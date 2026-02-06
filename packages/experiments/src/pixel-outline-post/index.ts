@@ -232,7 +232,7 @@ const experiment: ExperimentModule = {
 
     let raf = 0;
     const startedAt = performance.now();
-    const orbitTarget = new THREE.Vector3(0.35, 0.45, 0.0);
+    const orbitTarget = new THREE.Vector3(0.95, 0.45, 0.0);
 
     const render = () => {
       const t = (performance.now() - startedAt) / 1000;
