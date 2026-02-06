@@ -232,13 +232,17 @@ const experiment: ExperimentModule = {
 
     let raf = 0;
     const startedAt = performance.now();
-    const orbitTarget = new THREE.Vector3(0.0, 0.45, 0.0);
+    const orbitTarget = new THREE.Vector3(0.35, 0.45, 0.0);
 
     const render = () => {
       const t = (performance.now() - startedAt) / 1000;
 
       const radius = 6.6;
-      camera.position.set(Math.cos(t * 0.22) * radius, 2.65 + Math.sin(t * 0.18) * 0.24, Math.sin(t * 0.22) * radius);
+      camera.position.set(
+        orbitTarget.x + Math.cos(t * 0.22) * radius,
+        2.65 + Math.sin(t * 0.18) * 0.24,
+        orbitTarget.z + Math.sin(t * 0.22) * radius
+      );
       camera.lookAt(orbitTarget);
 
       knot.rotation.x = t * 0.25;
