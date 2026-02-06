@@ -39,7 +39,7 @@ float linearizeDepth(float rawDepth) {
 
 void main() {
   ivec2 screenSize = ivec2(max(uResolution, vec2(1.0)));
-  ivec2 p = ivec2(floor(vUv * vec2(screenSize)));
+  ivec2 p = ivec2(floor(gl_FragCoord.xy));
 
   int px = max(uPixelSize, 1);
   ivec2 block = (p / px) * px;
@@ -214,9 +214,13 @@ const experiment: ExperimentModule = {
       camera.aspect = safeWidth / safeHeight;
       camera.updateProjectionMatrix();
 
-      mainTarget.setSize(safeWidth, safeHeight);
-      normalTarget.setSize(safeWidth, safeHeight);
-      postMaterial.uniforms.uResolution.value.set(safeWidth, safeHeight);
+      const bufferSize = renderer.getDrawingBufferSize(new THREE.Vector2());
+      const bufferWidth = Math.max(1, Math.floor(bufferSize.x));
+      const bufferHeight = Math.max(1, Math.floor(bufferSize.y));
+
+      mainTarget.setSize(bufferWidth, bufferHeight);
+      normalTarget.setSize(bufferWidth, bufferHeight);
+      postMaterial.uniforms.uResolution.value.set(bufferWidth, bufferHeight);
     };
 
     resize(width, height);
@@ -243,8 +247,8 @@ const experiment: ExperimentModule = {
     const fovRad = THREE.MathUtils.degToRad(camera.fov);
     const fitDistance = subjectRadius / Math.tan(fovRad * 0.5);
     const orbitRadius = fitDistance * 1.8;
-    const baseAzimuth = 0.55; // Positive X side (camera to the right of subjects).
-    const orbitSpeed = 0.11;
+    const baseAzimuth = 0.95; // Stronger right-side start angle.
+    const azimuthArc = 0.28; // Keep orbit around right side, avoid drifting fully left.
     const baseHeight = subjectCenter.y + subjectRadius * 1.45;
 
     let raf = 0;
@@ -253,7 +257,7 @@ const experiment: ExperimentModule = {
     const render = () => {
       const t = (performance.now() - startedAt) / 1000;
 
-      const azimuth = baseAzimuth + t * orbitSpeed;
+      const azimuth = baseAzimuth + Math.sin(t * 0.22) * azimuthArc;
       camera.position.set(
         subjectCenter.x + Math.cos(azimuth) * orbitRadius,
         baseHeight + Math.sin(t * 0.13) * subjectRadius * 0.12,
