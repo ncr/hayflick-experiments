@@ -1,0 +1,153 @@
+:root {
+  color-scheme: light;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at 20% 0%, #e7f0fb 0%, #dfe8f1 40%, #ced8e3 100%);
+  color: #162130;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  height: 100%;
+}
+
+.sidebar {
+  border-right: 1px solid #a8b5c4;
+  padding: 1rem;
+  background: rgba(246, 250, 255, 0.85);
+  backdrop-filter: blur(6px);
+  overflow-y: auto;
+}
+
+.sidebar h1 {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sidebar button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #b5c2d2;
+  background: #f7fbff;
+  padding: 0.6rem 0.7rem;
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sidebar button.active {
+  border-color: #2a6f95;
+  background: #deeffd;
+}
+
+.main-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 1rem;
+  gap: 1rem;
+}
+
+.main-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.main-header h2 {
+  margin: 0;
+}
+
+.main-header p {
+  margin: 0.35rem 0 0;
+  color: #415263;
+}
+
+.main-header a {
+  border: 1px solid #2a6f95;
+  color: #184f6f;
+  text-decoration: none;
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  white-space: nowrap;
+}
+
+.stage-shell {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+}
+
+.stage-ratio {
+  width: min(100%, calc((100vh - 11rem) * 1.3333));
+  aspect-ratio: 4 / 3;
+  border: 1px solid #97a7b8;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+  background: #0a111a;
+  box-shadow: 0 8px 30px rgba(9, 15, 24, 0.18);
+}
+
+.stage-host {
+  width: 100%;
+  height: 100%;
+}
+
+.stage-empty,
+.stage-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #d0dceb;
+  text-align: center;
+  padding: 1rem;
+}
+
+.stage-error {
+  color: #f7b5b5;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #a8b5c4;
+    max-height: 30vh;
+  }
+
+  .stage-ratio {
+    width: 100%;
+  }
+}

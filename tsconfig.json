@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/common-core" },
+    { "path": "packages/common-render" },
+    { "path": "packages/common-gameplay" },
+    { "path": "packages/experiments" },
+    { "path": "apps/hub" }
+  ]
+}
