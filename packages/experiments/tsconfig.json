@@ -4,9 +4,5 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src"],
-  "references": [
-    { "path": "../common-core" },
-    { "path": "../common-render" }
-  ]
+  "include": ["src"]
 }
