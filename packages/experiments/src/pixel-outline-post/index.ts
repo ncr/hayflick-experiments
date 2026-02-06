@@ -230,20 +230,36 @@ const experiment: ExperimentModule = {
     });
     observer.observe(mount);
 
+    // Compute camera framing from actual subject bounds so composition is deterministic.
+    const subjectBounds = new THREE.Box3();
+    subjectBounds.expandByObject(knot);
+    subjectBounds.expandByObject(box);
+    subjectBounds.expandByObject(sphere);
+
+    const subjectCenter = subjectBounds.getCenter(new THREE.Vector3());
+    const subjectSize = subjectBounds.getSize(new THREE.Vector3());
+    const subjectRadius = Math.max(subjectSize.x, subjectSize.y, subjectSize.z) * 0.5;
+
+    const fovRad = THREE.MathUtils.degToRad(camera.fov);
+    const fitDistance = subjectRadius / Math.tan(fovRad * 0.5);
+    const orbitRadius = fitDistance * 1.8;
+    const baseAzimuth = 0.55; // Positive X side (camera to the right of subjects).
+    const orbitSpeed = 0.11;
+    const baseHeight = subjectCenter.y + subjectRadius * 1.45;
+
     let raf = 0;
     const startedAt = performance.now();
-    const orbitTarget = new THREE.Vector3(0.95, 0.45, 0.0);
 
     const render = () => {
       const t = (performance.now() - startedAt) / 1000;
 
-      const radius = 6.6;
+      const azimuth = baseAzimuth + t * orbitSpeed;
       camera.position.set(
-        orbitTarget.x + Math.cos(t * 0.22) * radius,
-        2.65 + Math.sin(t * 0.18) * 0.24,
-        orbitTarget.z + Math.sin(t * 0.22) * radius
+        subjectCenter.x + Math.cos(azimuth) * orbitRadius,
+        baseHeight + Math.sin(t * 0.13) * subjectRadius * 0.12,
+        subjectCenter.z + Math.sin(azimuth) * orbitRadius
       );
-      camera.lookAt(orbitTarget);
+      camera.lookAt(subjectCenter.x, subjectCenter.y - subjectRadius * 0.2, subjectCenter.z);
 
       knot.rotation.x = t * 0.25;
       knot.rotation.y = -t * 0.38;
