@@ -111,21 +111,26 @@ const experiment: ExperimentModule = {
     const renderer = makeRenderer(width, height, dpr);
     renderer.setPixelRatio(dpr);
     renderer.setClearColor(0x0e1218);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 2.1;
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a2432);
+    scene.background = new THREE.Color(0x2f4258);
 
-    const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 50);
+    const camera = new THREE.PerspectiveCamera(58, width / height, 0.1, 50);
 
-    const key = new THREE.DirectionalLight(0xfff4dc, 2.4);
+    const key = new THREE.DirectionalLight(0xfff3db, 5.6);
     key.position.set(3, 5, 2);
     scene.add(key);
-    scene.add(new THREE.AmbientLight(0x5f748d, 0.55));
+    const fill = new THREE.DirectionalLight(0x8ab5ff, 2.2);
+    fill.position.set(-4, 2, -3);
+    scene.add(fill);
+    scene.add(new THREE.AmbientLight(0x7a95b3, 1.6));
 
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(14, 14),
-      new THREE.MeshStandardMaterial({ color: 0x273447, roughness: 0.95, metalness: 0.0 })
+      new THREE.MeshStandardMaterial({ color: 0x31445a, roughness: 0.9, metalness: 0.0 })
     );
     ground.rotation.x = -Math.PI * 0.5;
     ground.position.y = -0.8;
@@ -137,7 +142,7 @@ const experiment: ExperimentModule = {
       new THREE.TorusKnotGeometry(0.58, 0.2, 180, 28),
       new THREE.MeshStandardMaterial({ color: 0x4fd0a4, roughness: 0.32, metalness: 0.12 })
     );
-    knot.position.set(0.0, 0.8, 0.0);
+    knot.position.set(0.0, 0.82, 0.0);
     scene.add(knot);
     objects.push(knot);
 
@@ -145,7 +150,7 @@ const experiment: ExperimentModule = {
       new THREE.BoxGeometry(0.9, 0.9, 0.9),
       new THREE.MeshStandardMaterial({ color: 0xf6a53d, roughness: 0.72, metalness: 0.08 })
     );
-    box.position.set(-1.2, 0.0, -0.5);
+    box.position.set(-1.0, 0.0, -0.45);
     scene.add(box);
     objects.push(box);
 
@@ -153,7 +158,7 @@ const experiment: ExperimentModule = {
       new THREE.SphereGeometry(0.58, 36, 24),
       new THREE.MeshStandardMaterial({ color: 0x7f9eff, roughness: 0.22, metalness: 0.02 })
     );
-    sphere.position.set(1.2, -0.15, 0.5);
+    sphere.position.set(1.0, -0.12, 0.45);
     scene.add(sphere);
     objects.push(sphere);
 
@@ -227,13 +232,13 @@ const experiment: ExperimentModule = {
 
     let raf = 0;
     const startedAt = performance.now();
-    const orbitTarget = new THREE.Vector3(0.0, 0.3, 0.0);
+    const orbitTarget = new THREE.Vector3(0.0, 0.45, 0.0);
 
     const render = () => {
       const t = (performance.now() - startedAt) / 1000;
 
-      const radius = 6.0;
-      camera.position.set(Math.cos(t * 0.28) * radius, 2.25 + Math.sin(t * 0.22) * 0.35, Math.sin(t * 0.28) * radius);
+      const radius = 6.6;
+      camera.position.set(Math.cos(t * 0.22) * radius, 2.65 + Math.sin(t * 0.18) * 0.24, Math.sin(t * 0.22) * radius);
       camera.lookAt(orbitTarget);
 
       knot.rotation.x = t * 0.25;
