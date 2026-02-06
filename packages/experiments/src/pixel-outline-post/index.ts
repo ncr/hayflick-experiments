@@ -3,8 +3,6 @@ import { makeRenderer } from "@common/render";
 import type { ExperimentModule } from "../runtime/types";
 
 const postVertexShader = `
-in vec3 position;
-in vec2 uv;
 out vec2 vUv;
 
 void main() {
