@@ -137,7 +137,7 @@ const experiment: ExperimentModule = {
       new THREE.TorusKnotGeometry(0.58, 0.2, 180, 28),
       new THREE.MeshStandardMaterial({ color: 0x4fd0a4, roughness: 0.32, metalness: 0.12 })
     );
-    knot.position.set(0.1, 0.8, 0.15);
+    knot.position.set(0.0, 0.8, 0.0);
     scene.add(knot);
     objects.push(knot);
 
@@ -145,7 +145,7 @@ const experiment: ExperimentModule = {
       new THREE.BoxGeometry(0.9, 0.9, 0.9),
       new THREE.MeshStandardMaterial({ color: 0xf6a53d, roughness: 0.72, metalness: 0.08 })
     );
-    box.position.set(-1.5, 0.0, -0.6);
+    box.position.set(-1.2, 0.0, -0.5);
     scene.add(box);
     objects.push(box);
 
@@ -153,7 +153,7 @@ const experiment: ExperimentModule = {
       new THREE.SphereGeometry(0.58, 36, 24),
       new THREE.MeshStandardMaterial({ color: 0x7f9eff, roughness: 0.22, metalness: 0.02 })
     );
-    sphere.position.set(1.45, -0.15, 0.55);
+    sphere.position.set(1.2, -0.15, 0.5);
     scene.add(sphere);
     objects.push(sphere);
 
@@ -172,7 +172,7 @@ const experiment: ExperimentModule = {
     const normalTarget = new THREE.WebGLRenderTarget(width, height, {
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
-      depthBuffer: false
+      depthBuffer: true
     });
 
     const postScene = new THREE.Scene();
@@ -227,13 +227,14 @@ const experiment: ExperimentModule = {
 
     let raf = 0;
     const startedAt = performance.now();
+    const orbitTarget = new THREE.Vector3(0.0, 0.3, 0.0);
 
     const render = () => {
       const t = (performance.now() - startedAt) / 1000;
 
-      const radius = 4.2;
-      camera.position.set(Math.cos(t * 0.33) * radius, 1.95 + Math.sin(t * 0.21) * 0.3, Math.sin(t * 0.33) * radius);
-      camera.lookAt(0.0, 0.45, 0.0);
+      const radius = 6.0;
+      camera.position.set(Math.cos(t * 0.28) * radius, 2.25 + Math.sin(t * 0.22) * 0.35, Math.sin(t * 0.28) * radius);
+      camera.lookAt(orbitTarget);
 
       knot.rotation.x = t * 0.25;
       knot.rotation.y = -t * 0.38;
