@@ -2,6 +2,8 @@ import * as THREE from "three";
 import { makeRenderer } from "@common/render";
 import type { ExperimentModule } from "../runtime/types";
 
+const DISABLE_POSTPROCESS = true;
+
 const postVertexShader = `
 out vec2 vUv;
 
@@ -259,6 +261,13 @@ const experiment: ExperimentModule = {
       knot.rotation.y = -t * 0.38;
       box.rotation.y = t * 0.45;
       sphere.position.y = -0.15 + Math.sin(t * 1.35) * 0.12;
+
+      if (DISABLE_POSTPROCESS) {
+        renderer.setRenderTarget(null);
+        renderer.render(scene, camera);
+        raf = requestAnimationFrame(render);
+        return;
+      }
 
       renderer.setRenderTarget(mainTarget);
       renderer.render(scene, camera);
