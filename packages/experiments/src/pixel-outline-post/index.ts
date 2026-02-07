@@ -236,7 +236,7 @@ const experiment: ExperimentModule = {
 
     const focusPoint = new THREE.Vector3(0.0, 0.42, 0.0);
     const orbitRadius = 5.3;
-    const baseAzimuth = THREE.MathUtils.degToRad(36);
+    const baseAzimuth = THREE.MathUtils.degToRad(126);
     const baseElevation = THREE.MathUtils.degToRad(34);
     const azimuthArc = THREE.MathUtils.degToRad(5);
     const elevationArc = THREE.MathUtils.degToRad(2);
