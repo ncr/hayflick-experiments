@@ -3,8 +3,8 @@ import type { ExperimentMeta } from "../runtime/meta";
 export const meta: ExperimentMeta = {
   id: "pixel-outline-post",
   title: "Pixel Outline Post",
-  description: "Simple 3D scene with orbiting camera and a Godot-style pixelization + one-sided depth/normal outline postprocess.",
-  tags: ["threejs", "shader", "postprocess", "outline", "pixel"],
+  description: "Retro demo scene with orbiting camera, toon+dither materials, and Godot-style one-sided pixel outline postprocess.",
+  tags: ["threejs", "shader", "postprocess", "outline", "toon", "pixel"],
   status: "draft",
-  updatedAt: "2026-02-06"
+  updatedAt: "2026-02-07"
 };
