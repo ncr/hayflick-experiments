@@ -27,6 +27,8 @@ uniform float uNormalThreshold;
 uniform float uEdgeDarken;
 uniform float uOutlineDarken;
 uniform float uOutlineLightResponse;
+uniform float uOutlineSaturationBoost;
+uniform float uOutlineProminence;
 uniform float uPostDitherStrength;
 
 varying vec2 vUv;
@@ -131,11 +133,12 @@ void main() {
   // Color outlines from the underlying mesh color so each object keeps its hue.
   float colorLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
   float lightMix = mix(0.0, smoothstep(0.02, 0.95, colorLuma), uOutlineLightResponse);
-  float shadeFactor = mix(uOutlineDarken, uOutlineDarken + 0.28, lightMix);
+  float shadeFactor = mix(uOutlineDarken, uOutlineDarken + 0.42, lightMix);
 
-  vec3 litEdgeColor = c * shadeFactor;
+  vec3 chromaEdge = mix(vec3(colorLuma), c, uOutlineSaturationBoost);
+  vec3 litEdgeColor = clamp(chromaEdge * shadeFactor, 0.0, 1.0);
   vec3 darkened = c * uEdgeDarken;
-  vec3 outlined = mix(darkened, litEdgeColor, 0.8);
+  vec3 outlined = mix(darkened, litEdgeColor, uOutlineProminence);
   vec3 outColor = mix(c, outlined, edge);
 
   vec2 blockCoord = floor(vUv / blockStep);
@@ -408,9 +411,11 @@ const experiment: ExperimentModule = {
         uPixelSize: { value: 4.0 },
         uDepthThreshold: { value: 0.12 },
         uNormalThreshold: { value: 0.24 },
-        uEdgeDarken: { value: 0.34 },
-        uOutlineDarken: { value: 0.3 },
+        uEdgeDarken: { value: 0.28 },
+        uOutlineDarken: { value: 0.24 },
         uOutlineLightResponse: { value: 1.0 },
+        uOutlineSaturationBoost: { value: 1.9 },
+        uOutlineProminence: { value: 0.98 },
         uPostDitherStrength: { value: 0.0 }
       },
       vertexShader: POST_VERTEX_SHADER,
