@@ -3,6 +3,7 @@ import { makeRenderer } from "@common/render";
 import type { ExperimentModule } from "../runtime/types";
 
 const DISABLE_POSTPROCESS = true;
+const SHOW_CAMERA_DEBUG = true;
 
 const postVertexShader = `
 out vec2 vUv;
@@ -152,7 +153,7 @@ const experiment: ExperimentModule = {
       new THREE.BoxGeometry(0.9, 0.9, 0.9),
       new THREE.MeshStandardMaterial({ color: 0xf6a53d, roughness: 0.72, metalness: 0.08 })
     );
-    box.position.set(0.0, 0.0, 0.0);
+    box.position.set(0.0, 0.45, 0.0);
     scene.add(box);
     objects.push(box);
 
@@ -237,30 +238,65 @@ const experiment: ExperimentModule = {
     observer.observe(mount);
 
     // Deterministic camera:
-    // - orange box is the exact center target
-    // - no orbit drift
-    const focusPoint = box.position.clone();
-    const cameraDistance = 5.4;
-    const azimuth = THREE.MathUtils.degToRad(38);
-    const elevation = THREE.MathUtils.degToRad(34);
+    // fixed world offset from orange box center, and always look exactly at box center.
+    const focusPoint = box.position;
+    const cameraOffset = new THREE.Vector3(3.2, 2.8, 3.2);
+
+    mount.style.position = "relative";
+    const debugOverlay = document.createElement("div");
+    debugOverlay.style.position = "absolute";
+    debugOverlay.style.inset = "0";
+    debugOverlay.style.pointerEvents = "none";
+    debugOverlay.style.display = SHOW_CAMERA_DEBUG ? "block" : "none";
+
+    const vLine = document.createElement("div");
+    vLine.style.position = "absolute";
+    vLine.style.left = "50%";
+    vLine.style.top = "0";
+    vLine.style.bottom = "0";
+    vLine.style.width = "1px";
+    vLine.style.background = "rgba(255, 0, 0, 0.6)";
+
+    const hLine = document.createElement("div");
+    hLine.style.position = "absolute";
+    hLine.style.top = "50%";
+    hLine.style.left = "0";
+    hLine.style.right = "0";
+    hLine.style.height = "1px";
+    hLine.style.background = "rgba(255, 0, 0, 0.6)";
+
+    const debugLabel = document.createElement("div");
+    debugLabel.style.position = "absolute";
+    debugLabel.style.left = "8px";
+    debugLabel.style.bottom = "8px";
+    debugLabel.style.color = "#ff8b8b";
+    debugLabel.style.background = "rgba(0, 0, 0, 0.45)";
+    debugLabel.style.padding = "2px 6px";
+    debugLabel.style.borderRadius = "4px";
+    debugLabel.style.font = "11px IBM Plex Mono, monospace";
+
+    debugOverlay.appendChild(vLine);
+    debugOverlay.appendChild(hLine);
+    debugOverlay.appendChild(debugLabel);
+    mount.appendChild(debugOverlay);
 
     let raf = 0;
     const startedAt = performance.now();
 
     const render = () => {
-      const planar = Math.cos(elevation) * cameraDistance;
-      camera.position.set(
-        focusPoint.x + Math.cos(azimuth) * planar,
-        focusPoint.y + Math.sin(elevation) * cameraDistance,
-        focusPoint.z + Math.sin(azimuth) * planar
-      );
+      camera.position.copy(focusPoint).add(cameraOffset);
       camera.lookAt(focusPoint);
 
       const t = (performance.now() - startedAt) / 1000;
       knot.rotation.x = t * 0.25;
       knot.rotation.y = -t * 0.38;
-      box.rotation.y = t * 0.45;
+      box.rotation.y = t * 0.35;
       sphere.position.y = -0.15 + Math.sin(t * 1.35) * 0.12;
+
+      const boxNdc = box.position.clone().project(camera);
+      if (SHOW_CAMERA_DEBUG) {
+        debugLabel.textContent = `box NDC x:${boxNdc.x.toFixed(3)} y:${boxNdc.y.toFixed(3)}`;
+      }
 
       if (DISABLE_POSTPROCESS) {
         renderer.setRenderTarget(null);
@@ -289,6 +325,7 @@ const experiment: ExperimentModule = {
     return () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
+      debugOverlay.remove();
 
       scene.remove(ground, knot, box, sphere);
       ground.geometry.dispose();
