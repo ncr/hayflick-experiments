@@ -25,9 +25,9 @@ uniform float uPixelSize;
 uniform float uDepthThreshold;
 uniform float uNormalThreshold;
 uniform float uEdgeDarken;
+uniform float uOutlineDarken;
+uniform float uOutlineLightResponse;
 uniform float uPostDitherStrength;
-uniform vec3 uDepthEdgeColor;
-uniform vec3 uNormalEdgeColor;
 
 varying vec2 vUv;
 
@@ -128,9 +128,14 @@ void main() {
   );
 
   float edge = max(depthEdge, normalEdge);
-  vec3 edgeBase = mix(uNormalEdgeColor, uDepthEdgeColor, depthEdge);
+  // Color outlines from the underlying mesh color so each object keeps its hue.
+  float colorLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float lightMix = mix(0.0, smoothstep(0.02, 0.95, colorLuma), uOutlineLightResponse);
+  float shadeFactor = mix(uOutlineDarken, uOutlineDarken + 0.28, lightMix);
+
+  vec3 litEdgeColor = c * shadeFactor;
   vec3 darkened = c * uEdgeDarken;
-  vec3 outlined = mix(darkened, edgeBase, 0.7);
+  vec3 outlined = mix(darkened, litEdgeColor, 0.8);
   vec3 outColor = mix(c, outlined, edge);
 
   vec2 blockCoord = floor(vUv / blockStep);
@@ -403,10 +408,10 @@ const experiment: ExperimentModule = {
         uPixelSize: { value: 4.0 },
         uDepthThreshold: { value: 0.12 },
         uNormalThreshold: { value: 0.24 },
-        uEdgeDarken: { value: 0.38 },
-        uPostDitherStrength: { value: 0.0 },
-        uDepthEdgeColor: { value: new THREE.Color(0x03050a) },
-        uNormalEdgeColor: { value: new THREE.Color(0x05070d) }
+        uEdgeDarken: { value: 0.34 },
+        uOutlineDarken: { value: 0.3 },
+        uOutlineLightResponse: { value: 1.0 },
+        uPostDitherStrength: { value: 0.0 }
       },
       vertexShader: POST_VERTEX_SHADER,
       fragmentShader: POST_FRAGMENT_SHADER
