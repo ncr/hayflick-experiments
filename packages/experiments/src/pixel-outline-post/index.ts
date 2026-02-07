@@ -142,7 +142,7 @@ const experiment: ExperimentModule = {
       new THREE.TorusKnotGeometry(0.58, 0.2, 180, 28),
       new THREE.MeshStandardMaterial({ color: 0x4fd0a4, roughness: 0.32, metalness: 0.12 })
     );
-    knot.position.set(0.35, 0.82, 0.0);
+    knot.position.set(-2.1, 1.05, -0.95);
     scene.add(knot);
     objects.push(knot);
 
@@ -150,7 +150,7 @@ const experiment: ExperimentModule = {
       new THREE.BoxGeometry(0.9, 0.9, 0.9),
       new THREE.MeshStandardMaterial({ color: 0xf6a53d, roughness: 0.72, metalness: 0.08 })
     );
-    box.position.set(-0.35, 0.0, 0.0);
+    box.position.set(0.0, 0.0, 0.0);
     scene.add(box);
     objects.push(box);
 
@@ -158,7 +158,7 @@ const experiment: ExperimentModule = {
       new THREE.SphereGeometry(0.58, 36, 24),
       new THREE.MeshStandardMaterial({ color: 0x7f9eff, roughness: 0.22, metalness: 0.02 })
     );
-    sphere.position.set(1.15, -0.12, 0.75);
+    sphere.position.set(2.05, -0.12, 1.35);
     scene.add(sphere);
     objects.push(sphere);
 
@@ -234,33 +234,18 @@ const experiment: ExperimentModule = {
     });
     observer.observe(mount);
 
-    // Deterministic camera from first principles:
-    // - focus point is exactly the center of the orange box
-    // - distance fits knot+box extents so both remain visible
-    // - fixed azimuth/elevation (no drift)
+    // Deterministic camera:
+    // - orange box is the exact center target
+    // - no orbit drift
     const focusPoint = box.position.clone();
-
-    const focusBounds = new THREE.Box3();
-    focusBounds.expandByObject(knot);
-    focusBounds.expandByObject(box);
-    const focusSize = focusBounds.getSize(new THREE.Vector3());
-
-    const vFov = THREE.MathUtils.degToRad(camera.fov);
-    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * camera.aspect);
-    const fitV = (focusSize.y * 0.5) / Math.tan(vFov * 0.5);
-    const fitH = (focusSize.x * 0.5) / Math.tan(hFov * 0.5);
-    const fitD = focusSize.z * 0.7;
-    const cameraDistance = Math.max(fitV, fitH, fitD) * 2.5;
-
-    const azimuth = THREE.MathUtils.degToRad(42);
-    const elevation = THREE.MathUtils.degToRad(36);
+    const cameraDistance = 5.4;
+    const azimuth = THREE.MathUtils.degToRad(38);
+    const elevation = THREE.MathUtils.degToRad(34);
 
     let raf = 0;
     const startedAt = performance.now();
 
     const render = () => {
-      const t = (performance.now() - startedAt) / 1000;
-
       const planar = Math.cos(elevation) * cameraDistance;
       camera.position.set(
         focusPoint.x + Math.cos(azimuth) * planar,
@@ -269,6 +254,7 @@ const experiment: ExperimentModule = {
       );
       camera.lookAt(focusPoint);
 
+      const t = (performance.now() - startedAt) / 1000;
       knot.rotation.x = t * 0.25;
       knot.rotation.y = -t * 0.38;
       box.rotation.y = t * 0.45;
