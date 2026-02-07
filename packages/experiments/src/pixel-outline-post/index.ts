@@ -235,11 +235,10 @@ const experiment: ExperimentModule = {
     observer.observe(mount);
 
     // Deterministic camera from first principles:
-    // - focus point is the midpoint of knot and box
-    // - distance fits both vertical and horizontal FOV for those two objects
-    // - fixed azimuth/elevation (no drift) for stable composition
-    const focusPoint = knot.position.clone().add(box.position).multiplyScalar(0.5);
-    focusPoint.y += 0.05;
+    // - focus point is exactly the center of the orange box
+    // - distance fits knot+box extents so both remain visible
+    // - fixed azimuth/elevation (no drift)
+    const focusPoint = box.position.clone();
 
     const focusBounds = new THREE.Box3();
     focusBounds.expandByObject(knot);
@@ -253,8 +252,8 @@ const experiment: ExperimentModule = {
     const fitD = focusSize.z * 0.7;
     const cameraDistance = Math.max(fitV, fitH, fitD) * 2.5;
 
-    const azimuth = THREE.MathUtils.degToRad(35);
-    const elevation = THREE.MathUtils.degToRad(38);
+    const azimuth = THREE.MathUtils.degToRad(42);
+    const elevation = THREE.MathUtils.degToRad(36);
 
     let raf = 0;
     const startedAt = performance.now();
