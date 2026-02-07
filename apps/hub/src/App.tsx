@@ -11,6 +11,9 @@ function readExperimentFromHash(): string | null {
 }
 
 export function App() {
+  const buildId = import.meta.env.VITE_BUILD_ID ?? "local";
+  const buildSha = import.meta.env.VITE_BUILD_SHA?.slice(0, 7) ?? "dev";
+
   const [selectedId, setSelectedId] = useState<string | null>(() => readExperimentFromHash() ?? experiments[0]?.id ?? null);
 
   useEffect(() => {
@@ -61,6 +64,7 @@ export function App() {
           <div>
             <h2>{selected?.title ?? "No experiment selected"}</h2>
             <p>{selected?.description ?? "Pick an experiment from the left list."}</p>
+            <p className="build-stamp">Build {buildId} ({buildSha})</p>
           </div>
           {selected && (
             <a href={`#/exp/${selected.id}`} title="Open this route in another tab to run simultaneously.">

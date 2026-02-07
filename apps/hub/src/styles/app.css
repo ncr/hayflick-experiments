@@ -88,6 +88,13 @@ body,
   color: #415263;
 }
 
+.build-stamp {
+  margin-top: 0.45rem;
+  font-size: 0.75rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  color: #5a6f86;
+}
+
 .main-header a {
   border: 1px solid #2a6f95;
   color: #184f6f;
