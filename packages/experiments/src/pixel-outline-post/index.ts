@@ -246,7 +246,7 @@ const experiment: ExperimentModule = {
     // Deterministic camera:
     // fixed world offset from orange box center, and always look exactly at box center.
     const focusPoint = box.position;
-    const cameraOffset = new THREE.Vector3(0.0, 2.8, 4.2);
+    const cameraOffset = new THREE.Vector3(0.0, 0.0, 5.4);
 
     mount.style.position = "relative";
     const debugOverlay = document.createElement("div");
