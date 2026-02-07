@@ -39,7 +39,7 @@ float linearizeDepth(float rawDepth) {
 
 void main() {
   ivec2 screenSize = ivec2(max(uResolution, vec2(1.0)));
-  ivec2 p = ivec2(floor(gl_FragCoord.xy));
+  ivec2 p = ivec2(floor(vUv * vec2(screenSize)));
 
   int px = max(uPixelSize, 1);
   ivec2 block = (p / px) * px;
@@ -234,12 +234,27 @@ const experiment: ExperimentModule = {
     });
     observer.observe(mount);
 
-    const focusPoint = new THREE.Vector3(0.0, 0.42, 0.0);
-    const orbitRadius = 5.3;
-    const baseAzimuth = THREE.MathUtils.degToRad(126);
-    const baseElevation = THREE.MathUtils.degToRad(34);
-    const azimuthArc = THREE.MathUtils.degToRad(5);
-    const elevationArc = THREE.MathUtils.degToRad(2);
+    // Deterministic camera from first principles:
+    // - focus point is the midpoint of knot and box
+    // - distance fits both vertical and horizontal FOV for those two objects
+    // - fixed azimuth/elevation (no drift) for stable composition
+    const focusPoint = knot.position.clone().add(box.position).multiplyScalar(0.5);
+    focusPoint.y += 0.05;
+
+    const focusBounds = new THREE.Box3();
+    focusBounds.expandByObject(knot);
+    focusBounds.expandByObject(box);
+    const focusSize = focusBounds.getSize(new THREE.Vector3());
+
+    const vFov = THREE.MathUtils.degToRad(camera.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * camera.aspect);
+    const fitV = (focusSize.y * 0.5) / Math.tan(vFov * 0.5);
+    const fitH = (focusSize.x * 0.5) / Math.tan(hFov * 0.5);
+    const fitD = focusSize.z * 0.7;
+    const cameraDistance = Math.max(fitV, fitH, fitD) * 2.5;
+
+    const azimuth = THREE.MathUtils.degToRad(35);
+    const elevation = THREE.MathUtils.degToRad(38);
 
     let raf = 0;
     const startedAt = performance.now();
@@ -247,12 +262,10 @@ const experiment: ExperimentModule = {
     const render = () => {
       const t = (performance.now() - startedAt) / 1000;
 
-      const azimuth = baseAzimuth + Math.sin(t * 0.22) * azimuthArc;
-      const elevation = baseElevation + Math.sin(t * 0.17) * elevationArc;
-      const planar = Math.cos(elevation) * orbitRadius;
+      const planar = Math.cos(elevation) * cameraDistance;
       camera.position.set(
         focusPoint.x + Math.cos(azimuth) * planar,
-        focusPoint.y + Math.sin(elevation) * orbitRadius,
+        focusPoint.y + Math.sin(elevation) * cameraDistance,
         focusPoint.z + Math.sin(azimuth) * planar
       );
       camera.lookAt(focusPoint);
