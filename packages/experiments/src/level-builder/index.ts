@@ -2,7 +2,9 @@ import * as THREE from "three";
 import { makeRenderer } from "@common/render";
 import type { ExperimentModule } from "../runtime/types";
 
-type SegmentType = "wall" | "window" | "door";
+type StructureSegmentType = "wall" | "window" | "door";
+type GroundTileType = "floor" | "grass";
+type BrushType = StructureSegmentType | GroundTileType;
 type ToolMode = "draw" | "erase";
 
 type GridEdge = {
@@ -10,6 +12,11 @@ type GridEdge = {
   az: number;
   bx: number;
   bz: number;
+};
+
+type GridCell = {
+  x: number;
+  z: number;
 };
 
 type DirectionVector = {
@@ -20,7 +27,8 @@ type DirectionVector = {
 type DragState = {
   pointerId: number;
   mode: "paint" | "pan";
-  toolOverride: ToolMode | null;
+  paintMode: ToolMode;
+  brush: BrushType;
   lastClientX: number;
   lastClientY: number;
   lastWorldPoint: THREE.Vector3 | null;
@@ -30,8 +38,15 @@ const GRID_TILES = 30;
 const TILE_SIZE = 1;
 const GRID_ORIGIN = -(GRID_TILES * TILE_SIZE) * 0.5;
 
-const WALL_HEIGHT = 2.8;
+const STRUCTURE_HEIGHTS: Record<StructureSegmentType, number> = {
+  wall: 2.8,
+  window: 2.1,
+  door: 2.3
+};
+
 const WALL_THICKNESS = 0.18;
+const GROUND_TILE_HEIGHT = 0.05;
+const DEFAULT_GROUND: GroundTileType = "floor";
 
 const ORTHO_HEIGHT = 28;
 const CAMERA_DISTANCE = 34;
@@ -41,13 +56,23 @@ const ZOOM_MIN = 0.45;
 const ZOOM_MAX = 3.8;
 const PAN_CLAMP = GRID_TILES * 0.8;
 
-const BRUSH_COLORS: Record<SegmentType, number> = {
+const BRUSH_COLORS: Record<BrushType, number> = {
   wall: 0xbec7d0,
   window: 0x8ccdee,
-  door: 0xd9b17f
+  door: 0xd9b17f,
+  floor: 0x7f95ab,
+  grass: 0x5ca063
 };
 
+function isGroundBrush(brush: BrushType): brush is GroundTileType {
+  return brush === "floor" || brush === "grass";
+}
+
 function nodeKey(x: number, z: number): string {
+  return `${x},${z}`;
+}
+
+function cellKey(x: number, z: number): string {
   return `${x},${z}`;
 }
 
@@ -76,6 +101,14 @@ function toWorldNodeX(x: number): number {
 
 function toWorldNodeZ(z: number): number {
   return GRID_ORIGIN + z * TILE_SIZE;
+}
+
+function toWorldCellX(x: number): number {
+  return GRID_ORIGIN + x * TILE_SIZE + TILE_SIZE * 0.5;
+}
+
+function toWorldCellZ(z: number): number {
+  return GRID_ORIGIN + z * TILE_SIZE + TILE_SIZE * 0.5;
 }
 
 function clampPanTarget(target: THREE.Vector3): void {
@@ -108,6 +141,11 @@ function createGridGeometry(step: number, y: number): THREE.BufferGeometry {
   return geometry;
 }
 
+function parseCellKey(key: string): GridCell {
+  const [xStr, zStr] = key.split(",");
+  return { x: Number(xStr), z: Number(zStr) };
+}
+
 const experiment: ExperimentModule = {
   id: "level-builder",
   title: "Level Builder",
@@ -138,21 +176,21 @@ const experiment: ExperimentModule = {
     keyLight.position.set(18, 24, 12);
     scene.add(keyLight);
 
-    const floorGeometry = new THREE.PlaneGeometry(GRID_TILES * TILE_SIZE, GRID_TILES * TILE_SIZE);
-    const floorMaterial = new THREE.MeshStandardMaterial({
-      color: 0x1a2c39,
-      roughness: 0.94,
+    const floorBaseGeometry = new THREE.PlaneGeometry(GRID_TILES * TILE_SIZE, GRID_TILES * TILE_SIZE);
+    const floorBaseMaterial = new THREE.MeshStandardMaterial({
+      color: 0x172430,
+      roughness: 0.95,
       metalness: 0.02
     });
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-    floor.rotation.x = -Math.PI * 0.5;
-    scene.add(floor);
+    const floorBase = new THREE.Mesh(floorBaseGeometry, floorBaseMaterial);
+    floorBase.rotation.x = -Math.PI * 0.5;
+    scene.add(floorBase);
 
     const minorGridGeometry = createGridGeometry(1, 0.001);
     const majorGridGeometry = createGridGeometry(5, 0.002);
     const minorGrid = new THREE.LineSegments(
       minorGridGeometry,
-      new THREE.LineBasicMaterial({ color: 0x375069, transparent: true, opacity: 0.45 })
+      new THREE.LineBasicMaterial({ color: 0x375069, transparent: true, opacity: 0.42 })
     );
     const majorGrid = new THREE.LineSegments(
       majorGridGeometry,
@@ -161,74 +199,65 @@ const experiment: ExperimentModule = {
     scene.add(minorGrid);
     scene.add(majorGrid);
 
+    const groundGroup = new THREE.Group();
     const structuresGroup = new THREE.Group();
     const jointsGroup = new THREE.Group();
+    scene.add(groundGroup);
     scene.add(structuresGroup);
     scene.add(jointsGroup);
 
-    const wallMaterial = new THREE.MeshStandardMaterial({
-      color: BRUSH_COLORS.wall,
-      roughness: 0.6,
-      metalness: 0.03
+    const groundFloorMaterial = new THREE.MeshStandardMaterial({
+      color: 0x788ea3,
+      roughness: 0.86,
+      metalness: 0.05
     });
-    const windowFrameMaterial = new THREE.MeshStandardMaterial({
-      color: BRUSH_COLORS.window,
-      roughness: 0.54,
-      metalness: 0.07
+    const groundGrassMaterial = new THREE.MeshStandardMaterial({
+      color: 0x5a9961,
+      roughness: 0.93,
+      metalness: 0.0
     });
-    const windowGlassMaterial = new THREE.MeshStandardMaterial({
-      color: 0xa2dfff,
-      roughness: 0.2,
-      metalness: 0.0,
-      transparent: true,
-      opacity: 0.4
-    });
-    const doorFrameMaterial = new THREE.MeshStandardMaterial({
-      color: BRUSH_COLORS.door,
-      roughness: 0.62,
-      metalness: 0.04
-    });
+
+    const structureMaterials: Record<StructureSegmentType, THREE.MeshStandardMaterial> = {
+      wall: new THREE.MeshStandardMaterial({ color: BRUSH_COLORS.wall, roughness: 0.66, metalness: 0.04 }),
+      window: new THREE.MeshStandardMaterial({ color: BRUSH_COLORS.window, roughness: 0.62, metalness: 0.08 }),
+      door: new THREE.MeshStandardMaterial({ color: BRUSH_COLORS.door, roughness: 0.7, metalness: 0.03 })
+    };
+
     const jointMaterial = new THREE.MeshStandardMaterial({
-      color: 0xf0dca8,
-      roughness: 0.5,
-      metalness: 0.1
+      color: 0xe7ddb8,
+      roughness: 0.56,
+      metalness: 0.08
     });
-    const jointCapMaterial = new THREE.MeshStandardMaterial({
-      color: 0xffeecc,
-      roughness: 0.35,
-      metalness: 0.25
-    });
+
     const hoverMaterial = new THREE.MeshBasicMaterial({
       color: BRUSH_COLORS.wall,
       transparent: true,
-      opacity: 0.68,
+      opacity: 0.62,
       depthWrite: false
     });
 
-    const fullWallGeometry = new THREE.BoxGeometry(TILE_SIZE, WALL_HEIGHT, WALL_THICKNESS);
-    const windowSillGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.9, WALL_THICKNESS);
-    const windowLintelGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.7, WALL_THICKNESS);
-    const windowPostGeometry = new THREE.BoxGeometry(0.16, 1.2, WALL_THICKNESS);
-    const windowGlassGeometry = new THREE.PlaneGeometry(0.66, 1.12);
+    const groundTileGeometry = new THREE.BoxGeometry(TILE_SIZE, GROUND_TILE_HEIGHT, TILE_SIZE);
+    const segmentGeometry = new THREE.BoxGeometry(TILE_SIZE, 1, WALL_THICKNESS);
+    const jointGeometry = new THREE.BoxGeometry(1, 2.8, 1);
 
-    const doorJambGeometry = new THREE.BoxGeometry(0.14, WALL_HEIGHT, WALL_THICKNESS);
-    const doorLintelGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.34, WALL_THICKNESS);
-    const doorThresholdGeometry = new THREE.BoxGeometry(TILE_SIZE * 0.92, 0.07, WALL_THICKNESS * 0.82);
+    const edgeHoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.05, WALL_THICKNESS);
+    const cellHoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.04, TILE_SIZE);
 
-    const jointPostGeometry = new THREE.BoxGeometry(0.22, WALL_HEIGHT, 0.22);
-    const jointArmXGeometry = new THREE.BoxGeometry(0.4, 0.14, 0.14);
-    const jointArmZGeometry = new THREE.BoxGeometry(0.14, 0.14, 0.4);
-    const jointCapGeometry = new THREE.CylinderGeometry(0.2, 0.2, 0.08, 10);
+    const edgeHoverMesh = new THREE.Mesh(edgeHoverGeometry, hoverMaterial);
+    edgeHoverMesh.visible = false;
+    edgeHoverMesh.position.y = 0.03;
 
-    const hoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.05, WALL_THICKNESS);
-    const hoverMesh = new THREE.Mesh(hoverGeometry, hoverMaterial);
-    hoverMesh.visible = false;
-    hoverMesh.position.y = 0.03;
-    scene.add(hoverMesh);
+    const cellHoverMesh = new THREE.Mesh(cellHoverGeometry, hoverMaterial);
+    cellHoverMesh.visible = false;
+    cellHoverMesh.position.y = 0.03;
 
-    const wallSegments = new Map<string, SegmentType>();
+    scene.add(edgeHoverMesh);
+    scene.add(cellHoverMesh);
 
-    let activeBrush: SegmentType = "wall";
+    const structureSegments = new Map<string, StructureSegmentType>();
+    const groundOverrides = new Map<string, GroundTileType>();
+
+    let activeBrush: BrushType = "wall";
     let activeTool: ToolMode = "draw";
     let spacePressed = false;
     let dragState: DragState | null = null;
@@ -253,6 +282,7 @@ const experiment: ExperimentModule = {
 
     const strokePoint = new THREE.Vector3();
     const nextWorldPoint = new THREE.Vector3();
+    const tempMatrix = new THREE.Matrix4();
 
     const hud = document.createElement("div");
     hud.style.position = "absolute";
@@ -280,12 +310,12 @@ const experiment: ExperimentModule = {
 
     const leftPanel = document.createElement("div");
     panelStyle(leftPanel);
-    leftPanel.style.width = "min(320px, 46vw)";
+    leftPanel.style.width = "min(350px, 50vw)";
     hud.appendChild(leftPanel);
 
     const rightPanel = document.createElement("div");
     panelStyle(rightPanel);
-    rightPanel.style.minWidth = "180px";
+    rightPanel.style.minWidth = "220px";
     rightPanel.style.alignItems = "stretch";
     hud.appendChild(rightPanel);
 
@@ -296,7 +326,7 @@ const experiment: ExperimentModule = {
     leftPanel.appendChild(title);
 
     const helper = document.createElement("div");
-    helper.textContent = "Smart joins are generated automatically for corners, T-junctions, and crosses.";
+    helper.textContent = "Simple blockout meshes with auto wall joins + paintable floor/grass terrain.";
     helper.style.fontSize = "12px";
     helper.style.lineHeight = "1.3";
     helper.style.color = "rgba(207, 225, 240, 0.88)";
@@ -356,8 +386,142 @@ const experiment: ExperimentModule = {
       }
     }
 
+    function getCurrentBrushAndMode(): { brush: BrushType; mode: ToolMode } {
+      if (dragState && dragState.mode === "paint") {
+        return { brush: dragState.brush, mode: dragState.paintMode };
+      }
+      return { brush: activeBrush, mode: activeTool };
+    }
+
+    function getGroundTypeAtCell(x: number, z: number): GroundTileType {
+      return groundOverrides.get(cellKey(x, z)) ?? DEFAULT_GROUND;
+    }
+
+    function setGroundTypeAtCell(x: number, z: number, type: GroundTileType): void {
+      const key = cellKey(x, z);
+      if (type === DEFAULT_GROUND) {
+        groundOverrides.delete(key);
+      } else {
+        groundOverrides.set(key, type);
+      }
+    }
+
+    function clearGroup(group: THREE.Group): void {
+      for (let i = group.children.length - 1; i >= 0; i -= 1) {
+        group.remove(group.children[i]);
+      }
+    }
+
+    function createGroundInstances(material: THREE.Material, count: number): THREE.InstancedMesh {
+      const mesh = new THREE.InstancedMesh(groundTileGeometry, material, Math.max(1, count));
+      mesh.count = count;
+      return mesh;
+    }
+
+    function createStructureSegment(type: StructureSegmentType): THREE.Mesh {
+      const mesh = new THREE.Mesh(segmentGeometry, structureMaterials[type]);
+      const height = STRUCTURE_HEIGHTS[type];
+      mesh.scale.y = height;
+      mesh.position.y = height * 0.5;
+      return mesh;
+    }
+
+    function createJoinPost(degree: number): THREE.Mesh {
+      const mesh = new THREE.Mesh(jointGeometry, jointMaterial);
+      const size = 0.22 + degree * 0.06;
+      mesh.scale.x = size;
+      mesh.scale.z = size;
+      mesh.position.y = 2.8 * 0.5;
+      return mesh;
+    }
+
+    function registerDirection(map: Map<string, DirectionVector[]>, x: number, z: number, dx: number, dz: number): void {
+      const key = nodeKey(x, z);
+      const directions = map.get(key) ?? [];
+      if (!directions.some((entry) => entry.dx === dx && entry.dz === dz)) {
+        directions.push({ dx, dz });
+      }
+      map.set(key, directions);
+    }
+
+    function rebuildGroundTiles(): void {
+      clearGroup(groundGroup);
+
+      const grassCount = groundOverrides.size;
+      const totalCells = GRID_TILES * GRID_TILES;
+      const floorCount = totalCells - grassCount;
+
+      const floorInstances = createGroundInstances(groundFloorMaterial, floorCount);
+      const grassInstances = createGroundInstances(groundGrassMaterial, grassCount);
+
+      let floorIndex = 0;
+      let grassIndex = 0;
+
+      for (let z = 0; z < GRID_TILES; z += 1) {
+        for (let x = 0; x < GRID_TILES; x += 1) {
+          tempMatrix.makeTranslation(toWorldCellX(x), GROUND_TILE_HEIGHT * 0.5, toWorldCellZ(z));
+
+          if (getGroundTypeAtCell(x, z) === "grass") {
+            grassInstances.setMatrixAt(grassIndex, tempMatrix);
+            grassIndex += 1;
+          } else {
+            floorInstances.setMatrixAt(floorIndex, tempMatrix);
+            floorIndex += 1;
+          }
+        }
+      }
+
+      floorInstances.instanceMatrix.needsUpdate = true;
+      grassInstances.instanceMatrix.needsUpdate = true;
+
+      groundGroup.add(floorInstances);
+      groundGroup.add(grassInstances);
+    }
+
+    function rebuildStructures(): void {
+      clearGroup(structuresGroup);
+      clearGroup(jointsGroup);
+
+      const adjacency = new Map<string, DirectionVector[]>();
+      intersectionCount = 0;
+
+      structureSegments.forEach((segmentType, segmentKey) => {
+        const edge = parseEdge(segmentKey);
+        const segment = createStructureSegment(segmentType);
+
+        const xA = toWorldNodeX(edge.ax);
+        const zA = toWorldNodeZ(edge.az);
+        const xB = toWorldNodeX(edge.bx);
+        const zB = toWorldNodeZ(edge.bz);
+
+        segment.position.set((xA + xB) * 0.5, segment.position.y, (zA + zB) * 0.5);
+        if (edge.az !== edge.bz) {
+          segment.rotation.y = Math.PI * 0.5;
+        }
+
+        structuresGroup.add(segment);
+
+        registerDirection(adjacency, edge.ax, edge.az, edge.bx - edge.ax, edge.bz - edge.az);
+        registerDirection(adjacency, edge.bx, edge.bz, edge.ax - edge.bx, edge.az - edge.bz);
+      });
+
+      adjacency.forEach((directions, key) => {
+        if (directions.length < 2) {
+          return;
+        }
+
+        const { x, z } = parseCellKey(key);
+        const post = createJoinPost(directions.length);
+        post.position.x = toWorldNodeX(x);
+        post.position.z = toWorldNodeZ(z);
+        jointsGroup.add(post);
+
+        intersectionCount += 1;
+      });
+    }
+
     const toolButtons = new Map<ToolMode, HTMLButtonElement>();
-    const brushButtons = new Map<SegmentType, HTMLButtonElement>();
+    const brushButtons = new Map<BrushType, HTMLButtonElement>();
 
     const toolRow = makeRow("Tool");
     const drawButton = makeButton("Draw (D)", () => {
@@ -385,10 +549,22 @@ const experiment: ExperimentModule = {
       activeBrush = "door";
       syncHud();
     });
+    const floorBrushButton = makeButton("Floor (4)", () => {
+      activeBrush = "floor";
+      syncHud();
+    });
+    const grassBrushButton = makeButton("Grass (5)", () => {
+      activeBrush = "grass";
+      syncHud();
+    });
+
     brushButtons.set("wall", wallBrushButton);
     brushButtons.set("window", windowBrushButton);
     brushButtons.set("door", doorBrushButton);
-    brushRow.append(wallBrushButton, windowBrushButton, doorBrushButton);
+    brushButtons.set("floor", floorBrushButton);
+    brushButtons.set("grass", grassBrushButton);
+
+    brushRow.append(wallBrushButton, windowBrushButton, doorBrushButton, floorBrushButton, grassBrushButton);
 
     const cameraRow = makeRow("Camera");
     const rotateLeftButton = makeButton("Rotate -90 (Q)", () => {
@@ -408,12 +584,17 @@ const experiment: ExperimentModule = {
     cameraRow.append(rotateLeftButton, rotateRightButton, resetViewButton);
 
     const utilityRow = makeRow("Scene");
-    const clearButton = makeButton("Clear Layout", () => {
-      wallSegments.clear();
+    const clearStructuresButton = makeButton("Clear Walls (C)", () => {
+      structureSegments.clear();
       needsRebuild = true;
       syncHud();
     });
-    utilityRow.append(clearButton);
+    const clearGroundButton = makeButton("Clear Grass (V)", () => {
+      groundOverrides.clear();
+      needsRebuild = true;
+      syncHud();
+    });
+    utilityRow.append(clearStructuresButton, clearGroundButton);
 
     const stats = document.createElement("div");
     stats.style.fontSize = "12px";
@@ -426,7 +607,7 @@ const experiment: ExperimentModule = {
     controlsHint.style.lineHeight = "1.35";
     controlsHint.style.opacity = "0.92";
     controlsHint.textContent =
-      "LMB drag: draw/erase  •  RMB drag: quick erase  •  MMB or Space+drag: pan  •  Wheel: zoom (mouse), pan (trackpad)";
+      "LMB drag: paint  •  RMB drag: erase  •  MMB or Space+drag: pan  •  Wheel: zoom (mouse), pan (trackpad)";
     rightPanel.appendChild(controlsHint);
 
     function syncHud(): void {
@@ -438,18 +619,16 @@ const experiment: ExperimentModule = {
         setButtonActive(button, activeBrush === brush);
       });
 
+      const viewStep = (yawIndex % 4 + 4) % 4;
       stats.textContent = [
-        `Segments: ${wallSegments.size}`,
-        `Intersections: ${intersectionCount}`,
-        `View Rotation: ${(yawIndex % 4 + 4) % 4} / 4`
+        `Segments: ${structureSegments.size}`,
+        `Junctions: ${intersectionCount}`,
+        `Grass Tiles: ${groundOverrides.size}`,
+        `View Rotation: ${viewStep} / 4`
       ].join("  •  ");
 
-      const toolForHover = dragState?.toolOverride ?? activeTool;
-      if (toolForHover === "erase") {
-        hoverMaterial.color.setHex(0xff7e7e);
-      } else {
-        hoverMaterial.color.setHex(BRUSH_COLORS[activeBrush]);
-      }
+      const { brush, mode } = getCurrentBrushAndMode();
+      hoverMaterial.color.setHex(mode === "erase" ? 0xff7e7e : BRUSH_COLORS[brush]);
     }
 
     function updateCameraProjection(): void {
@@ -497,152 +676,6 @@ const experiment: ExperimentModule = {
       camera.updateProjectionMatrix();
     }
 
-    function clearGroup(group: THREE.Group): void {
-      for (let i = group.children.length - 1; i >= 0; i -= 1) {
-        group.remove(group.children[i]);
-      }
-    }
-
-    function createWallSegment(type: SegmentType): THREE.Object3D {
-      if (type === "wall") {
-        const mesh = new THREE.Mesh(fullWallGeometry, wallMaterial);
-        mesh.position.y = WALL_HEIGHT * 0.5;
-        return mesh;
-      }
-
-      if (type === "window") {
-        const group = new THREE.Group();
-
-        const sill = new THREE.Mesh(windowSillGeometry, windowFrameMaterial);
-        sill.position.y = 0.45;
-        group.add(sill);
-
-        const lintel = new THREE.Mesh(windowLintelGeometry, windowFrameMaterial);
-        lintel.position.y = 2.45;
-        group.add(lintel);
-
-        const leftPost = new THREE.Mesh(windowPostGeometry, windowFrameMaterial);
-        leftPost.position.set(-0.42, 1.5, 0);
-        group.add(leftPost);
-
-        const rightPost = new THREE.Mesh(windowPostGeometry, windowFrameMaterial);
-        rightPost.position.set(0.42, 1.5, 0);
-        group.add(rightPost);
-
-        const glass = new THREE.Mesh(windowGlassGeometry, windowGlassMaterial);
-        glass.position.y = 1.5;
-        glass.position.z = 0.015;
-        group.add(glass);
-
-        return group;
-      }
-
-      const group = new THREE.Group();
-
-      const leftJamb = new THREE.Mesh(doorJambGeometry, doorFrameMaterial);
-      leftJamb.position.set(-0.43, WALL_HEIGHT * 0.5, 0);
-      group.add(leftJamb);
-
-      const rightJamb = new THREE.Mesh(doorJambGeometry, doorFrameMaterial);
-      rightJamb.position.set(0.43, WALL_HEIGHT * 0.5, 0);
-      group.add(rightJamb);
-
-      const lintel = new THREE.Mesh(doorLintelGeometry, doorFrameMaterial);
-      lintel.position.y = 2.62;
-      group.add(lintel);
-
-      const threshold = new THREE.Mesh(doorThresholdGeometry, doorFrameMaterial);
-      threshold.position.y = 0.035;
-      group.add(threshold);
-
-      return group;
-    }
-
-    function createJoint(directions: DirectionVector[]): THREE.Object3D {
-      const degree = directions.length;
-      const post = new THREE.Mesh(jointPostGeometry, jointMaterial);
-      const postScale = 0.95 + degree * 0.14;
-      post.scale.x = postScale;
-      post.scale.z = postScale;
-      post.position.y = WALL_HEIGHT * 0.5;
-
-      const group = new THREE.Group();
-      group.add(post);
-
-      for (const direction of directions) {
-        if (direction.dx !== 0) {
-          const arm = new THREE.Mesh(jointArmXGeometry, jointMaterial);
-          arm.position.set(direction.dx * 0.25, 1.72, 0);
-          group.add(arm);
-        }
-
-        if (direction.dz !== 0) {
-          const arm = new THREE.Mesh(jointArmZGeometry, jointMaterial);
-          arm.position.set(0, 1.72, direction.dz * 0.25);
-          group.add(arm);
-        }
-      }
-
-      const cap = new THREE.Mesh(jointCapGeometry, jointCapMaterial);
-      const capScale = 0.82 + degree * 0.12;
-      cap.scale.set(capScale, 1, capScale);
-      cap.position.y = WALL_HEIGHT + 0.04;
-      group.add(cap);
-
-      return group;
-    }
-
-    function registerDirection(map: Map<string, DirectionVector[]>, x: number, z: number, dx: number, dz: number): void {
-      const key = nodeKey(x, z);
-      const next = map.get(key) ?? [];
-      if (!next.some((entry) => entry.dx === dx && entry.dz === dz)) {
-        next.push({ dx, dz });
-      }
-      map.set(key, next);
-    }
-
-    function rebuildStructures(): void {
-      clearGroup(structuresGroup);
-      clearGroup(jointsGroup);
-
-      const adjacency = new Map<string, DirectionVector[]>();
-      intersectionCount = 0;
-
-      wallSegments.forEach((segmentType, segmentKey) => {
-        const edge = parseEdge(segmentKey);
-        const module = createWallSegment(segmentType);
-
-        const xA = toWorldNodeX(edge.ax);
-        const zA = toWorldNodeZ(edge.az);
-        const xB = toWorldNodeX(edge.bx);
-        const zB = toWorldNodeZ(edge.bz);
-
-        module.position.set((xA + xB) * 0.5, 0, (zA + zB) * 0.5);
-        if (edge.az !== edge.bz) {
-          module.rotation.y = Math.PI * 0.5;
-        }
-        structuresGroup.add(module);
-
-        registerDirection(adjacency, edge.ax, edge.az, edge.bx - edge.ax, edge.bz - edge.az);
-        registerDirection(adjacency, edge.bx, edge.bz, edge.ax - edge.bx, edge.az - edge.bz);
-      });
-
-      adjacency.forEach((directions, key) => {
-        const [xRaw, zRaw] = key.split(",");
-        const nodeX = Number(xRaw);
-        const nodeZ = Number(zRaw);
-        const joint = createJoint(directions);
-        joint.position.set(toWorldNodeX(nodeX), 0, toWorldNodeZ(nodeZ));
-        jointsGroup.add(joint);
-
-        if (directions.length >= 2) {
-          intersectionCount += 1;
-        }
-      });
-
-      syncHud();
-    }
-
     function getWorldAtClient(clientX: number, clientY: number): THREE.Vector3 | null {
       const rect = renderer.domElement.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
@@ -658,6 +691,20 @@ const experiment: ExperimentModule = {
         return null;
       }
       return hit.clone();
+    }
+
+    function pickCellFromWorld(world: THREE.Vector3): GridCell | null {
+      const localX = (world.x - GRID_ORIGIN) / TILE_SIZE;
+      const localZ = (world.z - GRID_ORIGIN) / TILE_SIZE;
+
+      if (localX < 0 || localX >= GRID_TILES || localZ < 0 || localZ >= GRID_TILES) {
+        return null;
+      }
+
+      return {
+        x: Math.floor(localX),
+        z: Math.floor(localZ)
+      };
     }
 
     function pickEdgeFromWorld(world: THREE.Vector3): GridEdge | null {
@@ -697,53 +744,107 @@ const experiment: ExperimentModule = {
       };
     }
 
-    function applyToolToEdge(edge: GridEdge, mode: ToolMode): void {
-      const key = edgeKey(edge.ax, edge.az, edge.bx, edge.bz);
+    function applyGroundTool(cell: GridCell, mode: ToolMode, brush: GroundTileType): void {
       if (mode === "erase") {
-        if (wallSegments.delete(key)) {
+        if (getGroundTypeAtCell(cell.x, cell.z) !== DEFAULT_GROUND) {
+          groundOverrides.delete(cellKey(cell.x, cell.z));
           needsRebuild = true;
         }
         return;
       }
 
-      const previous = wallSegments.get(key);
-      if (previous !== activeBrush) {
-        wallSegments.set(key, activeBrush);
+      const before = getGroundTypeAtCell(cell.x, cell.z);
+      if (before !== brush) {
+        setGroundTypeAtCell(cell.x, cell.z, brush);
         needsRebuild = true;
       }
     }
 
-    function paintAtWorldPoint(world: THREE.Vector3, mode: ToolMode): void {
+    function applyStructureTool(edge: GridEdge, mode: ToolMode, brush: StructureSegmentType): void {
+      const key = edgeKey(edge.ax, edge.az, edge.bx, edge.bz);
+
+      if (mode === "erase") {
+        if (structureSegments.delete(key)) {
+          needsRebuild = true;
+        }
+        return;
+      }
+
+      const before = structureSegments.get(key);
+      if (before !== brush) {
+        structureSegments.set(key, brush);
+        needsRebuild = true;
+      }
+    }
+
+    function applyBrushAtWorldPoint(world: THREE.Vector3, mode: ToolMode, brush: BrushType): void {
+      if (isGroundBrush(brush)) {
+        const cell = pickCellFromWorld(world);
+        if (!cell) {
+          return;
+        }
+        applyGroundTool(cell, mode, brush);
+        return;
+      }
+
       const edge = pickEdgeFromWorld(world);
       if (!edge) {
         return;
       }
-      applyToolToEdge(edge, mode);
+      applyStructureTool(edge, mode, brush);
     }
 
-    function strokeBetween(start: THREE.Vector3, end: THREE.Vector3, mode: ToolMode): void {
+    function strokeBetween(start: THREE.Vector3, end: THREE.Vector3, mode: ToolMode, brush: BrushType): void {
       const distance = start.distanceTo(end);
       const steps = Math.max(1, Math.ceil(distance / 0.2));
       for (let i = 1; i <= steps; i += 1) {
         strokePoint.lerpVectors(start, end, i / steps);
-        paintAtWorldPoint(strokePoint, mode);
+        applyBrushAtWorldPoint(strokePoint, mode, brush);
       }
     }
 
-    function updateHover(edge: GridEdge | null): void {
-      if (!edge) {
-        hoverMesh.visible = false;
+    function hideHover(): void {
+      edgeHoverMesh.visible = false;
+      cellHoverMesh.visible = false;
+    }
+
+    function updateHoverFromWorld(world: THREE.Vector3 | null): void {
+      if (!world) {
+        hideHover();
         return;
       }
+
+      const { brush } = getCurrentBrushAndMode();
+
+      if (isGroundBrush(brush)) {
+        const cell = pickCellFromWorld(world);
+        if (!cell) {
+          hideHover();
+          return;
+        }
+
+        cellHoverMesh.visible = true;
+        edgeHoverMesh.visible = false;
+        cellHoverMesh.position.set(toWorldCellX(cell.x), 0.03, toWorldCellZ(cell.z));
+        return;
+      }
+
+      const edge = pickEdgeFromWorld(world);
+      if (!edge) {
+        hideHover();
+        return;
+      }
+
+      edgeHoverMesh.visible = true;
+      cellHoverMesh.visible = false;
 
       const xA = toWorldNodeX(edge.ax);
       const zA = toWorldNodeZ(edge.az);
       const xB = toWorldNodeX(edge.bx);
       const zB = toWorldNodeZ(edge.bz);
 
-      hoverMesh.visible = true;
-      hoverMesh.position.set((xA + xB) * 0.5, 0.03, (zA + zB) * 0.5);
-      hoverMesh.rotation.y = edge.az !== edge.bz ? Math.PI * 0.5 : 0;
+      edgeHoverMesh.position.set((xA + xB) * 0.5, 0.03, (zA + zB) * 0.5);
+      edgeHoverMesh.rotation.y = edge.az !== edge.bz ? Math.PI * 0.5 : 0;
     }
 
     function updateCursor(): void {
@@ -757,11 +858,8 @@ const experiment: ExperimentModule = {
         return;
       }
 
-      if ((dragState?.toolOverride ?? activeTool) === "erase") {
-        renderer.domElement.style.cursor = "not-allowed";
-      } else {
-        renderer.domElement.style.cursor = "crosshair";
-      }
+      const { mode } = getCurrentBrushAndMode();
+      renderer.domElement.style.cursor = mode === "erase" ? "not-allowed" : "crosshair";
     }
 
     function handlePointerDown(event: PointerEvent): void {
@@ -774,13 +872,14 @@ const experiment: ExperimentModule = {
 
       const startWorld = getWorldAtClient(event.clientX, event.clientY);
       const shouldPan = event.button === 1 || spacePressed;
-      const quickErase = event.button === 2;
+      const paintMode: ToolMode = event.button === 2 ? "erase" : activeTool;
 
       if (shouldPan) {
         dragState = {
           pointerId: event.pointerId,
           mode: "pan",
-          toolOverride: null,
+          paintMode,
+          brush: activeBrush,
           lastClientX: event.clientX,
           lastClientY: event.clientY,
           lastWorldPoint: startWorld
@@ -790,20 +889,22 @@ const experiment: ExperimentModule = {
         return;
       }
 
-      const mode = quickErase ? "erase" : activeTool;
       if (startWorld) {
-        paintAtWorldPoint(startWorld, mode);
+        applyBrushAtWorldPoint(startWorld, paintMode, activeBrush);
       }
 
       dragState = {
         pointerId: event.pointerId,
         mode: "paint",
-        toolOverride: quickErase ? "erase" : null,
+        paintMode,
+        brush: activeBrush,
         lastClientX: event.clientX,
         lastClientY: event.clientY,
         lastWorldPoint: startWorld
       };
+
       updateCursor();
+      syncHud();
       event.preventDefault();
     }
 
@@ -813,38 +914,31 @@ const experiment: ExperimentModule = {
           const deltaX = event.clientX - dragState.lastClientX;
           const deltaY = event.clientY - dragState.lastClientY;
           applyPanByPixels(deltaX, deltaY);
+
           dragState.lastClientX = event.clientX;
           dragState.lastClientY = event.clientY;
 
-          const hoverWorld = getWorldAtClient(event.clientX, event.clientY);
-          updateHover(hoverWorld ? pickEdgeFromWorld(hoverWorld) : null);
+          updateHoverFromWorld(getWorldAtClient(event.clientX, event.clientY));
           event.preventDefault();
           return;
         }
 
         const world = getWorldAtClient(event.clientX, event.clientY);
         if (world) {
-          const mode = dragState.toolOverride ?? activeTool;
           if (dragState.lastWorldPoint) {
-            strokeBetween(dragState.lastWorldPoint, world, mode);
+            strokeBetween(dragState.lastWorldPoint, world, dragState.paintMode, dragState.brush);
           } else {
-            paintAtWorldPoint(world, mode);
+            applyBrushAtWorldPoint(world, dragState.paintMode, dragState.brush);
           }
           dragState.lastWorldPoint = world;
-          updateHover(pickEdgeFromWorld(world));
-        } else {
-          updateHover(null);
         }
+
+        updateHoverFromWorld(world);
         event.preventDefault();
         return;
       }
 
-      const world = getWorldAtClient(event.clientX, event.clientY);
-      if (!world) {
-        updateHover(null);
-        return;
-      }
-      updateHover(pickEdgeFromWorld(world));
+      updateHoverFromWorld(getWorldAtClient(event.clientX, event.clientY));
     }
 
     function finishPointer(pointerId: number): void {
@@ -853,6 +947,14 @@ const experiment: ExperimentModule = {
       }
       updateCursor();
       syncHud();
+    }
+
+    function handlePointerUp(event: PointerEvent): void {
+      finishPointer(event.pointerId);
+    }
+
+    function handlePointerCancel(event: PointerEvent): void {
+      finishPointer(event.pointerId);
     }
 
     function isLikelyTrackpad(event: WheelEvent): boolean {
@@ -918,6 +1020,14 @@ const experiment: ExperimentModule = {
         activeBrush = "door";
         syncHud();
         event.preventDefault();
+      } else if (event.code === "Digit4") {
+        activeBrush = "floor";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit5") {
+        activeBrush = "grass";
+        syncHud();
+        event.preventDefault();
       } else if (event.code === "KeyD") {
         activeTool = "draw";
         syncHud();
@@ -927,7 +1037,12 @@ const experiment: ExperimentModule = {
         syncHud();
         event.preventDefault();
       } else if (event.code === "KeyC") {
-        wallSegments.clear();
+        structureSegments.clear();
+        needsRebuild = true;
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "KeyV") {
+        groundOverrides.clear();
         needsRebuild = true;
         syncHud();
         event.preventDefault();
@@ -944,12 +1059,11 @@ const experiment: ExperimentModule = {
 
     function syncSize(): void {
       const rect = mount.getBoundingClientRect();
-      const nextWidth = Math.max(1, Math.floor(rect.width));
-      const nextHeight = Math.max(1, Math.floor(rect.height));
-      viewportWidth = nextWidth;
-      viewportHeight = nextHeight;
+      viewportWidth = Math.max(1, Math.floor(rect.width));
+      viewportHeight = Math.max(1, Math.floor(rect.height));
+
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      renderer.setSize(nextWidth, nextHeight, true);
+      renderer.setSize(viewportWidth, viewportHeight, true);
       updateCameraProjection();
     }
 
@@ -960,8 +1074,8 @@ const experiment: ExperimentModule = {
 
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
     renderer.domElement.addEventListener("pointermove", handlePointerMove);
-    renderer.domElement.addEventListener("pointerup", (event) => finishPointer(event.pointerId));
-    renderer.domElement.addEventListener("pointercancel", (event) => finishPointer(event.pointerId));
+    renderer.domElement.addEventListener("pointerup", handlePointerUp);
+    renderer.domElement.addEventListener("pointercancel", handlePointerCancel);
     renderer.domElement.addEventListener("wheel", handleWheel, { passive: false });
     renderer.domElement.addEventListener("contextmenu", handleContextMenu);
     renderer.domElement.addEventListener("keydown", handleKeyDown);
@@ -973,8 +1087,10 @@ const experiment: ExperimentModule = {
 
     const render = () => {
       if (needsRebuild) {
+        rebuildGroundTiles();
         rebuildStructures();
         needsRebuild = false;
+        syncHud();
       }
 
       setCameraPose();
@@ -990,6 +1106,8 @@ const experiment: ExperimentModule = {
 
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       renderer.domElement.removeEventListener("pointermove", handlePointerMove);
+      renderer.domElement.removeEventListener("pointerup", handlePointerUp);
+      renderer.domElement.removeEventListener("pointercancel", handlePointerCancel);
       renderer.domElement.removeEventListener("wheel", handleWheel);
       renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
       renderer.domElement.removeEventListener("keydown", handleKeyDown);
@@ -999,35 +1117,29 @@ const experiment: ExperimentModule = {
         hud.parentElement.removeChild(hud);
       }
 
+      clearGroup(groundGroup);
       clearGroup(structuresGroup);
       clearGroup(jointsGroup);
 
-      fullWallGeometry.dispose();
-      windowSillGeometry.dispose();
-      windowLintelGeometry.dispose();
-      windowPostGeometry.dispose();
-      windowGlassGeometry.dispose();
-      doorJambGeometry.dispose();
-      doorLintelGeometry.dispose();
-      doorThresholdGeometry.dispose();
-      jointPostGeometry.dispose();
-      jointArmXGeometry.dispose();
-      jointArmZGeometry.dispose();
-      jointCapGeometry.dispose();
-      hoverGeometry.dispose();
+      groundTileGeometry.dispose();
+      segmentGeometry.dispose();
+      jointGeometry.dispose();
+      edgeHoverGeometry.dispose();
+      cellHoverGeometry.dispose();
 
-      floorGeometry.dispose();
-      floorMaterial.dispose();
+      floorBaseGeometry.dispose();
+      floorBaseMaterial.dispose();
       minorGridGeometry.dispose();
       majorGridGeometry.dispose();
       (minorGrid.material as THREE.Material).dispose();
       (majorGrid.material as THREE.Material).dispose();
-      wallMaterial.dispose();
-      windowFrameMaterial.dispose();
-      windowGlassMaterial.dispose();
-      doorFrameMaterial.dispose();
+
+      groundFloorMaterial.dispose();
+      groundGrassMaterial.dispose();
+      structureMaterials.wall.dispose();
+      structureMaterials.window.dispose();
+      structureMaterials.door.dispose();
       jointMaterial.dispose();
-      jointCapMaterial.dispose();
       hoverMaterial.dispose();
 
       renderer.dispose();
