@@ -26,6 +26,7 @@ uniform float uDepthThreshold;
 uniform float uNormalThreshold;
 uniform float uEdgeDarken;
 uniform float uPostDitherStrength;
+uniform float uPostDitherLevels;
 uniform vec3 uDepthEdgeColor;
 uniform vec3 uNormalEdgeColor;
 
@@ -133,12 +134,13 @@ void main() {
   vec3 outlined = mix(darkened, edgeBase, 0.7);
   vec3 outColor = mix(c, outlined, edge);
 
-  vec2 blockCoord = floor(vUv / blockStep);
-  float bayer = (bayer4x4(blockCoord) + 0.5) / 16.0 - 0.5;
+  float bayer = (bayer4x4(gl_FragCoord.xy) + 0.5) / 16.0 - 0.5;
   float luma = dot(outColor, vec3(0.2126, 0.7152, 0.0722));
-  float midtones = smoothstep(0.08, 0.55, luma) * (1.0 - smoothstep(0.62, 0.92, luma));
-  float ditherMask = (1.0 - edge * 0.9) * midtones;
-  outColor = clamp(outColor + vec3(bayer * uPostDitherStrength * ditherMask), 0.0, 1.0);
+  float midtones = smoothstep(0.05, 0.5, luma) * (1.0 - smoothstep(0.7, 0.98, luma));
+  float ditherMask = (1.0 - edge * 0.85) * midtones;
+  vec3 dithered = clamp(outColor + vec3(bayer * uPostDitherStrength), 0.0, 1.0);
+  vec3 quantized = floor(dithered * uPostDitherLevels + 0.5) / uPostDitherLevels;
+  outColor = mix(outColor, quantized, ditherMask);
 
   gl_FragColor = vec4(outColor, 1.0);
 }
@@ -213,7 +215,7 @@ const experiment: ExperimentModule = {
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
     keyLight.shadow.bias = -0.0002;
-    keyLight.shadow.normalBias = 0.02;
+    keyLight.shadow.normalBias = 0.003;
     keyLight.shadow.camera.left = -1.8;
     keyLight.shadow.camera.right = 1.8;
     keyLight.shadow.camera.top = 1.3;
@@ -248,17 +250,17 @@ const experiment: ExperimentModule = {
       return material;
     };
 
+    const deskTopY = 0.0;
+    const SURFACE_EPSILON = 0.001;
     const geometries: THREE.BufferGeometry[] = [];
     const meshes: THREE.Mesh[] = [];
-    const spinData: Array<{ mesh: THREE.Mesh; speed: number; phase: number; bob: number; baseY: number }> = [];
+    const spinData: Array<{ mesh: THREE.Mesh; speed: number }> = [];
 
     const addMesh = (
       geometry: THREE.BufferGeometry,
       material: THREE.Material,
       position: THREE.Vector3,
       speed: number,
-      bob: number,
-      phase: number,
       castShadow: boolean
     ) => {
       geometries.push(geometry);
@@ -268,7 +270,7 @@ const experiment: ExperimentModule = {
       mesh.receiveShadow = true;
       scene.add(mesh);
       meshes.push(mesh);
-      spinData.push({ mesh, speed, phase, bob, baseY: position.y });
+      spinData.push({ mesh, speed });
       return mesh;
     };
 
@@ -276,8 +278,6 @@ const experiment: ExperimentModule = {
       new THREE.BoxGeometry(2.2, 0.08, 1.2),
       makeToonMaterial(0x8da7c7, 3, 0.02),
       new THREE.Vector3(0, -0.04, 0),
-      0.0,
-      0.0,
       0.0,
       false
     );
@@ -288,50 +288,50 @@ const experiment: ExperimentModule = {
       makeToonMaterial(0xf28a13, 4, 0.08),
       new THREE.Vector3(0, 0.11, 0),
       0.32,
-      0.008,
-      0.2,
       true
     );
 
-    addMesh(
+    const torus = addMesh(
       new THREE.TorusKnotGeometry(0.14, 0.045, 120, 18),
       makeToonMaterial(0x74dcb6, 4, 0.1),
-      new THREE.Vector3(-0.34, 0.22, -0.08),
+      new THREE.Vector3(-0.34, 0.0, -0.08),
       -0.32,
-      0.02,
-      1.3,
       true
     );
 
-    addMesh(
+    const sphere = addMesh(
       new THREE.IcosahedronGeometry(0.13, 1),
       makeToonMaterial(0xa6b7ff, 5, 0.07),
-      new THREE.Vector3(0.32, 0.19, 0.09),
+      new THREE.Vector3(0.32, 0.0, 0.09),
       0.24,
-      0.012,
-      2.0,
       true
     );
 
-    addMesh(
+    const capsule = addMesh(
       new THREE.CapsuleGeometry(0.08, 0.14, 4, 12),
       makeToonMaterial(0xd4db7c, 4, 0.06),
-      new THREE.Vector3(-0.1, 0.16, 0.27),
+      new THREE.Vector3(-0.1, 0.0, 0.27),
       -0.22,
-      0.012,
-      0.7,
       true
     );
 
-    addMesh(
+    const cone = addMesh(
       new THREE.ConeGeometry(0.1, 0.26, 12),
       makeToonMaterial(0xd67bc8, 4, 0.07),
-      new THREE.Vector3(0.23, 0.18, 0.25),
+      new THREE.Vector3(0.23, 0.0, 0.25),
       0.18,
-      0.012,
-      2.8,
       true
     );
+
+    const shapesOnDesk = [centerBox, torus, sphere, capsule, cone];
+    for (const mesh of shapesOnDesk) {
+      mesh.geometry.computeBoundingBox();
+      const bounds = mesh.geometry.boundingBox;
+      if (!bounds) {
+        continue;
+      }
+      mesh.position.y = deskTopY - bounds.min.y + SURFACE_EPSILON;
+    }
 
     const colorTarget = new THREE.WebGLRenderTarget(1, 1, {
       minFilter: THREE.NearestFilter,
@@ -364,7 +364,8 @@ const experiment: ExperimentModule = {
         uDepthThreshold: { value: 0.12 },
         uNormalThreshold: { value: 0.24 },
         uEdgeDarken: { value: 0.38 },
-        uPostDitherStrength: { value: 0.022 },
+        uPostDitherStrength: { value: 0.055 },
+        uPostDitherLevels: { value: 14.0 },
         uDepthEdgeColor: { value: new THREE.Color(0x03050a) },
         uNormalEdgeColor: { value: new THREE.Color(0x05070d) }
       },
@@ -429,9 +430,6 @@ const experiment: ExperimentModule = {
       for (const item of spinData) {
         if (item.speed !== 0) {
           item.mesh.rotation.y += dt * item.speed;
-        }
-        if (item.bob > 0) {
-          item.mesh.position.y = item.baseY + Math.sin(elapsed * 1.15 + item.phase) * item.bob;
         }
       }
 
