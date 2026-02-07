@@ -352,7 +352,7 @@ const experiment: ExperimentModule = {
     );
 
     const torus = addMesh(
-      new THREE.TorusKnotGeometry(0.14, 0.045, 120, 18),
+      new THREE.TorusKnotGeometry(0.14, 0.045, 320, 48),
       makeToonMaterial(0x74dcb6, 4, 0.085),
       new THREE.Vector3(-0.34, 0.0, -0.08),
       -0.32,
@@ -360,7 +360,7 @@ const experiment: ExperimentModule = {
     );
 
     const sphere = addMesh(
-      new THREE.IcosahedronGeometry(0.13, 1),
+      new THREE.SphereGeometry(0.13, 48, 32),
       makeToonMaterial(0xa6b7ff, 5, 0.07),
       new THREE.Vector3(0.32, 0.0, 0.09),
       0.24,
@@ -376,7 +376,7 @@ const experiment: ExperimentModule = {
     );
 
     const cone = addMesh(
-      new THREE.ConeGeometry(0.1, 0.26, 12),
+      new THREE.ConeGeometry(0.1, 0.26, 48, 4),
       makeToonMaterial(0xd67bc8, 4, 0.07),
       new THREE.Vector3(0.23, 0.0, 0.25),
       0.18,
