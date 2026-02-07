@@ -142,7 +142,7 @@ const experiment: ExperimentModule = {
       new THREE.TorusKnotGeometry(0.58, 0.2, 180, 28),
       new THREE.MeshStandardMaterial({ color: 0x4fd0a4, roughness: 0.32, metalness: 0.12 })
     );
-    knot.position.set(0.0, 0.82, 0.0);
+    knot.position.set(0.35, 0.82, 0.0);
     scene.add(knot);
     objects.push(knot);
 
@@ -150,7 +150,7 @@ const experiment: ExperimentModule = {
       new THREE.BoxGeometry(0.9, 0.9, 0.9),
       new THREE.MeshStandardMaterial({ color: 0xf6a53d, roughness: 0.72, metalness: 0.08 })
     );
-    box.position.set(-1.0, 0.0, -0.45);
+    box.position.set(-0.35, 0.0, 0.0);
     scene.add(box);
     objects.push(box);
 
@@ -158,7 +158,7 @@ const experiment: ExperimentModule = {
       new THREE.SphereGeometry(0.58, 36, 24),
       new THREE.MeshStandardMaterial({ color: 0x7f9eff, roughness: 0.22, metalness: 0.02 })
     );
-    sphere.position.set(1.0, -0.12, 0.45);
+    sphere.position.set(1.15, -0.12, 0.75);
     scene.add(sphere);
     objects.push(sphere);
 
@@ -234,27 +234,12 @@ const experiment: ExperimentModule = {
     });
     observer.observe(mount);
 
-    // Focus camera framing on knot + box as requested.
-    const focusBounds = new THREE.Box3();
-    focusBounds.expandByObject(knot);
-    focusBounds.expandByObject(box);
-
-    const focusCenter = focusBounds.getCenter(new THREE.Vector3());
-    const focusSize = focusBounds.getSize(new THREE.Vector3());
-    const focusRadius = Math.max(focusSize.x, focusSize.y, focusSize.z) * 0.5;
-
-    // Fit distance that respects both vertical and horizontal FOV.
-    const vFov = THREE.MathUtils.degToRad(camera.fov);
-    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * camera.aspect);
-    const fitV = (focusSize.y * 0.5) / Math.tan(vFov * 0.5);
-    const fitH = (focusSize.x * 0.5) / Math.tan(hFov * 0.5);
-    const fitD = focusSize.z * 0.75;
-    const orbitRadius = Math.max(fitV, fitH, fitD) * 2.15;
-
-    const baseAzimuth = THREE.MathUtils.degToRad(38); // Right side.
-    const baseElevation = THREE.MathUtils.degToRad(28); // Higher view, more downward look.
-    const azimuthArc = THREE.MathUtils.degToRad(8);
-    const elevationArc = THREE.MathUtils.degToRad(3);
+    const focusPoint = new THREE.Vector3(0.0, 0.42, 0.0);
+    const orbitRadius = 5.3;
+    const baseAzimuth = THREE.MathUtils.degToRad(36);
+    const baseElevation = THREE.MathUtils.degToRad(34);
+    const azimuthArc = THREE.MathUtils.degToRad(5);
+    const elevationArc = THREE.MathUtils.degToRad(2);
 
     let raf = 0;
     const startedAt = performance.now();
@@ -266,11 +251,11 @@ const experiment: ExperimentModule = {
       const elevation = baseElevation + Math.sin(t * 0.17) * elevationArc;
       const planar = Math.cos(elevation) * orbitRadius;
       camera.position.set(
-        focusCenter.x + Math.cos(azimuth) * planar,
-        focusCenter.y + Math.sin(elevation) * orbitRadius,
-        focusCenter.z + Math.sin(azimuth) * planar
+        focusPoint.x + Math.cos(azimuth) * planar,
+        focusPoint.y + Math.sin(elevation) * orbitRadius,
+        focusPoint.z + Math.sin(azimuth) * planar
       );
-      camera.lookAt(focusCenter.x + focusRadius * 0.1, focusCenter.y - focusRadius * 0.2, focusCenter.z);
+      camera.lookAt(focusPoint);
 
       knot.rotation.x = t * 0.25;
       knot.rotation.y = -t * 0.38;
