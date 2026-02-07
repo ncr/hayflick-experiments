@@ -170,27 +170,50 @@ function applyRetroDither(material: THREE.MeshToonMaterial, strength: number) {
   material.dithering = false;
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uDitherStrength = { value: strength };
+    shader.uniforms.uDitherPixelSize = { value: 4.0 };
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <common>",
       `
       #include <common>
       uniform float uDitherStrength;
+      uniform float uDitherPixelSize;
 
-      float toonBayer2x2(vec2 p) {
-        vec2 q = mod(floor(p), 2.0);
-        if (q.y < 1.0) {
-          return q.x < 1.0 ? 0.0 : 2.0;
+      float toonBayer4x4(vec2 p) {
+        vec2 q = mod(floor(p), 4.0);
+        float x = q.x;
+        float y = q.y;
+        if (y < 1.0) {
+          if (x < 1.0) return 0.0;
+          if (x < 2.0) return 8.0;
+          if (x < 3.0) return 2.0;
+          return 10.0;
         }
-        return q.x < 1.0 ? 3.0 : 1.0;
+        if (y < 2.0) {
+          if (x < 1.0) return 12.0;
+          if (x < 2.0) return 4.0;
+          if (x < 3.0) return 14.0;
+          return 6.0;
+        }
+        if (y < 3.0) {
+          if (x < 1.0) return 3.0;
+          if (x < 2.0) return 11.0;
+          if (x < 3.0) return 1.0;
+          return 9.0;
+        }
+        if (x < 1.0) return 15.0;
+        if (x < 2.0) return 7.0;
+        if (x < 3.0) return 13.0;
+        return 5.0;
       }
       `
     );
     shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <color_fragment>",
+      "vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;",
       `
-      #include <color_fragment>
-      float toonDither = ((toonBayer2x2(gl_FragCoord.xy) + 0.5) / 4.0 - 0.5) * uDitherStrength;
-      diffuseColor.rgb = clamp(diffuseColor.rgb + toonDither, 0.0, 1.0);
+      vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;
+      vec2 ditherCell = floor(gl_FragCoord.xy / max(1.0, uDitherPixelSize));
+      float toonDither = ((toonBayer4x4(ditherCell) + 0.5) / 16.0 - 0.5) * uDitherStrength;
+      outgoingLight = clamp(outgoingLight + vec3(toonDither), 0.0, 1.0);
       `
     );
   };
@@ -281,7 +304,7 @@ const experiment: ExperimentModule = {
 
     const desk = addMesh(
       new THREE.BoxGeometry(2.2, 0.08, 1.2),
-      makeToonMaterial(0x8da7c7, 3, 0.08),
+      makeToonMaterial(0x8da7c7, 3, 0.04),
       new THREE.Vector3(0, -0.04, 0),
       0.0,
       false
@@ -290,7 +313,7 @@ const experiment: ExperimentModule = {
 
     const centerBox = addMesh(
       new THREE.BoxGeometry(0.22, 0.22, 0.22),
-      makeToonMaterial(0xf28a13, 4, 0.16),
+      makeToonMaterial(0xf28a13, 4, 0.075),
       new THREE.Vector3(0, 0.11, 0),
       0.32,
       true
@@ -298,7 +321,7 @@ const experiment: ExperimentModule = {
 
     const torus = addMesh(
       new THREE.TorusKnotGeometry(0.14, 0.045, 120, 18),
-      makeToonMaterial(0x74dcb6, 4, 0.18),
+      makeToonMaterial(0x74dcb6, 4, 0.085),
       new THREE.Vector3(-0.34, 0.0, -0.08),
       -0.32,
       true
@@ -306,7 +329,7 @@ const experiment: ExperimentModule = {
 
     const sphere = addMesh(
       new THREE.IcosahedronGeometry(0.13, 1),
-      makeToonMaterial(0xa6b7ff, 5, 0.14),
+      makeToonMaterial(0xa6b7ff, 5, 0.07),
       new THREE.Vector3(0.32, 0.0, 0.09),
       0.24,
       true
@@ -314,7 +337,7 @@ const experiment: ExperimentModule = {
 
     const capsule = addMesh(
       new THREE.CapsuleGeometry(0.08, 0.14, 4, 12),
-      makeToonMaterial(0xd4db7c, 4, 0.14),
+      makeToonMaterial(0xd4db7c, 4, 0.07),
       new THREE.Vector3(-0.1, 0.0, 0.27),
       -0.22,
       true
@@ -322,7 +345,7 @@ const experiment: ExperimentModule = {
 
     const cone = addMesh(
       new THREE.ConeGeometry(0.1, 0.26, 12),
-      makeToonMaterial(0xd67bc8, 4, 0.14),
+      makeToonMaterial(0xd67bc8, 4, 0.07),
       new THREE.Vector3(0.23, 0.0, 0.25),
       0.18,
       true
