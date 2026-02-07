@@ -93,7 +93,7 @@ const experiment: ExperimentModule = {
       const safeWidth = Math.max(1, Math.floor(nextWidth));
       const safeHeight = Math.max(1, Math.floor(nextHeight));
 
-      renderer.setSize(safeWidth, safeHeight, false);
+      renderer.setSize(safeWidth, safeHeight, true);
       camera.aspect = safeWidth / safeHeight;
       camera.updateProjectionMatrix();
     };
