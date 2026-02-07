@@ -26,7 +26,6 @@ uniform float uDepthThreshold;
 uniform float uNormalThreshold;
 uniform float uEdgeDarken;
 uniform float uPostDitherStrength;
-uniform float uPostDitherLevels;
 uniform vec3 uDepthEdgeColor;
 uniform vec3 uNormalEdgeColor;
 
@@ -134,13 +133,12 @@ void main() {
   vec3 outlined = mix(darkened, edgeBase, 0.7);
   vec3 outColor = mix(c, outlined, edge);
 
-  float bayer = (bayer4x4(gl_FragCoord.xy) + 0.5) / 16.0 - 0.5;
+  vec2 blockCoord = floor(vUv / blockStep);
+  float bayer = (bayer4x4(blockCoord) + 0.5) / 16.0 - 0.5;
   float luma = dot(outColor, vec3(0.2126, 0.7152, 0.0722));
-  float midtones = smoothstep(0.05, 0.5, luma) * (1.0 - smoothstep(0.7, 0.98, luma));
-  float ditherMask = (1.0 - edge * 0.85) * midtones;
-  vec3 dithered = clamp(outColor + vec3(bayer * uPostDitherStrength), 0.0, 1.0);
-  vec3 quantized = floor(dithered * uPostDitherLevels + 0.5) / uPostDitherLevels;
-  outColor = mix(outColor, quantized, ditherMask);
+  float midtones = smoothstep(0.08, 0.55, luma) * (1.0 - smoothstep(0.62, 0.92, luma));
+  float ditherMask = (1.0 - edge * 0.9) * midtones;
+  outColor = clamp(outColor + vec3(bayer * uPostDitherStrength * ditherMask), 0.0, 1.0);
 
   gl_FragColor = vec4(outColor, 1.0);
 }
@@ -364,8 +362,7 @@ const experiment: ExperimentModule = {
         uDepthThreshold: { value: 0.12 },
         uNormalThreshold: { value: 0.24 },
         uEdgeDarken: { value: 0.38 },
-        uPostDitherStrength: { value: 0.055 },
-        uPostDitherLevels: { value: 14.0 },
+        uPostDitherStrength: { value: 0.045 },
         uDepthEdgeColor: { value: new THREE.Color(0x03050a) },
         uNormalEdgeColor: { value: new THREE.Color(0x05070d) }
       },
