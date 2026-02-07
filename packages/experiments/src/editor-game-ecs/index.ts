@@ -17,7 +17,6 @@ import {
   createEventSystem,
   createInputSystem,
   createMovementSystem,
-  createPlayerInputSystem,
   type EID
 } from "@common/gameplay";
 import type { ExperimentModule } from "../runtime/types";
@@ -88,7 +87,6 @@ type GameRuntime = {
   keyboard: KeyboardTracker;
   systems: {
     inputSystem: ReturnType<typeof createInputSystem>;
-    playerInputSystem: ReturnType<typeof createPlayerInputSystem>;
     movementSystem: ReturnType<typeof createMovementSystem>;
     eventSystem: ReturnType<typeof createEventSystem>;
   };
@@ -625,6 +623,8 @@ const experiment: ExperimentModule = {
     const panRight = new THREE.Vector3();
     const panForward = new THREE.Vector3();
     const panDelta = new THREE.Vector3();
+    const inputRight = new THREE.Vector3();
+    const inputForward = new THREE.Vector3();
 
     let dragState: DragState | null = null;
     let spacePressed = false;
@@ -804,6 +804,56 @@ const experiment: ExperimentModule = {
       camera.updateProjectionMatrix();
     }
 
+    // Player movement is view-relative: W/Up moves toward the top of the screen
+    // regardless of 90-degree camera rotation.
+    function runCameraRelativePlayerInputSystem(world: World): void {
+      let inputX = 0;
+      let inputY = 0;
+
+      if (world.input.left) inputX -= 1;
+      if (world.input.right) inputX += 1;
+      if (world.input.up) inputY += 1;
+      if (world.input.down) inputY -= 1;
+
+      inputRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+      inputRight.y = 0;
+      if (inputRight.lengthSq() > 0.000001) {
+        inputRight.normalize();
+      }
+
+      inputForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      inputForward.y = 0;
+      if (inputForward.lengthSq() > 0.000001) {
+        inputForward.normalize();
+      }
+
+      let moveX = inputRight.x * inputX + inputForward.x * inputY;
+      let moveY = inputRight.z * inputX + inputForward.z * inputY;
+
+      const length = Math.hypot(moveX, moveY);
+      if (length > 0) {
+        moveX /= length;
+        moveY /= length;
+      }
+
+      const vx = moveX * PLAYER_SPEED;
+      const vy = moveY * PLAYER_SPEED;
+
+      for (const eid of world.queryTransformPlayer()) {
+        if (!world.velocities.has(eid)) {
+          world.velocities.add(eid, { vx: 0, vy: 0 });
+        }
+
+        const velocity = world.velocities.get(eid);
+        if (!velocity) {
+          continue;
+        }
+
+        velocity.vx = vx;
+        velocity.vy = vy;
+      }
+    }
+
     function worldAtClient(clientX: number, clientY: number): THREE.Vector3 | null {
       const rect = renderer.domElement.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
@@ -939,7 +989,6 @@ const experiment: ExperimentModule = {
       const keyboard = new KeyboardTracker(window);
       const systems = {
         inputSystem: createInputSystem(keyboard),
-        playerInputSystem: createPlayerInputSystem(PLAYER_SPEED),
         movementSystem: createMovementSystem(),
         eventSystem: createEventSystem()
       };
@@ -1197,7 +1246,7 @@ const experiment: ExperimentModule = {
       world.time.frame += 1;
 
       runtime.systems.inputSystem(world);
-      runtime.systems.playerInputSystem(world);
+      runCameraRelativePlayerInputSystem(world);
       runDoorSystem(runtime);
       runtime.systems.movementSystem(world);
       runtime.systems.eventSystem(world);

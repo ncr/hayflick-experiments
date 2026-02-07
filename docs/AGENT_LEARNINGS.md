@@ -34,3 +34,16 @@ Detection signal:
 Preventive checklist:
 - After changing workspace package dependencies, run `pnpm install` before typecheck/build validation.
 - Re-run package-level typecheck after install to confirm import resolution before deeper debugging.
+
+## 2026-02-07 - Player movement direction felt inverted and broke after camera rotation
+Root cause:
+- Gameplay input used a world-axis player input mapping that ignored camera orientation.
+- In an isometric view with rotatable camera (`Q`/`E`), screen-relative intent (WASD/arrow keys) diverged from world-relative velocity, including default up/down feeling reversed.
+
+Detection signal:
+- User reported up/down felt reversed in default rotation and controls did not stay consistent after rotating the level view.
+
+Preventive checklist:
+- For any camera-rotatable gameplay view, map movement input through camera ground-plane forward/right vectors, not fixed world axes.
+- Validate directional controls at all 4 quarter-turn rotations before shipping.
+- Include at least one manual check that "W/Up moves toward top of screen" in default and rotated views.
