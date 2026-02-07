@@ -1,11 +1,38 @@
 import * as THREE from "three";
 import { makeRenderer } from "@common/render";
+import type { LevelResource } from "@common/gameplay";
 import type { ExperimentModule } from "../runtime/types";
+import {
+  bakeLevelForEcs,
+  createEcsLevelResourceFromBake,
+  serializeBakedLevel,
+  type LevelBuilderBake,
+  type LevelBuilderDoorState,
+  type LevelBuilderGroundOverride,
+  type LevelBuilderGroundType,
+  type LevelBuilderStructureSegment
+} from "./bake";
 
-type StructureSegmentType = "wall" | "window" | "door";
-type GroundTileType = "floor" | "grass";
-type BrushType = StructureSegmentType | GroundTileType;
+export {
+  bakeLevelForEcs,
+  createEcsLevelResourceFromBake,
+  serializeBakedLevel,
+  type LevelBuilderBake,
+  type LevelBuilderDoorState,
+  type LevelBuilderGroundOverride,
+  type LevelBuilderGroundType,
+  type LevelBuilderStructureSegment
+};
+
+type StructureBrush = "wall" | "window" | "door-closed" | "door-open";
+type GroundTileType = LevelBuilderGroundType;
+type BrushType = StructureBrush | GroundTileType;
 type ToolMode = "draw" | "erase";
+
+type StructureSegmentData =
+  | { kind: "wall" }
+  | { kind: "window" }
+  | { kind: "door"; state: LevelBuilderDoorState };
 
 type GridEdge = {
   ax: number;
@@ -38,13 +65,8 @@ const GRID_TILES = 30;
 const TILE_SIZE = 1;
 const GRID_ORIGIN = -(GRID_TILES * TILE_SIZE) * 0.5;
 
-const STRUCTURE_HEIGHTS: Record<StructureSegmentType, number> = {
-  wall: 2.8,
-  window: 2.1,
-  door: 2.3
-};
-
-const WALL_THICKNESS = 0.18;
+const WALL_HEIGHT = 2.8;
+const WALL_THICKNESS = 0.2;
 const GROUND_TILE_HEIGHT = 0.05;
 const DEFAULT_GROUND: GroundTileType = "floor";
 
@@ -57,15 +79,44 @@ const ZOOM_MAX = 3.8;
 const PAN_CLAMP = GRID_TILES * 0.8;
 
 const BRUSH_COLORS: Record<BrushType, number> = {
-  wall: 0xbec7d0,
-  window: 0x8ccdee,
-  door: 0xd9b17f,
+  wall: 0xb9c6d2,
+  window: 0x8bbfdc,
+  "door-closed": 0xd09d68,
+  "door-open": 0x95b882,
   floor: 0x7f95ab,
   grass: 0x5ca063
 };
 
 function isGroundBrush(brush: BrushType): brush is GroundTileType {
   return brush === "floor" || brush === "grass";
+}
+
+function structureFromBrush(brush: StructureBrush): StructureSegmentData {
+  if (brush === "wall") {
+    return { kind: "wall" };
+  }
+
+  if (brush === "window") {
+    return { kind: "window" };
+  }
+
+  if (brush === "door-open") {
+    return { kind: "door", state: "open" };
+  }
+
+  return { kind: "door", state: "closed" };
+}
+
+function structureEquals(a: StructureSegmentData | undefined, b: StructureSegmentData): boolean {
+  if (!a || a.kind !== b.kind) {
+    return false;
+  }
+
+  if (a.kind === "door" && b.kind === "door") {
+    return a.state === b.state;
+  }
+
+  return true;
 }
 
 function nodeKey(x: number, z: number): string {
@@ -93,6 +144,11 @@ function parseEdge(key: string): GridEdge {
     bx: Number(bxStr),
     bz: Number(bzStr)
   };
+}
+
+function parseCellKey(key: string): GridCell {
+  const [xStr, zStr] = key.split(",");
+  return { x: Number(xStr), z: Number(zStr) };
 }
 
 function toWorldNodeX(x: number): number {
@@ -141,11 +197,6 @@ function createGridGeometry(step: number, y: number): THREE.BufferGeometry {
   return geometry;
 }
 
-function parseCellKey(key: string): GridCell {
-  const [xStr, zStr] = key.split(",");
-  return { x: Number(xStr), z: Number(zStr) };
-}
-
 const experiment: ExperimentModule = {
   id: "level-builder",
   title: "Level Builder",
@@ -169,12 +220,16 @@ const experiment: ExperimentModule = {
     renderer.domElement.tabIndex = 0;
     mount.appendChild(renderer.domElement);
 
-    const hemiLight = new THREE.HemisphereLight(0xcde5ff, 0x26303d, 0.95);
+    const hemiLight = new THREE.HemisphereLight(0xd6e6ff, 0x2c3643, 0.94);
     scene.add(hemiLight);
 
-    const keyLight = new THREE.DirectionalLight(0xf5f2e7, 1.1);
+    const keyLight = new THREE.DirectionalLight(0xfff2dc, 1.18);
     keyLight.position.set(18, 24, 12);
     scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0xc4e2ff, 0.45);
+    fillLight.position.set(-10, 14, -9);
+    scene.add(fillLight);
 
     const floorBaseGeometry = new THREE.PlaneGeometry(GRID_TILES * TILE_SIZE, GRID_TILES * TILE_SIZE);
     const floorBaseMaterial = new THREE.MeshStandardMaterial({
@@ -208,23 +263,54 @@ const experiment: ExperimentModule = {
 
     const groundFloorMaterial = new THREE.MeshStandardMaterial({
       color: 0x788ea3,
-      roughness: 0.86,
+      roughness: 0.84,
       metalness: 0.05
     });
     const groundGrassMaterial = new THREE.MeshStandardMaterial({
-      color: 0x5a9961,
+      color: 0x5b9862,
       roughness: 0.93,
       metalness: 0.0
     });
 
-    const structureMaterials: Record<StructureSegmentType, THREE.MeshStandardMaterial> = {
-      wall: new THREE.MeshStandardMaterial({ color: BRUSH_COLORS.wall, roughness: 0.66, metalness: 0.04 }),
-      window: new THREE.MeshStandardMaterial({ color: BRUSH_COLORS.window, roughness: 0.62, metalness: 0.08 }),
-      door: new THREE.MeshStandardMaterial({ color: BRUSH_COLORS.door, roughness: 0.7, metalness: 0.03 })
-    };
-
+    const wallMaterial = new THREE.MeshStandardMaterial({
+      color: 0xc4cfd8,
+      roughness: 0.66,
+      metalness: 0.04
+    });
+    const wallTrimMaterial = new THREE.MeshStandardMaterial({
+      color: 0xb1bec9,
+      roughness: 0.58,
+      metalness: 0.06
+    });
+    const windowFrameMaterial = new THREE.MeshStandardMaterial({
+      color: 0x8aa4ba,
+      roughness: 0.58,
+      metalness: 0.09
+    });
+    const windowGlassMaterial = new THREE.MeshStandardMaterial({
+      color: 0x9bd5f3,
+      roughness: 0.17,
+      metalness: 0,
+      transparent: true,
+      opacity: 0.44
+    });
+    const doorFrameMaterial = new THREE.MeshStandardMaterial({
+      color: 0xc8a074,
+      roughness: 0.68,
+      metalness: 0.04
+    });
+    const doorLeafMaterial = new THREE.MeshStandardMaterial({
+      color: 0x986542,
+      roughness: 0.62,
+      metalness: 0.03
+    });
+    const doorHandleMaterial = new THREE.MeshStandardMaterial({
+      color: 0xe7d18f,
+      roughness: 0.26,
+      metalness: 0.42
+    });
     const jointMaterial = new THREE.MeshStandardMaterial({
-      color: 0xe7ddb8,
+      color: 0xe6dcc0,
       roughness: 0.56,
       metalness: 0.08
     });
@@ -237,8 +323,26 @@ const experiment: ExperimentModule = {
     });
 
     const groundTileGeometry = new THREE.BoxGeometry(TILE_SIZE, GROUND_TILE_HEIGHT, TILE_SIZE);
-    const segmentGeometry = new THREE.BoxGeometry(TILE_SIZE, 1, WALL_THICKNESS);
-    const jointGeometry = new THREE.BoxGeometry(1, 2.8, 1);
+
+    const wallCoreGeometry = new THREE.BoxGeometry(TILE_SIZE, 2.48, WALL_THICKNESS * 0.85);
+    const wallCapGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.13, WALL_THICKNESS + 0.06);
+    const wallBaseGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.18, WALL_THICKNESS + 0.04);
+
+    const windowLowerGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.96, WALL_THICKNESS * 0.88);
+    const windowUpperGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.76, WALL_THICKNESS * 0.88);
+    const windowSideGeometry = new THREE.BoxGeometry(0.16, 1.1, WALL_THICKNESS * 0.88);
+    const windowInsetGeometry = new THREE.BoxGeometry(0.72, 1.0, 0.08);
+    const windowGlassGeometry = new THREE.PlaneGeometry(0.66, 0.94);
+
+    const doorJambGeometry = new THREE.BoxGeometry(0.12, 2.34, WALL_THICKNESS + 0.04);
+    const doorHeaderGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.24, WALL_THICKNESS + 0.04);
+    const doorThresholdGeometry = new THREE.BoxGeometry(0.92, 0.07, WALL_THICKNESS * 0.85);
+    const doorLeafGeometry = new THREE.BoxGeometry(0.72, 2.02, 0.06);
+    const doorHandleGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.12, 10);
+    doorHandleGeometry.rotateZ(Math.PI * 0.5);
+
+    const jointColumnGeometry = new THREE.BoxGeometry(0.22, WALL_HEIGHT, 0.22);
+    const jointCapGeometry = new THREE.BoxGeometry(0.3, 0.12, 0.3);
 
     const edgeHoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.05, WALL_THICKNESS);
     const cellHoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.04, TILE_SIZE);
@@ -254,7 +358,7 @@ const experiment: ExperimentModule = {
     scene.add(edgeHoverMesh);
     scene.add(cellHoverMesh);
 
-    const structureSegments = new Map<string, StructureSegmentType>();
+    const structureSegments = new Map<string, StructureSegmentData>();
     const groundOverrides = new Map<string, GroundTileType>();
 
     let activeBrush: BrushType = "wall";
@@ -271,6 +375,10 @@ const experiment: ExperimentModule = {
     let intersectionCount = 0;
     let needsRebuild = true;
     let raf = 0;
+
+    let lastBake: LevelBuilderBake | null = null;
+    let lastBakedResource: LevelResource | null = null;
+    let bakeStatusMessage = "Not baked yet.";
 
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
@@ -310,12 +418,12 @@ const experiment: ExperimentModule = {
 
     const leftPanel = document.createElement("div");
     panelStyle(leftPanel);
-    leftPanel.style.width = "min(350px, 50vw)";
+    leftPanel.style.width = "min(390px, 56vw)";
     hud.appendChild(leftPanel);
 
     const rightPanel = document.createElement("div");
     panelStyle(rightPanel);
-    rightPanel.style.minWidth = "220px";
+    rightPanel.style.minWidth = "260px";
     rightPanel.style.alignItems = "stretch";
     hud.appendChild(rightPanel);
 
@@ -326,7 +434,7 @@ const experiment: ExperimentModule = {
     leftPanel.appendChild(title);
 
     const helper = document.createElement("div");
-    helper.textContent = "Simple blockout meshes with auto wall joins + paintable floor/grass terrain.";
+    helper.textContent = "Simplified but recognizable wall/window/door meshes with open+closed door states and ECS bake-ready export.";
     helper.style.fontSize = "12px";
     helper.style.lineHeight = "1.3";
     helper.style.color = "rgba(207, 225, 240, 0.88)";
@@ -418,21 +526,130 @@ const experiment: ExperimentModule = {
       return mesh;
     }
 
-    function createStructureSegment(type: StructureSegmentType): THREE.Mesh {
-      const mesh = new THREE.Mesh(segmentGeometry, structureMaterials[type]);
-      const height = STRUCTURE_HEIGHTS[type];
-      mesh.scale.y = height;
-      mesh.position.y = height * 0.5;
-      return mesh;
+    function createWallSegment(): THREE.Object3D {
+      const group = new THREE.Group();
+
+      const core = new THREE.Mesh(wallCoreGeometry, wallMaterial);
+      core.position.y = 1.34;
+      group.add(core);
+
+      const top = new THREE.Mesh(wallCapGeometry, wallTrimMaterial);
+      top.position.y = 2.73;
+      group.add(top);
+
+      const base = new THREE.Mesh(wallBaseGeometry, wallTrimMaterial);
+      base.position.y = 0.09;
+      group.add(base);
+
+      return group;
     }
 
-    function createJoinPost(degree: number): THREE.Mesh {
-      const mesh = new THREE.Mesh(jointGeometry, jointMaterial);
-      const size = 0.22 + degree * 0.06;
-      mesh.scale.x = size;
-      mesh.scale.z = size;
-      mesh.position.y = 2.8 * 0.5;
-      return mesh;
+    function createWindowSegment(): THREE.Object3D {
+      const group = new THREE.Group();
+
+      const lower = new THREE.Mesh(windowLowerGeometry, wallMaterial);
+      lower.position.y = 0.48;
+      group.add(lower);
+
+      const upper = new THREE.Mesh(windowUpperGeometry, wallMaterial);
+      upper.position.y = 2.42;
+      group.add(upper);
+
+      const left = new THREE.Mesh(windowSideGeometry, windowFrameMaterial);
+      left.position.set(-0.42, 1.45, 0);
+      group.add(left);
+
+      const right = new THREE.Mesh(windowSideGeometry, windowFrameMaterial);
+      right.position.set(0.42, 1.45, 0);
+      group.add(right);
+
+      const inset = new THREE.Mesh(windowInsetGeometry, windowFrameMaterial);
+      inset.position.y = 1.45;
+      group.add(inset);
+
+      const glass = new THREE.Mesh(windowGlassGeometry, windowGlassMaterial);
+      glass.position.set(0, 1.45, 0.05);
+      group.add(glass);
+
+      const top = new THREE.Mesh(wallCapGeometry, wallTrimMaterial);
+      top.position.y = 2.73;
+      group.add(top);
+
+      const base = new THREE.Mesh(wallBaseGeometry, wallTrimMaterial);
+      base.position.y = 0.09;
+      group.add(base);
+
+      return group;
+    }
+
+    function createDoorSegment(state: LevelBuilderDoorState): THREE.Object3D {
+      const group = new THREE.Group();
+
+      const leftJamb = new THREE.Mesh(doorJambGeometry, doorFrameMaterial);
+      leftJamb.position.set(-0.43, 1.17, 0);
+      group.add(leftJamb);
+
+      const rightJamb = new THREE.Mesh(doorJambGeometry, doorFrameMaterial);
+      rightJamb.position.set(0.43, 1.17, 0);
+      group.add(rightJamb);
+
+      const header = new THREE.Mesh(doorHeaderGeometry, doorFrameMaterial);
+      header.position.y = 2.46;
+      group.add(header);
+
+      const threshold = new THREE.Mesh(doorThresholdGeometry, doorFrameMaterial);
+      threshold.position.y = 0.035;
+      group.add(threshold);
+
+      const leafPivot = new THREE.Group();
+      leafPivot.position.set(-0.36, 0, 0);
+
+      const leaf = new THREE.Mesh(doorLeafGeometry, doorLeafMaterial);
+      leaf.position.set(0.36, 1.01, 0);
+      leafPivot.add(leaf);
+
+      const handle = new THREE.Mesh(doorHandleGeometry, doorHandleMaterial);
+      handle.position.set(0.66, 1.02, 0.05);
+      leafPivot.add(handle);
+
+      if (state === "open") {
+        leafPivot.rotation.y = -Math.PI * 0.5;
+      }
+
+      group.add(leafPivot);
+
+      return group;
+    }
+
+    function createStructureSegment(segment: StructureSegmentData): THREE.Object3D {
+      if (segment.kind === "wall") {
+        return createWallSegment();
+      }
+
+      if (segment.kind === "window") {
+        return createWindowSegment();
+      }
+
+      return createDoorSegment(segment.state);
+    }
+
+    function createJoinPost(degree: number): THREE.Object3D {
+      const group = new THREE.Group();
+
+      const column = new THREE.Mesh(jointColumnGeometry, jointMaterial);
+      const scale = 0.92 + degree * 0.14;
+      column.scale.x = scale;
+      column.scale.z = scale;
+      column.position.y = WALL_HEIGHT * 0.5;
+      group.add(column);
+
+      const cap = new THREE.Mesh(jointCapGeometry, jointMaterial);
+      cap.scale.x = 0.95 + degree * 0.1;
+      cap.scale.z = 0.95 + degree * 0.1;
+      cap.position.y = WALL_HEIGHT + 0.06;
+      group.add(cap);
+
+      return group;
     }
 
     function registerDirection(map: Map<string, DirectionVector[]>, x: number, z: number, dx: number, dz: number): void {
@@ -485,21 +702,21 @@ const experiment: ExperimentModule = {
       const adjacency = new Map<string, DirectionVector[]>();
       intersectionCount = 0;
 
-      structureSegments.forEach((segmentType, segmentKey) => {
+      structureSegments.forEach((segmentData, segmentKey) => {
         const edge = parseEdge(segmentKey);
-        const segment = createStructureSegment(segmentType);
+        const module = createStructureSegment(segmentData);
 
         const xA = toWorldNodeX(edge.ax);
         const zA = toWorldNodeZ(edge.az);
         const xB = toWorldNodeX(edge.bx);
         const zB = toWorldNodeZ(edge.bz);
 
-        segment.position.set((xA + xB) * 0.5, segment.position.y, (zA + zB) * 0.5);
+        module.position.set((xA + xB) * 0.5, 0, (zA + zB) * 0.5);
         if (edge.az !== edge.bz) {
-          segment.rotation.y = Math.PI * 0.5;
+          module.rotation.y = Math.PI * 0.5;
         }
 
-        structuresGroup.add(segment);
+        structuresGroup.add(module);
 
         registerDirection(adjacency, edge.ax, edge.az, edge.bx - edge.ax, edge.bz - edge.az);
         registerDirection(adjacency, edge.bx, edge.bz, edge.ax - edge.bx, edge.az - edge.bz);
@@ -518,6 +735,100 @@ const experiment: ExperimentModule = {
 
         intersectionCount += 1;
       });
+    }
+
+    function computeStructureCounts(): {
+      wall: number;
+      window: number;
+      doorClosed: number;
+      doorOpen: number;
+    } {
+      let wall = 0;
+      let windowCount = 0;
+      let doorClosed = 0;
+      let doorOpen = 0;
+
+      for (const segment of structureSegments.values()) {
+        if (segment.kind === "wall") {
+          wall += 1;
+        } else if (segment.kind === "window") {
+          windowCount += 1;
+        } else if (segment.state === "closed") {
+          doorClosed += 1;
+        } else {
+          doorOpen += 1;
+        }
+      }
+
+      return { wall, window: windowCount, doorClosed, doorOpen };
+    }
+
+    function createBakePayload(): LevelBuilderBake {
+      const structures: LevelBuilderStructureSegment[] = [];
+      for (const [segmentKey, segmentData] of structureSegments.entries()) {
+        const edge = parseEdge(segmentKey);
+
+        if (segmentData.kind === "door") {
+          structures.push({
+            kind: "door",
+            doorState: segmentData.state,
+            ax: edge.ax,
+            az: edge.az,
+            bx: edge.bx,
+            bz: edge.bz
+          });
+        } else {
+          structures.push({
+            kind: segmentData.kind,
+            ax: edge.ax,
+            az: edge.az,
+            bx: edge.bx,
+            bz: edge.bz
+          });
+        }
+      }
+
+      const ground: LevelBuilderGroundOverride[] = [];
+      for (const [key, type] of groundOverrides.entries()) {
+        const cell = parseCellKey(key);
+        ground.push({ x: cell.x, z: cell.z, type });
+      }
+
+      return bakeLevelForEcs({
+        level: {
+          id: "level-builder-draft",
+          version: 1
+        },
+        grid: {
+          tiles: GRID_TILES,
+          tileSize: TILE_SIZE,
+          origin: GRID_ORIGIN
+        },
+        terrain: {
+          defaultGround: DEFAULT_GROUND,
+          overrides: ground
+        },
+        structures
+      });
+    }
+
+    function runBakePreview(): void {
+      const baked = createBakePayload();
+      const resource = createEcsLevelResourceFromBake(baked);
+
+      lastBake = baked;
+      lastBakedResource = resource;
+      bakeStatusMessage = `Baked ${baked.structures.length} segments, blocked ${baked.blockedCells.length} cells.`;
+
+      console.log("[level-builder] Baked payload", baked);
+      console.log("[level-builder] Baked payload JSON", serializeBakedLevel(baked));
+      console.log("[level-builder] ECS LevelResource probes", {
+        blockedAt0_0: resource.isBlocked(0, 0),
+        blockedAt6_0: resource.isBlocked(6, 0),
+        blockedAt2_0: resource.isBlocked(2, 0)
+      });
+
+      syncHud();
     }
 
     const toolButtons = new Map<ToolMode, HTMLButtonElement>();
@@ -545,8 +856,12 @@ const experiment: ExperimentModule = {
       activeBrush = "window";
       syncHud();
     });
-    const doorBrushButton = makeButton("Door (3)", () => {
-      activeBrush = "door";
+    const doorClosedBrushButton = makeButton("Door Closed (3)", () => {
+      activeBrush = "door-closed";
+      syncHud();
+    });
+    const doorOpenBrushButton = makeButton("Door Open (6)", () => {
+      activeBrush = "door-open";
       syncHud();
     });
     const floorBrushButton = makeButton("Floor (4)", () => {
@@ -560,11 +875,12 @@ const experiment: ExperimentModule = {
 
     brushButtons.set("wall", wallBrushButton);
     brushButtons.set("window", windowBrushButton);
-    brushButtons.set("door", doorBrushButton);
+    brushButtons.set("door-closed", doorClosedBrushButton);
+    brushButtons.set("door-open", doorOpenBrushButton);
     brushButtons.set("floor", floorBrushButton);
     brushButtons.set("grass", grassBrushButton);
 
-    brushRow.append(wallBrushButton, windowBrushButton, doorBrushButton, floorBrushButton, grassBrushButton);
+    brushRow.append(wallBrushButton, windowBrushButton, doorClosedBrushButton, doorOpenBrushButton, floorBrushButton, grassBrushButton);
 
     const cameraRow = makeRow("Camera");
     const rotateLeftButton = makeButton("Rotate -90 (Q)", () => {
@@ -587,14 +903,22 @@ const experiment: ExperimentModule = {
     const clearStructuresButton = makeButton("Clear Walls (C)", () => {
       structureSegments.clear();
       needsRebuild = true;
+      bakeStatusMessage = "Geometry cleared.";
       syncHud();
     });
     const clearGroundButton = makeButton("Clear Grass (V)", () => {
       groundOverrides.clear();
       needsRebuild = true;
+      bakeStatusMessage = "Terrain overrides cleared.";
       syncHud();
     });
     utilityRow.append(clearStructuresButton, clearGroundButton);
+
+    const bakeRow = makeRow("Bake");
+    const bakeButton = makeButton("Bake ECS JSON (B)", () => {
+      runBakePreview();
+    });
+    bakeRow.append(bakeButton);
 
     const stats = document.createElement("div");
     stats.style.fontSize = "12px";
@@ -602,12 +926,18 @@ const experiment: ExperimentModule = {
     stats.style.color = "#c9dceb";
     rightPanel.appendChild(stats);
 
+    const bakeStatus = document.createElement("div");
+    bakeStatus.style.fontSize = "12px";
+    bakeStatus.style.lineHeight = "1.35";
+    bakeStatus.style.color = "#d8e8f4";
+    rightPanel.appendChild(bakeStatus);
+
     const controlsHint = document.createElement("div");
     controlsHint.style.fontSize = "12px";
     controlsHint.style.lineHeight = "1.35";
     controlsHint.style.opacity = "0.92";
     controlsHint.textContent =
-      "LMB drag: paint  •  RMB drag: erase  •  MMB or Space+drag: pan  •  Wheel: zoom (mouse), pan (trackpad)";
+      "LMB drag: paint  •  RMB drag: erase  •  MMB or Space+drag: pan  •  Wheel: zoom (mouse), pan (trackpad)  •  B: bake";
     rightPanel.appendChild(controlsHint);
 
     function syncHud(): void {
@@ -620,12 +950,19 @@ const experiment: ExperimentModule = {
       });
 
       const viewStep = (yawIndex % 4 + 4) % 4;
+      const counts = computeStructureCounts();
       stats.textContent = [
-        `Segments: ${structureSegments.size}`,
+        `Walls: ${counts.wall}`,
+        `Windows: ${counts.window}`,
+        `Doors(C/O): ${counts.doorClosed}/${counts.doorOpen}`,
         `Junctions: ${intersectionCount}`,
-        `Grass Tiles: ${groundOverrides.size}`,
-        `View Rotation: ${viewStep} / 4`
+        `Grass: ${groundOverrides.size}`,
+        `View: ${viewStep}/4`
       ].join("  •  ");
+
+      const blocked = lastBake?.blockedCells.length ?? 0;
+      const probe = lastBakedResource ? `  Probe(6,0): ${lastBakedResource.isBlocked(6, 0) ? "blocked" : "open"}` : "";
+      bakeStatus.textContent = `Bake: ${bakeStatusMessage}${lastBake ? `  (blocked cells: ${blocked})` : ""}${probe}`;
 
       const { brush, mode } = getCurrentBrushAndMode();
       hoverMaterial.color.setHex(mode === "erase" ? 0xff7e7e : BRUSH_COLORS[brush]);
@@ -760,7 +1097,7 @@ const experiment: ExperimentModule = {
       }
     }
 
-    function applyStructureTool(edge: GridEdge, mode: ToolMode, brush: StructureSegmentType): void {
+    function applyStructureTool(edge: GridEdge, mode: ToolMode, brush: StructureBrush): void {
       const key = edgeKey(edge.ax, edge.az, edge.bx, edge.bz);
 
       if (mode === "erase") {
@@ -770,9 +1107,10 @@ const experiment: ExperimentModule = {
         return;
       }
 
+      const next = structureFromBrush(brush);
       const before = structureSegments.get(key);
-      if (before !== brush) {
-        structureSegments.set(key, brush);
+      if (!structureEquals(before, next)) {
+        structureSegments.set(key, next);
         needsRebuild = true;
       }
     }
@@ -1017,7 +1355,7 @@ const experiment: ExperimentModule = {
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit3") {
-        activeBrush = "door";
+        activeBrush = "door-closed";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit4") {
@@ -1026,6 +1364,10 @@ const experiment: ExperimentModule = {
         event.preventDefault();
       } else if (event.code === "Digit5") {
         activeBrush = "grass";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit6") {
+        activeBrush = "door-open";
         syncHud();
         event.preventDefault();
       } else if (event.code === "KeyD") {
@@ -1039,12 +1381,17 @@ const experiment: ExperimentModule = {
       } else if (event.code === "KeyC") {
         structureSegments.clear();
         needsRebuild = true;
+        bakeStatusMessage = "Geometry cleared.";
         syncHud();
         event.preventDefault();
       } else if (event.code === "KeyV") {
         groundOverrides.clear();
         needsRebuild = true;
+        bakeStatusMessage = "Terrain overrides cleared.";
         syncHud();
+        event.preventDefault();
+      } else if (event.code === "KeyB") {
+        runBakePreview();
         event.preventDefault();
       }
     }
@@ -1121,26 +1468,54 @@ const experiment: ExperimentModule = {
       clearGroup(structuresGroup);
       clearGroup(jointsGroup);
 
-      groundTileGeometry.dispose();
-      segmentGeometry.dispose();
-      jointGeometry.dispose();
-      edgeHoverGeometry.dispose();
-      cellHoverGeometry.dispose();
+      const geometries: THREE.BufferGeometry[] = [
+        groundTileGeometry,
+        wallCoreGeometry,
+        wallCapGeometry,
+        wallBaseGeometry,
+        windowLowerGeometry,
+        windowUpperGeometry,
+        windowSideGeometry,
+        windowInsetGeometry,
+        windowGlassGeometry,
+        doorJambGeometry,
+        doorHeaderGeometry,
+        doorThresholdGeometry,
+        doorLeafGeometry,
+        doorHandleGeometry,
+        jointColumnGeometry,
+        jointCapGeometry,
+        edgeHoverGeometry,
+        cellHoverGeometry,
+        floorBaseGeometry,
+        minorGridGeometry,
+        majorGridGeometry
+      ];
 
-      floorBaseGeometry.dispose();
-      floorBaseMaterial.dispose();
-      minorGridGeometry.dispose();
-      majorGridGeometry.dispose();
-      (minorGrid.material as THREE.Material).dispose();
-      (majorGrid.material as THREE.Material).dispose();
+      for (const geometry of geometries) {
+        geometry.dispose();
+      }
 
-      groundFloorMaterial.dispose();
-      groundGrassMaterial.dispose();
-      structureMaterials.wall.dispose();
-      structureMaterials.window.dispose();
-      structureMaterials.door.dispose();
-      jointMaterial.dispose();
-      hoverMaterial.dispose();
+      const materials: THREE.Material[] = [
+        floorBaseMaterial,
+        minorGrid.material as THREE.Material,
+        majorGrid.material as THREE.Material,
+        groundFloorMaterial,
+        groundGrassMaterial,
+        wallMaterial,
+        wallTrimMaterial,
+        windowFrameMaterial,
+        windowGlassMaterial,
+        doorFrameMaterial,
+        doorLeafMaterial,
+        doorHandleMaterial,
+        jointMaterial,
+        hoverMaterial
+      ];
+
+      for (const material of materials) {
+        material.dispose();
+      }
 
       renderer.dispose();
       renderer.domElement.remove();

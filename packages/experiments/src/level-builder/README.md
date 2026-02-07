@@ -6,10 +6,11 @@ Prototype an isometric orthographic level editor for 1m terrain tiles and room-b
 ## Current Slice
 - Flat terrain with a 1m x 1m construction grid.
 - Orthographic isometric camera with pan, zoom, and 90-degree rotation.
-- Simple blockout meshes for `wall`, `window`, and `door` brushes.
+- Simple but recognizable meshes for walls, windows, and doors.
+- Doors support explicit `closed` and `open` representation.
 - Automatic connector posts at wall joins (corners, T-junctions, and crosses).
 - Terrain paint brushes for `floor` and `grass`.
-- Mouse + touchpad-friendly interaction pass for layout blocking.
+- ECS-ready bake payload + `LevelResource` adapter helpers for future runtime experiments.
 
 ## Controls
 - `LMB drag`: paint using active brush/tool.
@@ -19,13 +20,15 @@ Prototype an isometric orthographic level editor for 1m terrain tiles and room-b
 - `Trackpad two-finger scroll`: pan.
 - `Pinch` / `Ctrl+wheel`: zoom.
 - `Q` / `E`: rotate view in 90-degree increments.
-- `1` / `2` / `3`: structure brush (wall/window/door).
-- `4` / `5`: terrain brush (floor/grass).
+- `1` / `2`: wall / window brushes.
+- `3` / `6`: door closed / door open brushes.
+- `4` / `5`: terrain brushes (floor / grass).
 - `D` / `X`: switch tool (draw/erase).
+- `B`: bake current layout for ECS preview (logs JSON payload + probes).
 - `C`: clear all structures.
 - `V`: clear all grass overrides (reset to floor).
 
-## Next Steps
-- Add room/floor fill tools and rectangle tools.
-- Add parametric wall style sets and true tileset asset loading.
-- Add metadata + export format for runtime gameplay use.
+## Bake Notes
+- `bake.ts` defines `LevelBuilderBake` schema and conversion helpers.
+- `createEcsLevelResourceFromBake(...)` produces an ECS `LevelResource` shape.
+- This is a compatibility prep step; final runtime baking pipeline can be built in a dedicated experiment.
