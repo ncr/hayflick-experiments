@@ -25,6 +25,7 @@ uniform float uPixelSize;
 uniform float uDepthThreshold;
 uniform float uNormalThreshold;
 uniform float uEdgeDarken;
+uniform float uPostDitherStrength;
 uniform vec3 uDepthEdgeColor;
 uniform vec3 uNormalEdgeColor;
 
@@ -37,6 +38,35 @@ float linearizeDepth(float rawDepth) {
 
 vec2 clampUv(vec2 uv, vec2 texel) {
   return clamp(uv, texel * 0.5, vec2(1.0) - texel * 0.5);
+}
+
+float bayer4x4(vec2 p) {
+  vec2 q = mod(floor(p), 4.0);
+  float x = q.x;
+  float y = q.y;
+
+  if (y < 1.0) {
+    if (x < 1.0) return 0.0;
+    if (x < 2.0) return 8.0;
+    if (x < 3.0) return 2.0;
+    return 10.0;
+  }
+  if (y < 2.0) {
+    if (x < 1.0) return 12.0;
+    if (x < 2.0) return 4.0;
+    if (x < 3.0) return 14.0;
+    return 6.0;
+  }
+  if (y < 3.0) {
+    if (x < 1.0) return 3.0;
+    if (x < 2.0) return 11.0;
+    if (x < 3.0) return 1.0;
+    return 9.0;
+  }
+  if (x < 1.0) return 15.0;
+  if (x < 2.0) return 7.0;
+  if (x < 3.0) return 13.0;
+  return 5.0;
 }
 
 void main() {
@@ -102,6 +132,13 @@ void main() {
   vec3 darkened = c * uEdgeDarken;
   vec3 outlined = mix(darkened, edgeBase, 0.7);
   vec3 outColor = mix(c, outlined, edge);
+
+  vec2 blockCoord = floor(vUv / blockStep);
+  float bayer = (bayer4x4(blockCoord) + 0.5) / 16.0 - 0.5;
+  float luma = dot(outColor, vec3(0.2126, 0.7152, 0.0722));
+  float midtones = smoothstep(0.08, 0.55, luma) * (1.0 - smoothstep(0.62, 0.92, luma));
+  float ditherMask = (1.0 - edge * 0.9) * midtones;
+  outColor = clamp(outColor + vec3(bayer * uPostDitherStrength * ditherMask), 0.0, 1.0);
 
   gl_FragColor = vec4(outColor, 1.0);
 }
@@ -327,6 +364,7 @@ const experiment: ExperimentModule = {
         uDepthThreshold: { value: 0.12 },
         uNormalThreshold: { value: 0.24 },
         uEdgeDarken: { value: 0.38 },
+        uPostDitherStrength: { value: 0.022 },
         uDepthEdgeColor: { value: new THREE.Color(0x03050a) },
         uNormalEdgeColor: { value: new THREE.Color(0x05070d) }
       },
