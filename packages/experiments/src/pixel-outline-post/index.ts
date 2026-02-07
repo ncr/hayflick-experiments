@@ -186,12 +186,24 @@ function makeGradientMap(bands: number): THREE.DataTexture {
   return gradient;
 }
 
-function applyRetroDither(material: THREE.MeshToonMaterial, bands: number, strength: number) {
+function applyRetroDither(
+  material: THREE.MeshToonMaterial,
+  bands: number,
+  strength: number,
+  specularStrength: number,
+  specularShininess: number,
+  specularBands: number,
+  specularDitherStrength: number
+) {
   material.dithering = false;
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uToonDitherBands = { value: Math.max(2.0, bands) };
     shader.uniforms.uToonDitherStrength = { value: strength };
     shader.uniforms.uToonDitherPixelSize = { value: 4.0 };
+    shader.uniforms.uSpecularStrength = { value: specularStrength };
+    shader.uniforms.uSpecularShininess = { value: specularShininess };
+    shader.uniforms.uSpecularBands = { value: Math.max(2.0, specularBands) };
+    shader.uniforms.uSpecularDitherStrength = { value: specularDitherStrength };
 
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <gradientmap_pars_fragment>",
@@ -203,6 +215,10 @@ function applyRetroDither(material: THREE.MeshToonMaterial, bands: number, stren
       uniform float uToonDitherBands;
       uniform float uToonDitherStrength;
       uniform float uToonDitherPixelSize;
+      uniform float uSpecularStrength;
+      uniform float uSpecularShininess;
+      uniform float uSpecularBands;
+      uniform float uSpecularDitherStrength;
 
       float toonBayer4x4(vec2 p) {
         vec2 q = mod(floor(p), 4.0);
@@ -248,8 +264,47 @@ function applyRetroDither(material: THREE.MeshToonMaterial, bands: number, stren
       }
       `
     );
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <lights_toon_pars_fragment>",
+      `
+      varying vec3 vViewPosition;
+
+      struct ToonMaterial {
+        vec3 diffuseColor;
+      };
+
+      void RE_Direct_Toon( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in ToonMaterial material, inout ReflectedLight reflectedLight ) {
+        vec3 irradiance = getGradientIrradiance( geometryNormal, directLight.direction ) * directLight.color;
+        reflectedLight.directDiffuse += irradiance * BRDF_Lambert( material.diffuseColor );
+
+        // Stylized specular: quantized and Bayer-dithered to match retro toon bands.
+        float ndl = max( dot( geometryNormal, directLight.direction ), 0.0 );
+        vec3 halfDir = normalize( directLight.direction + geometryViewDir );
+        float ndh = max( dot( geometryNormal, halfDir ), 0.0 );
+        float specRaw = pow( ndh, max( 1.0, uSpecularShininess ) ) * ndl * uSpecularStrength;
+
+        vec2 ditherCell = floor( gl_FragCoord.xy / max( 1.0, uToonDitherPixelSize ) );
+        float bayer = ( toonBayer4x4( ditherCell ) + 0.5 ) / 16.0 - 0.5;
+        float dithered = clamp( specRaw + bayer * uSpecularDitherStrength, 0.0, 1.0 );
+        float levels = max( 2.0, uSpecularBands );
+        float quantizedSpec = floor( dithered * ( levels - 1.0 ) + 0.5 ) / ( levels - 1.0 );
+
+        vec3 specColor = mix( vec3( 1.0 ), material.diffuseColor, 0.2 );
+        reflectedLight.directDiffuse += quantizedSpec * directLight.color * specColor;
+      }
+
+      void RE_IndirectDiffuse_Toon( const in vec3 irradiance, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in ToonMaterial material, inout ReflectedLight reflectedLight ) {
+        reflectedLight.indirectDiffuse += irradiance * BRDF_Lambert( material.diffuseColor );
+      }
+
+      #define RE_Direct RE_Direct_Toon
+      #define RE_IndirectDiffuse RE_IndirectDiffuse_Toon
+      `
+    );
   };
-  material.customProgramCacheKey = () => `retroDither_b${bands.toFixed(2)}_s${strength.toFixed(3)}`;
+  material.customProgramCacheKey = () =>
+    `retroDither_b${bands.toFixed(2)}_s${strength.toFixed(3)}_spec${specularStrength.toFixed(3)}_sh${specularShininess.toFixed(2)}_sb${specularBands.toFixed(2)}_sd${specularDitherStrength.toFixed(3)}`;
   material.needsUpdate = true;
 }
 
@@ -297,7 +352,15 @@ const experiment: ExperimentModule = {
 
     const gradients: THREE.Texture[] = [];
     const toonMaterials: THREE.MeshToonMaterial[] = [];
-    const makeToonMaterial = (color: number, bands: number, ditherStrength: number) => {
+    const makeToonMaterial = (
+      color: number,
+      bands: number,
+      ditherStrength: number,
+      specularStrength: number,
+      specularShininess: number,
+      specularBands = 4,
+      specularDitherStrength = 0.08
+    ) => {
       const gradientMap = makeGradientMap(bands);
       gradients.push(gradientMap);
       const material = new THREE.MeshToonMaterial({
@@ -305,7 +368,15 @@ const experiment: ExperimentModule = {
         gradientMap,
         toneMapped: true
       });
-      applyRetroDither(material, bands, ditherStrength);
+      applyRetroDither(
+        material,
+        bands,
+        ditherStrength,
+        specularStrength,
+        specularShininess,
+        specularBands,
+        specularDitherStrength
+      );
       toonMaterials.push(material);
       return material;
     };
@@ -336,7 +407,7 @@ const experiment: ExperimentModule = {
 
     const desk = addMesh(
       new THREE.BoxGeometry(2.2, 0.08, 1.2),
-      makeToonMaterial(0x8da7c7, 3, 0.04),
+      makeToonMaterial(0x8da7c7, 3, 0.04, 0.07, 22, 3, 0.045),
       new THREE.Vector3(0, -0.04, 0),
       0.0,
       false
@@ -345,7 +416,7 @@ const experiment: ExperimentModule = {
 
     const centerBox = addMesh(
       new THREE.BoxGeometry(0.22, 0.22, 0.22),
-      makeToonMaterial(0xf28a13, 4, 0.075),
+      makeToonMaterial(0xf28a13, 4, 0.075, 0.2, 36, 4, 0.065),
       new THREE.Vector3(0, 0.11, 0),
       0.32,
       true
@@ -353,7 +424,7 @@ const experiment: ExperimentModule = {
 
     const torus = addMesh(
       new THREE.TorusKnotGeometry(0.14, 0.045, 320, 48),
-      makeToonMaterial(0x74dcb6, 4, 0.085),
+      makeToonMaterial(0x74dcb6, 4, 0.085, 0.34, 54, 5, 0.085),
       new THREE.Vector3(-0.34, 0.0, -0.08),
       -0.32,
       true
@@ -361,7 +432,7 @@ const experiment: ExperimentModule = {
 
     const sphere = addMesh(
       new THREE.SphereGeometry(0.13, 48, 32),
-      makeToonMaterial(0xa6b7ff, 5, 0.07),
+      makeToonMaterial(0xa6b7ff, 5, 0.07, 0.28, 44, 5, 0.08),
       new THREE.Vector3(0.32, 0.0, 0.09),
       0.24,
       true
@@ -369,7 +440,7 @@ const experiment: ExperimentModule = {
 
     const capsule = addMesh(
       new THREE.CapsuleGeometry(0.08, 0.14, 4, 12),
-      makeToonMaterial(0xd4db7c, 4, 0.07),
+      makeToonMaterial(0xd4db7c, 4, 0.07, 0.16, 28, 4, 0.06),
       new THREE.Vector3(-0.1, 0.0, 0.27),
       -0.22,
       true
@@ -377,7 +448,7 @@ const experiment: ExperimentModule = {
 
     const cone = addMesh(
       new THREE.ConeGeometry(0.1, 0.26, 48, 4),
-      makeToonMaterial(0xd67bc8, 4, 0.07),
+      makeToonMaterial(0xd67bc8, 4, 0.07, 0.22, 34, 4, 0.065),
       new THREE.Vector3(0.23, 0.0, 0.25),
       0.18,
       true
