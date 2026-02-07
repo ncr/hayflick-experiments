@@ -29,11 +29,18 @@ export type TimeResource = {
   frame: number;
 };
 
+export type LevelSnapshot = {
+  id: string;
+  version: number;
+};
+
 export type LevelResource = {
   id: string;
   version: number;
   isBlocked(x: number, y: number): boolean;
 };
+
+export type LevelResolver = (snapshot: LevelSnapshot) => LevelResource;
 
 export type EcsEvent =
   | { type: "Moved"; e: EID }
@@ -52,10 +59,7 @@ export type SaveEntityRecord = {
 
 export type SaveGame = {
   schemaVersion: number;
-  level: {
-    id: string;
-    version: number;
-  };
+  level: LevelSnapshot;
   time: {
     t: number;
   };
@@ -69,4 +73,9 @@ export type DebugMessage = {
 
 export type DebugSink = {
   push(message: DebugMessage): void;
+};
+
+export type WorldOptions = {
+  level?: LevelResource;
+  resolveLevel?: LevelResolver;
 };

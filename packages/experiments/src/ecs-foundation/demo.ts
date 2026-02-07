@@ -9,10 +9,37 @@
  * 7) HUD redraws from current resources and components.
  */
 
-import type { DebugMessage, DebugSink, Transform } from "./types";
-import { createDemoLevel } from "./save-load";
-import { createEventSystem, createInputSystem, createMovementSystem, createPlayerInputSystem, frame, KeyboardTracker } from "./systems";
-import { World } from "./world";
+import {
+  createEventSystem,
+  createInputSystem,
+  createMovementSystem,
+  createPlayerInputSystem,
+  frame,
+  KeyboardTracker,
+  type DebugMessage,
+  type DebugSink,
+  type LevelResource,
+  type Transform,
+  type WorldOptions,
+  World
+} from "@common/gameplay";
+
+function createDemoLevel(id = "demo-halfplane", version = 1): LevelResource {
+  return {
+    id,
+    version,
+    isBlocked(x: number): boolean {
+      return x > 5;
+    }
+  };
+}
+
+function createDemoWorldOptions(): WorldOptions {
+  return {
+    level: createDemoLevel(),
+    resolveLevel: (snapshot) => createDemoLevel(snapshot.id, snapshot.version)
+  };
+}
 
 function round2(value: number): string {
   return value.toFixed(2);
@@ -52,7 +79,7 @@ export function runEcsFoundationDemo(mount: HTMLElement): () => void {
   mount.style.color = "#d8e7f2";
   mount.style.fontFamily = "IBM Plex Mono, SFMono-Regular, Menlo, monospace";
 
-  const world = new World(createDemoLevel());
+  const world = new World(createDemoWorldOptions());
 
   // Explicit entity creation (no authoring/prefab layer):
   const player = world.createEntity();

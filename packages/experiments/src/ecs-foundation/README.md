@@ -33,3 +33,4 @@ Provide a minimal, clarity-first ECS baseline for browser games in TypeScript.
 - EIDs are runtime-only and never serialized.
 - Load always clears the world, recreates entities, and restores components.
 - Level collision in the demo blocks when `x > 5`.
+- ECS core is promoted to `@common/gameplay/ecs`; this experiment is a thin demo consumer.

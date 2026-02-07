@@ -9,3 +9,5 @@ export function mergeInventory(items: InventoryItem[]): Record<string, number> {
     return acc;
   }, {});
 }
+
+export * from "./ecs";

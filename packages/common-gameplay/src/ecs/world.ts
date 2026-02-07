@@ -1,19 +1,33 @@
 import { EventBus } from "./events";
-import { DataStore, TagStore } from "./store";
-import type { EID, InputState, LevelResource, Persistent, SaveGame, TimeResource, Transform, Velocity } from "./types";
 import {
-  createDemoLevel,
+  createOpenLevel,
   deserializeWorld,
   loadWorldFromLocalStorage,
+  resolveOpenLevel,
   saveWorldToLocalStorage,
   serializeWorld
 } from "./save-load";
+import { DataStore, TagStore } from "./store";
+import type {
+  EID,
+  InputState,
+  LevelResolver,
+  LevelResource,
+  LevelSnapshot,
+  Persistent,
+  SaveGame,
+  TimeResource,
+  Transform,
+  Velocity,
+  WorldOptions
+} from "./types";
 
 // World owns entity lifecycle, component stores, and global resources.
 // Systems run against this single mutable container each frame.
 export class World {
   private nextEid = 1;
   private readonly aliveEntities = new Set<EID>();
+  private readonly levelResolver: LevelResolver;
 
   readonly transforms = new DataStore<Transform>();
   readonly velocities = new DataStore<Velocity>();
@@ -38,8 +52,9 @@ export class World {
   level: LevelResource;
   readonly events = new EventBus();
 
-  constructor(level: LevelResource = createDemoLevel()) {
-    this.level = level;
+  constructor(options: WorldOptions = {}) {
+    this.level = options.level ?? createOpenLevel();
+    this.levelResolver = options.resolveLevel ?? resolveOpenLevel;
   }
 
   createEntity(): EID {
@@ -71,6 +86,10 @@ export class World {
 
   setLevel(level: LevelResource): void {
     this.level = level;
+  }
+
+  resolveLevelSnapshot(snapshot: LevelSnapshot): LevelResource {
+    return this.levelResolver(snapshot);
   }
 
   clear(): void {

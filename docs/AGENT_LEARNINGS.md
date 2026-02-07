@@ -21,3 +21,16 @@ Preventive checklist:
   - If user feedback conflicts with metrics, treat it as a real bug signal and re-check assumptions.
 - Communication:
   - State exactly what was verified (local/production, desktop/mobile, and method).
+
+## 2026-02-07 - Workspace package imports failed after adding new dependency
+Root cause:
+- Added a new workspace dependency in `packages/experiments/package.json` (`@common/gameplay`) but did not refresh workspace linking immediately.
+- TypeScript in `@experiments/catalog` and `@apps/hub` could not resolve the newly added package until workspace install state was refreshed.
+
+Detection signal:
+- `TS2307` module resolution errors for `@common/gameplay` imports, even though package exports and source files existed.
+- Errors appeared in dependent workspaces right after editing package manifests.
+
+Preventive checklist:
+- After changing workspace package dependencies, run `pnpm install` before typecheck/build validation.
+- Re-run package-level typecheck after install to confirm import resolution before deeper debugging.

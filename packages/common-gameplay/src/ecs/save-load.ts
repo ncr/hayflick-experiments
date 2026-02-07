@@ -1,16 +1,15 @@
-import type { EID, LevelResource, Persistent, SaveEntityRecord, SaveGame, Transform, Velocity } from "./types";
+import type { EID, LevelResource, LevelSnapshot, Persistent, SaveEntityRecord, SaveGame, Transform, Velocity } from "./types";
 import type { World } from "./world";
 
 export const SAVE_SCHEMA_VERSION = 1;
 
-// Save/load keeps format versioned and migration-ready from day one.
-// We serialize component data by entity records, never raw EIDs.
-export function createDemoLevel(id = "demo-halfplane", version = 1): LevelResource {
+// Default level used when no game-specific resolver is provided.
+export function createOpenLevel(id = "open-level", version = 1): LevelResource {
   return {
     id,
     version,
-    isBlocked(x: number): boolean {
-      return x > 5;
+    isBlocked(): boolean {
+      return false;
     }
   };
 }
@@ -165,12 +164,8 @@ export function migrateSave(raw: unknown): SaveGame | null {
     return migrateV1(raw);
   }
 
-  console.warn(`[ecs-foundation] Unsupported save schemaVersion: ${String(version)}`);
+  console.warn(`[ecs] Unsupported save schemaVersion: ${String(version)}`);
   return null;
-}
-
-function levelFromSave(level: { id: string; version: number }): LevelResource {
-  return createDemoLevel(level.id, level.version);
 }
 
 export function serializeWorld(world: World): SaveGame {
@@ -219,7 +214,9 @@ export function serializeWorld(world: World): SaveGame {
 export function deserializeWorld(world: World, save: SaveGame): void {
   world.clear();
 
-  world.setLevel(levelFromSave(save.level));
+  const level = world.resolveLevelSnapshot(save.level);
+  world.setLevel(level);
+
   world.time.dt = 0;
   world.time.t = save.time.t;
   world.time.frame = 0;
@@ -275,14 +272,18 @@ export function loadWorldFromLocalStorage(world: World, key = "ecs_demo_save"): 
     const raw = JSON.parse(json) as unknown;
     const migrated = migrateSave(raw);
     if (!migrated) {
-      console.warn("[ecs-foundation] Save payload failed migration/validation.");
+      console.warn("[ecs] Save payload failed migration/validation.");
       return false;
     }
 
     deserializeWorld(world, migrated);
     return true;
   } catch (error) {
-    console.warn("[ecs-foundation] Failed to parse save payload.", error);
+    console.warn("[ecs] Failed to parse save payload.", error);
     return false;
   }
+}
+
+export function resolveOpenLevel(snapshot: LevelSnapshot): LevelResource {
+  return createOpenLevel(snapshot.id, snapshot.version);
 }

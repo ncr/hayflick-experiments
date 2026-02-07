@@ -1,12 +1,7 @@
 import type { ExperimentModule } from "../runtime/types";
 import { runEcsFoundationDemo } from "./demo";
 
-export * from "./types";
-export * from "./store";
-export * from "./events";
-export * from "./save-load";
-export * from "./systems";
-export * from "./world";
+export * from "@common/gameplay";
 
 const experiment: ExperimentModule = {
   id: "ecs-foundation",
