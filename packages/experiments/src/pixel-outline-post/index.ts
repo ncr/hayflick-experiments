@@ -244,12 +244,18 @@ const experiment: ExperimentModule = {
     const subjectSize = subjectBounds.getSize(new THREE.Vector3());
     const subjectRadius = Math.max(subjectSize.x, subjectSize.y, subjectSize.z) * 0.5;
 
-    const fovRad = THREE.MathUtils.degToRad(camera.fov);
-    const fitDistance = subjectRadius / Math.tan(fovRad * 0.5);
-    const orbitRadius = fitDistance * 1.8;
-    const baseAzimuth = 0.95; // Stronger right-side start angle.
-    const azimuthArc = 0.28; // Keep orbit around right side, avoid drifting fully left.
-    const baseHeight = subjectCenter.y + subjectRadius * 1.45;
+    // Fit distance that respects both vertical and horizontal FOV.
+    const vFov = THREE.MathUtils.degToRad(camera.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * camera.aspect);
+    const fitV = (subjectSize.y * 0.5) / Math.tan(vFov * 0.5);
+    const fitH = (subjectSize.x * 0.5) / Math.tan(hFov * 0.5);
+    const fitD = subjectSize.z * 0.75;
+    const orbitRadius = Math.max(fitV, fitH, fitD) * 2.15;
+
+    const baseAzimuth = THREE.MathUtils.degToRad(38); // Right side.
+    const baseElevation = THREE.MathUtils.degToRad(28); // Higher view, more downward look.
+    const azimuthArc = THREE.MathUtils.degToRad(8);
+    const elevationArc = THREE.MathUtils.degToRad(3);
 
     let raf = 0;
     const startedAt = performance.now();
@@ -258,12 +264,14 @@ const experiment: ExperimentModule = {
       const t = (performance.now() - startedAt) / 1000;
 
       const azimuth = baseAzimuth + Math.sin(t * 0.22) * azimuthArc;
+      const elevation = baseElevation + Math.sin(t * 0.17) * elevationArc;
+      const planar = Math.cos(elevation) * orbitRadius;
       camera.position.set(
-        subjectCenter.x + Math.cos(azimuth) * orbitRadius,
-        baseHeight + Math.sin(t * 0.13) * subjectRadius * 0.12,
-        subjectCenter.z + Math.sin(azimuth) * orbitRadius
+        subjectCenter.x + Math.cos(azimuth) * planar,
+        subjectCenter.y + Math.sin(elevation) * orbitRadius,
+        subjectCenter.z + Math.sin(azimuth) * planar
       );
-      camera.lookAt(subjectCenter.x, subjectCenter.y - subjectRadius * 0.2, subjectCenter.z);
+      camera.lookAt(subjectCenter.x + subjectRadius * 0.12, subjectCenter.y - subjectRadius * 0.22, subjectCenter.z);
 
       knot.rotation.x = t * 0.25;
       knot.rotation.y = -t * 0.38;
