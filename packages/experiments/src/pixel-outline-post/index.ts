@@ -151,7 +151,13 @@ const experiment: ExperimentModule = {
 
     const box = new THREE.Mesh(
       new THREE.BoxGeometry(0.9, 0.9, 0.9),
-      new THREE.MeshStandardMaterial({ color: 0xf6a53d, roughness: 0.72, metalness: 0.08 })
+      new THREE.MeshStandardMaterial({
+        color: 0xff7a00,
+        roughness: 0.65,
+        metalness: 0.0,
+        emissive: 0x331100,
+        emissiveIntensity: 0.45
+      })
     );
     box.position.set(0.0, 0.45, 0.0);
     scene.add(box);
@@ -240,7 +246,7 @@ const experiment: ExperimentModule = {
     // Deterministic camera:
     // fixed world offset from orange box center, and always look exactly at box center.
     const focusPoint = box.position;
-    const cameraOffset = new THREE.Vector3(3.2, 2.8, 3.2);
+    const cameraOffset = new THREE.Vector3(0.0, 2.8, 4.2);
 
     mount.style.position = "relative";
     const debugOverlay = document.createElement("div");
@@ -290,7 +296,7 @@ const experiment: ExperimentModule = {
       const t = (performance.now() - startedAt) / 1000;
       knot.rotation.x = t * 0.25;
       knot.rotation.y = -t * 0.38;
-      box.rotation.y = t * 0.35;
+      box.rotation.y = 0;
       sphere.position.y = -0.15 + Math.sin(t * 1.35) * 0.12;
 
       const boxNdc = box.position.clone().project(camera);
