@@ -3,11 +3,16 @@ import { meta as shaderPlaygroundMeta } from "./shader-playground/meta";
 
 // Registry is kept explicit so lazy import boundaries stay obvious.
 // AUTO_IMPORTS_START
+import { meta as ecsFoundationMeta } from "./ecs-foundation/meta";
 import { meta as levelBuilderMeta } from "./level-builder/meta";
 import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...ecsFoundationMeta,
+    load: () => import("./ecs-foundation/index")
+  },
   {
     ...levelBuilderMeta,
     load: () => import("./level-builder/index")
