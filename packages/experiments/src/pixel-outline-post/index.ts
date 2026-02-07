@@ -166,17 +166,23 @@ function makeGradientMap(bands: number): THREE.DataTexture {
   return gradient;
 }
 
-function applyRetroDither(material: THREE.MeshToonMaterial, strength: number) {
+function applyRetroDither(material: THREE.MeshToonMaterial, bands: number, strength: number) {
   material.dithering = false;
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uDitherStrength = { value: strength };
-    shader.uniforms.uDitherPixelSize = { value: 4.0 };
+    shader.uniforms.uToonDitherBands = { value: Math.max(2.0, bands) };
+    shader.uniforms.uToonDitherStrength = { value: strength };
+    shader.uniforms.uToonDitherPixelSize = { value: 4.0 };
+
     shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <common>",
+      "#include <gradientmap_pars_fragment>",
       `
-      #include <common>
-      uniform float uDitherStrength;
-      uniform float uDitherPixelSize;
+      #ifdef USE_GRADIENTMAP
+      uniform sampler2D gradientMap;
+      #endif
+
+      uniform float uToonDitherBands;
+      uniform float uToonDitherStrength;
+      uniform float uToonDitherPixelSize;
 
       float toonBayer4x4(vec2 p) {
         vec2 q = mod(floor(p), 4.0);
@@ -205,19 +211,25 @@ function applyRetroDither(material: THREE.MeshToonMaterial, strength: number) {
         if (x < 3.0) return 13.0;
         return 5.0;
       }
-      `
-    );
-    shader.fragmentShader = shader.fragmentShader.replace(
-      "vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;",
-      `
-      vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;
-      vec2 ditherCell = floor(gl_FragCoord.xy / max(1.0, uDitherPixelSize));
-      float toonDither = ((toonBayer4x4(ditherCell) + 0.5) / 16.0 - 0.5) * uDitherStrength;
-      outgoingLight = clamp(outgoingLight + vec3(toonDither), 0.0, 1.0);
+
+      vec3 getGradientIrradiance(vec3 normal, vec3 lightDirection) {
+        float dotNL = clamp(dot(normal, lightDirection) * 0.5 + 0.5, 0.0, 1.0);
+        float levels = max(2.0, uToonDitherBands);
+        vec2 ditherCell = floor(gl_FragCoord.xy / max(1.0, uToonDitherPixelSize));
+        float bayer = (toonBayer4x4(ditherCell) + 0.5) / 16.0 - 0.5;
+        float dithered = clamp(dotNL + bayer * uToonDitherStrength, 0.0, 1.0);
+        float quantized = floor(dithered * (levels - 1.0) + 0.5) / (levels - 1.0);
+
+        #ifdef USE_GRADIENTMAP
+          return vec3(texture2D(gradientMap, vec2(quantized, 0.0)).r);
+        #else
+          return vec3(quantized);
+        #endif
+      }
       `
     );
   };
-  material.customProgramCacheKey = () => `retroDither_${strength.toFixed(3)}`;
+  material.customProgramCacheKey = () => `retroDither_b${bands.toFixed(2)}_s${strength.toFixed(3)}`;
   material.needsUpdate = true;
 }
 
@@ -273,7 +285,7 @@ const experiment: ExperimentModule = {
         gradientMap,
         toneMapped: true
       });
-      applyRetroDither(material, ditherStrength);
+      applyRetroDither(material, bands, ditherStrength);
       toonMaterials.push(material);
       return material;
     };
