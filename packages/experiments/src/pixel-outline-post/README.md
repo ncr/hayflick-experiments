@@ -5,7 +5,8 @@ Reimplement the Godot edge shader behavior as a Three.js screen-space postproces
 
 ## Notes
 - Uses custom toon materials with subtle screen-space dithering for non-photoreal shading.
-- Adds stylized contact shadows that stay readable with the retro look.
+- Uses real shadow mapping for object shadows on the desk.
+- Adds a stronger key/fill/rim + hemisphere light rig for better depth and shape readability.
 - Renders scene color + depth, then a separate normal pass.
 - Pixelizes by sampling one representative texel per block.
 - Detects one-sided edges using depth and normal differences with deterministic tie-breaks.

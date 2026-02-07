@@ -2,58 +2,6 @@ import * as THREE from "three";
 import { makeRenderer } from "@common/render";
 import type { ExperimentModule } from "../runtime/types";
 
-const TOON_VERTEX_SHADER = /* glsl */ `
-varying vec3 vNormalW;
-varying vec3 vWorldPos;
-
-void main() {
-  vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vWorldPos = worldPos.xyz;
-  vNormalW = normalize(mat3(modelMatrix) * normal);
-  gl_Position = projectionMatrix * viewMatrix * worldPos;
-}
-`;
-
-const TOON_FRAGMENT_SHADER = /* glsl */ `
-precision highp float;
-
-uniform vec3 uColor;
-uniform vec3 uLightDir;
-uniform float uBands;
-uniform float uAmbient;
-uniform float uDitherStrength;
-uniform float uRimStrength;
-
-varying vec3 vNormalW;
-varying vec3 vWorldPos;
-
-float hash12(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
-}
-
-void main() {
-  vec3 normalW = normalize(vNormalW);
-  vec3 lightDir = normalize(-uLightDir);
-  float ndotl = max(dot(normalW, lightDir), 0.0);
-
-  // Subtle retro dither before quantization.
-  float dither = (hash12(floor(gl_FragCoord.xy)) - 0.5) * uDitherStrength;
-  float lit = clamp(ndotl + dither, 0.0, 1.0);
-
-  float levels = max(2.0, uBands);
-  float toon = floor(lit * (levels - 1.0) + 0.5) / (levels - 1.0);
-
-  vec3 viewDir = normalize(cameraPosition - vWorldPos);
-  float rim = pow(1.0 - max(dot(normalW, viewDir), 0.0), 2.0) * uRimStrength;
-
-  float lightTerm = clamp(uAmbient + toon * (1.0 - uAmbient), 0.0, 1.0);
-  vec3 color = uColor * lightTerm + vec3(rim);
-  gl_FragColor = vec4(color, 1.0);
-}
-`;
-
 const POST_VERTEX_SHADER = /* glsl */ `
 varying vec2 vUv;
 
@@ -159,6 +107,53 @@ void main() {
 }
 `;
 
+function makeGradientMap(bands: number): THREE.DataTexture {
+  const steps = Math.max(2, bands);
+  const data = new Uint8Array(steps * 4);
+
+  for (let i = 0; i < steps; i += 1) {
+    const t = i / (steps - 1);
+    const value = Math.round((0.18 + t * 0.82) * 255);
+    const offset = i * 4;
+    data[offset] = value;
+    data[offset + 1] = value;
+    data[offset + 2] = value;
+    data[offset + 3] = 255;
+  }
+
+  const gradient = new THREE.DataTexture(data, steps, 1, THREE.RGBAFormat);
+  gradient.minFilter = THREE.NearestFilter;
+  gradient.magFilter = THREE.NearestFilter;
+  gradient.generateMipmaps = false;
+  gradient.needsUpdate = true;
+  return gradient;
+}
+
+function applyRetroDither(material: THREE.MeshToonMaterial, strength: number) {
+  material.dithering = true;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uDitherStrength = { value: strength };
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <dithering_pars_fragment>",
+      `
+      #include <dithering_pars_fragment>
+      uniform float uDitherStrength;
+      `
+    );
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <dithering_fragment>",
+      `
+      vec2 bayer = mod(floor(gl_FragCoord.xy), 2.0);
+      float noise = ((bayer.x + bayer.y * 2.0) / 4.0 - 0.375) * uDitherStrength;
+      gl_FragColor.rgb = clamp(gl_FragColor.rgb + noise, 0.0, 1.0);
+      #include <dithering_fragment>
+      `
+    );
+  };
+  material.customProgramCacheKey = () => `retroDither_${strength.toFixed(3)}`;
+  material.needsUpdate = true;
+}
+
 const experiment: ExperimentModule = {
   id: "pixel-outline-post",
   title: "Pixel Outline Post",
@@ -166,49 +161,59 @@ const experiment: ExperimentModule = {
   init: ({ mount, width, height, dpr }) => {
     const renderer = makeRenderer(width, height, dpr);
     renderer.setPixelRatio(dpr);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setClearColor(0x25364d);
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x334963);
 
-    const camera = new THREE.PerspectiveCamera(42, width / height, 0.05, 20);
+    const camera = new THREE.PerspectiveCamera(40, width / height, 0.05, 20);
 
-    const lightDirection = new THREE.Vector3(0.5, 1.0, 0.65).normalize();
+    const keyLight = new THREE.DirectionalLight(0xfff1d4, 1.15);
+    keyLight.position.set(1.7, 2.4, 1.15);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.bias = -0.0002;
+    keyLight.shadow.normalBias = 0.02;
+    keyLight.shadow.camera.left = -1.8;
+    keyLight.shadow.camera.right = 1.8;
+    keyLight.shadow.camera.top = 1.3;
+    keyLight.shadow.camera.bottom = -1.3;
+    keyLight.shadow.camera.near = 0.5;
+    keyLight.shadow.camera.far = 6.0;
+    scene.add(keyLight);
 
-    const toonMaterials: THREE.ShaderMaterial[] = [];
-    const makeToonMaterial = (color: number, bands = 4, ditherStrength = 0.12, ambient = 0.24, rimStrength = 0.08) => {
-      const material = new THREE.ShaderMaterial({
-        uniforms: {
-          uColor: { value: new THREE.Color(color) },
-          uLightDir: { value: lightDirection.clone() },
-          uBands: { value: bands },
-          uAmbient: { value: ambient },
-          uDitherStrength: { value: ditherStrength },
-          uRimStrength: { value: rimStrength }
-        },
-        vertexShader: TOON_VERTEX_SHADER,
-        fragmentShader: TOON_FRAGMENT_SHADER
+    const fillLight = new THREE.DirectionalLight(0x8bb0ff, 0.55);
+    fillLight.position.set(-1.5, 1.1, -1.2);
+    scene.add(fillLight);
+
+    const rimLight = new THREE.DirectionalLight(0xff9fd2, 0.34);
+    rimLight.position.set(0.15, 1.5, -1.9);
+    scene.add(rimLight);
+
+    const hemiLight = new THREE.HemisphereLight(0x8ba5bf, 0x1a2533, 0.28);
+    scene.add(hemiLight);
+
+    const gradients: THREE.Texture[] = [];
+    const toonMaterials: THREE.MeshToonMaterial[] = [];
+    const makeToonMaterial = (color: number, bands: number, ditherStrength: number) => {
+      const gradientMap = makeGradientMap(bands);
+      gradients.push(gradientMap);
+      const material = new THREE.MeshToonMaterial({
+        color,
+        gradientMap,
+        toneMapped: true
       });
+      applyRetroDither(material, ditherStrength);
       toonMaterials.push(material);
       return material;
     };
 
     const geometries: THREE.BufferGeometry[] = [];
     const meshes: THREE.Mesh[] = [];
-    const shadowMeshes: THREE.Mesh[] = [];
-    const shadowMaterials: THREE.MeshBasicMaterial[] = [];
-    const spinData: Array<{
-      mesh: THREE.Mesh;
-      speed: number;
-      phase: number;
-      bob: number;
-      baseY: number;
-      shadow: THREE.Mesh | null;
-      shadowScaleX: number;
-      shadowScaleZ: number;
-      shadowOpacity: number;
-    }> = [];
+    const spinData: Array<{ mesh: THREE.Mesh; speed: number; phase: number; bob: number; baseY: number }> = [];
 
     const addMesh = (
       geometry: THREE.BufferGeometry,
@@ -217,112 +222,78 @@ const experiment: ExperimentModule = {
       speed: number,
       bob: number,
       phase: number,
-      shadow?: { scaleX: number; scaleZ: number; opacity: number }
+      castShadow: boolean
     ) => {
       geometries.push(geometry);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.copy(position);
+      mesh.castShadow = castShadow;
+      mesh.receiveShadow = true;
       scene.add(mesh);
       meshes.push(mesh);
-
-      let shadowMesh: THREE.Mesh | null = null;
-      if (shadow) {
-        const shadowGeometry = new THREE.PlaneGeometry(1, 1);
-        geometries.push(shadowGeometry);
-
-        const shadowMaterial = new THREE.MeshBasicMaterial({
-          color: 0x0a0f17,
-          transparent: true,
-          opacity: shadow.opacity,
-          depthWrite: false,
-          toneMapped: false
-        });
-        shadowMaterials.push(shadowMaterial);
-
-        shadowMesh = new THREE.Mesh(shadowGeometry, shadowMaterial);
-        shadowMesh.rotation.x = -Math.PI * 0.5;
-        shadowMesh.position.set(position.x, 0.002, position.z);
-        shadowMesh.scale.set(shadow.scaleX, shadow.scaleZ, 1.0);
-        shadowMesh.renderOrder = 1;
-        scene.add(shadowMesh);
-        meshes.push(shadowMesh);
-        shadowMeshes.push(shadowMesh);
-      }
-
-      spinData.push({
-        mesh,
-        speed,
-        phase,
-        bob,
-        baseY: position.y,
-        shadow: shadowMesh,
-        shadowScaleX: shadow?.scaleX ?? 0,
-        shadowScaleZ: shadow?.scaleZ ?? 0,
-        shadowOpacity: shadow?.opacity ?? 0
-      });
+      spinData.push({ mesh, speed, phase, bob, baseY: position.y });
       return mesh;
     };
 
-    const deskTopY = 0.0;
-
     const desk = addMesh(
       new THREE.BoxGeometry(2.2, 0.08, 1.2),
-      makeToonMaterial(0x8da7c7, 3, 0.04, 0.35, 0.0),
+      makeToonMaterial(0x8da7c7, 3, 0.02),
       new THREE.Vector3(0, -0.04, 0),
       0.0,
       0.0,
-      0.0
+      0.0,
+      false
     );
     desk.frustumCulled = false;
 
     const centerBox = addMesh(
       new THREE.BoxGeometry(0.22, 0.22, 0.22),
-      makeToonMaterial(0xf28a13, 4, 0.1, 0.22, 0.04),
+      makeToonMaterial(0xf28a13, 4, 0.08),
       new THREE.Vector3(0, 0.11, 0),
-      0.3,
+      0.32,
       0.008,
       0.2,
-      { scaleX: 0.34, scaleZ: 0.28, opacity: 0.3 }
+      true
     );
 
     addMesh(
       new THREE.TorusKnotGeometry(0.14, 0.045, 120, 18),
-      makeToonMaterial(0x74dcb6, 4, 0.14, 0.22, 0.1),
-      new THREE.Vector3(-0.36, 0.22, -0.05),
+      makeToonMaterial(0x74dcb6, 4, 0.1),
+      new THREE.Vector3(-0.34, 0.22, -0.08),
       -0.32,
       0.02,
       1.3,
-      { scaleX: 0.38, scaleZ: 0.3, opacity: 0.28 }
+      true
     );
 
     addMesh(
       new THREE.IcosahedronGeometry(0.13, 1),
-      makeToonMaterial(0xa6b7ff, 5, 0.1, 0.22, 0.06),
-      new THREE.Vector3(0.3, 0.18, 0.08),
-      0.26,
+      makeToonMaterial(0xa6b7ff, 5, 0.07),
+      new THREE.Vector3(0.32, 0.19, 0.09),
+      0.24,
       0.012,
       2.0,
-      { scaleX: 0.33, scaleZ: 0.27, opacity: 0.26 }
+      true
     );
 
     addMesh(
       new THREE.CapsuleGeometry(0.08, 0.14, 4, 12),
-      makeToonMaterial(0xd4db7c, 4, 0.1, 0.2, 0.06),
-      new THREE.Vector3(-0.1, 0.16, 0.28),
+      makeToonMaterial(0xd4db7c, 4, 0.06),
+      new THREE.Vector3(-0.1, 0.16, 0.27),
       -0.22,
       0.012,
       0.7,
-      { scaleX: 0.28, scaleZ: 0.23, opacity: 0.24 }
+      true
     );
 
     addMesh(
       new THREE.ConeGeometry(0.1, 0.26, 12),
-      makeToonMaterial(0xd67bc8, 4, 0.12, 0.2, 0.05),
-      new THREE.Vector3(0.22, 0.18, 0.26),
-      0.2,
+      makeToonMaterial(0xd67bc8, 4, 0.07),
+      new THREE.Vector3(0.23, 0.18, 0.25),
+      0.18,
       0.012,
       2.8,
-      { scaleX: 0.31, scaleZ: 0.24, opacity: 0.24 }
+      true
     );
 
     const colorTarget = new THREE.WebGLRenderTarget(1, 1, {
@@ -355,9 +326,9 @@ const experiment: ExperimentModule = {
         uPixelSize: { value: 4.0 },
         uDepthThreshold: { value: 0.12 },
         uNormalThreshold: { value: 0.24 },
-        uEdgeDarken: { value: 0.34 },
-        uDepthEdgeColor: { value: new THREE.Color(0x05070b) },
-        uNormalEdgeColor: { value: new THREE.Color(0x04050a) }
+        uEdgeDarken: { value: 0.38 },
+        uDepthEdgeColor: { value: new THREE.Color(0x03050a) },
+        uNormalEdgeColor: { value: new THREE.Color(0x05070d) }
       },
       vertexShader: POST_VERTEX_SHADER,
       fragmentShader: POST_FRAGMENT_SHADER
@@ -370,7 +341,7 @@ const experiment: ExperimentModule = {
     postScene.add(postQuad);
 
     const orbitTarget = centerBox.position.clone();
-    const orbitRadius = 1.08;
+    const orbitRadius = 1.1;
     const orbitHeight = 0.72;
     let orbitAngle = 0.0;
 
@@ -404,12 +375,17 @@ const experiment: ExperimentModule = {
     const clock = new THREE.Clock();
     let elapsed = 0;
     let raf = 0;
+
     const render = () => {
       const dt = clock.getDelta();
       elapsed += dt;
 
-      orbitAngle += dt * 0.34;
-      camera.position.set(Math.cos(orbitAngle) * orbitRadius, orbitHeight, Math.sin(orbitAngle) * orbitRadius);
+      orbitAngle += dt * 0.32;
+      camera.position.set(
+        Math.cos(orbitAngle) * orbitRadius,
+        orbitHeight + Math.sin(elapsed * 0.25) * 0.05,
+        Math.sin(orbitAngle) * orbitRadius
+      );
       camera.lookAt(orbitTarget);
 
       for (const item of spinData) {
@@ -419,42 +395,18 @@ const experiment: ExperimentModule = {
         if (item.bob > 0) {
           item.mesh.position.y = item.baseY + Math.sin(elapsed * 1.15 + item.phase) * item.bob;
         }
-        if (item.shadow) {
-          const heightAboveDesk = Math.max(0.0, item.mesh.position.y - deskTopY);
-          const drift = heightAboveDesk * 0.28;
-          item.shadow.position.set(
-            item.mesh.position.x - lightDirection.x * drift,
-            deskTopY + 0.002,
-            item.mesh.position.z - lightDirection.z * drift
-          );
-
-          const spread = 1.0 + heightAboveDesk * 1.5;
-          item.shadow.scale.set(item.shadowScaleX * spread, item.shadowScaleZ * spread, 1.0);
-
-          const shadowMaterial = item.shadow.material as THREE.MeshBasicMaterial;
-          shadowMaterial.opacity = Math.max(0.08, item.shadowOpacity - heightAboveDesk * 0.55);
-        }
       }
 
-      for (const shadow of shadowMeshes) {
-        shadow.visible = true;
-      }
       scene.overrideMaterial = null;
       renderer.setRenderTarget(colorTarget);
       renderer.clear();
       renderer.render(scene, camera);
 
-      for (const shadow of shadowMeshes) {
-        shadow.visible = false;
-      }
       scene.overrideMaterial = normalMaterial;
       renderer.setRenderTarget(normalTarget);
       renderer.clear();
       renderer.render(scene, camera);
       scene.overrideMaterial = null;
-      for (const shadow of shadowMeshes) {
-        shadow.visible = true;
-      }
 
       renderer.setRenderTarget(null);
       renderer.clear();
@@ -479,9 +431,11 @@ const experiment: ExperimentModule = {
       for (const material of toonMaterials) {
         material.dispose();
       }
-      for (const material of shadowMaterials) {
-        material.dispose();
+      for (const gradient of gradients) {
+        gradient.dispose();
       }
+
+      scene.remove(keyLight, fillLight, rimLight, hemiLight);
 
       normalMaterial.dispose();
       colorTarget.dispose();
