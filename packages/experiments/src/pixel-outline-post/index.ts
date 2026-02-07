@@ -234,22 +234,21 @@ const experiment: ExperimentModule = {
     });
     observer.observe(mount);
 
-    // Compute camera framing from actual subject bounds so composition is deterministic.
-    const subjectBounds = new THREE.Box3();
-    subjectBounds.expandByObject(knot);
-    subjectBounds.expandByObject(box);
-    subjectBounds.expandByObject(sphere);
+    // Focus camera framing on knot + box as requested.
+    const focusBounds = new THREE.Box3();
+    focusBounds.expandByObject(knot);
+    focusBounds.expandByObject(box);
 
-    const subjectCenter = subjectBounds.getCenter(new THREE.Vector3());
-    const subjectSize = subjectBounds.getSize(new THREE.Vector3());
-    const subjectRadius = Math.max(subjectSize.x, subjectSize.y, subjectSize.z) * 0.5;
+    const focusCenter = focusBounds.getCenter(new THREE.Vector3());
+    const focusSize = focusBounds.getSize(new THREE.Vector3());
+    const focusRadius = Math.max(focusSize.x, focusSize.y, focusSize.z) * 0.5;
 
     // Fit distance that respects both vertical and horizontal FOV.
     const vFov = THREE.MathUtils.degToRad(camera.fov);
     const hFov = 2 * Math.atan(Math.tan(vFov * 0.5) * camera.aspect);
-    const fitV = (subjectSize.y * 0.5) / Math.tan(vFov * 0.5);
-    const fitH = (subjectSize.x * 0.5) / Math.tan(hFov * 0.5);
-    const fitD = subjectSize.z * 0.75;
+    const fitV = (focusSize.y * 0.5) / Math.tan(vFov * 0.5);
+    const fitH = (focusSize.x * 0.5) / Math.tan(hFov * 0.5);
+    const fitD = focusSize.z * 0.75;
     const orbitRadius = Math.max(fitV, fitH, fitD) * 2.15;
 
     const baseAzimuth = THREE.MathUtils.degToRad(38); // Right side.
@@ -267,11 +266,11 @@ const experiment: ExperimentModule = {
       const elevation = baseElevation + Math.sin(t * 0.17) * elevationArc;
       const planar = Math.cos(elevation) * orbitRadius;
       camera.position.set(
-        subjectCenter.x + Math.cos(azimuth) * planar,
-        subjectCenter.y + Math.sin(elevation) * orbitRadius,
-        subjectCenter.z + Math.sin(azimuth) * planar
+        focusCenter.x + Math.cos(azimuth) * planar,
+        focusCenter.y + Math.sin(elevation) * orbitRadius,
+        focusCenter.z + Math.sin(azimuth) * planar
       );
-      camera.lookAt(subjectCenter.x + subjectRadius * 0.12, subjectCenter.y - subjectRadius * 0.22, subjectCenter.z);
+      camera.lookAt(focusCenter.x + focusRadius * 0.1, focusCenter.y - focusRadius * 0.2, focusCenter.z);
 
       knot.rotation.x = t * 0.25;
       knot.rotation.y = -t * 0.38;
