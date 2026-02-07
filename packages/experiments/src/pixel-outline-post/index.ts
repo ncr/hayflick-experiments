@@ -15,6 +15,7 @@ const POST_FRAGMENT_SHADER = /* glsl */ `
 precision highp float;
 
 uniform sampler2D uColorTex;
+uniform sampler2D uNoShadowColorTex;
 uniform sampler2D uDepthTex;
 uniform sampler2D uNormalTex;
 
@@ -30,6 +31,7 @@ uniform float uOutlineLightResponse;
 uniform float uOutlineSaturationBoost;
 uniform float uOutlineProminence;
 uniform float uPostDitherStrength;
+uniform float uShadowDitherStrength;
 
 varying vec2 vUv;
 
@@ -85,6 +87,7 @@ void main() {
   vec2 dUv = clampUv(cUv + vec2(0.0, blockStep.y), texel);
 
   vec3 c = texture2D(uColorTex, cUv).rgb;
+  vec3 cNoShadow = texture2D(uNoShadowColorTex, cUv).rgb;
 
   float dC = texture2D(uDepthTex, cUv).r;
   float dL = texture2D(uDepthTex, lUv).r;
@@ -140,6 +143,15 @@ void main() {
   vec3 darkened = c * uEdgeDarken;
   vec3 outlined = mix(darkened, litEdgeColor, uOutlineProminence);
   vec3 outColor = mix(c, outlined, edge);
+
+  // Dither only the shadow contribution so penumbra transitions read smoother.
+  float lShadow = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float lNoShadow = dot(cNoShadow, vec3(0.2126, 0.7152, 0.0722));
+  float shadowAmount = clamp((lNoShadow - lShadow) / max(0.001, lNoShadow), 0.0, 1.0);
+  float shadowMask = smoothstep(0.03, 0.95, shadowAmount) * (1.0 - edge * 0.85);
+  float shadowDither = clamp(shadowAmount + bayer4x4(block) / 16.0 * uShadowDitherStrength - 0.5 * uShadowDitherStrength, 0.0, 1.0);
+  vec3 shadowDithered = mix(cNoShadow, outColor, shadowDither);
+  outColor = mix(outColor, shadowDithered, shadowMask);
 
   vec2 blockCoord = floor(vUv / blockStep);
   float bayer = (bayer4x4(blockCoord) + 0.5) / 16.0 - 0.5;
@@ -390,6 +402,14 @@ const experiment: ExperimentModule = {
     colorTarget.texture.generateMipmaps = false;
     colorTarget.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
 
+    const noShadowColorTarget = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      stencilBuffer: false
+    });
+    noShadowColorTarget.texture.generateMipmaps = false;
+
     const normalTarget = new THREE.WebGLRenderTarget(1, 1, {
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
@@ -403,6 +423,7 @@ const experiment: ExperimentModule = {
     const postMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uColorTex: { value: colorTarget.texture },
+        uNoShadowColorTex: { value: noShadowColorTarget.texture },
         uDepthTex: { value: colorTarget.depthTexture },
         uNormalTex: { value: normalTarget.texture },
         uResolution: { value: new THREE.Vector2(1, 1) },
@@ -416,7 +437,8 @@ const experiment: ExperimentModule = {
         uOutlineLightResponse: { value: 1.0 },
         uOutlineSaturationBoost: { value: 1.9 },
         uOutlineProminence: { value: 0.98 },
-        uPostDitherStrength: { value: 0.0 }
+        uPostDitherStrength: { value: 0.0 },
+        uShadowDitherStrength: { value: 0.22 }
       },
       vertexShader: POST_VERTEX_SHADER,
       fragmentShader: POST_FRAGMENT_SHADER
@@ -445,6 +467,7 @@ const experiment: ExperimentModule = {
       const targetWidth = Math.max(1, Math.floor(drawingBufferSize.x));
       const targetHeight = Math.max(1, Math.floor(drawingBufferSize.y));
       colorTarget.setSize(targetWidth, targetHeight);
+      noShadowColorTarget.setSize(targetWidth, targetHeight);
       normalTarget.setSize(targetWidth, targetHeight);
       postMaterial.uniforms.uResolution.value.set(targetWidth, targetHeight);
     };
@@ -487,6 +510,13 @@ const experiment: ExperimentModule = {
       renderer.clear();
       renderer.render(scene, camera);
 
+      const baseShadowIntensity = keyLight.shadow.intensity;
+      keyLight.shadow.intensity = 0.0;
+      renderer.setRenderTarget(noShadowColorTarget);
+      renderer.clear();
+      renderer.render(scene, camera);
+      keyLight.shadow.intensity = baseShadowIntensity;
+
       scene.overrideMaterial = normalMaterial;
       renderer.setRenderTarget(normalTarget);
       renderer.clear();
@@ -524,6 +554,7 @@ const experiment: ExperimentModule = {
 
       normalMaterial.dispose();
       colorTarget.dispose();
+      noShadowColorTarget.dispose();
       normalTarget.dispose();
 
       postQuad.geometry.dispose();
