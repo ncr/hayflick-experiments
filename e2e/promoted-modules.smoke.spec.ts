@@ -43,6 +43,8 @@ test.describe("promoted editor/game browser smoke", () => {
     const stats = page.locator('[data-testid="editor-game-ecs-stats"]');
     const status = page.locator('[data-testid="editor-game-ecs-status"]');
 
+    await expect(stats).toContainText("Mode: GAME");
+    await page.keyboard.press("Escape");
     await expect(stats).toContainText("Mode: EDITOR");
     await page.keyboard.press("F5");
     await expect(stats).toContainText("Mode: GAME");
