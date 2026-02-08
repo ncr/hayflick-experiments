@@ -276,3 +276,17 @@ Preventive checklist:
 - Derive wall/window physics colliders from structure edge segments, not blocked-cell adjacency.
 - Keep door colliders independent and toggle-able so opening doors actually creates a passable aperture.
 - Validate collider dimensions (`w` or `h` thin) in bake tests for wall segments.
+
+## 2026-02-08 - Promoted physics package lacked coverage gates for branch-heavy edge cases
+Root cause:
+- `@common/physics-rapier` had only a small happy-path test set and no package-level coverage thresholds.
+- Branches around fixed-step clamping, missing body/collider guards, and explicit body/collider controls were untested.
+
+Detection signal:
+- Coverage report showed low branch coverage (~40%) in `packages/common-physics-rapier/src/index.ts`.
+- Repeated movement/collision regressions appeared while iterating on editor-game integration.
+
+Preventive checklist:
+- Keep `vitest.config.ts` coverage thresholds in every promoted package, including newly promoted modules.
+- Add tests for guard/edge branches (dead entities, missing transforms/colliders, invalid handles, large `dt` clamping), not only movement happy paths.
+- Add regression assertions for collider shape/orientation in `@common/level-editor` bake tests.

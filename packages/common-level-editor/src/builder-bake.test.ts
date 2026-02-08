@@ -12,6 +12,7 @@ import {
   isLevelBuilderStructureKind,
   levelBuilderDoorPlacementIdFromNodes,
   parseBakedLevel,
+  serializeBakedLevel,
   type LevelBuilderBakeInput
 } from "./builder-bake";
 
@@ -107,6 +108,42 @@ describe("bakeLevelForEcs", () => {
       placementId: levelBuilderDoorPlacementIdFromNodes(2, 1, 3, 1),
       closed: true
     });
+  });
+
+  it("deduplicates reversed segments and preserves thin edge collider orientation", () => {
+    const bake = bakeLevelForEcs(
+      createInput([
+        { kind: "wall", ax: 1, az: 1, bx: 1, bz: 3 },
+        { kind: "wall", ax: 1, az: 3, bx: 1, bz: 1 },
+        { kind: "door", doorState: "closed", ax: 2, az: 2, bx: 3, bz: 2 },
+        { kind: "door", doorState: "closed", ax: 3, az: 2, bx: 2, bz: 2 }
+      ])
+    );
+
+    const rectColliders = bake.colliderDescs.filter((desc) => desc.kind === "rect");
+    const doorColliders = bake.colliderDescs.filter((desc) => desc.kind === "door");
+
+    expect(rectColliders).toHaveLength(1);
+    expect(doorColliders).toHaveLength(1);
+
+    expect(rectColliders[0]).toMatchObject({
+      kind: "rect",
+      x: 1,
+      y: 2,
+      h: 2,
+      layer: "solid"
+    });
+    expect(rectColliders[0]?.w).toBeLessThan(0.2);
+
+    expect(doorColliders[0]).toMatchObject({
+      kind: "door",
+      placementId: levelBuilderDoorPlacementIdFromNodes(2, 2, 3, 2),
+      x: 2.5,
+      y: 2,
+      w: 1,
+      closed: true
+    });
+    expect(doorColliders[0]?.h).toBeLessThan(0.2);
   });
 
   it("creates a mutable LevelResource aligned with bake grid origin/tile size", () => {
@@ -263,7 +300,32 @@ describe("parseBakedLevel", () => {
       })
     ).toBeNull();
 
+    expect(
+      parseBakedLevel({
+        schemaVersion: 3,
+        level: { id: "bad", version: 1 },
+        grid: { tiles: 4, tileSize: 1, origin: -2 },
+        terrain: { defaultGround: "grass", overrides: [] },
+        structures: [],
+        blockedCells: [],
+        colliderDescs: [{ kind: "door", placementId: "door:1,1|2,1", x: 1.5, y: 1, w: 1, h: 0.18, closed: false }]
+      })
+    ).toBeNull();
+
     expect(deserializeBakedLevel("{not-json")).toBeNull();
+  });
+
+  it("round-trips baked payloads via serialize/deserialize helpers", () => {
+    const bake = bakeLevelForEcs(
+      createInput([
+        { kind: "window", ax: 1, az: 1, bx: 1, bz: 2 },
+        { kind: "door", doorState: "closed", ax: 2, az: 2, bx: 3, bz: 2 }
+      ])
+    );
+
+    const json = serializeBakedLevel(bake);
+    const parsed = deserializeBakedLevel(json);
+    expect(parsed).toEqual(bake);
   });
 });
 
