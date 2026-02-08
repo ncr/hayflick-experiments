@@ -16,6 +16,7 @@ import {
   addDoorPlacement,
   bakeTileLevel,
   cloneLevelModel,
+  createEditorHud,
   createDefaultLevelModel,
   findDoorPlacementAt,
   getTileAt,
@@ -420,106 +421,25 @@ const experiment: ExperimentModule = {
     gameplayGroup.add(playerMesh);
     playerMesh.visible = false;
 
-    const hud = document.createElement("div");
-    hud.style.position = "absolute";
-    hud.style.inset = "12px";
-    hud.style.display = "flex";
-    hud.style.justifyContent = "space-between";
-    hud.style.alignItems = "flex-start";
-    hud.style.pointerEvents = "none";
-    hud.style.fontFamily = "\"IBM Plex Sans\", \"Segoe UI\", sans-serif";
-    hud.style.color = "#daecf9";
-    hud.style.gap = "10px";
-    mount.appendChild(hud);
+    const hud = createEditorHud({
+      mount,
+      title: "Editor + Game (ECS)",
+      description: "Build LevelModel in EDITOR, bake to LevelResource, then run ECS gameplay in GAME mode.",
+      hints:
+        "EDITOR: paint with LMB drag, Ctrl+S saves LevelModel. GAME: click doors to toggle, K saves game, L loads game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.",
+      focusTarget: renderer.domElement,
+      leftPanelWidth: "min(430px, 58vw)",
+      rightPanelMinWidth: "300px",
+      statsTestId: "editor-game-ecs-stats",
+      statusTestId: "editor-game-ecs-status"
+    });
 
-    const panelStyle = (panel: HTMLDivElement): void => {
-      panel.style.pointerEvents = "auto";
-      panel.style.background = "rgba(8, 15, 24, 0.78)";
-      panel.style.border = "1px solid rgba(115, 148, 175, 0.42)";
-      panel.style.borderRadius = "10px";
-      panel.style.padding = "10px";
-      panel.style.display = "flex";
-      panel.style.flexDirection = "column";
-      panel.style.gap = "8px";
-      panel.style.backdropFilter = "blur(6px)";
-    };
-
-    const leftPanel = document.createElement("div");
-    panelStyle(leftPanel);
-    leftPanel.style.width = "min(430px, 58vw)";
-    hud.appendChild(leftPanel);
-
-    const rightPanel = document.createElement("div");
-    panelStyle(rightPanel);
-    rightPanel.style.minWidth = "300px";
-    hud.appendChild(rightPanel);
-
-    const title = document.createElement("div");
-    title.textContent = "Editor + Game (ECS)";
-    title.style.fontWeight = "600";
-    title.style.letterSpacing = "0.02em";
-    leftPanel.appendChild(title);
-
-    const subtitle = document.createElement("div");
-    subtitle.textContent = "Build LevelModel in EDITOR, bake to LevelResource, then run ECS gameplay in GAME mode.";
-    subtitle.style.fontSize = "12px";
-    subtitle.style.lineHeight = "1.35";
-    subtitle.style.opacity = "0.9";
-    leftPanel.appendChild(subtitle);
-
-    function makeRow(label: string): HTMLDivElement {
-      const row = document.createElement("div");
-      row.style.display = "grid";
-      row.style.gridTemplateColumns = "72px 1fr";
-      row.style.alignItems = "center";
-      row.style.gap = "8px";
-
-      const caption = document.createElement("span");
-      caption.textContent = label;
-      caption.style.fontSize = "12px";
-      caption.style.opacity = "0.85";
-      row.appendChild(caption);
-
-      const controls = document.createElement("div");
-      controls.style.display = "flex";
-      controls.style.flexWrap = "wrap";
-      controls.style.gap = "6px";
-      row.appendChild(controls);
-
-      leftPanel.appendChild(row);
-      return controls;
-    }
-
-    function makeButton(label: string, onClick: () => void): HTMLButtonElement {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = label;
-      button.style.border = "1px solid rgba(118, 150, 178, 0.62)";
-      button.style.background = "rgba(17, 30, 42, 0.95)";
-      button.style.color = "#daecf9";
-      button.style.padding = "4px 8px";
-      button.style.borderRadius = "8px";
-      button.style.fontSize = "12px";
-      button.style.cursor = "pointer";
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        onClick();
-        renderer.domElement.focus({ preventScroll: true });
-      });
-      return button;
-    }
-
-    function setButtonActive(button: HTMLButtonElement, active: boolean): void {
-      if (active) {
-        button.style.background = "rgba(69, 134, 184, 0.92)";
-        button.style.borderColor = "rgba(150, 199, 233, 0.94)";
-        button.style.color = "#f2fbff";
-      } else {
-        button.style.background = "rgba(17, 30, 42, 0.95)";
-        button.style.borderColor = "rgba(118, 150, 178, 0.62)";
-        button.style.color = "#daecf9";
-      }
-    }
+    const makeRow = hud.createRow;
+    const makeButton = hud.createButton;
+    const setButtonActive = hud.setButtonActive;
+    const stats = hud.stats;
+    const status = hud.status;
+    const hints = hud.hints;
 
     const modeButtons = new Map<Mode, HTMLButtonElement>();
     const brushButtons = new Map<EditorBrush, HTMLButtonElement>();
@@ -589,27 +509,8 @@ const experiment: ExperimentModule = {
     });
     toolsRow.append(saveLevelButton, saveGameButton, loadGameButton);
 
-    const stats = document.createElement("div");
-    stats.dataset.testid = "editor-game-ecs-stats";
-    stats.style.fontSize = "12px";
-    stats.style.lineHeight = "1.4";
-    stats.style.color = "#c8deee";
-    rightPanel.appendChild(stats);
-
-    const status = document.createElement("div");
-    status.dataset.testid = "editor-game-ecs-status";
-    status.style.fontSize = "12px";
-    status.style.lineHeight = "1.35";
-    status.style.color = "#e3f3ff";
-    rightPanel.appendChild(status);
-
-    const hints = document.createElement("div");
-    hints.style.fontSize = "12px";
-    hints.style.lineHeight = "1.35";
-    hints.style.opacity = "0.93";
     hints.textContent =
       "EDITOR: paint with LMB drag, Ctrl+S saves LevelModel. GAME: click doors to toggle, K saves game, L loads game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
-    rightPanel.appendChild(hints);
 
     let levelModel = createDefaultLevelModel();
     const savedLevelModelJson = localStorage.getItem(LEVEL_MODEL_STORAGE_KEY);
@@ -1632,9 +1533,7 @@ const experiment: ExperimentModule = {
 
       renderer.dispose();
 
-      if (hud.parentElement) {
-        hud.parentElement.removeChild(hud);
-      }
+      hud.destroy();
 
       if (renderer.domElement.parentElement) {
         renderer.domElement.parentElement.removeChild(renderer.domElement);

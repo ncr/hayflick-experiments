@@ -84,3 +84,14 @@ Detection signal:
 Preventive checklist:
 - In canvas-based E2E tests, focus with `canvas.focus()` and interact in unobstructed stage regions.
 - Add stable `data-testid` hooks for HUD status/stats assertions instead of relying on fragile text traversal.
+
+## 2026-02-08 - Editor UI drifted between standalone and ECS-integrated experiments
+Root cause:
+- HUD/panel/button UI was duplicated in each experiment and evolved independently.
+
+Detection signal:
+- User observed large UX/style mismatch between `level-builder` and `editor-game-ecs`.
+
+Preventive checklist:
+- Keep editor HUD construction in shared `@common/level-editor` and consume it from all editor experiments.
+- Limit experiments to mode/feature-specific controls and state logic; avoid re-implementing shared UI scaffolding.

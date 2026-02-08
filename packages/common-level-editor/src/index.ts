@@ -3,3 +3,4 @@ export * from "./grid-level";
 export * from "./bake";
 export * from "./builder-bake";
 export * from "./autotile";
+export * from "./editor-hud";

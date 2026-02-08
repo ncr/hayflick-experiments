@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import { autoTileRotationRadians, describeAutoTile, type AutoTileShape } from "@common/level-editor";
+import {
+  autoTileRotationRadians,
+  createEditorHud,
+  describeAutoTile,
+  type AutoTileShape
+} from "@common/level-editor";
 import { makeRenderer } from "@common/render";
 import type { LevelResource } from "@common/gameplay";
 import type { ExperimentModule } from "../runtime/types";
@@ -575,108 +580,26 @@ const experiment: ExperimentModule = {
     const tempScale = new THREE.Vector3(1, 1, 1);
     const upAxis = new THREE.Vector3(0, 1, 0);
 
-    const hud = document.createElement("div");
-    hud.style.position = "absolute";
-    hud.style.inset = "12px";
-    hud.style.display = "flex";
-    hud.style.justifyContent = "space-between";
-    hud.style.alignItems = "flex-start";
-    hud.style.pointerEvents = "none";
-    hud.style.fontFamily = "\"IBM Plex Sans\", \"Segoe UI\", sans-serif";
-    hud.style.color = "#d8e8f4";
-    hud.style.gap = "12px";
-    mount.appendChild(hud);
+    const hud = createEditorHud({
+      mount,
+      title: "Level Builder",
+      description:
+        "Isometric room + terrain editor: seeded grass rect fill, autotiled road/sidewalk paint, building footprint rects, and ECS bake-ready export.",
+      hints:
+        "LMB drag: paint  •  Shift+drag: grass fill rect  •  G: grass rect  •  9: footprint rect  •  7/8: road/sidewalk  •  B: bake",
+      focusTarget: renderer.domElement,
+      leftPanelWidth: "min(390px, 56vw)",
+      rightPanelMinWidth: "260px",
+      statsTestId: "level-builder-stats",
+      statusTestId: "level-builder-status"
+    });
 
-    const panelStyle = (panel: HTMLDivElement) => {
-      panel.style.background = "rgba(9, 17, 25, 0.76)";
-      panel.style.border = "1px solid rgba(121, 153, 177, 0.45)";
-      panel.style.borderRadius = "10px";
-      panel.style.padding = "10px";
-      panel.style.pointerEvents = "auto";
-      panel.style.backdropFilter = "blur(6px)";
-      panel.style.display = "flex";
-      panel.style.flexDirection = "column";
-      panel.style.gap = "8px";
-    };
-
-    const leftPanel = document.createElement("div");
-    panelStyle(leftPanel);
-    leftPanel.style.width = "min(390px, 56vw)";
-    hud.appendChild(leftPanel);
-
-    const rightPanel = document.createElement("div");
-    panelStyle(rightPanel);
-    rightPanel.style.minWidth = "260px";
-    rightPanel.style.alignItems = "stretch";
-    hud.appendChild(rightPanel);
-
-    const title = document.createElement("div");
-    title.textContent = "Level Builder";
-    title.style.fontWeight = "600";
-    title.style.letterSpacing = "0.02em";
-    leftPanel.appendChild(title);
-
-    const helper = document.createElement("div");
-    helper.textContent =
-      "Isometric room + terrain editor: seeded grass rect fill, autotiled road/sidewalk paint, building footprint rects, and ECS bake-ready export.";
-    helper.style.fontSize = "12px";
-    helper.style.lineHeight = "1.3";
-    helper.style.color = "rgba(207, 225, 240, 0.88)";
-    leftPanel.appendChild(helper);
-
-    function makeRow(label: string): HTMLDivElement {
-      const row = document.createElement("div");
-      row.style.display = "grid";
-      row.style.gridTemplateColumns = "72px 1fr";
-      row.style.alignItems = "center";
-      row.style.gap = "8px";
-
-      const caption = document.createElement("span");
-      caption.textContent = label;
-      caption.style.fontSize = "12px";
-      caption.style.opacity = "0.82";
-      row.appendChild(caption);
-
-      const controls = document.createElement("div");
-      controls.style.display = "flex";
-      controls.style.flexWrap = "wrap";
-      controls.style.gap = "6px";
-      row.appendChild(controls);
-
-      leftPanel.appendChild(row);
-      return controls;
-    }
-
-    function makeButton(label: string, onClick: () => void): HTMLButtonElement {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = label;
-      button.style.border = "1px solid rgba(124, 155, 178, 0.62)";
-      button.style.background = "rgba(20, 35, 49, 0.92)";
-      button.style.color = "#d8e8f4";
-      button.style.padding = "4px 8px";
-      button.style.borderRadius = "8px";
-      button.style.cursor = "pointer";
-      button.style.fontSize = "12px";
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        onClick();
-        renderer.domElement.focus();
-      });
-      return button;
-    }
-
-    function setButtonActive(button: HTMLButtonElement, active: boolean): void {
-      if (active) {
-        button.style.background = "rgba(78, 136, 177, 0.9)";
-        button.style.borderColor = "rgba(150, 197, 229, 0.95)";
-        button.style.color = "#f3fbff";
-      } else {
-        button.style.background = "rgba(20, 35, 49, 0.92)";
-        button.style.borderColor = "rgba(124, 155, 178, 0.62)";
-        button.style.color = "#d8e8f4";
-      }
-    }
+    const makeRow = hud.createRow;
+    const makeButton = hud.createButton;
+    const setButtonActive = hud.setButtonActive;
+    const stats = hud.stats;
+    const bakeStatus = hud.status;
+    const controlsHint = hud.hints;
 
     function getCurrentBrushAndMode(): { brush: BrushType; mode: ToolMode } {
       if (dragState && dragState.mode === "paint") {
@@ -1430,27 +1353,8 @@ const experiment: ExperimentModule = {
     });
     bakeRow.append(bakeButton);
 
-    const stats = document.createElement("div");
-    stats.dataset.testid = "level-builder-stats";
-    stats.style.fontSize = "12px";
-    stats.style.lineHeight = "1.4";
-    stats.style.color = "#c9dceb";
-    rightPanel.appendChild(stats);
-
-    const bakeStatus = document.createElement("div");
-    bakeStatus.dataset.testid = "level-builder-status";
-    bakeStatus.style.fontSize = "12px";
-    bakeStatus.style.lineHeight = "1.35";
-    bakeStatus.style.color = "#d8e8f4";
-    rightPanel.appendChild(bakeStatus);
-
-    const controlsHint = document.createElement("div");
-    controlsHint.style.fontSize = "12px";
-    controlsHint.style.lineHeight = "1.35";
-    controlsHint.style.opacity = "0.92";
     controlsHint.textContent =
       "LMB drag: paint  •  Shift+drag: grass fill rect  •  G: grass rect  •  9: footprint rect  •  7/8: road/sidewalk  •  B: bake";
-    rightPanel.appendChild(controlsHint);
 
     function syncHud(): void {
       toolButtons.forEach((button, mode) => {
@@ -2105,9 +2009,7 @@ const experiment: ExperimentModule = {
       renderer.domElement.removeEventListener("keydown", handleKeyDown);
       renderer.domElement.removeEventListener("keyup", handleKeyUp);
 
-      if (hud.parentElement) {
-        hud.parentElement.removeChild(hud);
-      }
+      hud.destroy();
 
       clearGroup(groundGroup);
       clearGroup(structuresGroup);
