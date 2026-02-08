@@ -108,7 +108,7 @@ describe("createEditorHud", () => {
     const button = hud.createButton("Test", () => {
       clicked += 1;
     });
-    row.appendChild(button as unknown as FakeElement);
+    (row as unknown as FakeElement).appendChild(button as unknown as FakeElement);
 
     hud.setButtonActive(button, true);
     expect((button as unknown as FakeElement).style.background).toContain("78, 136, 177");
