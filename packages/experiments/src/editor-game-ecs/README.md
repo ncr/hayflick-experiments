@@ -32,5 +32,5 @@ This experiment now uses `@common/level-editor` for:
 - Shared editor structure meshes (walls/windows/doors) so visuals stay consistent with level-builder.
 
 ## Save Keys
-- Level model: `editor_game_ecs_level_model_v1`
-- Game save: `editor_game_ecs_game_save_v1`
+- Level model: `editor_game_ecs_level_model_v2`
+- Game save: `editor_game_ecs_game_save_v2`

@@ -42,7 +42,7 @@ test.describe("promoted editor/game browser smoke", () => {
     await expect(stats).toContainText("Mode: GAME");
 
     await page.keyboard.press("KeyK");
-    await expect(status).toContainText("Saved game to localStorage key: editor_game_ecs_game_save_v1");
+    await expect(status).toContainText("Saved game to localStorage key: editor_game_ecs_game_save_v2");
 
     await page.keyboard.press("KeyL");
     await expect(status).toContainText("Loaded game save and restored player + door states by placementId.");

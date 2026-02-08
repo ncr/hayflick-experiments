@@ -152,3 +152,14 @@ Preventive checklist:
 - For tile occupancy walls, generate segments only on transitions from blocked -> non-blocked (N/E/S/W boundary extraction).
 - Treat door cells as openings in the wall boundary pass.
 - Add node-based join posts from segment adjacency so corners/T/crosses remain consistent.
+
+## 2026-02-08 - Default mockup changes can be hidden by persisted localStorage state
+Root cause:
+- Experiment startup restored prior editor/game saves, so new default layouts were not visible.
+
+Detection signal:
+- User reported default scene still not matching requested structure after code changes.
+
+Preventive checklist:
+- When intentionally redefining startup mockups, bump localStorage keys (or add migration/override logic).
+- Keep README save-key docs aligned with code constants.

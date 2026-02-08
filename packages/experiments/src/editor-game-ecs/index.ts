@@ -129,8 +129,8 @@ type GameSave = {
   doors: GameSaveDoor[];
 };
 
-const LEVEL_MODEL_STORAGE_KEY = "editor_game_ecs_level_model_v1";
-const GAME_SAVE_STORAGE_KEY = "editor_game_ecs_game_save_v1";
+const LEVEL_MODEL_STORAGE_KEY = "editor_game_ecs_level_model_v2";
+const GAME_SAVE_STORAGE_KEY = "editor_game_ecs_game_save_v2";
 const GAME_SAVE_SCHEMA_VERSION = 1;
 const EDITOR_LEVEL_SCHEMA_VERSION = 2;
 
@@ -417,11 +417,11 @@ function createMockupTerrainOverrides(levelModel: LevelModel, seed: number): Map
   };
 
   // Room floors.
-  fillRect(4, 6, 8, 10, "floor");
-  fillRect(10, 6, 14, 10, "floor");
+  fillRect(5, 7, 8, 10, "floor");
+  fillRect(10, 7, 13, 10, "floor");
 
-  // Exterior path leading to the outside door at (6,5).
-  for (let y = 0; y <= 4; y += 1) {
+  // Exterior path leading to the outside door at (6,6).
+  for (let y = 0; y <= 5; y += 1) {
     setCell(6, y, "sidewalk");
   }
   for (let x = 5; x <= 7; x += 1) {

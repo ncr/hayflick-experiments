@@ -62,8 +62,8 @@ export function createDefaultLevelModel(): LevelModel {
   };
 
   // Two-room mockup with a shared wall.
-  drawRoom(3, 5, 9, 11);
-  drawRoom(9, 5, 15, 11);
+  drawRoom(4, 6, 9, 11);
+  drawRoom(9, 6, 14, 11);
 
   // Door between rooms (shared wall) and one exterior door.
   addDoorPlacement(model, {
@@ -78,7 +78,7 @@ export function createDefaultLevelModel(): LevelModel {
     id: "door-2",
     kind: "door",
     x: 6,
-    y: 5,
+    y: 6,
     rot: 0,
     data: { open: false }
   });

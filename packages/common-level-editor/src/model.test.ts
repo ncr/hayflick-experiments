@@ -67,4 +67,19 @@ describe("model", () => {
     expect(parseLevelModel({ width: 2, height: 2, tiles: [0], placements: [] })).toBeNull();
     expect(parseLevelModel({ width: 2, height: 2, tiles: [0, 0, 0, 0], placements: [{ id: 1 }] })).toBeNull();
   });
+
+  it("ships a two-room default mockup with shared-wall and exterior doors", () => {
+    const level = createDefaultLevelModel();
+
+    expect(level.width).toBe(18);
+    expect(level.height).toBe(18);
+
+    // Shared wall and connecting door between the two rooms.
+    expect(getTileAt(level, 9, 8)).toBe(TILE_WALL);
+    expect(findDoorPlacementAt(level, 9, 8)?.id).toBe("door-1");
+
+    // Exterior door from one room.
+    expect(getTileAt(level, 6, 6)).toBe(TILE_WALL);
+    expect(findDoorPlacementAt(level, 6, 6)?.id).toBe("door-2");
+  });
 });
