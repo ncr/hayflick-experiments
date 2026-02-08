@@ -6,6 +6,7 @@ import { meta as shaderPlaygroundMeta } from "./shader-playground/meta";
 import { meta as ecsFoundationMeta } from "./ecs-foundation/meta";
 import { meta as editorGameEcsMeta } from "./editor-game-ecs/meta";
 import { meta as levelBuilderMeta } from "./level-builder/meta";
+import { meta as physicsRapierMeta } from "./physics-rapier/meta";
 import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
@@ -21,6 +22,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...levelBuilderMeta,
     load: () => import("./level-builder/index")
+  },
+  {
+    ...physicsRapierMeta,
+    load: () => import("./physics-rapier/index")
   },
   {
     ...pixelOutlinePostMeta,
