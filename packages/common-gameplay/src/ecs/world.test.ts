@@ -6,6 +6,7 @@ import { World } from "./world";
 describe("World", () => {
   it("creates, queries, and destroys entities with component cleanup", () => {
     const world = new World();
+    world.destroyEntity(999);
     const eid = world.createEntity();
 
     world.transforms.add(eid, { x: 1, y: 2 });
@@ -54,6 +55,38 @@ describe("World", () => {
     expect(restored.level.id).toBe("save-level");
     expect(restored.level.version).toBe(7);
     expect(restored.time.t).toBe(9.5);
+  });
+
+  it("delegates save/load wrappers to localStorage helpers", () => {
+    const storage = new Map<string, string>();
+    const localStorageMock = {
+      getItem(key: string) {
+        return storage.has(key) ? storage.get(key)! : null;
+      },
+      setItem(key: string, value: string) {
+        storage.set(key, value);
+      }
+    };
+    (globalThis as { localStorage: typeof localStorageMock }).localStorage = localStorageMock;
+
+    const world = new World({
+      level: createOpenLevel("wrapper", 1)
+    });
+    const eid = world.createEntity();
+    world.transforms.add(eid, { x: 2, y: 3 });
+    world.playerTags.add(eid, true);
+    world.time.t = 7;
+
+    world.saveToLocalStorage("wrapper-key");
+
+    const target = new World({
+      resolveLevel(snapshot) {
+        return createOpenLevel(snapshot.id, snapshot.version);
+      }
+    });
+
+    expect(target.loadFromLocalStorage("wrapper-key")).toBe(true);
+    expect([...target.entities()]).toHaveLength(1);
   });
 });
 

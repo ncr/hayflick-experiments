@@ -14,6 +14,10 @@ Use this process when an experiment implementation should become reusable.
 
 3. Add tests in shared package
 - Add unit tests that cover expected behavior and basic failure inputs.
+- Promotion is not complete without coverage gating in the shared package.
+- Minimum policy for promoted modules:
+- `test:coverage` script with enforced thresholds.
+- Browser-level smoke coverage for critical user flows using Playwright (real click/key paths).
 
 4. Replace local experiment logic
 - Update experiment imports to use shared package API.

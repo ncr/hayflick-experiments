@@ -73,3 +73,14 @@ Preventive checklist:
 - Keep autotile mask decoding and rotation conversion in shared `@common/level-editor` helpers.
 - Unit-test all 16 cardinal masks and quarter-turn to radians conversion.
 - Use shared helpers from experiments instead of hand-rolled rotation math in rendering code.
+
+## 2026-02-08 - Browser E2E clicks were blocked by HUD overlay
+Root cause:
+- Playwright test clicks targeted top-left canvas positions where HUD panels intentionally consumed pointer events.
+
+Detection signal:
+- Repeated click retries with “subtree intercepts pointer events” while canvas was visible.
+
+Preventive checklist:
+- In canvas-based E2E tests, focus with `canvas.focus()` and interact in unobstructed stage regions.
+- Add stable `data-testid` hooks for HUD status/stats assertions instead of relying on fragile text traversal.

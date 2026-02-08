@@ -23,6 +23,8 @@ pnpm dev
 - `pnpm typecheck` - typecheck all workspaces
 - `pnpm lint` - lint all workspaces
 - `pnpm test` - run all tests
+- `pnpm test:promoted` - enforce coverage thresholds for promoted shared modules
+- `pnpm test:e2e` - run Playwright browser smoke tests
 - `pnpm exp:new <experiment-id>` - scaffold a new experiment
 
 ## Experiment flow

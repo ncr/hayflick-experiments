@@ -1431,12 +1431,14 @@ const experiment: ExperimentModule = {
     bakeRow.append(bakeButton);
 
     const stats = document.createElement("div");
+    stats.dataset.testid = "level-builder-stats";
     stats.style.fontSize = "12px";
     stats.style.lineHeight = "1.4";
     stats.style.color = "#c9dceb";
     rightPanel.appendChild(stats);
 
     const bakeStatus = document.createElement("div");
+    bakeStatus.dataset.testid = "level-builder-status";
     bakeStatus.style.fontSize = "12px";
     bakeStatus.style.lineHeight = "1.35";
     bakeStatus.style.color = "#d8e8f4";

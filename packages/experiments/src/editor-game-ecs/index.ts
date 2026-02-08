@@ -590,12 +590,14 @@ const experiment: ExperimentModule = {
     toolsRow.append(saveLevelButton, saveGameButton, loadGameButton);
 
     const stats = document.createElement("div");
+    stats.dataset.testid = "editor-game-ecs-stats";
     stats.style.fontSize = "12px";
     stats.style.lineHeight = "1.4";
     stats.style.color = "#c8deee";
     rightPanel.appendChild(stats);
 
     const status = document.createElement("div");
+    status.dataset.testid = "editor-game-ecs-status";
     status.style.fontSize = "12px";
     status.style.lineHeight = "1.35";
     status.style.color = "#e3f3ff";
