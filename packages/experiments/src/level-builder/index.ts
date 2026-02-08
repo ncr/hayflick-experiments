@@ -1089,7 +1089,6 @@ const experiment: ExperimentModule = {
     const rectToolButtons = promotedControls.rectToolButtons as Map<Exclude<RectToolMode, "none">, HTMLButtonElement>;
     const defaultGroundButtons = promotedControls.defaultGroundButtons as Map<"floor" | "grass", HTMLButtonElement>;
     const rectOffButton = promotedControls.rectOffButton;
-    const seedInput = promotedControls.seedInput;
 
     function syncHud(): void {
       toolButtons.forEach((button, mode) => {
