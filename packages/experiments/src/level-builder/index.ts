@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { autoTileRotationRadians, describeAutoTile, type AutoTileShape } from "@common/level-editor";
 import { makeRenderer } from "@common/render";
 import type { LevelResource } from "@common/gameplay";
 import type { ExperimentModule } from "../runtime/types";
@@ -39,13 +40,6 @@ type StructureSegmentData =
   | { kind: "wall" }
   | { kind: "window" }
   | { kind: "door"; state: LevelBuilderDoorState };
-
-type AutoTileShape = "isolated" | "end" | "straight" | "corner" | "tee" | "cross";
-
-type AutoTileDescriptor = {
-  shape: AutoTileShape;
-  rotation: 0 | 1 | 2 | 3;
-};
 
 type GridEdge = {
   ax: number;
@@ -312,29 +306,6 @@ function createPathTexture(colorHex: number, width: number, shape: AutoTileShape
   texture.generateMipmaps = false;
   texture.needsUpdate = true;
   return texture;
-}
-
-function describeAutoTile(mask: number): AutoTileDescriptor {
-  if (mask === 0) return { shape: "isolated", rotation: 0 };
-  if (mask === 1) return { shape: "end", rotation: 0 };
-  if (mask === 2) return { shape: "end", rotation: 1 };
-  if (mask === 4) return { shape: "end", rotation: 2 };
-  if (mask === 8) return { shape: "end", rotation: 3 };
-
-  if (mask === 5) return { shape: "straight", rotation: 0 };
-  if (mask === 10) return { shape: "straight", rotation: 1 };
-
-  if (mask === 3) return { shape: "corner", rotation: 0 };
-  if (mask === 6) return { shape: "corner", rotation: 1 };
-  if (mask === 12) return { shape: "corner", rotation: 2 };
-  if (mask === 9) return { shape: "corner", rotation: 3 };
-
-  if (mask === 11) return { shape: "tee", rotation: 0 };
-  if (mask === 7) return { shape: "tee", rotation: 1 };
-  if (mask === 14) return { shape: "tee", rotation: 2 };
-  if (mask === 13) return { shape: "tee", rotation: 3 };
-
-  return { shape: "cross", rotation: 0 };
 }
 
 const experiment: ExperimentModule = {
@@ -1057,9 +1028,7 @@ const experiment: ExperimentModule = {
             const key = `road:${tile.shape}:${tile.rotation}`;
             const matrices = autoTileBuckets.get(key) ?? [];
 
-            // Geometry UV "north" points toward -Z after the ground-plane rotation,
-            // so clockwise tile rotations must be applied as negative world-Y angles.
-            tempQuaternion.setFromAxisAngle(upAxis, -tile.rotation * Math.PI * 0.5);
+            tempQuaternion.setFromAxisAngle(upAxis, autoTileRotationRadians(tile.rotation));
             tempPosition.set(worldX, GROUND_TILE_HEIGHT + 0.012, worldZ);
             tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
             matrices.push(tempMatrix.clone());
@@ -1072,8 +1041,7 @@ const experiment: ExperimentModule = {
             const key = `sidewalk:${tile.shape}:${tile.rotation}`;
             const matrices = autoTileBuckets.get(key) ?? [];
 
-            // Keep sidewalk autotile rotation consistent with road autotile mapping.
-            tempQuaternion.setFromAxisAngle(upAxis, -tile.rotation * Math.PI * 0.5);
+            tempQuaternion.setFromAxisAngle(upAxis, autoTileRotationRadians(tile.rotation));
             tempPosition.set(worldX, GROUND_TILE_HEIGHT + 0.016, worldZ);
             tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
             matrices.push(tempMatrix.clone());

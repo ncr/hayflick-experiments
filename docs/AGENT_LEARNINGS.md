@@ -60,3 +60,16 @@ Preventive checklist:
 - Keep shared editor model + bake/resource helpers in a common package (`@common/level-editor`).
 - Import shared helpers from experiments instead of duplicating local model/bake files.
 - When adding editor features, update shared package first, then wire experiment-specific UI.
+
+## 2026-02-08 - Autotile orientation mismatched expected corner/T direction
+Root cause:
+- Rotation direction was applied ad-hoc in experiment rendering code, separate from autotile mask mapping logic.
+- A clockwise/counterclockwise sign mismatch on ground-plane overlays caused some corner/T tiles to face the wrong way.
+
+Detection signal:
+- Visual report: corner/T/angle road and sidewalk tiles appeared rotated incorrectly while mask mapping looked correct.
+
+Preventive checklist:
+- Keep autotile mask decoding and rotation conversion in shared `@common/level-editor` helpers.
+- Unit-test all 16 cardinal masks and quarter-turn to radians conversion.
+- Use shared helpers from experiments instead of hand-rolled rotation math in rendering code.
