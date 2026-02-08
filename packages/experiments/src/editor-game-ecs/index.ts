@@ -569,12 +569,25 @@ const experiment: ExperimentModule = {
     const saveLevelButton = makeButton("Save Level (Ctrl+S)", () => {
       saveLevelModelNow();
     });
-    const loadGameButton = makeButton("Load Game (L)", () => {
-      if (mode === "GAME") {
-        loadGameNow();
+    const saveGameButton = makeButton("Save Game (K)", () => {
+      if (mode !== "GAME") {
+        statusMessage = "Switch to GAME mode to save a game.";
+        syncHud();
+        return;
       }
+
+      saveGameNow();
     });
-    toolsRow.append(saveLevelButton, loadGameButton);
+    const loadGameButton = makeButton("Load Game (L)", () => {
+      if (mode !== "GAME") {
+        statusMessage = "Switch to GAME mode to load a game save.";
+        syncHud();
+        return;
+      }
+
+      loadGameNow();
+    });
+    toolsRow.append(saveLevelButton, saveGameButton, loadGameButton);
 
     const stats = document.createElement("div");
     stats.style.fontSize = "12px";
@@ -593,7 +606,7 @@ const experiment: ExperimentModule = {
     hints.style.lineHeight = "1.35";
     hints.style.opacity = "0.93";
     hints.textContent =
-      "EDITOR: paint with LMB drag. GAME: click doors to toggle. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
+      "EDITOR: paint with LMB drag, Ctrl+S saves LevelModel. GAME: click doors to toggle, K saves game, L loads game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
     rightPanel.appendChild(hints);
 
     let levelModel = createDefaultLevelModel();
@@ -1468,6 +1481,12 @@ const experiment: ExperimentModule = {
       }
 
       if (mode === "GAME" && !event.repeat) {
+        if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") {
+          event.preventDefault();
+          saveGameNow();
+          return;
+        }
+
         if (event.code === "KeyK") {
           event.preventDefault();
           saveGameNow();
