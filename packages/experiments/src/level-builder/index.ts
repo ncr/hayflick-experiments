@@ -2,9 +2,14 @@ import * as THREE from "three";
 import {
   autoTileRotationRadians,
   createEditorStructureMeshKit,
+  createPromotedEditorControls,
   createEditorHud,
   describeAutoTile,
-  type AutoTileShape
+  type AutoTileShape,
+  type PromotedEditorBrush,
+  type PromotedEditorDefaultGround,
+  type PromotedEditorRectToolMode,
+  type PromotedEditorToolMode
 } from "@common/level-editor";
 import { makeRenderer } from "@common/render";
 import type { LevelResource } from "@common/gameplay";
@@ -533,12 +538,9 @@ const experiment: ExperimentModule = {
       statusTestId: "level-builder-status"
     });
 
-    const makeRow = hud.createRow;
-    const makeButton = hud.createButton;
     const setButtonActive = hud.setButtonActive;
     const stats = hud.stats;
     const bakeStatus = hud.status;
-    const controlsHint = hud.hints;
 
     function getCurrentBrushAndMode(): { brush: BrushType; mode: ToolMode } {
       if (dragState && dragState.mode === "paint") {
@@ -1017,185 +1019,77 @@ const experiment: ExperimentModule = {
       syncHud();
     }
 
-    const toolButtons = new Map<ToolMode, HTMLButtonElement>();
-    const brushButtons = new Map<BrushType, HTMLButtonElement>();
-    const rectToolButtons = new Map<Exclude<RectToolMode, "none">, HTMLButtonElement>();
-    const defaultGroundButtons = new Map<"floor" | "grass", HTMLButtonElement>();
+    const promotedControls = createPromotedEditorControls({
+      hud,
+      initialSeed: userSeed,
+      onTool(mode: PromotedEditorToolMode): void {
+        activeTool = mode;
+        syncHud();
+      },
+      onBrush(brush: PromotedEditorBrush): void {
+        activeBrush = brush as BrushType;
+        if (brush === "grass" || brush === "road" || brush === "sidewalk") {
+          activeRectTool = "none";
+        }
+        syncHud();
+      },
+      onRectTool(mode: PromotedEditorRectToolMode): void {
+        activeRectTool = mode as RectToolMode;
+        if (mode === "none") {
+          hideRectPreview();
+        }
+        syncHud();
+      },
+      onDefaultGround(base: PromotedEditorDefaultGround): void {
+        defaultGroundBase = base;
+        needsRebuild = true;
+        bakeStatusMessage = `Default ground set to ${base}.`;
+        syncHud();
+      },
+      onSeed(seed: number): void {
+        userSeed = seed;
+        needsRebuild = true;
+        bakeStatusMessage = `Seed updated to ${userSeed}.`;
+        syncHud();
+      },
+      onRotate(deltaQuarterTurns: -1 | 1): void {
+        yawIndex += deltaQuarterTurns;
+        syncHud();
+      },
+      onResetView(): void {
+        yawIndex = 0;
+        zoomTarget = 1.15;
+        cameraTarget.set(0, 0, 0);
+        syncHud();
+      },
+      onClearStructures(): void {
+        structureSegments.clear();
+        needsRebuild = true;
+        bakeStatusMessage = "Geometry cleared.";
+        syncHud();
+      },
+      onClearGround(): void {
+        groundOverrides.clear();
+        needsRebuild = true;
+        bakeStatusMessage = "Terrain overrides cleared.";
+        syncHud();
+      },
+      onBake(): void {
+        runBakePreview();
+      },
+      onExit(): void {
+        bakeStatusMessage =
+          "EXIT is only available in the Editor + Game (ECS) experiment.";
+        syncHud();
+      }
+    });
 
-    const toolRow = makeRow("Tool");
-    const drawButton = makeButton("Draw (D)", () => {
-      activeTool = "draw";
-      syncHud();
-    });
-    const eraseButton = makeButton("Erase (X)", () => {
-      activeTool = "erase";
-      syncHud();
-    });
-    toolButtons.set("draw", drawButton);
-    toolButtons.set("erase", eraseButton);
-    toolRow.append(drawButton, eraseButton);
-
-    const brushRow = makeRow("Brush");
-    const wallBrushButton = makeButton("Wall (1)", () => {
-      activeBrush = "wall";
-      syncHud();
-    });
-    const windowBrushButton = makeButton("Window (2)", () => {
-      activeBrush = "window";
-      syncHud();
-    });
-    const doorClosedBrushButton = makeButton("Door Closed (3)", () => {
-      activeBrush = "door-closed";
-      syncHud();
-    });
-    const doorOpenBrushButton = makeButton("Door Open (6)", () => {
-      activeBrush = "door-open";
-      syncHud();
-    });
-    const floorBrushButton = makeButton("Floor (4)", () => {
-      activeBrush = "floor";
-      syncHud();
-    });
-    const grassBrushButton = makeButton("Grass (5)", () => {
-      activeBrush = "grass";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const roadBrushButton = makeButton("Road (7)", () => {
-      activeBrush = "road";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const sidewalkBrushButton = makeButton("Sidewalk (8)", () => {
-      activeBrush = "sidewalk";
-      activeRectTool = "none";
-      syncHud();
-    });
-
-    brushButtons.set("wall", wallBrushButton);
-    brushButtons.set("window", windowBrushButton);
-    brushButtons.set("door-closed", doorClosedBrushButton);
-    brushButtons.set("door-open", doorOpenBrushButton);
-    brushButtons.set("floor", floorBrushButton);
-    brushButtons.set("grass", grassBrushButton);
-    brushButtons.set("road", roadBrushButton);
-    brushButtons.set("sidewalk", sidewalkBrushButton);
-
-    brushRow.append(
-      wallBrushButton,
-      windowBrushButton,
-      doorClosedBrushButton,
-      doorOpenBrushButton,
-      floorBrushButton,
-      grassBrushButton,
-      roadBrushButton,
-      sidewalkBrushButton
-    );
-
-    const rectRow = makeRow("Rect");
-    const rectOffButton = makeButton("Rect Off", () => {
-      activeRectTool = "none";
-      hideRectPreview();
-      syncHud();
-    });
-    const grassRectButton = makeButton("Grass Fill (G)", () => {
-      activeRectTool = "grass-fill";
-      syncHud();
-    });
-    const buildingRectButton = makeButton("Footprint (9)", () => {
-      activeRectTool = "building-footprint";
-      syncHud();
-    });
-    rectToolButtons.set("grass-fill", grassRectButton);
-    rectToolButtons.set("building-footprint", buildingRectButton);
-    rectRow.append(rectOffButton, grassRectButton, buildingRectButton);
-
-    const terrainRow = makeRow("Terrain");
-    const defaultFloorButton = makeButton("Default Floor", () => {
-      defaultGroundBase = "floor";
-      needsRebuild = true;
-      bakeStatusMessage = "Default ground set to floor.";
-      syncHud();
-    });
-    const defaultGrassButton = makeButton("Default Grass", () => {
-      defaultGroundBase = "grass";
-      needsRebuild = true;
-      bakeStatusMessage = "Default ground set to grass.";
-      syncHud();
-    });
-    defaultGroundButtons.set("floor", defaultFloorButton);
-    defaultGroundButtons.set("grass", defaultGrassButton);
-
-    const seedWrap = document.createElement("label");
-    seedWrap.style.display = "inline-flex";
-    seedWrap.style.alignItems = "center";
-    seedWrap.style.gap = "4px";
-    seedWrap.style.fontSize = "12px";
-    seedWrap.style.padding = "0 2px";
-    seedWrap.textContent = "Seed";
-
-    const seedInput = document.createElement("input");
-    seedInput.type = "number";
-    seedInput.value = String(userSeed);
-    seedInput.step = "1";
-    seedInput.style.width = "84px";
-    seedInput.style.border = "1px solid rgba(124, 155, 178, 0.62)";
-    seedInput.style.background = "rgba(20, 35, 49, 0.92)";
-    seedInput.style.color = "#d8e8f4";
-    seedInput.style.borderRadius = "6px";
-    seedInput.style.padding = "3px 6px";
-    seedInput.style.fontSize = "12px";
-    seedInput.addEventListener("change", () => {
-      const parsed = Number(seedInput.value);
-      userSeed = Number.isFinite(parsed) ? Math.floor(parsed) : 1337;
-      seedInput.value = String(userSeed);
-      needsRebuild = true;
-      bakeStatusMessage = `Seed updated to ${userSeed}.`;
-      syncHud();
-    });
-    seedWrap.appendChild(seedInput);
-    terrainRow.append(defaultFloorButton, defaultGrassButton, seedWrap);
-
-    const cameraRow = makeRow("Camera");
-    const rotateLeftButton = makeButton("Rotate -90 (Q)", () => {
-      yawIndex -= 1;
-      syncHud();
-    });
-    const rotateRightButton = makeButton("Rotate +90 (E)", () => {
-      yawIndex += 1;
-      syncHud();
-    });
-    const resetViewButton = makeButton("Reset View", () => {
-      yawIndex = 0;
-      zoomTarget = 1.15;
-      cameraTarget.set(0, 0, 0);
-      syncHud();
-    });
-    cameraRow.append(rotateLeftButton, rotateRightButton, resetViewButton);
-
-    const utilityRow = makeRow("Scene");
-    const clearStructuresButton = makeButton("Clear Walls (C)", () => {
-      structureSegments.clear();
-      needsRebuild = true;
-      bakeStatusMessage = "Geometry cleared.";
-      syncHud();
-    });
-    const clearGroundButton = makeButton("Clear Ground (V)", () => {
-      groundOverrides.clear();
-      needsRebuild = true;
-      bakeStatusMessage = "Terrain overrides cleared.";
-      syncHud();
-    });
-    utilityRow.append(clearStructuresButton, clearGroundButton);
-
-    const bakeRow = makeRow("Bake");
-    const bakeButton = makeButton("Bake ECS JSON (B)", () => {
-      runBakePreview();
-    });
-    bakeRow.append(bakeButton);
-
-    controlsHint.textContent =
-      "LMB drag: paint  •  Shift+drag: grass fill rect  •  G: grass rect  •  9: footprint rect  •  7/8: road/sidewalk  •  B: bake";
+    const toolButtons = promotedControls.toolButtons as Map<ToolMode, HTMLButtonElement>;
+    const brushButtons = promotedControls.brushButtons as Map<BrushType, HTMLButtonElement>;
+    const rectToolButtons = promotedControls.rectToolButtons as Map<Exclude<RectToolMode, "none">, HTMLButtonElement>;
+    const defaultGroundButtons = promotedControls.defaultGroundButtons as Map<"floor" | "grass", HTMLButtonElement>;
+    const rectOffButton = promotedControls.rectOffButton;
+    const seedInput = promotedControls.seedInput;
 
     function syncHud(): void {
       toolButtons.forEach((button, mode) => {

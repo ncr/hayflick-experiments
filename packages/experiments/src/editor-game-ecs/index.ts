@@ -12,9 +12,14 @@ import * as THREE from "three";
 import { makeRenderer } from "@common/render";
 import {
   bakeLevelForEcs,
+  createPromotedEditorControls,
   createMutableGridLevelResource,
   createEditorStructureMeshKit,
   createEditorHud,
+  type PromotedEditorBrush,
+  type PromotedEditorDefaultGround,
+  type PromotedEditorRectToolMode,
+  type PromotedEditorToolMode,
   LEVEL_BUILDER_STRUCTURE_KIND as STRUCTURE_KIND,
   isLevelBuilderDoorState,
   isLevelBuilderStructureKind,
@@ -1060,24 +1065,10 @@ const experiment: ExperimentModule = {
       statusTestId: "editor-game-ecs-status"
     });
 
-    const makeRow = hud.createRow;
-    const makeButton = hud.createButton;
     const setButtonActive = hud.setButtonActive;
     const stats = hud.stats;
     const status = hud.status;
     const hints = hud.hints;
-
-    const modeButtons = new Map<Mode, HTMLButtonElement>();
-    const toolButtons = new Map<ToolMode, HTMLButtonElement>();
-    const brushButtons = new Map<EditorBrush, HTMLButtonElement>();
-    const rectToolButtons = new Map<
-      Exclude<RectToolMode, "none">,
-      HTMLButtonElement
-    >();
-    const defaultGroundButtons = new Map<
-      "floor" | "grass",
-      HTMLButtonElement
-    >();
 
     let mode: Mode = "EDITOR";
     let activeTool: ToolMode = "draw";
@@ -1087,193 +1078,124 @@ const experiment: ExperimentModule = {
     let userSeed = 1337;
     let statusMessage = "Ready.";
 
-    const modeRow = makeRow("Mode");
-    const editorButton = makeButton("EDITOR (ESC)", () => {
+    const editorHintsText =
+      "LMB drag: paint  •  Shift+drag: grass fill rect  •  G: grass rect  •  9: footprint rect  •  7/8: road/sidewalk  •  B: bake  •  EXIT (F5): game mode";
+    const gameHintsText =
+      "GAME: WASD/Arrows move, click doors to toggle, K save game, L load game, ESC editor. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
+
+    const promotedControls = createPromotedEditorControls({
+      hud,
+      initialSeed: userSeed,
+      onTool(modeValue: PromotedEditorToolMode): void {
+        activeTool = modeValue;
+        syncHud();
+      },
+      onBrush(brush: PromotedEditorBrush): void {
+        editorBrush = brush as EditorBrush;
+        if (brush === "grass" || brush === "road" || brush === "sidewalk") {
+          activeRectTool = "none";
+        }
+        syncHud();
+      },
+      onRectTool(modeValue: PromotedEditorRectToolMode): void {
+        activeRectTool = modeValue as RectToolMode;
+        if (modeValue === "none") {
+          hideRectPreview();
+        }
+        syncHud();
+      },
+      onDefaultGround(base: PromotedEditorDefaultGround): void {
+        defaultGroundBase = base;
+        rebuildBaseLevelMeshes();
+        statusMessage = `Default ground set to ${base}.`;
+        syncHud();
+      },
+      onSeed(seed: number): void {
+        userSeed = seed;
+        rebuildBaseLevelMeshes();
+        statusMessage = `Seed updated to ${userSeed}.`;
+        syncHud();
+      },
+      onRotate(deltaQuarterTurns: -1 | 1): void {
+        yawIndex += deltaQuarterTurns;
+        syncHud();
+      },
+      onResetView(): void {
+        yawIndex = 0;
+        zoomTarget = 1.2;
+        cameraTarget.set(0, 0, 0);
+        syncHud();
+      },
+      onClearStructures(): void {
+        structureSegments.clear();
+        rebuildEditorStructureMeshes();
+        statusMessage = "Structures cleared.";
+        syncHud();
+      },
+      onClearGround(): void {
+        groundOverrides.clear();
+        rebuildBaseLevelMeshes();
+        statusMessage = "Terrain overrides cleared.";
+        syncHud();
+      },
+      onBake(): void {
+        runBakePreview();
+      },
+      onExit(): void {
+        enterGame({
+          status: "Exited EDITOR and entered GAME mode."
+        });
+      }
+    });
+
+    const toolButtons = promotedControls.toolButtons as Map<
+      ToolMode,
+      HTMLButtonElement
+    >;
+    const brushButtons = promotedControls.brushButtons as Map<
+      EditorBrush,
+      HTMLButtonElement
+    >;
+    const rectToolButtons = promotedControls.rectToolButtons as Map<
+      Exclude<RectToolMode, "none">,
+      HTMLButtonElement
+    >;
+    const defaultGroundButtons = promotedControls.defaultGroundButtons as Map<
+      "floor" | "grass",
+      HTMLButtonElement
+    >;
+    const rectOffButton = promotedControls.rectOffButton;
+    const seedInput = promotedControls.seedInput;
+
+    const gameControlsRow = document.createElement("div");
+    gameControlsRow.style.display = "none";
+    gameControlsRow.style.flexDirection = "column";
+    gameControlsRow.style.gap = "6px";
+    gameControlsRow.style.marginBottom = "6px";
+
+    const gameControlsLabel = document.createElement("div");
+    gameControlsLabel.textContent = "Game";
+    gameControlsLabel.style.fontSize = "12px";
+    gameControlsLabel.style.opacity = "0.82";
+    gameControlsRow.appendChild(gameControlsLabel);
+
+    const gameControlsButtons = document.createElement("div");
+    gameControlsButtons.style.display = "flex";
+    gameControlsButtons.style.flexWrap = "wrap";
+    gameControlsButtons.style.gap = "6px";
+    gameControlsRow.appendChild(gameControlsButtons);
+
+    const gameEditorButton = hud.createButton("EDITOR (ESC)", () => {
       enterEditor();
     });
-    const gameButton = makeButton("GAME (F5)", () => {
-      enterGame();
-    });
-    modeButtons.set("EDITOR", editorButton);
-    modeButtons.set("GAME", gameButton);
-    modeRow.append(editorButton, gameButton);
-
-    const toolRow = makeRow("Tool");
-    const drawButton = makeButton("Draw (D)", () => {
-      activeTool = "draw";
-      syncHud();
-    });
-    const eraseButton = makeButton("Erase (X)", () => {
-      activeTool = "erase";
-      syncHud();
-    });
-    toolButtons.set("draw", drawButton);
-    toolButtons.set("erase", eraseButton);
-    toolRow.append(drawButton, eraseButton);
-
-    const brushRow = makeRow("Brush");
-    const wallButton = makeButton("Wall (1)", () => {
-      editorBrush = "wall";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const windowButton = makeButton("Window (2)", () => {
-      editorBrush = "window";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const doorClosedButton = makeButton("Door Closed (3)", () => {
-      editorBrush = "door-closed";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const doorOpenButton = makeButton("Door Open (6)", () => {
-      editorBrush = "door-open";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const floorButton = makeButton("Floor (4)", () => {
-      editorBrush = "floor";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const grassButton = makeButton("Grass (5)", () => {
-      editorBrush = "grass";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const roadButton = makeButton("Road (7)", () => {
-      editorBrush = "road";
-      activeRectTool = "none";
-      syncHud();
-    });
-    const sidewalkButton = makeButton("Sidewalk (8)", () => {
-      editorBrush = "sidewalk";
-      activeRectTool = "none";
-      syncHud();
-    });
-
-    brushButtons.set("wall", wallButton);
-    brushButtons.set("window", windowButton);
-    brushButtons.set("door-closed", doorClosedButton);
-    brushButtons.set("door-open", doorOpenButton);
-    brushButtons.set("floor", floorButton);
-    brushButtons.set("grass", grassButton);
-    brushButtons.set("road", roadButton);
-    brushButtons.set("sidewalk", sidewalkButton);
-
-    brushRow.append(
-      wallButton,
-      windowButton,
-      doorClosedButton,
-      doorOpenButton,
-      floorButton,
-      grassButton,
-      roadButton,
-      sidewalkButton
-    );
-
-    const rectRow = makeRow("Rect");
-    const rectOffButton = makeButton("Rect Off", () => {
-      activeRectTool = "none";
-      hideRectPreview();
-      syncHud();
-    });
-    const grassRectButton = makeButton("Grass Fill (G)", () => {
-      activeRectTool = "grass-fill";
-      syncHud();
-    });
-    const buildingRectButton = makeButton("Footprint (9)", () => {
-      activeRectTool = "building-footprint";
-      syncHud();
-    });
-    rectToolButtons.set("grass-fill", grassRectButton);
-    rectToolButtons.set("building-footprint", buildingRectButton);
-    rectRow.append(rectOffButton, grassRectButton, buildingRectButton);
-
-    const toolsRow = makeRow("Tools");
-    const saveLevelButton = makeButton("Save Level (Ctrl+S)", () => {
-      saveLevelModelNow();
-    });
-    const saveGameButton = makeButton("Save Game (K)", () => {
-      if (mode !== "GAME") {
-        statusMessage = "Switch to GAME mode to save a game.";
-        syncHud();
-        return;
-      }
-
+    const gameSaveButton = hud.createButton("Save Game (K)", () => {
       saveGameNow();
     });
-    const loadGameButton = makeButton("Load Game (L)", () => {
-      if (mode !== "GAME") {
-        statusMessage = "Switch to GAME mode to load a game save.";
-        syncHud();
-        return;
-      }
-
+    const gameLoadButton = hud.createButton("Load Game (L)", () => {
       loadGameNow();
     });
-    toolsRow.append(saveLevelButton, saveGameButton, loadGameButton);
-
-    const terrainRow = makeRow("Terrain");
-    const defaultFloorButton = makeButton("Default Floor", () => {
-      defaultGroundBase = "floor";
-      rebuildBaseLevelMeshes();
-      statusMessage = "Default ground set to floor.";
-      syncHud();
-    });
-    const defaultGrassButton = makeButton("Default Grass", () => {
-      defaultGroundBase = "grass";
-      rebuildBaseLevelMeshes();
-      statusMessage = "Default ground set to grass.";
-      syncHud();
-    });
-    defaultGroundButtons.set("floor", defaultFloorButton);
-    defaultGroundButtons.set("grass", defaultGrassButton);
-
-    const seedWrap = document.createElement("label");
-    seedWrap.style.display = "inline-flex";
-    seedWrap.style.alignItems = "center";
-    seedWrap.style.gap = "4px";
-    seedWrap.style.fontSize = "12px";
-    seedWrap.style.padding = "0 2px";
-    seedWrap.textContent = "Seed";
-
-    const seedInput = document.createElement("input");
-    seedInput.type = "number";
-    seedInput.value = String(userSeed);
-    seedInput.step = "1";
-    seedInput.style.width = "84px";
-    seedInput.style.border = "1px solid rgba(124, 155, 178, 0.62)";
-    seedInput.style.background = "rgba(20, 35, 49, 0.92)";
-    seedInput.style.color = "#d8e8f4";
-    seedInput.style.borderRadius = "6px";
-    seedInput.style.padding = "3px 6px";
-    seedInput.style.fontSize = "12px";
-    seedInput.addEventListener("change", () => {
-      const parsed = Number(seedInput.value);
-      userSeed = Number.isFinite(parsed) ? Math.floor(parsed) : 1337;
-      seedInput.value = String(userSeed);
-      rebuildBaseLevelMeshes();
-      statusMessage = `Seed updated to ${userSeed}.`;
-      syncHud();
-    });
-    seedWrap.appendChild(seedInput);
-    terrainRow.append(defaultFloorButton, defaultGrassButton, seedWrap);
-
-    const cameraRow = makeRow("Camera");
-    const rotateLeftButton = makeButton("Rotate -90 (Q)", () => {
-      yawIndex -= 1;
-      syncHud();
-    });
-    const rotateRightButton = makeButton("Rotate +90 (E)", () => {
-      yawIndex += 1;
-      syncHud();
-    });
-    cameraRow.append(rotateLeftButton, rotateRightButton);
-
-    hints.textContent =
-      "EDITOR: LMB drag paint, Shift+drag grass rect, D/X draw-erase, 1..8 brushes, G/9 rect tools, Ctrl+S save level. GAME: click doors, K save game, L load game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
+    gameControlsButtons.append(gameEditorButton, gameSaveButton, gameLoadButton);
+    hud.rightPanel.insertBefore(gameControlsRow, stats);
 
     let structureSegments = createMockupStructureSegments();
     let groundOverrides = createMockupTerrainOverrides(userSeed);
@@ -1648,86 +1570,103 @@ const experiment: ExperimentModule = {
     }
 
     function syncHud(): void {
-      modeButtons.forEach((button, buttonMode) => {
-        setButtonActive(button, mode === buttonMode);
-      });
+      const isEditorMode = mode === "EDITOR";
+      hud.leftPanel.style.display = isEditorMode ? "flex" : "none";
+      gameControlsRow.style.display = isEditorMode ? "none" : "flex";
+
       toolButtons.forEach((button, tool) => {
-        setButtonActive(button, mode === "EDITOR" && activeTool === tool);
+        setButtonActive(button, isEditorMode && activeTool === tool);
       });
       brushButtons.forEach((button, brush) => {
-        setButtonActive(button, mode === "EDITOR" && editorBrush === brush);
+        setButtonActive(button, isEditorMode && editorBrush === brush);
       });
       rectToolButtons.forEach((button, rectMode) => {
-        setButtonActive(
-          button,
-          mode === "EDITOR" && activeRectTool === rectMode
-        );
+        setButtonActive(button, isEditorMode && activeRectTool === rectMode);
       });
-      setButtonActive(
-        rectOffButton,
-        mode === "EDITOR" && activeRectTool === "none"
-      );
+      setButtonActive(rectOffButton, isEditorMode && activeRectTool === "none");
       defaultGroundButtons.forEach((button, base) => {
-        setButtonActive(
-          button,
-          mode === "EDITOR" && defaultGroundBase === base
-        );
+        setButtonActive(button, isEditorMode && defaultGroundBase === base);
       });
-
-      let wallCount = 0;
-      let windowCount = 0;
-      let doorCount = 0;
-      for (const segment of structureSegments.values()) {
-        switch (segment.kind) {
-          case STRUCTURE_KIND.WALL:
-            wallCount += 1;
-            break;
-          case STRUCTURE_KIND.WINDOW:
-            windowCount += 1;
-            break;
-          case STRUCTURE_KIND.DOOR:
-            doorCount += 1;
-            break;
-          default:
-            assertNever(segment, "structure segment");
-        }
-      }
 
       const viewStep = ((yawIndex % 4) + 4) % 4;
-      const groundCounts: Record<GroundBase, number> = {
-        floor: 0,
-        grass: 0,
-        road: 0,
-        sidewalk: 0,
-        building: 0
-      };
-      for (let y = 0; y < GRID_TILES; y += 1) {
-        for (let x = 0; x < GRID_TILES; x += 1) {
-          groundCounts[getGroundOverrideAtCell(x, y).base] += 1;
+
+      if (isEditorMode) {
+        let wallCount = 0;
+        let windowCount = 0;
+        let doorCount = 0;
+        for (const segment of structureSegments.values()) {
+          switch (segment.kind) {
+            case STRUCTURE_KIND.WALL:
+              wallCount += 1;
+              break;
+            case STRUCTURE_KIND.WINDOW:
+              windowCount += 1;
+              break;
+            case STRUCTURE_KIND.DOOR:
+              doorCount += 1;
+              break;
+            default:
+              assertNever(segment, "structure segment");
+          }
         }
+
+        const groundCounts: Record<GroundBase, number> = {
+          floor: 0,
+          grass: 0,
+          road: 0,
+          sidewalk: 0,
+          building: 0
+        };
+        for (let y = 0; y < GRID_TILES; y += 1) {
+          for (let x = 0; x < GRID_TILES; x += 1) {
+            groundCounts[getGroundOverrideAtCell(x, y).base] += 1;
+          }
+        }
+
+        stats.textContent = [
+          "Mode: EDITOR",
+          `Grid: ${GRID_TILES}x${GRID_TILES}`,
+          `Walls/Windows/Doors: ${wallCount}/${windowCount}/${doorCount}`,
+          `Ground(F/G/R/S/B): ${groundCounts.floor}/${groundCounts.grass}/${groundCounts.road}/${groundCounts.sidewalk}/${groundCounts.building}`,
+          `Overrides: ${groundOverrides.size}`,
+          `Default: ${defaultGroundBase}`,
+          `Rect: ${activeRectTool}`,
+          `Seed: ${userSeed}`,
+          `View: ${viewStep}/4`
+        ].join("  •  ");
+        hints.textContent = editorHintsText;
+      } else {
+        let openDoors = 0;
+        let closedDoors = 0;
+        if (gameRuntime) {
+          for (const doorEid of gameRuntime.doorByPlacementId.values()) {
+            const door = gameRuntime.doors.get(doorEid);
+            if (!door) {
+              continue;
+            }
+            if (door.open) {
+              openDoors += 1;
+            } else {
+              closedDoors += 1;
+            }
+          }
+        }
+
+        const playerTransform = gameRuntime
+          ? findPlayerTransform(gameRuntime.world)
+          : null;
+        const playerText = playerTransform
+          ? `Player=(${playerTransform.x.toFixed(2)}, ${playerTransform.y.toFixed(2)})`
+          : "Player=<none>";
+
+        stats.textContent = [
+          "Mode: GAME",
+          playerText,
+          `Doors(O/C): ${openDoors}/${closedDoors}`,
+          `View: ${viewStep}/4`
+        ].join("  •  ");
+        hints.textContent = gameHintsText;
       }
-
-      const playerTransform = gameRuntime
-        ? findPlayerTransform(gameRuntime.world)
-        : null;
-      const playerText = playerTransform
-        ? `Player=(${playerTransform.x.toFixed(2)}, ${playerTransform.y.toFixed(2)})`
-        : "Player=<none>";
-
-      stats.textContent = [
-        `Mode: ${mode}`,
-        `Grid: ${GRID_TILES}x${GRID_TILES}`,
-        `Walls/Windows/Doors: ${wallCount}/${windowCount}/${doorCount}`,
-        `Ground(F/G/R/S/B): ${groundCounts.floor}/${groundCounts.grass}/${groundCounts.road}/${groundCounts.sidewalk}/${groundCounts.building}`,
-        `Overrides: ${groundOverrides.size}`,
-        `Default: ${defaultGroundBase}`,
-        `Rect: ${activeRectTool}`,
-        `Seed: ${userSeed}`,
-        `View: ${viewStep}/4`,
-        mode === "GAME" ? playerText : ""
-      ]
-        .filter(Boolean)
-        .join("  •  ");
 
       status.textContent = statusMessage;
     }
@@ -2008,6 +1947,13 @@ const experiment: ExperimentModule = {
         },
         structures: toBakedStructures()
       });
+    }
+
+    function runBakePreview(): void {
+      const baked = createBakePayload();
+      statusMessage = `Baked preview: ${baked.structures.length} segments, blocked ${baked.blockedCells.length} cells.`;
+      console.log("[editor-game-ecs] baked preview", baked);
+      syncHud();
     }
 
     const MOVEMENT_EPS = 1e-4;
@@ -2904,6 +2850,9 @@ const experiment: ExperimentModule = {
       } else if (event.code === "KeyG") {
         activeRectTool = "grass-fill";
         syncHud();
+        event.preventDefault();
+      } else if (event.code === "KeyB") {
+        runBakePreview();
         event.preventDefault();
       } else if (event.code === "KeyD") {
         activeTool = "draw";

@@ -190,3 +190,16 @@ Preventive checklist:
 - Export shared discriminant constants + type guards from promoted modules and reuse them everywhere.
 - Prefer exhaustive/switch or guard-based branching over ad-hoc string comparisons for union types.
 - Do not use `as unknown as` for persisted schema migration; parse and validate legacy payload fields explicitly.
+
+## 2026-02-08 - Shared editor controls still leaked into GAME mode
+Root cause:
+- `editor-game-ecs` initially mixed editor and gameplay controls in one always-visible HUD.
+- Mode switches updated systems/rendering but did not strictly separate UI ownership by mode.
+
+Detection signal:
+- User reported editor-mode parity goals were unmet and game mode still showed editor-oriented controls.
+
+Preventive checklist:
+- Use promoted editor control builders (`@common/level-editor`) for editor mode only.
+- Enforce explicit HUD visibility boundaries on mode switch (hide editor panel in GAME, show game-only controls).
+- Keep mode-specific hint/status copy in sync with visible controls to avoid mixed affordances.
