@@ -50,24 +50,35 @@ export function createLevelModel(width: number, height: number): LevelModel {
 export function createDefaultLevelModel(): LevelModel {
   const model = createLevelModel(18, 18);
 
-  for (let y = 0; y < model.height; y += 1) {
-    for (let x = 0; x < model.width; x += 1) {
-      const border = x === 0 || y === 0 || x === model.width - 1 || y === model.height - 1;
-      if (border) {
-        setTileAt(model, x, y, TILE_WALL);
-      }
+  const drawRoom = (minX: number, minY: number, maxX: number, maxY: number): void => {
+    for (let x = minX; x <= maxX; x += 1) {
+      setTileAt(model, x, minY, TILE_WALL);
+      setTileAt(model, x, maxY, TILE_WALL);
     }
-  }
+    for (let y = minY; y <= maxY; y += 1) {
+      setTileAt(model, minX, y, TILE_WALL);
+      setTileAt(model, maxX, y, TILE_WALL);
+    }
+  };
 
-  for (let x = 3; x <= 13; x += 1) {
-    setTileAt(model, x, 7, TILE_WALL);
-  }
+  // Two-room mockup with a shared wall.
+  drawRoom(3, 5, 9, 11);
+  drawRoom(9, 5, 15, 11);
 
+  // Door between rooms (shared wall) and one exterior door.
   addDoorPlacement(model, {
     id: "door-1",
     kind: "door",
-    x: 8,
-    y: 7,
+    x: 9,
+    y: 8,
+    rot: 1,
+    data: { open: false }
+  });
+  addDoorPlacement(model, {
+    id: "door-2",
+    kind: "door",
+    x: 6,
+    y: 5,
     rot: 0,
     data: { open: false }
   });

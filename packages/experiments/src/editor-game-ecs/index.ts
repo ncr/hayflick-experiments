@@ -72,6 +72,11 @@ type DragState = {
   rectEndCell?: { x: number; y: number };
 };
 
+type DirectionVector = {
+  dx: number;
+  dy: number;
+};
+
 type DoorComponent = {
   placementId: string;
   cellX: number;
@@ -372,6 +377,14 @@ function toWorldCoordZ(level: LevelModel, y: number): number {
   return y - level.height * 0.5;
 }
 
+function toWorldNodeX(level: LevelModel, nodeX: number): number {
+  return -(level.width * 0.5) + nodeX;
+}
+
+function toWorldNodeZ(level: LevelModel, nodeY: number): number {
+  return -(level.height * 0.5) + nodeY;
+}
+
 function worldToCell(level: LevelModel, worldX: number, worldZ: number): { x: number; y: number } | null {
   const cellX = Math.floor(worldX + level.width * 0.5);
   const cellY = Math.floor(worldZ + level.height * 0.5);
@@ -381,6 +394,41 @@ function worldToCell(level: LevelModel, worldX: number, worldZ: number): { x: nu
   }
 
   return { x: cellX, y: cellY };
+}
+
+function createMockupTerrainOverrides(levelModel: LevelModel, seed: number): Map<string, GroundCellOverride> {
+  const overrides = new Map<string, GroundCellOverride>();
+
+  const setCell = (x: number, y: number, base: GroundBase, variant?: number): void => {
+    if (!inBounds(levelModel, x, y)) {
+      return;
+    }
+
+    overrides.set(cellKey(x, y), normalizeGroundOverride(base, variant));
+  };
+
+  const fillRect = (minX: number, minY: number, maxX: number, maxY: number, base: GroundBase): void => {
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        const variant = base === "grass" ? computeGrassVariant(seed ^ 0x9e3779b9, x, y) : undefined;
+        setCell(x, y, base, variant);
+      }
+    }
+  };
+
+  // Room floors.
+  fillRect(4, 6, 8, 10, "floor");
+  fillRect(10, 6, 14, 10, "floor");
+
+  // Exterior path leading to the outside door at (6,5).
+  for (let y = 0; y <= 4; y += 1) {
+    setCell(6, y, "sidewalk");
+  }
+  for (let x = 5; x <= 7; x += 1) {
+    setCell(x, 4, "sidewalk");
+  }
+
+  return overrides;
 }
 
 function findPlayerTransform(world: World): { x: number; y: number } | null {
@@ -616,7 +664,7 @@ const experiment: ExperimentModule = {
     let activeTool: ToolMode = "draw";
     let editorBrush: EditorBrush = "wall";
     let activeRectTool: RectToolMode = "none";
-    let defaultGroundBase: GroundBase = "floor";
+    let defaultGroundBase: GroundBase = "grass";
     let userSeed = 1337;
     let editorDoorRot = 0;
     let statusMessage = "Ready.";
@@ -815,7 +863,7 @@ const experiment: ExperimentModule = {
       "EDITOR: LMB drag paint, Shift+drag grass rect, D/X draw-erase, 1..8 brushes, G/9 rect tools, R rotate door, Ctrl+S save level. GAME: click doors, K save game, L load game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
 
     let levelModel = createDefaultLevelModel();
-    let groundOverrides = new Map<string, GroundCellOverride>();
+    let groundOverrides = createMockupTerrainOverrides(levelModel, userSeed);
     const savedLevelModelJson = localStorage.getItem(LEVEL_MODEL_STORAGE_KEY);
     if (savedLevelModelJson) {
       try {
@@ -989,6 +1037,23 @@ const experiment: ExperimentModule = {
       clearGroup(wallGroup);
 
       const doorCells = new Set(levelModel.placements.map((placement) => cellKey(placement.x, placement.y)));
+      const wallAdjacency = new Map<string, DirectionVector[]>();
+
+      const isSolidWallCell = (x: number, y: number): boolean => {
+        if (!inBounds(levelModel, x, y)) {
+          return false;
+        }
+        return getTileAt(levelModel, x, y) === TILE_WALL && !doorCells.has(cellKey(x, y));
+      };
+
+      const registerDirection = (x: number, y: number, dx: number, dy: number): void => {
+        const key = cellKey(x, y);
+        const existing = wallAdjacency.get(key) ?? [];
+        if (!existing.some((entry) => entry.dx === dx && entry.dy === dy)) {
+          existing.push({ dx, dy });
+        }
+        wallAdjacency.set(key, existing);
+      };
 
       for (let y = 0; y < levelModel.height; y += 1) {
         for (let x = 0; x < levelModel.width; x += 1) {
@@ -1011,17 +1076,74 @@ const experiment: ExperimentModule = {
           const floorTile = new THREE.Mesh(floorGeometry, terrainMaterial);
           floorTile.position.set(toWorldX(levelModel, x), 0.03, toWorldZ(levelModel, y));
           floorGroup.add(floorTile);
+        }
+      }
 
-          if (getTileAt(levelModel, x, y) !== TILE_WALL || doorCells.has(cellKey(x, y))) {
+      for (let y = 0; y < levelModel.height; y += 1) {
+        for (let x = 0; x < levelModel.width; x += 1) {
+          if (!isSolidWallCell(x, y)) {
             continue;
           }
 
-          const wall = structureMeshKit.createWallBlock();
+          const centerX = toWorldX(levelModel, x);
+          const centerZ = toWorldZ(levelModel, y);
 
-          wall.position.set(toWorldX(levelModel, x), 0, toWorldZ(levelModel, y));
-          wallGroup.add(wall);
+          if (!isSolidWallCell(x, y - 1)) {
+            const north = structureMeshKit.createWallSegment();
+            north.position.set(centerX, 0, centerZ - 0.5);
+            wallGroup.add(north);
+
+            registerDirection(x, y, 1, 0);
+            registerDirection(x + 1, y, -1, 0);
+          }
+
+          if (!isSolidWallCell(x, y + 1)) {
+            const south = structureMeshKit.createWallSegment();
+            south.position.set(centerX, 0, centerZ + 0.5);
+            wallGroup.add(south);
+
+            registerDirection(x, y + 1, 1, 0);
+            registerDirection(x + 1, y + 1, -1, 0);
+          }
+
+          if (!isSolidWallCell(x - 1, y)) {
+            const west = structureMeshKit.createWallSegment();
+            west.position.set(centerX - 0.5, 0, centerZ);
+            west.rotation.y = Math.PI * 0.5;
+            wallGroup.add(west);
+
+            registerDirection(x, y, 0, 1);
+            registerDirection(x, y + 1, 0, -1);
+          }
+
+          if (!isSolidWallCell(x + 1, y)) {
+            const east = structureMeshKit.createWallSegment();
+            east.position.set(centerX + 0.5, 0, centerZ);
+            east.rotation.y = Math.PI * 0.5;
+            wallGroup.add(east);
+
+            registerDirection(x + 1, y, 0, 1);
+            registerDirection(x + 1, y + 1, 0, -1);
+          }
         }
       }
+
+      wallAdjacency.forEach((directions, key) => {
+        if (directions.length < 2) {
+          return;
+        }
+
+        const [nodeXStr, nodeYStr] = key.split(",");
+        const nodeX = Number(nodeXStr);
+        const nodeY = Number(nodeYStr);
+        if (!Number.isFinite(nodeX) || !Number.isFinite(nodeY)) {
+          return;
+        }
+
+        const post = structureMeshKit.createJoinPost(directions.length);
+        post.position.set(toWorldNodeX(levelModel, nodeX), 0, toWorldNodeZ(levelModel, nodeY));
+        wallGroup.add(post);
+      });
     }
 
     function rebuildEditorDoorMeshes(): void {

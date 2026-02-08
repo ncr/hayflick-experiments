@@ -139,3 +139,16 @@ Preventive checklist:
   - runtime should compose from editor primitives, not alternate fallback forms
 - When exposing helper constructors (e.g. `createWallBlock`), build them from the same base primitives/materials.
 - Add mesh-kit tests that assert higher-level constructors are composite (not standalone alternate geometry).
+
+## 2026-02-08 - Tile-wall rendering should use boundary extraction, not per-cell wall blocks
+Root cause:
+- Rendering one full wall object per blocked tile produced dense "4-sided" visuals and duplicated internal walls.
+- This conflicted with intended segment-style room boundaries.
+
+Detection signal:
+- User reported runtime walls looked like multiple walls per tile instead of single boundary segments.
+
+Preventive checklist:
+- For tile occupancy walls, generate segments only on transitions from blocked -> non-blocked (N/E/S/W boundary extraction).
+- Treat door cells as openings in the wall boundary pass.
+- Add node-based join posts from segment adjacency so corners/T/crosses remain consistent.
