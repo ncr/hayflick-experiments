@@ -1057,7 +1057,9 @@ const experiment: ExperimentModule = {
             const key = `road:${tile.shape}:${tile.rotation}`;
             const matrices = autoTileBuckets.get(key) ?? [];
 
-            tempQuaternion.setFromAxisAngle(upAxis, tile.rotation * Math.PI * 0.5);
+            // Geometry UV "north" points toward -Z after the ground-plane rotation,
+            // so clockwise tile rotations must be applied as negative world-Y angles.
+            tempQuaternion.setFromAxisAngle(upAxis, -tile.rotation * Math.PI * 0.5);
             tempPosition.set(worldX, GROUND_TILE_HEIGHT + 0.012, worldZ);
             tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
             matrices.push(tempMatrix.clone());
@@ -1070,7 +1072,8 @@ const experiment: ExperimentModule = {
             const key = `sidewalk:${tile.shape}:${tile.rotation}`;
             const matrices = autoTileBuckets.get(key) ?? [];
 
-            tempQuaternion.setFromAxisAngle(upAxis, tile.rotation * Math.PI * 0.5);
+            // Keep sidewalk autotile rotation consistent with road autotile mapping.
+            tempQuaternion.setFromAxisAngle(upAxis, -tile.rotation * Math.PI * 0.5);
             tempPosition.set(worldX, GROUND_TILE_HEIGHT + 0.016, worldZ);
             tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
             matrices.push(tempMatrix.clone());
