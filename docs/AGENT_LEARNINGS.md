@@ -176,3 +176,17 @@ Preventive checklist:
 - Keep structure authoring data model shared across editor experiments (edge segments, not mixed tile/edge approaches).
 - Derive runtime doors from stable edge placement IDs, not cell positions.
 - Cover mode-switch/save-load behavior with browser smoke tests after changing editor model internals.
+
+## 2026-02-08 - Stringly discriminants and unsafe schema casts weakened parser/runtime guarantees
+Root cause:
+- Structure/placement kinds were checked with scattered string literals across modules.
+- Legacy bake migration (`schemaVersion:1`) used unchecked `as unknown as` casting instead of explicit validation.
+
+Detection signal:
+- Review feedback flagged repeated `segment.kind === "..."` patterns and weakly typed branching.
+- Parser accepted structure via broad casting paths that bypassed compile-time and runtime checks.
+
+Preventive checklist:
+- Export shared discriminant constants + type guards from promoted modules and reuse them everywhere.
+- Prefer exhaustive/switch or guard-based branching over ad-hoc string comparisons for union types.
+- Do not use `as unknown as` for persisted schema migration; parse and validate legacy payload fields explicitly.

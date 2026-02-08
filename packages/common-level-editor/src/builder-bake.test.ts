@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  LEVEL_BUILDER_DOOR_STATE,
+  LEVEL_BUILDER_STRUCTURE_KIND,
   bakeLevelForEcs,
   createEcsLevelResourceFromBake,
   deserializeBakedLevel,
+  isLevelBuilderDoorSegment,
+  isLevelBuilderDoorState,
+  isLevelBuilderGroundBase,
+  isLevelBuilderSolidSegment,
+  isLevelBuilderStructureKind,
   parseBakedLevel,
   type LevelBuilderBake,
   type LevelBuilderBakeInput
@@ -189,5 +196,42 @@ describe("parseBakedLevel", () => {
     ).toBeNull();
 
     expect(deserializeBakedLevel("{not-json")).toBeNull();
+  });
+});
+
+describe("builder-bake type guards", () => {
+  it("validates discriminants and segment predicates", () => {
+    expect(isLevelBuilderGroundBase("road")).toBe(true);
+    expect(isLevelBuilderGroundBase("lava")).toBe(false);
+
+    expect(isLevelBuilderDoorState(LEVEL_BUILDER_DOOR_STATE.OPEN)).toBe(true);
+    expect(isLevelBuilderDoorState("ajar")).toBe(false);
+
+    expect(isLevelBuilderStructureKind(LEVEL_BUILDER_STRUCTURE_KIND.WALL)).toBe(
+      true
+    );
+    expect(isLevelBuilderStructureKind("column")).toBe(false);
+
+    const doorSegment = {
+      kind: LEVEL_BUILDER_STRUCTURE_KIND.DOOR,
+      doorState: LEVEL_BUILDER_DOOR_STATE.CLOSED,
+      ax: 1,
+      az: 1,
+      bx: 2,
+      bz: 1
+    } as const;
+
+    const wallSegment = {
+      kind: LEVEL_BUILDER_STRUCTURE_KIND.WALL,
+      ax: 1,
+      az: 1,
+      bx: 1,
+      bz: 2
+    } as const;
+
+    expect(isLevelBuilderDoorSegment(doorSegment)).toBe(true);
+    expect(isLevelBuilderSolidSegment(doorSegment)).toBe(false);
+    expect(isLevelBuilderDoorSegment(wallSegment)).toBe(false);
+    expect(isLevelBuilderSolidSegment(wallSegment)).toBe(true);
   });
 });

@@ -15,6 +15,9 @@ import {
   createMutableGridLevelResource,
   createEditorStructureMeshKit,
   createEditorHud,
+  LEVEL_BUILDER_STRUCTURE_KIND as STRUCTURE_KIND,
+  isLevelBuilderDoorState,
+  isLevelBuilderStructureKind,
   setDoorVisualOpen,
   type LevelBuilderDoorState,
   type LevelBuilderGroundBase,
@@ -54,13 +57,6 @@ type StructureSegmentData =
   | { kind: "window" }
   | { kind: "door"; state: LevelBuilderDoorState };
 
-const STRUCTURE_KIND = {
-  WALL: "wall",
-  WINDOW: "window",
-  DOOR: "door"
-} as const;
-
-type StructureKind = StructureSegmentData["kind"];
 type DoorStructureSegment = Extract<StructureSegmentData, { kind: "door" }>;
 
 type GridCell = {
@@ -239,14 +235,6 @@ function structureFromBrush(brush: StructureBrush): StructureSegmentData {
 
 function assertNever(value: never, label: string): never {
   throw new Error(`Unhandled ${label}: ${String(value)}`);
-}
-
-function isStructureKind(value: unknown): value is StructureKind {
-  return (
-    value === STRUCTURE_KIND.WALL ||
-    value === STRUCTURE_KIND.WINDOW ||
-    value === STRUCTURE_KIND.DOOR
-  );
 }
 
 function isDoorStructureSegment(
@@ -430,7 +418,7 @@ function parseStructureState(
     }
 
     const key = edgeKey(ax, ay, bx, by);
-    if (!isStructureKind(kind)) {
+    if (!isLevelBuilderStructureKind(kind)) {
       return null;
     }
 
@@ -441,7 +429,7 @@ function parseStructureState(
         break;
       case STRUCTURE_KIND.DOOR: {
         const doorState = entry.doorState;
-        if (doorState !== "open" && doorState !== "closed") {
+        if (!isLevelBuilderDoorState(doorState)) {
           return null;
         }
         segments.set(key, { kind: STRUCTURE_KIND.DOOR, state: doorState });

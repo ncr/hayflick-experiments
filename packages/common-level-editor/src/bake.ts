@@ -1,5 +1,6 @@
 import { createMutableGridLevelResource, type MutableGridLevelResource } from "./grid-level";
 import {
+  LEVEL_MODEL_PLACEMENT_KIND,
   TILE_WALL,
   type LevelModel,
   type Placement
@@ -35,7 +36,7 @@ export function bakeTileLevel(levelModel: LevelModel, options?: { id?: string; v
   }));
 
   for (const placement of placements) {
-    if (placement.kind !== "door") {
+    if (placement.kind !== LEVEL_MODEL_PLACEMENT_KIND.DOOR) {
       continue;
     }
 

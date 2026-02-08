@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  LEVEL_MODEL_PLACEMENT_KIND,
   TILE_WALKABLE,
   TILE_WALL,
   addDoorPlacement,
@@ -8,6 +9,7 @@ import {
   createLevelModel,
   findDoorPlacementAt,
   getTileAt,
+  isDoorPlacementKind,
   nextPlacementId,
   parseLevelModel,
   removeDoorPlacementAt,
@@ -16,6 +18,11 @@ import {
 } from "./model";
 
 describe("model", () => {
+  it("exposes placement discriminant helpers", () => {
+    expect(isDoorPlacementKind(LEVEL_MODEL_PLACEMENT_KIND.DOOR)).toBe(true);
+    expect(isDoorPlacementKind("window")).toBe(false);
+  });
+
   it("creates and mutates a level grid with bounds checks", () => {
     const level = createLevelModel(4, 3);
     expect(level.width).toBe(4);

@@ -8,9 +8,13 @@ export type DoorPlacementData = {
   locked?: boolean;
 };
 
+export const LEVEL_MODEL_PLACEMENT_KIND = {
+  DOOR: "door"
+} as const;
+
 export type Placement = {
   id: string;
-  kind: "door";
+  kind: typeof LEVEL_MODEL_PLACEMENT_KIND.DOOR;
   x: number;
   y: number;
   rot?: number;
@@ -33,6 +37,14 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return value as Record<string, unknown>;
+}
+
+export function isDoorPlacementKind(value: unknown): value is Placement["kind"] {
+  return value === LEVEL_MODEL_PLACEMENT_KIND.DOOR;
+}
+
+function isDoorPlacementAt(placement: Placement, x: number, y: number): boolean {
+  return placement.kind === LEVEL_MODEL_PLACEMENT_KIND.DOOR && placement.x === x && placement.y === y;
 }
 
 export function createLevelModel(width: number, height: number): LevelModel {
@@ -68,7 +80,7 @@ export function createDefaultLevelModel(): LevelModel {
   // Door between rooms (shared wall) and one exterior door.
   addDoorPlacement(model, {
     id: "door-1",
-    kind: "door",
+    kind: LEVEL_MODEL_PLACEMENT_KIND.DOOR,
     x: 9,
     y: 8,
     rot: 1,
@@ -76,7 +88,7 @@ export function createDefaultLevelModel(): LevelModel {
   });
   addDoorPlacement(model, {
     id: "door-2",
-    kind: "door",
+    kind: LEVEL_MODEL_PLACEMENT_KIND.DOOR,
     x: 6,
     y: 6,
     rot: 0,
@@ -129,11 +141,11 @@ export function setTileAt(model: LevelModel, x: number, y: number, tile: TileTyp
 }
 
 export function findDoorPlacementAt(model: LevelModel, x: number, y: number): Placement | undefined {
-  return model.placements.find((placement) => placement.kind === "door" && placement.x === x && placement.y === y);
+  return model.placements.find((placement) => isDoorPlacementAt(placement, x, y));
 }
 
 export function removeDoorPlacementAt(model: LevelModel, x: number, y: number): boolean {
-  const index = model.placements.findIndex((placement) => placement.kind === "door" && placement.x === x && placement.y === y);
+  const index = model.placements.findIndex((placement) => isDoorPlacementAt(placement, x, y));
   if (index < 0) {
     return false;
   }
@@ -218,7 +230,7 @@ export function parseLevelModel(raw: unknown): LevelModel | null {
     const rot = placement.rot;
     const dataRaw = placement.data;
 
-    if (typeof id !== "string" || kind !== "door" || !isFiniteInt(x) || !isFiniteInt(y)) {
+    if (typeof id !== "string" || !isDoorPlacementKind(kind) || !isFiniteInt(x) || !isFiniteInt(y)) {
       return null;
     }
 
@@ -262,7 +274,7 @@ export function parseLevelModel(raw: unknown): LevelModel | null {
 
     parsedPlacements.push({
       id,
-      kind: "door",
+      kind: LEVEL_MODEL_PLACEMENT_KIND.DOOR,
       x,
       y,
       rot: parsedRot,

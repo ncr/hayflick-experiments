@@ -269,7 +269,7 @@ export function loadWorldFromLocalStorage(world: World, key = "ecs_demo_save"): 
   }
 
   try {
-    const raw = JSON.parse(json) as unknown;
+    const raw: unknown = JSON.parse(json);
     const migrated = migrateSave(raw);
     if (!migrated) {
       console.warn("[ecs] Save payload failed migration/validation.");

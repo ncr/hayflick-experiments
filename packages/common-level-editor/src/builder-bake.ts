@@ -3,10 +3,11 @@ import { createMutableGridLevelResource } from "./grid-level";
 
 export type LevelBuilderGroundBase = "floor" | "grass" | "road" | "sidewalk" | "building";
 export type LevelBuilderDoorState = "open" | "closed";
+export type LevelBuilderStructureKind = "wall" | "window" | "door";
 
 export type LevelBuilderStructureSegment =
   | {
-      kind: "wall" | "window";
+      kind: Exclude<LevelBuilderStructureKind, "door">;
       ax: number;
       az: number;
       bx: number;
@@ -20,6 +21,28 @@ export type LevelBuilderStructureSegment =
       bx: number;
       bz: number;
     };
+
+export type LevelBuilderDoorSegment = Extract<LevelBuilderStructureSegment, { kind: "door" }>;
+export type LevelBuilderSolidSegment = Exclude<LevelBuilderStructureSegment, { kind: "door" }>;
+
+export const LEVEL_BUILDER_GROUND_BASE = {
+  FLOOR: "floor",
+  GRASS: "grass",
+  ROAD: "road",
+  SIDEWALK: "sidewalk",
+  BUILDING: "building"
+} as const;
+
+export const LEVEL_BUILDER_DOOR_STATE = {
+  OPEN: "open",
+  CLOSED: "closed"
+} as const;
+
+export const LEVEL_BUILDER_STRUCTURE_KIND = {
+  WALL: "wall",
+  WINDOW: "window",
+  DOOR: "door"
+} as const;
 
 export type LevelBuilderGroundOverride = {
   x: number;
@@ -61,7 +84,7 @@ export type LevelBuilderBakeInput = {
 type LevelBuilderGroundOverrideV1 = {
   x: number;
   z: number;
-  type: "floor" | "grass";
+  type: typeof LEVEL_BUILDER_GROUND_BASE.FLOOR | typeof LEVEL_BUILDER_GROUND_BASE.GRASS;
 };
 
 type LevelBuilderBakeV1 = {
@@ -73,14 +96,14 @@ type LevelBuilderBakeV1 = {
     origin: number;
   };
   terrain: {
-    defaultGround: "floor" | "grass";
+    defaultGround: typeof LEVEL_BUILDER_GROUND_BASE.FLOOR | typeof LEVEL_BUILDER_GROUND_BASE.GRASS;
     overrides: LevelBuilderGroundOverrideV1[];
   };
   structures: LevelBuilderStructureSegment[];
   blockedCells: Array<{ x: number; z: number }>;
 };
 
-const GROUND_BASES = new Set<LevelBuilderGroundBase>(["floor", "grass", "road", "sidewalk", "building"]);
+const GROUND_BASES = new Set<LevelBuilderGroundBase>(Object.values(LEVEL_BUILDER_GROUND_BASE));
 
 function toCellKey(x: number, z: number): string {
   return `${x},${z}`;
@@ -97,12 +120,43 @@ function asFiniteNumber(value: unknown): number | null {
   return value;
 }
 
+export function isLevelBuilderGroundBase(value: unknown): value is LevelBuilderGroundBase {
+  return typeof value === "string" && GROUND_BASES.has(value as LevelBuilderGroundBase);
+}
+
+export function isLevelBuilderDoorState(value: unknown): value is LevelBuilderDoorState {
+  return value === LEVEL_BUILDER_DOOR_STATE.OPEN || value === LEVEL_BUILDER_DOOR_STATE.CLOSED;
+}
+
+export function isLevelBuilderStructureKind(value: unknown): value is LevelBuilderStructureKind {
+  return (
+    value === LEVEL_BUILDER_STRUCTURE_KIND.WALL ||
+    value === LEVEL_BUILDER_STRUCTURE_KIND.WINDOW ||
+    value === LEVEL_BUILDER_STRUCTURE_KIND.DOOR
+  );
+}
+
+export function isLevelBuilderDoorSegment(
+  value: LevelBuilderStructureSegment
+): value is LevelBuilderDoorSegment {
+  return value.kind === LEVEL_BUILDER_STRUCTURE_KIND.DOOR;
+}
+
+export function isLevelBuilderSolidSegment(
+  value: LevelBuilderStructureSegment
+): value is LevelBuilderSolidSegment {
+  return (
+    value.kind === LEVEL_BUILDER_STRUCTURE_KIND.WALL ||
+    value.kind === LEVEL_BUILDER_STRUCTURE_KIND.WINDOW
+  );
+}
+
 function asGroundBase(value: unknown): LevelBuilderGroundBase | null {
-  if (typeof value !== "string" || !GROUND_BASES.has(value as LevelBuilderGroundBase)) {
+  if (!isLevelBuilderGroundBase(value)) {
     return null;
   }
 
-  return value as LevelBuilderGroundBase;
+  return value;
 }
 
 function asGroundOverride(value: unknown): LevelBuilderGroundOverride | null {
@@ -163,11 +217,15 @@ function isStructureSegment(value: unknown): value is LevelBuilderStructureSegme
     return false;
   }
 
-  if (value.kind === "wall" || value.kind === "window") {
-    return true;
+  if (!isLevelBuilderStructureKind(value.kind)) {
+    return false;
   }
 
-  return value.kind === "door" && (value.doorState === "open" || value.doorState === "closed");
+  if (value.kind === LEVEL_BUILDER_STRUCTURE_KIND.DOOR) {
+    return isLevelBuilderDoorState(value.doorState);
+  }
+
+  return true;
 }
 
 function parseV2(raw: Record<string, unknown>): LevelBuilderBake | null {
@@ -260,8 +318,102 @@ function parseV1(raw: Record<string, unknown>): LevelBuilderBake | null {
     return null;
   }
 
-  const v1 = raw as unknown as LevelBuilderBakeV1;
-  return migrateV1ToV2(v1);
+  const level = raw.level;
+  const grid = raw.grid;
+  const terrain = raw.terrain;
+  const structures = raw.structures;
+  const blockedCells = raw.blockedCells;
+
+  if (!isRecord(level) || !isRecord(grid) || !isRecord(terrain) || !Array.isArray(structures) || !Array.isArray(blockedCells)) {
+    return null;
+  }
+
+  const levelId = typeof level.id === "string" ? level.id : null;
+  const levelVersion = asFiniteNumber(level.version);
+  const tiles = asFiniteNumber(grid.tiles);
+  const tileSize = asFiniteNumber(grid.tileSize);
+  const origin = asFiniteNumber(grid.origin);
+  const defaultGround = terrain.defaultGround;
+  const overridesRaw = terrain.overrides;
+
+  if (
+    levelId === null ||
+    levelVersion === null ||
+    tiles === null ||
+    tileSize === null ||
+    origin === null ||
+    !Array.isArray(overridesRaw)
+  ) {
+    return null;
+  }
+
+  if (defaultGround !== LEVEL_BUILDER_GROUND_BASE.FLOOR && defaultGround !== LEVEL_BUILDER_GROUND_BASE.GRASS) {
+    return null;
+  }
+
+  const overrides: LevelBuilderGroundOverrideV1[] = [];
+  for (const entry of overridesRaw) {
+    if (!isRecord(entry)) {
+      return null;
+    }
+
+    const x = asFiniteNumber(entry.x);
+    const z = asFiniteNumber(entry.z);
+    const type = entry.type;
+    if (
+      x === null ||
+      z === null ||
+      (type !== LEVEL_BUILDER_GROUND_BASE.FLOOR && type !== LEVEL_BUILDER_GROUND_BASE.GRASS)
+    ) {
+      return null;
+    }
+
+    overrides.push({ x, z, type });
+  }
+
+  const parsedStructures: LevelBuilderStructureSegment[] = [];
+  for (const entry of structures) {
+    if (!isStructureSegment(entry)) {
+      return null;
+    }
+    parsedStructures.push(entry);
+  }
+
+  const parsedBlocked: Array<{ x: number; z: number }> = [];
+  for (const cell of blockedCells) {
+    if (!isRecord(cell)) {
+      return null;
+    }
+
+    const x = asFiniteNumber(cell.x);
+    const z = asFiniteNumber(cell.z);
+    if (x === null || z === null) {
+      return null;
+    }
+
+    parsedBlocked.push({ x, z });
+  }
+
+  const legacy: LevelBuilderBakeV1 = {
+    schemaVersion: 1,
+    level: {
+      id: levelId,
+      version: levelVersion
+    },
+    grid: {
+      tiles,
+      tileSize,
+      origin
+    },
+    terrain: {
+      defaultGround,
+      overrides
+    },
+    structures: parsedStructures,
+    blockedCells: parsedBlocked
+  };
+
+  return migrateV1ToV2(legacy);
 }
 
 export function parseBakedLevel(raw: unknown): LevelBuilderBake | null {
@@ -274,7 +426,7 @@ export function parseBakedLevel(raw: unknown): LevelBuilderBake | null {
 
 export function deserializeBakedLevel(json: string): LevelBuilderBake | null {
   try {
-    const parsed = JSON.parse(json) as unknown;
+    const parsed: unknown = JSON.parse(json);
     return parseBakedLevel(parsed);
   } catch {
     return null;
@@ -314,7 +466,10 @@ export function bakeLevelForEcs(input: LevelBuilderBakeInput): LevelBuilderBake 
   const blocked = new Set<string>();
 
   for (const segment of input.structures) {
-    if (segment.kind === "door" && segment.doorState === "open") {
+    if (
+      isLevelBuilderDoorSegment(segment) &&
+      segment.doorState === LEVEL_BUILDER_DOOR_STATE.OPEN
+    ) {
       continue;
     }
 
