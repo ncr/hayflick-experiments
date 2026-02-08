@@ -163,3 +163,16 @@ Detection signal:
 Preventive checklist:
 - When intentionally redefining startup mockups, bump localStorage keys (or add migration/override logic).
 - Keep README save-key docs aligned with code constants.
+
+## 2026-02-08 - ECS-integrated editor diverged from standalone wall editing semantics
+Root cause:
+- `editor-game-ecs` still authored walls as blocked cells (`LevelModel.tiles`) while `level-builder` authored edge segments.
+- Rendering and interaction paths looked similar but produced different outcomes (one painted cell implied four wall edges).
+
+Detection signal:
+- User repeatedly reported that painting one wall in `editor-game-ecs` created four walls and did not match `level-builder`.
+
+Preventive checklist:
+- Keep structure authoring data model shared across editor experiments (edge segments, not mixed tile/edge approaches).
+- Derive runtime doors from stable edge placement IDs, not cell positions.
+- Cover mode-switch/save-load behavior with browser smoke tests after changing editor model internals.

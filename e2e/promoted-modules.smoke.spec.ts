@@ -8,7 +8,9 @@ async function focusStageCanvas(page: import("@playwright/test").Page) {
 }
 
 test.describe("promoted editor/game browser smoke", () => {
-  test("level-builder: rect grass fill and camera hotkey update HUD", async ({ page }) => {
+  test("level-builder: rect grass fill and camera hotkey update HUD", async ({
+    page
+  }) => {
     await page.goto("/#/exp/level-builder");
     const canvas = await focusStageCanvas(page);
     const stats = page.locator('[data-testid="level-builder-stats"]');
@@ -27,10 +29,14 @@ test.describe("promoted editor/game browser smoke", () => {
     await page.mouse.move(box.x + box.width * 0.84, box.y + box.height * 0.72);
     await page.mouse.up();
 
-    await expect.poll(async () => await stats.textContent()).toMatch(/Overrides:\s*[1-9]\d*/);
+    await expect
+      .poll(async () => await stats.textContent())
+      .toMatch(/Overrides:\s*[1-9]\d*/);
   });
 
-  test("editor-game-ecs: mode switch and game save/load keys", async ({ page }) => {
+  test("editor-game-ecs: mode switch and game save/load keys", async ({
+    page
+  }) => {
     await page.goto("/#/exp/editor-game-ecs");
     await focusStageCanvas(page);
 
@@ -42,9 +48,13 @@ test.describe("promoted editor/game browser smoke", () => {
     await expect(stats).toContainText("Mode: GAME");
 
     await page.keyboard.press("KeyK");
-    await expect(status).toContainText("Saved game to localStorage key: editor_game_ecs_game_save_v3");
+    await expect(status).toContainText(
+      "Saved game to localStorage key: editor_game_ecs_game_save_v4"
+    );
 
     await page.keyboard.press("KeyL");
-    await expect(status).toContainText("Loaded game save and restored player + door states by placementId.");
+    await expect(status).toContainText(
+      "Loaded game save and restored player + door states by placementId."
+    );
   });
 });
