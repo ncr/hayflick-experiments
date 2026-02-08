@@ -915,7 +915,7 @@ const experiment: ExperimentModule = {
   id: "editor-game-ecs",
   title: "Editor + Game (ECS)",
   tags: ["threejs", "editor", "ecs", "level-bake", "save-load"],
-  init: ({ mount, width, height, dpr }) => {
+  init: async ({ mount, width, height, dpr }) => {
     mount.style.position = "relative";
 
     const scene = new THREE.Scene();
@@ -2895,6 +2895,11 @@ const experiment: ExperimentModule = {
     rebuildBaseLevelMeshes();
     rebuildEditorStructureMeshes();
     updateCameraProjection();
+
+    await enterGame({
+      status: "Started in GAME mode. Press ESC to switch to EDITOR."
+    });
+
     syncHud();
     updateCursor();
 
