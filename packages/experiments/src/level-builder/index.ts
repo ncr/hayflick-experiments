@@ -8,8 +8,8 @@ import {
   serializeBakedLevel,
   type LevelBuilderBake,
   type LevelBuilderDoorState,
+  type LevelBuilderGroundBase,
   type LevelBuilderGroundOverride,
-  type LevelBuilderGroundType,
   type LevelBuilderStructureSegment
 } from "./bake";
 
@@ -19,20 +19,33 @@ export {
   serializeBakedLevel,
   type LevelBuilderBake,
   type LevelBuilderDoorState,
+  type LevelBuilderGroundBase,
   type LevelBuilderGroundOverride,
-  type LevelBuilderGroundType,
   type LevelBuilderStructureSegment
 };
 
 type StructureBrush = "wall" | "window" | "door-closed" | "door-open";
-type GroundTileType = LevelBuilderGroundType;
-type BrushType = StructureBrush | GroundTileType;
+type GroundPaintBrush = "floor" | "grass" | "road" | "sidewalk";
+type BrushType = StructureBrush | GroundPaintBrush;
 type ToolMode = "draw" | "erase";
+type RectToolMode = "none" | "grass-fill" | "building-footprint";
+
+type GroundCellOverride = {
+  base: LevelBuilderGroundBase;
+  variant?: number;
+};
 
 type StructureSegmentData =
   | { kind: "wall" }
   | { kind: "window" }
   | { kind: "door"; state: LevelBuilderDoorState };
+
+type AutoTileShape = "isolated" | "end" | "straight" | "corner" | "tee" | "cross";
+
+type AutoTileDescriptor = {
+  shape: AutoTileShape;
+  rotation: 0 | 1 | 2 | 3;
+};
 
 type GridEdge = {
   ax: number;
@@ -53,12 +66,15 @@ type DirectionVector = {
 
 type DragState = {
   pointerId: number;
-  mode: "paint" | "pan";
+  mode: "paint" | "pan" | "rect";
   paintMode: ToolMode;
   brush: BrushType;
   lastClientX: number;
   lastClientY: number;
   lastWorldPoint: THREE.Vector3 | null;
+  rectMode?: RectToolMode;
+  rectStartCell?: GridCell;
+  rectEndCell?: GridCell;
 };
 
 const GRID_TILES = 30;
@@ -68,7 +84,10 @@ const GRID_ORIGIN = -(GRID_TILES * TILE_SIZE) * 0.5;
 const WALL_HEIGHT = 2.8;
 const WALL_THICKNESS = 0.2;
 const GROUND_TILE_HEIGHT = 0.05;
-const DEFAULT_GROUND: GroundTileType = "floor";
+const GRASS_VARIANT_COUNT = 4;
+const ROAD_WIDTH = 0.24;
+const SIDEWALK_WIDTH = 0.34;
+const DEFAULT_GRASS_VARIANT_SEED = 0x41c64e6d;
 
 const ORTHO_HEIGHT = 28;
 const CAMERA_DISTANCE = 34;
@@ -84,11 +103,18 @@ const BRUSH_COLORS: Record<BrushType, number> = {
   "door-closed": 0xd09d68,
   "door-open": 0x95b882,
   floor: 0x7f95ab,
-  grass: 0x5ca063
+  grass: 0x5ca063,
+  road: 0x4e545d,
+  sidewalk: 0xb8b39f
 };
 
-function isGroundBrush(brush: BrushType): brush is GroundTileType {
-  return brush === "floor" || brush === "grass";
+const RECT_TOOL_COLORS: Record<Exclude<RectToolMode, "none">, number> = {
+  "grass-fill": 0x5ca063,
+  "building-footprint": 0xd4ba8a
+};
+
+function isGroundBrush(brush: BrushType): brush is GroundPaintBrush {
+  return brush === "floor" || brush === "grass" || brush === "road" || brush === "sidewalk";
 }
 
 function structureFromBrush(brush: StructureBrush): StructureSegmentData {
@@ -197,6 +223,120 @@ function createGridGeometry(step: number, y: number): THREE.BufferGeometry {
   return geometry;
 }
 
+function hashInt32(value: number): number {
+  let v = value | 0;
+  v ^= v >>> 16;
+  v = Math.imul(v, 0x7feb352d);
+  v ^= v >>> 15;
+  v = Math.imul(v, 0x846ca68b);
+  v ^= v >>> 16;
+  return v >>> 0;
+}
+
+function hashCell(seed: number, x: number, z: number): number {
+  let h = seed | 0;
+  h ^= Math.imul(x | 0, 0x9e3779b1);
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= Math.imul(z | 0, 0xc2b2ae35);
+  return hashInt32(h);
+}
+
+function hashRect(seed: number, ax: number, az: number, bx: number, bz: number): number {
+  let h = seed | 0;
+  h ^= Math.imul(ax | 0, 0x165667b1);
+  h ^= Math.imul(az | 0, 0xd3a2646c);
+  h ^= Math.imul(bx | 0, 0xfd7046c5);
+  h ^= Math.imul(bz | 0, 0xb55a4f09);
+  return hashInt32(h);
+}
+
+function computeGrassVariant(seed: number, x: number, z: number): number {
+  return hashCell(seed, x, z) % GRASS_VARIANT_COUNT;
+}
+
+function createPathTexture(colorHex: number, width: number, shape: AutoTileShape): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Failed to create path texture context.");
+  }
+
+  context.clearRect(0, 0, size, size);
+  context.fillStyle = "#00000000";
+  context.fillRect(0, 0, size, size);
+
+  const color = `#${colorHex.toString(16).padStart(6, "0")}`;
+  const center = size * 0.5;
+  const arm = Math.max(6, Math.floor(size * width * 0.5));
+
+  const drawArm = (north: boolean, east: boolean, south: boolean, west: boolean): void => {
+    context.fillStyle = color;
+    context.fillRect(center - arm, center - arm, arm * 2, arm * 2);
+
+    if (north) {
+      context.fillRect(center - arm, 0, arm * 2, center - arm);
+    }
+    if (east) {
+      context.fillRect(center + arm, center - arm, size - (center + arm), arm * 2);
+    }
+    if (south) {
+      context.fillRect(center - arm, center + arm, arm * 2, size - (center + arm));
+    }
+    if (west) {
+      context.fillRect(0, center - arm, center - arm, arm * 2);
+    }
+  };
+
+  if (shape === "isolated") {
+    drawArm(false, false, false, false);
+  } else if (shape === "end") {
+    drawArm(true, false, false, false);
+  } else if (shape === "straight") {
+    drawArm(true, false, true, false);
+  } else if (shape === "corner") {
+    drawArm(true, true, false, false);
+  } else if (shape === "tee") {
+    drawArm(true, true, false, true);
+  } else {
+    drawArm(true, true, true, true);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function describeAutoTile(mask: number): AutoTileDescriptor {
+  if (mask === 0) return { shape: "isolated", rotation: 0 };
+  if (mask === 1) return { shape: "end", rotation: 0 };
+  if (mask === 2) return { shape: "end", rotation: 1 };
+  if (mask === 4) return { shape: "end", rotation: 2 };
+  if (mask === 8) return { shape: "end", rotation: 3 };
+
+  if (mask === 5) return { shape: "straight", rotation: 0 };
+  if (mask === 10) return { shape: "straight", rotation: 1 };
+
+  if (mask === 3) return { shape: "corner", rotation: 0 };
+  if (mask === 6) return { shape: "corner", rotation: 1 };
+  if (mask === 12) return { shape: "corner", rotation: 2 };
+  if (mask === 9) return { shape: "corner", rotation: 3 };
+
+  if (mask === 11) return { shape: "tee", rotation: 0 };
+  if (mask === 7) return { shape: "tee", rotation: 1 };
+  if (mask === 14) return { shape: "tee", rotation: 2 };
+  if (mask === 13) return { shape: "tee", rotation: 3 };
+
+  return { shape: "cross", rotation: 0 };
+}
+
 const experiment: ExperimentModule = {
   id: "level-builder",
   title: "Level Builder",
@@ -266,11 +406,62 @@ const experiment: ExperimentModule = {
       roughness: 0.84,
       metalness: 0.05
     });
-    const groundGrassMaterial = new THREE.MeshStandardMaterial({
-      color: 0x5b9862,
-      roughness: 0.93,
-      metalness: 0.0
+    const grassVariantMaterials: THREE.MeshStandardMaterial[] = [
+      new THREE.MeshStandardMaterial({ color: 0x5b9862, roughness: 0.94, metalness: 0.0 }),
+      new THREE.MeshStandardMaterial({ color: 0x679f6b, roughness: 0.92, metalness: 0.0 }),
+      new THREE.MeshStandardMaterial({ color: 0x4e8d58, roughness: 0.95, metalness: 0.0 }),
+      new THREE.MeshStandardMaterial({ color: 0x76ab6c, roughness: 0.9, metalness: 0.0 })
+    ];
+    const groundBuildingMaterial = new THREE.MeshStandardMaterial({
+      color: 0xcab58e,
+      roughness: 0.74,
+      metalness: 0.03
     });
+    const groundRoadSubgradeMaterial = new THREE.MeshStandardMaterial({
+      color: 0x6a7480,
+      roughness: 0.82,
+      metalness: 0.03
+    });
+    const groundSidewalkSubgradeMaterial = new THREE.MeshStandardMaterial({
+      color: 0xb4b0a1,
+      roughness: 0.78,
+      metalness: 0.04
+    });
+
+    const autoTileShapes: AutoTileShape[] = ["isolated", "end", "straight", "corner", "tee", "cross"];
+    const autoTileTextures = new Map<string, THREE.CanvasTexture>();
+    const autoTileMaterials = new Map<string, THREE.MeshStandardMaterial>();
+    for (const shape of autoTileShapes) {
+      const roadTexture = createPathTexture(0x434a53, ROAD_WIDTH, shape);
+      autoTileTextures.set(`road:${shape}`, roadTexture);
+      autoTileMaterials.set(
+        `road:${shape}`,
+        new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          map: roadTexture,
+          alphaMap: roadTexture,
+          transparent: true,
+          roughness: 0.63,
+          metalness: 0.06,
+          depthWrite: false
+        })
+      );
+
+      const sidewalkTexture = createPathTexture(0xd2c8b1, SIDEWALK_WIDTH, shape);
+      autoTileTextures.set(`sidewalk:${shape}`, sidewalkTexture);
+      autoTileMaterials.set(
+        `sidewalk:${shape}`,
+        new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          map: sidewalkTexture,
+          alphaMap: sidewalkTexture,
+          transparent: true,
+          roughness: 0.86,
+          metalness: 0.01,
+          depthWrite: false
+        })
+      );
+    }
 
     const wallMaterial = new THREE.MeshStandardMaterial({
       color: 0xc4cfd8,
@@ -321,8 +512,16 @@ const experiment: ExperimentModule = {
       opacity: 0.62,
       depthWrite: false
     });
+    const rectPreviewMaterial = new THREE.MeshBasicMaterial({
+      color: RECT_TOOL_COLORS["grass-fill"],
+      transparent: true,
+      opacity: 0.26,
+      depthWrite: false
+    });
 
     const groundTileGeometry = new THREE.BoxGeometry(TILE_SIZE, GROUND_TILE_HEIGHT, TILE_SIZE);
+    const autoTileOverlayGeometry = new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE);
+    autoTileOverlayGeometry.rotateX(-Math.PI * 0.5);
 
     const wallCoreGeometry = new THREE.BoxGeometry(TILE_SIZE, 2.48, WALL_THICKNESS * 0.85);
     const wallCapGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.13, WALL_THICKNESS + 0.06);
@@ -346,6 +545,7 @@ const experiment: ExperimentModule = {
 
     const edgeHoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.05, WALL_THICKNESS);
     const cellHoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.04, TILE_SIZE);
+    const rectPreviewGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.03, TILE_SIZE);
 
     const edgeHoverMesh = new THREE.Mesh(edgeHoverGeometry, hoverMaterial);
     edgeHoverMesh.visible = false;
@@ -355,14 +555,22 @@ const experiment: ExperimentModule = {
     cellHoverMesh.visible = false;
     cellHoverMesh.position.y = 0.03;
 
+    const rectPreviewMesh = new THREE.Mesh(rectPreviewGeometry, rectPreviewMaterial);
+    rectPreviewMesh.visible = false;
+    rectPreviewMesh.position.y = 0.035;
+
     scene.add(edgeHoverMesh);
     scene.add(cellHoverMesh);
+    scene.add(rectPreviewMesh);
 
     const structureSegments = new Map<string, StructureSegmentData>();
-    const groundOverrides = new Map<string, GroundTileType>();
+    const groundOverrides = new Map<string, GroundCellOverride>();
 
     let activeBrush: BrushType = "wall";
     let activeTool: ToolMode = "draw";
+    let activeRectTool: RectToolMode = "none";
+    let defaultGroundBase: LevelBuilderGroundBase = "floor";
+    let userSeed = 1337;
     let spacePressed = false;
     let dragState: DragState | null = null;
 
@@ -391,6 +599,10 @@ const experiment: ExperimentModule = {
     const strokePoint = new THREE.Vector3();
     const nextWorldPoint = new THREE.Vector3();
     const tempMatrix = new THREE.Matrix4();
+    const tempQuaternion = new THREE.Quaternion();
+    const tempPosition = new THREE.Vector3();
+    const tempScale = new THREE.Vector3(1, 1, 1);
+    const upAxis = new THREE.Vector3(0, 1, 0);
 
     const hud = document.createElement("div");
     hud.style.position = "absolute";
@@ -434,7 +646,8 @@ const experiment: ExperimentModule = {
     leftPanel.appendChild(title);
 
     const helper = document.createElement("div");
-    helper.textContent = "Simplified but recognizable wall/window/door meshes with open+closed door states and ECS bake-ready export.";
+    helper.textContent =
+      "Isometric room + terrain editor: seeded grass rect fill, autotiled road/sidewalk paint, building footprint rects, and ECS bake-ready export.";
     helper.style.fontSize = "12px";
     helper.style.lineHeight = "1.3";
     helper.style.color = "rgba(207, 225, 240, 0.88)";
@@ -501,17 +714,134 @@ const experiment: ExperimentModule = {
       return { brush: activeBrush, mode: activeTool };
     }
 
-    function getGroundTypeAtCell(x: number, z: number): GroundTileType {
-      return groundOverrides.get(cellKey(x, z)) ?? DEFAULT_GROUND;
+    function areGroundOverridesEqual(a: GroundCellOverride, b: GroundCellOverride): boolean {
+      return a.base === b.base && a.variant === b.variant;
     }
 
-    function setGroundTypeAtCell(x: number, z: number, type: GroundTileType): void {
+    function normalizeGroundOverride(base: LevelBuilderGroundBase, variant?: number): GroundCellOverride {
+      if (base === "grass") {
+        return {
+          base,
+          variant: variant === undefined ? undefined : Math.max(0, Math.floor(variant))
+        };
+      }
+
+      return { base };
+    }
+
+    function getDefaultGroundAtCell(x: number, z: number): GroundCellOverride {
+      if (defaultGroundBase === "grass") {
+        return {
+          base: "grass",
+          variant: computeGrassVariant(userSeed ^ DEFAULT_GRASS_VARIANT_SEED, x, z)
+        };
+      }
+
+      return { base: defaultGroundBase };
+    }
+
+    function getGroundOverrideAtCell(x: number, z: number): GroundCellOverride {
+      const direct = groundOverrides.get(cellKey(x, z));
+      if (direct) {
+        return direct;
+      }
+
+      return getDefaultGroundAtCell(x, z);
+    }
+
+    function setGroundOverrideAtCell(x: number, z: number, override: GroundCellOverride): void {
       const key = cellKey(x, z);
-      if (type === DEFAULT_GROUND) {
+
+      const normalized = normalizeGroundOverride(override.base, override.variant);
+      const defaults = getDefaultGroundAtCell(x, z);
+      if (normalized.base === defaults.base && normalized.variant === defaults.variant) {
         groundOverrides.delete(key);
       } else {
-        groundOverrides.set(key, type);
+        groundOverrides.set(key, normalized);
       }
+    }
+
+    function getRoadMaskAtCell(x: number, z: number, base: "road" | "sidewalk"): number {
+      let mask = 0;
+
+      if (z > 0 && getGroundOverrideAtCell(x, z - 1).base === base) {
+        mask |= 1;
+      }
+      if (x < GRID_TILES - 1 && getGroundOverrideAtCell(x + 1, z).base === base) {
+        mask |= 2;
+      }
+      if (z < GRID_TILES - 1 && getGroundOverrideAtCell(x, z + 1).base === base) {
+        mask |= 4;
+      }
+      if (x > 0 && getGroundOverrideAtCell(x - 1, z).base === base) {
+        mask |= 8;
+      }
+
+      return mask;
+    }
+
+    function getRectBounds(a: GridCell, b: GridCell): { minX: number; maxX: number; minZ: number; maxZ: number } {
+      return {
+        minX: Math.min(a.x, b.x),
+        maxX: Math.max(a.x, b.x),
+        minZ: Math.min(a.z, b.z),
+        maxZ: Math.max(a.z, b.z)
+      };
+    }
+
+    function updateRectPreview(start: GridCell, end: GridCell, mode: RectToolMode): void {
+      const bounds = getRectBounds(start, end);
+      rectPreviewMesh.visible = mode !== "none";
+      if (mode === "none") {
+        return;
+      }
+
+      const width = bounds.maxX - bounds.minX + 1;
+      const height = bounds.maxZ - bounds.minZ + 1;
+      rectPreviewMesh.scale.set(width, 1, height);
+      rectPreviewMesh.position.set(
+        toWorldCellX(bounds.minX + (width - 1) * 0.5),
+        0.035,
+        toWorldCellZ(bounds.minZ + (height - 1) * 0.5)
+      );
+      rectPreviewMaterial.color.setHex(RECT_TOOL_COLORS[mode]);
+    }
+
+    function hideRectPreview(): void {
+      rectPreviewMesh.visible = false;
+    }
+
+    function applyGrassRectFill(start: GridCell, end: GridCell): void {
+      const bounds = getRectBounds(start, end);
+      const seededRect = hashRect(userSeed, bounds.minX, bounds.minZ, bounds.maxX, bounds.maxZ);
+      for (let z = bounds.minZ; z <= bounds.maxZ; z += 1) {
+        for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+          const variant = computeGrassVariant(seededRect, x, z);
+          setGroundOverrideAtCell(x, z, { base: "grass", variant });
+        }
+      }
+    }
+
+    function applyBuildingFootprintRect(start: GridCell, end: GridCell): void {
+      const bounds = getRectBounds(start, end);
+      for (let z = bounds.minZ; z <= bounds.maxZ; z += 1) {
+        for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+          setGroundOverrideAtCell(x, z, { base: "building" });
+        }
+      }
+    }
+
+    function runRectTool(mode: RectToolMode, start: GridCell, end: GridCell): void {
+      if (mode === "grass-fill") {
+        applyGrassRectFill(start, end);
+        bakeStatusMessage = `Filled grass rect (${start.x},${start.z}) -> (${end.x},${end.z}) with seed ${userSeed}.`;
+      } else if (mode === "building-footprint") {
+        applyBuildingFootprintRect(start, end);
+        bakeStatusMessage = `Painted building footprint rect (${start.x},${start.z}) -> (${end.x},${end.z}).`;
+      }
+
+      needsRebuild = true;
+      syncHud();
     }
 
     function clearGroup(group: THREE.Group): void {
@@ -664,23 +994,90 @@ const experiment: ExperimentModule = {
     function rebuildGroundTiles(): void {
       clearGroup(groundGroup);
 
-      const grassCount = groundOverrides.size;
-      const totalCells = GRID_TILES * GRID_TILES;
-      const floorCount = totalCells - grassCount;
-
-      const floorInstances = createGroundInstances(groundFloorMaterial, floorCount);
-      const grassInstances = createGroundInstances(groundGrassMaterial, grassCount);
-
-      let floorIndex = 0;
-      let grassIndex = 0;
+      const grassCounts = new Array<number>(GRASS_VARIANT_COUNT).fill(0);
+      let floorCount = 0;
+      let roadCount = 0;
+      let sidewalkCount = 0;
+      let buildingCount = 0;
 
       for (let z = 0; z < GRID_TILES; z += 1) {
         for (let x = 0; x < GRID_TILES; x += 1) {
-          tempMatrix.makeTranslation(toWorldCellX(x), GROUND_TILE_HEIGHT * 0.5, toWorldCellZ(z));
+          const ground = getGroundOverrideAtCell(x, z);
+          if (ground.base === "grass") {
+            const variant = ground.variant ?? computeGrassVariant(userSeed ^ DEFAULT_GRASS_VARIANT_SEED, x, z);
+            grassCounts[Math.max(0, variant % GRASS_VARIANT_COUNT)] += 1;
+          } else if (ground.base === "road") {
+            roadCount += 1;
+          } else if (ground.base === "sidewalk") {
+            sidewalkCount += 1;
+          } else if (ground.base === "building") {
+            buildingCount += 1;
+          } else {
+            floorCount += 1;
+          }
+        }
+      }
 
-          if (getGroundTypeAtCell(x, z) === "grass") {
-            grassInstances.setMatrixAt(grassIndex, tempMatrix);
-            grassIndex += 1;
+      const floorInstances = createGroundInstances(groundFloorMaterial, floorCount);
+      const roadInstances = createGroundInstances(groundRoadSubgradeMaterial, roadCount);
+      const sidewalkInstances = createGroundInstances(groundSidewalkSubgradeMaterial, sidewalkCount);
+      const buildingInstances = createGroundInstances(groundBuildingMaterial, buildingCount);
+      const grassVariantInstances = grassVariantMaterials.map((material, index) =>
+        createGroundInstances(material, grassCounts[index] ?? 0)
+      );
+
+      const autoTileBuckets = new Map<string, THREE.Matrix4[]>();
+
+      let floorIndex = 0;
+      let roadIndex = 0;
+      let sidewalkIndex = 0;
+      let buildingIndex = 0;
+      const grassIndexes = new Array<number>(GRASS_VARIANT_COUNT).fill(0);
+
+      for (let z = 0; z < GRID_TILES; z += 1) {
+        for (let x = 0; x < GRID_TILES; x += 1) {
+          const worldX = toWorldCellX(x);
+          const worldZ = toWorldCellZ(z);
+          const ground = getGroundOverrideAtCell(x, z);
+
+          tempMatrix.makeTranslation(worldX, GROUND_TILE_HEIGHT * 0.5, worldZ);
+
+          if (ground.base === "grass") {
+            const variant = Math.max(
+              0,
+              (ground.variant ?? computeGrassVariant(userSeed ^ DEFAULT_GRASS_VARIANT_SEED, x, z)) % GRASS_VARIANT_COUNT
+            );
+            grassVariantInstances[variant].setMatrixAt(grassIndexes[variant], tempMatrix);
+            grassIndexes[variant] += 1;
+          } else if (ground.base === "road") {
+            roadInstances.setMatrixAt(roadIndex, tempMatrix);
+            roadIndex += 1;
+
+            const tile = describeAutoTile(getRoadMaskAtCell(x, z, "road"));
+            const key = `road:${tile.shape}:${tile.rotation}`;
+            const matrices = autoTileBuckets.get(key) ?? [];
+
+            tempQuaternion.setFromAxisAngle(upAxis, tile.rotation * Math.PI * 0.5);
+            tempPosition.set(worldX, GROUND_TILE_HEIGHT + 0.012, worldZ);
+            tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
+            matrices.push(tempMatrix.clone());
+            autoTileBuckets.set(key, matrices);
+          } else if (ground.base === "sidewalk") {
+            sidewalkInstances.setMatrixAt(sidewalkIndex, tempMatrix);
+            sidewalkIndex += 1;
+
+            const tile = describeAutoTile(getRoadMaskAtCell(x, z, "sidewalk"));
+            const key = `sidewalk:${tile.shape}:${tile.rotation}`;
+            const matrices = autoTileBuckets.get(key) ?? [];
+
+            tempQuaternion.setFromAxisAngle(upAxis, tile.rotation * Math.PI * 0.5);
+            tempPosition.set(worldX, GROUND_TILE_HEIGHT + 0.016, worldZ);
+            tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
+            matrices.push(tempMatrix.clone());
+            autoTileBuckets.set(key, matrices);
+          } else if (ground.base === "building") {
+            buildingInstances.setMatrixAt(buildingIndex, tempMatrix);
+            buildingIndex += 1;
           } else {
             floorInstances.setMatrixAt(floorIndex, tempMatrix);
             floorIndex += 1;
@@ -689,10 +1086,40 @@ const experiment: ExperimentModule = {
       }
 
       floorInstances.instanceMatrix.needsUpdate = true;
-      grassInstances.instanceMatrix.needsUpdate = true;
+      roadInstances.instanceMatrix.needsUpdate = true;
+      sidewalkInstances.instanceMatrix.needsUpdate = true;
+      buildingInstances.instanceMatrix.needsUpdate = true;
+      for (const instance of grassVariantInstances) {
+        instance.instanceMatrix.needsUpdate = true;
+      }
 
       groundGroup.add(floorInstances);
-      groundGroup.add(grassInstances);
+      groundGroup.add(roadInstances);
+      groundGroup.add(sidewalkInstances);
+      groundGroup.add(buildingInstances);
+      for (const instance of grassVariantInstances) {
+        groundGroup.add(instance);
+      }
+
+      autoTileBuckets.forEach((matrices, key) => {
+        if (matrices.length === 0) {
+          return;
+        }
+
+        const [base, shape] = key.split(":");
+        const material = autoTileMaterials.get(`${base}:${shape}`);
+        if (!material) {
+          return;
+        }
+
+        const mesh = new THREE.InstancedMesh(autoTileOverlayGeometry, material, matrices.length);
+        mesh.count = matrices.length;
+        for (let index = 0; index < matrices.length; index += 1) {
+          mesh.setMatrixAt(index, matrices[index]);
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        groundGroup.add(mesh);
+      });
     }
 
     function rebuildStructures(): void {
@@ -763,6 +1190,25 @@ const experiment: ExperimentModule = {
       return { wall, window: windowCount, doorClosed, doorOpen };
     }
 
+    function computeGroundCounts(): Record<LevelBuilderGroundBase, number> {
+      const counts: Record<LevelBuilderGroundBase, number> = {
+        floor: 0,
+        grass: 0,
+        road: 0,
+        sidewalk: 0,
+        building: 0
+      };
+
+      for (let z = 0; z < GRID_TILES; z += 1) {
+        for (let x = 0; x < GRID_TILES; x += 1) {
+          const base = getGroundOverrideAtCell(x, z).base;
+          counts[base] += 1;
+        }
+      }
+
+      return counts;
+    }
+
     function createBakePayload(): LevelBuilderBake {
       const structures: LevelBuilderStructureSegment[] = [];
       for (const [segmentKey, segmentData] of structureSegments.entries()) {
@@ -789,9 +1235,14 @@ const experiment: ExperimentModule = {
       }
 
       const ground: LevelBuilderGroundOverride[] = [];
-      for (const [key, type] of groundOverrides.entries()) {
+      for (const [key, override] of groundOverrides.entries()) {
         const cell = parseCellKey(key);
-        ground.push({ x: cell.x, z: cell.z, type });
+        ground.push({
+          x: cell.x,
+          z: cell.z,
+          base: override.base,
+          variant: override.variant
+        });
       }
 
       return bakeLevelForEcs({
@@ -805,7 +1256,7 @@ const experiment: ExperimentModule = {
           origin: GRID_ORIGIN
         },
         terrain: {
-          defaultGround: DEFAULT_GROUND,
+          defaultGround: defaultGroundBase,
           overrides: ground
         },
         structures
@@ -833,6 +1284,8 @@ const experiment: ExperimentModule = {
 
     const toolButtons = new Map<ToolMode, HTMLButtonElement>();
     const brushButtons = new Map<BrushType, HTMLButtonElement>();
+    const rectToolButtons = new Map<Exclude<RectToolMode, "none">, HTMLButtonElement>();
+    const defaultGroundButtons = new Map<"floor" | "grass", HTMLButtonElement>();
 
     const toolRow = makeRow("Tool");
     const drawButton = makeButton("Draw (D)", () => {
@@ -870,6 +1323,17 @@ const experiment: ExperimentModule = {
     });
     const grassBrushButton = makeButton("Grass (5)", () => {
       activeBrush = "grass";
+      activeRectTool = "none";
+      syncHud();
+    });
+    const roadBrushButton = makeButton("Road (7)", () => {
+      activeBrush = "road";
+      activeRectTool = "none";
+      syncHud();
+    });
+    const sidewalkBrushButton = makeButton("Sidewalk (8)", () => {
+      activeBrush = "sidewalk";
+      activeRectTool = "none";
       syncHud();
     });
 
@@ -879,8 +1343,83 @@ const experiment: ExperimentModule = {
     brushButtons.set("door-open", doorOpenBrushButton);
     brushButtons.set("floor", floorBrushButton);
     brushButtons.set("grass", grassBrushButton);
+    brushButtons.set("road", roadBrushButton);
+    brushButtons.set("sidewalk", sidewalkBrushButton);
 
-    brushRow.append(wallBrushButton, windowBrushButton, doorClosedBrushButton, doorOpenBrushButton, floorBrushButton, grassBrushButton);
+    brushRow.append(
+      wallBrushButton,
+      windowBrushButton,
+      doorClosedBrushButton,
+      doorOpenBrushButton,
+      floorBrushButton,
+      grassBrushButton,
+      roadBrushButton,
+      sidewalkBrushButton
+    );
+
+    const rectRow = makeRow("Rect");
+    const rectOffButton = makeButton("Rect Off", () => {
+      activeRectTool = "none";
+      hideRectPreview();
+      syncHud();
+    });
+    const grassRectButton = makeButton("Grass Fill (G)", () => {
+      activeRectTool = "grass-fill";
+      syncHud();
+    });
+    const buildingRectButton = makeButton("Footprint (9)", () => {
+      activeRectTool = "building-footprint";
+      syncHud();
+    });
+    rectToolButtons.set("grass-fill", grassRectButton);
+    rectToolButtons.set("building-footprint", buildingRectButton);
+    rectRow.append(rectOffButton, grassRectButton, buildingRectButton);
+
+    const terrainRow = makeRow("Terrain");
+    const defaultFloorButton = makeButton("Default Floor", () => {
+      defaultGroundBase = "floor";
+      needsRebuild = true;
+      bakeStatusMessage = "Default ground set to floor.";
+      syncHud();
+    });
+    const defaultGrassButton = makeButton("Default Grass", () => {
+      defaultGroundBase = "grass";
+      needsRebuild = true;
+      bakeStatusMessage = "Default ground set to grass.";
+      syncHud();
+    });
+    defaultGroundButtons.set("floor", defaultFloorButton);
+    defaultGroundButtons.set("grass", defaultGrassButton);
+
+    const seedWrap = document.createElement("label");
+    seedWrap.style.display = "inline-flex";
+    seedWrap.style.alignItems = "center";
+    seedWrap.style.gap = "4px";
+    seedWrap.style.fontSize = "12px";
+    seedWrap.style.padding = "0 2px";
+    seedWrap.textContent = "Seed";
+
+    const seedInput = document.createElement("input");
+    seedInput.type = "number";
+    seedInput.value = String(userSeed);
+    seedInput.step = "1";
+    seedInput.style.width = "84px";
+    seedInput.style.border = "1px solid rgba(124, 155, 178, 0.62)";
+    seedInput.style.background = "rgba(20, 35, 49, 0.92)";
+    seedInput.style.color = "#d8e8f4";
+    seedInput.style.borderRadius = "6px";
+    seedInput.style.padding = "3px 6px";
+    seedInput.style.fontSize = "12px";
+    seedInput.addEventListener("change", () => {
+      const parsed = Number(seedInput.value);
+      userSeed = Number.isFinite(parsed) ? Math.floor(parsed) : 1337;
+      seedInput.value = String(userSeed);
+      needsRebuild = true;
+      bakeStatusMessage = `Seed updated to ${userSeed}.`;
+      syncHud();
+    });
+    seedWrap.appendChild(seedInput);
+    terrainRow.append(defaultFloorButton, defaultGrassButton, seedWrap);
 
     const cameraRow = makeRow("Camera");
     const rotateLeftButton = makeButton("Rotate -90 (Q)", () => {
@@ -906,7 +1445,7 @@ const experiment: ExperimentModule = {
       bakeStatusMessage = "Geometry cleared.";
       syncHud();
     });
-    const clearGroundButton = makeButton("Clear Grass (V)", () => {
+    const clearGroundButton = makeButton("Clear Ground (V)", () => {
       groundOverrides.clear();
       needsRebuild = true;
       bakeStatusMessage = "Terrain overrides cleared.";
@@ -937,7 +1476,7 @@ const experiment: ExperimentModule = {
     controlsHint.style.lineHeight = "1.35";
     controlsHint.style.opacity = "0.92";
     controlsHint.textContent =
-      "LMB drag: paint  •  RMB drag: erase  •  MMB or Space+drag: pan  •  Wheel: zoom (mouse), pan (trackpad)  •  B: bake";
+      "LMB drag: paint  •  Shift+drag: grass fill rect  •  G: grass rect  •  9: footprint rect  •  7/8: road/sidewalk  •  B: bake";
     rightPanel.appendChild(controlsHint);
 
     function syncHud(): void {
@@ -949,14 +1488,28 @@ const experiment: ExperimentModule = {
         setButtonActive(button, activeBrush === brush);
       });
 
+       rectToolButtons.forEach((button, mode) => {
+         setButtonActive(button, activeRectTool === mode);
+       });
+       setButtonActive(rectOffButton, activeRectTool === "none");
+
+       defaultGroundButtons.forEach((button, base) => {
+         setButtonActive(button, defaultGroundBase === base);
+       });
+
       const viewStep = (yawIndex % 4 + 4) % 4;
       const counts = computeStructureCounts();
+      const groundCounts = computeGroundCounts();
       stats.textContent = [
         `Walls: ${counts.wall}`,
         `Windows: ${counts.window}`,
         `Doors(C/O): ${counts.doorClosed}/${counts.doorOpen}`,
         `Junctions: ${intersectionCount}`,
-        `Grass: ${groundOverrides.size}`,
+        `Ground(F/G/R/S/B): ${groundCounts.floor}/${groundCounts.grass}/${groundCounts.road}/${groundCounts.sidewalk}/${groundCounts.building}`,
+        `Overrides: ${groundOverrides.size}`,
+        `Default: ${defaultGroundBase}`,
+        `Rect: ${activeRectTool}`,
+        `Seed: ${userSeed}`,
         `View: ${viewStep}/4`
       ].join("  •  ");
 
@@ -965,7 +1518,11 @@ const experiment: ExperimentModule = {
       bakeStatus.textContent = `Bake: ${bakeStatusMessage}${lastBake ? `  (blocked cells: ${blocked})` : ""}${probe}`;
 
       const { brush, mode } = getCurrentBrushAndMode();
-      hoverMaterial.color.setHex(mode === "erase" ? 0xff7e7e : BRUSH_COLORS[brush]);
+      if (activeRectTool !== "none") {
+        hoverMaterial.color.setHex(RECT_TOOL_COLORS[activeRectTool]);
+      } else {
+        hoverMaterial.color.setHex(mode === "erase" ? 0xff7e7e : BRUSH_COLORS[brush]);
+      }
     }
 
     function updateCameraProjection(): void {
@@ -1081,18 +1638,21 @@ const experiment: ExperimentModule = {
       };
     }
 
-    function applyGroundTool(cell: GridCell, mode: ToolMode, brush: GroundTileType): void {
+    function applyGroundTool(cell: GridCell, mode: ToolMode, brush: GroundPaintBrush): void {
+      const key = cellKey(cell.x, cell.z);
       if (mode === "erase") {
-        if (getGroundTypeAtCell(cell.x, cell.z) !== DEFAULT_GROUND) {
-          groundOverrides.delete(cellKey(cell.x, cell.z));
+        if (groundOverrides.delete(key)) {
           needsRebuild = true;
         }
         return;
       }
 
-      const before = getGroundTypeAtCell(cell.x, cell.z);
-      if (before !== brush) {
-        setGroundTypeAtCell(cell.x, cell.z, brush);
+      const variant = brush === "grass" ? computeGrassVariant(userSeed ^ 0x9e3779b9, cell.x, cell.z) : undefined;
+      const next = normalizeGroundOverride(brush, variant);
+      const before = getGroundOverrideAtCell(cell.x, cell.z);
+
+      if (!areGroundOverridesEqual(before, next)) {
+        setGroundOverrideAtCell(cell.x, cell.z, next);
         needsRebuild = true;
       }
     }
@@ -1141,6 +1701,18 @@ const experiment: ExperimentModule = {
       }
     }
 
+    function resolveRectModeForPointer(event: PointerEvent): RectToolMode {
+      if (activeRectTool !== "none") {
+        return activeRectTool;
+      }
+
+      if (event.shiftKey) {
+        return "grass-fill";
+      }
+
+      return "none";
+    }
+
     function hideHover(): void {
       edgeHoverMesh.visible = false;
       cellHoverMesh.visible = false;
@@ -1149,6 +1721,21 @@ const experiment: ExperimentModule = {
     function updateHoverFromWorld(world: THREE.Vector3 | null): void {
       if (!world) {
         hideHover();
+        return;
+      }
+
+      const rectMode = dragState?.mode === "rect" ? dragState.rectMode ?? "none" : activeRectTool;
+      if (rectMode !== "none") {
+        const cell = pickCellFromWorld(world);
+        if (!cell) {
+          hideHover();
+          return;
+        }
+
+        cellHoverMesh.visible = true;
+        edgeHoverMesh.visible = false;
+        cellHoverMesh.position.set(toWorldCellX(cell.x), 0.03, toWorldCellZ(cell.z));
+        hoverMaterial.color.setHex(RECT_TOOL_COLORS[rectMode]);
         return;
       }
 
@@ -1196,6 +1783,11 @@ const experiment: ExperimentModule = {
         return;
       }
 
+      if (activeRectTool !== "none" || dragState?.mode === "rect") {
+        renderer.domElement.style.cursor = "crosshair";
+        return;
+      }
+
       const { mode } = getCurrentBrushAndMode();
       renderer.domElement.style.cursor = mode === "erase" ? "not-allowed" : "crosshair";
     }
@@ -1211,6 +1803,7 @@ const experiment: ExperimentModule = {
       const startWorld = getWorldAtClient(event.clientX, event.clientY);
       const shouldPan = event.button === 1 || spacePressed;
       const paintMode: ToolMode = event.button === 2 ? "erase" : activeTool;
+      const rectMode = event.button === 0 ? resolveRectModeForPointer(event) : "none";
 
       if (shouldPan) {
         dragState = {
@@ -1223,6 +1816,32 @@ const experiment: ExperimentModule = {
           lastWorldPoint: startWorld
         };
         updateCursor();
+        event.preventDefault();
+        return;
+      }
+
+      if (rectMode !== "none") {
+        const startCell = startWorld ? pickCellFromWorld(startWorld) : null;
+        if (!startCell) {
+          event.preventDefault();
+          return;
+        }
+
+        dragState = {
+          pointerId: event.pointerId,
+          mode: "rect",
+          paintMode,
+          brush: activeBrush,
+          rectMode,
+          rectStartCell: startCell,
+          rectEndCell: startCell,
+          lastClientX: event.clientX,
+          lastClientY: event.clientY,
+          lastWorldPoint: startWorld
+        };
+        updateRectPreview(startCell, startCell, rectMode);
+        updateCursor();
+        syncHud();
         event.preventDefault();
         return;
       }
@@ -1261,6 +1880,18 @@ const experiment: ExperimentModule = {
           return;
         }
 
+        if (dragState.mode === "rect") {
+          const world = getWorldAtClient(event.clientX, event.clientY);
+          const cell = world ? pickCellFromWorld(world) : null;
+          if (cell && dragState.rectStartCell) {
+            dragState.rectEndCell = cell;
+            updateRectPreview(dragState.rectStartCell, cell, dragState.rectMode ?? "none");
+          }
+          updateHoverFromWorld(world);
+          event.preventDefault();
+          return;
+        }
+
         const world = getWorldAtClient(event.clientX, event.clientY);
         if (world) {
           if (dragState.lastWorldPoint) {
@@ -1281,8 +1912,20 @@ const experiment: ExperimentModule = {
 
     function finishPointer(pointerId: number): void {
       if (dragState && dragState.pointerId === pointerId) {
+        if (
+          dragState.mode === "rect" &&
+          dragState.rectMode &&
+          dragState.rectMode !== "none" &&
+          dragState.rectStartCell &&
+          dragState.rectEndCell
+        ) {
+          runRectTool(dragState.rectMode, dragState.rectStartCell, dragState.rectEndCell);
+          hideRectPreview();
+        }
+
         dragState = null;
       }
+      hideRectPreview();
       updateCursor();
       syncHud();
     }
@@ -1292,7 +1935,12 @@ const experiment: ExperimentModule = {
     }
 
     function handlePointerCancel(event: PointerEvent): void {
-      finishPointer(event.pointerId);
+      if (dragState && dragState.pointerId === event.pointerId) {
+        dragState = null;
+      }
+      hideRectPreview();
+      updateCursor();
+      syncHud();
     }
 
     function isLikelyTrackpad(event: WheelEvent): boolean {
@@ -1348,26 +1996,50 @@ const experiment: ExperimentModule = {
         event.preventDefault();
       } else if (event.code === "Digit1") {
         activeBrush = "wall";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit2") {
         activeBrush = "window";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit3") {
         activeBrush = "door-closed";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit4") {
         activeBrush = "floor";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit5") {
         activeBrush = "grass";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit6") {
         activeBrush = "door-open";
+        activeRectTool = "none";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit7") {
+        activeBrush = "road";
+        activeRectTool = "none";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit8") {
+        activeBrush = "sidewalk";
+        activeRectTool = "none";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit9") {
+        activeRectTool = "building-footprint";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "KeyG") {
+        activeRectTool = "grass-fill";
         syncHud();
         event.preventDefault();
       } else if (event.code === "KeyD") {
@@ -1487,6 +2159,8 @@ const experiment: ExperimentModule = {
         jointCapGeometry,
         edgeHoverGeometry,
         cellHoverGeometry,
+        rectPreviewGeometry,
+        autoTileOverlayGeometry,
         floorBaseGeometry,
         minorGridGeometry,
         majorGridGeometry
@@ -1501,7 +2175,10 @@ const experiment: ExperimentModule = {
         minorGrid.material as THREE.Material,
         majorGrid.material as THREE.Material,
         groundFloorMaterial,
-        groundGrassMaterial,
+        ...grassVariantMaterials,
+        groundBuildingMaterial,
+        groundRoadSubgradeMaterial,
+        groundSidewalkSubgradeMaterial,
         wallMaterial,
         wallTrimMaterial,
         windowFrameMaterial,
@@ -1510,11 +2187,17 @@ const experiment: ExperimentModule = {
         doorLeafMaterial,
         doorHandleMaterial,
         jointMaterial,
-        hoverMaterial
+        hoverMaterial,
+        rectPreviewMaterial,
+        ...autoTileMaterials.values()
       ];
 
       for (const material of materials) {
         material.dispose();
+      }
+
+      for (const texture of autoTileTextures.values()) {
+        texture.dispose();
       }
 
       renderer.dispose();

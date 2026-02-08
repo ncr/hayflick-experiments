@@ -1,7 +1,7 @@
 import type { LevelResource, LevelSnapshot } from "@common/gameplay";
 import { createMutableGridLevelResource } from "@common/level-editor";
 
-export type LevelBuilderGroundType = "floor" | "grass";
+export type LevelBuilderGroundBase = "floor" | "grass" | "road" | "sidewalk" | "building";
 export type LevelBuilderDoorState = "open" | "closed";
 
 export type LevelBuilderStructureSegment =
@@ -24,11 +24,12 @@ export type LevelBuilderStructureSegment =
 export type LevelBuilderGroundOverride = {
   x: number;
   z: number;
-  type: LevelBuilderGroundType;
+  base: LevelBuilderGroundBase;
+  variant?: number;
 };
 
 export type LevelBuilderBake = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   level: LevelSnapshot;
   grid: {
     tiles: number;
@@ -36,7 +37,7 @@ export type LevelBuilderBake = {
     origin: number;
   };
   terrain: {
-    defaultGround: LevelBuilderGroundType;
+    defaultGround: LevelBuilderGroundBase;
     overrides: LevelBuilderGroundOverride[];
   };
   structures: LevelBuilderStructureSegment[];
@@ -51,14 +52,205 @@ type BakeInput = {
     origin: number;
   };
   terrain: {
-    defaultGround: LevelBuilderGroundType;
+    defaultGround: LevelBuilderGroundBase;
     overrides: LevelBuilderGroundOverride[];
   };
   structures: LevelBuilderStructureSegment[];
 };
 
+type LevelBuilderGroundOverrideV1 = {
+  x: number;
+  z: number;
+  type: "floor" | "grass";
+};
+
+type LevelBuilderBakeV1 = {
+  schemaVersion: 1;
+  level: LevelSnapshot;
+  grid: {
+    tiles: number;
+    tileSize: number;
+    origin: number;
+  };
+  terrain: {
+    defaultGround: "floor" | "grass";
+    overrides: LevelBuilderGroundOverrideV1[];
+  };
+  structures: LevelBuilderStructureSegment[];
+  blockedCells: Array<{ x: number; z: number }>;
+};
+
+const GROUND_BASES = new Set<LevelBuilderGroundBase>(["floor", "grass", "road", "sidewalk", "building"]);
+
 function toCellKey(x: number, z: number): string {
   return `${x},${z}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return value;
+}
+
+function asGroundBase(value: unknown): LevelBuilderGroundBase | null {
+  if (typeof value !== "string" || !GROUND_BASES.has(value as LevelBuilderGroundBase)) {
+    return null;
+  }
+
+  return value as LevelBuilderGroundBase;
+}
+
+function asGroundOverride(value: unknown): LevelBuilderGroundOverride | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const x = asFiniteNumber(value.x);
+  const z = asFiniteNumber(value.z);
+  const base = asGroundBase(value.base);
+
+  if (x === null || z === null || base === null) {
+    return null;
+  }
+
+  const variantRaw = value.variant;
+  const variant = variantRaw === undefined ? undefined : asFiniteNumber(variantRaw);
+  if (variantRaw !== undefined && variant === null) {
+    return null;
+  }
+
+  return {
+    x,
+    z,
+    base,
+    variant: variant === null || variant === undefined ? undefined : Math.max(0, Math.floor(variant))
+  };
+}
+
+function migrateV1ToV2(v1: LevelBuilderBakeV1): LevelBuilderBake {
+  return {
+    schemaVersion: 2,
+    level: v1.level,
+    grid: v1.grid,
+    terrain: {
+      defaultGround: v1.terrain.defaultGround,
+      overrides: v1.terrain.overrides.map((entry) => ({
+        x: entry.x,
+        z: entry.z,
+        base: entry.type
+      }))
+    },
+    structures: v1.structures,
+    blockedCells: v1.blockedCells
+  };
+}
+
+function parseV2(raw: Record<string, unknown>): LevelBuilderBake | null {
+  const schemaVersion = asFiniteNumber(raw.schemaVersion);
+  if (schemaVersion !== 2) {
+    return null;
+  }
+
+  const level = raw.level;
+  const grid = raw.grid;
+  const terrain = raw.terrain;
+  const structures = raw.structures;
+  const blockedCells = raw.blockedCells;
+
+  if (!isRecord(level) || !isRecord(grid) || !isRecord(terrain) || !Array.isArray(structures) || !Array.isArray(blockedCells)) {
+    return null;
+  }
+
+  const levelId = typeof level.id === "string" ? level.id : null;
+  const levelVersion = asFiniteNumber(level.version);
+  const tiles = asFiniteNumber(grid.tiles);
+  const tileSize = asFiniteNumber(grid.tileSize);
+  const origin = asFiniteNumber(grid.origin);
+
+  if (levelId === null || levelVersion === null || tiles === null || tileSize === null || origin === null) {
+    return null;
+  }
+
+  const defaultGround = asGroundBase(terrain.defaultGround);
+  const overridesRaw = terrain.overrides;
+  if (defaultGround === null || !Array.isArray(overridesRaw)) {
+    return null;
+  }
+
+  const overrides: LevelBuilderGroundOverride[] = [];
+  for (const entry of overridesRaw) {
+    const override = asGroundOverride(entry);
+    if (!override) {
+      return null;
+    }
+    overrides.push(override);
+  }
+
+  const parsedBlocked: Array<{ x: number; z: number }> = [];
+  for (const cell of blockedCells) {
+    if (!isRecord(cell)) {
+      return null;
+    }
+
+    const x = asFiniteNumber(cell.x);
+    const z = asFiniteNumber(cell.z);
+    if (x === null || z === null) {
+      return null;
+    }
+
+    parsedBlocked.push({ x, z });
+  }
+
+  return {
+    schemaVersion: 2,
+    level: {
+      id: levelId,
+      version: levelVersion
+    },
+    grid: {
+      tiles,
+      tileSize,
+      origin
+    },
+    terrain: {
+      defaultGround,
+      overrides
+    },
+    structures: structures as LevelBuilderStructureSegment[],
+    blockedCells: parsedBlocked
+  };
+}
+
+function parseV1(raw: Record<string, unknown>): LevelBuilderBake | null {
+  const schemaVersion = asFiniteNumber(raw.schemaVersion);
+  if (schemaVersion !== 1) {
+    return null;
+  }
+
+  const v1 = raw as unknown as LevelBuilderBakeV1;
+  return migrateV1ToV2(v1);
+}
+
+export function parseBakedLevel(raw: unknown): LevelBuilderBake | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+
+  return parseV2(raw) ?? parseV1(raw);
+}
+
+export function deserializeBakedLevel(json: string): LevelBuilderBake | null {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return parseBakedLevel(parsed);
+  } catch {
+    return null;
+  }
 }
 
 function markBlocked(
@@ -118,7 +310,7 @@ export function bakeLevelForEcs(input: BakeInput): LevelBuilderBake {
     .sort((a, b) => (a.z - b.z) || (a.x - b.x));
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     level: input.level,
     grid: input.grid,
     terrain: {
