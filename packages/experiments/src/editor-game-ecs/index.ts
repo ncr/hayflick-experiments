@@ -1252,14 +1252,6 @@ const experiment: ExperimentModule = {
       runtime.systems.movementSystem(world);
       runtime.systems.eventSystem(world);
 
-      if (world.input.savePressed) {
-        saveGameNow();
-      }
-
-      if (world.input.loadPressed) {
-        loadGameNow();
-      }
-
       const player = world.transforms.get(runtime.playerEid);
       if (player) {
         playerMesh.position.set(toWorldCoordX(levelModel, player.x), 0, toWorldCoordZ(levelModel, player.y));
@@ -1473,6 +1465,20 @@ const experiment: ExperimentModule = {
         event.preventDefault();
         syncHud();
         return;
+      }
+
+      if (mode === "GAME" && !event.repeat) {
+        if (event.code === "KeyK") {
+          event.preventDefault();
+          saveGameNow();
+          return;
+        }
+
+        if (event.code === "KeyL") {
+          event.preventDefault();
+          loadGameNow();
+          return;
+        }
       }
 
       if (mode !== "EDITOR") {
