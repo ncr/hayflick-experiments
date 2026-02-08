@@ -108,6 +108,7 @@ export type LevelBuilderBakeInput = {
 
 const GROUND_BASES = new Set<LevelBuilderGroundBase>(Object.values(LEVEL_BUILDER_GROUND_BASE));
 const DOOR_THICKNESS = 0.18;
+const WALL_THICKNESS = 0.18;
 
 function toCellKey(x: number, z: number): string {
   return `${x},${z}`;
@@ -313,50 +314,50 @@ function deriveDoorColliderDesc(segment: LevelBuilderDoorSegment): LevelBuilderC
   };
 }
 
-function linkedCellsForDoorSegment(segment: LevelBuilderDoorSegment): Array<{ x: number; z: number }> {
-  const cells: Array<{ x: number; z: number }> = [];
+function deriveSolidSegmentColliderDesc(segment: LevelBuilderSolidSegment): LevelBuilderColliderDesc {
+  const minX = Math.min(segment.ax, segment.bx);
+  const maxX = Math.max(segment.ax, segment.bx);
+  const minY = Math.min(segment.az, segment.bz);
+  const maxY = Math.max(segment.az, segment.bz);
 
-  if (segment.ax === segment.bx) {
-    const z = Math.min(segment.az, segment.bz);
-    cells.push({ x: segment.ax - 1, z });
-    cells.push({ x: segment.ax, z });
-    return cells;
-  }
+  const isVertical = segment.ax === segment.bx;
+  const width = isVertical ? WALL_THICKNESS : Math.max(0.1, maxX - minX);
+  const height = isVertical ? Math.max(0.1, maxY - minY) : WALL_THICKNESS;
+  const x = isVertical ? segment.ax : minX + (maxX - minX) * 0.5;
+  const y = isVertical ? minY + (maxY - minY) * 0.5 : segment.az;
 
-  const x = Math.min(segment.ax, segment.bx);
-  cells.push({ x, z: segment.az - 1 });
-  cells.push({ x, z: segment.az });
-  return cells;
+  return {
+    kind: LEVEL_BUILDER_COLLIDER_KIND.RECT,
+    x,
+    y,
+    w: width,
+    h: height,
+    layer: "solid"
+  };
 }
 
 function deriveColliderDescs(
-  blockedCells: Array<{ x: number; z: number }>,
+  _blockedCells: Array<{ x: number; z: number }>,
   structures: LevelBuilderStructureSegment[]
 ): LevelBuilderColliderDesc[] {
-  const doorLinkedCells = new Set<string>();
-  for (const segment of structures) {
-    if (!isLevelBuilderDoorSegment(segment)) {
-      continue;
-    }
-    for (const cell of linkedCellsForDoorSegment(segment)) {
-      doorLinkedCells.add(toCellKey(cell.x, cell.z));
-    }
-  }
-
-  const colliders: LevelBuilderColliderDesc[] = blockedCells
-    .filter((cell) => !doorLinkedCells.has(toCellKey(cell.x, cell.z)))
-    .map((cell) => ({
-      kind: LEVEL_BUILDER_COLLIDER_KIND.RECT,
-      x: cell.x + 0.5,
-      y: cell.z + 0.5,
-      w: 1,
-      h: 1,
-      layer: "solid"
-    }));
-
+  const colliders: LevelBuilderColliderDesc[] = [];
+  const seenSolidSegments = new Set<string>();
   const seenDoors = new Set<string>();
+
   for (const segment of structures) {
-    if (!isLevelBuilderDoorSegment(segment)) {
+    if (isLevelBuilderSolidSegment(segment)) {
+      const solidKey = levelBuilderEdgeKey(
+        segment.ax,
+        segment.az,
+        segment.bx,
+        segment.bz
+      );
+      if (seenSolidSegments.has(solidKey)) {
+        continue;
+      }
+
+      seenSolidSegments.add(solidKey);
+      colliders.push(deriveSolidSegmentColliderDesc(segment));
       continue;
     }
 

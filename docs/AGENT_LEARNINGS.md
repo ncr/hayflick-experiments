@@ -263,3 +263,16 @@ Preventive checklist:
 - Default promoted editor/game modules to strict current-schema parsing unless migration is explicitly requested.
 - Avoid carrying legacy schema branches in experiments during active prototyping.
 - Keep save/bake contracts simple and version-gated to the current format only.
+
+## 2026-02-08 - Wall physics felt tile-wide because colliders were derived from blocked cells
+Root cause:
+- Physics collider generation used baked `blockedCells` (tile adjacency) for wall collisions.
+- This produced full-tile colliders instead of thin edge-aligned wall volumes.
+
+Detection signal:
+- User reported walls still behaved as occupied floor tiles and collisions did not match visible wall segments.
+
+Preventive checklist:
+- Derive wall/window physics colliders from structure edge segments, not blocked-cell adjacency.
+- Keep door colliders independent and toggle-able so opening doors actually creates a passable aperture.
+- Validate collider dimensions (`w` or `h` thin) in bake tests for wall segments.

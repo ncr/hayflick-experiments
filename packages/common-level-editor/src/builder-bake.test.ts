@@ -93,7 +93,14 @@ describe("bakeLevelForEcs", () => {
     const rectColliders = bake.colliderDescs.filter((desc) => desc.kind === "rect");
     const doorColliders = bake.colliderDescs.filter((desc) => desc.kind === "door");
 
-    expect(rectColliders.length).toBeLessThan(bake.blockedCells.length);
+    expect(rectColliders).toHaveLength(1);
+    expect(rectColliders[0]).toMatchObject({
+      kind: "rect",
+      layer: "solid"
+    });
+    // Wall/window colliders are thin edge colliders, not full-tile blockers.
+    expect(rectColliders[0]?.w === 1 || rectColliders[0]?.h === 1).toBe(true);
+    expect(rectColliders[0]?.w < 1 || rectColliders[0]?.h < 1).toBe(true);
     expect(doorColliders).toHaveLength(1);
     expect(doorColliders[0]).toMatchObject({
       kind: "door",
