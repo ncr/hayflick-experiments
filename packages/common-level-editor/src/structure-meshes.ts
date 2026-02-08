@@ -22,9 +22,6 @@ type EditorStructureGeometries = {
   wallCore: THREE.BoxGeometry;
   wallCap: THREE.BoxGeometry;
   wallBase: THREE.BoxGeometry;
-  wallBlockCore: THREE.BoxGeometry;
-  wallBlockCap: THREE.BoxGeometry;
-  wallBlockBase: THREE.BoxGeometry;
   windowLower: THREE.BoxGeometry;
   windowUpper: THREE.BoxGeometry;
   windowSide: THREE.BoxGeometry;
@@ -51,6 +48,8 @@ export type EditorStructureMeshKit = {
 
 const WALL_HEIGHT = 2.8;
 const WALL_THICKNESS = 0.2;
+const WALL_BLOCK_EDGE_OFFSET = 0.4;
+const WALL_BLOCK_CORNER_OFFSET = 0.5;
 
 function createMaterials(): EditorStructureMaterials {
   return {
@@ -107,9 +106,6 @@ function createGeometries(): EditorStructureGeometries {
     wallCore: new THREE.BoxGeometry(1, 2.48, WALL_THICKNESS * 0.85),
     wallCap: new THREE.BoxGeometry(1, 0.13, WALL_THICKNESS + 0.06),
     wallBase: new THREE.BoxGeometry(1, 0.18, WALL_THICKNESS + 0.04),
-    wallBlockCore: new THREE.BoxGeometry(0.94, 2.48, 0.94),
-    wallBlockCap: new THREE.BoxGeometry(1, 0.13, 1),
-    wallBlockBase: new THREE.BoxGeometry(1, 0.18, 1),
     windowLower: new THREE.BoxGeometry(1, 0.96, WALL_THICKNESS * 0.88),
     windowUpper: new THREE.BoxGeometry(1, 0.76, WALL_THICKNESS * 0.88),
     windowSide: new THREE.BoxGeometry(0.16, 1.1, WALL_THICKNESS * 0.88),
@@ -145,24 +141,6 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     group.add(top);
 
     const base = new THREE.Mesh(geometries.wallBase, materials.wallTrim);
-    base.position.y = 0.09;
-    group.add(base);
-
-    return group;
-  };
-
-  const createWallBlock = (): THREE.Group => {
-    const group = new THREE.Group();
-
-    const core = new THREE.Mesh(geometries.wallBlockCore, materials.wall);
-    core.position.y = 1.34;
-    group.add(core);
-
-    const top = new THREE.Mesh(geometries.wallBlockCap, materials.wallTrim);
-    top.position.y = 2.73;
-    group.add(top);
-
-    const base = new THREE.Mesh(geometries.wallBlockBase, materials.wallTrim);
     base.position.y = 0.09;
     group.add(base);
 
@@ -263,6 +241,43 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     cap.scale.z = 0.95 + degree * 0.1;
     cap.position.y = WALL_HEIGHT + 0.06;
     group.add(cap);
+
+    return group;
+  };
+
+  const createWallBlock = (): THREE.Group => {
+    const group = new THREE.Group();
+
+    const north = createWallSegment();
+    north.position.z = -WALL_BLOCK_EDGE_OFFSET;
+    group.add(north);
+
+    const south = createWallSegment();
+    south.position.z = WALL_BLOCK_EDGE_OFFSET;
+    group.add(south);
+
+    const east = createWallSegment();
+    east.position.x = WALL_BLOCK_EDGE_OFFSET;
+    east.rotation.y = Math.PI * 0.5;
+    group.add(east);
+
+    const west = createWallSegment();
+    west.position.x = -WALL_BLOCK_EDGE_OFFSET;
+    west.rotation.y = Math.PI * 0.5;
+    group.add(west);
+
+    const corners: Array<[number, number]> = [
+      [-WALL_BLOCK_CORNER_OFFSET, -WALL_BLOCK_CORNER_OFFSET],
+      [WALL_BLOCK_CORNER_OFFSET, -WALL_BLOCK_CORNER_OFFSET],
+      [WALL_BLOCK_CORNER_OFFSET, WALL_BLOCK_CORNER_OFFSET],
+      [-WALL_BLOCK_CORNER_OFFSET, WALL_BLOCK_CORNER_OFFSET]
+    ];
+
+    for (const [x, z] of corners) {
+      const post = createJoinPost(2);
+      post.position.set(x, 0, z);
+      group.add(post);
+    }
 
     return group;
   };

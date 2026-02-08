@@ -19,7 +19,7 @@ describe("structure meshes", () => {
     expect(doorClosed.children.length).toBeGreaterThan(0);
     expect(doorOpen.children.length).toBeGreaterThan(0);
     expect(join.children.length).toBeGreaterThan(0);
-    expect(block.children.length).toBeGreaterThan(0);
+    expect(block.children.length).toBeGreaterThanOrEqual(8);
 
     setDoorVisualOpen(door, false);
     expect(door.leafPivot.rotation.y).toBe(0);

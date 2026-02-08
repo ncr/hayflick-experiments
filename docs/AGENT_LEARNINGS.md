@@ -124,3 +124,18 @@ Preventive checklist:
 - Keep structure mesh factories in `@common/level-editor` and consume them from all editor-style experiments.
 - Avoid local mesh/material definitions for walls/windows/doors when a shared kit exists.
 - Add promoted-module tests when shared mesh APIs change.
+
+## 2026-02-08 - Runtime wall tiles still looked different after mesh promotion
+Root cause:
+- Even after promotion, the ECS-integrated experiment rendered tile walls via a separate "block" shape path, while editor walls were segment-based.
+- Shared API existed, but represented two visual grammars.
+
+Detection signal:
+- User explicitly observed that wall mesh in editor and game still differed.
+
+Preventive checklist:
+- Treat the editor asset module as the single source of truth for style:
+  - one wall language, one door language
+  - runtime should compose from editor primitives, not alternate fallback forms
+- When exposing helper constructors (e.g. `createWallBlock`), build them from the same base primitives/materials.
+- Add mesh-kit tests that assert higher-level constructors are composite (not standalone alternate geometry).
