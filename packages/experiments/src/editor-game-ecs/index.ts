@@ -44,7 +44,9 @@ import type { ExperimentModule } from "../runtime/types";
 
 type Mode = "EDITOR" | "GAME";
 
-type EditorBrush = "wall" | "walkable" | "door" | "erase-door";
+type ToolMode = "draw" | "erase";
+
+type EditorBrush = "wall" | "window" | "door-closed" | "door-open" | "floor" | "grass" | "road" | "sidewalk";
 
 type DragState = {
   pointerId: number;
@@ -129,6 +131,17 @@ const ZOOM_MAX = 3.4;
 
 const PLAYER_SPEED = 3.8;
 const PLAYER_SPAWN = { x: 2.5, y: 2.5 };
+
+const BRUSH_COLORS: Record<EditorBrush, number> = {
+  wall: 0xb9c6d2,
+  window: 0x8bbfdc,
+  "door-closed": 0xd09d68,
+  "door-open": 0x95b882,
+  floor: 0x7f95ab,
+  grass: 0x5ca063,
+  road: 0x4e545d,
+  sidewalk: 0xb8b39f
+};
 
 function cellKey(x: number, y: number): string {
   return `${x},${y}`;
@@ -442,9 +455,11 @@ const experiment: ExperimentModule = {
     const hints = hud.hints;
 
     const modeButtons = new Map<Mode, HTMLButtonElement>();
+    const toolButtons = new Map<ToolMode, HTMLButtonElement>();
     const brushButtons = new Map<EditorBrush, HTMLButtonElement>();
 
     let mode: Mode = "EDITOR";
+    let activeTool: ToolMode = "draw";
     let editorBrush: EditorBrush = "wall";
     let editorDoorRot = 0;
     let statusMessage = "Ready.";
@@ -460,30 +475,72 @@ const experiment: ExperimentModule = {
     modeButtons.set("GAME", gameButton);
     modeRow.append(editorButton, gameButton);
 
+    const toolRow = makeRow("Tool");
+    const drawButton = makeButton("Draw (D)", () => {
+      activeTool = "draw";
+      syncHud();
+    });
+    const eraseButton = makeButton("Erase (X)", () => {
+      activeTool = "erase";
+      syncHud();
+    });
+    toolButtons.set("draw", drawButton);
+    toolButtons.set("erase", eraseButton);
+    toolRow.append(drawButton, eraseButton);
+
     const brushRow = makeRow("Brush");
     const wallButton = makeButton("Wall (1)", () => {
       editorBrush = "wall";
       syncHud();
     });
-    const walkableButton = makeButton("Walkable (2)", () => {
-      editorBrush = "walkable";
+    const windowButton = makeButton("Window (2)", () => {
+      editorBrush = "window";
       syncHud();
     });
-    const doorButton = makeButton("Door (3)", () => {
-      editorBrush = "door";
+    const doorClosedButton = makeButton("Door Closed (3)", () => {
+      editorBrush = "door-closed";
       syncHud();
     });
-    const eraseDoorButton = makeButton("Erase Door (4)", () => {
-      editorBrush = "erase-door";
+    const doorOpenButton = makeButton("Door Open (6)", () => {
+      editorBrush = "door-open";
+      syncHud();
+    });
+    const floorButton = makeButton("Floor (4)", () => {
+      editorBrush = "floor";
+      syncHud();
+    });
+    const grassButton = makeButton("Grass (5)", () => {
+      editorBrush = "grass";
+      syncHud();
+    });
+    const roadButton = makeButton("Road (7)", () => {
+      editorBrush = "road";
+      syncHud();
+    });
+    const sidewalkButton = makeButton("Sidewalk (8)", () => {
+      editorBrush = "sidewalk";
       syncHud();
     });
 
     brushButtons.set("wall", wallButton);
-    brushButtons.set("walkable", walkableButton);
-    brushButtons.set("door", doorButton);
-    brushButtons.set("erase-door", eraseDoorButton);
+    brushButtons.set("window", windowButton);
+    brushButtons.set("door-closed", doorClosedButton);
+    brushButtons.set("door-open", doorOpenButton);
+    brushButtons.set("floor", floorButton);
+    brushButtons.set("grass", grassButton);
+    brushButtons.set("road", roadButton);
+    brushButtons.set("sidewalk", sidewalkButton);
 
-    brushRow.append(wallButton, walkableButton, doorButton, eraseDoorButton);
+    brushRow.append(
+      wallButton,
+      windowButton,
+      doorClosedButton,
+      doorOpenButton,
+      floorButton,
+      grassButton,
+      roadButton,
+      sidewalkButton
+    );
 
     const toolsRow = makeRow("Tools");
     const saveLevelButton = makeButton("Save Level (Ctrl+S)", () => {
@@ -509,8 +566,24 @@ const experiment: ExperimentModule = {
     });
     toolsRow.append(saveLevelButton, saveGameButton, loadGameButton);
 
+    const cameraRow = makeRow("Camera");
+    const rotateLeftButton = makeButton("Rotate -90 (Q)", () => {
+      yawIndex -= 1;
+      syncHud();
+    });
+    const rotateRightButton = makeButton("Rotate +90 (E)", () => {
+      yawIndex += 1;
+      syncHud();
+    });
+    const rotateDoorButton = makeButton("Door Rot (R)", () => {
+      editorDoorRot += 1;
+      statusMessage = `Door placement rotation set to ${(editorDoorRot % 4 + 4) % 4}`;
+      syncHud();
+    });
+    cameraRow.append(rotateLeftButton, rotateRightButton, rotateDoorButton);
+
     hints.textContent =
-      "EDITOR: paint with LMB drag, Ctrl+S saves LevelModel. GAME: click doors to toggle, K saves game, L loads game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
+      "EDITOR: D/X draw-erase, 1..8 brush, R rotate door, Ctrl+S saves LevelModel. GAME: click doors to toggle, K saves game, L loads game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
 
     let levelModel = createDefaultLevelModel();
     const savedLevelModelJson = localStorage.getItem(LEVEL_MODEL_STORAGE_KEY);
@@ -630,20 +703,16 @@ const experiment: ExperimentModule = {
       hoverMesh.visible = true;
       hoverMesh.position.set(toWorldX(levelModel, cell.x), 0.03, toWorldZ(levelModel, cell.y));
 
-      if (editorBrush === "wall") {
-        hoverMaterial.color.setHex(0x8fc6f5);
-      } else if (editorBrush === "walkable") {
-        hoverMaterial.color.setHex(0x86cf97);
-      } else if (editorBrush === "door") {
-        hoverMaterial.color.setHex(0xd8ac79);
-      } else {
-        hoverMaterial.color.setHex(0xe08484);
-      }
+      hoverMaterial.color.setHex(activeTool === "erase" ? 0xff7e7e : BRUSH_COLORS[editorBrush]);
     }
 
     function syncHud(): void {
       modeButtons.forEach((button, buttonMode) => {
         setButtonActive(button, mode === buttonMode);
+      });
+
+      toolButtons.forEach((button, tool) => {
+        setButtonActive(button, mode === "EDITOR" && activeTool === tool);
       });
 
       brushButtons.forEach((button, brush) => {
@@ -792,16 +861,20 @@ const experiment: ExperimentModule = {
 
       let changed = false;
 
-      if (editorBrush === "wall") {
-        changed = setTileAt(levelModel, cellX, cellY, TILE_WALL);
-      } else if (editorBrush === "walkable") {
-        changed = setTileAt(levelModel, cellX, cellY, TILE_WALKABLE);
-      } else if (editorBrush === "door") {
+      if (activeTool === "erase") {
+        const removedDoor = removeDoorPlacementAt(levelModel, cellX, cellY);
+        const madeWalkable = setTileAt(levelModel, cellX, cellY, TILE_WALKABLE);
+        changed = removedDoor || madeWalkable;
+      } else if (editorBrush === "wall" || editorBrush === "window") {
+        const removedDoor = removeDoorPlacementAt(levelModel, cellX, cellY);
+        const madeWall = setTileAt(levelModel, cellX, cellY, TILE_WALL);
+        changed = removedDoor || madeWall;
+      } else if (editorBrush === "door-closed" || editorBrush === "door-open") {
         setTileAt(levelModel, cellX, cellY, TILE_WALL);
 
         const existing = findDoorPlacementAt(levelModel, cellX, cellY);
         const data: DoorPlacementData = {
-          open: existing?.data?.open ?? false,
+          open: editorBrush === "door-open",
           locked: existing?.data?.locked
         };
 
@@ -816,8 +889,10 @@ const experiment: ExperimentModule = {
 
         addDoorPlacement(levelModel, placement);
         changed = true;
-      } else if (editorBrush === "erase-door") {
-        changed = removeDoorPlacementAt(levelModel, cellX, cellY);
+      } else {
+        const removedDoor = removeDoorPlacementAt(levelModel, cellX, cellY);
+        const madeWalkable = setTileAt(levelModel, cellX, cellY, TILE_WALKABLE);
+        changed = removedDoor || madeWalkable;
       }
 
       if (!changed) {
@@ -826,7 +901,7 @@ const experiment: ExperimentModule = {
 
       rebuildBaseLevelMeshes();
       rebuildEditorDoorMeshes();
-      statusMessage = `Edited cell (${cellX}, ${cellY}) using ${editorBrush}.`;
+      statusMessage = `Edited cell (${cellX}, ${cellY}) using ${activeTool}/${editorBrush}.`;
       syncHud();
     }
 
@@ -1419,18 +1494,50 @@ const experiment: ExperimentModule = {
 
       if (event.code === "Digit1") {
         editorBrush = "wall";
+        activeTool = "draw";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit2") {
-        editorBrush = "walkable";
+        editorBrush = "window";
+        activeTool = "draw";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit3") {
-        editorBrush = "door";
+        editorBrush = "door-closed";
+        activeTool = "draw";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit4") {
-        editorBrush = "erase-door";
+        editorBrush = "floor";
+        activeTool = "draw";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit5") {
+        editorBrush = "grass";
+        activeTool = "draw";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit6") {
+        editorBrush = "door-open";
+        activeTool = "draw";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit7") {
+        editorBrush = "road";
+        activeTool = "draw";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit8") {
+        editorBrush = "sidewalk";
+        activeTool = "draw";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "KeyD") {
+        activeTool = "draw";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "KeyX") {
+        activeTool = "erase";
         syncHud();
         event.preventDefault();
       } else if (event.code === "KeyR") {
