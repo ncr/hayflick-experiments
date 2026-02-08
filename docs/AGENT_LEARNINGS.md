@@ -47,3 +47,16 @@ Preventive checklist:
 - For any camera-rotatable gameplay view, map movement input through camera ground-plane forward/right vectors, not fixed world axes.
 - Validate directional controls at all 4 quarter-turn rotations before shipping.
 - Include at least one manual check that "W/Up moves toward top of screen" in default and rotated views.
+
+## 2026-02-08 - Editor core drifted between experiments
+Root cause:
+- Tile-level model/bake logic existed only inside `editor-game-ecs`, while `level-builder` maintained a separate resource-construction path.
+- Shared behavior changes required touching both experiments manually, increasing divergence risk.
+
+Detection signal:
+- User requested explicit reuse so both experiments evolve from the same editor core.
+
+Preventive checklist:
+- Keep shared editor model + bake/resource helpers in a common package (`@common/level-editor`).
+- Import shared helpers from experiments instead of duplicating local model/bake files.
+- When adding editor features, update shared package first, then wire experiment-specific UI.

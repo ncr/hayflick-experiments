@@ -16,9 +16,14 @@ Combine level editing and ECS gameplay in one experiment with explicit bake boun
 - `Middle mouse` or `Space + drag`: pan.
 
 ## Data Flow
-`LevelModel` -> `bakeLevel(...)` -> mutable `LevelResource` -> ECS world + systems.
+`LevelModel` -> `bakeTileLevel(...)` -> mutable `LevelResource` -> ECS world + systems.
 
 The bake step creates derived walkability arrays and an ECS-facing `isBlocked(x,y)` API. Door toggles at runtime call `levelResource.setBlocked(cellX,cellY,blocked)` so movement systems immediately see changes.
+
+## Shared Core
+This experiment now uses `@common/level-editor` for:
+- `LevelModel` types + editing helpers.
+- Tile-level bake helpers that generate mutable grid `LevelResource`.
 
 ## Save Keys
 - Level model: `editor_game_ecs_level_model_v1`

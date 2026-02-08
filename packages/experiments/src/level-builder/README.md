@@ -30,5 +30,5 @@ Prototype an isometric orthographic level editor for 1m terrain tiles and room-b
 
 ## Bake Notes
 - `bake.ts` defines `LevelBuilderBake` schema and conversion helpers.
-- `createEcsLevelResourceFromBake(...)` produces an ECS `LevelResource` shape.
+- `createEcsLevelResourceFromBake(...)` now uses shared `@common/level-editor` grid-resource helpers.
 - This is a compatibility prep step; final runtime baking pipeline can be built in a dedicated experiment.

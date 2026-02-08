@@ -11,20 +11,10 @@
 import * as THREE from "three";
 import { makeRenderer } from "@common/render";
 import {
-  DataStore,
-  KeyboardTracker,
-  World,
-  createEventSystem,
-  createInputSystem,
-  createMovementSystem,
-  type EID
-} from "@common/gameplay";
-import type { ExperimentModule } from "../runtime/types";
-import { bakeLevel, type MutableLevelResource } from "./bake";
-import {
   TILE_WALKABLE,
   TILE_WALL,
   addDoorPlacement,
+  bakeTileLevel,
   cloneLevelModel,
   createDefaultLevelModel,
   findDoorPlacementAt,
@@ -37,8 +27,19 @@ import {
   setTileAt,
   type DoorPlacementData,
   type LevelModel,
+  type MutableGridLevelResource,
   type Placement
-} from "./model";
+} from "@common/level-editor";
+import {
+  DataStore,
+  KeyboardTracker,
+  World,
+  createEventSystem,
+  createInputSystem,
+  createMovementSystem,
+  type EID
+} from "@common/gameplay";
+import type { ExperimentModule } from "../runtime/types";
 
 type Mode = "EDITOR" | "GAME";
 
@@ -83,7 +84,7 @@ type DoorOverride = {
 
 type GameRuntime = {
   world: World;
-  levelResource: MutableLevelResource;
+  levelResource: MutableGridLevelResource;
   keyboard: KeyboardTracker;
   systems: {
     inputSystem: ReturnType<typeof createInputSystem>;
@@ -979,7 +980,7 @@ const experiment: ExperimentModule = {
       player?: { x: number; y: number };
       doorOverrides?: Map<string, DoorOverride>;
     }): GameRuntime {
-      const baked = bakeLevel(levelModel);
+      const baked = bakeTileLevel(levelModel);
 
       const world = new World({
         level: baked.levelResource,

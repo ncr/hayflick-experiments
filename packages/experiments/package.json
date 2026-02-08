@@ -17,6 +17,7 @@
   "dependencies": {
     "@common/core": "workspace:*",
     "@common/gameplay": "workspace:*",
+    "@common/level-editor": "workspace:*",
     "@common/render": "workspace:*",
     "three": "^0.173.0"
   }

@@ -65,6 +65,12 @@ importers:
 
   packages/common-gameplay: {}
 
+  packages/common-level-editor:
+    dependencies:
+      '@common/gameplay':
+        specifier: workspace:*
+        version: link:../common-gameplay
+
   packages/common-render:
     dependencies:
       three:
@@ -79,6 +85,9 @@ importers:
       '@common/gameplay':
         specifier: workspace:*
         version: link:../common-gameplay
+      '@common/level-editor':
+        specifier: workspace:*
+        version: link:../common-level-editor
       '@common/render':
         specifier: workspace:*
         version: link:../common-render

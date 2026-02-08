@@ -1,4 +1,5 @@
 import type { LevelResource, LevelSnapshot } from "@common/gameplay";
+import { createMutableGridLevelResource } from "@common/level-editor";
 
 export type LevelBuilderGroundType = "floor" | "grass";
 export type LevelBuilderDoorState = "open" | "closed";
@@ -130,22 +131,19 @@ export function bakeLevelForEcs(input: BakeInput): LevelBuilderBake {
 }
 
 export function createEcsLevelResourceFromBake(bake: LevelBuilderBake): LevelResource {
-  const blocked = new Set<string>(bake.blockedCells.map((cell) => toCellKey(cell.x, cell.z)));
-
-  return {
+  return createMutableGridLevelResource({
     id: bake.level.id,
     version: bake.level.version,
-    isBlocked(x: number, y: number): boolean {
-      const cellX = Math.floor((x - bake.grid.origin) / bake.grid.tileSize);
-      const cellZ = Math.floor((y - bake.grid.origin) / bake.grid.tileSize);
-
-      if (cellX < 0 || cellX >= bake.grid.tiles || cellZ < 0 || cellZ >= bake.grid.tiles) {
-        return true;
-      }
-
-      return blocked.has(toCellKey(cellX, cellZ));
+    width: bake.grid.tiles,
+    height: bake.grid.tiles,
+    blockedCells: bake.blockedCells.map((cell) => ({ x: cell.x, y: cell.z })),
+    toCell(x: number, y: number): { x: number; y: number } {
+      return {
+        x: Math.floor((x - bake.grid.origin) / bake.grid.tileSize),
+        y: Math.floor((y - bake.grid.origin) / bake.grid.tileSize)
+      };
     }
-  };
+  });
 }
 
 export function serializeBakedLevel(bake: LevelBuilderBake): string {
