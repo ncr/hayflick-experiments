@@ -29,6 +29,7 @@ The bake step creates derived walkability arrays and an ECS-facing `isBlocked(x,
 This experiment now uses `@common/level-editor` for:
 - `LevelModel` types + editing helpers.
 - Tile-level bake helpers that generate mutable grid `LevelResource`.
+- Shared editor structure meshes (walls/windows/doors) so visuals stay consistent with level-builder.
 
 ## Save Keys
 - Level model: `editor_game_ecs_level_model_v1`

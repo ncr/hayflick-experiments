@@ -15,6 +15,7 @@ import {
   TILE_WALL,
   addDoorPlacement,
   bakeTileLevel,
+  createEditorStructureMeshKit,
   cloneLevelModel,
   createEditorHud,
   createDefaultLevelModel,
@@ -24,8 +25,10 @@ import {
   nextPlacementId,
   parseLevelModel,
   removeDoorPlacementAt,
+  setDoorVisualOpen,
   setTileAt,
   type DoorPlacementData,
+  type EditorDoorVisual,
   type LevelModel,
   type MutableGridLevelResource,
   type Placement
@@ -78,20 +81,6 @@ type DoorComponent = {
   locked?: boolean;
 };
 
-type DoorVisual = {
-  root: THREE.Group;
-  leafPivot: THREE.Group;
-};
-
-type DoorGeometrySet = {
-  leftJamb: THREE.BoxGeometry;
-  rightJamb: THREE.BoxGeometry;
-  header: THREE.BoxGeometry;
-  threshold: THREE.BoxGeometry;
-  leaf: THREE.BoxGeometry;
-  handle: THREE.BoxGeometry;
-};
-
 type DoorOverride = {
   open: boolean;
   locked?: boolean;
@@ -110,7 +99,7 @@ type GameRuntime = {
   doors: DataStore<DoorComponent>;
   doorByPlacementId: Map<string, EID>;
   placementIdByCell: Map<string, string>;
-  doorVisuals: Map<string, DoorVisual>;
+  doorVisuals: Map<string, EditorDoorVisual>;
   interactionQueue: Array<{ cellX: number; cellY: number }>;
 };
 
@@ -394,52 +383,6 @@ function worldToCell(level: LevelModel, worldX: number, worldZ: number): { x: nu
   return { x: cellX, y: cellY };
 }
 
-function createDoorVisual(
-  geometries: DoorGeometrySet,
-  materials: {
-  frame: THREE.Material;
-  leaf: THREE.Material;
-  handle: THREE.Material;
-}
-): DoorVisual {
-  const root = new THREE.Group();
-
-  const leftJamb = new THREE.Mesh(geometries.leftJamb, materials.frame);
-  leftJamb.position.set(-0.39, 0.9, 0);
-  root.add(leftJamb);
-
-  const rightJamb = new THREE.Mesh(geometries.rightJamb, materials.frame);
-  rightJamb.position.set(0.39, 0.9, 0);
-  root.add(rightJamb);
-
-  const header = new THREE.Mesh(geometries.header, materials.frame);
-  header.position.set(0, 1.72, 0);
-  root.add(header);
-
-  const threshold = new THREE.Mesh(geometries.threshold, materials.frame);
-  threshold.position.set(0, 0.03, 0);
-  root.add(threshold);
-
-  const leafPivot = new THREE.Group();
-  leafPivot.position.set(-0.33, 0, 0);
-
-  const leaf = new THREE.Mesh(geometries.leaf, materials.leaf);
-  leaf.position.set(0.33, 0.78, 0);
-  leafPivot.add(leaf);
-
-  const handle = new THREE.Mesh(geometries.handle, materials.handle);
-  handle.position.set(0.61, 0.82, 0.06);
-  leafPivot.add(handle);
-
-  root.add(leafPivot);
-
-  return { root, leafPivot };
-}
-
-function setDoorVisualOpen(door: DoorVisual, open: boolean): void {
-  door.leafPivot.rotation.y = open ? -Math.PI * 0.5 : 0;
-}
-
 function findPlayerTransform(world: World): { x: number; y: number } | null {
   for (const eid of world.queryTransformPlayer()) {
     const transform = world.transforms.get(eid);
@@ -591,18 +534,9 @@ const experiment: ExperimentModule = {
     scene.add(gridLines);
 
     const floorGeometry = new THREE.BoxGeometry(1, 0.06, 1);
-    const wallCoreGeometry = new THREE.BoxGeometry(0.94, 1.6, 0.94);
-    const wallCapGeometry = new THREE.BoxGeometry(1, 0.12, 1);
+    const structureMeshKit = createEditorStructureMeshKit();
     const playerBodyGeometry = new THREE.CylinderGeometry(0.25, 0.25, 1.0, 14);
     const playerHeadGeometry = new THREE.SphereGeometry(0.2, 12, 10);
-    const doorGeometries: DoorGeometrySet = {
-      leftJamb: new THREE.BoxGeometry(0.12, 1.8, 0.16),
-      rightJamb: new THREE.BoxGeometry(0.12, 1.8, 0.16),
-      header: new THREE.BoxGeometry(0.9, 0.16, 0.16),
-      threshold: new THREE.BoxGeometry(0.86, 0.06, 0.12),
-      leaf: new THREE.BoxGeometry(0.66, 1.48, 0.08),
-      handle: new THREE.BoxGeometry(0.06, 0.06, 0.06)
-    };
 
     const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x7592a7, roughness: 0.9, metalness: 0.03 });
     const grassVariantMaterials: THREE.MeshStandardMaterial[] = [
@@ -614,14 +548,6 @@ const experiment: ExperimentModule = {
     const roadMaterial = new THREE.MeshStandardMaterial({ color: 0x616a75, roughness: 0.82, metalness: 0.03 });
     const sidewalkMaterial = new THREE.MeshStandardMaterial({ color: 0xbeb7a7, roughness: 0.78, metalness: 0.02 });
     const buildingGroundMaterial = new THREE.MeshStandardMaterial({ color: 0xcab58e, roughness: 0.74, metalness: 0.03 });
-    const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xbec9d2, roughness: 0.72, metalness: 0.04 });
-    const wallCapMaterial = new THREE.MeshStandardMaterial({ color: 0xa6b6c4, roughness: 0.58, metalness: 0.08 });
-
-    const doorMaterials = {
-      frame: new THREE.MeshStandardMaterial({ color: 0xbd986f, roughness: 0.66, metalness: 0.04 }),
-      leaf: new THREE.MeshStandardMaterial({ color: 0x93613e, roughness: 0.61, metalness: 0.03 }),
-      handle: new THREE.MeshStandardMaterial({ color: 0xe2cb89, roughness: 0.24, metalness: 0.45 })
-    };
 
     const playerBodyMaterial = new THREE.MeshStandardMaterial({ color: 0x74b8db, roughness: 0.58, metalness: 0.05 });
     const playerHeadMaterial = new THREE.MeshStandardMaterial({ color: 0xe8f3ff, roughness: 0.4, metalness: 0.03 });
@@ -1090,14 +1016,7 @@ const experiment: ExperimentModule = {
             continue;
           }
 
-          const wall = new THREE.Group();
-          const wallCore = new THREE.Mesh(wallCoreGeometry, wallMaterial);
-          wallCore.position.y = 0.82;
-          wall.add(wallCore);
-
-          const wallCap = new THREE.Mesh(wallCapGeometry, wallCapMaterial);
-          wallCap.position.y = 1.68;
-          wall.add(wallCap);
+          const wall = structureMeshKit.createWallBlock();
 
           wall.position.set(toWorldX(levelModel, x), 0, toWorldZ(levelModel, y));
           wallGroup.add(wall);
@@ -1113,7 +1032,7 @@ const experiment: ExperimentModule = {
           continue;
         }
 
-        const doorVisual = createDoorVisual(doorGeometries, doorMaterials);
+        const doorVisual = structureMeshKit.createDoorVisual();
         setDoorVisualOpen(doorVisual, placement.data?.open === true);
 
         doorVisual.root.position.set(
@@ -1420,7 +1339,7 @@ const experiment: ExperimentModule = {
           continue;
         }
 
-        const visual = createDoorVisual(doorGeometries, doorMaterials);
+        const visual = structureMeshKit.createDoorVisual();
         visual.root.position.set(toWorldX(levelModel, door.cellX), 0, toWorldZ(levelModel, door.cellY));
         visual.root.rotation.y = door.rot * (Math.PI * 0.5);
         setDoorVisualOpen(visual, door.open);
@@ -1469,7 +1388,7 @@ const experiment: ExperimentModule = {
       const doors = new DataStore<DoorComponent>();
       const doorByPlacementId = new Map<string, EID>();
       const placementIdByCell = new Map<string, string>();
-      const doorVisuals = new Map<string, DoorVisual>();
+      const doorVisuals = new Map<string, EditorDoorVisual>();
       const interactionQueue: Array<{ cellX: number; cellY: number }> = [];
 
       for (const placement of baked.placements) {
@@ -2204,16 +2123,9 @@ const experiment: ExperimentModule = {
       window.removeEventListener("keyup", handleKeyUp);
 
       floorGeometry.dispose();
-      wallCoreGeometry.dispose();
-      wallCapGeometry.dispose();
+      structureMeshKit.dispose();
       playerBodyGeometry.dispose();
       playerHeadGeometry.dispose();
-      doorGeometries.leftJamb.dispose();
-      doorGeometries.rightJamb.dispose();
-      doorGeometries.header.dispose();
-      doorGeometries.threshold.dispose();
-      doorGeometries.leaf.dispose();
-      doorGeometries.handle.dispose();
       hoverMesh.geometry.dispose();
       rectPreviewMesh.geometry.dispose();
 
@@ -2225,11 +2137,6 @@ const experiment: ExperimentModule = {
       roadMaterial.dispose();
       sidewalkMaterial.dispose();
       buildingGroundMaterial.dispose();
-      wallMaterial.dispose();
-      wallCapMaterial.dispose();
-      doorMaterials.frame.dispose();
-      doorMaterials.leaf.dispose();
-      doorMaterials.handle.dispose();
       playerBodyMaterial.dispose();
       playerHeadMaterial.dispose();
       hoverMaterial.dispose();

@@ -4,3 +4,4 @@ export * from "./bake";
 export * from "./builder-bake";
 export * from "./autotile";
 export * from "./editor-hud";
+export * from "./structure-meshes";

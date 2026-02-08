@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import {
   autoTileRotationRadians,
+  createEditorStructureMeshKit,
   createEditorHud,
   describeAutoTile,
   type AutoTileShape
@@ -80,7 +81,6 @@ const GRID_TILES = 30;
 const TILE_SIZE = 1;
 const GRID_ORIGIN = -(GRID_TILES * TILE_SIZE) * 0.5;
 
-const WALL_HEIGHT = 2.8;
 const WALL_THICKNESS = 0.2;
 const GROUND_TILE_HEIGHT = 0.05;
 const GRASS_VARIANT_COUNT = 4;
@@ -439,48 +439,7 @@ const experiment: ExperimentModule = {
       );
     }
 
-    const wallMaterial = new THREE.MeshStandardMaterial({
-      color: 0xc4cfd8,
-      roughness: 0.66,
-      metalness: 0.04
-    });
-    const wallTrimMaterial = new THREE.MeshStandardMaterial({
-      color: 0xb1bec9,
-      roughness: 0.58,
-      metalness: 0.06
-    });
-    const windowFrameMaterial = new THREE.MeshStandardMaterial({
-      color: 0x8aa4ba,
-      roughness: 0.58,
-      metalness: 0.09
-    });
-    const windowGlassMaterial = new THREE.MeshStandardMaterial({
-      color: 0x9bd5f3,
-      roughness: 0.17,
-      metalness: 0,
-      transparent: true,
-      opacity: 0.44
-    });
-    const doorFrameMaterial = new THREE.MeshStandardMaterial({
-      color: 0xc8a074,
-      roughness: 0.68,
-      metalness: 0.04
-    });
-    const doorLeafMaterial = new THREE.MeshStandardMaterial({
-      color: 0x986542,
-      roughness: 0.62,
-      metalness: 0.03
-    });
-    const doorHandleMaterial = new THREE.MeshStandardMaterial({
-      color: 0xe7d18f,
-      roughness: 0.26,
-      metalness: 0.42
-    });
-    const jointMaterial = new THREE.MeshStandardMaterial({
-      color: 0xe6dcc0,
-      roughness: 0.56,
-      metalness: 0.08
-    });
+    const structureMeshKit = createEditorStructureMeshKit();
 
     const hoverMaterial = new THREE.MeshBasicMaterial({
       color: BRUSH_COLORS.wall,
@@ -498,26 +457,6 @@ const experiment: ExperimentModule = {
     const groundTileGeometry = new THREE.BoxGeometry(TILE_SIZE, GROUND_TILE_HEIGHT, TILE_SIZE);
     const autoTileOverlayGeometry = new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE);
     autoTileOverlayGeometry.rotateX(-Math.PI * 0.5);
-
-    const wallCoreGeometry = new THREE.BoxGeometry(TILE_SIZE, 2.48, WALL_THICKNESS * 0.85);
-    const wallCapGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.13, WALL_THICKNESS + 0.06);
-    const wallBaseGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.18, WALL_THICKNESS + 0.04);
-
-    const windowLowerGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.96, WALL_THICKNESS * 0.88);
-    const windowUpperGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.76, WALL_THICKNESS * 0.88);
-    const windowSideGeometry = new THREE.BoxGeometry(0.16, 1.1, WALL_THICKNESS * 0.88);
-    const windowInsetGeometry = new THREE.BoxGeometry(0.72, 1.0, 0.08);
-    const windowGlassGeometry = new THREE.PlaneGeometry(0.66, 0.94);
-
-    const doorJambGeometry = new THREE.BoxGeometry(0.12, 2.34, WALL_THICKNESS + 0.04);
-    const doorHeaderGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.24, WALL_THICKNESS + 0.04);
-    const doorThresholdGeometry = new THREE.BoxGeometry(0.92, 0.07, WALL_THICKNESS * 0.85);
-    const doorLeafGeometry = new THREE.BoxGeometry(0.72, 2.02, 0.06);
-    const doorHandleGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.12, 10);
-    doorHandleGeometry.rotateZ(Math.PI * 0.5);
-
-    const jointColumnGeometry = new THREE.BoxGeometry(0.22, WALL_HEIGHT, 0.22);
-    const jointCapGeometry = new THREE.BoxGeometry(0.3, 0.12, 0.3);
 
     const edgeHoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.05, WALL_THICKNESS);
     const cellHoverGeometry = new THREE.BoxGeometry(TILE_SIZE, 0.04, TILE_SIZE);
@@ -751,98 +690,15 @@ const experiment: ExperimentModule = {
     }
 
     function createWallSegment(): THREE.Object3D {
-      const group = new THREE.Group();
-
-      const core = new THREE.Mesh(wallCoreGeometry, wallMaterial);
-      core.position.y = 1.34;
-      group.add(core);
-
-      const top = new THREE.Mesh(wallCapGeometry, wallTrimMaterial);
-      top.position.y = 2.73;
-      group.add(top);
-
-      const base = new THREE.Mesh(wallBaseGeometry, wallTrimMaterial);
-      base.position.y = 0.09;
-      group.add(base);
-
-      return group;
+      return structureMeshKit.createWallSegment();
     }
 
     function createWindowSegment(): THREE.Object3D {
-      const group = new THREE.Group();
-
-      const lower = new THREE.Mesh(windowLowerGeometry, wallMaterial);
-      lower.position.y = 0.48;
-      group.add(lower);
-
-      const upper = new THREE.Mesh(windowUpperGeometry, wallMaterial);
-      upper.position.y = 2.42;
-      group.add(upper);
-
-      const left = new THREE.Mesh(windowSideGeometry, windowFrameMaterial);
-      left.position.set(-0.42, 1.45, 0);
-      group.add(left);
-
-      const right = new THREE.Mesh(windowSideGeometry, windowFrameMaterial);
-      right.position.set(0.42, 1.45, 0);
-      group.add(right);
-
-      const inset = new THREE.Mesh(windowInsetGeometry, windowFrameMaterial);
-      inset.position.y = 1.45;
-      group.add(inset);
-
-      const glass = new THREE.Mesh(windowGlassGeometry, windowGlassMaterial);
-      glass.position.set(0, 1.45, 0.05);
-      group.add(glass);
-
-      const top = new THREE.Mesh(wallCapGeometry, wallTrimMaterial);
-      top.position.y = 2.73;
-      group.add(top);
-
-      const base = new THREE.Mesh(wallBaseGeometry, wallTrimMaterial);
-      base.position.y = 0.09;
-      group.add(base);
-
-      return group;
+      return structureMeshKit.createWindowSegment();
     }
 
     function createDoorSegment(state: LevelBuilderDoorState): THREE.Object3D {
-      const group = new THREE.Group();
-
-      const leftJamb = new THREE.Mesh(doorJambGeometry, doorFrameMaterial);
-      leftJamb.position.set(-0.43, 1.17, 0);
-      group.add(leftJamb);
-
-      const rightJamb = new THREE.Mesh(doorJambGeometry, doorFrameMaterial);
-      rightJamb.position.set(0.43, 1.17, 0);
-      group.add(rightJamb);
-
-      const header = new THREE.Mesh(doorHeaderGeometry, doorFrameMaterial);
-      header.position.y = 2.46;
-      group.add(header);
-
-      const threshold = new THREE.Mesh(doorThresholdGeometry, doorFrameMaterial);
-      threshold.position.y = 0.035;
-      group.add(threshold);
-
-      const leafPivot = new THREE.Group();
-      leafPivot.position.set(-0.36, 0, 0);
-
-      const leaf = new THREE.Mesh(doorLeafGeometry, doorLeafMaterial);
-      leaf.position.set(0.36, 1.01, 0);
-      leafPivot.add(leaf);
-
-      const handle = new THREE.Mesh(doorHandleGeometry, doorHandleMaterial);
-      handle.position.set(0.66, 1.02, 0.05);
-      leafPivot.add(handle);
-
-      if (state === "open") {
-        leafPivot.rotation.y = -Math.PI * 0.5;
-      }
-
-      group.add(leafPivot);
-
-      return group;
+      return structureMeshKit.createDoorSegment(state);
     }
 
     function createStructureSegment(segment: StructureSegmentData): THREE.Object3D {
@@ -858,22 +714,7 @@ const experiment: ExperimentModule = {
     }
 
     function createJoinPost(degree: number): THREE.Object3D {
-      const group = new THREE.Group();
-
-      const column = new THREE.Mesh(jointColumnGeometry, jointMaterial);
-      const scale = 0.92 + degree * 0.14;
-      column.scale.x = scale;
-      column.scale.z = scale;
-      column.position.y = WALL_HEIGHT * 0.5;
-      group.add(column);
-
-      const cap = new THREE.Mesh(jointCapGeometry, jointMaterial);
-      cap.scale.x = 0.95 + degree * 0.1;
-      cap.scale.z = 0.95 + degree * 0.1;
-      cap.position.y = WALL_HEIGHT + 0.06;
-      group.add(cap);
-
-      return group;
+      return structureMeshKit.createJoinPost(degree);
     }
 
     function registerDirection(map: Map<string, DirectionVector[]>, x: number, z: number, dx: number, dz: number): void {
@@ -2017,21 +1858,6 @@ const experiment: ExperimentModule = {
 
       const geometries: THREE.BufferGeometry[] = [
         groundTileGeometry,
-        wallCoreGeometry,
-        wallCapGeometry,
-        wallBaseGeometry,
-        windowLowerGeometry,
-        windowUpperGeometry,
-        windowSideGeometry,
-        windowInsetGeometry,
-        windowGlassGeometry,
-        doorJambGeometry,
-        doorHeaderGeometry,
-        doorThresholdGeometry,
-        doorLeafGeometry,
-        doorHandleGeometry,
-        jointColumnGeometry,
-        jointCapGeometry,
         edgeHoverGeometry,
         cellHoverGeometry,
         rectPreviewGeometry,
@@ -2045,6 +1871,8 @@ const experiment: ExperimentModule = {
         geometry.dispose();
       }
 
+      structureMeshKit.dispose();
+
       const materials: THREE.Material[] = [
         floorBaseMaterial,
         minorGrid.material as THREE.Material,
@@ -2054,14 +1882,6 @@ const experiment: ExperimentModule = {
         groundBuildingMaterial,
         groundRoadSubgradeMaterial,
         groundSidewalkSubgradeMaterial,
-        wallMaterial,
-        wallTrimMaterial,
-        windowFrameMaterial,
-        windowGlassMaterial,
-        doorFrameMaterial,
-        doorLeafMaterial,
-        doorHandleMaterial,
-        jointMaterial,
         hoverMaterial,
         rectPreviewMaterial,
         ...autoTileMaterials.values()

@@ -11,6 +11,7 @@ Prototype an isometric orthographic level editor for 1m terrain tiles and room-b
 - Automatic connector posts at wall joins (corners, T-junctions, and crosses).
 - Terrain paint brushes for `floor` and `grass`.
 - ECS-ready bake payload + `LevelResource` adapter helpers for future runtime experiments.
+- Shared structure-mesh kit from `@common/level-editor` (walls/windows/doors) used by other editor-based experiments.
 
 ## Controls
 - `LMB drag`: paint using active brush/tool.

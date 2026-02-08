@@ -111,3 +111,16 @@ Preventive checklist:
   - runtime game save/load (`K`/`L`)
 - Add a browser smoke test that saves in GAME, reloads, and asserts restored terrain + door/player state.
 - Keep save status messages explicit about what payload was written.
+
+## 2026-02-08 - Wall/door mesh style drifted across editor-driven experiments
+Root cause:
+- Structure mesh builders/materials were duplicated in experiment files.
+- Visual tweaks landed in one experiment without propagating to the other.
+
+Detection signal:
+- User reported wall meshes did not match between editor/game flows.
+
+Preventive checklist:
+- Keep structure mesh factories in `@common/level-editor` and consume them from all editor-style experiments.
+- Avoid local mesh/material definitions for walls/windows/doors when a shared kit exists.
+- Add promoted-module tests when shared mesh APIs change.

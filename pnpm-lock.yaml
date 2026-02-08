@@ -76,6 +76,9 @@ importers:
       '@common/gameplay':
         specifier: workspace:*
         version: link:../common-gameplay
+      three:
+        specifier: ^0.173.0
+        version: 0.173.0
 
   packages/common-render:
     dependencies:
