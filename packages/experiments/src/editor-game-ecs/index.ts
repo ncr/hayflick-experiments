@@ -2000,13 +2000,7 @@ const experiment: ExperimentModule = {
         blockedCells: baked.blockedCells.map((cell) => ({
           x: cell.x,
           y: cell.z
-        })),
-        toCell(x: number, y: number): { x: number; y: number } {
-          return {
-            x: Math.floor((x - GRID_ORIGIN) / TILE_SIZE),
-            y: Math.floor((y - GRID_ORIGIN) / TILE_SIZE)
-          };
-        }
+        }))
       });
 
       const world = new World({
