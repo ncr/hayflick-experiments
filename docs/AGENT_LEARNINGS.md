@@ -227,3 +227,14 @@ Detection signal:
 Preventive checklist:
 - Any new file in promoted packages must ship with tests in the same commit.
 - Run `pnpm test:promoted` locally before pushing promoted-module changes.
+
+## 2026-02-08 - Boundary-index collision checks can still miss wall crossings
+Root cause:
+- Movement collision relied on boundary-index stepping; rare paths still bypassed walls when index selection didn’t match the crossed segment.
+
+Detection signal:
+- User reported player could pass through walls consistently despite edge-based blocking.
+
+Preventive checklist:
+- Keep boundary stepping, but add a swept segment-vs-blocked-edge intersection safety check before applying movement.
+- Treat any swept intersection as a hard bump and skip transform update for that frame.

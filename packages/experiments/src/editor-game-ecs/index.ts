@@ -2078,6 +2078,81 @@ const experiment: ExperimentModule = {
       return { value: targetY, bumped: false };
     }
 
+    function segmentIntersectsBlockedEdge(
+      fromX: number,
+      fromY: number,
+      toX: number,
+      toY: number,
+      blockedEdges: Set<string>
+    ): boolean {
+      const dx = toX - fromX;
+      const dy = toY - fromY;
+      if (Math.abs(dx) < MOVEMENT_EPS && Math.abs(dy) < MOVEMENT_EPS) {
+        return false;
+      }
+
+      for (const key of blockedEdges) {
+        const edge = parseEdge(key);
+
+        if (edge.ax === edge.bx) {
+          // Vertical segment at x = edge.ax, y in [ay, by].
+          const x = edge.ax;
+          const sideA = fromX - x;
+          const sideB = toX - x;
+          if (
+            (sideA < -MOVEMENT_EPS && sideB < -MOVEMENT_EPS) ||
+            (sideA > MOVEMENT_EPS && sideB > MOVEMENT_EPS)
+          ) {
+            continue;
+          }
+          if (Math.abs(dx) < MOVEMENT_EPS) {
+            continue;
+          }
+
+          const t = (x - fromX) / dx;
+          if (t <= MOVEMENT_EPS || t > 1 + MOVEMENT_EPS) {
+            continue;
+          }
+
+          const y = fromY + dy * t;
+          const minY = Math.min(edge.ay, edge.by) - MOVEMENT_EPS;
+          const maxY = Math.max(edge.ay, edge.by) + MOVEMENT_EPS;
+          if (y >= minY && y <= maxY) {
+            return true;
+          }
+          continue;
+        }
+
+        // Horizontal segment at y = edge.ay, x in [ax, bx].
+        const y = edge.ay;
+        const sideA = fromY - y;
+        const sideB = toY - y;
+        if (
+          (sideA < -MOVEMENT_EPS && sideB < -MOVEMENT_EPS) ||
+          (sideA > MOVEMENT_EPS && sideB > MOVEMENT_EPS)
+        ) {
+          continue;
+        }
+        if (Math.abs(dy) < MOVEMENT_EPS) {
+          continue;
+        }
+
+        const t = (y - fromY) / dy;
+        if (t <= MOVEMENT_EPS || t > 1 + MOVEMENT_EPS) {
+          continue;
+        }
+
+        const x = fromX + dx * t;
+        const minX = Math.min(edge.ax, edge.bx) - MOVEMENT_EPS;
+        const maxX = Math.max(edge.ax, edge.bx) + MOVEMENT_EPS;
+        if (x >= minX && x <= maxX) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     function runEdgeAwareMovementSystem(runtime: GameRuntime, dt: number): void {
       const world = runtime.world;
 
@@ -2109,11 +2184,25 @@ const experiment: ExperimentModule = {
         const nextX = clampInsideGrid(stepX.value);
         const nextY = clampInsideGrid(stepY.value);
 
-        if (stepX.bumped || stepY.bumped) {
+        let bumped = stepX.bumped || stepY.bumped;
+        if (
+          !bumped &&
+          segmentIntersectsBlockedEdge(
+            transform.x,
+            transform.y,
+            nextX,
+            nextY,
+            runtime.blockedEdges
+          )
+        ) {
+          bumped = true;
+        }
+
+        if (bumped) {
           world.events.emit({ type: "BumpedWall", e: eid });
         }
 
-        if (nextX !== transform.x || nextY !== transform.y) {
+        if (!bumped && (nextX !== transform.x || nextY !== transform.y)) {
           transform.x = nextX;
           transform.y = nextY;
           world.events.emit({ type: "Moved", e: eid });
