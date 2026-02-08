@@ -4,7 +4,7 @@
  * 2) F5 bakes LevelModel into a mutable ECS LevelResource (derived blocked arrays).
  * 3) GAME mode runs ECS systems in order: Input -> PlayerInput -> DoorSystem -> Movement -> Event.
  * 4) Door interactions are queued from clicks, then DoorSystem toggles state and walkability.
- * 5) K/L in GAME save/load full game state (LevelModel + player + door states by placementId).
+ * 5) K/L in GAME save/load full game state (LevelModel + terrain + player + door states by placementId).
  * 6) ESC returns to EDITOR without mutating LevelModel from runtime-only door toggles.
  */
 
@@ -24,7 +24,6 @@ import {
   nextPlacementId,
   parseLevelModel,
   removeDoorPlacementAt,
-  serializeLevelModel,
   setTileAt,
   type DoorPlacementData,
   type LevelModel,
@@ -47,14 +46,27 @@ type Mode = "EDITOR" | "GAME";
 type ToolMode = "draw" | "erase";
 
 type EditorBrush = "wall" | "window" | "door-closed" | "door-open" | "floor" | "grass" | "road" | "sidewalk";
+type RectToolMode = "none" | "grass-fill" | "building-footprint";
+
+type GroundBase = "floor" | "grass" | "road" | "sidewalk" | "building";
+
+type GroundCellOverride = {
+  base: GroundBase;
+  variant?: number;
+};
 
 type DragState = {
   pointerId: number;
-  mode: "pan" | "paint" | "game-click";
+  mode: "pan" | "paint" | "game-click" | "rect";
   lastClientX: number;
   lastClientY: number;
-  lastWorld: THREE.Vector3 | null;
+  lastWorldPoint: THREE.Vector3 | null;
+  paintMode?: ToolMode;
+  brush?: EditorBrush;
   moved: boolean;
+  rectMode?: RectToolMode;
+  rectStartCell?: { x: number; y: number };
+  rectEndCell?: { x: number; y: number };
 };
 
 type DoorComponent = {
@@ -111,6 +123,11 @@ type GameSaveDoor = {
 type GameSave = {
   schemaVersion: number;
   levelModel: LevelModel;
+  terrain?: {
+    defaultGround: GroundBase;
+    seed: number;
+    overrides: Array<{ x: number; y: number; base: GroundBase; variant?: number }>;
+  };
   player: {
     x: number;
     y: number;
@@ -121,6 +138,7 @@ type GameSave = {
 const LEVEL_MODEL_STORAGE_KEY = "editor_game_ecs_level_model_v1";
 const GAME_SAVE_STORAGE_KEY = "editor_game_ecs_game_save_v1";
 const GAME_SAVE_SCHEMA_VERSION = 1;
+const EDITOR_LEVEL_SCHEMA_VERSION = 2;
 
 const CAMERA_PITCH = THREE.MathUtils.degToRad(35.26438968);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
@@ -131,6 +149,8 @@ const ZOOM_MAX = 3.4;
 
 const PLAYER_SPEED = 3.8;
 const PLAYER_SPAWN = { x: 2.5, y: 2.5 };
+const GRASS_VARIANT_COUNT = 4;
+const DEFAULT_GRASS_VARIANT_SEED = 0x41c64e6d;
 
 const BRUSH_COLORS: Record<EditorBrush, number> = {
   wall: 0xb9c6d2,
@@ -142,6 +162,15 @@ const BRUSH_COLORS: Record<EditorBrush, number> = {
   road: 0x4e545d,
   sidewalk: 0xb8b39f
 };
+
+const RECT_TOOL_COLORS: Record<Exclude<RectToolMode, "none">, number> = {
+  "grass-fill": 0x5ca063,
+  "building-footprint": 0xd4ba8a
+};
+
+function isGroundBrush(brush: EditorBrush): brush is "floor" | "grass" | "road" | "sidewalk" {
+  return brush === "floor" || brush === "grass" || brush === "road" || brush === "sidewalk";
+}
 
 function cellKey(x: number, y: number): string {
   return `${x},${y}`;
@@ -160,6 +189,162 @@ function readFiniteNumber(record: Record<string, unknown>, key: string): number 
     return null;
   }
   return value;
+}
+
+function hashInt32(value: number): number {
+  let v = value | 0;
+  v ^= v >>> 16;
+  v = Math.imul(v, 0x7feb352d);
+  v ^= v >>> 15;
+  v = Math.imul(v, 0x846ca68b);
+  v ^= v >>> 16;
+  return v >>> 0;
+}
+
+function hashCell(seed: number, x: number, y: number): number {
+  let h = seed | 0;
+  h ^= Math.imul(x | 0, 0x9e3779b1);
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= Math.imul(y | 0, 0xc2b2ae35);
+  return hashInt32(h);
+}
+
+function hashRect(seed: number, ax: number, ay: number, bx: number, by: number): number {
+  let h = seed | 0;
+  h ^= Math.imul(ax | 0, 0x165667b1);
+  h ^= Math.imul(ay | 0, 0xd3a2646c);
+  h ^= Math.imul(bx | 0, 0xfd7046c5);
+  h ^= Math.imul(by | 0, 0xb55a4f09);
+  return hashInt32(h);
+}
+
+function computeGrassVariant(seed: number, x: number, y: number): number {
+  return hashCell(seed, x, y) % GRASS_VARIANT_COUNT;
+}
+
+function isGroundBase(value: unknown): value is GroundBase {
+  return value === "floor" || value === "grass" || value === "road" || value === "sidewalk" || value === "building";
+}
+
+function normalizeGroundOverride(base: GroundBase, variant?: number): GroundCellOverride {
+  if (base === "grass") {
+    return {
+      base,
+      variant: variant === undefined ? undefined : Math.max(0, Math.floor(variant))
+    };
+  }
+  return { base };
+}
+
+function parseTerrainState(raw: unknown): {
+  defaultGround: GroundBase;
+  seed: number;
+  overrides: Map<string, GroundCellOverride>;
+} | null {
+  const record = readRecord(raw);
+  if (!record) {
+    return null;
+  }
+
+  const defaultGroundRaw = record.defaultGround;
+  const seedRaw = record.seed;
+  const overridesRaw = record.overrides;
+
+  if (!isGroundBase(defaultGroundRaw) || typeof seedRaw !== "number" || !Array.isArray(overridesRaw)) {
+    return null;
+  }
+
+  const overrides = new Map<string, GroundCellOverride>();
+  for (const entryRaw of overridesRaw) {
+    const entry = readRecord(entryRaw);
+    if (!entry) {
+      return null;
+    }
+
+    const x = readFiniteNumber(entry, "x");
+    const y = readFiniteNumber(entry, "y");
+    const base = entry.base;
+    const variant = entry.variant;
+
+    if (x === null || y === null || !isGroundBase(base)) {
+      return null;
+    }
+    if (variant !== undefined && (typeof variant !== "number" || !Number.isFinite(variant))) {
+      return null;
+    }
+
+    overrides.set(cellKey(Math.floor(x), Math.floor(y)), normalizeGroundOverride(base, variant as number | undefined));
+  }
+
+  return {
+    defaultGround: defaultGroundRaw,
+    seed: Math.floor(seedRaw),
+    overrides
+  };
+}
+
+function parseStoredEditorState(raw: unknown): {
+  levelModel: LevelModel;
+  defaultGround: GroundBase;
+  seed: number;
+  overrides: Map<string, GroundCellOverride>;
+} | null {
+  const direct = parseLevelModel(raw);
+  if (direct) {
+    return {
+      levelModel: direct,
+      defaultGround: "floor",
+      seed: 1337,
+      overrides: new Map<string, GroundCellOverride>()
+    };
+  }
+
+  const record = readRecord(raw);
+  if (!record) {
+    return null;
+  }
+
+  const schemaVersion = readFiniteNumber(record, "schemaVersion");
+  if (schemaVersion !== EDITOR_LEVEL_SCHEMA_VERSION) {
+    return null;
+  }
+
+  const levelModel = parseLevelModel(record.levelModel);
+  const terrain = parseTerrainState(record.terrain);
+  if (!levelModel || !terrain) {
+    return null;
+  }
+
+  return {
+    levelModel,
+    defaultGround: terrain.defaultGround,
+    seed: terrain.seed,
+    overrides: terrain.overrides
+  };
+}
+
+function serializeTerrainState(
+  defaultGround: GroundBase,
+  seed: number,
+  overrides: Map<string, GroundCellOverride>
+): {
+  defaultGround: GroundBase;
+  seed: number;
+  overrides: Array<{ x: number; y: number; base: GroundBase; variant?: number }>;
+} {
+  return {
+    defaultGround,
+    seed,
+    overrides: [...overrides.entries()].map(([key, value]) => {
+      const [xStr, yStr] = key.split(",");
+      return {
+        x: Number(xStr),
+        y: Number(yStr),
+        base: value.base,
+        variant: value.variant
+      };
+    })
+  };
 }
 
 function createGridGeometry(width: number, height: number, y: number): THREE.BufferGeometry {
@@ -279,6 +464,7 @@ function parseGameSave(raw: unknown): GameSave | null {
   const playerRaw = readRecord(record.player);
   const levelRaw = record.levelModel;
   const doorsRaw = record.doors;
+  const terrainRaw = record.terrain;
 
   if (!playerRaw || !Array.isArray(doorsRaw)) {
     return null;
@@ -322,9 +508,29 @@ function parseGameSave(raw: unknown): GameSave | null {
     });
   }
 
+  const terrain = terrainRaw === undefined ? undefined : parseTerrainState(terrainRaw);
+  if (terrainRaw !== undefined && !terrain) {
+    return null;
+  }
+
   return {
     schemaVersion,
     levelModel,
+    terrain: terrain
+      ? {
+          defaultGround: terrain.defaultGround,
+          seed: terrain.seed,
+          overrides: [...terrain.overrides.entries()].map(([key, value]) => {
+            const [xStr, yStr] = key.split(",");
+            return {
+              x: Number(xStr),
+              y: Number(yStr),
+              base: value.base,
+              variant: value.variant
+            };
+          })
+        }
+      : undefined,
     player: {
       x: playerX,
       y: playerY
@@ -399,6 +605,15 @@ const experiment: ExperimentModule = {
     };
 
     const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x7592a7, roughness: 0.9, metalness: 0.03 });
+    const grassVariantMaterials: THREE.MeshStandardMaterial[] = [
+      new THREE.MeshStandardMaterial({ color: 0x5b9862, roughness: 0.94, metalness: 0.0 }),
+      new THREE.MeshStandardMaterial({ color: 0x679f6b, roughness: 0.92, metalness: 0.0 }),
+      new THREE.MeshStandardMaterial({ color: 0x4e8d58, roughness: 0.95, metalness: 0.0 }),
+      new THREE.MeshStandardMaterial({ color: 0x76ab6c, roughness: 0.9, metalness: 0.0 })
+    ];
+    const roadMaterial = new THREE.MeshStandardMaterial({ color: 0x616a75, roughness: 0.82, metalness: 0.03 });
+    const sidewalkMaterial = new THREE.MeshStandardMaterial({ color: 0xbeb7a7, roughness: 0.78, metalness: 0.02 });
+    const buildingGroundMaterial = new THREE.MeshStandardMaterial({ color: 0xcab58e, roughness: 0.74, metalness: 0.03 });
     const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xbec9d2, roughness: 0.72, metalness: 0.04 });
     const wallCapMaterial = new THREE.MeshStandardMaterial({ color: 0xa6b6c4, roughness: 0.58, metalness: 0.08 });
 
@@ -421,6 +636,17 @@ const experiment: ExperimentModule = {
     hoverMesh.visible = false;
     hoverMesh.position.y = 0.03;
     scene.add(hoverMesh);
+
+    const rectPreviewMaterial = new THREE.MeshBasicMaterial({
+      color: RECT_TOOL_COLORS["grass-fill"],
+      transparent: true,
+      opacity: 0.26,
+      depthWrite: false
+    });
+    const rectPreviewMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 0.03, 1), rectPreviewMaterial);
+    rectPreviewMesh.visible = false;
+    rectPreviewMesh.position.y = 0.035;
+    scene.add(rectPreviewMesh);
 
     const playerMesh = new THREE.Group();
     const playerBody = new THREE.Mesh(playerBodyGeometry, playerBodyMaterial);
@@ -457,10 +683,15 @@ const experiment: ExperimentModule = {
     const modeButtons = new Map<Mode, HTMLButtonElement>();
     const toolButtons = new Map<ToolMode, HTMLButtonElement>();
     const brushButtons = new Map<EditorBrush, HTMLButtonElement>();
+    const rectToolButtons = new Map<Exclude<RectToolMode, "none">, HTMLButtonElement>();
+    const defaultGroundButtons = new Map<"floor" | "grass", HTMLButtonElement>();
 
     let mode: Mode = "EDITOR";
     let activeTool: ToolMode = "draw";
     let editorBrush: EditorBrush = "wall";
+    let activeRectTool: RectToolMode = "none";
+    let defaultGroundBase: GroundBase = "floor";
+    let userSeed = 1337;
     let editorDoorRot = 0;
     let statusMessage = "Ready.";
 
@@ -491,34 +722,42 @@ const experiment: ExperimentModule = {
     const brushRow = makeRow("Brush");
     const wallButton = makeButton("Wall (1)", () => {
       editorBrush = "wall";
+      activeRectTool = "none";
       syncHud();
     });
     const windowButton = makeButton("Window (2)", () => {
       editorBrush = "window";
+      activeRectTool = "none";
       syncHud();
     });
     const doorClosedButton = makeButton("Door Closed (3)", () => {
       editorBrush = "door-closed";
+      activeRectTool = "none";
       syncHud();
     });
     const doorOpenButton = makeButton("Door Open (6)", () => {
       editorBrush = "door-open";
+      activeRectTool = "none";
       syncHud();
     });
     const floorButton = makeButton("Floor (4)", () => {
       editorBrush = "floor";
+      activeRectTool = "none";
       syncHud();
     });
     const grassButton = makeButton("Grass (5)", () => {
       editorBrush = "grass";
+      activeRectTool = "none";
       syncHud();
     });
     const roadButton = makeButton("Road (7)", () => {
       editorBrush = "road";
+      activeRectTool = "none";
       syncHud();
     });
     const sidewalkButton = makeButton("Sidewalk (8)", () => {
       editorBrush = "sidewalk";
+      activeRectTool = "none";
       syncHud();
     });
 
@@ -541,6 +780,24 @@ const experiment: ExperimentModule = {
       roadButton,
       sidewalkButton
     );
+
+    const rectRow = makeRow("Rect");
+    const rectOffButton = makeButton("Rect Off", () => {
+      activeRectTool = "none";
+      hideRectPreview();
+      syncHud();
+    });
+    const grassRectButton = makeButton("Grass Fill (G)", () => {
+      activeRectTool = "grass-fill";
+      syncHud();
+    });
+    const buildingRectButton = makeButton("Footprint (9)", () => {
+      activeRectTool = "building-footprint";
+      syncHud();
+    });
+    rectToolButtons.set("grass-fill", grassRectButton);
+    rectToolButtons.set("building-footprint", buildingRectButton);
+    rectRow.append(rectOffButton, grassRectButton, buildingRectButton);
 
     const toolsRow = makeRow("Tools");
     const saveLevelButton = makeButton("Save Level (Ctrl+S)", () => {
@@ -566,6 +823,52 @@ const experiment: ExperimentModule = {
     });
     toolsRow.append(saveLevelButton, saveGameButton, loadGameButton);
 
+    const terrainRow = makeRow("Terrain");
+    const defaultFloorButton = makeButton("Default Floor", () => {
+      defaultGroundBase = "floor";
+      rebuildBaseLevelMeshes();
+      statusMessage = "Default ground set to floor.";
+      syncHud();
+    });
+    const defaultGrassButton = makeButton("Default Grass", () => {
+      defaultGroundBase = "grass";
+      rebuildBaseLevelMeshes();
+      statusMessage = "Default ground set to grass.";
+      syncHud();
+    });
+    defaultGroundButtons.set("floor", defaultFloorButton);
+    defaultGroundButtons.set("grass", defaultGrassButton);
+
+    const seedWrap = document.createElement("label");
+    seedWrap.style.display = "inline-flex";
+    seedWrap.style.alignItems = "center";
+    seedWrap.style.gap = "4px";
+    seedWrap.style.fontSize = "12px";
+    seedWrap.style.padding = "0 2px";
+    seedWrap.textContent = "Seed";
+
+    const seedInput = document.createElement("input");
+    seedInput.type = "number";
+    seedInput.value = String(userSeed);
+    seedInput.step = "1";
+    seedInput.style.width = "84px";
+    seedInput.style.border = "1px solid rgba(124, 155, 178, 0.62)";
+    seedInput.style.background = "rgba(20, 35, 49, 0.92)";
+    seedInput.style.color = "#d8e8f4";
+    seedInput.style.borderRadius = "6px";
+    seedInput.style.padding = "3px 6px";
+    seedInput.style.fontSize = "12px";
+    seedInput.addEventListener("change", () => {
+      const parsed = Number(seedInput.value);
+      userSeed = Number.isFinite(parsed) ? Math.floor(parsed) : 1337;
+      seedInput.value = String(userSeed);
+      rebuildBaseLevelMeshes();
+      statusMessage = `Seed updated to ${userSeed}.`;
+      syncHud();
+    });
+    seedWrap.appendChild(seedInput);
+    terrainRow.append(defaultFloorButton, defaultGrassButton, seedWrap);
+
     const cameraRow = makeRow("Camera");
     const rotateLeftButton = makeButton("Rotate -90 (Q)", () => {
       yawIndex -= 1;
@@ -583,16 +886,21 @@ const experiment: ExperimentModule = {
     cameraRow.append(rotateLeftButton, rotateRightButton, rotateDoorButton);
 
     hints.textContent =
-      "EDITOR: D/X draw-erase, 1..8 brush, R rotate door, Ctrl+S saves LevelModel. GAME: click doors to toggle, K saves game, L loads game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
+      "EDITOR: LMB drag paint, Shift+drag grass rect, D/X draw-erase, 1..8 brushes, G/9 rect tools, R rotate door, Ctrl+S save level. GAME: click doors, K save game, L load game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
 
     let levelModel = createDefaultLevelModel();
+    let groundOverrides = new Map<string, GroundCellOverride>();
     const savedLevelModelJson = localStorage.getItem(LEVEL_MODEL_STORAGE_KEY);
     if (savedLevelModelJson) {
       try {
-        const parsed = parseLevelModel(JSON.parse(savedLevelModelJson));
+        const parsed = parseStoredEditorState(JSON.parse(savedLevelModelJson));
         if (parsed) {
-          levelModel = parsed;
-          statusMessage = "Loaded LevelModel from localStorage.";
+          levelModel = parsed.levelModel;
+          groundOverrides = parsed.overrides;
+          defaultGroundBase = parsed.defaultGround;
+          userSeed = parsed.seed;
+          seedInput.value = String(userSeed);
+          statusMessage = "Loaded editor state from localStorage.";
         }
       } catch {
         // Keep default model if stored value is invalid JSON.
@@ -622,10 +930,125 @@ const experiment: ExperimentModule = {
 
     let gameRuntime: GameRuntime | null = null;
 
+    function getCurrentBrushAndMode(): { brush: EditorBrush; mode: ToolMode } {
+      if (dragState && dragState.mode === "paint" && dragState.brush && dragState.paintMode) {
+        return {
+          brush: dragState.brush,
+          mode: dragState.paintMode
+        };
+      }
+
+      return {
+        brush: editorBrush,
+        mode: activeTool
+      };
+    }
+
     function clearGroup(group: THREE.Group): void {
       for (let i = group.children.length - 1; i >= 0; i -= 1) {
         group.remove(group.children[i]);
       }
+    }
+
+    function getDefaultGroundAtCell(x: number, y: number): GroundCellOverride {
+      if (defaultGroundBase === "grass") {
+        return {
+          base: "grass",
+          variant: computeGrassVariant(userSeed ^ DEFAULT_GRASS_VARIANT_SEED, x, y)
+        };
+      }
+
+      return { base: defaultGroundBase };
+    }
+
+    function getGroundOverrideAtCell(x: number, y: number): GroundCellOverride {
+      const direct = groundOverrides.get(cellKey(x, y));
+      if (direct) {
+        return direct;
+      }
+      return getDefaultGroundAtCell(x, y);
+    }
+
+    function setGroundOverrideAtCell(x: number, y: number, override: GroundCellOverride): void {
+      const key = cellKey(x, y);
+      const normalized = normalizeGroundOverride(override.base, override.variant);
+      const defaults = getDefaultGroundAtCell(x, y);
+
+      if (normalized.base === defaults.base && normalized.variant === defaults.variant) {
+        groundOverrides.delete(key);
+      } else {
+        groundOverrides.set(key, normalized);
+      }
+    }
+
+    function getRectBounds(
+      a: { x: number; y: number },
+      b: { x: number; y: number }
+    ): { minX: number; maxX: number; minY: number; maxY: number } {
+      return {
+        minX: Math.min(a.x, b.x),
+        maxX: Math.max(a.x, b.x),
+        minY: Math.min(a.y, b.y),
+        maxY: Math.max(a.y, b.y)
+      };
+    }
+
+    function updateRectPreview(start: { x: number; y: number }, end: { x: number; y: number }, mode: RectToolMode): void {
+      const bounds = getRectBounds(start, end);
+      rectPreviewMesh.visible = mode !== "none";
+      if (mode === "none") {
+        return;
+      }
+
+      const widthCells = bounds.maxX - bounds.minX + 1;
+      const heightCells = bounds.maxY - bounds.minY + 1;
+      rectPreviewMesh.scale.set(widthCells, 1, heightCells);
+      rectPreviewMesh.position.set(
+        toWorldX(levelModel, bounds.minX + (widthCells - 1) * 0.5),
+        0.035,
+        toWorldZ(levelModel, bounds.minY + (heightCells - 1) * 0.5)
+      );
+      rectPreviewMaterial.color.setHex(RECT_TOOL_COLORS[mode]);
+    }
+
+    function hideRectPreview(): void {
+      rectPreviewMesh.visible = false;
+    }
+
+    function runRectTool(mode: RectToolMode, start: { x: number; y: number }, end: { x: number; y: number }): void {
+      const bounds = getRectBounds(start, end);
+
+      if (mode === "grass-fill") {
+        const seededRect = hashRect(userSeed, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY);
+        for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+          for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+            const variant = computeGrassVariant(seededRect, x, y);
+            setGroundOverrideAtCell(x, y, { base: "grass", variant });
+          }
+        }
+      } else if (mode === "building-footprint") {
+        for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+          for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+            setGroundOverrideAtCell(x, y, { base: "building" });
+          }
+        }
+      }
+
+      rebuildBaseLevelMeshes();
+      statusMessage = `Applied ${mode} rect (${start.x},${start.y}) -> (${end.x},${end.y}).`;
+      syncHud();
+    }
+
+    function resolveRectModeForPointer(event: PointerEvent): RectToolMode {
+      if (activeRectTool !== "none") {
+        return activeRectTool;
+      }
+
+      if (event.shiftKey) {
+        return "grass-fill";
+      }
+
+      return "none";
     }
 
     function updateGridGeometry(): void {
@@ -643,7 +1066,23 @@ const experiment: ExperimentModule = {
 
       for (let y = 0; y < levelModel.height; y += 1) {
         for (let x = 0; x < levelModel.width; x += 1) {
-          const floorTile = new THREE.Mesh(floorGeometry, floorMaterial);
+          const ground = getGroundOverrideAtCell(x, y);
+          let terrainMaterial: THREE.Material = floorMaterial;
+          if (ground.base === "grass") {
+            const variant = Math.max(
+              0,
+              (ground.variant ?? computeGrassVariant(userSeed ^ DEFAULT_GRASS_VARIANT_SEED, x, y)) % GRASS_VARIANT_COUNT
+            );
+            terrainMaterial = grassVariantMaterials[variant] ?? grassVariantMaterials[0];
+          } else if (ground.base === "road") {
+            terrainMaterial = roadMaterial;
+          } else if (ground.base === "sidewalk") {
+            terrainMaterial = sidewalkMaterial;
+          } else if (ground.base === "building") {
+            terrainMaterial = buildingGroundMaterial;
+          }
+
+          const floorTile = new THREE.Mesh(floorGeometry, terrainMaterial);
           floorTile.position.set(toWorldX(levelModel, x), 0.03, toWorldZ(levelModel, y));
           floorGroup.add(floorTile);
 
@@ -702,8 +1141,13 @@ const experiment: ExperimentModule = {
 
       hoverMesh.visible = true;
       hoverMesh.position.set(toWorldX(levelModel, cell.x), 0.03, toWorldZ(levelModel, cell.y));
-
-      hoverMaterial.color.setHex(activeTool === "erase" ? 0xff7e7e : BRUSH_COLORS[editorBrush]);
+      const rectMode = dragState?.mode === "rect" ? dragState.rectMode ?? "none" : activeRectTool;
+      if (rectMode !== "none") {
+        hoverMaterial.color.setHex(RECT_TOOL_COLORS[rectMode]);
+      } else {
+        const { brush, mode: tool } = getCurrentBrushAndMode();
+        hoverMaterial.color.setHex(tool === "erase" ? 0xff7e7e : BRUSH_COLORS[brush]);
+      }
     }
 
     function syncHud(): void {
@@ -718,10 +1162,29 @@ const experiment: ExperimentModule = {
       brushButtons.forEach((button, brush) => {
         setButtonActive(button, mode === "EDITOR" && editorBrush === brush);
       });
+      rectToolButtons.forEach((button, rectMode) => {
+        setButtonActive(button, mode === "EDITOR" && activeRectTool === rectMode);
+      });
+      setButtonActive(rectOffButton, mode === "EDITOR" && activeRectTool === "none");
+      defaultGroundButtons.forEach((button, base) => {
+        setButtonActive(button, mode === "EDITOR" && defaultGroundBase === base);
+      });
 
       const doorCount = levelModel.placements.length;
       const wallCount = levelModel.tiles.filter((tile) => tile === TILE_WALL).length;
       const viewStep = ((yawIndex % 4) + 4) % 4;
+      const groundCounts: Record<GroundBase, number> = {
+        floor: 0,
+        grass: 0,
+        road: 0,
+        sidewalk: 0,
+        building: 0
+      };
+      for (let y = 0; y < levelModel.height; y += 1) {
+        for (let x = 0; x < levelModel.width; x += 1) {
+          groundCounts[getGroundOverrideAtCell(x, y).base] += 1;
+        }
+      }
 
       const playerTransform = gameRuntime ? findPlayerTransform(gameRuntime.world) : null;
       const playerText = playerTransform
@@ -732,6 +1195,11 @@ const experiment: ExperimentModule = {
         `Mode: ${mode}`,
         `Grid: ${levelModel.width}x${levelModel.height}`,
         `Tiles wall/walkable: ${wallCount}/${levelModel.tiles.length - wallCount}`,
+        `Ground(F/G/R/S/B): ${groundCounts.floor}/${groundCounts.grass}/${groundCounts.road}/${groundCounts.sidewalk}/${groundCounts.building}`,
+        `Overrides: ${groundOverrides.size}`,
+        `Default: ${defaultGroundBase}`,
+        `Rect: ${activeRectTool}`,
+        `Seed: ${userSeed}`,
         `Doors: ${doorCount}`,
         `Door rot brush: ${(editorDoorRot % 4 + 4) % 4}`,
         `View: ${viewStep}/4`,
@@ -854,27 +1322,28 @@ const experiment: ExperimentModule = {
       return hit ? hit.clone() : null;
     }
 
-    function applyEditorBrushAtCell(cellX: number, cellY: number): void {
+    function applyEditorBrushAtCell(cellX: number, cellY: number, toolMode: ToolMode, brush: EditorBrush): void {
       if (!inBounds(levelModel, cellX, cellY)) {
         return;
       }
 
       let changed = false;
 
-      if (activeTool === "erase") {
+      if (toolMode === "erase") {
         const removedDoor = removeDoorPlacementAt(levelModel, cellX, cellY);
         const madeWalkable = setTileAt(levelModel, cellX, cellY, TILE_WALKABLE);
-        changed = removedDoor || madeWalkable;
-      } else if (editorBrush === "wall" || editorBrush === "window") {
+        const removedGround = groundOverrides.delete(cellKey(cellX, cellY));
+        changed = removedDoor || madeWalkable || removedGround;
+      } else if (brush === "wall" || brush === "window") {
         const removedDoor = removeDoorPlacementAt(levelModel, cellX, cellY);
         const madeWall = setTileAt(levelModel, cellX, cellY, TILE_WALL);
         changed = removedDoor || madeWall;
-      } else if (editorBrush === "door-closed" || editorBrush === "door-open") {
+      } else if (brush === "door-closed" || brush === "door-open") {
         setTileAt(levelModel, cellX, cellY, TILE_WALL);
 
         const existing = findDoorPlacementAt(levelModel, cellX, cellY);
         const data: DoorPlacementData = {
-          open: editorBrush === "door-open",
+          open: brush === "door-open",
           locked: existing?.data?.locked
         };
 
@@ -889,10 +1358,15 @@ const experiment: ExperimentModule = {
 
         addDoorPlacement(levelModel, placement);
         changed = true;
-      } else {
+      } else if (isGroundBrush(brush)) {
         const removedDoor = removeDoorPlacementAt(levelModel, cellX, cellY);
         const madeWalkable = setTileAt(levelModel, cellX, cellY, TILE_WALKABLE);
-        changed = removedDoor || madeWalkable;
+        const groundVariant = brush === "grass" ? computeGrassVariant(userSeed ^ 0x9e3779b9, cellX, cellY) : undefined;
+        const before = getGroundOverrideAtCell(cellX, cellY);
+        const next = normalizeGroundOverride(brush, groundVariant);
+        setGroundOverrideAtCell(cellX, cellY, next);
+        const after = getGroundOverrideAtCell(cellX, cellY);
+        changed = removedDoor || madeWalkable || before.base !== after.base || before.variant !== after.variant;
       }
 
       if (!changed) {
@@ -901,15 +1375,15 @@ const experiment: ExperimentModule = {
 
       rebuildBaseLevelMeshes();
       rebuildEditorDoorMeshes();
-      statusMessage = `Edited cell (${cellX}, ${cellY}) using ${activeTool}/${editorBrush}.`;
+      statusMessage = `Edited cell (${cellX}, ${cellY}) using ${toolMode}/${brush}.`;
       syncHud();
     }
 
-    function paintStroke(start: THREE.Vector3 | null, end: THREE.Vector3): void {
+    function paintStroke(start: THREE.Vector3 | null, end: THREE.Vector3, toolMode: ToolMode, brush: EditorBrush): void {
       if (!start) {
         const cell = worldToCell(levelModel, end.x, end.z);
         if (cell) {
-          applyEditorBrushAtCell(cell.x, cell.y);
+          applyEditorBrushAtCell(cell.x, cell.y, toolMode, brush);
         }
         return;
       }
@@ -932,7 +1406,7 @@ const experiment: ExperimentModule = {
         }
 
         seen.add(key);
-        applyEditorBrushAtCell(cell.x, cell.y);
+        applyEditorBrushAtCell(cell.x, cell.y, toolMode, brush);
       }
     }
 
@@ -1047,6 +1521,7 @@ const experiment: ExperimentModule = {
       editorDoorGroup.visible = true;
       gameDoorGroup.visible = false;
       hoverMesh.visible = true;
+      hideRectPreview();
       statusMessage = "Switched to EDITOR.";
       syncHud();
     }
@@ -1070,6 +1545,7 @@ const experiment: ExperimentModule = {
       editorDoorGroup.visible = false;
       gameDoorGroup.visible = true;
       hoverMesh.visible = false;
+      hideRectPreview();
       playerMesh.visible = true;
 
       const playerTransform = runtime.world.transforms.get(runtime.playerEid);
@@ -1082,13 +1558,21 @@ const experiment: ExperimentModule = {
     }
 
     function saveLevelModelNow(): void {
-      localStorage.setItem(LEVEL_MODEL_STORAGE_KEY, serializeLevelModel(levelModel));
-      statusMessage = `Saved LevelModel to localStorage key: ${LEVEL_MODEL_STORAGE_KEY}`;
+      const payload = {
+        schemaVersion: EDITOR_LEVEL_SCHEMA_VERSION,
+        levelModel: cloneLevelModel(levelModel),
+        terrain: serializeTerrainState(defaultGroundBase, userSeed, groundOverrides)
+      };
+
+      localStorage.setItem(LEVEL_MODEL_STORAGE_KEY, JSON.stringify(payload));
+      statusMessage = `Saved editor state to localStorage key: ${LEVEL_MODEL_STORAGE_KEY}`;
       console.log("[editor-game-ecs] level model saved", {
         key: LEVEL_MODEL_STORAGE_KEY,
         width: levelModel.width,
         height: levelModel.height,
-        placements: levelModel.placements.length
+        placements: levelModel.placements.length,
+        defaultGroundBase,
+        groundOverrides: groundOverrides.size
       });
       syncHud();
     }
@@ -1122,6 +1606,7 @@ const experiment: ExperimentModule = {
       const payload: GameSave = {
         schemaVersion: GAME_SAVE_SCHEMA_VERSION,
         levelModel: cloneLevelModel(levelModel),
+        terrain: serializeTerrainState(defaultGroundBase, userSeed, groundOverrides),
         player,
         doors
       };
@@ -1158,6 +1643,23 @@ const experiment: ExperimentModule = {
       }
 
       levelModel = cloneLevelModel(parsedSave.levelModel);
+      if (parsedSave.terrain) {
+        defaultGroundBase = parsedSave.terrain.defaultGround;
+        userSeed = parsedSave.terrain.seed;
+        seedInput.value = String(userSeed);
+        groundOverrides = new Map(
+          parsedSave.terrain.overrides.map((entry) => [
+            cellKey(Math.floor(entry.x), Math.floor(entry.y)),
+            normalizeGroundOverride(entry.base, entry.variant)
+          ])
+        );
+      } else {
+        defaultGroundBase = "floor";
+        userSeed = 1337;
+        seedInput.value = String(userSeed);
+        groundOverrides = new Map<string, GroundCellOverride>();
+      }
+
       updateGridGeometry();
       rebuildBaseLevelMeshes();
       rebuildEditorDoorMeshes();
@@ -1271,14 +1773,24 @@ const experiment: ExperimentModule = {
       }
 
       if (mode === "EDITOR") {
-        renderer.domElement.style.cursor = "crosshair";
-      } else {
-        renderer.domElement.style.cursor = "pointer";
+        if (activeRectTool !== "none" || dragState?.mode === "rect") {
+          renderer.domElement.style.cursor = "crosshair";
+          return;
+        }
+
+        const { mode: tool } = getCurrentBrushAndMode();
+        renderer.domElement.style.cursor = tool === "erase" ? "not-allowed" : "crosshair";
+        return;
       }
+
+      renderer.domElement.style.cursor = "pointer";
     }
 
     function handlePointerDown(event: PointerEvent): void {
-      if (event.button !== 0 && event.button !== 1) {
+      if (event.button !== 0 && event.button !== 1 && event.button !== 2) {
+        return;
+      }
+      if (mode === "GAME" && event.button === 2) {
         return;
       }
 
@@ -1287,14 +1799,18 @@ const experiment: ExperimentModule = {
 
       const shouldPan = event.button === 1 || spacePressed;
       const world = worldAtClient(event.clientX, event.clientY);
+      const paintMode: ToolMode = event.button === 2 ? "erase" : activeTool;
+      const rectMode = event.button === 0 ? resolveRectModeForPointer(event) : "none";
 
       if (shouldPan) {
         dragState = {
           pointerId: event.pointerId,
           mode: "pan",
+          paintMode,
+          brush: editorBrush,
           lastClientX: event.clientX,
           lastClientY: event.clientY,
-          lastWorld: world,
+          lastWorldPoint: world,
           moved: false
         };
         updateCursor();
@@ -1303,25 +1819,56 @@ const experiment: ExperimentModule = {
       }
 
       if (mode === "EDITOR") {
+        if (rectMode !== "none") {
+          const startCell = world ? worldToCell(levelModel, world.x, world.z) : null;
+          if (!startCell) {
+            event.preventDefault();
+            return;
+          }
+
+          dragState = {
+            pointerId: event.pointerId,
+            mode: "rect",
+            paintMode,
+            brush: editorBrush,
+            lastClientX: event.clientX,
+            lastClientY: event.clientY,
+            lastWorldPoint: world,
+            moved: false,
+            rectMode,
+            rectStartCell: startCell,
+            rectEndCell: startCell
+          };
+          updateRectPreview(startCell, startCell, rectMode);
+          updateCursor();
+          syncHud();
+          event.preventDefault();
+          return;
+        }
+
         if (world) {
-          paintStroke(null, world);
+          paintStroke(null, world, paintMode, editorBrush);
         }
 
         dragState = {
           pointerId: event.pointerId,
           mode: "paint",
+          paintMode,
+          brush: editorBrush,
           lastClientX: event.clientX,
           lastClientY: event.clientY,
-          lastWorld: world,
+          lastWorldPoint: world,
           moved: false
         };
+
+        syncHud();
       } else {
         dragState = {
           pointerId: event.pointerId,
           mode: "game-click",
           lastClientX: event.clientX,
           lastClientY: event.clientY,
-          lastWorld: world,
+          lastWorldPoint: world,
           moved: false
         };
       }
@@ -1353,9 +1900,24 @@ const experiment: ExperimentModule = {
         return;
       }
 
+      if (dragState.mode === "rect") {
+        if (world && dragState.rectStartCell) {
+          const cell = worldToCell(levelModel, world.x, world.z);
+          if (cell) {
+            dragState.rectEndCell = cell;
+            updateRectPreview(dragState.rectStartCell, cell, dragState.rectMode ?? "none");
+          }
+        }
+
+        dragState.lastClientX = event.clientX;
+        dragState.lastClientY = event.clientY;
+        event.preventDefault();
+        return;
+      }
+
       if (dragState.mode === "paint" && mode === "EDITOR" && world) {
-        paintStroke(dragState.lastWorld, world);
-        dragState.lastWorld = world;
+        paintStroke(dragState.lastWorldPoint, world, dragState.paintMode ?? activeTool, dragState.brush ?? editorBrush);
+        dragState.lastWorldPoint = world;
       }
 
       dragState.lastClientX = event.clientX;
@@ -1377,9 +1939,20 @@ const experiment: ExperimentModule = {
           }
         }
       }
+      if (
+        dragState.mode === "rect" &&
+        dragState.rectMode &&
+        dragState.rectMode !== "none" &&
+        dragState.rectStartCell &&
+        dragState.rectEndCell
+      ) {
+        runRectTool(dragState.rectMode, dragState.rectStartCell, dragState.rectEndCell);
+      }
 
       dragState = null;
+      hideRectPreview();
       updateCursor();
+      syncHud();
       event.preventDefault();
     }
 
@@ -1389,7 +1962,9 @@ const experiment: ExperimentModule = {
       }
 
       dragState = null;
+      hideRectPreview();
       updateCursor();
+      syncHud();
       event.preventDefault();
     }
 
@@ -1495,41 +2070,57 @@ const experiment: ExperimentModule = {
       if (event.code === "Digit1") {
         editorBrush = "wall";
         activeTool = "draw";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit2") {
         editorBrush = "window";
         activeTool = "draw";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit3") {
         editorBrush = "door-closed";
         activeTool = "draw";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit4") {
         editorBrush = "floor";
         activeTool = "draw";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit5") {
         editorBrush = "grass";
         activeTool = "draw";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit6") {
         editorBrush = "door-open";
         activeTool = "draw";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit7") {
         editorBrush = "road";
         activeTool = "draw";
+        activeRectTool = "none";
         syncHud();
         event.preventDefault();
       } else if (event.code === "Digit8") {
         editorBrush = "sidewalk";
         activeTool = "draw";
+        activeRectTool = "none";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "Digit9") {
+        activeRectTool = "building-footprint";
+        syncHud();
+        event.preventDefault();
+      } else if (event.code === "KeyG") {
+        activeRectTool = "grass-fill";
         syncHud();
         event.preventDefault();
       } else if (event.code === "KeyD") {
@@ -1624,11 +2215,16 @@ const experiment: ExperimentModule = {
       doorGeometries.leaf.dispose();
       doorGeometries.handle.dispose();
       hoverMesh.geometry.dispose();
+      rectPreviewMesh.geometry.dispose();
 
       minorGridGeometry.dispose();
       minorGridMaterial.dispose();
 
       floorMaterial.dispose();
+      grassVariantMaterials.forEach((material) => material.dispose());
+      roadMaterial.dispose();
+      sidewalkMaterial.dispose();
+      buildingGroundMaterial.dispose();
       wallMaterial.dispose();
       wallCapMaterial.dispose();
       doorMaterials.frame.dispose();
@@ -1637,6 +2233,7 @@ const experiment: ExperimentModule = {
       playerBodyMaterial.dispose();
       playerHeadMaterial.dispose();
       hoverMaterial.dispose();
+      rectPreviewMaterial.dispose();
 
       renderer.dispose();
 

@@ -95,3 +95,19 @@ Detection signal:
 Preventive checklist:
 - Keep editor HUD construction in shared `@common/level-editor` and consume it from all editor experiments.
 - Limit experiments to mode/feature-specific controls and state logic; avoid re-implementing shared UI scaffolding.
+
+## 2026-02-08 - Terrain-capable editor state was not fully persisted in ECS-integrated save/load
+Root cause:
+- `editor-game-ecs` added terrain/default-ground/seed state, but save/load paths still primarily serialized `LevelModel`.
+- `loadGameNow()` restored tiles/placements but did not always restore terrain overrides before rebuilding runtime meshes.
+
+Detection signal:
+- User reported save appeared to work but load behavior was inconsistent and status copy suggested only model-level saving.
+- Gameplay/editor visual state diverged after reload.
+
+Preventive checklist:
+- When adding editor state fields, update both persistence layers together:
+  - editor-state save/load (`Ctrl+S`)
+  - runtime game save/load (`K`/`L`)
+- Add a browser smoke test that saves in GAME, reloads, and asserts restored terrain + door/player state.
+- Keep save status messages explicit about what payload was written.
