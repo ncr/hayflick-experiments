@@ -238,3 +238,16 @@ Detection signal:
 Preventive checklist:
 - Keep boundary stepping, but add a swept segment-vs-blocked-edge intersection safety check before applying movement.
 - Treat any swept intersection as a hard bump and skip transform update for that frame.
+
+## 2026-02-08 - Isometric movement felt wrong when intent was world-axis
+Root cause:
+- A new isometric experiment used `createPlayerInputSystem` directly, which maps intent to fixed world axes.
+- Camera view was angled, so W/A/S/D did not match screen-relative expectations.
+
+Detection signal:
+- User reported movement direction on screen did not match pressed WASD direction.
+
+Preventive checklist:
+- In isometric/camera-angled modes, map player intent through camera forward/right projected to the ground plane.
+- Reuse the same camera-relative input helper across experiments to avoid per-experiment drift.
+- Manually verify W/Up means “screen up” before shipping movement changes.

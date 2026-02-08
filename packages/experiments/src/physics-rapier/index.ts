@@ -20,7 +20,6 @@ import {
   KeyboardTracker,
   World,
   createInputSystem,
-  createPlayerInputSystem,
   type EID,
   type System
 } from "@common/gameplay";
@@ -116,7 +115,6 @@ type RuntimeState = {
   physics: PhysicsResource;
   systems: {
     inputSystem: System;
-    playerInputSystem: System;
   };
   playerEid: EID;
   doors: DataStore<DoorComponent>;
@@ -598,7 +596,6 @@ function loadGameFromLocalStorage(): PhysicsRapierSave | null {
 function createRuntimeState(options: {
   systems: {
     inputSystem: System;
-    playerInputSystem: System;
   };
   wallGroup: THREE.Group;
   doorGroup: THREE.Group;
@@ -879,8 +876,7 @@ const experiment: ExperimentModule = {
 
     const keyboard = new KeyboardTracker(window);
     const systems = {
-      inputSystem: createInputSystem(keyboard),
-      playerInputSystem: createPlayerInputSystem(PLAYER_SPEED)
+      inputSystem: createInputSystem(keyboard)
     };
 
     let statusMessage = "Ready.";
@@ -920,6 +916,58 @@ const experiment: ExperimentModule = {
       );
       camera.lookAt(cameraTarget);
       camera.updateProjectionMatrix();
+    }
+
+    const inputRight = new THREE.Vector3();
+    const inputForward = new THREE.Vector3();
+
+    // Screen-relative movement: W/Up always moves toward the top of the viewport.
+    function runCameraRelativePlayerInputSystem(world: World): void {
+      let inputX = 0;
+      let inputY = 0;
+
+      if (world.input.left) inputX -= 1;
+      if (world.input.right) inputX += 1;
+      if (world.input.up) inputY += 1;
+      if (world.input.down) inputY -= 1;
+
+      inputRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+      inputRight.y = 0;
+      if (inputRight.lengthSq() > 0.000001) {
+        inputRight.normalize();
+      }
+
+      inputForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      inputForward.y = 0;
+      if (inputForward.lengthSq() > 0.000001) {
+        inputForward.normalize();
+      }
+
+      let moveX = inputRight.x * inputX + inputForward.x * inputY;
+      let moveY = inputRight.z * inputX + inputForward.z * inputY;
+
+      const length = Math.hypot(moveX, moveY);
+      if (length > 0) {
+        moveX /= length;
+        moveY /= length;
+      }
+
+      const vx = moveX * PLAYER_SPEED;
+      const vy = moveY * PLAYER_SPEED;
+
+      for (const eid of world.queryTransformPlayer()) {
+        if (!world.velocities.has(eid)) {
+          world.velocities.add(eid, { vx: 0, vy: 0 });
+        }
+
+        const velocity = world.velocities.get(eid);
+        if (!velocity) {
+          continue;
+        }
+
+        velocity.vx = vx;
+        velocity.vy = vy;
+      }
     }
 
     function rebuildFromSave(save: PhysicsRapierSave): void {
@@ -1054,7 +1102,7 @@ const experiment: ExperimentModule = {
           runtime.world.time.frame += 1;
 
           runtime.systems.inputSystem(runtime.world);
-          runtime.systems.playerInputSystem(runtime.world);
+          runCameraRelativePlayerInputSystem(runtime.world);
           runPhysicsSyncIn(runtime);
           runtime.physics.step(stepDt);
           runPhysicsSyncOut(runtime);
