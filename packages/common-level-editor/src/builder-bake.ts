@@ -25,6 +25,25 @@ export type LevelBuilderStructureSegment =
 export type LevelBuilderDoorSegment = Extract<LevelBuilderStructureSegment, { kind: "door" }>;
 export type LevelBuilderSolidSegment = Exclude<LevelBuilderStructureSegment, { kind: "door" }>;
 
+export type LevelBuilderColliderDesc =
+  | {
+      kind: "rect";
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      layer: "solid";
+    }
+  | {
+      kind: "door";
+      placementId: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      closed: true;
+    };
+
 export const LEVEL_BUILDER_GROUND_BASE = {
   FLOOR: "floor",
   GRASS: "grass",
@@ -44,6 +63,11 @@ export const LEVEL_BUILDER_STRUCTURE_KIND = {
   DOOR: "door"
 } as const;
 
+export const LEVEL_BUILDER_COLLIDER_KIND = {
+  RECT: "rect",
+  DOOR: "door"
+} as const;
+
 export type LevelBuilderGroundOverride = {
   x: number;
   z: number;
@@ -52,7 +76,7 @@ export type LevelBuilderGroundOverride = {
 };
 
 export type LevelBuilderBake = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   level: LevelSnapshot;
   grid: {
     tiles: number;
@@ -65,6 +89,7 @@ export type LevelBuilderBake = {
   };
   structures: LevelBuilderStructureSegment[];
   blockedCells: Array<{ x: number; z: number }>;
+  colliderDescs: LevelBuilderColliderDesc[];
 };
 
 export type LevelBuilderBakeInput = {
@@ -81,32 +106,22 @@ export type LevelBuilderBakeInput = {
   structures: LevelBuilderStructureSegment[];
 };
 
-type LevelBuilderGroundOverrideV1 = {
-  x: number;
-  z: number;
-  type: typeof LEVEL_BUILDER_GROUND_BASE.FLOOR | typeof LEVEL_BUILDER_GROUND_BASE.GRASS;
-};
-
-type LevelBuilderBakeV1 = {
-  schemaVersion: 1;
-  level: LevelSnapshot;
-  grid: {
-    tiles: number;
-    tileSize: number;
-    origin: number;
-  };
-  terrain: {
-    defaultGround: typeof LEVEL_BUILDER_GROUND_BASE.FLOOR | typeof LEVEL_BUILDER_GROUND_BASE.GRASS;
-    overrides: LevelBuilderGroundOverrideV1[];
-  };
-  structures: LevelBuilderStructureSegment[];
-  blockedCells: Array<{ x: number; z: number }>;
-};
-
 const GROUND_BASES = new Set<LevelBuilderGroundBase>(Object.values(LEVEL_BUILDER_GROUND_BASE));
+const DOOR_THICKNESS = 0.18;
 
 function toCellKey(x: number, z: number): string {
   return `${x},${z}`;
+}
+
+export function levelBuilderEdgeKey(ax: number, az: number, bx: number, bz: number): string {
+  if (ax < bx || (ax === bx && az <= bz)) {
+    return `${ax},${az}|${bx},${bz}`;
+  }
+  return `${bx},${bz}|${ax},${az}`;
+}
+
+export function levelBuilderDoorPlacementIdFromNodes(ax: number, az: number, bx: number, bz: number): string {
+  return `door:${levelBuilderEdgeKey(ax, az, bx, bz)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -186,22 +201,64 @@ function asGroundOverride(value: unknown): LevelBuilderGroundOverride | null {
   };
 }
 
-function migrateV1ToV2(v1: LevelBuilderBakeV1): LevelBuilderBake {
-  return {
-    schemaVersion: 2,
-    level: v1.level,
-    grid: v1.grid,
-    terrain: {
-      defaultGround: v1.terrain.defaultGround,
-      overrides: v1.terrain.overrides.map((entry) => ({
-        x: entry.x,
-        z: entry.z,
-        base: entry.type
-      }))
-    },
-    structures: v1.structures,
-    blockedCells: v1.blockedCells
-  };
+function asColliderDesc(value: unknown): LevelBuilderColliderDesc | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const kind = value.kind;
+  if (kind === LEVEL_BUILDER_COLLIDER_KIND.RECT) {
+    const x = asFiniteNumber(value.x);
+    const y = asFiniteNumber(value.y);
+    const w = asFiniteNumber(value.w);
+    const h = asFiniteNumber(value.h);
+    const layer = value.layer;
+
+    if (x === null || y === null || w === null || h === null || layer !== "solid") {
+      return null;
+    }
+
+    return {
+      kind,
+      x,
+      y,
+      w,
+      h,
+      layer
+    };
+  }
+
+  if (kind === LEVEL_BUILDER_COLLIDER_KIND.DOOR) {
+    const placementId = value.placementId;
+    const x = asFiniteNumber(value.x);
+    const y = asFiniteNumber(value.y);
+    const w = asFiniteNumber(value.w);
+    const h = asFiniteNumber(value.h);
+    const closed = value.closed;
+
+    if (
+      typeof placementId !== "string" ||
+      x === null ||
+      y === null ||
+      w === null ||
+      h === null ||
+      closed !== true
+    ) {
+      return null;
+    }
+
+    return {
+      kind,
+      placementId,
+      x,
+      y,
+      w,
+      h,
+      closed
+    };
+  }
+
+  return null;
 }
 
 function isStructureSegment(value: unknown): value is LevelBuilderStructureSegment {
@@ -228,9 +285,105 @@ function isStructureSegment(value: unknown): value is LevelBuilderStructureSegme
   return true;
 }
 
-function parseV2(raw: Record<string, unknown>): LevelBuilderBake | null {
+function deriveDoorColliderDesc(segment: LevelBuilderDoorSegment): LevelBuilderColliderDesc {
+  const minX = Math.min(segment.ax, segment.bx);
+  const maxX = Math.max(segment.ax, segment.bx);
+  const minY = Math.min(segment.az, segment.bz);
+  const maxY = Math.max(segment.az, segment.bz);
+
+  const isVertical = segment.ax === segment.bx;
+  const width = isVertical ? DOOR_THICKNESS : Math.max(0.1, maxX - minX);
+  const height = isVertical ? Math.max(0.1, maxY - minY) : DOOR_THICKNESS;
+  const x = isVertical ? segment.ax : minX + (maxX - minX) * 0.5;
+  const y = isVertical ? minY + (maxY - minY) * 0.5 : segment.az;
+
+  return {
+    kind: LEVEL_BUILDER_COLLIDER_KIND.DOOR,
+    placementId: levelBuilderDoorPlacementIdFromNodes(
+      segment.ax,
+      segment.az,
+      segment.bx,
+      segment.bz
+    ),
+    x,
+    y,
+    w: width,
+    h: height,
+    closed: true
+  };
+}
+
+function linkedCellsForDoorSegment(segment: LevelBuilderDoorSegment): Array<{ x: number; z: number }> {
+  const cells: Array<{ x: number; z: number }> = [];
+
+  if (segment.ax === segment.bx) {
+    const z = Math.min(segment.az, segment.bz);
+    cells.push({ x: segment.ax - 1, z });
+    cells.push({ x: segment.ax, z });
+    return cells;
+  }
+
+  const x = Math.min(segment.ax, segment.bx);
+  cells.push({ x, z: segment.az - 1 });
+  cells.push({ x, z: segment.az });
+  return cells;
+}
+
+function deriveColliderDescs(
+  blockedCells: Array<{ x: number; z: number }>,
+  structures: LevelBuilderStructureSegment[]
+): LevelBuilderColliderDesc[] {
+  const doorLinkedCells = new Set<string>();
+  for (const segment of structures) {
+    if (!isLevelBuilderDoorSegment(segment)) {
+      continue;
+    }
+    for (const cell of linkedCellsForDoorSegment(segment)) {
+      doorLinkedCells.add(toCellKey(cell.x, cell.z));
+    }
+  }
+
+  const colliders: LevelBuilderColliderDesc[] = blockedCells
+    .filter((cell) => !doorLinkedCells.has(toCellKey(cell.x, cell.z)))
+    .map((cell) => ({
+      kind: LEVEL_BUILDER_COLLIDER_KIND.RECT,
+      x: cell.x + 0.5,
+      y: cell.z + 0.5,
+      w: 1,
+      h: 1,
+      layer: "solid"
+    }));
+
+  const seenDoors = new Set<string>();
+  for (const segment of structures) {
+    if (!isLevelBuilderDoorSegment(segment)) {
+      continue;
+    }
+
+    const placementId = levelBuilderDoorPlacementIdFromNodes(
+      segment.ax,
+      segment.az,
+      segment.bx,
+      segment.bz
+    );
+    if (seenDoors.has(placementId)) {
+      continue;
+    }
+
+    seenDoors.add(placementId);
+    colliders.push(deriveDoorColliderDesc(segment));
+  }
+
+  return colliders;
+}
+
+export function parseBakedLevel(raw: unknown): LevelBuilderBake | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+
   const schemaVersion = asFiniteNumber(raw.schemaVersion);
-  if (schemaVersion !== 2) {
+  if (schemaVersion !== 3) {
     return null;
   }
 
@@ -239,8 +392,16 @@ function parseV2(raw: Record<string, unknown>): LevelBuilderBake | null {
   const terrain = raw.terrain;
   const structures = raw.structures;
   const blockedCells = raw.blockedCells;
+  const colliderDescsRaw = raw.colliderDescs;
 
-  if (!isRecord(level) || !isRecord(grid) || !isRecord(terrain) || !Array.isArray(structures) || !Array.isArray(blockedCells)) {
+  if (
+    !isRecord(level) ||
+    !isRecord(grid) ||
+    !isRecord(terrain) ||
+    !Array.isArray(structures) ||
+    !Array.isArray(blockedCells) ||
+    !Array.isArray(colliderDescsRaw)
+  ) {
     return null;
   }
 
@@ -292,8 +453,17 @@ function parseV2(raw: Record<string, unknown>): LevelBuilderBake | null {
     parsedBlocked.push({ x, z });
   }
 
+  const colliderDescs: LevelBuilderColliderDesc[] = [];
+  for (const rawDesc of colliderDescsRaw) {
+    const desc = asColliderDesc(rawDesc);
+    if (!desc) {
+      return null;
+    }
+    colliderDescs.push(desc);
+  }
+
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     level: {
       id: levelId,
       version: levelVersion
@@ -308,120 +478,9 @@ function parseV2(raw: Record<string, unknown>): LevelBuilderBake | null {
       overrides
     },
     structures: parsedStructures,
-    blockedCells: parsedBlocked
+    blockedCells: parsedBlocked,
+    colliderDescs
   };
-}
-
-function parseV1(raw: Record<string, unknown>): LevelBuilderBake | null {
-  const schemaVersion = asFiniteNumber(raw.schemaVersion);
-  if (schemaVersion !== 1) {
-    return null;
-  }
-
-  const level = raw.level;
-  const grid = raw.grid;
-  const terrain = raw.terrain;
-  const structures = raw.structures;
-  const blockedCells = raw.blockedCells;
-
-  if (!isRecord(level) || !isRecord(grid) || !isRecord(terrain) || !Array.isArray(structures) || !Array.isArray(blockedCells)) {
-    return null;
-  }
-
-  const levelId = typeof level.id === "string" ? level.id : null;
-  const levelVersion = asFiniteNumber(level.version);
-  const tiles = asFiniteNumber(grid.tiles);
-  const tileSize = asFiniteNumber(grid.tileSize);
-  const origin = asFiniteNumber(grid.origin);
-  const defaultGround = terrain.defaultGround;
-  const overridesRaw = terrain.overrides;
-
-  if (
-    levelId === null ||
-    levelVersion === null ||
-    tiles === null ||
-    tileSize === null ||
-    origin === null ||
-    !Array.isArray(overridesRaw)
-  ) {
-    return null;
-  }
-
-  if (defaultGround !== LEVEL_BUILDER_GROUND_BASE.FLOOR && defaultGround !== LEVEL_BUILDER_GROUND_BASE.GRASS) {
-    return null;
-  }
-
-  const overrides: LevelBuilderGroundOverrideV1[] = [];
-  for (const entry of overridesRaw) {
-    if (!isRecord(entry)) {
-      return null;
-    }
-
-    const x = asFiniteNumber(entry.x);
-    const z = asFiniteNumber(entry.z);
-    const type = entry.type;
-    if (
-      x === null ||
-      z === null ||
-      (type !== LEVEL_BUILDER_GROUND_BASE.FLOOR && type !== LEVEL_BUILDER_GROUND_BASE.GRASS)
-    ) {
-      return null;
-    }
-
-    overrides.push({ x, z, type });
-  }
-
-  const parsedStructures: LevelBuilderStructureSegment[] = [];
-  for (const entry of structures) {
-    if (!isStructureSegment(entry)) {
-      return null;
-    }
-    parsedStructures.push(entry);
-  }
-
-  const parsedBlocked: Array<{ x: number; z: number }> = [];
-  for (const cell of blockedCells) {
-    if (!isRecord(cell)) {
-      return null;
-    }
-
-    const x = asFiniteNumber(cell.x);
-    const z = asFiniteNumber(cell.z);
-    if (x === null || z === null) {
-      return null;
-    }
-
-    parsedBlocked.push({ x, z });
-  }
-
-  const legacy: LevelBuilderBakeV1 = {
-    schemaVersion: 1,
-    level: {
-      id: levelId,
-      version: levelVersion
-    },
-    grid: {
-      tiles,
-      tileSize,
-      origin
-    },
-    terrain: {
-      defaultGround,
-      overrides
-    },
-    structures: parsedStructures,
-    blockedCells: parsedBlocked
-  };
-
-  return migrateV1ToV2(legacy);
-}
-
-export function parseBakedLevel(raw: unknown): LevelBuilderBake | null {
-  if (!isRecord(raw)) {
-    return null;
-  }
-
-  return parseV2(raw) ?? parseV1(raw);
 }
 
 export function deserializeBakedLevel(json: string): LevelBuilderBake | null {
@@ -484,7 +543,7 @@ export function bakeLevelForEcs(input: LevelBuilderBakeInput): LevelBuilderBake 
     .sort((a, b) => a.z - b.z || a.x - b.x);
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     level: input.level,
     grid: input.grid,
     terrain: {
@@ -492,7 +551,8 @@ export function bakeLevelForEcs(input: LevelBuilderBakeInput): LevelBuilderBake 
       overrides: input.terrain.overrides.slice()
     },
     structures: input.structures.slice(),
-    blockedCells
+    blockedCells,
+    colliderDescs: deriveColliderDescs(blockedCells, input.structures)
   };
 }
 

@@ -1,9 +1,9 @@
 /**
  * Per-frame flow for this combined editor + game experiment:
  * 1) EDITOR mode mutates a grid editor state (ground overrides + edge structure segments).
- * 2) F5 bakes editor state into a mutable ECS LevelResource (derived blocked arrays).
- * 3) GAME mode runs ECS systems in order: Input -> PlayerInput -> DoorSystem -> Movement -> Event.
- * 4) Door interactions are queued from clicks, then DoorSystem toggles state and walkability.
+ * 2) F5 bakes editor state into ECS LevelResource + collider descriptors.
+ * 3) GAME mode runs systems: Input -> PlayerIntent -> PhysicsEnsure -> SyncIn -> Step -> SyncOut -> Door -> Event.
+ * 4) Door interactions are queued from clicks, then DoorSystem toggles logical blocking and physics colliders.
  * 5) K/L in GAME save/load full game state (editor state + player + door states by placementId).
  * 6) ESC returns to EDITOR without mutating editor auth state from runtime-only door toggles.
  */
@@ -13,9 +13,10 @@ import { makeRenderer } from "@common/render";
 import {
   bakeLevelForEcs,
   createPromotedEditorControls,
-  createMutableGridLevelResource,
+  createEcsLevelResourceFromBake,
   createEditorStructureMeshKit,
   createEditorHud,
+  levelBuilderDoorPlacementIdFromNodes,
   type PromotedEditorBrush,
   type PromotedEditorDefaultGround,
   type PromotedEditorRectToolMode,
@@ -25,6 +26,7 @@ import {
   isLevelBuilderStructureKind,
   setDoorVisualOpen,
   type LevelBuilderDoorState,
+  type LevelBuilderColliderDesc,
   type LevelBuilderGroundBase,
   type LevelBuilderGroundOverride,
   type LevelBuilderStructureSegment,
@@ -39,6 +41,17 @@ import {
   createInputSystem,
   type EID
 } from "@common/gameplay";
+import {
+  createPhysicsResource,
+  initRapier,
+  physicsEnsureSystem,
+  physicsStepSystem,
+  physicsSyncInSystem,
+  physicsSyncOutSystem,
+  type PhysicsBodyRef,
+  type PhysicsColliderRef,
+  type PhysicsResource
+} from "@common/physics-rapier";
 import type { ExperimentModule } from "../runtime/types";
 
 type Mode = "EDITOR" | "GAME";
@@ -98,6 +111,9 @@ type DirectionVector = {
 type DoorComponent = {
   placementId: string;
   edgeKey: string;
+  cellX: number;
+  cellY: number;
+  linkedCells: Array<{ x: number; y: number }>;
   ax: number;
   ay: number;
   bx: number;
@@ -116,6 +132,9 @@ type GameRuntime = {
   world: World;
   levelResource: MutableGridLevelResource;
   keyboard: KeyboardTracker;
+  physics: PhysicsResource;
+  physicsBodies: DataStore<PhysicsBodyRef>;
+  physicsColliders: DataStore<PhysicsColliderRef>;
   systems: {
     inputSystem: ReturnType<typeof createInputSystem>;
     eventSystem: ReturnType<typeof createEventSystem>;
@@ -124,7 +143,7 @@ type GameRuntime = {
   doors: DataStore<DoorComponent>;
   doorByPlacementId: Map<string, EID>;
   placementIdByEdge: Map<string, string>;
-  blockedEdges: Set<string>;
+  doorColliderByPlacementId: Map<string, number>;
   doorVisuals: Map<string, EditorDoorVisual>;
   interactionQueue: string[];
 };
@@ -248,13 +267,6 @@ function isDoorStructureSegment(
   return segment.kind === STRUCTURE_KIND.DOOR;
 }
 
-function isSolidBlockingStructureSegment(segment: StructureSegmentData): boolean {
-  return (
-    segment.kind === STRUCTURE_KIND.WALL ||
-    segment.kind === STRUCTURE_KIND.WINDOW
-  );
-}
-
 function structureEquals(
   a: StructureSegmentData | undefined,
   b: StructureSegmentData
@@ -293,7 +305,12 @@ function parseEdge(key: string): GridEdge {
 }
 
 function edgePlacementId(edge: GridEdge): string {
-  return `door:${edgeKey(edge.ax, edge.ay, edge.bx, edge.by)}`;
+  return levelBuilderDoorPlacementIdFromNodes(
+    edge.ax,
+    edge.ay,
+    edge.bx,
+    edge.by
+  );
 }
 
 function isInGrid(cellX: number, cellY: number): boolean {
@@ -1142,7 +1159,7 @@ const experiment: ExperimentModule = {
         runBakePreview();
       },
       onExit(): void {
-        enterGame({
+        void enterGame({
           status: "Exited EDITOR and entered GAME mode."
         });
       }
@@ -1909,6 +1926,7 @@ const experiment: ExperimentModule = {
       }
 
       gameRuntime.keyboard.dispose(window);
+      gameRuntime.physics.dispose();
       gameRuntime = null;
       clearGroup(gameDoorGroup);
       playerMesh.visible = false;
@@ -1951,262 +1969,62 @@ const experiment: ExperimentModule = {
 
     function runBakePreview(): void {
       const baked = createBakePayload();
-      statusMessage = `Baked preview: ${baked.structures.length} segments, blocked ${baked.blockedCells.length} cells.`;
+      statusMessage = `Baked preview: ${baked.structures.length} segments, blocked ${baked.blockedCells.length} cells, ${baked.colliderDescs.length} colliders.`;
       console.log("[editor-game-ecs] baked preview", baked);
       syncHud();
     }
 
-    const MOVEMENT_EPS = 1e-4;
+    function linkedCellsForEdge(edge: GridEdge): Array<{ x: number; y: number }> {
+      const cells: Array<{ x: number; y: number }> = [];
 
-    function clampInsideGrid(value: number): number {
-      return THREE.MathUtils.clamp(
-        value,
-        MOVEMENT_EPS,
-        GRID_TILES - MOVEMENT_EPS
-      );
-    }
-
-    function candidateIndexAt(value: number): number[] {
-      const lo = Math.floor(
-        THREE.MathUtils.clamp(value - MOVEMENT_EPS, 0, GRID_TILES - MOVEMENT_EPS)
-      );
-      const hi = Math.floor(
-        THREE.MathUtils.clamp(value + MOVEMENT_EPS, 0, GRID_TILES - MOVEMENT_EPS)
-      );
-      return lo === hi ? [lo] : [lo, hi];
-    }
-
-    function moveAlongX(
-      fromX: number,
-      fromY: number,
-      toY: number,
-      deltaX: number,
-      blockedEdges: Set<string>
-    ): { value: number; bumped: boolean } {
-      const targetX = fromX + deltaX;
-      if (deltaX === 0) {
-        return { value: targetX, bumped: false };
-      }
-
-      if (deltaX > 0) {
-        const first = Math.floor(fromX + MOVEMENT_EPS) + 1;
-        const last = Math.floor(targetX + MOVEMENT_EPS);
-        for (let boundary = first; boundary <= last; boundary += 1) {
-          if (boundary >= GRID_TILES) {
-            return { value: GRID_TILES - MOVEMENT_EPS, bumped: true };
-          }
-
-          const t = (boundary - fromX) / deltaX;
-          const yAtBoundary = THREE.MathUtils.lerp(fromY, toY, t);
-          for (const yIndex of candidateIndexAt(yAtBoundary)) {
-            const key = edgeKey(boundary, yIndex, boundary, yIndex + 1);
-            if (blockedEdges.has(key)) {
-              return { value: boundary - MOVEMENT_EPS, bumped: true };
-            }
-          }
+      if (edge.ax === edge.bx) {
+        const y = Math.min(edge.ay, edge.by);
+        const left = { x: edge.ax - 1, y };
+        const right = { x: edge.ax, y };
+        if (isInGrid(left.x, left.y)) {
+          cells.push(left);
+        }
+        if (isInGrid(right.x, right.y)) {
+          cells.push(right);
         }
       } else {
-        const first = Math.ceil(fromX - MOVEMENT_EPS) - 1;
-        const last = Math.ceil(targetX - MOVEMENT_EPS);
-        for (let boundary = first; boundary >= last; boundary -= 1) {
-          if (boundary <= 0) {
-            return { value: MOVEMENT_EPS, bumped: true };
-          }
-
-          const t = (boundary - fromX) / deltaX;
-          const yAtBoundary = THREE.MathUtils.lerp(fromY, toY, t);
-          for (const yIndex of candidateIndexAt(yAtBoundary)) {
-            const key = edgeKey(boundary, yIndex, boundary, yIndex + 1);
-            if (blockedEdges.has(key)) {
-              return { value: boundary + MOVEMENT_EPS, bumped: true };
-            }
-          }
+        const x = Math.min(edge.ax, edge.bx);
+        const bottom = { x, y: edge.ay - 1 };
+        const top = { x, y: edge.ay };
+        if (isInGrid(bottom.x, bottom.y)) {
+          cells.push(bottom);
+        }
+        if (isInGrid(top.x, top.y)) {
+          cells.push(top);
         }
       }
 
-      return { value: targetX, bumped: false };
+      return cells;
     }
 
-    function moveAlongY(
-      fromY: number,
-      fromX: number,
-      toX: number,
-      deltaY: number,
-      blockedEdges: Set<string>
-    ): { value: number; bumped: boolean } {
-      const targetY = fromY + deltaY;
-      if (deltaY === 0) {
-        return { value: targetY, bumped: false };
-      }
-
-      if (deltaY > 0) {
-        const first = Math.floor(fromY + MOVEMENT_EPS) + 1;
-        const last = Math.floor(targetY + MOVEMENT_EPS);
-        for (let boundary = first; boundary <= last; boundary += 1) {
-          if (boundary >= GRID_TILES) {
-            return { value: GRID_TILES - MOVEMENT_EPS, bumped: true };
-          }
-
-          const t = (boundary - fromY) / deltaY;
-          const xAtBoundary = THREE.MathUtils.lerp(fromX, toX, t);
-          for (const xIndex of candidateIndexAt(xAtBoundary)) {
-            const key = edgeKey(xIndex, boundary, xIndex + 1, boundary);
-            if (blockedEdges.has(key)) {
-              return { value: boundary - MOVEMENT_EPS, bumped: true };
-            }
-          }
+    function doorColliderMap(
+      colliderDescs: LevelBuilderColliderDesc[]
+    ): Map<string, LevelBuilderColliderDesc & { kind: "door" }> {
+      const map = new Map<string, LevelBuilderColliderDesc & { kind: "door" }>();
+      for (const desc of colliderDescs) {
+        if (desc.kind !== "door") {
+          continue;
         }
-      } else {
-        const first = Math.ceil(fromY - MOVEMENT_EPS) - 1;
-        const last = Math.ceil(targetY - MOVEMENT_EPS);
-        for (let boundary = first; boundary >= last; boundary -= 1) {
-          if (boundary <= 0) {
-            return { value: MOVEMENT_EPS, bumped: true };
-          }
-
-          const t = (boundary - fromY) / deltaY;
-          const xAtBoundary = THREE.MathUtils.lerp(fromX, toX, t);
-          for (const xIndex of candidateIndexAt(xAtBoundary)) {
-            const key = edgeKey(xIndex, boundary, xIndex + 1, boundary);
-            if (blockedEdges.has(key)) {
-              return { value: boundary + MOVEMENT_EPS, bumped: true };
-            }
-          }
-        }
+        map.set(desc.placementId, desc);
       }
-
-      return { value: targetY, bumped: false };
+      return map;
     }
 
-    function segmentIntersectsBlockedEdge(
-      fromX: number,
-      fromY: number,
-      toX: number,
-      toY: number,
-      blockedEdges: Set<string>
-    ): boolean {
-      const dx = toX - fromX;
-      const dy = toY - fromY;
-      if (Math.abs(dx) < MOVEMENT_EPS && Math.abs(dy) < MOVEMENT_EPS) {
-        return false;
+    function applyDoorBlocking(runtime: GameRuntime, door: DoorComponent): void {
+      for (const cell of door.linkedCells) {
+        runtime.levelResource.setBlocked(cell.x, cell.y, !door.open);
       }
 
-      for (const key of blockedEdges) {
-        const edge = parseEdge(key);
-
-        if (edge.ax === edge.bx) {
-          // Vertical segment at x = edge.ax, y in [ay, by].
-          const x = edge.ax;
-          const sideA = fromX - x;
-          const sideB = toX - x;
-          if (
-            (sideA < -MOVEMENT_EPS && sideB < -MOVEMENT_EPS) ||
-            (sideA > MOVEMENT_EPS && sideB > MOVEMENT_EPS)
-          ) {
-            continue;
-          }
-          if (Math.abs(dx) < MOVEMENT_EPS) {
-            continue;
-          }
-
-          const t = (x - fromX) / dx;
-          if (t <= MOVEMENT_EPS || t > 1 + MOVEMENT_EPS) {
-            continue;
-          }
-
-          const y = fromY + dy * t;
-          const minY = Math.min(edge.ay, edge.by) - MOVEMENT_EPS;
-          const maxY = Math.max(edge.ay, edge.by) + MOVEMENT_EPS;
-          if (y >= minY && y <= maxY) {
-            return true;
-          }
-          continue;
-        }
-
-        // Horizontal segment at y = edge.ay, x in [ax, bx].
-        const y = edge.ay;
-        const sideA = fromY - y;
-        const sideB = toY - y;
-        if (
-          (sideA < -MOVEMENT_EPS && sideB < -MOVEMENT_EPS) ||
-          (sideA > MOVEMENT_EPS && sideB > MOVEMENT_EPS)
-        ) {
-          continue;
-        }
-        if (Math.abs(dy) < MOVEMENT_EPS) {
-          continue;
-        }
-
-        const t = (y - fromY) / dy;
-        if (t <= MOVEMENT_EPS || t > 1 + MOVEMENT_EPS) {
-          continue;
-        }
-
-        const x = fromX + dx * t;
-        const minX = Math.min(edge.ax, edge.bx) - MOVEMENT_EPS;
-        const maxX = Math.max(edge.ax, edge.bx) + MOVEMENT_EPS;
-        if (x >= minX && x <= maxX) {
-          return true;
-        }
-      }
-
-      return false;
-    }
-
-    function runEdgeAwareMovementSystem(runtime: GameRuntime, dt: number): void {
-      const world = runtime.world;
-
-      for (const eid of world.queryTransformVelocity()) {
-        const transform = world.transforms.get(eid);
-        const velocity = world.velocities.get(eid);
-        if (!transform || !velocity) {
-          continue;
-        }
-
-        const deltaX = velocity.vx * dt;
-        const deltaY = velocity.vy * dt;
-
-        const stepX = moveAlongX(
-          transform.x,
-          transform.y,
-          transform.y + deltaY,
-          deltaX,
-          runtime.blockedEdges
-        );
-        const stepY = moveAlongY(
-          transform.y,
-          transform.x,
-          stepX.value,
-          deltaY,
-          runtime.blockedEdges
-        );
-
-        const nextX = clampInsideGrid(stepX.value);
-        const nextY = clampInsideGrid(stepY.value);
-
-        let bumped = stepX.bumped || stepY.bumped;
-        if (
-          !bumped &&
-          segmentIntersectsBlockedEdge(
-            transform.x,
-            transform.y,
-            nextX,
-            nextY,
-            runtime.blockedEdges
-          )
-        ) {
-          bumped = true;
-        }
-
-        if (bumped) {
-          world.events.emit({ type: "BumpedWall", e: eid });
-        }
-
-        if (!bumped && (nextX !== transform.x || nextY !== transform.y)) {
-          transform.x = nextX;
-          transform.y = nextY;
-          world.events.emit({ type: "Moved", e: eid });
-        }
+      const colliderHandle = runtime.doorColliderByPlacementId.get(
+        door.placementId
+      );
+      if (colliderHandle !== undefined) {
+        runtime.physics.setColliderEnabled(colliderHandle, !door.open);
       }
     }
 
@@ -2215,12 +2033,7 @@ const experiment: ExperimentModule = {
       doorOverrides?: Map<string, DoorOverride>;
     }): GameRuntime {
       const baked = createBakePayload();
-      const levelResource = createMutableGridLevelResource({
-        id: baked.level.id,
-        version: baked.level.version,
-        width: baked.grid.tiles,
-        height: baked.grid.tiles
-      });
+      const levelResource = createEcsLevelResourceFromBake(baked) as MutableGridLevelResource;
 
       const world = new World({
         level: levelResource,
@@ -2232,6 +2045,29 @@ const experiment: ExperimentModule = {
         inputSystem: createInputSystem(keyboard),
         eventSystem: createEventSystem()
       };
+      const physics = createPhysicsResource();
+      const physicsBodies = new DataStore<PhysicsBodyRef>();
+      const physicsColliders = new DataStore<PhysicsColliderRef>();
+
+      for (const collider of baked.colliderDescs) {
+        if (collider.kind !== "rect") {
+          continue;
+        }
+
+        physics.ensureStaticColliderRect(collider.x, collider.y, collider.w, collider.h);
+      }
+
+      const doorColliderDescriptors = doorColliderMap(baked.colliderDescs);
+      const doorColliderByPlacementId = new Map<string, number>();
+      for (const [placementId, desc] of doorColliderDescriptors.entries()) {
+        const handle = physics.ensureStaticColliderRect(
+          desc.x,
+          desc.y,
+          desc.w,
+          desc.h
+        );
+        doorColliderByPlacementId.set(placementId, handle);
+      }
 
       const playerEid = world.createEntity();
       const playerStart = options?.player ?? PLAYER_SPAWN;
@@ -2243,15 +2079,8 @@ const experiment: ExperimentModule = {
       const doors = new DataStore<DoorComponent>();
       const doorByPlacementId = new Map<string, EID>();
       const placementIdByEdge = new Map<string, string>();
-      const blockedEdges = new Set<string>();
       const doorVisuals = new Map<string, EditorDoorVisual>();
       const interactionQueue: string[] = [];
-
-      for (const [key, segment] of structureSegments.entries()) {
-        if (isSolidBlockingStructureSegment(segment)) {
-          blockedEdges.add(key);
-        }
-      }
 
       for (const [key, segment] of structureSegments.entries()) {
         if (!isDoorStructureSegment(segment)) {
@@ -2263,12 +2092,17 @@ const experiment: ExperimentModule = {
         const override = options?.doorOverrides?.get(placementId);
         const open = override ? override.open : segment.state === "open";
         const locked = override?.locked;
+        const linkedCells = linkedCellsForEdge(edge);
+        const primaryCell = linkedCells[0] ?? { x: 0, y: 0 };
 
         const eid = world.createEntity();
         const rot = edge.ay !== edge.by ? 1 : 0;
         doors.add(eid, {
           placementId,
           edgeKey: key,
+          cellX: primaryCell.x,
+          cellY: primaryCell.y,
+          linkedCells,
           ax: edge.ax,
           ay: edge.ay,
           bx: edge.bx,
@@ -2285,26 +2119,45 @@ const experiment: ExperimentModule = {
         world.persistents.add(eid, { kind: "door" });
         doorByPlacementId.set(placementId, eid);
         placementIdByEdge.set(key, placementId);
-        if (!open) {
-          blockedEdges.add(key);
-        } else {
-          blockedEdges.delete(key);
-        }
+
       }
 
-      return {
+      physicsEnsureSystem({
+        world,
+        physics,
+        entities: world.queryTransformPlayer(),
+        capsule: { radius: 0.25 },
+        physicsBodies,
+        physicsColliders
+      });
+      physics.setTranslation(playerEid, playerStart);
+
+      const runtime: GameRuntime = {
         world,
         levelResource,
         keyboard,
+        physics,
+        physicsBodies,
+        physicsColliders,
         systems,
         playerEid,
         doors,
         doorByPlacementId,
         placementIdByEdge,
-        blockedEdges,
+        doorColliderByPlacementId,
         doorVisuals,
         interactionQueue
       };
+
+      for (const eid of runtime.doorByPlacementId.values()) {
+        const door = runtime.doors.get(eid);
+        if (!door) {
+          continue;
+        }
+        applyDoorBlocking(runtime, door);
+      }
+
+      return runtime;
     }
 
     function enterEditor(): void {
@@ -2318,17 +2171,32 @@ const experiment: ExperimentModule = {
       syncHud();
     }
 
-    function enterGame(options?: {
+    let enterGameRequestId = 0;
+
+    async function enterGame(options?: {
       player?: { x: number; y: number };
       doorOverrides?: Map<string, DoorOverride>;
       status?: string;
-    }): void {
+    }): Promise<void> {
+      const requestId = enterGameRequestId + 1;
+      enterGameRequestId = requestId;
+
+      await initRapier();
+      if (requestId !== enterGameRequestId) {
+        return;
+      }
+
       disposeGameRuntime();
 
       const runtime = createGameRuntime({
         player: options?.player,
         doorOverrides: options?.doorOverrides
       });
+      if (requestId !== enterGameRequestId) {
+        runtime.keyboard.dispose(window);
+        runtime.physics.dispose();
+        return;
+      }
 
       gameRuntime = runtime;
       rebuildGameplayDoorMeshes(runtime);
@@ -2479,7 +2347,7 @@ const experiment: ExperimentModule = {
         });
       }
 
-      enterGame({
+      void enterGame({
         player: parsedSave.player,
         doorOverrides: overrides,
         status:
@@ -2532,11 +2400,7 @@ const experiment: ExperimentModule = {
         }
 
         door.open = !door.open;
-        if (door.open) {
-          runtime.blockedEdges.delete(door.edgeKey);
-        } else {
-          runtime.blockedEdges.add(door.edgeKey);
-        }
+        applyDoorBlocking(runtime, door);
 
         const visual = runtime.doorVisuals.get(door.placementId);
         if (visual) {
@@ -2555,8 +2419,29 @@ const experiment: ExperimentModule = {
 
       runtime.systems.inputSystem(world);
       runCameraRelativePlayerInputSystem(world);
+      physicsEnsureSystem({
+        world,
+        physics: runtime.physics,
+        entities: world.queryTransformPlayer(),
+        capsule: { radius: 0.25 },
+        physicsBodies: runtime.physicsBodies,
+        physicsColliders: runtime.physicsColliders
+      });
+      physicsSyncInSystem({
+        world,
+        physics: runtime.physics,
+        entities: world.queryTransformPlayer()
+      });
+      physicsStepSystem({
+        physics: runtime.physics,
+        dtFrame: dt
+      });
+      physicsSyncOutSystem({
+        world,
+        physics: runtime.physics,
+        entities: world.queryTransformPlayer()
+      });
       runDoorSystem(runtime);
-      runEdgeAwareMovementSystem(runtime, dt);
       runtime.systems.eventSystem(world);
 
       const player = world.transforms.get(runtime.playerEid);
@@ -2851,7 +2736,7 @@ const experiment: ExperimentModule = {
 
       if (event.code === "F5") {
         event.preventDefault();
-        enterGame();
+        void enterGame();
         return;
       }
 

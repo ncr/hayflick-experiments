@@ -10,8 +10,8 @@ import {
   isLevelBuilderGroundBase,
   isLevelBuilderSolidSegment,
   isLevelBuilderStructureKind,
+  levelBuilderDoorPlacementIdFromNodes,
   parseBakedLevel,
-  type LevelBuilderBake,
   type LevelBuilderBakeInput
 } from "./builder-bake";
 
@@ -69,6 +69,39 @@ describe("bakeLevelForEcs", () => {
     expect(open.blockedCells).toEqual([]);
   });
 
+  it("emits collider descriptors for blocked cells and doors", () => {
+    const bake = bakeLevelForEcs(
+      createInput([
+        {
+          kind: "wall",
+          ax: 1,
+          az: 1,
+          bx: 1,
+          bz: 2
+        },
+        {
+          kind: "door",
+          doorState: "closed",
+          ax: 2,
+          az: 1,
+          bx: 3,
+          bz: 1
+        }
+      ])
+    );
+
+    const rectColliders = bake.colliderDescs.filter((desc) => desc.kind === "rect");
+    const doorColliders = bake.colliderDescs.filter((desc) => desc.kind === "door");
+
+    expect(rectColliders.length).toBeLessThan(bake.blockedCells.length);
+    expect(doorColliders).toHaveLength(1);
+    expect(doorColliders[0]).toMatchObject({
+      kind: "door",
+      placementId: levelBuilderDoorPlacementIdFromNodes(2, 1, 3, 1),
+      closed: true
+    });
+  });
+
   it("creates a mutable LevelResource aligned with bake grid origin/tile size", () => {
     const bake = bakeLevelForEcs(
       createInput([
@@ -108,10 +141,10 @@ describe("bakeLevelForEcs", () => {
 });
 
 describe("parseBakedLevel", () => {
-  it("parses valid schemaVersion 2 payloads", () => {
-    const v2: unknown = {
-      schemaVersion: 2,
-      level: { id: "v2", version: 2 },
+  it("parses valid schemaVersion 3 payloads", () => {
+    const v3: unknown = {
+      schemaVersion: 3,
+      level: { id: "v3", version: 3 },
       grid: { tiles: 4, tileSize: 1, origin: -2 },
       terrain: {
         defaultGround: "road",
@@ -121,77 +154,105 @@ describe("parseBakedLevel", () => {
         { kind: "wall", ax: 1, az: 1, bx: 1, bz: 2 },
         { kind: "door", doorState: "closed", ax: 2, az: 1, bx: 3, bz: 1 }
       ],
-      blockedCells: [{ x: 1, z: 1 }]
+      blockedCells: [{ x: 1, z: 1 }],
+      colliderDescs: [
+        { kind: "rect", x: 1.5, y: 1.5, w: 1, h: 1, layer: "solid" },
+        {
+          kind: "door",
+          placementId: "door:2,1|3,1",
+          x: 2.5,
+          y: 1,
+          w: 1,
+          h: 0.18,
+          closed: true
+        }
+      ]
     };
 
-    const parsed = parseBakedLevel(v2);
+    const parsed = parseBakedLevel(v3);
     expect(parsed).not.toBeNull();
-    expect(parsed?.schemaVersion).toBe(2);
+    expect(parsed?.schemaVersion).toBe(3);
     expect(parsed?.terrain.defaultGround).toBe("road");
     expect(parsed?.structures).toHaveLength(2);
+    expect(parsed?.colliderDescs).toHaveLength(2);
   });
 
-  it("migrates schemaVersion 1 terrain overrides into schemaVersion 2", () => {
-    const v1: unknown = {
-      schemaVersion: 1,
-      level: { id: "legacy", version: 1 },
-      grid: { tiles: 4, tileSize: 1, origin: -2 },
-      terrain: {
-        defaultGround: "grass",
-        overrides: [{ x: 1, z: 1, type: "floor" }]
-      },
-      structures: [],
-      blockedCells: [{ x: 1, z: 1 }]
-    };
+  it("rejects non-current schema payloads", () => {
+    expect(
+      parseBakedLevel({
+        schemaVersion: 2,
+        level: { id: "legacy-v2", version: 2 },
+        grid: { tiles: 4, tileSize: 1, origin: -2 },
+        terrain: {
+          defaultGround: "grass",
+          overrides: [{ x: 1, z: 1, base: "floor" }]
+        },
+        structures: [],
+        blockedCells: []
+      })
+    ).toBeNull();
 
-    const parsed = parseBakedLevel(v1);
-    expect(parsed).not.toBeNull();
-    expect((parsed as LevelBuilderBake).schemaVersion).toBe(2);
-    expect((parsed as LevelBuilderBake).terrain.overrides).toEqual([{ x: 1, z: 1, base: "floor" }]);
+    expect(
+      parseBakedLevel({
+        schemaVersion: 1,
+        level: { id: "legacy-v1", version: 1 },
+        grid: { tiles: 4, tileSize: 1, origin: -2 },
+        terrain: {
+          defaultGround: "grass",
+          overrides: [{ x: 1, z: 1, type: "floor" }]
+        },
+        structures: [],
+        blockedCells: []
+      })
+    ).toBeNull();
   });
 
   it("rejects malformed payloads and invalid JSON during deserialize", () => {
     expect(
       parseBakedLevel({
-        schemaVersion: 2,
+        schemaVersion: 3,
         level: { id: "bad", version: 1 },
         grid: { tiles: 4, tileSize: 1, origin: -2 },
         terrain: { defaultGround: "invalid", overrides: [] },
         structures: [],
-        blockedCells: []
+        blockedCells: [],
+        colliderDescs: []
       })
     ).toBeNull();
 
     expect(
       parseBakedLevel({
-        schemaVersion: 2,
+        schemaVersion: 3,
         level: { id: "bad", version: 1 },
         grid: { tiles: 4, tileSize: 1, origin: -2 },
         terrain: { defaultGround: "grass", overrides: [{ x: 0, z: 0, base: "road", variant: "oops" }] },
         structures: [],
-        blockedCells: []
+        blockedCells: [],
+        colliderDescs: []
       })
     ).toBeNull();
 
     expect(
       parseBakedLevel({
-        schemaVersion: 2,
+        schemaVersion: 3,
         level: { id: "bad", version: 1 },
         grid: { tiles: 4, tileSize: 1, origin: -2 },
         terrain: { defaultGround: "grass", overrides: [] },
         structures: [{ kind: "door", doorState: "ajar", ax: 1, az: 1, bx: 2, bz: 1 }],
-        blockedCells: []
+        blockedCells: [],
+        colliderDescs: []
       })
     ).toBeNull();
 
     expect(
       parseBakedLevel({
-        schemaVersion: 2,
+        schemaVersion: 3,
         level: { id: "bad", version: 1 },
         grid: { tiles: 4, tileSize: 1, origin: -2 },
         terrain: { defaultGround: "grass", overrides: [] },
         structures: [],
-        blockedCells: [{ x: "x", z: 1 }]
+        blockedCells: [{ x: "x", z: 1 }],
+        colliderDescs: []
       })
     ).toBeNull();
 

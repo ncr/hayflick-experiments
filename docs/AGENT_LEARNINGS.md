@@ -251,3 +251,15 @@ Preventive checklist:
 - In isometric/camera-angled modes, map player intent through camera forward/right projected to the ground plane.
 - Reuse the same camera-relative input helper across experiments to avoid per-experiment drift.
 - Manually verify W/Up means “screen up” before shipping movement changes.
+
+## 2026-02-08 - Legacy compatibility paths added unnecessary churn during rapid prototyping
+Root cause:
+- Added schema migration/legacy parsing paths for evolving editor bake formats while product requirements favored fast iteration on a single current schema.
+
+Detection signal:
+- User explicitly requested removing migrations/legacy accommodation because the project is intentionally in rapid flux.
+
+Preventive checklist:
+- Default promoted editor/game modules to strict current-schema parsing unless migration is explicitly requested.
+- Avoid carrying legacy schema branches in experiments during active prototyping.
+- Keep save/bake contracts simple and version-gated to the current format only.

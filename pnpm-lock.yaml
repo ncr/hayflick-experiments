@@ -80,6 +80,15 @@ importers:
         specifier: ^0.173.0
         version: 0.173.0
 
+  packages/common-physics-rapier:
+    dependencies:
+      '@common/gameplay':
+        specifier: workspace:*
+        version: link:../common-gameplay
+      '@dimforge/rapier2d-compat':
+        specifier: ^0.19.3
+        version: 0.19.3
+
   packages/common-render:
     dependencies:
       three:
@@ -97,6 +106,9 @@ importers:
       '@common/level-editor':
         specifier: workspace:*
         version: link:../common-level-editor
+      '@common/physics-rapier':
+        specifier: workspace:*
+        version: link:../common-physics-rapier
       '@common/render':
         specifier: workspace:*
         version: link:../common-render

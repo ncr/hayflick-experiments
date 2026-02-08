@@ -9,7 +9,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
-    "test:promoted": "pnpm --filter @common/gameplay test:coverage && pnpm --filter @common/level-editor test:coverage",
+    "test:promoted": "pnpm --filter @common/gameplay test:coverage && pnpm --filter @common/level-editor test:coverage && pnpm --filter @common/physics-rapier test:coverage",
     "test:e2e": "playwright test",
     "exp:new": "node scripts/new-experiment.mjs"
   },

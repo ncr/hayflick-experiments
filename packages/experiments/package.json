@@ -18,6 +18,7 @@
     "@common/core": "workspace:*",
     "@common/gameplay": "workspace:*",
     "@common/level-editor": "workspace:*",
+    "@common/physics-rapier": "workspace:*",
     "@common/render": "workspace:*",
     "@dimforge/rapier2d-compat": "^0.19.3",
     "three": "^0.173.0"
