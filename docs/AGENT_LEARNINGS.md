@@ -215,3 +215,15 @@ Detection signal:
 Preventive checklist:
 - When checking boundary crossings, evaluate candidate adjacent indices around the interpolated crossing point (`±eps`) instead of one floored index.
 - Keep collision checks diagonal-aware for both X and Y boundary tests.
+
+## 2026-02-08 - Promoted module coverage gate failed after adding new shared file
+Root cause:
+- Added `packages/common-level-editor/src/editor-controls.ts` without corresponding unit tests.
+- `test:promoted` enforces global coverage thresholds, so one uncovered promoted file dropped the whole package below required levels.
+
+Detection signal:
+- CI failed at `pnpm test:promoted` with coverage threshold errors for `@common/level-editor`.
+
+Preventive checklist:
+- Any new file in promoted packages must ship with tests in the same commit.
+- Run `pnpm test:promoted` locally before pushing promoted-module changes.
