@@ -29,7 +29,6 @@ import {
   World,
   createEventSystem,
   createInputSystem,
-  createMovementSystem,
   type EID
 } from "@common/gameplay";
 import type { ExperimentModule } from "../runtime/types";
@@ -54,6 +53,15 @@ type StructureSegmentData =
   | { kind: "wall" }
   | { kind: "window" }
   | { kind: "door"; state: LevelBuilderDoorState };
+
+const STRUCTURE_KIND = {
+  WALL: "wall",
+  WINDOW: "window",
+  DOOR: "door"
+} as const;
+
+type StructureKind = StructureSegmentData["kind"];
+type DoorStructureSegment = Extract<StructureSegmentData, { kind: "door" }>;
 
 type GridCell = {
   x: number;
@@ -96,7 +104,6 @@ type DoorComponent = {
   rot: number;
   open: boolean;
   locked?: boolean;
-  blockedCells: Array<{ x: number; y: number }>;
 };
 
 type DoorOverride = {
@@ -110,13 +117,13 @@ type GameRuntime = {
   keyboard: KeyboardTracker;
   systems: {
     inputSystem: ReturnType<typeof createInputSystem>;
-    movementSystem: ReturnType<typeof createMovementSystem>;
     eventSystem: ReturnType<typeof createEventSystem>;
   };
   playerEid: EID;
   doors: DataStore<DoorComponent>;
   doorByPlacementId: Map<string, EID>;
   placementIdByEdge: Map<string, string>;
+  blockedEdges: Set<string>;
   doorVisuals: Map<string, EditorDoorVisual>;
   interactionQueue: string[];
 };
@@ -219,12 +226,40 @@ function isStructureBrush(brush: EditorBrush): brush is StructureBrush {
 
 function structureFromBrush(brush: StructureBrush): StructureSegmentData {
   if (brush === "wall") {
-    return { kind: "wall" };
+    return { kind: STRUCTURE_KIND.WALL };
   }
   if (brush === "window") {
-    return { kind: "window" };
+    return { kind: STRUCTURE_KIND.WINDOW };
   }
-  return { kind: "door", state: brush === "door-open" ? "open" : "closed" };
+  return {
+    kind: STRUCTURE_KIND.DOOR,
+    state: brush === "door-open" ? "open" : "closed"
+  };
+}
+
+function assertNever(value: never, label: string): never {
+  throw new Error(`Unhandled ${label}: ${String(value)}`);
+}
+
+function isStructureKind(value: unknown): value is StructureKind {
+  return (
+    value === STRUCTURE_KIND.WALL ||
+    value === STRUCTURE_KIND.WINDOW ||
+    value === STRUCTURE_KIND.DOOR
+  );
+}
+
+function isDoorStructureSegment(
+  segment: StructureSegmentData
+): segment is DoorStructureSegment {
+  return segment.kind === STRUCTURE_KIND.DOOR;
+}
+
+function isSolidBlockingStructureSegment(segment: StructureSegmentData): boolean {
+  return (
+    segment.kind === STRUCTURE_KIND.WALL ||
+    segment.kind === STRUCTURE_KIND.WINDOW
+  );
 }
 
 function structureEquals(
@@ -234,7 +269,8 @@ function structureEquals(
   if (!a || a.kind !== b.kind) {
     return false;
   }
-  if (a.kind === "door" && b.kind === "door") {
+
+  if (isDoorStructureSegment(a) && isDoorStructureSegment(b)) {
     return a.state === b.state;
   }
   return true;
@@ -394,21 +430,26 @@ function parseStructureState(
     }
 
     const key = edgeKey(ax, ay, bx, by);
-    if (kind === "wall" || kind === "window") {
-      segments.set(key, { kind });
-      continue;
+    if (!isStructureKind(kind)) {
+      return null;
     }
 
-    if (kind === "door") {
-      const doorState = entry.doorState;
-      if (doorState !== "open" && doorState !== "closed") {
-        return null;
+    switch (kind) {
+      case STRUCTURE_KIND.WALL:
+      case STRUCTURE_KIND.WINDOW:
+        segments.set(key, { kind });
+        break;
+      case STRUCTURE_KIND.DOOR: {
+        const doorState = entry.doorState;
+        if (doorState !== "open" && doorState !== "closed") {
+          return null;
+        }
+        segments.set(key, { kind: STRUCTURE_KIND.DOOR, state: doorState });
+        break;
       }
-      segments.set(key, { kind: "door", state: doorState });
-      continue;
+      default:
+        return assertNever(kind, "serialized structure kind");
     }
-
-    return null;
   }
 
   return segments;
@@ -420,9 +461,9 @@ function serializeStructureState(
   const result: LevelBuilderStructureSegment[] = [];
   for (const [key, value] of structureSegments.entries()) {
     const edge = parseEdge(key);
-    if (value.kind === "door") {
+    if (isDoorStructureSegment(value)) {
       result.push({
-        kind: "door",
+        kind: STRUCTURE_KIND.DOOR,
         doorState: value.state,
         ax: edge.ax,
         az: edge.ay,
@@ -701,10 +742,13 @@ function createMockupStructureSegments(): Map<string, StructureSegmentData> {
 
   // Door between rooms (shared wall) and one door to the outside.
   structureSegments.set(edgeKey(10, 8, 10, 9), {
-    kind: "door",
+    kind: STRUCTURE_KIND.DOOR,
     state: "closed"
   });
-  structureSegments.set(edgeKey(7, 7, 8, 7), { kind: "door", state: "closed" });
+  structureSegments.set(edgeKey(7, 7, 8, 7), {
+    kind: STRUCTURE_KIND.DOOR,
+    state: "closed"
+  });
 
   return structureSegments;
 }
@@ -1493,13 +1537,16 @@ const experiment: ExperimentModule = {
     function createStructureMesh(
       segment: StructureSegmentData
     ): THREE.Object3D {
-      if (segment.kind === "wall") {
-        return structureMeshKit.createWallSegment();
+      switch (segment.kind) {
+        case STRUCTURE_KIND.WALL:
+          return structureMeshKit.createWallSegment();
+        case STRUCTURE_KIND.WINDOW:
+          return structureMeshKit.createWindowSegment();
+        case STRUCTURE_KIND.DOOR:
+          return structureMeshKit.createDoorSegment(segment.state);
+        default:
+          return assertNever(segment, "structure segment");
       }
-      if (segment.kind === "window") {
-        return structureMeshKit.createWindowSegment();
-      }
-      return structureMeshKit.createDoorSegment(segment.state);
     }
 
     function rebuildEditorStructureMeshes(): void {
@@ -1519,7 +1566,7 @@ const experiment: ExperimentModule = {
           mesh.rotation.y = Math.PI * 0.5;
         }
 
-        if (segment.kind === "door") {
+        if (isDoorStructureSegment(segment)) {
           editorDoorGroup.add(mesh);
         } else {
           wallGroup.add(mesh);
@@ -1643,12 +1690,18 @@ const experiment: ExperimentModule = {
       let windowCount = 0;
       let doorCount = 0;
       for (const segment of structureSegments.values()) {
-        if (segment.kind === "wall") {
-          wallCount += 1;
-        } else if (segment.kind === "window") {
-          windowCount += 1;
-        } else {
-          doorCount += 1;
+        switch (segment.kind) {
+          case STRUCTURE_KIND.WALL:
+            wallCount += 1;
+            break;
+          case STRUCTURE_KIND.WINDOW:
+            windowCount += 1;
+            break;
+          case STRUCTURE_KIND.DOOR:
+            doorCount += 1;
+            break;
+          default:
+            assertNever(segment, "structure segment");
         }
       }
 
@@ -1969,22 +2022,144 @@ const experiment: ExperimentModule = {
       });
     }
 
-    function blockedCellsForEdge(
-      edge: GridEdge
-    ): Array<{ x: number; y: number }> {
-      if (edge.ax === edge.bx) {
-        const z = Math.min(edge.ay, edge.by);
-        return [
-          { x: edge.ax - 1, y: z },
-          { x: edge.ax, y: z }
-        ];
+    const MOVEMENT_EPS = 1e-4;
+
+    function clampInsideGrid(value: number): number {
+      return THREE.MathUtils.clamp(
+        value,
+        MOVEMENT_EPS,
+        GRID_TILES - MOVEMENT_EPS
+      );
+    }
+
+    function moveAlongX(
+      fromX: number,
+      fixedY: number,
+      deltaX: number,
+      blockedEdges: Set<string>
+    ): { value: number; bumped: boolean } {
+      const targetX = fromX + deltaX;
+      if (deltaX === 0) {
+        return { value: targetX, bumped: false };
       }
 
-      const x = Math.min(edge.ax, edge.bx);
-      return [
-        { x, y: edge.ay - 1 },
-        { x, y: edge.ay }
-      ];
+      const yIndex = Math.floor(
+        THREE.MathUtils.clamp(fixedY, 0, GRID_TILES - MOVEMENT_EPS)
+      );
+
+      if (deltaX > 0) {
+        const first = Math.floor(fromX + MOVEMENT_EPS) + 1;
+        const last = Math.floor(targetX + MOVEMENT_EPS);
+        for (let boundary = first; boundary <= last; boundary += 1) {
+          if (boundary >= GRID_TILES) {
+            return { value: GRID_TILES - MOVEMENT_EPS, bumped: true };
+          }
+
+          const key = edgeKey(boundary, yIndex, boundary, yIndex + 1);
+          if (blockedEdges.has(key)) {
+            return { value: boundary - MOVEMENT_EPS, bumped: true };
+          }
+        }
+      } else {
+        const first = Math.ceil(fromX - MOVEMENT_EPS) - 1;
+        const last = Math.ceil(targetX - MOVEMENT_EPS);
+        for (let boundary = first; boundary >= last; boundary -= 1) {
+          if (boundary <= 0) {
+            return { value: MOVEMENT_EPS, bumped: true };
+          }
+
+          const key = edgeKey(boundary, yIndex, boundary, yIndex + 1);
+          if (blockedEdges.has(key)) {
+            return { value: boundary + MOVEMENT_EPS, bumped: true };
+          }
+        }
+      }
+
+      return { value: targetX, bumped: false };
+    }
+
+    function moveAlongY(
+      fromY: number,
+      fixedX: number,
+      deltaY: number,
+      blockedEdges: Set<string>
+    ): { value: number; bumped: boolean } {
+      const targetY = fromY + deltaY;
+      if (deltaY === 0) {
+        return { value: targetY, bumped: false };
+      }
+
+      const xIndex = Math.floor(
+        THREE.MathUtils.clamp(fixedX, 0, GRID_TILES - MOVEMENT_EPS)
+      );
+
+      if (deltaY > 0) {
+        const first = Math.floor(fromY + MOVEMENT_EPS) + 1;
+        const last = Math.floor(targetY + MOVEMENT_EPS);
+        for (let boundary = first; boundary <= last; boundary += 1) {
+          if (boundary >= GRID_TILES) {
+            return { value: GRID_TILES - MOVEMENT_EPS, bumped: true };
+          }
+
+          const key = edgeKey(xIndex, boundary, xIndex + 1, boundary);
+          if (blockedEdges.has(key)) {
+            return { value: boundary - MOVEMENT_EPS, bumped: true };
+          }
+        }
+      } else {
+        const first = Math.ceil(fromY - MOVEMENT_EPS) - 1;
+        const last = Math.ceil(targetY - MOVEMENT_EPS);
+        for (let boundary = first; boundary >= last; boundary -= 1) {
+          if (boundary <= 0) {
+            return { value: MOVEMENT_EPS, bumped: true };
+          }
+
+          const key = edgeKey(xIndex, boundary, xIndex + 1, boundary);
+          if (blockedEdges.has(key)) {
+            return { value: boundary + MOVEMENT_EPS, bumped: true };
+          }
+        }
+      }
+
+      return { value: targetY, bumped: false };
+    }
+
+    function runEdgeAwareMovementSystem(runtime: GameRuntime, dt: number): void {
+      const world = runtime.world;
+
+      for (const eid of world.queryTransformVelocity()) {
+        const transform = world.transforms.get(eid);
+        const velocity = world.velocities.get(eid);
+        if (!transform || !velocity) {
+          continue;
+        }
+
+        const stepX = moveAlongX(
+          transform.x,
+          transform.y,
+          velocity.vx * dt,
+          runtime.blockedEdges
+        );
+        const stepY = moveAlongY(
+          transform.y,
+          stepX.value,
+          velocity.vy * dt,
+          runtime.blockedEdges
+        );
+
+        const nextX = clampInsideGrid(stepX.value);
+        const nextY = clampInsideGrid(stepY.value);
+
+        if (stepX.bumped || stepY.bumped) {
+          world.events.emit({ type: "BumpedWall", e: eid });
+        }
+
+        if (nextX !== transform.x || nextY !== transform.y) {
+          transform.x = nextX;
+          transform.y = nextY;
+          world.events.emit({ type: "Moved", e: eid });
+        }
+      }
     }
 
     function createGameRuntime(options?: {
@@ -1996,11 +2171,7 @@ const experiment: ExperimentModule = {
         id: baked.level.id,
         version: baked.level.version,
         width: baked.grid.tiles,
-        height: baked.grid.tiles,
-        blockedCells: baked.blockedCells.map((cell) => ({
-          x: cell.x,
-          y: cell.z
-        }))
+        height: baked.grid.tiles
       });
 
       const world = new World({
@@ -2011,7 +2182,6 @@ const experiment: ExperimentModule = {
       const keyboard = new KeyboardTracker(window);
       const systems = {
         inputSystem: createInputSystem(keyboard),
-        movementSystem: createMovementSystem(),
         eventSystem: createEventSystem()
       };
 
@@ -2025,11 +2195,18 @@ const experiment: ExperimentModule = {
       const doors = new DataStore<DoorComponent>();
       const doorByPlacementId = new Map<string, EID>();
       const placementIdByEdge = new Map<string, string>();
+      const blockedEdges = new Set<string>();
       const doorVisuals = new Map<string, EditorDoorVisual>();
       const interactionQueue: string[] = [];
 
       for (const [key, segment] of structureSegments.entries()) {
-        if (segment.kind !== "door") {
+        if (isSolidBlockingStructureSegment(segment)) {
+          blockedEdges.add(key);
+        }
+      }
+
+      for (const [key, segment] of structureSegments.entries()) {
+        if (!isDoorStructureSegment(segment)) {
           continue;
         }
 
@@ -2038,9 +2215,6 @@ const experiment: ExperimentModule = {
         const override = options?.doorOverrides?.get(placementId);
         const open = override ? override.open : segment.state === "open";
         const locked = override?.locked;
-        const blockedCells = blockedCellsForEdge(edge).filter((cell) =>
-          isInGrid(cell.x, cell.y)
-        );
 
         const eid = world.createEntity();
         const rot = edge.ay !== edge.by ? 1 : 0;
@@ -2053,8 +2227,7 @@ const experiment: ExperimentModule = {
           by: edge.by,
           rot,
           open,
-          locked,
-          blockedCells
+          locked
         });
 
         world.transforms.add(eid, {
@@ -2064,9 +2237,10 @@ const experiment: ExperimentModule = {
         world.persistents.add(eid, { kind: "door" });
         doorByPlacementId.set(placementId, eid);
         placementIdByEdge.set(key, placementId);
-
-        for (const cell of blockedCells) {
-          levelResource.setBlocked(cell.x, cell.y, !open);
+        if (!open) {
+          blockedEdges.add(key);
+        } else {
+          blockedEdges.delete(key);
         }
       }
 
@@ -2079,6 +2253,7 @@ const experiment: ExperimentModule = {
         doors,
         doorByPlacementId,
         placementIdByEdge,
+        blockedEdges,
         doorVisuals,
         interactionQueue
       };
@@ -2309,8 +2484,10 @@ const experiment: ExperimentModule = {
         }
 
         door.open = !door.open;
-        for (const cell of door.blockedCells) {
-          runtime.levelResource.setBlocked(cell.x, cell.y, !door.open);
+        if (door.open) {
+          runtime.blockedEdges.delete(door.edgeKey);
+        } else {
+          runtime.blockedEdges.add(door.edgeKey);
         }
 
         const visual = runtime.doorVisuals.get(door.placementId);
@@ -2331,7 +2508,7 @@ const experiment: ExperimentModule = {
       runtime.systems.inputSystem(world);
       runCameraRelativePlayerInputSystem(world);
       runDoorSystem(runtime);
-      runtime.systems.movementSystem(world);
+      runEdgeAwareMovementSystem(runtime, dt);
       runtime.systems.eventSystem(world);
 
       const player = world.transforms.get(runtime.playerEid);
