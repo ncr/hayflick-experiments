@@ -203,3 +203,15 @@ Preventive checklist:
 - Use promoted editor control builders (`@common/level-editor`) for editor mode only.
 - Enforce explicit HUD visibility boundaries on mode switch (hide editor panel in GAME, show game-only controls).
 - Keep mode-specific hint/status copy in sync with visible controls to avoid mixed affordances.
+
+## 2026-02-08 - Diagonal movement could slip through wall segment endpoints
+Root cause:
+- Edge collision checks used only a single fixed row/column per axis pass.
+- During diagonal movement, crossing a boundary near a node could evaluate the wrong adjacent segment index and miss a block.
+
+Detection signal:
+- User reported wall collisions still failing despite edge-based blocking.
+
+Preventive checklist:
+- When checking boundary crossings, evaluate candidate adjacent indices around the interpolated crossing point (`±eps`) instead of one floored index.
+- Keep collision checks diagonal-aware for both X and Y boundary tests.

@@ -1966,9 +1966,20 @@ const experiment: ExperimentModule = {
       );
     }
 
+    function candidateIndexAt(value: number): number[] {
+      const lo = Math.floor(
+        THREE.MathUtils.clamp(value - MOVEMENT_EPS, 0, GRID_TILES - MOVEMENT_EPS)
+      );
+      const hi = Math.floor(
+        THREE.MathUtils.clamp(value + MOVEMENT_EPS, 0, GRID_TILES - MOVEMENT_EPS)
+      );
+      return lo === hi ? [lo] : [lo, hi];
+    }
+
     function moveAlongX(
       fromX: number,
-      fixedY: number,
+      fromY: number,
+      toY: number,
       deltaX: number,
       blockedEdges: Set<string>
     ): { value: number; bumped: boolean } {
@@ -1976,10 +1987,6 @@ const experiment: ExperimentModule = {
       if (deltaX === 0) {
         return { value: targetX, bumped: false };
       }
-
-      const yIndex = Math.floor(
-        THREE.MathUtils.clamp(fixedY, 0, GRID_TILES - MOVEMENT_EPS)
-      );
 
       if (deltaX > 0) {
         const first = Math.floor(fromX + MOVEMENT_EPS) + 1;
@@ -1989,9 +1996,13 @@ const experiment: ExperimentModule = {
             return { value: GRID_TILES - MOVEMENT_EPS, bumped: true };
           }
 
-          const key = edgeKey(boundary, yIndex, boundary, yIndex + 1);
-          if (blockedEdges.has(key)) {
-            return { value: boundary - MOVEMENT_EPS, bumped: true };
+          const t = (boundary - fromX) / deltaX;
+          const yAtBoundary = THREE.MathUtils.lerp(fromY, toY, t);
+          for (const yIndex of candidateIndexAt(yAtBoundary)) {
+            const key = edgeKey(boundary, yIndex, boundary, yIndex + 1);
+            if (blockedEdges.has(key)) {
+              return { value: boundary - MOVEMENT_EPS, bumped: true };
+            }
           }
         }
       } else {
@@ -2002,9 +2013,13 @@ const experiment: ExperimentModule = {
             return { value: MOVEMENT_EPS, bumped: true };
           }
 
-          const key = edgeKey(boundary, yIndex, boundary, yIndex + 1);
-          if (blockedEdges.has(key)) {
-            return { value: boundary + MOVEMENT_EPS, bumped: true };
+          const t = (boundary - fromX) / deltaX;
+          const yAtBoundary = THREE.MathUtils.lerp(fromY, toY, t);
+          for (const yIndex of candidateIndexAt(yAtBoundary)) {
+            const key = edgeKey(boundary, yIndex, boundary, yIndex + 1);
+            if (blockedEdges.has(key)) {
+              return { value: boundary + MOVEMENT_EPS, bumped: true };
+            }
           }
         }
       }
@@ -2014,7 +2029,8 @@ const experiment: ExperimentModule = {
 
     function moveAlongY(
       fromY: number,
-      fixedX: number,
+      fromX: number,
+      toX: number,
       deltaY: number,
       blockedEdges: Set<string>
     ): { value: number; bumped: boolean } {
@@ -2022,10 +2038,6 @@ const experiment: ExperimentModule = {
       if (deltaY === 0) {
         return { value: targetY, bumped: false };
       }
-
-      const xIndex = Math.floor(
-        THREE.MathUtils.clamp(fixedX, 0, GRID_TILES - MOVEMENT_EPS)
-      );
 
       if (deltaY > 0) {
         const first = Math.floor(fromY + MOVEMENT_EPS) + 1;
@@ -2035,9 +2047,13 @@ const experiment: ExperimentModule = {
             return { value: GRID_TILES - MOVEMENT_EPS, bumped: true };
           }
 
-          const key = edgeKey(xIndex, boundary, xIndex + 1, boundary);
-          if (blockedEdges.has(key)) {
-            return { value: boundary - MOVEMENT_EPS, bumped: true };
+          const t = (boundary - fromY) / deltaY;
+          const xAtBoundary = THREE.MathUtils.lerp(fromX, toX, t);
+          for (const xIndex of candidateIndexAt(xAtBoundary)) {
+            const key = edgeKey(xIndex, boundary, xIndex + 1, boundary);
+            if (blockedEdges.has(key)) {
+              return { value: boundary - MOVEMENT_EPS, bumped: true };
+            }
           }
         }
       } else {
@@ -2048,9 +2064,13 @@ const experiment: ExperimentModule = {
             return { value: MOVEMENT_EPS, bumped: true };
           }
 
-          const key = edgeKey(xIndex, boundary, xIndex + 1, boundary);
-          if (blockedEdges.has(key)) {
-            return { value: boundary + MOVEMENT_EPS, bumped: true };
+          const t = (boundary - fromY) / deltaY;
+          const xAtBoundary = THREE.MathUtils.lerp(fromX, toX, t);
+          for (const xIndex of candidateIndexAt(xAtBoundary)) {
+            const key = edgeKey(xIndex, boundary, xIndex + 1, boundary);
+            if (blockedEdges.has(key)) {
+              return { value: boundary + MOVEMENT_EPS, bumped: true };
+            }
           }
         }
       }
@@ -2068,16 +2088,21 @@ const experiment: ExperimentModule = {
           continue;
         }
 
+        const deltaX = velocity.vx * dt;
+        const deltaY = velocity.vy * dt;
+
         const stepX = moveAlongX(
           transform.x,
           transform.y,
-          velocity.vx * dt,
+          transform.y + deltaY,
+          deltaX,
           runtime.blockedEdges
         );
         const stepY = moveAlongY(
           transform.y,
+          transform.x,
           stepX.value,
-          velocity.vy * dt,
+          deltaY,
           runtime.blockedEdges
         );
 
