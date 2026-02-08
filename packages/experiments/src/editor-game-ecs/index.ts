@@ -129,8 +129,8 @@ type GameSave = {
   doors: GameSaveDoor[];
 };
 
-const LEVEL_MODEL_STORAGE_KEY = "editor_game_ecs_level_model_v2";
-const GAME_SAVE_STORAGE_KEY = "editor_game_ecs_game_save_v2";
+const LEVEL_MODEL_STORAGE_KEY = "editor_game_ecs_level_model_v3";
+const GAME_SAVE_STORAGE_KEY = "editor_game_ecs_game_save_v3";
 const GAME_SAVE_SCHEMA_VERSION = 1;
 const EDITOR_LEVEL_SCHEMA_VERSION = 2;
 
@@ -1055,6 +1055,43 @@ const experiment: ExperimentModule = {
         wallAdjacency.set(key, existing);
       };
 
+      const outsideOpenCells = new Set<string>();
+      const outsideQueue: Array<{ x: number; y: number }> = [];
+      const tryEnqueueOutside = (x: number, y: number): void => {
+        if (!inBounds(levelModel, x, y) || isSolidWallCell(x, y)) {
+          return;
+        }
+
+        const key = cellKey(x, y);
+        if (outsideOpenCells.has(key)) {
+          return;
+        }
+
+        outsideOpenCells.add(key);
+        outsideQueue.push({ x, y });
+      };
+
+      for (let x = 0; x < levelModel.width; x += 1) {
+        tryEnqueueOutside(x, 0);
+        tryEnqueueOutside(x, levelModel.height - 1);
+      }
+      for (let y = 1; y < levelModel.height - 1; y += 1) {
+        tryEnqueueOutside(0, y);
+        tryEnqueueOutside(levelModel.width - 1, y);
+      }
+
+      while (outsideQueue.length > 0) {
+        const next = outsideQueue.shift();
+        if (!next) {
+          break;
+        }
+
+        tryEnqueueOutside(next.x + 1, next.y);
+        tryEnqueueOutside(next.x - 1, next.y);
+        tryEnqueueOutside(next.x, next.y + 1);
+        tryEnqueueOutside(next.x, next.y - 1);
+      }
+
       for (let y = 0; y < levelModel.height; y += 1) {
         for (let x = 0; x < levelModel.width; x += 1) {
           const ground = getGroundOverrideAtCell(x, y);
@@ -1087,26 +1124,29 @@ const experiment: ExperimentModule = {
 
           const centerX = toWorldX(levelModel, x);
           const centerZ = toWorldZ(levelModel, y);
+          let renderedOutsideEdge = false;
 
-          if (!isSolidWallCell(x, y - 1)) {
+          if (!isSolidWallCell(x, y - 1) && outsideOpenCells.has(cellKey(x, y - 1))) {
             const north = structureMeshKit.createWallSegment();
             north.position.set(centerX, 0, centerZ - 0.5);
             wallGroup.add(north);
 
             registerDirection(x, y, 1, 0);
             registerDirection(x + 1, y, -1, 0);
+            renderedOutsideEdge = true;
           }
 
-          if (!isSolidWallCell(x, y + 1)) {
+          if (!isSolidWallCell(x, y + 1) && outsideOpenCells.has(cellKey(x, y + 1))) {
             const south = structureMeshKit.createWallSegment();
             south.position.set(centerX, 0, centerZ + 0.5);
             wallGroup.add(south);
 
             registerDirection(x, y + 1, 1, 0);
             registerDirection(x + 1, y + 1, -1, 0);
+            renderedOutsideEdge = true;
           }
 
-          if (!isSolidWallCell(x - 1, y)) {
+          if (!isSolidWallCell(x - 1, y) && outsideOpenCells.has(cellKey(x - 1, y))) {
             const west = structureMeshKit.createWallSegment();
             west.position.set(centerX - 0.5, 0, centerZ);
             west.rotation.y = Math.PI * 0.5;
@@ -1114,9 +1154,10 @@ const experiment: ExperimentModule = {
 
             registerDirection(x, y, 0, 1);
             registerDirection(x, y + 1, 0, -1);
+            renderedOutsideEdge = true;
           }
 
-          if (!isSolidWallCell(x + 1, y)) {
+          if (!isSolidWallCell(x + 1, y) && outsideOpenCells.has(cellKey(x + 1, y))) {
             const east = structureMeshKit.createWallSegment();
             east.position.set(centerX + 0.5, 0, centerZ);
             east.rotation.y = Math.PI * 0.5;
@@ -1124,6 +1165,32 @@ const experiment: ExperimentModule = {
 
             registerDirection(x + 1, y, 0, 1);
             registerDirection(x + 1, y + 1, 0, -1);
+            renderedOutsideEdge = true;
+          }
+
+          if (renderedOutsideEdge) {
+            continue;
+          }
+
+          const hasNorth = isSolidWallCell(x, y - 1);
+          const hasSouth = isSolidWallCell(x, y + 1);
+          const hasEast = isSolidWallCell(x + 1, y);
+          const hasWest = isSolidWallCell(x - 1, y);
+
+          const hasVertical = hasNorth || hasSouth;
+          const hasHorizontal = hasEast || hasWest;
+
+          if (hasHorizontal || !hasVertical) {
+            const horizontal = structureMeshKit.createWallSegment();
+            horizontal.position.set(centerX, 0, centerZ);
+            wallGroup.add(horizontal);
+          }
+
+          if (hasVertical) {
+            const vertical = structureMeshKit.createWallSegment();
+            vertical.position.set(centerX, 0, centerZ);
+            vertical.rotation.y = Math.PI * 0.5;
+            wallGroup.add(vertical);
           }
         }
       }
