@@ -133,6 +133,7 @@ const experiment: ExperimentModule = {
           )
         )
       ) * 2;
+      renderScale = scale;
       const targetWidth = FIXED_RENDER_WIDTH * scale;
       const targetHeight = FIXED_RENDER_HEIGHT * scale;
       renderer.setSize(targetWidth, targetHeight, true);
@@ -158,15 +159,14 @@ const experiment: ExperimentModule = {
     let dragActive = false;
     let lastClientX = 0;
     let lastClientY = 0;
+    let renderScale = 1;
+    let panRemainderX = 0;
+    let panRemainderY = 0;
 
-    const snapZoom = (value: number) => {
-      const pixelsPerUnit = (value * FIXED_RENDER_HEIGHT) / ORTHO_HEIGHT;
-      const snappedPixelsPerUnit = Math.max(
-        1,
-        Math.round(pixelsPerUnit / 32) * 32
-      );
-      return (snappedPixelsPerUnit * ORTHO_HEIGHT) / FIXED_RENDER_HEIGHT;
-    };
+    const pixelsPerUnitFromZoom = (value: number) =>
+      (value * FIXED_RENDER_HEIGHT) / ORTHO_HEIGHT;
+    const zoomFromPixelsPerUnit = (value: number) =>
+      (value * ORTHO_HEIGHT) / FIXED_RENDER_HEIGHT;
 
     const applyPan = (deltaX: number, deltaY: number) => {
       const worldUnitsPerPixel = ORTHO_HEIGHT / zoomCurrent / FIXED_RENDER_HEIGHT;
@@ -174,9 +174,19 @@ const experiment: ExperimentModule = {
       panRight.set(Math.cos(yaw), 0, -Math.sin(yaw));
       panForward.set(Math.sin(yaw), 0, Math.cos(yaw));
 
+      panRemainderX += deltaX / renderScale;
+      panRemainderY += deltaY / renderScale;
+      const stepX = Math.trunc(panRemainderX);
+      const stepY = Math.trunc(panRemainderY);
+      panRemainderX -= stepX;
+      panRemainderY -= stepY;
+      if (stepX === 0 && stepY === 0) {
+        return;
+      }
+
       panDelta.set(0, 0, 0);
-      panDelta.addScaledVector(panRight, -deltaX * worldUnitsPerPixel);
-      panDelta.addScaledVector(panForward, -deltaY * worldUnitsPerPixel);
+      panDelta.addScaledVector(panRight, -stepX * worldUnitsPerPixel);
+      panDelta.addScaledVector(panForward, -stepY * worldUnitsPerPixel);
       cameraTarget.add(panDelta);
     };
 
@@ -212,13 +222,11 @@ const experiment: ExperimentModule = {
     };
 
     const handleWheel = (event: WheelEvent) => {
-      const delta = event.deltaY;
-      zoomTarget = THREE.MathUtils.clamp(
-        zoomTarget * Math.exp(-delta * 0.0015),
-        0.5,
-        4
-      );
-      zoomTarget = snapZoom(zoomTarget);
+      const step = event.deltaY > 0 ? -32 : 32;
+      const currentPPU = pixelsPerUnitFromZoom(zoomTarget);
+      const nextPPU = THREE.MathUtils.clamp(currentPPU + step, 32, 256);
+      zoomTarget = zoomFromPixelsPerUnit(nextPPU);
+      zoomCurrent = zoomTarget;
       event.preventDefault();
     };
 
@@ -242,8 +250,7 @@ const experiment: ExperimentModule = {
     let raf = 0;
     const render = () => {
       const yaw = CAMERA_YAW + yawIndex * (Math.PI * 0.5);
-      zoomCurrent = THREE.MathUtils.lerp(zoomCurrent, zoomTarget, 0.2);
-      zoomCurrent = snapZoom(zoomCurrent);
+      zoomCurrent = zoomTarget;
 
       const horizontal = Math.cos(CAMERA_PITCH);
       const dir = new THREE.Vector3(
