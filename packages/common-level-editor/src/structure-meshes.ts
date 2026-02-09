@@ -210,7 +210,9 @@ function makeJoinShape(points: Array<[number, number]>): THREE.Shape {
 
 function createJoinCapGeometry(kind: Exclude<JoinCapKind, "none">): THREE.BufferGeometry {
   const half = WALL_THICKNESS * 0.5;
-  const reach = JUNCTION_ARM_REACH;
+  // We model the center block from [-half, half], so arm extension beyond that
+  // must stop exactly at half-tile reach.
+  const reach = Math.max(0, JUNCTION_ARM_REACH - half);
   const capHeight = WALL_HEIGHT + JOIN_CAP_HEIGHT_EPSILON;
 
   let points: Array<[number, number]>;

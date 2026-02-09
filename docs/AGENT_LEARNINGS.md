@@ -447,3 +447,15 @@ Detection signal:
 Preventive checklist:
 - Generate true single-mesh cap geometries (one `BufferGeometry` per junction type) and rotate by mask, rather than assembling from multiple meshes.
 - Keep segment endpoint trims aligned to cap arm reach so caps fill seams without overlap.
+
+## 2026-02-09 - Junction cap reach math must account for center half-thickness
+Root cause:
+- Junction cap shapes were authored as `center block + arm extension`, but extension used full half-tile reach directly.
+- Effective arm length became `halfThickness + reach`, overshooting intended tile-midpoint boundaries and causing visible seam mismatch.
+
+Detection signal:
+- User reported junction meshes did not terminate at tile boundaries and some corners looked incorrect.
+
+Preventive checklist:
+- When arms are modeled from a center square, compute extension as `targetReach - halfThickness`.
+- Keep one explicit constant for target centerline reach (half tile) and derive polygon coordinates from it.
