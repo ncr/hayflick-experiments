@@ -19,30 +19,97 @@ function projectToPixels(camera: any, v: any) {
   return new THREE.Vector2(x, y);
 }
 
+function createCamera() {
+  const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
+  const halfHeight = ORTHO_HEIGHT * 0.5;
+  const camera = new THREE.OrthographicCamera(
+    -halfHeight * aspect,
+    halfHeight * aspect,
+    halfHeight,
+    -halfHeight,
+    0.1,
+    200
+  );
+
+  const horizontal = Math.cos(CAMERA_PITCH);
+  const dir = new THREE.Vector3(
+    Math.sin(CAMERA_YAW) * horizontal,
+    Math.sin(CAMERA_PITCH),
+    Math.cos(CAMERA_YAW) * horizontal
+  );
+  const target = new THREE.Vector3(0, 0, 0);
+  camera.position.copy(target).addScaledVector(dir, CAMERA_DISTANCE);
+  camera.lookAt(target);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld();
+  return camera;
+}
+
+function rasterizeLine(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+): Array<{ x: number; y: number }> {
+  const points: Array<{ x: number; y: number }> = [];
+
+  let px = x0;
+  let py = y0;
+  const dx = Math.abs(x1 - x0);
+  const dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+
+  while (true) {
+    points.push({ x: px, y: py });
+    if (px === x1 && py === y1) {
+      break;
+    }
+
+    const e2 = err * 2;
+    if (e2 > -dy) {
+      err -= dy;
+      px += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      py += sy;
+    }
+  }
+
+  return points;
+}
+
+function assertTwoToOneStaircaseByRows(points: Array<{ x: number; y: number }>) {
+  const rows = new Map<number, number[]>();
+  for (const point of points) {
+    const xs = rows.get(point.y);
+    if (xs) {
+      xs.push(point.x);
+    } else {
+      rows.set(point.y, [point.x]);
+    }
+  }
+
+  const sorted = [...rows.entries()].sort((a, b) => a[0] - b[0]);
+  expect(sorted.length).toBeGreaterThan(20);
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const xs = sorted[i][1].sort((a, b) => a - b);
+    const isEndpointRow = i === 0 || i === sorted.length - 1;
+    const expectedCount = isEndpointRow ? [1, 2] : [2];
+    expect(expectedCount.includes(xs.length)).toBe(true);
+
+    if (xs.length === 2) {
+      expect(xs[1] - xs[0]).toBe(1);
+    }
+  }
+}
+
 describe("pixel-perfect-2to1", () => {
   it("projects unit steps to a 2:1 pixel ratio with integer steps", () => {
-    const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
-    const halfHeight = ORTHO_HEIGHT * 0.5;
-    const camera = new THREE.OrthographicCamera(
-      -halfHeight * aspect,
-      halfHeight * aspect,
-      halfHeight,
-      -halfHeight,
-      0.1,
-      200
-    );
-
-    const horizontal = Math.cos(CAMERA_PITCH);
-    const dir = new THREE.Vector3(
-      Math.sin(CAMERA_YAW) * horizontal,
-      Math.sin(CAMERA_PITCH),
-      Math.cos(CAMERA_YAW) * horizontal
-    );
-    const target = new THREE.Vector3(0, 0, 0);
-    camera.position.copy(target).addScaledVector(dir, CAMERA_DISTANCE);
-    camera.lookAt(target);
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld();
+    const camera = createCamera();
 
     const origin = projectToPixels(camera, new THREE.Vector3(0, 0, 0));
     const stepX = projectToPixels(camera, new THREE.Vector3(1, 0, 0));
@@ -64,5 +131,39 @@ describe("pixel-perfect-2to1", () => {
 
     expect(absDx).toBeCloseTo(32, 6);
     expect(absDy).toBeCloseTo(16, 6);
+  });
+
+  it("keeps long perpendicular world-axis lines as strict 2:1 staircases in pixel space", () => {
+    const camera = createCamera();
+    const lines = [
+      {
+        start: projectToPixels(camera, new THREE.Vector3(-7, 0, 0)),
+        end: projectToPixels(camera, new THREE.Vector3(7, 0, 0))
+      },
+      {
+        start: projectToPixels(camera, new THREE.Vector3(0, 0, -7)),
+        end: projectToPixels(camera, new THREE.Vector3(0, 0, 7))
+      }
+    ];
+
+    for (const line of lines) {
+      const screenSpan = Math.abs(line.end.x - line.start.x);
+      expect(screenSpan).toBeGreaterThan(FIXED_RENDER_WIDTH * 0.9);
+
+      const rasterized = rasterizeLine(
+        Math.round(line.start.x),
+        Math.round(line.start.y),
+        Math.round(line.end.x),
+        Math.round(line.end.y)
+      );
+
+      for (let i = 1; i < rasterized.length; i += 1) {
+        const dx = Math.abs(rasterized[i].x - rasterized[i - 1].x);
+        const dy = Math.abs(rasterized[i].y - rasterized[i - 1].y);
+        expect(dx <= 1 && dy <= 1 && (dx !== 0 || dy !== 0)).toBe(true);
+      }
+
+      assertTwoToOneStaircaseByRows(rasterized);
+    }
   });
 });
