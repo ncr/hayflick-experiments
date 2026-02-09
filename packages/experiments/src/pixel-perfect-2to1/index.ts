@@ -91,19 +91,6 @@ const experiment: ExperimentModule = {
     addBox(3, 0.5, 3, 3);
     addBox(0, 1.5, 0, 0);
 
-    const HI_RENDER_SCALE = 4;
-    const hiTarget = new THREE.WebGLRenderTarget(
-      FIXED_RENDER_WIDTH * HI_RENDER_SCALE,
-      FIXED_RENDER_HEIGHT * HI_RENDER_SCALE,
-      {
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        format: THREE.RGBAFormat,
-        stencilBuffer: false
-      }
-    );
-    hiTarget.texture.generateMipmaps = false;
-
     const lowTarget = new THREE.WebGLRenderTarget(
       FIXED_RENDER_WIDTH,
       FIXED_RENDER_HEIGHT,
@@ -115,42 +102,6 @@ const experiment: ExperimentModule = {
       }
     );
     lowTarget.texture.generateMipmaps = false;
-
-    const pixelateMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        uSource: { value: hiTarget.texture },
-        uLowResolution: {
-          value: new THREE.Vector2(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT)
-        }
-      },
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = vec4(position.xy, 0.0, 1.0);
-        }
-      `,
-      fragmentShader: `
-        precision highp float;
-        uniform sampler2D uSource;
-        uniform vec2 uLowResolution;
-        varying vec2 vUv;
-        void main() {
-          vec2 pixel = floor(vUv * uLowResolution);
-          vec2 uv = (pixel + 0.5) / uLowResolution;
-          gl_FragColor = texture2D(uSource, uv);
-        }
-      `
-    });
-
-    const pixelateScene = new THREE.Scene();
-    const pixelateCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    const pixelateQuad = new THREE.Mesh(
-      new THREE.PlaneGeometry(2, 2),
-      pixelateMaterial
-    );
-    pixelateQuad.frustumCulled = false;
-    pixelateScene.add(pixelateQuad);
 
     const outputScene = new THREE.Scene();
     const outputCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -381,13 +332,9 @@ const experiment: ExperimentModule = {
         lastYawIndex = yawIndex;
       }
 
-      renderer.setRenderTarget(hiTarget);
-      renderer.clear();
-      renderer.render(scene, camera);
-
       renderer.setRenderTarget(lowTarget);
       renderer.clear();
-      renderer.render(pixelateScene, pixelateCamera);
+      renderer.render(scene, camera);
 
       if (keyPanActive) {
         applyPan(keyPanX, keyPanY);
@@ -432,14 +379,9 @@ const experiment: ExperimentModule = {
       tileGray.dispose();
       boxGeometry.dispose();
       boxMaterials.forEach((material) => material.dispose());
-      hiTarget.dispose();
       lowTarget.dispose();
-      pixelateMaterial.dispose();
-
-      pixelateQuad.geometry.dispose();
       outputQuad.geometry.dispose();
       outputMaterial.dispose();
-      pixelateScene.remove(pixelateQuad);
       outputScene.remove(outputQuad);
 
       renderer.dispose();
