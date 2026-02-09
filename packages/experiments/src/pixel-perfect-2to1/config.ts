@@ -1,8 +1,8 @@
 import * as THREE from "three";
 
-export const FIXED_RENDER_WIDTH = 640;
-export const FIXED_RENDER_HEIGHT = 360;
-export const ORTHO_HEIGHT = 15.90990257669732;
+export const FIXED_RENDER_WIDTH = 480;
+export const FIXED_RENDER_HEIGHT = 270;
+export const ORTHO_HEIGHT = 11.93242693252299;
 export const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
 export const CAMERA_YAW = THREE.MathUtils.degToRad(45);
 export const CAMERA_DISTANCE = 30;
