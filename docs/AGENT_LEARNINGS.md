@@ -228,6 +228,20 @@ Preventive checklist:
 - Any new file in promoted packages must ship with tests in the same commit.
 - Run `pnpm test:promoted` locally before pushing promoted-module changes.
 
+## 2026-02-09 - 2:1 staircase drift appeared in rendered output despite projection tests passing
+Root cause:
+- `pixel-perfect-2to1` rendered scene geometry to a high-resolution target and then sampled down to low resolution.
+- The downsample pick introduced boundary sampling artifacts on cube top-face edges, so rendered staircases deviated from strict interior 2:1 stepping.
+
+Detection signal:
+- Projection/math tests passed, but screenshot-based rendered-frame analysis found interior staircase step violations.
+- User-visible artifacts were strongest on top surfaces of 1x1x1 cubes.
+
+Preventive checklist:
+- For strict pixel-perfect geometry validation, render scene directly at fixed low resolution and scale up with nearest filtering.
+- Keep at least one rendered-frame Playwright test (not only projection-space tests) for staircase invariants.
+- Validate cube top-edge staircases separately from axis-line tests because face boundaries are where sampling artifacts appear first.
+
 ## 2026-02-08 - Boundary-index collision checks can still miss wall crossings
 Root cause:
 - Movement collision relied on boundary-index stepping; rare paths still bypassed walls when index selection didn’t match the crossed segment.
