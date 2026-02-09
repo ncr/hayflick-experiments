@@ -111,7 +111,7 @@ describe("structure meshes", () => {
     kit.dispose();
   });
 
-  it("keeps join caps flush with wall height and wall material", () => {
+  it("keeps join caps visually seam-safe with wall material and slight height bias", () => {
     const kit = createEditorStructureMeshKit();
     const wall = kit.createWallSegment();
     const join = kit.createJoinPost(1 | 2);
@@ -127,7 +127,20 @@ describe("structure meshes", () => {
 
     const wallBounds = new THREE.Box3().setFromObject(wall);
     const joinBounds = new THREE.Box3().setFromObject(join);
-    expect(joinBounds.max.y).toBeCloseTo(wallBounds.max.y, 6);
+    expect(joinBounds.max.y).toBeGreaterThan(wallBounds.max.y);
+    expect(joinBounds.max.y - wallBounds.max.y).toBeLessThan(0.01);
+
+    kit.dispose();
+  });
+
+  it("extends corner join arms to tile midpoint reach", () => {
+    const kit = createEditorStructureMeshKit();
+    const corner = kit.createJoinPost(1 | 2);
+    const bounds = new THREE.Box3().setFromObject(corner);
+
+    // 1.28 m tile => half-tile node reach is 0.64 m.
+    expect(bounds.max.x).toBeGreaterThanOrEqual(0.64);
+    expect(bounds.min.z).toBeLessThanOrEqual(-0.64);
 
     kit.dispose();
   });

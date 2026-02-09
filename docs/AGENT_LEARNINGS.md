@@ -485,3 +485,16 @@ Preventive checklist:
 - Keep wall join caps flush to wall height and use wall material unless a deliberate style break is required.
 - Build wall junction adjacency from solid wall/window segments only; exclude doors from wall join topology.
 - Add/keep mesh-kit tests for join cap orientation plus flush-height invariants.
+
+## 2026-02-09 - Exact edge-to-edge junction math can still show raster cracks
+Root cause:
+- Segment trims and junction arm reach matched exactly at half-tile boundaries with zero overlap.
+- In low-resolution upscaled rendering, independent meshes with exact butt-joins can reveal subpixel cracks.
+
+Detection signal:
+- User reported systematic tiny gaps between junction meshes and neighboring wall segments after z-fighting fixes.
+
+Preventive checklist:
+- Use a tiny junction arm reach overlap epsilon (millimeter-scale) for seam closure.
+- Pair overlap with a tiny cap height bias so overlap does not reintroduce coplanar z-fighting.
+- Keep a mesh test that asserts corner cap reach is at least half-tile.

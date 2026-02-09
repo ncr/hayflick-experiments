@@ -62,7 +62,8 @@ const WALL_STRIPE_COLOR = 0xc45a12;
 const WALL_STRIPE_START_PIXEL_Y = 13;
 const WALL_STRIPE_END_PIXEL_Y = 17;
 
-const JOIN_CAP_HEIGHT_EPSILON = 0;
+const JOIN_CAP_HEIGHT_EPSILON = LEVEL_EDITOR_WORLD_UNIT * 0.0025;
+const JOIN_CAP_REACH_EPSILON = LEVEL_EDITOR_WORLD_UNIT * 0.002;
 const JOIN_MASK_NORTH = 1;
 const JOIN_MASK_EAST = 2;
 const JOIN_MASK_SOUTH = 4;
@@ -200,8 +201,9 @@ function makeJoinShape(points: Array<[number, number]>): THREE.Shape {
 function createJoinCapGeometry(kind: Exclude<JoinCapKind, "none">): THREE.BufferGeometry {
   const half = WALL_THICKNESS * 0.5;
   // We model the center block from [-half, half], so arm extension beyond that
-  // must stop exactly at half-tile reach.
-  const reach = Math.max(0, JUNCTION_ARM_REACH - half);
+  // must stop at half-tile reach. We intentionally add a tiny overlap epsilon
+  // to avoid visible raster cracks between independently generated meshes.
+  const reach = Math.max(0, JUNCTION_ARM_REACH - half + JOIN_CAP_REACH_EPSILON);
   const capHeight = WALL_HEIGHT + JOIN_CAP_HEIGHT_EPSILON;
 
   let points: Array<[number, number]>;
