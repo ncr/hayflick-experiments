@@ -23,7 +23,6 @@ type EditorStructureMaterials = {
   accent: THREE.MeshStandardMaterial;
   windowGlass: THREE.MeshStandardMaterial;
   door: THREE.MeshStandardMaterial;
-  joint: THREE.MeshStandardMaterial;
 };
 
 type EditorStructureGeometries = {
@@ -63,7 +62,7 @@ const WALL_STRIPE_COLOR = 0xc45a12;
 const WALL_STRIPE_START_PIXEL_Y = 13;
 const WALL_STRIPE_END_PIXEL_Y = 17;
 
-const JOIN_CAP_HEIGHT_EPSILON = LEVEL_EDITOR_WORLD_UNIT * 0.003;
+const JOIN_CAP_HEIGHT_EPSILON = 0;
 const JOIN_MASK_NORTH = 1;
 const JOIN_MASK_EAST = 2;
 const JOIN_MASK_SOUTH = 4;
@@ -163,15 +162,6 @@ function createMaterials(): { materials: EditorStructureMaterials } {
   });
   applyStripeBand(doorMaterial, stripeBand);
 
-  const jointMaterial = new THREE.MeshStandardMaterial({
-    color: 0xf2f8ff,
-    roughness: 0.12,
-    metalness: 0.36,
-    envMapIntensity: 1.25,
-    toneMapped: true
-  });
-  applyStripeBand(jointMaterial, stripeBand);
-
   const glassMaterial = new THREE.MeshStandardMaterial({
     color: 0xb9ddff,
     roughness: 0.04,
@@ -186,8 +176,7 @@ function createMaterials(): { materials: EditorStructureMaterials } {
       wall: wallMaterial,
       accent: accentMaterial,
       windowGlass: glassMaterial,
-      door: doorMaterial,
-      joint: jointMaterial
+      door: doorMaterial
     }
   };
 }
@@ -422,7 +411,7 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
           : geometries.joinCross;
 
     const group = new THREE.Group();
-    const cap = new THREE.Mesh(geometry, materials.joint);
+    const cap = new THREE.Mesh(geometry, materials.wall);
     cap.rotation.y = decoded.yaw;
     group.add(cap);
     return group;

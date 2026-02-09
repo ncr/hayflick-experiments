@@ -711,7 +711,7 @@ const experiment: ExperimentModule = {
       segment: StructureSegmentData,
       options?: { trimStart?: boolean; trimEnd?: boolean; trimStartAmount?: number; trimEndAmount?: number }
     ): THREE.Object3D {
-      if (segment.kind === "wall" && options?.trimStart && options?.trimEnd) {
+      if (segment.kind !== "door" && options?.trimStart && options?.trimEnd) {
         return new THREE.Group();
       }
       if (segment.kind === "wall") {
@@ -902,6 +902,9 @@ const experiment: ExperimentModule = {
       const adjacency = new Map<string, DirectionVector[]>();
 
       structureSegments.forEach((segmentData, segmentKey) => {
+        if (segmentData.kind === "door") {
+          return;
+        }
         const edge = parseEdge(segmentKey);
         registerDirection(adjacency, edge.ax, edge.az, edge.bx - edge.ax, edge.bz - edge.az);
         registerDirection(adjacency, edge.bx, edge.bz, edge.ax - edge.bx, edge.az - edge.bz);

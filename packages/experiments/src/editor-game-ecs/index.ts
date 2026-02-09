@@ -450,6 +450,10 @@ function isDoorStructureSegment(
   return segment.kind === STRUCTURE_KIND.DOOR;
 }
 
+function isSolidStructureSegment(segment: StructureSegmentData): boolean {
+  return segment.kind !== STRUCTURE_KIND.DOOR;
+}
+
 function structureEquals(
   a: StructureSegmentData | undefined,
   b: StructureSegmentData
@@ -1697,7 +1701,7 @@ const experiment: ExperimentModule = {
       segment: StructureSegmentData,
       options?: { trimStart?: boolean; trimEnd?: boolean; trimStartAmount?: number; trimEndAmount?: number }
     ): THREE.Object3D {
-      if (segment.kind === STRUCTURE_KIND.WALL && options?.trimStart && options?.trimEnd) {
+      if (isSolidStructureSegment(segment) && options?.trimStart && options?.trimEnd) {
         return new THREE.Group();
       }
       switch (segment.kind) {
@@ -1733,7 +1737,10 @@ const experiment: ExperimentModule = {
       clearGroup(editorDoorGroup);
       const adjacency = new Map<string, DirectionVector[]>();
 
-      for (const [key] of structureSegments.entries()) {
+      for (const [key, segment] of structureSegments.entries()) {
+        if (!isSolidStructureSegment(segment)) {
+          continue;
+        }
         const edge = parseEdge(key);
         const dx = edge.bx - edge.ax;
         const dy = edge.by - edge.ay;

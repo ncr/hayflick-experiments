@@ -110,4 +110,25 @@ describe("structure meshes", () => {
 
     kit.dispose();
   });
+
+  it("keeps join caps flush with wall height and wall material", () => {
+    const kit = createEditorStructureMeshKit();
+    const wall = kit.createWallSegment();
+    const join = kit.createJoinPost(1 | 2);
+
+    const wallCore = wall.children[0] as THREE.Mesh | undefined;
+    const joinCore = join.children[0] as THREE.Mesh | undefined;
+    expect(wallCore).toBeTruthy();
+    expect(joinCore).toBeTruthy();
+
+    const wallMaterial = wallCore?.material as THREE.Material | undefined;
+    const joinMaterial = joinCore?.material as THREE.Material | undefined;
+    expect(joinMaterial).toBe(wallMaterial);
+
+    const wallBounds = new THREE.Box3().setFromObject(wall);
+    const joinBounds = new THREE.Box3().setFromObject(join);
+    expect(joinBounds.max.y).toBeCloseTo(wallBounds.max.y, 6);
+
+    kit.dispose();
+  });
 });

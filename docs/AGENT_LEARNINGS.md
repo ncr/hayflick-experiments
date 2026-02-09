@@ -471,3 +471,17 @@ Detection signal:
 Preventive checklist:
 - Add explicit orientation tests for representative corner and tee masks (NE, ES, WN, etc.).
 - Keep a documented base orientation and derive all rotated variants against that reference.
+
+## 2026-02-09 - Junction seams persisted from cap styling and door-driven joins
+Root cause:
+- Junction caps were rendered with different material/height than wall segments, making node seams read as gaps/fighting.
+- Door segments were included in wall junction adjacency, creating unnecessary wall join caps at door endpoints.
+
+Detection signal:
+- User screenshots showed repeated corner/T-junction seam artifacts even after mask rotation fixes.
+- Artifacts clustered around join nodes and door-adjacent intersections.
+
+Preventive checklist:
+- Keep wall join caps flush to wall height and use wall material unless a deliberate style break is required.
+- Build wall junction adjacency from solid wall/window segments only; exclude doors from wall join topology.
+- Add/keep mesh-kit tests for join cap orientation plus flush-height invariants.
