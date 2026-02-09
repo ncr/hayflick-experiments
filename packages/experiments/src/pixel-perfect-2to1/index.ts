@@ -118,6 +118,8 @@ const experiment: ExperimentModule = {
     let lastClientX = 0;
     let lastClientY = 0;
     let renderScale = 1;
+    let outputWidth = FIXED_RENDER_WIDTH;
+    let outputHeight = FIXED_RENDER_HEIGHT;
     let panRemainderX = 0;
     let panRemainderY = 0;
 
@@ -146,6 +148,8 @@ const experiment: ExperimentModule = {
       renderScale = scale;
       const targetWidth = FIXED_RENDER_WIDTH * scale;
       const targetHeight = FIXED_RENDER_HEIGHT * scale;
+      outputWidth = targetWidth;
+      outputHeight = targetHeight;
       renderer.setSize(targetWidth, targetHeight, true);
       renderer.domElement.style.width = `${targetWidth}px`;
       renderer.domElement.style.height = `${targetHeight}px`;
@@ -278,6 +282,9 @@ const experiment: ExperimentModule = {
 
       renderer.setRenderTarget(null);
       renderer.clear();
+      const offsetX = (panRemainderX * renderScale) / (outputWidth * 0.5);
+      const offsetY = (-panRemainderY * renderScale) / (outputHeight * 0.5);
+      postQuad.position.set(offsetX, offsetY, 0);
       renderer.render(postScene, postCamera);
 
       raf = requestAnimationFrame(render);
