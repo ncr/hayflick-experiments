@@ -128,7 +128,7 @@ const experiment: ExperimentModule = {
             safeHeight / FIXED_RENDER_HEIGHT
           )
         )
-      ) * 4;
+      ) * 2;
       const targetWidth = FIXED_RENDER_WIDTH * scale;
       const targetHeight = FIXED_RENDER_HEIGHT * scale;
       renderer.setSize(targetWidth, targetHeight, true);
