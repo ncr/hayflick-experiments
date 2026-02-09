@@ -111,6 +111,16 @@ const experiment: ExperimentModule = {
     postQuad.frustumCulled = false;
     postScene.add(postQuad);
 
+    let yawIndex = 0;
+    let zoomTarget = 1;
+    let zoomCurrent = 1;
+    let dragActive = false;
+    let lastClientX = 0;
+    let lastClientY = 0;
+    let renderScale = 1;
+    let panRemainderX = 0;
+    let panRemainderY = 0;
+
     const updateCameraProjection = (nextWidth: number, nextHeight: number) => {
       const aspect = nextWidth / nextHeight;
       const halfHeight = ORTHO_HEIGHT * 0.5;
@@ -152,16 +162,6 @@ const experiment: ExperimentModule = {
       resize(entry.contentRect.width, entry.contentRect.height);
     });
     observer.observe(mount);
-
-    let yawIndex = 0;
-    let zoomTarget = 1;
-    let zoomCurrent = 1;
-    let dragActive = false;
-    let lastClientX = 0;
-    let lastClientY = 0;
-    let renderScale = 1;
-    let panRemainderX = 0;
-    let panRemainderY = 0;
 
     const pixelsPerUnitFromZoom = (value: number) =>
       (value * FIXED_RENDER_HEIGHT) / ORTHO_HEIGHT;
