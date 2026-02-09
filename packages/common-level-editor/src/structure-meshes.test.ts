@@ -60,4 +60,16 @@ describe("structure meshes", () => {
 
     kit.dispose();
   });
+
+  it("supports segment trimming at junction ends to avoid overlap", () => {
+    const kit = createEditorStructureMeshKit();
+    const trimmed = kit.createWallSegment({ trimStart: true, trimEnd: true });
+    const oneSided = kit.createWallSegment({ trimStart: true, trimEnd: false });
+
+    expect(trimmed.scale.x).toBeLessThan(1);
+    expect(trimmed.position.x).toBe(0);
+    expect(oneSided.position.x).toBeGreaterThan(0);
+
+    kit.dispose();
+  });
 });

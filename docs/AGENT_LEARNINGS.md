@@ -409,3 +409,16 @@ Preventive checklist:
 - Declare GLSL uniforms/varyings in fragment/vertex `#include <common>` blocks only.
 - Restrict `#include <opaque_fragment>` patches to executable statements.
 - Keep a unit test that runs `onBeforeCompile` with both `#include <common>` and `#include <opaque_fragment>` placeholders.
+
+## 2026-02-09 - Wall junction z-fighting from overlapping perpendicular segment tops
+Root cause:
+- Horizontal and vertical wall segments both extended fully to shared nodes, so their top faces overlapped in corner/T/X junction centers.
+- Join-post meshes were added on top, increasing overlap noise in those junctions.
+
+Detection signal:
+- User reported visible flicker/z-fighting at corners and T-junctions despite stable camera/pixel pipeline.
+
+Preventive checklist:
+- Trim segment endpoints at nodes that get non-straight join posts (corner/T/X), then fill the center with a single join-post mesh.
+- Treat straight-through degree-2 nodes separately (no post, no trim) to avoid gaps.
+- Keep shared trim behavior in promoted mesh kit and reuse it from all experiments.

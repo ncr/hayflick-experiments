@@ -692,32 +692,38 @@ const experiment: ExperimentModule = {
       return mesh;
     }
 
-    function createWallSegment(): THREE.Object3D {
-      return structureMeshKit.createWallSegment();
+    function createWallSegment(options?: { trimStart?: boolean; trimEnd?: boolean }): THREE.Object3D {
+      return structureMeshKit.createWallSegment(options);
     }
 
-    function createWindowSegment(): THREE.Object3D {
-      return structureMeshKit.createWindowSegment();
+    function createWindowSegment(options?: { trimStart?: boolean; trimEnd?: boolean }): THREE.Object3D {
+      return structureMeshKit.createWindowSegment(options);
     }
 
-    function createDoorSegment(state: LevelBuilderDoorState): THREE.Object3D {
-      return structureMeshKit.createDoorSegment(state);
+    function createDoorSegment(
+      state: LevelBuilderDoorState,
+      options?: { trimStart?: boolean; trimEnd?: boolean }
+    ): THREE.Object3D {
+      return structureMeshKit.createDoorSegment(state, options);
     }
 
-    function createStructureSegment(segment: StructureSegmentData): THREE.Object3D {
+    function createStructureSegment(
+      segment: StructureSegmentData,
+      options?: { trimStart?: boolean; trimEnd?: boolean }
+    ): THREE.Object3D {
       if (segment.kind === "wall") {
-        return createWallSegment();
+        return createWallSegment(options);
       }
 
       if (segment.kind === "window") {
-        return createWindowSegment();
+        return createWindowSegment(options);
       }
 
-      return createDoorSegment(segment.state);
+      return createDoorSegment(segment.state, options);
     }
 
-    function createJoinPost(degree: number): THREE.Object3D {
-      return structureMeshKit.createJoinPost(degree);
+    function createJoinPost(degree: number, straight: boolean): THREE.Object3D {
+      return structureMeshKit.createJoinPost(degree, straight);
     }
 
     function registerDirection(map: Map<string, DirectionVector[]>, x: number, z: number, dx: number, dz: number): void {
@@ -727,6 +733,16 @@ const experiment: ExperimentModule = {
         directions.push({ dx, dz });
       }
       map.set(key, directions);
+    }
+
+    function isStraightJunction(directions: DirectionVector[]): boolean {
+      return (
+        directions.length === 2 &&
+        directions[0] !== undefined &&
+        directions[1] !== undefined &&
+        directions[0].dx === -directions[1].dx &&
+        directions[0].dz === -directions[1].dz
+      );
     }
 
     function rebuildGroundTiles(): void {
@@ -865,11 +881,28 @@ const experiment: ExperimentModule = {
       clearGroup(jointsGroup);
 
       const adjacency = new Map<string, DirectionVector[]>();
-      intersectionCount = 0;
 
       structureSegments.forEach((segmentData, segmentKey) => {
         const edge = parseEdge(segmentKey);
-        const module = createStructureSegment(segmentData);
+        registerDirection(adjacency, edge.ax, edge.az, edge.bx - edge.ax, edge.bz - edge.az);
+        registerDirection(adjacency, edge.bx, edge.bz, edge.ax - edge.bx, edge.az - edge.bz);
+      });
+
+      const joinNodes = new Set<string>();
+      adjacency.forEach((directions, key) => {
+        if (directions.length < 2 || isStraightJunction(directions)) {
+          return;
+        }
+        joinNodes.add(key);
+      });
+      intersectionCount = joinNodes.size;
+
+      structureSegments.forEach((segmentData, segmentKey) => {
+        const edge = parseEdge(segmentKey);
+        const module = createStructureSegment(segmentData, {
+          trimStart: joinNodes.has(nodeKey(edge.ax, edge.az)),
+          trimEnd: joinNodes.has(nodeKey(edge.bx, edge.bz))
+        });
 
         const xA = toWorldNodeX(edge.ax);
         const zA = toWorldNodeZ(edge.az);
@@ -882,23 +915,22 @@ const experiment: ExperimentModule = {
         }
 
         structuresGroup.add(module);
-
-        registerDirection(adjacency, edge.ax, edge.az, edge.bx - edge.ax, edge.bz - edge.az);
-        registerDirection(adjacency, edge.bx, edge.bz, edge.ax - edge.bx, edge.az - edge.bz);
       });
 
       adjacency.forEach((directions, key) => {
         if (directions.length < 2) {
           return;
         }
+        const straight = isStraightJunction(directions);
+        if (straight) {
+          return;
+        }
 
         const { x, z } = parseCellKey(key);
-        const post = createJoinPost(directions.length);
+        const post = createJoinPost(directions.length, straight);
         post.position.x = toWorldNodeX(x);
         post.position.z = toWorldNodeZ(z);
         jointsGroup.add(post);
-
-        intersectionCount += 1;
       });
     }
 

@@ -11,6 +11,11 @@ export type EditorDoorVisual = {
   leafPivot: THREE.Group;
 };
 
+export type EditorStructureSegmentOptions = {
+  trimStart?: boolean;
+  trimEnd?: boolean;
+};
+
 type EditorStructureMaterials = {
   wall: THREE.MeshStandardMaterial;
   accent: THREE.MeshStandardMaterial;
@@ -29,11 +34,14 @@ type EditorStructureGeometries = {
 };
 
 export type EditorStructureMeshKit = {
-  createWallSegment: () => THREE.Group;
+  createWallSegment: (options?: EditorStructureSegmentOptions) => THREE.Group;
   createWallBlock: () => THREE.Group;
-  createWindowSegment: () => THREE.Group;
+  createWindowSegment: (options?: EditorStructureSegmentOptions) => THREE.Group;
   createDoorVisual: () => EditorDoorVisual;
-  createDoorSegment: (state: EditorStructureDoorState) => THREE.Group;
+  createDoorSegment: (
+    state: EditorStructureDoorState,
+    options?: EditorStructureSegmentOptions
+  ) => THREE.Group;
   createJoinPost: (degree: number, straight?: boolean) => THREE.Group;
   dispose: () => void;
 };
@@ -46,6 +54,7 @@ const WALL_BLOCK_CORNER_OFFSET = WALL_BLOCK_HALF_SPAN;
 const WALL_STRIPE_COLOR = 0xc45a12;
 const WALL_STRIPE_START_PIXEL_Y = 13;
 const WALL_STRIPE_END_PIXEL_Y = 17;
+const SEGMENT_TRIM_AMOUNT = WALL_THICKNESS * 0.5;
 
 type StripeBand = {
   color: number;
@@ -207,17 +216,32 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
   const { materials } = createMaterials();
   const geometries = createGeometries();
 
-  const createWallSegment = (): THREE.Group => {
+  const applySegmentTrim = (
+    group: THREE.Group,
+    options?: EditorStructureSegmentOptions
+  ): THREE.Group => {
+    const trimStart = options?.trimStart ? SEGMENT_TRIM_AMOUNT : 0;
+    const trimEnd = options?.trimEnd ? SEGMENT_TRIM_AMOUNT : 0;
+    const effectiveLength = Math.max(
+      LEVEL_EDITOR_WORLD_UNIT * 0.1,
+      LEVEL_EDITOR_WORLD_UNIT - trimStart - trimEnd
+    );
+    group.scale.x = effectiveLength / LEVEL_EDITOR_WORLD_UNIT;
+    group.position.x = (trimStart - trimEnd) * 0.5;
+    return group;
+  };
+
+  const createWallSegment = (options?: EditorStructureSegmentOptions): THREE.Group => {
     const group = new THREE.Group();
 
     const core = new THREE.Mesh(geometries.wallCore, materials.wall);
     core.position.y = WALL_HEIGHT * 0.5;
     group.add(core);
 
-    return group;
+    return applySegmentTrim(group, options);
   };
 
-  const createWindowSegment = (): THREE.Group => {
+  const createWindowSegment = (options?: EditorStructureSegmentOptions): THREE.Group => {
     const group = new THREE.Group();
 
     const lower = new THREE.Mesh(geometries.windowLower, materials.wall);
@@ -232,7 +256,7 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     glass.position.set(0, WALL_HEIGHT * 0.5, WALL_THICKNESS * 0.54);
     group.add(glass);
 
-    return group;
+    return applySegmentTrim(group, options);
   };
 
   const createDoorVisual = (): EditorDoorVisual => {
@@ -254,10 +278,13 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     return { root, leafPivot };
   };
 
-  const createDoorSegment = (state: EditorStructureDoorState): THREE.Group => {
+  const createDoorSegment = (
+    state: EditorStructureDoorState,
+    options?: EditorStructureSegmentOptions
+  ): THREE.Group => {
     const door = createDoorVisual();
     setDoorVisualOpen(door, state === "open");
-    return door.root;
+    return applySegmentTrim(door.root, options);
   };
 
   const createJoinPost = (degree: number, straight = false): THREE.Group => {
