@@ -435,3 +435,15 @@ Preventive checklist:
 - Prefer explicit junction-cap meshes (corner/T/X) selected from node neighbor masks over trim-only seam fixes.
 - Keep straight degree-2 junctions uncapped to avoid unnecessary geometry.
 - Implement junction logic in promoted mesh kit and consume it consistently in all editor experiments.
+
+## 2026-02-09 - Multi-mesh junction arms still left coplanar overlap noise
+Root cause:
+- Building corner/T/X caps from multiple overlapping arm meshes kept coplanar top-face contact zones.
+- Even when grouped logically as one cap object, it was still several meshes with shared planes.
+
+Detection signal:
+- User explicitly requested \"single mesh for corner/t/x\" after residual junction flicker persisted.
+
+Preventive checklist:
+- Generate true single-mesh cap geometries (one `BufferGeometry` per junction type) and rotate by mask, rather than assembling from multiple meshes.
+- Keep segment endpoint trims aligned to cap arm reach so caps fill seams without overlap.

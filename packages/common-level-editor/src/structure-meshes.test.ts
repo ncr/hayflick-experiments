@@ -68,10 +68,22 @@ describe("structure meshes", () => {
     const cross = kit.createJoinPost(1 | 2 | 4 | 8);
     const straight = kit.createJoinPost(1 | 4);
 
-    expect(corner.children.length).toBeGreaterThan(1);
-    expect(tee.children.length).toBeGreaterThan(corner.children.length);
-    expect(cross.children.length).toBeGreaterThanOrEqual(tee.children.length);
+    expect(corner.children.length).toBe(1);
+    expect(tee.children.length).toBe(1);
+    expect(cross.children.length).toBe(1);
     expect(straight.children.length).toBe(0);
+
+    kit.dispose();
+  });
+
+  it("supports endpoint trimming on segments used near junction caps", () => {
+    const kit = createEditorStructureMeshKit();
+    const trimmed = kit.createWallSegment({ trimStart: true, trimEnd: true });
+    const oneSided = kit.createWallSegment({ trimStart: true });
+
+    expect(trimmed.scale.x).toBeLessThan(1);
+    expect(trimmed.position.x).toBe(0);
+    expect(oneSided.position.x).toBeGreaterThan(0);
 
     kit.dispose();
   });

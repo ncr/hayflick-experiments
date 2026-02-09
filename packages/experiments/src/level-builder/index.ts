@@ -692,28 +692,34 @@ const experiment: ExperimentModule = {
       return mesh;
     }
 
-    function createWallSegment(): THREE.Object3D {
-      return structureMeshKit.createWallSegment();
+    function createWallSegment(options?: { trimStart?: boolean; trimEnd?: boolean }): THREE.Object3D {
+      return structureMeshKit.createWallSegment(options);
     }
 
-    function createWindowSegment(): THREE.Object3D {
-      return structureMeshKit.createWindowSegment();
+    function createWindowSegment(options?: { trimStart?: boolean; trimEnd?: boolean }): THREE.Object3D {
+      return structureMeshKit.createWindowSegment(options);
     }
 
-    function createDoorSegment(state: LevelBuilderDoorState): THREE.Object3D {
-      return structureMeshKit.createDoorSegment(state);
+    function createDoorSegment(
+      state: LevelBuilderDoorState,
+      options?: { trimStart?: boolean; trimEnd?: boolean }
+    ): THREE.Object3D {
+      return structureMeshKit.createDoorSegment(state, options);
     }
 
-    function createStructureSegment(segment: StructureSegmentData): THREE.Object3D {
+    function createStructureSegment(
+      segment: StructureSegmentData,
+      options?: { trimStart?: boolean; trimEnd?: boolean }
+    ): THREE.Object3D {
       if (segment.kind === "wall") {
-        return createWallSegment();
+        return createWallSegment(options);
       }
 
       if (segment.kind === "window") {
-        return createWindowSegment();
+        return createWindowSegment(options);
       }
 
-      return createDoorSegment(segment.state);
+      return createDoorSegment(segment.state, options);
     }
 
     function createJoinPost(mask: number): THREE.Object3D {
@@ -898,9 +904,20 @@ const experiment: ExperimentModule = {
         registerDirection(adjacency, edge.bx, edge.bz, edge.ax - edge.bx, edge.az - edge.bz);
       });
 
+      const joinNodes = new Set<string>();
+      adjacency.forEach((directions, key) => {
+        if (directions.length < 2 || isStraightJunction(directions)) {
+          return;
+        }
+        joinNodes.add(key);
+      });
+
       structureSegments.forEach((segmentData, segmentKey) => {
         const edge = parseEdge(segmentKey);
-        const module = createStructureSegment(segmentData);
+        const module = createStructureSegment(segmentData, {
+          trimStart: joinNodes.has(nodeKey(edge.ax, edge.az)),
+          trimEnd: joinNodes.has(nodeKey(edge.bx, edge.bz))
+        });
 
         const xA = toWorldNodeX(edge.ax);
         const zA = toWorldNodeZ(edge.az);

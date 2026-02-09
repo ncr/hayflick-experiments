@@ -1694,15 +1694,16 @@ const experiment: ExperimentModule = {
     }
 
     function createStructureMesh(
-      segment: StructureSegmentData
+      segment: StructureSegmentData,
+      options?: { trimStart?: boolean; trimEnd?: boolean }
     ): THREE.Object3D {
       switch (segment.kind) {
         case STRUCTURE_KIND.WALL:
-          return structureMeshKit.createWallSegment();
+          return structureMeshKit.createWallSegment(options);
         case STRUCTURE_KIND.WINDOW:
-          return structureMeshKit.createWindowSegment();
+          return structureMeshKit.createWindowSegment(options);
         case STRUCTURE_KIND.DOOR:
-          return structureMeshKit.createDoorSegment(segment.state);
+          return structureMeshKit.createDoorSegment(segment.state, options);
         default:
           return assertNever(segment, "structure segment");
       }
@@ -1737,9 +1738,24 @@ const experiment: ExperimentModule = {
         registerDirection(adjacency, edge.bx, edge.by, -dx, -dy);
       }
 
+      const joinNodes = new Set<string>();
+      adjacency.forEach((directions, key) => {
+        if (directions.length < 2) {
+          return;
+        }
+        const mask = directionMask(directions);
+        if (mask === 5 || mask === 10) {
+          return;
+        }
+        joinNodes.add(key);
+      });
+
       for (const [key, segment] of structureSegments.entries()) {
         const edge = parseEdge(key);
-        const mesh = createStructureMesh(segment);
+        const mesh = createStructureMesh(segment, {
+          trimStart: joinNodes.has(cellKey(edge.ax, edge.ay)),
+          trimEnd: joinNodes.has(cellKey(edge.bx, edge.by))
+        });
         mesh.position.set(
           (toWorldNodeX(edge.ax) + toWorldNodeX(edge.bx)) * 0.5,
           0,
