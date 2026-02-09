@@ -90,7 +90,20 @@ const experiment: ExperimentModule = {
     addBox(3, 0.5, 3, 3);
     addBox(0, 1.5, 0, 0);
 
-    const colorTarget = new THREE.WebGLRenderTarget(
+    const HI_RENDER_SCALE = 4;
+    const hiTarget = new THREE.WebGLRenderTarget(
+      FIXED_RENDER_WIDTH * HI_RENDER_SCALE,
+      FIXED_RENDER_HEIGHT * HI_RENDER_SCALE,
+      {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        format: THREE.RGBAFormat,
+        stencilBuffer: false
+      }
+    );
+    hiTarget.texture.generateMipmaps = false;
+
+    const lowTarget = new THREE.WebGLRenderTarget(
       FIXED_RENDER_WIDTH,
       FIXED_RENDER_HEIGHT,
       {
@@ -100,16 +113,52 @@ const experiment: ExperimentModule = {
         stencilBuffer: false
       }
     );
-    colorTarget.texture.generateMipmaps = false;
+    lowTarget.texture.generateMipmaps = false;
 
-    const postScene = new THREE.Scene();
-    const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    const postQuad = new THREE.Mesh(
+    const pixelateMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uSource: { value: hiTarget.texture },
+        uLowResolution: {
+          value: new THREE.Vector2(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT)
+        }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        precision highp float;
+        uniform sampler2D uSource;
+        uniform vec2 uLowResolution;
+        varying vec2 vUv;
+        void main() {
+          vec2 pixel = floor(vUv * uLowResolution);
+          vec2 uv = (pixel + 0.5) / uLowResolution;
+          gl_FragColor = texture2D(uSource, uv);
+        }
+      `
+    });
+
+    const pixelateScene = new THREE.Scene();
+    const pixelateCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const pixelateQuad = new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
-      new THREE.MeshBasicMaterial({ map: colorTarget.texture })
+      pixelateMaterial
     );
-    postQuad.frustumCulled = false;
-    postScene.add(postQuad);
+    pixelateQuad.frustumCulled = false;
+    pixelateScene.add(pixelateQuad);
+
+    const outputScene = new THREE.Scene();
+    const outputCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const outputQuad = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.MeshBasicMaterial({ map: lowTarget.texture })
+    );
+    outputQuad.frustumCulled = false;
+    outputScene.add(outputQuad);
 
     let yawIndex = 0;
     let zoomTarget = 1;
@@ -319,9 +368,13 @@ const experiment: ExperimentModule = {
       camera.zoom = zoomCurrent;
       camera.updateProjectionMatrix();
 
-      renderer.setRenderTarget(colorTarget);
+      renderer.setRenderTarget(hiTarget);
       renderer.clear();
       renderer.render(scene, camera);
+
+      renderer.setRenderTarget(lowTarget);
+      renderer.clear();
+      renderer.render(pixelateScene, pixelateCamera);
 
       if (keyPanActive) {
         applyPan(keyPanX, keyPanY);
@@ -331,8 +384,8 @@ const experiment: ExperimentModule = {
       renderer.clear();
       const offsetX = (panRemainderX * renderScale) / (outputWidth * 0.5);
       const offsetY = (-panRemainderY * renderScale) / (outputHeight * 0.5);
-      postQuad.position.set(offsetX, offsetY, 0);
-      renderer.render(postScene, postCamera);
+      outputQuad.position.set(offsetX, offsetY, 0);
+      renderer.render(outputScene, outputCamera);
 
       raf = requestAnimationFrame(render);
     };
@@ -364,11 +417,15 @@ const experiment: ExperimentModule = {
       tileGray.dispose();
       boxGeometry.dispose();
       boxMaterials.forEach((material) => material.dispose());
-      colorTarget.dispose();
+      hiTarget.dispose();
+      lowTarget.dispose();
+      pixelateMaterial.dispose();
 
-      postQuad.geometry.dispose();
-      (postQuad.material as THREE.Material).dispose();
-      postScene.remove(postQuad);
+      pixelateQuad.geometry.dispose();
+      outputQuad.geometry.dispose();
+      (outputQuad.material as THREE.Material).dispose();
+      pixelateScene.remove(pixelateQuad);
+      outputScene.remove(outputQuad);
 
       renderer.dispose();
       renderer.domElement.remove();
