@@ -162,8 +162,8 @@ const experiment: ExperimentModule = {
     const snapZoom = (value: number) => {
       const pixelsPerUnit = (value * FIXED_RENDER_HEIGHT) / ORTHO_HEIGHT;
       const snappedPixelsPerUnit = Math.max(
-        PIXEL_SNAP,
-        Math.round(pixelsPerUnit / PIXEL_SNAP) * PIXEL_SNAP
+        1,
+        Math.round(pixelsPerUnit / 32) * 32
       );
       return (snappedPixelsPerUnit * ORTHO_HEIGHT) / FIXED_RENDER_HEIGHT;
     };
@@ -176,7 +176,7 @@ const experiment: ExperimentModule = {
 
       panDelta.set(0, 0, 0);
       panDelta.addScaledVector(panRight, -deltaX * worldUnitsPerPixel);
-      panDelta.addScaledVector(panForward, deltaY * worldUnitsPerPixel);
+      panDelta.addScaledVector(panForward, -deltaY * worldUnitsPerPixel);
       cameraTarget.add(panDelta);
     };
 
