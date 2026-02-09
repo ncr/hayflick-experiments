@@ -54,6 +54,345 @@ import {
 } from "@common/physics-rapier";
 import type { ExperimentModule } from "../runtime/types";
 
+const POST_VERTEX_SHADER = /* glsl */ `
+varying vec2 vUv;
+
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`;
+
+const POST_FRAGMENT_SHADER = /* glsl */ `
+precision highp float;
+
+uniform sampler2D uColorTex;
+uniform sampler2D uNoShadowColorTex;
+uniform sampler2D uDepthTex;
+uniform sampler2D uNormalTex;
+
+uniform vec2 uResolution;
+uniform float uNear;
+uniform float uFar;
+uniform float uPixelSize;
+uniform float uDepthThreshold;
+uniform float uNormalThreshold;
+uniform float uEdgeDarken;
+uniform float uOutlineDarken;
+uniform float uOutlineLightResponse;
+uniform float uOutlineSaturationBoost;
+uniform float uOutlineProminence;
+uniform float uPostDitherStrength;
+uniform float uShadowDitherStrength;
+
+varying vec2 vUv;
+
+float linearizeDepth(float rawDepth) {
+  float z = rawDepth * 2.0 - 1.0;
+  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
+}
+
+vec2 clampUv(vec2 uv, vec2 texel) {
+  return clamp(uv, texel * 0.5, vec2(1.0) - texel * 0.5);
+}
+
+float bayer4x4(vec2 p) {
+  vec2 q = mod(floor(p), 4.0);
+  float x = q.x;
+  float y = q.y;
+
+  if (y < 1.0) {
+    if (x < 1.0) return 0.0;
+    if (x < 2.0) return 8.0;
+    if (x < 3.0) return 2.0;
+    return 10.0;
+  }
+  if (y < 2.0) {
+    if (x < 1.0) return 12.0;
+    if (x < 2.0) return 4.0;
+    if (x < 3.0) return 14.0;
+    return 6.0;
+  }
+  if (y < 3.0) {
+    if (x < 1.0) return 3.0;
+    if (x < 2.0) return 11.0;
+    if (x < 3.0) return 1.0;
+    return 9.0;
+  }
+  if (x < 1.0) return 15.0;
+  if (x < 2.0) return 7.0;
+  if (x < 3.0) return 13.0;
+  return 5.0;
+}
+
+void main() {
+  vec2 texel = 1.0 / uResolution;
+  float stepPx = max(1.0, floor(uPixelSize + 0.5));
+  vec2 blockStep = texel * stepPx;
+
+  vec2 block = floor(vUv / blockStep) * blockStep;
+  vec2 cUv = clampUv(block + blockStep * 0.5, texel);
+
+  vec2 lUv = clampUv(cUv + vec2(-blockStep.x, 0.0), texel);
+  vec2 rUv = clampUv(cUv + vec2(blockStep.x, 0.0), texel);
+  vec2 uUv = clampUv(cUv + vec2(0.0, -blockStep.y), texel);
+  vec2 dUv = clampUv(cUv + vec2(0.0, blockStep.y), texel);
+
+  vec3 c = texture2D(uColorTex, cUv).rgb;
+  vec3 cNoShadow = texture2D(uNoShadowColorTex, cUv).rgb;
+
+  float dC = texture2D(uDepthTex, cUv).r;
+  float dL = texture2D(uDepthTex, lUv).r;
+  float dR = texture2D(uDepthTex, rUv).r;
+  float dU = texture2D(uDepthTex, uUv).r;
+  float dD = texture2D(uDepthTex, dUv).r;
+
+  float ldC = linearizeDepth(dC);
+  float ldL = linearizeDepth(dL);
+  float ldR = linearizeDepth(dR);
+  float ldU = linearizeDepth(dU);
+  float ldD = linearizeDepth(dD);
+
+  vec3 nC = normalize(texture2D(uNormalTex, cUv).rgb * 2.0 - 1.0);
+  vec3 nL = normalize(texture2D(uNormalTex, lUv).rgb * 2.0 - 1.0);
+  vec3 nR = normalize(texture2D(uNormalTex, rUv).rgb * 2.0 - 1.0);
+  vec3 nU = normalize(texture2D(uNormalTex, uUv).rgb * 2.0 - 1.0);
+  vec3 nD = normalize(texture2D(uNormalTex, dUv).rgb * 2.0 - 1.0);
+
+  float depthFrontL = step(ldC, ldL);
+  float depthFrontR = step(ldC, ldR);
+  float depthFrontU = step(ldC, ldU);
+  float depthFrontD = step(ldC, ldD);
+
+  float sameL = 1.0 - step(uDepthThreshold, abs(ldC - ldL));
+  float sameR = 1.0 - step(uDepthThreshold, abs(ldC - ldR));
+  float sameU = 1.0 - step(uDepthThreshold, abs(ldC - ldU));
+  float sameD = 1.0 - step(uDepthThreshold, abs(ldC - ldD));
+
+  float frontL = mix(depthFrontL, 0.0, sameL);
+  float frontR = mix(depthFrontR, 1.0, sameR);
+  float frontU = mix(depthFrontU, 0.0, sameU);
+  float frontD = mix(depthFrontD, 1.0, sameD);
+
+  float depthEdge = max(
+    max(step(uDepthThreshold, abs(ldC - ldL)) * frontL, step(uDepthThreshold, abs(ldC - ldR)) * frontR),
+    max(step(uDepthThreshold, abs(ldC - ldU)) * frontU, step(uDepthThreshold, abs(ldC - ldD)) * frontD)
+  );
+
+  float normalEdge = max(
+    max(step(uNormalThreshold, 1.0 - dot(nC, nL)) * frontL, step(uNormalThreshold, 1.0 - dot(nC, nR)) * frontR),
+    max(step(uNormalThreshold, 1.0 - dot(nC, nU)) * frontU, step(uNormalThreshold, 1.0 - dot(nC, nD)) * frontD)
+  );
+
+  float edge = max(depthEdge, normalEdge);
+  float colorLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float lightMix = mix(0.0, smoothstep(0.02, 0.95, colorLuma), uOutlineLightResponse);
+  float shadeFactor = mix(uOutlineDarken, uOutlineDarken + 0.42, lightMix);
+
+  vec3 chromaEdge = mix(vec3(colorLuma), c, uOutlineSaturationBoost);
+  vec3 litEdgeColor = clamp(chromaEdge * shadeFactor, 0.0, 1.0);
+  vec3 darkened = c * uEdgeDarken;
+  vec3 outlined = mix(darkened, litEdgeColor, uOutlineProminence);
+  vec3 outColor = mix(c, outlined, edge);
+
+  float lShadow = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float lNoShadow = dot(cNoShadow, vec3(0.2126, 0.7152, 0.0722));
+  float shadowAmount = clamp((lNoShadow - lShadow) / max(0.001, lNoShadow), 0.0, 1.0);
+  float shadowMask = smoothstep(0.03, 0.95, shadowAmount) * (1.0 - edge * 0.85);
+  float shadowDither = clamp(shadowAmount + bayer4x4(block) / 16.0 * uShadowDitherStrength - 0.5 * uShadowDitherStrength, 0.0, 1.0);
+  vec3 shadowDithered = mix(cNoShadow, outColor, shadowDither);
+  outColor = mix(outColor, shadowDithered, shadowMask);
+
+  vec2 blockCoord = floor(vUv / blockStep);
+  float bayer = (bayer4x4(blockCoord) + 0.5) / 16.0 - 0.5;
+  float luma = dot(outColor, vec3(0.2126, 0.7152, 0.0722));
+  float midtones = smoothstep(0.08, 0.55, luma) * (1.0 - smoothstep(0.62, 0.92, luma));
+  float ditherMask = (1.0 - edge * 0.9) * midtones;
+  outColor = clamp(outColor + vec3(bayer * uPostDitherStrength * ditherMask), 0.0, 1.0);
+
+  gl_FragColor = vec4(outColor, 1.0);
+}
+`;
+
+function makeGradientMap(bands: number): THREE.DataTexture {
+  const steps = Math.max(2, bands);
+  const data = new Uint8Array(steps * 4);
+
+  for (let i = 0; i < steps; i += 1) {
+    const t = i / (steps - 1);
+    const value = Math.round((0.18 + t * 0.82) * 255);
+    const offset = i * 4;
+    data[offset] = value;
+    data[offset + 1] = value;
+    data[offset + 2] = value;
+    data[offset + 3] = 255;
+  }
+
+  const gradient = new THREE.DataTexture(data, steps, 1, THREE.RGBAFormat);
+  gradient.minFilter = THREE.NearestFilter;
+  gradient.magFilter = THREE.NearestFilter;
+  gradient.generateMipmaps = false;
+  gradient.needsUpdate = true;
+  return gradient;
+}
+
+function applyRetroDither(
+  material: THREE.MeshToonMaterial,
+  bands: number,
+  strength: number,
+  specularStrength: number,
+  specularShininess: number,
+  specularBands: number,
+  specularDitherStrength: number
+): void {
+  material.dithering = false;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uToonDitherBands = { value: Math.max(2.0, bands) };
+    shader.uniforms.uToonDitherStrength = { value: strength };
+    shader.uniforms.uToonDitherPixelSize = { value: 4.0 };
+    shader.uniforms.uSpecularStrength = { value: specularStrength };
+    shader.uniforms.uSpecularShininess = { value: specularShininess };
+    shader.uniforms.uSpecularBands = { value: Math.max(2.0, specularBands) };
+    shader.uniforms.uSpecularDitherStrength = { value: specularDitherStrength };
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <gradientmap_pars_fragment>",
+      `
+      #ifdef USE_GRADIENTMAP
+      uniform sampler2D gradientMap;
+      #endif
+
+      uniform float uToonDitherBands;
+      uniform float uToonDitherStrength;
+      uniform float uToonDitherPixelSize;
+      uniform float uSpecularStrength;
+      uniform float uSpecularShininess;
+      uniform float uSpecularBands;
+      uniform float uSpecularDitherStrength;
+
+      float toonBayer4x4(vec2 p) {
+        vec2 q = mod(floor(p), 4.0);
+        float x = q.x;
+        float y = q.y;
+        if (y < 1.0) {
+          if (x < 1.0) return 0.0;
+          if (x < 2.0) return 8.0;
+          if (x < 3.0) return 2.0;
+          return 10.0;
+        }
+        if (y < 2.0) {
+          if (x < 1.0) return 12.0;
+          if (x < 2.0) return 4.0;
+          if (x < 3.0) return 14.0;
+          return 6.0;
+        }
+        if (y < 3.0) {
+          if (x < 1.0) return 3.0;
+          if (x < 2.0) return 11.0;
+          if (x < 3.0) return 1.0;
+          return 9.0;
+        }
+        if (x < 1.0) return 15.0;
+        if (x < 2.0) return 7.0;
+        if (x < 3.0) return 13.0;
+        return 5.0;
+      }
+
+      vec3 getGradientIrradiance(vec3 normal, vec3 lightDirection) {
+        float dotNL = clamp(dot(normal, lightDirection) * 0.5 + 0.5, 0.0, 1.0);
+        float levels = max(2.0, uToonDitherBands);
+        vec2 ditherCell = floor(gl_FragCoord.xy / max(1.0, uToonDitherPixelSize));
+        float bayer = (toonBayer4x4(ditherCell) + 0.5) / 16.0 - 0.5;
+        float dithered = clamp(dotNL + bayer * uToonDitherStrength, 0.0, 1.0);
+        float quantized = floor(dithered * (levels - 1.0) + 0.5) / (levels - 1.0);
+
+        #ifdef USE_GRADIENTMAP
+          return vec3(texture2D(gradientMap, vec2(quantized, 0.0)).r);
+        #else
+          return vec3(quantized);
+        #endif
+      }
+      `
+    );
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <lights_toon_pars_fragment>",
+      `
+      varying vec3 vViewPosition;
+
+      struct ToonMaterial {
+        vec3 diffuseColor;
+      };
+
+      void RE_Direct_Toon( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in ToonMaterial material, inout ReflectedLight reflectedLight ) {
+        vec3 irradiance = getGradientIrradiance( geometryNormal, directLight.direction ) * directLight.color;
+        reflectedLight.directDiffuse += irradiance * BRDF_Lambert( material.diffuseColor );
+
+        float ndl = max( dot( geometryNormal, directLight.direction ), 0.0 );
+        vec3 halfDir = normalize( directLight.direction + geometryViewDir );
+        float ndh = max( dot( geometryNormal, halfDir ), 0.0 );
+        float specRaw = pow( ndh, max( 1.0, uSpecularShininess ) ) * ndl * uSpecularStrength;
+
+        vec2 ditherCell = floor( gl_FragCoord.xy / max( 1.0, uToonDitherPixelSize ) );
+        float bayer = ( toonBayer4x4( ditherCell ) + 0.5 ) / 16.0 - 0.5;
+        float dithered = clamp( specRaw + bayer * uSpecularDitherStrength, 0.0, 1.0 );
+        float levels = max( 2.0, uSpecularBands );
+        float quantizedSpec = floor( dithered * ( levels - 1.0 ) + 0.5 ) / ( levels - 1.0 );
+
+        vec3 specColor = mix( vec3( 1.0 ), material.diffuseColor, 0.2 );
+        reflectedLight.directDiffuse += quantizedSpec * directLight.color * specColor;
+      }
+
+      void RE_IndirectDiffuse_Toon( const in vec3 irradiance, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in ToonMaterial material, inout ReflectedLight reflectedLight ) {
+        reflectedLight.indirectDiffuse += irradiance * BRDF_Lambert( material.diffuseColor );
+      }
+
+      #define RE_Direct RE_Direct_Toon
+      #define RE_IndirectDiffuse RE_IndirectDiffuse_Toon
+      `
+    );
+  };
+  material.customProgramCacheKey = () =>
+    `retroDither_b${bands.toFixed(2)}_s${strength.toFixed(3)}_spec${specularStrength.toFixed(3)}_sh${specularShininess.toFixed(2)}_sb${specularBands.toFixed(2)}_sd${specularDitherStrength.toFixed(3)}`;
+  material.needsUpdate = true;
+}
+
+type ToonMaterialSpec = {
+  color: number;
+  bands: number;
+  ditherStrength: number;
+  specularStrength: number;
+  specularShininess: number;
+  specularBands?: number;
+  specularDitherStrength?: number;
+  transparent?: boolean;
+  opacity?: number;
+};
+
+function makeToonMaterial(spec: ToonMaterialSpec): {
+  material: THREE.MeshToonMaterial;
+  gradient: THREE.DataTexture;
+} {
+  const gradient = makeGradientMap(spec.bands);
+  const material = new THREE.MeshToonMaterial({
+    color: spec.color,
+    gradientMap: gradient,
+    transparent: spec.transparent ?? false,
+    opacity: spec.opacity ?? 1,
+    toneMapped: true
+  });
+  applyRetroDither(
+    material,
+    spec.bands,
+    spec.ditherStrength,
+    spec.specularStrength,
+    spec.specularShininess,
+    spec.specularBands ?? 4,
+    spec.specularDitherStrength ?? 0.08
+  );
+  return { material, gradient };
+}
+
 type Mode = "EDITOR" | "GAME";
 
 type ToolMode = "draw" | "erase";
@@ -919,7 +1258,7 @@ const experiment: ExperimentModule = {
     mount.style.position = "relative";
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x101821);
+    scene.background = new THREE.Color(0x0b1117);
 
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     let viewportWidth = Math.max(1, width);
@@ -934,16 +1273,77 @@ const experiment: ExperimentModule = {
     renderer.domElement.tabIndex = 0;
     mount.appendChild(renderer.domElement);
 
-    const hemiLight = new THREE.HemisphereLight(0xd3e9ff, 0x2f3944, 0.95);
+    const hemiLight = new THREE.HemisphereLight(0xd6ecff, 0x15202b, 0.7);
     scene.add(hemiLight);
 
-    const keyLight = new THREE.DirectionalLight(0xfff0d8, 1.14);
-    keyLight.position.set(20, 26, 14);
+    const keyLight = new THREE.DirectionalLight(0xf5f1e8, 1.1);
+    keyLight.position.set(16, 22, 12);
     scene.add(keyLight);
 
-    const fillLight = new THREE.DirectionalLight(0xc2deff, 0.45);
-    fillLight.position.set(-10, 12, -10);
+    const fillLight = new THREE.DirectionalLight(0xa9c7ff, 0.35);
+    fillLight.position.set(-12, 14, -10);
     scene.add(fillLight);
+
+    const colorTarget = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      stencilBuffer: false
+    });
+    colorTarget.texture.generateMipmaps = false;
+    colorTarget.depthTexture = new THREE.DepthTexture(
+      1,
+      1,
+      THREE.UnsignedIntType
+    );
+
+    const noShadowColorTarget = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      stencilBuffer: false
+    });
+    noShadowColorTarget.texture.generateMipmaps = false;
+
+    const normalTarget = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      stencilBuffer: false
+    });
+    normalTarget.texture.generateMipmaps = false;
+
+    const normalMaterial = new THREE.MeshNormalMaterial();
+
+    const postMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uColorTex: { value: colorTarget.texture },
+        uNoShadowColorTex: { value: noShadowColorTarget.texture },
+        uDepthTex: { value: colorTarget.depthTexture },
+        uNormalTex: { value: normalTarget.texture },
+        uResolution: { value: new THREE.Vector2(1, 1) },
+        uNear: { value: camera.near },
+        uFar: { value: camera.far },
+        uPixelSize: { value: 3.0 },
+        uDepthThreshold: { value: 0.08 },
+        uNormalThreshold: { value: 0.22 },
+        uEdgeDarken: { value: 0.24 },
+        uOutlineDarken: { value: 0.22 },
+        uOutlineLightResponse: { value: 1.0 },
+        uOutlineSaturationBoost: { value: 1.6 },
+        uOutlineProminence: { value: 0.9 },
+        uPostDitherStrength: { value: 0.0 },
+        uShadowDitherStrength: { value: 0.18 }
+      },
+      vertexShader: POST_VERTEX_SHADER,
+      fragmentShader: POST_FRAGMENT_SHADER
+    });
+
+    const postScene = new THREE.Scene();
+    const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial);
+    postQuad.frustumCulled = false;
+    postScene.add(postQuad);
 
     const floorGroup = new THREE.Group();
     const wallGroup = new THREE.Group();
@@ -973,59 +1373,85 @@ const experiment: ExperimentModule = {
     const structureMeshKit = createEditorStructureMeshKit();
     const playerBodyGeometry = new THREE.CylinderGeometry(0.25, 0.25, 1.0, 14);
     const playerHeadGeometry = new THREE.SphereGeometry(0.2, 12, 10);
+    const toonGradients: THREE.DataTexture[] = [];
+    const makeToon = (spec: ToonMaterialSpec) => {
+      const { material, gradient } = makeToonMaterial(spec);
+      toonGradients.push(gradient);
+      return material;
+    };
 
-    const floorMaterial = new THREE.MeshStandardMaterial({
-      color: 0x7592a7,
-      roughness: 0.9,
-      metalness: 0.03
+    const floorMaterial = makeToon({
+      color: 0xd7dee6,
+      bands: 5,
+      ditherStrength: 0.05,
+      specularStrength: 0.3,
+      specularShininess: 52
     });
-    const grassVariantMaterials: THREE.MeshStandardMaterial[] = [
-      new THREE.MeshStandardMaterial({
+    const grassVariantMaterials: THREE.MeshToonMaterial[] = [
+      makeToon({
         color: 0x5b9862,
-        roughness: 0.94,
-        metalness: 0.0
+        bands: 4,
+        ditherStrength: 0.06,
+        specularStrength: 0.08,
+        specularShininess: 18
       }),
-      new THREE.MeshStandardMaterial({
+      makeToon({
         color: 0x679f6b,
-        roughness: 0.92,
-        metalness: 0.0
+        bands: 4,
+        ditherStrength: 0.06,
+        specularStrength: 0.08,
+        specularShininess: 18
       }),
-      new THREE.MeshStandardMaterial({
+      makeToon({
         color: 0x4e8d58,
-        roughness: 0.95,
-        metalness: 0.0
+        bands: 4,
+        ditherStrength: 0.06,
+        specularStrength: 0.08,
+        specularShininess: 18
       }),
-      new THREE.MeshStandardMaterial({
+      makeToon({
         color: 0x76ab6c,
-        roughness: 0.9,
-        metalness: 0.0
+        bands: 4,
+        ditherStrength: 0.06,
+        specularStrength: 0.08,
+        specularShininess: 18
       })
     ];
-    const roadMaterial = new THREE.MeshStandardMaterial({
-      color: 0x616a75,
-      roughness: 0.82,
-      metalness: 0.03
+    const roadMaterial = makeToon({
+      color: 0x5b6672,
+      bands: 4,
+      ditherStrength: 0.05,
+      specularStrength: 0.12,
+      specularShininess: 24
     });
-    const sidewalkMaterial = new THREE.MeshStandardMaterial({
-      color: 0xbeb7a7,
-      roughness: 0.78,
-      metalness: 0.02
+    const sidewalkMaterial = makeToon({
+      color: 0xc4c7c9,
+      bands: 4,
+      ditherStrength: 0.05,
+      specularStrength: 0.18,
+      specularShininess: 28
     });
-    const buildingGroundMaterial = new THREE.MeshStandardMaterial({
-      color: 0xcab58e,
-      roughness: 0.74,
-      metalness: 0.03
+    const buildingGroundMaterial = makeToon({
+      color: 0xb7c0c9,
+      bands: 4,
+      ditherStrength: 0.05,
+      specularStrength: 0.2,
+      specularShininess: 26
     });
 
-    const playerBodyMaterial = new THREE.MeshStandardMaterial({
-      color: 0x74b8db,
-      roughness: 0.58,
-      metalness: 0.05
+    const playerBodyMaterial = makeToon({
+      color: 0x72b8f1,
+      bands: 4,
+      ditherStrength: 0.06,
+      specularStrength: 0.26,
+      specularShininess: 36
     });
-    const playerHeadMaterial = new THREE.MeshStandardMaterial({
-      color: 0xe8f3ff,
-      roughness: 0.4,
-      metalness: 0.03
+    const playerHeadMaterial = makeToon({
+      color: 0xf2f7ff,
+      bands: 5,
+      ditherStrength: 0.05,
+      specularStrength: 0.35,
+      specularShininess: 48
     });
 
     const hoverMaterial = new THREE.MeshBasicMaterial({
@@ -2461,6 +2887,17 @@ const experiment: ExperimentModule = {
 
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       renderer.setSize(viewportWidth, viewportHeight, true);
+      const drawingBufferSize = renderer.getDrawingBufferSize(
+        new THREE.Vector2()
+      );
+      const targetWidth = Math.max(1, Math.floor(drawingBufferSize.x));
+      const targetHeight = Math.max(1, Math.floor(drawingBufferSize.y));
+      colorTarget.setSize(targetWidth, targetHeight);
+      noShadowColorTarget.setSize(targetWidth, targetHeight);
+      normalTarget.setSize(targetWidth, targetHeight);
+      postMaterial.uniforms.uResolution.value.set(targetWidth, targetHeight);
+      postMaterial.uniforms.uNear.value = camera.near;
+      postMaterial.uniforms.uFar.value = camera.far;
       updateCameraProjection();
     }
 
@@ -2876,6 +3313,7 @@ const experiment: ExperimentModule = {
       syncSize();
     });
     resizeObserver.observe(mount);
+    syncSize();
 
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
     renderer.domElement.addEventListener("pointermove", handlePointerMove);
@@ -2914,7 +3352,24 @@ const experiment: ExperimentModule = {
       }
 
       setCameraPose();
+      scene.overrideMaterial = null;
+      renderer.setRenderTarget(colorTarget);
+      renderer.clear();
       renderer.render(scene, camera);
+
+      renderer.setRenderTarget(noShadowColorTarget);
+      renderer.clear();
+      renderer.render(scene, camera);
+
+      scene.overrideMaterial = normalMaterial;
+      renderer.setRenderTarget(normalTarget);
+      renderer.clear();
+      renderer.render(scene, camera);
+      scene.overrideMaterial = null;
+
+      renderer.setRenderTarget(null);
+      renderer.clear();
+      renderer.render(postScene, postCamera);
       syncHud();
 
       raf = requestAnimationFrame(render);
@@ -2957,8 +3412,17 @@ const experiment: ExperimentModule = {
       buildingGroundMaterial.dispose();
       playerBodyMaterial.dispose();
       playerHeadMaterial.dispose();
+      toonGradients.forEach((gradient) => gradient.dispose());
       hoverMaterial.dispose();
       rectPreviewMaterial.dispose();
+
+      postQuad.geometry.dispose();
+      postMaterial.dispose();
+      postScene.remove(postQuad);
+      normalMaterial.dispose();
+      colorTarget.dispose();
+      noShadowColorTarget.dispose();
+      normalTarget.dispose();
 
       renderer.dispose();
 
