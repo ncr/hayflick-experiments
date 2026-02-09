@@ -365,6 +365,7 @@ const experiment: ExperimentModule = {
     };
 
     let raf = 0;
+    let needsBaseAlign = true;
     const render = () => {
       const yaw = CAMERA_YAW + yawIndex * (Math.PI * 0.5);
 
