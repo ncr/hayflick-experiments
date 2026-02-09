@@ -692,25 +692,28 @@ const experiment: ExperimentModule = {
       return mesh;
     }
 
-    function createWallSegment(options?: { trimStart?: boolean; trimEnd?: boolean }): THREE.Object3D {
+    function createWallSegment(options?: { trimStart?: boolean; trimEnd?: boolean; trimStartAmount?: number; trimEndAmount?: number }): THREE.Object3D {
       return structureMeshKit.createWallSegment(options);
     }
 
-    function createWindowSegment(options?: { trimStart?: boolean; trimEnd?: boolean }): THREE.Object3D {
+    function createWindowSegment(options?: { trimStart?: boolean; trimEnd?: boolean; trimStartAmount?: number; trimEndAmount?: number }): THREE.Object3D {
       return structureMeshKit.createWindowSegment(options);
     }
 
     function createDoorSegment(
       state: LevelBuilderDoorState,
-      options?: { trimStart?: boolean; trimEnd?: boolean }
+      options?: { trimStart?: boolean; trimEnd?: boolean; trimStartAmount?: number; trimEndAmount?: number }
     ): THREE.Object3D {
       return structureMeshKit.createDoorSegment(state, options);
     }
 
     function createStructureSegment(
       segment: StructureSegmentData,
-      options?: { trimStart?: boolean; trimEnd?: boolean }
+      options?: { trimStart?: boolean; trimEnd?: boolean; trimStartAmount?: number; trimEndAmount?: number }
     ): THREE.Object3D {
+      if (segment.kind === "wall" && options?.trimStart && options?.trimEnd) {
+        return new THREE.Group();
+      }
       if (segment.kind === "wall") {
         return createWallSegment(options);
       }
@@ -914,9 +917,13 @@ const experiment: ExperimentModule = {
 
       structureSegments.forEach((segmentData, segmentKey) => {
         const edge = parseEdge(segmentKey);
+        const trimStart = joinNodes.has(nodeKey(edge.ax, edge.az));
+        const trimEnd = joinNodes.has(nodeKey(edge.bx, edge.bz));
         const module = createStructureSegment(segmentData, {
-          trimStart: joinNodes.has(nodeKey(edge.ax, edge.az)),
-          trimEnd: joinNodes.has(nodeKey(edge.bx, edge.bz))
+          trimStart,
+          trimEnd,
+          trimStartAmount: trimStart ? TILE_SIZE * 0.5 : undefined,
+          trimEndAmount: trimEnd ? TILE_SIZE * 0.5 : undefined
         });
 
         const xA = toWorldNodeX(edge.ax);

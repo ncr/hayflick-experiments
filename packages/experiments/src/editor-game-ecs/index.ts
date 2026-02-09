@@ -1695,8 +1695,11 @@ const experiment: ExperimentModule = {
 
     function createStructureMesh(
       segment: StructureSegmentData,
-      options?: { trimStart?: boolean; trimEnd?: boolean }
+      options?: { trimStart?: boolean; trimEnd?: boolean; trimStartAmount?: number; trimEndAmount?: number }
     ): THREE.Object3D {
+      if (segment.kind === STRUCTURE_KIND.WALL && options?.trimStart && options?.trimEnd) {
+        return new THREE.Group();
+      }
       switch (segment.kind) {
         case STRUCTURE_KIND.WALL:
           return structureMeshKit.createWallSegment(options);
@@ -1752,9 +1755,13 @@ const experiment: ExperimentModule = {
 
       for (const [key, segment] of structureSegments.entries()) {
         const edge = parseEdge(key);
+        const trimStart = joinNodes.has(cellKey(edge.ax, edge.ay));
+        const trimEnd = joinNodes.has(cellKey(edge.bx, edge.by));
         const mesh = createStructureMesh(segment, {
-          trimStart: joinNodes.has(cellKey(edge.ax, edge.ay)),
-          trimEnd: joinNodes.has(cellKey(edge.bx, edge.by))
+          trimStart,
+          trimEnd,
+          trimStartAmount: trimStart ? TILE_SIZE * 0.5 : undefined,
+          trimEndAmount: trimEnd ? TILE_SIZE * 0.5 : undefined
         });
         mesh.position.set(
           (toWorldNodeX(edge.ax) + toWorldNodeX(edge.bx)) * 0.5,

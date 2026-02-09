@@ -14,6 +14,8 @@ export type EditorDoorVisual = {
 export type EditorStructureSegmentOptions = {
   trimStart?: boolean;
   trimEnd?: boolean;
+  trimStartAmount?: number;
+  trimEndAmount?: number;
 };
 
 type EditorStructureMaterials = {
@@ -51,7 +53,8 @@ export type EditorStructureMeshKit = {
 
 const WALL_HEIGHT = 2.8 * LEVEL_EDITOR_WORLD_UNIT;
 const WALL_THICKNESS = 0.18 * LEVEL_EDITOR_WORLD_UNIT;
-const SEGMENT_TRIM_AMOUNT = WALL_THICKNESS * 0.5;
+const DEFAULT_SEGMENT_TRIM_AMOUNT = WALL_THICKNESS * 0.5;
+const JUNCTION_ARM_REACH = LEVEL_EDITOR_WORLD_UNIT * 0.5;
 const WALL_BLOCK_HALF_SPAN = LEVEL_EDITOR_WORLD_UNIT * 0.5;
 const WALL_BLOCK_EDGE_OFFSET = WALL_BLOCK_HALF_SPAN - WALL_THICKNESS * 0.5;
 const WALL_BLOCK_CORNER_OFFSET = WALL_BLOCK_HALF_SPAN;
@@ -207,7 +210,7 @@ function makeJoinShape(points: Array<[number, number]>): THREE.Shape {
 
 function createJoinCapGeometry(kind: Exclude<JoinCapKind, "none">): THREE.BufferGeometry {
   const half = WALL_THICKNESS * 0.5;
-  const reach = SEGMENT_TRIM_AMOUNT;
+  const reach = JUNCTION_ARM_REACH;
   const capHeight = WALL_HEIGHT + JOIN_CAP_HEIGHT_EPSILON;
 
   let points: Array<[number, number]>;
@@ -332,8 +335,8 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     group: THREE.Group,
     options?: EditorStructureSegmentOptions
   ): THREE.Group => {
-    const trimStart = options?.trimStart ? SEGMENT_TRIM_AMOUNT : 0;
-    const trimEnd = options?.trimEnd ? SEGMENT_TRIM_AMOUNT : 0;
+    const trimStart = options?.trimStartAmount ?? (options?.trimStart ? DEFAULT_SEGMENT_TRIM_AMOUNT : 0);
+    const trimEnd = options?.trimEndAmount ?? (options?.trimEnd ? DEFAULT_SEGMENT_TRIM_AMOUNT : 0);
     const effectiveLength = Math.max(
       LEVEL_EDITOR_WORLD_UNIT * 0.1,
       LEVEL_EDITOR_WORLD_UNIT - trimStart - trimEnd
