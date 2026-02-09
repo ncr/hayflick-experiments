@@ -178,8 +178,22 @@ const experiment: ExperimentModule = {
     const applyPan = (deltaX: number, deltaY: number) => {
       const worldUnitsPerPixel = ORTHO_HEIGHT / zoomCurrent / FIXED_RENDER_HEIGHT;
       const yaw = CAMERA_YAW + yawIndex * (Math.PI * 0.5);
-      panRight.set(Math.cos(yaw), 0, -Math.sin(yaw));
-      panForward.set(Math.sin(yaw), 0, Math.cos(yaw));
+      const horizontal = Math.cos(CAMERA_PITCH);
+      const forward = new THREE.Vector3(
+        Math.sin(yaw) * horizontal,
+        Math.sin(CAMERA_PITCH),
+        Math.cos(yaw) * horizontal
+      ).normalize();
+      panRight.copy(forward).cross(new THREE.Vector3(0, 1, 0)).normalize();
+      panForward.copy(panRight).cross(forward).normalize();
+      panRight.y = 0;
+      panForward.y = 0;
+      if (panRight.lengthSq() > 0.000001) {
+        panRight.normalize();
+      }
+      if (panForward.lengthSq() > 0.000001) {
+        panForward.normalize();
+      }
 
       panRemainderX += deltaX / renderScale;
       panRemainderY += deltaY / renderScale;
