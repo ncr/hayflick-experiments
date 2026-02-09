@@ -524,3 +524,17 @@ Preventive checklist:
 - When rotating authored geometry, verify local axis direction after rotation before applying directional trims.
 - For vertical edges in current setup, swap trimStart/trimEnd (and trim amounts) before creating the segment mesh.
 - Add an orientation-focused mesh regression test when trim logic depends on edge direction.
+
+## 2026-02-10 - Junction dimensions must match full segment replacement contract
+Root cause:
+- Junction meshes were built as midpoint caps (arm reach 0.5 tile), while product expectation was full replacement of incident wall segments.
+- This mismatch made junction meshes appear short and produced large perceived gaps.
+
+Detection signal:
+- User requirement: X junction top footprint must be exactly 256x256 cm (2x2 tiles at 128 cm/tile).
+- Visual reports consistently described "meshes too short" rather than micro seam artifacts.
+
+Preventive checklist:
+- Keep promoted junction mesh reach aligned to the authoring contract (full-tile arms for replacement meshes).
+- Add explicit geometry tests for required junction footprint sizes (e.g. cross = 2.56m x 2.56m).
+- Ensure experiment renderers do not draw overlapping legacy segments for edges owned by replacement junction meshes.

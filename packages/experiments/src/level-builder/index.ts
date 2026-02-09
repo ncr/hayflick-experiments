@@ -711,7 +711,7 @@ const experiment: ExperimentModule = {
       segment: StructureSegmentData,
       options?: { trimStart?: boolean; trimEnd?: boolean; trimStartAmount?: number; trimEndAmount?: number }
     ): THREE.Object3D {
-      if (segment.kind !== "door" && options?.trimStart && options?.trimEnd) {
+      if (segment.kind !== "door" && (options?.trimStart || options?.trimEnd)) {
         return new THREE.Group();
       }
       if (segment.kind === "wall") {
@@ -952,8 +952,8 @@ const experiment: ExperimentModule = {
           orientedSegmentTrimOptions(edge, {
             trimStart,
             trimEnd,
-            trimStartAmount: trimStart ? TILE_SIZE * 0.5 : undefined,
-            trimEndAmount: trimEnd ? TILE_SIZE * 0.5 : undefined
+            trimStartAmount: trimStart ? TILE_SIZE : undefined,
+            trimEndAmount: trimEnd ? TILE_SIZE : undefined
           })
         );
 

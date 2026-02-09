@@ -138,10 +138,22 @@ describe("structure meshes", () => {
     const corner = kit.createJoinPost(1 | 2);
     const bounds = new THREE.Box3().setFromObject(corner);
 
-    // 1.28 m tile => half-tile node reach is 0.64 m.
-    // We intentionally overlap by one big pixel (~0.04 m) for seam safety.
-    expect(bounds.max.x).toBeGreaterThanOrEqual(0.68);
-    expect(bounds.min.z).toBeLessThanOrEqual(-0.68);
+    // Full replacement reach: each arm spans one full tile from node center.
+    expect(bounds.max.x).toBeCloseTo(1.28, 6);
+    expect(bounds.min.z).toBeCloseTo(-1.28, 6);
+
+    kit.dispose();
+  });
+
+  it("builds X junction with exact 2x2 tile top footprint", () => {
+    const kit = createEditorStructureMeshKit();
+    const cross = kit.createJoinPost(1 | 2 | 4 | 8);
+    const bounds = new THREE.Box3().setFromObject(cross);
+    const width = bounds.max.x - bounds.min.x;
+    const depth = bounds.max.z - bounds.min.z;
+
+    expect(width).toBeCloseTo(2.56, 6);
+    expect(depth).toBeCloseTo(2.56, 6);
 
     kit.dispose();
   });

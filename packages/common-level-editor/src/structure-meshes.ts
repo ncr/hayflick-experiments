@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import {
-  LEVEL_EDITOR_PIXELS_PER_UNIT_X,
   LEVEL_EDITOR_PIXELS_PER_UNIT_Y,
   LEVEL_EDITOR_WORLD_UNIT
 } from "./constants";
@@ -54,7 +53,7 @@ export type EditorStructureMeshKit = {
 const WALL_HEIGHT = 2.8 * LEVEL_EDITOR_WORLD_UNIT;
 const WALL_THICKNESS = 0.18 * LEVEL_EDITOR_WORLD_UNIT;
 const DEFAULT_SEGMENT_TRIM_AMOUNT = WALL_THICKNESS * 0.5;
-const JUNCTION_ARM_REACH = LEVEL_EDITOR_WORLD_UNIT * 0.5;
+const JUNCTION_ARM_REACH = LEVEL_EDITOR_WORLD_UNIT;
 const WALL_BLOCK_HALF_SPAN = LEVEL_EDITOR_WORLD_UNIT * 0.5;
 const WALL_BLOCK_EDGE_OFFSET = WALL_BLOCK_HALF_SPAN - WALL_THICKNESS * 0.5;
 const WALL_BLOCK_CORNER_OFFSET = WALL_BLOCK_HALF_SPAN;
@@ -63,11 +62,8 @@ const WALL_STRIPE_COLOR = 0xc45a12;
 const WALL_STRIPE_START_PIXEL_Y = 13;
 const WALL_STRIPE_END_PIXEL_Y = 17;
 
-const JOIN_CAP_HEIGHT_EPSILON = LEVEL_EDITOR_WORLD_UNIT * 0.0025;
-// Use one "big pixel" of overlap (128 cm / 32 px = 4 cm) to hide raster
-// cracks between trimmed segments and junction arms in low-res upscaled render.
-const JOIN_CAP_REACH_EPSILON =
-  LEVEL_EDITOR_WORLD_UNIT / LEVEL_EDITOR_PIXELS_PER_UNIT_X;
+const JOIN_CAP_HEIGHT_EPSILON = LEVEL_EDITOR_WORLD_UNIT * 0.001;
+const JOIN_CAP_REACH_EPSILON = 0;
 const JOIN_MASK_NORTH = 1;
 const JOIN_MASK_EAST = 2;
 const JOIN_MASK_SOUTH = 4;
@@ -204,9 +200,8 @@ function makeJoinShape(points: Array<[number, number]>): THREE.Shape {
 
 function createJoinCapGeometry(kind: Exclude<JoinCapKind, "none">): THREE.BufferGeometry {
   const half = WALL_THICKNESS * 0.5;
-  // We model the center block from [-half, half], so arm extension beyond that
-  // must stop at half-tile reach. We intentionally add a tiny overlap epsilon
-  // to avoid visible raster cracks between independently generated meshes.
+  // Junction meshes are full replacements for incident wall segments, so each
+  // arm reaches a full tile from node center (128 cm in current world units).
   const reach = Math.max(0, JUNCTION_ARM_REACH - half + JOIN_CAP_REACH_EPSILON);
   const capHeight = WALL_HEIGHT + JOIN_CAP_HEIGHT_EPSILON;
 
