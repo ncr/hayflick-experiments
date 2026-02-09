@@ -387,7 +387,6 @@ const ZOOM_PIXEL_STEP = 2;
 const OUTPUT_SCALE_MULTIPLIER = 2;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3.4;
-const KEY_ZOOM_STEP = 1.2;
 
 const PLAYER_SPEED = 3.8;
 const PLAYER_SPAWN = { x: 2.5, y: 2.5 };
@@ -1314,7 +1313,7 @@ const experiment: ExperimentModule = {
     const editorHintsText =
       "LMB drag: paint  •  Shift+drag: grass fill rect  •  G: grass rect  •  9: footprint rect  •  7/8: road/sidewalk  •  B: bake  •  EXIT (F5): game mode";
     const gameHintsText =
-      "GAME: WASD/Arrows move, click doors to toggle, K save game, L load game, ESC editor. Camera: Q/E rotate, +/- zoom, wheel zoom, trackpad pan, MMB or Space+drag pan.";
+      "GAME: WASD/Arrows move, click doors to toggle, K save game, L load game, ESC editor. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
 
     const promotedControls = createPromotedEditorControls({
       hud,
@@ -1427,21 +1426,7 @@ const experiment: ExperimentModule = {
     const gameLoadButton = hud.createButton("Load Game (L)", () => {
       loadGameNow();
     });
-    const gameZoomInButton = hud.createButton("Zoom +", () => {
-      nudgeZoom(1);
-      syncHud();
-    });
-    const gameZoomOutButton = hud.createButton("Zoom -", () => {
-      nudgeZoom(-1);
-      syncHud();
-    });
-    gameControlsButtons.append(
-      gameEditorButton,
-      gameSaveButton,
-      gameLoadButton,
-      gameZoomInButton,
-      gameZoomOutButton
-    );
+    gameControlsButtons.append(gameEditorButton, gameSaveButton, gameLoadButton);
     hud.rightPanel.insertBefore(gameControlsRow, stats);
 
     let structureSegments = createMockupStructureSegments();
@@ -1876,7 +1861,6 @@ const experiment: ExperimentModule = {
           `Default: ${defaultGroundBase}`,
           `Rect: ${activeRectTool}`,
           `Seed: ${userSeed}`,
-          `Zoom: ${zoomCurrent.toFixed(2)}x`,
           `View: ${viewStep}/4`
         ].join("  •  ");
         hints.textContent = editorHintsText;
@@ -1908,7 +1892,6 @@ const experiment: ExperimentModule = {
           "Mode: GAME",
           playerText,
           `Doors(O/C): ${openDoors}/${closedDoors}`,
-          `Zoom: ${zoomCurrent.toFixed(2)}x`,
           `View: ${viewStep}/4`
         ].join("  •  ");
         hints.textContent = gameHintsText;
@@ -2069,16 +2052,6 @@ const experiment: ExperimentModule = {
         Math.round(pixelsPerUnit / ZOOM_PIXEL_STEP) * ZOOM_PIXEL_STEP
       );
       return (snappedPixelsPerUnit * ORTHO_HEIGHT) / FIXED_RENDER_HEIGHT;
-    }
-
-    function nudgeZoom(direction: -1 | 1): void {
-      const factor = direction > 0 ? KEY_ZOOM_STEP : 1 / KEY_ZOOM_STEP;
-      const nextZoom = THREE.MathUtils.clamp(
-        zoomTarget * factor,
-        ZOOM_MIN,
-        ZOOM_MAX
-      );
-      zoomTarget = snapZoom(nextZoom);
     }
 
     function setCameraPose(): void {
@@ -3033,20 +3006,6 @@ const experiment: ExperimentModule = {
 
       if (event.code === "KeyE" && !event.repeat) {
         yawIndex += 1;
-        event.preventDefault();
-        syncHud();
-        return;
-      }
-
-      if (
-        (event.code === "Equal" ||
-          event.code === "NumpadAdd" ||
-          event.code === "Minus" ||
-          event.code === "NumpadSubtract") &&
-        !event.repeat
-      ) {
-        const zoomIn = event.code === "Equal" || event.code === "NumpadAdd";
-        nudgeZoom(zoomIn ? 1 : -1);
         event.preventDefault();
         syncHud();
         return;
