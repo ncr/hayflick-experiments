@@ -325,22 +325,8 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
   };
 
   const createJoinPost = (degree: number): THREE.Group => {
-    const group = new THREE.Group();
-
-    const column = new THREE.Mesh(geometries.jointColumn, materials.joint);
-    const scale = 1.02 + degree * 0.06;
-    column.scale.x = scale;
-    column.scale.z = scale;
-    column.position.y = WALL_HEIGHT * 0.5;
-    group.add(column);
-
-    const stripe = new THREE.Mesh(geometries.jointStripe, materials.stripe);
-    stripe.scale.x = scale;
-    stripe.scale.z = scale;
-    stripe.position.y = 1.2;
-    group.add(stripe);
-
-    return group;
+    void degree;
+    return new THREE.Group();
   };
 
   const createWallBlock = (): THREE.Group => {
