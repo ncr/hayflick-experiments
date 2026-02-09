@@ -395,3 +395,17 @@ Detection signal:
 Preventive checklist:
 - Validate chunk hook names against `THREE.ShaderLib.toon` for the pinned Three.js version before patching.
 - Add a unit test that executes `onBeforeCompile` with Toon-like shader strings and asserts the expected hook replacement.
+
+## 2026-02-09 - PBR stripe shader compile failed when uniforms were injected inside `main`
+Root cause:
+- While porting stripes to `MeshStandardMaterial`, `uniform` and `varying` declarations were inserted at the `#include <opaque_fragment>` site.
+- That chunk expands inside `main`, so declarations were invalid GLSL and structure meshes stopped rendering.
+
+Detection signal:
+- User reported walls disappeared entirely after PBR migration.
+- Render behavior matched shader compile failure symptoms (missing only affected meshes).
+
+Preventive checklist:
+- Declare GLSL uniforms/varyings in fragment/vertex `#include <common>` blocks only.
+- Restrict `#include <opaque_fragment>` patches to executable statements.
+- Keep a unit test that runs `onBeforeCompile` with both `#include <common>` and `#include <opaque_fragment>` placeholders.

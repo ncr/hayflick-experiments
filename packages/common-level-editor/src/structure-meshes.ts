@@ -77,13 +77,19 @@ function applyStripeBand(material: THREE.MeshStandardMaterial, stripe: StripeBan
     );
 
     shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <opaque_fragment>",
+      "#include <common>",
       `
+      #include <common>
       uniform vec3 uStripeColor;
       uniform float uStripeMinY;
       uniform float uStripeMaxY;
       varying float vStripeWorldY;
+      `
+    );
 
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <opaque_fragment>",
+      `
       float stripeMask = step(uStripeMinY, vStripeWorldY) * (1.0 - step(uStripeMaxY, vStripeWorldY));
       outgoingLight = mix(outgoingLight, uStripeColor, stripeMask);
       #include <opaque_fragment>

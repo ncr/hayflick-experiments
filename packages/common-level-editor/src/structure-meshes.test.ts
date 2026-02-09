@@ -43,6 +43,7 @@ describe("structure meshes", () => {
         #include <begin_vertex>
       `,
       fragmentShader: `
+        #include <common>
         #include <opaque_fragment>
       `
     };
