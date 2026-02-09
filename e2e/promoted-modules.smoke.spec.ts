@@ -7,6 +7,15 @@ async function focusStageCanvas(page: import("@playwright/test").Page) {
   return canvas;
 }
 
+async function readZoomFromStats(stats: import("@playwright/test").Locator) {
+  const text = (await stats.textContent()) ?? "";
+  const match = text.match(/Zoom:\s*([0-9.]+)x/);
+  if (!match) {
+    return null;
+  }
+  return Number.parseFloat(match[1]);
+}
+
 test.describe("promoted editor/game browser smoke", () => {
   test("level-builder: rect grass fill and camera hotkey update HUD", async ({
     page
@@ -48,6 +57,18 @@ test.describe("promoted editor/game browser smoke", () => {
     await expect(stats).toContainText("Mode: EDITOR");
     await page.keyboard.press("F5");
     await expect(stats).toContainText("Mode: GAME");
+
+    const zoomBefore = await readZoomFromStats(stats);
+    expect(zoomBefore).not.toBeNull();
+    await page.keyboard.press("Equal");
+    await expect
+      .poll(async () => await readZoomFromStats(stats))
+      .toBeGreaterThan(zoomBefore ?? 0);
+    const zoomAfterIn = await readZoomFromStats(stats);
+    await page.keyboard.press("Minus");
+    await expect
+      .poll(async () => await readZoomFromStats(stats))
+      .toBeLessThan(zoomAfterIn ?? Number.POSITIVE_INFINITY);
 
     await page.keyboard.press("KeyK");
     await expect(status).toContainText(
