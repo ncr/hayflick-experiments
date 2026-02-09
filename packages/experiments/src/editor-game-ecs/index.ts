@@ -9,7 +9,6 @@
  */
 
 import * as THREE from "three";
-import { makeRenderer } from "@common/render";
 import {
   bakeLevelForEcs,
   createPromotedEditorControls,
@@ -53,179 +52,6 @@ import {
   type PhysicsResource
 } from "@common/physics-rapier";
 import type { ExperimentModule } from "../runtime/types";
-
-const POST_VERTEX_SHADER = /* glsl */ `
-varying vec2 vUv;
-
-void main() {
-  vUv = uv;
-  gl_Position = vec4(position.xy, 0.0, 1.0);
-}
-`;
-
-const POST_FRAGMENT_SHADER = /* glsl */ `
-precision highp float;
-
-uniform sampler2D uColorTex;
-uniform sampler2D uNoShadowColorTex;
-uniform sampler2D uDepthTex;
-uniform sampler2D uNormalTex;
-
-uniform vec2 uResolution;
-uniform float uNear;
-uniform float uFar;
-uniform float uPixelSize;
-uniform float uDepthThreshold;
-uniform float uNormalThreshold;
-uniform float uEdgeDarken;
-uniform float uOutlineDarken;
-uniform float uOutlineLightResponse;
-uniform float uOutlineSaturationBoost;
-uniform float uOutlineProminence;
-uniform float uPostDitherStrength;
-uniform float uShadowDitherStrength;
-uniform float uSeamSuppress;
-uniform vec3 uOutlineTint;
-uniform float uOutlineTintStrength;
-
-varying vec2 vUv;
-
-float linearizeDepth(float rawDepth) {
-  float z = rawDepth * 2.0 - 1.0;
-  return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
-}
-
-vec2 clampUv(vec2 uv, vec2 texel) {
-  return clamp(uv, texel * 0.5, vec2(1.0) - texel * 0.5);
-}
-
-float bayer4x4(vec2 p) {
-  vec2 q = mod(floor(p), 4.0);
-  float x = q.x;
-  float y = q.y;
-
-  if (y < 1.0) {
-    if (x < 1.0) return 0.0;
-    if (x < 2.0) return 8.0;
-    if (x < 3.0) return 2.0;
-    return 10.0;
-  }
-  if (y < 2.0) {
-    if (x < 1.0) return 12.0;
-    if (x < 2.0) return 4.0;
-    if (x < 3.0) return 14.0;
-    return 6.0;
-  }
-  if (y < 3.0) {
-    if (x < 1.0) return 3.0;
-    if (x < 2.0) return 11.0;
-    if (x < 3.0) return 1.0;
-    return 9.0;
-  }
-  if (x < 1.0) return 15.0;
-  if (x < 2.0) return 7.0;
-  if (x < 3.0) return 13.0;
-  return 5.0;
-}
-
-void main() {
-  vec2 texel = 1.0 / uResolution;
-  float stepPx = max(1.0, floor(uPixelSize + 0.5));
-  vec2 blockStep = texel * stepPx;
-
-  vec2 block = floor(vUv / blockStep) * blockStep;
-  vec2 cUv = clampUv(block + blockStep * 0.5, texel);
-
-  vec2 lUv = clampUv(cUv + vec2(-blockStep.x, 0.0), texel);
-  vec2 rUv = clampUv(cUv + vec2(blockStep.x, 0.0), texel);
-  vec2 uUv = clampUv(cUv + vec2(0.0, -blockStep.y), texel);
-  vec2 dUv = clampUv(cUv + vec2(0.0, blockStep.y), texel);
-
-  vec3 c = texture2D(uColorTex, cUv).rgb;
-  vec3 cNoShadow = texture2D(uNoShadowColorTex, cUv).rgb;
-
-  float dC = texture2D(uDepthTex, cUv).r;
-  float dL = texture2D(uDepthTex, lUv).r;
-  float dR = texture2D(uDepthTex, rUv).r;
-  float dU = texture2D(uDepthTex, uUv).r;
-  float dD = texture2D(uDepthTex, dUv).r;
-
-  float ldC = linearizeDepth(dC);
-  float ldL = linearizeDepth(dL);
-  float ldR = linearizeDepth(dR);
-  float ldU = linearizeDepth(dU);
-  float ldD = linearizeDepth(dD);
-
-  vec3 nC = normalize(texture2D(uNormalTex, cUv).rgb * 2.0 - 1.0);
-  vec3 nL = normalize(texture2D(uNormalTex, lUv).rgb * 2.0 - 1.0);
-  vec3 nR = normalize(texture2D(uNormalTex, rUv).rgb * 2.0 - 1.0);
-  vec3 nU = normalize(texture2D(uNormalTex, uUv).rgb * 2.0 - 1.0);
-  vec3 nD = normalize(texture2D(uNormalTex, dUv).rgb * 2.0 - 1.0);
-
-  float depthFrontL = step(ldC, ldL);
-  float depthFrontR = step(ldC, ldR);
-  float depthFrontU = step(ldC, ldU);
-  float depthFrontD = step(ldC, ldD);
-
-  float sameL = 1.0 - step(uDepthThreshold, abs(ldC - ldL));
-  float sameR = 1.0 - step(uDepthThreshold, abs(ldC - ldR));
-  float sameU = 1.0 - step(uDepthThreshold, abs(ldC - ldU));
-  float sameD = 1.0 - step(uDepthThreshold, abs(ldC - ldD));
-
-  float frontL = mix(depthFrontL, 0.0, sameL);
-  float frontR = mix(depthFrontR, 1.0, sameR);
-  float frontU = mix(depthFrontU, 0.0, sameU);
-  float frontD = mix(depthFrontD, 1.0, sameD);
-
-  float depthEdge = max(
-    max(step(uDepthThreshold, abs(ldC - ldL)) * frontL, step(uDepthThreshold, abs(ldC - ldR)) * frontR),
-    max(step(uDepthThreshold, abs(ldC - ldU)) * frontU, step(uDepthThreshold, abs(ldC - ldD)) * frontD)
-  );
-
-  float normalEdge = max(
-    max(step(uNormalThreshold, 1.0 - dot(nC, nL)) * frontL, step(uNormalThreshold, 1.0 - dot(nC, nR)) * frontR),
-    max(step(uNormalThreshold, 1.0 - dot(nC, nU)) * frontU, step(uNormalThreshold, 1.0 - dot(nC, nD)) * frontD)
-  );
-
-  float edge = max(depthEdge, normalEdge);
-
-  float seamDepth = 1.0 - step(uDepthThreshold * 0.5, max(abs(ldC - ldL), abs(ldC - ldR)));
-  float seamDepthLR = 1.0 - step(uDepthThreshold * 0.5, abs(ldL - ldR));
-  float seamDepthUD = 1.0 - step(uDepthThreshold * 0.5, abs(ldU - ldD));
-  float seamNormalLR = 1.0 - step(uNormalThreshold * 0.5, 1.0 - dot(nL, nR));
-  float seamNormalUD = 1.0 - step(uNormalThreshold * 0.5, 1.0 - dot(nU, nD));
-  float seamMask = seamDepth * max(seamDepthLR * seamNormalLR, seamDepthUD * seamNormalUD);
-  edge *= (1.0 - seamMask * uSeamSuppress);
-  float colorLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  float lightMix = mix(0.0, smoothstep(0.02, 0.95, colorLuma), uOutlineLightResponse);
-  float shadeFactor = mix(uOutlineDarken, uOutlineDarken + 0.25, lightMix);
-
-  vec3 chromaEdge = mix(vec3(colorLuma), c, uOutlineSaturationBoost);
-  vec3 edgeBase = mix(chromaEdge, vec3(colorLuma), 0.35);
-  vec3 edgeTint = mix(edgeBase, uOutlineTint, uOutlineTintStrength);
-  vec3 litEdgeColor = clamp(edgeTint * shadeFactor, 0.0, 1.0);
-  vec3 darkened = c * uEdgeDarken;
-  vec3 outlined = mix(darkened, litEdgeColor, uOutlineProminence);
-  vec3 outColor = mix(c, outlined, edge);
-
-  float lShadow = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  float lNoShadow = dot(cNoShadow, vec3(0.2126, 0.7152, 0.0722));
-  float shadowAmount = clamp((lNoShadow - lShadow) / max(0.001, lNoShadow), 0.0, 1.0);
-  float shadowMask = smoothstep(0.03, 0.95, shadowAmount) * (1.0 - edge * 0.85);
-  float shadowDither = clamp(shadowAmount + bayer4x4(block) / 16.0 * uShadowDitherStrength - 0.5 * uShadowDitherStrength, 0.0, 1.0);
-  vec3 shadowDithered = mix(cNoShadow, outColor, shadowDither);
-  outColor = mix(outColor, shadowDithered, shadowMask);
-
-  vec2 blockCoord = floor(vUv / blockStep);
-  float bayer = (bayer4x4(blockCoord) + 0.5) / 16.0 - 0.5;
-  float luma = dot(outColor, vec3(0.2126, 0.7152, 0.0722));
-  float midtones = smoothstep(0.08, 0.55, luma) * (1.0 - smoothstep(0.62, 0.92, luma));
-  float ditherMask = (1.0 - edge * 0.9) * midtones;
-  outColor = clamp(outColor + vec3(bayer * uPostDitherStrength * ditherMask), 0.0, 1.0);
-
-  gl_FragColor = vec4(outColor, 1.0);
-}
-`;
 
 function makeGradientMap(bands: number): THREE.DataTexture {
   const steps = Math.max(2, bands);
@@ -1272,7 +1098,7 @@ const experiment: ExperimentModule = {
   id: "editor-game-ecs",
   title: "Editor + Game (ECS)",
   tags: ["threejs", "editor", "ecs", "level-bake", "save-load"],
-  init: async ({ mount, width, height, dpr }) => {
+  init: async ({ mount, width, height }) => {
     mount.style.position = "relative";
 
     const scene = new THREE.Scene();
@@ -1282,9 +1108,10 @@ const experiment: ExperimentModule = {
     let viewportWidth = Math.max(1, width);
     let viewportHeight = Math.max(1, height);
 
-    const renderer = makeRenderer(viewportWidth, viewportHeight, 1);
+    const renderer = new THREE.WebGLRenderer({ antialias: false });
     renderer.setPixelRatio(1);
-    renderer.setSize(viewportWidth, viewportHeight, true);
+    renderer.setSize(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT, true);
+    renderer.setClearColor(0x0b1117, 1);
     renderer.domElement.style.touchAction = "none";
     renderer.domElement.style.outline = "none";
     renderer.domElement.style.display = "block";
@@ -1306,59 +1133,6 @@ const experiment: ExperimentModule = {
     const fillLight = new THREE.DirectionalLight(0xa9c7ff, 0.35);
     fillLight.position.set(-12, 14, -10);
     scene.add(fillLight);
-
-    const colorTarget = new THREE.WebGLRenderTarget(
-      FIXED_RENDER_WIDTH,
-      FIXED_RENDER_HEIGHT,
-      {
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        format: THREE.RGBAFormat,
-        stencilBuffer: false
-      }
-    );
-    colorTarget.texture.generateMipmaps = false;
-    colorTarget.depthTexture = new THREE.DepthTexture(
-      FIXED_RENDER_WIDTH,
-      FIXED_RENDER_HEIGHT,
-      THREE.UnsignedIntType
-    );
-
-    const noShadowColorTarget = new THREE.WebGLRenderTarget(
-      FIXED_RENDER_WIDTH,
-      FIXED_RENDER_HEIGHT,
-      {
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        format: THREE.RGBAFormat,
-        stencilBuffer: false
-      }
-    );
-    noShadowColorTarget.texture.generateMipmaps = false;
-
-    const normalTarget = new THREE.WebGLRenderTarget(
-      FIXED_RENDER_WIDTH,
-      FIXED_RENDER_HEIGHT,
-      {
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        format: THREE.RGBAFormat,
-        stencilBuffer: false
-      }
-    );
-    normalTarget.texture.generateMipmaps = false;
-
-    const normalMaterial = new THREE.MeshNormalMaterial();
-
-    const postMaterial = new THREE.MeshBasicMaterial({
-      map: colorTarget.texture
-    });
-
-    const postScene = new THREE.Scene();
-    const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial);
-    postQuad.frustumCulled = false;
-    postScene.add(postQuad);
 
     const floorGroup = new THREE.Group();
     const wallGroup = new THREE.Group();
@@ -2920,6 +2694,9 @@ const experiment: ExperimentModule = {
       viewportHeight = Math.max(1, Math.floor(rect.height));
 
       renderer.setPixelRatio(1);
+      // Keep the drawing buffer fixed so rasterization happens on a stable pixel grid.
+      // We only scale the canvas via CSS to avoid introducing a second sampling pass.
+      renderer.setSize(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT, true);
       const baseScale = Math.max(
         1,
         Math.floor(
@@ -2932,7 +2709,6 @@ const experiment: ExperimentModule = {
       const scale = baseScale * OUTPUT_SCALE_MULTIPLIER;
       const targetWidth = FIXED_RENDER_WIDTH * scale;
       const targetHeight = FIXED_RENDER_HEIGHT * scale;
-      renderer.setSize(targetWidth, targetHeight, true);
       renderer.domElement.style.width = `${targetWidth}px`;
       renderer.domElement.style.height = `${targetHeight}px`;
       updateCameraProjection();
@@ -3390,17 +3166,9 @@ const experiment: ExperimentModule = {
       }
 
       setCameraPose();
-      scene.overrideMaterial = null;
-      renderer.setRenderTarget(colorTarget);
+      renderer.setRenderTarget(null);
       renderer.clear();
       renderer.render(scene, camera);
-
-      // Outline pass disabled: skip no-shadow and normal targets.
-      renderer.setRenderTarget(null);
-
-      renderer.setRenderTarget(null);
-      renderer.clear();
-      renderer.render(postScene, postCamera);
       syncHud();
 
       raf = requestAnimationFrame(render);
@@ -3446,14 +3214,6 @@ const experiment: ExperimentModule = {
       toonGradients.forEach((gradient) => gradient.dispose());
       hoverMaterial.dispose();
       rectPreviewMaterial.dispose();
-
-      postQuad.geometry.dispose();
-      postMaterial.dispose();
-      postScene.remove(postQuad);
-      normalMaterial.dispose();
-      colorTarget.dispose();
-      noShadowColorTarget.dispose();
-      normalTarget.dispose();
 
       renderer.dispose();
 

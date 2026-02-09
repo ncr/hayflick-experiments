@@ -315,3 +315,15 @@ Detection signal:
 Preventive checklist:
 - After any code change, commit and push unless the user explicitly says not to.
 - Check `git status -sb` to confirm a clean working tree before reporting completion.
+
+## 2026-02-09 - Local Playwright `preview` runs can validate stale experiment bundles
+Root cause:
+- `playwright.config.ts` starts `pnpm --filter @apps/hub preview` without an automatic rebuild.
+- Local e2e checks can target outdated artifacts unless a fresh build exists.
+
+Detection signal:
+- Newly added route/canvas assertions failed under local `preview` but passed immediately against live `dev` server using current source.
+
+Preventive checklist:
+- For local e2e verification after source edits, prefer running against a live `pnpm --filter @apps/hub dev --host 127.0.0.1 --port 4173 --strictPort` server.
+- If using `preview`, run a fresh build first so tests consume current code.

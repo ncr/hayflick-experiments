@@ -59,4 +59,26 @@ test.describe("promoted editor/game browser smoke", () => {
       "Loaded game save and restored player + door states by placementId."
     );
   });
+
+  test("editor-game-ecs: uses fixed low-resolution render buffer scaled by CSS", async ({
+    page
+  }) => {
+    await page.goto("/#/exp/editor-game-ecs");
+    const canvas = await focusStageCanvas(page);
+
+    const metrics = await canvas.evaluate((node) => {
+      const canvasEl = node as HTMLCanvasElement;
+      return {
+        width: canvasEl.width,
+        height: canvasEl.height,
+        styleWidth: canvasEl.style.width,
+        styleHeight: canvasEl.style.height
+      };
+    });
+
+    expect(metrics.width).toBe(480);
+    expect(metrics.height).toBe(270);
+    expect(Number.parseFloat(metrics.styleWidth)).toBeGreaterThan(metrics.width);
+    expect(Number.parseFloat(metrics.styleHeight)).toBeGreaterThan(metrics.height);
+  });
 });
