@@ -5,6 +5,7 @@ import {
   createPromotedEditorControls,
   createEditorHud,
   describeAutoTile,
+  LEVEL_EDITOR_WORLD_UNIT,
   type AutoTileShape,
   type PromotedEditorBrush,
   type PromotedEditorDefaultGround,
@@ -83,23 +84,23 @@ type DragState = {
 };
 
 const GRID_TILES = 30;
-const TILE_SIZE = 1;
+const TILE_SIZE = LEVEL_EDITOR_WORLD_UNIT;
 const GRID_ORIGIN = -(GRID_TILES * TILE_SIZE) * 0.5;
 
-const WALL_THICKNESS = 0.2;
-const GROUND_TILE_HEIGHT = 0.05;
+const WALL_THICKNESS = 0.2 * TILE_SIZE;
+const GROUND_TILE_HEIGHT = 0.05 * TILE_SIZE;
 const GRASS_VARIANT_COUNT = 4;
 const ROAD_WIDTH = 0.24;
 const SIDEWALK_WIDTH = 0.34;
 const DEFAULT_GRASS_VARIANT_SEED = 0x41c64e6d;
 
-const ORTHO_HEIGHT = 28;
-const CAMERA_DISTANCE = 34;
+const ORTHO_HEIGHT = 28 * TILE_SIZE;
+const CAMERA_DISTANCE = 34 * TILE_SIZE;
 const CAMERA_PITCH = THREE.MathUtils.degToRad(35.26438968);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const ZOOM_MIN = 0.45;
 const ZOOM_MAX = 3.8;
-const PAN_CLAMP = GRID_TILES * 0.8;
+const PAN_CLAMP = GRID_TILES * TILE_SIZE * 0.8;
 
 const BRUSH_COLORS: Record<BrushType, number> = {
   wall: 0xb9c6d2,

@@ -15,6 +15,7 @@ import {
   createEcsLevelResourceFromBake,
   createEditorStructureMeshKit,
   createEditorHud,
+  LEVEL_EDITOR_WORLD_UNIT,
   levelBuilderDoorPlacementIdFromNodes,
   type PromotedEditorBrush,
   type PromotedEditorDefaultGround,
@@ -368,7 +369,7 @@ type EditorSave = {
 };
 
 const GRID_TILES = 30;
-const TILE_SIZE = 1;
+const TILE_SIZE = LEVEL_EDITOR_WORLD_UNIT;
 const GRID_ORIGIN = -(GRID_TILES * TILE_SIZE) * 0.5;
 
 const LEVEL_MODEL_STORAGE_KEY = "editor_game_ecs_level_model_v4";
@@ -378,8 +379,8 @@ const EDITOR_LEVEL_SCHEMA_VERSION = 4;
 
 const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
-const CAMERA_DISTANCE = 30;
-const ORTHO_HEIGHT = 5.966213466261495;
+const CAMERA_DISTANCE = 30 * TILE_SIZE;
+const ORTHO_HEIGHT = 5.966213466261495 * TILE_SIZE;
 const FIXED_RENDER_WIDTH = 480;
 const FIXED_RENDER_HEIGHT = 270;
 const ZOOM_PIXEL_STEP = 2;
@@ -801,13 +802,13 @@ function createGridGeometry(
   const originY = GRID_ORIGIN;
 
   for (let x = 0; x <= width; x += 1) {
-    const worldX = originX + x;
-    lines.push(worldX, y, originY, worldX, y, originY + height);
+    const worldX = originX + x * TILE_SIZE;
+    lines.push(worldX, y, originY, worldX, y, originY + height * TILE_SIZE);
   }
 
   for (let yCell = 0; yCell <= height; yCell += 1) {
-    const worldY = originY + yCell;
-    lines.push(originX, y, worldY, originX + width, y, worldY);
+    const worldY = originY + yCell * TILE_SIZE;
+    lines.push(originX, y, worldY, originX + width * TILE_SIZE, y, worldY);
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -824,11 +825,11 @@ function toWorldZ(cellY: number): number {
 }
 
 function toWorldCoordX(x: number): number {
-  return GRID_ORIGIN + x;
+  return GRID_ORIGIN + x * TILE_SIZE;
 }
 
 function toWorldCoordZ(y: number): number {
-  return GRID_ORIGIN + y;
+  return GRID_ORIGIN + y * TILE_SIZE;
 }
 
 function toWorldNodeX(nodeX: number): number {
@@ -1157,10 +1158,19 @@ const experiment: ExperimentModule = {
     );
     scene.add(gridLines);
 
-    const floorGeometry = new THREE.BoxGeometry(1, 0.06, 1);
+    const floorGeometry = new THREE.BoxGeometry(
+      TILE_SIZE,
+      0.06 * TILE_SIZE,
+      TILE_SIZE
+    );
     const structureMeshKit = createEditorStructureMeshKit();
-    const playerBodyGeometry = new THREE.CylinderGeometry(0.25, 0.25, 1.0, 14);
-    const playerHeadGeometry = new THREE.SphereGeometry(0.2, 12, 10);
+    const playerBodyGeometry = new THREE.CylinderGeometry(
+      0.25 * TILE_SIZE,
+      0.25 * TILE_SIZE,
+      1.0 * TILE_SIZE,
+      14
+    );
+    const playerHeadGeometry = new THREE.SphereGeometry(0.2 * TILE_SIZE, 12, 10);
     const toonGradients: THREE.DataTexture[] = [];
     const makeToon = (spec: ToonMaterialSpec) => {
       const { material, gradient } = makeToonMaterial(spec);
@@ -1249,11 +1259,11 @@ const experiment: ExperimentModule = {
       depthWrite: false
     });
     const hoverMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 0.04, 1),
+      new THREE.BoxGeometry(TILE_SIZE, 0.04 * TILE_SIZE, TILE_SIZE),
       hoverMaterial
     );
     hoverMesh.visible = false;
-    hoverMesh.position.y = 0.03;
+    hoverMesh.position.y = 0.03 * TILE_SIZE;
     scene.add(hoverMesh);
 
     const rectPreviewMaterial = new THREE.MeshBasicMaterial({
@@ -1263,20 +1273,20 @@ const experiment: ExperimentModule = {
       depthWrite: false
     });
     const rectPreviewMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 0.03, 1),
+      new THREE.BoxGeometry(TILE_SIZE, 0.03 * TILE_SIZE, TILE_SIZE),
       rectPreviewMaterial
     );
     rectPreviewMesh.visible = false;
-    rectPreviewMesh.position.y = 0.035;
+    rectPreviewMesh.position.y = 0.035 * TILE_SIZE;
     scene.add(rectPreviewMesh);
 
     const playerMesh = new THREE.Group();
     const playerBody = new THREE.Mesh(playerBodyGeometry, playerBodyMaterial);
-    playerBody.position.y = 0.5;
+    playerBody.position.y = 0.5 * TILE_SIZE;
     playerMesh.add(playerBody);
 
     const playerHead = new THREE.Mesh(playerHeadGeometry, playerHeadMaterial);
-    playerHead.position.y = 1.15;
+    playerHead.position.y = 1.15 * TILE_SIZE;
     playerMesh.add(playerHead);
 
     gameplayGroup.add(playerMesh);
@@ -1574,7 +1584,7 @@ const experiment: ExperimentModule = {
       rectPreviewMesh.scale.set(widthCells, 1, heightCells);
       rectPreviewMesh.position.set(
         toWorldX(bounds.minX + (widthCells - 1) * 0.5),
-        0.035,
+        0.035 * TILE_SIZE,
         toWorldZ(bounds.minY + (heightCells - 1) * 0.5)
       );
       rectPreviewMaterial.color.setHex(RECT_TOOL_COLORS[mode]);
@@ -1662,7 +1672,7 @@ const experiment: ExperimentModule = {
           }
 
           const floorTile = new THREE.Mesh(floorGeometry, terrainMaterial);
-          floorTile.position.set(toWorldX(x), 0.03, toWorldZ(y));
+          floorTile.position.set(toWorldX(x), 0.03 * TILE_SIZE, toWorldZ(y));
           floorGroup.add(floorTile);
         }
       }
@@ -1765,7 +1775,7 @@ const experiment: ExperimentModule = {
         hoverMesh.visible = true;
         hoverMesh.scale.set(1, 1, 1);
         hoverMesh.rotation.y = 0;
-        hoverMesh.position.set(toWorldX(cell.x), 0.03, toWorldZ(cell.y));
+        hoverMesh.position.set(toWorldX(cell.x), 0.03 * TILE_SIZE, toWorldZ(cell.y));
         hoverMaterial.color.setHex(RECT_TOOL_COLORS[rectMode]);
         return;
       }
@@ -1784,7 +1794,7 @@ const experiment: ExperimentModule = {
         hoverMesh.visible = true;
         hoverMesh.scale.set(1, 1, 1);
         hoverMesh.rotation.y = 0;
-        hoverMesh.position.set(toWorldX(cell.x), 0.03, toWorldZ(cell.y));
+        hoverMesh.position.set(toWorldX(cell.x), 0.03 * TILE_SIZE, toWorldZ(cell.y));
         return;
       }
 
@@ -1795,10 +1805,10 @@ const experiment: ExperimentModule = {
       }
 
       hoverMesh.visible = true;
-      hoverMesh.scale.set(1, 1, 0.2);
+      hoverMesh.scale.set(1, 1, 0.2 * TILE_SIZE);
       hoverMesh.position.set(
         (toWorldNodeX(edge.ax) + toWorldNodeX(edge.bx)) * 0.5,
-        0.03,
+        0.03 * TILE_SIZE,
         (toWorldNodeZ(edge.ay) + toWorldNodeZ(edge.by)) * 0.5
       );
       hoverMesh.rotation.y = edge.ay !== edge.by ? Math.PI * 0.5 : 0;

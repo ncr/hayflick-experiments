@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import {
+  LEVEL_EDITOR_PIXELS_PER_UNIT_Y,
+  LEVEL_EDITOR_WORLD_UNIT
+} from "./constants";
 
 export type EditorStructureDoorState = "open" | "closed";
 
@@ -34,14 +38,15 @@ export type EditorStructureMeshKit = {
   dispose: () => void;
 };
 
-const WALL_HEIGHT = 2.8;
-const WALL_THICKNESS = 0.18;
-const WALL_BLOCK_EDGE_OFFSET = 0.4;
-const WALL_BLOCK_CORNER_OFFSET = 0.5;
+const WALL_HEIGHT = 2.8 * LEVEL_EDITOR_WORLD_UNIT;
+const WALL_THICKNESS = 0.18 * LEVEL_EDITOR_WORLD_UNIT;
+const WALL_BLOCK_HALF_SPAN = LEVEL_EDITOR_WORLD_UNIT * 0.5;
+const WALL_BLOCK_EDGE_OFFSET = WALL_BLOCK_HALF_SPAN - WALL_THICKNESS * 0.5;
+const WALL_BLOCK_CORNER_OFFSET = WALL_BLOCK_HALF_SPAN;
 const WALL_STRIPE_COLOR = 0xc45a12;
-const WALL_STRIPE_PIXELS_PER_METER_Y = 16;
-const WALL_STRIPE_START_PIXEL_Y = 17;
-const WALL_STRIPE_END_PIXEL_Y = 21;
+const WALL_STRIPE_PIXELS_PER_UNIT_Y = LEVEL_EDITOR_PIXELS_PER_UNIT_Y;
+const WALL_STRIPE_START_PIXEL_Y = 13;
+const WALL_STRIPE_END_PIXEL_Y = 17;
 
 type StripeBand = {
   color: number;
@@ -215,11 +220,11 @@ function applyRetroDither(
 
     if (stripe) {
       shader.fragmentShader = shader.fragmentShader.replace(
-        "#include <output_fragment>",
+        "#include <opaque_fragment>",
         `
         float stripeMask = step(uStripeMinY, vStripeWorldY) * (1.0 - step(uStripeMaxY, vStripeWorldY));
         outgoingLight = mix(outgoingLight, uStripeColor, stripeMask);
-        #include <output_fragment>
+        #include <opaque_fragment>
         `
       );
     }
@@ -267,8 +272,8 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
 
   const stripeBand: StripeBand = {
     color: WALL_STRIPE_COLOR,
-    minY: WALL_STRIPE_START_PIXEL_Y / WALL_STRIPE_PIXELS_PER_METER_Y,
-    maxY: WALL_STRIPE_END_PIXEL_Y / WALL_STRIPE_PIXELS_PER_METER_Y
+    minY: WALL_STRIPE_START_PIXEL_Y / WALL_STRIPE_PIXELS_PER_UNIT_Y,
+    maxY: WALL_STRIPE_END_PIXEL_Y / WALL_STRIPE_PIXELS_PER_UNIT_Y
   };
 
   const wallMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.45, 64, stripeBand);
@@ -301,11 +306,30 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
 function createGeometries(): EditorStructureGeometries {
   const nodeWidth = WALL_THICKNESS;
   return {
-    wallCore: new THREE.BoxGeometry(1, WALL_HEIGHT, WALL_THICKNESS),
-    windowLower: new THREE.BoxGeometry(1, 0.92, WALL_THICKNESS),
-    windowUpper: new THREE.BoxGeometry(1, 0.92, WALL_THICKNESS),
-    windowGlass: new THREE.PlaneGeometry(0.86, 0.86),
-    doorLeaf: new THREE.BoxGeometry(0.88, 2.2, 0.08),
+    wallCore: new THREE.BoxGeometry(
+      LEVEL_EDITOR_WORLD_UNIT,
+      WALL_HEIGHT,
+      WALL_THICKNESS
+    ),
+    windowLower: new THREE.BoxGeometry(
+      LEVEL_EDITOR_WORLD_UNIT,
+      0.92 * LEVEL_EDITOR_WORLD_UNIT,
+      WALL_THICKNESS
+    ),
+    windowUpper: new THREE.BoxGeometry(
+      LEVEL_EDITOR_WORLD_UNIT,
+      0.92 * LEVEL_EDITOR_WORLD_UNIT,
+      WALL_THICKNESS
+    ),
+    windowGlass: new THREE.PlaneGeometry(
+      0.86 * LEVEL_EDITOR_WORLD_UNIT,
+      0.86 * LEVEL_EDITOR_WORLD_UNIT
+    ),
+    doorLeaf: new THREE.BoxGeometry(
+      0.88 * LEVEL_EDITOR_WORLD_UNIT,
+      2.2 * LEVEL_EDITOR_WORLD_UNIT,
+      0.08 * LEVEL_EDITOR_WORLD_UNIT
+    ),
     nodeCore: new THREE.BoxGeometry(nodeWidth, WALL_HEIGHT, nodeWidth)
   };
 }
@@ -350,10 +374,14 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     const root = new THREE.Group();
 
     const leafPivot = new THREE.Group();
-    leafPivot.position.set(-0.44, 0, 0);
+    leafPivot.position.set(-0.44 * LEVEL_EDITOR_WORLD_UNIT, 0, 0);
 
     const leaf = new THREE.Mesh(geometries.doorLeaf, materials.door);
-    leaf.position.set(0.44, 1.1, 0);
+    leaf.position.set(
+      0.44 * LEVEL_EDITOR_WORLD_UNIT,
+      1.1 * LEVEL_EDITOR_WORLD_UNIT,
+      0
+    );
     leafPivot.add(leaf);
 
     root.add(leafPivot);

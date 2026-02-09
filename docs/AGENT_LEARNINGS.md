@@ -382,3 +382,16 @@ Preventive checklist:
 - Render decorative bands procedurally in the same material shader as the base mesh when possible.
 - Align stripe start/end to explicit pixel-grid boundaries (for this project: 16 px/m vertical).
 - Avoid overlapping coplanar detail meshes for large repeated surfaces.
+
+## 2026-02-09 - Toon shader hook mismatch caused procedural stripe to silently disappear
+Root cause:
+- Stripe injection patched `#include <output_fragment>`, but `MeshToonMaterial` in this Three.js version uses `#include <opaque_fragment>`.
+- The replace no-op left walls fully unmodified (uniforms existed, stripe logic never executed).
+
+Detection signal:
+- User reported walls stayed plain gray after shader migration.
+- Local test with `ShaderLib.toon.fragmentShader` confirmed missing `output_fragment` include.
+
+Preventive checklist:
+- Validate chunk hook names against `THREE.ShaderLib.toon` for the pinned Three.js version before patching.
+- Add a unit test that executes `onBeforeCompile` with Toon-like shader strings and asserts the expected hook replacement.

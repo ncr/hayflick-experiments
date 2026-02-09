@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { createEditorStructureMeshKit, setDoorVisualOpen } from "./structure-meshes";
 
@@ -25,6 +26,38 @@ describe("structure meshes", () => {
     expect(door.leafPivot.rotation.y).toBe(0);
     setDoorVisualOpen(door, true);
     expect(door.leafPivot.rotation.y).toBe(-Math.PI * 0.5);
+
+    kit.dispose();
+  });
+
+  it("injects stripe shader logic into toon materials using opaque fragment hook", () => {
+    const kit = createEditorStructureMeshKit();
+    const wall = kit.createWallSegment();
+    const wallCore = wall.children[0] as THREE.Mesh;
+    const material = wallCore.material as THREE.MeshToonMaterial;
+
+    const shader = {
+      uniforms: {},
+      vertexShader: `
+        #include <common>
+        #include <begin_vertex>
+      `,
+      fragmentShader: `
+        #include <gradientmap_pars_fragment>
+        #include <lights_toon_pars_fragment>
+        #include <opaque_fragment>
+      `
+    };
+
+    material.onBeforeCompile(
+      shader as never,
+      {} as never
+    );
+
+    expect(shader.vertexShader).toContain("vStripeWorldY");
+    expect(shader.fragmentShader).toContain("uStripeColor");
+    expect(shader.fragmentShader).toContain("outgoingLight = mix(outgoingLight, uStripeColor, stripeMask);");
+    expect(shader.fragmentShader).toContain("#include <opaque_fragment>");
 
     kit.dispose();
   });
