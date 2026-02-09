@@ -498,3 +498,15 @@ Preventive checklist:
 - Use a tiny junction arm reach overlap epsilon (millimeter-scale) for seam closure.
 - Pair overlap with a tiny cap height bias so overlap does not reintroduce coplanar z-fighting.
 - Keep a mesh test that asserts corner cap reach is at least half-tile.
+
+## 2026-02-09 - Pixel-art seam closure needs overlap sized to render pixel, not tiny metric epsilon
+Root cause:
+- Initial seam overlap was sub-centimeter, smaller than one rendered "big pixel" in the fixed low-res pipeline.
+- Cracks remained visible because the overlap did not survive quantized rasterization.
+
+Detection signal:
+- User still saw L-corner/tee gaps after z-fighting was fixed and tiny overlap was added.
+
+Preventive checklist:
+- Derive seam overlap from pixel density constants (`worldUnit / pixelsPerUnitX`) instead of arbitrary tiny epsilons.
+- Keep overlap explicit in comments/tests so it stays tied to pixel-scale rendering assumptions.

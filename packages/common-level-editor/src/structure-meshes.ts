@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import {
+  LEVEL_EDITOR_PIXELS_PER_UNIT_X,
   LEVEL_EDITOR_PIXELS_PER_UNIT_Y,
   LEVEL_EDITOR_WORLD_UNIT
 } from "./constants";
@@ -63,7 +64,10 @@ const WALL_STRIPE_START_PIXEL_Y = 13;
 const WALL_STRIPE_END_PIXEL_Y = 17;
 
 const JOIN_CAP_HEIGHT_EPSILON = LEVEL_EDITOR_WORLD_UNIT * 0.0025;
-const JOIN_CAP_REACH_EPSILON = LEVEL_EDITOR_WORLD_UNIT * 0.002;
+// Use one "big pixel" of overlap (128 cm / 32 px = 4 cm) to hide raster
+// cracks between trimmed segments and junction arms in low-res upscaled render.
+const JOIN_CAP_REACH_EPSILON =
+  LEVEL_EDITOR_WORLD_UNIT / LEVEL_EDITOR_PIXELS_PER_UNIT_X;
 const JOIN_MASK_NORTH = 1;
 const JOIN_MASK_EAST = 2;
 const JOIN_MASK_SOUTH = 4;

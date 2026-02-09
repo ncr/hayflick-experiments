@@ -139,8 +139,9 @@ describe("structure meshes", () => {
     const bounds = new THREE.Box3().setFromObject(corner);
 
     // 1.28 m tile => half-tile node reach is 0.64 m.
-    expect(bounds.max.x).toBeGreaterThanOrEqual(0.64);
-    expect(bounds.min.z).toBeLessThanOrEqual(-0.64);
+    // We intentionally overlap by one big pixel (~0.04 m) for seam safety.
+    expect(bounds.max.x).toBeGreaterThanOrEqual(0.68);
+    expect(bounds.min.z).toBeLessThanOrEqual(-0.68);
 
     kit.dispose();
   });
