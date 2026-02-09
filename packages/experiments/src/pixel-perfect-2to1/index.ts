@@ -33,10 +33,7 @@ const experiment: ExperimentModule = {
 
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     const cameraTarget = new THREE.Vector3(0, 0, 0);
-    const screenRightWorld = new THREE.Vector3();
-    const screenDownWorld = new THREE.Vector3();
-    const cameraRight = new THREE.Vector3();
-    const cameraUp = new THREE.Vector3();
+    const baseTarget = new THREE.Vector3(0, 0, 0);
     const dragDelta = new THREE.Vector2();
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.65);
@@ -136,7 +133,7 @@ const experiment: ExperimentModule = {
         uniform vec2 uLowResolution;
         varying vec2 vUv;
         void main() {
-          vec2 pixel = floor(vUv * uLowResolution);
+          vec2 pixel = floor(vUv * uLowResolution + 0.0001);
           vec2 uv = (pixel + 0.5) / uLowResolution;
           gl_FragColor = texture2D(uSource, uv);
         }
@@ -194,10 +191,15 @@ const experiment: ExperimentModule = {
     let padSize = 0;
     let panScreenX = 0;
     let panScreenY = 0;
+    let panPixelX = 0;
+    let panPixelY = 0;
     let keyPanX = 0;
     let keyPanY = 0;
     let keyPanActive = false;
     let lastYawIndex = Number.NaN;
+    let needsBaseAlign = true;
+    let baseProjectionOffsetX = 0;
+    let baseProjectionOffsetY = 0;
 
     const updateCameraProjection = (nextWidth: number, nextHeight: number) => {
       const aspect = nextWidth / nextHeight;
@@ -234,6 +236,8 @@ const experiment: ExperimentModule = {
       renderer.domElement.style.height = `${targetHeight + padSize * 2}px`;
       updateCameraProjection(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT);
       lastYawIndex = Number.NaN;
+      panScreenX = 0;
+      panScreenY = 0;
     };
 
     resize(width, height);
@@ -254,11 +258,11 @@ const experiment: ExperimentModule = {
       const stepY = Math.trunc(panScreenY / renderScale);
       if (stepX !== 0) {
         panScreenX -= stepX * renderScale;
-        cameraTarget.addScaledVector(screenRightWorld, -stepX);
+        panPixelX -= stepX;
       }
       if (stepY !== 0) {
         panScreenY -= stepY * renderScale;
-        cameraTarget.addScaledVector(screenDownWorld, -stepY);
+        panPixelY -= stepY;
       }
     };
 
@@ -306,9 +310,13 @@ const experiment: ExperimentModule = {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.code === "KeyQ") {
         yawIndex -= 1;
+        lastYawIndex = Number.NaN;
+        needsBaseAlign = true;
         event.preventDefault();
       } else if (event.code === "KeyE") {
         yawIndex += 1;
+        lastYawIndex = Number.NaN;
+        needsBaseAlign = true;
         event.preventDefault();
       } else if (event.code === "KeyW") {
         keyPanY = -1;
@@ -346,21 +354,18 @@ const experiment: ExperimentModule = {
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
 
-    const updateScreenToWorld = () => {
-      const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
-      const halfHeight = ORTHO_HEIGHT * 0.5;
-      const halfWidth = halfHeight * aspect;
-      const unitRight = (halfWidth * 2) / FIXED_RENDER_WIDTH;
-      const unitDown = (halfHeight * 2) / FIXED_RENDER_HEIGHT;
-
-      cameraRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-      cameraUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
-
-      screenRightWorld.copy(cameraRight).multiplyScalar(unitRight);
-      screenDownWorld.copy(cameraUp).multiplyScalar(-unitDown);
+    const alignBaseToPixelGrid = () => {
+      const projected = baseTarget.clone().project(camera);
+      const pixelX = (projected.x * 0.5 + 0.5) * FIXED_RENDER_WIDTH;
+      const pixelY = (1 - (projected.y * 0.5 + 0.5)) * FIXED_RENDER_HEIGHT;
+      const targetX = Math.round(pixelX - 0.5) + 0.5;
+      const targetY = Math.round(pixelY - 0.5) + 0.5;
+      baseProjectionOffsetX = targetX - pixelX;
+      baseProjectionOffsetY = targetY - pixelY;
     };
 
     let raf = 0;
+    let needsBaseAlign = true;
     const render = () => {
       const yaw = CAMERA_YAW + yawIndex * (Math.PI * 0.5);
 
@@ -371,15 +376,29 @@ const experiment: ExperimentModule = {
         Math.cos(yaw) * horizontal
       );
 
+      if (lastYawIndex !== yawIndex) {
+        lastYawIndex = yawIndex;
+        needsBaseAlign = true;
+      }
+
+      cameraTarget.copy(baseTarget);
       camera.position.copy(cameraTarget).addScaledVector(dir, CAMERA_DISTANCE);
       camera.lookAt(cameraTarget);
       camera.updateProjectionMatrix();
       camera.updateMatrixWorld(true);
 
-      if (lastYawIndex !== yawIndex) {
-        updateScreenToWorld();
-        lastYawIndex = yawIndex;
+      if (needsBaseAlign) {
+        alignBaseToPixelGrid();
+        needsBaseAlign = false;
       }
+
+      const shiftX =
+        (2 * (baseProjectionOffsetX + panPixelX)) / FIXED_RENDER_WIDTH;
+      const shiftY =
+        (-2 * (baseProjectionOffsetY + panPixelY)) / FIXED_RENDER_HEIGHT;
+      camera.projectionMatrix.elements[12] += shiftX;
+      camera.projectionMatrix.elements[13] += shiftY;
+      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
 
       renderer.setRenderTarget(hiTarget);
       renderer.clear();
