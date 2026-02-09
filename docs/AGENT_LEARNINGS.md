@@ -327,3 +327,16 @@ Detection signal:
 Preventive checklist:
 - For local e2e verification after source edits, prefer running against a live `pnpm --filter @apps/hub dev --host 127.0.0.1 --port 4173 --strictPort` server.
 - If using `preview`, run a fresh build first so tests consume current code.
+
+## 2026-02-09 - Pixel-stable pan needs subpixel compensation, not only camera snapping
+Root cause:
+- `editor-game-ecs` applied pan directly to camera target and relied on world snapping.
+- Without retaining subpixel drag remainder in screen space, panning produced visible jump/shimmer compared to `pixel-perfect-2to1`.
+
+Detection signal:
+- User reported that panning in `pixel-perfect-2to1` was stable but `editor-game-ecs` shimmered and jumped.
+
+Preventive checklist:
+- For pixel-perfect pan, convert drag/wheel deltas into whole low-res pixel camera steps and keep leftover as CSS canvas translation remainder.
+- Preserve remainder across resize by normalizing with render scale.
+- Reuse the same pan model across experiments that claim fixed-grid pixel stability.

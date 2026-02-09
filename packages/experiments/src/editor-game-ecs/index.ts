@@ -1356,6 +1356,9 @@ const experiment: ExperimentModule = {
         yawIndex = 0;
         zoomTarget = 1.2;
         cameraTarget.set(0, 0, 0);
+        panScreenX = 0;
+        panScreenY = 0;
+        updateCanvasTransform();
         syncHud();
       },
       onClearStructures(): void {
@@ -1459,6 +1462,9 @@ const experiment: ExperimentModule = {
     let yawCurrent = CAMERA_BASE_YAW;
     let zoomTarget = 1.2;
     let zoomCurrent = zoomTarget;
+    let renderScale = 1;
+    let panScreenX = 0;
+    let panScreenY = 0;
 
     const panRight = new THREE.Vector3();
     const panForward = new THREE.Vector3();
@@ -2026,7 +2032,28 @@ const experiment: ExperimentModule = {
       camera.updateProjectionMatrix();
     }
 
+    function updateCanvasTransform(): void {
+      renderer.domElement.style.transform =
+        `translate(-50%, -50%) translate(${panScreenX}px, ${panScreenY}px)`;
+    }
+
     function applyPanByPixels(deltaX: number, deltaY: number): void {
+      if (renderScale <= 0) {
+        return;
+      }
+      panScreenX += deltaX;
+      panScreenY += deltaY;
+
+      const stepX = Math.trunc(panScreenX / renderScale);
+      const stepY = Math.trunc(panScreenY / renderScale);
+      if (stepX === 0 && stepY === 0) {
+        updateCanvasTransform();
+        return;
+      }
+
+      panScreenX -= stepX * renderScale;
+      panScreenY -= stepY * renderScale;
+
       const worldUnitsPerPixel =
         ORTHO_HEIGHT / zoomCurrent / FIXED_RENDER_HEIGHT;
 
@@ -2039,9 +2066,10 @@ const experiment: ExperimentModule = {
       panForward.normalize();
 
       panDelta.set(0, 0, 0);
-      panDelta.addScaledVector(panRight, -deltaX * worldUnitsPerPixel);
-      panDelta.addScaledVector(panForward, deltaY * worldUnitsPerPixel);
+      panDelta.addScaledVector(panRight, -stepX * worldUnitsPerPixel);
+      panDelta.addScaledVector(panForward, stepY * worldUnitsPerPixel);
       cameraTarget.add(panDelta);
+      updateCanvasTransform();
     }
 
     function snapZoom(value: number): number {
@@ -2707,10 +2735,18 @@ const experiment: ExperimentModule = {
         )
       );
       const scale = baseScale * OUTPUT_SCALE_MULTIPLIER;
+      if (scale !== renderScale && renderScale > 0) {
+        const normalizedPanX = panScreenX / renderScale;
+        const normalizedPanY = panScreenY / renderScale;
+        panScreenX = normalizedPanX * scale;
+        panScreenY = normalizedPanY * scale;
+      }
+      renderScale = scale;
       const targetWidth = FIXED_RENDER_WIDTH * scale;
       const targetHeight = FIXED_RENDER_HEIGHT * scale;
       renderer.domElement.style.width = `${targetWidth}px`;
       renderer.domElement.style.height = `${targetHeight}px`;
+      updateCanvasTransform();
       updateCameraProjection();
     }
 
