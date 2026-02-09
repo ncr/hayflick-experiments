@@ -8,6 +8,7 @@ import { meta as editorGameEcsMeta } from "./editor-game-ecs/meta";
 import { meta as levelBuilderMeta } from "./level-builder/meta";
 import { meta as physicsRapierMeta } from "./physics-rapier/meta";
 import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
+import { meta as pixelPerfect2to1Meta } from "./pixel-perfect-2to1/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
@@ -30,6 +31,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...pixelOutlinePostMeta,
     load: () => import("./pixel-outline-post/index")
+  },
+  {
+    ...pixelPerfect2to1Meta,
+    load: () => import("./pixel-perfect-2to1/index")
   },
   {
     ...shaderPlaygroundMeta,
