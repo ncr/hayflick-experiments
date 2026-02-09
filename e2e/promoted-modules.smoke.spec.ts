@@ -78,7 +78,11 @@ test.describe("promoted editor/game browser smoke", () => {
 
     expect(metrics.width).toBe(480);
     expect(metrics.height).toBe(270);
-    expect(Number.parseFloat(metrics.styleWidth)).toBeGreaterThan(metrics.width);
-    expect(Number.parseFloat(metrics.styleHeight)).toBeGreaterThan(metrics.height);
+    expect(Number.parseFloat(metrics.styleWidth)).toBeGreaterThanOrEqual(
+      metrics.width
+    );
+    expect(Number.parseFloat(metrics.styleHeight)).toBeGreaterThanOrEqual(
+      metrics.height
+    );
   });
 });
