@@ -40,8 +40,8 @@ const WALL_BLOCK_EDGE_OFFSET = 0.4;
 const WALL_BLOCK_CORNER_OFFSET = 0.5;
 const WALL_STRIPE_COLOR = 0xc45a12;
 const WALL_STRIPE_PIXELS_PER_METER_Y = 16;
-const WALL_STRIPE_START_PIXEL_Y = 18;
-const WALL_STRIPE_END_PIXEL_Y = 20;
+const WALL_STRIPE_START_PIXEL_Y = 17;
+const WALL_STRIPE_END_PIXEL_Y = 21;
 
 type StripeBand = {
   color: number;
@@ -215,11 +215,11 @@ function applyRetroDither(
 
     if (stripe) {
       shader.fragmentShader = shader.fragmentShader.replace(
-        "gl_FragColor = vec4( outgoingLight, diffuseColor.a );",
+        "#include <output_fragment>",
         `
         float stripeMask = step(uStripeMinY, vStripeWorldY) * (1.0 - step(uStripeMaxY, vStripeWorldY));
-        vec3 stripeLit = mix(outgoingLight, uStripeColor, stripeMask);
-        gl_FragColor = vec4( stripeLit, diffuseColor.a );
+        outgoingLight = mix(outgoingLight, uStripeColor, stripeMask);
+        #include <output_fragment>
         `
       );
     }
