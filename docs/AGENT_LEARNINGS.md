@@ -459,3 +459,15 @@ Detection signal:
 Preventive checklist:
 - When arms are modeled from a center square, compute extension as `targetReach - halfThickness`.
 - Keep one explicit constant for target centerline reach (half tile) and derive polygon coordinates from it.
+
+## 2026-02-09 - Junction mask rotation signs were inverted for ±90° cases
+Root cause:
+- Corner/T mask decoding used the wrong yaw sign for 90-degree rotations, mirroring some junction shapes into incorrect quadrants.
+- This produced apparent corner gaps/overlaps even when mesh extents were otherwise correct.
+
+Detection signal:
+- User screenshot still showed incorrect corners after reach fix; affected nodes matched rotated mask cases.
+
+Preventive checklist:
+- Add explicit orientation tests for representative corner and tee masks (NE, ES, WN, etc.).
+- Keep a documented base orientation and derive all rotated variants against that reference.

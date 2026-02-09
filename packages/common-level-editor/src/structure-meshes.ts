@@ -305,19 +305,19 @@ function decodeJoinMask(mask: number): { kind: JoinCapKind; yaw: number } {
     case JOIN_MASK_NORTH | JOIN_MASK_EAST:
       return { kind: "corner", yaw: 0 };
     case JOIN_MASK_EAST | JOIN_MASK_SOUTH:
-      return { kind: "corner", yaw: Math.PI * 0.5 };
+      return { kind: "corner", yaw: -Math.PI * 0.5 };
     case JOIN_MASK_SOUTH | JOIN_MASK_WEST:
       return { kind: "corner", yaw: Math.PI };
     case JOIN_MASK_WEST | JOIN_MASK_NORTH:
-      return { kind: "corner", yaw: -Math.PI * 0.5 };
+      return { kind: "corner", yaw: Math.PI * 0.5 };
     case JOIN_MASK_NORTH | JOIN_MASK_EAST | JOIN_MASK_WEST:
       return { kind: "tee", yaw: 0 };
     case JOIN_MASK_NORTH | JOIN_MASK_EAST | JOIN_MASK_SOUTH:
-      return { kind: "tee", yaw: Math.PI * 0.5 };
+      return { kind: "tee", yaw: -Math.PI * 0.5 };
     case JOIN_MASK_EAST | JOIN_MASK_SOUTH | JOIN_MASK_WEST:
       return { kind: "tee", yaw: Math.PI };
     case JOIN_MASK_NORTH | JOIN_MASK_SOUTH | JOIN_MASK_WEST:
-      return { kind: "tee", yaw: -Math.PI * 0.5 };
+      return { kind: "tee", yaw: Math.PI * 0.5 };
     case JOIN_MASK_NORTH | JOIN_MASK_EAST | JOIN_MASK_SOUTH | JOIN_MASK_WEST:
       return { kind: "cross", yaw: 0 };
     default:

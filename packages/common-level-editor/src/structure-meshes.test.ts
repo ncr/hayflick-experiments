@@ -87,4 +87,27 @@ describe("structure meshes", () => {
 
     kit.dispose();
   });
+
+  it("orients corner and tee masks to the expected world directions", () => {
+    const kit = createEditorStructureMeshKit();
+    const cornerNE = kit.createJoinPost(1 | 2);
+    const cornerES = kit.createJoinPost(2 | 4);
+    const cornerWN = kit.createJoinPost(8 | 1);
+    const teeNES = kit.createJoinPost(1 | 2 | 4);
+    const teeNSW = kit.createJoinPost(1 | 4 | 8);
+
+    const cornerNEYaw = (cornerNE.children[0] as THREE.Mesh | undefined)?.rotation.y ?? NaN;
+    const cornerESYaw = (cornerES.children[0] as THREE.Mesh | undefined)?.rotation.y ?? NaN;
+    const cornerWNYaw = (cornerWN.children[0] as THREE.Mesh | undefined)?.rotation.y ?? NaN;
+    const teeNESYaw = (teeNES.children[0] as THREE.Mesh | undefined)?.rotation.y ?? NaN;
+    const teeNSWYaw = (teeNSW.children[0] as THREE.Mesh | undefined)?.rotation.y ?? NaN;
+
+    expect(cornerNEYaw).toBeCloseTo(0, 6);
+    expect(cornerESYaw).toBeCloseTo(-Math.PI * 0.5, 6);
+    expect(cornerWNYaw).toBeCloseTo(Math.PI * 0.5, 6);
+    expect(teeNESYaw).toBeCloseTo(-Math.PI * 0.5, 6);
+    expect(teeNSWYaw).toBeCloseTo(Math.PI * 0.5, 6);
+
+    kit.dispose();
+  });
 });
