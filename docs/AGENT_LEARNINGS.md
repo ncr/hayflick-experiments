@@ -368,3 +368,17 @@ Preventive checklist:
 - Derive pan world vectors from camera right/up with orthographic frustum-per-pixel units (`screenRightWorld`, `screenDownWorld`).
 - Keep canvas anchor integer in CSS (`left/top` from floored offsets), then apply integer pan translation.
 - For parity bugs, copy the known-good math path verbatim before optimizing.
+
+## 2026-02-09 - Decorative stripe meshes on walls produced depth fighting artifacts
+Root cause:
+- Wall/door/join stripes were separate thin box meshes positioned nearly coplanar with base surfaces.
+- Small camera/pixel phase shifts caused z-fighting shimmer in the promoted wall kit.
+
+Detection signal:
+- User reported dark wall stripes looked unstable and suspected z-fighting.
+- Visual artifacts were strongest during pan/zoom despite otherwise stable pixel rendering.
+
+Preventive checklist:
+- Render decorative bands procedurally in the same material shader as the base mesh when possible.
+- Align stripe start/end to explicit pixel-grid boundaries (for this project: 16 px/m vertical).
+- Avoid overlapping coplanar detail meshes for large repeated surfaces.

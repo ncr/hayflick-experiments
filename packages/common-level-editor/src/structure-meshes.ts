@@ -13,7 +13,6 @@ type EditorStructureMaterials = {
   windowGlass: THREE.MeshToonMaterial;
   door: THREE.MeshToonMaterial;
   joint: THREE.MeshToonMaterial;
-  stripe: THREE.MeshToonMaterial;
 };
 
 type EditorStructureGeometries = {
@@ -22,9 +21,6 @@ type EditorStructureGeometries = {
   windowUpper: THREE.BoxGeometry;
   windowGlass: THREE.PlaneGeometry;
   doorLeaf: THREE.BoxGeometry;
-  wallStripe: THREE.BoxGeometry;
-  doorStripe: THREE.BoxGeometry;
-  nodeStripe: THREE.BoxGeometry;
   nodeCore: THREE.BoxGeometry;
 };
 
@@ -42,6 +38,16 @@ const WALL_HEIGHT = 2.8;
 const WALL_THICKNESS = 0.18;
 const WALL_BLOCK_EDGE_OFFSET = 0.4;
 const WALL_BLOCK_CORNER_OFFSET = 0.5;
+const WALL_STRIPE_COLOR = 0xc45a12;
+const WALL_STRIPE_PIXELS_PER_METER_Y = 16;
+const WALL_STRIPE_START_PIXEL_Y = 18;
+const WALL_STRIPE_END_PIXEL_Y = 20;
+
+type StripeBand = {
+  color: number;
+  minY: number;
+  maxY: number;
+};
 
 function makeGradientMap(bands: number): THREE.DataTexture {
   const steps = Math.max(2, bands);
@@ -72,7 +78,8 @@ function applyRetroDither(
   specularStrength: number,
   specularShininess: number,
   specularBands: number,
-  specularDitherStrength: number
+  specularDitherStrength: number,
+  stripe: StripeBand | null = null
 ): void {
   material.dithering = false;
   material.onBeforeCompile = (shader) => {
@@ -83,6 +90,30 @@ function applyRetroDither(
     shader.uniforms.uSpecularShininess = { value: specularShininess };
     shader.uniforms.uSpecularBands = { value: Math.max(2.0, specularBands) };
     shader.uniforms.uSpecularDitherStrength = { value: specularDitherStrength };
+    if (stripe) {
+      shader.uniforms.uStripeColor = {
+        value: new THREE.Color(stripe.color)
+      };
+      shader.uniforms.uStripeMinY = { value: stripe.minY };
+      shader.uniforms.uStripeMaxY = { value: stripe.maxY };
+    }
+
+    if (stripe) {
+      shader.vertexShader = shader.vertexShader.replace(
+        "#include <common>",
+        `
+        #include <common>
+        varying float vStripeWorldY;
+        `
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        "#include <begin_vertex>",
+        `
+        #include <begin_vertex>
+        vStripeWorldY = (modelMatrix * vec4(transformed, 1.0)).y;
+        `
+      );
+    }
 
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <gradientmap_pars_fragment>",
@@ -98,6 +129,7 @@ function applyRetroDither(
       uniform float uSpecularShininess;
       uniform float uSpecularBands;
       uniform float uSpecularDitherStrength;
+      ${stripe ? "uniform vec3 uStripeColor;\nuniform float uStripeMinY;\nuniform float uStripeMaxY;\nvarying float vStripeWorldY;" : ""}
 
       float toonBayer4x4(vec2 p) {
         vec2 q = mod(floor(p), 4.0);
@@ -181,9 +213,24 @@ function applyRetroDither(
       `
     );
 
+    if (stripe) {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        "gl_FragColor = vec4( outgoingLight, diffuseColor.a );",
+        `
+        float stripeMask = step(uStripeMinY, vStripeWorldY) * (1.0 - step(uStripeMaxY, vStripeWorldY));
+        vec3 stripeLit = mix(outgoingLight, uStripeColor, stripeMask);
+        gl_FragColor = vec4( stripeLit, diffuseColor.a );
+        `
+      );
+    }
+
   };
-  material.customProgramCacheKey = () =>
-    `retroDither_b${bands.toFixed(2)}_s${strength.toFixed(3)}_spec${specularStrength.toFixed(3)}_sh${specularShininess.toFixed(2)}_sb${specularBands.toFixed(2)}_sd${specularDitherStrength.toFixed(3)}`;
+  material.customProgramCacheKey = () => {
+    const stripeKey = stripe
+      ? `_stripe_${stripe.color.toString(16)}_${stripe.minY.toFixed(4)}_${stripe.maxY.toFixed(4)}`
+      : "_stripe_none";
+    return `retroDither_b${bands.toFixed(2)}_s${strength.toFixed(3)}_spec${specularStrength.toFixed(3)}_sh${specularShininess.toFixed(2)}_sb${specularBands.toFixed(2)}_sd${specularDitherStrength.toFixed(3)}${stripeKey}`;
+  };
   material.needsUpdate = true;
 }
 
@@ -195,7 +242,8 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
     bands: number,
     ditherStrength: number,
     specularStrength: number,
-    specularShininess: number
+    specularShininess: number,
+    stripe: StripeBand | null = null
   ) => {
     const gradientMap = makeGradientMap(bands);
     gradients.push(gradientMap);
@@ -211,16 +259,22 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
       specularStrength,
       specularShininess,
       4,
-      0.0
+      0.0,
+      stripe
     );
     return material;
   };
 
-  const wallMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.45, 64);
+  const stripeBand: StripeBand = {
+    color: WALL_STRIPE_COLOR,
+    minY: WALL_STRIPE_START_PIXEL_Y / WALL_STRIPE_PIXELS_PER_METER_Y,
+    maxY: WALL_STRIPE_END_PIXEL_Y / WALL_STRIPE_PIXELS_PER_METER_Y
+  };
+
+  const wallMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.45, 64, stripeBand);
   const accentMaterial = makeToon(0xe8edf3, 5, 0.0, 0.35, 58);
-  const doorMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.48, 68);
-  const jointMaterial = makeToon(0xf2f4f7, 5, 0.0, 0.4, 60);
-  const stripeMaterial = makeToon(0xc45a12, 4, 0.0, 0.24, 26);
+  const doorMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.48, 68, stripeBand);
+  const jointMaterial = makeToon(0xf2f4f7, 5, 0.0, 0.4, 60, stripeBand);
   const glassGradient = makeGradientMap(4);
   gradients.push(glassGradient);
   const glassMaterial = new THREE.MeshToonMaterial({
@@ -238,8 +292,7 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
       accent: accentMaterial,
       windowGlass: glassMaterial,
       door: doorMaterial,
-      joint: jointMaterial,
-      stripe: stripeMaterial
+      joint: jointMaterial
     },
     gradients
   };
@@ -253,9 +306,6 @@ function createGeometries(): EditorStructureGeometries {
     windowUpper: new THREE.BoxGeometry(1, 0.92, WALL_THICKNESS),
     windowGlass: new THREE.PlaneGeometry(0.86, 0.86),
     doorLeaf: new THREE.BoxGeometry(0.88, 2.2, 0.08),
-    wallStripe: new THREE.BoxGeometry(1, 0.1, WALL_THICKNESS + 0.02),
-    doorStripe: new THREE.BoxGeometry(0.88, 0.1, 0.09),
-    nodeStripe: new THREE.BoxGeometry(nodeWidth + 0.02, 0.1, nodeWidth + 0.02),
     nodeCore: new THREE.BoxGeometry(nodeWidth, WALL_HEIGHT, nodeWidth)
   };
 }
@@ -274,10 +324,6 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     const core = new THREE.Mesh(geometries.wallCore, materials.wall);
     core.position.y = WALL_HEIGHT * 0.5;
     group.add(core);
-
-    const stripe = new THREE.Mesh(geometries.wallStripe, materials.stripe);
-    stripe.position.y = 1.2;
-    group.add(stripe);
 
     return group;
   };
@@ -310,10 +356,6 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     leaf.position.set(0.44, 1.1, 0);
     leafPivot.add(leaf);
 
-    const stripe = new THREE.Mesh(geometries.doorStripe, materials.stripe);
-    stripe.position.set(0.44, 1.2, 0);
-    leafPivot.add(stripe);
-
     root.add(leafPivot);
 
     return { root, leafPivot };
@@ -335,10 +377,6 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     const core = new THREE.Mesh(geometries.nodeCore, materials.wall);
     core.position.y = WALL_HEIGHT * 0.5;
     group.add(core);
-
-    const stripe = new THREE.Mesh(geometries.nodeStripe, materials.stripe);
-    stripe.position.y = 1.2;
-    group.add(stripe);
 
     return group;
   };
