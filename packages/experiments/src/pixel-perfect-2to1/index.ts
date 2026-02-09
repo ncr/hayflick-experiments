@@ -33,6 +33,10 @@ const experiment: ExperimentModule = {
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     const cameraTarget = new THREE.Vector3(0, 0, 0);
     const cameraViewTarget = new THREE.Vector3();
+    const panRight = new THREE.Vector3();
+    const panForward = new THREE.Vector3();
+    const panDelta = new THREE.Vector3();
+    const dragDelta = new THREE.Vector2();
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.65);
     scene.add(ambient);
@@ -148,13 +152,104 @@ const experiment: ExperimentModule = {
     });
     observer.observe(mount);
 
+    let yawIndex = 0;
+    let zoomTarget = 1;
+    let zoomCurrent = 1;
+    let dragActive = false;
+    let lastClientX = 0;
+    let lastClientY = 0;
+
+    const snapZoom = (value: number) => {
+      const pixelsPerUnit = (value * FIXED_RENDER_HEIGHT) / ORTHO_HEIGHT;
+      const snappedPixelsPerUnit = Math.max(
+        PIXEL_SNAP,
+        Math.round(pixelsPerUnit / PIXEL_SNAP) * PIXEL_SNAP
+      );
+      return (snappedPixelsPerUnit * ORTHO_HEIGHT) / FIXED_RENDER_HEIGHT;
+    };
+
+    const applyPan = (deltaX: number, deltaY: number) => {
+      const worldUnitsPerPixel = ORTHO_HEIGHT / zoomCurrent / FIXED_RENDER_HEIGHT;
+      const yaw = CAMERA_YAW + yawIndex * (Math.PI * 0.5);
+      panRight.set(Math.cos(yaw), 0, -Math.sin(yaw));
+      panForward.set(Math.sin(yaw), 0, Math.cos(yaw));
+
+      panDelta.set(0, 0, 0);
+      panDelta.addScaledVector(panRight, -deltaX * worldUnitsPerPixel);
+      panDelta.addScaledVector(panForward, deltaY * worldUnitsPerPixel);
+      cameraTarget.add(panDelta);
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) {
+        return;
+      }
+      dragActive = true;
+      lastClientX = event.clientX;
+      lastClientY = event.clientY;
+      renderer.domElement.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!dragActive) {
+        return;
+      }
+      dragDelta.set(event.clientX - lastClientX, event.clientY - lastClientY);
+      lastClientX = event.clientX;
+      lastClientY = event.clientY;
+      applyPan(dragDelta.x, dragDelta.y);
+      event.preventDefault();
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (!dragActive) {
+        return;
+      }
+      dragActive = false;
+      renderer.domElement.releasePointerCapture(event.pointerId);
+      event.preventDefault();
+    };
+
+    const handleWheel = (event: WheelEvent) => {
+      const delta = event.deltaY;
+      zoomTarget = THREE.MathUtils.clamp(
+        zoomTarget * Math.exp(-delta * 0.0015),
+        0.5,
+        4
+      );
+      zoomTarget = snapZoom(zoomTarget);
+      event.preventDefault();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "KeyQ") {
+        yawIndex -= 1;
+        event.preventDefault();
+      } else if (event.code === "KeyE") {
+        yawIndex += 1;
+        event.preventDefault();
+      }
+    };
+
+    renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.addEventListener("pointermove", handlePointerMove);
+    renderer.domElement.addEventListener("pointerup", handlePointerUp);
+    renderer.domElement.addEventListener("pointercancel", handlePointerUp);
+    renderer.domElement.addEventListener("wheel", handleWheel, { passive: false });
+    window.addEventListener("keydown", handleKeyDown);
+
     let raf = 0;
     const render = () => {
+      const yaw = CAMERA_YAW + yawIndex * (Math.PI * 0.5);
+      zoomCurrent = THREE.MathUtils.lerp(zoomCurrent, zoomTarget, 0.2);
+      zoomCurrent = snapZoom(zoomCurrent);
+
       const horizontal = Math.cos(CAMERA_PITCH);
       const dir = new THREE.Vector3(
-        Math.sin(CAMERA_YAW) * horizontal,
+        Math.sin(yaw) * horizontal,
         Math.sin(CAMERA_PITCH),
-        Math.cos(CAMERA_YAW) * horizontal
+        Math.cos(yaw) * horizontal
       );
 
       cameraViewTarget.copy(cameraTarget);
@@ -167,6 +262,7 @@ const experiment: ExperimentModule = {
 
       camera.position.copy(cameraViewTarget).addScaledVector(dir, CAMERA_DISTANCE);
       camera.lookAt(cameraViewTarget);
+      camera.zoom = zoomCurrent;
       camera.updateProjectionMatrix();
 
       renderer.setRenderTarget(colorTarget);
@@ -185,6 +281,12 @@ const experiment: ExperimentModule = {
     return () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
+      renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+      renderer.domElement.removeEventListener("pointermove", handlePointerMove);
+      renderer.domElement.removeEventListener("pointerup", handlePointerUp);
+      renderer.domElement.removeEventListener("pointercancel", handlePointerUp);
+      renderer.domElement.removeEventListener("wheel", handleWheel);
+      window.removeEventListener("keydown", handleKeyDown);
 
       mount.style.display = "";
       mount.style.alignItems = "";
