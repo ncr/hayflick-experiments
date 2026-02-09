@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRequire } from "module";
+import * as THREE from "three";
 import {
   CAMERA_DISTANCE,
   CAMERA_PITCH,
@@ -9,10 +9,7 @@ import {
   ORTHO_HEIGHT
 } from "./config";
 
-const require = createRequire(import.meta.url);
-const THREE = require("three");
-
-function projectToPixels(camera: any, v: any) {
+function projectToPixels(camera: THREE.OrthographicCamera, v: THREE.Vector3) {
   const p = v.clone().project(camera);
   const x = (p.x * 0.5 + 0.5) * FIXED_RENDER_WIDTH;
   const y = (1 - (p.y * 0.5 + 0.5)) * FIXED_RENDER_HEIGHT;
