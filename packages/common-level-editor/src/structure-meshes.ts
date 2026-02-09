@@ -24,8 +24,8 @@ type EditorStructureGeometries = {
   doorLeaf: THREE.BoxGeometry;
   wallStripe: THREE.BoxGeometry;
   doorStripe: THREE.BoxGeometry;
-  jointStripe: THREE.BoxGeometry;
-  jointColumn: THREE.BoxGeometry;
+  nodeStripe: THREE.BoxGeometry;
+  nodeCore: THREE.BoxGeometry;
 };
 
 export type EditorStructureMeshKit = {
@@ -34,7 +34,7 @@ export type EditorStructureMeshKit = {
   createWindowSegment: () => THREE.Group;
   createDoorVisual: () => EditorDoorVisual;
   createDoorSegment: (state: EditorStructureDoorState) => THREE.Group;
-  createJoinPost: (degree: number) => THREE.Group;
+  createJoinPost: (degree: number, straight?: boolean) => THREE.Group;
   dispose: () => void;
 };
 
@@ -246,6 +246,7 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
 }
 
 function createGeometries(): EditorStructureGeometries {
+  const nodeWidth = WALL_THICKNESS + 0.04;
   return {
     wallCore: new THREE.BoxGeometry(1, WALL_HEIGHT, WALL_THICKNESS),
     windowLower: new THREE.BoxGeometry(1, 0.92, WALL_THICKNESS),
@@ -254,8 +255,8 @@ function createGeometries(): EditorStructureGeometries {
     doorLeaf: new THREE.BoxGeometry(0.88, 2.2, 0.08),
     wallStripe: new THREE.BoxGeometry(1, 0.1, WALL_THICKNESS + 0.02),
     doorStripe: new THREE.BoxGeometry(0.88, 0.1, 0.09),
-    jointStripe: new THREE.BoxGeometry(WALL_THICKNESS + 0.02, 0.1, WALL_THICKNESS + 0.02),
-    jointColumn: new THREE.BoxGeometry(WALL_THICKNESS, WALL_HEIGHT, WALL_THICKNESS)
+    nodeStripe: new THREE.BoxGeometry(nodeWidth + 0.02, 0.1, nodeWidth + 0.02),
+    nodeCore: new THREE.BoxGeometry(nodeWidth, WALL_HEIGHT, nodeWidth)
   };
 }
 
@@ -324,9 +325,22 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     return door.root;
   };
 
-  const createJoinPost = (degree: number): THREE.Group => {
-    void degree;
-    return new THREE.Group();
+  const createJoinPost = (degree: number, straight = false): THREE.Group => {
+    if (degree < 2 || straight) {
+      return new THREE.Group();
+    }
+
+    const group = new THREE.Group();
+
+    const core = new THREE.Mesh(geometries.nodeCore, materials.wall);
+    core.position.y = WALL_HEIGHT * 0.5;
+    group.add(core);
+
+    const stripe = new THREE.Mesh(geometries.nodeStripe, materials.stripe);
+    stripe.position.y = 1.2;
+    group.add(stripe);
+
+    return group;
   };
 
   const createWallBlock = (): THREE.Group => {

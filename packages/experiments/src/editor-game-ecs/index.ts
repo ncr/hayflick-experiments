@@ -85,6 +85,8 @@ uniform float uOutlineProminence;
 uniform float uPostDitherStrength;
 uniform float uShadowDitherStrength;
 uniform float uSeamSuppress;
+uniform vec3 uOutlineTint;
+uniform float uOutlineTintStrength;
 
 varying vec2 vUv;
 
@@ -201,7 +203,8 @@ void main() {
   vec3 chromaEdge = mix(vec3(colorLuma), c, uOutlineSaturationBoost);
   vec3 litEdgeColor = clamp(chromaEdge * shadeFactor, 0.0, 1.0);
   vec3 darkened = c * uEdgeDarken;
-  vec3 outlined = mix(darkened, litEdgeColor, uOutlineProminence);
+  vec3 edgeTint = mix(litEdgeColor, uOutlineTint, uOutlineTintStrength);
+  vec3 outlined = mix(darkened, edgeTint, uOutlineProminence);
   vec3 outColor = mix(c, outlined, edge);
 
   float lShadow = dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -1343,7 +1346,9 @@ const experiment: ExperimentModule = {
         uOutlineProminence: { value: 0.9 },
         uPostDitherStrength: { value: 0.0 },
         uShadowDitherStrength: { value: 0.18 },
-        uSeamSuppress: { value: 0.85 }
+        uSeamSuppress: { value: 0.85 },
+        uOutlineTint: { value: new THREE.Color(0x0a0f14) },
+        uOutlineTintStrength: { value: 0.7 }
       },
       vertexShader: POST_VERTEX_SHADER,
       fragmentShader: POST_FRAGMENT_SHADER
@@ -1935,30 +1940,26 @@ const experiment: ExperimentModule = {
           wallGroup.add(mesh);
         }
 
-        registerDirection(
-          adjacency,
-          edge.ax,
-          edge.ay,
-          edge.bx - edge.ax,
-          edge.by - edge.ay
-        );
-        registerDirection(
-          adjacency,
-          edge.bx,
-          edge.by,
-          edge.ax - edge.bx,
-          edge.ay - edge.by
-        );
+        const dx = edge.bx - edge.ax;
+        const dy = edge.by - edge.ay;
+        registerDirection(adjacency, edge.ax, edge.ay, dx, dy);
+        registerDirection(adjacency, edge.bx, edge.by, -dx, -dy);
       }
 
       adjacency.forEach((directions, key) => {
         if (directions.length < 2) {
           return;
         }
+        const straight =
+          directions.length === 2 &&
+          directions[0] &&
+          directions[1] &&
+          directions[0].dx === -directions[1].dx &&
+          directions[0].dy === -directions[1].dy;
         const [xStr, yStr] = key.split(",");
         const x = Number(xStr);
         const y = Number(yStr);
-        const post = structureMeshKit.createJoinPost(directions.length);
+        const post = structureMeshKit.createJoinPost(directions.length, straight);
         post.position.set(toWorldNodeX(x), 0, toWorldNodeZ(y));
         wallGroup.add(post);
       });
