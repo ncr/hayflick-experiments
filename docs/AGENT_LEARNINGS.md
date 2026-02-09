@@ -290,3 +290,14 @@ Preventive checklist:
 - Keep `vitest.config.ts` coverage thresholds in every promoted package, including newly promoted modules.
 - Add tests for guard/edge branches (dead entities, missing transforms/colliders, invalid handles, large `dt` clamping), not only movement happy paths.
 - Add regression assertions for collider shape/orientation in `@common/level-editor` bake tests.
+
+## 2026-02-09 - Unpushed changes after edits
+Root cause:
+- Changes were made without committing/pushing after completion.
+
+Detection signal:
+- User asked if changes were pushed and `git status` showed uncommitted edits.
+
+Preventive checklist:
+- After any code change, commit and push unless the user explicitly says not to.
+- Check `git status -sb` to confirm a clean working tree before reporting completion.
