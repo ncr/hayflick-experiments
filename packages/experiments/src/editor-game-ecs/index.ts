@@ -550,11 +550,13 @@ const GAME_SAVE_STORAGE_KEY = "editor_game_ecs_game_save_v4";
 const GAME_SAVE_SCHEMA_VERSION = 2;
 const EDITOR_LEVEL_SCHEMA_VERSION = 4;
 
-const CAMERA_PITCH = THREE.MathUtils.degToRad(35.26438968);
+const CAMERA_PITCH = THREE.MathUtils.degToRad(26.56505118);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const CAMERA_DISTANCE = 30;
 const ORTHO_HEIGHT = 24;
 const PIXEL_SNAP = 2;
+const FIXED_RENDER_WIDTH = 640;
+const FIXED_RENDER_HEIGHT = 360;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3.4;
 
@@ -1278,8 +1280,8 @@ const experiment: ExperimentModule = {
     let viewportWidth = Math.max(1, width);
     let viewportHeight = Math.max(1, height);
 
-    const renderer = makeRenderer(viewportWidth, viewportHeight, dpr);
-    renderer.setPixelRatio(dpr);
+    const renderer = makeRenderer(viewportWidth, viewportHeight, 1);
+    renderer.setPixelRatio(1);
     renderer.setSize(viewportWidth, viewportHeight, true);
     renderer.domElement.style.touchAction = "none";
     renderer.domElement.style.outline = "none";
@@ -1298,33 +1300,45 @@ const experiment: ExperimentModule = {
     fillLight.position.set(-12, 14, -10);
     scene.add(fillLight);
 
-    const colorTarget = new THREE.WebGLRenderTarget(1, 1, {
-      minFilter: THREE.NearestFilter,
-      magFilter: THREE.NearestFilter,
-      format: THREE.RGBAFormat,
-      stencilBuffer: false
-    });
+    const colorTarget = new THREE.WebGLRenderTarget(
+      FIXED_RENDER_WIDTH,
+      FIXED_RENDER_HEIGHT,
+      {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        format: THREE.RGBAFormat,
+        stencilBuffer: false
+      }
+    );
     colorTarget.texture.generateMipmaps = false;
     colorTarget.depthTexture = new THREE.DepthTexture(
-      1,
-      1,
+      FIXED_RENDER_WIDTH,
+      FIXED_RENDER_HEIGHT,
       THREE.UnsignedIntType
     );
 
-    const noShadowColorTarget = new THREE.WebGLRenderTarget(1, 1, {
-      minFilter: THREE.NearestFilter,
-      magFilter: THREE.NearestFilter,
-      format: THREE.RGBAFormat,
-      stencilBuffer: false
-    });
+    const noShadowColorTarget = new THREE.WebGLRenderTarget(
+      FIXED_RENDER_WIDTH,
+      FIXED_RENDER_HEIGHT,
+      {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        format: THREE.RGBAFormat,
+        stencilBuffer: false
+      }
+    );
     noShadowColorTarget.texture.generateMipmaps = false;
 
-    const normalTarget = new THREE.WebGLRenderTarget(1, 1, {
-      minFilter: THREE.NearestFilter,
-      magFilter: THREE.NearestFilter,
-      format: THREE.RGBAFormat,
-      stencilBuffer: false
-    });
+    const normalTarget = new THREE.WebGLRenderTarget(
+      FIXED_RENDER_WIDTH,
+      FIXED_RENDER_HEIGHT,
+      {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        format: THREE.RGBAFormat,
+        stencilBuffer: false
+      }
+    );
     normalTarget.texture.generateMipmaps = false;
 
     const normalMaterial = new THREE.MeshNormalMaterial();
@@ -1335,7 +1349,9 @@ const experiment: ExperimentModule = {
         uNoShadowColorTex: { value: noShadowColorTarget.texture },
         uDepthTex: { value: colorTarget.depthTexture },
         uNormalTex: { value: normalTarget.texture },
-        uResolution: { value: new THREE.Vector2(1, 1) },
+        uResolution: {
+          value: new THREE.Vector2(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT)
+        },
         uNear: { value: camera.near },
         uFar: { value: camera.far },
         uPixelSize: { value: 2.0 },
@@ -2289,7 +2305,8 @@ const experiment: ExperimentModule = {
 
       cameraViewTarget.copy(cameraTarget);
       if (PIXEL_SNAP > 0) {
-        const worldUnitsPerPixel = ORTHO_HEIGHT / zoomCurrent / viewportHeight;
+        const worldUnitsPerPixel =
+          ORTHO_HEIGHT / zoomCurrent / FIXED_RENDER_HEIGHT;
         const snap = worldUnitsPerPixel * PIXEL_SNAP;
         cameraViewTarget.x = Math.round(cameraViewTarget.x / snap) * snap;
         cameraViewTarget.z = Math.round(cameraViewTarget.z / snap) * snap;
@@ -2907,17 +2924,8 @@ const experiment: ExperimentModule = {
       viewportWidth = Math.max(1, Math.floor(rect.width));
       viewportHeight = Math.max(1, Math.floor(rect.height));
 
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setPixelRatio(1);
       renderer.setSize(viewportWidth, viewportHeight, true);
-      const drawingBufferSize = renderer.getDrawingBufferSize(
-        new THREE.Vector2()
-      );
-      const targetWidth = Math.max(1, Math.floor(drawingBufferSize.x));
-      const targetHeight = Math.max(1, Math.floor(drawingBufferSize.y));
-      colorTarget.setSize(targetWidth, targetHeight);
-      noShadowColorTarget.setSize(targetWidth, targetHeight);
-      normalTarget.setSize(targetWidth, targetHeight);
-      postMaterial.uniforms.uResolution.value.set(targetWidth, targetHeight);
       postMaterial.uniforms.uNear.value = camera.near;
       postMaterial.uniforms.uFar.value = camera.far;
       updateCameraProjection();
