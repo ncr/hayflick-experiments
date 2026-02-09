@@ -400,7 +400,7 @@ function makeToonMaterial(spec: ToonMaterialSpec): {
     spec.specularStrength,
     spec.specularShininess,
     spec.specularBands ?? 4,
-    spec.specularDitherStrength ?? 0.08
+    spec.specularDitherStrength ?? 0.0
   );
   return { material, gradient };
 }

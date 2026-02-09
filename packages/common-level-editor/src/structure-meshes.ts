@@ -211,7 +211,7 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
       specularStrength,
       specularShininess,
       4,
-      0.08
+      0.0
     );
     return material;
   };
