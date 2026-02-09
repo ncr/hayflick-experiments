@@ -35,9 +35,8 @@ const experiment: ExperimentModule = {
     const cameraTarget = new THREE.Vector3(0, 0, 0);
     const screenRightWorld = new THREE.Vector3();
     const screenDownWorld = new THREE.Vector3();
-    const screenCenterWorld = new THREE.Vector3();
-    const screenCenterRightWorld = new THREE.Vector3();
-    const screenCenterDownWorld = new THREE.Vector3();
+    const cameraRight = new THREE.Vector3();
+    const cameraUp = new THREE.Vector3();
     const dragDelta = new THREE.Vector2();
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.65);
@@ -347,33 +346,18 @@ const experiment: ExperimentModule = {
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
 
-    const ndc = new THREE.Vector3();
-    const rayDir = new THREE.Vector3();
-
-    const worldAtScreen = (screenX: number, screenY: number, out: THREE.Vector3) => {
-      ndc.set(
-        (screenX / FIXED_RENDER_WIDTH) * 2 - 1,
-        1 - (screenY / FIXED_RENDER_HEIGHT) * 2,
-        -1
-      );
-      ndc.unproject(camera);
-      rayDir.copy(ndc).sub(camera.position).normalize();
-      const t = -camera.position.y / rayDir.y;
-      out.copy(camera.position).addScaledVector(rayDir, t);
-    };
-
     const updateScreenToWorld = () => {
-      const centerX = FIXED_RENDER_WIDTH * 0.5;
-      const centerY = FIXED_RENDER_HEIGHT * 0.5;
-      worldAtScreen(centerX, centerY, screenCenterWorld);
-      worldAtScreen(centerX + 1, centerY, screenCenterRightWorld);
-      worldAtScreen(centerX, centerY + 1, screenCenterDownWorld);
-      screenRightWorld
-        .copy(screenCenterRightWorld)
-        .sub(screenCenterWorld);
-      screenDownWorld
-        .copy(screenCenterDownWorld)
-        .sub(screenCenterWorld);
+      const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
+      const halfHeight = ORTHO_HEIGHT * 0.5;
+      const halfWidth = halfHeight * aspect;
+      const unitRight = (halfWidth * 2) / FIXED_RENDER_WIDTH;
+      const unitDown = (halfHeight * 2) / FIXED_RENDER_HEIGHT;
+
+      cameraRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+      cameraUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+
+      screenRightWorld.copy(cameraRight).multiplyScalar(unitRight);
+      screenDownWorld.copy(cameraUp).multiplyScalar(-unitDown);
     };
 
     let raf = 0;
