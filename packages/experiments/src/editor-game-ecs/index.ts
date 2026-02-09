@@ -1115,9 +1115,9 @@ const experiment: ExperimentModule = {
     renderer.domElement.style.outline = "none";
     renderer.domElement.style.display = "block";
     renderer.domElement.style.position = "absolute";
-    renderer.domElement.style.left = "50%";
-    renderer.domElement.style.top = "50%";
-    renderer.domElement.style.transform = "translate(-50%, -50%)";
+    renderer.domElement.style.left = "0px";
+    renderer.domElement.style.top = "0px";
+    renderer.domElement.style.transform = "translate(0px, 0px)";
     renderer.domElement.style.imageRendering = "pixelated";
     renderer.domElement.tabIndex = 0;
     mount.appendChild(renderer.domElement);
@@ -1465,9 +1465,10 @@ const experiment: ExperimentModule = {
     let panScreenX = 0;
     let panScreenY = 0;
 
-    const panRight = new THREE.Vector3();
-    const panForward = new THREE.Vector3();
-    const panDelta = new THREE.Vector3();
+    const screenRightWorld = new THREE.Vector3();
+    const screenDownWorld = new THREE.Vector3();
+    const cameraRight = new THREE.Vector3();
+    const cameraUp = new THREE.Vector3();
     const cameraViewTarget = new THREE.Vector3();
     const inputRight = new THREE.Vector3();
     const inputForward = new THREE.Vector3();
@@ -2034,8 +2035,7 @@ const experiment: ExperimentModule = {
     function updateCanvasTransform(): void {
       const tx = Math.round(panScreenX);
       const ty = Math.round(panScreenY);
-      renderer.domElement.style.transform =
-        `translate(-50%, -50%) translate(${tx}px, ${ty}px)`;
+      renderer.domElement.style.transform = `translate(${tx}px, ${ty}px)`;
     }
 
     function applyPanByPixels(deltaX: number, deltaY: number): void {
@@ -2055,21 +2055,8 @@ const experiment: ExperimentModule = {
       panScreenX -= stepX * renderScale;
       panScreenY -= stepY * renderScale;
 
-      const worldUnitsPerPixel =
-        ORTHO_HEIGHT / zoomCurrent / FIXED_RENDER_HEIGHT;
-
-      panRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-      panRight.y = 0;
-      panRight.normalize();
-
-      panForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
-      panForward.y = 0;
-      panForward.normalize();
-
-      panDelta.set(0, 0, 0);
-      panDelta.addScaledVector(panRight, -stepX * worldUnitsPerPixel);
-      panDelta.addScaledVector(panForward, stepY * worldUnitsPerPixel);
-      cameraTarget.add(panDelta);
+      cameraTarget.addScaledVector(screenRightWorld, -stepX);
+      cameraTarget.addScaledVector(screenDownWorld, -stepY);
       updateCanvasTransform();
     }
 
@@ -2107,6 +2094,18 @@ const experiment: ExperimentModule = {
       camera.lookAt(cameraViewTarget);
       camera.zoom = zoomCurrent;
       camera.updateProjectionMatrix();
+
+      const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
+      const halfHeight = (ORTHO_HEIGHT * 0.5) / zoomCurrent;
+      const halfWidth = halfHeight * aspect;
+      const unitRight = (halfWidth * 2) / FIXED_RENDER_WIDTH;
+      const unitDown = (halfHeight * 2) / FIXED_RENDER_HEIGHT;
+
+      cameraRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+      cameraUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+
+      screenRightWorld.copy(cameraRight).multiplyScalar(unitRight);
+      screenDownWorld.copy(cameraUp).multiplyScalar(-unitDown);
     }
 
     // Player movement is view-relative: W/Up moves toward the top of the screen
@@ -2738,6 +2737,10 @@ const experiment: ExperimentModule = {
       renderScale = scale;
       const targetWidth = FIXED_RENDER_WIDTH * scale;
       const targetHeight = FIXED_RENDER_HEIGHT * scale;
+      const offsetX = Math.floor((viewportWidth - targetWidth) * 0.5);
+      const offsetY = Math.floor((viewportHeight - targetHeight) * 0.5);
+      renderer.domElement.style.left = `${offsetX}px`;
+      renderer.domElement.style.top = `${offsetY}px`;
       renderer.domElement.style.width = `${targetWidth}px`;
       renderer.domElement.style.height = `${targetHeight}px`;
       updateCanvasTransform();
@@ -3177,6 +3180,8 @@ const experiment: ExperimentModule = {
     rebuildBaseLevelMeshes();
     rebuildEditorStructureMeshes();
     updateCameraProjection();
+    setCameraPose();
+    updateCanvasTransform();
 
     await enterGame({
       status: "Started in GAME mode. Press ESC to switch to EDITOR."

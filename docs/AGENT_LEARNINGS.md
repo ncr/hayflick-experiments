@@ -354,3 +354,17 @@ Preventive checklist:
 - Quantize pan exactly once: either input-step quantization or camera pose snap, not both.
 - Keep CSS translation integer-valued for pixel-art canvases.
 - When matching behavior across experiments, compare full pan pipeline (camera math + DOM transform), not only world coordinates.
+
+## 2026-02-09 - Pixel-stable pan also requires exact screen-axis world vectors and integer centering
+Root cause:
+- `editor-game-ecs` pan used ground-plane forward/right approximation, not exact camera screen-axis world vectors.
+- Canvas centering used `left:50%/top:50%` with `translate(-50%,-50%)`, which can introduce fractional anchor offsets.
+
+Detection signal:
+- User still saw shimmer after initial compensation and double-quantization fixes.
+- Stability matched only after mirroring `pixel-perfect-2to1` axis math and integer CSS positioning.
+
+Preventive checklist:
+- Derive pan world vectors from camera right/up with orthographic frustum-per-pixel units (`screenRightWorld`, `screenDownWorld`).
+- Keep canvas anchor integer in CSS (`left/top` from floored offsets), then apply integer pan translation.
+- For parity bugs, copy the known-good math path verbatim before optimizing.
