@@ -62,7 +62,7 @@ describe("pixel-perfect-2to1", () => {
     expect(absDx).toBeCloseTo(Math.round(absDx), 6);
     expect(absDy).toBeCloseTo(Math.round(absDy), 6);
 
-    expect(absDx).toBeCloseTo(20, 6);
-    expect(absDy).toBeCloseTo(10, 6);
+    expect(absDx).toBeCloseTo(16, 6);
+    expect(absDy).toBeCloseTo(8, 6);
   });
 });

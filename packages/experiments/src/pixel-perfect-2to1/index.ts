@@ -131,7 +131,9 @@ const experiment: ExperimentModule = {
       );
       const targetWidth = FIXED_RENDER_WIDTH * scale;
       const targetHeight = FIXED_RENDER_HEIGHT * scale;
-      renderer.setSize(targetWidth, targetHeight, false);
+      renderer.setSize(targetWidth, targetHeight, true);
+      renderer.domElement.style.width = `${targetWidth}px`;
+      renderer.domElement.style.height = `${targetHeight}px`;
       updateCameraProjection(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT);
     };
 
