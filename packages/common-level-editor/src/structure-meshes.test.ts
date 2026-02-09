@@ -30,11 +30,11 @@ describe("structure meshes", () => {
     kit.dispose();
   });
 
-  it("injects stripe shader logic into toon materials using opaque fragment hook", () => {
+  it("injects stripe shader logic into pbr materials using opaque fragment hook", () => {
     const kit = createEditorStructureMeshKit();
     const wall = kit.createWallSegment();
     const wallCore = wall.children[0] as THREE.Mesh;
-    const material = wallCore.material as THREE.MeshToonMaterial;
+    const material = wallCore.material as THREE.MeshStandardMaterial;
 
     const shader = {
       uniforms: {},
@@ -43,8 +43,6 @@ describe("structure meshes", () => {
         #include <begin_vertex>
       `,
       fragmentShader: `
-        #include <gradientmap_pars_fragment>
-        #include <lights_toon_pars_fragment>
         #include <opaque_fragment>
       `
     };

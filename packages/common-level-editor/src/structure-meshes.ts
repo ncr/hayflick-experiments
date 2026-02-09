@@ -12,11 +12,11 @@ export type EditorDoorVisual = {
 };
 
 type EditorStructureMaterials = {
-  wall: THREE.MeshToonMaterial;
-  accent: THREE.MeshToonMaterial;
-  windowGlass: THREE.MeshToonMaterial;
-  door: THREE.MeshToonMaterial;
-  joint: THREE.MeshToonMaterial;
+  wall: THREE.MeshStandardMaterial;
+  accent: THREE.MeshStandardMaterial;
+  windowGlass: THREE.MeshStandardMaterial;
+  door: THREE.MeshStandardMaterial;
+  joint: THREE.MeshStandardMaterial;
 };
 
 type EditorStructureGeometries = {
@@ -44,7 +44,6 @@ const WALL_BLOCK_HALF_SPAN = LEVEL_EDITOR_WORLD_UNIT * 0.5;
 const WALL_BLOCK_EDGE_OFFSET = WALL_BLOCK_HALF_SPAN - WALL_THICKNESS * 0.5;
 const WALL_BLOCK_CORNER_OFFSET = WALL_BLOCK_HALF_SPAN;
 const WALL_STRIPE_COLOR = 0xc45a12;
-const WALL_STRIPE_PIXELS_PER_UNIT_Y = LEVEL_EDITOR_PIXELS_PER_UNIT_Y;
 const WALL_STRIPE_START_PIXEL_Y = 13;
 const WALL_STRIPE_END_PIXEL_Y = 17;
 
@@ -54,242 +53,103 @@ type StripeBand = {
   maxY: number;
 };
 
-function makeGradientMap(bands: number): THREE.DataTexture {
-  const steps = Math.max(2, bands);
-  const data = new Uint8Array(steps * 4);
-
-  for (let i = 0; i < steps; i += 1) {
-    const t = i / (steps - 1);
-    const value = Math.round((0.18 + t * 0.82) * 255);
-    const offset = i * 4;
-    data[offset] = value;
-    data[offset + 1] = value;
-    data[offset + 2] = value;
-    data[offset + 3] = 255;
-  }
-
-  const gradient = new THREE.DataTexture(data, steps, 1, THREE.RGBAFormat);
-  gradient.minFilter = THREE.NearestFilter;
-  gradient.magFilter = THREE.NearestFilter;
-  gradient.generateMipmaps = false;
-  gradient.needsUpdate = true;
-  return gradient;
-}
-
-function applyRetroDither(
-  material: THREE.MeshToonMaterial,
-  bands: number,
-  strength: number,
-  specularStrength: number,
-  specularShininess: number,
-  specularBands: number,
-  specularDitherStrength: number,
-  stripe: StripeBand | null = null
-): void {
-  material.dithering = false;
+function applyStripeBand(material: THREE.MeshStandardMaterial, stripe: StripeBand): void {
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uToonDitherBands = { value: Math.max(2.0, bands) };
-    shader.uniforms.uToonDitherStrength = { value: strength };
-    shader.uniforms.uToonDitherPixelSize = { value: 4.0 };
-    shader.uniforms.uSpecularStrength = { value: specularStrength };
-    shader.uniforms.uSpecularShininess = { value: specularShininess };
-    shader.uniforms.uSpecularBands = { value: Math.max(2.0, specularBands) };
-    shader.uniforms.uSpecularDitherStrength = { value: specularDitherStrength };
-    if (stripe) {
-      shader.uniforms.uStripeColor = {
-        value: new THREE.Color(stripe.color)
-      };
-      shader.uniforms.uStripeMinY = { value: stripe.minY };
-      shader.uniforms.uStripeMaxY = { value: stripe.maxY };
-    }
+    shader.uniforms.uStripeColor = {
+      value: new THREE.Color(stripe.color)
+    };
+    shader.uniforms.uStripeMinY = { value: stripe.minY };
+    shader.uniforms.uStripeMaxY = { value: stripe.maxY };
 
-    if (stripe) {
-      shader.vertexShader = shader.vertexShader.replace(
-        "#include <common>",
-        `
-        #include <common>
-        varying float vStripeWorldY;
-        `
-      );
-      shader.vertexShader = shader.vertexShader.replace(
-        "#include <begin_vertex>",
-        `
-        #include <begin_vertex>
-        vStripeWorldY = (modelMatrix * vec4(transformed, 1.0)).y;
-        `
-      );
-    }
-
-    shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <gradientmap_pars_fragment>",
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <common>",
       `
-      #ifdef USE_GRADIENTMAP
-      uniform sampler2D gradientMap;
-      #endif
-
-      uniform float uToonDitherBands;
-      uniform float uToonDitherStrength;
-      uniform float uToonDitherPixelSize;
-      uniform float uSpecularStrength;
-      uniform float uSpecularShininess;
-      uniform float uSpecularBands;
-      uniform float uSpecularDitherStrength;
-      ${stripe ? "uniform vec3 uStripeColor;\nuniform float uStripeMinY;\nuniform float uStripeMaxY;\nvarying float vStripeWorldY;" : ""}
-
-      float toonBayer4x4(vec2 p) {
-        vec2 q = mod(floor(p), 4.0);
-        float x = q.x;
-        float y = q.y;
-        if (y < 1.0) {
-          if (x < 1.0) return 0.0;
-          if (x < 2.0) return 8.0;
-          if (x < 3.0) return 2.0;
-          return 10.0;
-        }
-        if (y < 2.0) {
-          if (x < 1.0) return 12.0;
-          if (x < 2.0) return 4.0;
-          if (x < 3.0) return 14.0;
-          return 6.0;
-        }
-        if (y < 3.0) {
-          if (x < 1.0) return 3.0;
-          if (x < 2.0) return 11.0;
-          if (x < 3.0) return 1.0;
-          return 9.0;
-        }
-        if (x < 1.0) return 15.0;
-        if (x < 2.0) return 7.0;
-        if (x < 3.0) return 13.0;
-        return 5.0;
-      }
-
-      vec3 getGradientIrradiance(vec3 normal, vec3 lightDirection) {
-        float dotNL = clamp(dot(normal, lightDirection) * 0.5 + 0.5, 0.0, 1.0);
-        float levels = max(2.0, uToonDitherBands);
-        vec2 ditherCell = floor(gl_FragCoord.xy / max(1.0, uToonDitherPixelSize));
-        float bayer = (toonBayer4x4(ditherCell) + 0.5) / 16.0 - 0.5;
-        float dithered = clamp(dotNL + bayer * uToonDitherStrength, 0.0, 1.0);
-        float quantized = floor(dithered * (levels - 1.0) + 0.5) / (levels - 1.0);
-
-        #ifdef USE_GRADIENTMAP
-          return vec3(texture2D(gradientMap, vec2(quantized, 0.0)).r);
-        #else
-          return vec3(quantized);
-        #endif
-      }
+      #include <common>
+      varying float vStripeWorldY;
+      `
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <begin_vertex>",
+      `
+      #include <begin_vertex>
+      vStripeWorldY = (modelMatrix * vec4(transformed, 1.0)).y;
       `
     );
 
     shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <lights_toon_pars_fragment>",
+      "#include <opaque_fragment>",
       `
-      varying vec3 vViewPosition;
+      uniform vec3 uStripeColor;
+      uniform float uStripeMinY;
+      uniform float uStripeMaxY;
+      varying float vStripeWorldY;
 
-      struct ToonMaterial {
-        vec3 diffuseColor;
-      };
-
-      void RE_Direct_Toon( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in ToonMaterial material, inout ReflectedLight reflectedLight ) {
-        vec3 irradiance = getGradientIrradiance( geometryNormal, directLight.direction ) * directLight.color;
-        reflectedLight.directDiffuse += irradiance * BRDF_Lambert( material.diffuseColor );
-
-        float ndl = max( dot( geometryNormal, directLight.direction ), 0.0 );
-        vec3 halfDir = normalize( directLight.direction + geometryViewDir );
-        float ndh = max( dot( geometryNormal, halfDir ), 0.0 );
-        float specRaw = pow( ndh, max( 1.0, uSpecularShininess ) ) * ndl * uSpecularStrength;
-
-        vec2 ditherCell = floor( gl_FragCoord.xy / max( 1.0, uToonDitherPixelSize ) );
-        float bayer = ( toonBayer4x4( ditherCell ) + 0.5 ) / 16.0 - 0.5;
-        float dithered = clamp( specRaw + bayer * uSpecularDitherStrength, 0.0, 1.0 );
-        float levels = max( 2.0, uSpecularBands );
-        float quantizedSpec = floor( dithered * ( levels - 1.0 ) + 0.5 ) / ( levels - 1.0 );
-
-        vec3 specColor = mix( vec3( 1.0 ), material.diffuseColor, 0.2 );
-        reflectedLight.directDiffuse += quantizedSpec * directLight.color * specColor;
-      }
-
-      void RE_IndirectDiffuse_Toon( const in vec3 irradiance, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in ToonMaterial material, inout ReflectedLight reflectedLight ) {
-        reflectedLight.indirectDiffuse += irradiance * BRDF_Lambert( material.diffuseColor );
-      }
-
-      #define RE_Direct RE_Direct_Toon
-      #define RE_IndirectDiffuse RE_IndirectDiffuse_Toon
+      float stripeMask = step(uStripeMinY, vStripeWorldY) * (1.0 - step(uStripeMaxY, vStripeWorldY));
+      outgoingLight = mix(outgoingLight, uStripeColor, stripeMask);
+      #include <opaque_fragment>
       `
     );
-
-    if (stripe) {
-      shader.fragmentShader = shader.fragmentShader.replace(
-        "#include <opaque_fragment>",
-        `
-        float stripeMask = step(uStripeMinY, vStripeWorldY) * (1.0 - step(uStripeMaxY, vStripeWorldY));
-        outgoingLight = mix(outgoingLight, uStripeColor, stripeMask);
-        #include <opaque_fragment>
-        `
-      );
-    }
-
   };
-  material.customProgramCacheKey = () => {
-    const stripeKey = stripe
-      ? `_stripe_${stripe.color.toString(16)}_${stripe.minY.toFixed(4)}_${stripe.maxY.toFixed(4)}`
-      : "_stripe_none";
-    return `retroDither_b${bands.toFixed(2)}_s${strength.toFixed(3)}_spec${specularStrength.toFixed(3)}_sh${specularShininess.toFixed(2)}_sb${specularBands.toFixed(2)}_sd${specularDitherStrength.toFixed(3)}${stripeKey}`;
-  };
+
+  material.customProgramCacheKey = () =>
+    `pbrStripe_${stripe.color.toString(16)}_${stripe.minY.toFixed(4)}_${stripe.maxY.toFixed(4)}`;
   material.needsUpdate = true;
 }
 
-function createMaterials(): { materials: EditorStructureMaterials; gradients: THREE.DataTexture[] } {
-  const gradients: THREE.DataTexture[] = [];
-
-  const makeToon = (
-    color: number,
-    bands: number,
-    ditherStrength: number,
-    specularStrength: number,
-    specularShininess: number,
-    stripe: StripeBand | null = null
-  ) => {
-    const gradientMap = makeGradientMap(bands);
-    gradients.push(gradientMap);
-    const material = new THREE.MeshToonMaterial({
-      color,
-      gradientMap,
-      toneMapped: true
-    });
-    applyRetroDither(
-      material,
-      bands,
-      ditherStrength,
-      specularStrength,
-      specularShininess,
-      4,
-      0.0,
-      stripe
-    );
-    return material;
-  };
-
+function createMaterials(): { materials: EditorStructureMaterials } {
   const stripeBand: StripeBand = {
     color: WALL_STRIPE_COLOR,
-    minY: WALL_STRIPE_START_PIXEL_Y / WALL_STRIPE_PIXELS_PER_UNIT_Y,
-    maxY: WALL_STRIPE_END_PIXEL_Y / WALL_STRIPE_PIXELS_PER_UNIT_Y
+    minY:
+      (WALL_STRIPE_START_PIXEL_Y / LEVEL_EDITOR_PIXELS_PER_UNIT_Y) *
+      LEVEL_EDITOR_WORLD_UNIT,
+    maxY:
+      (WALL_STRIPE_END_PIXEL_Y / LEVEL_EDITOR_PIXELS_PER_UNIT_Y) *
+      LEVEL_EDITOR_WORLD_UNIT
   };
 
-  const wallMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.45, 64, stripeBand);
-  const accentMaterial = makeToon(0xe8edf3, 5, 0.0, 0.35, 58);
-  const doorMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.48, 68, stripeBand);
-  const jointMaterial = makeToon(0xf2f4f7, 5, 0.0, 0.4, 60, stripeBand);
-  const glassGradient = makeGradientMap(4);
-  gradients.push(glassGradient);
-  const glassMaterial = new THREE.MeshToonMaterial({
-    color: 0x92c8ff,
-    gradientMap: glassGradient,
-    transparent: true,
-    opacity: 0.4,
+  const wallMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfbfdff,
+    roughness: 0.08,
+    metalness: 0.34,
+    envMapIntensity: 1.25,
     toneMapped: true
   });
-  applyRetroDither(glassMaterial, 4, 0.0, 0.08, 18, 3, 0.0);
+  applyStripeBand(wallMaterial, stripeBand);
+
+  const accentMaterial = new THREE.MeshStandardMaterial({
+    color: 0xe7f1ff,
+    roughness: 0.14,
+    metalness: 0.3,
+    envMapIntensity: 1.2,
+    toneMapped: true
+  });
+
+  const doorMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.1,
+    metalness: 0.42,
+    envMapIntensity: 1.3,
+    toneMapped: true
+  });
+  applyStripeBand(doorMaterial, stripeBand);
+
+  const jointMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf2f8ff,
+    roughness: 0.12,
+    metalness: 0.36,
+    envMapIntensity: 1.25,
+    toneMapped: true
+  });
+  applyStripeBand(jointMaterial, stripeBand);
+
+  const glassMaterial = new THREE.MeshStandardMaterial({
+    color: 0xb9ddff,
+    roughness: 0.04,
+    metalness: 0.02,
+    transparent: true,
+    opacity: 0.36,
+    toneMapped: true
+  });
 
   return {
     materials: {
@@ -298,8 +158,7 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
       windowGlass: glassMaterial,
       door: doorMaterial,
       joint: jointMaterial
-    },
-    gradients
+    }
   };
 }
 
@@ -339,7 +198,7 @@ export function setDoorVisualOpen(door: EditorDoorVisual, open: boolean): void {
 }
 
 export function createEditorStructureMeshKit(): EditorStructureMeshKit {
-  const { materials, gradients } = createMaterials();
+  const { materials } = createMaterials();
   const geometries = createGeometries();
 
   const createWallSegment = (): THREE.Group => {
@@ -356,15 +215,15 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     const group = new THREE.Group();
 
     const lower = new THREE.Mesh(geometries.windowLower, materials.wall);
-    lower.position.y = 0.46;
+    lower.position.y = 0.46 * LEVEL_EDITOR_WORLD_UNIT;
     group.add(lower);
 
-    const upper = new THREE.Mesh(geometries.windowUpper, materials.wall);
-    upper.position.y = WALL_HEIGHT - 0.46;
+    const upper = new THREE.Mesh(geometries.windowUpper, materials.accent);
+    upper.position.y = WALL_HEIGHT - 0.46 * LEVEL_EDITOR_WORLD_UNIT;
     group.add(upper);
 
     const glass = new THREE.Mesh(geometries.windowGlass, materials.windowGlass);
-    glass.position.set(0, WALL_HEIGHT * 0.5, WALL_THICKNESS * 0.52);
+    glass.position.set(0, WALL_HEIGHT * 0.5, WALL_THICKNESS * 0.54);
     group.add(glass);
 
     return group;
@@ -402,7 +261,7 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
 
     const group = new THREE.Group();
 
-    const core = new THREE.Mesh(geometries.nodeCore, materials.wall);
+    const core = new THREE.Mesh(geometries.nodeCore, materials.joint);
     core.position.y = WALL_HEIGHT * 0.5;
     group.add(core);
 
@@ -449,7 +308,6 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
   const dispose = (): void => {
     Object.values(geometries).forEach((geometry) => geometry.dispose());
     Object.values(materials).forEach((material) => material.dispose());
-    gradients.forEach((gradient) => gradient.dispose());
   };
 
   return {
