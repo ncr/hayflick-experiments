@@ -205,8 +205,7 @@ void main() {
   vec3 edgeTint = mix(edgeBase, uOutlineTint, uOutlineTintStrength);
   vec3 litEdgeColor = clamp(edgeTint * shadeFactor, 0.0, 1.0);
   vec3 darkened = c * uEdgeDarken;
-  vec3 edgeTint = mix(litEdgeColor, uOutlineTint, uOutlineTintStrength);
-  vec3 outlined = mix(darkened, edgeTint, uOutlineProminence);
+  vec3 outlined = mix(darkened, litEdgeColor, uOutlineProminence);
   vec3 outColor = mix(c, outlined, edge);
 
   float lShadow = dot(c, vec3(0.2126, 0.7152, 0.0722));
