@@ -1350,33 +1350,8 @@ const experiment: ExperimentModule = {
 
     const normalMaterial = new THREE.MeshNormalMaterial();
 
-    const postMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        uColorTex: { value: colorTarget.texture },
-        uNoShadowColorTex: { value: noShadowColorTarget.texture },
-        uDepthTex: { value: colorTarget.depthTexture },
-        uNormalTex: { value: normalTarget.texture },
-        uResolution: {
-          value: new THREE.Vector2(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT)
-        },
-        uNear: { value: camera.near },
-        uFar: { value: camera.far },
-        uPixelSize: { value: 1.0 },
-        uDepthThreshold: { value: 0.08 },
-        uNormalThreshold: { value: 0.22 },
-        uEdgeDarken: { value: 0.24 },
-        uOutlineDarken: { value: 0.32 },
-        uOutlineLightResponse: { value: 1.0 },
-        uOutlineSaturationBoost: { value: 1.6 },
-        uOutlineProminence: { value: 0.9 },
-        uPostDitherStrength: { value: 0.0 },
-        uShadowDitherStrength: { value: 0.0 },
-        uSeamSuppress: { value: 0.85 },
-        uOutlineTint: { value: new THREE.Color(0x0a0f14) },
-        uOutlineTintStrength: { value: 0.85 }
-      },
-      vertexShader: POST_VERTEX_SHADER,
-      fragmentShader: POST_FRAGMENT_SHADER
+    const postMaterial = new THREE.MeshBasicMaterial({
+      map: colorTarget.texture
     });
 
     const postScene = new THREE.Scene();
@@ -2960,8 +2935,6 @@ const experiment: ExperimentModule = {
       renderer.setSize(targetWidth, targetHeight, true);
       renderer.domElement.style.width = `${targetWidth}px`;
       renderer.domElement.style.height = `${targetHeight}px`;
-      postMaterial.uniforms.uNear.value = camera.near;
-      postMaterial.uniforms.uFar.value = camera.far;
       updateCameraProjection();
     }
 
@@ -3422,15 +3395,8 @@ const experiment: ExperimentModule = {
       renderer.clear();
       renderer.render(scene, camera);
 
-      renderer.setRenderTarget(noShadowColorTarget);
-      renderer.clear();
-      renderer.render(scene, camera);
-
-      scene.overrideMaterial = normalMaterial;
-      renderer.setRenderTarget(normalTarget);
-      renderer.clear();
-      renderer.render(scene, camera);
-      scene.overrideMaterial = null;
+      // Outline pass disabled: skip no-shadow and normal targets.
+      renderer.setRenderTarget(null);
 
       renderer.setRenderTarget(null);
       renderer.clear();
