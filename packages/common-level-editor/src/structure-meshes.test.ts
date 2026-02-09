@@ -111,7 +111,7 @@ describe("structure meshes", () => {
     kit.dispose();
   });
 
-  it("keeps join caps visually seam-safe with wall material and slight height bias", () => {
+  it("keeps join caps aligned with wall height and wall material", () => {
     const kit = createEditorStructureMeshKit();
     const wall = kit.createWallSegment();
     const join = kit.createJoinPost(1 | 2);
@@ -127,8 +127,7 @@ describe("structure meshes", () => {
 
     const wallBounds = new THREE.Box3().setFromObject(wall);
     const joinBounds = new THREE.Box3().setFromObject(join);
-    expect(joinBounds.max.y).toBeGreaterThan(wallBounds.max.y);
-    expect(joinBounds.max.y - wallBounds.max.y).toBeLessThan(0.01);
+    expect(joinBounds.max.y).toBeCloseTo(wallBounds.max.y, 6);
 
     kit.dispose();
   });
