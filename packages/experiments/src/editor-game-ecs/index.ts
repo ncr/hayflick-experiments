@@ -198,10 +198,12 @@ void main() {
   edge *= (1.0 - seamMask * uSeamSuppress);
   float colorLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
   float lightMix = mix(0.0, smoothstep(0.02, 0.95, colorLuma), uOutlineLightResponse);
-  float shadeFactor = mix(uOutlineDarken, uOutlineDarken + 0.42, lightMix);
+  float shadeFactor = mix(uOutlineDarken, uOutlineDarken + 0.25, lightMix);
 
   vec3 chromaEdge = mix(vec3(colorLuma), c, uOutlineSaturationBoost);
-  vec3 litEdgeColor = clamp(chromaEdge * shadeFactor, 0.0, 1.0);
+  vec3 edgeBase = mix(chromaEdge, vec3(colorLuma), 0.35);
+  vec3 edgeTint = mix(edgeBase, uOutlineTint, uOutlineTintStrength);
+  vec3 litEdgeColor = clamp(edgeTint * shadeFactor, 0.0, 1.0);
   vec3 darkened = c * uEdgeDarken;
   vec3 edgeTint = mix(litEdgeColor, uOutlineTint, uOutlineTintStrength);
   vec3 outlined = mix(darkened, edgeTint, uOutlineProminence);
@@ -553,6 +555,7 @@ const CAMERA_PITCH = THREE.MathUtils.degToRad(35.26438968);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const CAMERA_DISTANCE = 30;
 const ORTHO_HEIGHT = 24;
+const PIXEL_SNAP = 2;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3.4;
 
@@ -1336,11 +1339,11 @@ const experiment: ExperimentModule = {
         uResolution: { value: new THREE.Vector2(1, 1) },
         uNear: { value: camera.near },
         uFar: { value: camera.far },
-        uPixelSize: { value: 3.0 },
+        uPixelSize: { value: 2.0 },
         uDepthThreshold: { value: 0.08 },
         uNormalThreshold: { value: 0.22 },
         uEdgeDarken: { value: 0.24 },
-        uOutlineDarken: { value: 0.22 },
+        uOutlineDarken: { value: 0.32 },
         uOutlineLightResponse: { value: 1.0 },
         uOutlineSaturationBoost: { value: 1.6 },
         uOutlineProminence: { value: 0.9 },
@@ -1348,7 +1351,7 @@ const experiment: ExperimentModule = {
         uShadowDitherStrength: { value: 0.0 },
         uSeamSuppress: { value: 0.85 },
         uOutlineTint: { value: new THREE.Color(0x0a0f14) },
-        uOutlineTintStrength: { value: 0.7 }
+        uOutlineTintStrength: { value: 0.85 }
       },
       vertexShader: POST_VERTEX_SHADER,
       fragmentShader: POST_FRAGMENT_SHADER
@@ -1689,6 +1692,7 @@ const experiment: ExperimentModule = {
     const panRight = new THREE.Vector3();
     const panForward = new THREE.Vector3();
     const panDelta = new THREE.Vector3();
+    const cameraViewTarget = new THREE.Vector3();
     const inputRight = new THREE.Vector3();
     const inputForward = new THREE.Vector3();
 
@@ -2284,8 +2288,16 @@ const experiment: ExperimentModule = {
         Math.cos(yawCurrent) * horizontal
       );
 
-      camera.position.copy(cameraTarget).addScaledVector(dir, CAMERA_DISTANCE);
-      camera.lookAt(cameraTarget);
+      cameraViewTarget.copy(cameraTarget);
+      if (PIXEL_SNAP > 0) {
+        const worldUnitsPerPixel = ORTHO_HEIGHT / zoomCurrent / viewportHeight;
+        const snap = worldUnitsPerPixel * PIXEL_SNAP;
+        cameraViewTarget.x = Math.round(cameraViewTarget.x / snap) * snap;
+        cameraViewTarget.z = Math.round(cameraViewTarget.z / snap) * snap;
+      }
+
+      camera.position.copy(cameraViewTarget).addScaledVector(dir, CAMERA_DISTANCE);
+      camera.lookAt(cameraViewTarget);
       camera.zoom = zoomCurrent;
       camera.updateProjectionMatrix();
     }
