@@ -246,7 +246,7 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
 }
 
 function createGeometries(): EditorStructureGeometries {
-  const nodeWidth = WALL_THICKNESS + 0.04;
+  const nodeWidth = WALL_THICKNESS;
   return {
     wallCore: new THREE.BoxGeometry(1, WALL_HEIGHT, WALL_THICKNESS),
     windowLower: new THREE.BoxGeometry(1, 0.92, WALL_THICKNESS),
