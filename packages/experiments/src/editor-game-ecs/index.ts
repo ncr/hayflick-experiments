@@ -380,7 +380,6 @@ const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const CAMERA_DISTANCE = 30;
 const ORTHO_HEIGHT = 5.966213466261495;
-const PIXEL_SNAP = 2;
 const FIXED_RENDER_WIDTH = 480;
 const FIXED_RENDER_HEIGHT = 270;
 const ZOOM_PIXEL_STEP = 2;
@@ -2033,8 +2032,10 @@ const experiment: ExperimentModule = {
     }
 
     function updateCanvasTransform(): void {
+      const tx = Math.round(panScreenX);
+      const ty = Math.round(panScreenY);
       renderer.domElement.style.transform =
-        `translate(-50%, -50%) translate(${panScreenX}px, ${panScreenY}px)`;
+        `translate(-50%, -50%) translate(${tx}px, ${ty}px)`;
     }
 
     function applyPanByPixels(deltaX: number, deltaY: number): void {
@@ -2101,13 +2102,6 @@ const experiment: ExperimentModule = {
       );
 
       cameraViewTarget.copy(cameraTarget);
-      if (PIXEL_SNAP > 0) {
-        const worldUnitsPerPixel =
-          ORTHO_HEIGHT / zoomCurrent / FIXED_RENDER_HEIGHT;
-        const snap = worldUnitsPerPixel * PIXEL_SNAP;
-        cameraViewTarget.x = Math.round(cameraViewTarget.x / snap) * snap;
-        cameraViewTarget.z = Math.round(cameraViewTarget.z / snap) * snap;
-      }
 
       camera.position.copy(cameraViewTarget).addScaledVector(dir, CAMERA_DISTANCE);
       camera.lookAt(cameraViewTarget);

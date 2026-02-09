@@ -340,3 +340,17 @@ Preventive checklist:
 - For pixel-perfect pan, convert drag/wheel deltas into whole low-res pixel camera steps and keep leftover as CSS canvas translation remainder.
 - Preserve remainder across resize by normalizing with render scale.
 - Reuse the same pan model across experiments that claim fixed-grid pixel stability.
+
+## 2026-02-09 - Double-quantizing camera pan caused phase-dependent shimmer
+Root cause:
+- `editor-game-ecs` quantized pan once in `applyPanByPixels`, then snapped camera target again in `setCameraPose`.
+- CSS pan transform also used fractional pixel translation, allowing subpixel sampling blur on the upscaled canvas.
+
+Detection signal:
+- User reported pixel stability still depended on pan position after initial compensation pass.
+- `pixel-perfect-2to1` remained stable under the same interaction, indicating implementation mismatch.
+
+Preventive checklist:
+- Quantize pan exactly once: either input-step quantization or camera pose snap, not both.
+- Keep CSS translation integer-valued for pixel-art canvases.
+- When matching behavior across experiments, compare full pan pipeline (camera math + DOM transform), not only world coordinates.
