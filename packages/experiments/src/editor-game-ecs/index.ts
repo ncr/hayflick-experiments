@@ -550,14 +550,15 @@ const GAME_SAVE_STORAGE_KEY = "editor_game_ecs_game_save_v4";
 const GAME_SAVE_SCHEMA_VERSION = 2;
 const EDITOR_LEVEL_SCHEMA_VERSION = 4;
 
-const CAMERA_PITCH = THREE.MathUtils.degToRad(26.56505118);
+const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const CAMERA_DISTANCE = 30;
-const ORTHO_HEIGHT = 24;
+const ORTHO_HEIGHT = 5.966213466261495;
 const PIXEL_SNAP = 2;
-const FIXED_RENDER_WIDTH = 640;
-const FIXED_RENDER_HEIGHT = 360;
+const FIXED_RENDER_WIDTH = 480;
+const FIXED_RENDER_HEIGHT = 270;
 const ZOOM_PIXEL_STEP = 2;
+const OUTPUT_SCALE_MULTIPLIER = 2;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3.4;
 
@@ -1287,6 +1288,11 @@ const experiment: ExperimentModule = {
     renderer.domElement.style.touchAction = "none";
     renderer.domElement.style.outline = "none";
     renderer.domElement.style.display = "block";
+    renderer.domElement.style.position = "absolute";
+    renderer.domElement.style.left = "50%";
+    renderer.domElement.style.top = "50%";
+    renderer.domElement.style.transform = "translate(-50%, -50%)";
+    renderer.domElement.style.imageRendering = "pixelated";
     renderer.domElement.tabIndex = 0;
     mount.appendChild(renderer.domElement);
 
@@ -2261,7 +2267,7 @@ const experiment: ExperimentModule = {
     }
 
     function updateCameraProjection(): void {
-      const aspect = viewportWidth / viewportHeight;
+      const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
       const halfHeight = ORTHO_HEIGHT * 0.5;
 
       camera.left = -halfHeight * aspect;
@@ -2272,7 +2278,8 @@ const experiment: ExperimentModule = {
     }
 
     function applyPanByPixels(deltaX: number, deltaY: number): void {
-      const worldUnitsPerPixel = ORTHO_HEIGHT / zoomCurrent / viewportHeight;
+      const worldUnitsPerPixel =
+        ORTHO_HEIGHT / zoomCurrent / FIXED_RENDER_HEIGHT;
 
       panRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
       panRight.y = 0;
@@ -2938,7 +2945,21 @@ const experiment: ExperimentModule = {
       viewportHeight = Math.max(1, Math.floor(rect.height));
 
       renderer.setPixelRatio(1);
-      renderer.setSize(viewportWidth, viewportHeight, true);
+      const baseScale = Math.max(
+        1,
+        Math.floor(
+          Math.min(
+            viewportWidth / FIXED_RENDER_WIDTH,
+            viewportHeight / FIXED_RENDER_HEIGHT
+          )
+        )
+      );
+      const scale = baseScale * OUTPUT_SCALE_MULTIPLIER;
+      const targetWidth = FIXED_RENDER_WIDTH * scale;
+      const targetHeight = FIXED_RENDER_HEIGHT * scale;
+      renderer.setSize(targetWidth, targetHeight, true);
+      renderer.domElement.style.width = `${targetWidth}px`;
+      renderer.domElement.style.height = `${targetHeight}px`;
       postMaterial.uniforms.uNear.value = camera.near;
       postMaterial.uniforms.uFar.value = camera.far;
       updateCameraProjection();
