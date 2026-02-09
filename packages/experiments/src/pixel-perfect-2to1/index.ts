@@ -122,6 +122,9 @@ const experiment: ExperimentModule = {
     let outputHeight = FIXED_RENDER_HEIGHT;
     let panRemainderX = 0;
     let panRemainderY = 0;
+    let keyPanX = 0;
+    let keyPanY = 0;
+    let keyPanActive = false;
 
     const updateCameraProjection = (nextWidth: number, nextHeight: number) => {
       const aspect = nextWidth / nextHeight;
@@ -241,7 +244,32 @@ const experiment: ExperimentModule = {
       } else if (event.code === "KeyE") {
         yawIndex += 1;
         event.preventDefault();
+      } else if (event.code === "KeyW") {
+        keyPanY = -1;
+        keyPanActive = true;
+        event.preventDefault();
+      } else if (event.code === "KeyS") {
+        keyPanY = 1;
+        keyPanActive = true;
+        event.preventDefault();
+      } else if (event.code === "KeyA") {
+        keyPanX = -1;
+        keyPanActive = true;
+        event.preventDefault();
+      } else if (event.code === "KeyD") {
+        keyPanX = 1;
+        keyPanActive = true;
+        event.preventDefault();
       }
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "KeyW" || event.code === "KeyS") {
+        keyPanY = 0;
+      } else if (event.code === "KeyA" || event.code === "KeyD") {
+        keyPanX = 0;
+      }
+      keyPanActive = keyPanX !== 0 || keyPanY !== 0;
     };
 
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
@@ -250,6 +278,7 @@ const experiment: ExperimentModule = {
     renderer.domElement.addEventListener("pointercancel", handlePointerUp);
     renderer.domElement.addEventListener("wheel", handleWheel, { passive: false });
     window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
 
     let raf = 0;
     const render = () => {
@@ -280,6 +309,10 @@ const experiment: ExperimentModule = {
       renderer.clear();
       renderer.render(scene, camera);
 
+      if (keyPanActive) {
+        applyPan(keyPanX, keyPanY);
+      }
+
       renderer.setRenderTarget(null);
       renderer.clear();
       const offsetX = (panRemainderX * renderScale) / (outputWidth * 0.5);
@@ -301,6 +334,7 @@ const experiment: ExperimentModule = {
       renderer.domElement.removeEventListener("pointercancel", handlePointerUp);
       renderer.domElement.removeEventListener("wheel", handleWheel);
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
 
       mount.style.display = "";
       mount.style.alignItems = "";
