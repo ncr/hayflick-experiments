@@ -422,3 +422,16 @@ Preventive checklist:
 - Trim segment endpoints at nodes that get non-straight join posts (corner/T/X), then fill the center with a single join-post mesh.
 - Treat straight-through degree-2 nodes separately (no post, no trim) to avoid gaps.
 - Keep shared trim behavior in promoted mesh kit and reuse it from all experiments.
+
+## 2026-02-09 - Endpoint trimming removed z-fighting but introduced visible wall gaps
+Root cause:
+- Uniform endpoint trimming relied on a minimal center post to close seams.
+- At some camera angles/material settings, those seams remained visible as gaps between segments.
+
+Detection signal:
+- User reported z-fighting unchanged and clearly visible segment gaps after trim rollout.
+
+Preventive checklist:
+- Prefer explicit junction-cap meshes (corner/T/X) selected from node neighbor masks over trim-only seam fixes.
+- Keep straight degree-2 junctions uncapped to avoid unnecessary geometry.
+- Implement junction logic in promoted mesh kit and consume it consistently in all editor experiments.

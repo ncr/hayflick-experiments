@@ -11,11 +11,6 @@ export type EditorDoorVisual = {
   leafPivot: THREE.Group;
 };
 
-export type EditorStructureSegmentOptions = {
-  trimStart?: boolean;
-  trimEnd?: boolean;
-};
-
 type EditorStructureMaterials = {
   wall: THREE.MeshStandardMaterial;
   accent: THREE.MeshStandardMaterial;
@@ -31,18 +26,18 @@ type EditorStructureGeometries = {
   windowGlass: THREE.PlaneGeometry;
   doorLeaf: THREE.BoxGeometry;
   nodeCore: THREE.BoxGeometry;
+  nodeCapCore: THREE.BoxGeometry;
+  nodeCapArmX: THREE.BoxGeometry;
+  nodeCapArmZ: THREE.BoxGeometry;
 };
 
 export type EditorStructureMeshKit = {
-  createWallSegment: (options?: EditorStructureSegmentOptions) => THREE.Group;
+  createWallSegment: () => THREE.Group;
   createWallBlock: () => THREE.Group;
-  createWindowSegment: (options?: EditorStructureSegmentOptions) => THREE.Group;
+  createWindowSegment: () => THREE.Group;
   createDoorVisual: () => EditorDoorVisual;
-  createDoorSegment: (
-    state: EditorStructureDoorState,
-    options?: EditorStructureSegmentOptions
-  ) => THREE.Group;
-  createJoinPost: (degree: number, straight?: boolean) => THREE.Group;
+  createDoorSegment: (state: EditorStructureDoorState) => THREE.Group;
+  createJoinPost: (mask: number) => THREE.Group;
   dispose: () => void;
 };
 
@@ -54,7 +49,12 @@ const WALL_BLOCK_CORNER_OFFSET = WALL_BLOCK_HALF_SPAN;
 const WALL_STRIPE_COLOR = 0xc45a12;
 const WALL_STRIPE_START_PIXEL_Y = 13;
 const WALL_STRIPE_END_PIXEL_Y = 17;
-const SEGMENT_TRIM_AMOUNT = WALL_THICKNESS * 0.5;
+const JOIN_CAP_OVERLAP = WALL_THICKNESS * 0.12;
+const JOIN_CAP_HEIGHT_EPSILON = LEVEL_EDITOR_WORLD_UNIT * 0.003;
+const JOIN_MASK_NORTH = 1;
+const JOIN_MASK_EAST = 2;
+const JOIN_MASK_SOUTH = 4;
+const JOIN_MASK_WEST = 8;
 
 type StripeBand = {
   color: number;
@@ -179,6 +179,8 @@ function createMaterials(): { materials: EditorStructureMaterials } {
 
 function createGeometries(): EditorStructureGeometries {
   const nodeWidth = WALL_THICKNESS;
+  const capHeight = WALL_HEIGHT + JOIN_CAP_HEIGHT_EPSILON;
+  const armLength = WALL_THICKNESS * 0.5 + JOIN_CAP_OVERLAP;
   return {
     wallCore: new THREE.BoxGeometry(
       LEVEL_EDITOR_WORLD_UNIT,
@@ -204,7 +206,10 @@ function createGeometries(): EditorStructureGeometries {
       2.2 * LEVEL_EDITOR_WORLD_UNIT,
       0.08 * LEVEL_EDITOR_WORLD_UNIT
     ),
-    nodeCore: new THREE.BoxGeometry(nodeWidth, WALL_HEIGHT, nodeWidth)
+    nodeCore: new THREE.BoxGeometry(nodeWidth, WALL_HEIGHT, nodeWidth),
+    nodeCapCore: new THREE.BoxGeometry(nodeWidth, capHeight, nodeWidth),
+    nodeCapArmX: new THREE.BoxGeometry(armLength, capHeight, nodeWidth),
+    nodeCapArmZ: new THREE.BoxGeometry(nodeWidth, capHeight, armLength)
   };
 }
 
@@ -216,32 +221,17 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
   const { materials } = createMaterials();
   const geometries = createGeometries();
 
-  const applySegmentTrim = (
-    group: THREE.Group,
-    options?: EditorStructureSegmentOptions
-  ): THREE.Group => {
-    const trimStart = options?.trimStart ? SEGMENT_TRIM_AMOUNT : 0;
-    const trimEnd = options?.trimEnd ? SEGMENT_TRIM_AMOUNT : 0;
-    const effectiveLength = Math.max(
-      LEVEL_EDITOR_WORLD_UNIT * 0.1,
-      LEVEL_EDITOR_WORLD_UNIT - trimStart - trimEnd
-    );
-    group.scale.x = effectiveLength / LEVEL_EDITOR_WORLD_UNIT;
-    group.position.x = (trimStart - trimEnd) * 0.5;
-    return group;
-  };
-
-  const createWallSegment = (options?: EditorStructureSegmentOptions): THREE.Group => {
+  const createWallSegment = (): THREE.Group => {
     const group = new THREE.Group();
 
     const core = new THREE.Mesh(geometries.wallCore, materials.wall);
     core.position.y = WALL_HEIGHT * 0.5;
     group.add(core);
 
-    return applySegmentTrim(group, options);
+    return group;
   };
 
-  const createWindowSegment = (options?: EditorStructureSegmentOptions): THREE.Group => {
+  const createWindowSegment = (): THREE.Group => {
     const group = new THREE.Group();
 
     const lower = new THREE.Mesh(geometries.windowLower, materials.wall);
@@ -256,7 +246,7 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     glass.position.set(0, WALL_HEIGHT * 0.5, WALL_THICKNESS * 0.54);
     group.add(glass);
 
-    return applySegmentTrim(group, options);
+    return group;
   };
 
   const createDoorVisual = (): EditorDoorVisual => {
@@ -278,25 +268,55 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     return { root, leafPivot };
   };
 
-  const createDoorSegment = (
-    state: EditorStructureDoorState,
-    options?: EditorStructureSegmentOptions
-  ): THREE.Group => {
+  const createDoorSegment = (state: EditorStructureDoorState): THREE.Group => {
     const door = createDoorVisual();
     setDoorVisualOpen(door, state === "open");
-    return applySegmentTrim(door.root, options);
+    return door.root;
   };
 
-  const createJoinPost = (degree: number, straight = false): THREE.Group => {
-    if (degree < 2 || straight) {
+  const createJoinPost = (mask: number): THREE.Group => {
+    const connections = ((mask & JOIN_MASK_NORTH) ? 1 : 0) +
+      ((mask & JOIN_MASK_EAST) ? 1 : 0) +
+      ((mask & JOIN_MASK_SOUTH) ? 1 : 0) +
+      ((mask & JOIN_MASK_WEST) ? 1 : 0);
+    const straight =
+      mask === (JOIN_MASK_NORTH | JOIN_MASK_SOUTH) ||
+      mask === (JOIN_MASK_EAST | JOIN_MASK_WEST);
+
+    if (connections < 2 || straight) {
       return new THREE.Group();
     }
 
     const group = new THREE.Group();
 
-    const core = new THREE.Mesh(geometries.nodeCore, materials.joint);
-    core.position.y = WALL_HEIGHT * 0.5;
+    const capHeight = WALL_HEIGHT + JOIN_CAP_HEIGHT_EPSILON;
+    const core = new THREE.Mesh(geometries.nodeCapCore, materials.joint);
+    core.position.y = capHeight * 0.5;
     group.add(core);
+
+    const armLength = WALL_THICKNESS * 0.5 + JOIN_CAP_OVERLAP;
+    const armCenter = WALL_THICKNESS * 0.5 + armLength * 0.5 - JOIN_CAP_OVERLAP * 0.5;
+    const addArm = (x: number, z: number, alongX: boolean): void => {
+      const arm = new THREE.Mesh(
+        alongX ? geometries.nodeCapArmX : geometries.nodeCapArmZ,
+        materials.joint
+      );
+      arm.position.set(x, capHeight * 0.5, z);
+      group.add(arm);
+    };
+
+    if (mask & JOIN_MASK_NORTH) {
+      addArm(0, -armCenter, false);
+    }
+    if (mask & JOIN_MASK_EAST) {
+      addArm(armCenter, 0, true);
+    }
+    if (mask & JOIN_MASK_SOUTH) {
+      addArm(0, armCenter, false);
+    }
+    if (mask & JOIN_MASK_WEST) {
+      addArm(-armCenter, 0, true);
+    }
 
     return group;
   };
@@ -322,15 +342,15 @@ export function createEditorStructureMeshKit(): EditorStructureMeshKit {
     west.rotation.y = Math.PI * 0.5;
     group.add(west);
 
-    const corners: Array<[number, number]> = [
-      [-WALL_BLOCK_CORNER_OFFSET, -WALL_BLOCK_CORNER_OFFSET],
-      [WALL_BLOCK_CORNER_OFFSET, -WALL_BLOCK_CORNER_OFFSET],
-      [WALL_BLOCK_CORNER_OFFSET, WALL_BLOCK_CORNER_OFFSET],
-      [-WALL_BLOCK_CORNER_OFFSET, WALL_BLOCK_CORNER_OFFSET]
+    const corners: Array<[number, number, number]> = [
+      [-WALL_BLOCK_CORNER_OFFSET, -WALL_BLOCK_CORNER_OFFSET, JOIN_MASK_EAST | JOIN_MASK_SOUTH],
+      [WALL_BLOCK_CORNER_OFFSET, -WALL_BLOCK_CORNER_OFFSET, JOIN_MASK_WEST | JOIN_MASK_SOUTH],
+      [WALL_BLOCK_CORNER_OFFSET, WALL_BLOCK_CORNER_OFFSET, JOIN_MASK_WEST | JOIN_MASK_NORTH],
+      [-WALL_BLOCK_CORNER_OFFSET, WALL_BLOCK_CORNER_OFFSET, JOIN_MASK_EAST | JOIN_MASK_NORTH]
     ];
 
-    for (const [x, z] of corners) {
-      const post = createJoinPost(2);
+    for (const [x, z, mask] of corners) {
+      const post = createJoinPost(mask);
       post.position.set(x, 0, z);
       group.add(post);
     }

@@ -1694,29 +1694,34 @@ const experiment: ExperimentModule = {
     }
 
     function createStructureMesh(
-      segment: StructureSegmentData,
-      options?: { trimStart?: boolean; trimEnd?: boolean }
+      segment: StructureSegmentData
     ): THREE.Object3D {
       switch (segment.kind) {
         case STRUCTURE_KIND.WALL:
-          return structureMeshKit.createWallSegment(options);
+          return structureMeshKit.createWallSegment();
         case STRUCTURE_KIND.WINDOW:
-          return structureMeshKit.createWindowSegment(options);
+          return structureMeshKit.createWindowSegment();
         case STRUCTURE_KIND.DOOR:
-          return structureMeshKit.createDoorSegment(segment.state, options);
+          return structureMeshKit.createDoorSegment(segment.state);
         default:
           return assertNever(segment, "structure segment");
       }
     }
 
-    function isStraightJunction(directions: DirectionVector[]): boolean {
-      return (
-        directions.length === 2 &&
-        directions[0] !== undefined &&
-        directions[1] !== undefined &&
-        directions[0].dx === -directions[1].dx &&
-        directions[0].dy === -directions[1].dy
-      );
+    function directionMask(directions: DirectionVector[]): number {
+      let mask = 0;
+      for (const direction of directions) {
+        if (direction.dy < 0) {
+          mask |= 1;
+        } else if (direction.dx > 0) {
+          mask |= 2;
+        } else if (direction.dy > 0) {
+          mask |= 4;
+        } else if (direction.dx < 0) {
+          mask |= 8;
+        }
+      }
+      return mask;
     }
 
     function rebuildEditorStructureMeshes(): void {
@@ -1732,20 +1737,9 @@ const experiment: ExperimentModule = {
         registerDirection(adjacency, edge.bx, edge.by, -dx, -dy);
       }
 
-      const joinNodes = new Set<string>();
-      adjacency.forEach((directions, key) => {
-        if (directions.length < 2 || isStraightJunction(directions)) {
-          return;
-        }
-        joinNodes.add(key);
-      });
-
       for (const [key, segment] of structureSegments.entries()) {
         const edge = parseEdge(key);
-        const mesh = createStructureMesh(segment, {
-          trimStart: joinNodes.has(cellKey(edge.ax, edge.ay)),
-          trimEnd: joinNodes.has(cellKey(edge.bx, edge.by))
-        });
+        const mesh = createStructureMesh(segment);
         mesh.position.set(
           (toWorldNodeX(edge.ax) + toWorldNodeX(edge.bx)) * 0.5,
           0,
@@ -1766,11 +1760,10 @@ const experiment: ExperimentModule = {
         if (directions.length < 2) {
           return;
         }
-        const straight = isStraightJunction(directions);
         const [xStr, yStr] = key.split(",");
         const x = Number(xStr);
         const y = Number(yStr);
-        const post = structureMeshKit.createJoinPost(directions.length, straight);
+        const post = structureMeshKit.createJoinPost(directionMask(directions));
         post.position.set(toWorldNodeX(x), 0, toWorldNodeZ(y));
         wallGroup.add(post);
       });

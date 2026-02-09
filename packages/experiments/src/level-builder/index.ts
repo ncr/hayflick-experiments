@@ -692,38 +692,32 @@ const experiment: ExperimentModule = {
       return mesh;
     }
 
-    function createWallSegment(options?: { trimStart?: boolean; trimEnd?: boolean }): THREE.Object3D {
-      return structureMeshKit.createWallSegment(options);
+    function createWallSegment(): THREE.Object3D {
+      return structureMeshKit.createWallSegment();
     }
 
-    function createWindowSegment(options?: { trimStart?: boolean; trimEnd?: boolean }): THREE.Object3D {
-      return structureMeshKit.createWindowSegment(options);
+    function createWindowSegment(): THREE.Object3D {
+      return structureMeshKit.createWindowSegment();
     }
 
-    function createDoorSegment(
-      state: LevelBuilderDoorState,
-      options?: { trimStart?: boolean; trimEnd?: boolean }
-    ): THREE.Object3D {
-      return structureMeshKit.createDoorSegment(state, options);
+    function createDoorSegment(state: LevelBuilderDoorState): THREE.Object3D {
+      return structureMeshKit.createDoorSegment(state);
     }
 
-    function createStructureSegment(
-      segment: StructureSegmentData,
-      options?: { trimStart?: boolean; trimEnd?: boolean }
-    ): THREE.Object3D {
+    function createStructureSegment(segment: StructureSegmentData): THREE.Object3D {
       if (segment.kind === "wall") {
-        return createWallSegment(options);
+        return createWallSegment();
       }
 
       if (segment.kind === "window") {
-        return createWindowSegment(options);
+        return createWindowSegment();
       }
 
-      return createDoorSegment(segment.state, options);
+      return createDoorSegment(segment.state);
     }
 
-    function createJoinPost(degree: number, straight: boolean): THREE.Object3D {
-      return structureMeshKit.createJoinPost(degree, straight);
+    function createJoinPost(mask: number): THREE.Object3D {
+      return structureMeshKit.createJoinPost(mask);
     }
 
     function registerDirection(map: Map<string, DirectionVector[]>, x: number, z: number, dx: number, dz: number): void {
@@ -743,6 +737,22 @@ const experiment: ExperimentModule = {
         directions[0].dx === -directions[1].dx &&
         directions[0].dz === -directions[1].dz
       );
+    }
+
+    function directionMask(directions: DirectionVector[]): number {
+      let mask = 0;
+      for (const direction of directions) {
+        if (direction.dz < 0) {
+          mask |= 1;
+        } else if (direction.dx > 0) {
+          mask |= 2;
+        } else if (direction.dz > 0) {
+          mask |= 4;
+        } else if (direction.dx < 0) {
+          mask |= 8;
+        }
+      }
+      return mask;
     }
 
     function rebuildGroundTiles(): void {
@@ -888,21 +898,9 @@ const experiment: ExperimentModule = {
         registerDirection(adjacency, edge.bx, edge.bz, edge.ax - edge.bx, edge.az - edge.bz);
       });
 
-      const joinNodes = new Set<string>();
-      adjacency.forEach((directions, key) => {
-        if (directions.length < 2 || isStraightJunction(directions)) {
-          return;
-        }
-        joinNodes.add(key);
-      });
-      intersectionCount = joinNodes.size;
-
       structureSegments.forEach((segmentData, segmentKey) => {
         const edge = parseEdge(segmentKey);
-        const module = createStructureSegment(segmentData, {
-          trimStart: joinNodes.has(nodeKey(edge.ax, edge.az)),
-          trimEnd: joinNodes.has(nodeKey(edge.bx, edge.bz))
-        });
+        const module = createStructureSegment(segmentData);
 
         const xA = toWorldNodeX(edge.ax);
         const zA = toWorldNodeZ(edge.az);
@@ -917,20 +915,21 @@ const experiment: ExperimentModule = {
         structuresGroup.add(module);
       });
 
+      intersectionCount = 0;
       adjacency.forEach((directions, key) => {
         if (directions.length < 2) {
           return;
         }
-        const straight = isStraightJunction(directions);
-        if (straight) {
+        if (isStraightJunction(directions)) {
           return;
         }
 
         const { x, z } = parseCellKey(key);
-        const post = createJoinPost(directions.length, straight);
+        const post = createJoinPost(directionMask(directions));
         post.position.x = toWorldNodeX(x);
         post.position.z = toWorldNodeZ(z);
         jointsGroup.add(post);
+        intersectionCount += 1;
       });
     }
 

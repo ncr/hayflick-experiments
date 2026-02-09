@@ -11,7 +11,7 @@ describe("structure meshes", () => {
     const door = kit.createDoorVisual();
     const doorClosed = kit.createDoorSegment("closed");
     const doorOpen = kit.createDoorSegment("open");
-    const join = kit.createJoinPost(3);
+    const join = kit.createJoinPost(1 | 2 | 4);
     const block = kit.createWallBlock();
 
     expect(wall.children.length).toBeGreaterThan(0);
@@ -61,14 +61,17 @@ describe("structure meshes", () => {
     kit.dispose();
   });
 
-  it("supports segment trimming at junction ends to avoid overlap", () => {
+  it("creates specialized join caps for corner/tee/cross masks", () => {
     const kit = createEditorStructureMeshKit();
-    const trimmed = kit.createWallSegment({ trimStart: true, trimEnd: true });
-    const oneSided = kit.createWallSegment({ trimStart: true, trimEnd: false });
+    const corner = kit.createJoinPost(1 | 2);
+    const tee = kit.createJoinPost(1 | 2 | 8);
+    const cross = kit.createJoinPost(1 | 2 | 4 | 8);
+    const straight = kit.createJoinPost(1 | 4);
 
-    expect(trimmed.scale.x).toBeLessThan(1);
-    expect(trimmed.position.x).toBe(0);
-    expect(oneSided.position.x).toBeGreaterThan(0);
+    expect(corner.children.length).toBeGreaterThan(1);
+    expect(tee.children.length).toBeGreaterThan(corner.children.length);
+    expect(cross.children.length).toBeGreaterThanOrEqual(tee.children.length);
+    expect(straight.children.length).toBe(0);
 
     kit.dispose();
   });
