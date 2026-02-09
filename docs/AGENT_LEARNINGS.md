@@ -510,3 +510,17 @@ Detection signal:
 Preventive checklist:
 - Derive seam overlap from pixel density constants (`worldUnit / pixelsPerUnitX`) instead of arbitrary tiny epsilons.
 - Keep overlap explicit in comments/tests so it stays tied to pixel-scale rendering assumptions.
+
+## 2026-02-10 - Vertical segment trim sides were inverted by +90° rotation
+Root cause:
+- Wall/window/door segment meshes are authored along local +X, then vertical edges were rotated by +90° around Y.
+- That rotation maps local +X toward world -Z, so `trimStart`/`trimEnd` semantics flipped on vertical edges.
+- Join logic trimmed the wrong half of many vertical segments, producing large visible gaps.
+
+Detection signal:
+- User reported gaps were large (not subpixel/raster-phase) and most apparent around L corners.
+
+Preventive checklist:
+- When rotating authored geometry, verify local axis direction after rotation before applying directional trims.
+- For vertical edges in current setup, swap trimStart/trimEnd (and trim amounts) before creating the segment mesh.
+- Add an orientation-focused mesh regression test when trim logic depends on edge direction.

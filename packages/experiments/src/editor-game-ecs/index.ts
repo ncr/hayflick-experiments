@@ -1716,6 +1716,31 @@ const experiment: ExperimentModule = {
       }
     }
 
+    function orientedSegmentTrimOptions(
+      edge: GridEdge,
+      options: {
+        trimStart: boolean;
+        trimEnd: boolean;
+        trimStartAmount?: number;
+        trimEndAmount?: number;
+      }
+    ): {
+      trimStart: boolean;
+      trimEnd: boolean;
+      trimStartAmount?: number;
+      trimEndAmount?: number;
+    } {
+      if (edge.ay === edge.by) {
+        return options;
+      }
+      return {
+        trimStart: options.trimEnd,
+        trimEnd: options.trimStart,
+        trimStartAmount: options.trimEndAmount,
+        trimEndAmount: options.trimStartAmount
+      };
+    }
+
     function directionMask(directions: DirectionVector[]): number {
       let mask = 0;
       for (const direction of directions) {
@@ -1764,12 +1789,15 @@ const experiment: ExperimentModule = {
         const edge = parseEdge(key);
         const trimStart = joinNodes.has(cellKey(edge.ax, edge.ay));
         const trimEnd = joinNodes.has(cellKey(edge.bx, edge.by));
-        const mesh = createStructureMesh(segment, {
-          trimStart,
-          trimEnd,
-          trimStartAmount: trimStart ? TILE_SIZE * 0.5 : undefined,
-          trimEndAmount: trimEnd ? TILE_SIZE * 0.5 : undefined
-        });
+        const mesh = createStructureMesh(
+          segment,
+          orientedSegmentTrimOptions(edge, {
+            trimStart,
+            trimEnd,
+            trimStartAmount: trimStart ? TILE_SIZE * 0.5 : undefined,
+            trimEndAmount: trimEnd ? TILE_SIZE * 0.5 : undefined
+          })
+        );
         mesh.position.set(
           (toWorldNodeX(edge.ax) + toWorldNodeX(edge.bx)) * 0.5,
           0,

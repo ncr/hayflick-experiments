@@ -725,6 +725,31 @@ const experiment: ExperimentModule = {
       return createDoorSegment(segment.state, options);
     }
 
+    function orientedSegmentTrimOptions(
+      edge: GridEdge,
+      options: {
+        trimStart: boolean;
+        trimEnd: boolean;
+        trimStartAmount?: number;
+        trimEndAmount?: number;
+      }
+    ): {
+      trimStart: boolean;
+      trimEnd: boolean;
+      trimStartAmount?: number;
+      trimEndAmount?: number;
+    } {
+      if (edge.az === edge.bz) {
+        return options;
+      }
+      return {
+        trimStart: options.trimEnd,
+        trimEnd: options.trimStart,
+        trimStartAmount: options.trimEndAmount,
+        trimEndAmount: options.trimStartAmount
+      };
+    }
+
     function createJoinPost(mask: number): THREE.Object3D {
       return structureMeshKit.createJoinPost(mask);
     }
@@ -922,12 +947,15 @@ const experiment: ExperimentModule = {
         const edge = parseEdge(segmentKey);
         const trimStart = joinNodes.has(nodeKey(edge.ax, edge.az));
         const trimEnd = joinNodes.has(nodeKey(edge.bx, edge.bz));
-        const module = createStructureSegment(segmentData, {
-          trimStart,
-          trimEnd,
-          trimStartAmount: trimStart ? TILE_SIZE * 0.5 : undefined,
-          trimEndAmount: trimEnd ? TILE_SIZE * 0.5 : undefined
-        });
+        const module = createStructureSegment(
+          segmentData,
+          orientedSegmentTrimOptions(edge, {
+            trimStart,
+            trimEnd,
+            trimStartAmount: trimStart ? TILE_SIZE * 0.5 : undefined,
+            trimEndAmount: trimEnd ? TILE_SIZE * 0.5 : undefined
+          })
+        );
 
         const xA = toWorldNodeX(edge.ax);
         const zA = toWorldNodeZ(edge.az);
