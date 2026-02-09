@@ -84,6 +84,7 @@ uniform float uOutlineSaturationBoost;
 uniform float uOutlineProminence;
 uniform float uPostDitherStrength;
 uniform float uShadowDitherStrength;
+uniform float uSeamSuppress;
 
 varying vec2 vUv;
 
@@ -185,6 +186,14 @@ void main() {
   );
 
   float edge = max(depthEdge, normalEdge);
+
+  float seamDepth = 1.0 - step(uDepthThreshold * 0.5, max(abs(ldC - ldL), abs(ldC - ldR)));
+  float seamDepthLR = 1.0 - step(uDepthThreshold * 0.5, abs(ldL - ldR));
+  float seamDepthUD = 1.0 - step(uDepthThreshold * 0.5, abs(ldU - ldD));
+  float seamNormalLR = 1.0 - step(uNormalThreshold * 0.5, 1.0 - dot(nL, nR));
+  float seamNormalUD = 1.0 - step(uNormalThreshold * 0.5, 1.0 - dot(nU, nD));
+  float seamMask = seamDepth * max(seamDepthLR * seamNormalLR, seamDepthUD * seamNormalUD);
+  edge *= (1.0 - seamMask * uSeamSuppress);
   float colorLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
   float lightMix = mix(0.0, smoothstep(0.02, 0.95, colorLuma), uOutlineLightResponse);
   float shadeFactor = mix(uOutlineDarken, uOutlineDarken + 0.42, lightMix);
@@ -1333,7 +1342,8 @@ const experiment: ExperimentModule = {
         uOutlineSaturationBoost: { value: 1.6 },
         uOutlineProminence: { value: 0.9 },
         uPostDitherStrength: { value: 0.0 },
-        uShadowDitherStrength: { value: 0.18 }
+        uShadowDitherStrength: { value: 0.18 },
+        uSeamSuppress: { value: 0.85 }
       },
       vertexShader: POST_VERTEX_SHADER,
       fragmentShader: POST_FRAGMENT_SHADER
