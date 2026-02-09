@@ -557,6 +557,7 @@ const ORTHO_HEIGHT = 24;
 const PIXEL_SNAP = 2;
 const FIXED_RENDER_WIDTH = 640;
 const FIXED_RENDER_HEIGHT = 360;
+const ZOOM_PIXEL_STEP = 2;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3.4;
 
@@ -1354,7 +1355,7 @@ const experiment: ExperimentModule = {
         },
         uNear: { value: camera.near },
         uFar: { value: camera.far },
-        uPixelSize: { value: 2.0 },
+        uPixelSize: { value: 1.0 },
         uDepthThreshold: { value: 0.08 },
         uNormalThreshold: { value: 0.22 },
         uEdgeDarken: { value: 0.24 },
@@ -2287,6 +2288,16 @@ const experiment: ExperimentModule = {
       cameraTarget.add(panDelta);
     }
 
+    function snapZoom(value: number): number {
+      const pixelsPerUnit =
+        (value * FIXED_RENDER_HEIGHT) / ORTHO_HEIGHT;
+      const snappedPixelsPerUnit = Math.max(
+        ZOOM_PIXEL_STEP,
+        Math.round(pixelsPerUnit / ZOOM_PIXEL_STEP) * ZOOM_PIXEL_STEP
+      );
+      return (snappedPixelsPerUnit * ORTHO_HEIGHT) / FIXED_RENDER_HEIGHT;
+    }
+
     function setCameraPose(): void {
       const yawTarget = CAMERA_BASE_YAW + yawIndex * (Math.PI * 0.5);
       const delta = Math.atan2(
@@ -2294,7 +2305,9 @@ const experiment: ExperimentModule = {
         Math.cos(yawTarget - yawCurrent)
       );
       yawCurrent += delta * 0.22;
-      zoomCurrent = THREE.MathUtils.lerp(zoomCurrent, zoomTarget, 0.18);
+      const desiredZoom = snapZoom(zoomTarget);
+      zoomCurrent = THREE.MathUtils.lerp(zoomCurrent, desiredZoom, 0.18);
+      zoomCurrent = snapZoom(zoomCurrent);
 
       const horizontal = Math.cos(CAMERA_PITCH);
       const dir = new THREE.Vector3(
@@ -3176,11 +3189,12 @@ const experiment: ExperimentModule = {
 
       if (zoomIntent) {
         const delta = event.deltaY * scale;
-        zoomTarget = THREE.MathUtils.clamp(
+        const nextZoom = THREE.MathUtils.clamp(
           zoomTarget * Math.exp(-delta * 0.0015),
           ZOOM_MIN,
           ZOOM_MAX
         );
+        zoomTarget = snapZoom(nextZoom);
       } else {
         const panX =
           (event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
