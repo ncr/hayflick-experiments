@@ -20,7 +20,12 @@ const experiment: ExperimentModule = {
     renderer.setPixelRatio(1);
     renderer.setSize(width, height, true);
     renderer.setClearColor(0x0b0f14, 1);
+    renderer.domElement.style.imageRendering = "pixelated";
     mount.appendChild(renderer.domElement);
+    mount.style.display = "flex";
+    mount.style.alignItems = "center";
+    mount.style.justifyContent = "center";
+    mount.style.background = "#0b0f14";
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b0f14);
@@ -115,7 +120,18 @@ const experiment: ExperimentModule = {
     const resize = (nextWidth: number, nextHeight: number) => {
       const safeWidth = Math.max(1, Math.floor(nextWidth));
       const safeHeight = Math.max(1, Math.floor(nextHeight));
-      renderer.setSize(safeWidth, safeHeight, true);
+      const scale = Math.max(
+        1,
+        Math.floor(
+          Math.min(
+            safeWidth / FIXED_RENDER_WIDTH,
+            safeHeight / FIXED_RENDER_HEIGHT
+          )
+        )
+      );
+      const targetWidth = FIXED_RENDER_WIDTH * scale;
+      const targetHeight = FIXED_RENDER_HEIGHT * scale;
+      renderer.setSize(targetWidth, targetHeight, false);
       updateCameraProjection(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT);
     };
 
@@ -167,6 +183,11 @@ const experiment: ExperimentModule = {
     return () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
+
+      mount.style.display = "";
+      mount.style.alignItems = "";
+      mount.style.justifyContent = "";
+      mount.style.background = "";
 
       boxes.forEach((mesh) => scene.remove(mesh));
       scene.remove(floorGroup);
