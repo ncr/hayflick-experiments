@@ -78,7 +78,10 @@ function rasterizeLine(
   return points;
 }
 
-function assertTwoToOneStaircaseByRows(points: Array<{ x: number; y: number }>) {
+function assertTwoToOneStaircaseByRows(
+  points: Array<{ x: number; y: number }>,
+  minRows = 8
+) {
   const rows = new Map<number, number[]>();
   for (const point of points) {
     const xs = rows.get(point.y);
@@ -90,7 +93,7 @@ function assertTwoToOneStaircaseByRows(points: Array<{ x: number; y: number }>) 
   }
 
   const sorted = [...rows.entries()].sort((a, b) => a[0] - b[0]);
-  expect(sorted.length).toBeGreaterThan(20);
+  expect(sorted.length).toBeGreaterThan(minRows);
 
   for (let i = 0; i < sorted.length; i += 1) {
     const xs = sorted[i][1].sort((a, b) => a - b);
@@ -102,6 +105,69 @@ function assertTwoToOneStaircaseByRows(points: Array<{ x: number; y: number }>) 
       expect(xs[1] - xs[0]).toBe(1);
     }
   }
+}
+
+type EdgeDef = {
+  a: number;
+  b: number;
+  n1: THREE.Vector3;
+  n2: THREE.Vector3;
+};
+
+const UNIT_CUBE_VERTICES = [
+  new THREE.Vector3(-0.5, -0.5, -0.5),
+  new THREE.Vector3(0.5, -0.5, -0.5),
+  new THREE.Vector3(0.5, 0.5, -0.5),
+  new THREE.Vector3(-0.5, 0.5, -0.5),
+  new THREE.Vector3(-0.5, -0.5, 0.5),
+  new THREE.Vector3(0.5, -0.5, 0.5),
+  new THREE.Vector3(0.5, 0.5, 0.5),
+  new THREE.Vector3(-0.5, 0.5, 0.5)
+] as const;
+
+const UNIT_CUBE_EDGES: EdgeDef[] = [
+  { a: 0, b: 1, n1: new THREE.Vector3(0, -1, 0), n2: new THREE.Vector3(0, 0, -1) },
+  { a: 1, b: 2, n1: new THREE.Vector3(1, 0, 0), n2: new THREE.Vector3(0, 0, -1) },
+  { a: 2, b: 3, n1: new THREE.Vector3(0, 1, 0), n2: new THREE.Vector3(0, 0, -1) },
+  { a: 3, b: 0, n1: new THREE.Vector3(-1, 0, 0), n2: new THREE.Vector3(0, 0, -1) },
+  { a: 4, b: 5, n1: new THREE.Vector3(0, -1, 0), n2: new THREE.Vector3(0, 0, 1) },
+  { a: 5, b: 6, n1: new THREE.Vector3(1, 0, 0), n2: new THREE.Vector3(0, 0, 1) },
+  { a: 6, b: 7, n1: new THREE.Vector3(0, 1, 0), n2: new THREE.Vector3(0, 0, 1) },
+  { a: 7, b: 4, n1: new THREE.Vector3(-1, 0, 0), n2: new THREE.Vector3(0, 0, 1) },
+  { a: 0, b: 4, n1: new THREE.Vector3(-1, 0, 0), n2: new THREE.Vector3(0, -1, 0) },
+  { a: 1, b: 5, n1: new THREE.Vector3(1, 0, 0), n2: new THREE.Vector3(0, -1, 0) },
+  { a: 2, b: 6, n1: new THREE.Vector3(1, 0, 0), n2: new THREE.Vector3(0, 1, 0) },
+  { a: 3, b: 7, n1: new THREE.Vector3(-1, 0, 0), n2: new THREE.Vector3(0, 1, 0) }
+];
+
+function isVerticalWorldEdge(a: THREE.Vector3, b: THREE.Vector3) {
+  const d = b.clone().sub(a);
+  return Math.abs(d.x) < 1e-9 && Math.abs(d.z) < 1e-9 && Math.abs(d.y) > 0;
+}
+
+function silhouetteEdgesForUnitCube(center: THREE.Vector3, viewDir: THREE.Vector3): Array<{ a: THREE.Vector3; b: THREE.Vector3 }> {
+  const vertices = UNIT_CUBE_VERTICES.map((v) => v.clone().add(center));
+  const eps = 1e-9;
+  const edges: Array<{ a: THREE.Vector3; b: THREE.Vector3 }> = [];
+
+  for (const edge of UNIT_CUBE_EDGES) {
+    const d1 = edge.n1.dot(viewDir);
+    const d2 = edge.n2.dot(viewDir);
+    const isSilhouette = (d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps);
+    if (!isSilhouette) {
+      continue;
+    }
+
+    const a = vertices[edge.a];
+    const b = vertices[edge.b];
+    if (isVerticalWorldEdge(a, b)) {
+      continue;
+    }
+
+    edges.push({ a, b });
+  }
+
+  return edges;
 }
 
 describe("pixel-perfect-2to1", () => {
@@ -160,7 +226,41 @@ describe("pixel-perfect-2to1", () => {
         expect(dx <= 1 && dy <= 1 && (dx !== 0 || dy !== 0)).toBe(true);
       }
 
-      assertTwoToOneStaircaseByRows(rasterized);
+      assertTwoToOneStaircaseByRows(rasterized, 20);
     }
+  });
+
+  it("keeps non-vertical silhouette edges of 1x1x1 cubes on a 2:1 staircase", () => {
+    const camera = createCamera();
+    const viewDir = camera.getWorldDirection(new THREE.Vector3()).clone().normalize();
+    const cubeCenters = [
+      new THREE.Vector3(-3, 0.5, -2),
+      new THREE.Vector3(-1, 0.5, 2),
+      new THREE.Vector3(2, 0.5, -1),
+      new THREE.Vector3(3, 0.5, 3)
+    ];
+
+    let checkedEdges = 0;
+    for (const center of cubeCenters) {
+      const silhouetteEdges = silhouetteEdgesForUnitCube(center, viewDir);
+      expect(silhouetteEdges.length).toBeGreaterThan(0);
+
+      for (const edge of silhouetteEdges) {
+        const start = projectToPixels(camera, edge.a);
+        const end = projectToPixels(camera, edge.b);
+        const rasterized = rasterizeLine(
+          Math.round(start.x),
+          Math.round(start.y),
+          Math.round(end.x),
+          Math.round(end.y)
+        );
+
+        expect(Math.abs(end.y - start.y)).toBeGreaterThan(8);
+        assertTwoToOneStaircaseByRows(rasterized, 10);
+        checkedEdges += 1;
+      }
+    }
+
+    expect(checkedEdges).toBeGreaterThan(8);
   });
 });
