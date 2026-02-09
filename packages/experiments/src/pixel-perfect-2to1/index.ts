@@ -1,14 +1,15 @@
 import * as THREE from "three";
 import type { ExperimentModule } from "../runtime/types";
-
-const FIXED_RENDER_WIDTH = 640;
-const FIXED_RENDER_HEIGHT = 360;
-const ORTHO_HEIGHT = 12;
-const CAMERA_PITCH = THREE.MathUtils.degToRad(26.56505118);
-const CAMERA_YAW = THREE.MathUtils.degToRad(45);
-const CAMERA_DISTANCE = 30;
-const PIXEL_SNAP = 2;
-const GRID_SIZE = 12;
+import {
+  CAMERA_DISTANCE,
+  CAMERA_PITCH,
+  CAMERA_YAW,
+  FIXED_RENDER_HEIGHT,
+  FIXED_RENDER_WIDTH,
+  GRID_SIZE,
+  ORTHO_HEIGHT,
+  PIXEL_SNAP
+} from "./config";
 
 const experiment: ExperimentModule = {
   id: "pixel-perfect-2to1",
