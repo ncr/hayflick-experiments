@@ -216,11 +216,11 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
     return material;
   };
 
-  const wallMaterial = makeToon(0xf5f7fb, 5, 0.06, 0.45, 64);
-  const accentMaterial = makeToon(0xe8edf3, 5, 0.05, 0.35, 58);
-  const doorMaterial = makeToon(0xf5f7fb, 5, 0.06, 0.48, 68);
-  const jointMaterial = makeToon(0xf2f4f7, 5, 0.05, 0.4, 60);
-  const stripeMaterial = makeToon(0xc45a12, 4, 0.05, 0.24, 26);
+  const wallMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.45, 64);
+  const accentMaterial = makeToon(0xe8edf3, 5, 0.0, 0.35, 58);
+  const doorMaterial = makeToon(0xf5f7fb, 5, 0.0, 0.48, 68);
+  const jointMaterial = makeToon(0xf2f4f7, 5, 0.0, 0.4, 60);
+  const stripeMaterial = makeToon(0xc45a12, 4, 0.0, 0.24, 26);
   const glassGradient = makeGradientMap(4);
   gradients.push(glassGradient);
   const glassMaterial = new THREE.MeshToonMaterial({
@@ -230,7 +230,7 @@ function createMaterials(): { materials: EditorStructureMaterials; gradients: TH
     opacity: 0.4,
     toneMapped: true
   });
-  applyRetroDither(glassMaterial, 4, 0.04, 0.08, 18, 3, 0.04);
+  applyRetroDither(glassMaterial, 4, 0.0, 0.08, 18, 3, 0.0);
 
   return {
     materials: {

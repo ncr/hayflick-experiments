@@ -1345,7 +1345,7 @@ const experiment: ExperimentModule = {
         uOutlineSaturationBoost: { value: 1.6 },
         uOutlineProminence: { value: 0.9 },
         uPostDitherStrength: { value: 0.0 },
-        uShadowDitherStrength: { value: 0.18 },
+        uShadowDitherStrength: { value: 0.0 },
         uSeamSuppress: { value: 0.85 },
         uOutlineTint: { value: new THREE.Color(0x0a0f14) },
         uOutlineTintStrength: { value: 0.7 }
@@ -1398,7 +1398,7 @@ const experiment: ExperimentModule = {
     const floorMaterial = makeToon({
       color: 0xd7dee6,
       bands: 5,
-      ditherStrength: 0.05,
+      ditherStrength: 0.0,
       specularStrength: 0.3,
       specularShininess: 52
     });
@@ -1406,28 +1406,28 @@ const experiment: ExperimentModule = {
       makeToon({
         color: 0x5b9862,
         bands: 4,
-        ditherStrength: 0.06,
+        ditherStrength: 0.0,
         specularStrength: 0.08,
         specularShininess: 18
       }),
       makeToon({
         color: 0x679f6b,
         bands: 4,
-        ditherStrength: 0.06,
+        ditherStrength: 0.0,
         specularStrength: 0.08,
         specularShininess: 18
       }),
       makeToon({
         color: 0x4e8d58,
         bands: 4,
-        ditherStrength: 0.06,
+        ditherStrength: 0.0,
         specularStrength: 0.08,
         specularShininess: 18
       }),
       makeToon({
         color: 0x76ab6c,
         bands: 4,
-        ditherStrength: 0.06,
+        ditherStrength: 0.0,
         specularStrength: 0.08,
         specularShininess: 18
       })
@@ -1435,21 +1435,21 @@ const experiment: ExperimentModule = {
     const roadMaterial = makeToon({
       color: 0x5b6672,
       bands: 4,
-      ditherStrength: 0.05,
+      ditherStrength: 0.0,
       specularStrength: 0.12,
       specularShininess: 24
     });
     const sidewalkMaterial = makeToon({
       color: 0xc4c7c9,
       bands: 4,
-      ditherStrength: 0.05,
+      ditherStrength: 0.0,
       specularStrength: 0.18,
       specularShininess: 28
     });
     const buildingGroundMaterial = makeToon({
       color: 0xb7c0c9,
       bands: 4,
-      ditherStrength: 0.05,
+      ditherStrength: 0.0,
       specularStrength: 0.2,
       specularShininess: 26
     });
@@ -1457,14 +1457,14 @@ const experiment: ExperimentModule = {
     const playerBodyMaterial = makeToon({
       color: 0x72b8f1,
       bands: 4,
-      ditherStrength: 0.06,
+      ditherStrength: 0.0,
       specularStrength: 0.26,
       specularShininess: 36
     });
     const playerHeadMaterial = makeToon({
       color: 0xf2f7ff,
       bands: 5,
-      ditherStrength: 0.05,
+      ditherStrength: 0.0,
       specularStrength: 0.35,
       specularShininess: 48
     });
