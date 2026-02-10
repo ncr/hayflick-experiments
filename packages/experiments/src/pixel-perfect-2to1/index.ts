@@ -151,6 +151,7 @@ const experiment: ExperimentModule = {
     let outputHeight = FIXED_RENDER_HEIGHT;
     let viewportWidth = width;
     let viewportHeight = height;
+    let devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
     let padSize = 0;
     let panPhase = createPanPhaseState();
     let screenUnitRight = 0;
@@ -175,6 +176,16 @@ const experiment: ExperimentModule = {
       const safeHeight = Math.max(1, Math.floor(nextHeight));
       viewportWidth = safeWidth;
       viewportHeight = safeHeight;
+      const nextDevicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+      if (nextDevicePixelRatio !== devicePixelRatio) {
+        const ratio = nextDevicePixelRatio / devicePixelRatio;
+        panPhase = {
+          ...panPhase,
+          carryX: panPhase.carryX * ratio,
+          carryY: panPhase.carryY * ratio
+        };
+        devicePixelRatio = nextDevicePixelRatio;
+      }
       const fitScale = Math.max(
         1,
         Math.floor(
@@ -184,7 +195,10 @@ const experiment: ExperimentModule = {
           )
         )
       );
-      const nextScale = Math.max(1, fitScale * userScale);
+      const nextScale = Math.max(
+        1,
+        Math.round(fitScale * userScale * devicePixelRatio)
+      );
       if (renderScale > 0 && nextScale !== renderScale) {
         panPhase = {
           ...panPhase,
@@ -206,13 +220,27 @@ const experiment: ExperimentModule = {
       outputWidth = targetWidth;
       outputHeight = targetHeight;
       padSize = renderScale;
-      renderer.setSize(targetWidth + padSize * 2, targetHeight + padSize * 2, true);
-      renderer.domElement.style.width = `${targetWidth + padSize * 2}px`;
-      renderer.domElement.style.height = `${targetHeight + padSize * 2}px`;
-      const offsetX = Math.floor((safeWidth - (targetWidth + padSize * 2)) * 0.5);
-      const offsetY = Math.floor((safeHeight - (targetHeight + padSize * 2)) * 0.5);
-      renderer.domElement.style.left = `${offsetX}px`;
-      renderer.domElement.style.top = `${offsetY}px`;
+      const totalDeviceWidth = targetWidth + padSize * 2;
+      const totalDeviceHeight = targetHeight + padSize * 2;
+      renderer.setSize(totalDeviceWidth, totalDeviceHeight, true);
+      renderer.domElement.style.width = `${totalDeviceWidth / devicePixelRatio}px`;
+      renderer.domElement.style.height = `${totalDeviceHeight / devicePixelRatio}px`;
+      const viewportDeviceWidth = Math.max(
+        1,
+        Math.floor(safeWidth * devicePixelRatio)
+      );
+      const viewportDeviceHeight = Math.max(
+        1,
+        Math.floor(safeHeight * devicePixelRatio)
+      );
+      const offsetDeviceX = Math.floor(
+        (viewportDeviceWidth - totalDeviceWidth) * 0.5
+      );
+      const offsetDeviceY = Math.floor(
+        (viewportDeviceHeight - totalDeviceHeight) * 0.5
+      );
+      renderer.domElement.style.left = `${offsetDeviceX / devicePixelRatio}px`;
+      renderer.domElement.style.top = `${offsetDeviceY / devicePixelRatio}px`;
       updateCameraProjection(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT);
       lastYawIndex = Number.NaN;
     };
@@ -229,7 +257,12 @@ const experiment: ExperimentModule = {
     observer.observe(mount);
 
     const applyPan = (deltaX: number, deltaY: number) => {
-      const next = stepPanPhase(panPhase, deltaX, deltaY, renderScale);
+      const next = stepPanPhase(
+        panPhase,
+        deltaX * devicePixelRatio,
+        deltaY * devicePixelRatio,
+        renderScale
+      );
       panPhase = next.state;
       if (next.cameraStepX !== 0) {
         cameraTarget.addScaledVector(screenRightWorld, -next.cameraStepX);
@@ -379,7 +412,10 @@ const experiment: ExperimentModule = {
       renderer.render(scene, camera);
 
       if (keyPanActive) {
-        applyPan(keyPanX, keyPanY);
+        applyPan(
+          keyPanX / devicePixelRatio,
+          keyPanY / devicePixelRatio
+        );
       }
 
       renderer.setRenderTarget(null);

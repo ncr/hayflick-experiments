@@ -607,3 +607,18 @@ Detection signal:
 Preventive checklist:
 - When mapping screen-space offsets into WebGL viewport offsets, invert Y (`viewportY = pad - remainderY`).
 - Keep a code comment near viewport setup documenting the coordinate-system conversion.
+
+## 2026-02-10 - Fractional DPR introduces unavoidable 1/2 physical-pixel cadence for 1 CSS-pixel drags
+Root cause:
+- Pointer events are in CSS pixels, while final raster stability is determined in physical device pixels.
+- At fractional DPR (for example `1.25`, `1.5`), each 1 CSS-pixel drag corresponds to non-integer physical movement (`1.25`, `1.5` px).
+- Any pixel-locked renderer must quantize to integer physical pixels, producing a cadence like `1,1,1,2` or `1,2,1,2`.
+
+Detection signal:
+- Browser frame-diff measurement showed exact pure translations each frame (score `0`) but mixed shift magnitudes at fractional DPR.
+- Example measured counts for repeated 1 CSS-pixel drags: DPR `1.25` -> `{1px: 18, 2px: 6}`, DPR `1.5` -> `{1px: 12, 2px: 12}`.
+
+Preventive checklist:
+- For pixel-lock claims, define whether "screen pixel" means CSS pixel or physical device pixel and implement quantization in that space consistently.
+- Validate with frame-diff tests at DPR `1`, `1.25`, `1.5`, and `2` before concluding wobble is fixed.
+- If uniform per-frame pan speed is required, constrain runtime to integer DPR (or browser zoom levels yielding integer DPR).
