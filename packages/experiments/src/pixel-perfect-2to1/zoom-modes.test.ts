@@ -3,7 +3,7 @@ import {
   computeSafeZoomLevels,
   nearestZoomLevel,
   stepZoomLevel
-} from "./zoom-modes";
+} from "@common/render";
 
 describe("pixel-perfect-2to1 zoom modes", () => {
   it("computes safe integer CSS zoom levels for fractional DPR", () => {
@@ -24,4 +24,3 @@ describe("pixel-perfect-2to1 zoom modes", () => {
     expect(stepZoomLevel(levels, 5, -1)).toBe(5);
   });
 });
-

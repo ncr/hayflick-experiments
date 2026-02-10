@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createPanPhaseState,
   stepPanPhase
-} from "./pan-phase";
+} from "@common/render";
 
 function runLegacyRoundedPhase(
   deltas: number[],
@@ -84,4 +84,3 @@ describe("pixel-perfect-2to1 pan phase", () => {
     expect(quantized).toEqual(quantizedExpected);
   });
 });
-

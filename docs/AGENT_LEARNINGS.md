@@ -661,3 +661,416 @@ Preventive checklist:
 - Confirm whether \"fluid\" means interpolation between fixed levels or truly continuous target values.
 - Keep wheel target levels discrete unless the user explicitly requests continuous zoom levels.
 - Preserve cursor-anchored interpolation while stepping targets by ladder/integer rules.
+
+## 2026-02-10 - Headless Playwright canvas readback can be blank for WebGL in pixel-perfect experiment
+Root cause:
+- In Chromium headless runs for `pixel-perfect-2to1`, reading WebGL output via `drawImage(canvas, ...)` from the live canvas produced transparent/blank samples.
+- Regression probes that depended on canvas readback silently measured empty frames and returned misleading perfect scores.
+
+Detection signal:
+- Probe stats showed impossible zero-error translations at search boundaries and grayscale signatures with a single value.
+- Direct sampling returned `[0,0,0,0]` from canvas readback while `.stage-host` screenshots clearly contained rendered scene pixels.
+
+Preventive checklist:
+- For WebGL frame-analysis e2e checks in this repo, use Playwright screenshot bytes (`.stage-host`) as the image source, not live canvas readback.
+- Validate probe input once per new test by checking grayscale min/max or unique count before trusting shift/error metrics.
+- Keep analysis crop centered on scene content to reduce HUD/static-overlay interference.
+
+## 2026-02-10 - Cursor-anchor zoom tests must use pixel-grid quantization bounds
+Root cause:
+- `pixel-perfect-2to1` intentionally snaps camera target to integer low-resolution pixels each frame.
+- Cursor-anchored zoom cannot guarantee sub-pixel-perfect CSS alignment after snapping, especially at high zoom and fractional DPR.
+
+Detection signal:
+- Strict fixed threshold (`<= 1.25 CSS px`) failed in high zoom scenarios while measured drift matched half low-res pixel size (`renderScale / nativeDpr * 0.5`).
+
+Preventive checklist:
+- For cursor-anchor assertions in this experiment, derive tolerance from current quantization cell size:
+  - `toleranceCss >= 0.5 * (renderScale / nativeDpr) + small_margin`
+- Keep anchor checks across multiple zoom levels, including higher zoom where quantization is most visible.
+
+## 2026-02-10 - High-zoom cursor-anchor drift came from using full-canvas coordinates instead of render viewport coordinates
+Root cause:
+- `pixel-perfect-2to1` maps pointer client coordinates through an oversized/clipped canvas.
+- Zoom anchor and world projection used full canvas rect math, but the actual image is drawn into a sub-viewport (`pad + remainder`, `outputWidth/outputHeight`).
+- At higher zoom this coordinate mismatch grows and breaks cursor-anchor zoom; it also makes pan feel inconsistent relative to pointer.
+
+Detection signal:
+- At higher zoom levels, measured cursor-anchor drift increased sharply while pan phase math remained internally consistent.
+- Direct probe showed pan distance mismatch in projected world/client space despite expected device-pixel deltas.
+
+Preventive checklist:
+- For pointer/world transforms, convert via the active render viewport rectangle, not the full canvas rect.
+- Include high-zoom interaction probes for both native and override DPR modes.
+- Keep debug helpers/tests using the same viewport mapping path as runtime input handling.
+
+## 2026-02-10 - Animated zoom anchor correction must stop after transition or it pollutes pan deltas
+Root cause:
+- Cursor-anchor correction was kept active after zoom animation settled.
+- Ongoing correction continued to call pan updates every frame, which inflated measured drag distance and destabilized pan-cadence checks.
+
+Detection signal:
+- Pan-parity test reported large device-pixel drift (orders of magnitude above expected ±1) right after zooming.
+- Cadence assertions became flaky under parallel Playwright workers.
+
+Preventive checklist:
+- Run anchor correction only while zoom animation is active (or for a bounded number of frames), then disable it.
+- Disable anchor correction immediately when manual drag starts.
+- In e2e, wait for animated zoom settle with a bounded tolerance that remains stable under worker scheduling jitter.
+
+## 2026-02-10 - Wheel bursts must be gated while zoom animation is active
+Root cause:
+- Touchpad/wheel gestures emit multiple wheel events per gesture.
+- Without gating, each event can advance zoom target, causing multi-level jumps and poor control.
+
+Detection signal:
+- User reported one scroll gesture jumped multiple zoom levels and animation felt wrong.
+
+Preventive checklist:
+- Ignore wheel zoom events while a zoom animation is already active.
+- Treat one gesture burst as one level step, then require a new post-animation gesture for the next step.
+- Use time-based zoom animation duration (fixed ms), not frame-factor lerp, for predictable feel.
+
+## 2026-02-10 - DPR-only input conversion breaks pan parity when canvas CSS size diverges from backing-store size
+Root cause:
+- Pointer deltas and cursor/world projection used `window.devicePixelRatio` directly.
+- In fractional DPR + responsive layout paths, actual input scale is `canvas.width / rect.width` (and height), not always exactly native DPR.
+- This caused subtle over/under-travel and anchor drift from coordinate-space mismatch.
+
+Detection signal:
+- User reported drag distance felt faster/slower than cursor at some zooms, with persistent 1px wobble.
+- A forced CSS/backing-store mismatch repro (`canvas.style.width/height` scaled) showed pan parity drift under DPR-only conversion.
+
+Preventive checklist:
+- Convert all pointer/client coordinates with per-axis canvas ratios from `getBoundingClientRect()` (`cssToDeviceX/Y`), not only `window.devicePixelRatio`.
+- Keep pan input conversion and world/client projection on the same canvas-ratio math path.
+- Maintain an e2e regression that intentionally desynchronizes CSS size vs backing-store size and checks pan-device parity.
+
+## 2026-02-10 - Animated zoom correction kept causing secondary pan drift and clumsy zoom behavior
+Root cause:
+- Smooth zoom interpolation required repeated anchor correction while scale changed.
+- That correction path interacted with pan quantization and made post-zoom drag feel inconsistent.
+
+Detection signal:
+- User reported zoom felt clumsy and pan mismatch persisted after prior fixes, especially after zooming.
+
+Preventive checklist:
+- For strict pixel-step zoom UX, keep zoom transitions discrete and immediate.
+- Apply cursor-anchor correction once at the final zoom level instead of continuously over animation frames.
+- Keep wheel handling deterministic: one safe zoom step per accepted wheel event.
+
+## 2026-02-10 - Continuous camera re-snapping can reintroduce visible phase movement
+Root cause:
+- Re-snapping camera target every render frame adds a second quantization pass on top of integer pan stepping.
+- Tiny floating variance around snap boundaries can look like extra movement/wobble.
+
+Detection signal:
+- User still perceived wobble/pan inconsistency even after input-space fixes.
+
+Preventive checklist:
+- Avoid per-frame camera target snapping when pan already advances in explicit integer screen-pixel steps.
+- Keep camera basis updates separate from quantization logic.
+- Validate both cursor-anchor and drag-parity at higher zoom levels after camera-phase changes.
+
+## 2026-02-10 - Pan carry residue bled across gestures and inflated drag distance
+Root cause:
+- Fractional pan carry (`panPhase.carryX/Y`) persisted across pointer/wheel gesture boundaries.
+- After zoom-anchor correction and prior drags, the next drag inherited residual carry and could quantize one device pixel ahead (`x + n` feel), especially at higher zoom.
+
+Detection signal:
+- User reported drag distance overshooting cursor movement after zooming.
+- High-zoom probe showed world-projected drag mismatch patterns that disappeared when carry was reset per gesture.
+
+Preventive checklist:
+- Reset pan carry at drag start/end and before/after wheel zoom-anchor correction.
+- Keep pan parity assertions strict in e2e (`expected pan-device parity` exact match) so carry bleed regressions fail fast.
+- Re-check both drag parity and cursor-anchor behavior after any pan/zoom math change.
+
+## 2026-02-10 - Viewport-fit baseline made zoom floor misleading and blocked true 1x small-pixel mode
+Root cause:
+- `renderScale` multiplied user zoom by a viewport-derived `fitScale`.
+- On larger viewports, even `zoom=1` still produced large upscaled pixels because `fitScale` stayed above `1`.
+- With safe-ladder enabled on fractional native DPR, lowest allowed user zoom could also start above `1` (for example `5` at DPR `1.2`).
+
+Detection signal:
+- User reported native mode could not go below `5` and override `zoom=1` still looked too large.
+
+Preventive checklist:
+- Keep viewport-fit scaling separate from zoom scaling when users expect `zoom=1` to mean minimal pixel size.
+- Default to `free` zoom mode when low-zoom access is required; keep safe-ladder as an explicit opt-in.
+- Validate zoom floor behavior on large desktop viewports and fractional DPR.
+
+## 2026-02-10 - High zoom broke at level 17 due to WebGL backing-size limits
+Root cause:
+- The experiment enlarges the canvas backing store as `renderScale` increases (`width ~= 482 * renderScale`).
+- On GPUs reporting `MAX_VIEWPORT_DIMS/MAX_TEXTURE_SIZE/MAX_RENDERBUFFER_SIZE = 8192`, scale `17` exceeds the safe backing budget.
+- Once backing dimensions are over the GL limit, viewport/clipping behavior causes both cursor-anchor zoom jumps and pan distance mismatch.
+
+Detection signal:
+- User reported both pan and zoom-anchor regressions beginning exactly at free-mode zoom `17`.
+- Runtime probe showed `maxViewport` `8192x8192`, matching the first failing scale boundary.
+
+Preventive checklist:
+- Compute max allowed user zoom from runtime GL caps and clamp wheel zoom to that value.
+- Keep safe-ladder levels bounded by the same dynamic max.
+- Expose max zoom/render-scale limits in HUD/debug state so cross-device boundaries are visible during QA.
+
+## 2026-02-10 - Canvas-resize-on-zoom created UX mismatch despite correct camera math
+Root cause:
+- Zoom path resized the canvas element (CSS and backing dimensions) with each zoom step.
+- Even with stable pan/anchor math, users perceived this as the viewport itself scaling instead of scene zoom.
+
+Detection signal:
+- User explicitly reported visible canvas size changes during zoom and requested a fixed-size canvas that always covers available area.
+
+Preventive checklist:
+- Keep canvas CSS size locked to mount/viewport dimensions during zoom interactions.
+- Apply zoom by changing internal render viewport scale/placement, not canvas element size.
+- Add an interaction regression check that canvas bounding box remains unchanged across zoom in/out.
+
+## 2026-02-10 - Fixed-size canvas needs a cover baseline so zoom=1 does not letterbox
+Root cause:
+- After decoupling zoom from canvas size, render scale at `zoom=1` could be too small for taller/narrower mounts.
+- This left visible bars around the rendered viewport even though canvas sizing was stable.
+
+Detection signal:
+- User reported `zoom=1` showed non-scene background areas and asked for viewport coverage of full canvas area.
+
+Preventive checklist:
+- Derive a `zoomBaseScale` from viewport coverage (`ceil(max(widthRatio, heightRatio))`) before applying user zoom.
+- Keep canvas fixed, but center/crop an internal render viewport to satisfy cover behavior.
+- Re-run zoom-anchor and pan-parity tests after changing baseline scale math.
+
+## 2026-02-10 - Stage sizing should fit container bounds, not viewport heuristics
+Root cause:
+- `.stage-ratio` width used a viewport-height formula (`100vh - 11rem`) instead of the actual `.stage-shell` dimensions.
+- This can underfill available space when shell/header/sidebar geometry differs from the heuristic.
+
+Detection signal:
+- User requested the stage canvas to occupy as much of the stage shell as possible while preserving stage ratio.
+
+Preventive checklist:
+- Use container-based sizing for ratio wrappers (e.g. `cqw/cqh` with `container-type: size`) when fitting inside dynamic layout regions.
+- Keep a fallback for browsers without container query units.
+- Verify fitted box uses either full shell height or full shell width (whichever is the active constraint) while preserving target aspect ratio.
+
+## 2026-02-10 - Rendered-frame e2e sampling broke after switching to dynamic low-resolution targets
+Root cause:
+- `pixel-perfect-rendered-staircase` mapped low-res pixels to screenshots using hardcoded `480/270` + fixed pad/scale assumptions.
+- Runtime now derives low-res target and viewport placement from current canvas/device size, so fixed mapping no longer matched actual samples.
+
+Detection signal:
+- `e2e/pixel-perfect-rendered-staircase.spec.ts` failed with "not enough matched rows" after dynamic-resolution refactor while interaction tests stayed green.
+
+Preventive checklist:
+- In WebGL screenshot probes, derive sample mapping from runtime render metrics (`lowRender*`, `renderScale`, `renderBase`, pan remainder), not fixed constants.
+- Keep debug-state exposure aligned with runtime viewport math so tests can transform low-res coordinates reliably.
+- Re-run rendered-frame probes whenever render target sizing or viewport placement logic changes.
+
+## 2026-02-10 - Dynamic low-res sizing can accidentally turn zoom into "pixel size only"
+Root cause:
+- After switching to dynamic low-resolution targets, zoom updated render scale but orthographic frustum height stayed fixed.
+- Result: scene composition remained constant while only big-pixel size changed.
+
+Detection signal:
+- User reported zoom in/out changed pixel size but did not move camera framing closer/farther.
+
+Preventive checklist:
+- When zoom semantics mean "get closer/farther", apply zoom to camera projection (orthographic frustum or perspective FOV), not only render target scale.
+- Keep pan basis (`screenUnitRight/Down`) derived from actual camera frustum to stay in sync after zoom changes.
+- Re-run cursor-anchor and pan-parity interaction tests after zoom pipeline refactors.
+
+## 2026-02-10 - Pan-remainder viewport shifts can expose 1px edge bars on fixed-size canvas
+Root cause:
+- Remainder pan was applied by shifting final output viewport.
+- Without guard-band coverage, small positive shifts could reveal clear-color strips at canvas edges.
+
+Detection signal:
+- User reported intermittent 1px black bars on canvas edges during zoom/pan.
+
+Preventive checklist:
+- Keep low-res scene projection unchanged; add overscan in the upscale/output pass instead.
+- Use clamped UV remap so overscan area repeats edge texels instead of stretching geometry.
+- Keep pointer/world mapping anchored to the scene-content sub-viewport (excluding overscan pad).
+
+## 2026-02-10 - Dynamic resolution can break the 32:16 world-to-pixel scale contract at zoom 1
+Root cause:
+- Orthographic frustum height was tied only to zoom, not to dynamic low-res target height.
+- When low-res dimensions changed with viewport/device scale, pixels-per-world-unit drifted from the baseline contract.
+
+Detection signal:
+- User reported the base mapping (`128cm -> 32px horizontal`, `128cm -> 16px vertical`) no longer held.
+
+Preventive checklist:
+- Keep a fixed reference low-res height for baseline scale calibration (here `270`), and scale frustum by `lowRenderHeight / referenceHeight`.
+- Apply zoom on top of that calibration so zoom 1 preserves the base contract.
+- Re-run rendered and interaction pixel-perfect tests after camera projection changes.
+
+## 2026-02-10 - Tying low-res render grid to zoom causes cross-zoom re-quantization
+Root cause:
+- Low-resolution target dimensions were recomputed from `viewport / renderScale`, so each zoom level used a different low-res sampling grid.
+- Even with pixel snapping, edges landed on different low-res pixels across zoom levels, changing staircase/contour quantization.
+
+Detection signal:
+- User reported that zooming changed which pixels were lit (different edge quantization), not just magnification/composition.
+
+Preventive checklist:
+- Keep low-res target dimensions derived from viewport + DPR baseline only (zoom-independent).
+- Apply zoom by scaling/cropping the upscaled output viewport, not by rebuilding the low-res sampling grid.
+- Preserve world-to-low-res contract via projection calibration against a fixed reference height.
+
+## 2026-02-10 - Rendered staircase probes must normalize zoom when viewport-crop zoom is active
+Root cause:
+- With zoom implemented as output scaling/cropping, default startup zoom can place some probe sample points off-screen.
+- Staircase e2e assumptions built around full-scene visibility failed when run at higher default zoom.
+
+Detection signal:
+- `pixel-perfect-rendered-staircase` reported missing sample colors or zero matched rows on one edge while interaction tests remained green.
+
+Preventive checklist:
+- Normalize test zoom to a known baseline (for example `zoom=1`) before pixel-sampling assertions.
+- For edge probes, require at least one reliably detected boundary path rather than a single hardcoded visible edge.
+- Keep probe camera/projection math synchronized with runtime projection calibration rules.
+
+## 2026-02-10 - Checkerboard floor seams came from overlapping internal side faces
+Root cause:
+- Floor was built from many thin `BoxGeometry` tiles.
+- Adjacent tiles created coplanar internal side faces that could z-fight and appear as dark seam/spot artifacts.
+
+Detection signal:
+- User reported dark floor seams/holes even after zoom/pixel stability was fixed.
+
+Preventive checklist:
+- For flat tile floors, render only top surfaces (plane tiles or merged top mesh), not stacked box sides.
+- Keep floor slightly below gameplay object bottoms to avoid coplanar overlap (`y` offset epsilon).
+- Recheck seam artifacts after any floor geometry/material changes.
+
+## 2026-02-10 - Stable-grid zoom model required explicit superseded-learning tags
+Root cause:
+- `pixel-perfect-2to1` moved to a zoom-independent low-res sampling grid + output viewport scale/crop model.
+- Override DPR mode was removed, but older learnings still described prior mode-dependent behavior.
+
+Detection signal:
+- Onboarding and review discussions referenced contradictory learnings for zoom behavior and mode controls.
+
+Preventive checklist:
+- Keep old learnings for audit trail, but mark outdated entries explicitly as superseded.
+- Maintain a concise "current model" reference (`docs/PIXEL_PERFECT_FOUNDATION.md`) for active invariants.
+- Superseded entries in this transition:
+  - `2026-02-10 - Fractional-DPR tuning needs explicit mode controls to compare tradeoffs in one build` (historical investigation note; mode toggles removed).
+  - `2026-02-10 - Override DPR mode can accidentally change pan speed if input deltas use active DPR` (historical; override mode removed).
+  - `2026-02-10 - Fixed-size canvas needs a cover baseline so zoom=1 does not letterbox` (superseded by stable low-res grid + output overscan/crop model).
+  - `2026-02-10 - Dynamic low-res sizing can accidentally turn zoom into "pixel size only"` (superseded by zoom semantics that preserve world-to-game-pixel mapping).
+
+## 2026-02-10 - Wheel burst throttling can violate expected one-wheel-one-step zoom behavior
+Root cause:
+- A wheel burst lock ignored subsequent wheel events for a quiet-window interval.
+- After pan/anchor correctness stabilized, this guard no longer provided value and instead hid valid user input.
+
+Detection signal:
+- User explicitly requested that each wheel action should apply immediately without burst suppression.
+
+Preventive checklist:
+- Default to direct one-event-one-step wheel handling for deterministic zoom controls.
+- If throttling is reintroduced, gate it behind an explicit mode and test expected per-event zoom cadence.
+- Keep cursor-anchor tests active when changing wheel handling to avoid pan/zoom regressions.
+
+## 2026-02-10 - Pixel-stage host glue drifted when kept inside experiment files
+Root cause:
+- Renderer/canvas mount styling, resize observation, and WebGL cap querying were implemented inline in `pixel-perfect-2to1`.
+- The same host concerns are needed by other experiments, so keeping them local increases copy/paste drift risk.
+
+Detection signal:
+- Refactor work required moving repeated host lifecycle code (mount styles, canvas metrics, cap detection) before controller extraction could stay clean.
+
+Preventive checklist:
+- Keep stage-host lifecycle in shared `@common/render` utilities (`PixelStage`) instead of per-experiment setup.
+- Let experiments own only scene/camera behavior and controller wiring, not mount/canvas boilerplate.
+- Preserve cleanup symmetry (style restoration + observer disconnect + renderer disposal) in one shared place.
+
+## 2026-02-10 - Rotated pixel-stable camera needs grid re-snap and bounded zoom-anchor correction
+Root cause:
+- With animated quarter-turn rotations, camera orientation changed continuously but camera target was not re-snapped to the active screen-pixel grid.
+- During rapid zoom-out, cursor-anchor correction could apply very large pan deltas in a single frame, briefly pushing the viewport into empty/black composition.
+
+Detection signal:
+- User reported post-rotation panning no longer matched viewport movement, non-default orientations lost pixel stability, and fast zoom-out occasionally flashed black frames.
+
+Preventive checklist:
+- After screen-basis updates (especially during/after rotation), snap camera target to the current screen-pixel lattice.
+- Keep panning basis refreshed before applying drag/key pan deltas when rotation is animated.
+- Bound per-frame cursor-anchor correction and disable anchor correction when error magnitude becomes implausibly large.
+
+## 2026-02-10 - Do not snap camera target to pixel grid while rotation is still animating
+Root cause:
+- Camera-target snapping was applied every frame in a continuously rotating basis (`animatedYawTurns`), which re-quantized target coordinates as the basis changed.
+- This caused accumulated drift, extreme pan behavior in non-default orientations, and occasional scene loss (black viewport) after rotate/pan sequences.
+
+Detection signal:
+- User reported that panning in non-default rotations made the scene "fly away", and rotating after panning could immediately show a black screen.
+
+Preventive checklist:
+- Only apply target snap-to-grid when rotation has settled to a stable quarter-turn target (within epsilon).
+- During active rotation, update pan basis but skip positional re-quantization.
+- Disable zoom-anchor correction when starting a rotation input to avoid competing camera corrections.
+
+## 2026-02-10 - Rotated pan must use ground-plane basis, not camera up/right basis
+Root cause:
+- Pan world-step vectors were derived from camera right/up axes and frustum units.
+- Camera up includes a vertical component at isometric pitch, so drag deltas could move `cameraTarget.y` away from the ground plane.
+- In rotated views this produced runaway composition shifts ("scene flies away") and occasional black framing after rotate+pan sequences.
+
+Detection signal:
+- User reported non-default rotation panning sent the scene off-screen and rotating after a prior pan could immediately lose scene framing.
+- Rotated-pan parity tests passed in device-pixel accounting, but projected scene motion was inconsistent with expected bounded viewport translation.
+
+Preventive checklist:
+- Derive `screenRightWorld`/`screenDownWorld` from ray intersections on the gameplay plane (center/right/down one-low-res-pixel probes), not camera up/right vectors.
+- Keep camera target constrained to ground-plane motion (`y = 0`) in top-down/isometric pan models.
+- Snap to pixel grid in that same ground-plane basis only after rotation settles.
+- Keep a rotated-pan e2e regression (quarter-turn + drag) to validate both pan parity and bounded projected motion.
+
+## 2026-02-10 - Conditional basis refresh can freeze pan/zoom mapping after rotation
+Root cause:
+- Screen-to-world pan basis refresh was gated by an incremental yaw-change check.
+- In practice the cached-basis path could remain active while camera orientation kept updating, leaving pan/zoom math locked to an old orientation.
+- That produced "axes swapped" panning and cursor-anchor zoom jumps in non-default quarter-turn views.
+
+Detection signal:
+- User reported horizontal drag became vertical-ish after rotation and zoom around cursor jumped in rotated views.
+- Probe showed camera orientation vectors changed, but pan basis vectors stayed identical to default orientation.
+
+Preventive checklist:
+- Recompute screen basis from current camera pose each frame in interaction-heavy modes (ray-based basis is cheap and deterministic).
+- Avoid relying on NaN-sensitive or threshold-only cache invalidation for camera-basis updates.
+- Keep rotated-view zoom-anchor and pan-axis e2e checks active (all quarter-turn orientations).
+
+## 2026-02-10 - Rapid wheel bursts can destabilize anchor if zoom targets update mid-animation
+Root cause:
+- Every wheel event updated zoom target immediately while an earlier zoom animation and anchor-correction pass were still in flight.
+- In rapid zoom-out bursts, anchor state could be re-based between partially settled frames, producing visible jumpy motion.
+
+Detection signal:
+- User reported zoom-out jumps only when scrolling quickly.
+- Stress probe (dense wheel events) showed transient anchor drift spikes, while single-step zoom remained stable.
+
+Preventive checklist:
+- Queue wheel zoom requests and apply one zoom step only when the current zoom animation has settled.
+- Keep anchor correction active through settle and only deactivate after residual cursor error is small.
+- Use separate epsilons for rotation settle vs zoom settle (zoom can tolerate a looser threshold for responsiveness).
+
+## 2026-02-10 - Queueing wheel steps fixes jump but regresses responsiveness
+Root cause:
+- Serializing wheel input into a per-step queue removed anchor jumps, but forced users to wait through animations for all intermediate zoom levels during fast scroll gestures.
+- This conflicted with expected zoom UX where rapid wheel input should reach the latest target quickly.
+
+Detection signal:
+- User reported that fast zoom-out required waiting for every intermediate animation ("queuing is bad").
+- Interaction remained stable but felt laggy compared to direct wheel control.
+
+Preventive checklist:
+- Do not hard-queue all wheel steps for zoom UX; accept immediate target updates during bursts.
+- Keep anchor stable across a short wheel burst window, and use a faster zoom animation rate while burst input is active.
+- Maintain burst-stability checks and responsiveness checks together, so fixes do not trade one failure mode for the other.
+- Supersedes part of prior entry `2026-02-10 - Rapid wheel bursts can destabilize anchor if zoom targets update mid-animation`:
+  - The strict "queue wheel zoom requests" recommendation is historical and should not be used as the default UX policy.

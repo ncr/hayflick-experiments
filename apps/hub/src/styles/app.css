@@ -109,6 +109,7 @@ body,
   display: grid;
   place-items: center;
   min-height: 0;
+  container-type: size;
 }
 
 .stage-ratio {
@@ -120,6 +121,13 @@ body,
   position: relative;
   background: #0a111a;
   box-shadow: 0 8px 30px rgba(9, 15, 24, 0.18);
+}
+
+@supports (width: 1cqw) and (height: 1cqh) {
+  .stage-ratio {
+    width: min(100cqw, calc(100cqh * 4 / 3));
+    height: min(100cqh, calc(100cqw * 3 / 4));
+  }
 }
 
 .stage-host {

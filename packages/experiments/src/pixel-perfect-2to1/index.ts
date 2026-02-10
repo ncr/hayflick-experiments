@@ -1,51 +1,53 @@
 import * as THREE from "three";
 import type { ExperimentModule } from "../runtime/types";
+import { PixelPerfectController, PixelStage } from "@common/render";
 import {
   CAMERA_DISTANCE,
   CAMERA_PITCH,
   CAMERA_YAW,
   FIXED_RENDER_HEIGHT,
-  FIXED_RENDER_WIDTH,
   GRID_SIZE,
   ORTHO_HEIGHT
 } from "./config";
-import {
-  createPanPhaseState,
-  rescalePanPhaseRemainder,
-  stepPanPhase
-} from "./pan-phase";
-import {
-  computeSafeZoomLevels,
-  nearestZoomLevel,
-  stepZoomLevel,
-  type DprMode,
-  type ZoomMode
-} from "./zoom-modes";
 
 const ZOOM_MIN = 1;
 const ZOOM_MAX = 20;
-const DPR_OVERRIDE_MIN = 1;
-const DPR_OVERRIDE_MAX = 4;
+// 1 low-res pixel guard on each side of final upscale output.
+const OUTPUT_OVERSCAN_LOW_PIXELS = 2;
+const ZOOM_ANIMATION_RATE = 14;
+const ZOOM_ANIMATION_BURST_RATE = 42;
+const ROTATION_ANIMATION_RATE = 18;
+const ROTATION_ANIMATION_EPSILON = 1e-3;
+const ZOOM_ANIMATION_EPSILON = 0.02;
+const ZOOM_BURST_IDLE_MS = 90;
+const MAX_ANCHOR_CORRECTION_CSS = 96;
+const MAX_ANCHOR_ERROR_CSS = 1400;
 
 const experiment: ExperimentModule = {
   id: "pixel-perfect-2to1",
   title: "Pixel Perfect 2:1",
   tags: ["pixel", "isometric", "rendering"],
   init: ({ mount, width, height }) => {
-    const renderer = new THREE.WebGLRenderer({ antialias: false });
-    renderer.setPixelRatio(1);
-    renderer.setSize(width, height, true);
-    renderer.setClearColor(0x0b0f14, 1);
-    renderer.domElement.style.imageRendering = "pixelated";
-    renderer.domElement.style.transformOrigin = "0 0";
-    renderer.domElement.style.position = "absolute";
-    renderer.domElement.style.left = "0px";
-    renderer.domElement.style.top = "0px";
-    renderer.domElement.style.display = "block";
-    mount.appendChild(renderer.domElement);
-    mount.style.position = "relative";
-    mount.style.background = "#0b0f14";
-    mount.style.overflow = "hidden";
+    const stage = new PixelStage({
+      mount,
+      width,
+      height,
+      antialias: false,
+      pixelRatio: 1,
+      clearColor: 0x0b0f14,
+      clearAlpha: 1,
+      mountPosition: "relative",
+      mountBackground: "#0b0f14",
+      mountOverflow: "hidden",
+      canvasPosition: "absolute",
+      canvasLeft: "0px",
+      canvasTop: "0px",
+      canvasDisplay: "block",
+      canvasBackground: "#0b0f14",
+      canvasImageRendering: "pixelated",
+      canvasTransformOrigin: "0 0"
+    });
+    const renderer = stage.renderer;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b0f14);
@@ -54,10 +56,16 @@ const experiment: ExperimentModule = {
     const cameraTarget = new THREE.Vector3(0, 0, 0);
     const screenRightWorld = new THREE.Vector3();
     const screenDownWorld = new THREE.Vector3();
-    const cameraRight = new THREE.Vector3();
-    const cameraUp = new THREE.Vector3();
-    const cameraForward = new THREE.Vector3();
-    const snappedCameraTarget = new THREE.Vector3();
+    const cameraDirection = new THREE.Vector3();
+    const raycaster = new THREE.Raycaster();
+    const pointerNdc = new THREE.Vector2();
+    const projectedNdc = new THREE.Vector3();
+    const projectedClient = new THREE.Vector2();
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const centerGround = new THREE.Vector3();
+    const rightGround = new THREE.Vector3();
+    const downGround = new THREE.Vector3();
+    const zoomBeforeWorld = new THREE.Vector3();
     const dragDelta = new THREE.Vector2();
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.65);
@@ -70,7 +78,7 @@ const experiment: ExperimentModule = {
     const floorGroup = new THREE.Group();
     scene.add(floorGroup);
 
-    const tileGeometry = new THREE.BoxGeometry(1, 0.04, 1);
+    const tileGeometry = new THREE.PlaneGeometry(1, 1);
     const tileWhite = new THREE.MeshLambertMaterial({ color: 0xf0f2f5 });
     const tileGray = new THREE.MeshLambertMaterial({ color: 0xc2c8cf });
 
@@ -78,9 +86,10 @@ const experiment: ExperimentModule = {
       for (let z = 0; z < GRID_SIZE; z += 1) {
         const material = (x + z) % 2 === 0 ? tileWhite : tileGray;
         const tile = new THREE.Mesh(tileGeometry, material);
+        tile.rotation.x = -Math.PI * 0.5;
         tile.position.set(
           x - GRID_SIZE * 0.5 + 0.5,
-          -0.02,
+          -0.001,
           z - GRID_SIZE * 0.5 + 0.5
         );
         floorGroup.add(tile);
@@ -112,23 +121,21 @@ const experiment: ExperimentModule = {
     addBox(3, 0.5, 3, 3);
     addBox(0, 1.5, 0, 0);
 
-    const lowTarget = new THREE.WebGLRenderTarget(
-      FIXED_RENDER_WIDTH,
-      FIXED_RENDER_HEIGHT,
-      {
-        minFilter: THREE.NearestFilter,
-        magFilter: THREE.NearestFilter,
-        format: THREE.RGBAFormat,
-        stencilBuffer: false
-      }
-    );
+    const lowTarget = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      stencilBuffer: false
+    });
     lowTarget.texture.generateMipmaps = false;
 
     const outputScene = new THREE.Scene();
     const outputCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     const outputMaterial = new THREE.ShaderMaterial({
       uniforms: {
-        uSource: { value: lowTarget.texture }
+        uSource: { value: lowTarget.texture },
+        uContentScale: { value: new THREE.Vector2(1, 1) },
+        uContentOffset: { value: new THREE.Vector2(0, 0) }
       },
       vertexShader: `
         varying vec2 vUv;
@@ -140,9 +147,12 @@ const experiment: ExperimentModule = {
       fragmentShader: `
         precision highp float;
         uniform sampler2D uSource;
+        uniform vec2 uContentScale;
+        uniform vec2 uContentOffset;
         varying vec2 vUv;
         void main() {
-          gl_FragColor = texture2D(uSource, vUv);
+          vec2 sampleUv = (vUv - uContentOffset) / uContentScale;
+          gl_FragColor = texture2D(uSource, sampleUv);
         }
       `
     });
@@ -167,72 +177,105 @@ const experiment: ExperimentModule = {
     hud.style.zIndex = "3";
     mount.appendChild(hud);
 
-    let yawIndex = 0;
     let dragActive = false;
     let lastClientX = 0;
     let lastClientY = 0;
-    let renderScale = 1;
-    let userScale = 4;
-    let outputWidth = FIXED_RENDER_WIDTH;
-    let outputHeight = FIXED_RENDER_HEIGHT;
-    let viewportWidth = width;
-    let viewportHeight = height;
-    let devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
-    let dprMode: DprMode = "native";
-    let dprOverride = THREE.MathUtils.clamp(
-      Math.round(devicePixelRatio),
-      DPR_OVERRIDE_MIN,
-      DPR_OVERRIDE_MAX
-    );
-    let zoomMode: ZoomMode = "free";
-    let safeZoomLevels: number[] = [];
-    let padSize = 0;
-    let panPhase = createPanPhaseState();
+    let viewportWidth = Math.max(1, width);
+    let viewportHeight = Math.max(1, height);
     let screenUnitRight = 0;
     let screenUnitDown = 0;
-    let keyPanX = 0;
-    let keyPanY = 0;
-    let keyPanActive = false;
-    let lastYawIndex = Number.NaN;
+    let snapAfterRotation = false;
 
-    const getActiveDpr = () =>
-      dprMode === "override" ? dprOverride : devicePixelRatio;
+    const maxBackingWidth = stage.maxBackingWidth;
+    const maxBackingHeight = stage.maxBackingHeight;
 
-    const updateSafeZoomLevels = () => {
-      safeZoomLevels = computeSafeZoomLevels(getActiveDpr(), ZOOM_MIN, ZOOM_MAX);
-      if (zoomMode === "safe-ladder") {
-        if (safeZoomLevels.length === 0) {
-          zoomMode = "free";
-          userScale = THREE.MathUtils.clamp(
-            Math.round(userScale),
-            ZOOM_MIN,
-            ZOOM_MAX
-          );
-        } else {
-          userScale = nearestZoomLevel(safeZoomLevels, userScale);
-        }
+    const controller = new PixelPerfectController({
+      minZoom: ZOOM_MIN,
+      maxZoom: ZOOM_MAX,
+      initialZoom: 2,
+      initialZoomMode: "free",
+      overscanLowPixels: OUTPUT_OVERSCAN_LOW_PIXELS,
+      baseOrthoHeight: ORTHO_HEIGHT,
+      referenceLowHeight: FIXED_RENDER_HEIGHT,
+      maxBackingWidth,
+      maxBackingHeight,
+      viewportCssWidth: viewportWidth,
+      viewportCssHeight: viewportHeight,
+      devicePixelRatio: Math.max(1, window.devicePixelRatio || 1)
+    });
+
+    const initialState = controller.getState();
+    let animatedYawTurns = controller.getYawIndex();
+    let animatedUserScale = initialState.userScale;
+    let zoomAnimationActive = false;
+    let displayRenderScale = initialState.renderScale;
+    let displaySceneOutputWidth = initialState.sceneOutputWidth;
+    let displaySceneOutputHeight = initialState.sceneOutputHeight;
+    let displayOutputWidth = initialState.outputWidth;
+    let displayOutputHeight = initialState.outputHeight;
+    let displayOutputPadDeviceX = initialState.outputPadDeviceX;
+    let displayOutputPadDeviceY = initialState.outputPadDeviceY;
+    let displayRenderBaseX = initialState.renderBaseX;
+    let displayRenderBaseY = initialState.renderBaseY;
+    const zoomAnchorClient = new THREE.Vector2();
+    const zoomAnchorWorld = new THREE.Vector3();
+    let zoomAnchorActive = false;
+    let zoomBurstActive = false;
+    let zoomBurstExpiresAtMs = 0;
+
+    const easeToward = (
+      current: number,
+      target: number,
+      rate: number,
+      deltaSeconds: number
+    ): number => {
+      if (deltaSeconds <= 0) {
+        return current;
       }
+      const blend = 1 - Math.exp(-rate * deltaSeconds);
+      return current + (target - current) * blend;
+    };
+
+    const updateDisplayLayout = (scale: number) => {
+      const state = controller.getState();
+      const safeScale = Math.max(1, scale);
+      displayRenderScale = safeScale;
+      displaySceneOutputWidth = state.lowRenderWidth * safeScale;
+      displaySceneOutputHeight = state.lowRenderHeight * safeScale;
+      displayOutputWidth = (state.lowRenderWidth + OUTPUT_OVERSCAN_LOW_PIXELS) * safeScale;
+      displayOutputHeight = (state.lowRenderHeight + OUTPUT_OVERSCAN_LOW_PIXELS) * safeScale;
+      displayOutputPadDeviceX = (displayOutputWidth - displaySceneOutputWidth) * 0.5;
+      displayOutputPadDeviceY = (displayOutputHeight - displaySceneOutputHeight) * 0.5;
+      displayRenderBaseX = Math.floor((state.viewportDeviceWidth - displayOutputWidth) * 0.5);
+      displayRenderBaseY = Math.floor((state.viewportDeviceHeight - displayOutputHeight) * 0.5);
     };
 
     const syncHud = () => {
-      const activeDpr = getActiveDpr();
-      const effectiveCssZoom =
-        renderScale > 0 ? renderScale / devicePixelRatio : userScale;
+      const state = controller.getState();
       const safeLevelsText =
-        safeZoomLevels.length === 0 ? "<none>" : safeZoomLevels.join(", ");
+        state.safeZoomLevels.length === 0
+          ? "<none>"
+          : state.safeZoomLevels.join(", ");
       hud.textContent = [
-        `Zoom: ${effectiveCssZoom.toFixed(3)}x (target ${userScale}x)`,
-        `Zoom mode: ${zoomMode}`,
-        `DPR mode: ${dprMode} (native=${devicePixelRatio.toFixed(3)}, active=${activeDpr.toFixed(3)})`,
+        `Zoom: ${animatedUserScale.toFixed(3)}x (target ${state.userScale}x, max ${state.maxUserScale}x)`,
+        `Zoom mode: ${state.zoomMode}`,
+        `DPR: ${state.devicePixelRatio.toFixed(3)}`,
+        `Low-res: ${state.lowRenderWidth}x${state.lowRenderHeight}`,
+        `Render viewport: ${Math.round(displaySceneOutputWidth)}x${Math.round(displaySceneOutputHeight)} (scale ${displayRenderScale.toFixed(3)}x, target ${state.renderScale}x)`,
+        `GL cap: ${maxBackingWidth}x${maxBackingHeight}`,
         `Safe ladder: [${safeLevelsText}]`,
-        "Keys: wheel zoom, Q/E rotate, WASD pan",
-        "Modes: Z zoom-mode, V dpr-mode, [ ] dpr-override"
+        "Keys: wheel zoom, Q/E rotate, middle-drag pan, WASD pan",
+        "Modes: Z zoom-mode"
       ].join("\n");
     };
 
-    const updateCameraProjection = (nextWidth: number, nextHeight: number) => {
-      const aspect = nextWidth / nextHeight;
-      const halfHeight = ORTHO_HEIGHT * 0.5;
+    const updateCameraProjection = (
+      lowRenderWidth: number,
+      lowRenderHeight: number,
+      orthoHeight: number
+    ) => {
+      const aspect = lowRenderWidth / lowRenderHeight;
+      const halfHeight = orthoHeight * 0.5;
       camera.left = -halfHeight * aspect;
       camera.right = halfHeight * aspect;
       camera.top = halfHeight;
@@ -240,123 +283,372 @@ const experiment: ExperimentModule = {
       camera.updateProjectionMatrix();
     };
 
-    const resize = (nextWidth: number, nextHeight: number) => {
-      const safeWidth = Math.max(1, Math.floor(nextWidth));
-      const safeHeight = Math.max(1, Math.floor(nextHeight));
-      viewportWidth = safeWidth;
-      viewportHeight = safeHeight;
-      const previousActiveDpr = getActiveDpr();
-      const nextDevicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
-      if (nextDevicePixelRatio !== devicePixelRatio) {
-        devicePixelRatio = nextDevicePixelRatio;
+    const applyControllerState = () => {
+      const state = controller.getState();
+      lowTarget.setSize(state.lowRenderWidth, state.lowRenderHeight);
+      (outputMaterial.uniforms.uContentScale.value as THREE.Vector2).set(
+        state.contentScaleX,
+        state.contentScaleY
+      );
+      (outputMaterial.uniforms.uContentOffset.value as THREE.Vector2).set(
+        state.contentOffsetX,
+        state.contentOffsetY
+      );
+      stage.applyLayout({
+        deviceWidth: state.viewportDeviceWidth,
+        deviceHeight: state.viewportDeviceHeight,
+        cssWidth: state.viewportCssWidth,
+        cssHeight: state.viewportCssHeight,
+        left: 0,
+        top: 0
+      });
+      updateCameraProjection(
+        state.lowRenderWidth,
+        state.lowRenderHeight,
+        state.orthoHeight
+      );
+      if (!zoomAnimationActive) {
+        displayRenderScale = state.renderScale;
       }
-      const nextActiveDpr = getActiveDpr();
-      if (Math.abs(nextActiveDpr - previousActiveDpr) > 1e-9) {
-        const activeRatio = nextActiveDpr / previousActiveDpr;
-        panPhase = {
-          ...panPhase,
-          carryX: panPhase.carryX * activeRatio,
-          carryY: panPhase.carryY * activeRatio
-        };
-        updateSafeZoomLevels();
-      }
-      const fitScale = Math.max(
-        1,
-        Math.floor(
-          Math.min(
-            safeWidth / FIXED_RENDER_WIDTH,
-            safeHeight / FIXED_RENDER_HEIGHT
-          )
-        )
-      );
-      const activeDpr = getActiveDpr();
-      const nextScale = Math.max(
-        1,
-        Math.round(fitScale * userScale * activeDpr)
-      );
-      if (renderScale > 0 && nextScale !== renderScale) {
-        panPhase = {
-          ...panPhase,
-          remainderX: rescalePanPhaseRemainder(
-            panPhase.remainderX,
-            renderScale,
-            nextScale
-          ),
-          remainderY: rescalePanPhaseRemainder(
-            panPhase.remainderY,
-            renderScale,
-            nextScale
-          )
-        };
-      }
-      renderScale = nextScale;
-      const targetWidth = FIXED_RENDER_WIDTH * renderScale;
-      const targetHeight = FIXED_RENDER_HEIGHT * renderScale;
-      outputWidth = targetWidth;
-      outputHeight = targetHeight;
-      padSize = renderScale;
-      const totalDeviceWidth = targetWidth + padSize * 2;
-      const totalDeviceHeight = targetHeight + padSize * 2;
-      renderer.setSize(totalDeviceWidth, totalDeviceHeight, true);
-      renderer.domElement.style.width = `${totalDeviceWidth / devicePixelRatio}px`;
-      renderer.domElement.style.height = `${totalDeviceHeight / devicePixelRatio}px`;
-      const viewportDeviceWidth = Math.max(
-        1,
-        Math.floor(safeWidth * devicePixelRatio)
-      );
-      const viewportDeviceHeight = Math.max(
-        1,
-        Math.floor(safeHeight * devicePixelRatio)
-      );
-      const offsetDeviceX = Math.floor(
-        (viewportDeviceWidth - totalDeviceWidth) * 0.5
-      );
-      const offsetDeviceY = Math.floor(
-        (viewportDeviceHeight - totalDeviceHeight) * 0.5
-      );
-      renderer.domElement.style.left = `${offsetDeviceX / devicePixelRatio}px`;
-      renderer.domElement.style.top = `${offsetDeviceY / devicePixelRatio}px`;
-      updateCameraProjection(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT);
-      lastYawIndex = Number.NaN;
+      updateDisplayLayout(displayRenderScale);
       syncHud();
     };
 
-    updateSafeZoomLevels();
-    resize(width, height);
+    const resize = (nextWidth: number, nextHeight: number) => {
+      viewportWidth = Math.max(1, nextWidth);
+      viewportHeight = Math.max(1, nextHeight);
+      controller.resize(
+        viewportWidth,
+        viewportHeight,
+        Math.max(1, window.devicePixelRatio || 1)
+      );
+      applyControllerState();
+    };
 
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) {
+    const getCanvasMetrics = () => stage.getCanvasMetrics();
+
+    const setCameraPoseFromTarget = () => {
+      const yaw = CAMERA_YAW + animatedYawTurns * (Math.PI * 0.5);
+      const horizontal = Math.cos(CAMERA_PITCH);
+      cameraDirection.set(
+        Math.sin(yaw) * horizontal,
+        Math.sin(CAMERA_PITCH),
+        Math.cos(yaw) * horizontal
+      );
+      camera.position
+        .copy(cameraTarget)
+        .addScaledVector(cameraDirection, CAMERA_DISTANCE);
+      camera.lookAt(cameraTarget);
+      camera.updateProjectionMatrix();
+      camera.updateMatrixWorld(true);
+    };
+
+    const worldAtClient = (
+      clientX: number,
+      clientY: number,
+      out: THREE.Vector3
+    ): boolean => {
+      const metrics = getCanvasMetrics();
+      if (!metrics) {
+        return false;
+      }
+      const state = controller.getState();
+      const deviceX = (clientX - metrics.rect.left) * metrics.cssToDeviceX;
+      const deviceY = (clientY - metrics.rect.top) * metrics.cssToDeviceY;
+      const renderStartX = displayRenderBaseX + state.panRemainderX;
+      const renderStartY = displayRenderBaseY + state.panRemainderY;
+      const localRenderX = deviceX - (renderStartX + displayOutputPadDeviceX);
+      const localRenderY = deviceY - (renderStartY + displayOutputPadDeviceY);
+      if (
+        localRenderX < 0 ||
+        localRenderY < 0 ||
+        localRenderX > displaySceneOutputWidth ||
+        localRenderY > displaySceneOutputHeight
+      ) {
+        return false;
+      }
+      const scenePoint = {
+        x: localRenderX / displaySceneOutputWidth,
+        y: localRenderY / displaySceneOutputHeight
+      };
+      pointerNdc.set(scenePoint.x * 2 - 1, -(scenePoint.y * 2 - 1));
+      raycaster.setFromCamera(pointerNdc, camera);
+      return raycaster.ray.intersectPlane(groundPlane, out) !== null;
+    };
+
+    const projectWorldToClient = (
+      world: THREE.Vector3,
+      out: THREE.Vector2
+    ): boolean => {
+      const metrics = getCanvasMetrics();
+      if (!metrics) {
+        return false;
+      }
+      const state = controller.getState();
+      projectedNdc.copy(world).project(camera);
+      const normalizedX = projectedNdc.x * 0.5 + 0.5;
+      const normalizedY = 1 - (projectedNdc.y * 0.5 + 0.5);
+      const deviceX =
+        displayRenderBaseX +
+        state.panRemainderX +
+        displayOutputPadDeviceX +
+        normalizedX * displaySceneOutputWidth;
+      const deviceY =
+        displayRenderBaseY +
+        state.panRemainderY +
+        displayOutputPadDeviceY +
+        normalizedY * displaySceneOutputHeight;
+      out.set(
+        metrics.rect.left + deviceX / metrics.cssToDeviceX,
+        metrics.rect.top + deviceY / metrics.cssToDeviceY
+      );
+      return true;
+    };
+
+    const updateScreenToWorld = () => {
+      const state = controller.getState();
+      const ndcStepX = 2 / state.lowRenderWidth;
+      const ndcStepY = 2 / state.lowRenderHeight;
+
+      pointerNdc.set(0, 0);
+      raycaster.setFromCamera(pointerNdc, camera);
+      const hasCenter = raycaster.ray.intersectPlane(groundPlane, centerGround) !== null;
+
+      pointerNdc.set(ndcStepX, 0);
+      raycaster.setFromCamera(pointerNdc, camera);
+      const hasRight = raycaster.ray.intersectPlane(groundPlane, rightGround) !== null;
+
+      pointerNdc.set(0, -ndcStepY);
+      raycaster.setFromCamera(pointerNdc, camera);
+      const hasDown = raycaster.ray.intersectPlane(groundPlane, downGround) !== null;
+
+      if (hasCenter && hasRight && hasDown) {
+        screenRightWorld.subVectors(rightGround, centerGround);
+        screenDownWorld.subVectors(downGround, centerGround);
+        screenUnitRight = screenRightWorld.length();
+        screenUnitDown = screenDownWorld.length();
         return;
       }
-      resize(entry.contentRect.width, entry.contentRect.height);
-    });
-    observer.observe(mount);
 
-    const applyPan = (deltaX: number, deltaY: number) => {
-      const activeDpr = getActiveDpr();
-      const next = stepPanPhase(
-        panPhase,
-        deltaX * activeDpr,
-        deltaY * activeDpr,
-        renderScale
-      );
-      panPhase = next.state;
-      if (next.cameraStepX !== 0) {
-        cameraTarget.addScaledVector(screenRightWorld, -next.cameraStepX);
+      // Fallback for unexpected ray/plane intersection failures.
+      const frustumWidth = camera.right - camera.left;
+      const frustumHeight = camera.top - camera.bottom;
+      const unitRight = frustumWidth / state.lowRenderWidth;
+      const unitDown = frustumHeight / state.lowRenderHeight;
+      const yaw = CAMERA_YAW + animatedYawTurns * (Math.PI * 0.5);
+      screenRightWorld.set(Math.cos(yaw), 0, -Math.sin(yaw)).multiplyScalar(unitRight);
+      screenDownWorld.set(Math.sin(yaw), 0, Math.cos(yaw)).multiplyScalar(unitDown);
+      screenUnitRight = screenRightWorld.length();
+      screenUnitDown = screenDownWorld.length();
+    };
+
+    const snapCameraTargetToGrid = () => {
+      const det =
+        screenRightWorld.x * screenDownWorld.z -
+        screenRightWorld.z * screenDownWorld.x;
+      if (Math.abs(det) <= 1e-12) {
+        return;
       }
-      if (next.cameraStepY !== 0) {
-        cameraTarget.addScaledVector(screenDownWorld, -next.cameraStepY);
+
+      const tx = cameraTarget.x;
+      const tz = cameraTarget.z;
+      const rightPixels = (tx * screenDownWorld.z - tz * screenDownWorld.x) / det;
+      const downPixels = (screenRightWorld.x * tz - screenRightWorld.z * tx) / det;
+
+      const snappedRightPixels = Math.round(rightPixels);
+      const snappedDownPixels = Math.round(downPixels);
+      const snappedX =
+        snappedRightPixels * screenRightWorld.x +
+        snappedDownPixels * screenDownWorld.x;
+      const snappedZ =
+        snappedRightPixels * screenRightWorld.z +
+        snappedDownPixels * screenDownWorld.z;
+
+      if (
+        Math.abs(snappedX - cameraTarget.x) <= 1e-9 &&
+        Math.abs(snappedZ - cameraTarget.z) <= 1e-9 &&
+        Math.abs(cameraTarget.y) <= 1e-9
+      ) {
+        return;
+      }
+      cameraTarget.set(snappedX, 0, snappedZ);
+      setCameraPoseFromTarget();
+    };
+
+    const ensureScreenBasis = () => {
+      if (Math.abs(cameraTarget.y) > 1e-9) {
+        cameraTarget.y = 0;
+      }
+      setCameraPoseFromTarget();
+      updateScreenToWorld();
+      const targetYawTurns = controller.getYawIndex();
+      const rotationSettled =
+        Math.abs(animatedYawTurns - targetYawTurns) <= ROTATION_ANIMATION_EPSILON;
+
+      if (
+        rotationSettled &&
+        snapAfterRotation &&
+        Math.abs(screenUnitRight) > 1e-9 &&
+        Math.abs(screenUnitDown) > 1e-9
+      ) {
+        snapCameraTargetToGrid();
+        snapAfterRotation = false;
       }
     };
 
-    const handlePointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) {
+    const updateAnimationState = (deltaSeconds: number) => {
+      const state = controller.getState();
+      const previousAnimatedUserScale = animatedUserScale;
+      const previousDisplayRenderScale = displayRenderScale;
+
+      const targetYawTurns = controller.getYawIndex();
+      animatedYawTurns = easeToward(
+        animatedYawTurns,
+        targetYawTurns,
+        ROTATION_ANIMATION_RATE,
+        deltaSeconds
+      );
+      if (
+        Math.abs(animatedYawTurns - targetYawTurns) <=
+        ROTATION_ANIMATION_EPSILON
+      ) {
+        animatedYawTurns = targetYawTurns;
+      }
+
+      const targetUserScale = state.userScale;
+      const targetRenderScale = state.renderScale;
+      const zoomAnimationRate = zoomBurstActive
+        ? ZOOM_ANIMATION_BURST_RATE
+        : ZOOM_ANIMATION_RATE;
+      animatedUserScale = easeToward(
+        animatedUserScale,
+        targetUserScale,
+        zoomAnimationRate,
+        deltaSeconds
+      );
+      displayRenderScale = easeToward(
+        displayRenderScale,
+        targetRenderScale,
+        zoomAnimationRate,
+        deltaSeconds
+      );
+
+      if (
+        Math.abs(animatedUserScale - targetUserScale) <= ZOOM_ANIMATION_EPSILON &&
+        Math.abs(displayRenderScale - targetRenderScale) <= ZOOM_ANIMATION_EPSILON
+      ) {
+        animatedUserScale = targetUserScale;
+        displayRenderScale = targetRenderScale;
+        zoomAnimationActive = false;
+      } else {
+        zoomAnimationActive = true;
+      }
+
+      updateDisplayLayout(displayRenderScale);
+      if (
+        Math.abs(previousAnimatedUserScale - animatedUserScale) > 1e-5 ||
+        Math.abs(previousDisplayRenderScale - displayRenderScale) > 1e-5
+      ) {
+        syncHud();
+      }
+    };
+
+    const applyPanDevice = (deltaDeviceX: number, deltaDeviceY: number) => {
+      ensureScreenBasis();
+      const step = controller.panByDevice(deltaDeviceX, deltaDeviceY);
+      if (step.cameraStepX !== 0) {
+        cameraTarget.addScaledVector(screenRightWorld, -step.cameraStepX);
+      }
+      if (step.cameraStepY !== 0) {
+        cameraTarget.addScaledVector(screenDownWorld, -step.cameraStepY);
+      }
+    };
+
+    const applyPan = (deltaCssX: number, deltaCssY: number) => {
+      ensureScreenBasis();
+      const metrics = getCanvasMetrics();
+      const fallbackScale = controller.getState().devicePixelRatio;
+      const cssToDeviceX = metrics?.cssToDeviceX ?? fallbackScale;
+      const cssToDeviceY = metrics?.cssToDeviceY ?? fallbackScale;
+      const step = controller.panByCss(
+        deltaCssX,
+        deltaCssY,
+        cssToDeviceX,
+        cssToDeviceY
+      );
+      if (step.cameraStepX !== 0) {
+        cameraTarget.addScaledVector(screenRightWorld, -step.cameraStepX);
+      }
+      if (step.cameraStepY !== 0) {
+        cameraTarget.addScaledVector(screenDownWorld, -step.cameraStepY);
+      }
+    };
+
+    const resetPanCarry = () => {
+      controller.resetPanCarry();
+    };
+
+    const applyZoomAnchorCorrection = (maxIterations: number) => {
+      if (!zoomAnchorActive) {
         return;
       }
+      for (let i = 0; i < maxIterations; i += 1) {
+        if (!projectWorldToClient(zoomAnchorWorld, projectedClient)) {
+          break;
+        }
+        const rawCorrectionX = zoomAnchorClient.x - projectedClient.x;
+        const rawCorrectionY = zoomAnchorClient.y - projectedClient.y;
+        if (
+          Math.abs(rawCorrectionX) > MAX_ANCHOR_ERROR_CSS ||
+          Math.abs(rawCorrectionY) > MAX_ANCHOR_ERROR_CSS
+        ) {
+          zoomAnchorActive = false;
+          break;
+        }
+        if (
+          !zoomAnimationActive &&
+          !zoomBurstActive &&
+          Math.abs(rawCorrectionX) < 1 &&
+          Math.abs(rawCorrectionY) < 1
+        ) {
+          zoomAnchorActive = false;
+          break;
+        }
+        if (Math.abs(rawCorrectionX) < 0.01 && Math.abs(rawCorrectionY) < 0.01) {
+          break;
+        }
+        const correctionX = THREE.MathUtils.clamp(
+          rawCorrectionX,
+          -MAX_ANCHOR_CORRECTION_CSS,
+          MAX_ANCHOR_CORRECTION_CSS
+        );
+        const correctionY = THREE.MathUtils.clamp(
+          rawCorrectionY,
+          -MAX_ANCHOR_CORRECTION_CSS,
+          MAX_ANCHOR_CORRECTION_CSS
+        );
+        applyPan(correctionX, correctionY);
+        ensureScreenBasis();
+      }
+    };
+
+    resize(width, height);
+
+    stage.observeResize((nextWidth, nextHeight) => {
+      resize(nextWidth, nextHeight);
+    });
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 1) {
+        return;
+      }
+      resetPanCarry();
       dragActive = true;
+      zoomAnchorActive = false;
+      zoomBurstActive = false;
       lastClientX = event.clientX;
       lastClientY = event.clientY;
+      stage.setCursor("grabbing");
       renderer.domElement.setPointerCapture(event.pointerId);
       event.preventDefault();
     };
@@ -377,204 +669,249 @@ const experiment: ExperimentModule = {
         return;
       }
       dragActive = false;
-      renderer.domElement.releasePointerCapture(event.pointerId);
+      resetPanCarry();
+      stage.clearCursor();
+      if (renderer.domElement.hasPointerCapture(event.pointerId)) {
+        renderer.domElement.releasePointerCapture(event.pointerId);
+      }
       event.preventDefault();
     };
 
     const handleWheel = (event: WheelEvent) => {
       const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
-      let nextZoom = userScale;
-      if (zoomMode === "safe-ladder" && safeZoomLevels.length > 0) {
-        nextZoom = stepZoomLevel(safeZoomLevels, userScale, direction);
-      } else {
-        nextZoom = THREE.MathUtils.clamp(
-          userScale + direction,
-          ZOOM_MIN,
-          ZOOM_MAX
+      const nowMs = performance.now();
+      const burstContinues = zoomBurstActive && nowMs <= zoomBurstExpiresAtMs;
+      if (!burstContinues) {
+        resetPanCarry();
+        ensureScreenBasis();
+        const hasZoomAnchor = worldAtClient(
+          event.clientX,
+          event.clientY,
+          zoomBeforeWorld
         );
+        if (hasZoomAnchor) {
+          zoomAnchorWorld.copy(zoomBeforeWorld);
+          zoomAnchorActive = true;
+        } else {
+          zoomAnchorActive = false;
+        }
       }
-      if (nextZoom !== userScale) {
-        userScale = nextZoom;
-        resize(viewportWidth, viewportHeight);
+      zoomBurstActive = true;
+      zoomBurstExpiresAtMs = nowMs + ZOOM_BURST_IDLE_MS;
+      zoomAnchorClient.set(event.clientX, event.clientY);
+      if (controller.stepZoom(direction)) {
+        zoomAnimationActive = true;
+        applyControllerState();
+        applyZoomAnchorCorrection(2);
+        syncHud();
+      }
+      event.preventDefault();
+    };
+
+    const handleAuxClick = (event: MouseEvent) => {
+      if (event.button !== 1) {
+        return;
       }
       event.preventDefault();
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.code === "KeyQ") {
-        yawIndex -= 1;
+        zoomAnchorActive = false;
+        zoomBurstActive = false;
+        snapAfterRotation = true;
+        controller.rotateQuarterTurns(-1);
         event.preventDefault();
       } else if (event.code === "KeyE") {
-        yawIndex += 1;
+        zoomAnchorActive = false;
+        zoomBurstActive = false;
+        snapAfterRotation = true;
+        controller.rotateQuarterTurns(1);
         event.preventDefault();
       } else if (event.code === "KeyW") {
-        keyPanY = -1;
-        keyPanActive = true;
         event.preventDefault();
       } else if (event.code === "KeyS") {
-        keyPanY = 1;
-        keyPanActive = true;
         event.preventDefault();
       } else if (event.code === "KeyA") {
-        keyPanX = -1;
-        keyPanActive = true;
         event.preventDefault();
       } else if (event.code === "KeyD") {
-        keyPanX = 1;
-        keyPanActive = true;
         event.preventDefault();
       } else if (event.code === "KeyZ") {
-        zoomMode = zoomMode === "free" ? "safe-ladder" : "free";
-        updateSafeZoomLevels();
-        resize(viewportWidth, viewportHeight);
-        event.preventDefault();
-      } else if (event.code === "KeyV") {
-        dprMode = dprMode === "native" ? "override" : "native";
-        updateSafeZoomLevels();
-        resize(viewportWidth, viewportHeight);
-        event.preventDefault();
-      } else if (event.code === "BracketLeft") {
-        dprOverride = THREE.MathUtils.clamp(
-          dprOverride - 1,
-          DPR_OVERRIDE_MIN,
-          DPR_OVERRIDE_MAX
-        );
-        updateSafeZoomLevels();
-        if (dprMode === "override") {
-          resize(viewportWidth, viewportHeight);
-        } else {
-          syncHud();
-        }
-        event.preventDefault();
-      } else if (event.code === "BracketRight") {
-        dprOverride = THREE.MathUtils.clamp(
-          dprOverride + 1,
-          DPR_OVERRIDE_MIN,
-          DPR_OVERRIDE_MAX
-        );
-        updateSafeZoomLevels();
-        if (dprMode === "override") {
-          resize(viewportWidth, viewportHeight);
-        } else {
-          syncHud();
-        }
+        controller.toggleZoomMode();
+        applyControllerState();
         event.preventDefault();
       }
-    };
-
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.code === "KeyW" || event.code === "KeyS") {
-        keyPanY = 0;
-      } else if (event.code === "KeyA" || event.code === "KeyD") {
-        keyPanX = 0;
-      }
-      keyPanActive = keyPanX !== 0 || keyPanY !== 0;
     };
 
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
     renderer.domElement.addEventListener("pointermove", handlePointerMove);
     renderer.domElement.addEventListener("pointerup", handlePointerUp);
     renderer.domElement.addEventListener("pointercancel", handlePointerUp);
+    renderer.domElement.addEventListener("auxclick", handleAuxClick);
     renderer.domElement.addEventListener("wheel", handleWheel, { passive: false });
     window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-
-    const updateScreenToWorld = () => {
-      const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
-      const halfHeight = ORTHO_HEIGHT * 0.5;
-      const halfWidth = halfHeight * aspect;
-      const unitRight = (halfWidth * 2) / FIXED_RENDER_WIDTH;
-      const unitDown = (halfHeight * 2) / FIXED_RENDER_HEIGHT;
-      screenUnitRight = unitRight;
-      screenUnitDown = unitDown;
-
-      cameraRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-      cameraUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
-
-      screenRightWorld.copy(cameraRight).multiplyScalar(unitRight);
-      screenDownWorld.copy(cameraUp).multiplyScalar(-unitDown);
-    };
 
     let raf = 0;
-    const render = () => {
-      const yaw = CAMERA_YAW + yawIndex * (Math.PI * 0.5);
-
-      const horizontal = Math.cos(CAMERA_PITCH);
-      const dir = new THREE.Vector3(
-        Math.sin(yaw) * horizontal,
-        Math.sin(CAMERA_PITCH),
-        Math.cos(yaw) * horizontal
+    let lastFrameTimeMs = performance.now();
+    const render = (nowMs: number) => {
+      const deltaSeconds = Math.min(
+        0.05,
+        Math.max(0, (nowMs - lastFrameTimeMs) / 1000)
       );
-
-      camera.position.copy(cameraTarget).addScaledVector(dir, CAMERA_DISTANCE);
-      camera.lookAt(cameraTarget);
-      camera.updateProjectionMatrix();
-      camera.updateMatrixWorld(true);
-
-      if (lastYawIndex !== yawIndex || screenUnitRight === 0 || screenUnitDown === 0) {
-        updateScreenToWorld();
-        lastYawIndex = yawIndex;
+      lastFrameTimeMs = nowMs;
+      updateAnimationState(deltaSeconds);
+      ensureScreenBasis();
+      if (zoomBurstActive && nowMs > zoomBurstExpiresAtMs) {
+        zoomBurstActive = false;
       }
 
-      cameraForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
-      const depth = cameraTarget.dot(cameraForward);
-      const rightPx = Math.round(cameraTarget.dot(cameraRight) / screenUnitRight);
-      const upPx = Math.round(cameraTarget.dot(cameraUp) / screenUnitDown);
-      snappedCameraTarget
-        .copy(cameraForward)
-        .multiplyScalar(depth)
-        .addScaledVector(cameraRight, rightPx * screenUnitRight)
-        .addScaledVector(cameraUp, upPx * screenUnitDown);
-      cameraTarget.copy(snappedCameraTarget);
-      camera.position.copy(cameraTarget).addScaledVector(dir, CAMERA_DISTANCE);
-      camera.lookAt(cameraTarget);
-      camera.updateMatrixWorld(true);
+      if (zoomAnchorActive) {
+        applyZoomAnchorCorrection(4);
+      }
 
       renderer.setRenderTarget(lowTarget);
       renderer.clear();
       renderer.render(scene, camera);
 
-      if (keyPanActive) {
-        const activeDpr = getActiveDpr();
-        applyPan(
-          keyPanX / activeDpr,
-          keyPanY / activeDpr
-        );
-      }
+      // no keyboard pan handling
 
       renderer.setRenderTarget(null);
       renderer.clear();
+      const state = controller.getState();
+      const viewportWidth = Math.max(1, Math.round(displayOutputWidth));
+      const viewportHeight = Math.max(1, Math.round(displayOutputHeight));
+      const renderLeft = Math.round(displayRenderBaseX + state.panRemainderX);
+      const renderTop = Math.round(displayRenderBaseY + state.panRemainderY);
+      const renderBottom = renderer.domElement.height - (renderTop + viewportHeight);
       renderer.setViewport(
-        padSize + panPhase.remainderX,
-        // WebGL viewport Y is bottom-origin; screen-space pan remainder is top-origin.
-        // Invert Y remainder so subpixel pan and camera-step pan move in the same direction.
-        padSize - panPhase.remainderY,
-        outputWidth,
-        outputHeight
+        renderLeft,
+        renderBottom,
+        viewportWidth,
+        viewportHeight
       );
       renderer.render(outputScene, outputCamera);
-      renderer.setViewport(0, 0, outputWidth + padSize * 2, outputHeight + padSize * 2);
+      renderer.setViewport(
+        0,
+        0,
+        renderer.domElement.width,
+        renderer.domElement.height
+      );
 
       raf = requestAnimationFrame(render);
     };
 
-    render();
+    const debugWindow = window as Window & {
+      __pixelPerfect2to1Debug?: {
+        getState: () => {
+          nativeDpr: number;
+          activeDpr: number;
+          maxUserScale: number;
+          inputScaleX: number;
+          inputScaleY: number;
+          renderScale: number;
+          userScale: number;
+          animatedUserScale: number;
+          zoomAnimationActive: boolean;
+          lowRenderWidth: number;
+          lowRenderHeight: number;
+          sceneOutputWidth: number;
+          sceneOutputHeight: number;
+          outputWidth: number;
+          outputHeight: number;
+          outputPadDeviceX: number;
+          outputPadDeviceY: number;
+          viewportDeviceWidth: number;
+          viewportDeviceHeight: number;
+          renderBaseX: number;
+          renderBaseY: number;
+          panRemainderX: number;
+          panRemainderY: number;
+          cumulativePanDeviceX: number;
+          cumulativePanDeviceY: number;
+        };
+        worldAtClient: (clientX: number, clientY: number) => {
+          x: number;
+          y: number;
+          z: number;
+        } | null;
+        projectWorldToClient: (x: number, y: number, z: number) => {
+          clientX: number;
+          clientY: number;
+        } | null;
+      };
+    };
+    const debugApi = {
+      getState: () => {
+        const metrics = getCanvasMetrics();
+        const state = controller.getState();
+        return {
+          nativeDpr: state.devicePixelRatio,
+          activeDpr: state.devicePixelRatio,
+          maxUserScale: state.maxUserScale,
+          inputScaleX: metrics?.cssToDeviceX ?? state.devicePixelRatio,
+          inputScaleY: metrics?.cssToDeviceY ?? state.devicePixelRatio,
+          renderScale: displayRenderScale,
+          userScale: state.userScale,
+          animatedUserScale,
+          zoomAnimationActive,
+          lowRenderWidth: state.lowRenderWidth,
+          lowRenderHeight: state.lowRenderHeight,
+          sceneOutputWidth: displaySceneOutputWidth,
+          sceneOutputHeight: displaySceneOutputHeight,
+          outputWidth: displayOutputWidth,
+          outputHeight: displayOutputHeight,
+          outputPadDeviceX: displayOutputPadDeviceX,
+          outputPadDeviceY: displayOutputPadDeviceY,
+          viewportDeviceWidth: state.viewportDeviceWidth,
+          viewportDeviceHeight: state.viewportDeviceHeight,
+          renderBaseX: displayRenderBaseX,
+          renderBaseY: displayRenderBaseY,
+          panRemainderX: state.panRemainderX,
+          panRemainderY: state.panRemainderY,
+          cumulativePanDeviceX: state.cumulativePanDeviceX,
+          cumulativePanDeviceY: state.cumulativePanDeviceY
+        };
+      },
+      worldAtClient: (clientX: number, clientY: number) => {
+        setCameraPoseFromTarget();
+        if (!worldAtClient(clientX, clientY, zoomBeforeWorld)) {
+          return null;
+        }
+        return {
+          x: zoomBeforeWorld.x,
+          y: zoomBeforeWorld.y,
+          z: zoomBeforeWorld.z
+        };
+      },
+      projectWorldToClient: (x: number, y: number, z: number) => {
+        setCameraPoseFromTarget();
+        if (!projectWorldToClient(zoomBeforeWorld.set(x, y, z), projectedClient)) {
+          return null;
+        }
+        return {
+          clientX: projectedClient.x,
+          clientY: projectedClient.y
+        };
+      }
+    };
+    debugWindow.__pixelPerfect2to1Debug = debugApi;
+
+    raf = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(raf);
-      observer.disconnect();
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       renderer.domElement.removeEventListener("pointermove", handlePointerMove);
       renderer.domElement.removeEventListener("pointerup", handlePointerUp);
       renderer.domElement.removeEventListener("pointercancel", handlePointerUp);
+      renderer.domElement.removeEventListener("auxclick", handleAuxClick);
       renderer.domElement.removeEventListener("wheel", handleWheel);
       window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
 
-      mount.style.position = "";
-      mount.style.background = "";
-      mount.style.overflow = "";
       hud.remove();
+      if (debugWindow.__pixelPerfect2to1Debug === debugApi) {
+        delete debugWindow.__pixelPerfect2to1Debug;
+      }
 
       boxes.forEach((mesh) => scene.remove(mesh));
       scene.remove(floorGroup);
@@ -590,8 +927,7 @@ const experiment: ExperimentModule = {
       outputMaterial.dispose();
       outputScene.remove(outputQuad);
 
-      renderer.dispose();
-      renderer.domElement.remove();
+      stage.dispose();
     };
   }
 };
