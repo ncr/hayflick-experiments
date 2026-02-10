@@ -622,3 +622,16 @@ Preventive checklist:
 - For pixel-lock claims, define whether "screen pixel" means CSS pixel or physical device pixel and implement quantization in that space consistently.
 - Validate with frame-diff tests at DPR `1`, `1.25`, `1.5`, and `2` before concluding wobble is fixed.
 - If uniform per-frame pan speed is required, constrain runtime to integer DPR (or browser zoom levels yielding integer DPR).
+
+## 2026-02-10 - Fractional-DPR tuning needs explicit mode controls to compare tradeoffs in one build
+Root cause:
+- Native-DPR pixel lock and integer-effective-DPR override optimize different goals (pointer-speed fidelity vs strict physical-pixel cadence).
+- Without an in-scene switch, regressions were hard to compare and discuss because each commit changed multiple assumptions.
+
+Detection signal:
+- User requested trying both approaches side-by-side in the same experiment.
+
+Preventive checklist:
+- Add runtime toggles for DPR mode and zoom quantization mode when investigating pixel-phase issues.
+- Surface active/native DPR, effective zoom, and ladder values in a HUD so behavior can be interpreted quickly.
+- Keep mode helpers unit-tested (`safe ladder` computation and stepping).

@@ -14,6 +14,18 @@ import {
   rescalePanPhaseRemainder,
   stepPanPhase
 } from "./pan-phase";
+import {
+  computeSafeZoomLevels,
+  nearestZoomLevel,
+  stepZoomLevel,
+  type DprMode,
+  type ZoomMode
+} from "./zoom-modes";
+
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 20;
+const DPR_OVERRIDE_MIN = 1;
+const DPR_OVERRIDE_MAX = 4;
 
 const experiment: ExperimentModule = {
   id: "pixel-perfect-2to1",
@@ -141,17 +153,39 @@ const experiment: ExperimentModule = {
     outputQuad.frustumCulled = false;
     outputScene.add(outputQuad);
 
+    const hud = document.createElement("div");
+    hud.style.position = "absolute";
+    hud.style.left = "8px";
+    hud.style.top = "8px";
+    hud.style.padding = "6px 8px";
+    hud.style.background = "rgba(11, 15, 20, 0.8)";
+    hud.style.color = "#d7dde6";
+    hud.style.font = "12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+    hud.style.whiteSpace = "pre-line";
+    hud.style.pointerEvents = "none";
+    hud.style.userSelect = "none";
+    hud.style.zIndex = "3";
+    mount.appendChild(hud);
+
     let yawIndex = 0;
     let dragActive = false;
     let lastClientX = 0;
     let lastClientY = 0;
     let renderScale = 1;
-    let userScale = 2;
+    let userScale = 4;
     let outputWidth = FIXED_RENDER_WIDTH;
     let outputHeight = FIXED_RENDER_HEIGHT;
     let viewportWidth = width;
     let viewportHeight = height;
     let devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+    let dprMode: DprMode = "native";
+    let dprOverride = THREE.MathUtils.clamp(
+      Math.round(devicePixelRatio),
+      DPR_OVERRIDE_MIN,
+      DPR_OVERRIDE_MAX
+    );
+    let zoomMode: ZoomMode = "free";
+    let safeZoomLevels: number[] = [];
     let padSize = 0;
     let panPhase = createPanPhaseState();
     let screenUnitRight = 0;
@@ -160,6 +194,41 @@ const experiment: ExperimentModule = {
     let keyPanY = 0;
     let keyPanActive = false;
     let lastYawIndex = Number.NaN;
+
+    const getActiveDpr = () =>
+      dprMode === "override" ? dprOverride : devicePixelRatio;
+
+    const updateSafeZoomLevels = () => {
+      safeZoomLevels = computeSafeZoomLevels(getActiveDpr(), ZOOM_MIN, ZOOM_MAX);
+      if (zoomMode === "safe-ladder") {
+        if (safeZoomLevels.length === 0) {
+          zoomMode = "free";
+          userScale = THREE.MathUtils.clamp(
+            Math.round(userScale),
+            ZOOM_MIN,
+            ZOOM_MAX
+          );
+        } else {
+          userScale = nearestZoomLevel(safeZoomLevels, userScale);
+        }
+      }
+    };
+
+    const syncHud = () => {
+      const activeDpr = getActiveDpr();
+      const effectiveCssZoom =
+        renderScale > 0 ? renderScale / devicePixelRatio : userScale;
+      const safeLevelsText =
+        safeZoomLevels.length === 0 ? "<none>" : safeZoomLevels.join(", ");
+      hud.textContent = [
+        `Zoom: ${effectiveCssZoom.toFixed(3)}x (target ${userScale}x)`,
+        `Zoom mode: ${zoomMode}`,
+        `DPR mode: ${dprMode} (native=${devicePixelRatio.toFixed(3)}, active=${activeDpr.toFixed(3)})`,
+        `Safe ladder: [${safeLevelsText}]`,
+        "Keys: wheel zoom, Q/E rotate, WASD pan",
+        "Modes: Z zoom-mode, V dpr-mode, [ ] dpr-override"
+      ].join("\n");
+    };
 
     const updateCameraProjection = (nextWidth: number, nextHeight: number) => {
       const aspect = nextWidth / nextHeight;
@@ -176,15 +245,20 @@ const experiment: ExperimentModule = {
       const safeHeight = Math.max(1, Math.floor(nextHeight));
       viewportWidth = safeWidth;
       viewportHeight = safeHeight;
+      const previousActiveDpr = getActiveDpr();
       const nextDevicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
       if (nextDevicePixelRatio !== devicePixelRatio) {
-        const ratio = nextDevicePixelRatio / devicePixelRatio;
+        devicePixelRatio = nextDevicePixelRatio;
+      }
+      const nextActiveDpr = getActiveDpr();
+      if (Math.abs(nextActiveDpr - previousActiveDpr) > 1e-9) {
+        const activeRatio = nextActiveDpr / previousActiveDpr;
         panPhase = {
           ...panPhase,
-          carryX: panPhase.carryX * ratio,
-          carryY: panPhase.carryY * ratio
+          carryX: panPhase.carryX * activeRatio,
+          carryY: panPhase.carryY * activeRatio
         };
-        devicePixelRatio = nextDevicePixelRatio;
+        updateSafeZoomLevels();
       }
       const fitScale = Math.max(
         1,
@@ -195,9 +269,10 @@ const experiment: ExperimentModule = {
           )
         )
       );
+      const activeDpr = getActiveDpr();
       const nextScale = Math.max(
         1,
-        Math.round(fitScale * userScale * devicePixelRatio)
+        Math.round(fitScale * userScale * activeDpr)
       );
       if (renderScale > 0 && nextScale !== renderScale) {
         panPhase = {
@@ -243,8 +318,10 @@ const experiment: ExperimentModule = {
       renderer.domElement.style.top = `${offsetDeviceY / devicePixelRatio}px`;
       updateCameraProjection(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT);
       lastYawIndex = Number.NaN;
+      syncHud();
     };
 
+    updateSafeZoomLevels();
     resize(width, height);
 
     const observer = new ResizeObserver((entries) => {
@@ -257,10 +334,11 @@ const experiment: ExperimentModule = {
     observer.observe(mount);
 
     const applyPan = (deltaX: number, deltaY: number) => {
+      const activeDpr = getActiveDpr();
       const next = stepPanPhase(
         panPhase,
-        deltaX * devicePixelRatio,
-        deltaY * devicePixelRatio,
+        deltaX * activeDpr,
+        deltaY * activeDpr,
         renderScale
       );
       panPhase = next.state;
@@ -304,10 +382,19 @@ const experiment: ExperimentModule = {
     };
 
     const handleWheel = (event: WheelEvent) => {
-      const step = event.deltaY > 0 ? -1 : 1;
-      const nextScale = THREE.MathUtils.clamp(userScale + step, 1, 8);
-      if (nextScale !== userScale) {
-        userScale = nextScale;
+      const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
+      let nextZoom = userScale;
+      if (zoomMode === "safe-ladder" && safeZoomLevels.length > 0) {
+        nextZoom = stepZoomLevel(safeZoomLevels, userScale, direction);
+      } else {
+        nextZoom = THREE.MathUtils.clamp(
+          userScale + direction,
+          ZOOM_MIN,
+          ZOOM_MAX
+        );
+      }
+      if (nextZoom !== userScale) {
+        userScale = nextZoom;
         resize(viewportWidth, viewportHeight);
       }
       event.preventDefault();
@@ -335,6 +422,42 @@ const experiment: ExperimentModule = {
       } else if (event.code === "KeyD") {
         keyPanX = 1;
         keyPanActive = true;
+        event.preventDefault();
+      } else if (event.code === "KeyZ") {
+        zoomMode = zoomMode === "free" ? "safe-ladder" : "free";
+        updateSafeZoomLevels();
+        resize(viewportWidth, viewportHeight);
+        event.preventDefault();
+      } else if (event.code === "KeyV") {
+        dprMode = dprMode === "native" ? "override" : "native";
+        updateSafeZoomLevels();
+        resize(viewportWidth, viewportHeight);
+        event.preventDefault();
+      } else if (event.code === "BracketLeft") {
+        dprOverride = THREE.MathUtils.clamp(
+          dprOverride - 1,
+          DPR_OVERRIDE_MIN,
+          DPR_OVERRIDE_MAX
+        );
+        updateSafeZoomLevels();
+        if (dprMode === "override") {
+          resize(viewportWidth, viewportHeight);
+        } else {
+          syncHud();
+        }
+        event.preventDefault();
+      } else if (event.code === "BracketRight") {
+        dprOverride = THREE.MathUtils.clamp(
+          dprOverride + 1,
+          DPR_OVERRIDE_MIN,
+          DPR_OVERRIDE_MAX
+        );
+        updateSafeZoomLevels();
+        if (dprMode === "override") {
+          resize(viewportWidth, viewportHeight);
+        } else {
+          syncHud();
+        }
         event.preventDefault();
       }
     };
@@ -412,9 +535,10 @@ const experiment: ExperimentModule = {
       renderer.render(scene, camera);
 
       if (keyPanActive) {
+        const activeDpr = getActiveDpr();
         applyPan(
-          keyPanX / devicePixelRatio,
-          keyPanY / devicePixelRatio
+          keyPanX / activeDpr,
+          keyPanY / activeDpr
         );
       }
 
@@ -450,6 +574,7 @@ const experiment: ExperimentModule = {
       mount.style.position = "";
       mount.style.background = "";
       mount.style.overflow = "";
+      hud.remove();
 
       boxes.forEach((mesh) => scene.remove(mesh));
       scene.remove(floorGroup);
