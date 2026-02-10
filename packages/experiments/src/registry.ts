@@ -9,6 +9,7 @@ import { meta as levelBuilderMeta } from "./level-builder/meta";
 import { meta as physicsRapierMeta } from "./physics-rapier/meta";
 import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
 import { meta as pixelPerfect2to1Meta } from "./pixel-perfect-2to1/meta";
+import { meta as pixelPerfectCameraZoomMeta } from "./pixel-perfect-camera-zoom/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
@@ -35,6 +36,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...pixelPerfect2to1Meta,
     load: () => import("./pixel-perfect-2to1/index")
+  },
+  {
+    ...pixelPerfectCameraZoomMeta,
+    load: () => import("./pixel-perfect-camera-zoom/index")
   },
   {
     ...shaderPlaygroundMeta,

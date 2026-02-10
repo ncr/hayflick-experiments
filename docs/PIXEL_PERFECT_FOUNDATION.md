@@ -81,10 +81,15 @@ foundational code for game experiments.
 
 ### Phase 4: Feature Extensions
 - Add optional modules:
-  - inertial pan
-  - bounded camera limits
-  - touch pinch/zoom
-  - deterministic replayable input events.
+- inertial pan
+- bounded camera limits
+- touch pinch/zoom
+- deterministic replayable input events.
+
+## Camera-based Zoom Prototype
+- The `pixel-perfect-camera-zoom` experiment keeps the low-res render target fixed and drives zoom through the orthographic camera height instead of increasing the backing resolution.
+- It reuses `PixelStage`/`PixelPerfectController` for pan, layout, and input mappings while handling its own `cameraZoom` multiplier plus cursor-anchor correction so the point under the cursor stays stable.
+- This prototype shows how a future experiment can explore camera-based zoom without touching the promoted controller.
 
 ## API Shape Proposal
 ```ts

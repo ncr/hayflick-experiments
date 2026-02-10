@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const ROUTE = "/#/exp/pixel-perfect-2to1";
+const CAMERA_ZOOM_ROUTE = "/#/exp/pixel-perfect-camera-zoom";
 
 type DebugState = {
   nativeDpr: number;
@@ -114,6 +115,45 @@ async function waitForZoomSettle(page: Page) {
     .toBe(true);
 }
 
+async function readCameraZoomState(page: Page) {
+  const state = await page.evaluate(() => {
+    const debug = (
+      window as Window & {
+        __pixelPerfectCameraZoomDebug?: {
+          getState: () => {
+            cameraZoomCurrent: number;
+            cameraZoomTarget: number;
+            zoomAnimationActive: boolean;
+            zoomBurstActive: boolean;
+            renderScale: number;
+            lowRenderWidth: number;
+            lowRenderHeight: number;
+            sceneOutputWidth: number;
+            sceneOutputHeight: number;
+          };
+        };
+      }
+    ).__pixelPerfectCameraZoomDebug;
+    return debug?.getState() ?? null;
+  });
+  if (!state) {
+    throw new Error("camera zoom debug state unavailable");
+  }
+  return state;
+}
+
+async function waitForCameraZoomSettle(page: Page) {
+  await expect
+    .poll(
+      async () => {
+        const state = await readCameraZoomState(page);
+        return !state.zoomAnimationActive;
+      },
+      { timeout: 3_500 }
+    )
+    .toBe(true);
+}
+
 async function rotateQuarterTurns(page: Page, turns: number): Promise<void> {
   if (turns === 0) {
     return;
@@ -195,6 +235,41 @@ test("pixel-perfect-2to1 zoom stays anchored at mouse cursor", async ({ browser 
       `cursor-anchor y drift at scenario ticks=${ticks}`
     ).toBeLessThanOrEqual(anchorToleranceCss);
   }
+
+  await context.close();
+});
+
+test("pixel-perfect-camera-zoom keeps render resolution constant across zoom", async ({
+  browser
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 920, height: 620 },
+    deviceScaleFactor: 1.6
+  });
+  const page = await context.newPage();
+  await page.goto(CAMERA_ZOOM_ROUTE);
+  await page.waitForTimeout(500);
+
+  const stage = page.locator(".stage-host");
+  const stageBox = await stage.boundingBox();
+  if (!stageBox) {
+    throw new Error("stage bounding box unavailable");
+  }
+  const centerX = stageBox.x + stageBox.width * 0.5;
+  const centerY = stageBox.y + stageBox.height * 0.5;
+
+  const before = await readCameraZoomState(page);
+  for (let i = 0; i < 4; i += 1) {
+    await applyZoomTicks(page, 1, centerX, centerY);
+    await page.waitForTimeout(40);
+  }
+  await waitForCameraZoomSettle(page);
+  const after = await readCameraZoomState(page);
+
+  expect(after.renderScale).toBeCloseTo(before.renderScale, 6);
+  expect(after.lowRenderWidth).toBe(before.lowRenderWidth);
+  expect(after.lowRenderHeight).toBe(before.lowRenderHeight);
+  expect(after.cameraZoomCurrent).not.toBeCloseTo(before.cameraZoomCurrent, 5);
 
   await context.close();
 });
