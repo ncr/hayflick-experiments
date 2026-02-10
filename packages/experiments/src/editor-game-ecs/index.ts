@@ -1118,16 +1118,24 @@ const experiment: ExperimentModule = {
     let viewportWidth = Math.max(1, width);
     let viewportHeight = Math.max(1, height);
 
-    const hemiLight = new THREE.HemisphereLight(0xd6ecff, 0x15202b, 0.7);
+    const hemiLight = new THREE.HemisphereLight(0xf2f8ff, 0x2d3f52, 1.45);
     scene.add(hemiLight);
 
-    const keyLight = new THREE.DirectionalLight(0xf5f1e8, 1.1);
+    const keyLight = new THREE.DirectionalLight(0xfff3df, 1.7);
     keyLight.position.set(16, 22, 12);
     scene.add(keyLight);
 
-    const fillLight = new THREE.DirectionalLight(0xa9c7ff, 0.35);
+    const fillLight = new THREE.DirectionalLight(0xb8d0ff, 0.95);
     fillLight.position.set(-12, 14, -10);
     scene.add(fillLight);
+
+    const rimLight = new THREE.DirectionalLight(0xffd8a8, 0.6);
+    rimLight.position.set(-18, 10, 20);
+    scene.add(rimLight);
+
+    const bounceLight = new THREE.PointLight(0xb3d3ff, 0.75, 180, 2);
+    bounceLight.position.set(0, 8, 0);
+    scene.add(bounceLight);
 
     const floorGroup = new THREE.Group();
     const wallGroup = new THREE.Group();
@@ -1169,6 +1177,7 @@ const experiment: ExperimentModule = {
     });
     const camera = view.camera;
     const renderer = view.renderer;
+    renderer.toneMappingExposure = 1.35;
     renderer.domElement.style.touchAction = "none";
     renderer.domElement.style.outline = "none";
     renderer.domElement.tabIndex = 0;
