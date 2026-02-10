@@ -1438,3 +1438,41 @@ Detection signal:
 Preventive checklist:
 - Keep smoke tests aligned with promoted view invariants (pixelated output + viewport/device sizing), not old experiment-specific constants.
 - After rendering pipeline promotion, rerun and update route-specific smoke expectations before concluding integration.
+
+## 2026-02-10 - Entering editor discarded runtime-only player transform
+Root cause:
+- `enterEditor()` disposed `gameRuntime`, and later `enterGame()` rebuilt runtime using default spawn unless explicit player override was provided.
+- The GAME->EDITOR->GAME flow from the UI did not pass a player override, so position reset.
+
+Detection signal:
+- User reported player position changed after entering EDITOR, editing, and exiting back to GAME.
+
+Preventive checklist:
+- Preserve player transform when transitioning GAME -> EDITOR and consume it on next EDITOR -> GAME unless an explicit load/save player override is present.
+- Add an e2e smoke check that moves player, enters EDITOR, returns to GAME, and asserts position continuity.
+
+## 2026-02-10 - Zoom-scaled input quantization made high-zoom pan feel locked to big-pixel steps
+Root cause:
+- Pan input was divided by zoom before entering pan-phase quantization.
+- At high zoom, sub-1px deltas were accumulated behind truncation, so visible movement only happened in coarse jumps.
+
+Detection signal:
+- User reported at higher zoom that panning felt like the smallest movement unit was a big pixel instead of a screen pixel.
+
+Preventive checklist:
+- Keep drag input in screen-pixel units through pan-phase accumulation.
+- If zoom compensation is needed, apply it to world camera-step displacement (post-quantization), not to raw input deltas.
+- Re-run high-zoom pan parity tests after any pan/zoom coupling change.
+
+## 2026-02-10 - High-zoom smooth pan requires split between screen offset and source-phase camera stepping
+Root cause:
+- A direct zoom-scaled camera-step approach either caused coarse pan (big-pixel increments) or phase instability.
+- The same accumulator cannot satisfy both invariants: 1px screen movement and stable low-res sampling phase.
+
+Detection signal:
+- User reported either coarse high-zoom pan or phase jumping depending on which pan path was active.
+
+Preventive checklist:
+- Keep a screen-space pan remainder (device-pixel translation) for per-pixel drag responsiveness.
+- Promote remainder into camera target movement only in source-phase quanta (`renderScale * zoom`).
+- Ensure client/world mapping and render viewport offsets include both controller pan remainder and the screen-space remainder.

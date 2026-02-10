@@ -102,6 +102,10 @@ export class PixelPerfectIsoView {
   private displayRenderBaseX = 0;
   private displayRenderBaseY = 0;
   private readonly baseDisplayRenderScale: number;
+  private panDeviceCarryX = 0;
+  private panDeviceCarryY = 0;
+  private panDeviceRemainderX = 0;
+  private panDeviceRemainderY = 0;
 
   constructor(config: PixelPerfectIsoViewConfig) {
     this.config = config;
@@ -257,10 +261,15 @@ export class PixelPerfectIsoView {
     this.zoomAnimationActive = false;
     this.zoomBurstActive = false;
     this.zoomPivotScene.set(0.5, 0.5);
+    this.panDeviceCarryX = 0;
+    this.panDeviceCarryY = 0;
+    this.panDeviceRemainderX = 0;
+    this.panDeviceRemainderY = 0;
     this.applyControllerState();
   }
 
   resize(nextWidth: number, nextHeight: number): void {
+    const previousDpr = this.controller.getState().devicePixelRatio;
     this.viewportWidth = Math.max(1, nextWidth);
     this.viewportHeight = Math.max(1, nextHeight);
     this.controller.resize(
@@ -268,6 +277,14 @@ export class PixelPerfectIsoView {
       this.viewportHeight,
       Math.max(1, window.devicePixelRatio || 1)
     );
+    const nextDpr = this.controller.getState().devicePixelRatio;
+    if (Math.abs(nextDpr - previousDpr) > 1e-9) {
+      const ratio = nextDpr / previousDpr;
+      this.panDeviceCarryX *= ratio;
+      this.panDeviceCarryY *= ratio;
+      this.panDeviceRemainderX = Math.trunc(this.panDeviceRemainderX * ratio);
+      this.panDeviceRemainderY = Math.trunc(this.panDeviceRemainderY * ratio);
+    }
     this.applyControllerState();
   }
 
@@ -286,8 +303,12 @@ export class PixelPerfectIsoView {
     const viewportWidth = Math.max(1, Math.round(this.displayOutputWidth));
     const viewportHeight = Math.max(1, Math.round(this.displayOutputHeight));
     const state = this.controller.getState();
-    const renderLeft = Math.round(this.displayRenderBaseX + state.panRemainderX);
-    const renderTop = Math.round(this.displayRenderBaseY + state.panRemainderY);
+    const renderLeft = Math.round(
+      this.displayRenderBaseX + state.panRemainderX + this.panDeviceRemainderX
+    );
+    const renderTop = Math.round(
+      this.displayRenderBaseY + state.panRemainderY + this.panDeviceRemainderY
+    );
     const renderBottom = this.renderer.domElement.height - (renderTop + viewportHeight);
     this.renderer.setViewport(renderLeft, renderBottom, viewportWidth, viewportHeight);
     this.renderer.render(this.outputScene, this.outputCamera);
@@ -302,8 +323,10 @@ export class PixelPerfectIsoView {
     const state = this.controller.getState();
     const deviceX = (clientX - metrics.rect.left) * metrics.cssToDeviceX;
     const deviceY = (clientY - metrics.rect.top) * metrics.cssToDeviceY;
-    const renderStartX = this.displayRenderBaseX + state.panRemainderX;
-    const renderStartY = this.displayRenderBaseY + state.panRemainderY;
+    const renderStartX =
+      this.displayRenderBaseX + state.panRemainderX + this.panDeviceRemainderX;
+    const renderStartY =
+      this.displayRenderBaseY + state.panRemainderY + this.panDeviceRemainderY;
     const localRenderX = deviceX - (renderStartX + this.displayOutputPadDeviceX);
     const localRenderY = deviceY - (renderStartY + this.displayOutputPadDeviceY);
     if (
@@ -344,11 +367,13 @@ export class PixelPerfectIsoView {
     const deviceX =
       this.displayRenderBaseX +
       state.panRemainderX +
+      this.panDeviceRemainderX +
       this.displayOutputPadDeviceX +
       normalizedX * this.displaySceneOutputWidth;
     const deviceY =
       this.displayRenderBaseY +
       state.panRemainderY +
+      this.panDeviceRemainderY +
       this.displayOutputPadDeviceY +
       normalizedY * this.displaySceneOutputHeight;
     out.set(
@@ -541,18 +566,35 @@ export class PixelPerfectIsoView {
     const fallbackScale = this.controller.getState().devicePixelRatio;
     const cssToDeviceX = metrics?.cssToDeviceX ?? fallbackScale;
     const cssToDeviceY = metrics?.cssToDeviceY ?? fallbackScale;
-    const step = this.controller.panByCss(deltaCssX, deltaCssY, cssToDeviceX, cssToDeviceY);
-    if (step.cameraStepX !== 0) {
-      this.cameraTarget.addScaledVector(this.screenRightWorld, -step.cameraStepX);
+    const deltaDeviceX = deltaCssX * cssToDeviceX + this.panDeviceCarryX;
+    const deltaDeviceY = deltaCssY * cssToDeviceY + this.panDeviceCarryY;
+    const wholeDeviceX = Math.trunc(deltaDeviceX);
+    const wholeDeviceY = Math.trunc(deltaDeviceY);
+    this.panDeviceCarryX = deltaDeviceX - wholeDeviceX;
+    this.panDeviceCarryY = deltaDeviceY - wholeDeviceY;
+
+    this.panDeviceRemainderX += wholeDeviceX;
+    this.panDeviceRemainderY += wholeDeviceY;
+
+    const cameraStepQuantum = Math.max(
+      1,
+      this.controller.getState().renderScale * Math.max(1, this.cameraZoomStable)
+    );
+    const cameraStepX = Math.trunc(this.panDeviceRemainderX / cameraStepQuantum);
+    const cameraStepY = Math.trunc(this.panDeviceRemainderY / cameraStepQuantum);
+    this.panDeviceRemainderX -= cameraStepX * cameraStepQuantum;
+    this.panDeviceRemainderY -= cameraStepY * cameraStepQuantum;
+
+    if (cameraStepX !== 0) {
+      this.cameraTarget.addScaledVector(this.screenRightWorld, -cameraStepX);
     }
-    if (step.cameraStepY !== 0) {
-      this.cameraTarget.addScaledVector(this.screenDownWorld, -step.cameraStepY);
+    if (cameraStepY !== 0) {
+      this.cameraTarget.addScaledVector(this.screenDownWorld, -cameraStepY);
     }
   }
 
   private applyPan(deltaCssX: number, deltaCssY: number): void {
-    const zoomDivisor = Math.max(1, this.cameraZoomStable);
-    this.applyPanRawCss(deltaCssX / zoomDivisor, deltaCssY / zoomDivisor);
+    this.applyPanRawCss(deltaCssX, deltaCssY);
   }
 
   private recenterCameraTargetToScreenCenter(): void {
@@ -579,8 +621,10 @@ export class PixelPerfectIsoView {
     const state = this.controller.getState();
     const deviceX = (clientX - metrics.rect.left) * metrics.cssToDeviceX;
     const deviceY = (clientY - metrics.rect.top) * metrics.cssToDeviceY;
-    const renderStartX = this.displayRenderBaseX + state.panRemainderX;
-    const renderStartY = this.displayRenderBaseY + state.panRemainderY;
+    const renderStartX =
+      this.displayRenderBaseX + state.panRemainderX + this.panDeviceRemainderX;
+    const renderStartY =
+      this.displayRenderBaseY + state.panRemainderY + this.panDeviceRemainderY;
     const localRenderX = deviceX - (renderStartX + this.displayOutputPadDeviceX);
     const localRenderY = deviceY - (renderStartY + this.displayOutputPadDeviceY);
     if (

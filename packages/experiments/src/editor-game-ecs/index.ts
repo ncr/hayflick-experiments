@@ -1491,6 +1491,7 @@ const experiment: ExperimentModule = {
     let raf = 0;
 
     let gameRuntime: GameRuntime | null = null;
+    let preservedEditorReturnPlayer: { x: number; y: number } | null = null;
 
     function getCurrentBrushAndMode(): { brush: EditorBrush; mode: ToolMode } {
       if (
@@ -2405,6 +2406,12 @@ const experiment: ExperimentModule = {
     }
 
     function enterEditor(): void {
+      if (gameRuntime) {
+        const player = findPlayerTransform(gameRuntime.world);
+        if (player) {
+          preservedEditorReturnPlayer = { x: player.x, y: player.y };
+        }
+      }
       disposeGameRuntime();
       mode = "EDITOR";
       editorDoorGroup.visible = true;
@@ -2433,7 +2440,7 @@ const experiment: ExperimentModule = {
       disposeGameRuntime();
 
       const runtime = createGameRuntime({
-        player: options?.player,
+        player: options?.player ?? preservedEditorReturnPlayer ?? undefined,
         doorOverrides: options?.doorOverrides
       });
       if (requestId !== enterGameRequestId) {
@@ -2463,6 +2470,7 @@ const experiment: ExperimentModule = {
 
       statusMessage =
         options?.status ?? "Baked editor state and entered GAME mode.";
+      preservedEditorReturnPlayer = null;
       syncHud();
     }
 

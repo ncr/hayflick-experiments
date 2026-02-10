@@ -7,6 +7,17 @@ async function focusStageCanvas(page: import("@playwright/test").Page) {
   return canvas;
 }
 
+function parsePlayerFromStats(text: string | null): { x: number; y: number } | null {
+  if (!text) {
+    return null;
+  }
+  const match = text.match(/Player=\(([-\d.]+),\s*([-\d.]+)\)/);
+  if (!match) {
+    return null;
+  }
+  return { x: Number(match[1]), y: Number(match[2]) };
+}
+
 test.describe("promoted editor/game browser smoke", () => {
   test("level-builder: rect grass fill and camera hotkey update HUD", async ({
     page
@@ -88,5 +99,35 @@ test.describe("promoted editor/game browser smoke", () => {
     expect(Number.parseFloat(metrics.styleWidth)).toBeGreaterThan(0);
     expect(Number.parseFloat(metrics.styleHeight)).toBeGreaterThan(0);
     expect(metrics.imageRendering).toBe("pixelated");
+  });
+
+  test("editor-game-ecs: preserves player position when returning from editor", async ({
+    page
+  }) => {
+    await page.goto("/#/exp/editor-game-ecs");
+    await focusStageCanvas(page);
+
+    const stats = page.locator('[data-testid="editor-game-ecs-stats"]');
+    await expect(stats).toContainText("Mode: GAME");
+
+    await page.keyboard.down("ArrowRight");
+    await page.waitForTimeout(250);
+    await page.keyboard.up("ArrowRight");
+
+    const moved = parsePlayerFromStats(await stats.textContent());
+    expect(moved).not.toBeNull();
+    if (!moved) return;
+
+    await page.keyboard.press("Escape");
+    await expect(stats).toContainText("Mode: EDITOR");
+    await page.keyboard.press("F5");
+    await expect(stats).toContainText("Mode: GAME");
+
+    const after = parsePlayerFromStats(await stats.textContent());
+    expect(after).not.toBeNull();
+    if (!after) return;
+
+    expect(Math.abs(after.x - moved.x)).toBeLessThanOrEqual(0.2);
+    expect(Math.abs(after.y - moved.y)).toBeLessThanOrEqual(0.2);
   });
 });
