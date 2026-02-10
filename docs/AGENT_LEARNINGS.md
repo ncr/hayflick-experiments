@@ -1074,3 +1074,30 @@ Preventive checklist:
 - Maintain burst-stability checks and responsiveness checks together, so fixes do not trade one failure mode for the other.
 - Supersedes part of prior entry `2026-02-10 - Rapid wheel bursts can destabilize anchor if zoom targets update mid-animation`:
   - The strict "queue wheel zoom requests" recommendation is historical and should not be used as the default UX policy.
+
+## 2026-02-10 - Camera-frustum zoom broke fixed world-to-game-pixel contract
+Root cause:
+- In `pixel-perfect-camera-zoom`, zoom changed orthographic height (`orthoHeight / cameraZoom`), which changed how many low-res game pixels represented one world unit.
+- This violated the invariant that a 128cm world segment projects to 32x16 game pixels.
+
+Detection signal:
+- User reported world units looked too large in game-pixel terms as zoom changed.
+- Camera-zoom probe confirmed contract drift across zoom levels when frustum height was animated.
+
+Preventive checklist:
+- Keep contract-sensitive projection (`orthoHeight`) fixed when zoom semantics should preserve world-to-game-pixel mapping.
+- Apply experiment zoom through output display scaling/cropping instead of frustum scaling when contract invariance is required.
+- Keep an automated contract assertion in e2e that verifies 1 world-unit projects to 32x16 game pixels across zoom scenarios.
+
+## 2026-02-10 - Fixed viewport zoom requires projection zoom, not output-viewport scaling
+Root cause:
+- In `pixel-perfect-camera-zoom`, applying zoom by increasing output display scale made the render viewport visibly grow during zoom.
+- This conflicted with the expected UX where viewport/canvas size stays fixed and only scene composition zooms.
+
+Detection signal:
+- User reported zoom-in made the render viewport larger on screen.
+
+Preventive checklist:
+- For fixed viewport/canvas UX, keep output viewport scale constant and apply zoom via camera projection/frustum.
+- Keep world-to-game-pixel contract assertions scoped to the calibrated baseline zoom in camera-zoom experiments.
+- Validate both interaction semantics together after zoom changes: viewport-size stability and cursor-anchor behavior.

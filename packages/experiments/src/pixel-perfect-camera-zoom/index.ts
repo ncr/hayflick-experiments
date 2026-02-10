@@ -13,6 +13,7 @@ import {
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 6;
 const ZOOM_STEP = 0.25;
+const BASE_PIXEL_ZOOM = 2;
 const ZOOM_ANIMATION_RATE = 14;
 const ZOOM_ANIMATION_BURST_RATE = 42;
 const ROTATION_ANIMATION_RATE = 18;
@@ -177,7 +178,7 @@ const experiment: ExperimentModule = {
     const controller = new PixelPerfectController({
       minZoom: 1,
       maxZoom: 20,
-      initialZoom: 1,
+      initialZoom: BASE_PIXEL_ZOOM,
       initialZoomMode: "free",
       overscanLowPixels: OUTPUT_OVERSCAN_LOW_PIXELS,
       baseOrthoHeight: ORTHO_HEIGHT,
@@ -190,7 +191,8 @@ const experiment: ExperimentModule = {
     });
 
     const initialState = controller.getState();
-    let displayRenderScale = initialState.renderScale;
+    const baseDisplayRenderScale = initialState.renderScale;
+    let displayRenderScale = baseDisplayRenderScale;
     let displaySceneOutputWidth = initialState.sceneOutputWidth;
     let displaySceneOutputHeight = initialState.sceneOutputHeight;
     let displayOutputWidth = initialState.outputWidth;
@@ -449,6 +451,8 @@ const experiment: ExperimentModule = {
       updateScreenToWorld();
     };
 
+    const getDisplayScale = () => baseDisplayRenderScale;
+
     const updateAnimationState = (deltaSeconds: number) => {
       const targetYawTurns = controller.getYawIndex();
       animatedYawTurns = easeToward(
@@ -481,10 +485,7 @@ const experiment: ExperimentModule = {
         state.lowRenderHeight,
         state.orthoHeight / cameraZoomCurrent
       );
-      updateDisplayLayout(displayRenderScale);
-      if (Math.abs(state.renderScale - displayRenderScale) > 1e-5) {
-        displayRenderScale = state.renderScale;
-      }
+      updateDisplayLayout(getDisplayScale());
       syncHud();
     };
 
@@ -608,35 +609,38 @@ const experiment: ExperimentModule = {
       }
     };
 
-    const debugWindow = window as Window & {
-      __pixelPerfectCameraZoomDebug?: {
-        getState: () => {
-          cameraZoomCurrent: number;
-          cameraZoomTarget: number;
-          zoomAnimationActive: boolean;
-          zoomBurstActive: boolean;
-          renderScale: number;
-          lowRenderWidth: number;
-          lowRenderHeight: number;
-          sceneOutputWidth: number;
-          sceneOutputHeight: number;
-        };
-        worldAtClient: (clientX: number, clientY: number) => {
-          x: number;
-          y: number;
-          z: number;
-        } | null;
-        projectWorldToClient: (
-          x: number,
-          y: number,
-          z: number
-        ) => {
-          clientX: number;
-          clientY: number;
-        } | null;
+    type CameraZoomDebugApi = {
+      getState: () => {
+        cameraZoomCurrent: number;
+        cameraZoomTarget: number;
+        zoomAnimationActive: boolean;
+        zoomBurstActive: boolean;
+        controllerRenderScale: number;
+        displayRenderScale: number;
+        lowRenderWidth: number;
+        lowRenderHeight: number;
+        sceneOutputWidth: number;
+        sceneOutputHeight: number;
       };
+      worldAtClient: (clientX: number, clientY: number) => {
+        x: number;
+        y: number;
+        z: number;
+      } | null;
+      projectWorldToClient: (
+        x: number,
+        y: number,
+        z: number
+      ) => {
+        clientX: number;
+        clientY: number;
+      } | null;
     };
-    const debugApi = {
+
+    const debugWindow = window as Window & {
+      __pixelPerfectCameraZoomDebug?: CameraZoomDebugApi;
+    };
+    const debugApi: CameraZoomDebugApi = {
       getState: () => {
         const state = controller.getState();
         return {
@@ -644,7 +648,8 @@ const experiment: ExperimentModule = {
           cameraZoomTarget,
           zoomAnimationActive,
           zoomBurstActive,
-          renderScale: displayRenderScale,
+          controllerRenderScale: state.renderScale,
+          displayRenderScale,
           lowRenderWidth: state.lowRenderWidth,
           lowRenderHeight: state.lowRenderHeight,
           sceneOutputWidth: displaySceneOutputWidth,

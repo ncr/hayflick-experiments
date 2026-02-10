@@ -125,7 +125,8 @@ async function readCameraZoomState(page: Page) {
             cameraZoomTarget: number;
             zoomAnimationActive: boolean;
             zoomBurstActive: boolean;
-            renderScale: number;
+            controllerRenderScale: number;
+            displayRenderScale: number;
             lowRenderWidth: number;
             lowRenderHeight: number;
             sceneOutputWidth: number;
@@ -140,6 +141,33 @@ async function readCameraZoomState(page: Page) {
     throw new Error("camera zoom debug state unavailable");
   }
   return state;
+}
+
+async function projectCameraWorldToClient(
+  page: Page,
+  world: WorldPoint
+): Promise<ClientPoint> {
+  const projected = await page.evaluate(
+    ({ x, y, z }) => {
+      const debug = (
+        window as Window & {
+          __pixelPerfectCameraZoomDebug?: {
+            projectWorldToClient: (
+              wx: number,
+              wy: number,
+              wz: number
+            ) => ClientPoint | null;
+          };
+        }
+      ).__pixelPerfectCameraZoomDebug;
+      return debug?.projectWorldToClient(x, y, z) ?? null;
+    },
+    world
+  );
+  if (!projected) {
+    throw new Error("projectWorldToClient returned null for camera zoom debug");
+  }
+  return projected;
 }
 
 async function waitForCameraZoomSettle(page: Page) {
@@ -266,10 +294,61 @@ test("pixel-perfect-camera-zoom keeps render resolution constant across zoom", a
   await waitForCameraZoomSettle(page);
   const after = await readCameraZoomState(page);
 
-  expect(after.renderScale).toBeCloseTo(before.renderScale, 6);
+  expect(after.controllerRenderScale).toBeCloseTo(before.controllerRenderScale, 6);
+  expect(after.displayRenderScale).toBeCloseTo(before.displayRenderScale, 6);
   expect(after.lowRenderWidth).toBe(before.lowRenderWidth);
   expect(after.lowRenderHeight).toBe(before.lowRenderHeight);
   expect(after.cameraZoomCurrent).not.toBeCloseTo(before.cameraZoomCurrent, 5);
+
+  await context.close();
+});
+
+test("pixel-perfect-camera-zoom keeps 32:16 world-to-game-pixel contract at baseline zoom", async ({
+  browser
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 920, height: 620 },
+    deviceScaleFactor: 1.6
+  });
+  const page = await context.newPage();
+  await page.goto(CAMERA_ZOOM_ROUTE);
+  await page.waitForTimeout(500);
+
+  const stage = page.locator(".stage-host");
+  const stageBox = await stage.boundingBox();
+  if (!stageBox) {
+    throw new Error("stage bounding box unavailable");
+  }
+  const centerX = stageBox.x + stageBox.width * 0.5;
+  const centerY = stageBox.y + stageBox.height * 0.5;
+
+  const state = await readCameraZoomState(page);
+  const origin = await projectCameraWorldToClient(page, { x: 0, y: 0, z: 0 });
+  const xStep = await projectCameraWorldToClient(page, { x: 1, y: 0, z: 0 });
+  const zStep = await projectCameraWorldToClient(page, { x: 0, y: 0, z: 1 });
+
+  const canvas = page.locator(".stage-host canvas");
+  const metrics = await canvas.evaluate((canvasEl) => {
+    if (!(canvasEl instanceof HTMLCanvasElement)) {
+      return null;
+    }
+    const rect = canvasEl.getBoundingClientRect();
+    return {
+      cssToDeviceX: canvasEl.width / rect.width,
+      cssToDeviceY: canvasEl.height / rect.height
+    };
+  });
+  if (!metrics) {
+    throw new Error("canvas metrics unavailable");
+  }
+
+  const worldXGamePixels =
+    ((xStep.clientX - origin.clientX) * metrics.cssToDeviceX) / state.displayRenderScale;
+  const worldYGamePixels =
+    ((zStep.clientY - origin.clientY) * metrics.cssToDeviceY) / state.displayRenderScale;
+
+  expect(Math.abs(worldXGamePixels), "baseline world x game-pixels").toBeCloseTo(32, 6);
+  expect(Math.abs(worldYGamePixels), "baseline world y game-pixels").toBeCloseTo(16, 6);
 
   await context.close();
 });
