@@ -566,3 +566,32 @@ Preventive checklist:
 - For strict pixel-lock mode, keep canvas transform fixed at integer zero and use remainder only as an accumulator for next camera pixel step.
 - Avoid mixing camera pixel stepping with non-zero DOM transform in the same render path.
 - Validate by observing static geometry while panning slowly: no whole-frame ±1 px jumps should be visible.
+
+## 2026-02-10 - Pixel-perfect-2to1 wobble came from fractional anchoring and unsnapped camera-phase accumulation
+Root cause:
+- Canvas centering via flex layout could place the upscaled canvas on fractional pixel anchors.
+- Repeated world-space camera target updates accumulated tiny floating-point drift without explicit screen-space pixel snapping.
+
+Detection signal:
+- User observed persistent ±1 screen-pixel whole-image wobble across zoom levels.
+- Wobble remained visible even when panning in single-screen-pixel increments.
+
+Preventive checklist:
+- Anchor upscaled canvas with integer `left/top` offsets instead of flex centering for pixel-lock renderers.
+- Snap camera target to integer low-resolution screen-space coordinates each frame.
+- Keep pan transform integer-rounded and preserve pan remainder normalization when scale changes.
+
+## 2026-02-10 - Rounded CSS pan remainder caused early 1px phase jumps during subpixel pointer deltas
+Root cause:
+- `pixel-perfect-2to1` mixed floating pointer deltas with `Math.round` canvas translation.
+- Rounding allowed the displayed offset to jump before a full screen pixel of drag had actually accumulated.
+- The offset was applied as DOM transform, adding compositor-phase instability on top of raster content.
+
+Detection signal:
+- User reported persistent ±1 screen-pixel wobble while panning at all zoom levels.
+- New pan-phase unit test reproduced legacy early jumps with repeated `0.25px` raw deltas.
+
+Preventive checklist:
+- Quantize pointer deltas through an explicit carry accumulator (`Math.trunc`), so movement advances only on whole screen pixels.
+- Keep pan remainder integer-valued and bounded by `renderScale`.
+- Apply remainder shift in final WebGL viewport, not via CSS canvas transforms.

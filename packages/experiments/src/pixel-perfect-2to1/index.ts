@@ -9,6 +9,11 @@ import {
   GRID_SIZE,
   ORTHO_HEIGHT
 } from "./config";
+import {
+  createPanPhaseState,
+  rescalePanPhaseRemainder,
+  stepPanPhase
+} from "./pan-phase";
 
 const experiment: ExperimentModule = {
   id: "pixel-perfect-2to1",
@@ -21,10 +26,12 @@ const experiment: ExperimentModule = {
     renderer.setClearColor(0x0b0f14, 1);
     renderer.domElement.style.imageRendering = "pixelated";
     renderer.domElement.style.transformOrigin = "0 0";
+    renderer.domElement.style.position = "absolute";
+    renderer.domElement.style.left = "0px";
+    renderer.domElement.style.top = "0px";
+    renderer.domElement.style.display = "block";
     mount.appendChild(renderer.domElement);
-    mount.style.display = "flex";
-    mount.style.alignItems = "center";
-    mount.style.justifyContent = "center";
+    mount.style.position = "relative";
     mount.style.background = "#0b0f14";
     mount.style.overflow = "hidden";
 
@@ -37,6 +44,8 @@ const experiment: ExperimentModule = {
     const screenDownWorld = new THREE.Vector3();
     const cameraRight = new THREE.Vector3();
     const cameraUp = new THREE.Vector3();
+    const cameraForward = new THREE.Vector3();
+    const snappedCameraTarget = new THREE.Vector3();
     const dragDelta = new THREE.Vector2();
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.65);
@@ -143,8 +152,9 @@ const experiment: ExperimentModule = {
     let viewportWidth = width;
     let viewportHeight = height;
     let padSize = 0;
-    let panScreenX = 0;
-    let panScreenY = 0;
+    let panPhase = createPanPhaseState();
+    let screenUnitRight = 0;
+    let screenUnitDown = 0;
     let keyPanX = 0;
     let keyPanY = 0;
     let keyPanActive = false;
@@ -174,7 +184,23 @@ const experiment: ExperimentModule = {
           )
         )
       );
-      renderScale = Math.max(1, fitScale * userScale);
+      const nextScale = Math.max(1, fitScale * userScale);
+      if (renderScale > 0 && nextScale !== renderScale) {
+        panPhase = {
+          ...panPhase,
+          remainderX: rescalePanPhaseRemainder(
+            panPhase.remainderX,
+            renderScale,
+            nextScale
+          ),
+          remainderY: rescalePanPhaseRemainder(
+            panPhase.remainderY,
+            renderScale,
+            nextScale
+          )
+        };
+      }
+      renderScale = nextScale;
       const targetWidth = FIXED_RENDER_WIDTH * renderScale;
       const targetHeight = FIXED_RENDER_HEIGHT * renderScale;
       outputWidth = targetWidth;
@@ -183,6 +209,10 @@ const experiment: ExperimentModule = {
       renderer.setSize(targetWidth + padSize * 2, targetHeight + padSize * 2, true);
       renderer.domElement.style.width = `${targetWidth + padSize * 2}px`;
       renderer.domElement.style.height = `${targetHeight + padSize * 2}px`;
+      const offsetX = Math.floor((safeWidth - (targetWidth + padSize * 2)) * 0.5);
+      const offsetY = Math.floor((safeHeight - (targetHeight + padSize * 2)) * 0.5);
+      renderer.domElement.style.left = `${offsetX}px`;
+      renderer.domElement.style.top = `${offsetY}px`;
       updateCameraProjection(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT);
       lastYawIndex = Number.NaN;
     };
@@ -199,17 +229,13 @@ const experiment: ExperimentModule = {
     observer.observe(mount);
 
     const applyPan = (deltaX: number, deltaY: number) => {
-      panScreenX += deltaX;
-      panScreenY += deltaY;
-      const stepX = Math.trunc(panScreenX / renderScale);
-      const stepY = Math.trunc(panScreenY / renderScale);
-      if (stepX !== 0) {
-        panScreenX -= stepX * renderScale;
-        cameraTarget.addScaledVector(screenRightWorld, -stepX);
+      const next = stepPanPhase(panPhase, deltaX, deltaY, renderScale);
+      panPhase = next.state;
+      if (next.cameraStepX !== 0) {
+        cameraTarget.addScaledVector(screenRightWorld, -next.cameraStepX);
       }
-      if (stepY !== 0) {
-        panScreenY -= stepY * renderScale;
-        cameraTarget.addScaledVector(screenDownWorld, -stepY);
+      if (next.cameraStepY !== 0) {
+        cameraTarget.addScaledVector(screenDownWorld, -next.cameraStepY);
       }
     };
 
@@ -303,6 +329,8 @@ const experiment: ExperimentModule = {
       const halfWidth = halfHeight * aspect;
       const unitRight = (halfWidth * 2) / FIXED_RENDER_WIDTH;
       const unitDown = (halfHeight * 2) / FIXED_RENDER_HEIGHT;
+      screenUnitRight = unitRight;
+      screenUnitDown = unitDown;
 
       cameraRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
       cameraUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
@@ -327,10 +355,24 @@ const experiment: ExperimentModule = {
       camera.updateProjectionMatrix();
       camera.updateMatrixWorld(true);
 
-      if (lastYawIndex !== yawIndex) {
+      if (lastYawIndex !== yawIndex || screenUnitRight === 0 || screenUnitDown === 0) {
         updateScreenToWorld();
         lastYawIndex = yawIndex;
       }
+
+      cameraForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+      const depth = cameraTarget.dot(cameraForward);
+      const rightPx = Math.round(cameraTarget.dot(cameraRight) / screenUnitRight);
+      const upPx = Math.round(cameraTarget.dot(cameraUp) / screenUnitDown);
+      snappedCameraTarget
+        .copy(cameraForward)
+        .multiplyScalar(depth)
+        .addScaledVector(cameraRight, rightPx * screenUnitRight)
+        .addScaledVector(cameraUp, upPx * screenUnitDown);
+      cameraTarget.copy(snappedCameraTarget);
+      camera.position.copy(cameraTarget).addScaledVector(dir, CAMERA_DISTANCE);
+      camera.lookAt(cameraTarget);
+      camera.updateMatrixWorld(true);
 
       renderer.setRenderTarget(lowTarget);
       renderer.clear();
@@ -342,11 +384,14 @@ const experiment: ExperimentModule = {
 
       renderer.setRenderTarget(null);
       renderer.clear();
-      renderer.setViewport(padSize, padSize, outputWidth, outputHeight);
+      renderer.setViewport(
+        padSize + panPhase.remainderX,
+        padSize + panPhase.remainderY,
+        outputWidth,
+        outputHeight
+      );
       renderer.render(outputScene, outputCamera);
       renderer.setViewport(0, 0, outputWidth + padSize * 2, outputHeight + padSize * 2);
-
-      renderer.domElement.style.transform = `translate(${panScreenX}px, ${panScreenY}px)`;
 
       raf = requestAnimationFrame(render);
     };
@@ -364,9 +409,7 @@ const experiment: ExperimentModule = {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
 
-      mount.style.display = "";
-      mount.style.alignItems = "";
-      mount.style.justifyContent = "";
+      mount.style.position = "";
       mount.style.background = "";
       mount.style.overflow = "";
 
