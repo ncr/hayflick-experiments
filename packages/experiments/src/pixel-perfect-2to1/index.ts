@@ -58,12 +58,6 @@ const experiment: ExperimentModule = {
     const cameraUp = new THREE.Vector3();
     const cameraForward = new THREE.Vector3();
     const snappedCameraTarget = new THREE.Vector3();
-    const raycaster = new THREE.Raycaster();
-    const pointerNdc = new THREE.Vector2();
-    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const beforeZoomWorld = new THREE.Vector3();
-    const afterZoomWorld = new THREE.Vector3();
-    const cameraShift = new THREE.Vector3();
     const dragDelta = new THREE.Vector2();
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.65);
@@ -178,8 +172,7 @@ const experiment: ExperimentModule = {
     let lastClientX = 0;
     let lastClientY = 0;
     let renderScale = 1;
-    let zoomTarget = 4;
-    let zoomCurrent = zoomTarget;
+    let userScale = 4;
     let outputWidth = FIXED_RENDER_WIDTH;
     let outputHeight = FIXED_RENDER_HEIGHT;
     let viewportWidth = width;
@@ -201,9 +194,6 @@ const experiment: ExperimentModule = {
     let keyPanY = 0;
     let keyPanActive = false;
     let lastYawIndex = Number.NaN;
-    let zoomAnchorX = width * 0.5;
-    let zoomAnchorY = height * 0.5;
-    let zoomAnchorActive = false;
 
     const getActiveDpr = () =>
       dprMode === "override" ? dprOverride : devicePixelRatio;
@@ -213,13 +203,13 @@ const experiment: ExperimentModule = {
       if (zoomMode === "safe-ladder") {
         if (safeZoomLevels.length === 0) {
           zoomMode = "free";
-          zoomTarget = THREE.MathUtils.clamp(
-            Math.round(zoomTarget),
+          userScale = THREE.MathUtils.clamp(
+            Math.round(userScale),
             ZOOM_MIN,
             ZOOM_MAX
           );
         } else {
-          zoomTarget = nearestZoomLevel(safeZoomLevels, zoomTarget);
+          userScale = nearestZoomLevel(safeZoomLevels, userScale);
         }
       }
     };
@@ -227,11 +217,11 @@ const experiment: ExperimentModule = {
     const syncHud = () => {
       const activeDpr = getActiveDpr();
       const effectiveCssZoom =
-        renderScale > 0 ? renderScale / devicePixelRatio : zoomCurrent;
+        renderScale > 0 ? renderScale / devicePixelRatio : userScale;
       const safeLevelsText =
         safeZoomLevels.length === 0 ? "<none>" : safeZoomLevels.join(", ");
       hud.textContent = [
-        `Zoom: ${effectiveCssZoom.toFixed(3)}x (target ${zoomTarget.toFixed(3)}x)`,
+        `Zoom: ${effectiveCssZoom.toFixed(3)}x (target ${userScale}x)`,
         `Zoom mode: ${zoomMode}`,
         `DPR mode: ${dprMode} (native=${devicePixelRatio.toFixed(3)}, active=${activeDpr.toFixed(3)})`,
         `Safe ladder: [${safeLevelsText}]`,
@@ -248,21 +238,6 @@ const experiment: ExperimentModule = {
       camera.top = halfHeight;
       camera.bottom = -halfHeight;
       camera.updateProjectionMatrix();
-    };
-
-    const worldAtClient = (
-      clientX: number,
-      clientY: number,
-      out: THREE.Vector3
-    ): boolean => {
-      const rect = renderer.domElement.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) {
-        return false;
-      }
-      pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-      pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointerNdc, camera);
-      return !!raycaster.ray.intersectPlane(groundPlane, out);
     };
 
     const resize = (nextWidth: number, nextHeight: number) => {
@@ -297,7 +272,7 @@ const experiment: ExperimentModule = {
       const activeDpr = getActiveDpr();
       const nextScale = Math.max(
         1,
-        Math.round(fitScale * zoomCurrent * activeDpr)
+        Math.round(fitScale * userScale * activeDpr)
       );
       if (renderScale > 0 && nextScale !== renderScale) {
         panPhase = {
@@ -359,10 +334,11 @@ const experiment: ExperimentModule = {
     observer.observe(mount);
 
     const applyPan = (deltaX: number, deltaY: number) => {
+      const activeDpr = getActiveDpr();
       const next = stepPanPhase(
         panPhase,
-        deltaX * devicePixelRatio,
-        deltaY * devicePixelRatio,
+        deltaX * activeDpr,
+        deltaY * activeDpr,
         renderScale
       );
       panPhase = next.state;
@@ -407,27 +383,19 @@ const experiment: ExperimentModule = {
 
     const handleWheel = (event: WheelEvent) => {
       const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
-      let nextZoom = zoomTarget;
+      let nextZoom = userScale;
       if (zoomMode === "safe-ladder" && safeZoomLevels.length > 0) {
-        nextZoom = stepZoomLevel(safeZoomLevels, zoomTarget, direction);
+        nextZoom = stepZoomLevel(safeZoomLevels, userScale, direction);
       } else {
-        const baseLevel = THREE.MathUtils.clamp(
-          Math.round(zoomTarget),
-          ZOOM_MIN,
-          ZOOM_MAX
-        );
         nextZoom = THREE.MathUtils.clamp(
-          baseLevel + direction,
+          userScale + direction,
           ZOOM_MIN,
           ZOOM_MAX
         );
       }
-      if (Math.abs(nextZoom - zoomTarget) > 1e-6) {
-        zoomTarget = nextZoom;
-        zoomAnchorX = event.clientX;
-        zoomAnchorY = event.clientY;
-        zoomAnchorActive = true;
-        syncHud();
+      if (nextZoom !== userScale) {
+        userScale = nextZoom;
+        resize(viewportWidth, viewportHeight);
       }
       event.preventDefault();
     };
@@ -458,7 +426,7 @@ const experiment: ExperimentModule = {
       } else if (event.code === "KeyZ") {
         zoomMode = zoomMode === "free" ? "safe-ladder" : "free";
         updateSafeZoomLevels();
-        syncHud();
+        resize(viewportWidth, viewportHeight);
         event.preventDefault();
       } else if (event.code === "KeyV") {
         dprMode = dprMode === "native" ? "override" : "native";
@@ -529,24 +497,6 @@ const experiment: ExperimentModule = {
 
     let raf = 0;
     const render = () => {
-      const zoomDelta = zoomTarget - zoomCurrent;
-      if (Math.abs(zoomDelta) > 0.0005) {
-        const hadAnchor =
-          zoomAnchorActive &&
-          worldAtClient(zoomAnchorX, zoomAnchorY, beforeZoomWorld);
-        zoomCurrent = THREE.MathUtils.lerp(zoomCurrent, zoomTarget, 0.22);
-        if (Math.abs(zoomTarget - zoomCurrent) < 0.0005) {
-          zoomCurrent = zoomTarget;
-        }
-        resize(viewportWidth, viewportHeight);
-        if (hadAnchor && worldAtClient(zoomAnchorX, zoomAnchorY, afterZoomWorld)) {
-          cameraShift.copy(beforeZoomWorld).sub(afterZoomWorld);
-          cameraTarget.add(cameraShift);
-        }
-      } else if (zoomAnchorActive) {
-        zoomAnchorActive = false;
-      }
-
       const yaw = CAMERA_YAW + yawIndex * (Math.PI * 0.5);
 
       const horizontal = Math.cos(CAMERA_PITCH);
@@ -585,9 +535,10 @@ const experiment: ExperimentModule = {
       renderer.render(scene, camera);
 
       if (keyPanActive) {
+        const activeDpr = getActiveDpr();
         applyPan(
-          keyPanX / devicePixelRatio,
-          keyPanY / devicePixelRatio
+          keyPanX / activeDpr,
+          keyPanY / activeDpr
         );
       }
 
