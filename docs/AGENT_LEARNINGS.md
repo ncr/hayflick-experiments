@@ -648,3 +648,16 @@ Preventive checklist:
 - Convert pointer deltas to device space using native `window.devicePixelRatio`, not rendering override DPR.
 - Keep render quantization DPR and input conversion DPR as separate variables with explicit names.
 - Include mode-specific manual checks for pointer-distance parity after DPR mode changes.
+
+## 2026-02-10 - \"Fluid zoom\" can be misread as continuous target levels instead of animated discrete levels
+Root cause:
+- Wheel zoom was switched to continuous exponential target updates, which introduced non-level intermediate targets.
+- Product intent was to keep discrete zoom steps but animate transitions between those steps.
+
+Detection signal:
+- User explicitly reported that smooth zoom should not add unsafe/non-level zoom targets.
+
+Preventive checklist:
+- Confirm whether \"fluid\" means interpolation between fixed levels or truly continuous target values.
+- Keep wheel target levels discrete unless the user explicitly requests continuous zoom levels.
+- Preserve cursor-anchored interpolation while stepping targets by ladder/integer rules.

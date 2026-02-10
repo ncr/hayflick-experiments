@@ -406,14 +406,18 @@ const experiment: ExperimentModule = {
     };
 
     const handleWheel = (event: WheelEvent) => {
-      const deltaScale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
       const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
       let nextZoom = zoomTarget;
       if (zoomMode === "safe-ladder" && safeZoomLevels.length > 0) {
         nextZoom = stepZoomLevel(safeZoomLevels, zoomTarget, direction);
       } else {
+        const baseLevel = THREE.MathUtils.clamp(
+          Math.round(zoomTarget),
+          ZOOM_MIN,
+          ZOOM_MAX
+        );
         nextZoom = THREE.MathUtils.clamp(
-          zoomTarget * Math.exp(-event.deltaY * deltaScale * 0.0015),
+          baseLevel + direction,
           ZOOM_MIN,
           ZOOM_MAX
         );
