@@ -381,12 +381,13 @@ const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const CAMERA_DISTANCE = 30 * TILE_SIZE;
 const ORTHO_HEIGHT = 5.966213466261495 * TILE_SIZE;
+const CAMERA_ZOOM = 1;
 const FIXED_RENDER_WIDTH = 480;
 const FIXED_RENDER_HEIGHT = 270;
-const ZOOM_PIXEL_STEP = 2;
 const OUTPUT_SCALE_MULTIPLIER = 1;
-const ZOOM_MIN = 0.5;
-const ZOOM_MAX = 3.4;
+const SCREEN_SCALE_MIN = 1;
+const SCREEN_SCALE_MAX = 12;
+const SCREEN_SCALE_DEFAULT = 4;
 
 const PLAYER_SPEED = 3.8;
 const PLAYER_SPAWN = { x: 2.5, y: 2.5 };
@@ -1367,11 +1368,12 @@ const experiment: ExperimentModule = {
       },
       onResetView(): void {
         yawIndex = 0;
-        zoomTarget = 1.2;
+        userScale = SCREEN_SCALE_DEFAULT;
         cameraTarget.set(0, 0, 0);
         panScreenX = 0;
         panScreenY = 0;
         updateCanvasTransform();
+        syncSize();
         syncHud();
       },
       onClearStructures(): void {
@@ -1473,9 +1475,8 @@ const experiment: ExperimentModule = {
     const cameraTarget = new THREE.Vector3(0, 0, 0);
     let yawIndex = 0;
     let yawCurrent = CAMERA_BASE_YAW;
-    let zoomTarget = 1.2;
-    let zoomCurrent = zoomTarget;
     let renderScale = 1;
+    let userScale = SCREEN_SCALE_DEFAULT;
     let panScreenX = 0;
     let panScreenY = 0;
 
@@ -2141,16 +2142,6 @@ const experiment: ExperimentModule = {
       updateCanvasTransform();
     }
 
-    function snapZoom(value: number): number {
-      const pixelsPerUnit =
-        (value * FIXED_RENDER_HEIGHT) / ORTHO_HEIGHT;
-      const snappedPixelsPerUnit = Math.max(
-        ZOOM_PIXEL_STEP,
-        Math.round(pixelsPerUnit / ZOOM_PIXEL_STEP) * ZOOM_PIXEL_STEP
-      );
-      return (snappedPixelsPerUnit * ORTHO_HEIGHT) / FIXED_RENDER_HEIGHT;
-    }
-
     function setCameraPose(): void {
       const yawTarget = CAMERA_BASE_YAW + yawIndex * (Math.PI * 0.5);
       const delta = Math.atan2(
@@ -2158,9 +2149,6 @@ const experiment: ExperimentModule = {
         Math.cos(yawTarget - yawCurrent)
       );
       yawCurrent += delta * 0.22;
-      const desiredZoom = snapZoom(zoomTarget);
-      zoomCurrent = THREE.MathUtils.lerp(zoomCurrent, desiredZoom, 0.18);
-      zoomCurrent = snapZoom(zoomCurrent);
 
       const horizontal = Math.cos(CAMERA_PITCH);
       const dir = new THREE.Vector3(
@@ -2173,11 +2161,11 @@ const experiment: ExperimentModule = {
 
       camera.position.copy(cameraViewTarget).addScaledVector(dir, CAMERA_DISTANCE);
       camera.lookAt(cameraViewTarget);
-      camera.zoom = zoomCurrent;
+      camera.zoom = CAMERA_ZOOM;
       camera.updateProjectionMatrix();
 
       const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
-      const halfHeight = (ORTHO_HEIGHT * 0.5) / zoomCurrent;
+      const halfHeight = (ORTHO_HEIGHT * 0.5) / CAMERA_ZOOM;
       const halfWidth = halfHeight * aspect;
       const unitRight = (halfWidth * 2) / FIXED_RENDER_WIDTH;
       const unitDown = (halfHeight * 2) / FIXED_RENDER_HEIGHT;
@@ -2799,16 +2787,7 @@ const experiment: ExperimentModule = {
       // Keep the drawing buffer fixed so rasterization happens on a stable pixel grid.
       // We only scale the canvas via CSS to avoid introducing a second sampling pass.
       renderer.setSize(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT, true);
-      const baseScale = Math.max(
-        1,
-        Math.floor(
-          Math.min(
-            viewportWidth / FIXED_RENDER_WIDTH,
-            viewportHeight / FIXED_RENDER_HEIGHT
-          )
-        )
-      );
-      const scale = baseScale * OUTPUT_SCALE_MULTIPLIER;
+      const scale = userScale * OUTPUT_SCALE_MULTIPLIER;
       if (scale !== renderScale && renderScale > 0) {
         const normalizedPanX = panScreenX / renderScale;
         const normalizedPanY = panScreenY / renderScale;
@@ -3072,13 +3051,16 @@ const experiment: ExperimentModule = {
       const zoomIntent = event.ctrlKey || event.metaKey || !trackpad;
 
       if (zoomIntent) {
-        const delta = event.deltaY * scale;
-        const nextZoom = THREE.MathUtils.clamp(
-          zoomTarget * Math.exp(-delta * 0.0015),
-          ZOOM_MIN,
-          ZOOM_MAX
+        const step = event.deltaY > 0 ? -1 : 1;
+        const nextScale = THREE.MathUtils.clamp(
+          userScale + step,
+          SCREEN_SCALE_MIN,
+          SCREEN_SCALE_MAX
         );
-        zoomTarget = snapZoom(nextZoom);
+        if (nextScale !== userScale) {
+          userScale = nextScale;
+          syncSize();
+        }
       } else {
         const panX =
           (event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
