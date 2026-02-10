@@ -314,6 +314,16 @@ export class PixelPerfectController {
     return this.yawIndex;
   }
 
+  resetView(initialZoom: number, mode: ZoomMode = "free"): void {
+    this.zoomMode = mode;
+    this.yawIndex = 0;
+    this.userScale = clamp(initialZoom, this.minZoom, this.maxUserScale);
+    this.panPhase = createPanPhaseState();
+    this.cumulativePanDeviceX = 0;
+    this.cumulativePanDeviceY = 0;
+    this.recomputeLayout();
+  }
+
   resetPanCarry(): void {
     if (this.panPhase.carryX === 0 && this.panPhase.carryY === 0) {
       return;

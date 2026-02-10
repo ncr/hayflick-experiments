@@ -1412,3 +1412,29 @@ Preventive checklist:
 - First move existing render helpers to a `_legacy` package and repoint old experiment imports.
 - Introduce a dedicated shared camera-control module in the new package and integrate experiments through that API.
 - Validate both legacy experiments and new integration with targeted Playwright smoke tests after the split.
+
+## 2026-02-10 - Camera zoom parity failed when only controls were promoted without the render/output pipeline
+Root cause:
+- Shared extraction initially promoted camera input/control state (`PixelCameraController`) but left the pixel-perfect two-pass render pipeline, output zoom shader sampling, and screen/world mapping logic inside one experiment.
+- Integrations reimplemented those pieces differently, causing shimmer/phase drift and contract mismatches.
+
+Detection signal:
+- `pixel-perfect-camera-zoom` looked stable while integrations using only the control module showed phase transitions and world-to-pixel contract drift.
+- Large code duplication remained in experiment files for low-target/output pass, zoom pivot math, and interaction handlers.
+
+Preventive checklist:
+- Promote the full pixel view stack as one module (stage/layout + low-res target + output pass + mapping + interaction handlers), not only controller state.
+- Validate extracted module by swapping the original experiment to consume it before integrating elsewhere.
+- Gate promotion with targeted camera-zoom Playwright checks for contract, anchor stability, pan parity, and fixed render resolution.
+
+## 2026-02-10 - Editor-game smoke test assumptions broke after promoting dynamic pixel view
+Root cause:
+- E2E smoke test still asserted legacy fixed canvas buffer size (`480x360`) from pre-library setup.
+- Promoted `PixelPerfectIsoView` sizes canvas buffer to viewport device pixels while keeping pixelated presentation.
+
+Detection signal:
+- `e2e/promoted-modules.smoke.spec.ts` failed with unexpected canvas dimensions (`width/height` no longer fixed constants).
+
+Preventive checklist:
+- Keep smoke tests aligned with promoted view invariants (pixelated output + viewport/device sizing), not old experiment-specific constants.
+- After rendering pipeline promotion, rerun and update route-specific smoke expectations before concluding integration.

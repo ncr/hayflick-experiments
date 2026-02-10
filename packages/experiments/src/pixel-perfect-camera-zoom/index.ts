@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { ExperimentModule } from "../runtime/types";
-import { PixelPerfectController, PixelStage } from "@common/render_legacy";
+import { PixelPerfectIsoView } from "@common/render";
 import {
   CAMERA_DISTANCE,
   CAMERA_PITCH,
@@ -22,52 +22,41 @@ const ZOOM_ANIMATION_EPSILON = 0.02;
 const ZOOM_BURST_IDLE_MS = 90;
 const OUTPUT_OVERSCAN_LOW_PIXELS = 2;
 
+type CameraZoomDebugApi = {
+  getState: () => {
+    cameraZoomCurrent: number;
+    cameraZoomTarget: number;
+    zoomAnimationActive: boolean;
+    zoomBurstActive: boolean;
+    controllerRenderScale: number;
+    displayRenderScale: number;
+    lowRenderWidth: number;
+    lowRenderHeight: number;
+    sceneOutputWidth: number;
+    sceneOutputHeight: number;
+  };
+  worldAtClient: (clientX: number, clientY: number) => {
+    x: number;
+    y: number;
+    z: number;
+  } | null;
+  projectWorldToClient: (
+    x: number,
+    y: number,
+    z: number
+  ) => {
+    clientX: number;
+    clientY: number;
+  } | null;
+};
+
 const experiment: ExperimentModule = {
   id: "pixel-perfect-camera-zoom",
   title: "Pixel Perfect (Camera Zoom)",
   tags: ["pixel", "isometric", "rendering"],
   init: ({ mount, width, height }) => {
-    const stage = new PixelStage({
-      mount,
-      width,
-      height,
-      antialias: false,
-      pixelRatio: 1,
-      clearColor: 0x0b0f14,
-      clearAlpha: 1,
-      mountPosition: "relative",
-      mountBackground: "#0b0f14",
-      mountOverflow: "hidden",
-      canvasPosition: "absolute",
-      canvasLeft: "0px",
-      canvasTop: "0px",
-      canvasDisplay: "block",
-      canvasBackground: "#0b0f14",
-      canvasImageRendering: "pixelated",
-      canvasTransformOrigin: "0 0"
-    });
-    const renderer = stage.renderer;
-
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b0f14);
-
-    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
-    const cameraTarget = new THREE.Vector3(0, 0, 0);
-    const cameraDirection = new THREE.Vector3();
-    const screenRightWorld = new THREE.Vector3();
-    const screenDownWorld = new THREE.Vector3();
-
-    const raycaster = new THREE.Raycaster();
-    const pointerNdc = new THREE.Vector2();
-    const projectedNdc = new THREE.Vector3();
-    const projectedClient = new THREE.Vector2();
-    const zoomScenePoint = new THREE.Vector2();
-    const previousZoomPivot = new THREE.Vector2();
-    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const centerGround = new THREE.Vector3();
-    const rightGround = new THREE.Vector3();
-    const downGround = new THREE.Vector3();
-    const zoomBeforeWorld = new THREE.Vector3();
 
     const hud = document.createElement("div");
     hud.style.position = "absolute";
@@ -125,636 +114,82 @@ const experiment: ExperimentModule = {
     addBox(3, 0.5, 3, 3);
     addBox(0, 1.5, 0, 0);
 
-    const lowTarget = new THREE.WebGLRenderTarget(1, 1, {
-      minFilter: THREE.NearestFilter,
-      magFilter: THREE.NearestFilter,
-      format: THREE.RGBAFormat,
-      stencilBuffer: false
-    });
-    lowTarget.texture.generateMipmaps = false;
-
-    const outputScene = new THREE.Scene();
-    const outputCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    const outputMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        uSource: { value: lowTarget.texture },
-        uContentScale: { value: new THREE.Vector2(1, 1) },
-        uContentOffset: { value: new THREE.Vector2(0, 0) },
-        uZoom: { value: 1 },
-        uSourceSize: { value: new THREE.Vector2(1, 1) },
-        uZoomPivot: { value: new THREE.Vector2(0.5, 0.5) }
-      },
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = vec4(position.xy, 0.0, 1.0);
-        }
-      `,
-      fragmentShader: `
-        precision highp float;
-        uniform sampler2D uSource;
-        uniform vec2 uContentScale;
-        uniform vec2 uContentOffset;
-        uniform float uZoom;
-        uniform vec2 uSourceSize;
-        uniform vec2 uZoomPivot;
-        varying vec2 vUv;
-        void main() {
-          vec2 sampleUv = (vUv - uContentOffset) / uContentScale;
-          sampleUv = (sampleUv - uZoomPivot) / max(0.0001, uZoom) + uZoomPivot;
-          vec2 texel = vec2(1.0) / max(uSourceSize, vec2(1.0));
-          sampleUv = clamp(sampleUv, vec2(0.0), vec2(1.0) - texel * 0.5);
-          sampleUv = (floor(sampleUv * uSourceSize) + vec2(0.5)) * texel;
-          gl_FragColor = texture2D(uSource, sampleUv);
-        }
-      `,
-      depthTest: false
-    });
-    const outputQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), outputMaterial);
-    outputQuad.frustumCulled = false;
-    outputScene.add(outputQuad);
-
-    let dragActive = false;
-    let lastClientX = 0;
-    let lastClientY = 0;
-    let pointerClientX = Number.NaN;
-    let pointerClientY = Number.NaN;
-    const dragDelta = new THREE.Vector2();
-    let viewportWidth = Math.max(1, width);
-    let viewportHeight = Math.max(1, height);
-
-    const maxBackingWidth = stage.maxBackingWidth;
-    const maxBackingHeight = stage.maxBackingHeight;
-
-    const controller = new PixelPerfectController({
-      minZoom: 1,
-      maxZoom: 20,
-      initialZoom: BASE_PIXEL_ZOOM,
-      initialZoomMode: "free",
-      overscanLowPixels: OUTPUT_OVERSCAN_LOW_PIXELS,
+    const view = new PixelPerfectIsoView({
+      mount,
+      width,
+      height,
+      scene,
+      fixedRenderHeight: FIXED_RENDER_HEIGHT,
       baseOrthoHeight: ORTHO_HEIGHT,
-      referenceLowHeight: FIXED_RENDER_HEIGHT,
-      maxBackingWidth,
-      maxBackingHeight,
-      viewportCssWidth: viewportWidth,
-      viewportCssHeight: viewportHeight,
-      devicePixelRatio: Math.max(1, window.devicePixelRatio || 1)
+      cameraDistance: CAMERA_DISTANCE,
+      cameraPitch: CAMERA_PITCH,
+      cameraYaw: CAMERA_YAW,
+      basePixelZoom: BASE_PIXEL_ZOOM,
+      zoomMin: ZOOM_MIN,
+      zoomMax: ZOOM_MAX,
+      zoomStep: ZOOM_STEP,
+      zoomAnimationRate: ZOOM_ANIMATION_RATE,
+      zoomAnimationBurstRate: ZOOM_ANIMATION_BURST_RATE,
+      zoomAnimationEpsilon: ZOOM_ANIMATION_EPSILON,
+      rotationAnimationRate: ROTATION_ANIMATION_RATE,
+      rotationAnimationEpsilon: ROTATION_ANIMATION_EPSILON,
+      zoomBurstIdleMs: ZOOM_BURST_IDLE_MS,
+      outputOverscanLowPixels: OUTPUT_OVERSCAN_LOW_PIXELS,
+      clearColor: 0x0b0f14,
+      clearAlpha: 1,
+      mountBackground: "#0b0f14",
+      canvasBackground: "#0b0f14"
     });
 
-    const initialState = controller.getState();
-    const baseDisplayRenderScale = initialState.renderScale;
-    let displayRenderScale = baseDisplayRenderScale;
-    let displaySceneOutputWidth = initialState.sceneOutputWidth;
-    let displaySceneOutputHeight = initialState.sceneOutputHeight;
-    let displayOutputWidth = initialState.outputWidth;
-    let displayOutputHeight = initialState.outputHeight;
-    let displayOutputPadDeviceX = initialState.outputPadDeviceX;
-    let displayOutputPadDeviceY = initialState.outputPadDeviceY;
-    let displayRenderBaseX = initialState.renderBaseX;
-    let displayRenderBaseY = initialState.renderBaseY;
-
-    let animatedYawTurns = controller.getYawIndex();
-    let zoomAnimationActive = false;
-    let zoomBurstActive = false;
-    let zoomBurstExpiresAtMs = 0;
-    let cameraZoomTarget = 1;
-    let cameraZoomCurrent = 1;
-    let cameraZoomStable = 1;
-    const zoomPivotScene = new THREE.Vector2(0.5, 0.5);
-
-    const easeToward = (current: number, target: number, rate: number, deltaSeconds: number) => {
-      if (deltaSeconds <= 0) {
-        return current;
-      }
-      const blend = 1 - Math.exp(-rate * deltaSeconds);
-      return current + (target - current) * blend;
-    };
-
-    // Keep output zoom on a lattice where final big-pixel size stays integer in device pixels.
-    const quantizeZoom = (zoom: number) => {
-      const minUnits = Math.round(ZOOM_MIN * baseDisplayRenderScale);
-      const maxUnits = Math.round(ZOOM_MAX * baseDisplayRenderScale);
-      const rawUnits = Math.round(zoom * baseDisplayRenderScale);
-      const clampedUnits = THREE.MathUtils.clamp(rawUnits, minUnits, maxUnits);
-      return clampedUnits / baseDisplayRenderScale;
-    };
-
-    const updateDisplayLayout = (scale: number) => {
-      const state = controller.getState();
-      const safeScale = Math.max(1, scale);
-      displayRenderScale = safeScale;
-      displaySceneOutputWidth = state.lowRenderWidth * safeScale;
-      displaySceneOutputHeight = state.lowRenderHeight * safeScale;
-      displayOutputWidth = (state.lowRenderWidth + OUTPUT_OVERSCAN_LOW_PIXELS) * safeScale;
-      displayOutputHeight = (state.lowRenderHeight + OUTPUT_OVERSCAN_LOW_PIXELS) * safeScale;
-      displayOutputPadDeviceX = (displayOutputWidth - displaySceneOutputWidth) * 0.5;
-      displayOutputPadDeviceY = (displayOutputHeight - displaySceneOutputHeight) * 0.5;
-      displayRenderBaseX = Math.floor((state.viewportDeviceWidth - displayOutputWidth) * 0.5);
-      displayRenderBaseY = Math.floor((state.viewportDeviceHeight - displayOutputHeight) * 0.5);
-    };
+    const projectedWorld = new THREE.Vector3();
+    const projectedClient = new THREE.Vector2();
 
     const syncHud = () => {
-      const state = controller.getState();
+      const state = view.getState();
       hud.textContent = [
-        `Camera zoom: ${cameraZoomCurrent.toFixed(3)}x (target ${cameraZoomTarget.toFixed(3)}x)`,
+        `Camera zoom: ${state.cameraZoomCurrent.toFixed(3)}x (target ${state.cameraZoomTarget.toFixed(3)}x)`,
         `Zoom mode: fixed render`,
         `DPR: ${state.devicePixelRatio.toFixed(3)}`,
         `Low-res: ${state.lowRenderWidth}x${state.lowRenderHeight}`,
-        `Render viewport: ${Math.round(displaySceneOutputWidth)}x${Math.round(displaySceneOutputHeight)} (scale ${displayRenderScale.toFixed(3)}x)`,
+        `Render viewport: ${Math.round(state.sceneOutputWidth)}x${Math.round(state.sceneOutputHeight)} (scale ${state.displayRenderScale.toFixed(3)}x)`,
         `Keys: Q/E rotate, wheel zoom, middle-drag pan, Z toggle zoom mode`,
         `Note: render target size stays constant; orthographic frustum changes`
       ].join("\n");
     };
 
-    const updateCameraProjection = (
-      lowRenderWidth: number,
-      lowRenderHeight: number,
-      orthoHeight: number
-    ) => {
-      const aspect = lowRenderWidth / lowRenderHeight;
-      const halfHeight = orthoHeight * 0.5;
-      camera.left = -halfHeight * aspect;
-      camera.right = halfHeight * aspect;
-      camera.top = halfHeight;
-      camera.bottom = -halfHeight;
-      camera.updateProjectionMatrix();
-    };
-
-    const applyControllerState = () => {
-      const state = controller.getState();
-      lowTarget.setSize(state.lowRenderWidth, state.lowRenderHeight);
-      (outputMaterial.uniforms.uSourceSize.value as THREE.Vector2).set(
-        state.lowRenderWidth,
-        state.lowRenderHeight
-      );
-      (outputMaterial.uniforms.uContentScale.value as THREE.Vector2).set(
-        state.contentScaleX,
-        state.contentScaleY
-      );
-      (outputMaterial.uniforms.uContentOffset.value as THREE.Vector2).set(
-        state.contentOffsetX,
-        state.contentOffsetY
-      );
-      stage.applyLayout({
-        deviceWidth: state.viewportDeviceWidth,
-        deviceHeight: state.viewportDeviceHeight,
-        cssWidth: state.viewportCssWidth,
-        cssHeight: state.viewportCssHeight,
-        left: 0,
-        top: 0
-      });
-      updateDisplayLayout(displayRenderScale);
-      syncHud();
-    };
-
-    const resize = (nextWidth: number, nextHeight: number) => {
-      viewportWidth = Math.max(1, nextWidth);
-      viewportHeight = Math.max(1, nextHeight);
-      controller.resize(
-        viewportWidth,
-        viewportHeight,
-        Math.max(1, window.devicePixelRatio || 1)
-      );
-      applyControllerState();
-    };
-
-    const getCanvasMetrics = () => stage.getCanvasMetrics();
-
-    const setCameraPoseFromTarget = () => {
-      const yaw = CAMERA_YAW + animatedYawTurns * (Math.PI * 0.5);
-      const horizontal = Math.cos(CAMERA_PITCH);
-      cameraDirection.set(
-        Math.sin(yaw) * horizontal,
-        Math.sin(CAMERA_PITCH),
-        Math.cos(yaw) * horizontal
-      );
-      camera.position
-        .copy(cameraTarget)
-        .addScaledVector(cameraDirection, CAMERA_DISTANCE);
-      camera.lookAt(cameraTarget);
-      camera.updateMatrixWorld(true);
-    };
-
-    const worldAtClient = (
-      clientX: number,
-      clientY: number,
-      out: THREE.Vector3
-    ): boolean => {
-      const metrics = getCanvasMetrics();
-      if (!metrics) {
-        return false;
-      }
-      const state = controller.getState();
-      const deviceX = (clientX - metrics.rect.left) * metrics.cssToDeviceX;
-      const deviceY = (clientY - metrics.rect.top) * metrics.cssToDeviceY;
-      const renderStartX = displayRenderBaseX + state.panRemainderX;
-      const renderStartY = displayRenderBaseY + state.panRemainderY;
-      const localRenderX = deviceX - (renderStartX + displayOutputPadDeviceX);
-      const localRenderY = deviceY - (renderStartY + displayOutputPadDeviceY);
-      if (
-        localRenderX < 0 ||
-        localRenderY < 0 ||
-        localRenderX > displaySceneOutputWidth ||
-        localRenderY > displaySceneOutputHeight
-      ) {
-        return false;
-      }
-      const scenePoint = {
-        x: localRenderX / displaySceneOutputWidth,
-        y: localRenderY / displaySceneOutputHeight
-      };
-      const sourceX =
-        (scenePoint.x - zoomPivotScene.x) / cameraZoomStable + zoomPivotScene.x;
-      const sourceY =
-        (scenePoint.y - zoomPivotScene.y) / cameraZoomStable + zoomPivotScene.y;
-      if (sourceX < 0 || sourceY < 0 || sourceX > 1 || sourceY > 1) {
-        return false;
-      }
-      pointerNdc.set(sourceX * 2 - 1, -(sourceY * 2 - 1));
-      raycaster.setFromCamera(pointerNdc, camera);
-      return raycaster.ray.intersectPlane(groundPlane, out) !== null;
-    };
-
-    const projectWorldToClient = (
-      world: THREE.Vector3,
-      out: THREE.Vector2
-    ): boolean => {
-      const metrics = getCanvasMetrics();
-      if (!metrics) {
-        return false;
-      }
-      const state = controller.getState();
-      projectedNdc.copy(world).project(camera);
-      const sourceX = projectedNdc.x * 0.5 + 0.5;
-      const sourceY = 1 - (projectedNdc.y * 0.5 + 0.5);
-      const normalizedX =
-        (sourceX - zoomPivotScene.x) * cameraZoomStable + zoomPivotScene.x;
-      const normalizedY =
-        (sourceY - zoomPivotScene.y) * cameraZoomStable + zoomPivotScene.y;
-      const deviceX =
-        displayRenderBaseX +
-        state.panRemainderX +
-        displayOutputPadDeviceX +
-        normalizedX * displaySceneOutputWidth;
-      const deviceY =
-        displayRenderBaseY +
-        state.panRemainderY +
-        displayOutputPadDeviceY +
-        normalizedY * displaySceneOutputHeight;
-      out.set(
-        metrics.rect.left + deviceX / metrics.cssToDeviceX,
-        metrics.rect.top + deviceY / metrics.cssToDeviceY
-      );
-      return true;
-    };
-
-    const scenePointAtClient = (
-      clientX: number,
-      clientY: number,
-      out: THREE.Vector2,
-      clampToBounds = false
-    ): boolean => {
-      const metrics = getCanvasMetrics();
-      if (!metrics) {
-        return false;
-      }
-      const state = controller.getState();
-      const deviceX = (clientX - metrics.rect.left) * metrics.cssToDeviceX;
-      const deviceY = (clientY - metrics.rect.top) * metrics.cssToDeviceY;
-      const renderStartX = displayRenderBaseX + state.panRemainderX;
-      const renderStartY = displayRenderBaseY + state.panRemainderY;
-      const localRenderX = deviceX - (renderStartX + displayOutputPadDeviceX);
-      const localRenderY = deviceY - (renderStartY + displayOutputPadDeviceY);
-      const inside =
-        localRenderX >= 0 &&
-        localRenderY >= 0 &&
-        localRenderX <= displaySceneOutputWidth &&
-        localRenderY <= displaySceneOutputHeight;
-      if (!inside && !clampToBounds) {
-        return false;
-      }
-      const boundedX = THREE.MathUtils.clamp(localRenderX, 0, displaySceneOutputWidth);
-      const boundedY = THREE.MathUtils.clamp(localRenderY, 0, displaySceneOutputHeight);
-      out.set(
-        boundedX / displaySceneOutputWidth,
-        boundedY / displaySceneOutputHeight
-      );
-      return inside;
-    };
-
-    const updateScreenToWorld = () => {
-      const state = controller.getState();
-      const ndcStepX = 2 / state.lowRenderWidth;
-      const ndcStepY = 2 / state.lowRenderHeight;
-      pointerNdc.set(0, 0);
-      raycaster.setFromCamera(pointerNdc, camera);
-      const hasCenter = raycaster.ray.intersectPlane(groundPlane, centerGround) !== null;
-      pointerNdc.set(ndcStepX, 0);
-      raycaster.setFromCamera(pointerNdc, camera);
-      const hasRight = raycaster.ray.intersectPlane(groundPlane, rightGround) !== null;
-      pointerNdc.set(0, -ndcStepY);
-      raycaster.setFromCamera(pointerNdc, camera);
-      const hasDown = raycaster.ray.intersectPlane(groundPlane, downGround) !== null;
-      if (hasCenter && hasRight && hasDown) {
-        screenRightWorld.subVectors(rightGround, centerGround);
-        screenDownWorld.subVectors(downGround, centerGround);
-        return;
-      }
-      const frustumWidth = camera.right - camera.left;
-      const frustumHeight = camera.top - camera.bottom;
-      screenRightWorld.set(Math.cos(CAMERA_YAW), 0, -Math.sin(CAMERA_YAW)).multiplyScalar(frustumWidth);
-      screenDownWorld.set(Math.sin(CAMERA_YAW), 0, Math.cos(CAMERA_YAW)).multiplyScalar(frustumHeight);
-    };
-
-    const ensureScreenBasis = () => {
-      if (Math.abs(cameraTarget.y) > 1e-9) {
-        cameraTarget.y = 0;
-      }
-      setCameraPoseFromTarget();
-      updateScreenToWorld();
-    };
-
-    const getDisplayScale = () => baseDisplayRenderScale;
-
-    const updateAnimationState = (deltaSeconds: number) => {
-      const targetYawTurns = controller.getYawIndex();
-      animatedYawTurns = easeToward(
-        animatedYawTurns,
-        targetYawTurns,
-        ROTATION_ANIMATION_RATE,
-        deltaSeconds
-      );
-      if (
-        Math.abs(animatedYawTurns - targetYawTurns) <= ROTATION_ANIMATION_EPSILON
-      ) {
-        animatedYawTurns = targetYawTurns;
-      }
-      const zoomRate = zoomBurstActive
-        ? ZOOM_ANIMATION_BURST_RATE
-        : ZOOM_ANIMATION_RATE;
-      cameraZoomCurrent = easeToward(
-        cameraZoomCurrent,
-        cameraZoomTarget,
-        zoomRate,
-        deltaSeconds
-      );
-      if (Math.abs(cameraZoomCurrent - cameraZoomTarget) <= ZOOM_ANIMATION_EPSILON) {
-        cameraZoomCurrent = cameraZoomTarget;
-        zoomAnimationActive = false;
-      } else {
-        zoomAnimationActive = true;
-      }
-      cameraZoomStable = THREE.MathUtils.clamp(
-        cameraZoomCurrent,
-        ZOOM_MIN,
-        ZOOM_MAX
-      );
-      const state = controller.getState();
-      updateCameraProjection(
-        state.lowRenderWidth,
-        state.lowRenderHeight,
-        state.orthoHeight
-      );
-      outputMaterial.uniforms.uZoom.value = cameraZoomStable;
-      (outputMaterial.uniforms.uZoomPivot.value as THREE.Vector2).set(
-        zoomPivotScene.x,
-        1 - zoomPivotScene.y
-      );
-      updateDisplayLayout(getDisplayScale());
-      syncHud();
-    };
-
-    const applyPanDevice = (deltaDeviceX: number, deltaDeviceY: number) => {
-      ensureScreenBasis();
-      const zoomDivisor = Math.max(1, cameraZoomStable);
-      const step = controller.panByDevice(
-        deltaDeviceX / zoomDivisor,
-        deltaDeviceY / zoomDivisor
-      );
-      if (step.cameraStepX !== 0) {
-        cameraTarget.addScaledVector(screenRightWorld, -step.cameraStepX);
-      }
-      if (step.cameraStepY !== 0) {
-        cameraTarget.addScaledVector(screenDownWorld, -step.cameraStepY);
-      }
-    };
-
-    const applyPanRawCss = (deltaCssX: number, deltaCssY: number) => {
-      ensureScreenBasis();
-      const metrics = getCanvasMetrics();
-      const fallbackScale = controller.getState().devicePixelRatio;
-      const cssToDeviceX = metrics?.cssToDeviceX ?? fallbackScale;
-      const cssToDeviceY = metrics?.cssToDeviceY ?? fallbackScale;
-      const step = controller.panByCss(
-        deltaCssX,
-        deltaCssY,
-        cssToDeviceX,
-        cssToDeviceY
-      );
-      if (step.cameraStepX !== 0) {
-        cameraTarget.addScaledVector(screenRightWorld, -step.cameraStepX);
-      }
-      if (step.cameraStepY !== 0) {
-        cameraTarget.addScaledVector(screenDownWorld, -step.cameraStepY);
-      }
-    };
-
-    const applyPan = (deltaCssX: number, deltaCssY: number) => {
-      const zoomDivisor = Math.max(1, cameraZoomStable);
-      applyPanRawCss(deltaCssX / zoomDivisor, deltaCssY / zoomDivisor);
-    };
-
-    const recenterCameraTargetToScreenCenter = () => {
-      const metrics = getCanvasMetrics();
-      if (!metrics) {
-        return;
-      }
-      const centerClientX = metrics.rect.left + metrics.rect.width * 0.5;
-      const centerClientY = metrics.rect.top + metrics.rect.height * 0.5;
-      if (worldAtClient(centerClientX, centerClientY, zoomBeforeWorld)) {
-        // Rotation is defined around screen center, so reset output zoom pivot to center.
-        zoomPivotScene.set(0.5, 0.5);
-        cameraTarget.x = zoomBeforeWorld.x;
-        cameraTarget.z = zoomBeforeWorld.z;
-        cameraTarget.y = 0;
-        ensureScreenBasis();
-      }
-    };
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (event.button !== 1) {
-        return;
-      }
-      pointerClientX = event.clientX;
-      pointerClientY = event.clientY;
-      dragActive = true;
-      lastClientX = event.clientX;
-      lastClientY = event.clientY;
-      zoomBurstActive = false;
-      stage.setCursor("grabbing");
-      renderer.domElement.setPointerCapture(event.pointerId);
-      event.preventDefault();
-    };
-
-    const handlePointerMove = (event: PointerEvent) => {
-      pointerClientX = event.clientX;
-      pointerClientY = event.clientY;
-      if (!dragActive) {
-        return;
-      }
-      dragDelta.set(event.clientX - lastClientX, event.clientY - lastClientY);
-      lastClientX = event.clientX;
-      lastClientY = event.clientY;
-      applyPan(dragDelta.x, dragDelta.y);
-      event.preventDefault();
-    };
-
-    const handlePointerUp = (event: PointerEvent) => {
-      if (!dragActive) {
-        return;
-      }
-      dragActive = false;
-      stage.clearCursor();
-      if (renderer.domElement.hasPointerCapture(event.pointerId)) {
-        renderer.domElement.releasePointerCapture(event.pointerId);
-      }
-      event.preventDefault();
-    };
-
-    const handleWheel = (event: WheelEvent) => {
-      const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
-      const nextZoomTarget = quantizeZoom(
-        THREE.MathUtils.clamp(
-          cameraZoomTarget + direction * ZOOM_STEP,
-          ZOOM_MIN,
-          ZOOM_MAX
-        )
-      );
-      if (Math.abs(nextZoomTarget - cameraZoomTarget) <= 1e-6) {
-        event.preventDefault();
-        return;
-      }
-      const nowMs = performance.now();
-      zoomBurstActive = true;
-      zoomBurstExpiresAtMs = nowMs + ZOOM_BURST_IDLE_MS;
-      pointerClientX = event.clientX;
-      pointerClientY = event.clientY;
-      const hadAnchorWorld = worldAtClient(
-        pointerClientX,
-        pointerClientY,
-        zoomBeforeWorld
-      );
-      if (scenePointAtClient(pointerClientX, pointerClientY, zoomScenePoint)) {
-        previousZoomPivot.copy(zoomPivotScene);
-        zoomPivotScene.copy(zoomScenePoint);
-        if (
-          hadAnchorWorld &&
-          (Math.abs(zoomPivotScene.x - previousZoomPivot.x) > 1e-6 ||
-            Math.abs(zoomPivotScene.y - previousZoomPivot.y) > 1e-6)
-        ) {
-          ensureScreenBasis();
-          if (projectWorldToClient(zoomBeforeWorld, projectedClient)) {
-            const correctionX = pointerClientX - projectedClient.x;
-            const correctionY = pointerClientY - projectedClient.y;
-            if (Math.abs(correctionX) > 0.01 || Math.abs(correctionY) > 0.01) {
-              applyPan(correctionX, correctionY);
-              ensureScreenBasis();
-            }
-          }
-        }
-      }
-      cameraZoomTarget = nextZoomTarget;
-      zoomAnimationActive =
-        Math.abs(cameraZoomTarget - cameraZoomCurrent) > ZOOM_ANIMATION_EPSILON;
-      event.preventDefault();
-    };
-
-    const handleAuxClick = (event: MouseEvent) => {
-      if (event.button !== 1) {
-        return;
-      }
-      event.preventDefault();
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.code === "KeyQ") {
-        zoomBurstActive = false;
-        recenterCameraTargetToScreenCenter();
-        controller.rotateQuarterTurns(-1);
-        event.preventDefault();
-      } else if (event.code === "KeyE") {
-        zoomBurstActive = false;
-        recenterCameraTargetToScreenCenter();
-        controller.rotateQuarterTurns(1);
-        event.preventDefault();
-      } else if (event.code === "KeyZ") {
-        controller.toggleZoomMode();
-        applyControllerState();
-        event.preventDefault();
-      }
-    };
-
-    type CameraZoomDebugApi = {
-      getState: () => {
-        cameraZoomCurrent: number;
-        cameraZoomTarget: number;
-        zoomAnimationActive: boolean;
-        zoomBurstActive: boolean;
-        controllerRenderScale: number;
-        displayRenderScale: number;
-        lowRenderWidth: number;
-        lowRenderHeight: number;
-        sceneOutputWidth: number;
-        sceneOutputHeight: number;
-      };
-      worldAtClient: (clientX: number, clientY: number) => {
-        x: number;
-        y: number;
-        z: number;
-      } | null;
-      projectWorldToClient: (
-        x: number,
-        y: number,
-        z: number
-      ) => {
-        clientX: number;
-        clientY: number;
-      } | null;
-    };
-
     const debugWindow = window as Window & {
       __pixelPerfectCameraZoomDebug?: CameraZoomDebugApi;
     };
+
     const debugApi: CameraZoomDebugApi = {
       getState: () => {
-        const state = controller.getState();
+        const state = view.getState();
         return {
-          cameraZoomCurrent,
-          cameraZoomTarget,
-          zoomAnimationActive,
-          zoomBurstActive,
-          controllerRenderScale: state.renderScale,
-          displayRenderScale,
+          cameraZoomCurrent: state.cameraZoomCurrent,
+          cameraZoomTarget: state.cameraZoomTarget,
+          zoomAnimationActive: state.zoomAnimationActive,
+          zoomBurstActive: state.zoomBurstActive,
+          controllerRenderScale: state.controllerRenderScale,
+          displayRenderScale: state.displayRenderScale,
           lowRenderWidth: state.lowRenderWidth,
           lowRenderHeight: state.lowRenderHeight,
-          sceneOutputWidth: displaySceneOutputWidth,
-          sceneOutputHeight: displaySceneOutputHeight
+          sceneOutputWidth: state.sceneOutputWidth,
+          sceneOutputHeight: state.sceneOutputHeight
         };
       },
       worldAtClient: (clientX: number, clientY: number) => {
-        if (!worldAtClient(clientX, clientY, zoomBeforeWorld)) {
+        if (!view.worldAtClient(clientX, clientY, projectedWorld)) {
           return null;
         }
         return {
-          x: zoomBeforeWorld.x,
-          y: zoomBeforeWorld.y,
-          z: zoomBeforeWorld.z
+          x: projectedWorld.x,
+          y: projectedWorld.y,
+          z: projectedWorld.z
         };
       },
       projectWorldToClient: (x: number, y: number, z: number) => {
-        const projectionPoint = new THREE.Vector3(x, y, z);
-        if (!projectWorldToClient(projectionPoint, projectedClient)) {
+        projectedWorld.set(x, y, z);
+        if (!view.projectWorldToClient(projectedWorld, projectedClient)) {
           return null;
         }
         return {
@@ -763,55 +198,24 @@ const experiment: ExperimentModule = {
         };
       }
     };
-    debugWindow.__pixelPerfectCameraZoomDebug = debugApi;
 
-    renderer.domElement.addEventListener("pointerdown", handlePointerDown);
-    renderer.domElement.addEventListener("pointermove", handlePointerMove);
-    renderer.domElement.addEventListener("pointerup", handlePointerUp);
-    renderer.domElement.addEventListener("pointercancel", handlePointerUp);
-    renderer.domElement.addEventListener("auxclick", handleAuxClick);
-    renderer.domElement.addEventListener("wheel", handleWheel, { passive: false });
-    window.addEventListener("keydown", handleKeyDown);
+    debugWindow.__pixelPerfectCameraZoomDebug = debugApi;
 
     let raf = 0;
     let lastFrameTimeMs = performance.now();
     const render = (nowMs: number) => {
       const deltaSeconds = Math.min(0.05, Math.max(0, (nowMs - lastFrameTimeMs) / 1000));
       lastFrameTimeMs = nowMs;
-      updateAnimationState(deltaSeconds);
-      if (zoomBurstActive && nowMs > zoomBurstExpiresAtMs) {
-        zoomBurstActive = false;
-      }
-      ensureScreenBasis();
-      renderer.setRenderTarget(lowTarget);
-      renderer.clear();
-      renderer.render(scene, camera);
-      renderer.setRenderTarget(null);
-      renderer.clear();
-      const viewportWidth = Math.max(1, Math.round(displayOutputWidth));
-      const viewportHeight = Math.max(1, Math.round(displayOutputHeight));
-      const renderLeft = Math.round(displayRenderBaseX + controller.getState().panRemainderX);
-      const renderTop = Math.round(displayRenderBaseY + controller.getState().panRemainderY);
-      const renderBottom = renderer.domElement.height - (renderTop + viewportHeight);
-      renderer.setViewport(renderLeft, renderBottom, viewportWidth, viewportHeight);
-      renderer.render(outputScene, outputCamera);
-      renderer.setViewport(0, 0, renderer.domElement.width, renderer.domElement.height);
+      view.frame(nowMs, deltaSeconds);
+      syncHud();
       raf = requestAnimationFrame(render);
     };
 
-    applyControllerState();
-    resize(width, height);
+    syncHud();
     raf = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(raf);
-      renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
-      renderer.domElement.removeEventListener("pointermove", handlePointerMove);
-      renderer.domElement.removeEventListener("pointerup", handlePointerUp);
-      renderer.domElement.removeEventListener("pointercancel", handlePointerUp);
-      renderer.domElement.removeEventListener("auxclick", handleAuxClick);
-      renderer.domElement.removeEventListener("wheel", handleWheel);
-      window.removeEventListener("keydown", handleKeyDown);
       hud.remove();
       if (debugWindow.__pixelPerfectCameraZoomDebug === debugApi) {
         delete debugWindow.__pixelPerfectCameraZoomDebug;
@@ -824,11 +228,7 @@ const experiment: ExperimentModule = {
       tileGray.dispose();
       boxGeometry.dispose();
       boxMaterials.forEach((material) => material.dispose());
-      lowTarget.dispose();
-      outputQuad.geometry.dispose();
-      outputMaterial.dispose();
-      outputScene.remove(outputQuad);
-      stage.dispose();
+      view.dispose();
     };
   }
 };

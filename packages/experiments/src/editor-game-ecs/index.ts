@@ -41,7 +41,7 @@ import {
   createInputSystem,
   type EID
 } from "@common/gameplay";
-import { PixelCameraController } from "@common/render";
+import { PixelPerfectIsoView } from "@common/render";
 import {
   createPhysicsResource,
   initRapier,
@@ -381,8 +381,7 @@ const EDITOR_LEVEL_SCHEMA_VERSION = 4;
 const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const CAMERA_DISTANCE = 30 * TILE_SIZE;
-const ORTHO_HEIGHT = 5.966213466261495 * TILE_SIZE;
-const CAMERA_ZOOM = 1;
+const ORTHO_HEIGHT = 7.95495128834866 * TILE_SIZE;
 const CAMERA_ZOOM_MIN = 1;
 const CAMERA_ZOOM_MAX = 6;
 const CAMERA_ZOOM_STEP = 1;
@@ -392,13 +391,9 @@ const ZOOM_ANIMATION_RATE = 14;
 const ZOOM_ANIMATION_BURST_RATE = 42;
 const ZOOM_ANIMATION_EPSILON = 0.02;
 const ZOOM_BURST_IDLE_MS = 90;
-const ZOOM_ANCHOR_MAX_CORRECTION_CSS = 96;
-const FIXED_RENDER_WIDTH = 480;
-const FIXED_RENDER_HEIGHT = 270;
-const OUTPUT_SCALE_MULTIPLIER = 1;
-const SCREEN_SCALE_MIN = 1;
-const SCREEN_SCALE_MAX = 12;
-const SCREEN_SCALE_DEFAULT = 4;
+const FIXED_RENDER_HEIGHT = 360;
+const BASE_PIXEL_ZOOM = 2;
+const OUTPUT_OVERSCAN_LOW_PIXELS = 2;
 
 const PLAYER_SPEED = 3.8;
 const PLAYER_SPAWN = { x: 2.5, y: 2.5 };
@@ -1120,24 +1115,8 @@ const experiment: ExperimentModule = {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b1117);
 
-    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     let viewportWidth = Math.max(1, width);
     let viewportHeight = Math.max(1, height);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: false });
-    renderer.setPixelRatio(1);
-    renderer.setSize(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT, true);
-    renderer.setClearColor(0x0b1117, 1);
-    renderer.domElement.style.touchAction = "none";
-    renderer.domElement.style.outline = "none";
-    renderer.domElement.style.display = "block";
-    renderer.domElement.style.position = "absolute";
-    renderer.domElement.style.left = "0px";
-    renderer.domElement.style.top = "0px";
-    renderer.domElement.style.transform = "translate(0px, 0px)";
-    renderer.domElement.style.imageRendering = "pixelated";
-    renderer.domElement.tabIndex = 0;
-    mount.appendChild(renderer.domElement);
 
     const hemiLight = new THREE.HemisphereLight(0xd6ecff, 0x15202b, 0.7);
     scene.add(hemiLight);
@@ -1161,6 +1140,38 @@ const experiment: ExperimentModule = {
     scene.add(editorDoorGroup);
     scene.add(gameDoorGroup);
     scene.add(gameplayGroup);
+
+    const view = new PixelPerfectIsoView({
+      mount,
+      width,
+      height,
+      scene,
+      fixedRenderHeight: FIXED_RENDER_HEIGHT,
+      baseOrthoHeight: ORTHO_HEIGHT,
+      cameraDistance: CAMERA_DISTANCE,
+      cameraPitch: CAMERA_PITCH,
+      cameraYaw: CAMERA_BASE_YAW,
+      basePixelZoom: BASE_PIXEL_ZOOM,
+      zoomMin: CAMERA_ZOOM_MIN,
+      zoomMax: CAMERA_ZOOM_MAX,
+      zoomStep: CAMERA_ZOOM_STEP,
+      zoomAnimationRate: ZOOM_ANIMATION_RATE,
+      zoomAnimationBurstRate: ZOOM_ANIMATION_BURST_RATE,
+      zoomAnimationEpsilon: ZOOM_ANIMATION_EPSILON,
+      rotationAnimationRate: ROTATION_ANIMATION_RATE,
+      rotationAnimationEpsilon: ROTATION_ANIMATION_EPSILON,
+      zoomBurstIdleMs: ZOOM_BURST_IDLE_MS,
+      outputOverscanLowPixels: OUTPUT_OVERSCAN_LOW_PIXELS,
+      clearColor: 0x0b1117,
+      clearAlpha: 1,
+      mountBackground: "#0b1117",
+      canvasBackground: "#0b1117"
+    });
+    const camera = view.camera;
+    const renderer = view.renderer;
+    renderer.domElement.style.touchAction = "none";
+    renderer.domElement.style.outline = "none";
+    renderer.domElement.tabIndex = 0;
 
     let minorGridGeometry = createGridGeometry(GRID_TILES, GRID_TILES, 0.01);
     const minorGridMaterial = new THREE.LineBasicMaterial({
@@ -1314,7 +1325,7 @@ const experiment: ExperimentModule = {
       description:
         "Build terrain + edge structures in EDITOR, bake to LevelResource, then run ECS gameplay in GAME mode.",
       hints:
-        "EDITOR: paint with LMB drag, Ctrl+S saves editor state. GAME: click doors to toggle, K saves game, L loads game. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.",
+        "EDITOR: paint with LMB drag, Ctrl+S saves editor state. GAME: click doors to toggle, K saves game, L loads game. Camera: Q/E rotate, wheel zoom, MMB drag pan.",
       focusTarget: renderer.domElement,
       leftPanelWidth: "min(430px, 58vw)",
       rightPanelMinWidth: "300px",
@@ -1338,7 +1349,7 @@ const experiment: ExperimentModule = {
     const editorHintsText =
       "LMB drag: paint  •  Shift+drag: grass fill rect  •  G: grass rect  •  9: footprint rect  •  7/8: road/sidewalk  •  B: bake  •  EXIT (F5): game mode";
     const gameHintsText =
-      "GAME: WASD/Arrows move, click doors to toggle, K save game, L load game, ESC editor. Camera: Q/E rotate, wheel zoom, trackpad pan, MMB or Space+drag pan.";
+      "GAME: WASD/Arrows move, click doors to toggle, K save game, L load game, ESC editor. Camera: Q/E rotate, wheel zoom, MMB drag pan.";
 
     const promotedControls = createPromotedEditorControls({
       hud,
@@ -1374,18 +1385,11 @@ const experiment: ExperimentModule = {
         syncHud();
       },
       onRotate(deltaQuarterTurns: -1 | 1): void {
-        recenterCameraTargetToScreenCenter();
-        cameraController.rotateQuarterTurns(deltaQuarterTurns);
+        view.rotateQuarterTurns(deltaQuarterTurns);
         syncHud();
       },
       onResetView(): void {
-        cameraController.reset();
-        userScale = SCREEN_SCALE_DEFAULT;
-        cameraTarget.set(0, 0, 0);
-        panScreenX = 0;
-        panScreenY = 0;
-        updateCanvasTransform();
-        syncSize();
+        view.reset();
         syncHud();
       },
       onClearStructures(): void {
@@ -1478,45 +1482,12 @@ const experiment: ExperimentModule = {
       }
     }
 
-    const raycaster = new THREE.Raycaster();
-    const pointerNdc = new THREE.Vector2();
-    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const worldPoint = new THREE.Vector3();
     const strokePoint = new THREE.Vector3();
-    const zoomAnchorSample = new THREE.Vector3();
-    const projectedClient = new THREE.Vector2();
-    const projectedNdc = new THREE.Vector3();
-
-    const cameraTarget = new THREE.Vector3(0, 0, 0);
-    const cameraController = new PixelCameraController({
-      zoomMin: CAMERA_ZOOM_MIN,
-      zoomMax: CAMERA_ZOOM_MAX,
-      zoomStep: CAMERA_ZOOM_STEP,
-      rotationAnimationRate: ROTATION_ANIMATION_RATE,
-      rotationAnimationEpsilon: ROTATION_ANIMATION_EPSILON,
-      zoomAnimationRate: ZOOM_ANIMATION_RATE,
-      zoomAnimationBurstRate: ZOOM_ANIMATION_BURST_RATE,
-      zoomAnimationEpsilon: ZOOM_ANIMATION_EPSILON,
-      zoomBurstIdleMs: ZOOM_BURST_IDLE_MS,
-      zoomAnchorMaxCorrectionCss: ZOOM_ANCHOR_MAX_CORRECTION_CSS
-    });
-    let renderScale = 1;
-    let userScale = SCREEN_SCALE_DEFAULT;
-    let panScreenX = 0;
-    let panScreenY = 0;
-
-    const screenRightWorld = new THREE.Vector3();
-    const screenDownWorld = new THREE.Vector3();
-    const cameraRight = new THREE.Vector3();
-    const cameraUp = new THREE.Vector3();
-    const cameraForward = new THREE.Vector3();
-    const cameraViewTarget = new THREE.Vector3();
-    const snappedCameraTarget = new THREE.Vector3();
     const inputRight = new THREE.Vector3();
     const inputForward = new THREE.Vector3();
+    const worldPoint = new THREE.Vector3();
 
     let dragState: DragState | null = null;
-    let spacePressed = false;
     let raf = 0;
 
     let gameRuntime: GameRuntime | null = null;
@@ -1932,7 +1903,8 @@ const experiment: ExperimentModule = {
         setButtonActive(button, isEditorMode && defaultGroundBase === base);
       });
 
-      const viewStep = ((cameraController.getYawIndex() % 4) + 4) % 4;
+      const viewStep = ((view.getYawIndex() % 4) + 4) % 4;
+      const zoomCurrent = view.getState().cameraZoomCurrent;
 
       if (isEditorMode) {
         let wallCount = 0;
@@ -1977,7 +1949,7 @@ const experiment: ExperimentModule = {
           `Rect: ${activeRectTool}`,
           `Seed: ${userSeed}`,
           `View: ${viewStep}/4`,
-          `Zoom: ${cameraController.getZoomCurrent().toFixed(2)}x`
+          `Zoom: ${zoomCurrent.toFixed(2)}x`
         ].join("  •  ");
         hints.textContent = editorHintsText;
       } else {
@@ -2009,7 +1981,7 @@ const experiment: ExperimentModule = {
           playerText,
           `Doors(O/C): ${openDoors}/${closedDoors}`,
           `View: ${viewStep}/4`,
-          `Zoom: ${cameraController.getZoomCurrent().toFixed(2)}x`
+          `Zoom: ${zoomCurrent.toFixed(2)}x`
         ].join("  •  ");
         hints.textContent = gameHintsText;
       }
@@ -2132,123 +2104,6 @@ const experiment: ExperimentModule = {
       }
     }
 
-    function updateCameraProjection(): void {
-      const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
-      const halfHeight = ORTHO_HEIGHT * 0.5;
-
-      camera.left = -halfHeight * aspect;
-      camera.right = halfHeight * aspect;
-      camera.top = halfHeight;
-      camera.bottom = -halfHeight;
-      camera.updateProjectionMatrix();
-    }
-
-    function updateCanvasTransform(): void {
-      renderer.domElement.style.transform = "translate(0px, 0px)";
-    }
-
-    function applyPanByPixels(deltaX: number, deltaY: number): void {
-      if (renderScale <= 0) {
-        return;
-      }
-      panScreenX += deltaX;
-      panScreenY += deltaY;
-
-      const stepX = Math.trunc(panScreenX / renderScale);
-      const stepY = Math.trunc(panScreenY / renderScale);
-      if (stepX === 0 && stepY === 0) {
-        return;
-      }
-
-      panScreenX -= stepX * renderScale;
-      panScreenY -= stepY * renderScale;
-
-      cameraTarget.addScaledVector(screenRightWorld, -stepX);
-      cameraTarget.addScaledVector(screenDownWorld, -stepY);
-    }
-
-    function projectWorldToClient(
-      world: THREE.Vector3,
-      out: THREE.Vector2
-    ): boolean {
-      const rect = renderer.domElement.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) {
-        return false;
-      }
-      projectedNdc.copy(world).project(camera);
-      out.set(
-        rect.left + (projectedNdc.x * 0.5 + 0.5) * rect.width,
-        rect.top + (1 - (projectedNdc.y * 0.5 + 0.5)) * rect.height
-      );
-      return true;
-    }
-
-    function recenterCameraTargetToScreenCenter(): void {
-      const rect = renderer.domElement.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) {
-        return;
-      }
-      const centerWorld = worldAtClient(
-        rect.left + rect.width * 0.5,
-        rect.top + rect.height * 0.5
-      );
-      if (!centerWorld) {
-        return;
-      }
-      cameraTarget.x = centerWorld.x;
-      cameraTarget.z = centerWorld.z;
-      cameraTarget.y = 0;
-    }
-
-    function setCameraPose(): void {
-      const yawCurrent =
-        CAMERA_BASE_YAW + cameraController.getAnimatedYawTurns() * (Math.PI * 0.5);
-      const cameraZoom = CAMERA_ZOOM * cameraController.getZoomCurrent();
-
-      const horizontal = Math.cos(CAMERA_PITCH);
-      const dir = new THREE.Vector3(
-        Math.sin(yawCurrent) * horizontal,
-        Math.sin(CAMERA_PITCH),
-        Math.cos(yawCurrent) * horizontal
-      );
-
-      cameraViewTarget.copy(cameraTarget);
-
-      camera.position.copy(cameraViewTarget).addScaledVector(dir, CAMERA_DISTANCE);
-      camera.lookAt(cameraViewTarget);
-      camera.zoom = cameraZoom;
-      camera.updateProjectionMatrix();
-
-      const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
-      const halfHeight = (ORTHO_HEIGHT * 0.5) / cameraZoom;
-      const halfWidth = halfHeight * aspect;
-      const unitRight = (halfWidth * 2) / FIXED_RENDER_WIDTH;
-      const unitDown = (halfHeight * 2) / FIXED_RENDER_HEIGHT;
-
-      cameraRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-      cameraUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
-      cameraForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
-
-      screenRightWorld.copy(cameraRight).multiplyScalar(unitRight);
-      screenDownWorld.copy(cameraUp).multiplyScalar(-unitDown);
-
-      // Keep camera phase pinned to integer low-res pixels in screen space.
-      const depth = cameraViewTarget.dot(cameraForward);
-      const rightPx = Math.round(cameraViewTarget.dot(cameraRight) / unitRight);
-      const upPx = Math.round(cameraViewTarget.dot(cameraUp) / unitDown);
-      snappedCameraTarget
-        .copy(cameraForward)
-        .multiplyScalar(depth)
-        .addScaledVector(cameraRight, rightPx * unitRight)
-        .addScaledVector(cameraUp, upPx * unitDown);
-      cameraViewTarget.copy(snappedCameraTarget);
-      cameraTarget.copy(snappedCameraTarget);
-
-      camera.position.copy(cameraViewTarget).addScaledVector(dir, CAMERA_DISTANCE);
-      camera.lookAt(cameraViewTarget);
-      camera.updateMatrixWorld(true);
-    }
-
     // Player movement is view-relative: W/Up moves toward the top of the screen
     // regardless of 90-degree camera rotation.
     function runCameraRelativePlayerInputSystem(world: World): void {
@@ -2303,17 +2158,10 @@ const experiment: ExperimentModule = {
       clientX: number,
       clientY: number
     ): THREE.Vector3 | null {
-      const rect = renderer.domElement.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) {
+      if (!view.worldAtClient(clientX, clientY, worldPoint)) {
         return null;
       }
-
-      pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-      pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointerNdc, camera);
-
-      const hit = raycaster.ray.intersectPlane(groundPlane, worldPoint);
-      return hit ? hit.clone() : null;
+      return worldPoint.clone();
     }
 
     function disposeGameRuntime(): void {
@@ -2854,42 +2702,10 @@ const experiment: ExperimentModule = {
       const rect = mount.getBoundingClientRect();
       viewportWidth = Math.max(1, Math.floor(rect.width));
       viewportHeight = Math.max(1, Math.floor(rect.height));
-
-      renderer.setPixelRatio(1);
-      // Keep the drawing buffer fixed so rasterization happens on a stable pixel grid.
-      // We only scale the canvas via CSS to avoid introducing a second sampling pass.
-      renderer.setSize(FIXED_RENDER_WIDTH, FIXED_RENDER_HEIGHT, true);
-      const scale = userScale * OUTPUT_SCALE_MULTIPLIER;
-      if (scale !== renderScale && renderScale > 0) {
-        const normalizedPanX = panScreenX / renderScale;
-        const normalizedPanY = panScreenY / renderScale;
-        panScreenX = normalizedPanX * scale;
-        panScreenY = normalizedPanY * scale;
-      }
-      renderScale = scale;
-      const targetWidth = FIXED_RENDER_WIDTH * scale;
-      const targetHeight = FIXED_RENDER_HEIGHT * scale;
-      const offsetX = Math.floor((viewportWidth - targetWidth) * 0.5);
-      const offsetY = Math.floor((viewportHeight - targetHeight) * 0.5);
-      renderer.domElement.style.left = `${offsetX}px`;
-      renderer.domElement.style.top = `${offsetY}px`;
-      renderer.domElement.style.width = `${targetWidth}px`;
-      renderer.domElement.style.height = `${targetHeight}px`;
-      updateCanvasTransform();
-      updateCameraProjection();
+      view.resize(viewportWidth, viewportHeight);
     }
 
     function updateCursor(): void {
-      if (dragState?.mode === "pan") {
-        renderer.domElement.style.cursor = "grabbing";
-        return;
-      }
-
-      if (spacePressed) {
-        renderer.domElement.style.cursor = "grab";
-        return;
-      }
-
       if (mode === "EDITOR") {
         if (activeRectTool !== "none" || dragState?.mode === "rect") {
           renderer.domElement.style.cursor = "crosshair";
@@ -2906,37 +2722,20 @@ const experiment: ExperimentModule = {
     }
 
     function handlePointerDown(event: PointerEvent): void {
-      if (event.button !== 0 && event.button !== 1 && event.button !== 2) {
+      if (event.button !== 0 && event.button !== 2) {
         return;
       }
-      if (mode === "GAME" && event.button === 2) {
+      if (mode === "GAME" && event.button !== 0) {
         return;
       }
 
       renderer.domElement.focus({ preventScroll: true });
       renderer.domElement.setPointerCapture(event.pointerId);
 
-      const shouldPan = event.button === 1 || spacePressed;
       const world = worldAtClient(event.clientX, event.clientY);
       const paintMode: ToolMode = event.button === 2 ? "erase" : activeTool;
       const rectMode =
         event.button === 0 ? resolveRectModeForPointer(event) : "none";
-
-      if (shouldPan) {
-        dragState = {
-          pointerId: event.pointerId,
-          mode: "pan",
-          paintMode,
-          brush: editorBrush,
-          lastClientX: event.clientX,
-          lastClientY: event.clientY,
-          lastWorldPoint: world,
-          moved: false
-        };
-        updateCursor();
-        event.preventDefault();
-        return;
-      }
 
       if (mode === "EDITOR") {
         if (rectMode !== "none") {
@@ -3010,15 +2809,6 @@ const experiment: ExperimentModule = {
 
       if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
         dragState.moved = true;
-      }
-
-      if (dragState.mode === "pan") {
-        cameraController.cancelZoomAnchor();
-        applyPanByPixels(dx, dy);
-        dragState.lastClientX = event.clientX;
-        dragState.lastClientY = event.clientY;
-        event.preventDefault();
-        return;
       }
 
       if (dragState.mode === "rect") {
@@ -3106,61 +2896,7 @@ const experiment: ExperimentModule = {
       event.preventDefault();
     }
 
-    function isLikelyTrackpad(event: WheelEvent): boolean {
-      if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) {
-        return false;
-      }
-
-      if (Math.abs(event.deltaX) > 0.01) {
-        return true;
-      }
-
-      return Math.abs(event.deltaY) < 24;
-    }
-
-    function handleWheel(event: WheelEvent): void {
-      const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
-      const trackpad = isLikelyTrackpad(event);
-      const zoomIntent = event.ctrlKey || event.metaKey || !trackpad;
-
-      if (zoomIntent) {
-        cameraController.handleWheelZoom(
-          event.deltaY,
-          event.clientX,
-          event.clientY,
-          performance.now(),
-          {
-            worldAtClient: (clientX, clientY, out) => {
-              const world = worldAtClient(clientX, clientY);
-              if (!world) {
-                return false;
-              }
-              out.copy(world);
-              return true;
-            }
-          }
-        );
-      } else {
-        cameraController.cancelZoomAnchor();
-        const panX =
-          (event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
-        const panY = event.deltaY * scale;
-        applyPanByPixels(panX, panY);
-      }
-
-      event.preventDefault();
-    }
-
     function handleKeyDown(event: KeyboardEvent): void {
-      if (event.code === "Space") {
-        if (!spacePressed) {
-          spacePressed = true;
-          updateCursor();
-        }
-        event.preventDefault();
-        return;
-      }
-
       if (event.code === "F5") {
         event.preventDefault();
         void enterGame();
@@ -3170,22 +2906,6 @@ const experiment: ExperimentModule = {
       if (event.code === "Escape") {
         event.preventDefault();
         enterEditor();
-        return;
-      }
-
-      if (event.code === "KeyQ" && !event.repeat) {
-        recenterCameraTargetToScreenCenter();
-        cameraController.rotateQuarterTurns(-1);
-        event.preventDefault();
-        syncHud();
-        return;
-      }
-
-      if (event.code === "KeyE" && !event.repeat) {
-        recenterCameraTargetToScreenCenter();
-        cameraController.rotateQuarterTurns(1);
-        event.preventDefault();
-        syncHud();
         return;
       }
 
@@ -3293,40 +3013,20 @@ const experiment: ExperimentModule = {
       }
     }
 
-    function handleKeyUp(event: KeyboardEvent): void {
-      if (event.code === "Space") {
-        spacePressed = false;
-        updateCursor();
-        event.preventDefault();
-      }
-    }
-
-    const resizeObserver = new ResizeObserver(() => {
-      syncSize();
-    });
-    resizeObserver.observe(mount);
     syncSize();
 
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
     renderer.domElement.addEventListener("pointermove", handlePointerMove);
     renderer.domElement.addEventListener("pointerup", handlePointerUp);
     renderer.domElement.addEventListener("pointercancel", handlePointerCancel);
-    renderer.domElement.addEventListener("wheel", handleWheel, {
-      passive: false
-    });
     renderer.domElement.addEventListener("contextmenu", (event) =>
       event.preventDefault()
     );
 
     window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-
     updateGridGeometry();
     rebuildBaseLevelMeshes();
     rebuildEditorStructureMeshes();
-    updateCameraProjection();
-    setCameraPose();
-    updateCanvasTransform();
 
     await enterGame({
       status: "Started in GAME mode. Press ESC to switch to EDITOR."
@@ -3345,15 +3045,7 @@ const experiment: ExperimentModule = {
         runGameFrame(gameRuntime, dt);
       }
 
-      setCameraPose();
-      cameraController.update(dt, now, {
-        projectWorldToClient,
-        applyPanByPixels
-      });
-      setCameraPose();
-      renderer.setRenderTarget(null);
-      renderer.clear();
-      renderer.render(scene, camera);
+      view.frame(now, dt);
       syncHud();
 
       raf = requestAnimationFrame(render);
@@ -3365,7 +3057,6 @@ const experiment: ExperimentModule = {
       cancelAnimationFrame(raf);
 
       disposeGameRuntime();
-      resizeObserver.disconnect();
 
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       renderer.domElement.removeEventListener("pointermove", handlePointerMove);
@@ -3374,10 +3065,7 @@ const experiment: ExperimentModule = {
         "pointercancel",
         handlePointerCancel
       );
-      renderer.domElement.removeEventListener("wheel", handleWheel);
-
       window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
 
       floorGeometry.dispose();
       structureMeshKit.dispose();
@@ -3400,13 +3088,9 @@ const experiment: ExperimentModule = {
       hoverMaterial.dispose();
       rectPreviewMaterial.dispose();
 
-      renderer.dispose();
+      view.dispose();
 
       hud.destroy();
-
-      if (renderer.domElement.parentElement) {
-        renderer.domElement.parentElement.removeChild(renderer.domElement);
-      }
 
       mount.style.position = "";
     };

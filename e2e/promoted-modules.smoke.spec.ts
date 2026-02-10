@@ -60,7 +60,7 @@ test.describe("promoted editor/game browser smoke", () => {
     );
   });
 
-  test("editor-game-ecs: uses fixed low-resolution render buffer scaled by CSS", async ({
+  test("editor-game-ecs: uses pixelated canvas sized to viewport device pixels", async ({
     page
   }) => {
     await page.goto("/#/exp/editor-game-ecs");
@@ -68,21 +68,25 @@ test.describe("promoted editor/game browser smoke", () => {
 
     const metrics = await canvas.evaluate((node) => {
       const canvasEl = node as HTMLCanvasElement;
+      const rect = canvasEl.getBoundingClientRect();
       return {
         width: canvasEl.width,
         height: canvasEl.height,
         styleWidth: canvasEl.style.width,
-        styleHeight: canvasEl.style.height
+        styleHeight: canvasEl.style.height,
+        imageRendering: canvasEl.style.imageRendering,
+        cssWidth: rect.width,
+        cssHeight: rect.height,
+        dpr: window.devicePixelRatio
       };
     });
 
-    expect(metrics.width).toBe(480);
-    expect(metrics.height).toBe(270);
-    expect(Number.parseFloat(metrics.styleWidth)).toBeGreaterThanOrEqual(
-      metrics.width
-    );
-    expect(Number.parseFloat(metrics.styleHeight)).toBeGreaterThanOrEqual(
-      metrics.height
-    );
+    expect(metrics.width).toBeGreaterThan(0);
+    expect(metrics.height).toBeGreaterThan(0);
+    expect(Math.abs(metrics.width - metrics.cssWidth * metrics.dpr)).toBeLessThanOrEqual(2);
+    expect(Math.abs(metrics.height - metrics.cssHeight * metrics.dpr)).toBeLessThanOrEqual(2);
+    expect(Number.parseFloat(metrics.styleWidth)).toBeGreaterThan(0);
+    expect(Number.parseFloat(metrics.styleHeight)).toBeGreaterThan(0);
+    expect(metrics.imageRendering).toBe("pixelated");
   });
 });
