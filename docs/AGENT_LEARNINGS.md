@@ -635,3 +635,16 @@ Preventive checklist:
 - Add runtime toggles for DPR mode and zoom quantization mode when investigating pixel-phase issues.
 - Surface active/native DPR, effective zoom, and ladder values in a HUD so behavior can be interpreted quickly.
 - Keep mode helpers unit-tested (`safe ladder` computation and stepping).
+
+## 2026-02-10 - Override DPR mode can accidentally change pan speed if input deltas use active DPR
+Root cause:
+- Pan input conversion multiplied pointer CSS deltas by active rendering DPR instead of native browser DPR.
+- In override mode this scaled movement away from pointer distance (faster/slower pan).
+
+Detection signal:
+- User reported panning felt faster than mouse movement in override mode while native mode felt correct.
+
+Preventive checklist:
+- Convert pointer deltas to device space using native `window.devicePixelRatio`, not rendering override DPR.
+- Keep render quantization DPR and input conversion DPR as separate variables with explicit names.
+- Include mode-specific manual checks for pointer-distance parity after DPR mode changes.
