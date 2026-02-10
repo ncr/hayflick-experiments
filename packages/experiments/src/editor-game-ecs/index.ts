@@ -1949,7 +1949,8 @@ const experiment: ExperimentModule = {
           `Default: ${defaultGroundBase}`,
           `Rect: ${activeRectTool}`,
           `Seed: ${userSeed}`,
-          `View: ${viewStep}/4`
+          `View: ${viewStep}/4`,
+          `Zoom: ${userScale}x`
         ].join("  •  ");
         hints.textContent = editorHintsText;
       } else {
@@ -1980,7 +1981,8 @@ const experiment: ExperimentModule = {
           "Mode: GAME",
           playerText,
           `Doors(O/C): ${openDoors}/${closedDoors}`,
-          `View: ${viewStep}/4`
+          `View: ${viewStep}/4`,
+          `Zoom: ${userScale}x`
         ].join("  •  ");
         hints.textContent = gameHintsText;
       }
