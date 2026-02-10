@@ -1400,3 +1400,15 @@ Preventive checklist:
 - When entering Q/E rotation mode, set `zoomPivotScene` to `(0.5, 0.5)` before/with target recenter.
 - Recenter `cameraTarget` from current screen-center world point in the same step.
 - Validate rotation pivot at zoom > 1 after any zoom-pivot behavior changes.
+
+## 2026-02-10 - Safe promotion path for camera controls is: split legacy package first, then integrate via shared module
+Root cause:
+- Directly copying camera-control logic into `editor-game-ecs` caused divergence and made rollbacks/rework expensive.
+
+Detection signal:
+- User requested explicit rollback of copy-based integration and asked to extract shared library before integration.
+
+Preventive checklist:
+- First move existing render helpers to a `_legacy` package and repoint old experiment imports.
+- Introduce a dedicated shared camera-control module in the new package and integrate experiments through that API.
+- Validate both legacy experiments and new integration with targeted Playwright smoke tests after the split.

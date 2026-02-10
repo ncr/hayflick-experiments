@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createPanPhaseState,
   stepPanPhase
-} from "@common/render";
+} from "@common/render_legacy";
 
 function runLegacyRoundedPhase(
   deltas: number[],

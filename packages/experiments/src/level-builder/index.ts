@@ -12,7 +12,7 @@ import {
   type PromotedEditorRectToolMode,
   type PromotedEditorToolMode
 } from "@common/level-editor";
-import { makeRenderer } from "@common/render";
+import { makeRenderer } from "@common/render_legacy";
 import type { LevelResource } from "@common/gameplay";
 import type { ExperimentModule } from "../runtime/types";
 import {

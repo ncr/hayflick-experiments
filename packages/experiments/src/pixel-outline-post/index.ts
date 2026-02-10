@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { makeRenderer } from "@common/render";
+import { makeRenderer } from "@common/render_legacy";
 import type { ExperimentModule } from "../runtime/types";
 
 const POST_VERTEX_SHADER = /* glsl */ `

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { ExperimentModule } from "../runtime/types";
-import { PixelPerfectController, PixelStage } from "@common/render";
+import { PixelPerfectController, PixelStage } from "@common/render_legacy";
 import {
   CAMERA_DISTANCE,
   CAMERA_PITCH,

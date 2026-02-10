@@ -95,6 +95,12 @@ importers:
         specifier: ^0.173.0
         version: 0.173.0
 
+  packages/common-render-legacy:
+    dependencies:
+      three:
+        specifier: ^0.173.0
+        version: 0.173.0
+
   packages/experiments:
     dependencies:
       '@common/core':
@@ -112,6 +118,9 @@ importers:
       '@common/render':
         specifier: workspace:*
         version: link:../common-render
+      '@common/render_legacy':
+        specifier: workspace:*
+        version: link:../common-render-legacy
       '@dimforge/rapier2d-compat':
         specifier: ^0.19.3
         version: 0.19.3

@@ -41,6 +41,7 @@ import {
   createInputSystem,
   type EID
 } from "@common/gameplay";
+import { PixelCameraController } from "@common/render";
 import {
   createPhysicsResource,
   initRapier,
@@ -382,6 +383,16 @@ const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const CAMERA_DISTANCE = 30 * TILE_SIZE;
 const ORTHO_HEIGHT = 5.966213466261495 * TILE_SIZE;
 const CAMERA_ZOOM = 1;
+const CAMERA_ZOOM_MIN = 1;
+const CAMERA_ZOOM_MAX = 6;
+const CAMERA_ZOOM_STEP = 1;
+const ROTATION_ANIMATION_RATE = 18;
+const ROTATION_ANIMATION_EPSILON = 1e-3;
+const ZOOM_ANIMATION_RATE = 14;
+const ZOOM_ANIMATION_BURST_RATE = 42;
+const ZOOM_ANIMATION_EPSILON = 0.02;
+const ZOOM_BURST_IDLE_MS = 90;
+const ZOOM_ANCHOR_MAX_CORRECTION_CSS = 96;
 const FIXED_RENDER_WIDTH = 480;
 const FIXED_RENDER_HEIGHT = 270;
 const OUTPUT_SCALE_MULTIPLIER = 1;
@@ -1363,11 +1374,12 @@ const experiment: ExperimentModule = {
         syncHud();
       },
       onRotate(deltaQuarterTurns: -1 | 1): void {
-        yawIndex += deltaQuarterTurns;
+        recenterCameraTargetToScreenCenter();
+        cameraController.rotateQuarterTurns(deltaQuarterTurns);
         syncHud();
       },
       onResetView(): void {
-        yawIndex = 0;
+        cameraController.reset();
         userScale = SCREEN_SCALE_DEFAULT;
         cameraTarget.set(0, 0, 0);
         panScreenX = 0;
@@ -1471,10 +1483,23 @@ const experiment: ExperimentModule = {
     const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const worldPoint = new THREE.Vector3();
     const strokePoint = new THREE.Vector3();
+    const zoomAnchorSample = new THREE.Vector3();
+    const projectedClient = new THREE.Vector2();
+    const projectedNdc = new THREE.Vector3();
 
     const cameraTarget = new THREE.Vector3(0, 0, 0);
-    let yawIndex = 0;
-    let yawCurrent = CAMERA_BASE_YAW;
+    const cameraController = new PixelCameraController({
+      zoomMin: CAMERA_ZOOM_MIN,
+      zoomMax: CAMERA_ZOOM_MAX,
+      zoomStep: CAMERA_ZOOM_STEP,
+      rotationAnimationRate: ROTATION_ANIMATION_RATE,
+      rotationAnimationEpsilon: ROTATION_ANIMATION_EPSILON,
+      zoomAnimationRate: ZOOM_ANIMATION_RATE,
+      zoomAnimationBurstRate: ZOOM_ANIMATION_BURST_RATE,
+      zoomAnimationEpsilon: ZOOM_ANIMATION_EPSILON,
+      zoomBurstIdleMs: ZOOM_BURST_IDLE_MS,
+      zoomAnchorMaxCorrectionCss: ZOOM_ANCHOR_MAX_CORRECTION_CSS
+    });
     let renderScale = 1;
     let userScale = SCREEN_SCALE_DEFAULT;
     let panScreenX = 0;
@@ -1907,7 +1932,7 @@ const experiment: ExperimentModule = {
         setButtonActive(button, isEditorMode && defaultGroundBase === base);
       });
 
-      const viewStep = ((yawIndex % 4) + 4) % 4;
+      const viewStep = ((cameraController.getYawIndex() % 4) + 4) % 4;
 
       if (isEditorMode) {
         let wallCount = 0;
@@ -1952,7 +1977,7 @@ const experiment: ExperimentModule = {
           `Rect: ${activeRectTool}`,
           `Seed: ${userSeed}`,
           `View: ${viewStep}/4`,
-          `Zoom: ${userScale}x`
+          `Zoom: ${cameraController.getZoomCurrent().toFixed(2)}x`
         ].join("  •  ");
         hints.textContent = editorHintsText;
       } else {
@@ -1984,7 +2009,7 @@ const experiment: ExperimentModule = {
           playerText,
           `Doors(O/C): ${openDoors}/${closedDoors}`,
           `View: ${viewStep}/4`,
-          `Zoom: ${userScale}x`
+          `Zoom: ${cameraController.getZoomCurrent().toFixed(2)}x`
         ].join("  •  ");
         hints.textContent = gameHintsText;
       }
@@ -2142,9 +2167,43 @@ const experiment: ExperimentModule = {
       cameraTarget.addScaledVector(screenDownWorld, -stepY);
     }
 
+    function projectWorldToClient(
+      world: THREE.Vector3,
+      out: THREE.Vector2
+    ): boolean {
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return false;
+      }
+      projectedNdc.copy(world).project(camera);
+      out.set(
+        rect.left + (projectedNdc.x * 0.5 + 0.5) * rect.width,
+        rect.top + (1 - (projectedNdc.y * 0.5 + 0.5)) * rect.height
+      );
+      return true;
+    }
+
+    function recenterCameraTargetToScreenCenter(): void {
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+      const centerWorld = worldAtClient(
+        rect.left + rect.width * 0.5,
+        rect.top + rect.height * 0.5
+      );
+      if (!centerWorld) {
+        return;
+      }
+      cameraTarget.x = centerWorld.x;
+      cameraTarget.z = centerWorld.z;
+      cameraTarget.y = 0;
+    }
+
     function setCameraPose(): void {
-      const yawTarget = CAMERA_BASE_YAW + yawIndex * (Math.PI * 0.5);
-      yawCurrent = yawTarget;
+      const yawCurrent =
+        CAMERA_BASE_YAW + cameraController.getAnimatedYawTurns() * (Math.PI * 0.5);
+      const cameraZoom = CAMERA_ZOOM * cameraController.getZoomCurrent();
 
       const horizontal = Math.cos(CAMERA_PITCH);
       const dir = new THREE.Vector3(
@@ -2157,11 +2216,11 @@ const experiment: ExperimentModule = {
 
       camera.position.copy(cameraViewTarget).addScaledVector(dir, CAMERA_DISTANCE);
       camera.lookAt(cameraViewTarget);
-      camera.zoom = CAMERA_ZOOM;
+      camera.zoom = cameraZoom;
       camera.updateProjectionMatrix();
 
       const aspect = FIXED_RENDER_WIDTH / FIXED_RENDER_HEIGHT;
-      const halfHeight = (ORTHO_HEIGHT * 0.5) / CAMERA_ZOOM;
+      const halfHeight = (ORTHO_HEIGHT * 0.5) / cameraZoom;
       const halfWidth = halfHeight * aspect;
       const unitRight = (halfWidth * 2) / FIXED_RENDER_WIDTH;
       const unitDown = (halfHeight * 2) / FIXED_RENDER_HEIGHT;
@@ -2954,6 +3013,7 @@ const experiment: ExperimentModule = {
       }
 
       if (dragState.mode === "pan") {
+        cameraController.cancelZoomAnchor();
         applyPanByPixels(dx, dy);
         dragState.lastClientX = event.clientX;
         dragState.lastClientY = event.clientY;
@@ -3064,17 +3124,24 @@ const experiment: ExperimentModule = {
       const zoomIntent = event.ctrlKey || event.metaKey || !trackpad;
 
       if (zoomIntent) {
-        const step = event.deltaY > 0 ? -1 : 1;
-        const nextScale = THREE.MathUtils.clamp(
-          userScale + step,
-          SCREEN_SCALE_MIN,
-          SCREEN_SCALE_MAX
+        cameraController.handleWheelZoom(
+          event.deltaY,
+          event.clientX,
+          event.clientY,
+          performance.now(),
+          {
+            worldAtClient: (clientX, clientY, out) => {
+              const world = worldAtClient(clientX, clientY);
+              if (!world) {
+                return false;
+              }
+              out.copy(world);
+              return true;
+            }
+          }
         );
-        if (nextScale !== userScale) {
-          userScale = nextScale;
-          syncSize();
-        }
       } else {
+        cameraController.cancelZoomAnchor();
         const panX =
           (event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
         const panY = event.deltaY * scale;
@@ -3107,14 +3174,16 @@ const experiment: ExperimentModule = {
       }
 
       if (event.code === "KeyQ" && !event.repeat) {
-        yawIndex -= 1;
+        recenterCameraTargetToScreenCenter();
+        cameraController.rotateQuarterTurns(-1);
         event.preventDefault();
         syncHud();
         return;
       }
 
       if (event.code === "KeyE" && !event.repeat) {
-        yawIndex += 1;
+        recenterCameraTargetToScreenCenter();
+        cameraController.rotateQuarterTurns(1);
         event.preventDefault();
         syncHud();
         return;
@@ -3276,6 +3345,11 @@ const experiment: ExperimentModule = {
         runGameFrame(gameRuntime, dt);
       }
 
+      setCameraPose();
+      cameraController.update(dt, now, {
+        projectWorldToClient,
+        applyPanByPixels
+      });
       setCameraPose();
       renderer.setRenderTarget(null);
       renderer.clear();
