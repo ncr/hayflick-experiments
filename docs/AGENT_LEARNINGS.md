@@ -595,3 +595,15 @@ Preventive checklist:
 - Quantize pointer deltas through an explicit carry accumulator (`Math.trunc`), so movement advances only on whole screen pixels.
 - Keep pan remainder integer-valued and bounded by `renderScale`.
 - Apply remainder shift in final WebGL viewport, not via CSS canvas transforms.
+
+## 2026-02-10 - Viewport Y-origin mismatch inverted vertical subpixel pan direction
+Root cause:
+- Pan remainder is in screen coordinates (Y increases downward), but `WebGLRenderer.setViewport` uses bottom-origin Y.
+- Applying `pad + remainderY` made subpixel vertical remainder move opposite to camera-step pan, causing zigzag/jump behavior.
+
+Detection signal:
+- User reported vertical pan moved in the wrong direction until a whole big-pixel camera step occurred, then jumped back.
+
+Preventive checklist:
+- When mapping screen-space offsets into WebGL viewport offsets, invert Y (`viewportY = pad - remainderY`).
+- Keep a code comment near viewport setup documenting the coordinate-system conversion.

@@ -386,7 +386,9 @@ const experiment: ExperimentModule = {
       renderer.clear();
       renderer.setViewport(
         padSize + panPhase.remainderX,
-        padSize + panPhase.remainderY,
+        // WebGL viewport Y is bottom-origin; screen-space pan remainder is top-origin.
+        // Invert Y remainder so subpixel pan and camera-step pan move in the same direction.
+        padSize - panPhase.remainderY,
         outputWidth,
         outputHeight
       );
