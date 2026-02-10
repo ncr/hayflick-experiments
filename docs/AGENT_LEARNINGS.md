@@ -1101,3 +1101,302 @@ Preventive checklist:
 - For fixed viewport/canvas UX, keep output viewport scale constant and apply zoom via camera projection/frustum.
 - Keep world-to-game-pixel contract assertions scoped to the calibrated baseline zoom in camera-zoom experiments.
 - Validate both interaction semantics together after zoom changes: viewport-size stability and cursor-anchor behavior.
+
+## 2026-02-10 - Projection-only zoom keeps viewport fixed but can make pixel size feel static
+Root cause:
+- `pixel-perfect-camera-zoom` used orthographic-frustum zoom with a fixed output scale.
+- That zoomed scene composition, but big-pixel size did not increase, which looked like contract breakage from UX perspective.
+
+Detection signal:
+- User reported that zoom changed scene size while pixel size stayed too small at the same zoom level.
+
+Preventive checklist:
+- For fixed-viewport zoom that should also enlarge visible big pixels, apply zoom in the output sample mapping (crop/stretch) instead of only camera projection.
+- Keep world-to-low-res projection contract fixed and include zoom factor in screen mapping helpers (`worldAtClient`/`projectWorldToClient`).
+- Validate with interaction checks that viewport size is stable while pixel size increases as zoom increases.
+
+## 2026-02-10 - Camera-zoom prototype needed explicit minimum zoom floor at baseline
+Root cause:
+- Camera-zoom experiment allowed `cameraZoomTarget < 1`, which conflicted with expected baseline contract behavior and UX.
+
+Detection signal:
+- User requested to prevent zooming out below `1x`.
+
+Preventive checklist:
+- Clamp prototype camera zoom floor to explicit baseline minimum (`1x`) when contract assumes baseline as lower bound.
+- Keep wheel zoom clamping co-located with zoom target updates so behavior is deterministic.
+
+## 2026-02-10 - Output-zoom prototypes need pan-step compensation to keep drag parity
+Root cause:
+- In `pixel-perfect-camera-zoom`, output-sample zoom magnified screen movement from each camera pan step.
+- Pan step conversion remained calibrated for unzoomed output, so high zoom caused drag overshoot (`x + n`).
+
+Detection signal:
+- User reported panning moved farther than cursor at larger zoom levels.
+
+Preventive checklist:
+- Scale camera pan-step world displacement by inverse zoom (`1 / cameraZoom`) when output zoom is active.
+- Keep pointer/world mapping functions aligned with the same zoom transform used in the output shader.
+- Add high-zoom pan parity e2e checks (drag shift error bound) to catch regressions.
+
+## 2026-02-10 - Fractional output zoom causes pixel-phase drift during zoom animation
+Root cause:
+- `pixel-perfect-camera-zoom` sampled the fixed low-res target with a continuous (`float`) zoom factor.
+- Non-lattice zoom factors made big-pixel boundaries land on different device-pixel phases during zoom, causing visible instability.
+
+Detection signal:
+- User reported phase changes/flicker while zooming in despite correct pan distance and base contract.
+
+Preventive checklist:
+- Quantize output zoom to a render-scale lattice where effective big-pixel size in device pixels stays integral.
+- Use the same quantized zoom value in shader sampling, pointer-to-world mapping, world projection, and pan compensation.
+- Keep high-zoom interaction probes active while changing zoom animation behavior.
+
+## 2026-02-10 - Even quantized zoom can show phase transitions if animation traverses intermediate levels
+Root cause:
+- `pixel-perfect-camera-zoom` used a quantized stable zoom for sampling, but animated `cameraZoomCurrent` still walked through intermediate levels frame-by-frame.
+- This produced visible per-frame phase changes during wheel zoom.
+
+Detection signal:
+- User reported phase transitions remained, but reduced, after first quantization pass.
+
+Preventive checklist:
+- For strict pixel-phase stability, apply zoom as immediate step changes on the quantized lattice (no tween across intermediate zoom levels).
+- Keep zoom animation disabled or separately gated in modes that require hard pixel-grid invariants.
+- Verify visually at higher zoom while scrolling continuously, not only single-step zoom tests.
+
+## 2026-02-10 - Nearest filter alone is insufficient for stable output-zoom sampling
+Root cause:
+- Output zoom used continuous UV transforms and relied on `NearestFilter` only.
+- Without explicit texel-center snapping, UV boundary drift still produced visible phase transitions while zooming.
+
+Detection signal:
+- User still observed phase transitions after quantized zoom steps were introduced.
+
+Preventive checklist:
+- In shader-based output zoom, snap sample UVs to source texel centers (`floor(uv * size) + 0.5`).
+- Keep source texture dimensions available as uniforms and clamp UV to valid texel domain before snapping.
+- Validate zoom visual stability manually in addition to interaction math tests.
+
+## 2026-02-10 - Repeated anchor correction around wheel zoom can cause 1-pixel pan toggling
+Root cause:
+- Anchor correction was applied both immediately on wheel event and again in render frames while zoom state was settling.
+- With quantized zoom steps, this produced alternating one-pixel corrections between two nearby pan states.
+
+Detection signal:
+- User reported zooming remained stable but viewport jumped between two pan positions about one big pixel apart.
+
+Preventive checklist:
+- Do not run pre-zoom anchor correction on wheel events; apply correction after zoom state is updated.
+- Limit anchor correction to a single post-zoom pass when zoom interpolation is disabled.
+- Keep settle criteria independent from wheel burst flags for no-animation zoom modes.
+
+## 2026-02-10 - Pre-wheel anchor correction also destabilizes `pixel-perfect-2to1`
+Root cause:
+- `pixel-perfect-2to1` applied immediate `applyZoomAnchorCorrection(2)` inside `handleWheel` before render-loop correction.
+- This duplicated correction timing and can introduce one-pixel anchor/pan toggling around zoom steps.
+
+Detection signal:
+- After fixing the camera-zoom experiment, user asked to remove equivalent pre-correction from `pixel-perfect-2to1`.
+
+Preventive checklist:
+- Keep zoom-anchor correction only in render/update loop where camera + projection state is final for the frame.
+- Avoid wheel-handler correction passes that run before frame state is fully updated.
+- Validate with rapid wheel anchor tests and visual spot-check for single-pixel flip-flop.
+
+## 2026-02-10 - Re-anchoring cursor each wheel event in a burst creates unintended zoom+pan coupling
+Root cause:
+- `pixel-perfect-2to1` updated `zoomAnchorClient` on every wheel event, including during an active burst.
+- If pointer moved while scrolling, anchor target shifted mid-burst and correction behaved like extra pan.
+
+Detection signal:
+- User reported moving mouse while zooming caused viewport panning instead of pure zoom.
+
+Preventive checklist:
+- Lock zoom anchor client position at burst start and keep it fixed until burst ends.
+- Update anchor world/client only when starting a new wheel burst.
+- Validate with manual interaction: scroll continuously while moving mouse; viewport should only zoom.
+
+## 2026-02-10 - Cursor-anchor zoom requires shared pivot math between shader sampling and world mapping
+Root cause:
+- `pixel-perfect-camera-zoom` moved output zoom pivot into shader space, but `worldAtClient`/`projectWorldToClient` still assumed center-pivot zoom.
+- Anchor correction and debug projection then solved against a different transform than the actual rendered image.
+
+Detection signal:
+- User reported point under cursor moved while zooming.
+- New e2e anchor test in camera-zoom route failed with large cursor drift.
+
+Preventive checklist:
+- Keep one canonical zoom pivot (`scene UV`) and use it in shader sampling, client->world mapping, and world->client projection.
+- For wheel bursts, lock cursor anchor once per burst and derive pivot from that fixed client point.
+- Maintain a camera-zoom e2e that checks fixed-cursor anchor drift during repeated zoom-in steps.
+
+## 2026-02-10 - Center-pivot correction is lossy for cursor-pivot output zoom
+Root cause:
+- `pixel-perfect-camera-zoom` tried to preserve cursor anchor via pan correction while output zoom/pivot lived in shader space.
+- Mapping and correction worked in different transform spaces, so zoom still appeared to pan away from cursor.
+
+Detection signal:
+- User repeatedly reported under-cursor point drifting during zoom even after pan/correction tweaks.
+- A dedicated fixed-cursor zoom e2e failed with large x/y drift.
+
+Preventive checklist:
+- In shader-pivot zoom models, solve pivot directly from locked anchor world+scene points per zoom step.
+- Keep one transform chain for shader sampling and debug/client mapping; avoid mixing with corrective pan loops.
+- Maintain a fixed-cursor multi-step zoom e2e assertion for anchor drift.
+
+## 2026-02-10 - Cursor-anchored output zoom is most stable with per-event pivot sampling
+Root cause:
+- Mixed strategies (center-pivot plus pan correction / world-anchor solve) introduced residual drift and visible zoom-pan coupling.
+- Quantized pan/correction paths cannot perfectly recover anchor in all zoom steps.
+
+Detection signal:
+- User still observed screen panning away during zoom even after multiple correction passes.
+
+Preventive checklist:
+- For shader-based output zoom, derive pivot directly from current cursor scene UV on each wheel event.
+- Use that same pivot in shader sampling and in client/world mapping helpers.
+- Prefer pivot-driven zoom over correction-by-pan when strict cursor lock is required.
+
+## 2026-02-10 - Integer wheel steps and smooth zoom animation should be decoupled
+Root cause:
+- Switching to integer wheel steps initially forced immediate zoom updates, which removed transition animation.
+- Re-quantizing animated zoom each frame also makes transitions feel stepped.
+
+Detection signal:
+- User requested integer zoom increments and animated transitions at the same time.
+
+Preventive checklist:
+- Keep integer zoom targets (`+/-1` per wheel event), but animate current zoom toward target with `easeToward`.
+- Reuse established rates/epsilon from the stable experiment (`14`, `42`, `0.02`) for consistent interaction feel.
+- Avoid per-frame target quantization on the animated zoom value when smooth visual interpolation is required.
+
+## 2026-02-10 - Mixed zoom anchor systems caused double-vision jitter
+Root cause:
+- `pixel-perfect-camera-zoom` applied shader pivot zoom and a separate world-anchor pan correction loop at the same time.
+- The two correction paths fought each other during animated zoom steps and produced visible jitter/ghosting.
+
+Detection signal:
+- User reported "double vision" and jumpy zoom/pan behavior returning after anchor-correction changes.
+
+Preventive checklist:
+- Keep one zoom anchor mechanism per experiment path (pivot-only or pan-correction-only), never both.
+- If shader pivot zoom is active, use the same pivot in client<->world mapping helpers and shader uniforms.
+- Run the camera-zoom Playwright anchor + pan tests after any zoom-anchor refactor.
+
+## 2026-02-10 - Stale wheel pivot fallback caused zoom-out pan drift after mouse reposition
+Root cause:
+- Wheel anchor logic could keep previous zoom pivot when cursor sample was outside the scene-output rect.
+- Next zoom step then used stale pivot, which appeared as unintended pan after moving the mouse.
+
+Detection signal:
+- User reported: move mouse, then zoom out, and viewport pans away.
+
+Preventive checklist:
+- Derive zoom anchor from current wheel event coordinates, not cached pointer fallback.
+- Clamp sampled scene pivot to output bounds so wheel events never reuse stale pivot state.
+- Keep anchor regression checks that include cursor reposition before opposite-direction zoom.
+
+## 2026-02-10 - Changing zoom pivot mid-zoom introduces apparent pan jump
+Root cause:
+- In shader-pivot zoom, switching pivot while `zoom != 1` changes the current image offset immediately, even before applying the next zoom step.
+- Moving mouse before zoom-out changed pivot and produced visible pan drift/jump.
+
+Detection signal:
+- User reported: moving mouse before zooming out causes viewport pan during zoom.
+
+Preventive checklist:
+- On wheel, if pivot changes, compute world point under cursor first and apply one-shot pan compensation after pivot update.
+- Keep this compensation single-pass in wheel handler (no continuous correction loop).
+- Re-test both baseline contract and cursor-anchor interactions after pivot-change math updates.
+
+## 2026-02-10 - Pivot rebase compensation must use zoom-aware pan conversion
+Root cause:
+- Wheel pivot-rebase correction applied `applyPanRawCss`, but normal interaction pan is zoom-aware (`1 / zoom`).
+- At higher zoom this over-corrected by roughly the zoom factor, causing large apparent pan jumps when changing cursor then zooming out.
+
+Detection signal:
+- User reported moving mouse before zoom caused pan drift; probe showed >1000px anchor error after one zoom-out step.
+
+Preventive checklist:
+- Any wheel-anchor correction must use the same pan conversion path as drag pan (`applyPan`), not raw CSS pan.
+- Keep a repro check that zooms in, moves cursor, then zooms out and asserts low pixel anchor drift.
+- Validate both with e2e and a direct debug probe after wheel-anchor edits.
+
+## 2026-02-10 - Clamped wheel input must be a strict no-op to avoid boundary pan jitter
+Root cause:
+- At zoom bounds, wheel events still updated pivot/rebase logic before discovering target zoom could not change.
+- That produced small viewport pans while attempting to zoom past min/max.
+
+Detection signal:
+- User reported slight panning at max zoom when scrolling further while moving the mouse.
+
+Preventive checklist:
+- Compute clamped next zoom target first in wheel handler.
+- If target is unchanged, return immediately after `preventDefault()` and skip pivot/anchor/pan correction work.
+- Keep a boundary interaction check (scroll at max/min while moving cursor) after zoom-handler changes.
+
+## 2026-02-10 - Quarter-turn rotation should preserve screen-center anchor across zoom states
+Root cause:
+- Rotation input changed yaw target without explicitly anchoring the world point currently at screen center.
+- With output-zoom pivot not fixed at center, rotation could feel like orbiting around an offset point.
+
+Detection signal:
+- User requested rotation to stay relative to the point at the center of the screen at any zoom.
+
+Preventive checklist:
+- On rotate input, capture world point at screen center before changing yaw target.
+- During rotation animation, apply per-frame pan correction to keep that anchor projected at screen center.
+- Disable anchor once residual is subpixel and rotation settles.
+
+## 2026-02-10 - Rotation anchor correction must not run outside active rotation
+Root cause:
+- Center-anchor correction for rotation continued beyond the actual rotation animation window.
+- Persistent correction loop fought normal pan/zoom input and reintroduced jitter/double-vision symptoms.
+
+Detection signal:
+- User reported panning broke and visual ghosting returned immediately after adding rotation-center anchoring.
+
+Preventive checklist:
+- Apply rotation anchor correction only while rotation interpolation is active.
+- Cancel rotation anchor state on direct pointer/wheel interaction.
+- Clamp per-frame correction magnitude to avoid runaway feedback.
+
+## 2026-02-10 - Rotation center-lock correction should be screen-space, not zoom-scaled
+Root cause:
+- Rotation anchor correction reused zoom-aware pan conversion (`applyPan`), which divides by current zoom.
+- At zoom > 1 this under-corrected each frame and made rotation animation trajectory look unstable, even if final pose converged.
+
+Detection signal:
+- User reported rotation animation was wrong only at zoom levels above 1, while final transform ended correct.
+
+Preventive checklist:
+- Use raw CSS/device pan conversion (`applyPanRawCss`) for rotation center-lock correction.
+- Reserve zoom-scaled pan (`applyPan`) for user drag/wheel-rebase flows where behavior is intentionally tied to zoom.
+- Manually test Q/E rotation animation at multiple zoom levels after anchor/pan math changes.
+
+## 2026-02-10 - Continuous rotation anchor correction can cause ghosting; prefer one-shot recenter
+Root cause:
+- Per-frame rotation anchor correction loop introduced feedback against quantized pan/output sampling, producing visible double-vision during rotation animation.
+- Although final orientation converged, intermediate frames jittered.
+
+Detection signal:
+- User reported rotation pivot looked correct but animation showed ghosting/double vision, especially at higher zoom.
+
+Preventive checklist:
+- For quarter-turn orbit around screen center, recenter `cameraTarget` once from screen-center world point before rotation starts.
+- Avoid persistent per-frame pan correction loops during rotation unless strictly necessary.
+- Manually verify rotation animation quality at zoom > 1 after anchor-related changes.
+
+## 2026-02-10 - Rotation around screen center requires centered output zoom pivot at rotate start
+Root cause:
+- Rotation recenter used world-at-screen-center, but retained prior cursor-derived `zoomPivotScene` from wheel zoom.
+- Non-centered output pivot offsets visual rotation center, so rotation looked to pivot around a wrong point.
+
+Detection signal:
+- User reported rotation animation became smooth but pivots were still wrong.
+
+Preventive checklist:
+- When entering Q/E rotation mode, set `zoomPivotScene` to `(0.5, 0.5)` before/with target recenter.
+- Recenter `cameraTarget` from current screen-center world point in the same step.
+- Validate rotation pivot at zoom > 1 after any zoom-pivot behavior changes.
