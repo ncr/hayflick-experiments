@@ -538,3 +538,17 @@ Preventive checklist:
 - Keep promoted junction mesh reach aligned to the authoring contract (full-tile arms for replacement meshes).
 - Add explicit geometry tests for required junction footprint sizes (e.g. cross = 2.56m x 2.56m).
 - Ensure experiment renderers do not draw overlapping legacy segments for edges owned by replacement junction meshes.
+
+## 2026-02-10 - Low zoom levels shimmered in editor-game-ecs despite integer canvas scale
+Root cause:
+- Camera yaw still used per-frame interpolation, so camera basis drifted through subpixel phases even when zoom scale and pan steps were integer-snapped.
+- `pixel-perfect-2to1` uses fixed quarter-turn yaw, so the mismatch caused extra phase instability in `editor-game-ecs`.
+
+Detection signal:
+- User reported visible shimmer specifically at low screen scales (`3x`, `2x`, `1x`) while high scales looked stable.
+- Instability persisted after decoupling zoom from viewport size, pointing to camera phase rather than canvas resize math.
+
+Preventive checklist:
+- For experiments claiming pixel-stable rendering, keep quarter-turn yaw discrete (no smoothing interpolation).
+- Snap camera target to integer low-resolution pixel coordinates in camera screen-space basis each frame.
+- When comparing stability across experiments, audit the full camera phase path (yaw update + target snap), not only canvas scaling.

@@ -1484,7 +1484,9 @@ const experiment: ExperimentModule = {
     const screenDownWorld = new THREE.Vector3();
     const cameraRight = new THREE.Vector3();
     const cameraUp = new THREE.Vector3();
+    const cameraForward = new THREE.Vector3();
     const cameraViewTarget = new THREE.Vector3();
+    const snappedCameraTarget = new THREE.Vector3();
     const inputRight = new THREE.Vector3();
     const inputForward = new THREE.Vector3();
 
@@ -2146,11 +2148,7 @@ const experiment: ExperimentModule = {
 
     function setCameraPose(): void {
       const yawTarget = CAMERA_BASE_YAW + yawIndex * (Math.PI * 0.5);
-      const delta = Math.atan2(
-        Math.sin(yawTarget - yawCurrent),
-        Math.cos(yawTarget - yawCurrent)
-      );
-      yawCurrent += delta * 0.22;
+      yawCurrent = yawTarget;
 
       const horizontal = Math.cos(CAMERA_PITCH);
       const dir = new THREE.Vector3(
@@ -2174,9 +2172,26 @@ const experiment: ExperimentModule = {
 
       cameraRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
       cameraUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+      cameraForward.set(0, 0, -1).applyQuaternion(camera.quaternion);
 
       screenRightWorld.copy(cameraRight).multiplyScalar(unitRight);
       screenDownWorld.copy(cameraUp).multiplyScalar(-unitDown);
+
+      // Keep camera phase pinned to integer low-res pixels in screen space.
+      const depth = cameraViewTarget.dot(cameraForward);
+      const rightPx = Math.round(cameraViewTarget.dot(cameraRight) / unitRight);
+      const upPx = Math.round(cameraViewTarget.dot(cameraUp) / unitDown);
+      snappedCameraTarget
+        .copy(cameraForward)
+        .multiplyScalar(depth)
+        .addScaledVector(cameraRight, rightPx * unitRight)
+        .addScaledVector(cameraUp, upPx * unitDown);
+      cameraViewTarget.copy(snappedCameraTarget);
+      cameraTarget.copy(snappedCameraTarget);
+
+      camera.position.copy(cameraViewTarget).addScaledVector(dir, CAMERA_DISTANCE);
+      camera.lookAt(cameraViewTarget);
+      camera.updateMatrixWorld(true);
     }
 
     // Player movement is view-relative: W/Up moves toward the top of the screen
