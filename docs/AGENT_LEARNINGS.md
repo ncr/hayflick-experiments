@@ -552,3 +552,17 @@ Preventive checklist:
 - For experiments claiming pixel-stable rendering, keep quarter-turn yaw discrete (no smoothing interpolation).
 - Snap camera target to integer low-resolution pixel coordinates in camera screen-space basis each frame.
 - When comparing stability across experiments, audit the full camera phase path (yaw update + target snap), not only canvas scaling.
+
+## 2026-02-10 - Canvas remainder translation can cause global ±1 px wobble at all zoom levels
+Root cause:
+- `editor-game-ecs` used CSS canvas translation to show sub-step pan remainder while also stepping camera on integer low-res pixels.
+- The DOM transform remainder introduced screen-space phase shifts, perceived as whole big-pixel translation jitter.
+
+Detection signal:
+- User reported stable sizing but whole-image wobble by about one screen pixel across zoom levels, most visible at low scales.
+- Artifact remained after yaw/target snapping fixes, isolating the issue to canvas transform phase.
+
+Preventive checklist:
+- For strict pixel-lock mode, keep canvas transform fixed at integer zero and use remainder only as an accumulator for next camera pixel step.
+- Avoid mixing camera pixel stepping with non-zero DOM transform in the same render path.
+- Validate by observing static geometry while panning slowly: no whole-frame ±1 px jumps should be visible.

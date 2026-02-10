@@ -2119,9 +2119,7 @@ const experiment: ExperimentModule = {
     }
 
     function updateCanvasTransform(): void {
-      const tx = Math.round(panScreenX);
-      const ty = Math.round(panScreenY);
-      renderer.domElement.style.transform = `translate(${tx}px, ${ty}px)`;
+      renderer.domElement.style.transform = "translate(0px, 0px)";
     }
 
     function applyPanByPixels(deltaX: number, deltaY: number): void {
@@ -2134,7 +2132,6 @@ const experiment: ExperimentModule = {
       const stepX = Math.trunc(panScreenX / renderScale);
       const stepY = Math.trunc(panScreenY / renderScale);
       if (stepX === 0 && stepY === 0) {
-        updateCanvasTransform();
         return;
       }
 
@@ -2143,7 +2140,6 @@ const experiment: ExperimentModule = {
 
       cameraTarget.addScaledVector(screenRightWorld, -stepX);
       cameraTarget.addScaledVector(screenDownWorld, -stepY);
-      updateCanvasTransform();
     }
 
     function setCameraPose(): void {
