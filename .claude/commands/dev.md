@@ -1,0 +1,1 @@
+Start (or restart if already running) the HTTPS dev server by running `pnpm dev:s` in the background. If there's already a background dev server task running, stop it first then start a new one.

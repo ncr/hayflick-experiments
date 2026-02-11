@@ -5,6 +5,7 @@
   "packageManager": "pnpm@9.15.4",
   "scripts": {
     "dev": "pnpm --filter @apps/hub dev",
+    "dev:s": "bash scripts/dev-https.sh",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
