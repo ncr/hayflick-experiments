@@ -7,5 +7,8 @@ const base = process.env.NODE_ENV === "production" && repoName ? `/${repoName}/`
 
 export default defineConfig({
   base,
-  plugins: [react(), glsl()]
+  plugins: [react(), glsl()],
+  server: {
+    allowedHosts: ["exp.trixtech.net"],
+  },
 });
