@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { PixelPerfectController } from "./pixel-perfect-controller";
 import { PixelStage } from "./pixel-stage";
+import { attachTouchGestures } from "./touch-gestures";
 
 export type PixelPerfectIsoViewConfig = {
   mount: HTMLElement;
@@ -75,6 +76,7 @@ export class PixelPerfectIsoView {
   private readonly zoomBeforeWorld = new THREE.Vector3();
   private readonly zoomPivotScene = new THREE.Vector2(0.5, 0.5);
   private readonly resizeObserver: ResizeObserver;
+  private readonly detachTouch: () => void;
 
   private viewportWidth: number;
   private viewportHeight: number;
@@ -216,6 +218,21 @@ export class PixelPerfectIsoView {
     this.stage.canvas.addEventListener("wheel", this.handleWheel, { passive: false });
     window.addEventListener("keydown", this.handleKeyDown);
 
+    this.detachTouch = attachTouchGestures(this.stage.canvas, {
+      onPan: (dx, dy) => {
+        this.applyPan(dx, dy);
+      },
+      onPinch: (scaleDelta) => {
+        if (Math.abs(scaleDelta - 1) < 0.02) {
+          return;
+        }
+        this.stepCameraZoom(scaleDelta > 1 ? 1 : -1);
+      },
+      onRotate: (direction) => {
+        this.rotateQuarterTurns(direction);
+      }
+    });
+
     this.resizeObserver = new ResizeObserver(() => {
       const rect = config.mount.getBoundingClientRect();
       this.resize(rect.width, rect.height);
@@ -249,6 +266,27 @@ export class PixelPerfectIsoView {
     this.zoomBurstActive = false;
     this.recenterCameraTargetToScreenCenter();
     this.controller.rotateQuarterTurns(delta);
+  }
+
+  panByCss(dx: number, dy: number): void {
+    this.applyPan(dx, dy);
+  }
+
+  stepCameraZoom(direction: -1 | 1): void {
+    const nextZoom = THREE.MathUtils.clamp(
+      this.cameraZoomTarget + direction * this.config.zoomStep,
+      this.config.zoomMin,
+      this.config.zoomMax
+    );
+    if (Math.abs(nextZoom - this.cameraZoomTarget) <= 1e-6) {
+      return;
+    }
+    this.cameraZoomTarget = nextZoom;
+    this.zoomAnimationActive = true;
+  }
+
+  get canvas(): HTMLCanvasElement {
+    return this.stage.canvas;
   }
 
   reset(): void {
@@ -384,6 +422,7 @@ export class PixelPerfectIsoView {
   }
 
   dispose(): void {
+    this.detachTouch();
     this.resizeObserver.disconnect();
     this.stage.canvas.removeEventListener("pointerdown", this.handlePointerDown);
     this.stage.canvas.removeEventListener("pointermove", this.handlePointerMove);

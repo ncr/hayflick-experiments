@@ -41,6 +41,10 @@ export {
   type PixelPerfectIsoViewConfig,
   type PixelPerfectIsoViewState
 } from "./pixel-perfect-iso-view";
+export {
+  attachTouchGestures,
+  type TouchGestureCallbacks
+} from "./touch-gestures";
 
 export function makeRenderer(width: number, height: number, dpr: number): THREE.WebGLRenderer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });

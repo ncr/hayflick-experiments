@@ -8,7 +8,7 @@ import {
   FIXED_RENDER_HEIGHT,
   GRID_SIZE,
   ORTHO_HEIGHT
-} from "../pixel-perfect-2to1/config";
+} from "./config";
 
 const ZOOM_MIN = 1;
 const ZOOM_MAX = 6;

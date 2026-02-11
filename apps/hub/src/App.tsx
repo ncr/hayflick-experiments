@@ -15,6 +15,7 @@ export function App() {
   const buildSha = import.meta.env.VITE_BUILD_SHA?.slice(0, 7) ?? "dev";
 
   const [selectedId, setSelectedId] = useState<string | null>(() => readExperimentFromHash() ?? experiments[0]?.id ?? null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -41,16 +42,22 @@ export function App() {
     return getExperimentById(selectedId);
   }, [selectedId]);
 
+  const selectExperiment = (id: string) => {
+    setSelectedId(id);
+    setMenuOpen(false);
+  };
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      {menuOpen && <div className="sidebar-backdrop" onClick={() => setMenuOpen(false)} />}
+      <aside className={`sidebar${menuOpen ? " open" : ""}`}>
         <h1>Experiments</h1>
         <ul>
           {experiments.map((entry) => {
             const active = selectedId === entry.id;
             return (
               <li key={entry.id}>
-                <button className={active ? "active" : ""} onClick={() => setSelectedId(entry.id)}>
+                <button className={active ? "active" : ""} onClick={() => selectExperiment(entry.id)}>
                   <span>{entry.title}</span>
                 </button>
               </li>
@@ -60,9 +67,16 @@ export function App() {
       </aside>
       <main className="main-pane">
         <header className="main-header">
-          <div>
+          <button className="hamburger" onClick={() => setMenuOpen((v) => !v)} aria-label="Toggle menu">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+          <div className="main-header-info">
             <h2>{selected?.title ?? "No experiment selected"}</h2>
-            <p>{selected?.description ?? "Pick an experiment from the left list."}</p>
+            <p className="main-header-desc">{selected?.description ?? "Pick an experiment from the left list."}</p>
             <p className="build-stamp">Build {buildId} ({buildSha})</p>
           </div>
         </header>
