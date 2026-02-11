@@ -353,6 +353,124 @@ test("pixel-perfect-camera-zoom keeps 32:16 world-to-game-pixel contract at base
   await context.close();
 });
 
+test("pixel-perfect-camera-zoom pan distance matches mouse drag at higher zoom", async ({
+  browser
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 920, height: 620 },
+    deviceScaleFactor: 1.6
+  });
+  const page = await context.newPage();
+
+  const zoomScenarios = [0, 4];
+  for (const ticks of zoomScenarios) {
+    await page.goto(CAMERA_ZOOM_ROUTE);
+    await page.waitForTimeout(500);
+
+    const stage = page.locator(".stage-host");
+    const stageBox = await stage.boundingBox();
+    if (!stageBox) {
+      throw new Error("stage bounding box unavailable");
+    }
+    const centerX = stageBox.x + stageBox.width * 0.5;
+    const centerY = stageBox.y + stageBox.height * 0.5;
+
+    await applyZoomTicks(page, ticks, centerX, centerY);
+    await waitForCameraZoomSettle(page);
+
+    const anchorWorld = await page.evaluate(
+      ({ x, y }) => {
+        const debug = (
+          window as Window & {
+            __pixelPerfectCameraZoomDebug?: {
+              worldAtClient: (clientX: number, clientY: number) => WorldPoint | null;
+            };
+          }
+        ).__pixelPerfectCameraZoomDebug;
+        return debug?.worldAtClient(x, y) ?? null;
+      },
+      { x: centerX, y: centerY }
+    );
+    if (!anchorWorld) {
+      throw new Error("anchor world point unavailable");
+    }
+
+    const dragCssDeltaX = 96;
+    await page.mouse.move(centerX, centerY);
+    await page.mouse.down({ button: "middle" });
+    await page.mouse.move(centerX + dragCssDeltaX, centerY, { steps: 1 });
+    await page.waitForTimeout(20);
+    await page.mouse.up({ button: "middle" });
+    await page.waitForTimeout(30);
+
+    const after = await projectCameraWorldToClient(page, anchorWorld);
+    const measuredShift = Math.abs(after.clientX - centerX);
+    const shiftError = Math.abs(measuredShift - Math.abs(dragCssDeltaX));
+    expect(
+      shiftError,
+      `ticks=${ticks} expected pan shift error <= 3px`
+    ).toBeLessThanOrEqual(3);
+  }
+
+  await context.close();
+});
+
+test("pixel-perfect-camera-zoom keeps cursor anchor while zooming at fixed mouse position", async ({
+  browser
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 920, height: 620 },
+    deviceScaleFactor: 1.6
+  });
+  const page = await context.newPage();
+  await page.goto(CAMERA_ZOOM_ROUTE);
+  await page.waitForTimeout(500);
+
+  const stage = page.locator(".stage-host");
+  const stageBox = await stage.boundingBox();
+  if (!stageBox) {
+    throw new Error("stage bounding box unavailable");
+  }
+  const anchorClientX = stageBox.x + stageBox.width * 0.55;
+  const anchorClientY = stageBox.y + stageBox.height * 0.45;
+
+  const anchorWorld = await page.evaluate(
+    ({ x, y }) => {
+      const debug = (
+        window as Window & {
+          __pixelPerfectCameraZoomDebug?: {
+            worldAtClient: (clientX: number, clientY: number) => WorldPoint | null;
+          };
+        }
+      ).__pixelPerfectCameraZoomDebug;
+      return debug?.worldAtClient(x, y) ?? null;
+    },
+    { x: anchorClientX, y: anchorClientY }
+  );
+  if (!anchorWorld) {
+    throw new Error("camera zoom anchor world unavailable");
+  }
+
+  await page.mouse.move(anchorClientX, anchorClientY);
+  for (let i = 0; i < 2; i += 1) {
+    await page.mouse.wheel(0, -120);
+    await page.waitForTimeout(20);
+  }
+
+  await waitForCameraZoomSettle(page);
+  const afterClient = await projectCameraWorldToClient(page, anchorWorld);
+  expect(
+    Math.abs(afterClient.clientX - anchorClientX),
+    "camera zoom anchor x drift"
+  ).toBeLessThanOrEqual(2);
+  expect(
+    Math.abs(afterClient.clientY - anchorClientY),
+    "camera zoom anchor y drift"
+  ).toBeLessThanOrEqual(2);
+
+  await context.close();
+});
+
 test("pixel-perfect-2to1 keeps cursor anchor bounded during rapid zoom-out animation", async ({
   browser
 }) => {

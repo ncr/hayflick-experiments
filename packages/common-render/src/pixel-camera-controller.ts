@@ -1,6 +1,7 @@
 import * as THREE from "three";
 
 export type PixelCameraControllerConfig = {
+  animateZoom?: boolean;
   zoomMin: number;
   zoomMax: number;
   zoomStep: number;
@@ -41,7 +42,10 @@ export class PixelCameraController {
   private zoomCurrent = 1;
 
   constructor(config: PixelCameraControllerConfig) {
-    this.config = config;
+    this.config = {
+      ...config,
+      animateZoom: config.animateZoom ?? true
+    };
   }
 
   getYawIndex(): number {
@@ -130,16 +134,21 @@ export class PixelCameraController {
     const zoomRate = this.zoomBurstActive
       ? this.config.zoomAnimationBurstRate
       : this.config.zoomAnimationRate;
-    const zoomBlend = 1 - Math.exp(-zoomRate * deltaSeconds);
-    this.zoomCurrent += (this.zoomTarget - this.zoomCurrent) * zoomBlend;
-    if (
-      Math.abs(this.zoomCurrent - this.zoomTarget) <=
-      this.config.zoomAnimationEpsilon
-    ) {
+    if (!this.config.animateZoom) {
       this.zoomCurrent = this.zoomTarget;
       this.zoomAnimationActive = false;
     } else {
-      this.zoomAnimationActive = true;
+      const zoomBlend = 1 - Math.exp(-zoomRate * deltaSeconds);
+      this.zoomCurrent += (this.zoomTarget - this.zoomCurrent) * zoomBlend;
+      if (
+        Math.abs(this.zoomCurrent - this.zoomTarget) <=
+        this.config.zoomAnimationEpsilon
+      ) {
+        this.zoomCurrent = this.zoomTarget;
+        this.zoomAnimationActive = false;
+      } else {
+        this.zoomAnimationActive = true;
+      }
     }
 
     if (this.zoomBurstActive && nowMs > this.zoomBurstExpiresAtMs) {
@@ -175,5 +184,10 @@ export class PixelCameraController {
         this.config.zoomAnchorMaxCorrectionCss
       )
     );
+    // In discrete-zoom mode, repeated correction frames can oscillate by 1 px.
+    // Apply a single correction pass per wheel step.
+    if (!this.config.animateZoom) {
+      this.zoomAnchorActive = false;
+    }
   }
 }

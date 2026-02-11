@@ -52,7 +52,6 @@ export function App() {
               <li key={entry.id}>
                 <button className={active ? "active" : ""} onClick={() => setSelectedId(entry.id)}>
                   <span>{entry.title}</span>
-                  <small>{entry.status}</small>
                 </button>
               </li>
             );
@@ -66,11 +65,6 @@ export function App() {
             <p>{selected?.description ?? "Pick an experiment from the left list."}</p>
             <p className="build-stamp">Build {buildId} ({buildSha})</p>
           </div>
-          {selected && (
-            <a href={`#/exp/${selected.id}`} title="Open this route in another tab to run simultaneously.">
-              Open standalone
-            </a>
-          )}
         </header>
         <Stage experiment={selected} />
       </main>
