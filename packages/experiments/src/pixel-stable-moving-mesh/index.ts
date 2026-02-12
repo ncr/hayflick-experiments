@@ -33,6 +33,10 @@ const PLANTER_MODEL_URL = new URL(
   "../../../../assets/models/optimized/compact-hydroponic-planter-optimized.glb",
   import.meta.url
 ).href;
+const CHEST_MODEL_URL = new URL(
+  "../../../../assets/models/optimized/futuristic-storage-chest-optimized.glb",
+  import.meta.url
+).href;
 
 type MovementMode = "unstable-free" | "stable-snapped";
 
@@ -185,6 +189,7 @@ const experiment: ExperimentModule = {
     let chairRoot: THREE.Group | null = null;
     let labDeviceRoot: THREE.Group | null = null;
     let planterRoot: THREE.Group | null = null;
+    let chestRoot: THREE.Group | null = null;
     try {
       const chairGltf = await chairLoader.loadAsync(CHAIR_MODEL_URL);
       chairRoot = chairGltf.scene;
@@ -232,6 +237,24 @@ const experiment: ExperimentModule = {
     } catch (error) {
       console.error(
         "[pixel-stable-moving-mesh] failed to load planter model",
+        error
+      );
+    }
+
+    try {
+      const chestGltf = await chairLoader.loadAsync(CHEST_MODEL_URL);
+      chestRoot = chestGltf.scene;
+      chestRoot.position.set(-4.5, 0, 2.2);
+      chestRoot.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.castShadow = false;
+          object.receiveShadow = false;
+        }
+      });
+      scene.add(chestRoot);
+    } catch (error) {
+      console.error(
+        "[pixel-stable-moving-mesh] failed to load chest model",
         error
       );
     }
@@ -391,6 +414,9 @@ const experiment: ExperimentModule = {
       }
       if (planterRoot) {
         scene.remove(planterRoot);
+      }
+      if (chestRoot) {
+        scene.remove(chestRoot);
       }
       tileGeometry.dispose();
       tileDark.dispose();
