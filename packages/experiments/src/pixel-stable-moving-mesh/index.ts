@@ -273,7 +273,7 @@ const experiment: ExperimentModule = {
     const syncHud = () => {
       const state = view.getState();
       hud.textContent = [
-        `Shading: object-stable (M toggles unstable screen mode for comparison)`,
+        `Shading mode: ${ditherMode === "local" ? "object-stable" : "screen-unstable"} (M toggle)`,
         `Player: WASD / arrows`,
         `Camera: middle-drag pan, wheel zoom, Q/E rotate`,
         `Zoom: ${state.cameraZoomCurrent.toFixed(2)}x target ${state.cameraZoomTarget.toFixed(2)}x`
@@ -285,6 +285,7 @@ const experiment: ExperimentModule = {
       const modeValue = ditherMode === "screen" ? 0 : 1;
       dynamicMaterials.forEach((material) => {
         material.uniforms.uMode.value = modeValue;
+        material.uniforms.uDitherStrength.value = ditherMode === "local" ? 0.0 : 0.23;
       });
       syncHud();
     };
