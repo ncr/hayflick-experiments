@@ -1499,3 +1499,97 @@ Detection signal:
 Preventive checklist:
 - Pin a known-working CLI version for repo tooling tasks (`@gltf-transform/cli@3.10.1` here).
 - Run a quick `--version`/`inspect` sanity check before running expensive optimize commands.
+
+## 2026-02-12 - Trackpad two-finger drag was treated as wheel zoom in shared iso view
+Root cause:
+- `PixelPerfectIsoView` handled all `wheel` events as zoom steps and had no trackpad-pan intent detection.
+- Middle-mouse/touch pan paths existed, but two-finger touchpad scroll had no pan mapping in the promoted shared view.
+
+Detection signal:
+- User reported keyboard/mobile touch/middle-mouse bindings worked, but touchpad two-finger drag could not pan.
+
+Preventive checklist:
+- In shared camera input handlers, classify wheel intent (`trackpad pan` vs `zoom`) instead of assuming all wheels mean zoom.
+- Keep `Ctrl/Cmd + wheel` (or pinch-emulated wheel) on the zoom path.
+- Include touchpad two-finger pan in camera-control acceptance checks when adding new bindings.
+
+## 2026-02-12 - GLTF prop meshes with unlit/basic materials appeared to ignore received shadows
+Root cause:
+- Some imported prop meshes can use `MeshBasicMaterial` (unlit), which does not render lighting/shadow reception even when `mesh.receiveShadow = true`.
+
+Detection signal:
+- User reported props visibly casting shadows but not showing incoming shadowing on their own surfaces.
+
+Preventive checklist:
+- In model-load paths, enable cast/receive at mesh level and normalize unlit/basic materials to a light-reactive material when shadow reception is required.
+- Keep shadow setup centralized via a shared helper for all loaded prop roots.
+
+## 2026-02-12 - Shadows looked absent on props due high fill/ambient and aggressive normal-bias
+Root cause:
+- Even with `receiveShadow` enabled, high ambient/fill light flattened contrast.
+- Directional light `normalBias` was high for small props, reducing visible contact/received shadow detail.
+
+Detection signal:
+- User still perceived props as not receiving shadows after enabling receive flags.
+
+Preventive checklist:
+- When tuning shadow readability, balance light angle plus ambient/fill intensity; avoid over-flattening indirect light.
+- Keep directional `normalBias` conservative for small-scale scenes and re-check prop shadow reception visually.
+
+## 2026-02-12 - Shadow tweaks can appear ineffective when orbit update overrides static light position
+Root cause:
+- Initial directional light position was changed, but render-loop orbit logic still wrote a different Y each frame.
+- Player used a custom unlit-ish shader path that did not participate in Three.js shadow receiving, so `receiveShadow` had no visible effect.
+
+Detection signal:
+- User reported no visible change after light-height updates, and player mesh still looked unaffected by shadows.
+
+Preventive checklist:
+- When changing animated light placement, update both init-time and per-frame orbit values.
+- For meshes that must receive scene shadows, use shadow-compatible lit materials (or explicitly integrate Three shadow chunks in custom shaders).
+
+## 2026-02-12 - Prop receive-shadow flags were insufficient without material normalization
+Root cause:
+- Imported props came in with mixed material models; mesh-level `receiveShadow` alone did not produce reliable visible reception across all imported material types/settings.
+
+Detection signal:
+- User confirmed player mesh received shadows while prop meshes still appeared not to.
+
+Preventive checklist:
+- For imported props that must reliably receive shadows, normalize materials to a shadow-compatible lit path (`MeshStandardMaterial`) at load time.
+- Preserve core texture channels during normalization and cap emissive contribution so received shadows remain visible.
+
+## 2026-02-12 - Blanket conversion of imported prop materials can destroy intended PBR lighting response
+Root cause:
+- Converting all loaded prop materials to a generic `MeshStandardMaterial` removed model-specific PBR tuning (and could flatten reflections/lighting behavior).
+
+Detection signal:
+- User reported prop materials looked much worse and no longer reacted to light like the original PBR assets.
+
+Preventive checklist:
+- Preserve original lit/PBR materials by default; only convert explicitly unlit materials (`MeshBasicMaterial`) when shadow reception is required.
+- Make shadow fixes additive (`receiveShadow`, `shadowSide`, `needsUpdate`) before replacing asset materials.
+
+## 2026-02-12 - Optimized GLB props missing normal attributes prevented reliable PBR shadow response
+Root cause:
+- Optimized prop assets (`chair`, `lab device`, `planter`, `chest`) only contained `POSITION` and `TEXCOORD_0` attributes, with no `NORMAL` attribute.
+- Without normals, PBR materials cannot react correctly to directional lighting/shadowing.
+
+Detection signal:
+- User observed player mesh receiving shadows while prop PBR assets did not.
+- `gltf-transform inspect` for all four assets showed no `NORMAL` attribute.
+
+Preventive checklist:
+- Validate imported/optimized GLBs include `NORMAL` for lit rendering paths.
+- In runtime loaders, generate normals (`computeVertexNormals`) when missing before enabling shadowed PBR rendering.
+
+## 2026-02-12 - Daylight readability improved by simplifying to hemisphere + orbiting directional sun
+Root cause:
+- Layering several low-intensity fill/rim lights with dark background made the scene feel underlit and visually muddy.
+
+Detection signal:
+- User requested “normal noon in summer” lighting and reported the scene was too dark.
+
+Preventive checklist:
+- For simple daylight looks, start with a hemisphere sky/ground light and one directional sun (shadow caster), then tune exposure.
+- Keep orbiting behavior on the sun only when shadow motion is needed, and avoid stacking extra lights unless required.

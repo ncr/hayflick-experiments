@@ -21,6 +21,9 @@ const ROTATION_ANIMATION_EPSILON = 1e-3;
 const ZOOM_ANIMATION_EPSILON = 0.02;
 const ZOOM_BURST_IDLE_MS = 90;
 const OUTPUT_OVERSCAN_LOW_PIXELS = 2;
+const ORBIT_LIGHT_RADIUS = 10;
+const ORBIT_LIGHT_BASE_Y = 10.8;
+const ORBIT_LIGHT_Y_SWING = 0.45;
 const CHAIR_MODEL_URL = new URL(
   "../../../../assets/models/optimized/chair-optimized.glb",
   import.meta.url
@@ -130,7 +133,7 @@ const experiment: ExperimentModule = {
   tags: ["pixel", "isometric", "rendering", "prototype"],
   init: async ({ mount, width, height }) => {
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0b0f14);
+    scene.background = new THREE.Color(0xcfe9ff);
 
     const hud = document.createElement("div");
     hud.style.position = "absolute";
@@ -146,13 +149,13 @@ const experiment: ExperimentModule = {
     hud.style.zIndex = "3";
     mount.appendChild(hud);
 
-    const ambient = new THREE.AmbientLight(0xf6fbff, 0.72);
-    const keyLight = new THREE.DirectionalLight(0xfff5e8, 1.25);
-    keyLight.position.set(9, 10, 0);
+    const skyLight = new THREE.HemisphereLight(0xe2f2ff, 0xbbc89c, 0.95);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
+    keyLight.position.set(ORBIT_LIGHT_RADIUS, ORBIT_LIGHT_BASE_Y, 0);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
     keyLight.shadow.bias = -0.0002;
-    keyLight.shadow.normalBias = 0.02;
+    keyLight.shadow.normalBias = 0.01;
     keyLight.shadow.camera.left = -12;
     keyLight.shadow.camera.right = 12;
     keyLight.shadow.camera.top = 12;
@@ -162,12 +165,7 @@ const experiment: ExperimentModule = {
     const keyTarget = new THREE.Object3D();
     keyTarget.position.set(0, 0, 0);
     keyLight.target = keyTarget;
-
-    const fillLight = new THREE.DirectionalLight(0xbfd7ff, 0.5);
-    fillLight.position.set(-6, 7, -5);
-    const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
-    rimLight.position.set(-3, 5, 8);
-    scene.add(ambient, keyLight, keyTarget, fillLight, rimLight);
+    scene.add(skyLight, keyLight, keyTarget);
 
     const boardGroup = new THREE.Group();
     scene.add(boardGroup);
@@ -213,6 +211,61 @@ const experiment: ExperimentModule = {
       object.updateMatrixWorld(true);
     };
 
+    const toShadowReceivingMaterial = (material: THREE.Material): THREE.Material => {
+      if (material instanceof THREE.MeshBasicMaterial) {
+        const converted = new THREE.MeshStandardMaterial({
+          color: material.color.clone(),
+          map: material.map,
+          alphaMap: material.alphaMap,
+          transparent: material.transparent,
+          opacity: material.opacity,
+          side: material.side,
+          alphaTest: material.alphaTest,
+          roughness: 0.9,
+          metalness: 0.05
+        });
+        converted.name = material.name;
+        converted.vertexColors = material.vertexColors;
+        converted.wireframe = material.wireframe;
+        converted.depthTest = material.depthTest;
+        converted.depthWrite = material.depthWrite;
+        converted.toneMapped = material.toneMapped;
+        converted.shadowSide = converted.side;
+        converted.needsUpdate = true;
+        return converted;
+      }
+
+      material.shadowSide = material.side;
+      material.needsUpdate = true;
+      return material;
+    };
+
+    const enablePropMeshShadows = (root: THREE.Object3D): void => {
+      root.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) {
+          return;
+        }
+        const geometry = object.geometry;
+        if (geometry) {
+          if (!geometry.getAttribute("normal")) {
+            geometry.computeVertexNormals();
+          } else {
+            geometry.normalizeNormals();
+          }
+          geometry.computeBoundingSphere();
+        }
+        object.castShadow = true;
+        object.receiveShadow = true;
+        if (Array.isArray(object.material)) {
+          object.material = object.material.map((entry) =>
+            toShadowReceivingMaterial(entry)
+          );
+        } else {
+          object.material = toShadowReceivingMaterial(object.material);
+        }
+      });
+    };
+
     const dynamicMaterials: THREE.ShaderMaterial[] = [];
     const boxMaterial = new THREE.MeshStandardMaterial({
       color: 0xff7f3f,
@@ -236,12 +289,7 @@ const experiment: ExperimentModule = {
       const chairGltf = await chairLoader.loadAsync(CHAIR_MODEL_URL);
       chairRoot = chairGltf.scene;
       chairRoot.position.set(-2.5, 0.5, 0);
-      chairRoot.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.castShadow = true;
-          object.receiveShadow = true;
-        }
-      });
+      enablePropMeshShadows(chairRoot);
       scene.add(chairRoot);
     } catch (error) {
       console.error("[pixel-stable-moving-mesh] failed to load chair model", error);
@@ -250,13 +298,8 @@ const experiment: ExperimentModule = {
     try {
       const labDeviceGltf = await chairLoader.loadAsync(LAB_DEVICE_MODEL_URL);
       labDeviceRoot = labDeviceGltf.scene;
-      labDeviceRoot.position.set(4.5, 0, -1.5);
-      labDeviceRoot.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.castShadow = true;
-          object.receiveShadow = true;
-        }
-      });
+      placeOnGround(labDeviceRoot, 4.5, -1.5, 2);
+      enablePropMeshShadows(labDeviceRoot);
       scene.add(labDeviceRoot);
     } catch (error) {
       console.error(
@@ -270,12 +313,7 @@ const experiment: ExperimentModule = {
       planterRoot = planterGltf.scene;
       planterRoot.position.set(0.5, 0, 3.5);
       planterRoot.scale.setScalar(3);
-      planterRoot.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.castShadow = true;
-          object.receiveShadow = true;
-        }
-      });
+      enablePropMeshShadows(planterRoot);
       scene.add(planterRoot);
     } catch (error) {
       console.error(
@@ -288,12 +326,7 @@ const experiment: ExperimentModule = {
       const chestGltf = await chairLoader.loadAsync(CHEST_MODEL_URL);
       chestRoot = chestGltf.scene;
       placeOnGround(chestRoot, -4.5, 2.2, 2);
-      chestRoot.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.castShadow = true;
-          object.receiveShadow = true;
-        }
-      });
+      enablePropMeshShadows(chestRoot);
       scene.add(chestRoot);
     } catch (error) {
       console.error(
@@ -305,9 +338,16 @@ const experiment: ExperimentModule = {
     const player = new THREE.Group();
     const playerBodyGeometry = new THREE.CylinderGeometry(0.18, 0.25, 0.8, 14, 1);
     const playerHeadGeometry = new THREE.SphereGeometry(0.2, 14, 12);
-    const playerBodyMaterial = makePixelDitherMaterial(0x72c2ff);
-    const playerHeadMaterial = makePixelDitherMaterial(0xffd8a8);
-    dynamicMaterials.push(playerBodyMaterial, playerHeadMaterial);
+    const playerBodyMaterial = new THREE.MeshStandardMaterial({
+      color: 0x72c2ff,
+      roughness: 0.62,
+      metalness: 0.06
+    });
+    const playerHeadMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffd8a8,
+      roughness: 0.58,
+      metalness: 0.03
+    });
 
     const playerBody = new THREE.Mesh(playerBodyGeometry, playerBodyMaterial);
     playerBody.position.y = 0.4;
@@ -342,13 +382,13 @@ const experiment: ExperimentModule = {
       rotationAnimationEpsilon: ROTATION_ANIMATION_EPSILON,
       zoomBurstIdleMs: ZOOM_BURST_IDLE_MS,
       outputOverscanLowPixels: OUTPUT_OVERSCAN_LOW_PIXELS,
-      clearColor: 0x0b0f14,
+      clearColor: 0xcfe9ff,
       clearAlpha: 1,
-      mountBackground: "#0b0f14",
-      canvasBackground: "#0b0f14"
+      mountBackground: "#cfe9ff",
+      canvasBackground: "#cfe9ff"
     });
     view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    view.renderer.toneMappingExposure = 1.35;
+    view.renderer.toneMappingExposure = 1.15;
     view.renderer.shadowMap.enabled = true;
     view.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -404,9 +444,9 @@ const experiment: ExperimentModule = {
       lastFrameTimeMs = nowMs;
       const orbitAngle = nowMs * 0.00025;
       keyLight.position.set(
-        Math.cos(orbitAngle) * 9,
-        10.5 + Math.sin(orbitAngle * 0.37) * 1.5,
-        Math.sin(orbitAngle) * 9
+        Math.cos(orbitAngle) * ORBIT_LIGHT_RADIUS,
+        ORBIT_LIGHT_BASE_Y + Math.sin(orbitAngle * 0.37) * ORBIT_LIGHT_Y_SWING,
+        Math.sin(orbitAngle) * ORBIT_LIGHT_RADIUS
       );
       keyTarget.position.set(0, 0, 0);
       keyTarget.updateMatrixWorld();
@@ -464,11 +504,9 @@ const experiment: ExperimentModule = {
       hud.remove();
 
       scene.remove(
-        ambient,
+        skyLight,
         keyLight,
         keyTarget,
-        fillLight,
-        rimLight,
         boardGroup,
         box,
         player

@@ -781,7 +781,29 @@ export class PixelPerfectIsoView {
     event.preventDefault();
   };
 
+  private isLikelyTrackpadWheel(event: WheelEvent): boolean {
+    if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) {
+      return false;
+    }
+    if (Math.abs(event.deltaX) > 0.01) {
+      return true;
+    }
+    return Math.abs(event.deltaY) < 24;
+  }
+
   private handleWheel = (event: WheelEvent) => {
+    const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
+    const trackpad = this.isLikelyTrackpadWheel(event);
+    const zoomIntent = event.ctrlKey || event.metaKey || !trackpad;
+
+    if (!zoomIntent) {
+      const panX = -(event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
+      const panY = -event.deltaY * scale;
+      this.applyPan(panX, panY);
+      event.preventDefault();
+      return;
+    }
+
     const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
     const nextZoom = THREE.MathUtils.clamp(
       this.cameraZoomTarget + direction * this.config.zoomStep,
