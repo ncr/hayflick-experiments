@@ -175,6 +175,20 @@ const experiment: ExperimentModule = {
     }
 
     let movementMode: MovementMode = "stable-snapped";
+    const placementBounds = new THREE.Box3();
+    const placeOnGround = (
+      object: THREE.Object3D,
+      x: number,
+      z: number,
+      scale: number
+    ): void => {
+      object.scale.setScalar(scale);
+      object.position.set(x, 0, z);
+      object.updateMatrixWorld(true);
+      placementBounds.setFromObject(object);
+      object.position.y -= placementBounds.min.y;
+      object.updateMatrixWorld(true);
+    };
 
     const dynamicMaterials: THREE.ShaderMaterial[] = [];
     const boxMaterial = makePixelDitherMaterial(0xff7f3f);
@@ -182,7 +196,7 @@ const experiment: ExperimentModule = {
 
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     const box = new THREE.Mesh(boxGeometry, boxMaterial);
-    box.position.set(2, 0.5, 0);
+    placeOnGround(box, 2, 0, 2);
     scene.add(box);
 
     const chairLoader = new GLTFLoader();
@@ -245,8 +259,7 @@ const experiment: ExperimentModule = {
     try {
       const chestGltf = await chairLoader.loadAsync(CHEST_MODEL_URL);
       chestRoot = chestGltf.scene;
-      chestRoot.position.set(-4.5, 0, 2.2);
-      chestRoot.scale.setScalar(2);
+      placeOnGround(chestRoot, -4.5, 2.2, 4);
       chestRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
           object.castShadow = false;
