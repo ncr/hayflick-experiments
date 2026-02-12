@@ -1488,3 +1488,14 @@ Detection signal:
 Preventive checklist:
 - Prefer importing shared camera config from the currently active source module (`pixel-perfect-camera-zoom/config`) rather than historical experiment paths.
 - Run root `pnpm typecheck` before pushing when adding new cross-file imports in experiments.
+
+## 2026-02-12 - glTF optimization CLI failed silently with latest package in this environment
+Root cause:
+- `pnpm dlx @gltf-transform/cli` (latest) failed during transient dependency setup (`sharp`) and produced non-actionable output for initial invocations.
+
+Detection signal:
+- Optimization commands exited non-zero with only deprecation/setup warnings and no transform report.
+
+Preventive checklist:
+- Pin a known-working CLI version for repo tooling tasks (`@gltf-transform/cli@3.10.1` here).
+- Run a quick `--version`/`inspect` sanity check before running expensive optimize commands.

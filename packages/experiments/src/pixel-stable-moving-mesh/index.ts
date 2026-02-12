@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { PixelPerfectIsoView } from "@common/render";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { ExperimentModule } from "../runtime/types";
 import {
   CAMERA_DISTANCE,
@@ -20,6 +21,10 @@ const ROTATION_ANIMATION_EPSILON = 1e-3;
 const ZOOM_ANIMATION_EPSILON = 0.02;
 const ZOOM_BURST_IDLE_MS = 90;
 const OUTPUT_OVERSCAN_LOW_PIXELS = 2;
+const CHAIR_MODEL_URL = new URL(
+  "../../../../assets/models/chair-optimized.glb",
+  import.meta.url
+).href;
 
 type MovementMode = "unstable-free" | "stable-snapped";
 
@@ -111,7 +116,7 @@ const experiment: ExperimentModule = {
   id: "pixel-stable-moving-mesh",
   title: "Pixel Stable Moving Mesh",
   tags: ["pixel", "isometric", "rendering", "prototype"],
-  init: ({ mount, width, height }) => {
+  init: async ({ mount, width, height }) => {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b0f14);
 
@@ -163,6 +168,24 @@ const experiment: ExperimentModule = {
     const box = new THREE.Mesh(boxGeometry, boxMaterial);
     box.position.set(2, 0.5, 0);
     scene.add(box);
+
+    const chairLoader = new GLTFLoader();
+    let chairRoot: THREE.Group | null = null;
+    try {
+      const chairGltf = await chairLoader.loadAsync(CHAIR_MODEL_URL);
+      chairRoot = chairGltf.scene;
+      chairRoot.position.set(-2.5, 0.5, 0);
+      chairRoot.rotation.y = Math.PI * -0.25;
+      chairRoot.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.castShadow = false;
+          object.receiveShadow = false;
+        }
+      });
+      scene.add(chairRoot);
+    } catch (error) {
+      console.error("[pixel-stable-moving-mesh] failed to load chair model", error);
+    }
 
     const player = new THREE.Group();
     const playerBodyGeometry = new THREE.CylinderGeometry(0.18, 0.25, 0.8, 14, 1);
@@ -309,6 +332,9 @@ const experiment: ExperimentModule = {
       hud.remove();
 
       scene.remove(ambient, keyLight, boardGroup, box, player);
+      if (chairRoot) {
+        scene.remove(chairRoot);
+      }
       tileGeometry.dispose();
       tileDark.dispose();
       tileLight.dispose();
