@@ -30,7 +30,7 @@ function makePixelDitherMaterial(color: number, mode: DitherMode): THREE.ShaderM
       uColor: { value: new THREE.Vector3(rgb.r, rgb.g, rgb.b) },
       uLightDir: { value: new THREE.Vector3(0.45, 0.85, 0.25).normalize() },
       uBands: { value: 5.0 },
-      uDitherStrength: { value: 0.23 },
+      uDitherStrength: { value: 0.0 },
       uMode: { value: mode === "screen" ? 0 : 1 },
       uScreenPixelSize: { value: 4.0 },
       uLocalScale: { value: 12.0 }
@@ -138,8 +138,8 @@ const experiment: ExperimentModule = {
     scene.add(boardGroup);
     const boardSize = 20;
     const tileGeometry = new THREE.PlaneGeometry(1, 1);
-    const tileDark = new THREE.MeshLambertMaterial({ color: 0x29303a });
-    const tileLight = new THREE.MeshLambertMaterial({ color: 0x394251 });
+    const tileDark = new THREE.MeshBasicMaterial({ color: 0x1f2933 });
+    const tileLight = new THREE.MeshBasicMaterial({ color: 0xe6edf5 });
 
     for (let x = 0; x < boardSize; x += 1) {
       for (let z = 0; z < boardSize; z += 1) {
@@ -153,16 +153,16 @@ const experiment: ExperimentModule = {
       }
     }
 
-    let ditherMode: DitherMode = "screen";
+    let ditherMode: DitherMode = "local";
 
     const dynamicMaterials: THREE.ShaderMaterial[] = [];
     const boxMaterial = makePixelDitherMaterial(0xff7f3f, ditherMode);
     dynamicMaterials.push(boxMaterial);
 
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
-    const movingBox = new THREE.Mesh(boxGeometry, boxMaterial);
-    movingBox.position.set(-3.5, 0.5, 0);
-    scene.add(movingBox);
+    const box = new THREE.Mesh(boxGeometry, boxMaterial);
+    box.position.set(2, 0.5, 0);
+    scene.add(box);
 
     const player = new THREE.Group();
     const playerBodyGeometry = new THREE.CylinderGeometry(0.18, 0.25, 0.8, 14, 1);
@@ -212,7 +212,7 @@ const experiment: ExperimentModule = {
     const syncHud = () => {
       const state = view.getState();
       hud.textContent = [
-        `Dither mode: ${ditherMode === "local" ? "local/object-stable" : "screen/unstable"} (M to toggle)`,
+        `Shading: object-stable (M toggles unstable screen mode for comparison)`,
         `Player: WASD / arrows`,
         `Camera: middle-drag pan, wheel zoom, Q/E rotate`,
         `Zoom: ${state.cameraZoomCurrent.toFixed(2)}x target ${state.cameraZoomTarget.toFixed(2)}x`
@@ -245,12 +245,10 @@ const experiment: ExperimentModule = {
     window.addEventListener("keyup", onKeyUp);
 
     let raf = 0;
-    let elapsedSeconds = 0;
     let lastFrameTimeMs = performance.now();
     const render = (nowMs: number) => {
       const deltaSeconds = Math.min(0.05, Math.max(0, (nowMs - lastFrameTimeMs) / 1000));
       lastFrameTimeMs = nowMs;
-      elapsedSeconds += deltaSeconds;
 
       const moveX =
         (pressedKeys.has("KeyD") || pressedKeys.has("ArrowRight") ? 1 : 0) -
@@ -265,9 +263,6 @@ const experiment: ExperimentModule = {
         player.position.z += (moveZ / length) * step;
       }
 
-      movingBox.position.x = -3.5 + Math.sin(elapsedSeconds * 1.3) * 2.6;
-      movingBox.position.z = Math.cos(elapsedSeconds * 0.9) * 1.2;
-
       view.frame(nowMs, deltaSeconds);
       raf = requestAnimationFrame(render);
     };
@@ -281,7 +276,7 @@ const experiment: ExperimentModule = {
       window.removeEventListener("keyup", onKeyUp);
       hud.remove();
 
-      scene.remove(ambient, keyLight, boardGroup, movingBox, player);
+      scene.remove(ambient, keyLight, boardGroup, box, player);
       tileGeometry.dispose();
       tileDark.dispose();
       tileLight.dispose();

@@ -1476,3 +1476,15 @@ Preventive checklist:
 - Keep a screen-space pan remainder (device-pixel translation) for per-pixel drag responsiveness.
 - Promote remainder into camera target movement only in source-phase quanta (`renderScale * zoom`).
 - Ensure client/world mapping and render viewport offsets include both controller pan remainder and the screen-space remainder.
+
+## 2026-02-12 - New experiment imported config from a removed module path
+Root cause:
+- New experiment referenced `../pixel-perfect-2to1/config`, but that module no longer exists on current `main`.
+- Package-level checks during development missed the broader workspace context where CI validates from root.
+
+Detection signal:
+- GitHub Actions `pnpm typecheck` failed with `TS2307` for missing module in `packages/experiments/src/pixel-stable-moving-mesh/index.ts`.
+
+Preventive checklist:
+- Prefer importing shared camera config from the currently active source module (`pixel-perfect-camera-zoom/config`) rather than historical experiment paths.
+- Run root `pnpm typecheck` before pushing when adding new cross-file imports in experiments.
