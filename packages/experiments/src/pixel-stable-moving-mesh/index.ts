@@ -146,21 +146,43 @@ const experiment: ExperimentModule = {
     hud.style.zIndex = "3";
     mount.appendChild(hud);
 
-    const ambient = new THREE.AmbientLight(0xf6fbff, 0.95);
-    const keyLight = new THREE.DirectionalLight(0xfff5e8, 1.3);
-    keyLight.position.set(7, 10, 6);
-    const fillLight = new THREE.DirectionalLight(0xbfd7ff, 0.7);
+    const ambient = new THREE.AmbientLight(0xf6fbff, 0.5);
+    const keyLight = new THREE.DirectionalLight(0xfff5e8, 1.25);
+    keyLight.position.set(9, 10, 0);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.bias = -0.0002;
+    keyLight.shadow.normalBias = 0.02;
+    keyLight.shadow.camera.left = -12;
+    keyLight.shadow.camera.right = 12;
+    keyLight.shadow.camera.top = 12;
+    keyLight.shadow.camera.bottom = -12;
+    keyLight.shadow.camera.near = 0.1;
+    keyLight.shadow.camera.far = 40;
+    const keyTarget = new THREE.Object3D();
+    keyTarget.position.set(0, 0, 0);
+    keyLight.target = keyTarget;
+
+    const fillLight = new THREE.DirectionalLight(0xbfd7ff, 0.35);
     fillLight.position.set(-6, 7, -5);
-    const rimLight = new THREE.DirectionalLight(0xffffff, 0.45);
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
     rimLight.position.set(-3, 5, 8);
-    scene.add(ambient, keyLight, fillLight, rimLight);
+    scene.add(ambient, keyLight, keyTarget, fillLight, rimLight);
 
     const boardGroup = new THREE.Group();
     scene.add(boardGroup);
     const boardSize = 20;
     const tileGeometry = new THREE.PlaneGeometry(1, 1);
-    const tileDark = new THREE.MeshBasicMaterial({ color: 0x7d8590 });
-    const tileLight = new THREE.MeshBasicMaterial({ color: 0xaab2bd });
+    const tileDark = new THREE.MeshStandardMaterial({
+      color: 0x7d8590,
+      roughness: 0.95,
+      metalness: 0.02
+    });
+    const tileLight = new THREE.MeshStandardMaterial({
+      color: 0xaab2bd,
+      roughness: 0.93,
+      metalness: 0.02
+    });
 
     for (let x = 0; x < boardSize; x += 1) {
       for (let z = 0; z < boardSize; z += 1) {
@@ -170,6 +192,7 @@ const experiment: ExperimentModule = {
         );
         tile.rotation.x = -Math.PI * 0.5;
         tile.position.set(x - boardSize * 0.5 + 0.5, -0.001, z - boardSize * 0.5 + 0.5);
+        tile.receiveShadow = true;
         boardGroup.add(tile);
       }
     }
@@ -191,12 +214,17 @@ const experiment: ExperimentModule = {
     };
 
     const dynamicMaterials: THREE.ShaderMaterial[] = [];
-    const boxMaterial = makePixelDitherMaterial(0xff7f3f);
-    dynamicMaterials.push(boxMaterial);
+    const boxMaterial = new THREE.MeshStandardMaterial({
+      color: 0xff7f3f,
+      roughness: 0.72,
+      metalness: 0.08
+    });
 
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     const box = new THREE.Mesh(boxGeometry, boxMaterial);
     placeOnGround(box, 2, 0, 2);
+    box.castShadow = true;
+    box.receiveShadow = true;
     scene.add(box);
 
     const chairLoader = new GLTFLoader();
@@ -210,8 +238,8 @@ const experiment: ExperimentModule = {
       chairRoot.position.set(-2.5, 0.5, 0);
       chairRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
-          object.castShadow = false;
-          object.receiveShadow = false;
+          object.castShadow = true;
+          object.receiveShadow = true;
         }
       });
       scene.add(chairRoot);
@@ -225,8 +253,8 @@ const experiment: ExperimentModule = {
       labDeviceRoot.position.set(4.5, 0, -1.5);
       labDeviceRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
-          object.castShadow = false;
-          object.receiveShadow = false;
+          object.castShadow = true;
+          object.receiveShadow = true;
         }
       });
       scene.add(labDeviceRoot);
@@ -244,8 +272,8 @@ const experiment: ExperimentModule = {
       planterRoot.scale.setScalar(3);
       planterRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
-          object.castShadow = false;
-          object.receiveShadow = false;
+          object.castShadow = true;
+          object.receiveShadow = true;
         }
       });
       scene.add(planterRoot);
@@ -262,8 +290,8 @@ const experiment: ExperimentModule = {
       placeOnGround(chestRoot, -4.5, 2.2, 4);
       chestRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
-          object.castShadow = false;
-          object.receiveShadow = false;
+          object.castShadow = true;
+          object.receiveShadow = true;
         }
       });
       scene.add(chestRoot);
@@ -283,8 +311,12 @@ const experiment: ExperimentModule = {
 
     const playerBody = new THREE.Mesh(playerBodyGeometry, playerBodyMaterial);
     playerBody.position.y = 0.4;
+    playerBody.castShadow = true;
+    playerBody.receiveShadow = true;
     const playerHead = new THREE.Mesh(playerHeadGeometry, playerHeadMaterial);
     playerHead.position.y = 0.92;
+    playerHead.castShadow = true;
+    playerHead.receiveShadow = true;
     player.add(playerBody, playerHead);
     player.position.set(0, 0, 0);
     scene.add(player);
@@ -317,6 +349,8 @@ const experiment: ExperimentModule = {
     });
     view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     view.renderer.toneMappingExposure = 1.22;
+    view.renderer.shadowMap.enabled = true;
+    view.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const pressedKeys = new Set<string>();
     const playerSpeed = 3.2;
@@ -329,6 +363,7 @@ const experiment: ExperimentModule = {
       const state = view.getState();
       hud.textContent = [
         "Shading: no dithering",
+        "Light: orbiting key light + shadows",
         `Movement mode: ${movementMode === "stable-snapped" ? "stable-snapped" : "unstable-free"} (M toggle)`,
         `Player: WASD / arrows`,
         `Camera: middle-drag pan, wheel zoom, Q/E rotate`,
@@ -367,6 +402,14 @@ const experiment: ExperimentModule = {
     const render = (nowMs: number) => {
       const deltaSeconds = Math.min(0.05, Math.max(0, (nowMs - lastFrameTimeMs) / 1000));
       lastFrameTimeMs = nowMs;
+      const orbitAngle = nowMs * 0.00025;
+      keyLight.position.set(
+        Math.cos(orbitAngle) * 9,
+        10.5 + Math.sin(orbitAngle * 0.37) * 1.5,
+        Math.sin(orbitAngle) * 9
+      );
+      keyTarget.position.set(0, 0, 0);
+      keyTarget.updateMatrixWorld();
 
       const inputX =
         (pressedKeys.has("KeyD") || pressedKeys.has("ArrowRight") ? 1 : 0) -
@@ -420,7 +463,16 @@ const experiment: ExperimentModule = {
       window.removeEventListener("keyup", onKeyUp);
       hud.remove();
 
-      scene.remove(ambient, keyLight, fillLight, rimLight, boardGroup, box, player);
+      scene.remove(
+        ambient,
+        keyLight,
+        keyTarget,
+        fillLight,
+        rimLight,
+        boardGroup,
+        box,
+        player
+      );
       if (chairRoot) {
         scene.remove(chairRoot);
       }
@@ -437,6 +489,7 @@ const experiment: ExperimentModule = {
       tileDark.dispose();
       tileLight.dispose();
       boxGeometry.dispose();
+      boxMaterial.dispose();
       playerBodyGeometry.dispose();
       playerHeadGeometry.dispose();
       dynamicMaterials.forEach((material) => material.dispose());
