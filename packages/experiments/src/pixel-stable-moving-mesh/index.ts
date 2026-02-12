@@ -227,6 +227,7 @@ const experiment: ExperimentModule = {
       const planterGltf = await chairLoader.loadAsync(PLANTER_MODEL_URL);
       planterRoot = planterGltf.scene;
       planterRoot.position.set(0.5, 0, 3.5);
+      planterRoot.scale.setScalar(3);
       planterRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
           object.castShadow = false;
@@ -245,6 +246,7 @@ const experiment: ExperimentModule = {
       const chestGltf = await chairLoader.loadAsync(CHEST_MODEL_URL);
       chestRoot = chestGltf.scene;
       chestRoot.position.set(-4.5, 0, 2.2);
+      chestRoot.scale.setScalar(2);
       chestRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
           object.castShadow = false;
