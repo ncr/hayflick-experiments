@@ -134,10 +134,14 @@ const experiment: ExperimentModule = {
     hud.style.zIndex = "3";
     mount.appendChild(hud);
 
-    const ambient = new THREE.AmbientLight(0xffffff, 0.45);
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.85);
-    keyLight.position.set(5, 8, 3);
-    scene.add(ambient, keyLight);
+    const ambient = new THREE.AmbientLight(0xf6fbff, 0.95);
+    const keyLight = new THREE.DirectionalLight(0xfff5e8, 1.3);
+    keyLight.position.set(7, 10, 6);
+    const fillLight = new THREE.DirectionalLight(0xbfd7ff, 0.7);
+    fillLight.position.set(-6, 7, -5);
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.45);
+    rimLight.position.set(-3, 5, 8);
+    scene.add(ambient, keyLight, fillLight, rimLight);
 
     const boardGroup = new THREE.Group();
     scene.add(boardGroup);
@@ -331,7 +335,7 @@ const experiment: ExperimentModule = {
       window.removeEventListener("keyup", onKeyUp);
       hud.remove();
 
-      scene.remove(ambient, keyLight, boardGroup, box, player);
+      scene.remove(ambient, keyLight, fillLight, rimLight, boardGroup, box, player);
       if (chairRoot) {
         scene.remove(chairRoot);
       }
