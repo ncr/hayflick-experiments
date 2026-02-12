@@ -1495,6 +1495,7 @@ const experiment: ExperimentModule = {
     const inputRight = new THREE.Vector3();
     const inputForward = new THREE.Vector3();
     const worldPoint = new THREE.Vector3();
+    const snappedPlayerWorld = new THREE.Vector3();
 
     let dragState: DragState | null = null;
     let raf = 0;
@@ -2174,6 +2175,23 @@ const experiment: ExperimentModule = {
       return worldPoint.clone();
     }
 
+    function syncPlayerMeshPosition(transform: { x: number; y: number }): void {
+      snappedPlayerWorld.set(
+        toWorldCoordX(transform.x),
+        0,
+        toWorldCoordZ(transform.y)
+      );
+      if (view.snapWorldPointOnGround(snappedPlayerWorld, snappedPlayerWorld)) {
+        playerMesh.position.copy(snappedPlayerWorld);
+        return;
+      }
+      playerMesh.position.set(
+        toWorldCoordX(transform.x),
+        0,
+        toWorldCoordZ(transform.y)
+      );
+    }
+
     function disposeGameRuntime(): void {
       if (!gameRuntime) {
         return;
@@ -2470,11 +2488,7 @@ const experiment: ExperimentModule = {
 
       const playerTransform = runtime.world.transforms.get(runtime.playerEid);
       if (playerTransform) {
-        playerMesh.position.set(
-          toWorldCoordX(playerTransform.x),
-          0,
-          toWorldCoordZ(playerTransform.y)
-        );
+        syncPlayerMeshPosition(playerTransform);
       }
 
       statusMessage =
@@ -2707,11 +2721,7 @@ const experiment: ExperimentModule = {
 
       const player = world.transforms.get(runtime.playerEid);
       if (player) {
-        playerMesh.position.set(
-          toWorldCoordX(player.x),
-          0,
-          toWorldCoordZ(player.y)
-        );
+        syncPlayerMeshPosition(player);
       }
     }
 

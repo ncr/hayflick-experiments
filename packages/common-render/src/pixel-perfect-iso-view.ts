@@ -45,6 +45,8 @@ export type PixelPerfectIsoViewState = {
   devicePixelRatio: number;
 };
 
+export type PixelSnapMode = "nearest" | "floor" | "ceil";
+
 export class PixelPerfectIsoView {
   readonly stage: PixelStage;
   readonly renderer: THREE.WebGLRenderer;
@@ -421,6 +423,37 @@ export class PixelPerfectIsoView {
     return true;
   }
 
+  snapWorldPointOnGround(
+    world: THREE.Vector3,
+    out: THREE.Vector3,
+    mode: PixelSnapMode = "nearest"
+  ): boolean {
+    this.ensureScreenBasis();
+
+    const ux = this.screenRightWorld.x;
+    const uz = this.screenRightWorld.z;
+    const vx = this.screenDownWorld.x;
+    const vz = this.screenDownWorld.z;
+    const wx = world.x - this.centerGround.x;
+    const wz = world.z - this.centerGround.z;
+    const det = ux * vz - uz * vx;
+    if (Math.abs(det) < 1e-8) {
+      return false;
+    }
+
+    const a = (wx * vz - wz * vx) / det;
+    const b = (wz * ux - wx * uz) / det;
+    const qa = this.quantizeSnap(a, mode);
+    const qb = this.quantizeSnap(b, mode);
+
+    out.set(
+      this.centerGround.x + ux * qa + vx * qb,
+      world.y,
+      this.centerGround.z + uz * qa + vz * qb
+    );
+    return true;
+  }
+
   dispose(): void {
     this.detachTouch();
     this.resizeObserver.disconnect();
@@ -687,6 +720,18 @@ export class PixelPerfectIsoView {
     }
     const blend = 1 - Math.exp(-rate * deltaSeconds);
     return current + (target - current) * blend;
+  }
+
+  private quantizeSnap(value: number, mode: PixelSnapMode): number {
+    switch (mode) {
+      case "floor":
+        return Math.floor(value);
+      case "ceil":
+        return Math.ceil(value);
+      case "nearest":
+      default:
+        return Math.round(value);
+    }
   }
 
   private handlePointerDown = (event: PointerEvent) => {
