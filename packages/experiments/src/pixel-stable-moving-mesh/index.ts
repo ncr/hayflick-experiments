@@ -287,7 +287,7 @@ const experiment: ExperimentModule = {
     try {
       const chestGltf = await chairLoader.loadAsync(CHEST_MODEL_URL);
       chestRoot = chestGltf.scene;
-      placeOnGround(chestRoot, -4.5, 2.2, 4);
+      placeOnGround(chestRoot, -4.5, 2.2, 2);
       chestRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
           object.castShadow = true;
