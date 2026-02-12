@@ -21,9 +21,9 @@ const ZOOM_ANIMATION_EPSILON = 0.02;
 const ZOOM_BURST_IDLE_MS = 90;
 const OUTPUT_OVERSCAN_LOW_PIXELS = 2;
 
-type DitherMode = "screen" | "local";
+type MovementMode = "unstable-free" | "stable-snapped";
 
-function makePixelDitherMaterial(color: number, mode: DitherMode): THREE.ShaderMaterial {
+function makePixelDitherMaterial(color: number): THREE.ShaderMaterial {
   const rgb = new THREE.Color(color);
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -31,7 +31,7 @@ function makePixelDitherMaterial(color: number, mode: DitherMode): THREE.ShaderM
       uLightDir: { value: new THREE.Vector3(0.45, 0.85, 0.25).normalize() },
       uBands: { value: 5.0 },
       uDitherStrength: { value: 0.0 },
-      uMode: { value: mode === "screen" ? 0 : 1 },
+      uMode: { value: 1 },
       uScreenPixelSize: { value: 4.0 },
       uLocalScale: { value: 12.0 }
     },
@@ -153,10 +153,10 @@ const experiment: ExperimentModule = {
       }
     }
 
-    let ditherMode: DitherMode = "local";
+    let movementMode: MovementMode = "stable-snapped";
 
     const dynamicMaterials: THREE.ShaderMaterial[] = [];
-    const boxMaterial = makePixelDitherMaterial(0xff7f3f, ditherMode);
+    const boxMaterial = makePixelDitherMaterial(0xff7f3f);
     dynamicMaterials.push(boxMaterial);
 
     const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
@@ -167,8 +167,8 @@ const experiment: ExperimentModule = {
     const player = new THREE.Group();
     const playerBodyGeometry = new THREE.CylinderGeometry(0.18, 0.25, 0.8, 14, 1);
     const playerHeadGeometry = new THREE.SphereGeometry(0.2, 14, 12);
-    const playerBodyMaterial = makePixelDitherMaterial(0x72c2ff, ditherMode);
-    const playerHeadMaterial = makePixelDitherMaterial(0xffd8a8, ditherMode);
+    const playerBodyMaterial = makePixelDitherMaterial(0x72c2ff);
+    const playerHeadMaterial = makePixelDitherMaterial(0xffd8a8);
     dynamicMaterials.push(playerBodyMaterial, playerHeadMaterial);
 
     const playerBody = new THREE.Mesh(playerBodyGeometry, playerBodyMaterial);
@@ -273,19 +273,19 @@ const experiment: ExperimentModule = {
     const syncHud = () => {
       const state = view.getState();
       hud.textContent = [
-        `Shading mode: ${ditherMode === "local" ? "object-stable" : "screen-unstable"} (M toggle)`,
+        "Shading: no dithering",
+        `Movement mode: ${movementMode === "stable-snapped" ? "stable-snapped" : "unstable-free"} (M toggle)`,
         `Player: WASD / arrows`,
         `Camera: middle-drag pan, wheel zoom, Q/E rotate`,
         `Zoom: ${state.cameraZoomCurrent.toFixed(2)}x target ${state.cameraZoomTarget.toFixed(2)}x`
       ].join("\n");
     };
 
-    const setDitherMode = (nextMode: DitherMode): void => {
-      ditherMode = nextMode;
-      const modeValue = ditherMode === "screen" ? 0 : 1;
+    const setMovementMode = (nextMode: MovementMode): void => {
+      movementMode = nextMode;
       dynamicMaterials.forEach((material) => {
-        material.uniforms.uMode.value = modeValue;
-        material.uniforms.uDitherStrength.value = ditherMode === "local" ? 0.0 : 0.23;
+        material.uniforms.uMode.value = 1;
+        material.uniforms.uDitherStrength.value = 0.0;
       });
       syncHud();
     };
@@ -293,8 +293,9 @@ const experiment: ExperimentModule = {
     const onKeyDown = (event: KeyboardEvent) => {
       pressedKeys.add(event.code);
       if (event.code === "KeyM") {
-        const nextMode: DitherMode = ditherMode === "screen" ? "local" : "screen";
-        setDitherMode(nextMode);
+        const nextMode: MovementMode =
+          movementMode === "stable-snapped" ? "unstable-free" : "stable-snapped";
+        setMovementMode(nextMode);
         event.preventDefault();
       }
     };
@@ -341,7 +342,11 @@ const experiment: ExperimentModule = {
         playerLogical.y += moveZ * step;
       }
 
-      snapPlayerToScreenPixelGrid(playerLogical.x, playerLogical.y);
+      if (movementMode === "stable-snapped") {
+        snapPlayerToScreenPixelGrid(playerLogical.x, playerLogical.y);
+      } else {
+        player.position.set(playerLogical.x, 0, playerLogical.y);
+      }
       view.frame(nowMs, deltaSeconds);
       raf = requestAnimationFrame(render);
     };
