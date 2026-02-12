@@ -29,6 +29,10 @@ const LAB_DEVICE_MODEL_URL = new URL(
   "../../../../assets/models/optimized/futuristic-lab-device-optimized.glb",
   import.meta.url
 ).href;
+const PLANTER_MODEL_URL = new URL(
+  "../../../../assets/models/optimized/compact-hydroponic-planter-optimized.glb",
+  import.meta.url
+).href;
 
 type MovementMode = "unstable-free" | "stable-snapped";
 
@@ -180,6 +184,7 @@ const experiment: ExperimentModule = {
     const chairLoader = new GLTFLoader();
     let chairRoot: THREE.Group | null = null;
     let labDeviceRoot: THREE.Group | null = null;
+    let planterRoot: THREE.Group | null = null;
     try {
       const chairGltf = await chairLoader.loadAsync(CHAIR_MODEL_URL);
       chairRoot = chairGltf.scene;
@@ -209,6 +214,24 @@ const experiment: ExperimentModule = {
     } catch (error) {
       console.error(
         "[pixel-stable-moving-mesh] failed to load lab device model",
+        error
+      );
+    }
+
+    try {
+      const planterGltf = await chairLoader.loadAsync(PLANTER_MODEL_URL);
+      planterRoot = planterGltf.scene;
+      planterRoot.position.set(0.5, 0, 3.5);
+      planterRoot.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.castShadow = false;
+          object.receiveShadow = false;
+        }
+      });
+      scene.add(planterRoot);
+    } catch (error) {
+      console.error(
+        "[pixel-stable-moving-mesh] failed to load planter model",
         error
       );
     }
@@ -365,6 +388,9 @@ const experiment: ExperimentModule = {
       }
       if (labDeviceRoot) {
         scene.remove(labDeviceRoot);
+      }
+      if (planterRoot) {
+        scene.remove(planterRoot);
       }
       tileGeometry.dispose();
       tileDark.dispose();
