@@ -147,8 +147,8 @@ const experiment: ExperimentModule = {
     scene.add(boardGroup);
     const boardSize = 20;
     const tileGeometry = new THREE.PlaneGeometry(1, 1);
-    const tileDark = new THREE.MeshBasicMaterial({ color: 0x1f2933 });
-    const tileLight = new THREE.MeshBasicMaterial({ color: 0xe6edf5 });
+    const tileDark = new THREE.MeshBasicMaterial({ color: 0x7d8590 });
+    const tileLight = new THREE.MeshBasicMaterial({ color: 0xaab2bd });
 
     for (let x = 0; x < boardSize; x += 1) {
       for (let z = 0; z < boardSize; z += 1) {
@@ -232,6 +232,8 @@ const experiment: ExperimentModule = {
       mountBackground: "#0b0f14",
       canvasBackground: "#0b0f14"
     });
+    view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    view.renderer.toneMappingExposure = 1.22;
 
     const pressedKeys = new Set<string>();
     const playerSpeed = 3.2;
