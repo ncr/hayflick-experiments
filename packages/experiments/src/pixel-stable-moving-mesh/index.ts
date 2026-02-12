@@ -184,7 +184,6 @@ const experiment: ExperimentModule = {
       const chairGltf = await chairLoader.loadAsync(CHAIR_MODEL_URL);
       chairRoot = chairGltf.scene;
       chairRoot.position.set(-2.5, 0.5, 0);
-      chairRoot.rotation.y = Math.PI * -0.25;
       chairRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
           object.castShadow = false;
@@ -200,7 +199,6 @@ const experiment: ExperimentModule = {
       const labDeviceGltf = await chairLoader.loadAsync(LAB_DEVICE_MODEL_URL);
       labDeviceRoot = labDeviceGltf.scene;
       labDeviceRoot.position.set(4.5, 0, -1.5);
-      labDeviceRoot.rotation.y = Math.PI * 0.16;
       labDeviceRoot.traverse((object) => {
         if (object instanceof THREE.Mesh) {
           object.castShadow = false;
