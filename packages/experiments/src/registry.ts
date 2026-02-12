@@ -8,6 +8,7 @@ import { meta as levelBuilderMeta } from "./level-builder/meta";
 import { meta as physicsRapierMeta } from "./physics-rapier/meta";
 import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
 import { meta as pixelPerfectCameraZoomMeta } from "./pixel-perfect-camera-zoom/meta";
+import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
@@ -34,6 +35,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...pixelPerfectCameraZoomMeta,
     load: () => import("./pixel-perfect-camera-zoom/index")
+  },
+  {
+    ...pixelStableMovingMeshMeta,
+    load: () => import("./pixel-stable-moving-mesh/index")
   }
   // AUTO_ENTRIES_END
 ];
