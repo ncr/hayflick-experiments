@@ -22,7 +22,11 @@ const ZOOM_ANIMATION_EPSILON = 0.02;
 const ZOOM_BURST_IDLE_MS = 90;
 const OUTPUT_OVERSCAN_LOW_PIXELS = 2;
 const CHAIR_MODEL_URL = new URL(
-  "../../../../assets/models/chair-optimized.glb",
+  "../../../../assets/models/optimized/chair-optimized.glb",
+  import.meta.url
+).href;
+const LAB_DEVICE_MODEL_URL = new URL(
+  "../../../../assets/models/optimized/futuristic-lab-device-optimized.glb",
   import.meta.url
 ).href;
 
@@ -175,6 +179,7 @@ const experiment: ExperimentModule = {
 
     const chairLoader = new GLTFLoader();
     let chairRoot: THREE.Group | null = null;
+    let labDeviceRoot: THREE.Group | null = null;
     try {
       const chairGltf = await chairLoader.loadAsync(CHAIR_MODEL_URL);
       chairRoot = chairGltf.scene;
@@ -189,6 +194,25 @@ const experiment: ExperimentModule = {
       scene.add(chairRoot);
     } catch (error) {
       console.error("[pixel-stable-moving-mesh] failed to load chair model", error);
+    }
+
+    try {
+      const labDeviceGltf = await chairLoader.loadAsync(LAB_DEVICE_MODEL_URL);
+      labDeviceRoot = labDeviceGltf.scene;
+      labDeviceRoot.position.set(4.5, 0, -1.5);
+      labDeviceRoot.rotation.y = Math.PI * 0.16;
+      labDeviceRoot.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.castShadow = false;
+          object.receiveShadow = false;
+        }
+      });
+      scene.add(labDeviceRoot);
+    } catch (error) {
+      console.error(
+        "[pixel-stable-moving-mesh] failed to load lab device model",
+        error
+      );
     }
 
     const player = new THREE.Group();
@@ -340,6 +364,9 @@ const experiment: ExperimentModule = {
       scene.remove(ambient, keyLight, fillLight, rimLight, boardGroup, box, player);
       if (chairRoot) {
         scene.remove(chairRoot);
+      }
+      if (labDeviceRoot) {
+        scene.remove(labDeviceRoot);
       }
       tileGeometry.dispose();
       tileDark.dispose();
