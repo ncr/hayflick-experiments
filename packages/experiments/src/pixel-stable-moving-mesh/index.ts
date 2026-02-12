@@ -146,7 +146,7 @@ const experiment: ExperimentModule = {
     hud.style.zIndex = "3";
     mount.appendChild(hud);
 
-    const ambient = new THREE.AmbientLight(0xf6fbff, 0.5);
+    const ambient = new THREE.AmbientLight(0xf6fbff, 0.72);
     const keyLight = new THREE.DirectionalLight(0xfff5e8, 1.25);
     keyLight.position.set(9, 10, 0);
     keyLight.castShadow = true;
@@ -163,7 +163,7 @@ const experiment: ExperimentModule = {
     keyTarget.position.set(0, 0, 0);
     keyLight.target = keyTarget;
 
-    const fillLight = new THREE.DirectionalLight(0xbfd7ff, 0.35);
+    const fillLight = new THREE.DirectionalLight(0xbfd7ff, 0.5);
     fillLight.position.set(-6, 7, -5);
     const rimLight = new THREE.DirectionalLight(0xffffff, 0.2);
     rimLight.position.set(-3, 5, 8);
@@ -348,7 +348,7 @@ const experiment: ExperimentModule = {
       canvasBackground: "#0b0f14"
     });
     view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    view.renderer.toneMappingExposure = 1.22;
+    view.renderer.toneMappingExposure = 1.35;
     view.renderer.shadowMap.enabled = true;
     view.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
