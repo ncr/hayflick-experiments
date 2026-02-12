@@ -208,6 +208,67 @@ const experiment: ExperimentModule = {
 
     const pressedKeys = new Set<string>();
     const playerSpeed = 3.2;
+    const inputRight = new THREE.Vector3();
+    const inputForward = new THREE.Vector3();
+    const playerLogical = new THREE.Vector2(0, 0);
+    const raycaster = new THREE.Raycaster();
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const centerGround = new THREE.Vector3();
+    const rightGround = new THREE.Vector3();
+    const downGround = new THREE.Vector3();
+    const snappedGround = new THREE.Vector3();
+    const pointerNdc = new THREE.Vector2();
+
+    const snapPlayerToScreenPixelGrid = (x: number, z: number): void => {
+      const state = view.getState();
+      const lowW = Math.max(1, state.lowRenderWidth);
+      const lowH = Math.max(1, state.lowRenderHeight);
+      const ndcStepX = 2 / lowW;
+      const ndcStepY = 2 / lowH;
+
+      pointerNdc.set(0, 0);
+      raycaster.setFromCamera(pointerNdc, view.camera);
+      if (!raycaster.ray.intersectPlane(groundPlane, centerGround)) {
+        player.position.set(x, 0, z);
+        return;
+      }
+      pointerNdc.set(ndcStepX, 0);
+      raycaster.setFromCamera(pointerNdc, view.camera);
+      if (!raycaster.ray.intersectPlane(groundPlane, rightGround)) {
+        player.position.set(x, 0, z);
+        return;
+      }
+      pointerNdc.set(0, -ndcStepY);
+      raycaster.setFromCamera(pointerNdc, view.camera);
+      if (!raycaster.ray.intersectPlane(groundPlane, downGround)) {
+        player.position.set(x, 0, z);
+        return;
+      }
+
+      const ux = rightGround.x - centerGround.x;
+      const uz = rightGround.z - centerGround.z;
+      const vx = downGround.x - centerGround.x;
+      const vz = downGround.z - centerGround.z;
+      const wx = x - centerGround.x;
+      const wz = z - centerGround.z;
+      const det = ux * vz - uz * vx;
+      if (Math.abs(det) < 1e-8) {
+        player.position.set(x, 0, z);
+        return;
+      }
+
+      const a = (wx * vz - wz * vx) / det;
+      const b = (wz * ux - wx * uz) / det;
+      const qa = Math.round(a);
+      const qb = Math.round(b);
+
+      snappedGround.set(
+        centerGround.x + ux * qa + vx * qb,
+        0,
+        centerGround.z + uz * qa + vz * qb
+      );
+      player.position.copy(snappedGround);
+    };
 
     const syncHud = () => {
       const state = view.getState();
@@ -250,19 +311,36 @@ const experiment: ExperimentModule = {
       const deltaSeconds = Math.min(0.05, Math.max(0, (nowMs - lastFrameTimeMs) / 1000));
       lastFrameTimeMs = nowMs;
 
-      const moveX =
+      const inputX =
         (pressedKeys.has("KeyD") || pressedKeys.has("ArrowRight") ? 1 : 0) -
         (pressedKeys.has("KeyA") || pressedKeys.has("ArrowLeft") ? 1 : 0);
-      const moveZ =
-        (pressedKeys.has("KeyS") || pressedKeys.has("ArrowDown") ? 1 : 0) -
-        (pressedKeys.has("KeyW") || pressedKeys.has("ArrowUp") ? 1 : 0);
-      if (moveX !== 0 || moveZ !== 0) {
+      const inputY =
+        (pressedKeys.has("KeyW") || pressedKeys.has("ArrowUp") ? 1 : 0) -
+        (pressedKeys.has("KeyS") || pressedKeys.has("ArrowDown") ? 1 : 0);
+      if (inputX !== 0 || inputY !== 0) {
+        inputRight.set(1, 0, 0).applyQuaternion(view.camera.quaternion);
+        inputRight.y = 0;
+        if (inputRight.lengthSq() > 0.000001) {
+          inputRight.normalize();
+        }
+
+        inputForward.set(0, 0, -1).applyQuaternion(view.camera.quaternion);
+        inputForward.y = 0;
+        if (inputForward.lengthSq() > 0.000001) {
+          inputForward.normalize();
+        }
+
+        let moveX = inputRight.x * inputX + inputForward.x * inputY;
+        let moveZ = inputRight.z * inputX + inputForward.z * inputY;
         const length = Math.hypot(moveX, moveZ);
+        moveX /= length;
+        moveZ /= length;
         const step = playerSpeed * deltaSeconds;
-        player.position.x += (moveX / length) * step;
-        player.position.z += (moveZ / length) * step;
+        playerLogical.x += moveX * step;
+        playerLogical.y += moveZ * step;
       }
 
+      snapPlayerToScreenPixelGrid(playerLogical.x, playerLogical.y);
       view.frame(nowMs, deltaSeconds);
       raf = requestAnimationFrame(render);
     };
