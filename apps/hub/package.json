@@ -12,9 +12,15 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@common/render": "workspace:^",
     "@experiments/catalog": "workspace:*",
+    "@gltf-transform/core": "^4.3.0",
+    "@gltf-transform/extensions": "^4.3.0",
+    "@types/three": "^0.173.0",
+    "meshoptimizer": "^1.0.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "three": "^0.173.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.8",

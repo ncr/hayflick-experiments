@@ -1,51 +1,70 @@
 import { useEffect, useMemo, useState } from "react";
 import { experiments, getExperimentById } from "@experiments/catalog";
 import { Stage } from "./components/Stage";
+import { Forge } from "./pages/Forge";
 
-function readExperimentFromHash(): string | null {
+type Route =
+  | { type: "experiment"; id: string }
+  | { type: "forge" }
+  | null;
+
+function readRouteFromHash(): Route {
   const hash = window.location.hash;
-  if (!hash.startsWith("#/exp/")) {
-    return null;
+  if (hash === "#/forge") {
+    return { type: "forge" };
   }
-  return hash.replace("#/exp/", "").trim() || null;
+  if (hash.startsWith("#/exp/")) {
+    const id = hash.replace("#/exp/", "").trim();
+    return id ? { type: "experiment", id } : null;
+  }
+  return null;
 }
 
 export function App() {
   const buildId = import.meta.env.VITE_BUILD_ID ?? "local";
   const buildSha = import.meta.env.VITE_BUILD_SHA?.slice(0, 7) ?? "dev";
 
-  const [selectedId, setSelectedId] = useState<string | null>(() => readExperimentFromHash() ?? experiments[0]?.id ?? null);
+  const [route, setRoute] = useState<Route>(
+    () => readRouteFromHash() ?? { type: "experiment", id: experiments[0]?.id ?? "" }
+  );
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const onHashChange = () => {
-      const id = readExperimentFromHash();
-      if (id) {
-        setSelectedId(id);
-      }
+      const r = readRouteFromHash();
+      if (r) setRoute(r);
     };
-
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
   useEffect(() => {
-    if (selectedId) {
-      window.history.replaceState({}, "", `#/exp/${selectedId}`);
+    if (!route) return;
+    if (route.type === "forge") {
+      window.history.replaceState({}, "", "#/forge");
+    } else {
+      window.history.replaceState({}, "", `#/exp/${route.id}`);
     }
-  }, [selectedId]);
+  }, [route]);
 
-  const selected = useMemo(() => {
-    if (!selectedId) {
-      return undefined;
-    }
-    return getExperimentById(selectedId);
-  }, [selectedId]);
+  const selectedExperiment = useMemo(() => {
+    if (route?.type !== "experiment") return undefined;
+    return getExperimentById(route.id);
+  }, [route]);
 
   const selectExperiment = (id: string) => {
-    setSelectedId(id);
+    setRoute({ type: "experiment", id });
     setMenuOpen(false);
   };
+
+  const selectForge = () => {
+    setRoute({ type: "forge" });
+    setMenuOpen(false);
+  };
+
+  if (route?.type === "forge") {
+    return <Forge />;
+  }
 
   return (
     <div className="app-shell">
@@ -53,8 +72,13 @@ export function App() {
       <aside className={`sidebar${menuOpen ? " open" : ""}`}>
         <h1>Experiments</h1>
         <ul>
+          <li>
+            <button onClick={selectForge}>
+              <span>Asset Forge</span>
+            </button>
+          </li>
           {experiments.map((entry) => {
-            const active = selectedId === entry.id;
+            const active = route?.type === "experiment" && route.id === entry.id;
             return (
               <li key={entry.id}>
                 <button className={active ? "active" : ""} onClick={() => selectExperiment(entry.id)}>
@@ -75,12 +99,12 @@ export function App() {
             </svg>
           </button>
           <div className="main-header-info">
-            <h2>{selected?.title ?? "No experiment selected"}</h2>
-            <p className="main-header-desc">{selected?.description ?? "Pick an experiment from the left list."}</p>
+            <h2>{selectedExperiment?.title ?? "No experiment selected"}</h2>
+            <p className="main-header-desc">{selectedExperiment?.description ?? "Pick an experiment from the left list."}</p>
             <p className="build-stamp">Build {buildId} ({buildSha})</p>
           </div>
         </header>
-        <Stage experiment={selected} />
+        <Stage experiment={selectedExperiment} />
       </main>
     </div>
   );
