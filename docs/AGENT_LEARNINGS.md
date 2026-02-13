@@ -1593,3 +1593,28 @@ Detection signal:
 Preventive checklist:
 - For simple daylight looks, start with a hemisphere sky/ground light and one directional sun (shadow caster), then tune exposure.
 - Keep orbiting behavior on the sun only when shadow motion is needed, and avoid stacking extra lights unless required.
+
+## 2026-02-13 - Q then E rotation could drift by 1px and showed a final-frame snap
+Root cause:
+- Rotation always re-centered camera target from a raycasted screen-center world point, even when zoom pivot was already centered, introducing avoidable floating-point drift.
+- Render used a rounded viewport origin while client/world mapping paths could use a different unshared origin path, allowing 1px phase mismatch.
+- Yaw snap epsilon (`1e-3` turns) allowed a visible last-frame jump when snapping to exact quarter-turn.
+
+Detection signal:
+- User observed checkerboard seams intermittently appearing/disappearing after `Q`/`E` with no pan/zoom, and a visible jump at rotation completion.
+
+Preventive checklist:
+- Only recenter target on rotate when zoom pivot is actually off-center.
+- Use one shared quantized render-origin helper for render viewport and all coordinate mapping helpers.
+- Keep rotation snap epsilon tight enough that terminal snapping is subpixel-invisible.
+
+## 2026-02-13 - Rotation end could still feel harsh even after final snap smoothing
+Root cause:
+- A single fixed-rate yaw approach stayed too aggressive close to target, so velocity dropped too abruptly when entering the final settle window.
+
+Detection signal:
+- User reported end-of-rotation still looked harsh despite a short final snap animation.
+
+Preventive checklist:
+- Use a staged yaw rate profile: fast pickup, explicit pre-snap deceleration band, then short settle.
+- Keep tuning constants (`decel start/end`, `fast/slow multipliers`, `settle duration`) centralized for quick feel iteration.

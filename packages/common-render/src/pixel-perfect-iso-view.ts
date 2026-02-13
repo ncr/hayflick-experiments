@@ -48,6 +48,8 @@ export type PixelPerfectIsoViewState = {
 export type PixelSnapMode = "nearest" | "floor" | "ceil";
 
 export class PixelPerfectIsoView {
+  private static readonly ROTATION_SNAP_SETTLE_SECONDS = 0.08;
+
   readonly stage: PixelStage;
   readonly renderer: THREE.WebGLRenderer;
   readonly camera: THREE.OrthographicCamera;
@@ -89,6 +91,10 @@ export class PixelPerfectIsoView {
   private pointerClientY = Number.NaN;
 
   private animatedYawTurns = 0;
+  private rotationSnapActive = false;
+  private rotationSnapFromTurns = 0;
+  private rotationSnapToTurns = 0;
+  private rotationSnapElapsedSeconds = 0;
   private zoomAnimationActive = false;
   private zoomBurstActive = false;
   private zoomBurstExpiresAtMs = 0;
@@ -266,7 +272,8 @@ export class PixelPerfectIsoView {
 
   rotateQuarterTurns(delta: -1 | 1): void {
     this.zoomBurstActive = false;
-    this.recenterCameraTargetToScreenCenter();
+    this.rotationSnapActive = false;
+    this.recenterCameraTargetToScreenCenterIfNeeded();
     this.controller.rotateQuarterTurns(delta);
   }
 
@@ -294,6 +301,10 @@ export class PixelPerfectIsoView {
   reset(): void {
     this.controller.resetView(this.config.basePixelZoom, "free");
     this.animatedYawTurns = this.controller.getYawIndex();
+    this.rotationSnapActive = false;
+    this.rotationSnapFromTurns = this.animatedYawTurns;
+    this.rotationSnapToTurns = this.animatedYawTurns;
+    this.rotationSnapElapsedSeconds = 0;
     this.cameraTarget.set(0, 0, 0);
     this.cameraZoomTarget = 1;
     this.cameraZoomCurrent = 1;
@@ -342,13 +353,8 @@ export class PixelPerfectIsoView {
 
     const viewportWidth = Math.max(1, Math.round(this.displayOutputWidth));
     const viewportHeight = Math.max(1, Math.round(this.displayOutputHeight));
-    const state = this.controller.getState();
-    const renderLeft = Math.round(
-      this.displayRenderBaseX + state.panRemainderX + this.panDeviceRemainderX
-    );
-    const renderTop = Math.round(
-      this.displayRenderBaseY + state.panRemainderY + this.panDeviceRemainderY
-    );
+    const renderLeft = this.getRenderStartX();
+    const renderTop = this.getRenderStartY();
     const renderBottom = this.renderer.domElement.height - (renderTop + viewportHeight);
     this.renderer.setViewport(renderLeft, renderBottom, viewportWidth, viewportHeight);
     this.renderer.render(this.outputScene, this.outputCamera);
@@ -360,13 +366,10 @@ export class PixelPerfectIsoView {
     if (!metrics) {
       return false;
     }
-    const state = this.controller.getState();
     const deviceX = (clientX - metrics.rect.left) * metrics.cssToDeviceX;
     const deviceY = (clientY - metrics.rect.top) * metrics.cssToDeviceY;
-    const renderStartX =
-      this.displayRenderBaseX + state.panRemainderX + this.panDeviceRemainderX;
-    const renderStartY =
-      this.displayRenderBaseY + state.panRemainderY + this.panDeviceRemainderY;
+    const renderStartX = this.getRenderStartX();
+    const renderStartY = this.getRenderStartY();
     const localRenderX = deviceX - (renderStartX + this.displayOutputPadDeviceX);
     const localRenderY = deviceY - (renderStartY + this.displayOutputPadDeviceY);
     if (
@@ -396,7 +399,6 @@ export class PixelPerfectIsoView {
     if (!metrics) {
       return false;
     }
-    const state = this.controller.getState();
     this.projectedNdc.copy(world).project(this.camera);
     const sourceX = this.projectedNdc.x * 0.5 + 0.5;
     const sourceY = 1 - (this.projectedNdc.y * 0.5 + 0.5);
@@ -405,15 +407,11 @@ export class PixelPerfectIsoView {
     const normalizedY =
       (sourceY - this.zoomPivotScene.y) * this.cameraZoomStable + this.zoomPivotScene.y;
     const deviceX =
-      this.displayRenderBaseX +
-      state.panRemainderX +
-      this.panDeviceRemainderX +
+      this.getRenderStartX() +
       this.displayOutputPadDeviceX +
       normalizedX * this.displaySceneOutputWidth;
     const deviceY =
-      this.displayRenderBaseY +
-      state.panRemainderY +
-      this.panDeviceRemainderY +
+      this.getRenderStartY() +
       this.displayOutputPadDeviceY +
       normalizedY * this.displaySceneOutputHeight;
     out.set(
@@ -587,17 +585,39 @@ export class PixelPerfectIsoView {
 
   private updateAnimationState(deltaSeconds: number): void {
     const targetYawTurns = this.controller.getYawIndex();
-    this.animatedYawTurns = this.easeToward(
-      this.animatedYawTurns,
-      targetYawTurns,
-      this.config.rotationAnimationRate,
-      deltaSeconds
-    );
-    if (
-      Math.abs(this.animatedYawTurns - targetYawTurns) <=
-      this.config.rotationAnimationEpsilon
-    ) {
-      this.animatedYawTurns = targetYawTurns;
+    if (this.rotationSnapActive && this.rotationSnapToTurns !== targetYawTurns) {
+      this.rotationSnapActive = false;
+    }
+
+    if (this.rotationSnapActive) {
+      this.rotationSnapElapsedSeconds += Math.max(0, deltaSeconds);
+      const duration = PixelPerfectIsoView.ROTATION_SNAP_SETTLE_SECONDS;
+      const tRaw = duration > 0 ? this.rotationSnapElapsedSeconds / duration : 1;
+      const t = THREE.MathUtils.clamp(tRaw, 0, 1);
+      const easedT = t * t * (3 - 2 * t);
+      this.animatedYawTurns = THREE.MathUtils.lerp(
+        this.rotationSnapFromTurns,
+        this.rotationSnapToTurns,
+        easedT
+      );
+      if (t >= 1) {
+        this.animatedYawTurns = this.rotationSnapToTurns;
+        this.rotationSnapActive = false;
+      }
+    } else {
+      this.animatedYawTurns = this.easeToward(
+        this.animatedYawTurns,
+        targetYawTurns,
+        this.config.rotationAnimationRate,
+        deltaSeconds
+      );
+      const yawSnapEpsilon = Math.min(this.config.rotationAnimationEpsilon, 1e-5);
+      if (Math.abs(this.animatedYawTurns - targetYawTurns) <= yawSnapEpsilon) {
+        this.rotationSnapActive = true;
+        this.rotationSnapFromTurns = this.animatedYawTurns;
+        this.rotationSnapToTurns = targetYawTurns;
+        this.rotationSnapElapsedSeconds = 0;
+      }
     }
 
     const zoomRate = this.zoomBurstActive
@@ -669,7 +689,13 @@ export class PixelPerfectIsoView {
     this.applyPanRawCss(deltaCssX, deltaCssY);
   }
 
-  private recenterCameraTargetToScreenCenter(): void {
+  private recenterCameraTargetToScreenCenterIfNeeded(): void {
+    if (
+      Math.abs(this.zoomPivotScene.x - 0.5) <= 1e-6 &&
+      Math.abs(this.zoomPivotScene.y - 0.5) <= 1e-6
+    ) {
+      return;
+    }
     const metrics = this.stage.getCanvasMetrics();
     if (!metrics) {
       return;
@@ -690,13 +716,10 @@ export class PixelPerfectIsoView {
     if (!metrics) {
       return false;
     }
-    const state = this.controller.getState();
     const deviceX = (clientX - metrics.rect.left) * metrics.cssToDeviceX;
     const deviceY = (clientY - metrics.rect.top) * metrics.cssToDeviceY;
-    const renderStartX =
-      this.displayRenderBaseX + state.panRemainderX + this.panDeviceRemainderX;
-    const renderStartY =
-      this.displayRenderBaseY + state.panRemainderY + this.panDeviceRemainderY;
+    const renderStartX = this.getRenderStartX();
+    const renderStartY = this.getRenderStartY();
     const localRenderX = deviceX - (renderStartX + this.displayOutputPadDeviceX);
     const localRenderY = deviceY - (renderStartY + this.displayOutputPadDeviceY);
     if (
@@ -856,14 +879,16 @@ export class PixelPerfectIsoView {
   private handleKeyDown = (event: KeyboardEvent) => {
     if (event.code === "KeyQ") {
       this.zoomBurstActive = false;
-      this.recenterCameraTargetToScreenCenter();
+      this.rotationSnapActive = false;
+      this.recenterCameraTargetToScreenCenterIfNeeded();
       this.controller.rotateQuarterTurns(-1);
       event.preventDefault();
       return;
     }
     if (event.code === "KeyE") {
       this.zoomBurstActive = false;
-      this.recenterCameraTargetToScreenCenter();
+      this.rotationSnapActive = false;
+      this.recenterCameraTargetToScreenCenterIfNeeded();
       this.controller.rotateQuarterTurns(1);
       event.preventDefault();
       return;
@@ -874,4 +899,18 @@ export class PixelPerfectIsoView {
       event.preventDefault();
     }
   };
+
+  private getRenderStartX(): number {
+    const state = this.controller.getState();
+    return Math.round(
+      this.displayRenderBaseX + state.panRemainderX + this.panDeviceRemainderX
+    );
+  }
+
+  private getRenderStartY(): number {
+    const state = this.controller.getState();
+    return Math.round(
+      this.displayRenderBaseY + state.panRemainderY + this.panDeviceRemainderY
+    );
+  }
 }
