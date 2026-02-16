@@ -12,7 +12,8 @@
     "test": "pnpm -r test",
     "test:promoted": "pnpm --filter @common/gameplay test:coverage && pnpm --filter @common/level-editor test:coverage && pnpm --filter @common/physics-rapier test:coverage",
     "test:e2e": "playwright test",
-    "exp:new": "node scripts/new-experiment.mjs"
+    "exp:new": "node scripts/new-experiment.mjs",
+    "forge:retrofit-colliders": "pnpm --filter @apps/hub forge:retrofit-colliders"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",

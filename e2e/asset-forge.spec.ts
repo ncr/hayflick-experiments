@@ -204,6 +204,9 @@ test.describe("asset forge workflow", () => {
     expect(writePaths.some((p) => p.includes("meta.json"))).toBe(true);
     expect(writePaths.some((p) => p.includes("concept.png"))).toBe(true);
     expect(writePaths.some((p) => p.includes("prompt.txt"))).toBe(true);
+    expect(writePaths.some((p) => p.includes("processed/collider.glb"))).toBe(
+      true
+    );
   });
 
   test("forge page is accessible from sidebar", async ({ page }) => {

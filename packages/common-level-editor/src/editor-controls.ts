@@ -26,6 +26,18 @@ export type PromotedEditorControls = {
   defaultGroundButtons: Map<PromotedEditorDefaultGround, HTMLButtonElement>;
   rectOffButton: HTMLButtonElement;
   seedInput: HTMLInputElement;
+  rows: {
+    mode: HTMLDivElement;
+    tool: HTMLDivElement;
+    brush: HTMLDivElement;
+    rect: HTMLDivElement;
+    terrain: HTMLDivElement;
+    camera: HTMLDivElement;
+    utility: HTMLDivElement;
+    bake: HTMLDivElement;
+  };
+  exitButton: HTMLButtonElement;
+  bakeButton: HTMLButtonElement;
 };
 
 export type CreatePromotedEditorControlsOptions = {
@@ -151,9 +163,16 @@ export function createPromotedEditorControls(
   const seedWrap = document.createElement("label");
   seedWrap.style.display = "inline-flex";
   seedWrap.style.alignItems = "center";
-  seedWrap.style.gap = "4px";
+  seedWrap.style.gap = "6px";
   seedWrap.style.fontSize = "12px";
-  seedWrap.style.padding = "0 2px";
+  seedWrap.style.padding = "0 4px";
+  seedWrap.style.border = "1px solid rgba(130, 152, 169, 0.52)";
+  seedWrap.style.borderRadius = "8px";
+  seedWrap.style.background =
+    "linear-gradient(180deg, rgba(38, 49, 58, 0.82), rgba(21, 30, 36, 0.82))";
+  seedWrap.style.minHeight = "32px";
+  seedWrap.style.fontWeight = "600";
+  seedWrap.style.color = "rgba(231, 240, 246, 0.95)";
   seedWrap.textContent = "Seed";
 
   const seedInput = document.createElement("input");
@@ -161,12 +180,13 @@ export function createPromotedEditorControls(
   seedInput.value = String(options.initialSeed);
   seedInput.step = "1";
   seedInput.style.width = "84px";
-  seedInput.style.border = "1px solid rgba(124, 155, 178, 0.62)";
-  seedInput.style.background = "rgba(20, 35, 49, 0.92)";
-  seedInput.style.color = "#d8e8f4";
+  seedInput.style.border = "1px solid rgba(138, 161, 178, 0.62)";
+  seedInput.style.background = "rgba(13, 18, 23, 0.84)";
+  seedInput.style.color = "#f5fbff";
   seedInput.style.borderRadius = "6px";
-  seedInput.style.padding = "3px 6px";
+  seedInput.style.padding = "4px 6px";
   seedInput.style.fontSize = "12px";
+  seedInput.style.fontWeight = "600";
   seedInput.addEventListener("change", () => {
     const parsed = Number(seedInput.value);
     const normalized = Number.isFinite(parsed) ? Math.floor(parsed) : 1337;
@@ -212,6 +232,18 @@ export function createPromotedEditorControls(
     rectToolButtons,
     defaultGroundButtons,
     rectOffButton,
-    seedInput
+    seedInput,
+    rows: {
+      mode: modeRow,
+      tool: toolRow,
+      brush: brushRow,
+      rect: rectRow,
+      terrain: terrainRow,
+      camera: cameraRow,
+      utility: utilityRow,
+      bake: bakeRow
+    },
+    exitButton,
+    bakeButton
   };
 }

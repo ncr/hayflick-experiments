@@ -3,8 +3,12 @@ import * as fsApi from "./api/fs";
 import type { StyleGuide } from "./StyleGuidePanel";
 import type { ColliderParams } from "./processing/colliders";
 import type { PivotPreset, BBox, ScaleMode } from "./processing/dimensions";
-import type { GLTFExporter as GLTFExporterType } from "three/examples/jsm/exporters/GLTFExporter.js";
 import type { ViewportHandle } from "./Viewport";
+import type { Object3D } from "three";
+import {
+  buildSimplifiedColliderScene,
+  DEFAULT_COLLIDER_FACE_TARGET
+} from "./processing/collider-mesh";
 
 export interface AssetMeta {
   id: string;
@@ -25,6 +29,8 @@ export interface AssetMeta {
     originalFaces: number;
     simplifiedFaces: number;
     simplificationRatio: number;
+    colliderFaces: number;
+    colliderFaceTarget: number;
     scale: [number, number, number];
     pivot: PivotPreset;
     pivotOffset: [number, number, number];
@@ -93,6 +99,8 @@ export function ExportPanel({
 
     try {
       const basePath = `props/${propId}`;
+      let colliderFaces = 0;
+      let colliderFaceTarget = 0;
 
       // Save concept image
       if (conceptImage) {
@@ -115,15 +123,30 @@ export function ExportPanel({
           "three/examples/jsm/exporters/GLTFExporter.js"
         );
         const exporter = new GLTFExporter();
-        const glbBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
-          exporter.parse(
-            model,
-            (result) => resolve(result as ArrayBuffer),
-            reject,
-            { binary: true }
-          );
-        });
+
+        const exportBinary = async (
+          object: Object3D | Object3D[]
+        ): Promise<ArrayBuffer> =>
+          new Promise<ArrayBuffer>((resolve, reject) => {
+            exporter.parse(
+              object,
+              (result) => resolve(result as ArrayBuffer),
+              reject,
+              { binary: true }
+            );
+          });
+
+        const glbBuffer = await exportBinary(model);
         await fsApi.writeBinary(`${basePath}/processed/model.glb`, glbBuffer);
+
+        const collider = await buildSimplifiedColliderScene(
+          model,
+          DEFAULT_COLLIDER_FACE_TARGET
+        );
+        const colliderBuffer = await exportBinary(collider.scene);
+        await fsApi.writeBinary(`${basePath}/processed/collider.glb`, colliderBuffer);
+        colliderFaces = collider.colliderFaces;
+        colliderFaceTarget = collider.targetFaces;
       }
 
       // Save meta.json
@@ -146,6 +169,8 @@ export function ExportPanel({
           originalFaces,
           simplifiedFaces,
           simplificationRatio,
+          colliderFaces,
+          colliderFaceTarget,
           scale: [scale, scale, scale],
           pivot,
           pivotOffset,

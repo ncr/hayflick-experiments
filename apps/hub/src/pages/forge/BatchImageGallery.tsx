@@ -26,7 +26,7 @@ export function BatchImageGallery({
     if (ready.length === 0) return;
     setGenerating3D(true);
     try {
-      await generate3DParallel(ready, updateProp, 1);
+      await generate3DParallel(ready, updateProp, 5);
     } finally {
       setGenerating3D(false);
     }

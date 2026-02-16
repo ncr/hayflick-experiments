@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
-    "test": "vitest run"
+    "test": "vitest run",
+    "forge:retrofit-colliders": "node scripts/retrofit-collider-meshes.mjs"
   },
   "dependencies": {
     "@common/render": "workspace:^",

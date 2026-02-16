@@ -1618,3 +1618,250 @@ Detection signal:
 Preventive checklist:
 - Use a staged yaw rate profile: fast pickup, explicit pre-snap deceleration band, then short settle.
 - Keep tuning constants (`decel start/end`, `fast/slow multipliers`, `settle duration`) centralized for quick feel iteration.
+
+## 2026-02-16 - Tripo size hint controls were ineffective for model generation
+Root cause:
+- Forge exposed per-prop height/width hint inputs, but Tripo `image_to_model` does not provide explicit numeric size parameters for deterministic dimensions.
+- The implementation relied on prompt guidance, which is non-deterministic and was not reliably honored.
+
+Detection signal:
+- User reported generated models did not follow configured height hints.
+
+Preventive checklist:
+- Before adding deterministic sizing controls, verify the provider API supports explicit numeric dimension fields.
+- If sizing is prompt-only guidance, do not present it as a controllable setting in core workflows.
+- Validate new generation controls with at least one end-to-end behavior check before exposing in UI.
+
+## 2026-02-16 - Undo/redo dropped valid falsy snapshots
+Root cause:
+- History controller used `if (!next)` to detect empty stack entries.
+- This treated valid falsy snapshots (e.g. `0`) as missing values and returned `null` on undo/redo.
+
+Detection signal:
+- `packages/experiments/src/settlement-builder-ecs/history.test.ts` failed with `expected null to be +0` during undo flow.
+
+Preventive checklist:
+- For stack pop checks, compare against `undefined` explicitly (`next === undefined`) instead of truthiness.
+- Include at least one unit test with falsy but valid snapshot values when implementing generic history/state stacks.
+
+## 2026-02-16 - Prop ghost preview disappeared after rotate hotkey until mouse moved
+Root cause:
+- Ghost visibility/elevation redraw was coupled to `pointermove` (`updateHover`), while `KeyR` rebuilt ghost visuals but did not force a hover recompute.
+
+Detection signal:
+- Pressing `R` in `settlement-builder-ecs` made the pending prop preview disappear until the next mouse movement event.
+
+Preventive checklist:
+- Any editor action that mutates ghost visuals (rotate, async template swap, selection change) must trigger a hover refresh from last known pointer position.
+- Cache last pointer client coordinates so hotkey-driven updates can reproject hover state without requiring user movement.
+
+## 2026-02-16 - Grid-only prop placement blocked precise stacking workflows
+Root cause:
+- Prop placement logic always snapped to cell centers (`worldToCell -> cell center`) for both ghost preview and committed placement.
+- Save schema stored only `cellX/cellY`, so sub-cell placement could not be represented.
+
+Detection signal:
+- User reported inability to orient/place props precisely and asked to disable snapping for prop placement.
+
+Preventive checklist:
+- For editor props, persist sub-cell placement offsets alongside grid-cell ownership.
+- Keep placement preview and final placement path sharing the same placement-target resolver (snap on/off aware).
+- Expose snap mode clearly in UI and hotkeys so behavior is explicit.
+
+## 2026-02-16 - Prop catalog mode could fall through to brush placement with no selection
+Root cause:
+- Editor action routing only executed prop placement when both `activeBuildCatalog === "prop"` and `selectedPropId` were truthy.
+- In props mode with an empty selection, logic fell through to brush/terrain placement handlers.
+
+Detection signal:
+- During catalog-tab UI refactor review, the `activeBuildCatalog === "prop" && selectedPropId` condition revealed mode/selection coupling that allowed unintended fallback behavior.
+
+Preventive checklist:
+- Gate action handlers by active mode first, then handle missing selections explicitly with an early return.
+- Add one editor test case for each catalog mode with an empty selection state.
+- Keep catalog mode transitions and selection clearing synchronized in one function path.
+
+## 2026-02-16 - Full render-mesh colliders made prop drop simulation too heavy
+Root cause:
+- Settlement drop physics used render mesh trimesh data directly for mesh collider mode and had no dedicated lightweight collider asset path.
+- Forge exports did not produce a simplified collider GLB, so retrofitted props defaulted to heavy triangle counts.
+
+Detection signal:
+- User reported mesh-collider placement was too heavy and requested simplified collider meshes per prop.
+- Drop/stacking workflows needed physics detail beyond box colliders without bogging Rapier.
+
+Preventive checklist:
+- Always export `processed/collider.glb` from Forge with an aggressive low-poly target (default 96 faces).
+- In settlement drop simulation, default to proxy collider meshes and keep full render mesh as explicit override mode.
+- Keep a retrofit script for existing `assets/forge/props/*` so older props get collider GLBs too.
+
+## 2026-02-16 - Optional render-collider toggle still allowed pathological editor slowdown
+Root cause:
+- Even after introducing proxy collider assets, the editor still exposed a render-mesh collider mode that reran expensive trimesh drop simulation on hover.
+- A single toggle could push placement preview back into high-cost Rapier workloads.
+
+Detection signal:
+- User switched to render collider mode and reported editor crawling to a near stop.
+
+Preventive checklist:
+- Keep editor placement/drop preview on proxy collider meshes only.
+- Avoid exposing heavy debug/accuracy modes in primary editor UX paths unless heavily throttled.
+- If a high-fidelity mode is needed, gate it behind explicit diagnostics tooling, not default build controls.
+
+## 2026-02-16 - Proxy-collider drop simulation looked static due overly damped dynamics
+Root cause:
+- Drop settling used high linear/angular damping and quick settle thresholds.
+- Cuboid fallback path locked rotations, preventing natural tipping off edges.
+
+Detection signal:
+- User reported editor became fast with proxy colliders but props no longer fell/rolled off supports (e.g. chair on crate edge).
+
+Preventive checklist:
+- Keep dropped-body damping low enough for visible gravity-driven tipping in preview simulations.
+- Do not lock rotations in fallback dynamic paths when edge-fall behavior is required.
+- Use stricter settle thresholds and enough simulation frames so unstable placements can actually collapse.
+
+## 2026-02-16 - Edge-fall result looked wrong when drop solver ignored settled transform
+Root cause:
+- Drop simulation returned only elevation and discarded settled `x/z`.
+- Elevation was computed as `translation.y + localMinY`, which is invalid once the body rotates during tipping/rolling.
+
+Detection signal:
+- User placed a bottle mostly off a desk edge and it still appeared to stay supported.
+
+Preventive checklist:
+- Use full settled transform from simulation (`x`, `z`, and bottom `y`) for both ghost preview and committed placement.
+- For rotated trimesh bodies, compute world-space bottom from transformed vertices instead of a fixed local `minY`.
+- Keep placement cell/offset derived from settled world position, not original cursor target.
+
+## 2026-02-16 - Dynamic proxy collider body-frame offset caused erratic drop behavior
+Root cause:
+- The bottle dynamic collider was built from bottom-anchored mesh-space vertices, so rigid-body frame and effective collider mass distribution were offset.
+- In the real-time edge-drop test this produced unstable-looking settle behavior (delayed slip, sudden fall transitions, runaway motion perception).
+
+Detection signal:
+- User reported bottle would sit on crate for several seconds, then abruptly fall, intermittently pause, and then shoot off-screen at high speed.
+
+Preventive checklist:
+- For dynamic mesh/convex colliders, recenter collider vertex clouds around bounds center before collider creation.
+- Keep render root offset explicit from physics body frame (apply rotated local offset when syncing visuals).
+- Increase per-body/global solver stability settings in edge-case drop tests (additional solver iterations + CCD substeps).
+
+## 2026-02-16 - Editor drop simulation needed centered convex-hull dynamic colliders
+Root cause:
+- `settlement-builder-ecs` drop preview used dynamic trimesh colliders built from bottom-anchored proxy vertices.
+- Dynamic body frame and collider mass distribution were offset, increasing instability and producing unreliable edge-drop behavior.
+
+Detection signal:
+- Edge-drop sandbox stabilized only after switching to centered convex-hull dynamics with root-offset compensation.
+- User requested applying that fix path directly to the editor drop solver.
+
+Preventive checklist:
+- For dynamic prop drop previews, derive a centered dynamic collider dataset from proxy trimesh vertices.
+- Use convex hull for the dynamic dropped body; keep trimesh colliders for static placed supports.
+- Preserve editor/world placement alignment by compensating root offset when converting between body translation and stored prop root position.
+
+## 2026-02-16 - Full settle horizon made edge placement feel unresponsive to cursor intent
+Root cause:
+- Drop preview simulated too long (420 steps with long stable-frame gate), letting small props continue rolling/drifting after initial landing.
+- Placement result prioritized long-horizon settle over user target point, making edge placement difficult.
+
+Detection signal:
+- User reported bottle became very hard to place near an edge after stability fixes.
+
+Preventive checklist:
+- Keep editor drop preview horizon short enough to preserve placement intent.
+- Clamp lateral drift from cursor target for preview/placement outputs.
+- Balance physical plausibility against editability; editor tools should favor controllable intent over fully unconstrained long-run simulation.
+
+## 2026-02-16 - Ghost drop preview physics conflicted with precise editor targeting
+Root cause:
+- Running full physics-based settle on every hover caused lateral drift/roll in preview, so ghost position diverged from cursor intent.
+- Additional free-placement quantization in hover (`5cm`) further broke 1:1 pointer-to-pivot expectation.
+
+Detection signal:
+- User reported edge placement remained hard and explicitly requested non-physics ghost solve + proper mouse-ray pivot mapping.
+
+Preventive checklist:
+- Keep hover ghost solve deterministic and fast (height/support only) with no lateral physics drift.
+- Use exact mouse raycast world X/Z for free prop placement in both preview and placement commit paths.
+- If physics settle is retained for commit, preserve user-targeted pivot coordinates unless movement is explicitly desired UX.
+
+## 2026-02-16 - Commit-time drop from very high spawn over-biased props toward floor
+Root cause:
+- Placement solver spawned dropped props at a fixed high Y (`~5.5m`) regardless of local support height.
+- Extra potential energy amplified rolling/fall-off, causing edge placements to resolve to floor too aggressively.
+
+Detection signal:
+- User reported props placed at the edge instantly appearing on floor even when expected to remain supported.
+
+Preventive checklist:
+- For commit-time drop simulation, initialize dynamic bodies just above locally inferred support elevation.
+- Tune dropped-body friction/damping for editor placement reliability, not only physical purity.
+- Re-test edge-on-support and unsupported-overhang placements after any solver knob change.
+
+## 2026-02-16 - Pre-solved commit placement removed expected post-click fall animation
+Root cause:
+- Prop placement committed to a physics-solved rest pose immediately at click time.
+- This bypassed visible post-click motion and made edge placements appear to teleport to floor.
+
+Detection signal:
+- User reported edge placements instantly appearing on floor and requested delayed, visible physics after placement.
+
+Preventive checklist:
+- In editor UX, separate ghost/commit intent from heavy physics settle.
+- Commit at cursor/ghost pose first, then run delayed physics playback for visible feedback when needed.
+- Keep placement pivot anchored to direct mouse raycast coordinates at click time.
+
+## 2026-02-16 - Editor placement needed delayed playback instead of immediate settle
+Root cause:
+- Placement commit used pre-solved physics rest pose, so unstable edge placements teleported to floor at click time.
+- This removed expected temporal feedback of an object first being placed, then falling.
+
+Detection signal:
+- User reported edge placements still appeared instantly on ground and requested explicit 500ms delay before visible physics motion.
+
+Preventive checklist:
+- For editor UX, commit at ghost pose first and decouple post-click simulation into delayed playback.
+- Keep a per-placement playback queue and update only prop transforms during playback for smooth visual feedback.
+- Invalidate hover/drop caches after geometry-affecting edits so repeated clicks at the same cursor location use fresh support data.
+
+## 2026-02-16 - Delayed drop playback lost prop rotation
+Root cause:
+- Drop playback samples stored only translation/elevation, and visual updates only set position.
+- Physics body quaternion was never sampled/applied, so props appeared rotation-locked while falling.
+
+Detection signal:
+- User reported dropped props always kept the same orientation even when physics should rotate them.
+- Playback looked like vertical translation only.
+
+Preventive checklist:
+- Any physics playback sample must include both translation and rotation (quaternion).
+- Apply sampled quaternion to live scene roots each frame of playback.
+- Include rotation delta in "skip playback" checks so pure-spin motion still animates.
+- Keep or clear runtime rotation maps intentionally at snapshot/load boundaries to avoid stale state leaks.
+
+## 2026-02-16 - Tilted prop playback must use root-pose Y, not collider min-Y
+Root cause:
+- Drop sampling wrote `placement.elevation` from collider world min-Y.
+- For rolled/tilted props, collider min-Y and prop root Y diverge, so visual meshes appeared to sink below the floor.
+
+Detection signal:
+- User reported bottles looked correctly simulated but ended up slightly below floor after settling.
+
+Preventive checklist:
+- Treat editor placement elevation as prop-root world Y consistently.
+- Convert between root pose and body pose via rotated local root offset for both spawn and sample paths.
+- Avoid mixing collider min-Y semantics with render root transforms in delayed playback.
+
+## 2026-02-16 - Reload should run a one-shot full-scene settle for legacy unstable props
+Root cause:
+- Old saved placements could retain pre-fix unsupported stacks because only newly placed props were simulated.
+
+Detection signal:
+- After reload, many existing props remained in physically implausible placements from previous experiments.
+
+Preventive checklist:
+- On startup with saved editor state, queue a one-shot world settle after relevant prop templates finish loading.
+- Apply settled root poses + quaternions back into placement/runtime maps, then autosave.
+- Guard the settle pass with in-flight/pending flags so it runs once and avoids re-entry.

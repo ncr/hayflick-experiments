@@ -4,6 +4,7 @@ import { generateImage } from "./api/openai";
 import { generateModel } from "./api/tripo";
 
 let nextId = 1;
+const DEFAULT_BATCH_CONCURRENCY = 5;
 
 export function createPropItem(description: string): PropItem {
   return {
@@ -68,7 +69,7 @@ export async function generateImagesParallel(
   items: PropItem[],
   styleGuide: StyleGuide,
   updateProp: (id: string, patch: Partial<PropItem>) => void,
-  concurrency = 3
+  concurrency = DEFAULT_BATCH_CONCURRENCY
 ): Promise<void> {
   const tasks = items.map((item) => async () => {
     updateProp(item.id, { status: "generating-image", imageError: null });
@@ -104,7 +105,7 @@ export async function generateImagesParallel(
 export async function generate3DParallel(
   items: PropItem[],
   updateProp: (id: string, patch: Partial<PropItem>) => void,
-  concurrency = 3
+  concurrency = DEFAULT_BATCH_CONCURRENCY
 ): Promise<void> {
   const tasks = items.map((item) => async () => {
     if (!item.conceptImage) return;

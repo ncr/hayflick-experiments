@@ -12,7 +12,7 @@ foundational code for game experiments.
    - Low-res render target is derived from viewport + DPR baseline (`zoom=1`).
    - Zoom must not recompute low-res grid dimensions.
 3. World-to-game-pixel contract:
-   - 1 world tile edge (`128cm`) maps to `32` game pixels horizontally and `16`
+   - 1 world tile edge (`128cm`) maps to `64` game pixels horizontally and `32`
      game pixels vertically.
    - Contract holds at all zoom levels.
 4. Integer upscale:

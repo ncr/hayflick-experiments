@@ -9,6 +9,8 @@ import { meta as physicsRapierMeta } from "./physics-rapier/meta";
 import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
 import { meta as pixelPerfectCameraZoomMeta } from "./pixel-perfect-camera-zoom/meta";
 import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
+import { meta as propDropEdgeTestMeta } from "./prop-drop-edge-test/meta";
+import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
@@ -25,6 +27,10 @@ export const experiments: ExperimentRegistryEntry[] = [
     load: () => import("./level-builder/index")
   },
   {
+    ...settlementBuilderEcsMeta,
+    load: () => import("./settlement-builder-ecs/index")
+  },
+  {
     ...physicsRapierMeta,
     load: () => import("./physics-rapier/index")
   },
@@ -39,6 +45,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...pixelStableMovingMeshMeta,
     load: () => import("./pixel-stable-moving-mesh/index")
+  },
+  {
+    ...propDropEdgeTestMeta,
+    load: () => import("./prop-drop-edge-test/index")
   }
   // AUTO_ENTRIES_END
 ];

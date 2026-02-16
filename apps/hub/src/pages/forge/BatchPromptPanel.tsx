@@ -37,7 +37,7 @@ export function BatchPromptPanel({
     if (drafts.length === 0) return;
     setGenerating(true);
     try {
-      await generateImagesParallel(drafts, styleGuide, updateProp, 3);
+      await generateImagesParallel(drafts, styleGuide, updateProp, 5);
     } finally {
       setGenerating(false);
     }
