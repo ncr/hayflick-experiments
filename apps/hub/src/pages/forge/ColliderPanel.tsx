@@ -9,50 +9,50 @@ import {
 interface Props {
   viewport: ViewportHandle | null;
   onColliderChange: (params: ColliderParams) => void;
+  hideTitle?: boolean;
+  /** Increment to trigger a refit (e.g. after scale changes) */
+  refitTrigger?: number;
 }
 
-export function ColliderPanel({ viewport, onColliderChange }: Props) {
+export function ColliderPanel({ viewport, onColliderChange, hideTitle, refitTrigger }: Props) {
   const [type, setType] = useState<ColliderType>("box");
   const [params, setParams] = useState<ColliderParams | null>(null);
+  const [padding, setPadding] = useState(1.0);
 
-  const autoFit = (colliderType: ColliderType) => {
+  const applyPadding = (
+    base: ColliderParams,
+    scale: number
+  ): ColliderParams => {
+    const scaledParams: Record<string, number> = {};
+    for (const [key, value] of Object.entries(base.params)) {
+      scaledParams[key] = value * scale;
+    }
+    return { ...base, params: scaledParams };
+  };
+
+  const autoFit = (colliderType: ColliderType, pad = padding) => {
     if (!viewport) return;
     const bbox = viewport.getBBox();
     if (!bbox) return;
     const fitted = autoFitCollider(colliderType, bbox);
-    setParams(fitted);
-    viewport.setCollider(fitted);
-    onColliderChange(fitted);
+    const scaled = applyPadding(fitted, pad);
+    setParams(scaled);
+    viewport.setCollider(scaled);
+    onColliderChange(scaled);
   };
 
   useEffect(() => {
     autoFit(type);
-  }, [type, viewport]);
+  }, [type, viewport, refitTrigger]);
 
-  const updateParam = (key: string, value: number) => {
-    if (!params) return;
-    const updated: ColliderParams = {
-      ...params,
-      params: { ...params.params, [key]: value },
-    };
-    setParams(updated);
-    viewport?.setCollider(updated);
-    onColliderChange(updated);
-  };
-
-  const updatePosition = (axis: number, value: number) => {
-    if (!params) return;
-    const pos = [...params.position] as [number, number, number];
-    pos[axis] = value;
-    const updated: ColliderParams = { ...params, position: pos };
-    setParams(updated);
-    viewport?.setCollider(updated);
-    onColliderChange(updated);
+  const handlePaddingChange = (value: number) => {
+    setPadding(value);
+    autoFit(type, value);
   };
 
   return (
     <div className="forge-panel" data-testid="forge-collider">
-      <h3>Collider Shape</h3>
+      {!hideTitle && <h3>Collider Shape</h3>}
 
       <div className="forge-field">
         <label>Type</label>
@@ -61,7 +61,7 @@ export function ColliderPanel({ viewport, onColliderChange }: Props) {
           onChange={(e) => {
             const t = e.target.value as ColliderType;
             setType(t);
-            autoFit(t);
+            setPadding(1.0);
           }}
           data-testid="collider-type"
         >
@@ -75,47 +75,35 @@ export function ColliderPanel({ viewport, onColliderChange }: Props) {
 
       <button
         className="forge-btn"
-        onClick={() => autoFit(type)}
+        onClick={() => { setPadding(1.0); autoFit(type, 1.0); }}
         data-testid="collider-autofit"
+        style={{ marginBottom: "0.5rem" }}
       >
-        Auto-fit to mesh
+        Auto-fit
       </button>
 
-      {params && (
-        <>
-          <div className="forge-field">
-            <label>Position offset</label>
-            <div className="forge-vec3">
-              {(["x", "y", "z"] as const).map((axis, i) => (
-                <input
-                  key={axis}
-                  type="number"
-                  step={0.01}
-                  value={params.position[i]}
-                  onChange={(e) => updatePosition(i, Number(e.target.value))}
-                  placeholder={axis}
-                />
-              ))}
-            </div>
-          </div>
+      {type !== "convex-hull" && (
+        <div className="forge-field">
+          <label>Padding: {Math.round(padding * 100)}%</label>
+          <input
+            type="range"
+            min={0.8}
+            max={2.0}
+            step={0.05}
+            value={padding}
+            onChange={(e) => handlePaddingChange(Number(e.target.value))}
+            data-testid="collider-padding"
+          />
+        </div>
+      )}
 
-          {Object.entries(params.params).length > 0 && (
-            <div className="forge-field">
-              <label>Shape parameters</label>
-              {Object.entries(params.params).map(([key, value]) => (
-                <div key={key} className="forge-param-row">
-                  <span>{key}</span>
-                  <input
-                    type="number"
-                    step={0.01}
-                    value={value}
-                    onChange={(e) => updateParam(key, Number(e.target.value))}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </>
+      {params && type !== "convex-hull" && (
+        <div className="forge-info">
+          {type === "box" && `${(params.params.halfWidth * 2).toFixed(3)} x ${(params.params.halfHeight * 2).toFixed(3)} x ${(params.params.halfDepth * 2).toFixed(3)}m`}
+          {type === "sphere" && `r=${params.params.radius.toFixed(3)}m`}
+          {type === "capsule" && `r=${params.params.radius.toFixed(3)}m h=${(params.params.halfHeight * 2).toFixed(3)}m`}
+          {type === "cylinder" && `r=${params.params.radius.toFixed(3)}m h=${(params.params.halfHeight * 2).toFixed(3)}m`}
+        </div>
       )}
     </div>
   );

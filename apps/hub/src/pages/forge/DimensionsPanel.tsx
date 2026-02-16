@@ -3,6 +3,7 @@ import type { ViewportHandle } from "./Viewport";
 import {
   computeScaleForTarget,
   applyScale,
+  computeBBox,
   type ScaleMode,
   type BBox,
 } from "./processing/dimensions";
@@ -15,9 +16,10 @@ interface Props {
     targetValue: number;
     bbox: BBox;
   }) => void;
+  hideTitle?: boolean;
 }
 
-export function DimensionsPanel({ viewport, onDimensionsChange }: Props) {
+export function DimensionsPanel({ viewport, onDimensionsChange, hideTitle }: Props) {
   const [mode, setMode] = useState<ScaleMode>("height");
   const [targetValue, setTargetValue] = useState(0.85);
   const [currentBBox, setCurrentBBox] = useState<BBox | null>(null);
@@ -37,27 +39,46 @@ export function DimensionsPanel({ viewport, onDimensionsChange }: Props) {
     const model = viewport.getModel();
     if (!model) return;
 
-    const scale = computeScaleForTarget(currentBBox, mode, targetValue);
+    // Reset to unit scale first so computeScaleForTarget works from unscaled bbox
+    model.scale.set(1, 1, 1);
+    model.updateMatrixWorld(true);
+    const unscaledBBox = computeBBox(model);
+
+    const scale = computeScaleForTarget(unscaledBBox, mode, targetValue);
     applyScale(model, scale);
     setAppliedScale(scale);
 
-    // Refresh bbox display
     const newBBox = viewport.getBBox();
     if (newBBox) {
       setCurrentBBox(newBBox);
       viewport.setBBoxVisible(true);
-      onDimensionsChange({
-        scale,
-        mode,
-        targetValue,
-        bbox: newBBox,
-      });
+      onDimensionsChange({ scale, mode, targetValue, bbox: newBBox });
     }
+  };
+
+  const handleReset = () => {
+    if (!viewport) return;
+    const model = viewport.getModel();
+    if (!model) return;
+
+    applyScale(model, 1);
+    setAppliedScale(1);
+
+    const newBBox = viewport.getBBox();
+    if (newBBox) setCurrentBBox(newBBox);
+
+    // Always notify so collider refits even if bbox is null
+    onDimensionsChange({
+      scale: 1,
+      mode,
+      targetValue,
+      bbox: newBBox ?? currentBBox!,
+    });
   };
 
   return (
     <div className="forge-panel" data-testid="forge-dimensions">
-      <h3>Scale & Dimensions</h3>
+      {!hideTitle && <h3>Scale & Dimensions</h3>}
 
       {currentBBox && (
         <div className="forge-bbox-info" data-testid="bbox-info">
@@ -101,14 +122,25 @@ export function DimensionsPanel({ viewport, onDimensionsChange }: Props) {
         />
       </div>
 
-      <button
-        className="forge-btn forge-btn-primary"
-        onClick={handleApply}
-        disabled={!currentBBox}
-        data-testid="apply-scale-btn"
-      >
-        Apply Scale
-      </button>
+      <div className="forge-btn-group">
+        <button
+          className="forge-btn forge-btn-primary"
+          onClick={handleApply}
+          disabled={!currentBBox}
+          data-testid="apply-scale-btn"
+        >
+          Apply Scale
+        </button>
+        {appliedScale !== 1 && (
+          <button
+            className="forge-btn"
+            onClick={handleReset}
+            data-testid="reset-scale-btn"
+          >
+            Reset
+          </button>
+        )}
+      </div>
 
       {appliedScale !== 1 && (
         <div className="forge-info">

@@ -1,12 +1,13 @@
-/* Asset Forge layout */
+/* Asset Forge layout — 3-column + dual viewports */
 .forge-shell {
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 320px 1fr 300px;
   height: 100%;
   background: radial-gradient(circle at 20% 0%, #e7f0fb 0%, #dfe8f1 40%, #ced8e3 100%);
 }
 
-.forge-sidebar {
+/* Left rail */
+.forge-left-rail {
   display: flex;
   flex-direction: column;
   border-right: 1px solid #a8b5c4;
@@ -16,12 +17,12 @@
   padding: 0;
 }
 
-.forge-sidebar-header {
+.forge-left-rail-header {
   padding: 1rem 1rem 0.5rem;
   border-bottom: 1px solid #d0dae6;
 }
 
-.forge-sidebar-header h2 {
+.forge-left-rail-header h2 {
   margin: 0;
   font-size: 1.1rem;
   letter-spacing: 0.04em;
@@ -29,56 +30,28 @@
   color: #162130;
 }
 
-/* Workflow steps nav */
-.forge-steps {
+/* Right rail */
+.forge-right-rail {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 0.5rem;
+  border-left: 1px solid #a8b5c4;
+  background: rgba(246, 250, 255, 0.9);
+  backdrop-filter: blur(6px);
+  overflow-y: auto;
+  padding: 0;
+}
+
+.forge-right-rail-header {
+  padding: 0.75rem 1rem 0.5rem;
   border-bottom: 1px solid #d0dae6;
 }
 
-.forge-step {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.6rem;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  border-radius: 6px;
-  font-size: 0.85rem;
-  color: #5a6f86;
-  text-align: left;
-}
-
-.forge-step:hover {
-  background: rgba(42, 111, 149, 0.08);
-}
-
-.forge-step-active {
-  background: #deeffd;
+.forge-right-rail-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: #162130;
-  font-weight: 600;
-}
-
-.forge-step-done .forge-step-num {
-  background: #2a6f95;
-  color: white;
-}
-
-.forge-step-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #d0dae6;
-  color: #5a6f86;
-  font-size: 0.7rem;
-  font-weight: 700;
-  flex-shrink: 0;
 }
 
 /* Panel area */
@@ -183,45 +156,56 @@
   padding: 0 0.25rem;
 }
 
-/* Navigation */
-.forge-nav {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  border-top: 1px solid #d0dae6;
-  border-bottom: 1px solid #d0dae6;
+.forge-btn-sm {
+  padding: 0.2rem 0.45rem;
+  font-size: 0.75rem;
 }
 
-.forge-nav .forge-btn-primary {
-  margin-left: auto;
+.forge-btn-danger {
+  color: #cc3333;
+  border-color: #cc3333;
 }
 
-/* Viewport area */
-.forge-viewport-area {
+.forge-btn-danger:hover {
+  background: #fff0f0;
+}
+
+/* Center area — dual viewports */
+.forge-center {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
 }
 
-.forge-viewport-header {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid #d0dae6;
-  background: rgba(246, 250, 255, 0.7);
-}
-
-.forge-view-toggle {
-  display: flex;
-  gap: 0.35rem;
-}
-
-.forge-viewport-container {
+.forge-viewports {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   flex: 1;
   min-height: 0;
+}
+
+.forge-viewport-pane {
   position: relative;
+  min-width: 0;
+  min-height: 0;
   background: #1a1a2e;
+}
+
+.forge-viewport-pane:first-child {
+  border-right: 1px solid #333;
+}
+
+.forge-viewport-label {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.75rem;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  z-index: 1;
+  pointer-events: none;
 }
 
 /* Reference images */
@@ -380,7 +364,7 @@
   gap: 0.3rem;
 }
 
-.forge-vec3 input {
+.forge-field .forge-vec3 input[type="number"] {
   width: 0;
   flex: 1;
   padding: 0.3rem 0.4rem;
@@ -436,7 +420,8 @@
   min-width: 80px;
 }
 
-.forge-param-row input {
+.forge-param-row input[type="number"] {
+  width: 0;
   flex: 1;
   padding: 0.3rem 0.4rem;
   border: 1px solid #b5c2d2;
@@ -466,46 +451,216 @@
   gap: 0.4rem;
 }
 
-.forge-prop-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* Saved props visual gallery */
+.forge-saved-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 6px;
+}
+
+.forge-saved-card {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-
-.forge-prop-item {
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  padding: 0.35rem 0.5rem;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
   cursor: pointer;
-  font-size: 0.8rem;
-  border-radius: 4px;
+  background: #eef3f9;
+  padding: 0;
+  text-align: left;
+}
+
+.forge-saved-card:hover {
+  border-color: rgba(42, 111, 149, 0.3);
+}
+
+.forge-saved-card-active {
+  border-color: #2a6f95;
+}
+
+.forge-saved-card-img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+
+.forge-saved-card-placeholder {
+  width: 100%;
+  aspect-ratio: 1;
+  background: #d0dae6;
+}
+
+.forge-saved-card-label {
+  padding: 3px 5px;
+  font-size: 0.65rem;
   color: #415263;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.forge-prop-item:hover {
-  background: rgba(42, 111, 149, 0.08);
-}
-
-.forge-prop-active {
-  background: #deeffd;
+/* Batch prompt panel */
+.forge-batch-textarea {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #b5c2d2;
+  border-radius: 6px;
+  background: #f7fbff;
+  font-size: 0.82rem;
   color: #162130;
+  font-family: inherit;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.forge-batch-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+
+/* Batch image gallery */
+.forge-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 6px;
+}
+
+.forge-image-cell {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  cursor: pointer;
+  background: #eef3f9;
+}
+
+.forge-image-cell:hover {
+  border-color: rgba(42, 111, 149, 0.3);
+}
+
+.forge-image-cell-selected {
+  border-color: #2a6f95;
+}
+
+.forge-image-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.forge-image-cell-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  color: #8899aa;
+  text-align: center;
+  padding: 0.25rem;
+}
+
+.forge-image-cell-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  font-size: 0.55rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+}
+
+.forge-image-cell-badge-generating {
+  background: #2a6f95;
+}
+
+.forge-image-cell-badge-ready {
+  background: #228833;
+}
+
+.forge-image-cell-badge-error {
+  background: #cc3333;
+}
+
+.forge-gallery-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Right-rail collapsible sections */
+.forge-right-rail details {
+  border-bottom: 1px solid #d0dae6;
+}
+
+.forge-right-rail details summary {
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #162130;
+  cursor: pointer;
+  user-select: none;
+}
+
+.forge-right-rail details summary:hover {
+  background: rgba(42, 111, 149, 0.05);
+}
+
+.forge-right-rail .forge-panel {
+  padding-top: 0;
+}
+
+/* No-prop placeholder */
+.forge-no-selection {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 2rem 1rem;
+  text-align: center;
+  color: #8899aa;
+  font-size: 0.85rem;
+}
+
+/* Section dividers in left rail */
+.forge-section {
+  border-bottom: 1px solid #d0dae6;
 }
 
 /* Responsive */
+@media (max-width: 1100px) {
+  .forge-shell {
+    grid-template-columns: 280px 1fr 260px;
+  }
+}
+
 @media (max-width: 900px) {
   .forge-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto 1fr auto;
   }
 
-  .forge-sidebar {
-    max-height: 50vh;
+  .forge-left-rail {
+    max-height: 40vh;
     border-right: none;
     border-bottom: 1px solid #a8b5c4;
+  }
+
+  .forge-right-rail {
+    max-height: 40vh;
+    border-left: none;
+    border-top: 1px solid #a8b5c4;
+  }
+
+  .forge-viewports {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+
+  .forge-viewport-pane:first-child {
+    border-right: none;
+    border-bottom: 1px solid #333;
   }
 }

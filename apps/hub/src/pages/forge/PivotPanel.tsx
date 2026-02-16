@@ -1,49 +1,64 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import * as THREE from "three";
 import type { ViewportHandle } from "./Viewport";
 import {
   computePivotOffset,
   applyPivotOffset,
+  computeBBox,
   type PivotPreset,
 } from "./processing/dimensions";
 
 interface Props {
   viewport: ViewportHandle | null;
   onPivotChange: (preset: PivotPreset, offset: [number, number, number]) => void;
+  hideTitle?: boolean;
+  /** The pivot offset already baked into geometry (e.g. from auto-pivot on load) */
+  initialOffset?: [number, number, number];
 }
 
-export function PivotPanel({ viewport, onPivotChange }: Props) {
+export function PivotPanel({ viewport, onPivotChange, hideTitle, initialOffset }: Props) {
   const [preset, setPreset] = useState<PivotPreset>("bottom-center");
-  const [customOffset, setCustomOffset] = useState<[number, number, number]>([
-    0, 0, 0,
-  ]);
+  // Track cumulative geometry offset so we can undo before re-applying.
+  // Initialized from the offset already applied during model load.
+  const appliedOffsetRef = useRef<THREE.Vector3>(
+    initialOffset
+      ? new THREE.Vector3(initialOffset[0], initialOffset[1], initialOffset[2])
+      : new THREE.Vector3()
+  );
 
   const handleApplyPreset = (p: PivotPreset) => {
     setPreset(p);
     if (!viewport) return;
     const model = viewport.getModel();
-    const bbox = viewport.getBBox();
-    if (!model || !bbox) return;
+    if (!model) return;
 
-    const offset = computePivotOffset(bbox, p);
+    // Undo previous offset
+    const prev = appliedOffsetRef.current;
+    if (prev.x !== 0 || prev.y !== 0 || prev.z !== 0) {
+      applyPivotOffset(model, prev.clone().negate());
+    }
+
+    // Compute bbox in local space (temporarily reset scale)
+    const savedScale = model.scale.clone();
+    model.scale.set(1, 1, 1);
+    model.updateMatrixWorld(true);
+    const localBBox = computeBBox(model);
+
+    const offset = computePivotOffset(localBBox, p);
     applyPivotOffset(model, offset);
+    appliedOffsetRef.current = offset.clone();
+
+    // Restore scale
+    model.scale.copy(savedScale);
+    model.updateMatrixWorld(true);
+
     viewport.setBBoxVisible(true);
     onPivotChange(p, [offset.x, offset.y, offset.z]);
   };
 
-  const handleApplyCustom = () => {
-    if (!viewport) return;
-    const model = viewport.getModel();
-    if (!model) return;
-    const offset = new THREE.Vector3(...customOffset);
-    applyPivotOffset(model, offset);
-    viewport.setBBoxVisible(true);
-    onPivotChange(preset, customOffset);
-  };
-
   return (
     <div className="forge-panel" data-testid="forge-pivot">
-      <h3>Set Pivot</h3>
+      {!hideTitle && <h3>Set Pivot</h3>}
 
       <div className="forge-field">
         <label>Preset</label>
@@ -61,29 +76,6 @@ export function PivotPanel({ viewport, onPivotChange }: Props) {
             </button>
           ))}
         </div>
-      </div>
-
-      <div className="forge-field">
-        <label>Custom offset (x, y, z)</label>
-        <div className="forge-vec3">
-          {(["x", "y", "z"] as const).map((axis, i) => (
-            <input
-              key={axis}
-              type="number"
-              step={0.01}
-              value={customOffset[i]}
-              onChange={(e) => {
-                const next = [...customOffset] as [number, number, number];
-                next[i] = Number(e.target.value);
-                setCustomOffset(next);
-              }}
-              placeholder={axis}
-            />
-          ))}
-        </div>
-        <button className="forge-btn" onClick={handleApplyCustom}>
-          Apply Custom
-        </button>
       </div>
     </div>
   );

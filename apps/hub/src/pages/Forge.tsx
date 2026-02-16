@@ -2,48 +2,21 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Viewport, type ViewportHandle } from "./forge/Viewport";
 import { ViewportPixel, type ViewportPixelHandle } from "./forge/ViewportPixel";
 import { StyleGuidePanel, type StyleGuide } from "./forge/StyleGuidePanel";
-import { GenerateImagePanel } from "./forge/GenerateImagePanel";
-import { Generate3DPanel } from "./forge/Generate3DPanel";
-import { SimplifyPanel } from "./forge/SimplifyPanel";
-import { DimensionsPanel } from "./forge/DimensionsPanel";
-import { PivotPanel } from "./forge/PivotPanel";
-import { ColliderPanel } from "./forge/ColliderPanel";
-import { ExportPanel } from "./forge/ExportPanel";
+import { BatchPromptPanel } from "./forge/BatchPromptPanel";
+import { BatchImageGallery } from "./forge/BatchImageGallery";
+import { ProcessingRail } from "./forge/ProcessingRail";
 import { PropGallery } from "./forge/PropGallery";
 import * as fsApi from "./forge/api/fs";
 import * as THREE from "three";
+import type { PropItem } from "./forge/types";
 import type { ColliderParams } from "./forge/processing/colliders";
-import type { PivotPreset, ScaleMode, BBox } from "./forge/processing/dimensions";
+import type { PivotPreset, ScaleMode } from "./forge/processing/dimensions";
+import { normalizeAndPivot } from "./forge/processing/dimensions";
 import { countTotalFaces } from "./forge/processing/simplify";
-
-type WorkflowStep =
-  | "style"
-  | "image"
-  | "model"
-  | "simplify"
-  | "dimensions"
-  | "pivot"
-  | "collider"
-  | "export";
-
-const STEPS: { key: WorkflowStep; label: string }[] = [
-  { key: "style", label: "Style Guide" },
-  { key: "image", label: "Reference Image" },
-  { key: "model", label: "3D Model" },
-  { key: "simplify", label: "Simplify" },
-  { key: "dimensions", label: "Dimensions" },
-  { key: "pivot", label: "Pivot" },
-  { key: "collider", label: "Collider" },
-  { key: "export", label: "Export" },
-];
 
 export function Forge() {
   const viewportRef = useRef<ViewportHandle>(null);
   const pixelViewportRef = useRef<ViewportPixelHandle>(null);
-
-  // Workflow state
-  const [step, setStep] = useState<WorkflowStep>("style");
-  const [viewMode, setViewMode] = useState<"normal" | "pixel">("normal");
 
   // Style guide
   const [styleGuide, setStyleGuide] = useState<StyleGuide>({
@@ -54,100 +27,110 @@ export function Forge() {
     referenceImages: [],
   });
 
-  // Image generation
-  const [propDescription, setPropDescription] = useState("");
-  const [conceptImage, setConceptImage] = useState<string | null>(null);
+  // Batch prop state (the queue)
+  const [props, setProps] = useState<Map<string, PropItem>>(new Map());
+  const [selectedPropId, setSelectedPropId] = useState<string | null>(null);
 
-  // 3D model
-  const [rawGlb, setRawGlb] = useState<ArrayBuffer | null>(null);
-  const [originalModel, setOriginalModel] = useState<THREE.Group | null>(null);
+  // Loaded-from-disk prop (separate from queue)
+  const [loadedProp, setLoadedProp] = useState<PropItem | null>(null);
 
-  // Processing state
-  const [originalFaces, setOriginalFaces] = useState(0);
-  const [simplifiedFaces, setSimplifiedFaces] = useState(0);
-  const [simplificationRatio, setSimplificationRatio] = useState(1);
-  const [scale, setScale] = useState(1);
-  const [scaleMode, setScaleMode] = useState<ScaleMode>("height");
-  const [targetDimension, setTargetDimension] = useState(0.85);
-  const [pivot, setPivot] = useState<PivotPreset>("bottom-center");
-  const [pivotOffset, setPivotOffset] = useState<[number, number, number]>([0, 0, 0]);
-  const [collider, setCollider] = useState<ColliderParams | null>(null);
-  const [textureResolution, setTextureResolution] = useState(0);
-  const [bbox, setBBox] = useState<BBox | null>(null);
-
-  // Model version counter — increments every time the normal viewport's model changes
+  // Model version counter — triggers pixel viewport sync
   const [modelVersion, setModelVersion] = useState(0);
 
-  // Gallery
-  const [selectedProp, setSelectedProp] = useState("");
+  // Original model for simplify panel (per-selection)
+  const [originalModel, setOriginalModel] = useState<THREE.Group | null>(null);
 
-  const composePrompt = () => {
-    return [
-      styleGuide.prompt,
-      propDescription,
-      "3/4 view, product shot, centered object, plain mid-gray background.",
-    ]
-      .filter(Boolean)
-      .join(" ");
-  };
+  // The active prop shown in the right rail: loaded prop takes priority over queue selection
+  const activeProp = loadedProp ?? (selectedPropId ? props.get(selectedPropId) ?? null : null);
 
-  const handleAcceptImage = () => {
-    setStep("model");
-  };
-
-  const handleModelGenerated = useCallback(
-    async (glb: ArrayBuffer) => {
-      setRawGlb(glb);
-      const vp = viewportRef.current;
-      if (!vp) return;
-      const group = await vp.loadGlb(glb);
-      vp.setModel(group);
-      setOriginalModel(group.clone(true));
-      const faces = countTotalFaces(group);
-      setOriginalFaces(faces);
-      setSimplifiedFaces(faces);
-      setStep("simplify");
+  const updateProp = useCallback(
+    (id: string, patch: Partial<PropItem>) => {
+      // Update loaded prop if it matches
+      setLoadedProp((prev) => {
+        if (prev && prev.id === id) return { ...prev, ...patch };
+        return prev;
+      });
+      // Update queue prop if it matches
+      setProps((prev) => {
+        const existing = prev.get(id);
+        if (!existing) return prev;
+        const next = new Map(prev);
+        next.set(id, { ...existing, ...patch });
+        return next;
+      });
     },
     []
   );
 
-  const handleSimplifiedModel = (model: THREE.Group) => {
-    const faces = countTotalFaces(model);
-    setSimplifiedFaces(faces);
-    setSimplificationRatio(originalFaces > 0 ? faces / originalFaces : 1);
-  };
+  const handleAddProps = useCallback((items: PropItem[]) => {
+    setProps((prev) => {
+      const next = new Map(prev);
+      for (const item of items) {
+        next.set(item.id, item);
+      }
+      return next;
+    });
+  }, []);
 
-  const handleDimensionsChange = (info: {
-    scale: number;
-    mode: ScaleMode;
-    targetValue: number;
-    bbox: BBox;
-  }) => {
-    setScale(info.scale);
-    setScaleMode(info.mode);
-    setTargetDimension(info.targetValue);
-    setBBox(info.bbox);
-  };
+  const handleRemoveProp = useCallback(
+    (id: string) => {
+      setProps((prev) => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+      if (selectedPropId === id) {
+        setSelectedPropId(null);
+        setOriginalModel(null);
+        viewportRef.current?.setModel(null);
+      }
+    },
+    [selectedPropId]
+  );
 
-  const handlePivotChange = (
-    preset: PivotPreset,
-    offset: [number, number, number]
-  ) => {
-    setPivot(preset);
-    setPivotOffset(offset);
-    // Refresh bbox
-    const b = viewportRef.current?.getBBox();
-    if (b) setBBox(b);
-  };
+  // Select a prop from the batch queue — load its GLB into viewport
+  const handleSelectQueueProp = useCallback(
+    async (id: string) => {
+      setSelectedPropId(id);
+      setLoadedProp(null); // clear loaded prop so queue selection takes priority
+      const prop = props.get(id);
+      if (!prop) return;
 
-  const handleColliderChange = (params: ColliderParams) => {
-    setCollider(params);
-  };
+      const vp = viewportRef.current;
+      if (!vp) return;
 
-  const handleSelectProp = async (propId: string) => {
-    setSelectedProp(propId);
+      if (prop.rawGlb) {
+        const group = await vp.loadGlb(prop.rawGlb);
+
+        // Normalize transforms and auto-pivot to bottom-center
+        const pivotOff = normalizeAndPivot(group);
+        updateProp(id, { pivot: "bottom-center", pivotOffset: pivotOff });
+
+        if (prop.scale !== 1) {
+          group.scale.set(prop.scale, prop.scale, prop.scale);
+          group.updateMatrixWorld(true);
+        }
+
+        vp.setModel(group);
+        setOriginalModel(group.clone(true));
+
+        const faces = countTotalFaces(group);
+        updateProp(id, { originalFaces: faces, simplifiedFaces: faces });
+
+        if (prop.collider) {
+          vp.setCollider(prop.collider);
+        }
+      } else {
+        vp.setModel(null);
+        setOriginalModel(null);
+      }
+    },
+    [props, updateProp]
+  );
+
+  // Load a saved prop from disk — does NOT add to batch queue
+  const handleSelectSavedProp = async (propId: string) => {
     try {
-      // Load meta.json
       const meta = await fsApi.readJson<{
         description: string;
         styleGuide: string;
@@ -165,40 +148,68 @@ export function Forge() {
         collider: ColliderParams;
       }>(`props/${propId}/meta.json`);
 
-      // Restore all state from meta
-      setPropDescription(meta.description);
-      setOriginalFaces(meta.processing.originalFaces);
-      setSimplifiedFaces(meta.processing.simplifiedFaces);
-      setSimplificationRatio(meta.processing.simplificationRatio);
-      setScale(meta.processing.scale[0]);
-      setScaleMode(meta.processing.targetDimension.method);
-      setTargetDimension(meta.processing.targetDimension.value);
-      setPivot(meta.processing.pivot);
-      setPivotOffset(meta.processing.pivotOffset);
-      setCollider(meta.collider);
-      setTextureResolution(meta.processing.textureResolution);
-      setBBox({
-        width: meta.processing.bbox.width,
-        height: meta.processing.bbox.height,
-        depth: meta.processing.bbox.depth,
-        center: new THREE.Vector3(),
-        min: new THREE.Vector3(),
-        max: new THREE.Vector3(),
-      });
-
-      // Try to load raw model first, fall back to processed
       let glb: ArrayBuffer;
       try {
         glb = await fsApi.readBinary(`props/${propId}/raw/tripo-output.glb`);
-        setRawGlb(glb);
       } catch {
         glb = await fsApi.readBinary(`props/${propId}/processed/model.glb`);
       }
+
+      let conceptImage: string | null = null;
+      try {
+        const res = await fsApi.readFile(`props/${propId}/raw/concept.png`);
+        const blob = await res.blob();
+        conceptImage = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+      } catch {
+        // No concept image
+      }
+
+      const item: PropItem = {
+        id: `saved-${propId}`,
+        description: meta.description,
+        status: "3d-ready",
+        conceptImage,
+        imageError: null,
+        rawGlb: glb,
+        modelProgress: 100,
+        modelError: null,
+        originalFaces: meta.processing.originalFaces,
+        simplifiedFaces: meta.processing.simplifiedFaces,
+        simplificationRatio: meta.processing.simplificationRatio,
+        scale: meta.processing.scale[0],
+        scaleMode: meta.processing.targetDimension.method,
+        targetDimension: meta.processing.targetDimension.value,
+        pivot: meta.processing.pivot,
+        pivotOffset: meta.processing.pivotOffset,
+        collider: meta.collider,
+        textureResolution: meta.processing.textureResolution,
+        bbox: {
+          width: meta.processing.bbox.width,
+          height: meta.processing.bbox.height,
+          depth: meta.processing.bbox.depth,
+          center: new THREE.Vector3(),
+          min: new THREE.Vector3(),
+          max: new THREE.Vector3(),
+        },
+      };
+
+      // Set as loaded prop (NOT in queue), clear queue selection
+      setLoadedProp(item);
+      setSelectedPropId(null);
+
+      // Load into viewport
       const vp = viewportRef.current;
       if (vp) {
         const group = await vp.loadGlb(glb);
 
-        // Re-apply processing: scale, pivot
+        // Normalize transforms and auto-pivot to bottom-center
+        const pivotOff = normalizeAndPivot(group);
+        setLoadedProp((prev) => prev ? { ...prev, pivot: "bottom-center", pivotOffset: pivotOff } : prev);
+
         if (meta.processing.scale[0] !== 1) {
           group.scale.set(
             meta.processing.scale[0],
@@ -207,43 +218,26 @@ export function Forge() {
           );
           group.updateMatrixWorld(true);
         }
-        if (meta.processing.pivotOffset) {
-          const off = meta.processing.pivotOffset;
-          if (off[0] !== 0 || off[1] !== 0 || off[2] !== 0) {
-            group.traverse((child) => {
-              if (child instanceof THREE.Mesh && child.geometry) {
-                child.geometry.translate(off[0], off[1], off[2]);
-              }
-            });
-          }
-        }
 
         vp.setModel(group);
         setOriginalModel(group.clone(true));
-        const faces = countTotalFaces(group);
-        setOriginalFaces(faces);
-        setSimplifiedFaces(meta.processing.simplifiedFaces || faces);
 
-        // Re-apply collider visual
         if (meta.collider) {
           vp.setCollider(meta.collider);
         }
 
-        // Update bbox from actual model
         const actualBBox = vp.getBBox();
-        if (actualBBox) setBBox(actualBBox);
+        if (actualBBox) {
+          setLoadedProp((prev) => prev ? { ...prev, bbox: actualBBox } : prev);
+        }
       }
-
-      setStep("simplify");
     } catch {
       // Prop not fully saved
     }
   };
 
-  // Sync model from normal viewport → pixel viewport whenever model changes or pixel view becomes active.
-  // requestAnimationFrame ensures the pixel viewport's scene is fully initialized before we set the model.
+  // Sync model from normal viewport to pixel viewport unconditionally
   useEffect(() => {
-    if (viewMode !== "pixel") return;
     const raf = requestAnimationFrame(() => {
       const model = viewportRef.current?.getModel();
       if (model) {
@@ -251,159 +245,77 @@ export function Forge() {
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [viewMode, modelVersion]);
-
-  const stepIndex = STEPS.findIndex((s) => s.key === step);
+  }, [modelVersion]);
 
   return (
     <div className="forge-shell" data-testid="forge-page">
-      <div className="forge-sidebar">
-        <div className="forge-sidebar-header">
+      {/* LEFT RAIL */}
+      <div className="forge-left-rail">
+        <div className="forge-left-rail-header">
           <h2>Asset Forge</h2>
         </div>
 
-        {/* Workflow steps */}
-        <nav className="forge-steps">
-          {STEPS.map((s, i) => (
-            <button
-              key={s.key}
-              className={`forge-step ${step === s.key ? "forge-step-active" : ""} ${i <= stepIndex ? "forge-step-done" : ""}`}
-              onClick={() => setStep(s.key)}
-            >
-              <span className="forge-step-num">{i + 1}</span>
-              <span>{s.label}</span>
-            </button>
-          ))}
-        </nav>
-
-        {/* Active panel */}
         <div className="forge-panel-area">
-          {step === "style" && (
+          {/* Style Guide */}
+          <div className="forge-section">
             <StyleGuidePanel value={styleGuide} onChange={setStyleGuide} />
-          )}
-          {step === "image" && (
-            <GenerateImagePanel
-              styleGuide={styleGuide}
-              conceptImage={conceptImage}
-              onConceptImage={setConceptImage}
-              propDescription={propDescription}
-              onPropDescription={setPropDescription}
-              onAccept={handleAcceptImage}
-            />
-          )}
-          {step === "model" && (
-            <Generate3DPanel
-              conceptImage={conceptImage}
-              onModelGenerated={handleModelGenerated}
-            />
-          )}
-          {step === "simplify" && (
-            <SimplifyPanel
-              viewport={viewportRef.current}
-              originalModel={originalModel}
-              onSimplifiedModel={handleSimplifiedModel}
-            />
-          )}
-          {step === "dimensions" && (
-            <DimensionsPanel
-              viewport={viewportRef.current}
-              onDimensionsChange={handleDimensionsChange}
-            />
-          )}
-          {step === "pivot" && (
-            <PivotPanel
-              viewport={viewportRef.current}
-              onPivotChange={handlePivotChange}
-            />
-          )}
-          {step === "collider" && (
-            <ColliderPanel
-              viewport={viewportRef.current}
-              onColliderChange={handleColliderChange}
-            />
-          )}
-          {step === "export" && (
-            <ExportPanel
-              viewport={viewportRef.current}
-              propDescription={propDescription}
-              conceptImage={conceptImage}
-              composedPrompt={composePrompt()}
-              styleGuide={styleGuide}
-              rawGlb={rawGlb}
-              originalFaces={originalFaces}
-              simplifiedFaces={simplifiedFaces}
-              simplificationRatio={simplificationRatio}
-              scale={scale}
-              scaleMode={scaleMode}
-              targetDimension={targetDimension}
-              pivot={pivot}
-              pivotOffset={pivotOffset}
-              collider={collider}
-              textureResolution={textureResolution}
-              bbox={bbox}
-            />
-          )}
-        </div>
+          </div>
 
-        {/* Navigation */}
-        <div className="forge-nav">
-          {stepIndex > 0 && (
-            <button
-              className="forge-btn"
-              onClick={() => setStep(STEPS[stepIndex - 1].key)}
-            >
-              Back
-            </button>
-          )}
-          {stepIndex < STEPS.length - 1 && (
-            <button
-              className="forge-btn forge-btn-primary"
-              onClick={() => setStep(STEPS[stepIndex + 1].key)}
-            >
-              Next
-            </button>
-          )}
-        </div>
+          {/* Batch Prompts */}
+          <BatchPromptPanel
+            styleGuide={styleGuide}
+            props={props}
+            updateProp={updateProp}
+            onAddProps={handleAddProps}
+          />
 
-        {/* Gallery */}
-        <PropGallery
-          onSelectProp={handleSelectProp}
-          selectedProp={selectedProp}
-        />
+          {/* Image Gallery / Queue */}
+          <BatchImageGallery
+            props={props}
+            selectedPropId={loadedProp ? null : selectedPropId}
+            onSelectProp={handleSelectQueueProp}
+            updateProp={updateProp}
+            onRemoveProp={handleRemoveProp}
+          />
+
+          {/* Saved Props */}
+          <PropGallery
+            onSelectProp={handleSelectSavedProp}
+            selectedProp={loadedProp?.id.replace("saved-", "") ?? ""}
+          />
+        </div>
       </div>
 
-      <div className="forge-viewport-area">
-        <div className="forge-viewport-header">
-          <div className="forge-view-toggle">
-            <button
-              className={`forge-btn ${viewMode === "normal" ? "forge-btn-active" : ""}`}
-              onClick={() => setViewMode("normal")}
-            >
-              3D View
-            </button>
-            <button
-              className={`forge-btn ${viewMode === "pixel" ? "forge-btn-active" : ""}`}
-              onClick={() => setViewMode("pixel")}
-            >
-              Pixel View
-            </button>
-          </div>
-        </div>
-        <div className="forge-viewport-container">
-          <div style={{ display: viewMode === "normal" ? "block" : "none", width: "100%", height: "100%" }}>
+      {/* CENTER — Dual Viewports */}
+      <div className="forge-center">
+        <div className="forge-viewports">
+          <div className="forge-viewport-pane">
+            <span className="forge-viewport-label">3D View</span>
             <Viewport
               ref={viewportRef}
-              onModelChange={() => {
-                setModelVersion((v) => v + 1);
-              }}
+              onModelChange={() => setModelVersion((v) => v + 1)}
             />
           </div>
-          {viewMode === "pixel" && (
-            <div style={{ width: "100%", height: "100%" }}>
-              <ViewportPixel ref={pixelViewportRef} />
-            </div>
-          )}
+          <div className="forge-viewport-pane">
+            <span className="forge-viewport-label">Pixel View</span>
+            <ViewportPixel ref={pixelViewportRef} />
+          </div>
         </div>
+      </div>
+
+      {/* RIGHT RAIL */}
+      <div className="forge-right-rail" data-testid="forge-right-rail">
+        <div className="forge-right-rail-header">
+          <h2>Processing</h2>
+        </div>
+        <ProcessingRail
+          viewport={viewportRef.current}
+          prop={activeProp}
+          originalModel={originalModel}
+          styleGuide={styleGuide}
+          updateProp={updateProp}
+          onModelChanged={() => setModelVersion((v) => v + 1)}
+        />
       </div>
     </div>
   );

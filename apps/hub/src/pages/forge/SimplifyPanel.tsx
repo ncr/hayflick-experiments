@@ -23,12 +23,14 @@ interface Props {
   viewport: ViewportHandle | null;
   originalModel: THREE.Group | null;
   onSimplifiedModel: (model: THREE.Group) => void;
+  hideTitle?: boolean;
 }
 
 export function SimplifyPanel({
   viewport,
   originalModel,
   onSimplifiedModel,
+  hideTitle,
 }: Props) {
   const [ratio, setRatio] = useState(1.0);
   const [simplifying, setSimplifying] = useState(false);
@@ -119,7 +121,7 @@ export function SimplifyPanel({
 
   return (
     <div className="forge-panel" data-testid="forge-simplify">
-      <h3>Inspect & Simplify</h3>
+      {!hideTitle && <h3>Inspect & Simplify</h3>}
 
       <div className="forge-field">
         <label>

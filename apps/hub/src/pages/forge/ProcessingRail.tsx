@@ -1,0 +1,143 @@
+import { useState } from "react";
+import type { ViewportHandle } from "./Viewport";
+import type { PropItem } from "./types";
+import { SimplifyPanel } from "./SimplifyPanel";
+import { DimensionsPanel } from "./DimensionsPanel";
+import { PivotPanel } from "./PivotPanel";
+import { ColliderPanel } from "./ColliderPanel";
+import { ExportPanel } from "./ExportPanel";
+import type { StyleGuide } from "./StyleGuidePanel";
+import type * as THREE from "three";
+import type { PivotPreset, ScaleMode, BBox } from "./processing/dimensions";
+import type { ColliderParams } from "./processing/colliders";
+import { composePrompt } from "./batch";
+
+interface Props {
+  viewport: ViewportHandle | null;
+  prop: PropItem | null;
+  originalModel: THREE.Group | null;
+  styleGuide: StyleGuide;
+  updateProp: (id: string, patch: Partial<PropItem>) => void;
+  onModelChanged: () => void;
+}
+
+export function ProcessingRail({
+  viewport,
+  prop,
+  originalModel,
+  styleGuide,
+  updateProp,
+  onModelChanged,
+}: Props) {
+  const [colliderRefitTrigger, setColliderRefitTrigger] = useState(0);
+
+  if (!prop) {
+    return (
+      <div className="forge-no-selection">
+        Select a prop from the queue to configure processing settings.
+      </div>
+    );
+  }
+
+  const id = prop.id;
+
+  const handleSimplifiedModel = (_model: THREE.Group) => {
+    onModelChanged();
+    setColliderRefitTrigger((v) => v + 1);
+  };
+
+  const handleDimensionsChange = (info: {
+    scale: number;
+    mode: ScaleMode;
+    targetValue: number;
+    bbox: BBox;
+  }) => {
+    updateProp(id, {
+      scale: info.scale,
+      scaleMode: info.mode,
+      targetDimension: info.targetValue,
+      bbox: info.bbox,
+    });
+    onModelChanged();
+    setColliderRefitTrigger((v) => v + 1);
+  };
+
+  const handlePivotChange = (
+    preset: PivotPreset,
+    offset: [number, number, number]
+  ) => {
+    updateProp(id, { pivot: preset, pivotOffset: offset });
+    const b = viewport?.getBBox();
+    if (b) updateProp(id, { bbox: b });
+    onModelChanged();
+    setColliderRefitTrigger((v) => v + 1);
+  };
+
+  const handleColliderChange = (params: ColliderParams) => {
+    updateProp(id, { collider: params });
+  };
+
+  return (
+    <>
+      <details open>
+        <summary>Simplify</summary>
+        <SimplifyPanel
+          viewport={viewport}
+          originalModel={originalModel}
+          onSimplifiedModel={handleSimplifiedModel}
+          hideTitle
+        />
+      </details>
+      <details open>
+        <summary>Dimensions</summary>
+        <DimensionsPanel
+          viewport={viewport}
+          onDimensionsChange={handleDimensionsChange}
+          hideTitle
+        />
+      </details>
+      <details open>
+        <summary>Pivot</summary>
+        <PivotPanel
+          key={id}
+          viewport={viewport}
+          onPivotChange={handlePivotChange}
+          hideTitle
+          initialOffset={prop.pivotOffset}
+        />
+      </details>
+      <details open>
+        <summary>Collider</summary>
+        <ColliderPanel
+          viewport={viewport}
+          onColliderChange={handleColliderChange}
+          refitTrigger={colliderRefitTrigger}
+          hideTitle
+        />
+      </details>
+      <details open>
+        <summary>Export</summary>
+        <ExportPanel
+          viewport={viewport}
+          propDescription={prop.description}
+          conceptImage={prop.conceptImage}
+          composedPrompt={composePrompt(styleGuide, prop.description)}
+          styleGuide={styleGuide}
+          rawGlb={prop.rawGlb}
+          originalFaces={prop.originalFaces}
+          simplifiedFaces={prop.simplifiedFaces}
+          simplificationRatio={prop.simplificationRatio}
+          scale={prop.scale}
+          scaleMode={prop.scaleMode}
+          targetDimension={prop.targetDimension}
+          pivot={prop.pivot}
+          pivotOffset={prop.pivotOffset}
+          collider={prop.collider}
+          textureResolution={prop.textureResolution}
+          bbox={prop.bbox}
+          hideTitle
+        />
+      </details>
+    </>
+  );
+}

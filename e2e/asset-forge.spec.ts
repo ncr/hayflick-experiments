@@ -10,7 +10,7 @@ const MOCK_GLB = fs.readFileSync(
 );
 
 test.describe("asset forge workflow", () => {
-  test("full forge workflow with mocked APIs", async ({ page }) => {
+  test("batch forge workflow with dual viewports", async ({ page }) => {
     // Mock OpenAI image generation
     await page.route("**/api/openai/generate-image", async (route) => {
       const pngBase64 = MOCK_PNG.toString("base64");
@@ -101,104 +101,97 @@ test.describe("asset forge workflow", () => {
     // 1. Navigate to #/forge
     await page.goto("/#/forge");
 
-    // 2. Verify forge page renders
+    // 2. Verify forge page renders with 3-column layout
     const forgePage = page.locator('[data-testid="forge-page"]');
     await expect(forgePage).toBeVisible();
 
-    const viewport = page.locator('[data-testid="forge-viewport"]');
-    await expect(viewport).toBeVisible();
+    // 3. Verify dual viewports are visible
+    const viewportPanes = page.locator(".forge-viewport-pane");
+    await expect(viewportPanes).toHaveCount(2);
 
-    // 3. Style guide: enter style prompt
+    // Verify right rail is visible
+    const rightRail = page.locator('[data-testid="forge-right-rail"]');
+    await expect(rightRail).toBeVisible();
+
+    // 4. Style guide: enter style prompt
     const styleGuidePanel = page.locator('[data-testid="forge-style-guide"]');
     await expect(styleGuidePanel).toBeVisible();
 
     const stylePrompt = page.locator('[data-testid="style-guide-prompt"]');
     await stylePrompt.fill("Stylized low-poly, warm palette");
 
-    // 4. Move to image generation step
-    const nextBtn = page.locator(".forge-nav .forge-btn-primary");
-    await nextBtn.click();
+    // 5. Enter batch descriptions
+    const batchPanel = page.locator('[data-testid="forge-batch-prompt"]');
+    await expect(batchPanel).toBeVisible();
 
-    // Generate image
-    const imagePanel = page.locator('[data-testid="forge-generate-image"]');
-    await expect(imagePanel).toBeVisible();
+    const batchTextarea = page.locator('[data-testid="batch-prompt-textarea"]');
+    await batchTextarea.fill("wooden chair\nstone well");
 
-    const propDesc = page.locator('[data-testid="prop-description"]');
-    await propDesc.fill("wooden chair");
+    // Add to queue
+    const addToQueueBtn = page.locator('[data-testid="add-to-queue-btn"]');
+    await addToQueueBtn.click();
 
-    const genImageBtn = page.locator('[data-testid="generate-image-btn"]');
-    await genImageBtn.click();
+    // Verify props appear in gallery
+    const batchGallery = page.locator('[data-testid="forge-batch-gallery"]');
+    await expect(batchGallery).toBeVisible();
+    const propCells = page.locator(".forge-image-cell");
+    await expect(propCells).toHaveCount(2);
 
-    // Wait for concept image to appear
-    const conceptImg = page.locator('[data-testid="concept-image"]');
-    await expect(conceptImg).toBeVisible({ timeout: 10000 });
+    // 6. Generate all images
+    const genAllImagesBtn = page.locator(
+      '[data-testid="generate-all-images-btn"]'
+    );
+    await genAllImagesBtn.click();
 
-    // Accept the image
-    const acceptBtn = page.locator('[data-testid="accept-image-btn"]');
-    await acceptBtn.click();
+    // Wait for images to appear (both props should get images)
+    await expect(
+      page.locator(".forge-image-cell img").first()
+    ).toBeVisible({ timeout: 15000 });
 
-    // 5. Generate 3D
-    const gen3dPanel = page.locator('[data-testid="forge-generate-3d"]');
-    await expect(gen3dPanel).toBeVisible();
+    // 7. Generate all 3D models
+    const genAll3DBtn = page.locator('[data-testid="generate-all-3d-btn"]');
+    await genAll3DBtn.click();
 
-    const gen3dBtn = page.locator('[data-testid="generate-3d-btn"]');
-    await gen3dBtn.click();
+    // Wait for 3D badge to appear
+    await expect(
+      page.locator(".forge-image-cell-badge-ready").first()
+    ).toBeVisible({ timeout: 30000 });
 
-    // Wait for simplify panel to appear (auto-advances after 3D gen)
+    // 8. Select first prop — should load into viewport
+    await propCells.first().click();
+
+    // 9. Verify processing panels are visible in right rail
     const simplifyPanel = page.locator('[data-testid="forge-simplify"]');
-    await expect(simplifyPanel).toBeVisible({ timeout: 30000 });
+    await expect(simplifyPanel).toBeVisible();
 
-    // 6. Verify face count
-    const faceCount = page.locator('[data-testid="face-count"]');
-    await expect(faceCount).toBeVisible();
-    const faceText = await faceCount.textContent();
-    expect(Number(faceText)).toBeGreaterThan(0);
-
-    // Toggle wireframe
-    const wireframeToggle = page.locator('[data-testid="wireframe-toggle"]');
-    await wireframeToggle.check();
-    await wireframeToggle.uncheck();
-
-    // 7. Navigate to dimensions
-    await nextBtn.click();
     const dimPanel = page.locator('[data-testid="forge-dimensions"]');
     await expect(dimPanel).toBeVisible();
 
-    // Select fit height and enter target
+    const pivotPanel = page.locator('[data-testid="forge-pivot"]');
+    await expect(pivotPanel).toBeVisible();
+
+    const colliderPanel = page.locator('[data-testid="forge-collider"]');
+    await expect(colliderPanel).toBeVisible();
+
+    const exportPanel = page.locator('[data-testid="forge-export"]');
+    await expect(exportPanel).toBeVisible();
+
+    // 10. Apply scale
     const targetDim = page.locator('[data-testid="target-dimension"]');
     await targetDim.fill("0.85");
 
     const applyScaleBtn = page.locator('[data-testid="apply-scale-btn"]');
     await applyScaleBtn.click();
 
-    // Verify bbox info shows
-    const bboxInfo = page.locator('[data-testid="bbox-info"]');
-    await expect(bboxInfo).toBeVisible();
-
-    // 8. Navigate to pivot
-    await nextBtn.click();
-    const pivotPanel = page.locator('[data-testid="forge-pivot"]');
-    await expect(pivotPanel).toBeVisible();
-
-    // Select bottom-center preset
+    // 11. Set pivot
     const pivotBtn = page.locator('[data-testid="pivot-bottom-center"]');
     await pivotBtn.click();
 
-    // 9. Navigate to collider
-    await nextBtn.click();
-    const colliderPanel = page.locator('[data-testid="forge-collider"]');
-    await expect(colliderPanel).toBeVisible();
-
-    // Select capsule type
+    // 12. Set collider
     const colliderType = page.locator('[data-testid="collider-type"]');
     await colliderType.selectOption("capsule");
 
-    // 10. Navigate to export
-    await nextBtn.click();
-    const exportPanel = page.locator('[data-testid="forge-export"]');
-    await expect(exportPanel).toBeVisible();
-
-    // Save asset
+    // 13. Save asset
     const saveBtn = page.locator('[data-testid="save-asset-btn"]');
     await saveBtn.click();
 

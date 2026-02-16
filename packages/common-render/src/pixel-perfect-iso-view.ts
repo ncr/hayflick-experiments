@@ -877,6 +877,11 @@ export class PixelPerfectIsoView {
   };
 
   private handleKeyDown = (event: KeyboardEvent) => {
+    // Don't capture keys when typing in form elements
+    const tag = (event.target as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if ((event.target as HTMLElement)?.isContentEditable) return;
+
     if (event.code === "KeyQ") {
       this.zoomBurstActive = false;
       this.rotationSnapActive = false;

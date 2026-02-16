@@ -78,6 +78,55 @@ export function applyPivotOffset(
   });
 }
 
+/**
+ * Bake all nested transforms (rotation, position, scale) into geometry vertices,
+ * then flatten the hierarchy so every mesh is a direct child of the root group
+ * with identity transforms. Fixes models that arrive rotated off-axis.
+ */
+export function normalizeTransforms(group: THREE.Group): void {
+  group.updateMatrixWorld(true);
+
+  const meshes: { mesh: THREE.Mesh; mat: THREE.Matrix4 }[] = [];
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.geometry) {
+      meshes.push({ mesh: child, mat: child.matrixWorld.clone() });
+    }
+  });
+
+  // Remove all children
+  while (group.children.length > 0) {
+    group.remove(group.children[0]);
+  }
+
+  // Re-add meshes as direct children with baked geometry
+  for (const { mesh, mat } of meshes) {
+    mesh.geometry = mesh.geometry.clone();
+    mesh.geometry.applyMatrix4(mat);
+    mesh.position.set(0, 0, 0);
+    mesh.rotation.set(0, 0, 0);
+    mesh.scale.set(1, 1, 1);
+    mesh.updateMatrix();
+    group.add(mesh);
+  }
+
+  group.position.set(0, 0, 0);
+  group.rotation.set(0, 0, 0);
+  group.scale.set(1, 1, 1);
+  group.updateMatrixWorld(true);
+}
+
+/**
+ * Normalize transforms and apply bottom-center pivot in one step.
+ * Returns the pivot offset that was applied.
+ */
+export function normalizeAndPivot(group: THREE.Group): [number, number, number] {
+  normalizeTransforms(group);
+  const bbox = computeBBox(group);
+  const offset = computePivotOffset(bbox, "bottom-center");
+  applyPivotOffset(group, offset);
+  return [offset.x, offset.y, offset.z];
+}
+
 export function createBBoxHelper(bbox: BBox): THREE.Box3Helper {
   const box = new THREE.Box3(bbox.min, bbox.max);
   const helper = new THREE.Box3Helper(box, new THREE.Color(0x00ff88));

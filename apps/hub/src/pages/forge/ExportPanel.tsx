@@ -53,6 +53,7 @@ interface Props {
   collider: ColliderParams | null;
   textureResolution: number;
   bbox: BBox | null;
+  hideTitle?: boolean;
 }
 
 export function ExportPanel({
@@ -73,6 +74,7 @@ export function ExportPanel({
   collider,
   textureResolution,
   bbox,
+  hideTitle,
 }: Props) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -175,7 +177,7 @@ export function ExportPanel({
 
   return (
     <div className="forge-panel" data-testid="forge-export">
-      <h3>Export</h3>
+      {!hideTitle && <h3>Export</h3>}
 
       <div className="forge-field">
         <label>
