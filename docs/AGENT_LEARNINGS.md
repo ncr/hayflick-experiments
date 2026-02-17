@@ -1865,3 +1865,68 @@ Preventive checklist:
 - On startup with saved editor state, queue a one-shot world settle after relevant prop templates finish loading.
 - Apply settled root poses + quaternions back into placement/runtime maps, then autosave.
 - Guard the settle pass with in-flight/pending flags so it runs once and avoids re-entry.
+
+## 2026-02-17 - Per-item playback breaks continuous multi-prop physics
+Root cause:
+- Editor prop drop used isolated precomputed playback per placement instead of one persistent world simulation.
+- Placing a new prop introduced a new scripted track, so previously placed props were no longer governed by the same live solver step.
+
+Detection signal:
+- User reported that after placing a second prop, the first prop stopped simulating.
+- Behavior looked like serialized animation clips instead of normal shared-world physics.
+
+Preventive checklist:
+- In editor mode, keep one persistent Rapier world for props and step it every frame.
+- Treat each newly placed prop as a normal body with a delayed activation timestamp (e.g. 500ms), not a pre-baked trajectory.
+- Sync ECS/editor placement state from live body poses each frame and autosave throttled changes from the shared simulation.
+
+## 2026-02-17 - Uniform dynamic prop settings caused support-object drift and unstable reloads
+Root cause:
+- All prop kinds were simulated with the same dynamic-body tuning, so large support assets (desks/mainframes) were not anchored and accumulated solver jitter from stacked small items.
+- Save payloads did not reliably persist runtime orientation/velocity state for props, so reloads reconstructed simplified poses and lost settled disorder.
+
+Detection signal:
+- User reported large support props shaking/drifting when loose props were piled on top.
+- User reported reload reshaping previously chaotic piles into artificial placements.
+
+Preventive checklist:
+- Define per-prop physics profiles (at minimum `fixed` support vs `dynamic` loose) and persist profile overrides in editor save state.
+- Persist prop runtime state (`rotation`, velocities, sleeping) and restore it before rebuilding editor physics bodies.
+- Avoid snapping active dynamic bodies back to authored placement every frame; treat live solver pose as authoritative after activation.
+
+## 2026-02-17 - Collider metadata precedence can silently override legacy compound data
+Root cause:
+- Prop parsing started reading `colliderVariants.compoundBoxes` before legacy `compoundCollider`.
+- Tests and callers still assumed the legacy field was authoritative when both existed.
+
+Detection signal:
+- `prop-library.test.ts` failed after adding collider variants because parsed compound part counts changed from legacy values.
+
+Preventive checklist:
+- When introducing a new metadata contract, explicitly define precedence rules and update tests to assert that precedence.
+- Keep legacy fields as fallback only and verify one mixed-payload fixture (new + legacy fields present) in parser tests.
+
+## 2026-02-17 - Forge collider preview did not refresh after reload/model load
+Root cause:
+- `ProcessingRail` began depending on `modelVersion` for collider rebuild triggers, but `Forge` did not pass the prop.
+- That made `refitTrigger` evaluate to `NaN`, so dependency tracking never observed subsequent model-load changes.
+
+Detection signal:
+- After browser reload, switching collider preview types showed no change until manually clicking "Rebuild Collider Variants".
+
+Preventive checklist:
+- When adding required props in intermediate panel components, update all call sites in the same change.
+- Avoid trigger math that can yield `NaN`; prefer explicit defaults/guards for numeric trigger props.
+- Add a UI smoke check for "reload -> select prop -> switch collider mode" without manual rebuild.
+
+## 2026-02-17 - K-means-only compound boxes underfit non-convex furniture colliders
+Root cause:
+- Compound collider generation used centroid clustering + per-cluster AABBs only, which tends to produce broad overlapping boxes that fill intentional voids (e.g. desk knee space).
+
+Detection signal:
+- User reported desk-like props with two side panels were not represented by expected "top + 2 legs" box composition.
+
+Preventive checklist:
+- Use structure-aware decomposition (voxel slice/run decomposition + vertical merge) before generic k-means fallback.
+- Sample triangle surfaces (not just sparse vertices) when deriving collider structure.
+- Validate collider preview on at least one non-convex furniture prop after collider pipeline changes.

@@ -31,7 +31,42 @@ export type SettlementPropCollider2D = {
   depth: number;
 };
 
-export type SettlementPropColliderMode = "defined" | "mesh";
+export type SettlementPropColliderMode =
+  | "box"
+  | "convex-hull"
+  | "compound-boxes";
+
+export type SettlementPropPhysicsMobility = "fixed" | "dynamic";
+
+export type SettlementPropPhysicsProfile = {
+  mobility: SettlementPropPhysicsMobility;
+  mass: number;
+  friction: number;
+  restitution: number;
+  linearDamping: number;
+  angularDamping: number;
+  activationDelayMs: number;
+};
+
+export type SettlementPropRuntimeState = {
+  rotation: {
+    x: number;
+    y: number;
+    z: number;
+    w: number;
+  };
+  linearVelocity: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  angularVelocity: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  sleeping: boolean;
+};
 
 export type SettlementPropPlacement = {
   placementId: string;
@@ -43,6 +78,7 @@ export type SettlementPropPlacement = {
   rotQuarterTurns: 0 | 1 | 2 | 3;
   elevation: number;
   collider2d: SettlementPropCollider2D | null;
+  runtimeState?: SettlementPropRuntimeState;
 };
 
 export type SettlementEditorSaveV1 = {
@@ -62,6 +98,10 @@ export type SettlementEditorSaveV1 = {
   propColliderModes?: Array<{
     sourcePropId: string;
     mode: SettlementPropColliderMode;
+  }>;
+  propPhysicsProfiles?: Array<{
+    sourcePropId: string;
+    profile: SettlementPropPhysicsProfile;
   }>;
 };
 
@@ -88,6 +128,7 @@ export type ParsedEditorState = {
   structures: Map<string, StructureSegmentData>;
   props: Map<string, SettlementPropPlacement>;
   propColliderModes: Map<string, SettlementPropColliderMode>;
+  propPhysicsProfiles: Map<string, SettlementPropPhysicsProfile>;
 };
 
 export function cellKey(x: number, y: number): string {
@@ -126,6 +167,14 @@ function readFiniteNumber(record: Record<string, unknown>, key: string): number 
     return null;
   }
   return value;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.floor(clamp(value, min, max));
 }
 
 function asInteger(value: unknown): number | null {
@@ -341,7 +390,28 @@ export function serializePropPlacements(
           width: placement.collider2d.width,
           depth: placement.collider2d.depth
         }
-      : null
+      : null,
+    runtimeState: placement.runtimeState
+      ? {
+          rotation: {
+            x: placement.runtimeState.rotation.x,
+            y: placement.runtimeState.rotation.y,
+            z: placement.runtimeState.rotation.z,
+            w: placement.runtimeState.rotation.w
+          },
+          linearVelocity: {
+            x: placement.runtimeState.linearVelocity.x,
+            y: placement.runtimeState.linearVelocity.y,
+            z: placement.runtimeState.linearVelocity.z
+          },
+          angularVelocity: {
+            x: placement.runtimeState.angularVelocity.x,
+            y: placement.runtimeState.angularVelocity.y,
+            z: placement.runtimeState.angularVelocity.z
+          },
+          sleeping: placement.runtimeState.sleeping
+        }
+      : undefined
   }));
 }
 
@@ -353,7 +423,9 @@ export function serializePropColliderModes(
       ([sourcePropId, mode]) =>
         typeof sourcePropId === "string" &&
         sourcePropId.length > 0 &&
-        (mode === "defined" || mode === "mesh")
+        (mode === "box" ||
+          mode === "convex-hull" ||
+          mode === "compound-boxes")
     )
     .map(([sourcePropId, mode]) => ({ sourcePropId, mode }));
 }
@@ -375,11 +447,21 @@ export function parsePropColliderModes(
       return null;
     }
     const sourcePropId = entry.sourcePropId;
-    const mode = entry.mode;
+    const modeRaw = entry.mode;
+    const mode: SettlementPropColliderMode | null =
+      modeRaw === "defined"
+        ? "compound-boxes"
+        : modeRaw === "mesh"
+          ? "convex-hull"
+          : modeRaw === "box" ||
+              modeRaw === "convex-hull" ||
+              modeRaw === "compound-boxes"
+            ? modeRaw
+            : null;
     if (
       typeof sourcePropId !== "string" ||
       sourcePropId.length === 0 ||
-      (mode !== "defined" && mode !== "mesh")
+      mode === null
     ) {
       return null;
     }
@@ -387,6 +469,163 @@ export function parsePropColliderModes(
   }
 
   return modes;
+}
+
+function parsePropRuntimeState(raw: unknown): SettlementPropRuntimeState | null {
+  const state = readRecord(raw);
+  if (!state) {
+    return null;
+  }
+
+  const rotationRecord = readRecord(state.rotation);
+  const linearVelocityRecord = readRecord(state.linearVelocity);
+  const angularVelocityRecord = readRecord(state.angularVelocity);
+  const sleeping = state.sleeping;
+
+  if (
+    !rotationRecord ||
+    !linearVelocityRecord ||
+    !angularVelocityRecord ||
+    typeof sleeping !== "boolean"
+  ) {
+    return null;
+  }
+
+  const rotationX = readFiniteNumber(rotationRecord, "x");
+  const rotationY = readFiniteNumber(rotationRecord, "y");
+  const rotationZ = readFiniteNumber(rotationRecord, "z");
+  const rotationW = readFiniteNumber(rotationRecord, "w");
+  const linearVelocityX = readFiniteNumber(linearVelocityRecord, "x");
+  const linearVelocityY = readFiniteNumber(linearVelocityRecord, "y");
+  const linearVelocityZ = readFiniteNumber(linearVelocityRecord, "z");
+  const angularVelocityX = readFiniteNumber(angularVelocityRecord, "x");
+  const angularVelocityY = readFiniteNumber(angularVelocityRecord, "y");
+  const angularVelocityZ = readFiniteNumber(angularVelocityRecord, "z");
+
+  if (
+    rotationX === null ||
+    rotationY === null ||
+    rotationZ === null ||
+    rotationW === null ||
+    linearVelocityX === null ||
+    linearVelocityY === null ||
+    linearVelocityZ === null ||
+    angularVelocityX === null ||
+    angularVelocityY === null ||
+    angularVelocityZ === null
+  ) {
+    return null;
+  }
+
+  return {
+    rotation: {
+      x: rotationX,
+      y: rotationY,
+      z: rotationZ,
+      w: rotationW
+    },
+    linearVelocity: {
+      x: linearVelocityX,
+      y: linearVelocityY,
+      z: linearVelocityZ
+    },
+    angularVelocity: {
+      x: angularVelocityX,
+      y: angularVelocityY,
+      z: angularVelocityZ
+    },
+    sleeping
+  };
+}
+
+function normalizePropPhysicsProfile(
+  profile: SettlementPropPhysicsProfile
+): SettlementPropPhysicsProfile {
+  return {
+    mobility: profile.mobility === "fixed" ? "fixed" : "dynamic",
+    mass: clamp(profile.mass, 0.01, 250),
+    friction: clamp(profile.friction, 0, 2),
+    restitution: clamp(profile.restitution, 0, 1),
+    linearDamping: clamp(profile.linearDamping, 0, 20),
+    angularDamping: clamp(profile.angularDamping, 0, 20),
+    activationDelayMs: clampInteger(profile.activationDelayMs, 0, 120_000)
+  };
+}
+
+export function serializePropPhysicsProfiles(
+  profiles: Map<string, SettlementPropPhysicsProfile>
+): SettlementEditorSaveV1["propPhysicsProfiles"] {
+  return [...profiles.entries()]
+    .filter(([sourcePropId, profile]) => {
+      return (
+        typeof sourcePropId === "string" &&
+        sourcePropId.length > 0 &&
+        (profile.mobility === "fixed" || profile.mobility === "dynamic")
+      );
+    })
+    .map(([sourcePropId, profile]) => ({
+      sourcePropId,
+      profile: normalizePropPhysicsProfile(profile)
+    }));
+}
+
+export function parsePropPhysicsProfiles(
+  raw: unknown
+): Map<string, SettlementPropPhysicsProfile> | null {
+  if (raw === undefined || raw === null) {
+    return new Map();
+  }
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+
+  const profiles = new Map<string, SettlementPropPhysicsProfile>();
+  for (const entryRaw of raw) {
+    const entry = readRecord(entryRaw);
+    if (!entry) {
+      return null;
+    }
+
+    const sourcePropId = entry.sourcePropId;
+    const profileRecord = readRecord(entry.profile);
+    if (typeof sourcePropId !== "string" || sourcePropId.length === 0 || !profileRecord) {
+      return null;
+    }
+
+    const mobility = profileRecord.mobility;
+    const mass = readFiniteNumber(profileRecord, "mass");
+    const friction = readFiniteNumber(profileRecord, "friction");
+    const restitution = readFiniteNumber(profileRecord, "restitution");
+    const linearDamping = readFiniteNumber(profileRecord, "linearDamping");
+    const angularDamping = readFiniteNumber(profileRecord, "angularDamping");
+    const activationDelayMs = readFiniteNumber(profileRecord, "activationDelayMs");
+    if (
+      (mobility !== "fixed" && mobility !== "dynamic") ||
+      mass === null ||
+      friction === null ||
+      restitution === null ||
+      linearDamping === null ||
+      angularDamping === null ||
+      activationDelayMs === null
+    ) {
+      return null;
+    }
+
+    profiles.set(
+      sourcePropId,
+      normalizePropPhysicsProfile({
+        mobility,
+        mass,
+        friction,
+        restitution,
+        linearDamping,
+        angularDamping,
+        activationDelayMs
+      })
+    );
+  }
+
+  return profiles;
 }
 
 export function parsePropPlacements(
@@ -454,6 +693,16 @@ export function parsePropPlacements(
       collider2d = { width, depth };
     }
 
+    const runtimeStateRaw = entry.runtimeState;
+    let runtimeState: SettlementPropRuntimeState | undefined;
+    if (runtimeStateRaw !== undefined && runtimeStateRaw !== null) {
+      const parsedRuntimeState = parsePropRuntimeState(runtimeStateRaw);
+      if (!parsedRuntimeState) {
+        return null;
+      }
+      runtimeState = parsedRuntimeState;
+    }
+
     placements.set(placementId, {
       placementId,
       sourcePropId,
@@ -463,7 +712,8 @@ export function parsePropPlacements(
       offsetZ,
       rotQuarterTurns,
       elevation,
-      collider2d
+      collider2d,
+      runtimeState
     });
   }
 
@@ -477,6 +727,7 @@ export function buildEditorSaveV1(options: {
   structures: Map<string, StructureSegmentData>;
   props: Map<string, SettlementPropPlacement>;
   propColliderModes: Map<string, SettlementPropColliderMode>;
+  propPhysicsProfiles: Map<string, SettlementPropPhysicsProfile>;
 }): SettlementEditorSaveV1 {
   return {
     schemaVersion: SETTLEMENT_EDITOR_SCHEMA_VERSION,
@@ -487,7 +738,8 @@ export function buildEditorSaveV1(options: {
     ),
     structures: serializeStructureState(options.structures),
     props: serializePropPlacements(options.props),
-    propColliderModes: serializePropColliderModes(options.propColliderModes)
+    propColliderModes: serializePropColliderModes(options.propColliderModes),
+    propPhysicsProfiles: serializePropPhysicsProfiles(options.propPhysicsProfiles)
   };
 }
 
@@ -509,8 +761,9 @@ export function parseEditorSaveV1(
   const structures = parseStructureState(record.structures, gridTiles);
   const props = parsePropPlacements(record.props ?? [], gridTiles);
   const propColliderModes = parsePropColliderModes(record.propColliderModes);
+  const propPhysicsProfiles = parsePropPhysicsProfiles(record.propPhysicsProfiles);
 
-  if (!terrain || !structures || !props || !propColliderModes) {
+  if (!terrain || !structures || !props || !propColliderModes || !propPhysicsProfiles) {
     return null;
   }
 
@@ -520,7 +773,8 @@ export function parseEditorSaveV1(
     overrides: terrain.overrides,
     structures,
     props,
-    propColliderModes
+    propColliderModes,
+    propPhysicsProfiles
   };
 }
 

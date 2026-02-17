@@ -19,6 +19,7 @@ interface Props {
   styleGuide: StyleGuide;
   updateProp: (id: string, patch: Partial<PropItem>) => void;
   onModelChanged: () => void;
+  modelVersion: number;
 }
 
 export function ProcessingRail({
@@ -28,6 +29,7 @@ export function ProcessingRail({
   styleGuide,
   updateProp,
   onModelChanged,
+  modelVersion
 }: Props) {
   const [colliderRefitTrigger, setColliderRefitTrigger] = useState(0);
 
@@ -41,7 +43,7 @@ export function ProcessingRail({
 
   const id = prop.id;
 
-  const handleSimplifiedModel = (_model: THREE.Group) => {
+  const handleSimplifiedModel = () => {
     onModelChanged();
     setColliderRefitTrigger((v) => v + 1);
   };
@@ -77,6 +79,8 @@ export function ProcessingRail({
     updateProp(id, { collider: params });
   };
 
+  const colliderRebuildTrigger = colliderRefitTrigger + modelVersion;
+
   return (
     <>
       <details open>
@@ -111,7 +115,7 @@ export function ProcessingRail({
         <ColliderPanel
           viewport={viewport}
           onColliderChange={handleColliderChange}
-          refitTrigger={colliderRefitTrigger}
+          refitTrigger={colliderRebuildTrigger}
           hideTitle
         />
       </details>

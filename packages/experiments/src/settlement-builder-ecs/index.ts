@@ -2,10 +2,11 @@
  * Per-frame flow for this combined editor + game experiment:
  * 1) EDITOR mode mutates a grid editor state (ground overrides + edge structure segments).
  * 2) F5 bakes editor state into ECS LevelResource + collider descriptors.
- * 3) GAME mode runs systems: Input -> PlayerIntent -> PhysicsEnsure -> SyncIn -> Step -> SyncOut -> Door -> Event.
+ * 3) GAME mode runs systems: Input -> PlayerIntent -> Door -> Rapier3D Step -> Sync -> Event.
  * 4) Door interactions are queued from clicks, then DoorSystem toggles logical blocking and physics colliders.
- * 5) K/L in GAME save/load full game state (editor state + player + door states by placementId).
- * 6) ESC returns to EDITOR without mutating editor auth state from runtime-only door toggles.
+ * 5) Props are instantiated as ECS entities and mapped to 3D physics bodies/colliders.
+ * 6) K/L in GAME save/load full game state (editor state + player + door states by placementId).
+ * 7) ESC returns to EDITOR without mutating editor auth state from runtime-only door toggles.
  */
 
 import * as THREE from "three";
@@ -43,25 +44,39 @@ import {
 } from "@common/gameplay";
 import { PixelPerfectIsoView } from "@common/render";
 import {
-  createPhysicsResource,
-  initRapier,
-  physicsEnsureSystem,
-  physicsStepSystem,
-  physicsSyncInSystem,
-  physicsSyncOutSystem,
-  type PhysicsBodyRef,
-  type PhysicsColliderRef,
-  type PhysicsResource
-} from "@common/physics-rapier";
+  createPhysics3dResource,
+  type Physics3dBodyRef,
+  type Physics3dColliderRef,
+  type Physics3dResource
+} from "./game-physics-3d";
 import type { ExperimentModule } from "../runtime/types";
 import { createHistoryController } from "./history";
 import {
   listSavedPropDefinitions,
-  loadSavedPropColliderBinary,
   loadSavedPropBinary,
   makePropPlacementId,
+  type SavedPropColliderVariants,
+  type SavedPropCompoundCollider,
+  type SavedPropConvexHullCollider,
   type SavedPropDefinition
 } from "./prop-library";
+import {
+  clonePropPhysicsProfile,
+  inferPropPhysicsProfile,
+  normalizePropPhysicsProfile,
+  withPropPhysicsMobility
+} from "./prop-physics-profile";
+import {
+  bodyTranslationFromRootPose,
+  quaternionDelta,
+  rootPoseFromBodyPose,
+  yawQuaternionForQuarterTurns
+} from "./prop-physics-math";
+import {
+  collisionGroups,
+  PHYSICS_LAYER,
+  PHYSICS_MASK
+} from "./physics-settings";
 import {
   buildEditorSaveV1,
   parseEditorSaveV1,
@@ -71,6 +86,8 @@ import {
   SETTLEMENT_GAME_SCHEMA_VERSION,
   type SettlementGameSaveV1,
   type SettlementPropColliderMode,
+  type SettlementPropPhysicsMobility,
+  type SettlementPropPhysicsProfile,
   type SettlementPropPlacement
 } from "./schema";
 
@@ -305,42 +322,23 @@ type DroppedPlacement = {
   elevation: number;
 };
 
-type PropTrimeshColliderData = {
-  vertices: Float32Array;
-  indices: Uint32Array;
-  minY: number;
-};
-
-type PropDropDynamicColliderData = {
-  vertices: Float32Array;
-  minY: number;
-  rootOffsetX: number;
-  rootOffsetY: number;
-  rootOffsetZ: number;
-};
-
-type PropDropPlaybackSample = {
-  worldX: number;
-  worldZ: number;
-  elevation: number;
-  rotX: number;
-  rotY: number;
-  rotZ: number;
-  rotW: number;
-};
-
-type PendingPropDropPlayback = {
-  placementId: string;
-  startAtMs: number;
-  frameMs: number;
-  samples: PropDropPlaybackSample[];
-};
-
 type PropRuntimeRotation = {
   x: number;
   y: number;
   z: number;
   w: number;
+};
+
+type EditorPropPhysicsBody = {
+  placementId: string;
+  sourcePropId: string;
+  rotQuarterTurns: 0 | 1 | 2 | 3;
+  profile: SettlementPropPhysicsProfile;
+  body: RAPIER3D.RigidBody;
+  localRootOffset: { x: number; y: number; z: number };
+  usesComplexCollider: boolean;
+  activationTimeMs: number;
+  active: boolean;
 };
 
 type GridEdge = {
@@ -389,13 +387,19 @@ type DoorOverride = {
   locked?: boolean;
 };
 
+type PropComponent = {
+  placementId: string;
+  sourcePropId: string;
+  localRootOffset: { x: number; y: number; z: number };
+};
+
 type GameRuntime = {
   world: World;
   levelResource: MutableGridLevelResource;
   keyboard: KeyboardTracker;
-  physics: PhysicsResource;
-  physicsBodies: DataStore<PhysicsBodyRef>;
-  physicsColliders: DataStore<PhysicsColliderRef>;
+  physics: Physics3dResource;
+  physicsBodies: DataStore<Physics3dBodyRef>;
+  physicsColliders: DataStore<Physics3dColliderRef>;
   systems: {
     inputSystem: ReturnType<typeof createInputSystem>;
     eventSystem: ReturnType<typeof createEventSystem>;
@@ -406,6 +410,9 @@ type GameRuntime = {
   placementIdByEdge: Map<string, string>;
   doorColliderByPlacementId: Map<string, number>;
   doorVisuals: Map<string, EditorDoorVisual>;
+  props: DataStore<PropComponent>;
+  propByPlacementId: Map<string, EID>;
+  propRootByPlacementId: Map<string, THREE.Group>;
   interactionQueue: string[];
 };
 
@@ -422,6 +429,7 @@ type EditorSnapshot = {
   structureSegments: Map<string, StructureSegmentData>;
   propPlacements: Map<string, SettlementPropPlacement>;
   propColliderModes: Map<string, SettlementPropColliderMode>;
+  propPhysicsProfiles: Map<string, SettlementPropPhysicsProfile>;
   propRotationQuarterTurns: 0 | 1 | 2 | 3;
 };
 
@@ -451,16 +459,16 @@ const OUTPUT_OVERSCAN_LOW_PIXELS = 2;
 
 const PLAYER_SPEED = 3.8;
 const PLAYER_SPAWN = { x: 2.5, y: 2.5 };
+const GAME_PHYSICS_PLAYER_RADIUS = 0.24 * TILE_SIZE;
+const GAME_PHYSICS_PLAYER_HALF_HEIGHT = 0.26 * TILE_SIZE;
+const GAME_PHYSICS_PLAYER_CENTER_Y =
+  GAME_PHYSICS_PLAYER_RADIUS + GAME_PHYSICS_PLAYER_HALF_HEIGHT;
+const GAME_PHYSICS_COLLIDER_HEIGHT = 2.8 * TILE_SIZE;
+const GAME_PHYSICS_FLOOR_HALF_HEIGHT = 0.05;
 const GRASS_VARIANT_COUNT = 4;
 const DEFAULT_GRASS_VARIANT_SEED = 0x41c64e6d;
 const DROP_PREVIEW_MAX_LINEAR_SPEED = 8;
 const DROP_PREVIEW_MAX_ANGULAR_SPEED = 18;
-const DROP_PREVIEW_MAX_STEPS = 220;
-const DROP_PREVIEW_STABLE_FRAMES = 16;
-const DROP_PREVIEW_MAX_LATERAL_DRIFT = 0.12;
-const DROP_PLAYBACK_DELAY_MS = 500;
-const DROP_PLAYBACK_FRAME_MS = 1000 / 60;
-const RELOAD_SCENE_SETTLE_MAX_STEPS = 420;
 
 const BRUSH_COLORS: Record<EditorBrush, number> = {
   wall: 0xb9c6d2,
@@ -624,6 +632,55 @@ function normalizeGroundOverride(
   return { base };
 }
 
+function clonePropRuntimeState(
+  runtimeState: SettlementPropPlacement["runtimeState"]
+): SettlementPropPlacement["runtimeState"] {
+  if (!runtimeState) {
+    return undefined;
+  }
+  return {
+    rotation: {
+      x: runtimeState.rotation.x,
+      y: runtimeState.rotation.y,
+      z: runtimeState.rotation.z,
+      w: runtimeState.rotation.w
+    },
+    linearVelocity: {
+      x: runtimeState.linearVelocity.x,
+      y: runtimeState.linearVelocity.y,
+      z: runtimeState.linearVelocity.z
+    },
+    angularVelocity: {
+      x: runtimeState.angularVelocity.x,
+      y: runtimeState.angularVelocity.y,
+      z: runtimeState.angularVelocity.z
+    },
+    sleeping: runtimeState.sleeping
+  };
+}
+
+function clonePropPlacement(
+  placement: SettlementPropPlacement
+): SettlementPropPlacement {
+  return {
+    placementId: placement.placementId,
+    sourcePropId: placement.sourcePropId,
+    cellX: placement.cellX,
+    cellY: placement.cellY,
+    offsetX: placement.offsetX,
+    offsetZ: placement.offsetZ,
+    rotQuarterTurns: placement.rotQuarterTurns,
+    elevation: placement.elevation,
+    collider2d: placement.collider2d
+      ? {
+          width: placement.collider2d.width,
+          depth: placement.collider2d.depth
+        }
+      : null,
+    runtimeState: clonePropRuntimeState(placement.runtimeState)
+  };
+}
+
 function serializeStructureState(
   structureSegments: Map<string, StructureSegmentData>
 ): LevelBuilderStructureSegment[] {
@@ -659,6 +716,7 @@ function parseStoredEditorState(raw: unknown): {
   structures: Map<string, StructureSegmentData>;
   props: Map<string, SettlementPropPlacement>;
   propColliderModes: Map<string, SettlementPropColliderMode>;
+  propPhysicsProfiles: Map<string, SettlementPropPhysicsProfile>;
 } | null {
   const parsed = parseEditorSaveV1(raw, GRID_TILES);
   if (!parsed) {
@@ -671,7 +729,8 @@ function parseStoredEditorState(raw: unknown): {
     overrides: parsed.overrides,
     structures: parsed.structures,
     props: parsed.props,
-    propColliderModes: parsed.propColliderModes
+    propColliderModes: parsed.propColliderModes,
+    propPhysicsProfiles: parsed.propPhysicsProfiles
   };
 }
 
@@ -713,6 +772,10 @@ function toWorldCoordX(x: number): number {
 
 function toWorldCoordZ(y: number): number {
   return GRID_ORIGIN + y * TILE_SIZE;
+}
+
+function toWorldDistance(value: number): number {
+  return value * TILE_SIZE;
 }
 
 function toWorldNodeX(nodeX: number): number {
@@ -1448,17 +1511,59 @@ const experiment: ExperimentModule = {
     propColliderBadge.style.background = "rgba(16, 24, 30, 0.86)";
     propColliderBadge.style.border = "1px solid rgba(148, 173, 190, 0.5)";
     propColliderBadge.style.color = "rgba(223, 237, 247, 0.96)";
-    propInspectorRow.append(propRotationBadge, propSnapBadge, propColliderBadge);
+    const propPhysicsBadge = document.createElement("span");
+    propPhysicsBadge.style.display = "inline-flex";
+    propPhysicsBadge.style.alignItems = "center";
+    propPhysicsBadge.style.padding = "3px 8px";
+    propPhysicsBadge.style.borderRadius = "999px";
+    propPhysicsBadge.style.fontSize = "10px";
+    propPhysicsBadge.style.letterSpacing = "0.08em";
+    propPhysicsBadge.style.textTransform = "uppercase";
+    propPhysicsBadge.style.background = "rgba(16, 24, 30, 0.86)";
+    propPhysicsBadge.style.border = "1px solid rgba(148, 173, 190, 0.5)";
+    propPhysicsBadge.style.color = "rgba(223, 237, 247, 0.96)";
+    propInspectorRow.append(
+      propRotationBadge,
+      propSnapBadge,
+      propColliderBadge,
+      propPhysicsBadge
+    );
 
     const propColliderModeRow = document.createElement("div");
     propColliderModeRow.style.display = "flex";
     propColliderModeRow.style.flexWrap = "wrap";
     propColliderModeRow.style.gap = "7px";
-    const propColliderDefinedButton = hud.createButton("Collider: Proxy (Fast)", () => {
-      setSelectedPropColliderMode("defined");
+    const propColliderBoxButton = hud.createButton("Collider: Box", () => {
+      setSelectedPropColliderMode("box");
     });
-    propColliderModeRow.append(propColliderDefinedButton);
-    propColliderDefinedButton.style.flex = "1 1 220px";
+    const propColliderHullButton = hud.createButton("Collider: Convex Hull", () => {
+      setSelectedPropColliderMode("convex-hull");
+    });
+    const propColliderCompoundButton = hud.createButton("Collider: Compound", () => {
+      setSelectedPropColliderMode("compound-boxes");
+    });
+    propColliderModeRow.append(
+      propColliderBoxButton,
+      propColliderHullButton,
+      propColliderCompoundButton
+    );
+    propColliderBoxButton.style.flex = "1 1 120px";
+    propColliderHullButton.style.flex = "1 1 140px";
+    propColliderCompoundButton.style.flex = "1 1 140px";
+
+    const propPhysicsModeRow = document.createElement("div");
+    propPhysicsModeRow.style.display = "flex";
+    propPhysicsModeRow.style.flexWrap = "wrap";
+    propPhysicsModeRow.style.gap = "7px";
+    const propPhysicsDynamicButton = hud.createButton("Physics: Loose", () => {
+      setSelectedPropPhysicsMobility("dynamic");
+    });
+    const propPhysicsFixedButton = hud.createButton("Physics: Support", () => {
+      setSelectedPropPhysicsMobility("fixed");
+    });
+    propPhysicsDynamicButton.style.flex = "1 1 150px";
+    propPhysicsFixedButton.style.flex = "1 1 150px";
+    propPhysicsModeRow.append(propPhysicsDynamicButton, propPhysicsFixedButton);
 
     const propActionRow = document.createElement("div");
     propActionRow.style.display = "flex";
@@ -1509,6 +1614,7 @@ const experiment: ExperimentModule = {
       propSelectionLabel,
       propInspectorRow,
       propColliderModeRow,
+      propPhysicsModeRow,
       propActionRow,
       propCardGrid,
       propEmptyState
@@ -1540,10 +1646,16 @@ const experiment: ExperimentModule = {
     const importJsonButton = hud.createButton("Import JSON", () => {
       importJsonInput.click();
     });
+    const clearAllButton = hud.createButton("Clear All", () => {
+      runEditorMutation("Cleared all level content.", () => clearAllEditorContent());
+    });
     exportJsonButton.style.borderColor = "rgba(210, 174, 102, 0.82)";
     exportJsonButton.style.background =
       "linear-gradient(180deg, rgba(94, 71, 34, 0.88), rgba(52, 41, 24, 0.92))";
     importJsonButton.style.borderColor = "rgba(160, 193, 214, 0.78)";
+    clearAllButton.style.borderColor = "rgba(226, 132, 116, 0.86)";
+    clearAllButton.style.background =
+      "linear-gradient(180deg, rgba(112, 42, 34, 0.9), rgba(66, 24, 20, 0.94))";
     const importJsonInput = document.createElement("input");
     importJsonInput.type = "file";
     importJsonInput.accept = "application/json,.json";
@@ -1556,7 +1668,7 @@ const experiment: ExperimentModule = {
       void importEditorJson(file);
       importJsonInput.value = "";
     });
-    dataRow.append(exportJsonButton, importJsonButton);
+    dataRow.append(exportJsonButton, importJsonButton, clearAllButton);
     const dataRowContainer = dataRow.parentElement as HTMLDivElement | null;
     if (dataRowContainer) {
       dataRowContainer.style.borderColor = "rgba(201, 168, 112, 0.4)";
@@ -1606,24 +1718,18 @@ const experiment: ExperimentModule = {
     const gltfLoader = new GLTFLoader();
     const savedPropDefinitionsById = new Map<string, SavedPropDefinition>();
     const propTemplateById = new Map<string, THREE.Object3D | null>();
-    const propColliderTemplateById = new Map<string, THREE.Object3D | null>();
-    const propProxyTrimeshColliderById = new Map<string, PropTrimeshColliderData | null>();
-    const propDropDynamicColliderById = new Map<
-      string,
-      PropDropDynamicColliderData | null
-    >();
+    const propConvexVerticesById = new Map<string, Float32Array | null>();
     const editorPropRootByPlacementId = new Map<string, THREE.Group>();
     const propRuntimeRotationByPlacementId = new Map<string, PropRuntimeRotation>();
-    const pendingPropDropPlaybackByPlacementId = new Map<
-      string,
-      PendingPropDropPlayback
-    >();
+    const editorPropPhysicsByPlacementId = new Map<string, EditorPropPhysicsBody>();
+    const pendingEditorPropActivationAtMsByPlacementId = new Map<string, number>();
     const propTemplateRequestById = new Map<string, Promise<void>>();
 
     let structureSegments = createMockupStructureSegments();
     let groundOverrides = createMockupTerrainOverrides(userSeed);
     let propPlacements = new Map<string, SettlementPropPlacement>();
     let propColliderModes = new Map<string, SettlementPropColliderMode>();
+    let propPhysicsProfiles = new Map<string, SettlementPropPhysicsProfile>();
     const savedLevelModelJson = localStorage.getItem(LEVEL_MODEL_STORAGE_KEY);
     if (savedLevelModelJson) {
       try {
@@ -1633,6 +1739,7 @@ const experiment: ExperimentModule = {
           groundOverrides = parsed.overrides;
           propPlacements = parsed.props;
           propColliderModes = parsed.propColliderModes;
+          propPhysicsProfiles = new Map(parsed.propPhysicsProfiles);
           defaultGroundBase = parsed.defaultGround;
           userSeed = parsed.seed;
           seedInput.value = String(userSeed);
@@ -1642,6 +1749,7 @@ const experiment: ExperimentModule = {
         // Keep defaults if stored value is invalid JSON.
       }
     }
+    hydrateRuntimeStateFromPlacements();
     for (const placement of propPlacements.values()) {
       ensurePropTemplate(placement.sourcePropId);
     }
@@ -1667,9 +1775,9 @@ const experiment: ExperimentModule = {
     let ghostDropWorldX = 0;
     let ghostDropWorldZ = 0;
     let propDropRevision = 0;
-    let reloadSceneSettlePending =
-      savedLevelModelJson !== null && propPlacements.size > 0;
-    let reloadSceneSettleInFlight = false;
+    let editorPropPhysicsWorld: RAPIER3D.World | null = null;
+    let editorPropPhysicsLastAutosaveMs = 0;
+    let editorPropPhysicsLastHoverRefreshMs = 0;
     const ghostMaterials = new Set<THREE.Material>();
 
     const history = createHistoryController<EditorSnapshot>({
@@ -1695,25 +1803,16 @@ const experiment: ExperimentModule = {
           propPlacements: new Map(
             [...value.propPlacements.entries()].map(([key, placement]) => [
               key,
-              {
-                placementId: placement.placementId,
-                sourcePropId: placement.sourcePropId,
-                cellX: placement.cellX,
-                cellY: placement.cellY,
-                offsetX: placement.offsetX,
-                offsetZ: placement.offsetZ,
-                rotQuarterTurns: placement.rotQuarterTurns,
-                elevation: placement.elevation,
-                collider2d: placement.collider2d
-                  ? {
-                      width: placement.collider2d.width,
-                      depth: placement.collider2d.depth
-                    }
-                : null
-              }
+              clonePropPlacement(placement)
             ])
           ),
           propColliderModes: new Map(value.propColliderModes),
+          propPhysicsProfiles: new Map(
+            [...value.propPhysicsProfiles.entries()].map(([key, profile]) => [
+              key,
+              clonePropPhysicsProfile(profile)
+            ])
+          ),
           propRotationQuarterTurns: value.propRotationQuarterTurns
         };
       }
@@ -1758,27 +1857,34 @@ const experiment: ExperimentModule = {
         propPlacements: new Map(
           [...propPlacements.entries()].map(([key, placement]) => [
             key,
-            {
-              placementId: placement.placementId,
-              sourcePropId: placement.sourcePropId,
-              cellX: placement.cellX,
-              cellY: placement.cellY,
-              offsetX: placement.offsetX,
-              offsetZ: placement.offsetZ,
-              rotQuarterTurns: placement.rotQuarterTurns,
-              elevation: placement.elevation,
-              collider2d: placement.collider2d
-                ? {
-                    width: placement.collider2d.width,
-                    depth: placement.collider2d.depth
-                  }
-                : null
-            }
+            clonePropPlacement(placement)
           ])
         ),
         propColliderModes: new Map(propColliderModes),
+        propPhysicsProfiles: new Map(
+          [...propPhysicsProfiles.entries()].map(([key, profile]) => [
+            key,
+            clonePropPhysicsProfile(profile)
+          ])
+        ),
         propRotationQuarterTurns
       };
+    }
+
+    function hydrateRuntimeStateFromPlacements(): void {
+      propRuntimeRotationByPlacementId.clear();
+      for (const placement of propPlacements.values()) {
+        const runtimeState = placement.runtimeState;
+        if (!runtimeState) {
+          continue;
+        }
+        propRuntimeRotationByPlacementId.set(placement.placementId, {
+          x: runtimeState.rotation.x,
+          y: runtimeState.rotation.y,
+          z: runtimeState.rotation.z,
+          w: runtimeState.rotation.w
+        });
+      }
     }
 
     function applyEditorSnapshot(snapshot: EditorSnapshot): void {
@@ -1787,9 +1893,10 @@ const experiment: ExperimentModule = {
       groundOverrides = new Map(snapshot.groundOverrides);
       structureSegments = new Map(snapshot.structureSegments);
       propPlacements = new Map(snapshot.propPlacements);
-      pendingPropDropPlaybackByPlacementId.clear();
-      propRuntimeRotationByPlacementId.clear();
+      disposeEditorPropPhysics();
+      hydrateRuntimeStateFromPlacements();
       propColliderModes = new Map(snapshot.propColliderModes);
+      propPhysicsProfiles = new Map(snapshot.propPhysicsProfiles);
       propRotationQuarterTurns = snapshot.propRotationQuarterTurns;
       propDropRevision += 1;
       ghostDropCacheKey = "";
@@ -1811,7 +1918,8 @@ const experiment: ExperimentModule = {
         overrides: groundOverrides,
         structures: structureSegments,
         props: propPlacements,
-        propColliderModes
+        propColliderModes,
+        propPhysicsProfiles
       });
       localStorage.setItem(LEVEL_MODEL_STORAGE_KEY, JSON.stringify(payload));
     }
@@ -1823,7 +1931,8 @@ const experiment: ExperimentModule = {
         overrides: groundOverrides,
         structures: structureSegments,
         props: propPlacements,
-        propColliderModes
+        propColliderModes,
+        propPhysicsProfiles
       });
       const blob = new Blob([JSON.stringify(payload, null, 2)], {
         type: "application/json"
@@ -1862,9 +1971,10 @@ const experiment: ExperimentModule = {
       groundOverrides = editor.overrides;
       structureSegments = editor.structures;
       propPlacements = editor.props;
-      pendingPropDropPlaybackByPlacementId.clear();
-      propRuntimeRotationByPlacementId.clear();
+      disposeEditorPropPhysics();
+      hydrateRuntimeStateFromPlacements();
       propColliderModes = editor.propColliderModes;
+      propPhysicsProfiles = new Map(editor.propPhysicsProfiles);
       propRotationQuarterTurns = 0;
       propDropRevision += 1;
       ghostDropCacheKey = "";
@@ -1913,6 +2023,28 @@ const experiment: ExperimentModule = {
       scheduleEditorAutosave();
       statusMessage = statusText;
       syncHud();
+      return true;
+    }
+
+    function clearAllEditorContent(): boolean {
+      const hasAnyContent =
+        structureSegments.size > 0 ||
+        groundOverrides.size > 0 ||
+        propPlacements.size > 0 ||
+        propColliderModes.size > 0 ||
+        propPhysicsProfiles.size > 0;
+      if (!hasAnyContent) {
+        return false;
+      }
+
+      structureSegments.clear();
+      groundOverrides.clear();
+      propPlacements.clear();
+      propColliderModes.clear();
+      propPhysicsProfiles.clear();
+      propRuntimeRotationByPlacementId.clear();
+      pendingEditorPropActivationAtMsByPlacementId.clear();
+      disposeEditorPropPhysics();
       return true;
     }
 
@@ -2032,6 +2164,96 @@ const experiment: ExperimentModule = {
       return dimensions.collider2d;
     }
 
+    function getPropColliderVariants(
+      sourcePropId: string
+    ): SavedPropColliderVariants | null {
+      const definition = savedPropDefinitionsById.get(sourcePropId);
+      return definition?.colliderVariants ?? null;
+    }
+
+    function getPropCompoundCollider(
+      sourcePropId: string
+    ): SavedPropCompoundCollider | null {
+      const variants = getPropColliderVariants(sourcePropId);
+      if (variants?.compoundBoxes && variants.compoundBoxes.parts.length > 0) {
+        return variants.compoundBoxes;
+      }
+      const definition = savedPropDefinitionsById.get(sourcePropId);
+      return definition?.compoundCollider ?? null;
+    }
+
+    function getPropConvexHullCollider(
+      sourcePropId: string
+    ): SavedPropConvexHullCollider | null {
+      const variants = getPropColliderVariants(sourcePropId);
+      if (variants?.convexHull && variants.convexHull.points.length >= 4) {
+        return variants.convexHull;
+      }
+      return null;
+    }
+
+    function getAvailablePropColliderModes(
+      sourcePropId: string
+    ): SettlementPropColliderMode[] {
+      const modes: SettlementPropColliderMode[] = ["box"];
+      if (getPropConvexHullCollider(sourcePropId)) {
+        modes.push("convex-hull");
+      }
+      if (getPropCompoundCollider(sourcePropId)) {
+        modes.push("compound-boxes");
+      }
+      return modes;
+    }
+
+    function isPropColliderModeSupported(
+      sourcePropId: string,
+      mode: SettlementPropColliderMode
+    ): boolean {
+      return getAvailablePropColliderModes(sourcePropId).includes(mode);
+    }
+
+    function toRapierCompoundParts(
+      compound: SavedPropCompoundCollider
+    ): Array<{
+      translation: { x: number; y: number; z: number };
+      halfExtents: { x: number; y: number; z: number };
+    }> {
+      return compound.parts.map((part) => ({
+        translation: {
+          x: part.position[0],
+          y: part.position[1],
+          z: part.position[2]
+        },
+        halfExtents: {
+          x: part.halfExtents[0],
+          y: part.halfExtents[1],
+          z: part.halfExtents[2]
+        }
+      }));
+    }
+
+    function toRapierConvexHullVertices(
+      sourcePropId: string,
+      hull: SavedPropConvexHullCollider
+    ): Float32Array | null {
+      const cached = propConvexVerticesById.get(sourcePropId);
+      if (cached !== undefined) {
+        return cached;
+      }
+
+      const flat = new Float32Array(hull.points.length * 3);
+      let cursor = 0;
+      for (const point of hull.points) {
+        flat[cursor] = point[0];
+        flat[cursor + 1] = point[1];
+        flat[cursor + 2] = point[2];
+        cursor += 3;
+      }
+
+      propConvexVerticesById.set(sourcePropId, flat);
+      return flat;
+    }
+
     function disposeGhostMaterials(): void {
       ghostMaterials.forEach((material) => material.dispose());
       ghostMaterials.clear();
@@ -2107,23 +2329,70 @@ const experiment: ExperimentModule = {
       return `${value.toFixed(2)}m`;
     }
 
-    function getPropColliderMode(sourcePropId: string): SettlementPropColliderMode {
-      void sourcePropId;
-      return "defined";
+    function getPropPhysicsProfile(sourcePropId: string): SettlementPropPhysicsProfile {
+      const explicit = propPhysicsProfiles.get(sourcePropId);
+      if (explicit) {
+        return normalizePropPhysicsProfile(explicit);
+      }
+      return inferPropPhysicsProfile(savedPropDefinitionsById.get(sourcePropId));
     }
 
-    function setPropColliderMode(
+    function setPropPhysicsMobility(
       sourcePropId: string,
-      mode: SettlementPropColliderMode
+      mobility: SettlementPropPhysicsMobility
     ): boolean {
-      const normalized = mode === "mesh" ? "mesh" : "defined";
-      if (normalized === "mesh") {
+      const normalizedMobility = mobility === "fixed" ? "fixed" : "dynamic";
+      const current = getPropPhysicsProfile(sourcePropId);
+      if (
+        current.mobility === normalizedMobility &&
+        propPhysicsProfiles.has(sourcePropId)
+      ) {
         return false;
       }
-      if (!propColliderModes.has(sourcePropId)) {
-        return false;
+
+      const next = withPropPhysicsMobility(current, normalizedMobility);
+      propPhysicsProfiles.set(sourcePropId, next);
+
+      const nowMs = performance.now();
+      for (const placement of propPlacements.values()) {
+        if (placement.sourcePropId !== sourcePropId) {
+          continue;
+        }
+        const currentRotation = resolvePlacementRuntimeRotation(placement);
+        if (normalizedMobility === "fixed") {
+          placement.runtimeState = {
+            rotation: {
+              x: currentRotation.x,
+              y: currentRotation.y,
+              z: currentRotation.z,
+              w: currentRotation.w
+            },
+            linearVelocity: { x: 0, y: 0, z: 0 },
+            angularVelocity: { x: 0, y: 0, z: 0 },
+            sleeping: true
+          };
+          pendingEditorPropActivationAtMsByPlacementId.delete(placement.placementId);
+        } else {
+          placement.runtimeState = {
+            rotation: {
+              x: currentRotation.x,
+              y: currentRotation.y,
+              z: currentRotation.z,
+              w: currentRotation.w
+            },
+            linearVelocity: { x: 0, y: 0, z: 0 },
+            angularVelocity: { x: 0, y: 0, z: 0 },
+            sleeping: false
+          };
+          const delayMs = Math.max(1, next.activationDelayMs);
+          pendingEditorPropActivationAtMsByPlacementId.set(
+            placement.placementId,
+            nowMs + delayMs
+          );
+        }
+        removeEditorPropPhysicsBody(placement.placementId);
       }
-      propColliderModes.delete(sourcePropId);
+
       updatePropSelectOptions();
       propDropRevision += 1;
       ghostDropCacheKey = "";
@@ -2131,20 +2400,106 @@ const experiment: ExperimentModule = {
       return true;
     }
 
+    function getPropColliderMode(sourcePropId: string): SettlementPropColliderMode {
+      const fallback = getPropCompoundCollider(sourcePropId)
+        ? "compound-boxes"
+        : getPropConvexHullCollider(sourcePropId)
+          ? "convex-hull"
+          : "box";
+      const explicit = propColliderModes.get(sourcePropId);
+      if (!explicit) {
+        return fallback;
+      }
+      return isPropColliderModeSupported(sourcePropId, explicit)
+        ? explicit
+        : fallback;
+    }
+
+    function setPropColliderMode(
+      sourcePropId: string,
+      mode: SettlementPropColliderMode
+    ): boolean {
+      if (!isPropColliderModeSupported(sourcePropId, mode)) {
+        return false;
+      }
+
+      const current = getPropColliderMode(sourcePropId);
+      if (current === mode) {
+        if (!propColliderModes.has(sourcePropId)) {
+          return false;
+        }
+      }
+
+      const fallback = getPropCompoundCollider(sourcePropId)
+        ? "compound-boxes"
+        : getPropConvexHullCollider(sourcePropId)
+          ? "convex-hull"
+          : "box";
+      if (mode === fallback) {
+        if (!propColliderModes.has(sourcePropId)) {
+          return false;
+        }
+        propColliderModes.delete(sourcePropId);
+      } else {
+        propColliderModes.set(sourcePropId, mode);
+      }
+
+      for (const placement of propPlacements.values()) {
+        if (placement.sourcePropId !== sourcePropId) {
+          continue;
+        }
+        removeEditorPropPhysicsBody(placement.placementId);
+      }
+
+      propConvexVerticesById.delete(sourcePropId);
+      updatePropSelectOptions();
+      propDropRevision += 1;
+      ghostDropCacheKey = "";
+      refreshHoverFromLastPointer();
+      return true;
+    }
+
+    function colliderModeLabel(mode: SettlementPropColliderMode): string {
+      switch (mode) {
+        case "box":
+          return "box";
+        case "convex-hull":
+          return "convex hull";
+        case "compound-boxes":
+          return "compound boxes";
+        default:
+          return mode;
+      }
+    }
+
     function setSelectedPropColliderMode(mode: SettlementPropColliderMode): void {
       if (!selectedPropId) {
         return;
       }
-      if (mode === "mesh") {
-        statusMessage = "Render collider mode disabled to keep editor placement fast.";
+      const propId = selectedPropId;
+      if (!isPropColliderModeSupported(propId, mode)) {
+        statusMessage = `${propId} does not provide ${colliderModeLabel(mode)} collider data.`;
         syncHud();
         return;
       }
-      const propId = selectedPropId;
-      const modeLabel = "proxy collider";
+      const modeLabel = colliderModeLabel(mode);
       runEditorMutation(
         `Set ${propId} to ${modeLabel} mode.`,
         () => setPropColliderMode(propId, mode)
+      );
+    }
+
+    function setSelectedPropPhysicsMobility(
+      mobility: SettlementPropPhysicsMobility
+    ): void {
+      if (!selectedPropId) {
+        return;
+      }
+      const propId = selectedPropId;
+      const modeLabel = mobility === "fixed" ? "support (fixed)" : "loose (dynamic)";
+      runEditorMutation(
+        `Set ${propId} physics to ${modeLabel}.`,
+        () => setPropPhysicsMobility(propId, mobility)
       );
     }
 
@@ -2295,7 +2650,10 @@ const experiment: ExperimentModule = {
         dims.style.fontSize = "10px";
         dims.style.lineHeight = "1.2";
         dims.style.color = "rgba(190, 220, 242, 0.88)";
-        dims.textContent = `${formatPropDimension(entry.bbox.width)} × ${formatPropDimension(entry.bbox.depth)} × ${formatPropDimension(entry.bbox.height)} • proxy collider`;
+        const profile = getPropPhysicsProfile(entry.id);
+        const mobilityLabel =
+          profile.mobility === "fixed" ? "support physics" : "loose physics";
+        dims.textContent = `${formatPropDimension(entry.bbox.width)} × ${formatPropDimension(entry.bbox.depth)} × ${formatPropDimension(entry.bbox.height)} • ${mobilityLabel}`;
 
         card.append(thumb, label, dims);
         card.addEventListener("click", () => {
@@ -2335,8 +2693,11 @@ const experiment: ExperimentModule = {
 
       if (selectedPropId && savedPropDefinitionsById.has(selectedPropId)) {
         const selected = savedPropDefinitionsById.get(selectedPropId);
+        const profile = getPropPhysicsProfile(selectedPropId);
+        const mobilityLabel =
+          profile.mobility === "fixed" ? "support physics" : "loose physics";
         propSelectionLabel.textContent = selected
-          ? `Selected: ${selected.description} • proxy collider`
+          ? `Selected: ${selected.description} • ${mobilityLabel}`
           : `Selected: ${selectedPropId}`;
       } else {
         propSelectionLabel.textContent = "No prop selected.";
@@ -2411,193 +2772,6 @@ const experiment: ExperimentModule = {
       return resolved;
     }
 
-    function buildTrimeshColliderData(
-      template: THREE.Object3D
-    ): PropTrimeshColliderData | null {
-      const vertices: number[] = [];
-      const indices: number[] = [];
-      const scratch = new THREE.Vector3();
-      let minY = Number.POSITIVE_INFINITY;
-
-      template.updateMatrixWorld(true);
-      template.traverse((node) => {
-        if (!(node instanceof THREE.Mesh)) {
-          return;
-        }
-        if (!(node.geometry instanceof THREE.BufferGeometry)) {
-          return;
-        }
-        const position = node.geometry.attributes.position;
-        if (!position) {
-          return;
-        }
-
-        const vertexOffset = vertices.length / 3;
-        for (let i = 0; i < position.count; i += 1) {
-          scratch
-            .set(position.getX(i), position.getY(i), position.getZ(i))
-            .applyMatrix4(node.matrixWorld);
-          vertices.push(scratch.x, scratch.y, scratch.z);
-          minY = Math.min(minY, scratch.y);
-        }
-
-        if (node.geometry.index) {
-          const index = node.geometry.index;
-          for (let i = 0; i + 2 < index.count; i += 3) {
-            indices.push(
-              vertexOffset + index.getX(i),
-              vertexOffset + index.getX(i + 1),
-              vertexOffset + index.getX(i + 2)
-            );
-          }
-          return;
-        }
-
-        for (let i = 0; i + 2 < position.count; i += 3) {
-          indices.push(vertexOffset + i, vertexOffset + i + 1, vertexOffset + i + 2);
-        }
-      });
-
-      if (!Number.isFinite(minY) || vertices.length < 9 || indices.length < 3) {
-        return null;
-      }
-
-      return {
-        vertices: new Float32Array(vertices),
-        indices: new Uint32Array(indices),
-        minY
-      };
-    }
-
-    function buildDropDynamicColliderData(
-      collider: PropTrimeshColliderData
-    ): PropDropDynamicColliderData | null {
-      const source = collider.vertices;
-      if (source.length < 9) {
-        return null;
-      }
-
-      let minX = Number.POSITIVE_INFINITY;
-      let minY = Number.POSITIVE_INFINITY;
-      let minZ = Number.POSITIVE_INFINITY;
-      let maxX = Number.NEGATIVE_INFINITY;
-      let maxY = Number.NEGATIVE_INFINITY;
-      let maxZ = Number.NEGATIVE_INFINITY;
-
-      for (let i = 0; i + 2 < source.length; i += 3) {
-        const x = source[i];
-        const y = source[i + 1];
-        const z = source[i + 2];
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (z < minZ) minZ = z;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-        if (z > maxZ) maxZ = z;
-      }
-
-      if (!Number.isFinite(minY)) {
-        return null;
-      }
-
-      const centerX = (minX + maxX) * 0.5;
-      const centerY = (minY + maxY) * 0.5;
-      const centerZ = (minZ + maxZ) * 0.5;
-      const centeredVertices = new Float32Array(source.length);
-      for (let i = 0; i + 2 < source.length; i += 3) {
-        centeredVertices[i] = source[i] - centerX;
-        centeredVertices[i + 1] = source[i + 1] - centerY;
-        centeredVertices[i + 2] = source[i + 2] - centerZ;
-      }
-
-      return {
-        vertices: centeredVertices,
-        minY: minY - centerY,
-        rootOffsetX: -centerX,
-        rootOffsetY: -centerY,
-        rootOffsetZ: -centerZ
-      };
-    }
-
-    function getPropTrimeshColliderData(
-      cache: Map<string, PropTrimeshColliderData | null>,
-      templateById: Map<string, THREE.Object3D | null>,
-      sourcePropId: string
-    ): PropTrimeshColliderData | null {
-      if (cache.has(sourcePropId)) {
-        return cache.get(sourcePropId) ?? null;
-      }
-      const template = templateById.get(sourcePropId);
-      if (!template) {
-        cache.set(sourcePropId, null);
-        return null;
-      }
-      const data = buildTrimeshColliderData(template);
-      cache.set(sourcePropId, data);
-      return data;
-    }
-
-    function getProxyPropTrimeshColliderData(
-      sourcePropId: string
-    ): PropTrimeshColliderData | null {
-      return getPropTrimeshColliderData(
-        propProxyTrimeshColliderById,
-        propColliderTemplateById,
-        sourcePropId
-      );
-    }
-
-    function getDropTrimeshColliderData(
-      sourcePropId: string,
-      mode: SettlementPropColliderMode
-    ): PropTrimeshColliderData | null {
-      // Always use simplified proxy colliders in-editor to keep hover/drop fast.
-      void mode;
-      return getProxyPropTrimeshColliderData(sourcePropId);
-    }
-
-    function getDropDynamicColliderData(
-      sourcePropId: string,
-      mode: SettlementPropColliderMode
-    ): PropDropDynamicColliderData | null {
-      if (propDropDynamicColliderById.has(sourcePropId)) {
-        return propDropDynamicColliderById.get(sourcePropId) ?? null;
-      }
-
-      const baseCollider = getDropTrimeshColliderData(sourcePropId, mode);
-      if (!baseCollider) {
-        propDropDynamicColliderById.set(sourcePropId, null);
-        return null;
-      }
-
-      const dynamicCollider = buildDropDynamicColliderData(baseCollider);
-      propDropDynamicColliderById.set(sourcePropId, dynamicCollider);
-      return dynamicCollider;
-    }
-
-    function rotateVectorByQuaternion(
-      x: number,
-      y: number,
-      z: number,
-      rotation: { x: number; y: number; z: number; w: number }
-    ): { x: number; y: number; z: number } {
-      const qx = rotation.x;
-      const qy = rotation.y;
-      const qz = rotation.z;
-      const qw = rotation.w;
-
-      const ix = qw * x + qy * z - qz * y;
-      const iy = qw * y + qz * x - qx * z;
-      const iz = qw * z + qx * y - qy * x;
-      const iw = -qx * x - qy * y - qz * z;
-
-      return {
-        x: ix * qw + iw * -qx + iy * -qz - iz * -qy,
-        y: iy * qw + iw * -qy + iz * -qx - ix * -qz,
-        z: iz * qw + iw * -qz + ix * -qy - iy * -qx
-      };
-    }
-
     function clampDropBodyVelocity(body: RAPIER3D.RigidBody): void {
       const linear = body.linvel();
       const linearSpeed = Math.hypot(linear.x, linear.y, linear.z);
@@ -2628,68 +2802,6 @@ const experiment: ExperimentModule = {
       }
     }
 
-    function yawQuaternionForQuarterTurns(rotQuarterTurns: 0 | 1 | 2 | 3): {
-      x: number;
-      y: number;
-      z: number;
-      w: number;
-    } {
-      const yaw = rotQuarterTurns * (Math.PI * 0.5);
-      const halfYaw = yaw * 0.5;
-      return {
-        x: 0,
-        y: Math.sin(halfYaw),
-        z: 0,
-        w: Math.cos(halfYaw)
-      };
-    }
-
-    function quaternionDelta(
-      a: { x: number; y: number; z: number; w: number },
-      b: { x: number; y: number; z: number; w: number }
-    ): number {
-      const dot = Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w);
-      return 1 - Math.min(1, dot);
-    }
-
-    function bodyTranslationFromRootPose(
-      worldX: number,
-      worldY: number,
-      worldZ: number,
-      rootOffsetLocal: { x: number; y: number; z: number },
-      rotation: { x: number; y: number; z: number; w: number }
-    ): { x: number; y: number; z: number } {
-      const rootOffsetWorld = rotateVectorByQuaternion(
-        rootOffsetLocal.x,
-        rootOffsetLocal.y,
-        rootOffsetLocal.z,
-        rotation
-      );
-      return {
-        x: worldX - rootOffsetWorld.x,
-        y: worldY - rootOffsetWorld.y,
-        z: worldZ - rootOffsetWorld.z
-      };
-    }
-
-    function rootPoseFromBodyPose(
-      translation: { x: number; y: number; z: number },
-      rootOffsetLocal: { x: number; y: number; z: number },
-      rotation: { x: number; y: number; z: number; w: number }
-    ): { worldX: number; worldY: number; worldZ: number } {
-      const rootOffsetWorld = rotateVectorByQuaternion(
-        rootOffsetLocal.x,
-        rootOffsetLocal.y,
-        rootOffsetLocal.z,
-        rotation
-      );
-      return {
-        worldX: translation.x + rootOffsetWorld.x,
-        worldY: translation.y + rootOffsetWorld.y,
-        worldZ: translation.z + rootOffsetWorld.z
-      };
-    }
-
     function ensurePropTemplate(propId: string): void {
       if (propTemplateById.has(propId)) {
         return;
@@ -2699,55 +2811,35 @@ const experiment: ExperimentModule = {
       }
 
       const request = (async () => {
-        const [binary, colliderBinary] = await Promise.all([
-          loadSavedPropBinary(propId),
-          loadSavedPropColliderBinary(propId)
-        ]);
+        const binary = await loadSavedPropBinary(propId);
         if (!binary) {
           propTemplateById.set(propId, null);
-          propColliderTemplateById.set(propId, null);
-          propProxyTrimeshColliderById.set(propId, null);
-          propDropDynamicColliderById.set(propId, null);
+          propConvexVerticesById.delete(propId);
           return;
         }
         const parsed = await parseGltfBinary(binary);
         if (!parsed) {
           propTemplateById.set(propId, null);
-          propColliderTemplateById.set(propId, null);
-          propProxyTrimeshColliderById.set(propId, null);
-          propDropDynamicColliderById.set(propId, null);
+          propConvexVerticesById.delete(propId);
           return;
         }
-        const normalization = normalizePropTemplate(parsed);
+        normalizePropTemplate(parsed);
         propTemplateById.set(propId, parsed);
-
-        let parsedCollider: THREE.Object3D | null = null;
-        if (colliderBinary) {
-          parsedCollider = await parseGltfBinary(colliderBinary);
-        }
-        if (parsedCollider) {
-          if (normalization) {
-            applyPropTemplateNormalization(parsedCollider, normalization);
-          } else {
-            normalizePropTemplate(parsedCollider);
-          }
-          propColliderTemplateById.set(propId, parsedCollider);
-        } else {
-          propColliderTemplateById.set(propId, null);
-        }
-        propProxyTrimeshColliderById.delete(propId);
-        propDropDynamicColliderById.delete(propId);
+        propConvexVerticesById.delete(propId);
         propDropRevision += 1;
         ghostDropCacheKey = "";
       })()
         .catch(() => {
           propTemplateById.set(propId, null);
-          propColliderTemplateById.set(propId, null);
-          propProxyTrimeshColliderById.set(propId, null);
-          propDropDynamicColliderById.set(propId, null);
+          propConvexVerticesById.delete(propId);
         })
         .finally(() => {
           propTemplateRequestById.delete(propId);
+          for (const placement of propPlacements.values()) {
+            if (placement.sourcePropId === propId) {
+              removeEditorPropPhysicsBody(placement.placementId);
+            }
+          }
           updatePropSelectOptions();
           rebuildEditorPropMeshes();
           if (gameRuntime) {
@@ -2765,6 +2857,7 @@ const experiment: ExperimentModule = {
     async function refreshSavedProps(): Promise<void> {
       const definitions = await listSavedPropDefinitions();
       savedPropDefinitionsById.clear();
+      propConvexVerticesById.clear();
       for (const definition of definitions) {
         savedPropDefinitionsById.set(definition.id, definition);
         ensurePropTemplate(definition.id);
@@ -2825,242 +2918,6 @@ const experiment: ExperimentModule = {
       };
     }
 
-    function computeDroppedPlacement(
-      sourcePropId: string,
-      worldX: number,
-      worldZ: number,
-      rotQuarterTurns: 0 | 1 | 2 | 3
-    ): DroppedPlacement {
-      if (!propDropEnabled) {
-        return { worldX, worldZ, elevation: 0 };
-      }
-      const dimensions = resolvePropDimensions(sourcePropId, rotQuarterTurns);
-      const halfWidth = dimensions.width * 0.5;
-      const halfDepth = dimensions.depth * 0.5;
-      const halfHeight = dimensions.height * 0.5;
-      const selectedMode = getPropColliderMode(sourcePropId);
-      const selectedDynamicCollider = getDropDynamicColliderData(
-        sourcePropId,
-        selectedMode
-      );
-      let droppedUsesTrimesh = selectedDynamicCollider !== null;
-      let droppedRootOffsetLocal =
-        droppedUsesTrimesh && selectedDynamicCollider
-          ? {
-              x: selectedDynamicCollider.rootOffsetX,
-              y: selectedDynamicCollider.rootOffsetY,
-              z: selectedDynamicCollider.rootOffsetZ
-            }
-          : { x: 0, y: -halfHeight, z: 0 };
-      const supportPlacement = computeGhostPlacementFromSupportHeights(
-        sourcePropId,
-        worldX,
-        worldZ,
-        rotQuarterTurns
-      );
-      const dropStartElevation = Math.max(0, supportPlacement.elevation) + 0.03;
-
-      const initialDropRotation = yawQuaternionForQuarterTurns(rotQuarterTurns);
-      const droppedStart = bodyTranslationFromRootPose(
-        worldX,
-        dropStartElevation,
-        worldZ,
-        droppedRootOffsetLocal,
-        initialDropRotation
-      );
-
-      const world = new RAPIER3D.World({ x: 0, y: -9.81, z: 0 });
-      try {
-        world.integrationParameters.dt = 1 / 60;
-        world.integrationParameters.maxCcdSubsteps = 4;
-
-        const floorBody = world.createRigidBody(
-          RAPIER3D.RigidBodyDesc.fixed().setTranslation(0, -0.05, 0)
-        );
-        world.createCollider(
-          RAPIER3D.ColliderDesc.cuboid(GRID_TILES, 0.05, GRID_TILES)
-            .setFriction(0.92)
-            .setRestitution(0),
-          floorBody
-        );
-
-        for (const placement of propPlacements.values()) {
-          const placementMode = getPropColliderMode(placement.sourcePropId);
-          const placementTrimesh = getDropTrimeshColliderData(
-            placement.sourcePropId,
-            placementMode
-          );
-
-          if (placementTrimesh) {
-            const placedBody = world.createRigidBody(
-              RAPIER3D.RigidBodyDesc.fixed()
-                .setTranslation(
-                  getPropPlacementWorldX(placement),
-                  placement.elevation - placementTrimesh.minY,
-                  getPropPlacementWorldZ(placement)
-                )
-                .setRotation(
-                  yawQuaternionForQuarterTurns(placement.rotQuarterTurns)
-                )
-            );
-            try {
-              world.createCollider(
-                RAPIER3D.ColliderDesc.trimesh(
-                  placementTrimesh.vertices,
-                  placementTrimesh.indices
-                )
-                  .setFriction(0.9)
-                  .setRestitution(0),
-                placedBody
-              );
-              continue;
-            } catch {
-              // Fall back to defined box collider when trimesh creation fails.
-            }
-          }
-
-          const placedDims = resolvePropDimensions(
-            placement.sourcePropId,
-            placement.rotQuarterTurns
-          );
-          const placedBody = world.createRigidBody(
-            RAPIER3D.RigidBodyDesc.fixed().setTranslation(
-              getPropPlacementWorldX(placement),
-              placement.elevation + placedDims.height * 0.5,
-              getPropPlacementWorldZ(placement)
-            )
-          );
-          world.createCollider(
-            RAPIER3D.ColliderDesc.cuboid(
-              placedDims.width * 0.5,
-              placedDims.height * 0.5,
-              placedDims.depth * 0.5
-            )
-              .setFriction(0.9)
-              .setRestitution(0),
-            placedBody
-          );
-        }
-
-        const droppedBody = world.createRigidBody(
-          RAPIER3D.RigidBodyDesc.dynamic()
-            .setTranslation(
-              droppedStart.x,
-              droppedStart.y,
-              droppedStart.z
-            )
-            .setAdditionalSolverIterations(droppedUsesTrimesh ? 2 : 0)
-        );
-        droppedBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        droppedBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-        droppedBody.setLinearDamping(droppedUsesTrimesh ? 0.28 : 0.24);
-        droppedBody.setAngularDamping(droppedUsesTrimesh ? 0.42 : 0.35);
-        droppedBody.enableCcd(true);
-
-        if (droppedUsesTrimesh && selectedDynamicCollider) {
-          droppedBody.setRotation(initialDropRotation, true);
-          try {
-            const hullDesc = RAPIER3D.ColliderDesc.convexHull(
-              selectedDynamicCollider.vertices
-            );
-            if (!hullDesc) {
-              throw new Error("Failed to create convex hull collider.");
-            }
-            world.createCollider(
-              hullDesc.setFriction(0.92).setRestitution(0).setMass(0.9),
-              droppedBody
-            );
-          } catch {
-            droppedUsesTrimesh = false;
-            droppedRootOffsetLocal = { x: 0, y: -halfHeight, z: 0 };
-            const fallbackStart = bodyTranslationFromRootPose(
-              worldX,
-              dropStartElevation,
-              worldZ,
-              droppedRootOffsetLocal,
-              initialDropRotation
-            );
-            droppedBody.setTranslation(
-              {
-                x: fallbackStart.x,
-                y: fallbackStart.y,
-                z: fallbackStart.z
-              },
-              true
-            );
-            world.createCollider(
-              RAPIER3D.ColliderDesc.cuboid(halfWidth, halfHeight, halfDepth)
-                .setFriction(0.92)
-                .setRestitution(0)
-                .setMass(0.9),
-              droppedBody
-            );
-          }
-        } else {
-          world.createCollider(
-            RAPIER3D.ColliderDesc.cuboid(halfWidth, halfHeight, halfDepth)
-              .setFriction(0.92)
-              .setRestitution(0)
-              .setMass(0.9),
-            droppedBody
-          );
-        }
-
-        let stableFrames = 0;
-        for (let i = 0; i < DROP_PREVIEW_MAX_STEPS; i += 1) {
-          world.step();
-          clampDropBodyVelocity(droppedBody);
-          const velocity = droppedBody.linvel();
-          const speedSq =
-            velocity.x * velocity.x +
-            velocity.y * velocity.y +
-            velocity.z * velocity.z;
-          const angular = droppedBody.angvel();
-          const angularSpeedSq =
-            angular.x * angular.x +
-            angular.y * angular.y +
-            angular.z * angular.z;
-
-          const linearThreshold = droppedUsesTrimesh ? 0.00022 : 0.00008;
-          const angularThreshold = droppedUsesTrimesh ? 0.0018 : 0.00045;
-          if (speedSq <= linearThreshold && angularSpeedSq <= angularThreshold) {
-            stableFrames += 1;
-          } else {
-            stableFrames = 0;
-          }
-          if (stableFrames >= DROP_PREVIEW_STABLE_FRAMES) {
-            break;
-          }
-        }
-
-        const translation = droppedBody.translation();
-        const settledRotation = droppedBody.rotation();
-        const settledRootPose = rootPoseFromBodyPose(
-          translation,
-          droppedRootOffsetLocal,
-          settledRotation
-        );
-        let settledWorldX = settledRootPose.worldX;
-        let settledWorldZ = settledRootPose.worldZ;
-        const driftX = settledWorldX - worldX;
-        const driftZ = settledWorldZ - worldZ;
-        const driftDistance = Math.hypot(driftX, driftZ);
-        if (driftDistance > DROP_PREVIEW_MAX_LATERAL_DRIFT && driftDistance > 0) {
-          const scale = DROP_PREVIEW_MAX_LATERAL_DRIFT / driftDistance;
-          settledWorldX = worldX + driftX * scale;
-          settledWorldZ = worldZ + driftZ * scale;
-        }
-
-        return {
-          worldX: settledWorldX,
-          worldZ: settledWorldZ,
-          elevation: Math.max(0, settledRootPose.worldY)
-        };
-      } finally {
-        world.free();
-      }
-    }
-
     function applyPlacementWorldPose(
       placement: SettlementPropPlacement,
       worldX: number,
@@ -3077,613 +2934,516 @@ const experiment: ExperimentModule = {
       placement.elevation = Math.max(0, elevation);
     }
 
-    function simulateDroppedPlaybackSamples(
-      placementId: string,
-      sourcePropId: string,
-      worldX: number,
-      worldZ: number,
-      startElevation: number,
-      rotQuarterTurns: 0 | 1 | 2 | 3
-    ): PropDropPlaybackSample[] | null {
+    function propPhysicsProfileEquals(
+      a: SettlementPropPhysicsProfile,
+      b: SettlementPropPhysicsProfile
+    ): boolean {
+      return (
+        a.mobility === b.mobility &&
+        Math.abs(a.mass - b.mass) <= 0.00001 &&
+        Math.abs(a.friction - b.friction) <= 0.00001 &&
+        Math.abs(a.restitution - b.restitution) <= 0.00001 &&
+        Math.abs(a.linearDamping - b.linearDamping) <= 0.00001 &&
+        Math.abs(a.angularDamping - b.angularDamping) <= 0.00001 &&
+        a.activationDelayMs === b.activationDelayMs
+      );
+    }
+
+    function updatePlacementRuntimeStateFromBody(
+      placement: SettlementPropPlacement,
+      body: RAPIER3D.RigidBody,
+      rotation: { x: number; y: number; z: number; w: number },
+      sleeping: boolean
+    ): void {
+      const linearVelocity = body.linvel();
+      const angularVelocity = body.angvel();
+      placement.runtimeState = {
+        rotation: {
+          x: rotation.x,
+          y: rotation.y,
+          z: rotation.z,
+          w: rotation.w
+        },
+        linearVelocity: {
+          x: linearVelocity.x,
+          y: linearVelocity.y,
+          z: linearVelocity.z
+        },
+        angularVelocity: {
+          x: angularVelocity.x,
+          y: angularVelocity.y,
+          z: angularVelocity.z
+        },
+        sleeping
+      };
+    }
+
+    function configureDynamicDropBody(
+      body: RAPIER3D.RigidBody,
+      usesComplexCollider: boolean,
+      profile: SettlementPropPhysicsProfile
+    ): void {
+      body.setAdditionalSolverIterations(usesComplexCollider ? 2 : 0);
+      body.setLinearDamping(profile.linearDamping);
+      body.setAngularDamping(profile.angularDamping);
+      body.enableCcd(true);
+    }
+
+    function disposeEditorPropPhysics(): void {
+      editorPropPhysicsByPlacementId.clear();
+      pendingEditorPropActivationAtMsByPlacementId.clear();
+      if (!editorPropPhysicsWorld) {
+        return;
+      }
+      editorPropPhysicsWorld.free();
+      editorPropPhysicsWorld = null;
+    }
+
+    function ensureEditorPropPhysicsWorld(): RAPIER3D.World {
+      if (editorPropPhysicsWorld) {
+        return editorPropPhysicsWorld;
+      }
+
+      const world = new RAPIER3D.World({ x: 0, y: -9.81, z: 0 });
+      world.integrationParameters.dt = 1 / 60;
+      world.integrationParameters.maxCcdSubsteps = 4;
+      world.integrationParameters.numSolverIterations = 8;
+      world.integrationParameters.numInternalPgsIterations = 2;
+      world.integrationParameters.normalizedAllowedLinearError = 0.0005;
+
+      const floorHalfSpan = GRID_TILES * TILE_SIZE * 0.5 + TILE_SIZE;
+      const floorBody = world.createRigidBody(
+        RAPIER3D.RigidBodyDesc.fixed().setTranslation(0, -0.05, 0)
+      );
+      world.createCollider(
+        RAPIER3D.ColliderDesc.cuboid(floorHalfSpan, 0.05, floorHalfSpan)
+          .setFriction(0.92)
+          .setRestitution(0)
+          .setCollisionGroups(
+            collisionGroups(PHYSICS_LAYER.WORLD_STATIC, PHYSICS_MASK.WORLD_STATIC)
+          ),
+        floorBody
+      );
+
+      editorPropPhysicsWorld = world;
+      return world;
+    }
+
+    function removeEditorPropPhysicsBody(placementId: string): void {
+      const state = editorPropPhysicsByPlacementId.get(placementId);
+      if (!state) {
+        pendingEditorPropActivationAtMsByPlacementId.delete(placementId);
+        return;
+      }
+      const world = ensureEditorPropPhysicsWorld();
+      world.removeRigidBody(state.body);
+      editorPropPhysicsByPlacementId.delete(placementId);
+      pendingEditorPropActivationAtMsByPlacementId.delete(placementId);
+    }
+
+    function createEditorPropPhysicsBody(
+      placement: SettlementPropPlacement,
+      activationTimeMs: number,
+      nowMs: number
+    ): EditorPropPhysicsBody | null {
       if (!propDropEnabled) {
         return null;
       }
 
-      const dimensions = resolvePropDimensions(sourcePropId, rotQuarterTurns);
+      const world = ensureEditorPropPhysicsWorld();
+      const worldX = getPropPlacementWorldX(placement);
+      const worldZ = getPropPlacementWorldZ(placement);
+      const rotation = resolvePlacementRuntimeRotation(placement);
+      const profile = getPropPhysicsProfile(placement.sourcePropId);
+      const dimensions = resolvePropDimensions(
+        placement.sourcePropId,
+        placement.rotQuarterTurns
+      );
       const halfWidth = dimensions.width * 0.5;
       const halfDepth = dimensions.depth * 0.5;
       const halfHeight = dimensions.height * 0.5;
-      const selectedMode = getPropColliderMode(sourcePropId);
-      const selectedDynamicCollider = getDropDynamicColliderData(
-        sourcePropId,
-        selectedMode
-      );
-      let droppedUsesTrimesh = selectedDynamicCollider !== null;
-      let droppedRootOffsetLocal =
-        droppedUsesTrimesh && selectedDynamicCollider
+      const mode = getPropColliderMode(placement.sourcePropId);
+      const compoundCollider =
+        mode === "compound-boxes"
+          ? getPropCompoundCollider(placement.sourcePropId)
+          : null;
+      const convexCollider =
+        mode === "convex-hull"
+          ? getPropConvexHullCollider(placement.sourcePropId)
+          : null;
+      const convexHullVertices = convexCollider
+        ? toRapierConvexHullVertices(placement.sourcePropId, convexCollider)
+        : null;
+      const propCollisionGroups =
+        profile.mobility === "fixed"
+          ? collisionGroups(PHYSICS_LAYER.PROP_SUPPORT, PHYSICS_MASK.PROP_SUPPORT)
+          : collisionGroups(PHYSICS_LAYER.PROP_LOOSE, PHYSICS_MASK.PROP_LOOSE);
+
+      let usesComplexCollider = mode !== "box";
+      const shouldBeDynamic = profile.mobility === "dynamic";
+      let localRootOffset =
+        compoundCollider !== null
+          ? { x: 0, y: 0, z: 0 }
+          : convexCollider !== null
           ? {
-              x: selectedDynamicCollider.rootOffsetX,
-              y: selectedDynamicCollider.rootOffsetY,
-              z: selectedDynamicCollider.rootOffsetZ
+              x: convexCollider.rootOffset[0],
+              y: convexCollider.rootOffset[1],
+              z: convexCollider.rootOffset[2]
             }
           : { x: 0, y: -halfHeight, z: 0 };
-      const dropStartElevation = Math.max(0, startElevation) + 0.03;
-      const initialDropRotation = yawQuaternionForQuarterTurns(rotQuarterTurns);
-      const droppedStart = bodyTranslationFromRootPose(
+      const bodyStart = bodyTranslationFromRootPose(
         worldX,
-        dropStartElevation,
+        placement.elevation,
         worldZ,
-        droppedRootOffsetLocal,
-        initialDropRotation
+        localRootOffset,
+        rotation
       );
+      const shouldActivateNow = shouldBeDynamic && activationTimeMs <= nowMs;
 
-      const world = new RAPIER3D.World({ x: 0, y: -9.81, z: 0 });
-      try {
-        world.integrationParameters.dt = 1 / 60;
-        world.integrationParameters.maxCcdSubsteps = 4;
+      const bodyDesc = shouldActivateNow
+        ? RAPIER3D.RigidBodyDesc.dynamic()
+            .setTranslation(bodyStart.x, bodyStart.y, bodyStart.z)
+            .setRotation(rotation)
+            .setAdditionalSolverIterations(usesComplexCollider ? 2 : 0)
+        : RAPIER3D.RigidBodyDesc.fixed()
+            .setTranslation(bodyStart.x, bodyStart.y, bodyStart.z)
+            .setRotation(rotation);
 
-        const floorBody = world.createRigidBody(
-          RAPIER3D.RigidBodyDesc.fixed().setTranslation(0, -0.05, 0)
-        );
-        world.createCollider(
-          RAPIER3D.ColliderDesc.cuboid(GRID_TILES, 0.05, GRID_TILES)
-            .setFriction(0.92)
-            .setRestitution(0),
-          floorBody
-        );
+      const body = world.createRigidBody(bodyDesc);
+      let colliderCreated = false;
 
-        for (const placement of propPlacements.values()) {
-          if (placement.placementId === placementId) {
-            continue;
-          }
-          const placementMode = getPropColliderMode(placement.sourcePropId);
-          const placementTrimesh = getDropTrimeshColliderData(
-            placement.sourcePropId,
-            placementMode
-          );
-
-          if (placementTrimesh) {
-            const placedBody = world.createRigidBody(
-              RAPIER3D.RigidBodyDesc.fixed()
-                .setTranslation(
-                  getPropPlacementWorldX(placement),
-                  placement.elevation - placementTrimesh.minY,
-                  getPropPlacementWorldZ(placement)
-                )
-                .setRotation(
-                  yawQuaternionForQuarterTurns(placement.rotQuarterTurns)
-                )
-            );
-            try {
-              world.createCollider(
-                RAPIER3D.ColliderDesc.trimesh(
-                  placementTrimesh.vertices,
-                  placementTrimesh.indices
-                )
-                  .setFriction(0.9)
-                  .setRestitution(0),
-                placedBody
-              );
-              continue;
-            } catch {
-              // Fall back to defined box collider when trimesh creation fails.
-            }
-          }
-
-          const placedDims = resolvePropDimensions(
-            placement.sourcePropId,
-            placement.rotQuarterTurns
-          );
-          const placedBody = world.createRigidBody(
-            RAPIER3D.RigidBodyDesc.fixed().setTranslation(
-              getPropPlacementWorldX(placement),
-              placement.elevation + placedDims.height * 0.5,
-              getPropPlacementWorldZ(placement)
-            )
-          );
+      if (compoundCollider && compoundCollider.parts.length > 0) {
+        const partCount = Math.max(1, compoundCollider.parts.length);
+        const partMass = profile.mass / partCount;
+        for (const part of compoundCollider.parts) {
           world.createCollider(
             RAPIER3D.ColliderDesc.cuboid(
-              placedDims.width * 0.5,
-              placedDims.height * 0.5,
-              placedDims.depth * 0.5
+              part.halfExtents[0],
+              part.halfExtents[1],
+              part.halfExtents[2]
             )
-              .setFriction(0.9)
-              .setRestitution(0),
-            placedBody
+              .setTranslation(part.position[0], part.position[1], part.position[2])
+              .setFriction(profile.friction)
+              .setRestitution(profile.restitution)
+              .setMass(partMass)
+              .setCollisionGroups(propCollisionGroups),
+            body
           );
         }
+        colliderCreated = true;
+      } else if (convexHullVertices) {
+        try {
+          const hullDesc = RAPIER3D.ColliderDesc.convexHull(convexHullVertices);
+          if (hullDesc) {
+            world.createCollider(
+              hullDesc
+                .setFriction(profile.friction)
+                .setRestitution(profile.restitution)
+                .setMass(profile.mass)
+                .setCollisionGroups(propCollisionGroups),
+              body
+            );
+            colliderCreated = true;
+          }
+        } catch {
+          colliderCreated = false;
+        }
+      }
 
-        const droppedBody = world.createRigidBody(
-          RAPIER3D.RigidBodyDesc.dynamic()
-            .setTranslation(
-              droppedStart.x,
-              droppedStart.y,
-              droppedStart.z
-            )
-            .setAdditionalSolverIterations(droppedUsesTrimesh ? 2 : 0)
+      if (!colliderCreated) {
+        usesComplexCollider = false;
+        localRootOffset = { x: 0, y: -halfHeight, z: 0 };
+        const fallbackStart = bodyTranslationFromRootPose(
+          worldX,
+          placement.elevation,
+          worldZ,
+          localRootOffset,
+          rotation
         );
-        droppedBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        droppedBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-        droppedBody.setLinearDamping(droppedUsesTrimesh ? 0.28 : 0.24);
-        droppedBody.setAngularDamping(droppedUsesTrimesh ? 0.42 : 0.35);
-        droppedBody.enableCcd(true);
+        body.setTranslation(fallbackStart, true);
+        world.createCollider(
+          RAPIER3D.ColliderDesc.cuboid(halfWidth, halfHeight, halfDepth)
+            .setFriction(profile.friction)
+            .setRestitution(profile.restitution)
+            .setMass(profile.mass)
+            .setCollisionGroups(propCollisionGroups),
+          body
+        );
+      }
 
-        if (droppedUsesTrimesh && selectedDynamicCollider) {
-          droppedBody.setRotation(initialDropRotation, true);
-          try {
-            const hullDesc = RAPIER3D.ColliderDesc.convexHull(
-              selectedDynamicCollider.vertices
-            );
-            if (!hullDesc) {
-              throw new Error("Failed to create convex hull collider.");
-            }
-            world.createCollider(
-              hullDesc.setFriction(0.92).setRestitution(0).setMass(0.9),
-              droppedBody
-            );
-          } catch {
-            droppedUsesTrimesh = false;
-            droppedRootOffsetLocal = { x: 0, y: -halfHeight, z: 0 };
-            const fallbackStart = bodyTranslationFromRootPose(
-              worldX,
-              dropStartElevation,
-              worldZ,
-              droppedRootOffsetLocal,
-              initialDropRotation
-            );
-            droppedBody.setTranslation(
-              {
-                x: fallbackStart.x,
-                y: fallbackStart.y,
-                z: fallbackStart.z
-              },
-              true
-            );
-            world.createCollider(
-              RAPIER3D.ColliderDesc.cuboid(halfWidth, halfHeight, halfDepth)
-                .setFriction(0.92)
-                .setRestitution(0)
-                .setMass(0.9),
-              droppedBody
-            );
+      if (shouldActivateNow) {
+        configureDynamicDropBody(body, usesComplexCollider, profile);
+        if (placement.runtimeState) {
+          body.setLinvel(placement.runtimeState.linearVelocity, true);
+          body.setAngvel(placement.runtimeState.angularVelocity, true);
+          if (placement.runtimeState.sleeping) {
+            body.sleep();
+          } else {
+            body.wakeUp();
           }
         } else {
-          world.createCollider(
-            RAPIER3D.ColliderDesc.cuboid(halfWidth, halfHeight, halfDepth)
-              .setFriction(0.92)
-              .setRestitution(0)
-              .setMass(0.9),
-            droppedBody
-          );
+          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          body.setAngvel({ x: 0, y: 0, z: 0 }, true);
         }
-
-        const readSample = (): PropDropPlaybackSample => {
-          const translation = droppedBody.translation();
-          const rotation = droppedBody.rotation();
-          const rootPose = rootPoseFromBodyPose(
-            translation,
-            droppedRootOffsetLocal,
-            rotation
-          );
-          return {
-            worldX: rootPose.worldX,
-            worldZ: rootPose.worldZ,
-            elevation: Math.max(0, rootPose.worldY),
-            rotX: rotation.x,
-            rotY: rotation.y,
-            rotZ: rotation.z,
-            rotW: rotation.w
-          };
-        };
-
-        const samples: PropDropPlaybackSample[] = [readSample()];
-        let stableFrames = 0;
-        for (let i = 0; i < DROP_PREVIEW_MAX_STEPS; i += 1) {
-          world.step();
-          clampDropBodyVelocity(droppedBody);
-          samples.push(readSample());
-
-          const velocity = droppedBody.linvel();
-          const speedSq =
-            velocity.x * velocity.x +
-            velocity.y * velocity.y +
-            velocity.z * velocity.z;
-          const angular = droppedBody.angvel();
-          const angularSpeedSq =
-            angular.x * angular.x +
-            angular.y * angular.y +
-            angular.z * angular.z;
-
-          const linearThreshold = droppedUsesTrimesh ? 0.00022 : 0.00008;
-          const angularThreshold = droppedUsesTrimesh ? 0.0018 : 0.00045;
-          if (speedSq <= linearThreshold && angularSpeedSq <= angularThreshold) {
-            stableFrames += 1;
-          } else {
-            stableFrames = 0;
-          }
-          if (stableFrames >= DROP_PREVIEW_STABLE_FRAMES) {
-            break;
-          }
-        }
-
-        return samples;
-      } finally {
-        world.free();
+      } else {
+        body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        body.setAngvel({ x: 0, y: 0, z: 0 }, true);
       }
+
+      return {
+        placementId: placement.placementId,
+        sourcePropId: placement.sourcePropId,
+        rotQuarterTurns: placement.rotQuarterTurns,
+        profile: clonePropPhysicsProfile(profile),
+        body,
+        localRootOffset,
+        usesComplexCollider,
+        activationTimeMs,
+        active: shouldActivateNow
+      };
     }
 
-    function schedulePropDropPlayback(
-      placementId: string,
-      sourcePropId: string,
-      worldX: number,
-      worldZ: number,
-      elevation: number,
-      rotQuarterTurns: 0 | 1 | 2 | 3
-    ): void {
-      pendingPropDropPlaybackByPlacementId.delete(placementId);
-      const samples = simulateDroppedPlaybackSamples(
-        placementId,
-        sourcePropId,
-        worldX,
-        worldZ,
-        elevation,
-        rotQuarterTurns
-      );
-      if (!samples || samples.length < 2) {
+    function queueEditorPropDropActivation(placementId: string): void {
+      if (!propDropEnabled) {
         return;
       }
-      const first = samples[0];
-      const last = samples[samples.length - 1] ?? first;
-      const rotationDelta = quaternionDelta(
-        { x: first.rotX, y: first.rotY, z: first.rotZ, w: first.rotW },
-        { x: last.rotX, y: last.rotY, z: last.rotZ, w: last.rotW }
-      );
-      if (
-        Math.hypot(last.worldX - first.worldX, last.worldZ - first.worldZ) < 0.003 &&
-        Math.abs(last.elevation - first.elevation) < 0.003 &&
-        rotationDelta < 0.0005
-      ) {
+      const placement = propPlacements.get(placementId);
+      if (!placement) {
         return;
       }
-      pendingPropDropPlaybackByPlacementId.set(placementId, {
-        placementId,
-        startAtMs: performance.now() + DROP_PLAYBACK_DELAY_MS,
-        frameMs: DROP_PLAYBACK_FRAME_MS,
-        samples
-      });
+      const profile = getPropPhysicsProfile(placement.sourcePropId);
+      if (profile.mobility !== "dynamic") {
+        pendingEditorPropActivationAtMsByPlacementId.delete(placementId);
+        return;
+      }
+      const rotation = resolvePlacementRuntimeRotation(placement);
+      placement.runtimeState = {
+        rotation: {
+          x: rotation.x,
+          y: rotation.y,
+          z: rotation.z,
+          w: rotation.w
+        },
+        linearVelocity: { x: 0, y: 0, z: 0 },
+        angularVelocity: { x: 0, y: 0, z: 0 },
+        sleeping: false
+      };
+
+      const activationTimeMs = performance.now() + Math.max(1, profile.activationDelayMs);
+      pendingEditorPropActivationAtMsByPlacementId.set(placementId, activationTimeMs);
+      const state = editorPropPhysicsByPlacementId.get(placementId);
+      if (!state) {
+        return;
+      }
+      state.profile = clonePropPhysicsProfile(profile);
+      state.activationTimeMs = activationTimeMs;
+      state.active = false;
+      state.body.setBodyType(RAPIER3D.RigidBodyType.Fixed, true);
+      state.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      state.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     }
 
-    function stepPendingPropDropPlaybacks(nowMs: number): void {
-      if (mode !== "EDITOR" || pendingPropDropPlaybackByPlacementId.size === 0) {
+    function syncEditorPropPhysicsBodies(nowMs: number): void {
+      if (!propDropEnabled) {
         return;
       }
 
-      let completedAny = false;
-      for (const [placementId, playback] of pendingPropDropPlaybackByPlacementId.entries()) {
+      for (const [placementId, state] of editorPropPhysicsByPlacementId.entries()) {
         const placement = propPlacements.get(placementId);
         if (!placement) {
-          pendingPropDropPlaybackByPlacementId.delete(placementId);
+          removeEditorPropPhysicsBody(placementId);
           continue;
         }
-        if (nowMs < playback.startAtMs) {
+        const desiredProfile = getPropPhysicsProfile(placement.sourcePropId);
+        if (
+          state.sourcePropId !== placement.sourcePropId ||
+          state.rotQuarterTurns !== placement.rotQuarterTurns ||
+          !propPhysicsProfileEquals(state.profile, desiredProfile)
+        ) {
+          removeEditorPropPhysicsBody(placementId);
           continue;
         }
 
-        const elapsedMs = nowMs - playback.startAtMs;
-        const index = Math.min(
-          playback.samples.length - 1,
-          Math.floor(elapsedMs / playback.frameMs)
+        if (state.active) {
+          continue;
+        }
+
+        const desiredRotation = resolvePlacementRuntimeRotation(placement);
+        const currentTranslation = state.body.translation();
+        const currentRotation = state.body.rotation();
+        const currentRootPose = rootPoseFromBodyPose(
+          currentTranslation,
+          state.localRootOffset,
+          currentRotation
         );
-        const sample = playback.samples[index];
+        const desiredWorldX = getPropPlacementWorldX(placement);
+        const desiredWorldZ = getPropPlacementWorldZ(placement);
+        const desiredWorldY = placement.elevation;
+        const rotationDiff = quaternionDelta(desiredRotation, currentRotation);
+        if (
+          Math.hypot(
+            currentRootPose.worldX - desiredWorldX,
+            currentRootPose.worldZ - desiredWorldZ
+          ) > 0.006 ||
+          Math.abs(currentRootPose.worldY - desiredWorldY) > 0.006 ||
+          rotationDiff > 0.003
+        ) {
+          const desiredBodyPose = bodyTranslationFromRootPose(
+            desiredWorldX,
+            desiredWorldY,
+            desiredWorldZ,
+            state.localRootOffset,
+            desiredRotation
+          );
+          state.body.setTranslation(desiredBodyPose, true);
+          state.body.setRotation(desiredRotation, true);
+          state.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          state.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        }
+      }
+
+      for (const placement of propPlacements.values()) {
+        if (editorPropPhysicsByPlacementId.has(placement.placementId)) {
+          continue;
+        }
+        const activationTimeMs =
+          pendingEditorPropActivationAtMsByPlacementId.get(placement.placementId) ??
+          nowMs;
+        const state = createEditorPropPhysicsBody(placement, activationTimeMs, nowMs);
+        if (!state) {
+          continue;
+        }
+        editorPropPhysicsByPlacementId.set(placement.placementId, state);
+        pendingEditorPropActivationAtMsByPlacementId.delete(placement.placementId);
+      }
+    }
+
+    function stepEditorPropPhysics(nowMs: number): void {
+      if (mode !== "EDITOR" || !propDropEnabled) {
+        return;
+      }
+
+      syncEditorPropPhysicsBodies(nowMs);
+      if (!editorPropPhysicsWorld || editorPropPhysicsByPlacementId.size === 0) {
+        return;
+      }
+
+      for (const state of editorPropPhysicsByPlacementId.values()) {
+        if (
+          state.profile.mobility !== "dynamic" ||
+          state.active ||
+          nowMs < state.activationTimeMs
+        ) {
+          continue;
+        }
+
+        const placement = propPlacements.get(state.placementId);
+        state.body.setBodyType(RAPIER3D.RigidBodyType.Dynamic, true);
+        configureDynamicDropBody(state.body, state.usesComplexCollider, state.profile);
+        if (placement?.runtimeState) {
+          state.body.setLinvel(placement.runtimeState.linearVelocity, true);
+          state.body.setAngvel(placement.runtimeState.angularVelocity, true);
+          if (placement.runtimeState.sleeping) {
+            state.body.sleep();
+          } else {
+            state.body.wakeUp();
+          }
+        } else {
+          state.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          state.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        }
+        state.active = true;
+      }
+
+      editorPropPhysicsWorld.step();
+
+      let movedAny = false;
+      for (const [placementId, state] of editorPropPhysicsByPlacementId.entries()) {
+        const placement = propPlacements.get(placementId);
+        if (!placement) {
+          continue;
+        }
+        if (state.active) {
+          clampDropBodyVelocity(state.body);
+        }
+
+        const translation = state.body.translation();
+        const rotation = state.body.rotation();
+        const rootPose = rootPoseFromBodyPose(
+          translation,
+          state.localRootOffset,
+          rotation
+        );
+        const nextElevation = Math.max(0, rootPose.worldY);
+        const previousWorldX = getPropPlacementWorldX(placement);
+        const previousWorldZ = getPropPlacementWorldZ(placement);
+        const previousElevation = placement.elevation;
+        const previousRotation =
+          propRuntimeRotationByPlacementId.get(placement.placementId) ??
+          yawQuaternionForQuarterTurns(placement.rotQuarterTurns);
+        const previousSleeping = placement.runtimeState?.sleeping;
+
         applyPlacementWorldPose(
           placement,
-          sample.worldX,
-          sample.worldZ,
-          sample.elevation
+          rootPose.worldX,
+          rootPose.worldZ,
+          nextElevation
         );
         propRuntimeRotationByPlacementId.set(placementId, {
-          x: sample.rotX,
-          y: sample.rotY,
-          z: sample.rotZ,
-          w: sample.rotW
+          x: rotation.x,
+          y: rotation.y,
+          z: rotation.z,
+          w: rotation.w
         });
 
         const root = editorPropRootByPlacementId.get(placementId);
         if (root) {
-          root.position.set(sample.worldX, sample.elevation, sample.worldZ);
-          root.quaternion.set(
-            sample.rotX,
-            sample.rotY,
-            sample.rotZ,
-            sample.rotW
-          );
+          root.position.set(rootPose.worldX, nextElevation, rootPose.worldZ);
+          root.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
         }
 
-        if (index >= playback.samples.length - 1) {
-          pendingPropDropPlaybackByPlacementId.delete(placementId);
-          completedAny = true;
+        updatePlacementRuntimeStateFromBody(
+          placement,
+          state.body,
+          rotation,
+          state.profile.mobility === "fixed" ? true : state.body.isSleeping()
+        );
+
+        if (
+          Math.hypot(rootPose.worldX - previousWorldX, rootPose.worldZ - previousWorldZ) >
+            0.0008 ||
+          Math.abs(nextElevation - previousElevation) > 0.0008 ||
+          quaternionDelta(previousRotation, rotation) > 0.0004 ||
+          previousSleeping !== placement.runtimeState?.sleeping
+        ) {
+          movedAny = true;
         }
       }
 
-      if (completedAny) {
-        propDropRevision += 1;
-        ghostDropCacheKey = "";
-        scheduleEditorAutosave();
+      if (!movedAny) {
+        return;
+      }
+      ghostDropCacheKey = "";
+      if (nowMs - editorPropPhysicsLastHoverRefreshMs > 90) {
         refreshHoverFromLastPointer();
+        editorPropPhysicsLastHoverRefreshMs = nowMs;
+      }
+      if (nowMs - editorPropPhysicsLastAutosaveMs > 700) {
+        scheduleEditorAutosave();
+        editorPropPhysicsLastAutosaveMs = nowMs;
       }
     }
 
     function resolvePlacementRuntimeRotation(
       placement: SettlementPropPlacement
     ): { x: number; y: number; z: number; w: number } {
+      if (placement.runtimeState) {
+        return placement.runtimeState.rotation;
+      }
       return (
         propRuntimeRotationByPlacementId.get(placement.placementId) ??
         yawQuaternionForQuarterTurns(placement.rotQuarterTurns)
       );
-    }
-
-    function settleAllPropPlacementsInWorld(): boolean {
-      if (!propDropEnabled || propPlacements.size === 0) {
-        return false;
-      }
-
-      type SettleBody = {
-        placement: SettlementPropPlacement;
-        body: RAPIER3D.RigidBody;
-        usesTrimesh: boolean;
-        localRootOffset: { x: number; y: number; z: number };
-        beforeWorldX: number;
-        beforeWorldY: number;
-        beforeWorldZ: number;
-        beforeRotation: { x: number; y: number; z: number; w: number };
-      };
-
-      const world = new RAPIER3D.World({ x: 0, y: -9.81, z: 0 });
-      const settleBodies: SettleBody[] = [];
-      try {
-        world.integrationParameters.dt = 1 / 60;
-        world.integrationParameters.maxCcdSubsteps = 4;
-
-        const floorBody = world.createRigidBody(
-          RAPIER3D.RigidBodyDesc.fixed().setTranslation(0, -0.05, 0)
-        );
-        world.createCollider(
-          RAPIER3D.ColliderDesc.cuboid(GRID_TILES, 0.05, GRID_TILES)
-            .setFriction(0.92)
-            .setRestitution(0),
-          floorBody
-        );
-
-        for (const placement of propPlacements.values()) {
-          const worldX = getPropPlacementWorldX(placement);
-          const worldZ = getPropPlacementWorldZ(placement);
-          const beforeRotation = resolvePlacementRuntimeRotation(placement);
-          const dimensions = resolvePropDimensions(
-            placement.sourcePropId,
-            placement.rotQuarterTurns
-          );
-          const halfWidth = dimensions.width * 0.5;
-          const halfDepth = dimensions.depth * 0.5;
-          const halfHeight = dimensions.height * 0.5;
-          const mode = getPropColliderMode(placement.sourcePropId);
-          const dynamicCollider = getDropDynamicColliderData(
-            placement.sourcePropId,
-            mode
-          );
-
-          let usesTrimesh = dynamicCollider !== null;
-          let localRootOffset =
-            dynamicCollider !== null
-              ? {
-                  x: dynamicCollider.rootOffsetX,
-                  y: dynamicCollider.rootOffsetY,
-                  z: dynamicCollider.rootOffsetZ
-                }
-              : { x: 0, y: -halfHeight, z: 0 };
-          const bodyStart = bodyTranslationFromRootPose(
-            worldX,
-            placement.elevation,
-            worldZ,
-            localRootOffset,
-            beforeRotation
-          );
-
-          const body = world.createRigidBody(
-            RAPIER3D.RigidBodyDesc.dynamic()
-              .setTranslation(bodyStart.x, bodyStart.y, bodyStart.z)
-              .setRotation(beforeRotation)
-              .setAdditionalSolverIterations(usesTrimesh ? 2 : 0)
-          );
-          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-          body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-          body.setLinearDamping(usesTrimesh ? 0.28 : 0.24);
-          body.setAngularDamping(usesTrimesh ? 0.42 : 0.35);
-          body.enableCcd(true);
-
-          if (usesTrimesh && dynamicCollider) {
-            try {
-              const hullDesc = RAPIER3D.ColliderDesc.convexHull(
-                dynamicCollider.vertices
-              );
-              if (!hullDesc) {
-                throw new Error("Failed to create convex hull collider.");
-              }
-              world.createCollider(
-                hullDesc.setFriction(0.92).setRestitution(0).setMass(0.9),
-                body
-              );
-            } catch {
-              usesTrimesh = false;
-              localRootOffset = { x: 0, y: -halfHeight, z: 0 };
-              const fallbackStart = bodyTranslationFromRootPose(
-                worldX,
-                placement.elevation,
-                worldZ,
-                localRootOffset,
-                beforeRotation
-              );
-              body.setTranslation(
-                {
-                  x: fallbackStart.x,
-                  y: fallbackStart.y,
-                  z: fallbackStart.z
-                },
-                true
-              );
-              world.createCollider(
-                RAPIER3D.ColliderDesc.cuboid(halfWidth, halfHeight, halfDepth)
-                  .setFriction(0.92)
-                  .setRestitution(0)
-                  .setMass(0.9),
-                body
-              );
-            }
-          } else {
-            world.createCollider(
-              RAPIER3D.ColliderDesc.cuboid(halfWidth, halfHeight, halfDepth)
-                .setFriction(0.92)
-                .setRestitution(0)
-                .setMass(0.9),
-              body
-            );
-          }
-
-          settleBodies.push({
-            placement,
-            body,
-            usesTrimesh,
-            localRootOffset,
-            beforeWorldX: worldX,
-            beforeWorldY: placement.elevation,
-            beforeWorldZ: worldZ,
-            beforeRotation
-          });
-        }
-
-        let stableFrames = 0;
-        for (let i = 0; i < RELOAD_SCENE_SETTLE_MAX_STEPS; i += 1) {
-          world.step();
-          let allStable = true;
-          for (const state of settleBodies) {
-            clampDropBodyVelocity(state.body);
-            const velocity = state.body.linvel();
-            const speedSq =
-              velocity.x * velocity.x +
-              velocity.y * velocity.y +
-              velocity.z * velocity.z;
-            const angular = state.body.angvel();
-            const angularSpeedSq =
-              angular.x * angular.x +
-              angular.y * angular.y +
-              angular.z * angular.z;
-            const linearThreshold = state.usesTrimesh ? 0.00022 : 0.00008;
-            const angularThreshold = state.usesTrimesh ? 0.0018 : 0.00045;
-            if (speedSq > linearThreshold || angularSpeedSq > angularThreshold) {
-              allStable = false;
-            }
-          }
-
-          if (allStable) {
-            stableFrames += 1;
-          } else {
-            stableFrames = 0;
-          }
-          if (stableFrames >= DROP_PREVIEW_STABLE_FRAMES) {
-            break;
-          }
-        }
-
-        let changed = false;
-        for (const state of settleBodies) {
-          const translation = state.body.translation();
-          const rotation = state.body.rotation();
-          const rootPose = rootPoseFromBodyPose(
-            translation,
-            state.localRootOffset,
-            rotation
-          );
-          const settledWorldY = Math.max(0, rootPose.worldY);
-          applyPlacementWorldPose(
-            state.placement,
-            rootPose.worldX,
-            rootPose.worldZ,
-            settledWorldY
-          );
-          propRuntimeRotationByPlacementId.set(state.placement.placementId, {
-            x: rotation.x,
-            y: rotation.y,
-            z: rotation.z,
-            w: rotation.w
-          });
-
-          if (
-            Math.hypot(
-              rootPose.worldX - state.beforeWorldX,
-              rootPose.worldZ - state.beforeWorldZ
-            ) > 0.001 ||
-            Math.abs(settledWorldY - state.beforeWorldY) > 0.001 ||
-            quaternionDelta(state.beforeRotation, rotation) > 0.0005
-          ) {
-            changed = true;
-          }
-        }
-
-        return changed;
-      } finally {
-        world.free();
-      }
-    }
-
-    async function runReloadSceneSettleIfNeeded(): Promise<void> {
-      if (!reloadSceneSettlePending || reloadSceneSettleInFlight) {
-        return;
-      }
-      reloadSceneSettlePending = false;
-      if (!propDropEnabled || propPlacements.size === 0) {
-        return;
-      }
-
-      reloadSceneSettleInFlight = true;
-      try {
-        const loadRequests: Promise<void>[] = [];
-        const seenSourceIds = new Set<string>();
-        for (const placement of propPlacements.values()) {
-          if (seenSourceIds.has(placement.sourcePropId)) {
-            continue;
-          }
-          seenSourceIds.add(placement.sourcePropId);
-          ensurePropTemplate(placement.sourcePropId);
-          const pending = propTemplateRequestById.get(placement.sourcePropId);
-          if (pending) {
-            loadRequests.push(pending);
-          }
-        }
-        if (loadRequests.length > 0) {
-          await Promise.allSettled(loadRequests);
-        }
-
-        if (!propDropEnabled || mode !== "EDITOR" || propPlacements.size === 0) {
-          return;
-        }
-
-        const changed = settleAllPropPlacementsInWorld();
-        if (!changed) {
-          return;
-        }
-        propDropRevision += 1;
-        ghostDropCacheKey = "";
-        rebuildEditorPropMeshes();
-        if (gameRuntime) {
-          rebuildGamePropMeshes();
-        }
-        scheduleEditorAutosave();
-        refreshHoverFromLastPointer();
-        statusMessage =
-          "Reload settle pass completed; unstable props dropped into stable poses.";
-        syncHud();
-      } finally {
-        reloadSceneSettleInFlight = false;
-      }
     }
 
     function createPropInstance(placement: SettlementPropPlacement): THREE.Object3D {
@@ -3693,17 +3453,13 @@ const experiment: ExperimentModule = {
         placement.elevation,
         getPropPlacementWorldZ(placement)
       );
-      const runtimeRotation = propRuntimeRotationByPlacementId.get(placement.placementId);
-      if (runtimeRotation) {
-        root.quaternion.set(
-          runtimeRotation.x,
-          runtimeRotation.y,
-          runtimeRotation.z,
-          runtimeRotation.w
-        );
-      } else {
-        root.rotation.y = placement.rotQuarterTurns * (Math.PI * 0.5);
-      }
+      const runtimeRotation = resolvePlacementRuntimeRotation(placement);
+      root.quaternion.set(
+        runtimeRotation.x,
+        runtimeRotation.y,
+        runtimeRotation.z,
+        runtimeRotation.w
+      );
 
       const template = propTemplateById.get(placement.sourcePropId);
       if (template) {
@@ -3744,8 +3500,36 @@ const experiment: ExperimentModule = {
       rebuildPropMeshes(editorPropGroup, editorPropRootByPlacementId);
     }
 
+    function rebuildRuntimePropMeshes(runtime: GameRuntime): void {
+      clearGroup(gamePropGroup);
+      runtime.propRootByPlacementId.clear();
+
+      for (const [placementId, eid] of runtime.propByPlacementId.entries()) {
+        const prop = runtime.props.get(eid);
+        if (!prop) {
+          continue;
+        }
+
+        const placement = propPlacements.get(placementId);
+        if (!placement) {
+          continue;
+        }
+
+        if (!propTemplateById.has(prop.sourcePropId)) {
+          ensurePropTemplate(prop.sourcePropId);
+        }
+        const root = createPropInstance(placement) as THREE.Group;
+        runtime.propRootByPlacementId.set(placementId, root);
+        gamePropGroup.add(root);
+      }
+    }
+
     function rebuildGamePropMeshes(): void {
-      rebuildPropMeshes(gamePropGroup);
+      if (!gameRuntime) {
+        clearGroup(gamePropGroup);
+        return;
+      }
+      rebuildRuntimePropMeshes(gameRuntime);
     }
 
     function clearGroup(group: THREE.Group): void {
@@ -4220,10 +4004,49 @@ const experiment: ExperimentModule = {
       propClearButton.disabled = !propCatalogActive;
       propSnapToggleButton.disabled = !propCatalogActive;
       const hasSelectedProp = selectedPropId !== null;
-      propColliderDefinedButton.disabled = !propCatalogActive || !hasSelectedProp;
+      const selectedProfile =
+        selectedPropId !== null ? getPropPhysicsProfile(selectedPropId) : null;
+      const selectedColliderMode =
+        selectedPropId !== null ? getPropColliderMode(selectedPropId) : null;
+      const availableColliderModes =
+        selectedPropId !== null ? getAvailablePropColliderModes(selectedPropId) : [];
+      propColliderBoxButton.disabled =
+        !propCatalogActive ||
+        !hasSelectedProp ||
+        !availableColliderModes.includes("box");
+      propColliderHullButton.disabled =
+        !propCatalogActive ||
+        !hasSelectedProp ||
+        !availableColliderModes.includes("convex-hull");
+      propColliderCompoundButton.disabled =
+        !propCatalogActive ||
+        !hasSelectedProp ||
+        !availableColliderModes.includes("compound-boxes");
       setButtonActive(
-        propColliderDefinedButton,
-        propCatalogActive && hasSelectedProp
+        propColliderBoxButton,
+        propCatalogActive && selectedColliderMode === "box"
+      );
+      setButtonActive(
+        propColliderHullButton,
+        propCatalogActive && selectedColliderMode === "convex-hull"
+      );
+      setButtonActive(
+        propColliderCompoundButton,
+        propCatalogActive && selectedColliderMode === "compound-boxes"
+      );
+      propPhysicsDynamicButton.disabled = !propCatalogActive || !hasSelectedProp;
+      propPhysicsFixedButton.disabled = !propCatalogActive || !hasSelectedProp;
+      setButtonActive(
+        propPhysicsDynamicButton,
+        propCatalogActive &&
+          selectedProfile !== null &&
+          selectedProfile.mobility === "dynamic"
+      );
+      setButtonActive(
+        propPhysicsFixedButton,
+        propCatalogActive &&
+          selectedProfile !== null &&
+          selectedProfile.mobility === "fixed"
       );
       propCardGrid.style.pointerEvents = propCatalogActive ? "auto" : "none";
       propCardGrid.style.opacity = propCatalogActive ? "1" : "0.54";
@@ -4237,12 +4060,32 @@ const experiment: ExperimentModule = {
         ? "rgba(225, 244, 255, 0.96)"
         : "rgba(255, 230, 197, 0.97)";
       propColliderBadge.textContent = hasSelectedProp
-        ? "Collider Proxy"
+        ? selectedColliderMode === "box"
+          ? "Collider Box"
+          : selectedColliderMode === "convex-hull"
+            ? "Collider Hull"
+            : "Collider Compound"
         : "Collider --";
-      propColliderBadge.style.borderColor =
-        "rgba(148, 173, 190, 0.5)";
-      propColliderBadge.style.color =
-        "rgba(223, 237, 247, 0.96)";
+      propColliderBadge.style.borderColor = "rgba(148, 173, 190, 0.5)";
+      propColliderBadge.style.color = "rgba(223, 237, 247, 0.96)";
+      propPhysicsBadge.textContent =
+        selectedProfile === null
+          ? "Physics --"
+          : selectedProfile.mobility === "fixed"
+            ? "Physics Support"
+            : "Physics Loose";
+      propPhysicsBadge.style.borderColor =
+        selectedProfile === null
+          ? "rgba(148, 173, 190, 0.5)"
+          : selectedProfile.mobility === "fixed"
+            ? "rgba(245, 191, 120, 0.68)"
+            : "rgba(162, 202, 231, 0.64)";
+      propPhysicsBadge.style.color =
+        selectedProfile === null
+          ? "rgba(223, 237, 247, 0.96)"
+          : selectedProfile.mobility === "fixed"
+            ? "rgba(255, 230, 197, 0.97)"
+            : "rgba(225, 244, 255, 0.96)";
 
       const viewStep = ((view.getYawIndex() % 4) + 4) % 4;
       const zoomCurrent = view.getState().cameraZoomCurrent;
@@ -4442,6 +4285,8 @@ const experiment: ExperimentModule = {
         placementCellX,
         placementCellY
       );
+      const initialRotation = yawQuaternionForQuarterTurns(propRotationQuarterTurns);
+      const placementProfile = getPropPhysicsProfile(selectedPropId);
       propPlacements.set(placementId, {
         placementId,
         sourcePropId: selectedPropId,
@@ -4451,20 +4296,21 @@ const experiment: ExperimentModule = {
         offsetZ: placementWorldZ - toWorldZ(placementCellY),
         rotQuarterTurns: propRotationQuarterTurns,
         elevation,
-        collider2d
+        collider2d,
+        runtimeState: {
+          rotation: {
+            x: initialRotation.x,
+            y: initialRotation.y,
+            z: initialRotation.z,
+            w: initialRotation.w
+          },
+          linearVelocity: { x: 0, y: 0, z: 0 },
+          angularVelocity: { x: 0, y: 0, z: 0 },
+          sleeping: placementProfile.mobility === "fixed"
+        }
       });
-      propRuntimeRotationByPlacementId.set(
-        placementId,
-        yawQuaternionForQuarterTurns(propRotationQuarterTurns)
-      );
-      schedulePropDropPlayback(
-        placementId,
-        selectedPropId,
-        placementWorldX,
-        placementWorldZ,
-        elevation,
-        propRotationQuarterTurns
-      );
+      propRuntimeRotationByPlacementId.set(placementId, initialRotation);
+      queueEditorPropDropActivation(placementId);
       return true;
     }
 
@@ -4740,23 +4586,6 @@ const experiment: ExperimentModule = {
       return map;
     }
 
-    function propColliderSizeForPlacement(placement: SettlementPropPlacement): {
-      width: number;
-      depth: number;
-    } | null {
-      if (placement.elevation > 0.12) {
-        return null;
-      }
-      const dimensions = resolvePropDimensions(
-        placement.sourcePropId,
-        placement.rotQuarterTurns
-      );
-      return {
-        width: Math.max(0.1, Math.min(2.0, dimensions.width)),
-        depth: Math.max(0.1, Math.min(2.0, dimensions.depth))
-      };
-    }
-
     function applyDoorBlocking(runtime: GameRuntime, door: DoorComponent): void {
       for (const cell of door.linkedCells) {
         runtime.levelResource.setBlocked(cell.x, cell.y, !door.open);
@@ -4767,6 +4596,52 @@ const experiment: ExperimentModule = {
       );
       if (colliderHandle !== undefined) {
         runtime.physics.setColliderEnabled(colliderHandle, !door.open);
+      }
+    }
+
+    function createRuntimeSolidColliders(
+      physics: Physics3dResource,
+      baked: ReturnType<typeof createBakePayload>
+    ): void {
+      const floorHalfSpan = GRID_TILES * TILE_SIZE * 0.5 + TILE_SIZE;
+      physics.createStaticCuboidCollider({
+        translation: { x: 0, y: -GAME_PHYSICS_FLOOR_HALF_HEIGHT, z: 0 },
+        halfExtents: {
+          x: floorHalfSpan,
+          y: GAME_PHYSICS_FLOOR_HALF_HEIGHT,
+          z: floorHalfSpan
+        },
+        friction: 0.94,
+        restitution: 0,
+        collisionGroups: collisionGroups(
+          PHYSICS_LAYER.WORLD_STATIC,
+          PHYSICS_MASK.WORLD_STATIC
+        )
+      });
+
+      const colliderHalfHeight = GAME_PHYSICS_COLLIDER_HEIGHT * 0.5;
+      for (const collider of baked.colliderDescs) {
+        if (collider.kind !== "rect") {
+          continue;
+        }
+        physics.createStaticCuboidCollider({
+          translation: {
+            x: toWorldCoordX(collider.x),
+            y: colliderHalfHeight,
+            z: toWorldCoordZ(collider.y)
+          },
+          halfExtents: {
+            x: toWorldDistance(collider.w) * 0.5,
+            y: colliderHalfHeight,
+            z: toWorldDistance(collider.h) * 0.5
+          },
+          friction: 0.9,
+          restitution: 0,
+          collisionGroups: collisionGroups(
+            PHYSICS_LAYER.WORLD_STATIC,
+            PHYSICS_MASK.WORLD_STATIC
+          )
+        });
       }
     }
 
@@ -4787,44 +4662,18 @@ const experiment: ExperimentModule = {
         inputSystem: createInputSystem(keyboard),
         eventSystem: createEventSystem()
       };
-      const physics = createPhysicsResource();
-      const physicsBodies = new DataStore<PhysicsBodyRef>();
-      const physicsColliders = new DataStore<PhysicsColliderRef>();
-
-      for (const collider of baked.colliderDescs) {
-        if (collider.kind !== "rect") {
-          continue;
-        }
-
-        physics.ensureStaticColliderRect(collider.x, collider.y, collider.w, collider.h);
-      }
+      const physics = createPhysics3dResource({
+        gravity: { x: 0, y: -9.81, z: 0 },
+        fixedDt: 1 / 60,
+        maxSubsteps: 10,
+        characterOffset: 0.02
+      });
+      const physicsBodies = new DataStore<Physics3dBodyRef>();
+      const physicsColliders = new DataStore<Physics3dColliderRef>();
+      createRuntimeSolidColliders(physics, baked);
 
       const doorColliderDescriptors = doorColliderMap(baked.colliderDescs);
       const doorColliderByPlacementId = new Map<string, number>();
-      for (const [placementId, desc] of doorColliderDescriptors.entries()) {
-        const handle = physics.ensureStaticColliderRect(
-          desc.x,
-          desc.y,
-          desc.w,
-          desc.h
-        );
-        doorColliderByPlacementId.set(placementId, handle);
-      }
-
-      for (const placement of propPlacements.values()) {
-        const size = propColliderSizeForPlacement(placement);
-        if (!size) {
-          continue;
-        }
-        const centerX = toGameplayCoordX(getPropPlacementWorldX(placement));
-        const centerY = toGameplayCoordY(getPropPlacementWorldZ(placement));
-        physics.ensureStaticColliderRect(
-          centerX,
-          centerY,
-          size.width,
-          size.depth
-        );
-      }
 
       const playerEid = world.createEntity();
       const playerStart = options?.player ?? PLAYER_SPAWN;
@@ -4832,12 +4681,34 @@ const experiment: ExperimentModule = {
       world.velocities.add(playerEid, { vx: 0, vy: 0 });
       world.playerTags.add(playerEid, true);
       world.persistents.add(playerEid, { kind: "player" });
+      const playerBody = physics.ensureKinematicCharacterCapsule(
+        playerEid,
+        {
+          x: toWorldCoordX(playerStart.x),
+          y: GAME_PHYSICS_PLAYER_CENTER_Y,
+          z: toWorldCoordZ(playerStart.y)
+        },
+        {
+          radius: GAME_PHYSICS_PLAYER_RADIUS,
+          halfHeight: GAME_PHYSICS_PLAYER_HALF_HEIGHT
+        },
+        {
+          collisionGroups: collisionGroups(PHYSICS_LAYER.PLAYER, PHYSICS_MASK.PLAYER),
+          friction: 0.5
+        }
+      );
+      physicsBodies.add(playerEid, { bodyHandle: playerBody.bodyHandle });
+      physicsColliders.add(playerEid, { colliderHandle: playerBody.colliderHandle });
 
       const doors = new DataStore<DoorComponent>();
       const doorByPlacementId = new Map<string, EID>();
       const placementIdByEdge = new Map<string, string>();
       const doorVisuals = new Map<string, EditorDoorVisual>();
+      const props = new DataStore<PropComponent>();
+      const propByPlacementId = new Map<string, EID>();
+      const propRootByPlacementId = new Map<string, THREE.Group>();
       const interactionQueue: string[] = [];
+      const doorColliderHalfHeight = GAME_PHYSICS_COLLIDER_HEIGHT * 0.5;
 
       for (const [key, segment] of structureSegments.entries()) {
         if (!isDoorStructureSegment(segment)) {
@@ -4877,17 +4748,217 @@ const experiment: ExperimentModule = {
         doorByPlacementId.set(placementId, eid);
         placementIdByEdge.set(key, placementId);
 
+        const doorCollider = doorColliderDescriptors.get(placementId);
+        if (doorCollider) {
+          const created = physics.createFixedCuboidEntity(eid, {
+            translation: {
+              x: toWorldCoordX(doorCollider.x),
+              y: doorColliderHalfHeight,
+              z: toWorldCoordZ(doorCollider.y)
+            },
+            halfExtents: {
+              x: toWorldDistance(doorCollider.w) * 0.5,
+              y: doorColliderHalfHeight,
+              z: toWorldDistance(doorCollider.h) * 0.5
+            },
+            friction: 0.9,
+            restitution: 0,
+            collisionGroups: collisionGroups(
+              PHYSICS_LAYER.STRUCTURE_DOOR,
+              PHYSICS_MASK.STRUCTURE_DOOR
+            )
+          });
+          physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+          physicsColliders.add(eid, {
+            colliderHandle: created.colliderHandle
+          });
+          doorColliderByPlacementId.set(placementId, created.colliderHandle);
+        }
       }
 
-      physicsEnsureSystem({
-        world,
-        physics,
-        entities: world.queryTransformPlayer(),
-        capsule: { radius: 0.25 },
-        physicsBodies,
-        physicsColliders
-      });
-      physics.setTranslation(playerEid, playerStart);
+      for (const placement of propPlacements.values()) {
+        const eid = world.createEntity();
+        const worldX = getPropPlacementWorldX(placement);
+        const worldZ = getPropPlacementWorldZ(placement);
+        const runtimeRotation = resolvePlacementRuntimeRotation(placement);
+        let localRootOffset = { x: 0, y: 0, z: 0 };
+        const profile = getPropPhysicsProfile(placement.sourcePropId);
+        const propCollisionGroups =
+          profile.mobility === "fixed"
+            ? collisionGroups(PHYSICS_LAYER.PROP_SUPPORT, PHYSICS_MASK.PROP_SUPPORT)
+            : collisionGroups(PHYSICS_LAYER.PROP_LOOSE, PHYSICS_MASK.PROP_LOOSE);
+
+        world.transforms.add(eid, {
+          x: toGameplayCoordX(worldX),
+          y: toGameplayCoordY(worldZ)
+        });
+        world.persistents.add(eid, { kind: "prop" });
+        propByPlacementId.set(placement.placementId, eid);
+
+        const placementMode = getPropColliderMode(placement.sourcePropId);
+        const compoundCollider =
+          placementMode === "compound-boxes"
+            ? getPropCompoundCollider(placement.sourcePropId)
+            : null;
+        const convexCollider =
+          placementMode === "convex-hull"
+            ? getPropConvexHullCollider(placement.sourcePropId)
+            : null;
+        if (compoundCollider && compoundCollider.parts.length > 0) {
+          const parts = toRapierCompoundParts(compoundCollider);
+          const bodyTranslation = bodyTranslationFromRootPose(
+            worldX,
+            placement.elevation,
+            worldZ,
+            { x: 0, y: 0, z: 0 },
+            runtimeRotation
+          );
+          if (profile.mobility === "dynamic") {
+            const created = physics.createDynamicCompoundCuboidEntity(eid, {
+              translation: bodyTranslation,
+              rotation: runtimeRotation,
+              parts,
+              mass: profile.mass,
+              friction: profile.friction,
+              restitution: profile.restitution,
+              linearDamping: profile.linearDamping,
+              angularDamping: profile.angularDamping,
+              ccd: true,
+              collisionGroups: propCollisionGroups
+            });
+            physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+            physicsColliders.add(eid, {
+              colliderHandle: created.colliderHandle
+            });
+          } else {
+            const created = physics.createFixedCompoundCuboidEntity(eid, {
+              translation: bodyTranslation,
+              rotation: runtimeRotation,
+              parts,
+              friction: profile.friction,
+              restitution: profile.restitution,
+              collisionGroups: propCollisionGroups
+            });
+            physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+            physicsColliders.add(eid, {
+              colliderHandle: created.colliderHandle
+            });
+          }
+          localRootOffset = { x: 0, y: 0, z: 0 };
+        }
+
+        if (convexCollider && !physicsBodies.has(eid)) {
+          const convexVertices = toRapierConvexHullVertices(
+            placement.sourcePropId,
+            convexCollider
+          );
+          if (convexVertices) {
+            localRootOffset = {
+              x: convexCollider.rootOffset[0],
+              y: convexCollider.rootOffset[1],
+              z: convexCollider.rootOffset[2]
+            };
+            const bodyTranslation = bodyTranslationFromRootPose(
+              worldX,
+              placement.elevation,
+              worldZ,
+              localRootOffset,
+              runtimeRotation
+            );
+            const created =
+              profile.mobility === "dynamic"
+                ? physics.createDynamicConvexHullEntity(eid, {
+                    translation: bodyTranslation,
+                    rotation: runtimeRotation,
+                    vertices: convexVertices,
+                    mass: profile.mass,
+                    friction: profile.friction,
+                    restitution: profile.restitution,
+                    linearDamping: profile.linearDamping,
+                    angularDamping: profile.angularDamping,
+                    ccd: true,
+                    collisionGroups: propCollisionGroups
+                  })
+                : physics.createFixedConvexHullEntity(eid, {
+                    translation: bodyTranslation,
+                    rotation: runtimeRotation,
+                    vertices: convexVertices,
+                    friction: profile.friction,
+                    restitution: profile.restitution,
+                    collisionGroups: propCollisionGroups
+                  });
+            if (created) {
+              physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+              physicsColliders.add(eid, {
+                colliderHandle: created.colliderHandle
+              });
+            }
+          }
+        }
+
+        if (!physicsBodies.has(eid)) {
+          const dimensions = resolvePropDimensions(
+            placement.sourcePropId,
+            placement.rotQuarterTurns
+          );
+          const halfHeight = dimensions.height * 0.5;
+          localRootOffset = { x: 0, y: -halfHeight, z: 0 };
+          const bodyTranslation = bodyTranslationFromRootPose(
+            worldX,
+            placement.elevation,
+            worldZ,
+            localRootOffset,
+            runtimeRotation
+          );
+          const halfExtents = {
+            x: dimensions.width * 0.5,
+            y: halfHeight,
+            z: dimensions.depth * 0.5
+          };
+          const created =
+            profile.mobility === "dynamic"
+              ? physics.createDynamicCuboidEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  halfExtents,
+                  mass: profile.mass,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  linearDamping: profile.linearDamping,
+                  angularDamping: profile.angularDamping,
+                  ccd: true,
+                  collisionGroups: propCollisionGroups
+                })
+              : physics.createFixedCuboidEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  halfExtents,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  collisionGroups: propCollisionGroups
+                });
+          physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+          physicsColliders.add(eid, {
+            colliderHandle: created.colliderHandle
+          });
+        }
+
+        if (profile.mobility === "dynamic" && placement.runtimeState) {
+          physics.setEntityLinearVelocity(eid, placement.runtimeState.linearVelocity, true);
+          physics.setEntityAngularVelocity(eid, placement.runtimeState.angularVelocity, true);
+          if (placement.runtimeState.sleeping) {
+            physics.sleepEntity(eid);
+          } else {
+            physics.wakeEntity(eid);
+          }
+        }
+
+        props.add(eid, {
+          placementId: placement.placementId,
+          sourcePropId: placement.sourcePropId,
+          localRootOffset
+        });
+      }
 
       const runtime: GameRuntime = {
         world,
@@ -4903,6 +4974,9 @@ const experiment: ExperimentModule = {
         placementIdByEdge,
         doorColliderByPlacementId,
         doorVisuals,
+        props,
+        propByPlacementId,
+        propRootByPlacementId,
         interactionQueue
       };
 
@@ -4917,9 +4991,93 @@ const experiment: ExperimentModule = {
       return runtime;
     }
 
+    function syncRuntimePlayerFromPhysics(runtime: GameRuntime): void {
+      const translation = runtime.physics.getEntityTranslation(runtime.playerEid);
+      if (!translation) {
+        return;
+      }
+      const transform = runtime.world.transforms.get(runtime.playerEid);
+      if (!transform) {
+        return;
+      }
+      transform.x = toGameplayCoordX(translation.x);
+      transform.y = toGameplayCoordY(translation.z);
+    }
+
+    function syncRuntimePropTransforms(runtime: GameRuntime): void {
+      for (const [placementId, eid] of runtime.propByPlacementId.entries()) {
+        const prop = runtime.props.get(eid);
+        if (!prop) {
+          continue;
+        }
+        const placement = propPlacements.get(placementId);
+        if (!placement) {
+          continue;
+        }
+
+        const translation = runtime.physics.getEntityTranslation(eid);
+        const rotation = runtime.physics.getEntityRotation(eid);
+        if (!translation || !rotation) {
+          continue;
+        }
+
+        const rootPose = rootPoseFromBodyPose(
+          translation,
+          prop.localRootOffset,
+          rotation
+        );
+        const rootY = Math.max(0, rootPose.worldY);
+        applyPlacementWorldPose(placement, rootPose.worldX, rootPose.worldZ, rootY);
+        propRuntimeRotationByPlacementId.set(placement.placementId, {
+          x: rotation.x,
+          y: rotation.y,
+          z: rotation.z,
+          w: rotation.w
+        });
+
+        const linearVelocity =
+          runtime.physics.getEntityLinearVelocity(eid) ?? { x: 0, y: 0, z: 0 };
+        const angularVelocity =
+          runtime.physics.getEntityAngularVelocity(eid) ?? { x: 0, y: 0, z: 0 };
+        const profile = getPropPhysicsProfile(placement.sourcePropId);
+        placement.runtimeState = {
+          rotation: {
+            x: rotation.x,
+            y: rotation.y,
+            z: rotation.z,
+            w: rotation.w
+          },
+          linearVelocity: {
+            x: linearVelocity.x,
+            y: linearVelocity.y,
+            z: linearVelocity.z
+          },
+          angularVelocity: {
+            x: angularVelocity.x,
+            y: angularVelocity.y,
+            z: angularVelocity.z
+          },
+          sleeping:
+            profile.mobility === "fixed"
+              ? true
+              : runtime.physics.isEntitySleeping(eid)
+        };
+
+        const transform = runtime.world.transforms.get(eid);
+        if (transform) {
+          transform.x = toGameplayCoordX(rootPose.worldX);
+          transform.y = toGameplayCoordY(rootPose.worldZ);
+        }
+
+        const root = runtime.propRootByPlacementId.get(placementId);
+        if (root) {
+          root.position.set(rootPose.worldX, rootY, rootPose.worldZ);
+          root.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+        }
+      }
+    }
+
     function enterEditor(): void {
-      pendingPropDropPlaybackByPlacementId.clear();
-      propRuntimeRotationByPlacementId.clear();
       if (gameRuntime) {
         const player = findPlayerTransform(gameRuntime.world);
         if (player) {
@@ -4946,12 +5104,11 @@ const experiment: ExperimentModule = {
       doorOverrides?: Map<string, DoorOverride>;
       status?: string;
     }): Promise<void> {
-      pendingPropDropPlaybackByPlacementId.clear();
-      propRuntimeRotationByPlacementId.clear();
+      disposeEditorPropPhysics();
       const requestId = enterGameRequestId + 1;
       enterGameRequestId = requestId;
 
-      await initRapier();
+      await initRapier3d();
       if (requestId !== enterGameRequestId) {
         return;
       }
@@ -4971,6 +5128,8 @@ const experiment: ExperimentModule = {
       gameRuntime = runtime;
       rebuildGameplayDoorMeshes(runtime);
       rebuildGamePropMeshes();
+      syncRuntimePlayerFromPhysics(runtime);
+      syncRuntimePropTransforms(runtime);
 
       mode = "GAME";
       editorDoorGroup.visible = false;
@@ -5036,7 +5195,8 @@ const experiment: ExperimentModule = {
           overrides: groundOverrides,
           structures: structureSegments,
           props: propPlacements,
-          propColliderModes
+          propColliderModes,
+          propPhysicsProfiles
         }),
         player,
         doors
@@ -5081,9 +5241,10 @@ const experiment: ExperimentModule = {
       groundOverrides = parsedEditor.overrides;
       structureSegments = parsedEditor.structures;
       propPlacements = parsedEditor.props;
-      pendingPropDropPlaybackByPlacementId.clear();
-      propRuntimeRotationByPlacementId.clear();
+      disposeEditorPropPhysics();
+      hydrateRuntimeStateFromPlacements();
       propColliderModes = parsedEditor.propColliderModes;
+      propPhysicsProfiles = new Map(parsedEditor.propPhysicsProfiles);
       propRotationQuarterTurns = 0;
       propDropRevision += 1;
       ghostDropCacheKey = "";
@@ -5174,29 +5335,23 @@ const experiment: ExperimentModule = {
 
       runtime.systems.inputSystem(world);
       runCameraRelativePlayerInputSystem(world);
-      physicsEnsureSystem({
-        world,
-        physics: runtime.physics,
-        entities: world.queryTransformPlayer(),
-        capsule: { radius: 0.25 },
-        physicsBodies: runtime.physicsBodies,
-        physicsColliders: runtime.physicsColliders
-      });
-      physicsSyncInSystem({
-        world,
-        physics: runtime.physics,
-        entities: world.queryTransformPlayer()
-      });
-      physicsStepSystem({
-        physics: runtime.physics,
-        dtFrame: dt
-      });
-      physicsSyncOutSystem({
-        world,
-        physics: runtime.physics,
-        entities: world.queryTransformPlayer()
-      });
+      const playerVelocity = world.velocities.get(runtime.playerEid);
+      if (playerVelocity) {
+        runtime.physics.setCharacterDesiredVelocity(runtime.playerEid, {
+          vx: playerVelocity.vx * TILE_SIZE,
+          vz: playerVelocity.vy * TILE_SIZE
+        });
+      } else {
+        runtime.physics.setCharacterDesiredVelocity(runtime.playerEid, {
+          vx: 0,
+          vz: 0
+        });
+      }
+
       runDoorSystem(runtime);
+      runtime.physics.step(dt);
+      syncRuntimePlayerFromPhysics(runtime);
+      syncRuntimePropTransforms(runtime);
       runtime.systems.eventSystem(world);
 
       const player = world.transforms.get(runtime.playerEid);
@@ -5652,7 +5807,6 @@ const experiment: ExperimentModule = {
     enterEditor();
     syncHud();
     updateCursor();
-    void runReloadSceneSettleIfNeeded();
 
     let last = performance.now();
 
@@ -5663,7 +5817,7 @@ const experiment: ExperimentModule = {
       if (mode === "GAME" && gameRuntime) {
         runGameFrame(gameRuntime, dt);
       } else if (mode === "EDITOR") {
-        stepPendingPropDropPlaybacks(now);
+        stepEditorPropPhysics(now);
       }
 
       view.frame(now, dt);
@@ -5676,7 +5830,7 @@ const experiment: ExperimentModule = {
 
     return () => {
       cancelAnimationFrame(raf);
-      pendingPropDropPlaybackByPlacementId.clear();
+      disposeEditorPropPhysics();
       propRuntimeRotationByPlacementId.clear();
 
       if (autosaveTimer > 0) {

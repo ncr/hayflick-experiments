@@ -15,6 +15,7 @@ export interface ViewportHandle {
   setWireframe(on: boolean): void;
   setMaterialChannel(channel: MaterialChannelMode): void;
   setCollider(params: ColliderParams | null): void;
+  setColliderPreviewObject(helper: THREE.Object3D | null): void;
   setBBoxVisible(on: boolean): void;
   getBBox(): BBox | null;
   getScene(): THREE.Scene;
@@ -48,6 +49,25 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       activeChannel: MaterialChannelMode;
     } | null>(null);
 
+    const disposeObject = (object: THREE.Object3D | null): void => {
+      if (!object) {
+        return;
+      }
+      object.traverse((node) => {
+        if (!(node instanceof THREE.Mesh)) {
+          return;
+        }
+        node.geometry?.dispose();
+        if (Array.isArray(node.material)) {
+          for (const material of node.material) {
+            material.dispose();
+          }
+          return;
+        }
+        node.material?.dispose();
+      });
+    };
+
     useImperativeHandle(ref, () => ({
       loadGlb: async (data: ArrayBuffer) => {
         const loader = new GLTFLoader();
@@ -65,7 +85,11 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         if (s.model) s.scene.remove(s.model);
         if (s.bboxHelper) { s.scene.remove(s.bboxHelper); s.bboxHelper = null; }
         if (s.dimLabels) { s.scene.remove(s.dimLabels); s.dimLabels = null; }
-        if (s.colliderHelper) { s.scene.remove(s.colliderHelper); s.colliderHelper = null; }
+        if (s.colliderHelper) {
+          s.scene.remove(s.colliderHelper);
+          disposeObject(s.colliderHelper);
+          s.colliderHelper = null;
+        }
 
         s.model = group;
         if (group) {
@@ -155,12 +179,28 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         if (!s) return;
         if (s.colliderHelper) {
           s.scene.remove(s.colliderHelper);
+          disposeObject(s.colliderHelper);
           s.colliderHelper = null;
         }
         if (params) {
           s.colliderHelper = createColliderHelper(params);
           s.scene.add(s.colliderHelper);
         }
+      },
+
+      setColliderPreviewObject: (helper: THREE.Object3D | null) => {
+        const s = stateRef.current;
+        if (!s) return;
+        if (s.colliderHelper) {
+          s.scene.remove(s.colliderHelper);
+          disposeObject(s.colliderHelper);
+          s.colliderHelper = null;
+        }
+        if (!helper) {
+          return;
+        }
+        s.colliderHelper = helper;
+        s.scene.add(helper);
       },
 
       setBBoxVisible: (on: boolean) => {
@@ -285,6 +325,10 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         cancelAnimationFrame(state.raf);
         ro.disconnect();
         controls.dispose();
+        if (state.colliderHelper) {
+          disposeObject(state.colliderHelper);
+          state.colliderHelper = null;
+        }
         renderer.dispose();
         renderer.domElement.remove();
         stateRef.current = null;

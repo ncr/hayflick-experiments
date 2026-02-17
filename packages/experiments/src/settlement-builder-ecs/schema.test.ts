@@ -30,7 +30,13 @@ describe("settlement schema", () => {
           offsetZ: -0.08,
           rotQuarterTurns: 1,
           elevation: 0.4,
-          collider2d: { width: 0.8, depth: 0.7 }
+          collider2d: { width: 0.8, depth: 0.7 },
+          runtimeState: {
+            rotation: { x: 0, y: 0.707, z: 0, w: 0.707 },
+            linearVelocity: { x: 0.1, y: -0.2, z: 0.05 },
+            angularVelocity: { x: 0.3, y: 0, z: -0.1 },
+            sleeping: false
+          }
         }
       ]
     ]);
@@ -42,8 +48,22 @@ describe("settlement schema", () => {
       structures,
       props,
       propColliderModes: new Map([
-        ["chair", "mesh"],
-        ["bench", "defined"]
+        ["chair", "convex-hull"],
+        ["bench", "compound-boxes"]
+      ]),
+      propPhysicsProfiles: new Map([
+        [
+          "chair",
+          {
+            mobility: "dynamic",
+            mass: 0.8,
+            friction: 0.7,
+            restitution: 0.04,
+            linearDamping: 0.3,
+            angularDamping: 0.35,
+            activationDelayMs: 500
+          }
+        ]
       ])
     });
 
@@ -59,8 +79,12 @@ describe("settlement schema", () => {
     expect(parsed.props.get("chair:2,2:1")?.elevation).toBe(0.4);
     expect(parsed.props.get("chair:2,2:1")?.offsetX).toBeCloseTo(0.12);
     expect(parsed.props.get("chair:2,2:1")?.offsetZ).toBeCloseTo(-0.08);
-    expect(parsed.propColliderModes.get("chair")).toBe("mesh");
-    expect(parsed.propColliderModes.get("bench")).toBe("defined");
+    expect(parsed.props.get("chair:2,2:1")?.runtimeState?.rotation.y).toBeCloseTo(
+      0.707
+    );
+    expect(parsed.propColliderModes.get("chair")).toBe("convex-hull");
+    expect(parsed.propColliderModes.get("bench")).toBe("compound-boxes");
+    expect(parsed.propPhysicsProfiles.get("chair")?.mobility).toBe("dynamic");
   });
 
   it("rejects wrong editor schema version", () => {
@@ -84,7 +108,8 @@ describe("settlement schema", () => {
       overrides: new Map(),
       structures: new Map(),
       props: new Map(),
-      propColliderModes: new Map()
+      propColliderModes: new Map(),
+      propPhysicsProfiles: new Map()
     });
 
     const gamePayload: SettlementGameSaveV1 = {
@@ -128,5 +153,27 @@ describe("settlement schema", () => {
     expect(parsed.props.get("crate:1,1:1")?.offsetX).toBe(0);
     expect(parsed.props.get("crate:1,1:1")?.offsetZ).toBe(0);
     expect(parsed.propColliderModes.size).toBe(0);
+    expect(parsed.propPhysicsProfiles.size).toBe(0);
+  });
+
+  it("maps legacy collider modes to current variants", () => {
+    const parsed = parseEditorSaveV1(
+      {
+        schemaVersion: SETTLEMENT_EDITOR_SCHEMA_VERSION,
+        terrain: { defaultGround: "grass", seed: 1, overrides: [] },
+        structures: [],
+        props: [],
+        propColliderModes: [
+          { sourcePropId: "crate", mode: "defined" },
+          { sourcePropId: "flask", mode: "mesh" }
+        ]
+      },
+      30
+    );
+
+    expect(parsed).not.toBeNull();
+    if (!parsed) return;
+    expect(parsed.propColliderModes.get("crate")).toBe("compound-boxes");
+    expect(parsed.propColliderModes.get("flask")).toBe("convex-hull");
   });
 });

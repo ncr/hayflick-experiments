@@ -315,6 +315,7 @@ export function Forge() {
           styleGuide={styleGuide}
           updateProp={updateProp}
           onModelChanged={() => setModelVersion((v) => v + 1)}
+          modelVersion={modelVersion}
         />
       </div>
     </div>

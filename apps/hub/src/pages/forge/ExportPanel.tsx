@@ -7,7 +7,9 @@ import type { ViewportHandle } from "./Viewport";
 import type { Object3D } from "three";
 import {
   buildSimplifiedColliderScene,
-  DEFAULT_COLLIDER_FACE_TARGET
+  DEFAULT_COLLIDER_FACE_TARGET,
+  type ColliderVariantsSpec,
+  type CompoundColliderSpec
 } from "./processing/collider-mesh";
 
 export interface AssetMeta {
@@ -39,6 +41,8 @@ export interface AssetMeta {
     textureResolution: number;
   };
   collider: ColliderParams;
+  compoundCollider?: CompoundColliderSpec;
+  colliderVariants?: ColliderVariantsSpec;
 }
 
 interface Props {
@@ -101,6 +105,8 @@ export function ExportPanel({
       const basePath = `props/${propId}`;
       let colliderFaces = 0;
       let colliderFaceTarget = 0;
+      let compoundCollider: CompoundColliderSpec | undefined;
+      let colliderVariants: ColliderVariantsSpec | undefined;
 
       // Save concept image
       if (conceptImage) {
@@ -147,6 +153,8 @@ export function ExportPanel({
         await fsApi.writeBinary(`${basePath}/processed/collider.glb`, colliderBuffer);
         colliderFaces = collider.colliderFaces;
         colliderFaceTarget = collider.targetFaces;
+        compoundCollider = collider.compoundCollider;
+        colliderVariants = collider.colliderVariants;
       }
 
       // Save meta.json
@@ -189,6 +197,8 @@ export function ExportPanel({
           position: [0, 0, 0],
           params: {},
         },
+        compoundCollider,
+        colliderVariants,
       };
 
       await fsApi.writeJson(`${basePath}/meta.json`, meta);
@@ -215,6 +225,9 @@ export function ExportPanel({
         <div>Scale: {scale.toFixed(4)}</div>
         <div>Pivot: {pivot}</div>
         {collider && <div>Collider: {collider.type}</div>}
+        <div>
+          Export Colliders: Box + Convex Hull + Compound ({Math.max(1, Math.floor(DEFAULT_COLLIDER_FACE_TARGET / 12))} boxes max)
+        </div>
         {bbox && (
           <div>
             Size: {bbox.width.toFixed(3)} x {bbox.height.toFixed(3)} x{" "}

@@ -28,6 +28,62 @@ describe("prop library", () => {
             description: "Lab Chair",
             processing: {
               bbox: { width: 0.75, height: 1.1, depth: 0.7 }
+            },
+            physics: {
+              mobility: "dynamic",
+              material: "glass",
+              mass: 0.75,
+              friction: 0.65,
+              restitution: 0.05,
+              linearDamping: 0.3,
+              angularDamping: 0.4,
+              activationDelayMs: 250
+            },
+            compoundCollider: {
+              type: "compound-boxes",
+              source: "auto-kmeans-v1",
+              parts: [
+                {
+                  kind: "box",
+                  position: [0, 0.2, 0],
+                  halfExtents: [0.15, 0.2, 0.15]
+                },
+                {
+                  kind: "box",
+                  position: [0, 0.33, 0],
+                  halfExtents: [0.08, 0.09, 0.08]
+                }
+              ]
+            },
+            colliderVariants: {
+              box: {
+                type: "box",
+                source: "aabb-v1",
+                position: [0, 0.55, 0],
+                halfExtents: [0.375, 0.55, 0.35]
+              },
+              convexHull: {
+                type: "convex-hull",
+                source: "sampled-points-v1",
+                points: [
+                  [0.1, 0.1, 0.1],
+                  [-0.1, 0.1, 0.1],
+                  [0.1, -0.1, 0.1],
+                  [0.1, 0.1, -0.1]
+                ],
+                rootOffset: [0, -0.5, 0]
+              },
+              compoundBoxes: {
+                type: "compound-boxes",
+                source: "auto-kmeans-v1",
+                parts: [
+                  {
+                    kind: "box",
+                    position: [0, 0.2, 0],
+                    halfExtents: [0.15, 0.2, 0.15]
+                  }
+                ]
+              }
             }
           })
         });
@@ -51,7 +107,19 @@ describe("prop library", () => {
     expect(defs).toHaveLength(2);
     expect(defs[0]?.description).toBe("Lab Chair");
     expect(defs[0]?.collider2d).toEqual({ width: 0.75, depth: 0.7 });
+    expect(defs[0]?.physicsHint?.mobility).toBe("dynamic");
+    expect(defs[0]?.physicsHint?.material).toBe("glass");
+    expect(defs[0]?.physicsHint?.activationDelayMs).toBe(250);
+    expect(defs[0]?.compoundCollider?.type).toBe("compound-boxes");
+    expect(defs[0]?.compoundCollider?.parts).toHaveLength(1);
+    expect(defs[0]?.colliderVariants?.box?.type).toBe("box");
+    expect(defs[0]?.colliderVariants?.convexHull?.type).toBe("convex-hull");
+    expect(defs[0]?.colliderVariants?.compoundBoxes?.parts).toHaveLength(1);
     expect(defs[1]?.description).toBe("Mainframe");
+    expect(defs[1]?.physicsHint).toBeUndefined();
+    expect(defs[1]?.compoundCollider).toBeUndefined();
+    expect(defs[1]?.colliderVariants?.box?.type).toBe("box");
+    expect(defs[1]?.colliderVariants?.convexHull?.type).toBe("convex-hull");
   });
 
   it("falls back from processed to raw GLB", async () => {
