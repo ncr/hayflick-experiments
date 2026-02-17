@@ -55,17 +55,25 @@ import {
   listSavedPropDefinitions,
   loadSavedPropBinary,
   makePropPlacementId,
-  type SavedPropColliderVariants,
-  type SavedPropCompoundCollider,
-  type SavedPropConvexHullCollider,
   type SavedPropDefinition
 } from "./prop-library";
+import {
+  getAvailablePropColliderModes as getAvailablePropColliderModesForDefinition,
+  isPropColliderModeSupported as isPropColliderModeSupportedForDefinition,
+  resolveEffectivePropColliderMode,
+  resolvePropColliderResolution
+} from "./prop-collider-resolver";
 import {
   clonePropPhysicsProfile,
   inferPropPhysicsProfile,
   normalizePropPhysicsProfile,
   withPropPhysicsMobility
 } from "./prop-physics-profile";
+import {
+  summarizePropAssetValidation,
+  validateSavedPropDefinition,
+  type PropAssetValidationIssue
+} from "./prop-asset-validation";
 import {
   bodyTranslationFromRootPose,
   quaternionDelta,
@@ -314,12 +322,30 @@ type PropPlacementTarget = {
   cellY: number;
   worldX: number;
   worldZ: number;
+  supportKind: "floor" | "prop";
+  supportY: number;
+  supportPlacementId: string | null;
+  pointerWorldX: number;
+  pointerWorldY: number;
+  pointerWorldZ: number;
+  rayDirectionX: number;
+  rayDirectionY: number;
+  rayDirectionZ: number;
 };
 
 type DroppedPlacement = {
   worldX: number;
   worldZ: number;
   elevation: number;
+};
+
+type ResolvedGhostPlacement = DroppedPlacement & {
+  anchorWorldX: number;
+  anchorWorldY: number;
+  anchorWorldZ: number;
+  landingY: number;
+  isClear: boolean;
+  slidTowardCamera: boolean;
 };
 
 type PropRuntimeRotation = {
@@ -333,6 +359,7 @@ type EditorPropPhysicsBody = {
   placementId: string;
   sourcePropId: string;
   rotQuarterTurns: 0 | 1 | 2 | 3;
+  colliderMode: SettlementPropColliderMode;
   profile: SettlementPropPhysicsProfile;
   body: RAPIER3D.RigidBody;
   localRootOffset: { x: number; y: number; z: number };
@@ -340,6 +367,13 @@ type EditorPropPhysicsBody = {
   activationTimeMs: number;
   active: boolean;
 };
+
+type EditorPropRebuildReason =
+  | "missing-placement"
+  | "source-changed"
+  | "rotation-changed"
+  | "collider-mode-changed"
+  | "profile-changed";
 
 type GridEdge = {
   ax: number;
@@ -469,6 +503,10 @@ const GRASS_VARIANT_COUNT = 4;
 const DEFAULT_GRASS_VARIANT_SEED = 0x41c64e6d;
 const DROP_PREVIEW_MAX_LINEAR_SPEED = 8;
 const DROP_PREVIEW_MAX_ANGULAR_SPEED = 18;
+const PROP_SURFACE_CLEARANCE = 0.004;
+const PROP_PLACEMENT_SLIDE_STEP = 0.03;
+const PROP_PLACEMENT_SLIDE_MAX_DISTANCE = 1.1 * TILE_SIZE;
+const PROP_PLACEMENT_MARKER_Y_OFFSET = 0.01;
 
 const BRUSH_COLORS: Record<EditorBrush, number> = {
   wall: 0xb9c6d2,
@@ -1189,6 +1227,72 @@ const experiment: ExperimentModule = {
     const propGhostRoot = new THREE.Group();
     propGhostRoot.visible = false;
     scene.add(propGhostRoot);
+    const propPlacementAnchorMaterial = new THREE.MeshBasicMaterial({
+      color: 0xc2eeff,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide
+    });
+    const propPlacementAnchorMesh = new THREE.Mesh(
+      new THREE.RingGeometry(0.06 * TILE_SIZE, 0.12 * TILE_SIZE, 20),
+      propPlacementAnchorMaterial
+    );
+    propPlacementAnchorMesh.rotation.x = -Math.PI * 0.5;
+    propPlacementAnchorMesh.visible = false;
+    propPlacementAnchorMesh.renderOrder = 25;
+    scene.add(propPlacementAnchorMesh);
+    const propPlacementLandingMaterial = new THREE.MeshBasicMaterial({
+      color: 0x6fd0ff,
+      transparent: true,
+      opacity: 0.26,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.DoubleSide
+    });
+    const propPlacementLandingMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      propPlacementLandingMaterial
+    );
+    propPlacementLandingMesh.rotation.x = -Math.PI * 0.5;
+    propPlacementLandingMesh.visible = false;
+    propPlacementLandingMesh.renderOrder = 20;
+    scene.add(propPlacementLandingMesh);
+    const propPlacementDepthLineMaterial = new THREE.LineBasicMaterial({
+      color: 0x86d8ff,
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false
+    });
+    const propPlacementDepthLineGeometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(),
+      new THREE.Vector3()
+    ]);
+    const propPlacementDepthLine = new THREE.Line(
+      propPlacementDepthLineGeometry,
+      propPlacementDepthLineMaterial
+    );
+    propPlacementDepthLine.visible = false;
+    propPlacementDepthLine.renderOrder = 24;
+    scene.add(propPlacementDepthLine);
+    const propPlacementOffsetLineMaterial = new THREE.LineBasicMaterial({
+      color: 0xffd88d,
+      transparent: true,
+      opacity: 0.8,
+      depthWrite: false
+    });
+    const propPlacementOffsetLineGeometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(),
+      new THREE.Vector3()
+    ]);
+    const propPlacementOffsetLine = new THREE.Line(
+      propPlacementOffsetLineGeometry,
+      propPlacementOffsetLineMaterial
+    );
+    propPlacementOffsetLine.visible = false;
+    propPlacementOffsetLine.renderOrder = 24;
+    scene.add(propPlacementOffsetLine);
 
     const playerMesh = new THREE.Group();
     const playerBody = new THREE.Mesh(playerBodyGeometry, playerBodyMaterial);
@@ -1717,13 +1821,16 @@ const experiment: ExperimentModule = {
 
     const gltfLoader = new GLTFLoader();
     const savedPropDefinitionsById = new Map<string, SavedPropDefinition>();
+    const propAssetValidationIssuesById = new Map<string, PropAssetValidationIssue[]>();
     const propTemplateById = new Map<string, THREE.Object3D | null>();
-    const propConvexVerticesById = new Map<string, Float32Array | null>();
+    const propConvexVerticesById = new Map<string, Float32Array>();
     const editorPropRootByPlacementId = new Map<string, THREE.Group>();
     const propRuntimeRotationByPlacementId = new Map<string, PropRuntimeRotation>();
     const editorPropPhysicsByPlacementId = new Map<string, EditorPropPhysicsBody>();
     const pendingEditorPropActivationAtMsByPlacementId = new Map<string, number>();
+    const editorPropRebuildCounts = new Map<EditorPropRebuildReason, number>();
     const propTemplateRequestById = new Map<string, Promise<void>>();
+    let runtimePhysicsLastSubsteps = 0;
 
     let structureSegments = createMockupStructureSegments();
     let groundOverrides = createMockupTerrainOverrides(userSeed);
@@ -1759,6 +1866,14 @@ const experiment: ExperimentModule = {
     const inputForward = new THREE.Vector3();
     const worldPoint = new THREE.Vector3();
     const snappedPlayerWorld = new THREE.Vector3();
+    const propPlacementRayDirection = new THREE.Vector3();
+    const propPlacementRayToCameraDirection = new THREE.Vector3();
+    const propSurfaceRaycaster = new THREE.Raycaster();
+    const propPointerNdc = new THREE.Vector2();
+    const propFloorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const propFloorHit = new THREE.Vector3();
+    const propPlacementHintLineStart = new THREE.Vector3();
+    const propPlacementHintLineEnd = new THREE.Vector3();
     const propScratchBounds = new THREE.Box3();
     const propScratchCenter = new THREE.Vector3();
 
@@ -1774,6 +1889,12 @@ const experiment: ExperimentModule = {
     let ghostDropElevation = 0;
     let ghostDropWorldX = 0;
     let ghostDropWorldZ = 0;
+    let ghostDropLandingY = 0;
+    let ghostAnchorWorldX = 0;
+    let ghostAnchorWorldY = 0;
+    let ghostAnchorWorldZ = 0;
+    let ghostDropIsClear = true;
+    let ghostDropSlidTowardCamera = false;
     let propDropRevision = 0;
     let editorPropPhysicsWorld: RAPIER3D.World | null = null;
     let editorPropPhysicsLastAutosaveMs = 0;
@@ -2044,6 +2165,7 @@ const experiment: ExperimentModule = {
       propPhysicsProfiles.clear();
       propRuntimeRotationByPlacementId.clear();
       pendingEditorPropActivationAtMsByPlacementId.clear();
+      editorPropRebuildCounts.clear();
       disposeEditorPropPhysics();
       return true;
     }
@@ -2068,26 +2190,149 @@ const experiment: ExperimentModule = {
       return (worldZ - GRID_ORIGIN) / TILE_SIZE;
     }
 
-    function resolvePropPlacementTarget(world: THREE.Vector3): PropPlacementTarget | null {
-      const cell = worldToCell(world.x, world.z);
-      if (!cell) {
+    function setPropPointerRayFromClient(clientX: number, clientY: number): boolean {
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return false;
+      }
+
+      const normalizedX = (clientX - rect.left) / rect.width;
+      const normalizedY = (clientY - rect.top) / rect.height;
+      propPointerNdc.set(
+        normalizedX * 2 - 1,
+        -(normalizedY * 2 - 1)
+      );
+      propSurfaceRaycaster.setFromCamera(propPointerNdc, camera);
+      return true;
+    }
+
+    type PlacementSupportCandidate = {
+      kind: "floor" | "prop";
+      t: number;
+      pointX: number;
+      pointY: number;
+      pointZ: number;
+      supportY: number;
+      supportPlacementId: string | null;
+    };
+
+    function selectBestPlacementSupportOnRay(
+      ray: THREE.Ray
+    ): PlacementSupportCandidate | null {
+      if (Math.abs(ray.direction.y) <= 0.000001) {
         return null;
       }
 
-      if (propPlacementSnapToGrid) {
-        return {
-          cellX: cell.x,
-          cellY: cell.y,
-          worldX: toWorldX(cell.x),
-          worldZ: toWorldZ(cell.y)
-        };
+      let best: PlacementSupportCandidate | null = null;
+      const setIfCloser = (candidate: PlacementSupportCandidate): void => {
+        if (candidate.t <= 0) {
+          return;
+        }
+        if (!best || candidate.t < best.t) {
+          best = candidate;
+        }
+      };
+
+      const floorHit = ray.intersectPlane(propFloorPlane, propFloorHit);
+      if (floorHit && worldToCell(floorHit.x, floorHit.z)) {
+        const floorT = (0 - ray.origin.y) / ray.direction.y;
+        setIfCloser({
+          kind: "floor",
+          t: floorT,
+          pointX: floorHit.x,
+          pointY: 0,
+          pointZ: floorHit.z,
+          supportY: 0,
+          supportPlacementId: null
+        });
       }
 
+      const footprintEpsilon = 0.0006;
+      for (const placement of propPlacements.values()) {
+        const dims = resolvePropDimensions(
+          placement.sourcePropId,
+          placement.rotQuarterTurns
+        );
+        const supportY = placement.elevation + dims.height;
+        const t = (supportY - ray.origin.y) / ray.direction.y;
+        if (t <= 0) {
+          continue;
+        }
+        const hitX = ray.origin.x + ray.direction.x * t;
+        const hitZ = ray.origin.z + ray.direction.z * t;
+        if (!worldToCell(hitX, hitZ)) {
+          continue;
+        }
+
+        const centerX = getPropPlacementWorldX(placement);
+        const centerZ = getPropPlacementWorldZ(placement);
+        const halfWidth = dims.width * 0.5 + footprintEpsilon;
+        const halfDepth = dims.depth * 0.5 + footprintEpsilon;
+        if (Math.abs(hitX - centerX) > halfWidth) {
+          continue;
+        }
+        if (Math.abs(hitZ - centerZ) > halfDepth) {
+          continue;
+        }
+
+        setIfCloser({
+          kind: "prop",
+          t,
+          pointX: hitX,
+          pointY: supportY,
+          pointZ: hitZ,
+          supportY,
+          supportPlacementId: placement.placementId
+        });
+      }
+
+      return best;
+    }
+
+    function resolvePropPlacementTargetFromClient(
+      clientX: number,
+      clientY: number
+    ): PropPlacementTarget | null {
+      if (!setPropPointerRayFromClient(clientX, clientY)) {
+        return null;
+      }
+
+      const ray = propSurfaceRaycaster.ray;
+      const support = selectBestPlacementSupportOnRay(ray);
+      if (!support) {
+        return null;
+      }
+
+      const pointerCell = worldToCell(support.pointX, support.pointZ);
+      if (!pointerCell) {
+        return null;
+      }
+
+      let worldX = support.pointX;
+      let worldZ = support.pointZ;
+      if (support.kind === "floor") {
+        if (propPlacementSnapToGrid) {
+          worldX = toWorldX(pointerCell.x);
+          worldZ = toWorldZ(pointerCell.y);
+        }
+      }
+
+      const placementCell = worldToCell(worldX, worldZ) ?? pointerCell;
+
       return {
-        cellX: cell.x,
-        cellY: cell.y,
-        worldX: world.x,
-        worldZ: world.z
+        cellX: placementCell.x,
+        cellY: placementCell.y,
+        worldX,
+        worldZ,
+        supportKind: support.kind,
+        supportY: support.supportY,
+        supportPlacementId: support.supportPlacementId,
+        pointerWorldX: support.pointX,
+        pointerWorldY: support.pointY,
+        pointerWorldZ: support.pointZ,
+        rayDirectionX: ray.direction.x,
+        rayDirectionY: ray.direction.y,
+        rayDirectionZ: ray.direction.z
       };
     }
 
@@ -2164,94 +2409,30 @@ const experiment: ExperimentModule = {
       return dimensions.collider2d;
     }
 
-    function getPropColliderVariants(
-      sourcePropId: string
-    ): SavedPropColliderVariants | null {
-      const definition = savedPropDefinitionsById.get(sourcePropId);
-      return definition?.colliderVariants ?? null;
+    function getSavedPropDefinition(sourcePropId: string): SavedPropDefinition | undefined {
+      return savedPropDefinitionsById.get(sourcePropId);
     }
 
-    function getPropCompoundCollider(
-      sourcePropId: string
-    ): SavedPropCompoundCollider | null {
-      const variants = getPropColliderVariants(sourcePropId);
-      if (variants?.compoundBoxes && variants.compoundBoxes.parts.length > 0) {
-        return variants.compoundBoxes;
-      }
-      const definition = savedPropDefinitionsById.get(sourcePropId);
-      return definition?.compoundCollider ?? null;
-    }
-
-    function getPropConvexHullCollider(
-      sourcePropId: string
-    ): SavedPropConvexHullCollider | null {
-      const variants = getPropColliderVariants(sourcePropId);
-      if (variants?.convexHull && variants.convexHull.points.length >= 4) {
-        return variants.convexHull;
-      }
-      return null;
+    function getPropAssetValidationIssueCount(sourcePropId: string): number {
+      return propAssetValidationIssuesById.get(sourcePropId)?.length ?? 0;
     }
 
     function getAvailablePropColliderModes(
       sourcePropId: string
     ): SettlementPropColliderMode[] {
-      const modes: SettlementPropColliderMode[] = ["box"];
-      if (getPropConvexHullCollider(sourcePropId)) {
-        modes.push("convex-hull");
-      }
-      if (getPropCompoundCollider(sourcePropId)) {
-        modes.push("compound-boxes");
-      }
-      return modes;
+      return getAvailablePropColliderModesForDefinition(
+        getSavedPropDefinition(sourcePropId)
+      );
     }
 
     function isPropColliderModeSupported(
       sourcePropId: string,
       mode: SettlementPropColliderMode
     ): boolean {
-      return getAvailablePropColliderModes(sourcePropId).includes(mode);
-    }
-
-    function toRapierCompoundParts(
-      compound: SavedPropCompoundCollider
-    ): Array<{
-      translation: { x: number; y: number; z: number };
-      halfExtents: { x: number; y: number; z: number };
-    }> {
-      return compound.parts.map((part) => ({
-        translation: {
-          x: part.position[0],
-          y: part.position[1],
-          z: part.position[2]
-        },
-        halfExtents: {
-          x: part.halfExtents[0],
-          y: part.halfExtents[1],
-          z: part.halfExtents[2]
-        }
-      }));
-    }
-
-    function toRapierConvexHullVertices(
-      sourcePropId: string,
-      hull: SavedPropConvexHullCollider
-    ): Float32Array | null {
-      const cached = propConvexVerticesById.get(sourcePropId);
-      if (cached !== undefined) {
-        return cached;
-      }
-
-      const flat = new Float32Array(hull.points.length * 3);
-      let cursor = 0;
-      for (const point of hull.points) {
-        flat[cursor] = point[0];
-        flat[cursor + 1] = point[1];
-        flat[cursor + 2] = point[2];
-        cursor += 3;
-      }
-
-      propConvexVerticesById.set(sourcePropId, flat);
-      return flat;
+      return isPropColliderModeSupportedForDefinition(
+        getSavedPropDefinition(sourcePropId),
+        mode
+      );
     }
 
     function disposeGhostMaterials(): void {
@@ -2264,6 +2445,14 @@ const experiment: ExperimentModule = {
       disposeGhostMaterials();
       ghostPropTemplateId = null;
       propGhostRoot.visible = false;
+      hidePropPlacementIndicators();
+    }
+
+    function hidePropPlacementIndicators(): void {
+      propPlacementAnchorMesh.visible = false;
+      propPlacementLandingMesh.visible = false;
+      propPlacementDepthLine.visible = false;
+      propPlacementOffsetLine.visible = false;
     }
 
     function cloneGhostMaterial(material: THREE.Material): THREE.Material {
@@ -2401,18 +2590,10 @@ const experiment: ExperimentModule = {
     }
 
     function getPropColliderMode(sourcePropId: string): SettlementPropColliderMode {
-      const fallback = getPropCompoundCollider(sourcePropId)
-        ? "compound-boxes"
-        : getPropConvexHullCollider(sourcePropId)
-          ? "convex-hull"
-          : "box";
-      const explicit = propColliderModes.get(sourcePropId);
-      if (!explicit) {
-        return fallback;
-      }
-      return isPropColliderModeSupported(sourcePropId, explicit)
-        ? explicit
-        : fallback;
+      return resolveEffectivePropColliderMode(
+        getSavedPropDefinition(sourcePropId),
+        propColliderModes.get(sourcePropId)
+      );
     }
 
     function setPropColliderMode(
@@ -2430,11 +2611,10 @@ const experiment: ExperimentModule = {
         }
       }
 
-      const fallback = getPropCompoundCollider(sourcePropId)
-        ? "compound-boxes"
-        : getPropConvexHullCollider(sourcePropId)
-          ? "convex-hull"
-          : "box";
+      const fallback = resolveEffectivePropColliderMode(
+        getSavedPropDefinition(sourcePropId),
+        null
+      );
       if (mode === fallback) {
         if (!propColliderModes.has(sourcePropId)) {
           return false;
@@ -2651,9 +2831,10 @@ const experiment: ExperimentModule = {
         dims.style.lineHeight = "1.2";
         dims.style.color = "rgba(190, 220, 242, 0.88)";
         const profile = getPropPhysicsProfile(entry.id);
+        const validationIssueCount = getPropAssetValidationIssueCount(entry.id);
         const mobilityLabel =
           profile.mobility === "fixed" ? "support physics" : "loose physics";
-        dims.textContent = `${formatPropDimension(entry.bbox.width)} × ${formatPropDimension(entry.bbox.depth)} × ${formatPropDimension(entry.bbox.height)} • ${mobilityLabel}`;
+        dims.textContent = `${formatPropDimension(entry.bbox.width)} × ${formatPropDimension(entry.bbox.depth)} × ${formatPropDimension(entry.bbox.height)} • ${mobilityLabel}${validationIssueCount > 0 ? ` • meta warn:${validationIssueCount}` : ""}`;
 
         card.append(thumb, label, dims);
         card.addEventListener("click", () => {
@@ -2694,10 +2875,11 @@ const experiment: ExperimentModule = {
       if (selectedPropId && savedPropDefinitionsById.has(selectedPropId)) {
         const selected = savedPropDefinitionsById.get(selectedPropId);
         const profile = getPropPhysicsProfile(selectedPropId);
+        const validationIssueCount = getPropAssetValidationIssueCount(selectedPropId);
         const mobilityLabel =
           profile.mobility === "fixed" ? "support physics" : "loose physics";
         propSelectionLabel.textContent = selected
-          ? `Selected: ${selected.description} • ${mobilityLabel}`
+          ? `Selected: ${selected.description} • ${mobilityLabel}${validationIssueCount > 0 ? ` • meta warn:${validationIssueCount}` : ""}`
           : `Selected: ${selectedPropId}`;
       } else {
         propSelectionLabel.textContent = "No prop selected.";
@@ -2857,13 +3039,41 @@ const experiment: ExperimentModule = {
     async function refreshSavedProps(): Promise<void> {
       const definitions = await listSavedPropDefinitions();
       savedPropDefinitionsById.clear();
+      propAssetValidationIssuesById.clear();
       propConvexVerticesById.clear();
       for (const definition of definitions) {
         savedPropDefinitionsById.set(definition.id, definition);
+        const validationIssues = validateSavedPropDefinition(definition);
+        if (validationIssues.length > 0) {
+          propAssetValidationIssuesById.set(definition.id, validationIssues);
+        }
         ensurePropTemplate(definition.id);
       }
+      const validationSummary = summarizePropAssetValidation(
+        propAssetValidationIssuesById
+      );
+      if (validationSummary.totalIssues > 0) {
+        console.warn(
+          `[settlement-builder-ecs] Prop asset validation: ${validationSummary.propsWithIssues} props with issues (${validationSummary.warningCount} warnings, ${validationSummary.errorCount} errors).`
+        );
+        let logged = 0;
+        for (const [propId, issues] of propAssetValidationIssuesById.entries()) {
+          if (logged >= 12) {
+            break;
+          }
+          console.warn(
+            `[settlement-builder-ecs] ${propId}: ${issues
+              .map((issue) => `${issue.severity}:${issue.code}`)
+              .join(", ")}`
+          );
+          logged += 1;
+        }
+      }
       updatePropSelectOptions();
-      statusMessage = `Loaded ${definitions.length} saved props.`;
+      statusMessage =
+        validationSummary.totalIssues > 0
+          ? `Loaded ${definitions.length} saved props (${validationSummary.propsWithIssues} with metadata warnings/errors).`
+          : `Loaded ${definitions.length} saved props.`;
       syncHud();
     }
 
@@ -2876,45 +3086,273 @@ const experiment: ExperimentModule = {
       return mesh;
     }
 
-    function computeGhostPlacementFromSupportHeights(
+    function computePointerRayDirectionFromTarget(
+      target: PropPlacementTarget
+    ): THREE.Vector3 | null {
+      propPlacementRayDirection.set(
+        target.rayDirectionX,
+        target.rayDirectionY,
+        target.rayDirectionZ
+      );
+      if (propPlacementRayDirection.lengthSq() <= 0.0000001) {
+        return null;
+      }
+      return propPlacementRayDirection.normalize();
+    }
+
+    function supportContainsWorldPoint(
+      target: PropPlacementTarget,
+      worldX: number,
+      worldZ: number
+    ): boolean {
+      if (target.supportKind === "floor") {
+        return worldToCell(worldX, worldZ) !== null;
+      }
+      if (!target.supportPlacementId) {
+        return false;
+      }
+      const supportPlacement = propPlacements.get(target.supportPlacementId);
+      if (!supportPlacement) {
+        return false;
+      }
+      const supportDims = resolvePropDimensions(
+        supportPlacement.sourcePropId,
+        supportPlacement.rotQuarterTurns
+      );
+      const supportCenterX = getPropPlacementWorldX(supportPlacement);
+      const supportCenterZ = getPropPlacementWorldZ(supportPlacement);
+      const halfWidth = supportDims.width * 0.5 + 0.0015;
+      const halfDepth = supportDims.depth * 0.5 + 0.0015;
+      return (
+        Math.abs(worldX - supportCenterX) <= halfWidth &&
+        Math.abs(worldZ - supportCenterZ) <= halfDepth
+      );
+    }
+
+    function placementWouldIntersectExistingProps(
       sourcePropId: string,
+      rotQuarterTurns: 0 | 1 | 2 | 3,
       worldX: number,
       worldZ: number,
-      rotQuarterTurns: 0 | 1 | 2 | 3
-    ): DroppedPlacement {
+      elevation: number,
+      ignorePlacementId: string | null = null
+    ): boolean {
       const targetDims = resolvePropDimensions(sourcePropId, rotQuarterTurns);
-      const targetHalfWidth = targetDims.width * 0.5;
-      const targetHalfDepth = targetDims.depth * 0.5;
-      let elevation = 0;
+      const targetMinX = worldX - targetDims.width * 0.5;
+      const targetMaxX = worldX + targetDims.width * 0.5;
+      const targetMinY = elevation;
+      const targetMaxY = elevation + targetDims.height;
+      const targetMinZ = worldZ - targetDims.depth * 0.5;
+      const targetMaxZ = worldZ + targetDims.depth * 0.5;
+      const epsilon = 0.0015;
 
       for (const placement of propPlacements.values()) {
+        if (ignorePlacementId && placement.placementId === ignorePlacementId) {
+          continue;
+        }
         const placedDims = resolvePropDimensions(
           placement.sourcePropId,
           placement.rotQuarterTurns
         );
-        const placedHalfWidth = placedDims.width * 0.5;
-        const placedHalfDepth = placedDims.depth * 0.5;
         const placedWorldX = getPropPlacementWorldX(placement);
         const placedWorldZ = getPropPlacementWorldZ(placement);
+        const placedMinX = placedWorldX - placedDims.width * 0.5;
+        const placedMaxX = placedWorldX + placedDims.width * 0.5;
+        const placedMinY = placement.elevation;
+        const placedMaxY = placement.elevation + placedDims.height;
+        const placedMinZ = placedWorldZ - placedDims.depth * 0.5;
+        const placedMaxZ = placedWorldZ + placedDims.depth * 0.5;
 
         const overlapsX =
-          Math.abs(placedWorldX - worldX) <= targetHalfWidth + placedHalfWidth;
+          targetMinX < placedMaxX - epsilon && targetMaxX > placedMinX + epsilon;
         if (!overlapsX) {
           continue;
         }
+        const overlapsY =
+          targetMinY < placedMaxY - epsilon && targetMaxY > placedMinY + epsilon;
+        if (!overlapsY) {
+          continue;
+        }
         const overlapsZ =
-          Math.abs(placedWorldZ - worldZ) <= targetHalfDepth + placedHalfDepth;
+          targetMinZ < placedMaxZ - epsilon && targetMaxZ > placedMinZ + epsilon;
         if (!overlapsZ) {
           continue;
         }
+        return true;
+      }
 
-        elevation = Math.max(elevation, placement.elevation + placedDims.height);
+      return false;
+    }
+
+    function slidePlacementTowardCameraUntilClear(options: {
+      sourcePropId: string;
+      rotQuarterTurns: 0 | 1 | 2 | 3;
+      rayDirection: THREE.Vector3;
+      worldX: number;
+      worldZ: number;
+      elevation: number;
+      target: PropPlacementTarget;
+      ignorePlacementId?: string | null;
+    }): DroppedPlacement & { isClear: boolean; slidTowardCamera: boolean } {
+      const initialCollision = placementWouldIntersectExistingProps(
+        options.sourcePropId,
+        options.rotQuarterTurns,
+        options.worldX,
+        options.worldZ,
+        options.elevation,
+        options.ignorePlacementId ?? null
+      );
+      if (!initialCollision) {
+        return {
+          worldX: options.worldX,
+          worldZ: options.worldZ,
+          elevation: options.elevation,
+          isClear: true,
+          slidTowardCamera: false
+        };
+      }
+
+      propPlacementRayToCameraDirection.set(
+        -options.rayDirection.x,
+        0,
+        -options.rayDirection.z
+      );
+      if (propPlacementRayToCameraDirection.lengthSq() <= 0.0000001) {
+        return {
+          worldX: options.worldX,
+          worldZ: options.worldZ,
+          elevation: options.elevation,
+          isClear: false,
+          slidTowardCamera: false
+        };
+      }
+      propPlacementRayToCameraDirection.normalize();
+
+      for (
+        let distance = PROP_PLACEMENT_SLIDE_STEP;
+        distance <= PROP_PLACEMENT_SLIDE_MAX_DISTANCE;
+        distance += PROP_PLACEMENT_SLIDE_STEP
+      ) {
+        const trialWorldX =
+          options.worldX + propPlacementRayToCameraDirection.x * distance;
+        const trialWorldZ =
+          options.worldZ + propPlacementRayToCameraDirection.z * distance;
+        const trialElevation = options.elevation;
+        if (!supportContainsWorldPoint(options.target, trialWorldX, trialWorldZ)) {
+          break;
+        }
+        if (
+          !placementWouldIntersectExistingProps(
+            options.sourcePropId,
+            options.rotQuarterTurns,
+            trialWorldX,
+            trialWorldZ,
+            trialElevation,
+            options.ignorePlacementId ?? null
+          )
+        ) {
+          return {
+            worldX: trialWorldX,
+            worldZ: trialWorldZ,
+            elevation: trialElevation,
+            isClear: true,
+            slidTowardCamera: true
+          };
+        }
       }
 
       return {
-        worldX,
-        worldZ,
-        elevation
+        worldX: options.worldX,
+        worldZ: options.worldZ,
+        elevation: options.elevation,
+        isClear: false,
+        slidTowardCamera: false
+      };
+    }
+
+    function resolveGhostPlacementFromTarget(
+      sourcePropId: string,
+      target: PropPlacementTarget,
+      rotQuarterTurns: 0 | 1 | 2 | 3
+    ): ResolvedGhostPlacement {
+      if (!supportContainsWorldPoint(target, target.worldX, target.worldZ)) {
+        return {
+          worldX: target.worldX,
+          worldZ: target.worldZ,
+          elevation: target.supportKind === "prop" ? target.supportY : 0,
+          anchorWorldX: target.pointerWorldX,
+          anchorWorldY: target.pointerWorldY,
+          anchorWorldZ: target.pointerWorldZ,
+          landingY: target.supportY,
+          isClear: false,
+          slidTowardCamera: false
+        };
+      }
+
+      const rayDirection = computePointerRayDirectionFromTarget(target);
+      const ignorePlacementId =
+        target.supportKind === "prop" ? target.supportPlacementId : null;
+      const basePlacement: DroppedPlacement = {
+        worldX: target.worldX,
+        worldZ: target.worldZ,
+        elevation:
+          target.supportKind === "prop"
+            ? Math.max(0, target.supportY + PROP_SURFACE_CLEARANCE)
+            : 0
+      };
+      const allowSlide =
+        target.supportKind === "prop" || !propPlacementSnapToGrid;
+      const resolved = rayDirection
+        ? !allowSlide
+          ? {
+              worldX: basePlacement.worldX,
+              worldZ: basePlacement.worldZ,
+              elevation: basePlacement.elevation,
+              isClear: !placementWouldIntersectExistingProps(
+                sourcePropId,
+                rotQuarterTurns,
+                basePlacement.worldX,
+                basePlacement.worldZ,
+                basePlacement.elevation,
+                ignorePlacementId
+              ),
+              slidTowardCamera: false
+            }
+          : slidePlacementTowardCameraUntilClear({
+              sourcePropId,
+              rotQuarterTurns,
+              rayDirection,
+              worldX: basePlacement.worldX,
+              worldZ: basePlacement.worldZ,
+              elevation: basePlacement.elevation,
+              target,
+              ignorePlacementId
+            })
+        : {
+            worldX: basePlacement.worldX,
+            worldZ: basePlacement.worldZ,
+            elevation: basePlacement.elevation,
+            isClear: !placementWouldIntersectExistingProps(
+              sourcePropId,
+              rotQuarterTurns,
+              basePlacement.worldX,
+              basePlacement.worldZ,
+              basePlacement.elevation,
+              ignorePlacementId
+            ),
+            slidTowardCamera: false
+          };
+
+      return {
+        worldX: resolved.worldX,
+        worldZ: resolved.worldZ,
+        elevation: resolved.elevation,
+        anchorWorldX: target.pointerWorldX,
+        anchorWorldY: target.pointerWorldY,
+        anchorWorldZ: target.pointerWorldZ,
+        landingY: target.supportY,
+        isClear: resolved.isClear,
+        slidTowardCamera: resolved.slidTowardCamera
       };
     }
 
@@ -3041,6 +3479,13 @@ const experiment: ExperimentModule = {
       pendingEditorPropActivationAtMsByPlacementId.delete(placementId);
     }
 
+    function noteEditorPropRebuild(reason: EditorPropRebuildReason): void {
+      editorPropRebuildCounts.set(
+        reason,
+        (editorPropRebuildCounts.get(reason) ?? 0) + 1
+      );
+    }
+
     function createEditorPropPhysicsBody(
       placement: SettlementPropPlacement,
       activationTimeMs: number,
@@ -3062,35 +3507,21 @@ const experiment: ExperimentModule = {
       const halfWidth = dimensions.width * 0.5;
       const halfDepth = dimensions.depth * 0.5;
       const halfHeight = dimensions.height * 0.5;
-      const mode = getPropColliderMode(placement.sourcePropId);
-      const compoundCollider =
-        mode === "compound-boxes"
-          ? getPropCompoundCollider(placement.sourcePropId)
-          : null;
-      const convexCollider =
-        mode === "convex-hull"
-          ? getPropConvexHullCollider(placement.sourcePropId)
-          : null;
-      const convexHullVertices = convexCollider
-        ? toRapierConvexHullVertices(placement.sourcePropId, convexCollider)
-        : null;
+      const colliderResolution = resolvePropColliderResolution({
+        sourcePropId: placement.sourcePropId,
+        definition: getSavedPropDefinition(placement.sourcePropId),
+        explicitMode: propColliderModes.get(placement.sourcePropId),
+        dimensions,
+        convexVerticesByPropId: propConvexVerticesById
+      });
       const propCollisionGroups =
         profile.mobility === "fixed"
           ? collisionGroups(PHYSICS_LAYER.PROP_SUPPORT, PHYSICS_MASK.PROP_SUPPORT)
           : collisionGroups(PHYSICS_LAYER.PROP_LOOSE, PHYSICS_MASK.PROP_LOOSE);
 
-      let usesComplexCollider = mode !== "box";
+      let usesComplexCollider = colliderResolution.usesComplexCollider;
       const shouldBeDynamic = profile.mobility === "dynamic";
-      let localRootOffset =
-        compoundCollider !== null
-          ? { x: 0, y: 0, z: 0 }
-          : convexCollider !== null
-          ? {
-              x: convexCollider.rootOffset[0],
-              y: convexCollider.rootOffset[1],
-              z: convexCollider.rootOffset[2]
-            }
-          : { x: 0, y: -halfHeight, z: 0 };
+      let localRootOffset = colliderResolution.localRootOffset;
       const bodyStart = bodyTranslationFromRootPose(
         worldX,
         placement.elevation,
@@ -3111,43 +3542,69 @@ const experiment: ExperimentModule = {
 
       const body = world.createRigidBody(bodyDesc);
       let colliderCreated = false;
-
-      if (compoundCollider && compoundCollider.parts.length > 0) {
-        const partCount = Math.max(1, compoundCollider.parts.length);
-        const partMass = profile.mass / partCount;
-        for (const part of compoundCollider.parts) {
-          world.createCollider(
-            RAPIER3D.ColliderDesc.cuboid(
-              part.halfExtents[0],
-              part.halfExtents[1],
-              part.halfExtents[2]
-            )
-              .setTranslation(part.position[0], part.position[1], part.position[2])
-              .setFriction(profile.friction)
-              .setRestitution(profile.restitution)
-              .setMass(partMass)
-              .setCollisionGroups(propCollisionGroups),
-            body
-          );
-        }
-        colliderCreated = true;
-      } else if (convexHullVertices) {
-        try {
-          const hullDesc = RAPIER3D.ColliderDesc.convexHull(convexHullVertices);
-          if (hullDesc) {
+      switch (colliderResolution.shape) {
+        case "compound-boxes": {
+          const partCount = Math.max(1, colliderResolution.parts.length);
+          const partMass = profile.mass / partCount;
+          for (const part of colliderResolution.parts) {
             world.createCollider(
-              hullDesc
+              RAPIER3D.ColliderDesc.cuboid(
+                part.halfExtents.x,
+                part.halfExtents.y,
+                part.halfExtents.z
+              )
+                .setTranslation(
+                  part.translation.x,
+                  part.translation.y,
+                  part.translation.z
+                )
                 .setFriction(profile.friction)
                 .setRestitution(profile.restitution)
-                .setMass(profile.mass)
+                .setMass(partMass)
                 .setCollisionGroups(propCollisionGroups),
               body
             );
-            colliderCreated = true;
           }
-        } catch {
-          colliderCreated = false;
+          colliderCreated = true;
+          break;
         }
+        case "convex-hull": {
+          try {
+            const hullDesc = RAPIER3D.ColliderDesc.convexHull(colliderResolution.vertices);
+            if (hullDesc) {
+              world.createCollider(
+                hullDesc
+                  .setFriction(profile.friction)
+                  .setRestitution(profile.restitution)
+                  .setMass(profile.mass)
+                  .setCollisionGroups(propCollisionGroups),
+                body
+              );
+              colliderCreated = true;
+            }
+          } catch {
+            colliderCreated = false;
+          }
+          break;
+        }
+        case "box": {
+          world.createCollider(
+            RAPIER3D.ColliderDesc.cuboid(
+              colliderResolution.halfExtents.x,
+              colliderResolution.halfExtents.y,
+              colliderResolution.halfExtents.z
+            )
+              .setFriction(profile.friction)
+              .setRestitution(profile.restitution)
+              .setMass(profile.mass)
+              .setCollisionGroups(propCollisionGroups),
+            body
+          );
+          colliderCreated = true;
+          break;
+        }
+        default:
+          assertNever(colliderResolution, "prop collider resolution");
       }
 
       if (!colliderCreated) {
@@ -3194,6 +3651,7 @@ const experiment: ExperimentModule = {
         placementId: placement.placementId,
         sourcePropId: placement.sourcePropId,
         rotQuarterTurns: placement.rotQuarterTurns,
+        colliderMode: colliderResolution.mode,
         profile: clonePropPhysicsProfile(profile),
         body,
         localRootOffset,
@@ -3251,15 +3709,24 @@ const experiment: ExperimentModule = {
       for (const [placementId, state] of editorPropPhysicsByPlacementId.entries()) {
         const placement = propPlacements.get(placementId);
         if (!placement) {
+          noteEditorPropRebuild("missing-placement");
           removeEditorPropPhysicsBody(placementId);
           continue;
         }
         const desiredProfile = getPropPhysicsProfile(placement.sourcePropId);
-        if (
-          state.sourcePropId !== placement.sourcePropId ||
-          state.rotQuarterTurns !== placement.rotQuarterTurns ||
-          !propPhysicsProfileEquals(state.profile, desiredProfile)
-        ) {
+        const desiredColliderMode = getPropColliderMode(placement.sourcePropId);
+        const rebuildReason =
+          state.sourcePropId !== placement.sourcePropId
+            ? "source-changed"
+            : state.rotQuarterTurns !== placement.rotQuarterTurns
+              ? "rotation-changed"
+              : state.colliderMode !== desiredColliderMode
+                ? "collider-mode-changed"
+                : !propPhysicsProfileEquals(state.profile, desiredProfile)
+                  ? "profile-changed"
+                  : null;
+        if (rebuildReason !== null) {
+          noteEditorPropRebuild(rebuildReason);
           removeEditorPropPhysicsBody(placementId);
           continue;
         }
@@ -3846,13 +4313,18 @@ const experiment: ExperimentModule = {
 
     function updateHover(world: THREE.Vector3 | null): void {
       propGhostRoot.visible = false;
-      if (mode !== "EDITOR" || !world) {
+      hidePropPlacementIndicators();
+      if (mode !== "EDITOR") {
         hoverMesh.visible = false;
         return;
       }
 
       if (activeBuildCatalog === "prop" && activeTool === "draw" && selectedPropId) {
-        const target = resolvePropPlacementTarget(world);
+        const hasPointerClient =
+          Number.isFinite(lastPointerClientX) && Number.isFinite(lastPointerClientY);
+        const target = hasPointerClient
+          ? resolvePropPlacementTargetFromClient(lastPointerClientX, lastPointerClientY)
+          : null;
         if (!target) {
           hoverMesh.visible = false;
           propGhostRoot.visible = false;
@@ -3865,18 +4337,23 @@ const experiment: ExperimentModule = {
 
         const dropWorldX = target.worldX;
         const dropWorldZ = target.worldZ;
-        const cacheKey = `${selectedPropId}:${propRotationQuarterTurns}:${target.cellX},${target.cellY}:${dropWorldX.toFixed(3)},${dropWorldZ.toFixed(3)}:${propPlacementSnapToGrid ? "snap" : "free"}:${propDropRevision}`;
+        const cacheKey = `${selectedPropId}:${propRotationQuarterTurns}:${target.supportKind}:${target.supportPlacementId ?? "-"}:${target.cellX},${target.cellY}:${dropWorldX.toFixed(3)},${target.supportY.toFixed(3)},${dropWorldZ.toFixed(3)}:${target.pointerWorldX.toFixed(3)},${target.pointerWorldY.toFixed(3)},${target.pointerWorldZ.toFixed(3)}:${target.rayDirectionX.toFixed(5)},${target.rayDirectionY.toFixed(5)},${target.rayDirectionZ.toFixed(5)}:${propPlacementSnapToGrid ? "snap" : "free"}:${propDropRevision}`;
         if (cacheKey !== ghostDropCacheKey) {
           ghostDropCacheKey = cacheKey;
-          const dropped = computeGhostPlacementFromSupportHeights(
+          const dropped = resolveGhostPlacementFromTarget(
             selectedPropId,
-            dropWorldX,
-            dropWorldZ,
+            target,
             propRotationQuarterTurns
           );
           ghostDropElevation = dropped.elevation;
           ghostDropWorldX = dropped.worldX;
           ghostDropWorldZ = dropped.worldZ;
+          ghostDropLandingY = dropped.landingY;
+          ghostAnchorWorldX = dropped.anchorWorldX;
+          ghostAnchorWorldY = dropped.anchorWorldY;
+          ghostAnchorWorldZ = dropped.anchorWorldZ;
+          ghostDropIsClear = dropped.isClear;
+          ghostDropSlidTowardCamera = dropped.slidTowardCamera;
         }
 
         propGhostRoot.visible = true;
@@ -3886,6 +4363,90 @@ const experiment: ExperimentModule = {
           ghostDropWorldZ
         );
         propGhostRoot.rotation.y = propRotationQuarterTurns * (Math.PI * 0.5);
+        propPlacementAnchorMesh.visible = true;
+        propPlacementAnchorMesh.position.set(
+          ghostAnchorWorldX,
+          ghostAnchorWorldY + PROP_PLACEMENT_MARKER_Y_OFFSET,
+          ghostAnchorWorldZ
+        );
+        propPlacementLandingMesh.visible = true;
+        propPlacementLandingMesh.position.set(
+          ghostDropWorldX,
+          ghostDropLandingY + PROP_PLACEMENT_MARKER_Y_OFFSET,
+          ghostDropWorldZ
+        );
+        const ghostDims = resolvePropDimensions(
+          selectedPropId,
+          propRotationQuarterTurns
+        );
+        propPlacementLandingMesh.scale.set(ghostDims.width, ghostDims.depth, 1);
+        const depthDelta = Math.abs(ghostDropElevation - ghostDropLandingY);
+        if (depthDelta > 0.0008) {
+          propPlacementDepthLine.visible = true;
+          propPlacementHintLineStart.set(
+            ghostDropWorldX,
+            ghostDropElevation,
+            ghostDropWorldZ
+          );
+          propPlacementHintLineEnd.set(
+            ghostDropWorldX,
+            ghostDropLandingY + PROP_PLACEMENT_MARKER_Y_OFFSET,
+            ghostDropWorldZ
+          );
+          propPlacementDepthLineGeometry.setFromPoints([
+            propPlacementHintLineStart,
+            propPlacementHintLineEnd
+          ]);
+        } else {
+          propPlacementDepthLine.visible = false;
+        }
+
+        const offsetDeltaX = ghostDropWorldX - ghostAnchorWorldX;
+        const offsetDeltaZ = ghostDropWorldZ - ghostAnchorWorldZ;
+        const offsetDistance = Math.hypot(offsetDeltaX, offsetDeltaZ);
+        if (offsetDistance > 0.0075) {
+          propPlacementOffsetLine.visible = true;
+          propPlacementHintLineStart.set(
+            ghostAnchorWorldX,
+            ghostDropLandingY + PROP_PLACEMENT_MARKER_Y_OFFSET,
+            ghostAnchorWorldZ
+          );
+          propPlacementHintLineEnd.set(
+            ghostDropWorldX,
+            ghostDropLandingY + PROP_PLACEMENT_MARKER_Y_OFFSET,
+            ghostDropWorldZ
+          );
+          propPlacementOffsetLineGeometry.setFromPoints([
+            propPlacementHintLineStart,
+            propPlacementHintLineEnd
+          ]);
+        } else {
+          propPlacementOffsetLine.visible = false;
+        }
+        if (!ghostDropIsClear) {
+          propPlacementLandingMaterial.color.setHex(0xff6767);
+          propPlacementLandingMaterial.opacity = 0.34;
+          propPlacementAnchorMaterial.color.setHex(0xffaaaa);
+          propPlacementDepthLineMaterial.color.setHex(0xff8e8e);
+          propPlacementOffsetLineMaterial.color.setHex(0xff8e8e);
+        } else if (ghostDropSlidTowardCamera) {
+          propPlacementLandingMaterial.color.setHex(0xffd88d);
+          propPlacementLandingMaterial.opacity = 0.3;
+          propPlacementAnchorMaterial.color.setHex(0xfff0c2);
+          propPlacementDepthLineMaterial.color.setHex(0xffd6a8);
+          propPlacementOffsetLineMaterial.color.setHex(0xffd88d);
+        } else {
+          propPlacementLandingMaterial.color.setHex(0x6fd0ff);
+          propPlacementLandingMaterial.opacity = 0.26;
+          propPlacementAnchorMaterial.color.setHex(0xc2eeff);
+          propPlacementDepthLineMaterial.color.setHex(0x86d8ff);
+          propPlacementOffsetLineMaterial.color.setHex(0x8ed6ff);
+        }
+        hoverMesh.visible = false;
+        return;
+      }
+
+      if (!world) {
         hoverMesh.visible = false;
         return;
       }
@@ -4122,6 +4683,27 @@ const experiment: ExperimentModule = {
             groundCounts[getGroundOverrideAtCell(x, y).base] += 1;
           }
         }
+        const propMetaIssueProps = propAssetValidationIssuesById.size;
+        let propMetaIssueTotal = 0;
+        for (const issues of propAssetValidationIssuesById.values()) {
+          propMetaIssueTotal += issues.length;
+        }
+        let editorDynamicBodies = 0;
+        let editorDynamicSleeping = 0;
+        for (const state of editorPropPhysicsByPlacementId.values()) {
+          if (state.profile.mobility !== "dynamic") {
+            continue;
+          }
+          editorDynamicBodies += 1;
+          if (state.body.isSleeping()) {
+            editorDynamicSleeping += 1;
+          }
+        }
+        const rebuildMissing = editorPropRebuildCounts.get("missing-placement") ?? 0;
+        const rebuildSource = editorPropRebuildCounts.get("source-changed") ?? 0;
+        const rebuildRotation = editorPropRebuildCounts.get("rotation-changed") ?? 0;
+        const rebuildCollider = editorPropRebuildCounts.get("collider-mode-changed") ?? 0;
+        const rebuildProfile = editorPropRebuildCounts.get("profile-changed") ?? 0;
 
         stats.textContent = [
           "Mode: EDITOR",
@@ -4136,6 +4718,9 @@ const experiment: ExperimentModule = {
           `Prop Snap: ${propPlacementSnapToGrid ? "ON" : "OFF"}`,
           `Walls/Windows/Doors: ${wallCount}/${windowCount}/${doorCount}`,
           `Props: ${propPlacements.size}`,
+          `Prop Meta Issues(props/issues): ${propMetaIssueProps}/${propMetaIssueTotal}`,
+          `Editor Phys(Bodies/Dyn/Sleep/Pending): ${editorPropPhysicsByPlacementId.size}/${editorDynamicBodies}/${editorDynamicSleeping}/${pendingEditorPropActivationAtMsByPlacementId.size}`,
+          `Rebuilds(M/S/R/C/P): ${rebuildMissing}/${rebuildSource}/${rebuildRotation}/${rebuildCollider}/${rebuildProfile}`,
           `Ground(F/G/R/S/B): ${groundCounts.floor}/${groundCounts.grass}/${groundCounts.road}/${groundCounts.sidewalk}/${groundCounts.building}`,
           `Overrides: ${groundOverrides.size}`,
           `Default: ${defaultGroundBase}`,
@@ -4149,6 +4734,8 @@ const experiment: ExperimentModule = {
       } else {
         let openDoors = 0;
         let closedDoors = 0;
+        let dynamicProps = 0;
+        let sleepingDynamicProps = 0;
         if (gameRuntime) {
           for (const doorEid of gameRuntime.doorByPlacementId.values()) {
             const door = gameRuntime.doors.get(doorEid);
@@ -4159,6 +4746,20 @@ const experiment: ExperimentModule = {
               openDoors += 1;
             } else {
               closedDoors += 1;
+            }
+          }
+          for (const [placementId, eid] of gameRuntime.propByPlacementId.entries()) {
+            const placement = propPlacements.get(placementId);
+            if (!placement) {
+              continue;
+            }
+            const profile = getPropPhysicsProfile(placement.sourcePropId);
+            if (profile.mobility !== "dynamic") {
+              continue;
+            }
+            dynamicProps += 1;
+            if (gameRuntime.physics.isEntitySleeping(eid)) {
+              sleepingDynamicProps += 1;
             }
           }
         }
@@ -4175,6 +4776,7 @@ const experiment: ExperimentModule = {
           playerText,
           `Doors(O/C): ${openDoors}/${closedDoors}`,
           `Props: ${propPlacements.size}`,
+          `Physics(Dyn/Sleep/Substeps): ${dynamicProps}/${sleepingDynamicProps}/${runtimePhysicsLastSubsteps}`,
           `View: ${viewStep}/4`,
           `Zoom: ${zoomCurrent.toFixed(2)}x`
         ].join("  •  ");
@@ -4246,19 +4848,23 @@ const experiment: ExperimentModule = {
         selectedPropId,
         propRotationQuarterTurns
       );
-      const initialPlacement = computeGhostPlacementFromSupportHeights(
+      const resolvedPlacement = resolveGhostPlacementFromTarget(
         selectedPropId,
-        target.worldX,
-        target.worldZ,
+        target,
         propRotationQuarterTurns
       );
-      const placementWorldX = target.worldX;
-      const placementWorldZ = target.worldZ;
+      if (!resolvedPlacement.isClear) {
+        statusMessage = "Blocked: no clear prop placement along the pointer ray.";
+        syncHud();
+        return false;
+      }
+      const placementWorldX = resolvedPlacement.worldX;
+      const placementWorldZ = resolvedPlacement.worldZ;
       const settledCell = worldToCell(placementWorldX, placementWorldZ);
       const placementCellX = settledCell?.x ?? target.cellX;
       const placementCellY = settledCell?.y ?? target.cellY;
       const placementsAtCell = getPropPlacementsAtCell(placementCellX, placementCellY);
-      const elevation = initialPlacement.elevation;
+      const elevation = resolvedPlacement.elevation;
       const duplicateDistanceThreshold = propPlacementSnapToGrid ? 0.02 : 0.08;
       const duplicateDistanceSq = duplicateDistanceThreshold * duplicateDistanceThreshold;
       if (
@@ -4314,11 +4920,13 @@ const experiment: ExperimentModule = {
       return true;
     }
 
-    function applyEditorActionAtWorld(world: THREE.Vector3): boolean {
-      const cell = worldToCell(world.x, world.z);
-      const edge = pickEdgeFromWorld(world);
-
+    function applyEditorActionAtWorld(world: THREE.Vector3 | null): boolean {
       if (activeTool === "erase") {
+        if (!world) {
+          return false;
+        }
+        const cell = worldToCell(world.x, world.z);
+        const edge = pickEdgeFromWorld(world);
         if (cell) {
           const existingProp = findTopPropPlacementAtCell(cell.x, cell.y);
           if (existingProp) {
@@ -4340,13 +4948,23 @@ const experiment: ExperimentModule = {
         if (!selectedPropId) {
           return false;
         }
-        const target = resolvePropPlacementTarget(world);
+        if (!Number.isFinite(lastPointerClientX) || !Number.isFinite(lastPointerClientY)) {
+          return false;
+        }
+        const target = resolvePropPlacementTargetFromClient(
+          lastPointerClientX,
+          lastPointerClientY
+        );
         if (!target) {
           return false;
         }
         return applyPropPlacementTool(target);
       }
 
+      if (!world) {
+        return false;
+      }
+      const cell = worldToCell(world.x, world.z);
       if (isGroundBrush(editorBrush)) {
         if (!cell) {
           return false;
@@ -4354,13 +4972,14 @@ const experiment: ExperimentModule = {
         return applyGroundTool(cell.x, cell.y, activeTool, editorBrush);
       }
 
+      const edge = pickEdgeFromWorld(world);
       if (!edge || !isStructureBrush(editorBrush)) {
         return false;
       }
       return applyStructureTool(edge, activeTool, editorBrush);
     }
 
-    function applyEditorActionWithHistory(world: THREE.Vector3): void {
+    function applyEditorActionWithHistory(world: THREE.Vector3 | null): void {
       const contextLabel =
         activeTool === "erase"
           ? "Scrapped selection."
@@ -4498,6 +5117,7 @@ const experiment: ExperimentModule = {
       gameRuntime.keyboard.dispose(window);
       gameRuntime.physics.dispose();
       gameRuntime = null;
+      runtimePhysicsLastSubsteps = 0;
       clearGroup(gameDoorGroup);
       clearGroup(gamePropGroup);
       playerMesh.visible = false;
@@ -4643,6 +5263,201 @@ const experiment: ExperimentModule = {
           )
         });
       }
+    }
+
+    function createRuntimePropPhysicsBody(options: {
+      physics: Physics3dResource;
+      physicsBodies: DataStore<Physics3dBodyRef>;
+      physicsColliders: DataStore<Physics3dColliderRef>;
+      eid: EID;
+      placement: SettlementPropPlacement;
+      runtimeRotation: { x: number; y: number; z: number; w: number };
+      profile: SettlementPropPhysicsProfile;
+      propCollisionGroups: number;
+    }): { localRootOffset: { x: number; y: number; z: number } } {
+      const placement = options.placement;
+      const worldX = getPropPlacementWorldX(placement);
+      const worldZ = getPropPlacementWorldZ(placement);
+      const runtimeRotation = options.runtimeRotation;
+      const profile = options.profile;
+      const physics = options.physics;
+      const physicsBodies = options.physicsBodies;
+      const physicsColliders = options.physicsColliders;
+      const eid = options.eid;
+      const propCollisionGroups = options.propCollisionGroups;
+
+      const dimensions = resolvePropDimensions(
+        placement.sourcePropId,
+        placement.rotQuarterTurns
+      );
+      const halfHeight = dimensions.height * 0.5;
+      const fallbackHalfExtents = {
+        x: dimensions.width * 0.5,
+        y: halfHeight,
+        z: dimensions.depth * 0.5
+      };
+      const colliderResolution = resolvePropColliderResolution({
+        sourcePropId: placement.sourcePropId,
+        definition: getSavedPropDefinition(placement.sourcePropId),
+        explicitMode: propColliderModes.get(placement.sourcePropId),
+        dimensions,
+        convexVerticesByPropId: propConvexVerticesById
+      });
+      let localRootOffset = colliderResolution.localRootOffset;
+      const bodyTranslation = bodyTranslationFromRootPose(
+        worldX,
+        placement.elevation,
+        worldZ,
+        localRootOffset,
+        runtimeRotation
+      );
+
+      let createdBody = false;
+      switch (colliderResolution.shape) {
+        case "compound-boxes": {
+          const created =
+            profile.mobility === "dynamic"
+              ? physics.createDynamicCompoundCuboidEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  parts: colliderResolution.parts,
+                  mass: profile.mass,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  linearDamping: profile.linearDamping,
+                  angularDamping: profile.angularDamping,
+                  ccd: true,
+                  collisionGroups: propCollisionGroups
+                })
+              : physics.createFixedCompoundCuboidEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  parts: colliderResolution.parts,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  collisionGroups: propCollisionGroups
+                });
+          physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+          physicsColliders.add(eid, {
+            colliderHandle: created.colliderHandle
+          });
+          createdBody = true;
+          break;
+        }
+        case "convex-hull": {
+          const created =
+            profile.mobility === "dynamic"
+              ? physics.createDynamicConvexHullEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  vertices: colliderResolution.vertices,
+                  mass: profile.mass,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  linearDamping: profile.linearDamping,
+                  angularDamping: profile.angularDamping,
+                  ccd: true,
+                  collisionGroups: propCollisionGroups
+                })
+              : physics.createFixedConvexHullEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  vertices: colliderResolution.vertices,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  collisionGroups: propCollisionGroups
+                });
+          if (created) {
+            physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+            physicsColliders.add(eid, {
+              colliderHandle: created.colliderHandle
+            });
+            createdBody = true;
+          }
+          break;
+        }
+        case "box": {
+          const created =
+            profile.mobility === "dynamic"
+              ? physics.createDynamicCuboidEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  halfExtents: colliderResolution.halfExtents,
+                  mass: profile.mass,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  linearDamping: profile.linearDamping,
+                  angularDamping: profile.angularDamping,
+                  ccd: true,
+                  collisionGroups: propCollisionGroups
+                })
+              : physics.createFixedCuboidEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  halfExtents: colliderResolution.halfExtents,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  collisionGroups: propCollisionGroups
+                });
+          physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+          physicsColliders.add(eid, {
+            colliderHandle: created.colliderHandle
+          });
+          createdBody = true;
+          break;
+        }
+        default:
+          assertNever(colliderResolution, "prop collider resolution");
+      }
+
+      if (!createdBody) {
+        localRootOffset = { x: 0, y: -halfHeight, z: 0 };
+        const fallbackBodyTranslation = bodyTranslationFromRootPose(
+          worldX,
+          placement.elevation,
+          worldZ,
+          localRootOffset,
+          runtimeRotation
+        );
+        const created =
+          profile.mobility === "dynamic"
+            ? physics.createDynamicCuboidEntity(eid, {
+                translation: fallbackBodyTranslation,
+                rotation: runtimeRotation,
+                halfExtents: fallbackHalfExtents,
+                mass: profile.mass,
+                friction: profile.friction,
+                restitution: profile.restitution,
+                linearDamping: profile.linearDamping,
+                angularDamping: profile.angularDamping,
+                ccd: true,
+                collisionGroups: propCollisionGroups
+              })
+            : physics.createFixedCuboidEntity(eid, {
+                translation: fallbackBodyTranslation,
+                rotation: runtimeRotation,
+                halfExtents: fallbackHalfExtents,
+                friction: profile.friction,
+                restitution: profile.restitution,
+                collisionGroups: propCollisionGroups
+              });
+        physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+        physicsColliders.add(eid, {
+          colliderHandle: created.colliderHandle
+        });
+      }
+
+      if (profile.mobility === "dynamic" && placement.runtimeState) {
+        physics.setEntityLinearVelocity(eid, placement.runtimeState.linearVelocity, true);
+        physics.setEntityAngularVelocity(eid, placement.runtimeState.angularVelocity, true);
+        if (placement.runtimeState.sleeping) {
+          physics.sleepEntity(eid);
+        } else {
+          physics.wakeEntity(eid);
+        }
+      }
+
+      return { localRootOffset };
     }
 
     function createGameRuntime(options?: {
@@ -4795,163 +5610,16 @@ const experiment: ExperimentModule = {
         world.persistents.add(eid, { kind: "prop" });
         propByPlacementId.set(placement.placementId, eid);
 
-        const placementMode = getPropColliderMode(placement.sourcePropId);
-        const compoundCollider =
-          placementMode === "compound-boxes"
-            ? getPropCompoundCollider(placement.sourcePropId)
-            : null;
-        const convexCollider =
-          placementMode === "convex-hull"
-            ? getPropConvexHullCollider(placement.sourcePropId)
-            : null;
-        if (compoundCollider && compoundCollider.parts.length > 0) {
-          const parts = toRapierCompoundParts(compoundCollider);
-          const bodyTranslation = bodyTranslationFromRootPose(
-            worldX,
-            placement.elevation,
-            worldZ,
-            { x: 0, y: 0, z: 0 },
-            runtimeRotation
-          );
-          if (profile.mobility === "dynamic") {
-            const created = physics.createDynamicCompoundCuboidEntity(eid, {
-              translation: bodyTranslation,
-              rotation: runtimeRotation,
-              parts,
-              mass: profile.mass,
-              friction: profile.friction,
-              restitution: profile.restitution,
-              linearDamping: profile.linearDamping,
-              angularDamping: profile.angularDamping,
-              ccd: true,
-              collisionGroups: propCollisionGroups
-            });
-            physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
-            physicsColliders.add(eid, {
-              colliderHandle: created.colliderHandle
-            });
-          } else {
-            const created = physics.createFixedCompoundCuboidEntity(eid, {
-              translation: bodyTranslation,
-              rotation: runtimeRotation,
-              parts,
-              friction: profile.friction,
-              restitution: profile.restitution,
-              collisionGroups: propCollisionGroups
-            });
-            physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
-            physicsColliders.add(eid, {
-              colliderHandle: created.colliderHandle
-            });
-          }
-          localRootOffset = { x: 0, y: 0, z: 0 };
-        }
-
-        if (convexCollider && !physicsBodies.has(eid)) {
-          const convexVertices = toRapierConvexHullVertices(
-            placement.sourcePropId,
-            convexCollider
-          );
-          if (convexVertices) {
-            localRootOffset = {
-              x: convexCollider.rootOffset[0],
-              y: convexCollider.rootOffset[1],
-              z: convexCollider.rootOffset[2]
-            };
-            const bodyTranslation = bodyTranslationFromRootPose(
-              worldX,
-              placement.elevation,
-              worldZ,
-              localRootOffset,
-              runtimeRotation
-            );
-            const created =
-              profile.mobility === "dynamic"
-                ? physics.createDynamicConvexHullEntity(eid, {
-                    translation: bodyTranslation,
-                    rotation: runtimeRotation,
-                    vertices: convexVertices,
-                    mass: profile.mass,
-                    friction: profile.friction,
-                    restitution: profile.restitution,
-                    linearDamping: profile.linearDamping,
-                    angularDamping: profile.angularDamping,
-                    ccd: true,
-                    collisionGroups: propCollisionGroups
-                  })
-                : physics.createFixedConvexHullEntity(eid, {
-                    translation: bodyTranslation,
-                    rotation: runtimeRotation,
-                    vertices: convexVertices,
-                    friction: profile.friction,
-                    restitution: profile.restitution,
-                    collisionGroups: propCollisionGroups
-                  });
-            if (created) {
-              physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
-              physicsColliders.add(eid, {
-                colliderHandle: created.colliderHandle
-              });
-            }
-          }
-        }
-
-        if (!physicsBodies.has(eid)) {
-          const dimensions = resolvePropDimensions(
-            placement.sourcePropId,
-            placement.rotQuarterTurns
-          );
-          const halfHeight = dimensions.height * 0.5;
-          localRootOffset = { x: 0, y: -halfHeight, z: 0 };
-          const bodyTranslation = bodyTranslationFromRootPose(
-            worldX,
-            placement.elevation,
-            worldZ,
-            localRootOffset,
-            runtimeRotation
-          );
-          const halfExtents = {
-            x: dimensions.width * 0.5,
-            y: halfHeight,
-            z: dimensions.depth * 0.5
-          };
-          const created =
-            profile.mobility === "dynamic"
-              ? physics.createDynamicCuboidEntity(eid, {
-                  translation: bodyTranslation,
-                  rotation: runtimeRotation,
-                  halfExtents,
-                  mass: profile.mass,
-                  friction: profile.friction,
-                  restitution: profile.restitution,
-                  linearDamping: profile.linearDamping,
-                  angularDamping: profile.angularDamping,
-                  ccd: true,
-                  collisionGroups: propCollisionGroups
-                })
-              : physics.createFixedCuboidEntity(eid, {
-                  translation: bodyTranslation,
-                  rotation: runtimeRotation,
-                  halfExtents,
-                  friction: profile.friction,
-                  restitution: profile.restitution,
-                  collisionGroups: propCollisionGroups
-                });
-          physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
-          physicsColliders.add(eid, {
-            colliderHandle: created.colliderHandle
-          });
-        }
-
-        if (profile.mobility === "dynamic" && placement.runtimeState) {
-          physics.setEntityLinearVelocity(eid, placement.runtimeState.linearVelocity, true);
-          physics.setEntityAngularVelocity(eid, placement.runtimeState.angularVelocity, true);
-          if (placement.runtimeState.sleeping) {
-            physics.sleepEntity(eid);
-          } else {
-            physics.wakeEntity(eid);
-          }
-        }
+        localRootOffset = createRuntimePropPhysicsBody({
+          physics,
+          physicsBodies,
+          physicsColliders,
+          eid,
+          placement,
+          runtimeRotation,
+          profile,
+          propCollisionGroups
+        }).localRootOffset;
 
         props.add(eid, {
           placementId: placement.placementId,
@@ -5092,7 +5760,9 @@ const experiment: ExperimentModule = {
       gamePropGroup.visible = false;
       hoverMesh.visible = true;
       propGhostRoot.visible = false;
+      hidePropPlacementIndicators();
       hideRectPreview();
+      runtimePhysicsLastSubsteps = 0;
       statusMessage = "Switched to EDITOR.";
       syncHud();
     }
@@ -5126,6 +5796,7 @@ const experiment: ExperimentModule = {
       }
 
       gameRuntime = runtime;
+      runtimePhysicsLastSubsteps = 0;
       rebuildGameplayDoorMeshes(runtime);
       rebuildGamePropMeshes();
       syncRuntimePlayerFromPhysics(runtime);
@@ -5138,6 +5809,7 @@ const experiment: ExperimentModule = {
       gamePropGroup.visible = true;
       hoverMesh.visible = false;
       propGhostRoot.visible = false;
+      hidePropPlacementIndicators();
       hideRectPreview();
       playerMesh.visible = true;
 
@@ -5349,7 +6021,7 @@ const experiment: ExperimentModule = {
       }
 
       runDoorSystem(runtime);
-      runtime.physics.step(dt);
+      runtimePhysicsLastSubsteps = runtime.physics.step(dt);
       syncRuntimePlayerFromPhysics(runtime);
       syncRuntimePropTransforms(runtime);
       runtime.systems.eventSystem(world);
@@ -5479,9 +6151,7 @@ const experiment: ExperimentModule = {
           return;
         }
 
-        if (world) {
-          applyEditorActionWithHistory(world);
-        }
+        applyEditorActionWithHistory(world);
 
         dragState = {
           pointerId: event.pointerId,
@@ -5856,6 +6526,10 @@ const experiment: ExperimentModule = {
       playerHeadGeometry.dispose();
       hoverMesh.geometry.dispose();
       rectPreviewMesh.geometry.dispose();
+      propPlacementAnchorMesh.geometry.dispose();
+      propPlacementLandingMesh.geometry.dispose();
+      propPlacementDepthLineGeometry.dispose();
+      propPlacementOffsetLineGeometry.dispose();
       propPlaceholderGeometry.dispose();
 
       minorGridGeometry.dispose();
@@ -5871,6 +6545,10 @@ const experiment: ExperimentModule = {
       clearPropGhostVisual();
       propPlaceholderMaterial.dispose();
       propGhostMaterial.dispose();
+      propPlacementAnchorMaterial.dispose();
+      propPlacementLandingMaterial.dispose();
+      propPlacementDepthLineMaterial.dispose();
+      propPlacementOffsetLineMaterial.dispose();
       toonGradients.forEach((gradient) => gradient.dispose());
       hoverMaterial.dispose();
       rectPreviewMaterial.dispose();

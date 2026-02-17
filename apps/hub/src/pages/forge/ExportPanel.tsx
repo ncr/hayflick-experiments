@@ -5,12 +5,18 @@ import type { ColliderParams } from "./processing/colliders";
 import type { PivotPreset, BBox, ScaleMode } from "./processing/dimensions";
 import type { ViewportHandle } from "./Viewport";
 import type { Object3D } from "three";
+import type { PropPhysicsSettings } from "./types";
 import {
   buildSimplifiedColliderScene,
   DEFAULT_COLLIDER_FACE_TARGET,
   type ColliderVariantsSpec,
   type CompoundColliderSpec
 } from "./processing/collider-mesh";
+import {
+  buildPhysicsHintFromForgeSettings,
+  normalizeForgePhysicsSettings,
+  resolveForgeMass
+} from "./processing/physics";
 
 export interface AssetMeta {
   id: string;
@@ -41,6 +47,19 @@ export interface AssetMeta {
     textureResolution: number;
   };
   collider: ColliderParams;
+  physics?: {
+    mobility?: "fixed" | "dynamic";
+    material?: "default" | "metal" | "rubber" | "glass" | "wood" | "concrete";
+    mass?: number;
+    friction?: number;
+    restitution?: number;
+    linearDamping?: number;
+    angularDamping?: number;
+    activationDelayMs?: number;
+    massMode?: "auto" | "manual";
+    massScale?: number;
+    manualMass?: number;
+  };
   compoundCollider?: CompoundColliderSpec;
   colliderVariants?: ColliderVariantsSpec;
 }
@@ -61,6 +80,7 @@ interface Props {
   pivot: PivotPreset;
   pivotOffset: [number, number, number];
   collider: ColliderParams | null;
+  physics: PropPhysicsSettings;
   textureResolution: number;
   bbox: BBox | null;
   hideTitle?: boolean;
@@ -82,6 +102,7 @@ export function ExportPanel({
   pivot,
   pivotOffset,
   collider,
+  physics,
   textureResolution,
   bbox,
   hideTitle,
@@ -158,6 +179,8 @@ export function ExportPanel({
       }
 
       // Save meta.json
+      const normalizedPhysics = normalizeForgePhysicsSettings(physics, bbox);
+      const physicsHint = buildPhysicsHintFromForgeSettings(normalizedPhysics, bbox);
       const meta: AssetMeta = {
         id: propId,
         description: propDescription,
@@ -197,6 +220,7 @@ export function ExportPanel({
           position: [0, 0, 0],
           params: {},
         },
+        physics: physicsHint,
         compoundCollider,
         colliderVariants,
       };
@@ -225,6 +249,11 @@ export function ExportPanel({
         <div>Scale: {scale.toFixed(4)}</div>
         <div>Pivot: {pivot}</div>
         {collider && <div>Collider: {collider.type}</div>}
+        <div>
+          Physics: {physics.material} /{" "}
+          {physics.mobility === "auto" ? "auto mobility" : physics.mobility} / mass{" "}
+          {resolveForgeMass(normalizeForgePhysicsSettings(physics, bbox), bbox).toFixed(3)}
+        </div>
         <div>
           Export Colliders: Box + Convex Hull + Compound ({Math.max(1, Math.floor(DEFAULT_COLLIDER_FACE_TARGET / 12))} boxes max)
         </div>

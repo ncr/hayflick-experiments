@@ -5,11 +5,13 @@ import { SimplifyPanel } from "./SimplifyPanel";
 import { DimensionsPanel } from "./DimensionsPanel";
 import { PivotPanel } from "./PivotPanel";
 import { ColliderPanel } from "./ColliderPanel";
+import { PhysicsPanel } from "./PhysicsPanel";
 import { ExportPanel } from "./ExportPanel";
 import type { StyleGuide } from "./StyleGuidePanel";
 import type * as THREE from "three";
 import type { PivotPreset, ScaleMode, BBox } from "./processing/dimensions";
 import type { ColliderParams } from "./processing/colliders";
+import type { PropPhysicsSettings } from "./types";
 import { composePrompt } from "./batch";
 
 interface Props {
@@ -79,6 +81,10 @@ export function ProcessingRail({
     updateProp(id, { collider: params });
   };
 
+  const handlePhysicsChange = (next: PropPhysicsSettings) => {
+    updateProp(id, { physics: next });
+  };
+
   const colliderRebuildTrigger = colliderRefitTrigger + modelVersion;
 
   return (
@@ -120,6 +126,15 @@ export function ProcessingRail({
         />
       </details>
       <details open>
+        <summary>Physics</summary>
+        <PhysicsPanel
+          value={prop.physics}
+          bbox={prop.bbox}
+          onChange={handlePhysicsChange}
+          hideTitle
+        />
+      </details>
+      <details open>
         <summary>Export</summary>
         <ExportPanel
           viewport={viewport}
@@ -137,6 +152,7 @@ export function ProcessingRail({
           pivot={prop.pivot}
           pivotOffset={prop.pivotOffset}
           collider={prop.collider}
+          physics={prop.physics}
           textureResolution={prop.textureResolution}
           bbox={prop.bbox}
           hideTitle

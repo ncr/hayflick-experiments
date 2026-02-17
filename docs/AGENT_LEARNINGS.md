@@ -1919,6 +1919,20 @@ Preventive checklist:
 - Avoid trigger math that can yield `NaN`; prefer explicit defaults/guards for numeric trigger props.
 - Add a UI smoke check for "reload -> select prop -> switch collider mode" without manual rebuild.
 
+## 2026-02-17 - Vite import-analysis failed on newly added workspace dependency
+Root cause:
+- `@dimforge/rapier3d-compat` was declared in `packages/experiments/package.json` and present in `pnpm-lock.yaml`, but local workspace links were stale after pulling changes.
+- Vite resolved `packages/experiments/src/...` directly and could not resolve the missing linked package from that workspace context.
+
+Detection signal:
+- Browser/dev-server error: `Failed to resolve import "@dimforge/rapier3d-compat"` from `packages/experiments/src/settlement-builder-ecs/index.ts` and `game-physics-3d.ts`.
+- `packages/experiments/node_modules/@dimforge/rapier3d-compat` was absent before reinstall.
+
+Preventive checklist:
+- After pulling commits that modify workspace dependencies/lockfile, run `pnpm install` before starting Vite.
+- Verify resolution from the importing workspace context (not only app root) when debugging unresolved imports.
+- Restart Vite after dependency-link refresh to clear stale import-analysis state.
+
 ## 2026-02-17 - K-means-only compound boxes underfit non-convex furniture colliders
 Root cause:
 - Compound collider generation used centroid clustering + per-cluster AABBs only, which tends to produce broad overlapping boxes that fill intentional voids (e.g. desk knee space).
@@ -1930,3 +1944,165 @@ Preventive checklist:
 - Use structure-aware decomposition (voxel slice/run decomposition + vertical merge) before generic k-means fallback.
 - Sample triangle surfaces (not just sparse vertices) when deriving collider structure.
 - Validate collider preview on at least one non-convex furniture prop after collider pipeline changes.
+
+## 2026-02-17 - Synthesized collider/material fallbacks hid weak asset metadata quality
+Root cause:
+- Prop parsing intentionally synthesizes fallback collider variants and inferred material profiles.
+- Without explicit validation reporting, assets with missing collider/material metadata still loaded "successfully", masking quality gaps until runtime tuning/perf issues appeared.
+
+Detection signal:
+- Physics integration work required stronger, explicit asset rules, but no immediate signal existed for props relying on fallback `bbox-fallback`/missing compound metadata/material hints.
+
+Preventive checklist:
+- Run prop-asset validation at load and report warning/error counts in editor status/HUD.
+- Mark per-prop metadata warning counts in prop catalog/selection UI.
+- Keep automated tests for asset validation rules (bbox validity, collider variant coverage, material/mass hint sanity).
+
+## 2026-02-17 - Ghost preview drifted away from cursor over elevated supports
+Root cause:
+- Cursor world anchor came from ground-plane ray projection, while ghost was raised to support elevation without compensating X/Z for isometric parallax.
+- Placement commit path used uncompensated anchor X/Z, so final spawn could diverge from user-perceived cursor intent on stacked props.
+
+Detection signal:
+- User reported ghost stayed under cursor only on empty floor, but shifted away when hovering over existing props/supports.
+
+Preventive checklist:
+- Resolve prop ghost and commit pose through one shared helper that applies camera-direction parallax compensation for nonzero elevation.
+- Keep hover cache invalidation keyed by camera direction when ghost position depends on view orientation.
+- Ensure click commit uses the exact same resolved pose used by ghost preview.
+
+## 2026-02-17 - Legacy Forge physics `mass` needed explicit manual-mode migration
+Root cause:
+- New Forge physics settings introduced `massMode` (`auto`/`manual`), but older `meta.json` payloads only had `physics.mass`.
+- Parser defaulted to `auto` when `massMode` was missing, causing saved explicit mass values to be ignored.
+
+Detection signal:
+- Unit test for legacy meta parsing expected `mass` round-trip but got auto-computed mass.
+
+Preventive checklist:
+- When adding mode fields to persisted settings, migrate legacy payloads by inferring mode from existing value presence.
+- Add parser tests that include "old payload without new mode flag" fixtures.
+
+## 2026-02-17 - Surface placement needs ray-aware pivot solve, not ground-anchor-only solve
+Root cause:
+- Prop ghost/placement target was anchored from ground-plane projection and then elevated/adjusted, which did not preserve cursor intent when hovering over existing prop surfaces.
+- The solver lacked collision-aware fallback along the active pointer ray for occluded/overlapping placements.
+
+Detection signal:
+- User reported ghost aligned under cursor on empty floor but drifted and felt disorienting over stacked props.
+- Placing over prop surfaces did not behave like "place pivot at pointed surface."
+
+Preventive checklist:
+- In prop placement mode, resolve target from nearest prop surface ray hit first (pivot-at-hit behavior).
+- If initial surface target collides, slide candidate toward camera along inverse ray until clear.
+- Keep hover and commit paths calling the same resolved-target helper to avoid preview/commit mismatch.
+
+## 2026-02-17 - Prop placement preview needed explicit anchor and landing indicators
+Root cause:
+- Hover showed only one ghost pose, so when collision resolution shifted placement from the pointer anchor, users could not tell where they were aiming versus where placement would commit.
+- Commit path still allowed unresolved colliding placements when slide-to-clear failed, creating confusing overlaps.
+
+Detection signal:
+- User reported disorienting ghost behavior around stacked props and asked for an explicit "where it will land" shadow below the ghost.
+
+Preventive checklist:
+- In prop placement mode, render both cues:
+  - cursor anchor marker at ray-hit target point
+  - landing footprint marker at final resolved placement contact pose
+- Color-code landing footprint by state (clear / slid / blocked) to communicate solver adjustments.
+- Reject commit when no clear placement exists after ray slide resolution; do not silently place intersecting props.
+
+## 2026-02-17 - Snap-mode collision slide must still use raw pointer ray
+Root cause:
+- Overlap fallback direction used ray data derived from the snapped placement target (cell center), not the actual pointer world position.
+- Slide step also allowed elevation drift, which made ghost relocation appear far and directionally wrong for floor placements.
+
+Detection signal:
+- User reported when placing near an existing floor prop, ghost jumped too far and not along the expected mouse ray direction.
+
+Preventive checklist:
+- Include raw pointer world position in prop placement target data even when snap-to-grid is enabled.
+- Build slide ray direction from raw pointer world data, not snapped world anchors.
+- Preserve elevation during overlap slide in editor placement UX to avoid vertical drift artifacts.
+
+## 2026-02-17 - Hybrid support-height/parallax placement logic was too fragile for editor UX
+Root cause:
+- Placement mixed ground-projected pointer data, support-height stacking heuristics, and camera-direction compensation.
+- The hybrid path created hard-to-predict hover/commit behavior under overlaps and stacked props.
+
+Detection signal:
+- Repeated user feedback that ghost placement still felt wrong across edge cases even after incremental fixes.
+
+Preventive checklist:
+- Use one deterministic placement pipeline:
+  - screen ray from pointer
+  - nearest support hit (prop surface or floor plane)
+  - optional floor-only snap
+  - local overlap resolve along inverse pointer ray
+- Keep hover and commit on the exact same resolved target data model.
+- Retain a landing shadow marker to communicate final resolved pose before click.
+
+## 2026-02-17 - Side-face ray hits caused false blocked state for stack placement
+Root cause:
+- Prop support selection accepted the nearest prop ray hit regardless of surface normal.
+- In isometric camera angles, side faces are often hit before top faces, producing mid-height support anchors and false overlap/blocking when stacking.
+
+Detection signal:
+- User reported trying to place a box on top of another showed red blocked hint, and click result diverged from ghost expectation.
+
+Preventive checklist:
+- For stackable prop placement, accept prop support hits only on sufficiently upward-facing surfaces (`normal.y` threshold).
+- Fall back to floor support when no valid upward-facing prop hit is found.
+- Keep support-hit filtering identical for hover and commit paths.
+
+## 2026-02-17 - Top-surface-only filtering blocked valid stack placement
+Root cause:
+- Requiring strictly upward-facing ray hits for prop support caused many cursor rays to miss prop support entirely in isometric angles.
+- The resolver fell back to floor support under the prop, so stacking attempts became blocked (red hint + no placement).
+
+Detection signal:
+- User reported they could no longer place a box on another box after support filtering changes.
+
+Preventive checklist:
+- Keep upward-normal preference, but add a nearest-prop fallback that derives support Y from the hit prop's top elevation.
+- Never downgrade to floor support when the pointer is clearly intersecting a prop and a valid placement top can be inferred.
+
+## 2026-02-17 - Stack placement overlap checks must ignore the chosen support prop
+Root cause:
+- Even with prop support detected, overlap rejection still tested against all existing props, including the support prop itself.
+- Minor numerical/contact ambiguity at support surfaces could trigger blocked placement and show "no clear placement".
+
+Detection signal:
+- User reported box-on-box placement remained red/blocked despite clearly targeting a top support surface.
+
+Preventive checklist:
+- Carry support placement identity in placement targets (`supportPlacementId`, `supportTopY`).
+- Resolve prop-support anchor on the support top plane, not arbitrary side-hit point.
+- Exclude the chosen support placement from overlap rejection while still testing all other props.
+
+## 2026-02-17 - Orthographic placement must be support-plane-first, not mesh-hit-first
+Root cause:
+- Orthographic camera depth ambiguity made mesh-hit/normal heuristics unstable for hover and commit targeting.
+- The prior flow mixed multiple targeting assumptions (mesh nearest-hit, support offsets, fallbacks), causing non-deterministic ghost/hint behavior.
+
+Detection signal:
+- User requested full rewrite from first principles because ghost/hint remained disorienting and placement outcomes inconsistent.
+
+Preventive checklist:
+- Resolve placement target from screen ray against deterministic support planes (floor + prop top planes), ranked by ray distance.
+- Keep support metadata explicit in placement target (`supportKind`, `supportY`, `supportPlacementId`) and use one shared resolver for hover + commit.
+- In ortho, render two explicit cues:
+  - projected landing shadow on support plane
+  - depth/offset lines for vertical and along-plane displacement legibility.
+
+## 2026-02-17 - Landing hint must be projected to support plane, not ghost root plane
+Root cause:
+- Landing indicator was rendered at ghost root elevation, visually sticking to the ghost in isometric perspective.
+- This made the hint redundant and hard to read as a placement target cue.
+
+Detection signal:
+- User reported landing hint looked "stuck to the ghost" and did not help with iso placement judgment.
+
+Preventive checklist:
+- Render landing footprint at the support/contact plane (`supportTopY` or floor `y=0`), independent from ghost root elevation.
+- Keep landing hint depth-tested so it reads like a surface projection rather than an overlay through geometry.

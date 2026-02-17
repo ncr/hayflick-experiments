@@ -2,6 +2,7 @@ import type { PropItem } from "./types";
 import type { StyleGuide } from "./StyleGuidePanel";
 import { generateImage } from "./api/openai";
 import { generateModel } from "./api/tripo";
+import { DEFAULT_FORGE_PHYSICS_SETTINGS } from "./processing/physics";
 
 let nextId = 1;
 const DEFAULT_BATCH_CONCURRENCY = 5;
@@ -25,6 +26,7 @@ export function createPropItem(description: string): PropItem {
     pivot: "bottom-center",
     pivotOffset: [0, 0, 0],
     collider: null,
+    physics: { ...DEFAULT_FORGE_PHYSICS_SETTINGS },
     textureResolution: 0,
     bbox: null,
   };

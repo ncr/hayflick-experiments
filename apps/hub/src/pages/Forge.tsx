@@ -13,6 +13,10 @@ import type { ColliderParams } from "./forge/processing/colliders";
 import type { PivotPreset, ScaleMode } from "./forge/processing/dimensions";
 import { normalizeAndPivot } from "./forge/processing/dimensions";
 import { countTotalFaces } from "./forge/processing/simplify";
+import {
+  normalizeForgePhysicsSettings,
+  parseForgePhysicsSettingsFromMeta
+} from "./forge/processing/physics";
 
 export function Forge() {
   const viewportRef = useRef<ViewportHandle>(null);
@@ -146,6 +150,7 @@ export function Forge() {
           textureResolution: number;
         };
         collider: ColliderParams;
+        physics?: Record<string, unknown>;
       }>(`props/${propId}/meta.json`);
 
       let glb: ArrayBuffer;
@@ -186,6 +191,14 @@ export function Forge() {
         pivot: meta.processing.pivot,
         pivotOffset: meta.processing.pivotOffset,
         collider: meta.collider,
+        physics: parseForgePhysicsSettingsFromMeta(meta.physics, {
+          width: meta.processing.bbox.width,
+          height: meta.processing.bbox.height,
+          depth: meta.processing.bbox.depth,
+          center: new THREE.Vector3(),
+          min: new THREE.Vector3(),
+          max: new THREE.Vector3()
+        }),
         textureResolution: meta.processing.textureResolution,
         bbox: {
           width: meta.processing.bbox.width,
@@ -228,7 +241,15 @@ export function Forge() {
 
         const actualBBox = vp.getBBox();
         if (actualBBox) {
-          setLoadedProp((prev) => prev ? { ...prev, bbox: actualBBox } : prev);
+          setLoadedProp((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  bbox: actualBBox,
+                  physics: normalizeForgePhysicsSettings(prev.physics, actualBBox)
+                }
+              : prev
+          );
         }
       }
     } catch {

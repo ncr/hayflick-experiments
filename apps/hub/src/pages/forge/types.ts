@@ -28,6 +28,32 @@ export interface PropItem {
   pivot: PivotPreset;
   pivotOffset: [number, number, number];
   collider: ColliderParams | null;
+  physics: PropPhysicsSettings;
   textureResolution: number;
   bbox: BBox | null;
+}
+
+export type PropPhysicsMaterial =
+  | "default"
+  | "metal"
+  | "rubber"
+  | "glass"
+  | "wood"
+  | "concrete";
+
+export type PropPhysicsMobility = "auto" | "fixed" | "dynamic";
+
+export type PropPhysicsMassMode = "auto" | "manual";
+
+export interface PropPhysicsSettings {
+  mobility: PropPhysicsMobility;
+  material: PropPhysicsMaterial;
+  massMode: PropPhysicsMassMode;
+  massScale: number;
+  manualMass: number;
+  friction: number;
+  restitution: number;
+  linearDamping: number;
+  angularDamping: number;
+  activationDelayMs: number;
 }
