@@ -1,1 +1,445 @@
-{"id":"microscope","description":"microscope","styleGuide":"clan-sci-fi","created":"2026-02-16T17:49:49.537Z","gen2d":{"model":"gpt-image-1","prompt":"this is the style guide for my game: STYLE GUIDE — Year 2200 Isometric Architecture\n\nUnified interior and architectural design language built from cold, perfect white mineral surfaces resembling carved Greek white sandstone or dense architectural ceramic. Forms are monolithic, heavy, and rectilinear, appearing carved from a single solid mass rather than assembled from parts. Edges are sharp with minimal chamfering; rounded corners are rare and structural, never decorative. Surfaces are pristine, new, and well-maintained — no damage, decay, grime, or chaos. Exterior aging, if present, is subtle and passive.\n\nThe setting is the year 2200. Civilization functions but is depopulated due to low birth rates, not war. Spaces are calm, sterile, melancholic, intentional, and designed — never cozy, never ruined, never heroic.\n\nVisual language follows a strict architectural system:\n\nFixed square modular grid.\n\nInfrastructure-first logic (walls, doors, windows are structural, not props).\n\nCorners are solid, dedicated volumes.\n\nNo clutter, no ornamental detailing.\n\nLow-to-mid mesh detail with strong, readable silhouettes.\n\nAccent system:\n\nSingle accent color only: burnt industrial amber (#B8430E).\n\nUsed sparingly and functionally.\n\nOften appears as a clean horizontal stripe at a consistent architectural datum.\n\nIndicators and controls use the same amber.\n\nNo additional accent colors.\n\nWindows:\n\nNarrow, vertical, very dark tinted — near-black voids.\n\nRead as absence rather than transparency.\n\nTechnology:\n\nHigh-end but understated and slightly obsolete.\n\nPhysical interaction preferred over screens.\n\nButtons and controls are rare, grouped, recessed, and intentional.\n\nScreens are minimal, secondary, or inactive.\n\nLighting:\n\nNeutral, even, non-dramatic.\n\nOptimized for gameplay readability.\n\nNo cinematic contrast or exaggerated glow.\n\nRendering style:\n\nClassic isometric view with orthographic feel.\n\nFallout 1–2 inspired proportions.\n\nClean topology.\n\nNo micro-detailing.\n\nNo decorative bevels.\n\nNo texture clutter.\n\nAtmosphere:\nCalm, sterile, structured, slightly melancholic, depopulated but functioning civilization — a designed future, not a broken one.\n\n microscope 3/4 view, product shot, centered object, plain mid-gray background.","size":"1024x1024"},"gen3d":{"tripoTaskId":"","faceLimit":20000,"pbr":true},"processing":{"originalFaces":18864,"simplifiedFaces":18864,"simplificationRatio":1,"scale":[0.5000010132810147,0.5000010132810147,0.5000010132810147],"pivot":"bottom-center","pivotOffset":[-0.0004594475030899048,0.4999989867210388,0.011138305068016052],"bbox":{"width":0.3221400948025717,"height":0.5,"depth":0.25403223258828567},"targetDimension":{"method":"height","value":0.5},"textureResolution":0},"collider":{"type":"box","position":[0,0.25,0],"params":{"halfWidth":0.16107004740128586,"halfHeight":0.25,"halfDepth":0.12701611629414283}}}
+{
+  "id": "microscope",
+  "description": "microscope",
+  "styleGuide": "clan-sci-fi",
+  "created": "2026-02-16T17:49:49.537Z",
+  "gen2d": {
+    "model": "gpt-image-1",
+    "prompt": "this is the style guide for my game: STYLE GUIDE — Year 2200 Isometric Architecture\n\nUnified interior and architectural design language built from cold, perfect white mineral surfaces resembling carved Greek white sandstone or dense architectural ceramic. Forms are monolithic, heavy, and rectilinear, appearing carved from a single solid mass rather than assembled from parts. Edges are sharp with minimal chamfering; rounded corners are rare and structural, never decorative. Surfaces are pristine, new, and well-maintained — no damage, decay, grime, or chaos. Exterior aging, if present, is subtle and passive.\n\nThe setting is the year 2200. Civilization functions but is depopulated due to low birth rates, not war. Spaces are calm, sterile, melancholic, intentional, and designed — never cozy, never ruined, never heroic.\n\nVisual language follows a strict architectural system:\n\nFixed square modular grid.\n\nInfrastructure-first logic (walls, doors, windows are structural, not props).\n\nCorners are solid, dedicated volumes.\n\nNo clutter, no ornamental detailing.\n\nLow-to-mid mesh detail with strong, readable silhouettes.\n\nAccent system:\n\nSingle accent color only: burnt industrial amber (#B8430E).\n\nUsed sparingly and functionally.\n\nOften appears as a clean horizontal stripe at a consistent architectural datum.\n\nIndicators and controls use the same amber.\n\nNo additional accent colors.\n\nWindows:\n\nNarrow, vertical, very dark tinted — near-black voids.\n\nRead as absence rather than transparency.\n\nTechnology:\n\nHigh-end but understated and slightly obsolete.\n\nPhysical interaction preferred over screens.\n\nButtons and controls are rare, grouped, recessed, and intentional.\n\nScreens are minimal, secondary, or inactive.\n\nLighting:\n\nNeutral, even, non-dramatic.\n\nOptimized for gameplay readability.\n\nNo cinematic contrast or exaggerated glow.\n\nRendering style:\n\nClassic isometric view with orthographic feel.\n\nFallout 1–2 inspired proportions.\n\nClean topology.\n\nNo micro-detailing.\n\nNo decorative bevels.\n\nNo texture clutter.\n\nAtmosphere:\nCalm, sterile, structured, slightly melancholic, depopulated but functioning civilization — a designed future, not a broken one.\n\n microscope 3/4 view, product shot, centered object, plain mid-gray background.",
+    "size": "1024x1024"
+  },
+  "gen3d": {
+    "tripoTaskId": "",
+    "faceLimit": 20000,
+    "pbr": true
+  },
+  "processing": {
+    "originalFaces": 18864,
+    "simplifiedFaces": 18864,
+    "simplificationRatio": 1,
+    "scale": [
+      0.5000010132810147,
+      0.5000010132810147,
+      0.5000010132810147
+    ],
+    "pivot": "bottom-center",
+    "pivotOffset": [
+      -0.0004594475030899048,
+      0.4999989867210388,
+      0.011138305068016052
+    ],
+    "bbox": {
+      "width": 0.3221400948025717,
+      "height": 0.5,
+      "depth": 0.25403223258828567
+    },
+    "targetDimension": {
+      "method": "height",
+      "value": 0.5
+    },
+    "textureResolution": 0,
+    "colliderFaces": 48,
+    "colliderFaceTarget": 96
+  },
+  "collider": {
+    "type": "box",
+    "position": [
+      0,
+      0.25,
+      0
+    ],
+    "params": {
+      "halfWidth": 0.16107004740128586,
+      "halfHeight": 0.25,
+      "halfDepth": 0.12701611629414283
+    }
+  },
+  "compoundCollider": {
+    "type": "compound-boxes",
+    "source": "auto-kmeans-v1",
+    "parts": [
+      {
+        "kind": "box",
+        "position": [
+          -0.1420520357787609,
+          0.32365353405475616,
+          0.012532800436019897
+        ],
+        "halfExtents": [
+          0.1786014623939991,
+          0.32252953946590424,
+          0.23699210584163666
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          0.11347428150475025,
+          0.7713792622089386,
+          -0.05674562603235245
+        ],
+        "halfExtents": [
+          0.1396468561142683,
+          0.22569027543067932,
+          0.19689246267080307
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          0.22991783171892166,
+          0.1772378385066986,
+          -0.05501953512430191
+        ],
+        "halfExtents": [
+          0.08996456116437912,
+          0.17439547181129456,
+          0.17182720452547073
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          0.3187107443809509,
+          0.11935260891914368,
+          0.2508300766348839
+        ],
+        "halfExtents": [
+          0.005,
+          0.11612808704376221,
+          0.005
+        ]
+      }
+    ]
+  },
+  "colliderVariants": {
+    "box": {
+      "type": "box",
+      "source": "aabb-v1",
+      "position": [
+        -0.00038555264472961426,
+        0.4990967661142349,
+        -0.000791400671005249
+      ],
+      "halfExtents": [
+        0.3202679455280304,
+        0.497972771525383,
+        0.25284668803215027
+      ]
+    },
+    "convexHull": {
+      "type": "convex-hull",
+      "source": "sampled-points-v1",
+      "points": [
+        [
+          -0.22618238627910614,
+          -0.49456824362277985,
+          0.2503163069486618
+        ],
+        [
+          0.32002881169319153,
+          -0.49587224423885345,
+          0.250396266579628
+        ],
+        [
+          0.31816378235816956,
+          -0.26361607015132904,
+          0.25284668803215027
+        ],
+        [
+          -0.22549431025981903,
+          -0.2640412598848343,
+          0.14221583306789398
+        ],
+        [
+          0.08960403501987457,
+          0.2207237333059311,
+          0.095000721514225
+        ],
+        [
+          0.13896821439266205,
+          0.497972771525383,
+          0.14093823730945587
+        ],
+        [
+          -0.3198051154613495,
+          0.13044844567775726,
+          0.1380586475133896
+        ],
+        [
+          0.01845841482281685,
+          0.2627619355916977,
+          0.05859881639480591
+        ],
+        [
+          -0.31871744990348816,
+          -0.497972771525383,
+          0.13436836004257202
+        ],
+        [
+          -0.3188575208187103,
+          -0.15114833414554596,
+          0.057894185185432434
+        ],
+        [
+          0.3202679455280304,
+          -0.26366446912288666,
+          -0.224030002951622
+        ],
+        [
+          0.21098265051841736,
+          -0.14774353802204132,
+          0.11759907007217407
+        ],
+        [
+          -0.09098554402589798,
+          -0.26403380930423737,
+          0.05960192158818245
+        ],
+        [
+          0.036934979259967804,
+          -0.14728648960590363,
+          0.11859659105539322
+        ],
+        [
+          -0.020787149667739868,
+          0.4179137200117111,
+          0.0574648454785347
+        ],
+        [
+          0.1510828286409378,
+          0.052757009863853455,
+          0.046817757189273834
+        ],
+        [
+          0.2137179672718048,
+          0.11791180074214935,
+          0.06396344304084778
+        ],
+        [
+          0.06461875140666962,
+          0.259921059012413,
+          -0.08807674050331116
+        ],
+        [
+          -0.10347132384777069,
+          -0.27142365276813507,
+          -0.062300458550453186
+        ],
+        [
+          0.06584116816520691,
+          0.4179617017507553,
+          -0.09243733435869217
+        ],
+        [
+          0.25350669026374817,
+          0.2051011174917221,
+          -0.013422265648841858
+        ],
+        [
+          -0.06853756308555603,
+          -0.09832991659641266,
+          -0.15607807040214539
+        ],
+        [
+          0.20459555089473724,
+          0.04659222066402435,
+          -0.01979418843984604
+        ],
+        [
+          0.21305690705776215,
+          -0.14746345579624176,
+          -0.07245943695306778
+        ],
+        [
+          -0.22565174102783203,
+          -0.4957684427499771,
+          -0.2236679047346115
+        ],
+        [
+          -0.3192655146121979,
+          -0.15295757353305817,
+          -0.04992438480257988
+        ],
+        [
+          -0.3202679455280304,
+          -0.20567964017391205,
+          -0.14828608930110931
+        ],
+        [
+          0.14033882319927216,
+          -0.49625439941883087,
+          -0.1189327985048294
+        ],
+        [
+          0.31643304228782654,
+          -0.4950636178255081,
+          -0.2260553389787674
+        ],
+        [
+          -0.10901135951280594,
+          -0.26990337669849396,
+          -0.029526948928833008
+        ],
+        [
+          -0.10908812284469604,
+          -0.26229114830493927,
+          -0.028299760073423386
+        ],
+        [
+          -0.10911748558282852,
+          -0.27045316994190216,
+          -0.03619201108813286
+        ],
+        [
+          -0.12417534738779068,
+          -0.2524934560060501,
+          -0.02774069458246231
+        ],
+        [
+          -0.1307428479194641,
+          -0.2615043669939041,
+          -0.03182438760995865
+        ],
+        [
+          -0.13223139941692352,
+          -0.262546643614769,
+          -0.03483271598815918
+        ],
+        [
+          -0.13071827590465546,
+          -0.2662481516599655,
+          -0.0470394641160965
+        ],
+        [
+          -0.025787021964788437,
+          0.2651061862707138,
+          -0.148137167096138
+        ],
+        [
+          -0.13207173347473145,
+          -0.2625891715288162,
+          -0.04216434061527252
+        ],
+        [
+          -0.10373428463935852,
+          -0.2717791646718979,
+          -0.04295729100704193
+        ],
+        [
+          -0.1272285431623459,
+          -0.2605050951242447,
+          -0.05153975635766983
+        ],
+        [
+          -0.13181188702583313,
+          -0.26346205174922943,
+          -0.055743008852005005
+        ],
+        [
+          -0.12781883776187897,
+          -0.27043525874614716,
+          -0.06789503991603851
+        ],
+        [
+          -0.1108320951461792,
+          -0.27199403941631317,
+          -0.07061897963285446
+        ],
+        [
+          -0.3161287009716034,
+          0.14708630740642548,
+          -0.14607979357242584
+        ],
+        [
+          0.06085021793842316,
+          0.41655682027339935,
+          -0.25284668803215027
+        ],
+        [
+          -0.13074694573879242,
+          -0.25429584085941315,
+          -0.028648260980844498
+        ],
+        [
+          -0.1311599314212799,
+          -0.2606738358736038,
+          -0.0486769862473011
+        ],
+        [
+          -0.13034062087535858,
+          -0.26690538227558136,
+          -0.058923110365867615
+        ],
+        [
+          -0.12092650681734085,
+          -0.2644626945257187,
+          -0.0439661368727684
+        ]
+      ],
+      "rootOffset": [
+        0.00038555264472961426,
+        -0.4990967661142349,
+        0.000791400671005249
+      ]
+    },
+    "compoundBoxes": {
+      "type": "compound-boxes",
+      "source": "auto-kmeans-v1",
+      "parts": [
+        {
+          "kind": "box",
+          "position": [
+            -0.1420520357787609,
+            0.32365353405475616,
+            0.012532800436019897
+          ],
+          "halfExtents": [
+            0.1786014623939991,
+            0.32252953946590424,
+            0.23699210584163666
+          ]
+        },
+        {
+          "kind": "box",
+          "position": [
+            0.11347428150475025,
+            0.7713792622089386,
+            -0.05674562603235245
+          ],
+          "halfExtents": [
+            0.1396468561142683,
+            0.22569027543067932,
+            0.19689246267080307
+          ]
+        },
+        {
+          "kind": "box",
+          "position": [
+            0.22991783171892166,
+            0.1772378385066986,
+            -0.05501953512430191
+          ],
+          "halfExtents": [
+            0.08996456116437912,
+            0.17439547181129456,
+            0.17182720452547073
+          ]
+        },
+        {
+          "kind": "box",
+          "position": [
+            0.3187107443809509,
+            0.11935260891914368,
+            0.2508300766348839
+          ],
+          "halfExtents": [
+            0.005,
+            0.11612808704376221,
+            0.005
+          ]
+        }
+      ]
+    }
+  }
+}

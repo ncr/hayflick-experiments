@@ -1,1 +1,424 @@
-{"id":"chemical-flask","description":"chemical flask","styleGuide":"clan-sci-fi","created":"2026-02-16T17:50:08.014Z","gen2d":{"model":"gpt-image-1","prompt":"this is the style guide for my game: STYLE GUIDE — Year 2200 Isometric Architecture\n\nUnified interior and architectural design language built from cold, perfect white mineral surfaces resembling carved Greek white sandstone or dense architectural ceramic. Forms are monolithic, heavy, and rectilinear, appearing carved from a single solid mass rather than assembled from parts. Edges are sharp with minimal chamfering; rounded corners are rare and structural, never decorative. Surfaces are pristine, new, and well-maintained — no damage, decay, grime, or chaos. Exterior aging, if present, is subtle and passive.\n\nThe setting is the year 2200. Civilization functions but is depopulated due to low birth rates, not war. Spaces are calm, sterile, melancholic, intentional, and designed — never cozy, never ruined, never heroic.\n\nVisual language follows a strict architectural system:\n\nFixed square modular grid.\n\nInfrastructure-first logic (walls, doors, windows are structural, not props).\n\nCorners are solid, dedicated volumes.\n\nNo clutter, no ornamental detailing.\n\nLow-to-mid mesh detail with strong, readable silhouettes.\n\nAccent system:\n\nSingle accent color only: burnt industrial amber (#B8430E).\n\nUsed sparingly and functionally.\n\nOften appears as a clean horizontal stripe at a consistent architectural datum.\n\nIndicators and controls use the same amber.\n\nNo additional accent colors.\n\nWindows:\n\nNarrow, vertical, very dark tinted — near-black voids.\n\nRead as absence rather than transparency.\n\nTechnology:\n\nHigh-end but understated and slightly obsolete.\n\nPhysical interaction preferred over screens.\n\nButtons and controls are rare, grouped, recessed, and intentional.\n\nScreens are minimal, secondary, or inactive.\n\nLighting:\n\nNeutral, even, non-dramatic.\n\nOptimized for gameplay readability.\n\nNo cinematic contrast or exaggerated glow.\n\nRendering style:\n\nClassic isometric view with orthographic feel.\n\nFallout 1–2 inspired proportions.\n\nClean topology.\n\nNo micro-detailing.\n\nNo decorative bevels.\n\nNo texture clutter.\n\nAtmosphere:\nCalm, sterile, structured, slightly melancholic, depopulated but functioning civilization — a designed future, not a broken one.\n\n chemical flask 3/4 view, product shot, centered object, plain mid-gray background.","size":"1024x1024"},"gen3d":{"tripoTaskId":"","faceLimit":20000,"pbr":true},"processing":{"originalFaces":18898,"simplifiedFaces":18898,"simplificationRatio":1,"scale":[0.4000070811571541,0.4000070811571541,0.4000070811571541],"pivot":"bottom-center","pivotOffset":[0.0001725703477859497,0.4999989867210388,-0.000040724873542785645],"bbox":{"width":0.34730381663045523,"height":0.4,"depth":0.3471202787591691},"targetDimension":{"method":"height","value":0.4},"textureResolution":0},"collider":{"type":"box","position":[0,0.2,0],"params":{"halfWidth":0.17365190831522762,"halfHeight":0.2,"halfDepth":0.17356013937958456}}}
+{
+  "id": "chemical-flask",
+  "description": "chemical flask",
+  "styleGuide": "",
+  "created": "2026-02-17T14:14:54.570Z",
+  "gen2d": {
+    "model": "gpt-image-1",
+    "prompt": "chemical flask 3/4 view, product shot, centered object, plain mid-gray background.",
+    "size": "1024x1024"
+  },
+  "gen3d": {
+    "tripoTaskId": "",
+    "faceLimit": 20000,
+    "pbr": true
+  },
+  "processing": {
+    "originalFaces": 18898,
+    "simplifiedFaces": 18898,
+    "simplificationRatio": 1,
+    "colliderFaces": 36,
+    "colliderFaceTarget": 96,
+    "scale": [
+      0.4000070811571541,
+      0.4000070811571541,
+      0.4000070811571541
+    ],
+    "pivot": "bottom-center",
+    "pivotOffset": [
+      0.0001725703477859497,
+      0.4999989867210388,
+      -0.000040724873542785645
+    ],
+    "bbox": {
+      "width": 0.34730381663045523,
+      "height": 0.4,
+      "depth": 0.3471202787591691
+    },
+    "targetDimension": {
+      "method": "height",
+      "value": 0.4
+    },
+    "textureResolution": 0
+  },
+  "collider": {
+    "type": "box",
+    "position": [
+      0,
+      0.2,
+      0.000024402573559539897
+    ],
+    "params": {
+      "halfWidth": 0.17365190831522762,
+      "halfHeight": 0.2,
+      "halfDepth": 0.17353573680602502
+    }
+  },
+  "compoundCollider": {
+    "type": "compound-boxes",
+    "source": "auto-kmeans-v1",
+    "parts": [
+      {
+        "kind": "box",
+        "position": [
+          0.0004857778549194336,
+          0.21839556097984314,
+          -0.21413596370257437
+        ],
+        "halfExtents": [
+          0.4335446357727051,
+          0.21715644001960754,
+          0.21889994642697275
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          0.00018006563186645508,
+          0.21744729578495026,
+          0.2150117012206465
+        ],
+        "halfExtents": [
+          0.3057003617286682,
+          0.21620862185955048,
+          0.21764887846074998
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          0.00003953278064727783,
+          0.8670211434364319,
+          -0.0002486482262611389
+        ],
+        "halfExtents": [
+          0.15077900886535645,
+          0.13205879926681519,
+          0.15175210684537888
+        ]
+      }
+    ]
+  },
+  "colliderVariants": {
+    "box": {
+      "type": "box",
+      "source": "aabb-v1",
+      "position": [
+        0.0004857778549194336,
+        0.5001593083143234,
+        -0.00018766522407531738
+      ],
+      "halfExtents": [
+        0.4335446357727051,
+        0.49892063438892365,
+        0.4328482449054718
+      ]
+    },
+    "convexHull": {
+      "type": "convex-hull",
+      "source": "sampled-points-v1",
+      "points": [
+        [
+          0.0010548875434324145,
+          -0.3924410790205002,
+          0.4328482449054718
+        ],
+        [
+          0.21667897701263428,
+          -0.10543255507946014,
+          0.217215433716774
+        ],
+        [
+          0.001294754329137504,
+          -0.10503096878528595,
+          0.31304284930229187
+        ],
+        [
+          -0.25685936212539673,
+          -0.4932479113340378,
+          -0.25489917397499084
+        ],
+        [
+          0.24786396324634552,
+          -0.49892063438892365,
+          0.2506570518016815
+        ],
+        [
+          0.30539464950561523,
+          -0.32740847766399384,
+          0.30468764901161194
+        ],
+        [
+          0.2012370377779007,
+          -0.06982146203517914,
+          0.1989641934633255
+        ],
+        [
+          0.0030538588762283325,
+          -0.10314591228961945,
+          0.29394128918647766
+        ],
+        [
+          0.10687685757875443,
+          0.23722727596759796,
+          0.0000864852627273649
+        ],
+        [
+          -0.0012460737489163876,
+          -0.483967587351799,
+          0.35051801800727844
+        ],
+        [
+          0.2947583794593811,
+          -0.38610468804836273,
+          0.294324666261673
+        ],
+        [
+          0.3536038398742676,
+          -0.48147059977054596,
+          0.002227191114798188
+        ],
+        [
+          0.24686992168426514,
+          -0.49881611764431,
+          -0.25110748410224915
+        ],
+        [
+          0.4172601103782654,
+          -0.38701270520687103,
+          0.0006881593726575375
+        ],
+        [
+          0.28212666511535645,
+          -0.08020545542240143,
+          0.002552984282374382
+        ],
+        [
+          0.0007921771612018347,
+          0.2367575317621231,
+          0.12447001039981842
+        ],
+        [
+          0.1240796446800232,
+          0.23735757172107697,
+          0.00008192670065909624
+        ],
+        [
+          -0.000052680959925055504,
+          0.49825097620487213,
+          0.15169112384319305
+        ],
+        [
+          0.1503327637910843,
+          0.4987628608942032,
+          0.0010337841813452542
+        ],
+        [
+          -0.001802197191864252,
+          -0.3864458352327347,
+          0.41785404086112976
+        ],
+        [
+          0.4335446357727051,
+          -0.38995371758937836,
+          0.00051194938714616
+        ],
+        [
+          0.29205209016799927,
+          -0.06664307415485382,
+          -0.002449512016028166
+        ],
+        [
+          -0.07544934749603271,
+          0.23577894270420074,
+          0.07413554191589355
+        ],
+        [
+          -0.3060060739517212,
+          -0.39105086028575897,
+          0.30503925681114197
+        ],
+        [
+          -0.207095667719841,
+          -0.06695656478404999,
+          0.20659980177879333
+        ],
+        [
+          -0.29318225383758545,
+          -0.06650339066982269,
+          -0.0011533894576132298
+        ],
+        [
+          -0.4335446357727051,
+          -0.39123640954494476,
+          -0.0010199378011748195
+        ],
+        [
+          -0.10700765997171402,
+          0.49892063438892365,
+          0.10272730886936188
+        ],
+        [
+          -0.12513317167758942,
+          0.2351953536272049,
+          -0.0006785184377804399
+        ],
+        [
+          -0.1512252539396286,
+          0.49880583584308624,
+          -0.0020074250642210245
+        ],
+        [
+          -0.29325026273727417,
+          -0.3881671279668808,
+          0.29469797015190125
+        ],
+        [
+          -0.35060960054397583,
+          -0.48417000472545624,
+          0.004951647948473692
+        ],
+        [
+          -0.41859906911849976,
+          -0.38628433644771576,
+          -0.0004350388189777732
+        ],
+        [
+          -0.10747774690389633,
+          0.23497267067432404,
+          0.000010648553143255413
+        ],
+        [
+          -0.0022374822292476892,
+          -0.4830659478902817,
+          -0.3513500988483429
+        ],
+        [
+          -0.0011218610452488065,
+          0.23480303585529327,
+          -0.10679790377616882
+        ],
+        [
+          0.29439419507980347,
+          -0.3871362656354904,
+          -0.29372188448905945
+        ],
+        [
+          0.2465711385011673,
+          -0.48435936868190765,
+          -0.24686382710933685
+        ],
+        [
+          0.000820829882286489,
+          0.4973977953195572,
+          -0.1518130898475647
+        ],
+        [
+          0.20026884973049164,
+          -0.08565275371074677,
+          -0.20247907936573029
+        ],
+        [
+          0.00476010050624609,
+          -0.49892018735408783,
+          -0.354061096906662
+        ],
+        [
+          0.0015011283103376627,
+          -0.3854586333036423,
+          -0.4180154502391815
+        ],
+        [
+          -0.001762016792781651,
+          0.23604364693164825,
+          -0.12423016130924225
+        ],
+        [
+          0.3049008250236511,
+          -0.39381082355976105,
+          -0.30329665541648865
+        ],
+        [
+          0.22032761573791504,
+          -0.10524056851863861,
+          -0.22048117220401764
+        ],
+        [
+          -0.0016121004009619355,
+          -0.10486353933811188,
+          -0.31270280480384827
+        ],
+        [
+          -0.0008241618052124977,
+          -0.32714106142520905,
+          -0.4328482449054718
+        ],
+        [
+          -0.20491769909858704,
+          -0.06460730731487274,
+          -0.2067968249320984
+        ],
+        [
+          -0.30583620071411133,
+          -0.3908711224794388,
+          -0.3054865896701813
+        ],
+        [
+          -0.2945703864097595,
+          -0.33272890746593475,
+          -0.29417142271995544
+        ]
+      ],
+      "rootOffset": [
+        -0.0004857778549194336,
+        -0.5001593083143234,
+        0.00018766522407531738
+      ]
+    },
+    "compoundBoxes": {
+      "type": "compound-boxes",
+      "source": "auto-kmeans-v1",
+      "parts": [
+        {
+          "kind": "box",
+          "position": [
+            0.0004857778549194336,
+            0.21839556097984314,
+            -0.21413596370257437
+          ],
+          "halfExtents": [
+            0.4335446357727051,
+            0.21715644001960754,
+            0.21889994642697275
+          ]
+        },
+        {
+          "kind": "box",
+          "position": [
+            0.00018006563186645508,
+            0.21744729578495026,
+            0.2150117012206465
+          ],
+          "halfExtents": [
+            0.3057003617286682,
+            0.21620862185955048,
+            0.21764887846074998
+          ]
+        },
+        {
+          "kind": "box",
+          "position": [
+            0.00003953278064727783,
+            0.8670211434364319,
+            -0.0002486482262611389
+          ],
+          "halfExtents": [
+            0.15077900886535645,
+            0.13205879926681519,
+            0.15175210684537888
+          ]
+        }
+      ]
+    }
+  }
+}
