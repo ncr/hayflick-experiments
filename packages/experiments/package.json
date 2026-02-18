@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./registry": "./src/registry.ts",
-    "./runtime": "./src/runtime/types.ts"
+    "./runtime": "./src/runtime/types.ts",
+    "./auto-collider": "./src/auto-collider/index.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

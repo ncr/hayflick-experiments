@@ -2,22 +2,121 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { makeRenderer } from "@common/render";
-import type { ExperimentModule } from "../runtime/types";
 import {
-  simplifyMeshPlaneAware,
-  type PlaneAwareSimplifyOptions,
-  type PlaneAwareSimplifyResult
-} from "./plane-aware-simplify";
-import { loadSavedPropBinary } from "../settlement-builder-ecs/prop-library";
+  listSavedPropDefinitions,
+  loadSavedPropBinary
+} from "../settlement-builder-ecs/prop-library";
+import {
+  generateColliderFromObject,
+  type ColliderResult
+} from "../auto-collider";
+import {
+  segmentIntoConvexHulls,
+  type ConvexSegmentationResult
+} from "./convex-segmentation";
+import type { ExperimentModule } from "../runtime/types";
 
-const LAB_PROP_ID = "commodore-pet-inspired-computer";
-const LAB_PROP_LABEL = "Commodore PET Inspired Computer";
+const DEFAULT_PROP_ID = "commodore-pet-inspired-computer";
+const DEFAULT_HULL_COUNT = 4;
 
-const DEFAULT_OPTIONS: Required<PlaneAwareSimplifyOptions> = {
-  vertexMerge: 0.006,
-  creaseProtect: 0.65,
-  planeSensitivity: 0.58
+type LabAlgorithm = "convex" | "auto";
+type FitMode = "balanced" | "tight" | "max";
+
+type PropChoice = {
+  id: string;
+  label: string;
 };
+
+type PropPreset = {
+  algorithm?: LabAlgorithm;
+  hulls?: number;
+  fitMode?: FitMode;
+  note?: string;
+};
+
+const FALLBACK_PROP_CHOICES: PropChoice[] = [
+  {
+    id: "commodore-pet-inspired-computer",
+    label: "Commodore PET Inspired Computer"
+  },
+  {
+    id: "large-desk-without-drawers",
+    label: "Large Desk Without Drawers"
+  }
+];
+
+const PROP_PRESETS: Record<string, PropPreset> = {
+  "commodore-pet-inspired-computer": {
+    algorithm: "convex",
+    hulls: 3,
+    fitMode: "max",
+    note: "PET target: local Y cuts (XZ planes), 3 hulls, max fit."
+  },
+  "large-desk-without-drawers": {
+    algorithm: "auto",
+    note: "Desk target: 3 boxes (left support, right support, top slab)."
+  }
+};
+
+function fitModeTuning(mode: FitMode): {
+  maxSamplePoints: number;
+  maxHullPoints: number;
+  minSplitImprovement: number;
+  minSplitImprovementAfterBase: number;
+} {
+  if (mode === "tight") {
+    return {
+      maxSamplePoints: 3600,
+      maxHullPoints: 260,
+      minSplitImprovement: 0.02,
+      minSplitImprovementAfterBase: 0
+    };
+  }
+  if (mode === "max") {
+    return {
+      maxSamplePoints: 5200,
+      maxHullPoints: 420,
+      minSplitImprovement: 0,
+      minSplitImprovementAfterBase: 0
+    };
+  }
+  return {
+    maxSamplePoints: 2400,
+    maxHullPoints: 140,
+    minSplitImprovement: 0.07,
+    minSplitImprovementAfterBase: 0.02
+  };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function listPropChoices(): Promise<PropChoice[]> {
+  try {
+    const definitions = await listSavedPropDefinitions();
+    const fromDefinitions: PropChoice[] = definitions
+      .map((entry) => ({
+        id: entry.id,
+        label: entry.description?.trim().length > 0 ? entry.description : entry.id
+      }))
+      .filter((entry) => entry.id.trim().length > 0);
+
+    if (fromDefinitions.length <= 0) {
+      return FALLBACK_PROP_CHOICES;
+    }
+
+    fromDefinitions.sort((a, b) => a.label.localeCompare(b.label));
+    return fromDefinitions;
+  } catch {
+    return FALLBACK_PROP_CHOICES;
+  }
+}
 
 async function loadPropModel(
   loader: GLTFLoader,
@@ -41,15 +140,21 @@ async function loadPropModel(
 function createFallbackProp(): THREE.Group {
   const group = new THREE.Group();
   const material = new THREE.MeshStandardMaterial({
-    color: 0x7f8a96,
+    color: 0x8f97a1,
     roughness: 0.84,
-    metalness: 0.06
+    metalness: 0.08
   });
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), material);
-  mesh.position.y = 0.4;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  group.add(mesh);
+
+  const screen = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.74, 0.3), material);
+  screen.position.set(0, 0.82, -0.16);
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.44, 0.64), material);
+  body.position.set(0, 0.35, 0.04);
+
+  const keyboard = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.12, 0.5), material);
+  keyboard.position.set(0, 0.12, 0.36);
+
+  group.add(screen, body, keyboard);
   return group;
 }
 
@@ -66,48 +171,9 @@ function markRenderable(root: THREE.Object3D): void {
   });
 }
 
-function createSimplifiedOverlay(geometry: THREE.BufferGeometry): THREE.Group {
-  const group = new THREE.Group();
-
-  const fill = new THREE.MeshStandardMaterial({
-    color: 0x8fd4ff,
-    roughness: 0.8,
-    metalness: 0.04,
-    transparent: true,
-    opacity: 0.34,
-    side: THREE.DoubleSide
-  });
-
-  const wire = new THREE.LineBasicMaterial({
-    color: 0xc7e8ff,
-    transparent: true,
-    opacity: 0.8
-  });
-
-  const fillMesh = new THREE.Mesh(geometry, fill);
-  fillMesh.renderOrder = 310;
-  fillMesh.castShadow = false;
-  fillMesh.receiveShadow = false;
-
-  const wireframe = new THREE.LineSegments(
-    new THREE.WireframeGeometry(geometry),
-    wire
-  );
-  wireframe.renderOrder = 311;
-
-  group.add(fillMesh, wireframe);
-  return group;
-}
-
 function disposeRenderable(root: THREE.Object3D): void {
   root.traverse((node) => {
-    if (
-      !(
-        node instanceof THREE.Mesh ||
-        node instanceof THREE.Line ||
-        node instanceof THREE.LineSegments
-      )
-    ) {
+    if (!(node instanceof THREE.Mesh || node instanceof THREE.Line || node instanceof THREE.LineSegments)) {
       return;
     }
 
@@ -125,8 +191,8 @@ function disposeRenderable(root: THREE.Object3D): void {
 
 const experiment: ExperimentModule = {
   id: "compound-collider-lab",
-  title: "Mesh Simplification Lab",
-  tags: ["colliders", "mesh", "simplification", "debug"],
+  title: "Compound Collider Lab",
+  tags: ["colliders", "physics", "props", "debug"],
   init: async ({ mount, width, height, dpr }) => {
     mount.style.position = "relative";
     mount.style.background = "#0b1218";
@@ -141,7 +207,7 @@ const experiment: ExperimentModule = {
     scene.fog = new THREE.Fog(0x0b1218, 14, 44);
 
     const camera = new THREE.PerspectiveCamera(48, width / height, 0.05, 120);
-    camera.position.set(9.2, 7.4, 9.2);
+    camera.position.set(9.4, 7.8, 9.4);
     camera.lookAt(0, 0.8, 0);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -154,7 +220,7 @@ const experiment: ExperimentModule = {
 
     scene.add(new THREE.HemisphereLight(0xd8eaff, 0x1f2f38, 0.58));
 
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.18);
     sun.position.set(9, 12, 5);
     sun.castShadow = true;
     sun.shadow.mapSize.set(3072, 3072);
@@ -187,11 +253,11 @@ const experiment: ExperimentModule = {
     hud.style.position = "absolute";
     hud.style.left = "12px";
     hud.style.top = "12px";
-    hud.style.width = "350px";
+    hud.style.width = "420px";
     hud.style.maxWidth = "calc(100% - 24px)";
     hud.style.padding = "10px 12px";
     hud.style.borderRadius = "12px";
-    hud.style.background = "rgba(8,14,20,0.86)";
+    hud.style.background = "rgba(8,14,20,0.88)";
     hud.style.border = "1px solid rgba(118,177,220,0.45)";
     hud.style.color = "#d3e8fa";
     hud.style.font = '12px/1.35 "IBM Plex Sans", "Segoe UI", sans-serif';
@@ -201,228 +267,386 @@ const experiment: ExperimentModule = {
     mount.appendChild(hud);
 
     hud.innerHTML = [
-      "<div style='font-size:13px;font-weight:600;letter-spacing:0.02em;margin-bottom:8px'>Mesh Simplification Lab</div>",
-      "<div style='font-size:11px;opacity:0.88;margin-bottom:8px'>Clean testbed: one mesh simplifier, three knobs only.</div>",
+      "<div style='font-size:13px;font-weight:600;letter-spacing:0.02em;margin-bottom:8px'>Collider Heuristics Lab</div>",
+      "<div style='font-size:11px;opacity:0.88;margin-bottom:8px'>Switch props and compare convex segmentation vs auto-collider behavior.</div>",
+      "<div style='display:grid;grid-template-columns:1fr;gap:8px;margin:8px 0'>",
+      "<label>Prop<select data-id='prop' style='width:100%;margin-top:4px'></select></label>",
+      "<label>Algorithm<select data-id='algo' style='width:100%;margin-top:4px'><option value='convex' selected>convex segments</option><option value='auto'>auto collider (dynamic strict)</option></select></label>",
+      "<label>Target Hull Count<select data-id='hulls' style='width:100%;margin-top:4px'><option value='2'>2</option><option value='3'>3</option><option value='4' selected>4</option><option value='5'>5</option><option value='6'>6</option></select></label>",
+      "<label>Fit Mode<select data-id='fit-mode' style='width:100%;margin-top:4px'><option value='balanced' selected>balanced</option><option value='tight'>tight</option><option value='max'>max</option></select></label>",
+      "</div>",
       "<div style='display:flex;gap:10px;flex-wrap:wrap;margin:9px 0'>",
       "<label style='display:flex;align-items:center;gap:5px'><input data-id='show-original' type='checkbox' checked>Original</label>",
-      "<label style='display:flex;align-items:center;gap:5px'><input data-id='show-simplified' type='checkbox' checked>Simplified</label>",
+      "<label style='display:flex;align-items:center;gap:5px'><input data-id='show-overlay' type='checkbox' checked>Collider Overlay</label>",
       "</div>",
-      "<div style='margin:8px 0;padding:8px;border-radius:8px;background:rgba(10,18,25,0.55);border:1px solid rgba(118,177,220,0.25)'>",
-      "<label style='display:block;margin:6px 0'>",
-      "<div style='display:flex;justify-content:space-between;gap:8px;font-size:11px;opacity:0.92'><span>Vertex Merge</span><span data-id='value-merge'></span></div>",
-      "<input data-id='knob-merge' type='range' min='0.0001' max='0.05' step='0.0001' value='0.006' style='width:100%'>",
-      "</label>",
-      "<label style='display:block;margin:6px 0'>",
-      "<div style='display:flex;justify-content:space-between;gap:8px;font-size:11px;opacity:0.92'><span>Crease Protect</span><span data-id='value-crease'></span></div>",
-      "<input data-id='knob-crease' type='range' min='0' max='100' step='1' value='65' style='width:100%'>",
-      "</label>",
-      "<label style='display:block;margin:6px 0'>",
-      "<div style='display:flex;justify-content:space-between;gap:8px;font-size:11px;opacity:0.92'><span>Plane Sensitivity</span><span data-id='value-plane'></span></div>",
-      "<input data-id='knob-plane' type='range' min='0' max='100' step='1' value='58' style='width:100%'>",
-      "</label>",
+      "<div style='display:flex;gap:8px;flex-wrap:wrap;margin:8px 0'>",
+      "<button data-id='rebuild' style='padding:6px 10px;border-radius:8px;border:1px solid rgba(118,177,220,0.4);background:#122130;color:#d3e8fa'>Rebuild</button>",
+      "<button data-id='determinism' style='padding:6px 10px;border-radius:8px;border:1px solid rgba(118,177,220,0.4);background:#122130;color:#d3e8fa'>Determinism Check</button>",
       "</div>",
       "<pre data-id='stats' style='margin:9px 0 0;padding:7px;border-radius:8px;background:rgba(5,10,15,0.6);white-space:pre-wrap;font:11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'></pre>"
     ].join("");
 
     const showOriginal = hud.querySelector<HTMLInputElement>("[data-id='show-original']");
-    const showSimplified = hud.querySelector<HTMLInputElement>("[data-id='show-simplified']");
-    const knobMerge = hud.querySelector<HTMLInputElement>("[data-id='knob-merge']");
-    const knobCrease = hud.querySelector<HTMLInputElement>("[data-id='knob-crease']");
-    const knobPlane = hud.querySelector<HTMLInputElement>("[data-id='knob-plane']");
-    const valueMerge = hud.querySelector<HTMLSpanElement>("[data-id='value-merge']");
-    const valueCrease = hud.querySelector<HTMLSpanElement>("[data-id='value-crease']");
-    const valuePlane = hud.querySelector<HTMLSpanElement>("[data-id='value-plane']");
+    const showOverlay = hud.querySelector<HTMLInputElement>("[data-id='show-overlay']");
+    const propSelect = hud.querySelector<HTMLSelectElement>("[data-id='prop']");
+    const algorithmSelect = hud.querySelector<HTMLSelectElement>("[data-id='algo']");
+    const hullCountSelect = hud.querySelector<HTMLSelectElement>("[data-id='hulls']");
+    const fitModeSelect = hud.querySelector<HTMLSelectElement>("[data-id='fit-mode']");
+    const rebuildBtn = hud.querySelector<HTMLButtonElement>("[data-id='rebuild']");
+    const determinismBtn = hud.querySelector<HTMLButtonElement>("[data-id='determinism']");
     const statsPre = hud.querySelector<HTMLPreElement>("[data-id='stats']");
 
     if (
       !showOriginal ||
-      !showSimplified ||
-      !knobMerge ||
-      !knobCrease ||
-      !knobPlane ||
-      !valueMerge ||
-      !valueCrease ||
-      !valuePlane ||
+      !showOverlay ||
+      !propSelect ||
+      !algorithmSelect ||
+      !hullCountSelect ||
+      !fitModeSelect ||
+      !rebuildBtn ||
+      !determinismBtn ||
       !statsPre
     ) {
-      throw new Error("Failed to initialize simplification lab controls.");
+      throw new Error("Failed to initialize collider lab controls.");
+    }
+
+    const choices = await listPropChoices();
+    const labelById = new Map<string, string>();
+    for (const choice of choices) {
+      labelById.set(choice.id, choice.label);
+    }
+    propSelect.innerHTML = choices
+      .map(
+        (choice) =>
+          `<option value="${escapeHtml(choice.id)}">${escapeHtml(choice.label)} (${escapeHtml(choice.id)})</option>`
+      )
+      .join("");
+
+    const defaultChoice = choices.some((entry) => entry.id === DEFAULT_PROP_ID)
+      ? DEFAULT_PROP_ID
+      : choices[0]?.id;
+    if (defaultChoice) {
+      propSelect.value = defaultChoice;
     }
 
     const loader = new GLTFLoader();
-    const loaded = await loadPropModel(loader, LAB_PROP_ID);
-    const model = loaded ?? createFallbackProp();
-    markRenderable(model);
 
     const modelRoot = new THREE.Group();
-    modelRoot.add(model);
     scene.add(modelRoot);
 
-    const options: Required<PlaneAwareSimplifyOptions> = {
-      ...DEFAULT_OPTIONS
-    };
-
-    const updateLabels = (): void => {
-      valueMerge.textContent = `${options.vertexMerge.toFixed(4)} m`;
-      valueCrease.textContent = `${Math.round(options.creaseProtect * 100)}%`;
-      valuePlane.textContent = `${Math.round(options.planeSensitivity * 100)}%`;
-    };
-
-    let simplifyResult: PlaneAwareSimplifyResult = simplifyMeshPlaneAware(model, options);
-    let simplifiedOverlay = createSimplifiedOverlay(simplifyResult.geometry);
-    modelRoot.add(simplifiedOverlay);
+    let model: THREE.Group | null = null;
+    let modelLabel = "";
+    let usedFallback = false;
+    let overlayObject: THREE.Object3D | null = null;
+    let lastConvexResult: ConvexSegmentationResult | null = null;
+    let lastAutoResult: ColliderResult | null = null;
+    let lastDeterminism = "not checked";
+    let loadToken = 0;
 
     const syncVisibility = (): void => {
-      model.visible = showOriginal.checked;
-      simplifiedOverlay.visible = showSimplified.checked;
+      if (model) {
+        model.visible = showOriginal.checked;
+      }
+      if (overlayObject) {
+        overlayObject.visible = showOverlay.checked;
+      }
+    };
+
+    const disposeOverlay = (): void => {
+      if (!overlayObject) {
+        return;
+      }
+      modelRoot.remove(overlayObject);
+      disposeRenderable(overlayObject);
+      overlayObject = null;
+    };
+
+    const disposeModel = (): void => {
+      if (!model) {
+        return;
+      }
+      modelRoot.remove(model);
+      disposeRenderable(model);
+      model = null;
+    };
+
+    const applyPresetIfKnown = (): void => {
+      const preset = PROP_PRESETS[propSelect.value];
+      if (!preset) {
+        return;
+      }
+      if (preset.algorithm) {
+        algorithmSelect.value = preset.algorithm;
+      }
+      if (preset.hulls) {
+        hullCountSelect.value = String(preset.hulls);
+      }
+      if (preset.fitMode) {
+        fitModeSelect.value = preset.fitMode;
+      }
     };
 
     const renderStats = (): void => {
-      const reduction =
-        100 *
-        (1 - simplifyResult.simplifiedFaces / Math.max(1, simplifyResult.originalFaces));
+      const propId = propSelect.value;
+      const preset = PROP_PRESETS[propId];
 
-      statsPre.textContent = [
-        `Loaded prop: ${LAB_PROP_ID}`,
-        `Label: ${LAB_PROP_LABEL}`,
-        `Fallback mesh: ${loaded ? "no" : "yes"}`,
-        `Faces: ${simplifyResult.simplifiedFaces} / ${simplifyResult.originalFaces} (${reduction.toFixed(1)}% reduction)`,
-        `Watertight: ${simplifyResult.watertight ? "yes" : "no"} (boundary edges: ${simplifyResult.boundaryEdges})`,
-        `Plane clusters: ${simplifyResult.clusterCount}`,
-        `Protected vertices: ${simplifyResult.protectedVertices}`,
-        `Fallback used: ${simplifyResult.fallbackUsed ? "yes" : "no"}`
-      ].join("\n");
+      const header = [
+        `Loaded prop: ${propId || "n/a"}`,
+        `Label: ${modelLabel || propId || "n/a"}`,
+        `Fallback mesh: ${usedFallback ? "yes" : "no"}`,
+        `Algorithm: ${algorithmSelect.value}`,
+        `Determinism: ${lastDeterminism}`,
+        preset?.note ? `Preset: ${preset.note}` : "Preset: none"
+      ];
+
+      if (lastConvexResult) {
+        const partLines = lastConvexResult.parts.map((part) =>
+          `#${part.index + 1} seg=${part.segmentIndex + 1} y=[${part.yMin.toFixed(2)}, ${part.yMax.toFixed(2)}] center=(${part.centroid[0].toFixed(2)}, ${part.centroid[1].toFixed(2)}, ${part.centroid[2].toFixed(2)}) pts=${part.pointCount} hullPts=${part.hullPointCount} verts=${part.vertices.length} conc=${part.concavityProxy.toFixed(2)}`
+        );
+        const cutLine =
+          lastConvexResult.cutHeights.length <= 0
+            ? "Cuts: none"
+            : `Cuts (local Y): ${lastConvexResult.cutHeights
+                .map((value) => value.toFixed(3))
+                .join(", ")}`;
+
+        statsPre.textContent = [
+          ...header,
+          `Target hulls: ${lastConvexResult.targetParts}`,
+          `Fit mode: ${fitModeSelect.value}`,
+          `Actual hulls: ${lastConvexResult.parts.length}`,
+          `Surface samples: ${lastConvexResult.sampledPoints}`,
+          cutLine,
+          `Signature: ${lastConvexResult.signature}`,
+          "",
+          ...partLines
+        ].join("\n");
+        return;
+      }
+
+      if (lastAutoResult) {
+        const collider = lastAutoResult.rapier;
+        const colliderLine =
+          collider.type === "compound"
+            ? `Collider: compound boxes (${collider.parts.length})`
+            : `Collider: ${collider.type}`;
+        const partLines =
+          collider.type === "compound"
+            ? collider.parts.map((part, index) =>
+                `#${index + 1} pos=(${part.position[0].toFixed(2)}, ${part.position[1].toFixed(2)}, ${part.position[2].toFixed(2)}) half=(${part.halfExtents[0].toFixed(2)}, ${part.halfExtents[1].toFixed(2)}, ${part.halfExtents[2].toFixed(2)})`
+              )
+            : [];
+
+        statsPre.textContent = [
+          ...header,
+          colliderLine,
+          `Selected strategy: ${lastAutoResult.quality.selectedStrategy}`,
+          `Outside ratio: ${(lastAutoResult.quality.error.outsideRatio * 100).toFixed(2)}%`,
+          `Mean outside dist: ${lastAutoResult.quality.error.meanOutsideDistance.toFixed(4)}`,
+          `Overfill ratio: ${(lastAutoResult.quality.error.overfillRatio * 100).toFixed(2)}%`,
+          `Planarity: ${lastAutoResult.metrics.planarity.toFixed(3)}`,
+          `Concavity proxy: ${lastAutoResult.metrics.concavityProxy.toFixed(3)}`,
+          `Cavity score: ${lastAutoResult.metrics.cavityScore.toFixed(3)}`,
+          `Layer score: ${lastAutoResult.metrics.layerScore.toFixed(3)}`,
+          `Signature: ${lastAutoResult.quality.signature}`,
+          "",
+          ...partLines
+        ].join("\n");
+        return;
+      }
+
+      statsPre.textContent = [...header, "No collider result yet."].join("\n");
     };
 
-    updateLabels();
-    syncVisibility();
-    renderStats();
+    const rebuildCollider = (): void => {
+      if (!model) {
+        lastConvexResult = null;
+        lastAutoResult = null;
+        disposeOverlay();
+        renderStats();
+        return;
+      }
 
-    let rebuildTimer = 0;
-    const rebuildSimplified = (): void => {
-      const next = simplifyMeshPlaneAware(model, options);
-      modelRoot.remove(simplifiedOverlay);
-      disposeRenderable(simplifiedOverlay);
-      simplifyResult = next;
-      simplifiedOverlay = createSimplifiedOverlay(simplifyResult.geometry);
-      modelRoot.add(simplifiedOverlay);
+      disposeOverlay();
+
+      const algorithm = (algorithmSelect.value as LabAlgorithm) || "convex";
+      if (algorithm === "auto") {
+        const autoResult = generateColliderFromObject(model, {
+          mode: "dynamic",
+          budget: "strict",
+          debug: true
+        });
+        const overlay = autoResult.debug?.three ?? new THREE.Group();
+        overlay.name = "auto-collider-overlay";
+        modelRoot.add(overlay);
+
+        overlayObject = overlay;
+        lastAutoResult = autoResult;
+        lastConvexResult = null;
+        lastDeterminism = "not checked";
+        syncVisibility();
+        renderStats();
+        return;
+      }
+
+      const target = Number(hullCountSelect.value);
+      const fitMode = (fitModeSelect.value as FitMode) || "balanced";
+      const tuning = fitModeTuning(fitMode);
+      const convexResult = segmentIntoConvexHulls(model, {
+        targetParts: Number.isFinite(target) ? target : DEFAULT_HULL_COUNT,
+        iterations: 10,
+        maxSamplePoints: tuning.maxSamplePoints,
+        maxHullPoints: tuning.maxHullPoints,
+        minSplitImprovement: tuning.minSplitImprovement,
+        minSplitImprovementAfterBase: tuning.minSplitImprovementAfterBase,
+        minClusterPoints: 32
+      });
+
+      modelRoot.add(convexResult.overlay);
+      overlayObject = convexResult.overlay;
+      lastConvexResult = convexResult;
+      lastAutoResult = null;
+      lastDeterminism = "not checked";
       syncVisibility();
       renderStats();
     };
 
-    const scheduleRebuild = (): void => {
-      if (rebuildTimer !== 0) {
-        window.clearTimeout(rebuildTimer);
-      }
-      rebuildTimer = window.setTimeout(() => {
-        rebuildTimer = 0;
-        rebuildSimplified();
-      }, 90);
-    };
-
-    const onMergeInput = (): void => {
-      const value = Number(knobMerge.value);
-      if (!Number.isFinite(value)) {
+    const runDeterminismCheck = (): void => {
+      if (!model) {
         return;
       }
-      options.vertexMerge = value;
-      updateLabels();
-      scheduleRebuild();
-    };
 
-    const onCreaseInput = (): void => {
-      const value = Number(knobCrease.value);
-      if (!Number.isFinite(value)) {
+      const algorithm = (algorithmSelect.value as LabAlgorithm) || "convex";
+      if (algorithm === "auto") {
+        if (!lastAutoResult) {
+          return;
+        }
+        const rerun = generateColliderFromObject(model, {
+          mode: "dynamic",
+          budget: "strict"
+        });
+        lastDeterminism =
+          rerun.quality.signature === lastAutoResult.quality.signature ? "pass" : "fail";
+        renderStats();
         return;
       }
-      options.creaseProtect = value / 100;
-      updateLabels();
-      scheduleRebuild();
-    };
 
-    const onPlaneInput = (): void => {
-      const value = Number(knobPlane.value);
-      if (!Number.isFinite(value)) {
+      if (!lastConvexResult) {
         return;
       }
-      options.planeSensitivity = value / 100;
-      updateLabels();
-      scheduleRebuild();
+
+      const target = Number(hullCountSelect.value);
+      const fitMode = (fitModeSelect.value as FitMode) || "balanced";
+      const tuning = fitModeTuning(fitMode);
+      const rerun = segmentIntoConvexHulls(model, {
+        targetParts: Number.isFinite(target) ? target : DEFAULT_HULL_COUNT,
+        iterations: 10,
+        maxSamplePoints: tuning.maxSamplePoints,
+        maxHullPoints: tuning.maxHullPoints,
+        minSplitImprovement: tuning.minSplitImprovement,
+        minSplitImprovementAfterBase: tuning.minSplitImprovementAfterBase,
+        minClusterPoints: 32
+      });
+
+      lastDeterminism = rerun.signature === lastConvexResult.signature ? "pass" : "fail";
+      disposeRenderable(rerun.overlay);
+      renderStats();
     };
 
-    showOriginal.addEventListener("change", syncVisibility);
-    showSimplified.addEventListener("change", syncVisibility);
-    knobMerge.addEventListener("input", onMergeInput);
-    knobMerge.addEventListener("change", onMergeInput);
-    knobCrease.addEventListener("input", onCreaseInput);
-    knobCrease.addEventListener("change", onCreaseInput);
-    knobPlane.addEventListener("input", onPlaneInput);
-    knobPlane.addEventListener("change", onPlaneInput);
+    const loadSelectedProp = async (applyPreset: boolean): Promise<void> => {
+      const token = ++loadToken;
+      const propId = propSelect.value;
 
-    const onResize = (): void => {
-      const rect = mount.getBoundingClientRect();
-      const nextWidth = Math.max(1, Math.floor(rect.width));
-      const nextHeight = Math.max(1, Math.floor(rect.height));
-      camera.aspect = nextWidth / nextHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(nextWidth, nextHeight, true);
+      rebuildBtn.disabled = true;
+      determinismBtn.disabled = true;
+      statsPre.textContent = `Loading prop ${propId}...`;
+
+      let loaded: THREE.Group | null = null;
+      try {
+        loaded = await loadPropModel(loader, propId);
+      } catch {
+        loaded = null;
+      }
+
+      if (token !== loadToken) {
+        if (loaded) {
+          disposeRenderable(loaded);
+        }
+        return;
+      }
+
+      disposeOverlay();
+      disposeModel();
+
+      const nextModel = loaded ?? createFallbackProp();
+      usedFallback = loaded === null;
+      markRenderable(nextModel);
+      model = nextModel;
+      modelLabel = labelById.get(propId) ?? propId;
+      modelRoot.add(nextModel);
+
+      if (applyPreset) {
+        applyPresetIfKnown();
+      }
+
+      rebuildBtn.disabled = false;
+      determinismBtn.disabled = false;
+      rebuildCollider();
     };
 
-    const resizeObserver = new ResizeObserver(() => {
-      onResize();
-    });
-    resizeObserver.observe(mount);
+    const onToggleVisibility = (): void => {
+      syncVisibility();
+    };
+    const onPropChange = (): void => {
+      void loadSelectedProp(true);
+    };
+    const onAlgoChange = (): void => {
+      rebuildCollider();
+    };
+    const onRebuild = (): void => {
+      rebuildCollider();
+    };
+    const onDeterminism = (): void => {
+      runDeterminismCheck();
+    };
+
+    showOriginal.addEventListener("change", onToggleVisibility);
+    showOverlay.addEventListener("change", onToggleVisibility);
+    propSelect.addEventListener("change", onPropChange);
+    algorithmSelect.addEventListener("change", onAlgoChange);
+    hullCountSelect.addEventListener("change", onRebuild);
+    fitModeSelect.addEventListener("change", onRebuild);
+    rebuildBtn.addEventListener("click", onRebuild);
+    determinismBtn.addEventListener("click", onDeterminism);
+
+    await loadSelectedProp(true);
 
     let raf = 0;
     const tick = (): void => {
-      raf = requestAnimationFrame(tick);
       controls.update();
       renderer.render(scene, camera);
+      raf = requestAnimationFrame(tick);
     };
     tick();
 
     return () => {
       cancelAnimationFrame(raf);
-      resizeObserver.disconnect();
-      if (rebuildTimer !== 0) {
-        window.clearTimeout(rebuildTimer);
-      }
 
-      showOriginal.removeEventListener("change", syncVisibility);
-      showSimplified.removeEventListener("change", syncVisibility);
-      knobMerge.removeEventListener("input", onMergeInput);
-      knobMerge.removeEventListener("change", onMergeInput);
-      knobCrease.removeEventListener("input", onCreaseInput);
-      knobCrease.removeEventListener("change", onCreaseInput);
-      knobPlane.removeEventListener("input", onPlaneInput);
-      knobPlane.removeEventListener("change", onPlaneInput);
+      showOriginal.removeEventListener("change", onToggleVisibility);
+      showOverlay.removeEventListener("change", onToggleVisibility);
+      propSelect.removeEventListener("change", onPropChange);
+      algorithmSelect.removeEventListener("change", onAlgoChange);
+      hullCountSelect.removeEventListener("change", onRebuild);
+      fitModeSelect.removeEventListener("change", onRebuild);
+      rebuildBtn.removeEventListener("click", onRebuild);
+      determinismBtn.removeEventListener("click", onDeterminism);
 
+      disposeOverlay();
+      disposeModel();
       controls.dispose();
       renderer.dispose();
-
-      scene.traverse((node) => {
-        if (
-          !(
-            node instanceof THREE.Mesh ||
-            node instanceof THREE.Line ||
-            node instanceof THREE.LineSegments
-          )
-        ) {
-          return;
-        }
-
-        node.geometry.dispose();
-        const material = node.material;
-        if (Array.isArray(material)) {
-          for (const entry of material) {
-            entry.dispose();
-          }
-        } else {
-          material.dispose();
-        }
-      });
-
+      mount.removeChild(renderer.domElement);
       hud.remove();
-      renderer.domElement.remove();
     };
   }
 };

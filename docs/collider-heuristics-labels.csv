@@ -1,0 +1,3 @@
+prop_id,collider_family,target_parts,fit_mode,cut_rule,quality,notes
+commodore-pet-inspired-computer,convex-layered,3,max,local_y_xz_planes,5,PET-like layered split; monitor/body/keyboard style partition
+large-desk-without-drawers,compound-concave-desk,3,n/a,left_right_vertical_plus_top_horizontal,5,Expect 3 boxes: left support + right support + top slab

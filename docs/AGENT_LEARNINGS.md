@@ -2167,6 +2167,20 @@ Preventive checklist:
 - In `@experiments/catalog`, prefer existing runtime loaders (`listSavedPropDefinitions` + `loadSavedPropBinary`) unless Vite glob typings are explicitly added to the package tsconfig.
 - Run package typecheck immediately after introducing asset discovery changes.
 
+## 2026-02-18 - Concave desks collapsed to convex because concave routing was too narrow
+Root cause:
+- Concave strategy routing only triggered for extreme concavity/cavity thresholds, so layered planar furniture (e.g. Braun desk) remained on `single-convex`.
+- Existing concave voxelization was sample-driven and desk-specific, producing unstable splits on more complex desk geometry.
+
+Detection signal:
+- Braun desk collider result stayed `single-convex` despite visible leg-space concavity.
+- Direct strategy probe showed concave/boxy could produce compound parts, but final selection never chose them.
+
+Preventive checklist:
+- For planar layered furniture, evaluate concave compound candidates even at moderate concavity (`planarity + layer + cavity` gating), not only extreme cavity scores.
+- Use triangle-voxel occupancy + outside flood fill + greedy cuboid merge for concave furniture strategies instead of sparse sample rasterization.
+- Keep fixture-specific regression tests (real GLB) asserting strategy + expected compound part count.
+
 ## 2026-02-18 - Collider-lab comparisons can silently regress when source-of-truth switches
 Root cause:
 - Gallery mode rendered persisted `meta.json` collider variants while prior single-prop lab view rendered live objective-fit colliders, causing visual mismatch for the same prop.
@@ -2444,3 +2458,66 @@ Detection signal:
 Preventive checklist:
 - Add a constrained one-ring centroid attraction pass for non-crease vertices so merge tolerance has observable impact.
 - Keep the same local validity guard (area + normal checks) on this secondary merge move.
+
+## 2026-02-18 - Experiment modules must return a cleanup function, not a `{ resize, dispose }` object
+Root cause:
+- A newly rewritten experiment (`compound-collider-lab`) used an outdated return shape from `init` and returned an object with `resize`/`dispose`.
+- Current `ExperimentModule` contract requires `init` to return only a cleanup function.
+
+Detection signal:
+- TypeScript error `TS2322` on experiment `init` assignment in `packages/experiments/src/compound-collider-lab/index.ts`.
+
+Preventive checklist:
+- Before shipping experiment rewrites, verify `packages/experiments/src/runtime/types.ts` and match the exact `ExperimentModule` contract.
+- Keep resize handling inside runtime-supported paths; return only `() => void` from experiment `init`.
+
+## 2026-02-18 - PET convex segmentation violated Y-slab expectations at higher hull counts
+Root cause:
+- Layered segmentation and recursive splitting lacked an explicit global local-Y non-overlap invariant, so accepted candidates could violate the expected "one hull per Y band" contract in edge cases.
+
+Detection signal:
+- User reported that with target hull count `4`, two generated hulls occupied the same local-Y range despite XZ-plane cutting intent.
+
+Preventive checklist:
+- Track per-hull local-Y min/max in segmentation outputs and expose them in debug stats.
+- Reject split candidates when child Y ranges overlap.
+- Validate each accepted split against all active hull Y ranges before committing.
+
+## 2026-02-18 - Desk-like concave furniture collapsed to one box despite obvious leg space
+Root cause:
+- Surface-only error scoring favored oversized colliders because it penalized points outside the collider but not excess interior volume.
+- Concave fallback gating relied on `cavityScore`, which can read near zero for open desks in the current voxel proxy.
+
+Detection signal:
+- Synthetic desk regression produced `partCount=1` with `outsideRatio=0`, while desired shape was three parts (top + two vertical supports).
+
+Preventive checklist:
+- Add a desk-specific deterministic fallback for high-planarity/high-concavity low-layer meshes.
+- Do not gate concave/desk candidate evaluation only on `cavityScore`; include shape cues (`planarity`, `concavityProxy`, `layerScore`).
+- Keep explicit desk-shape assertions in `packages/experiments/src/auto-collider/api.test.ts` (exact 3 parts and layout checks).
+
+## 2026-02-19 - Collider scoring accepted oversized boxes on chair-like furniture
+Root cause:
+- Error scoring only measured uncovered surface (`outsideRatio`, `meanOutsideDistance`) and ignored excess empty-space coverage.
+- Large compound boxes spanning seat+armrest voids could win despite poor gameplay fit.
+
+Detection signal:
+- `professional-workbench-chair` generated a top box above the seating plane, blocking expected seating space.
+
+Preventive checklist:
+- Include an overfill metric in collider error scoring: penalize collider volume covering outside-air voxels from a deterministic voxel solid proxy.
+- Keep early-stop criteria dependent on both surface coverage and overfill quality.
+- Cache voxel solid proxies per prepared mesh + budget to keep scoring deterministic and fast.
+
+## 2026-02-19 - Strict part budget can re-introduce seat/armrest bridge boxes after overfill scoring
+Root cause:
+- For layered chair topology, concave decomposition produced a better high-detail split, but strict part-count compaction merged it back into a large mid/top bridge box.
+- Overfill scoring alone could not recover shape quality once compaction erased the split structure.
+
+Detection signal:
+- `professional-workbench-chair` still produced a wide central box spanning seating bay despite overfill penalties.
+- Running concave generation at balanced budget reduced overfill and removed the bridge artifact.
+
+Preventive checklist:
+- Add a dynamic strict-mode refinement pass: when overfill remains high on planar/layered concave props, rerun concave generation with expanded budget and adopt if overfill improves without outside-coverage regression.
+- Keep fixture regression tests that assert no large seat-bridge box remains for chair-like assets.

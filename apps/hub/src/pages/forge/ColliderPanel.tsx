@@ -4,6 +4,7 @@ import type { ColliderParams } from "./processing/colliders";
 import {
   buildSimplifiedColliderScene,
   DEFAULT_COLLIDER_FACE_TARGET,
+  type ColliderAutoRecommendation,
   type ColliderVariantsSpec,
   type CompoundColliderSpec
 } from "./processing/collider-mesh";
@@ -230,6 +231,12 @@ export function ColliderPanel({
   );
   const [colliderScale, setColliderScale] = useState(DEFAULT_COLLIDER_SCALE);
   const [variants, setVariants] = useState<ColliderVariantsSpec | null>(null);
+  const [autoRecommendation, setAutoRecommendation] =
+    useState<ColliderAutoRecommendation | null>(null);
+  const [autoSummary, setAutoSummary] = useState<{
+    strategy: string;
+    outsideRatio: number;
+  } | null>(null);
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestTokenRef = useRef(0);
@@ -269,12 +276,16 @@ export function ColliderPanel({
     if (!currentViewport) {
       setVariants(null);
       setError(null);
+      setAutoRecommendation(null);
+      setAutoSummary(null);
       return;
     }
     const model = currentViewport.getModel();
     if (!model) {
       setVariants(null);
       setError(null);
+      setAutoRecommendation(null);
+      setAutoSummary(null);
       currentViewport.setColliderPreviewObject(null);
       return;
     }
@@ -293,11 +304,18 @@ export function ColliderPanel({
       }
 
       setVariants(result.colliderVariants);
+      setAutoRecommendation(result.autoRecommendation);
+      setAutoSummary({
+        strategy: result.autoSummary.strategy,
+        outsideRatio: result.autoSummary.outsideRatio
+      });
     } catch (err) {
       if (requestTokenRef.current !== token) {
         return;
       }
       setVariants(null);
+      setAutoRecommendation(null);
+      setAutoSummary(null);
       setError(err instanceof Error ? err.message : "Collider build failed.");
       currentViewport.setColliderPreviewObject(null);
     } finally {
@@ -311,6 +329,8 @@ export function ColliderPanel({
     if (!hasViewport) {
       setVariants(null);
       setError(null);
+      setAutoRecommendation(null);
+      setAutoSummary(null);
       return;
     }
     void rebuildVariants();
@@ -415,6 +435,24 @@ export function ColliderPanel({
           <div>Convex Hull Points: {summary.hullPoints}</div>
           <div>Compound Parts: {summary.compoundParts}</div>
         </div>
+      )}
+
+      {autoSummary && (
+        <div className="forge-info">
+          <div>Auto Strategy: {autoSummary.strategy}</div>
+          <div>Auto Surface Miss Ratio: {(autoSummary.outsideRatio * 100).toFixed(1)}%</div>
+        </div>
+      )}
+
+      {autoRecommendation && autoRecommendation !== colliderMode && (
+        <button
+          className="forge-btn"
+          onClick={() =>
+            setColliderMode(autoRecommendation as EditableColliderMode)
+          }
+        >
+          Apply Auto Collider ({autoRecommendation})
+        </button>
       )}
 
       <div className="forge-info">

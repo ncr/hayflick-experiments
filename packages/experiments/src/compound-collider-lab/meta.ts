@@ -4,7 +4,7 @@ export const meta: ExperimentMeta = {
   id: "compound-collider-lab",
   title: "Compound Collider Lab",
   description:
-    "Desk-first collider fitting playground for evaluating top+legs compound box decomposition against current saved variants.",
+    "Single-prop convex segmentation playground for decomposing the Commodore PET into a few deterministic convex hulls.",
   tags: ["colliders", "physics", "props", "debug"],
   status: "draft",
   updatedAt: "2026-02-18"

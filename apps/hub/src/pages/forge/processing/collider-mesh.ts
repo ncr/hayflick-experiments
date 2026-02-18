@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import {
+  generateColliderFromObject,
+  type RapierColliderDescription
+} from "@experiments/catalog/auto-collider";
 import { countTotalFaces } from "./simplify";
 import { fitCompoundBoxesObjective } from "./compound-objective";
 
@@ -54,7 +58,7 @@ export type CylinderColliderSpec = {
 
 export type ConvexHullColliderSpec = {
   type: "convex-hull";
-  source: "sampled-points-v1";
+  source: "sampled-points-v1" | "auto-collider-v1";
   points: Array<[number, number, number]>;
   rootOffset: [number, number, number];
 };
@@ -67,9 +71,17 @@ export type CompoundColliderPart = {
 
 export type CompoundColliderSpec = {
   type: "compound-boxes";
-  source: "objective-split-v1" | "auto-kmeans-v1";
+  source: "objective-split-v1" | "auto-kmeans-v1" | "auto-collider-v1";
   parts: CompoundColliderPart[];
 };
+
+export type ColliderAutoRecommendation =
+  | "box"
+  | "pill"
+  | "sphere"
+  | "cylinder"
+  | "convex-hull"
+  | "compound-boxes";
 
 export type ColliderVariantsSpec = {
   box: BoxColliderSpec;
@@ -87,6 +99,12 @@ export type ColliderMeshBuildResult = {
   colliderFaces: number;
   compoundCollider: CompoundColliderSpec;
   colliderVariants: ColliderVariantsSpec;
+  autoRecommendation: ColliderAutoRecommendation;
+  autoSummary: {
+    strategy: string;
+    outsideRatio: number;
+    signature: string;
+  };
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -930,6 +948,64 @@ function buildConvexHullSpec(
   };
 }
 
+function mapAutoCompoundFromRapier(
+  rapier: RapierColliderDescription
+): CompoundColliderSpec | null {
+  if (rapier.type !== "compound" || rapier.parts.length <= 0) {
+    return null;
+  }
+
+  return {
+    type: "compound-boxes",
+    source: "auto-collider-v1",
+    parts: rapier.parts.map((part) => ({
+      kind: "box",
+      position: pointTuple(part.position[0], part.position[1], part.position[2]),
+      halfExtents: pointTuple(
+        Math.max(part.halfExtents[0], MIN_BOX_EDGE * 0.5),
+        Math.max(part.halfExtents[1], MIN_BOX_EDGE * 0.5),
+        Math.max(part.halfExtents[2], MIN_BOX_EDGE * 0.5)
+      )
+    }))
+  };
+}
+
+function mapAutoConvexHullFromRapier(
+  rapier: RapierColliderDescription
+): ConvexHullColliderSpec | null {
+  if (rapier.type !== "convex" || rapier.points.length < 4) {
+    return null;
+  }
+
+  return {
+    type: "convex-hull",
+    source: "auto-collider-v1",
+    points: rapier.points.map((point) =>
+      pointTuple(point[0], point[1], point[2])
+    ),
+    rootOffset: pointTuple(
+      rapier.rootOffset[0],
+      rapier.rootOffset[1],
+      rapier.rootOffset[2]
+    )
+  };
+}
+
+function chooseAutoRecommendation(
+  rapier: RapierColliderDescription
+): ColliderAutoRecommendation {
+  if (rapier.type === "compound") {
+    return "compound-boxes";
+  }
+  if (rapier.type === "convex" || rapier.type === "trimesh") {
+    return "convex-hull";
+  }
+  if (rapier.type === "capsule") {
+    return "pill";
+  }
+  return "sphere";
+}
+
 export async function buildSimplifiedColliderScene(
   sourceModel: THREE.Object3D,
   faceTarget = DEFAULT_COLLIDER_FACE_TARGET
@@ -957,13 +1033,24 @@ export async function buildSimplifiedColliderScene(
   }
   sourceBounds = makeSafeBounds(sourceBounds);
 
+  const autoResult = generateColliderFromObject(sourceScene, {
+    mode: "dynamic",
+    budget: "strict"
+  });
+  const autoCompound = mapAutoCompoundFromRapier(autoResult.rapier);
+  const autoConvex = mapAutoConvexHullFromRapier(autoResult.rapier);
+
   const decompositionPoints =
     samplePoints.length > 0 ? samplePoints : buildBoundsCorners(sourceBounds);
-  let parts = decomposeToBoxParts(decompositionPoints, sourceFaces, targetFaces);
-  if (parts.length === 0) {
+  let fallbackParts = decomposeToBoxParts(
+    decompositionPoints,
+    sourceFaces,
+    targetFaces
+  );
+  if (fallbackParts.length === 0) {
     const center = sourceBounds.getCenter(new THREE.Vector3());
     const half = sourceBounds.getSize(new THREE.Vector3()).multiplyScalar(0.5);
-    parts = [
+    fallbackParts = [
       {
         position: pointTuple(center.x, center.y, center.z),
         halfExtents: pointTuple(half.x, half.y, half.z)
@@ -971,11 +1058,10 @@ export async function buildSimplifiedColliderScene(
     ];
   }
 
-  const scene = createCompoundColliderScene(parts);
-  const compoundCollider: CompoundColliderSpec = {
+  const compoundCollider: CompoundColliderSpec = autoCompound ?? {
     type: "compound-boxes",
     source: "objective-split-v1",
-    parts: parts.map((part) => ({
+    parts: fallbackParts.map((part) => ({
       kind: "box" as const,
       position: pointTuple(part.position[0], part.position[1], part.position[2]),
       halfExtents: pointTuple(
@@ -985,12 +1071,23 @@ export async function buildSimplifiedColliderScene(
       )
     }))
   };
+
+  const parts: BoxPart[] = compoundCollider.parts.map((part) => ({
+    position: pointTuple(part.position[0], part.position[1], part.position[2]),
+    halfExtents: pointTuple(
+      Math.max(part.halfExtents[0], MIN_BOX_EDGE * 0.5),
+      Math.max(part.halfExtents[1], MIN_BOX_EDGE * 0.5),
+      Math.max(part.halfExtents[2], MIN_BOX_EDGE * 0.5)
+    )
+  }));
+
+  const scene = createCompoundColliderScene(parts);
   const colliderVariants: ColliderVariantsSpec = {
     box: buildBoxColliderSpec(sourceBounds),
     pill: buildPillColliderSpec(sourceBounds),
     sphere: buildSphereColliderSpec(sourceBounds),
     cylinder: buildCylinderColliderSpec(sourceBounds),
-    convexHull: buildConvexHullSpec(samplePoints, sourceBounds),
+    convexHull: autoConvex ?? buildConvexHullSpec(samplePoints, sourceBounds),
     compoundBoxes: compoundCollider
   };
 
@@ -1000,6 +1097,12 @@ export async function buildSimplifiedColliderScene(
     targetFaces,
     colliderFaces: parts.length * 12,
     compoundCollider,
-    colliderVariants
+    colliderVariants,
+    autoRecommendation: chooseAutoRecommendation(autoResult.rapier),
+    autoSummary: {
+      strategy: autoResult.quality.selectedStrategy,
+      outsideRatio: autoResult.quality.error.outsideRatio,
+      signature: autoResult.quality.signature
+    }
   };
 }
