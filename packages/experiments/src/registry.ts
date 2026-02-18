@@ -2,6 +2,7 @@ import type { ExperimentRegistryEntry } from "./runtime/meta";
 
 // Registry is kept explicit so lazy import boundaries stay obvious.
 // AUTO_IMPORTS_START
+import { meta as compoundColliderLabMeta } from "./compound-collider-lab/meta";
 import { meta as ecsFoundationMeta } from "./ecs-foundation/meta";
 import { meta as editorGameEcsMeta } from "./editor-game-ecs/meta";
 import { meta as levelBuilderMeta } from "./level-builder/meta";
@@ -14,6 +15,10 @@ import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta"
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...compoundColliderLabMeta,
+    load: () => import("./compound-collider-lab/index")
+  },
   {
     ...ecsFoundationMeta,
     load: () => import("./ecs-foundation/index")

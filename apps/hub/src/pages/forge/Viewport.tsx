@@ -68,6 +68,46 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       });
     };
 
+    const markColliderHelperRoot = (object: THREE.Object3D): void => {
+      object.userData.__forgeColliderHelperRoot = true;
+    };
+
+    const clearColliderHelpers = (state: {
+      scene: THREE.Scene;
+      colliderHelper: THREE.Object3D | null;
+    }): void => {
+      const helperRoots = new Set<THREE.Object3D>();
+      if (state.colliderHelper) {
+        helperRoots.add(state.colliderHelper);
+      }
+
+      state.scene.traverse((node) => {
+        if (node === state.scene) {
+          return;
+        }
+        const isHelperNode =
+          node.userData.__forgeColliderHelperRoot === true ||
+          node.name === "collider-helper" ||
+          node.name.startsWith("collider-preview");
+        if (!isHelperNode) {
+          return;
+        }
+        let root: THREE.Object3D = node;
+        while (root.parent && root.parent !== state.scene) {
+          root = root.parent;
+        }
+        if (root.parent === state.scene) {
+          helperRoots.add(root);
+        }
+      });
+
+      for (const helper of helperRoots) {
+        state.scene.remove(helper);
+        disposeObject(helper);
+      }
+      state.colliderHelper = null;
+    };
+
     useImperativeHandle(ref, () => ({
       loadGlb: async (data: ArrayBuffer) => {
         const loader = new GLTFLoader();
@@ -85,11 +125,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         if (s.model) s.scene.remove(s.model);
         if (s.bboxHelper) { s.scene.remove(s.bboxHelper); s.bboxHelper = null; }
         if (s.dimLabels) { s.scene.remove(s.dimLabels); s.dimLabels = null; }
-        if (s.colliderHelper) {
-          s.scene.remove(s.colliderHelper);
-          disposeObject(s.colliderHelper);
-          s.colliderHelper = null;
-        }
+        clearColliderHelpers(s);
 
         s.model = group;
         if (group) {
@@ -177,13 +213,10 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       setCollider: (params: ColliderParams | null) => {
         const s = stateRef.current;
         if (!s) return;
-        if (s.colliderHelper) {
-          s.scene.remove(s.colliderHelper);
-          disposeObject(s.colliderHelper);
-          s.colliderHelper = null;
-        }
+        clearColliderHelpers(s);
         if (params) {
           s.colliderHelper = createColliderHelper(params);
+          markColliderHelperRoot(s.colliderHelper);
           s.scene.add(s.colliderHelper);
         }
       },
@@ -191,15 +224,12 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       setColliderPreviewObject: (helper: THREE.Object3D | null) => {
         const s = stateRef.current;
         if (!s) return;
-        if (s.colliderHelper) {
-          s.scene.remove(s.colliderHelper);
-          disposeObject(s.colliderHelper);
-          s.colliderHelper = null;
-        }
+        clearColliderHelpers(s);
         if (!helper) {
           return;
         }
         s.colliderHelper = helper;
+        markColliderHelperRoot(s.colliderHelper);
         s.scene.add(helper);
       },
 
@@ -325,10 +355,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         cancelAnimationFrame(state.raf);
         ro.disconnect();
         controls.dispose();
-        if (state.colliderHelper) {
-          disposeObject(state.colliderHelper);
-          state.colliderHelper = null;
-        }
+        clearColliderHelpers(state);
         renderer.dispose();
         renderer.domElement.remove();
         stateRef.current = null;

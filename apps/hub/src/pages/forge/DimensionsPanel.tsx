@@ -63,6 +63,7 @@ export function DimensionsPanel({ viewport, onDimensionsChange, hideTitle }: Pro
 
     applyScale(model, 1);
     setAppliedScale(1);
+    viewport.setBBoxVisible(true);
 
     const newBBox = viewport.getBBox();
     if (newBBox) setCurrentBBox(newBBox);

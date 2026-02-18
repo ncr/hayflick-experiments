@@ -255,7 +255,7 @@ export function ExportPanel({
           {resolveForgeMass(normalizeForgePhysicsSettings(physics, bbox), bbox).toFixed(3)}
         </div>
         <div>
-          Export Colliders: Box + Convex Hull + Compound ({Math.max(1, Math.floor(DEFAULT_COLLIDER_FACE_TARGET / 12))} boxes max)
+          Export Colliders: Box + Pill + Sphere + Cylinder + Convex Hull + Compound ({Math.max(1, Math.floor(DEFAULT_COLLIDER_FACE_TARGET / 12))} boxes max)
         </div>
         {bbox && (
           <div>

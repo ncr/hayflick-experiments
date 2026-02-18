@@ -277,33 +277,53 @@ export function Forge() {
         </div>
 
         <div className="forge-panel-area">
-          {/* Style Guide */}
-          <div className="forge-section">
-            <StyleGuidePanel value={styleGuide} onChange={setStyleGuide} />
+          <div className="forge-workflow-group">
+            <div className="forge-workflow-group-header">
+              <span className="forge-workflow-group-step">1</span>
+              <div>
+                <h3>Library / Selection</h3>
+                <p>Choose an existing prop first if you want to tweak or re-export it.</p>
+              </div>
+            </div>
+
+            {/* Saved Props */}
+            <PropGallery
+              onSelectProp={handleSelectSavedProp}
+              selectedProp={loadedProp?.id.replace("saved-", "") ?? ""}
+            />
           </div>
 
-          {/* Batch Prompts */}
-          <BatchPromptPanel
-            styleGuide={styleGuide}
-            props={props}
-            updateProp={updateProp}
-            onAddProps={handleAddProps}
-          />
+          <div className="forge-workflow-group">
+            <div className="forge-workflow-group-header">
+              <span className="forge-workflow-group-step">2</span>
+              <div>
+                <h3>Generation Workflow</h3>
+                <p>Create new concepts and queue up parallel image/3D generation.</p>
+              </div>
+            </div>
 
-          {/* Image Gallery / Queue */}
-          <BatchImageGallery
-            props={props}
-            selectedPropId={loadedProp ? null : selectedPropId}
-            onSelectProp={handleSelectQueueProp}
-            updateProp={updateProp}
-            onRemoveProp={handleRemoveProp}
-          />
+            {/* Style Guide */}
+            <div className="forge-section">
+              <StyleGuidePanel value={styleGuide} onChange={setStyleGuide} />
+            </div>
 
-          {/* Saved Props */}
-          <PropGallery
-            onSelectProp={handleSelectSavedProp}
-            selectedProp={loadedProp?.id.replace("saved-", "") ?? ""}
-          />
+            {/* Batch Prompts */}
+            <BatchPromptPanel
+              styleGuide={styleGuide}
+              props={props}
+              updateProp={updateProp}
+              onAddProps={handleAddProps}
+            />
+
+            {/* Image Gallery / Queue */}
+            <BatchImageGallery
+              props={props}
+              selectedPropId={loadedProp ? null : selectedPropId}
+              onSelectProp={handleSelectQueueProp}
+              updateProp={updateProp}
+              onRemoveProp={handleRemoveProp}
+            />
+          </div>
         </div>
       </div>
 
@@ -327,7 +347,8 @@ export function Forge() {
       {/* RIGHT RAIL */}
       <div className="forge-right-rail" data-testid="forge-right-rail">
         <div className="forge-right-rail-header">
-          <h2>Processing</h2>
+          <h2>Tweaking / Processing</h2>
+          <p>Refine the selected prop and configure export metadata.</p>
         </div>
         <ProcessingRail
           viewport={viewportRef.current}

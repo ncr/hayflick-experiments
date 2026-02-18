@@ -54,11 +54,61 @@
   color: #162130;
 }
 
+.forge-right-rail-header p {
+  margin: 0.3rem 0 0;
+  font-size: 0.74rem;
+  color: #5a6f86;
+  line-height: 1.3;
+}
+
 /* Panel area */
 .forge-panel-area {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+}
+
+.forge-workflow-group {
+  border-bottom: 1px solid #d0dae6;
+}
+
+.forge-workflow-group-header {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  padding: 0.7rem 1rem 0.55rem;
+  border-bottom: 1px solid #dfe6ef;
+  background: linear-gradient(180deg, rgba(230, 239, 249, 0.55), rgba(230, 239, 249, 0.12));
+}
+
+.forge-workflow-group-step {
+  flex-shrink: 0;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #0f2232;
+  border: 1px solid #8ca4ba;
+  background: #dceaf8;
+}
+
+.forge-workflow-group-header h3 {
+  margin: 0;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #162130;
+}
+
+.forge-workflow-group-header p {
+  margin: 0.2rem 0 0;
+  font-size: 0.74rem;
+  line-height: 1.3;
+  color: #516478;
 }
 
 .forge-panel {
@@ -442,7 +492,7 @@
 
 /* Gallery */
 .forge-gallery {
-  border-top: 1px solid #d0dae6;
+  border-top: none;
 }
 
 .forge-gallery h3 {

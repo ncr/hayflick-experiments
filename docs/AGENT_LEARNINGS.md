@@ -2106,3 +2106,341 @@ Detection signal:
 Preventive checklist:
 - Render landing footprint at the support/contact plane (`supportTopY` or floor `y=0`), independent from ghost root elevation.
 - Keep landing hint depth-tested so it reads like a surface projection rather than an overlay through geometry.
+
+## 2026-02-18 - Concave desk collider fitting needs structure-aware decomposition
+Root cause:
+- Generic point-cluster box fitting produced small corner-aligned boxes and missed the intended semantic split (tabletop + side panels) for non-convex desk geometry.
+
+Detection signal:
+- `large-desk-without-drawers` generated weak compound boxes that did not represent the leg void and panel structure.
+
+Preventive checklist:
+- Keep a dedicated collider-fit experiment fixture for representative concave furniture.
+- Derive top slab from per-height footprint coverage, then fit side supports separately.
+- Validate new decomposition code with a synthetic desk point-cloud unit test before integrating into Forge export paths.
+
+## 2026-02-18 - Collider decomposition tuning needs explicit numeric regression targets
+Root cause:
+- Manual slider tuning in the collider lab improved one fixture, but there was no durable numeric pass/fail signal to protect the behavior while iterating algorithm internals.
+
+Detection signal:
+- User provided a verified desk collider pose/size triplet and requested fast iteration with strict verification criteria.
+
+Preventive checklist:
+- Keep decomposition tests with concrete target box poses/sizes and tolerance-based assertions.
+- Distinguish "auto algorithm" verification mode from manual tuning UIs to avoid hidden dependency on slider state.
+- Include both structural tests (part labels/axis) and numeric near-match tests in collider-fit suites.
+
+## 2026-02-18 - Auto desk decomposition can under-estimate tabletop thickness
+Root cause:
+- Top split selected strictly by high-coverage threshold produced a too-thin tabletop slab, leaving support boxes to absorb under-top volume and collapse leg clearance.
+
+Detection signal:
+- User observed leg/support boxes invading tabletop volume and removing convex leg space in collider preview.
+
+Preventive checklist:
+- Clamp automatic top split to a minimum/maximum top-thickness ratio band.
+- Derive support footprints from points below a trimmed support cap (`topMinY - trim`) to avoid apron/top contamination.
+- Surface top-thickness and support-sample diagnostics in the collider lab HUD for quick verification.
+
+## 2026-02-18 - Greedy single-step split objective underfit concave shapes that need setup splits
+Root cause:
+- Compound decomposition accepted splits only when immediate empty-volume reduction beat box penalty.
+- Some concave structures (desk-like top + two side supports) require an initial split with little or no immediate gain to unlock high-gain child splits.
+
+Detection signal:
+- Objective splitter produced either one box (no split accepted) or fragmented thin strips depending on fixture, while target near-3-box profile existed.
+
+Preventive checklist:
+- Score candidate splits with at least one-step lookahead, not immediate gain only.
+- Keep explicit complexity pressure (box penalty + max box cap) so lookahead does not explode part count.
+- Maintain numeric regression tests with known target collider poses/sizes to catch under/over-splitting.
+
+## 2026-02-18 - `import.meta.glob` is not typed in `@experiments/catalog` tsconfig
+Root cause:
+- `packages/experiments` TypeScript config does not include Vite's `ImportMeta.glob` typing, so direct `import.meta.glob(...)` usage typechecks as missing API.
+
+Detection signal:
+- `TS2339: Property 'glob' does not exist on type 'ImportMeta'` in experiment modules.
+
+Preventive checklist:
+- In `@experiments/catalog`, prefer existing runtime loaders (`listSavedPropDefinitions` + `loadSavedPropBinary`) unless Vite glob typings are explicitly added to the package tsconfig.
+- Run package typecheck immediately after introducing asset discovery changes.
+
+## 2026-02-18 - Collider-lab comparisons can silently regress when source-of-truth switches
+Root cause:
+- Gallery mode rendered persisted `meta.json` collider variants while prior single-prop lab view rendered live objective-fit colliders, causing visual mismatch for the same prop.
+
+Detection signal:
+- User observed desk colliders looked worse immediately after moving from single-prop view to all-props gallery.
+
+Preventive checklist:
+- In collider validation experiments, label collider source explicitly in HUD (`saved` vs `live objective`).
+- Keep source selection consistent with experiment goal; for algorithm validation, default to live-fit from mesh samples.
+
+## 2026-02-18 - Forge collider panel drifted into debug UX (separate preview mode + manual rebuild)
+Root cause:
+- Collider UI exposed independent "selected collider type" and "preview mode" controls plus a manual rebuild action, even though variant generation can be derived from model/processing state.
+- This created a mismatch between what users thought they were choosing and what the viewport/export state showed.
+
+Detection signal:
+- User asked why collider type and preview mode both existed and why rebuilding variants was not automatic.
+
+Preventive checklist:
+- Keep collider selection as a single source of truth for both preview and exported collider type.
+- Rebuild collider variants automatically on model/processing trigger changes; avoid manual rebuild actions in primary UX.
+- Reserve multi-overlay/debug controls for dedicated lab/debug surfaces, not the main Forge workflow.
+
+## 2026-02-18 - Forge collider preview drift: stale helper overlays and mode resync churn
+Root cause:
+- Collider helper replacement only removed the tracked helper reference; stale preview helpers could remain if state drifted, causing mismatched overlays.
+- Collider panel re-synced local mode from `currentCollider` on object identity changes, creating unnecessary mode churn during rapid updates.
+
+Detection signal:
+- User observed pill preview looking wrong and a persistent large green compound overlay after scaling up/down.
+
+Preventive checklist:
+- In viewport helper swaps, clear all collider helper objects by name prefix, not only the tracked reference.
+- Sync collider mode from parent on collider type changes, not every collider object mutation.
+- Keep primitive collider metadata explicit (e.g. axis) so preview orientation matches generated collider intent.
+
+## 2026-02-18 - Scene-child-only helper cleanup missed nested/stale collider previews
+Root cause:
+- Collider cleanup initially removed only tracked/top-level helper objects.
+- Nested/legacy helper roots could survive if references drifted, leaving stale collider visuals after slider/mode updates.
+
+Detection signal:
+- User reported a large collider box remaining visible after scaling back down.
+
+Preventive checklist:
+- Tag helper roots when adding them to the scene.
+- During cleanup, traverse scene nodes, resolve each helper node to its top-level scene root, and remove/dispose those roots.
+- Avoid relying solely on one stored helper reference for cleanup.
+
+## 2026-02-18 - Green "collider" after scale reset was actually stale bbox helper
+Root cause:
+- Dimensions reset path updated model scale and state but did not rebuild the bbox helper overlay.
+- Because bbox helper color is bright green, it looked like a stale collider overlay to the user.
+
+Detection signal:
+- User reported a large green wireframe staying after reset-scale, despite collider updates.
+
+Preventive checklist:
+- Whenever transform-affecting operations run (apply/reset scale, pivot/normalize), refresh bbox helper if bbox overlay is enabled.
+- Distinguish collider vs bbox visuals in troubleshooting by color/label.
+
+## 2026-02-18 - Axis-only empty-volume objective over-splits mildly sloped props
+Root cause:
+- Compound decomposition scored boxes using axis-aligned empty volume only.
+- Slightly sloped structures (e.g. chair backrests) looked expensive unless split into several axis boxes.
+
+Detection signal:
+- User requested corner-adjusted boxes in collider lab because sloped regions generated too many boxes.
+
+Preventive checklist:
+- Include slope-aware effective-empty estimation (top-envelope plane fit) in split/cost scoring, blended with axis-empty cost.
+- Emit optional corner-adjusted part geometry for sloped boxes so overlays reflect the fitted slope.
+- Keep regression tests for both concave desk decomposition and wedge-like sloped fixtures.
+
+## 2026-02-18 - Collider-lab startup latency regressed when loading full prop catalog
+Root cause:
+- The lab loaded every saved Forge prop and ran live decomposition per prop during init.
+- This made refresh time scale with library size and masked algorithm behavior on the target fixture.
+
+Detection signal:
+- User reported collider-lab refresh felt very slow and visually produced mostly axis boxes.
+
+Preventive checklist:
+- Keep collider algorithm experiments single-fixture by default (explicit target prop id).
+- Limit surface sampling in lab mode to the minimum needed for stable iteration.
+- Add multi-prop gallery mode only as an opt-in, separate from default startup path.
+
+## 2026-02-18 - Top-only corner deformation underfits sloped appliance geometry
+Root cause:
+- Deformation model only adjusted top-face corner heights (vertical edges fixed), so assets with sloped front/side faces remained mostly axis boxes.
+- Both greedy and global partitioners shared this shape model limitation, so solver choice alone could not produce sloped parts.
+
+Detection signal:
+- User observed global produced only normal boxes and hybrid produced only one sloped part on `commodore-pet-inspired-computer`.
+
+Preventive checklist:
+- Support multiple deformation families in per-part fitting (top slope + side slope in YZ/XY) and pick best effective-volume candidate.
+- Keep deformed corners in voxel-boundary coordinates and convert to world-space at render/export time.
+- Compare hybrid/global on the same fixture with sloped-part counts in HUD to verify shape-model, not just split strategy.
+
+## 2026-02-18 - One-axis deformation candidates cannot express dual-axis taper on appliance-like props
+Root cause:
+- Per-part deformation selection only considered top-slope or single-axis side-slope candidates.
+- Shapes that taper in both X and Z with height were approximated as one-axis deformations, leaving the orthogonal axis straight.
+
+Detection signal:
+- User reported both hybrid/global showed slope only in one axis in collider-lab output.
+
+Preventive checklist:
+- Include a bi-axis side-slope candidate that fits X and Z min/max as functions of Y.
+- Allow split-bias heuristics to treat dominant slope axis as `both` so candidate splits are sampled across both horizontal axes.
+- Keep HUD surfacing sloped-part counts per strategy to catch regressions quickly.
+
+## 2026-02-18 - Global collider split search over-produced parts without explicit count-frontier selection
+Root cause:
+- Beam expansion optimized split-level candidates and tracked one running best state, but did not preserve the best partition per box count as a first-class search frontier.
+- Without a frontier selection pass, intermediate depth bias could favor extra boxes on some meshes even when marginal fit gain was weak.
+
+Detection signal:
+- User observed global mode producing noticeably more boxes than expected after moving away from fixed-count assumptions.
+
+Preventive checklist:
+- Track best decomposition state per box count during global search.
+- Select final result from the box-count frontier using fit+complexity scoring, with elbow preference when score delta is small.
+- Keep a regression test that bounds global selected box count on a known desk profile.
+
+## 2026-02-18 - Independent slope fits caused wedge gaps and non-continuous compound silhouettes
+Root cause:
+- Side/top deformation fits were unconstrained least-squares approximations, so fitted faces could move inward relative to sampled occupancy.
+- Adjacent decomposed parts did not enforce shared boundary continuity, allowing visible wedge gaps between touching boxes.
+
+Detection signal:
+- User reported generated compound colliders looked worse, with discontinuities/wedges between neighboring parts instead of a coherent continuous shape.
+
+Preventive checklist:
+- Constrain min/max linear fits to envelope bounds so deformed faces do not cut inward through occupied samples.
+- Apply adjacency anchoring on touching faces (X/Z) before preview/export to keep neighboring parts continuous.
+- Keep low-box-count selection bias conservative so continuity-preserving detail is not dropped too aggressively.
+
+## 2026-02-18 - Multi-solver lab UI should use a shared minimal result contract
+Root cause:
+- New collider solvers and existing hybrid/global outputs had slightly different `auto` typing details (`strategy` union/optional fields), causing integration type errors when wiring side-by-side overlays.
+
+Detection signal:
+- Typecheck failed when solver timing helper required one concrete solver result type for all strategies.
+
+Preventive checklist:
+- In comparison UIs, define one minimal shared result interface (parts + common metrics) instead of reusing a narrow strategy-specific type.
+- Keep per-solver optional metrics (`beamWidth`, `statesEvaluated`, etc.) optional in the shared contract.
+
+## 2026-02-18 - Re-labeled solver variants can hide that algorithm logic did not actually change
+Root cause:
+- Solver names/checkmarks were updated without sufficiently distinct internal fitting logic, so visual outputs stayed effectively the same and looked cached.
+
+Detection signal:
+- User reported newly added approaches looked identical to previous variants even after refresh.
+
+Preventive checklist:
+- When introducing a new algorithm label, verify at least one core optimization stage differs (candidate generation, objective, or fitting primitive).
+- Compare per-solver debug metrics (`parts`, `cost`, `statesEvaluated`) and confirm they diverge on the same fixture before declaring integration complete.
+
+## 2026-02-18 - Plane-aware experimental solvers can regress into fragmented micro-boxes or a single bbox
+Root cause:
+- Plane-region extraction accepted too many small regions without strong minimum coverage gating.
+- QEM/plane-constrained simplification over-reduced detail before decomposition, making the downstream solver collapse to one coarse box.
+
+Detection signal:
+- User reported plane-graph output as scattered tiny boxes and QEM-plane output as essentially one bounding box.
+
+Preventive checklist:
+- Gate plane regions by relative coverage and suppress tiny residual components by minimum voxel mass.
+- Add fallback from fragmented plane result to a stable global/hybrid decomposition path.
+- For simplified pipelines, merge simplified points with sampled original points and reject one-box outcomes via fallback.
+
+## 2026-02-18 - Collider-lab comparison quality regressed when a weak solver stayed in the matrix
+Root cause:
+- Keeping `QEM Plane` alongside stronger methods hid whether improvements came from algorithm changes or fallback behavior.
+- Its simplification stage was not reliable enough on the target fixture, so outputs oscillated between over-fragmented and over-collapsed fits.
+
+Detection signal:
+- User reported `QEM Plane` produced many noisy boxes while `PlaneGraph Prism` remained only partly usable.
+- Visual outputs did not communicate meaningful simplification progress.
+
+Preventive checklist:
+- Remove unstable solver variants from the default comparison set quickly instead of preserving them for parity.
+- Keep one plane-aware path and invest in its region smoothing/splitting quality before adding new solver labels.
+- Prefer region-level quality heuristics (fit error + footprint fill + split balance) over global fallback-heavy pipelines.
+
+## 2026-02-18 - Box-only collider-lab outputs hid whether mesh simplification actually improved
+Root cause:
+- The lab compared collider box fits but did not render a real simplified mesh artifact, so algorithm changes looked like parameter churn.
+- There was no direct face-count signal to validate simplification quality for mesh-collider workflows.
+
+Detection signal:
+- User reported outputs still looked "same/shitty" and asked for a flat-plane-aware simplified mesh preview.
+
+Preventive checklist:
+- In collider experiments, always pair box-fit overlays with a real simplified mesh preview and explicit face-count stats.
+- Use plane clustering + planar boundary retriangulation for man-made props before trying generic decimation.
+- Keep tiny-cluster suppression explicit so simplification goals are visible and tunable.
+
+## 2026-02-18 - Plane-aware simplification quality needs live tolerance tuning
+Root cause:
+- Fixed default tolerances can over-prune small planar regions, causing visible holes on some assets.
+- Without live controls, troubleshooting looked like algorithm failure instead of parameter sensitivity.
+
+Detection signal:
+- User confirmed simplification worked but reported holes and requested tolerance knobs.
+
+Preventive checklist:
+- Expose core plane-aware tolerances (normal, plane distance, vertex merge, boundary simplify, cluster area) directly in the lab UI.
+- Rebuild simplified output live with debounce and keep face/cluster stats visible while tuning.
+
+## 2026-02-18 - Patch-wise planar retriangulation is not watertight by construction
+Root cause:
+- Rebuilding each plane cluster independently changed boundary loops per patch and did not enforce shared seam topology.
+- Cluster dropping/simplification could remove seam-supporting geometry, creating cracks/holes even from watertight input.
+
+Detection signal:
+- User reported persistent holes despite tolerance tuning and expected strict watertight preservation from a watertight source mesh.
+
+Preventive checklist:
+- Use topology-preserving simplification (global indexed edge-collapse) before any plane-aware vertex shaping.
+- Keep shared index connectivity intact; never rebuild disconnected patches when watertightness is a hard requirement.
+- Add a boundary-edge check and fallback path so closed input cannot emit open output.
+
+## 2026-02-18 - Edge fidelity degrades when merge/snap ignores crease structure
+Root cause:
+- Vertex welding and plane snapping treated all regions uniformly, so high merge tolerance disproportionately damaged hard edges.
+- Without explicit crease protection, simplifier choices optimized face count but eroded man-made silhouette lines.
+
+Detection signal:
+- User reported that as merge tolerance increased, planar edges degraded first even when overall simplification looked acceptable.
+
+Preventive checklist:
+- Detect crease/border edges from face dihedral and protect their vertices from planar snapping.
+- Use normal-aware welding to avoid merging across sharp orientation changes.
+- Expose crease threshold as a live tuning control in the lab.
+
+## 2026-02-18 - `vertexMerge` control can silently become ineffective due internal clamp mismatch
+Root cause:
+- UI slider allowed merge values up to 0.08 m while simplifier internals clamped weld tolerance to 0.008 m.
+- As a result, most of the slider travel produced no additional effect.
+
+Detection signal:
+- User reported `vertex merge` knob appeared to do nothing.
+
+Preventive checklist:
+- Keep control ranges consistent with effective algorithm clamp ranges.
+- Include key tuning values in runtime stats/debug output.
+- Ensure merge tolerance influences at least one visible stage (weld and/or non-crease snapping).
+
+## 2026-02-18 - High merge should not collapse topology in mesh collection stage
+Root cause:
+- Reusing `vertexMerge` directly as weld tolerance in indexed mesh collection merged non-identical nearby vertices and dropped triangles before simplification.
+- This created true geometric holes when slider values were high.
+
+Detection signal:
+- User reported holes returning specifically when increasing `vertex merge`.
+
+Preventive checklist:
+- Keep collection/weld tolerance tiny and fixed for topology stability.
+- Apply high-level merge aggressiveness in constrained snapping stages, not in base connectivity construction.
+- Guard snapping with local face-area/normal validity checks to prevent fold-over and degenerate triangles.
+
+## 2026-02-18 - Merge knob can appear inert when projection-only moves cancel on multi-plane vertices
+Root cause:
+- Plane-only snapping can average to near-zero displacement on vertices influenced by multiple adjacent planes.
+- On low/medium poly hard-surface meshes, many vertices are multi-plane, so slider changes looked ineffective.
+
+Detection signal:
+- User reported `vertex merge` still had no visible effect even after removing clamp bottlenecks.
+
+Preventive checklist:
+- Add a constrained one-ring centroid attraction pass for non-crease vertices so merge tolerance has observable impact.
+- Keep the same local validity guard (area + normal checks) on this secondary merge move.

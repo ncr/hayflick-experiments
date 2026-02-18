@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { countTotalFaces } from "./simplify";
+import { fitCompoundBoxesObjective } from "./compound-objective";
 
 export const DEFAULT_COLLIDER_FACE_TARGET = 96;
 const MIN_COLLIDER_FACE_TARGET = 24;
@@ -17,11 +18,38 @@ type BoxPart = {
   halfExtents: [number, number, number];
 };
 
+export type ColliderAxis = "x" | "y" | "z";
+
 export type BoxColliderSpec = {
   type: "box";
   source: "aabb-v1";
   position: [number, number, number];
   halfExtents: [number, number, number];
+};
+
+export type PillColliderSpec = {
+  type: "pill";
+  source: "capsule-fit-v1";
+  position: [number, number, number];
+  axis: ColliderAxis;
+  radius: number;
+  halfHeight: number;
+};
+
+export type SphereColliderSpec = {
+  type: "sphere";
+  source: "sphere-fit-v1";
+  position: [number, number, number];
+  radius: number;
+};
+
+export type CylinderColliderSpec = {
+  type: "cylinder";
+  source: "cylinder-fit-v1";
+  position: [number, number, number];
+  axis: ColliderAxis;
+  radius: number;
+  halfHeight: number;
 };
 
 export type ConvexHullColliderSpec = {
@@ -39,12 +67,15 @@ export type CompoundColliderPart = {
 
 export type CompoundColliderSpec = {
   type: "compound-boxes";
-  source: "auto-kmeans-v1";
+  source: "objective-split-v1" | "auto-kmeans-v1";
   parts: CompoundColliderPart[];
 };
 
 export type ColliderVariantsSpec = {
   box: BoxColliderSpec;
+  pill: PillColliderSpec;
+  sphere: SphereColliderSpec;
+  cylinder: CylinderColliderSpec;
   convexHull: ConvexHullColliderSpec;
   compoundBoxes: CompoundColliderSpec;
 };
@@ -657,6 +688,30 @@ function decomposeToBoxParts(
   );
   const maxParts = Math.max(1, Math.floor(targetFaces / 12));
 
+  const objectivePartsRaw = fitCompoundBoxesObjective(
+    points.map((point) => ({
+      x: point.x,
+      y: point.y,
+      z: point.z
+    }))
+  );
+  if (objectivePartsRaw.length > 0) {
+    const objectiveParts = filterAndLimitBoxParts(
+      objectivePartsRaw.map((part) => ({
+        position: part.position,
+        halfExtents: [
+          Math.max(part.halfExtents[0], MIN_BOX_EDGE * 0.5),
+          Math.max(part.halfExtents[1], MIN_BOX_EDGE * 0.5),
+          Math.max(part.halfExtents[2], MIN_BOX_EDGE * 0.5)
+        ]
+      })),
+      maxParts
+    );
+    if (objectiveParts.length > 0) {
+      return objectiveParts;
+    }
+  }
+
   const voxelParts = decomposeToVoxelBoxParts(
     points,
     bounds,
@@ -745,6 +800,95 @@ function buildBoxColliderSpec(bounds: THREE.Box3): BoxColliderSpec {
   };
 }
 
+function choosePrimaryAxis(half: THREE.Vector3): ColliderAxis {
+  if (half.x >= half.y && half.x >= half.z) {
+    return "x";
+  }
+  if (half.y >= half.z) {
+    return "y";
+  }
+  return "z";
+}
+
+function axisDimensions(
+  half: THREE.Vector3,
+  axis: ColliderAxis
+): { major: number; radialA: number; radialB: number } {
+  if (axis === "x") {
+    return {
+      major: half.x,
+      radialA: half.y,
+      radialB: half.z
+    };
+  }
+  if (axis === "z") {
+    return {
+      major: half.z,
+      radialA: half.x,
+      radialB: half.y
+    };
+  }
+  return {
+    major: half.y,
+    radialA: half.x,
+    radialB: half.z
+  };
+}
+
+function buildPillColliderSpec(bounds: THREE.Box3): PillColliderSpec {
+  const safe = makeSafeBounds(bounds);
+  const center = safe.getCenter(new THREE.Vector3());
+  const half = safe.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  const axis = choosePrimaryAxis(half);
+  const dims = axisDimensions(half, axis);
+  const radius = Math.max(
+    Math.sqrt(dims.radialA * dims.radialA + dims.radialB * dims.radialB),
+    MIN_BOX_EDGE * 0.5
+  );
+  const halfHeight = Math.max(0, dims.major - radius);
+  return {
+    type: "pill",
+    source: "capsule-fit-v1",
+    position: pointTuple(center.x, center.y, center.z),
+    axis,
+    radius,
+    halfHeight
+  };
+}
+
+function buildSphereColliderSpec(bounds: THREE.Box3): SphereColliderSpec {
+  const safe = makeSafeBounds(bounds);
+  const center = safe.getCenter(new THREE.Vector3());
+  const size = safe.getSize(new THREE.Vector3());
+  const radius = Math.max(size.length() * 0.5, MIN_BOX_EDGE * 0.5);
+  return {
+    type: "sphere",
+    source: "sphere-fit-v1",
+    position: pointTuple(center.x, center.y, center.z),
+    radius
+  };
+}
+
+function buildCylinderColliderSpec(bounds: THREE.Box3): CylinderColliderSpec {
+  const safe = makeSafeBounds(bounds);
+  const center = safe.getCenter(new THREE.Vector3());
+  const half = safe.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  const axis = choosePrimaryAxis(half);
+  const dims = axisDimensions(half, axis);
+  const radius = Math.max(
+    Math.sqrt(dims.radialA * dims.radialA + dims.radialB * dims.radialB),
+    MIN_BOX_EDGE * 0.5
+  );
+  return {
+    type: "cylinder",
+    source: "cylinder-fit-v1",
+    position: pointTuple(center.x, center.y, center.z),
+    axis,
+    radius,
+    halfHeight: Math.max(dims.major, MIN_BOX_EDGE * 0.5)
+  };
+}
+
 function limitHullPoints(points: THREE.Vector3[], maxPoints: number): THREE.Vector3[] {
   if (points.length <= maxPoints) {
     return points.map((point) => point.clone());
@@ -830,7 +974,7 @@ export async function buildSimplifiedColliderScene(
   const scene = createCompoundColliderScene(parts);
   const compoundCollider: CompoundColliderSpec = {
     type: "compound-boxes",
-    source: "auto-kmeans-v1",
+    source: "objective-split-v1",
     parts: parts.map((part) => ({
       kind: "box" as const,
       position: pointTuple(part.position[0], part.position[1], part.position[2]),
@@ -843,6 +987,9 @@ export async function buildSimplifiedColliderScene(
   };
   const colliderVariants: ColliderVariantsSpec = {
     box: buildBoxColliderSpec(sourceBounds),
+    pill: buildPillColliderSpec(sourceBounds),
+    sphere: buildSphereColliderSpec(sourceBounds),
+    cylinder: buildCylinderColliderSpec(sourceBounds),
     convexHull: buildConvexHullSpec(samplePoints, sourceBounds),
     compoundBoxes: compoundCollider
   };

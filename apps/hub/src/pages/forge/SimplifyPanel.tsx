@@ -123,86 +123,96 @@ export function SimplifyPanel({
     <div className="forge-panel" data-testid="forge-simplify">
       {!hideTitle && <h3>Inspect & Simplify</h3>}
 
-      <div className="forge-field">
-        <label>
-          Face count: <strong data-testid="face-count">{currentFaces}</strong>
-          {originalFaces > 0 && originalFaces !== currentFaces && (
-            <span className="forge-face-orig"> (original: {originalFaces})</span>
-          )}
-        </label>
-      </div>
+      <div style={{ marginBottom: "0.75rem" }}>
+        <h4 style={{ margin: "0 0 0.5rem 0", fontSize: "0.92rem" }}>Mesh</h4>
 
-      <div className="forge-field">
-        <label>
-          Simplify ratio: {Math.round(ratio * 100)}%
-        </label>
-        <input
-          type="range"
-          min={0.01}
-          max={1}
-          step={0.01}
-          value={ratio}
-          onChange={(e) => setRatio(Number(e.target.value))}
-          data-testid="simplify-slider"
-        />
-        <button
-          className="forge-btn"
-          onClick={handleSimplify}
-          disabled={simplifying || !originalModel}
-          data-testid="simplify-btn"
-        >
-          {simplifying ? "Simplifying..." : "Apply"}
-        </button>
-      </div>
+        <div className="forge-field">
+          <label>
+            Face count: <strong data-testid="face-count">{currentFaces}</strong>
+            {originalFaces > 0 && originalFaces !== currentFaces && (
+              <span className="forge-face-orig"> (original: {originalFaces})</span>
+            )}
+          </label>
+        </div>
 
-      <div className="forge-field forge-toggles">
-        <label>
+        <div className="forge-field">
+          <label>
+            Simplify ratio: {Math.round(ratio * 100)}%
+          </label>
           <input
-            type="checkbox"
-            checked={wireframe}
-            onChange={handleWireframeToggle}
-            data-testid="wireframe-toggle"
+            type="range"
+            min={0.01}
+            max={1}
+            step={0.01}
+            value={ratio}
+            onChange={(e) => setRatio(Number(e.target.value))}
+            data-testid="simplify-slider"
           />
-          Wireframe
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={showOriginal}
-            onChange={handleToggleOriginal}
-          />
-          Show original
-        </label>
+          <button
+            className="forge-btn"
+            onClick={handleSimplify}
+            disabled={simplifying || !originalModel}
+            data-testid="simplify-btn"
+          >
+            {simplifying ? "Simplifying..." : "Apply"}
+          </button>
+        </div>
+
+        <div className="forge-field forge-toggles">
+          <label>
+            <input
+              type="checkbox"
+              checked={wireframe}
+              onChange={handleWireframeToggle}
+              data-testid="wireframe-toggle"
+            />
+            Wireframe
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={showOriginal}
+              onChange={handleToggleOriginal}
+            />
+            Show original
+          </label>
+        </div>
       </div>
 
-      <div className="forge-field">
-        <label>Texture resolution</label>
-        <select
-          value={textureRes}
-          onChange={(e) => handleTextureResize(Number(e.target.value))}
-          data-testid="texture-res"
-        >
-          <option value={0}>Original</option>
-          <option value={512}>512px</option>
-          <option value={256}>256px</option>
-          <option value={128}>128px</option>
-        </select>
-      </div>
+      <div>
+        <h4 style={{ margin: "0 0 0.5rem 0", fontSize: "0.92rem" }}>Texture</h4>
 
-      <div className="forge-field">
-        <label>Material channel</label>
-        <select
-          value={viewChannel}
-          onChange={(e) => handleChannelChange(e.target.value as MaterialChannelMode)}
-        >
-          <option value="">Normal render</option>
-          <option value="baseColor">Base Color</option>
-          <option value="normal">Normal</option>
-          <option value="roughness">Roughness</option>
-          <option value="metallic">Metallic</option>
-          <option value="ao">Ambient Occlusion</option>
-          <option value="emissive">Emissive</option>
-        </select>
+        <div className="forge-field">
+          <label>Texture resolution</label>
+          <select
+            value={textureRes}
+            onChange={(e) => handleTextureResize(Number(e.target.value))}
+            data-testid="texture-res"
+          >
+            <option value={0}>Original</option>
+            <option value={512}>512px</option>
+            <option value={256}>256px</option>
+            <option value={128}>128px</option>
+          </select>
+        </div>
+
+        <div className="forge-field">
+          <label>Material channel</label>
+          <select
+            value={viewChannel}
+            onChange={(e) =>
+              handleChannelChange(e.target.value as MaterialChannelMode)
+            }
+          >
+            <option value="">Normal render</option>
+            <option value="baseColor">Base Color</option>
+            <option value="normal">Normal</option>
+            <option value="roughness">Roughness</option>
+            <option value="metallic">Metallic</option>
+            <option value="ao">Ambient Occlusion</option>
+            <option value="emissive">Emissive</option>
+          </select>
+        </div>
       </div>
     </div>
   );

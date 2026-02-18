@@ -22,6 +22,7 @@
     "@common/render": "workspace:*",
     "@dimforge/rapier2d-compat": "^0.19.3",
     "@dimforge/rapier3d-compat": "^0.19.3",
+    "meshoptimizer": "^1.0.1",
     "three": "^0.173.0"
   }
 }

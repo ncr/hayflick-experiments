@@ -1,18 +1,105 @@
 import * as THREE from "three";
+import { ConvexGeometry } from "three/examples/jsm/geometries/ConvexGeometry.js";
 import type { BBox } from "./dimensions";
 
-export type ColliderType = "box" | "capsule" | "sphere" | "cylinder" | "convex-hull";
+export type ColliderType =
+  | "box"
+  | "pill"
+  | "capsule"
+  | "sphere"
+  | "cylinder"
+  | "convex-hull"
+  | "compound-boxes";
+
+export type CompoundBoxPart = {
+  position: [number, number, number];
+  halfExtents: [number, number, number];
+};
 
 export interface ColliderParams {
   type: ColliderType;
   position: [number, number, number];
-  params: Record<string, number>;
+  params: Record<string, unknown>;
+}
+
+type ColliderAxis = "x" | "y" | "z";
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asTuple3(value: unknown): [number, number, number] | null {
+  if (!Array.isArray(value) || value.length !== 3) {
+    return null;
+  }
+  const x = asNumber(value[0], Number.NaN);
+  const y = asNumber(value[1], Number.NaN);
+  const z = asNumber(value[2], Number.NaN);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
+  }
+  return [x, y, z];
+}
+
+function asColliderAxis(value: unknown, fallback: ColliderAxis = "y"): ColliderAxis {
+  return value === "x" || value === "y" || value === "z" ? value : fallback;
+}
+
+function choosePrimaryAxis(sx: number, sy: number, sz: number): ColliderAxis {
+  if (sx >= sy && sx >= sz) {
+    return "x";
+  }
+  if (sy >= sz) {
+    return "y";
+  }
+  return "z";
+}
+
+function axisDimensions(
+  sx: number,
+  sy: number,
+  sz: number,
+  axis: ColliderAxis
+): { major: number; radialA: number; radialB: number } {
+  if (axis === "x") {
+    return {
+      major: sx * 0.5,
+      radialA: sy * 0.5,
+      radialB: sz * 0.5
+    };
+  }
+  if (axis === "z") {
+    return {
+      major: sz * 0.5,
+      radialA: sx * 0.5,
+      radialB: sy * 0.5
+    };
+  }
+  return {
+    major: sy * 0.5,
+    radialA: sx * 0.5,
+    radialB: sz * 0.5
+  };
+}
+
+function applyAxisRotation(object: THREE.Object3D, axis: ColliderAxis): void {
+  if (axis === "x") {
+    object.rotation.z = -Math.PI * 0.5;
+    return;
+  }
+  if (axis === "z") {
+    object.rotation.x = Math.PI * 0.5;
+  }
 }
 
 export function autoFitCollider(
   type: ColliderType,
-  bbox: BBox
+  bbox: BBox,
+  scale = 1
 ): ColliderParams {
+  const sx = Math.max(0, bbox.width) * Math.max(0, scale);
+  const sy = Math.max(0, bbox.height) * Math.max(0, scale);
+  const sz = Math.max(0, bbox.depth) * Math.max(0, scale);
   const cx = bbox.center.x;
   const cy = bbox.center.y;
   const cz = bbox.center.z;
@@ -23,96 +110,179 @@ export function autoFitCollider(
         type: "box",
         position: [cx, cy, cz],
         params: {
-          halfWidth: bbox.width / 2,
-          halfHeight: bbox.height / 2,
-          halfDepth: bbox.depth / 2,
-        },
+          halfWidth: sx * 0.5,
+          halfHeight: sy * 0.5,
+          halfDepth: sz * 0.5
+        }
       };
+    case "pill":
     case "capsule": {
-      const radius = Math.min(bbox.width, bbox.depth) / 2;
-      const halfHeight = Math.max(0, bbox.height / 2 - radius);
+      const axis = choosePrimaryAxis(sx, sy, sz);
+      const dims = axisDimensions(sx, sy, sz, axis);
+      const radius = Math.sqrt(
+        dims.radialA * dims.radialA + dims.radialB * dims.radialB
+      );
+      const halfHeight = Math.max(0, dims.major - radius);
       return {
-        type: "capsule",
+        type: type === "capsule" ? "capsule" : "pill",
         position: [cx, cy, cz],
-        params: { halfHeight, radius },
+        params: { axis, halfHeight, radius }
       };
     }
     case "sphere": {
-      const r = Math.max(bbox.width, bbox.height, bbox.depth) / 2;
+      const radius = Math.sqrt(sx * sx + sy * sy + sz * sz) * 0.5;
       return {
         type: "sphere",
         position: [cx, cy, cz],
-        params: { radius: r },
+        params: { radius }
       };
     }
     case "cylinder": {
-      const rad = Math.max(bbox.width, bbox.depth) / 2;
+      const axis = choosePrimaryAxis(sx, sy, sz);
+      const dims = axisDimensions(sx, sy, sz, axis);
+      const radius = Math.sqrt(
+        dims.radialA * dims.radialA + dims.radialB * dims.radialB
+      );
       return {
         type: "cylinder",
         position: [cx, cy, cz],
-        params: { halfHeight: bbox.height / 2, radius: rad },
+        params: { axis, halfHeight: dims.major, radius }
       };
     }
     case "convex-hull":
       return {
         type: "convex-hull",
         position: [0, 0, 0],
-        params: {},
+        params: {}
+      };
+    case "compound-boxes":
+      return {
+        type: "compound-boxes",
+        position: [0, 0, 0],
+        params: { parts: [] }
       };
   }
 }
 
-export function createColliderHelper(
-  collider: ColliderParams
-): THREE.Object3D {
+function buildConvexHullHelper(collider: ColliderParams): THREE.Object3D {
+  const rawPoints = collider.params.points;
+  const pointsArray = Array.isArray(rawPoints) ? rawPoints : [];
+  const points = pointsArray
+    .map((point) => asTuple3(point))
+    .filter((point): point is [number, number, number] => point !== null)
+    .map(([x, y, z]) => new THREE.Vector3(x, y, z));
+
+  const rootOffset = asTuple3(collider.params.rootOffset) ?? [0, 0, 0];
+  const center = new THREE.Vector3(-rootOffset[0], -rootOffset[1], -rootOffset[2]);
+
+  const group = new THREE.Group();
+  group.position.copy(center);
+  group.name = "collider-helper";
+
+  if (points.length < 4) {
+    return group;
+  }
+
+  const geometry = new ConvexGeometry(points);
   const material = new THREE.MeshBasicMaterial({
     color: 0x44aaff,
     wireframe: true,
     transparent: true,
-    opacity: 0.4,
+    opacity: 0.4
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  group.add(mesh);
+  return group;
+}
+
+function buildCompoundBoxesHelper(collider: ColliderParams): THREE.Object3D {
+  const rawParts = collider.params.parts;
+  const parts = Array.isArray(rawParts) ? rawParts : [];
+  const group = new THREE.Group();
+  group.name = "collider-helper";
+
+  for (const part of parts) {
+    if (typeof part !== "object" || part === null) {
+      continue;
+    }
+    const record = part as Record<string, unknown>;
+    const position = asTuple3(record.position);
+    const halfExtents = asTuple3(record.halfExtents);
+    if (!position || !halfExtents) {
+      continue;
+    }
+
+    const geometry = new THREE.BoxGeometry(
+      Math.max(halfExtents[0], 0.0001) * 2,
+      Math.max(halfExtents[1], 0.0001) * 2,
+      Math.max(halfExtents[2], 0.0001) * 2
+    );
+    const material = new THREE.MeshBasicMaterial({
+      color: 0x44aaff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.4
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(position[0], position[1], position[2]);
+    group.add(mesh);
+  }
+
+  return group;
+}
+
+export function createColliderHelper(collider: ColliderParams): THREE.Object3D {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x44aaff,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.4
   });
 
-  let geometry: THREE.BufferGeometry;
+  let geometry: THREE.BufferGeometry | null = null;
 
   switch (collider.type) {
     case "box":
       geometry = new THREE.BoxGeometry(
-        collider.params.halfWidth * 2,
-        collider.params.halfHeight * 2,
-        collider.params.halfDepth * 2
+        asNumber(collider.params.halfWidth) * 2,
+        asNumber(collider.params.halfHeight) * 2,
+        asNumber(collider.params.halfDepth) * 2
       );
       break;
+    case "pill":
     case "capsule":
       geometry = new THREE.CapsuleGeometry(
-        collider.params.radius,
-        collider.params.halfHeight * 2,
+        asNumber(collider.params.radius),
+        asNumber(collider.params.halfHeight) * 2,
         8,
         16
       );
       break;
     case "sphere":
-      geometry = new THREE.SphereGeometry(collider.params.radius, 16, 12);
+      geometry = new THREE.SphereGeometry(asNumber(collider.params.radius), 16, 12);
       break;
     case "cylinder":
       geometry = new THREE.CylinderGeometry(
-        collider.params.radius,
-        collider.params.radius,
-        collider.params.halfHeight * 2,
+        asNumber(collider.params.radius),
+        asNumber(collider.params.radius),
+        asNumber(collider.params.halfHeight) * 2,
         16
       );
       break;
     case "convex-hull":
-      // Convex hull uses mesh geometry directly; show nothing extra
-      geometry = new THREE.BufferGeometry();
-      break;
+      return buildConvexHullHelper(collider);
+    case "compound-boxes":
+      return buildCompoundBoxesHelper(collider);
   }
 
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.set(
-    collider.position[0],
-    collider.position[1],
-    collider.position[2]
+  const mesh = new THREE.Mesh(
+    geometry ?? new THREE.BufferGeometry(),
+    material
   );
+  if (collider.type === "pill" || collider.type === "capsule" || collider.type === "cylinder") {
+    applyAxisRotation(mesh, asColliderAxis(collider.params.axis, "y"));
+  }
+  mesh.position.set(collider.position[0], collider.position[1], collider.position[2]);
   mesh.name = "collider-helper";
   return mesh;
 }

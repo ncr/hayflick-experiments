@@ -90,7 +90,7 @@ export function ProcessingRail({
   return (
     <>
       <details open>
-        <summary>Simplify</summary>
+        <summary>Mesh / Texture</summary>
         <SimplifyPanel
           viewport={viewport}
           originalModel={originalModel}
@@ -121,6 +121,7 @@ export function ProcessingRail({
         <ColliderPanel
           viewport={viewport}
           onColliderChange={handleColliderChange}
+          currentCollider={prop.collider}
           refitTrigger={colliderRebuildTrigger}
           hideTitle
         />
