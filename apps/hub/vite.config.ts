@@ -10,6 +10,7 @@ export default defineConfig({
   base,
   plugins: [react(), glsl(), apiProxyPlugin()],
   server: {
+    host: true,
     allowedHosts: ["exp.trixtech.net"],
   },
 });

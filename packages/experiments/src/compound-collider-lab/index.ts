@@ -251,10 +251,9 @@ const experiment: ExperimentModule = {
     const hud = document.createElement("div");
     hud.style.position = "absolute";
     hud.style.left = "12px";
-    hud.style.top = "12px";
+    hud.style.bottom = "12px";
     hud.style.width = "420px";
     hud.style.maxWidth = "calc(100% - 24px)";
-    hud.style.padding = "10px 12px";
     hud.style.borderRadius = "12px";
     hud.style.background = "rgba(8,14,20,0.88)";
     hud.style.border = "1px solid rgba(118,177,220,0.45)";
@@ -263,28 +262,41 @@ const experiment: ExperimentModule = {
     hud.style.backdropFilter = "blur(6px)";
     hud.style.pointerEvents = "auto";
     hud.style.zIndex = "5";
+    hud.style.boxSizing = "border-box";
     mount.appendChild(hud);
 
+    const startCollapsed = width < 600;
+
     hud.innerHTML = [
-      "<div style='font-size:13px;font-weight:600;letter-spacing:0.02em;margin-bottom:8px'>Collider Heuristics Lab</div>",
+      "<div data-id='hud-header' style='display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;-webkit-tap-highlight-color:transparent'>",
+      "<div style='font-size:13px;font-weight:600;letter-spacing:0.02em'>Collider Heuristics Lab</div>",
+      "<button data-id='hud-toggle' style='background:none;border:none;color:#d3e8fa;font-size:18px;min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;margin:-8px -8px -8px 0'>",
+      startCollapsed ? "&#x25B2;" : "&#x25BC;",
+      "</button>",
+      "</div>",
+      `<div data-id='hud-body' style='padding:0 12px 10px;max-height:70vh;overflow-y:auto;${startCollapsed ? "display:none" : ""}'>`,
       "<div style='font-size:11px;opacity:0.88;margin-bottom:8px'>Switch props and compare convex segmentation vs auto-collider behavior.</div>",
       "<div style='display:grid;grid-template-columns:1fr;gap:8px;margin:8px 0'>",
-      "<label>Prop<select data-id='prop' style='width:100%;margin-top:4px'></select></label>",
-      "<label>Algorithm<select data-id='algo' style='width:100%;margin-top:4px'><option value='convex' selected>convex segments</option><option value='auto'>auto collider (dynamic strict)</option></select></label>",
-      "<label>Auto Strategy<select data-id='auto-strategy' style='width:100%;margin-top:4px'><option value='concave-furniture' selected>concave-furniture</option><option value='boxy-furniture'>boxy-furniture</option></select></label>",
-      "<label>Target Hull Count<select data-id='hulls' style='width:100%;margin-top:4px'><option value='2'>2</option><option value='3'>3</option><option value='4' selected>4</option><option value='5'>5</option><option value='6'>6</option></select></label>",
+      "<label>Prop<select data-id='prop' style='width:100%;margin-top:4px;min-height:36px;font-size:14px'></select></label>",
+      "<label>Algorithm<select data-id='algo' style='width:100%;margin-top:4px;min-height:36px;font-size:14px'><option value='convex' selected>convex segments</option><option value='auto'>auto collider (dynamic strict)</option></select></label>",
+      "<label>Auto Strategy<select data-id='auto-strategy' style='width:100%;margin-top:4px;min-height:36px;font-size:14px'><option value='concave-furniture' selected>concave-furniture</option><option value='boxy-furniture'>boxy-furniture</option></select></label>",
+      "<label>Target Hull Count<select data-id='hulls' style='width:100%;margin-top:4px;min-height:36px;font-size:14px'><option value='2'>2</option><option value='3'>3</option><option value='4' selected>4</option><option value='5'>5</option><option value='6'>6</option></select></label>",
       "</div>",
       "<div style='display:flex;gap:10px;flex-wrap:wrap;margin:9px 0'>",
-      "<label style='display:flex;align-items:center;gap:5px'><input data-id='show-original' type='checkbox' checked>Original</label>",
-      "<label style='display:flex;align-items:center;gap:5px'><input data-id='show-overlay' type='checkbox' checked>Collider Overlay</label>",
+      "<label style='display:flex;align-items:center;gap:5px;min-height:44px'><input data-id='show-original' type='checkbox' checked>Original</label>",
+      "<label style='display:flex;align-items:center;gap:5px;min-height:44px'><input data-id='show-overlay' type='checkbox' checked>Collider Overlay</label>",
       "</div>",
       "<div style='display:flex;gap:8px;flex-wrap:wrap;margin:8px 0'>",
-      "<button data-id='rebuild' style='padding:6px 10px;border-radius:8px;border:1px solid rgba(118,177,220,0.4);background:#122130;color:#d3e8fa'>Rebuild</button>",
-      "<button data-id='determinism' style='padding:6px 10px;border-radius:8px;border:1px solid rgba(118,177,220,0.4);background:#122130;color:#d3e8fa'>Determinism Check</button>",
+      "<button data-id='rebuild' style='padding:6px 10px;min-height:44px;border-radius:8px;border:1px solid rgba(118,177,220,0.4);background:#122130;color:#d3e8fa'>Rebuild</button>",
+      "<button data-id='determinism' style='padding:6px 10px;min-height:44px;border-radius:8px;border:1px solid rgba(118,177,220,0.4);background:#122130;color:#d3e8fa'>Determinism Check</button>",
       "</div>",
-      "<pre data-id='stats' style='margin:9px 0 0;padding:7px;border-radius:8px;background:rgba(5,10,15,0.6);white-space:pre-wrap;font:11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'></pre>"
+      "<pre data-id='stats' style='margin:9px 0 0;padding:7px;border-radius:8px;background:rgba(5,10,15,0.6);white-space:pre-wrap;font:11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'></pre>",
+      "</div>"
     ].join("");
 
+    const hudHeader = hud.querySelector<HTMLElement>("[data-id='hud-header']");
+    const hudToggle = hud.querySelector<HTMLButtonElement>("[data-id='hud-toggle']");
+    const hudBody = hud.querySelector<HTMLElement>("[data-id='hud-body']");
     const showOriginal = hud.querySelector<HTMLInputElement>("[data-id='show-original']");
     const showOverlay = hud.querySelector<HTMLInputElement>("[data-id='show-overlay']");
     const propSelect = hud.querySelector<HTMLSelectElement>("[data-id='prop']");
@@ -296,6 +308,9 @@ const experiment: ExperimentModule = {
     const statsPre = hud.querySelector<HTMLPreElement>("[data-id='stats']");
 
     if (
+      !hudHeader ||
+      !hudToggle ||
+      !hudBody ||
       !showOriginal ||
       !showOverlay ||
       !propSelect ||
@@ -308,6 +323,14 @@ const experiment: ExperimentModule = {
     ) {
       throw new Error("Failed to initialize collider lab controls.");
     }
+
+    let hudExpanded = !startCollapsed;
+    const toggleHud = (): void => {
+      hudExpanded = !hudExpanded;
+      hudBody.style.display = hudExpanded ? "" : "none";
+      hudToggle.innerHTML = hudExpanded ? "&#x25BC;" : "&#x25B2;";
+    };
+    hudHeader.addEventListener("click", toggleHud);
 
     const choices = await listPropChoices();
     const labelById = new Map<string, string>();
@@ -641,6 +664,7 @@ const experiment: ExperimentModule = {
       hullCountSelect.removeEventListener("change", onRebuild);
       rebuildBtn.removeEventListener("click", onRebuild);
       determinismBtn.removeEventListener("click", onDeterminism);
+      hudHeader.removeEventListener("click", toggleHud);
 
       disposeOverlay();
       disposeModel();
