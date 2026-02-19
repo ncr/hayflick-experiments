@@ -2595,3 +2595,16 @@ Preventive checklist:
 - Expose strategy as an explicit option in UI where auto-collider is invoked.
 - Thread selected strategy through generation APIs instead of deriving it implicitly from classifier order.
 - Keep quality metrics/reporting, but do not use them to silently switch user-selected strategy.
+
+## 2026-02-19 - Convex-hull collider quality should prioritize hull vertex quality, not mesh remesh topology
+Root cause:
+- We treated hull triangle topology as a physics-quality target and added heavy remeshing/debug controls.
+- For Rapier convex colliders, solver behavior is driven by convex vertex set + part count, not pretty triangulation.
+
+Detection signal:
+- User observed little practical value from remeshing/topology controls and asked to remove the whole attempt.
+
+Preventive checklist:
+- For convex collider workflows, optimize point-set quality and hull complexity first.
+- Keep topology-remesh experiments out of the main path unless trimesh colliders are a hard requirement.
+- Validate improvements with physics metrics (stability/contact behavior), not wireframe aesthetics.
