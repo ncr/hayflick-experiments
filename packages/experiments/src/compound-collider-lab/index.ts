@@ -20,7 +20,6 @@ const DEFAULT_PROP_ID = "commodore-pet-inspired-computer";
 const DEFAULT_HULL_COUNT = 4;
 
 type LabAlgorithm = "convex" | "auto";
-type FitMode = "balanced" | "tight" | "max";
 
 type PropChoice = {
   id: string;
@@ -30,7 +29,6 @@ type PropChoice = {
 type PropPreset = {
   algorithm?: LabAlgorithm;
   hulls?: number;
-  fitMode?: FitMode;
   note?: string;
 };
 
@@ -49,7 +47,6 @@ const PROP_PRESETS: Record<string, PropPreset> = {
   "commodore-pet-inspired-computer": {
     algorithm: "convex",
     hulls: 3,
-    fitMode: "max",
     note: "PET target: local Y cuts (XZ planes), 3 hulls, max fit."
   },
   "large-desk-without-drawers": {
@@ -58,7 +55,7 @@ const PROP_PRESETS: Record<string, PropPreset> = {
   }
 };
 
-function fitModeTuning(mode: FitMode): {
+function fitModeTuning(mode: "balanced" | "tight" | "max"): {
   maxSamplePoints: number;
   maxHullPoints: number;
   minSplitImprovement: number;
@@ -273,7 +270,6 @@ const experiment: ExperimentModule = {
       "<label>Prop<select data-id='prop' style='width:100%;margin-top:4px'></select></label>",
       "<label>Algorithm<select data-id='algo' style='width:100%;margin-top:4px'><option value='convex' selected>convex segments</option><option value='auto'>auto collider (dynamic strict)</option></select></label>",
       "<label>Target Hull Count<select data-id='hulls' style='width:100%;margin-top:4px'><option value='2'>2</option><option value='3'>3</option><option value='4' selected>4</option><option value='5'>5</option><option value='6'>6</option></select></label>",
-      "<label>Fit Mode<select data-id='fit-mode' style='width:100%;margin-top:4px'><option value='balanced' selected>balanced</option><option value='tight'>tight</option><option value='max'>max</option></select></label>",
       "</div>",
       "<div style='display:flex;gap:10px;flex-wrap:wrap;margin:9px 0'>",
       "<label style='display:flex;align-items:center;gap:5px'><input data-id='show-original' type='checkbox' checked>Original</label>",
@@ -291,7 +287,6 @@ const experiment: ExperimentModule = {
     const propSelect = hud.querySelector<HTMLSelectElement>("[data-id='prop']");
     const algorithmSelect = hud.querySelector<HTMLSelectElement>("[data-id='algo']");
     const hullCountSelect = hud.querySelector<HTMLSelectElement>("[data-id='hulls']");
-    const fitModeSelect = hud.querySelector<HTMLSelectElement>("[data-id='fit-mode']");
     const rebuildBtn = hud.querySelector<HTMLButtonElement>("[data-id='rebuild']");
     const determinismBtn = hud.querySelector<HTMLButtonElement>("[data-id='determinism']");
     const statsPre = hud.querySelector<HTMLPreElement>("[data-id='stats']");
@@ -302,7 +297,6 @@ const experiment: ExperimentModule = {
       !propSelect ||
       !algorithmSelect ||
       !hullCountSelect ||
-      !fitModeSelect ||
       !rebuildBtn ||
       !determinismBtn ||
       !statsPre
@@ -381,9 +375,6 @@ const experiment: ExperimentModule = {
       if (preset.hulls) {
         hullCountSelect.value = String(preset.hulls);
       }
-      if (preset.fitMode) {
-        fitModeSelect.value = preset.fitMode;
-      }
     };
 
     const renderStats = (): void => {
@@ -413,7 +404,7 @@ const experiment: ExperimentModule = {
         statsPre.textContent = [
           ...header,
           `Target hulls: ${lastConvexResult.targetParts}`,
-          `Fit mode: ${fitModeSelect.value}`,
+          "Fit mode: max (forced)",
           `Actual hulls: ${lastConvexResult.parts.length}`,
           `Surface samples: ${lastConvexResult.sampledPoints}`,
           cutLine,
@@ -490,8 +481,7 @@ const experiment: ExperimentModule = {
       }
 
       const target = Number(hullCountSelect.value);
-      const fitMode = (fitModeSelect.value as FitMode) || "balanced";
-      const tuning = fitModeTuning(fitMode);
+      const tuning = fitModeTuning("max");
       const convexResult = segmentIntoConvexHulls(model, {
         targetParts: Number.isFinite(target) ? target : DEFAULT_HULL_COUNT,
         iterations: 10,
@@ -536,8 +526,7 @@ const experiment: ExperimentModule = {
       }
 
       const target = Number(hullCountSelect.value);
-      const fitMode = (fitModeSelect.value as FitMode) || "balanced";
-      const tuning = fitModeTuning(fitMode);
+      const tuning = fitModeTuning("max");
       const rerun = segmentIntoConvexHulls(model, {
         targetParts: Number.isFinite(target) ? target : DEFAULT_HULL_COUNT,
         iterations: 10,
@@ -615,7 +604,6 @@ const experiment: ExperimentModule = {
     propSelect.addEventListener("change", onPropChange);
     algorithmSelect.addEventListener("change", onAlgoChange);
     hullCountSelect.addEventListener("change", onRebuild);
-    fitModeSelect.addEventListener("change", onRebuild);
     rebuildBtn.addEventListener("click", onRebuild);
     determinismBtn.addEventListener("click", onDeterminism);
 
@@ -637,7 +625,6 @@ const experiment: ExperimentModule = {
       propSelect.removeEventListener("change", onPropChange);
       algorithmSelect.removeEventListener("change", onAlgoChange);
       hullCountSelect.removeEventListener("change", onRebuild);
-      fitModeSelect.removeEventListener("change", onRebuild);
       rebuildBtn.removeEventListener("click", onRebuild);
       determinismBtn.removeEventListener("click", onDeterminism);
 

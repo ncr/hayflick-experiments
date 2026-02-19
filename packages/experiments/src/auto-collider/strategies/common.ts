@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import type {
-  ColliderAxis,
   ColliderBudget,
   RapierCompoundPart,
   Vector3Tuple
@@ -128,48 +127,6 @@ export function limitCompoundParts(
   return kept;
 }
 
-export function primaryAxisFromSize(size: THREE.Vector3): ColliderAxis {
-  if (size.x >= size.y && size.x >= size.z) {
-    return "x";
-  }
-  if (size.y >= size.z) {
-    return "y";
-  }
-  return "z";
-}
-
-export function pointCoordByAxis(point: THREE.Vector3, axis: ColliderAxis): number {
-  if (axis === "x") return point.x;
-  if (axis === "y") return point.y;
-  return point.z;
-}
-
-export function radialDistanceToAxis(
-  point: THREE.Vector3,
-  center: THREE.Vector3,
-  axis: ColliderAxis
-): number {
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  const dz = point.z - center.z;
-  if (axis === "x") {
-    return Math.sqrt(dy * dy + dz * dz);
-  }
-  if (axis === "y") {
-    return Math.sqrt(dx * dx + dz * dz);
-  }
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-export function percentile(values: readonly number[], p: number): number {
-  if (values.length <= 0) {
-    return 0;
-  }
-  const sorted = [...values].sort((a, b) => a - b);
-  const index = clamp(Math.floor((sorted.length - 1) * p), 0, sorted.length - 1);
-  return sorted[index];
-}
-
 export function downsamplePoints(
   points: readonly THREE.Vector3[],
   maxPoints: number
@@ -185,19 +142,4 @@ export function downsamplePoints(
   }
 
   return result;
-}
-
-export function getBoundsCorners(bounds: THREE.Box3): THREE.Vector3[] {
-  const min = bounds.min;
-  const max = bounds.max;
-  return [
-    new THREE.Vector3(min.x, min.y, min.z),
-    new THREE.Vector3(min.x, min.y, max.z),
-    new THREE.Vector3(min.x, max.y, min.z),
-    new THREE.Vector3(min.x, max.y, max.z),
-    new THREE.Vector3(max.x, min.y, min.z),
-    new THREE.Vector3(max.x, min.y, max.z),
-    new THREE.Vector3(max.x, max.y, min.z),
-    new THREE.Vector3(max.x, max.y, max.z)
-  ];
 }

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { ConvexGeometry } from "three/examples/jsm/geometries/ConvexGeometry.js";
+import { simplifyMeshPlaneAware } from "./plane-aware-simplify";
 
 export type ConvexSegmentationOptions = {
   targetParts: number;
@@ -10,6 +11,12 @@ export type ConvexSegmentationOptions = {
   histogramBins?: number;
   minSplitImprovement?: number;
   minSplitImprovementAfterBase?: number;
+  hullSimplify?: {
+    vertexMerge?: number;
+    creaseProtect?: number;
+    planeSensitivity?: number;
+    detailCull?: number;
+  };
 };
 
 export type ConvexSegmentPart = {
@@ -77,6 +84,23 @@ type SplitCandidate = {
   rightTriangles: TriangleWithPca[];
   left: InternalHullPart;
   right: InternalHullPart;
+};
+
+type SegVertex = {
+  world: THREE.Vector3;
+  pca: THREE.Vector3;
+};
+
+type HullSimplifySettings = {
+  vertexMerge: number;
+  creaseProtect: number;
+  planeSensitivity: number;
+  detailCull: number;
+};
+
+type IndexedSegmentMesh = {
+  vertices: THREE.Vector3[];
+  triangles: Array<[number, number, number]>;
 };
 
 const COLOR_PALETTE = [
@@ -508,6 +532,106 @@ function cutHeightsFromBins(
   return bins.map((bin) => upMin + ((bin + 1) / histogramBins) * range);
 }
 
+function interpolateSegVertex(a: SegVertex, b: SegVertex, t: number): SegVertex {
+  return {
+    world: a.world.clone().lerp(b.world, t),
+    pca: a.pca.clone().lerp(b.pca, t)
+  };
+}
+
+function clipPolygonAgainstYPlane(
+  polygon: readonly SegVertex[],
+  planeY: number,
+  keepAbove: boolean
+): SegVertex[] {
+  if (polygon.length <= 0) {
+    return [];
+  }
+
+  const result: SegVertex[] = [];
+  const isInside = (vertex: SegVertex): boolean =>
+    keepAbove ? vertex.world.y >= planeY - EPSILON : vertex.world.y <= planeY + EPSILON;
+
+  for (let i = 0; i < polygon.length; i += 1) {
+    const current = polygon[i];
+    const next = polygon[(i + 1) % polygon.length];
+    const currentInside = isInside(current);
+    const nextInside = isInside(next);
+
+    if (currentInside && nextInside) {
+      result.push({
+        world: next.world.clone(),
+        pca: next.pca.clone()
+      });
+      continue;
+    }
+
+    const dy = next.world.y - current.world.y;
+    const intersects = (currentInside && !nextInside) || (!currentInside && nextInside);
+    if (intersects && Math.abs(dy) > EPSILON) {
+      const t = clamp((planeY - current.world.y) / dy, 0, 1);
+      result.push(interpolateSegVertex(current, next, t));
+    }
+
+    if (!currentInside && nextInside) {
+      result.push({
+        world: next.world.clone(),
+        pca: next.pca.clone()
+      });
+    }
+  }
+
+  return result;
+}
+
+function triangleFromSegVertices(a: SegVertex, b: SegVertex, c: SegVertex): TriangleWithPca {
+  const centroid = a.world.clone().add(b.world).add(c.world).multiplyScalar(1 / 3);
+  const pcaCentroid = a.pca.clone().add(b.pca).add(c.pca).multiplyScalar(1 / 3);
+  return {
+    a: a.world.clone(),
+    b: b.world.clone(),
+    c: c.world.clone(),
+    centroid,
+    pcaA: a.pca.clone(),
+    pcaB: b.pca.clone(),
+    pcaC: c.pca.clone(),
+    pcaCentroid
+  };
+}
+
+function clipTriangleToYRange(
+  triangle: TriangleWithPca,
+  minY: number,
+  maxY: number
+): TriangleWithPca[] {
+  let polygon: SegVertex[] = [
+    { world: triangle.a.clone(), pca: triangle.pcaA.clone() },
+    { world: triangle.b.clone(), pca: triangle.pcaB.clone() },
+    { world: triangle.c.clone(), pca: triangle.pcaC.clone() }
+  ];
+
+  if (Number.isFinite(minY)) {
+    polygon = clipPolygonAgainstYPlane(polygon, minY, true);
+  }
+  if (polygon.length < 3) {
+    return [];
+  }
+
+  if (Number.isFinite(maxY)) {
+    polygon = clipPolygonAgainstYPlane(polygon, maxY, false);
+  }
+  if (polygon.length < 3) {
+    return [];
+  }
+
+  const clippedTriangles: TriangleWithPca[] = [];
+  const anchor = polygon[0];
+  for (let i = 1; i < polygon.length - 1; i += 1) {
+    clippedTriangles.push(triangleFromSegVertices(anchor, polygon[i], polygon[i + 1]));
+  }
+  return clippedTriangles;
+}
+
 function segmentTrianglesByCutHeights(
   triangles: readonly TriangleWithPca[],
   cutHeights: readonly number[]
@@ -521,15 +645,20 @@ function segmentTrianglesByCutHeights(
     { length: sortedCuts.length + 1 },
     () => []
   );
+  const bounds = [Number.NEGATIVE_INFINITY, ...sortedCuts, Number.POSITIVE_INFINITY];
 
   for (const triangle of triangles) {
-    const up = triangle.centroid.y;
-
-    let segment = 0;
-    while (segment < sortedCuts.length && up > sortedCuts[segment]) {
-      segment += 1;
+    for (let segmentIndex = 0; segmentIndex < bounds.length - 1; segmentIndex += 1) {
+      const clipped = clipTriangleToYRange(
+        triangle,
+        bounds[segmentIndex],
+        bounds[segmentIndex + 1]
+      );
+      if (clipped.length <= 0) {
+        continue;
+      }
+      segments[segmentIndex].push(...clipped);
     }
-    segments[segment].push(triangle);
   }
 
   return segments.filter((segment) => segment.length > 0);
@@ -617,17 +746,19 @@ function collectSegmentPoints(
   const world: THREE.Vector3[] = [];
   const pca: THREE.Vector3[] = [];
 
-  // Keep segment hull construction inside the Y-banded partition by using
-  // interior samples (centroids) rather than full triangle vertices.
+  // Build hulls from real surface vertices to preserve silhouette fidelity.
   for (const triangle of triangles) {
-    world.push(triangle.centroid.clone());
-    pca.push(triangle.pcaCentroid.clone());
+    world.push(triangle.a.clone(), triangle.b.clone(), triangle.c.clone());
+    pca.push(triangle.pcaA.clone(), triangle.pcaB.clone(), triangle.pcaC.clone());
   }
 
   return { world, pca };
 }
 
-function downsamplePoints(points: readonly THREE.Vector3[], maxPoints: number): THREE.Vector3[] {
+function downsamplePointsStride(
+  points: readonly THREE.Vector3[],
+  maxPoints: number
+): THREE.Vector3[] {
   if (points.length <= maxPoints) {
     return points.map((point) => point.clone());
   }
@@ -640,6 +771,433 @@ function downsamplePoints(points: readonly THREE.Vector3[], maxPoints: number): 
   }
 
   return sampled;
+}
+
+function quantizedPointKey(point: THREE.Vector3, step: number): string {
+  const safeStep = Math.max(1e-9, step);
+  return `${Math.round(point.x / safeStep)}|${Math.round(point.y / safeStep)}|${Math.round(point.z / safeStep)}`;
+}
+
+function buildIndexedGeometryFromTriangles(
+  triangles: readonly TriangleWithPca[]
+): THREE.BufferGeometry {
+  const bounds = new THREE.Box3();
+  for (const triangle of triangles) {
+    bounds.expandByPoint(triangle.a);
+    bounds.expandByPoint(triangle.b);
+    bounds.expandByPoint(triangle.c);
+  }
+  const size = bounds.getSize(new THREE.Vector3());
+  const diagonal = Math.max(EPSILON, size.length());
+  const quantStep = Math.max(1e-6, diagonal * 1e-6);
+
+  const vertexLookup = new Map<string, number>();
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  const indexForPoint = (point: THREE.Vector3): number => {
+    const key = quantizedPointKey(point, quantStep);
+    const existing = vertexLookup.get(key);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const next = Math.floor(positions.length / 3);
+    vertexLookup.set(key, next);
+    positions.push(point.x, point.y, point.z);
+    return next;
+  };
+
+  for (const triangle of triangles) {
+    const a = indexForPoint(triangle.a);
+    const b = indexForPoint(triangle.b);
+    const c = indexForPoint(triangle.c);
+    if (a === b || b === c || c === a) {
+      continue;
+    }
+    indices.push(a, b, c);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(new THREE.Uint32BufferAttribute(indices, 1));
+  return geometry;
+}
+
+function toIndexedSegmentMesh(geometry: THREE.BufferGeometry): IndexedSegmentMesh {
+  const position = geometry.getAttribute("position");
+  if (!(position instanceof THREE.BufferAttribute) || position.count < 3) {
+    return { vertices: [], triangles: [] };
+  }
+
+  const vertices: THREE.Vector3[] = [];
+  for (let i = 0; i < position.count; i += 1) {
+    vertices.push(
+      new THREE.Vector3(position.getX(i), position.getY(i), position.getZ(i))
+    );
+  }
+
+  const triangles: Array<[number, number, number]> = [];
+  const index = geometry.getIndex();
+  if (index) {
+    for (let i = 0; i + 2 < index.count; i += 3) {
+      const a = index.getX(i);
+      const b = index.getX(i + 1);
+      const c = index.getX(i + 2);
+      if (a === b || b === c || c === a) {
+        continue;
+      }
+      triangles.push([a, b, c]);
+    }
+  } else {
+    for (let i = 0; i + 2 < position.count; i += 3) {
+      triangles.push([i, i + 1, i + 2]);
+    }
+  }
+
+  return { vertices, triangles };
+}
+
+function edgeKeyByIndex(a: number, b: number): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+function computeFaceNormals(mesh: IndexedSegmentMesh): THREE.Vector3[] {
+  const normals: THREE.Vector3[] = [];
+  const ab = new THREE.Vector3();
+  const ac = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+
+  for (const [a, b, c] of mesh.triangles) {
+    const va = mesh.vertices[a];
+    const vb = mesh.vertices[b];
+    const vc = mesh.vertices[c];
+    if (!va || !vb || !vc) {
+      normals.push(new THREE.Vector3());
+      continue;
+    }
+
+    ab.copy(vb).sub(va);
+    ac.copy(vc).sub(va);
+    normal.copy(ab).cross(ac);
+    const lenSq = normal.lengthSq();
+    if (lenSq <= EPSILON) {
+      normals.push(new THREE.Vector3());
+      continue;
+    }
+    normal.multiplyScalar(1 / Math.sqrt(lenSq));
+    normals.push(normal.clone());
+  }
+
+  return normals;
+}
+
+function detectFeatureVertexIndices(
+  mesh: IndexedSegmentMesh,
+  creaseProtect: number
+): number[] {
+  if (mesh.vertices.length <= 0 || mesh.triangles.length <= 0) {
+    return [];
+  }
+
+  const features = new Set<number>();
+
+  let minX = 0;
+  let maxX = 0;
+  let minY = 0;
+  let maxY = 0;
+  let minZ = 0;
+  let maxZ = 0;
+  for (let index = 1; index < mesh.vertices.length; index += 1) {
+    const vertex = mesh.vertices[index];
+    if (vertex.x < mesh.vertices[minX].x) minX = index;
+    if (vertex.x > mesh.vertices[maxX].x) maxX = index;
+    if (vertex.y < mesh.vertices[minY].y) minY = index;
+    if (vertex.y > mesh.vertices[maxY].y) maxY = index;
+    if (vertex.z < mesh.vertices[minZ].z) minZ = index;
+    if (vertex.z > mesh.vertices[maxZ].z) maxZ = index;
+  }
+  features.add(minX);
+  features.add(maxX);
+  features.add(minY);
+  features.add(maxY);
+  features.add(minZ);
+  features.add(maxZ);
+
+  const edgeMap = new Map<string, { a: number; b: number; faces: number[] }>();
+  const addEdge = (faceIndex: number, a: number, b: number): void => {
+    const key = edgeKeyByIndex(a, b);
+    const existing = edgeMap.get(key);
+    if (existing) {
+      existing.faces.push(faceIndex);
+      return;
+    }
+    edgeMap.set(key, { a, b, faces: [faceIndex] });
+  };
+
+  for (let faceIndex = 0; faceIndex < mesh.triangles.length; faceIndex += 1) {
+    const [a, b, c] = mesh.triangles[faceIndex];
+    addEdge(faceIndex, a, b);
+    addEdge(faceIndex, b, c);
+    addEdge(faceIndex, c, a);
+  }
+
+  const normals = computeFaceNormals(mesh);
+  const creaseAngleDeg = THREE.MathUtils.lerp(62, 8, clamp(creaseProtect, 0, 1));
+  const creaseCos = Math.cos(THREE.MathUtils.degToRad(creaseAngleDeg));
+
+  for (const edge of edgeMap.values()) {
+    if (edge.faces.length !== 2) {
+      features.add(edge.a);
+      features.add(edge.b);
+      continue;
+    }
+
+    const normalA = normals[edge.faces[0]];
+    const normalB = normals[edge.faces[1]];
+    if (!normalA || !normalB || normalA.lengthSq() <= EPSILON || normalB.lengthSq() <= EPSILON) {
+      features.add(edge.a);
+      features.add(edge.b);
+      continue;
+    }
+
+    const dot = clamp(normalA.dot(normalB), -1, 1);
+    if (dot < creaseCos) {
+      features.add(edge.a);
+      features.add(edge.b);
+    }
+  }
+
+  return [...features].sort((a, b) => a - b);
+}
+
+function farthestPointSampleIndices(
+  points: readonly THREE.Vector3[],
+  candidateIndices: readonly number[],
+  targetCount: number,
+  seedIndices: readonly number[] = []
+): number[] {
+  if (targetCount <= 0 || points.length <= 0 || candidateIndices.length <= 0) {
+    return [];
+  }
+
+  const uniqueCandidates = [...new Set(candidateIndices)]
+    .filter((index) => index >= 0 && index < points.length)
+    .sort((a, b) => a - b);
+  if (uniqueCandidates.length <= targetCount) {
+    return uniqueCandidates;
+  }
+
+  const candidateMask = new Uint8Array(points.length);
+  for (const index of uniqueCandidates) {
+    candidateMask[index] = 1;
+  }
+
+  const selected: number[] = [];
+  const selectedMask = new Uint8Array(points.length);
+  const distances = new Float64Array(points.length);
+  distances.fill(Number.POSITIVE_INFINITY);
+
+  const select = (index: number): void => {
+    if (candidateMask[index] === 0 || selectedMask[index] !== 0) {
+      return;
+    }
+    selectedMask[index] = 1;
+    selected.push(index);
+  };
+
+  const updateDistances = (sourceIndex: number): void => {
+    const source = points[sourceIndex];
+    for (const index of uniqueCandidates) {
+      if (selectedMask[index] !== 0) {
+        continue;
+      }
+      const distance = source.distanceToSquared(points[index]);
+      if (distance < distances[index]) {
+        distances[index] = distance;
+      }
+    }
+  };
+
+  for (const seed of [...new Set(seedIndices)].sort((a, b) => a - b)) {
+    if (selected.length >= targetCount) {
+      break;
+    }
+    select(seed);
+  }
+  for (const index of selected) {
+    updateDistances(index);
+  }
+
+  if (selected.length <= 0) {
+    const centroid = new THREE.Vector3();
+    for (const index of uniqueCandidates) {
+      centroid.add(points[index]);
+    }
+    centroid.multiplyScalar(1 / uniqueCandidates.length);
+
+    let first = uniqueCandidates[0];
+    let bestDistance = -1;
+    for (const index of uniqueCandidates) {
+      const distance = points[index].distanceToSquared(centroid);
+      if (
+        distance > bestDistance + 1e-12 ||
+        (Math.abs(distance - bestDistance) <= 1e-12 && index < first)
+      ) {
+        first = index;
+        bestDistance = distance;
+      }
+    }
+    select(first);
+    updateDistances(first);
+  }
+
+  while (selected.length < targetCount) {
+    let bestIndex = -1;
+    let bestDistance = -1;
+    for (const index of uniqueCandidates) {
+      if (selectedMask[index] !== 0) {
+        continue;
+      }
+      const distance = distances[index];
+      if (
+        distance > bestDistance + 1e-12 ||
+        (Math.abs(distance - bestDistance) <= 1e-12 && (bestIndex < 0 || index < bestIndex))
+      ) {
+        bestIndex = index;
+        bestDistance = distance;
+      }
+    }
+
+    if (bestIndex < 0) {
+      break;
+    }
+
+    select(bestIndex);
+    updateDistances(bestIndex);
+  }
+
+  return selected;
+}
+
+function selectFeatureAwareHullPoints(
+  mesh: IndexedSegmentMesh,
+  maxPoints: number,
+  creaseProtect: number
+): THREE.Vector3[] {
+  if (mesh.vertices.length <= maxPoints) {
+    return mesh.vertices.map((point) => point.clone());
+  }
+
+  const allCandidates = mesh.vertices.map((_, index) => index);
+  const featureIndices = detectFeatureVertexIndices(mesh, creaseProtect);
+  const featureBudget = Math.min(
+    featureIndices.length,
+    Math.max(4, Math.floor(maxPoints * 0.58))
+  );
+  const selectedFeature = farthestPointSampleIndices(
+    mesh.vertices,
+    featureIndices,
+    featureBudget
+  );
+  const selectedSet = new Set<number>(selectedFeature);
+
+  const remainingCandidates = allCandidates.filter((index) => !selectedSet.has(index));
+  const remainingBudget = maxPoints - selectedFeature.length;
+  const selectedCoverage = farthestPointSampleIndices(
+    mesh.vertices,
+    remainingCandidates,
+    remainingBudget,
+    selectedFeature
+  );
+
+  const selected = [...selectedFeature, ...selectedCoverage];
+  for (const index of selectedCoverage) {
+    selectedSet.add(index);
+  }
+  if (selected.length < maxPoints) {
+    for (const index of remainingCandidates) {
+      if (selectedSet.has(index)) {
+        continue;
+      }
+      selected.push(index);
+      selectedSet.add(index);
+      if (selected.length >= maxPoints) {
+        break;
+      }
+    }
+  }
+
+  return selected.slice(0, maxPoints).map((index) => mesh.vertices[index].clone());
+}
+
+function optimizeSegmentHullPoints(
+  triangles: readonly TriangleWithPca[],
+  maxHullPoints: number,
+  simplify: HullSimplifySettings
+): THREE.Vector3[] {
+  const rawGeometry = buildIndexedGeometryFromTriangles(triangles);
+  const rawMesh = toIndexedSegmentMesh(rawGeometry);
+  if (rawMesh.vertices.length <= 0 || rawMesh.triangles.length <= 0) {
+    rawGeometry.dispose();
+    return [];
+  }
+
+  const detail = clamp(simplify.detailCull, 0, 1);
+  const targetFaces = Math.floor(
+    clamp(
+      Math.round(maxHullPoints * THREE.MathUtils.lerp(2.45, 0.92, detail)),
+      8,
+      rawMesh.triangles.length
+    )
+  );
+  const vertexMerge = clamp(
+    simplify.vertexMerge * THREE.MathUtils.lerp(1, 3.2, detail),
+    0.00005,
+    0.05
+  );
+  const creaseProtect = clamp(simplify.creaseProtect - detail * 0.16, 0, 1);
+  const planeSensitivity = clamp(simplify.planeSensitivity + detail * 0.14, 0, 1);
+
+  const tempRoot = new THREE.Group();
+  const tempMaterial = new THREE.MeshBasicMaterial();
+  const tempMesh = new THREE.Mesh(rawGeometry, tempMaterial);
+  tempRoot.add(tempMesh);
+
+  let simplifiedGeometry: THREE.BufferGeometry | null = null;
+  try {
+    const simplified = simplifyMeshPlaneAware(tempRoot, {
+      vertexMerge,
+      creaseProtect,
+      planeSensitivity,
+      targetFaces
+    });
+    simplifiedGeometry = simplified.geometry;
+  } catch {
+    simplifiedGeometry = null;
+  }
+
+  tempRoot.remove(tempMesh);
+  tempMaterial.dispose();
+  rawGeometry.dispose();
+
+  if (!simplifiedGeometry) {
+    return downsamplePointsStride(rawMesh.vertices, maxHullPoints);
+  }
+
+  const simplifiedMesh = toIndexedSegmentMesh(simplifiedGeometry);
+  const sampled = selectFeatureAwareHullPoints(
+    simplifiedMesh,
+    maxHullPoints,
+    creaseProtect
+  );
+  simplifiedGeometry.dispose();
+
+  if (sampled.length >= 4) {
+    return sampled;
+  }
+
+  return downsamplePointsStride(rawMesh.vertices, maxHullPoints);
 }
 
 function uniqueHullVertices(geometry: THREE.BufferGeometry): Array<[number, number, number]> {
@@ -737,16 +1295,44 @@ function estimatePointCloudVolume(points: readonly THREE.Vector3[]): number {
 function makeHullPart(
   triangles: readonly TriangleWithPca[],
   segmentIndex: number,
-  maxHullPoints: number
+  maxHullPoints: number,
+  hullSimplify: HullSimplifySettings
 ): InternalHullPart | null {
   const points = collectSegmentPoints(triangles);
   if (points.world.length < 4) {
     return null;
   }
 
-  const sampled = downsamplePoints(points.world, maxHullPoints);
+  const sampled = optimizeSegmentHullPoints(triangles, maxHullPoints, hullSimplify);
   if (sampled.length < 4) {
-    return null;
+    const fallback = downsamplePointsStride(points.world, maxHullPoints);
+    if (fallback.length < 4) {
+      return null;
+    }
+    const geometry = new ConvexGeometry(fallback);
+    const vertices = uniqueHullVertices(geometry);
+    if (vertices.length < 4) {
+      geometry.dispose();
+      return null;
+    }
+
+    const hullVolume = Math.max(EPSILON, convexHullVolume(geometry));
+    const segmentVolume = estimatePointCloudVolume(points.pca);
+    const concavityProxy = clamp(1 - segmentVolume / hullVolume, 0, 1);
+    const yRange = yRangeOfTriangles(triangles);
+    const centroid = computeMean(points.world);
+    return {
+      geometry,
+      centroid,
+      yMin: yRange.yMin,
+      yMax: yRange.yMax,
+      pointCount: points.world.length,
+      hullPointCount: fallback.length,
+      vertices,
+      hullVolume,
+      concavityProxy,
+      segmentIndex
+    };
   }
 
   const geometry = new ConvexGeometry(sampled);
@@ -807,13 +1393,9 @@ function splitSegmentByY(
 
   const left: TriangleWithPca[] = [];
   const right: TriangleWithPca[] = [];
-
   for (const triangle of triangles) {
-    if (triangle.centroid.y <= median) {
-      left.push(triangle);
-    } else {
-      right.push(triangle);
-    }
+    left.push(...clipTriangleToYRange(triangle, Number.NEGATIVE_INFINITY, median));
+    right.push(...clipTriangleToYRange(triangle, median, Number.POSITIVE_INFINITY));
   }
 
   if (left.length < 8 || right.length < 8) {
@@ -828,6 +1410,7 @@ function trySplitHull(
   single: InternalHullPart,
   segmentIndex: number,
   maxHullPoints: number,
+  hullSimplify: HullSimplifySettings,
   minImprovement: number
 ): SplitCandidate | null {
   const split = splitSegmentByY(triangles);
@@ -835,8 +1418,8 @@ function trySplitHull(
     return null;
   }
 
-  const leftPart = makeHullPart(split.left, segmentIndex, maxHullPoints);
-  const rightPart = makeHullPart(split.right, segmentIndex, maxHullPoints);
+  const leftPart = makeHullPart(split.left, segmentIndex, maxHullPoints, hullSimplify);
+  const rightPart = makeHullPart(split.right, segmentIndex, maxHullPoints, hullSimplify);
   if (!leftPart || !rightPart) {
     if (leftPart) leftPart.geometry.dispose();
     if (rightPart) rightPart.geometry.dispose();
@@ -916,6 +1499,12 @@ export function segmentIntoConvexHulls(
     0,
     0.2
   );
+  const hullSimplify: HullSimplifySettings = {
+    vertexMerge: clamp(options.hullSimplify?.vertexMerge ?? 0.0065, 0.00005, 0.05),
+    creaseProtect: clamp(options.hullSimplify?.creaseProtect ?? 0.82, 0, 1),
+    planeSensitivity: clamp(options.hullSimplify?.planeSensitivity ?? 0.88, 0, 1),
+    detailCull: clamp(options.hullSimplify?.detailCull ?? 0.18, 0, 1)
+  };
 
   const triangles = collectTriangles(root);
   if (triangles.length <= 0) {
@@ -966,7 +1555,12 @@ export function segmentIntoConvexHulls(
 
   const activeHulls: ActiveHull[] = [];
   for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
-    const hull = makeHullPart(segments[segmentIndex], segmentIndex, maxHullPoints);
+    const hull = makeHullPart(
+      segments[segmentIndex],
+      segmentIndex,
+      maxHullPoints,
+      hullSimplify
+    );
     if (!hull) {
       continue;
     }
@@ -995,6 +1589,7 @@ export function segmentIntoConvexHulls(
         source.hull,
         source.segmentIndex,
         maxHullPoints,
+        hullSimplify,
         minImprovement
       );
       if (!candidate) {

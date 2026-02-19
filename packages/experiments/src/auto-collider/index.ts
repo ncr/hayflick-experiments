@@ -1,6 +1,5 @@
 export { generateCollider, generateColliderFromObject } from "./api";
 export type {
-  ColliderAxis,
   ColliderBudget,
   ColliderClass,
   ColliderClassification,
@@ -12,12 +11,8 @@ export type {
   ColliderResult,
   ColliderStrategyKind,
   GenerateColliderOptions,
-  RapierBallCollider,
-  RapierCapsuleCollider,
   RapierColliderDescription,
   RapierCompoundCollider,
   RapierCompoundPart,
-  RapierConvexCollider,
-  RapierTrimeshCollider,
   Vector3Tuple
 } from "./types";

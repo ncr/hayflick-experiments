@@ -6,41 +6,12 @@ export type ColliderMode = "dynamic" | "static";
 export type ColliderBudget = "strict" | "balanced";
 
 export type ColliderClass =
-  | "Primitive"
-  | "SingleConvex"
   | "BoxyFurniture"
-  | "Layered"
-  | "ConcaveFurniture"
-  | "HardNoisy";
+  | "ConcaveFurniture";
 
 export type ColliderStrategyKind =
-  | "primitive"
-  | "single-convex"
   | "boxy-furniture"
-  | "concave-furniture"
-  | "hard-noisy";
-
-export type ColliderAxis = "x" | "y" | "z";
-
-export type RapierBallCollider = {
-  type: "ball";
-  center: Vector3Tuple;
-  radius: number;
-};
-
-export type RapierCapsuleCollider = {
-  type: "capsule";
-  center: Vector3Tuple;
-  axis: ColliderAxis;
-  radius: number;
-  halfHeight: number;
-};
-
-export type RapierConvexCollider = {
-  type: "convex";
-  points: Vector3Tuple[];
-  rootOffset: Vector3Tuple;
-};
+  | "concave-furniture";
 
 export type RapierCompoundPart = {
   kind: "box";
@@ -53,18 +24,7 @@ export type RapierCompoundCollider = {
   parts: RapierCompoundPart[];
 };
 
-export type RapierTrimeshCollider = {
-  type: "trimesh";
-  vertices: Float32Array;
-  indices: Uint32Array;
-};
-
-export type RapierColliderDescription =
-  | RapierBallCollider
-  | RapierCapsuleCollider
-  | RapierConvexCollider
-  | RapierCompoundCollider
-  | RapierTrimeshCollider;
+export type RapierColliderDescription = RapierCompoundCollider;
 
 export type ColliderMetrics = {
   diagonal: number;
@@ -123,7 +83,6 @@ export type ColliderResult = {
 export type GenerateColliderOptions = {
   mode?: ColliderMode;
   budget?: ColliderBudget;
-  allowStaticTrimeshFallback?: boolean;
   debug?: boolean;
 };
 

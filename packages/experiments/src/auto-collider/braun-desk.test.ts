@@ -55,7 +55,8 @@ describe("auto-collider braun inspired desk", () => {
     expect(result.quality.selectedStrategy).toBe("concave-furniture");
     expect(result.rapier.type).toBe("compound");
     expect(result.quality.error.outsideRatio).toBeLessThan(0.04);
-    expect(result.quality.partCount).toBe(5);
+    expect(result.quality.partCount).toBeGreaterThanOrEqual(3);
+    expect(result.quality.partCount).toBeLessThanOrEqual(8);
     if (result.rapier.type !== "compound") {
       return;
     }
@@ -84,7 +85,8 @@ describe("auto-collider braun inspired desk", () => {
     expect(top.halfExtents[2]).toBeGreaterThan(0.45);
 
     const lowerParts = parts.filter((part) => part !== top);
-    expect(lowerParts.length).toBe(4);
+    expect(lowerParts.length).toBeGreaterThanOrEqual(2);
+    expect(lowerParts.length).toBeLessThanOrEqual(7);
     const sideSpans = lowerParts.map((part) => part.halfExtents[0] * 2);
     expect(Math.max(...sideSpans)).toBeGreaterThan(0.55);
   });

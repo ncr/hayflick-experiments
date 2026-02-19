@@ -21,6 +21,7 @@ export type PlaneAwareSimplifyOptions = {
   vertexMerge?: number;
   creaseProtect?: number;
   planeSensitivity?: number;
+  targetFaces?: number;
 };
 
 export type PlaneAwareSimplifyResult = {
@@ -37,7 +38,8 @@ export type PlaneAwareSimplifyResult = {
 const DEFAULT_OPTIONS: Required<PlaneAwareSimplifyOptions> = {
   vertexMerge: 0.006,
   creaseProtect: 0.65,
-  planeSensitivity: 0.58
+  planeSensitivity: 0.58,
+  targetFaces: Number.POSITIVE_INFINITY
 };
 
 const MIN_AREA = 1e-8;
@@ -838,7 +840,8 @@ export function simplifyMeshPlaneAware(
   const options: Required<PlaneAwareSimplifyOptions> = {
     vertexMerge: clamp(opts.vertexMerge ?? DEFAULT_OPTIONS.vertexMerge, 0.00005, 0.05),
     creaseProtect: clamp(opts.creaseProtect ?? DEFAULT_OPTIONS.creaseProtect, 0, 1),
-    planeSensitivity: clamp(opts.planeSensitivity ?? DEFAULT_OPTIONS.planeSensitivity, 0, 1)
+    planeSensitivity: clamp(opts.planeSensitivity ?? DEFAULT_OPTIONS.planeSensitivity, 0, 1),
+    targetFaces: Math.floor(clamp(opts.targetFaces ?? Number.POSITIVE_INFINITY, 4, 500000))
   };
 
   const raw = collectMesh(root);
@@ -878,11 +881,15 @@ export function simplifyMeshPlaneAware(
   const sourceClosed = sourceBoundaryEdges === 0;
 
   const mergeNorm = clamp(options.vertexMerge / 0.05, 0, 1);
-  const targetRatio = clamp(
+  const autoTargetRatio = clamp(
     0.84 - mergeNorm * 0.52 - options.planeSensitivity * 0.24,
     0.08,
     0.9
   );
+  const ratioFromFaceBudget = Number.isFinite(options.targetFaces)
+    ? clamp((options.targetFaces * 3) / Math.max(6, welded.indices.length), 0.08, 0.98)
+    : 0.98;
+  const targetRatio = Math.min(autoTargetRatio, ratioFromFaceBudget);
 
   const simplifiedIndices = simplifyIndicesWithClosedPreference(
     welded.positions,

@@ -3,8 +3,7 @@ import type {
   ColliderErrorMetrics,
   PreparedGeometry,
   RapierColliderDescription,
-  RapierCompoundPart,
-  Vector3Tuple
+  RapierCompoundPart
 } from "./types";
 import { downsamplePoints } from "./strategies/common";
 
@@ -33,10 +32,6 @@ const volumeProxyCache = new WeakMap<
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
-}
-
-function vecFromTuple(tuple: Vector3Tuple): THREE.Vector3 {
-  return new THREE.Vector3(tuple[0], tuple[1], tuple[2]);
 }
 
 function voxelIndex(
@@ -320,135 +315,22 @@ function pointInsideBox(point: THREE.Vector3, part: RapierCompoundPart): boolean
   );
 }
 
-function pointDistanceToBall(point: THREE.Vector3, center: THREE.Vector3, radius: number): number {
-  return Math.max(0, point.distanceTo(center) - radius);
-}
-
-function pointDistanceToCapsule(
-  point: THREE.Vector3,
-  center: THREE.Vector3,
-  axis: "x" | "y" | "z",
-  radius: number,
-  halfHeight: number
-): number {
-  const px = point.x - center.x;
-  const py = point.y - center.y;
-  const pz = point.z - center.z;
-
-  let along = 0;
-  let radial = 0;
-
-  if (axis === "x") {
-    along = px;
-    radial = Math.sqrt(py * py + pz * pz);
-  } else if (axis === "y") {
-    along = py;
-    radial = Math.sqrt(px * px + pz * pz);
-  } else {
-    along = pz;
-    radial = Math.sqrt(px * px + py * py);
-  }
-
-  if (Math.abs(along) <= halfHeight) {
-    return Math.max(0, radial - radius);
-  }
-
-  const capDelta = Math.abs(along) - halfHeight;
-  return Math.max(0, Math.sqrt(radial * radial + capDelta * capDelta) - radius);
-}
-
-function boundsFromTuples(points: readonly Vector3Tuple[]): THREE.Box3 {
-  const bounds = new THREE.Box3();
-  for (const point of points) {
-    bounds.expandByPoint(vecFromTuple(point));
-  }
-  return bounds;
-}
-
-function boundsFromVertices(vertices: Float32Array): THREE.Box3 {
-  const bounds = new THREE.Box3();
-  for (let i = 0; i + 2 < vertices.length; i += 3) {
-    bounds.expandByPoint(new THREE.Vector3(vertices[i], vertices[i + 1], vertices[i + 2]));
-  }
-  return bounds;
-}
-
-function pointDistanceToBounds(point: THREE.Vector3, bounds: THREE.Box3): number {
-  const clamped = point.clone().clamp(bounds.min, bounds.max);
-  if (clamped.equals(point)) {
-    return 0;
-  }
-  return point.distanceTo(clamped);
-}
-
 function buildCandidateEvaluator(collider: RapierColliderDescription): CandidateEvaluator {
-  if (collider.type === "ball") {
-    const center = vecFromTuple(collider.center);
-    return {
-      distance: (point) => pointDistanceToBall(point, center, collider.radius),
-      contains: (point) => point.distanceToSquared(center) <= (collider.radius + 0.00075) ** 2
-    };
-  }
-
-  if (collider.type === "capsule") {
-    const center = vecFromTuple(collider.center);
-    return {
-      distance: (point) =>
-        pointDistanceToCapsule(
-          point,
-          center,
-          collider.axis,
-          collider.radius,
-          collider.halfHeight
-        ),
-      contains: (point) =>
-        pointDistanceToCapsule(
-          point,
-          center,
-          collider.axis,
-          collider.radius,
-          collider.halfHeight
-        ) <= 0.00075
-    };
-  }
-
-  if (collider.type === "compound") {
-    return {
-      distance: (point) => {
-        if (collider.parts.length <= 0) {
-          return Number.POSITIVE_INFINITY;
-        }
-        let minDistance = Number.POSITIVE_INFINITY;
-        for (const part of collider.parts) {
-          minDistance = Math.min(minDistance, pointDistanceToBox(point, part));
-          if (minDistance <= 0) {
-            return 0;
-          }
-        }
-        return minDistance;
-      },
-      contains: (point) => collider.parts.some((part) => pointInsideBox(point, part))
-    };
-  }
-
-  if (collider.type === "convex") {
-    const bounds = boundsFromTuples(
-      collider.points.map((point) => [
-        point[0] - collider.rootOffset[0],
-        point[1] - collider.rootOffset[1],
-        point[2] - collider.rootOffset[2]
-      ])
-    );
-    return {
-      distance: (point) => pointDistanceToBounds(point, bounds),
-      contains: (point) => bounds.containsPoint(point)
-    };
-  }
-
-  const bounds = boundsFromVertices(collider.vertices);
   return {
-    distance: (point) => pointDistanceToBounds(point, bounds),
-    contains: (point) => bounds.containsPoint(point)
+    distance: (point) => {
+      if (collider.parts.length <= 0) {
+        return Number.POSITIVE_INFINITY;
+      }
+      let minDistance = Number.POSITIVE_INFINITY;
+      for (const part of collider.parts) {
+        minDistance = Math.min(minDistance, pointDistanceToBox(point, part));
+        if (minDistance <= 0) {
+          return 0;
+        }
+      }
+      return minDistance;
+    },
+    contains: (point) => collider.parts.some((part) => pointInsideBox(point, part))
   };
 }
 

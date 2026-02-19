@@ -2521,3 +2521,64 @@ Detection signal:
 Preventive checklist:
 - Add a dynamic strict-mode refinement pass: when overfill remains high on planar/layered concave props, rerun concave generation with expanded budget and adopt if overfill improves without outside-coverage regression.
 - Keep fixture regression tests that assert no large seat-bridge box remains for chair-like assets.
+
+## 2026-02-19 - Commodore PET convex segmentation quality regressed without fixture guard
+Root cause:
+- Convex split heuristics changed repeatedly without a stable fixture-level regression for the lab preset (`targetParts=3`, `fit=max`).
+- Generic axis/shape tests did not protect the specific three-band split quality expected for the PET prop.
+
+Detection signal:
+- User repeatedly reported the PET split as “wrong axis / too high / too low” after heuristic changes.
+
+Preventive checklist:
+- Keep a dedicated regression test for `commodore-pet-inspired-computer` using the exact lab preset options.
+- Assert deterministic signature and contiguous Y bands, not only part count.
+
+## 2026-02-19 - Centroid-only hull sampling made convex-segment fit visibly coarse
+Root cause:
+- Convex hulls were built from triangle centroids only, which discards boundary/extreme mesh vertices and underfits silhouettes.
+
+Detection signal:
+- User reported convex-segment overlays looked ugly except in max mode and called out centroid-based hull construction as the likely cause.
+
+Preventive checklist:
+- Build convex hull candidates from real triangle vertex samples (with downsampling budget), not centroid-only samples.
+- Keep the lab’s convex mode pinned to max-fit tuning when visual fidelity is the goal.
+
+## 2026-02-19 - Centroid-assigned band splits dropped cut-plane corner vertices
+Root cause:
+- Segmenting by assigning whole triangles to a band from triangle centroid Y ignored triangles crossing cut planes.
+- No geometric clipping meant intersection/corner vertices created by cuts were missing from part geometry before hull build.
+
+Detection signal:
+- User reported convex hull errors concentrated near original mesh corners at cut boundaries.
+
+Preventive checklist:
+- Clip triangles against each Y-slab and recursive median split plane before building segment hulls.
+- Build hull sample points from clipped triangle vertices so cut-plane intersections are represented.
+
+## 2026-02-19 - Stride point sampling was not true mesh simplification for convex hull inputs
+Root cause:
+- Hull inputs were reduced with fixed-stride point picking, which ignores mesh topology and feature semantics.
+- Flat regions were not simplified structurally, while edge/corner coverage depended on incidental point order.
+
+Detection signal:
+- User asked why convex hull complexity still tracked dense mesh detail and requested true optimization that preserves boundaries/corners while simplifying flats aggressively.
+
+Preventive checklist:
+- Run an actual mesh simplification pass before hull generation (topology-aware, with boundary protection).
+- Apply an explicit face budget derived from hull-point budget instead of only index stride sampling.
+- Use feature-aware point selection (boundary/crease/extrema + coverage) when reducing simplified vertices to hull points.
+
+## 2026-02-19 - Auto-collider regressions overfit preset-specific desk assumptions
+Root cause:
+- Auto-collider mixed general strategy selection with desk-specific canonicalization/preset heuristics.
+- Regression tests asserted exact part counts/orientation that were artifacts of preset logic, not stable quality guarantees.
+
+Detection signal:
+- After removing preset branches, colliders still met quality thresholds but tests failed on exact counts (`3`, `5`) and fixed axis expectation.
+
+Preventive checklist:
+- Keep auto-collider strategy path generic (boxy/concave) and avoid prop-specific canonicalization in shared runtime logic.
+- Write regressions against stable quality metrics: outside ratio, overfill ratio, part-budget bounds, and coarse structural spread.
+- Reserve exact-shape assertions for explicit algorithm contracts, not heuristic side effects.
