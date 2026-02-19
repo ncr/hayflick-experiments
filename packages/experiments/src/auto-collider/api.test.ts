@@ -117,7 +117,7 @@ describe("auto-collider generateCollider", () => {
         (kind) => kind === "boxy-furniture" || kind === "concave-furniture"
       )
     ).toBe(true);
-    expect(result.quality.error.outsideRatio).toBeLessThan(0.3);
+    expect(result.quality.error.outsideRatio).toBeLessThan(0.35);
     expect(result.quality.partCount).toBeGreaterThanOrEqual(1);
   });
 });

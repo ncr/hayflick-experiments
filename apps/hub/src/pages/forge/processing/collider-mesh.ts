@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import {
   generateColliderFromObject,
+  type ColliderStrategyKind,
   type RapierColliderDescription
 } from "@experiments/catalog/auto-collider";
 import { countTotalFaces } from "./simplify";
@@ -101,11 +102,13 @@ export type ColliderMeshBuildResult = {
   colliderVariants: ColliderVariantsSpec;
   autoRecommendation: ColliderAutoRecommendation;
   autoSummary: {
-    strategy: string;
+    strategy: ColliderStrategyKind;
     outsideRatio: number;
     signature: string;
   };
 };
+
+export type AutoColliderStrategy = ColliderStrategyKind;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -951,7 +954,7 @@ function buildConvexHullSpec(
 function mapAutoCompoundFromRapier(
   rapier: RapierColliderDescription
 ): CompoundColliderSpec | null {
-  if (rapier.type !== "compound" || rapier.parts.length <= 0) {
+  if (rapier.parts.length <= 0) {
     return null;
   }
 
@@ -970,45 +973,10 @@ function mapAutoCompoundFromRapier(
   };
 }
 
-function mapAutoConvexHullFromRapier(
-  rapier: RapierColliderDescription
-): ConvexHullColliderSpec | null {
-  if (rapier.type !== "convex" || rapier.points.length < 4) {
-    return null;
-  }
-
-  return {
-    type: "convex-hull",
-    source: "auto-collider-v1",
-    points: rapier.points.map((point) =>
-      pointTuple(point[0], point[1], point[2])
-    ),
-    rootOffset: pointTuple(
-      rapier.rootOffset[0],
-      rapier.rootOffset[1],
-      rapier.rootOffset[2]
-    )
-  };
-}
-
-function chooseAutoRecommendation(
-  rapier: RapierColliderDescription
-): ColliderAutoRecommendation {
-  if (rapier.type === "compound") {
-    return "compound-boxes";
-  }
-  if (rapier.type === "convex" || rapier.type === "trimesh") {
-    return "convex-hull";
-  }
-  if (rapier.type === "capsule") {
-    return "pill";
-  }
-  return "sphere";
-}
-
 export async function buildSimplifiedColliderScene(
   sourceModel: THREE.Object3D,
-  faceTarget = DEFAULT_COLLIDER_FACE_TARGET
+  faceTarget = DEFAULT_COLLIDER_FACE_TARGET,
+  autoStrategy: AutoColliderStrategy = "concave-furniture"
 ): Promise<ColliderMeshBuildResult> {
   const sourceScene = cloneToGroup(sourceModel);
   const sourceFaces = Math.max(0, Math.round(countTotalFaces(sourceScene)));
@@ -1035,10 +1003,10 @@ export async function buildSimplifiedColliderScene(
 
   const autoResult = generateColliderFromObject(sourceScene, {
     mode: "dynamic",
-    budget: "strict"
+    budget: "strict",
+    strategy: autoStrategy
   });
   const autoCompound = mapAutoCompoundFromRapier(autoResult.rapier);
-  const autoConvex = mapAutoConvexHullFromRapier(autoResult.rapier);
 
   const decompositionPoints =
     samplePoints.length > 0 ? samplePoints : buildBoundsCorners(sourceBounds);
@@ -1087,7 +1055,7 @@ export async function buildSimplifiedColliderScene(
     pill: buildPillColliderSpec(sourceBounds),
     sphere: buildSphereColliderSpec(sourceBounds),
     cylinder: buildCylinderColliderSpec(sourceBounds),
-    convexHull: autoConvex ?? buildConvexHullSpec(samplePoints, sourceBounds),
+    convexHull: buildConvexHullSpec(samplePoints, sourceBounds),
     compoundBoxes: compoundCollider
   };
 
@@ -1098,7 +1066,7 @@ export async function buildSimplifiedColliderScene(
     colliderFaces: parts.length * 12,
     compoundCollider,
     colliderVariants,
-    autoRecommendation: chooseAutoRecommendation(autoResult.rapier),
+    autoRecommendation: "compound-boxes",
     autoSummary: {
       strategy: autoResult.quality.selectedStrategy,
       outsideRatio: autoResult.quality.error.outsideRatio,

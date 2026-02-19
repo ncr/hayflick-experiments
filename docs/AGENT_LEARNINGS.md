@@ -2582,3 +2582,16 @@ Preventive checklist:
 - Keep auto-collider strategy path generic (boxy/concave) and avoid prop-specific canonicalization in shared runtime logic.
 - Write regressions against stable quality metrics: outside ratio, overfill ratio, part-budget bounds, and coarse structural spread.
 - Reserve exact-shape assertions for explicit algorithm contracts, not heuristic side effects.
+
+## 2026-02-19 - Strategy-choice heuristics blocked direct UX control
+Root cause:
+- Auto-collider internally chose strategy order from metrics heuristics, while UI only surfaced the final chosen strategy as read-only status.
+- Users could not compare `boxy-furniture` vs `concave-furniture` deterministically from the same menu.
+
+Detection signal:
+- User requested explicit menu control over the two remaining strategies and removal of automatic choice heuristics.
+
+Preventive checklist:
+- Expose strategy as an explicit option in UI where auto-collider is invoked.
+- Thread selected strategy through generation APIs instead of deriving it implicitly from classifier order.
+- Keep quality metrics/reporting, but do not use them to silently switch user-selected strategy.

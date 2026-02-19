@@ -4,6 +4,7 @@ import type { ColliderParams } from "./processing/colliders";
 import {
   buildSimplifiedColliderScene,
   DEFAULT_COLLIDER_FACE_TARGET,
+  type AutoColliderStrategy,
   type ColliderAutoRecommendation,
   type ColliderVariantsSpec,
   type CompoundColliderSpec
@@ -25,6 +26,7 @@ type EditableColliderMode = Exclude<ColliderPreviewMode, "all">;
 
 const DEFAULT_COLLIDER_MODE: EditableColliderMode = "compound-boxes";
 const DEFAULT_COLLIDER_SCALE = 1;
+const DEFAULT_AUTO_COLLIDER_STRATEGY: AutoColliderStrategy = "concave-furniture";
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -233,8 +235,11 @@ export function ColliderPanel({
   const [variants, setVariants] = useState<ColliderVariantsSpec | null>(null);
   const [autoRecommendation, setAutoRecommendation] =
     useState<ColliderAutoRecommendation | null>(null);
+  const [autoStrategy, setAutoStrategy] = useState<AutoColliderStrategy>(
+    DEFAULT_AUTO_COLLIDER_STRATEGY
+  );
   const [autoSummary, setAutoSummary] = useState<{
-    strategy: string;
+    strategy: AutoColliderStrategy;
     outsideRatio: number;
   } | null>(null);
   const [building, setBuilding] = useState(false);
@@ -297,7 +302,8 @@ export function ColliderPanel({
     try {
       const result = await buildSimplifiedColliderScene(
         model,
-        DEFAULT_COLLIDER_FACE_TARGET
+        DEFAULT_COLLIDER_FACE_TARGET,
+        autoStrategy
       );
       if (requestTokenRef.current !== token) {
         return;
@@ -323,7 +329,7 @@ export function ColliderPanel({
         setBuilding(false);
       }
     }
-  }, []);
+  }, [autoStrategy]);
 
   useEffect(() => {
     if (!hasViewport) {
@@ -391,6 +397,20 @@ export function ColliderPanel({
       </div>
 
       <div className="forge-field">
+        <label>Auto Collider Strategy</label>
+        <select
+          value={autoStrategy}
+          onChange={(event) => {
+            setAutoStrategy(event.target.value as AutoColliderStrategy);
+          }}
+          data-testid="auto-collider-strategy"
+        >
+          <option value="concave-furniture">Concave Furniture</option>
+          <option value="boxy-furniture">Boxy Furniture</option>
+        </select>
+      </div>
+
+      <div className="forge-field">
         <label>Collider Scale: {colliderScale.toFixed(2)}x</label>
         <input
           type="range"
@@ -439,7 +459,7 @@ export function ColliderPanel({
 
       {autoSummary && (
         <div className="forge-info">
-          <div>Auto Strategy: {autoSummary.strategy}</div>
+          <div>Strategy: {autoSummary.strategy}</div>
           <div>Auto Surface Miss Ratio: {(autoSummary.outsideRatio * 100).toFixed(1)}%</div>
         </div>
       )}

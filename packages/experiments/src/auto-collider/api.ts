@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { classifyMetrics } from "./classify";
 import { evaluateColliderError } from "./error-metric";
 import { computeMetrics } from "./metrics";
 import { collectRootLocalGeometry, preprocessGeometry } from "./preprocess";
@@ -20,6 +19,7 @@ function withDefaults(options?: GenerateColliderOptions): Required<GenerateColli
   return {
     mode: options?.mode ?? "dynamic",
     budget: options?.budget ?? "strict",
+    strategy: options?.strategy ?? "concave-furniture",
     debug: options?.debug ?? false
   };
 }
@@ -40,6 +40,12 @@ function strategyByKind(kind: ColliderStrategyKind, context: StrategyContext): S
     return generateConcaveFurnitureStrategy(context);
   }
   return generateBoxyFurnitureStrategy(context);
+}
+
+function classFromStrategy(
+  strategy: ColliderStrategyKind
+): "BoxyFurniture" | "ConcaveFurniture" {
+  return strategy === "concave-furniture" ? "ConcaveFurniture" : "BoxyFurniture";
 }
 
 function scoreCandidate(
@@ -143,7 +149,10 @@ export function generateCollider(
         classification: {
           selected: "BoxyFurniture",
           confidence: 1,
-          scores: [{ kind: "BoxyFurniture", score: 1 }],
+          scores: [
+            { kind: "BoxyFurniture", score: 1 },
+            { kind: "ConcaveFurniture", score: 0 }
+          ],
           lowConfidenceFallback: false,
           strategyOrder: ["boxy-furniture"]
         },
@@ -162,56 +171,20 @@ export function generateCollider(
   }
 
   const metrics = computeMetrics(prepared, resolvedOptions.budget);
-  const classification = classifyMetrics(metrics);
   const context: StrategyContext = {
     prepared,
     metrics,
     options: resolvedOptions
   };
   const threshold = maxAllowedOutsideRatio(resolvedOptions);
-
-  let best: {
-    result: StrategyResult;
-    error: ColliderErrorMetrics;
-    score: number;
-  } | null = null;
-  const attemptedStrategies: ColliderStrategyKind[] = [];
-
-  for (const kind of classification.strategyOrder) {
-    const result = strategyByKind(kind, context);
-    attemptedStrategies.push(kind);
-
-    const error = evaluateColliderError(prepared, result.rapier, resolvedOptions.budget);
-    const score = scoreCandidate(result.rapier, error);
-    if (!best || score < best.score) {
-      best = { result, error, score };
-    }
-
-    if (
-      error.outsideRatio <= threshold &&
-      error.meanOutsideDistance <= 0.035 &&
-      error.overfillRatio <= 0.42
-    ) {
-      break;
-    }
-  }
-
-  if (!best) {
-    const fallback = generateBoxyFurnitureStrategy(context);
-    const error = evaluateColliderError(prepared, fallback.rapier, resolvedOptions.budget);
-    best = {
-      result: fallback,
-      error,
-      score: scoreCandidate(fallback.rapier, error)
-    };
-    attemptedStrategies.push("boxy-furniture");
-  }
-
-  let rapier = best.result.rapier;
-  let selectedStrategy = best.result.kind;
-  let selectedError = best.error;
+  const selectedStrategy = resolvedOptions.strategy;
+  const attemptedStrategies: ColliderStrategyKind[] = [selectedStrategy];
+  const baseResult = strategyByKind(selectedStrategy, context);
+  let rapier = baseResult.rapier;
+  let selectedError = evaluateColliderError(prepared, rapier, resolvedOptions.budget);
 
   if (
+    selectedStrategy === "concave-furniture" &&
     resolvedOptions.mode === "dynamic" &&
     resolvedOptions.budget === "strict" &&
     metrics.planarity >= 0.82 &&
@@ -247,13 +220,29 @@ export function generateCollider(
         (overfillGain >= 0.03 && expandedError.overfillRatio <= 0.24))
     ) {
       rapier = expandedConcave.rapier;
-      selectedStrategy = expandedConcave.kind;
       selectedError = expandedError;
-      if (!attemptedStrategies.includes("concave-furniture")) {
-        attemptedStrategies.push("concave-furniture");
-      }
     }
   }
+
+  const classification = {
+    selected: classFromStrategy(selectedStrategy),
+    confidence: 1,
+    scores: [
+      {
+        kind: classFromStrategy(selectedStrategy),
+        score: 1
+      },
+      {
+        kind:
+          selectedStrategy === "concave-furniture"
+            ? ("BoxyFurniture" as const)
+            : ("ConcaveFurniture" as const),
+        score: 0
+      }
+    ],
+    lowConfidenceFallback: false,
+    strategyOrder: [selectedStrategy]
+  };
 
   const result: ColliderResult = {
     rapier,

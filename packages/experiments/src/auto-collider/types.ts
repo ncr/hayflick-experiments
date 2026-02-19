@@ -83,6 +83,7 @@ export type ColliderResult = {
 export type GenerateColliderOptions = {
   mode?: ColliderMode;
   budget?: ColliderBudget;
+  strategy?: ColliderStrategyKind;
   debug?: boolean;
 };
 

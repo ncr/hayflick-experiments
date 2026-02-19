@@ -8,7 +8,8 @@ import {
 } from "../settlement-builder-ecs/prop-library";
 import {
   generateColliderFromObject,
-  type ColliderResult
+  type ColliderResult,
+  type ColliderStrategyKind
 } from "../auto-collider";
 import {
   segmentIntoConvexHulls,
@@ -20,6 +21,7 @@ const DEFAULT_PROP_ID = "commodore-pet-inspired-computer";
 const DEFAULT_HULL_COUNT = 4;
 
 type LabAlgorithm = "convex" | "auto";
+type AutoStrategy = ColliderStrategyKind;
 
 type PropChoice = {
   id: string;
@@ -269,6 +271,7 @@ const experiment: ExperimentModule = {
       "<div style='display:grid;grid-template-columns:1fr;gap:8px;margin:8px 0'>",
       "<label>Prop<select data-id='prop' style='width:100%;margin-top:4px'></select></label>",
       "<label>Algorithm<select data-id='algo' style='width:100%;margin-top:4px'><option value='convex' selected>convex segments</option><option value='auto'>auto collider (dynamic strict)</option></select></label>",
+      "<label>Auto Strategy<select data-id='auto-strategy' style='width:100%;margin-top:4px'><option value='concave-furniture' selected>concave-furniture</option><option value='boxy-furniture'>boxy-furniture</option></select></label>",
       "<label>Target Hull Count<select data-id='hulls' style='width:100%;margin-top:4px'><option value='2'>2</option><option value='3'>3</option><option value='4' selected>4</option><option value='5'>5</option><option value='6'>6</option></select></label>",
       "</div>",
       "<div style='display:flex;gap:10px;flex-wrap:wrap;margin:9px 0'>",
@@ -286,6 +289,7 @@ const experiment: ExperimentModule = {
     const showOverlay = hud.querySelector<HTMLInputElement>("[data-id='show-overlay']");
     const propSelect = hud.querySelector<HTMLSelectElement>("[data-id='prop']");
     const algorithmSelect = hud.querySelector<HTMLSelectElement>("[data-id='algo']");
+    const autoStrategySelect = hud.querySelector<HTMLSelectElement>("[data-id='auto-strategy']");
     const hullCountSelect = hud.querySelector<HTMLSelectElement>("[data-id='hulls']");
     const rebuildBtn = hud.querySelector<HTMLButtonElement>("[data-id='rebuild']");
     const determinismBtn = hud.querySelector<HTMLButtonElement>("[data-id='determinism']");
@@ -296,6 +300,7 @@ const experiment: ExperimentModule = {
       !showOverlay ||
       !propSelect ||
       !algorithmSelect ||
+      !autoStrategySelect ||
       !hullCountSelect ||
       !rebuildBtn ||
       !determinismBtn ||
@@ -465,6 +470,7 @@ const experiment: ExperimentModule = {
         const autoResult = generateColliderFromObject(model, {
           mode: "dynamic",
           budget: "strict",
+          strategy: autoStrategySelect.value as AutoStrategy,
           debug: true
         });
         const overlay = autoResult.debug?.three ?? new THREE.Group();
@@ -513,7 +519,8 @@ const experiment: ExperimentModule = {
         }
         const rerun = generateColliderFromObject(model, {
           mode: "dynamic",
-          budget: "strict"
+          budget: "strict",
+          strategy: autoStrategySelect.value as AutoStrategy
         });
         lastDeterminism =
           rerun.quality.signature === lastAutoResult.quality.signature ? "pass" : "fail";
@@ -592,6 +599,11 @@ const experiment: ExperimentModule = {
     const onAlgoChange = (): void => {
       rebuildCollider();
     };
+    const onAutoStrategyChange = (): void => {
+      if ((algorithmSelect.value as LabAlgorithm) === "auto") {
+        rebuildCollider();
+      }
+    };
     const onRebuild = (): void => {
       rebuildCollider();
     };
@@ -603,6 +615,7 @@ const experiment: ExperimentModule = {
     showOverlay.addEventListener("change", onToggleVisibility);
     propSelect.addEventListener("change", onPropChange);
     algorithmSelect.addEventListener("change", onAlgoChange);
+    autoStrategySelect.addEventListener("change", onAutoStrategyChange);
     hullCountSelect.addEventListener("change", onRebuild);
     rebuildBtn.addEventListener("click", onRebuild);
     determinismBtn.addEventListener("click", onDeterminism);
@@ -624,6 +637,7 @@ const experiment: ExperimentModule = {
       showOverlay.removeEventListener("change", onToggleVisibility);
       propSelect.removeEventListener("change", onPropChange);
       algorithmSelect.removeEventListener("change", onAlgoChange);
+      autoStrategySelect.removeEventListener("change", onAutoStrategyChange);
       hullCountSelect.removeEventListener("change", onRebuild);
       rebuildBtn.removeEventListener("click", onRebuild);
       determinismBtn.removeEventListener("click", onDeterminism);
