@@ -191,7 +191,8 @@ function createStrategyCard(
 ): StrategyCardRuntime {
   const root = document.createElement("div");
   root.style.display = "grid";
-  root.style.gridTemplateRows = "28px minmax(180px, 1fr) auto";
+  root.style.gridTemplateRows = "28px 220px auto";
+  root.style.minHeight = "360px";
   root.style.background = "rgba(7, 17, 26, 0.92)";
   root.style.border = "1px solid rgba(95, 139, 170, 0.42)";
   root.style.borderRadius = "10px";
@@ -208,7 +209,8 @@ function createStrategyCard(
 
   const viewport = document.createElement("div");
   viewport.style.position = "relative";
-  viewport.style.minHeight = "190px";
+  viewport.style.height = "220px";
+  viewport.style.minHeight = "220px";
   viewport.style.background = "#08131e";
   root.appendChild(viewport);
 
