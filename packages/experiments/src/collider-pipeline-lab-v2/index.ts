@@ -265,8 +265,7 @@ function createStrategyCard(
   camera.lookAt(0, 0.33, 0);
 
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.07;
+  controls.enableDamping = false;
   controls.target.set(0, 0.35, 0);
   controls.minDistance = 0.35;
   controls.maxDistance = 6;
@@ -469,6 +468,7 @@ const experiment: ExperimentModule = {
     };
 
     let isSyncingCameras = false;
+    let activeSyncCard: StrategyCardRuntime | null = null;
     const syncFromCard = (source: StrategyCardRuntime): void => {
       if (isSyncingCameras) {
         return;
@@ -485,8 +485,32 @@ const experiment: ExperimentModule = {
       }
       isSyncingCameras = false;
     };
+
+    const frameAllStrategyCards = (): void => {
+      for (const card of strategyCards) {
+        frameStrategyCardToModel(card);
+      }
+      if (strategyCards.length > 0) {
+        syncFromCard(strategyCards[0]);
+      }
+    };
+
     for (const card of strategyCards) {
-      card.controls.addEventListener("change", () => syncFromCard(card));
+      card.renderer.domElement.addEventListener("pointerdown", () => {
+        activeSyncCard = card;
+      });
+      card.renderer.domElement.addEventListener("wheel", () => {
+        activeSyncCard = card;
+      });
+      card.renderer.domElement.addEventListener("touchstart", () => {
+        activeSyncCard = card;
+      });
+      card.controls.addEventListener("change", () => {
+        if (activeSyncCard !== card) {
+          return;
+        }
+        syncFromCard(card);
+      });
     }
 
     const paramState = deepCloneStrategyParams(DEFAULT_STRATEGY_PARAMS);
@@ -547,7 +571,6 @@ const experiment: ExperimentModule = {
           CARD_COLORS[card.strategyId]
         );
         card.overlayRoot.add(overlay);
-        frameStrategyCardToModel(card);
 
         card.stats.textContent = [
           `actual rank: #${strategyResult.actualRank}    predicted rank: #${strategyResult.predictedRank}`,
@@ -558,6 +581,7 @@ const experiment: ExperimentModule = {
           `compute: ${strategyResult.elapsedMs.toFixed(2)} ms`
         ].join("\n");
       }
+      frameAllStrategyCards();
     };
 
     const ensurePreparedProp = async (
@@ -869,13 +893,24 @@ const experiment: ExperimentModule = {
         rightPane.style.gridColumn = "1";
       }
       updateStrategyGridColumns();
+      frameAllStrategyCards();
     });
     shellResizeObserver.observe(mount);
     updateStrategyGridColumns();
+    const handlePointerUp = (): void => {
+      activeSyncCard = null;
+    };
+    const handleTouchEnd = (): void => {
+      activeSyncCard = null;
+    };
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("touchend", handleTouchEnd);
 
     return () => {
       disposed = true;
       shellResizeObserver.disconnect();
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("touchend", handleTouchEnd);
       if (debounceHandle !== null) {
         window.clearTimeout(debounceHandle);
       }
