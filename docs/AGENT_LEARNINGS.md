@@ -2620,3 +2620,154 @@ Detection signal:
 Preventive checklist:
 - For strongly typed strategy maps, prefer explicit per-key `Object.assign` (or key-narrowed helper functions) instead of direct indexed replacement in generic loops.
 - Run package typecheck immediately after wiring reset/default-state UI for union-typed config objects.
+
+## 2026-02-20 - Strategy canvases looked empty because card children overflowed min-content width in CSS grid
+Root cause:
+- Strategy card rows used a `pre` stats block with long unwrapped lines inside a grid container.
+- Default grid-item `min-width: auto` allowed the `pre` min-content width to force sibling row items (`viewport` + `canvas`) wider than the card.
+- The canvas rendered correctly but got clipped by card overflow, so meshes appeared off-screen or missing in fullscreen/reload layouts.
+
+Detection signal:
+- Playwright fullscreen screenshots showed floor fragments but missing props/colliders.
+- DOM probe showed `card width ~382px` while `viewport/canvas width ~1165px` for the same card.
+
+Preventive checklist:
+- In strategy-card/grid UIs, explicitly set `gridTemplateColumns: minmax(0, 1fr)` on card grids and `minWidth: 0` on child rows.
+- Keep wide `pre` text from driving layout; use `overflowX: auto` on stats panels.
+- Add an E2E guard that asserts `card width ≈ viewport width ≈ canvas width` across fullscreen, reload, and reframe actions.
+
+## 2026-02-20 - Orbit sync logic can accidentally disable all strategy interactions
+Root cause:
+- Sync orchestration toggled `controls.enabled` on/off using active-card start/end events.
+- Any missed active transition or reset path left all cards disabled, so rotate/pan/zoom stopped working.
+
+Detection signal:
+- User reported no rotate, pan, or zoom response in strategy cards after recent camera-sync changes.
+
+Preventive checklist:
+- Keep OrbitControls enabled on every strategy card and sync other views from `change` events using a guarded apply phase.
+- Do not gate camera interaction behind global active-card toggles unless pointer capture state is guaranteed.
+- Add E2E interaction coverage that drags/wheels one card and verifies at least one sibling card view changes.
+
+## 2026-02-20 - Playwright `addInitScript` can invalidate localStorage persistence tests on reload
+Root cause:
+- Test setup used `page.addInitScript` to clear localStorage keys.
+- Init scripts run on every new document, so a reload re-cleared the key under test and produced false persistence failures.
+
+Detection signal:
+- Persistence test failed after reload while runtime behavior looked correct in manual verification.
+
+Preventive checklist:
+- For persistence tests, clear localStorage once before entering the target page (e.g. via `page.goto("/")` + `page.evaluate`), not via reload-time init scripts.
+- Use visible-only selectors (`pre:visible`) when a feature intentionally hides UI sections.
+
+## 2026-02-20 - Collapsed cards did not repack grid because row span was measured from stretched box size
+Root cause:
+- Masonry-like grid used fixed `grid-auto-rows`, but card row-span sizing was computed from `getBoundingClientRect().height`.
+- Grid items were stretched, so collapsed cards still reported large visual height and kept large row spans.
+
+Detection signal:
+- Collapsed state flag changed, but card `gridRowEnd` remained large (`span 21`) and cards below did not move up.
+
+Preventive checklist:
+- For grid-masonry span math, use intrinsic height (`scrollHeight`) instead of stretched box height.
+- Set card `align-self: start` so collapsed cards are not stretched by track sizing.
+- Add E2E coverage asserting single-card collapse moves the nearest card below upward in the same column.
+
+## 2026-02-20 - Strategy matrix exceeded browser WebGL context limits and crashed shader program setup
+Root cause:
+- The strategy grid created one `THREE.WebGLRenderer` per strategy card, which exceeded browser active-context limits as strategy count grew.
+- Context loss then cascaded into runtime shader/program errors (`Cannot read properties of null (reading 'trim')`) during render.
+
+Detection signal:
+- Console warning `Too many active WebGL contexts. Oldest context will be lost.`
+- Follow-on `WebGLProgram.getUniforms` / `onFirstUse` exception during the render loop.
+
+Preventive checklist:
+- Do not allocate one renderer per strategy in large comparison grids.
+- Keep per-card scenes/cameras, but lazily attach renderer+controls only for visible, expanded cards (dispose on scroll-out/collapse).
+- Add/keep E2E coverage for rotate/pan/zoom sync after renderer lifecycle changes.
+
+## 2026-02-20 - Generated per-prop default maps should be typed as partial strategy maps
+Root cause:
+- `per-prop-defaults.generated.ts` stored tuned defaults for a previous strategy set and was typed as `Record<string, StrategyParamsById>`.
+- Adding new strategy IDs made existing generated entries incomplete and broke typecheck (`TS2739`) immediately.
+
+Detection signal:
+- TypeScript compile errors in generated defaults file complaining missing new strategy keys after expanding `StrategyId`.
+
+Preventive checklist:
+- Type generated defaults as `Record<string, Partial<StrategyParamsById>>`.
+- Merge generated per-prop overrides onto `DEFAULT_STRATEGY_PARAMS` at runtime instead of requiring full entries.
+- Keep generator output format aligned with this partial-map contract.
+
+## 2026-02-20 - Thin-part penalty and strict concave defaults can mis-rank legitimate furniture leg colliders
+Root cause:
+- `thinPartPenalty` treated moderately thin support legs as strongly undesirable, which pushed visually correct desk/chair strategies down in ranking.
+- `concave-furniture` defaulted to strict budget in V2, causing avoidable underfill on desk-like fixtures and further hurting score.
+- Base coverage bonus favored chunkier lower supports without a counterweight for footprint overreach.
+
+Detection signal:
+- For `large-desk-without-drawers`, `concave-furniture`/`boxy-furniture` ranked below `voxel-greedy` despite visibly better leg sizing.
+- Diagnostic breakdown showed `underfill` + `thinPenalty` dominating concave score while voxel stayed near zero.
+
+Preventive checklist:
+- Keep thinness threshold conservative (penalize only near-needle parts, not normal furniture legs).
+- Default `concave-furniture` to balanced budget unless strict is explicitly required.
+- Include a base-footprint overreach term so oversized support footprints do not win from flat-base bonus alone.
+- Use fixture diagnostics to inspect per-term contributions before changing global weights.
+
+## 2026-02-20 - Per-prop tuner runs can lose progress or stall when expensive strategies explore extreme params
+Root cause:
+- The defaults tuner evaluated many strategy/prop combinations with broad random mutation ranges, which can hit high-cost parameter regions.
+- A single long-running pass wrote output only at the end, so interruption meant losing completed prop tuning work.
+
+Detection signal:
+- Tuning runs appeared "stuck" for long periods on specific props while one worker stayed at full CPU.
+- Generated defaults file timestamp did not advance until full completion.
+
+Preventive checklist:
+- Keep strategy-aware bounded search ranges for expensive parameter keys (resolution, maxParts, cluster counts, etc.).
+- Write checkpoint output after each completed prop so long runs are resumable.
+- Support prop filtering env vars for targeted reruns/debugging without rerunning the full matrix.
+
+## 2026-02-20 - Overlap volume metrics can be wrong when evaluated only inside mesh bbox
+Root cause:
+- Overlap/coverage was computed on a voxel grid bounded to the mesh bbox, so collider volume outside the mesh bounds was clipped out.
+- Fixed voxel resolution over changing bounds also changed voxel size, causing non-comparable overlap scores between strategies.
+
+Detection signal:
+- Oversized collider test case did not reduce overlap agreement as expected.
+- Directional overlap numbers appeared inconsistent with obvious size mismatch.
+
+Preventive checklist:
+- Compute overlap metrics on merged mesh+collider bounds, not mesh bounds only.
+- Scale voxel resolution with merged-bounds size (within a cap) to keep voxel size approximately stable.
+- Keep a test asserting overlap agreement drops when collider is intentionally oversized.
+
+## 2026-02-20 - Column-span solid fill can mislabel open air as mesh volume for furniture-like props
+Root cause:
+- Prop voxel solidification filled every Y cell between min/max occupied per XZ column.
+- For disconnected vertical structures (e.g. desk tops + legs), this bridged open air and made bulky colliders look artificially "inside mesh".
+
+Detection signal:
+- User-reported visual mismatch: HACD looked overly bulky but still ranked above tight furniture strategies.
+- Diagnostics showed `colHit=1.000` and near-zero overfill on visibly air-catching colliders.
+
+Preventive checklist:
+- Build mesh volume from shell + exterior flood-fill interior, not per-column min/max span fill.
+- Prefer triangle-sampled shell voxels over pre-dilated point cloud for flood-fill boundaries.
+- Re-run strategy diagnostics on representative furniture props after occupancy changes.
+
+## 2026-02-20 - Strategy produced rotated boxes when workflow required world-axis alignment
+Root cause:
+- New `simplify-bsp-convex` strategy emitted per-segment OBBs (PCA-based orientation) after decomposition.
+- Lab workflow expectation for this pipeline was axis-aligned box colliders for every strategy in the active comparison set.
+
+Detection signal:
+- User reported new-strategy boxes were not aligned to world/main axes while other algorithms were.
+
+Preventive checklist:
+- For any newly added strategy in collider-pipeline-lab-v2, verify whether output should be world-axis AABB or oriented OBB before shipping.
+- If axis alignment is expected, build parts via world-space bounds (`axisAlignedPartFromBounds`) and avoid PCA rotation paths.
+- Add a strategy-specific assertion that part rotations stay identity when axis-aligned behavior is required.

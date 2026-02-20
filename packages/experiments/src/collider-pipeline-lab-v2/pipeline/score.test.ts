@@ -24,6 +24,10 @@ describe("collider-pipeline-lab-v2 score", () => {
     );
 
     expect(goodScore.finalScore).toBeLessThan(badScore.finalScore);
+    expect(goodScore.voxelIoU).toBeGreaterThan(badScore.voxelIoU);
+    expect(goodScore.overlapAgreement).toBeGreaterThan(
+      badScore.overlapAgreement
+    );
     expect(goodScore.underfill).toBeLessThan(badScore.underfill);
   });
 
@@ -39,6 +43,11 @@ describe("collider-pipeline-lab-v2 score", () => {
       DEFAULT_QUALITY_WEIGHTS
     );
 
+    expect(closeScore.overlapAgreement).toBeGreaterThan(0);
+    expect(oversizedScore.overlapAgreement).toBeLessThan(1);
+    expect(oversizedScore.overlapAgreement).toBeLessThan(
+      closeScore.overlapAgreement
+    );
     expect(oversizedScore.overfill).toBeGreaterThan(closeScore.overfill);
     expect(oversizedScore.finalScore).toBeGreaterThan(closeScore.finalScore);
   });
@@ -60,5 +69,17 @@ describe("collider-pipeline-lab-v2 score", () => {
     const manyScore = scoreColliderQuality(prop, manyParts, DEFAULT_QUALITY_WEIGHTS);
     expect(manyScore.partPenalty).toBeGreaterThan(fewScore.partPenalty);
   });
-});
 
+  it("reports collider self-overlap without double-counting intersecting parts", () => {
+    const prop = makeSimpleBoxProp("box");
+    const partA = axisAlignedPartFromBounds(prop.bbox.min, prop.bbox.max, 0);
+    const partB = axisAlignedPartFromBounds(prop.bbox.min, prop.bbox.max, 0);
+
+    const score = scoreColliderQuality(prop, [partA, partB], DEFAULT_QUALITY_WEIGHTS);
+
+    expect(score.colliderPartVolume).toBeGreaterThan(score.colliderUnionVolume);
+    expect(score.colliderSelfOverlap).toBeGreaterThan(0.45);
+    expect(score.meshOverlap).toBeGreaterThan(0.99);
+    expect(score.overlapVolume).toBeGreaterThan(0);
+  });
+});

@@ -1,11 +1,18 @@
-import { generateAabbCollider } from "../strategies/aabb";
-import { generateLayeredXCollider } from "../strategies/layered-x";
+import {
+  generateCapsuleFitCollider,
+  generateCylinderFitCollider,
+  generateHacdCollider,
+  generateKdopCollider,
+  generateKmeansSegCollider,
+  generateQemDecimateCollider,
+  generateSpectralSegCollider
+} from "../strategies/extended";
+import {
+  generateBoxyFurnitureLegacyCollider,
+  generateConcaveFurnitureLegacyCollider
+} from "../strategies/legacy-ported";
 import { generateLayeredYCollider } from "../strategies/layered-y";
-import { generateLayeredZCollider } from "../strategies/layered-z";
-import { generateObbPcaCollider } from "../strategies/obb-pca";
-import { generateSplitFitCollider } from "../strategies/split-fit";
-import { generateSupportColumnsCollider } from "../strategies/support-columns";
-import { generateVoxelGreedyCollider } from "../strategies/voxel-greedy";
+import { generateConcavitySplitCollider } from "../strategies/concavity-split";
 import { classifyProp } from "./classify";
 import { predictStrategySuitability } from "./predict";
 import { scoreColliderQuality } from "./score";
@@ -17,13 +24,26 @@ import type {
   StrategyParamsById,
   StrategyResult
 } from "../types";
-import { STRATEGY_IDS } from "../types";
+import { ACTIVE_STRATEGY_IDS } from "../types";
 
 const now = (): number =>
   typeof performance !== "undefined" ? performance.now() : Date.now();
 
 function sortedByActualQuality(results: StrategyResult[]): StrategyResult[] {
   return [...results].sort((a, b) => {
+    // Rank by overlap agreement first (higher is better), then prefer tighter/fewer colliders.
+    if (a.quality.overlapAgreement !== b.quality.overlapAgreement) {
+      return b.quality.overlapAgreement - a.quality.overlapAgreement;
+    }
+    if (a.quality.colliderSelfOverlap !== b.quality.colliderSelfOverlap) {
+      return a.quality.colliderSelfOverlap - b.quality.colliderSelfOverlap;
+    }
+    if (a.quality.overfill !== b.quality.overfill) {
+      return a.quality.overfill - b.quality.overfill;
+    }
+    if (a.parts.length !== b.parts.length) {
+      return a.parts.length - b.parts.length;
+    }
     if (a.quality.finalScore !== b.quality.finalScore) {
       return a.quality.finalScore - b.quality.finalScore;
     }
@@ -110,21 +130,24 @@ export function runPipelineForProp(
       parts,
       quality: scoreColliderQuality(prop, parts, qualityWeights),
       predicted: predicted[strategyId],
-      actualRank: STRATEGY_IDS.length,
-      predictedRank: STRATEGY_IDS.length,
+      actualRank: ACTIVE_STRATEGY_IDS.length,
+      predictedRank: ACTIVE_STRATEGY_IDS.length,
       elapsedMs
     };
   };
 
   const initialResults: StrategyResult[] = [
-    runStrategy("aabb", generateAabbCollider),
-    runStrategy("obb-pca", generateObbPcaCollider),
+    runStrategy("concave-furniture", generateConcaveFurnitureLegacyCollider),
+    runStrategy("concavity-split", generateConcavitySplitCollider),
+    runStrategy("cylinder-fit", generateCylinderFitCollider),
+    runStrategy("qem-decimate", generateQemDecimateCollider),
+    runStrategy("kmeans-seg", generateKmeansSegCollider),
+    runStrategy("capsule-fit", generateCapsuleFitCollider),
+    runStrategy("hacd", generateHacdCollider),
+    runStrategy("boxy-furniture", generateBoxyFurnitureLegacyCollider),
+    runStrategy("spectral-seg", generateSpectralSegCollider),
     runStrategy("layered-y", generateLayeredYCollider),
-    runStrategy("layered-x", generateLayeredXCollider),
-    runStrategy("layered-z", generateLayeredZCollider),
-    runStrategy("voxel-greedy", generateVoxelGreedyCollider),
-    runStrategy("split-fit", generateSplitFitCollider),
-    runStrategy("support-columns", generateSupportColumnsCollider)
+    runStrategy("k-dop", generateKdopCollider),
   ];
 
   const strategyResults = applyRanks(initialResults);

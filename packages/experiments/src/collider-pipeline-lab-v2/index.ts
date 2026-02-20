@@ -14,6 +14,7 @@ import { buildColliderOverlay, disposeOverlay } from "./preview/build-overlay";
 import {
   DEFAULT_QUALITY_WEIGHTS,
   DEFAULT_STRATEGY_PARAMS,
+  resolveDefaultStrategyParams,
   STRATEGY_LABELS,
   STRATEGY_PARAM_SPECS
 } from "./state/defaults";
@@ -23,7 +24,7 @@ import type {
   StrategyId,
   StrategyParamsById
 } from "./types";
-import { STRATEGY_IDS } from "./types";
+import { ACTIVE_STRATEGY_IDS } from "./types";
 
 type PreparedProp = {
   definition: SavedPropDefinition;
@@ -34,28 +35,85 @@ type PreparedProp = {
 type StrategyCardRuntime = {
   strategyId: StrategyId;
   root: HTMLDivElement;
+  collapseButton: HTMLButtonElement;
+  rankBadge: HTMLSpanElement;
   viewport: HTMLDivElement;
   stats: HTMLPreElement;
-  renderer: THREE.WebGLRenderer;
+  renderer: THREE.WebGLRenderer | null;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
-  controls: OrbitControls;
+  controls: OrbitControls | null;
+  cameraTarget: THREE.Vector3;
   focusPoint: THREE.Vector3;
+  collapsed: boolean;
+  isVisible: boolean;
   modelRoot: THREE.Group;
   overlayRoot: THREE.Group;
   resizeObserver: ResizeObserver;
 };
 
-const CARD_COLORS: Record<StrategyId, number> = {
-  "aabb": 0x7dd5ff,
-  "obb-pca": 0x7af2bf,
-  "layered-y": 0xf8de76,
-  "layered-x": 0x8cf8de,
-  "layered-z": 0xffd78b,
-  "voxel-greedy": 0xff9b6b,
-  "split-fit": 0xd09bff,
-  "support-columns": 0x8dc2ff
-};
+type StrategyCollapseState = Partial<Record<StrategyId, boolean>>;
+
+const CARD_COLOR_PALETTE = [
+  0x7dd5ff,
+  0x7af2bf,
+  0xf8de76,
+  0x8cf8de,
+  0xffd78b,
+  0xff9b6b,
+  0xd09bff,
+  0x8dc2ff,
+  0x8bf9c9,
+  0x9ad6ff,
+  0xffc985,
+  0xbaf58f
+] as const;
+
+const CARD_COLORS = Object.fromEntries(
+  ACTIVE_STRATEGY_IDS.map((strategyId, index) => [
+    strategyId,
+    CARD_COLOR_PALETTE[index % CARD_COLOR_PALETTE.length]
+  ])
+) as Record<StrategyId, number>;
+
+const STRATEGY_COLLAPSE_STORAGE_KEY =
+  "collider_pipeline_lab_v2_collapsed_strategies_v1";
+const STRATEGY_GRID_ROW_HEIGHT_PX = 8;
+const STRATEGY_GRID_GAP_PX = 10;
+
+function readCollapsedStrategyState(): StrategyCollapseState {
+  try {
+    const raw = window.localStorage.getItem(STRATEGY_COLLAPSE_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    const state: StrategyCollapseState = {};
+    for (const strategyId of ACTIVE_STRATEGY_IDS) {
+      const value = (parsed as Record<string, unknown>)[strategyId];
+      if (typeof value === "boolean") {
+        state[strategyId] = value;
+      }
+    }
+    return state;
+  } catch {
+    return {};
+  }
+}
+
+function writeCollapsedStrategyState(state: StrategyCollapseState): void {
+  try {
+    window.localStorage.setItem(
+      STRATEGY_COLLAPSE_STORAGE_KEY,
+      JSON.stringify(state)
+    );
+  } catch {
+    // Ignore write errors (e.g. privacy mode or storage quota).
+  }
+}
 
 function deepCloneStrategyParams(source: StrategyParamsById): StrategyParamsById {
   return JSON.parse(JSON.stringify(source)) as StrategyParamsById;
@@ -166,8 +224,24 @@ function formatPipelineSummary(result: PipelineOutput): string {
   return lines.join("\n");
 }
 
+function disposeCardRenderer(card: StrategyCardRuntime): void {
+  if (card.controls) {
+    card.controls.dispose();
+    card.controls = null;
+  }
+  if (card.renderer) {
+    card.renderer.forceContextLoss();
+    card.renderer.dispose();
+    const canvas = card.renderer.domElement;
+    if (canvas.parentElement === card.viewport) {
+      canvas.remove();
+    }
+    card.renderer = null;
+  }
+}
+
 function disposeRendererCard(card: StrategyCardRuntime): void {
-  card.controls.dispose();
+  disposeCardRenderer(card);
   card.resizeObserver.disconnect();
   card.scene.traverse((node) => {
     if (node instanceof THREE.Mesh || node instanceof THREE.LineSegments) {
@@ -182,7 +256,6 @@ function disposeRendererCard(card: StrategyCardRuntime): void {
       }
     }
   });
-  card.renderer.dispose();
 }
 
 function frameStrategyCardToModel(card: StrategyCardRuntime): void {
@@ -205,22 +278,124 @@ function frameStrategyCardToModel(card: StrategyCardRuntime): void {
   const position = sphere.center.clone().addScaledVector(viewDirection, distance);
 
   card.focusPoint.copy(sphere.center);
-  card.controls.target.copy(card.focusPoint);
+  card.cameraTarget.copy(card.focusPoint);
   card.camera.position.copy(position);
-  card.camera.lookAt(card.focusPoint);
+  card.camera.lookAt(card.cameraTarget);
   card.camera.near = Math.max(0.01, radius * 0.02);
   card.camera.far = Math.max(24, radius * 18);
   card.camera.updateProjectionMatrix();
-  card.controls.update();
+  if (card.controls) {
+    card.controls.target.copy(card.cameraTarget);
+    card.controls.update();
+  }
+}
+
+function setStrategyCardCollapsed(
+  card: StrategyCardRuntime,
+  collapsed: boolean
+): void {
+  card.collapsed = collapsed;
+  card.root.dataset.collapsed = collapsed ? "true" : "false";
+  card.collapseButton.textContent = collapsed ? "Expand" : "Collapse";
+  card.collapseButton.title = collapsed
+    ? `Expand ${STRATEGY_LABELS[card.strategyId]}`
+    : `Collapse ${STRATEGY_LABELS[card.strategyId]}`;
+  card.collapseButton.setAttribute(
+    "aria-label",
+    card.collapseButton.title
+  );
+
+  if (collapsed) {
+    card.root.style.gridTemplateRows = "28px 0px 0px";
+    card.root.style.minHeight = "28px";
+    card.viewport.style.display = "none";
+    card.stats.style.display = "none";
+    if (card.controls) {
+      card.controls.enabled = false;
+    }
+  } else {
+    card.root.style.gridTemplateRows = "28px 220px auto";
+    card.root.style.minHeight = "360px";
+    card.viewport.style.display = "block";
+    card.stats.style.display = "block";
+    if (card.controls) {
+      card.controls.enabled = true;
+    }
+    if (card.renderer) {
+      const rect = card.viewport.getBoundingClientRect();
+      const width = Math.max(8, Math.floor(rect.width));
+      const height = Math.max(8, Math.floor(rect.height));
+      card.renderer.setSize(width, height, true);
+      card.camera.aspect = width / height;
+      card.camera.updateProjectionMatrix();
+    }
+  }
+
+  window.requestAnimationFrame(() => {
+    const cardHeight = Math.max(1, card.root.scrollHeight);
+    const span = Math.max(
+      1,
+      Math.ceil((cardHeight + STRATEGY_GRID_GAP_PX) / (STRATEGY_GRID_ROW_HEIGHT_PX + STRATEGY_GRID_GAP_PX))
+    );
+    card.root.style.gridRowEnd = `span ${span}`;
+  });
+}
+
+function applyStrategyRankHighlight(
+  card: StrategyCardRuntime,
+  actualRank: number | null
+): void {
+  card.root.dataset.actualRank = actualRank === null ? "" : String(actualRank);
+  if (actualRank === null) {
+    card.root.style.borderColor = "rgba(95, 139, 170, 0.42)";
+    card.root.style.boxShadow = "none";
+    card.rankBadge.textContent = "";
+    card.rankBadge.style.display = "none";
+    return;
+  }
+
+  if (actualRank <= 3) {
+    const rankStyles: Array<{ border: string; shadow: string; text: string }> = [
+      {
+        border: "rgba(248, 210, 96, 0.95)",
+        shadow: "0 0 0 1px rgba(248, 210, 96, 0.42), 0 0 18px rgba(248, 210, 96, 0.2)",
+        text: "TOP 1"
+      },
+      {
+        border: "rgba(163, 219, 255, 0.92)",
+        shadow: "0 0 0 1px rgba(163, 219, 255, 0.38), 0 0 14px rgba(143, 196, 255, 0.18)",
+        text: "TOP 2"
+      },
+      {
+        border: "rgba(226, 174, 122, 0.9)",
+        shadow: "0 0 0 1px rgba(226, 174, 122, 0.35), 0 0 12px rgba(226, 174, 122, 0.16)",
+        text: "TOP 3"
+      }
+    ];
+    const style = rankStyles[actualRank - 1];
+    card.root.style.borderColor = style.border;
+    card.root.style.boxShadow = style.shadow;
+    card.rankBadge.textContent = style.text;
+    card.rankBadge.style.display = "inline-flex";
+    return;
+  }
+
+  card.root.style.borderColor = "rgba(95, 139, 170, 0.42)";
+  card.root.style.boxShadow = "none";
+  card.rankBadge.textContent = "";
+  card.rankBadge.style.display = "none";
 }
 
 function createStrategyCard(
   mount: HTMLDivElement,
-  strategyId: StrategyId,
-  dpr: number
+  strategyId: StrategyId
 ): StrategyCardRuntime {
   const root = document.createElement("div");
+  root.setAttribute("data-testid", `collider-v2-card-${strategyId}`);
+  root.dataset.strategyId = strategyId;
   root.style.display = "grid";
+  root.style.alignSelf = "start";
+  root.style.gridTemplateColumns = "minmax(0, 1fr)";
   root.style.gridTemplateRows = "28px 220px auto";
   root.style.minHeight = "360px";
   root.style.background = "rgba(7, 17, 26, 0.92)";
@@ -228,18 +403,61 @@ function createStrategyCard(
   root.style.borderRadius = "10px";
   root.style.overflow = "hidden";
 
+  const titleRow = document.createElement("div");
+  titleRow.style.display = "flex";
+  titleRow.style.alignItems = "center";
+  titleRow.style.justifyContent = "space-between";
+  titleRow.style.gap = "6px";
+  titleRow.style.padding = "5px 8px";
+  titleRow.style.background = "rgba(31, 63, 89, 0.36)";
+  titleRow.style.minWidth = "0";
+
   const title = document.createElement("div");
   title.textContent = STRATEGY_LABELS[strategyId];
-  title.style.padding = "7px 10px";
   title.style.font = "600 12px/1.2 'IBM Plex Sans', ui-sans-serif, system-ui";
   title.style.letterSpacing = "0.02em";
   title.style.color = "#d8ebf7";
-  title.style.background = "rgba(31, 63, 89, 0.36)";
-  root.appendChild(title);
+  title.style.minWidth = "0";
+  title.style.overflow = "hidden";
+  title.style.textOverflow = "ellipsis";
+  title.style.whiteSpace = "nowrap";
+  titleRow.appendChild(title);
+
+  const rankBadge = document.createElement("span");
+  rankBadge.style.display = "none";
+  rankBadge.style.padding = "1px 7px";
+  rankBadge.style.borderRadius = "999px";
+  rankBadge.style.border = "1px solid rgba(158, 201, 230, 0.55)";
+  rankBadge.style.background = "rgba(25, 56, 78, 0.65)";
+  rankBadge.style.color = "#e5f4ff";
+  rankBadge.style.font = "700 10px/1.1 'IBM Plex Sans', ui-sans-serif, system-ui";
+  rankBadge.style.letterSpacing = "0.04em";
+  rankBadge.style.textTransform = "uppercase";
+  rankBadge.style.whiteSpace = "nowrap";
+  rankBadge.style.flex = "none";
+  titleRow.appendChild(rankBadge);
+
+  const collapseButton = document.createElement("button");
+  collapseButton.type = "button";
+  collapseButton.setAttribute("data-testid", `collider-v2-collapse-${strategyId}`);
+  collapseButton.style.padding = "2px 8px";
+  collapseButton.style.borderRadius = "6px";
+  collapseButton.style.border = "1px solid rgba(108, 168, 206, 0.7)";
+  collapseButton.style.background = "rgba(17, 55, 83, 0.65)";
+  collapseButton.style.color = "#dff2ff";
+  collapseButton.style.font = "600 10px/1.1 'IBM Plex Sans', ui-sans-serif, system-ui";
+  collapseButton.style.cursor = "pointer";
+  collapseButton.style.flex = "none";
+  titleRow.appendChild(collapseButton);
+
+  root.appendChild(titleRow);
 
   const viewport = document.createElement("div");
+  viewport.setAttribute("data-testid", `collider-v2-viewport-${strategyId}`);
   viewport.style.position = "relative";
+  viewport.style.width = "100%";
   viewport.style.height = "220px";
+  viewport.style.minWidth = "0";
   viewport.style.minHeight = "220px";
   viewport.style.background = "#08131e";
   root.appendChild(viewport);
@@ -251,29 +469,20 @@ function createStrategyCard(
   stats.style.font = "11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace";
   stats.style.color = "#cae6f6";
   stats.style.background = "rgba(4, 11, 18, 0.72)";
+  stats.style.width = "100%";
+  stats.style.minWidth = "0";
+  stats.style.overflowX = "auto";
   stats.textContent = "No result yet.";
   root.appendChild(stats);
 
   mount.appendChild(root);
 
-  const renderer = makeRenderer(320, 220, dpr);
-  renderer.setClearColor(0x08131e, 1);
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  viewport.appendChild(renderer.domElement);
-
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(42, 320 / 220, 0.01, 120);
+  const focusPoint = new THREE.Vector3(0, 0.35, 0);
+  const cameraTarget = focusPoint.clone();
   camera.position.set(1.6, 1.35, 1.6);
-  camera.lookAt(0, 0.33, 0);
-
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = false;
-  controls.target.set(0, 0.35, 0);
-  controls.minDistance = 0.35;
-  controls.maxDistance = 6;
-  controls.enablePan = false;
-  controls.maxPolarAngle = Math.PI * 0.48;
+  camera.lookAt(cameraTarget);
 
   const hemi = new THREE.HemisphereLight(0xddf4ff, 0x19232c, 0.7);
   scene.add(hemi);
@@ -311,30 +520,77 @@ function createStrategyCard(
   const overlayRoot = new THREE.Group();
   scene.add(modelRoot, overlayRoot);
 
+  const runtime: StrategyCardRuntime = {
+    strategyId,
+    root,
+    collapseButton,
+    rankBadge,
+    viewport,
+    stats,
+    renderer: null,
+    scene,
+    camera,
+    controls: null,
+    cameraTarget,
+    focusPoint,
+    collapsed: false,
+    isVisible: false,
+    modelRoot,
+    overlayRoot,
+    resizeObserver: undefined as unknown as ResizeObserver
+  };
+
   const resizeObserver = new ResizeObserver(() => {
+    if (!runtime.renderer) {
+      return;
+    }
     const rect = viewport.getBoundingClientRect();
     const width = Math.max(8, Math.floor(rect.width));
     const height = Math.max(8, Math.floor(rect.height));
-    renderer.setSize(width, height, true);
+    runtime.renderer.setSize(width, height, true);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
   });
   resizeObserver.observe(viewport);
+  runtime.resizeObserver = resizeObserver;
 
-  return {
-    strategyId,
-    root,
-    viewport,
-    stats,
-    renderer,
-    scene,
-    camera,
-    controls,
-    focusPoint,
-    modelRoot,
-    overlayRoot,
-    resizeObserver
-  };
+  return runtime;
+}
+
+function ensureCardRenderer(
+  card: StrategyCardRuntime,
+  dpr: number,
+  onControlsChange: (card: StrategyCardRuntime) => void
+): void {
+  if (card.renderer || card.collapsed) {
+    return;
+  }
+  const rect = card.viewport.getBoundingClientRect();
+  const width = Math.max(8, Math.floor(rect.width));
+  const height = Math.max(8, Math.floor(rect.height));
+
+  const renderer = makeRenderer(width, height, dpr);
+  renderer.setClearColor(0x08131e, 1);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  card.viewport.appendChild(renderer.domElement);
+
+  card.renderer = renderer;
+  card.camera.aspect = width / height;
+  card.camera.updateProjectionMatrix();
+
+  const controls = new OrbitControls(card.camera, renderer.domElement);
+  controls.enableDamping = false;
+  controls.target.copy(card.cameraTarget);
+  controls.minDistance = 0.35;
+  controls.maxDistance = 6;
+  controls.enablePan = true;
+  controls.maxPolarAngle = Math.PI * 0.48;
+  controls.addEventListener("change", () => {
+    onControlsChange(card);
+  });
+  controls.update();
+  card.controls = controls;
 }
 
 const experiment: ExperimentModule = {
@@ -416,7 +672,7 @@ const experiment: ExperimentModule = {
     middleHeader.style.borderBottom = "1px solid rgba(88, 136, 169, 0.32)";
     middleHeader.style.display = "flex";
     middleHeader.style.alignItems = "center";
-    middleHeader.style.justifyContent = "space-between";
+    middleHeader.style.justifyContent = "flex-start";
     middleHeader.style.gap = "10px";
 
     const middleHeaderTitle = document.createElement("div");
@@ -425,18 +681,6 @@ const experiment: ExperimentModule = {
     middleHeaderTitle.style.letterSpacing = "0.02em";
     middleHeaderTitle.style.color = "#d6ecfa";
     middleHeader.appendChild(middleHeaderTitle);
-
-    const reframeAllButton = document.createElement("button");
-    reframeAllButton.type = "button";
-    reframeAllButton.textContent = "Reframe All";
-    reframeAllButton.style.padding = "5px 9px";
-    reframeAllButton.style.borderRadius = "7px";
-    reframeAllButton.style.border = "1px solid rgba(108, 168, 206, 0.8)";
-    reframeAllButton.style.background = "rgba(29, 73, 103, 0.58)";
-    reframeAllButton.style.color = "#e1f3ff";
-    reframeAllButton.style.font = "600 11px/1.1 'IBM Plex Sans', ui-sans-serif, system-ui";
-    reframeAllButton.style.cursor = "pointer";
-    middleHeader.appendChild(reframeAllButton);
     middlePane.appendChild(middleHeader);
 
     const middleGrid = document.createElement("div");
@@ -446,7 +690,8 @@ const experiment: ExperimentModule = {
     middleGrid.style.display = "grid";
     middleGrid.style.gap = "10px";
     middleGrid.style.alignContent = "start";
-    middleGrid.style.gridAutoRows = "minmax(360px, auto)";
+    middleGrid.style.gridAutoRows = `${STRATEGY_GRID_ROW_HEIGHT_PX}px`;
+    middleGrid.style.gridAutoFlow = "row dense";
     middlePane.appendChild(middleGrid);
 
     const rightPane = document.createElement("div");
@@ -473,9 +718,29 @@ const experiment: ExperimentModule = {
     controlsHint.style.marginBottom = "10px";
     rightPane.appendChild(controlsHint);
 
-    const strategyCards = STRATEGY_IDS.map((strategyId) =>
-      createStrategyCard(middleGrid, strategyId, dpr)
-    );
+    const collapsedState = readCollapsedStrategyState();
+    const strategyCards = ACTIVE_STRATEGY_IDS.map((strategyId) => {
+      const card = createStrategyCard(middleGrid, strategyId);
+      setStrategyCardCollapsed(card, collapsedState[strategyId] ?? false);
+      return card;
+    });
+    const cardByRoot = new Map<HTMLElement, StrategyCardRuntime>();
+    for (const card of strategyCards) {
+      cardByRoot.set(card.root, card);
+    }
+
+    const refreshStrategyGridSpans = (): void => {
+      window.requestAnimationFrame(() => {
+        for (const card of strategyCards) {
+          const cardHeight = Math.max(1, card.root.scrollHeight);
+          const span = Math.max(
+            1,
+            Math.ceil((cardHeight + STRATEGY_GRID_GAP_PX) / (STRATEGY_GRID_ROW_HEIGHT_PX + STRATEGY_GRID_GAP_PX))
+          );
+          card.root.style.gridRowEnd = `span ${span}`;
+        }
+      });
+    };
 
     const updateStrategyGridColumns = (): void => {
       const widthPx = middleGrid.getBoundingClientRect().width;
@@ -488,16 +753,62 @@ const experiment: ExperimentModule = {
         columns = 2;
       }
       middleGrid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+      refreshStrategyGridSpans();
+      window.requestAnimationFrame(() => {
+        for (const card of strategyCards) {
+          if (card.renderer) {
+            const rect = card.viewport.getBoundingClientRect();
+            const width = Math.max(8, Math.floor(rect.width));
+            const height = Math.max(8, Math.floor(rect.height));
+            card.renderer.setSize(width, height, true);
+            card.camera.aspect = width / height;
+            card.camera.updateProjectionMatrix();
+          }
+        }
+      });
     };
 
-    let activeSyncCard: StrategyCardRuntime | null = null;
+    let applyingSharedPose = false;
     const sharedCameraOffset = new THREE.Vector3(1.6, 1.0, 1.6);
+    const sharedTargetOffset = new THREE.Vector3(0, 0, 0);
 
     const applySharedPoseToCard = (card: StrategyCardRuntime): void => {
-      card.controls.target.copy(card.focusPoint);
-      card.camera.position.copy(card.focusPoint.clone().add(sharedCameraOffset));
-      card.camera.lookAt(card.focusPoint);
+      const target = card.focusPoint.clone().add(sharedTargetOffset);
+      card.cameraTarget.copy(target);
+      if (card.controls) {
+        card.controls.target.copy(target);
+      }
+      card.camera.position.copy(target.clone().add(sharedCameraOffset));
+      card.camera.lookAt(target);
       card.camera.updateMatrixWorld(true);
+      if (card.controls) {
+        card.controls.update();
+      }
+    };
+
+    const syncSharedPoseFromCard = (source: StrategyCardRuntime): void => {
+      if (source.collapsed || !source.controls) {
+        return;
+      }
+      sharedTargetOffset.copy(source.controls.target).sub(source.focusPoint);
+      const offset = source.camera.position.clone().sub(source.controls.target);
+      const length = Math.max(
+        source.controls.minDistance,
+        Math.min(source.controls.maxDistance, offset.length())
+      );
+      if (!Number.isFinite(length) || length <= 1e-5) {
+        return;
+      }
+      sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
+
+      applyingSharedPose = true;
+      for (const card of strategyCards) {
+        if (card === source) {
+          continue;
+        }
+        applySharedPoseToCard(card);
+      }
+      applyingSharedPose = false;
     };
 
     const frameAllStrategyCards = (): void => {
@@ -505,53 +816,90 @@ const experiment: ExperimentModule = {
         frameStrategyCardToModel(card);
       }
       if (strategyCards.length > 0) {
-        const offset = strategyCards[0].camera.position
-          .clone()
-          .sub(strategyCards[0].focusPoint);
-        const length = Math.max(0.35, Math.min(6, offset.length()));
-        sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
+        const source = strategyCards.find((entry) => !entry.collapsed) ?? strategyCards[0];
+        if (source) {
+          sharedTargetOffset.copy(source.cameraTarget).sub(source.focusPoint);
+          const offset = source.camera.position.clone().sub(source.cameraTarget);
+          const sourceMinDistance = source.controls?.minDistance ?? 0.35;
+          const sourceMaxDistance = source.controls?.maxDistance ?? 6;
+          const length = Math.max(sourceMinDistance, Math.min(sourceMaxDistance, offset.length()));
+          if (Number.isFinite(length) && length > 1e-5) {
+            sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
+          }
+        }
       }
+      applyingSharedPose = true;
       for (const card of strategyCards) {
         applySharedPoseToCard(card);
       }
+      applyingSharedPose = false;
     };
 
-    reframeAllButton.addEventListener("click", () => {
-      activeSyncCard = null;
-      for (const card of strategyCards) {
-        card.controls.enabled = false;
+    const onCardControlsChange = (card: StrategyCardRuntime): void => {
+      if (applyingSharedPose || card.collapsed) {
+        return;
       }
-      frameAllStrategyCards();
-      statusBar.textContent = "Reframed all strategy views.";
-    });
+      syncSharedPoseFromCard(card);
+    };
+
+    const updateCardRendererActivation = (card: StrategyCardRuntime): void => {
+      const shouldBeActive = !card.collapsed && card.isVisible;
+      if (shouldBeActive) {
+        ensureCardRenderer(card, dpr, onCardControlsChange);
+        applySharedPoseToCard(card);
+      } else {
+        disposeCardRenderer(card);
+      }
+    };
+
+    const visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const target = entry.target;
+          if (!(target instanceof HTMLElement)) {
+            continue;
+          }
+          const card = cardByRoot.get(target);
+          if (!card) {
+            continue;
+          }
+          card.isVisible = entry.isIntersecting && entry.intersectionRatio > 0;
+          updateCardRendererActivation(card);
+        }
+      },
+      {
+        root: middleGrid,
+        threshold: [0, 0.01, 0.1]
+      }
+    );
 
     for (const card of strategyCards) {
-      card.controls.addEventListener("start", () => {
-        activeSyncCard = card;
-        for (const entry of strategyCards) {
-          entry.controls.enabled = entry === card;
+      visibilityObserver.observe(card.root);
+      card.collapseButton.addEventListener("click", () => {
+        const nextCollapsed = !card.collapsed;
+        setStrategyCardCollapsed(card, nextCollapsed);
+        collapsedState[card.strategyId] = nextCollapsed;
+        writeCollapsedStrategyState(collapsedState);
+        if (!nextCollapsed) {
+          applySharedPoseToCard(card);
         }
+        updateCardRendererActivation(card);
+        updateStrategyGridColumns();
+        refreshStrategyGridSpans();
       });
-      card.controls.addEventListener("end", () => {
-        if (activeSyncCard === card) {
-          activeSyncCard = null;
-        }
-        for (const entry of strategyCards) {
-          entry.controls.enabled = false;
-        }
-      });
-      card.controls.addEventListener("change", () => {
-        if (activeSyncCard !== card) {
-          return;
-        }
-        const offset = card.camera.position.clone().sub(card.controls.target);
-        const length = Math.max(card.controls.minDistance, Math.min(card.controls.maxDistance, offset.length()));
-        sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
-      });
-      card.controls.enabled = false;
     }
 
-    const paramState = deepCloneStrategyParams(DEFAULT_STRATEGY_PARAMS);
+    const propParamState = new Map<string, StrategyParamsById>();
+    let paramState = deepCloneStrategyParams(DEFAULT_STRATEGY_PARAMS);
+    const getParamsForProp = (propId: string): StrategyParamsById => {
+      const existing = propParamState.get(propId);
+      if (existing) {
+        return existing;
+      }
+      const seeded = deepCloneStrategyParams(resolveDefaultStrategyParams(propId));
+      propParamState.set(propId, seeded);
+      return seeded;
+    };
     const propButtonsById = new Map<string, HTMLButtonElement>();
     const preparedCache = new Map<string, PreparedProp>();
     const gltfLoader = new GLTFLoader();
@@ -591,11 +939,27 @@ const experiment: ExperimentModule = {
       template: THREE.Object3D
     ): void => {
       const byId = new Map(result.strategyResults.map((entry) => [entry.strategyId, entry]));
+      const rankById = new Map(
+        result.strategyResults.map((entry) => [entry.strategyId, entry.actualRank])
+      );
+
+      strategyCards.sort((a, b) => {
+        const rankA = rankById.get(a.strategyId) ?? Number.POSITIVE_INFINITY;
+        const rankB = rankById.get(b.strategyId) ?? Number.POSITIVE_INFINITY;
+        if (rankA !== rankB) {
+          return rankA - rankB;
+        }
+        return a.strategyId.localeCompare(b.strategyId);
+      });
+      for (const card of strategyCards) {
+        middleGrid.appendChild(card.root);
+      }
 
       for (const card of strategyCards) {
         clearCardContent(card);
         const strategyResult = byId.get(card.strategyId);
         if (!strategyResult) {
+          applyStrategyRankHighlight(card, null);
           card.stats.textContent = "No result.";
           continue;
         }
@@ -613,13 +977,18 @@ const experiment: ExperimentModule = {
         card.stats.textContent = [
           `actual rank: #${strategyResult.actualRank}    predicted rank: #${strategyResult.predictedRank}`,
           `quality score: ${strategyResult.quality.finalScore.toFixed(4)}    suitability: ${strategyResult.predicted.suitability.toFixed(3)}`,
-          `underfill: ${strategyResult.quality.underfill.toFixed(3)}  overfill: ${strategyResult.quality.overfill.toFixed(3)}`,
+          `voxel IoU: ${strategyResult.quality.voxelIoU.toFixed(3)}  underfill: ${strategyResult.quality.underfill.toFixed(3)}  overfill: ${strategyResult.quality.overfill.toFixed(3)}`,
+          `overlap agreement: ${strategyResult.quality.overlapAgreement.toFixed(3)}  mesh/collider hit: ${strategyResult.quality.meshOverlap.toFixed(3)} / ${strategyResult.quality.colliderOverlap.toFixed(3)}  self-overlap: ${strategyResult.quality.colliderSelfOverlap.toFixed(3)}`,
+          `volumes (mesh/colliderUnion/overlap): ${strategyResult.quality.meshVolume.toFixed(4)} / ${strategyResult.quality.colliderUnionVolume.toFixed(4)} / ${strategyResult.quality.overlapVolume.toFixed(4)}`,
           `thin penalty: ${strategyResult.quality.thinPenalty.toFixed(3)}  part penalty: ${strategyResult.quality.partPenalty.toFixed(3)}`,
-          `base bonus: ${strategyResult.quality.flatBaseBonus.toFixed(3)}  parts: ${strategyResult.parts.length}`,
+          `base overreach: ${strategyResult.quality.baseOverreachPenalty.toFixed(3)}  base bonus: ${strategyResult.quality.flatBaseBonus.toFixed(3)}`,
+          `parts: ${strategyResult.parts.length}`,
           `compute: ${strategyResult.elapsedMs.toFixed(2)} ms`
         ].join("\n");
+        applyStrategyRankHighlight(card, strategyResult.actualRank);
       }
       frameAllStrategyCards();
+      refreshStrategyGridSpans();
     };
 
     const ensurePreparedProp = async (
@@ -687,6 +1056,7 @@ const experiment: ExperimentModule = {
 
     const setSelectedProp = (definition: SavedPropDefinition): void => {
       selected = definition;
+      paramState = getParamsForProp(definition.id);
       for (const [id, button] of propButtonsById.entries()) {
         if (id === definition.id) {
           button.style.borderColor = "rgba(136, 210, 255, 0.96)";
@@ -698,6 +1068,7 @@ const experiment: ExperimentModule = {
           button.style.transform = "none";
         }
       }
+      rebuildControls();
       scheduleRun();
     };
 
@@ -757,11 +1128,15 @@ const experiment: ExperimentModule = {
 
     const controlsRoot = document.createElement("div");
     rightPane.appendChild(controlsRoot);
+    const controlsSectionById = new Map<StrategyId, HTMLElement>();
+    const controlsHighlightTimeoutById = new Map<StrategyId, number>();
 
     const rebuildControls = (): void => {
       controlsRoot.replaceChildren();
-      for (const strategyId of STRATEGY_IDS) {
+      controlsSectionById.clear();
+      for (const strategyId of ACTIVE_STRATEGY_IDS) {
         const section = document.createElement("section");
+        section.setAttribute("data-testid", `collider-v2-controls-${strategyId}`);
         section.style.padding = "9px 10px 10px";
         section.style.border = "1px solid rgba(88, 136, 169, 0.35)";
         section.style.borderRadius = "9px";
@@ -790,10 +1165,66 @@ const experiment: ExperimentModule = {
           );
         }
         controlsRoot.appendChild(section);
+        controlsSectionById.set(strategyId, section);
       }
     };
 
+    const scrollControlsToStrategy = (strategyId: StrategyId): void => {
+      const section = controlsSectionById.get(strategyId);
+      if (!section) {
+        return;
+      }
+
+      const rightRect = rightPane.getBoundingClientRect();
+      const sectionRect = section.getBoundingClientRect();
+      const deltaTop = sectionRect.top - rightRect.top;
+      rightPane.scrollTo({
+        top: Math.max(0, rightPane.scrollTop + deltaTop - 8),
+        behavior: "smooth"
+      });
+
+      section.style.borderColor = "rgba(136, 210, 255, 0.95)";
+      section.style.boxShadow = "0 0 0 1px rgba(136, 210, 255, 0.55)";
+      const priorTimeout = controlsHighlightTimeoutById.get(strategyId);
+      if (priorTimeout !== undefined) {
+        window.clearTimeout(priorTimeout);
+      }
+      const timeoutHandle = window.setTimeout(() => {
+        if (!section.isConnected) {
+          return;
+        }
+        section.style.borderColor = "rgba(88, 136, 169, 0.35)";
+        section.style.boxShadow = "none";
+      }, 520);
+      controlsHighlightTimeoutById.set(strategyId, timeoutHandle);
+    };
+
     rebuildControls();
+
+    for (const card of strategyCards) {
+      let pointerDownPosition: { x: number; y: number } | null = null;
+      card.viewport.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) {
+          return;
+        }
+        pointerDownPosition = { x: event.clientX, y: event.clientY };
+      });
+      card.viewport.addEventListener("pointerup", (event) => {
+        if (event.button !== 0 || pointerDownPosition === null) {
+          pointerDownPosition = null;
+          return;
+        }
+        const dx = event.clientX - pointerDownPosition.x;
+        const dy = event.clientY - pointerDownPosition.y;
+        pointerDownPosition = null;
+        if (Math.hypot(dx, dy) <= 6) {
+          scrollControlsToStrategy(card.strategyId);
+        }
+      });
+      card.viewport.addEventListener("pointercancel", () => {
+        pointerDownPosition = null;
+      });
+    }
 
     const resetRow = document.createElement("div");
     resetRow.style.display = "flex";
@@ -811,15 +1242,15 @@ const experiment: ExperimentModule = {
     resetAllButton.style.color = "#d9efff";
     resetAllButton.style.cursor = "pointer";
     resetAllButton.addEventListener("click", () => {
-      const fresh = deepCloneStrategyParams(DEFAULT_STRATEGY_PARAMS);
-      Object.assign(paramState["aabb"], fresh["aabb"]);
-      Object.assign(paramState["obb-pca"], fresh["obb-pca"]);
-      Object.assign(paramState["layered-y"], fresh["layered-y"]);
-      Object.assign(paramState["layered-x"], fresh["layered-x"]);
-      Object.assign(paramState["layered-z"], fresh["layered-z"]);
-      Object.assign(paramState["voxel-greedy"], fresh["voxel-greedy"]);
-      Object.assign(paramState["split-fit"], fresh["split-fit"]);
-      Object.assign(paramState["support-columns"], fresh["support-columns"]);
+      if (selected) {
+        const freshForSelected = deepCloneStrategyParams(
+          resolveDefaultStrategyParams(selected.id)
+        );
+        propParamState.set(selected.id, freshForSelected);
+        paramState = freshForSelected;
+      } else {
+        paramState = deepCloneStrategyParams(DEFAULT_STRATEGY_PARAMS);
+      }
       rebuildControls();
       scheduleRun();
     });
@@ -830,21 +1261,15 @@ const experiment: ExperimentModule = {
         return;
       }
       for (const card of strategyCards) {
-        if (activeSyncCard === card) {
-          card.controls.enabled = true;
-          card.controls.target.copy(card.focusPoint);
-          card.controls.update();
-          const offset = card.camera.position.clone().sub(card.controls.target);
-          const length = Math.max(
-            card.controls.minDistance,
-            Math.min(card.controls.maxDistance, offset.length())
-          );
-          sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
-        } else {
-          card.controls.enabled = false;
-          applySharedPoseToCard(card);
+        if (card.collapsed || !card.renderer) {
+          continue;
         }
-        card.camera.lookAt(card.focusPoint);
+        const activeTarget = card.controls ? card.controls.target : card.cameraTarget;
+        const cameraOffset = card.camera.position.clone().sub(activeTarget);
+        const targetOffset = activeTarget.clone().sub(card.focusPoint);
+        card.viewport.dataset.cameraOffset = `${cameraOffset.x.toFixed(4)},${cameraOffset.y.toFixed(4)},${cameraOffset.z.toFixed(4)}`;
+        card.viewport.dataset.targetOffset = `${targetOffset.x.toFixed(4)},${targetOffset.y.toFixed(4)},${targetOffset.z.toFixed(4)}`;
+        card.viewport.dataset.cameraDistance = cameraOffset.length().toFixed(4);
         card.renderer.render(card.scene, card.camera);
       }
       animationFrame = window.requestAnimationFrame(renderLoop);
@@ -949,10 +1374,17 @@ const experiment: ExperimentModule = {
     });
     shellResizeObserver.observe(mount);
     updateStrategyGridColumns();
+    for (const card of strategyCards) {
+      updateCardRendererActivation(card);
+    }
 
     return () => {
       disposed = true;
       shellResizeObserver.disconnect();
+      visibilityObserver.disconnect();
+      for (const timeoutHandle of controlsHighlightTimeoutById.values()) {
+        window.clearTimeout(timeoutHandle);
+      }
       if (debounceHandle !== null) {
         window.clearTimeout(debounceHandle);
       }
@@ -966,4 +1398,3 @@ const experiment: ExperimentModule = {
 };
 
 export default experiment;
-  const focusPoint = new THREE.Vector3(0, 0.35, 0);

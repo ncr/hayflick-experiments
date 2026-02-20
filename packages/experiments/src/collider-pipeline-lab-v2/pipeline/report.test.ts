@@ -6,6 +6,7 @@ import {
   makeSimpleBoxProp,
   makeTallLampLikeProp
 } from "../test-utils";
+import { ACTIVE_STRATEGY_IDS } from "../types";
 
 describe("collider-pipeline-lab-v2 report fixtures", () => {
   it("builds deterministic report-shape output for fixture props", () => {
@@ -21,7 +22,7 @@ describe("collider-pipeline-lab-v2 report fixtures", () => {
         DEFAULT_STRATEGY_PARAMS,
         DEFAULT_QUALITY_WEIGHTS
       );
-      expect(result.strategyResults.length).toBe(8);
+      expect(result.strategyResults.length).toBe(ACTIVE_STRATEGY_IDS.length);
       for (const entry of result.strategyResults) {
         expect(Number.isFinite(entry.quality.finalScore)).toBe(true);
         expect(Number.isFinite(entry.predicted.suitability)).toBe(true);
