@@ -2785,3 +2785,90 @@ Preventive checklist:
 - Guard synchronized updates with a re-entrancy flag to avoid recursive control-change loops.
 - After reload/recompute paths, reapply a reference pose so cards remain aligned.
 - Keep a readable lighting baseline (ambient + hemi + key/fill directional) and avoid near-black viewport backgrounds.
+
+## 2026-02-20 - High-budget VHACD runs looked frozen with minimal status feedback
+Root cause:
+- Decomposition ran in long synchronous phases per prop, so the UI had few repaint opportunities and status stayed coarse (`Running N props...`).
+- Progress surfaced only at prop boundaries, which is too sparse for high-budget presets.
+
+Detection signal:
+- User reported the page appeared stuck during aggressive defaults and asked for paced execution plus clearer progress indication.
+
+Preventive checklist:
+- For expensive mesh processing, expose phase-level progress (`collect`, `voxelize`, `split`, `merge`, `hulls`, `finalize`) rather than only item counts.
+- Yield to the UI thread between major phases so progress bars/status can repaint.
+- Show both overall progress (`current/total`) and active phase text in the HUD.
+
+## 2026-02-20 - Hidden high-cost VHACD knobs made aggressive presets hard to recover from in UI
+Root cause:
+- We increased non-trivial compute controls (`maxHullPointSamples`, hull-vertex projection) without exposing them in the experiment HUD.
+- Users could tune visible params but still hit large runtime costs from hidden defaults.
+
+Detection signal:
+- User reported aggressive settings were too slow and asked specifically to expose the increased-but-hidden parameters.
+
+Preventive checklist:
+- Any time compute defaults are raised, expose the corresponding controls in the same UI revision.
+- Keep parameter guide text updated with practical speed/quality tradeoffs for each newly exposed knob.
+- Ensure all runtime-costful options passed into core decomposition are user-adjustable from the panel.
+
+## 2026-02-20 - Main-thread VHACD decomposition blocked interaction under high-budget presets
+Root cause:
+- VHACD execution (split/merge/hull/project phases) ran on the UI thread, so long props caused visible stalls even with progress text updates.
+- Recompute actions only invalidated local tokens; they did not actively interrupt ongoing CPU-heavy work.
+
+Detection signal:
+- User reported the page looked stuck and requested worker offload plus graceful recompute restarts on param changes.
+
+Preventive checklist:
+- Move heavy decomposition into a dedicated worker and communicate via typed request/progress/result messages.
+- Keep source mesh payloads serializable (flattened triangle positions) and rebuild renderable geometries on the main thread.
+- On recompute/reload while running, terminate current worker job and start a fresh worker task with latest parameters.
+
+## 2026-02-20 - Projection toggle forced recompute because only one hull variant was cached
+Root cause:
+- The decomposition result stored only the currently selected hull variant (`projectHullVertices` on or off).
+- Checkbox changes had no precomputed alternate geometry to display, so the UI had to launch a fresh run.
+
+Detection signal:
+- User asked to compute both variants up front and reported the projection toggle did not provide immediate visible switching.
+
+Preventive checklist:
+- For UI toggles that compare algorithm variants, return all compared variants from the same worker result payload.
+- Keep toggle handlers render-only (swap cached geometry) instead of triggering recompute.
+- Include active variant and per-variant signatures in debug output so variant switching is verifiable.
+
+## 2026-02-20 - Split-stage plane evaluation became the dominant runtime bottleneck at high resolutions
+Root cause:
+- Split-level processing evaluated each part sequentially inside a single worker, and each evaluation scanned many plane candidates with convex-hull estimates.
+- Increasing resolution and grid-cell budget amplified per-level cost enough that split progress appeared stalled.
+
+Detection signal:
+- User reported `Split level` progress was very slow even after lowering unrelated knobs.
+
+Preventive checklist:
+- Parallelize per-part split decisions within each split level using a bounded nested-worker pool.
+- Keep level ordering deterministic and apply split decisions in original part order after parallel evaluation.
+- Provide a safe fallback to local sequential split evaluation if nested-worker initialization or task execution fails.
+
+## 2026-02-20 - Worker parallelization was hard to verify without explicit split-mode telemetry
+Root cause:
+- Split evaluation moved to a nested worker pool, but run-time UI output did not explicitly show whether split processing was parallel, sequential, or fallback mode.
+
+Detection signal:
+- User asked how to ensure workers were actually doing split work in parallel.
+
+Preventive checklist:
+- Surface split evaluation mode and worker count in both live progress messages and final per-prop debug stats.
+- If the pool fails and falls back, show an explicit fallback status instead of silently switching execution mode.
+
+## 2026-02-20 - Fixed split-worker caps can underutilize CPUs on high-res runs
+Root cause:
+- Worker pool sizing used a hard voxel-threshold cap (`2` workers above a fixed voxel count), which was too conservative on machines with many cores and available memory.
+
+Detection signal:
+- User observed split phase reporting only `parallel x2` and asked for more aggressive parallelism.
+
+Preventive checklist:
+- Derive worker count from both CPU (`hardwareConcurrency`) and estimated per-worker memory footprint, not a single fixed threshold.
+- Keep an upper safety cap for runaway worker spawning, but allow higher counts when memory budget permits.

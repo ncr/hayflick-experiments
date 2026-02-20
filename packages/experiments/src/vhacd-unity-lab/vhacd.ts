@@ -11,7 +11,13 @@ export type VhacdOptions = {
   maxConvexHulls: number;
   minVoxelCountPerPart: number;
   maxHullPointSamples: number;
+  projectHullVertices: boolean;
+  precomputeBothHullVariants: boolean;
+  maxGridCells: number;
+  voxelizationTriangleSampleCount: number;
 };
+
+export type VhacdHullVariant = "projected" | "unprojected";
 
 export type VhacdHull = {
   index: number;
@@ -33,6 +39,11 @@ export type VhacdVoxelPart = {
 
 export type VhacdResult = {
   hulls: VhacdHull[];
+  hullVariants?: {
+    projected: VhacdHull[];
+    unprojected: VhacdHull[];
+  };
+  activeHullVariant?: VhacdHullVariant;
   voxelView: {
     voxelSize: number;
     parts: VhacdVoxelPart[];
@@ -50,20 +61,78 @@ export type VhacdResult = {
     candidatePlaneCount: number;
     iterationCount: number;
     generatedBeforeMerge: number;
+    splitEvaluationMode: "parallel" | "sequential" | "mixed";
+    splitWorkerCount: number;
   };
   signature: string;
+  signatures?: {
+    projected: string;
+    unprojected: string;
+  };
+};
+
+export type VhacdSourceData = {
+  // Flat triangle positions in world space: [ax, ay, az, bx, by, bz, cx, cy, cz] per triangle.
+  positions: Float32Array;
+};
+
+export type VhacdSerializedHull = Omit<VhacdHull, "geometry"> & {
+  positions: Float32Array;
+  indices: Uint32Array;
+};
+
+export type VhacdSerializedVoxelPart = Omit<VhacdVoxelPart, "centers"> & {
+  centers: Float32Array;
+};
+
+export type VhacdSerializedResult = {
+  hulls: VhacdSerializedHull[];
+  hullVariants?: {
+    projected: VhacdSerializedHull[];
+    unprojected: VhacdSerializedHull[];
+  };
+  activeHullVariant?: VhacdHullVariant;
+  voxelView: {
+    voxelSize: number;
+    parts: VhacdSerializedVoxelPart[];
+  };
+  stats: VhacdResult["stats"];
+  signature: string;
+  signatures?: {
+    projected: string;
+    unprojected: string;
+  };
+};
+
+export type VhacdProgress = {
+  phase:
+    | "collect"
+    | "voxelize"
+    | "flood-fill"
+    | "build-voxels"
+    | "split"
+    | "merge"
+    | "build-hulls"
+    | "project"
+    | "finalize";
+  propProgress: number;
+  message: string;
 };
 
 const DEFAULT_OPTIONS: VhacdOptions = {
-  resolution: 40,
+  resolution: 128,
   concavity: 0.002,
   alpha: 0.05,
   beta: 0.05,
-  planeDownsampling: 4,
-  convexHullDownsampling: 4,
-  maxConvexHulls: 12,
+  planeDownsampling: 1,
+  convexHullDownsampling: 1,
+  maxConvexHulls: 24,
   minVoxelCountPerPart: 24,
-  maxHullPointSamples: 1800
+  maxHullPointSamples: 1800,
+  projectHullVertices: true,
+  precomputeBothHullVariants: false,
+  maxGridCells: 20_000_000,
+  voxelizationTriangleSampleCount: 12_000
 };
 
 type Triangle = {
@@ -160,8 +229,102 @@ type SplitCost = {
   candidate: PlaneCandidate;
 };
 
+type SplitPartDecisionKeep = {
+  kind: "keep";
+  candidatePlaneCount: number;
+};
+
+type SplitPartDecisionSplit = {
+  kind: "split";
+  candidatePlaneCount: number;
+  leftVoxelIds: number[];
+  rightVoxelIds: number[];
+};
+
+type SplitPartDecision = SplitPartDecisionKeep | SplitPartDecisionSplit;
+
+type SplitWorkerInitRequest = {
+  type: "init";
+  options: {
+    concavity: number;
+    alpha: number;
+    beta: number;
+    planeDownsampling: number;
+    convexHullDownsampling: number;
+    minVoxelCountPerPart: number;
+    maxHullPointSamples: number;
+  };
+  cellVolume: number;
+  rootHullVolume: number;
+  voxelX: Float32Array;
+  voxelY: Float32Array;
+  voxelZ: Float32Array;
+  voxelCellX: Int32Array;
+  voxelCellY: Int32Array;
+  voxelCellZ: Int32Array;
+};
+
+type SplitWorkerEvaluateRequest = {
+  type: "evaluate";
+  requestId: number;
+  voxelIds: Uint32Array;
+};
+
+type SplitWorkerRequest = SplitWorkerInitRequest | SplitWorkerEvaluateRequest;
+
+type SplitWorkerReadyResponse = {
+  type: "ready";
+};
+
+type SplitWorkerResultKeepResponse = {
+  type: "result";
+  requestId: number;
+  kind: "keep";
+  candidatePlaneCount: number;
+};
+
+type SplitWorkerResultSplitResponse = {
+  type: "result";
+  requestId: number;
+  kind: "split";
+  candidatePlaneCount: number;
+  leftVoxelIds: Uint32Array;
+  rightVoxelIds: Uint32Array;
+};
+
+type SplitWorkerErrorResponse = {
+  type: "error";
+  requestId?: number;
+  error: string;
+};
+
+type SplitWorkerResponse =
+  | SplitWorkerReadyResponse
+  | SplitWorkerResultKeepResponse
+  | SplitWorkerResultSplitResponse
+  | SplitWorkerErrorResponse;
+
+type SplitWorkerTask = {
+  requestId: number;
+  payload: Uint32Array;
+  resolve: (result: SplitPartDecision) => void;
+  reject: (error: Error) => void;
+};
+
+type SplitWorkerSlot = {
+  worker: Worker;
+  ready: boolean;
+  busy: boolean;
+  currentRequestId: number | null;
+};
+
+type SplitWorkerPool = {
+  evaluatePart: (part: Part) => Promise<SplitPartDecision>;
+  workerCount: number;
+  dispose: () => void;
+};
+
 const EPSILON = 1e-9;
-const MAX_GRID_CELLS = 1_900_000;
 const HULL_COLORS = [
   0x5ec9ff,
   0x76f5b1,
@@ -177,6 +340,16 @@ const HULL_COLORS = [
   0x96f3d9
 ] as const;
 const MAX_VOXEL_PREVIEW_COUNT = 80_000;
+
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -327,7 +500,31 @@ function collectTriangles(root: THREE.Object3D): {
   return { triangles, bounds };
 }
 
-function createGrid(bounds: Bounds, resolution: number): VoxelGrid {
+export function extractVhacdSourceData(source: THREE.Object3D): VhacdSourceData | null {
+  const extracted = collectTriangles(source);
+  if (extracted.triangles.length <= 0 || !isFiniteBounds(extracted.bounds)) {
+    return null;
+  }
+
+  const positions = new Float32Array(extracted.triangles.length * 9);
+  let cursor = 0;
+  for (const triangle of extracted.triangles) {
+    positions[cursor] = triangle.ax;
+    positions[cursor + 1] = triangle.ay;
+    positions[cursor + 2] = triangle.az;
+    positions[cursor + 3] = triangle.bx;
+    positions[cursor + 4] = triangle.by;
+    positions[cursor + 5] = triangle.bz;
+    positions[cursor + 6] = triangle.cx;
+    positions[cursor + 7] = triangle.cy;
+    positions[cursor + 8] = triangle.cz;
+    cursor += 9;
+  }
+
+  return { positions };
+}
+
+function createGrid(bounds: Bounds, resolution: number, maxGridCells: number): VoxelGrid {
   const spanX = Math.max(EPSILON, bounds.maxX - bounds.minX);
   const spanY = Math.max(EPSILON, bounds.maxY - bounds.minY);
   const spanZ = Math.max(EPSILON, bounds.maxZ - bounds.minZ);
@@ -348,7 +545,8 @@ function createGrid(bounds: Bounds, resolution: number): VoxelGrid {
   let ny = computeAxisCount(spanY, voxelSize);
   let nz = computeAxisCount(spanZ, voxelSize);
 
-  while (nx * ny * nz > MAX_GRID_CELLS) {
+  const cellBudget = Math.max(250_000, Math.floor(maxGridCells));
+  while (nx * ny * nz > cellBudget) {
     voxelSize *= 1.12;
     nx = computeAxisCount(spanX, voxelSize);
     ny = computeAxisCount(spanY, voxelSize);
@@ -382,9 +580,14 @@ function markShellVoxel(grid: VoxelGrid, shell: Uint8Array, x: number, y: number
   shell[toLinearIndex(grid, ix, iy, iz)] = 1;
 }
 
-function rasterizeTrianglesToShell(grid: VoxelGrid, triangles: Triangle[]): Uint8Array {
+function rasterizeTrianglesToShell(
+  grid: VoxelGrid,
+  triangles: Triangle[],
+  triangleSampleCount: number
+): Uint8Array {
   const shell = new Uint8Array(grid.nx * grid.ny * grid.nz);
-  const triStep = Math.max(1, Math.floor(triangles.length / 12000));
+  const budget = Math.max(1, Math.floor(triangleSampleCount));
+  const triStep = Math.max(1, Math.floor(triangles.length / budget));
 
   for (let index = 0; index < triangles.length; index += triStep) {
     const triangle = triangles[index];
@@ -734,6 +937,110 @@ function buildHullGeometry(part: Part, ctx: DecompositionContext): {
   };
 }
 
+function cloneHullGeometry(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  const clone = geometry.clone();
+  if (!clone.getAttribute("normal")) {
+    clone.computeVertexNormals();
+  }
+  clone.computeBoundingBox();
+  return clone;
+}
+
+function extractUniqueGeometryPoints(
+  geometry: THREE.BufferGeometry,
+  maxPoints: number
+): THREE.Vector3[] {
+  const position = geometry.getAttribute("position");
+  if (!(position instanceof THREE.BufferAttribute) || position.count <= 0) {
+    return [];
+  }
+
+  const points: THREE.Vector3[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < position.count; i += 1) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const key = `${x.toFixed(6)}|${y.toFixed(6)}|${z.toFixed(6)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    points.push(new THREE.Vector3(x, y, z));
+    if (points.length >= maxPoints) {
+      break;
+    }
+  }
+  return points;
+}
+
+function buildProjectionTriangles(sourceTriangles: Triangle[]): THREE.Triangle[] {
+  return sourceTriangles.map((triangle) => {
+    return new THREE.Triangle(
+      new THREE.Vector3(triangle.ax, triangle.ay, triangle.az),
+      new THREE.Vector3(triangle.bx, triangle.by, triangle.bz),
+      new THREE.Vector3(triangle.cx, triangle.cy, triangle.cz)
+    );
+  });
+}
+
+function projectHullGeometryToSource(
+  geometry: THREE.BufferGeometry,
+  sourceTriangles: THREE.Triangle[],
+  maxProjectedPoints: number
+): {
+  geometry: THREE.BufferGeometry;
+  hullVolume: number;
+} | null {
+  if (sourceTriangles.length <= 0) {
+    return null;
+  }
+
+  const points = extractUniqueGeometryPoints(
+    geometry,
+    clampInt(maxProjectedPoints, 64, 40_000)
+  );
+  if (points.length < 4) {
+    return null;
+  }
+
+  const projectedPoints: THREE.Vector3[] = [];
+  const closest = new THREE.Vector3();
+  const bestPoint = new THREE.Vector3();
+
+  for (const point of points) {
+    let bestDistSq = Number.POSITIVE_INFINITY;
+    let hit = false;
+
+    for (const sourceTriangle of sourceTriangles) {
+      sourceTriangle.closestPointToPoint(point, closest);
+      const distSq = closest.distanceToSquared(point);
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        bestPoint.copy(closest);
+        hit = true;
+      }
+    }
+
+    projectedPoints.push(hit ? bestPoint.clone() : point.clone());
+  }
+
+  if (projectedPoints.length < 4) {
+    return null;
+  }
+
+  try {
+    const projectedHull = new ConvexGeometry(projectedPoints);
+    projectedHull.computeBoundingBox();
+    return {
+      geometry: projectedHull,
+      hullVolume: Math.max(EPSILON, computeGeometryVolume(projectedHull))
+    };
+  } catch {
+    return null;
+  }
+}
+
 function computePartConcavity(part: Part, ctx: DecompositionContext): {
   summary: PartSummary;
   concavity: number;
@@ -952,6 +1259,330 @@ function evaluateSplitCost(
   return best;
 }
 
+function evaluatePartSplitLocally(part: Part, ctx: DecompositionContext): SplitPartDecision {
+  if (part.voxelIds.length < ctx.options.minVoxelCountPerPart * 2) {
+    return {
+      kind: "keep",
+      candidatePlaneCount: 0
+    };
+  }
+
+  const candidateStart = ctx.stats.candidatePlaneCount;
+  const concavityInfo = computePartConcavity(part, ctx);
+  if (concavityInfo.concavity <= ctx.options.concavity) {
+    return {
+      kind: "keep",
+      candidatePlaneCount: ctx.stats.candidatePlaneCount - candidateStart
+    };
+  }
+
+  const preferred = computePreferredDirection(part, ctx);
+  const coarsePlanes = buildAxisPlanes(part, ctx, ctx.options.planeDownsampling);
+  if (coarsePlanes.length <= 0) {
+    return {
+      kind: "keep",
+      candidatePlaneCount: ctx.stats.candidatePlaneCount - candidateStart
+    };
+  }
+
+  let best = evaluateSplitCost(
+    part,
+    ctx,
+    coarsePlanes,
+    concavityInfo.concavity,
+    preferred.direction,
+    preferred.weight,
+    ctx.options.convexHullDownsampling
+  );
+
+  if (best && (ctx.options.planeDownsampling > 1 || ctx.options.convexHullDownsampling > 1)) {
+    const refinedPlanes = refinePlanesAroundBest(part, ctx, best.candidate);
+    const refined = evaluateSplitCost(
+      part,
+      ctx,
+      refinedPlanes,
+      concavityInfo.concavity,
+      preferred.direction,
+      preferred.weight,
+      1
+    );
+    if (refined && refined.total <= best.total) {
+      best = refined;
+    }
+  }
+
+  const candidatePlaneCount = ctx.stats.candidatePlaneCount - candidateStart;
+  if (!best || best.concavity >= concavityInfo.concavity - 1e-6) {
+    return {
+      kind: "keep",
+      candidatePlaneCount
+    };
+  }
+
+  return {
+    kind: "split",
+    candidatePlaneCount,
+    leftVoxelIds: best.leftVoxels,
+    rightVoxelIds: best.rightVoxels
+  };
+}
+
+async function createSplitWorkerPool(ctx: DecompositionContext): Promise<SplitWorkerPool | null> {
+  if (typeof Worker === "undefined") {
+    return null;
+  }
+
+  const hardwareConcurrency =
+    typeof navigator !== "undefined" && Number.isFinite(navigator.hardwareConcurrency)
+      ? Math.max(1, Math.floor(navigator.hardwareConcurrency))
+      : 2;
+  const bytesPerWorker = Math.max(1, ctx.voxels.length) * 24;
+  const memoryBudgetBytes = 768 * 1024 * 1024;
+  const workersByMemory = Math.max(1, Math.floor(memoryBudgetBytes / bytesPerWorker));
+  const maxWorkersFromVoxels =
+    ctx.voxels.length > 2_500_000 ? 4 : ctx.voxels.length > 1_000_000 ? 6 : 8;
+  const workerCount = clampInt(
+    Math.min(hardwareConcurrency - 1, workersByMemory, maxWorkersFromVoxels),
+    0,
+    8
+  );
+  if (workerCount < 2) {
+    return null;
+  }
+
+  const voxelCount = ctx.voxels.length;
+  const voxelX = new Float32Array(voxelCount);
+  const voxelY = new Float32Array(voxelCount);
+  const voxelZ = new Float32Array(voxelCount);
+  const voxelCellX = new Int32Array(voxelCount);
+  const voxelCellY = new Int32Array(voxelCount);
+  const voxelCellZ = new Int32Array(voxelCount);
+  for (let i = 0; i < voxelCount; i += 1) {
+    const voxel = ctx.voxels[i];
+    voxelX[i] = voxel?.x ?? 0;
+    voxelY[i] = voxel?.y ?? 0;
+    voxelZ[i] = voxel?.z ?? 0;
+    voxelCellX[i] = voxel?.cellX ?? 0;
+    voxelCellY[i] = voxel?.cellY ?? 0;
+    voxelCellZ[i] = voxel?.cellZ ?? 0;
+  }
+
+  const initMessage: SplitWorkerInitRequest = {
+    type: "init",
+    options: {
+      concavity: ctx.options.concavity,
+      alpha: ctx.options.alpha,
+      beta: ctx.options.beta,
+      planeDownsampling: ctx.options.planeDownsampling,
+      convexHullDownsampling: ctx.options.convexHullDownsampling,
+      minVoxelCountPerPart: ctx.options.minVoxelCountPerPart,
+      maxHullPointSamples: ctx.options.maxHullPointSamples
+    },
+    cellVolume: ctx.grid.cellVolume,
+    rootHullVolume: ctx.rootHullVolume,
+    voxelX,
+    voxelY,
+    voxelZ,
+    voxelCellX,
+    voxelCellY,
+    voxelCellZ
+  };
+
+  let disposed = false;
+  let nextRequestId = 1;
+
+  const slots: SplitWorkerSlot[] = [];
+  const queue: SplitWorkerTask[] = [];
+  const pendingByRequestId = new Map<number, SplitWorkerTask>();
+  let readyCount = 0;
+
+  let readyResolve: (() => void) | null = null;
+  let readyReject: ((error: Error) => void) | null = null;
+  const readyPromise = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+
+  const rejectAllPending = (reason: string): void => {
+    for (const task of queue.splice(0, queue.length)) {
+      task.reject(new Error(reason));
+    }
+    for (const task of pendingByRequestId.values()) {
+      task.reject(new Error(reason));
+    }
+    pendingByRequestId.clear();
+    for (const slot of slots) {
+      slot.busy = false;
+      slot.currentRequestId = null;
+    }
+  };
+
+  const dispatch = (): void => {
+    if (disposed) {
+      return;
+    }
+
+    for (const slot of slots) {
+      if (!slot.ready || slot.busy) {
+        continue;
+      }
+      const nextTask = queue.shift();
+      if (!nextTask) {
+        break;
+      }
+      slot.busy = true;
+      slot.currentRequestId = nextTask.requestId;
+      pendingByRequestId.set(nextTask.requestId, nextTask);
+      const request: SplitWorkerEvaluateRequest = {
+        type: "evaluate",
+        requestId: nextTask.requestId,
+        voxelIds: nextTask.payload
+      };
+      slot.worker.postMessage(request, [nextTask.payload.buffer]);
+    }
+  };
+
+  const onWorkerError = (error: unknown): void => {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (!disposed) {
+      disposed = true;
+      rejectAllPending(`Split worker pool failed: ${detail}`);
+      readyReject?.(new Error(`Split worker pool failed: ${detail}`));
+    }
+    for (const slot of slots) {
+      slot.worker.terminate();
+    }
+  };
+
+  const onWorkerMessage = (
+    slot: SplitWorkerSlot,
+    message: SplitWorkerResponse
+  ): void => {
+    if (disposed) {
+      return;
+    }
+
+    if (message.type === "ready") {
+      if (!slot.ready) {
+        slot.ready = true;
+        readyCount += 1;
+        if (readyCount >= slots.length) {
+          readyResolve?.();
+        }
+      }
+      dispatch();
+      return;
+    }
+
+    if (message.type === "error") {
+      if (typeof message.requestId === "number") {
+        const task = pendingByRequestId.get(message.requestId);
+        pendingByRequestId.delete(message.requestId);
+        if (task) {
+          task.reject(new Error(message.error || "Split worker failed"));
+        }
+        if (slot.currentRequestId === message.requestId) {
+          slot.currentRequestId = null;
+          slot.busy = false;
+        }
+        dispatch();
+        return;
+      }
+
+      onWorkerError(new Error(message.error || "Split worker pool failed"));
+      return;
+    }
+
+    const task = pendingByRequestId.get(message.requestId);
+    pendingByRequestId.delete(message.requestId);
+    if (slot.currentRequestId === message.requestId) {
+      slot.currentRequestId = null;
+      slot.busy = false;
+    }
+
+    if (!task) {
+      dispatch();
+      return;
+    }
+
+    if (message.kind === "split") {
+      task.resolve({
+        kind: "split",
+        candidatePlaneCount: message.candidatePlaneCount,
+        leftVoxelIds: Array.from(message.leftVoxelIds),
+        rightVoxelIds: Array.from(message.rightVoxelIds)
+      });
+    } else {
+      task.resolve({
+        kind: "keep",
+        candidatePlaneCount: message.candidatePlaneCount
+      });
+    }
+
+    dispatch();
+  };
+
+  for (let i = 0; i < workerCount; i += 1) {
+    const worker = new Worker(new URL("./vhacd.split.worker.ts", import.meta.url), {
+      type: "module"
+    });
+    const slot: SplitWorkerSlot = {
+      worker,
+      ready: false,
+      busy: false,
+      currentRequestId: null
+    };
+    worker.addEventListener("message", (event: MessageEvent<SplitWorkerResponse>) => {
+      onWorkerMessage(slot, event.data);
+    });
+    worker.addEventListener("error", (event: ErrorEvent) => {
+      onWorkerError(event.error ?? new Error(event.message || "split worker crashed"));
+    });
+    worker.postMessage(initMessage);
+    slots.push(slot);
+  }
+
+  try {
+    await readyPromise;
+  } catch {
+    for (const slot of slots) {
+      slot.worker.terminate();
+    }
+    return null;
+  }
+
+  return {
+    evaluatePart: (part: Part): Promise<SplitPartDecision> => {
+      if (disposed) {
+        return Promise.reject(new Error("Split worker pool is disposed"));
+      }
+
+      return new Promise<SplitPartDecision>((resolve, reject) => {
+        const requestId = nextRequestId;
+        nextRequestId += 1;
+        queue.push({
+          requestId,
+          payload: Uint32Array.from(part.voxelIds),
+          resolve,
+          reject
+        });
+        dispatch();
+      });
+    },
+    dispose: (): void => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      rejectAllPending("Split worker pool disposed");
+      for (const slot of slots) {
+        slot.worker.terminate();
+      }
+    },
+    workerCount
+  };
+}
+
 function deriveDecompositionDepth(maxConvexHulls: number): number {
   let hullCount = 2;
   let depth = 1;
@@ -1033,6 +1664,11 @@ function buildSignature(hulls: VhacdHull[]): string {
 function createFallbackResult(): VhacdResult {
   return {
     hulls: [],
+    hullVariants: {
+      projected: [],
+      unprojected: []
+    },
+    activeHullVariant: "unprojected",
     voxelView: {
       voxelSize: 0,
       parts: []
@@ -1049,20 +1685,27 @@ function createFallbackResult(): VhacdResult {
       mergeCount: 0,
       candidatePlaneCount: 0,
       iterationCount: 0,
-      generatedBeforeMerge: 0
+      generatedBeforeMerge: 0,
+      splitEvaluationMode: "sequential",
+      splitWorkerCount: 1
     },
-    signature: "empty"
+    signature: "empty",
+    signatures: {
+      projected: "empty",
+      unprojected: "empty"
+    }
   };
 }
 
-export function runVhacdFromObject(
+export async function runVhacdFromObject(
   source: THREE.Object3D,
-  inputOptions: Partial<VhacdOptions> = {}
-): VhacdResult {
+  inputOptions: Partial<VhacdOptions> = {},
+  onProgress?: (progress: VhacdProgress) => void
+): Promise<VhacdResult> {
   const options: VhacdOptions = {
     ...DEFAULT_OPTIONS,
     ...inputOptions,
-    resolution: clampInt(inputOptions.resolution ?? DEFAULT_OPTIONS.resolution, 10, 96),
+    resolution: clampInt(inputOptions.resolution ?? DEFAULT_OPTIONS.resolution, 10, 256),
     planeDownsampling: clampInt(
       inputOptions.planeDownsampling ?? DEFAULT_OPTIONS.planeDownsampling,
       1,
@@ -1086,20 +1729,54 @@ export function runVhacdFromObject(
     ),
     concavity: clamp(inputOptions.concavity ?? DEFAULT_OPTIONS.concavity, 0, 1),
     alpha: clamp(inputOptions.alpha ?? DEFAULT_OPTIONS.alpha, 0, 1),
-    beta: clamp(inputOptions.beta ?? DEFAULT_OPTIONS.beta, 0, 1)
+    beta: clamp(inputOptions.beta ?? DEFAULT_OPTIONS.beta, 0, 1),
+    projectHullVertices: inputOptions.projectHullVertices ?? DEFAULT_OPTIONS.projectHullVertices,
+    precomputeBothHullVariants:
+      inputOptions.precomputeBothHullVariants ?? DEFAULT_OPTIONS.precomputeBothHullVariants,
+    maxGridCells: clampInt(inputOptions.maxGridCells ?? DEFAULT_OPTIONS.maxGridCells, 250_000, 20_000_000),
+    voxelizationTriangleSampleCount: clampInt(
+      inputOptions.voxelizationTriangleSampleCount ?? DEFAULT_OPTIONS.voxelizationTriangleSampleCount,
+      1_000,
+      120_000
+    )
   };
 
+  const reportProgress = async (
+    phase: VhacdProgress["phase"],
+    propProgress: number,
+    message: string
+  ): Promise<void> => {
+    onProgress?.({
+      phase,
+      propProgress: clamp(propProgress, 0, 1),
+      message
+    });
+    await yieldToUi();
+  };
+
+  await reportProgress("collect", 0.02, "Collecting source triangles");
   const extracted = collectTriangles(source);
   if (extracted.triangles.length <= 0 || !isFiniteBounds(extracted.bounds)) {
+    await reportProgress("finalize", 1, "No source triangles");
     return createFallbackResult();
   }
 
-  const grid = createGrid(extracted.bounds, options.resolution);
-  const shell = rasterizeTrianglesToShell(grid, extracted.triangles);
+  await reportProgress("voxelize", 0.08, "Voxelizing source mesh");
+  const grid = createGrid(extracted.bounds, options.resolution, options.maxGridCells);
+  const shell = rasterizeTrianglesToShell(
+    grid,
+    extracted.triangles,
+    options.voxelizationTriangleSampleCount
+  );
+
+  await reportProgress("flood-fill", 0.34, "Flood filling exterior");
   const outside = floodFillExterior(grid, shell);
+
+  await reportProgress("build-voxels", 0.42, "Building solid voxel field");
   const voxels = buildVoxelPoints(grid, shell, outside);
 
   if (voxels.length <= 0) {
+    await reportProgress("finalize", 1, "No voxels generated");
     return createFallbackResult();
   }
 
@@ -1151,69 +1828,110 @@ export function runVhacdFromObject(
   let workingParts: Part[] = [rootPart];
   let nextPartId = 1;
   const depth = deriveDecompositionDepth(options.maxConvexHulls);
+  let splitPool: SplitWorkerPool | null = await createSplitWorkerPool(ctx);
+  const splitWorkerCount = splitPool?.workerCount ?? 1;
+  let splitEvaluationMode: "parallel" | "sequential" | "mixed" = splitPool
+    ? "parallel"
+    : "sequential";
+  const splitModeLabel = (): string => {
+    if (splitEvaluationMode === "parallel") {
+      return `parallel x${splitWorkerCount}`;
+    }
+    if (splitEvaluationMode === "mixed") {
+      return `mixed (fallback to sequential)`;
+    }
+    return "sequential";
+  };
 
-  for (let level = 0; level < depth && workingParts.length > 0; level += 1) {
-    ctx.stats.iterationCount += 1;
-    const nextLevel: Part[] = [];
-
-    for (const part of workingParts) {
-      if (part.voxelIds.length < options.minVoxelCountPerPart * 2) {
-        finalParts.push(part);
-        continue;
-      }
-
-      const concavityInfo = computePartConcavity(part, ctx);
-      if (concavityInfo.concavity <= options.concavity) {
-        finalParts.push(part);
-        continue;
-      }
-
-      const preferred = computePreferredDirection(part, ctx);
-      const coarsePlanes = buildAxisPlanes(part, ctx, options.planeDownsampling);
-      if (coarsePlanes.length <= 0) {
-        finalParts.push(part);
-        continue;
-      }
-
-      let best = evaluateSplitCost(
-        part,
-        ctx,
-        coarsePlanes,
-        concavityInfo.concavity,
-        preferred.direction,
-        preferred.weight,
-        options.convexHullDownsampling
+  await reportProgress("split", 0.5, `Splitting parts (depth ${depth}, ${splitModeLabel()})`);
+  try {
+    for (let level = 0; level < depth && workingParts.length > 0; level += 1) {
+      ctx.stats.iterationCount += 1;
+      const nextLevel: Part[] = [];
+      await reportProgress(
+        "split",
+        0.5 + 0.3 * (level / Math.max(1, depth)),
+        `Split level ${level + 1}/${depth} (${splitModeLabel()})`
       );
 
-      if (best && (options.planeDownsampling > 1 || options.convexHullDownsampling > 1)) {
-        const refinedPlanes = refinePlanesAroundBest(part, ctx, best.candidate);
-        const refined = evaluateSplitCost(
-          part,
-          ctx,
-          refinedPlanes,
-          concavityInfo.concavity,
-          preferred.direction,
-          preferred.weight,
-          1
-        );
-        if (refined && refined.total <= best.total) {
-          best = refined;
+      if (splitPool && workingParts.length > 1) {
+        const activeSplitPool = splitPool;
+        try {
+          let completed = 0;
+          const updateStride = Math.max(1, Math.floor(workingParts.length / 6));
+          const decisions = await Promise.all(
+            workingParts.map(async (part, partIndex) => {
+              const decision = await activeSplitPool.evaluatePart(part);
+              completed += 1;
+              if (completed % updateStride === 0 || completed === workingParts.length) {
+                const levelRatio = completed / Math.max(1, workingParts.length);
+                await reportProgress(
+                  "split",
+                  0.5 + 0.3 * ((level + levelRatio) / Math.max(1, depth)),
+                  `Split level ${level + 1}/${depth}: ${completed}/${workingParts.length} (${splitModeLabel()})`
+                );
+              }
+              return {
+                partIndex,
+                part,
+                decision
+              };
+            })
+          );
+
+          decisions.sort((a, b) => a.partIndex - b.partIndex);
+          for (const { part, decision } of decisions) {
+            ctx.stats.candidatePlaneCount += decision.candidatePlaneCount;
+            if (decision.kind === "split") {
+              nextLevel.push({ id: nextPartId, voxelIds: decision.leftVoxelIds });
+              nextPartId += 1;
+              nextLevel.push({ id: nextPartId, voxelIds: decision.rightVoxelIds });
+              nextPartId += 1;
+              ctx.stats.splitCount += 1;
+              continue;
+            }
+            finalParts.push(part);
+          }
+        } catch {
+          splitPool.dispose();
+          splitPool = null;
+          splitEvaluationMode = "mixed";
+          await reportProgress(
+            "split",
+            0.5 + 0.3 * (level / Math.max(1, depth)),
+            `Split worker pool failed, continuing sequentially (${splitModeLabel()})`
+          );
         }
       }
 
-      if (!best || best.concavity >= concavityInfo.concavity - 1e-6) {
-        finalParts.push(part);
-        continue;
+      if (!splitPool || workingParts.length <= 1) {
+        for (let partIndex = 0; partIndex < workingParts.length; partIndex += 1) {
+          const part = workingParts[partIndex];
+          const decision = evaluatePartSplitLocally(part, ctx);
+          if (decision.kind === "split") {
+            nextLevel.push({ id: nextPartId, voxelIds: decision.leftVoxelIds });
+            nextPartId += 1;
+            nextLevel.push({ id: nextPartId, voxelIds: decision.rightVoxelIds });
+            nextPartId += 1;
+            ctx.stats.splitCount += 1;
+          } else {
+            finalParts.push(part);
+          }
+          if ((partIndex + 1) % 3 === 0 || partIndex === workingParts.length - 1) {
+            const levelRatio = (partIndex + 1) / Math.max(1, workingParts.length);
+            await reportProgress(
+              "split",
+              0.5 + 0.3 * ((level + levelRatio) / Math.max(1, depth)),
+              `Split level ${level + 1}/${depth}: ${partIndex + 1}/${workingParts.length} (${splitModeLabel()})`
+            );
+          }
+        }
       }
 
-      nextLevel.push({ id: nextPartId, voxelIds: best.leftVoxels });
-      nextPartId += 1;
-      nextLevel.push({ id: nextPartId, voxelIds: best.rightVoxels });
-      nextPartId += 1;
-      ctx.stats.splitCount += 1;
+      workingParts = nextLevel;
     }
-
-    workingParts = nextLevel;
+  } finally {
+    splitPool?.dispose();
   }
 
   for (const part of workingParts) {
@@ -1221,38 +1939,94 @@ export function runVhacdFromObject(
   }
 
   const generatedBeforeMerge = finalParts.length;
+  await reportProgress("merge", 0.82, `Merging ${generatedBeforeMerge} parts`);
   const mergedParts = mergePartsToLimit(finalParts, ctx);
+  const shouldBuildProjectedHulls =
+    options.projectHullVertices || options.precomputeBothHullVariants;
+  const activeHullVariant: VhacdHullVariant = options.projectHullVertices
+    ? "projected"
+    : "unprojected";
+  const projectionTriangles = shouldBuildProjectedHulls
+    ? buildProjectionTriangles(extracted.triangles)
+    : [];
+  const hullBuildPhase: VhacdProgress["phase"] = shouldBuildProjectedHulls ? "project" : "build-hulls";
 
-  const entries = mergedParts
-    .map((part, index) => {
-      const summary = summarizePart(part, ctx);
-      const hull = buildHullGeometry(part, ctx);
-      const concavity =
-        Math.abs(hull.hullVolume - summary.volume) / Math.max(EPSILON, ctx.rootHullVolume);
+  await reportProgress(
+    hullBuildPhase,
+    0.86,
+    options.precomputeBothHullVariants
+      ? "Building hull variants (raw + projected)"
+      : options.projectHullVertices
+        ? "Building and projecting hulls"
+        : "Building hulls"
+  );
 
-      return {
-        part,
-        hull: {
-          index,
-          color: 0xffffff,
-          geometry: hull.geometry,
-          centroid: [summary.centroidX, summary.centroidY, summary.centroidZ],
-          voxelCount: summary.voxelCount,
-          voxelVolume: summary.volume,
-          hullVolume: hull.hullVolume,
-          concavity
-        } satisfies VhacdHull
-      };
-    })
-    .sort((a, b) => {
-      if (a.hull.centroid[1] !== b.hull.centroid[1]) {
-        return a.hull.centroid[1] - b.hull.centroid[1];
+  const entries: Array<{
+    part: Part;
+    centroid: [number, number, number];
+    voxelCount: number;
+    voxelVolume: number;
+    unprojectedGeometry: THREE.BufferGeometry;
+    unprojectedHullVolume: number;
+    projectedGeometry: THREE.BufferGeometry | null;
+    projectedHullVolume: number;
+  }> = [];
+
+  for (let index = 0; index < mergedParts.length; index += 1) {
+    const part = mergedParts[index];
+    const summary = summarizePart(part, ctx);
+    const baseHull = buildHullGeometry(part, ctx);
+
+    let projectedGeometry: THREE.BufferGeometry | null = null;
+    let projectedHullVolume = baseHull.hullVolume;
+    if (shouldBuildProjectedHulls) {
+      const projected = projectHullGeometryToSource(
+        baseHull.geometry,
+        projectionTriangles,
+        options.maxHullPointSamples
+      );
+      if (projected) {
+        projectedGeometry = projected.geometry;
+        projectedHullVolume = projected.hullVolume;
+      } else {
+        projectedGeometry = cloneHullGeometry(baseHull.geometry);
       }
-      if (a.hull.centroid[0] !== b.hull.centroid[0]) {
-        return a.hull.centroid[0] - b.hull.centroid[0];
-      }
-      return a.hull.centroid[2] - b.hull.centroid[2];
+    }
+
+    entries.push({
+      part,
+      centroid: [summary.centroidX, summary.centroidY, summary.centroidZ],
+      voxelCount: summary.voxelCount,
+      voxelVolume: summary.volume,
+      unprojectedGeometry: baseHull.geometry,
+      unprojectedHullVolume: baseHull.hullVolume,
+      projectedGeometry,
+      projectedHullVolume
     });
+
+    if ((index + 1) % 2 === 0 || index === mergedParts.length - 1) {
+      const fraction = (index + 1) / Math.max(1, mergedParts.length);
+      await reportProgress(
+        hullBuildPhase,
+        0.86 + fraction * 0.11,
+        options.precomputeBothHullVariants
+          ? `Building hull variants ${index + 1}/${mergedParts.length}`
+          : options.projectHullVertices
+            ? `Projecting hulls ${index + 1}/${mergedParts.length}`
+            : `Building hulls ${index + 1}/${mergedParts.length}`
+      );
+    }
+  }
+
+  entries.sort((a, b) => {
+    if (a.centroid[1] !== b.centroid[1]) {
+      return a.centroid[1] - b.centroid[1];
+    }
+    if (a.centroid[0] !== b.centroid[0]) {
+      return a.centroid[0] - b.centroid[0];
+    }
+    return a.centroid[2] - b.centroid[2];
+  });
 
   const totalVoxelCountForPreview = entries.reduce(
     (sum, entry) => sum + entry.part.voxelIds.length,
@@ -1264,17 +2038,51 @@ export function runVhacdFromObject(
   );
 
   const hulls: VhacdHull[] = [];
+  const projectedHulls: VhacdHull[] = [];
+  const unprojectedHulls: VhacdHull[] = [];
   const voxelParts: VhacdVoxelPart[] = [];
 
+  await reportProgress("finalize", 0.97, "Packing hull previews");
   for (let sortedIndex = 0; sortedIndex < entries.length; sortedIndex += 1) {
     const entry = entries[sortedIndex];
     const color = HULL_COLORS[sortedIndex % HULL_COLORS.length];
 
-    hulls.push({
-      ...entry.hull,
+    const unprojectedConcavity =
+      Math.abs(entry.unprojectedHullVolume - entry.voxelVolume) / Math.max(EPSILON, ctx.rootHullVolume);
+    const unprojectedHull: VhacdHull = {
       index: sortedIndex,
-      color
-    });
+      color,
+      geometry: entry.unprojectedGeometry,
+      centroid: entry.centroid,
+      voxelCount: entry.voxelCount,
+      voxelVolume: entry.voxelVolume,
+      hullVolume: entry.unprojectedHullVolume,
+      concavity: unprojectedConcavity
+    };
+    unprojectedHulls.push(unprojectedHull);
+
+    let projectedHull: VhacdHull | null = null;
+    if (entry.projectedGeometry) {
+      const projectedConcavity =
+        Math.abs(entry.projectedHullVolume - entry.voxelVolume) / Math.max(EPSILON, ctx.rootHullVolume);
+      projectedHull = {
+        index: sortedIndex,
+        color,
+        geometry: entry.projectedGeometry,
+        centroid: entry.centroid,
+        voxelCount: entry.voxelCount,
+        voxelVolume: entry.voxelVolume,
+        hullVolume: entry.projectedHullVolume,
+        concavity: projectedConcavity
+      };
+      projectedHulls.push(projectedHull);
+    }
+
+    if (activeHullVariant === "projected" && projectedHull) {
+      hulls.push(projectedHull);
+    } else {
+      hulls.push(unprojectedHull);
+    }
 
     const centers: Array<[number, number, number]> = [];
     for (let i = 0; i < entry.part.voxelIds.length; i += previewStride) {
@@ -1303,6 +2111,15 @@ export function runVhacdFromObject(
       voxelCount: entry.part.voxelIds.length,
       centers
     });
+
+    if ((sortedIndex + 1) % 8 === 0 || sortedIndex === entries.length - 1) {
+      const fraction = (sortedIndex + 1) / Math.max(1, entries.length);
+      await reportProgress(
+        "finalize",
+        0.97 + fraction * 0.03,
+        `Packing previews ${sortedIndex + 1}/${entries.length}`
+      );
+    }
   }
 
   const voxelPreviewCount = voxelParts.reduce(
@@ -1311,9 +2128,21 @@ export function runVhacdFromObject(
   );
 
   const rootConcavity = Math.abs(rootHullVolume - rootSummary.volume) / Math.max(EPSILON, rootHullVolume);
+  const unprojectedSignature = buildSignature(unprojectedHulls);
+  const projectedSignature =
+    projectedHulls.length > 0 ? buildSignature(projectedHulls) : unprojectedSignature;
 
+  await reportProgress("finalize", 1, "Done");
   return {
     hulls,
+    hullVariants:
+      projectedHulls.length > 0
+        ? {
+            projected: projectedHulls,
+            unprojected: unprojectedHulls
+          }
+        : undefined,
+    activeHullVariant,
     voxelView: {
       voxelSize: grid.voxelSize,
       parts: voxelParts
@@ -1330,9 +2159,238 @@ export function runVhacdFromObject(
       mergeCount: ctx.stats.mergeCount,
       candidatePlaneCount: ctx.stats.candidatePlaneCount,
       iterationCount: ctx.stats.iterationCount,
-      generatedBeforeMerge
+      generatedBeforeMerge,
+      splitEvaluationMode,
+      splitWorkerCount
     },
-    signature: buildSignature(hulls)
+    signature: activeHullVariant === "projected" ? projectedSignature : unprojectedSignature,
+    signatures: {
+      projected: projectedSignature,
+      unprojected: unprojectedSignature
+    }
+  };
+}
+
+export async function runVhacdFromSourceData(
+  sourceData: VhacdSourceData,
+  inputOptions: Partial<VhacdOptions> = {},
+  onProgress?: (progress: VhacdProgress) => void
+): Promise<VhacdResult> {
+  if (!(sourceData.positions instanceof Float32Array) || sourceData.positions.length < 9) {
+    return createFallbackResult();
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(new Float32Array(sourceData.positions), 3)
+  );
+
+  const material = new THREE.MeshBasicMaterial();
+  const mesh = new THREE.Mesh(geometry, material);
+
+  try {
+    return await runVhacdFromObject(mesh, inputOptions, onProgress);
+  } finally {
+    geometry.dispose();
+    material.dispose();
+  }
+}
+
+function serializeGeometry(
+  geometry: THREE.BufferGeometry
+): {
+  positions: Float32Array;
+  indices: Uint32Array;
+} {
+  const position = geometry.getAttribute("position");
+  if (!(position instanceof THREE.BufferAttribute) || position.count <= 0) {
+    return {
+      positions: new Float32Array(),
+      indices: new Uint32Array()
+    };
+  }
+
+  const positions = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i += 1) {
+    const base = i * 3;
+    positions[base] = position.getX(i);
+    positions[base + 1] = position.getY(i);
+    positions[base + 2] = position.getZ(i);
+  }
+
+  const index = geometry.getIndex();
+  if (!index) {
+    const indices = new Uint32Array(position.count);
+    for (let i = 0; i < position.count; i += 1) {
+      indices[i] = i;
+    }
+    return { positions, indices };
+  }
+
+  const indices = new Uint32Array(index.count);
+  for (let i = 0; i < index.count; i += 1) {
+    indices[i] = index.array[i] ?? 0;
+  }
+
+  return { positions, indices };
+}
+
+export function serializeVhacdResult(result: VhacdResult): VhacdSerializedResult {
+  const serializeHulls = (hulls: VhacdHull[]): VhacdSerializedHull[] => {
+    return hulls.map((hull) => {
+      const geometry = serializeGeometry(hull.geometry);
+      return {
+        index: hull.index,
+        color: hull.color,
+        centroid: hull.centroid,
+        voxelCount: hull.voxelCount,
+        voxelVolume: hull.voxelVolume,
+        hullVolume: hull.hullVolume,
+        concavity: hull.concavity,
+        positions: geometry.positions,
+        indices: geometry.indices
+      };
+    });
+  };
+
+  let serializedHulls = serializeHulls(result.hulls);
+  let serializedVariants:
+    | {
+        projected: VhacdSerializedHull[];
+        unprojected: VhacdSerializedHull[];
+      }
+    | undefined;
+  let activeHullVariant = result.activeHullVariant;
+
+  if (result.hullVariants) {
+    const projected = serializeHulls(result.hullVariants.projected);
+    const unprojected = serializeHulls(result.hullVariants.unprojected);
+    serializedVariants = {
+      projected,
+      unprojected
+    };
+
+    const inferredActive =
+      activeHullVariant ??
+      (result.hulls === result.hullVariants.projected ? "projected" : "unprojected");
+    activeHullVariant = inferredActive;
+    serializedHulls = inferredActive === "projected" ? projected : unprojected;
+  }
+
+  return {
+    hulls: serializedHulls,
+    hullVariants: serializedVariants,
+    activeHullVariant,
+    voxelView: {
+      voxelSize: result.voxelView.voxelSize,
+      parts: result.voxelView.parts.map((part) => {
+        const centers = new Float32Array(part.centers.length * 3);
+        for (let i = 0; i < part.centers.length; i += 1) {
+          const center = part.centers[i];
+          const base = i * 3;
+          centers[base] = center[0];
+          centers[base + 1] = center[1];
+          centers[base + 2] = center[2];
+        }
+        return {
+          index: part.index,
+          color: part.color,
+          voxelCount: part.voxelCount,
+          centers
+        };
+      })
+    },
+    stats: { ...result.stats },
+    signature: result.signature,
+    signatures: result.signatures ? { ...result.signatures } : undefined
+  };
+}
+
+export function deserializeVhacdResult(serialized: VhacdSerializedResult): VhacdResult {
+  const deserializeHulls = (hulls: VhacdSerializedHull[]): VhacdHull[] => {
+    return hulls.map((hull) => {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(hull.positions, 3));
+      if (hull.indices.length > 0) {
+        geometry.setIndex(new THREE.BufferAttribute(hull.indices, 1));
+      }
+      geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      return {
+        index: hull.index,
+        color: hull.color,
+        geometry,
+        centroid: hull.centroid,
+        voxelCount: hull.voxelCount,
+        voxelVolume: hull.voxelVolume,
+        hullVolume: hull.hullVolume,
+        concavity: hull.concavity
+      };
+    });
+  };
+
+  let hulls: VhacdHull[] = [];
+  let hullVariants:
+    | {
+        projected: VhacdHull[];
+        unprojected: VhacdHull[];
+      }
+    | undefined;
+  let activeHullVariant: VhacdHullVariant | undefined = serialized.activeHullVariant;
+
+  if (serialized.hullVariants) {
+    const projected = deserializeHulls(serialized.hullVariants.projected);
+    const unprojected = deserializeHulls(serialized.hullVariants.unprojected);
+    hullVariants = {
+      projected,
+      unprojected
+    };
+    if (activeHullVariant !== "projected" && activeHullVariant !== "unprojected") {
+      activeHullVariant = "unprojected";
+    }
+    hulls = activeHullVariant === "projected" ? projected : unprojected;
+  } else {
+    hulls = deserializeHulls(serialized.hulls);
+  }
+
+  let signatures = serialized.signatures
+    ? { ...serialized.signatures }
+    : undefined;
+  if (!signatures && hullVariants) {
+    signatures = {
+      projected: buildSignature(hullVariants.projected),
+      unprojected: buildSignature(hullVariants.unprojected)
+    };
+  }
+
+  return {
+    hulls,
+    hullVariants,
+    activeHullVariant,
+    voxelView: {
+      voxelSize: serialized.voxelView.voxelSize,
+      parts: serialized.voxelView.parts.map((part) => {
+        const centers: Array<[number, number, number]> = [];
+        for (let i = 0; i < part.centers.length; i += 3) {
+          centers.push([part.centers[i] ?? 0, part.centers[i + 1] ?? 0, part.centers[i + 2] ?? 0]);
+        }
+        return {
+          index: part.index,
+          color: part.color,
+          voxelCount: part.voxelCount,
+          centers
+        };
+      })
+    },
+    stats: { ...serialized.stats },
+    signature:
+      activeHullVariant === "projected" && signatures
+        ? signatures.projected
+        : activeHullVariant === "unprojected" && signatures
+          ? signatures.unprojected
+          : serialized.signature,
+    signatures
   };
 }
 
@@ -1340,7 +2398,19 @@ export function disposeVhacdResult(result: VhacdResult | null | undefined): void
   if (!result) {
     return;
   }
+  const geometries = new Set<THREE.BufferGeometry>();
   for (const hull of result.hulls) {
-    hull.geometry.dispose();
+    geometries.add(hull.geometry);
+  }
+  if (result.hullVariants) {
+    for (const hull of result.hullVariants.projected) {
+      geometries.add(hull.geometry);
+    }
+    for (const hull of result.hullVariants.unprojected) {
+      geometries.add(hull.geometry);
+    }
+  }
+  for (const geometry of geometries) {
+    geometry.dispose();
   }
 }

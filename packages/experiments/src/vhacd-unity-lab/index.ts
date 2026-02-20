@@ -3,10 +3,15 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { ExperimentModule } from "../runtime/types";
 import {
+  deserializeVhacdResult,
   disposeVhacdResult,
-  runVhacdFromObject,
+  extractVhacdSourceData,
+  type VhacdHull,
+  type VhacdProgress,
   type VhacdOptions,
-  type VhacdResult
+  type VhacdResult,
+  type VhacdSerializedResult,
+  type VhacdSourceData
 } from "./vhacd";
 
 type PropChoice = {
@@ -36,9 +41,37 @@ type PropCard = {
   hullEdgeMaterials: THREE.LineBasicMaterial[];
   voxelMaterials: THREE.MeshStandardMaterial[];
   voxelGeometry: THREE.BoxGeometry | null;
+  sourceData: VhacdSourceData | null;
   runtimeMs: number | null;
   selectHandler: ((event: PointerEvent) => void) | null;
 };
+
+type WorkerRunRequest = {
+  type: "run";
+  requestId: number;
+  sourceData: VhacdSourceData;
+  options: VhacdOptions;
+};
+
+type WorkerProgressResponse = {
+  type: "progress";
+  requestId: number;
+  progress: VhacdProgress;
+};
+
+type WorkerResultResponse = {
+  type: "result";
+  requestId: number;
+  result: VhacdSerializedResult;
+};
+
+type WorkerErrorResponse = {
+  type: "error";
+  requestId: number;
+  error: string;
+};
+
+type WorkerResponse = WorkerProgressResponse | WorkerResultResponse | WorkerErrorResponse;
 
 type SharedViewPose = {
   position: THREE.Vector3;
@@ -444,6 +477,7 @@ function createCard(choice: PropChoice, cardsGrid: HTMLElement): PropCard {
     hullEdgeMaterials: [],
     voxelMaterials: [],
     voxelGeometry: null,
+    sourceData: null,
     runtimeMs: null,
     selectHandler: null
   };
@@ -491,10 +525,7 @@ function clearCardVoxelOverlay(card: PropCard): void {
   card.voxelMaterials.length = 0;
 }
 
-function clearCardOverlay(card: PropCard): void {
-  disposeVhacdResult(card.result);
-  card.result = null;
-
+function clearCardHullOverlay(card: PropCard): void {
   while (card.hullRoot.children.length > 0) {
     const child = card.hullRoot.children[0];
     if (!child) {
@@ -517,17 +548,24 @@ function clearCardOverlay(card: PropCard): void {
     material.dispose();
   }
   card.hullEdgeMaterials.length = 0;
+}
 
+function clearCardOverlay(card: PropCard): void {
+  disposeVhacdResult(card.result);
+  card.result = null;
+  clearCardHullOverlay(card);
   clearCardVoxelOverlay(card);
 }
 
 function clearCardModel(card: PropCard): void {
   if (!card.model) {
+    card.sourceData = null;
     return;
   }
   card.modelRoot.remove(card.model);
   disposeObjectResources(card.model);
   card.model = null;
+  card.sourceData = null;
 }
 
 function disposeCard(card: PropCard): void {
@@ -554,11 +592,24 @@ function disposeCard(card: PropCard): void {
   card.root.remove();
 }
 
-function renderCardHullOverlay(card: PropCard, result: VhacdResult, wireframe: boolean): void {
-  clearCardOverlay(card);
-  card.result = result;
+function resolveDisplayedHulls(result: VhacdResult, projected: boolean): VhacdHull[] {
+  if (!result.hullVariants) {
+    return result.hulls;
+  }
+  return projected ? result.hullVariants.projected : result.hullVariants.unprojected;
+}
 
-  for (const hull of result.hulls) {
+function resolveDisplayedSignature(result: VhacdResult, projected: boolean): string {
+  if (!result.signatures) {
+    return result.signature;
+  }
+  return projected ? result.signatures.projected : result.signatures.unprojected;
+}
+
+function renderCardHullOverlay(card: PropCard, hulls: VhacdHull[], wireframe: boolean): void {
+  clearCardHullOverlay(card);
+
+  for (const hull of hulls) {
     const material = new THREE.MeshStandardMaterial({
       color: hull.color,
       roughness: 0.58,
@@ -636,7 +687,7 @@ function renderCardVoxelOverlay(card: PropCard, result: VhacdResult): void {
   }
 }
 
-function renderCardStats(card: PropCard, runtimeMs: number | null): string {
+function renderCardStats(card: PropCard, runtimeMs: number | null, projected: boolean): string {
   const result = card.result;
   if (!result) {
     return [
@@ -645,17 +696,22 @@ function renderCardStats(card: PropCard, runtimeMs: number | null): string {
     ].join("\n");
   }
 
+  const displayedHulls = resolveDisplayedHulls(result, projected);
+  const displaySignature = resolveDisplayedSignature(result, projected);
+
   const lines = [
     `runtime: ${runtimeMs === null ? "n/a" : `${runtimeMs.toFixed(1)} ms`}`,
     `fallback mesh: ${card.fallbackUsed ? "yes" : "no"}`,
     `triangles: ${result.stats.sourceTriangleCount}`,
     `voxels: ${result.stats.voxelCount}`,
     `voxel preview: ${result.stats.voxelPreviewCount}`,
-    `hulls: ${result.hulls.length}`,
+    `variant: ${projected ? "projected" : "raw"}`,
+    `hulls: ${displayedHulls.length}`,
     `splits: ${result.stats.splitCount}`,
     `merges: ${result.stats.mergeCount}`,
+    `split eval: ${result.stats.splitEvaluationMode} (${result.stats.splitWorkerCount} workers)`,
     `planes tested: ${result.stats.candidatePlaneCount}`,
-    `signature: ${result.signature}`
+    `signature: ${displaySignature}`
   ];
 
   return lines.join("\n");
@@ -677,6 +733,7 @@ async function loadCardModel(card: PropCard, loader: GLTFLoader): Promise<void> 
   normalizeModel(nextModel);
   card.modelRoot.add(nextModel);
   card.model = nextModel;
+  card.sourceData = extractVhacdSourceData(nextModel);
   card.fallbackUsed = loaded === null;
   card.runtimeMs = null;
   frameCard(card);
@@ -708,18 +765,146 @@ function readOptionsFromUi(
   betaInput: HTMLInputElement,
   planeDownsampleInput: HTMLInputElement,
   hullDownsampleInput: HTMLInputElement,
-  minVoxelsInput: HTMLInputElement
+  minVoxelsInput: HTMLInputElement,
+  maxHullSamplesInput: HTMLInputElement,
+  projectHullVerticesInput: HTMLInputElement,
+  maxGridCellsInput: HTMLInputElement,
+  voxelTriSampleInput: HTMLInputElement
 ): VhacdOptions {
   return {
-    resolution: Math.floor(readNumberInput(resolutionInput, 40)),
-    maxConvexHulls: Math.floor(readNumberInput(maxHullsInput, 12)),
+    resolution: Math.floor(readNumberInput(resolutionInput, 128)),
+    maxConvexHulls: Math.floor(readNumberInput(maxHullsInput, 24)),
     concavity: readNumberInput(concavityInput, 0.002),
     alpha: readNumberInput(alphaInput, 0.05),
     beta: readNumberInput(betaInput, 0.05),
-    planeDownsampling: Math.floor(readNumberInput(planeDownsampleInput, 4)),
-    convexHullDownsampling: Math.floor(readNumberInput(hullDownsampleInput, 4)),
+    planeDownsampling: Math.floor(readNumberInput(planeDownsampleInput, 1)),
+    convexHullDownsampling: Math.floor(readNumberInput(hullDownsampleInput, 1)),
     minVoxelCountPerPart: Math.floor(readNumberInput(minVoxelsInput, 24)),
-    maxHullPointSamples: 1800
+    maxHullPointSamples: Math.floor(readNumberInput(maxHullSamplesInput, 1800)),
+    projectHullVertices: projectHullVerticesInput.checked,
+    precomputeBothHullVariants: true,
+    maxGridCells: Math.floor(readNumberInput(maxGridCellsInput, 20_000_000)),
+    voxelizationTriangleSampleCount: Math.floor(readNumberInput(voxelTriSampleInput, 12_000))
+  };
+}
+
+type PendingWorkerRequest = {
+  requestId: number;
+  resolve: (result: VhacdResult) => void;
+  reject: (error: Error) => void;
+  onProgress: (progress: VhacdProgress) => void;
+};
+
+function createVhacdWorkerRunner(): {
+  run: (
+    sourceData: VhacdSourceData,
+    options: VhacdOptions,
+    onProgress: (progress: VhacdProgress) => void
+  ) => Promise<VhacdResult>;
+  restart: (reason?: string) => void;
+  dispose: () => void;
+} {
+  let worker: Worker | null = null;
+  let pending: PendingWorkerRequest | null = null;
+  let nextRequestId = 1;
+
+  const terminateWorker = (reason: string): void => {
+    if (worker) {
+      worker.terminate();
+      worker = null;
+    }
+    if (pending) {
+      const request = pending;
+      pending = null;
+      request.reject(new Error(reason));
+    }
+  };
+
+  const ensureWorker = (): Worker => {
+    if (worker) {
+      return worker;
+    }
+
+    const instance = new Worker(new URL("./vhacd.worker.ts", import.meta.url), {
+      type: "module"
+    });
+
+    instance.addEventListener("message", (event: MessageEvent<WorkerResponse>) => {
+      const message = event.data;
+      if (!pending || message.requestId !== pending.requestId) {
+        return;
+      }
+
+      if (message.type === "progress") {
+        pending.onProgress(message.progress);
+        return;
+      }
+
+      if (message.type === "error") {
+        const request = pending;
+        pending = null;
+        request.reject(new Error(message.error || "VHACD worker failed"));
+        return;
+      }
+
+      const request = pending;
+      pending = null;
+      try {
+        request.resolve(deserializeVhacdResult(message.result));
+      } catch (error) {
+        request.reject(
+          error instanceof Error ? error : new Error("Failed to deserialize VHACD worker result")
+        );
+      }
+    });
+
+    instance.addEventListener("error", (event: ErrorEvent) => {
+      const detail = event.message?.trim().length ? event.message : "unknown error";
+      terminateWorker(`VHACD worker crashed: ${detail}`);
+    });
+
+    worker = instance;
+    return instance;
+  };
+
+  const run = (
+    sourceData: VhacdSourceData,
+    options: VhacdOptions,
+    onProgress: (progress: VhacdProgress) => void
+  ): Promise<VhacdResult> => {
+    if (pending) {
+      return Promise.reject(new Error("VHACD worker is busy"));
+    }
+
+    return new Promise<VhacdResult>((resolve, reject) => {
+      const requestId = nextRequestId;
+      nextRequestId += 1;
+      pending = {
+        requestId,
+        resolve,
+        reject,
+        onProgress
+      };
+
+      const request: WorkerRunRequest = {
+        type: "run",
+        requestId,
+        sourceData,
+        options
+      };
+
+      ensureWorker().postMessage(request);
+    });
+  };
+
+  return {
+    run,
+    restart: (reason = "VHACD run canceled"): void => {
+      terminateWorker(reason);
+    },
+    dispose: (): void => {
+      terminateWorker("VHACD worker disposed");
+    }
   };
 }
 
@@ -769,19 +954,23 @@ const experiment: ExperimentModule = {
       "</div>",
       "<div style='font-size:11px;opacity:0.86;margin-bottom:10px'>All props are shown simultaneously in a grid; orbit pan/zoom/rotate is synchronized across cards and rendered via one WebGL renderer.</div>",
       "<div style='display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px'>",
-      "<label>Resolution<input data-id='resolution' type='number' min='10' max='96' step='1' value='40' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
-      "<label>Max Hulls<input data-id='max-hulls' type='number' min='1' max='64' step='1' value='12' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Resolution<input data-id='resolution' type='number' min='10' max='256' step='1' value='128' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Max Hulls<input data-id='max-hulls' type='number' min='1' max='64' step='1' value='24' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Concavity<input data-id='concavity' type='number' min='0' max='1' step='0.0005' value='0.002' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Alpha<input data-id='alpha' type='number' min='0' max='1' step='0.01' value='0.05' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Beta<input data-id='beta' type='number' min='0' max='1' step='0.01' value='0.05' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
-      "<label>Plane Downsample<input data-id='plane-downsample' type='number' min='1' max='12' step='1' value='4' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
-      "<label>Hull Downsample<input data-id='hull-downsample' type='number' min='1' max='12' step='1' value='4' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Plane Downsample<input data-id='plane-downsample' type='number' min='1' max='12' step='1' value='1' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Hull Downsample<input data-id='hull-downsample' type='number' min='1' max='12' step='1' value='1' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Min Voxels/Part<input data-id='min-voxels' type='number' min='4' max='200' step='1' value='24' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Max Hull Samples<input data-id='max-hull-samples' type='number' min='64' max='9000' step='1' value='1800' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Max Grid Cells<input data-id='max-grid-cells' type='number' min='250000' max='20000000' step='250000' value='20000000' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Voxel Tri Samples<input data-id='voxel-tri-samples' type='number' min='1000' max='120000' step='1000' value='12000' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "</div>",
+      "<label style='display:flex;align-items:center;gap:6px;margin-top:8px;min-height:34px'><input data-id='project-hull-vertices' type='checkbox' checked>Project Hull Vertices To Source Mesh (instant toggle after compute)</label>",
       "<details style='margin-top:10px;border:1px solid rgba(111,177,216,0.3);border-radius:8px;background:rgba(10,18,26,0.55)'>",
       "<summary style='cursor:pointer;user-select:none;padding:7px 9px;font-size:11px;font-weight:600'>Parameter Guide (practical meaning)</summary>",
       "<div style='padding:2px 9px 9px;font-size:10px;opacity:0.9;line-height:1.3'>",
-      "<div style='margin-top:6px'><b>Resolution</b>: higher = finer voxel detail, more runtime. lower = faster but misses thin features. sensible: 24-64 (72-96 for hard meshes).</div>",
+      "<div style='margin-top:6px'><b>Resolution</b>: higher = finer voxel detail, more runtime. lower = faster but misses thin features. sensible: 24-128 (256 = very expensive).</div>",
       "<div style='margin-top:6px'><b>Max Hulls</b>: higher = allows finer segmentation. lower = more merged/coarse parts. sensible: 6-20 (24-32 for very concave props).</div>",
       "<div style='margin-top:6px'><b>Concavity</b>: split stop threshold. higher = fewer splits. lower = more splits. sensible: 0.001-0.01.</div>",
       "<div style='margin-top:6px'><b>Alpha</b>: volume-balance weight in split cost. higher = more balanced cuts, fewer slivers. sensible: 0.02-0.12.</div>",
@@ -789,6 +978,11 @@ const experiment: ExperimentModule = {
       "<div style='margin-top:6px'><b>Plane Downsample</b>: coarse plane-search stride. higher = fewer tested planes, faster/lower quality. sensible: 2-6 (1 for quality).</div>",
       "<div style='margin-top:6px'><b>Hull Downsample</b>: sampling stride for split-time hull estimates. higher = faster/noisier estimates. sensible: 2-6 (1 for quality).</div>",
       "<div style='margin-top:6px'><b>Min Voxels/Part</b>: minimum child size after split. higher = less tiny noise parts, may miss thin details. sensible: 20-40 at res 40.</div>",
+      "<div style='margin-top:6px'><b>Max Hull Samples</b>: point budget used to build/project each hull. higher = tighter hulls and slower runs. sensible: 1200-3000.</div>",
+      "<div style='margin-top:6px'><b>Max Grid Cells</b>: upper bound for voxel grid cells. higher = better detail and higher memory/runtime.</div>",
+      "<div style='margin-top:6px'><b>Voxel Tri Samples</b>: how many source triangles are sampled during voxelization. higher = better shell coverage, slower.</div>",
+      "<div style='margin-top:6px'><b>Project Hull Vertices</b>: snaps hull vertices onto the source mesh. Both raw/projected variants are precomputed per run, so toggling is immediate after compute.</div>",
+      "<div style='margin-top:6px'><b>Current Defaults</b>: balanced-high preset (Resolution 128 + Max Grid Cells 20M).</div>",
       "</div>",
       "</details>",
       "<div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:10px'>",
@@ -800,6 +994,15 @@ const experiment: ExperimentModule = {
       "<label style='display:flex;align-items:center;gap:5px;min-height:34px'><input data-id='show-hulls' type='checkbox' checked>Segments</label>",
       "<label style='display:flex;align-items:center;gap:5px;min-height:34px'><input data-id='show-voxels' type='checkbox'>Voxels</label>",
       "<label style='display:flex;align-items:center;gap:5px;min-height:34px'><input data-id='wireframe' type='checkbox'>Wireframe</label>",
+      "</div>",
+      "<div style='margin-top:10px;border:1px solid rgba(111,177,216,0.3);border-radius:8px;background:rgba(10,18,26,0.45);padding:8px'>",
+      "<div style='display:flex;justify-content:space-between;gap:8px;font-size:10px;opacity:0.92'>",
+      "<div data-id='progress-label'>Idle</div>",
+      "<div data-id='progress-value'>0%</div>",
+      "</div>",
+      "<div style='margin-top:5px;height:8px;border-radius:999px;overflow:hidden;background:rgba(111,177,216,0.22)'>",
+      "<div data-id='progress-fill' style='height:100%;width:0%;background:linear-gradient(90deg,#7fd1ff,#79f0bc);transition:width 120ms linear'></div>",
+      "</div>",
       "</div>",
       "<div style='margin-top:10px;border:1px solid rgba(111,177,216,0.35);border-radius:8px;background:rgba(10,18,26,0.55);padding:8px'>",
       "<div style='font-size:11px;font-weight:600'>Selected Pane Debug</div>",
@@ -833,12 +1036,21 @@ const experiment: ExperimentModule = {
     const planeDownsampleInput = hud.querySelector<HTMLInputElement>("[data-id='plane-downsample']");
     const hullDownsampleInput = hud.querySelector<HTMLInputElement>("[data-id='hull-downsample']");
     const minVoxelsInput = hud.querySelector<HTMLInputElement>("[data-id='min-voxels']");
+    const maxHullSamplesInput = hud.querySelector<HTMLInputElement>("[data-id='max-hull-samples']");
+    const maxGridCellsInput = hud.querySelector<HTMLInputElement>("[data-id='max-grid-cells']");
+    const voxelTriSampleInput = hud.querySelector<HTMLInputElement>("[data-id='voxel-tri-samples']");
+    const projectHullVerticesInput = hud.querySelector<HTMLInputElement>(
+      "[data-id='project-hull-vertices']"
+    );
     const runAllButton = hud.querySelector<HTMLButtonElement>("[data-id='run-all']");
     const reloadAllButton = hud.querySelector<HTMLButtonElement>("[data-id='reload-all']");
     const showModelInput = hud.querySelector<HTMLInputElement>("[data-id='show-model']");
     const showHullsInput = hud.querySelector<HTMLInputElement>("[data-id='show-hulls']");
     const showVoxelsInput = hud.querySelector<HTMLInputElement>("[data-id='show-voxels']");
     const wireframeInput = hud.querySelector<HTMLInputElement>("[data-id='wireframe']");
+    const progressLabelNode = hud.querySelector<HTMLElement>("[data-id='progress-label']");
+    const progressValueNode = hud.querySelector<HTMLElement>("[data-id='progress-value']");
+    const progressFillNode = hud.querySelector<HTMLElement>("[data-id='progress-fill']");
     const selectedPropNode = hud.querySelector<HTMLElement>("[data-id='selected-prop']");
     const selectedStatsNode = hud.querySelector<HTMLPreElement>("[data-id='selected-stats']");
     const statusNode = hud.querySelector<HTMLElement>("[data-id='status']");
@@ -852,12 +1064,19 @@ const experiment: ExperimentModule = {
       !planeDownsampleInput ||
       !hullDownsampleInput ||
       !minVoxelsInput ||
+      !maxHullSamplesInput ||
+      !maxGridCellsInput ||
+      !voxelTriSampleInput ||
+      !projectHullVerticesInput ||
       !runAllButton ||
       !reloadAllButton ||
       !showModelInput ||
       !showHullsInput ||
       !showVoxelsInput ||
       !wireframeInput ||
+      !progressLabelNode ||
+      !progressValueNode ||
+      !progressFillNode ||
       !selectedPropNode ||
       !selectedStatsNode ||
       !statusNode
@@ -867,6 +1086,7 @@ const experiment: ExperimentModule = {
 
     const loader = new GLTFLoader();
     const cards: PropCard[] = [];
+    const workerRunner = createVhacdWorkerRunner();
     let selectedCard: PropCard | null = null;
     let syncingView = false;
 
@@ -893,7 +1113,11 @@ const experiment: ExperimentModule = {
         return;
       }
       selectedPropNode.textContent = `${selectedCard.choice.label} (${selectedCard.choice.id})`;
-      selectedStatsNode.textContent = renderCardStats(selectedCard, selectedCard.runtimeMs);
+      selectedStatsNode.textContent = renderCardStats(
+        selectedCard,
+        selectedCard.runtimeMs,
+        projectHullVerticesInput.checked
+      );
     };
 
     const setCardSelectionVisual = (card: PropCard, active: boolean): void => {
@@ -921,6 +1145,14 @@ const experiment: ExperimentModule = {
 
     const setStatus = (message: string): void => {
       statusNode.textContent = message;
+    };
+
+    const setRunProgress = (fraction: number, label: string): void => {
+      const clamped = Math.max(0, Math.min(1, fraction));
+      const percent = Math.round(clamped * 100);
+      progressFillNode.style.width = `${(clamped * 100).toFixed(2)}%`;
+      progressValueNode.textContent = `${percent}%`;
+      progressLabelNode.textContent = label;
     };
 
     const updateLayout = (): void => {
@@ -952,12 +1184,21 @@ const experiment: ExperimentModule = {
       applyWireframe(cards, wireframeInput.checked);
     };
 
+    const applyDisplayedHullVariantFromUi = (): void => {
+      const projected = projectHullVerticesInput.checked;
+      for (const card of cards) {
+        if (!card.result) {
+          continue;
+        }
+        renderCardHullOverlay(card, resolveDisplayedHulls(card.result, projected), wireframeInput.checked);
+      }
+      applyVisibilityFromUi();
+    };
+
     let runToken = 0;
     const runAll = async (reloadModels: boolean): Promise<void> => {
       const token = ++runToken;
-
-      runAllButton.disabled = true;
-      reloadAllButton.disabled = true;
+      workerRunner.restart("VHACD run superseded by a new recompute request");
 
       const options = readOptionsFromUi(
         resolutionInput,
@@ -967,10 +1208,16 @@ const experiment: ExperimentModule = {
         betaInput,
         planeDownsampleInput,
         hullDownsampleInput,
-        minVoxelsInput
+        minVoxelsInput,
+        maxHullSamplesInput,
+        projectHullVerticesInput,
+        maxGridCellsInput,
+        voxelTriSampleInput
       );
 
       const total = cards.length;
+      const totalSafe = Math.max(1, total);
+      setRunProgress(0, total > 0 ? `Preparing 0/${total}` : "No props");
       setStatus(`Running ${total} props...`);
 
       for (let index = 0; index < total; index += 1) {
@@ -979,7 +1226,9 @@ const experiment: ExperimentModule = {
         }
 
         const card = cards[index];
-        card.status.textContent = reloadModels || !card.model ? "loading model..." : "running vhacd...";
+        setRunProgress(index / totalSafe, `Loading ${index + 1}/${total}: ${card.choice.id}`);
+        setStatus(`Loading ${index + 1}/${total}: ${card.choice.id}`);
+        card.status.textContent = reloadModels || !card.model ? "loading model..." : "queued";
 
         if (reloadModels || !card.model) {
           await loadCardModel(card, loader);
@@ -992,6 +1241,19 @@ const experiment: ExperimentModule = {
           clearCardOverlay(card);
           card.status.textContent = "failed";
           card.runtimeMs = null;
+          setRunProgress((index + 1) / totalSafe, `Failed ${index + 1}/${total}: ${card.choice.id}`);
+          setStatus(`Failed ${index + 1}/${total}: ${card.choice.id}`);
+          if (selectedCard === card) {
+            refreshSelectedPaneDebug();
+          }
+          continue;
+        }
+
+        if (!card.sourceData) {
+          card.status.textContent = "no source data";
+          card.runtimeMs = null;
+          setRunProgress((index + 1) / totalSafe, `Failed ${index + 1}/${total}: ${card.choice.id}`);
+          setStatus(`Failed ${index + 1}/${total}: ${card.choice.id} (no source data)`);
           if (selectedCard === card) {
             refreshSelectedPaneDebug();
           }
@@ -999,9 +1261,47 @@ const experiment: ExperimentModule = {
         }
 
         const start = performance.now();
-        const result = runVhacdFromObject(card.model, options);
+        let result: VhacdResult;
+        try {
+          result = await workerRunner.run(card.sourceData, options, (progress: VhacdProgress) => {
+            if (token !== runToken) {
+              return;
+            }
+            const overall = (index + progress.propProgress) / totalSafe;
+            const phasePercent = Math.round(progress.propProgress * 100);
+            card.status.textContent = `${progress.message} (${phasePercent}%)`;
+            setRunProgress(overall, `${index + 1}/${total}: ${progress.message}`);
+            setStatus(`Running ${index + 1}/${total}: ${card.choice.id} - ${progress.message}`);
+          });
+        } catch (error) {
+          if (token !== runToken) {
+            break;
+          }
+          const message =
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : "worker failed";
+          card.status.textContent = "error";
+          card.runtimeMs = null;
+          setRunProgress((index + 1) / totalSafe, `Error ${index + 1}/${total}: ${card.choice.id}`);
+          setStatus(`Error ${index + 1}/${total}: ${card.choice.id} (${message})`);
+          if (selectedCard === card) {
+            refreshSelectedPaneDebug();
+          }
+          continue;
+        }
+        if (token !== runToken) {
+          disposeVhacdResult(result);
+          break;
+        }
         const elapsed = performance.now() - start;
-        renderCardHullOverlay(card, result, wireframeInput.checked);
+        disposeVhacdResult(card.result);
+        card.result = result;
+        renderCardHullOverlay(
+          card,
+          resolveDisplayedHulls(result, projectHullVerticesInput.checked),
+          wireframeInput.checked
+        );
         renderCardVoxelOverlay(card, result);
         card.runtimeMs = elapsed;
         if (selectedCard === card) {
@@ -1011,6 +1311,10 @@ const experiment: ExperimentModule = {
         card.status.textContent = card.fallbackUsed ? "done (fallback mesh)" : "done";
 
         applyVisibilityFromUi();
+        setRunProgress(
+          (index + 1) / totalSafe,
+          `Completed ${index + 1}/${total}: ${card.choice.id}`
+        );
         setStatus(`Processed ${index + 1}/${total}: ${card.choice.id}`);
 
         await new Promise<void>((resolve) => {
@@ -1018,17 +1322,17 @@ const experiment: ExperimentModule = {
         });
       }
 
-      if (token === runToken) {
-        const referenceCard = cards.find((card) => card.model !== null) ?? cards[0];
-        if (referenceCard) {
-          syncViewFromCard(referenceCard);
-        }
-        refreshSelectedPaneDebug();
-        setStatus(`Ready. Rendered ${total} props with one WebGL context + scissor.`);
+      if (token !== runToken) {
+        return;
       }
 
-      runAllButton.disabled = false;
-      reloadAllButton.disabled = false;
+      const referenceCard = cards.find((card) => card.model !== null) ?? cards[0];
+      if (referenceCard) {
+        syncViewFromCard(referenceCard);
+      }
+      refreshSelectedPaneDebug();
+      setRunProgress(1, "Done");
+      setStatus(`Ready. Rendered ${total} props with one WebGL context + scissor.`);
     };
 
     const onRunAll = (): void => {
@@ -1049,6 +1353,13 @@ const experiment: ExperimentModule = {
     const onWireframe = (): void => {
       applyWireframeFromUi();
     };
+    const onProjectHullVertices = (): void => {
+      applyDisplayedHullVariantFromUi();
+      refreshSelectedPaneDebug();
+      setStatus(
+        `Displaying ${projectHullVerticesInput.checked ? "projected" : "raw"} hull variant.`
+      );
+    };
 
     runAllButton.addEventListener("click", onRunAll);
     reloadAllButton.addEventListener("click", onReloadAll);
@@ -1056,6 +1367,7 @@ const experiment: ExperimentModule = {
     showHullsInput.addEventListener("change", onShowHulls);
     showVoxelsInput.addEventListener("change", onShowVoxels);
     wireframeInput.addEventListener("change", onWireframe);
+    projectHullVerticesInput.addEventListener("change", onProjectHullVertices);
 
     const choices = await listPropChoices();
     for (const choice of choices) {
@@ -1135,6 +1447,7 @@ const experiment: ExperimentModule = {
 
     return () => {
       runToken += 1;
+      workerRunner.dispose();
       cancelAnimationFrame(raf);
       resizeObserver.disconnect();
 
@@ -1144,6 +1457,7 @@ const experiment: ExperimentModule = {
       showHullsInput.removeEventListener("change", onShowHulls);
       showVoxelsInput.removeEventListener("change", onShowVoxels);
       wireframeInput.removeEventListener("change", onWireframe);
+      projectHullVerticesInput.removeEventListener("change", onProjectHullVertices);
 
       for (const card of cards) {
         disposeCard(card);
