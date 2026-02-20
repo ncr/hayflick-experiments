@@ -371,12 +371,32 @@ const experiment: ExperimentModule = {
 
     const middlePane = document.createElement("div");
     middlePane.style.minHeight = "0";
-    middlePane.style.overflow = "auto";
-    middlePane.style.padding = "2px";
     middlePane.style.display = "grid";
-    middlePane.style.gap = "10px";
-    middlePane.style.gridTemplateColumns = "repeat(auto-fit, minmax(260px, 1fr))";
+    middlePane.style.gridTemplateRows = "34px minmax(0, 1fr)";
+    middlePane.style.background = "rgba(6, 18, 30, 0.94)";
+    middlePane.style.border = "1px solid rgba(88, 136, 169, 0.44)";
+    middlePane.style.borderRadius = "12px";
+    middlePane.style.overflow = "hidden";
     body.appendChild(middlePane);
+
+    const middleHeader = document.createElement("div");
+    middleHeader.textContent = "Strategy Grid";
+    middleHeader.style.padding = "9px 12px";
+    middleHeader.style.borderBottom = "1px solid rgba(88, 136, 169, 0.32)";
+    middleHeader.style.font = "600 13px/1.15 'IBM Plex Sans', ui-sans-serif, system-ui";
+    middleHeader.style.letterSpacing = "0.02em";
+    middleHeader.style.color = "#d6ecfa";
+    middlePane.appendChild(middleHeader);
+
+    const middleGrid = document.createElement("div");
+    middleGrid.style.minHeight = "0";
+    middleGrid.style.overflow = "auto";
+    middleGrid.style.padding = "10px";
+    middleGrid.style.display = "grid";
+    middleGrid.style.gap = "10px";
+    middleGrid.style.alignContent = "start";
+    middleGrid.style.gridAutoRows = "minmax(360px, auto)";
+    middlePane.appendChild(middleGrid);
 
     const rightPane = document.createElement("div");
     rightPane.style.minHeight = "0";
@@ -403,8 +423,21 @@ const experiment: ExperimentModule = {
     rightPane.appendChild(controlsHint);
 
     const strategyCards = STRATEGY_IDS.map((strategyId) =>
-      createStrategyCard(middlePane, strategyId, dpr)
+      createStrategyCard(middleGrid, strategyId, dpr)
     );
+
+    const updateStrategyGridColumns = (): void => {
+      const widthPx = middleGrid.getBoundingClientRect().width;
+      let columns = 1;
+      if (widthPx >= 1650) {
+        columns = 4;
+      } else if (widthPx >= 1180) {
+        columns = 3;
+      } else if (widthPx >= 760) {
+        columns = 2;
+      }
+      middleGrid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+    };
 
     let isSyncingCameras = false;
     const syncFromCard = (source: StrategyCardRuntime): void => {
@@ -805,8 +838,10 @@ const experiment: ExperimentModule = {
         middlePane.style.gridColumn = "1";
         rightPane.style.gridColumn = "1";
       }
+      updateStrategyGridColumns();
     });
     shellResizeObserver.observe(mount);
+    updateStrategyGridColumns();
 
     return () => {
       disposed = true;
