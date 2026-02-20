@@ -40,6 +40,7 @@ type StrategyCardRuntime = {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
+  focusPoint: THREE.Vector3;
   modelRoot: THREE.Group;
   overlayRoot: THREE.Group;
   resizeObserver: ResizeObserver;
@@ -203,8 +204,10 @@ function frameStrategyCardToModel(card: StrategyCardRuntime): void {
   const viewDirection = new THREE.Vector3(1, 0.76, 1).normalize();
   const position = sphere.center.clone().addScaledVector(viewDirection, distance);
 
-  card.controls.target.copy(sphere.center);
+  card.focusPoint.copy(sphere.center);
+  card.controls.target.copy(card.focusPoint);
   card.camera.position.copy(position);
+  card.camera.lookAt(card.focusPoint);
   card.camera.near = Math.max(0.01, radius * 0.02);
   card.camera.far = Math.max(24, radius * 18);
   card.camera.updateProjectionMatrix();
@@ -327,6 +330,7 @@ function createStrategyCard(
     scene,
     camera,
     controls,
+    focusPoint,
     modelRoot,
     overlayRoot,
     resizeObserver
@@ -474,13 +478,11 @@ const experiment: ExperimentModule = {
         return;
       }
       isSyncingCameras = true;
+      const sourceOffset = source.camera.position.clone().sub(source.controls.target);
       for (const card of strategyCards) {
-        if (card === source) {
-          continue;
-        }
-        card.controls.target.copy(source.controls.target);
-        card.camera.position.copy(source.camera.position);
-        card.camera.quaternion.copy(source.camera.quaternion);
+        card.controls.target.copy(card.focusPoint);
+        card.camera.position.copy(card.focusPoint.clone().add(sourceOffset));
+        card.camera.lookAt(card.focusPoint);
         card.controls.update();
       }
       isSyncingCameras = false;
@@ -496,14 +498,13 @@ const experiment: ExperimentModule = {
     };
 
     for (const card of strategyCards) {
-      card.renderer.domElement.addEventListener("pointerdown", () => {
+      card.controls.addEventListener("start", () => {
         activeSyncCard = card;
       });
-      card.renderer.domElement.addEventListener("wheel", () => {
-        activeSyncCard = card;
-      });
-      card.renderer.domElement.addEventListener("touchstart", () => {
-        activeSyncCard = card;
+      card.controls.addEventListener("end", () => {
+        if (activeSyncCard === card) {
+          activeSyncCard = null;
+        }
       });
       card.controls.addEventListener("change", () => {
         if (activeSyncCard !== card) {
@@ -792,7 +793,11 @@ const experiment: ExperimentModule = {
         return;
       }
       for (const card of strategyCards) {
+        if (!activeSyncCard) {
+          card.controls.target.copy(card.focusPoint);
+        }
         card.controls.update();
+        card.camera.lookAt(card.controls.target);
         card.renderer.render(card.scene, card.camera);
       }
       animationFrame = window.requestAnimationFrame(renderLoop);
@@ -897,20 +902,10 @@ const experiment: ExperimentModule = {
     });
     shellResizeObserver.observe(mount);
     updateStrategyGridColumns();
-    const handlePointerUp = (): void => {
-      activeSyncCard = null;
-    };
-    const handleTouchEnd = (): void => {
-      activeSyncCard = null;
-    };
-    window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("touchend", handleTouchEnd);
 
     return () => {
       disposed = true;
       shellResizeObserver.disconnect();
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("touchend", handleTouchEnd);
       if (debounceHandle !== null) {
         window.clearTimeout(debounceHandle);
       }
@@ -924,3 +919,4 @@ const experiment: ExperimentModule = {
 };
 
 export default experiment;
+  const focusPoint = new THREE.Vector3(0, 0.35, 0);
