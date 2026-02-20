@@ -2608,3 +2608,15 @@ Preventive checklist:
 - For convex collider workflows, optimize point-set quality and hull complexity first.
 - Keep topology-remesh experiments out of the main path unless trimesh colliders are a hard requirement.
 - Validate improvements with physics metrics (stability/contact behavior), not wireframe aesthetics.
+
+## 2026-02-20 - Strict TS unions can break strategy-param reset flows in multi-strategy labs
+Root cause:
+- Resetting `StrategyParamsById` by assigning `paramState[strategyId] = fresh[strategyId]` inside a `for ... of STRATEGY_IDS` loop produced a strict TypeScript indexed-access intersection mismatch.
+- The union key iteration path lost per-key specificity, so assignment looked like `A | B | ...` into `A & B & ...`.
+
+Detection signal:
+- `tsc` error `TS2322` in the v2 collider lab UI reset handler during `pnpm --filter @experiments/catalog typecheck`.
+
+Preventive checklist:
+- For strongly typed strategy maps, prefer explicit per-key `Object.assign` (or key-narrowed helper functions) instead of direct indexed replacement in generic loops.
+- Run package typecheck immediately after wiring reset/default-state UI for union-typed config objects.
