@@ -412,12 +412,31 @@ const experiment: ExperimentModule = {
     body.appendChild(middlePane);
 
     const middleHeader = document.createElement("div");
-    middleHeader.textContent = "Strategy Grid";
-    middleHeader.style.padding = "9px 12px";
+    middleHeader.style.padding = "6px 10px";
     middleHeader.style.borderBottom = "1px solid rgba(88, 136, 169, 0.32)";
-    middleHeader.style.font = "600 13px/1.15 'IBM Plex Sans', ui-sans-serif, system-ui";
-    middleHeader.style.letterSpacing = "0.02em";
-    middleHeader.style.color = "#d6ecfa";
+    middleHeader.style.display = "flex";
+    middleHeader.style.alignItems = "center";
+    middleHeader.style.justifyContent = "space-between";
+    middleHeader.style.gap = "10px";
+
+    const middleHeaderTitle = document.createElement("div");
+    middleHeaderTitle.textContent = "Strategy Grid";
+    middleHeaderTitle.style.font = "600 13px/1.15 'IBM Plex Sans', ui-sans-serif, system-ui";
+    middleHeaderTitle.style.letterSpacing = "0.02em";
+    middleHeaderTitle.style.color = "#d6ecfa";
+    middleHeader.appendChild(middleHeaderTitle);
+
+    const reframeAllButton = document.createElement("button");
+    reframeAllButton.type = "button";
+    reframeAllButton.textContent = "Reframe All";
+    reframeAllButton.style.padding = "5px 9px";
+    reframeAllButton.style.borderRadius = "7px";
+    reframeAllButton.style.border = "1px solid rgba(108, 168, 206, 0.8)";
+    reframeAllButton.style.background = "rgba(29, 73, 103, 0.58)";
+    reframeAllButton.style.color = "#e1f3ff";
+    reframeAllButton.style.font = "600 11px/1.1 'IBM Plex Sans', ui-sans-serif, system-ui";
+    reframeAllButton.style.cursor = "pointer";
+    middleHeader.appendChild(reframeAllButton);
     middlePane.appendChild(middleHeader);
 
     const middleGrid = document.createElement("div");
@@ -496,6 +515,15 @@ const experiment: ExperimentModule = {
         applySharedPoseToCard(card);
       }
     };
+
+    reframeAllButton.addEventListener("click", () => {
+      activeSyncCard = null;
+      for (const card of strategyCards) {
+        card.controls.enabled = false;
+      }
+      frameAllStrategyCards();
+      statusBar.textContent = "Reframed all strategy views.";
+    });
 
     for (const card of strategyCards) {
       card.controls.addEventListener("start", () => {
