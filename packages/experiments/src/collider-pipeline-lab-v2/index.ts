@@ -478,7 +478,7 @@ const experiment: ExperimentModule = {
       card.controls.target.copy(card.focusPoint);
       card.camera.position.copy(card.focusPoint.clone().add(sharedCameraOffset));
       card.camera.lookAt(card.focusPoint);
-      card.controls.update();
+      card.camera.updateMatrixWorld(true);
     };
 
     const frameAllStrategyCards = (): void => {
@@ -803,6 +803,7 @@ const experiment: ExperimentModule = {
       }
       for (const card of strategyCards) {
         if (activeSyncCard === card) {
+          card.controls.enabled = true;
           card.controls.target.copy(card.focusPoint);
           card.controls.update();
           const offset = card.camera.position.clone().sub(card.controls.target);
@@ -812,6 +813,7 @@ const experiment: ExperimentModule = {
           );
           sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
         } else {
+          card.controls.enabled = false;
           applySharedPoseToCard(card);
         }
         card.camera.lookAt(card.focusPoint);
