@@ -471,21 +471,14 @@ const experiment: ExperimentModule = {
       middleGrid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
     };
 
-    let isSyncingCameras = false;
     let activeSyncCard: StrategyCardRuntime | null = null;
-    const syncFromCard = (source: StrategyCardRuntime): void => {
-      if (isSyncingCameras) {
-        return;
-      }
-      isSyncingCameras = true;
-      const sourceOffset = source.camera.position.clone().sub(source.controls.target);
-      for (const card of strategyCards) {
-        card.controls.target.copy(card.focusPoint);
-        card.camera.position.copy(card.focusPoint.clone().add(sourceOffset));
-        card.camera.lookAt(card.focusPoint);
-        card.controls.update();
-      }
-      isSyncingCameras = false;
+    const sharedCameraOffset = new THREE.Vector3(1.6, 1.0, 1.6);
+
+    const applySharedPoseToCard = (card: StrategyCardRuntime): void => {
+      card.controls.target.copy(card.focusPoint);
+      card.camera.position.copy(card.focusPoint.clone().add(sharedCameraOffset));
+      card.camera.lookAt(card.focusPoint);
+      card.controls.update();
     };
 
     const frameAllStrategyCards = (): void => {
@@ -493,25 +486,41 @@ const experiment: ExperimentModule = {
         frameStrategyCardToModel(card);
       }
       if (strategyCards.length > 0) {
-        syncFromCard(strategyCards[0]);
+        const offset = strategyCards[0].camera.position
+          .clone()
+          .sub(strategyCards[0].focusPoint);
+        const length = Math.max(0.35, Math.min(6, offset.length()));
+        sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
+      }
+      for (const card of strategyCards) {
+        applySharedPoseToCard(card);
       }
     };
 
     for (const card of strategyCards) {
       card.controls.addEventListener("start", () => {
         activeSyncCard = card;
+        for (const entry of strategyCards) {
+          entry.controls.enabled = entry === card;
+        }
       });
       card.controls.addEventListener("end", () => {
         if (activeSyncCard === card) {
           activeSyncCard = null;
+        }
+        for (const entry of strategyCards) {
+          entry.controls.enabled = false;
         }
       });
       card.controls.addEventListener("change", () => {
         if (activeSyncCard !== card) {
           return;
         }
-        syncFromCard(card);
+        const offset = card.camera.position.clone().sub(card.controls.target);
+        const length = Math.max(card.controls.minDistance, Math.min(card.controls.maxDistance, offset.length()));
+        sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
       });
+      card.controls.enabled = false;
     }
 
     const paramState = deepCloneStrategyParams(DEFAULT_STRATEGY_PARAMS);
@@ -793,11 +802,19 @@ const experiment: ExperimentModule = {
         return;
       }
       for (const card of strategyCards) {
-        if (!activeSyncCard) {
+        if (activeSyncCard === card) {
           card.controls.target.copy(card.focusPoint);
+          card.controls.update();
+          const offset = card.camera.position.clone().sub(card.controls.target);
+          const length = Math.max(
+            card.controls.minDistance,
+            Math.min(card.controls.maxDistance, offset.length())
+          );
+          sharedCameraOffset.copy(offset.normalize().multiplyScalar(length));
+        } else {
+          applySharedPoseToCard(card);
         }
-        card.controls.update();
-        card.camera.lookAt(card.controls.target);
+        card.camera.lookAt(card.focusPoint);
         card.renderer.render(card.scene, card.camera);
       }
       animationFrame = window.requestAnimationFrame(renderLoop);
