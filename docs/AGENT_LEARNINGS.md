@@ -2771,3 +2771,17 @@ Preventive checklist:
 - For any newly added strategy in collider-pipeline-lab-v2, verify whether output should be world-axis AABB or oriented OBB before shipping.
 - If axis alignment is expected, build parts via world-space bounds (`axisAlignedPartFromBounds`) and avoid PCA rotation paths.
 - Add a strategy-specific assertion that part rotations stay identity when axis-aligned behavior is required.
+
+## 2026-02-20 - Multi-prop comparison view drifted into independent camera states and underlit scenes
+Root cause:
+- Prop cards used independent `OrbitControls` with no shared view-pose propagation, so pan/zoom/rotate diverged between cards.
+- Lighting/background values were tuned too dark for hull/segment inspection in dense grid cards.
+
+Detection signal:
+- User requested that rotating/panning/zooming one prop should apply to all props and reported the scenes as too dark compared to previous behavior.
+
+Preventive checklist:
+- In multi-card comparison views, sync a shared camera pose from the active card to all sibling cards on controls `change` events.
+- Guard synchronized updates with a re-entrancy flag to avoid recursive control-change loops.
+- After reload/recompute paths, reapply a reference pose so cards remain aligned.
+- Keep a readable lighting baseline (ambient + hemi + key/fill directional) and avoid near-black viewport backgrounds.

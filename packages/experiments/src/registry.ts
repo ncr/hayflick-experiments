@@ -13,6 +13,7 @@ import { meta as pixelPerfectCameraZoomMeta } from "./pixel-perfect-camera-zoom/
 import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
 import { meta as propDropEdgeTestMeta } from "./prop-drop-edge-test/meta";
 import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
+import { meta as vhacdUnityLabMeta } from "./vhacd-unity-lab/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
@@ -59,6 +60,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...propDropEdgeTestMeta,
     load: () => import("./prop-drop-edge-test/index")
+  },
+  {
+    ...vhacdUnityLabMeta,
+    load: () => import("./vhacd-unity-lab/index")
   }
   // AUTO_ENTRIES_END
 ];
