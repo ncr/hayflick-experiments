@@ -184,6 +184,33 @@ function disposeRendererCard(card: StrategyCardRuntime): void {
   card.renderer.dispose();
 }
 
+function frameStrategyCardToModel(card: StrategyCardRuntime): void {
+  if (card.modelRoot.children.length <= 0) {
+    return;
+  }
+
+  const bounds = new THREE.Box3().setFromObject(card.modelRoot);
+  if (bounds.isEmpty()) {
+    return;
+  }
+
+  const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+  const radius = Math.max(0.12, sphere.radius);
+  const fovRadians = (card.camera.fov * Math.PI) / 180;
+  const fitDistance = radius / Math.tan(fovRadians * 0.5);
+  const distance = fitDistance * 1.22;
+
+  const viewDirection = new THREE.Vector3(1, 0.76, 1).normalize();
+  const position = sphere.center.clone().addScaledVector(viewDirection, distance);
+
+  card.controls.target.copy(sphere.center);
+  card.camera.position.copy(position);
+  card.camera.near = Math.max(0.01, radius * 0.02);
+  card.camera.far = Math.max(24, radius * 18);
+  card.camera.updateProjectionMatrix();
+  card.controls.update();
+}
+
 function createStrategyCard(
   mount: HTMLDivElement,
   strategyId: StrategyId,
@@ -520,6 +547,7 @@ const experiment: ExperimentModule = {
           CARD_COLORS[card.strategyId]
         );
         card.overlayRoot.add(overlay);
+        frameStrategyCardToModel(card);
 
         card.stats.textContent = [
           `actual rank: #${strategyResult.actualRank}    predicted rank: #${strategyResult.predictedRank}`,
