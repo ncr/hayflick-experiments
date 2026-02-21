@@ -70,6 +70,54 @@ describe("prop-asset-validation", () => {
     expect(issues).toHaveLength(0);
   });
 
+  it("accepts compound convex hulls as a valid compound collider variant", () => {
+    const issues = validateSavedPropDefinition(
+      makeDefinition({
+        colliderVariants: {
+          box: {
+            type: "box",
+            source: "aabb-v1",
+            position: [0, 0.5, 0],
+            halfExtents: [0.5, 0.5, 0.5]
+          },
+          convexHull: {
+            type: "convex-hull",
+            source: "sampled-points-v1",
+            points: [
+              [0, 0, 0],
+              [1, 0, 0],
+              [0, 1, 0],
+              [0, 0, 1]
+            ],
+            rootOffset: [0, -0.5, 0]
+          },
+          compoundConvexHulls: {
+            type: "compound-convex-hulls",
+            source: "vhacd-unity-v1",
+            parts: [
+              {
+                kind: "convex-hull",
+                position: [0, 0.3, 0],
+                points: [
+                  [-0.2, -0.2, -0.2],
+                  [0.2, -0.2, -0.2],
+                  [0.2, -0.2, 0.2],
+                  [-0.2, -0.2, 0.2],
+                  [0, 0.25, 0]
+                ]
+              }
+            ]
+          }
+        },
+        physicsHint: {
+          material: "wood"
+        }
+      })
+    );
+
+    expect(issues.some((issue) => issue.code === "collider-compound-missing")).toBe(false);
+  });
+
   it("reports fallback/missing metadata as warnings", () => {
     const issues = validateSavedPropDefinition(
       makeDefinition({

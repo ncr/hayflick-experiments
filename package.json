@@ -10,10 +10,11 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
-    "test:promoted": "pnpm --filter @common/gameplay test:coverage && pnpm --filter @common/level-editor test:coverage && pnpm --filter @common/physics-rapier test:coverage",
+    "test:promoted": "pnpm --filter @common/gameplay test:coverage && pnpm --filter @common/level-editor test:coverage && pnpm --filter @common/physics-rapier test:coverage && pnpm --filter @common/collider-vhacd test:coverage",
     "test:e2e": "playwright test",
     "exp:new": "node scripts/new-experiment.mjs",
-    "forge:retrofit-colliders": "pnpm --filter @apps/hub forge:retrofit-colliders"
+    "forge:retrofit-colliders": "pnpm --filter @apps/hub forge:retrofit-colliders",
+    "forge:precompute-colliders": "pnpm --filter @apps/hub forge:precompute-colliders"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",

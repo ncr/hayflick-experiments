@@ -12,6 +12,7 @@ import type * as THREE from "three";
 import type { PivotPreset, ScaleMode, BBox } from "./processing/dimensions";
 import type { ColliderParams } from "./processing/colliders";
 import type { PropPhysicsSettings } from "./types";
+import type { ForgeColliderGenerationMetadata } from "./processing/collider-vhacd";
 import { composePrompt } from "./batch";
 
 interface Props {
@@ -46,6 +47,7 @@ export function ProcessingRail({
   const id = prop.id;
 
   const handleSimplifiedModel = () => {
+    updateProp(id, { colliderGeneration: null });
     onModelChanged();
     setColliderRefitTrigger((v) => v + 1);
   };
@@ -61,6 +63,7 @@ export function ProcessingRail({
       scaleMode: info.mode,
       targetDimension: info.targetValue,
       bbox: info.bbox,
+      colliderGeneration: null
     });
     onModelChanged();
     setColliderRefitTrigger((v) => v + 1);
@@ -70,7 +73,7 @@ export function ProcessingRail({
     preset: PivotPreset,
     offset: [number, number, number]
   ) => {
-    updateProp(id, { pivot: preset, pivotOffset: offset });
+    updateProp(id, { pivot: preset, pivotOffset: offset, colliderGeneration: null });
     const b = viewport?.getBBox();
     if (b) updateProp(id, { bbox: b });
     onModelChanged();
@@ -79,6 +82,12 @@ export function ProcessingRail({
 
   const handleColliderChange = (params: ColliderParams) => {
     updateProp(id, { collider: params });
+  };
+
+  const handleColliderGenerationChange = (
+    metadata: ForgeColliderGenerationMetadata | null
+  ) => {
+    updateProp(id, { colliderGeneration: metadata });
   };
 
   const handlePhysicsChange = (next: PropPhysicsSettings) => {
@@ -121,7 +130,9 @@ export function ProcessingRail({
         <ColliderPanel
           viewport={viewport}
           onColliderChange={handleColliderChange}
+          onColliderGenerationChange={handleColliderGenerationChange}
           currentCollider={prop.collider}
+          currentColliderGeneration={prop.colliderGeneration}
           refitTrigger={colliderRebuildTrigger}
           hideTitle
         />
@@ -153,6 +164,7 @@ export function ProcessingRail({
           pivot={prop.pivot}
           pivotOffset={prop.pivotOffset}
           collider={prop.collider}
+          colliderGeneration={prop.colliderGeneration}
           physics={prop.physics}
           textureResolution={prop.textureResolution}
           bbox={prop.bbox}

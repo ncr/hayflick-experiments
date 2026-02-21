@@ -16,6 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@common/collider-vhacd": "workspace:*",
     "@common/core": "workspace:*",
     "@common/gameplay": "workspace:*",
     "@common/level-editor": "workspace:*",

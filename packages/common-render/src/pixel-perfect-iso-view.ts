@@ -45,6 +45,13 @@ export type PixelPerfectIsoViewState = {
   devicePixelRatio: number;
 };
 
+export type PixelPerfectIsoViewPose = {
+  targetX: number;
+  targetZ: number;
+  yawIndex: number;
+  zoom: number;
+};
+
 export type PixelSnapMode = "nearest" | "floor" | "ceil";
 
 export class PixelPerfectIsoView {
@@ -264,6 +271,49 @@ export class PixelPerfectIsoView {
       zoomMode: state.zoomMode,
       devicePixelRatio: state.devicePixelRatio
     };
+  }
+
+  getViewPose(): PixelPerfectIsoViewPose {
+    return {
+      targetX: this.cameraTarget.x,
+      targetZ: this.cameraTarget.z,
+      yawIndex: this.controller.getYawIndex(),
+      zoom: this.cameraZoomTarget
+    };
+  }
+
+  setViewPose(pose: PixelPerfectIsoViewPose): void {
+    if (Number.isFinite(pose.targetX)) {
+      this.cameraTarget.x = pose.targetX;
+    }
+    if (Number.isFinite(pose.targetZ)) {
+      this.cameraTarget.z = pose.targetZ;
+    }
+    this.cameraTarget.y = 0;
+
+    const targetYaw = Math.round(pose.yawIndex);
+    this.controller.setYawIndex(targetYaw);
+
+    this.animatedYawTurns = this.controller.getYawIndex();
+    this.rotationSnapActive = false;
+    this.rotationSnapFromTurns = this.animatedYawTurns;
+    this.rotationSnapToTurns = this.animatedYawTurns;
+    this.rotationSnapElapsedSeconds = 0;
+
+    const nextZoom = THREE.MathUtils.clamp(
+      Number.isFinite(pose.zoom) ? pose.zoom : this.cameraZoomTarget,
+      this.config.zoomMin,
+      this.config.zoomMax
+    );
+    this.cameraZoomTarget = nextZoom;
+    this.cameraZoomCurrent = nextZoom;
+    this.cameraZoomStable = nextZoom;
+    this.zoomAnimationActive = false;
+    this.zoomBurstActive = false;
+
+    this.updateCameraProjection();
+    this.outputMaterial.uniforms.uZoom.value = this.cameraZoomStable;
+    this.ensureScreenBasis();
   }
 
   getYawIndex(): number {

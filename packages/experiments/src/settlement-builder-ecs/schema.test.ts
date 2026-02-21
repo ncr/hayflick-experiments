@@ -49,7 +49,8 @@ describe("settlement schema", () => {
       props,
       propColliderModes: new Map([
         ["chair", "convex-hull"],
-        ["bench", "compound-boxes"]
+        ["bench", "compound-boxes"],
+        ["sofa", "compound-convex-hulls"]
       ]),
       propPhysicsProfiles: new Map([
         [
@@ -84,6 +85,7 @@ describe("settlement schema", () => {
     );
     expect(parsed.propColliderModes.get("chair")).toBe("convex-hull");
     expect(parsed.propColliderModes.get("bench")).toBe("compound-boxes");
+    expect(parsed.propColliderModes.get("sofa")).toBe("compound-convex-hulls");
     expect(parsed.propPhysicsProfiles.get("chair")?.mobility).toBe("dynamic");
   });
 

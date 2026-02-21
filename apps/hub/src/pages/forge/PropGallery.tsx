@@ -10,9 +10,10 @@ interface SavedProp {
 interface Props {
   onSelectProp: (propId: string) => void;
   selectedProp: string;
+  refreshToken?: number;
 }
 
-export function PropGallery({ onSelectProp, selectedProp }: Props) {
+export function PropGallery({ onSelectProp, selectedProp, refreshToken }: Props) {
   const [props, setProps] = useState<SavedProp[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -57,7 +58,7 @@ export function PropGallery({ onSelectProp, selectedProp }: Props) {
 
   useEffect(() => {
     loadProps();
-  }, []);
+  }, [refreshToken]);
 
   if (props.length === 0 && !loading) {
     return (

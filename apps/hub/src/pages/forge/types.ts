@@ -1,5 +1,6 @@
 import type { ColliderParams } from "./processing/colliders";
 import type { ScaleMode, PivotPreset, BBox } from "./processing/dimensions";
+import type { ForgeColliderGenerationMetadata } from "./processing/collider-vhacd";
 
 export type PropStatus =
   | "draft"
@@ -28,6 +29,7 @@ export interface PropItem {
   pivot: PivotPreset;
   pivotOffset: [number, number, number];
   collider: ColliderParams | null;
+  colliderGeneration: ForgeColliderGenerationMetadata | null;
   physics: PropPhysicsSettings;
   textureResolution: number;
   bbox: BBox | null;

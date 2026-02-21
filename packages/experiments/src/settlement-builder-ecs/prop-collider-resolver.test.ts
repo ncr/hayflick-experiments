@@ -17,6 +17,7 @@ function makeDefinition(
     collider2d: partial.collider2d ?? { width: 1, depth: 1 },
     physicsHint: partial.physicsHint,
     compoundCollider: partial.compoundCollider,
+    compoundConvexHulls: partial.compoundConvexHulls,
     colliderVariants: partial.colliderVariants
   };
 }
@@ -52,6 +53,23 @@ describe("prop-collider-resolver", () => {
               halfExtents: [0.2, 0.25, 0.2]
             }
           ]
+        },
+        compoundConvexHulls: {
+          type: "compound-convex-hulls",
+          source: "vhacd-unity-v1",
+          parts: [
+            {
+              kind: "convex-hull",
+              position: [0, 0.5, 0],
+              points: [
+                [-0.3, -0.2, -0.25],
+                [0.3, -0.2, -0.25],
+                [0.3, -0.2, 0.25],
+                [-0.3, -0.2, 0.25],
+                [0, 0.4, 0]
+              ]
+            }
+          ]
         }
       }
     });
@@ -59,7 +77,8 @@ describe("prop-collider-resolver", () => {
     expect(getAvailablePropColliderModes(definition)).toEqual([
       "box",
       "convex-hull",
-      "compound-boxes"
+      "compound-boxes",
+      "compound-convex-hulls"
     ]);
   });
 
@@ -131,6 +150,106 @@ describe("prop-collider-resolver", () => {
       translation: { x: 0.1, y: 0.3, z: -0.2 },
       halfExtents: { x: 0.15, y: 0.2, z: 0.25 }
     });
+  });
+
+  it("resolves compound convex hull parts and zero root offset", () => {
+    const definition = makeDefinition({
+      colliderVariants: {
+        box: {
+          type: "box",
+          source: "aabb-v1",
+          position: [0, 0.5, 0],
+          halfExtents: [0.5, 0.5, 0.5]
+        },
+        compoundConvexHulls: {
+          type: "compound-convex-hulls",
+          source: "vhacd-unity-v1",
+          parts: [
+            {
+              kind: "convex-hull",
+              position: [0.1, 0.3, -0.2],
+              points: [
+                [-0.15, -0.2, -0.15],
+                [0.15, -0.2, -0.15],
+                [0.15, -0.2, 0.15],
+                [-0.15, -0.2, 0.15],
+                [0, 0.2, 0]
+              ]
+            }
+          ]
+        }
+      }
+    });
+
+    const resolved = resolvePropColliderResolution({
+      sourcePropId: "chair",
+      definition,
+      explicitMode: "compound-convex-hulls",
+      dimensions: { width: 1, height: 1, depth: 1 },
+      convexVerticesByPropId: new Map()
+    });
+
+    expect(resolved.shape).toBe("compound-convex-hulls");
+    if (resolved.shape !== "compound-convex-hulls") {
+      return;
+    }
+    expect(resolved.localRootOffset).toEqual({ x: 0, y: 0, z: 0 });
+    expect(resolved.parts).toHaveLength(1);
+    expect(resolved.parts[0]?.translation).toEqual({ x: 0.1, y: 0.3, z: -0.2 });
+    const expectedVertices = [
+      -0.15, -0.2, -0.15, 0.15, -0.2, -0.15, 0.15, -0.2, 0.15, -0.15, -0.2,
+      0.15, 0, 0.2, 0
+    ];
+    const actualVertices = Array.from(resolved.parts[0]?.vertices ?? new Float32Array());
+    expect(actualVertices).toHaveLength(expectedVertices.length);
+    expectedVertices.forEach((value, index) => {
+      expect(actualVertices[index]).toBeCloseTo(value, 5);
+    });
+  });
+
+  it("prefers compound-convex-hulls as fallback when available", () => {
+    const definition = makeDefinition({
+      colliderVariants: {
+        box: {
+          type: "box",
+          source: "aabb-v1",
+          position: [0, 0.5, 0],
+          halfExtents: [0.5, 0.5, 0.5]
+        },
+        compoundBoxes: {
+          type: "compound-boxes",
+          source: "auto-kmeans-v1",
+          parts: [
+            {
+              kind: "box",
+              position: [0, 0.25, 0],
+              halfExtents: [0.2, 0.25, 0.2]
+            }
+          ]
+        },
+        compoundConvexHulls: {
+          type: "compound-convex-hulls",
+          source: "vhacd-unity-v1",
+          parts: [
+            {
+              kind: "convex-hull",
+              position: [0, 0.3, 0],
+              points: [
+                [-0.2, -0.2, -0.2],
+                [0.2, -0.2, -0.2],
+                [0.2, -0.2, 0.2],
+                [-0.2, -0.2, 0.2],
+                [0, 0.25, 0]
+              ]
+            }
+          ]
+        }
+      }
+    });
+
+    expect(resolveEffectivePropColliderMode(definition, "convex-hull")).toBe(
+      "compound-convex-hulls"
+    );
   });
 
   it("caches flattened convex vertices by prop id", () => {

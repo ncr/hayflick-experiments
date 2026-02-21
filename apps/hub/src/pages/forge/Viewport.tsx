@@ -8,14 +8,27 @@ import { createBBoxHelper, createDimensionLabels, computeBBox, type BBox } from 
 
 export type MaterialChannelMode = "" | "baseColor" | "normal" | "roughness" | "metallic" | "ao" | "emissive";
 
+export type Viewport3dViewState = {
+  target: [number, number, number];
+  distance: number;
+  yaw: number;
+  pitch: number;
+};
+
 export interface ViewportHandle {
   loadGlb(data: ArrayBuffer): Promise<THREE.Group>;
   setModel(group: THREE.Group | null): void;
   getModel(): THREE.Group | null;
+  getViewState(): Viewport3dViewState | null;
+  setViewState(state: Viewport3dViewState): void;
   setWireframe(on: boolean): void;
   setMaterialChannel(channel: MaterialChannelMode): void;
   setCollider(params: ColliderParams | null): void;
   setColliderPreviewObject(helper: THREE.Object3D | null): void;
+  setModelVisible(on: boolean): void;
+  setColliderVisible(on: boolean): void;
+  setGridVisible(on: boolean): void;
+  setAxesVisible(on: boolean): void;
   setBBoxVisible(on: boolean): void;
   getBBox(): BBox | null;
   getScene(): THREE.Scene;
@@ -26,13 +39,17 @@ export interface ViewportHandle {
 interface ViewportProps {
   className?: string;
   onModelChange?: (model: THREE.Group | null) => void;
+  onViewChange?: (state: Viewport3dViewState) => void;
 }
 
 export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
-  function Viewport({ className, onModelChange }, ref) {
+  function Viewport({ className, onModelChange, onViewChange }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const onModelChangeRef = useRef(onModelChange);
+    const onViewChangeRef = useRef(onViewChange);
+    const applyingExternalViewRef = useRef(false);
     onModelChangeRef.current = onModelChange;
+    onViewChangeRef.current = onViewChange;
     const stateRef = useRef<{
       scene: THREE.Scene;
       camera: THREE.PerspectiveCamera;
@@ -45,8 +62,13 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       bboxVisible: boolean;
       raf: number;
       grid: THREE.GridHelper;
+      axesHelper: THREE.AxesHelper;
       savedMaterials: Map<THREE.Mesh, THREE.Material | THREE.Material[]>;
       activeChannel: MaterialChannelMode;
+      modelVisible: boolean;
+      colliderVisible: boolean;
+      gridVisible: boolean;
+      axesVisible: boolean;
     } | null>(null);
 
     const disposeObject = (object: THREE.Object3D | null): void => {
@@ -54,7 +76,13 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         return;
       }
       object.traverse((node) => {
-        if (!(node instanceof THREE.Mesh)) {
+        if (
+          !(
+            node instanceof THREE.Mesh ||
+            node instanceof THREE.LineSegments ||
+            node instanceof THREE.Line
+          )
+        ) {
           return;
         }
         node.geometry?.dispose();
@@ -108,6 +136,22 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       state.colliderHelper = null;
     };
 
+    const readCurrentViewState = (state: {
+      controls: OrbitControls;
+    }): Viewport3dViewState => ({
+      target: [
+        state.controls.target.x,
+        state.controls.target.y,
+        state.controls.target.z
+      ],
+      distance: state.controls.getDistance(),
+      yaw: state.controls.getAzimuthalAngle(),
+      pitch: state.controls.getPolarAngle()
+    });
+
+    const clamp = (value: number, min: number, max: number): number =>
+      Math.min(max, Math.max(min, value));
+
     useImperativeHandle(ref, () => ({
       loadGlb: async (data: ArrayBuffer) => {
         const loader = new GLTFLoader();
@@ -129,6 +173,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
 
         s.model = group;
         if (group) {
+          group.visible = s.modelVisible;
           s.scene.add(group);
 
           // Fit camera
@@ -139,6 +184,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
           s.camera.lookAt(bbox.center);
           s.controls.target.copy(bbox.center);
           s.controls.update();
+          onViewChangeRef.current?.(readCurrentViewState(s));
 
           // BBox
           if (s.bboxVisible) {
@@ -152,6 +198,48 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       },
 
       getModel: () => stateRef.current?.model ?? null,
+
+      getViewState: () => {
+        const s = stateRef.current;
+        if (!s) {
+          return null;
+        }
+        return readCurrentViewState(s);
+      },
+
+      setViewState: (viewState: Viewport3dViewState) => {
+        const s = stateRef.current;
+        if (!s) {
+          return;
+        }
+        const nextTarget = viewState.target;
+        const targetX = Number.isFinite(nextTarget[0]) ? nextTarget[0] : s.controls.target.x;
+        const targetY = Number.isFinite(nextTarget[1]) ? nextTarget[1] : s.controls.target.y;
+        const targetZ = Number.isFinite(nextTarget[2]) ? nextTarget[2] : s.controls.target.z;
+        const distance = Math.max(
+          0.001,
+          Number.isFinite(viewState.distance) ? viewState.distance : s.controls.getDistance()
+        );
+        const yaw = Number.isFinite(viewState.yaw)
+          ? viewState.yaw
+          : s.controls.getAzimuthalAngle();
+        const pitch = clamp(
+          Number.isFinite(viewState.pitch) ? viewState.pitch : s.controls.getPolarAngle(),
+          1e-3,
+          Math.PI - 1e-3
+        );
+
+        const offset = new THREE.Vector3().setFromSpherical(
+          new THREE.Spherical(distance, pitch, yaw)
+        );
+
+        applyingExternalViewRef.current = true;
+        s.controls.target.set(targetX, targetY, targetZ);
+        s.camera.position.copy(s.controls.target).add(offset);
+        s.camera.lookAt(s.controls.target);
+        s.controls.update();
+        applyingExternalViewRef.current = false;
+      },
 
       setWireframe: (on: boolean) => {
         const s = stateRef.current;
@@ -217,6 +305,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         if (params) {
           s.colliderHelper = createColliderHelper(params);
           markColliderHelperRoot(s.colliderHelper);
+          s.colliderHelper.visible = s.colliderVisible;
           s.scene.add(s.colliderHelper);
         }
       },
@@ -230,7 +319,40 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         }
         s.colliderHelper = helper;
         markColliderHelperRoot(s.colliderHelper);
+        s.colliderHelper.visible = s.colliderVisible;
         s.scene.add(helper);
+      },
+
+      setModelVisible: (on: boolean) => {
+        const s = stateRef.current;
+        if (!s) return;
+        s.modelVisible = on;
+        if (s.model) {
+          s.model.visible = on;
+        }
+      },
+
+      setColliderVisible: (on: boolean) => {
+        const s = stateRef.current;
+        if (!s) return;
+        s.colliderVisible = on;
+        if (s.colliderHelper) {
+          s.colliderHelper.visible = on;
+        }
+      },
+
+      setGridVisible: (on: boolean) => {
+        const s = stateRef.current;
+        if (!s) return;
+        s.gridVisible = on;
+        s.grid.visible = on;
+      },
+
+      setAxesVisible: (on: boolean) => {
+        const s = stateRef.current;
+        if (!s) return;
+        s.axesVisible = on;
+        s.axesHelper.visible = on;
       },
 
       setBBoxVisible: (on: boolean) => {
@@ -324,10 +446,23 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
         bboxVisible: true,
         raf: 0,
         grid,
+        axesHelper,
         savedMaterials: new Map(),
         activeChannel: "" as MaterialChannelMode,
+        modelVisible: true,
+        colliderVisible: true,
+        gridVisible: true,
+        axesVisible: true,
       };
       stateRef.current = state;
+
+      const handleControlsChange = () => {
+        if (applyingExternalViewRef.current) {
+          return;
+        }
+        onViewChangeRef.current?.(readCurrentViewState(state));
+      };
+      controls.addEventListener("change", handleControlsChange);
 
       // Resize observer
       const ro = new ResizeObserver((entries) => {
@@ -354,6 +489,7 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       return () => {
         cancelAnimationFrame(state.raf);
         ro.disconnect();
+        controls.removeEventListener("change", handleControlsChange);
         controls.dispose();
         clearColliderHelpers(state);
         renderer.dispose();

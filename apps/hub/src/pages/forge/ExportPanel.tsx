@@ -7,11 +7,9 @@ import type { ViewportHandle } from "./Viewport";
 import type { Object3D } from "three";
 import type { PropPhysicsSettings } from "./types";
 import {
-  buildSimplifiedColliderScene,
-  DEFAULT_COLLIDER_FACE_TARGET,
-  type ColliderVariantsSpec,
-  type CompoundColliderSpec
-} from "./processing/collider-mesh";
+  buildColliderExportSceneFromParams,
+  type ForgeColliderGenerationMetadata
+} from "./processing/collider-vhacd";
 import {
   buildPhysicsHintFromForgeSettings,
   normalizeForgePhysicsSettings,
@@ -60,8 +58,7 @@ export interface AssetMeta {
     massScale?: number;
     manualMass?: number;
   };
-  compoundCollider?: CompoundColliderSpec;
-  colliderVariants?: ColliderVariantsSpec;
+  colliderGeneration?: ForgeColliderGenerationMetadata;
 }
 
 interface Props {
@@ -80,6 +77,7 @@ interface Props {
   pivot: PivotPreset;
   pivotOffset: [number, number, number];
   collider: ColliderParams | null;
+  colliderGeneration: ForgeColliderGenerationMetadata | null;
   physics: PropPhysicsSettings;
   textureResolution: number;
   bbox: BBox | null;
@@ -102,6 +100,7 @@ export function ExportPanel({
   pivot,
   pivotOffset,
   collider,
+  colliderGeneration,
   physics,
   textureResolution,
   bbox,
@@ -126,8 +125,6 @@ export function ExportPanel({
       const basePath = `props/${propId}`;
       let colliderFaces = 0;
       let colliderFaceTarget = 0;
-      let compoundCollider: CompoundColliderSpec | undefined;
-      let colliderVariants: ColliderVariantsSpec | undefined;
 
       // Save concept image
       if (conceptImage) {
@@ -166,16 +163,14 @@ export function ExportPanel({
         const glbBuffer = await exportBinary(model);
         await fsApi.writeBinary(`${basePath}/processed/model.glb`, glbBuffer);
 
-        const collider = await buildSimplifiedColliderScene(
-          model,
-          DEFAULT_COLLIDER_FACE_TARGET
-        );
-        const colliderBuffer = await exportBinary(collider.scene);
+        if (!collider || !colliderGeneration) {
+          throw new Error("Collider metadata missing. Recompute collider before saving.");
+        }
+        const colliderScene = buildColliderExportSceneFromParams(collider);
+        const colliderBuffer = await exportBinary(colliderScene);
         await fsApi.writeBinary(`${basePath}/processed/collider.glb`, colliderBuffer);
-        colliderFaces = collider.colliderFaces;
-        colliderFaceTarget = collider.targetFaces;
-        compoundCollider = collider.compoundCollider;
-        colliderVariants = collider.colliderVariants;
+        colliderFaces = colliderScene.children.length * 12;
+        colliderFaceTarget = Math.max(0, colliderGeneration.options.maxConvexHulls * 12);
       }
 
       // Save meta.json
@@ -220,9 +215,8 @@ export function ExportPanel({
           position: [0, 0, 0],
           params: {},
         },
+        colliderGeneration: colliderGeneration ?? undefined,
         physics: physicsHint,
-        compoundCollider,
-        colliderVariants,
       };
 
       await fsApi.writeJson(`${basePath}/meta.json`, meta);
@@ -249,13 +243,18 @@ export function ExportPanel({
         <div>Scale: {scale.toFixed(4)}</div>
         <div>Pivot: {pivot}</div>
         {collider && <div>Collider: {collider.type}</div>}
+        {colliderGeneration && (
+          <div>
+            VHACD Preset: {colliderGeneration.presetName} ({colliderGeneration.hullCount} hulls)
+          </div>
+        )}
         <div>
           Physics: {physics.material} /{" "}
           {physics.mobility === "auto" ? "auto mobility" : physics.mobility} / mass{" "}
           {resolveForgeMass(normalizeForgePhysicsSettings(physics, bbox), bbox).toFixed(3)}
         </div>
         <div>
-          Export Colliders: Auto Collider v1 + Box/Pill/Sphere/Cylinder/Convex variants
+          Export Colliders: VHACD compound convex hulls
         </div>
         {bbox && (
           <div>
@@ -268,11 +267,17 @@ export function ExportPanel({
       <button
         className="forge-btn forge-btn-primary"
         onClick={handleSave}
-        disabled={saving || !propId}
+        disabled={saving || !propId || !collider || !colliderGeneration}
         data-testid="save-asset-btn"
       >
         {saving ? "Saving..." : "Save Asset"}
       </button>
+
+      {!colliderGeneration && (
+        <div className="forge-muted">
+          Recompute collider in the Collider panel before saving so generation settings are stored.
+        </div>
+      )}
 
       {saved && (
         <div className="forge-success" data-testid="save-success">

@@ -10,9 +10,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
-    "forge:retrofit-colliders": "node scripts/retrofit-collider-meshes.mjs"
+    "forge:retrofit-colliders": "node scripts/retrofit-collider-meshes.mjs",
+    "forge:precompute-colliders": "node scripts/precompute-vhacd-colliders.mjs --preset=Balanced"
   },
   "dependencies": {
+    "@common/collider-vhacd": "workspace:*",
     "@common/render": "workspace:^",
     "@experiments/catalog": "workspace:*",
     "@gltf-transform/core": "^4.3.0",

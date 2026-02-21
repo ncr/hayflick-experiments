@@ -1643,17 +1643,25 @@ const experiment: ExperimentModule = {
     const propColliderHullButton = hud.createButton("Collider: Convex Hull", () => {
       setSelectedPropColliderMode("convex-hull");
     });
-    const propColliderCompoundButton = hud.createButton("Collider: Compound", () => {
+    const propColliderCompoundButton = hud.createButton("Collider: Compound Boxes", () => {
       setSelectedPropColliderMode("compound-boxes");
     });
+    const propColliderCompoundHullsButton = hud.createButton(
+      "Collider: Compound Hulls",
+      () => {
+        setSelectedPropColliderMode("compound-convex-hulls");
+      }
+    );
     propColliderModeRow.append(
       propColliderBoxButton,
       propColliderHullButton,
-      propColliderCompoundButton
+      propColliderCompoundButton,
+      propColliderCompoundHullsButton
     );
     propColliderBoxButton.style.flex = "1 1 120px";
     propColliderHullButton.style.flex = "1 1 140px";
     propColliderCompoundButton.style.flex = "1 1 140px";
+    propColliderCompoundHullsButton.style.flex = "1 1 150px";
 
     const propPhysicsModeRow = document.createElement("div");
     propPhysicsModeRow.style.display = "flex";
@@ -2647,6 +2655,8 @@ const experiment: ExperimentModule = {
           return "convex hull";
         case "compound-boxes":
           return "compound boxes";
+        case "compound-convex-hulls":
+          return "compound convex hulls";
         default:
           return mode;
       }
@@ -3543,6 +3553,37 @@ const experiment: ExperimentModule = {
       const body = world.createRigidBody(bodyDesc);
       let colliderCreated = false;
       switch (colliderResolution.shape) {
+        case "compound-convex-hulls": {
+          const partCount = Math.max(1, colliderResolution.parts.length);
+          const partMass = profile.mass / partCount;
+          let createdCount = 0;
+          for (const part of colliderResolution.parts) {
+            try {
+              const hullDesc = RAPIER3D.ColliderDesc.convexHull(part.vertices);
+              if (!hullDesc) {
+                continue;
+              }
+              world.createCollider(
+                hullDesc
+                  .setTranslation(
+                    part.translation.x,
+                    part.translation.y,
+                    part.translation.z
+                  )
+                  .setFriction(profile.friction)
+                  .setRestitution(profile.restitution)
+                  .setMass(partMass)
+                  .setCollisionGroups(propCollisionGroups),
+                body
+              );
+              createdCount += 1;
+            } catch {
+              // Skip invalid hull part and keep trying remaining parts.
+            }
+          }
+          colliderCreated = createdCount > 0;
+          break;
+        }
         case "compound-boxes": {
           const partCount = Math.max(1, colliderResolution.parts.length);
           const partMass = profile.mass / partCount;
@@ -4583,6 +4624,10 @@ const experiment: ExperimentModule = {
         !propCatalogActive ||
         !hasSelectedProp ||
         !availableColliderModes.includes("compound-boxes");
+      propColliderCompoundHullsButton.disabled =
+        !propCatalogActive ||
+        !hasSelectedProp ||
+        !availableColliderModes.includes("compound-convex-hulls");
       setButtonActive(
         propColliderBoxButton,
         propCatalogActive && selectedColliderMode === "box"
@@ -4594,6 +4639,10 @@ const experiment: ExperimentModule = {
       setButtonActive(
         propColliderCompoundButton,
         propCatalogActive && selectedColliderMode === "compound-boxes"
+      );
+      setButtonActive(
+        propColliderCompoundHullsButton,
+        propCatalogActive && selectedColliderMode === "compound-convex-hulls"
       );
       propPhysicsDynamicButton.disabled = !propCatalogActive || !hasSelectedProp;
       propPhysicsFixedButton.disabled = !propCatalogActive || !hasSelectedProp;
@@ -4625,7 +4674,9 @@ const experiment: ExperimentModule = {
           ? "Collider Box"
           : selectedColliderMode === "convex-hull"
             ? "Collider Hull"
-            : "Collider Compound"
+            : selectedColliderMode === "compound-convex-hulls"
+              ? "Collider Compound Hulls"
+              : "Collider Compound Boxes"
         : "Collider --";
       propColliderBadge.style.borderColor = "rgba(148, 173, 190, 0.5)";
       propColliderBadge.style.color = "rgba(223, 237, 247, 0.96)";
@@ -5314,6 +5365,36 @@ const experiment: ExperimentModule = {
 
       let createdBody = false;
       switch (colliderResolution.shape) {
+        case "compound-convex-hulls": {
+          const created =
+            profile.mobility === "dynamic"
+              ? physics.createDynamicCompoundConvexHullEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  parts: colliderResolution.parts,
+                  mass: profile.mass,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  linearDamping: profile.linearDamping,
+                  angularDamping: profile.angularDamping,
+                  ccd: true,
+                  collisionGroups: propCollisionGroups
+                })
+              : physics.createFixedCompoundConvexHullEntity(eid, {
+                  translation: bodyTranslation,
+                  rotation: runtimeRotation,
+                  parts: colliderResolution.parts,
+                  friction: profile.friction,
+                  restitution: profile.restitution,
+                  collisionGroups: propCollisionGroups
+                });
+          physicsBodies.add(eid, { bodyHandle: created.bodyHandle });
+          physicsColliders.add(eid, {
+            colliderHandle: created.colliderHandle
+          });
+          createdBody = true;
+          break;
+        }
         case "compound-boxes": {
           const created =
             profile.mobility === "dynamic"

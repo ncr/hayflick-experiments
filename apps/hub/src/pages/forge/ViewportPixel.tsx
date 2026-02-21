@@ -2,20 +2,45 @@ import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import * as THREE from "three";
 import { PixelPerfectIsoView } from "@common/render";
 
+export type PixelViewportViewState = {
+  target: [number, number, number];
+  yawTurns: number;
+  zoom: number;
+};
+
 export interface ViewportPixelHandle {
   setModel(group: THREE.Group | null): void;
+  getViewState(): PixelViewportViewState | null;
+  setViewState(state: PixelViewportViewState): void;
 }
 
 interface Props {
   className?: string;
+  onViewChange?: (state: PixelViewportViewState) => void;
 }
 
 export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
-  function ViewportPixel({ className }, ref) {
+  function ViewportPixel({ className, onViewChange }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<PixelPerfectIsoView | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const modelRef = useRef<THREE.Group | null>(null);
+    const onViewChangeRef = useRef(onViewChange);
+    const lastViewSignatureRef = useRef<string>("");
+    onViewChangeRef.current = onViewChange;
+
+    const readViewState = (): PixelViewportViewState | null => {
+      const view = viewRef.current;
+      if (!view) {
+        return null;
+      }
+      const pose = view.getViewPose();
+      return {
+        target: [pose.targetX, 0, pose.targetZ],
+        yawTurns: pose.yawIndex,
+        zoom: pose.zoom
+      };
+    };
 
     useImperativeHandle(ref, () => ({
       setModel: (group: THREE.Group | null) => {
@@ -33,6 +58,29 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
           scene.add(clone);
         }
       },
+      getViewState: () => readViewState(),
+      setViewState: (state: PixelViewportViewState) => {
+        const view = viewRef.current;
+        if (!view) {
+          return;
+        }
+        const target = state.target;
+        const zoom = Math.round(
+          THREE.MathUtils.clamp(
+            Number.isFinite(state.zoom) ? state.zoom : view.getState().cameraZoomTarget,
+            1,
+            6
+          )
+        );
+        view.setViewPose({
+          targetX: Number.isFinite(target[0]) ? target[0] : view.cameraTarget.x,
+          targetZ: Number.isFinite(target[2]) ? target[2] : view.cameraTarget.z,
+          yawIndex: Number.isFinite(state.yawTurns)
+            ? ((Math.round(state.yawTurns) % 4) + 4) % 4
+            : ((view.getYawIndex() % 4) + 4) % 4,
+          zoom
+        });
+      }
     }));
 
     useEffect(() => {
@@ -107,6 +155,15 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
         const dt = (now - lastTime) / 1000;
         lastTime = now;
         view.frame(now, dt);
+
+        const current = readViewState();
+        if (current) {
+          const signature = `${current.target[0].toFixed(4)}|${current.target[2].toFixed(4)}|${current.yawTurns}|${current.zoom.toFixed(4)}`;
+          if (signature !== lastViewSignatureRef.current) {
+            lastViewSignatureRef.current = signature;
+            onViewChangeRef.current?.(current);
+          }
+        }
       }
       animate();
 

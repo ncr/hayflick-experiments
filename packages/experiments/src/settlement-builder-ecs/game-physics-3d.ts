@@ -39,6 +39,11 @@ export type Physics3dBoxPart = {
   halfExtents: Vector3;
 };
 
+export type Physics3dConvexHullPart = {
+  translation: Vector3;
+  vertices: Float32Array;
+};
+
 export type Physics3dResource = {
   world: RapierWorld;
   characterController: KinematicCharacterController;
@@ -76,6 +81,21 @@ export type Physics3dResource = {
       translation: Vector3;
       rotation?: Quaternion;
       parts: Physics3dBoxPart[];
+      friction?: number;
+      restitution?: number;
+      collisionGroups?: number;
+    }
+  ): {
+    bodyHandle: RigidBodyHandle;
+    colliderHandle: ColliderHandle;
+    colliderHandles: ColliderHandle[];
+  };
+  createFixedCompoundConvexHullEntity(
+    eid: EID,
+    options: {
+      translation: Vector3;
+      rotation?: Quaternion;
+      parts: Physics3dConvexHullPart[];
       friction?: number;
       restitution?: number;
       collisionGroups?: number;
@@ -129,6 +149,25 @@ export type Physics3dResource = {
       translation: Vector3;
       rotation?: Quaternion;
       parts: Physics3dBoxPart[];
+      mass?: number;
+      friction?: number;
+      restitution?: number;
+      linearDamping?: number;
+      angularDamping?: number;
+      ccd?: boolean;
+      collisionGroups?: number;
+    }
+  ): {
+    bodyHandle: RigidBodyHandle;
+    colliderHandle: ColliderHandle;
+    colliderHandles: ColliderHandle[];
+  };
+  createDynamicCompoundConvexHullEntity(
+    eid: EID,
+    options: {
+      translation: Vector3;
+      rotation?: Quaternion;
+      parts: Physics3dConvexHullPart[];
       mass?: number;
       friction?: number;
       restitution?: number;
@@ -397,6 +436,63 @@ export function createPhysics3dResource(options?: {
         colliderHandles: colliders.map((collider) => collider.handle)
       };
     },
+    createFixedCompoundConvexHullEntity(
+      eid: EID,
+      options: {
+        translation: Vector3;
+        rotation?: Quaternion;
+        parts: Physics3dConvexHullPart[];
+        friction?: number;
+        restitution?: number;
+        collisionGroups?: number;
+      }
+    ): {
+      bodyHandle: RigidBodyHandle;
+      colliderHandle: ColliderHandle;
+      colliderHandles: ColliderHandle[];
+    } {
+      const body = world.createRigidBody(
+        makeFixedBodyDesc(options.translation, options.rotation)
+      );
+      const colliders: Collider[] = [];
+      for (const part of options.parts) {
+        const desc = RAPIER3D.ColliderDesc.convexHull(part.vertices);
+        if (!desc) {
+          continue;
+        }
+        desc
+          .setTranslation(
+            part.translation.x,
+            part.translation.y,
+            part.translation.z
+          )
+          .setFriction(options.friction ?? 0.9)
+          .setRestitution(options.restitution ?? 0);
+        if (options.collisionGroups !== undefined) {
+          desc.setCollisionGroups(options.collisionGroups);
+        }
+        colliders.push(world.createCollider(desc, body));
+      }
+      if (colliders.length <= 0) {
+        const fallback = world.createCollider(
+          createCuboidColliderDesc({
+            halfExtents: { x: 0.15, y: 0.15, z: 0.15 },
+            friction: options.friction,
+            restitution: options.restitution,
+            collisionGroups: options.collisionGroups
+          }),
+          body
+        );
+        colliders.push(fallback);
+      }
+
+      bindEntityBody(resource, eid, body, colliders);
+      return {
+        bodyHandle: body.handle,
+        colliderHandle: colliders[0].handle,
+        colliderHandles: colliders.map((collider) => collider.handle)
+      };
+    },
     createFixedConvexHullEntity(
       eid: EID,
       options: {
@@ -542,6 +638,80 @@ export function createPhysics3dResource(options?: {
             part.translation.z
           )
           .setMass(partMass);
+        colliders.push(world.createCollider(desc, body));
+      }
+      if (colliders.length <= 0) {
+        const fallback = world.createCollider(
+          createCuboidColliderDesc({
+            halfExtents: { x: 0.15, y: 0.15, z: 0.15 },
+            friction: options.friction,
+            restitution: options.restitution,
+            collisionGroups: options.collisionGroups
+          }).setMass(options.mass ?? 1),
+          body
+        );
+        colliders.push(fallback);
+      }
+
+      bindEntityBody(resource, eid, body, colliders);
+      return {
+        bodyHandle: body.handle,
+        colliderHandle: colliders[0].handle,
+        colliderHandles: colliders.map((collider) => collider.handle)
+      };
+    },
+    createDynamicCompoundConvexHullEntity(
+      eid: EID,
+      options: {
+        translation: Vector3;
+        rotation?: Quaternion;
+        parts: Physics3dConvexHullPart[];
+        mass?: number;
+        friction?: number;
+        restitution?: number;
+        linearDamping?: number;
+        angularDamping?: number;
+        ccd?: boolean;
+        collisionGroups?: number;
+      }
+    ): {
+      bodyHandle: RigidBodyHandle;
+      colliderHandle: ColliderHandle;
+      colliderHandles: ColliderHandle[];
+    } {
+      const bodyDesc = RAPIER3D.RigidBodyDesc.dynamic().setTranslation(
+        options.translation.x,
+        options.translation.y,
+        options.translation.z
+      );
+      if (options.rotation) {
+        bodyDesc.setRotation(options.rotation);
+      }
+      const body = world.createRigidBody(bodyDesc);
+      body.setLinearDamping(options.linearDamping ?? 0.22);
+      body.setAngularDamping(options.angularDamping ?? 0.3);
+      body.enableCcd(options.ccd ?? true);
+
+      const colliders: Collider[] = [];
+      const partCount = Math.max(1, options.parts.length);
+      const partMass = (options.mass ?? 1) / partCount;
+      for (const part of options.parts) {
+        const desc = RAPIER3D.ColliderDesc.convexHull(part.vertices);
+        if (!desc) {
+          continue;
+        }
+        desc
+          .setTranslation(
+            part.translation.x,
+            part.translation.y,
+            part.translation.z
+          )
+          .setFriction(options.friction ?? 0.9)
+          .setRestitution(options.restitution ?? 0)
+          .setMass(partMass);
+        if (options.collisionGroups !== undefined) {
+          desc.setCollisionGroups(options.collisionGroups);
+        }
         colliders.push(world.createCollider(desc, body));
       }
       if (colliders.length <= 0) {

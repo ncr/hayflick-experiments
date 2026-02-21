@@ -70,11 +70,15 @@ export function validateSavedPropDefinition(
     });
   }
 
-  if (!variants?.compoundBoxes || variants.compoundBoxes.parts.length <= 0) {
+  const hasCompoundBoxes =
+    !!variants?.compoundBoxes && variants.compoundBoxes.parts.length > 0;
+  const hasCompoundConvexHulls =
+    !!variants?.compoundConvexHulls && variants.compoundConvexHulls.parts.length > 0;
+  if (!hasCompoundBoxes && !hasCompoundConvexHulls) {
     issues.push({
       severity: "warning",
       code: "collider-compound-missing",
-      message: "Compound-box collider variant is missing."
+      message: "Compound collider variant (boxes or convex hulls) is missing."
     });
   }
 

@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "defaultPreset": "Balanced",
+  "updatedAt": "2026-02-21T00:00:00.000Z",
+  "presets": [
+    {
+      "name": "Balanced",
+      "options": {
+        "resolution": 128,
+        "concavity": 0.002,
+        "alpha": 0.05,
+        "beta": 0.05,
+        "sliverPenalty": 0.35,
+        "planeDownsampling": 1,
+        "convexHullDownsampling": 1,
+        "maxConvexHulls": 24,
+        "minVoxelCountPerPart": 24,
+        "maxHullPointSamples": 1800,
+        "projectHullVertices": true,
+        "projectHullMaxDistance": 0.18,
+        "precomputeBothHullVariants": true,
+        "maxGridCells": 20000000,
+        "voxelizationTriangleSampleCount": 12000
+      }
+    },
+    {
+      "name": "Fast",
+      "options": {
+        "resolution": 96,
+        "concavity": 0.0035,
+        "alpha": 0.08,
+        "beta": 0.05,
+        "sliverPenalty": 0.45,
+        "planeDownsampling": 2,
+        "convexHullDownsampling": 2,
+        "maxConvexHulls": 16,
+        "minVoxelCountPerPart": 28,
+        "maxHullPointSamples": 1200,
+        "projectHullVertices": true,
+        "projectHullMaxDistance": 0.14,
+        "precomputeBothHullVariants": false,
+        "maxGridCells": 12000000,
+        "voxelizationTriangleSampleCount": 8000
+      }
+    },
+    {
+      "name": "High Detail",
+      "options": {
+        "resolution": 256,
+        "concavity": 0.0015,
+        "alpha": 0.06,
+        "beta": 0.05,
+        "sliverPenalty": 0.5,
+        "planeDownsampling": 1,
+        "convexHullDownsampling": 1,
+        "maxConvexHulls": 32,
+        "minVoxelCountPerPart": 20,
+        "maxHullPointSamples": 3200,
+        "projectHullVertices": true,
+        "projectHullMaxDistance": 0.16,
+        "precomputeBothHullVariants": true,
+        "maxGridCells": 20000000,
+        "voxelizationTriangleSampleCount": 20000
+      }
+    }
+  ]
+}

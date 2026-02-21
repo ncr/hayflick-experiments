@@ -1,251 +1,105 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createVhacdWorkerRunner,
+  type VhacdOptions,
+  type VhacdProgress
+} from "@common/collider-vhacd";
 import type { ViewportHandle } from "./Viewport";
-import type { ColliderParams } from "./processing/colliders";
+import { createColliderHelper, type ColliderParams } from "./processing/colliders";
 import {
-  buildSimplifiedColliderScene,
-  DEFAULT_COLLIDER_FACE_TARGET,
-  type AutoColliderStrategy,
-  type ColliderAutoRecommendation,
-  type ColliderVariantsSpec,
-  type CompoundColliderSpec
-} from "./processing/collider-mesh";
-import {
-  createColliderVariantsPreview,
-  type ColliderPreviewMode
-} from "./processing/collider-variants-preview";
+  buildVhacdColliderForObject,
+  normalizeVhacdOptions,
+  readVhacdPresetFile,
+  writeVhacdPresetFile,
+  type ForgeColliderGenerationMetadata,
+  type ForgeVhacdPresetFile
+} from "./processing/collider-vhacd";
 
 interface Props {
   viewport: ViewportHandle | null;
   onColliderChange: (params: ColliderParams) => void;
+  onColliderGenerationChange: (
+    metadata: ForgeColliderGenerationMetadata | null
+  ) => void;
   currentCollider?: ColliderParams | null;
+  currentColliderGeneration?: ForgeColliderGenerationMetadata | null;
   hideTitle?: boolean;
   refitTrigger?: number;
 }
 
-type EditableColliderMode = Exclude<ColliderPreviewMode, "all">;
-
-const DEFAULT_COLLIDER_MODE: EditableColliderMode = "compound-boxes";
-const DEFAULT_COLLIDER_SCALE = 1;
-const DEFAULT_AUTO_COLLIDER_STRATEGY: AutoColliderStrategy = "concave-furniture";
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function mapCompoundParts(parts: CompoundColliderSpec["parts"]): Array<{
-  position: [number, number, number];
-  halfExtents: [number, number, number];
-}> {
-  return parts.map((part) => ({
-    position: [part.position[0], part.position[1], part.position[2]],
-    halfExtents: [part.halfExtents[0], part.halfExtents[1], part.halfExtents[2]]
-  }));
-}
-
-function scaleCompoundSpec(
-  compound: ColliderVariantsSpec["compoundBoxes"],
-  scale: number
-): ColliderVariantsSpec["compoundBoxes"] {
-  if (compound.parts.length === 0 || scale === 1) {
-    return {
-      ...compound,
-      parts: compound.parts.map((part) => ({
-        ...part,
-        position: [...part.position] as [number, number, number],
-        halfExtents: [...part.halfExtents] as [number, number, number]
-      }))
-    };
+function readNumberInput(value: string, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
   }
+  return parsed;
+}
 
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let minZ = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  let maxZ = Number.NEGATIVE_INFINITY;
+function formatProgress(progress: VhacdProgress): string {
+  const percent = Math.round(progress.propProgress * 100);
+  return `${progress.message} (${percent}%)`;
+}
 
-  for (const part of compound.parts) {
-    minX = Math.min(minX, part.position[0] - part.halfExtents[0]);
-    minY = Math.min(minY, part.position[1] - part.halfExtents[1]);
-    minZ = Math.min(minZ, part.position[2] - part.halfExtents[2]);
-    maxX = Math.max(maxX, part.position[0] + part.halfExtents[0]);
-    maxY = Math.max(maxY, part.position[1] + part.halfExtents[1]);
-    maxZ = Math.max(maxZ, part.position[2] + part.halfExtents[2]);
+type NumberOptionField = {
+  key: keyof VhacdOptions;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+};
+
+const NUMBER_FIELDS: NumberOptionField[] = [
+  { key: "resolution", label: "Resolution", min: 10, max: 256, step: 1 },
+  { key: "maxConvexHulls", label: "Max Hulls", min: 1, max: 64, step: 1 },
+  { key: "concavity", label: "Concavity", min: 0, max: 1, step: 0.0005 },
+  { key: "alpha", label: "Alpha", min: 0, max: 1, step: 0.01 },
+  { key: "beta", label: "Beta", min: 0, max: 1, step: 0.01 },
+  { key: "sliverPenalty", label: "Sliver Penalty", min: 0, max: 3, step: 0.05 },
+  { key: "planeDownsampling", label: "Plane Downsample", min: 1, max: 12, step: 1 },
+  { key: "convexHullDownsampling", label: "Hull Downsample", min: 1, max: 12, step: 1 },
+  { key: "minVoxelCountPerPart", label: "Min Voxels/Part", min: 4, max: 200, step: 1 },
+  { key: "maxHullPointSamples", label: "Max Hull Samples", min: 64, max: 9000, step: 1 },
+  {
+    key: "projectHullMaxDistance",
+    label: "Project Max Distance",
+    min: 0,
+    max: 2,
+    step: 0.01
+  },
+  { key: "maxGridCells", label: "Max Grid Cells", min: 250000, max: 20000000, step: 250000 },
+  {
+    key: "voxelizationTriangleSampleCount",
+    label: "Voxel Tri Samples",
+    min: 1000,
+    max: 120000,
+    step: 1000
   }
-
-  const centerX = (minX + maxX) * 0.5;
-  const centerY = (minY + maxY) * 0.5;
-  const centerZ = (minZ + maxZ) * 0.5;
-
-  return {
-    ...compound,
-    parts: compound.parts.map((part) => {
-      const dx = part.position[0] - centerX;
-      const dy = part.position[1] - centerY;
-      const dz = part.position[2] - centerZ;
-      return {
-        ...part,
-        position: [
-          centerX + dx * scale,
-          centerY + dy * scale,
-          centerZ + dz * scale
-        ],
-        halfExtents: [
-          part.halfExtents[0] * scale,
-          part.halfExtents[1] * scale,
-          part.halfExtents[2] * scale
-        ]
-      };
-    })
-  };
-}
-
-function scaleVariants(
-  variants: ColliderVariantsSpec,
-  scale: number
-): ColliderVariantsSpec {
-  const clampedScale = Math.max(0.01, scale);
-  return {
-    box: {
-      ...variants.box,
-      halfExtents: [
-        variants.box.halfExtents[0] * clampedScale,
-        variants.box.halfExtents[1] * clampedScale,
-        variants.box.halfExtents[2] * clampedScale
-      ]
-    },
-    pill: {
-      ...variants.pill,
-      radius: variants.pill.radius * clampedScale,
-      halfHeight: variants.pill.halfHeight * clampedScale
-    },
-    sphere: {
-      ...variants.sphere,
-      radius: variants.sphere.radius * clampedScale
-    },
-    cylinder: {
-      ...variants.cylinder,
-      radius: variants.cylinder.radius * clampedScale,
-      halfHeight: variants.cylinder.halfHeight * clampedScale
-    },
-    convexHull: {
-      ...variants.convexHull,
-      points: variants.convexHull.points.map((point) => [
-        point[0] * clampedScale,
-        point[1] * clampedScale,
-        point[2] * clampedScale
-      ])
-    },
-    compoundBoxes: scaleCompoundSpec(variants.compoundBoxes, clampedScale)
-  };
-}
-
-function toColliderParams(
-  variants: ColliderVariantsSpec,
-  mode: EditableColliderMode
-): ColliderParams {
-  switch (mode) {
-    case "box":
-      return {
-        type: "box",
-        position: [
-          variants.box.position[0],
-          variants.box.position[1],
-          variants.box.position[2]
-        ],
-        params: {
-          halfWidth: variants.box.halfExtents[0],
-          halfHeight: variants.box.halfExtents[1],
-          halfDepth: variants.box.halfExtents[2]
-        }
-      };
-    case "pill":
-      return {
-        type: "pill",
-        position: [
-          variants.pill.position[0],
-          variants.pill.position[1],
-          variants.pill.position[2]
-        ],
-        params: {
-          axis: variants.pill.axis,
-          radius: variants.pill.radius,
-          halfHeight: variants.pill.halfHeight
-        }
-      };
-    case "sphere":
-      return {
-        type: "sphere",
-        position: [
-          variants.sphere.position[0],
-          variants.sphere.position[1],
-          variants.sphere.position[2]
-        ],
-        params: {
-          radius: variants.sphere.radius
-        }
-      };
-    case "cylinder":
-      return {
-        type: "cylinder",
-        position: [
-          variants.cylinder.position[0],
-          variants.cylinder.position[1],
-          variants.cylinder.position[2]
-        ],
-        params: {
-          axis: variants.cylinder.axis,
-          radius: variants.cylinder.radius,
-          halfHeight: variants.cylinder.halfHeight
-        }
-      };
-    case "convex-hull":
-      return {
-        type: "convex-hull",
-        position: [0, 0, 0],
-        params: {
-          points: variants.convexHull.points,
-          rootOffset: variants.convexHull.rootOffset
-        }
-      };
-    case "compound-boxes":
-      return {
-        type: "compound-boxes",
-        position: [0, 0, 0],
-        params: {
-          parts: mapCompoundParts(variants.compoundBoxes.parts)
-        }
-      };
-  }
-}
+];
 
 export function ColliderPanel({
   viewport,
   onColliderChange,
+  onColliderGenerationChange,
   currentCollider,
+  currentColliderGeneration,
   hideTitle,
   refitTrigger
 }: Props) {
+  const runnerRef = useRef(createVhacdWorkerRunner());
   const viewportRef = useRef<ViewportHandle | null>(viewport);
   const onColliderChangeRef = useRef(onColliderChange);
-  const [colliderMode, setColliderMode] = useState<EditableColliderMode>(
-    DEFAULT_COLLIDER_MODE
-  );
-  const [colliderScale, setColliderScale] = useState(DEFAULT_COLLIDER_SCALE);
-  const [variants, setVariants] = useState<ColliderVariantsSpec | null>(null);
-  const [autoRecommendation, setAutoRecommendation] =
-    useState<ColliderAutoRecommendation | null>(null);
-  const [autoStrategy, setAutoStrategy] = useState<AutoColliderStrategy>(
-    DEFAULT_AUTO_COLLIDER_STRATEGY
-  );
-  const [autoSummary, setAutoSummary] = useState<{
-    strategy: AutoColliderStrategy;
-    outsideRatio: number;
-  } | null>(null);
+  const onGenerationChangeRef = useRef(onColliderGenerationChange);
+
+  const [presetFile, setPresetFile] = useState<ForgeVhacdPresetFile | null>(null);
+  const [selectedPresetName, setSelectedPresetName] = useState<string>("");
+  const [options, setOptions] = useState<VhacdOptions>(normalizeVhacdOptions(null));
+  const [status, setStatus] = useState("Select a model and run VHACD.");
+  const [progressText, setProgressText] = useState("idle");
   const [building, setBuilding] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const requestTokenRef = useRef(0);
-  const hasViewport = viewport !== null;
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -255,235 +109,385 @@ export function ColliderPanel({
     onColliderChangeRef.current = onColliderChange;
   }, [onColliderChange]);
 
-  const currentColliderType = currentCollider?.type ?? null;
+  useEffect(() => {
+    onGenerationChangeRef.current = onColliderGenerationChange;
+  }, [onColliderGenerationChange]);
 
   useEffect(() => {
-    if (!currentColliderType) {
-      return;
-    }
-
-    const nextMode: EditableColliderMode =
-      currentColliderType === "capsule"
-        ? "pill"
-        : currentColliderType === "box" ||
-            currentColliderType === "pill" ||
-            currentColliderType === "sphere" ||
-            currentColliderType === "cylinder" ||
-            currentColliderType === "convex-hull" ||
-            currentColliderType === "compound-boxes"
-          ? currentColliderType
-          : DEFAULT_COLLIDER_MODE;
-    setColliderMode(nextMode);
-  }, [currentColliderType]);
-
-  const rebuildVariants = useCallback(async () => {
-    const currentViewport = viewportRef.current;
-    if (!currentViewport) {
-      setVariants(null);
-      setError(null);
-      setAutoRecommendation(null);
-      setAutoSummary(null);
-      return;
-    }
-    const model = currentViewport.getModel();
-    if (!model) {
-      setVariants(null);
-      setError(null);
-      setAutoRecommendation(null);
-      setAutoSummary(null);
-      currentViewport.setColliderPreviewObject(null);
-      return;
-    }
-
-    const token = ++requestTokenRef.current;
-    setBuilding(true);
-    setError(null);
-
-    try {
-      const result = await buildSimplifiedColliderScene(
-        model,
-        DEFAULT_COLLIDER_FACE_TARGET,
-        autoStrategy
-      );
-      if (requestTokenRef.current !== token) {
-        return;
+    void (async () => {
+      const loaded = await readVhacdPresetFile();
+      setPresetFile(loaded);
+      const preferred =
+        loaded.presets.find((preset) => preset.name === loaded.defaultPreset) ??
+        loaded.presets[0];
+      if (preferred) {
+        setSelectedPresetName(preferred.name);
+        setOptions(normalizeVhacdOptions(preferred.options));
       }
-
-      setVariants(result.colliderVariants);
-      setAutoRecommendation(result.autoRecommendation);
-      setAutoSummary({
-        strategy: result.autoSummary.strategy,
-        outsideRatio: result.autoSummary.outsideRatio
-      });
-    } catch (err) {
-      if (requestTokenRef.current !== token) {
-        return;
-      }
-      setVariants(null);
-      setAutoRecommendation(null);
-      setAutoSummary(null);
-      setError(err instanceof Error ? err.message : "Collider build failed.");
-      currentViewport.setColliderPreviewObject(null);
-    } finally {
-      if (requestTokenRef.current === token) {
-        setBuilding(false);
-      }
-    }
-  }, [autoStrategy]);
+    })();
+  }, []);
 
   useEffect(() => {
-    if (!hasViewport) {
-      setVariants(null);
-      setError(null);
-      setAutoRecommendation(null);
-      setAutoSummary(null);
+    if (refitTrigger === undefined) {
       return;
     }
-    void rebuildVariants();
-  }, [hasViewport, rebuildVariants, refitTrigger]);
+    setDirty(true);
+    if (!building) {
+      setStatus("Model changed. Recompute collider to refresh VHACD output.");
+    }
+  }, [refitTrigger, building]);
 
   useEffect(() => {
     const currentViewport = viewportRef.current;
     if (!currentViewport) {
       return;
     }
-    if (!variants) {
+    if (!currentCollider) {
       currentViewport.setColliderPreviewObject(null);
       return;
     }
-
-    const scaled = scaleVariants(variants, colliderScale);
-    const helper = createColliderVariantsPreview(scaled, colliderMode);
-    currentViewport.setColliderPreviewObject(helper);
-    onColliderChangeRef.current(toColliderParams(scaled, colliderMode));
-  }, [variants, colliderMode, colliderScale]);
+    currentViewport.setColliderPreviewObject(createColliderHelper(currentCollider));
+  }, [currentCollider]);
 
   useEffect(() => {
     return () => {
+      runnerRef.current.dispose();
       viewportRef.current?.setColliderPreviewObject(null);
     };
   }, []);
 
-  const summary = variants
-    ? {
-        boxSize: `${(variants.box.halfExtents[0] * 2).toFixed(3)} x ${(variants.box.halfExtents[1] * 2).toFixed(3)} x ${(variants.box.halfExtents[2] * 2).toFixed(3)}m`,
-        pillRadius: variants.pill.radius,
-        sphereRadius: variants.sphere.radius,
-        hullPoints: variants.convexHull.points.length,
-        compoundParts: variants.compoundBoxes.parts.length
+  const selectedPreset = useMemo(() => {
+    if (!presetFile) {
+      return null;
+    }
+    return presetFile.presets.find((preset) => preset.name === selectedPresetName) ?? null;
+  }, [presetFile, selectedPresetName]);
+
+  const updatePresetFile = useCallback(
+    async (next: ForgeVhacdPresetFile) => {
+      const saved = await writeVhacdPresetFile(next);
+      setPresetFile(saved);
+      return saved;
+    },
+    []
+  );
+
+  const onSelectPreset = useCallback(
+    (nextName: string) => {
+      if (!presetFile) {
+        return;
       }
-    : null;
+      const nextPreset = presetFile.presets.find((preset) => preset.name === nextName);
+      if (!nextPreset) {
+        return;
+      }
+      setSelectedPresetName(nextPreset.name);
+      setOptions(normalizeVhacdOptions(nextPreset.options));
+      setDirty(true);
+      setStatus(`Preset "${nextPreset.name}" loaded. Click Recompute to apply.`);
+    },
+    [presetFile]
+  );
+
+  const onSaveAsPreset = useCallback(async () => {
+    if (!presetFile) {
+      return;
+    }
+    const nameRaw = window.prompt("Preset name");
+    if (!nameRaw) {
+      return;
+    }
+    const name = nameRaw.trim();
+    if (name.length <= 0) {
+      return;
+    }
+    const duplicate = presetFile.presets.some(
+      (preset) => preset.name.toLowerCase() === name.toLowerCase()
+    );
+    if (duplicate) {
+      setError(`Preset "${name}" already exists.`);
+      return;
+    }
+
+    const saved = await updatePresetFile({
+      ...presetFile,
+      presets: [...presetFile.presets, { name, options: normalizeVhacdOptions(options) }]
+    });
+    setSelectedPresetName(name);
+    setError(null);
+    setStatus(`Preset "${name}" saved.`);
+    setPresetFile(saved);
+  }, [options, presetFile, updatePresetFile]);
+
+  const onUpdatePreset = useCallback(async () => {
+    if (!presetFile || !selectedPreset) {
+      return;
+    }
+    const next = {
+      ...presetFile,
+      presets: presetFile.presets.map((preset) =>
+        preset.name === selectedPreset.name
+          ? { ...preset, options: normalizeVhacdOptions(options) }
+          : preset
+      )
+    };
+    await updatePresetFile(next);
+    setError(null);
+    setStatus(`Preset "${selectedPreset.name}" updated.`);
+  }, [options, presetFile, selectedPreset, updatePresetFile]);
+
+  const onDeletePreset = useCallback(async () => {
+    if (!presetFile || !selectedPreset) {
+      return;
+    }
+    if (presetFile.presets.length <= 1) {
+      setError("At least one preset is required.");
+      return;
+    }
+    const confirmed = window.confirm(`Delete preset "${selectedPreset.name}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    const nextPresets = presetFile.presets.filter(
+      (preset) => preset.name !== selectedPreset.name
+    );
+    const nextDefault =
+      presetFile.defaultPreset === selectedPreset.name
+        ? nextPresets[0]?.name ?? ""
+        : presetFile.defaultPreset;
+    const next = {
+      ...presetFile,
+      defaultPreset: nextDefault,
+      presets: nextPresets
+    };
+    const saved = await updatePresetFile(next);
+    const fallback = saved.presets[0];
+    if (fallback) {
+      setSelectedPresetName(fallback.name);
+      setOptions(normalizeVhacdOptions(fallback.options));
+    }
+    setError(null);
+    setDirty(true);
+    setStatus(`Preset "${selectedPreset.name}" deleted.`);
+  }, [presetFile, selectedPreset, updatePresetFile]);
+
+  const onSetDefaultPreset = useCallback(async () => {
+    if (!presetFile || !selectedPreset) {
+      return;
+    }
+    await updatePresetFile({
+      ...presetFile,
+      defaultPreset: selectedPreset.name
+    });
+    setStatus(`Preset "${selectedPreset.name}" set as default.`);
+  }, [presetFile, selectedPreset, updatePresetFile]);
+
+  const onNumberFieldChange = useCallback(
+    (key: keyof VhacdOptions, value: string) => {
+      const field = NUMBER_FIELDS.find((entry) => entry.key === key);
+      if (!field) {
+        return;
+      }
+      const nextValue = clamp(
+        readNumberInput(value, options[key] as number),
+        field.min,
+        field.max
+      );
+      const normalized = normalizeVhacdOptions({
+        ...options,
+        [key]: nextValue
+      });
+      setOptions(normalized);
+      setDirty(true);
+    },
+    [options]
+  );
+
+  const onRecompute = useCallback(async () => {
+    const currentViewport = viewportRef.current;
+    if (!currentViewport) {
+      setError("No viewport available.");
+      return;
+    }
+    const model = currentViewport.getModel();
+    if (!model) {
+      setError("No model loaded.");
+      return;
+    }
+
+    const token = ++requestTokenRef.current;
+    runnerRef.current.restart("VHACD run superseded");
+    const normalizedOptions = normalizeVhacdOptions(options);
+    const presetName = selectedPresetName || "Custom";
+
+    setBuilding(true);
+    setError(null);
+    setProgressText("starting...");
+    setStatus(`Running VHACD preset "${presetName}"...`);
+
+    try {
+      const built = await buildVhacdColliderForObject({
+        sourceModel: model,
+        presetName,
+        inputOptions: normalizedOptions,
+        runner: runnerRef.current,
+        onProgress: (progress: VhacdProgress) => {
+          if (token !== requestTokenRef.current) {
+            return;
+          }
+          setProgressText(formatProgress(progress));
+        }
+      });
+      if (token !== requestTokenRef.current) {
+        return;
+      }
+
+      onColliderChangeRef.current(built.collider);
+      onGenerationChangeRef.current(built.metadata);
+      currentViewport.setColliderPreviewObject(createColliderHelper(built.collider));
+      setDirty(false);
+      setStatus(
+        `VHACD done: ${built.metadata.hullCount} hulls, ${built.metadata.stats.voxelCount} voxels.`
+      );
+      setProgressText("done");
+    } catch (runError) {
+      if (token !== requestTokenRef.current) {
+        return;
+      }
+      setError(runError instanceof Error ? runError.message : "VHACD recompute failed.");
+      setStatus("VHACD failed.");
+    } finally {
+      if (token === requestTokenRef.current) {
+        setBuilding(false);
+      }
+    }
+  }, [options, selectedPresetName]);
 
   return (
     <div className="forge-panel" data-testid="forge-collider">
-      {!hideTitle && <h3>Collider Variants</h3>}
+      {!hideTitle && <h3>Collider (VHACD)</h3>}
 
       <div className="forge-field">
-        <label>Collider Type</label>
+        <label>Preset</label>
         <select
-          value={colliderMode}
-          onChange={(event) =>
-            setColliderMode(event.target.value as EditableColliderMode)
-          }
-          data-testid="collider-type"
+          value={selectedPresetName}
+          onChange={(event) => onSelectPreset(event.target.value)}
+          data-testid="vhacd-preset-select"
         >
-          <option value="box">Box</option>
-          <option value="pill">Pill</option>
-          <option value="sphere">Sphere</option>
-          <option value="cylinder">Cylinder</option>
-          <option value="convex-hull">Convex Hull</option>
-          <option value="compound-boxes">Compound Boxes</option>
+          {(presetFile?.presets ?? []).map((preset) => (
+            <option key={preset.name} value={preset.name}>
+              {preset.name}
+            </option>
+          ))}
         </select>
       </div>
 
-      <div className="forge-field">
-        <label>Auto Collider Strategy</label>
-        <select
-          value={autoStrategy}
-          onChange={(event) => {
-            setAutoStrategy(event.target.value as AutoColliderStrategy);
-          }}
-          data-testid="auto-collider-strategy"
-        >
-          <option value="concave-furniture">Concave Furniture</option>
-          <option value="boxy-furniture">Boxy Furniture</option>
-        </select>
-      </div>
-
-      <div className="forge-field">
-        <label>Collider Scale: {colliderScale.toFixed(2)}x</label>
-        <input
-          type="range"
-          min={0.5}
-          max={2}
-          step={0.01}
-          value={colliderScale}
-          onChange={(event) => {
-            const next = clamp(Number(event.target.value), 0.5, 2);
-            setColliderScale(next);
-          }}
-          data-testid="collider-scale"
-        />
-        <input
-          type="number"
-          min={0.5}
-          max={2}
-          step={0.01}
-          value={colliderScale.toFixed(2)}
-          onChange={(event) => {
-            const parsed = Number(event.target.value);
-            if (!Number.isFinite(parsed)) {
-              return;
-            }
-            setColliderScale(clamp(parsed, 0.5, 2));
-          }}
-        />
-      </div>
-
-      {building && (
-        <div className="forge-muted" style={{ marginBottom: "0.5rem" }}>
-          Building collider variants...
-        </div>
-      )}
-
-      {summary && (
-        <div className="forge-info">
-          <div>Box: {summary.boxSize}</div>
-          <div>
-            Pill Radius: {summary.pillRadius.toFixed(3)}m | Sphere Radius: {summary.sphereRadius.toFixed(3)}m
-          </div>
-          <div>Convex Hull Points: {summary.hullPoints}</div>
-          <div>Compound Parts: {summary.compoundParts}</div>
-        </div>
-      )}
-
-      {autoSummary && (
-        <div className="forge-info">
-          <div>Strategy: {autoSummary.strategy}</div>
-          <div>Auto Surface Miss Ratio: {(autoSummary.outsideRatio * 100).toFixed(1)}%</div>
-        </div>
-      )}
-
-      {autoRecommendation && autoRecommendation !== colliderMode && (
-        <button
-          className="forge-btn"
-          onClick={() =>
-            setColliderMode(autoRecommendation as EditableColliderMode)
-          }
-        >
-          Apply Auto Collider ({autoRecommendation})
+      <div className="forge-btn-group">
+        <button className="forge-btn" onClick={() => void onSaveAsPreset()}>
+          Save As Preset
         </button>
-      )}
+        <button className="forge-btn" onClick={() => void onUpdatePreset()}>
+          Update Preset
+        </button>
+        <button className="forge-btn" onClick={() => void onDeletePreset()}>
+          Delete Preset
+        </button>
+        <button className="forge-btn" onClick={() => void onSetDefaultPreset()}>
+          Set Default
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: "0.5rem"
+        }}
+      >
+        {NUMBER_FIELDS.map((field) => (
+          <div className="forge-field" key={field.key}>
+            <label>{field.label}</label>
+            <input
+              type="number"
+              min={field.min}
+              max={field.max}
+              step={field.step}
+              value={(options[field.key] as number).toString()}
+              onChange={(event) => onNumberFieldChange(field.key, event.target.value)}
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="forge-field">
+        <label>
+          <input
+            type="checkbox"
+            checked={options.projectHullVertices}
+            onChange={(event) => {
+              setOptions(
+                normalizeVhacdOptions({
+                  ...options,
+                  projectHullVertices: event.target.checked
+                })
+              );
+              setDirty(true);
+            }}
+          />{" "}
+          Project Hull Vertices
+        </label>
+      </div>
+      <div className="forge-field">
+        <label>
+          <input
+            type="checkbox"
+            checked={options.precomputeBothHullVariants}
+            onChange={(event) => {
+              setOptions(
+                normalizeVhacdOptions({
+                  ...options,
+                  precomputeBothHullVariants: event.target.checked
+                })
+              );
+              setDirty(true);
+            }}
+          />{" "}
+          Precompute Both Hull Variants
+        </label>
+      </div>
+
+      <button
+        className="forge-btn forge-btn-primary"
+        onClick={() => void onRecompute()}
+        disabled={building}
+        data-testid="vhacd-recompute-btn"
+      >
+        {building ? "Running VHACD..." : "Recompute Collider"}
+      </button>
 
       <div className="forge-info">
-        Sphere and pill are auto-fit to fully contain the mesh bounds by default.
+        <div>Status: {status}</div>
+        <div>Progress: {progressText}</div>
+        {dirty && <div>Model/settings changed. Collider is stale until recompute.</div>}
       </div>
 
-      {!variants && !building && !error && (
-        <div className="forge-muted">No model loaded.</div>
+      {currentColliderGeneration && (
+        <div className="forge-info">
+          <div>Preset Used: {currentColliderGeneration.presetName}</div>
+          <div>Hulls: {currentColliderGeneration.hullCount}</div>
+          <div>Voxels: {currentColliderGeneration.stats.voxelCount}</div>
+          <div>Splits: {currentColliderGeneration.stats.splitCount}</div>
+          <div>Merges: {currentColliderGeneration.stats.mergeCount}</div>
+          <div>Signature: {currentColliderGeneration.signature}</div>
+        </div>
       )}
 
       {error && <div className="forge-error">{error}</div>}
     </div>
   );
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

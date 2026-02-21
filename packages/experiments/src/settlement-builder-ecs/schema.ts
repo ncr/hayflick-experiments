@@ -34,7 +34,8 @@ export type SettlementPropCollider2D = {
 export type SettlementPropColliderMode =
   | "box"
   | "convex-hull"
-  | "compound-boxes";
+  | "compound-boxes"
+  | "compound-convex-hulls";
 
 export type SettlementPropPhysicsMobility = "fixed" | "dynamic";
 
@@ -425,7 +426,8 @@ export function serializePropColliderModes(
         sourcePropId.length > 0 &&
         (mode === "box" ||
           mode === "convex-hull" ||
-          mode === "compound-boxes")
+          mode === "compound-boxes" ||
+          mode === "compound-convex-hulls")
     )
     .map(([sourcePropId, mode]) => ({ sourcePropId, mode }));
 }
@@ -455,7 +457,8 @@ export function parsePropColliderModes(
           ? "convex-hull"
           : modeRaw === "box" ||
               modeRaw === "convex-hull" ||
-              modeRaw === "compound-boxes"
+              modeRaw === "compound-boxes" ||
+              modeRaw === "compound-convex-hulls"
             ? modeRaw
             : null;
     if (

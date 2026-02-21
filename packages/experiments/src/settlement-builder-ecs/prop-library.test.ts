@@ -55,6 +55,25 @@ describe("prop library", () => {
                 }
               ]
             },
+            collider: {
+              type: "compound-convex-hulls",
+              source: "vhacd-unity-v1",
+              params: {
+                parts: [
+                  {
+                    kind: "convex-hull",
+                    position: [0, 0.28, 0],
+                    points: [
+                      [-0.14, -0.2, -0.14],
+                      [0.14, -0.2, -0.14],
+                      [0.14, -0.2, 0.14],
+                      [-0.14, -0.2, 0.14],
+                      [0, 0.2, 0]
+                    ]
+                  }
+                ]
+              }
+            },
             colliderVariants: {
               box: {
                 type: "box",
@@ -81,6 +100,23 @@ describe("prop library", () => {
                     kind: "box",
                     position: [0, 0.2, 0],
                     halfExtents: [0.15, 0.2, 0.15]
+                  }
+                ]
+              },
+              compoundConvexHulls: {
+                type: "compound-convex-hulls",
+                source: "vhacd-unity-v1",
+                parts: [
+                  {
+                    kind: "convex-hull",
+                    position: [0, 0.28, 0],
+                    points: [
+                      [-0.14, -0.2, -0.14],
+                      [0.14, -0.2, -0.14],
+                      [0.14, -0.2, 0.14],
+                      [-0.14, -0.2, 0.14],
+                      [0, 0.2, 0]
+                    ]
                   }
                 ]
               }
@@ -112,9 +148,12 @@ describe("prop library", () => {
     expect(defs[0]?.physicsHint?.activationDelayMs).toBe(250);
     expect(defs[0]?.compoundCollider?.type).toBe("compound-boxes");
     expect(defs[0]?.compoundCollider?.parts).toHaveLength(1);
+    expect(defs[0]?.compoundConvexHulls?.type).toBe("compound-convex-hulls");
+    expect(defs[0]?.compoundConvexHulls?.parts).toHaveLength(1);
     expect(defs[0]?.colliderVariants?.box?.type).toBe("box");
     expect(defs[0]?.colliderVariants?.convexHull?.type).toBe("convex-hull");
     expect(defs[0]?.colliderVariants?.compoundBoxes?.parts).toHaveLength(1);
+    expect(defs[0]?.colliderVariants?.compoundConvexHulls?.parts).toHaveLength(1);
     expect(defs[1]?.description).toBe("Mainframe");
     expect(defs[1]?.physicsHint).toBeUndefined();
     expect(defs[1]?.compoundCollider).toBeUndefined();

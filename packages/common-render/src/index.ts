@@ -39,6 +39,7 @@ export {
 export {
   PixelPerfectIsoView,
   type PixelPerfectIsoViewConfig,
+  type PixelPerfectIsoViewPose,
   type PixelPerfectIsoViewState,
   type PixelSnapMode
 } from "./pixel-perfect-iso-view";

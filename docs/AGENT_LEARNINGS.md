@@ -2897,3 +2897,29 @@ Preventive checklist:
 - Keep a configurable projection distance cap and only snap vertices when nearest surface distance is below that threshold.
 - Expose the cap in UI with clear semantics (`0` disables cap).
 - Pair projection with a sliver penalty in split scoring to reduce narrow wedge fragments before projection.
+
+## 2026-02-21 - Float32 collider vertex tests failed on exact equality
+Root cause:
+- New compound-convex collider tests compared `Float32Array` values using strict equality against decimal literals.
+- Float32 representation introduces tiny rounding differences (e.g. `0.15` -> `0.15000000596`), causing deterministic but noisy assertion failures.
+
+Detection signal:
+- `vitest` failure in `prop-collider-resolver.test.ts` showed only tiny numeric diffs between expected and actual flattened vertices.
+
+Preventive checklist:
+- For collider vertex arrays (especially `Float32Array`), assert per-element tolerance with `toBeCloseTo` instead of strict array equality.
+- Keep exact-equality checks for integer/discrete metadata only.
+
+## 2026-02-21 - Offline collider precompute picked empty processed models
+Root cause:
+- Precompute selected `processed/model.glb` whenever it existed, without validating that it contained mesh triangles.
+- Some props had a placeholder/empty processed GLB while the usable mesh existed in `raw/tripo-output.glb`.
+
+Detection signal:
+- User reported a visible mesh, while precompute produced fallback one-box colliders and `sourceTriangleCount: 0`.
+- Direct file inspection showed `processed/model.glb` with `0` meshes and raw GLB with expected triangle count.
+
+Preventive checklist:
+- When choosing source geometry for offline processing, validate triangle payload, not file existence.
+- Probe both processed and raw model paths and pick the first with valid triangle data.
+- Log when raw fallback is used because processed mesh content is empty.

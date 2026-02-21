@@ -1,6 +1,14 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Viewport, type ViewportHandle } from "./forge/Viewport";
-import { ViewportPixel, type ViewportPixelHandle } from "./forge/ViewportPixel";
+import {
+  Viewport,
+  type Viewport3dViewState,
+  type ViewportHandle
+} from "./forge/Viewport";
+import {
+  ViewportPixel,
+  type PixelViewportViewState,
+  type ViewportPixelHandle
+} from "./forge/ViewportPixel";
 import { StyleGuidePanel, type StyleGuide } from "./forge/StyleGuidePanel";
 import { BatchPromptPanel } from "./forge/BatchPromptPanel";
 import { BatchImageGallery } from "./forge/BatchImageGallery";
@@ -17,6 +25,24 @@ import {
   normalizeForgePhysicsSettings,
   parseForgePhysicsSettingsFromMeta
 } from "./forge/processing/physics";
+import type { ForgeColliderGenerationMetadata } from "./forge/processing/collider-vhacd";
+
+const PIXEL_BASE_YAW = THREE.MathUtils.degToRad(45);
+const QUARTER_TURN_RADIANS = Math.PI * 0.5;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeTurns(value: number): number {
+  return Math.round(value);
+}
+
+function wrapQuarterTurns(value: number): number {
+  const rounded = normalizeTurns(value);
+  const wrapped = rounded % 4;
+  return wrapped < 0 ? wrapped + 4 : wrapped;
+}
 
 export function Forge() {
   const viewportRef = useRef<ViewportHandle>(null);
@@ -44,6 +70,17 @@ export function Forge() {
   // Original model for simplify panel (per-selection)
   const [originalModel, setOriginalModel] = useState<THREE.Group | null>(null);
 
+  const [meshViewportVisibility, setMeshViewportVisibility] = useState({
+    mesh: true,
+    collider: true,
+    grid: true,
+    axes: true
+  });
+
+  const meshToPixelSyncLockRef = useRef(false);
+  const pixelToMeshSyncLockRef = useRef(false);
+  const zoomSyncScaleRef = useRef<number | null>(null);
+
   // The active prop shown in the right rail: loaded prop takes priority over queue selection
   const activeProp = loadedProp ?? (selectedPropId ? props.get(selectedPropId) ?? null : null);
 
@@ -66,6 +103,120 @@ export function Forge() {
     []
   );
 
+  const syncPixelFromMesh = useCallback((meshState: Viewport3dViewState) => {
+    const pixelViewport = pixelViewportRef.current;
+    if (!pixelViewport) {
+      return;
+    }
+    const currentPixelState = pixelViewport.getViewState();
+    if (!currentPixelState) {
+      return;
+    }
+
+    if (zoomSyncScaleRef.current === null) {
+      zoomSyncScaleRef.current = meshState.distance * Math.max(1, currentPixelState.zoom);
+    }
+    const zoomScale = zoomSyncScaleRef.current;
+    const desiredZoom = Math.round(
+      clamp(
+        zoomScale / Math.max(meshState.distance, 1e-3),
+        1,
+        6
+      )
+    );
+    const desiredYawTurns = wrapQuarterTurns(
+      (meshState.yaw - PIXEL_BASE_YAW) / QUARTER_TURN_RADIANS
+    );
+    const desiredState: PixelViewportViewState = {
+      target: [meshState.target[0], 0, meshState.target[2]],
+      yawTurns: desiredYawTurns,
+      zoom: desiredZoom
+    };
+
+    const isSame =
+      Math.abs(currentPixelState.target[0] - desiredState.target[0]) <= 1e-4 &&
+      Math.abs(currentPixelState.target[2] - desiredState.target[2]) <= 1e-4 &&
+      currentPixelState.yawTurns === desiredState.yawTurns &&
+      Math.abs(currentPixelState.zoom - desiredState.zoom) <= 1e-4;
+    if (isSame) {
+      return;
+    }
+
+    meshToPixelSyncLockRef.current = true;
+    pixelViewport.setViewState(desiredState);
+  }, []);
+
+  const syncMeshFromPixel = useCallback((pixelState: PixelViewportViewState) => {
+    const meshViewport = viewportRef.current;
+    if (!meshViewport) {
+      return;
+    }
+    const currentMeshState = meshViewport.getViewState();
+    if (!currentMeshState) {
+      return;
+    }
+
+    if (zoomSyncScaleRef.current === null) {
+      zoomSyncScaleRef.current =
+        currentMeshState.distance * Math.max(1, pixelState.zoom);
+    }
+    const zoomScale = zoomSyncScaleRef.current;
+    const desiredDistance = clamp(
+      zoomScale / Math.max(pixelState.zoom, 1),
+      0.1,
+      200
+    );
+    const desiredYaw =
+      PIXEL_BASE_YAW + wrapQuarterTurns(pixelState.yawTurns) * QUARTER_TURN_RADIANS;
+
+    const desiredState: Viewport3dViewState = {
+      target: [
+        pixelState.target[0],
+        currentMeshState.target[1],
+        pixelState.target[2]
+      ],
+      distance: desiredDistance,
+      yaw: desiredYaw,
+      pitch: currentMeshState.pitch
+    };
+
+    const isSame =
+      Math.abs(currentMeshState.target[0] - desiredState.target[0]) <= 1e-4 &&
+      Math.abs(currentMeshState.target[1] - desiredState.target[1]) <= 1e-4 &&
+      Math.abs(currentMeshState.target[2] - desiredState.target[2]) <= 1e-4 &&
+      Math.abs(currentMeshState.distance - desiredState.distance) <= 1e-3 &&
+      Math.abs(currentMeshState.yaw - desiredState.yaw) <= 1e-4 &&
+      Math.abs(currentMeshState.pitch - desiredState.pitch) <= 1e-4;
+    if (isSame) {
+      return;
+    }
+
+    pixelToMeshSyncLockRef.current = true;
+    meshViewport.setViewState(desiredState);
+  }, []);
+
+  const handleMeshViewChange = useCallback(
+    (meshState: Viewport3dViewState) => {
+      if (pixelToMeshSyncLockRef.current) {
+        pixelToMeshSyncLockRef.current = false;
+        return;
+      }
+      syncPixelFromMesh(meshState);
+    },
+    [syncPixelFromMesh]
+  );
+
+  const handlePixelViewChange = useCallback(
+    (pixelState: PixelViewportViewState) => {
+      if (meshToPixelSyncLockRef.current) {
+        meshToPixelSyncLockRef.current = false;
+        return;
+      }
+      syncMeshFromPixel(pixelState);
+    },
+    [syncMeshFromPixel]
+  );
+
   const handleAddProps = useCallback((items: PropItem[]) => {
     setProps((prev) => {
       const next = new Map(prev);
@@ -84,6 +235,7 @@ export function Forge() {
         return next;
       });
       if (selectedPropId === id) {
+        zoomSyncScaleRef.current = null;
         setSelectedPropId(null);
         setOriginalModel(null);
         viewportRef.current?.setModel(null);
@@ -105,6 +257,7 @@ export function Forge() {
 
       if (prop.rawGlb) {
         const group = await vp.loadGlb(prop.rawGlb);
+        zoomSyncScaleRef.current = null;
 
         // Normalize transforms and auto-pivot to bottom-center
         const pivotOff = normalizeAndPivot(group);
@@ -125,6 +278,7 @@ export function Forge() {
           vp.setCollider(prop.collider);
         }
       } else {
+        zoomSyncScaleRef.current = null;
         vp.setModel(null);
         setOriginalModel(null);
       }
@@ -149,7 +303,8 @@ export function Forge() {
           targetDimension: { method: ScaleMode; value: number };
           textureResolution: number;
         };
-        collider: ColliderParams;
+        collider?: ColliderParams;
+        colliderGeneration?: ForgeColliderGenerationMetadata;
         physics?: Record<string, unknown>;
       }>(`props/${propId}/meta.json`);
 
@@ -190,7 +345,8 @@ export function Forge() {
         targetDimension: meta.processing.targetDimension.value,
         pivot: meta.processing.pivot,
         pivotOffset: meta.processing.pivotOffset,
-        collider: meta.collider,
+        collider: meta.collider ?? null,
+        colliderGeneration: meta.colliderGeneration ?? null,
         physics: parseForgePhysicsSettingsFromMeta(meta.physics, {
           width: meta.processing.bbox.width,
           height: meta.processing.bbox.height,
@@ -218,6 +374,7 @@ export function Forge() {
       const vp = viewportRef.current;
       if (vp) {
         const group = await vp.loadGlb(glb);
+        zoomSyncScaleRef.current = null;
 
         // Normalize transforms and auto-pivot to bottom-center
         const pivotOff = normalizeAndPivot(group);
@@ -260,13 +417,27 @@ export function Forge() {
   // Sync model from normal viewport to pixel viewport unconditionally
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
-      const model = viewportRef.current?.getModel();
-      if (model) {
-        pixelViewportRef.current?.setModel(model);
+      const model = viewportRef.current?.getModel() ?? null;
+      pixelViewportRef.current?.setModel(model);
+
+      const meshState = viewportRef.current?.getViewState();
+      if (meshState) {
+        syncPixelFromMesh(meshState);
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [modelVersion]);
+  }, [modelVersion, syncPixelFromMesh]);
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) {
+      return;
+    }
+    vp.setModelVisible(meshViewportVisibility.mesh);
+    vp.setColliderVisible(meshViewportVisibility.collider);
+    vp.setGridVisible(meshViewportVisibility.grid);
+    vp.setAxesVisible(meshViewportVisibility.axes);
+  }, [meshViewportVisibility, modelVersion]);
 
   return (
     <div className="forge-shell" data-testid="forge-page">
@@ -331,15 +502,73 @@ export function Forge() {
       <div className="forge-center">
         <div className="forge-viewports">
           <div className="forge-viewport-pane">
-            <span className="forge-viewport-label">3D View</span>
+            <span className="forge-viewport-label">Mesh View</span>
+            <div className="forge-viewport-toolbar">
+              <label className="forge-viewport-toggle">
+                <input
+                  type="checkbox"
+                  checked={meshViewportVisibility.mesh}
+                  onChange={(event) =>
+                    setMeshViewportVisibility((prev) => ({
+                      ...prev,
+                      mesh: event.target.checked
+                    }))
+                  }
+                />
+                Mesh
+              </label>
+              <label className="forge-viewport-toggle">
+                <input
+                  type="checkbox"
+                  checked={meshViewportVisibility.collider}
+                  onChange={(event) =>
+                    setMeshViewportVisibility((prev) => ({
+                      ...prev,
+                      collider: event.target.checked
+                    }))
+                  }
+                />
+                Collider
+              </label>
+              <label className="forge-viewport-toggle">
+                <input
+                  type="checkbox"
+                  checked={meshViewportVisibility.grid}
+                  onChange={(event) =>
+                    setMeshViewportVisibility((prev) => ({
+                      ...prev,
+                      grid: event.target.checked
+                    }))
+                  }
+                />
+                Grid
+              </label>
+              <label className="forge-viewport-toggle">
+                <input
+                  type="checkbox"
+                  checked={meshViewportVisibility.axes}
+                  onChange={(event) =>
+                    setMeshViewportVisibility((prev) => ({
+                      ...prev,
+                      axes: event.target.checked
+                    }))
+                  }
+                />
+                Axes
+              </label>
+            </div>
             <Viewport
               ref={viewportRef}
               onModelChange={() => setModelVersion((v) => v + 1)}
+              onViewChange={handleMeshViewChange}
             />
           </div>
           <div className="forge-viewport-pane">
             <span className="forge-viewport-label">Pixel View</span>
-            <ViewportPixel ref={pixelViewportRef} />
+            <ViewportPixel
+              ref={pixelViewportRef}
+              onViewChange={handlePixelViewChange}
+            />
           </div>
         </div>
       </div>

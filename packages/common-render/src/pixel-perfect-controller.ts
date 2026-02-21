@@ -310,6 +310,15 @@ export class PixelPerfectController {
     return this.yawIndex;
   }
 
+  setYawIndex(next: number): boolean {
+    const rounded = Math.round(next);
+    if (rounded === this.yawIndex) {
+      return false;
+    }
+    this.yawIndex = rounded;
+    return true;
+  }
+
   getYawIndex(): number {
     return this.yawIndex;
   }

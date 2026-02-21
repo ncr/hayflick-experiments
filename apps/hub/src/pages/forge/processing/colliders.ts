@@ -9,7 +9,8 @@ export type ColliderType =
   | "sphere"
   | "cylinder"
   | "convex-hull"
-  | "compound-boxes";
+  | "compound-boxes"
+  | "compound-convex-hulls";
 
 export type CompoundBoxPart = {
   position: [number, number, number];
@@ -161,6 +162,12 @@ export function autoFitCollider(
         position: [0, 0, 0],
         params: { parts: [] }
       };
+    case "compound-convex-hulls":
+      return {
+        type: "compound-convex-hulls",
+        position: [0, 0, 0],
+        params: { parts: [] }
+      };
   }
 }
 
@@ -231,6 +238,67 @@ function buildCompoundBoxesHelper(collider: ColliderParams): THREE.Object3D {
   return group;
 }
 
+function buildCompoundConvexHullsHelper(collider: ColliderParams): THREE.Object3D {
+  const rawParts = collider.params.parts;
+  const parts = Array.isArray(rawParts) ? rawParts : [];
+  const group = new THREE.Group();
+  group.name = "collider-helper";
+
+  const colorForIndex = (index: number): THREE.Color => {
+    const hue = ((index * 137.508) % 360) / 360;
+    return new THREE.Color().setHSL(hue, 0.68, 0.56);
+  };
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    const partRecord = typeof part === "object" && part !== null ? (part as Record<string, unknown>) : null;
+    if (!partRecord) {
+      continue;
+    }
+    const position = asTuple3(partRecord.position);
+    const pointsRaw = Array.isArray(partRecord.points) ? partRecord.points : [];
+    if (!position || pointsRaw.length < 4) {
+      continue;
+    }
+
+    const points = pointsRaw
+      .map((value) => asTuple3(value))
+      .filter((value): value is [number, number, number] => value !== null)
+      .map(([x, y, z]) => new THREE.Vector3(x, y, z));
+
+    if (points.length < 4) {
+      continue;
+    }
+
+    const geometry = new ConvexGeometry(points);
+    const material = new THREE.MeshStandardMaterial({
+      color: colorForIndex(index),
+      roughness: 0.58,
+      metalness: 0.06,
+      transparent: true,
+      opacity: 0.48,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+
+    const edgeGeometry = new THREE.EdgesGeometry(geometry, 25);
+    const edgeMaterial = new THREE.LineBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.65
+    });
+    const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+
+    const partGroup = new THREE.Group();
+    partGroup.position.set(position[0], position[1], position[2]);
+    partGroup.add(mesh, edges);
+    group.add(partGroup);
+  }
+
+  return group;
+}
+
 export function createColliderHelper(collider: ColliderParams): THREE.Object3D {
   const material = new THREE.MeshBasicMaterial({
     color: 0x44aaff,
@@ -273,6 +341,8 @@ export function createColliderHelper(collider: ColliderParams): THREE.Object3D {
       return buildConvexHullHelper(collider);
     case "compound-boxes":
       return buildCompoundBoxesHelper(collider);
+    case "compound-convex-hulls":
+      return buildCompoundConvexHullsHelper(collider);
   }
 
   const mesh = new THREE.Mesh(

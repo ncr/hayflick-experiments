@@ -19,6 +19,17 @@ function parsePlayerFromStats(text: string | null): { x: number; y: number } | n
 }
 
 test.describe("promoted editor/game browser smoke", () => {
+  test("vhacd-unity-lab: promoted collider package route loads and shows progress UI", async ({
+    page
+  }) => {
+    await page.goto("/#/exp/vhacd-unity-lab");
+
+    await expect(page.getByText("VHACD (Unity-style) Grid Lab")).toBeVisible();
+    await expect(page.locator('[data-id="run-all"]')).toBeVisible();
+    await expect(page.locator('[data-id="progress-label"]')).toBeVisible();
+    await expect(page.locator('[data-id="status"]')).toContainText(/Loaded|Running|Ready/);
+  });
+
   test("pixel-perfect-camera-zoom: Q then E preserves center world point", async ({
     page
   }) => {

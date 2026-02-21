@@ -1,5 +1,6 @@
 import type {
   SavedPropColliderVariants,
+  SavedPropCompoundConvexHulls,
   SavedPropCompoundCollider,
   SavedPropConvexHullCollider,
   SavedPropDefinition
@@ -23,7 +24,19 @@ export type RapierCompoundPart = {
   halfExtents: Vector3;
 };
 
+export type RapierCompoundConvexHullPart = {
+  translation: Vector3;
+  vertices: Float32Array;
+};
+
 export type PropColliderResolution =
+  | {
+      mode: "compound-convex-hulls";
+      shape: "compound-convex-hulls";
+      usesComplexCollider: true;
+      localRootOffset: Vector3;
+      parts: RapierCompoundConvexHullPart[];
+    }
   | {
       mode: "compound-boxes";
       shape: "compound-boxes";
@@ -64,6 +77,16 @@ export function getPropCompoundCollider(
   return definition?.compoundCollider ?? null;
 }
 
+export function getPropCompoundConvexHullCollider(
+  definition: SavedPropDefinition | null | undefined
+): SavedPropCompoundConvexHulls | null {
+  const variants = getPropColliderVariants(definition);
+  if (variants?.compoundConvexHulls && variants.compoundConvexHulls.parts.length > 0) {
+    return variants.compoundConvexHulls;
+  }
+  return definition?.compoundConvexHulls ?? null;
+}
+
 export function getPropConvexHullCollider(
   definition: SavedPropDefinition | null | undefined
 ): SavedPropConvexHullCollider | null {
@@ -84,6 +107,9 @@ export function getAvailablePropColliderModes(
   if (getPropCompoundCollider(definition)) {
     modes.push("compound-boxes");
   }
+  if (getPropCompoundConvexHullCollider(definition)) {
+    modes.push("compound-convex-hulls");
+  }
   return modes;
 }
 
@@ -98,11 +124,13 @@ export function resolveEffectivePropColliderMode(
   definition: SavedPropDefinition | null | undefined,
   explicitMode: SettlementPropColliderMode | null | undefined
 ): SettlementPropColliderMode {
-  const fallback = getPropCompoundCollider(definition)
-    ? "compound-boxes"
-    : getPropConvexHullCollider(definition)
-      ? "convex-hull"
-      : "box";
+  const fallback = getPropCompoundConvexHullCollider(definition)
+    ? "compound-convex-hulls"
+    : getPropCompoundCollider(definition)
+      ? "compound-boxes"
+      : getPropConvexHullCollider(definition)
+        ? "convex-hull"
+        : "box";
   if (!explicitMode) {
     return fallback;
   }
@@ -128,6 +156,40 @@ function toRapierCompoundParts(
   }));
 }
 
+function flattenCompoundConvexPartVertices(
+  points: Array<[number, number, number]>
+): Float32Array {
+  const flat = new Float32Array(points.length * 3);
+  let cursor = 0;
+  for (const point of points) {
+    flat[cursor] = point[0];
+    flat[cursor + 1] = point[1];
+    flat[cursor + 2] = point[2];
+    cursor += 3;
+  }
+  return flat;
+}
+
+function toRapierCompoundConvexHullParts(
+  compound: SavedPropCompoundConvexHulls
+): RapierCompoundConvexHullPart[] {
+  const parts: RapierCompoundConvexHullPart[] = [];
+  for (const part of compound.parts) {
+    if (!part.points || part.points.length < 4) {
+      continue;
+    }
+    parts.push({
+      translation: {
+        x: part.position[0],
+        y: part.position[1],
+        z: part.position[2]
+      },
+      vertices: flattenCompoundConvexPartVertices(part.points)
+    });
+  }
+  return parts;
+}
+
 function flattenConvexHullVertices(hull: SavedPropConvexHullCollider): Float32Array {
   const flat = new Float32Array(hull.points.length * 3);
   let cursor = 0;
@@ -149,6 +211,22 @@ export function resolvePropColliderResolution(options: {
 }): PropColliderResolution {
   const mode = resolveEffectivePropColliderMode(options.definition, options.explicitMode);
   const dimensions = options.dimensions;
+
+  if (mode === "compound-convex-hulls") {
+    const compound = getPropCompoundConvexHullCollider(options.definition);
+    if (compound && compound.parts.length > 0) {
+      const parts = toRapierCompoundConvexHullParts(compound);
+      if (parts.length > 0) {
+        return {
+          mode,
+          shape: "compound-convex-hulls",
+          usesComplexCollider: true,
+          localRootOffset: { x: 0, y: 0, z: 0 },
+          parts
+        };
+      }
+    }
+  }
 
   if (mode === "compound-boxes") {
     const compound = getPropCompoundCollider(options.definition);

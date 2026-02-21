@@ -187,9 +187,12 @@ test.describe("asset forge workflow", () => {
     const pivotBtn = page.locator('[data-testid="pivot-bottom-center"]');
     await pivotBtn.click();
 
-    // 12. Set collider
-    const colliderType = page.locator('[data-testid="collider-type"]');
-    await colliderType.selectOption("capsule");
+    // 12. Recompute VHACD collider
+    const recomputeColliderBtn = page.locator('[data-testid="vhacd-recompute-btn"]');
+    await recomputeColliderBtn.click();
+    await expect(recomputeColliderBtn).toHaveText("Recompute Collider", {
+      timeout: 30000,
+    });
 
     // 13. Save asset
     const saveBtn = page.locator('[data-testid="save-asset-btn"]');

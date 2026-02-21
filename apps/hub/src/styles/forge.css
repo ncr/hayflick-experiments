@@ -258,6 +258,35 @@
   pointer-events: none;
 }
 
+.forge-viewport-toolbar {
+  position: absolute;
+  top: 1.7rem;
+  left: 0.75rem;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 6px;
+  background: rgba(7, 12, 20, 0.56);
+  border: 1px solid rgba(148, 173, 190, 0.22);
+}
+
+.forge-viewport-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: rgba(226, 238, 249, 0.92);
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.forge-viewport-toggle input {
+  margin: 0;
+}
+
 /* Reference images */
 .forge-ref-images {
   display: flex;

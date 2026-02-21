@@ -26,6 +26,7 @@ export function createPropItem(description: string): PropItem {
     pivot: "bottom-center",
     pivotOffset: [0, 0, 0],
     collider: null,
+    colliderGeneration: null,
     physics: { ...DEFAULT_FORGE_PHYSICS_SETTINGS },
     textureResolution: 0,
     bbox: null,

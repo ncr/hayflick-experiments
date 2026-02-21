@@ -14,6 +14,7 @@ export type SavedPropDefinition = {
   physicsHint?: SavedPropPhysicsHint;
   colliderVariants?: SavedPropColliderVariants;
   compoundCollider?: SavedPropCompoundCollider;
+  compoundConvexHulls?: SavedPropCompoundConvexHulls;
 };
 
 export type SavedPropPhysicsHint = {
@@ -47,6 +48,18 @@ export type SavedPropCompoundCollider = {
   parts: SavedPropCompoundColliderPart[];
 };
 
+export type SavedPropCompoundConvexHullPart = {
+  kind: "convex-hull";
+  position: [number, number, number];
+  points: Array<[number, number, number]>;
+};
+
+export type SavedPropCompoundConvexHulls = {
+  type: "compound-convex-hulls";
+  source: string;
+  parts: SavedPropCompoundConvexHullPart[];
+};
+
 export type SavedPropBoxCollider = {
   type: "box";
   source: string;
@@ -65,6 +78,7 @@ export type SavedPropColliderVariants = {
   box?: SavedPropBoxCollider;
   convexHull?: SavedPropConvexHullCollider;
   compoundBoxes?: SavedPropCompoundCollider;
+  compoundConvexHulls?: SavedPropCompoundConvexHulls;
 };
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -288,6 +302,67 @@ function parseVector3Tuple(
   return [x, y, z];
 }
 
+function parseSavedCompoundConvexHulls(
+  raw: unknown
+): SavedPropCompoundConvexHulls | undefined {
+  const record = readRecord(raw);
+  if (!record || record.type !== "compound-convex-hulls") {
+    return undefined;
+  }
+
+  const params = readRecord(record.params);
+  const sourceRecord = params ?? record;
+  const partsRaw = sourceRecord.parts;
+  if (!Array.isArray(partsRaw)) {
+    return undefined;
+  }
+
+  const parts: SavedPropCompoundConvexHullPart[] = [];
+  for (const partRaw of partsRaw) {
+    const partRecord = readRecord(partRaw);
+    if (!partRecord) {
+      continue;
+    }
+    const position = parseVector3Tuple(partRecord.position);
+    const pointsRaw = Array.isArray(partRecord.points) ? partRecord.points : [];
+    if (!position || pointsRaw.length < 4) {
+      continue;
+    }
+
+    const points: Array<[number, number, number]> = [];
+    for (const pointRaw of pointsRaw) {
+      const point = parseVector3Tuple(pointRaw);
+      if (!point) {
+        continue;
+      }
+      points.push(point);
+    }
+
+    if (points.length < 4) {
+      continue;
+    }
+
+    parts.push({
+      kind: "convex-hull",
+      position,
+      points
+    });
+  }
+
+  if (parts.length <= 0) {
+    return undefined;
+  }
+
+  return {
+    type: "compound-convex-hulls",
+    source:
+      typeof record.source === "string" && record.source.length > 0
+        ? record.source
+        : "unknown",
+    parts
+  };
+}
+
 function parseSavedBoxCollider(raw: unknown): SavedPropBoxCollider | undefined {
   const record = readRecord(raw);
   if (!record || record.type !== "box") {
@@ -360,15 +435,17 @@ function parseSavedColliderVariants(raw: unknown): SavedPropColliderVariants | u
   const box = parseSavedBoxCollider(record.box);
   const convexHull = parseSavedConvexHullCollider(record.convexHull);
   const compoundBoxes = parseSavedCompoundCollider(record.compoundBoxes);
+  const compoundConvexHulls = parseSavedCompoundConvexHulls(record.compoundConvexHulls);
 
-  if (!box && !convexHull && !compoundBoxes) {
+  if (!box && !convexHull && !compoundBoxes && !compoundConvexHulls) {
     return undefined;
   }
 
   return {
     box,
     convexHull,
-    compoundBoxes
+    compoundBoxes,
+    compoundConvexHulls
   };
 }
 
@@ -433,6 +510,11 @@ function parseSavedPropMeta(id: string, raw: unknown): SavedPropDefinition {
   const compoundColliderLegacy =
     parseSavedCompoundCollider(record.compoundCollider) ??
     parseSavedCompoundCollider(processing?.compoundCollider);
+  const compoundConvexHullsLegacy =
+    parseSavedCompoundConvexHulls(record.compoundConvexHulls) ??
+    parseSavedCompoundConvexHulls(processing?.compoundConvexHulls) ??
+    parseSavedCompoundConvexHulls(record.collider) ??
+    parseSavedCompoundConvexHulls(processing?.collider);
   const parsedColliderVariants =
     parseSavedColliderVariants(record.colliderVariants) ??
     parseSavedColliderVariants(processing?.colliderVariants);
@@ -444,12 +526,15 @@ function parseSavedPropMeta(id: string, raw: unknown): SavedPropDefinition {
     (synthesizedBox ? synthesizeConvexHullFromBox(synthesizedBox) : undefined);
   const compoundCollider =
     parsedColliderVariants?.compoundBoxes ?? compoundColliderLegacy;
+  const compoundConvexHulls =
+    parsedColliderVariants?.compoundConvexHulls ?? compoundConvexHullsLegacy;
   const colliderVariants: SavedPropColliderVariants | undefined =
-    synthesizedBox || convexHull || compoundCollider
+    synthesizedBox || convexHull || compoundCollider || compoundConvexHulls
       ? {
           box: synthesizedBox,
           convexHull,
-          compoundBoxes: compoundCollider
+          compoundBoxes: compoundCollider,
+          compoundConvexHulls
         }
       : undefined;
 
@@ -471,7 +556,8 @@ function parseSavedPropMeta(id: string, raw: unknown): SavedPropDefinition {
         : null,
     physicsHint,
     colliderVariants,
-    compoundCollider
+    compoundCollider,
+    compoundConvexHulls
   };
 }
 
