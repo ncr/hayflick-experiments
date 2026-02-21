@@ -21,11 +21,16 @@ type PropChoice = {
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+type PropClassification = {
+  furnitureScore: number;
+};
+
 type PropCard = {
   choice: PropChoice;
   root: HTMLDivElement;
   viewport: HTMLDivElement;
   status: HTMLDivElement;
+  classification: HTMLDivElement;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
@@ -42,6 +47,7 @@ type PropCard = {
   voxelMaterials: THREE.MeshStandardMaterial[];
   voxelGeometry: THREE.BoxGeometry | null;
   sourceData: VhacdSourceData | null;
+  classificationData: PropClassification | null;
   runtimeMs: number | null;
   selectHandler: ((event: PointerEvent) => void) | null;
 };
@@ -341,6 +347,144 @@ function readNumberInput(input: HTMLInputElement, fallback: number): number {
   return value;
 }
 
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function classifyFurniture(sourceData: VhacdSourceData | null): PropClassification | null {
+  if (!sourceData || sourceData.positions.length < 9) {
+    return null;
+  }
+
+  let totalArea = 0;
+  let axisAlignedArea = 0;
+  let horizontalArea = 0;
+  let verticalArea = 0;
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+
+  const includePoint = (x: number, y: number, z: number): void => {
+    if (x < minX) {
+      minX = x;
+    }
+    if (y < minY) {
+      minY = y;
+    }
+    if (z < minZ) {
+      minZ = z;
+    }
+    if (x > maxX) {
+      maxX = x;
+    }
+    if (y > maxY) {
+      maxY = y;
+    }
+    if (z > maxZ) {
+      maxZ = z;
+    }
+  };
+
+  for (let i = 0; i < sourceData.positions.length; i += 9) {
+    const ax = sourceData.positions[i] ?? 0;
+    const ay = sourceData.positions[i + 1] ?? 0;
+    const az = sourceData.positions[i + 2] ?? 0;
+    const bx = sourceData.positions[i + 3] ?? 0;
+    const by = sourceData.positions[i + 4] ?? 0;
+    const bz = sourceData.positions[i + 5] ?? 0;
+    const cx = sourceData.positions[i + 6] ?? 0;
+    const cy = sourceData.positions[i + 7] ?? 0;
+    const cz = sourceData.positions[i + 8] ?? 0;
+
+    includePoint(ax, ay, az);
+    includePoint(bx, by, bz);
+    includePoint(cx, cy, cz);
+
+    const abx = bx - ax;
+    const aby = by - ay;
+    const abz = bz - az;
+    const acx = cx - ax;
+    const acy = cy - ay;
+    const acz = cz - az;
+
+    const nx = aby * acz - abz * acy;
+    const ny = abz * acx - abx * acz;
+    const nz = abx * acy - aby * acx;
+
+    const normalLength = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (normalLength <= 1e-9) {
+      continue;
+    }
+
+    const area = normalLength * 0.5;
+    totalArea += area;
+
+    const invLength = 1 / normalLength;
+    const absNx = Math.abs(nx * invLength);
+    const absNy = Math.abs(ny * invLength);
+    const absNz = Math.abs(nz * invLength);
+    const maxAbs = Math.max(absNx, absNy, absNz);
+
+    if (maxAbs >= 0.92) {
+      axisAlignedArea += area;
+    }
+    if (absNy >= 0.82) {
+      horizontalArea += area;
+    }
+    if (absNy <= 0.28) {
+      verticalArea += area;
+    }
+  }
+
+  if (totalArea <= 1e-9) {
+    return null;
+  }
+
+  const axisScore = clamp01((axisAlignedArea / totalArea - 0.45) / 0.45);
+  const horizontalScore = clamp01((horizontalArea / totalArea) / 0.2);
+  const verticalScore = clamp01((verticalArea / totalArea) / 0.25);
+  const orientationMixScore = Math.sqrt(horizontalScore * verticalScore);
+
+  const sizeX = Math.max(1e-6, maxX - minX);
+  const sizeY = Math.max(1e-6, maxY - minY);
+  const sizeZ = Math.max(1e-6, maxZ - minZ);
+
+  const footprintDominance = Math.max(sizeX, sizeZ) / Math.max(sizeY, 1e-6);
+  const footprintScore = clamp01((footprintDominance - 0.75) / 2.5);
+
+  const horizontalAspect = Math.max(sizeX, sizeZ) / Math.max(1e-6, Math.min(sizeX, sizeZ));
+  const horizontalBalanceScore = 1 - clamp01((horizontalAspect - 1) / 5);
+
+  const furnitureScore = clamp01(
+    axisScore * 0.45 +
+      orientationMixScore * 0.3 +
+      footprintScore * 0.15 +
+      horizontalBalanceScore * 0.1
+  );
+
+  return {
+    furnitureScore
+  };
+}
+
+function setCardClassification(card: PropCard, classification: PropClassification | null): void {
+  card.classificationData = classification;
+  if (!classification) {
+    card.classification.textContent = "class: furniture n/a";
+    card.classification.style.color = "#8db4cf";
+    return;
+  }
+
+  const score = classification.furnitureScore;
+  card.classification.textContent = `class: furniture ${score.toFixed(2)}`;
+  const hue = Math.round(8 + score * 122);
+  card.classification.style.color = `hsl(${hue}, 78%, 80%)`;
+}
+
 function readCardViewPose(card: PropCard): SharedViewPose {
   return {
     position: card.camera.position.clone(),
@@ -367,7 +511,7 @@ function createCard(choice: PropChoice, cardsGrid: HTMLElement): PropCard {
   root.style.padding = "8px";
   root.style.boxSizing = "border-box";
   root.style.display = "grid";
-  root.style.gridTemplateRows = "auto auto auto";
+  root.style.gridTemplateRows = "auto auto auto auto";
   root.style.gap = "6px";
   root.style.minWidth = "0";
 
@@ -395,6 +539,12 @@ function createCard(choice: PropChoice, cardsGrid: HTMLElement): PropCard {
   status.style.color = "#9cc0d8";
   status.textContent = "waiting";
 
+  const classification = document.createElement("div");
+  classification.style.font = "10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  classification.style.color = "#8db4cf";
+  classification.style.opacity = "0.96";
+  classification.textContent = "class: furniture n/a";
+
   const viewport = document.createElement("div");
   viewport.style.height = "258px";
   viewport.style.borderRadius = "8px";
@@ -403,7 +553,7 @@ function createCard(choice: PropChoice, cardsGrid: HTMLElement): PropCard {
   viewport.style.touchAction = "none";
   viewport.style.overflow = "hidden";
 
-  root.append(title, status, viewport);
+  root.append(title, status, classification, viewport);
   cardsGrid.appendChild(root);
 
   const scene = new THREE.Scene();
@@ -462,6 +612,7 @@ function createCard(choice: PropChoice, cardsGrid: HTMLElement): PropCard {
     root,
     viewport,
     status,
+    classification,
     scene,
     camera,
     controls,
@@ -478,6 +629,7 @@ function createCard(choice: PropChoice, cardsGrid: HTMLElement): PropCard {
     voxelMaterials: [],
     voxelGeometry: null,
     sourceData: null,
+    classificationData: null,
     runtimeMs: null,
     selectHandler: null
   };
@@ -560,12 +712,14 @@ function clearCardOverlay(card: PropCard): void {
 function clearCardModel(card: PropCard): void {
   if (!card.model) {
     card.sourceData = null;
+    setCardClassification(card, null);
     return;
   }
   card.modelRoot.remove(card.model);
   disposeObjectResources(card.model);
   card.model = null;
   card.sourceData = null;
+  setCardClassification(card, null);
 }
 
 function disposeCard(card: PropCard): void {
@@ -689,9 +843,12 @@ function renderCardVoxelOverlay(card: PropCard, result: VhacdResult): void {
 
 function renderCardStats(card: PropCard, runtimeMs: number | null, projected: boolean): string {
   const result = card.result;
+  const furnitureScore =
+    card.classificationData === null ? "n/a" : card.classificationData.furnitureScore.toFixed(3);
   if (!result) {
     return [
       `prop: ${card.choice.id}`,
+      `furniture score: ${furnitureScore}`,
       "no segmentation result"
     ].join("\n");
   }
@@ -702,6 +859,7 @@ function renderCardStats(card: PropCard, runtimeMs: number | null, projected: bo
   const lines = [
     `runtime: ${runtimeMs === null ? "n/a" : `${runtimeMs.toFixed(1)} ms`}`,
     `fallback mesh: ${card.fallbackUsed ? "yes" : "no"}`,
+    `furniture score: ${furnitureScore}`,
     `triangles: ${result.stats.sourceTriangleCount}`,
     `voxels: ${result.stats.voxelCount}`,
     `voxel preview: ${result.stats.voxelPreviewCount}`,
@@ -734,6 +892,7 @@ async function loadCardModel(card: PropCard, loader: GLTFLoader): Promise<void> 
   card.modelRoot.add(nextModel);
   card.model = nextModel;
   card.sourceData = extractVhacdSourceData(nextModel);
+  setCardClassification(card, classifyFurniture(card.sourceData));
   card.fallbackUsed = loaded === null;
   card.runtimeMs = null;
   frameCard(card);

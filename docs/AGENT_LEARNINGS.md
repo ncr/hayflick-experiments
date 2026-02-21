@@ -2873,6 +2873,18 @@ Preventive checklist:
 - Derive worker count from both CPU (`hardwareConcurrency`) and estimated per-worker memory footprint, not a single fixed threshold.
 - Keep an upper safety cap for runaway worker spawning, but allow higher counts when memory budget permits.
 
+## 2026-02-21 - Unbounded hull projection can create overlapping artifacts
+Root cause:
+- Projected hull vertices were always snapped to the nearest mesh surface point with no maximum distance threshold.
+- Deep interior hull vertices could jump to distant exterior surfaces, causing distorted overlap.
+
+Detection signal:
+- User reported “funky overlapping hulls” when projection was enabled.
+
+Preventive checklist:
+- Keep a configurable projection max-distance cap and only snap when nearest distance is below it.
+- Allow `0` as an explicit “no cap” mode for controlled experiments.
+
 ## 2026-02-21 - Unbounded hull-vertex projection can over-snap interior points and create overlapping hull artifacts
 Root cause:
 - Projection snapped each hull vertex to the globally closest source-triangle point without a maximum distance guard.
