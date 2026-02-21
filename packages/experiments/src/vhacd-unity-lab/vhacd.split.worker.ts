@@ -7,6 +7,7 @@ type SplitWorkerInitRequest = {
     concavity: number;
     alpha: number;
     beta: number;
+    sliverPenalty: number;
     planeDownsampling: number;
     convexHullDownsampling: number;
     minVoxelCountPerPart: number;
@@ -445,6 +446,70 @@ function splitVoxelIdsByPlane(
   return { left, right };
 }
 
+function computeSliverScore(voxelIds: number[]): number {
+  if (!state || voxelIds.length <= 0) {
+    return 0;
+  }
+
+  let minCellX = Number.POSITIVE_INFINITY;
+  let minCellY = Number.POSITIVE_INFINITY;
+  let minCellZ = Number.POSITIVE_INFINITY;
+  let maxCellX = Number.NEGATIVE_INFINITY;
+  let maxCellY = Number.NEGATIVE_INFINITY;
+  let maxCellZ = Number.NEGATIVE_INFINITY;
+
+  for (const voxelId of voxelIds) {
+    const cellX = state.voxelCellX[voxelId] ?? 0;
+    const cellY = state.voxelCellY[voxelId] ?? 0;
+    const cellZ = state.voxelCellZ[voxelId] ?? 0;
+
+    if (cellX < minCellX) {
+      minCellX = cellX;
+    }
+    if (cellY < minCellY) {
+      minCellY = cellY;
+    }
+    if (cellZ < minCellZ) {
+      minCellZ = cellZ;
+    }
+    if (cellX > maxCellX) {
+      maxCellX = cellX;
+    }
+    if (cellY > maxCellY) {
+      maxCellY = cellY;
+    }
+    if (cellZ > maxCellZ) {
+      maxCellZ = cellZ;
+    }
+  }
+
+  if (
+    !Number.isFinite(minCellX) ||
+    !Number.isFinite(minCellY) ||
+    !Number.isFinite(minCellZ) ||
+    !Number.isFinite(maxCellX) ||
+    !Number.isFinite(maxCellY) ||
+    !Number.isFinite(maxCellZ)
+  ) {
+    return 0;
+  }
+
+  const spanX = Math.max(1, maxCellX - minCellX + 1);
+  const spanY = Math.max(1, maxCellY - minCellY + 1);
+  const spanZ = Math.max(1, maxCellZ - minCellZ + 1);
+
+  const minSpan = Math.max(1, Math.min(spanX, spanY, spanZ));
+  const maxSpan = Math.max(1, Math.max(spanX, spanY, spanZ));
+  const thinRatio = minSpan / maxSpan;
+
+  const bboxCells = Math.max(1, spanX * spanY * spanZ);
+  const fillRatio = voxelIds.length / bboxCells;
+
+  const thinDeficit = clamp((0.2 - thinRatio) / 0.2, 0, 1);
+  const sparseDeficit = clamp((0.55 - fillRatio) / 0.55, 0, 1);
+  return thinDeficit * (0.35 + 0.65 * sparseDeficit);
+}
+
 function evaluateSplitCost(
   voxelIds: Uint32Array,
   planes: PlaneCandidate[],
@@ -468,6 +533,7 @@ function evaluateSplitCost(
 
   const alpha = partConcavity * state.options.alpha;
   const beta = partConcavity * state.options.beta;
+  const gamma = partConcavity * state.options.sliverPenalty;
 
   for (const candidate of planes) {
     candidatePlaneCount += 1;
@@ -501,7 +567,8 @@ function evaluateSplitCost(
           ? preferredDirection[1]
           : preferredDirection[2];
     const symmetry = beta * preferredWeight * axisDot;
-    const total = concavity + balance + symmetry;
+    const sliver = gamma * (computeSliverScore(split.left) + computeSliverScore(split.right));
+    const total = concavity + balance + symmetry + sliver;
 
     if (!best || total < best.total) {
       best = {

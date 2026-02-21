@@ -6,12 +6,14 @@ export type VhacdOptions = {
   concavity: number;
   alpha: number;
   beta: number;
+  sliverPenalty: number;
   planeDownsampling: number;
   convexHullDownsampling: number;
   maxConvexHulls: number;
   minVoxelCountPerPart: number;
   maxHullPointSamples: number;
   projectHullVertices: boolean;
+  projectHullMaxDistance: number;
   precomputeBothHullVariants: boolean;
   maxGridCells: number;
   voxelizationTriangleSampleCount: number;
@@ -124,12 +126,14 @@ const DEFAULT_OPTIONS: VhacdOptions = {
   concavity: 0.002,
   alpha: 0.05,
   beta: 0.05,
+  sliverPenalty: 0.35,
   planeDownsampling: 1,
   convexHullDownsampling: 1,
   maxConvexHulls: 24,
   minVoxelCountPerPart: 24,
   maxHullPointSamples: 1800,
   projectHullVertices: true,
+  projectHullMaxDistance: 0.18,
   precomputeBothHullVariants: false,
   maxGridCells: 20_000_000,
   voxelizationTriangleSampleCount: 12_000
@@ -249,6 +253,7 @@ type SplitWorkerInitRequest = {
     concavity: number;
     alpha: number;
     beta: number;
+    sliverPenalty: number;
     planeDownsampling: number;
     convexHullDownsampling: number;
     minVoxelCountPerPart: number;
@@ -987,7 +992,8 @@ function buildProjectionTriangles(sourceTriangles: Triangle[]): THREE.Triangle[]
 function projectHullGeometryToSource(
   geometry: THREE.BufferGeometry,
   sourceTriangles: THREE.Triangle[],
-  maxProjectedPoints: number
+  maxProjectedPoints: number,
+  maxProjectionDistance: number
 ): {
   geometry: THREE.BufferGeometry;
   hullVolume: number;
@@ -1007,6 +1013,10 @@ function projectHullGeometryToSource(
   const projectedPoints: THREE.Vector3[] = [];
   const closest = new THREE.Vector3();
   const bestPoint = new THREE.Vector3();
+  const maxDistanceSq =
+    maxProjectionDistance > 0 && Number.isFinite(maxProjectionDistance)
+      ? maxProjectionDistance * maxProjectionDistance
+      : Number.POSITIVE_INFINITY;
 
   for (const point of points) {
     let bestDistSq = Number.POSITIVE_INFINITY;
@@ -1022,7 +1032,7 @@ function projectHullGeometryToSource(
       }
     }
 
-    projectedPoints.push(hit ? bestPoint.clone() : point.clone());
+    projectedPoints.push(hit && bestDistSq <= maxDistanceSq ? bestPoint.clone() : point.clone());
   }
 
   if (projectedPoints.length < 4) {
@@ -1200,6 +1210,74 @@ function splitVoxelIdsByPlane(
   return { left, right };
 }
 
+function computeSliverScore(
+  voxelIds: number[],
+  ctx: DecompositionContext
+): number {
+  if (voxelIds.length <= 0) {
+    return 0;
+  }
+
+  let minCellX = Number.POSITIVE_INFINITY;
+  let minCellY = Number.POSITIVE_INFINITY;
+  let minCellZ = Number.POSITIVE_INFINITY;
+  let maxCellX = Number.NEGATIVE_INFINITY;
+  let maxCellY = Number.NEGATIVE_INFINITY;
+  let maxCellZ = Number.NEGATIVE_INFINITY;
+
+  for (const voxelId of voxelIds) {
+    const voxel = ctx.voxels[voxelId];
+    if (!voxel) {
+      continue;
+    }
+
+    if (voxel.cellX < minCellX) {
+      minCellX = voxel.cellX;
+    }
+    if (voxel.cellY < minCellY) {
+      minCellY = voxel.cellY;
+    }
+    if (voxel.cellZ < minCellZ) {
+      minCellZ = voxel.cellZ;
+    }
+    if (voxel.cellX > maxCellX) {
+      maxCellX = voxel.cellX;
+    }
+    if (voxel.cellY > maxCellY) {
+      maxCellY = voxel.cellY;
+    }
+    if (voxel.cellZ > maxCellZ) {
+      maxCellZ = voxel.cellZ;
+    }
+  }
+
+  if (
+    !Number.isFinite(minCellX) ||
+    !Number.isFinite(minCellY) ||
+    !Number.isFinite(minCellZ) ||
+    !Number.isFinite(maxCellX) ||
+    !Number.isFinite(maxCellY) ||
+    !Number.isFinite(maxCellZ)
+  ) {
+    return 0;
+  }
+
+  const spanX = Math.max(1, maxCellX - minCellX + 1);
+  const spanY = Math.max(1, maxCellY - minCellY + 1);
+  const spanZ = Math.max(1, maxCellZ - minCellZ + 1);
+
+  const minSpan = Math.max(1, Math.min(spanX, spanY, spanZ));
+  const maxSpan = Math.max(1, Math.max(spanX, spanY, spanZ));
+  const thinRatio = minSpan / maxSpan;
+
+  const bboxCells = Math.max(1, spanX * spanY * spanZ);
+  const fillRatio = voxelIds.length / bboxCells;
+
+  const thinDeficit = clamp((0.2 - thinRatio) / 0.2, 0, 1);
+  const sparseDeficit = clamp((0.55 - fillRatio) / 0.55, 0, 1);
+  return thinDeficit * (0.35 + 0.65 * sparseDeficit);
+}
+
 function evaluateSplitCost(
   part: Part,
   ctx: DecompositionContext,
@@ -1213,6 +1291,7 @@ function evaluateSplitCost(
 
   const alpha = partConcavity * ctx.options.alpha;
   const beta = partConcavity * ctx.options.beta;
+  const gamma = partConcavity * ctx.options.sliverPenalty;
 
   for (const candidate of planes) {
     ctx.stats.candidatePlaneCount += 1;
@@ -1242,8 +1321,9 @@ function evaluateSplitCost(
 
     const axisDot = candidate.axis === 0 ? preferredDirection[0] : candidate.axis === 1 ? preferredDirection[1] : preferredDirection[2];
     const symmetry = beta * preferredWeight * axisDot;
-
-    const total = concavity + balance + symmetry;
+    const sliver =
+      gamma * (computeSliverScore(split.left, ctx) + computeSliverScore(split.right, ctx));
+    const total = concavity + balance + symmetry + sliver;
 
     if (!best || total < best.total) {
       best = {
@@ -1373,6 +1453,7 @@ async function createSplitWorkerPool(ctx: DecompositionContext): Promise<SplitWo
       concavity: ctx.options.concavity,
       alpha: ctx.options.alpha,
       beta: ctx.options.beta,
+      sliverPenalty: ctx.options.sliverPenalty,
       planeDownsampling: ctx.options.planeDownsampling,
       convexHullDownsampling: ctx.options.convexHullDownsampling,
       minVoxelCountPerPart: ctx.options.minVoxelCountPerPart,
@@ -1730,7 +1811,13 @@ export async function runVhacdFromObject(
     concavity: clamp(inputOptions.concavity ?? DEFAULT_OPTIONS.concavity, 0, 1),
     alpha: clamp(inputOptions.alpha ?? DEFAULT_OPTIONS.alpha, 0, 1),
     beta: clamp(inputOptions.beta ?? DEFAULT_OPTIONS.beta, 0, 1),
+    sliverPenalty: clamp(inputOptions.sliverPenalty ?? DEFAULT_OPTIONS.sliverPenalty, 0, 3),
     projectHullVertices: inputOptions.projectHullVertices ?? DEFAULT_OPTIONS.projectHullVertices,
+    projectHullMaxDistance: clamp(
+      inputOptions.projectHullMaxDistance ?? DEFAULT_OPTIONS.projectHullMaxDistance,
+      0,
+      2
+    ),
     precomputeBothHullVariants:
       inputOptions.precomputeBothHullVariants ?? DEFAULT_OPTIONS.precomputeBothHullVariants,
     maxGridCells: clampInt(inputOptions.maxGridCells ?? DEFAULT_OPTIONS.maxGridCells, 250_000, 20_000_000),
@@ -1983,7 +2070,8 @@ export async function runVhacdFromObject(
       const projected = projectHullGeometryToSource(
         baseHull.geometry,
         projectionTriangles,
-        options.maxHullPointSamples
+        options.maxHullPointSamples,
+        options.projectHullMaxDistance
       );
       if (projected) {
         projectedGeometry = projected.geometry;

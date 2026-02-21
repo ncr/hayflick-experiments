@@ -763,10 +763,12 @@ function readOptionsFromUi(
   concavityInput: HTMLInputElement,
   alphaInput: HTMLInputElement,
   betaInput: HTMLInputElement,
+  sliverPenaltyInput: HTMLInputElement,
   planeDownsampleInput: HTMLInputElement,
   hullDownsampleInput: HTMLInputElement,
   minVoxelsInput: HTMLInputElement,
   maxHullSamplesInput: HTMLInputElement,
+  projectHullMaxDistanceInput: HTMLInputElement,
   projectHullVerticesInput: HTMLInputElement,
   maxGridCellsInput: HTMLInputElement,
   voxelTriSampleInput: HTMLInputElement
@@ -777,11 +779,13 @@ function readOptionsFromUi(
     concavity: readNumberInput(concavityInput, 0.002),
     alpha: readNumberInput(alphaInput, 0.05),
     beta: readNumberInput(betaInput, 0.05),
+    sliverPenalty: readNumberInput(sliverPenaltyInput, 0.35),
     planeDownsampling: Math.floor(readNumberInput(planeDownsampleInput, 1)),
     convexHullDownsampling: Math.floor(readNumberInput(hullDownsampleInput, 1)),
     minVoxelCountPerPart: Math.floor(readNumberInput(minVoxelsInput, 24)),
     maxHullPointSamples: Math.floor(readNumberInput(maxHullSamplesInput, 1800)),
     projectHullVertices: projectHullVerticesInput.checked,
+    projectHullMaxDistance: readNumberInput(projectHullMaxDistanceInput, 0.18),
     precomputeBothHullVariants: true,
     maxGridCells: Math.floor(readNumberInput(maxGridCellsInput, 20_000_000)),
     voxelizationTriangleSampleCount: Math.floor(readNumberInput(voxelTriSampleInput, 12_000))
@@ -959,10 +963,12 @@ const experiment: ExperimentModule = {
       "<label>Concavity<input data-id='concavity' type='number' min='0' max='1' step='0.0005' value='0.002' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Alpha<input data-id='alpha' type='number' min='0' max='1' step='0.01' value='0.05' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Beta<input data-id='beta' type='number' min='0' max='1' step='0.01' value='0.05' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Sliver Penalty<input data-id='sliver-penalty' type='number' min='0' max='3' step='0.05' value='0.35' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Plane Downsample<input data-id='plane-downsample' type='number' min='1' max='12' step='1' value='1' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Hull Downsample<input data-id='hull-downsample' type='number' min='1' max='12' step='1' value='1' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Min Voxels/Part<input data-id='min-voxels' type='number' min='4' max='200' step='1' value='24' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Max Hull Samples<input data-id='max-hull-samples' type='number' min='64' max='9000' step='1' value='1800' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
+      "<label>Project Max Distance<input data-id='project-hull-max-distance' type='number' min='0' max='2' step='0.01' value='0.18' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Max Grid Cells<input data-id='max-grid-cells' type='number' min='250000' max='20000000' step='250000' value='20000000' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "<label>Voxel Tri Samples<input data-id='voxel-tri-samples' type='number' min='1000' max='120000' step='1000' value='12000' style='display:block;width:100%;margin-top:4px;min-height:34px'></label>",
       "</div>",
@@ -975,6 +981,7 @@ const experiment: ExperimentModule = {
       "<div style='margin-top:6px'><b>Concavity</b>: split stop threshold. higher = fewer splits. lower = more splits. sensible: 0.001-0.01.</div>",
       "<div style='margin-top:6px'><b>Alpha</b>: volume-balance weight in split cost. higher = more balanced cuts, fewer slivers. sensible: 0.02-0.12.</div>",
       "<div style='margin-top:6px'><b>Beta</b>: preferred-axis bias weight. higher = stronger axis preference. sensible: 0-0.1.</div>",
+      "<div style='margin-top:6px'><b>Sliver Penalty</b>: penalizes thin/sparse child parts during split scoring. higher = fewer narrow wedge fragments, but can reduce fine-detail capture. sensible: 0.15-0.8.</div>",
       "<div style='margin-top:6px'><b>Plane Downsample</b>: coarse plane-search stride. higher = fewer tested planes, faster/lower quality. sensible: 2-6 (1 for quality).</div>",
       "<div style='margin-top:6px'><b>Hull Downsample</b>: sampling stride for split-time hull estimates. higher = faster/noisier estimates. sensible: 2-6 (1 for quality).</div>",
       "<div style='margin-top:6px'><b>Min Voxels/Part</b>: minimum child size after split. higher = less tiny noise parts, may miss thin details. sensible: 20-40 at res 40.</div>",
@@ -982,6 +989,7 @@ const experiment: ExperimentModule = {
       "<div style='margin-top:6px'><b>Max Grid Cells</b>: upper bound for voxel grid cells. higher = better detail and higher memory/runtime.</div>",
       "<div style='margin-top:6px'><b>Voxel Tri Samples</b>: how many source triangles are sampled during voxelization. higher = better shell coverage, slower.</div>",
       "<div style='margin-top:6px'><b>Project Hull Vertices</b>: snaps hull vertices onto the source mesh. Both raw/projected variants are precomputed per run, so toggling is immediate after compute.</div>",
+      "<div style='margin-top:6px'><b>Project Max Distance</b>: max allowed snap distance when projecting hull vertices. lower = prevents deep interior vertices from jumping to distant surface points. 0 disables the cap.</div>",
       "<div style='margin-top:6px'><b>Current Defaults</b>: balanced-high preset (Resolution 128 + Max Grid Cells 20M).</div>",
       "</div>",
       "</details>",
@@ -1033,10 +1041,14 @@ const experiment: ExperimentModule = {
     const concavityInput = hud.querySelector<HTMLInputElement>("[data-id='concavity']");
     const alphaInput = hud.querySelector<HTMLInputElement>("[data-id='alpha']");
     const betaInput = hud.querySelector<HTMLInputElement>("[data-id='beta']");
+    const sliverPenaltyInput = hud.querySelector<HTMLInputElement>("[data-id='sliver-penalty']");
     const planeDownsampleInput = hud.querySelector<HTMLInputElement>("[data-id='plane-downsample']");
     const hullDownsampleInput = hud.querySelector<HTMLInputElement>("[data-id='hull-downsample']");
     const minVoxelsInput = hud.querySelector<HTMLInputElement>("[data-id='min-voxels']");
     const maxHullSamplesInput = hud.querySelector<HTMLInputElement>("[data-id='max-hull-samples']");
+    const projectHullMaxDistanceInput = hud.querySelector<HTMLInputElement>(
+      "[data-id='project-hull-max-distance']"
+    );
     const maxGridCellsInput = hud.querySelector<HTMLInputElement>("[data-id='max-grid-cells']");
     const voxelTriSampleInput = hud.querySelector<HTMLInputElement>("[data-id='voxel-tri-samples']");
     const projectHullVerticesInput = hud.querySelector<HTMLInputElement>(
@@ -1061,10 +1073,12 @@ const experiment: ExperimentModule = {
       !concavityInput ||
       !alphaInput ||
       !betaInput ||
+      !sliverPenaltyInput ||
       !planeDownsampleInput ||
       !hullDownsampleInput ||
       !minVoxelsInput ||
       !maxHullSamplesInput ||
+      !projectHullMaxDistanceInput ||
       !maxGridCellsInput ||
       !voxelTriSampleInput ||
       !projectHullVerticesInput ||
@@ -1206,10 +1220,12 @@ const experiment: ExperimentModule = {
         concavityInput,
         alphaInput,
         betaInput,
+        sliverPenaltyInput,
         planeDownsampleInput,
         hullDownsampleInput,
         minVoxelsInput,
         maxHullSamplesInput,
+        projectHullMaxDistanceInput,
         projectHullVerticesInput,
         maxGridCellsInput,
         voxelTriSampleInput
