@@ -276,18 +276,16 @@ describe("@common/render SharedScissorStage", () => {
     stage.dispose();
   });
 
-  it("unregisterPane removes the pane without disposing it and clears focused pane", () => {
+  it("unregisterPane removes the pane without disposing it", () => {
     const mount = makeElement(makeRect(0, 0, 200, 100));
     const paneEl = makeElement(makeRect(0, 0, 80, 80));
     const pane = makePane("pane-a", paneEl);
 
     const stage = new SharedScissorStage({ mount: mount as unknown as HTMLElement, width: 200, height: 100 });
     stage.registerPane(pane);
-    stage.setFocusedPaneId("pane-a");
 
     stage.unregisterPane("pane-a");
 
-    expect(stage.getFocusedPaneId()).toBeNull();
     expect(stage.getPaneRects().has("pane-a")).toBe(false);
     expect(pane.disposeSpy).not.toHaveBeenCalled();
 

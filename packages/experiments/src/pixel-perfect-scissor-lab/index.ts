@@ -65,11 +65,13 @@ type SharedBackend = {
   paneRuntimes: Record<PaneKey, PaneRuntime>;
   canvasLayer: HTMLDivElement;
   disposeInputs: Array<() => void>;
+  focusState: { paneKey: PaneKey | null };
 };
 
 type IndependentBackend = {
   paneRuntimes: Record<PaneKey, PaneRuntime>;
   disposeInputs: Array<() => void>;
+  focusState: { paneKey: PaneKey | null };
 };
 
 type Backend =
@@ -414,6 +416,7 @@ function makeIndependentBackend(
 ): IndependentBackend {
   const paneRuntimes = {} as Record<PaneKey, PaneRuntime>;
   const disposeInputs: Array<() => void> = [];
+  const focusState: { paneKey: PaneKey | null } = { paneKey: null };
 
   for (const pane of PANES) {
     paneDoms[pane.key].surface.style.display = "block";
@@ -441,7 +444,10 @@ function makeIndependentBackend(
     disposeInputs.push(
       bindSharedScissorStageInput({
         stage,
-        syncStageFocus: false,
+        getFocusedPaneId: () => focusState.paneKey,
+        setFocusedPaneId: (paneId) => {
+          focusState.paneKey = (paneId as PaneKey | null) ?? null;
+        },
         getPaneInputTarget: (paneId) => (paneId === pane.key ? paneAdapter : null)
       })
     );
@@ -455,7 +461,7 @@ function makeIndependentBackend(
   }
 
   applyVisualStatesToRuntimes(paneRuntimes, states);
-  return { paneRuntimes, disposeInputs };
+  return { paneRuntimes, disposeInputs, focusState };
 }
 
 function makeSharedBackend(
@@ -479,6 +485,7 @@ function makeSharedBackend(
     clearAlpha: 0
   });
   const disposeInputs: Array<() => void> = [];
+  const focusState: { paneKey: PaneKey | null } = { paneKey: null };
 
   const paneRuntimes = {} as Record<PaneKey, PaneRuntime>;
   for (const pane of PANES) {
@@ -503,12 +510,15 @@ function makeSharedBackend(
   disposeInputs.push(
     bindSharedScissorStageInput({
       stage,
-      syncStageFocus: false,
+      getFocusedPaneId: () => focusState.paneKey,
+      setFocusedPaneId: (paneId) => {
+        focusState.paneKey = (paneId as PaneKey | null) ?? null;
+      },
       getPaneInputTarget: (paneId) => paneRuntimes[paneId as PaneKey]?.pane ?? null
     })
   );
 
-  return { stage, paneRuntimes, canvasLayer: gridCanvasLayer, disposeInputs };
+  return { stage, paneRuntimes, canvasLayer: gridCanvasLayer, disposeInputs, focusState };
 }
 
 function backendGetRuntimes(backend: Backend): Record<PaneKey, PaneRuntime> {
@@ -516,26 +526,11 @@ function backendGetRuntimes(backend: Backend): Record<PaneKey, PaneRuntime> {
 }
 
 function backendGetFocusedPane(backend: Backend): PaneKey | null {
-  if (backend.mode === "shared") {
-    const id = backend.impl.stage.getFocusedPaneId();
-    return (id as PaneKey | null) ?? null;
-  }
-  for (const pane of PANES) {
-    if (backend.impl.paneRuntimes[pane.key].stage.getFocusedPaneId()) {
-      return pane.key;
-    }
-  }
-  return null;
+  return backend.impl.focusState.paneKey;
 }
 
 function backendSetFocusedPane(backend: Backend, paneKey: PaneKey | null): void {
-  if (backend.mode === "shared") {
-    backend.impl.stage.setFocusedPaneId(paneKey);
-    return;
-  }
-  for (const pane of PANES) {
-    backend.impl.paneRuntimes[pane.key].stage.setFocusedPaneId(pane.key === paneKey ? pane.key : null);
-  }
+  backend.impl.focusState.paneKey = paneKey;
 }
 
 function paneKeyAtClientPoint(

@@ -173,11 +173,11 @@ describe("@common/input shared scissor stage bindings", () => {
       rotateQuarterTurns: vi.fn(),
       toggleZoomMode: vi.fn()
     };
+    const getFocusedPaneId = vi.fn(() => "north");
+    const setFocusedPaneId = vi.fn();
     const stage = {
       canvas: pointerTarget as unknown as HTMLCanvasElement,
-      hitTestPane: vi.fn(() => ({ paneId: "north", localX: 1, localY: 2, rect: {} })),
-      setFocusedPaneId: vi.fn(),
-      getFocusedPaneId: vi.fn(() => "north")
+      hitTestPane: vi.fn(() => ({ paneId: "north", localX: 1, localY: 2, rect: {} }))
     };
     const onFocusPaneId = vi.fn();
 
@@ -186,6 +186,8 @@ describe("@common/input shared scissor stage bindings", () => {
       pointerTarget: pointerTarget as unknown as HTMLElement,
       keyboardTarget: keyboardTarget as unknown as Window,
       onFocusPaneId,
+      getFocusedPaneId,
+      setFocusedPaneId,
       getPaneInputTarget: (paneId) => (paneId === "north" ? (pane as unknown as any) : null)
     });
 
@@ -223,13 +225,14 @@ describe("@common/input shared scissor stage bindings", () => {
     keyboardTarget.emit("keydown", { code: "KeyQ", target: { tagName: "DIV", isContentEditable: false }, preventDefault: vi.fn() });
     keyboardTarget.emit("keyup", { code: "KeyQ" });
 
-    expect(stage.setFocusedPaneId).toHaveBeenCalledWith("north");
+    expect(setFocusedPaneId).toHaveBeenCalledWith("north");
     expect(onFocusPaneId).toHaveBeenCalledWith("north");
     expect(pane.beginPanDrag).toHaveBeenCalledWith(1, 2);
     expect(pane.updatePanDrag).toHaveBeenCalled();
     expect(pane.endPanDrag).toHaveBeenCalled();
     expect(pane.panByCss).toHaveBeenCalled();
     expect(pane.rotateQuarterTurns).toHaveBeenCalledWith(-1);
+    expect(getFocusedPaneId).toHaveBeenCalled();
 
     detach();
     pointerTarget.emit("pointerdown", pointerDownEvent);

@@ -17,8 +17,9 @@ export type SharedScissorStageInputBindingOptions = {
   pointerTarget?: HTMLElement;
   keyboardTarget?: KeyboardTarget;
   enableKeyboard?: boolean;
-  syncStageFocus?: boolean;
   onFocusPaneId?: (paneId: string | null) => void;
+  getFocusedPaneId?: () => string | null;
+  setFocusedPaneId?: (paneId: string | null) => void;
   getPaneInputTarget: (paneId: string) => SharedScissorStagePaneInputTarget | null | undefined;
 };
 
@@ -194,7 +195,6 @@ export function bindSharedScissorStageInput(
   const pointerTarget = options.pointerTarget ?? stage.canvas;
   const keyboardTarget = options.keyboardTarget ?? window;
   const enableKeyboard = options.enableKeyboard ?? true;
-  const syncStageFocus = options.syncStageFocus ?? true;
   let drag:
     | {
         pointerId: number;
@@ -205,9 +205,7 @@ export function bindSharedScissorStageInput(
   const focusFromClient = (clientX: number, clientY: number) => {
     const hit = stage.hitTestPane(clientX, clientY);
     const paneId = hit?.paneId ?? null;
-    if (paneId && syncStageFocus) {
-      stage.setFocusedPaneId(paneId);
-    }
+    options.setFocusedPaneId?.(paneId);
     options.onFocusPaneId?.(paneId);
     return hit;
   };
@@ -321,7 +319,7 @@ export function bindSharedScissorStageInput(
 
   const onKeyDown = (event: KeyboardEvent): void => {
     if (isTypingTarget(event.target)) return;
-    const paneId = stage.getFocusedPaneId();
+    const paneId = options.getFocusedPaneId?.() ?? null;
     if (!paneId) {
       return;
     }

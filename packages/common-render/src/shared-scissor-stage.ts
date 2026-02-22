@@ -65,7 +65,6 @@ export class SharedScissorStage {
   private widthCss = 1;
   private heightCss = 1;
   private pixelRatio = 1;
-  private focusedPaneId: string | null = null;
   private readonly clearColor: number;
   private readonly clearAlpha: number;
   private readonly savedMountPosition: string;
@@ -134,9 +133,6 @@ export class SharedScissorStage {
     if (!entry) return;
     this.panes.delete(id);
     this.paneRects.delete(id);
-    if (this.focusedPaneId === id) {
-      this.focusedPaneId = null;
-    }
   }
 
   start(): void {
@@ -205,18 +201,6 @@ export class SharedScissorStage {
 
   getCanvas(): HTMLCanvasElement {
     return this.canvas;
-  }
-
-  getFocusedPaneId(): string | null {
-    return this.focusedPaneId;
-  }
-
-  setFocusedPaneId(id: string | null): void {
-    if (id == null) {
-      this.focusedPaneId = null;
-      return;
-    }
-    this.focusedPaneId = this.panes.has(id) ? id : null;
   }
 
   getPaneRects(): ReadonlyMap<string, SharedScissorPaneRect> {
