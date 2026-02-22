@@ -20,29 +20,6 @@ export type PixelPerfectIsoRenderViewport = {
   height: number;
 };
 
-export type PixelLocalPointerEventLike = {
-  clientX: number;
-  clientY: number;
-  localX: number;
-  localY: number;
-  button: number;
-  buttons: number;
-  pointerId: number;
-};
-
-export type PixelLocalWheelEventLike = {
-  clientX: number;
-  clientY: number;
-  localX: number;
-  localY: number;
-  deltaX: number;
-  deltaY: number;
-  deltaMode: number;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  shiftKey: boolean;
-};
-
 export type PixelPerfectIsoViewportCoreVisualState = {
   targetX: number;
   targetZ: number;
@@ -912,84 +889,6 @@ export class PixelPerfectIsoViewportCore {
       Math.abs(this.cameraZoomTarget - this.cameraZoomCurrent) >
       this.config.zoomAnimationEpsilon;
     return true;
-  }
-
-  onPointerDown(event: PixelLocalPointerEventLike): boolean {
-    if (event.button !== 1) {
-      return false;
-    }
-    this.beginPanDrag(event.localX, event.localY);
-    return true;
-  }
-
-  onPointerMove(event: PixelLocalPointerEventLike): boolean {
-    return this.updatePanDrag(event.localX, event.localY);
-  }
-
-  onPointerUp(_event: Pick<PixelLocalPointerEventLike, "pointerId">): boolean {
-    return this.endPanDrag();
-  }
-
-  onAuxClick(button: number): boolean {
-    return button === 1;
-  }
-
-  private isLikelyTrackpadWheel(event: Pick<WheelEvent, "deltaMode" | "deltaX" | "deltaY">): boolean {
-    if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) {
-      return false;
-    }
-    if (Math.abs(event.deltaX) > 0.01) {
-      return true;
-    }
-    return Math.abs(event.deltaY) < 24;
-  }
-
-  onWheel(event: PixelLocalWheelEventLike): boolean {
-    const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
-    const trackpad = this.isLikelyTrackpadWheel(event);
-    const zoomIntent = event.ctrlKey || event.metaKey || !trackpad;
-
-    if (!zoomIntent) {
-      const panX = -(event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
-      const panY = -event.deltaY * scale;
-      this.applyPan(panX, panY);
-      return true;
-    }
-
-    const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
-    this.zoomStepAtLocalCss(direction, event.localX, event.localY);
-    return true;
-  }
-
-  onKeyDown(event: KeyboardEvent): boolean {
-    // Don't capture keys when typing in form elements
-    const tag = (event.target as HTMLElement)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return false;
-    if ((event.target as HTMLElement)?.isContentEditable) return false;
-
-    if (event.code === "KeyQ") {
-      this.zoomBurstActive = false;
-      this.rotationSnapActive = false;
-      this.recenterCameraTargetToScreenCenterIfNeeded();
-      this.controller.rotateQuarterTurns(-1);
-      return true;
-    }
-    if (event.code === "KeyE") {
-      this.zoomBurstActive = false;
-      this.rotationSnapActive = false;
-      this.recenterCameraTargetToScreenCenterIfNeeded();
-      this.controller.rotateQuarterTurns(1);
-      return true;
-    }
-    if (event.code === "KeyZ") {
-      this.toggleZoomMode();
-      return true;
-    }
-    return false;
-  }
-
-  onKeyUp(_event: KeyboardEvent): boolean {
-    return false;
   }
 
   isDragging(): boolean {

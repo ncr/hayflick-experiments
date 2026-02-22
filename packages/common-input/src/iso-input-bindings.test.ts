@@ -157,21 +157,27 @@ describe("@common/input iso view bindings", () => {
 });
 
 describe("@common/input shared scissor stage bindings", () => {
-  it("focuses hit pane and routes stage events without stage-owned listeners", () => {
+  it("focuses hit pane and routes commands to pane targets without stage-owned listeners", () => {
     const pointerTarget = new FakeTarget();
     const keyboardTarget = new FakeTarget();
+    const paneElement = {
+      getBoundingClientRect: () => ({ left: 5, top: 6 })
+    };
+    const pane = {
+      element: paneElement as unknown as HTMLElement,
+      beginPanDrag: vi.fn(),
+      updatePanDrag: vi.fn(() => true),
+      endPanDrag: vi.fn(() => true),
+      panByCss: vi.fn(),
+      stepCameraZoomAtLocalCss: vi.fn(() => true),
+      rotateQuarterTurns: vi.fn(),
+      toggleZoomMode: vi.fn()
+    };
     const stage = {
       canvas: pointerTarget as unknown as HTMLCanvasElement,
       hitTestPane: vi.fn(() => ({ paneId: "north", localX: 1, localY: 2, rect: {} })),
       setFocusedPaneId: vi.fn(),
-      routePointerDown: vi.fn(),
-      routePointerMove: vi.fn(),
-      routePointerUp: vi.fn(),
-      routePointerCancel: vi.fn(),
-      routeAuxClick: vi.fn(),
-      routeWheel: vi.fn(),
-      routeKeyDown: vi.fn(),
-      routeKeyUp: vi.fn()
+      getFocusedPaneId: vi.fn(() => "north")
     };
     const onFocusPaneId = vi.fn();
 
@@ -179,25 +185,55 @@ describe("@common/input shared scissor stage bindings", () => {
       stage: stage as unknown as SharedScissorStage,
       pointerTarget: pointerTarget as unknown as HTMLElement,
       keyboardTarget: keyboardTarget as unknown as Window,
-      onFocusPaneId
+      onFocusPaneId,
+      getPaneInputTarget: (paneId) => (paneId === "north" ? (pane as unknown as any) : null)
     });
 
-    const pointerEvent = { clientX: 10, clientY: 20 };
-    pointerTarget.emit("pointerdown", pointerEvent);
-    pointerTarget.emit("wheel", pointerEvent);
-    keyboardTarget.emit("keydown", { code: "KeyQ" });
+    const pointerDownEvent = makePreventable({
+      button: 1,
+      pointerId: 7,
+      clientX: 10,
+      clientY: 20
+    });
+    const pointerMoveEvent = makePreventable({
+      pointerId: 7,
+      clientX: 12,
+      clientY: 22
+    });
+    const pointerUpEvent = makePreventable({
+      pointerId: 7,
+      clientX: 12,
+      clientY: 22
+    });
+    const wheelEvent = makePreventable({
+      clientX: 10,
+      clientY: 20,
+      deltaMode: 0,
+      deltaX: 2,
+      deltaY: 3,
+      shiftKey: false,
+      ctrlKey: false,
+      metaKey: false
+    });
+
+    pointerTarget.emit("pointerdown", pointerDownEvent);
+    pointerTarget.emit("pointermove", pointerMoveEvent);
+    pointerTarget.emit("pointerup", pointerUpEvent);
+    pointerTarget.emit("wheel", wheelEvent);
+    keyboardTarget.emit("keydown", { code: "KeyQ", target: { tagName: "DIV", isContentEditable: false }, preventDefault: vi.fn() });
     keyboardTarget.emit("keyup", { code: "KeyQ" });
 
     expect(stage.setFocusedPaneId).toHaveBeenCalledWith("north");
     expect(onFocusPaneId).toHaveBeenCalledWith("north");
-    expect(stage.routePointerDown).toHaveBeenCalledWith(pointerEvent);
-    expect(stage.routeWheel).toHaveBeenCalledWith(pointerEvent);
-    expect(stage.routeKeyDown).toHaveBeenCalled();
-    expect(stage.routeKeyUp).toHaveBeenCalled();
+    expect(pane.beginPanDrag).toHaveBeenCalledWith(1, 2);
+    expect(pane.updatePanDrag).toHaveBeenCalled();
+    expect(pane.endPanDrag).toHaveBeenCalled();
+    expect(pane.panByCss).toHaveBeenCalled();
+    expect(pane.rotateQuarterTurns).toHaveBeenCalledWith(-1);
 
     detach();
-    pointerTarget.emit("pointerdown", pointerEvent);
-    expect(stage.routePointerDown).toHaveBeenCalledTimes(1);
+    pointerTarget.emit("pointerdown", pointerDownEvent);
+    expect(pane.beginPanDrag).toHaveBeenCalledTimes(1);
   });
 });
 

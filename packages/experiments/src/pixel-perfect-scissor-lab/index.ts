@@ -438,7 +438,13 @@ function makeIndependentBackend(
     });
     stage.registerPane(paneAdapter);
     stage.start();
-    disposeInputs.push(bindSharedScissorStageInput({ stage, syncStageFocus: false }));
+    disposeInputs.push(
+      bindSharedScissorStageInput({
+        stage,
+        syncStageFocus: false,
+        getPaneInputTarget: (paneId) => (paneId === pane.key ? paneAdapter : null)
+      })
+    );
 
     paneRuntimes[pane.key] = {
       pane: paneAdapter,
@@ -494,7 +500,13 @@ function makeSharedBackend(
   }
   applyVisualStatesToRuntimes(paneRuntimes, states);
   stage.start();
-  disposeInputs.push(bindSharedScissorStageInput({ stage, syncStageFocus: false }));
+  disposeInputs.push(
+    bindSharedScissorStageInput({
+      stage,
+      syncStageFocus: false,
+      getPaneInputTarget: (paneId) => paneRuntimes[paneId as PaneKey]?.pane ?? null
+    })
+  );
 
   return { stage, paneRuntimes, canvasLayer: gridCanvasLayer, disposeInputs };
 }

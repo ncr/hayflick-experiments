@@ -41,9 +41,7 @@ export {
   PixelPerfectIsoViewportCore,
   type PixelPerfectIsoViewportCoreConfig,
   type PixelPerfectIsoRenderViewport,
-  type PixelPerfectIsoViewportCoreVisualState,
-  type PixelLocalPointerEventLike,
-  type PixelLocalWheelEventLike
+  type PixelPerfectIsoViewportCoreVisualState
 } from "./pixel-perfect-iso-viewport-core";
 export {
   SharedScissorStage,
@@ -51,8 +49,6 @@ export {
   type SharedScissorPane,
   type SharedScissorPaneRect,
   type SharedScissorFrameContext,
-  type SharedPanePointerEvent,
-  type SharedPaneWheelEvent,
   type SharedScissorPaneHit
 } from "./shared-scissor-stage";
 export {

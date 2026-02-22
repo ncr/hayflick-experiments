@@ -3123,3 +3123,17 @@ Preventive checklist:
 - Avoid inline `height: 100%` on reusable pane roots when the same component is sometimes the sizing host and sometimes nested inside one; let the caller-owned host class control height.
 - When using one shared canvas behind pane DOM overlays, audit later CSS rules for opaque pane backgrounds that can mask the canvas output.
 - In blank-pane debugging, inspect computed pane rects and overlay/background stacking before assuming render logic is broken.
+
+## 2026-02-22 - Input extraction is incomplete if render-stage APIs still expose DOM event routing
+Root cause:
+- `@common/input` was moved out, but `SharedScissorStage` still exported `routePointer*` / `routeWheel` / `routeKey*` dispatch methods plus pane `onPointer*`/`onWheel`/`onKey*` hooks.
+- That preserved low-level event mechanics inside `@common/render`, so the abstraction boundary remained leaky even though listeners moved.
+
+Detection signal:
+- `bindSharedScissorStageInput(...)` in `@common/input` still depended on stage route methods instead of `hitTestPane(...)` and explicit pane commands.
+- `SharedScissorPane` interface still mixed rendering and DOM-event callbacks.
+
+Preventive checklist:
+- When extracting input into a separate package, remove both listener ownership and event-routing APIs from the render package in the same pass.
+- Keep shared stage contracts render-only (`render`, `onResize`, `hitTestPane`, focus state) and route interactions through pane command methods from the input layer.
+- Search for `PointerEvent`/`WheelEvent`/`KeyboardEvent` types in render-layer public interfaces after the extraction to verify the boundary is actually clean.

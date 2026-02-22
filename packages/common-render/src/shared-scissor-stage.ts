@@ -19,22 +19,6 @@ export type SharedScissorFrameContext = {
   deltaSeconds: number;
 };
 
-export type SharedPanePointerEvent = {
-  originalEvent: PointerEvent;
-  paneId: string;
-  localX: number;
-  localY: number;
-  rect: SharedScissorPaneRect;
-};
-
-export type SharedPaneWheelEvent = {
-  originalEvent: WheelEvent;
-  paneId: string;
-  localX: number;
-  localY: number;
-  rect: SharedScissorPaneRect;
-};
-
 export type SharedScissorPaneHit = {
   paneId: string;
   localX: number;
@@ -47,13 +31,6 @@ export interface SharedScissorPane {
   element: HTMLElement;
   render(frame: SharedScissorFrameContext, rect: SharedScissorPaneRect): void;
   onResize?(rect: SharedScissorPaneRect): void;
-  onPointerDown?(event: SharedPanePointerEvent): boolean;
-  onPointerMove?(event: SharedPanePointerEvent): boolean;
-  onPointerUp?(event: SharedPanePointerEvent): boolean;
-  onAuxClick?(event: SharedPanePointerEvent): boolean;
-  onWheel?(event: SharedPaneWheelEvent): boolean;
-  onKeyDown?(event: KeyboardEvent): boolean;
-  onKeyUp?(event: KeyboardEvent): boolean;
   dispose?(): void;
 }
 
@@ -82,7 +59,6 @@ export class SharedScissorStage {
   private readonly resizeObserver: ResizeObserver;
   private readonly panes = new Map<string, PaneEntry>();
   private readonly paneRects = new Map<string, SharedScissorPaneRect>();
-  private readonly pointerCaptureById = new Map<number, string>();
   private raf = 0;
   private running = false;
   private lastFrameTimeMs = performance.now();
@@ -274,7 +250,6 @@ export class SharedScissorStage {
     }
     this.panes.clear();
     this.paneRects.clear();
-    this.pointerCaptureById.clear();
     if (this.canvas.parentElement === this.mount) {
       this.mount.removeChild(this.canvas);
     }
@@ -388,173 +363,5 @@ export class SharedScissorStage {
       return { pane: entry.pane, rect };
     }
     return null;
-  }
-
-  private toPointerEventPayload(
-    pane: SharedScissorPane,
-    rect: SharedScissorPaneRect,
-    event: PointerEvent
-  ): SharedPanePointerEvent {
-    const domRect = pane.element.getBoundingClientRect();
-    return {
-      originalEvent: event,
-      paneId: pane.id,
-      localX: event.clientX - domRect.left,
-      localY: event.clientY - domRect.top,
-      rect
-    };
-  }
-
-  private toWheelEventPayload(
-    pane: SharedScissorPane,
-    rect: SharedScissorPaneRect,
-    event: WheelEvent
-  ): SharedPaneWheelEvent {
-    const domRect = pane.element.getBoundingClientRect();
-    return {
-      originalEvent: event,
-      paneId: pane.id,
-      localX: event.clientX - domRect.left,
-      localY: event.clientY - domRect.top,
-      rect
-    };
-  }
-
-  private handlePointerDown = (event: PointerEvent): void => {
-    this.measurePaneRects();
-    const hit = this.findPaneAtClientPoint(event.clientX, event.clientY);
-    if (!hit) return;
-    const consumed = hit.pane.onPointerDown?.(this.toPointerEventPayload(hit.pane, hit.rect, event)) ?? false;
-    if (consumed) {
-      this.pointerCaptureById.set(event.pointerId, hit.pane.id);
-      try {
-        this.canvas.setPointerCapture(event.pointerId);
-      } catch {
-        // no-op
-      }
-      event.preventDefault();
-    }
-  };
-
-  private handlePointerMove = (event: PointerEvent): void => {
-    this.measurePaneRects();
-    const capturedPaneId = this.pointerCaptureById.get(event.pointerId);
-    const hit = capturedPaneId
-      ? (() => {
-          const entry = this.panes.get(capturedPaneId);
-          const rect = capturedPaneId ? this.paneRects.get(capturedPaneId) : null;
-          return entry && rect ? { pane: entry.pane, rect } : null;
-        })()
-      : this.findPaneAtClientPoint(event.clientX, event.clientY);
-    if (!hit) return;
-    const consumed = hit.pane.onPointerMove?.(this.toPointerEventPayload(hit.pane, hit.rect, event)) ?? false;
-    if (consumed) {
-      event.preventDefault();
-    }
-  };
-
-  private handlePointerUp = (event: PointerEvent): void => {
-    this.measurePaneRects();
-    const capturedPaneId = this.pointerCaptureById.get(event.pointerId);
-    const hit = capturedPaneId
-      ? (() => {
-          const entry = this.panes.get(capturedPaneId);
-          const rect = capturedPaneId ? this.paneRects.get(capturedPaneId) : null;
-          return entry && rect ? { pane: entry.pane, rect } : null;
-        })()
-      : this.findPaneAtClientPoint(event.clientX, event.clientY);
-    if (!hit) {
-      this.pointerCaptureById.delete(event.pointerId);
-      return;
-    }
-    const consumed = hit.pane.onPointerUp?.(this.toPointerEventPayload(hit.pane, hit.rect, event)) ?? false;
-    this.pointerCaptureById.delete(event.pointerId);
-    if (this.canvas.hasPointerCapture(event.pointerId)) {
-      try {
-        this.canvas.releasePointerCapture(event.pointerId);
-      } catch {
-        // no-op
-      }
-    }
-    if (consumed) {
-      event.preventDefault();
-    }
-  };
-
-  private handleAuxClick = (event: MouseEvent): void => {
-    this.measurePaneRects();
-    const hit = this.findPaneAtClientPoint(event.clientX, event.clientY);
-    if (!hit) return;
-    const consumed =
-      hit.pane.onAuxClick?.({
-        originalEvent: event as unknown as PointerEvent,
-        paneId: hit.pane.id,
-        localX: event.clientX - hit.pane.element.getBoundingClientRect().left,
-        localY: event.clientY - hit.pane.element.getBoundingClientRect().top,
-        rect: hit.rect
-      }) ?? false;
-    if (consumed) {
-      event.preventDefault();
-    }
-  };
-
-  private handleWheel = (event: WheelEvent): void => {
-    this.measurePaneRects();
-    const hit = this.findPaneAtClientPoint(event.clientX, event.clientY);
-    if (!hit) return;
-    const consumed = hit.pane.onWheel?.(this.toWheelEventPayload(hit.pane, hit.rect, event)) ?? false;
-    if (consumed) {
-      event.preventDefault();
-    }
-  };
-
-  private handleKeyDown = (event: KeyboardEvent): void => {
-    if (!this.focusedPaneId) return;
-    const pane = this.panes.get(this.focusedPaneId)?.pane;
-    if (!pane?.onKeyDown) return;
-    if (pane.onKeyDown(event)) {
-      event.preventDefault();
-    }
-  };
-
-  private handleKeyUp = (event: KeyboardEvent): void => {
-    if (!this.focusedPaneId) return;
-    const pane = this.panes.get(this.focusedPaneId)?.pane;
-    if (!pane?.onKeyUp) return;
-    if (pane.onKeyUp(event)) {
-      event.preventDefault();
-    }
-  };
-
-  routePointerDown(event: PointerEvent): void {
-    this.handlePointerDown(event);
-  }
-
-  routePointerMove(event: PointerEvent): void {
-    this.handlePointerMove(event);
-  }
-
-  routePointerUp(event: PointerEvent): void {
-    this.handlePointerUp(event);
-  }
-
-  routePointerCancel(event: PointerEvent): void {
-    this.handlePointerUp(event);
-  }
-
-  routeAuxClick(event: MouseEvent): void {
-    this.handleAuxClick(event);
-  }
-
-  routeWheel(event: WheelEvent): void {
-    this.handleWheel(event);
-  }
-
-  routeKeyDown(event: KeyboardEvent): void {
-    this.handleKeyDown(event);
-  }
-
-  routeKeyUp(event: KeyboardEvent): void {
-    this.handleKeyUp(event);
   }
 }

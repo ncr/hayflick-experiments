@@ -1,3 +1,4 @@
+import type { PixelPerfectIsoScissorPane } from "@common/render";
 import { PixelPerfectIsoView, SharedScissorStage } from "@common/render";
 import { attachTouchGestures } from "./touch-gestures";
 
@@ -18,7 +19,20 @@ export type SharedScissorStageInputBindingOptions = {
   enableKeyboard?: boolean;
   syncStageFocus?: boolean;
   onFocusPaneId?: (paneId: string | null) => void;
+  getPaneInputTarget: (paneId: string) => SharedScissorStagePaneInputTarget | null | undefined;
 };
+
+type SharedScissorStagePaneInputTarget = Pick<
+  PixelPerfectIsoScissorPane,
+  | "element"
+  | "beginPanDrag"
+  | "updatePanDrag"
+  | "endPanDrag"
+  | "panByCss"
+  | "stepCameraZoomAtLocalCss"
+  | "rotateQuarterTurns"
+  | "toggleZoomMode"
+>;
 
 function isLikelyTrackpadWheel(event: Pick<WheelEvent, "deltaMode" | "deltaX" | "deltaY">): boolean {
   if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) {
@@ -181,42 +195,158 @@ export function bindSharedScissorStageInput(
   const keyboardTarget = options.keyboardTarget ?? window;
   const enableKeyboard = options.enableKeyboard ?? true;
   const syncStageFocus = options.syncStageFocus ?? true;
+  let drag:
+    | {
+        pointerId: number;
+        paneId: string;
+      }
+    | null = null;
 
-  const focusFromClient = (clientX: number, clientY: number): void => {
+  const focusFromClient = (clientX: number, clientY: number) => {
     const hit = stage.hitTestPane(clientX, clientY);
     const paneId = hit?.paneId ?? null;
     if (paneId && syncStageFocus) {
       stage.setFocusedPaneId(paneId);
     }
     options.onFocusPaneId?.(paneId);
+    return hit;
+  };
+
+  const getPaneLocalFromClient = (paneId: string, clientX: number, clientY: number) => {
+    const pane = options.getPaneInputTarget(paneId);
+    if (!pane) {
+      return null;
+    }
+    const rect = pane.element.getBoundingClientRect();
+    return {
+      pane,
+      localX: clientX - rect.left,
+      localY: clientY - rect.top
+    };
   };
 
   const onPointerDown = (event: PointerEvent): void => {
-    focusFromClient(event.clientX, event.clientY);
-    stage.routePointerDown(event);
+    const hit = focusFromClient(event.clientX, event.clientY);
+    if (event.button !== 1 || !hit) {
+      return;
+    }
+    const pane = options.getPaneInputTarget(hit.paneId);
+    if (!pane) {
+      return;
+    }
+    pane.beginPanDrag(hit.localX, hit.localY);
+    drag = { pointerId: event.pointerId, paneId: hit.paneId };
+    try {
+      pointerTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // no-op
+    }
+    event.preventDefault();
   };
+
   const onPointerMove = (event: PointerEvent): void => {
-    stage.routePointerMove(event);
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const local = getPaneLocalFromClient(drag.paneId, event.clientX, event.clientY);
+    if (!local) {
+      return;
+    }
+    if (local.pane.updatePanDrag(local.localX, local.localY)) {
+      event.preventDefault();
+    }
   };
+
   const onPointerUp = (event: PointerEvent): void => {
-    stage.routePointerUp(event);
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    const local = getPaneLocalFromClient(drag.paneId, event.clientX, event.clientY);
+    const pane = local?.pane ?? options.getPaneInputTarget(drag.paneId);
+    drag = null;
+    const consumed = pane?.endPanDrag() ?? false;
+    if (pointerTarget.hasPointerCapture(event.pointerId)) {
+      try {
+        pointerTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // no-op
+      }
+    }
+    if (consumed) {
+      event.preventDefault();
+    }
   };
+
   const onPointerCancel = (event: PointerEvent): void => {
-    stage.routePointerCancel(event);
+    onPointerUp(event);
   };
+
   const onAuxClick = (event: MouseEvent): void => {
     focusFromClient(event.clientX, event.clientY);
-    stage.routeAuxClick(event);
+    if (event.button === 1) {
+      event.preventDefault();
+    }
   };
+
   const onWheel = (event: WheelEvent): void => {
-    focusFromClient(event.clientX, event.clientY);
-    stage.routeWheel(event);
+    const hit = focusFromClient(event.clientX, event.clientY);
+    if (!hit) {
+      return;
+    }
+    const pane = options.getPaneInputTarget(hit.paneId);
+    if (!pane) {
+      return;
+    }
+
+    const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
+    const trackpad = isLikelyTrackpadWheel(event);
+    const zoomIntent = event.ctrlKey || event.metaKey || !trackpad;
+
+    if (!zoomIntent) {
+      const panX = -(event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
+      const panY = -event.deltaY * scale;
+      pane.panByCss(panX, panY);
+      event.preventDefault();
+      return;
+    }
+
+    if (event.deltaY === 0) {
+      return;
+    }
+
+    const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
+    pane.stepCameraZoomAtLocalCss(direction, hit.localX, hit.localY, performance.now());
+    event.preventDefault();
   };
+
   const onKeyDown = (event: KeyboardEvent): void => {
-    stage.routeKeyDown(event);
+    if (isTypingTarget(event.target)) return;
+    const paneId = stage.getFocusedPaneId();
+    if (!paneId) {
+      return;
+    }
+    const pane = options.getPaneInputTarget(paneId);
+    if (!pane) {
+      return;
+    }
+    if (event.code === "KeyQ") {
+      pane.rotateQuarterTurns(-1);
+      event.preventDefault();
+      return;
+    }
+    if (event.code === "KeyE") {
+      pane.rotateQuarterTurns(1);
+      event.preventDefault();
+      return;
+    }
+    if (event.code === "KeyZ") {
+      pane.toggleZoomMode();
+      event.preventDefault();
+    }
   };
-  const onKeyUp = (event: KeyboardEvent): void => {
-    stage.routeKeyUp(event);
+
+  const onKeyUp = (_event: KeyboardEvent): void => {
+    // reserved for future bindings parity
   };
 
   pointerTarget.addEventListener("pointerdown", onPointerDown);
@@ -232,6 +362,7 @@ export function bindSharedScissorStageInput(
   }
 
   return () => {
+    drag = null;
     pointerTarget.removeEventListener("pointerdown", onPointerDown);
     pointerTarget.removeEventListener("pointermove", onPointerMove);
     pointerTarget.removeEventListener("pointerup", onPointerUp);

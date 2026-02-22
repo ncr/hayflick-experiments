@@ -2,13 +2,9 @@ import * as THREE from "three";
 import type { PixelPerfectIsoViewPose, PixelPerfectIsoViewState, PixelSnapMode } from "./pixel-perfect-iso-types";
 import {
   PixelPerfectIsoViewportCore,
-  type PixelPerfectIsoViewportCoreVisualState,
-  type PixelLocalPointerEventLike,
-  type PixelLocalWheelEventLike
+  type PixelPerfectIsoViewportCoreVisualState
 } from "./pixel-perfect-iso-viewport-core";
 import type {
-  SharedPanePointerEvent,
-  SharedPaneWheelEvent,
   SharedScissorFrameContext,
   SharedScissorPane,
   SharedScissorPaneRect
@@ -20,35 +16,6 @@ export type PixelPerfectIsoScissorPaneConfig = {
   core: PixelPerfectIsoViewportCore;
   devicePixelRatio?: number;
 };
-
-function toLocalPointerLike(event: SharedPanePointerEvent): PixelLocalPointerEventLike {
-  const src = event.originalEvent;
-  return {
-    clientX: src.clientX,
-    clientY: src.clientY,
-    localX: event.localX,
-    localY: event.localY,
-    button: src.button,
-    buttons: src.buttons,
-    pointerId: src.pointerId
-  };
-}
-
-function toLocalWheelLike(event: SharedPaneWheelEvent): PixelLocalWheelEventLike {
-  const src = event.originalEvent;
-  return {
-    clientX: src.clientX,
-    clientY: src.clientY,
-    localX: event.localX,
-    localY: event.localY,
-    deltaX: src.deltaX,
-    deltaY: src.deltaY,
-    deltaMode: src.deltaMode,
-    ctrlKey: src.ctrlKey,
-    metaKey: src.metaKey,
-    shiftKey: src.shiftKey
-  };
-}
 
 export class PixelPerfectIsoScissorPane implements SharedScissorPane {
   readonly id: string;
@@ -82,34 +49,6 @@ export class PixelPerfectIsoScissorPane implements SharedScissorPane {
       this.fixedDevicePixelRatio ??
       (rect.cssWidth > 0 ? rect.deviceWidth / rect.cssWidth : 1);
     this.core.resize(rect.cssWidth, rect.cssHeight, dpr, rect.deviceWidth, rect.deviceHeight);
-  }
-
-  onPointerDown(event: SharedPanePointerEvent): boolean {
-    return this.core.onPointerDown(toLocalPointerLike(event));
-  }
-
-  onPointerMove(event: SharedPanePointerEvent): boolean {
-    return this.core.onPointerMove(toLocalPointerLike(event));
-  }
-
-  onPointerUp(event: SharedPanePointerEvent): boolean {
-    return this.core.onPointerUp(toLocalPointerLike(event));
-  }
-
-  onAuxClick(event: SharedPanePointerEvent): boolean {
-    return this.core.onAuxClick(event.originalEvent.button);
-  }
-
-  onWheel(event: SharedPaneWheelEvent): boolean {
-    return this.core.onWheel(toLocalWheelLike(event));
-  }
-
-  onKeyDown(event: KeyboardEvent): boolean {
-    return this.core.onKeyDown(event);
-  }
-
-  onKeyUp(event: KeyboardEvent): boolean {
-    return this.core.onKeyUp(event);
   }
 
   getViewPose(): PixelPerfectIsoViewPose {
