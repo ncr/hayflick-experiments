@@ -48,6 +48,8 @@ type PaneDom = {
   frame: HTMLDivElement;
   surface: HTMLDivElement;
   label: HTMLDivElement;
+  labelText: string;
+  accentCss: string;
 };
 
 type PaneRuntime = {
@@ -236,19 +238,23 @@ function createPaneDom(pane: PaneSpec): PaneDom {
   label.style.padding = "3px 6px";
   label.style.borderRadius = "6px";
   label.style.background = "#090d14";
-  label.style.border = `1px solid #${new THREE.Color(pane.accent).getHexString()}`;
+  const accentCss = `#${new THREE.Color(pane.accent).getHexString()}`;
+  label.style.border = `1px solid ${accentCss}`;
   label.style.color = "#e9f0f7";
   label.style.font = "11px/1.2 ui-monospace, Menlo, monospace";
   label.style.pointerEvents = "none";
   label.style.zIndex = "3";
   frame.appendChild(label);
 
-  return { frame, surface, label };
+  return { frame, surface, label, labelText: pane.label, accentCss };
 }
 
 function setFocusedVisual(paneDom: PaneDom, focused: boolean): void {
-  paneDom.frame.style.borderColor = focused ? "#42566d" : "#42566d";
-  paneDom.frame.style.boxShadow = "none";
+  paneDom.frame.style.borderColor = focused ? paneDom.accentCss : "#42566d";
+  paneDom.frame.style.boxShadow = focused ? `inset 0 0 0 1px ${paneDom.accentCss}` : "none";
+  paneDom.label.style.background = focused ? "#0f1722" : "#090d14";
+  paneDom.label.style.color = focused ? "#ffffff" : "#e9f0f7";
+  paneDom.label.textContent = focused ? `${paneDom.labelText} (active)` : paneDom.labelText;
 }
 
 function defaultVisualStateMap(): PaneVisualStateMap {
@@ -513,6 +519,21 @@ function backendSetFocusedPane(backend: Backend, paneKey: PaneKey | null): void 
   }
 }
 
+function paneKeyAtClientPoint(
+  paneDoms: Record<PaneKey, PaneDom>,
+  clientX: number,
+  clientY: number
+): PaneKey | null {
+  for (const pane of PANES) {
+    const rect = paneDoms[pane.key].frame.getBoundingClientRect();
+    if (clientX < rect.left || clientY < rect.top || clientX > rect.right || clientY > rect.bottom) {
+      continue;
+    }
+    return pane.key;
+  }
+  return null;
+}
+
 function backendDispose(backend: Backend): void {
   if (backend.mode === "shared") {
     backend.impl.stage.dispose();
@@ -621,6 +642,7 @@ const experiment: ExperimentModule = {
     let petCenterWorld = new THREE.Vector3(0, 0.25, 0);
     let currentMode: Mode = "independent";
     let visualStateStore = defaultVisualStateMap();
+    const interactionCleanup: Array<() => void> = [];
 
     const setMode = (nextMode: Mode): void => {
       if (disposed) return;
@@ -655,6 +677,37 @@ const experiment: ExperimentModule = {
         setFocusedVisual(paneDoms[pane.key], focused === pane.key);
       }
     };
+
+    const focusPane = (paneKey: PaneKey | null): void => {
+      if (!backend) return;
+      backendSetFocusedPane(backend, paneKey);
+    };
+
+    for (const pane of PANES) {
+      const focusThisPane = (): void => {
+        focusPane(pane.key);
+      };
+      const surface = paneDoms[pane.key].surface;
+      surface.addEventListener("pointerdown", focusThisPane);
+      surface.addEventListener("wheel", focusThisPane);
+      interactionCleanup.push(() => {
+        surface.removeEventListener("pointerdown", focusThisPane);
+        surface.removeEventListener("wheel", focusThisPane);
+      });
+    }
+
+    const focusSharedHitPane = (event: PointerEvent | WheelEvent): void => {
+      const paneKey = paneKeyAtClientPoint(paneDoms, event.clientX, event.clientY);
+      if (paneKey) {
+        focusPane(paneKey);
+      }
+    };
+    gridCanvasLayer.addEventListener("pointerdown", focusSharedHitPane);
+    gridCanvasLayer.addEventListener("wheel", focusSharedHitPane);
+    interactionCleanup.push(() => {
+      gridCanvasLayer.removeEventListener("pointerdown", focusSharedHitPane);
+      gridCanvasLayer.removeEventListener("wheel", focusSharedHitPane);
+    });
 
     toggle.addEventListener("change", () => {
       setMode(toggle.checked ? "shared" : "independent");
@@ -743,6 +796,9 @@ const experiment: ExperimentModule = {
       }
       if (debugWindow.__pixelPerfectScissorLabDebug === debugApi) {
         delete debugWindow.__pixelPerfectScissorLabDebug;
+      }
+      for (const cleanup of interactionCleanup) {
+        cleanup();
       }
       shell.remove();
     };

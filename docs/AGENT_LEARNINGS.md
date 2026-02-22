@@ -246,6 +246,19 @@ Preventive checklist:
 - Do not clamp scissor viewport origins if smooth subpixel pan remainders rely on temporary overscan overflow; rely on scissor rect clipping instead.
 - When changing scissor viewport math, manually verify two-finger pan smoothness on both axes at max zoom.
 
+## 2026-02-22 - Independent scissor-lab panes kept stale keyboard focus across views
+Root cause:
+- In independent mode, each pane owns its own `SharedScissorStage` and each stage listens to `window` key events.
+- Clicking a new pane focused that pane locally but did not clear focus on previously interacted panes, so `Q`/`E` rotations were handled by multiple stages.
+
+Detection signal:
+- After clicking multiple views in `pixel-perfect-scissor-lab`, pressing `Q` or `E` rotated all previously clicked panes instead of only the active one.
+
+Preventive checklist:
+- When multiple independent stages share global keyboard listeners, maintain one experiment-level active pane and clear focus on all others on every pane interaction.
+- Treat wheel/touchpad pan as focus-acquiring interaction too, not only pointer down.
+- Add a visible active-pane indicator so focus state is easy to verify during manual testing.
+
 ## 2026-02-09 - 2:1 staircase drift appeared in rendered output despite projection tests passing
 Root cause:
 - `pixel-perfect-2to1` rendered scene geometry to a high-resolution target and then sampled down to low resolution.
