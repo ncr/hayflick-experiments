@@ -2979,3 +2979,32 @@ Preventive checklist:
 - For multi-pane preview grids, use one renderer/canvas with scissor viewports per grid (`PixelQuad` / similar wrappers) instead of one WebGL context per pane.
 - Count worst-case visible panes before adding new preview rows, especially in React StrictMode/dev.
 - Treat context-limit warnings as a correctness bug (they can cause random panes to disappear), not just a performance warning.
+
+## 2026-02-22 - Shared scissor pixel panes drifted by 1px from independent panes
+Root cause:
+- A shared WebGLRenderer was reused across pane renders, but the pixel renderer's offscreen low-resolution pass did not explicitly reset scissor test / viewport / scissor before rendering to its render target.
+- Pane-dependent WebGL state could leak into the offscreen pass and cause subtle rasterization differences in some panes (for example, a 1-pixel edge difference on the orange box in the east view).
+
+Detection signal:
+- A/B toggle looked almost identical overall, but specific pixel edges differed between independent and shared modes.
+- The issue was easier to notice on high-DPI/Retina displays and in tight edge cases rather than broad scene composition.
+
+Preventive checklist:
+- In shared-renderer pipelines, explicitly set scissor test, viewport, and scissor before every offscreen render-target pass.
+- Do not assume render-target switches restore all WebGL state needed for pixel-perfect parity.
+- Validate shared-vs-independent A/B parity at DPR 2, not only DPR 1.
+
+## 2026-02-22 - Touchpad wheel pan smoothing broke pixel stability and vertical wheel deltas felt chunky
+Root cause:
+- Replacing pixel-quantized pan with continuous world-space pan removed the camera-step quantization invariant and reintroduced shimmer.
+- Touchpad vertical wheel events can arrive as larger per-event deltas than horizontal, so feeding one wheel event directly into quantized `applyPan(...)` caused immediate full "big-pixel" jumps.
+
+Detection signal:
+- User reported horizontal touchpad pan felt fluid while vertical pan jumped in large pixel units.
+- A quick vertical attenuation hack only changed speed, not the stepped feel.
+- Continuous smoothing fix removed the stepping but reintroduced shimmering.
+
+Preventive checklist:
+- Keep all pan motion (drag and wheel) inside the same pixel-quantized pan pipeline.
+- For large wheel deltas, split one wheel event into smaller sub-steps and feed each through quantized pan rather than bypassing quantization.
+- When patching scissor-vs-independent parity paths, mirror the fix in both `pixel-perfect-iso-view` and `pixel-perfect-iso-viewport-core` until the wrapper refactor removes duplication.

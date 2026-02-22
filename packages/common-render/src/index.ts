@@ -44,6 +44,27 @@ export {
   type PixelSnapMode
 } from "./pixel-perfect-iso-view";
 export {
+  PixelPerfectIsoViewportCore,
+  type PixelPerfectIsoViewportCoreConfig,
+  type PixelPerfectIsoRenderViewport,
+  type PixelPerfectIsoViewportCoreVisualState,
+  type PixelLocalPointerEventLike,
+  type PixelLocalWheelEventLike
+} from "./pixel-perfect-iso-viewport-core";
+export {
+  SharedScissorStage,
+  type SharedScissorStageConfig,
+  type SharedScissorPane,
+  type SharedScissorPaneRect,
+  type SharedScissorFrameContext,
+  type SharedPanePointerEvent,
+  type SharedPaneWheelEvent
+} from "./shared-scissor-stage";
+export {
+  PixelPerfectIsoScissorPane,
+  type PixelPerfectIsoScissorPaneConfig
+} from "./pixel-perfect-iso-scissor-pane";
+export {
   attachTouchGestures,
   type TouchGestureCallbacks
 } from "./touch-gestures";

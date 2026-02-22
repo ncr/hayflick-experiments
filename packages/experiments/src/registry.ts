@@ -10,6 +10,7 @@ import { meta as levelBuilderMeta } from "./level-builder/meta";
 import { meta as physicsRapierMeta } from "./physics-rapier/meta";
 import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
 import { meta as pixelPerfectCameraZoomMeta } from "./pixel-perfect-camera-zoom/meta";
+import { meta as pixelPerfectScissorLabMeta } from "./pixel-perfect-scissor-lab/meta";
 import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
 import { meta as propDropEdgeTestMeta } from "./prop-drop-edge-test/meta";
 import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
@@ -52,6 +53,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...pixelPerfectCameraZoomMeta,
     load: () => import("./pixel-perfect-camera-zoom/index")
+  },
+  {
+    ...pixelPerfectScissorLabMeta,
+    load: () => import("./pixel-perfect-scissor-lab/index")
   },
   {
     ...pixelStableMovingMeshMeta,

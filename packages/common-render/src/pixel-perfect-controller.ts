@@ -202,6 +202,8 @@ export class PixelPerfectController {
   private viewportCssHeight: number;
   private viewportDeviceWidth = 1;
   private viewportDeviceHeight = 1;
+  private viewportDeviceOverrideWidth: number | null = null;
+  private viewportDeviceOverrideHeight: number | null = null;
   private maxUserScale: number;
   private userScale: number;
   private renderScale = 1;
@@ -243,7 +245,13 @@ export class PixelPerfectController {
     this.recomputeLayout();
   }
 
-  resize(cssWidth: number, cssHeight: number, dpr: number): void {
+  resize(
+    cssWidth: number,
+    cssHeight: number,
+    dpr: number,
+    exactDeviceWidth?: number,
+    exactDeviceHeight?: number
+  ): void {
     const nextCssWidth = Math.max(1, cssWidth);
     const nextCssHeight = Math.max(1, cssHeight);
     const previousDpr = this.devicePixelRatio;
@@ -251,6 +259,12 @@ export class PixelPerfectController {
 
     this.viewportCssWidth = nextCssWidth;
     this.viewportCssHeight = nextCssHeight;
+    this.viewportDeviceOverrideWidth = Number.isFinite(exactDeviceWidth)
+      ? Math.max(1, Math.floor(exactDeviceWidth ?? 1))
+      : null;
+    this.viewportDeviceOverrideHeight = Number.isFinite(exactDeviceHeight)
+      ? Math.max(1, Math.floor(exactDeviceHeight ?? 1))
+      : null;
 
     if (Math.abs(nextDpr - previousDpr) > 1e-9) {
       const inputRatio = nextDpr / previousDpr;
@@ -491,13 +505,25 @@ export class PixelPerfectController {
   }
 
   private recomputeLayout(): void {
-    const viewport = computeViewportDeviceSize(
-      this.viewportCssWidth,
-      this.viewportCssHeight,
-      this.devicePixelRatio,
-      this.maxBackingWidth,
-      this.maxBackingHeight
-    );
+    const viewport =
+      this.viewportDeviceOverrideWidth != null && this.viewportDeviceOverrideHeight != null
+        ? {
+            width: Math.max(
+              1,
+              Math.min(this.maxBackingWidth, Math.floor(this.viewportDeviceOverrideWidth))
+            ),
+            height: Math.max(
+              1,
+              Math.min(this.maxBackingHeight, Math.floor(this.viewportDeviceOverrideHeight))
+            )
+          }
+        : computeViewportDeviceSize(
+            this.viewportCssWidth,
+            this.viewportCssHeight,
+            this.devicePixelRatio,
+            this.maxBackingWidth,
+            this.maxBackingHeight
+          );
     this.viewportDeviceWidth = viewport.width;
     this.viewportDeviceHeight = viewport.height;
 
