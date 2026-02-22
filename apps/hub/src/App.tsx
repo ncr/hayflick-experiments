@@ -2,16 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import { experiments, getExperimentById } from "@experiments/catalog";
 import { Stage } from "./components/Stage";
 import { Forge } from "./pages/Forge";
+import { ForgeV2 } from "./pages/ForgeV2";
 
 type Route =
   | { type: "experiment"; id: string }
   | { type: "forge" }
+  | { type: "forge-v2" }
   | null;
 
 function readRouteFromHash(): Route {
   const hash = window.location.hash;
   if (hash === "#/forge") {
     return { type: "forge" };
+  }
+  if (hash === "#/forge-v2") {
+    return { type: "forge-v2" };
   }
   if (hash.startsWith("#/exp/")) {
     const id = hash.replace("#/exp/", "").trim();
@@ -42,6 +47,8 @@ export function App() {
     if (!route) return;
     if (route.type === "forge") {
       window.history.replaceState({}, "", "#/forge");
+    } else if (route.type === "forge-v2") {
+      window.history.replaceState({}, "", "#/forge-v2");
     } else {
       window.history.replaceState({}, "", `#/exp/${route.id}`);
     }
@@ -62,8 +69,16 @@ export function App() {
     setMenuOpen(false);
   };
 
+  const selectForgeV2 = () => {
+    setRoute({ type: "forge-v2" });
+    setMenuOpen(false);
+  };
+
   if (route?.type === "forge") {
     return <Forge />;
+  }
+  if (route?.type === "forge-v2") {
+    return <ForgeV2 />;
   }
 
   return (
@@ -75,6 +90,11 @@ export function App() {
           <li>
             <button onClick={selectForge}>
               <span>Asset Forge</span>
+            </button>
+          </li>
+          <li>
+            <button onClick={selectForgeV2}>
+              <span>Asset Forge V2</span>
             </button>
           </li>
           {experiments.map((entry) => {

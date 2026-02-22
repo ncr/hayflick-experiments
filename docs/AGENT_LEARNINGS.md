@@ -238,6 +238,20 @@ Detection signal:
 - User-visible artifacts were strongest on top surfaces of 1x1x1 cubes.
 
 Preventive checklist:
+
+## 2026-02-22 - Forge V2 frontend persistence silently targeted the wrong asset root
+Root cause:
+- Hub `/api/fs/*` proxy was hard-wired to `assets/forge`, while the new Forge V2 UI was designed to persist under `assets/forge-v2`.
+- Reusing the existing FS client shape without adding a new proxy root would have written V2 metadata/artifacts into the V1 tree.
+
+Detection signal:
+- Repo inspection showed `apps/hub/plugins/api-proxy.ts` defines a single `FORGE_ROOT` and all `/api/fs/*` requests resolve against it.
+- Forge V2 plan required a separate storage root (`assets/forge-v2`), making the mismatch explicit before UI persistence wiring.
+
+Preventive checklist:
+- When adding a new asset workflow root, inspect the hub proxy middleware first and confirm the filesystem base path is configurable or duplicated intentionally.
+- Add a dedicated FS route/client pair (e.g. `/api/fs-v2`) rather than overloading path traversal to reach sibling roots.
+- Validate the first persisted file path end-to-end (UI request path and on-disk location) before building more workflow steps.
 - For strict pixel-perfect geometry validation, render scene directly at fixed low resolution and scale up with nearest filtering.
 - Keep at least one rendered-frame Playwright test (not only projection-space tests) for staircase invariants.
 - Validate cube top-edge staircases separately from axis-line tests because face boundaries are where sampling artifacts appear first.
@@ -2923,3 +2937,45 @@ Preventive checklist:
 - When choosing source geometry for offline processing, validate triangle payload, not file existence.
 - Probe both processed and raw model paths and pick the first with valid triangle data.
 - Log when raw fallback is used because processed mesh content is empty.
+
+## 2026-02-22 - Physics preview sim effect restarted itself via shared viewport state
+Root cause:
+- The Forge V2 simulation `useEffect` depended on shared `physicsViewState`.
+- Inside the effect, calling `Viewport.setModel(...)` emitted `onViewChange`, which updated `physicsViewState` and immediately re-triggered the effect cleanup/restart loop.
+
+Detection signal:
+- Collider generation succeeded but physics preview appeared static / never progressed.
+- No typecheck/build errors; issue reproduced only at runtime in the `ForgeV2` physics preview flow.
+
+Preventive checklist:
+- Keep long-running simulation/animation effects independent from UI camera-sync state unless camera changes must rebuild simulation state.
+- If a viewport `setModel` emits `onViewChange`, do not include that shared view state in the same effect dependency list that sets the model.
+- Split simulation world setup and camera synchronization into separate effects when both are needed.
+
+## 2026-02-22 - One pixel pane stayed blank in multi-pane imperative preview grids
+Root cause:
+- `PixelQuad` pushed the model to child `ViewportPixel` instances only in a one-time `useEffect` keyed by `model`.
+- If one child viewport mounted after that effect ran, it never received the current model and stayed blank.
+
+Detection signal:
+- In Forge V2 physics preview, a single angle/scenario pane (e.g. south on the 30deg slope row) could remain blank while sibling panes rendered normally.
+- Rebuilds/prop switches sometimes moved the problem to a different pane, pointing to mount timing rather than scenario logic.
+
+Preventive checklist:
+- In imperative multi-pane wrappers, backfill current model/view state inside the child ref callback for late-mounted panes.
+- Do not assume all child refs are attached before parent `model`/`view` effects fire.
+- When a single pane is blank but siblings work, inspect ref-attachment timing before debugging scene content.
+
+## 2026-02-22 - Forge V2 physics preview exceeded browser WebGL context limits
+Root cause:
+- Physics view mounted many independent WebGL canvases at once (multiple `Viewport` 3D panes plus `4 x N` pixel panes), exceeding the browser's active context cap.
+- React StrictMode dev effect replays amplified context churn during mount, making failures easier to hit.
+
+Detection signal:
+- Browser console spammed “There are too many active WebGL contexts on this page, the oldest context will be lost.”
+- Failures appeared in both `Viewport.tsx` and `ViewportPixel.tsx` stack traces during physics view mount.
+
+Preventive checklist:
+- For multi-pane preview grids, use one renderer/canvas with scissor viewports per grid (`PixelQuad` / similar wrappers) instead of one WebGL context per pane.
+- Count worst-case visible panes before adding new preview rows, especially in React StrictMode/dev.
+- Treat context-limit warnings as a correctness bug (they can cause random panes to disappear), not just a performance warning.

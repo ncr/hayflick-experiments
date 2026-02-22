@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "id": "large-desk-without-drawers",
+  "description": "large desk without drawers",
+  "createdAt": "2026-02-21T21:59:54.816Z",
+  "updatedAt": "2026-02-22T11:07:39.069Z",
+  "lifecycle": {
+    "status": "mesh-ready"
+  },
+  "styleGuide": {
+    "name": "",
+    "prompt": "",
+    "negativePrompt": "",
+    "imageSize": "1024x1024"
+  },
+  "generation": {
+    "image": {
+      "provider": "openai",
+      "model": "gpt-image-1",
+      "prompt": "large desk without drawers 3/4 view, product shot, centered object, plain mid-gray background.",
+      "size": "1024x1024",
+      "generatedAt": "2026-02-21T21:59:54.816Z",
+      "revision": 1
+    },
+    "mesh": {
+      "provider": "tripo",
+      "faceLimit": 20000,
+      "pbr": true,
+      "tripoTaskId": "",
+      "generatedAt": "2026-02-21T21:59:54.816Z",
+      "revision": 1
+    }
+  },
+  "processing": {
+    "mesh": {
+      "originalFaces": 0,
+      "processedFaces": 0,
+      "simplificationRatio": 1,
+      "textureResolution": 0
+    },
+    "transform": {
+      "unitScaleMetersPerUnit": 1.28,
+      "targetDimension": {
+        "method": "max",
+        "value": 1
+      },
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "provisionalPivot": {
+        "preset": "bottom-center",
+        "offset": [
+          0,
+          0,
+          0
+        ],
+        "basis": "mesh"
+      }
+    }
+  },
+  "pixelPreview": {
+    "testEnvironmentVersion": 1,
+    "cameraSyncState": {
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "yawTurns": 0,
+      "zoomLevel": 2
+    },
+    "views": [
+      {
+        "angle": "north",
+        "visible": true
+      },
+      {
+        "angle": "east",
+        "visible": true
+      },
+      {
+        "angle": "south",
+        "visible": true
+      },
+      {
+        "angle": "west",
+        "visible": true
+      }
+    ]
+  }
+}

@@ -47,6 +47,9 @@ importers:
       '@common/render':
         specifier: workspace:^
         version: link:../../packages/common-render
+      '@dimforge/rapier3d-compat':
+        specifier: ^0.19.3
+        version: 0.19.3
       '@experiments/catalog':
         specifier: workspace:*
         version: link:../../packages/experiments

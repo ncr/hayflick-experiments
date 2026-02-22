@@ -12,19 +12,29 @@ export interface ViewportPixelHandle {
   setModel(group: THREE.Group | null): void;
   getViewState(): PixelViewportViewState | null;
   setViewState(state: PixelViewportViewState): void;
+  setNamedObjectTransform(
+    name: string,
+    transform: {
+      position?: [number, number, number];
+      quaternion?: [number, number, number, number];
+    }
+  ): void;
 }
 
 interface Props {
   className?: string;
   onViewChange?: (state: PixelViewportViewState) => void;
+  framingScale?: number;
 }
 
 export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
-  function ViewportPixel({ className, onViewChange }, ref) {
+  function ViewportPixel({ className, onViewChange, framingScale = 1 }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<PixelPerfectIsoView | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const modelRef = useRef<THREE.Group | null>(null);
+    const desiredModelRef = useRef<THREE.Group | null>(null);
+    const pendingViewStateRef = useRef<PixelViewportViewState | null>(null);
     const onViewChangeRef = useRef(onViewChange);
     const lastViewSignatureRef = useRef<string>("");
     onViewChangeRef.current = onViewChange;
@@ -42,44 +52,82 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       };
     };
 
+    const applyModelToScene = (group: THREE.Group | null): void => {
+      const scene = sceneRef.current;
+      if (!scene) {
+        return;
+      }
+
+      if (modelRef.current) {
+        scene.remove(modelRef.current);
+      }
+
+      modelRef.current = null;
+      if (group) {
+        const clone = group.clone(true);
+        modelRef.current = clone;
+        scene.add(clone);
+      }
+    };
+
+    const applyViewState = (state: PixelViewportViewState): void => {
+      const view = viewRef.current;
+      if (!view) {
+        pendingViewStateRef.current = state;
+        return;
+      }
+      const target = state.target;
+      const zoom = Math.round(
+        THREE.MathUtils.clamp(
+          Number.isFinite(state.zoom) ? state.zoom : view.getState().cameraZoomTarget,
+          1,
+          6
+        )
+      );
+      view.setViewPose({
+        targetX: Number.isFinite(target[0]) ? target[0] : view.cameraTarget.x,
+        targetZ: Number.isFinite(target[2]) ? target[2] : view.cameraTarget.z,
+        yawIndex: Number.isFinite(state.yawTurns)
+          ? ((Math.round(state.yawTurns) % 4) + 4) % 4
+          : ((view.getYawIndex() % 4) + 4) % 4,
+        zoom
+      });
+      pendingViewStateRef.current = null;
+    };
+
     useImperativeHandle(ref, () => ({
       setModel: (group: THREE.Group | null) => {
-        const scene = sceneRef.current;
-        if (!scene) return;
-
-        if (modelRef.current) {
-          scene.remove(modelRef.current);
-        }
-
-        modelRef.current = group;
-        if (group) {
-          const clone = group.clone(true);
-          modelRef.current = clone;
-          scene.add(clone);
-        }
+        desiredModelRef.current = group;
+        applyModelToScene(group);
       },
       getViewState: () => readViewState(),
       setViewState: (state: PixelViewportViewState) => {
-        const view = viewRef.current;
-        if (!view) {
+        applyViewState(state);
+      },
+      setNamedObjectTransform: (
+        name: string,
+        transform: {
+          position?: [number, number, number];
+          quaternion?: [number, number, number, number];
+        }
+      ) => {
+        const root = modelRef.current;
+        if (!root || !name) {
           return;
         }
-        const target = state.target;
-        const zoom = Math.round(
-          THREE.MathUtils.clamp(
-            Number.isFinite(state.zoom) ? state.zoom : view.getState().cameraZoomTarget,
-            1,
-            6
-          )
-        );
-        view.setViewPose({
-          targetX: Number.isFinite(target[0]) ? target[0] : view.cameraTarget.x,
-          targetZ: Number.isFinite(target[2]) ? target[2] : view.cameraTarget.z,
-          yawIndex: Number.isFinite(state.yawTurns)
-            ? ((Math.round(state.yawTurns) % 4) + 4) % 4
-            : ((view.getYawIndex() % 4) + 4) % 4,
-          zoom
-        });
+        const target = root.getObjectByName(name);
+        if (!target) {
+          return;
+        }
+        const pos = transform.position;
+        if (pos) {
+          target.position.set(pos[0], pos[1], pos[2]);
+        }
+        const quat = transform.quaternion;
+        if (quat) {
+          target.quaternion.set(quat[0], quat[1], quat[2], quat[3]);
+        }
+        target.updateMatrixWorld(true);
       }
     }));
 
@@ -121,13 +169,17 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
       const CAMERA_YAW = THREE.MathUtils.degToRad(45);
 
+      const effectiveFramingScale =
+        Number.isFinite(framingScale) && framingScale > 0 ? framingScale : 1;
+
       const view = new PixelPerfectIsoView({
         mount: container,
         width,
         height,
         scene,
         fixedRenderHeight: 270,
-        baseOrthoHeight: 5.966213466261495,
+        // Wider framing helps multi-panel quad previews fit tall props at zoom=1.
+        baseOrthoHeight: 5.966213466261495 * effectiveFramingScale,
         cameraDistance: 30,
         cameraPitch: CAMERA_PITCH,
         cameraYaw: CAMERA_YAW,
@@ -145,6 +197,12 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
         clearColor: 0x1a1a2e,
       });
       viewRef.current = view;
+
+      // Apply any imperative updates that arrived before the internal renderer finished mounting.
+      applyModelToScene(desiredModelRef.current);
+      if (pendingViewStateRef.current) {
+        applyViewState(pendingViewStateRef.current);
+      }
 
       // Render loop
       let raf = 0;

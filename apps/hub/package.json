@@ -16,6 +16,7 @@
   "dependencies": {
     "@common/collider-vhacd": "workspace:*",
     "@common/render": "workspace:^",
+    "@dimforge/rapier3d-compat": "^0.19.3",
     "@experiments/catalog": "workspace:*",
     "@gltf-transform/core": "^4.3.0",
     "@gltf-transform/extensions": "^4.3.0",

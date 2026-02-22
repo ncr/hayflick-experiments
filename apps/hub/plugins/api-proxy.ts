@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const FORGE_ROOT = path.resolve(process.cwd(), "../../assets/forge");
+const FORGE_V2_ROOT = path.resolve(process.cwd(), "../../assets/forge-v2");
 
 // Load .env files — Vite only exposes VITE_* to client; we need raw keys for server middleware
 function loadEnvFile() {
@@ -196,7 +197,8 @@ function safePath(base: string, ...segments: string[]): string | null {
 async function handleFs(
   req: IncomingMessage,
   res: ServerResponse,
-  subpath: string
+  subpath: string,
+  root: string
 ) {
   // Read a file or directory listing
   if (subpath === "/read" && req.method === "GET") {
@@ -204,7 +206,7 @@ async function handleFs(
     const filePath = url.searchParams.get("path");
     if (!filePath) return errorResponse(res, 400, "Missing path param");
 
-    const resolved = safePath(FORGE_ROOT, filePath);
+    const resolved = safePath(root, filePath);
     if (!resolved) return errorResponse(res, 403, "Path traversal denied");
 
     if (!fs.existsSync(resolved)) {
@@ -250,7 +252,7 @@ async function handleFs(
     const filePath = url.searchParams.get("path");
     if (!filePath) return errorResponse(res, 400, "Missing path param");
 
-    const resolved = safePath(FORGE_ROOT, filePath);
+    const resolved = safePath(root, filePath);
     if (!resolved) return errorResponse(res, 403, "Path traversal denied");
 
     ensureDir(path.dirname(resolved));
@@ -269,7 +271,7 @@ async function handleFs(
   if (subpath === "/list" && req.method === "GET") {
     const url = new URL(req.url!, "http://localhost");
     const dir = url.searchParams.get("dir") || "";
-    const resolved = safePath(FORGE_ROOT, dir);
+    const resolved = safePath(root, dir);
     if (!resolved) return errorResponse(res, 403, "Path traversal denied");
 
     if (!fs.existsSync(resolved)) {
@@ -313,7 +315,12 @@ export function apiProxyPlugin(): Plugin {
 
           if (url.startsWith("/api/fs/")) {
             const subpath = url.replace("/api/fs", "").split("?")[0];
-            return await handleFs(req, res, subpath);
+            return await handleFs(req, res, subpath, FORGE_ROOT);
+          }
+
+          if (url.startsWith("/api/fs-v2/")) {
+            const subpath = url.replace("/api/fs-v2", "").split("?")[0];
+            return await handleFs(req, res, subpath, FORGE_V2_ROOT);
           }
 
           errorResponse(res, 404, "Unknown API route");
