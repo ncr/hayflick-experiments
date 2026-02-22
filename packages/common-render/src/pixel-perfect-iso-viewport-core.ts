@@ -459,7 +459,9 @@ export class PixelPerfectIsoViewportCore {
     const viewportHeight = Math.max(1, Math.round(this.displayOutputHeight));
     const renderLeft = viewport.x + this.getRenderStartX();
     const renderTop = this.getRenderStartY();
-    const renderBottom = viewport.y + Math.max(0, viewport.height - (renderTop + viewportHeight));
+    // Allow negative local viewport offsets so subpixel pan remainders can move the
+    // overscanned output smoothly inside the scissor rect (matches PixelPerfectIsoView).
+    const renderBottom = viewport.y + (viewport.height - (renderTop + viewportHeight));
     renderer.setViewport(renderLeft, renderBottom, viewportWidth, viewportHeight);
     renderer.render(this.outputScene, this.outputCamera);
     renderer.setViewport(viewport.x, viewport.y, viewport.width, viewport.height);

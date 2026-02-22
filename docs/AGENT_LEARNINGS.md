@@ -218,15 +218,33 @@ Preventive checklist:
 
 ## 2026-02-08 - Promoted module coverage gate failed after adding new shared file
 Root cause:
+- Coverage gate scripts targeted a fixed set of promoted modules, so newly promoted/shared packages could be added without being included in the coverage run.
 - Added `packages/common-level-editor/src/editor-controls.ts` without corresponding unit tests.
 - `test:promoted` enforces global coverage thresholds, so one uncovered promoted file dropped the whole package below required levels.
 
 Detection signal:
+- CI/review reported promoted module coverage expectation mismatch after adding a new shared file/package.
 - CI failed at `pnpm test:promoted` with coverage threshold errors for `@common/level-editor`.
 
 Preventive checklist:
+- When promoting a module or adding a new shared package with coverage expectations, update the promoted coverage script in the same change.
+- Run the promoted coverage command locally once after changing promoted package boundaries.
 - Any new file in promoted packages must ship with tests in the same commit.
 - Run `pnpm test:promoted` locally before pushing promoted-module changes.
+
+## 2026-02-22 - Scissor pane vertical trackpad pan lost subpixel motion at max zoom
+Root cause:
+- `PixelPerfectIsoViewportCore.renderToRenderer()` clamped the pane-local output viewport Y origin with `Math.max(0, ...)`.
+- When the overscanned pixelated output was taller than the scissor pane, that clamp pinned vertical blit offset and discarded `panDeviceRemainderY` visual motion until a full camera-step quantum accumulated.
+
+Detection signal:
+- In `pixel-perfect-scissor-lab`, horizontal two-finger pan was smooth at max zoom, but vertical pan stayed still for multiple touchpad events and then jumped by one large pixel.
+- The same gesture worked correctly in `pixel-stable-moving-mesh` (non-scissor path), isolating the regression to scissor rendering.
+
+Preventive checklist:
+- Keep scissor and non-scissor viewport placement math behaviorally aligned for negative/overscan offsets.
+- Do not clamp scissor viewport origins if smooth subpixel pan remainders rely on temporary overscan overflow; rely on scissor rect clipping instead.
+- When changing scissor viewport math, manually verify two-finger pan smoothness on both axes at max zoom.
 
 ## 2026-02-09 - 2:1 staircase drift appeared in rendered output despite projection tests passing
 Root cause:
