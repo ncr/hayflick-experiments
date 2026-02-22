@@ -9,6 +9,7 @@
  */
 
 import * as THREE from "three";
+import { bindPixelPerfectIsoViewInput } from "@common/input";
 import {
   bakeLevelForEcs,
   createPromotedEditorControls,
@@ -1175,6 +1176,7 @@ const experiment: ExperimentModule = {
       mountBackground: "#0b1117",
       canvasBackground: "#0b1117"
     });
+    const detachCameraInput = bindPixelPerfectIsoViewInput({ view });
     const camera = view.camera;
     const renderer = view.renderer;
     renderer.toneMappingExposure = 1.35;
@@ -3115,6 +3117,7 @@ const experiment: ExperimentModule = {
       hoverMaterial.dispose();
       rectPreviewMaterial.dispose();
 
+      detachCameraInput();
       view.dispose();
 
       hud.destroy();

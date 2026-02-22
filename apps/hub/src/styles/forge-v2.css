@@ -529,6 +529,28 @@
   gap: 0.65rem;
 }
 
+.forgev2-scissor-3d-stage {
+  position: relative;
+}
+
+.forgev2-scissor-3d-canvas-host {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.forgev2-scissor-3d-pane-host {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  pointer-events: none;
+}
+
+.forgev2-scissor-3d-pane-host-interactive {
+  pointer-events: auto;
+}
+
 .forgev2-viewport-row-scroll {
   display: grid;
   grid-auto-flow: column;
@@ -581,6 +603,8 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.6rem;
   background: transparent;
+  position: relative;
+  z-index: 1;
 }
 
 .forgev2-sim-row-grid .forgev2-viewport-host {
@@ -595,6 +619,10 @@
   border-radius: 8px;
   overflow: hidden;
   background: #111927;
+}
+
+.forgev2-sim-row-grid .forgev2-pixel-quad-scissor .forgev2-pixel-cell {
+  background: transparent;
 }
 
 @media (max-width: 1400px) {

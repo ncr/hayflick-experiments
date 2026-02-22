@@ -13,7 +13,7 @@ interface TouchRecord {
   y: number;
 }
 
-const ROTATION_ANGLE_THRESHOLD = Math.PI / 6; // ~30 degrees
+const ROTATION_ANGLE_THRESHOLD = Math.PI / 6;
 
 function getDistance(a: TouchRecord, b: TouchRecord): number {
   const dx = a.x - b.x;
@@ -29,16 +29,6 @@ function getCenter(a: TouchRecord, b: TouchRecord): { x: number; y: number } {
   return { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
 }
 
-/**
- * Attaches multi-touch gesture recognition to an element.
- *
- * - 1-finger drag → pan
- * - 2-finger pinch → zoom (scaleDelta)
- * - 2-finger rotate → discrete 90° rotation when angle exceeds threshold
- *
- * Sets `touch-action: none` on the element to prevent browser gestures.
- * Returns a cleanup function.
- */
 export function attachTouchGestures(
   element: HTMLElement,
   callbacks: TouchGestureCallbacks
@@ -54,9 +44,9 @@ export function attachTouchGestures(
   const previousStyle = element.style.touchAction;
   element.style.touchAction = "none";
 
-  const onTouchStart = (event: TouchEvent) => {
+  const onTouchStart = (event: TouchEvent): void => {
     event.preventDefault();
-    for (let i = 0; i < event.changedTouches.length; i++) {
+    for (let i = 0; i < event.changedTouches.length; i += 1) {
       const t = event.changedTouches[i];
       pointers.set(t.identifier, { x: t.clientX, y: t.clientY });
     }
@@ -78,13 +68,13 @@ export function attachTouchGestures(
     }
   };
 
-  const onTouchMove = (event: TouchEvent) => {
+  const onTouchMove = (event: TouchEvent): void => {
     event.preventDefault();
 
     if (panActive && pointers.size === 1) {
       const t = event.changedTouches[0];
-      const prev = pointers.get(t.identifier);
-      if (prev) {
+      const prev = t ? pointers.get(t.identifier) : undefined;
+      if (t && prev) {
         const dx = t.clientX - prev.x;
         const dy = t.clientY - prev.y;
         pointers.set(t.identifier, { x: t.clientX, y: t.clientY });
@@ -93,7 +83,7 @@ export function attachTouchGestures(
       return;
     }
 
-    for (let i = 0; i < event.changedTouches.length; i++) {
+    for (let i = 0; i < event.changedTouches.length; i += 1) {
       const t = event.changedTouches[i];
       if (pointers.has(t.identifier)) {
         pointers.set(t.identifier, { x: t.clientX, y: t.clientY });
@@ -101,9 +91,7 @@ export function attachTouchGestures(
     }
 
     if (pinchActive && pointers.size >= 2) {
-      const entries = [...pointers.values()];
-      const a = entries[0];
-      const b = entries[1];
+      const [a, b] = [...pointers.values()];
       const currentDistance = getDistance(a, b);
       const currentAngle = getAngle(a, b);
       const center = getCenter(a, b);
@@ -121,23 +109,21 @@ export function attachTouchGestures(
       initialPinchAngle = currentAngle;
 
       if (Math.abs(cumulativeAngle) >= ROTATION_ANGLE_THRESHOLD) {
-        const direction: -1 | 1 = cumulativeAngle > 0 ? 1 : -1;
-        callbacks.onRotate?.(direction);
+        callbacks.onRotate?.(cumulativeAngle > 0 ? 1 : -1);
         cumulativeAngle = 0;
       }
     }
   };
 
-  const onTouchEnd = (event: TouchEvent) => {
+  const onTouchEnd = (event: TouchEvent): void => {
     event.preventDefault();
-    for (let i = 0; i < event.changedTouches.length; i++) {
+    for (let i = 0; i < event.changedTouches.length; i += 1) {
       pointers.delete(event.changedTouches[i].identifier);
     }
 
     if (pointers.size < 2 && pinchActive) {
       pinchActive = false;
       callbacks.onPinchEnd?.();
-
       if (pointers.size === 1) {
         panActive = true;
         callbacks.onPanStart?.();

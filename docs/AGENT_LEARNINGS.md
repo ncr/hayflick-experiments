@@ -259,6 +259,34 @@ Preventive checklist:
 - Treat wheel/touchpad pan as focus-acquiring interaction too, not only pointer down.
 - Add a visible active-pane indicator so focus state is easy to verify during manual testing.
 
+## 2026-02-22 - Render library-owned DOM input listeners blocked scissor unification and caused focus regressions
+Root cause:
+- `@common/render` mixed rendering and low-level DOM input listener ownership (`window` key handlers, canvas pointer/wheel listeners) across both `PixelPerfectIsoView` and `SharedScissorStage`.
+- In multi-stage scenarios, hidden listener ownership created conflicting keyboard routing and made focus policy implicit instead of app-controlled.
+
+Detection signal:
+- Scissor lab focus/rotation bugs required experiment-level workarounds because keyboard routing happened inside render stages.
+- Refactor planning showed `PixelPerfectIsoView`, `SharedScissorStage`, and `touch-gestures` split input responsibilities across multiple render classes/files.
+
+Preventive checklist:
+- Keep `@common/render` command-driven and render-only; no constructor-owned DOM input listeners.
+- Put pointer/wheel/keyboard/touch binding and gesture heuristics in a dedicated input package (`@common/input`).
+- Make focus ownership explicit in the caller/app layer and pass targets/commands into render objects.
+
+## 2026-02-22 - Duplicated ISO view/core implementations caused parity drift and slowed fixes
+Root cause:
+- `PixelPerfectIsoView` and `PixelPerfectIsoViewportCore` duplicated nearly all camera/pan/zoom/render math with only stage/backend differences.
+- Behavioral fixes (e.g. scissor viewport offset handling) landed in one path and not the other.
+
+Detection signal:
+- Scissor-only vertical pan regression fix required patching `PixelPerfectIsoViewportCore`, while standalone `PixelPerfectIsoView` had matching but separate logic.
+- File inspection showed near-line-for-line duplication of animation, display layout, pan quantization, and projection paths.
+
+Preventive checklist:
+- Maintain one ISO viewport core implementation for pan/zoom/rotate/render math.
+- Keep wrappers/facades thin and backend-specific (single-pane vs multi-pane scissor) without duplicating camera logic.
+- Add core-level contract tests before refactors so wrapper changes can be verified against shared behavior.
+
 ## 2026-02-09 - 2:1 staircase drift appeared in rendered output despite projection tests passing
 Root cause:
 - `pixel-perfect-2to1` rendered scene geometry to a high-resolution target and then sampled down to low resolution.
@@ -3039,3 +3067,59 @@ Preventive checklist:
 - Keep all pan motion (drag and wheel) inside the same pixel-quantized pan pipeline.
 - For large wheel deltas, split one wheel event into smaller sub-steps and feed each through quantized pan rather than bypassing quantization.
 - When patching scissor-vs-independent parity paths, mirror the fix in both `pixel-perfect-iso-view` and `pixel-perfect-iso-viewport-core` until the wrapper refactor removes duplication.
+
+## 2026-02-22 - Forge V2 physics pixel previews silently bypassed `@common/render`
+Root cause:
+- `ForgeV2` physics used a custom `PixelQuad` renderer path with raw `THREE.WebGLRenderer` + hand-rolled scissor logic instead of the shared `@common/render` pixel viewport stack.
+- That parallel implementation drifted from the render-library behavior and fixes, so "pixelated views" in physics setup could fail or behave differently even when `@common/render` was working elsewhere.
+
+Detection signal:
+- Forge V2 physics pixel strips did not match recent `@common/render` scissor/pixel fixes.
+- Code inspection showed `apps/hub/src/pages/forge-v2/PixelQuad.tsx` rendering directly with `three` rather than `PixelPerfectIsoViewportCore` / `SharedScissorStage`.
+
+Preventive checklist:
+- Do not maintain parallel pixel-preview renderer implementations in app code when `@common/render` already provides the needed scissor/pixel pipeline.
+- For multi-pane pixel previews, wrap `SharedScissorStage` + `PixelPerfectIsoViewportCore` in app components instead of custom renderer/scissor math.
+- When debugging a preview regression, first verify the affected screen is actually using the intended shared library path.
+
+## 2026-02-22 - Shared scissor stage mount setup overrode CSS-positioned overlay hosts
+Root cause:
+- `SharedScissorStage` checked `mount.style.position` (inline style only) and forced `position: relative` when empty.
+- For mounts positioned via stylesheet (for example `position: absolute` scissor canvas overlays), the inline style was empty even though computed positioning was correct, so the stage unintentionally changed layout.
+
+Detection signal:
+- A scissor canvas host that should be an absolute overlay started occupying grid layout space (extra row/column item appeared).
+- Pane hit-testing/scissor rect math became wrong because pane elements were measured relative to a now-mispositioned mount, causing blank rendering.
+
+Preventive checklist:
+- When conditionally mutating layout-affecting styles (`position`, `display`), inspect computed style (`getComputedStyle`) rather than inline style only.
+- Treat scissor stage mount setup as compatible with CSS-positioned hosts, not only plain static mounts.
+- If a scissor pane grid suddenly shows one pane on a new row, inspect whether the canvas host became an in-flow grid item.
+
+## 2026-02-22 - Partial scissor migration can still exceed WebGL context limits in React StrictMode
+Root cause:
+- Forge V2 physics moved collider/sim preview panes to a shared scissor 3D renderer but left the primary source mesh preview on the legacy per-pane `Viewport` renderer.
+- In dev/StrictMode, effect replays temporarily double context allocations, so a "mostly migrated" page can still cross the browser context cap and blank random panes.
+
+Detection signal:
+- Multi Prop Generation (fewer contexts) rendered correctly while Physics Setup still failed/blanked after a partial scissor migration.
+- Code inspection showed one remaining independent `Viewport` in the physics pane alongside shared scissor renderers.
+
+Preventive checklist:
+- When migrating a context-heavy screen to scissor/shared rendering, count contexts after StrictMode effect replay, not only steady state.
+- Do not leave a single legacy preview canvas in a dense preview matrix if the goal is context-cap safety.
+- Complete migration of all same-class preview panes (source + variants) before judging context-limit fixes.
+
+## 2026-02-22 - Shared scissor overlays can render "empty" when host sizing or cell backgrounds hide the canvas
+Root cause:
+- `ForgeScissorViewportPane` set inline `height: 100%`, which overrode the CSS height utility when the pane root itself was the sized host, collapsing some scissor pane hosts to `0px` height.
+- Physics Setup sim-row pixel cells had a later opaque background rule that covered the shared scissor canvas overlay, so pixel panes looked blank even though rendering was happening.
+
+Detection signal:
+- Playwright DOM inspection showed visible pane containers with valid widths but top-row scissor pane hosts at `height: 0`.
+- Shared scissor canvas and pane rects existed, but `.forgev2-sim-row-grid .forgev2-pixel-cell` computed backgrounds remained opaque over the overlay canvas.
+
+Preventive checklist:
+- Avoid inline `height: 100%` on reusable pane roots when the same component is sometimes the sizing host and sometimes nested inside one; let the caller-owned host class control height.
+- When using one shared canvas behind pane DOM overlays, audit later CSS rules for opaque pane backgrounds that can mask the canvas output.
+- In blank-pane debugging, inspect computed pane rects and overlay/background stacking before assuming render logic is broken.

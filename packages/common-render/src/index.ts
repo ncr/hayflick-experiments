@@ -31,12 +31,6 @@ export {
   type PixelStageOptions
 } from "./pixel-stage";
 export {
-  PixelCameraController,
-  type PixelCameraControllerConfig,
-  type PixelCameraControllerUpdateHooks,
-  type PixelCameraControllerWheelHooks
-} from "./pixel-camera-controller";
-export {
   PixelPerfectIsoView,
   type PixelPerfectIsoViewConfig,
   type PixelPerfectIsoViewPose,
@@ -58,17 +52,17 @@ export {
   type SharedScissorPaneRect,
   type SharedScissorFrameContext,
   type SharedPanePointerEvent,
-  type SharedPaneWheelEvent
+  type SharedPaneWheelEvent,
+  type SharedScissorPaneHit
 } from "./shared-scissor-stage";
 export {
   PixelPerfectIsoScissorPane,
   type PixelPerfectIsoScissorPaneConfig
 } from "./pixel-perfect-iso-scissor-pane";
 export {
-  attachTouchGestures,
-  type TouchGestureCallbacks
-} from "./touch-gestures";
-
+  ThreeSceneScissorPane,
+  type ThreeSceneScissorPaneConfig
+} from "./three-scene-scissor-pane";
 export function makeRenderer(width: number, height: number, dpr: number): THREE.WebGLRenderer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(dpr);

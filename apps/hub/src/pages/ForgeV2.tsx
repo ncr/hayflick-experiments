@@ -4,6 +4,11 @@ import { createVhacdWorkerRunner, type VhacdProgress } from "@common/collider-vh
 import { StyleGuidePanel, type StyleGuide } from "./forge/StyleGuidePanel";
 import { Viewport, type Viewport3dViewState, type ViewportHandle } from "./forge/Viewport";
 import { PixelQuad, type PixelQuadHandle } from "./forge-v2/PixelQuad";
+import {
+  ForgeScissorViewportPane,
+  ForgeScissorViewportStage,
+  type ForgeScissorViewportHandle
+} from "./forge-v2/ScissorViewport3d";
 import { generateImage } from "./forge/api/openai";
 import { generateModel } from "./forge/api/tripo";
 import { countTotalFaces } from "./forge/processing/simplify";
@@ -651,9 +656,9 @@ export function ForgeV2() {
   const [physicsViewState, setPhysicsViewState] = useState<Viewport3dViewState | null>(null);
   const [physicsSimMeshViewState, setPhysicsSimMeshViewState] = useState<Viewport3dViewState | null>(null);
 
-  const physicsMeshViewportRef = useRef<ViewportHandle>(null);
-  const physicsColliderPresetViewportRefs = useRef<Record<string, ViewportHandle | null>>({});
-  const physicsSimMeshViewportRefs = useRef<ScenarioRecord<ViewportHandle | null>>(
+  const physicsMeshViewportRef = useRef<ForgeScissorViewportHandle>(null);
+  const physicsColliderPresetViewportRefs = useRef<Record<string, ForgeScissorViewportHandle | null>>({});
+  const physicsSimMeshViewportRefs = useRef<ScenarioRecord<ForgeScissorViewportHandle | null>>(
     makeScenarioRecord(() => null)
   );
   const physicsSimPixelQuadRefs = useRef<ScenarioRecord<PixelQuadHandle | null>>(
@@ -1630,16 +1635,6 @@ export function ForgeV2() {
     physicsSuppressSimViewSyncRef.current = false;
   }, []);
 
-  const handlePhysicsSimMeshViewChange = useCallback((state: Viewport3dViewState) => {
-    if (physicsSuppressSimViewSyncRef.current) {
-      return;
-    }
-    setPhysicsSimMeshViewState(state);
-    for (const scenario of PHYSICS_SCENARIOS) {
-      physicsSimMeshViewportRefs.current[scenario]?.setViewState(state);
-    }
-  }, []);
-
   const computeSelectedPhysicsColliders = useCallback(async () => {
     if (!physicsSelected || !physicsColliderPresets) {
       return;
@@ -2256,13 +2251,17 @@ export function ForgeV2() {
 
           <div className="forgev2-layout-physics-body">
             <section className="forgev2-pane forgev2-pane-center">
-              <div className="forgev2-physics-views">
+              <ForgeScissorViewportStage className="forgev2-physics-views">
                 <div className="forgev2-viewport-row-scroll">
                   <div className="forgev2-viewport-card forgev2-physics-top-card">
                     <div className="forgev2-viewport-card-header"><strong>Original Mesh</strong></div>
-                    <div className="forgev2-viewport-host forgev2-viewport-host-sm">
-                      <Viewport ref={physicsMeshViewportRef} onViewChange={handlePhysicsAssetViewChange} />
-                    </div>
+                    <ForgeScissorViewportPane
+                      paneId="physics-source-mesh"
+                      className="forgev2-viewport-host forgev2-viewport-host-sm forgev2-scissor-3d-pane-host forgev2-scissor-3d-pane-host-interactive"
+                      ref={physicsMeshViewportRef}
+                      interactive
+                      onViewChange={handlePhysicsAssetViewChange}
+                    />
                   </div>
                   {physicsColliderResults.map((entry) => (
                     <button
@@ -2281,14 +2280,13 @@ export function ForgeV2() {
                           {physicsSelectedColliderPresetId === entry.presetId ? " · active" : ""}
                         </span>
                       </div>
-                      <div className="forgev2-viewport-host forgev2-viewport-host-sm">
-                        <Viewport
-                          ref={(handle) => {
-                            physicsColliderPresetViewportRefs.current[entry.presetId] = handle;
-                          }}
-                          onViewChange={handlePhysicsAssetViewChange}
-                        />
-                      </div>
+                      <ForgeScissorViewportPane
+                        paneId={`collider-${entry.presetId}`}
+                        className="forgev2-viewport-host forgev2-viewport-host-sm forgev2-scissor-3d-pane-host"
+                        ref={(handle) => {
+                          physicsColliderPresetViewportRefs.current[entry.presetId] = handle;
+                        }}
+                      />
                     </button>
                   ))}
                   {physicsSelected && physicsColliderResults.length <= 0 && (
@@ -2310,11 +2308,12 @@ export function ForgeV2() {
                       </div>
                       <div className="forgev2-sim-row-grid">
                         <div className="forgev2-viewport-host forgev2-viewport-host-sm">
-                          <Viewport
+                          <ForgeScissorViewportPane
+                            paneId={`sim-${scenario}`}
+                            className="forgev2-viewport-host forgev2-viewport-host-sm forgev2-scissor-3d-pane-host"
                             ref={(handle) => {
                               physicsSimMeshViewportRefs.current[scenario] = handle;
                             }}
-                            onViewChange={handlePhysicsSimMeshViewChange}
                           />
                         </div>
                         <PixelQuad
@@ -2331,12 +2330,13 @@ export function ForgeV2() {
                           }}
                           className="forgev2-pixel-strip"
                           viewportFramingScale={1.28}
+                          paneIdPrefix={`physics-pixel-${scenario}-`}
                         />
                       </div>
                     </div>
                   ))}
                 </div>
-              </div>
+              </ForgeScissorViewportStage>
             </section>
 
             <aside className="forgev2-pane forgev2-pane-right">

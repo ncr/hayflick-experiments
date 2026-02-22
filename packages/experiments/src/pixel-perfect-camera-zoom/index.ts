@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { ExperimentModule } from "../runtime/types";
 import { PixelPerfectIsoView } from "@common/render";
+import { bindPixelPerfectIsoViewInput } from "@common/input";
 import {
   CAMERA_DISTANCE,
   CAMERA_PITCH,
@@ -140,6 +141,7 @@ const experiment: ExperimentModule = {
       mountBackground: "#0b0f14",
       canvasBackground: "#0b0f14"
     });
+    const detachCameraInput = bindPixelPerfectIsoViewInput({ view });
 
     const projectedWorld = new THREE.Vector3();
     const projectedClient = new THREE.Vector2();
@@ -228,6 +230,7 @@ const experiment: ExperimentModule = {
       tileGray.dispose();
       boxGeometry.dispose();
       boxMaterials.forEach((material) => material.dispose());
+      detachCameraInput();
       view.dispose();
     };
   }

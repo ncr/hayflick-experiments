@@ -5,7 +5,7 @@ import type {
   PixelPerfectIsoViewPose,
   PixelPerfectIsoViewState,
   PixelSnapMode
-} from "./pixel-perfect-iso-view";
+} from "./pixel-perfect-iso-types";
 
 export type PixelPerfectIsoViewportCoreConfig = Omit<PixelPerfectIsoViewConfig, "mount"> & {
   maxBackingWidth: number;
@@ -828,33 +828,29 @@ export class PixelPerfectIsoViewportCore {
     }
   }
 
-  onPointerDown(event: PixelLocalPointerEventLike): boolean {
-    if (event.button !== 1) {
-      return false;
-    }
-    this.pointerClientX = event.localX;
-    this.pointerClientY = event.localY;
+  beginPanDrag(localCssX: number, localCssY: number): void {
+    this.pointerClientX = localCssX;
+    this.pointerClientY = localCssY;
     this.dragActive = true;
-    this.lastClientX = event.localX;
-    this.lastClientY = event.localY;
+    this.lastClientX = localCssX;
+    this.lastClientY = localCssY;
     this.zoomBurstActive = false;
-    return true;
   }
 
-  onPointerMove(event: PixelLocalPointerEventLike): boolean {
-    this.pointerClientX = event.localX;
-    this.pointerClientY = event.localY;
+  updatePanDrag(localCssX: number, localCssY: number): boolean {
+    this.pointerClientX = localCssX;
+    this.pointerClientY = localCssY;
     if (!this.dragActive) {
       return false;
     }
-    this.dragDelta.set(event.localX - this.lastClientX, event.localY - this.lastClientY);
-    this.lastClientX = event.localX;
-    this.lastClientY = event.localY;
+    this.dragDelta.set(localCssX - this.lastClientX, localCssY - this.lastClientY);
+    this.lastClientX = localCssX;
+    this.lastClientY = localCssY;
     this.applyPan(this.dragDelta.x, this.dragDelta.y);
     return true;
   }
 
-  onPointerUp(_event: Pick<PixelLocalPointerEventLike, "pointerId">): boolean {
+  endPanDrag(): boolean {
     if (!this.dragActive) {
       return false;
     }
@@ -862,47 +858,30 @@ export class PixelPerfectIsoViewportCore {
     return true;
   }
 
-  onAuxClick(button: number): boolean {
-    return button === 1;
+  toggleZoomMode(): void {
+    this.controller.toggleZoomMode();
+    this.applyControllerState();
   }
 
-  private isLikelyTrackpadWheel(event: Pick<WheelEvent, "deltaMode" | "deltaX" | "deltaY">): boolean {
-    if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) {
-      return false;
-    }
-    if (Math.abs(event.deltaX) > 0.01) {
-      return true;
-    }
-    return Math.abs(event.deltaY) < 24;
-  }
-
-  onWheel(event: PixelLocalWheelEventLike): boolean {
-    const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
-    const trackpad = this.isLikelyTrackpadWheel(event);
-    const zoomIntent = event.ctrlKey || event.metaKey || !trackpad;
-
-    if (!zoomIntent) {
-      const panX = -(event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
-      const panY = -event.deltaY * scale;
-      this.applyPan(panX, panY);
-      return true;
-    }
-
-    const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
+  zoomStepAtLocalCss(
+    direction: -1 | 1,
+    localCssX: number,
+    localCssY: number,
+    nowMs: number = performance.now()
+  ): boolean {
     const nextZoom = THREE.MathUtils.clamp(
       this.cameraZoomTarget + direction * this.config.zoomStep,
       this.config.zoomMin,
       this.config.zoomMax
     );
     if (Math.abs(nextZoom - this.cameraZoomTarget) <= 1e-6) {
-      return true;
+      return false;
     }
 
-    const nowMs = performance.now();
     this.zoomBurstActive = true;
     this.zoomBurstExpiresAtMs = nowMs + this.config.zoomBurstIdleMs;
-    this.pointerClientX = event.localX;
-    this.pointerClientY = event.localY;
+    this.pointerClientX = localCssX;
+    this.pointerClientY = localCssY;
     const hadAnchorWorld = this.worldAtLocalCss(
       this.pointerClientX,
       this.pointerClientY,
@@ -935,6 +914,53 @@ export class PixelPerfectIsoViewportCore {
     return true;
   }
 
+  onPointerDown(event: PixelLocalPointerEventLike): boolean {
+    if (event.button !== 1) {
+      return false;
+    }
+    this.beginPanDrag(event.localX, event.localY);
+    return true;
+  }
+
+  onPointerMove(event: PixelLocalPointerEventLike): boolean {
+    return this.updatePanDrag(event.localX, event.localY);
+  }
+
+  onPointerUp(_event: Pick<PixelLocalPointerEventLike, "pointerId">): boolean {
+    return this.endPanDrag();
+  }
+
+  onAuxClick(button: number): boolean {
+    return button === 1;
+  }
+
+  private isLikelyTrackpadWheel(event: Pick<WheelEvent, "deltaMode" | "deltaX" | "deltaY">): boolean {
+    if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) {
+      return false;
+    }
+    if (Math.abs(event.deltaX) > 0.01) {
+      return true;
+    }
+    return Math.abs(event.deltaY) < 24;
+  }
+
+  onWheel(event: PixelLocalWheelEventLike): boolean {
+    const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
+    const trackpad = this.isLikelyTrackpadWheel(event);
+    const zoomIntent = event.ctrlKey || event.metaKey || !trackpad;
+
+    if (!zoomIntent) {
+      const panX = -(event.deltaX + (event.shiftKey ? event.deltaY : 0)) * scale;
+      const panY = -event.deltaY * scale;
+      this.applyPan(panX, panY);
+      return true;
+    }
+
+    const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
+    this.zoomStepAtLocalCss(direction, event.localX, event.localY);
+    return true;
+  }
+
   onKeyDown(event: KeyboardEvent): boolean {
     // Don't capture keys when typing in form elements
     const tag = (event.target as HTMLElement)?.tagName;
@@ -956,8 +982,7 @@ export class PixelPerfectIsoViewportCore {
       return true;
     }
     if (event.code === "KeyZ") {
-      this.controller.toggleZoomMode();
-      this.applyControllerState();
+      this.toggleZoomMode();
       return true;
     }
     return false;

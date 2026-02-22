@@ -101,6 +101,12 @@ importers:
 
   packages/common-gameplay: {}
 
+  packages/common-input:
+    dependencies:
+      '@common/render':
+        specifier: workspace:*
+        version: link:../common-render
+
   packages/common-level-editor:
     dependencies:
       '@common/gameplay':
@@ -136,6 +142,9 @@ importers:
       '@common/gameplay':
         specifier: workspace:*
         version: link:../common-gameplay
+      '@common/input':
+        specifier: workspace:*
+        version: link:../common-input
       '@common/level-editor':
         specifier: workspace:*
         version: link:../common-level-editor

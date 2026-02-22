@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { queryMaxBackingSize } from "./gl-caps";
 
 export type SharedScissorPaneRect = {
   cssLeft: number;
@@ -28,6 +29,13 @@ export type SharedPanePointerEvent = {
 
 export type SharedPaneWheelEvent = {
   originalEvent: WheelEvent;
+  paneId: string;
+  localX: number;
+  localY: number;
+  rect: SharedScissorPaneRect;
+};
+
+export type SharedScissorPaneHit = {
   paneId: string;
   localX: number;
   localY: number;
@@ -94,6 +102,7 @@ export class SharedScissorStage {
     this.clearAlpha = config.clearAlpha ?? 1;
     this.savedMountPosition = this.mount.style.position;
     this.savedMountOverflow = this.mount.style.overflow;
+    const computedMountStyle = window.getComputedStyle(this.mount);
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: config.antialias ?? false,
@@ -108,10 +117,13 @@ export class SharedScissorStage {
     this.canvas.style.width = "100%";
     this.canvas.style.height = "100%";
     this.canvas.style.imageRendering = "pixelated";
-    this.canvas.style.touchAction = "none";
     this.canvas.style.zIndex = "0";
 
-    this.mount.style.position = this.mount.style.position || "relative";
+    // Respect CSS-positioned mounts (e.g. absolute scissor canvas overlays) and only
+    // force a positioning context when the computed position is still static.
+    if (!this.mount.style.position && computedMountStyle.position === "static") {
+      this.mount.style.position = "relative";
+    }
     this.mount.style.overflow = this.mount.style.overflow || "hidden";
     this.mount.appendChild(this.canvas);
 
@@ -121,24 +133,22 @@ export class SharedScissorStage {
 
     this.resize(Math.max(1, config.width), Math.max(1, config.height), this.pixelRatio);
 
-    this.canvas.addEventListener("pointerdown", this.handlePointerDown);
-    this.canvas.addEventListener("pointermove", this.handlePointerMove);
-    this.canvas.addEventListener("pointerup", this.handlePointerUp);
-    this.canvas.addEventListener("pointercancel", this.handlePointerUp);
-    this.canvas.addEventListener("auxclick", this.handleAuxClick);
-    this.canvas.addEventListener("wheel", this.handleWheel, { passive: false });
-    window.addEventListener("keydown", this.handleKeyDown);
-    window.addEventListener("keyup", this.handleKeyUp);
-
     this.resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      this.resize(entry.contentRect.width, entry.contentRect.height);
+      this.resize(
+        entry.contentRect.width,
+        entry.contentRect.height,
+        Math.max(1, window.devicePixelRatio || 1)
+      );
     });
     this.resizeObserver.observe(this.mount);
   }
 
   registerPane(pane: SharedScissorPane): void {
+    if (this.panes.has(pane.id)) {
+      throw new Error(`SharedScissorStage duplicate pane id: ${pane.id}`);
+    }
     this.panes.set(pane.id, { pane, lastRectKey: "" });
     this.measurePaneRects();
   }
@@ -151,7 +161,6 @@ export class SharedScissorStage {
     if (this.focusedPaneId === id) {
       this.focusedPaneId = null;
     }
-    entry.pane.dispose?.();
   }
 
   start(): void {
@@ -173,6 +182,10 @@ export class SharedScissorStage {
     this.running = false;
     cancelAnimationFrame(this.raf);
     this.raf = 0;
+  }
+
+  drawFrame(nowMs: number, deltaSeconds: number): void {
+    this.draw(nowMs, deltaSeconds);
   }
 
   resize(widthCss: number, heightCss: number, nextPixelRatio?: number): void {
@@ -234,6 +247,21 @@ export class SharedScissorStage {
     return this.paneRects;
   }
 
+  hitTestPane(clientX: number, clientY: number): SharedScissorPaneHit | null {
+    this.measurePaneRects();
+    const hit = this.findPaneAtClientPoint(clientX, clientY);
+    if (!hit) {
+      return null;
+    }
+    const domRect = hit.pane.element.getBoundingClientRect();
+    return {
+      paneId: hit.pane.id,
+      localX: clientX - domRect.left,
+      localY: clientY - domRect.top,
+      rect: hit.rect
+    };
+  }
+
   getDevicePixelRatio(): number {
     return this.pixelRatio;
   }
@@ -241,14 +269,6 @@ export class SharedScissorStage {
   dispose(): void {
     this.stop();
     this.resizeObserver.disconnect();
-    this.canvas.removeEventListener("pointerdown", this.handlePointerDown);
-    this.canvas.removeEventListener("pointermove", this.handlePointerMove);
-    this.canvas.removeEventListener("pointerup", this.handlePointerUp);
-    this.canvas.removeEventListener("pointercancel", this.handlePointerUp);
-    this.canvas.removeEventListener("auxclick", this.handleAuxClick);
-    this.canvas.removeEventListener("wheel", this.handleWheel);
-    window.removeEventListener("keydown", this.handleKeyDown);
-    window.removeEventListener("keyup", this.handleKeyUp);
     for (const entry of this.panes.values()) {
       entry.pane.dispose?.();
     }
@@ -404,7 +424,6 @@ export class SharedScissorStage {
     this.measurePaneRects();
     const hit = this.findPaneAtClientPoint(event.clientX, event.clientY);
     if (!hit) return;
-    this.focusedPaneId = hit.pane.id;
     const consumed = hit.pane.onPointerDown?.(this.toPointerEventPayload(hit.pane, hit.rect, event)) ?? false;
     if (consumed) {
       this.pointerCaptureById.set(event.pointerId, hit.pane.id);
@@ -506,16 +525,36 @@ export class SharedScissorStage {
       event.preventDefault();
     }
   };
-}
 
-function queryMaxBackingSize(gl: WebGLRenderingContext | WebGL2RenderingContext): {
-  width: number;
-  height: number;
-} {
-  const viewportDims = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array | number[];
-  const safeLimit = (value: number): number =>
-    Math.max(1, Number.isFinite(value) ? Math.floor(value) : 4096);
-  const width = safeLimit(viewportDims[0] ?? 4096);
-  const height = safeLimit(viewportDims[1] ?? 4096);
-  return { width, height };
+  routePointerDown(event: PointerEvent): void {
+    this.handlePointerDown(event);
+  }
+
+  routePointerMove(event: PointerEvent): void {
+    this.handlePointerMove(event);
+  }
+
+  routePointerUp(event: PointerEvent): void {
+    this.handlePointerUp(event);
+  }
+
+  routePointerCancel(event: PointerEvent): void {
+    this.handlePointerUp(event);
+  }
+
+  routeAuxClick(event: MouseEvent): void {
+    this.handleAuxClick(event);
+  }
+
+  routeWheel(event: WheelEvent): void {
+    this.handleWheel(event);
+  }
+
+  routeKeyDown(event: KeyboardEvent): void {
+    this.handleKeyDown(event);
+  }
+
+  routeKeyUp(event: KeyboardEvent): void {
+    this.handleKeyUp(event);
+  }
 }

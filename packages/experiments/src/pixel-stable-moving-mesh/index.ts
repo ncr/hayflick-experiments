@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { PixelPerfectIsoView } from "@common/render";
+import { bindPixelPerfectIsoViewInput } from "@common/input";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { ExperimentModule } from "../runtime/types";
 import {
@@ -387,6 +388,7 @@ const experiment: ExperimentModule = {
       mountBackground: "#cfe9ff",
       canvasBackground: "#cfe9ff"
     });
+    const detachCameraInput = bindPixelPerfectIsoViewInput({ view });
     view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     view.renderer.toneMappingExposure = 1.15;
     view.renderer.shadowMap.enabled = true;
@@ -531,6 +533,7 @@ const experiment: ExperimentModule = {
       playerBodyGeometry.dispose();
       playerHeadGeometry.dispose();
       dynamicMaterials.forEach((material) => material.dispose());
+      detachCameraInput();
       view.dispose();
     };
   }

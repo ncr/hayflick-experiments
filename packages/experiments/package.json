@@ -19,6 +19,7 @@
     "@common/collider-vhacd": "workspace:*",
     "@common/core": "workspace:*",
     "@common/gameplay": "workspace:*",
+    "@common/input": "workspace:*",
     "@common/level-editor": "workspace:*",
     "@common/physics-rapier": "workspace:*",
     "@common/render": "workspace:*",

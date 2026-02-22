@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { bindSharedScissorStageInput } from "@common/input";
 import {
   PixelPerfectIsoScissorPane,
   PixelPerfectIsoViewportCore,
@@ -63,10 +64,12 @@ type SharedBackend = {
   stage: SharedScissorStage;
   paneRuntimes: Record<PaneKey, PaneRuntime>;
   canvasLayer: HTMLDivElement;
+  disposeInputs: Array<() => void>;
 };
 
 type IndependentBackend = {
   paneRuntimes: Record<PaneKey, PaneRuntime>;
+  disposeInputs: Array<() => void>;
 };
 
 type Backend =
@@ -388,7 +391,7 @@ function collectProjectedPetCenters(
   const outVec = new THREE.Vector2();
   const result = {} as Record<PaneKey, { x: number; y: number } | null>;
   for (const pane of PANES) {
-    const ok = runtimes[pane.key].pane.core.projectWorldToLocalCss(petCenterWorld, outVec);
+    const ok = runtimes[pane.key].pane.projectWorldToLocalCss(petCenterWorld, outVec);
     result[pane.key] = ok ? { x: outVec.x, y: outVec.y } : null;
   }
   return result;
@@ -410,6 +413,7 @@ function makeIndependentBackend(
   states: PaneVisualStateMap
 ): IndependentBackend {
   const paneRuntimes = {} as Record<PaneKey, PaneRuntime>;
+  const disposeInputs: Array<() => void> = [];
 
   for (const pane of PANES) {
     paneDoms[pane.key].surface.style.display = "block";
@@ -434,6 +438,7 @@ function makeIndependentBackend(
     });
     stage.registerPane(paneAdapter);
     stage.start();
+    disposeInputs.push(bindSharedScissorStageInput({ stage, syncStageFocus: false }));
 
     paneRuntimes[pane.key] = {
       pane: paneAdapter,
@@ -444,7 +449,7 @@ function makeIndependentBackend(
   }
 
   applyVisualStatesToRuntimes(paneRuntimes, states);
-  return { paneRuntimes };
+  return { paneRuntimes, disposeInputs };
 }
 
 function makeSharedBackend(
@@ -467,6 +472,7 @@ function makeSharedBackend(
     clearColor: PANE_CLEAR_COLOR,
     clearAlpha: 0
   });
+  const disposeInputs: Array<() => void> = [];
 
   const paneRuntimes = {} as Record<PaneKey, PaneRuntime>;
   for (const pane of PANES) {
@@ -488,8 +494,9 @@ function makeSharedBackend(
   }
   applyVisualStatesToRuntimes(paneRuntimes, states);
   stage.start();
+  disposeInputs.push(bindSharedScissorStageInput({ stage, syncStageFocus: false }));
 
-  return { stage, paneRuntimes, canvasLayer: gridCanvasLayer };
+  return { stage, paneRuntimes, canvasLayer: gridCanvasLayer, disposeInputs };
 }
 
 function backendGetRuntimes(backend: Backend): Record<PaneKey, PaneRuntime> {
@@ -536,6 +543,9 @@ function paneKeyAtClientPoint(
 
 function backendDispose(backend: Backend): void {
   if (backend.mode === "shared") {
+    for (const disposeInput of backend.impl.disposeInputs) {
+      disposeInput();
+    }
     backend.impl.stage.dispose();
     for (const pane of PANES) {
       for (const obj of backend.impl.paneRuntimes[pane.key].disposables) {
@@ -543,6 +553,9 @@ function backendDispose(backend: Backend): void {
       }
     }
     return;
+  }
+  for (const disposeInput of backend.impl.disposeInputs) {
+    disposeInput();
   }
   disposeRuntimes(backend.impl.paneRuntimes);
 }
@@ -755,7 +768,7 @@ const experiment: ExperimentModule = {
         const runtime = backendGetRuntimes(backend)[id];
         if (!runtime) return null;
         const out = new THREE.Vector2();
-        if (!runtime.pane.core.projectWorldToLocalCss(petCenterWorld, out)) {
+        if (!runtime.pane.projectWorldToLocalCss(petCenterWorld, out)) {
           return null;
         }
         return { x: out.x, y: out.y };
