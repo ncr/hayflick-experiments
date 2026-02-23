@@ -61,7 +61,6 @@ type VariantRuntime = {
 };
 
 type PropSectionRuntime = {
-  stage: SharedScissorStage;
   renderMount: HTMLDivElement;
   rows: VariantRuntime[];
 };
@@ -400,6 +399,13 @@ function createRowDom(variant: VariantSpec): RowDom {
   const pixelPaneSurfaces = {} as Record<PixelPaneKey, HTMLDivElement>;
 
   for (const pane of PIXEL_PANES) {
+    const wrapper = document.createElement("div");
+    wrapper.style.display = "flex";
+    wrapper.style.flexDirection = "column";
+    wrapper.style.alignItems = "center";
+    wrapper.style.gap = "4px";
+    pixelGrid.appendChild(wrapper);
+
     const cell = document.createElement("div");
     cell.style.position = "relative";
     cell.style.border = "1px solid #455a74";
@@ -408,7 +414,8 @@ function createRowDom(variant: VariantSpec): RowDom {
     cell.style.background = "transparent";
     cell.style.aspectRatio = "4 / 3";
     cell.style.minHeight = "76px";
-    pixelGrid.appendChild(cell);
+    cell.style.width = "100%";
+    wrapper.appendChild(cell);
 
     const surface = document.createElement("div");
     surface.style.position = "absolute";
@@ -418,22 +425,13 @@ function createRowDom(variant: VariantSpec): RowDom {
     cell.appendChild(surface);
     pixelPaneSurfaces[pane.key] = surface;
 
-    const badge = document.createElement("div");
-    badge.textContent = pane.label;
-    badge.style.position = "absolute";
-    badge.style.left = "6px";
-    badge.style.top = "6px";
-    badge.style.padding = "2px 5px";
-    badge.style.borderRadius = "5px";
-    badge.style.background = "rgba(7, 11, 18, 0.82)";
-    badge.style.border = "1px solid rgba(126, 170, 216, 0.45)";
-    badge.style.color = "#cbd9e7";
-    badge.style.font = "600 10px/1 ui-monospace, Menlo, monospace";
-    badge.style.letterSpacing = "0.04em";
-    badge.style.textTransform = "uppercase";
-    badge.style.pointerEvents = "none";
-    badge.style.zIndex = "2";
-    cell.appendChild(badge);
+    const label = document.createElement("div");
+    label.textContent = pane.label;
+    label.style.font = "600 10px/1 ui-monospace, Menlo, monospace";
+    label.style.color = "#4b617b";
+    label.style.letterSpacing = "0.04em";
+    label.style.textTransform = "uppercase";
+    wrapper.appendChild(label);
   }
 
   return {
@@ -658,6 +656,7 @@ const experiment: ExperimentModule = {
 
     const root = document.createElement("div");
     root.className = "tripo-face-limit-compare-root";
+    root.dataset.sharedScissorAllowOpaqueBackground = "true";
     mount.appendChild(root);
 
     const styleEl = createPageStyles();
@@ -689,23 +688,32 @@ const experiment: ExperimentModule = {
     const rowDomByVariantKey = new Map<string, RowDom>();
     const variantSpecs: VariantSpec[] = [];
 
+    // Single viewport-fixed canvas overlay — one WebGL context for all sections.
+    // Pane surfaces anywhere in the DOM are measured via getBoundingClientRect and
+    // rendered into the matching scissor region of this viewport-sized canvas.
+    const stageOverlay = document.createElement("div");
+    stageOverlay.style.position = "fixed";
+    stageOverlay.style.inset = "0";
+    stageOverlay.style.pointerEvents = "none";
+    stageOverlay.style.zIndex = "10";
+    root.appendChild(stageOverlay);
+
+    const stage = new SharedScissorStage({
+      mount: stageOverlay,
+      width: Math.max(1, window.innerWidth),
+      height: Math.max(1, window.innerHeight),
+      antialias: false,
+      clearAlpha: 0
+    });
+    stage.canvas.style.pointerEvents = "none";
+    stage.start();
+
     for (const prop of PROPS) {
       const sectionShell = createPropSectionShell(prop);
+      sectionShell.shell.dataset.sharedScissorAllowOpaqueBackground = "true";
       stack.appendChild(sectionShell.shell);
 
-      const stage = new SharedScissorStage({
-        mount: sectionShell.renderMount,
-        width: Math.max(1, sectionShell.renderMount.clientWidth || 1),
-        height: Math.max(1, sectionShell.renderMount.clientHeight || 1),
-        antialias: false,
-        clearAlpha: 0
-      });
-      stage.canvas.style.pointerEvents = "none";
-      stage.canvas.style.background = "transparent";
-      stage.start();
-
       const sectionRuntime: PropSectionRuntime = {
-        stage,
         renderMount: sectionShell.renderMount,
         rows: []
       };
@@ -763,7 +771,7 @@ const experiment: ExperimentModule = {
         const faceCount = computeTriangleCount(loaded);
         const visuals = buildSceneForVariant(loaded);
         const runtime = buildVariantVisuals(
-          section.stage,
+          stage,
           variant,
           rowDom,
           visuals.scene,
@@ -790,9 +798,7 @@ const experiment: ExperimentModule = {
     }
 
     if (!disposed) {
-      for (const section of sectionRuntimes) {
-        section.stage.drawFrame(performance.now(), 0);
-      }
+      stage.drawFrame(performance.now(), 0);
     }
 
     const cleanup = (): void => {
@@ -801,8 +807,8 @@ const experiment: ExperimentModule = {
 
       for (const dispose of disposers) dispose();
 
+      stage.dispose();
       for (const section of sectionRuntimes) {
-        section.stage.dispose();
         for (const row of section.rows) {
           deepDisposeObject(row.scene);
         }
