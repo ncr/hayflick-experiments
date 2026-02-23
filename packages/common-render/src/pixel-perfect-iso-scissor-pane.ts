@@ -47,8 +47,10 @@ export class PixelPerfectIsoScissorPane implements SharedScissorPane {
   onResize(rect: SharedScissorPaneRect): void {
     const dpr =
       this.fixedDevicePixelRatio ??
-      (rect.cssWidth > 0 ? rect.deviceWidth / rect.cssWidth : 1);
-    this.core.resize(rect.cssWidth, rect.cssHeight, dpr, rect.deviceWidth, rect.deviceHeight);
+      (rect.cssWidth > 0 ? rect.deviceWidthUnclipped / rect.cssWidth : 1);
+    const logicalDeviceWidth = Math.max(1, rect.deviceWidthUnclipped || Math.round(rect.cssWidth * dpr));
+    const logicalDeviceHeight = Math.max(1, rect.deviceHeightUnclipped || Math.round(rect.cssHeight * dpr));
+    this.core.resize(rect.cssWidth, rect.cssHeight, dpr, logicalDeviceWidth, logicalDeviceHeight);
   }
 
   getViewPose(): PixelPerfectIsoViewPose {

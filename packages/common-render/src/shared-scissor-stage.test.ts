@@ -86,6 +86,10 @@ type Rect = DOMRect;
 
 type FakeElement = {
   style: Record<string, string>;
+  dataset: Record<string, string>;
+  id: string;
+  className: string;
+  tagName: string;
   parentElement: FakeElement | null;
   children: unknown[];
   addEventListener: ReturnType<typeof vi.fn>;
@@ -114,6 +118,10 @@ function makeRect(left: number, top: number, width: number, height: number): Rec
 function makeElement(nextRect: Rect): FakeElement {
   const el: FakeElement = {
     style: {},
+    dataset: {},
+    id: "",
+    className: "",
+    tagName: "DIV",
     parentElement: null,
     children: [],
     addEventListener: vi.fn(),
@@ -175,7 +183,10 @@ describe("@common/render SharedScissorStage", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       getComputedStyle: (el: { style?: Record<string, string> }) => ({
-        position: el.style?.position || "static"
+        position: el.style?.position || "static",
+        backgroundColor:
+          el.style?.backgroundColor || el.style?.background || "rgba(0, 0, 0, 0)",
+        backgroundImage: el.style?.backgroundImage || "none"
       })
     };
     (globalThis as { window: unknown }).window = fakeWindow;
@@ -257,6 +268,8 @@ describe("@common/render SharedScissorStage", () => {
       cssTop: 1,
       cssWidth: 50.5,
       cssHeight: 25.5,
+      deviceWidthUnclipped: 101,
+      deviceHeightUnclipped: 51,
       deviceLeft: 2,
       deviceTop: 2,
       deviceBottom: 48,
@@ -339,6 +352,34 @@ describe("@common/render SharedScissorStage", () => {
     expect(pane.resizeSpy).toHaveBeenCalledTimes(2);
     expect(stage.getPaneRects().get("pane-a")?.deviceLeft).toBe(25);
     expect(stage.getPaneRects().get("pane-a")?.deviceTop).toBe(35);
+
+    stage.dispose();
+  });
+
+  it("warns once when an opaque pane ancestor background can mask the shared canvas", () => {
+    const mount = makeElement(makeRect(0, 0, 300, 200));
+    const row = makeElement(makeRect(0, 0, 300, 120));
+    row.className = "row-card";
+    row.style.backgroundColor = "rgb(32, 39, 52)";
+    const paneEl = makeElement(makeRect(10, 10, 100, 80));
+    paneEl.className = "pane-surface";
+    mount.appendChild(row);
+    row.appendChild(paneEl);
+    const pane = makePane("pane-a", paneEl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const stage = new SharedScissorStage({
+      mount: mount as unknown as HTMLElement,
+      width: 300,
+      height: 200,
+      pixelRatio: 1
+    });
+    stage.registerPane(pane);
+    stage.drawFrame(1000, 1 / 60);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]?.[0] ?? "")).toContain('Pane "pane-a"');
+    expect(String(warnSpy.mock.calls[0]?.[0] ?? "")).toContain("row-card");
 
     stage.dispose();
   });

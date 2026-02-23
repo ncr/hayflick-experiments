@@ -602,27 +602,30 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.6rem;
+  width: 100%;
+  min-width: 0;
   background: transparent;
   position: relative;
   z-index: 1;
 }
 
-.forgev2-sim-row-grid .forgev2-viewport-host {
-  height: 220px;
-  min-height: 220px;
-}
-
-.forgev2-sim-row-grid .forgev2-pixel-cell {
-  height: 220px;
-  min-height: 220px;
+.forgev2-pixel-strip .forgev2-pixel-cell {
+  aspect-ratio: 4 / 3;
+  height: auto;
+  min-height: 0;
   border: 1px solid #9fb4c9;
   border-radius: 8px;
   overflow: hidden;
   background: #111927;
 }
 
-.forgev2-sim-row-grid .forgev2-pixel-quad-scissor .forgev2-pixel-cell {
+.forgev2-pixel-strip.forgev2-pixel-quad-scissor .forgev2-pixel-cell {
   background: transparent;
+}
+
+.forgev2-sim-row-grid .forgev2-viewport-host {
+  height: 220px;
+  min-height: 220px;
 }
 
 @media (max-width: 1400px) {

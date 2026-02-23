@@ -3137,3 +3137,45 @@ Preventive checklist:
 - When extracting input into a separate package, remove both listener ownership and event-routing APIs from the render package in the same pass.
 - Keep shared stage contracts render-only (`render`, `onResize`, `hitTestPane`, focus state) and route interactions through pane command methods from the input layer.
 - Search for `PointerEvent`/`WheelEvent`/`KeyboardEvent` types in render-layer public interfaces after the extraction to verify the boundary is actually clean.
+
+## 2026-02-23 - Horizontal PixelQuad strip can show "white ground" after switching from grid layout
+Root cause:
+- Forge V2 Multi Prop Generation switched `PixelQuad` to the horizontal `forgev2-pixel-strip` layout, but that strip class used a transparent background while scissor-mode pixel cells are also transparent.
+- Pixel viewport letterboxing/gaps then revealed the light card background, which looked like a pane-specific render bug (often most visible in the north pane).
+
+Detection signal:
+- After changing Multi Prop Generation pixel previews from `forgev2-pixel-grid` to `forgev2-pixel-strip`, the north pane appeared to have a white floor/ground region while the render content itself was otherwise correct.
+- CSS inspection showed `.forgev2-pixel-strip { background: transparent; }` and scissor-mode cells intentionally transparent.
+
+Preventive checklist:
+- When reusing `PixelQuad` in scissor mode, ensure the container/root layout class provides an explicit background because pane cells are transparent by design.
+- Treat apparent per-pane "render color" glitches in scissor previews as possible host/background leaks before debugging renderer state.
+- When changing preview layouts (`grid` -> `strip`), port the visual container styling (background/padding/border context) along with the grid template.
+
+## 2026-02-23 - Scissor-clipped panes must not resize pixel cameras from clipped viewport dimensions
+Root cause:
+- `SharedScissorStage` reported only the clipped scissor rect device size.
+- `PixelPerfectIsoScissorPane.onResize(...)` used that clipped `deviceWidth/deviceHeight` to recompute DPR and resize the pixel viewport core, so horizontally scrolled/offscreen panes were treated like actual resizes.
+
+Detection signal:
+- In Forge V2 pixel strips, horizontal scrolling worked but panes that moved out of the visible stage area changed apparent camera framing/viewport.
+- The effect occurred without CSS size changes and correlated with scissor clipping at the container/browser edge.
+
+Preventive checklist:
+- Distinguish logical pane size from clipped render viewport size in shared scissor APIs.
+- Pixel render cores should resize from the pane's full quantized device size, then render into a clipped scissor viewport when partially offscreen.
+- When adding scroller-based pane layouts, test that offscreen clipping does not mutate camera framing/state.
+
+## 2026-02-23 - Shared scissor pane ancestors with opaque backgrounds mask the canvas and make panes look blank
+Root cause:
+- `SharedScissorStage` renders one canvas behind pane DOM overlays; any opaque background on the pane element or an ancestor between the pane and the stage mount paints over the shared canvas in that pane region.
+- This surfaced again in a new experiment where row cards were opaque even though pane surfaces themselves were transparent.
+
+Detection signal:
+- Pane DOM frames/labels are visible and correctly sized, but mesh/pixel renders appear empty.
+- Switching an ancestor/card background from opaque to transparent immediately restores rendering without changing renderer logic.
+
+Preventive checklist:
+- Treat the full ancestor chain from pane surface to scissor stage mount as part of the rendering path; it must remain transparent in pane regions.
+- Prefer borders/box-shadows for pane chrome instead of opaque fills when using a shared canvas behind overlay DOM.
+- Keep the `SharedScissorStage` opaque-background warning enabled and investigate any warning before assuming render math is broken.

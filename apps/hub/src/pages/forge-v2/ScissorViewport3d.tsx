@@ -34,6 +34,11 @@ export type ForgeScissorViewportHandle = {
   getViewState(): Viewport3dViewState | null;
   setViewState(state: Viewport3dViewState): void;
   setColliderPreviewObject(helper: THREE.Object3D | null): void;
+  setModelVisible(on: boolean): void;
+  setColliderVisible(on: boolean): void;
+  setGridVisible(on: boolean): void;
+  setAxesVisible(on: boolean): void;
+  setBBoxVisible(on: boolean): void;
 };
 
 type ForgeScissorViewportStageProps = {
@@ -148,6 +153,10 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
     const applyingExternalViewRef = useRef(false);
     const onViewChangeRef = useRef(onViewChange);
     onViewChangeRef.current = onViewChange;
+    const modelVisibleRef = useRef(true);
+    const colliderVisibleRef = useRef(true);
+    const gridVisibleRef = useRef(true);
+    const axesVisibleRef = useRef(true);
 
     const tmpTargetRef = useRef(new THREE.Vector3());
     const tmpOffsetRef = useRef(new THREE.Vector3());
@@ -263,6 +272,7 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
         return;
       }
       modelRef.current = group;
+      group.visible = modelVisibleRef.current;
       scene.add(group);
       group.updateMatrixWorld(true);
       fitCameraToObject(group);
@@ -282,6 +292,7 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
         return;
       }
       colliderPreviewRef.current = helper;
+      helper.visible = colliderVisibleRef.current;
       scene.add(helper);
       helper.updateMatrixWorld(true);
     };
@@ -312,6 +323,33 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
         },
         setColliderPreviewObject: (helper) => {
           applyColliderPreviewObject(helper);
+        },
+        setModelVisible: (on) => {
+          modelVisibleRef.current = on;
+          if (modelRef.current) {
+            modelRef.current.visible = on;
+          }
+        },
+        setColliderVisible: (on) => {
+          colliderVisibleRef.current = on;
+          if (colliderPreviewRef.current) {
+            colliderPreviewRef.current.visible = on;
+          }
+        },
+        setGridVisible: (on) => {
+          gridVisibleRef.current = on;
+          if (gridRef.current) {
+            gridRef.current.visible = on;
+          }
+        },
+        setAxesVisible: (on) => {
+          axesVisibleRef.current = on;
+          if (axesRef.current) {
+            axesRef.current.visible = on;
+          }
+        },
+        setBBoxVisible: (_on) => {
+          // Intentionally unsupported here: Forge V2 scissor view keeps bbox helpers out of the scene.
         }
       }),
       []
@@ -370,9 +408,11 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
 
       const grid = new THREE.GridHelper(10, 10, 0x444466, 0x333355);
       gridRef.current = grid;
+      grid.visible = gridVisibleRef.current;
       scene.add(grid);
       const axes = new THREE.AxesHelper(0.2);
       axesRef.current = axes;
+      axes.visible = axesVisibleRef.current;
       scene.add(axes);
 
       const pane = new ThreeSceneScissorPane({

@@ -1,0 +1,60 @@
+{
+  "propId": "commodore-pet-inspired-computer",
+  "propLabel": "Commodore PET Inspired Computer",
+  "faceLimit": 10000,
+  "generatedAt": "2026-02-23T14:34:08.911Z",
+  "source": {
+    "promptPath": "assets/forge-v2/props/commodore-pet-inspired-computer/raw/prompt.txt",
+    "conceptPath": "assets/forge-v2/props/commodore-pet-inspired-computer/raw/concept.png"
+  },
+  "promptRaw": "\"commodore pet inspired computer 3/4 view, product shot, centered object, plain mid-gray background.\"",
+  "promptParsed": "commodore pet inspired computer 3/4 view, product shot, centered object, plain mid-gray background.",
+  "taskId": "df24b480-b27f-4940-bc2d-c602238ae938",
+  "tripoTaskStatus": "success",
+  "tripoTaskProgress": 100,
+  "tripoModelUrl": "https://tripo-data.rg1.data.tripo3d.com/tcli_94e0f14194bc451ea566ab5a30b1a619/20260223/df24b480-b27f-4940-bc2d-c602238ae938/tripo_pbr_model_df24b480-b27f-4940-bc2d-c602238ae938.glb?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly90cmlwby1kYXRhLnJnMS5kYXRhLnRyaXBvM2QuY29tL3RjbGlfOTRlMGYxNDE5NGJjNDUxZWE1NjZhYjVhMzBiMWE2MTkvMjAyNjAyMjMvZGYyNGI0ODAtYjI3Zi00OTQwLWJjMmQtYzYwMjIzOGFlOTM4L3RyaXBvX3Bicl9tb2RlbF9kZjI0YjQ4MC1iMjdmLTQ5NDAtYmMyZC1jNjAyMjM4YWU5MzguZ2xiIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzcxODkxMjAwfX19XX0_&Signature=qF7X~Y7RWPJ6OKu0QOHK4wtMQYgKv25WWRIYjk75euD7hbeZ7pRUudN5vnJta7MscSoKH-LxsJzR~2iGfWBo2oeL62mMWgIxsAeQsyvPcGiezXduNgOvbvQPNJ2K6sLOrWqLpB7CELYXn~41498r0fmPPIzTrW2QRBvgMijtZLjRisTfbSnEgi5W7J3X79dqdQ8EwU~WvKQcArcQVMrTxFAdW-aAm5baKctRO~Bl4IanZr2dHPdbmOD29tvLWstZ9oF7e6NjJXXKqNiFWY075bnJe-fauXmdXoWUngkz2-z-6o~oI9TruYUOZc1ZKXsfhvTH-ypuA3BV8CHRorWQhg__&Key-Pair-Id=K1676C64NMVM2J",
+  "promptIncludedInTaskRequest": true,
+  "task": {
+    "task_id": "df24b480-b27f-4940-bc2d-c602238ae938",
+    "type": "image_to_model",
+    "status": "success",
+    "input": {
+      "model_version": "v3.0-20250812",
+      "file": {
+        "object": {
+          "bucket": "tripo-data",
+          "key": "tcli_94e0f14194bc451ea566ab5a30b1a619/20260223/df24b480-b27f-4940-bc2d-c602238ae938/image.png"
+        },
+        "type": "png"
+      },
+      "texture": true,
+      "pbr": true,
+      "export_uv": true,
+      "face_limit": 10000,
+      "geometry_quality": "standard"
+    },
+    "output": {
+      "pbr_model": "https://tripo-data.rg1.data.tripo3d.com/tcli_94e0f14194bc451ea566ab5a30b1a619/20260223/df24b480-b27f-4940-bc2d-c602238ae938/tripo_pbr_model_df24b480-b27f-4940-bc2d-c602238ae938.glb?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly90cmlwby1kYXRhLnJnMS5kYXRhLnRyaXBvM2QuY29tL3RjbGlfOTRlMGYxNDE5NGJjNDUxZWE1NjZhYjVhMzBiMWE2MTkvMjAyNjAyMjMvZGYyNGI0ODAtYjI3Zi00OTQwLWJjMmQtYzYwMjIzOGFlOTM4L3RyaXBvX3Bicl9tb2RlbF9kZjI0YjQ4MC1iMjdmLTQ5NDAtYmMyZC1jNjAyMjM4YWU5MzguZ2xiIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzcxODkxMjAwfX19XX0_&Signature=qF7X~Y7RWPJ6OKu0QOHK4wtMQYgKv25WWRIYjk75euD7hbeZ7pRUudN5vnJta7MscSoKH-LxsJzR~2iGfWBo2oeL62mMWgIxsAeQsyvPcGiezXduNgOvbvQPNJ2K6sLOrWqLpB7CELYXn~41498r0fmPPIzTrW2QRBvgMijtZLjRisTfbSnEgi5W7J3X79dqdQ8EwU~WvKQcArcQVMrTxFAdW-aAm5baKctRO~Bl4IanZr2dHPdbmOD29tvLWstZ9oF7e6NjJXXKqNiFWY075bnJe-fauXmdXoWUngkz2-z-6o~oI9TruYUOZc1ZKXsfhvTH-ypuA3BV8CHRorWQhg__&Key-Pair-Id=K1676C64NMVM2J",
+      "rendered_image": "https://tripo-data.rg1.data.tripo3d.com/tcli_94e0f14194bc451ea566ab5a30b1a619/20260223/df24b480-b27f-4940-bc2d-c602238ae938/legacy_mesh.webp?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly90cmlwby1kYXRhLnJnMS5kYXRhLnRyaXBvM2QuY29tL3RjbGlfOTRlMGYxNDE5NGJjNDUxZWE1NjZhYjVhMzBiMWE2MTkvMjAyNjAyMjMvZGYyNGI0ODAtYjI3Zi00OTQwLWJjMmQtYzYwMjIzOGFlOTM4L2xlZ2FjeV9tZXNoLndlYnAiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3NzE4OTEyMDB9fX1dfQ__&Signature=xNd-HunIAJWcGGP8vVjvIpwroCbynsTRb8C-5c5O4XHGZUpL33seHfy4VEKHQTqOOdD2QnLlPJ1S1DQZ54gZNVRjaGUx9eR7rkgH1abr3w6v2FC-ECfzjR63pBCxS4D73Gp7wHEo~-ywmKaG-ueQ29L9K31g4xvc4HCYrStGYRiGkBeQLfNFc7kNQuvzYHJs7O48DO9sq6RGNRczLb9oHspsGqd1YzUyIU7wY0qUL2XgcMxYN5S5bwfy5Vihg~SXWBADkCvKSWOB0slUsjt5lMtXGWachq9p8Ld7NWR2EtQjay5b3jBwSC-BRT1xVvkzDaMTXLJsLfZWnE-Fd4v00g__&Key-Pair-Id=K1676C64NMVM2J"
+    },
+    "progress": 100,
+    "create_time": 1771857180,
+    "thumbnail": "https://tripo-data.rg1.data.tripo3d.com/tcli_94e0f14194bc451ea566ab5a30b1a619/20260223/df24b480-b27f-4940-bc2d-c602238ae938/legacy_mesh.webp?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly90cmlwby1kYXRhLnJnMS5kYXRhLnRyaXBvM2QuY29tL3RjbGlfOTRlMGYxNDE5NGJjNDUxZWE1NjZhYjVhMzBiMWE2MTkvMjAyNjAyMjMvZGYyNGI0ODAtYjI3Zi00OTQwLWJjMmQtYzYwMjIzOGFlOTM4L2xlZ2FjeV9tZXNoLndlYnAiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3NzE4OTEyMDB9fX1dfQ__&Signature=xNd-HunIAJWcGGP8vVjvIpwroCbynsTRb8C-5c5O4XHGZUpL33seHfy4VEKHQTqOOdD2QnLlPJ1S1DQZ54gZNVRjaGUx9eR7rkgH1abr3w6v2FC-ECfzjR63pBCxS4D73Gp7wHEo~-ywmKaG-ueQ29L9K31g4xvc4HCYrStGYRiGkBeQLfNFc7kNQuvzYHJs7O48DO9sq6RGNRczLb9oHspsGqd1YzUyIU7wY0qUL2XgcMxYN5S5bwfy5Vihg~SXWBADkCvKSWOB0slUsjt5lMtXGWachq9p8Ld7NWR2EtQjay5b3jBwSC-BRT1xVvkzDaMTXLJsLfZWnE-Fd4v00g__&Key-Pair-Id=K1676C64NMVM2J",
+    "queuing_num": -1,
+    "running_left_time": -1,
+    "result": {
+      "pbr_model": {
+        "type": "glb",
+        "url": "https://tripo-data.rg1.data.tripo3d.com/tcli_94e0f14194bc451ea566ab5a30b1a619/20260223/df24b480-b27f-4940-bc2d-c602238ae938/tripo_pbr_model_df24b480-b27f-4940-bc2d-c602238ae938.glb?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly90cmlwby1kYXRhLnJnMS5kYXRhLnRyaXBvM2QuY29tL3RjbGlfOTRlMGYxNDE5NGJjNDUxZWE1NjZhYjVhMzBiMWE2MTkvMjAyNjAyMjMvZGYyNGI0ODAtYjI3Zi00OTQwLWJjMmQtYzYwMjIzOGFlOTM4L3RyaXBvX3Bicl9tb2RlbF9kZjI0YjQ4MC1iMjdmLTQ5NDAtYmMyZC1jNjAyMjM4YWU5MzguZ2xiIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzcxODkxMjAwfX19XX0_&Signature=qF7X~Y7RWPJ6OKu0QOHK4wtMQYgKv25WWRIYjk75euD7hbeZ7pRUudN5vnJta7MscSoKH-LxsJzR~2iGfWBo2oeL62mMWgIxsAeQsyvPcGiezXduNgOvbvQPNJ2K6sLOrWqLpB7CELYXn~41498r0fmPPIzTrW2QRBvgMijtZLjRisTfbSnEgi5W7J3X79dqdQ8EwU~WvKQcArcQVMrTxFAdW-aAm5baKctRO~Bl4IanZr2dHPdbmOD29tvLWstZ9oF7e6NjJXXKqNiFWY075bnJe-fauXmdXoWUngkz2-z-6o~oI9TruYUOZc1ZKXsfhvTH-ypuA3BV8CHRorWQhg__&Key-Pair-Id=K1676C64NMVM2J"
+      },
+      "rendered_image": {
+        "type": "webp",
+        "url": "https://tripo-data.rg1.data.tripo3d.com/tcli_94e0f14194bc451ea566ab5a30b1a619/20260223/df24b480-b27f-4940-bc2d-c602238ae938/legacy_mesh.webp?Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly90cmlwby1kYXRhLnJnMS5kYXRhLnRyaXBvM2QuY29tL3RjbGlfOTRlMGYxNDE5NGJjNDUxZWE1NjZhYjVhMzBiMWE2MTkvMjAyNjAyMjMvZGYyNGI0ODAtYjI3Zi00OTQwLWJjMmQtYzYwMjIzOGFlOTM4L2xlZ2FjeV9tZXNoLndlYnAiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3NzE4OTEyMDB9fX1dfQ__&Signature=xNd-HunIAJWcGGP8vVjvIpwroCbynsTRb8C-5c5O4XHGZUpL33seHfy4VEKHQTqOOdD2QnLlPJ1S1DQZ54gZNVRjaGUx9eR7rkgH1abr3w6v2FC-ECfzjR63pBCxS4D73Gp7wHEo~-ywmKaG-ueQ29L9K31g4xvc4HCYrStGYRiGkBeQLfNFc7kNQuvzYHJs7O48DO9sq6RGNRczLb9oHspsGqd1YzUyIU7wY0qUL2XgcMxYN5S5bwfy5Vihg~SXWBADkCvKSWOB0slUsjt5lMtXGWachq9p8Ld7NWR2EtQjay5b3jBwSC-BRT1xVvkzDaMTXLJsLfZWnE-Fd4v00g__&Key-Pair-Id=K1676C64NMVM2J"
+      }
+    }
+  },
+  "file": {
+    "glb": "commodore-pet-inspired-computer/10000.glb",
+    "bytes": 636412
+  }
+}

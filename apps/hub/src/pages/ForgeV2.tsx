@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { createVhacdWorkerRunner, type VhacdProgress } from "@common/collider-vhacd";
 import { StyleGuidePanel, type StyleGuide } from "./forge/StyleGuidePanel";
-import { Viewport, type Viewport3dViewState, type ViewportHandle } from "./forge/Viewport";
+import type { Viewport3dViewState } from "./forge/Viewport";
 import { PixelQuad, type PixelQuadHandle } from "./forge-v2/PixelQuad";
 import {
   ForgeScissorViewportPane,
@@ -311,9 +311,7 @@ function buildPixelTestEnvironmentGroup(processedModel: THREE.Group): THREE.Grou
   const refs = new THREE.Group();
   refs.name = "pixel-test-environment";
 
-  const grid = new THREE.GridHelper(8, 8, 0x92c5ff, 0x4f6f91);
-  grid.position.y = 0.001;
-  refs.add(grid);
+  addPixelPreviewGroundEnvironment(refs);
 
   const unitBox = new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),
@@ -341,6 +339,28 @@ function buildPixelTestEnvironmentGroup(processedModel: THREE.Group): THREE.Grou
   return root;
 }
 
+function addPixelPreviewGroundEnvironment(root: THREE.Group): void {
+  const gridSize = 12;
+  const darkGridColor = 0x6b8fb5;
+  const brightCenterGridColor = 0xa7d2ff;
+
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(14, 0.1, 14),
+    new THREE.MeshStandardMaterial({
+      color: 0x5d748b,
+      roughness: 0.95,
+      metalness: 0.02
+    })
+  );
+  floor.position.set(0, -0.05, 0);
+  floor.receiveShadow = true;
+  root.add(floor);
+
+  const grid = new THREE.GridHelper(gridSize, 12, brightCenterGridColor, darkGridColor);
+  grid.position.y = 0.002;
+  root.add(grid);
+}
+
 function createScenarioVisuals(
   baseModel: THREE.Group,
   scenario: PhysicsPreviewScenario
@@ -350,21 +370,7 @@ function createScenarioVisuals(
   const pixelRoot = new THREE.Group();
 
   function addEnvironment(root: THREE.Group): void {
-    const floor = new THREE.Mesh(
-      new THREE.BoxGeometry(14, 0.1, 14),
-      new THREE.MeshStandardMaterial({
-        color: 0x51667a,
-        roughness: 0.95,
-        metalness: 0.02
-      })
-    );
-    floor.position.set(0, -0.05, 0);
-    floor.receiveShadow = true;
-    root.add(floor);
-
-    const grid = new THREE.GridHelper(12, 12, 0x7ea0bf, 0x44586d);
-    grid.position.y = 0.002;
-    root.add(grid);
+    addPixelPreviewGroundEnvironment(root);
 
     if (scenario === "slope30Drop") {
       const ramp = new THREE.Mesh(
@@ -610,7 +616,7 @@ export function ForgeV2() {
     meshes: false
   });
 
-  const generationViewportRef = useRef<ViewportHandle>(null);
+  const generationViewportRef = useRef<ForgeScissorViewportHandle>(null);
   const generationPixelBaseModelRef = useRef<THREE.Group | null>(null);
   const [generationPixelModel, setGenerationPixelModel] = useState<THREE.Group | null>(null);
   const [generationMeshVisibility, setGenerationMeshVisibility] = useState({
@@ -844,6 +850,7 @@ export function ForgeV2() {
     vp.setColliderVisible(generationMeshVisibility.collider);
     vp.setGridVisible(generationMeshVisibility.grid);
     vp.setAxesVisible(generationMeshVisibility.axes);
+    vp.setBBoxVisible(false);
   }, [generationMeshVisibility]);
 
   const syncGenerationPixelFromMesh = useCallback((meshState: Viewport3dViewState) => {
@@ -2009,7 +2016,7 @@ export function ForgeV2() {
           </aside>
 
           <section className="forgev2-pane forgev2-pane-center">
-            <div className="forgev2-view-stack">
+            <ForgeScissorViewportStage className="forgev2-view-stack">
               <div className="forgev2-viewport-card">
                 <div className="forgev2-viewport-card-header">
                   <strong>Mesh View</strong>
@@ -2037,9 +2044,13 @@ export function ForgeV2() {
                     </label>
                   </div>
                 </div>
-                <div className="forgev2-viewport-host">
-                  <Viewport ref={generationViewportRef} onViewChange={handleGenerationMeshViewChange} />
-                </div>
+                <ForgeScissorViewportPane
+                  paneId="generation-mesh"
+                  className="forgev2-viewport-host forgev2-scissor-3d-pane-host forgev2-scissor-3d-pane-host-interactive"
+                  ref={generationViewportRef}
+                  interactive
+                  onViewChange={handleGenerationMeshViewChange}
+                />
               </div>
 
               <div className="forgev2-viewport-card">
@@ -2051,10 +2062,12 @@ export function ForgeV2() {
                   model={generationPixelModel}
                   baseViewState={generationPixelBaseViewState}
                   onBaseViewStateChange={handleGenerationPixelBaseViewChange}
-                  className="forgev2-pixel-grid"
+                  className="forgev2-pixel-strip"
+                  interactive={false}
+                  viewportFramingScale={1.28}
                 />
               </div>
-            </div>
+            </ForgeScissorViewportStage>
           </section>
 
           <aside className="forgev2-pane forgev2-pane-right">
@@ -2329,6 +2342,7 @@ export function ForgeV2() {
                             }));
                           }}
                           className="forgev2-pixel-strip"
+                          interactive={false}
                           viewportFramingScale={1.28}
                           paneIdPrefix={`physics-pixel-${scenario}-`}
                         />

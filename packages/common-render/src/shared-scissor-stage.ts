@@ -6,6 +6,8 @@ export type SharedScissorPaneRect = {
   cssTop: number;
   cssWidth: number;
   cssHeight: number;
+  deviceWidthUnclipped: number;
+  deviceHeightUnclipped: number;
   deviceLeft: number;
   deviceTop: number;
   deviceBottom: number;
@@ -47,6 +49,7 @@ export type SharedScissorStageConfig = {
 type PaneEntry = {
   pane: SharedScissorPane;
   lastRectKey: string;
+  warnedOpaqueBackgroundMask: boolean;
 };
 
 export class SharedScissorStage {
@@ -124,7 +127,7 @@ export class SharedScissorStage {
     if (this.panes.has(pane.id)) {
       throw new Error(`SharedScissorStage duplicate pane id: ${pane.id}`);
     }
-    this.panes.set(pane.id, { pane, lastRectKey: "" });
+    this.panes.set(pane.id, { pane, lastRectKey: "", warnedOpaqueBackgroundMask: false });
     this.measurePaneRects();
   }
 
@@ -281,6 +284,7 @@ export class SharedScissorStage {
     const mountTopAbsPx = Math.round(mountRect.top * this.pixelRatio);
 
     for (const [id, entry] of this.panes) {
+      this.warnIfPaneAncestorChainMasksCanvas(entry);
       const rect = entry.pane.element.getBoundingClientRect();
       const cssLeft = rect.left - mountRect.left;
       const cssTop = rect.top - mountRect.top;
@@ -305,6 +309,8 @@ export class SharedScissorStage {
         0,
         Math.min(canvasHeight, deviceBottomTopOriginRaw)
       );
+      const deviceWidthUnclipped = Math.max(0, deviceRightRaw - deviceLeftRaw);
+      const deviceHeightUnclipped = Math.max(0, deviceBottomTopOriginRaw - deviceTopRaw);
       const deviceWidth = Math.max(0, deviceRight - deviceLeft);
       const deviceHeight = Math.max(0, deviceBottomTopOrigin - deviceTop);
       const deviceBottom = Math.max(0, canvasHeight - (deviceTop + deviceHeight));
@@ -313,6 +319,8 @@ export class SharedScissorStage {
         cssTop,
         cssWidth,
         cssHeight,
+        deviceWidthUnclipped,
+        deviceHeightUnclipped,
         deviceLeft,
         deviceTop,
         deviceBottom,
@@ -326,6 +334,75 @@ export class SharedScissorStage {
         entry.pane.onResize?.(nextRect);
       }
     }
+  }
+
+  private warnIfPaneAncestorChainMasksCanvas(entry: PaneEntry): void {
+    if (entry.warnedOpaqueBackgroundMask) {
+      return;
+    }
+
+    const offenders: string[] = [];
+    let node: HTMLElement | null = entry.pane.element;
+    while (node && node !== this.mount) {
+      const allowOpaque =
+        node.dataset?.sharedScissorAllowOpaqueBackground === "true";
+      if (!allowOpaque) {
+        const style = window.getComputedStyle(node);
+        const bgImage = style.backgroundImage?.trim() ?? "";
+        const bgColor = style.backgroundColor?.trim() ?? "";
+        if (bgImage && bgImage !== "none") {
+          offenders.push(this.describeNodeForMaskWarning(node, `background-image=${bgImage}`));
+        } else if (!this.isComputedBackgroundColorTransparent(bgColor)) {
+          offenders.push(this.describeNodeForMaskWarning(node, `background-color=${bgColor}`));
+        }
+      }
+      node = node.parentElement;
+    }
+
+    if (offenders.length === 0) {
+      return;
+    }
+
+    entry.warnedOpaqueBackgroundMask = true;
+    console.warn(
+      `[SharedScissorStage] Pane "${entry.pane.id}" may be visually masked by opaque backgrounds between pane element and stage mount. ` +
+        `Shared scissor canvases render behind pane DOM overlays, so pane ancestor backgrounds must stay transparent. ` +
+        `Offenders: ${offenders.join(" -> ")}. ` +
+        `If this is intentional, set data-shared-scissor-allow-opaque-background="true" on that element.`
+    );
+  }
+
+  private describeNodeForMaskWarning(node: HTMLElement, detail: string): string {
+    const tag = node.tagName?.toLowerCase?.() || "element";
+    const id = node.id ? `#${node.id}` : "";
+    const className =
+      typeof node.className === "string" && node.className.trim()
+        ? `.${node.className.trim().split(/\s+/).join(".")}`
+        : "";
+    return `${tag}${id}${className}(${detail})`;
+  }
+
+  private isComputedBackgroundColorTransparent(color: string): boolean {
+    const value = color.trim().toLowerCase();
+    if (!value || value === "transparent") {
+      return true;
+    }
+    if (value === "rgba(0, 0, 0, 0)" || value === "rgba(0,0,0,0)") {
+      return true;
+    }
+    if (value.startsWith("rgba(")) {
+      const parts = value
+        .slice(5, -1)
+        .split(",")
+        .map((part) => part.trim());
+      const alpha = Number(parts[3]);
+      return Number.isFinite(alpha) && alpha <= 0;
+    }
+    if (value.startsWith("rgb(")) {
+      return false;
+    }
+    // Conservative default for uncommon color syntaxes in computed styles.
+    return false;
   }
 
   private findPaneAtClientPoint(clientX: number, clientY: number): {

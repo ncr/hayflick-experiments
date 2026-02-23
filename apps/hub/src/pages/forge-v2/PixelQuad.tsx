@@ -73,6 +73,7 @@ interface Props {
   baseViewState: PixelViewportViewState;
   onBaseViewStateChange?: (state: PixelViewportViewState) => void;
   className?: string;
+  interactive?: boolean;
   viewportFramingScale?: number;
   paneIdPrefix?: string;
 }
@@ -93,6 +94,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
     baseViewState,
     onBaseViewStateChange,
     className,
+    interactive = true,
     viewportFramingScale = 1.22,
     paneIdPrefix = ""
   }: Props,
@@ -326,13 +328,13 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
     syncPanesFromBase(baseViewStateRef.current);
 
     const pointerTarget = ownsStage ? stage.canvas : container;
-    if (!pointerTarget) {
+    if (interactive && !pointerTarget) {
       if (ownsStage) {
         stage.dispose();
       }
       return;
     }
-    const pointerEventTarget: HTMLElement = pointerTarget;
+    const pointerEventTarget: HTMLElement | null = interactive ? pointerTarget : null;
 
     const onPointerDown = (event: PointerEvent): void => {
       if (event.button !== 0 && event.button !== 2) {
@@ -362,7 +364,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
       }
 
       try {
-        pointerEventTarget.setPointerCapture(event.pointerId);
+        pointerEventTarget?.setPointerCapture(event.pointerId);
       } catch {
         // no-op
       }
@@ -418,7 +420,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
       }
 
       try {
-        if (pointerEventTarget.hasPointerCapture(event.pointerId)) {
+        if (pointerEventTarget?.hasPointerCapture(event.pointerId)) {
           pointerEventTarget.releasePointerCapture(event.pointerId);
         }
       } catch {
@@ -466,24 +468,28 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
       event.preventDefault();
     };
 
-    pointerEventTarget.addEventListener("pointerdown", onPointerDown);
-    pointerEventTarget.addEventListener("pointermove", onPointerMove);
-    pointerEventTarget.addEventListener("pointerup", endPointer);
-    pointerEventTarget.addEventListener("pointercancel", endPointer);
-    pointerEventTarget.addEventListener("wheel", onWheel, { passive: false });
-    pointerEventTarget.addEventListener("contextmenu", onContextMenu);
+    if (pointerEventTarget) {
+      pointerEventTarget.addEventListener("pointerdown", onPointerDown);
+      pointerEventTarget.addEventListener("pointermove", onPointerMove);
+      pointerEventTarget.addEventListener("pointerup", endPointer);
+      pointerEventTarget.addEventListener("pointercancel", endPointer);
+      pointerEventTarget.addEventListener("wheel", onWheel, { passive: false });
+      pointerEventTarget.addEventListener("contextmenu", onContextMenu);
+    }
 
     if (ownsStage) {
       stage.start();
     }
 
     return () => {
-      pointerEventTarget.removeEventListener("pointerdown", onPointerDown);
-      pointerEventTarget.removeEventListener("pointermove", onPointerMove);
-      pointerEventTarget.removeEventListener("pointerup", endPointer);
-      pointerEventTarget.removeEventListener("pointercancel", endPointer);
-      pointerEventTarget.removeEventListener("wheel", onWheel);
-      pointerEventTarget.removeEventListener("contextmenu", onContextMenu);
+      if (pointerEventTarget) {
+        pointerEventTarget.removeEventListener("pointerdown", onPointerDown);
+        pointerEventTarget.removeEventListener("pointermove", onPointerMove);
+        pointerEventTarget.removeEventListener("pointerup", endPointer);
+        pointerEventTarget.removeEventListener("pointercancel", endPointer);
+        pointerEventTarget.removeEventListener("wheel", onWheel);
+        pointerEventTarget.removeEventListener("contextmenu", onContextMenu);
+      }
 
       dragStateRef.current = null;
       for (const angle of ANGLES) {
@@ -504,7 +510,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
       modelRef.current = null;
       sceneRef.current = null;
     };
-  }, [paneIdPrefix, sharedScissorStage, viewportFramingScale]);
+  }, [interactive, paneIdPrefix, sharedScissorStage, viewportFramingScale]);
 
   return (
     <div

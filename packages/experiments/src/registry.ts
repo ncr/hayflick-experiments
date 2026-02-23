@@ -14,6 +14,7 @@ import { meta as pixelPerfectScissorLabMeta } from "./pixel-perfect-scissor-lab/
 import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
 import { meta as propDropEdgeTestMeta } from "./prop-drop-edge-test/meta";
 import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
+import { meta as tripoFaceLimitCompareMeta } from "./tripo-face-limit-compare/meta";
 import { meta as vhacdUnityLabMeta } from "./vhacd-unity-lab/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
@@ -41,6 +42,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...settlementBuilderEcsMeta,
     load: () => import("./settlement-builder-ecs/index")
+  },
+  {
+    ...tripoFaceLimitCompareMeta,
+    load: () => import("./tripo-face-limit-compare/index")
   },
   {
     ...physicsRapierMeta,

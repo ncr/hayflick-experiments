@@ -1,0 +1,113 @@
+{
+  "id": "tripo-face-limit-compare",
+  "generatedAt": "2026-02-23T14:38:53.313Z",
+  "startedAt": "2026-02-23T14:23:49.214Z",
+  "tripoProxyBase": "http://127.0.0.1:4173/api/tripo",
+  "modelVersion": "v3.0-20250812",
+  "faceLimits": [
+    1000,
+    3000,
+    5000,
+    10000
+  ],
+  "props": [
+    {
+      "id": "chemical-flask",
+      "label": "Chemical Flask"
+    },
+    {
+      "id": "commodore-pet-inspired-computer",
+      "label": "Commodore PET Inspired Computer"
+    },
+    {
+      "id": "professional-workbench-chair",
+      "label": "Professional Workbench Chair"
+    }
+  ],
+  "variants": [
+    {
+      "propId": "chemical-flask",
+      "faceLimit": 1000,
+      "glbRelPath": "chemical-flask/1000.glb",
+      "metaRelPath": "chemical-flask/1000.json",
+      "skipped": false
+    },
+    {
+      "propId": "chemical-flask",
+      "faceLimit": 3000,
+      "glbRelPath": "chemical-flask/3000.glb",
+      "metaRelPath": "chemical-flask/3000.json",
+      "skipped": false
+    },
+    {
+      "propId": "chemical-flask",
+      "faceLimit": 5000,
+      "glbRelPath": "chemical-flask/5000.glb",
+      "metaRelPath": "chemical-flask/5000.json",
+      "skipped": false
+    },
+    {
+      "propId": "chemical-flask",
+      "faceLimit": 10000,
+      "glbRelPath": "chemical-flask/10000.glb",
+      "metaRelPath": "chemical-flask/10000.json",
+      "skipped": false
+    },
+    {
+      "propId": "commodore-pet-inspired-computer",
+      "faceLimit": 1000,
+      "glbRelPath": "commodore-pet-inspired-computer/1000.glb",
+      "metaRelPath": "commodore-pet-inspired-computer/1000.json",
+      "skipped": false
+    },
+    {
+      "propId": "commodore-pet-inspired-computer",
+      "faceLimit": 3000,
+      "glbRelPath": "commodore-pet-inspired-computer/3000.glb",
+      "metaRelPath": "commodore-pet-inspired-computer/3000.json",
+      "skipped": false
+    },
+    {
+      "propId": "commodore-pet-inspired-computer",
+      "faceLimit": 5000,
+      "glbRelPath": "commodore-pet-inspired-computer/5000.glb",
+      "metaRelPath": "commodore-pet-inspired-computer/5000.json",
+      "skipped": false
+    },
+    {
+      "propId": "commodore-pet-inspired-computer",
+      "faceLimit": 10000,
+      "glbRelPath": "commodore-pet-inspired-computer/10000.glb",
+      "metaRelPath": "commodore-pet-inspired-computer/10000.json",
+      "skipped": false
+    },
+    {
+      "propId": "professional-workbench-chair",
+      "faceLimit": 1000,
+      "glbRelPath": "professional-workbench-chair/1000.glb",
+      "metaRelPath": "professional-workbench-chair/1000.json",
+      "skipped": false
+    },
+    {
+      "propId": "professional-workbench-chair",
+      "faceLimit": 3000,
+      "glbRelPath": "professional-workbench-chair/3000.glb",
+      "metaRelPath": "professional-workbench-chair/3000.json",
+      "skipped": false
+    },
+    {
+      "propId": "professional-workbench-chair",
+      "faceLimit": 5000,
+      "glbRelPath": "professional-workbench-chair/5000.glb",
+      "metaRelPath": "professional-workbench-chair/5000.json",
+      "skipped": false
+    },
+    {
+      "propId": "professional-workbench-chair",
+      "faceLimit": 10000,
+      "glbRelPath": "professional-workbench-chair/10000.glb",
+      "metaRelPath": "professional-workbench-chair/10000.json",
+      "skipped": false
+    }
+  ]
+}
