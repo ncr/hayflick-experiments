@@ -1,5 +1,6 @@
 import * as THREE from "three";
 export {
+  clamp,
   computeLowResolutionSize,
   computeOrthoHeightForLowResolution,
   computeOutputViewportLayout,

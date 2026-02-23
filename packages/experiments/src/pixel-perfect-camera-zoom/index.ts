@@ -30,7 +30,7 @@ type CameraZoomDebugApi = {
     zoomAnimationActive: boolean;
     zoomBurstActive: boolean;
     controllerRenderScale: number;
-    displayRenderScale: number;
+    baseRenderScale: number;
     lowRenderWidth: number;
     lowRenderHeight: number;
     sceneOutputWidth: number;
@@ -153,7 +153,7 @@ const experiment: ExperimentModule = {
         `Zoom mode: fixed render`,
         `DPR: ${state.devicePixelRatio.toFixed(3)}`,
         `Low-res: ${state.lowRenderWidth}x${state.lowRenderHeight}`,
-        `Render viewport: ${Math.round(state.sceneOutputWidth)}x${Math.round(state.sceneOutputHeight)} (scale ${state.displayRenderScale.toFixed(3)}x)`,
+        `Render viewport: ${Math.round(state.sceneOutputWidth)}x${Math.round(state.sceneOutputHeight)} (scale ${state.baseRenderScale.toFixed(3)}x)`,
         `Keys: Q/E rotate, wheel zoom, middle-drag pan, Z toggle zoom mode`,
         `Note: render target size stays constant; orthographic frustum changes`
       ].join("\n");
@@ -172,7 +172,7 @@ const experiment: ExperimentModule = {
           zoomAnimationActive: state.zoomAnimationActive,
           zoomBurstActive: state.zoomBurstActive,
           controllerRenderScale: state.controllerRenderScale,
-          displayRenderScale: state.displayRenderScale,
+          baseRenderScale: state.baseRenderScale,
           lowRenderWidth: state.lowRenderWidth,
           lowRenderHeight: state.lowRenderHeight,
           sceneOutputWidth: state.sceneOutputWidth,

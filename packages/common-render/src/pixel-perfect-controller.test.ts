@@ -93,6 +93,6 @@ describe("@common/render pixel-perfect controller", () => {
     const viewport = controller.getRenderViewport(state.viewportDeviceHeight);
     expect(viewport.width).toBe(state.outputWidth);
     expect(viewport.height).toBe(state.outputHeight);
-    expect(viewport.y).toBe(state.viewportDeviceHeight - (state.renderBaseY + state.outputHeight));
+    expect(viewport.y).toBe(Math.max(0, state.viewportDeviceHeight - (state.renderBaseY + state.outputHeight)));
   });
 });

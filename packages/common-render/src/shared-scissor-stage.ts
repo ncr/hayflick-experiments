@@ -72,6 +72,9 @@ export class SharedScissorStage {
   private readonly clearAlpha: number;
   private readonly savedMountPosition: string;
   private readonly savedMountOverflow: string;
+  private paneRectsDirty = true;
+  private paneRectsFrameSeq = -1;
+  private drawFrameSeq = 0;
 
   constructor(config: SharedScissorStageConfig) {
     this.mount = config.mount;
@@ -128,6 +131,7 @@ export class SharedScissorStage {
       throw new Error(`SharedScissorStage duplicate pane id: ${pane.id}`);
     }
     this.panes.set(pane.id, { pane, lastRectKey: "", warnedOpaqueBackgroundMask: false });
+    this.paneRectsDirty = true;
     this.measurePaneRects();
   }
 
@@ -195,6 +199,7 @@ export class SharedScissorStage {
     this.renderer.setSize(deviceWidth, deviceHeight, false);
     this.canvas.style.width = `${this.widthCss}px`;
     this.canvas.style.height = `${this.heightCss}px`;
+    this.paneRectsDirty = true;
     this.measurePaneRects();
   }
 
@@ -211,6 +216,7 @@ export class SharedScissorStage {
   }
 
   hitTestPane(clientX: number, clientY: number): SharedScissorPaneHit | null {
+    this.paneRectsDirty = true;
     this.measurePaneRects();
     const hit = this.findPaneAtClientPoint(clientX, clientY);
     if (!hit) {
@@ -246,6 +252,7 @@ export class SharedScissorStage {
   }
 
   private draw(nowMs: number, deltaSeconds: number): void {
+    this.drawFrameSeq += 1;
     this.measurePaneRects();
     const renderer = this.renderer;
     renderer.setScissorTest(false);
@@ -265,6 +272,12 @@ export class SharedScissorStage {
   }
 
   private measurePaneRects(): void {
+    if (!this.paneRectsDirty && this.paneRectsFrameSeq === this.drawFrameSeq) {
+      return;
+    }
+    this.paneRectsDirty = false;
+    this.paneRectsFrameSeq = this.drawFrameSeq;
+
     const mountRect = this.mount.getBoundingClientRect();
     const cssToDeviceX = mountRect.width > 0 ? this.canvas.width / mountRect.width : 1;
     const cssToDeviceY = mountRect.height > 0 ? this.canvas.height / mountRect.height : 1;

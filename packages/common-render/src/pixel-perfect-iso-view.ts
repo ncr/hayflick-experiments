@@ -29,6 +29,7 @@ export class PixelPerfectIsoView {
   private readonly pane: PixelPerfectIsoScissorPane;
   private readonly savedMountBackground: string;
   private readonly savedCanvasBackground: string;
+  private readonly projectLocal = new THREE.Vector2();
   private disposed = false;
 
   constructor(config: PixelPerfectIsoViewConfig) {
@@ -184,7 +185,7 @@ export class PixelPerfectIsoView {
   }
 
   projectWorldToClient(world: THREE.Vector3, out: THREE.Vector2): boolean {
-    const local = new THREE.Vector2();
+    const local = this.projectLocal;
     if (!this.core.projectWorldToLocalCss(world, local)) {
       return false;
     }

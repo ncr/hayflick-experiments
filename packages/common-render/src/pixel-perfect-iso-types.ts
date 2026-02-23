@@ -33,7 +33,7 @@ export type PixelPerfectIsoViewState = {
   zoomAnimationActive: boolean;
   zoomBurstActive: boolean;
   controllerRenderScale: number;
-  displayRenderScale: number;
+  baseRenderScale: number;
   lowRenderWidth: number;
   lowRenderHeight: number;
   sceneOutputWidth: number;

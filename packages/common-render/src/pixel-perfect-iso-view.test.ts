@@ -47,7 +47,7 @@ vi.mock("./pixel-perfect-iso-viewport-core", () => {
       zoomAnimationActive: false,
       zoomBurstActive: false,
       controllerRenderScale: 2,
-      displayRenderScale: 2,
+      baseRenderScale: 2,
       lowRenderWidth: 160,
       lowRenderHeight: 120,
       sceneOutputWidth: 160,

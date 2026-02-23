@@ -1,4 +1,5 @@
 import {
+  clamp,
   computeLowResolutionSize,
   computeOrthoHeightForLowResolution,
   computeOutputViewportLayout,
@@ -10,10 +11,32 @@ export type ZoomMode = "free" | "safe-ladder";
 
 const SAFE_EPSILON = 1e-6;
 
+/**
+ * Two-stage quantization state for pixel-perfect panning.
+ *
+ * Stage 1 — sub-device-pixel accumulation (`carry`):
+ *   Raw CSS input deltas are scaled to device pixels and accumulated in
+ *   `carryX`/`carryY`. Only whole device-pixel increments pass through;
+ *   the fractional remainder stays in `carry` for the next frame.
+ *
+ * Stage 2 — sub-camera-step accumulation (`remainder`):
+ *   Whole device-pixel deltas are further quantized to the current
+ *   `renderScale` (integer upscale factor). Only whole render-scale
+ *   multiples produce a camera movement step; the residual device pixels
+ *   stay in `remainderX`/`remainderY` and shift the viewport sub-pixel
+ *   offset instead.
+ *
+ * Together the two stages guarantee that camera position only changes by
+ * exact low-res pixel boundaries, preserving the pixel-perfect invariant.
+ */
 export type PanPhaseState = {
+  /** Fractional device-pixel accumulator (sub-device-pixel input residual). */
   carryX: number;
+  /** Fractional device-pixel accumulator (sub-device-pixel input residual). */
   carryY: number;
+  /** Sub-render-scale-step device-pixel residual driving viewport offset. */
   remainderX: number;
+  /** Sub-render-scale-step device-pixel residual driving viewport offset. */
   remainderY: number;
 };
 
@@ -92,6 +115,14 @@ export function createPanPhaseState(): PanPhaseState {
   };
 }
 
+/**
+ * Advances pan state through the two-stage quantization pipeline.
+ *
+ * 1. Accumulates raw device-pixel deltas into `carry`, extracting whole
+ *    device pixels.
+ * 2. Divides whole pixels by `renderScale` to produce integer camera steps,
+ *    keeping the sub-step residual in `remainder`.
+ */
 export function stepPanPhase(
   state: PanPhaseState,
   rawDeltaX: number,
@@ -226,6 +257,7 @@ export class PixelPerfectController {
   private panPhase = createPanPhaseState();
   private cumulativePanDeviceX = 0;
   private cumulativePanDeviceY = 0;
+  private cachedState: PixelPerfectControllerState | null = null;
 
   constructor(config: PixelPerfectControllerConfig) {
     this.minZoom = config.minZoom;
@@ -320,6 +352,7 @@ export class PixelPerfectController {
   }
 
   rotateQuarterTurns(step: -1 | 1): number {
+    this.invalidateCache();
     this.yawIndex += step;
     return this.yawIndex;
   }
@@ -329,6 +362,7 @@ export class PixelPerfectController {
     if (rounded === this.yawIndex) {
       return false;
     }
+    this.invalidateCache();
     this.yawIndex = rounded;
     return true;
   }
@@ -351,6 +385,7 @@ export class PixelPerfectController {
     if (this.panPhase.carryX === 0 && this.panPhase.carryY === 0) {
       return;
     }
+    this.invalidateCache();
     this.panPhase = {
       ...this.panPhase,
       carryX: 0,
@@ -359,6 +394,7 @@ export class PixelPerfectController {
   }
 
   panByDevice(deltaDeviceX: number, deltaDeviceY: number): PanPhaseStep {
+    this.invalidateCache();
     const previousRemainderX = this.panPhase.remainderX;
     const previousRemainderY = this.panPhase.remainderY;
     const next = stepPanPhase(
@@ -460,7 +496,7 @@ export class PixelPerfectController {
   } {
     const renderLeft = this.renderBaseX + this.panPhase.remainderX;
     const renderTop = this.renderBaseY + this.panPhase.remainderY;
-    const renderBottom = canvasDeviceHeight - (renderTop + this.outputHeight);
+    const renderBottom = Math.max(0, canvasDeviceHeight - (renderTop + this.outputHeight));
     return {
       x: renderLeft,
       y: renderBottom,
@@ -470,7 +506,10 @@ export class PixelPerfectController {
   }
 
   getState(): PixelPerfectControllerState {
-    return {
+    if (this.cachedState !== null) {
+      return this.cachedState;
+    }
+    const state: PixelPerfectControllerState = {
       zoomMode: this.zoomMode,
       yawIndex: this.yawIndex,
       devicePixelRatio: this.devicePixelRatio,
@@ -502,9 +541,16 @@ export class PixelPerfectController {
       cumulativePanDeviceX: this.cumulativePanDeviceX,
       cumulativePanDeviceY: this.cumulativePanDeviceY
     };
+    this.cachedState = state;
+    return state;
+  }
+
+  private invalidateCache(): void {
+    this.cachedState = null;
   }
 
   private recomputeLayout(): void {
+    this.invalidateCache();
     const viewport =
       this.viewportDeviceOverrideWidth != null && this.viewportDeviceOverrideHeight != null
         ? {
@@ -627,11 +673,4 @@ export class PixelPerfectController {
 
     return Math.max(safeMinZoom, Math.min(safeMaxZoom, best));
   }
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) {
-    return min;
-  }
-  return Math.max(min, Math.min(max, value));
 }

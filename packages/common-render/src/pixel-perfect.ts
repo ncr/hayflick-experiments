@@ -28,8 +28,8 @@ export function computeViewportDeviceSize(
   maxDeviceHeight: number
 ): DeviceSize {
   return {
-    width: clampInteger(Math.round(cssWidth * dpr), 1, maxDeviceWidth),
-    height: clampInteger(Math.round(cssHeight * dpr), 1, maxDeviceHeight)
+    width: clamp(Math.round(cssWidth * dpr), 1, maxDeviceWidth),
+    height: clamp(Math.round(cssHeight * dpr), 1, maxDeviceHeight)
   };
 }
 
@@ -110,7 +110,7 @@ export function computeOrthoHeightForLowResolution(
   return baseOrthoHeight * (lowHeight / safeReference);
 }
 
-function clampInteger(value: number, min: number, max: number): number {
+export function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) {
     return min;
   }

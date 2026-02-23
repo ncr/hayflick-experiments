@@ -86,7 +86,7 @@ export class PixelPerfectIsoViewportCore {
   private cameraZoomCurrent = 1;
   private cameraZoomStable = 1;
 
-  private displayRenderScale = 1;
+  private baseRenderScale = 1;
   private displaySceneOutputWidth = 1;
   private displaySceneOutputHeight = 1;
   private displayOutputWidth = 1;
@@ -192,7 +192,7 @@ export class PixelPerfectIsoViewportCore {
       zoomAnimationActive: this.zoomAnimationActive,
       zoomBurstActive: this.zoomBurstActive,
       controllerRenderScale: state.renderScale,
-      displayRenderScale: this.displayRenderScale,
+      baseRenderScale: this.baseRenderScale,
       lowRenderWidth: state.lowRenderWidth,
       lowRenderHeight: state.lowRenderHeight,
       sceneOutputWidth: this.displaySceneOutputWidth,
@@ -555,7 +555,7 @@ export class PixelPerfectIsoViewportCore {
   private updateDisplayLayout(scale: number): void {
     const state = this.controller.getState();
     const safeScale = Math.max(1, scale);
-    this.displayRenderScale = safeScale;
+    this.baseRenderScale = safeScale;
     this.displaySceneOutputWidth = state.lowRenderWidth * safeScale;
     this.displaySceneOutputHeight = state.lowRenderHeight * safeScale;
     this.displayOutputWidth =
