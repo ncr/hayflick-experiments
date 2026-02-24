@@ -3179,3 +3179,17 @@ Preventive checklist:
 - Treat the full ancestor chain from pane surface to scissor stage mount as part of the rendering path; it must remain transparent in pane regions.
 - Prefer borders/box-shadows for pane chrome instead of opaque fills when using a shared canvas behind overlay DOM.
 - Keep the `SharedScissorStage` opaque-background warning enabled and investigate any warning before assuming render math is broken.
+
+## 2026-02-24 - Shared scissor canvas on fractional mount edges can create visible pixelated seam/jump artifacts versus independent canvases
+Root cause:
+- `SharedScissorStage` quantized the renderer backing size from absolute device-pixel edges, but left the shared canvas CSS box pinned to unquantized mount CSS edges (`left/top=0`, raw CSS width/height).
+- On fractional layout positions/sizes, browser `image-rendering: pixelated` scaling of one large shared canvas could land on a different sampling phase than per-pane canvases, causing visible row/column seam jumps when toggling shared scissor mode.
+
+Detection signal:
+- In `pixel-perfect-scissor-lab`, enabling the shared scissor toggle caused visible 1-3px jumps/seams (reported in the north/east panes) that did not appear in independent mode.
+- Local world-projection/debug math could still match, pointing to a canvas CSS/backing alignment issue rather than scene/camera math.
+
+Preventive checklist:
+- When a shared canvas backing store is quantized from absolute edges, also align the canvas CSS box to those same quantized edges (left/top offset + CSS size from `deviceSize / dpr`).
+- Add a regression test for fractional mount geometry that asserts shared canvas CSS left/top and width/height match device-pixel quantized mount edges.
+- Treat shared-canvas pixelated rendering mismatches as potentially browser compositing/CSS alignment issues before changing scene/scissor math.
