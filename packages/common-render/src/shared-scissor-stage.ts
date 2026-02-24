@@ -197,8 +197,24 @@ export class SharedScissorStage {
     );
 
     this.renderer.setSize(deviceWidth, deviceHeight, false);
-    this.canvas.style.width = `${this.widthCss}px`;
-    this.canvas.style.height = `${this.heightCss}px`;
+    if (
+      absWidthFromRect > 0 &&
+      absHeightFromRect > 0 &&
+      deviceWidth === absWidthFromRect &&
+      deviceHeight === absHeightFromRect
+    ) {
+      const quantizedLeftCss = Math.round(mountRect.left * this.pixelRatio) / this.pixelRatio;
+      const quantizedTopCss = Math.round(mountRect.top * this.pixelRatio) / this.pixelRatio;
+      this.canvas.style.left = `${quantizedLeftCss - mountRect.left}px`;
+      this.canvas.style.top = `${quantizedTopCss - mountRect.top}px`;
+      this.canvas.style.width = `${deviceWidth / this.pixelRatio}px`;
+      this.canvas.style.height = `${deviceHeight / this.pixelRatio}px`;
+    } else {
+      this.canvas.style.left = "0";
+      this.canvas.style.top = "0";
+      this.canvas.style.width = `${this.widthCss}px`;
+      this.canvas.style.height = `${this.heightCss}px`;
+    }
     this.paneRectsDirty = true;
     this.measurePaneRects();
   }

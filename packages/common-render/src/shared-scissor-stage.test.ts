@@ -289,6 +289,32 @@ describe("@common/render SharedScissorStage", () => {
     stage.dispose();
   });
 
+  it("aligns the shared canvas CSS box to device-pixel quantized mount edges on fractional layouts", () => {
+    const mount = makeElement(makeRect(10.25, 20.25, 100.5, 50.5));
+
+    const stage = new SharedScissorStage({
+      mount: mount as unknown as HTMLElement,
+      width: 100.5,
+      height: 50.5,
+      pixelRatio: 2
+    });
+
+    const canvas = stage.getCanvas() as unknown as {
+      style: Record<string, string>;
+      width: number;
+      height: number;
+    };
+
+    expect(canvas.width).toBe(201);
+    expect(canvas.height).toBe(101);
+    expect(canvas.style.left).toBe("0.25px");
+    expect(canvas.style.top).toBe("0.25px");
+    expect(canvas.style.width).toBe("100.5px");
+    expect(canvas.style.height).toBe("50.5px");
+
+    stage.dispose();
+  });
+
   it("unregisterPane removes the pane without disposing it", () => {
     const mount = makeElement(makeRect(0, 0, 200, 100));
     const paneEl = makeElement(makeRect(0, 0, 80, 80));
