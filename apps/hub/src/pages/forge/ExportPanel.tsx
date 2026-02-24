@@ -188,7 +188,7 @@ export function ExportPanel({
         },
         gen3d: {
           tripoTaskId: "",
-          faceLimit: 20000,
+          faceLimit: 5000,
           pbr: true,
         },
         processing: {

@@ -410,8 +410,11 @@ export class PixelPerfectIsoViewportCore {
     renderer: THREE.WebGLRenderer,
     viewport: PixelPerfectIsoRenderViewport,
     nowMs: number,
-    deltaSeconds: number
+    deltaSeconds: number,
+    clipViewport?: PixelPerfectIsoRenderViewport
   ): void {
+    const paneViewport = viewport;
+    const scissorViewport = clipViewport ?? paneViewport;
     this.updateAnimationState(deltaSeconds);
     if (this.zoomBurstActive && nowMs > this.zoomBurstExpiresAtMs) {
       this.zoomBurstActive = false;
@@ -427,21 +430,26 @@ export class PixelPerfectIsoViewportCore {
     renderer.setRenderTarget(null);
     renderer.setScissorTest(previousScissorTest);
 
-    renderer.setScissor(viewport.x, viewport.y, viewport.width, viewport.height);
-    renderer.setViewport(viewport.x, viewport.y, viewport.width, viewport.height);
+    renderer.setScissor(
+      scissorViewport.x,
+      scissorViewport.y,
+      scissorViewport.width,
+      scissorViewport.height
+    );
+    renderer.setViewport(paneViewport.x, paneViewport.y, paneViewport.width, paneViewport.height);
     renderer.setClearColor(this.config.clearColor ?? 0x0b0f14, this.config.clearAlpha ?? 1);
     renderer.clear(true, true, true);
 
     const viewportWidth = Math.max(1, Math.round(this.displayOutputWidth));
     const viewportHeight = Math.max(1, Math.round(this.displayOutputHeight));
-    const renderLeft = viewport.x + this.getRenderStartX();
+    const renderLeft = paneViewport.x + this.getRenderStartX();
     const renderTop = this.getRenderStartY();
     // Allow negative local viewport offsets so subpixel pan remainders can move the
     // overscanned output smoothly inside the scissor rect (matches PixelPerfectIsoView).
-    const renderBottom = viewport.y + (viewport.height - (renderTop + viewportHeight));
+    const renderBottom = paneViewport.y + (paneViewport.height - (renderTop + viewportHeight));
     renderer.setViewport(renderLeft, renderBottom, viewportWidth, viewportHeight);
     renderer.render(this.outputScene, this.outputCamera);
-    renderer.setViewport(viewport.x, viewport.y, viewport.width, viewport.height);
+    renderer.setViewport(paneViewport.x, paneViewport.y, paneViewport.width, paneViewport.height);
   }
 
   worldAtLocalCss(localCssX: number, localCssY: number, out: THREE.Vector3): boolean {

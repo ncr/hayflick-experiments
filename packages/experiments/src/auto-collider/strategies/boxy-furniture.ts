@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import type { Point3 } from "../../compound-collider-lab/decomposition";
-import { fitCompoundBoxesHybrid } from "../../compound-collider-lab/decomposition";
+import type { Point3 } from "../fit/compound-boxes";
+import { fitCompoundBoxesHybrid } from "../fit/compound-boxes";
 import type { RapierCompoundPart, StrategyContext, StrategyResult } from "../types";
 import { choosePartBudget, downsamplePoints, limitCompoundParts, tuple } from "./common";
 

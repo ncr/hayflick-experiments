@@ -433,7 +433,7 @@ export function sanitizeForgeV2PropMeta(raw: unknown): ForgeV2PropMeta | null {
       },
       mesh: {
         provider: "tripo",
-        faceLimit: Math.max(500, Math.floor(asFiniteNumber(meshRecord?.faceLimit, 20000))),
+        faceLimit: Math.max(500, Math.floor(asFiniteNumber(meshRecord?.faceLimit, 5000))),
         pbr: asBoolean(meshRecord?.pbr, true),
         tripoTaskId: asString(meshRecord?.tripoTaskId) || undefined,
         generatedAt: asString(meshRecord?.generatedAt) || undefined,

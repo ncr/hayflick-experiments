@@ -78,7 +78,7 @@ export async function generateModel(
     type: "image_to_model",
     model_version: "v3.0-20250812",
     file: { type: "image", file_token: token },
-    face_limit: opts.faceLimit ?? 20000,
+    face_limit: opts.faceLimit ?? 5000,
     texture: opts.pbr !== false,
     pbr: opts.pbr !== false,
   });

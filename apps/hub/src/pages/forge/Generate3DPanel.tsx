@@ -7,7 +7,7 @@ interface Props {
 }
 
 export function Generate3DPanel({ conceptImage, onModelGenerated }: Props) {
-  const [faceLimit, setFaceLimit] = useState(20000);
+  const [faceLimit, setFaceLimit] = useState(5000);
   const [pbr, setPbr] = useState(true);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);

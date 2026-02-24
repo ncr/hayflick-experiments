@@ -6,6 +6,8 @@ export type SharedScissorPaneRect = {
   cssTop: number;
   cssWidth: number;
   cssHeight: number;
+  deviceViewportLeft: number;
+  deviceViewportBottom: number;
   deviceWidthUnclipped: number;
   deviceHeightUnclipped: number;
   deviceLeft: number;
@@ -343,11 +345,15 @@ export class SharedScissorStage {
       const deviceWidth = Math.max(0, deviceRight - deviceLeft);
       const deviceHeight = Math.max(0, deviceBottomTopOrigin - deviceTop);
       const deviceBottom = Math.max(0, canvasHeight - (deviceTop + deviceHeight));
+      const deviceViewportLeft = deviceLeftRaw;
+      const deviceViewportBottom = canvasHeight - deviceBottomTopOriginRaw;
       const nextRect: SharedScissorPaneRect = {
         cssLeft,
         cssTop,
         cssWidth,
         cssHeight,
+        deviceViewportLeft,
+        deviceViewportBottom,
         deviceWidthUnclipped,
         deviceHeightUnclipped,
         deviceLeft,

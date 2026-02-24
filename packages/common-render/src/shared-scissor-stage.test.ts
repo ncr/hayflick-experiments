@@ -58,12 +58,20 @@ vi.mock("three", () => {
       this.calls.push(["setViewport", x, y, width, height]);
     }
 
+    setScissor(x: number, y: number, width: number, height: number): void {
+      this.calls.push(["setScissor", x, y, width, height]);
+    }
+
     setClearColor(color: number, alpha: number): void {
       this.calls.push(["setClearColor", color, alpha]);
     }
 
     clear(color?: boolean, depth?: boolean, stencil?: boolean): void {
       this.calls.push(["clear", color, depth, stencil]);
+    }
+
+    render(scene: unknown, camera: unknown): void {
+      this.calls.push(["render", scene, camera]);
     }
 
     dispose(): void {
@@ -75,6 +83,7 @@ vi.mock("three", () => {
 });
 
 import { SharedScissorStage, type SharedScissorPane } from "./shared-scissor-stage";
+import { ThreeSceneScissorPane } from "./three-scene-scissor-pane";
 
 class FakeResizeObserver {
   constructor(private readonly _callback: ResizeObserverCallback) {}
@@ -268,6 +277,8 @@ describe("@common/render SharedScissorStage", () => {
       cssTop: 1,
       cssWidth: 50.5,
       cssHeight: 25.5,
+      deviceViewportLeft: 2,
+      deviceViewportBottom: 48,
       deviceWidthUnclipped: 101,
       deviceHeightUnclipped: 51,
       deviceLeft: 2,
@@ -355,6 +366,35 @@ describe("@common/render SharedScissorStage", () => {
     expect(largePane.renderSpy).toHaveBeenCalledTimes(1);
     expect(tinyPane.renderSpy).not.toHaveBeenCalled();
     expect(drawCalls.at(-1)).toEqual(["setScissorTest", false]);
+
+    stage.dispose();
+  });
+
+  it("uses unclipped viewport dimensions for partially clipped ThreeScene panes", () => {
+    const mount = makeElement(makeRect(0, 0, 200, 120));
+    const paneEl = makeElement(makeRect(-50, 10, 120, 80));
+    const pane = new ThreeSceneScissorPane({
+      id: "pane-a",
+      element: paneEl as unknown as HTMLElement,
+      scene: {} as any,
+      camera: {} as any,
+      autoResizePerspectiveCamera: false
+    });
+
+    const stage = new SharedScissorStage({
+      mount: mount as unknown as HTMLElement,
+      width: 200,
+      height: 120,
+      pixelRatio: 1
+    });
+    stage.registerPane(pane);
+
+    const before = latestRendererCalls().length;
+    stage.drawFrame(1000, 1 / 60);
+    const drawCalls = latestRendererCalls().slice(before);
+
+    expect(drawCalls).toContainEqual(["setScissor", 0, 30, 70, 80]);
+    expect(drawCalls).toContainEqual(["setViewport", -50, 30, 120, 80]);
 
     stage.dispose();
   });

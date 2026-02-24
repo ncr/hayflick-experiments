@@ -12,3 +12,6 @@
 ## Scope
 - Keep entries practical and repo-specific.
 - Prefer verifiable engineering checks over assumptions.
+
+## Bug Fix Workflow
+- Use red-green TDD for bug fixes whenever feasible: add a failing regression test that reproduces the reported bug first, then implement the fix until the test passes.

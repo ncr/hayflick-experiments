@@ -34,13 +34,19 @@ export class PixelPerfectIsoScissorPane implements SharedScissorPane {
     this.core.renderToRenderer(
       frame.renderer,
       {
+        x: rect.deviceViewportLeft,
+        y: rect.deviceViewportBottom,
+        width: rect.deviceWidthUnclipped,
+        height: rect.deviceHeightUnclipped
+      },
+      frame.nowMs,
+      frame.deltaSeconds,
+      {
         x: rect.deviceLeft,
         y: rect.deviceBottom,
         width: rect.deviceWidth,
         height: rect.deviceHeight
-      },
-      frame.nowMs,
-      frame.deltaSeconds
+      }
     );
   }
 

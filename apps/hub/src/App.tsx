@@ -1,20 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { experiments, getExperimentById } from "@experiments/catalog";
+import { ExperimentRouteDrawer } from "./components/ExperimentRouteDrawer";
 import { Stage } from "./components/Stage";
-import { Forge } from "./pages/Forge";
 import { ForgeV2 } from "./pages/ForgeV2";
 
 type Route =
   | { type: "experiment"; id: string }
-  | { type: "forge" }
   | { type: "forge-v2" }
   | null;
 
 function readRouteFromHash(): Route {
   const hash = window.location.hash;
-  if (hash === "#/forge") {
-    return { type: "forge" };
-  }
   if (hash === "#/forge-v2") {
     return { type: "forge-v2" };
   }
@@ -45,9 +41,7 @@ export function App() {
 
   useEffect(() => {
     if (!route) return;
-    if (route.type === "forge") {
-      window.history.replaceState({}, "", "#/forge");
-    } else if (route.type === "forge-v2") {
+    if (route.type === "forge-v2") {
       window.history.replaceState({}, "", "#/forge-v2");
     } else {
       window.history.replaceState({}, "", `#/exp/${route.id}`);
@@ -64,51 +58,23 @@ export function App() {
     setMenuOpen(false);
   };
 
-  const selectForge = () => {
-    setRoute({ type: "forge" });
-    setMenuOpen(false);
-  };
-
   const selectForgeV2 = () => {
     setRoute({ type: "forge-v2" });
     setMenuOpen(false);
   };
-
-  if (route?.type === "forge") {
-    return <Forge />;
-  }
   if (route?.type === "forge-v2") {
     return <ForgeV2 />;
   }
 
   return (
     <div className="app-shell">
-      {menuOpen && <div className="sidebar-backdrop" onClick={() => setMenuOpen(false)} />}
-      <aside className={`sidebar${menuOpen ? " open" : ""}`}>
-        <h1>Experiments</h1>
-        <ul>
-          <li>
-            <button onClick={selectForge}>
-              <span>Asset Forge</span>
-            </button>
-          </li>
-          <li>
-            <button onClick={selectForgeV2}>
-              <span>Asset Forge V2</span>
-            </button>
-          </li>
-          {experiments.map((entry) => {
-            const active = route?.type === "experiment" && route.id === entry.id;
-            return (
-              <li key={entry.id}>
-                <button className={active ? "active" : ""} onClick={() => selectExperiment(entry.id)}>
-                  <span>{entry.title}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </aside>
+      <ExperimentRouteDrawer
+        open={menuOpen}
+        active={route?.type === "experiment" ? route : null}
+        onClose={() => setMenuOpen(false)}
+        onSelectForgeV2={selectForgeV2}
+        onSelectExperiment={selectExperiment}
+      />
       <main className="main-pane">
         <header className="main-header">
           <button

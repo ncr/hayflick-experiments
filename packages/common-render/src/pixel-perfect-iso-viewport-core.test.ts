@@ -120,4 +120,20 @@ describe("@common/render iso viewport core", () => {
     const outputViewport = renderer.viewportCalls[renderer.viewportCalls.length - 2];
     expect(outputViewport[1]).toBeLessThan(20);
   });
+
+  it("supports clipped scissor rects with an unclipped pane viewport to avoid sticky edge scrolling", () => {
+    const core = makeCore();
+    const renderer = new FakeRenderer();
+
+    core.renderToRenderer(
+      renderer as unknown as THREE.WebGLRenderer,
+      { x: -40, y: 18, width: 160, height: 120 },
+      0,
+      0,
+      { x: 0, y: 18, width: 120, height: 120 }
+    );
+
+    expect(renderer.scissorCalls).toContainEqual([0, 18, 120, 120]);
+    expect(renderer.viewportCalls).toContainEqual([-40, 18, 160, 120]);
+  });
 });

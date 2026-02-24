@@ -45,7 +45,12 @@ export class ThreeSceneScissorPane implements SharedScissorPane {
     const renderer = frame.renderer;
     this.beforeRenderHook?.(frame, rect);
     renderer.setScissor(rect.deviceLeft, rect.deviceBottom, rect.deviceWidth, rect.deviceHeight);
-    renderer.setViewport(rect.deviceLeft, rect.deviceBottom, rect.deviceWidth, rect.deviceHeight);
+    renderer.setViewport(
+      rect.deviceViewportLeft,
+      rect.deviceViewportBottom,
+      rect.deviceWidthUnclipped,
+      rect.deviceHeightUnclipped
+    );
     if (this.clearColor != null) {
       renderer.setClearColor(this.clearColor, this.clearAlpha);
       renderer.clear(true, true, true);
@@ -63,4 +68,3 @@ export class ThreeSceneScissorPane implements SharedScissorPane {
     this.resizeHook?.(rect);
   }
 }
-

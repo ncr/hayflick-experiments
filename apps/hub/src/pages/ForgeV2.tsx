@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { createVhacdWorkerRunner, type VhacdProgress } from "@common/collider-vhacd";
+import { ExperimentRouteDrawer } from "../components/ExperimentRouteDrawer";
 import { StyleGuidePanel, type StyleGuide } from "./forge/StyleGuidePanel";
 import type { Viewport3dViewState } from "./forge/Viewport";
 import { PixelQuad, type PixelQuadHandle } from "./forge-v2/PixelQuad";
@@ -67,7 +68,7 @@ import type {
 
 const PIXEL_BASE_YAW = THREE.MathUtils.degToRad(45);
 const QUARTER_TURN_RADIANS = Math.PI * 0.5;
-const DEFAULT_FACE_LIMIT = 20_000;
+const DEFAULT_FACE_LIMIT = 5_000;
 const DEFAULT_PBR = true;
 const UNIT_SCALE_METERS_PER_UNIT = 1.28;
 
@@ -598,6 +599,7 @@ function buildPhysicsSettingsFromKind(kind: ForgeV2PhysicsKindPresetFile["kinds"
 }
 
 export function ForgeV2() {
+  const [menuOpen, setMenuOpen] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("generation");
   const [styleGuide, setStyleGuide] = useState<StyleGuide>({
     name: "",
@@ -705,6 +707,16 @@ export function ForgeV2() {
   );
 
   const selectedDraft = selectedDraftId ? drafts.get(selectedDraftId) ?? null : null;
+
+  const selectExperimentFromMenu = useCallback((id: string) => {
+    window.location.hash = `#/exp/${id}`;
+    setMenuOpen(false);
+  }, []);
+
+  const selectForgeV2FromMenu = useCallback(() => {
+    window.location.hash = "#/forge-v2";
+    setMenuOpen(false);
+  }, []);
 
   const updateDraft = useCallback((id: string, patch: Partial<ForgeV2GenerationDraftProp>) => {
     setDrafts((prev) => {
@@ -1831,10 +1843,39 @@ export function ForgeV2() {
   const draftMeshReadyCount = generationDrafts.filter((d) => d.rawGlb).length;
   return (
     <div className="forgev2-shell" data-testid="forge-v2-page">
+      <ExperimentRouteDrawer
+        open={menuOpen}
+        active={{ type: "forge-v2" }}
+        onClose={() => setMenuOpen(false)}
+        onSelectForgeV2={selectForgeV2FromMenu}
+        onSelectExperiment={selectExperimentFromMenu}
+      />
       <header className="forgev2-header">
-        <div>
-          <h1>Asset Forge V2</h1>
-          <p>Two-stage workflow: batch generation approval, then per-prop collider/physics setup.</p>
+        <div className="forgev2-header-left">
+          <button
+            className="hamburger"
+            onClick={() => setMenuOpen((value) => !value)}
+            aria-label="Toggle experiment menu"
+            aria-expanded={menuOpen}
+          >
+            <svg
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            >
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+          <div className="forgev2-header-copy">
+            <h1>Asset Forge V2</h1>
+            <p>Two-stage workflow: batch generation approval, then per-prop collider/physics setup.</p>
+          </div>
         </div>
         <div className="forgev2-tabbar">
           <button

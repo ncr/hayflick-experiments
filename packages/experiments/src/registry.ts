@@ -2,54 +2,17 @@ import type { ExperimentRegistryEntry } from "./runtime/meta";
 
 // Registry is kept explicit so lazy import boundaries stay obvious.
 // AUTO_IMPORTS_START
-import { meta as compoundColliderLabMeta } from "./compound-collider-lab/meta";
-import { meta as colliderPipelineLabV2Meta } from "./collider-pipeline-lab-v2/meta";
-import { meta as ecsFoundationMeta } from "./ecs-foundation/meta";
-import { meta as editorGameEcsMeta } from "./editor-game-ecs/meta";
-import { meta as levelBuilderMeta } from "./level-builder/meta";
-import { meta as physicsRapierMeta } from "./physics-rapier/meta";
 import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
 import { meta as pixelPerfectCameraZoomMeta } from "./pixel-perfect-camera-zoom/meta";
 import { meta as pixelPerfectScissorLabMeta } from "./pixel-perfect-scissor-lab/meta";
 import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
-import { meta as propDropEdgeTestMeta } from "./prop-drop-edge-test/meta";
 import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
-import { meta as tripoFaceLimitCompareMeta } from "./tripo-face-limit-compare/meta";
-import { meta as vhacdUnityLabMeta } from "./vhacd-unity-lab/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
   {
-    ...compoundColliderLabMeta,
-    load: () => import("./compound-collider-lab/index")
-  },
-  {
-    ...colliderPipelineLabV2Meta,
-    load: () => import("./collider-pipeline-lab-v2/index")
-  },
-  {
-    ...ecsFoundationMeta,
-    load: () => import("./ecs-foundation/index")
-  },
-  {
-    ...editorGameEcsMeta,
-    load: () => import("./editor-game-ecs/index")
-  },
-  {
-    ...levelBuilderMeta,
-    load: () => import("./level-builder/index")
-  },
-  {
     ...settlementBuilderEcsMeta,
     load: () => import("./settlement-builder-ecs/index")
-  },
-  {
-    ...tripoFaceLimitCompareMeta,
-    load: () => import("./tripo-face-limit-compare/index")
-  },
-  {
-    ...physicsRapierMeta,
-    load: () => import("./physics-rapier/index")
   },
   {
     ...pixelOutlinePostMeta,
@@ -66,14 +29,6 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...pixelStableMovingMeshMeta,
     load: () => import("./pixel-stable-moving-mesh/index")
-  },
-  {
-    ...propDropEdgeTestMeta,
-    load: () => import("./prop-drop-edge-test/index")
-  },
-  {
-    ...vhacdUnityLabMeta,
-    load: () => import("./vhacd-unity-lab/index")
   }
   // AUTO_ENTRIES_END
 ];

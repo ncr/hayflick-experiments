@@ -3180,6 +3180,61 @@ Preventive checklist:
 - Prefer borders/box-shadows for pane chrome instead of opaque fills when using a shared canvas behind overlay DOM.
 - Keep the `SharedScissorStage` opaque-background warning enabled and investigate any warning before assuming render math is broken.
 
+## 2026-02-24 - ThreeScene scissor panes can look horizontally/vertically squeezed when partially offscreen
+Root cause:
+- `ThreeSceneScissorPane` used the clipped scissor rect for both `setScissor(...)` and `setViewport(...)`.
+- When a pane was partially clipped by scrolling, WebGL mapped the full scene into the smaller clipped viewport, visually compressing the content instead of showing a cropped slice.
+
+Detection signal:
+- In `tripo-face-limit-compare`, panes that should have been partially visible during scroll still showed the full scene squeezed into the visible portion.
+- A unit test with a pane offset outside the stage showed scissor rect `(clipped)` but viewport also `(clipped)` instead of preserving the pane's full viewport origin/size.
+
+Preventive checklist:
+- In shared scissor rendering, use clipped rects for `setScissor(...)` but keep `setViewport(...)` aligned to the pane's unclipped device-space origin/size.
+- Include a test for partially clipped panes that asserts scissor and viewport rectangles differ as expected.
+- When debugging scroll-related scissor artifacts, check for viewport compression before camera/aspect math regressions.
+
+## 2026-02-24 - Shared scissor overlay layering in experiment UIs can draw over page chrome and create misleading pane-edge artifacts
+Root cause:
+- The Tripo compare screen used a viewport-fixed shared scissor overlay with a high z-index (`10`), which placed rendered pane content above the experiment top header while scrolling.
+- Pane frame chrome also used rounded borders, which made pane content corners appear slightly rounded/masked relative to the intended rectangular framing.
+
+Detection signal:
+- While scrolling inside the experiment root div, pane renders visually stayed above the description header instead of disappearing beneath it.
+- Users reported slight corner rounding on pane content despite expecting square/rectangular pane visuals.
+
+Preventive checklist:
+- Keep shared scissor overlays only high enough to sit above pane shells, and explicitly reserve higher z-index for sticky/header chrome.
+- Add a local stacking context (`isolation: isolate`) for experiment roots that host fixed overlays.
+- Treat pane frame corner radius as a rendering-path decision in shared-canvas screens; test and standardize it instead of leaving cosmetic defaults.
+
+## 2026-02-24 - Hub stage hosts need paint containment for experiments that use viewport-fixed shared scissor overlays
+Root cause:
+- Some experiments render a shared scissor canvas using `position: fixed` inside the experiment mount.
+- Without a containing block on the Hub stage host, that fixed overlay anchors to the browser viewport and can paint above the Hub page header/description outside the stage.
+
+Detection signal:
+- While scrolling inside an experiment's internal scroll container, preview renders appear on top of the outer Hub header (title/description/build stamp) instead of remaining visually contained to the stage panel.
+
+Preventive checklist:
+- Make the Hub stage host a containing block/paint boundary for experiment content (`contain: paint` and local isolation) so fixed overlays stay inside the stage.
+- Reserve a higher local layer for the Hub header when experiments may create overlay layers inside the stage.
+- Add a CSS regression test for stage-host containment and header z-index when changing shell styles.
+
+## 2026-02-24 - Pixel scissor panes can look "sticky" at scroll boundaries if clipped scissor origin is reused as the pane viewport origin
+Root cause:
+- `PixelPerfectIsoScissorPane` passed only the clipped visible rect into `PixelPerfectIsoViewportCore.renderToRenderer(...)`.
+- The core used that rect for both `setScissor(...)` and viewport-relative output placement, so once a pane started clipping at the viewport edge, content stopped translating with the pane and appeared stuck to the boundary.
+
+Detection signal:
+- Pixel panes scroll normally until they begin clipping offscreen, then the visible content appears to stop moving while the pane continues scrolling.
+- Renderer behavior shows scissor clipping should change while pane viewport origin should keep moving (possibly negative/offscreen).
+
+Preventive checklist:
+- Pixel scissor rendering should support separate pane viewport and clipped scissor rect inputs.
+- Use unclipped pane viewport origin/size for viewport-relative output placement and clipped rect only for `setScissor(...)`.
+- Keep a regression test that asserts clipped scissor and pane viewport can differ during partial offscreen rendering.
+
 ## 2026-02-24 - Shared scissor canvas on fractional mount edges can create visible pixelated seam/jump artifacts versus independent canvases
 Root cause:
 - `SharedScissorStage` quantized the renderer backing size from absolute device-pixel edges, but left the shared canvas CSS box pinned to unquantized mount CSS edges (`left/top=0`, raw CSS width/height).
