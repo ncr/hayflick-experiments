@@ -103,11 +103,10 @@ export function ForgeScissorViewportStage({
       width: Math.max(1, host.clientWidth),
       height: Math.max(1, host.clientHeight),
       antialias: true,
-      clearColor: 0x000000,
-      clearAlpha: 0
+      clearColor: 0x121212,
+      clearAlpha: 1
     });
     nextStage.canvas.style.pointerEvents = "none";
-    nextStage.canvas.style.background = "transparent";
     nextStage.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     nextStage.renderer.toneMappingExposure = 1.0;
     nextStage.start();
