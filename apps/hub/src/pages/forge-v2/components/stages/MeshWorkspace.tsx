@@ -7,10 +7,24 @@ import {
   ForgeScissorViewportStage,
 } from "../../ScissorViewport3d";
 import { PixelQuad } from "../../PixelQuad";
-import type * as THREE from "three";
+import * as THREE from "three";
 import type { PixelViewportViewState } from "../../../forge/ViewportPixel";
 import type { ForgeV2GenerationDraftProp } from "../../types";
 import type { PivotPreset, ScaleMode } from "../../../forge/processing/dimensions";
+
+function deepCloneForThumb(group: THREE.Group): THREE.Group {
+  const clone = group.clone(true);
+  clone.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      if (Array.isArray(child.material)) {
+        child.material = child.material.map((m: THREE.Material) => m.clone());
+      } else {
+        child.material = child.material.clone();
+      }
+    }
+  });
+  return clone;
+}
 
 type ScaleModeV2 = ScaleMode | "depth";
 const UNIT_SCALE_METERS_PER_UNIT = 1.28;
@@ -45,6 +59,11 @@ export function MeshWorkspace() {
   // batch — this avoids a microtask-timing edge-case where the
   // .then() fires after React has already committed.
   useEffect(() => {
+    // Clear the tab thumbnail immediately so stale models don't linger
+    // while the new draft loads.  It will be repopulated below once the
+    // rebuild completes.
+    refs.meshTabThumb.current?.setModel(null);
+
     if (!draft?.rawGlb) {
       setPixelModel(null);
       return;
@@ -65,9 +84,20 @@ export function MeshWorkspace() {
       if (model && model !== immediate) {
         setPixelModel(model);
       }
+      // Feed the mesh tab thumbnail viewport (live 3D pane in sidebar)
+      const mainModel = refs.generationViewport.current?.getModel();
+      const thumb = refs.meshTabThumb.current;
+      if (mainModel && thumb) {
+        thumb.setModel(deepCloneForThumb(mainModel));
+        thumb.setAxesVisible(false);
+        // Tighten framing for thumbnail
+        const vs = thumb.getViewState();
+        if (vs) thumb.setViewState({ ...vs, distance: vs.distance * 0.65 });
+      }
     });
     return () => { active = false; };
   }, [
+    refs,
     draft?.tempId,
     draft?.rawGlb,
     draft?.textureResolution,

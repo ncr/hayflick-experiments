@@ -88,6 +88,15 @@ export function PhysicsWorkspace() {
 
   // Load model into physics viewport when prop changes
   useEffect(() => {
+    // Clear the tab thumbnail immediately so stale colliders don't linger
+    // while the new prop loads.  The thumb effect below will repopulate
+    // once collider results are available for the new prop.
+    const thumb = refs.physicsTabThumb.current;
+    if (thumb) {
+      thumb.setModel(null);
+      thumb.setColliderPreviewObject(null);
+    }
+
     const viewport = refs.physicsMeshViewport.current;
     if (!viewport || !state.physicsSelectedPropId) {
       viewport?.setModel(null);
@@ -173,6 +182,32 @@ export function PhysicsWorkspace() {
     setSimPixelModels,
     setSimStatus,
   });
+
+  // Feed the physics tab thumbnail viewport (live 3D pane in sidebar)
+  useEffect(() => {
+    const thumb = refs.physicsTabThumb.current;
+    if (!thumb) return;
+    const selectedId = state.physicsSelectedColliderPresetId;
+    const sourceModel = refs.physicsSimSourceModel.current;
+    if (!selectedId || !sourceModel || state.physicsColliderResults.length <= 0) {
+      thumb.setModel(null);
+      thumb.setColliderPreviewObject(null);
+      return;
+    }
+    const entry = state.physicsColliderResults.find((e) => e.presetId === selectedId);
+    if (!entry) {
+      thumb.setModel(null);
+      thumb.setColliderPreviewObject(null);
+      return;
+    }
+    thumb.setModel(deepCloneWithMaterials(sourceModel));
+    thumb.setModelVisible(false);
+    thumb.setColliderPreviewObject(createColliderHelper(entry.collider));
+    thumb.setAxesVisible(false);
+    // Tighten framing for thumbnail
+    const vs = thumb.getViewState();
+    if (vs) thumb.setViewState({ ...vs, distance: vs.distance * 0.65 });
+  }, [refs, state.physicsSelectedColliderPresetId, state.physicsColliderResults, state.physicsBBox, state.physicsSelectedPropId]);
 
   const handlePhysicsAssetViewChange = useCallback((viewState: Viewport3dViewState) => {
     if (refs.physicsSuppressAssetViewSync.current) return;

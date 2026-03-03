@@ -27,7 +27,13 @@ export function Workspace() {
         <MeshWorkspace />
       </div>
 
-      {activeStage === "physics" && <PhysicsWorkspace />}
+      {/* Physics viewport persists so collider thumbnails capture without tab visit */}
+      <div
+        className="ps-workspace-viewport-persistent"
+        style={{ display: activeStage === "physics" ? "flex" : "none" }}
+      >
+        <PhysicsWorkspace />
+      </div>
     </div>
   );
 }

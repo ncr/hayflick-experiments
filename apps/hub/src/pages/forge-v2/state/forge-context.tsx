@@ -80,6 +80,10 @@ export interface ForgeRuntimeRefs {
   generationPixelBaseViewState: React.MutableRefObject<PixelViewportViewState>;
   physicsViewState: React.MutableRefObject<Viewport3dViewState | null>;
   physicsSimMeshViewState: React.MutableRefObject<Viewport3dViewState | null>;
+
+  // Stage tab thumbnail viewports (live 3D panes in the sidebar tabs)
+  meshTabThumb: React.RefObject<ForgeScissorViewportHandle | null>;
+  physicsTabThumb: React.RefObject<ForgeScissorViewportHandle | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +141,8 @@ export function ForgeProvider({ children }: { children: ReactNode }) {
     }),
     physicsViewState: useRef(null),
     physicsSimMeshViewState: useRef(null),
+    meshTabThumb: useRef<ForgeScissorViewportHandle | null>(null),
+    physicsTabThumb: useRef<ForgeScissorViewportHandle | null>(null),
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const refs = useRef(refsInner).current;

@@ -39,11 +39,14 @@ export type ForgeScissorViewportHandle = {
   setGridVisible(on: boolean): void;
   setAxesVisible(on: boolean): void;
   setBBoxVisible(on: boolean): void;
+  captureScreenshot(width: number, height: number): string | null;
 };
 
 type ForgeScissorViewportStageProps = {
   className?: string;
   children: ReactNode;
+  clearColor?: number;
+  clearAlpha?: number;
 };
 
 type ForgeScissorViewportPaneProps = {
@@ -52,6 +55,7 @@ type ForgeScissorViewportPaneProps = {
   dataTestId?: string;
   interactive?: boolean;
   onViewChange?: (state: Viewport3dViewState) => void;
+  autoOrbitSpeed?: number;
 };
 
 function disposeObject(object: THREE.Object3D | null): void {
@@ -88,7 +92,9 @@ function copyViewState(state: Viewport3dViewState): Viewport3dViewState {
 
 export function ForgeScissorViewportStage({
   className,
-  children
+  children,
+  clearColor: clearColorProp,
+  clearAlpha: clearAlphaProp,
 }: ForgeScissorViewportStageProps) {
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
   const [stage, setStage] = useState<SharedScissorStage | null>(null);
@@ -103,8 +109,8 @@ export function ForgeScissorViewportStage({
       width: Math.max(1, host.clientWidth),
       height: Math.max(1, host.clientHeight),
       antialias: true,
-      clearColor: 0x121212,
-      clearAlpha: 1
+      clearColor: clearColorProp ?? 0x121212,
+      clearAlpha: clearAlphaProp ?? 1,
     });
     nextStage.canvas.style.pointerEvents = "none";
     nextStage.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -132,7 +138,7 @@ export function ForgeScissorViewportStage({
 
 export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, ForgeScissorViewportPaneProps>(
   function ForgeScissorViewportPane(
-    { paneId, className, dataTestId, interactive = false, onViewChange },
+    { paneId, className, dataTestId, interactive = false, onViewChange, autoOrbitSpeed },
     ref
   ) {
     const { stage } = useContext(ScissorViewport3dStageContext);
@@ -152,6 +158,10 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
     const applyingExternalViewRef = useRef(false);
     const onViewChangeRef = useRef(onViewChange);
     onViewChangeRef.current = onViewChange;
+    const stageRef = useRef(stage);
+    stageRef.current = stage;
+    const autoOrbitSpeedRef = useRef(autoOrbitSpeed);
+    autoOrbitSpeedRef.current = autoOrbitSpeed;
     const modelVisibleRef = useRef(true);
     const colliderVisibleRef = useRef(true);
     const gridVisibleRef = useRef(true);
@@ -349,6 +359,77 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
         },
         setBBoxVisible: (_on) => {
           // Intentionally unsupported here: Forge V2 scissor view keeps bbox helpers out of the scene.
+        },
+        captureScreenshot: (width, height) => {
+          const currentStage = stageRef.current;
+          const scene = sceneRef.current;
+          const camera = cameraRef.current;
+          if (!currentStage || !scene || !camera) return null;
+
+          const renderer = currentStage.getRenderer();
+          const rt = new THREE.WebGLRenderTarget(width, height);
+          const prevRT = renderer.getRenderTarget();
+          const prevScissor = renderer.getScissorTest();
+          const prevAspect = camera.aspect;
+
+          // --- thumbnail scene overrides (brighter for small icons) ---
+          const boostLight = new THREE.AmbientLight(0xffffff, 0.8);
+          scene.add(boostLight);
+
+          const grid = gridRef.current;
+          const savedGridVis = grid?.visible;
+          if (grid) grid.visible = true;
+          const gridMats = grid
+            ? (Array.isArray(grid.material) ? grid.material : [grid.material]) as THREE.LineBasicMaterial[]
+            : [];
+          const savedGridColors = gridMats.map((m) => m.color.clone());
+          if (gridMats.length >= 2) {
+            gridMats[0].color.set(0x7777bb);
+            gridMats[1].color.set(0x555599);
+          } else if (gridMats.length === 1) {
+            gridMats[0].color.set(0x6666aa);
+          }
+          // --- end overrides ---
+
+          renderer.setScissorTest(false);
+          renderer.setRenderTarget(rt);
+          camera.aspect = width / height;
+          camera.updateProjectionMatrix();
+          renderer.setClearColor(0x1a1a2e, 1);
+          renderer.clear(true, true, true);
+          renderer.render(scene, camera);
+
+          // --- restore scene ---
+          scene.remove(boostLight);
+          boostLight.dispose();
+          if (grid && savedGridVis !== undefined) grid.visible = savedGridVis;
+          gridMats.forEach((m, i) => {
+            if (savedGridColors[i]) m.color.copy(savedGridColors[i]);
+          });
+          // --- end restore ---
+
+          const buf = new Uint8Array(width * height * 4);
+          renderer.readRenderTargetPixels(rt, 0, 0, width, height, buf);
+
+          camera.aspect = prevAspect;
+          camera.updateProjectionMatrix();
+          renderer.setRenderTarget(prevRT);
+          renderer.setScissorTest(prevScissor);
+          rt.dispose();
+
+          const cvs = document.createElement("canvas");
+          cvs.width = width;
+          cvs.height = height;
+          const ctx = cvs.getContext("2d");
+          if (!ctx) return null;
+          const imgData = ctx.createImageData(width, height);
+          for (let y = 0; y < height; y++) {
+            const src = (height - 1 - y) * width * 4;
+            const dst = y * width * 4;
+            imgData.data.set(buf.subarray(src, src + width * 4), dst);
+          }
+          ctx.putImageData(imgData, 0, 0);
+          return cvs.toDataURL("image/png");
         }
       }),
       []
@@ -422,8 +503,13 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
         clearColor: 0x1a1a2e,
         clearAlpha: 1,
         autoResizePerspectiveCamera: true,
-        beforeRender: () => {
+        beforeRender: (frame) => {
           controlsRef.current?.update();
+          const speed = autoOrbitSpeedRef.current;
+          if (speed && viewStateRef.current && !controlsRef.current) {
+            viewStateRef.current.yaw += speed * frame.deltaSeconds;
+            applyViewState(viewStateRef.current);
+          }
         }
       });
       paneRef.current = pane;

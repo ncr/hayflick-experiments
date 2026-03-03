@@ -411,6 +411,8 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .ps-stage-tab:hover:not(:disabled) {
@@ -434,8 +436,8 @@
 }
 
 .ps-stage-tab-thumb {
-  width: 40px;
-  height: 40px;
+  width: 60px;
+  height: 60px;
   border-radius: 4px;
   overflow: hidden;
   flex-shrink: 0;
@@ -446,17 +448,50 @@
   height: 100%;
   object-fit: cover;
   display: block;
+  pointer-events: none;
 }
 
 /* The classic magenta/black checkerboard — every gamedev's favourite texture */
 .ps-stage-tab-missing {
-  width: 40px;
-  height: 40px;
+  width: 60px;
+  height: 60px;
   border-radius: 4px;
   flex-shrink: 0;
   background:
     repeating-conic-gradient(#ff00ff 0% 25%, #000 0% 50%)
     0 0 / 10px 10px;
+}
+
+/* Live 3D viewport pane inside a tab button (rendered by scissor stage) */
+.ps-stage-tab-viewport {
+  width: 60px;
+  height: 60px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+/* The tab scissor stage wraps the sidebar — provide the panel background
+   on the stage div so the transparent canvas (clearAlpha 0) lets it
+   show through between panes. */
+.ps-stage-tabs-stage {
+  background: var(--ps-panel);
+  border-right: 1px solid var(--ps-border);
+}
+
+/* Scissor canvas must show through — make all intermediate elements
+   between the stage canvas and the viewport pane transparent. */
+.ps-stage-tabs-stage .ps-stage-tabs {
+  background: transparent;
+  border-right: none;
+}
+.ps-stage-tabs-stage .ps-stage-tab {
+  background: transparent;
+}
+.ps-stage-tabs-stage .ps-stage-tab:hover:not(:disabled) {
+  background: transparent;
+}
+.ps-stage-tabs-stage .ps-stage-tab-active {
+  background: transparent;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1314,9 +1349,15 @@
   }
 
   .ps-stage-tab-thumb,
-  .ps-stage-tab-missing {
-    width: 28px;
-    height: 28px;
+  .ps-stage-tab-missing,
+  .ps-stage-tab-viewport {
+    width: 42px;
+    height: 42px;
+  }
+
+  .ps-stage-tabs-stage {
+    border-right: none;
+    border-bottom: 1px solid var(--ps-border);
   }
 
   .ps-viewport-row-scroll {

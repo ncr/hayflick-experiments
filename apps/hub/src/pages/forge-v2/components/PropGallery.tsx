@@ -59,7 +59,8 @@ export function PropGallery({ onSelectProp }: Props) {
           ))}
         </div>
       </div>
-      <div className="ps-gallery-strip">
+      {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+      <div className="ps-gallery-strip" onDragStart={(e) => e.preventDefault()}>
         {/* Unsaved drafts (from batch, in-progress) */}
         {unsavedDrafts.map((d) => (
           <button
@@ -70,7 +71,7 @@ export function PropGallery({ onSelectProp }: Props) {
           >
             <div className="ps-gallery-thumb-image">
               {d.conceptImage ? (
-                <img src={d.conceptImage} alt={d.description} />
+                <img src={d.conceptImage} alt={d.description} draggable={false} />
               ) : (
                 <div className="ps-gallery-thumb-placeholder ps-gallery-thumb-pending">
                   {d.status === "generating-image" ? (
@@ -94,7 +95,7 @@ export function PropGallery({ onSelectProp }: Props) {
           >
             <div className="ps-gallery-thumb-image">
               {item.conceptImage ? (
-                <img src={item.conceptImage} alt={item.description} />
+                <img src={item.conceptImage} alt={item.description} draggable={false} />
               ) : (
                 <div className="ps-gallery-thumb-placeholder" />
               )}

@@ -722,9 +722,11 @@ export function usePipelineActions() {
     dispatch({ type: "ADD_DRAFTS", drafts: [draft] });
     dispatch({ type: "SELECT_DRAFT", id: tempId });
 
-    // Also load physics data if available
+    // Also load physics data if available, otherwise clear stale physics state
     if (meta.lifecycle.status === "generation-approved" || meta.lifecycle.status === "physics-approved") {
       dispatch({ type: "SET_PHYSICS_PROP", propId, meta, conceptImage });
+    } else {
+      dispatch({ type: "CLEAR_PHYSICS_PROP" });
     }
 
     refs.zoomSyncScale.current = null;
