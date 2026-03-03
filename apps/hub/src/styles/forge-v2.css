@@ -433,11 +433,6 @@
   font-weight: 600;
 }
 
-.ps-stage-tab-shortcut {
-  font-size: 9px;
-  opacity: 0.5;
-}
-
 .ps-stage-tab-thumb {
   width: 40px;
   height: 40px;
@@ -451,6 +446,17 @@
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+/* The classic magenta/black checkerboard — every gamedev's favourite texture */
+.ps-stage-tab-missing {
+  width: 40px;
+  height: 40px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background:
+    repeating-conic-gradient(#ff00ff 0% 25%, #000 0% 50%)
+    0 0 / 10px 10px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1307,7 +1313,8 @@
     border-bottom-color: var(--ps-accent);
   }
 
-  .ps-stage-tab-thumb {
+  .ps-stage-tab-thumb,
+  .ps-stage-tab-missing {
     width: 28px;
     height: 28px;
   }

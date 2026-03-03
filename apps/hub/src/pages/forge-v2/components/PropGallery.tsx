@@ -4,9 +4,9 @@ import { lifecycleToStageStatuses, type GalleryFilter, type SavedPropListItem } 
 
 const FILTERS: { label: string; value: GalleryFilter }[] = [
   { label: "All", value: "all" },
-  { label: "Ref", value: "ref" },
-  { label: "Mesh", value: "mesh" },
-  { label: "Phy", value: "physics" },
+  { label: "Ref missing", value: "ref" },
+  { label: "Mesh missing", value: "mesh" },
+  { label: "Phy missing", value: "physics" },
 ];
 
 function highestValidStageStatus(item: SavedPropListItem) {

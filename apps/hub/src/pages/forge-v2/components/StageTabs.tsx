@@ -1,17 +1,15 @@
 import { useForgeState, useForgeDispatch } from "../state/forge-context";
-import { StatusBadge } from "./shared/StatusBadge";
 import type { StageId, StageStatus, RefArtifact } from "../state/forge-store";
 
 type TabDef = {
   id: StageId;
   label: string;
-  shortcut: string;
 };
 
 const TABS: TabDef[] = [
-  { id: "ref", label: "REF", shortcut: "1" },
-  { id: "mesh", label: "MESH", shortcut: "2" },
-  { id: "physics", label: "PHYS", shortcut: "3" },
+  { id: "ref", label: "REF" },
+  { id: "mesh", label: "MESH" },
+  { id: "physics", label: "PHYS" },
 ];
 
 function isStageEnabled(
@@ -42,12 +40,23 @@ function disableTooltip(stageId: StageId): string {
   }
 }
 
+/** Classic magenta/black checkerboard — the universal "missing texture" sign. */
+function MissingTexturePlaceholder() {
+  return (
+    <div className="ps-stage-tab-missing" title="nothing to see here yet" />
+  );
+}
+
 export function StageTabs() {
   const state = useForgeState();
   const dispatch = useForgeDispatch();
 
   const refArtifact = state.ref.artifact as RefArtifact | null;
   const conceptImage = refArtifact?.conceptImage ?? null;
+
+  const draft = state.selectedDraftId ? state.drafts.get(state.selectedDraftId) ?? null : null;
+  const hasMesh = !!draft?.rawGlb;
+  const hasPhysics = state.physics.status === "VALID" || state.physics.status === "OUTDATED";
 
   return (
     <nav className="ps-stage-tabs">
@@ -60,23 +69,29 @@ export function StageTabs() {
         );
         const isActive = state.activeStage === tab.id;
 
+        // Pick thumbnail per stage: ref image, mesh (concept when mesh exists),
+        // physics (concept when physics exists).  Fallback: missing texture meme.
+        let thumb: "image" | "missing" = "missing";
+        if (tab.id === "ref" && conceptImage) thumb = "image";
+        if (tab.id === "mesh" && conceptImage && hasMesh) thumb = "image";
+        if (tab.id === "physics" && conceptImage && hasPhysics) thumb = "image";
+
         return (
           <button
             key={tab.id}
             className={`ps-stage-tab ${isActive ? "ps-stage-tab-active" : ""} ${!enabled ? "ps-stage-tab-disabled" : ""}`}
             onClick={() => enabled && dispatch({ type: "SET_ACTIVE_STAGE", stage: tab.id })}
             disabled={!enabled}
-            title={enabled ? `${tab.label} (${tab.shortcut})` : disableTooltip(tab.id)}
+            title={enabled ? tab.label : disableTooltip(tab.id)}
           >
-            {conceptImage && stage.status !== "EMPTY" ? (
+            {thumb === "image" ? (
               <div className="ps-stage-tab-thumb">
-                <img src={conceptImage} alt={tab.label} />
+                <img src={conceptImage!} alt={tab.label} />
               </div>
             ) : (
-              <StatusBadge status={stage.status} size={8} />
+              <MissingTexturePlaceholder />
             )}
             <span className="ps-stage-tab-label">{tab.label}</span>
-            <span className="ps-stage-tab-shortcut">{tab.shortcut}</span>
           </button>
         );
       })}
