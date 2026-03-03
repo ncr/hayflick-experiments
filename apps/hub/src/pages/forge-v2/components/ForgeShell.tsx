@@ -15,6 +15,7 @@ function ForgeShellInner() {
   const actions = usePipelineActions();
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
 
   // Initialize on mount
   useEffect(() => {
@@ -35,8 +36,8 @@ function ForgeShellInner() {
           void actions.runMeshGenerationForDraft(draft);
         }
         break;
-      case "physics":
-        void actions.approvePhysicsSetup();
+      case "phy":
+        void actions.computeSelectedPhysicsColliders();
         break;
     }
   }, [actions, state.activeStage, state.drafts, state.selectedDraftId]);
@@ -44,9 +45,9 @@ function ForgeShellInner() {
   useKeyboardShortcuts({ onPrimaryAction: handlePrimaryAction });
 
   const handleSelectProp = useCallback((propId: string) => {
-    dispatch({ type: "SET_BATCH_MODE", on: false });
+    setBatchOpen(false);
     void actions.selectProp(propId);
-  }, [actions, dispatch]);
+  }, [actions]);
 
   const selectExperimentFromMenu = useCallback((id: string) => {
     window.location.hash = `#/exp/${id}`;
@@ -70,7 +71,7 @@ function ForgeShellInner() {
 
       {/* Top: Gallery filmstrip */}
       <header className="ps-shell-header">
-        <PropGallery onSelectProp={handleSelectProp} />
+        <PropGallery onSelectProp={handleSelectProp} onAddClick={() => setBatchOpen(true)} />
         <div className="ps-header-actions">
           <button
             className={`ps-menu-btn ${settingsOpen ? "ps-menu-btn-active" : ""}`}
@@ -118,6 +119,39 @@ function ForgeShellInner() {
                 value={state.styleGuide}
                 onChange={(guide) => dispatch({ type: "SET_STYLE_GUIDE", guide })}
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Props modal */}
+      {batchOpen && (
+        <div className="ps-settings-overlay">
+          <div className="ps-settings-panel">
+            <div className="ps-settings-header">
+              <strong>Add Props</strong>
+              <button className="ps-batch-close" onClick={() => setBatchOpen(false)}>×</button>
+            </div>
+            <div className="ps-settings-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <textarea
+                className="ps-textarea"
+                rows={8}
+                value={state.batchText}
+                onChange={(e) => dispatch({ type: "SET_BATCH_TEXT", text: e.target.value })}
+                placeholder={"wooden chair\nstone well\niron lantern\n\nOne description per line"}
+                autoFocus
+              />
+              <button
+                className="forge-btn forge-btn-primary"
+                style={{ alignSelf: "flex-end" }}
+                onClick={() => {
+                  void actions.createPropPlaceholders();
+                  setBatchOpen(false);
+                }}
+                disabled={!state.batchText.trim()}
+              >
+                Create Props
+              </button>
             </div>
           </div>
         </div>

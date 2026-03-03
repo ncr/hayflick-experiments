@@ -12,7 +12,7 @@ export function Inspector() {
       {activeStage === "ref" && <RefInspector />}
       {activeStage === "mesh" && <MeshInspector />}
       {activeStage === "pix" && <PixInspector />}
-      {activeStage === "physics" && <PhysicsInspector />}
+      {activeStage === "phy" && <PhysicsInspector />}
     </div>
   );
 }

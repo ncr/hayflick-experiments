@@ -5,7 +5,7 @@ import type { StageId } from "../state/forge-store";
 const STAGE_KEYS: Record<string, StageId> = {
   "1": "ref",
   "2": "mesh",
-  "3": "physics",
+  "3": "phy",
 };
 
 interface Options {
@@ -49,7 +49,7 @@ export function useKeyboardShortcuts({ onPrimaryAction }: Options) {
         const canSwitch =
           stage === "ref" ||
           (stage === "mesh" && ref.status !== "EMPTY") ||
-          (stage === "physics" && mesh.status !== "EMPTY");
+          (stage === "phy" && mesh.status !== "EMPTY");
         if (canSwitch) {
           dispatch({ type: "SET_ACTIVE_STAGE", stage });
           e.preventDefault();

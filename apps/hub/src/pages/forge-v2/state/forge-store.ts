@@ -15,7 +15,7 @@ import type {
 // Stage-Status Model
 // ---------------------------------------------------------------------------
 
-export type StageId = "ref" | "mesh" | "pix" | "physics";
+export type StageId = "ref" | "mesh" | "pix" | "phy";
 
 export type StageStatus = "EMPTY" | "VALID" | "OUTDATED" | "BUILDING" | "FAILED";
 
@@ -99,7 +99,7 @@ export type SavedPropListItem = {
 };
 
 // Gallery filter
-export type GalleryFilter = "all" | "ref" | "mesh" | "physics";
+export type GalleryFilter = "all" | "ref" | "mesh" | "phy";
 
 // ---------------------------------------------------------------------------
 // Top-level state
@@ -113,7 +113,7 @@ export interface ForgeStoreState {
   ref: StageState<RefConfig, RefArtifact>;
   mesh: StageState<MeshConfig, MeshArtifact>;
   pix: StageState<PixConfig, PixArtifact>;
-  physics: StageState<PhysicsConfig, PhysicsArtifact>;
+  phy: StageState<PhysicsConfig, PhysicsArtifact>;
 
   // Active stage navigation
   activeStage: StageId;
@@ -181,7 +181,7 @@ function emptyStage<C, A>(config: C): StageState<C, A> {
 // Cascade logic
 // ---------------------------------------------------------------------------
 
-const STAGE_ORDER: StageId[] = ["ref", "mesh", "pix", "physics"];
+const STAGE_ORDER: StageId[] = ["ref", "mesh", "pix", "phy"];
 
 function cascadeDownstream(state: ForgeStoreState): ForgeStoreState {
   let next = state;
@@ -189,7 +189,7 @@ function cascadeDownstream(state: ForgeStoreState): ForgeStoreState {
     const upstreamId = STAGE_ORDER[i - 1];
     const stageId = STAGE_ORDER[i];
     // physics depends on mesh, not pix
-    const effectiveUpstream = stageId === "physics" ? "mesh" : upstreamId;
+    const effectiveUpstream = stageId === "phy" ? "mesh" : upstreamId;
     const upstream = next[effectiveUpstream] as StageState;
     const current = next[stageId] as StageState;
     if (
@@ -214,15 +214,15 @@ export function lifecycleToStageStatuses(
 ): Record<StageId, StageStatus> {
   switch (status) {
     case "draft":
-      return { ref: "EMPTY", mesh: "EMPTY", pix: "EMPTY", physics: "EMPTY" };
+      return { ref: "EMPTY", mesh: "EMPTY", pix: "EMPTY", phy: "EMPTY" };
     case "image-ready":
-      return { ref: "VALID", mesh: "EMPTY", pix: "EMPTY", physics: "EMPTY" };
+      return { ref: "VALID", mesh: "EMPTY", pix: "EMPTY", phy: "EMPTY" };
     case "mesh-ready":
-      return { ref: "VALID", mesh: "VALID", pix: "EMPTY", physics: "EMPTY" };
+      return { ref: "VALID", mesh: "VALID", pix: "EMPTY", phy: "EMPTY" };
     case "generation-approved":
-      return { ref: "VALID", mesh: "VALID", pix: "VALID", physics: "EMPTY" };
+      return { ref: "VALID", mesh: "VALID", pix: "VALID", phy: "EMPTY" };
     case "physics-approved":
-      return { ref: "VALID", mesh: "VALID", pix: "VALID", physics: "VALID" };
+      return { ref: "VALID", mesh: "VALID", pix: "VALID", phy: "VALID" };
   }
 }
 
@@ -230,7 +230,7 @@ export function lifecycleToStageStatuses(
 export function stageStatusesToLifecycle(
   stages: Record<StageId, StageStatus>
 ): ForgeV2LifecycleStatus {
-  if (stages.physics === "VALID") return "physics-approved";
+  if (stages.phy === "VALID") return "physics-approved";
   if (stages.pix === "VALID") return "generation-approved";
   if (stages.mesh === "VALID") return "mesh-ready";
   if (stages.ref === "VALID") return "image-ready";
@@ -312,7 +312,7 @@ export function createInitialState(): ForgeStoreState {
     pix: emptyStage<PixConfig, PixArtifact>({
       pixelCamera: { target: [0, 0, 0], yawTurns: 0, zoomLevel: 1 },
     }),
-    physics: emptyStage<PhysicsConfig, PhysicsArtifact>({
+    phy: emptyStage<PhysicsConfig, PhysicsArtifact>({
       kindId: "wood",
       physicsSettings: { ...DEFAULT_FORGE_PHYSICS_SETTINGS },
       colliderPresetSelection: [],
@@ -609,21 +609,21 @@ export function forgeReducer(state: ForgeStoreState, action: ForgeAction): Forge
           ownVersion: ver,
           builtFromUpstreamVersion: ver,
         },
-        physics: {
+        phy: {
           config: {
             kindId: meta.physics?.kind ?? "wood",
             physicsSettings: meta.physics?.resolved ?? { ...DEFAULT_FORGE_PHYSICS_SETTINGS },
             colliderPresetSelection: [],
             selectedColliderPresetId: meta.colliders?.selectedPresetId ?? null,
           },
-          artifact: statuses.physics !== "EMPTY" && meta.physics
+          artifact: statuses.phy !== "EMPTY" && meta.physics
             ? {
                 colliderResults: meta.colliders?.presets ?? [],
                 simulationChecks: meta.physics.simulationChecks ?? {},
                 physicsApprovedAt: meta.lifecycle.physicsApprovedAt ?? "",
               }
             : null,
-          status: statuses.physics,
+          status: statuses.phy,
           error: null,
           ownVersion: ver,
           builtFromUpstreamVersion: ver,

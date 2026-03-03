@@ -60,13 +60,6 @@ function buildPhysicsSettingsFromKind(kind: ForgeV2PhysicsKindPresetFile["kinds"
   );
 }
 
-function formatStatusTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString();
-}
-
 export function PhysicsWorkspace() {
   const state = useForgeState();
   const dispatch = useForgeDispatch();
@@ -96,6 +89,9 @@ export function PhysicsWorkspace() {
       thumb.setModel(null);
       thumb.setColliderPreviewObject(null);
     }
+
+    // Reset captured sim camera so next sim setup re-seeds from mesh view
+    refs.physicsSimMeshViewState.current = null;
 
     const viewport = refs.physicsMeshViewport.current;
     if (!viewport || !state.physicsSelectedPropId) {
@@ -248,38 +244,6 @@ export function PhysicsWorkspace() {
       {/* Physics controls toolbar */}
       <div className="ps-workspace-toolbar ps-physics-toolbar">
         <div className="ps-toolbar-row">
-          <div className="ps-field ps-field-inline">
-            <label className="ps-label">Collider Presets</label>
-            {state.colliderPresets ? (
-              <div className="ps-checkbox-list-inline">
-                {state.colliderPresets.presets.map((preset) => (
-                  <label key={preset.id} className="ps-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={preset.enabledByDefault !== false}
-                      onChange={(e) => {
-                        if (!state.colliderPresets) return;
-                        dispatch({
-                          type: "SET_COLLIDER_PRESETS",
-                          presets: {
-                            ...state.colliderPresets,
-                            presets: state.colliderPresets.presets.map((entry) =>
-                              entry.id === preset.id
-                                ? { ...entry, enabledByDefault: e.target.checked }
-                                : entry
-                            ),
-                          },
-                        });
-                      }}
-                    />
-                    {preset.name}
-                  </label>
-                ))}
-              </div>
-            ) : (
-              <span className="ps-text-muted">Loading...</span>
-            )}
-          </div>
           <button
             className="forge-btn forge-btn-primary"
             onClick={() => void actions.computeSelectedPhysicsColliders()}
@@ -290,58 +254,52 @@ export function PhysicsWorkspace() {
           {state.physicsColliderBuildState.error && (
             <span className="ps-text-error">{state.physicsColliderBuildState.error}</span>
           )}
-          <span className="ps-text-muted">{state.physicsColliderBuildState.statusText}</span>
-        </div>
-        <div className="ps-toolbar-row">
-          <div className="ps-field ps-field-inline">
-            <label className="ps-label">Kind</label>
-            <select
-              className="ps-select ps-select-sm"
-              value={state.physicsSelectedKindId}
-              onChange={(e) => {
-                const kindId = e.target.value;
-                dispatch({ type: "SET_PHYSICS_KIND", kindId });
-                const kind = state.physicsKindPresets?.kinds.find((k) => k.id === kindId);
-                if (kind) {
-                  dispatch({ type: "SET_PHYSICS_SETTINGS", settings: buildPhysicsSettingsFromKind(kind) });
-                }
-              }}
-            >
-              {(state.physicsKindPresets?.kinds ?? []).map((kind) => (
-                <option key={kind.id} value={kind.id}>{kind.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="ps-field ps-field-inline">
-            <label className="ps-label">Active Collider</label>
-            <select
-              className="ps-select ps-select-sm"
-              value={state.physicsSelectedColliderPresetId ?? ""}
-              onChange={(e) =>
-                dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: e.target.value || null })
-              }
-            >
-              <option value="">-- Select --</option>
-              {state.physicsColliderResults.map((entry) => (
-                <option key={entry.presetId} value={entry.presetId}>
-                  {entry.presetName} ({entry.generation.hullCount} hulls)
-                </option>
-              ))}
-            </select>
-          </div>
-          <span className="ps-text-muted">Mass: {resolveForgeMass(state.physicsSettings, state.physicsBBox).toFixed(3)}</span>
-          <button
-            className="forge-btn forge-btn-primary"
-            onClick={() => void actions.approvePhysicsSetup()}
-            disabled={!state.physicsSelectedColliderPresetId || state.physicsColliderResults.length <= 0}
-          >
-            Approve Physics
-          </button>
-          {meta.lifecycle.physicsApprovedAt && (
-            <span className="ps-text-success">
-              Approved {formatStatusTime(meta.lifecycle.physicsApprovedAt)}
-            </span>
+          {state.physicsColliderBuildState.running && (
+            <span className="ps-text-muted">{state.physicsColliderBuildState.statusText}</span>
           )}
+          <span className="ps-text-muted">Mass: {resolveForgeMass(state.physicsSettings, state.physicsBBox).toFixed(3)}</span>
+        </div>
+
+        {/* Collider preset radio buttons */}
+        {state.physicsColliderResults.length > 0 && (
+          <div className="ps-toolbar-row">
+            <label className="ps-label">Collider</label>
+            <div className="ps-btn-group">
+              {state.physicsColliderResults.map((entry) => (
+                <button
+                  key={entry.presetId}
+                  className={`forge-btn forge-btn-xs ${state.physicsSelectedColliderPresetId === entry.presetId ? "forge-btn-active" : ""}`}
+                  onClick={() => {
+                    dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: entry.presetId });
+                    void actions.autoApprovePhysics({ selectedPresetId: entry.presetId });
+                  }}
+                >
+                  {entry.presetName} ({entry.generation.hullCount})
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Kind radio buttons */}
+        <div className="ps-toolbar-row">
+          <label className="ps-label">Kind</label>
+          <div className="ps-btn-group">
+            {(state.physicsKindPresets?.kinds ?? []).map((kind) => (
+              <button
+                key={kind.id}
+                className={`forge-btn forge-btn-xs ${state.physicsSelectedKindId === kind.id ? "forge-btn-active" : ""}`}
+                onClick={() => {
+                  const settings = buildPhysicsSettingsFromKind(kind);
+                  dispatch({ type: "SET_PHYSICS_KIND", kindId: kind.id });
+                  dispatch({ type: "SET_PHYSICS_SETTINGS", settings });
+                  void actions.autoApprovePhysics({ kindId: kind.id, settings });
+                }}
+              >
+                {kind.name}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -352,7 +310,10 @@ export function PhysicsWorkspace() {
           <PhysicsPanel
             value={state.physicsSettings}
             bbox={state.physicsBBox}
-            onChange={(settings) => dispatch({ type: "SET_PHYSICS_SETTINGS", settings })}
+            onChange={(settings) => {
+              dispatch({ type: "SET_PHYSICS_SETTINGS", settings });
+              void actions.autoApprovePhysics({ settings });
+            }}
             hideTitle
           />
         </div>

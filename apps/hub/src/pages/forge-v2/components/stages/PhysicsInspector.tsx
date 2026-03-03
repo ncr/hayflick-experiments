@@ -25,13 +25,6 @@ function buildPhysicsSettingsFromKind(kind: ForgeV2PhysicsKindPresetFile["kinds"
   );
 }
 
-function formatStatusTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString();
-}
-
 export function PhysicsInspector() {
   const state = useForgeState();
   const dispatch = useForgeDispatch();
@@ -56,58 +49,41 @@ export function PhysicsInspector() {
   return (
     <div className="ps-inspector-content">
       <div className="ps-section">
-        <div className="ps-section-header"><span>Collider Presets</span></div>
+        <div className="ps-section-header"><span>Colliders</span></div>
         <div className="ps-section-body">
-          {state.colliderPresets ? (
-            <div className="ps-checkbox-list">
-              {state.colliderPresets.presets.map((preset) => (
-                <label key={preset.id} className="ps-checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={preset.enabledByDefault !== false}
-                    onChange={(e) => {
-                      if (!state.colliderPresets) return;
-                      dispatch({
-                        type: "SET_COLLIDER_PRESETS",
-                        presets: {
-                          ...state.colliderPresets,
-                          presets: state.colliderPresets.presets.map((entry) =>
-                            entry.id === preset.id
-                              ? { ...entry, enabledByDefault: e.target.checked }
-                              : entry
-                          ),
-                        },
-                      });
-                    }}
-                  />
-                  {preset.name}
-                </label>
-              ))}
-            </div>
-          ) : (
-            <div className="ps-text-muted">Loading collider presets...</div>
-          )}
-          <div className="ps-btn-row" style={{ marginTop: 8 }}>
+          <div className="ps-btn-row" style={{ marginBottom: 8 }}>
             <button
               className="forge-btn forge-btn-primary"
               onClick={() => void actions.computeSelectedPhysicsColliders()}
               disabled={!state.physicsSelectedPropId || state.physicsColliderBuildState.running}
             >
-              {state.physicsColliderBuildState.running ? "Computing..." : "Recompute Colliders"}
+              {state.physicsColliderBuildState.running ? "Computing..." : "Recompute"}
             </button>
           </div>
-          <div className="ps-info-block">
-            <div>Status: {state.physicsColliderBuildState.statusText}</div>
-            <div>Progress: {state.physicsColliderBuildState.progressText}</div>
-            {state.physicsColliderBuildState.error && (
-              <div className="ps-text-error">{state.physicsColliderBuildState.error}</div>
-            )}
-          </div>
+          {state.physicsColliderBuildState.error && (
+            <div className="ps-text-error">{state.physicsColliderBuildState.error}</div>
+          )}
+          {state.physicsColliderResults.length > 0 && (
+            <div className="ps-btn-group ps-btn-group-vertical">
+              {state.physicsColliderResults.map((entry) => (
+                <button
+                  key={entry.presetId}
+                  className={`forge-btn forge-btn-xs ${state.physicsSelectedColliderPresetId === entry.presetId ? "forge-btn-active" : ""}`}
+                  onClick={() => {
+                    dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: entry.presetId });
+                    void actions.autoApprovePhysics({ selectedPresetId: entry.presetId });
+                  }}
+                >
+                  {entry.presetName} ({entry.generation.hullCount} hulls)
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
       <div className="ps-section">
-        <div className="ps-section-header"><span>Physics Setup</span></div>
+        <div className="ps-section-header"><span>Physics</span></div>
         <div className="ps-section-body">
           <div className="ps-detail-title">{meta.description}</div>
           {state.physicsConceptImage && (
@@ -117,77 +93,38 @@ export function PhysicsInspector() {
           )}
 
           <div className="ps-field">
-            <label className="ps-label">Physics Kind (preset)</label>
-            <select
-              className="ps-select"
-              value={state.physicsSelectedKindId}
-              onChange={(e) => {
-                const kindId = e.target.value;
-                dispatch({ type: "SET_PHYSICS_KIND", kindId });
-                const kind = state.physicsKindPresets?.kinds.find((k) => k.id === kindId);
-                if (kind) {
-                  dispatch({ type: "SET_PHYSICS_SETTINGS", settings: buildPhysicsSettingsFromKind(kind) });
-                }
-              }}
-            >
+            <label className="ps-label">Kind</label>
+            <div className="ps-btn-group ps-btn-group-vertical">
               {(state.physicsKindPresets?.kinds ?? []).map((kind) => (
-                <option key={kind.id} value={kind.id}>{kind.name}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="ps-field">
-            <label className="ps-label">Active Collider Preset</label>
-            <select
-              className="ps-select"
-              value={state.physicsSelectedColliderPresetId ?? ""}
-              onChange={(e) =>
-                dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: e.target.value || null })
-              }
-            >
-              <option value="">-- Select --</option>
-              {state.physicsColliderResults.map((entry) => (
-                <option key={entry.presetId} value={entry.presetId}>
-                  {entry.presetName} ({entry.generation.hullCount} hulls)
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {state.physicsColliderResults.length > 0 && (
-            <div className="ps-info-block">
-              {state.physicsColliderResults.map((entry) => (
-                <div key={entry.presetId}>
-                  {entry.presetName}: {entry.generation.hullCount} hulls, {entry.generation.stats.voxelCount} voxels
-                </div>
+                <button
+                  key={kind.id}
+                  className={`forge-btn forge-btn-xs ${state.physicsSelectedKindId === kind.id ? "forge-btn-active" : ""}`}
+                  onClick={() => {
+                    const settings = buildPhysicsSettingsFromKind(kind);
+                    dispatch({ type: "SET_PHYSICS_KIND", kindId: kind.id });
+                    dispatch({ type: "SET_PHYSICS_SETTINGS", settings });
+                    void actions.autoApprovePhysics({ kindId: kind.id, settings });
+                  }}
+                >
+                  {kind.name}
+                </button>
               ))}
             </div>
-          )}
+          </div>
+
+          <div className="ps-info-block">
+            <div>Mass: {resolveForgeMass(state.physicsSettings, state.physicsBBox).toFixed(3)}</div>
+          </div>
 
           <PhysicsPanel
             value={state.physicsSettings}
             bbox={state.physicsBBox}
-            onChange={(settings) => dispatch({ type: "SET_PHYSICS_SETTINGS", settings })}
+            onChange={(settings) => {
+              dispatch({ type: "SET_PHYSICS_SETTINGS", settings });
+              void actions.autoApprovePhysics({ settings });
+            }}
             hideTitle
           />
-
-          <div className="ps-info-block">
-            <div>Estimated Mass: {resolveForgeMass(state.physicsSettings, state.physicsBBox).toFixed(3)}</div>
-          </div>
-
-          <button
-            className="forge-btn forge-btn-primary ps-generate-btn"
-            onClick={() => void actions.approvePhysicsSetup()}
-            disabled={!state.physicsSelectedColliderPresetId || state.physicsColliderResults.length <= 0}
-          >
-            Approve Physics Setup
-          </button>
-
-          {meta.lifecycle.physicsApprovedAt && (
-            <div className="ps-text-success" style={{ marginTop: 8 }}>
-              Physics approved: {formatStatusTime(meta.lifecycle.physicsApprovedAt)}
-            </div>
-          )}
         </div>
       </div>
     </div>

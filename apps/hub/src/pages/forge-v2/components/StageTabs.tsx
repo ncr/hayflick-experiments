@@ -13,7 +13,7 @@ type TabDef = {
 const TABS: TabDef[] = [
   { id: "ref", label: "REF" },
   { id: "mesh", label: "MESH" },
-  { id: "physics", label: "PHYS" },
+  { id: "phy", label: "PHY" },
 ];
 
 function isStageEnabled(
@@ -26,7 +26,7 @@ function isStageEnabled(
       return true;
     case "mesh":
       return refStatus !== "EMPTY";
-    case "physics":
+    case "phy":
       return meshStatus !== "EMPTY";
     default:
       return false;
@@ -37,7 +37,7 @@ function disableTooltip(stageId: StageId): string {
   switch (stageId) {
     case "mesh":
       return "Generate a reference image first";
-    case "physics":
+    case "phy":
       return "Generate a mesh first";
     default:
       return "";
@@ -96,7 +96,7 @@ export function StageTabs() {
                   ref={refs.meshTabThumb}
                   autoOrbitSpeed={TAB_ORBIT_SPEED}
                 />
-              ) : tab.id === "physics" ? (
+              ) : tab.id === "phy" ? (
                 <ForgeScissorViewportPane
                   paneId="tab-thumb-physics"
                   className="ps-stage-tab-viewport"

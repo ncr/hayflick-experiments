@@ -237,6 +237,31 @@ export function usePipelineActions() {
         } as Partial<ForgeV2GenerationDraftProp>,
       });
       dispatch({ type: "SET_STATUS_MESSAGE", message: "" });
+
+      // Update the ref stage artifact so the stage tab thumbnail refreshes
+      dispatch({
+        type: "SET_STAGE_ARTIFACT",
+        stage: "ref",
+        artifact: { conceptImage: dataUrl, imageRevision: draft.imageRevision + 1 },
+      });
+
+      // Persist image for saved (on-disk) props
+      if (draft.tempId.startsWith("saved-")) {
+        const idSlug = draft.tempId.slice("saved-".length);
+        try {
+          await writePropConceptImage(idSlug, dataUrl);
+          const meta = await readForgeV2PropMeta(idSlug);
+          if (meta) {
+            meta.lifecycle.status = "image-ready";
+            meta.generation.image.revision = draft.imageRevision + 1;
+            meta.generation.image.generatedAt = new Date().toISOString();
+            await writeForgeV2PropMeta(meta);
+          }
+          await loadSavedPropIndex();
+        } catch {
+          // persist is best-effort; image is already in draft state
+        }
+      }
     } catch (err) {
       if (refs.imageJobTokens.current.get(draft.tempId) !== token) return;
       const msg = err instanceof Error ? err.message : "Image generation failed";
@@ -247,7 +272,7 @@ export function usePipelineActions() {
       });
       dispatch({ type: "SET_STATUS_ERROR", error: msg });
     }
-  }, [dispatch, refs, state.styleGuide]);
+  }, [dispatch, loadSavedPropIndex, refs, state.styleGuide]);
 
   const runMeshGenerationForDraft = useCallback(async (draft: ForgeV2GenerationDraftProp) => {
     if (!draft.conceptImage) return;
@@ -281,6 +306,26 @@ export function usePipelineActions() {
         patch: { rawGlb: glb, status: "mesh-ready", meshRevision: draft.meshRevision + 1, meshProgress: 100, meshProgressLabel: "Done" },
       });
       dispatch({ type: "SET_STATUS_MESSAGE", message: "" });
+
+      // Persist mesh for saved (on-disk) props
+      if (draft.tempId.startsWith("saved-")) {
+        const idSlug = draft.tempId.slice("saved-".length);
+        try {
+          await writePropRawGlb(idSlug, glb);
+          const meta = await readForgeV2PropMeta(idSlug);
+          if (meta) {
+            meta.lifecycle.status = "mesh-ready";
+            meta.generation.mesh.revision = draft.meshRevision + 1;
+            meta.generation.mesh.generatedAt = new Date().toISOString();
+            meta.generation.mesh.faceLimit = draft.faceLimit;
+            meta.generation.mesh.pbr = draft.pbr;
+            await writeForgeV2PropMeta(meta);
+          }
+          await loadSavedPropIndex();
+        } catch {
+          // persist is best-effort; mesh is already in draft state
+        }
+      }
     } catch (err) {
       if (refs.meshJobTokens.current.get(draft.tempId) !== token) return;
       const msg = err instanceof Error ? err.message : "3D generation failed";
@@ -291,7 +336,7 @@ export function usePipelineActions() {
       });
       dispatch({ type: "SET_STATUS_ERROR", error: msg });
     }
-  }, [dispatch, refs]);
+  }, [dispatch, loadSavedPropIndex, refs]);
 
   const handleGenerateAllImages = useCallback(async () => {
     const queue = Array.from(state.drafts.values()).filter((item) => item.status === "draft" || item.status === "image-ready");
@@ -393,6 +438,52 @@ export function usePipelineActions() {
     return { pixelModel: pixelGroup };
   }, [dispatch, refs, state.drafts, state.selectedDraftId]);
 
+  const persistProcessedMesh = useCallback(async () => {
+    const draftId = state.selectedDraftId;
+    const draft = draftId ? state.drafts.get(draftId) ?? null : null;
+    if (!draft || !draft.tempId.startsWith("saved-") || !draft.rawGlb) return;
+    const viewport = refs.generationViewport.current;
+    const model = viewport?.getModel();
+    if (!model) return;
+
+    const idSlug = draft.tempId.slice("saved-".length);
+    try {
+      const processedGlb = await exportObjectToGlb(model);
+      await writePropProcessedModelGlb(idSlug, processedGlb);
+
+      const meta = await readForgeV2PropMeta(idSlug);
+      if (meta) {
+        meta.lifecycle.status = "generation-approved";
+        meta.lifecycle.generationApprovedAt = new Date().toISOString();
+        meta.processing.mesh.originalFaces = draft.originalFaces;
+        meta.processing.mesh.processedFaces = draft.processedFaces;
+        meta.processing.mesh.simplificationRatio = draft.simplificationRatio;
+        meta.processing.mesh.textureResolution = draft.textureResolution;
+        meta.processing.mesh.bboxProcessed = draft.bboxProcessed ?? undefined;
+        meta.processing.transform.scale = [draft.scale, draft.scale, draft.scale];
+        meta.processing.transform.provisionalPivot = {
+          preset: draft.pivot,
+          offset: draft.pivotOffset,
+          basis: "mesh",
+        };
+        meta.processing.transform.targetDimension = {
+          method: draft.scaleMode,
+          value: draft.targetDimension,
+        } as ForgeV2PropMeta["processing"]["transform"]["targetDimension"];
+        await writeForgeV2PropMeta(meta);
+      }
+
+      dispatch({
+        type: "UPDATE_DRAFT",
+        id: draft.tempId,
+        patch: { status: "approved-generation", generationApprovedAt: meta?.lifecycle.generationApprovedAt },
+      });
+      await loadSavedPropIndex();
+    } catch {
+      // best-effort
+    }
+  }, [dispatch, loadSavedPropIndex, refs, state.drafts, state.selectedDraftId]);
+
   const approveSelectedDraftGeneration = useCallback(async () => {
     const draftId = state.selectedDraftId;
     const draft = draftId ? state.drafts.get(draftId) ?? null : null;
@@ -480,11 +571,11 @@ export function usePipelineActions() {
       });
       return;
     }
-    const enabledPresets = state.colliderPresets.presets.filter((preset) => preset.enabledByDefault !== false);
-    if (enabledPresets.length <= 0) {
+    const allPresets = state.colliderPresets.presets;
+    if (allPresets.length <= 0) {
       dispatch({
         type: "SET_PHYSICS_BUILD_STATE",
-        state: { ...state.physicsColliderBuildState, error: "No collider presets enabled." },
+        state: { ...state.physicsColliderBuildState, error: "No collider presets defined." },
       });
       return;
     }
@@ -492,19 +583,19 @@ export function usePipelineActions() {
     refs.vhacdRunner.current.restart("Forge V2 collider recompute");
     dispatch({
       type: "SET_PHYSICS_BUILD_STATE",
-      state: { running: true, progressText: "starting...", statusText: `Running ${enabledPresets.length} collider preset(s)...`, error: null },
+      state: { running: true, progressText: "starting...", statusText: `Running ${allPresets.length} collider preset(s)...`, error: null },
     });
 
     const entries: ForgeV2ColliderResultEntry[] = [];
     try {
-      for (let i = 0; i < enabledPresets.length; i += 1) {
-        const preset = enabledPresets[i];
+      for (let i = 0; i < allPresets.length; i += 1) {
+        const preset = allPresets[i];
         dispatch({
           type: "SET_PHYSICS_BUILD_STATE",
           state: {
             running: true,
             progressText: state.physicsColliderBuildState.progressText,
-            statusText: `Running ${preset.name} (${i + 1}/${enabledPresets.length})...`,
+            statusText: `Running ${preset.name} (${i + 1}/${allPresets.length})...`,
             error: null,
           },
         });
@@ -520,7 +611,7 @@ export function usePipelineActions() {
               state: {
                 running: true,
                 progressText: `${preset.name}: ${formatVhacdProgress(progress)}`,
-                statusText: `Running ${preset.name} (${i + 1}/${enabledPresets.length})...`,
+                statusText: `Running ${preset.name} (${i + 1}/${allPresets.length})...`,
                 error: null,
               },
             });
@@ -536,9 +627,21 @@ export function usePipelineActions() {
         });
       }
       dispatch({ type: "SET_PHYSICS_COLLIDER_RESULTS", results: entries });
+      // Auto-select default preset
+      const defaultId = state.colliderPresets.defaultPresetId;
+      const defaultEntry = entries.find((e) => e.presetId === defaultId) ?? entries[0];
+      if (defaultEntry) {
+        dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: defaultEntry.presetId });
+      }
       dispatch({
         type: "SET_PHYSICS_BUILD_STATE",
         state: { running: false, progressText: "done", statusText: `Computed ${entries.length} collider preset(s).`, error: null },
+      });
+
+      // Auto-persist (approve) physics setup
+      await autoApprovePhysics({
+        entries,
+        selectedPresetId: defaultEntry?.presetId ?? entries[0]?.presetId ?? null,
       });
     } catch (err) {
       dispatch({
@@ -548,24 +651,27 @@ export function usePipelineActions() {
     }
   }, [dispatch, refs, state.colliderPresets, state.physicsColliderBuildState, state.physicsSelectedPropId]);
 
-  const approvePhysicsSetup = useCallback(async () => {
+  // Auto-persist physics setup (called after collider compute, collider selection change, or kind change)
+  // Accepts optional overrides for values that were just dispatched (not yet in state).
+  const autoApprovePhysics = useCallback(async (opts?: {
+    entries?: ForgeV2ColliderResultEntry[];
+    selectedPresetId?: string | null;
+    kindId?: string;
+    settings?: ReturnType<typeof normalizeForgePhysicsSettings>;
+  }) => {
     if (!state.physicsSelectedPropId) return;
     const baseMeta = await readForgeV2PropMeta(state.physicsSelectedPropId);
     if (!baseMeta) return;
+    const colliderResults = opts?.entries ?? state.physicsColliderResults;
+    const selId = opts?.selectedPresetId ?? state.physicsSelectedColliderPresetId;
+    const kindId = opts?.kindId ?? state.physicsSelectedKindId;
+    const physSettings = opts?.settings ?? state.physicsSettings;
     const selectedCollider =
-      state.physicsColliderResults.find((entry) => entry.presetId === state.physicsSelectedColliderPresetId) ??
-      state.physicsColliderResults[0] ?? null;
-    if (!selectedCollider) {
-      dispatch({
-        type: "SET_PHYSICS_BUILD_STATE",
-        state: { ...state.physicsColliderBuildState, error: "Compute and select a collider preset before approving physics." },
-      });
-      return;
-    }
+      colliderResults.find((entry) => entry.presetId === selId) ??
+      colliderResults[0] ?? null;
+    if (!selectedCollider || colliderResults.length <= 0) return;
 
-    dispatch({ type: "SET_STATUS_MESSAGE", message: "Saving physics setup..." });
-
-    for (const entry of state.physicsColliderResults) {
+    for (const entry of colliderResults) {
       const scene = buildColliderExportSceneFromParams(entry.collider);
       const buffer = await exportObjectToGlb(scene);
       const rel = await writePropColliderGlb(state.physicsSelectedPropId, entry.presetId, buffer);
@@ -576,7 +682,7 @@ export function usePipelineActions() {
     const colliderBBox = computeBBox(colliderHelper);
     const finalPivotOffset = computePivotOffset(colliderBBox, "bottom-center");
 
-    const resolvedPhysics = normalizeForgePhysicsSettings(state.physicsSettings, state.physicsBBox);
+    const resolvedPhysics = normalizeForgePhysicsSettings(physSettings, state.physicsBBox);
     const previousResolved = baseMeta.physics?.resolved ?? null;
     const overrides: Partial<typeof resolvedPhysics> = {};
     if (previousResolved) {
@@ -589,10 +695,10 @@ export function usePipelineActions() {
 
     baseMeta.colliders = {
       selectedPresetId: selectedCollider.presetId,
-      presets: state.physicsColliderResults,
+      presets: colliderResults,
     };
     baseMeta.physics = {
-      kind: state.physicsSelectedKindId,
+      kind: kindId,
       overrides,
       resolved: resolvedPhysics,
       simulationChecks: {
@@ -612,7 +718,6 @@ export function usePipelineActions() {
 
     await writeForgeV2PropMeta(baseMeta);
     dispatch({ type: "SET_PHYSICS_PROP", propId: state.physicsSelectedPropId, meta: baseMeta, conceptImage: state.physicsConceptImage });
-    dispatch({ type: "SET_STATUS_MESSAGE", message: "" });
     await loadSavedPropIndex();
   }, [dispatch, loadSavedPropIndex, refs, state]);
 
@@ -657,6 +762,31 @@ export function usePipelineActions() {
     dispatch({ type: "ADD_DRAFTS", drafts: items });
     dispatch({ type: "SET_BATCH_TEXT", text: "" });
   }, [dispatch, state.batchText, state.defaultFaceLimit]);
+
+  const createPropPlaceholders = useCallback(async () => {
+    const lines = state.batchText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length <= 0) return;
+
+    for (const line of lines) {
+      const id = slugifyPropId(line) || `prop-${Date.now()}`;
+      const composedPrompt = buildComposedPrompt(state.styleGuide, line);
+      const meta = createDefaultForgeV2Meta({
+        id,
+        description: line,
+        styleGuide: state.styleGuide,
+        composedPrompt,
+        faceLimit: state.defaultFaceLimit,
+        pbr: true,
+      });
+      await writeForgeV2PropMeta(meta);
+    }
+
+    dispatch({ type: "SET_BATCH_TEXT", text: "" });
+    await loadSavedPropIndex();
+  }, [dispatch, loadSavedPropIndex, state.batchText, state.defaultFaceLimit, state.styleGuide]);
 
   const selectProp = useCallback(async (propId: string) => {
     const [meta, conceptImage, rawGlb] = await Promise.all([
@@ -801,11 +931,13 @@ export function usePipelineActions() {
     handleGenerateAllImages,
     handleGenerateAllMeshes,
     rebuildSelectedDraftPreview,
+    persistProcessedMesh,
     approveSelectedDraftGeneration,
     loadPhysicsProp,
     computeSelectedPhysicsColliders,
-    approvePhysicsSetup,
+    autoApprovePhysics,
     addBatchDrafts,
+    createPropPlaceholders,
     importSavedPropIntoGeneration,
   };
 }

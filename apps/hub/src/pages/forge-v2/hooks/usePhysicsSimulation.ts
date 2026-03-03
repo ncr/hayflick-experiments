@@ -338,20 +338,35 @@ export function usePhysicsSimulation(options: {
         const mass = resolveForgeMass(physicsSettings, physicsBBox);
         const friction = clamp(physicsSettings.friction, 0, 2);
         const restitution = clamp(physicsSettings.restitution, 0, 1);
-        // Match the sim 3D viewport zoom to the pixel quad's ortho framing.
-        // The pixel cells have aspect-ratio 4:3 in a 5-column grid, giving
-        // a typical cell height of ~175px.  The pixel quad uses:
-        //   orthoHeight = baseOrthoHeight * framingScale * (cellHeight / refHeight)
-        //               = 5.966 * 1.28 * (175 / 270) ≈ 4.95
-        // For perspective FOV=45°:  d = orthoHeight / (2·tan(22.5°)) ≈ 6.0
-        const simDistance = 6.0;
-        const simTarget: [number, number, number] = [0, 0.7, 0];
-
-        const seededSimViewState =
-          refs.physicsMeshViewport.current?.getViewState() ??
-          refs.physicsViewState.current;
+        // Seed sim cameras: on first setup clone the mesh viewport's full
+        // view state (distance, target, yaw, pitch) so they look the same.
+        // On subsequent restarts preserve whatever the user set per-scenario.
+        const isFirstSetup = !refs.physicsSimMeshViewState.current;
+        if (isFirstSetup) {
+          const meshVs = refs.physicsMeshViewport.current?.getViewState() ??
+            refs.physicsViewState.current;
+          if (meshVs) {
+            refs.physicsSimMeshViewState.current = { ...meshVs };
+          }
+          // Shift target up so the ground plane (y=0) sits at ~1/3 from the
+          // bottom of the viewport on first load.
+          if (refs.physicsSimMeshViewState.current) {
+            const vs = refs.physicsSimMeshViewState.current;
+            const d = vs.distance;
+            // visibleHeight = 2 * d * tan(fov/2); fov=45° → tan(22.5°)
+            // shift = visibleHeight * (1/2 - 1/3) = visibleHeight / 6
+            const yShift = (2 * d * Math.tan(Math.PI / 8)) / 6;
+            vs.target = [vs.target[0], yShift, vs.target[2]];
+          }
+        }
 
         for (const scenario of PHYSICS_SCENARIOS) {
+          // On first setup use the shifted seed; on restarts preserve the
+          // user's current sim camera (captured before setModel resets it).
+          const prevViewState = isFirstSetup
+            ? null
+            : refs.physicsSimMeshViewports.current[scenario]?.getViewState();
+
           const simVisual = createScenarioVisuals(
             deepCloneWithMaterials(sourceModel),
             scenario
@@ -359,16 +374,9 @@ export function usePhysicsSimulation(options: {
           refs.physicsSimDynamicMeshes.current[scenario] = simVisual.meshDynamic;
 
           refs.physicsSimMeshViewports.current[scenario]?.setModel(simVisual.meshRoot);
-          // Override fitCameraToObject (which fits the 14-unit floor) with
-          // a prop-centric framing that keeps the action area in view.
-          const fittedState = refs.physicsSimMeshViewports.current[scenario]?.getViewState();
-          if (fittedState) {
-            refs.physicsSimMeshViewports.current[scenario]?.setViewState({
-              target: simTarget,
-              distance: simDistance,
-              yaw: seededSimViewState?.yaw ?? fittedState.yaw,
-              pitch: seededSimViewState?.pitch ?? fittedState.pitch,
-            });
+          const restoreState = prevViewState ?? refs.physicsSimMeshViewState.current;
+          if (restoreState) {
+            refs.physicsSimMeshViewports.current[scenario]?.setViewState(restoreState);
           }
 
           setSimPixelModels((prev) => ({ ...prev, [scenario]: simVisual.pixelRoot }));

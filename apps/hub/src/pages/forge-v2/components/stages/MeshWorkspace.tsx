@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useForgeState, useForgeDispatch, useForgeRefs } from "../../state/forge-context";
 import { usePipelineActions } from "../../hooks/usePipelineActions";
 import { OutdatedBanner } from "../shared/OutdatedBanner";
@@ -10,7 +10,7 @@ import { PixelQuad } from "../../PixelQuad";
 import * as THREE from "three";
 import type { PixelViewportViewState } from "../../../forge/ViewportPixel";
 import type { ForgeV2GenerationDraftProp } from "../../types";
-import type { PivotPreset, ScaleMode } from "../../../forge/processing/dimensions";
+import type { PivotPreset } from "../../../forge/processing/dimensions";
 
 function deepCloneForThumb(group: THREE.Group): THREE.Group {
   const clone = group.clone(true);
@@ -26,7 +26,6 @@ function deepCloneForThumb(group: THREE.Group): THREE.Group {
   return clone;
 }
 
-type ScaleModeV2 = ScaleMode | "depth";
 const UNIT_SCALE_METERS_PER_UNIT = 1.28;
 
 export function MeshWorkspace() {
@@ -50,6 +49,8 @@ export function MeshWorkspace() {
   // recreates the callback), so the ref bridges the gap.
   const rebuildRef = useRef(actions.rebuildSelectedDraftPreview);
   rebuildRef.current = actions.rebuildSelectedDraftPreview;
+  const persistRef = useRef(actions.persistProcessedMesh);
+  persistRef.current = actions.persistProcessedMesh;
 
   // Rebuild preview when draft changes.
   // The rebuild function is async (first load awaits GLB parsing) but
@@ -94,6 +95,8 @@ export function MeshWorkspace() {
         const vs = thumb.getViewState();
         if (vs) thumb.setViewState({ ...vs, distance: vs.distance * 0.65 });
       }
+      // Auto-persist processed model for saved props
+      void persistRef.current();
     });
     return () => { active = false; };
   }, [
@@ -190,26 +193,14 @@ export function MeshWorkspace() {
 
       {/* Mesh settings — only when mesh exists */}
       {hasMesh && draft && (
-        <MeshSettings draft={draft} dispatch={dispatch} />
+        <MeshSettings
+          draft={draft}
+          dispatch={dispatch}
+          baseModel={refs.baseModelCache.current.get(draft.tempId) ?? null}
+        />
       )}
 
-      {/* Approve generation */}
-      {hasMesh && draft && (
-        <div className="ps-mesh-approve">
-          <button
-            className="forge-btn forge-btn-primary"
-            onClick={() => void actions.approveSelectedDraftGeneration()}
-            disabled={!draft.rawGlb || !draft.conceptImage}
-          >
-            {draft.generationApprovedAt ? "Re-Approve Generation" : "Approve Generation"}
-          </button>
-          {draft.generationApprovedAt && (
-            <span className="ps-text-success">
-              Approved {new Date(draft.generationApprovedAt).toLocaleString()}
-            </span>
-          )}
-        </div>
-      )}
+      {/* Auto-persisted — no manual approve step needed */}
     </div>
   );
 }
@@ -218,83 +209,154 @@ export function MeshWorkspace() {
 /* Mesh settings (texture, scale, pivot)                                      */
 /* -------------------------------------------------------------------------- */
 
+const CM_PER_UNIT = UNIT_SCALE_METERS_PER_UNIT * 100; // 128
+
+const TEX_DOWNSAMPLE_SIZES = [1024, 512, 256, 128];
+
+/** Extracts the first base-color texture image from a THREE group. */
+function extractBaseColorImage(group: THREE.Object3D): TexImageSource | null {
+  let found: TexImageSource | null = null;
+  group.traverse((child) => {
+    if (found) return;
+    if (child instanceof THREE.Mesh) {
+      const mat = Array.isArray(child.material) ? child.material[0] : child.material;
+      if (mat instanceof THREE.MeshStandardMaterial && mat.map?.image) {
+        found = mat.map.image as TexImageSource;
+      }
+    }
+  });
+  return found;
+}
+
+/** Canvas that renders `image` downsampled to `targetSize` without filtering. */
+function TextureThumb({
+  image,
+  targetSize,
+}: {
+  image: TexImageSource;
+  targetSize: number; // 0 = original
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const srcW = (image as { width: number }).width ?? 0;
+  const srcH = (image as { height: number }).height ?? 0;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || srcW <= 0 || srcH <= 0) return;
+
+    // Render at the downsampled resolution (CSS scales it up via width:100%)
+    const outSize = targetSize > 0 ? Math.min(targetSize, Math.max(srcW, srcH)) : Math.max(srcW, srcH);
+    const aspect = srcW / srcH;
+    const w = aspect >= 1 ? outSize : Math.round(outSize * aspect);
+    const h = aspect >= 1 ? Math.round(outSize / aspect) : outSize;
+    canvas.width = w;
+    canvas.height = h;
+
+    const ctx = canvas.getContext("2d")!;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(image as CanvasImageSource, 0, 0, w, h);
+  }, [image, targetSize, srcW, srcH]);
+
+  return <canvas ref={canvasRef} />;
+}
+
 function MeshSettings({
   draft,
   dispatch,
+  baseModel,
 }: {
   draft: ForgeV2GenerationDraftProp;
   dispatch: ReturnType<typeof useForgeDispatch>;
+  baseModel: THREE.Group | null;
 }) {
+  const texImage = baseModel ? extractBaseColorImage(baseModel) : null;
+  const texNativeSize = texImage
+    ? Math.max((texImage as { width: number }).width ?? 0, (texImage as { height: number }).height ?? 0)
+    : 0;
+
+  // Build texture options: native size first, then downsample sizes smaller than native
+  const texOptions: { value: number; label: string }[] = [
+    { value: 0, label: texNativeSize > 0 ? `${texNativeSize} px` : "Original" },
+    ...TEX_DOWNSAMPLE_SIZES
+      .filter((s) => texNativeSize <= 0 || s < texNativeSize)
+      .map((s) => ({ value: s, label: `${s} px` })),
+  ];
+
+  const bbox = draft.bboxProcessed;
+  const wCm = bbox ? Math.round(bbox.width * CM_PER_UNIT) : 0;
+  const hCm = bbox ? Math.round(bbox.height * CM_PER_UNIT) : 0;
+  const dCm = bbox ? Math.round(bbox.depth * CM_PER_UNIT) : 0;
+
+  // Slider: 10cm..1000cm (10m), step 1cm
+  const sliderMin = 10;
+  const sliderMax = 1000;
+  const sliderValueCm = Math.round(draft.targetDimension * CM_PER_UNIT);
+
+  const handleSlider = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const cm = Number(e.target.value);
+      dispatch({
+        type: "UPDATE_DRAFT",
+        id: draft.tempId,
+        patch: { scaleMode: "max" as const, targetDimension: Math.max(0.01, cm / CM_PER_UNIT) },
+      });
+    },
+    [dispatch, draft.tempId]
+  );
+
   return (
     <div className="ps-mesh-settings-panel">
-      {draft.bboxProcessed && (
-        <div className="ps-text-muted" style={{ marginBottom: 8 }}>
-          {draft.processedFaces || draft.originalFaces || 0} faces ·{" "}
-          {draft.bboxProcessed.width.toFixed(2)}×{draft.bboxProcessed.height.toFixed(2)}×{draft.bboxProcessed.depth.toFixed(2)}u ·{" "}
-          scale {draft.scale.toFixed(3)}
-        </div>
-      )}
+      {/* Texture resolution — visual radio cards */}
       <div className="ps-field">
         <label className="ps-label">Texture</label>
-        <select
-          className="ps-select ps-select-sm"
-          value={draft.textureResolution}
-          onChange={(e) =>
-            dispatch({
-              type: "UPDATE_DRAFT",
-              id: draft.tempId,
-              patch: { textureResolution: Number(e.target.value) },
-            })
-          }
-        >
-          <option value={0}>Original</option>
-          <option value={1024}>1024px</option>
-          <option value={512}>512px</option>
-          <option value={256}>256px</option>
-          <option value={128}>128px</option>
-        </select>
-      </div>
-      <div className="ps-field">
-        <label className="ps-label">Scale</label>
-        <select
-          className="ps-select ps-select-sm"
-          value={draft.scaleMode}
-          onChange={(e) =>
-            dispatch({
-              type: "UPDATE_DRAFT",
-              id: draft.tempId,
-              patch: { scaleMode: e.target.value as ScaleModeV2 },
-            })
-          }
-        >
-          <option value="height">Height</option>
-          <option value="width">Width</option>
-          <option value="depth">Depth</option>
-          <option value="max">Max Dim</option>
-          <option value="manual">Manual</option>
-        </select>
-      </div>
-      <div className="ps-field">
-        <label className="ps-label">{draft.scaleMode === "manual" ? "Factor" : "Target"}</label>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="number"
-            className="ps-input ps-input-sm"
-            min={0.01}
-            step={0.01}
-            value={draft.targetDimension}
-            onChange={(e) =>
-              dispatch({
-                type: "UPDATE_DRAFT",
-                id: draft.tempId,
-                patch: { targetDimension: Math.max(0.01, Number(e.target.value) || 1) },
-              })
-            }
-          />
-          <span className="ps-text-muted">1u = {UNIT_SCALE_METERS_PER_UNIT}m</span>
+        <div className="ps-tex-cards" style={{ gridTemplateColumns: `repeat(${texOptions.length}, 1fr)` }}>
+          {texOptions.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              className={`ps-tex-card ${draft.textureResolution === opt.value ? "ps-tex-card-active" : ""}`}
+              onClick={() =>
+                dispatch({
+                  type: "UPDATE_DRAFT",
+                  id: draft.tempId,
+                  patch: { textureResolution: opt.value },
+                })
+              }
+            >
+              {texImage ? (
+                <TextureThumb image={texImage} targetSize={opt.value} />
+              ) : (
+                <div style={{ aspectRatio: "1", background: "#222", borderRadius: 3 }} />
+              )}
+              <span className="ps-tex-card-label">{opt.label}</span>
+            </button>
+          ))}
         </div>
       </div>
-      <div className="ps-field">
+
+      {/* Size — slider with live dimensions */}
+      <div className="ps-size-slider-row">
+        <div className="ps-size-slider-header">
+          <label className="ps-label" style={{ margin: 0 }}>Size</label>
+          {bbox && (
+            <div className="ps-size-slider-dims">
+              {wCm}<span> W</span> &times; {hCm}<span> H</span> &times; {dCm}<span> D</span> cm
+            </div>
+          )}
+        </div>
+        <input
+          type="range"
+          className="ps-size-slider"
+          min={sliderMin}
+          max={sliderMax}
+          step={1}
+          value={sliderValueCm}
+          onChange={handleSlider}
+        />
+      </div>
+
+      {/* Pivot */}
+      <div className="ps-field ps-field-inline">
         <label className="ps-label">Pivot</label>
         <div className="ps-btn-group">
           {(["bottom-center", "center", "bottom-front-center"] as PivotPreset[]).map((preset) => (

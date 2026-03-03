@@ -6,12 +6,12 @@ const FILTERS: { label: string; value: GalleryFilter }[] = [
   { label: "All", value: "all" },
   { label: "Ref missing", value: "ref" },
   { label: "Mesh missing", value: "mesh" },
-  { label: "Phy missing", value: "physics" },
+  { label: "Phy missing", value: "phy" },
 ];
 
 function highestValidStageStatus(item: SavedPropListItem) {
   const stages = lifecycleToStageStatuses(item.status);
-  if (stages.physics === "VALID") return "VALID" as const;
+  if (stages.phy === "VALID") return "VALID" as const;
   if (stages.pix === "VALID") return "VALID" as const;
   if (stages.mesh === "VALID") return "VALID" as const;
   if (stages.ref === "VALID") return "VALID" as const;
@@ -24,15 +24,16 @@ function matchesFilter(item: SavedPropListItem, filter: GalleryFilter): boolean 
   const stages = lifecycleToStageStatuses(item.status);
   if (filter === "ref") return stages.ref !== "VALID";
   if (filter === "mesh") return stages.mesh !== "VALID";
-  if (filter === "physics") return stages.physics !== "VALID";
+  if (filter === "phy") return stages.phy !== "VALID";
   return true;
 }
 
 interface Props {
   onSelectProp: (propId: string) => void;
+  onAddClick: () => void;
 }
 
-export function PropGallery({ onSelectProp }: Props) {
+export function PropGallery({ onSelectProp, onAddClick }: Props) {
   const state = useForgeState();
   const dispatch = useForgeDispatch();
 
@@ -114,11 +115,11 @@ export function PropGallery({ onSelectProp }: Props) {
           </div>
         )}
 
-        {/* "+" button — right end, opens batch pane */}
+        {/* "+" button — right end, opens add-props modal */}
         <button
-          className={`ps-gallery-thumb ps-gallery-add-btn ${state.batchMode ? "ps-gallery-thumb-active" : ""}`}
-          onClick={() => dispatch({ type: "SET_BATCH_MODE", on: !state.batchMode })}
-          title="Add new props (batch generate)"
+          className="ps-gallery-thumb ps-gallery-add-btn"
+          onClick={onAddClick}
+          title="Add new props"
         >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="12" y1="5" x2="12" y2="19" />

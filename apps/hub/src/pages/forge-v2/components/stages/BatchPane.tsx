@@ -38,6 +38,13 @@ export function BatchPane() {
           </div>
           <div className="ps-batch-pane-actions">
             <button
+              className="forge-btn forge-btn-primary"
+              onClick={() => void actions.createPropPlaceholders()}
+              disabled={!state.batchText.trim()}
+            >
+              Create Props
+            </button>
+            <button
               className="forge-btn"
               onClick={() => actions.addBatchDrafts()}
               disabled={!state.batchText.trim()}
@@ -45,7 +52,7 @@ export function BatchPane() {
               Add to Queue
             </button>
             <button
-              className="forge-btn forge-btn-primary"
+              className="forge-btn"
               onClick={() => {
                 if (state.batchText.trim()) actions.addBatchDrafts();
                 void actions.handleGenerateAllImages();

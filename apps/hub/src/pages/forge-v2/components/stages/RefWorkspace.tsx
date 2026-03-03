@@ -62,10 +62,10 @@ export function RefWorkspace() {
           onClick={handleRegen}
           disabled={generating}
         >
-          {generating ? "Generating..." : draft.conceptImage ? "Regen" : "Generate"}
+          {generating ? "Generating..." : draft.conceptImage ? "Reimagine" : "Imagine"}
         </button>
       </div>
-      {draft.conceptImage && (
+      {draft.conceptImage ? (
         <div className="ps-ref-image-viewer ps-viewport-labeled">
           <div className="ps-viewport-label">Reference</div>
           <img
@@ -73,6 +73,11 @@ export function RefWorkspace() {
             alt={draft.description}
             className="ps-ref-image-large"
           />
+        </div>
+      ) : (
+        <div className="ps-ref-image-viewer ps-viewport-labeled">
+          <div className="ps-viewport-label">Reference</div>
+          <div className="ps-ref-placeholder" />
         </div>
       )}
     </div>

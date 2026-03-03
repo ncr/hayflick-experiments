@@ -2,18 +2,9 @@ import { useForgeState } from "../state/forge-context";
 import { RefWorkspace } from "./stages/RefWorkspace";
 import { MeshWorkspace } from "./stages/MeshWorkspace";
 import { PhysicsWorkspace } from "./stages/PhysicsWorkspace";
-import { BatchPane } from "./stages/BatchPane";
 
 export function Workspace() {
-  const { activeStage, batchMode } = useForgeState();
-
-  if (batchMode) {
-    return (
-      <div className="ps-workspace">
-        <BatchPane />
-      </div>
-    );
-  }
+  const { activeStage } = useForgeState();
 
   return (
     <div className="ps-workspace">
@@ -30,7 +21,7 @@ export function Workspace() {
       {/* Physics viewport persists so collider thumbnails capture without tab visit */}
       <div
         className="ps-workspace-viewport-persistent"
-        style={{ display: activeStage === "physics" ? "flex" : "none" }}
+        style={{ display: activeStage === "phy" ? "flex" : "none" }}
       >
         <PhysicsWorkspace />
       </div>
