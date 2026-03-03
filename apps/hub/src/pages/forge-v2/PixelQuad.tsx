@@ -32,19 +32,10 @@ const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const DEFAULT_BASE_ORTHO_HEIGHT = 5.966213466261495;
 const CLEAR_COLOR = 0x1a1a2e;
 
-type DragState =
-  | {
-      pointerId: number;
-      mode: "pan";
-      angleKey: PixelAngle["key"];
-    }
-  | {
-      pointerId: number;
-      mode: "rotate";
-      angleKey: PixelAngle["key"];
-      lastClientX: number;
-      accumX: number;
-    };
+type DragState = {
+  pointerId: number;
+  angleKey: PixelAngle["key"];
+};
 
 function wrapTurns(value: number): number {
   const rounded = Math.round(value);
@@ -75,6 +66,8 @@ interface Props {
   className?: string;
   interactive?: boolean;
   viewportFramingScale?: number;
+  /** Where the camera target sits vertically on screen: 0.5 = centered (default), 1/3 = lower third. */
+  verticalBias?: number;
   paneIdPrefix?: string;
 }
 
@@ -96,6 +89,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
     className,
     interactive = true,
     viewportFramingScale = 1.22,
+    verticalBias,
     paneIdPrefix = ""
   }: Props,
   ref
@@ -140,36 +134,6 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
     for (const angle of ANGLES) {
       paneRefs.current[angle.key]?.setViewPose(panePoseForAngle(angle, base));
     }
-  };
-
-  const emitBaseState = (next: PixelViewportViewState): void => {
-    const normalized = normalizeBaseState(next);
-    const prev = baseViewStateRef.current;
-    const same =
-      Math.abs(prev.target[0] - normalized.target[0]) < 1e-6 &&
-      Math.abs(prev.target[2] - normalized.target[2]) < 1e-6 &&
-      prev.yawTurns === normalized.yawTurns &&
-      prev.zoom === normalized.zoom;
-    if (same) {
-      return;
-    }
-    baseViewStateRef.current = normalized;
-    syncPanesFromBase(normalized);
-    onBaseViewChangeRef.current?.(normalized);
-  };
-
-  const syncBaseFromPane = (angleKey: PixelAngle["key"]): void => {
-    const pane = paneRefs.current[angleKey];
-    const angle = angleByKey(angleKey);
-    if (!pane || !angle) {
-      return;
-    }
-    const pose = pane.getViewPose();
-    emitBaseState({
-      target: [pose.targetX, 0, pose.targetZ],
-      yawTurns: wrapTurns(pose.yawIndex - angle.offset),
-      zoom: Math.max(1, Math.round(pose.zoom))
-    });
   };
 
   const paneIdForAngle = (angleKey: PixelAngle["key"]): string => `${paneIdPrefix}${angleKey}`;
@@ -227,6 +191,13 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
   );
 
   useEffect(() => {
+    const prev = baseViewStateRef.current;
+    const same =
+      Math.abs(prev.target[0] - normalizedBase.target[0]) < 1e-6 &&
+      Math.abs(prev.target[2] - normalizedBase.target[2]) < 1e-6 &&
+      prev.yawTurns === normalizedBase.yawTurns &&
+      prev.zoom === normalizedBase.zoom;
+    if (same) return;
     baseViewStateRef.current = normalizedBase;
     syncPanesFromBase(normalizedBase);
   }, [normalizedBase]);
@@ -311,6 +282,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         zoomBurstIdleMs: 200,
         outputOverscanLowPixels: 2,
         clearColor: CLEAR_COLOR,
+        verticalBias,
         maxBackingWidth: stage.maxBackingWidth,
         maxBackingHeight: stage.maxBackingHeight
       });
@@ -337,7 +309,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
     const pointerEventTarget: HTMLElement | null = interactive ? pointerTarget : null;
 
     const onPointerDown = (event: PointerEvent): void => {
-      if (event.button !== 0 && event.button !== 2) {
+      if (event.button !== 0) {
         return;
       }
       const hit = stage.hitTestPane(event.clientX, event.clientY);
@@ -346,22 +318,13 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         return;
       }
 
-      if (event.button === 2) {
-        dragStateRef.current = {
-          pointerId: event.pointerId,
-          mode: "rotate",
-          angleKey: angle.key,
-          lastClientX: event.clientX,
-          accumX: 0
-        };
-      } else {
-        paneRefs.current[angle.key]?.beginPanDrag(hit.localX, hit.localY);
-        dragStateRef.current = {
-          pointerId: event.pointerId,
-          mode: "pan",
-          angleKey: angle.key
-        };
+      for (const a of ANGLES) {
+        paneRefs.current[a.key]?.beginPanDrag(hit.localX, hit.localY);
       }
+      dragStateRef.current = {
+        pointerId: event.pointerId,
+        angleKey: angle.key
+      };
 
       try {
         pointerEventTarget?.setPointerCapture(event.pointerId);
@@ -381,29 +344,16 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         return;
       }
 
-      if (drag.mode === "rotate") {
-        const dx = event.clientX - drag.lastClientX;
-        drag.lastClientX = event.clientX;
-        drag.accumX += dx;
-        const threshold = 36;
-        while (Math.abs(drag.accumX) >= threshold) {
-          const direction = drag.accumX > 0 ? 1 : -1;
-          drag.accumX -= threshold * direction;
-          const base = baseViewStateRef.current;
-          emitBaseState({
-            ...base,
-            yawTurns: wrapTurns(base.yawTurns + direction)
-          });
-        }
-        event.preventDefault();
-        return;
-      }
-
       const rect = cell.getBoundingClientRect();
       const localX = event.clientX - rect.left;
       const localY = event.clientY - rect.top;
-      if (paneRefs.current[drag.angleKey]?.updatePanDrag(localX, localY)) {
-        syncBaseFromPane(drag.angleKey);
+      let anyChanged = false;
+      for (const a of ANGLES) {
+        if (paneRefs.current[a.key]?.updatePanDrag(localX, localY)) {
+          anyChanged = true;
+        }
+      }
+      if (anyChanged) {
         event.preventDefault();
       }
     };
@@ -414,9 +364,23 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         return;
       }
       dragStateRef.current = null;
+      for (const a of ANGLES) {
+        paneRefs.current[a.key]?.endPanDrag();
+      }
 
-      if (drag.mode === "pan") {
-        paneRefs.current[drag.angleKey]?.endPanDrag();
+      // Notify parent from the initiating pane (for 3D viewport sync).
+      // baseViewStateRef is updated so the prop round-trip is a no-op.
+      const pane = paneRefs.current[drag.angleKey];
+      const dragAngle = angleByKey(drag.angleKey);
+      if (pane && dragAngle) {
+        const pose = pane.getViewPose();
+        const next = normalizeBaseState({
+          target: [pose.targetX, 0, pose.targetZ],
+          yawTurns: wrapTurns(pose.yawIndex - dragAngle.offset),
+          zoom: Math.max(1, Math.round(pose.zoom))
+        });
+        baseViewStateRef.current = next;
+        onBaseViewChangeRef.current?.(next);
       }
 
       try {
@@ -425,41 +389,6 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         }
       } catch {
         // no-op
-      }
-      event.preventDefault();
-    };
-
-    const onWheel = (event: WheelEvent): void => {
-      const hit = stage.hitTestPane(event.clientX, event.clientY);
-      const angle = hit ? angleForPaneId(hit.paneId) : null;
-      if (!hit || !angle) {
-        return;
-      }
-
-      const base = baseViewStateRef.current;
-      if (event.shiftKey) {
-        const direction = event.deltaY > 0 ? 1 : -1;
-        emitBaseState({
-          ...base,
-          yawTurns: wrapTurns(base.yawTurns + direction)
-        });
-        event.preventDefault();
-        return;
-      }
-
-      if (event.deltaY === 0) {
-        return;
-      }
-
-      const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
-      const changed = paneRefs.current[angle.key]?.stepCameraZoomAtLocalCss(
-        direction,
-        hit.localX,
-        hit.localY,
-        performance.now()
-      );
-      if (changed) {
-        syncBaseFromPane(angle.key);
       }
       event.preventDefault();
     };
@@ -473,7 +402,6 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
       pointerEventTarget.addEventListener("pointermove", onPointerMove);
       pointerEventTarget.addEventListener("pointerup", endPointer);
       pointerEventTarget.addEventListener("pointercancel", endPointer);
-      pointerEventTarget.addEventListener("wheel", onWheel, { passive: false });
       pointerEventTarget.addEventListener("contextmenu", onContextMenu);
     }
 
@@ -487,7 +415,6 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         pointerEventTarget.removeEventListener("pointermove", onPointerMove);
         pointerEventTarget.removeEventListener("pointerup", endPointer);
         pointerEventTarget.removeEventListener("pointercancel", endPointer);
-        pointerEventTarget.removeEventListener("wheel", onWheel);
         pointerEventTarget.removeEventListener("contextmenu", onContextMenu);
       }
 

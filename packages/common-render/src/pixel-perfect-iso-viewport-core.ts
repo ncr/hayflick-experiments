@@ -585,11 +585,12 @@ export class PixelPerfectIsoViewportCore {
   private updateCameraProjection(): void {
     const state = this.controller.getState();
     const aspect = state.lowRenderWidth / state.lowRenderHeight;
-    const halfHeight = state.orthoHeight * 0.5;
-    this.camera.left = -halfHeight * aspect;
-    this.camera.right = halfHeight * aspect;
-    this.camera.top = halfHeight;
-    this.camera.bottom = -halfHeight;
+    const h = state.orthoHeight;
+    const bias = this.config.verticalBias ?? 0.5;
+    this.camera.left = -h * 0.5 * aspect;
+    this.camera.right = h * 0.5 * aspect;
+    this.camera.top = h * (1 - bias);
+    this.camera.bottom = -h * bias;
     this.camera.updateProjectionMatrix();
   }
 

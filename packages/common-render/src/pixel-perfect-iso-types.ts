@@ -23,6 +23,8 @@ export type PixelPerfectIsoViewConfig = {
   outputOverscanLowPixels: number;
   clearColor?: number;
   clearAlpha?: number;
+  /** Where the camera target sits vertically on screen: 0.5 = centered (default), 1/3 = lower third. */
+  verticalBias?: number;
   mountBackground?: string;
   canvasBackground?: string;
 };

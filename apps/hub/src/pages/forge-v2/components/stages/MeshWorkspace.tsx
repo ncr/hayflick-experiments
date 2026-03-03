@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForgeState, useForgeDispatch, useForgeRefs } from "../../state/forge-context";
-import { useViewportSync } from "../../hooks/useViewportSync";
 import { usePipelineActions } from "../../hooks/usePipelineActions";
 import { OutdatedBanner } from "../shared/OutdatedBanner";
 import {
@@ -20,7 +19,6 @@ export function MeshWorkspace() {
   const state = useForgeState();
   const dispatch = useForgeDispatch();
   const refs = useForgeRefs();
-  const viewportSync = useViewportSync();
   const actions = usePipelineActions();
 
   const draft = state.selectedDraftId ? state.drafts.get(state.selectedDraftId) ?? null : null;
@@ -31,17 +29,44 @@ export function MeshWorkspace() {
     zoom: 1,
   });
 
-  // Rebuild preview when draft changes
+  // Keep a ref to the latest rebuild so the effect always calls the
+  // current closure (which captures the up-to-date state.drafts).
+  // We intentionally exclude `actions` from the effect deps to avoid
+  // an infinite loop (the rebuild dispatches UPDATE_DRAFT which
+  // recreates the callback), so the ref bridges the gap.
+  const rebuildRef = useRef(actions.rebuildSelectedDraftPreview);
+  rebuildRef.current = actions.rebuildSelectedDraftPreview;
+
+  // Rebuild preview when draft changes.
+  // The rebuild function is async (first load awaits GLB parsing) but
+  // on the cached path it executes synchronously and sets
+  // refs.generationPixelBaseModel.current before returning.  We read
+  // that ref immediately so the state update is part of the same React
+  // batch — this avoids a microtask-timing edge-case where the
+  // .then() fires after React has already committed.
   useEffect(() => {
     if (!draft?.rawGlb) {
       setPixelModel(null);
       return;
     }
-    void actions.rebuildSelectedDraftPreview().then((result) => {
-      if (result?.pixelModel) {
-        setPixelModel(result.pixelModel);
+    let active = true;
+    const promise = rebuildRef.current();
+
+    // Synchronous path: the ref was already set during the call above.
+    const immediate = refs.generationPixelBaseModel.current;
+    if (immediate) {
+      setPixelModel(immediate);
+    }
+
+    // Async path (first load): wait for the Promise, then update.
+    void promise.then(() => {
+      if (!active) return;
+      const model = refs.generationPixelBaseModel.current;
+      if (model && model !== immediate) {
+        setPixelModel(model);
       }
     });
+    return () => { active = false; };
   }, [
     draft?.tempId,
     draft?.rawGlb,
@@ -52,15 +77,6 @@ export function MeshWorkspace() {
     draft?.meshRevision,
   ]);
 
-  // Sync pixel camera from draft
-  useEffect(() => {
-    if (!draft) return;
-    setPixelBaseViewState({
-      target: draft.pixelCamera.target,
-      yawTurns: draft.pixelCamera.yawTurns,
-      zoom: draft.pixelCamera.zoomLevel,
-    });
-  }, [draft?.tempId]);
 
   // Set default visibility
   useEffect(() => {
@@ -114,10 +130,9 @@ export function MeshWorkspace() {
         </div>
       )}
 
-      {/* Main area: viewport left, options right */}
-      <div className="ps-mesh-split">
-        {/* Left: 3D viewport */}
-        <ForgeScissorViewportStage className="ps-mesh-viewport-col">
+      {/* Main area: viewport left, pixel quad right */}
+      <div className="ps-viewport-pixel-split">
+        <ForgeScissorViewportStage>
           <div className="ps-viewport-labeled">
             <div className="ps-viewport-label">Mesh</div>
             <ForgeScissorViewportPane
@@ -125,52 +140,46 @@ export function MeshWorkspace() {
               className="ps-viewport-host ps-viewport-host-interactive"
               ref={refs.generationViewport}
               interactive
-              onViewChange={viewportSync.handleMeshViewChange}
+              onViewChange={undefined}
             />
           </div>
         </ForgeScissorViewportStage>
 
-        {/* Right: options panel */}
-        <div className="ps-mesh-options-col">
-          {/* Pixel quad */}
-          <ForgeScissorViewportStage className="ps-mesh-pixel-stage">
-            <PixelQuad
-              model={pixelModel}
-              baseViewState={pixelBaseViewState}
-              onBaseViewStateChange={(newState) => {
-                setPixelBaseViewState(newState);
-                viewportSync.handlePixelBaseViewChange(newState);
-              }}
-              className="ps-pixel-strip"
-              interactive={false}
-              viewportFramingScale={1.28}
-            />
-          </ForgeScissorViewportStage>
+        <ForgeScissorViewportStage>
+          <PixelQuad
+            model={pixelModel}
+            baseViewState={pixelBaseViewState}
+            onBaseViewStateChange={setPixelBaseViewState}
+            className="ps-pixel-strip"
+            interactive
+            viewportFramingScale={1.0}
+            verticalBias={1 / 3}
+          />
+        </ForgeScissorViewportStage>
+      </div>
 
-          {/* Mesh settings — only when mesh exists */}
-          {hasMesh && draft && (
-            <MeshSettings draft={draft} dispatch={dispatch} />
-          )}
+      {/* Mesh settings — only when mesh exists */}
+      {hasMesh && draft && (
+        <MeshSettings draft={draft} dispatch={dispatch} />
+      )}
 
-          {/* Approve generation */}
-          {hasMesh && draft && (
-            <div className="ps-mesh-approve">
-              <button
-                className="forge-btn forge-btn-primary"
-                onClick={() => void actions.approveSelectedDraftGeneration()}
-                disabled={!draft.rawGlb || !draft.conceptImage}
-              >
-                {draft.generationApprovedAt ? "Re-Approve Generation" : "Approve Generation"}
-              </button>
-              {draft.generationApprovedAt && (
-                <span className="ps-text-success">
-                  Approved {new Date(draft.generationApprovedAt).toLocaleString()}
-                </span>
-              )}
-            </div>
+      {/* Approve generation */}
+      {hasMesh && draft && (
+        <div className="ps-mesh-approve">
+          <button
+            className="forge-btn forge-btn-primary"
+            onClick={() => void actions.approveSelectedDraftGeneration()}
+            disabled={!draft.rawGlb || !draft.conceptImage}
+          >
+            {draft.generationApprovedAt ? "Re-Approve Generation" : "Approve Generation"}
+          </button>
+          {draft.generationApprovedAt && (
+            <span className="ps-text-success">
+              Approved {new Date(draft.generationApprovedAt).toLocaleString()}
+            </span>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }

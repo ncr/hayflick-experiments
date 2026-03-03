@@ -349,8 +349,7 @@ export function usePhysicsSimulation(options: {
 
         const seededSimViewState =
           refs.physicsMeshViewport.current?.getViewState() ??
-          refs.physicsViewState.current ??
-          refs.physicsSimMeshViewState.current;
+          refs.physicsViewState.current;
 
         for (const scenario of PHYSICS_SCENARIOS) {
           const simVisual = createScenarioVisuals(
@@ -359,7 +358,6 @@ export function usePhysicsSimulation(options: {
           );
           refs.physicsSimDynamicMeshes.current[scenario] = simVisual.meshDynamic;
 
-          refs.physicsSuppressSimViewSync.current = true;
           refs.physicsSimMeshViewports.current[scenario]?.setModel(simVisual.meshRoot);
           // Override fitCameraToObject (which fits the 14-unit floor) with
           // a prop-centric framing that keeps the action area in view.
@@ -372,7 +370,6 @@ export function usePhysicsSimulation(options: {
               pitch: seededSimViewState?.pitch ?? fittedState.pitch,
             });
           }
-          refs.physicsSuppressSimViewSync.current = false;
 
           setSimPixelModels((prev) => ({ ...prev, [scenario]: simVisual.pixelRoot }));
 

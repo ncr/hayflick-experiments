@@ -138,9 +138,11 @@ export function PhysicsWorkspace() {
         viewport.setColliderPreviewObject(null);
         continue;
       }
-      // Show the actual mesh with the collider wireframe overlaid
+      // Load the mesh (needed for bounding-box framing) but hide it —
+      // the collider pane should only show the collider wireframe.
       refs.physicsSuppressAssetViewSync.current = true;
       viewport.setModel(deepCloneWithMaterials(sourceModel));
+      viewport.setModelVisible(false);
       viewport.setColliderPreviewObject(createColliderHelper(entry.collider));
       const viewState = refs.physicsViewState.current;
       if (viewState) viewport.setViewState(viewState);
@@ -175,34 +177,23 @@ export function PhysicsWorkspace() {
   const handlePhysicsAssetViewChange = useCallback((viewState: Viewport3dViewState) => {
     if (refs.physicsSuppressAssetViewSync.current) return;
     refs.physicsViewState.current = viewState;
-    // Do NOT call setViewState on the source viewport — it already has this state
-    // and the spherical serialization round-trip causes precision loss / jitter.
+    // Sync mesh ↔ collider views (they share the same scene framing).
     for (const viewport of Object.values(refs.physicsColliderPresetViewports.current)) {
       viewport?.setViewState(viewState);
     }
-    // Sync only yaw/pitch to sim viewports — they have different scenes
-    // (floor + environment) so distance and target must stay independent.
-    refs.physicsSuppressSimViewSync.current = true;
-    for (const scenario of PHYSICS_SCENARIOS) {
-      const simVp = refs.physicsSimMeshViewports.current[scenario];
-      const current = simVp?.getViewState();
-      if (simVp && current) {
-        simVp.setViewState({
-          ...current,
-          yaw: viewState.yaw,
-          pitch: viewState.pitch,
-        });
-      }
-    }
-    refs.physicsSuppressSimViewSync.current = false;
+    // Simulation views are independent — no sync from asset views.
   }, [refs]);
 
-  const handlePhysicsSimMeshViewChange = useCallback((viewState: Viewport3dViewState) => {
-    if (refs.physicsSuppressSimViewSync.current) return;
-    refs.physicsSimMeshViewState.current = viewState;
-    for (const scenario of PHYSICS_SCENARIOS) {
-      refs.physicsSimMeshViewports.current[scenario]?.setViewState(viewState);
+  const handleColliderViewChange = useCallback((viewState: Viewport3dViewState) => {
+    if (refs.physicsSuppressAssetViewSync.current) return;
+    refs.physicsViewState.current = viewState;
+    // Sync to source mesh viewport
+    refs.physicsMeshViewport.current?.setViewState(viewState);
+    // Sync to all collider viewports
+    for (const viewport of Object.values(refs.physicsColliderPresetViewports.current)) {
+      viewport?.setViewState(viewState);
     }
+    // Simulation views are independent — no sync from collider views.
   }, [refs]);
 
   const meta = state.physicsMeta;
@@ -351,16 +342,18 @@ export function PhysicsWorkspace() {
           </div>
 
           {state.physicsColliderResults.map((entry) => (
-            <button
+            <div
               key={`collider-pane-${entry.presetId}`}
-              type="button"
               className={`ps-viewport-card ps-collider-preview-btn ${
                 state.physicsSelectedColliderPresetId === entry.presetId ? "ps-viewport-card-active" : ""
               }`}
-              onClick={() => dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: entry.presetId })}
               title={`Use ${entry.presetName} collider for physics sim`}
             >
-              <div className="ps-viewport-card-header">
+              <div
+                className="ps-viewport-card-header"
+                style={{ cursor: "pointer" }}
+                onClick={() => dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: entry.presetId })}
+              >
                 <strong>{entry.presetName}</strong>
                 <span className="ps-text-muted">
                   {entry.generation.hullCount} hulls
@@ -371,13 +364,15 @@ export function PhysicsWorkspace() {
                 <div className="ps-viewport-label">Collider</div>
                 <ForgeScissorViewportPane
                   paneId={`collider-${entry.presetId}`}
-                  className="ps-viewport-host ps-viewport-host-sm"
+                  className="ps-viewport-host ps-viewport-host-sm ps-viewport-host-interactive"
                   ref={(handle) => {
                     refs.physicsColliderPresetViewports.current[entry.presetId] = handle;
                   }}
+                  interactive
+                  onViewChange={handleColliderViewChange}
                 />
               </div>
-            </button>
+            </div>
           ))}
 
           {state.physicsSelectedPropId && state.physicsColliderResults.length <= 0 && (
@@ -397,17 +392,17 @@ export function PhysicsWorkspace() {
                 <strong>{PHYSICS_SCENARIO_LABELS[scenario]}</strong>
                 <span className="ps-text-muted">{state.physicsSimStatusByScenario[scenario]}</span>
               </div>
-              <div className="ps-sim-row-grid">
+              <div className="ps-viewport-pixel-split">
                 <div className="ps-viewport-labeled">
                   <div className="ps-viewport-label">3D</div>
                   <ForgeScissorViewportPane
                     paneId={`sim-${scenario}`}
-                    className="ps-viewport-host ps-viewport-host-sm ps-viewport-host-interactive"
+                    className="ps-viewport-host ps-viewport-host-interactive"
                     ref={(handle) => {
                       refs.physicsSimMeshViewports.current[scenario] = handle;
                     }}
                     interactive
-                    onViewChange={handlePhysicsSimMeshViewChange}
+                    onViewChange={undefined}
                   />
                 </div>
                 <PixelQuad
@@ -420,8 +415,9 @@ export function PhysicsWorkspace() {
                     setSimPixelBaseViewStates((prev) => ({ ...prev, [scenario]: newState }));
                   }}
                   className="ps-pixel-strip"
-                  interactive={false}
-                  viewportFramingScale={1.28}
+                  interactive
+                  viewportFramingScale={1.0}
+                  verticalBias={1 / 3}
                   paneIdPrefix={`physics-pixel-${scenario}-`}
                 />
               </div>

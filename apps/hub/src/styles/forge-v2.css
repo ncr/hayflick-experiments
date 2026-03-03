@@ -914,6 +914,29 @@
 }
 
 /* ---------------------------------------------------------------------------
+   Viewport + pixel-quad split (shared by mesh & physics workspaces)
+   --------------------------------------------------------------------------- */
+
+.ps-viewport-pixel-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: end;
+  min-height: 0;
+}
+
+.ps-viewport-pixel-split .ps-viewport-host {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
+  min-height: 0;
+}
+
+.ps-viewport-pixel-split .ps-pixel-strip {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* ---------------------------------------------------------------------------
    Mesh workspace
    --------------------------------------------------------------------------- */
 
@@ -932,36 +955,8 @@
   flex-shrink: 0;
 }
 
-.ps-mesh-split {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+.ps-mesh-workspace > .ps-viewport-pixel-split {
   flex: 1;
-  min-height: 0;
-}
-
-.ps-mesh-viewport-col {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.ps-mesh-viewport-col .ps-viewport-host {
-  flex: 1;
-  height: auto;
-  min-height: 300px;
-}
-
-.ps-mesh-options-col {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.ps-mesh-pixel-stage {
-  flex-shrink: 0;
 }
 
 .ps-mesh-settings-panel {
@@ -1010,14 +1005,6 @@
   gap: 8px;
 }
 
-.ps-sim-row-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(200px, 1fr));
-  gap: 8px;
-  padding: 8px;
-  align-items: start;
-  overflow-x: auto;
-}
 
 /* ---------------------------------------------------------------------------
    REF workspace
@@ -1288,15 +1275,6 @@
   background: transparent;
 }
 
-/* Sim row grid pixel strips */
-.ps-sim-row-grid .ps-pixel-strip {
-  grid-column: span 4;
-}
-
-.ps-sim-row-grid .ps-viewport-host {
-  height: 220px;
-  min-height: 220px;
-}
 
 /* ---------------------------------------------------------------------------
    Responsive
@@ -1332,10 +1310,6 @@
   .ps-stage-tab-thumb {
     width: 28px;
     height: 28px;
-  }
-
-  .ps-sim-row-grid {
-    grid-template-columns: repeat(5, minmax(160px, 1fr));
   }
 
   .ps-viewport-row-scroll {
