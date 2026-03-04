@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { computeBBox, type BBox } from "../../forge/processing/dimensions";
 import { resolveForgeMass } from "../../forge/processing/physics";
+import { deepCloneWithMaterials } from "../model/MeshProcessor";
 import type { ColliderParams } from "../../forge/processing/colliders";
 import type { PropPhysicsSettings } from "../../forge/types";
 import type { ForgeV2ColliderResultEntry } from "../types";
@@ -61,20 +62,6 @@ type SimVisualSetup = {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
-}
-
-function deepCloneWithMaterials(group: THREE.Group): THREE.Group {
-  const clone = group.clone(true);
-  clone.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
-      if (Array.isArray(child.material)) {
-        child.material = child.material.map((m: THREE.Material) => m.clone());
-      } else {
-        child.material = child.material.clone();
-      }
-    }
-  });
-  return clone;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +278,7 @@ export function usePhysicsSimulation(options: {
   physicsColliderResults: ForgeV2ColliderResultEntry[];
   physicsSettings: PropPhysicsSettings;
   physicsBBox: BBox | null;
+  physicsModelRevision: number;
   setSimPixelModels: React.Dispatch<
     React.SetStateAction<Record<PhysicsPreviewScenario, THREE.Group | null>>
   >;
@@ -303,9 +291,16 @@ export function usePhysicsSimulation(options: {
     physicsColliderResults,
     physicsSettings,
     physicsBBox,
+    physicsModelRevision,
     setSimPixelModels,
     setSimStatus,
   } = options;
+
+  // Use a ref for physicsBBox so the simulation doesn't restart when only
+  // the model changes (SET_PHYSICS_BBOX). The sim only needs the bbox for
+  // mass calculation which reads the latest value via the ref.
+  const physicsBBoxRef = useRef(physicsBBox);
+  physicsBBoxRef.current = physicsBBox;
 
   useEffect(() => {
     const sourceModel = refs.physicsSimSourceModel.current;
@@ -335,7 +330,7 @@ export function usePhysicsSimulation(options: {
         if (disposed) return;
 
         const fallbackBounds = computeBBox(sourceModel);
-        const mass = resolveForgeMass(physicsSettings, physicsBBox);
+        const mass = resolveForgeMass(physicsSettings, physicsBBoxRef.current);
         const friction = clamp(physicsSettings.friction, 0, 2);
         const restitution = clamp(physicsSettings.restitution, 0, 1);
         // Seed sim cameras: on first setup clone the mesh viewport's full
@@ -592,10 +587,13 @@ export function usePhysicsSimulation(options: {
         }
       }
     };
+    // physicsBBox intentionally omitted — read via ref so model changes don't
+    // restart the simulation. physicsModelRevision is included so the sim
+    // restarts when mesh settings change (debounced from the controller).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    physicsBBox,
     physicsColliderResults,
+    physicsModelRevision,
     physicsSelectedPropId,
     physicsSelectedColliderPresetId,
     physicsSettings,

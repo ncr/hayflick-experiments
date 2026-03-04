@@ -19,6 +19,15 @@ import {
   type ForgeAction,
   type ForgeStoreState
 } from "./forge-store";
+import { SharedModelCache } from "../model/SharedModelCache";
+import { AutoSaver, type SaveStatus } from "../model/AutoSaver";
+import { ForgeController } from "../model/ForgeController";
+import {
+  exportObjectToGlb,
+  readForgeV2PropMeta,
+  writeForgeV2PropMeta,
+  writePropProcessedModelGlb,
+} from "./persistence";
 
 // ---------------------------------------------------------------------------
 // Runtime refs — non-serializable objects that live outside the reducer
@@ -84,6 +93,12 @@ export interface ForgeRuntimeRefs {
   // Stage tab thumbnail viewports (live 3D panes in the sidebar tabs)
   meshTabThumb: React.RefObject<ForgeScissorViewportHandle | null>;
   physicsTabThumb: React.RefObject<ForgeScissorViewportHandle | null>;
+
+  // Shared model cache (in-memory, cross-stage)
+  sharedModelCache: React.MutableRefObject<SharedModelCache>;
+
+  // Auto-saver (debounced disk persistence)
+  autoSaver: React.MutableRefObject<AutoSaver>;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +108,7 @@ export interface ForgeRuntimeRefs {
 const ForgeStateContext = createContext<ForgeStoreState>(null!);
 const ForgeDispatchContext = createContext<Dispatch<ForgeAction>>(null!);
 const ForgeRefsContext = createContext<ForgeRuntimeRefs>(null!);
+const ForgeControllerContext = createContext<ForgeController>(null!);
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -100,6 +116,10 @@ const ForgeRefsContext = createContext<ForgeRuntimeRefs>(null!);
 
 export function ForgeProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(forgeReducer, undefined, createInitialState);
+
+  // Stable dispatch ref so AutoSaver callback doesn't cause re-renders
+  const dispatchRef = useRef(dispatch);
+  dispatchRef.current = dispatch;
 
   // Individual useRef() calls are stable across renders, but the wrapper
   // object literal would be a new identity each render. Effects that list
@@ -143,9 +163,56 @@ export function ForgeProvider({ children }: { children: ReactNode }) {
     physicsSimMeshViewState: useRef(null),
     meshTabThumb: useRef<ForgeScissorViewportHandle | null>(null),
     physicsTabThumb: useRef<ForgeScissorViewportHandle | null>(null),
+    sharedModelCache: useRef(new SharedModelCache()),
+    autoSaver: useRef(null as unknown as AutoSaver), // initialized below
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const refs = useRef(refsInner).current;
+
+  // Initialize AutoSaver with real save callback (after refs are stable)
+  if (!refs.autoSaver.current) {
+    refs.autoSaver.current = new AutoSaver(
+      async (propId: string) => {
+        const model = refs.sharedModelCache.current.get(propId, "processed");
+        if (!model) return;
+        const glb = await exportObjectToGlb(model);
+        await writePropProcessedModelGlb(propId, glb);
+
+        // Update meta with processing state from the current draft
+        const meta = await readForgeV2PropMeta(propId);
+        if (meta) {
+          meta.lifecycle.status = "generation-approved";
+          meta.lifecycle.generationApprovedAt = new Date().toISOString();
+          await writeForgeV2PropMeta(meta);
+        }
+      },
+      (status: SaveStatus) => { dispatchRef.current({ type: "SET_SAVE_STATUS", status }); },
+      10_000,
+    );
+  }
+
+  // Create ForgeController (once, stable across renders)
+  const controllerRef = useRef<ForgeController | null>(null);
+  if (!controllerRef.current) {
+    controllerRef.current = new ForgeController(
+      () => dispatchRef.current,
+      () => refs,
+      refs.sharedModelCache.current,
+      refs.autoSaver.current,
+    );
+  }
+  const controller = controllerRef.current;
+
+  // Keep controller in sync with latest state
+  controller.syncState(state);
+
+  // Flush AutoSaver and dispose controller on unmount
+  useEffect(() => {
+    return () => {
+      void refs.autoSaver.current.dispose();
+      controller.dispose();
+    };
+  }, [refs, controller]);
 
   // Expose dispatch and refs for e2e tests
   useEffect(() => {
@@ -160,7 +227,9 @@ export function ForgeProvider({ children }: { children: ReactNode }) {
     <ForgeStateContext.Provider value={state}>
       <ForgeDispatchContext.Provider value={dispatch}>
         <ForgeRefsContext.Provider value={refs}>
-          {children}
+          <ForgeControllerContext.Provider value={controller}>
+            {children}
+          </ForgeControllerContext.Provider>
         </ForgeRefsContext.Provider>
       </ForgeDispatchContext.Provider>
     </ForgeStateContext.Provider>
@@ -181,4 +250,8 @@ export function useForgeDispatch(): Dispatch<ForgeAction> {
 
 export function useForgeRefs(): ForgeRuntimeRefs {
   return useContext(ForgeRefsContext);
+}
+
+export function useForgeController(): ForgeController {
+  return useContext(ForgeControllerContext);
 }

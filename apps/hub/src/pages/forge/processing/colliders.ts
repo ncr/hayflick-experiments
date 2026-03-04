@@ -299,6 +299,78 @@ function buildCompoundConvexHullsHelper(collider: ColliderParams): THREE.Object3
   return group;
 }
 
+/**
+ * Uniformly scale all positions and extents in a ColliderParams by `ratio`.
+ * Used to keep colliders in sync when the mesh scale changes without
+ * running a full VHACD regeneration.
+ */
+export function scaleColliderParams(collider: ColliderParams, ratio: number): ColliderParams {
+  const sp = (v: [number, number, number]): [number, number, number] => [
+    v[0] * ratio, v[1] * ratio, v[2] * ratio,
+  ];
+
+  const scaledPosition = sp(collider.position);
+
+  if (collider.type === "compound-convex-hulls") {
+    const parts = (Array.isArray(collider.params.parts) ? collider.params.parts : []) as {
+      position: [number, number, number];
+      points: [number, number, number][];
+    }[];
+    return {
+      ...collider,
+      position: scaledPosition,
+      params: {
+        ...collider.params,
+        parts: parts.map((part) => ({
+          ...part,
+          position: sp(part.position),
+          points: (part.points ?? []).map(sp),
+        })),
+      },
+    };
+  }
+
+  if (collider.type === "box") {
+    return {
+      ...collider,
+      position: scaledPosition,
+      params: {
+        ...collider.params,
+        halfWidth: asNumber(collider.params.halfWidth) * ratio,
+        halfHeight: asNumber(collider.params.halfHeight) * ratio,
+        halfDepth: asNumber(collider.params.halfDepth) * ratio,
+      },
+    };
+  }
+
+  if (collider.type === "compound-boxes") {
+    const parts = (Array.isArray(collider.params.parts) ? collider.params.parts : []) as CompoundBoxPart[];
+    return {
+      ...collider,
+      position: scaledPosition,
+      params: {
+        ...collider.params,
+        parts: parts.map((part) => ({
+          ...part,
+          position: sp(part.position),
+          halfExtents: sp(part.halfExtents),
+        })),
+      },
+    };
+  }
+
+  // sphere, cylinder, capsule, pill, convex-hull — scale radius/height/extents
+  return {
+    ...collider,
+    position: scaledPosition,
+    params: Object.fromEntries(
+      Object.entries(collider.params).map(([k, v]) =>
+        typeof v === "number" ? [k, v * ratio] : [k, v]
+      )
+    ),
+  };
+}
+
 export function createColliderHelper(collider: ColliderParams): THREE.Object3D {
   const material = new THREE.MeshBasicMaterial({
     color: 0x44aaff,

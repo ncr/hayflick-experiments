@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import type { Object3D } from "three";
 import type { StyleGuide } from "../../forge/StyleGuidePanel";
 import * as fsApi from "../api/fs";
@@ -159,14 +160,57 @@ export async function writePhysicsKindPresetFile(
 export async function exportObjectToGlb(object: Object3D | Object3D[]): Promise<ArrayBuffer> {
   const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
   const exporter = new GLTFExporter();
+
+  // GLTFExporter drops the root object's transform (glTF scenes can't have
+  // transforms). Bake world transforms into geometry so the exported GLB
+  // contains correct final-scale positions.
+  const items = Array.isArray(object) ? object : [object];
+  const baked: Object3D[] = items.map((item) => bakeWorldTransforms(item));
+  const exportTarget = baked.length === 1 ? baked[0] : baked;
+
   return new Promise<ArrayBuffer>((resolve, reject) => {
     exporter.parse(
-      object,
+      exportTarget,
       (result) => resolve(result as ArrayBuffer),
       reject,
       { binary: true }
     );
   });
+}
+
+/**
+ * Clone an object tree and bake all world transforms into the geometry
+ * positions so the exported result has identity transforms everywhere.
+ * Uses a shallow geometry clone (copies buffer data) to avoid mutating
+ * the source.
+ */
+function bakeWorldTransforms(root: Object3D): Object3D {
+  const clone = root.clone(true);
+  clone.updateMatrixWorld(true);
+
+  clone.traverse((node) => {
+    if (
+      (node instanceof THREE.Mesh ||
+       node instanceof THREE.Line ||
+       node instanceof THREE.LineSegments) &&
+      node.geometry
+    ) {
+      const geo = node.geometry.clone();
+      geo.applyMatrix4(node.matrixWorld);
+      node.geometry = geo;
+    }
+  });
+
+  // Reset all node transforms to identity
+  clone.traverse((node) => {
+    node.position.set(0, 0, 0);
+    node.rotation.set(0, 0, 0);
+    node.scale.set(1, 1, 1);
+    node.updateMatrix();
+  });
+  clone.updateMatrixWorld(true);
+
+  return clone;
 }
 
 export async function ensureSeedPresetFiles(): Promise<void> {

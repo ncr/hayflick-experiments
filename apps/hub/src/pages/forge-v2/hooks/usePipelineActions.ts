@@ -1,20 +1,10 @@
 import { useCallback } from "react";
-import * as THREE from "three";
 import { useForgeState, useForgeDispatch, useForgeRefs } from "../state/forge-context";
 import { generateImage } from "../../forge/api/openai";
 import { generateModel } from "../../forge/api/tripo";
-import { countTotalFaces } from "../../forge/processing/simplify";
 import {
-  applyPivotOffset,
-  applyScale,
-  computeBBox,
-  computePivotOffset,
-  normalizeTransforms,
-  type BBox,
   type PivotPreset,
-  type ScaleMode,
 } from "../../forge/processing/dimensions";
-import { downsampleMeshTextures } from "../../forge/processing/textures";
 import {
   buildColliderExportSceneFromParams,
   buildVhacdColliderForObject,
@@ -22,7 +12,6 @@ import {
 import { createColliderHelper } from "../../forge/processing/colliders";
 import {
   normalizeForgePhysicsSettings,
-  resolveForgeMass,
 } from "../../forge/processing/physics";
 import {
   buildComposedPrompt,
@@ -32,7 +21,6 @@ import {
   readColliderPresetFile,
   readForgeV2PropMeta,
   readPhysicsKindPresetFile,
-  readPropProcessedModelGlb,
   readPropRawConceptImage,
   readPropRawGlb,
   writeForgeV2PropMeta,
@@ -45,92 +33,21 @@ import {
   makePropBaseDir,
 } from "../state/persistence";
 import { createDefaultForgeV2Meta } from "../state/schema";
+import {
+  processMesh,
+  normalizeTransforms,
+  UNIT_SCALE_METERS_PER_UNIT,
+  type ScaleModeV2,
+} from "../model/MeshProcessor";
 import type {
   ForgeV2ColliderResultEntry,
   ForgeV2GenerationDraftProp,
   ForgeV2PropMeta,
 } from "../types";
 import type { VhacdProgress } from "@common/collider-vhacd";
+import { computeBBox, computePivotOffset } from "../../forge/processing/dimensions";
 
-type ScaleModeV2 = ScaleMode | "depth";
-const UNIT_SCALE_METERS_PER_UNIT = 1.28;
 const DEFAULT_FACE_LIMIT = 5_000;
-
-function deepCloneWithMaterials(group: THREE.Group): THREE.Group {
-  const clone = group.clone(true);
-  clone.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
-      if (Array.isArray(child.material)) {
-        child.material = child.material.map((m: THREE.Material) => m.clone());
-      } else {
-        child.material = child.material.clone();
-      }
-    }
-  });
-  return clone;
-}
-
-function computeScaleForDraft(bbox: BBox, mode: ScaleModeV2, targetValue: number): number {
-  const safeTarget = Math.max(0.01, targetValue);
-  if (mode === "depth") {
-    return bbox.depth > 0 ? safeTarget / bbox.depth : 1;
-  }
-  switch (mode) {
-    case "height":
-      return bbox.height > 0 ? safeTarget / bbox.height : 1;
-    case "width":
-      return bbox.width > 0 ? safeTarget / bbox.width : 1;
-    case "max": {
-      const maxDim = Math.max(bbox.width, bbox.height, bbox.depth);
-      return maxDim > 0 ? safeTarget / maxDim : 1;
-    }
-    case "manual":
-      return safeTarget;
-  }
-}
-
-function bboxToJson(bbox: BBox | null): { width: number; height: number; depth: number } | null {
-  if (!bbox) return null;
-  return { width: bbox.width, height: bbox.height, depth: bbox.depth };
-}
-
-function addPixelPreviewGroundEnvironment(root: THREE.Group): void {
-  const gridSize = 12;
-  const darkGridColor = 0x6b8fb5;
-  const brightCenterGridColor = 0xa7d2ff;
-  const floor = new THREE.Mesh(
-    new THREE.BoxGeometry(14, 0.1, 14),
-    new THREE.MeshStandardMaterial({ color: 0x5d748b, roughness: 0.95, metalness: 0.02 })
-  );
-  floor.position.set(0, -0.05, 0);
-  floor.receiveShadow = true;
-  root.add(floor);
-  const grid = new THREE.GridHelper(gridSize, 12, brightCenterGridColor, darkGridColor);
-  grid.position.y = 0.002;
-  root.add(grid);
-}
-
-function buildPixelTestEnvironmentGroup(processedModel: THREE.Group): THREE.Group {
-  const root = new THREE.Group();
-  root.add(processedModel);
-  const refs = new THREE.Group();
-  refs.name = "pixel-test-environment";
-  addPixelPreviewGroundEnvironment(refs);
-  const unitBox = new THREE.Mesh(
-    new THREE.BoxGeometry(1, 1, 1),
-    new THREE.MeshStandardMaterial({ color: 0x7ec6a2, roughness: 0.85, metalness: 0.04 })
-  );
-  unitBox.position.set(2.25, 0.5, 0);
-  refs.add(unitBox);
-  const tallBox = new THREE.Mesh(
-    new THREE.BoxGeometry(1, 2, 1),
-    new THREE.MeshStandardMaterial({ color: 0xe7b375, roughness: 0.84, metalness: 0.03 })
-  );
-  tallBox.position.set(4.0, 1, 0);
-  refs.add(tallBox);
-  root.add(refs);
-  return root;
-}
 
 function formatVhacdProgress(progress: VhacdProgress): string {
   return `${progress.message} (${Math.round(progress.propProgress * 100)}%)`;
@@ -396,46 +313,37 @@ export function usePipelineActions() {
     }
     if (token !== refs.previewBuildToken.current) return { pixelModel: null };
 
-    const model = deepCloneWithMaterials(base);
-    if (draft.textureResolution > 0) {
-      downsampleMeshTextures(model, draft.textureResolution);
-    }
-    const unitBBox = computeBBox(model);
-    const pivotOffset = computePivotOffset(unitBBox, draft.pivot);
-    applyPivotOffset(model, pivotOffset);
-    const postPivotBBox = computeBBox(model);
-    const scale = computeScaleForDraft(postPivotBBox, draft.scaleMode as ScaleModeV2, draft.targetDimension);
-    applyScale(model, scale);
-    const finalBBox = computeBBox(model);
+    // Use pure processMesh pipeline
+    const result = processMesh(base, {
+      textureResolution: draft.textureResolution,
+      pivot: draft.pivot,
+      scaleMode: draft.scaleMode as ScaleModeV2,
+      targetDimension: draft.targetDimension,
+    });
 
-    const originalFaces = countTotalFaces(base);
-    const processedFaces = countTotalFaces(model);
-
-    viewport.setModel(model);
+    viewport.setModel(result.model);
     refs.generationMeshViewState.current = viewport.getViewState();
+    refs.generationPixelBaseModel.current = result.pixelModel;
 
-    const pixelGroup = buildPixelTestEnvironmentGroup(deepCloneWithMaterials(model));
-    refs.generationPixelBaseModel.current = pixelGroup;
-
-    const nextPivotOffset: [number, number, number] = [pivotOffset.x, pivotOffset.y, pivotOffset.z];
-    const nextBBox = bboxToJson(finalBBox);
-    const nextRatio = originalFaces > 0 ? processedFaces / originalFaces : 1;
+    // Store processed model in shared cache for cross-stage sync
+    const propId = draft.tempId.startsWith("saved-") ? draft.tempId.slice("saved-".length) : draft.idSlug;
+    refs.sharedModelCache.current.set(propId, "processed", result.model);
 
     dispatch({
       type: "UPDATE_DRAFT",
       id: draft.tempId,
       patch: {
         status: draft.status === "approved-generation" ? "approved-generation" : "mesh-ready",
-        pivotOffset: nextPivotOffset,
-        scale,
-        originalFaces,
-        processedFaces,
-        simplificationRatio: nextRatio,
-        bboxProcessed: nextBBox,
+        pivotOffset: result.pivotOffset,
+        scale: result.scale,
+        originalFaces: result.originalFaces,
+        processedFaces: result.processedFaces,
+        simplificationRatio: result.simplificationRatio,
+        bboxProcessed: result.bbox,
       },
     });
 
-    return { pixelModel: pixelGroup };
+    return { pixelModel: result.pixelModel };
   }, [dispatch, refs, state.drafts, state.selectedDraftId]);
 
   const persistProcessedMesh = useCallback(async () => {
@@ -626,7 +534,8 @@ export function usePipelineActions() {
           generation: built.metadata,
         });
       }
-      dispatch({ type: "SET_PHYSICS_COLLIDER_RESULTS", results: entries });
+      const currentDraft = state.selectedDraftId ? state.drafts.get(state.selectedDraftId) ?? null : null;
+      dispatch({ type: "SET_PHYSICS_COLLIDER_RESULTS", results: entries, baseScale: currentDraft?.scale ?? 1 });
       // Auto-select default preset
       const defaultId = state.colliderPresets.defaultPresetId;
       const defaultEntry = entries.find((e) => e.presetId === defaultId) ?? entries[0];
@@ -763,31 +672,6 @@ export function usePipelineActions() {
     dispatch({ type: "SET_BATCH_TEXT", text: "" });
   }, [dispatch, state.batchText, state.defaultFaceLimit]);
 
-  const createPropPlaceholders = useCallback(async () => {
-    const lines = state.batchText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (lines.length <= 0) return;
-
-    for (const line of lines) {
-      const id = slugifyPropId(line) || `prop-${Date.now()}`;
-      const composedPrompt = buildComposedPrompt(state.styleGuide, line);
-      const meta = createDefaultForgeV2Meta({
-        id,
-        description: line,
-        styleGuide: state.styleGuide,
-        composedPrompt,
-        faceLimit: state.defaultFaceLimit,
-        pbr: true,
-      });
-      await writeForgeV2PropMeta(meta);
-    }
-
-    dispatch({ type: "SET_BATCH_TEXT", text: "" });
-    await loadSavedPropIndex();
-  }, [dispatch, loadSavedPropIndex, state.batchText, state.defaultFaceLimit, state.styleGuide]);
-
   const selectProp = useCallback(async (propId: string) => {
     const [meta, conceptImage, rawGlb] = await Promise.all([
       readForgeV2PropMeta(propId),
@@ -861,6 +745,53 @@ export function usePipelineActions() {
 
     refs.zoomSyncScale.current = null;
   }, [dispatch, refs]);
+
+  const createPropPlaceholders = useCallback(async () => {
+    const lines = state.batchText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length <= 0) return;
+
+    const created: string[] = [];
+    const errors: { id: string; error: string }[] = [];
+
+    for (const line of lines) {
+      const id = slugifyPropId(line) || `prop-${Date.now()}`;
+      const composedPrompt = buildComposedPrompt(state.styleGuide, line);
+      const meta = createDefaultForgeV2Meta({
+        id,
+        description: line,
+        styleGuide: state.styleGuide,
+        composedPrompt,
+        faceLimit: state.defaultFaceLimit,
+        pbr: true,
+      });
+      try {
+        await writeForgeV2PropMeta(meta);
+        created.push(id);
+      } catch (err) {
+        errors.push({ id, error: err instanceof Error ? err.message : "Unknown error" });
+      }
+    }
+
+    dispatch({ type: "SET_BATCH_TEXT", text: "" });
+
+    if (errors.length > 0) {
+      const errMsg = errors.map((e) => `${e.id}: ${e.error}`).join("; ");
+      dispatch({ type: "SET_STATUS_ERROR", error: `Failed to create ${errors.length} prop(s): ${errMsg}` });
+    }
+    if (created.length > 0) {
+      dispatch({ type: "SET_STATUS_MESSAGE", message: `Created ${created.length} prop placeholder(s)` });
+    }
+
+    await loadSavedPropIndex();
+
+    // Auto-select first created prop
+    if (created.length > 0) {
+      await selectProp(created[0]);
+    }
+  }, [dispatch, loadSavedPropIndex, selectProp, state.batchText, state.defaultFaceLimit, state.styleGuide]);
 
   const importSavedPropIntoGeneration = useCallback(async (propId: string) => {
     const [meta, conceptImage, rawGlb] = await Promise.all([

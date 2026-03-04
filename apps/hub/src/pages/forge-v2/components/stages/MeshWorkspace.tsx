@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useForgeState, useForgeDispatch, useForgeRefs } from "../../state/forge-context";
+import { useForgeState, useForgeDispatch, useForgeRefs, useForgeController } from "../../state/forge-context";
 import { usePipelineActions } from "../../hooks/usePipelineActions";
 import { OutdatedBanner } from "../shared/OutdatedBanner";
 import {
@@ -11,28 +11,14 @@ import * as THREE from "three";
 import type { PixelViewportViewState } from "../../../forge/ViewportPixel";
 import type { ForgeV2GenerationDraftProp } from "../../types";
 import type { PivotPreset } from "../../../forge/processing/dimensions";
-
-function deepCloneForThumb(group: THREE.Group): THREE.Group {
-  const clone = group.clone(true);
-  clone.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
-      if (Array.isArray(child.material)) {
-        child.material = child.material.map((m: THREE.Material) => m.clone());
-      } else {
-        child.material = child.material.clone();
-      }
-    }
-  });
-  return clone;
-}
-
-const UNIT_SCALE_METERS_PER_UNIT = 1.28;
+import { UNIT_SCALE_METERS_PER_UNIT } from "../../model/MeshProcessor";
 
 export function MeshWorkspace() {
   const state = useForgeState();
   const dispatch = useForgeDispatch();
   const refs = useForgeRefs();
   const actions = usePipelineActions();
+  const controller = useForgeController();
 
   const draft = state.selectedDraftId ? state.drafts.get(state.selectedDraftId) ?? null : null;
   const [pixelModel, setPixelModel] = useState<THREE.Group | null>(null);
@@ -42,27 +28,15 @@ export function MeshWorkspace() {
     zoom: 1,
   });
 
-  // Keep a ref to the latest rebuild so the effect always calls the
-  // current closure (which captures the up-to-date state.drafts).
-  // We intentionally exclude `actions` from the effect deps to avoid
-  // an infinite loop (the rebuild dispatches UPDATE_DRAFT which
-  // recreates the callback), so the ref bridges the gap.
-  const rebuildRef = useRef(actions.rebuildSelectedDraftPreview);
-  rebuildRef.current = actions.rebuildSelectedDraftPreview;
-  const persistRef = useRef(actions.persistProcessedMesh);
-  persistRef.current = actions.persistProcessedMesh;
-
-  // Rebuild preview when draft changes.
-  // The rebuild function is async (first load awaits GLB parsing) but
-  // on the cached path it executes synchronously and sets
-  // refs.generationPixelBaseModel.current before returning.  We read
-  // that ref immediately so the state update is part of the same React
-  // batch — this avoids a microtask-timing edge-case where the
-  // .then() fires after React has already committed.
+  // Subscribe to pixel model updates from the controller
   useEffect(() => {
-    // Clear the tab thumbnail immediately so stale models don't linger
-    // while the new draft loads.  It will be repopulated below once the
-    // rebuild completes.
+    return controller.subscribePixelModel(setPixelModel);
+  }, [controller]);
+
+  // Rebuild preview when draft changes (initial load or prop switch).
+  // Subsequent slider/setting changes go through controller.setMeshSetting()
+  // which debounces the rebuild.
+  useEffect(() => {
     refs.meshTabThumb.current?.setModel(null);
 
     if (!draft?.rawGlb) {
@@ -70,43 +44,19 @@ export function MeshWorkspace() {
       return;
     }
     let active = true;
-    const promise = rebuildRef.current();
-
-    // Synchronous path: the ref was already set during the call above.
-    const immediate = refs.generationPixelBaseModel.current;
-    if (immediate) {
-      setPixelModel(immediate);
-    }
-
-    // Async path (first load): wait for the Promise, then update.
-    void promise.then(() => {
+    void controller.rebuildSelectedDraft().then((model) => {
       if (!active) return;
-      const model = refs.generationPixelBaseModel.current;
-      if (model && model !== immediate) {
-        setPixelModel(model);
-      }
-      // Feed the mesh tab thumbnail viewport (live 3D pane in sidebar)
-      const mainModel = refs.generationViewport.current?.getModel();
-      const thumb = refs.meshTabThumb.current;
-      if (mainModel && thumb) {
-        thumb.setModel(deepCloneForThumb(mainModel));
-        thumb.setAxesVisible(false);
-        // Tighten framing for thumbnail
-        const vs = thumb.getViewState();
-        if (vs) thumb.setViewState({ ...vs, distance: vs.distance * 0.65 });
-      }
-      // Auto-persist processed model for saved props
-      void persistRef.current();
+      if (model) setPixelModel(model);
     });
     return () => { active = false; };
+    // Only trigger on prop/mesh identity changes, not on setting changes
+    // (those are handled by controller.setMeshSetting's debounced rebuild)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    controller,
     refs,
     draft?.tempId,
     draft?.rawGlb,
-    draft?.textureResolution,
-    draft?.scaleMode,
-    draft?.targetDimension,
-    draft?.pivot,
     draft?.meshRevision,
   ]);
 
@@ -195,7 +145,7 @@ export function MeshWorkspace() {
       {hasMesh && draft && (
         <MeshSettings
           draft={draft}
-          dispatch={dispatch}
+          controller={controller}
           baseModel={refs.baseModelCache.current.get(draft.tempId) ?? null}
         />
       )}
@@ -262,11 +212,11 @@ function TextureThumb({
 
 function MeshSettings({
   draft,
-  dispatch,
+  controller,
   baseModel,
 }: {
   draft: ForgeV2GenerationDraftProp;
-  dispatch: ReturnType<typeof useForgeDispatch>;
+  controller: ReturnType<typeof useForgeController>;
   baseModel: THREE.Group | null;
 }) {
   const texImage = baseModel ? extractBaseColorImage(baseModel) : null;
@@ -295,13 +245,13 @@ function MeshSettings({
   const handleSlider = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const cm = Number(e.target.value);
-      dispatch({
-        type: "UPDATE_DRAFT",
-        id: draft.tempId,
-        patch: { scaleMode: "max" as const, targetDimension: Math.max(0.01, cm / CM_PER_UNIT) },
+      // Controller: immediate dispatch + debounced rebuild (250ms)
+      controller.setMeshSetting(draft.tempId, {
+        scaleMode: "max" as const,
+        targetDimension: Math.max(0.01, cm / CM_PER_UNIT),
       });
     },
-    [dispatch, draft.tempId]
+    [controller, draft.tempId]
   );
 
   return (
@@ -316,11 +266,7 @@ function MeshSettings({
               type="button"
               className={`ps-tex-card ${draft.textureResolution === opt.value ? "ps-tex-card-active" : ""}`}
               onClick={() =>
-                dispatch({
-                  type: "UPDATE_DRAFT",
-                  id: draft.tempId,
-                  patch: { textureResolution: opt.value },
-                })
+                controller.setMeshSetting(draft.tempId, { textureResolution: opt.value })
               }
             >
               {texImage ? (
@@ -364,11 +310,7 @@ function MeshSettings({
               key={preset}
               className={`forge-btn forge-btn-xs ${draft.pivot === preset ? "forge-btn-active" : ""}`}
               onClick={() =>
-                dispatch({
-                  type: "UPDATE_DRAFT",
-                  id: draft.tempId,
-                  patch: { pivot: preset },
-                })
+                controller.setMeshSetting(draft.tempId, { pivot: preset })
               }
             >
               {preset.replace(/-/g, " ")}

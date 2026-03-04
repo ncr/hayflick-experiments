@@ -1,8 +1,17 @@
 import { useForgeState, useForgeDispatch } from "../state/forge-context";
 
+const SAVE_STATUS_LABELS: Record<string, string> = {
+  idle: "",
+  dirty: "Unsaved",
+  saving: "Saving...",
+  saved: "Saved",
+  error: "Save failed",
+};
+
 export function StatusStrip() {
-  const { statusMessage, statusError, savedProps } = useForgeState();
+  const { statusMessage, statusError, savedProps, saveStatus } = useForgeState();
   const dispatch = useForgeDispatch();
+  const saveLabel = SAVE_STATUS_LABELS[saveStatus] ?? "";
 
   return (
     <div className="ps-status-strip">
@@ -21,6 +30,9 @@ export function StatusStrip() {
         )}
       </div>
       <div className="ps-status-right">
+        {saveLabel && (
+          <span className={`ps-status-save ps-status-save-${saveStatus}`}>{saveLabel}</span>
+        )}
         <span className="ps-status-count">{savedProps.length} props</span>
         <span className="ps-status-hint">1-4: stages · Cmd+Enter: generate · Esc: blur</span>
       </div>

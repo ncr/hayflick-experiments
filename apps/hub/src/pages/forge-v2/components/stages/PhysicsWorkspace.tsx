@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { useForgeState, useForgeDispatch, useForgeRefs } from "../../state/forge-context";
 import { usePipelineActions } from "../../hooks/usePipelineActions";
@@ -14,8 +14,9 @@ import {
   resolveForgeMass,
 } from "../../../forge/processing/physics";
 import { computeBBox, normalizeTransforms } from "../../../forge/processing/dimensions";
-import { createColliderHelper } from "../../../forge/processing/colliders";
+import { createColliderHelper, scaleColliderParams } from "../../../forge/processing/colliders";
 import { readPropProcessedModelGlb, readPropRawGlb } from "../../state/persistence";
+import { deepCloneWithMaterials } from "../../model/MeshProcessor";
 import type { PixelViewportViewState } from "../../../forge/ViewportPixel";
 import type { Viewport3dViewState } from "../../../forge/Viewport";
 import type { ForgeV2PhysicsKindPresetFile } from "../../types";
@@ -27,20 +28,6 @@ const PHYSICS_SCENARIO_LABELS: Record<PhysicsPreviewScenario, string> = {
   slope30Drop: "30deg Slope",
   edgeDrop: "Edge Drop",
 };
-
-function deepCloneWithMaterials(group: THREE.Group): THREE.Group {
-  const clone = group.clone(true);
-  clone.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
-      if (Array.isArray(child.material)) {
-        child.material = child.material.map((m: THREE.Material) => m.clone());
-      } else {
-        child.material = child.material.clone();
-      }
-    }
-  });
-  return clone;
-}
 
 function buildPhysicsSettingsFromKind(kind: ForgeV2PhysicsKindPresetFile["kinds"][number]) {
   return normalizeForgePhysicsSettings(
@@ -101,10 +88,24 @@ export function PhysicsWorkspace() {
     }
 
     let active = true;
+    const propId = state.physicsSelectedPropId;
+
+    // Try shared model cache first (instant, no disk I/O)
+    const cached = refs.sharedModelCache.current.get(propId, "processed");
+    if (cached) {
+      const clone = deepCloneWithMaterials(cached);
+      viewport.setModel(clone);
+      const bbox = viewport.getBBox();
+      dispatch({ type: "SET_PHYSICS_BBOX", bbox });
+      refs.physicsSimSourceModel.current = deepCloneWithMaterials(clone);
+      return;
+    }
+
+    // Disk fallback
     void (async () => {
       const [processedGlb, rawGlb] = await Promise.all([
-        readPropProcessedModelGlb(state.physicsSelectedPropId!),
-        readPropRawGlb(state.physicsSelectedPropId!),
+        readPropProcessedModelGlb(propId),
+        readPropRawGlb(propId),
       ]);
       if (!active) return;
       const glb = processedGlb ?? rawGlb;
@@ -116,6 +117,27 @@ export function PhysicsWorkspace() {
       const group = await viewport.loadGlb(glb);
       if (!active) return;
       if (!processedGlb) normalizeTransforms(group);
+
+      // Old processed GLBs may be missing the root scale transform (the
+      // GLTFExporter used to drop scene-level transforms). Detect this by
+      // comparing the loaded bbox with bboxProcessed from meta and apply
+      // the meta scale if the loaded model is significantly larger.
+      if (processedGlb && state.physicsMeta) {
+        const bp = state.physicsMeta.processing?.mesh?.bboxProcessed;
+        const metaScale = state.physicsMeta.processing?.transform?.scale;
+        if (bp && metaScale && metaScale[0] < 0.99) {
+          const loadedBbox = computeBBox(group);
+          if (loadedBbox) {
+            const loadedMax = Math.max(loadedBbox.width, loadedBbox.height, loadedBbox.depth);
+            const processedMax = Math.max(bp.width ?? 0, bp.height ?? 0, bp.depth ?? 0);
+            if (processedMax > 0 && loadedMax > processedMax * 1.5) {
+              group.scale.set(metaScale[0], metaScale[1], metaScale[2]);
+              group.updateMatrixWorld(true);
+            }
+          }
+        }
+      }
+
       viewport.setModel(group);
       const bbox = viewport.getBBox();
       dispatch({ type: "SET_PHYSICS_BBOX", bbox });
@@ -124,6 +146,61 @@ export function PhysicsWorkspace() {
 
     return () => { active = false; };
   }, [dispatch, refs, state.physicsSelectedPropId]);
+
+  // Re-sync physics model when mesh settings change (debounced from controller).
+  // This is separate from the prop-loading effect above: it preserves camera,
+  // doesn't clear collider results, and only touches the viewport + source ref.
+  const prevRevisionRef = useRef(state.physicsModelRevision);
+  useEffect(() => {
+    // Skip initial mount (revision 0) and no-change renders
+    if (
+      state.physicsModelRevision === 0 ||
+      state.physicsModelRevision === prevRevisionRef.current
+    ) {
+      prevRevisionRef.current = state.physicsModelRevision;
+      return;
+    }
+    prevRevisionRef.current = state.physicsModelRevision;
+
+    const propId = state.physicsSelectedPropId;
+    if (!propId) return;
+
+    const cached = refs.sharedModelCache.current.get(propId, "processed");
+    if (!cached) return;
+
+    const viewport = refs.physicsMeshViewport.current;
+    if (!viewport) return;
+
+    // Preserve camera position and keep collider panes in sync
+    const prevView = viewport.getModel() ? viewport.getViewState() : null;
+    const clone = deepCloneWithMaterials(cached);
+    viewport.setModel(clone);
+    if (prevView) {
+      viewport.setViewState(prevView);
+      // setViewState doesn't emit onViewChange, so update the shared ref
+      // manually — collider pane effect reads this to stay in sync.
+      refs.physicsViewState.current = prevView;
+    }
+
+    const bbox = viewport.getBBox();
+    dispatch({ type: "SET_PHYSICS_BBOX", bbox });
+    refs.physicsSimSourceModel.current = deepCloneWithMaterials(clone);
+
+    // Scale existing collider results to match the new mesh scale
+    const draft = state.selectedDraftId ? state.drafts.get(state.selectedDraftId) ?? null : null;
+    const currentScale = draft?.scale ?? 1;
+    const baseScale = state.physicsColliderBaseScale;
+    if (baseScale > 0 && state.physicsColliderBaseResults.length > 0) {
+      const ratio = currentScale / baseScale;
+      if (Math.abs(ratio - 1) > 1e-6) {
+        const scaled = state.physicsColliderBaseResults.map((entry) => ({
+          ...entry,
+          collider: scaleColliderParams(entry.collider, ratio),
+        }));
+        dispatch({ type: "SET_PHYSICS_COLLIDER_RESULTS", results: scaled });
+      }
+    }
+  }, [dispatch, refs, state.physicsModelRevision, state.physicsSelectedPropId, state.selectedDraftId, state.drafts, state.physicsColliderBaseScale, state.physicsColliderBaseResults]);
 
   // Update collider preview panes
   useEffect(() => {
@@ -175,6 +252,7 @@ export function PhysicsWorkspace() {
     physicsColliderResults: state.physicsColliderResults,
     physicsSettings: state.physicsSettings,
     physicsBBox: state.physicsBBox,
+    physicsModelRevision: state.physicsModelRevision,
     setSimPixelModels,
     setSimStatus,
   });

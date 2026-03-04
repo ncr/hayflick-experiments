@@ -1,6 +1,7 @@
 import type { StyleGuide } from "../../forge/StyleGuidePanel";
 import type { PropPhysicsSettings } from "../../forge/types";
 import type { BBox, PivotPreset, ScaleMode } from "../../forge/processing/dimensions";
+import { scaleColliderParams } from "../../forge/processing/colliders";
 import type {
   ForgeV2ColliderPresetFile,
   ForgeV2ColliderResultEntry,
@@ -10,6 +11,61 @@ import type {
   ForgeV2PropMeta,
   ForgeV2SimulationCheckResult
 } from "../types";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect the effective scale at which stored colliders were generated.
+ *
+ * Due to a previous GLB export bug (GLTFExporter dropped root group
+ * transforms), some colliders were generated from models at raw scale
+ * instead of the processed scale. Compare the collider extent with
+ * `bboxProcessed` to determine whether stored colliders match the
+ * processed dimensions or the raw dimensions.
+ */
+function detectColliderBaseScale(
+  meta: ForgeV2PropMeta,
+  presets: ForgeV2ColliderResultEntry[]
+): number {
+  const metaScale = meta.processing?.transform?.scale?.[0] ?? 1;
+  if (presets.length === 0 || metaScale >= 0.99) return metaScale;
+
+  const bp = meta.processing?.mesh?.bboxProcessed;
+  if (!bp) return metaScale;
+  const processedMaxDim = Math.max(bp.width ?? 0, bp.height ?? 0, bp.depth ?? 0);
+  if (processedMaxDim <= 0) return metaScale;
+
+  // Compute max dimension of the first collider preset's hulls
+  const first = presets[0];
+  if (first.collider.type !== "compound-convex-hulls") return metaScale;
+  const parts = Array.isArray(first.collider.params.parts) ? first.collider.params.parts : [];
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const raw of parts) {
+    const part = raw as { position?: number[]; points?: number[][] };
+    const pos = Array.isArray(part.position) && part.position.length >= 3 ? part.position : [0, 0, 0];
+    const pts = Array.isArray(part.points) ? part.points : [];
+    for (const pt of pts) {
+      if (!Array.isArray(pt) || pt.length < 3) continue;
+      const wx = pos[0] + pt[0], wy = pos[1] + pt[1], wz = pos[2] + pt[2];
+      if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
+      if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+      if (wz < minZ) minZ = wz; if (wz > maxZ) maxZ = wz;
+    }
+  }
+  if (!Number.isFinite(minX)) return metaScale;
+  const colliderMaxDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+  if (colliderMaxDim <= 0) return metaScale;
+
+  // If collider extent is much larger than bboxProcessed, the colliders
+  // were generated at raw scale (effective baseScale ≈ 1.0)
+  if (colliderMaxDim > processedMaxDim * 1.5) {
+    return 1;
+  }
+  return metaScale;
+}
 
 // ---------------------------------------------------------------------------
 // Stage-Status Model
@@ -143,6 +199,8 @@ export interface ForgeStoreState {
   physicsConceptImage: string | null;
   physicsBBox: BBox | null;
   physicsColliderResults: ForgeV2ColliderResultEntry[];
+  physicsColliderBaseResults: ForgeV2ColliderResultEntry[];
+  physicsColliderBaseScale: number;
   physicsSelectedColliderPresetId: string | null;
   physicsSelectedKindId: string;
   physicsSettings: PropPhysicsSettings;
@@ -153,6 +211,12 @@ export interface ForgeStoreState {
     error: string | null;
   };
   physicsSimStatusByScenario: Record<string, string>;
+
+  // Physics model revision (bumped when mesh settings change and physics should re-sync)
+  physicsModelRevision: number;
+
+  // Save status
+  saveStatus: "idle" | "dirty" | "saving" | "saved" | "error";
 
   // Status strip
   statusMessage: string;
@@ -269,13 +333,17 @@ export type ForgeAction =
   // Physics
   | { type: "SET_PHYSICS_PROP"; propId: string; meta: ForgeV2PropMeta; conceptImage: string | null }
   | { type: "SET_PHYSICS_BBOX"; bbox: BBox | null }
-  | { type: "SET_PHYSICS_COLLIDER_RESULTS"; results: ForgeV2ColliderResultEntry[] }
+  | { type: "SET_PHYSICS_COLLIDER_RESULTS"; results: ForgeV2ColliderResultEntry[]; baseScale?: number }
   | { type: "SET_PHYSICS_SELECTED_COLLIDER"; presetId: string | null }
   | { type: "SET_PHYSICS_KIND"; kindId: string }
   | { type: "SET_PHYSICS_SETTINGS"; settings: PropPhysicsSettings }
   | { type: "SET_PHYSICS_BUILD_STATE"; state: ForgeStoreState["physicsColliderBuildState"] }
   | { type: "SET_PHYSICS_SIM_STATUS"; scenario: string; text: string }
   | { type: "CLEAR_PHYSICS_PROP" }
+  // Physics model revision
+  | { type: "INCREMENT_PHYSICS_MODEL_REVISION" }
+  // Save status
+  | { type: "SET_SAVE_STATUS"; status: ForgeStoreState["saveStatus"] }
   // Status strip
   | { type: "SET_STATUS_MESSAGE"; message: string }
   | { type: "SET_STATUS_ERROR"; error: string | null }
@@ -335,6 +403,8 @@ export function createInitialState(): ForgeStoreState {
     physicsConceptImage: null,
     physicsBBox: null,
     physicsColliderResults: [],
+    physicsColliderBaseResults: [],
+    physicsColliderBaseScale: 1,
     physicsSelectedColliderPresetId: null,
     physicsSelectedKindId: "wood",
     physicsSettings: { ...DEFAULT_FORGE_PHYSICS_SETTINGS },
@@ -349,6 +419,8 @@ export function createInitialState(): ForgeStoreState {
       slope30Drop: "Compute a collider to start auto-replay.",
       edgeDrop: "Compute a collider to start auto-replay.",
     },
+    physicsModelRevision: 0,
+    saveStatus: "idle",
     statusMessage: "",
     statusError: null,
     styleGuide: { name: "", prompt: "", negativePrompt: "", imageSize: "1024x1024", referenceImages: [] },
@@ -470,23 +542,48 @@ export function forgeReducer(state: ForgeStoreState, action: ForgeAction): Forge
       break;
 
     // Physics
-    case "SET_PHYSICS_PROP":
+    case "SET_PHYSICS_PROP": {
+      const presets = action.meta.colliders?.presets ?? [];
+      const baseScale = detectColliderBaseScale(action.meta, presets);
+      const metaScale = action.meta.processing?.transform?.scale?.[0] ?? 1;
+
+      // If the stored colliders were generated at raw scale (GLB export
+      // bug), rescale them to match the processed model dimensions.
+      let displayResults = presets;
+      if (baseScale > 0 && presets.length > 0 && Math.abs(baseScale - metaScale) > 1e-6) {
+        const ratio = metaScale / baseScale;
+        displayResults = presets.map((entry) => ({
+          ...entry,
+          collider: scaleColliderParams(entry.collider, ratio),
+        }));
+      }
+
       next = {
         ...state,
         physicsSelectedPropId: action.propId,
         physicsMeta: action.meta,
         physicsConceptImage: action.conceptImage,
-        physicsColliderResults: action.meta.colliders?.presets ?? [],
+        physicsColliderResults: displayResults,
+        physicsColliderBaseResults: presets,
+        physicsColliderBaseScale: baseScale,
         physicsSelectedColliderPresetId:
           action.meta.colliders?.selectedPresetId ??
           action.meta.colliders?.presets[0]?.presetId ?? null,
       };
       break;
+    }
     case "SET_PHYSICS_BBOX":
       next = { ...state, physicsBBox: action.bbox };
       break;
     case "SET_PHYSICS_COLLIDER_RESULTS":
-      next = { ...state, physicsColliderResults: action.results };
+      next = {
+        ...state,
+        physicsColliderResults: action.results,
+        // When baseScale is provided this is a fresh generation — save originals
+        ...(action.baseScale != null
+          ? { physicsColliderBaseResults: action.results, physicsColliderBaseScale: action.baseScale }
+          : {}),
+      };
       break;
     case "SET_PHYSICS_SELECTED_COLLIDER":
       next = { ...state, physicsSelectedColliderPresetId: action.presetId };
@@ -517,8 +614,20 @@ export function forgeReducer(state: ForgeStoreState, action: ForgeAction): Forge
         physicsConceptImage: null,
         physicsBBox: null,
         physicsColliderResults: [],
+        physicsColliderBaseResults: [],
+        physicsColliderBaseScale: 1,
         physicsSelectedColliderPresetId: null,
       };
+      break;
+
+    // Physics model revision
+    case "INCREMENT_PHYSICS_MODEL_REVISION":
+      next = { ...state, physicsModelRevision: state.physicsModelRevision + 1 };
+      break;
+
+    // Save status
+    case "SET_SAVE_STATUS":
+      next = { ...state, saveStatus: action.status };
       break;
 
     // Status strip
