@@ -508,8 +508,7 @@
 }
 
 .ps-workspace-viewport-persistent {
-  min-height: 0;
-  flex: 1;
+  flex: 1 0 auto;
   display: flex;
   flex-direction: column;
 }
@@ -989,8 +988,6 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 0;
-  height: 100%;
 }
 
 .ps-mesh-prompt-row {

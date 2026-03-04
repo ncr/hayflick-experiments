@@ -165,7 +165,7 @@ export function MeshWorkspace() {
 
       {/* Main area: viewport left, pixel quad right */}
       <div className="ps-viewport-pixel-split">
-        <ForgeScissorViewportStage>
+        <ForgeScissorViewportStage className="ps-mesh-viewport-col">
           <div className="ps-viewport-labeled">
             <div className="ps-viewport-label">Mesh</div>
             <ForgeScissorViewportPane
