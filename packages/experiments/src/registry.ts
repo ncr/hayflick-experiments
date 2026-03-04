@@ -7,9 +7,14 @@ import { meta as pixelPerfectCameraZoomMeta } from "./pixel-perfect-camera-zoom/
 import { meta as pixelPerfectScissorLabMeta } from "./pixel-perfect-scissor-lab/meta";
 import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
 import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
+import { meta as wallGeneratorMeta } from "./wall-generator/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...wallGeneratorMeta,
+    load: () => import("./wall-generator/index")
+  },
   {
     ...settlementBuilderEcsMeta,
     load: () => import("./settlement-builder-ecs/index")
