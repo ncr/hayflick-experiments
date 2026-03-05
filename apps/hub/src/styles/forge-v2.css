@@ -880,6 +880,8 @@
 
 .ps-viewport-host-interactive {
   pointer-events: auto;
+  /* Reserve two-finger drag for page scrolling */
+  touch-action: pan-y;
 }
 
 .ps-viewport-labeled {
@@ -967,13 +969,15 @@
   gap: 8px;
   align-items: end;
   min-height: 0;
+  /* Allow two-finger vertical scroll to pass through to the page */
+  touch-action: pan-y;
 }
 
 .ps-viewport-pixel-split .ps-viewport-host {
   width: 100%;
   height: auto;
   aspect-ratio: 4 / 3;
-  min-height: 0;
+  min-height: 120px;
 }
 
 .ps-viewport-pixel-split .ps-pixel-strip {

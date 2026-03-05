@@ -7,7 +7,7 @@ export function Workspace() {
   const { activeStage } = useForgeState();
 
   return (
-    <div className="ps-workspace">
+    <div className="ps-workspace" data-shared-scissor-allow-opaque-background="true">
       {activeStage === "ref" && <RefWorkspace />}
 
       {/* Mesh viewport persists for Three.js continuity */}

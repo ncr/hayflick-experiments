@@ -466,10 +466,27 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
       const handleControlsChange = () => {
         emitViewChange();
       };
+      // Pinch-to-zoom: trackpad pinch sends wheel events with ctrlKey.
+      // Plain two-finger scroll (no ctrlKey) passes through for page scroll.
+      const onPinchWheel = (e: WheelEvent) => {
+        if (!e.ctrlKey || !controls) return;
+        e.preventDefault();
+        const factor = 1 - e.deltaY * 0.01;
+        camera.position.sub(controls.target)
+          .multiplyScalar(1 / factor)
+          .add(controls.target);
+        camera.updateMatrixWorld(true);
+        controls.update();
+      };
       if (interactive) {
         controls = new OrbitControls(camera, host);
         controls.enableDamping = true;
         controls.dampingFactor = 0.08;
+        // Disable built-in zoom/pan so two-finger drag scrolls the page.
+        controls.enableZoom = false;
+        controls.enablePan = false;
+        controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: undefined! };
+        host.addEventListener("wheel", onPinchWheel, { passive: false });
         controlsRef.current = controls;
         controls.addEventListener("change", handleControlsChange);
       }
@@ -530,6 +547,7 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
         if (controls) {
           controls.removeEventListener("change", handleControlsChange);
           controls.dispose();
+          host.removeEventListener("wheel", onPinchWheel);
         }
         controlsRef.current = null;
 
