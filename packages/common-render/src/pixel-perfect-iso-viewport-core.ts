@@ -48,7 +48,8 @@ export class PixelPerfectIsoViewportCore {
   private readonly outputCamera: THREE.OrthographicCamera;
   private readonly outputMaterial: THREE.ShaderMaterial;
   private readonly outputQuad: THREE.Mesh;
-  private readonly lowTarget: THREE.WebGLRenderTarget;
+  private lowTarget: THREE.WebGLRenderTarget;
+  private customOutputSource: THREE.Texture | null = null;
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointerNdc = new THREE.Vector2();
   private readonly projectedNdc = new THREE.Vector3();
@@ -115,7 +116,8 @@ export class PixelPerfectIsoViewportCore {
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
       format: THREE.RGBAFormat,
-      stencilBuffer: false
+      stencilBuffer: false,
+      samples: config.lowTargetSamples ?? 4
     });
     this.lowTarget.texture.generateMipmaps = false;
 
@@ -292,6 +294,43 @@ export class PixelPerfectIsoViewportCore {
     this.ensureScreenBasis();
   }
 
+  /* ---- AA extension points ---- */
+
+  /** The low-resolution render target the scene is drawn into. */
+  getLowTarget(): THREE.WebGLRenderTarget {
+    return this.lowTarget;
+  }
+
+  /** Replace the low-res render target (e.g. to change MSAA sample count). */
+  setLowTarget(target: THREE.WebGLRenderTarget): void {
+    const old = this.lowTarget;
+    this.lowTarget = target;
+    // Keep size in sync with controller
+    const state = this.controller.getState();
+    this.lowTarget.setSize(state.lowRenderWidth, state.lowRenderHeight);
+    // Update output source unless a custom source overrides it
+    if (!this.customOutputSource) {
+      this.outputMaterial.uniforms.uSource.value = this.lowTarget.texture;
+    }
+    old.dispose();
+  }
+
+  /** Override the texture the output upscale quad reads from.
+   *  Pass null to revert to the default lowTarget texture. */
+  setOutputSourceTexture(texture: THREE.Texture | null): void {
+    this.customOutputSource = texture;
+    this.outputMaterial.uniforms.uSource.value = texture ?? this.lowTarget.texture;
+  }
+
+  /**
+   * Optional callback invoked after the scene is rendered to lowTarget
+   * but before the output upscale quad is drawn. Use this to run
+   * post-process AA passes (FXAA, SMAA) on the low-res image.
+   */
+  afterSceneRender:
+    | ((renderer: THREE.WebGLRenderer, lowTarget: THREE.WebGLRenderTarget) => void)
+    | null = null;
+
   setViewPose(pose: PixelPerfectIsoViewPose): void {
     if (Number.isFinite(pose.targetX)) {
       this.cameraTarget.x = pose.targetX;
@@ -427,6 +466,11 @@ export class PixelPerfectIsoViewportCore {
     renderer.setScissor(0, 0, this.lowTarget.width, this.lowTarget.height);
     renderer.clear();
     renderer.render(this.scene, this.camera);
+
+    if (this.afterSceneRender) {
+      this.afterSceneRender(renderer, this.lowTarget);
+    }
+
     renderer.setRenderTarget(null);
     renderer.setScissorTest(previousScissorTest);
 

@@ -160,6 +160,26 @@ export class PixelPerfectIsoView {
     return this.core.zoomStepAtLocalCss(direction, local.x, local.y, nowMs);
   }
 
+  /* ---- AA extension points ---- */
+
+  getLowTarget(): THREE.WebGLRenderTarget {
+    return this.core.getLowTarget();
+  }
+
+  setLowTarget(target: THREE.WebGLRenderTarget): void {
+    this.core.setLowTarget(target);
+  }
+
+  setOutputSourceTexture(texture: THREE.Texture | null): void {
+    this.core.setOutputSourceTexture(texture);
+  }
+
+  set afterSceneRender(
+    cb: ((renderer: THREE.WebGLRenderer, lowTarget: THREE.WebGLRenderTarget) => void) | null
+  ) {
+    this.core.afterSceneRender = cb;
+  }
+
   get canvas(): HTMLCanvasElement {
     return this.stage.canvas;
   }

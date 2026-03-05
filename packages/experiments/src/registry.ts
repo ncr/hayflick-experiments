@@ -8,9 +8,14 @@ import { meta as pixelPerfectScissorLabMeta } from "./pixel-perfect-scissor-lab/
 import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
 import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
 import { meta as wallGeneratorMeta } from "./wall-generator/meta";
+import { meta as propTestSceneMeta } from "./prop-test-scene/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...propTestSceneMeta,
+    load: () => import("./prop-test-scene/index")
+  },
   {
     ...wallGeneratorMeta,
     load: () => import("./wall-generator/index")
