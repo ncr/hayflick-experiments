@@ -11,6 +11,7 @@ Monorepo managed with **pnpm workspaces**.
 
 ```
 apps/hub          — Vite + React experiment browser (the hub UI)
+  src/pages/forge-v2/  — Asset Forge v2 (route: #/forge-v2) — prop pipeline: concept image → mesh → physics colliders
 packages/
   common-render   — Pixel-perfect rendering primitives (PixelStage, PixelPerfectController, PixelPerfectIsoView)
   common-render-legacy — Legacy render exports (frozen; 2to1 experiment still uses this)

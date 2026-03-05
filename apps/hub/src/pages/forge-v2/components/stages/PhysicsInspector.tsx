@@ -74,7 +74,7 @@ export function PhysicsInspector() {
                     void actions.autoApprovePhysics({ selectedPresetId: entry.presetId });
                   }}
                 >
-                  {entry.presetName} ({entry.generation.hullCount} hulls)
+                  {entry.presetName} ({entry.generation.hullCount} hulls, {(JSON.stringify(entry.collider).length / 1024).toFixed(1)} KB)
                 </button>
               ))}
             </div>

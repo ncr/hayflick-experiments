@@ -352,7 +352,7 @@ export function PhysicsWorkspace() {
                     void actions.autoApprovePhysics({ selectedPresetId: entry.presetId });
                   }}
                 >
-                  {entry.presetName} ({entry.generation.hullCount})
+                  {entry.presetName} ({entry.generation.hullCount} hulls, {(JSON.stringify(entry.collider).length / 1024).toFixed(1)} KB)
                 </button>
               ))}
             </div>
@@ -430,7 +430,7 @@ export function PhysicsWorkspace() {
               >
                 <strong>{entry.presetName}</strong>
                 <span className="ps-text-muted">
-                  {entry.generation.hullCount} hulls
+                  {entry.generation.hullCount} hulls · {(JSON.stringify(entry.collider).length / 1024).toFixed(1)} KB
                   {state.physicsSelectedColliderPresetId === entry.presetId ? " · active" : ""}
                 </span>
               </div>

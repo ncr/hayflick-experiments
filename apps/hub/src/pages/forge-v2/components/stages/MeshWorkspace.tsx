@@ -224,12 +224,26 @@ function MeshSettings({
     ? Math.max((texImage as { width: number }).width ?? 0, (texImage as { height: number }).height ?? 0)
     : 0;
 
+  const [texMinimized, setTexMinimized] = useState(false);
+
   // Build texture options: native size first, then downsample sizes smaller than native
-  const texOptions: { value: number; label: string }[] = [
-    { value: 0, label: texNativeSize > 0 ? `${texNativeSize} px` : "Original" },
+  const texSrcW = texImage ? (texImage as { width: number }).width ?? 0 : 0;
+  const texSrcH = texImage ? (texImage as { height: number }).height ?? 0 : 0;
+  const texAspect = texSrcW > 0 && texSrcH > 0 ? texSrcW / texSrcH : 1;
+
+  function texKb(size: number): string {
+    const s = size > 0 ? Math.min(size, Math.max(texSrcW, texSrcH)) : Math.max(texSrcW, texSrcH);
+    if (s <= 0) return "";
+    const w = texAspect >= 1 ? s : Math.round(s * texAspect);
+    const h = texAspect >= 1 ? Math.round(s / texAspect) : s;
+    return `${(w * h * 4 / 1024).toFixed(0)} KB`;
+  }
+
+  const texOptions: { value: number; label: string; kb: string }[] = [
+    { value: 0, label: texNativeSize > 0 ? `${texNativeSize} px` : "Original", kb: texKb(0) },
     ...TEX_DOWNSAMPLE_SIZES
       .filter((s) => texNativeSize <= 0 || s < texNativeSize)
-      .map((s) => ({ value: s, label: `${s} px` })),
+      .map((s) => ({ value: s, label: `${s} px`, kb: texKb(s) })),
   ];
 
   const bbox = draft.bboxProcessed;
@@ -258,7 +272,17 @@ function MeshSettings({
     <div className="ps-mesh-settings-panel">
       {/* Texture resolution — visual radio cards */}
       <div className="ps-field">
-        <label className="ps-label">Texture</label>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label className="ps-label" style={{ margin: 0 }}>Texture</label>
+          <button
+            type="button"
+            className="forge-btn forge-btn-xs"
+            onClick={() => setTexMinimized((v) => !v)}
+            title={texMinimized ? "Show texture previews" : "Hide texture previews"}
+          >
+            {texMinimized ? "Show" : "Hide"}
+          </button>
+        </div>
         <div className="ps-tex-cards" style={{ gridTemplateColumns: `repeat(${texOptions.length}, 1fr)` }}>
           {texOptions.map((opt) => (
             <button
@@ -269,12 +293,13 @@ function MeshSettings({
                 controller.setMeshSetting(draft.tempId, { textureResolution: opt.value })
               }
             >
-              {texImage ? (
+              {!texMinimized && (texImage ? (
                 <TextureThumb image={texImage} targetSize={opt.value} />
               ) : (
                 <div style={{ aspectRatio: "1", background: "#222", borderRadius: 3 }} />
-              )}
+              ))}
               <span className="ps-tex-card-label">{opt.label}</span>
+              {opt.kb && <span className="ps-tex-card-label ps-text-muted">{opt.kb}</span>}
             </button>
           ))}
         </div>
