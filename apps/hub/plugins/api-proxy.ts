@@ -3,6 +3,7 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+const ASSETS_ROOT = path.resolve(process.cwd(), "../../assets");
 const FORGE_ROOT = path.resolve(process.cwd(), "../../assets/forge");
 const FORGE_V2_ROOT = path.resolve(process.cwd(), "../../assets/forge-v2");
 
@@ -311,6 +312,11 @@ export function apiProxyPlugin(): Plugin {
           if (url.startsWith("/api/tripo/")) {
             const subpath = url.replace("/api/tripo", "").split("?")[0];
             return await handleTripo(req, res, subpath);
+          }
+
+          if (url.startsWith("/api/assets/")) {
+            const subpath = url.replace("/api/assets", "").split("?")[0];
+            return await handleFs(req, res, subpath, ASSETS_ROOT);
           }
 
           if (url.startsWith("/api/fs/")) {

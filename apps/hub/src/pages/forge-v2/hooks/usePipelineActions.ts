@@ -655,7 +655,7 @@ export function usePipelineActions() {
         meshProgressLabel: "idle",
         faceLimit: state.defaultFaceLimit,
         pbr: true,
-        textureResolution: 0,
+        textureResolution: 128,
         scaleMode: "max" as const,
         targetDimension: 1,
         scale: 1,

@@ -372,7 +372,7 @@ export function createInitialState(): ForgeStoreState {
     mesh: emptyStage<MeshConfig, MeshArtifact>({
       faceLimit: DEFAULT_FACE_LIMIT,
       pbr: true,
-      textureResolution: 0,
+      textureResolution: 128,
       scaleMode: "max",
       targetDimension: 1,
       pivot: "bottom-center",

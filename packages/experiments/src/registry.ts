@@ -9,9 +9,14 @@ import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/me
 import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
 import { meta as wallGeneratorMeta } from "./wall-generator/meta";
 import { meta as propTestSceneMeta } from "./prop-test-scene/meta";
+import { meta as physicsPropDropMeta } from "./physics-prop-drop/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...physicsPropDropMeta,
+    load: () => import("./physics-prop-drop/index")
+  },
   {
     ...propTestSceneMeta,
     load: () => import("./prop-test-scene/index")
