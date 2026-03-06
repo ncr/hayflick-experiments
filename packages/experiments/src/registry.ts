@@ -6,8 +6,6 @@ import { meta as pixelOutlinePostMeta } from "./pixel-outline-post/meta";
 import { meta as pixelPerfectCameraZoomMeta } from "./pixel-perfect-camera-zoom/meta";
 import { meta as pixelPerfectScissorLabMeta } from "./pixel-perfect-scissor-lab/meta";
 import { meta as pixelStableMovingMeshMeta } from "./pixel-stable-moving-mesh/meta";
-import { meta as settlementBuilderEcsMeta } from "./settlement-builder-ecs/meta";
-import { meta as wallGeneratorMeta } from "./wall-generator/meta";
 import { meta as propTestSceneMeta } from "./prop-test-scene/meta";
 import { meta as physicsPropDropMeta } from "./physics-prop-drop/meta";
 // AUTO_IMPORTS_END
@@ -20,14 +18,6 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...propTestSceneMeta,
     load: () => import("./prop-test-scene/index")
-  },
-  {
-    ...wallGeneratorMeta,
-    load: () => import("./wall-generator/index")
-  },
-  {
-    ...settlementBuilderEcsMeta,
-    load: () => import("./settlement-builder-ecs/index")
   },
   {
     ...pixelOutlinePostMeta,

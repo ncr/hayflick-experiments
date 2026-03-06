@@ -1,8 +1,8 @@
-import type { Physics3dConvexHullPart } from "../settlement-builder-ecs/game-physics-3d";
+import type { Physics3dConvexHullPart } from "../prop-physics-3d/game-physics-3d";
 import {
   PHYSICS_MATERIAL_PRESETS,
   estimateMassFromBounds
-} from "../settlement-builder-ecs/physics-settings";
+} from "../prop-physics-3d/physics-settings";
 import {
   computeCompoundHullDimensions,
   parseCompoundConvexHullParts

@@ -2,9 +2,9 @@ import { experiments } from "@experiments/catalog";
 
 type ExperimentRouteDrawerProps = {
   open: boolean;
-  active: { type: "forge-v2" } | { type: "experiment"; id: string } | null;
+  active: { type: "forge" } | { type: "experiment"; id: string } | null;
   onClose: () => void;
-  onSelectForgeV2: () => void;
+  onSelectForge: () => void;
   onSelectExperiment: (id: string) => void;
 };
 
@@ -12,10 +12,10 @@ export function ExperimentRouteDrawer({
   open,
   active,
   onClose,
-  onSelectForgeV2,
+  onSelectForge,
   onSelectExperiment
 }: ExperimentRouteDrawerProps) {
-  const isForgeV2Active = active?.type === "forge-v2";
+  const isForgeActive = active?.type === "forge";
 
   return (
     <>
@@ -24,8 +24,8 @@ export function ExperimentRouteDrawer({
         <h1>Experiments</h1>
         <ul>
           <li>
-            <button className={isForgeV2Active ? "active" : ""} onClick={onSelectForgeV2}>
-              <span>Asset Forge V2</span>
+            <button className={isForgeActive ? "active" : ""} onClick={onSelectForge}>
+              <span>Asset Forge</span>
             </button>
           </li>
           {experiments.map((entry) => {

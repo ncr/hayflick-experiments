@@ -3,11 +3,9 @@ export interface DirEntry {
   isDirectory: boolean;
 }
 
-const FS_API_BASE = "/api/fs-v2";
-
 export async function readFile(filePath: string): Promise<Response> {
   const res = await fetch(
-    `${FS_API_BASE}/read?path=${encodeURIComponent(filePath)}`
+    `/api/fs/read?path=${encodeURIComponent(filePath)}`
   );
   if (!res.ok) {
     if (res.status === 404) throw new Error(`Not found: ${filePath}`);
@@ -33,37 +31,46 @@ export async function readBinary(filePath: string): Promise<ArrayBuffer> {
   return res.arrayBuffer();
 }
 
-export async function writeJson(filePath: string, data: unknown): Promise<void> {
+export async function writeJson(
+  filePath: string,
+  data: unknown
+): Promise<void> {
   const res = await fetch(
-    `${FS_API_BASE}/write?path=${encodeURIComponent(filePath)}`,
+    `/api/fs/write?path=${encodeURIComponent(filePath)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
     }
   );
   if (!res.ok) throw new Error(`FS write failed: ${res.statusText}`);
 }
 
-export async function writeText(filePath: string, text: string): Promise<void> {
+export async function writeText(
+  filePath: string,
+  text: string
+): Promise<void> {
   const res = await fetch(
-    `${FS_API_BASE}/write?path=${encodeURIComponent(filePath)}`,
+    `/api/fs/write?path=${encodeURIComponent(filePath)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(text)
+      body: JSON.stringify(text),
     }
   );
   if (!res.ok) throw new Error(`FS write failed: ${res.statusText}`);
 }
 
-export async function writeBinary(filePath: string, data: ArrayBuffer | Blob): Promise<void> {
+export async function writeBinary(
+  filePath: string,
+  data: ArrayBuffer | Blob
+): Promise<void> {
   const res = await fetch(
-    `${FS_API_BASE}/write?path=${encodeURIComponent(filePath)}`,
+    `/api/fs/write?path=${encodeURIComponent(filePath)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
-      body: data
+      body: data,
     }
   );
   if (!res.ok) throw new Error(`FS write failed: ${res.statusText}`);
@@ -71,7 +78,7 @@ export async function writeBinary(filePath: string, data: ArrayBuffer | Blob): P
 
 export async function listDirs(dir: string): Promise<string[]> {
   const res = await fetch(
-    `${FS_API_BASE}/list?dir=${encodeURIComponent(dir)}`
+    `/api/fs/list?dir=${encodeURIComponent(dir)}`
   );
   if (!res.ok) throw new Error(`FS list failed: ${res.statusText}`);
   return res.json();

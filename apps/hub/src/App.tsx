@@ -2,17 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { experiments, getExperimentById } from "@experiments/catalog";
 import { ExperimentRouteDrawer } from "./components/ExperimentRouteDrawer";
 import { Stage } from "./components/Stage";
-import { ForgeV2 } from "./pages/ForgeV2";
+import { Forge } from "./pages/Forge";
 
 type Route =
   | { type: "experiment"; id: string }
-  | { type: "forge-v2" }
+  | { type: "forge" }
   | null;
 
 function readRouteFromHash(): Route {
   const hash = window.location.hash;
-  if (hash === "#/forge-v2") {
-    return { type: "forge-v2" };
+  if (hash === "#/forge" || hash === "#/forge-v2") {
+    return { type: "forge" };
   }
   if (hash.startsWith("#/exp/")) {
     const id = hash.replace("#/exp/", "").trim();
@@ -41,8 +41,8 @@ export function App() {
 
   useEffect(() => {
     if (!route) return;
-    if (route.type === "forge-v2") {
-      window.history.replaceState({}, "", "#/forge-v2");
+    if (route.type === "forge") {
+      window.history.replaceState({}, "", "#/forge");
     } else {
       window.history.replaceState({}, "", `#/exp/${route.id}`);
     }
@@ -58,12 +58,12 @@ export function App() {
     setMenuOpen(false);
   };
 
-  const selectForgeV2 = () => {
-    setRoute({ type: "forge-v2" });
+  const selectForge = () => {
+    setRoute({ type: "forge" });
     setMenuOpen(false);
   };
-  if (route?.type === "forge-v2") {
-    return <ForgeV2 />;
+  if (route?.type === "forge") {
+    return <Forge />;
   }
 
   return (
@@ -72,7 +72,7 @@ export function App() {
         open={menuOpen}
         active={route?.type === "experiment" ? route : null}
         onClose={() => setMenuOpen(false)}
-        onSelectForgeV2={selectForgeV2}
+        onSelectForge={selectForge}
         onSelectExperiment={selectExperiment}
       />
       <main className="main-pane">

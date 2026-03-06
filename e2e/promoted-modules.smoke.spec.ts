@@ -52,25 +52,4 @@ test.describe("promoted editor/game browser smoke", () => {
     expect(Math.abs(after.x - before.x)).toBeLessThanOrEqual(0.002);
     expect(Math.abs(after.z - before.z)).toBeLessThanOrEqual(0.002);
   });
-
-  test("settlement-builder-ecs: editor/game flow and tool mode hotkeys", async ({
-    page
-  }) => {
-    await page.goto("/#/exp/settlement-builder-ecs");
-    await focusStageCanvas(page);
-
-    const stats = page.locator('[data-testid="settlement-builder-ecs-stats"]');
-    await expect(stats).toContainText("Mode: EDITOR");
-    await expect(stats).toContainText("Tool: Build");
-
-    await page.keyboard.press("KeyX");
-    await expect(stats).toContainText("Tool: Scrap");
-    await page.keyboard.press("KeyD");
-    await expect(stats).toContainText("Tool: Build");
-
-    await page.keyboard.press("F5");
-    await expect(stats).toContainText("Mode: GAME");
-    await page.keyboard.press("Escape");
-    await expect(stats).toContainText("Mode: EDITOR");
-  });
 });

@@ -11,20 +11,22 @@ import {
   type Physics3dBoxPart,
   type Physics3dConvexHullPart,
   type Physics3dResource
-} from "../settlement-builder-ecs/game-physics-3d";
+} from "../prop-physics-3d/game-physics-3d";
 import {
   rootPoseFromBodyPose,
   bodyTranslationFromRootPose,
   type PhysicsQuaternion
-} from "../settlement-builder-ecs/prop-physics-math";
+} from "../prop-physics-3d/prop-physics-math";
 import {
   collisionGroups,
   PHYSICS_LAYER,
   PHYSICS_MASK,
   PHYSICS_MATERIAL_PRESETS
-} from "../settlement-builder-ecs/physics-settings";
+} from "../prop-physics-3d/physics-settings";
 import { parseForgeV2PropMeta, type ForgeV2PropMeta } from "./forge-v2-props";
 import {
+  deriveRoomSupportFloorPart,
+  omitRoomSupportSurfaceParts,
   parseRoomCompoundColliderAsset,
   scaleCompoundConvexHullParts
 } from "./room-compound-collider";
@@ -33,6 +35,7 @@ import {
   createCompoundConvexHullPreview
 } from "./collider-preview";
 import { prepareImportedObjectShadows } from "./shadow-utils";
+import { generatePropPlacements } from "./placement-layout";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -226,7 +229,15 @@ function createRoomCompoundHullPreview(
   roomGroup: THREE.Group,
   parts: Physics3dConvexHullPart[]
 ): THREE.Group {
-  const preview = createCompoundConvexHullPreview(parts);
+  const preview = new THREE.Group();
+  const hullPreview = createCompoundConvexHullPreview(omitRoomSupportSurfaceParts(parts));
+  preview.add(hullPreview);
+
+  const supportFloor = deriveRoomSupportFloorPart(parts);
+  if (supportFloor) {
+    preview.add(createCompoundBoxPreview([supportFloor]));
+  }
+
   preview.position.copy(roomGroup.position);
   preview.quaternion.copy(roomGroup.quaternion);
   preview.scale.copy(roomGroup.scale);
@@ -252,6 +263,28 @@ function setDisplayModeVisibility(
     }
     inst.colliderVisual.visible = !showMesh;
   }
+}
+
+function createRoomSupportFloorCollider(
+  physics: Physics3dResource,
+  parts: Physics3dConvexHullPart[],
+  nextEid: () => EID
+): void {
+  const supportFloor = deriveRoomSupportFloorPart(parts);
+  if (!supportFloor) {
+    return;
+  }
+
+  physics.createFixedCuboidEntity(nextEid(), {
+    translation: supportFloor.translation,
+    halfExtents: supportFloor.halfExtents,
+    friction: 0.9,
+    restitution: 0.01,
+    collisionGroups: collisionGroups(
+      PHYSICS_LAYER.WORLD_STATIC,
+      PHYSICS_MASK.WORLD_STATIC
+    )
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -299,33 +332,6 @@ function createLighting(scene: THREE.Scene, roomBounds?: THREE.Box3): THREE.Dire
   scene.add(hemi);
 
   return key;
-}
-
-/* ------------------------------------------------------------------ */
-/* Prop placement layout                                               */
-/* ------------------------------------------------------------------ */
-
-type PlacementSlot = {
-  x: number;
-  z: number;
-  rotY: number;
-};
-
-function generatePropPlacements(count: number, roomRadius: number): PlacementSlot[] {
-  const placements: PlacementSlot[] = [];
-  const spacing = roomRadius * 0.5;
-  const cols = Math.ceil(Math.sqrt(count));
-
-  for (let i = 0; i < count; i++) {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    const x = (col - (cols - 1) * 0.5) * spacing;
-    const z = (row - (Math.ceil(count / cols) - 1) * 0.5) * spacing;
-    const rotY = (i * 0.7) % (Math.PI * 2);
-    placements.push({ x, z, rotY });
-  }
-
-  return placements;
 }
 
 /* ------------------------------------------------------------------ */
@@ -500,10 +506,20 @@ const experiment: ExperimentModule = {
         // Use the precomputed VHACD compound hull asset for the room so the
         // level follows the same collider model as forge props.
         if (physics) {
+          const scaledRoomColliderParts = scaleCompoundConvexHullParts(
+            roomColliderParts,
+            roomGroup.scale
+          );
+          const structuralRoomColliderParts = omitRoomSupportSurfaceParts(roomColliderParts);
           const colliderCount = createRoomCompoundHullColliders(
             physics,
             roomGroup,
-            roomColliderParts,
+            structuralRoomColliderParts,
+            () => nextEid++ as EID
+          );
+          createRoomSupportFloorCollider(
+            physics,
+            scaledRoomColliderParts,
             () => nextEid++ as EID
           );
           if (colliderCount <= 0) {
@@ -559,7 +575,13 @@ const experiment: ExperimentModule = {
       const validProps = metas.filter((m) => m.collider !== null);
 
       // Generate placement slots
-      const slots = generatePropPlacements(validProps.length, 2.0);
+      const slots = generatePropPlacements(
+        validProps.map((meta) => ({
+          width: meta.collider?.dimensions.width ?? 1,
+          depth: meta.collider?.dimensions.depth ?? 1
+        })),
+        2.0
+      );
 
       // Load visuals and create physics bodies in parallel
       await Promise.all(

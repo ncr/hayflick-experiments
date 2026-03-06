@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  deriveRoomSupportFloorPart,
+  omitRoomSupportSurfaceParts,
   parseRoomCompoundColliderAsset,
   scaleCompoundConvexHullParts
 } from "./room-compound-collider";
@@ -49,5 +51,49 @@ describe("physics-prop-drop room compound collider", () => {
       -10, 0, 30,
       20, 60, 120
     ]);
+  });
+
+  it("derives a flat support floor from the top walkable slab when the hull includes an underside slab", () => {
+    const parts = [
+      {
+        translation: { x: 0, y: 0, z: 0 },
+        vertices: new Float32Array([
+          -4, 0, -3,
+          4, 0, -3,
+          4, 0.12, 3,
+          -4, 0.12, 3
+        ])
+      },
+      {
+        translation: { x: -4.5, y: 0, z: 0 },
+        vertices: new Float32Array([
+          0, 0, -3,
+          0.5, 0, -3,
+          0.5, 3, 3,
+          0, 3, 3
+        ])
+      },
+      {
+        translation: { x: 0, y: 0.35, z: 0 },
+        vertices: new Float32Array([
+          -4, 0, -3,
+          4, 0, -3,
+          4, 0.05, 3,
+          -4, 0.05, 3
+        ])
+      }
+    ];
+    const supportFloor = deriveRoomSupportFloorPart(parts);
+
+    expect(supportFloor?.translation.x).toBe(0);
+    expect(supportFloor?.translation.y).toBeCloseTo(0.392, 6);
+    expect(supportFloor?.translation.z).toBe(0);
+    expect(supportFloor?.halfExtents).toEqual({
+      x: 4,
+      y: 0.01,
+      z: 3
+    });
+
+    expect(omitRoomSupportSurfaceParts(parts)).toEqual([parts[1]]);
   });
 });

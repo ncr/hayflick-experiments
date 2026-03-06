@@ -3347,3 +3347,58 @@ Preventive checklist:
 - When consuming forge-v2 props, prefer `physics.resolved` before falling back to overrides or material presets.
 - For compound convex hull dynamic bodies, give Rapier extra solver iterations instead of adding experiment-local force-sleep heuristics.
 - Keep `createPhysics3dResource` world integration tuning aligned with the editor drop sandbox when the scene is dominated by resting contact stacks.
+
+## 2026-03-06 - `physics-prop-drop` spawn layout must use rotated prop footprints, not a fixed grid
+Root cause:
+- Initial prop placement used a constant 1-unit grid regardless of each prop's collider width/depth.
+- Several forge-v2 props are roughly 1 meter wide, and the experiment also applies per-prop yaw, so their rotated spawn footprints could overlap before simulation even started.
+
+Detection signal:
+- A regression test that checks pairwise overlap of rotated spawn footprints failed against the old fixed-grid layout.
+- User observed props starting interpenetrating and never settling cleanly in `physics-prop-drop`.
+
+Preventive checklist:
+- Generate `physics-prop-drop` spawn slots from collider-derived width/depth, not just prop count.
+- Inflate row/column spacing by the rotated footprint extents plus a safety gap before spawning dynamic bodies.
+- Keep a unit test that rejects pairwise spawn-footprint overlap for representative 1x1 meter props.
+
+## 2026-03-06 - `physics-prop-drop` room VHACD can include broad low support slabs that prevent rest settling
+Root cause:
+- The authored room compound-hull collider included multiple broad, low horizontal slabs in the playable area instead of one clean resting surface.
+- Props slept normally on a flat floor, but those extra room support surfaces kept waking a few bodies even after long settle time.
+
+Detection signal:
+- A new Rapier regression test passed on a simple flat floor and failed on the authored room collider with a few props still awake after 20 seconds.
+- The failing set stayed consistent (`commodore-pet-inspired-computer`, `large-desk-without-drawers`, `mainframe-with-many-distinct-status-lights`), which pointed to room contact geometry instead of random solver noise.
+
+Preventive checklist:
+- For `physics-prop-drop`, derive one flat support floor from the broadest low-lying room hull and use the remaining room hulls for walls/features only.
+- Keep a simulation regression that compares flat-floor settling against authored-room settling so room collider regressions are isolated quickly.
+- When a “physics params” suspicion reproduces only on one environment collider, inspect and simplify the static contact geometry before retuning shared body defaults.
+
+## 2026-03-06 - `physics-prop-drop` support floor must use the top walkable slab, not the underside support slab
+Root cause:
+- The room VHACD contained both a lower broad underside slab and a higher broad thin walkable slab.
+- The first support-floor derivation picked the lowest broad slab, which fixed twitching but moved the resting plane below the visible floor mesh so props looked sunk.
+
+Detection signal:
+- User reported props sinking into the room floor immediately after the support-floor fix.
+- A regression test with stacked broad slabs failed until the derivation preferred the higher thin slab.
+
+Preventive checklist:
+- When deriving a floor from room hull parts, prefer the highest broad thin slab in the lower portion of the room rather than the absolute lowest broad slab.
+- Keep a unit test that includes both an underside slab and a walkable slab so floor-height regressions are caught without visual QA.
+- Continue removing broad support-surface hulls at or below the chosen walkable slab from the structural room collider set.
+
+## 2026-03-06 - Experiment removal must include browser smoke coverage and route/catalog references
+Root cause:
+- Removing an experiment from `packages/experiments/src` and the registry did not automatically remove Playwright smoke cases or route references that still navigated to the deleted experiment id.
+
+Detection signal:
+- After deleting `settlement-builder-ecs`, a repo-wide search still found `e2e/promoted-modules.smoke.spec.ts` navigating to `/#/exp/settlement-builder-ecs`.
+- Static references remained even though package typecheck passed, which means this class of regression can survive compile-only validation.
+
+Preventive checklist:
+- When deleting an experiment, search the whole repo for its id string, not just source imports.
+- Check `packages/experiments/src/registry.ts`, browser smoke/e2e specs, and route/menu surfaces together before considering the removal complete.
+- Treat compile success as insufficient for experiment removals; include a reference search or targeted smoke-test pass.
