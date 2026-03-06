@@ -139,4 +139,62 @@ describe("physics-prop-drop forge-v2 props", () => {
     expect(meta.collider).toBeNull();
     expect(meta.physics.mass).toBeGreaterThan(0);
   });
+
+  it("prefers resolved forge physics over empty overrides", () => {
+    const meta = parseForgeV2PropMeta("desk", {
+      processing: {
+        mesh: {
+          bboxProcessed: {
+            width: 2,
+            height: 1,
+            depth: 1
+          }
+        }
+      },
+      colliders: {
+        presets: [
+          {
+            presetId: "balanced",
+            generation: { hullCount: 8 },
+            collider: {
+              type: "compound-convex-hulls",
+              params: {
+                parts: [
+                  {
+                    position: [0, 0.5, 0],
+                    points: [
+                      [-1, -0.5, -0.5],
+                      [1, -0.5, -0.5],
+                      [1, 0.5, 0.5],
+                      [-1, 0.5, 0.5]
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      physics: {
+        kind: "wood",
+        overrides: {},
+        resolved: {
+          material: "metal",
+          manualMass: 12,
+          friction: 0.61,
+          restitution: 0.02,
+          linearDamping: 0.44,
+          angularDamping: 0.57
+        }
+      }
+    });
+
+    expect(meta.physics).toEqual({
+      mass: 12,
+      friction: 0.61,
+      restitution: 0.02,
+      linearDamping: 0.44,
+      angularDamping: 0.57
+    });
+  });
 });

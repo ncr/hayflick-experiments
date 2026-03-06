@@ -12,7 +12,8 @@
     "test": "vitest run",
     "forge:retrofit-colliders": "node scripts/retrofit-collider-meshes.mjs",
     "forge:precompute-colliders": "node scripts/precompute-vhacd-colliders.mjs --preset=Balanced",
-    "forge-v2:precompute-colliders": "node scripts/precompute-vhacd-colliders-v2.mjs"
+    "forge-v2:precompute-colliders": "node scripts/precompute-vhacd-colliders-v2.mjs",
+    "forge:precompute-static-collider": "node scripts/precompute-static-asset-collider.mjs"
   },
   "dependencies": {
     "@common/collider-vhacd": "workspace:*",

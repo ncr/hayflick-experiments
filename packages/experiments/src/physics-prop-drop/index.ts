@@ -8,6 +8,8 @@ import type { ExperimentModule } from "../runtime/types";
 
 import {
   createPhysics3dResource,
+  type Physics3dBoxPart,
+  type Physics3dConvexHullPart,
   type Physics3dResource
 } from "../settlement-builder-ecs/game-physics-3d";
 import {
@@ -22,6 +24,14 @@ import {
   PHYSICS_MATERIAL_PRESETS
 } from "../settlement-builder-ecs/physics-settings";
 import { parseForgeV2PropMeta, type ForgeV2PropMeta } from "./forge-v2-props";
+import {
+  parseRoomCompoundColliderAsset,
+  scaleCompoundConvexHullParts
+} from "./room-compound-collider";
+import {
+  createCompoundBoxPreview,
+  createCompoundConvexHullPreview
+} from "./collider-preview";
 import { prepareImportedObjectShadows } from "./shadow-utils";
 
 /* ------------------------------------------------------------------ */
@@ -31,9 +41,12 @@ import { prepareImportedObjectShadows } from "./shadow-utils";
 type PropInstance = {
   eid: EID;
   propId: string;
-  visual: THREE.Group;
+  visual: THREE.Group | null;
+  colliderVisual: THREE.Group;
   localRootOffset: { x: number; y: number; z: number };
 };
+
+type DisplayMode = "mesh" | "collider";
 
 /* ------------------------------------------------------------------ */
 /* Rapier init                                                         */
@@ -68,6 +81,21 @@ async function loadGlbFromUrl(url: string): Promise<THREE.Group | null> {
 async function loadRoomGlb(): Promise<THREE.Group | null> {
   const url = `/api/assets/read?path=${encodeURIComponent("empty+room+interior+3d+model.glb")}`;
   return loadGlbFromUrl(url);
+}
+
+async function loadRoomColliderParts(): Promise<Physics3dConvexHullPart[]> {
+  try {
+    const url = `/api/assets/read?path=${encodeURIComponent("empty+room+interior+3d+collider-balanced.json")}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      return [];
+    }
+    const data = await res.json();
+    const parsed = typeof data.content === "string" ? JSON.parse(data.content) : data;
+    return parseRoomCompoundColliderAsset(parsed);
+  } catch {
+    return [];
+  }
 }
 
 async function loadPropGlb(propId: string): Promise<THREE.Group | null> {
@@ -106,7 +134,7 @@ async function loadPropMeta(propId: string): Promise<ForgeV2PropMeta> {
 }
 
 /* ------------------------------------------------------------------ */
-/* Room physics collider (simplified boxes, not trimesh)                */
+/* Room physics colliders                                                */
 /* ------------------------------------------------------------------ */
 
 /** Measure the scaled bounding box of the room group to auto-size physics boxes. */
@@ -115,59 +143,115 @@ function measureRoomBounds(group: THREE.Group): THREE.Box3 {
   return new THREE.Box3().setFromObject(group);
 }
 
-/**
- * Create simple box colliders for the room: floor + 4 walls.
- * Much faster than a 1.4M-triangle trimesh.
- */
-function createRoomBoxColliders(
+function createRoomCompoundHullColliders(
   physics: Physics3dResource,
-  bounds: THREE.Box3,
+  roomGroup: THREE.Group,
+  parts: Physics3dConvexHullPart[],
   nextEid: () => EID
-): void {
+): number {
+  if (parts.length <= 0) {
+    return 0;
+  }
+
+  const cg = collisionGroups(PHYSICS_LAYER.WORLD_STATIC, PHYSICS_MASK.WORLD_STATIC);
+  const scaledParts = scaleCompoundConvexHullParts(parts, roomGroup.scale);
+  const rotation = roomGroup.quaternion;
+  physics.createFixedCompoundConvexHullEntity(nextEid(), {
+    translation: {
+      x: roomGroup.position.x,
+      y: roomGroup.position.y,
+      z: roomGroup.position.z
+    },
+    rotation: { x: rotation.x, y: rotation.y, z: rotation.z, w: rotation.w },
+    parts: scaledParts,
+    friction: 0.9,
+    restitution: 0.01,
+    collisionGroups: cg
+  });
+  return scaledParts.length;
+}
+
+function createFallbackRoomBoxParts(bounds: THREE.Box3): Physics3dBoxPart[] {
   const size = new THREE.Vector3();
   const center = new THREE.Vector3();
   bounds.getSize(size);
   bounds.getCenter(center);
 
   const wallThickness = 0.5;
-  const cg = collisionGroups(PHYSICS_LAYER.WORLD_STATIC, PHYSICS_MASK.WORLD_STATIC);
-  const opts = { friction: 0.9, restitution: 0.01, collisionGroups: cg };
-
-  // Floor
-  physics.createFixedCuboidEntity(nextEid(), {
-    translation: { x: center.x, y: bounds.min.y - 0.05, z: center.z },
-    halfExtents: { x: size.x * 0.5, y: 0.05, z: size.z * 0.5 },
-    ...opts
-  });
-
-  // Walls: -X, +X, -Z, +Z
   const wallHeight = size.y * 0.5;
   const wallY = bounds.min.y + wallHeight;
 
-  // -X wall
-  physics.createFixedCuboidEntity(nextEid(), {
-    translation: { x: bounds.min.x - wallThickness * 0.5, y: wallY, z: center.z },
-    halfExtents: { x: wallThickness * 0.5, y: wallHeight, z: size.z * 0.5 },
-    ...opts
-  });
-  // +X wall
-  physics.createFixedCuboidEntity(nextEid(), {
-    translation: { x: bounds.max.x + wallThickness * 0.5, y: wallY, z: center.z },
-    halfExtents: { x: wallThickness * 0.5, y: wallHeight, z: size.z * 0.5 },
-    ...opts
-  });
-  // -Z wall
-  physics.createFixedCuboidEntity(nextEid(), {
-    translation: { x: center.x, y: wallY, z: bounds.min.z - wallThickness * 0.5 },
-    halfExtents: { x: size.x * 0.5, y: wallHeight, z: wallThickness * 0.5 },
-    ...opts
-  });
-  // +Z wall
-  physics.createFixedCuboidEntity(nextEid(), {
-    translation: { x: center.x, y: wallY, z: bounds.max.z + wallThickness * 0.5 },
-    halfExtents: { x: size.x * 0.5, y: wallHeight, z: wallThickness * 0.5 },
-    ...opts
-  });
+  return [
+    {
+      translation: { x: center.x, y: bounds.min.y - 0.05, z: center.z },
+      halfExtents: { x: size.x * 0.5, y: 0.05, z: size.z * 0.5 }
+    },
+    {
+      translation: { x: bounds.min.x - wallThickness * 0.5, y: wallY, z: center.z },
+      halfExtents: { x: wallThickness * 0.5, y: wallHeight, z: size.z * 0.5 }
+    },
+    {
+      translation: { x: bounds.max.x + wallThickness * 0.5, y: wallY, z: center.z },
+      halfExtents: { x: wallThickness * 0.5, y: wallHeight, z: size.z * 0.5 }
+    },
+    {
+      translation: { x: center.x, y: wallY, z: bounds.min.z - wallThickness * 0.5 },
+      halfExtents: { x: size.x * 0.5, y: wallHeight, z: wallThickness * 0.5 }
+    },
+    {
+      translation: { x: center.x, y: wallY, z: bounds.max.z + wallThickness * 0.5 },
+      halfExtents: { x: size.x * 0.5, y: wallHeight, z: wallThickness * 0.5 }
+    }
+  ];
+}
+
+function createFallbackRoomBoxColliders(
+  physics: Physics3dResource,
+  bounds: THREE.Box3,
+  nextEid: () => EID
+): void {
+  const cg = collisionGroups(PHYSICS_LAYER.WORLD_STATIC, PHYSICS_MASK.WORLD_STATIC);
+  const opts = { friction: 0.9, restitution: 0.01, collisionGroups: cg };
+
+  for (const part of createFallbackRoomBoxParts(bounds)) {
+    physics.createFixedCuboidEntity(nextEid(), {
+      translation: part.translation,
+      halfExtents: part.halfExtents,
+      ...opts
+    });
+  }
+}
+
+function createRoomCompoundHullPreview(
+  roomGroup: THREE.Group,
+  parts: Physics3dConvexHullPart[]
+): THREE.Group {
+  const preview = createCompoundConvexHullPreview(parts);
+  preview.position.copy(roomGroup.position);
+  preview.quaternion.copy(roomGroup.quaternion);
+  preview.scale.copy(roomGroup.scale);
+  return preview;
+}
+
+function setDisplayModeVisibility(
+  mode: DisplayMode,
+  roomMeshVisual: THREE.Object3D | null,
+  roomColliderVisual: THREE.Object3D | null,
+  propInstances: PropInstance[]
+): void {
+  const showMesh = mode === "mesh";
+  if (roomMeshVisual) {
+    roomMeshVisual.visible = showMesh;
+  }
+  if (roomColliderVisual) {
+    roomColliderVisual.visible = !showMesh;
+  }
+  for (const inst of propInstances) {
+    if (inst.visual) {
+      inst.visual.visible = showMesh;
+    }
+    inst.colliderVisual.visible = !showMesh;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -251,24 +335,49 @@ function generatePropPlacements(count: number, roomRadius: number): PlacementSlo
 function createHud(mount: HTMLElement): {
   el: HTMLDivElement;
   update: (propCount: number, awake: number) => void;
+  setDisplayMode: (mode: DisplayMode) => void;
+  setToggleHandler: (handler: () => void) => void;
 } {
   const el = document.createElement("div");
   el.style.cssText =
     "position:absolute;top:8px;left:8px;padding:6px 10px;background:rgba(0,0,0,0.6);" +
-    "color:#eee;font:12px/1.4 monospace;border-radius:4px;pointer-events:none;z-index:10;";
+    "color:#eee;font:12px/1.4 monospace;border-radius:4px;z-index:10;";
   mount.style.position = "relative";
   mount.appendChild(el);
+  const stats = document.createElement("div");
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.style.cssText =
+    "margin-top:6px;padding:4px 8px;border:1px solid rgba(255,255,255,0.2);" +
+    "background:rgba(255,255,255,0.08);color:#eee;border-radius:4px;cursor:pointer;" +
+    "font:12px/1.2 monospace;";
+  let toggleHandler = () => {};
+  toggle.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+  toggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleHandler();
+  });
+  el.append(stats, toggle);
   const update = (propCount: number, awake: number) => {
-    el.textContent = `Props: ${propCount} | Awake: ${awake}`;
+    stats.textContent = `Props: ${propCount} | Awake: ${awake}`;
   };
-  return { el, update };
+  const setDisplayMode = (mode: DisplayMode) => {
+    toggle.textContent = `View: ${mode === "mesh" ? "Mesh" : "Collider"} [C]`;
+  };
+  const setToggleHandler = (handler: () => void) => {
+    toggleHandler = handler;
+  };
+  return { el, update, setDisplayMode, setToggleHandler };
 }
 
 /* ------------------------------------------------------------------ */
 /* Experiment                                                          */
 /* ------------------------------------------------------------------ */
 
-const DROP_HEIGHT = 0.1; // 10cm above floor
+const DROP_HEIGHT = 1.0; // 1m above floor
 
 const experiment: ExperimentModule = {
   id: "physics-prop-drop",
@@ -321,12 +430,39 @@ const experiment: ExperimentModule = {
     // HUD
     const hud = createHud(mount);
     hud.update(0, 0);
+    let displayMode: DisplayMode = "mesh";
+    hud.setDisplayMode(displayMode);
 
     // State
     let physics: Physics3dResource | null = null;
     let nextEid = 1;
     const propInstances: PropInstance[] = [];
+    let roomMeshVisual: THREE.Object3D | null = null;
+    let roomColliderVisual: THREE.Object3D | null = null;
     let disposed = false;
+
+    const applyDisplayMode = () => {
+      setDisplayModeVisibility(
+        displayMode,
+        roomMeshVisual,
+        roomColliderVisual,
+        propInstances
+      );
+      hud.setDisplayMode(displayMode);
+    };
+    const toggleDisplayMode = () => {
+      displayMode = displayMode === "mesh" ? "collider" : "mesh";
+      applyDisplayMode();
+    };
+    hud.setToggleHandler(toggleDisplayMode);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.code !== "KeyC") {
+        return;
+      }
+      event.preventDefault();
+      toggleDisplayMode();
+    };
+    window.addEventListener("keydown", onKeyDown);
 
     // --- Async init ---
     const initPromise = (async () => {
@@ -335,8 +471,11 @@ const experiment: ExperimentModule = {
 
       physics = createPhysics3dResource({ gravity: { x: 0, y: -9.81, z: 0 } });
 
-      // Load room
-      const roomGroup = await loadRoomGlb();
+      // Load room visual + precomputed compound hull collider asset.
+      const [roomGroup, roomColliderParts] = await Promise.all([
+        loadRoomGlb(),
+        loadRoomColliderParts()
+      ]);
       if (disposed) return;
 
       if (roomGroup) {
@@ -344,15 +483,32 @@ const experiment: ExperimentModule = {
         roomGroup.scale.setScalar(10);
         prepareImportedObjectShadows(roomGroup);
         scene.add(roomGroup);
+        roomMeshVisual = roomGroup;
 
         const bounds = measureRoomBounds(roomGroup);
 
         // Set up lighting sized to the room
         createLighting(scene, bounds);
 
-        // Create simplified box colliders for room (floor + walls).
+        roomColliderVisual =
+          roomColliderParts.length > 0
+            ? createRoomCompoundHullPreview(roomGroup, roomColliderParts)
+            : createCompoundBoxPreview(createFallbackRoomBoxParts(bounds));
+        scene.add(roomColliderVisual);
+        applyDisplayMode();
+
+        // Use the precomputed VHACD compound hull asset for the room so the
+        // level follows the same collider model as forge props.
         if (physics) {
-          createRoomBoxColliders(physics, bounds, () => nextEid++ as EID);
+          const colliderCount = createRoomCompoundHullColliders(
+            physics,
+            roomGroup,
+            roomColliderParts,
+            () => nextEid++ as EID
+          );
+          if (colliderCount <= 0) {
+            createFallbackRoomBoxColliders(physics, bounds, () => nextEid++ as EID);
+          }
         }
       } else {
         // Fallback: create a simple floor
@@ -367,6 +523,15 @@ const experiment: ExperimentModule = {
         floor.rotation.x = -Math.PI / 2;
         floor.receiveShadow = true;
         scene.add(floor);
+        roomMeshVisual = floor;
+        roomColliderVisual = createCompoundBoxPreview([
+          {
+            translation: { x: 0, y: -0.05, z: 0 },
+            halfExtents: { x: 10, y: 0.05, z: 10 }
+          }
+        ]);
+        scene.add(roomColliderVisual);
+        applyDisplayMode();
 
         if (physics) {
           const floorEid = nextEid++ as EID;
@@ -401,10 +566,12 @@ const experiment: ExperimentModule = {
         validProps.map(async (meta, i) => {
           if (disposed || !physics) return;
 
-          const visual = await loadPropGlb(meta.id);
-          if (disposed || !visual || !physics) return;
-          prepareImportedObjectShadows(visual);
           if (!meta.collider) return;
+          const visual = await loadPropGlb(meta.id);
+          if (disposed || !physics) return;
+          if (visual) {
+            prepareImportedObjectShadows(visual);
+          }
 
           const slot = slots[i];
           const eid = nextEid++ as EID;
@@ -445,16 +612,37 @@ const experiment: ExperimentModule = {
             collisionGroups: collisionGroup
           });
 
-          // Set initial visual position
-          visual.position.set(slot.x, dropY, slot.z);
-          visual.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
-          scene.add(visual);
+          let visualRoot: THREE.Group | null = null;
+          if (visual) {
+            visual.position.set(slot.x, dropY, slot.z);
+            visual.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+            scene.add(visual);
+            visualRoot = visual;
+          }
 
-          propInstances.push({ eid, propId: meta.id, visual, localRootOffset });
+          const colliderVisual = createCompoundConvexHullPreview(meta.collider.parts);
+          colliderVisual.position.set(
+            bodyTranslation.x,
+            bodyTranslation.y,
+            bodyTranslation.z
+          );
+          colliderVisual.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+          scene.add(colliderVisual);
+
+          const instance: PropInstance = {
+            eid,
+            propId: meta.id,
+            visual: visualRoot,
+            colliderVisual,
+            localRootOffset
+          };
+          propInstances.push(instance);
+          setDisplayModeVisibility(displayMode, roomMeshVisual, roomColliderVisual, [instance]);
         })
       );
 
       if (!disposed) {
+        applyDisplayMode();
         hud.update(propInstances.length, propInstances.length);
       }
     })();
@@ -480,8 +668,12 @@ const experiment: ExperimentModule = {
           const rot = physics.getEntityRotation(inst.eid);
           if (pos && rot) {
             const root = rootPoseFromBodyPose(pos, inst.localRootOffset, rot);
-            inst.visual.position.set(root.worldX, root.worldY, root.worldZ);
-            inst.visual.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+            if (inst.visual) {
+              inst.visual.position.set(root.worldX, root.worldY, root.worldZ);
+              inst.visual.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+            }
+            inst.colliderVisual.position.set(pos.x, pos.y, pos.z);
+            inst.colliderVisual.quaternion.set(rot.x, rot.y, rot.z, rot.w);
           }
           if (!physics.isEntitySleeping(inst.eid)) {
             awakeCount++;
@@ -500,6 +692,7 @@ const experiment: ExperimentModule = {
       cancelAnimationFrame(raf);
       resizeObserver.disconnect();
       unbindInput();
+      window.removeEventListener("keydown", onKeyDown);
       hud.el.remove();
       void initPromise.then(() => {
         physics?.dispose();

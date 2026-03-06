@@ -44,6 +44,16 @@ export type Physics3dConvexHullPart = {
   vertices: Float32Array;
 };
 
+export const DEFAULT_PHYSICS3D_LINEAR_DAMPING = 0.22;
+export const DEFAULT_PHYSICS3D_ANGULAR_DAMPING = 0.3;
+export const DEFAULT_PHYSICS3D_COMPLEX_BODY_SOLVER_ITERATIONS = 2;
+export const DEFAULT_PHYSICS3D_WORLD_TUNING = {
+  maxCcdSubsteps: 4,
+  numSolverIterations: 8,
+  numInternalPgsIterations: 2,
+  normalizedAllowedLinearError: 0.0005
+} as const;
+
 export type Physics3dResource = {
   world: RapierWorld;
   characterController: KinematicCharacterController;
@@ -140,6 +150,7 @@ export type Physics3dResource = {
       linearDamping?: number;
       angularDamping?: number;
       ccd?: boolean;
+      additionalSolverIterations?: number;
       collisionGroups?: number;
     }
   ): { bodyHandle: RigidBodyHandle; colliderHandle: ColliderHandle };
@@ -155,6 +166,7 @@ export type Physics3dResource = {
       linearDamping?: number;
       angularDamping?: number;
       ccd?: boolean;
+      additionalSolverIterations?: number;
       collisionGroups?: number;
     }
   ): {
@@ -174,6 +186,7 @@ export type Physics3dResource = {
       linearDamping?: number;
       angularDamping?: number;
       ccd?: boolean;
+      additionalSolverIterations?: number;
       collisionGroups?: number;
     }
   ): {
@@ -193,6 +206,7 @@ export type Physics3dResource = {
       linearDamping?: number;
       angularDamping?: number;
       ccd?: boolean;
+      additionalSolverIterations?: number;
       collisionGroups?: number;
     }
   ): { bodyHandle: RigidBodyHandle; colliderHandle: ColliderHandle } | null;
@@ -227,6 +241,19 @@ export type Physics3dResource = {
   step(dtFrame: number): number;
   dispose(): void;
 };
+
+type MutableIntegrationParameters = {
+  dt: number;
+  maxCcdSubsteps: number;
+  numSolverIterations: number;
+  numInternalPgsIterations: number;
+  normalizedAllowedLinearError: number;
+};
+
+type DynamicBodyTuningTarget = Pick<
+  RigidBody,
+  "setLinearDamping" | "setAngularDamping" | "enableCcd" | "setAdditionalSolverIterations"
+>;
 
 function getBody(resource: Physics3dResource, eid: EID): RigidBody | null {
   const handle = resource.eidToBody.get(eid);
@@ -290,11 +317,63 @@ function createCuboidColliderDesc(options: {
   return desc;
 }
 
+export function applyPhysics3dWorldTuning(
+  integrationParameters: MutableIntegrationParameters,
+  fixedDt: number,
+  options?: {
+    maxCcdSubsteps?: number;
+    numSolverIterations?: number;
+    numInternalPgsIterations?: number;
+    normalizedAllowedLinearError?: number;
+  }
+): void {
+  integrationParameters.dt = fixedDt;
+  integrationParameters.maxCcdSubsteps =
+    options?.maxCcdSubsteps ?? DEFAULT_PHYSICS3D_WORLD_TUNING.maxCcdSubsteps;
+  integrationParameters.numSolverIterations =
+    options?.numSolverIterations ?? DEFAULT_PHYSICS3D_WORLD_TUNING.numSolverIterations;
+  integrationParameters.numInternalPgsIterations =
+    options?.numInternalPgsIterations ??
+    DEFAULT_PHYSICS3D_WORLD_TUNING.numInternalPgsIterations;
+  integrationParameters.normalizedAllowedLinearError =
+    options?.normalizedAllowedLinearError ??
+    DEFAULT_PHYSICS3D_WORLD_TUNING.normalizedAllowedLinearError;
+}
+
+export function configureDynamicBodyTuning(
+  body: DynamicBodyTuningTarget,
+  options?: {
+    linearDamping?: number;
+    angularDamping?: number;
+    ccd?: boolean;
+    additionalSolverIterations?: number;
+    usesComplexCollider?: boolean;
+  }
+): void {
+  body.setLinearDamping(
+    options?.linearDamping ?? DEFAULT_PHYSICS3D_LINEAR_DAMPING
+  );
+  body.setAngularDamping(
+    options?.angularDamping ?? DEFAULT_PHYSICS3D_ANGULAR_DAMPING
+  );
+  body.enableCcd(options?.ccd ?? true);
+  body.setAdditionalSolverIterations(
+    options?.additionalSolverIterations ??
+      (options?.usesComplexCollider
+        ? DEFAULT_PHYSICS3D_COMPLEX_BODY_SOLVER_ITERATIONS
+        : 0)
+  );
+}
+
 export function createPhysics3dResource(options?: {
   gravity?: Vector3;
   fixedDt?: number;
   maxSubsteps?: number;
   characterOffset?: number;
+  maxCcdSubsteps?: number;
+  numSolverIterations?: number;
+  numInternalPgsIterations?: number;
+  normalizedAllowedLinearError?: number;
 }): Physics3dResource {
   const world = new RAPIER3D.World(options?.gravity ?? { x: 0, y: -9.81, z: 0 });
   const characterController = world.createCharacterController(
@@ -302,11 +381,18 @@ export function createPhysics3dResource(options?: {
   );
   characterController.setSlideEnabled(true);
   characterController.setUp({ x: 0, y: 1, z: 0 });
+  const fixedDt = options?.fixedDt ?? 1 / 60;
+  applyPhysics3dWorldTuning(world.integrationParameters, fixedDt, {
+    maxCcdSubsteps: options?.maxCcdSubsteps,
+    numSolverIterations: options?.numSolverIterations,
+    numInternalPgsIterations: options?.numInternalPgsIterations,
+    normalizedAllowedLinearError: options?.normalizedAllowedLinearError
+  });
 
   const resource: Physics3dResource = {
     world,
     characterController,
-    fixedDt: options?.fixedDt ?? 1 / 60,
+    fixedDt,
     accumulator: 0,
     maxSubsteps: options?.maxSubsteps ?? 8,
     eidToBody: new Map<EID, RigidBodyHandle>(),
@@ -566,6 +652,7 @@ export function createPhysics3dResource(options?: {
         linearDamping?: number;
         angularDamping?: number;
         ccd?: boolean;
+        additionalSolverIterations?: number;
         collisionGroups?: number;
       }
     ): { bodyHandle: RigidBodyHandle; colliderHandle: ColliderHandle } {
@@ -578,9 +665,7 @@ export function createPhysics3dResource(options?: {
         bodyDesc.setRotation(options.rotation);
       }
       const body = world.createRigidBody(bodyDesc);
-      body.setLinearDamping(options.linearDamping ?? 0.22);
-      body.setAngularDamping(options.angularDamping ?? 0.3);
-      body.enableCcd(options.ccd ?? true);
+      configureDynamicBodyTuning(body, options);
 
       const desc = createCuboidColliderDesc(options).setMass(options.mass ?? 1);
       const collider = world.createCollider(desc, body);
@@ -602,6 +687,7 @@ export function createPhysics3dResource(options?: {
         linearDamping?: number;
         angularDamping?: number;
         ccd?: boolean;
+        additionalSolverIterations?: number;
         collisionGroups?: number;
       }
     ): {
@@ -618,9 +704,7 @@ export function createPhysics3dResource(options?: {
         bodyDesc.setRotation(options.rotation);
       }
       const body = world.createRigidBody(bodyDesc);
-      body.setLinearDamping(options.linearDamping ?? 0.22);
-      body.setAngularDamping(options.angularDamping ?? 0.3);
-      body.enableCcd(options.ccd ?? true);
+      configureDynamicBodyTuning(body, options);
 
       const colliders: Collider[] = [];
       const partCount = Math.max(1, options.parts.length);
@@ -672,6 +756,7 @@ export function createPhysics3dResource(options?: {
         linearDamping?: number;
         angularDamping?: number;
         ccd?: boolean;
+        additionalSolverIterations?: number;
         collisionGroups?: number;
       }
     ): {
@@ -688,9 +773,10 @@ export function createPhysics3dResource(options?: {
         bodyDesc.setRotation(options.rotation);
       }
       const body = world.createRigidBody(bodyDesc);
-      body.setLinearDamping(options.linearDamping ?? 0.22);
-      body.setAngularDamping(options.angularDamping ?? 0.3);
-      body.enableCcd(options.ccd ?? true);
+      configureDynamicBodyTuning(body, {
+        ...options,
+        usesComplexCollider: true
+      });
 
       const colliders: Collider[] = [];
       const partCount = Math.max(1, options.parts.length);
@@ -746,6 +832,7 @@ export function createPhysics3dResource(options?: {
         linearDamping?: number;
         angularDamping?: number;
         ccd?: boolean;
+        additionalSolverIterations?: number;
         collisionGroups?: number;
       }
     ): { bodyHandle: RigidBodyHandle; colliderHandle: ColliderHandle } | null {
@@ -758,9 +845,10 @@ export function createPhysics3dResource(options?: {
         bodyDesc.setRotation(options.rotation);
       }
       const body = world.createRigidBody(bodyDesc);
-      body.setLinearDamping(options.linearDamping ?? 0.22);
-      body.setAngularDamping(options.angularDamping ?? 0.3);
-      body.enableCcd(options.ccd ?? true);
+      configureDynamicBodyTuning(body, {
+        ...options,
+        usesComplexCollider: true
+      });
 
       const desc = RAPIER3D.ColliderDesc.convexHull(options.vertices);
       if (!desc) {

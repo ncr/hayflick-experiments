@@ -3319,3 +3319,31 @@ Preventive checklist:
 - When a user asks for "the same as the asset forge UI", copy the UI's selection semantics exactly instead of inferring from raw files.
 - Keep forge-v2 batch filters aligned with `lifecycle.status` when the UI stage filter is status-based.
 - After collider batch runs, verify both the raw asset condition and the UI-equivalent pending set.
+
+## 2026-03-06 - `physics-prop-drop` room collision should use a precomputed compound hull asset
+Root cause:
+- The experiment used a quick floor-plus-four-walls collider approximation for the room while the props were already using authored compound colliders.
+- That made the level behave unlike a prop and left the room on a separate collision path from the forge prop workflow.
+
+Detection signal:
+- User asked to treat the level "as prop" and noticed the room meshes still lacked a proper collider path.
+- A first pass switched the room to fixed trimesh colliders, and the user explicitly rejected mesh colliders in favor of generated hulls.
+
+Preventive checklist:
+- For static level meshes in `physics-prop-drop`, generate and check in a VHACD compound hull asset instead of using trimeshes.
+- Load the room through the same compound-hull parser shape used for forge props so runtime physics stays consistent.
+- Keep the box-shell room collider only as a fallback path when the authored hull asset is missing or invalid.
+
+## 2026-03-06 - `physics-prop-drop` stability regressions should be fixed in body/world tuning, not by force-sleeping props
+Root cause:
+- The experiment parser ignored forge-v2 `physics.resolved` data, so dynamic props could spawn with fallback mass/damping/material values instead of the authored physics profile.
+- `createPhysics3dResource` also left Rapier on weaker defaults than the editor drop sandbox, and compound convex hull bodies were created without extra solver iterations.
+
+Detection signal:
+- A few dropped props stayed awake indefinitely after landing in `physics-prop-drop`, even though the user expected normal rest settling.
+- The same code path showed `physics.resolved` values in asset metadata, but `parseForgeV2PropMeta` only read `physics.overrides`.
+
+Preventive checklist:
+- When consuming forge-v2 props, prefer `physics.resolved` before falling back to overrides or material presets.
+- For compound convex hull dynamic bodies, give Rapier extra solver iterations instead of adding experiment-local force-sleep heuristics.
+- Keep `createPhysics3dResource` world integration tuning aligned with the editor drop sandbox when the scene is dominated by resting contact stacks.
