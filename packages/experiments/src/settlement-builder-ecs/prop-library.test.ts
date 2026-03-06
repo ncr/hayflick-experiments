@@ -161,6 +161,117 @@ describe("prop library", () => {
     expect(defs[1]?.colliderVariants?.convexHull?.type).toBe("convex-hull");
   });
 
+  it("parses forge-v2 selected compound hull presets and finalPivot root offsets", async () => {
+    const fetchMock = async (input: string): Promise<Response> => {
+      const url = new URL(input, "http://localhost");
+      if (url.pathname === "/api/fs/list") {
+        return jsonResponse(["crate"]);
+      }
+
+      const path = url.searchParams.get("path");
+      if (path === "props/crate/meta.json") {
+        return jsonResponse({
+          content: JSON.stringify({
+            description: "Ammo Crate",
+            processing: {
+              mesh: {
+                bboxProcessed: { width: 1, height: 0.75, depth: 0.5 }
+              },
+              transform: {
+                finalPivot: {
+                  offset: [0.25, 0.5, -0.75]
+                }
+              }
+            },
+            colliders: {
+              selectedPresetId: "fast-preview",
+              presets: [
+                {
+                  presetId: "fast-preview",
+                  generation: { hullCount: 4 },
+                  collider: {
+                    type: "compound-convex-hulls",
+                    params: {
+                      parts: [
+                        {
+                          position: [0, 0.3, 0],
+                          points: [
+                            [-0.25, -0.3, -0.15],
+                            [0.25, -0.3, -0.15],
+                            [0.25, -0.3, 0.15],
+                            [-0.25, -0.3, 0.15],
+                            [0, 0.3, 0]
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  presetId: "high-detail",
+                  generation: { hullCount: 12 },
+                  collider: {
+                    type: "compound-convex-hulls",
+                    params: {
+                      parts: [
+                        {
+                          position: [99, 99, 99],
+                          points: [
+                            [0, 0, 0],
+                            [1, 0, 0],
+                            [0, 1, 0],
+                            [0, 0, 1]
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            physics: {
+              kind: "wood",
+              resolved: {
+                material: "wood",
+                manualMass: 1.8,
+                friction: 0.72,
+                restitution: 0.04,
+                linearDamping: 0.26,
+                angularDamping: 0.36,
+                activationDelayMs: 500
+              }
+            }
+          })
+        });
+      }
+
+      return new Response("not found", { status: 404 });
+    };
+
+    const defs = await listSavedPropDefinitions(fetchMock);
+    expect(defs).toHaveLength(1);
+    expect(defs[0]?.bbox).toEqual({ width: 1, height: 0.75, depth: 0.5 });
+    expect(defs[0]?.physicsHint).toEqual({
+      mobility: undefined,
+      material: "wood",
+      mass: 1.8,
+      friction: 0.72,
+      restitution: 0.04,
+      linearDamping: 0.26,
+      angularDamping: 0.36,
+      activationDelayMs: 500
+    });
+    expect(defs[0]?.compoundConvexHulls?.rootOffset).toEqual([-0.25, -0.5, 0.75]);
+    expect(defs[0]?.compoundConvexHulls?.parts[0]?.position).toEqual([0, 0.3, 0]);
+    expect(defs[0]?.colliderVariants?.box?.position).toEqual([0, 0.375, 0]);
+    expect(defs[0]?.colliderVariants?.convexHull?.rootOffset).toEqual([0, -0.375, 0]);
+    expect(defs[0]?.colliderVariants?.compoundConvexHulls?.rootOffset).toEqual([
+      -0.25,
+      -0.5,
+      0.75
+    ]);
+  });
+
   it("falls back from processed to raw GLB", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const fetchMock = async (input: string): Promise<Response> => {

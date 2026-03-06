@@ -52,21 +52,21 @@
       "name": "High Detail",
       "enabledByDefault": false,
       "options": {
-        "resolution": 256,
-        "concavity": 0.0015,
-        "alpha": 0.06,
+        "resolution": 192,
+        "concavity": 0.0018,
+        "alpha": 0.055,
         "beta": 0.05,
-        "sliverPenalty": 0.5,
+        "sliverPenalty": 0.45,
         "planeDownsampling": 1,
         "convexHullDownsampling": 1,
-        "maxConvexHulls": 32,
-        "minVoxelCountPerPart": 20,
-        "maxHullPointSamples": 3200,
+        "maxConvexHulls": 28,
+        "minVoxelCountPerPart": 22,
+        "maxHullPointSamples": 2400,
         "projectHullVertices": true,
-        "projectHullMaxDistance": 0.16,
+        "projectHullMaxDistance": 0.17,
         "precomputeBothHullVariants": true,
-        "maxGridCells": 20000000,
-        "voxelizationTriangleSampleCount": 20000
+        "maxGridCells": 16000000,
+        "voxelizationTriangleSampleCount": 16000
       }
     }
   ]

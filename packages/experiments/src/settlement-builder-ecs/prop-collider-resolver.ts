@@ -202,6 +202,14 @@ function flattenConvexHullVertices(hull: SavedPropConvexHullCollider): Float32Ar
   return flat;
 }
 
+function toVector3(tuple: [number, number, number]): Vector3 {
+  return {
+    x: tuple[0],
+    y: tuple[1],
+    z: tuple[2]
+  };
+}
+
 export function resolvePropColliderResolution(options: {
   sourcePropId: string;
   definition: SavedPropDefinition | null | undefined;
@@ -221,7 +229,7 @@ export function resolvePropColliderResolution(options: {
           mode,
           shape: "compound-convex-hulls",
           usesComplexCollider: true,
-          localRootOffset: { x: 0, y: 0, z: 0 },
+          localRootOffset: toVector3(compound.rootOffset),
           parts
         };
       }
@@ -253,11 +261,7 @@ export function resolvePropColliderResolution(options: {
         mode,
         shape: "convex-hull",
         usesComplexCollider: true,
-        localRootOffset: {
-          x: convex.rootOffset[0],
-          y: convex.rootOffset[1],
-          z: convex.rootOffset[2]
-        },
+        localRootOffset: toVector3(convex.rootOffset),
         vertices
       };
     }

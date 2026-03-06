@@ -57,6 +57,7 @@ export type SavedPropCompoundConvexHullPart = {
 export type SavedPropCompoundConvexHulls = {
   type: "compound-convex-hulls";
   source: string;
+  rootOffset: [number, number, number];
   parts: SavedPropCompoundConvexHullPart[];
 };
 
@@ -176,22 +177,86 @@ function asPhysicsMaterial(
   }
 }
 
+function firstFiniteNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const parsed = asFiniteNumber(value);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function firstPhysicsMaterial(
+  ...values: unknown[]
+): SavedPropPhysicsMaterial | undefined {
+  for (const value of values) {
+    const parsed = asPhysicsMaterial(value);
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function negateSignedZeroSafe(value: number): number {
+  return value === 0 ? 0 : -value;
+}
+
+function normalizeSource(value: unknown, fallback = "unknown"): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
 function parseSavedPropPhysicsHint(raw: unknown): SavedPropPhysicsHint | undefined {
   const record = readRecord(raw);
   if (!record) {
     return undefined;
   }
 
-  const mobilityRaw = record.mobility;
+  const resolved = readRecord(record.resolved);
+  const overrides = readRecord(record.overrides);
+  const mobilityRaw = record.mobility ?? resolved?.mobility ?? overrides?.mobility;
   const mobility =
     mobilityRaw === "fixed" || mobilityRaw === "dynamic" ? mobilityRaw : undefined;
-  const material = asPhysicsMaterial(record.material);
-  const mass = asFiniteNumber(record.mass) ?? undefined;
-  const friction = asFiniteNumber(record.friction) ?? undefined;
-  const restitution = asFiniteNumber(record.restitution) ?? undefined;
-  const linearDamping = asFiniteNumber(record.linearDamping) ?? undefined;
-  const angularDamping = asFiniteNumber(record.angularDamping) ?? undefined;
-  const activationDelayMs = asFiniteNumber(record.activationDelayMs) ?? undefined;
+  const material = firstPhysicsMaterial(
+    record.material,
+    resolved?.material,
+    overrides?.material,
+    record.kind
+  );
+  const mass = firstFiniteNumber(
+    record.mass,
+    resolved?.mass,
+    resolved?.manualMass,
+    overrides?.mass,
+    overrides?.manualMass,
+    record.manualMass
+  );
+  const friction = firstFiniteNumber(
+    record.friction,
+    resolved?.friction,
+    overrides?.friction
+  );
+  const restitution = firstFiniteNumber(
+    record.restitution,
+    resolved?.restitution,
+    overrides?.restitution
+  );
+  const linearDamping = firstFiniteNumber(
+    record.linearDamping,
+    resolved?.linearDamping,
+    overrides?.linearDamping
+  );
+  const angularDamping = firstFiniteNumber(
+    record.angularDamping,
+    resolved?.angularDamping,
+    overrides?.angularDamping
+  );
+  const activationDelayMs = firstFiniteNumber(
+    record.activationDelayMs,
+    resolved?.activationDelayMs,
+    overrides?.activationDelayMs
+  );
 
   if (
     mobility === undefined &&
@@ -302,8 +367,44 @@ function parseVector3Tuple(
   return [x, y, z];
 }
 
+function parseCompoundRootOffset(raw: unknown): [number, number, number] {
+  const processing = readRecord(raw);
+  const transform = readRecord(processing?.transform);
+  const finalPivot = readRecord(transform?.finalPivot);
+  const offset = parseVector3Tuple(finalPivot?.offset);
+  if (!offset) {
+    return [0, 0, 0];
+  }
+  return [
+    negateSignedZeroSafe(offset[0]),
+    negateSignedZeroSafe(offset[1]),
+    negateSignedZeroSafe(offset[2])
+  ];
+}
+
+function parseProcessedDimensions(raw: unknown): {
+  width: number;
+  height: number;
+  depth: number;
+} {
+  const processing = readRecord(raw);
+  const mesh = readRecord(processing?.mesh);
+  const bboxRecord =
+    readRecord(mesh?.bboxProcessed) ?? readRecord(processing?.bbox);
+
+  return {
+    width: Math.max(0, asFiniteNumber(bboxRecord?.width) ?? 0),
+    height: Math.max(0, asFiniteNumber(bboxRecord?.height) ?? 0),
+    depth: Math.max(0, asFiniteNumber(bboxRecord?.depth) ?? 0)
+  };
+}
+
 function parseSavedCompoundConvexHulls(
-  raw: unknown
+  raw: unknown,
+  options?: {
+    fallbackSource?: string;
+    rootOffset?: [number, number, number];
+  }
 ): SavedPropCompoundConvexHulls | undefined {
   const record = readRecord(raw);
   if (!record || record.type !== "compound-convex-hulls") {
@@ -355,12 +456,65 @@ function parseSavedCompoundConvexHulls(
 
   return {
     type: "compound-convex-hulls",
-    source:
-      typeof record.source === "string" && record.source.length > 0
-        ? record.source
-        : "unknown",
+    source: normalizeSource(record.source, options?.fallbackSource ?? "unknown"),
+    rootOffset: parseVector3Tuple(record.rootOffset) ?? options?.rootOffset ?? [0, 0, 0],
     parts
   };
+}
+
+function parseSelectedCompoundConvexHullPreset(
+  raw: unknown,
+  rootOffset: [number, number, number]
+): SavedPropCompoundConvexHulls | undefined {
+  const record = readRecord(raw);
+  if (!record) {
+    return undefined;
+  }
+
+  const presets = Array.isArray(record.presets) ? record.presets : [];
+  const selectedPresetId =
+    typeof record.selectedPresetId === "string" ? record.selectedPresetId : null;
+  const candidates = presets
+    .map((presetRaw) => {
+      const preset = readRecord(presetRaw);
+      if (!preset) {
+        return null;
+      }
+      const presetId =
+        typeof preset.presetId === "string" && preset.presetId.length > 0
+          ? preset.presetId
+          : null;
+      const generation = readRecord(preset.generation);
+      const collider = parseSavedCompoundConvexHulls(preset.collider, {
+        fallbackSource:
+          normalizeSource(generation?.method, presetId ?? "unknown"),
+        rootOffset
+      });
+      if (!collider) {
+        return null;
+      }
+      return {
+        presetId,
+        hullCount: asFiniteNumber(generation?.hullCount) ?? 0,
+        collider
+      };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+
+  if (candidates.length <= 0) {
+    return undefined;
+  }
+
+  if (selectedPresetId) {
+    const selected = candidates.find((candidate) => candidate.presetId === selectedPresetId);
+    if (selected) {
+      return selected.collider;
+    }
+  }
+
+  return candidates.reduce((best, candidate) =>
+    candidate.hullCount > best.hullCount ? candidate : best
+  ).collider;
 }
 
 function parseSavedBoxCollider(raw: unknown): SavedPropBoxCollider | undefined {
@@ -426,7 +580,10 @@ function parseSavedConvexHullCollider(
   };
 }
 
-function parseSavedColliderVariants(raw: unknown): SavedPropColliderVariants | undefined {
+function parseSavedColliderVariants(
+  raw: unknown,
+  compoundRootOffset: [number, number, number]
+): SavedPropColliderVariants | undefined {
   const record = readRecord(raw);
   if (!record) {
     return undefined;
@@ -435,7 +592,12 @@ function parseSavedColliderVariants(raw: unknown): SavedPropColliderVariants | u
   const box = parseSavedBoxCollider(record.box);
   const convexHull = parseSavedConvexHullCollider(record.convexHull);
   const compoundBoxes = parseSavedCompoundCollider(record.compoundBoxes);
-  const compoundConvexHulls = parseSavedCompoundConvexHulls(record.compoundConvexHulls);
+  const compoundConvexHulls = parseSavedCompoundConvexHulls(
+    record.compoundConvexHulls,
+    {
+      rootOffset: compoundRootOffset
+    }
+  );
 
   if (!box && !convexHull && !compoundBoxes && !compoundConvexHulls) {
     return undefined;
@@ -484,7 +646,11 @@ function synthesizeConvexHullFromBox(
       [hx, hy, -hz],
       [hx, hy, hz]
     ],
-    rootOffset: [-box.position[0], -box.position[1], -box.position[2]]
+    rootOffset: [
+      negateSignedZeroSafe(box.position[0]),
+      negateSignedZeroSafe(box.position[1]),
+      negateSignedZeroSafe(box.position[2])
+    ]
   };
 }
 
@@ -496,11 +662,8 @@ function parseSavedPropMeta(id: string, raw: unknown): SavedPropDefinition {
       : id;
 
   const processing = readRecord(record.processing);
-  const bboxRecord = processing ? readRecord(processing.bbox) : null;
-
-  const width = Math.max(0, asFiniteNumber(bboxRecord?.width) ?? 0);
-  const height = Math.max(0, asFiniteNumber(bboxRecord?.height) ?? 0);
-  const depth = Math.max(0, asFiniteNumber(bboxRecord?.depth) ?? 0);
+  const compoundRootOffset = parseCompoundRootOffset(processing);
+  const { width, height, depth } = parseProcessedDimensions(processing);
 
   const colliderWidth = width > 0 ? width : 0;
   const colliderDepth = depth > 0 ? depth : 0;
@@ -511,13 +674,22 @@ function parseSavedPropMeta(id: string, raw: unknown): SavedPropDefinition {
     parseSavedCompoundCollider(record.compoundCollider) ??
     parseSavedCompoundCollider(processing?.compoundCollider);
   const compoundConvexHullsLegacy =
-    parseSavedCompoundConvexHulls(record.compoundConvexHulls) ??
-    parseSavedCompoundConvexHulls(processing?.compoundConvexHulls) ??
-    parseSavedCompoundConvexHulls(record.collider) ??
-    parseSavedCompoundConvexHulls(processing?.collider);
+    parseSavedCompoundConvexHulls(record.compoundConvexHulls, {
+      rootOffset: compoundRootOffset
+    }) ??
+    parseSavedCompoundConvexHulls(processing?.compoundConvexHulls, {
+      rootOffset: compoundRootOffset
+    }) ??
+    parseSavedCompoundConvexHulls(record.collider, {
+      rootOffset: compoundRootOffset
+    }) ??
+    parseSavedCompoundConvexHulls(processing?.collider, {
+      rootOffset: compoundRootOffset
+    }) ??
+    parseSelectedCompoundConvexHullPreset(record.colliders, compoundRootOffset);
   const parsedColliderVariants =
-    parseSavedColliderVariants(record.colliderVariants) ??
-    parseSavedColliderVariants(processing?.colliderVariants);
+    parseSavedColliderVariants(record.colliderVariants, compoundRootOffset) ??
+    parseSavedColliderVariants(processing?.colliderVariants, compoundRootOffset);
   const synthesizedBox =
     parsedColliderVariants?.box ??
     synthesizeFallbackBoxCollider(width, height, depth);

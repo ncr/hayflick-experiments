@@ -11,7 +11,8 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "forge:retrofit-colliders": "node scripts/retrofit-collider-meshes.mjs",
-    "forge:precompute-colliders": "node scripts/precompute-vhacd-colliders.mjs --preset=Balanced"
+    "forge:precompute-colliders": "node scripts/precompute-vhacd-colliders.mjs --preset=Balanced",
+    "forge-v2:precompute-colliders": "node scripts/precompute-vhacd-colliders-v2.mjs"
   },
   "dependencies": {
     "@common/collider-vhacd": "workspace:*",

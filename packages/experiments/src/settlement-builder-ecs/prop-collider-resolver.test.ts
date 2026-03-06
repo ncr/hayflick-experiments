@@ -57,6 +57,7 @@ describe("prop-collider-resolver", () => {
         compoundConvexHulls: {
           type: "compound-convex-hulls",
           source: "vhacd-unity-v1",
+          rootOffset: [0, 0, 0],
           parts: [
             {
               kind: "convex-hull",
@@ -152,7 +153,7 @@ describe("prop-collider-resolver", () => {
     });
   });
 
-  it("resolves compound convex hull parts and zero root offset", () => {
+  it("resolves compound convex hull parts and parsed root offset", () => {
     const definition = makeDefinition({
       colliderVariants: {
         box: {
@@ -164,6 +165,7 @@ describe("prop-collider-resolver", () => {
         compoundConvexHulls: {
           type: "compound-convex-hulls",
           source: "vhacd-unity-v1",
+          rootOffset: [-0.2, -0.4, 0.1],
           parts: [
             {
               kind: "convex-hull",
@@ -193,7 +195,7 @@ describe("prop-collider-resolver", () => {
     if (resolved.shape !== "compound-convex-hulls") {
       return;
     }
-    expect(resolved.localRootOffset).toEqual({ x: 0, y: 0, z: 0 });
+    expect(resolved.localRootOffset).toEqual({ x: -0.2, y: -0.4, z: 0.1 });
     expect(resolved.parts).toHaveLength(1);
     expect(resolved.parts[0]?.translation).toEqual({ x: 0.1, y: 0.3, z: -0.2 });
     const expectedVertices = [
@@ -230,6 +232,7 @@ describe("prop-collider-resolver", () => {
         compoundConvexHulls: {
           type: "compound-convex-hulls",
           source: "vhacd-unity-v1",
+          rootOffset: [0, 0, 0],
           parts: [
             {
               kind: "convex-hull",

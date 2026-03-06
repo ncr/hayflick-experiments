@@ -93,12 +93,16 @@ export function defaultForgeV2ColliderPresetFile(): ForgeV2ColliderPresetFile {
       enabledByDefault: false,
       options: normalizeVhacdOptions({
         ...DEFAULT_VHACD_OPTIONS,
-        resolution: 256,
-        concavity: 0.0015,
-        maxConvexHulls: 32,
-        minVoxelCountPerPart: 20,
-        maxHullPointSamples: 3200,
-        voxelizationTriangleSampleCount: 20_000
+        resolution: 192,
+        concavity: 0.0018,
+        alpha: 0.055,
+        sliverPenalty: 0.45,
+        maxConvexHulls: 28,
+        minVoxelCountPerPart: 22,
+        maxHullPointSamples: 2400,
+        projectHullMaxDistance: 0.17,
+        maxGridCells: 16_000_000,
+        voxelizationTriangleSampleCount: 16_000
       })
     }
   ];

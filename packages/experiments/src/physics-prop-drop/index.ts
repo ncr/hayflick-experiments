@@ -8,8 +8,7 @@ import type { ExperimentModule } from "../runtime/types";
 
 import {
   createPhysics3dResource,
-  type Physics3dResource,
-  type Physics3dConvexHullPart
+  type Physics3dResource
 } from "../settlement-builder-ecs/game-physics-3d";
 import {
   rootPoseFromBodyPose,
@@ -22,27 +21,12 @@ import {
   PHYSICS_MASK,
   PHYSICS_MATERIAL_PRESETS
 } from "../settlement-builder-ecs/physics-settings";
+import { parseForgeV2PropMeta, type ForgeV2PropMeta } from "./forge-v2-props";
+import { prepareImportedObjectShadows } from "./shadow-utils";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
-
-type ForgeV2PropMeta = {
-  id: string;
-  bbox: { width: number; height: number; depth: number };
-  collider: ForgeV2Collider | null;
-  physics: {
-    mass: number;
-    friction: number;
-    restitution: number;
-    linearDamping: number;
-    angularDamping: number;
-  };
-};
-
-type ForgeV2Collider =
-  | { type: "compound-convex-hulls"; parts: Physics3dConvexHullPart[] }
-  | { type: "box"; halfExtents: THREE.Vector3; centerOffset: THREE.Vector3 };
 
 type PropInstance = {
   eid: EID;
@@ -59,97 +43,6 @@ let rapierReady: Promise<void> | null = null;
 function initRapier(): Promise<void> {
   if (!rapierReady) rapierReady = RAPIER3D.init();
   return rapierReady;
-}
-
-/* ------------------------------------------------------------------ */
-/* Forge-v2 meta parsing                                               */
-/* ------------------------------------------------------------------ */
-
-function parseForgeV2Meta(id: string, raw: Record<string, unknown>): ForgeV2PropMeta {
-  const processing = raw.processing as Record<string, unknown> | undefined;
-  const meshProc = processing?.mesh as Record<string, unknown> | undefined;
-  const bboxRaw = meshProc?.bboxProcessed as Record<string, number> | undefined;
-  const bbox = {
-    width: bboxRaw?.width ?? 0,
-    height: bboxRaw?.height ?? 0,
-    depth: bboxRaw?.depth ?? 0
-  };
-
-  // Parse collider from the first available preset
-  let collider: ForgeV2Collider | null = null;
-  const collidersSection = raw.colliders as Record<string, unknown> | undefined;
-  const presets = collidersSection?.presets as Array<Record<string, unknown>> | undefined;
-
-  if (presets && presets.length > 0) {
-    // Prefer presets with most hulls (usually "high-detail" or "balanced")
-    const bestPreset = presets.reduce((best, p) => {
-      const gen = p.generation as Record<string, unknown> | undefined;
-      const count = (gen?.hullCount as number) ?? 0;
-      const bestGen = best.generation as Record<string, unknown> | undefined;
-      const bestCount = (bestGen?.hullCount as number) ?? 0;
-      return count > bestCount ? p : best;
-    }, presets[0]);
-
-    const col = bestPreset.collider as Record<string, unknown> | undefined;
-    if (col?.type === "compound-convex-hulls") {
-      const params = col.params as Record<string, unknown> | undefined;
-      const rawParts = params?.parts as Array<Record<string, unknown>> | undefined;
-      if (rawParts && rawParts.length > 0) {
-        const parts: Physics3dConvexHullPart[] = [];
-        for (const part of rawParts) {
-          const pos = part.position as [number, number, number];
-          const points = part.points as Array<[number, number, number]>;
-          if (!points || points.length < 4) continue;
-          const flat = new Float32Array(points.length * 3);
-          for (let i = 0; i < points.length; i++) {
-            flat[i * 3] = points[i][0];
-            flat[i * 3 + 1] = points[i][1];
-            flat[i * 3 + 2] = points[i][2];
-          }
-          parts.push({
-            translation: { x: pos[0], y: pos[1], z: pos[2] },
-            vertices: flat
-          });
-        }
-        if (parts.length > 0) {
-          collider = { type: "compound-convex-hulls", parts };
-        }
-      }
-    }
-  }
-
-  // Fallback: box collider from bbox
-  if (!collider && bbox.width > 0 && bbox.height > 0 && bbox.depth > 0) {
-    collider = {
-      type: "box",
-      halfExtents: new THREE.Vector3(bbox.width * 0.5, bbox.height * 0.5, bbox.depth * 0.5),
-      centerOffset: new THREE.Vector3(0, -bbox.height * 0.5, 0)
-    };
-  }
-
-  // Parse physics overrides
-  const physicsSection = raw.physics as Record<string, unknown> | undefined;
-  const overrides = physicsSection?.overrides as Record<string, unknown> | undefined;
-  const materialName = (overrides?.material as string) ?? "default";
-  const preset =
-    PHYSICS_MATERIAL_PRESETS[materialName as keyof typeof PHYSICS_MATERIAL_PRESETS] ??
-    PHYSICS_MATERIAL_PRESETS.default;
-
-  const volume = Math.max(0, bbox.width) * Math.max(0, bbox.height) * Math.max(0, bbox.depth);
-  const autoMass = Math.max(0.08, Math.min(40, volume * preset.density * 0.01));
-
-  return {
-    id,
-    bbox,
-    collider,
-    physics: {
-      mass: (overrides?.manualMass as number) ?? autoMass,
-      friction: (overrides?.friction as number) ?? preset.friction,
-      restitution: (overrides?.restitution as number) ?? preset.restitution,
-      linearDamping: (overrides?.linearDamping as number) ?? preset.linearDamping,
-      angularDamping: (overrides?.angularDamping as number) ?? preset.angularDamping
-    }
-  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -196,11 +89,10 @@ async function loadPropMeta(propId: string): Promise<ForgeV2PropMeta> {
     if (!res.ok) throw new Error("not found");
     const data = await res.json();
     const parsed = typeof data.content === "string" ? JSON.parse(data.content) : data;
-    return parseForgeV2Meta(propId, parsed as Record<string, unknown>);
+    return parseForgeV2PropMeta(propId, parsed as Record<string, unknown>);
   } catch {
     return {
       id: propId,
-      bbox: { width: 0, height: 0, depth: 0 },
       collider: null,
       physics: {
         mass: 0.65,
@@ -297,18 +189,21 @@ function createLighting(scene: THREE.Scene, roomBounds?: THREE.Box3): THREE.Dire
   const reach = Math.max(size.x, size.z) * 0.6;
 
   const key = new THREE.DirectionalLight(0xfff4e0, 2.0);
-  key.position.set(center.x + reach, center.y + reach * 2, center.z + reach * 0.8);
+  // Lower sun angle so prop shadows travel farther across the floor.
+  key.position.set(center.x + reach * 1.35, center.y + reach * 0.95, center.z + reach * 1.1);
   key.target.position.copy(center);
   key.castShadow = true;
-  key.shadow.mapSize.set(4096, 4096);
-  key.shadow.camera.near = 1;
+  // Shadow frustum covers the prop area (not the full room) for adequate
+  // texel density.  Props are placed within ~5 units of center.
+  const shadowReach = Math.min(reach, 8);
+  key.shadow.mapSize.set(2048, 2048);
+  key.shadow.camera.near = 0.5;
   key.shadow.camera.far = reach * 5;
-  key.shadow.camera.left = -reach;
-  key.shadow.camera.right = reach;
-  key.shadow.camera.top = reach;
-  key.shadow.camera.bottom = -reach;
-  key.shadow.bias = -0.0005;
-  key.shadow.normalBias = 0.02;
+  key.shadow.camera.left = -shadowReach;
+  key.shadow.camera.right = shadowReach;
+  key.shadow.camera.top = shadowReach;
+  key.shadow.camera.bottom = -shadowReach;
+  key.shadow.bias = -0.002;
   scene.add(key);
   scene.add(key.target);
 
@@ -377,7 +272,7 @@ const DROP_HEIGHT = 0.1; // 10cm above floor
 
 const experiment: ExperimentModule = {
   id: "physics-prop-drop",
-  title: "Physics Prop Drop",
+  title: "Level as Prop",
   tags: ["threejs", "rapier", "physics", "props", "pixel-perfect", "isometric"],
   init: ({ mount, width, height }) => {
     const scene = new THREE.Scene();
@@ -447,36 +342,10 @@ const experiment: ExperimentModule = {
       if (roomGroup) {
         // Scale room 10x
         roomGroup.scale.setScalar(10);
-
-        // Room meshes: cast shadows but don't need to receive
-        // (a dedicated ground plane handles shadow receiving)
-        roomGroup.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            child.castShadow = true;
-            child.receiveShadow = false;
-          }
-        });
+        prepareImportedObjectShadows(roomGroup);
         scene.add(roomGroup);
 
         const bounds = measureRoomBounds(roomGroup);
-
-        // Add a shadow-receiving ground plane at the room floor level.
-        // The room GLB floor geometry has bad normals / doubleSided materials
-        // that prevent reliable shadow reception, so we overlay a dedicated plane.
-        const floorGeo = new THREE.PlaneGeometry(
-          bounds.max.x - bounds.min.x,
-          bounds.max.z - bounds.min.z
-        );
-        const floorMat = new THREE.ShadowMaterial({ opacity: 0.4 });
-        const shadowFloor = new THREE.Mesh(floorGeo, floorMat);
-        shadowFloor.rotation.x = -Math.PI / 2;
-        shadowFloor.position.set(
-          (bounds.min.x + bounds.max.x) * 0.5,
-          bounds.min.y + 0.01,
-          (bounds.min.z + bounds.max.z) * 0.5
-        );
-        shadowFloor.receiveShadow = true;
-        scene.add(shadowFloor);
 
         // Set up lighting sized to the room
         createLighting(scene, bounds);
@@ -534,37 +403,15 @@ const experiment: ExperimentModule = {
 
           const visual = await loadPropGlb(meta.id);
           if (disposed || !visual || !physics) return;
-
-          visual.traverse((child) => {
-            if (child instanceof THREE.Mesh) {
-              child.castShadow = true;
-              child.receiveShadow = true;
-              const mats = Array.isArray(child.material) ? child.material : [child.material];
-              for (const mat of mats) {
-                if (mat) {
-                  mat.side = THREE.FrontSide;
-                  mat.shadowSide = THREE.BackSide;
-                  mat.needsUpdate = true;
-                }
-              }
-            }
-          });
+          prepareImportedObjectShadows(visual);
+          if (!meta.collider) return;
 
           const slot = slots[i];
           const eid = nextEid++ as EID;
+          const localRootOffset = meta.collider.localRootOffset;
 
-          // Determine root offset for this collider type
-          const localRootOffset =
-            meta.collider!.type === "box"
-              ? {
-                  x: meta.collider!.centerOffset.x,
-                  y: meta.collider!.centerOffset.y,
-                  z: meta.collider!.centerOffset.z
-                }
-              : { x: 0, y: 0, z: 0 };
-
-          // Place prop above the floor
-          const dropY = meta.bbox.height * 0.5 + DROP_HEIGHT;
+          // Asset-forge props are bottom-center rooted, so 10cm means root=10cm.
+          const dropY = DROP_HEIGHT;
           const rotation: PhysicsQuaternion = {
             x: 0,
             y: Math.sin(slot.rotY * 0.5),
@@ -585,33 +432,18 @@ const experiment: ExperimentModule = {
             PHYSICS_MASK.PROP_LOOSE
           );
 
-          if (meta.collider!.type === "compound-convex-hulls") {
-            physics.createDynamicCompoundConvexHullEntity(eid, {
-              translation: bodyTranslation,
-              rotation,
-              parts: meta.collider!.parts,
-              mass: meta.physics.mass,
-              friction: meta.physics.friction,
-              restitution: meta.physics.restitution,
-              linearDamping: meta.physics.linearDamping,
-              angularDamping: meta.physics.angularDamping,
-              ccd: true,
-              collisionGroups: collisionGroup
-            });
-          } else {
-            physics.createDynamicCuboidEntity(eid, {
-              translation: bodyTranslation,
-              rotation,
-              halfExtents: meta.collider!.halfExtents,
-              mass: meta.physics.mass,
-              friction: meta.physics.friction,
-              restitution: meta.physics.restitution,
-              linearDamping: meta.physics.linearDamping,
-              angularDamping: meta.physics.angularDamping,
-              ccd: true,
-              collisionGroups: collisionGroup
-            });
-          }
+          physics.createDynamicCompoundConvexHullEntity(eid, {
+            translation: bodyTranslation,
+            rotation,
+            parts: meta.collider.parts,
+            mass: meta.physics.mass,
+            friction: meta.physics.friction,
+            restitution: meta.physics.restitution,
+            linearDamping: meta.physics.linearDamping,
+            angularDamping: meta.physics.angularDamping,
+            ccd: true,
+            collisionGroups: collisionGroup
+          });
 
           // Set initial visual position
           visual.position.set(slot.x, dropY, slot.z);

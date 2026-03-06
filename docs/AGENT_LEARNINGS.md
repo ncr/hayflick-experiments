@@ -3248,3 +3248,74 @@ Preventive checklist:
 - When a shared canvas backing store is quantized from absolute edges, also align the canvas CSS box to those same quantized edges (left/top offset + CSS size from `deviceSize / dpr`).
 - Add a regression test for fractional mount geometry that asserts shared canvas CSS left/top and width/height match device-pixel quantized mount edges.
 - Treat shared-canvas pixelated rendering mismatches as potentially browser compositing/CSS alignment issues before changing scene/scissor math.
+
+## 2026-03-06 - Imported prop shadow prep can silently disable floor shadows by forcing `shadowSide = BackSide`
+Root cause:
+- `physics-prop-drop` forced imported prop materials to `side = FrontSide` and `shadowSide = BackSide` instead of preserving the asset-authored sidedness.
+- On forge-v2 props this prevented reliable shadow-map casting onto the room floor even though renderer shadows and mesh `castShadow` flags were enabled.
+
+Detection signal:
+- User reported no visible prop shadows on the floor in `#/exp/physics-prop-drop`.
+- Local screenshot verification showed floor contact shadows appearing only after restoring `shadowSide` to match the material `side` and centralizing imported shadow prep.
+
+Preventive checklist:
+- For imported meshes, preserve authored material `side`; set `material.shadowSide = material.side` instead of forcing `BackSide`.
+- Keep imported shadow prep in one helper that also normalizes unlit materials and repairs missing normals.
+- Add a regression test for imported shadow prep before tweaking scene-light parameters.
+
+## 2026-03-06 - Compound hull asset-forge props need pivot metadata, not bbox/box fallbacks, to align visual roots with Rapier bodies
+Root cause:
+- `physics-prop-drop` still mixed old box-collider assumptions (`bboxProcessed`, half-height drop offsets, box-only root offsets) into a path now fed mostly by forge-v2 compound convex hull colliders.
+- Several forge-v2 props store the visual bottom-center pivot in `processing.transform.finalPivot.offset`; ignoring that made the rigid-body origin act like the prop pivot was centered.
+
+Detection signal:
+- User reported props looked like they had a pivot in the middle despite approved colliders.
+- Local metadata inspection showed compound hull props such as `ammo-crate` had large `finalPivot.offset.y` values while the experiment hardcoded compound-hull root offsets to zero.
+
+Preventive checklist:
+- When consuming forge-v2 props, prefer the selected compound hull preset instead of generic bbox/box fallbacks.
+- Derive rigid-body root offsets from `processing.transform.finalPivot.offset` for compound hull props.
+- Treat processed forge-v2 visuals as bottom-center rooted and use root-space placement heights directly (for example `DROP_HEIGHT`) instead of re-adding half-height offsets.
+
+## 2026-03-06 - Shared prop metadata must parse forge-v2 `colliders.presets`, `bboxProcessed`, `finalPivot`, and resolved physics together
+Root cause:
+- `settlement-builder-ecs/prop-library.ts` still assumed older prop metadata (`processing.bbox`, direct collider records, direct physics fields) and ignored current forge-v2 fields like `processing.mesh.bboxProcessed`, `processing.transform.finalPivot.offset`, `colliders.selectedPresetId`, and `physics.resolved`.
+- That left shared collider resolution with zeroed compound-hull root offsets and incomplete physics hints even when the asset-forge metadata was correct.
+
+Detection signal:
+- Shared regression tests failed on forge-v2 shaped metadata with zero bbox dimensions and zero `localRootOffset` for compound convex hulls.
+- User reported props looking center-pivoted and confirmed asset-forge compound hull props are now the forward path.
+
+Preventive checklist:
+- When adding or changing asset-forge metadata, update the shared prop parser first, not just experiment-local loaders.
+- For forge-v2 props, derive compound hull data from `colliders.selectedPresetId` or the highest-hull fallback preset, and carry `finalPivot.offset` through to `rootOffset`.
+- Parse physics hints from resolved/override payloads, not only legacy top-level fields.
+- Keep regression tests that exercise real forge-v2 metadata shape in the shared parser and collider resolver.
+
+## 2026-03-06 - Forge-v2 collider backfills need to write both preset results and missing processed metadata
+Root cause:
+- Some `generation-approved` forge-v2 props had valid processed GLBs but no `colliders`, no `physics`, and stale `processing.mesh` metrics (`bboxProcessed`, face counts still zero).
+- Generating colliders alone was not enough for downstream consumers, because shared runtime code relies on `bboxProcessed` and `finalPivot` as well as the collider presets.
+
+Detection signal:
+- Four props under `assets/forge-v2/props` had no collider presets at all, and three of those also had zeroed processed mesh metadata despite existing `processed/model.glb` files.
+- User reported that high-detail collider generation felt excessively slow and asked for the same end state as the forge UI's `Compute Colliders`.
+
+Preventive checklist:
+- When batch-backfilling forge-v2 colliders, write all configured presets, set `colliders.selectedPresetId`, update `processing.transform.finalPivot`, and mark the prop `physics-approved`.
+- Backfill missing `processing.mesh.bboxProcessed` and face counts from the processed/raw GLBs when older props have stale zero values.
+- Keep the `high-detail` VHACD preset only moderately above `balanced`; avoid jumps that dramatically increase hull count, point samples, or voxelization work without clear benefit.
+
+## 2026-03-06 - Forge-v2 collider batch selection must match the UI's `Phy missing` semantics
+Root cause:
+- The batch script filtered `--missing-only` props by absence of collider presets, while the forge-v2 gallery's `Phy missing` filter is driven by props that still need physics approval (`lifecycle.status !== "physics-approved"`).
+- That mismatch skipped props like `ammo-crate` and `stop-sign`, which already had some collider data on disk but were still pending physics approval in the UI.
+
+Detection signal:
+- Batch verification reported zero props missing colliders, but the asset forge UI still listed two props under `Phy missing`.
+- Both props had `generation-approved` lifecycle state even though collider files and `physicsApprovedAt` data were present.
+
+Preventive checklist:
+- When a user asks for "the same as the asset forge UI", copy the UI's selection semantics exactly instead of inferring from raw files.
+- Keep forge-v2 batch filters aligned with `lifecycle.status` when the UI stage filter is status-based.
+- After collider batch runs, verify both the raw asset condition and the UI-equivalent pending set.

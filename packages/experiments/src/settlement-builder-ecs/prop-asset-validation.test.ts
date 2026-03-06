@@ -94,6 +94,7 @@ describe("prop-asset-validation", () => {
           compoundConvexHulls: {
             type: "compound-convex-hulls",
             source: "vhacd-unity-v1",
+            rootOffset: [0, 0, 0],
             parts: [
               {
                 kind: "convex-hull",
