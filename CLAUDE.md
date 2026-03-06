@@ -67,7 +67,9 @@ See `docs/PIXEL_PERFECT_FOUNDATION.md` for full architecture.
 - Browser-level smoke coverage for critical user flows using Playwright
 - Run `pnpm typecheck` before committing changes
 
-## HTTPS Dev Server
+## Dev Server
 
-`pnpm dev:s` starts a Caddy reverse proxy for HTTPS local development.
-Useful for testing on mobile devices over the local network.
+On this devbox, use `pnpm dev` (plain HTTP via Vite). No Caddy needed here.
+
+`pnpm dev:s` (Caddy HTTPS reverse proxy) is only for the remote Hetzner machine.
+When the `/dev` skill is invoked, run `pnpm dev` — not `pnpm dev:s`.
