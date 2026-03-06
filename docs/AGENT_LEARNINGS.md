@@ -3402,3 +3402,17 @@ Preventive checklist:
 - When deleting an experiment, search the whole repo for its id string, not just source imports.
 - Check `packages/experiments/src/registry.ts`, browser smoke/e2e specs, and route/menu surfaces together before considering the removal complete.
 - Treat compile success as insufficient for experiment removals; include a reference search or targeted smoke-test pass.
+
+## 2026-03-06 - Hub vitest config must stay independent from dev-only middleware plugins
+Root cause:
+- `apps/hub` tests were loading `vite.config.ts`, which imports the dev `api-proxy` plugin.
+- After the proxy started importing the forge store, config-time Node resolution tried to load workspace `.ts` sources before Vite transformed them, and `vitest` failed before any tests ran.
+
+Detection signal:
+- `pnpm --filter @apps/hub test ...` failed at startup while loading `vite.config.ts` with `ERR_UNKNOWN_FILE_EXTENSION` for a workspace package source file.
+- The failure happened before test collection, which pointed to config/plugin bootstrap rather than application code.
+
+Preventive checklist:
+- Keep a dedicated `apps/hub/vitest.config.ts` that excludes dev-only middleware/plugins.
+- Use the minimal plugin set needed for tests (`react`, `glsl`) and set the default environment explicitly instead of inheriting from dev config.
+- When adding server-side imports under `apps/hub/plugins`, rerun a targeted hub `vitest` command to catch config-load regressions immediately.

@@ -31,7 +31,7 @@ const PROPS: PropPlacement[] = [
 /* ------------------------------------------------------------------ */
 
 async function loadPropGlb(propId: string): Promise<THREE.Group | null> {
-  const url = `/api/fs-v2/read?path=${encodeURIComponent(`props/${propId}/processed/model.glb`)}`;
+  const url = `/api/forge/props/${encodeURIComponent(propId)}/processed-glb`;
   try {
     const res = await fetch(url);
     if (!res.ok) return null;

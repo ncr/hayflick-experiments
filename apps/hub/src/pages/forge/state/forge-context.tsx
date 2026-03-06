@@ -24,10 +24,9 @@ import { AutoSaver, type SaveStatus } from "../model/AutoSaver";
 import { ForgeController } from "../model/ForgeController";
 import {
   exportObjectToGlb,
-  readForgePropMeta,
-  writeForgePropMeta,
-  writePropProcessedModelGlb,
-} from "../io/PropRepository";
+} from "../io/forge-helpers";
+import { getForgeProp, saveMeshStage } from "../io/forge-client";
+import { applyDraftMeshToMeta } from "../model/prop-mappers";
 
 // ---------------------------------------------------------------------------
 // Runtime refs — non-serializable objects that live outside the reducer
@@ -120,6 +119,8 @@ export function ForgeProvider({ children }: { children: ReactNode }) {
   // Stable dispatch ref so AutoSaver callback doesn't cause re-renders
   const dispatchRef = useRef(dispatch);
   dispatchRef.current = dispatch;
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   // Individual useRef() calls are stable across renders, but the wrapper
   // object literal would be a new identity each render. Effects that list
@@ -175,16 +176,26 @@ export function ForgeProvider({ children }: { children: ReactNode }) {
       async (propId: string) => {
         const model = refs.sharedModelCache.current.get(propId, "processed");
         if (!model) return;
-        const glb = await exportObjectToGlb(model);
-        await writePropProcessedModelGlb(propId, glb);
+        const currentState = stateRef.current;
+        const draft = Array.from(currentState.drafts.values()).find(
+          (item) => item.tempId === `saved-${propId}`
+        );
+        if (!draft?.rawGlb) return;
+        const record = await getForgeProp(propId);
+        if (!record) return;
 
-        // Update meta with processing state from the current draft
-        const meta = await readForgePropMeta(propId);
-        if (meta) {
-          meta.lifecycle.status = "generation-approved";
-          meta.lifecycle.generationApprovedAt = new Date().toISOString();
-          await writeForgePropMeta(meta);
-        }
+        const glb = await exportObjectToGlb(model);
+        const meta = applyDraftMeshToMeta(
+          record.meta,
+          draft,
+          refs.generationPixelBaseViewState.current
+        );
+        await saveMeshStage({
+          propId,
+          meta,
+          rawGlb: draft.rawGlb,
+          processedGlb: glb,
+        });
       },
       (status: SaveStatus) => { dispatchRef.current({ type: "SET_SAVE_STATUS", status }); },
       10_000,

@@ -384,16 +384,21 @@ export function sanitizeForgePropMeta(raw: unknown): ForgePropMeta | null {
   const description = asString(record.description, id);
   const lifecycleRecord = asRecord(record.lifecycle);
   const lifecycleStatus = asString(lifecycleRecord?.status, "draft");
-  const allowedStatuses = new Set([
-    "draft",
-    "image-ready",
-    "mesh-ready",
-    "generation-approved",
-    "physics-approved"
-  ]);
-  const status = allowedStatuses.has(lifecycleStatus)
-    ? (lifecycleStatus as ForgePropMeta["lifecycle"]["status"])
-    : "draft";
+  const status = (() => {
+    switch (lifecycleStatus) {
+      case "draft":
+      case "image-ready":
+      case "mesh-ready":
+      case "physics-ready":
+        return lifecycleStatus as ForgePropMeta["lifecycle"]["status"];
+      case "generation-approved":
+        return "mesh-ready";
+      case "physics-approved":
+        return "physics-ready";
+      default:
+        return "draft";
+    }
+  })();
 
   const styleGuideRecord = asRecord(record.styleGuide);
   const generationRecord = asRecord(record.generation);
@@ -417,8 +422,6 @@ export function sanitizeForgePropMeta(raw: unknown): ForgePropMeta | null {
     updatedAt: asString(record.updatedAt, new Date().toISOString()),
     lifecycle: {
       status,
-      generationApprovedAt: asString(lifecycleRecord?.generationApprovedAt) || undefined,
-      physicsApprovedAt: asString(lifecycleRecord?.physicsApprovedAt) || undefined
     },
     styleGuide: {
       name: asString(styleGuideRecord?.name),

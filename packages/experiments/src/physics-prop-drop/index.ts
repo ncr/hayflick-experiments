@@ -23,7 +23,7 @@ import {
   PHYSICS_MASK,
   PHYSICS_MATERIAL_PRESETS
 } from "../prop-physics-3d/physics-settings";
-import { parseForgeV2PropMeta, type ForgeV2PropMeta } from "./forge-v2-props";
+import { parseForgePropMeta, type ForgePropMetaSnapshot } from "./forge-v2-props";
 import {
   deriveRoomSupportFloorPart,
   omitRoomSupportSurfaceParts,
@@ -102,25 +102,23 @@ async function loadRoomColliderParts(): Promise<Physics3dConvexHullPart[]> {
 }
 
 async function loadPropGlb(propId: string): Promise<THREE.Group | null> {
-  const url = `/api/fs-v2/read?path=${encodeURIComponent(`props/${propId}/processed/model.glb`)}`;
+  const url = `/api/forge/props/${encodeURIComponent(propId)}/processed-glb`;
   return loadGlbFromUrl(url);
 }
 
-async function listForgeV2Props(): Promise<string[]> {
-  const res = await fetch(`/api/fs-v2/list?dir=props`);
+async function listForgeProps(): Promise<string[]> {
+  const res = await fetch("/api/forge/props");
   if (!res.ok) return [];
-  return res.json();
+  const items = (await res.json()) as Array<{ id: string }>;
+  return items.map((item) => item.id);
 }
 
-async function loadPropMeta(propId: string): Promise<ForgeV2PropMeta> {
+async function loadPropMeta(propId: string): Promise<ForgePropMetaSnapshot> {
   try {
-    const res = await fetch(
-      `/api/fs-v2/read?path=${encodeURIComponent(`props/${propId}/meta.json`)}`
-    );
+    const res = await fetch(`/api/forge/props/${encodeURIComponent(propId)}`);
     if (!res.ok) throw new Error("not found");
-    const data = await res.json();
-    const parsed = typeof data.content === "string" ? JSON.parse(data.content) : data;
-    return parseForgeV2PropMeta(propId, parsed as Record<string, unknown>);
+    const data = (await res.json()) as { meta?: Record<string, unknown> };
+    return parseForgePropMeta(propId, (data.meta ?? {}) as Record<string, unknown>);
   } catch {
     return {
       id: propId,
@@ -565,7 +563,7 @@ const experiment: ExperimentModule = {
       }
 
       // Load props
-      const propIds = await listForgeV2Props();
+      const propIds = await listForgeProps();
       if (disposed) return;
 
       const metas = await Promise.all(propIds.map((id) => loadPropMeta(id)));

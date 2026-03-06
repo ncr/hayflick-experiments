@@ -36,7 +36,7 @@ export function PhysicsInspector() {
         <div className="ps-section">
           <div className="ps-section-body">
             <p className="ps-text-muted">
-              Select a generation-approved prop from the gallery to configure colliders and physics.
+              Select a mesh-ready prop from the gallery to configure colliders and physics.
             </p>
           </div>
         </div>
@@ -71,7 +71,7 @@ export function PhysicsInspector() {
                   className={`forge-btn forge-btn-xs ${state.physicsSelectedColliderPresetId === entry.presetId ? "forge-btn-active" : ""}`}
                   onClick={() => {
                     dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: entry.presetId });
-                    void actions.autoApprovePhysics({ selectedPresetId: entry.presetId });
+                    void actions.persistPhysicsState({ selectedPresetId: entry.presetId });
                   }}
                 >
                   {entry.presetName} ({entry.generation.hullCount} hulls, {(JSON.stringify(entry.collider).length / 1024).toFixed(1)} KB)
@@ -103,7 +103,7 @@ export function PhysicsInspector() {
                     const settings = buildPhysicsSettingsFromKind(kind);
                     dispatch({ type: "SET_PHYSICS_KIND", kindId: kind.id });
                     dispatch({ type: "SET_PHYSICS_SETTINGS", settings });
-                    void actions.autoApprovePhysics({ kindId: kind.id, settings });
+                    void actions.persistPhysicsState({ kindId: kind.id, settings });
                   }}
                 >
                   {kind.name}
@@ -121,7 +121,7 @@ export function PhysicsInspector() {
             bbox={state.physicsBBox}
             onChange={(settings) => {
               dispatch({ type: "SET_PHYSICS_SETTINGS", settings });
-              void actions.autoApprovePhysics({ settings });
+              void actions.persistPhysicsState({ settings });
             }}
             hideTitle
           />

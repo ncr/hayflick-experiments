@@ -15,7 +15,7 @@ import {
 } from "../../../forge-core/processing/physics";
 import { computeBBox, normalizeTransforms } from "../../../forge-core/processing/dimensions";
 import { createColliderHelper, scaleColliderParams } from "../../../forge-core/processing/colliders";
-import { readPropProcessedModelGlb, readPropRawGlb } from "../../io/PropRepository";
+import { readPropProcessedModelGlb, readPropRawGlb } from "../../io/forge-client";
 import { deepCloneWithMaterials } from "../../model/MeshProcessor";
 import type { PixelViewportViewState } from "../../../forge-core/ViewportPixel";
 import type { Viewport3dViewState } from "../../../forge-core/Viewport";
@@ -311,7 +311,7 @@ export function PhysicsWorkspace() {
     return (
       <div className="ps-physics-workspace">
         <div className="ps-workspace-empty">
-          <p>Select a generation-approved prop from the gallery to configure colliders and physics.</p>
+          <p>Select a mesh-ready prop from the gallery to configure colliders and physics.</p>
         </div>
       </div>
     );
@@ -349,7 +349,7 @@ export function PhysicsWorkspace() {
                   className={`forge-btn forge-btn-xs ${state.physicsSelectedColliderPresetId === entry.presetId ? "forge-btn-active" : ""}`}
                   onClick={() => {
                     dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: entry.presetId });
-                    void actions.autoApprovePhysics({ selectedPresetId: entry.presetId });
+                    void actions.persistPhysicsState({ selectedPresetId: entry.presetId });
                   }}
                 >
                   {entry.presetName} ({entry.generation.hullCount} hulls, {(JSON.stringify(entry.collider).length / 1024).toFixed(1)} KB)
@@ -371,7 +371,7 @@ export function PhysicsWorkspace() {
                   const settings = buildPhysicsSettingsFromKind(kind);
                   dispatch({ type: "SET_PHYSICS_KIND", kindId: kind.id });
                   dispatch({ type: "SET_PHYSICS_SETTINGS", settings });
-                  void actions.autoApprovePhysics({ kindId: kind.id, settings });
+                  void actions.persistPhysicsState({ kindId: kind.id, settings });
                 }}
               >
                 {kind.name}
@@ -390,7 +390,7 @@ export function PhysicsWorkspace() {
             bbox={state.physicsBBox}
             onChange={(settings) => {
               dispatch({ type: "SET_PHYSICS_SETTINGS", settings });
-              void actions.autoApprovePhysics({ settings });
+              void actions.persistPhysicsState({ settings });
             }}
             hideTitle
           />
@@ -426,7 +426,10 @@ export function PhysicsWorkspace() {
               <div
                 className="ps-viewport-card-header"
                 style={{ cursor: "pointer" }}
-                onClick={() => dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: entry.presetId })}
+                onClick={() => {
+                  dispatch({ type: "SET_PHYSICS_SELECTED_COLLIDER", presetId: entry.presetId });
+                  void actions.persistPhysicsState({ selectedPresetId: entry.presetId });
+                }}
               >
                 <strong>{entry.presetName}</strong>
                 <span className="ps-text-muted">

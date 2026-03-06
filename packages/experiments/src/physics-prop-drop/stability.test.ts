@@ -18,7 +18,7 @@ import {
   PHYSICS_LAYER,
   PHYSICS_MASK
 } from "../prop-physics-3d/physics-settings";
-import { parseForgeV2PropMeta, type ForgeV2PropMeta } from "./forge-v2-props";
+import { parseForgePropMeta, type ForgePropMetaSnapshot } from "./forge-v2-props";
 import { generatePropPlacements } from "./placement-layout";
 import {
   deriveRoomSupportFloorPart,
@@ -37,14 +37,14 @@ async function readJson(filePath: string): Promise<unknown> {
   return JSON.parse(await readFile(filePath, "utf8")) as unknown;
 }
 
-async function loadPropMetas(): Promise<ForgeV2PropMeta[]> {
-  const propsDir = path.join(REPO_ROOT, "assets/forge-v2/props");
+async function loadPropMetas(): Promise<ForgePropMetaSnapshot[]> {
+  const propsDir = path.join(REPO_ROOT, "assets/forge/props");
   const entries = await readdir(propsDir, { withFileTypes: true });
   const propIds = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   const metas = await Promise.all(
     propIds.map(async (propId) => {
       const raw = await readJson(path.join(propsDir, propId, "meta.json"));
-      return parseForgeV2PropMeta(propId, raw as Record<string, unknown>);
+      return parseForgePropMeta(propId, raw as Record<string, unknown>);
     })
   );
   return metas.filter((meta) => meta.collider !== null);
@@ -60,7 +60,10 @@ async function loadRoomColliderParts(): Promise<Physics3dConvexHullPart[]> {
   return scaleCompoundConvexHullParts(parseRoomCompoundColliderAsset(parsed), ROOM_SCALE);
 }
 
-function collectAwakeProps(physics: ReturnType<typeof createPhysics3dResource>, props: ForgeV2PropMeta[]) {
+function collectAwakeProps(
+  physics: ReturnType<typeof createPhysics3dResource>,
+  props: ForgePropMetaSnapshot[]
+) {
   return props
     .map((meta, index) => ({
       id: meta.id,
@@ -72,7 +75,7 @@ function collectAwakeProps(physics: ReturnType<typeof createPhysics3dResource>, 
 }
 
 describe("physics-prop-drop stability", () => {
-  it("lets dropped forge-v2 props fall asleep on a flat floor", async () => {
+  it("lets dropped forge props fall asleep on a flat floor", async () => {
     await RAPIER3D.init();
 
     const physics = createPhysics3dResource({ gravity: { x: 0, y: -9.81, z: 0 } });
@@ -145,7 +148,7 @@ describe("physics-prop-drop stability", () => {
     expect(awakeProps).toEqual([]);
   }, 20000);
 
-  it("lets dropped forge-v2 props fall asleep on the room floor", async () => {
+  it("lets dropped forge props fall asleep on the room floor", async () => {
     await RAPIER3D.init();
 
     const physics = createPhysics3dResource({ gravity: { x: 0, y: -9.81, z: 0 } });

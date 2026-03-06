@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseForgeV2PropMeta } from "./forge-v2-props";
+import { parseForgePropMeta } from "./forge-v2-props";
 
-describe("physics-prop-drop forge-v2 props", () => {
+describe("physics-prop-drop forge props", () => {
   it("uses the selected compound hull preset and negates finalPivot into a root offset", () => {
-    const meta = parseForgeV2PropMeta("crate", {
+    const meta = parseForgePropMeta("crate", {
       processing: {
         transform: {
           finalPivot: {
@@ -69,7 +69,7 @@ describe("physics-prop-drop forge-v2 props", () => {
   });
 
   it("falls back to collider-derived dimensions when bboxProcessed is missing", () => {
-    const meta = parseForgeV2PropMeta("chair", {
+    const meta = parseForgePropMeta("chair", {
       processing: {
         mesh: {},
         transform: {
@@ -122,7 +122,7 @@ describe("physics-prop-drop forge-v2 props", () => {
   });
 
   it("returns null collider when no valid compound hull preset exists", () => {
-    const meta = parseForgeV2PropMeta("lamp", {
+    const meta = parseForgePropMeta("lamp", {
       processing: {},
       colliders: {
         presets: [
@@ -141,7 +141,7 @@ describe("physics-prop-drop forge-v2 props", () => {
   });
 
   it("prefers resolved forge physics over empty overrides", () => {
-    const meta = parseForgeV2PropMeta("desk", {
+    const meta = parseForgePropMeta("desk", {
       processing: {
         mesh: {
           bboxProcessed: {

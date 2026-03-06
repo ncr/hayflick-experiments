@@ -60,11 +60,11 @@ async function countNonBlackPixelsInScreenshot(
   }, b64);
 }
 
-test.describe("forge-v2 mesh viewport", () => {
+test.describe("forge mesh viewport", () => {
   test("mesh viewport renders 3D scene (grid/axes visible)", async ({ page }) => {
-    await page.goto("/#/forge-v2");
+    await page.goto("/#/forge");
 
-    const shell = page.locator('[data-testid="forge-v2-page"]');
+    const shell = page.locator('[data-testid="forge-page"]');
     await expect(shell).toBeVisible({ timeout: 10_000 });
 
     await setForgeStage(page, "mesh");
@@ -89,9 +89,9 @@ test.describe("forge-v2 mesh viewport", () => {
   });
 
   test("mesh viewport renders loaded GLB model", async ({ page }) => {
-    await page.goto("/#/forge-v2");
+    await page.goto("/#/forge");
 
-    const shell = page.locator('[data-testid="forge-v2-page"]');
+    const shell = page.locator('[data-testid="forge-page"]');
     await expect(shell).toBeVisible({ timeout: 10_000 });
 
     await setForgeStage(page, "mesh");
@@ -132,9 +132,9 @@ test.describe("forge-v2 mesh viewport", () => {
   });
 
   test("viewport label text contrasts with background", async ({ page }) => {
-    await page.goto("/#/forge-v2");
+    await page.goto("/#/forge");
 
-    const shell = page.locator('[data-testid="forge-v2-page"]');
+    const shell = page.locator('[data-testid="forge-page"]');
     await expect(shell).toBeVisible({ timeout: 10_000 });
 
     await setForgeStage(page, "mesh");
@@ -208,9 +208,9 @@ test.describe("forge-v2 mesh viewport", () => {
   });
 
   test("mesh tab shows pixel quad with 4 cells", async ({ page }) => {
-    await page.goto("/#/forge-v2");
+    await page.goto("/#/forge");
 
-    const shell = page.locator('[data-testid="forge-v2-page"]');
+    const shell = page.locator('[data-testid="forge-page"]');
     await expect(shell).toBeVisible({ timeout: 10_000 });
 
     await setForgeStage(page, "mesh");

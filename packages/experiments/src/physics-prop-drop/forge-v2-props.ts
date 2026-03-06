@@ -8,7 +8,7 @@ import {
   parseCompoundConvexHullParts
 } from "./compound-hull-collider";
 
-export type ForgeV2CompoundCollider = {
+export type ForgeCompoundCollider = {
   parts: Physics3dConvexHullPart[];
   localRootOffset: {
     x: number;
@@ -22,9 +22,9 @@ export type ForgeV2CompoundCollider = {
   };
 };
 
-export type ForgeV2PropMeta = {
+export type ForgePropMetaSnapshot = {
   id: string;
-  collider: ForgeV2CompoundCollider | null;
+  collider: ForgeCompoundCollider | null;
   physics: {
     mass: number;
     friction: number;
@@ -168,10 +168,10 @@ function selectCompoundHullParts(raw: unknown): Physics3dConvexHullPart[] {
   ).parts;
 }
 
-export function parseForgeV2PropMeta(
+export function parseForgePropMeta(
   id: string,
   raw: Record<string, unknown>
-): ForgeV2PropMeta {
+): ForgePropMetaSnapshot {
   const parts = selectCompoundHullParts(raw.colliders);
   const processedDimensions = parseProcessedDimensions(raw.processing);
   const dimensions = processedDimensions ?? computeCompoundHullDimensions(parts);

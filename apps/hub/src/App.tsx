@@ -11,7 +11,7 @@ type Route =
 
 function readRouteFromHash(): Route {
   const hash = window.location.hash;
-  if (hash === "#/forge" || hash === "#/forge-v2") {
+  if (hash === "#/forge") {
     return { type: "forge" };
   }
   if (hash.startsWith("#/exp/")) {

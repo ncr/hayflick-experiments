@@ -71,7 +71,7 @@ function detectColliderBaseScale(
 // Stage-Status Model
 // ---------------------------------------------------------------------------
 
-export type StageId = "ref" | "mesh" | "pix" | "phy";
+export type StageId = "ref" | "mesh" | "phy";
 
 export type StageStatus = "EMPTY" | "VALID" | "OUTDATED" | "BUILDING" | "FAILED";
 
@@ -116,18 +116,6 @@ export type MeshArtifact = {
   bboxProcessed: { width: number; height: number; depth: number } | null;
 };
 
-export type PixConfig = {
-  pixelCamera: {
-    target: [number, number, number];
-    yawTurns: number;
-    zoomLevel: number;
-  };
-};
-
-export type PixArtifact = {
-  generationApprovedAt: string;
-};
-
 export type PhysicsConfig = {
   kindId: string;
   physicsSettings: PropPhysicsSettings;
@@ -138,7 +126,6 @@ export type PhysicsConfig = {
 export type PhysicsArtifact = {
   colliderResults: ForgeColliderResultEntry[];
   simulationChecks: Record<string, ForgeSimulationCheckResult>;
-  physicsApprovedAt: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -150,8 +137,8 @@ export type SavedPropListItem = {
   description: string;
   status: ForgeLifecycleStatus;
   conceptImage: string | null;
-  generationApprovedAt?: string;
-  physicsApprovedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 // Gallery filter
@@ -168,7 +155,6 @@ export interface ForgeStoreState {
   // Pipeline stages
   ref: StageState<RefConfig, RefArtifact>;
   mesh: StageState<MeshConfig, MeshArtifact>;
-  pix: StageState<PixConfig, PixArtifact>;
   phy: StageState<PhysicsConfig, PhysicsArtifact>;
 
   // Active stage navigation
@@ -245,16 +231,14 @@ function emptyStage<C, A>(config: C): StageState<C, A> {
 // Cascade logic
 // ---------------------------------------------------------------------------
 
-const STAGE_ORDER: StageId[] = ["ref", "mesh", "pix", "phy"];
+const STAGE_ORDER: StageId[] = ["ref", "mesh", "phy"];
 
 function cascadeDownstream(state: ForgeStoreState): ForgeStoreState {
   let next = state;
   for (let i = 1; i < STAGE_ORDER.length; i++) {
     const upstreamId = STAGE_ORDER[i - 1];
     const stageId = STAGE_ORDER[i];
-    // physics depends on mesh, not pix
-    const effectiveUpstream = stageId === "phy" ? "mesh" : upstreamId;
-    const upstream = next[effectiveUpstream] as StageState;
+    const upstream = next[upstreamId] as StageState;
     const current = next[stageId] as StageState;
     if (
       current.status === "VALID" &&
@@ -278,15 +262,13 @@ export function lifecycleToStageStatuses(
 ): Record<StageId, StageStatus> {
   switch (status) {
     case "draft":
-      return { ref: "EMPTY", mesh: "EMPTY", pix: "EMPTY", phy: "EMPTY" };
+      return { ref: "EMPTY", mesh: "EMPTY", phy: "EMPTY" };
     case "image-ready":
-      return { ref: "VALID", mesh: "EMPTY", pix: "EMPTY", phy: "EMPTY" };
+      return { ref: "VALID", mesh: "EMPTY", phy: "EMPTY" };
     case "mesh-ready":
-      return { ref: "VALID", mesh: "VALID", pix: "EMPTY", phy: "EMPTY" };
-    case "generation-approved":
-      return { ref: "VALID", mesh: "VALID", pix: "VALID", phy: "EMPTY" };
-    case "physics-approved":
-      return { ref: "VALID", mesh: "VALID", pix: "VALID", phy: "VALID" };
+      return { ref: "VALID", mesh: "VALID", phy: "EMPTY" };
+    case "physics-ready":
+      return { ref: "VALID", mesh: "VALID", phy: "VALID" };
   }
 }
 
@@ -294,8 +276,7 @@ export function lifecycleToStageStatuses(
 export function stageStatusesToLifecycle(
   stages: Record<StageId, StageStatus>
 ): ForgeLifecycleStatus {
-  if (stages.phy === "VALID") return "physics-approved";
-  if (stages.pix === "VALID") return "generation-approved";
+  if (stages.phy === "VALID") return "physics-ready";
   if (stages.mesh === "VALID") return "mesh-ready";
   if (stages.ref === "VALID") return "image-ready";
   return "draft";
@@ -376,9 +357,6 @@ export function createInitialState(): ForgeStoreState {
       scaleMode: "max",
       targetDimension: 1,
       pivot: "bottom-center",
-    }),
-    pix: emptyStage<PixConfig, PixArtifact>({
-      pixelCamera: { target: [0, 0, 0], yawTurns: 0, zoomLevel: 1 },
     }),
     phy: emptyStage<PhysicsConfig, PhysicsArtifact>({
       kindId: "wood",
@@ -702,22 +680,6 @@ export function forgeReducer(state: ForgeStoreState, action: ForgeAction): Forge
           ownVersion: ver,
           builtFromUpstreamVersion: ver,
         },
-        pix: {
-          config: {
-            pixelCamera: {
-              target: meta.pixelPreview.cameraSyncState.target,
-              yawTurns: meta.pixelPreview.cameraSyncState.yawTurns,
-              zoomLevel: meta.pixelPreview.cameraSyncState.zoomLevel,
-            },
-          },
-          artifact: statuses.pix !== "EMPTY"
-            ? { generationApprovedAt: meta.lifecycle.generationApprovedAt ?? "" }
-            : null,
-          status: statuses.pix,
-          error: null,
-          ownVersion: ver,
-          builtFromUpstreamVersion: ver,
-        },
         phy: {
           config: {
             kindId: meta.physics?.kind ?? "wood",
@@ -729,7 +691,6 @@ export function forgeReducer(state: ForgeStoreState, action: ForgeAction): Forge
             ? {
                 colliderResults: meta.colliders?.presets ?? [],
                 simulationChecks: meta.physics.simulationChecks ?? {},
-                physicsApprovedAt: meta.lifecycle.physicsApprovedAt ?? "",
               }
             : null,
           status: statuses.phy,

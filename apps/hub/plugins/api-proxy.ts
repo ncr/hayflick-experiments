@@ -2,10 +2,11 @@ import type { Plugin, ViteDevServer } from "vite";
 import { IncomingMessage, ServerResponse } from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { ForgeStore } from "./forge-store";
 
 const ASSETS_ROOT = path.resolve(process.cwd(), "../../assets");
 const FORGE_ROOT = path.resolve(process.cwd(), "../../assets/forge");
-const FORGE_V2_ROOT = path.resolve(process.cwd(), "../../assets/forge-v2");
+const forgeStore = new ForgeStore(FORGE_ROOT);
 
 // Load .env files — Vite only exposes VITE_* to client; we need raw keys for server middleware
 function loadEnvFile() {
@@ -292,6 +293,144 @@ async function handleFs(
   errorResponse(res, 404, "Unknown FS endpoint");
 }
 
+function serveBinaryFile(res: ServerResponse, filePath: string) {
+  if (!fs.existsSync(filePath)) {
+    return errorResponse(res, 404, "Not found");
+  }
+  const buffer = fs.readFileSync(filePath);
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeMap: Record<string, string> = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".glb": "model/gltf-binary",
+  };
+  res.writeHead(200, {
+    "Content-Type": mimeMap[ext] || "application/octet-stream",
+    "Content-Length": buffer.length,
+  });
+  res.end(buffer);
+}
+
+async function handleForge(
+  req: IncomingMessage,
+  res: ServerResponse,
+  subpath: string
+) {
+  const parts = subpath.split("/").filter(Boolean);
+
+  if (parts.length === 1 && parts[0] === "props" && req.method === "GET") {
+    return jsonResponse(res, 200, await forgeStore.listProps());
+  }
+
+  if (parts.length === 1 && parts[0] === "props" && req.method === "POST") {
+    const body = (await readJson(req)) as { meta?: unknown };
+    try {
+      const meta = await forgeStore.createProp(body.meta);
+      return jsonResponse(res, 200, meta);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create prop";
+      return errorResponse(res, message.includes("already exists") ? 409 : 400, message);
+    }
+  }
+
+  if (parts.length === 1 && parts[0] === "collider-presets" && req.method === "GET") {
+    return jsonResponse(res, 200, await forgeStore.readColliderPresets());
+  }
+
+  if (parts.length === 1 && parts[0] === "collider-presets" && req.method === "PUT") {
+    const body = (await readJson(req)) as { file?: unknown };
+    return jsonResponse(res, 200, await forgeStore.writeColliderPresets(body.file));
+  }
+
+  if (parts.length === 1 && parts[0] === "physics-kinds" && req.method === "GET") {
+    return jsonResponse(res, 200, await forgeStore.readPhysicsKinds());
+  }
+
+  if (parts.length === 1 && parts[0] === "physics-kinds" && req.method === "PUT") {
+    const body = (await readJson(req)) as { file?: unknown };
+    return jsonResponse(res, 200, await forgeStore.writePhysicsKinds(body.file));
+  }
+
+  if (parts.length >= 2 && parts[0] === "props") {
+    const propId = decodeURIComponent(parts[1]);
+
+    if (parts.length === 2 && req.method === "GET") {
+      const record = await forgeStore.getProp(propId);
+      if (!record) {
+        return errorResponse(res, 404, "Not found");
+      }
+      return jsonResponse(res, 200, record);
+    }
+
+    if (parts.length === 3 && parts[2] === "concept-image" && req.method === "GET") {
+      return serveBinaryFile(res, forgeStore.getConceptImagePath(propId));
+    }
+
+    if (parts.length === 3 && parts[2] === "raw-glb" && req.method === "GET") {
+      return serveBinaryFile(res, forgeStore.getRawGlbPath(propId));
+    }
+
+    if (parts.length === 3 && parts[2] === "processed-glb" && req.method === "GET") {
+      return serveBinaryFile(res, forgeStore.getProcessedGlbPath(propId));
+    }
+
+    if (parts.length === 3 && parts[2] === "reference" && req.method === "POST") {
+      const body = (await readJson(req)) as {
+        meta?: unknown;
+        conceptImageDataUrl?: string | null;
+        prompt?: string | null;
+      };
+      return jsonResponse(
+        res,
+        200,
+        await forgeStore.saveReferenceStage({
+          propId,
+          meta: body.meta as never,
+          conceptImageDataUrl: body.conceptImageDataUrl,
+          prompt: body.prompt,
+        })
+      );
+    }
+
+    if (parts.length === 3 && parts[2] === "mesh" && req.method === "POST") {
+      const body = (await readJson(req)) as {
+        meta?: unknown;
+        rawGlbBase64?: string | null;
+        processedGlbBase64?: string | null;
+      };
+      return jsonResponse(
+        res,
+        200,
+        await forgeStore.saveMeshStage({
+          propId,
+          meta: body.meta as never,
+          rawGlbBase64: body.rawGlbBase64,
+          processedGlbBase64: body.processedGlbBase64,
+        })
+      );
+    }
+
+    if (parts.length === 3 && parts[2] === "physics" && req.method === "POST") {
+      const body = (await readJson(req)) as {
+        meta?: unknown;
+        colliderGlbs?: Array<{ presetId: string; glbBase64: string }>;
+      };
+      return jsonResponse(
+        res,
+        200,
+        await forgeStore.savePhysicsStage({
+          propId,
+          meta: body.meta as never,
+          colliderGlbs: Array.isArray(body.colliderGlbs) ? body.colliderGlbs : [],
+        })
+      );
+    }
+  }
+
+  errorResponse(res, 404, "Unknown Forge endpoint");
+}
+
 export function apiProxyPlugin(): Plugin {
   return {
     name: "forge-api-proxy",
@@ -319,14 +458,14 @@ export function apiProxyPlugin(): Plugin {
             return await handleFs(req, res, subpath, ASSETS_ROOT);
           }
 
+          if (url.startsWith("/api/forge/")) {
+            const subpath = url.replace("/api/forge", "").split("?")[0];
+            return await handleForge(req, res, subpath);
+          }
+
           if (url.startsWith("/api/fs/")) {
             const subpath = url.replace("/api/fs", "").split("?")[0];
             return await handleFs(req, res, subpath, FORGE_ROOT);
-          }
-
-          if (url.startsWith("/api/fs-v2/")) {
-            const subpath = url.replace("/api/fs-v2", "").split("?")[0];
-            return await handleFs(req, res, subpath, FORGE_V2_ROOT);
           }
 
           errorResponse(res, 404, "Unknown API route");

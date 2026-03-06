@@ -7,13 +7,6 @@ import type { PivotPreset, ScaleMode } from "../../../forge-core/processing/dime
 type ForgeScaleMode = ScaleMode | "depth";
 const UNIT_SCALE_METERS_PER_UNIT = 1.28;
 
-function formatStatusTime(iso?: string): string {
-  if (!iso) return "";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString();
-}
-
 export function MeshInspector() {
   const state = useForgeState();
   const dispatch = useForgeDispatch();
@@ -186,9 +179,6 @@ export function MeshInspector() {
           {state.mesh.status === "OUTDATED" && (
             <OutdatedBanner message="Reference image changed. Regenerate mesh to update." />
           )}
-          {state.pix.status === "OUTDATED" && (
-            <OutdatedBanner message="Mesh was regenerated. Re-approve to update." />
-          )}
           <div className="ps-btn-row">
             <GenerateButton
               status={draft.status === "generating-mesh" ? "BUILDING" : state.mesh.status}
@@ -198,19 +188,10 @@ export function MeshInspector() {
               generateLabel="Generate Mesh"
               regenerateLabel="Regenerate Mesh"
             />
-            <button
-              className="forge-btn forge-btn-primary"
-              onClick={() => void actions.approveSelectedDraftGeneration()}
-              disabled={!draft.rawGlb || !draft.conceptImage}
-            >
-              {draft.generationApprovedAt ? "Re-Approve" : "Approve"}
-            </button>
           </div>
-          {draft.generationApprovedAt && (
-            <div className="ps-text-success" style={{ marginTop: 8 }}>
-              Generation approved ({formatStatusTime(draft.generationApprovedAt)})
-            </div>
-          )}
+          <div className="ps-text-muted" style={{ marginTop: 8 }}>
+            Mesh changes are saved automatically for stored props.
+          </div>
         </div>
       </div>
     </div>

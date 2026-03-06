@@ -13,39 +13,38 @@ import { createColliderHelper } from "../../forge-core/processing/colliders";
 import {
   normalizeForgePhysicsSettings,
 } from "../../forge-core/processing/physics";
+import { buildComposedPrompt, exportObjectToGlb, slugifyPropId } from "../io/forge-helpers";
 import {
-  buildComposedPrompt,
-  ensureSeedPresetFiles,
-  exportObjectToGlb,
-  listForgePropIds,
+  createForgeProp,
+  getForgeProp,
+  getPropConceptImageUrl,
+  listForgeProps,
   readColliderPresetFile,
-  readForgePropMeta,
   readPhysicsKindPresetFile,
-  readPropRawConceptImage,
   readPropRawGlb,
-  writeForgePropMeta,
-  writePropColliderGlb,
-  writePropConceptImage,
-  writePropProcessedModelGlb,
-  writePropPrompt,
-  writePropRawGlb,
-  slugifyPropId,
-  makePropBaseDir,
-} from "../io/PropRepository";
+  saveMeshStage,
+  savePhysicsStage,
+  saveReferenceStage,
+} from "../io/forge-client";
 import { createDefaultForgeMeta } from "../state/schema";
 import {
   processMesh,
   normalizeTransforms,
-  UNIT_SCALE_METERS_PER_UNIT,
   type ForgeScaleMode,
 } from "../model/MeshProcessor";
 import type {
   ForgeColliderResultEntry,
   ForgeGenerationDraftProp,
-  ForgePropMeta,
 } from "../types";
 import type { VhacdProgress } from "@common/collider-vhacd";
 import { computeBBox, computePivotOffset } from "../../forge-core/processing/dimensions";
+import {
+  applyDraftMeshToMeta,
+  applyDraftReferenceToMeta,
+  applyPhysicsToMeta,
+  canLoadPhysicsForLifecycle,
+  draftFromSavedProp,
+} from "../model/prop-mappers";
 
 const DEFAULT_FACE_LIMIT = 5_000;
 
@@ -61,27 +60,14 @@ export function usePipelineActions() {
   const loadSavedPropIndex = useCallback(async () => {
     dispatch({ type: "SET_SAVED_LOADING", loading: true });
     try {
-      const ids = await listForgePropIds();
-      const pairs = await Promise.all(
-        ids.map(async (id) => {
-          const [meta, conceptImage] = await Promise.all([
-            readForgePropMeta(id),
-            readPropRawConceptImage(id),
-          ]);
-          return { meta, conceptImage };
-        })
-      );
-      const items = pairs
-        .filter((pair): pair is { meta: ForgePropMeta; conceptImage: string | null } => pair.meta !== null)
-        .map(({ meta, conceptImage }) => ({
-          id: meta.id,
-          description: meta.description,
-          status: meta.lifecycle.status,
-          conceptImage,
-          generationApprovedAt: meta.lifecycle.generationApprovedAt,
-          physicsApprovedAt: meta.lifecycle.physicsApprovedAt,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id));
+      const items = (await listForgeProps()).map((item) => ({
+        id: item.id,
+        description: item.description,
+        status: item.status,
+        conceptImage: item.hasConceptImage ? getPropConceptImageUrl(item.id) : null,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }));
       dispatch({ type: "SET_SAVED_PROPS", props: items });
     } finally {
       dispatch({ type: "SET_SAVED_LOADING", loading: false });
@@ -89,7 +75,6 @@ export function usePipelineActions() {
   }, [dispatch]);
 
   const initialize = useCallback(async () => {
-    await ensureSeedPresetFiles();
     const [colliderPresets, kindPresets] = await Promise.all([
       readColliderPresetFile(),
       readPhysicsKindPresetFile(),
@@ -100,12 +85,13 @@ export function usePipelineActions() {
   }, [dispatch, loadSavedPropIndex]);
 
   const loadPropIntoPipeline = useCallback(async (propId: string) => {
-    const [meta, conceptImage] = await Promise.all([
-      readForgePropMeta(propId),
-      readPropRawConceptImage(propId),
-    ]);
-    if (!meta) return;
-    dispatch({ type: "LOAD_PROP_INTO_PIPELINE", meta, conceptImage });
+    const record = await getForgeProp(propId);
+    if (!record) return;
+    dispatch({
+      type: "LOAD_PROP_INTO_PIPELINE",
+      meta: record.meta,
+      conceptImage: record.hasConceptImage ? getPropConceptImageUrl(propId) : null,
+    });
   }, [dispatch]);
 
   const runImageGenerationForDraft = useCallback(async (
@@ -166,13 +152,26 @@ export function usePipelineActions() {
       if (draft.tempId.startsWith("saved-")) {
         const idSlug = draft.tempId.slice("saved-".length);
         try {
-          await writePropConceptImage(idSlug, dataUrl);
-          const meta = await readForgePropMeta(idSlug);
-          if (meta) {
-            meta.lifecycle.status = "image-ready";
-            meta.generation.image.revision = draft.imageRevision + 1;
-            meta.generation.image.generatedAt = new Date().toISOString();
-            await writeForgePropMeta(meta);
+          const record = await getForgeProp(idSlug);
+          if (record) {
+            const composedPrompt = (draft as ForgeGenerationDraftProp & { lastPromptUsed?: string }).lastPromptUsed
+              ?? buildComposedPrompt(state.styleGuide, draft.description);
+            const nextMeta = applyDraftReferenceToMeta(
+              record.meta,
+              {
+                ...draft,
+                conceptImage: dataUrl,
+                imageRevision: draft.imageRevision + 1,
+              },
+              state.styleGuide,
+              composedPrompt
+            );
+            await saveReferenceStage({
+              propId: idSlug,
+              meta: nextMeta,
+              conceptImageDataUrl: dataUrl,
+              prompt: composedPrompt,
+            });
           }
           await loadSavedPropIndex();
         } catch {
@@ -228,15 +227,22 @@ export function usePipelineActions() {
       if (draft.tempId.startsWith("saved-")) {
         const idSlug = draft.tempId.slice("saved-".length);
         try {
-          await writePropRawGlb(idSlug, glb);
-          const meta = await readForgePropMeta(idSlug);
-          if (meta) {
-            meta.lifecycle.status = "mesh-ready";
-            meta.generation.mesh.revision = draft.meshRevision + 1;
-            meta.generation.mesh.generatedAt = new Date().toISOString();
-            meta.generation.mesh.faceLimit = draft.faceLimit;
-            meta.generation.mesh.pbr = draft.pbr;
-            await writeForgePropMeta(meta);
+          const record = await getForgeProp(idSlug);
+          if (record) {
+            const nextMeta = applyDraftMeshToMeta(
+              record.meta,
+              {
+                ...draft,
+                rawGlb: glb,
+                meshRevision: draft.meshRevision + 1,
+              },
+              refs.generationPixelBaseViewState.current
+            );
+            await saveMeshStage({
+              propId: idSlug,
+              meta: nextMeta,
+              rawGlb: glb,
+            });
           }
           await loadSavedPropIndex();
         } catch {
@@ -333,7 +339,7 @@ export function usePipelineActions() {
       type: "UPDATE_DRAFT",
       id: draft.tempId,
       patch: {
-        status: draft.status === "approved-generation" ? "approved-generation" : "mesh-ready",
+        status: "mesh-ready",
         pivotOffset: result.pivotOffset,
         scale: result.scale,
         originalFaces: result.originalFaces,
@@ -345,128 +351,6 @@ export function usePipelineActions() {
 
     return { pixelModel: result.pixelModel };
   }, [dispatch, refs, state.drafts, state.selectedDraftId]);
-
-  const persistProcessedMesh = useCallback(async () => {
-    const draftId = state.selectedDraftId;
-    const draft = draftId ? state.drafts.get(draftId) ?? null : null;
-    if (!draft || !draft.tempId.startsWith("saved-") || !draft.rawGlb) return;
-    const viewport = refs.generationViewport.current;
-    const model = viewport?.getModel();
-    if (!model) return;
-
-    const idSlug = draft.tempId.slice("saved-".length);
-    try {
-      const processedGlb = await exportObjectToGlb(model);
-      await writePropProcessedModelGlb(idSlug, processedGlb);
-
-      const meta = await readForgePropMeta(idSlug);
-      if (meta) {
-        meta.lifecycle.status = "generation-approved";
-        meta.lifecycle.generationApprovedAt = new Date().toISOString();
-        meta.processing.mesh.originalFaces = draft.originalFaces;
-        meta.processing.mesh.processedFaces = draft.processedFaces;
-        meta.processing.mesh.simplificationRatio = draft.simplificationRatio;
-        meta.processing.mesh.textureResolution = draft.textureResolution;
-        meta.processing.mesh.bboxProcessed = draft.bboxProcessed ?? undefined;
-        meta.processing.transform.scale = [draft.scale, draft.scale, draft.scale];
-        meta.processing.transform.provisionalPivot = {
-          preset: draft.pivot,
-          offset: draft.pivotOffset,
-          basis: "mesh",
-        };
-        meta.processing.transform.targetDimension = {
-          method: draft.scaleMode,
-          value: draft.targetDimension,
-        } as ForgePropMeta["processing"]["transform"]["targetDimension"];
-        await writeForgePropMeta(meta);
-      }
-
-      dispatch({
-        type: "UPDATE_DRAFT",
-        id: draft.tempId,
-        patch: { status: "approved-generation", generationApprovedAt: meta?.lifecycle.generationApprovedAt },
-      });
-      await loadSavedPropIndex();
-    } catch {
-      // best-effort
-    }
-  }, [dispatch, loadSavedPropIndex, refs, state.drafts, state.selectedDraftId]);
-
-  const approveSelectedDraftGeneration = useCallback(async () => {
-    const draftId = state.selectedDraftId;
-    const draft = draftId ? state.drafts.get(draftId) ?? null : null;
-    const viewport = refs.generationViewport.current;
-    if (!draft || !viewport) return;
-    const model = viewport.getModel();
-    if (!model || !draft.rawGlb || !draft.conceptImage) return;
-
-    const composedPrompt =
-      (draft as ForgeGenerationDraftProp & { lastPromptUsed?: string }).lastPromptUsed ??
-      buildComposedPrompt(state.styleGuide, draft.description);
-    const pixelViewState = refs.generationPixelBaseViewState.current;
-
-    const meta = createDefaultForgeMeta({
-      id: draft.idSlug,
-      description: draft.description,
-      styleGuide: state.styleGuide,
-      composedPrompt,
-      faceLimit: draft.faceLimit,
-      pbr: draft.pbr,
-    });
-    meta.lifecycle.status = "generation-approved";
-    meta.lifecycle.generationApprovedAt = new Date().toISOString();
-    meta.generation.image.revision = draft.imageRevision;
-    meta.generation.image.generatedAt = draft.imageRevision > 0 ? new Date().toISOString() : undefined;
-    meta.generation.mesh.faceLimit = draft.faceLimit;
-    meta.generation.mesh.pbr = draft.pbr;
-    meta.generation.mesh.revision = draft.meshRevision;
-    meta.generation.mesh.generatedAt = draft.meshRevision > 0 ? new Date().toISOString() : undefined;
-    meta.processing.mesh.originalFaces = draft.originalFaces;
-    meta.processing.mesh.processedFaces = draft.processedFaces;
-    meta.processing.mesh.simplificationRatio = draft.simplificationRatio;
-    meta.processing.mesh.textureResolution = draft.textureResolution;
-    meta.processing.mesh.bboxProcessed = draft.bboxProcessed ?? undefined;
-    meta.processing.transform.unitScaleMetersPerUnit = UNIT_SCALE_METERS_PER_UNIT;
-    meta.processing.transform.targetDimension = {
-      method: draft.scaleMode,
-      value: draft.targetDimension,
-    } as ForgePropMeta["processing"]["transform"]["targetDimension"];
-    meta.processing.transform.scale = [draft.scale, draft.scale, draft.scale];
-    meta.processing.transform.provisionalPivot = {
-      preset: draft.pivot,
-      offset: draft.pivotOffset,
-      basis: "mesh",
-    };
-    meta.pixelPreview.cameraSyncState = {
-      target: pixelViewState.target,
-      yawTurns: pixelViewState.yawTurns,
-      zoomLevel: Math.round(pixelViewState.zoom),
-    };
-
-    dispatch({ type: "SET_STATUS_MESSAGE", message: `Saving ${draft.description}...` });
-
-    await writePropConceptImage(draft.idSlug, draft.conceptImage);
-    await writePropPrompt(draft.idSlug, composedPrompt);
-    await writePropRawGlb(draft.idSlug, draft.rawGlb);
-    const processedGlb = await exportObjectToGlb(model);
-    await writePropProcessedModelGlb(draft.idSlug, processedGlb);
-    await writeForgePropMeta(meta);
-
-    dispatch({
-      type: "UPDATE_DRAFT",
-      id: draft.tempId,
-      patch: { status: "approved-generation", generationApprovedAt: meta.lifecycle.generationApprovedAt },
-    });
-    dispatch({ type: "SET_STATUS_MESSAGE", message: "" });
-    await loadSavedPropIndex();
-  }, [dispatch, loadSavedPropIndex, refs, state.drafts, state.selectedDraftId, state.styleGuide]);
-
-  const loadPhysicsProp = useCallback(async (propId: string) => {
-    const meta = await readForgePropMeta(propId);
-    if (!meta) return;
-    const conceptImage = await readPropRawConceptImage(propId);
-    dispatch({ type: "SET_PHYSICS_PROP", propId, meta, conceptImage });
-  }, [dispatch]);
 
   const computeSelectedPhysicsColliders = useCallback(async () => {
     if (!state.physicsSelectedPropId || !state.colliderPresets) return;
@@ -529,7 +413,7 @@ export function usePipelineActions() {
           presetId: preset.id,
           presetName: preset.name,
           enabled: true,
-          file: `${makePropBaseDir(state.physicsSelectedPropId)}/processed/colliders/${preset.id}.glb`,
+          file: `processed/colliders/${preset.id}.glb`,
           collider: built.collider,
           generation: built.metadata,
         });
@@ -547,8 +431,7 @@ export function usePipelineActions() {
         state: { running: false, progressText: "done", statusText: `Computed ${entries.length} collider preset(s).`, error: null },
       });
 
-      // Auto-persist (approve) physics setup
-      await autoApprovePhysics({
+      await persistPhysicsState({
         entries,
         selectedPresetId: defaultEntry?.presetId ?? entries[0]?.presetId ?? null,
       });
@@ -560,17 +443,18 @@ export function usePipelineActions() {
     }
   }, [dispatch, refs, state.colliderPresets, state.physicsColliderBuildState, state.physicsSelectedPropId]);
 
-  // Auto-persist physics setup (called after collider compute, collider selection change, or kind change)
+  // Persist physics state after collider compute, collider selection, or kind changes.
   // Accepts optional overrides for values that were just dispatched (not yet in state).
-  const autoApprovePhysics = useCallback(async (opts?: {
+  const persistPhysicsState = useCallback(async (opts?: {
     entries?: ForgeColliderResultEntry[];
     selectedPresetId?: string | null;
     kindId?: string;
     settings?: ReturnType<typeof normalizeForgePhysicsSettings>;
   }) => {
     if (!state.physicsSelectedPropId) return;
-    const baseMeta = await readForgePropMeta(state.physicsSelectedPropId);
-    if (!baseMeta) return;
+    const record = await getForgeProp(state.physicsSelectedPropId);
+    if (!record) return;
+    const baseMeta = record.meta;
     const colliderResults = opts?.entries ?? state.physicsColliderResults;
     const selId = opts?.selectedPresetId ?? state.physicsSelectedColliderPresetId;
     const kindId = opts?.kindId ?? state.physicsSelectedKindId;
@@ -580,11 +464,12 @@ export function usePipelineActions() {
       colliderResults[0] ?? null;
     if (!selectedCollider || colliderResults.length <= 0) return;
 
+    const colliderGlbs: Array<{ presetId: string; glb: ArrayBuffer }> = [];
     for (const entry of colliderResults) {
       const scene = buildColliderExportSceneFromParams(entry.collider);
       const buffer = await exportObjectToGlb(scene);
-      const rel = await writePropColliderGlb(state.physicsSelectedPropId, entry.presetId, buffer);
-      entry.file = rel;
+      colliderGlbs.push({ presetId: entry.presetId, glb: buffer });
+      entry.file = `processed/colliders/${entry.presetId}.glb`;
     }
 
     const colliderHelper = createColliderHelper(selectedCollider.collider);
@@ -602,31 +487,33 @@ export function usePipelineActions() {
       });
     }
 
-    baseMeta.colliders = {
+    const nextMeta = applyPhysicsToMeta(baseMeta, {
       selectedPresetId: selectedCollider.presetId,
-      presets: colliderResults,
-    };
-    baseMeta.physics = {
-      kind: kindId,
-      overrides,
-      resolved: resolvedPhysics,
-      simulationChecks: {
-        floorDrop: { scenario: "floorDrop", ...refs.physicsSimMetrics.current.floorDrop },
-        slope30Drop: { scenario: "slope30Drop", ...refs.physicsSimMetrics.current.slope30Drop },
-        edgeDrop: { scenario: "edgeDrop", ...refs.physicsSimMetrics.current.edgeDrop },
+      colliderResults,
+      physics: {
+        kind: kindId,
+        overrides,
+        resolved: resolvedPhysics,
+        simulationChecks: {
+          floorDrop: { scenario: "floorDrop", ...refs.physicsSimMetrics.current.floorDrop },
+          slope30Drop: { scenario: "slope30Drop", ...refs.physicsSimMetrics.current.slope30Drop },
+          edgeDrop: { scenario: "edgeDrop", ...refs.physicsSimMetrics.current.edgeDrop },
+        },
       },
-    };
-    baseMeta.processing.transform.finalPivot = {
-      preset: "bottom-center",
-      offset: [finalPivotOffset.x, finalPivotOffset.y, finalPivotOffset.z],
-      basis: "collider",
-      colliderPresetId: selectedCollider.presetId,
-    };
-    baseMeta.lifecycle.status = "physics-approved";
-    baseMeta.lifecycle.physicsApprovedAt = new Date().toISOString();
+      finalPivotOffset: [finalPivotOffset.x, finalPivotOffset.y, finalPivotOffset.z],
+    });
 
-    await writeForgePropMeta(baseMeta);
-    dispatch({ type: "SET_PHYSICS_PROP", propId: state.physicsSelectedPropId, meta: baseMeta, conceptImage: state.physicsConceptImage });
+    await savePhysicsStage({
+      propId: state.physicsSelectedPropId,
+      meta: nextMeta,
+      colliderGlbs,
+    });
+    dispatch({
+      type: "SET_PHYSICS_PROP",
+      propId: state.physicsSelectedPropId,
+      meta: nextMeta,
+      conceptImage: state.physicsConceptImage,
+    });
     await loadSavedPropIndex();
   }, [dispatch, loadSavedPropIndex, refs, state]);
 
@@ -673,71 +560,27 @@ export function usePipelineActions() {
   }, [dispatch, state.batchText, state.defaultFaceLimit]);
 
   const selectProp = useCallback(async (propId: string) => {
-    const [meta, conceptImage, rawGlb] = await Promise.all([
-      readForgePropMeta(propId),
-      readPropRawConceptImage(propId),
+    await refs.autoSaver.current.flush();
+    const [record, rawGlb] = await Promise.all([
+      getForgeProp(propId),
       readPropRawGlb(propId),
     ]);
-    if (!meta) return;
+    if (!record) return;
+    const conceptImage = record.hasConceptImage ? getPropConceptImageUrl(propId) : null;
+    const meta = record.meta;
 
     // Set stage states from persisted meta
     dispatch({ type: "LOAD_PROP_INTO_PIPELINE", meta, conceptImage });
 
-    // Create a working draft for operations (generate, approve, etc.)
-    const tempId = `saved-${propId}`;
-    const scaleModeRaw = meta.processing.transform.targetDimension.method;
-    const scaleMode: ForgeScaleMode =
-      scaleModeRaw === "width" || scaleModeRaw === "height" || scaleModeRaw === "max" || scaleModeRaw === "manual" || scaleModeRaw === "depth"
-        ? scaleModeRaw
-        : "max";
-
-    const draft: ForgeGenerationDraftProp = {
-      tempId,
-      idSlug: propId,
-      description: meta.description,
-      status:
-        rawGlb && conceptImage
-          ? meta.lifecycle.status === "generation-approved" || meta.lifecycle.status === "physics-approved"
-            ? "approved-generation"
-            : "mesh-ready"
-          : conceptImage
-            ? "image-ready"
-            : "draft",
-      conceptImage,
-      rawGlb,
-      imageError: null,
-      meshError: null,
-      imageRevision: Math.max(0, meta.generation.image.revision),
-      meshRevision: Math.max(0, meta.generation.mesh.revision),
-      meshProgress: rawGlb ? 100 : 0,
-      meshProgressLabel: rawGlb ? "Imported" : "idle",
-      faceLimit: Math.max(1000, meta.generation.mesh.faceLimit || DEFAULT_FACE_LIMIT),
-      pbr: meta.generation.mesh.pbr !== false,
-      textureResolution: meta.processing.mesh.textureResolution ?? 0,
-      scaleMode,
-      targetDimension: meta.processing.transform.targetDimension.value ?? 1,
-      scale: meta.processing.transform.scale?.[0] ?? 1,
-      pivot: meta.processing.transform.provisionalPivot.preset,
-      pivotOffset: meta.processing.transform.provisionalPivot.offset,
-      originalFaces: meta.processing.mesh.originalFaces ?? 0,
-      processedFaces: meta.processing.mesh.processedFaces ?? 0,
-      simplificationRatio: meta.processing.mesh.simplificationRatio ?? 1,
-      bboxProcessed: meta.processing.mesh.bboxProcessed ?? null,
-      pixelCamera: {
-        target: meta.pixelPreview.cameraSyncState.target,
-        yawTurns: meta.pixelPreview.cameraSyncState.yawTurns,
-        zoomLevel: meta.pixelPreview.cameraSyncState.zoomLevel,
-      },
-      generationApprovedAt: meta.lifecycle.generationApprovedAt,
-    };
+    const draft = draftFromSavedProp({ meta, conceptImage, rawGlb });
 
     // Replace all drafts with just this prop
     dispatch({ type: "CLEAR_DRAFTS" });
     dispatch({ type: "ADD_DRAFTS", drafts: [draft] });
-    dispatch({ type: "SELECT_DRAFT", id: tempId });
+    dispatch({ type: "SELECT_DRAFT", id: draft.tempId });
 
     // Also load physics data if available, otherwise clear stale physics state
-    if (meta.lifecycle.status === "generation-approved" || meta.lifecycle.status === "physics-approved") {
+    if (canLoadPhysicsForLifecycle(meta.lifecycle.status)) {
       dispatch({ type: "SET_PHYSICS_PROP", propId, meta, conceptImage });
     } else {
       dispatch({ type: "CLEAR_PHYSICS_PROP" });
@@ -768,7 +611,7 @@ export function usePipelineActions() {
         pbr: true,
       });
       try {
-        await writeForgePropMeta(meta);
+        await createForgeProp(meta);
         created.push(id);
       } catch (err) {
         errors.push({ id, error: err instanceof Error ? err.message : "Unknown error" });
@@ -794,61 +637,16 @@ export function usePipelineActions() {
   }, [dispatch, loadSavedPropIndex, selectProp, state.batchText, state.defaultFaceLimit, state.styleGuide]);
 
   const importSavedPropIntoGeneration = useCallback(async (propId: string) => {
-    const [meta, conceptImage, rawGlb] = await Promise.all([
-      readForgePropMeta(propId),
-      readPropRawConceptImage(propId),
+    const [record, rawGlb] = await Promise.all([
+      getForgeProp(propId),
       readPropRawGlb(propId),
     ]);
-    if (!meta) return;
-    const tempId = `saved-${propId}`;
-    const scaleModeRaw = meta.processing.transform.targetDimension.method;
-    const scaleMode: ForgeScaleMode =
-      scaleModeRaw === "width" || scaleModeRaw === "height" || scaleModeRaw === "max" || scaleModeRaw === "manual" || scaleModeRaw === "depth"
-        ? scaleModeRaw
-        : "max";
-
-    const draft: ForgeGenerationDraftProp = {
-      tempId,
-      idSlug: propId,
-      description: meta.description,
-      status:
-        rawGlb && conceptImage
-          ? meta.lifecycle.status === "generation-approved" || meta.lifecycle.status === "physics-approved"
-            ? "approved-generation"
-            : "mesh-ready"
-          : conceptImage
-            ? "image-ready"
-            : "draft",
-      conceptImage,
-      rawGlb,
-      imageError: null,
-      meshError: null,
-      imageRevision: Math.max(0, meta.generation.image.revision),
-      meshRevision: Math.max(0, meta.generation.mesh.revision),
-      meshProgress: rawGlb ? 100 : 0,
-      meshProgressLabel: rawGlb ? "Imported" : "idle",
-      faceLimit: Math.max(1000, meta.generation.mesh.faceLimit || DEFAULT_FACE_LIMIT),
-      pbr: meta.generation.mesh.pbr !== false,
-      textureResolution: meta.processing.mesh.textureResolution ?? 0,
-      scaleMode,
-      targetDimension: meta.processing.transform.targetDimension.value ?? 1,
-      scale: meta.processing.transform.scale?.[0] ?? 1,
-      pivot: meta.processing.transform.provisionalPivot.preset,
-      pivotOffset: meta.processing.transform.provisionalPivot.offset,
-      originalFaces: meta.processing.mesh.originalFaces ?? 0,
-      processedFaces: meta.processing.mesh.processedFaces ?? 0,
-      simplificationRatio: meta.processing.mesh.simplificationRatio ?? 1,
-      bboxProcessed: meta.processing.mesh.bboxProcessed ?? null,
-      pixelCamera: {
-        target: meta.pixelPreview.cameraSyncState.target,
-        yawTurns: meta.pixelPreview.cameraSyncState.yawTurns,
-        zoomLevel: meta.pixelPreview.cameraSyncState.zoomLevel,
-      },
-      generationApprovedAt: meta.lifecycle.generationApprovedAt,
-    };
+    if (!record) return;
+    const conceptImage = record.hasConceptImage ? getPropConceptImageUrl(propId) : null;
+    const draft = draftFromSavedProp({ meta: record.meta, conceptImage, rawGlb });
 
     dispatch({ type: "ADD_DRAFTS", drafts: [draft] });
-    dispatch({ type: "SELECT_DRAFT", id: tempId });
+    dispatch({ type: "SELECT_DRAFT", id: draft.tempId });
     refs.zoomSyncScale.current = null;
   }, [dispatch, refs]);
 
@@ -862,11 +660,8 @@ export function usePipelineActions() {
     handleGenerateAllImages,
     handleGenerateAllMeshes,
     rebuildSelectedDraftPreview,
-    persistProcessedMesh,
-    approveSelectedDraftGeneration,
-    loadPhysicsProp,
     computeSelectedPhysicsColliders,
-    autoApprovePhysics,
+    persistPhysicsState,
     addBatchDrafts,
     createPropPlaceholders,
     importSavedPropIntoGeneration,

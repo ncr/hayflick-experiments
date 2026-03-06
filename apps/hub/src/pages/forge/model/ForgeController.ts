@@ -124,7 +124,7 @@ export class ForgeController {
       type: "UPDATE_DRAFT",
       id: draft.tempId,
       patch: {
-        status: draft.status === "approved-generation" ? "approved-generation" : "mesh-ready",
+        status: "mesh-ready",
         pivotOffset: result.pivotOffset,
         scale: result.scale,
         originalFaces: result.originalFaces,

@@ -12,7 +12,6 @@ const FILTERS: { label: string; value: GalleryFilter }[] = [
 function highestValidStageStatus(item: SavedPropListItem) {
   const stages = lifecycleToStageStatuses(item.status);
   if (stages.phy === "VALID") return "VALID" as const;
-  if (stages.pix === "VALID") return "VALID" as const;
   if (stages.mesh === "VALID") return "VALID" as const;
   if (stages.ref === "VALID") return "VALID" as const;
   return "EMPTY" as const;

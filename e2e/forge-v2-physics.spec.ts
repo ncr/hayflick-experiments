@@ -24,8 +24,7 @@ async function setupPhysicsProp(page: import("@playwright/test").Page) {
       id: "test-prop",
       description: "test prop",
       lifecycle: {
-        status: "generation-approved",
-        generationApprovedAt: new Date().toISOString(),
+        status: "mesh-ready",
       },
       generation: {
         image: { revision: 1 },
@@ -60,14 +59,14 @@ async function waitForCanvasResize(
   }, selector, { timeout: 5_000 });
 }
 
-test.describe("forge-v2 physics viewport", () => {
+test.describe("forge physics viewport", () => {
   test("physics source mesh viewport accepts pointer events for rotation", async ({ page }) => {
-    await page.goto("/#/forge-v2");
+    await page.goto("/#/forge");
 
-    const shell = page.locator('[data-testid="forge-v2-page"]');
+    const shell = page.locator('[data-testid="forge-page"]');
     await expect(shell).toBeVisible({ timeout: 10_000 });
 
-    await setForgeStage(page, "physics");
+    await setForgeStage(page, "phy");
     await setupPhysicsProp(page);
 
     // Wait for the physics workspace to mount
@@ -157,12 +156,12 @@ test.describe("forge-v2 physics viewport", () => {
   });
 
   test("physics sim scenario viewports and pixel quads are mounted", async ({ page }) => {
-    await page.goto("/#/forge-v2");
+    await page.goto("/#/forge");
 
-    const shell = page.locator('[data-testid="forge-v2-page"]');
+    const shell = page.locator('[data-testid="forge-page"]');
     await expect(shell).toBeVisible({ timeout: 10_000 });
 
-    await setForgeStage(page, "physics");
+    await setForgeStage(page, "phy");
     await setupPhysicsProp(page);
 
     // Wait for the physics workspace to mount

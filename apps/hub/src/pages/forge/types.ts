@@ -12,8 +12,7 @@ export type ForgeLifecycleStatus =
   | "draft"
   | "image-ready"
   | "mesh-ready"
-  | "generation-approved"
-  | "physics-approved";
+  | "physics-ready";
 
 export type ForgeBBoxJson = {
   width: number;
@@ -29,8 +28,6 @@ export interface ForgePropMeta {
   updatedAt: string;
   lifecycle: {
     status: ForgeLifecycleStatus;
-    generationApprovedAt?: string;
-    physicsApprovedAt?: string;
   };
   styleGuide: {
     name: string;
@@ -172,7 +169,6 @@ export interface ForgeGenerationDraftProp {
     | "image-ready"
     | "generating-mesh"
     | "mesh-ready"
-    | "approved-generation"
     | "error";
   conceptImage: string | null;
   rawGlb: ArrayBuffer | null;
@@ -199,7 +195,6 @@ export interface ForgeGenerationDraftProp {
     yawTurns: number;
     zoomLevel: number;
   };
-  generationApprovedAt?: string;
 }
 
 export interface ForgePhysicsEditorState {
