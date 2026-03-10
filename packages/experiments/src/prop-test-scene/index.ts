@@ -125,7 +125,7 @@ function createHud(mount: HTMLElement): { el: HTMLDivElement; update: (mode: AAM
 
 const experiment: ExperimentModule = {
   id: "prop-test-scene",
-  title: "Prop Test Scene",
+  title: "Antialiasing Test",
   tags: ["threejs", "pixel-perfect", "isometric", "props"],
   init: ({ mount, width, height }) => {
     const scene = new THREE.Scene();
