@@ -1,0 +1,114 @@
+{
+  "kitId": "kit_mmqb370o_a",
+  "kitName": "modern_desert_monolith_kit",
+  "generatedAt": "2026-03-14T12:32:48.728Z",
+  "format": "glb",
+  "artifactTransform": {
+    "format": "gltf",
+    "blockbenchUnitsPerWorldUnit": 128,
+    "worldUnitsPerBlockbenchUnit": 0.007813
+  },
+  "part": {
+    "name": "end_cap",
+    "kind": "end_cap",
+    "groupUuid": "5b06a5d9-af50-334a-8ee1-688b8870d671",
+    "anchorClass": "edge_midpoint",
+    "anchorPolicy": "first_logical_unit",
+    "anchorLocal": [
+      0,
+      0,
+      0
+    ],
+    "sceneAnchor": [
+      2976,
+      0,
+      0
+    ],
+    "logicalFootprint": {
+      "type": "edge_cap",
+      "runUnits": 32,
+      "runCells": 0.25,
+      "baseUnit": 128
+    },
+    "meshEnvelope": [
+      32,
+      280,
+      32
+    ],
+    "articulationPivot": null,
+    "articulationType": null,
+    "hingeSide": null,
+    "dimensions": [
+      32,
+      280,
+      32
+    ],
+    "artifactAnchor": [
+      0,
+      0,
+      0
+    ],
+    "artifactSceneAnchor": [
+      23.25,
+      0,
+      0
+    ],
+    "artifactArticulationPivot": null
+  },
+  "textures": [
+    {
+      "role": "wall",
+      "name": "modern_desert_monolith_wall.png",
+      "mode": "data_url",
+      "resolution": 280,
+      "uvWidth": 280,
+      "uvHeight": 280,
+      "density": {
+        "x": 16,
+        "y": 16
+      },
+      "densityLabel": "16x",
+      "blockbenchPixelsPerGamePixel": 4,
+      "path": "/Users/ncr/dev/blockstudio/tilesets/modern_desert_monolith/project/textures/modern_desert_monolith_wall.png"
+    },
+    {
+      "role": "trim",
+      "name": "modern_desert_monolith_trim.png",
+      "mode": "data_url",
+      "resolution": 280,
+      "uvWidth": 280,
+      "uvHeight": 280,
+      "density": {
+        "x": 16,
+        "y": 16
+      },
+      "densityLabel": "16x",
+      "blockbenchPixelsPerGamePixel": 4,
+      "path": "/Users/ncr/dev/blockstudio/tilesets/modern_desert_monolith/project/textures/modern_desert_monolith_trim.png"
+    },
+    {
+      "role": "accent",
+      "name": "modern_desert_monolith_accent.png",
+      "mode": "data_url",
+      "resolution": 280,
+      "uvWidth": 280,
+      "uvHeight": 280,
+      "density": {
+        "x": 16,
+        "y": 16
+      },
+      "densityLabel": "16x",
+      "blockbenchPixelsPerGamePixel": 4,
+      "path": "/Users/ncr/dev/blockstudio/tilesets/modern_desert_monolith/project/textures/modern_desert_monolith_accent.png"
+    }
+  ],
+  "workspace": {
+    "rootDir": "/Users/ncr/dev/blockstudio/tilesets/modern_desert_monolith/project",
+    "name": "modern_desert_monolith_kit",
+    "fileStem": "modern_desert_monolith",
+    "texturesDir": "/Users/ncr/dev/blockstudio/tilesets/modern_desert_monolith/project/textures",
+    "exportsDir": "/Users/ncr/dev/blockstudio/tilesets/modern_desert_monolith/artifacts",
+    "capturesDir": "/Users/ncr/dev/blockstudio/tilesets/modern_desert_monolith/project/captures",
+    "projectFile": "/Users/ncr/dev/blockstudio/tilesets/modern_desert_monolith/project/modern_desert_monolith.bbmodel"
+  }
+}

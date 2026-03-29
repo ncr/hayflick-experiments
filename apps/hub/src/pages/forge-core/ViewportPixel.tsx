@@ -165,7 +165,7 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       ground.receiveShadow = true;
       scene.add(ground);
 
-      // Match settings from existing experiments (pixel-stable-moving-mesh)
+      // Isometric camera defaults
       const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
       const CAMERA_YAW = THREE.MathUtils.degToRad(45);
 

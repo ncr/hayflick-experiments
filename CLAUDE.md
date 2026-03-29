@@ -11,16 +11,20 @@ Monorepo managed with **pnpm workspaces**.
 
 ```
 apps/hub          — Vite + React experiment browser (the hub UI)
-  src/pages/forge-v2/  — Asset Forge v2 (route: #/forge-v2) — prop pipeline: concept image → mesh → physics colliders
+  src/pages/forge/     — Asset Forge v2 (route: #/forge-v2) — prop pipeline: concept image → mesh → physics colliders
+  src/pages/forge-core/ — Forge shared processing (colliders, export, textures)
 packages/
-  common-render   — Pixel-perfect rendering primitives (PixelStage, PixelPerfectController, PixelPerfectIsoView)
-  common-render-legacy — Legacy render exports (frozen; 2to1 experiment still uses this)
-  common-core     — Generic utilities and data logic
-  common-gameplay — Gameplay systems (inventory, state rules)
-  experiments     — Individual experiment modules (each in src/<name>/)
-docs/             — Architecture docs, learnings, promotion guide
-e2e/              — Playwright end-to-end tests
-scripts/          — CLI helpers (new-experiment scaffold, HTTPS dev server)
+  common-render       — Pixel-perfect rendering primitives (PixelStage, PixelPerfectController, PixelPerfectIsoView)
+  common-core         — Generic utilities and data logic
+  common-gameplay     — Gameplay systems (inventory, state rules)
+  common-level-editor — Tile/structure models, wall/door mesh kit, editor UI, bake pipeline
+  common-input        — Input handling
+  common-physics-rapier — Rapier physics integration
+  common-collider-vhacd — V-HACD convex decomposition for colliders
+  experiments         — Active experiment modules (physics-prop-drop, prop-test-scene, prop-physics-3d, auto-collider)
+docs/               — Architecture docs, learnings, promotion guide
+e2e/                — Playwright end-to-end tests
+scripts/            — CLI helpers (new-experiment scaffold, HTTPS dev server)
 ```
 
 ## Key Commands
