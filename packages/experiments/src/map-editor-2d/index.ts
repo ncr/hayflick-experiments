@@ -7,19 +7,19 @@ import {
 import { bindSharedScissorStageInput } from "@common/input";
 import {
   createEditorHud,
-  createPromotedEditorControls,
-  bakeLevelForEcs,
-  serializeBakedLevel,
   LEVEL_EDITOR_WORLD_UNIT
 } from "@common/level-editor";
 import type { ExperimentModule } from "../runtime/types";
 
-import { toBakeInput, clearStructures, clearGround, setDefaultGround } from "./editor-state";
+import { clearStructures, clearGround } from "./editor-state";
 import { GridRenderer } from "./grid-renderer";
 import { SceneBuilder, LAYER_2D_TINT } from "./scene-builder";
-import { bindPointerTools } from "./pointer-tools";
+import { bindPointerTools, GROUND_BRUSHES, brushPlacement } from "./pointer-tools";
+import type { ToolMode } from "./pointer-tools";
+import type { HoverTarget } from "./grid-renderer";
 import { loadEditorState, debouncedSave } from "./persistence";
 import { loadTilesetAssets } from "./tileset-loader";
+import type { TilesetAssets } from "./tileset-loader";
 
 const GRID_TILES = 20;
 const CAMERA_DISTANCE = 50;
@@ -54,6 +54,29 @@ const SHARED_VIEW_CONFIG = {
   outputOverscanLowPixels: 2
 };
 
+/** Human-friendly label for a tile name */
+function tileLabel(name: string): string {
+  return name.replace(/_/g, " ");
+}
+
+/** Build tile brush buttons from the kit manifest — one row, all tiles */
+function buildTileBrushes(
+  assets: TilesetAssets,
+  hud: ReturnType<typeof createEditorHud>,
+  onSelect: (tileName: string) => void
+): Map<string, HTMLButtonElement> {
+  const buttons = new Map<string, HTMLButtonElement>();
+  const row = hud.createRow("Tiles");
+
+  for (const [name] of assets.tiles) {
+    const btn = hud.createButton(tileLabel(name), () => onSelect(name));
+    buttons.set(name, btn);
+    row.append(btn);
+  }
+
+  return buttons;
+}
+
 const experiment: ExperimentModule = {
   id: "map-editor-2d",
   title: "2D Map Editor",
@@ -85,6 +108,7 @@ const experiment: ExperimentModule = {
     const assets = await loadTilesetAssets();
     const sceneBuilder = new SceneBuilder(assets);
     scene.add(sceneBuilder.root);
+    scene.add(sceneBuilder.preview);
 
     // --- Dual-pane layout ---
     const leftPaneEl = createPaneElement(mount, { left: "0", width: "55%" });
@@ -113,7 +137,6 @@ const experiment: ExperimentModule = {
       maxBackingHeight: stage.maxBackingHeight,
       devicePixelRatio: stage.getDevicePixelRatio()
     });
-    // 2D camera sees layer 0 (grid/terrain/3D originals) + layer 2 (tinted overlays)
     leftCore.camera.layers.enable(LAYER_2D_TINT);
 
     const leftPane = new PixelPerfectIsoScissorPane({
@@ -137,7 +160,6 @@ const experiment: ExperimentModule = {
       maxBackingHeight: stage.maxBackingHeight,
       devicePixelRatio: stage.getDevicePixelRatio()
     });
-    // 3D camera sees only layer 0 (default) — grid, terrain, and original structures
 
     const rightPane = new PixelPerfectIsoScissorPane({
       id: "preview-3d",
@@ -161,15 +183,48 @@ const experiment: ExperimentModule = {
       }
     });
 
-    // Pane divs must not capture pointer events — let them fall through to the canvas
     leftPaneEl.style.pointerEvents = "none";
     rightPaneEl.style.pointerEvents = "none";
 
-    // Pointer tools: LMB painting (left pane only, via canvas hit-testing)
+    // Preview ghost — shared state so R key can trigger re-render
+    let lastHoverTarget: HoverTarget = null;
+
+    function updatePreview(): void {
+      const target = lastHoverTarget;
+      if (!target) {
+        sceneBuilder.clearPreview();
+        return;
+      }
+      const brush = pointerBinding.toolState.brush;
+      if (GROUND_BRUSHES.has(brush)) {
+        sceneBuilder.clearPreview();
+        return;
+      }
+
+      let wx: number, wz: number, yaw: number;
+      if (target.kind === "vertex") {
+        wx = state.grid.origin + target.x * state.grid.tileSize;
+        wz = state.grid.origin + target.z * state.grid.tileSize;
+        yaw = (pointerBinding.toolState.vertexRotation & 3) * (Math.PI / 2);
+      } else if (target.kind === "cell") {
+        wx = state.grid.origin + (target.x + 0.5) * state.grid.tileSize;
+        wz = state.grid.origin + (target.z + 0.5) * state.grid.tileSize;
+        yaw = 0;
+      } else if (target.kind === "edge") {
+        wx = state.grid.origin + ((target.ax + target.bx) / 2) * state.grid.tileSize;
+        wz = state.grid.origin + ((target.az + target.bz) / 2) * state.grid.tileSize;
+        yaw = target.ax === target.bx ? Math.PI / 2 : 0;
+      } else {
+        sceneBuilder.clearPreview();
+        return;
+      }
+      sceneBuilder.setPreview(brush, wx, wz, yaw);
+    }
+
+    // Pointer tools
     const pointerBinding = bindPointerTools(
       stage.canvas,
       (lx, ly, out) => {
-        // Only paint when pointer is over the left (editor) pane
         const canvasRect = stage.canvas.getBoundingClientRect();
         const clientX = canvasRect.left + lx;
         const clientY = canvasRect.top + ly;
@@ -178,90 +233,118 @@ const experiment: ExperimentModule = {
         return leftPane.worldAtLocalCss(hit.localX, hit.localY, out);
       },
       state,
-      (target) => gridRenderer.setHover(target)
+      assets,
+      (target) => {
+        gridRenderer.setHover(target);
+        lastHoverTarget = target;
+        updatePreview();
+      }
     );
 
-    // --- HUD ---
+    // --- HUD (built dynamically from kit manifest) ---
     const hud = createEditorHud({
       mount,
       title: "Map Editor",
-      description: "LMB: paint  |  Middle-mouse: pan  |  Scroll: zoom  |  Both panes navigate independently",
+      description: "LMB: paint  |  Middle-mouse: pan  |  Scroll: zoom",
       hints: "",
       focusTarget: stage.canvas
     });
 
-    const controls = createPromotedEditorControls({
-      hud,
-      initialSeed: 1337,
-      onTool(mode) {
-        pointerBinding.toolState.toolMode = mode;
-        controls.toolButtons.forEach((btn, key) => hud.setButtonActive(btn, key === mode));
-      },
-      onBrush(brush) {
-        pointerBinding.toolState.brush = brush;
-        controls.brushButtons.forEach((btn, key) => hud.setButtonActive(btn, key === brush));
-      },
-      onRectTool() {},
-      onDefaultGround(base) {
-        setDefaultGround(state, base);
-        controls.defaultGroundButtons.forEach((btn, key) => hud.setButtonActive(btn, key === base));
-      },
-      onSeed() {},
-      onRotate(delta) {
-        // Rotate the focused pane
-        if (focusedPaneId === "editor-2d") leftPane.rotateQuarterTurns(delta);
-        else if (focusedPaneId === "preview-3d") rightPane.rotateQuarterTurns(delta);
-      },
-      onResetView() {
-        leftCore.reset();
-        rightCore.reset();
-      },
-      onClearStructures() {
-        clearStructures(state);
-      },
-      onClearGround() {
-        clearGround(state);
-      },
-      onBake() {
-        const input = toBakeInput(state);
-        const baked = bakeLevelForEcs(input);
-        const json = serializeBakedLevel(baked);
-        console.log("[map-editor-2d] Baked level:", json);
-        try {
-          navigator.clipboard.writeText(json);
-          hud.status.textContent = "Baked! JSON copied to clipboard.";
-        } catch {
-          hud.status.textContent = "Baked! Check console for JSON.";
-        }
+    // Active brush tracking
+    let activeBrush = pointerBinding.toolState.brush;
+    const allBrushButtons = new Map<string, HTMLButtonElement>();
+
+    function setActiveBrush(brush: string): void {
+      activeBrush = brush;
+      pointerBinding.toolState.brush = brush;
+      for (const [key, btn] of allBrushButtons) {
+        hud.setButtonActive(btn, key === brush);
       }
+    }
+
+    function setActiveToolMode(mode: ToolMode): void {
+      pointerBinding.toolState.toolMode = mode;
+      hud.setButtonActive(drawBtn, mode === "draw");
+      hud.setButtonActive(eraseBtn, mode === "erase");
+    }
+
+    // Tool mode row
+    const toolRow = hud.createRow("Tool");
+    const drawBtn = hud.createButton("Draw (D)", () => setActiveToolMode("draw"));
+    const eraseBtn = hud.createButton("Erase (X)", () => setActiveToolMode("erase"));
+    toolRow.append(drawBtn, eraseBtn);
+
+    // Structure brushes from kit manifest
+    const tileBrushButtons = buildTileBrushes(assets, hud, setActiveBrush);
+    for (const [name, btn] of tileBrushButtons) {
+      allBrushButtons.set(name, btn);
+    }
+
+    // Ground brushes (static)
+    const groundRow = hud.createRow("Ground");
+    for (const ground of GROUND_BRUSHES) {
+      const btn = hud.createButton(ground, () => setActiveBrush(ground));
+      allBrushButtons.set(ground, btn);
+      groundRow.append(btn);
+    }
+
+    // Camera controls
+    const cameraRow = hud.createRow("Camera");
+    const rotLeftBtn = hud.createButton("Rotate -90 (Q)", () => {
+      if (focusedPaneId === "editor-2d") leftPane.rotateQuarterTurns(-1);
+      else if (focusedPaneId === "preview-3d") rightPane.rotateQuarterTurns(-1);
     });
+    const rotRightBtn = hud.createButton("Rotate +90 (E)", () => {
+      if (focusedPaneId === "editor-2d") leftPane.rotateQuarterTurns(1);
+      else if (focusedPaneId === "preview-3d") rightPane.rotateQuarterTurns(1);
+    });
+    const resetBtn = hud.createButton("Reset View", () => {
+      leftCore.reset();
+      rightCore.reset();
+    });
+    cameraRow.append(rotLeftBtn, rotRightBtn, resetBtn);
+
+    // Utility
+    const utilRow = hud.createRow("Scene");
+    const clearWallsBtn = hud.createButton("Clear Walls (C)", () => clearStructures(state));
+    const clearGroundBtn = hud.createButton("Clear Ground (V)", () => clearGround(state));
+    utilRow.append(clearWallsBtn, clearGroundBtn);
 
     // Set initial active states
-    hud.setButtonActive(controls.toolButtons.get("draw")!, true);
-    hud.setButtonActive(controls.brushButtons.get("wall")!, true);
-    const defaultGroundBtn = controls.defaultGroundButtons.get(state.defaultGround as "floor" | "grass");
-    if (defaultGroundBtn) hud.setButtonActive(defaultGroundBtn, true);
+    hud.setButtonActive(drawBtn, true);
+    setActiveBrush(activeBrush);
 
-    // Keyboard shortcuts
+    // Keyboard shortcuts — number keys map to brush buttons in order
+    const orderedBrushKeys = [...allBrushButtons.keys()];
+
     const onKeyDown = (event: KeyboardEvent): void => {
       const el = event.target as HTMLElement | null;
       if (el?.tagName === "INPUT" || el?.tagName === "TEXTAREA") return;
 
       switch (event.code) {
-        case "KeyD": controls.toolButtons.get("draw")?.click(); break;
-        case "KeyX": controls.toolButtons.get("erase")?.click(); break;
-        case "Digit1": controls.brushButtons.get("wall")?.click(); break;
-        case "Digit2": controls.brushButtons.get("window")?.click(); break;
-        case "Digit3": controls.brushButtons.get("door-closed")?.click(); break;
-        case "Digit4": controls.brushButtons.get("floor")?.click(); break;
-        case "Digit5": controls.brushButtons.get("grass")?.click(); break;
-        case "Digit6": controls.brushButtons.get("door-open")?.click(); break;
-        case "Digit7": controls.brushButtons.get("road")?.click(); break;
-        case "Digit8": controls.brushButtons.get("sidewalk")?.click(); break;
+        case "KeyD": setActiveToolMode("draw"); break;
+        case "KeyX": setActiveToolMode("erase"); break;
+        case "KeyR": {
+          pointerBinding.toolState.vertexRotation = (pointerBinding.toolState.vertexRotation + 1) & 3;
+          sceneBuilder.invalidatePreview();
+          updatePreview();
+          hud.status.textContent = `Rotation: ${pointerBinding.toolState.vertexRotation * 90}°`;
+          break;
+        }
         case "KeyC": clearStructures(state); break;
         case "KeyV": clearGround(state); break;
-        case "KeyB": controls.bakeButton.click(); break;
-        default: return;
+        default: {
+          // Digit1-Digit9 → select brush by index
+          const match = event.code.match(/^Digit(\d)$/);
+          if (match) {
+            const idx = parseInt(match[1], 10) - 1;
+            if (idx >= 0 && idx < orderedBrushKeys.length) {
+              setActiveBrush(orderedBrushKeys[idx]);
+              event.preventDefault();
+            }
+          }
+          return;
+        }
       }
       event.preventDefault();
     };
@@ -271,8 +354,10 @@ const experiment: ExperimentModule = {
     const updateStats = (): void => {
       hud.stats.textContent = [
         `Grid: ${state.grid.tiles}×${state.grid.tiles}`,
-        `Structures: ${state.structures.size}`,
-        `Terrain overrides: ${state.terrainOverrides.size}`
+        `Edges: ${state.edgeStructures.size}`,
+        `Cells: ${state.cellStructures.size}`,
+        `Vertices: ${state.vertexStructures.size}`,
+        `Terrain: ${state.terrainOverrides.size}`
       ].join("\n");
     };
 

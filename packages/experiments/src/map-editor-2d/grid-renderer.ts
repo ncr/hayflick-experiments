@@ -20,6 +20,7 @@ const HOVER_ALPHA = 0.35;
 export type HoverTarget =
   | { kind: "cell"; x: number; z: number }
   | { kind: "edge"; ax: number; az: number; bx: number; bz: number }
+  | { kind: "vertex"; x: number; z: number }
   | null;
 
 export class GridRenderer {
@@ -161,6 +162,17 @@ export class GridRenderer {
         this.grid.origin + (target.z + 0.5) * this.grid.tileSize
       );
       this.hoverGroup.add(mesh);
+    } else if (target.kind === "vertex") {
+      const size = this.grid.tileSize * 0.2;
+      const geo = new THREE.PlaneGeometry(size, size);
+      geo.rotateX(-Math.PI / 2);
+      const mesh = new THREE.Mesh(geo, this.hoverEdgeMaterial);
+      mesh.position.set(
+        this.grid.origin + target.x * this.grid.tileSize,
+        0.003,
+        this.grid.origin + target.z * this.grid.tileSize
+      );
+      this.hoverGroup.add(mesh);
     } else {
       const ax = this.grid.origin + target.ax * this.grid.tileSize;
       const az = this.grid.origin + target.az * this.grid.tileSize;
@@ -218,6 +230,9 @@ function hoverEqual(a: HoverTarget, b: HoverTarget): boolean {
   }
   if (a.kind === "edge" && b.kind === "edge") {
     return a.ax === b.ax && a.az === b.az && a.bx === b.bx && a.bz === b.bz;
+  }
+  if (a.kind === "vertex" && b.kind === "vertex") {
+    return a.x === b.x && a.z === b.z;
   }
   return false;
 }

@@ -1,15 +1,9 @@
 import {
   levelBuilderEdgeKey,
-  levelBuilderDoorPlacementIdFromNodes,
-  type LevelBuilderBakeInput,
+  LEVEL_EDITOR_WORLD_UNIT,
+  LEVEL_BUILDER_GROUND_BASE,
   type LevelBuilderGroundBase,
   type LevelBuilderGroundOverride,
-  type LevelBuilderStructureSegment,
-  type LevelBuilderDoorState,
-  LEVEL_BUILDER_GROUND_BASE,
-  LEVEL_BUILDER_STRUCTURE_KIND,
-  LEVEL_BUILDER_DOOR_STATE,
-  LEVEL_EDITOR_WORLD_UNIT
 } from "@common/level-editor";
 
 export type GridConfig = {
@@ -18,11 +12,41 @@ export type GridConfig = {
   origin: number;
 };
 
+/** A placed edge structure (wall, door, window segment) */
+export type PlacedEdge = {
+  tileName: string;
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+};
+
+/** A placed cell structure (floor tile, etc.) */
+export type PlacedCell = {
+  tileName: string;
+  x: number;
+  z: number;
+};
+
+/** A placed vertex structure (corner, etc.) with rotation */
+export type PlacedVertex = {
+  tileName: string;
+  x: number;
+  z: number;
+  /** Rotation in quarter turns (0=default +X/+Z, 1=90°, 2=180°, 3=270°) */
+  rotation: number;
+};
+
 export type MapEditorState = {
   grid: GridConfig;
   defaultGround: LevelBuilderGroundBase;
   terrainOverrides: Map<string, LevelBuilderGroundOverride>;
-  structures: Map<string, LevelBuilderStructureSegment>;
+  /** Edge-based structures (walls, doors, windows) keyed by edge key */
+  edgeStructures: Map<string, PlacedEdge>;
+  /** Cell-based structures (floor tiles, etc.) keyed by "x,z" */
+  cellStructures: Map<string, PlacedCell>;
+  /** Vertex-based structures (corners, etc.) keyed by "x,z" */
+  vertexStructures: Map<string, PlacedVertex>;
   revision: number;
 };
 
@@ -40,7 +64,9 @@ export function createDefaultState(): MapEditorState {
     },
     defaultGround: LEVEL_BUILDER_GROUND_BASE.GRASS,
     terrainOverrides: new Map(),
-    structures: new Map(),
+    edgeStructures: new Map(),
+    cellStructures: new Map(),
+    vertexStructures: new Map(),
     revision: 0
   };
 }
@@ -65,48 +91,57 @@ export function removeTerrainCell(state: MapEditorState, x: number, z: number): 
   state.revision++;
 }
 
-export function setStructureEdge(
+export function setCellStructure(
   state: MapEditorState,
-  ax: number,
-  az: number,
-  bx: number,
-  bz: number,
-  kind: "wall" | "window",
-): void;
-export function setStructureEdge(
-  state: MapEditorState,
-  ax: number,
-  az: number,
-  bx: number,
-  bz: number,
-  kind: "door",
-  doorState: LevelBuilderDoorState,
-): void;
-export function setStructureEdge(
-  state: MapEditorState,
-  ax: number,
-  az: number,
-  bx: number,
-  bz: number,
-  kind: "wall" | "window" | "door",
-  doorState?: LevelBuilderDoorState
+  x: number,
+  z: number,
+  tileName: string
 ): void {
-  const key = levelBuilderEdgeKey(ax, az, bx, bz);
-  let segment: LevelBuilderStructureSegment;
-  if (kind === LEVEL_BUILDER_STRUCTURE_KIND.DOOR) {
-    segment = {
-      kind,
-      doorState: doorState ?? LEVEL_BUILDER_DOOR_STATE.CLOSED,
-      ax, az, bx, bz
-    };
-  } else {
-    segment = { kind, ax, az, bx, bz };
-  }
-  state.structures.set(key, segment);
+  const key = cellKey(x, z);
+  state.cellStructures.set(key, { tileName, x, z });
   state.revision++;
 }
 
-export function removeStructureEdge(
+export function removeCellStructure(state: MapEditorState, x: number, z: number): void {
+  const key = cellKey(x, z);
+  if (!state.cellStructures.has(key)) return;
+  state.cellStructures.delete(key);
+  state.revision++;
+}
+
+export function setVertexStructure(
+  state: MapEditorState,
+  x: number,
+  z: number,
+  tileName: string,
+  rotation: number
+): void {
+  const key = cellKey(x, z);
+  state.vertexStructures.set(key, { tileName, x, z, rotation: rotation & 3 });
+  state.revision++;
+}
+
+export function removeVertexStructure(state: MapEditorState, x: number, z: number): void {
+  const key = cellKey(x, z);
+  if (!state.vertexStructures.has(key)) return;
+  state.vertexStructures.delete(key);
+  state.revision++;
+}
+
+export function setEdgeStructure(
+  state: MapEditorState,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  tileName: string
+): void {
+  const key = levelBuilderEdgeKey(ax, az, bx, bz);
+  state.edgeStructures.set(key, { tileName, ax, az, bx, bz });
+  state.revision++;
+}
+
+export function removeEdgeStructure(
   state: MapEditorState,
   ax: number,
   az: number,
@@ -114,14 +149,16 @@ export function removeStructureEdge(
   bz: number
 ): void {
   const key = levelBuilderEdgeKey(ax, az, bx, bz);
-  if (!state.structures.has(key)) return;
-  state.structures.delete(key);
+  if (!state.edgeStructures.has(key)) return;
+  state.edgeStructures.delete(key);
   state.revision++;
 }
 
 export function clearStructures(state: MapEditorState): void {
-  if (state.structures.size === 0) return;
-  state.structures.clear();
+  if (state.edgeStructures.size === 0 && state.cellStructures.size === 0 && state.vertexStructures.size === 0) return;
+  state.edgeStructures.clear();
+  state.cellStructures.clear();
+  state.vertexStructures.clear();
   state.revision++;
 }
 
@@ -137,35 +174,67 @@ export function setDefaultGround(state: MapEditorState, base: LevelBuilderGround
   state.revision++;
 }
 
-export function toBakeInput(state: MapEditorState): LevelBuilderBakeInput {
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
+
+export type SerializedState = {
+  grid: GridConfig;
+  defaultGround: string;
+  terrainOverrides: Array<{ x: number; z: number; base: string }>;
+  edgeStructures: Array<{ tileName: string; ax: number; az: number; bx: number; bz: number }>;
+  cellStructures: Array<{ tileName: string; x: number; z: number }>;
+  vertexStructures: Array<{ tileName: string; x: number; z: number; rotation: number }>;
+};
+
+export function serializeState(state: MapEditorState): SerializedState {
   return {
-    level: { id: "map-editor-2d", version: state.revision },
     grid: { ...state.grid },
-    terrain: {
-      defaultGround: state.defaultGround,
-      overrides: [...state.terrainOverrides.values()]
-    },
-    structures: [...state.structures.values()]
+    defaultGround: state.defaultGround,
+    terrainOverrides: [...state.terrainOverrides.values()].map((o) => ({
+      x: o.x, z: o.z, base: o.base
+    })),
+    edgeStructures: [...state.edgeStructures.values()].map((s) => ({
+      tileName: s.tileName, ax: s.ax, az: s.az, bx: s.bx, bz: s.bz
+    })),
+    cellStructures: [...state.cellStructures.values()].map((s) => ({
+      tileName: s.tileName, x: s.x, z: s.z
+    })),
+    vertexStructures: [...state.vertexStructures.values()].map((s) => ({
+      tileName: s.tileName, x: s.x, z: s.z, rotation: s.rotation
+    }))
   };
 }
 
-export function fromBakeInput(input: LevelBuilderBakeInput): MapEditorState {
+export function deserializeState(raw: SerializedState): MapEditorState {
   const terrainOverrides = new Map<string, LevelBuilderGroundOverride>();
-  for (const override of input.terrain.overrides) {
-    terrainOverrides.set(cellKey(override.x, override.z), override);
+  for (const o of raw.terrainOverrides) {
+    terrainOverrides.set(cellKey(o.x, o.z), { x: o.x, z: o.z, base: o.base as LevelBuilderGroundBase });
   }
 
-  const structures = new Map<string, LevelBuilderStructureSegment>();
-  for (const segment of input.structures) {
-    const key = levelBuilderEdgeKey(segment.ax, segment.az, segment.bx, segment.bz);
-    structures.set(key, segment);
+  const edgeStructures = new Map<string, PlacedEdge>();
+  for (const s of raw.edgeStructures) {
+    const key = levelBuilderEdgeKey(s.ax, s.az, s.bx, s.bz);
+    edgeStructures.set(key, s);
+  }
+
+  const cellStructures = new Map<string, PlacedCell>();
+  for (const s of raw.cellStructures) {
+    cellStructures.set(cellKey(s.x, s.z), s);
+  }
+
+  const vertexStructures = new Map<string, PlacedVertex>();
+  for (const s of (raw.vertexStructures ?? [])) {
+    vertexStructures.set(cellKey(s.x, s.z), s);
   }
 
   return {
-    grid: { ...input.grid },
-    defaultGround: input.terrain.defaultGround,
+    grid: { ...raw.grid },
+    defaultGround: raw.defaultGround as LevelBuilderGroundBase,
     terrainOverrides,
-    structures,
+    edgeStructures,
+    cellStructures,
+    vertexStructures,
     revision: 0
   };
 }

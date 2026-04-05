@@ -1,24 +1,46 @@
 import * as THREE from "three";
-import type { PromotedEditorToolMode, PromotedEditorBrush } from "@common/level-editor";
-import {
-  LEVEL_BUILDER_STRUCTURE_KIND,
-  LEVEL_BUILDER_DOOR_STATE
-} from "@common/level-editor";
+import type { LevelBuilderGroundBase } from "@common/level-editor";
 import type { GridConfig, MapEditorState } from "./editor-state";
 import {
   setTerrainCell,
   removeTerrainCell,
-  setStructureEdge,
-  removeStructureEdge
+  setEdgeStructure,
+  removeEdgeStructure,
+  setCellStructure,
+  removeCellStructure,
+  setVertexStructure,
+  removeVertexStructure
 } from "./editor-state";
 import type { HoverTarget } from "./grid-renderer";
+import type { TilesetAssets } from "./tileset-loader";
+
+/** Ground brush names (terrain cell painting) */
+export const GROUND_BRUSHES = new Set<string>(["floor", "grass", "road", "sidewalk"]);
+
+export type ToolMode = "draw" | "erase";
 
 export type PointerToolState = {
-  toolMode: PromotedEditorToolMode;
-  brush: PromotedEditorBrush;
+  toolMode: ToolMode;
+  /** Either a ground brush name or a tile name from the kit */
+  brush: string;
+  /** Rotation for vertex-placed tiles (quarter turns: 0-3) */
+  vertexRotation: number;
 };
 
 type Edge = { ax: number; az: number; bx: number; bz: number };
+
+export type PlacementMode = "ground" | "cell" | "edge" | "vertex";
+
+/** Determine placement mode for a brush */
+export function brushPlacement(brush: string, assets: TilesetAssets): PlacementMode {
+  if (GROUND_BRUSHES.has(brush)) return "ground";
+  const tile = assets.tiles.get(brush);
+  if (!tile) return "edge";
+  const ft = tile.entry.logicalFootprint.type;
+  if (ft === "cell") return "cell";
+  if (ft === "corner_vertex") return "vertex";
+  return "edge";
+}
 
 const worldPoint = new THREE.Vector3();
 
@@ -41,7 +63,6 @@ export function pickNearestEdge(
   const localX = (worldX - grid.origin) / grid.tileSize;
   const localZ = (worldZ - grid.origin) / grid.tileSize;
 
-  // Nearest vertical grid line (x = integer) and horizontal grid line (z = integer)
   const nearestVx = Math.round(localX);
   const nearestHz = Math.round(localZ);
 
@@ -49,13 +70,11 @@ export function pickNearestEdge(
   const distToHorizontal = Math.abs(localZ - nearestHz);
 
   if (distToVertical <= distToHorizontal) {
-    // Snap to vertical line: edge runs north-south at x=nearestVx
     const cellZ = Math.floor(localZ);
     if (nearestVx < 0 || nearestVx > grid.tiles) return null;
     if (cellZ < 0 || cellZ >= grid.tiles) return null;
     return { ax: nearestVx, az: cellZ, bx: nearestVx, bz: cellZ + 1 };
   } else {
-    // Snap to horizontal line: edge runs east-west at z=nearestHz
     const cellX = Math.floor(localX);
     if (nearestHz < 0 || nearestHz > grid.tiles) return null;
     if (cellX < 0 || cellX >= grid.tiles) return null;
@@ -63,55 +82,79 @@ export function pickNearestEdge(
   }
 }
 
-function isGroundBrush(brush: PromotedEditorBrush): boolean {
-  return brush === "floor" || brush === "grass" || brush === "road" || brush === "sidewalk";
+/** Snap to nearest grid vertex (intersection point) */
+export function pickNearestVertex(
+  worldX: number,
+  worldZ: number,
+  grid: GridConfig
+): { x: number; z: number } | null {
+  const x = Math.round((worldX - grid.origin) / grid.tileSize);
+  const z = Math.round((worldZ - grid.origin) / grid.tileSize);
+  if (x < 0 || z < 0 || x > grid.tiles || z > grid.tiles) return null;
+  return { x, z };
 }
 
 function applyBrush(
   state: MapEditorState,
   toolState: PointerToolState,
+  assets: TilesetAssets,
   worldX: number,
   worldZ: number
 ): void {
   const { toolMode, brush } = toolState;
+  const placement = brushPlacement(brush, assets);
 
-  if (isGroundBrush(brush)) {
+  if (placement === "ground") {
     const cell = worldToCell(worldX, worldZ, state.grid);
     if (!cell) return;
     if (toolMode === "erase") {
       removeTerrainCell(state, cell.x, cell.z);
     } else {
-      setTerrainCell(state, cell.x, cell.z, brush as "floor" | "grass" | "road" | "sidewalk");
+      setTerrainCell(state, cell.x, cell.z, brush as LevelBuilderGroundBase);
+    }
+  } else if (placement === "cell") {
+    const cell = worldToCell(worldX, worldZ, state.grid);
+    if (!cell) return;
+    if (toolMode === "erase") {
+      removeCellStructure(state, cell.x, cell.z);
+    } else {
+      setCellStructure(state, cell.x, cell.z, brush);
+    }
+  } else if (placement === "vertex") {
+    const vtx = pickNearestVertex(worldX, worldZ, state.grid);
+    if (!vtx) return;
+    if (toolMode === "erase") {
+      removeVertexStructure(state, vtx.x, vtx.z);
+    } else {
+      setVertexStructure(state, vtx.x, vtx.z, brush, toolState.vertexRotation);
     }
   } else {
     const edge = pickNearestEdge(worldX, worldZ, state.grid);
     if (!edge) return;
     if (toolMode === "erase") {
-      removeStructureEdge(state, edge.ax, edge.az, edge.bx, edge.bz);
+      removeEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz);
     } else {
-      if (brush === "wall") {
-        setStructureEdge(state, edge.ax, edge.az, edge.bx, edge.bz, LEVEL_BUILDER_STRUCTURE_KIND.WALL);
-      } else if (brush === "window") {
-        setStructureEdge(state, edge.ax, edge.az, edge.bx, edge.bz, LEVEL_BUILDER_STRUCTURE_KIND.WINDOW);
-      } else if (brush === "door-closed") {
-        setStructureEdge(state, edge.ax, edge.az, edge.bx, edge.bz, LEVEL_BUILDER_STRUCTURE_KIND.DOOR, LEVEL_BUILDER_DOOR_STATE.CLOSED);
-      } else if (brush === "door-open") {
-        setStructureEdge(state, edge.ax, edge.az, edge.bx, edge.bz, LEVEL_BUILDER_STRUCTURE_KIND.DOOR, LEVEL_BUILDER_DOOR_STATE.OPEN);
-      }
+      setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, brush);
     }
   }
 }
 
 function getHoverTarget(
   toolState: PointerToolState,
+  assets: TilesetAssets,
   worldX: number,
   worldZ: number,
   grid: GridConfig
 ): HoverTarget {
-  if (isGroundBrush(toolState.brush)) {
+  const placement = brushPlacement(toolState.brush, assets);
+  if (placement === "ground" || placement === "cell") {
     const cell = worldToCell(worldX, worldZ, grid);
     if (!cell) return null;
     return { kind: "cell", x: cell.x, z: cell.z };
+  } else if (placement === "vertex") {
+    const vtx = pickNearestVertex(worldX, worldZ, grid);
+    if (!vtx) return null;
+    return { kind: "vertex", x: vtx.x, z: vtx.z };
   } else {
     const edge = pickNearestEdge(worldX, worldZ, grid);
     if (!edge) return null;
@@ -130,11 +173,13 @@ export function bindPointerTools(
   element: HTMLElement,
   worldAtLocal: WorldAtLocal,
   state: MapEditorState,
+  assets: TilesetAssets,
   onHover: (target: HoverTarget) => void
 ): PointerToolsBinding {
   const toolState: PointerToolState = {
     toolMode: "draw",
-    brush: "wall"
+    brush: "wall",
+    vertexRotation: 0
   };
   let dragging = false;
 
@@ -147,7 +192,7 @@ export function bindPointerTools(
     if (event.button !== 0) return;
     const { lx, ly } = toLocal(event);
     if (!worldAtLocal(lx, ly, worldPoint)) return;
-    applyBrush(state, toolState, worldPoint.x, worldPoint.z);
+    applyBrush(state, toolState, assets, worldPoint.x, worldPoint.z);
     dragging = true;
     event.preventDefault();
   };
@@ -159,10 +204,10 @@ export function bindPointerTools(
       return;
     }
 
-    onHover(getHoverTarget(toolState, worldPoint.x, worldPoint.z, state.grid));
+    onHover(getHoverTarget(toolState, assets, worldPoint.x, worldPoint.z, state.grid));
 
     if (dragging && (event.buttons & 1)) {
-      applyBrush(state, toolState, worldPoint.x, worldPoint.z);
+      applyBrush(state, toolState, assets, worldPoint.x, worldPoint.z);
     }
   };
 

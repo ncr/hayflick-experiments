@@ -2,34 +2,66 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { LEVEL_EDITOR_WORLD_UNIT } from "@common/level-editor";
 
+// ---------------------------------------------------------------------------
+// Manifest types (subset of what tiles.manifest.json contains)
+// ---------------------------------------------------------------------------
+
+export type TileFootprint =
+  | { type: "edge_run"; runUnits: number; runCells: number; baseUnit: number }
+  | { type: "submodule"; runUnits: number; baseUnit: number }
+  | { type: "cell" }
+  | { type: "corner_vertex" }
+  | { type: "edge_cap" };
+
+export type TileEntry = {
+  name: string;
+  kind: string;
+  anchorClass: string;
+  articulationType: string | null;
+  meshEnvelope: [number, number, number];
+  logicalFootprint: TileFootprint;
+};
+
+export type TilesManifest = {
+  kitId: string;
+  name: string;
+  tiles: TileEntry[];
+};
+
+// ---------------------------------------------------------------------------
+// Loaded tile: manifest entry + Three.js group template
+// ---------------------------------------------------------------------------
+
+export type LoadedTile = {
+  entry: TileEntry;
+  template: THREE.Group;
+};
+
+/** All loaded tiles from the kit, keyed by tile name */
 export type TilesetAssets = {
-  wall: THREE.Group;
-  door: THREE.Group;
-  window: THREE.Group;
-  corner: THREE.Group;
-  endCap: THREE.Group;
+  manifest: TilesManifest;
+  tiles: Map<string, LoadedTile>;
+  /** Convenience: tiles grouped by kind */
+  byKind: Map<string, LoadedTile[]>;
 };
 
-const TILESET_BASE = "tilesets/modern_desert_monolith/tiles";
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
 
-// Default material colors per tile type (the GLB textures are placeholders)
-const TILE_COLORS: Record<string, number> = {
-  wall: 0xe8ddd0,
-  door: 0xc4a882,
-  window: 0x8cb8d8,
-  corner: 0xe8ddd0,
-  endCap: 0xe8ddd0
-};
-
-const TILE_FILES: Array<{ key: keyof TilesetAssets; dir: string }> = [
-  { key: "wall", dir: "wall_straight" },
-  { key: "door", dir: "door_wall" },
-  { key: "window", dir: "dimmed_vertical_panel_fixed" },
-  { key: "corner", dir: "corner" },
-  { key: "endCap", dir: "end_cap" }
-];
+const TILESET_BASE = "tilesets/desert_sandstone";
+const TILES_DIR = `${TILESET_BASE}/tiles`;
 
 const gltfLoader = new GLTFLoader();
+
+async function fetchJson<T>(assetPath: string): Promise<T> {
+  const url = `/api/assets/read?path=${encodeURIComponent(assetPath)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to load ${assetPath}: ${res.status}`);
+  const json = await res.json();
+  // The api-proxy wraps json/txt in { content: string }
+  return typeof json.content === "string" ? JSON.parse(json.content) : json;
+}
 
 async function loadGlb(assetPath: string): Promise<THREE.Group> {
   const url = `/api/assets/read?path=${encodeURIComponent(assetPath)}`;
@@ -42,34 +74,52 @@ async function loadGlb(assetPath: string): Promise<THREE.Group> {
   return gltf.scene;
 }
 
-function fixMaterials(group: THREE.Group, color: number): void {
-  // The blockstudio GLBs have placeholder textures (112 bytes) and alpha-mask
-  // materials that render invisible. Replace with a solid MeshStandardMaterial.
-  const mat = new THREE.MeshStandardMaterial({
-    color,
-    roughness: 0.7,
-    metalness: 0.05
-  });
+/**
+ * Set nearest-neighbor filtering on all textures for pixel-art style.
+ */
+function fixTextureFiltering(group: THREE.Group): void {
   group.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
-      obj.material = mat;
+    if (!(obj instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const mat of materials) {
+      if (mat instanceof THREE.MeshStandardMaterial && mat.map) {
+        mat.map.magFilter = THREE.NearestFilter;
+        mat.map.minFilter = THREE.NearestFilter;
+        mat.map.needsUpdate = true;
+      }
     }
   });
 }
 
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 export async function loadTilesetAssets(): Promise<TilesetAssets> {
-  const entries = await Promise.all(
-    TILE_FILES.map(async ({ key, dir }) => {
-      const group = await loadGlb(`${TILESET_BASE}/${dir}/${dir}.glb`);
+  const manifest = await fetchJson<TilesManifest>(`${TILES_DIR}/tiles.manifest.json`);
+
+  console.log(`[tileset] ${manifest.name}: ${manifest.tiles.length} tiles`);
+
+  // Load all tile GLBs in parallel
+  const loaded = await Promise.all(
+    manifest.tiles.map(async (entry) => {
+      const group = await loadGlb(`${TILES_DIR}/${entry.name}/${entry.name}.glb`);
       group.scale.setScalar(LEVEL_EDITOR_WORLD_UNIT);
-      fixMaterials(group, TILE_COLORS[key] ?? 0xcccccc);
-      return { key, group };
+      fixTextureFiltering(group);
+      return { entry, template: group } satisfies LoadedTile;
     })
   );
 
-  const assets = {} as Record<string, THREE.Group>;
-  for (const { key, group } of entries) {
-    assets[key] = group;
+  const tiles = new Map<string, LoadedTile>();
+  const byKind = new Map<string, LoadedTile[]>();
+  for (const tile of loaded) {
+    tiles.set(tile.entry.name, tile);
+    const kindList = byKind.get(tile.entry.kind) ?? [];
+    kindList.push(tile);
+    byKind.set(tile.entry.kind, kindList);
   }
-  return assets as TilesetAssets;
+
+  console.log(`[tileset] kinds: ${[...byKind.keys()].join(", ")}`);
+
+  return { manifest, tiles, byKind };
 }

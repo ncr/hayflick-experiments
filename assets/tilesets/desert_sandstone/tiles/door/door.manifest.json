@@ -1,0 +1,120 @@
+{
+  "kitId": "kit_mnlq8j56_4",
+  "kitName": "desert_sandstone",
+  "generatedAt": "2026-04-05T12:17:43.882Z",
+  "format": "glb",
+  "artifactTransform": {
+    "format": "gltf",
+    "blockbenchUnitsPerWorldUnit": 128,
+    "worldUnitsPerBlockbenchUnit": 0.007813
+  },
+  "part": {
+    "name": "door",
+    "kind": "door_wall",
+    "role": "door",
+    "groupUuid": "815e79d3-ad1c-dd3e-3689-0e1085b02211",
+    "anchorClass": "edge_midpoint",
+    "anchorPolicy": "first_logical_unit",
+    "anchorLocal": [
+      0,
+      0,
+      0
+    ],
+    "sceneAnchor": [
+      448,
+      0,
+      0
+    ],
+    "logicalFootprint": {
+      "type": "edge_run",
+      "runUnits": 128,
+      "runCells": 1,
+      "baseUnit": 128
+    },
+    "meshEnvelope": [
+      130,
+      280,
+      32
+    ],
+    "articulationPivot": [
+      -45,
+      0,
+      -10.5
+    ],
+    "articulationType": "hinged",
+    "hingeSide": "left",
+    "dimensions": [
+      128,
+      280,
+      32
+    ],
+    "artifactAnchor": [
+      0,
+      0,
+      0
+    ],
+    "artifactSceneAnchor": [
+      3.5,
+      0,
+      0
+    ],
+    "artifactArticulationPivot": [
+      -0.351562,
+      0,
+      -0.082031
+    ]
+  },
+  "textures": [
+    {
+      "role": "wall",
+      "name": "blockstudio_wall",
+      "mode": "data_url",
+      "resolution": 140,
+      "uvWidth": 280,
+      "uvHeight": 280,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    },
+    {
+      "role": "trim",
+      "name": "blockstudio_trim",
+      "mode": "data_url",
+      "resolution": 140,
+      "uvWidth": 280,
+      "uvHeight": 280,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    },
+    {
+      "role": "accent",
+      "name": "blockstudio_accent",
+      "mode": "data_url",
+      "resolution": 140,
+      "uvWidth": 280,
+      "uvHeight": 280,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    }
+  ],
+  "workspace": {
+    "rootDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project",
+    "name": "blockstudio_project",
+    "fileStem": "desert_sandstone",
+    "texturesDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/textures",
+    "exportsDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts",
+    "capturesDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/captures",
+    "projectFile": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/desert_sandstone.bbmodel"
+  }
+}
