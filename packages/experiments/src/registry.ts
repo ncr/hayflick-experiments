@@ -5,9 +5,14 @@ import type { ExperimentRegistryEntry } from "./runtime/meta";
 import { meta as propTestSceneMeta } from "./prop-test-scene/meta";
 import { meta as physicsPropDropMeta } from "./physics-prop-drop/meta";
 import { meta as mapEditor2dMeta } from "./map-editor-2d/meta";
+import { meta as primitiveViewsMeta } from "./primitive-views/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...primitiveViewsMeta,
+    load: () => import("./primitive-views/index")
+  },
   {
     ...mapEditor2dMeta,
     load: () => import("./map-editor-2d/index")

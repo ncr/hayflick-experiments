@@ -27,7 +27,6 @@ const ANGLES: PixelAngle[] = [
   { key: "west", label: "West", offset: 3 }
 ];
 
-const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const DEFAULT_BASE_ORTHO_HEIGHT = 5.966213466261495;
 const CLEAR_COLOR = 0x1a1a2e;
@@ -268,7 +267,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         fixedRenderHeight: 270,
         baseOrthoHeight: DEFAULT_BASE_ORTHO_HEIGHT * framingScale,
         cameraDistance: 30,
-        cameraPitch: CAMERA_PITCH,
+        cameraPitch: "iso-2to1",
         cameraYaw: CAMERA_BASE_YAW,
         basePixelZoom: 2,
         zoomMin: 1,

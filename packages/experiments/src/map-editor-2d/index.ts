@@ -23,8 +23,6 @@ import type { TilesetAssets } from "./tileset-loader";
 
 const GRID_TILES = 20;
 const CAMERA_DISTANCE = 50;
-const TOP_DOWN_PITCH = Math.PI / 2 - 0.001;
-const ISO_PITCH = Math.asin(1 / Math.sqrt(3));
 const ISO_YAW = Math.PI / 4;
 
 function createPaneElement(parent: HTMLElement, style: Partial<CSSStyleDeclaration>): HTMLDivElement {
@@ -130,7 +128,7 @@ const experiment: ExperimentModule = {
       width: leftPaneEl.clientWidth || width * 0.55,
       height: leftPaneEl.clientHeight || height,
       scene,
-      cameraPitch: TOP_DOWN_PITCH,
+      cameraPitch: "top-down",
       cameraYaw: 0,
       clearColor: 0x1a1e24,
       maxBackingWidth: stage.maxBackingWidth,
@@ -153,12 +151,13 @@ const experiment: ExperimentModule = {
       width: rightPaneEl.clientWidth || width * 0.45,
       height: rightPaneEl.clientHeight || height,
       scene,
-      cameraPitch: ISO_PITCH,
+      cameraPitch: "iso-2to1",
       cameraYaw: ISO_YAW,
       clearColor: 0x14181e,
       maxBackingWidth: stage.maxBackingWidth,
       maxBackingHeight: stage.maxBackingHeight,
-      devicePixelRatio: stage.getDevicePixelRatio()
+      devicePixelRatio: stage.getDevicePixelRatio(),
+      lowTargetSamples: 0
     });
 
     const rightPane = new PixelPerfectIsoScissorPane({

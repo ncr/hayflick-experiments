@@ -1,5 +1,32 @@
 import * as THREE from "three";
 
+/**
+ * Discrete camera modes for the pixel-perfect renderer. Each value resolves to a
+ * fixed camera pitch internally so the screen-to-world projection always lands on
+ * the integer-pixel grid the renderer guarantees:
+ *
+ * - `"top-down"` — looks straight down at the ground plane (yaw rotates the map)
+ * - `"iso-2to1"` — 30° pitch; the canonical 2:1 isometric (2 horizontal pixels
+ *   per 1 vertical pixel along major axes). This is what the rest of the
+ *   pipeline assumes; do not introduce other angles.
+ * - `"side"` — 0° pitch (horizontal eye level); yaw snaps the camera onto
+ *   one of the four cardinal world axes for side-scroller / FPS-style framing.
+ */
+export type PixelView = "top-down" | "iso-2to1" | "side";
+
+/** Resolve a {@link PixelView} mode to its numeric pitch in radians. */
+export function pitchForPixelView(view: PixelView): number {
+  switch (view) {
+    case "top-down":
+      // Avoid the camera lookAt singularity at exactly π/2.
+      return Math.PI / 2 - 1e-3;
+    case "iso-2to1":
+      return Math.PI / 6;
+    case "side":
+      return 0;
+  }
+}
+
 export type PixelPerfectIsoViewConfig = {
   mount: HTMLElement;
   width: number;
@@ -8,7 +35,7 @@ export type PixelPerfectIsoViewConfig = {
   fixedRenderHeight: number;
   baseOrthoHeight: number;
   cameraDistance: number;
-  cameraPitch: number;
+  cameraPitch: PixelView;
   cameraYaw: number;
   basePixelZoom: number;
   zoomMin: number;

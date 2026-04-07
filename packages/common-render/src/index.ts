@@ -39,6 +39,10 @@ export {
   type PixelSnapMode
 } from "./pixel-perfect-iso-view";
 export {
+  pitchForPixelView,
+  type PixelView
+} from "./pixel-perfect-iso-types";
+export {
   PixelPerfectIsoViewportCore,
   type PixelPerfectIsoViewportCoreConfig,
   type PixelPerfectIsoRenderViewport,

@@ -166,7 +166,6 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       scene.add(ground);
 
       // Isometric camera defaults
-      const CAMERA_PITCH = THREE.MathUtils.degToRad(30);
       const CAMERA_YAW = THREE.MathUtils.degToRad(45);
 
       const effectiveFramingScale =
@@ -181,7 +180,7 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
         // Wider framing helps multi-panel quad previews fit tall props at zoom=1.
         baseOrthoHeight: 5.966213466261495 * effectiveFramingScale,
         cameraDistance: 30,
-        cameraPitch: CAMERA_PITCH,
+        cameraPitch: "iso-2to1",
         cameraYaw: CAMERA_YAW,
         basePixelZoom: 2,
         zoomMin: 1,

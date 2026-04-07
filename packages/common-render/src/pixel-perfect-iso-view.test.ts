@@ -148,7 +148,7 @@ function makeConfig(mount: HTMLElement): any {
     fixedRenderHeight: 120,
     baseOrthoHeight: 6,
     cameraDistance: 10,
-    cameraPitch: -Math.PI / 4,
+    cameraPitch: "iso-2to1",
     cameraYaw: Math.PI / 4,
     basePixelZoom: 2,
     zoomMin: 1,

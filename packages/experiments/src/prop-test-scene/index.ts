@@ -142,7 +142,7 @@ const experiment: ExperimentModule = {
       fixedRenderHeight: 240,
       baseOrthoHeight: 3.0,
       cameraDistance: 20,
-      cameraPitch: Math.asin(1 / Math.sqrt(3)),
+      cameraPitch: "iso-2to1",
       cameraYaw: Math.PI / 4,
       basePixelZoom: 1,
       zoomMin: 1,
