@@ -1,8 +1,6 @@
 import * as THREE from "three";
-import type { LevelBuilderGroundBase } from "@common/level-editor";
 import type { GridConfig, MapEditorState } from "./editor-state";
 import {
-  setTerrainCell,
   removeTerrainCell,
   setEdgeStructure,
   removeEdgeStructure,
@@ -14,14 +12,11 @@ import {
 import type { HoverTarget } from "./grid-renderer";
 import type { TilesetAssets } from "./tileset-loader";
 
-/** Ground brush names (terrain cell painting) */
-export const GROUND_BRUSHES = new Set<string>(["floor", "grass", "road", "sidewalk"]);
-
-export type ToolMode = "draw" | "erase";
+/** Special brush name for the eraser tool */
+export const ERASER_BRUSH = "__eraser__";
 
 export type PointerToolState = {
-  toolMode: ToolMode;
-  /** Either a ground brush name or a tile name from the kit */
+  /** Either a ground brush name, a tile name from the kit, or ERASER_BRUSH */
   brush: string;
   /** Rotation for vertex-placed tiles (quarter turns: 0-3) */
   vertexRotation: number;
@@ -29,11 +24,10 @@ export type PointerToolState = {
 
 type Edge = { ax: number; az: number; bx: number; bz: number };
 
-export type PlacementMode = "ground" | "cell" | "edge" | "vertex";
+export type PlacementMode = "cell" | "edge" | "vertex";
 
 /** Determine placement mode for a brush */
 export function brushPlacement(brush: string, assets: TilesetAssets): PlacementMode {
-  if (GROUND_BRUSHES.has(brush)) return "ground";
   const tile = assets.tiles.get(brush);
   if (!tile) return "edge";
   const ft = tile.entry.logicalFootprint.type;
@@ -101,41 +95,35 @@ function applyBrush(
   worldX: number,
   worldZ: number
 ): void {
-  const { toolMode, brush } = toolState;
+  const { brush } = toolState;
+
+  if (brush === ERASER_BRUSH) {
+    const cell = worldToCell(worldX, worldZ, state.grid);
+    if (cell) {
+      removeCellStructure(state, cell.x, cell.z);
+      removeTerrainCell(state, cell.x, cell.z);
+    }
+    const vtx = pickNearestVertex(worldX, worldZ, state.grid);
+    if (vtx) removeVertexStructure(state, vtx.x, vtx.z);
+    const edge = pickNearestEdge(worldX, worldZ, state.grid);
+    if (edge) removeEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz);
+    return;
+  }
+
   const placement = brushPlacement(brush, assets);
 
-  if (placement === "ground") {
+  if (placement === "cell") {
     const cell = worldToCell(worldX, worldZ, state.grid);
     if (!cell) return;
-    if (toolMode === "erase") {
-      removeTerrainCell(state, cell.x, cell.z);
-    } else {
-      setTerrainCell(state, cell.x, cell.z, brush as LevelBuilderGroundBase);
-    }
-  } else if (placement === "cell") {
-    const cell = worldToCell(worldX, worldZ, state.grid);
-    if (!cell) return;
-    if (toolMode === "erase") {
-      removeCellStructure(state, cell.x, cell.z);
-    } else {
-      setCellStructure(state, cell.x, cell.z, brush);
-    }
+    setCellStructure(state, cell.x, cell.z, brush);
   } else if (placement === "vertex") {
     const vtx = pickNearestVertex(worldX, worldZ, state.grid);
     if (!vtx) return;
-    if (toolMode === "erase") {
-      removeVertexStructure(state, vtx.x, vtx.z);
-    } else {
-      setVertexStructure(state, vtx.x, vtx.z, brush, toolState.vertexRotation);
-    }
+    setVertexStructure(state, vtx.x, vtx.z, brush, toolState.vertexRotation);
   } else {
     const edge = pickNearestEdge(worldX, worldZ, state.grid);
     if (!edge) return;
-    if (toolMode === "erase") {
-      removeEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz);
-    } else {
-      setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, brush);
-    }
+    setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, brush);
   }
 }
 
@@ -146,8 +134,13 @@ function getHoverTarget(
   worldZ: number,
   grid: GridConfig
 ): HoverTarget {
+  if (toolState.brush === ERASER_BRUSH) {
+    const cell = worldToCell(worldX, worldZ, grid);
+    if (!cell) return null;
+    return { kind: "cell", x: cell.x, z: cell.z };
+  }
   const placement = brushPlacement(toolState.brush, assets);
-  if (placement === "ground" || placement === "cell") {
+  if (placement === "cell") {
     const cell = worldToCell(worldX, worldZ, grid);
     if (!cell) return null;
     return { kind: "cell", x: cell.x, z: cell.z };
@@ -169,15 +162,18 @@ export type PointerToolsBinding = {
   toolState: PointerToolState;
 };
 
-export function bindPointerTools(
-  element: HTMLElement,
-  worldAtLocal: WorldAtLocal,
-  state: MapEditorState,
-  assets: TilesetAssets,
-  onHover: (target: HoverTarget) => void
-): PointerToolsBinding {
+export type PointerToolsOptions = {
+  element: HTMLElement;
+  worldAtLocal: WorldAtLocal;
+  state: MapEditorState;
+  assets: TilesetAssets;
+  onHover: (target: HoverTarget) => void;
+  onBeforeDrag?: () => void;
+};
+
+export function bindPointerTools(opts: PointerToolsOptions): PointerToolsBinding {
+  const { element, worldAtLocal, state, assets, onHover } = opts;
   const toolState: PointerToolState = {
-    toolMode: "draw",
     brush: "wall",
     vertexRotation: 0
   };
@@ -192,6 +188,7 @@ export function bindPointerTools(
     if (event.button !== 0) return;
     const { lx, ly } = toLocal(event);
     if (!worldAtLocal(lx, ly, worldPoint)) return;
+    opts.onBeforeDrag?.();
     applyBrush(state, toolState, assets, worldPoint.x, worldPoint.z);
     dragging = true;
     event.preventDefault();

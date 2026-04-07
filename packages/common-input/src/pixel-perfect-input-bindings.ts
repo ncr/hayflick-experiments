@@ -138,7 +138,7 @@ export function bindPixelPerfectViewInput(
       event.preventDefault();
       return;
     }
-    if (event.code === "KeyZ") {
+    if (event.code === "KeyZ" && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
       view.toggleZoomMode();
       event.preventDefault();
     }
@@ -337,7 +337,7 @@ export function bindSharedScissorStageInput(
       event.preventDefault();
       return;
     }
-    if (event.code === "KeyZ") {
+    if (event.code === "KeyZ" && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
       pane.toggleZoomMode();
       event.preventDefault();
     }

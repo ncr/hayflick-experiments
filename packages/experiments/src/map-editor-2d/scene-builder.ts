@@ -104,7 +104,7 @@ export class SceneBuilder {
     const isVertical = structure.ax === structure.bx;
     const yaw = isVertical ? Math.PI / 2 : 0;
 
-    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, yaw);
+    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, yaw, 2);
   }
 
   private placeVertex(structure: PlacedVertex, grid: GridConfig): void {
@@ -115,7 +115,7 @@ export class SceneBuilder {
     const worldZ = grid.origin + structure.z * grid.tileSize;
     const yaw = (structure.rotation & 3) * (Math.PI / 2);
 
-    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, yaw);
+    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, yaw, 3);
   }
 
   private placeCell(structure: PlacedCell, grid: GridConfig): void {
@@ -125,7 +125,7 @@ export class SceneBuilder {
     const worldX = grid.origin + (structure.x + 0.5) * grid.tileSize;
     const worldZ = grid.origin + (structure.z + 0.5) * grid.tileSize;
 
-    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, 0);
+    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, 0, 1);
   }
 
   private addOriginalAndTint(
@@ -133,7 +133,8 @@ export class SceneBuilder {
     kind: string,
     worldX: number,
     worldZ: number,
-    yaw: number
+    yaw: number,
+    tintRenderOrder: number
   ): void {
     // 3D original on layer 0 — both cameras see it
     const original = template.clone();
@@ -149,6 +150,7 @@ export class SceneBuilder {
     const tintMat = this.getTintMaterial(kind, tintColor);
     replaceMaterialsRecursive(tinted, tintMat);
     setLayerRecursive(tinted, LAYER_2D_TINT);
+    setRenderOrderRecursive(tinted, tintRenderOrder);
     this.root.add(tinted);
   }
 
@@ -172,6 +174,13 @@ function setLayerRecursive(obj: THREE.Object3D, layer: number): void {
   obj.layers.set(layer);
   for (const child of obj.children) {
     setLayerRecursive(child, layer);
+  }
+}
+
+function setRenderOrderRecursive(obj: THREE.Object3D, order: number): void {
+  obj.renderOrder = order;
+  for (const child of obj.children) {
+    setRenderOrderRecursive(child, order);
   }
 }
 

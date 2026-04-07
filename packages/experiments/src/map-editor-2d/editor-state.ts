@@ -71,19 +71,6 @@ export function createDefaultState(): MapEditorState {
   };
 }
 
-export function setTerrainCell(
-  state: MapEditorState,
-  x: number,
-  z: number,
-  base: LevelBuilderGroundBase
-): void {
-  const key = cellKey(x, z);
-  const existing = state.terrainOverrides.get(key);
-  if (existing && existing.base === base) return;
-  state.terrainOverrides.set(key, { x, z, base });
-  state.revision++;
-}
-
 export function removeTerrainCell(state: MapEditorState, x: number, z: number): void {
   const key = cellKey(x, z);
   if (!state.terrainOverrides.has(key)) return;
@@ -154,23 +141,14 @@ export function removeEdgeStructure(
   state.revision++;
 }
 
-export function clearStructures(state: MapEditorState): void {
-  if (state.edgeStructures.size === 0 && state.cellStructures.size === 0 && state.vertexStructures.size === 0) return;
+export function clearAll(state: MapEditorState): void {
+  const empty = state.edgeStructures.size === 0 && state.cellStructures.size === 0
+    && state.vertexStructures.size === 0 && state.terrainOverrides.size === 0;
+  if (empty) return;
   state.edgeStructures.clear();
   state.cellStructures.clear();
   state.vertexStructures.clear();
-  state.revision++;
-}
-
-export function clearGround(state: MapEditorState): void {
-  if (state.terrainOverrides.size === 0) return;
   state.terrainOverrides.clear();
-  state.revision++;
-}
-
-export function setDefaultGround(state: MapEditorState, base: LevelBuilderGroundBase): void {
-  if (state.defaultGround === base) return;
-  state.defaultGround = base;
   state.revision++;
 }
 
@@ -203,6 +181,58 @@ export function serializeState(state: MapEditorState): SerializedState {
     vertexStructures: [...state.vertexStructures.values()].map((s) => ({
       tileName: s.tileName, x: s.x, z: s.z, rotation: s.rotation
     }))
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Undo / Redo
+// ---------------------------------------------------------------------------
+
+export type UndoManager = {
+  checkpoint(state: MapEditorState): void;
+  undo(state: MapEditorState): boolean;
+  redo(state: MapEditorState): boolean;
+  canUndo(): boolean;
+  canRedo(): boolean;
+};
+
+export function createUndoManager(maxDepth = 50): UndoManager {
+  const undoStack: SerializedState[] = [];
+  const redoStack: SerializedState[] = [];
+
+  function restoreInPlace(state: MapEditorState, snapshot: SerializedState): void {
+    const restored = deserializeState(snapshot);
+    state.grid = restored.grid;
+    state.defaultGround = restored.defaultGround;
+    state.terrainOverrides = restored.terrainOverrides;
+    state.edgeStructures = restored.edgeStructures;
+    state.cellStructures = restored.cellStructures;
+    state.vertexStructures = restored.vertexStructures;
+    state.revision++;
+  }
+
+  return {
+    checkpoint(state) {
+      undoStack.push(serializeState(state));
+      if (undoStack.length > maxDepth) undoStack.shift();
+      redoStack.length = 0;
+    },
+    undo(state) {
+      const snapshot = undoStack.pop();
+      if (!snapshot) return false;
+      redoStack.push(serializeState(state));
+      restoreInPlace(state, snapshot);
+      return true;
+    },
+    redo(state) {
+      const snapshot = redoStack.pop();
+      if (!snapshot) return false;
+      undoStack.push(serializeState(state));
+      restoreInPlace(state, snapshot);
+      return true;
+    },
+    canUndo: () => undoStack.length > 0,
+    canRedo: () => redoStack.length > 0,
   };
 }
 

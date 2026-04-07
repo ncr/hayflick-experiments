@@ -5,21 +5,17 @@ import {
   PixelPerfectScissorPane
 } from "@common/render";
 import { bindSharedScissorStageInput } from "@common/input";
-import {
-  createEditorHud,
-  LEVEL_EDITOR_WORLD_UNIT
-} from "@common/level-editor";
+import { LEVEL_EDITOR_WORLD_UNIT } from "@common/level-editor";
 import type { ExperimentModule } from "../runtime/types";
 
-import { clearStructures, clearGround } from "./editor-state";
+import { clearAll, createUndoManager } from "./editor-state";
 import { GridRenderer } from "./grid-renderer";
 import { SceneBuilder, LAYER_2D_TINT } from "./scene-builder";
-import { bindPointerTools, GROUND_BRUSHES, brushPlacement } from "./pointer-tools";
-import type { ToolMode } from "./pointer-tools";
+import { bindPointerTools, ERASER_BRUSH } from "./pointer-tools";
 import type { HoverTarget } from "./grid-renderer";
 import { loadEditorState, debouncedSave } from "./persistence";
 import { loadTilesetAssets } from "./tileset-loader";
-import type { TilesetAssets } from "./tileset-loader";
+import { createEditorToolbar, TOOLBAR_HEIGHT } from "./editor-toolbar";
 
 const GRID_TILES = 20;
 const CAMERA_DISTANCE = 50;
@@ -28,8 +24,8 @@ const ISO_YAW = Math.PI / 4;
 function createPaneElement(parent: HTMLElement, style: Partial<CSSStyleDeclaration>): HTMLDivElement {
   const el = document.createElement("div");
   el.style.position = "absolute";
-  el.style.top = "0";
-  el.style.height = "100%";
+  el.style.top = `${TOOLBAR_HEIGHT}px`;
+  el.style.height = `calc(100% - ${TOOLBAR_HEIGHT}px)`;
   Object.assign(el.style, style);
   parent.appendChild(el);
   return el;
@@ -40,7 +36,7 @@ const SHARED_VIEW_CONFIG = {
   baseOrthoHeight: GRID_TILES * LEVEL_EDITOR_WORLD_UNIT * 0.8,
   cameraDistance: CAMERA_DISTANCE,
   basePixelZoom: 1,
-  zoomMin: 0.5,
+  zoomMin: 1,
   zoomMax: 6,
   zoomStep: 0.5,
   zoomAnimationRate: 12,
@@ -57,24 +53,6 @@ function tileLabel(name: string): string {
   return name.replace(/_/g, " ");
 }
 
-/** Build tile brush buttons from the kit manifest — one row, all tiles */
-function buildTileBrushes(
-  assets: TilesetAssets,
-  hud: ReturnType<typeof createEditorHud>,
-  onSelect: (tileName: string) => void
-): Map<string, HTMLButtonElement> {
-  const buttons = new Map<string, HTMLButtonElement>();
-  const row = hud.createRow("Tiles");
-
-  for (const [name] of assets.tiles) {
-    const btn = hud.createButton(tileLabel(name), () => onSelect(name));
-    buttons.set(name, btn);
-    row.append(btn);
-  }
-
-  return buttons;
-}
-
 const experiment: ExperimentModule = {
   id: "map-editor-2d",
   title: "2D Map Editor",
@@ -84,8 +62,9 @@ const experiment: ExperimentModule = {
     const { mount, width, height } = ctx;
     mount.style.position = "relative";
 
-    // Load editor state
+    // Load editor state + undo manager
     const state = loadEditorState();
+    const undoManager = createUndoManager(50);
     let lastSavedRevision = state.revision;
 
     // Scene (shared by both panes)
@@ -182,6 +161,13 @@ const experiment: ExperimentModule = {
       }
     });
 
+    // Hover-based pane focus (Q/E works on whichever pane the mouse is over)
+    const onHoverFocus = (event: PointerEvent): void => {
+      const hit = stage.hitTestPane(event.clientX, event.clientY);
+      if (hit) focusedPaneId = hit.paneId;
+    };
+    stage.canvas.addEventListener("pointermove", onHoverFocus);
+
     leftPaneEl.style.pointerEvents = "none";
     rightPaneEl.style.pointerEvents = "none";
 
@@ -195,7 +181,7 @@ const experiment: ExperimentModule = {
         return;
       }
       const brush = pointerBinding.toolState.brush;
-      if (GROUND_BRUSHES.has(brush)) {
+      if (brush === ERASER_BRUSH) {
         sceneBuilder.clearPreview();
         return;
       }
@@ -221,9 +207,9 @@ const experiment: ExperimentModule = {
     }
 
     // Pointer tools
-    const pointerBinding = bindPointerTools(
-      stage.canvas,
-      (lx, ly, out) => {
+    const pointerBinding = bindPointerTools({
+      element: stage.canvas,
+      worldAtLocal: (lx, ly, out) => {
         const canvasRect = stage.canvas.getBoundingClientRect();
         const clientX = canvasRect.left + lx;
         const clientY = canvasRect.top + ly;
@@ -233,21 +219,18 @@ const experiment: ExperimentModule = {
       },
       state,
       assets,
-      (target) => {
+      onHover: (target) => {
         gridRenderer.setHover(target);
         lastHoverTarget = target;
         updatePreview();
+      },
+      onBeforeDrag: () => {
+        undoManager.checkpoint(state);
       }
-    );
-
-    // --- HUD (built dynamically from kit manifest) ---
-    const hud = createEditorHud({
-      mount,
-      title: "Map Editor",
-      description: "LMB: paint  |  Middle-mouse: pan  |  Scroll: zoom",
-      hints: "",
-      focusTarget: stage.canvas
     });
+
+    // --- Toolbar ---
+    const toolbar = createEditorToolbar({ mount, focusTarget: stage.canvas });
 
     // Active brush tracking
     let activeBrush = pointerBinding.toolState.brush;
@@ -257,81 +240,71 @@ const experiment: ExperimentModule = {
       activeBrush = brush;
       pointerBinding.toolState.brush = brush;
       for (const [key, btn] of allBrushButtons) {
-        hud.setButtonActive(btn, key === brush);
+        toolbar.setButtonActive(btn, key === brush);
       }
     }
 
-    function setActiveToolMode(mode: ToolMode): void {
-      pointerBinding.toolState.toolMode = mode;
-      hud.setButtonActive(drawBtn, mode === "draw");
-      hud.setButtonActive(eraseBtn, mode === "erase");
-    }
+    // Undo / Redo / Clear All group
+    const actionGroup = toolbar.createGroup("");
+    const undoBtn = toolbar.createButton("Undo", () => undoManager.undo(state));
+    const redoBtn = toolbar.createButton("Redo", () => undoManager.redo(state));
+    const clearAllBtn = toolbar.createButton("Clear All", () => {
+      undoManager.checkpoint(state);
+      clearAll(state);
+    });
+    actionGroup.append(undoBtn, toolbar.createSeparator(), redoBtn, toolbar.createSeparator(), clearAllBtn);
 
-    // Tool mode row
-    const toolRow = hud.createRow("Tool");
-    const drawBtn = hud.createButton("Draw (D)", () => setActiveToolMode("draw"));
-    const eraseBtn = hud.createButton("Erase (X)", () => setActiveToolMode("erase"));
-    toolRow.append(drawBtn, eraseBtn);
-
-    // Structure brushes from kit manifest
-    const tileBrushButtons = buildTileBrushes(assets, hud, setActiveBrush);
-    for (const [name, btn] of tileBrushButtons) {
+    // Tileset tile brushes (grouped by tileset name)
+    const tilesetGroup = toolbar.createGroup(tileLabel(assets.manifest.name));
+    for (const [name] of assets.tiles) {
+      const btn = toolbar.createButton(tileLabel(name), () => setActiveBrush(name));
       allBrushButtons.set(name, btn);
+      tilesetGroup.append(btn);
     }
 
-    // Ground brushes (static)
-    const groundRow = hud.createRow("Ground");
-    for (const ground of GROUND_BRUSHES) {
-      const btn = hud.createButton(ground, () => setActiveBrush(ground));
-      allBrushButtons.set(ground, btn);
-      groundRow.append(btn);
-    }
+    // Eraser
+    const eraserGroup = toolbar.createGroup("");
+    const eraserBtn = toolbar.createButton("Eraser", () => setActiveBrush(ERASER_BRUSH));
+    allBrushButtons.set(ERASER_BRUSH, eraserBtn);
+    eraserGroup.append(eraserBtn);
 
-    // Camera controls
-    const cameraRow = hud.createRow("Camera");
-    const rotLeftBtn = hud.createButton("Rotate -90 (Q)", () => {
-      if (focusedPaneId === "editor-2d") leftPane.rotateQuarterTurns(-1);
-      else if (focusedPaneId === "preview-3d") rightPane.rotateQuarterTurns(-1);
-    });
-    const rotRightBtn = hud.createButton("Rotate +90 (E)", () => {
-      if (focusedPaneId === "editor-2d") leftPane.rotateQuarterTurns(1);
-      else if (focusedPaneId === "preview-3d") rightPane.rotateQuarterTurns(1);
-    });
-    const resetBtn = hud.createButton("Reset View", () => {
-      leftCore.reset();
-      rightCore.reset();
-    });
-    cameraRow.append(rotLeftBtn, rotRightBtn, resetBtn);
-
-    // Utility
-    const utilRow = hud.createRow("Scene");
-    const clearWallsBtn = hud.createButton("Clear Walls (C)", () => clearStructures(state));
-    const clearGroundBtn = hud.createButton("Clear Ground (V)", () => clearGround(state));
-    utilRow.append(clearWallsBtn, clearGroundBtn);
-
-    // Set initial active states
-    hud.setButtonActive(drawBtn, true);
+    // Set initial active brush
     setActiveBrush(activeBrush);
 
-    // Keyboard shortcuts — number keys map to brush buttons in order
+    // Keyboard shortcuts
     const orderedBrushKeys = [...allBrushButtons.keys()];
 
     const onKeyDown = (event: KeyboardEvent): void => {
       const el = event.target as HTMLElement | null;
       if (el?.tagName === "INPUT" || el?.tagName === "TEXTAREA") return;
 
+      // Undo: Ctrl+Z / Cmd+Z
+      if (event.code === "KeyZ" && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+        undoManager.undo(state);
+        event.preventDefault();
+        return;
+      }
+      // Redo: Ctrl+Shift+Z / Cmd+Shift+Z
+      if (event.code === "KeyZ" && (event.ctrlKey || event.metaKey) && event.shiftKey) {
+        undoManager.redo(state);
+        event.preventDefault();
+        return;
+      }
+      // Redo: Ctrl+Y / Cmd+Y
+      if (event.code === "KeyY" && (event.ctrlKey || event.metaKey)) {
+        undoManager.redo(state);
+        event.preventDefault();
+        return;
+      }
+
       switch (event.code) {
-        case "KeyD": setActiveToolMode("draw"); break;
-        case "KeyX": setActiveToolMode("erase"); break;
         case "KeyR": {
           pointerBinding.toolState.vertexRotation = (pointerBinding.toolState.vertexRotation + 1) & 3;
           sceneBuilder.invalidatePreview();
           updatePreview();
-          hud.status.textContent = `Rotation: ${pointerBinding.toolState.vertexRotation * 90}°`;
+          toolbar.setRotation(pointerBinding.toolState.vertexRotation * 90);
           break;
         }
-        case "KeyC": clearStructures(state); break;
-        case "KeyV": clearGround(state); break;
         default: {
           // Digit1-Digit9 → select brush by index
           const match = event.code.match(/^Digit(\d)$/);
@@ -348,17 +321,6 @@ const experiment: ExperimentModule = {
       event.preventDefault();
     };
     window.addEventListener("keydown", onKeyDown);
-
-    // Stats
-    const updateStats = (): void => {
-      hud.stats.textContent = [
-        `Grid: ${state.grid.tiles}×${state.grid.tiles}`,
-        `Edges: ${state.edgeStructures.size}`,
-        `Cells: ${state.cellStructures.size}`,
-        `Vertices: ${state.vertexStructures.size}`,
-        `Terrain: ${state.terrainOverrides.size}`
-      ].join("\n");
-    };
 
     // Resize
     const resizeObserver = new ResizeObserver((entries) => {
@@ -382,7 +344,12 @@ const experiment: ExperimentModule = {
 
       gridRenderer.update(state);
       sceneBuilder.update(state);
-      updateStats();
+
+      toolbar.setStats(
+        `${state.grid.tiles}\u00d7${state.grid.tiles} | E:${state.edgeStructures.size} C:${state.cellStructures.size} V:${state.vertexStructures.size}`
+      );
+      toolbar.setUndoRedoEnabled(undoManager.canUndo(), undoManager.canRedo());
+
       stage.drawFrame(now, dt);
 
       if (state.revision !== lastSavedRevision) {
@@ -397,9 +364,10 @@ const experiment: ExperimentModule = {
       cancelAnimationFrame(animId);
       resizeObserver.disconnect();
       window.removeEventListener("keydown", onKeyDown);
+      stage.canvas.removeEventListener("pointermove", onHoverFocus);
       pointerBinding.unbind();
       unbindStageInput();
-      hud.destroy();
+      toolbar.destroy();
       gridRenderer.dispose();
       sceneBuilder.dispose();
       stage.dispose();
