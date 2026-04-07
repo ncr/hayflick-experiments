@@ -1,11 +1,11 @@
-import type { PixelPerfectIsoScissorPane } from "@common/render";
-import { PixelPerfectIsoView, SharedScissorStage } from "@common/render";
+import type { PixelPerfectScissorPane } from "@common/render";
+import { PixelPerfectView, SharedScissorStage } from "@common/render";
 import { attachTouchGestures } from "./touch-gestures";
 
 type KeyboardTarget = Window;
 
-export type PixelPerfectIsoViewInputBindingOptions = {
-  view: PixelPerfectIsoView;
+export type PixelPerfectViewInputBindingOptions = {
+  view: PixelPerfectView;
   pointerTarget?: HTMLElement;
   keyboardTarget?: KeyboardTarget;
   enableTouch?: boolean;
@@ -24,7 +24,7 @@ export type SharedScissorStageInputBindingOptions = {
 };
 
 type SharedScissorStagePaneInputTarget = Pick<
-  PixelPerfectIsoScissorPane,
+  PixelPerfectScissorPane,
   | "element"
   | "beginPanDrag"
   | "updatePanDrag"
@@ -53,8 +53,8 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return !!el.isContentEditable;
 }
 
-export function bindPixelPerfectIsoViewInput(
-  options: PixelPerfectIsoViewInputBindingOptions
+export function bindPixelPerfectViewInput(
+  options: PixelPerfectViewInputBindingOptions
 ): () => void {
   const view = options.view;
   const pointerTarget = options.pointerTarget ?? view.canvas;

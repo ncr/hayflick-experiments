@@ -234,7 +234,7 @@ Preventive checklist:
 
 ## 2026-02-22 - Scissor pane vertical trackpad pan lost subpixel motion at max zoom
 Root cause:
-- `PixelPerfectIsoViewportCore.renderToRenderer()` clamped the pane-local output viewport Y origin with `Math.max(0, ...)`.
+- `PixelPerfectViewportCore.renderToRenderer()` clamped the pane-local output viewport Y origin with `Math.max(0, ...)`.
 - When the overscanned pixelated output was taller than the scissor pane, that clamp pinned vertical blit offset and discarded `panDeviceRemainderY` visual motion until a full camera-step quantum accumulated.
 
 Detection signal:
@@ -261,12 +261,12 @@ Preventive checklist:
 
 ## 2026-02-22 - Render library-owned DOM input listeners blocked scissor unification and caused focus regressions
 Root cause:
-- `@common/render` mixed rendering and low-level DOM input listener ownership (`window` key handlers, canvas pointer/wheel listeners) across both `PixelPerfectIsoView` and `SharedScissorStage`.
+- `@common/render` mixed rendering and low-level DOM input listener ownership (`window` key handlers, canvas pointer/wheel listeners) across both `PixelPerfectView` and `SharedScissorStage`.
 - In multi-stage scenarios, hidden listener ownership created conflicting keyboard routing and made focus policy implicit instead of app-controlled.
 
 Detection signal:
 - Scissor lab focus/rotation bugs required experiment-level workarounds because keyboard routing happened inside render stages.
-- Refactor planning showed `PixelPerfectIsoView`, `SharedScissorStage`, and `touch-gestures` split input responsibilities across multiple render classes/files.
+- Refactor planning showed `PixelPerfectView`, `SharedScissorStage`, and `touch-gestures` split input responsibilities across multiple render classes/files.
 
 Preventive checklist:
 - Keep `@common/render` command-driven and render-only; no constructor-owned DOM input listeners.
@@ -275,11 +275,11 @@ Preventive checklist:
 
 ## 2026-02-22 - Duplicated ISO view/core implementations caused parity drift and slowed fixes
 Root cause:
-- `PixelPerfectIsoView` and `PixelPerfectIsoViewportCore` duplicated nearly all camera/pan/zoom/render math with only stage/backend differences.
+- `PixelPerfectView` and `PixelPerfectViewportCore` duplicated nearly all camera/pan/zoom/render math with only stage/backend differences.
 - Behavioral fixes (e.g. scissor viewport offset handling) landed in one path and not the other.
 
 Detection signal:
-- Scissor-only vertical pan regression fix required patching `PixelPerfectIsoViewportCore`, while standalone `PixelPerfectIsoView` had matching but separate logic.
+- Scissor-only vertical pan regression fix required patching `PixelPerfectViewportCore`, while standalone `PixelPerfectView` had matching but separate logic.
 - File inspection showed near-line-for-line duplication of animation, display layout, pan quantization, and projection paths.
 
 Preventive checklist:
@@ -1503,7 +1503,7 @@ Preventive checklist:
 ## 2026-02-10 - Editor-game smoke test assumptions broke after promoting dynamic pixel view
 Root cause:
 - E2E smoke test still asserted legacy fixed canvas buffer size (`480x360`) from pre-library setup.
-- Promoted `PixelPerfectIsoView` sizes canvas buffer to viewport device pixels while keeping pixelated presentation.
+- Promoted `PixelPerfectView` sizes canvas buffer to viewport device pixels while keeping pixelated presentation.
 
 Detection signal:
 - `e2e/promoted-modules.smoke.spec.ts` failed with unexpected canvas dimensions (`width/height` no longer fixed constants).
@@ -1575,7 +1575,7 @@ Preventive checklist:
 
 ## 2026-02-12 - Trackpad two-finger drag was treated as wheel zoom in shared iso view
 Root cause:
-- `PixelPerfectIsoView` handled all `wheel` events as zoom steps and had no trackpad-pan intent detection.
+- `PixelPerfectView` handled all `wheel` events as zoom steps and had no trackpad-pan intent detection.
 - Middle-mouse/touch pan paths existed, but two-finger touchpad scroll had no pan mapping in the promoted shared view.
 
 Detection signal:
@@ -3066,7 +3066,7 @@ Detection signal:
 Preventive checklist:
 - Keep all pan motion (drag and wheel) inside the same pixel-quantized pan pipeline.
 - For large wheel deltas, split one wheel event into smaller sub-steps and feed each through quantized pan rather than bypassing quantization.
-- When patching scissor-vs-independent parity paths, mirror the fix in both `pixel-perfect-iso-view` and `pixel-perfect-iso-viewport-core` until the wrapper refactor removes duplication.
+- When patching scissor-vs-independent parity paths, mirror the fix in both `pixel-perfect-view` and `pixel-perfect-viewport-core` until the wrapper refactor removes duplication.
 
 ## 2026-02-22 - Forge V2 physics pixel previews silently bypassed `@common/render`
 Root cause:
@@ -3075,11 +3075,11 @@ Root cause:
 
 Detection signal:
 - Forge V2 physics pixel strips did not match recent `@common/render` scissor/pixel fixes.
-- Code inspection showed `apps/hub/src/pages/forge-v2/PixelQuad.tsx` rendering directly with `three` rather than `PixelPerfectIsoViewportCore` / `SharedScissorStage`.
+- Code inspection showed `apps/hub/src/pages/forge-v2/PixelQuad.tsx` rendering directly with `three` rather than `PixelPerfectViewportCore` / `SharedScissorStage`.
 
 Preventive checklist:
 - Do not maintain parallel pixel-preview renderer implementations in app code when `@common/render` already provides the needed scissor/pixel pipeline.
-- For multi-pane pixel previews, wrap `SharedScissorStage` + `PixelPerfectIsoViewportCore` in app components instead of custom renderer/scissor math.
+- For multi-pane pixel previews, wrap `SharedScissorStage` + `PixelPerfectViewportCore` in app components instead of custom renderer/scissor math.
 - When debugging a preview regression, first verify the affected screen is actually using the intended shared library path.
 
 ## 2026-02-22 - Shared scissor stage mount setup overrode CSS-positioned overlay hosts
@@ -3155,7 +3155,7 @@ Preventive checklist:
 ## 2026-02-23 - Scissor-clipped panes must not resize pixel cameras from clipped viewport dimensions
 Root cause:
 - `SharedScissorStage` reported only the clipped scissor rect device size.
-- `PixelPerfectIsoScissorPane.onResize(...)` used that clipped `deviceWidth/deviceHeight` to recompute DPR and resize the pixel viewport core, so horizontally scrolled/offscreen panes were treated like actual resizes.
+- `PixelPerfectScissorPane.onResize(...)` used that clipped `deviceWidth/deviceHeight` to recompute DPR and resize the pixel viewport core, so horizontally scrolled/offscreen panes were treated like actual resizes.
 
 Detection signal:
 - In Forge V2 pixel strips, horizontal scrolling worked but panes that moved out of the visible stage area changed apparent camera framing/viewport.
@@ -3223,7 +3223,7 @@ Preventive checklist:
 
 ## 2026-02-24 - Pixel scissor panes can look "sticky" at scroll boundaries if clipped scissor origin is reused as the pane viewport origin
 Root cause:
-- `PixelPerfectIsoScissorPane` passed only the clipped visible rect into `PixelPerfectIsoViewportCore.renderToRenderer(...)`.
+- `PixelPerfectScissorPane` passed only the clipped visible rect into `PixelPerfectViewportCore.renderToRenderer(...)`.
 - The core used that rect for both `setScissor(...)` and viewport-relative output placement, so once a pane started clipping at the viewport edge, content stopped translating with the pane and appeared stuck to the boundary.
 
 Detection signal:

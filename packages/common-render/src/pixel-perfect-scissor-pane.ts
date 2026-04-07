@@ -1,29 +1,29 @@
 import * as THREE from "three";
-import type { PixelPerfectIsoViewPose, PixelPerfectIsoViewState, PixelSnapMode } from "./pixel-perfect-iso-types";
+import type { PixelPerfectViewPose, PixelPerfectViewState, PixelSnapMode } from "./pixel-perfect-types";
 import {
-  PixelPerfectIsoViewportCore,
-  type PixelPerfectIsoViewportCoreVisualState
-} from "./pixel-perfect-iso-viewport-core";
+  PixelPerfectViewportCore,
+  type PixelPerfectViewportCoreVisualState
+} from "./pixel-perfect-viewport-core";
 import type {
   SharedScissorFrameContext,
   SharedScissorPane,
   SharedScissorPaneRect
 } from "./shared-scissor-stage";
 
-export type PixelPerfectIsoScissorPaneConfig = {
+export type PixelPerfectScissorPaneConfig = {
   id: string;
   element: HTMLElement;
-  core: PixelPerfectIsoViewportCore;
+  core: PixelPerfectViewportCore;
   devicePixelRatio?: number;
 };
 
-export class PixelPerfectIsoScissorPane implements SharedScissorPane {
+export class PixelPerfectScissorPane implements SharedScissorPane {
   readonly id: string;
   readonly element: HTMLElement;
-  private readonly core: PixelPerfectIsoViewportCore;
+  private readonly core: PixelPerfectViewportCore;
   private readonly fixedDevicePixelRatio?: number;
 
-  constructor(config: PixelPerfectIsoScissorPaneConfig) {
+  constructor(config: PixelPerfectScissorPaneConfig) {
     this.id = config.id;
     this.element = config.element;
     this.core = config.core;
@@ -59,23 +59,23 @@ export class PixelPerfectIsoScissorPane implements SharedScissorPane {
     this.core.resize(rect.cssWidth, rect.cssHeight, dpr, logicalDeviceWidth, logicalDeviceHeight);
   }
 
-  getViewPose(): PixelPerfectIsoViewPose {
+  getViewPose(): PixelPerfectViewPose {
     return this.core.getViewPose();
   }
 
-  setViewPose(pose: PixelPerfectIsoViewPose): void {
+  setViewPose(pose: PixelPerfectViewPose): void {
     this.core.setViewPose(pose);
   }
 
-  getState(): PixelPerfectIsoViewState {
+  getState(): PixelPerfectViewState {
     return this.core.getState();
   }
 
-  getVisualState(): PixelPerfectIsoViewportCoreVisualState {
+  getVisualState(): PixelPerfectViewportCoreVisualState {
     return this.core.getVisualState();
   }
 
-  setVisualState(state: PixelPerfectIsoViewportCoreVisualState): void {
+  setVisualState(state: PixelPerfectViewportCoreVisualState): void {
     this.core.setVisualState(state);
   }
 

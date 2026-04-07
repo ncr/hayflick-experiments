@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import RAPIER3D from "@dimforge/rapier3d-compat";
-import { PixelPerfectIsoView } from "@common/render";
-import { bindPixelPerfectIsoViewInput } from "@common/input";
+import { PixelPerfectView } from "@common/render";
+import { bindPixelPerfectViewInput } from "@common/input";
 import type { EID } from "@common/gameplay";
 import type { ExperimentModule } from "../runtime/types";
 
@@ -391,7 +391,7 @@ const experiment: ExperimentModule = {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x2a2e38);
 
-    const view = new PixelPerfectIsoView({
+    const view = new PixelPerfectView({
       mount,
       width,
       height,
@@ -420,7 +420,7 @@ const experiment: ExperimentModule = {
     view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     view.renderer.toneMappingExposure = 1.25;
 
-    const unbindInput = bindPixelPerfectIsoViewInput({ view });
+    const unbindInput = bindPixelPerfectViewInput({ view });
 
     // Resize
     const resizeObserver = new ResizeObserver((entries) => {

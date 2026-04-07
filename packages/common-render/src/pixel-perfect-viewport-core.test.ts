@@ -1,9 +1,11 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { PixelPerfectIsoViewportCore } from "./pixel-perfect-iso-viewport-core";
+import { PixelPerfectViewportCore } from "./pixel-perfect-viewport-core";
 
-function makeCore(): PixelPerfectIsoViewportCore {
-  return new PixelPerfectIsoViewportCore({
+function makeCore(
+  overrides: Partial<ConstructorParameters<typeof PixelPerfectViewportCore>[0]> = {}
+): PixelPerfectViewportCore {
+  return new PixelPerfectViewportCore({
     width: 160,
     height: 120,
     scene: new THREE.Scene(),
@@ -27,8 +29,13 @@ function makeCore(): PixelPerfectIsoViewportCore {
     clearAlpha: 1,
     maxBackingWidth: 4096,
     maxBackingHeight: 4096,
-    devicePixelRatio: 1
+    devicePixelRatio: 1,
+    ...overrides
   });
+}
+
+function makeSideCore(): PixelPerfectViewportCore {
+  return makeCore({ cameraPitch: "side", cameraYaw: 0 });
 }
 
 class FakeRenderer {
@@ -119,6 +126,66 @@ describe("@common/render iso viewport core", () => {
     expect(renderer.viewportCalls.length).toBeGreaterThanOrEqual(4);
     const outputViewport = renderer.viewportCalls[renderer.viewportCalls.length - 2];
     expect(outputViewport[1]).toBeLessThan(20);
+  });
+
+  describe("side view mode", () => {
+    it("does not clamp cameraTarget.y to 0 after vertical pan", () => {
+      const core = makeSideCore();
+      core.panByCss(0, 200);
+      const pose = core.getViewPose();
+      expect(Math.abs(pose.targetY ?? 0)).toBeGreaterThan(1e-3);
+    });
+
+    it("panByCss moves the target by per-pixel scale, not the full frustum width", () => {
+      const core = makeSideCore();
+      const before = core.getViewPose();
+      core.panByCss(20, 0);
+      const after = core.getViewPose();
+      const dx = after.targetX - before.targetX;
+      const dz = after.targetZ - before.targetZ;
+      const moved = Math.sqrt(dx * dx + dz * dz);
+      // The dead fallback used `frustumWidth` directly (~baseOrthoHeight *
+      // aspect = 6 * 160/120 = 8 world units per device pixel of remainder),
+      // which would move the target by tens of world units for a 20-pixel
+      // drag. The camera-basis fix scales by world units per low-res pixel,
+      // keeping it well under 5 world units even for this pan amount.
+      expect(moved).toBeGreaterThan(0);
+      expect(moved).toBeLessThan(5);
+    });
+
+    it("snapWorldPointOnGround returns false in side mode", () => {
+      const core = makeSideCore();
+      const out = new THREE.Vector3();
+      const ok = core.snapWorldPointOnGround(new THREE.Vector3(1, 0, 1), out);
+      expect(ok).toBe(false);
+    });
+
+    it("getViewPose round-trips through setViewPose for non-zero targetY", () => {
+      const coreA = makeSideCore();
+      coreA.setViewPose({ targetX: 1.5, targetY: 2.25, targetZ: -0.75, yawIndex: 0, zoom: 2 });
+      const pose = coreA.getViewPose();
+      expect(pose.targetX).toBeCloseTo(1.5);
+      expect(pose.targetY).toBeCloseTo(2.25);
+      expect(pose.targetZ).toBeCloseTo(-0.75);
+
+      const coreB = makeSideCore();
+      coreB.setViewPose(pose);
+      const round = coreB.getViewPose();
+      expect(round.targetX).toBeCloseTo(pose.targetX);
+      expect(round.targetY).toBeCloseTo(pose.targetY ?? 0);
+      expect(round.targetZ).toBeCloseTo(pose.targetZ);
+    });
+
+    it("getVisualState round-trips through setVisualState for non-zero targetY", () => {
+      const coreA = makeSideCore();
+      coreA.panByCss(3, 17);
+      const state = coreA.getVisualState();
+      expect(Math.abs(state.targetY)).toBeGreaterThan(1e-6);
+
+      const coreB = makeSideCore();
+      coreB.setVisualState(state);
+      expect(coreB.getVisualState()).toEqual(state);
+    });
   });
 
   it("supports clipped scissor rects with an unclipped pane viewport to avoid sticky edge scrolling", () => {

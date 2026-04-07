@@ -37,8 +37,8 @@ vi.mock("./shared-scissor-stage", () => {
   return { SharedScissorStage: SharedScissorStageMock };
 });
 
-vi.mock("./pixel-perfect-iso-viewport-core", () => {
-  class PixelPerfectIsoViewportCoreMock {
+vi.mock("./pixel-perfect-viewport-core", () => {
+  class PixelPerfectViewportCoreMock {
     readonly camera = { tag: "camera" };
     readonly cameraTarget = { tag: "cameraTarget" };
     readonly state = {
@@ -93,11 +93,11 @@ vi.mock("./pixel-perfect-iso-viewport-core", () => {
     }
   }
 
-  return { PixelPerfectIsoViewportCore: PixelPerfectIsoViewportCoreMock };
+  return { PixelPerfectViewportCore: PixelPerfectViewportCoreMock };
 });
 
-vi.mock("./pixel-perfect-iso-scissor-pane", () => {
-  class PixelPerfectIsoScissorPaneMock {
+vi.mock("./pixel-perfect-scissor-pane", () => {
+  class PixelPerfectScissorPaneMock {
     readonly id: string;
     readonly element: HTMLElement;
 
@@ -108,10 +108,10 @@ vi.mock("./pixel-perfect-iso-scissor-pane", () => {
     }
   }
 
-  return { PixelPerfectIsoScissorPane: PixelPerfectIsoScissorPaneMock };
+  return { PixelPerfectScissorPane: PixelPerfectScissorPaneMock };
 });
 
-import { PixelPerfectIsoView } from "./pixel-perfect-iso-view";
+import { PixelPerfectView } from "./pixel-perfect-view";
 
 type RectLike = {
   left: number;
@@ -168,7 +168,7 @@ function makeConfig(mount: HTMLElement): any {
   };
 }
 
-describe("@common/render PixelPerfectIsoView facade", () => {
+describe("@common/render PixelPerfectView facade", () => {
   const originalWindow = (globalThis as any).window;
 
   beforeAll(() => {
@@ -200,7 +200,7 @@ describe("@common/render PixelPerfectIsoView facade", () => {
 
   it("constructs a single scissor-pane facade and wires stage/core/pane together", () => {
     const mount = makeMount(makeRect(100, 200, 160, 120)) as HTMLElement;
-    const view = new PixelPerfectIsoView(makeConfig(mount));
+    const view = new PixelPerfectView(makeConfig(mount));
 
     const stage = mockState.stageInstances[0];
     const core = mockState.coreInstances[0];
@@ -235,7 +235,7 @@ describe("@common/render PixelPerfectIsoView facade", () => {
 
   it("delegates state, commands, frame, and resize to the core/stage", () => {
     const mount = makeMount(makeRect(0, 0, 160, 120)) as HTMLElement;
-    const view = new PixelPerfectIsoView(makeConfig(mount));
+    const view = new PixelPerfectView(makeConfig(mount));
     const stage = mockState.stageInstances[0];
     const core = mockState.coreInstances[0];
 
@@ -269,7 +269,7 @@ describe("@common/render PixelPerfectIsoView facade", () => {
 
   it("translates client coordinates into local CSS coordinates for drag/zoom/world queries", () => {
     const mount = makeMount(makeRect(100, 200, 160, 120));
-    const view = new PixelPerfectIsoView(makeConfig(mount as unknown as HTMLElement));
+    const view = new PixelPerfectView(makeConfig(mount as unknown as HTMLElement));
     const core = mockState.coreInstances[0];
 
     expect(view.beginPanDrag(112, 228)).toBe(true);
@@ -289,7 +289,7 @@ describe("@common/render PixelPerfectIsoView facade", () => {
 
   it("maps projected local coordinates back to client space and guards zero-sized mounts", () => {
     const mount = makeMount(makeRect(50, 75, 160, 120));
-    const view = new PixelPerfectIsoView(makeConfig(mount as unknown as HTMLElement));
+    const view = new PixelPerfectView(makeConfig(mount as unknown as HTMLElement));
     const core = mockState.coreInstances[0];
 
     const client = new THREE.Vector2();
@@ -308,7 +308,7 @@ describe("@common/render PixelPerfectIsoView facade", () => {
 
   it("restores backgrounds and disposes stage exactly once", () => {
     const mount = makeMount(makeRect(0, 0, 160, 120)) as HTMLElement;
-    const view = new PixelPerfectIsoView(makeConfig(mount));
+    const view = new PixelPerfectView(makeConfig(mount));
     const stage = mockState.stageInstances[0];
 
     expect((mount as any).style.background).toBe("#123456");
@@ -324,7 +324,7 @@ describe("@common/render PixelPerfectIsoView facade", () => {
 
   it("does not attach DOM input listeners from the facade", () => {
     const mount = makeMount(makeRect(0, 0, 160, 120)) as HTMLElement;
-    new PixelPerfectIsoView(makeConfig(mount));
+    new PixelPerfectView(makeConfig(mount));
 
     expect((mount as any).addEventListener).not.toHaveBeenCalled();
     expect((globalThis as any).window.addEventListener).not.toHaveBeenCalled();

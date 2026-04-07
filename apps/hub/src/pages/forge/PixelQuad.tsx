@@ -6,8 +6,8 @@ import {
   useRef
 } from "react";
 import {
-  PixelPerfectIsoScissorPane,
-  PixelPerfectIsoViewportCore,
+  PixelPerfectScissorPane,
+  PixelPerfectViewportCore,
   SharedScissorStage
 } from "@common/render";
 import * as THREE from "three";
@@ -104,7 +104,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
   });
 
   const stageRef = useRef<SharedScissorStage | null>(null);
-  const paneRefs = useRef<Record<PixelAngle["key"], PixelPerfectIsoScissorPane | null>>({
+  const paneRefs = useRef<Record<PixelAngle["key"], PixelPerfectScissorPane | null>>({
     north: null,
     east: null,
     south: null,
@@ -260,7 +260,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
       if (!cell) {
         continue;
       }
-      const core = new PixelPerfectIsoViewportCore({
+      const core = new PixelPerfectViewportCore({
         width: Math.max(1, cell.clientWidth || 1),
         height: Math.max(1, cell.clientHeight || 1),
         scene,
@@ -286,7 +286,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         maxBackingHeight: stage.maxBackingHeight
       });
 
-      const pane = new PixelPerfectIsoScissorPane({
+      const pane = new PixelPerfectScissorPane({
         id: paneIdForAngle(angle.key),
         element: cell,
         core

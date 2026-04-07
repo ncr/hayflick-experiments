@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PixelPerfectIsoScissorPane } from "./pixel-perfect-iso-scissor-pane";
+import { PixelPerfectScissorPane } from "./pixel-perfect-scissor-pane";
 import { ThreeSceneScissorPane } from "./three-scene-scissor-pane";
 import type { SharedScissorFrameContext, SharedScissorPaneRect } from "./shared-scissor-stage";
 
@@ -54,14 +54,14 @@ describe("@common/render shared scissor contract regressions", () => {
     expect(calls).toContainEqual(["setViewport", -40, 18, 160, 120]);
   });
 
-  it("PixelPerfectIsoScissorPane forwards separate pane viewport and clipped scissor rect to the core", () => {
+  it("PixelPerfectScissorPane forwards separate pane viewport and clipped scissor rect to the core", () => {
     const renderToRenderer = vi.fn();
     const resize = vi.fn();
     const core = {
       renderToRenderer,
       resize
     } as any;
-    const pane = new PixelPerfectIsoScissorPane({
+    const pane = new PixelPerfectScissorPane({
       id: "pixel",
       element: {} as HTMLElement,
       core
@@ -79,13 +79,13 @@ describe("@common/render shared scissor contract regressions", () => {
     );
   });
 
-  it("PixelPerfectIsoScissorPane resize uses unclipped device size for logical viewport state", () => {
+  it("PixelPerfectScissorPane resize uses unclipped device size for logical viewport state", () => {
     const resize = vi.fn();
     const core = {
       renderToRenderer: vi.fn(),
       resize
     } as any;
-    const pane = new PixelPerfectIsoScissorPane({
+    const pane = new PixelPerfectScissorPane({
       id: "pixel",
       element: {} as HTMLElement,
       core

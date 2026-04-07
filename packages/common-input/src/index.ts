@@ -3,8 +3,8 @@ export {
   type TouchGestureCallbacks
 } from "./touch-gestures";
 export {
-  bindPixelPerfectIsoViewInput,
+  bindPixelPerfectViewInput,
   bindSharedScissorStageInput,
-  type PixelPerfectIsoViewInputBindingOptions,
+  type PixelPerfectViewInputBindingOptions,
   type SharedScissorStageInputBindingOptions
-} from "./iso-input-bindings";
+} from "./pixel-perfect-input-bindings";

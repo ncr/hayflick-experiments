@@ -1,38 +1,38 @@
 import * as THREE from "three";
-import { PixelPerfectIsoScissorPane } from "./pixel-perfect-iso-scissor-pane";
-import { PixelPerfectIsoViewportCore } from "./pixel-perfect-iso-viewport-core";
+import { PixelPerfectScissorPane } from "./pixel-perfect-scissor-pane";
+import { PixelPerfectViewportCore } from "./pixel-perfect-viewport-core";
 import { SharedScissorStage } from "./shared-scissor-stage";
 import type {
-  PixelPerfectIsoViewConfig,
-  PixelPerfectIsoViewPose,
-  PixelPerfectIsoViewState,
+  PixelPerfectViewConfig,
+  PixelPerfectViewPose,
+  PixelPerfectViewState,
   PixelSnapMode
-} from "./pixel-perfect-iso-types";
+} from "./pixel-perfect-types";
 
 export type {
-  PixelPerfectIsoViewConfig,
-  PixelPerfectIsoViewPose,
-  PixelPerfectIsoViewState,
+  PixelPerfectViewConfig,
+  PixelPerfectViewPose,
+  PixelPerfectViewState,
   PixelSnapMode
-} from "./pixel-perfect-iso-types";
+} from "./pixel-perfect-types";
 
 const SINGLE_PANE_ID = "main";
 
-export class PixelPerfectIsoView {
+export class PixelPerfectView {
   readonly stage: SharedScissorStage;
   readonly renderer: THREE.WebGLRenderer;
   readonly camera: THREE.OrthographicCamera;
   readonly cameraTarget: THREE.Vector3;
 
   private readonly mount: HTMLElement;
-  private readonly core: PixelPerfectIsoViewportCore;
-  private readonly pane: PixelPerfectIsoScissorPane;
+  private readonly core: PixelPerfectViewportCore;
+  private readonly pane: PixelPerfectScissorPane;
   private readonly savedMountBackground: string;
   private readonly savedCanvasBackground: string;
   private readonly projectLocal = new THREE.Vector2();
   private disposed = false;
 
-  constructor(config: PixelPerfectIsoViewConfig) {
+  constructor(config: PixelPerfectViewConfig) {
     this.mount = config.mount;
     this.savedMountBackground = this.mount.style.background;
 
@@ -55,7 +55,7 @@ export class PixelPerfectIsoView {
       this.stage.canvas.style.background = config.canvasBackground;
     }
 
-    this.core = new PixelPerfectIsoViewportCore({
+    this.core = new PixelPerfectViewportCore({
       width: config.width,
       height: config.height,
       scene: config.scene,
@@ -82,7 +82,7 @@ export class PixelPerfectIsoView {
       devicePixelRatio: this.stage.getDevicePixelRatio()
     });
 
-    this.pane = new PixelPerfectIsoScissorPane({
+    this.pane = new PixelPerfectScissorPane({
       id: SINGLE_PANE_ID,
       element: this.mount,
       core: this.core,
@@ -94,15 +94,15 @@ export class PixelPerfectIsoView {
     this.cameraTarget = this.core.cameraTarget;
   }
 
-  getState(): PixelPerfectIsoViewState {
+  getState(): PixelPerfectViewState {
     return this.core.getState();
   }
 
-  getViewPose(): PixelPerfectIsoViewPose {
+  getViewPose(): PixelPerfectViewPose {
     return this.core.getViewPose();
   }
 
-  setViewPose(pose: PixelPerfectIsoViewPose): void {
+  setViewPose(pose: PixelPerfectViewPose): void {
     this.core.setViewPose(pose);
   }
 

@@ -27,7 +27,7 @@ export function pitchForPixelView(view: PixelView): number {
   }
 }
 
-export type PixelPerfectIsoViewConfig = {
+export type PixelPerfectViewConfig = {
   mount: HTMLElement;
   width: number;
   height: number;
@@ -58,7 +58,7 @@ export type PixelPerfectIsoViewConfig = {
   canvasBackground?: string;
 };
 
-export type PixelPerfectIsoViewState = {
+export type PixelPerfectViewState = {
   cameraZoomCurrent: number;
   cameraZoomTarget: number;
   zoomAnimationActive: boolean;
@@ -73,9 +73,15 @@ export type PixelPerfectIsoViewState = {
   devicePixelRatio: number;
 };
 
-export type PixelPerfectIsoViewPose = {
+export type PixelPerfectViewPose = {
   targetX: number;
   targetZ: number;
+  /**
+   * Optional vertical position of the camera target. Only meaningful for the
+   * `"side"` view, which pans along world Y. Top-down / iso modes ignore it
+   * (the target is always clamped to the ground plane in those modes).
+   */
+  targetY?: number;
   yawIndex: number;
   zoom: number;
 };

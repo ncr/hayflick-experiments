@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import {
-  PixelPerfectIsoScissorPane,
-  PixelPerfectIsoViewportCore,
+  PixelPerfectScissorPane,
+  PixelPerfectViewportCore,
   SharedScissorStage,
   type PixelView
 } from "@common/render";
@@ -224,13 +224,13 @@ const experiment: ExperimentModule = {
     type PaneEntry = {
       spec: PaneSpec;
       element: HTMLDivElement;
-      core: PixelPerfectIsoViewportCore;
-      pane: PixelPerfectIsoScissorPane;
+      core: PixelPerfectViewportCore;
+      pane: PixelPerfectScissorPane;
     };
 
     const panes: PaneEntry[] = PANE_SPECS.map((spec) => {
       const element = createPaneElement(mount, spec);
-      const core = new PixelPerfectIsoViewportCore({
+      const core = new PixelPerfectViewportCore({
         ...SHARED_VIEW_CONFIG,
         width: element.clientWidth || width / 2,
         height: element.clientHeight || height / 2,
@@ -245,7 +245,7 @@ const experiment: ExperimentModule = {
         maxBackingHeight: stage.maxBackingHeight,
         devicePixelRatio: stage.getDevicePixelRatio()
       });
-      const pane = new PixelPerfectIsoScissorPane({
+      const pane = new PixelPerfectScissorPane({
         id: spec.id,
         element,
         core,

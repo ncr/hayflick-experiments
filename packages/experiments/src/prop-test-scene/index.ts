@@ -3,8 +3,8 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
 import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
-import { PixelPerfectIsoView } from "@common/render";
-import { bindPixelPerfectIsoViewInput } from "@common/input";
+import { PixelPerfectView } from "@common/render";
+import { bindPixelPerfectViewInput } from "@common/input";
 import type { ExperimentModule } from "../runtime/types";
 
 /* ------------------------------------------------------------------ */
@@ -134,7 +134,7 @@ const experiment: ExperimentModule = {
     createLighting(scene);
     createGround(scene);
 
-    const view = new PixelPerfectIsoView({
+    const view = new PixelPerfectView({
       mount,
       width,
       height,
@@ -163,7 +163,7 @@ const experiment: ExperimentModule = {
     view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     view.renderer.toneMappingExposure = 1.25;
 
-    const unbindInput = bindPixelPerfectIsoViewInput({ view });
+    const unbindInput = bindPixelPerfectViewInput({ view });
 
     // Resize
     const resizeObserver = new ResizeObserver((entries) => {

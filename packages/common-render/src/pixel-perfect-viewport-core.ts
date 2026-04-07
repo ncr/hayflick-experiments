@@ -2,28 +2,29 @@ import * as THREE from "three";
 import { PixelPerfectController } from "./pixel-perfect-controller";
 import {
   pitchForPixelView,
-  type PixelPerfectIsoViewConfig,
-  type PixelPerfectIsoViewPose,
-  type PixelPerfectIsoViewState,
+  type PixelPerfectViewConfig,
+  type PixelPerfectViewPose,
+  type PixelPerfectViewState,
   type PixelSnapMode,
   type PixelView
-} from "./pixel-perfect-iso-types";
+} from "./pixel-perfect-types";
 
-export type PixelPerfectIsoViewportCoreConfig = Omit<PixelPerfectIsoViewConfig, "mount"> & {
+export type PixelPerfectViewportCoreConfig = Omit<PixelPerfectViewConfig, "mount"> & {
   maxBackingWidth: number;
   maxBackingHeight: number;
   devicePixelRatio?: number;
 };
 
-export type PixelPerfectIsoRenderViewport = {
+export type PixelPerfectRenderViewport = {
   x: number;
   y: number;
   width: number;
   height: number;
 };
 
-export type PixelPerfectIsoViewportCoreVisualState = {
+export type PixelPerfectViewportCoreVisualState = {
   targetX: number;
+  targetY: number;
   targetZ: number;
   yawIndex: number;
   animatedYawTurns: number;
@@ -37,13 +38,13 @@ export type PixelPerfectIsoViewportCoreVisualState = {
   panDeviceRemainderY: number;
 };
 
-export class PixelPerfectIsoViewportCore {
+export class PixelPerfectViewportCore {
   private static readonly ROTATION_SNAP_SETTLE_SECONDS = 0.08;
 
   readonly camera: THREE.OrthographicCamera;
   readonly cameraTarget = new THREE.Vector3(0, 0, 0);
 
-  private readonly config: PixelPerfectIsoViewportCoreConfig;
+  private readonly config: PixelPerfectViewportCoreConfig;
   private readonly viewMode: PixelView;
   private readonly cameraPitchRadians: number;
   private readonly scene: THREE.Scene;
@@ -113,7 +114,7 @@ export class PixelPerfectIsoViewportCore {
   private cssToDeviceX = 1;
   private cssToDeviceY = 1;
 
-  constructor(config: PixelPerfectIsoViewportCoreConfig) {
+  constructor(config: PixelPerfectViewportCoreConfig) {
     this.config = config;
     this.viewMode = config.cameraPitch;
     this.cameraPitchRadians = pitchForPixelView(config.cameraPitch);
@@ -197,7 +198,7 @@ export class PixelPerfectIsoViewportCore {
     this.resize(this.viewportWidth, this.viewportHeight, config.devicePixelRatio);
   }
 
-  getState(): PixelPerfectIsoViewState {
+  getState(): PixelPerfectViewState {
     const state = this.controller.getState();
     return {
       cameraZoomCurrent: this.cameraZoomCurrent,
@@ -215,18 +216,20 @@ export class PixelPerfectIsoViewportCore {
     };
   }
 
-  getViewPose(): PixelPerfectIsoViewPose {
+  getViewPose(): PixelPerfectViewPose {
     return {
       targetX: this.cameraTarget.x,
+      targetY: this.cameraTarget.y,
       targetZ: this.cameraTarget.z,
       yawIndex: this.controller.getYawIndex(),
       zoom: this.cameraZoomTarget
     };
   }
 
-  getVisualState(): PixelPerfectIsoViewportCoreVisualState {
+  getVisualState(): PixelPerfectViewportCoreVisualState {
     return {
       targetX: this.cameraTarget.x,
+      targetY: this.cameraTarget.y,
       targetZ: this.cameraTarget.z,
       yawIndex: this.controller.getYawIndex(),
       animatedYawTurns: this.animatedYawTurns,
@@ -241,13 +244,20 @@ export class PixelPerfectIsoViewportCore {
     };
   }
 
-  setVisualState(state: PixelPerfectIsoViewportCoreVisualState): void {
+  setVisualState(state: PixelPerfectViewportCoreVisualState): void {
     this.setViewPose({
       targetX: state.targetX,
+      targetY: state.targetY,
       targetZ: state.targetZ,
       yawIndex: state.yawIndex,
       zoom: state.zoomTarget
     });
+    // Visual state is the full snapshot, so honor a non-finite targetY here as
+    // an explicit "no change" rather than clamping. setViewPose() already
+    // handles the side-mode pass-through; the non-side modes write 0.
+    if (this.viewMode === "side" && Number.isFinite(state.targetY)) {
+      this.cameraTarget.y = state.targetY;
+    }
 
     this.animatedYawTurns = Number.isFinite(state.animatedYawTurns)
       ? state.animatedYawTurns
@@ -342,7 +352,7 @@ export class PixelPerfectIsoViewportCore {
     | ((renderer: THREE.WebGLRenderer, lowTarget: THREE.WebGLRenderTarget) => void)
     | null = null;
 
-  setViewPose(pose: PixelPerfectIsoViewPose): void {
+  setViewPose(pose: PixelPerfectViewPose): void {
     if (Number.isFinite(pose.targetX)) {
       this.cameraTarget.x = pose.targetX;
     }
@@ -352,7 +362,11 @@ export class PixelPerfectIsoViewportCore {
     // `side` view pans along world Y, so the target's Y component is part of
     // its state and must not be clamped. The other modes lock the target onto
     // the ground plane (Y=0) so the snap helpers stay coherent.
-    if (this.viewMode !== "side") {
+    if (this.viewMode === "side") {
+      if (pose.targetY !== undefined && Number.isFinite(pose.targetY)) {
+        this.cameraTarget.y = pose.targetY;
+      }
+    } else {
       this.cameraTarget.y = 0;
     }
 
@@ -463,10 +477,10 @@ export class PixelPerfectIsoViewportCore {
 
   renderToRenderer(
     renderer: THREE.WebGLRenderer,
-    viewport: PixelPerfectIsoRenderViewport,
+    viewport: PixelPerfectRenderViewport,
     nowMs: number,
     deltaSeconds: number,
-    clipViewport?: PixelPerfectIsoRenderViewport
+    clipViewport?: PixelPerfectRenderViewport
   ): void {
     const paneViewport = viewport;
     const scissorViewport = clipViewport ?? paneViewport;
@@ -505,7 +519,7 @@ export class PixelPerfectIsoViewportCore {
     const renderLeft = paneViewport.x + this.getRenderStartX();
     const renderTop = this.getRenderStartY();
     // Allow negative local viewport offsets so subpixel pan remainders can move the
-    // overscanned output smoothly inside the scissor rect (matches PixelPerfectIsoView).
+    // overscanned output smoothly inside the scissor rect (matches PixelPerfectView).
     const renderBottom = paneViewport.y + (paneViewport.height - (renderTop + viewportHeight));
     renderer.setViewport(renderLeft, renderBottom, viewportWidth, viewportHeight);
     renderer.render(this.outputScene, this.outputCamera);
@@ -569,6 +583,11 @@ export class PixelPerfectIsoViewportCore {
     out: THREE.Vector3,
     mode: PixelSnapMode = "nearest"
   ): boolean {
+    // Snap-on-ground has no meaning for a horizontal camera (the ground plane
+    // is parallel to the view direction).
+    if (this.viewMode === "side") {
+      return false;
+    }
     this.ensureScreenBasis();
 
     const ux = this.screenRightWorld.x;
@@ -677,21 +696,9 @@ export class PixelPerfectIsoViewportCore {
       // The side view's camera looks horizontally, so the Y=0 ground plane is
       // parallel to the view direction and the raycast approach used by the
       // iso/top-down modes never produces a finite intersection. Derive the
-      // screen-to-world basis directly from the camera's local axes scaled to
-      // world units per low-res pixel — this works for any orthographic camera
-      // and gives correct horizontal pan along camera-right plus vertical pan
-      // along world Y (since the camera is level, camera-up == world up).
-      this.camera.matrixWorld.extractBasis(
-        this.cameraBasisRight,
-        this.cameraBasisUp,
-        this.cameraBasisBack
-      );
-      const worldUnitsPerPixelX =
-        (this.camera.right - this.camera.left) / Math.max(1, state.lowRenderWidth);
-      const worldUnitsPerPixelY =
-        (this.camera.top - this.camera.bottom) / Math.max(1, state.lowRenderHeight);
-      this.screenRightWorld.copy(this.cameraBasisRight).multiplyScalar(worldUnitsPerPixelX);
-      this.screenDownWorld.copy(this.cameraBasisUp).multiplyScalar(-worldUnitsPerPixelY);
+      // screen-to-world basis directly from the camera's local axes — see
+      // computeCameraBasisScreenToWorld() for the math.
+      this.computeCameraBasisScreenToWorld();
       // Snap helpers reference centerGround as their origin; for side mode the
       // most coherent value is the camera target itself (snap onto ground only
       // makes sense for top-down/iso anyway).
@@ -718,14 +725,31 @@ export class PixelPerfectIsoViewportCore {
       return;
     }
 
-    const frustumWidth = this.camera.right - this.camera.left;
-    const frustumHeight = this.camera.top - this.camera.bottom;
-    this.screenRightWorld
-      .set(Math.cos(this.config.cameraYaw), 0, -Math.sin(this.config.cameraYaw))
-      .multiplyScalar(frustumWidth);
-    this.screenDownWorld
-      .set(Math.sin(this.config.cameraYaw), 0, Math.cos(this.config.cameraYaw))
-      .multiplyScalar(frustumHeight);
+    // Fallback: ground-plane raycast didn't produce a finite basis (e.g. the
+    // camera is parallel to the plane). Use the camera-basis derivation, which
+    // is universally correct for any orthographic camera.
+    this.computeCameraBasisScreenToWorld();
+  }
+
+  /**
+   * Derive `screenRightWorld` / `screenDownWorld` from the camera's local axes
+   * scaled by world units per low-res pixel. Works for any orthographic camera
+   * regardless of pitch — used by `side` mode (where the ground-plane raycast
+   * is degenerate) and as a universal fallback for the other modes.
+   */
+  private computeCameraBasisScreenToWorld(): void {
+    const state = this.controller.getState();
+    this.camera.matrixWorld.extractBasis(
+      this.cameraBasisRight,
+      this.cameraBasisUp,
+      this.cameraBasisBack
+    );
+    const worldUnitsPerPixelX =
+      (this.camera.right - this.camera.left) / Math.max(1, state.lowRenderWidth);
+    const worldUnitsPerPixelY =
+      (this.camera.top - this.camera.bottom) / Math.max(1, state.lowRenderHeight);
+    this.screenRightWorld.copy(this.cameraBasisRight).multiplyScalar(worldUnitsPerPixelX);
+    this.screenDownWorld.copy(this.cameraBasisUp).multiplyScalar(-worldUnitsPerPixelY);
   }
 
   private ensureScreenBasis(): void {
@@ -744,7 +768,7 @@ export class PixelPerfectIsoViewportCore {
 
     if (this.rotationSnapActive) {
       this.rotationSnapElapsedSeconds += Math.max(0, deltaSeconds);
-      const duration = PixelPerfectIsoViewportCore.ROTATION_SNAP_SETTLE_SECONDS;
+      const duration = PixelPerfectViewportCore.ROTATION_SNAP_SETTLE_SECONDS;
       const tRaw = duration > 0 ? this.rotationSnapElapsedSeconds / duration : 1;
       const t = THREE.MathUtils.clamp(tRaw, 0, 1);
       const easedT = t * t * (3 - 2 * t);

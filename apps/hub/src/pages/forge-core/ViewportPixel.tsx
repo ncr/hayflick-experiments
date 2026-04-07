@@ -1,6 +1,6 @@
 import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import * as THREE from "three";
-import { PixelPerfectIsoView } from "@common/render";
+import { PixelPerfectView } from "@common/render";
 
 export type PixelViewportViewState = {
   target: [number, number, number];
@@ -30,7 +30,7 @@ interface Props {
 export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
   function ViewportPixel({ className, onViewChange, framingScale = 1 }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
-    const viewRef = useRef<PixelPerfectIsoView | null>(null);
+    const viewRef = useRef<PixelPerfectView | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const modelRef = useRef<THREE.Group | null>(null);
     const desiredModelRef = useRef<THREE.Group | null>(null);
@@ -171,7 +171,7 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       const effectiveFramingScale =
         Number.isFinite(framingScale) && framingScale > 0 ? framingScale : 1;
 
-      const view = new PixelPerfectIsoView({
+      const view = new PixelPerfectView({
         mount: container,
         width,
         height,

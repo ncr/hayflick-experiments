@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import {
   SharedScissorStage,
-  PixelPerfectIsoViewportCore,
-  PixelPerfectIsoScissorPane
+  PixelPerfectViewportCore,
+  PixelPerfectScissorPane
 } from "@common/render";
 import { bindSharedScissorStageInput } from "@common/input";
 import {
@@ -123,7 +123,7 @@ const experiment: ExperimentModule = {
     });
 
     // Left pane: top-down 2D editor
-    const leftCore = new PixelPerfectIsoViewportCore({
+    const leftCore = new PixelPerfectViewportCore({
       ...SHARED_VIEW_CONFIG,
       width: leftPaneEl.clientWidth || width * 0.55,
       height: leftPaneEl.clientHeight || height,
@@ -137,7 +137,7 @@ const experiment: ExperimentModule = {
     });
     leftCore.camera.layers.enable(LAYER_2D_TINT);
 
-    const leftPane = new PixelPerfectIsoScissorPane({
+    const leftPane = new PixelPerfectScissorPane({
       id: "editor-2d",
       element: leftPaneEl,
       core: leftCore,
@@ -146,7 +146,7 @@ const experiment: ExperimentModule = {
     stage.registerPane(leftPane);
 
     // Right pane: isometric 3D preview
-    const rightCore = new PixelPerfectIsoViewportCore({
+    const rightCore = new PixelPerfectViewportCore({
       ...SHARED_VIEW_CONFIG,
       width: rightPaneEl.clientWidth || width * 0.45,
       height: rightPaneEl.clientHeight || height,
@@ -160,7 +160,7 @@ const experiment: ExperimentModule = {
       lowTargetSamples: 0
     });
 
-    const rightPane = new PixelPerfectIsoScissorPane({
+    const rightPane = new PixelPerfectScissorPane({
       id: "preview-3d",
       element: rightPaneEl,
       core: rightCore,

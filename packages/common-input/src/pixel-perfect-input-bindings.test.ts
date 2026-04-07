@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  bindPixelPerfectIsoViewInput,
+  bindPixelPerfectViewInput,
   bindSharedScissorStageInput
-} from "./iso-input-bindings";
+} from "./pixel-perfect-input-bindings";
 
 class FakeTarget {
   style = { touchAction: "" };
@@ -67,7 +67,7 @@ describe("@common/input iso view bindings", () => {
       toggleZoomMode: vi.fn()
     };
 
-    const detach = bindPixelPerfectIsoViewInput({
+    const detach = bindPixelPerfectViewInput({
       view: view as unknown as any,
       pointerTarget: pointerTarget as unknown as HTMLElement,
       keyboardTarget: keyboardTarget as unknown as Window,
@@ -108,7 +108,7 @@ describe("@common/input iso view bindings", () => {
       toggleZoomMode: vi.fn()
     };
 
-    const detach = bindPixelPerfectIsoViewInput({
+    const detach = bindPixelPerfectViewInput({
       view: view as unknown as any,
       pointerTarget: pointerTarget as unknown as HTMLElement,
       keyboardTarget: keyboardTarget as unknown as Window,

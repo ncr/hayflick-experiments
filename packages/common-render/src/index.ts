@@ -32,22 +32,22 @@ export {
   type PixelStageOptions
 } from "./pixel-stage";
 export {
-  PixelPerfectIsoView,
-  type PixelPerfectIsoViewConfig,
-  type PixelPerfectIsoViewPose,
-  type PixelPerfectIsoViewState,
+  PixelPerfectView,
+  type PixelPerfectViewConfig,
+  type PixelPerfectViewPose,
+  type PixelPerfectViewState,
   type PixelSnapMode
-} from "./pixel-perfect-iso-view";
+} from "./pixel-perfect-view";
 export {
   pitchForPixelView,
   type PixelView
-} from "./pixel-perfect-iso-types";
+} from "./pixel-perfect-types";
 export {
-  PixelPerfectIsoViewportCore,
-  type PixelPerfectIsoViewportCoreConfig,
-  type PixelPerfectIsoRenderViewport,
-  type PixelPerfectIsoViewportCoreVisualState
-} from "./pixel-perfect-iso-viewport-core";
+  PixelPerfectViewportCore,
+  type PixelPerfectViewportCoreConfig,
+  type PixelPerfectRenderViewport,
+  type PixelPerfectViewportCoreVisualState
+} from "./pixel-perfect-viewport-core";
 export {
   SharedScissorStage,
   type SharedScissorStageConfig,
@@ -57,9 +57,9 @@ export {
   type SharedScissorPaneHit
 } from "./shared-scissor-stage";
 export {
-  PixelPerfectIsoScissorPane,
-  type PixelPerfectIsoScissorPaneConfig
-} from "./pixel-perfect-iso-scissor-pane";
+  PixelPerfectScissorPane,
+  type PixelPerfectScissorPaneConfig
+} from "./pixel-perfect-scissor-pane";
 export {
   ThreeSceneScissorPane,
   type ThreeSceneScissorPaneConfig
