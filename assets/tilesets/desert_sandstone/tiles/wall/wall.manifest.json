@@ -1,7 +1,7 @@
 {
-  "kitId": "kit_mnlq8j56_4",
+  "kitId": "kit_mnq0im7t_4",
   "kitName": "desert_sandstone",
-  "generatedAt": "2026-04-05T12:17:43.778Z",
+  "generatedAt": "2026-04-08T12:16:33.216Z",
   "format": "glb",
   "artifactTransform": {
     "format": "gltf",
@@ -12,7 +12,7 @@
     "name": "wall",
     "kind": "wall",
     "role": "wall",
-    "groupUuid": "ce5d7217-9204-fac6-2d71-0e7cac1e27c3",
+    "groupUuid": "d463db50-fadf-5a1e-d84d-f5eb47f3060b",
     "anchorClass": "edge_midpoint",
     "anchorPolicy": "first_logical_unit",
     "anchorLocal": [
@@ -21,7 +21,7 @@
       0
     ],
     "sceneAnchor": [
-      224,
+      0,
       0,
       0
     ],
@@ -32,7 +32,7 @@
       "baseUnit": 128
     },
     "meshEnvelope": [
-      130,
+      128,
       280,
       32
     ],
@@ -50,7 +50,7 @@
       0
     ],
     "artifactSceneAnchor": [
-      1.75,
+      0,
       0,
       0
     ],
@@ -101,12 +101,12 @@
     }
   ],
   "workspace": {
-    "rootDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project",
+    "rootDir": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/project",
     "name": "blockstudio_project",
     "fileStem": "desert_sandstone",
-    "texturesDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/textures",
-    "exportsDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts",
-    "capturesDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/captures",
-    "projectFile": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/desert_sandstone.bbmodel"
+    "texturesDir": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/project/textures",
+    "exportsDir": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts",
+    "capturesDir": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/project/captures",
+    "projectFile": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/project/desert_sandstone.bbmodel"
   }
 }

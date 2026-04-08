@@ -1,8 +1,8 @@
 {
-  "kitId": "kit_mnlq8j56_4",
+  "kitId": "kit_mnq0im7t_4",
   "name": "desert_sandstone",
-  "generatedAt": "2026-04-05T12:17:43.565Z",
-  "styleProfileId": "style_mnlq8j56_3",
+  "generatedAt": "2026-04-08T12:16:33.149Z",
+  "styleProfileId": "style_mnq0im7t_3",
   "artifactTransform": {
     "format": "gltf",
     "blockbenchUnitsPerWorldUnit": 128,
@@ -10,11 +10,11 @@
   },
   "parts": [
     {
-      "name": "floor_tile",
-      "kind": "floor_tile",
-      "role": "floor_tile",
-      "groupUuid": "4de31358-037f-2793-d6dc-7e4ea41bf9f8",
-      "anchorClass": "cell_center",
+      "name": "wall",
+      "kind": "wall",
+      "role": "wall",
+      "groupUuid": "d463db50-fadf-5a1e-d84d-f5eb47f3060b",
+      "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
         0,
@@ -27,25 +27,23 @@
         0
       ],
       "logicalFootprint": {
-        "type": "cell",
-        "widthUnits": 128,
-        "depthUnits": 128,
-        "widthCells": 1,
-        "depthCells": 1,
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
         "baseUnit": 128
       },
       "meshEnvelope": [
-        130,
-        6,
-        130
+        128,
+        280,
+        32
       ],
       "articulationPivot": null,
       "articulationType": null,
       "hingeSide": null,
       "dimensions": [
         128,
-        6,
-        128
+        280,
+        32
       ],
       "artifactAnchor": [
         0,
@@ -60,10 +58,10 @@
       "artifactArticulationPivot": null
     },
     {
-      "name": "wall",
-      "kind": "wall",
-      "role": "wall",
-      "groupUuid": "ce5d7217-9204-fac6-2d71-0e7cac1e27c3",
+      "name": "door",
+      "kind": "door_wall",
+      "role": "door",
+      "groupUuid": "79c6711b-8a6e-99d8-855d-4779ca441f7a",
       "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -83,55 +81,7 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        130,
-        280,
-        32
-      ],
-      "articulationPivot": null,
-      "articulationType": null,
-      "hingeSide": null,
-      "dimensions": [
         128,
-        280,
-        32
-      ],
-      "artifactAnchor": [
-        0,
-        0,
-        0
-      ],
-      "artifactSceneAnchor": [
-        1.75,
-        0,
-        0
-      ],
-      "artifactArticulationPivot": null
-    },
-    {
-      "name": "door",
-      "kind": "door_wall",
-      "role": "door",
-      "groupUuid": "815e79d3-ad1c-dd3e-3689-0e1085b02211",
-      "anchorClass": "edge_midpoint",
-      "anchorPolicy": "first_logical_unit",
-      "anchorLocal": [
-        0,
-        0,
-        0
-      ],
-      "sceneAnchor": [
-        448,
-        0,
-        0
-      ],
-      "logicalFootprint": {
-        "type": "edge_run",
-        "runUnits": 128,
-        "runCells": 1,
-        "baseUnit": 128
-      },
-      "meshEnvelope": [
-        130,
         280,
         32
       ],
@@ -153,7 +103,7 @@
         0
       ],
       "artifactSceneAnchor": [
-        3.5,
+        1.75,
         0,
         0
       ],
@@ -167,7 +117,7 @@
       "name": "window_left",
       "kind": "window_module",
       "role": "window_left",
-      "groupUuid": "79147e8b-00a9-24b2-69b8-546a1916a91c",
+      "groupUuid": "458cc811-62c6-37c7-9d2f-4e1f285a698c",
       "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -176,7 +126,7 @@
         0
       ],
       "sceneAnchor": [
-        672,
+        448,
         0,
         0
       ],
@@ -187,7 +137,7 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        129,
+        128,
         280,
         32
       ],
@@ -205,7 +155,7 @@
         0
       ],
       "artifactSceneAnchor": [
-        5.25,
+        3.5,
         0,
         0
       ],
@@ -215,7 +165,7 @@
       "name": "window_middle",
       "kind": "window_module",
       "role": "window_middle",
-      "groupUuid": "226a3b02-ca99-923d-9106-280aa64c77b5",
+      "groupUuid": "673632a5-440c-aac3-89d9-10bab4affc36",
       "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -224,7 +174,7 @@
         0
       ],
       "sceneAnchor": [
-        896,
+        672,
         0,
         0
       ],
@@ -253,7 +203,7 @@
         0
       ],
       "artifactSceneAnchor": [
-        7,
+        5.25,
         0,
         0
       ],
@@ -263,7 +213,7 @@
       "name": "window_right",
       "kind": "window_module",
       "role": "window_right",
-      "groupUuid": "de99e84c-4fb9-6b99-59f4-09b2952f723f",
+      "groupUuid": "1e71e210-bbac-f988-2ee4-b1d1417b30f1",
       "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -272,7 +222,7 @@
         0
       ],
       "sceneAnchor": [
-        1120,
+        896,
         0,
         0
       ],
@@ -283,7 +233,7 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        129,
+        128,
         280,
         32
       ],
@@ -301,7 +251,7 @@
         0
       ],
       "artifactSceneAnchor": [
-        8.75,
+        7,
         0,
         0
       ],
@@ -311,7 +261,7 @@
       "name": "corner",
       "kind": "corner",
       "role": "corner",
-      "groupUuid": "1c21192b-7bbd-b697-e1bc-5418831fee6e",
+      "groupUuid": "ca8517ff-cc2e-d6bf-aaf6-c6f529900cee",
       "anchorClass": "vertex",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -320,7 +270,7 @@
         0
       ],
       "sceneAnchor": [
-        1344,
+        1120,
         0,
         0
       ],
@@ -333,9 +283,9 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        129,
+        128,
         280,
-        129
+        128
       ],
       "articulationPivot": null,
       "articulationType": null,
@@ -351,7 +301,7 @@
         0
       ],
       "artifactSceneAnchor": [
-        10.5,
+        8.75,
         0,
         0
       ],
@@ -404,12 +354,12 @@
     }
   ],
   "workspace": {
-    "rootDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project",
+    "rootDir": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/project",
     "name": "blockstudio_project",
     "fileStem": "desert_sandstone",
-    "texturesDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/textures",
-    "exportsDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts",
-    "capturesDir": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/captures",
-    "projectFile": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/project/desert_sandstone.bbmodel"
+    "texturesDir": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/project/textures",
+    "exportsDir": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts",
+    "capturesDir": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/project/captures",
+    "projectFile": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/project/desert_sandstone.bbmodel"
   }
 }

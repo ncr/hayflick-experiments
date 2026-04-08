@@ -1,0 +1,170 @@
+{
+  "kitId": "kit_mnq0jbjx_4",
+  "kitName": "ground_tiles",
+  "generatedAt": "2026-04-08T12:17:06.045Z",
+  "format": "glb",
+  "artifactTransform": {
+    "format": "gltf",
+    "blockbenchUnitsPerWorldUnit": 128,
+    "worldUnitsPerBlockbenchUnit": 0.007813
+  },
+  "part": {
+    "name": "grass",
+    "kind": "floor_tile",
+    "role": "floor_tile",
+    "groupUuid": "43a90ec3-15fc-5f92-47c5-837d2784b525",
+    "anchorClass": "cell_center",
+    "anchorPolicy": "first_logical_unit",
+    "anchorLocal": [
+      0,
+      0,
+      0
+    ],
+    "sceneAnchor": [
+      0,
+      0,
+      0
+    ],
+    "logicalFootprint": {
+      "type": "cell",
+      "widthUnits": 128,
+      "depthUnits": 128,
+      "widthCells": 1,
+      "depthCells": 1,
+      "baseUnit": 128
+    },
+    "meshEnvelope": [
+      128,
+      6,
+      128
+    ],
+    "articulationPivot": null,
+    "articulationType": null,
+    "hingeSide": null,
+    "dimensions": [
+      128,
+      6,
+      128
+    ],
+    "artifactAnchor": [
+      0,
+      0,
+      0
+    ],
+    "artifactSceneAnchor": [
+      0,
+      0,
+      0
+    ],
+    "artifactArticulationPivot": null
+  },
+  "textures": [
+    {
+      "role": "wall",
+      "name": "blockstudio_wall",
+      "mode": "data_url",
+      "resolution": 64,
+      "uvWidth": 128,
+      "uvHeight": 128,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    },
+    {
+      "role": "trim",
+      "name": "blockstudio_trim",
+      "mode": "data_url",
+      "resolution": 64,
+      "uvWidth": 128,
+      "uvHeight": 128,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    },
+    {
+      "role": "accent",
+      "name": "blockstudio_accent",
+      "mode": "data_url",
+      "resolution": 64,
+      "uvWidth": 128,
+      "uvHeight": 128,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    },
+    {
+      "role": "grass",
+      "name": "blockstudio_grass",
+      "mode": "data_url",
+      "resolution": 64,
+      "uvWidth": 128,
+      "uvHeight": 128,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    },
+    {
+      "role": "concrete_walk",
+      "name": "blockstudio_concrete_walk",
+      "mode": "data_url",
+      "resolution": 64,
+      "uvWidth": 128,
+      "uvHeight": 128,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    },
+    {
+      "role": "asphalt",
+      "name": "blockstudio_asphalt",
+      "mode": "data_url",
+      "resolution": 64,
+      "uvWidth": 128,
+      "uvHeight": 128,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    },
+    {
+      "role": "sandstone",
+      "name": "blockstudio_sandstone",
+      "mode": "data_url",
+      "resolution": 64,
+      "uvWidth": 128,
+      "uvHeight": 128,
+      "density": {
+        "x": 8,
+        "y": 8
+      },
+      "densityLabel": "8x",
+      "blockbenchPixelsPerGamePixel": 2
+    }
+  ],
+  "workspace": {
+    "rootDir": "/home/ncr/dev/blockstudio/tilesets/ground_tiles/project",
+    "name": "blockstudio_project",
+    "fileStem": "ground_tiles",
+    "texturesDir": "/home/ncr/dev/blockstudio/tilesets/ground_tiles/project/textures",
+    "exportsDir": "/home/ncr/dev/blockstudio/tilesets/ground_tiles/artifacts",
+    "capturesDir": "/home/ncr/dev/blockstudio/tilesets/ground_tiles/project/captures",
+    "projectFile": "/home/ncr/dev/blockstudio/tilesets/ground_tiles/project/ground_tiles.bbmodel"
+  }
+}

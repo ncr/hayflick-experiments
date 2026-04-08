@@ -1,10 +1,10 @@
 {
   "schema": "blockstudio/tileset-game-metadata@1",
-  "generatedAt": "2026-04-08T12:16:33.685Z",
+  "generatedAt": "2026-04-08T12:17:06.349Z",
   "tileset": {
-    "id": "desert_sandstone",
-    "name": "desert_sandstone",
-    "kind": "wall_kit",
+    "id": "ground_tiles",
+    "name": "ground_tiles",
+    "kind": "ground",
     "description": ""
   },
   "rules": {
@@ -130,9 +130,9 @@
     ]
   },
   "profile": {
-    "id": "desert_sandstone",
-    "name": "desert_sandstone",
-    "kind": "wall_kit",
+    "id": "ground_tiles",
+    "name": "ground_tiles",
+    "kind": "ground",
     "description": "",
     "game": {
       "artifactFormat": "glb",
@@ -264,7 +264,7 @@
       }
     },
     "kitSpec": {
-      "name": "desert_sandstone_kit",
+      "name": "ground_tiles_kit",
       "includeCorners": true,
       "includeEndCaps": false,
       "catalogWindowSource": {
@@ -313,12 +313,10 @@
       "notes": []
     },
     "requiredParts": [
-      "corner",
-      "door",
-      "wall",
-      "window_left",
-      "window_middle",
-      "window_right"
+      "asphalt",
+      "concrete_walk",
+      "grass",
+      "sandstone"
     ],
     "style": {
       "notes": "",
@@ -331,63 +329,47 @@
     "root": ".",
     "kitDir": "kit",
     "tilesDir": "tiles",
-    "kitManifest": "kit/desert_sandstone.manifest.json",
+    "kitManifest": "kit/ground_tiles.manifest.json",
     "tilesManifest": "tiles/tiles.manifest.json",
     "saved": [
       {
-        "path": "kit/desert_sandstone.manifest.json",
+        "path": "kit/ground_tiles.manifest.json",
         "format": "manifest"
       },
       {
-        "path": "kit/desert_sandstone.glb",
+        "path": "kit/ground_tiles.glb",
         "format": "glb"
       },
       {
-        "path": "tiles/wall/wall.manifest.json",
+        "path": "tiles/grass/grass.manifest.json",
         "format": "manifest"
       },
       {
-        "path": "tiles/wall/wall.glb",
+        "path": "tiles/grass/grass.glb",
         "format": "glb"
       },
       {
-        "path": "tiles/door/door.manifest.json",
+        "path": "tiles/concrete_walk/concrete_walk.manifest.json",
         "format": "manifest"
       },
       {
-        "path": "tiles/door/door.glb",
+        "path": "tiles/concrete_walk/concrete_walk.glb",
         "format": "glb"
       },
       {
-        "path": "tiles/window_left/window_left.manifest.json",
+        "path": "tiles/asphalt/asphalt.manifest.json",
         "format": "manifest"
       },
       {
-        "path": "tiles/window_left/window_left.glb",
+        "path": "tiles/asphalt/asphalt.glb",
         "format": "glb"
       },
       {
-        "path": "tiles/window_middle/window_middle.manifest.json",
+        "path": "tiles/sandstone/sandstone.manifest.json",
         "format": "manifest"
       },
       {
-        "path": "tiles/window_middle/window_middle.glb",
-        "format": "glb"
-      },
-      {
-        "path": "tiles/window_right/window_right.manifest.json",
-        "format": "manifest"
-      },
-      {
-        "path": "tiles/window_right/window_right.glb",
-        "format": "glb"
-      },
-      {
-        "path": "tiles/corner/corner.manifest.json",
-        "format": "manifest"
-      },
-      {
-        "path": "tiles/corner/corner.glb",
+        "path": "tiles/sandstone/sandstone.glb",
         "format": "glb"
       },
       {
@@ -396,192 +378,132 @@
       }
     ],
     "kit": {
-      "manifest": "kit/desert_sandstone.manifest.json",
-      "kitId": "kit_mnq0im7t_4",
-      "name": "desert_sandstone",
+      "manifest": "kit/ground_tiles.manifest.json",
+      "kitId": "kit_mnq0jbjx_4",
+      "name": "ground_tiles",
       "dimensions": null,
       "parts": [
         {
-          "name": "wall",
-          "kind": "wall",
-          "role": "wall",
+          "name": "grass",
+          "kind": "floor_tile",
+          "role": "floor_tile",
           "dimensions": [
             128,
-            280,
-            32
-          ],
-          "meshEnvelope": [
-            128,
-            280,
-            32
-          ],
-          "anchorClass": "edge_midpoint",
-          "anchorPolicy": "first_logical_unit",
-          "logicalFootprint": {
-            "type": "edge_run",
-            "runUnits": 128,
-            "runCells": 1,
-            "baseUnit": 128
-          },
-          "anchor": [
-            0,
-            0,
-            0
-          ],
-          "articulationPivot": null,
-          "articulationType": null,
-          "hingeSide": null
-        },
-        {
-          "name": "door",
-          "kind": "door_wall",
-          "role": "door",
-          "dimensions": [
-            128,
-            280,
-            32
-          ],
-          "meshEnvelope": [
-            128,
-            280,
-            32
-          ],
-          "anchorClass": "edge_midpoint",
-          "anchorPolicy": "first_logical_unit",
-          "logicalFootprint": {
-            "type": "edge_run",
-            "runUnits": 128,
-            "runCells": 1,
-            "baseUnit": 128
-          },
-          "anchor": [
-            0,
-            0,
-            0
-          ],
-          "articulationPivot": [
-            -0.351562,
-            0,
-            -0.082031
-          ],
-          "articulationType": "hinged",
-          "hingeSide": "left"
-        },
-        {
-          "name": "window_left",
-          "kind": "window_module",
-          "role": "window_left",
-          "dimensions": [
-            128,
-            280,
-            32
-          ],
-          "meshEnvelope": [
-            128,
-            280,
-            32
-          ],
-          "anchorClass": "edge_midpoint",
-          "anchorPolicy": "first_logical_unit",
-          "logicalFootprint": {
-            "type": "edge_run",
-            "runUnits": 128,
-            "runCells": 1,
-            "baseUnit": 128
-          },
-          "anchor": [
-            0,
-            0,
-            0
-          ],
-          "articulationPivot": null,
-          "articulationType": null,
-          "hingeSide": null
-        },
-        {
-          "name": "window_middle",
-          "kind": "window_module",
-          "role": "window_middle",
-          "dimensions": [
-            128,
-            280,
-            32
-          ],
-          "meshEnvelope": [
-            128,
-            280,
-            32
-          ],
-          "anchorClass": "edge_midpoint",
-          "anchorPolicy": "first_logical_unit",
-          "logicalFootprint": {
-            "type": "edge_run",
-            "runUnits": 128,
-            "runCells": 1,
-            "baseUnit": 128
-          },
-          "anchor": [
-            0,
-            0,
-            0
-          ],
-          "articulationPivot": null,
-          "articulationType": "fixed",
-          "hingeSide": "left"
-        },
-        {
-          "name": "window_right",
-          "kind": "window_module",
-          "role": "window_right",
-          "dimensions": [
-            128,
-            280,
-            32
-          ],
-          "meshEnvelope": [
-            128,
-            280,
-            32
-          ],
-          "anchorClass": "edge_midpoint",
-          "anchorPolicy": "first_logical_unit",
-          "logicalFootprint": {
-            "type": "edge_run",
-            "runUnits": 128,
-            "runCells": 1,
-            "baseUnit": 128
-          },
-          "anchor": [
-            0,
-            0,
-            0
-          ],
-          "articulationPivot": null,
-          "articulationType": null,
-          "hingeSide": null
-        },
-        {
-          "name": "corner",
-          "kind": "corner",
-          "role": "corner",
-          "dimensions": [
-            128,
-            280,
+            6,
             128
           ],
           "meshEnvelope": [
             128,
-            280,
+            6,
             128
           ],
-          "anchorClass": "vertex",
+          "anchorClass": "cell_center",
           "anchorPolicy": "first_logical_unit",
           "logicalFootprint": {
-            "type": "corner_vertex",
-            "xRunUnits": 128,
-            "zRunUnits": 128,
-            "xRunCells": 1,
-            "zRunCells": 1,
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "concrete_walk",
+          "kind": "floor_tile",
+          "role": "floor_tile",
+          "dimensions": [
+            128,
+            6,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            6,
+            128
+          ],
+          "anchorClass": "cell_center",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "asphalt",
+          "kind": "floor_tile",
+          "role": "floor_tile",
+          "dimensions": [
+            128,
+            6,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            6,
+            128
+          ],
+          "anchorClass": "cell_center",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "sandstone",
+          "kind": "floor_tile",
+          "role": "floor_tile",
+          "dimensions": [
+            128,
+            6,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            6,
+            128
+          ],
+          "anchorClass": "cell_center",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
             "baseUnit": 128
           },
           "anchor": [
@@ -597,204 +519,138 @@
     },
     "tiles": [
       {
-        "name": "wall",
-        "kind": "wall",
-        "role": "wall",
-        "directory": "tiles/wall",
-        "file": "tiles/wall/wall.glb",
-        "manifest": "tiles/wall/wall.manifest.json",
+        "name": "grass",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/grass",
+        "file": "tiles/grass/grass.glb",
+        "manifest": "tiles/grass/grass.manifest.json",
         "dimensions": [
           128,
-          280,
-          32
-        ],
-        "meshEnvelope": [
-          128,
-          280,
-          32
-        ],
-        "anchorClass": "edge_midpoint",
-        "anchorPolicy": "first_logical_unit",
-        "logicalFootprint": {
-          "type": "edge_run",
-          "runUnits": 128,
-          "runCells": 1,
-          "baseUnit": 128
-        },
-        "anchor": [
-          0,
-          0,
-          0
-        ],
-        "articulationPivot": null,
-        "articulationType": null,
-        "hingeSide": null
-      },
-      {
-        "name": "door",
-        "kind": "door_wall",
-        "role": "door",
-        "directory": "tiles/door",
-        "file": "tiles/door/door.glb",
-        "manifest": "tiles/door/door.manifest.json",
-        "dimensions": [
-          128,
-          280,
-          32
-        ],
-        "meshEnvelope": [
-          128,
-          280,
-          32
-        ],
-        "anchorClass": "edge_midpoint",
-        "anchorPolicy": "first_logical_unit",
-        "logicalFootprint": {
-          "type": "edge_run",
-          "runUnits": 128,
-          "runCells": 1,
-          "baseUnit": 128
-        },
-        "anchor": [
-          0,
-          0,
-          0
-        ],
-        "articulationPivot": [
-          -0.351562,
-          0,
-          -0.082031
-        ],
-        "articulationType": "hinged",
-        "hingeSide": "left"
-      },
-      {
-        "name": "window_left",
-        "kind": "window_module",
-        "role": "window_left",
-        "directory": "tiles/window_left",
-        "file": "tiles/window_left/window_left.glb",
-        "manifest": "tiles/window_left/window_left.manifest.json",
-        "dimensions": [
-          128,
-          280,
-          32
-        ],
-        "meshEnvelope": [
-          128,
-          280,
-          32
-        ],
-        "anchorClass": "edge_midpoint",
-        "anchorPolicy": "first_logical_unit",
-        "logicalFootprint": {
-          "type": "edge_run",
-          "runUnits": 128,
-          "runCells": 1,
-          "baseUnit": 128
-        },
-        "anchor": [
-          0,
-          0,
-          0
-        ],
-        "articulationPivot": null,
-        "articulationType": null,
-        "hingeSide": null
-      },
-      {
-        "name": "window_middle",
-        "kind": "window_module",
-        "role": "window_middle",
-        "directory": "tiles/window_middle",
-        "file": "tiles/window_middle/window_middle.glb",
-        "manifest": "tiles/window_middle/window_middle.manifest.json",
-        "dimensions": [
-          128,
-          280,
-          32
-        ],
-        "meshEnvelope": [
-          128,
-          280,
-          32
-        ],
-        "anchorClass": "edge_midpoint",
-        "anchorPolicy": "first_logical_unit",
-        "logicalFootprint": {
-          "type": "edge_run",
-          "runUnits": 128,
-          "runCells": 1,
-          "baseUnit": 128
-        },
-        "anchor": [
-          0,
-          0,
-          0
-        ],
-        "articulationPivot": null,
-        "articulationType": "fixed",
-        "hingeSide": "left"
-      },
-      {
-        "name": "window_right",
-        "kind": "window_module",
-        "role": "window_right",
-        "directory": "tiles/window_right",
-        "file": "tiles/window_right/window_right.glb",
-        "manifest": "tiles/window_right/window_right.manifest.json",
-        "dimensions": [
-          128,
-          280,
-          32
-        ],
-        "meshEnvelope": [
-          128,
-          280,
-          32
-        ],
-        "anchorClass": "edge_midpoint",
-        "anchorPolicy": "first_logical_unit",
-        "logicalFootprint": {
-          "type": "edge_run",
-          "runUnits": 128,
-          "runCells": 1,
-          "baseUnit": 128
-        },
-        "anchor": [
-          0,
-          0,
-          0
-        ],
-        "articulationPivot": null,
-        "articulationType": null,
-        "hingeSide": null
-      },
-      {
-        "name": "corner",
-        "kind": "corner",
-        "role": "corner",
-        "directory": "tiles/corner",
-        "file": "tiles/corner/corner.glb",
-        "manifest": "tiles/corner/corner.manifest.json",
-        "dimensions": [
-          128,
-          280,
+          6,
           128
         ],
         "meshEnvelope": [
           128,
-          280,
+          6,
           128
         ],
-        "anchorClass": "vertex",
+        "anchorClass": "cell_center",
         "anchorPolicy": "first_logical_unit",
         "logicalFootprint": {
-          "type": "corner_vertex",
-          "xRunUnits": 128,
-          "zRunUnits": 128,
-          "xRunCells": 1,
-          "zRunCells": 1,
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "concrete_walk",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/concrete_walk",
+        "file": "tiles/concrete_walk/concrete_walk.glb",
+        "manifest": "tiles/concrete_walk/concrete_walk.manifest.json",
+        "dimensions": [
+          128,
+          6,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          6,
+          128
+        ],
+        "anchorClass": "cell_center",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "asphalt",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/asphalt",
+        "file": "tiles/asphalt/asphalt.glb",
+        "manifest": "tiles/asphalt/asphalt.manifest.json",
+        "dimensions": [
+          128,
+          6,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          6,
+          128
+        ],
+        "anchorClass": "cell_center",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "sandstone",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/sandstone",
+        "file": "tiles/sandstone/sandstone.glb",
+        "manifest": "tiles/sandstone/sandstone.manifest.json",
+        "dimensions": [
+          128,
+          6,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          6,
+          128
+        ],
+        "anchorClass": "cell_center",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
           "baseUnit": 128
         },
         "anchor": [

@@ -1,58 +1,21 @@
 {
-  "kitId": "kit_mnlq8j56_4",
+  "kitId": "kit_mnq0im7t_4",
   "name": "desert_sandstone",
-  "generatedAt": "2026-04-05T12:17:44.366Z",
+  "generatedAt": "2026-04-08T12:16:33.681Z",
   "format": "glb",
   "tiles": [
-    {
-      "name": "floor_tile",
-      "kind": "floor_tile",
-      "role": "floor_tile",
-      "directory": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/floor_tile",
-      "files": [
-        {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/floor_tile/floor_tile.manifest.json",
-          "format": "manifest"
-        },
-        {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/floor_tile/floor_tile.glb",
-          "format": "glb"
-        }
-      ],
-      "articulationType": null,
-      "anchor": [
-        0,
-        0,
-        0
-      ],
-      "anchorClass": "cell_center",
-      "anchorPolicy": "first_logical_unit",
-      "logicalFootprint": {
-        "type": "cell",
-        "widthUnits": 128,
-        "depthUnits": 128,
-        "widthCells": 1,
-        "depthCells": 1,
-        "baseUnit": 128
-      },
-      "meshEnvelope": [
-        130,
-        6,
-        130
-      ]
-    },
     {
       "name": "wall",
       "kind": "wall",
       "role": "wall",
-      "directory": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/wall",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/wall",
       "files": [
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/wall/wall.manifest.json",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/wall/wall.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/wall/wall.glb",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/wall/wall.glb",
           "format": "glb"
         }
       ],
@@ -71,7 +34,7 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        130,
+        128,
         280,
         32
       ]
@@ -80,14 +43,14 @@
       "name": "door",
       "kind": "door_wall",
       "role": "door",
-      "directory": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/door",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/door",
       "files": [
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/door/door.manifest.json",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/door/door.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/door/door.glb",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/door/door.glb",
           "format": "glb"
         }
       ],
@@ -106,7 +69,7 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        130,
+        128,
         280,
         32
       ]
@@ -115,14 +78,14 @@
       "name": "window_left",
       "kind": "window_module",
       "role": "window_left",
-      "directory": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_left",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_left",
       "files": [
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.manifest.json",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.glb",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.glb",
           "format": "glb"
         }
       ],
@@ -141,7 +104,7 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        129,
+        128,
         280,
         32
       ]
@@ -150,14 +113,14 @@
       "name": "window_middle",
       "kind": "window_module",
       "role": "window_middle",
-      "directory": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_middle",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_middle",
       "files": [
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.manifest.json",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.glb",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.glb",
           "format": "glb"
         }
       ],
@@ -185,14 +148,14 @@
       "name": "window_right",
       "kind": "window_module",
       "role": "window_right",
-      "directory": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_right",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_right",
       "files": [
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_right/window_right.manifest.json",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_right/window_right.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_right/window_right.glb",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/window_right/window_right.glb",
           "format": "glb"
         }
       ],
@@ -211,7 +174,7 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        129,
+        128,
         280,
         32
       ]
@@ -220,14 +183,14 @@
       "name": "corner",
       "kind": "corner",
       "role": "corner",
-      "directory": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/corner",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/corner",
       "files": [
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/corner/corner.manifest.json",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/corner/corner.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/corner/corner.glb",
+          "path": "/home/ncr/dev/blockstudio/tilesets/desert_sandstone/artifacts/tiles/corner/corner.glb",
           "format": "glb"
         }
       ],
@@ -248,9 +211,9 @@
         "baseUnit": 128
       },
       "meshEnvelope": [
-        129,
+        128,
         280,
-        129
+        128
       ]
     }
   ]
