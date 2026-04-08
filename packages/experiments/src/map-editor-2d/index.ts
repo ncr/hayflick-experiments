@@ -10,12 +10,13 @@ import type { ExperimentModule } from "../runtime/types";
 
 import { clearAll, createUndoManager } from "./editor-state";
 import { GridRenderer } from "./grid-renderer";
-import { SceneBuilder, LAYER_2D_TINT } from "./scene-builder";
+import { SceneBuilder, LAYER_2D_TINT, LAYER_3D_ONLY } from "./scene-builder";
 import { bindPointerTools, ERASER_BRUSH } from "./pointer-tools";
 import type { HoverTarget } from "./grid-renderer";
 import { loadEditorState, debouncedSave } from "./persistence";
 import { loadTilesetAssets } from "./tileset-loader";
 import { createEditorToolbar, TOOLBAR_HEIGHT } from "./editor-toolbar";
+import { createTilePalette, TILE_PALETTE_WIDTH } from "./tile-palette";
 
 const GRID_TILES = 20;
 const CAMERA_DISTANCE = 50;
@@ -47,11 +48,6 @@ const SHARED_VIEW_CONFIG = {
   zoomBurstIdleMs: 300,
   outputOverscanLowPixels: 2
 };
-
-/** Human-friendly label for a tile name */
-function tileLabel(name: string): string {
-  return name.replace(/_/g, " ");
-}
 
 const experiment: ExperimentModule = {
   id: "map-editor-2d",
@@ -88,7 +84,12 @@ const experiment: ExperimentModule = {
     scene.add(sceneBuilder.preview);
 
     // --- Dual-pane layout ---
-    const leftPaneEl = createPaneElement(mount, { left: "0", width: "55%" });
+    // Left pane is anchored to both edges so the tile palette (between the
+    // two panes) gets a fixed-width gutter while the 3D preview keeps its 45%.
+    const leftPaneEl = createPaneElement(mount, {
+      left: "0",
+      right: `calc(45% + ${TILE_PALETTE_WIDTH}px)`
+    });
     const rightPaneEl = createPaneElement(mount, { right: "0", width: "45%" });
 
     const stage = new SharedScissorStage({
@@ -104,7 +105,7 @@ const experiment: ExperimentModule = {
     // Left pane: top-down 2D editor
     const leftCore = new PixelPerfectViewportCore({
       ...SHARED_VIEW_CONFIG,
-      width: leftPaneEl.clientWidth || width * 0.55,
+      width: leftPaneEl.clientWidth || Math.max(1, width * 0.55 - TILE_PALETTE_WIDTH),
       height: leftPaneEl.clientHeight || height,
       scene,
       cameraPitch: "top-down",
@@ -138,6 +139,7 @@ const experiment: ExperimentModule = {
       devicePixelRatio: stage.getDevicePixelRatio(),
       lowTargetSamples: 0
     });
+    rightCore.camera.layers.enable(LAYER_3D_ONLY);
 
     const rightPane = new PixelPerfectScissorPane({
       id: "preview-3d",
@@ -229,20 +231,8 @@ const experiment: ExperimentModule = {
       }
     });
 
-    // --- Toolbar ---
+    // --- Toolbar (commands only — brushes live in the side palette) ---
     const toolbar = createEditorToolbar({ mount, focusTarget: stage.canvas });
-
-    // Active brush tracking
-    let activeBrush = pointerBinding.toolState.brush;
-    const allBrushButtons = new Map<string, HTMLButtonElement>();
-
-    function setActiveBrush(brush: string): void {
-      activeBrush = brush;
-      pointerBinding.toolState.brush = brush;
-      for (const [key, btn] of allBrushButtons) {
-        toolbar.setButtonActive(btn, key === brush);
-      }
-    }
 
     // Undo / Redo / Clear All group
     const actionGroup = toolbar.createGroup("");
@@ -254,25 +244,38 @@ const experiment: ExperimentModule = {
     });
     actionGroup.append(undoBtn, toolbar.createSeparator(), redoBtn, toolbar.createSeparator(), clearAllBtn);
 
-    // Tileset tile brushes (grouped by tileset name)
-    const tilesetGroup = toolbar.createGroup(tileLabel(assets.manifest.name));
-    for (const [name] of assets.tiles) {
-      const btn = toolbar.createButton(tileLabel(name), () => setActiveBrush(name));
-      allBrushButtons.set(name, btn);
-      tilesetGroup.append(btn);
-    }
+    // Reload kits — fetches manifests + GLBs again. Brutal page reload
+    // (kit data is loaded once at init); structures survive via localStorage
+    // and the URL hash brings us back to this experiment.
+    const fileGroup = toolbar.createGroup("");
+    const reloadBtn = toolbar.createButton("Reload Kits", () => {
+      location.reload();
+    });
+    fileGroup.append(reloadBtn);
 
-    // Eraser
-    const eraserGroup = toolbar.createGroup("");
-    const eraserBtn = toolbar.createButton("Eraser", () => setActiveBrush(ERASER_BRUSH));
-    allBrushButtons.set(ERASER_BRUSH, eraserBtn);
-    eraserGroup.append(eraserBtn);
+    // --- Tile palette (right of the 2D pane) ---
+    const palette = createTilePalette({
+      mount,
+      tilesets: assets.tilesets,
+      topOffset: TOOLBAR_HEIGHT,
+      focusTarget: stage.canvas,
+      onSelect: (key) => setActiveBrush(key)
+    });
+
+    // Active brush tracking
+    let activeBrush = pointerBinding.toolState.brush;
+
+    function setActiveBrush(brush: string): void {
+      activeBrush = brush;
+      pointerBinding.toolState.brush = brush;
+      palette.setActiveBrush(brush);
+    }
 
     // Set initial active brush
     setActiveBrush(activeBrush);
 
-    // Keyboard shortcuts
-    const orderedBrushKeys = [...allBrushButtons.keys()];
+    // Keyboard shortcuts (Digit1..Digit9 → palette brushes in display order)
+    const orderedBrushKeys = palette.orderedBrushKeys;
 
     const onKeyDown = (event: KeyboardEvent): void => {
       const el = event.target as HTMLElement | null;
@@ -342,7 +345,6 @@ const experiment: ExperimentModule = {
       const dt = Math.min((now - lastTime) / 1000, 0.1);
       lastTime = now;
 
-      gridRenderer.update(state);
       sceneBuilder.update(state);
 
       toolbar.setStats(
@@ -367,6 +369,7 @@ const experiment: ExperimentModule = {
       stage.canvas.removeEventListener("pointermove", onHoverFocus);
       pointerBinding.unbind();
       unbindStageInput();
+      palette.destroy();
       toolbar.destroy();
       gridRenderer.dispose();
       sceneBuilder.dispose();

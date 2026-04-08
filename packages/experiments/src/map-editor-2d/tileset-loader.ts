@@ -37,11 +37,19 @@ export type LoadedTile = {
   template: THREE.Group;
 };
 
-/** All loaded tiles from the kit, keyed by tile name */
-export type TilesetAssets = {
+/** A single loaded kit: its manifest plus tiles keyed by tile name */
+export type LoadedTileset = {
   manifest: TilesManifest;
   tiles: Map<string, LoadedTile>;
-  /** Convenience: tiles grouped by kind */
+};
+
+/** All loaded tiles, merged across one or more kits */
+export type TilesetAssets = {
+  /** Each loaded kit in load order — used by the toolbar to render one group per kit */
+  tilesets: LoadedTileset[];
+  /** Flat lookup across every kit, keyed by tile name */
+  tiles: Map<string, LoadedTile>;
+  /** Convenience: tiles grouped by kind, merged across kits */
   byKind: Map<string, LoadedTile[]>;
 };
 
@@ -49,8 +57,8 @@ export type TilesetAssets = {
 // Internals
 // ---------------------------------------------------------------------------
 
-const TILESET_BASE = "tilesets/desert_sandstone";
-const TILES_DIR = `${TILESET_BASE}/tiles`;
+/** Kits to load, in display order. Each must exist under assets/tilesets/<id>/tiles/ */
+const KIT_IDS: ReadonlyArray<string> = ["desert_sandstone", "ground_tiles"];
 
 const gltfLoader = new GLTFLoader();
 
@@ -95,15 +103,15 @@ function fixTextureFiltering(group: THREE.Group): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function loadTilesetAssets(): Promise<TilesetAssets> {
-  const manifest = await fetchJson<TilesManifest>(`${TILES_DIR}/tiles.manifest.json`);
+async function loadOneKit(kitId: string): Promise<LoadedTileset> {
+  const tilesDir = `tilesets/${kitId}/tiles`;
+  const manifest = await fetchJson<TilesManifest>(`${tilesDir}/tiles.manifest.json`);
 
   console.log(`[tileset] ${manifest.name}: ${manifest.tiles.length} tiles`);
 
-  // Load all tile GLBs in parallel
   const loaded = await Promise.all(
     manifest.tiles.map(async (entry) => {
-      const group = await loadGlb(`${TILES_DIR}/${entry.name}/${entry.name}.glb`);
+      const group = await loadGlb(`${tilesDir}/${entry.name}/${entry.name}.glb`);
       group.scale.setScalar(LEVEL_EDITOR_WORLD_UNIT);
       fixTextureFiltering(group);
       return { entry, template: group } satisfies LoadedTile;
@@ -111,15 +119,39 @@ export async function loadTilesetAssets(): Promise<TilesetAssets> {
   );
 
   const tiles = new Map<string, LoadedTile>();
-  const byKind = new Map<string, LoadedTile[]>();
   for (const tile of loaded) {
     tiles.set(tile.entry.name, tile);
-    const kindList = byKind.get(tile.entry.kind) ?? [];
-    kindList.push(tile);
-    byKind.set(tile.entry.kind, kindList);
+  }
+
+  return { manifest, tiles };
+}
+
+export async function loadTilesetAssets(): Promise<TilesetAssets> {
+  // Load all configured kits in parallel
+  const tilesets = await Promise.all(KIT_IDS.map(loadOneKit));
+
+  // Merge into a flat lookup so callers that resolve by tile name (scene
+  // builder, pointer tools, persisted state) don't need to know which kit a
+  // tile came from. Tile-name collisions across kits would silently overwrite
+  // — fine for now since current kits don't overlap, revisit if it changes.
+  const tiles = new Map<string, LoadedTile>();
+  const byKind = new Map<string, LoadedTile[]>();
+  for (const kit of tilesets) {
+    for (const tile of kit.tiles.values()) {
+      if (tiles.has(tile.entry.name)) {
+        console.warn(
+          `[tileset] tile-name collision: "${tile.entry.name}" appears in multiple kits; ` +
+          `the later kit (${kit.manifest.name}) wins`
+        );
+      }
+      tiles.set(tile.entry.name, tile);
+      const kindList = byKind.get(tile.entry.kind) ?? [];
+      kindList.push(tile);
+      byKind.set(tile.entry.kind, kindList);
+    }
   }
 
   console.log(`[tileset] kinds: ${[...byKind.keys()].join(", ")}`);
 
-  return { manifest, tiles, byKind };
+  return { tilesets, tiles, byKind };
 }

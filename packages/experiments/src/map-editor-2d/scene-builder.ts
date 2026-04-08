@@ -2,9 +2,11 @@ import * as THREE from "three";
 import type { GridConfig, MapEditorState, PlacedEdge, PlacedCell, PlacedVertex } from "./editor-state";
 import type { TilesetAssets } from "./tileset-loader";
 
-// Layer 0 = default: grid, terrain, 3D originals (both cameras)
-// Layer 2 = 2D tinted clones (only 2D camera sees these)
+// Layer 0 = default: placed structures, both cameras see them
+// Layer 2 = 2D-only overlays (tinted clones, grid, hover, 2D ghost preview)
+// Layer 3 = 3D-only overlays (textured semi-transparent ghost preview)
 export const LAYER_2D_TINT = 2;
+export const LAYER_3D_ONLY = 3;
 
 const TINT_COLOR_BY_KIND: Record<string, number> = {
   wall: 0xd0d8e0,
@@ -18,10 +20,18 @@ const DEFAULT_TINT = 0xaabbcc;
 
 export class SceneBuilder {
   readonly root = new THREE.Group();
-  /** Ghost preview group — sits on layer 2 so only 2D camera sees it */
+  /**
+   * Ghost preview group — holds two clones per hover:
+   *   - a flat yellow ghost on layer 2 (visible only in 2D pane)
+   *   - a textured semi-transparent ghost on layer 3 (visible only in 3D pane)
+   */
   readonly preview = new THREE.Group();
   private readonly tintMaterials = new Map<string, THREE.MeshBasicMaterial>();
   private ghostMaterial: THREE.MeshBasicMaterial;
+  /** Cached "what does the 3D ghost of tile X look like" templates. */
+  private readonly ghost3DTemplates = new Map<string, THREE.Group>();
+  /** Cloned ghost materials we own and must dispose. */
+  private readonly ghost3DMaterials: THREE.Material[] = [];
   private lastRevision = -1;
   private lastPreviewKey = "";
 
@@ -60,12 +70,57 @@ export class SceneBuilder {
     const loaded = this.assets.tiles.get(tileName);
     if (!loaded) return;
 
-    const ghost = loaded.template.clone();
-    ghost.position.set(worldX, 0, worldZ);
-    ghost.rotation.y = yaw;
-    replaceMaterialsRecursive(ghost, this.ghostMaterial);
-    setLayerRecursive(ghost, LAYER_2D_TINT);
-    this.preview.add(ghost);
+    // 2D ghost — flat yellow overlay on layer 2.
+    const ghost2D = loaded.template.clone();
+    ghost2D.position.set(worldX, 0, worldZ);
+    ghost2D.rotation.y = yaw;
+    replaceMaterialsRecursive(ghost2D, this.ghostMaterial);
+    setLayerRecursive(ghost2D, LAYER_2D_TINT);
+    this.preview.add(ghost2D);
+
+    // 3D ghost — real textures, semi-transparent, on layer 3.
+    const ghost3DTemplate = this.getGhost3DTemplate(tileName);
+    if (ghost3DTemplate) {
+      const ghost3D = ghost3DTemplate.clone();
+      ghost3D.position.set(worldX, 0, worldZ);
+      ghost3D.rotation.y = yaw;
+      // Object3D.clone() copies layers per node, but be defensive against
+      // any descendants that might somehow drop their layer assignment.
+      setLayerRecursive(ghost3D, LAYER_3D_ONLY);
+      this.preview.add(ghost3D);
+    }
+  }
+
+  /**
+   * Lazily build a "3D ghost" template for a tile: clones the loaded mesh,
+   * clones each material so we can mark it transparent without disturbing
+   * the placed (opaque) instances, and stamps the whole subtree onto
+   * LAYER_3D_ONLY so the 2D camera ignores it.
+   */
+  private getGhost3DTemplate(tileName: string): THREE.Group | null {
+    const cached = this.ghost3DTemplates.get(tileName);
+    if (cached) return cached;
+    const loaded = this.assets.tiles.get(tileName);
+    if (!loaded) return null;
+
+    const template = loaded.template.clone();
+    const cloneAsGhost = (m: THREE.Material): THREE.Material => {
+      const c = m.clone();
+      c.transparent = true;
+      c.opacity = 0.5;
+      c.depthWrite = false;
+      this.ghost3DMaterials.push(c);
+      return c;
+    };
+    template.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      obj.material = Array.isArray(obj.material)
+        ? obj.material.map(cloneAsGhost)
+        : cloneAsGhost(obj.material);
+    });
+    setLayerRecursive(template, LAYER_3D_ONLY);
+    this.ghost3DTemplates.set(tileName, template);
+    return template;
   }
 
   clearPreview(): void {
@@ -77,6 +132,9 @@ export class SceneBuilder {
   dispose(): void {
     this.ghostMaterial.dispose();
     for (const mat of this.tintMaterials.values()) mat.dispose();
+    for (const mat of this.ghost3DMaterials) mat.dispose();
+    this.ghost3DMaterials.length = 0;
+    this.ghost3DTemplates.clear();
     clearGroup(this.root);
     clearGroup(this.preview);
   }

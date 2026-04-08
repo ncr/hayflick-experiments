@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import type { GridConfig, MapEditorState } from "./editor-state";
 import {
-  removeTerrainCell,
   setEdgeStructure,
   removeEdgeStructure,
   setCellStructure,
@@ -101,7 +100,6 @@ function applyBrush(
     const cell = worldToCell(worldX, worldZ, state.grid);
     if (cell) {
       removeCellStructure(state, cell.x, cell.z);
-      removeTerrainCell(state, cell.x, cell.z);
     }
     const vtx = pickNearestVertex(worldX, worldZ, state.grid);
     if (vtx) removeVertexStructure(state, vtx.x, vtx.z);

@@ -1,17 +1,9 @@
 import * as THREE from "three";
-import type { LevelBuilderGroundBase } from "@common/level-editor";
-import type { GridConfig, MapEditorState } from "./editor-state";
+import type { GridConfig } from "./editor-state";
+import { LAYER_2D_TINT } from "./scene-builder";
 
-const GROUND_COLORS: Record<LevelBuilderGroundBase, number> = {
-  grass: 0x4a7a3a,
-  floor: 0x9e9484,
-  road: 0x4a5560,
-  sidewalk: 0x9ea3a8,
-  building: 0x8090a0
-};
-
-const GRID_COLOR = 0x445566;
-const DEFAULT_GROUND_ALPHA = 0.35;
+const GRID_COLOR = 0x33ff66;
+const GRID_OPACITY = 0.78;
 const STRUCTURE_THICKNESS_FACTOR = 0.14;
 const HOVER_CELL_COLOR = 0xffffff;
 const HOVER_EDGE_COLOR = 0xffcc44;
@@ -27,40 +19,20 @@ export class GridRenderer {
   readonly root = new THREE.Group();
 
   private readonly gridLines = new THREE.Group();
-  private readonly terrainGroup = new THREE.Group();
   private readonly hoverGroup = new THREE.Group();
-  private readonly defaultGroundMesh: THREE.Mesh;
 
-  private lastRevision = -1;
   private lastHover: HoverTarget = null;
 
-  private cellGeometry: THREE.PlaneGeometry | null = null;
-  private cellMaterials = new Map<string, THREE.MeshBasicMaterial>();
-  private hoverCellMaterial: THREE.MeshBasicMaterial;
-  private hoverEdgeMaterial: THREE.MeshBasicMaterial;
+  private readonly hoverCellGeometry: THREE.PlaneGeometry;
+  private readonly hoverCellMaterial: THREE.MeshBasicMaterial;
+  private readonly hoverEdgeMaterial: THREE.MeshBasicMaterial;
 
   constructor(private grid: GridConfig) {
     this.root.add(this.gridLines);
-    this.root.add(this.terrainGroup);
     this.root.add(this.hoverGroup);
 
-    // Default ground plane covering the whole grid
-    const fullSize = grid.tiles * grid.tileSize;
-    const groundGeo = new THREE.PlaneGeometry(fullSize, fullSize);
-    groundGeo.rotateX(-Math.PI / 2);
-    const groundMat = new THREE.MeshBasicMaterial({
-      color: GROUND_COLORS.grass,
-      transparent: true,
-      opacity: DEFAULT_GROUND_ALPHA,
-      depthWrite: false
-    });
-    this.defaultGroundMesh = new THREE.Mesh(groundGeo, groundMat);
-    this.defaultGroundMesh.position.set(
-      grid.origin + fullSize / 2,
-      0,
-      grid.origin + fullSize / 2
-    );
-    this.root.add(this.defaultGroundMesh);
+    this.hoverCellGeometry = new THREE.PlaneGeometry(grid.tileSize, grid.tileSize);
+    this.hoverCellGeometry.rotateX(-Math.PI / 2);
 
     this.hoverCellMaterial = new THREE.MeshBasicMaterial({
       color: HOVER_CELL_COLOR,
@@ -78,17 +50,6 @@ export class GridRenderer {
     this.buildGridLines();
   }
 
-  update(state: MapEditorState): void {
-    if (state.revision === this.lastRevision) return;
-    this.lastRevision = state.revision;
-
-    // Update default ground color
-    const groundMat = this.defaultGroundMesh.material as THREE.MeshBasicMaterial;
-    groundMat.color.setHex(GROUND_COLORS[state.defaultGround] ?? GROUND_COLORS.grass);
-
-    this.rebuildTerrain(state);
-  }
-
   setHover(target: HoverTarget): void {
     if (hoverEqual(this.lastHover, target)) return;
     this.lastHover = target;
@@ -96,12 +57,9 @@ export class GridRenderer {
   }
 
   dispose(): void {
-    this.cellGeometry?.dispose();
-    for (const mat of this.cellMaterials.values()) mat.dispose();
+    this.hoverCellGeometry.dispose();
     this.hoverCellMaterial.dispose();
     this.hoverEdgeMaterial.dispose();
-    (this.defaultGroundMesh.geometry as THREE.PlaneGeometry).dispose();
-    (this.defaultGroundMesh.material as THREE.MeshBasicMaterial).dispose();
   }
 
   private buildGridLines(): void {
@@ -119,30 +77,16 @@ export class GridRenderer {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
-    const material = new THREE.LineBasicMaterial({ color: GRID_COLOR, transparent: true, opacity: 0.5 });
+    const material = new THREE.LineBasicMaterial({
+      color: GRID_COLOR,
+      transparent: true,
+      opacity: GRID_OPACITY
+    });
     const lines = new THREE.LineSegments(geometry, material);
     lines.position.y = 0.0005;
+    // Grid is an editor overlay — only the 2D pane should see it.
+    lines.layers.set(LAYER_2D_TINT);
     this.gridLines.add(lines);
-  }
-
-  private rebuildTerrain(state: MapEditorState): void {
-    disposeChildren(this.terrainGroup);
-
-    if (!this.cellGeometry) {
-      this.cellGeometry = new THREE.PlaneGeometry(state.grid.tileSize, state.grid.tileSize);
-      this.cellGeometry.rotateX(-Math.PI / 2);
-    }
-
-    for (const override of state.terrainOverrides.values()) {
-      const mat = this.getCellMaterial(override.base);
-      const mesh = new THREE.Mesh(this.cellGeometry, mat);
-      mesh.position.set(
-        state.grid.origin + (override.x + 0.5) * state.grid.tileSize,
-        0.001,
-        state.grid.origin + (override.z + 0.5) * state.grid.tileSize
-      );
-      this.terrainGroup.add(mesh);
-    }
   }
 
   private rebuildHover(): void {
@@ -151,16 +95,13 @@ export class GridRenderer {
     if (!target) return;
 
     if (target.kind === "cell") {
-      if (!this.cellGeometry) {
-        this.cellGeometry = new THREE.PlaneGeometry(this.grid.tileSize, this.grid.tileSize);
-        this.cellGeometry.rotateX(-Math.PI / 2);
-      }
-      const mesh = new THREE.Mesh(this.cellGeometry, this.hoverCellMaterial);
+      const mesh = new THREE.Mesh(this.hoverCellGeometry, this.hoverCellMaterial);
       mesh.position.set(
         this.grid.origin + (target.x + 0.5) * this.grid.tileSize,
         0.003,
         this.grid.origin + (target.z + 0.5) * this.grid.tileSize
       );
+      mesh.layers.set(LAYER_2D_TINT);
       this.hoverGroup.add(mesh);
     } else if (target.kind === "vertex") {
       const size = this.grid.tileSize * 0.2;
@@ -172,6 +113,7 @@ export class GridRenderer {
         0.003,
         this.grid.origin + target.z * this.grid.tileSize
       );
+      mesh.layers.set(LAYER_2D_TINT);
       this.hoverGroup.add(mesh);
     } else {
       const ax = this.grid.origin + target.ax * this.grid.tileSize;
@@ -193,22 +135,10 @@ export class GridRenderer {
       if (isVertical) {
         mesh.rotation.y = Math.PI / 2;
       }
+      mesh.layers.set(LAYER_2D_TINT);
       this.hoverGroup.add(mesh);
     }
   }
-
-  private getCellMaterial(base: LevelBuilderGroundBase): THREE.MeshBasicMaterial {
-    let mat = this.cellMaterials.get(base);
-    if (!mat) {
-      mat = new THREE.MeshBasicMaterial({
-        color: GROUND_COLORS[base] ?? 0xff00ff,
-        depthWrite: false
-      });
-      this.cellMaterials.set(base, mat);
-    }
-    return mat;
-  }
-
 }
 
 function disposeChildren(group: THREE.Group): void {

@@ -1,4 +1,3 @@
-import { isLevelBuilderGroundBase } from "@common/level-editor";
 import {
   createDefaultState,
   serializeState,
@@ -63,21 +62,6 @@ function validateSerialized(raw: Record<string, unknown>): SerializedState | nul
   const origin = asNumber(grid.origin);
   if (!tiles || !tileSize || origin === null) return null;
 
-  const defaultGround = raw.defaultGround;
-  if (typeof defaultGround !== "string" || !isLevelBuilderGroundBase(defaultGround)) return null;
-
-  const overridesRaw = Array.isArray(raw.terrainOverrides) ? raw.terrainOverrides : [];
-  const terrainOverrides = [];
-  for (const entry of overridesRaw) {
-    if (!isRecord(entry)) continue;
-    const x = asNumber(entry.x);
-    const z = asNumber(entry.z);
-    const base = entry.base;
-    if (x === null || z === null || typeof base !== "string") continue;
-    if (!isLevelBuilderGroundBase(base)) continue;
-    terrainOverrides.push({ x, z, base });
-  }
-
   const edgesRaw = Array.isArray(raw.edgeStructures) ? raw.edgeStructures : [];
   const edgeStructures = [];
   for (const entry of edgesRaw) {
@@ -116,8 +100,6 @@ function validateSerialized(raw: Record<string, unknown>): SerializedState | nul
 
   return {
     grid: { tiles, tileSize, origin },
-    defaultGround,
-    terrainOverrides,
     edgeStructures,
     cellStructures,
     vertexStructures
