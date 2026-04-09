@@ -154,6 +154,108 @@ describe("@common/input iso view bindings", () => {
 
     detach();
   });
+
+  it("accumulates trackpad zoom deltas instead of firing per event", () => {
+    const pointerTarget = new FakeTarget();
+    const keyboardTarget = new FakeTarget();
+    const view = {
+      canvas: pointerTarget as unknown as HTMLCanvasElement,
+      beginPanDrag: vi.fn(() => true),
+      updatePanDrag: vi.fn(() => true),
+      endPanDrag: vi.fn(() => true),
+      panByCss: vi.fn(),
+      zoomStepAtClient: vi.fn(),
+      rotateQuarterTurns: vi.fn(),
+      toggleZoomMode: vi.fn()
+    };
+
+    const detach = bindPixelPerfectViewInput({
+      view: view as unknown as any,
+      pointerTarget: pointerTarget as unknown as HTMLElement,
+      keyboardTarget: keyboardTarget as unknown as Window,
+      enableTouch: false
+    });
+
+    // Fire a small trackpad zoom event (ctrlKey=true, deltaMode=PIXEL, no deltaX)
+    // Should NOT fire immediately — below accumulator threshold
+    pointerTarget.emit(
+      "wheel",
+      makePreventable({
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 5,
+        shiftKey: false,
+        ctrlKey: true,
+        metaKey: false,
+        clientX: 80,
+        clientY: 90
+      })
+    );
+    expect(view.zoomStepAtClient).not.toHaveBeenCalled();
+
+    // Accumulate more until threshold (30) is reached
+    for (let i = 0; i < 6; i += 1) {
+      pointerTarget.emit(
+        "wheel",
+        makePreventable({
+          deltaMode: 0,
+          deltaX: 0,
+          deltaY: 5,
+          shiftKey: false,
+          ctrlKey: true,
+          metaKey: false,
+          clientX: 80,
+          clientY: 90
+        })
+      );
+    }
+    // Total accumulated: 35 — should have fired once
+    expect(view.zoomStepAtClient).toHaveBeenCalledTimes(1);
+    expect(view.zoomStepAtClient).toHaveBeenCalledWith(-1, 80, 90, expect.any(Number));
+
+    detach();
+  });
+
+  it("fires mouse wheel zoom immediately without accumulation", () => {
+    const pointerTarget = new FakeTarget();
+    const keyboardTarget = new FakeTarget();
+    const view = {
+      canvas: pointerTarget as unknown as HTMLCanvasElement,
+      beginPanDrag: vi.fn(() => true),
+      updatePanDrag: vi.fn(() => true),
+      endPanDrag: vi.fn(() => true),
+      panByCss: vi.fn(),
+      zoomStepAtClient: vi.fn(),
+      rotateQuarterTurns: vi.fn(),
+      toggleZoomMode: vi.fn()
+    };
+
+    const detach = bindPixelPerfectViewInput({
+      view: view as unknown as any,
+      pointerTarget: pointerTarget as unknown as HTMLElement,
+      keyboardTarget: keyboardTarget as unknown as Window,
+      enableTouch: false
+    });
+
+    // Mouse wheel: deltaMode=LINE, should fire immediately
+    pointerTarget.emit(
+      "wheel",
+      makePreventable({
+        deltaMode: 1,
+        deltaX: 0,
+        deltaY: 3,
+        shiftKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        clientX: 40,
+        clientY: 50
+      })
+    );
+    expect(view.zoomStepAtClient).toHaveBeenCalledTimes(1);
+    expect(view.zoomStepAtClient).toHaveBeenCalledWith(-1, 40, 50, expect.any(Number));
+
+    detach();
+  });
 });
 
 describe("@common/input shared scissor stage bindings", () => {

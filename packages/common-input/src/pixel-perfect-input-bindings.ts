@@ -53,6 +53,26 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return !!el.isContentEditable;
 }
 
+/** Accumulated device-pixel delta required per zoom step for trackpad pinch. */
+const TRACKPAD_ZOOM_STEP_THRESHOLD = 30;
+/** Reset trackpad accumulator after this many ms of inactivity. */
+const TRACKPAD_ZOOM_IDLE_RESET_MS = 300;
+/** Log2 pinch ratio required per zoom step for touch gestures (~32% size change). */
+const TOUCH_PINCH_LOG2_THRESHOLD = 0.4;
+
+function drainZoomAccumulator(
+  accum: number,
+  threshold: number,
+  fire: (direction: -1 | 1) => void
+): number {
+  while (Math.abs(accum) >= threshold) {
+    const dir: -1 | 1 = accum > 0 ? -1 : 1;
+    fire(dir);
+    accum += dir * threshold;
+  }
+  return accum;
+}
+
 export function bindPixelPerfectViewInput(
   options: PixelPerfectViewInputBindingOptions
 ): () => void {
@@ -63,6 +83,9 @@ export function bindPixelPerfectViewInput(
   const enableTouch = options.enableTouch ?? true;
 
   let dragPointerId: number | null = null;
+  let wheelZoomAccum = 0;
+  let wheelZoomLastMs = 0;
+  let pinchLog2Accum = 0;
 
   const onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 1) return;
@@ -121,8 +144,27 @@ export function bindPixelPerfectViewInput(
     if (event.deltaY === 0) {
       return;
     }
-    const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
-    view.zoomStepAtClient(direction, event.clientX, event.clientY, performance.now());
+
+    if (!trackpad) {
+      // Discrete mouse wheel: one step per notch
+      const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
+      view.zoomStepAtClient(direction, event.clientX, event.clientY, performance.now());
+    } else {
+      // Trackpad pinch: accumulate deltas so zoom doesn't race
+      const now = performance.now();
+      if (now - wheelZoomLastMs > TRACKPAD_ZOOM_IDLE_RESET_MS) {
+        wheelZoomAccum = 0;
+      }
+      wheelZoomLastMs = now;
+      wheelZoomAccum += event.deltaY * scale;
+      const cx = event.clientX;
+      const cy = event.clientY;
+      wheelZoomAccum = drainZoomAccumulator(
+        wheelZoomAccum,
+        TRACKPAD_ZOOM_STEP_THRESHOLD,
+        (dir) => view.zoomStepAtClient(dir, cx, cy, now)
+      );
+    }
     event.preventDefault();
   };
 
@@ -164,10 +206,22 @@ export function bindPixelPerfectViewInput(
     ? attachTouchGestures(pointerTarget, {
         onPan: (dx, dy) => view.panByCss(dx, dy),
         onPinch: (scaleDelta, centerX, centerY) => {
-          if (Math.abs(scaleDelta - 1) < 0.02) {
+          if (Math.abs(scaleDelta - 1) < 0.005) {
             return;
           }
-          view.zoomStepAtClient(scaleDelta > 1 ? 1 : -1, centerX, centerY, performance.now());
+          pinchLog2Accum += Math.log2(scaleDelta);
+          const now = performance.now();
+          while (pinchLog2Accum >= TOUCH_PINCH_LOG2_THRESHOLD) {
+            view.zoomStepAtClient(1, centerX, centerY, now);
+            pinchLog2Accum -= TOUCH_PINCH_LOG2_THRESHOLD;
+          }
+          while (pinchLog2Accum <= -TOUCH_PINCH_LOG2_THRESHOLD) {
+            view.zoomStepAtClient(-1, centerX, centerY, now);
+            pinchLog2Accum += TOUCH_PINCH_LOG2_THRESHOLD;
+          }
+        },
+        onPinchEnd: () => {
+          pinchLog2Accum = 0;
         },
         onRotate: (direction) => view.rotateQuarterTurns(direction)
       })
@@ -195,6 +249,8 @@ export function bindSharedScissorStageInput(
   const pointerTarget = options.pointerTarget ?? stage.canvas;
   const keyboardTarget = options.keyboardTarget ?? window;
   const enableKeyboard = options.enableKeyboard ?? true;
+  let stageWheelZoomAccum = 0;
+  let stageWheelZoomLastMs = 0;
   let drag:
     | {
         pointerId: number;
@@ -312,8 +368,24 @@ export function bindSharedScissorStageInput(
       return;
     }
 
-    const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
-    pane.stepCameraZoomAtLocalCss(direction, hit.localX, hit.localY, performance.now());
+    if (!trackpad) {
+      const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
+      pane.stepCameraZoomAtLocalCss(direction, hit.localX, hit.localY, performance.now());
+    } else {
+      const now = performance.now();
+      if (now - stageWheelZoomLastMs > TRACKPAD_ZOOM_IDLE_RESET_MS) {
+        stageWheelZoomAccum = 0;
+      }
+      stageWheelZoomLastMs = now;
+      stageWheelZoomAccum += event.deltaY * scale;
+      const lx = hit.localX;
+      const ly = hit.localY;
+      stageWheelZoomAccum = drainZoomAccumulator(
+        stageWheelZoomAccum,
+        TRACKPAD_ZOOM_STEP_THRESHOLD,
+        (dir) => pane.stepCameraZoomAtLocalCss(dir, lx, ly, now)
+      );
+    }
     event.preventDefault();
   };
 

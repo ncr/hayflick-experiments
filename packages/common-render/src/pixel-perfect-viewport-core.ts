@@ -126,7 +126,7 @@ export class PixelPerfectViewportCore {
 
     this.lowTarget = new THREE.WebGLRenderTarget(1, 1, {
       minFilter: THREE.NearestFilter,
-      magFilter: THREE.NearestFilter,
+      magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
       stencilBuffer: false,
       samples: config.lowTargetSamples ?? 4
@@ -142,7 +142,8 @@ export class PixelPerfectViewportCore {
         uContentOffset: { value: new THREE.Vector2(0, 0) },
         uZoom: { value: 1 },
         uSourceSize: { value: new THREE.Vector2(1, 1) },
-        uZoomPivot: { value: new THREE.Vector2(0.5, 0.5) }
+        uZoomPivot: { value: new THREE.Vector2(0.5, 0.5) },
+        uEffectiveScale: { value: 1 }
       },
       vertexShader: `
         varying vec2 vUv;
@@ -159,14 +160,21 @@ export class PixelPerfectViewportCore {
         uniform float uZoom;
         uniform vec2 uSourceSize;
         uniform vec2 uZoomPivot;
+        uniform float uEffectiveScale;
         varying vec2 vUv;
         void main() {
           vec2 sampleUv = (vUv - uContentOffset) / uContentScale;
           sampleUv = (sampleUv - uZoomPivot) / max(0.0001, uZoom) + uZoomPivot;
-          vec2 texel = vec2(1.0) / max(uSourceSize, vec2(1.0));
-          sampleUv = clamp(sampleUv, vec2(0.0), vec2(1.0) - texel * 0.5);
-          sampleUv = (floor(sampleUv * uSourceSize) + vec2(0.5)) * texel;
-          gl_FragColor = texture2D(uSource, sampleUv);
+          sampleUv = clamp(sampleUv, vec2(0.0), vec2(1.0));
+          // Smooth pixel-perfect sampling: crisp texel interiors with
+          // 1-device-pixel-wide transitions at texel boundaries.
+          // Eliminates shimmer when the viewport shifts by sub-texel amounts
+          // while preserving sharp upscaled pixels everywhere else.
+          vec2 tc = sampleUv * uSourceSize;
+          vec2 fl = floor(tc - 0.5) + 0.5;
+          vec2 f = tc - fl;
+          f = clamp((f - 0.5) * uEffectiveScale + 0.5, 0.0, 1.0);
+          gl_FragColor = texture2D(uSource, (fl + f) / uSourceSize);
         }
       `,
       depthTest: false
@@ -277,7 +285,7 @@ export class PixelPerfectViewportCore {
       this.config.zoomMin,
       this.config.zoomMax
     );
-    this.cameraZoomTarget = nextZoomTarget;
+    this.cameraZoomTarget = this.quantizeZoom(nextZoomTarget);
     this.cameraZoomCurrent = nextZoomCurrent;
     this.cameraZoomStable = nextZoomCurrent;
     this.zoomAnimationActive =
@@ -308,6 +316,8 @@ export class PixelPerfectViewportCore {
 
     this.updateCameraProjection();
     this.outputMaterial.uniforms.uZoom.value = Math.max(1, this.cameraZoomStable);
+    this.outputMaterial.uniforms.uEffectiveScale.value =
+      this.baseRenderScale * Math.max(1, this.cameraZoomStable);
     (this.outputMaterial.uniforms.uZoomPivot.value as THREE.Vector2).set(
       this.zoomPivotScene.x,
       1 - this.zoomPivotScene.y
@@ -384,14 +394,16 @@ export class PixelPerfectViewportCore {
       this.config.zoomMin,
       this.config.zoomMax
     );
-    this.cameraZoomTarget = nextZoom;
-    this.cameraZoomCurrent = nextZoom;
-    this.cameraZoomStable = nextZoom;
+    this.cameraZoomTarget = this.quantizeZoom(nextZoom);
+    this.cameraZoomCurrent = this.cameraZoomTarget;
+    this.cameraZoomStable = this.cameraZoomTarget;
     this.zoomAnimationActive = false;
     this.zoomBurstActive = false;
 
     this.updateCameraProjection();
     this.outputMaterial.uniforms.uZoom.value = Math.max(1, this.cameraZoomStable);
+    this.outputMaterial.uniforms.uEffectiveScale.value =
+      this.baseRenderScale * Math.max(1, this.cameraZoomStable);
     this.ensureScreenBasis();
   }
 
@@ -411,11 +423,12 @@ export class PixelPerfectViewportCore {
   }
 
   stepCameraZoom(direction: -1 | 1): void {
-    const nextZoom = THREE.MathUtils.clamp(
+    const raw = THREE.MathUtils.clamp(
       this.cameraZoomTarget + direction * this.config.zoomStep,
       this.config.zoomMin,
       this.config.zoomMax
     );
+    const nextZoom = this.quantizeZoom(raw);
     if (Math.abs(nextZoom - this.cameraZoomTarget) <= 1e-6) {
       return;
     }
@@ -831,6 +844,8 @@ export class PixelPerfectViewportCore {
       this.zoomPivotScene.x,
       1 - this.zoomPivotScene.y
     );
+    this.outputMaterial.uniforms.uEffectiveScale.value =
+      this.baseRenderScale * Math.max(1, this.cameraZoomStable);
     this.updateDisplayLayout(this.baseDisplayRenderScale);
   }
 
@@ -918,6 +933,19 @@ export class PixelPerfectViewportCore {
     return current + (target - current) * blend;
   }
 
+  /**
+   * Snap a zoom level so that `baseRenderScale * zoom` is an integer,
+   * guaranteeing every texel maps to the same number of device pixels.
+   * Below zoom 1 the shader doesn't magnify, so no snap is needed.
+   */
+  private quantizeZoom(zoom: number): number {
+    if (zoom < 1) {
+      return zoom;
+    }
+    const quantum = 1 / Math.max(1, this.baseRenderScale);
+    return Math.max(1, Math.round(zoom / quantum) * quantum);
+  }
+
   private quantizeSnap(value: number, mode: PixelSnapMode): number {
     switch (mode) {
       case "floor":
@@ -971,11 +999,12 @@ export class PixelPerfectViewportCore {
     localCssY: number,
     nowMs: number = performance.now()
   ): boolean {
-    const nextZoom = THREE.MathUtils.clamp(
+    const raw = THREE.MathUtils.clamp(
       this.cameraZoomTarget + direction * this.config.zoomStep,
       this.config.zoomMin,
       this.config.zoomMax
     );
+    const nextZoom = this.quantizeZoom(raw);
     if (Math.abs(nextZoom - this.cameraZoomTarget) <= 1e-6) {
       return false;
     }
