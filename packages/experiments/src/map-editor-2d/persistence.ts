@@ -72,7 +72,8 @@ function validateSerialized(raw: Record<string, unknown>): SerializedState | nul
     const bx = asNumber(entry.bx);
     const bz = asNumber(entry.bz);
     if (typeof tileName !== "string" || ax === null || az === null || bx === null || bz === null) continue;
-    edgeStructures.push({ tileName, ax, az, bx, bz });
+    const flipped = entry.flipped === true;
+    edgeStructures.push({ tileName, ax, az, bx, bz, flipped });
   }
 
   const cellsRaw = Array.isArray(raw.cellStructures) ? raw.cellStructures : [];

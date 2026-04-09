@@ -1,7 +1,7 @@
 {
-  "kitId": "kit_mnq0im7t_4",
-  "kitName": "desert_sandstone",
-  "generatedAt": "2026-04-08T12:16:33.479Z",
+  "kitId": "kit_mnrdlg8b_4",
+  "kitName": "desert_sandstone_kit",
+  "generatedAt": "2026-04-09T11:10:26.839Z",
   "format": "glb",
   "artifactTransform": {
     "format": "gltf",
@@ -12,7 +12,7 @@
     "name": "window_middle",
     "kind": "window_module",
     "role": "window_middle",
-    "groupUuid": "673632a5-440c-aac3-89d9-10bab4affc36",
+    "groupUuid": "e01e7d8d-2a5e-ed5b-be36-4a0316a3e72a",
     "anchorClass": "edge_midpoint",
     "anchorPolicy": "first_logical_unit",
     "anchorLocal": [

@@ -4,7 +4,7 @@
 // without stretching the top toolbar (which is reserved for global commands).
 // ---------------------------------------------------------------------------
 
-import { ERASER_BRUSH } from "./pointer-tools";
+import { ERASER_BRUSH, SELECT_BRUSH } from "./pointer-tools";
 import type { LoadedTileset } from "./tileset-loader";
 
 export const TILE_PALETTE_WIDTH = 240;
@@ -142,11 +142,12 @@ export function createTilePalette(options: TilePaletteOptions): TilePalette {
     return labelEl;
   }
 
-  // Eraser pinned at the top — always available regardless of loaded tilesets.
-  const eraserSection = makeSection();
-  eraserSection.appendChild(makeSectionLabel("Tools"));
-  eraserSection.appendChild(makeButton("Eraser", ERASER_BRUSH));
-  root.appendChild(eraserSection);
+  // Tools pinned at the top — always available regardless of loaded tilesets.
+  const toolsSection = makeSection();
+  toolsSection.appendChild(makeSectionLabel("Tools"));
+  toolsSection.appendChild(makeButton("Select", SELECT_BRUSH));
+  toolsSection.appendChild(makeButton("Eraser", ERASER_BRUSH));
+  root.appendChild(toolsSection);
 
   // One section per tileset, in load order.
   for (const kit of tilesets) {

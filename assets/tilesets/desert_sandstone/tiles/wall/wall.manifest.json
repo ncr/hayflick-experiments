@@ -1,7 +1,7 @@
 {
-  "kitId": "kit_mnq0im7t_4",
-  "kitName": "desert_sandstone",
-  "generatedAt": "2026-04-08T12:16:33.216Z",
+  "kitId": "kit_mnrdlg8b_4",
+  "kitName": "desert_sandstone_kit",
+  "generatedAt": "2026-04-09T11:10:26.566Z",
   "format": "glb",
   "artifactTransform": {
     "format": "gltf",
@@ -12,7 +12,7 @@
     "name": "wall",
     "kind": "wall",
     "role": "wall",
-    "groupUuid": "d463db50-fadf-5a1e-d84d-f5eb47f3060b",
+    "groupUuid": "d907e9f2-c246-a9a2-34f1-72b6681dab38",
     "anchorClass": "edge_midpoint",
     "anchorPolicy": "first_logical_unit",
     "anchorLocal": [

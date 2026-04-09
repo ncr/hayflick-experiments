@@ -1,22 +1,13 @@
 import * as THREE from "three";
 import type { GridConfig, MapEditorState, PlacedEdge, PlacedCell, PlacedVertex } from "./editor-state";
 import type { TilesetAssets } from "./tileset-loader";
+import type { Selection } from "./pointer-tools";
 
-// Layer 0 = default: placed structures, both cameras see them
-// Layer 2 = 2D-only overlays (tinted clones, grid, hover, 2D ghost preview)
+// Layer 0 = default: placed structures with real materials, both cameras see them
+// Layer 2 = 2D-only overlays (grid, hover, 2D ghost preview)
 // Layer 3 = 3D-only overlays (textured semi-transparent ghost preview)
 export const LAYER_2D_TINT = 2;
 export const LAYER_3D_ONLY = 3;
-
-const TINT_COLOR_BY_KIND: Record<string, number> = {
-  wall: 0xd0d8e0,
-  door_wall: 0xcc7722,
-  window_module: 0x5599cc,
-  corner: 0xd0d8e0,
-  end_cap: 0xd0d8e0,
-  floor_tile: 0x9e9484
-};
-const DEFAULT_TINT = 0xaabbcc;
 
 export class SceneBuilder {
   readonly root = new THREE.Group();
@@ -26,8 +17,14 @@ export class SceneBuilder {
    *   - a textured semi-transparent ghost on layer 3 (visible only in 3D pane)
    */
   readonly preview = new THREE.Group();
-  private readonly tintMaterials = new Map<string, THREE.MeshBasicMaterial>();
+  readonly selectionHighlight = new THREE.Group();
   private ghostMaterial: THREE.MeshBasicMaterial;
+  private selectionMaterial: THREE.MeshBasicMaterial;
+  private edgeOutlineMaterial: THREE.MeshBasicMaterial;
+  private edgeOutlineGeometry: THREE.PlaneGeometry;
+  private directionArrowMaterial: THREE.MeshBasicMaterial;
+  private directionArrowGeometry: THREE.BufferGeometry;
+  private tileSize: number;
   /** Cached "what does the 3D ghost of tile X look like" templates. */
   private readonly ghost3DTemplates = new Map<string, THREE.Group>();
   /** Cloned ghost materials we own and must dispose. */
@@ -35,7 +32,8 @@ export class SceneBuilder {
   private lastRevision = -1;
   private lastPreviewKey = "";
 
-  constructor(private readonly assets: TilesetAssets) {
+  constructor(private readonly assets: TilesetAssets, tileSize: number) {
+    this.tileSize = tileSize;
     this.ghostMaterial = new THREE.MeshBasicMaterial({
       color: 0xffcc44,
       transparent: true,
@@ -45,6 +43,41 @@ export class SceneBuilder {
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2
     });
+    this.selectionMaterial = new THREE.MeshBasicMaterial({
+      color: 0x44aaff,
+      transparent: true,
+      opacity: 0.35,
+      depthTest: false
+    });
+    // Outline for wall tiles in 2D view
+    this.edgeOutlineMaterial = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.6
+    });
+    // Wall footprint: tileSize long, 0.25*tileSize deep; add border
+    const outlineBorder = tileSize * 0.04;
+    this.edgeOutlineGeometry = new THREE.PlaneGeometry(
+      tileSize + outlineBorder * 2,
+      tileSize * 0.25 + outlineBorder * 2
+    );
+    this.edgeOutlineGeometry.rotateX(-Math.PI / 2);
+    this.directionArrowMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff4444,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.8
+    });
+    // Small triangle pointing in -Z direction (the "outside" face)
+    const s = 0.15;
+    const verts = new Float32Array([
+      0, 0, -s * 2,
+      -s, 0, 0,
+      s, 0, 0
+    ]);
+    this.directionArrowGeometry = new THREE.BufferGeometry();
+    this.directionArrowGeometry.setAttribute("position", new THREE.BufferAttribute(verts, 3));
   }
 
   update(state: MapEditorState): void {
@@ -58,9 +91,10 @@ export class SceneBuilder {
     this.lastPreviewKey = "";
   }
 
-  /** Show a ghost preview of the given tile at a world position with rotation */
-  setPreview(tileName: string | null, worldX: number, worldZ: number, yaw: number): void {
-    const key = tileName ? `${tileName}:${worldX.toFixed(3)}:${worldZ.toFixed(3)}:${yaw.toFixed(3)}` : "";
+  /** Show a ghost preview of the given tile at a world position with rotation.
+   *  When showDirection is true, a small red arrow shows the "outside" (-X) face. */
+  setPreview(tileName: string | null, worldX: number, worldZ: number, yaw: number, showDirection = false): void {
+    const key = tileName ? `${tileName}:${worldX.toFixed(3)}:${worldZ.toFixed(3)}:${yaw.toFixed(3)}:${showDirection}` : "";
     if (key === this.lastPreviewKey) return;
     this.lastPreviewKey = key;
 
@@ -77,6 +111,16 @@ export class SceneBuilder {
     replaceMaterialsRecursive(ghost2D, this.ghostMaterial);
     setLayerRecursive(ghost2D, LAYER_2D_TINT);
     this.preview.add(ghost2D);
+
+    // Direction arrow on layer 2 — points toward the "outside" face (-X in local space)
+    if (showDirection) {
+      const arrow = new THREE.Mesh(this.directionArrowGeometry, this.directionArrowMaterial);
+      arrow.position.set(worldX, 0.01, worldZ);
+      arrow.rotation.y = yaw;
+      arrow.renderOrder = 10;
+      arrow.layers.set(LAYER_2D_TINT);
+      this.preview.add(arrow);
+    }
 
     // 3D ghost — real textures, semi-transparent, on layer 3.
     const ghost3DTemplate = this.getGhost3DTemplate(tileName);
@@ -129,14 +173,57 @@ export class SceneBuilder {
     clearGroup(this.preview);
   }
 
+  /** Show a blue highlight overlay on a selected tile (2D only). Pass null to clear. */
+  setSelection(
+    kind: "edge" | "cell" | "vertex" | null,
+    worldX = 0,
+    worldZ = 0,
+    yaw = 0
+  ): void {
+    clearGroup(this.selectionHighlight);
+    if (!kind) return;
+
+    let w: number, h: number;
+    if (kind === "cell") {
+      w = this.tileSize; h = this.tileSize;
+    } else if (kind === "edge") {
+      w = this.tileSize * 1.05; h = this.tileSize * 0.3;
+    } else {
+      w = this.tileSize * 0.3; h = this.tileSize * 0.3;
+    }
+
+    const geo = new THREE.PlaneGeometry(w, h);
+    geo.rotateX(-Math.PI / 2);
+    const mesh = new THREE.Mesh(geo, this.selectionMaterial);
+    mesh.position.set(worldX, 0.002, worldZ);
+    mesh.rotation.y = yaw;
+    mesh.renderOrder = 5;
+    mesh.layers.set(LAYER_2D_TINT);
+    this.selectionHighlight.add(mesh);
+
+    if (kind === "edge") {
+      const arrow = new THREE.Mesh(this.directionArrowGeometry, this.directionArrowMaterial);
+      arrow.position.set(worldX, 0.01, worldZ);
+      arrow.rotation.y = yaw;
+      arrow.renderOrder = 10;
+      arrow.layers.set(LAYER_2D_TINT);
+      this.selectionHighlight.add(arrow);
+    }
+  }
+
   dispose(): void {
     this.ghostMaterial.dispose();
-    for (const mat of this.tintMaterials.values()) mat.dispose();
+    this.selectionMaterial.dispose();
+    this.edgeOutlineMaterial.dispose();
+    this.edgeOutlineGeometry.dispose();
+    this.directionArrowMaterial.dispose();
+    this.directionArrowGeometry.dispose();
     for (const mat of this.ghost3DMaterials) mat.dispose();
     this.ghost3DMaterials.length = 0;
     this.ghost3DTemplates.clear();
     clearGroup(this.root);
     clearGroup(this.preview);
+    clearGroup(this.selectionHighlight);
   }
 
   private rebuild(state: MapEditorState): void {
@@ -160,9 +247,17 @@ export class SceneBuilder {
     const worldX = grid.origin + ((structure.ax + structure.bx) / 2) * grid.tileSize;
     const worldZ = grid.origin + ((structure.az + structure.bz) / 2) * grid.tileSize;
     const isVertical = structure.ax === structure.bx;
-    const yaw = isVertical ? Math.PI / 2 : 0;
+    const yaw = (isVertical ? Math.PI / 2 : 0) + (structure.flipped ? Math.PI : 0);
 
-    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, yaw, 2);
+    // 2D outline on layer 2 — dark border behind the wall mesh
+    const outline = new THREE.Mesh(this.edgeOutlineGeometry, this.edgeOutlineMaterial);
+    outline.position.set(worldX, 0.001, worldZ);
+    outline.rotation.y = yaw;
+    outline.renderOrder = -1;
+    outline.layers.set(LAYER_2D_TINT);
+    this.root.add(outline);
+
+    this.placeMesh(loaded.template, worldX, worldZ, yaw);
   }
 
   private placeVertex(structure: PlacedVertex, grid: GridConfig): void {
@@ -173,7 +268,7 @@ export class SceneBuilder {
     const worldZ = grid.origin + structure.z * grid.tileSize;
     const yaw = (structure.rotation & 3) * (Math.PI / 2);
 
-    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, yaw, 3);
+    this.placeMesh(loaded.template, worldX, worldZ, yaw);
   }
 
   private placeCell(structure: PlacedCell, grid: GridConfig): void {
@@ -183,62 +278,28 @@ export class SceneBuilder {
     const worldX = grid.origin + (structure.x + 0.5) * grid.tileSize;
     const worldZ = grid.origin + (structure.z + 0.5) * grid.tileSize;
 
-    this.addOriginalAndTint(loaded.template, loaded.entry.kind, worldX, worldZ, 0, 1);
+    this.placeMesh(loaded.template, worldX, worldZ, 0);
   }
 
-  private addOriginalAndTint(
+  private placeMesh(
     template: THREE.Group,
-    kind: string,
     worldX: number,
     worldZ: number,
-    yaw: number,
-    tintRenderOrder: number
+    yaw: number
   ): void {
-    // 3D original on layer 0 — both cameras see it
+    // Original mesh on layer 0 — both cameras see it with real materials
     const original = template.clone();
     original.position.set(worldX, 0, worldZ);
     original.rotation.y = yaw;
     this.root.add(original);
-
-    // 2D tinted clone on layer 2 — only 2D camera sees it
-    const tinted = template.clone();
-    tinted.position.set(worldX, 0, worldZ);
-    tinted.rotation.y = yaw;
-    const tintColor = TINT_COLOR_BY_KIND[kind] ?? DEFAULT_TINT;
-    const tintMat = this.getTintMaterial(kind, tintColor);
-    replaceMaterialsRecursive(tinted, tintMat);
-    setLayerRecursive(tinted, LAYER_2D_TINT);
-    setRenderOrderRecursive(tinted, tintRenderOrder);
-    this.root.add(tinted);
   }
 
-  private getTintMaterial(key: string, color: number): THREE.MeshBasicMaterial {
-    let mat = this.tintMaterials.get(key);
-    if (!mat) {
-      mat = new THREE.MeshBasicMaterial({
-        color,
-        depthTest: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1
-      });
-      this.tintMaterials.set(key, mat);
-    }
-    return mat;
-  }
 }
 
 function setLayerRecursive(obj: THREE.Object3D, layer: number): void {
   obj.layers.set(layer);
   for (const child of obj.children) {
     setLayerRecursive(child, layer);
-  }
-}
-
-function setRenderOrderRecursive(obj: THREE.Object3D, order: number): void {
-  obj.renderOrder = order;
-  for (const child of obj.children) {
-    setRenderOrderRecursive(child, order);
   }
 }
 

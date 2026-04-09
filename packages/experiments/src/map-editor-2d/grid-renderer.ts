@@ -2,8 +2,8 @@ import * as THREE from "three";
 import type { GridConfig } from "./editor-state";
 import { LAYER_2D_TINT } from "./scene-builder";
 
-const GRID_COLOR = 0x33ff66;
-const GRID_OPACITY = 0.78;
+const GRID_COLOR = 0x88aa99;
+const GRID_OPACITY = 0.3;
 const STRUCTURE_THICKNESS_FACTOR = 0.14;
 const HOVER_CELL_COLOR = 0xffffff;
 const HOVER_EDGE_COLOR = 0xffcc44;

@@ -5,13 +5,20 @@ import {
   PixelPerfectScissorPane
 } from "@common/render";
 import { bindSharedScissorStageInput } from "@common/input";
-import { LEVEL_EDITOR_WORLD_UNIT } from "@common/level-editor";
+import { LEVEL_EDITOR_WORLD_UNIT, levelBuilderEdgeKey } from "@common/level-editor";
 import type { ExperimentModule } from "../runtime/types";
 
 import { clearAll, createUndoManager } from "./editor-state";
 import { GridRenderer } from "./grid-renderer";
 import { SceneBuilder, LAYER_2D_TINT, LAYER_3D_ONLY } from "./scene-builder";
-import { bindPointerTools, ERASER_BRUSH } from "./pointer-tools";
+import { bindPointerTools, brushPlacement, ERASER_BRUSH, SELECT_BRUSH } from "./pointer-tools";
+import {
+  removeEdgeStructure,
+  removeCellStructure,
+  removeVertexStructure,
+  setEdgeStructure,
+  setVertexStructure
+} from "./editor-state";
 import type { HoverTarget } from "./grid-renderer";
 import { loadEditorState, debouncedSave } from "./persistence";
 import { loadTilesetAssets } from "./tileset-loader";
@@ -34,7 +41,7 @@ function createPaneElement(parent: HTMLElement, style: Partial<CSSStyleDeclarati
 
 const SHARED_VIEW_CONFIG = {
   fixedRenderHeight: 360,
-  baseOrthoHeight: GRID_TILES * LEVEL_EDITOR_WORLD_UNIT * 0.8,
+  baseOrthoHeight: GRID_TILES * LEVEL_EDITOR_WORLD_UNIT * 0.4,
   cameraDistance: CAMERA_DISTANCE,
   basePixelZoom: 1,
   zoomMin: 1,
@@ -79,9 +86,10 @@ const experiment: ExperimentModule = {
 
     // Load tileset assets and create scene builder
     const assets = await loadTilesetAssets();
-    const sceneBuilder = new SceneBuilder(assets);
+    const sceneBuilder = new SceneBuilder(assets, state.grid.tileSize);
     scene.add(sceneBuilder.root);
     scene.add(sceneBuilder.preview);
+    scene.add(sceneBuilder.selectionHighlight);
 
     // --- Dual-pane layout ---
     // Left pane is anchored to both edges so the tile palette (between the
@@ -105,6 +113,7 @@ const experiment: ExperimentModule = {
     // Left pane: top-down 2D editor
     const leftCore = new PixelPerfectViewportCore({
       ...SHARED_VIEW_CONFIG,
+      zoomMin: 0.25,
       width: leftPaneEl.clientWidth || Math.max(1, width * 0.55 - TILE_PALETTE_WIDTH),
       height: leftPaneEl.clientHeight || height,
       scene,
@@ -183,8 +192,22 @@ const experiment: ExperimentModule = {
         return;
       }
       const brush = pointerBinding.toolState.brush;
-      if (brush === ERASER_BRUSH) {
+      if (brush === ERASER_BRUSH || brush === SELECT_BRUSH) {
         sceneBuilder.clearPreview();
+        // In select mode, show direction arrow on hovered edges
+        if (brush === SELECT_BRUSH && target.kind === "edge") {
+          const key = levelBuilderEdgeKey(target.ax, target.az, target.bx, target.bz);
+          const edge = state.edgeStructures.get(key);
+          if (edge && !pointerBinding.toolState.selection) {
+            const wx = state.grid.origin + ((target.ax + target.bx) / 2) * state.grid.tileSize;
+            const wz = state.grid.origin + ((target.az + target.bz) / 2) * state.grid.tileSize;
+            const isVertical = target.ax === target.bx;
+            const yaw = (isVertical ? Math.PI / 2 : 0) + (edge.flipped ? Math.PI : 0);
+            sceneBuilder.setSelection("edge", wx, wz, yaw);
+          }
+        } else if (brush === SELECT_BRUSH && !pointerBinding.toolState.selection) {
+          sceneBuilder.setSelection(null);
+        }
         return;
       }
 
@@ -200,12 +223,38 @@ const experiment: ExperimentModule = {
       } else if (target.kind === "edge") {
         wx = state.grid.origin + ((target.ax + target.bx) / 2) * state.grid.tileSize;
         wz = state.grid.origin + ((target.az + target.bz) / 2) * state.grid.tileSize;
-        yaw = target.ax === target.bx ? Math.PI / 2 : 0;
+        const baseYaw = target.ax === target.bx ? Math.PI / 2 : 0;
+        yaw = baseYaw + (pointerBinding.toolState.edgeFlipped ? Math.PI : 0);
       } else {
         sceneBuilder.clearPreview();
         return;
       }
-      sceneBuilder.setPreview(brush, wx, wz, yaw);
+      const isEdgeBrush = brushPlacement(brush, assets) === "edge";
+      sceneBuilder.setPreview(brush, wx, wz, yaw, isEdgeBrush);
+    }
+
+    function updateSelectionHighlight(sel: import("./pointer-tools").Selection): void {
+      if (!sel) {
+        sceneBuilder.setSelection(null);
+        return;
+      }
+      const g = state.grid;
+      if (sel.kind === "edge") {
+        const edge = state.edgeStructures.get(sel.key);
+        const wx = g.origin + ((sel.ax + sel.bx) / 2) * g.tileSize;
+        const wz = g.origin + ((sel.az + sel.bz) / 2) * g.tileSize;
+        const isVertical = sel.ax === sel.bx;
+        const yaw = (isVertical ? Math.PI / 2 : 0) + (edge?.flipped ? Math.PI : 0);
+        sceneBuilder.setSelection("edge", wx, wz, yaw);
+      } else if (sel.kind === "cell") {
+        const wx = g.origin + (sel.x + 0.5) * g.tileSize;
+        const wz = g.origin + (sel.z + 0.5) * g.tileSize;
+        sceneBuilder.setSelection("cell", wx, wz);
+      } else if (sel.kind === "vertex") {
+        const wx = g.origin + sel.x * g.tileSize;
+        const wz = g.origin + sel.z * g.tileSize;
+        sceneBuilder.setSelection("vertex", wx, wz);
+      }
     }
 
     // Pointer tools
@@ -228,6 +277,9 @@ const experiment: ExperimentModule = {
       },
       onBeforeDrag: () => {
         undoManager.checkpoint(state);
+      },
+      onSelectionChange: (sel) => {
+        updateSelectionHighlight(sel);
       }
     });
 
@@ -269,6 +321,10 @@ const experiment: ExperimentModule = {
       activeBrush = brush;
       pointerBinding.toolState.brush = brush;
       palette.setActiveBrush(brush);
+      if (brush !== SELECT_BRUSH) {
+        pointerBinding.toolState.selection = null;
+        sceneBuilder.setSelection(null);
+      }
     }
 
     // Set initial active brush
@@ -302,10 +358,50 @@ const experiment: ExperimentModule = {
 
       switch (event.code) {
         case "KeyR": {
-          pointerBinding.toolState.vertexRotation = (pointerBinding.toolState.vertexRotation + 1) & 3;
-          sceneBuilder.invalidatePreview();
-          updatePreview();
-          toolbar.setRotation(pointerBinding.toolState.vertexRotation * 90);
+          const sel = pointerBinding.toolState.selection;
+          if (pointerBinding.toolState.brush === SELECT_BRUSH && sel) {
+            // Rotate the selected placed tile
+            undoManager.checkpoint(state);
+            if (sel.kind === "edge") {
+              const edge = state.edgeStructures.get(sel.key);
+              if (edge) {
+                setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, edge.tileName, !edge.flipped);
+                updateSelectionHighlight(sel);
+              }
+            } else if (sel.kind === "vertex") {
+              const vtx = state.vertexStructures.get(sel.key);
+              if (vtx) {
+                setVertexStructure(state, vtx.x, vtx.z, vtx.tileName, (vtx.rotation + 3) & 3);
+              }
+            }
+          } else {
+            const placement = brushPlacement(pointerBinding.toolState.brush, assets);
+            if (placement === "edge") {
+              pointerBinding.toolState.edgeFlipped = !pointerBinding.toolState.edgeFlipped;
+            } else {
+              pointerBinding.toolState.vertexRotation = (pointerBinding.toolState.vertexRotation + 3) & 3;
+            }
+            sceneBuilder.invalidatePreview();
+            updatePreview();
+            toolbar.setRotation(pointerBinding.toolState.vertexRotation * 90);
+          }
+          break;
+        }
+        case "Backspace":
+        case "Delete": {
+          const sel = pointerBinding.toolState.selection;
+          if (pointerBinding.toolState.brush === SELECT_BRUSH && sel) {
+            undoManager.checkpoint(state);
+            if (sel.kind === "edge") {
+              removeEdgeStructure(state, sel.ax, sel.az, sel.bx, sel.bz);
+            } else if (sel.kind === "cell") {
+              removeCellStructure(state, sel.x, sel.z);
+            } else if (sel.kind === "vertex") {
+              removeVertexStructure(state, sel.x, sel.z);
+            }
+            pointerBinding.toolState.selection = null;
+            sceneBuilder.setSelection(null);
+          }
           break;
         }
         default: {

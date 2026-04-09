@@ -307,7 +307,7 @@ export class PixelPerfectViewportCore {
       : 0;
 
     this.updateCameraProjection();
-    this.outputMaterial.uniforms.uZoom.value = this.cameraZoomStable;
+    this.outputMaterial.uniforms.uZoom.value = Math.max(1, this.cameraZoomStable);
     (this.outputMaterial.uniforms.uZoomPivot.value as THREE.Vector2).set(
       this.zoomPivotScene.x,
       1 - this.zoomPivotScene.y
@@ -391,7 +391,7 @@ export class PixelPerfectViewportCore {
     this.zoomBurstActive = false;
 
     this.updateCameraProjection();
-    this.outputMaterial.uniforms.uZoom.value = this.cameraZoomStable;
+    this.outputMaterial.uniforms.uZoom.value = Math.max(1, this.cameraZoomStable);
     this.ensureScreenBasis();
   }
 
@@ -543,10 +543,11 @@ export class PixelPerfectViewportCore {
     }
     const scenePointX = localRenderX / this.displaySceneOutputWidth;
     const scenePointY = localRenderY / this.displaySceneOutputHeight;
+    const shaderZoom = Math.max(1, this.cameraZoomStable);
     const sourceX =
-      (scenePointX - this.zoomPivotScene.x) / this.cameraZoomStable + this.zoomPivotScene.x;
+      (scenePointX - this.zoomPivotScene.x) / shaderZoom + this.zoomPivotScene.x;
     const sourceY =
-      (scenePointY - this.zoomPivotScene.y) / this.cameraZoomStable + this.zoomPivotScene.y;
+      (scenePointY - this.zoomPivotScene.y) / shaderZoom + this.zoomPivotScene.y;
     if (sourceX < 0 || sourceY < 0 || sourceX > 1 || sourceY > 1) {
       return false;
     }
@@ -559,10 +560,11 @@ export class PixelPerfectViewportCore {
     this.projectedNdc.copy(world).project(this.camera);
     const sourceX = this.projectedNdc.x * 0.5 + 0.5;
     const sourceY = 1 - (this.projectedNdc.y * 0.5 + 0.5);
+    const shaderZoom = Math.max(1, this.cameraZoomStable);
     const normalizedX =
-      (sourceX - this.zoomPivotScene.x) * this.cameraZoomStable + this.zoomPivotScene.x;
+      (sourceX - this.zoomPivotScene.x) * shaderZoom + this.zoomPivotScene.x;
     const normalizedY =
-      (sourceY - this.zoomPivotScene.y) * this.cameraZoomStable + this.zoomPivotScene.y;
+      (sourceY - this.zoomPivotScene.y) * shaderZoom + this.zoomPivotScene.y;
     const deviceX =
       this.getRenderStartX() +
       this.displayOutputPadDeviceX +
@@ -664,7 +666,10 @@ export class PixelPerfectViewportCore {
   private updateCameraProjection(): void {
     const state = this.controller.getState();
     const aspect = state.lowRenderWidth / state.lowRenderHeight;
-    const h = state.orthoHeight;
+    // When zoom < 1, expand the frustum so the camera captures more world.
+    // Shader zoom only handles magnification (zoom >= 1).
+    const zoomOutFactor = Math.min(1, this.cameraZoomStable);
+    const h = state.orthoHeight / zoomOutFactor;
     const bias = this.config.verticalBias ?? 0.5;
     this.camera.left = -h * 0.5 * aspect;
     this.camera.right = h * 0.5 * aspect;
@@ -821,7 +826,7 @@ export class PixelPerfectViewportCore {
       this.config.zoomMax
     );
     this.updateCameraProjection();
-    this.outputMaterial.uniforms.uZoom.value = this.cameraZoomStable;
+    this.outputMaterial.uniforms.uZoom.value = Math.max(1, this.cameraZoomStable);
     (this.outputMaterial.uniforms.uZoomPivot.value as THREE.Vector2).set(
       this.zoomPivotScene.x,
       1 - this.zoomPivotScene.y

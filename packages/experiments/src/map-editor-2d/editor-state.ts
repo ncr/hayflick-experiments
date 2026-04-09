@@ -16,6 +16,8 @@ export type PlacedEdge = {
   az: number;
   bx: number;
   bz: number;
+  /** When true the tile is rotated 180° around Y (front faces the other side) */
+  flipped: boolean;
 };
 
 /** A placed cell structure (floor tile, etc.) */
@@ -107,10 +109,11 @@ export function setEdgeStructure(
   az: number,
   bx: number,
   bz: number,
-  tileName: string
+  tileName: string,
+  flipped: boolean
 ): void {
   const key = levelBuilderEdgeKey(ax, az, bx, bz);
-  state.edgeStructures.set(key, { tileName, ax, az, bx, bz });
+  state.edgeStructures.set(key, { tileName, ax, az, bx, bz, flipped });
   state.revision++;
 }
 
@@ -143,7 +146,7 @@ export function clearAll(state: MapEditorState): void {
 
 export type SerializedState = {
   grid: GridConfig;
-  edgeStructures: Array<{ tileName: string; ax: number; az: number; bx: number; bz: number }>;
+  edgeStructures: Array<{ tileName: string; ax: number; az: number; bx: number; bz: number; flipped?: boolean }>;
   cellStructures: Array<{ tileName: string; x: number; z: number }>;
   vertexStructures: Array<{ tileName: string; x: number; z: number; rotation: number }>;
 };
@@ -152,7 +155,7 @@ export function serializeState(state: MapEditorState): SerializedState {
   return {
     grid: { ...state.grid },
     edgeStructures: [...state.edgeStructures.values()].map((s) => ({
-      tileName: s.tileName, ax: s.ax, az: s.az, bx: s.bx, bz: s.bz
+      tileName: s.tileName, ax: s.ax, az: s.az, bx: s.bx, bz: s.bz, flipped: s.flipped
     })),
     cellStructures: [...state.cellStructures.values()].map((s) => ({
       tileName: s.tileName, x: s.x, z: s.z
@@ -217,7 +220,7 @@ export function deserializeState(raw: SerializedState): MapEditorState {
   const edgeStructures = new Map<string, PlacedEdge>();
   for (const s of raw.edgeStructures) {
     const key = levelBuilderEdgeKey(s.ax, s.az, s.bx, s.bz);
-    edgeStructures.set(key, s);
+    edgeStructures.set(key, { ...s, flipped: s.flipped ?? false });
   }
 
   const cellStructures = new Map<string, PlacedCell>();

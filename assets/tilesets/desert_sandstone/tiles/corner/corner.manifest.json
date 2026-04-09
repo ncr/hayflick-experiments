@@ -1,7 +1,7 @@
 {
-  "kitId": "kit_mnq0im7t_4",
-  "kitName": "desert_sandstone",
-  "generatedAt": "2026-04-08T12:16:33.648Z",
+  "kitId": "kit_mnrdlg8b_4",
+  "kitName": "desert_sandstone_kit",
+  "generatedAt": "2026-04-09T11:10:26.930Z",
   "format": "glb",
   "artifactTransform": {
     "format": "gltf",
@@ -12,7 +12,7 @@
     "name": "corner",
     "kind": "corner",
     "role": "corner",
-    "groupUuid": "ca8517ff-cc2e-d6bf-aaf6-c6f529900cee",
+    "groupUuid": "a2b45985-3a7d-b0c3-428d-3207a3279515",
     "anchorClass": "vertex",
     "anchorPolicy": "first_logical_unit",
     "anchorLocal": [
@@ -21,7 +21,7 @@
       0
     ],
     "sceneAnchor": [
-      1120,
+      896,
       0,
       0
     ],
@@ -52,7 +52,7 @@
       0
     ],
     "artifactSceneAnchor": [
-      8.75,
+      7,
       0,
       0
     ],

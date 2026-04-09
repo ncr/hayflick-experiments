@@ -1,7 +1,7 @@
 {
-  "kitId": "kit_mnq0im7t_4",
-  "kitName": "desert_sandstone",
-  "generatedAt": "2026-04-08T12:16:33.310Z",
+  "kitId": "kit_mnrdlg8b_4",
+  "kitName": "desert_sandstone_kit",
+  "generatedAt": "2026-04-09T11:10:26.660Z",
   "format": "glb",
   "artifactTransform": {
     "format": "gltf",
@@ -12,7 +12,7 @@
     "name": "door",
     "kind": "door_wall",
     "role": "door",
-    "groupUuid": "79c6711b-8a6e-99d8-855d-4779ca441f7a",
+    "groupUuid": "a6fc8bec-5034-d691-e801-daace209717a",
     "anchorClass": "edge_midpoint",
     "anchorPolicy": "first_logical_unit",
     "anchorLocal": [

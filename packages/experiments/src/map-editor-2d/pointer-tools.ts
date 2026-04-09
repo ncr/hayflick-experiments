@@ -8,17 +8,30 @@ import {
   setVertexStructure,
   removeVertexStructure
 } from "./editor-state";
+import { levelBuilderEdgeKey } from "@common/level-editor";
 import type { HoverTarget } from "./grid-renderer";
 import type { TilesetAssets } from "./tileset-loader";
 
 /** Special brush name for the eraser tool */
 export const ERASER_BRUSH = "__eraser__";
+/** Special brush name for the select/pointer tool */
+export const SELECT_BRUSH = "__select__";
+
+export type Selection =
+  | { kind: "edge"; key: string; ax: number; az: number; bx: number; bz: number }
+  | { kind: "cell"; key: string; x: number; z: number }
+  | { kind: "vertex"; key: string; x: number; z: number }
+  | null;
 
 export type PointerToolState = {
-  /** Either a ground brush name, a tile name from the kit, or ERASER_BRUSH */
+  /** Either a ground brush name, a tile name from the kit, ERASER_BRUSH, or SELECT_BRUSH */
   brush: string;
   /** Rotation for vertex-placed tiles (quarter turns: 0-3) */
   vertexRotation: number;
+  /** When true, edge tiles are flipped 180° (front faces other side) */
+  edgeFlipped: boolean;
+  /** Currently selected placed tile (only in SELECT_BRUSH mode) */
+  selection: Selection;
 };
 
 type Edge = { ax: number; az: number; bx: number; bz: number };
@@ -87,6 +100,39 @@ export function pickNearestVertex(
   return { x, z };
 }
 
+/** Find the placed structure at the given world position, if any. */
+function findSelection(
+  state: MapEditorState,
+  worldX: number,
+  worldZ: number
+): Selection {
+  // Check edges first (walls take priority visually)
+  const edge = pickNearestEdge(worldX, worldZ, state.grid);
+  if (edge) {
+    const key = levelBuilderEdgeKey(edge.ax, edge.az, edge.bx, edge.bz);
+    if (state.edgeStructures.has(key)) {
+      return { kind: "edge", key, ax: edge.ax, az: edge.az, bx: edge.bx, bz: edge.bz };
+    }
+  }
+  // Check vertices
+  const vtx = pickNearestVertex(worldX, worldZ, state.grid);
+  if (vtx) {
+    const key = `${vtx.x},${vtx.z}`;
+    if (state.vertexStructures.has(key)) {
+      return { kind: "vertex", key, x: vtx.x, z: vtx.z };
+    }
+  }
+  // Check cells
+  const cell = worldToCell(worldX, worldZ, state.grid);
+  if (cell) {
+    const key = `${cell.x},${cell.z}`;
+    if (state.cellStructures.has(key)) {
+      return { kind: "cell", key, x: cell.x, z: cell.z };
+    }
+  }
+  return null;
+}
+
 function applyBrush(
   state: MapEditorState,
   toolState: PointerToolState,
@@ -95,6 +141,13 @@ function applyBrush(
   worldZ: number
 ): void {
   const { brush } = toolState;
+
+  if (brush === SELECT_BRUSH) {
+    toolState.selection = findSelection(state, worldX, worldZ);
+    return;
+  }
+  // Placing a tile clears any selection
+  toolState.selection = null;
 
   if (brush === ERASER_BRUSH) {
     const cell = worldToCell(worldX, worldZ, state.grid);
@@ -121,17 +174,27 @@ function applyBrush(
   } else {
     const edge = pickNearestEdge(worldX, worldZ, state.grid);
     if (!edge) return;
-    setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, brush);
+    setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, brush, toolState.edgeFlipped);
   }
 }
 
 function getHoverTarget(
   toolState: PointerToolState,
   assets: TilesetAssets,
+  state: MapEditorState,
   worldX: number,
   worldZ: number,
   grid: GridConfig
 ): HoverTarget {
+  if (toolState.brush === SELECT_BRUSH) {
+    // In select mode, find what we'd select to show a hover highlight
+    const sel = findSelection(state, worldX, worldZ);
+    if (!sel) return null;
+    if (sel.kind === "edge") return { kind: "edge", ax: sel.ax, az: sel.az, bx: sel.bx, bz: sel.bz };
+    if (sel.kind === "cell") return { kind: "cell", x: sel.x, z: sel.z };
+    if (sel.kind === "vertex") return { kind: "vertex", x: sel.x, z: sel.z };
+    return null;
+  }
   if (toolState.brush === ERASER_BRUSH) {
     const cell = worldToCell(worldX, worldZ, grid);
     if (!cell) return null;
@@ -167,13 +230,16 @@ export type PointerToolsOptions = {
   assets: TilesetAssets;
   onHover: (target: HoverTarget) => void;
   onBeforeDrag?: () => void;
+  onSelectionChange?: (selection: Selection) => void;
 };
 
 export function bindPointerTools(opts: PointerToolsOptions): PointerToolsBinding {
   const { element, worldAtLocal, state, assets, onHover } = opts;
   const toolState: PointerToolState = {
     brush: "wall",
-    vertexRotation: 0
+    vertexRotation: 0,
+    edgeFlipped: false,
+    selection: null
   };
   let dragging = false;
 
@@ -188,6 +254,9 @@ export function bindPointerTools(opts: PointerToolsOptions): PointerToolsBinding
     if (!worldAtLocal(lx, ly, worldPoint)) return;
     opts.onBeforeDrag?.();
     applyBrush(state, toolState, assets, worldPoint.x, worldPoint.z);
+    if (toolState.brush === SELECT_BRUSH) {
+      opts.onSelectionChange?.(toolState.selection);
+    }
     dragging = true;
     event.preventDefault();
   };
@@ -199,7 +268,7 @@ export function bindPointerTools(opts: PointerToolsOptions): PointerToolsBinding
       return;
     }
 
-    onHover(getHoverTarget(toolState, assets, worldPoint.x, worldPoint.z, state.grid));
+    onHover(getHoverTarget(toolState, assets, state, worldPoint.x, worldPoint.z, state.grid));
 
     if (dragging && (event.buttons & 1)) {
       applyBrush(state, toolState, assets, worldPoint.x, worldPoint.z);

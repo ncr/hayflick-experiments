@@ -1,8 +1,8 @@
 {
-  "kitId": "kit_mnq0im7t_4",
-  "name": "desert_sandstone",
-  "generatedAt": "2026-04-08T12:16:33.149Z",
-  "styleProfileId": "style_mnq0im7t_3",
+  "kitId": "kit_mnrdlg8b_4",
+  "name": "desert_sandstone_kit",
+  "generatedAt": "2026-04-09T11:10:26.496Z",
+  "styleProfileId": "style_mnrdlg8b_3",
   "artifactTransform": {
     "format": "gltf",
     "blockbenchUnitsPerWorldUnit": 128,
@@ -13,7 +13,7 @@
       "name": "wall",
       "kind": "wall",
       "role": "wall",
-      "groupUuid": "d463db50-fadf-5a1e-d84d-f5eb47f3060b",
+      "groupUuid": "d907e9f2-c246-a9a2-34f1-72b6681dab38",
       "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -61,7 +61,7 @@
       "name": "door",
       "kind": "door_wall",
       "role": "door",
-      "groupUuid": "79c6711b-8a6e-99d8-855d-4779ca441f7a",
+      "groupUuid": "a6fc8bec-5034-d691-e801-daace209717a",
       "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -117,7 +117,7 @@
       "name": "window_left",
       "kind": "window_module",
       "role": "window_left",
-      "groupUuid": "458cc811-62c6-37c7-9d2f-4e1f285a698c",
+      "groupUuid": "7a307505-2d75-8534-c00f-169a79a3d4ca",
       "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -165,7 +165,7 @@
       "name": "window_middle",
       "kind": "window_module",
       "role": "window_middle",
-      "groupUuid": "673632a5-440c-aac3-89d9-10bab4affc36",
+      "groupUuid": "e01e7d8d-2a5e-ed5b-be36-4a0316a3e72a",
       "anchorClass": "edge_midpoint",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -210,58 +210,10 @@
       "artifactArticulationPivot": null
     },
     {
-      "name": "window_right",
-      "kind": "window_module",
-      "role": "window_right",
-      "groupUuid": "1e71e210-bbac-f988-2ee4-b1d1417b30f1",
-      "anchorClass": "edge_midpoint",
-      "anchorPolicy": "first_logical_unit",
-      "anchorLocal": [
-        0,
-        0,
-        0
-      ],
-      "sceneAnchor": [
-        896,
-        0,
-        0
-      ],
-      "logicalFootprint": {
-        "type": "edge_run",
-        "runUnits": 128,
-        "runCells": 1,
-        "baseUnit": 128
-      },
-      "meshEnvelope": [
-        128,
-        280,
-        32
-      ],
-      "articulationPivot": null,
-      "articulationType": null,
-      "hingeSide": null,
-      "dimensions": [
-        128,
-        280,
-        32
-      ],
-      "artifactAnchor": [
-        0,
-        0,
-        0
-      ],
-      "artifactSceneAnchor": [
-        7,
-        0,
-        0
-      ],
-      "artifactArticulationPivot": null
-    },
-    {
       "name": "corner",
       "kind": "corner",
       "role": "corner",
-      "groupUuid": "ca8517ff-cc2e-d6bf-aaf6-c6f529900cee",
+      "groupUuid": "a2b45985-3a7d-b0c3-428d-3207a3279515",
       "anchorClass": "vertex",
       "anchorPolicy": "first_logical_unit",
       "anchorLocal": [
@@ -270,7 +222,7 @@
         0
       ],
       "sceneAnchor": [
-        1120,
+        896,
         0,
         0
       ],
@@ -301,7 +253,7 @@
         0
       ],
       "artifactSceneAnchor": [
-        8.75,
+        7,
         0,
         0
       ],
