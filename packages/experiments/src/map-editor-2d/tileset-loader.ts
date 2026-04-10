@@ -58,7 +58,7 @@ export type TilesetAssets = {
 // ---------------------------------------------------------------------------
 
 /** Kits to load, in display order. Each must exist under assets/tilesets/<id>/tiles/ */
-const KIT_IDS: ReadonlyArray<string> = ["desert_sandstone", "ground_tiles"];
+const KIT_IDS: ReadonlyArray<string> = ["desert_sandstone", "greek_island_white", "ground_tiles"];
 
 const gltfLoader = new GLTFLoader();
 

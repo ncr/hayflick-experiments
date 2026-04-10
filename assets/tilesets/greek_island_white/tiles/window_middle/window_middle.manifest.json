@@ -1,0 +1,45 @@
+{
+  "kitId": "kit_mnsykshv_4",
+  "kitName": "greek_island_white",
+  "generatedAt": "2026-04-10T13:50:02.675704+00:00",
+  "format": "glb",
+  "artifactTransform": null,
+  "part": {
+    "name": "window_middle",
+    "kind": "window_module",
+    "role": "window_middle",
+    "groupUuid": null,
+    "anchorClass": "edge_midpoint",
+    "anchorPolicy": "first_logical_unit",
+    "anchorLocal": [
+      0,
+      0,
+      0
+    ],
+    "sceneAnchor": [
+      896,
+      0,
+      0
+    ],
+    "logicalFootprint": {
+      "type": "edge_run",
+      "runUnits": 128,
+      "runCells": 1,
+      "baseUnit": 128
+    },
+    "meshEnvelope": [
+      128,
+      280,
+      32
+    ],
+    "articulationPivot": null,
+    "articulationType": "fixed",
+    "hingeSide": "left",
+    "dimensions": [
+      128,
+      280,
+      32
+    ]
+  },
+  "textures": []
+}

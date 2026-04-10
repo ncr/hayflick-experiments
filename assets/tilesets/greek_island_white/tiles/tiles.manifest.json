@@ -1,0 +1,257 @@
+{
+  "kitId": "kit_mnsykshv_4",
+  "name": "greek_island_white",
+  "generatedAt": "2026-04-10T13:50:02.686165+00:00",
+  "format": "glb",
+  "tiles": [
+    {
+      "name": "floor_tile",
+      "kind": "floor_tile",
+      "role": "floor_tile",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/floor_tile",
+      "files": [
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/floor_tile/floor_tile.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/floor_tile/floor_tile.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": null,
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "cell_center",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "cell",
+        "widthUnits": 128,
+        "depthUnits": 128,
+        "widthCells": 1,
+        "depthCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        6,
+        128
+      ]
+    },
+    {
+      "name": "wall",
+      "kind": "wall",
+      "role": "wall",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/wall",
+      "files": [
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/wall/wall.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/wall/wall.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": null,
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "door",
+      "kind": "door_wall",
+      "role": "door",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/door",
+      "files": [
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/door/door.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/door/door.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": "hinged",
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "window_left",
+      "kind": "window_module",
+      "role": "window_left",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_left",
+      "files": [
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_left/window_left.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_left/window_left.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": null,
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "window_middle",
+      "kind": "window_module",
+      "role": "window_middle",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_middle",
+      "files": [
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_middle/window_middle.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_middle/window_middle.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": "fixed",
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "window_right",
+      "kind": "window_module",
+      "role": "window_right",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_right",
+      "files": [
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_right/window_right.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/window_right/window_right.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": null,
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "corner",
+      "kind": "corner",
+      "role": "corner",
+      "directory": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/corner",
+      "files": [
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/corner/corner.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/home/ncr/dev/blockstudio/tilesets/greek_island_white/artifacts/tiles/corner/corner.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": null,
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "vertex",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "corner_vertex",
+        "xRunUnits": 128,
+        "zRunUnits": 128,
+        "xRunCells": 1,
+        "zRunCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        128
+      ]
+    }
+  ]
+}
