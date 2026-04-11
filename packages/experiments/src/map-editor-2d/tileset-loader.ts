@@ -83,11 +83,20 @@ async function loadGlb(assetPath: string): Promise<THREE.Group> {
 }
 
 /**
- * Set nearest-neighbor filtering on all textures for pixel-art style.
+ * Prepare a loaded tile GLB for the realtime pixel-art PBR pipeline:
+ *
+ * - baseColor texture gets nearest-neighbour filtering so the pre-quantized
+ *   palette PNGs read as chunky pixel-art blocks. Normal / roughness /
+ *   metallic / AO maps keep their native linear filtering so PBR lighting
+ *   (specular highlights, surface relief, contact shadows) stays crisp.
+ * - Every mesh casts and receives shadows so the directional key light in
+ *   `map-editor-2d/index.ts` can do real contact shadows.
  */
-function fixTextureFiltering(group: THREE.Group): void {
+function prepareTileMaterials(group: THREE.Group): void {
   group.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return;
+    obj.castShadow = true;
+    obj.receiveShadow = true;
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
     for (const mat of materials) {
       if (mat instanceof THREE.MeshStandardMaterial && mat.map) {
@@ -113,7 +122,7 @@ async function loadOneKit(kitId: string): Promise<LoadedTileset> {
     manifest.tiles.map(async (entry) => {
       const group = await loadGlb(`${tilesDir}/${entry.name}/${entry.name}.glb`);
       group.scale.setScalar(LEVEL_EDITOR_WORLD_UNIT);
-      fixTextureFiltering(group);
+      prepareTileMaterials(group);
       return { entry, template: group } satisfies LoadedTile;
     })
   );

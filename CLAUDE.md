@@ -72,10 +72,10 @@ See `docs/PIXEL_PERFECT_FOUNDATION.md` for full architecture.
 The isometric wall / ground tileset pipeline lives in three places:
 
 - `packages/blockstudio/` — planner, shared kit logic, pbr-library, tileset-files, vitest unit tests
-- `scripts/blockstudio/` — orchestrators that shell out to Blender for the actual mesh build and sprite bake
+- `scripts/blockstudio/` — orchestrators that shell out to Blender for the actual mesh build and export
 - `blender/*.py` — Blender-side Python (geometry, materials, export, capture, project)
 
-Source specs are `assets/tilesets/<id>/tileset.json`. The rebuild pipeline writes outputs under `assets/tilesets/<id>/artifacts/` (GLBs, manifests, sprites) and the authoring-debug `assets/tilesets/<id>/project/example_room.glb`.
+Source specs are `assets/tilesets/<id>/tileset.json`. The rebuild pipeline writes outputs under `assets/tilesets/<id>/artifacts/` (per-tile GLBs, whole-kit GLB, manifests) and the authoring-debug `assets/tilesets/<id>/project/example_room.glb`. The map editor renders these GLBs directly at runtime — there is no sprite bake step.
 
 Material registry and Polyhaven downloads live under `assets/materials/`. The `polyhaven/` subdirectory is gitignored.
 

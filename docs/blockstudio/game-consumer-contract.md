@@ -14,17 +14,13 @@ tilesets/<id>/artifacts/
     tiles.manifest.json                     # index of individual tile directories
     <tile>/<tile>.glb                       # one GLB per reusable tile
     <tile>/<tile>.manifest.json             # per-tile manifest (part + kit context)
-  sprites/
-    sprites.manifest.json                   # index of pixel-perfect sprites
-    <tile>.png                              # one sprite per tile at the game pixel budget
-    <tile>.sprite.json                      # per-sprite sidecar (size, anchor, projection)
 ```
 
 - **What to ship**: Anything inside `artifacts/`. Do not ship `project/`.
 - **Units**: Every GLB is exported with `1 glTF unit = 1 base cell = 128 cm`. Use `artifactTransform.authoringUnitsPerArtifactUnit` (always `128`) if you need to convert back to authoring coordinates.
 - **Vertex attributes per primitive**: `POSITION`, `NORMAL`, `TEXCOORD_0`, `TANGENT`. All primitives have PBR materials with baseColor / normal / ARM maps embedded in the GLB.
-- **Consumers have two options**: load the GLBs and render them at runtime (3D route), or use the pre-baked sprites (pixel-art route). See §7 for both patterns.
-- **Textures are intentionally oversupplied at 1K** for 3D consumers. Sprites are already downsampled to the game pixel budget and do not need further processing.
+- **Consumption model**: load the per-tile GLBs and render them at runtime. The pixel-art look is produced by the consumer (nearest-neighbour baseColor sampling + low-res render target + ortho 2:1 iso camera), not by pre-baked sprite frames.
+- **Textures**: baseColor is pre-quantized to a small palette PNG for the pixel-art look; normal and ARM maps stay at their source resolution so PBR lighting (specular, AO, normal relief) works at full fidelity.
 
 ## 2. `tileset.game.json`
 
@@ -142,9 +138,9 @@ To animate a door:
 
 Fixed windows (`articulationType: "fixed"`) don't animate. Non-articulated parts (`articulationType: null`) have no articulation data.
 
-## 7. Consumption patterns
+## 7. Consumption pattern
 
-### 7.1 Runtime glTF loading (three.js, babylon.js, godot)
+Runtime glTF loading (three.js, babylon.js, godot):
 
 1. Load `tileset.game.json`.
 2. For each entry in `tiles[]`, load the corresponding tile GLB.
@@ -155,33 +151,16 @@ Fields you care about: `name`, `kind`/`role`, `anchorClass`, `logicalFootprint`,
 
 Fields you ignore: `sceneAnchor`, `artifactSceneAnchor`, `styleProfileId`, `profile.*` (authoring metadata).
 
-### 7.2 Pre-baked sprite consumption (pixel-art route)
+### Pixel-art look at runtime
 
-Blockstudio already ships per-tile sprites under `artifacts/sprites/`. Each sprite is rendered once at the game pixel budget — ortho 2:1 iso, 32 horizontal / 16 vertical game px per base cell, pitch 30°, yaw 45° — from the corresponding tile GLB. This is the simplest path for pixel-art games.
+The "pixel-art with realistic PBR lighting" look is produced by the consumer, not by pre-baked sprites:
 
-1. Load `sprites/sprites.manifest.json`.
-2. For each entry:
-   - `file` → path to the PNG (relative to `artifacts/`).
-   - `size` → `[width, height]` of the sprite in device pixels. Sprites are at 100% scale; upscale at render time with `NearestFilter` if your game uses a higher display zoom.
-   - `anchorPx` → `[x, y]` position of the tile's logical anchor within the sprite (top-left origin, y down). Use this to align the sprite to a grid cell: compute the tile's target pixel on screen, subtract `anchorPx`, blit the sprite there.
-   - `projection` → describes the bake camera (`kind`, `pitchDeg`, `yawDeg`, `pixelsPerBaseCellHorizontal`, `pixelsPerCameraUnit`) so you can re-project anything on top.
-3. Sprites have transparent backgrounds (`alpha=0`). Depth-sort by grid Y + cell coordinate and blit back-to-front; a simple tile painter works.
+- Render to a low-resolution integer-scale render target, then upscale with nearest-neighbour.
+- Set `mat.map.magFilter = mat.map.minFilter = NearestFilter` on the baseColor texture of every loaded mesh. Leave normal / ARM / roughness / metallic maps at their native filtering so PBR lighting stays crisp.
+- Use an orthographic 2:1 iso camera (pitch 30°, yaw 45°) if you want the canonical Blockstudio camera.
+- Light the scene with tone-mapped PBR lights (ACES / AgX + sRGB output) — the baked baseColor palette is small on purpose, so the lighting layer is what gives tiles their form.
 
-Fields you care about: `name`, `file`, `size`, `anchorPx`. The rest is metadata.
-
-Sprites do not bake articulation frames today; a hinged door is baked in its closed position only. If you need open/intermediate frames, fall back to the 3D route.
-
-### 7.3 Offline sprite-atlas baking (custom)
-
-If the default sprites aren't what you need — e.g., you want a different camera yaw, higher-resolution frames for zoomed views, or articulation frames — re-run the baker with your own settings:
-
-```
-blender --background --python scripts/bake-tile-sprite.py -- \
-    --input path/to/tile.glb \
-    --output path/to/sprite.png
-```
-
-See `scripts/bake-tile-sprite.py` for the available flags. The output format matches `sprites.manifest.json` so you can drop custom bakes in alongside the defaults.
+The reference implementation is the map editor under `packages/experiments/src/map-editor-2d/` — see its `tileset-loader.ts` (texture filtering) and `index.ts` (lighting rig).
 
 ## 8. Gotchas
 

@@ -73,12 +73,54 @@ const experiment: ExperimentModule = {
     // Scene (shared by both panes)
     const scene = new THREE.Scene();
 
-    // Lighting (for 3D pane; MeshBasicMaterial ignores it)
-    const ambient = new THREE.AmbientLight(0xffffff, 0.7);
-    scene.add(ambient);
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
-    dirLight.position.set(5, 10, 7);
-    scene.add(dirLight);
+    // --- Lighting rig ---
+    //
+    // The 3D iso pane renders the PBR tile meshes. The pixel-art look comes
+    // from nearest-filtered baseColor (see tileset-loader.prepareTileMaterials)
+    // plus a low-resolution render target; the *form* of the tiles comes from
+    // this lighting rig driving normal / roughness / AO maps that stay at
+    // full resolution.
+    //
+    // Three-light setup tuned for a mediterranean-noon feel:
+    //   - warm key sun, high-right, soft PCF shadows (contact shadows)
+    //   - cool hemisphere sky ↔ warm ground-bounce fill (replaces flat ambient)
+    //   - cool back-rim to separate silhouettes from the dark background
+    //
+    // Lights are layered to LAYER_3D_ONLY so they don't affect the top-down
+    // editor pane, which uses flat unlit material on its grid overlay.
+
+    const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.8);
+    keyLight.position.set(14, 20, 10);
+    keyLight.target.position.set(0, 0, 0);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    const SHADOW_SPAN = 22;
+    keyLight.shadow.camera.left = -SHADOW_SPAN;
+    keyLight.shadow.camera.right = SHADOW_SPAN;
+    keyLight.shadow.camera.top = SHADOW_SPAN;
+    keyLight.shadow.camera.bottom = -SHADOW_SPAN;
+    keyLight.shadow.camera.near = 0.5;
+    keyLight.shadow.camera.far = 80;
+    keyLight.shadow.bias = -0.0004;
+    keyLight.shadow.normalBias = 0.02;
+    keyLight.shadow.radius = 3;
+    keyLight.layers.set(LAYER_3D_ONLY);
+    keyLight.target.layers.set(LAYER_3D_ONLY);
+    scene.add(keyLight);
+    scene.add(keyLight.target);
+
+    const hemiFill = new THREE.HemisphereLight(0xa9c6ff, 0x4d3a26, 0.85);
+    hemiFill.position.set(0, 10, 0);
+    hemiFill.layers.set(LAYER_3D_ONLY);
+    scene.add(hemiFill);
+
+    const rimLight = new THREE.DirectionalLight(0xc9dcff, 0.9);
+    rimLight.position.set(-10, 7, -12);
+    rimLight.target.position.set(0, 0, 0);
+    rimLight.layers.set(LAYER_3D_ONLY);
+    rimLight.target.layers.set(LAYER_3D_ONLY);
+    scene.add(rimLight);
+    scene.add(rimLight.target);
 
     // Grid renderer (grid lines + terrain cells + hover)
     const gridRenderer = new GridRenderer(state.grid);
@@ -109,6 +151,21 @@ const experiment: ExperimentModule = {
       clearColor: 0x1a1e24,
       clearAlpha: 1
     });
+
+    // PBR / pixel-art colour pipeline:
+    // - ACES tone mapping so HDR lighting compresses into displayable range
+    // - sRGB output colour space for correct gamma on the canvas
+    // - PCF soft shadow maps for the key light's contact shadows
+    //
+    // The low render target for the 3D pane is tagged sRGB so three.js
+    // applies tone mapping + encoding when the scene renders into it. The
+    // 2D pane's low target stays linear (no tone mapping) because its
+    // content is flat unlit grid colours where ACES would desaturate mids.
+    stage.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    stage.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    stage.renderer.toneMappingExposure = 1.0;
+    stage.renderer.shadowMap.enabled = true;
+    stage.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     // Left pane: top-down 2D editor
     const leftCore = new PixelPerfectViewportCore({
@@ -157,6 +214,11 @@ const experiment: ExperimentModule = {
       devicePixelRatio: stage.getDevicePixelRatio()
     });
     stage.registerPane(rightPane);
+
+    // Tag the 3D pane's low render target as sRGB so the renderer's ACES
+    // tone map + gamma encoding apply when the scene is rendered into it.
+    // Without this the low target stays linear and tone mapping is skipped.
+    rightCore.getLowTarget().texture.colorSpace = THREE.SRGBColorSpace;
 
     // --- Input ---
     let focusedPaneId: string | null = "editor-2d";

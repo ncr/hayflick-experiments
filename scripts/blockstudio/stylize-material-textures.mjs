@@ -7,15 +7,15 @@
  * Only the diffuse (baseColor) map is touched. Normal and ARM maps stay
  * at their source resolution so the engine's PBR lighting pipeline —
  * shadows, specular, metallic shimmer, normal-driven bumps — continues
- * to work at full fidelity. The diffuse gets the aggressive pixel-art
- * treatment; lighting layers stay realistic.
+ * to work at full fidelity. The diffuse gets the pixel-art treatment;
+ * lighting layers stay realistic.
  *
  * Workflow:
- *   1. Read <material>_diff_256.jpg (seeded by scripts/downscale-materials.mjs).
- *   2. Downscale to --diff-size (default 64) with Lanczos.
- *   3. Boost contrast + saturation.
- *   4. Palette-quantize to --palette colours (default 8).
- *   5. Write <material>_diff_pix.png (palette-mode PNG, tiny).
+ *   1. Read <material>_diff_<N>.jpg (seeded by scripts/downscale-materials.mjs).
+ *   2. Downscale to --diff-size (default 128) with Lanczos via ImageMagick.
+ *   3. Boost contrast + saturation (modulate).
+ *   4. Palette-quantize to --palette colours (default 24, no dither).
+ *   5. Write <material>_diff_pix.png.
  *   6. Rewrite materials/registry.json so `maps.baseColor` points at the PNG.
  *
  * Reversible: re-run scripts/downscale-materials.mjs to reseed the diffuse
@@ -23,7 +23,7 @@
  *
  * Usage:
  *   node scripts/stylize-material-textures.mjs                        # defaults
- *   node scripts/stylize-material-textures.mjs --palette 6 --diff-size 32
+ *   node scripts/stylize-material-textures.mjs --palette 16 --diff-size 96
  */
 
 import fs from "node:fs";
@@ -36,8 +36,6 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const MATERIALS_DIR = path.join(REPO_ROOT, "assets/materials");
 const REGISTRY_PATH = path.join(MATERIALS_DIR, "registry.json");
 const POLYHAVEN_DIR = path.join(MATERIALS_DIR, "polyhaven");
-const PYTHON = process.env.BLOCKSTUDIO_PYTHON || "python3";
-const PASS = path.join(REPO_ROOT, "scripts/blockstudio/pixel-art-pass.py");
 
 function flag(argv, name, fallback) {
   const index = argv.indexOf(name);
@@ -47,10 +45,10 @@ function flag(argv, name, fallback) {
 
 function main() {
   const argv = process.argv.slice(2);
-  const palette = flag(argv, "--palette", "8");
-  const contrast = flag(argv, "--contrast", "1.2");
-  const saturation = flag(argv, "--saturation", "1.3");
-  const diffSize = flag(argv, "--diff-size", "64");
+  const palette = Number(flag(argv, "--palette", "24"));
+  const contrast = Number(flag(argv, "--contrast", "1.08"));
+  const saturation = Number(flag(argv, "--saturation", "1.15"));
+  const diffSize = Number(flag(argv, "--diff-size", "128"));
 
   if (!fs.existsSync(POLYHAVEN_DIR)) {
     console.error(`[stylize] no polyhaven dir at ${POLYHAVEN_DIR}`);
@@ -64,13 +62,18 @@ function main() {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
 
+  // ImageMagick's -modulate takes saturation and brightness in percentage.
+  // Contrast is expressed via -brightness-contrast (delta around 100).
+  const modulateArg = `100,${Math.round(saturation * 100)},100`;
+  const contrastDelta = Math.round((contrast - 1) * 100);
+
   let stylized = 0;
   for (const id of materialIds) {
     const dir = path.join(POLYHAVEN_DIR, id);
     const files = fs.readdirSync(dir);
     // Prefer whatever downscaled diffuse the registry currently points at
-    // (e.g. _diff_64.jpg, _diff_256.jpg). Falls back to the 1K master if
-    // nothing else is available.
+    // (e.g. _diff_256.jpg). Falls back to the 1K master if nothing else
+    // is available.
     const downscaled = files.find((f) => /_diff_\d+\.jpg$/.test(f) && !/_diff_1k\.jpg$/.test(f));
     const sourceDiff = downscaled || files.find((f) => /_diff_1k\.jpg$/.test(f));
     if (!sourceDiff) {
@@ -82,16 +85,16 @@ function main() {
     const targetPath = path.join(dir, targetName);
 
     execFileSync(
-      PYTHON,
+      "magick",
       [
-        PASS,
-        "--input", sourcePath,
-        "--output", targetPath,
-        "--texture-mode",
-        "--diff-size", diffSize,
-        "--palette-size", palette,
-        "--contrast", contrast,
-        "--saturation", saturation,
+        sourcePath,
+        "-filter", "Lanczos",
+        "-resize", `${diffSize}x${diffSize}`,
+        "-modulate", modulateArg,
+        "-brightness-contrast", `0x${contrastDelta}`,
+        "+dither",
+        "-colors", String(palette),
+        "PNG8:" + targetPath,
       ],
       { stdio: ["ignore", "inherit", "inherit"] }
     );
@@ -110,17 +113,19 @@ function main() {
     entry.maps = { ...(entry.maps || {}), baseColor: targetName };
     entry.style = {
       kind: "pixel_art_diffuse",
-      diffSize: Number(diffSize),
-      paletteSize: Number(palette),
-      contrast: Number(contrast),
-      saturation: Number(saturation),
+      diffSize,
+      paletteSize: palette,
+      contrast,
+      saturation,
     };
     registry.materials[id] = entry;
     stylized += 1;
   }
 
   fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
-  console.log(`[stylize] stylized ${stylized} diffuse maps @ ${diffSize}x${diffSize} palette=${palette}, registry updated`);
+  console.log(
+    `[stylize] stylized ${stylized} diffuse maps @ ${diffSize}x${diffSize} palette=${palette}, registry updated`
+  );
 }
 
 main();

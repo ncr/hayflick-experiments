@@ -5,11 +5,11 @@ This directory holds the blockstudio design docs, folded into hayflick-26-2 on 2
 - `tilekit-improvement-plan.md` — the 8-phase improvement plan (UVs, corner fix, lint, example room, procedural cleanup, texture budget, vocabulary, consumer contract). Historical — everything is landed.
 - `wall-kit-contract.md` — source of truth for wall-kit anchors, pivots, geometry, tile vocabulary per kit.
 - `game-consumer-contract.md` — what the game engine needs to know to load tileset artifacts.
-- `blockstudio-move-plan.md` — the move plan itself (this directory exists because of it).
+- `blockstudio-move-plan.md` — the move plan itself (this directory exists because of it). **Historical**: any references to `bake-tile-sprite.py`, `bake-sprite-set.mjs`, `pixel-art-pass.py`, or `artifacts/sprites/` describe the state *at the time of the move*. The sprite pipeline has since been removed — the map editor renders the per-tile GLBs directly and the pixel-art look is produced at runtime (nearest-filter baseColor + low-res render target).
 
 **Pipeline entry point**: `pnpm run rebuild <tileset-id>` from the repo root.
 **Source specs**: `assets/tilesets/<id>/tileset.json`.
-**Outputs**: `assets/tilesets/<id>/artifacts/{kit,tiles,sprites}/…` and `.../artifacts/tileset.game.json`.
+**Outputs**: `assets/tilesets/<id>/artifacts/{kit,tiles}/…` and `.../artifacts/tileset.game.json`.
 **Materials**: `assets/materials/{registry.json,polyhaven/}`.
 **Code**: `packages/blockstudio/src/{planner,shared,server}` + `scripts/blockstudio/` + `blender/`.
 

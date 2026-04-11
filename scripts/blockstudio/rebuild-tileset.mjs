@@ -20,7 +20,6 @@ import { fileURLToPath } from "node:url";
 
 import { buildBlenderMaterialMap } from "../../packages/blockstudio/src/server/pbr-library.js";
 import { writeTilesetGameMetadata } from "../../packages/blockstudio/src/server/tileset-files.js";
-import { bakeSpriteSet } from "./bake-sprite-set.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -95,17 +94,6 @@ function main() {
   //     because example rooms are authoring/debug output, not game content.
   if (tileset.kind !== "ground") {
     rebuildExampleRoom({ tilesetId, tilesetFile, tilesetDir, materials });
-  }
-
-  // 4c. Bake every tile into a pixel-perfect sprite at the game pixel
-  //     budget. Writes artifacts/sprites/<tile>.png + .sprite.json and
-  //     a sprites.manifest.json index. This is how pixel-art consumers
-  //     read the tileset — the GLBs stay as the authoring source and
-  //     sprites are the game-ready output.
-  try {
-    bakeSpriteSet(tilesetId);
-  } catch (err) {
-    process.stderr.write(`[rebuild-tileset] sprite bake failed: ${err.message}\n`);
   }
 
   // 5. Regenerate tileset.game.json so downstream consumers see the new
