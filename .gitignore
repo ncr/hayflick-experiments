@@ -9,3 +9,4 @@ coverage
 
 # blockstudio inherited rules
 assets/materials/polyhaven/
+blender/__pycache__/
