@@ -75,19 +75,27 @@ const experiment: ExperimentModule = {
 
     // --- Lighting rig ---
     //
-    // The 3D iso pane renders the PBR tile meshes. The pixel-art look comes
-    // from nearest-filtered baseColor (see tileset-loader.prepareTileMaterials)
-    // plus a low-resolution render target; the *form* of the tiles comes from
-    // this lighting rig driving normal / roughness / AO maps that stay at
-    // full resolution.
+    // Each camera gets its own light set via layers. The tile GLB meshes sit
+    // on layer 0 (visible to both cameras), but lights are filtered per-camera
+    // by the layers they're on. Three.js uses a light during a render iff
+    // the light's layers intersect the rendering camera's layers.
     //
-    // Three-light setup tuned for a mediterranean-noon feel:
-    //   - warm key sun, high-right, soft PCF shadows (contact shadows)
-    //   - cool hemisphere sky ↔ warm ground-bounce fill (replaces flat ambient)
-    //   - cool back-rim to separate silhouettes from the dark background
+    // - LAYER_2D_TINT (2D editor): a single flat ambient so the top-down grid
+    //   view reads like a diagram — no direction, no shadows, tiles uniformly
+    //   lit so the grid dominates the read.
     //
-    // Lights are layered to LAYER_3D_ONLY so they don't affect the top-down
-    // editor pane, which uses flat unlit material on its grid overlay.
+    // - LAYER_3D_ONLY (iso preview): the real PBR rig. Three-light setup
+    //   tuned for a mediterranean-noon feel:
+    //     - warm key sun, high-right, soft PCF shadows (contact shadows)
+    //     - cool hemisphere sky ↔ warm ground-bounce fill
+    //     - cool back-rim to separate silhouettes from the dark background
+    //   Combined with ACES tone mapping + sRGB output, the normal / roughness
+    //   / AO maps on the tile meshes get to do their job, while the
+    //   nearest-filtered baseColor gives the pixel-art chunkiness.
+
+    const editorAmbient = new THREE.AmbientLight(0xffffff, 1.6);
+    editorAmbient.layers.set(LAYER_2D_TINT);
+    scene.add(editorAmbient);
 
     const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.8);
     keyLight.position.set(14, 20, 10);
@@ -114,8 +122,12 @@ const experiment: ExperimentModule = {
     hemiFill.layers.set(LAYER_3D_ONLY);
     scene.add(hemiFill);
 
-    const rimLight = new THREE.DirectionalLight(0xc9dcff, 0.9);
-    rimLight.position.set(-10, 7, -12);
+    // Rim pushed from the opposite-ish hemisphere from the key so it
+    // grazes the back edges. Bright + blue so silhouettes separate from
+    // the dark editor background after ACES tone mapping compresses the
+    // upper range.
+    const rimLight = new THREE.DirectionalLight(0x9ec6ff, 2.2);
+    rimLight.position.set(-14, 5, -16);
     rimLight.target.position.set(0, 0, 0);
     rimLight.layers.set(LAYER_3D_ONLY);
     rimLight.target.layers.set(LAYER_3D_ONLY);
@@ -153,16 +165,12 @@ const experiment: ExperimentModule = {
     });
 
     // PBR / pixel-art colour pipeline:
-    // - ACES tone mapping so HDR lighting compresses into displayable range
     // - sRGB output colour space for correct gamma on the canvas
     // - PCF soft shadow maps for the key light's contact shadows
-    //
-    // The low render target for the 3D pane is tagged sRGB so three.js
-    // applies tone mapping + encoding when the scene renders into it. The
-    // 2D pane's low target stays linear (no tone mapping) because its
-    // content is flat unlit grid colours where ACES would desaturate mids.
+    // - Tone mapping is toggled per-pane via beforeSceneRender hooks below
+    //   (ACES on the 3D iso pane, NoToneMapping on the 2D editor pane)
     stage.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    stage.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    stage.renderer.toneMapping = THREE.NoToneMapping;
     stage.renderer.toneMappingExposure = 1.0;
     stage.renderer.shadowMap.enabled = true;
     stage.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -219,6 +227,18 @@ const experiment: ExperimentModule = {
     // tone map + gamma encoding apply when the scene is rendered into it.
     // Without this the low target stays linear and tone mapping is skipped.
     rightCore.getLowTarget().texture.colorSpace = THREE.SRGBColorSpace;
+
+    // Per-pane tone mapping. Global state gets flipped before each scene
+    // render and restored after, so:
+    //   - 3D iso pane: ACES tone mapping, sRGB low target
+    //   - 2D editor pane: no tone mapping, linear low target (unchanged
+    //     from the pre-PBR-upgrade behaviour)
+    rightCore.beforeSceneRender = (renderer) => {
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    };
+    rightCore.afterSceneRender = (renderer) => {
+      renderer.toneMapping = THREE.NoToneMapping;
+    };
 
     // --- Input ---
     let focusedPaneId: string | null = "editor-2d";

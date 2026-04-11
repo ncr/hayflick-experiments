@@ -354,6 +354,17 @@ export class PixelPerfectViewportCore {
   }
 
   /**
+   * Optional callback invoked right before the scene is rendered to
+   * lowTarget. Use this to flip per-pane renderer state — e.g. toggle
+   * `toneMapping` / `toneMappingExposure` so one pane runs ACES while
+   * another stays in `NoToneMapping`. Pair with `afterSceneRender` to
+   * restore state and keep the stage renderer otherwise shared.
+   */
+  beforeSceneRender:
+    | ((renderer: THREE.WebGLRenderer, lowTarget: THREE.WebGLRenderTarget) => void)
+    | null = null;
+
+  /**
    * Optional callback invoked after the scene is rendered to lowTarget
    * but before the output upscale quad is drawn. Use this to run
    * post-process AA passes (FXAA, SMAA) on the low-res image.
@@ -508,6 +519,11 @@ export class PixelPerfectViewportCore {
     renderer.setViewport(0, 0, this.lowTarget.width, this.lowTarget.height);
     renderer.setScissor(0, 0, this.lowTarget.width, this.lowTarget.height);
     renderer.clear();
+
+    if (this.beforeSceneRender) {
+      this.beforeSceneRender(renderer, this.lowTarget);
+    }
+
     renderer.render(this.scene, this.camera);
 
     if (this.afterSceneRender) {
