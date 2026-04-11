@@ -1,0 +1,815 @@
+{
+  "schema": "blockstudio/tileset-game-metadata@1",
+  "generatedAt": "2026-04-11T18:11:26.847Z",
+  "tileset": {
+    "id": "greek_island_white",
+    "name": "greek_island_white",
+    "kind": "wall_kit",
+    "description": "Cycladic white plaster walls with blue painted wood trim, inspired by Greek island architecture (Santorini, Mykonos)."
+  },
+  "rules": {
+    "units": {
+      "baseUnitCm": 128,
+      "authoringUnitsPerBaseUnit": 128,
+      "exporterScale": 128,
+      "artifactFormat": "glb"
+    },
+    "render": {
+      "projection": "ortho_iso_2_to_1",
+      "baseUnitCm": 128,
+      "gamePixelsPerBaseUnit": {
+        "horizontal": 32,
+        "vertical": 16
+      },
+      "modelUnitsPerBaseUnit": 128,
+      "densityAxis": "horizontal",
+      "defaultDisplayScale": 2,
+      "texturePixelsPerGamePixel": {
+        "minimum": 1,
+        "default": 2,
+        "presets": [
+          1,
+          2,
+          4
+        ]
+      },
+      "derived": {
+        "centimetersPerGamePixel": {
+          "horizontal": 4,
+          "vertical": 8
+        },
+        "centimetersPerModelUnit": 1,
+        "gamePixelsPerModelUnit": {
+          "horizontal": 0.25,
+          "vertical": 0.125
+        },
+        "lowResolutionContract": {
+          "horizontal": 32,
+          "vertical": 16
+        },
+        "displayContractAtDefaultScale": {
+          "horizontal": 64,
+          "vertical": 32
+        },
+        "densityPresets": [
+          {
+            "texturePixelsPerGamePixel": 1,
+            "texelsPerModelUnit": 0.25,
+            "texelsPerBaseUnit": 32,
+            "density": 4,
+            "centimetersPerTexturePixel": 4,
+            "horizontalGamePixelsPerTexturePixel": 1,
+            "verticalGamePixelsPerTexturePixel": 0.5
+          },
+          {
+            "texturePixelsPerGamePixel": 2,
+            "texelsPerModelUnit": 0.5,
+            "texelsPerBaseUnit": 64,
+            "density": 8,
+            "centimetersPerTexturePixel": 2,
+            "horizontalGamePixelsPerTexturePixel": 0.5,
+            "verticalGamePixelsPerTexturePixel": 0.25
+          },
+          {
+            "texturePixelsPerGamePixel": 4,
+            "texelsPerModelUnit": 1,
+            "texelsPerBaseUnit": 128,
+            "density": 16,
+            "centimetersPerTexturePixel": 1,
+            "horizontalGamePixelsPerTexturePixel": 0.25,
+            "verticalGamePixelsPerTexturePixel": 0.125
+          }
+        ]
+      }
+    },
+    "defaults": {
+      "kind": "wall_kit",
+      "wallSpan": 128,
+      "wallHeight": 280,
+      "wallThickness": 32,
+      "floorThickness": 6,
+      "door": {
+        "width": 90,
+        "height": 220,
+        "frameThickness": 16,
+        "frameProtrusion": 3
+      },
+      "window": {
+        "narrowWidth": 32,
+        "glassThickness": 4
+      }
+    },
+    "requiredParts": {
+      "wall_kit": [
+        "wall",
+        "corner",
+        "window_left",
+        "window_middle",
+        "window_right",
+        "door",
+        "floor_tile"
+      ]
+    },
+    "anchors": {
+      "policy": "first_logical_unit",
+      "snap": {
+        "floor": "cell_center",
+        "wall": "edge_midpoint",
+        "corner": "vertex",
+        "endCap": "edge_midpoint"
+      },
+      "articulation": {
+        "hinged": "hinge_edge",
+        "casement_window": "mounted_side"
+      }
+    },
+    "notes": [
+      "128cm is the holy logical base cell for the game grid.",
+      "Walls and floors are plain butt joints — no chamfers, no mesh overlap.",
+      "Multi-cell and multi-segment assets anchor to the first logical unit, never the geometric center."
+    ]
+  },
+  "profile": {
+    "id": "greek_island_white",
+    "name": "greek_island_white",
+    "kind": "wall_kit",
+    "description": "Cycladic white plaster walls with blue painted wood trim, inspired by Greek island architecture (Santorini, Mykonos).",
+    "game": {
+      "artifactFormat": "glb",
+      "copyFrom": "artifacts",
+      "copyTilesFrom": "artifacts/tiles",
+      "copyKitFrom": "artifacts/kit"
+    },
+    "geometry": {
+      "baseUnit": 128,
+      "authoringUnitsPerBaseUnit": 128,
+      "wallSpan": 128,
+      "wallHeight": 280,
+      "wallThickness": 32,
+      "floorThickness": 6,
+      "door": {
+        "width": 90,
+        "height": 220,
+        "frameThickness": 16,
+        "frameProtrusion": 3
+      },
+      "window": {
+        "narrowWidth": 32,
+        "glassThickness": 4
+      }
+    },
+    "render": {
+      "projection": "ortho_iso_2_to_1",
+      "baseUnitCm": 128,
+      "gamePixelsPerBaseUnit": {
+        "horizontal": 32,
+        "vertical": 16
+      },
+      "modelUnitsPerBaseUnit": 128,
+      "densityAxis": "horizontal",
+      "defaultDisplayScale": 2,
+      "texturePixelsPerGamePixel": 2,
+      "presets": [
+        1,
+        2,
+        4
+      ],
+      "derived": {
+        "centimetersPerGamePixel": {
+          "horizontal": 4,
+          "vertical": 8
+        },
+        "centimetersPerModelUnit": 1,
+        "gamePixelsPerModelUnit": {
+          "horizontal": 0.25,
+          "vertical": 0.125
+        },
+        "lowResolutionContract": {
+          "horizontal": 32,
+          "vertical": 16
+        },
+        "displayContractAtDefaultScale": {
+          "horizontal": 64,
+          "vertical": 32
+        },
+        "densityPresets": [
+          {
+            "texturePixelsPerGamePixel": 1,
+            "texelsPerModelUnit": 0.25,
+            "texelsPerBaseUnit": 32,
+            "density": 4,
+            "centimetersPerTexturePixel": 4,
+            "horizontalGamePixelsPerTexturePixel": 1,
+            "verticalGamePixelsPerTexturePixel": 0.5
+          },
+          {
+            "texturePixelsPerGamePixel": 2,
+            "texelsPerModelUnit": 0.5,
+            "texelsPerBaseUnit": 64,
+            "density": 8,
+            "centimetersPerTexturePixel": 2,
+            "horizontalGamePixelsPerTexturePixel": 0.5,
+            "verticalGamePixelsPerTexturePixel": 0.25
+          },
+          {
+            "texturePixelsPerGamePixel": 4,
+            "texelsPerModelUnit": 1,
+            "texelsPerBaseUnit": 128,
+            "density": 16,
+            "centimetersPerTexturePixel": 1,
+            "horizontalGamePixelsPerTexturePixel": 0.25,
+            "verticalGamePixelsPerTexturePixel": 0.125
+          }
+        ]
+      }
+    },
+    "textures": {
+      "authoring": {
+        "wallMaterial": "white_plaster_02",
+        "trimMaterial": "blue_painted_planks",
+        "accentMaterial": "glass",
+        "resolution": 140,
+        "uvWidth": 280,
+        "uvHeight": 280,
+        "uvSize": 280,
+        "densityAxis": "horizontal",
+        "texturePixelsPerGamePixel": 2,
+        "texelsPerModelUnit": {
+          "x": 0.5,
+          "y": 0.5
+        },
+        "density": {
+          "x": 8,
+          "y": 8
+        },
+        "densityLabel": "8x",
+        "centimetersPerTexturePixel": {
+          "x": 2,
+          "y": 2
+        },
+        "gamePixelsPerTexturePixel": {
+          "horizontal": 0.5,
+          "vertical": 0.25
+        },
+        "renderContract": {
+          "projection": "ortho_iso_2_to_1",
+          "baseUnitCm": 128,
+          "gamePixelsPerBaseUnit": {
+            "horizontal": 32,
+            "vertical": 16
+          },
+          "modelUnitsPerBaseUnit": 128,
+          "densityAxis": "horizontal"
+        }
+      }
+    },
+    "kitSpec": {
+      "name": "greek_island_white_kit",
+      "includeCorners": true,
+      "includeEndCaps": false,
+      "catalogWindowSource": {
+        "familyName": "vertical_panel",
+        "variantName": "fixed"
+      },
+      "windowFamilies": [
+        {
+          "name": "vertical_panel",
+          "leftWidth": 16,
+          "middleWidth": 32,
+          "rightWidth": 16,
+          "sillHeight": 0,
+          "openingHeight": 280,
+          "frameThickness": 16,
+          "glassThickness": 4,
+          "repeatableMiddlePanels": 1,
+          "variants": [
+            {
+              "name": "fixed",
+              "trimStyle": "plain",
+              "mullionStyle": "single",
+              "articulation": {
+                "type": "fixed",
+                "hingeSide": "left",
+                "pivotRole": "none"
+              },
+              "repeatableMiddlePanels": 1
+            }
+          ]
+        }
+      ]
+    },
+    "anchors": {
+      "policy": "first_logical_unit",
+      "snap": {
+        "floor": "cell_center",
+        "wall": "edge_midpoint",
+        "corner": "vertex",
+        "endCap": "edge_midpoint"
+      },
+      "articulation": {
+        "hinged": "hinge_edge",
+        "casement_window": "mounted_side"
+      },
+      "notes": []
+    },
+    "requiredParts": [
+      "floor_tile",
+      "corner",
+      "door",
+      "wall",
+      "window_left",
+      "window_middle"
+    ],
+    "style": {
+      "notes": "Cycladic white plaster walls, blue painted wood doors and shutters, clear glass windows. Mediterranean island aesthetic.",
+      "referenceImages": []
+    },
+    "notes": []
+  },
+  "exports": {
+    "format": "glb",
+    "root": ".",
+    "kitDir": "kit",
+    "tilesDir": "tiles",
+    "kitManifest": "kit/greek_island_white.manifest.json",
+    "tilesManifest": "tiles/tiles.manifest.json",
+    "saved": [
+      {
+        "path": "kit/greek_island_white.glb",
+        "format": "glb"
+      },
+      {
+        "path": "kit/greek_island_white.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/floor_tile/floor_tile.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/floor_tile/floor_tile.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/wall/wall.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/wall/wall.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/door/door.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/door/door.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/window_left/window_left.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/window_left/window_left.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/window_middle/window_middle.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/window_middle/window_middle.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/corner/corner.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/corner/corner.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/tiles.manifest.json",
+        "format": "manifest"
+      }
+    ],
+    "kit": {
+      "manifest": "kit/greek_island_white.manifest.json",
+      "kitId": "kit_mnunif56_4",
+      "name": "greek_island_white_kit",
+      "dimensions": null,
+      "parts": [
+        {
+          "name": "floor_tile",
+          "kind": "floor_tile",
+          "role": "floor_tile",
+          "dimensions": [
+            128,
+            6,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            6,
+            128
+          ],
+          "anchorClass": "cell_center",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "wall",
+          "kind": "wall",
+          "role": "wall",
+          "dimensions": [
+            128,
+            280,
+            32
+          ],
+          "meshEnvelope": [
+            128,
+            280,
+            32
+          ],
+          "anchorClass": "edge_midpoint",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "edge_run",
+            "runUnits": 128,
+            "runCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "door",
+          "kind": "door_wall",
+          "role": "door",
+          "dimensions": [
+            128,
+            280,
+            32
+          ],
+          "meshEnvelope": [
+            128,
+            280,
+            32
+          ],
+          "anchorClass": "edge_midpoint",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "edge_run",
+            "runUnits": 128,
+            "runCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": [
+            -0.351562,
+            0,
+            -0.082031
+          ],
+          "articulationType": "hinged",
+          "hingeSide": "left"
+        },
+        {
+          "name": "window_left",
+          "kind": "window_module",
+          "role": "window_left",
+          "dimensions": [
+            128,
+            280,
+            32
+          ],
+          "meshEnvelope": [
+            128,
+            280,
+            32
+          ],
+          "anchorClass": "edge_midpoint",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "edge_run",
+            "runUnits": 128,
+            "runCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "window_middle",
+          "kind": "window_module",
+          "role": "window_middle",
+          "dimensions": [
+            128,
+            280,
+            32
+          ],
+          "meshEnvelope": [
+            128,
+            280,
+            32
+          ],
+          "anchorClass": "edge_midpoint",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "edge_run",
+            "runUnits": 128,
+            "runCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": "fixed",
+          "hingeSide": "left"
+        },
+        {
+          "name": "corner",
+          "kind": "corner",
+          "role": "corner",
+          "dimensions": [
+            128,
+            280,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            280,
+            128
+          ],
+          "anchorClass": "vertex",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "corner_vertex",
+            "xRunUnits": 128,
+            "zRunUnits": 128,
+            "xRunCells": 1,
+            "zRunCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        }
+      ]
+    },
+    "tiles": [
+      {
+        "name": "floor_tile",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/floor_tile",
+        "file": "tiles/floor_tile/floor_tile.glb",
+        "manifest": "tiles/floor_tile/floor_tile.manifest.json",
+        "dimensions": [
+          128,
+          6,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          6,
+          128
+        ],
+        "anchorClass": "cell_center",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "wall",
+        "kind": "wall",
+        "role": "wall",
+        "directory": "tiles/wall",
+        "file": "tiles/wall/wall.glb",
+        "manifest": "tiles/wall/wall.manifest.json",
+        "dimensions": [
+          128,
+          280,
+          32
+        ],
+        "meshEnvelope": [
+          128,
+          280,
+          32
+        ],
+        "anchorClass": "edge_midpoint",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "edge_run",
+          "runUnits": 128,
+          "runCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "door",
+        "kind": "door_wall",
+        "role": "door",
+        "directory": "tiles/door",
+        "file": "tiles/door/door.glb",
+        "manifest": "tiles/door/door.manifest.json",
+        "dimensions": [
+          128,
+          280,
+          32
+        ],
+        "meshEnvelope": [
+          128,
+          280,
+          32
+        ],
+        "anchorClass": "edge_midpoint",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "edge_run",
+          "runUnits": 128,
+          "runCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": [
+          -0.351562,
+          0,
+          -0.082031
+        ],
+        "articulationType": "hinged",
+        "hingeSide": "left"
+      },
+      {
+        "name": "window_left",
+        "kind": "window_module",
+        "role": "window_left",
+        "directory": "tiles/window_left",
+        "file": "tiles/window_left/window_left.glb",
+        "manifest": "tiles/window_left/window_left.manifest.json",
+        "dimensions": [
+          128,
+          280,
+          32
+        ],
+        "meshEnvelope": [
+          128,
+          280,
+          32
+        ],
+        "anchorClass": "edge_midpoint",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "edge_run",
+          "runUnits": 128,
+          "runCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "window_middle",
+        "kind": "window_module",
+        "role": "window_middle",
+        "directory": "tiles/window_middle",
+        "file": "tiles/window_middle/window_middle.glb",
+        "manifest": "tiles/window_middle/window_middle.manifest.json",
+        "dimensions": [
+          128,
+          280,
+          32
+        ],
+        "meshEnvelope": [
+          128,
+          280,
+          32
+        ],
+        "anchorClass": "edge_midpoint",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "edge_run",
+          "runUnits": 128,
+          "runCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": "fixed",
+        "hingeSide": "left"
+      },
+      {
+        "name": "corner",
+        "kind": "corner",
+        "role": "corner",
+        "directory": "tiles/corner",
+        "file": "tiles/corner/corner.glb",
+        "manifest": "tiles/corner/corner.manifest.json",
+        "dimensions": [
+          128,
+          280,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          280,
+          128
+        ],
+        "anchorClass": "vertex",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "corner_vertex",
+          "xRunUnits": 128,
+          "zRunUnits": 128,
+          "xRunCells": 1,
+          "zRunCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      }
+    ]
+  }
+}

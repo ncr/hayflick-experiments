@@ -1,0 +1,60 @@
+{
+  "kitId": "kit_mnuns5r5_4",
+  "kitName": "desert_sandstone_kit",
+  "generatedAt": "2026-04-11T18:18:54.647639+00:00",
+  "format": "glb",
+  "artifactTransform": {
+    "format": "gltf",
+    "authoringUnitsPerArtifactUnit": 128,
+    "artifactUnitsPerAuthoringUnit": 0.007812
+  },
+  "part": {
+    "name": "window_middle",
+    "kind": "window_module",
+    "role": "window_middle",
+    "groupUuid": null,
+    "anchorClass": "edge_midpoint",
+    "anchorPolicy": "first_logical_unit",
+    "anchorLocal": [
+      0,
+      0,
+      0
+    ],
+    "sceneAnchor": [
+      672,
+      0,
+      0
+    ],
+    "logicalFootprint": {
+      "type": "edge_run",
+      "runUnits": 128,
+      "runCells": 1,
+      "baseUnit": 128
+    },
+    "meshEnvelope": [
+      128,
+      280,
+      32
+    ],
+    "articulationPivot": null,
+    "articulationType": "fixed",
+    "hingeSide": "left",
+    "dimensions": [
+      128,
+      280,
+      32
+    ],
+    "artifactAnchor": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "artifactSceneAnchor": [
+      5.25,
+      0.0,
+      0.0
+    ],
+    "artifactArticulationPivot": null
+  },
+  "textures": []
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@common/blockstudio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Blender bridge, planner, and tooling for modular isometric tileset generation.",
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "lint-kit": "node src/planner/plan-kit.js --validate --rules ../../assets/tilesets/_rules/general.tileset-rules.json --spec"
+  }
+}

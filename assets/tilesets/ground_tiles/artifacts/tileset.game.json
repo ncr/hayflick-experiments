@@ -1,0 +1,673 @@
+{
+  "schema": "blockstudio/tileset-game-metadata@1",
+  "generatedAt": "2026-04-11T17:10:12.182Z",
+  "tileset": {
+    "id": "ground_tiles",
+    "name": "ground_tiles",
+    "kind": "ground",
+    "description": "Outdoor surface tiles — asphalt, concrete walkway, grass, sandstone."
+  },
+  "rules": {
+    "units": {
+      "baseUnitCm": 128,
+      "authoringUnitsPerBaseUnit": 128,
+      "exporterScale": 128,
+      "artifactFormat": "glb"
+    },
+    "render": {
+      "projection": "ortho_iso_2_to_1",
+      "baseUnitCm": 128,
+      "gamePixelsPerBaseUnit": {
+        "horizontal": 32,
+        "vertical": 16
+      },
+      "modelUnitsPerBaseUnit": 128,
+      "densityAxis": "horizontal",
+      "defaultDisplayScale": 2,
+      "texturePixelsPerGamePixel": {
+        "minimum": 1,
+        "default": 2,
+        "presets": [
+          1,
+          2,
+          4
+        ]
+      },
+      "derived": {
+        "centimetersPerGamePixel": {
+          "horizontal": 4,
+          "vertical": 8
+        },
+        "centimetersPerModelUnit": 1,
+        "gamePixelsPerModelUnit": {
+          "horizontal": 0.25,
+          "vertical": 0.125
+        },
+        "lowResolutionContract": {
+          "horizontal": 32,
+          "vertical": 16
+        },
+        "displayContractAtDefaultScale": {
+          "horizontal": 64,
+          "vertical": 32
+        },
+        "densityPresets": [
+          {
+            "texturePixelsPerGamePixel": 1,
+            "texelsPerModelUnit": 0.25,
+            "texelsPerBaseUnit": 32,
+            "density": 4,
+            "centimetersPerTexturePixel": 4,
+            "horizontalGamePixelsPerTexturePixel": 1,
+            "verticalGamePixelsPerTexturePixel": 0.5
+          },
+          {
+            "texturePixelsPerGamePixel": 2,
+            "texelsPerModelUnit": 0.5,
+            "texelsPerBaseUnit": 64,
+            "density": 8,
+            "centimetersPerTexturePixel": 2,
+            "horizontalGamePixelsPerTexturePixel": 0.5,
+            "verticalGamePixelsPerTexturePixel": 0.25
+          },
+          {
+            "texturePixelsPerGamePixel": 4,
+            "texelsPerModelUnit": 1,
+            "texelsPerBaseUnit": 128,
+            "density": 16,
+            "centimetersPerTexturePixel": 1,
+            "horizontalGamePixelsPerTexturePixel": 0.25,
+            "verticalGamePixelsPerTexturePixel": 0.125
+          }
+        ]
+      }
+    },
+    "defaults": {
+      "kind": "wall_kit",
+      "wallSpan": 128,
+      "wallHeight": 280,
+      "wallThickness": 32,
+      "floorThickness": 6,
+      "door": {
+        "width": 90,
+        "height": 220,
+        "frameThickness": 16,
+        "frameProtrusion": 3
+      },
+      "window": {
+        "narrowWidth": 32,
+        "glassThickness": 4
+      }
+    },
+    "requiredParts": {
+      "wall_kit": [
+        "wall",
+        "corner",
+        "window_left",
+        "window_middle",
+        "window_right",
+        "door",
+        "floor_tile"
+      ]
+    },
+    "anchors": {
+      "policy": "first_logical_unit",
+      "snap": {
+        "floor": "cell_center",
+        "wall": "edge_midpoint",
+        "corner": "vertex",
+        "endCap": "edge_midpoint"
+      },
+      "articulation": {
+        "hinged": "hinge_edge",
+        "casement_window": "mounted_side"
+      }
+    },
+    "notes": [
+      "128cm is the holy logical base cell for the game grid.",
+      "Walls and floors are plain butt joints — no chamfers, no mesh overlap.",
+      "Multi-cell and multi-segment assets anchor to the first logical unit, never the geometric center."
+    ]
+  },
+  "profile": {
+    "id": "ground_tiles",
+    "name": "ground_tiles",
+    "kind": "ground",
+    "description": "Outdoor surface tiles — asphalt, concrete walkway, grass, sandstone.",
+    "game": {
+      "artifactFormat": "glb",
+      "copyFrom": "artifacts",
+      "copyTilesFrom": "artifacts/tiles",
+      "copyKitFrom": "artifacts/kit"
+    },
+    "geometry": {
+      "baseUnit": 128,
+      "authoringUnitsPerBaseUnit": 128,
+      "wallSpan": 128,
+      "wallHeight": 280,
+      "wallThickness": 32,
+      "floorThickness": 6,
+      "door": {
+        "width": 90,
+        "height": 220,
+        "frameThickness": 16,
+        "frameProtrusion": 3
+      },
+      "window": {
+        "narrowWidth": 32,
+        "glassThickness": 4
+      }
+    },
+    "render": {
+      "projection": "ortho_iso_2_to_1",
+      "baseUnitCm": 128,
+      "gamePixelsPerBaseUnit": {
+        "horizontal": 32,
+        "vertical": 16
+      },
+      "modelUnitsPerBaseUnit": 128,
+      "densityAxis": "horizontal",
+      "defaultDisplayScale": 2,
+      "texturePixelsPerGamePixel": 2,
+      "presets": [
+        1,
+        2,
+        4
+      ],
+      "derived": {
+        "centimetersPerGamePixel": {
+          "horizontal": 4,
+          "vertical": 8
+        },
+        "centimetersPerModelUnit": 1,
+        "gamePixelsPerModelUnit": {
+          "horizontal": 0.25,
+          "vertical": 0.125
+        },
+        "lowResolutionContract": {
+          "horizontal": 32,
+          "vertical": 16
+        },
+        "displayContractAtDefaultScale": {
+          "horizontal": 64,
+          "vertical": 32
+        },
+        "densityPresets": [
+          {
+            "texturePixelsPerGamePixel": 1,
+            "texelsPerModelUnit": 0.25,
+            "texelsPerBaseUnit": 32,
+            "density": 4,
+            "centimetersPerTexturePixel": 4,
+            "horizontalGamePixelsPerTexturePixel": 1,
+            "verticalGamePixelsPerTexturePixel": 0.5
+          },
+          {
+            "texturePixelsPerGamePixel": 2,
+            "texelsPerModelUnit": 0.5,
+            "texelsPerBaseUnit": 64,
+            "density": 8,
+            "centimetersPerTexturePixel": 2,
+            "horizontalGamePixelsPerTexturePixel": 0.5,
+            "verticalGamePixelsPerTexturePixel": 0.25
+          },
+          {
+            "texturePixelsPerGamePixel": 4,
+            "texelsPerModelUnit": 1,
+            "texelsPerBaseUnit": 128,
+            "density": 16,
+            "centimetersPerTexturePixel": 1,
+            "horizontalGamePixelsPerTexturePixel": 0.25,
+            "verticalGamePixelsPerTexturePixel": 0.125
+          }
+        ]
+      }
+    },
+    "textures": {
+      "authoring": {
+        "wallMaterial": "plaster",
+        "trimMaterial": "wood",
+        "accentMaterial": "painted_wood",
+        "tileMaterials": {
+          "asphalt": "asphalt_04",
+          "concrete_walk": "cobblestone_floor_04",
+          "grass": "aerial_grass_rock",
+          "sandstone": "sandstone_cracks"
+        },
+        "resolution": 140,
+        "uvWidth": 280,
+        "uvHeight": 280,
+        "uvSize": 280,
+        "densityAxis": "horizontal",
+        "texturePixelsPerGamePixel": 2,
+        "texelsPerModelUnit": {
+          "x": 0.5,
+          "y": 0.5
+        },
+        "density": {
+          "x": 8,
+          "y": 8
+        },
+        "densityLabel": "8x",
+        "centimetersPerTexturePixel": {
+          "x": 2,
+          "y": 2
+        },
+        "gamePixelsPerTexturePixel": {
+          "horizontal": 0.5,
+          "vertical": 0.25
+        },
+        "renderContract": {
+          "projection": "ortho_iso_2_to_1",
+          "baseUnitCm": 128,
+          "gamePixelsPerBaseUnit": {
+            "horizontal": 32,
+            "vertical": 16
+          },
+          "modelUnitsPerBaseUnit": 128,
+          "densityAxis": "horizontal"
+        }
+      }
+    },
+    "kitSpec": {
+      "name": "ground_tiles_kit",
+      "includeCorners": true,
+      "includeEndCaps": false,
+      "catalogWindowSource": {
+        "familyName": "vertical_black_panel",
+        "variantName": "fixed"
+      },
+      "windowFamilies": [
+        {
+          "name": "vertical_black_panel",
+          "leftWidth": 16,
+          "middleWidth": 32,
+          "rightWidth": 16,
+          "sillHeight": 0,
+          "openingHeight": 280,
+          "frameThickness": 16,
+          "glassThickness": 4,
+          "repeatableMiddlePanels": 1,
+          "variants": [
+            {
+              "name": "fixed",
+              "trimStyle": "plain",
+              "mullionStyle": "single",
+              "articulation": {
+                "type": "fixed",
+                "hingeSide": "left",
+                "pivotRole": "none"
+              },
+              "repeatableMiddlePanels": 1
+            }
+          ]
+        }
+      ]
+    },
+    "anchors": {
+      "policy": "first_logical_unit",
+      "snap": {
+        "floor": "cell_center",
+        "wall": "edge_midpoint",
+        "corner": "vertex",
+        "endCap": "edge_midpoint"
+      },
+      "articulation": {
+        "hinged": "hinge_edge",
+        "casement_window": "mounted_side"
+      },
+      "notes": []
+    },
+    "requiredParts": [
+      "asphalt",
+      "concrete_walk",
+      "grass",
+      "sandstone"
+    ],
+    "style": {
+      "notes": "Outdoor ground surfaces. Each tile is a single base cell with its own PBR material.",
+      "referenceImages": []
+    },
+    "notes": []
+  },
+  "exports": {
+    "format": "glb",
+    "root": ".",
+    "kitDir": "kit",
+    "tilesDir": "tiles",
+    "kitManifest": "kit/ground_tiles.manifest.json",
+    "tilesManifest": "tiles/tiles.manifest.json",
+    "saved": [
+      {
+        "path": "kit/ground_tiles.glb",
+        "format": "glb"
+      },
+      {
+        "path": "kit/ground_tiles.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/asphalt/asphalt.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/asphalt/asphalt.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/concrete_walk/concrete_walk.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/concrete_walk/concrete_walk.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/grass/grass.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/grass/grass.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/sandstone/sandstone.glb",
+        "format": "glb"
+      },
+      {
+        "path": "tiles/sandstone/sandstone.manifest.json",
+        "format": "manifest"
+      },
+      {
+        "path": "tiles/tiles.manifest.json",
+        "format": "manifest"
+      }
+    ],
+    "kit": {
+      "manifest": "kit/ground_tiles.manifest.json",
+      "kitId": "kit_mnulbqe4_4",
+      "name": "ground_tiles_kit",
+      "dimensions": null,
+      "parts": [
+        {
+          "name": "asphalt",
+          "kind": "floor_tile",
+          "role": "floor_tile",
+          "dimensions": [
+            128,
+            6,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            6,
+            128
+          ],
+          "anchorClass": "cell_center",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "concrete_walk",
+          "kind": "floor_tile",
+          "role": "floor_tile",
+          "dimensions": [
+            128,
+            6,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            6,
+            128
+          ],
+          "anchorClass": "cell_center",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "grass",
+          "kind": "floor_tile",
+          "role": "floor_tile",
+          "dimensions": [
+            128,
+            6,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            6,
+            128
+          ],
+          "anchorClass": "cell_center",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        },
+        {
+          "name": "sandstone",
+          "kind": "floor_tile",
+          "role": "floor_tile",
+          "dimensions": [
+            128,
+            6,
+            128
+          ],
+          "meshEnvelope": [
+            128,
+            6,
+            128
+          ],
+          "anchorClass": "cell_center",
+          "anchorPolicy": "first_logical_unit",
+          "logicalFootprint": {
+            "type": "cell",
+            "widthUnits": 128,
+            "depthUnits": 128,
+            "widthCells": 1,
+            "depthCells": 1,
+            "baseUnit": 128
+          },
+          "anchor": [
+            0,
+            0,
+            0
+          ],
+          "articulationPivot": null,
+          "articulationType": null,
+          "hingeSide": null
+        }
+      ]
+    },
+    "tiles": [
+      {
+        "name": "asphalt",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/asphalt",
+        "file": "tiles/asphalt/asphalt.glb",
+        "manifest": "tiles/asphalt/asphalt.manifest.json",
+        "dimensions": [
+          128,
+          6,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          6,
+          128
+        ],
+        "anchorClass": "cell_center",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "concrete_walk",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/concrete_walk",
+        "file": "tiles/concrete_walk/concrete_walk.glb",
+        "manifest": "tiles/concrete_walk/concrete_walk.manifest.json",
+        "dimensions": [
+          128,
+          6,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          6,
+          128
+        ],
+        "anchorClass": "cell_center",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "grass",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/grass",
+        "file": "tiles/grass/grass.glb",
+        "manifest": "tiles/grass/grass.manifest.json",
+        "dimensions": [
+          128,
+          6,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          6,
+          128
+        ],
+        "anchorClass": "cell_center",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      },
+      {
+        "name": "sandstone",
+        "kind": "floor_tile",
+        "role": "floor_tile",
+        "directory": "tiles/sandstone",
+        "file": "tiles/sandstone/sandstone.glb",
+        "manifest": "tiles/sandstone/sandstone.manifest.json",
+        "dimensions": [
+          128,
+          6,
+          128
+        ],
+        "meshEnvelope": [
+          128,
+          6,
+          128
+        ],
+        "anchorClass": "cell_center",
+        "anchorPolicy": "first_logical_unit",
+        "logicalFootprint": {
+          "type": "cell",
+          "widthUnits": 128,
+          "depthUnits": 128,
+          "widthCells": 1,
+          "depthCells": 1,
+          "baseUnit": 128
+        },
+        "anchor": [
+          0,
+          0,
+          0
+        ],
+        "articulationPivot": null,
+        "articulationType": null,
+        "hingeSide": null
+      }
+    ]
+  }
+}

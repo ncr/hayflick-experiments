@@ -1,0 +1,264 @@
+{
+  "kitId": "kit_mnuns5r5_4",
+  "name": "desert_sandstone_kit",
+  "styleProfileId": "style_mnuns5r5_3",
+  "parts": [
+    {
+      "name": "wall",
+      "kind": "wall",
+      "role": "wall",
+      "groupUuid": null,
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "anchorLocal": [
+        0,
+        0,
+        0
+      ],
+      "sceneAnchor": [
+        0,
+        0,
+        0
+      ],
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ],
+      "articulationPivot": null,
+      "articulationType": null,
+      "hingeSide": null,
+      "dimensions": [
+        128,
+        280,
+        32
+      ],
+      "artifactAnchor": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "artifactSceneAnchor": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "artifactArticulationPivot": null
+    },
+    {
+      "name": "door",
+      "kind": "door_wall",
+      "role": "door",
+      "groupUuid": null,
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "anchorLocal": [
+        0,
+        0,
+        0
+      ],
+      "sceneAnchor": [
+        224,
+        0,
+        0
+      ],
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ],
+      "articulationPivot": [
+        -45,
+        0,
+        -10.5
+      ],
+      "articulationType": "hinged",
+      "hingeSide": "left",
+      "dimensions": [
+        128,
+        280,
+        32
+      ],
+      "artifactAnchor": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "artifactSceneAnchor": [
+        1.75,
+        0.0,
+        0.0
+      ],
+      "artifactArticulationPivot": [
+        -0.351562,
+        0.0,
+        -0.082031
+      ]
+    },
+    {
+      "name": "window_left",
+      "kind": "window_module",
+      "role": "window_left",
+      "groupUuid": null,
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "anchorLocal": [
+        0,
+        0,
+        0
+      ],
+      "sceneAnchor": [
+        448,
+        0,
+        0
+      ],
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ],
+      "articulationPivot": null,
+      "articulationType": null,
+      "hingeSide": null,
+      "dimensions": [
+        128,
+        280,
+        32
+      ],
+      "artifactAnchor": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "artifactSceneAnchor": [
+        3.5,
+        0.0,
+        0.0
+      ],
+      "artifactArticulationPivot": null
+    },
+    {
+      "name": "window_middle",
+      "kind": "window_module",
+      "role": "window_middle",
+      "groupUuid": null,
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "anchorLocal": [
+        0,
+        0,
+        0
+      ],
+      "sceneAnchor": [
+        672,
+        0,
+        0
+      ],
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ],
+      "articulationPivot": null,
+      "articulationType": "fixed",
+      "hingeSide": "left",
+      "dimensions": [
+        128,
+        280,
+        32
+      ],
+      "artifactAnchor": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "artifactSceneAnchor": [
+        5.25,
+        0.0,
+        0.0
+      ],
+      "artifactArticulationPivot": null
+    },
+    {
+      "name": "corner",
+      "kind": "corner",
+      "role": "corner",
+      "groupUuid": null,
+      "anchorClass": "vertex",
+      "anchorPolicy": "first_logical_unit",
+      "anchorLocal": [
+        0,
+        0,
+        0
+      ],
+      "sceneAnchor": [
+        896,
+        0,
+        0
+      ],
+      "logicalFootprint": {
+        "type": "corner_vertex",
+        "xRunUnits": 128,
+        "zRunUnits": 128,
+        "xRunCells": 1,
+        "zRunCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        128
+      ],
+      "articulationPivot": null,
+      "articulationType": null,
+      "hingeSide": null,
+      "dimensions": [
+        128,
+        280,
+        128
+      ],
+      "artifactAnchor": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "artifactSceneAnchor": [
+        7.0,
+        0.0,
+        0.0
+      ],
+      "artifactArticulationPivot": null
+    }
+  ],
+  "exampleRoom": null,
+  "textures": [],
+  "artifactTransform": {
+    "format": "gltf",
+    "authoringUnitsPerArtifactUnit": 128,
+    "artifactUnitsPerAuthoringUnit": 0.007812
+  }
+}

@@ -57,7 +57,7 @@ export type TilesetAssets = {
 // Internals
 // ---------------------------------------------------------------------------
 
-/** Kits to load, in display order. Each must exist under assets/tilesets/<id>/tiles/ */
+/** Kits to load, in display order. Each must exist under assets/tilesets/<id>/artifacts/tiles/ */
 const KIT_IDS: ReadonlyArray<string> = ["desert_sandstone", "greek_island_white", "ground_tiles"];
 
 const gltfLoader = new GLTFLoader();
@@ -104,7 +104,7 @@ function fixTextureFiltering(group: THREE.Group): void {
 // ---------------------------------------------------------------------------
 
 async function loadOneKit(kitId: string): Promise<LoadedTileset> {
-  const tilesDir = `tilesets/${kitId}/tiles`;
+  const tilesDir = `tilesets/${kitId}/artifacts/tiles`;
   const manifest = await fetchJson<TilesManifest>(`${tilesDir}/tiles.manifest.json`);
 
   console.log(`[tileset] ${manifest.name}: ${manifest.tiles.length} tiles`);

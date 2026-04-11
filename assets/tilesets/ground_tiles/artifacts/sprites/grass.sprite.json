@@ -1,0 +1,25 @@
+{
+  "schema": "blockstudio/tile-sprite@1",
+  "source": "grass.glb",
+  "size": [
+    34,
+    19
+  ],
+  "anchorPx": [
+    17.0,
+    10.0
+  ],
+  "projection": {
+    "kind": "ortho_iso_2_to_1",
+    "pitchDeg": 30.0,
+    "yawDeg": 45.0,
+    "pixelsPerBaseCellHorizontal": 32,
+    "pixelsPerCameraUnit": 22.627417
+  },
+  "orthoFrustum": {
+    "minU": -0.751301,
+    "maxU": 0.751301,
+    "minV": -0.397748,
+    "maxV": 0.438343
+  }
+}

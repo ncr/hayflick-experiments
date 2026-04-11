@@ -1,0 +1,75 @@
+{
+  "id": "ground_tiles",
+  "name": "ground_tiles",
+  "kind": "ground",
+  "description": "Outdoor surface tiles — asphalt, concrete walkway, grass, sandstone.",
+  "game": {
+    "artifactFormat": "glb",
+    "copyFrom": "artifacts",
+    "copyTilesFrom": "artifacts/tiles",
+    "copyKitFrom": "artifacts/kit"
+  },
+  "geometry": {
+    "baseUnit": 128,
+    "authoringUnitsPerBaseUnit": 128,
+    "wallSpan": 128,
+    "wallHeight": 280,
+    "wallThickness": 32,
+    "floorThickness": 6
+  },
+  "render": {
+    "projection": "ortho_iso_2_to_1",
+    "baseUnitCm": 128,
+    "gamePixelsPerBaseUnit": {
+      "horizontal": 32,
+      "vertical": 16
+    },
+    "modelUnitsPerBaseUnit": 128,
+    "densityAxis": "horizontal",
+    "defaultDisplayScale": 2,
+    "texturePixelsPerGamePixel": 2
+  },
+  "textures": {
+    "authoring": {
+      "tileMaterials": {
+        "asphalt": "asphalt_04",
+        "concrete_walk": "cobblestone_floor_04",
+        "grass": "aerial_grass_rock",
+        "sandstone": "sandstone_cracks"
+      }
+    }
+  },
+  "kitSpec": {
+    "name": "ground_tiles_kit",
+    "tiles": [
+      { "name": "asphalt" },
+      { "name": "concrete_walk" },
+      { "name": "grass" },
+      { "name": "sandstone" }
+    ]
+  },
+  "anchors": {
+    "policy": "first_logical_unit",
+    "snap": {
+      "floor": "cell_center"
+    }
+  },
+  "requiredParts": [
+    "asphalt",
+    "concrete_walk",
+    "grass",
+    "sandstone"
+  ],
+  "style": {
+    "notes": "Outdoor ground surfaces. Each tile is a single base cell with its own PBR material."
+  },
+  "paths": {
+    "projectDir": "project",
+    "texturesDir": "project/textures",
+    "capturesDir": "project/captures",
+    "artifactsDir": "artifacts",
+    "kitArtifactsDir": "artifacts/kit",
+    "tileArtifactsDir": "artifacts/tiles",
+    "rulesFile": "../_rules/general.tileset-rules.json"
+  }
+}

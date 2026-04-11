@@ -1,0 +1,68 @@
+{
+  "kitId": "kit_mnuns5r5_4",
+  "kitName": "desert_sandstone_kit",
+  "generatedAt": "2026-04-11T18:18:54.635713+00:00",
+  "format": "glb",
+  "artifactTransform": {
+    "format": "gltf",
+    "authoringUnitsPerArtifactUnit": 128,
+    "artifactUnitsPerAuthoringUnit": 0.007812
+  },
+  "part": {
+    "name": "door",
+    "kind": "door_wall",
+    "role": "door",
+    "groupUuid": null,
+    "anchorClass": "edge_midpoint",
+    "anchorPolicy": "first_logical_unit",
+    "anchorLocal": [
+      0,
+      0,
+      0
+    ],
+    "sceneAnchor": [
+      224,
+      0,
+      0
+    ],
+    "logicalFootprint": {
+      "type": "edge_run",
+      "runUnits": 128,
+      "runCells": 1,
+      "baseUnit": 128
+    },
+    "meshEnvelope": [
+      128,
+      280,
+      32
+    ],
+    "articulationPivot": [
+      -45,
+      0,
+      -10.5
+    ],
+    "articulationType": "hinged",
+    "hingeSide": "left",
+    "dimensions": [
+      128,
+      280,
+      32
+    ],
+    "artifactAnchor": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "artifactSceneAnchor": [
+      1.75,
+      0.0,
+      0.0
+    ],
+    "artifactArticulationPivot": [
+      -0.351562,
+      0.0,
+      -0.082031
+    ]
+  },
+  "textures": []
+}

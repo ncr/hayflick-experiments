@@ -1,0 +1,114 @@
+{
+  "id": "desert_sandstone",
+  "name": "desert_sandstone",
+  "kind": "wall_kit",
+  "description": "Weathered sandstone walls with rough planks, inspired by North African desert villages.",
+  "game": {
+    "artifactFormat": "glb",
+    "copyFrom": "artifacts",
+    "copyTilesFrom": "artifacts/tiles",
+    "copyKitFrom": "artifacts/kit"
+  },
+  "geometry": {
+    "baseUnit": 128,
+    "authoringUnitsPerBaseUnit": 128,
+    "wallSpan": 128,
+    "wallHeight": 280,
+    "wallThickness": 32,
+    "floorThickness": 6,
+    "door": {
+      "width": 90,
+      "height": 220,
+      "frameThickness": 16,
+      "frameProtrusion": 3
+    },
+    "window": {
+      "narrowWidth": 32,
+      "glassThickness": 4
+    }
+  },
+  "render": {
+    "projection": "ortho_iso_2_to_1",
+    "baseUnitCm": 128,
+    "gamePixelsPerBaseUnit": {
+      "horizontal": 32,
+      "vertical": 16
+    },
+    "modelUnitsPerBaseUnit": 128,
+    "densityAxis": "horizontal",
+    "defaultDisplayScale": 2,
+    "texturePixelsPerGamePixel": 2
+  },
+  "textures": {
+    "authoring": {
+      "wallMaterial": "sandstone_cracks",
+      "trimMaterial": "weathered_brown_planks",
+      "accentMaterial": "glass"
+    }
+  },
+  "kitSpec": {
+    "name": "desert_sandstone_kit",
+    "includeFloorTile": false,
+    "includeWindowRight": false,
+    "includeCorners": true,
+    "includeEndCaps": false,
+    "catalogWindowSource": {
+      "familyName": "vertical_panel",
+      "variantName": "fixed"
+    },
+    "windowFamilies": [
+      {
+        "name": "vertical_panel",
+        "leftWidth": 16,
+        "middleWidth": 32,
+        "rightWidth": 16,
+        "sillHeight": 0,
+        "openingHeight": 280,
+        "frameThickness": 16,
+        "glassThickness": 4,
+        "repeatableMiddlePanels": 1,
+        "variants": [
+          {
+            "name": "fixed",
+            "trimStyle": "plain",
+            "mullionStyle": "single",
+            "articulation": {
+              "type": "fixed",
+              "hingeSide": "left",
+              "pivotRole": "none"
+            },
+            "repeatableMiddlePanels": 1
+          }
+        ]
+      }
+    ]
+  },
+  "anchors": {
+    "policy": "first_logical_unit",
+    "snap": {
+      "floor": "cell_center",
+      "wall": "edge_midpoint",
+      "corner": "vertex",
+      "endCap": "edge_midpoint"
+    }
+  },
+  "requiredParts": [
+    "corner",
+    "door",
+    "wall",
+    "window_left",
+    "window_middle"
+  ],
+  "style": {
+    "notes": "Sun-bleached sandstone with weathered wood shutters and doors. Sparse desert palette."
+  },
+  "paths": {
+    "projectDir": "project",
+    "texturesDir": "project/textures",
+    "capturesDir": "project/captures",
+    "artifactsDir": "artifacts",
+    "kitArtifactsDir": "artifacts/kit",
+    "tileArtifactsDir": "artifacts/tiles",
+    "rulesFile": "../_rules/general.tileset-rules.json"
+  }
+}

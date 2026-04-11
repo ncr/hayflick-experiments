@@ -40,6 +40,8 @@ scripts/            — CLI helpers (new-experiment scaffold, HTTPS dev server)
 | `pnpm test:promoted` | Run coverage-gated tests for promoted packages |
 | `pnpm test:e2e` | Run Playwright end-to-end tests |
 | `pnpm exp:new` | Scaffold a new experiment |
+| `pnpm run rebuild <id>` | Rebuild one tileset through Blender (planner + export + sprite bake). Writes to `assets/tilesets/<id>/artifacts/`. Requires `$BLENDER_BIN` and `assets/materials/polyhaven/` populated. |
+| `pnpm run rebuild:all` | Rebuild all three checked-in tilesets in sequence. |
 
 ## Experiment Flow
 
@@ -64,6 +66,22 @@ See `docs/PIXEL_PERFECT_FOUNDATION.md` for full architecture.
 5. Pan advances in whole low-res pixel steps with carried remainder
 6. Zoom changes corrected by pan so world point under cursor stays fixed
 7. Overscan guard band prevents edge bars under remainder shifts
+
+## Tileset Pipeline (Blockstudio)
+
+The isometric wall / ground tileset pipeline lives in three places:
+
+- `packages/blockstudio/` — planner, shared kit logic, pbr-library, tileset-files, vitest unit tests
+- `scripts/blockstudio/` — orchestrators that shell out to Blender for the actual mesh build and sprite bake
+- `blender/*.py` — Blender-side Python (geometry, materials, export, capture, project)
+
+Source specs are `assets/tilesets/<id>/tileset.json`. The rebuild pipeline writes outputs under `assets/tilesets/<id>/artifacts/` (GLBs, manifests, sprites) and the authoring-debug `assets/tilesets/<id>/project/example_room.glb`.
+
+Material registry and Polyhaven downloads live under `assets/materials/`. The `polyhaven/` subdirectory is gitignored.
+
+Iteration loop: edit `assets/tilesets/<id>/tileset.json` → `pnpm run rebuild <id>` → reload the map editor in the hub.
+
+See `docs/blockstudio/` for the full contract (game consumer, wall kit, tilekit improvement plan).
 
 ## Testing Conventions
 

@@ -1,0 +1,185 @@
+{
+  "kitId": "kit_mnuns5r5_4",
+  "name": "desert_sandstone_kit",
+  "generatedAt": "2026-04-11T18:18:54.653485+00:00",
+  "format": "glb",
+  "tiles": [
+    {
+      "name": "wall",
+      "kind": "wall",
+      "role": "wall",
+      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/wall",
+      "files": [
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/wall/wall.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/wall/wall.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": null,
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "door",
+      "kind": "door_wall",
+      "role": "door",
+      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/door",
+      "files": [
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/door/door.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/door/door.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": "hinged",
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "window_left",
+      "kind": "window_module",
+      "role": "window_left",
+      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_left",
+      "files": [
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": null,
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "window_middle",
+      "kind": "window_module",
+      "role": "window_middle",
+      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle",
+      "files": [
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": "fixed",
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "edge_midpoint",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "edge_run",
+        "runUnits": 128,
+        "runCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        32
+      ]
+    },
+    {
+      "name": "corner",
+      "kind": "corner",
+      "role": "corner",
+      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/corner",
+      "files": [
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/corner/corner.manifest.json",
+          "format": "manifest"
+        },
+        {
+          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/corner/corner.glb",
+          "format": "glb"
+        }
+      ],
+      "articulationType": null,
+      "anchor": [
+        0,
+        0,
+        0
+      ],
+      "anchorClass": "vertex",
+      "anchorPolicy": "first_logical_unit",
+      "logicalFootprint": {
+        "type": "corner_vertex",
+        "xRunUnits": 128,
+        "zRunUnits": 128,
+        "xRunCells": 1,
+        "zRunCells": 1,
+        "baseUnit": 128
+      },
+      "meshEnvelope": [
+        128,
+        280,
+        128
+      ]
+    }
+  ]
+}

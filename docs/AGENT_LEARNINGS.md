@@ -3416,3 +3416,17 @@ Preventive checklist:
 - Keep a dedicated `apps/hub/vitest.config.ts` that excludes dev-only middleware/plugins.
 - Use the minimal plugin set needed for tests (`react`, `glsl`) and set the default environment explicitly instead of inheriting from dev config.
 - When adding server-side imports under `apps/hub/plugins`, rerun a targeted hub `vitest` command to catch config-load regressions immediately.
+
+## 2026-04-11 - Blockstudio repo folded into hayflick-26-2
+Root cause:
+- Blockstudio lived in its own repo and published tileset GLBs that hayflick consumed via `scripts/sync-tileset.sh` (driven by a `/sync-tilesets` slash command).
+- Every asset iteration required rebuild in repo A, sync into repo B, reload the game. Two-repo context switching was slow and easy to forget.
+
+Detection signal:
+- Any mention of `scripts/sync-tileset.sh` or the `/sync-tilesets` slash command.
+- Stale synced copies under `assets/tilesets/<id>/` diverging from the blockstudio source of truth.
+
+Preventive checklist:
+- Never re-introduce a sync bridge. Rebuild pipelines must write directly under `assets/` in the same repo the consumer lives in.
+- Source specs, artifacts, and materials all live at `assets/tilesets/` and `assets/materials/`; code lives under `packages/blockstudio/`, `scripts/blockstudio/`, and top-level `blender/`.
+- When moving tooling into a workspace package, strip dead surfaces (MCP server + related tests) rather than carrying them forward "just in case".

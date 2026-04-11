@@ -1,0 +1,25 @@
+{
+  "schema": "blockstudio/tile-sprite@1",
+  "source": "window_left.glb",
+  "size": [
+    22,
+    55
+  ],
+  "anchorPx": [
+    11.0,
+    49.0
+  ],
+  "projection": {
+    "kind": "ortho_iso_2_to_1",
+    "pitchDeg": 30.0,
+    "yawDeg": 45.0,
+    "pixelsPerBaseCellHorizontal": 32,
+    "pixelsPerCameraUnit": 22.627417
+  },
+  "orthoFrustum": {
+    "minU": -0.486136,
+    "maxU": 0.486136,
+    "minV": -0.265165,
+    "maxV": 2.159596
+  }
+}
