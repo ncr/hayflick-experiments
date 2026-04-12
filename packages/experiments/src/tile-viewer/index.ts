@@ -171,9 +171,13 @@ const experiment: ExperimentModule = {
     const ground = createGroundPlane();
     scene.add(ground); // layer 0
 
-    // Lighting on layer 0 (both cameras)
+    // Lighting on layer 0 (both cameras).
+    // The key light orbits slowly so normal-map relief and roughness
+    // variation are visible as the light angle changes.
+    const KEY_RADIUS = 20;
+    const KEY_HEIGHT = 18;
+    const KEY_ORBIT_SPEED = 0.15; // radians per second — one full revolution ~42s
     const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.8);
-    keyLight.position.set(14, 20, 10);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
     const S = 6;
@@ -426,10 +430,20 @@ const experiment: ExperimentModule = {
     // Frame loop
     let animId = 0;
     let lastTime = performance.now();
+    let keyAngle = 0;
     const frame = (now: number): void => {
       animId = requestAnimationFrame(frame);
       const dt = Math.min((now - lastTime) / 1000, 0.1);
       lastTime = now;
+
+      // Orbit the key light
+      keyAngle += KEY_ORBIT_SPEED * dt;
+      keyLight.position.set(
+        Math.cos(keyAngle) * KEY_RADIUS,
+        KEY_HEIGHT,
+        Math.sin(keyAngle) * KEY_RADIUS
+      );
+
       stage.drawFrame(now, dt);
     };
     animId = requestAnimationFrame(frame);
