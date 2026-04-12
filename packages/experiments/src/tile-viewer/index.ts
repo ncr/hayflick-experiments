@@ -4,22 +4,31 @@ import {
   PixelPerfectViewportCore,
   PixelPerfectScissorPane
 } from "@common/render";
-import { bindSharedScissorStageInput } from "@common/input";
+import { attachTouchGestures } from "@common/input";
 import { LEVEL_EDITOR_WORLD_UNIT } from "@common/level-editor";
 import type { ExperimentModule } from "../runtime/types";
 import { loadTilesetAssets, type TilesetAssets, type LoadedTile } from "../map-editor-2d/tileset-loader";
 
 // ---------------------------------------------------------------------------
-// Constants
+// Layers — both cameras see layer 0 (ground + lights). Each camera also
+// enables its own private layer where a differently-filtered tile clone lives.
 // ---------------------------------------------------------------------------
 
-// Canonical settings — must match map-editor-2d's 3D iso pane exactly so
-// tiles render at the same pixel density and ortho frustum as the game.
+const NORMAL_LAYER = 1;
+const TARGET_LAYER = 2;
+
+// ---------------------------------------------------------------------------
+// Canonical target view config (matches map-editor-2d 3D iso pane)
+// ---------------------------------------------------------------------------
+
 const GRID_TILES = 20;
 const CAMERA_DISTANCE = 50;
 const ISO_YAW = Math.PI / 4;
 
-const VIEW_CONFIG = {
+/** Log2 pinch ratio per zoom step (~32% size change). */
+const TOUCH_PINCH_LOG2_THRESHOLD = Math.log2(1.32);
+
+const TARGET_VIEW_CONFIG = {
   fixedRenderHeight: 360,
   baseOrthoHeight: GRID_TILES * LEVEL_EDITOR_WORLD_UNIT * 0.4,
   cameraDistance: CAMERA_DISTANCE,
@@ -36,9 +45,17 @@ const VIEW_CONFIG = {
   outputOverscanLowPixels: 2
 };
 
+// Normal view: same framing, higher fidelity render
+const NORMAL_VIEW_CONFIG = {
+  ...TARGET_VIEW_CONFIG,
+  fixedRenderHeight: 720
+};
+
 // ---------------------------------------------------------------------------
-// Tile selector UI
+// Tile selector UI (touch-friendly)
 // ---------------------------------------------------------------------------
+
+const SELECTOR_HEIGHT = 44;
 
 function createTileSelector(
   parent: HTMLElement,
@@ -47,37 +64,37 @@ function createTileSelector(
 ): { destroy(): void; setActive(name: string): void } {
   const bar = document.createElement("div");
   bar.style.cssText = `
-    position: absolute; top: 0; left: 0; right: 0; height: 36px;
-    display: flex; align-items: center; gap: 6px; padding: 0 10px;
+    position: absolute; top: 0; left: 0; right: 0; height: ${SELECTOR_HEIGHT}px;
+    display: flex; align-items: center; gap: 4px; padding: 0 8px;
     background: #14181e; border-bottom: 1px solid #2a2e36;
-    font: 12px/1 monospace; color: #aab; overflow-x: auto; z-index: 10;
+    font: 13px/1 monospace; color: #aab; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; z-index: 10;
   `;
   parent.appendChild(bar);
 
   const buttons = new Map<string, HTMLButtonElement>();
 
   for (const kit of assets.tilesets) {
-    // Kit label
     const label = document.createElement("span");
-    label.textContent = kit.manifest.name;
-    label.style.cssText = "color:#667;margin-right:2px;";
+    label.textContent = kit.manifest.name.replace(/_/g, " ");
+    label.style.cssText = "color:#667;margin-right:2px;white-space:nowrap;font-size:11px;";
     bar.appendChild(label);
 
     for (const [name, tile] of kit.tiles) {
       const btn = document.createElement("button");
-      btn.textContent = name;
+      btn.textContent = name.replace(/_/g, " ");
       btn.style.cssText = `
         background: #1e2430; color: #ccd; border: 1px solid #333;
-        border-radius: 3px; padding: 3px 8px; cursor: pointer; font: inherit;
+        border-radius: 4px; padding: 6px 10px; cursor: pointer;
+        font: inherit; white-space: nowrap; min-height: 32px;
       `;
       btn.addEventListener("click", () => onSelect(tile));
       bar.appendChild(btn);
       buttons.set(name, btn);
     }
 
-    // Separator between kits
     const sep = document.createElement("span");
-    sep.style.cssText = "width:1px;height:18px;background:#333;flex-shrink:0;";
+    sep.style.cssText = "width:1px;height:20px;background:#333;flex-shrink:0;";
     bar.appendChild(sep);
   }
 
@@ -88,29 +105,51 @@ function createTileSelector(
     }
   }
 
-  return {
-    destroy() { bar.remove(); },
-    setActive
-  };
+  return { destroy() { bar.remove(); }, setActive };
 }
 
 // ---------------------------------------------------------------------------
-// Ground plane
+// Helpers
 // ---------------------------------------------------------------------------
 
+function addPaneLabel(parent: HTMLElement, text: string): HTMLDivElement {
+  const el = document.createElement("div");
+  el.textContent = text;
+  el.style.cssText = `
+    position: absolute; top: 4px; left: 8px; z-index: 5;
+    font: 11px/1 monospace; color: #556; pointer-events: none;
+  `;
+  parent.appendChild(el);
+  return el;
+}
+
 function createGroundPlane(): THREE.Mesh {
-  const size = 8;
-  const geo = new THREE.PlaneGeometry(size, size);
+  const geo = new THREE.PlaneGeometry(8, 8);
   geo.rotateX(-Math.PI / 2);
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x2a2a2a,
-    roughness: 0.95,
-    metalness: 0.0
-  });
+  const mat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.95, metalness: 0 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
-  mesh.position.y = -0.001; // slightly below origin so tiles sit on top
+  mesh.position.y = -0.001;
   return mesh;
+}
+
+function setLayerRecursive(obj: THREE.Object3D, layer: number): void {
+  obj.layers.set(layer);
+  for (const child of obj.children) setLayerRecursive(child, layer);
+}
+
+function setTextureFiltering(group: THREE.Group, filter: THREE.MagnificationTextureFilter): void {
+  group.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const mat of mats) {
+      if (mat instanceof THREE.MeshStandardMaterial && mat.map) {
+        mat.map.magFilter = filter;
+        mat.map.minFilter = filter;
+        mat.map.needsUpdate = true;
+      }
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -126,29 +165,24 @@ const experiment: ExperimentModule = {
     const { mount, width, height } = ctx;
     mount.style.position = "relative";
 
-    const SELECTOR_HEIGHT = 36;
-
-    // Scene
+    // Scene (shared by both panes via layers)
     const scene = new THREE.Scene();
 
-    // Ground plane for shadow reception
     const ground = createGroundPlane();
-    scene.add(ground);
+    scene.add(ground); // layer 0
 
-    // --- Lighting rig (matches map-editor-2d 3D pane) ---
-
+    // Lighting on layer 0 (both cameras)
     const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.8);
     keyLight.position.set(14, 20, 10);
-    keyLight.target.position.set(0, 0, 0);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
-    const SHADOW_SPAN = 6;
-    keyLight.shadow.camera.left = -SHADOW_SPAN;
-    keyLight.shadow.camera.right = SHADOW_SPAN;
-    keyLight.shadow.camera.far = 80;
+    const S = 6;
+    keyLight.shadow.camera.left = -S;
+    keyLight.shadow.camera.right = S;
+    keyLight.shadow.camera.top = S;
+    keyLight.shadow.camera.bottom = -S;
     keyLight.shadow.camera.near = 0.5;
-    keyLight.shadow.camera.top = SHADOW_SPAN;
-    keyLight.shadow.camera.bottom = -SHADOW_SPAN;
+    keyLight.shadow.camera.far = 80;
     keyLight.shadow.bias = -0.0004;
     keyLight.shadow.normalBias = 0.02;
     keyLight.shadow.radius = 3;
@@ -156,50 +190,76 @@ const experiment: ExperimentModule = {
     scene.add(keyLight.target);
 
     const hemiFill = new THREE.HemisphereLight(0xa9c6ff, 0x4d3a26, 0.85);
-    hemiFill.position.set(0, 10, 0);
     scene.add(hemiFill);
 
     const rimLight = new THREE.DirectionalLight(0x9ec6ff, 2.2);
     rimLight.position.set(-14, 5, -16);
-    rimLight.target.position.set(0, 0, 0);
     scene.add(rimLight);
     scene.add(rimLight.target);
+
+    // Tile groups on private layers
+    const normalTileGroup = new THREE.Group();
+    const targetTileGroup = new THREE.Group();
+    scene.add(normalTileGroup);
+    scene.add(targetTileGroup);
 
     // Load tileset assets
     const assets = await loadTilesetAssets();
 
-    // Current tile display group — swapped when selecting a different tile
-    const tileGroup = new THREE.Group();
-    scene.add(tileGroup);
-
     function showTile(tile: LoadedTile): void {
-      // Clear previous
-      while (tileGroup.children.length > 0) tileGroup.remove(tileGroup.children[0]);
-      // Clone and add
-      const clone = tile.template.clone();
-      // Tile meshes are already scaled by LEVEL_EDITOR_WORLD_UNIT in tileset-loader
-      // Center vertically: move up by half the mesh height
-      const box = new THREE.Box3().setFromObject(clone);
+      while (normalTileGroup.children.length > 0) normalTileGroup.remove(normalTileGroup.children[0]);
+      while (targetTileGroup.children.length > 0) targetTileGroup.remove(targetTileGroup.children[0]);
+
+      const measure = tile.template.clone();
+      const box = new THREE.Box3().setFromObject(measure);
       const center = new THREE.Vector3();
       box.getCenter(center);
-      clone.position.set(-center.x, -box.min.y, -center.z);
-      tileGroup.add(clone);
+      const ox = -center.x, oy = -box.min.y, oz = -center.z;
+
+      // Normal view: linear texture filtering
+      const normalClone = tile.template.clone();
+      normalClone.position.set(ox, oy, oz);
+      setTextureFiltering(normalClone, THREE.LinearFilter);
+      normalClone.traverse((o) => {
+        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
+      });
+      setLayerRecursive(normalClone, NORMAL_LAYER);
+      normalTileGroup.add(normalClone);
+
+      // Target view: nearest filtering (already set by tileset-loader)
+      const targetClone = tile.template.clone();
+      targetClone.position.set(ox, oy, oz);
+      targetClone.traverse((o) => {
+        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
+      });
+      setLayerRecursive(targetClone, TARGET_LAYER);
+      targetTileGroup.add(targetClone);
+
       selector.setActive(tile.entry.name);
     }
 
-    // Pane container (below selector bar)
-    const viewerEl = document.createElement("div");
-    viewerEl.style.cssText = `
+    // --- Layout: selector bar + two panes stacked vertically ---
+
+    const topEl = document.createElement("div");
+    topEl.style.cssText = `
       position: absolute; top: ${SELECTOR_HEIGHT}px; left: 0; right: 0;
-      height: calc(100% - ${SELECTOR_HEIGHT}px);
+      height: calc(50% - ${SELECTOR_HEIGHT / 2}px);
     `;
-    mount.appendChild(viewerEl);
+    mount.appendChild(topEl);
+    addPaneLabel(topEl, "normal");
+
+    const bottomEl = document.createElement("div");
+    bottomEl.style.cssText = `
+      position: absolute; bottom: 0; left: 0; right: 0;
+      height: calc(50% - ${SELECTOR_HEIGHT / 2}px);
+      border-top: 1px solid #2a2e36;
+    `;
+    mount.appendChild(bottomEl);
+    addPaneLabel(bottomEl, "target");
 
     // Stage
     const stage = new SharedScissorStage({
-      mount,
-      width,
-      height,
+      mount, width, height,
       pixelRatio: Math.max(1, window.devicePixelRatio || 1),
       antialias: false,
       clearColor: 0x14181e,
@@ -212,66 +272,156 @@ const experiment: ExperimentModule = {
     stage.renderer.shadowMap.enabled = true;
     stage.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    // Single iso viewport — lowTargetSamples: 0 matches the map editor's
-    // 3D pane (no MSAA, purely pixel-snapped nearest output).
-    const core = new PixelPerfectViewportCore({
-      ...VIEW_CONFIG,
-      width: viewerEl.clientWidth || width,
-      height: (viewerEl.clientHeight || height) - SELECTOR_HEIGHT,
+    const dpr = stage.getDevicePixelRatio();
+    const maxW = stage.maxBackingWidth;
+    const maxH = stage.maxBackingHeight;
+
+    // Top pane: normal (higher internal res, MSAA)
+    const normalCore = new PixelPerfectViewportCore({
+      ...NORMAL_VIEW_CONFIG,
+      width: topEl.clientWidth || width,
+      height: topEl.clientHeight || Math.round(height / 2),
       scene,
       cameraPitch: "iso-2to1",
       cameraYaw: ISO_YAW,
       clearColor: 0x14181e,
-      maxBackingWidth: stage.maxBackingWidth,
-      maxBackingHeight: stage.maxBackingHeight,
-      devicePixelRatio: stage.getDevicePixelRatio(),
+      maxBackingWidth: maxW, maxBackingHeight: maxH,
+      devicePixelRatio: dpr,
+      lowTargetSamples: 4
+    });
+    normalCore.camera.layers.enable(NORMAL_LAYER);
+    normalCore.getLowTarget().texture.colorSpace = THREE.SRGBColorSpace;
+    normalCore.beforeSceneRender = (r) => { r.toneMapping = THREE.ACESFilmicToneMapping; };
+    normalCore.afterSceneRender = (r) => { r.toneMapping = THREE.NoToneMapping; };
+
+    const normalPane = new PixelPerfectScissorPane({
+      id: "normal", element: topEl, core: normalCore, devicePixelRatio: dpr
+    });
+    stage.registerPane(normalPane);
+
+    // Bottom pane: target (canonical pixel-art, no MSAA)
+    const targetCore = new PixelPerfectViewportCore({
+      ...TARGET_VIEW_CONFIG,
+      width: bottomEl.clientWidth || width,
+      height: bottomEl.clientHeight || Math.round(height / 2),
+      scene,
+      cameraPitch: "iso-2to1",
+      cameraYaw: ISO_YAW,
+      clearColor: 0x14181e,
+      maxBackingWidth: maxW, maxBackingHeight: maxH,
+      devicePixelRatio: dpr,
       lowTargetSamples: 0
     });
+    targetCore.camera.layers.enable(TARGET_LAYER);
+    targetCore.getLowTarget().texture.colorSpace = THREE.SRGBColorSpace;
+    targetCore.beforeSceneRender = (r) => { r.toneMapping = THREE.ACESFilmicToneMapping; };
+    targetCore.afterSceneRender = (r) => { r.toneMapping = THREE.NoToneMapping; };
 
-    const pane = new PixelPerfectScissorPane({
-      id: "tile-viewer",
-      element: viewerEl,
-      core,
-      devicePixelRatio: stage.getDevicePixelRatio()
+    const targetPane = new PixelPerfectScissorPane({
+      id: "target", element: bottomEl, core: targetCore, devicePixelRatio: dpr
     });
-    stage.registerPane(pane);
+    stage.registerPane(targetPane);
 
-    // Tag low target as sRGB + per-pane ACES tone mapping
-    core.getLowTarget().texture.colorSpace = THREE.SRGBColorSpace;
-    core.beforeSceneRender = (renderer) => {
-      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // --- Unison input (both panes sync) ---
+
+    const allPanes = [normalPane, targetPane];
+
+    const broadcastPan = (dx: number, dy: number): void => {
+      for (const p of allPanes) p.panByCss(dx, dy);
     };
-    core.afterSceneRender = (renderer) => {
-      renderer.toneMapping = THREE.NoToneMapping;
+
+    const broadcastZoom = (dir: -1 | 1, cx: number, cy: number, now: number): void => {
+      for (const p of allPanes) p.stepCameraZoomAtLocalCss(dir, cx, cy, now);
     };
 
-    // Input: rotate (Q/E), zoom (wheel), pan (middle-click drag)
-    let focusedPaneId: string | null = "tile-viewer";
+    const broadcastRotate = (delta: -1 | 1): void => {
+      for (const p of allPanes) p.rotateQuarterTurns(delta);
+    };
 
-    const unbindInput = bindSharedScissorStageInput({
-      stage,
-      getFocusedPaneId: () => focusedPaneId,
-      setFocusedPaneId: (id) => { focusedPaneId = id; },
-      getPaneInputTarget: () => pane
+    // Mouse / trackpad
+    let dragPid: number | null = null;
+    let lastDragX = 0;
+    let lastDragY = 0;
+
+    const onPointerDown = (e: PointerEvent): void => {
+      if (e.button !== 0 && e.button !== 1) return;
+      dragPid = e.pointerId;
+      lastDragX = e.clientX;
+      lastDragY = e.clientY;
+      try { stage.canvas.setPointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+    };
+    const onPointerMove = (e: PointerEvent): void => {
+      if (dragPid == null || e.pointerId !== dragPid) return;
+      const dx = e.clientX - lastDragX;
+      const dy = e.clientY - lastDragY;
+      lastDragX = e.clientX;
+      lastDragY = e.clientY;
+      broadcastPan(dx, dy);
+      e.preventDefault();
+    };
+    const onPointerUp = (e: PointerEvent): void => {
+      if (dragPid == null || e.pointerId !== dragPid) return;
+      dragPid = null;
+      try { if (stage.canvas.hasPointerCapture(e.pointerId)) stage.canvas.releasePointerCapture(e.pointerId); } catch {}
+    };
+
+    const onWheel = (e: WheelEvent): void => {
+      if (e.deltaY === 0) return;
+      const hit = stage.hitTestPane(e.clientX, e.clientY);
+      if (!hit) return;
+      broadcastZoom(e.deltaY > 0 ? -1 : 1, hit.localX, hit.localY, performance.now());
+      e.preventDefault();
+    };
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.code === "KeyQ") { broadcastRotate(-1); e.preventDefault(); }
+      else if (e.code === "KeyE") { broadcastRotate(1); e.preventDefault(); }
+    };
+
+    stage.canvas.addEventListener("pointerdown", onPointerDown);
+    stage.canvas.addEventListener("pointermove", onPointerMove);
+    stage.canvas.addEventListener("pointerup", onPointerUp);
+    stage.canvas.addEventListener("pointercancel", onPointerUp);
+    stage.canvas.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKeyDown);
+
+    // Touch: pinch zoom, one-finger pan, two-finger twist rotate
+    let pinchLog2Accum = 0;
+    const unbindTouch = attachTouchGestures(stage.canvas, {
+      onPan: (dx, dy) => broadcastPan(dx, dy),
+      onPinch: (scaleDelta, cx, cy) => {
+        if (Math.abs(scaleDelta - 1) < 0.005) return;
+        pinchLog2Accum += Math.log2(scaleDelta);
+        const now = performance.now();
+        while (pinchLog2Accum >= TOUCH_PINCH_LOG2_THRESHOLD) {
+          broadcastZoom(1, cx, cy, now);
+          pinchLog2Accum -= TOUCH_PINCH_LOG2_THRESHOLD;
+        }
+        while (pinchLog2Accum <= -TOUCH_PINCH_LOG2_THRESHOLD) {
+          broadcastZoom(-1, cx, cy, now);
+          pinchLog2Accum += TOUCH_PINCH_LOG2_THRESHOLD;
+        }
+      },
+      onPinchEnd: () => { pinchLog2Accum = 0; },
+      onRotate: (direction) => broadcastRotate(direction)
     });
 
-    // Tile selector bar
+    // Tile selector
     const selector = createTileSelector(mount, assets, showTile);
 
-    // Show first tile by default
+    // Show first tile
     const firstTile = assets.tiles.values().next().value;
     if (firstTile) showTile(firstTile);
 
     // Resize
-    const resizeObserver = new ResizeObserver((entries) => {
+    const resizeObs = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width: w, height: h } = entry.contentRect;
-        if (w > 0 && h > 0) {
-          stage.resize(w, h, Math.max(1, window.devicePixelRatio || 1));
-        }
+        if (w > 0 && h > 0) stage.resize(w, h, Math.max(1, window.devicePixelRatio || 1));
       }
     });
-    resizeObserver.observe(mount);
+    resizeObs.observe(mount);
 
     // Frame loop
     let animId = 0;
@@ -284,14 +434,20 @@ const experiment: ExperimentModule = {
     };
     animId = requestAnimationFrame(frame);
 
-    // Cleanup
     return () => {
       cancelAnimationFrame(animId);
-      resizeObserver.disconnect();
-      unbindInput();
+      resizeObs.disconnect();
+      unbindTouch();
+      stage.canvas.removeEventListener("pointerdown", onPointerDown);
+      stage.canvas.removeEventListener("pointermove", onPointerMove);
+      stage.canvas.removeEventListener("pointerup", onPointerUp);
+      stage.canvas.removeEventListener("pointercancel", onPointerUp);
+      stage.canvas.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKeyDown);
       selector.destroy();
       stage.dispose();
-      viewerEl.remove();
+      topEl.remove();
+      bottomEl.remove();
     };
   }
 };
