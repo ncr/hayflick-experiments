@@ -800,7 +800,7 @@ function buildCornerGroupPlan({ name, x, z, spec, includeGuide = false, manifest
       contour: buildCornerOutline({
         x,
         z,
-        thickness: Math.max(0.001, spec.wallThickness),
+        halfThickness: Math.max(0.001, spec.wallThickness / 2),
         runLength: Math.max(spec.wallThickness, spec.baseUnit)
       })
     })
@@ -1183,18 +1183,18 @@ function findRoomWindowVariant(family, variantName) {
   return family.variants.find((entry) => entry.name === variantName) || null;
 }
 
-function buildCornerOutline({ x, z, thickness, runLength }) {
-  // Corner anchor (x, z) is the outside vertex of the cell. Two walls of
-  // width `thickness` run inward (into the +X/+Z quadrant) from there, each
-  // `runLength` long. The envelope fits exactly inside one base cell
-  // (runLength × runLength) with no overhang into neighbouring cells.
+function buildCornerOutline({ x, z, halfThickness, runLength }) {
+  // Corner anchor (x, z) is the grid vertex. Each wall leg is centered on
+  // its grid line by extending halfThickness on each side, exactly matching
+  // how wall tiles are centered on edge midpoints. The legs run `runLength`
+  // into the +X/+Z quadrant from the vertex.
   return [
-    [x, z],
-    [x, z + runLength],
-    [x + thickness, z + runLength],
-    [x + thickness, z + thickness],
-    [x + runLength, z + thickness],
-    [x + runLength, z]
+    [x - halfThickness, z - halfThickness],
+    [x - halfThickness, z + runLength],
+    [x + halfThickness, z + runLength],
+    [x + halfThickness, z + halfThickness],
+    [x + runLength,     z + halfThickness],
+    [x + runLength,     z - halfThickness]
   ];
 }
 
@@ -1217,19 +1217,20 @@ function buildLinearGuideNode({ name, x, z, width, depth, y }) {
 }
 
 function buildCornerGuideNodes({ x, z, spec }) {
-  // Guides mirror the mesh: two legs of `wallThickness` running inward from
-  // the (x, z) corner vertex into the +X / +Z quadrant.
+  // Guides mirror the mesh: two legs centered on the grid lines at (x, z),
+  // extending halfThickness on each side just like the corner outline.
+  const ht = spec.wallThickness / 2;
   return [
     buildGuidePadNode({
       name: "corner_x_guide",
-      from: [x, -6, z],
-      to: [x + spec.baseUnit, -4, z + spec.wallThickness],
+      from: [x, -6, z - ht],
+      to: [x + spec.baseUnit, -4, z + ht],
       origin: [x, -6, z]
     }),
     buildGuidePadNode({
       name: "corner_z_guide",
-      from: [x, -6, z],
-      to: [x + spec.wallThickness, -4, z + spec.baseUnit],
+      from: [x - ht, -6, z],
+      to: [x + ht, -4, z + spec.baseUnit],
       origin: [x, -6, z]
     })
   ];
