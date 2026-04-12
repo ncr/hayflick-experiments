@@ -32,52 +32,67 @@ const DEV_SERVER = process.env.DEV_SERVER || "http://localhost:5173";
 // mapping at the standard texturePixelsPerGamePixel=2 density.
 const DEFAULT_TARGET_SIZE = 64;
 
-// Material descriptions for the image generation prompt.
-// These describe what the pixel-art texture should depict.
+// ---------------------------------------------------------------------------
+// Style guide — Year 2200 Isometric Architecture
+//
+// Clean white mineral surfaces (carved Greek sandstone / dense ceramic).
+// Monolithic, rectilinear, pristine. Single accent: burnt amber #B8430E.
+// No clutter, no ornament, no micro-detail. Calm, sterile, structured.
+// ---------------------------------------------------------------------------
+
+const STYLE_PREAMBLE = [
+  "Year 2200 sci-fi architectural surface.",
+  "Material looks carved from dense white mineral or architectural ceramic.",
+  "Pristine, clean, no damage, no grime, no decay, no texture clutter.",
+  "Flat, non-dramatic, even lighting baked into the albedo (no shadows, no specular highlights — PBR handles that at runtime).",
+  "Top-down view, perfectly flat, no perspective, no 3D shading.",
+  "Crisp pixel art with large flat-colour blocks, no anti-aliasing, no gradients, no dithering.",
+].join(" ");
+
 const MATERIAL_DESCRIPTIONS = {
   white_plaster_02: {
-    desc: "white plaster wall, smooth stucco surface with subtle cracks and stains",
-    palette: "white, off-white, light grey, faint yellow-grey"
+    desc: "interior wall panel surface, dense white mineral ceramic, very subtle rectilinear panel seams forming a large modular grid, almost flat white with barely visible hairline joints",
+    palette: "pure white, off-white, very faint cool grey for panel seams"
   },
   blue_painted_planks: {
-    desc: "blue painted wooden planks, horizontal wood grain, peeling paint",
-    palette: "cobalt blue, dark blue, navy, light blue highlights"
+    desc: "accent trim strip, clean horizontal bands of burnt industrial amber on a dark structural substrate, functional marker stripe at an architectural datum, not decorative",
+    palette: "burnt amber #B8430E, dark amber #8A3000, near-black structural dark #1a1a1a"
   },
   sandstone_cracks: {
-    desc: "sandstone wall surface with natural cracks and weathering",
-    palette: "warm tan, sandy beige, ochre, brown crack lines"
+    desc: "exterior wall panel, dense white architectural ceramic with fine structural joints forming a clean rectangular grid, very minimal surface variation, monolithic and heavy",
+    palette: "warm white, faint cream, very subtle warm grey joint lines"
   },
   weathered_brown_planks: {
-    desc: "weathered brown wooden planks, aged wood grain, horizontal boards",
-    palette: "dark brown, warm brown, tan, dark grain lines"
+    desc: "accent structural panel, clean amber-tinted horizontal bands, functional infrastructure marking, subtle grain-like linear texture within each band",
+    palette: "burnt amber #B8430E, dark amber, very dark brown structural base"
   },
   cobblestone_floor_04: {
-    desc: "cobblestone floor, large rounded stones fitted together with dark mortar gaps",
-    palette: "grey, warm grey, dark grey mortar, slight brown and blue-grey variation"
+    desc: "modular floor tile, clean white mineral ceramic, precise square grid pattern with thin recessed joints, each tile perfectly flat and uniform, no variation between tiles except the joint lines",
+    palette: "light warm grey, white, thin dark grey joint lines"
   },
   asphalt_04: {
-    desc: "dark asphalt road surface, slightly rough, small aggregate pebbles",
-    palette: "dark charcoal, grey, dark grey, subtle warm spots"
+    desc: "utility floor surface, dark neutral composite, subtle rectilinear grid embossed into the surface, clean and well-maintained, infrastructure-grade",
+    palette: "dark charcoal #2a2a2a, slightly lighter grey grid lines, very dark neutral"
   },
   concrete_wall_004: {
-    desc: "concrete wall, poured concrete with form marks and subtle staining",
-    palette: "neutral grey, light grey, slight blue-grey, faint stain spots"
+    desc: "interior wall surface, white mineral panel with very faint formwork marks, large flat areas with minimal texture, clean and pristine, monolithic feel",
+    palette: "white, off-white, barely visible cool grey marks"
   },
   forrest_ground_01: {
-    desc: "forest floor with leaves, twigs, and earth patches",
-    palette: "dark green, brown, dark brown, olive, tan leaf spots"
+    desc: "exterior ground surface, pale mineral aggregate with sparse subdued vegetation breaking through joints, muted and calm, passive aging only",
+    palette: "pale grey, muted sage green, faint warm stone"
   },
   aerial_grass_rock: {
-    desc: "grass and rock ground, patches of green grass between exposed stone",
-    palette: "green, dark green, grey rock, brown earth"
+    desc: "exterior terrain, white mineral pavers with sparse muted ground cover between joints, depopulated and well-maintained but slightly overgrown, calm and structured",
+    palette: "light grey stone, muted olive green, warm sand"
   },
   beige_wall_001: {
-    desc: "beige plastered wall, smooth interior wall finish",
-    palette: "beige, cream, warm grey, faint warm spots"
+    desc: "interior wall panel, warm-toned mineral ceramic, smooth and pristine with barely visible modular panel seams, monolithic and heavy",
+    palette: "warm white, faint cream, very subtle warm grey seams"
   },
   rusty_metal_02: {
-    desc: "rusty metal surface, corroded steel with rust patches and bare metal",
-    palette: "rust orange, dark brown, dark grey metal, bright rust spots"
+    desc: "structural utility panel, dark metal composite with amber indicator markings, recessed control surface with clean geometric cutouts, functional not decorative",
+    palette: "dark gunmetal grey, amber #B8430E indicator lines, near-black"
   }
 };
 
@@ -88,12 +103,11 @@ function flag(name, fallback) {
 
 async function generateTexture(materialId, desc, palette, targetSize) {
   const prompt = [
+    STYLE_PREAMBLE,
     `Seamless tileable ${targetSize}x${targetSize} pixel art texture of: ${desc}.`,
-    `Style: chunky pixel art with large flat-colour blocks, no anti-aliasing, no gradients, no dithering.`,
-    `Each distinct visual element (stone, plank, crack) must be at least 6-8 pixels wide so it reads clearly at small sizes.`,
+    `Each distinct visual element must be at least 6-8 pixels wide so it reads clearly at small sizes.`,
     `Limited palette: ${palette}.`,
     `The texture must tile perfectly — edges wrap seamlessly in both X and Y.`,
-    `Top-down view, flat, no perspective, no 3D shading (lighting comes from PBR normal maps at runtime).`,
     `Output as a crisp ${targetSize}x${targetSize} pixel grid with no smoothing or interpolation.`
   ].join(" ");
 
