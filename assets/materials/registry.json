@@ -5,7 +5,7 @@
       "sourceId": "beige_wall_001",
       "category": "plaster",
       "maps": {
-        "baseColor": "beige_wall_001_diff_1k.jpg",
+        "baseColor": "beige_wall_001_diff_pixart.png",
         "normal": "beige_wall_001_nor_gl_1k.jpg",
         "arm": "beige_wall_001_arm_1k.jpg"
       },
@@ -14,14 +14,20 @@
         "metallicFactor": 0
       },
       "physicalScaleM": 1,
-      "resolution": "1k"
+      "resolution": "1k",
+      "style": {
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:10:44.875Z"
+      }
     },
     "rusty_metal_02": {
       "source": "polyhaven",
       "sourceId": "rusty_metal_02",
       "category": "metal",
       "maps": {
-        "baseColor": "rusty_metal_02_diff_1k.jpg",
+        "baseColor": "rusty_metal_02_diff_pixart.png",
         "normal": "rusty_metal_02_nor_gl_1k.jpg",
         "arm": "rusty_metal_02_arm_1k.jpg"
       },
@@ -30,14 +36,20 @@
         "metallicFactor": 0.8
       },
       "physicalScaleM": 1,
-      "resolution": "1k"
+      "resolution": "1k",
+      "style": {
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:11:24.598Z"
+      }
     },
     "white_plaster_02": {
       "source": "polyhaven",
       "sourceId": "white_plaster_02",
       "category": "plaster",
       "maps": {
-        "baseColor": "white_plaster_02_diff_pix.png",
+        "baseColor": "white_plaster_02_diff_pixart.png",
         "normal": "white_plaster_02_nor_gl_64.jpg",
         "arm": "white_plaster_02_arm_64.jpg"
       },
@@ -48,11 +60,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:12:07.994Z"
       }
     },
     "blue_painted_planks": {
@@ -60,7 +71,7 @@
       "sourceId": "blue_painted_planks",
       "category": "wood",
       "maps": {
-        "baseColor": "blue_painted_planks_diff_pix.png",
+        "baseColor": "blue_painted_planks_diff_pixart.png",
         "normal": "blue_painted_planks_nor_gl_64.jpg",
         "arm": "blue_painted_planks_arm_64.jpg"
       },
@@ -71,11 +82,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:12:57.912Z"
       }
     },
     "sandstone_cracks": {
@@ -83,7 +93,7 @@
       "sourceId": "sandstone_cracks",
       "category": "stone",
       "maps": {
-        "baseColor": "sandstone_cracks_diff_pix.png",
+        "baseColor": "sandstone_cracks_diff_pixart.png",
         "normal": "sandstone_cracks_nor_gl_64.jpg",
         "arm": "sandstone_cracks_arm_64.jpg"
       },
@@ -94,11 +104,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:13:38.008Z"
       }
     },
     "weathered_brown_planks": {
@@ -106,7 +115,7 @@
       "sourceId": "weathered_brown_planks",
       "category": "wood",
       "maps": {
-        "baseColor": "weathered_brown_planks_diff_pix.png",
+        "baseColor": "weathered_brown_planks_diff_pixart.png",
         "normal": "weathered_brown_planks_nor_gl_64.jpg",
         "arm": "weathered_brown_planks_arm_64.jpg"
       },
@@ -117,11 +126,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:14:11.307Z"
       }
     },
     "asphalt_04": {
@@ -129,7 +137,7 @@
       "sourceId": "asphalt_04",
       "category": "ground",
       "maps": {
-        "baseColor": "asphalt_04_diff_pix.png",
+        "baseColor": "asphalt_04_diff_pixart.png",
         "normal": "asphalt_04_nor_gl_64.jpg",
         "arm": "asphalt_04_arm_64.jpg"
       },
@@ -140,11 +148,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:14:57.168Z"
       }
     },
     "concrete_wall_004": {
@@ -152,7 +159,7 @@
       "sourceId": "concrete_wall_004",
       "category": "concrete",
       "maps": {
-        "baseColor": "concrete_wall_004_diff_pix.png",
+        "baseColor": "concrete_wall_004_diff_pixart.png",
         "normal": "concrete_wall_004_nor_gl_64.jpg",
         "arm": "concrete_wall_004_arm_64.jpg"
       },
@@ -163,11 +170,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:15:35.734Z"
       }
     },
     "forrest_ground_01": {
@@ -175,7 +181,7 @@
       "sourceId": "forrest_ground_01",
       "category": "ground",
       "maps": {
-        "baseColor": "forrest_ground_01_diff_pix.png",
+        "baseColor": "forrest_ground_01_diff_pixart.png",
         "normal": "forrest_ground_01_nor_gl_64.jpg",
         "arm": "forrest_ground_01_arm_64.jpg"
       },
@@ -186,11 +192,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:16:28.153Z"
       }
     },
     "aerial_grass_rock": {
@@ -198,7 +203,7 @@
       "sourceId": "aerial_grass_rock",
       "category": "unknown",
       "maps": {
-        "baseColor": "aerial_grass_rock_diff_pix.png",
+        "baseColor": "aerial_grass_rock_diff_pixart.png",
         "normal": "aerial_grass_rock_nor_gl_64.jpg",
         "arm": "aerial_grass_rock_arm_64.jpg"
       },
@@ -209,11 +214,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:17:05.890Z"
       }
     },
     "cobblestone_floor_04": {
@@ -221,7 +225,7 @@
       "sourceId": "cobblestone_floor_04",
       "category": "unknown",
       "maps": {
-        "baseColor": "cobblestone_floor_04_diff_pix.png",
+        "baseColor": "cobblestone_floor_04_diff_pixart.png",
         "normal": "cobblestone_floor_04_nor_gl_64.jpg",
         "arm": "cobblestone_floor_04_arm_64.jpg"
       },
@@ -232,11 +236,10 @@
       "physicalScaleM": 1,
       "resolution": "64",
       "style": {
-        "kind": "pixel_art_diffuse",
-        "diffSize": 64,
-        "paletteSize": 8,
-        "contrast": 1.2,
-        "saturation": 1.3
+        "kind": "pixel_art_generated",
+        "targetSize": 64,
+        "generator": "gpt-image-1",
+        "generatedAt": "2026-04-12T10:17:42.086Z"
       }
     }
   }
