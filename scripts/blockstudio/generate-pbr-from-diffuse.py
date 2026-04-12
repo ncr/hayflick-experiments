@@ -30,35 +30,63 @@ def load_grayscale(path: str) -> np.ndarray:
     return np.asarray(img, dtype=np.float32) / 255.0
 
 
-def sobel_gradients(height: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Compute horizontal and vertical gradients with Sobel kernels.
+def load_rgb(path: str) -> np.ndarray:
+    """Load image as float32 RGB in [0, 1], shape (H, W, 3)."""
+    img = Image.open(path).convert("RGB")
+    return np.asarray(img, dtype=np.float32) / 255.0
 
-    Uses np.roll for seamless tiling (wraps around edges).
-    """
-    # Sobel X: detects vertical edges → horizontal gradient
+
+def _sobel_2d(ch: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Sobel X and Y gradients for a single 2D channel. Wraps for tiling."""
     gx = (
-        -1.0 * np.roll(np.roll(height, 1, axis=0), -1, axis=1)
-        +  1.0 * np.roll(np.roll(height, 1, axis=0),  1, axis=1)
-        + -2.0 * np.roll(height, -1, axis=1)
-        +  2.0 * np.roll(height,  1, axis=1)
-        + -1.0 * np.roll(np.roll(height, -1, axis=0), -1, axis=1)
-        +  1.0 * np.roll(np.roll(height, -1, axis=0),  1, axis=1)
+        -1.0 * np.roll(np.roll(ch, 1, axis=0), -1, axis=1)
+        +  1.0 * np.roll(np.roll(ch, 1, axis=0),  1, axis=1)
+        + -2.0 * np.roll(ch, -1, axis=1)
+        +  2.0 * np.roll(ch,  1, axis=1)
+        + -1.0 * np.roll(np.roll(ch, -1, axis=0), -1, axis=1)
+        +  1.0 * np.roll(np.roll(ch, -1, axis=0),  1, axis=1)
     )
-    # Sobel Y: detects horizontal edges → vertical gradient
     gy = (
-        -1.0 * np.roll(np.roll(height, -1, axis=1), 1, axis=0)
-        +  1.0 * np.roll(np.roll(height, -1, axis=1), -1, axis=0)
-        + -2.0 * np.roll(height, 1, axis=0)
-        +  2.0 * np.roll(height, -1, axis=0)
-        + -1.0 * np.roll(np.roll(height, 1, axis=1), 1, axis=0)
-        +  1.0 * np.roll(np.roll(height, 1, axis=1), -1, axis=0)
+        -1.0 * np.roll(np.roll(ch, -1, axis=1), 1, axis=0)
+        +  1.0 * np.roll(np.roll(ch, -1, axis=1), -1, axis=0)
+        + -2.0 * np.roll(ch, 1, axis=0)
+        +  2.0 * np.roll(ch, -1, axis=0)
+        + -1.0 * np.roll(np.roll(ch, 1, axis=1), 1, axis=0)
+        +  1.0 * np.roll(np.roll(ch, 1, axis=1), -1, axis=0)
     )
     return gx, gy
 
 
-def generate_normal_map(height: np.ndarray, strength: float = 1.5) -> np.ndarray:
-    """Height map → OpenGL tangent-space normal map (uint8 RGB)."""
-    gx, gy = sobel_gradients(height)
+def sobel_gradients(height: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute gradients from a single-channel height map."""
+    return _sobel_2d(height)
+
+
+def sobel_gradients_rgb(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute gradients across all RGB channels and take the max magnitude.
+
+    This catches edges between regions of different hue but similar
+    brightness — e.g. two adjacent stones that are grey vs. blue-grey.
+    A grayscale-only Sobel would miss those boundaries.
+    """
+    gx_sum = np.zeros(rgb.shape[:2], dtype=np.float32)
+    gy_sum = np.zeros(rgb.shape[:2], dtype=np.float32)
+    for c in range(3):
+        cx, cy = _sobel_2d(rgb[:, :, c])
+        gx_sum += cx
+        gy_sum += cy
+    # Average across channels (gives stronger signal at colour edges than
+    # a single grayscale Sobel would)
+    return gx_sum / 3.0, gy_sum / 3.0
+
+
+def generate_normal_map(rgb: np.ndarray, strength: float = 1.5) -> np.ndarray:
+    """RGB image → OpenGL tangent-space normal map (uint8 RGB).
+
+    Uses per-channel Sobel so colour edges produce bumps even when the
+    luminance difference is small.
+    """
+    gx, gy = sobel_gradients_rgb(rgb)
 
     # Scale gradients by strength
     gx *= strength
@@ -84,17 +112,16 @@ def generate_normal_map(height: np.ndarray, strength: float = 1.5) -> np.ndarray
 
 
 def generate_arm_map(
-    height: np.ndarray,
+    rgb: np.ndarray,
     base_roughness: float = 0.7,
     roughness_range: float = 0.25
 ) -> np.ndarray:
-    """Height map → ARM map (R=AO, G=Roughness, B=Metalness).
+    """RGB image → ARM map (R=AO, G=Roughness, B=Metalness).
 
-    - AO: edge-darkened from gradient magnitude (crevices are darker)
-    - Roughness: inverse luminance (darker areas = mortar/cracks = rougher)
-    - Metalness: always 0 for natural materials
+    Uses per-channel Sobel (same as the normal map) so AO darkening
+    appears at every colour edge, not just luminance edges.
     """
-    gx, gy = sobel_gradients(height)
+    gx, gy = sobel_gradients_rgb(rgb)
     edge_mag = np.sqrt(gx * gx + gy * gy)
 
     # AO: 1.0 minus edge strength (clamped). Edges (mortar lines, cracks)
@@ -102,11 +129,12 @@ def generate_arm_map(
     ao = np.clip(1.0 - edge_mag * 3.0, 0.3, 1.0)
 
     # Roughness: darker pixels → rougher (mortar, cracks), lighter → smoother
-    roughness = base_roughness + (1.0 - height) * roughness_range
+    lum = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+    roughness = base_roughness + (1.0 - lum) * roughness_range
     roughness = np.clip(roughness, 0.0, 1.0)
 
     # Metalness: 0 for all natural materials
-    metalness = np.zeros_like(height)
+    metalness = np.zeros_like(lum)
 
     r = np.clip(ao * 255, 0, 255).astype(np.uint8)
     g = np.clip(roughness * 255, 0, 255).astype(np.uint8)
@@ -128,13 +156,13 @@ def main():
                         help="Roughness variation range (default 0.25).")
     args = parser.parse_args()
 
-    height = load_grayscale(args.input)
+    rgb = load_rgb(args.input)
 
-    normal = generate_normal_map(height, strength=args.strength)
+    normal = generate_normal_map(rgb, strength=args.strength)
     Image.fromarray(normal, "RGB").save(args.normal)
     print(f"[pbr] normal → {args.normal} ({normal.shape[1]}×{normal.shape[0]})")
 
-    arm = generate_arm_map(height, base_roughness=args.roughness,
+    arm = generate_arm_map(rgb, base_roughness=args.roughness,
                            roughness_range=args.roughness_range)
     Image.fromarray(arm, "RGB").save(args.arm)
     print(f"[pbr] arm    → {args.arm} ({arm.shape[1]}×{arm.shape[0]})")
