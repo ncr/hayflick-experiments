@@ -6,8 +6,8 @@
       "category": "plaster",
       "maps": {
         "baseColor": "beige_wall_001_diff_pixart.png",
-        "normal": "beige_wall_001_nor_gl_1k.jpg",
-        "arm": "beige_wall_001_arm_1k.jpg"
+        "normal": "beige_wall_001_nor_pixart.png",
+        "arm": "beige_wall_001_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.8,
@@ -28,8 +28,8 @@
       "category": "metal",
       "maps": {
         "baseColor": "rusty_metal_02_diff_pixart.png",
-        "normal": "rusty_metal_02_nor_gl_1k.jpg",
-        "arm": "rusty_metal_02_arm_1k.jpg"
+        "normal": "rusty_metal_02_nor_pixart.png",
+        "arm": "rusty_metal_02_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.7,
@@ -50,8 +50,8 @@
       "category": "plaster",
       "maps": {
         "baseColor": "white_plaster_02_diff_pixart.png",
-        "normal": "white_plaster_02_nor_gl_64.jpg",
-        "arm": "white_plaster_02_arm_64.jpg"
+        "normal": "white_plaster_02_nor_pixart.png",
+        "arm": "white_plaster_02_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.85,
@@ -72,8 +72,8 @@
       "category": "wood",
       "maps": {
         "baseColor": "blue_painted_planks_diff_pixart.png",
-        "normal": "blue_painted_planks_nor_gl_64.jpg",
-        "arm": "blue_painted_planks_arm_64.jpg"
+        "normal": "blue_painted_planks_nor_pixart.png",
+        "arm": "blue_painted_planks_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.6,
@@ -94,8 +94,8 @@
       "category": "stone",
       "maps": {
         "baseColor": "sandstone_cracks_diff_pixart.png",
-        "normal": "sandstone_cracks_nor_gl_64.jpg",
-        "arm": "sandstone_cracks_arm_64.jpg"
+        "normal": "sandstone_cracks_nor_pixart.png",
+        "arm": "sandstone_cracks_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.9,
@@ -116,8 +116,8 @@
       "category": "wood",
       "maps": {
         "baseColor": "weathered_brown_planks_diff_pixart.png",
-        "normal": "weathered_brown_planks_nor_gl_64.jpg",
-        "arm": "weathered_brown_planks_arm_64.jpg"
+        "normal": "weathered_brown_planks_nor_pixart.png",
+        "arm": "weathered_brown_planks_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.75,
@@ -138,8 +138,8 @@
       "category": "ground",
       "maps": {
         "baseColor": "asphalt_04_diff_pixart.png",
-        "normal": "asphalt_04_nor_gl_64.jpg",
-        "arm": "asphalt_04_arm_64.jpg"
+        "normal": "asphalt_04_nor_pixart.png",
+        "arm": "asphalt_04_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.85,
@@ -160,8 +160,8 @@
       "category": "concrete",
       "maps": {
         "baseColor": "concrete_wall_004_diff_pixart.png",
-        "normal": "concrete_wall_004_nor_gl_64.jpg",
-        "arm": "concrete_wall_004_arm_64.jpg"
+        "normal": "concrete_wall_004_nor_pixart.png",
+        "arm": "concrete_wall_004_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.85,
@@ -182,8 +182,8 @@
       "category": "ground",
       "maps": {
         "baseColor": "forrest_ground_01_diff_pixart.png",
-        "normal": "forrest_ground_01_nor_gl_64.jpg",
-        "arm": "forrest_ground_01_arm_64.jpg"
+        "normal": "forrest_ground_01_nor_pixart.png",
+        "arm": "forrest_ground_01_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.95,
@@ -204,8 +204,8 @@
       "category": "unknown",
       "maps": {
         "baseColor": "aerial_grass_rock_diff_pixart.png",
-        "normal": "aerial_grass_rock_nor_gl_64.jpg",
-        "arm": "aerial_grass_rock_arm_64.jpg"
+        "normal": "aerial_grass_rock_nor_pixart.png",
+        "arm": "aerial_grass_rock_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.5,
@@ -226,8 +226,8 @@
       "category": "unknown",
       "maps": {
         "baseColor": "cobblestone_floor_04_diff_pixart.png",
-        "normal": "cobblestone_floor_04_nor_gl_64.jpg",
-        "arm": "cobblestone_floor_04_arm_64.jpg"
+        "normal": "cobblestone_floor_04_nor_pixart.png",
+        "arm": "cobblestone_floor_04_arm_pixart.png"
       },
       "defaults": {
         "roughnessFactor": 0.5,
