@@ -176,7 +176,7 @@ const experiment: ExperimentModule = {
     // variation are visible as the light angle changes.
     const KEY_RADIUS = 20;
     const KEY_HEIGHT = 18;
-    const KEY_ORBIT_SPEED = 0.15; // radians per second — one full revolution ~42s
+    const KEY_ORBIT_SPEED = 2 * Math.PI / 10; // one full revolution in 10s
     const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.8);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
