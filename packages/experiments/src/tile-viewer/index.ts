@@ -230,9 +230,13 @@ const experiment: ExperimentModule = {
       setLayerRecursive(normalClone, NORMAL_LAYER);
       normalTileGroup.add(normalClone);
 
-      // Target view: nearest filtering (already set by tileset-loader)
+      // Target view: linear filtering on baseColor — the pixel-art grid
+      // comes from the low-res render target (360p), not from nearest
+      // texture sampling. Linear smooths harsh texel boundaries within
+      // surfaces while mesh edges stay sharp at the render budget.
       const targetClone = tile.template.clone();
       targetClone.position.set(ox, oy, oz);
+      setTextureFiltering(targetClone, THREE.LinearFilter);
       targetClone.traverse((o) => {
         if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
       });

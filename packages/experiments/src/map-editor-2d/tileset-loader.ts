@@ -85,10 +85,11 @@ async function loadGlb(assetPath: string): Promise<THREE.Group> {
 /**
  * Prepare a loaded tile GLB for the realtime pixel-art PBR pipeline:
  *
- * - baseColor texture gets nearest-neighbour filtering so the pre-quantized
- *   palette PNGs read as chunky pixel-art blocks. Normal / roughness /
- *   metallic / AO maps keep their native linear filtering so PBR lighting
- *   (specular highlights, surface relief, contact shadows) stays crisp.
+ * - baseColor texture uses linear filtering — the pixel-art grid comes
+ *   from the low-res render target (360p + integer upscale), not from
+ *   nearest-neighbour texture sampling. Linear smooths harsh texel
+ *   boundaries within surfaces while mesh edges stay sharp at the
+ *   render budget.
  * - Every mesh casts and receives shadows so the directional key light in
  *   `map-editor-2d/index.ts` can do real contact shadows.
  */
@@ -100,8 +101,8 @@ function prepareTileMaterials(group: THREE.Group): void {
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
     for (const mat of materials) {
       if (mat instanceof THREE.MeshStandardMaterial && mat.map) {
-        mat.map.magFilter = THREE.NearestFilter;
-        mat.map.minFilter = THREE.NearestFilter;
+        mat.map.magFilter = THREE.LinearFilter;
+        mat.map.minFilter = THREE.LinearFilter;
         mat.map.needsUpdate = true;
       }
     }
