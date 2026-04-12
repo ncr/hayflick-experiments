@@ -410,9 +410,9 @@ const experiment: ExperimentModule = {
     // Tile selector
     const selector = createTileSelector(mount, assets, showTile);
 
-    // Show first tile
-    const firstTile = assets.tiles.values().next().value;
-    if (firstTile) showTile(firstTile);
+    // Show concrete_walk by default (good test case for pixel-art readability)
+    const defaultTile = assets.tiles.get("concrete_walk") ?? assets.tiles.values().next().value;
+    if (defaultTile) showTile(defaultTile);
 
     // Resize
     const resizeObs = new ResizeObserver((entries) => {
