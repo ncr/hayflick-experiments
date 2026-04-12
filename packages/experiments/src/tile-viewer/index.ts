@@ -13,16 +13,19 @@ import { loadTilesetAssets, type TilesetAssets, type LoadedTile } from "../map-e
 // Constants
 // ---------------------------------------------------------------------------
 
-const CAMERA_DISTANCE = 10;
+// Canonical settings — must match map-editor-2d's 3D iso pane exactly so
+// tiles render at the same pixel density and ortho frustum as the game.
+const GRID_TILES = 20;
+const CAMERA_DISTANCE = 50;
 const ISO_YAW = Math.PI / 4;
 
 const VIEW_CONFIG = {
   fixedRenderHeight: 360,
-  baseOrthoHeight: 2.5 * LEVEL_EDITOR_WORLD_UNIT,
+  baseOrthoHeight: GRID_TILES * LEVEL_EDITOR_WORLD_UNIT * 0.4,
   cameraDistance: CAMERA_DISTANCE,
   basePixelZoom: 1,
-  zoomMin: 0.5,
-  zoomMax: 10,
+  zoomMin: 1,
+  zoomMax: 6,
   zoomStep: 0.5,
   zoomAnimationRate: 12,
   zoomAnimationBurstRate: 24,
@@ -209,7 +212,8 @@ const experiment: ExperimentModule = {
     stage.renderer.shadowMap.enabled = true;
     stage.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    // Single iso viewport
+    // Single iso viewport — lowTargetSamples: 0 matches the map editor's
+    // 3D pane (no MSAA, purely pixel-snapped nearest output).
     const core = new PixelPerfectViewportCore({
       ...VIEW_CONFIG,
       width: viewerEl.clientWidth || width,
@@ -220,7 +224,8 @@ const experiment: ExperimentModule = {
       clearColor: 0x14181e,
       maxBackingWidth: stage.maxBackingWidth,
       maxBackingHeight: stage.maxBackingHeight,
-      devicePixelRatio: stage.getDevicePixelRatio()
+      devicePixelRatio: stage.getDevicePixelRatio(),
+      lowTargetSamples: 0
     });
 
     const pane = new PixelPerfectScissorPane({
