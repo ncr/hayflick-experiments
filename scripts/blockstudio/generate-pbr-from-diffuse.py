@@ -124,9 +124,9 @@ def generate_arm_map(
     gx, gy = sobel_gradients_rgb(rgb)
     edge_mag = np.sqrt(gx * gx + gy * gy)
 
-    # AO: 1.0 minus edge strength (clamped). Edges (mortar lines, cracks)
-    # get darker AO.
-    ao = np.clip(1.0 - edge_mag * 3.0, 0.3, 1.0)
+    # AO: gentle darkening at edges. Keep the floor high (0.55) so
+    # crevices don't go harsh under strong directional light + ACES.
+    ao = np.clip(1.0 - edge_mag * 1.5, 0.55, 1.0)
 
     # Roughness: darker pixels → rougher (mortar, cracks), lighter → smoother
     lum = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
