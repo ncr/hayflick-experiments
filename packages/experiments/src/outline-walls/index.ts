@@ -35,7 +35,7 @@ uniform float uFar;
 uniform float uDepthThreshold;
 uniform float uNormalThreshold;
 uniform float uIdSuppressNormalDot;
-uniform vec3 uOutlineColor;
+uniform float uOutlineBrightness;
 uniform float uOutlineMix;
 uniform int uDebugMode; // 0=final, 1=color, 2=depth, 3=normal, 4=id, 5=edgeOnly, 6=depthEdge, 7=normalEdge
 
@@ -138,7 +138,8 @@ void main() {
 
   float edge = max(depthEdge, normalEdge);
 
-  vec3 outColor = mix(c, uOutlineColor, edge * uOutlineMix);
+  vec3 brighter = min(c * uOutlineBrightness, vec3(1.0));
+  vec3 outColor = mix(c, brighter, edge * uOutlineMix);
 
   if (uDebugMode == 1) outColor = c;
   else if (uDebugMode == 2) outColor = vec3(pow(1.0 - rawC, 32.0));
@@ -363,7 +364,7 @@ const experiment: ExperimentModule = {
         uDepthThreshold: { value: 0.05 },
         uNormalThreshold: { value: 0.3 },
         uIdSuppressNormalDot: { value: maskEnabled ? 0.5 : 2.0 },
-        uOutlineColor: { value: new THREE.Color(0xff3355) },
+        uOutlineBrightness: { value: 1.35 },
         uOutlineMix: { value: 1.0 },
         uDebugMode: { value: debugMode }
       },
