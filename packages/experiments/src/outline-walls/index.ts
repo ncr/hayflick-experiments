@@ -209,7 +209,7 @@ type WallMeshEntry = {
 };
 
 async function loadWallTemplate(): Promise<THREE.Group> {
-  const url = "/api/assets/read?path=tilesets%2Fgreek_island_white%2Ftiles%2Fwall%2Fwall.glb";
+  const url = "/api/assets/read?path=tilesets%2Fgreek_island_white%2Fartifacts%2Ftiles%2Fwall%2Fwall.glb";
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to load wall: ${res.status}`);
   const buffer = await res.arrayBuffer();
@@ -408,11 +408,12 @@ const experiment: ExperimentModule = {
         }
       });
 
-      // Wall's native size (from manifest) is 128 units long. Scale to match
-      // roughly "one tile" (1.28 world units) wide like the level editor does.
+      // GLB already carries a 1/128 parent-node scale so the authoring-space
+      // mesh (128 units long) renders at 1 unit wide. Scale the whole group by
+      // WORLD_UNIT to match the map editor's one-tile sizing.
       const WORLD_UNIT = 1.28;
-      const SCALE = WORLD_UNIT / 128;
-      const SEGMENT_WORLD_LEN = WORLD_UNIT; // 128 * SCALE
+      const SCALE = WORLD_UNIT;
+      const SEGMENT_WORLD_LEN = WORLD_UNIT;
 
       for (let i = 0; i < 3; i++) {
         const instance = template.clone(true);
