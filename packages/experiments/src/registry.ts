@@ -6,9 +6,14 @@ import { meta as propTestSceneMeta } from "./prop-test-scene/meta";
 import { meta as physicsPropDropMeta } from "./physics-prop-drop/meta";
 import { meta as mapEditor2dMeta } from "./map-editor-2d/meta";
 import { meta as primitiveViewsMeta } from "./primitive-views/meta";
+import { meta as outlineWallsMeta } from "./outline-walls/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...outlineWallsMeta,
+    load: () => import("./outline-walls/index")
+  },
   {
     ...primitiveViewsMeta,
     load: () => import("./primitive-views/index")
