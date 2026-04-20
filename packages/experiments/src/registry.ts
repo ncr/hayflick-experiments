@@ -7,9 +7,14 @@ import { meta as physicsPropDropMeta } from "./physics-prop-drop/meta";
 import { meta as mapEditor2dMeta } from "./map-editor-2d/meta";
 import { meta as primitiveViewsMeta } from "./primitive-views/meta";
 import { meta as tileViewerMeta } from "./tile-viewer/meta";
+import { meta as textureWorkshopMeta } from "./texture-workshop/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...textureWorkshopMeta,
+    load: () => import("./texture-workshop/index")
+  },
   {
     ...tileViewerMeta,
     load: () => import("./tile-viewer/index")
