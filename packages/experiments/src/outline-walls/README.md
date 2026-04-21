@@ -1,26 +1,26 @@
 # Outline Walls
 
-## Goal
-Tile several wall GLBs and render them so that adjacent segments read as a
-single mesh — depth + normal edge detection outlines the shared silhouette
-while seams between segments that share an outline group id are suppressed.
-The color pass keeps the original PBR materials from the GLBs (base color,
-normal map, metallic-roughness) so the wall reads as a textured material
-rather than a flat fill, and an orbiting point light sweeps across the face
-so the normal-map relief and roughness response are visible.
+Demo of `PixelPerfectOutlinedView` from `@common/render`. Tiles several wall
+GLBs and renders them so adjacent segments read as a single mesh — the shared
+outline pipeline handles depth + normal edge detection plus id-based
+suppression; this experiment just drives it.
 
-## Passes
-1. Color — scene rendered into `colorTarget` with the GLB's PBR materials
-   and `ACESFilmicToneMapping` on the renderer.
-2. Normals — scene rendered with `MeshNormalMaterial` into `normalTarget`
-   (geometric normals only; the normal map is intentionally ignored here so
-   crease detection tracks geometry, not texture bumps).
-3. IDs — wall meshes swapped to per-group id materials, rendered into
-   `idTarget`.
-4. Composite — edge-detect post shader reads color + depth + normal + id and
-   writes to `postTarget`, which is handed to the view as the output source.
+## Pipeline (owned by `@common/render`)
+1. Color — scene rendered into the color target with PBR materials and
+   `ACESFilmicToneMapping`.
+2. Normals — scene re-rendered with `MeshNormalMaterial` (geometric normals
+   only, texture-level normal maps ignored so crease detection tracks shape,
+   not bumps).
+3. Linear depth — `LinearDepthMaterial` writes view-z into a HalfFloat
+   target (ortho-safe workaround for three.js depth quirks).
+4. IDs — meshes swap to per-group `OutlineGroupMaterial` via
+   `view.assignOutlineGroup`.
+5. Composite — `EdgeDetectionMaterial` reads all four inputs and writes the
+   final image; handed to the view as the output source.
 
-Tone mapping is disabled around passes 2–4 so auxiliary buffers keep raw data.
+Tone mapping is disabled around passes 2–5 so auxiliary buffers keep raw data.
+All of this is encapsulated inside `PixelPerfectOutlinedView`; the experiment
+just builds scenes and calls `assignOutlineGroup`.
 
 ## Edge kinds
 The composite shader fires an edge when any of three tests match:
@@ -42,8 +42,9 @@ creases and silhouettes draw. The strip scene shares one id too, or one id
 per instance with `?outlineGroups=split` to verify the mask is at work.
 
 ## URL params
-- `outlineDebug=N` — 0=final, 1=color, 2=depth, 3=normal, 4=id, 5=edgeOnly,
-  6=depthEdgeOnly, 7=normalEdgeOnly. Also toggled with `D` at runtime.
+- `outlineDebug=N` — 0=final, 1=color, 2=depth, 3=normals, 4=ids, 5=edges,
+  6=depth-edges, 7=normal-edges. Also cycles with `D` at runtime
+  (see `EdgeDetectionDebugMode` for the typed equivalent).
 - `outlineZoom=N` — initial pixel zoom (1–8).
 - `outlineTileset=greek_island_white|desert_sandstone` — which wall kit.
 - `outlineScene=strip|room` — `strip` (default) = 3 adjacent wall segments for

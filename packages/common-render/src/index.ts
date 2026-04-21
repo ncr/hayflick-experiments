@@ -69,6 +69,27 @@ export {
   ThreeSceneScissorPane,
   type ThreeSceneScissorPaneConfig
 } from "./three-scene-scissor-pane";
+export {
+  PixelPerfectOutlinedView,
+  OutlineDefaults,
+  type PixelPerfectOutlinedViewConfig,
+  type OutlineTuning
+} from "./outline/outlined-view";
+export {
+  EdgeDetectionMaterial,
+  EDGE_DETECTION_DEBUG_MODES,
+  edgeDetectionDebugModeIndex,
+  type EdgeDetectionConfig,
+  type EdgeDetectionDebugMode
+} from "./outline/edge-detection-material";
+export {
+  LinearDepthMaterial
+} from "./outline/linear-depth-material";
+export {
+  OutlineGroupMaterial,
+  OUTLINE_GROUP_ID_EPS,
+  encodeOutlineGroupColor
+} from "./outline/outline-group-material";
 export function makeRenderer(width: number, height: number, dpr: number): THREE.WebGLRenderer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(dpr);
