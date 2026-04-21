@@ -10,34 +10,16 @@ export {
   type OutputViewportLayout
 } from "./pixel-perfect";
 export {
-  PixelPerfectController,
-  computeSafeZoomLevels,
-  createPanPhaseState,
-  nearestZoomLevel,
-  rescalePanPhaseRemainder,
-  stepPanPhase,
-  stepZoomLevel,
-  type PanPhaseState,
-  type PanPhaseStep,
-  type PixelControllerCanvasMetrics,
-  type PixelControllerPoint,
-  type PixelPerfectControllerConfig,
-  type PixelPerfectControllerState,
-  type ZoomMode
-} from "./pixel-perfect-controller";
-export {
-  PixelStage,
-  type PixelStageLayout,
-  type PixelStageMetrics,
-  type PixelStageOptions
-} from "./pixel-stage";
-export {
   PixelPerfectView,
   type PixelPerfectViewConfig,
   type PixelPerfectViewPose,
   type PixelPerfectViewState,
   type PixelSnapMode
 } from "./pixel-perfect-view";
+export {
+  OutputUpscaleMaterial,
+  type OutputUpscaleConfig
+} from "./output-upscale-material";
 export {
   PixelPerfectDefaults,
   pitchForPixelView,

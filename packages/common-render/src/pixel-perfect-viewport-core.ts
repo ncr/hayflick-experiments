@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { OutputUpscaleMaterial } from "./output-upscale-material";
 import { PixelPerfectController } from "./pixel-perfect-controller";
 import {
   pitchForPixelView,
@@ -50,7 +51,7 @@ export class PixelPerfectViewportCore {
   private readonly controller: PixelPerfectController;
   private readonly outputScene: THREE.Scene;
   private readonly outputCamera: THREE.OrthographicCamera;
-  private readonly outputMaterial: THREE.ShaderMaterial;
+  private readonly outputMaterial: OutputUpscaleMaterial;
   private readonly outputQuad: THREE.Mesh;
   private lowTarget: THREE.WebGLRenderTarget;
   private customOutputSource: THREE.Texture | null = null;
@@ -146,55 +147,9 @@ export class PixelPerfectViewportCore {
 
     this.outputScene = new THREE.Scene();
     this.outputCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.outputMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        uSource: { value: this.lowTarget.texture },
-        uContentScale: { value: new THREE.Vector2(1, 1) },
-        uContentOffset: { value: new THREE.Vector2(0, 0) },
-        uZoom: { value: 1 },
-        uSourceSize: { value: new THREE.Vector2(1, 1) },
-        uZoomPivot: { value: new THREE.Vector2(0.5, 0.5) },
-        uEffectiveScale: { value: 1 },
-        uSmoothSampling: { value: config.smoothPixelTransitions ? 1 : 0 }
-      },
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = vec4(position.xy, 0.0, 1.0);
-        }
-      `,
-      fragmentShader: `
-        precision highp float;
-        uniform sampler2D uSource;
-        uniform vec2 uContentScale;
-        uniform vec2 uContentOffset;
-        uniform float uZoom;
-        uniform vec2 uSourceSize;
-        uniform vec2 uZoomPivot;
-        uniform float uEffectiveScale;
-        uniform float uSmoothSampling;
-        varying vec2 vUv;
-        void main() {
-          vec2 sampleUv = (vUv - uContentOffset) / uContentScale;
-          sampleUv = (sampleUv - uZoomPivot) / max(0.0001, uZoom) + uZoomPivot;
-          sampleUv = clamp(sampleUv, vec2(0.0), vec2(1.0));
-          // Smooth pixel-perfect sampling: crisp texel interiors with
-          // 1-device-pixel-wide transitions at texel boundaries.
-          // Eliminates shimmer when the viewport shifts by sub-texel amounts
-          // while preserving sharp upscaled pixels everywhere else.
-          vec2 tc = sampleUv * uSourceSize;
-          vec2 fl = floor(tc - 0.5) + 0.5;
-          if (uSmoothSampling < 0.5) {
-            gl_FragColor = texture2D(uSource, fl / uSourceSize);
-            return;
-          }
-          vec2 f = tc - fl;
-          f = clamp((f - 0.5) * uEffectiveScale + 0.5, 0.0, 1.0);
-          gl_FragColor = texture2D(uSource, (fl + f) / uSourceSize);
-        }
-      `,
-      depthTest: false
+    this.outputMaterial = new OutputUpscaleMaterial({
+      source: this.lowTarget.texture,
+      smoothPixelTransitions: config.smoothPixelTransitions
     });
     this.outputQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.outputMaterial);
     this.outputQuad.frustumCulled = false;
