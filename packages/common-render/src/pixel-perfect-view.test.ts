@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import * as THREE from "three";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -150,6 +151,7 @@ function makeConfig(mount: HTMLElement): any {
     cameraDistance: 10,
     cameraPitch: "iso-2to1",
     cameraYaw: Math.PI / 4,
+    verticalBias: 0.34,
     basePixelZoom: 2,
     zoomMin: 1,
     zoomMax: 6,
@@ -161,6 +163,7 @@ function makeConfig(mount: HTMLElement): any {
     rotationAnimationEpsilon: 1e-3,
     zoomBurstIdleMs: 90,
     outputOverscanLowPixels: 2,
+    lowTargetSamples: 0,
     clearColor: 0x0b0f14,
     clearAlpha: 1,
     mountBackground: "#123456",
@@ -219,6 +222,8 @@ describe("@common/render PixelPerfectView facade", () => {
     expect(core.config.maxBackingWidth).toBe(stage.maxBackingWidth);
     expect(core.config.maxBackingHeight).toBe(stage.maxBackingHeight);
     expect(core.config.devicePixelRatio).toBe(2);
+    expect(core.config.lowTargetSamples).toBe(0);
+    expect(core.config.verticalBias).toBe(0.34);
 
     expect(pane.config.id).toBe("main");
     expect(pane.config.element).toBe(mount);

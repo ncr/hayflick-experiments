@@ -3430,3 +3430,17 @@ Preventive checklist:
 - Never re-introduce a sync bridge. Rebuild pipelines must write directly under `assets/` in the same repo the consumer lives in.
 - Source specs, artifacts, and materials all live at `assets/tilesets/` and `assets/materials/`; code lives under `packages/blockstudio/`, `scripts/blockstudio/`, and top-level `blender/`.
 - When moving tooling into a workspace package, strip dead surfaces (MCP server + related tests) rather than carrying them forward "just in case".
+
+## 2026-04-20 - Pixel-edge screenshot checks must verify framing before raster quality
+Root cause:
+- The segmented wall edge overlay was drawn in the correct pixel grid, but early screenshot analysis counted off-canvas expected blocks as missing pixels because the tall wall was clipped at the top of the stage.
+- `PixelPerfectView` also failed to forward `verticalBias` into `PixelPerfectViewportCore`, so experiment-level framing changes had no effect.
+
+Detection signal:
+- Browser pixel analysis reported edge misses only on top edges, and the projected endpoints had negative local Y coordinates.
+- After forwarding `verticalBias` and reframing, the same analysis reported full blocks and zero off-canvas samples.
+
+Preventive checklist:
+- In screenshot analyzers, report off-canvas expected pixels separately from true raster misses.
+- Before judging 2:1 staircase quality, verify projected endpoints are inside the overlay canvas.
+- When using facade config fields such as `verticalBias`, assert they are forwarded into the core in facade tests.

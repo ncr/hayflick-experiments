@@ -58,13 +58,6 @@ void main() {
   vec2 rUv = clampUv(cUv + vec2( texel.x, 0.0), texel);
   vec2 uUvc = clampUv(cUv + vec2(0.0, -texel.y), texel);
   vec2 dUv = clampUv(cUv + vec2(0.0,  texel.y), texel);
-  // 2-step neighbours — used to detect "my immediate neighbour is itself
-  // at a silhouette", so we can suppress an in-mesh crease edge that would
-  // otherwise land one iso-col away from the silhouette and thicken it.
-  vec2 llUv = clampUv(cUv + vec2(-2.0 * texel.x, 0.0), texel);
-  vec2 rrUv = clampUv(cUv + vec2(+2.0 * texel.x, 0.0), texel);
-  vec2 uuUv = clampUv(cUv + vec2(0.0, -2.0 * texel.y), texel);
-  vec2 ddUv = clampUv(cUv + vec2(0.0, +2.0 * texel.y), texel);
 
   vec3 c = texture2D(uColorTex, cUv).rgb;
 
@@ -73,20 +66,12 @@ void main() {
   float rawR = texture2D(uDepthTex, rUv).r;
   float rawU = texture2D(uDepthTex, uUvc).r;
   float rawD = texture2D(uDepthTex, dUv).r;
-  float rawLL = texture2D(uDepthTex, llUv).r;
-  float rawRR = texture2D(uDepthTex, rrUv).r;
-  float rawUU = texture2D(uDepthTex, uuUv).r;
-  float rawDD = texture2D(uDepthTex, ddUv).r;
 
   float dC = linearizeDepth(rawC);
   float dL = linearizeDepth(rawL);
   float dR = linearizeDepth(rawR);
   float dU = linearizeDepth(rawU);
   float dD = linearizeDepth(rawD);
-  float dLL = linearizeDepth(rawLL);
-  float dRR = linearizeDepth(rawRR);
-  float dUU = linearizeDepth(rawUU);
-  float dDD = linearizeDepth(rawDD);
 
   vec3 nC = normalize(texture2D(uNormalTex, cUv).rgb * 2.0 - 1.0);
   vec3 nL = normalize(texture2D(uNormalTex, lUv).rgb * 2.0 - 1.0);
@@ -171,22 +156,10 @@ void main() {
   float dEdgeD = step(uDepthThreshold, abs(dC - dD)) * depthFrontD * keepD;
   float depthEdge = max(max(dEdgeL, dEdgeR), max(dEdgeU, dEdgeD));
 
-  // "My immediate neighbour is at a silhouette" test: the neighbour has its
-  // own big depth step with its further-out neighbour. When true, the neighbour
-  // is a 1-iso-col-wide slice of mesh right on the silhouette (e.g. the narrow
-  // end face of a slab). Any in-mesh crease we'd draw one iso-col inside of it
-  // would land immediately next to the silhouette, producing a 2-iso-col band.
-  // Suppress the crease in that case: the silhouette pixel already represents
-  // that edge of the mesh, so the crease merges into the silhouette visually.
-  float lNeighborAtSilhouette = step(uDepthThreshold, abs(dL - dLL));
-  float rNeighborAtSilhouette = step(uDepthThreshold, abs(dR - dRR));
-  float uNeighborAtSilhouette = step(uDepthThreshold, abs(dU - dUU));
-  float dNeighborAtSilhouette = step(uDepthThreshold, abs(dD - dDD));
-
-  float nEdgeL = step(uNormalThreshold, 1.0 - dot(nC, nL)) * edgeSideL * keepL * (1.0 - lNeighborAtSilhouette);
-  float nEdgeR = step(uNormalThreshold, 1.0 - dot(nC, nR)) * edgeSideR * keepR * (1.0 - rNeighborAtSilhouette);
-  float nEdgeU = step(uNormalThreshold, 1.0 - dot(nC, nU)) * edgeSideU * keepU * (1.0 - uNeighborAtSilhouette);
-  float nEdgeD = step(uNormalThreshold, 1.0 - dot(nC, nD)) * edgeSideD * keepD * (1.0 - dNeighborAtSilhouette);
+  float nEdgeL = step(uNormalThreshold, 1.0 - dot(nC, nL)) * edgeSideL * keepL;
+  float nEdgeR = step(uNormalThreshold, 1.0 - dot(nC, nR)) * edgeSideR * keepR;
+  float nEdgeU = step(uNormalThreshold, 1.0 - dot(nC, nU)) * edgeSideU * keepU;
+  float nEdgeD = step(uNormalThreshold, 1.0 - dot(nC, nD)) * edgeSideD * keepD;
   float normalEdge = max(max(nEdgeL, nEdgeR), max(nEdgeU, nEdgeD));
 
   // Id-boundary edge: catches coplanar, same-normal seams between different
@@ -199,10 +172,10 @@ void main() {
   // meeting door trim at a recessed door), the id-edge and depth-edge fire
   // on the same iso-col instead of adjacent ones — otherwise the combined
   // edge becomes 2 iso-px wide.
-  float iEdgeL = (1.0 - sameIdL) * sameNormalL * edgeSideL * (1.0 - lNeighborAtSilhouette);
-  float iEdgeR = (1.0 - sameIdR) * sameNormalR * edgeSideR * (1.0 - rNeighborAtSilhouette);
-  float iEdgeU = (1.0 - sameIdU) * sameNormalU * edgeSideU * (1.0 - uNeighborAtSilhouette);
-  float iEdgeD = (1.0 - sameIdD) * sameNormalD * edgeSideD * (1.0 - dNeighborAtSilhouette);
+  float iEdgeL = (1.0 - sameIdL) * sameNormalL * edgeSideL;
+  float iEdgeR = (1.0 - sameIdR) * sameNormalR * edgeSideR;
+  float iEdgeU = (1.0 - sameIdU) * sameNormalU * edgeSideU;
+  float iEdgeD = (1.0 - sameIdD) * sameNormalD * edgeSideD;
   float idEdge = max(max(iEdgeL, iEdgeR), max(iEdgeU, iEdgeD));
 
   float edge = max(max(depthEdge, normalEdge), idEdge);

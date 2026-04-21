@@ -36,9 +36,16 @@ export function computeViewportDeviceSize(
 /**
  * Zoom-independent low-resolution target.
  *
- * Invariant:
+ * Invariants:
  * - `baseRenderScale` must be the render scale for zoom=1, so low-res sampling
  *   grid does not change across zoom levels.
+ * - Width and height are always even. An odd low-res dimension puts the
+ *   buffer's center on a half-pixel (e.g. 269/2 = 134.5), which propagates a
+ *   0.5-iso-px offset to every world position and pushes sub-pixel features
+ *   (like a 1.6-iso-px slab end-face) across pixel boundaries inconsistently
+ *   as the viewport resizes. Rounding up to even keeps the center on an
+ *   integer iso-col so world origin, tile centres, and feature offsets all
+ *   land on the same iso-cols regardless of viewport.
  */
 export function computeLowResolutionSize(
   deviceWidth: number,
@@ -46,9 +53,11 @@ export function computeLowResolutionSize(
   baseRenderScale: number
 ): DeviceSize {
   const safeBaseScale = Math.max(1, Math.trunc(baseRenderScale));
+  const w = Math.ceil(deviceWidth / safeBaseScale);
+  const h = Math.ceil(deviceHeight / safeBaseScale);
   return {
-    width: Math.max(1, Math.ceil(deviceWidth / safeBaseScale)),
-    height: Math.max(1, Math.ceil(deviceHeight / safeBaseScale))
+    width: Math.max(2, w + (w & 1)),
+    height: Math.max(2, h + (h & 1))
   };
 }
 
