@@ -1188,13 +1188,17 @@ function buildCornerOutline({ x, z, halfThickness, runLength }) {
   // its grid line by extending halfThickness on each side, exactly matching
   // how wall tiles are centered on edge midpoints. The legs run `runLength`
   // into the +X/+Z quadrant from the vertex.
+  //
+  // Contour must be CCW when viewed from Blender +Z so the extruder produces
+  // outward normals; a CW contour inverts every face and gives a tangent
+  // basis that disagrees with abutting wall meshes (tile-seam stripe bug).
   return [
     [x - halfThickness, z - halfThickness],
-    [x - halfThickness, z + runLength],
-    [x + halfThickness, z + runLength],
-    [x + halfThickness, z + halfThickness],
+    [x + runLength,     z - halfThickness],
     [x + runLength,     z + halfThickness],
-    [x + runLength,     z - halfThickness]
+    [x + halfThickness, z + halfThickness],
+    [x + halfThickness, z + runLength],
+    [x - halfThickness, z + runLength]
   ];
 }
 

@@ -1,21 +1,21 @@
 {
-  "kitId": "kit_mnvqicv6_4",
+  "kitId": "kit_mo90us24_4",
   "name": "desert_sandstone_kit",
-  "generatedAt": "2026-04-12T12:23:02.323873+00:00",
+  "generatedAt": "2026-04-21T19:33:38.119963+00:00",
   "format": "glb",
   "tiles": [
     {
       "name": "wall",
       "kind": "wall",
       "role": "wall",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/wall",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/wall",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/wall/wall.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/wall/wall.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/wall/wall.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/wall/wall.glb",
           "format": "glb"
         }
       ],
@@ -43,14 +43,14 @@
       "name": "door",
       "kind": "door_wall",
       "role": "door",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/door",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/door",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/door/door.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/door/door.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/door/door.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/door/door.glb",
           "format": "glb"
         }
       ],
@@ -78,14 +78,14 @@
       "name": "window_left",
       "kind": "window_module",
       "role": "window_left",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_left",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/window_left",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/window_left/window_left.glb",
           "format": "glb"
         }
       ],
@@ -113,14 +113,14 @@
       "name": "window_middle",
       "kind": "window_module",
       "role": "window_middle",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/window_middle/window_middle.glb",
           "format": "glb"
         }
       ],
@@ -148,14 +148,14 @@
       "name": "corner",
       "kind": "corner",
       "role": "corner",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/corner",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/corner",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/corner/corner.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/corner/corner.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/desert_sandstone/artifacts/tiles/corner/corner.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/desert_sandstone/artifacts/tiles/corner/corner.glb",
           "format": "glb"
         }
       ],

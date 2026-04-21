@@ -1,21 +1,21 @@
 {
-  "kitId": "kit_mnvqibcw_4",
+  "kitId": "kit_mo90usoh_4",
   "name": "ground_tiles_kit",
-  "generatedAt": "2026-04-12T12:23:00.363057+00:00",
+  "generatedAt": "2026-04-21T19:33:38.911780+00:00",
   "format": "glb",
   "tiles": [
     {
       "name": "asphalt",
       "kind": "floor_tile",
       "role": "floor_tile",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/asphalt",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/asphalt",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/asphalt/asphalt.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/asphalt/asphalt.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/asphalt/asphalt.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/asphalt/asphalt.glb",
           "format": "glb"
         }
       ],
@@ -45,14 +45,14 @@
       "name": "concrete_walk",
       "kind": "floor_tile",
       "role": "floor_tile",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/concrete_walk",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/concrete_walk",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/concrete_walk/concrete_walk.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/concrete_walk/concrete_walk.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/concrete_walk/concrete_walk.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/concrete_walk/concrete_walk.glb",
           "format": "glb"
         }
       ],
@@ -82,14 +82,14 @@
       "name": "grass",
       "kind": "floor_tile",
       "role": "floor_tile",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/grass",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/grass",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/grass/grass.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/grass/grass.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/grass/grass.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/grass/grass.glb",
           "format": "glb"
         }
       ],
@@ -119,14 +119,14 @@
       "name": "sandstone",
       "kind": "floor_tile",
       "role": "floor_tile",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/sandstone",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/sandstone",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/sandstone/sandstone.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/sandstone/sandstone.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/ground_tiles/artifacts/tiles/sandstone/sandstone.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/ground_tiles/artifacts/tiles/sandstone/sandstone.glb",
           "format": "glb"
         }
       ],

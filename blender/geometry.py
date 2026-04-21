@@ -247,6 +247,29 @@ def _finalize_mesh(mesh, world_offset=(0.0, 0.0, 0.0)):
 # Geometry builders
 # ---------------------------------------------------------------------------
 
+def _build_prism_faces(n):
+    """Face index list for an extruded prism with `n`-vertex contour.
+
+    Contract: contours passed to the builders that call this helper MUST be
+    CCW when viewed from Blender +Z. A CW contour silently inverts every
+    face normal — which looks fine in isolation under doubleSided materials
+    but desynchronises tangent bases at tile seams (see `buildCornerOutline`
+    regression that gave corner↔wall stripe artifacts).
+    """
+    faces = []
+    # Bottom cap (at min Z, outward normal -Z): reversed winding.
+    for i in range(1, n - 1):
+        faces.append((0, i + 1, i))
+    # Top cap (at max Z, outward normal +Z): direct winding.
+    for i in range(1, n - 1):
+        faces.append((n, n + i, n + i + 1))
+    # Side quads: outward normal = 90° CW from CCW edge direction.
+    for i in range(n):
+        ni = (i + 1) % n
+        faces.append((i, ni, n + ni, n + i))
+    return faces
+
+
 def _create_box_mesh(name, fr, to, origin):
     """Create an axis-aligned box mesh."""
     o = s2b_vec(origin)
@@ -349,17 +372,7 @@ def _create_vertical_edge_chamfered_prism(name, fr, to, origin, chamfer, corners
 
     verts = bottom_verts + top_verts
 
-    faces = []
-    # Bottom cap — fan triangulation (reversed winding for outward normal)
-    for i in range(1, n - 1):
-        faces.append((0, i + 1, i))
-    # Top cap
-    for i in range(1, n - 1):
-        faces.append((n, n + i, n + i + 1))
-    # Side quads
-    for i in range(n):
-        ni = (i + 1) % n
-        faces.append((i, ni, n + ni, n + i))
+    faces = _build_prism_faces(n)
 
     mesh_data = bpy.data.meshes.new(name + "_mesh")
     mesh_data.from_pydata(verts, [], faces)
@@ -384,18 +397,7 @@ def _create_extruded_polygon(name, contour, bottom_y, top_y, origin):
     top_verts = [rel(pt[0], top_y, pt[1]) for pt in contour]
 
     verts = bottom_verts + top_verts
-
-    faces = []
-    # Bottom cap — fan triangulation (reversed winding)
-    for i in range(1, n - 1):
-        faces.append((0, i + 1, i))
-    # Top cap
-    for i in range(1, n - 1):
-        faces.append((n, n + i, n + i + 1))
-    # Side quads
-    for i in range(n):
-        ni = (i + 1) % n
-        faces.append((i, ni, n + ni, n + i))
+    faces = _build_prism_faces(n)
 
     mesh_data = bpy.data.meshes.new(name + "_mesh")
     mesh_data.from_pydata(verts, [], faces)

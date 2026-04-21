@@ -1,21 +1,21 @@
 {
-  "kitId": "kit_mnvqibvb_4",
+  "kitId": "kit_mo90urcj_4",
   "name": "greek_island_white_kit",
-  "generatedAt": "2026-04-12T12:23:01.043313+00:00",
+  "generatedAt": "2026-04-21T19:33:37.362775+00:00",
   "format": "glb",
   "tiles": [
     {
       "name": "floor_tile",
       "kind": "floor_tile",
       "role": "floor_tile",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/floor_tile",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/floor_tile",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/floor_tile/floor_tile.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/floor_tile/floor_tile.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/floor_tile/floor_tile.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/floor_tile/floor_tile.glb",
           "format": "glb"
         }
       ],
@@ -45,14 +45,14 @@
       "name": "wall",
       "kind": "wall",
       "role": "wall",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/wall",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/wall",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/wall/wall.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/wall/wall.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/wall/wall.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/wall/wall.glb",
           "format": "glb"
         }
       ],
@@ -80,14 +80,14 @@
       "name": "door",
       "kind": "door_wall",
       "role": "door",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/door",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/door",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/door/door.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/door/door.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/door/door.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/door/door.glb",
           "format": "glb"
         }
       ],
@@ -115,14 +115,14 @@
       "name": "window_left",
       "kind": "window_module",
       "role": "window_left",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/window_left",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/window_left",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/window_left/window_left.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/window_left/window_left.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/window_left/window_left.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/window_left/window_left.glb",
           "format": "glb"
         }
       ],
@@ -150,14 +150,14 @@
       "name": "window_middle",
       "kind": "window_module",
       "role": "window_middle",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/window_middle",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/window_middle",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/window_middle/window_middle.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/window_middle/window_middle.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/window_middle/window_middle.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/window_middle/window_middle.glb",
           "format": "glb"
         }
       ],
@@ -185,14 +185,14 @@
       "name": "corner",
       "kind": "corner",
       "role": "corner",
-      "directory": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/corner",
+      "directory": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/corner",
       "files": [
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/corner/corner.manifest.json",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/corner/corner.manifest.json",
           "format": "manifest"
         },
         {
-          "path": "/Users/ncr/dev/hayflick-26-2/assets/tilesets/greek_island_white/artifacts/tiles/corner/corner.glb",
+          "path": "/home/ncr/dev/hayflick-experiments/assets/tilesets/greek_island_white/artifacts/tiles/corner/corner.glb",
           "format": "glb"
         }
       ],

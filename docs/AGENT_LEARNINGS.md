@@ -3458,3 +3458,35 @@ Preventive checklist:
 - When a task requires exact hard pixel blocks, verify the output upscale shader path as well as MSAA settings.
 - Keep output smoothing configurable per view so experiments can opt into hard nearest-neighbor upscale when strict pixel checks matter.
 - Add facade pass-through assertions for any new pixel-view config toggles used by experiments.
+
+## 2026-04-21 - Corner tile bright-stripe seam at wall↔corner boundaries
+Root cause:
+- `buildCornerOutline` in `packages/blockstudio/src/shared/scene-plan.js` emitted its
+  L-shape contour CW when viewed from Blender +Z, while the geometry extruder in
+  `blender/geometry.py` was written assuming CCW input (matching how
+  `_build_vertical_chamfer_outline` emits wall contours). A CW contour silently
+  inverts every face of the extruded prism.
+- Inverted face normals rendered fine in isolation with `doubleSided` materials,
+  but inverted the tangent basis. Adjacent wall meshes had the correct tangent
+  basis, so the normal map sampled into a different surface orientation at the
+  shared seam — producing a 1–2 px vertical bright stripe on every corner↔wall
+  abutment that moved with pan.
+
+Detection signal:
+- User reported bright vertical seams during pan at `outlineZoom=4` that persisted
+  with outlines disabled (D key) and at every viewport size.
+- Normals debug view (`outlineDebug=3`) showed the corner strip with the opposite
+  color from the abutting wall (magenta↔blue inversion) — the clearest tell.
+- A centroid-outwardness test on `corner.glb` confirmed 28-of-36 vertex normals
+  pointed inward; every other tile (wall, door, window, floor) was fully outward.
+
+Preventive checklist:
+- Treat every new contour-consumer in `blender/geometry.py` as CCW-only: the
+  `_build_prism_faces` helper now carries that contract in its docstring and a
+  CW contour will produce inverted normals with no error.
+- When a visual bug is invisible with outlines off but visible in the normal
+  buffer, suspect tangent-basis / winding mismatches before blaming the
+  post-process pipeline.
+- `assets/materials/polyhaven/` is not checked in. Full `pnpm run rebuild:all`
+  needs those PNGs on disk; `scripts/_extract-glb-textures.mjs` recovers them
+  from committed GLBs when the source pixart files are missing.
