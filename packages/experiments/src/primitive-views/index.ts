@@ -5,6 +5,7 @@ import {
   SharedScissorStage,
   type PixelView
 } from "@common/render";
+import { bindPixelPerfectPaneBroadcast } from "@common/input";
 import type { ExperimentModule } from "../runtime/types";
 
 // All four panes share these projection parameters so the on-screen pixel
@@ -252,137 +253,20 @@ const experiment: ExperimentModule = {
 
     createHud(mount);
 
-    // ------------------------------------------------------------------
-    // Unison input — pointer events on any pane drive ALL panes at once.
-    // We hit-test against the stage to find which pane the cursor is over,
-    // then broadcast the same local pointer coordinates to every pane (as
-    // PixelQuad does for the four iso angles).
-    // ------------------------------------------------------------------
-
-    let dragPointerId: number | null = null;
-
-    const broadcastBeginDrag = (localX: number, localY: number): void => {
-      for (const entry of panes) {
-        entry.pane.beginPanDrag(localX, localY);
-      }
-    };
-
-    const broadcastUpdateDrag = (localX: number, localY: number): void => {
-      for (const entry of panes) {
-        entry.pane.updatePanDrag(localX, localY);
-      }
-    };
-
-    const broadcastEndDrag = (): void => {
-      for (const entry of panes) {
-        entry.pane.endPanDrag();
-      }
-    };
-
-    const broadcastZoom = (
-      direction: -1 | 1,
-      localX: number,
-      localY: number,
-      nowMs: number
-    ): void => {
-      for (const entry of panes) {
-        entry.pane.stepCameraZoomAtLocalCss(direction, localX, localY, nowMs);
-      }
-    };
-
-    const broadcastRotate = (delta: -1 | 1): void => {
-      for (const entry of panes) {
-        entry.pane.rotateQuarterTurns(delta);
-      }
-    };
-
-    const onPointerDown = (event: PointerEvent): void => {
-      // Middle mouse pans, matching the convention in the rest of the project.
-      if (event.button !== 1) return;
-      const hit = stage.hitTestPane(event.clientX, event.clientY);
-      if (!hit) return;
-      broadcastBeginDrag(hit.localX, hit.localY);
-      dragPointerId = event.pointerId;
-      try {
-        stage.canvas.setPointerCapture(event.pointerId);
-      } catch {
-        // no-op
-      }
-      event.preventDefault();
-    };
-
-    const onPointerMove = (event: PointerEvent): void => {
-      if (dragPointerId == null || event.pointerId !== dragPointerId) return;
-      const hit = stage.hitTestPane(event.clientX, event.clientY);
-      if (!hit) return;
-      broadcastUpdateDrag(hit.localX, hit.localY);
-      event.preventDefault();
-    };
-
-    const onPointerUp = (event: PointerEvent): void => {
-      if (dragPointerId == null || event.pointerId !== dragPointerId) return;
-      dragPointerId = null;
-      broadcastEndDrag();
-      try {
-        if (stage.canvas.hasPointerCapture(event.pointerId)) {
-          stage.canvas.releasePointerCapture(event.pointerId);
-        }
-      } catch {
-        // no-op
-      }
-      event.preventDefault();
-    };
-
-    const onAuxClick = (event: MouseEvent): void => {
-      // Suppress the autoscroll affordance browsers attach to middle mouse.
-      if (event.button === 1) {
-        event.preventDefault();
-      }
-    };
-
-    const onWheel = (event: WheelEvent): void => {
-      const hit = stage.hitTestPane(event.clientX, event.clientY);
-      if (!hit) return;
-      if (event.deltaY === 0) return;
-      const direction = (event.deltaY > 0 ? -1 : 1) as -1 | 1;
-      broadcastZoom(direction, hit.localX, hit.localY, performance.now());
-      event.preventDefault();
-    };
-
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.code === "KeyQ") {
-        broadcastRotate(-1);
-        event.preventDefault();
-      } else if (event.code === "KeyE") {
-        broadcastRotate(1);
-        event.preventDefault();
-      }
-    };
-
-    stage.canvas.addEventListener("pointerdown", onPointerDown);
-    stage.canvas.addEventListener("pointermove", onPointerMove);
-    stage.canvas.addEventListener("pointerup", onPointerUp);
-    stage.canvas.addEventListener("pointercancel", onPointerUp);
-    stage.canvas.addEventListener("auxclick", onAuxClick);
-    stage.canvas.addEventListener("wheel", onWheel, { passive: false });
-    window.addEventListener("keydown", onKeyDown);
+    const unbindInput = bindPixelPerfectPaneBroadcast({
+      stage,
+      panes: panes.map((e) => e.pane)
+    });
 
     stage.start();
 
     return () => {
-      stage.canvas.removeEventListener("pointerdown", onPointerDown);
-      stage.canvas.removeEventListener("pointermove", onPointerMove);
-      stage.canvas.removeEventListener("pointerup", onPointerUp);
-      stage.canvas.removeEventListener("pointercancel", onPointerUp);
-      stage.canvas.removeEventListener("auxclick", onAuxClick);
-      stage.canvas.removeEventListener("wheel", onWheel);
-      window.removeEventListener("keydown", onKeyDown);
+      unbindInput();
       for (const entry of panes) {
         stage.unregisterPane(entry.spec.id);
         entry.element.remove();
       }
       stage.dispose();
-      // Tear down scene resources.
       scene.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
           obj.geometry.dispose();

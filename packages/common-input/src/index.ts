@@ -8,3 +8,7 @@ export {
   type PixelPerfectViewInputBindingOptions,
   type SharedScissorStageInputBindingOptions
 } from "./pixel-perfect-input-bindings";
+export {
+  bindPixelPerfectPaneBroadcast,
+  type PixelPerfectPaneBroadcastOptions
+} from "./pixel-perfect-broadcast-bindings";

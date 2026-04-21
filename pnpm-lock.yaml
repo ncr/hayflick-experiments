@@ -135,6 +135,10 @@ importers:
       three:
         specifier: ^0.173.0
         version: 0.173.0
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^3.2.4
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.9))
 
   packages/experiments:
     dependencies:

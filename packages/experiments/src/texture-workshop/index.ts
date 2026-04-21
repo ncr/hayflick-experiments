@@ -4,7 +4,7 @@ import {
   PixelPerfectViewportCore,
   PixelPerfectScissorPane
 } from "@common/render";
-import { attachTouchGestures } from "@common/input";
+import { bindPixelPerfectPaneBroadcast } from "@common/input";
 import { LEVEL_EDITOR_WORLD_UNIT } from "@common/level-editor";
 import type { ExperimentModule } from "../runtime/types";
 import { loadTilesetAssets, type TilesetAssets, type LoadedTile } from "../map-editor-2d/tileset-loader";
@@ -29,7 +29,6 @@ const TARGET_LAYER = 2;
 
 const GRID_TILES = 20;
 const CAMERA_DISTANCE = 50;
-const TOUCH_PINCH_LOG2_THRESHOLD = Math.log2(1.32);
 const PANEL_WIDTH = 320;
 
 const TARGET_VIEW_CONFIG = {
@@ -419,81 +418,9 @@ const experiment: ExperimentModule = {
       if (tile) showTile(tile);
     }
 
-    // --- Unison input ---
-
-    const allPanes = [normalPane, targetPane];
-
-    const broadcastPan = (dx: number, dy: number): void => {
-      for (const p of allPanes) p.panByCss(dx, dy);
-    };
-    const broadcastZoom = (dir: -1 | 1, cx: number, cy: number, now: number): void => {
-      for (const p of allPanes) p.stepCameraZoomAtLocalCss(dir, cx, cy, now);
-    };
-    const broadcastRotate = (delta: -1 | 1): void => {
-      for (const p of allPanes) p.rotateQuarterTurns(delta);
-    };
-
-    let dragPid: number | null = null;
-    let lastDragX = 0;
-    let lastDragY = 0;
-
-    const onPointerDown = (e: PointerEvent): void => {
-      if (e.button !== 0 && e.button !== 1) return;
-      dragPid = e.pointerId;
-      lastDragX = e.clientX;
-      lastDragY = e.clientY;
-      try { stage.canvas.setPointerCapture(e.pointerId); } catch {}
-      e.preventDefault();
-    };
-    const onPointerMove = (e: PointerEvent): void => {
-      if (dragPid == null || e.pointerId !== dragPid) return;
-      broadcastPan(e.clientX - lastDragX, e.clientY - lastDragY);
-      lastDragX = e.clientX;
-      lastDragY = e.clientY;
-      e.preventDefault();
-    };
-    const onPointerUp = (e: PointerEvent): void => {
-      if (dragPid == null || e.pointerId !== dragPid) return;
-      dragPid = null;
-      try { if (stage.canvas.hasPointerCapture(e.pointerId)) stage.canvas.releasePointerCapture(e.pointerId); } catch {}
-    };
-    const onWheel = (e: WheelEvent): void => {
-      if (e.deltaY === 0) return;
-      const hit = stage.hitTestPane(e.clientX, e.clientY);
-      if (!hit) return;
-      broadcastZoom(e.deltaY > 0 ? -1 : 1, hit.localX, hit.localY, performance.now());
-      e.preventDefault();
-    };
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.code === "KeyQ") { broadcastRotate(-1); e.preventDefault(); }
-      else if (e.code === "KeyE") { broadcastRotate(1); e.preventDefault(); }
-    };
-
-    stage.canvas.addEventListener("pointerdown", onPointerDown);
-    stage.canvas.addEventListener("pointermove", onPointerMove);
-    stage.canvas.addEventListener("pointerup", onPointerUp);
-    stage.canvas.addEventListener("pointercancel", onPointerUp);
-    stage.canvas.addEventListener("wheel", onWheel, { passive: false });
-    window.addEventListener("keydown", onKeyDown);
-
-    let pinchLog2Accum = 0;
-    const unbindTouch = attachTouchGestures(stage.canvas, {
-      onPan: (dx, dy) => broadcastPan(dx, dy),
-      onPinch: (scaleDelta, cx, cy) => {
-        if (Math.abs(scaleDelta - 1) < 0.005) return;
-        pinchLog2Accum += Math.log2(scaleDelta);
-        const now = performance.now();
-        while (pinchLog2Accum >= TOUCH_PINCH_LOG2_THRESHOLD) {
-          broadcastZoom(1, cx, cy, now);
-          pinchLog2Accum -= TOUCH_PINCH_LOG2_THRESHOLD;
-        }
-        while (pinchLog2Accum <= -TOUCH_PINCH_LOG2_THRESHOLD) {
-          broadcastZoom(-1, cx, cy, now);
-          pinchLog2Accum += TOUCH_PINCH_LOG2_THRESHOLD;
-        }
-      },
-      onPinchEnd: () => { pinchLog2Accum = 0; },
-      onRotate: (direction) => broadcastRotate(direction)
+    const unbindInput = bindPixelPerfectPaneBroadcast({
+      stage,
+      panes: [normalPane, targetPane]
     });
 
     // --- Resize ---
@@ -533,13 +460,7 @@ const experiment: ExperimentModule = {
     return () => {
       cancelAnimationFrame(animId);
       resizeObs.disconnect();
-      unbindTouch();
-      stage.canvas.removeEventListener("pointerdown", onPointerDown);
-      stage.canvas.removeEventListener("pointermove", onPointerMove);
-      stage.canvas.removeEventListener("pointerup", onPointerUp);
-      stage.canvas.removeEventListener("pointercancel", onPointerUp);
-      stage.canvas.removeEventListener("wheel", onWheel);
-      window.removeEventListener("keydown", onKeyDown);
+      unbindInput();
       controlPanel.destroy();
       stage.dispose();
       topEl.remove();
