@@ -3444,3 +3444,17 @@ Preventive checklist:
 - In screenshot analyzers, report off-canvas expected pixels separately from true raster misses.
 - Before judging 2:1 staircase quality, verify projected endpoints are inside the overlay canvas.
 - When using facade config fields such as `verticalBias`, assert they are forwarded into the core in facade tests.
+
+## 2026-04-21 - Pixel-view "smooth" upscale still softens texel boundaries after MSAA is disabled
+Root cause:
+- `PixelPerfectViewportCore` always used the output shader's smooth texel-boundary sampling path.
+- Even with `lowTargetSamples: 0` and WebGL antialiasing off, screenshot checks still saw softened 1-device-pixel transitions because the upscale shader blended around texel edges.
+
+Detection signal:
+- The segmented wall edge pass rendered at the correct low-res texels, but screenshot block checks still found mixed-color 4x4 cells until the output-stage smoothing was disabled.
+- Visual output looked crisp at a glance while per-block image analysis still showed partial edge coverage.
+
+Preventive checklist:
+- When a task requires exact hard pixel blocks, verify the output upscale shader path as well as MSAA settings.
+- Keep output smoothing configurable per view so experiments can opt into hard nearest-neighbor upscale when strict pixel checks matter.
+- Add facade pass-through assertions for any new pixel-view config toggles used by experiments.

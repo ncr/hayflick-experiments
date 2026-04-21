@@ -164,6 +164,7 @@ function makeConfig(mount: HTMLElement): any {
     zoomBurstIdleMs: 90,
     outputOverscanLowPixels: 2,
     lowTargetSamples: 0,
+    smoothPixelTransitions: false,
     clearColor: 0x0b0f14,
     clearAlpha: 1,
     mountBackground: "#123456",
@@ -223,6 +224,7 @@ describe("@common/render PixelPerfectView facade", () => {
     expect(core.config.maxBackingHeight).toBe(stage.maxBackingHeight);
     expect(core.config.devicePixelRatio).toBe(2);
     expect(core.config.lowTargetSamples).toBe(0);
+    expect(core.config.smoothPixelTransitions).toBe(false);
     expect(core.config.verticalBias).toBe(0.34);
 
     expect(pane.config.id).toBe("main");

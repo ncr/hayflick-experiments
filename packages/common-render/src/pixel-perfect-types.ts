@@ -50,6 +50,8 @@ export type PixelPerfectViewConfig = {
   outputOverscanLowPixels: number;
   /** MSAA sample count for the low-res render target. Default: 4. Set to 0 to disable. */
   lowTargetSamples?: number;
+  /** When false, the output upscale pass uses hard nearest-neighbor texel edges with no boundary smoothing. */
+  smoothPixelTransitions?: boolean;
   clearColor?: number;
   clearAlpha?: number;
   /** Where the camera target sits vertically on screen: 0.5 = centered (default), 1/3 = lower third. */

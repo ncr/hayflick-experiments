@@ -34,6 +34,82 @@ void main() {
 }
 `;
 
+const ID_FRAGMENT_SHADER = `
+varying vec3 vWorldNormal;
+
+float categoryForNormal(vec3 n) {
+  vec3 an = abs(n);
+  if (n.y > 0.5) return 1.0;
+  if (an.z > 0.5) return 2.0;
+  if (an.x > 0.5) return 3.0;
+  return 0.0;
+}
+
+void main() {
+  float category = categoryForNormal(normalize(vWorldNormal));
+  gl_FragColor = vec4(category / 3.0, 0.0, 0.0, 1.0);
+}
+`;
+
+const POST_VERTEX_SHADER = `
+varying vec2 vUv;
+
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`;
+
+const POST_FRAGMENT_SHADER = `
+precision highp float;
+
+uniform sampler2D uColorTex;
+uniform sampler2D uIdTex;
+uniform vec2 uTexelSize;
+uniform vec3 uEdgeColor;
+
+varying vec2 vUv;
+
+float decodeCategory(vec2 uv) {
+  return floor(texture2D(uIdTex, uv).r * 3.0 + 0.5);
+}
+
+float priorityForCategory(float category) {
+  if (category < 0.5) return 0.0;
+  if (category < 1.5) return 1.0;
+  if (category < 2.5) return 2.0;
+  return 3.0;
+}
+
+bool shouldShadeAgainst(float currentCategory, vec2 stepOffset) {
+  float neighborCategory = decodeCategory(vUv + stepOffset * uTexelSize);
+  if (neighborCategory < 0.5) return true;
+  if (abs(neighborCategory - currentCategory) <= 0.1) return false;
+  return priorityForCategory(currentCategory) > priorityForCategory(neighborCategory);
+}
+
+void main() {
+  vec4 baseColor = texture2D(uColorTex, vUv);
+  float currentCategory = decodeCategory(vUv);
+  if (currentCategory < 0.5) {
+    gl_FragColor = baseColor;
+    return;
+  }
+
+  bool edge = false;
+  edge = edge || shouldShadeAgainst(currentCategory, vec2(-1.0, 0.0));
+  edge = edge || shouldShadeAgainst(currentCategory, vec2(1.0, 0.0));
+  edge = edge || shouldShadeAgainst(currentCategory, vec2(0.0, -1.0));
+  edge = edge || shouldShadeAgainst(currentCategory, vec2(0.0, 1.0));
+  edge = edge || shouldShadeAgainst(currentCategory, vec2(-1.0, -1.0));
+  edge = edge || shouldShadeAgainst(currentCategory, vec2(1.0, -1.0));
+  edge = edge || shouldShadeAgainst(currentCategory, vec2(-1.0, 1.0));
+  edge = edge || shouldShadeAgainst(currentCategory, vec2(1.0, 1.0));
+
+  gl_FragColor = edge ? vec4(uEdgeColor, 1.0) : baseColor;
+}
+`;
+
 type WorldPoint = { x: number; y: number; z: number };
 type ScreenPoint = { x: number; y: number };
 
@@ -162,13 +238,22 @@ function createWallMaterial(): THREE.ShaderMaterial {
   });
 }
 
+function createWallIdMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: VERTEX_SHADER,
+    fragmentShader: ID_FRAGMENT_SHADER
+  });
+}
+
 function createWallSegments(): {
   root: THREE.Group;
+  idRoot: THREE.Group;
   geometries: THREE.BufferGeometry[];
   materials: THREE.Material[];
   debugSegments: SegmentDebug[];
 } {
   const root = new THREE.Group();
+  const idRoot = new THREE.Group();
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
   const debugSegments: SegmentDebug[] = [];
@@ -176,12 +261,17 @@ function createWallSegments(): {
   for (const spec of buildWallSegmentSpecs(SEGMENT_COUNT, WALL_LENGTH)) {
     const geometry = createWallSegmentGeometry(spec);
     const material = createWallMaterial();
+    const idMaterial = createWallIdMaterial();
     const mesh = new THREE.Mesh(geometry, material);
+    const idMesh = new THREE.Mesh(geometry, idMaterial);
     mesh.position.set(spec.centerX, 0, 0);
+    idMesh.position.copy(mesh.position);
     mesh.name = `wall-segment-${spec.index}`;
+    idMesh.name = `wall-segment-id-${spec.index}`;
     root.add(mesh);
+    idRoot.add(idMesh);
     geometries.push(geometry);
-    materials.push(material);
+    materials.push(material, idMaterial);
     debugSegments.push({
       index: spec.index,
       suppressMinX: spec.suppressMinX,
@@ -190,7 +280,7 @@ function createWallSegments(): {
     });
   }
 
-  return { root, geometries, materials, debugSegments };
+  return { root, idRoot, geometries, materials, debugSegments };
 }
 
 function createGround(): THREE.Mesh {
@@ -219,28 +309,6 @@ function createHud(mount: HTMLElement): HTMLDivElement {
   return hud;
 }
 
-function syncOverlayCanvasToRenderer(canvas: HTMLCanvasElement, rendererCanvas: HTMLCanvasElement): void {
-  if (canvas.width !== rendererCanvas.width || canvas.height !== rendererCanvas.height) {
-    canvas.width = rendererCanvas.width;
-    canvas.height = rendererCanvas.height;
-  }
-  canvas.style.left = rendererCanvas.style.left;
-  canvas.style.top = rendererCanvas.style.top;
-  canvas.style.width = rendererCanvas.style.width;
-  canvas.style.height = rendererCanvas.style.height;
-}
-
-function createPixelOverlay(mount: HTMLElement, rendererCanvas: HTMLCanvasElement): HTMLCanvasElement {
-  const canvas = document.createElement("canvas");
-  canvas.style.position = "absolute";
-  canvas.style.imageRendering = "pixelated";
-  canvas.style.pointerEvents = "none";
-  canvas.style.zIndex = "2";
-  syncOverlayCanvasToRenderer(canvas, rendererCanvas);
-  mount.appendChild(canvas);
-  return canvas;
-}
-
 function isVisibleEdge(edge: WallEdge, cameraDirection: THREE.Vector3): boolean {
   return edge.normals.some((normal) => normal.dot(cameraDirection) < -0.0001);
 }
@@ -248,91 +316,6 @@ function isVisibleEdge(edge: WallEdge, cameraDirection: THREE.Vector3): boolean 
 function edgePixelScaleForView(view: PixelPerfectView): number {
   const state = view.getState();
   return Math.max(1, Math.round(state.baseRenderScale * Math.max(1, state.cameraZoomCurrent)));
-}
-
-function drawPixel(ctx: CanvasRenderingContext2D, x: number, y: number, pixelScale: number): void {
-  ctx.fillRect(x * pixelScale, y * pixelScale, pixelScale, pixelScale);
-}
-
-function drawTwoToOneHorizontal(
-  ctx: CanvasRenderingContext2D,
-  x0: number,
-  y0: number,
-  sx: number,
-  sy: number,
-  dy: number,
-  pixelScale: number
-): void {
-  for (let row = 0; row <= dy; row += 1) {
-    const y = y0 + sy * row;
-    const x = x0 + sx * row * 2;
-    drawPixel(ctx, x, y, pixelScale);
-    drawPixel(ctx, x + sx, y, pixelScale);
-  }
-}
-
-function drawTwoToOneVertical(
-  ctx: CanvasRenderingContext2D,
-  x0: number,
-  y0: number,
-  sx: number,
-  sy: number,
-  dx: number,
-  pixelScale: number
-): void {
-  for (let column = 0; column <= dx; column += 1) {
-    const x = x0 + sx * column;
-    const y = y0 + sy * column * 2;
-    drawPixel(ctx, x, y, pixelScale);
-    drawPixel(ctx, x, y + sy, pixelScale);
-  }
-}
-
-function drawDdaLine(
-  ctx: CanvasRenderingContext2D,
-  x0: number,
-  y0: number,
-  x1: number,
-  y1: number,
-  pixelScale: number
-): void {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const steps = Math.max(Math.abs(dx), Math.abs(dy));
-  if (steps === 0) {
-    drawPixel(ctx, x0, y0, pixelScale);
-    return;
-  }
-  for (let i = 0; i <= steps; i += 1) {
-    drawPixel(
-      ctx,
-      Math.round(x0 + (dx * i) / steps),
-      Math.round(y0 + (dy * i) / steps),
-      pixelScale
-    );
-  }
-}
-
-function drawPixelLine(ctx: CanvasRenderingContext2D, a: ScreenPoint, b: ScreenPoint, pixelScale: number): void {
-  const x0 = Math.round(a.x / pixelScale);
-  const y0 = Math.round(a.y / pixelScale);
-  const x1 = Math.round(b.x / pixelScale);
-  const y1 = Math.round(b.y / pixelScale);
-  const dx = Math.abs(x1 - x0);
-  const dy = Math.abs(y1 - y0);
-  const sx = Math.sign(x1 - x0) || 1;
-  const sy = Math.sign(y1 - y0) || 1;
-
-  if (dx >= dy && dy > 0 && Math.abs(dx - dy * 2) <= 2) {
-    drawTwoToOneHorizontal(ctx, x0, y0, sx, sy, dy, pixelScale);
-    return;
-  }
-  if (dy > dx && dx > 0 && Math.abs(dy - dx * 2) <= 2) {
-    drawTwoToOneVertical(ctx, x0, y0, sx, sy, dx, pixelScale);
-    return;
-  }
-
-  drawDdaLine(ctx, x0, y0, x1, y1, pixelScale);
 }
 
 function projectEdgeToLocal(
@@ -358,10 +341,9 @@ function projectEdgeToLocal(
 function projectVisibleEdges(
   edges: WallEdge[],
   view: PixelPerfectView,
-  overlay: HTMLCanvasElement,
+  mountRect: DOMRect,
   cameraDirection: THREE.Vector3
 ): Array<{ id: string; a: ScreenPoint; b: ScreenPoint }> {
-  const mountRect = overlay.getBoundingClientRect();
   const projected: Array<{ id: string; a: ScreenPoint; b: ScreenPoint }> = [];
   for (const edge of edges) {
     if (!isVisibleEdge(edge, cameraDirection)) continue;
@@ -369,24 +351,6 @@ function projectVisibleEdges(
     if (line) projected.push(line);
   }
   return projected;
-}
-
-function drawEdgeOverlay(
-  overlay: HTMLCanvasElement,
-  edges: WallEdge[],
-  view: PixelPerfectView,
-  rendererCanvas: HTMLCanvasElement,
-  cameraDirection: THREE.Vector3
-): void {
-  syncOverlayCanvasToRenderer(overlay, rendererCanvas);
-  const ctx = overlay.getContext("2d");
-  if (!ctx) return;
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  ctx.fillStyle = EDGE_PIXEL_COLOR;
-  const pixelScale = edgePixelScaleForView(view);
-  for (const edge of projectVisibleEdges(edges, view, overlay, cameraDirection)) {
-    drawPixelLine(ctx, edge.a, edge.b, pixelScale);
-  }
 }
 
 const experiment: ExperimentModule = {
@@ -401,8 +365,10 @@ const experiment: ExperimentModule = {
     const ground = createGround();
     scene.add(ground);
 
-    const { root, geometries, materials, debugSegments } = createWallSegments();
+    const { root, idRoot, geometries, materials, debugSegments } = createWallSegments();
     scene.add(root);
+    const idScene = new THREE.Scene();
+    idScene.add(idRoot);
 
     const view = new PixelPerfectView({
       mount,
@@ -427,6 +393,7 @@ const experiment: ExperimentModule = {
       zoomBurstIdleMs: 200,
       outputOverscanLowPixels: 2,
       lowTargetSamples: 0,
+      smoothPixelTransitions: false,
       clearColor: 0xa6afa7,
       clearAlpha: 1,
       mountBackground: "#a6afa7",
@@ -434,8 +401,69 @@ const experiment: ExperimentModule = {
     });
     view.setViewPose({ ...view.getViewPose(), targetX: 0, targetZ: 0, zoom: 2 });
 
+    const idTarget = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      depthBuffer: false,
+      stencilBuffer: false,
+      samples: 0
+    });
+    idTarget.texture.generateMipmaps = false;
+    const edgeTarget = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      depthBuffer: false,
+      stencilBuffer: false,
+      samples: 0
+    });
+    edgeTarget.texture.generateMipmaps = false;
+    const postScene = new THREE.Scene();
+    const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const postMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uColorTex: { value: null as THREE.Texture | null },
+        uIdTex: { value: idTarget.texture },
+        uTexelSize: { value: new THREE.Vector2(1, 1) },
+        uEdgeColor: { value: new THREE.Color(EDGE_PIXEL_COLOR) }
+      },
+      vertexShader: POST_VERTEX_SHADER,
+      fragmentShader: POST_FRAGMENT_SHADER,
+      depthTest: false,
+      depthWrite: false
+    });
+    const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial);
+    postQuad.frustumCulled = false;
+    postScene.add(postQuad);
+    view.setOutputSourceTexture(edgeTarget.texture);
+    view.afterSceneRender = (renderer, lowTarget) => {
+      if (idTarget.width !== lowTarget.width || idTarget.height !== lowTarget.height) {
+        idTarget.setSize(lowTarget.width, lowTarget.height);
+        edgeTarget.setSize(lowTarget.width, lowTarget.height);
+        (postMaterial.uniforms.uTexelSize.value as THREE.Vector2).set(
+          1 / lowTarget.width,
+          1 / lowTarget.height
+        );
+      }
+
+      renderer.setRenderTarget(idTarget);
+      renderer.setScissorTest(false);
+      renderer.setViewport(0, 0, idTarget.width, idTarget.height);
+      renderer.setScissor(0, 0, idTarget.width, idTarget.height);
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear();
+      renderer.render(idScene, view.camera);
+
+      postMaterial.uniforms.uColorTex.value = lowTarget.texture;
+      renderer.setRenderTarget(edgeTarget);
+      renderer.setViewport(0, 0, edgeTarget.width, edgeTarget.height);
+      renderer.setScissor(0, 0, edgeTarget.width, edgeTarget.height);
+      renderer.clear();
+      renderer.render(postScene, postCamera);
+    };
+
     const unbindInput = bindPixelPerfectViewInput({ view });
-    const overlay = createPixelOverlay(mount, view.canvas);
     const hud = createHud(mount);
     const continuousEdges = createContinuousWallEdges();
     const cameraDirection = new THREE.Vector3();
@@ -445,7 +473,6 @@ const experiment: ExperimentModule = {
         const { width: nextWidth, height: nextHeight } = entry.contentRect;
         if (nextWidth > 0 && nextHeight > 0) {
           view.resize(nextWidth, nextHeight);
-          syncOverlayCanvasToRenderer(overlay, view.canvas);
         }
       }
     });
@@ -474,7 +501,7 @@ const experiment: ExperimentModule = {
       projectJoinPoints: () => internalJoinWorldPoints.map(projectWorldPoint),
       projectVisibleEdges: () => {
         view.camera.getWorldDirection(cameraDirection);
-        return projectVisibleEdges(continuousEdges, view, overlay, cameraDirection);
+        return projectVisibleEdges(continuousEdges, view, mount.getBoundingClientRect(), cameraDirection);
       },
       edgePixelScale: () => edgePixelScaleForView(view),
       lowTargetSamples: () => view.getLowTarget().samples,
@@ -489,8 +516,6 @@ const experiment: ExperimentModule = {
       const dt = Math.min((now - prevTime) / 1000, 0.1);
       prevTime = now;
       view.frame(now, dt);
-      view.camera.getWorldDirection(cameraDirection);
-      drawEdgeOverlay(overlay, continuousEdges, view, view.canvas, cameraDirection);
     };
     animate();
 
@@ -498,10 +523,13 @@ const experiment: ExperimentModule = {
       cancelAnimationFrame(raf);
       resizeObserver.disconnect();
       unbindInput();
-      overlay.remove();
       hud.remove();
       delete window.__segmentedWallEdgesDebug;
       scene.remove(root, ground);
+      idScene.remove(idRoot);
+      postScene.remove(postQuad);
+      view.afterSceneRender = null;
+      view.setOutputSourceTexture(null);
       for (const geometry of geometries) geometry.dispose();
       for (const material of materials) material.dispose();
       ground.geometry.dispose();
@@ -510,6 +538,10 @@ const experiment: ExperimentModule = {
       } else {
         ground.material.dispose();
       }
+      postQuad.geometry.dispose();
+      postMaterial.dispose();
+      idTarget.dispose();
+      edgeTarget.dispose();
       view.dispose();
     };
   }

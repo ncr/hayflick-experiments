@@ -77,6 +77,7 @@ export class PixelPerfectView {
       zoomBurstIdleMs: config.zoomBurstIdleMs,
       outputOverscanLowPixels: config.outputOverscanLowPixels,
       lowTargetSamples: config.lowTargetSamples,
+      smoothPixelTransitions: config.smoothPixelTransitions,
       clearColor: config.clearColor,
       clearAlpha: config.clearAlpha,
       maxBackingWidth: this.stage.maxBackingWidth,
@@ -174,6 +175,12 @@ export class PixelPerfectView {
 
   setOutputSourceTexture(texture: THREE.Texture | null): void {
     this.core.setOutputSourceTexture(texture);
+  }
+
+  set beforeSceneRender(
+    cb: ((renderer: THREE.WebGLRenderer, lowTarget: THREE.WebGLRenderTarget) => void) | null
+  ) {
+    this.core.beforeSceneRender = cb;
   }
 
   set afterSceneRender(

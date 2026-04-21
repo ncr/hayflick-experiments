@@ -143,7 +143,8 @@ export class PixelPerfectViewportCore {
         uZoom: { value: 1 },
         uSourceSize: { value: new THREE.Vector2(1, 1) },
         uZoomPivot: { value: new THREE.Vector2(0.5, 0.5) },
-        uEffectiveScale: { value: 1 }
+        uEffectiveScale: { value: 1 },
+        uSmoothSampling: { value: config.smoothPixelTransitions === false ? 0 : 1 }
       },
       vertexShader: `
         varying vec2 vUv;
@@ -161,6 +162,7 @@ export class PixelPerfectViewportCore {
         uniform vec2 uSourceSize;
         uniform vec2 uZoomPivot;
         uniform float uEffectiveScale;
+        uniform float uSmoothSampling;
         varying vec2 vUv;
         void main() {
           vec2 sampleUv = (vUv - uContentOffset) / uContentScale;
@@ -172,6 +174,10 @@ export class PixelPerfectViewportCore {
           // while preserving sharp upscaled pixels everywhere else.
           vec2 tc = sampleUv * uSourceSize;
           vec2 fl = floor(tc - 0.5) + 0.5;
+          if (uSmoothSampling < 0.5) {
+            gl_FragColor = texture2D(uSource, fl / uSourceSize);
+            return;
+          }
           vec2 f = tc - fl;
           f = clamp((f - 0.5) * uEffectiveScale + 0.5, 0.0, 1.0);
           gl_FragColor = texture2D(uSource, (fl + f) / uSourceSize);
