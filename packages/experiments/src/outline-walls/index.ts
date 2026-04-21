@@ -401,41 +401,20 @@ const experiment: ExperimentModule = {
     // `outlineGridAxis=x|z|diag` — along which world axis to lay out the grid.
     const gridAxis = (params.get("outlineGridAxis") ?? "diag") as "x" | "z" | "diag";
 
-    // Pixel-perfect iso-2:1 view.
+    // Pixel-perfect iso-2:1 view. Defaults from PixelPerfectDefaults match
+    // what this experiment needs; only per-scene overrides are listed.
     const view = new PixelPerfectView({
       mount,
       width,
       height,
       scene,
-      fixedRenderHeight: 240,
-      // 4.8 * √2 makes scale = 240 / (4.8·√2) = 25·√2. With yaw=π/4 and
-      // pitch=30°, this gives per-world-unit screen_x = 25 and per-world-unit
-      // screen_y from (x+z) = 12.5 iso-pixels. Tile centres (multiples of
-      // 1.28 m) then land on integer iso rows/cols, and any mesh dimension
-      // that's a multiple of 8 cm also lands on integers — eliminating the
-      // sub-pixel flip between the two window walls that `yaw·cos=√2/2` would
-      // otherwise introduce. (Default 6.0 leaves 40/(iso projection) = 10·√2
-      // per unit on the vertical axis, which is irrational and causes the
-      // two glass slabs to rasterise 1 row apart from each other.)
-      baseOrthoHeight: 4.8 * Math.SQRT2,
-      cameraDistance: 40,
-      cameraPitch: "iso-2to1",
-      cameraYaw: Math.PI / 4,
       basePixelZoom: initialZoom,
-      zoomMin: 1,
-      zoomMax: 8,
-      zoomStep: 1,
-      zoomAnimationRate: 12,
-      zoomAnimationBurstRate: 24,
-      zoomAnimationEpsilon: 0.01,
       // Rotation: moderate ease rate, but hand off to the final snap phase
       // early (larger epsilon) so we don't spend a few hundred ms easing
       // sub-pixel at the tail — that was causing visible shimmer on
       // non-quarter-turn yaws.
       rotationAnimationRate: 20,
       rotationAnimationEpsilon: 0.08,
-      zoomBurstIdleMs: 300,
-      outputOverscanLowPixels: 2,
       clearColor: 0x1d2029
     });
 

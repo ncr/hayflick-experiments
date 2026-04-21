@@ -2,11 +2,12 @@ import * as THREE from "three";
 import { PixelPerfectScissorPane } from "./pixel-perfect-scissor-pane";
 import { PixelPerfectViewportCore } from "./pixel-perfect-viewport-core";
 import { SharedScissorStage } from "./shared-scissor-stage";
-import type {
-  PixelPerfectViewConfig,
-  PixelPerfectViewPose,
-  PixelPerfectViewState,
-  PixelSnapMode
+import {
+  resolvePixelPerfectTuning,
+  type PixelPerfectViewConfig,
+  type PixelPerfectViewPose,
+  type PixelPerfectViewState,
+  type PixelSnapMode
 } from "./pixel-perfect-types";
 
 export type {
@@ -55,29 +56,12 @@ export class PixelPerfectView {
       this.stage.canvas.style.background = config.canvasBackground;
     }
 
+    const tuning = resolvePixelPerfectTuning(config);
     this.core = new PixelPerfectViewportCore({
+      ...tuning,
       width: config.width,
       height: config.height,
       scene: config.scene,
-      fixedRenderHeight: config.fixedRenderHeight,
-      baseOrthoHeight: config.baseOrthoHeight,
-      cameraDistance: config.cameraDistance,
-      cameraPitch: config.cameraPitch,
-      cameraYaw: config.cameraYaw,
-      verticalBias: config.verticalBias,
-      basePixelZoom: config.basePixelZoom,
-      zoomMin: config.zoomMin,
-      zoomMax: config.zoomMax,
-      zoomStep: config.zoomStep,
-      zoomAnimationRate: config.zoomAnimationRate,
-      zoomAnimationBurstRate: config.zoomAnimationBurstRate,
-      zoomAnimationEpsilon: config.zoomAnimationEpsilon,
-      rotationAnimationRate: config.rotationAnimationRate,
-      rotationAnimationEpsilon: config.rotationAnimationEpsilon,
-      zoomBurstIdleMs: config.zoomBurstIdleMs,
-      outputOverscanLowPixels: config.outputOverscanLowPixels,
-      lowTargetSamples: config.lowTargetSamples,
-      smoothPixelTransitions: config.smoothPixelTransitions,
       clearColor: config.clearColor,
       clearAlpha: config.clearAlpha,
       maxBackingWidth: this.stage.maxBackingWidth,

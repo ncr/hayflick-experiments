@@ -9,7 +9,6 @@ import { meta as primitiveViewsMeta } from "./primitive-views/meta";
 import { meta as tileViewerMeta } from "./tile-viewer/meta";
 import { meta as textureWorkshopMeta } from "./texture-workshop/meta";
 import { meta as outlineWallsMeta } from "./outline-walls/meta";
-import { meta as segmentedWallEdgesMeta } from "./segmented-wall-edges/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
@@ -40,10 +39,6 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...propTestSceneMeta,
     load: () => import("./prop-test-scene/index")
-  },
-  {
-    ...segmentedWallEdgesMeta,
-    load: () => import("./segmented-wall-edges/index")
   }
   // AUTO_ENTRIES_END
 ];

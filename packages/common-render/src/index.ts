@@ -39,7 +39,12 @@ export {
   type PixelSnapMode
 } from "./pixel-perfect-view";
 export {
+  PixelPerfectDefaults,
   pitchForPixelView,
+  resolvePixelPerfectTuning,
+  type PixelPerfectViewTuning,
+  type PixelPerfectViewportCoreInput,
+  type PixelPerfectViewportCoreResolved,
   type PixelView
 } from "./pixel-perfect-types";
 export {

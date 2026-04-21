@@ -396,22 +396,10 @@ const experiment: ExperimentModule = {
       width,
       height,
       scene,
-      fixedRenderHeight: 240,
       baseOrthoHeight: 5.0,
       cameraDistance: 30,
-      cameraPitch: "iso-2to1",
-      cameraYaw: Math.PI / 4,
-      basePixelZoom: 1,
-      zoomMin: 1,
-      zoomMax: 8,
-      zoomStep: 1,
-      zoomAnimationRate: 12,
-      zoomAnimationBurstRate: 24,
-      zoomAnimationEpsilon: 0.01,
       rotationAnimationRate: 12,
       rotationAnimationEpsilon: 0.005,
-      zoomBurstIdleMs: 300,
-      outputOverscanLowPixels: 2,
       clearColor: 0x2a2e38
     });
 

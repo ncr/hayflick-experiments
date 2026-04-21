@@ -6,7 +6,7 @@ import { chromium } from "@playwright/test";
 import { PNG } from "pngjs";
 import { writeFileSync } from "node:fs";
 
-const port = 5174;
+const port = 5175;
 const zoom = 3;
 const ISO_WIDTH_PX = zoom;
 const FAT_WIDTH_PX = 2 * zoom;

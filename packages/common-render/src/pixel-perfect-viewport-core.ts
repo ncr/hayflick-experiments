@@ -2,18 +2,17 @@ import * as THREE from "three";
 import { PixelPerfectController } from "./pixel-perfect-controller";
 import {
   pitchForPixelView,
-  type PixelPerfectViewConfig,
+  resolvePixelPerfectTuning,
   type PixelPerfectViewPose,
   type PixelPerfectViewState,
+  type PixelPerfectViewportCoreInput,
+  type PixelPerfectViewportCoreResolved,
   type PixelSnapMode,
   type PixelView
 } from "./pixel-perfect-types";
 
-export type PixelPerfectViewportCoreConfig = Omit<PixelPerfectViewConfig, "mount"> & {
-  maxBackingWidth: number;
-  maxBackingHeight: number;
-  devicePixelRatio?: number;
-};
+/** @deprecated Use {@link PixelPerfectViewportCoreInput} instead. */
+export type PixelPerfectViewportCoreConfig = PixelPerfectViewportCoreInput;
 
 export type PixelPerfectRenderViewport = {
   x: number;
@@ -44,7 +43,7 @@ export class PixelPerfectViewportCore {
   readonly camera: THREE.OrthographicCamera;
   readonly cameraTarget = new THREE.Vector3(0, 0, 0);
 
-  private readonly config: PixelPerfectViewportCoreConfig;
+  private readonly config: PixelPerfectViewportCoreResolved;
   private readonly viewMode: PixelView;
   private readonly cameraPitchRadians: number;
   private readonly scene: THREE.Scene;
@@ -114,8 +113,20 @@ export class PixelPerfectViewportCore {
   private cssToDeviceX = 1;
   private cssToDeviceY = 1;
 
-  constructor(config: PixelPerfectViewportCoreConfig) {
-    this.config = config;
+  constructor(input: PixelPerfectViewportCoreInput) {
+    const resolved: PixelPerfectViewportCoreResolved = {
+      ...resolvePixelPerfectTuning(input),
+      width: input.width,
+      height: input.height,
+      scene: input.scene,
+      clearColor: input.clearColor,
+      clearAlpha: input.clearAlpha,
+      maxBackingWidth: input.maxBackingWidth,
+      maxBackingHeight: input.maxBackingHeight,
+      devicePixelRatio: input.devicePixelRatio
+    };
+    const config = resolved;
+    this.config = resolved;
     this.viewMode = config.cameraPitch;
     this.cameraPitchRadians = pitchForPixelView(config.cameraPitch);
     this.scene = config.scene;
@@ -129,7 +140,7 @@ export class PixelPerfectViewportCore {
       magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
       stencilBuffer: false,
-      samples: config.lowTargetSamples ?? 4
+      samples: config.lowTargetSamples
     });
     this.lowTarget.texture.generateMipmaps = false;
 
@@ -144,7 +155,7 @@ export class PixelPerfectViewportCore {
         uSourceSize: { value: new THREE.Vector2(1, 1) },
         uZoomPivot: { value: new THREE.Vector2(0.5, 0.5) },
         uEffectiveScale: { value: 1 },
-        uSmoothSampling: { value: config.smoothPixelTransitions === false ? 0 : 1 }
+        uSmoothSampling: { value: config.smoothPixelTransitions ? 1 : 0 }
       },
       vertexShader: `
         varying vec2 vUv;

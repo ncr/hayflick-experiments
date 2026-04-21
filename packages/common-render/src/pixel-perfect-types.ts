@@ -27,11 +27,12 @@ export function pitchForPixelView(view: PixelView): number {
   }
 }
 
-export type PixelPerfectViewConfig = {
-  mount: HTMLElement;
-  width: number;
-  height: number;
-  scene: THREE.Scene;
+/**
+ * Everything about a {@link PixelPerfectView} that the caller *might* want to
+ * tune. All are optional; defaults in {@link PixelPerfectDefaults} match the
+ * iso-2:1 art pipeline (240 low-res lines, tile centres on integer iso rows/cols).
+ */
+export type PixelPerfectViewTuning = {
   fixedRenderHeight: number;
   baseOrthoHeight: number;
   cameraDistance: number;
@@ -49,16 +50,76 @@ export type PixelPerfectViewConfig = {
   zoomBurstIdleMs: number;
   outputOverscanLowPixels: number;
   /** MSAA sample count for the low-res render target. Default: 4. Set to 0 to disable. */
-  lowTargetSamples?: number;
+  lowTargetSamples: number;
   /** When false, the output upscale pass uses hard nearest-neighbor texel edges with no boundary smoothing. */
-  smoothPixelTransitions?: boolean;
+  smoothPixelTransitions: boolean;
+  /** Where the camera target sits vertically on screen: 0.5 = centered, 1/3 = lower third. */
+  verticalBias: number;
+};
+
+/**
+ * Baseline tuning tuned for the game's iso-2:1 art: 240 low-res scanlines,
+ * `baseOrthoHeight = 4.8·√2` so tile centres (1.28 m spacing) and 8 cm mesh
+ * features land on integer iso-pixels, canonical yaw = π/4.
+ *
+ * Don't change these — override fields via {@link PixelPerfectViewConfig} when
+ * a scene genuinely needs a different framing. The defaults are reference values.
+ */
+export const PixelPerfectDefaults: Readonly<PixelPerfectViewTuning> = Object.freeze({
+  fixedRenderHeight: 240,
+  baseOrthoHeight: 4.8 * Math.SQRT2,
+  cameraDistance: 40,
+  cameraPitch: "iso-2to1",
+  cameraYaw: Math.PI / 4,
+  basePixelZoom: 1,
+  zoomMin: 1,
+  zoomMax: 8,
+  zoomStep: 1,
+  zoomAnimationRate: 12,
+  zoomAnimationBurstRate: 24,
+  zoomAnimationEpsilon: 0.01,
+  rotationAnimationRate: 16,
+  rotationAnimationEpsilon: 0.02,
+  zoomBurstIdleMs: 300,
+  outputOverscanLowPixels: 2,
+  lowTargetSamples: 4,
+  smoothPixelTransitions: true,
+  verticalBias: 0.5
+});
+
+export type PixelPerfectViewConfig = {
+  mount: HTMLElement;
+  width: number;
+  height: number;
+  scene: THREE.Scene;
   clearColor?: number;
   clearAlpha?: number;
-  /** Where the camera target sits vertically on screen: 0.5 = centered (default), 1/3 = lower third. */
-  verticalBias?: number;
   mountBackground?: string;
   canvasBackground?: string;
-};
+} & Partial<PixelPerfectViewTuning>;
+
+/**
+ * Internal config for {@link PixelPerfectViewportCore}. Callers get the same
+ * partial tuning story as {@link PixelPerfectViewConfig} — defaults from
+ * {@link PixelPerfectDefaults} are applied inside the constructor.
+ */
+export type PixelPerfectViewportCoreInput = {
+  width: number;
+  height: number;
+  scene: THREE.Scene;
+  clearColor?: number;
+  clearAlpha?: number;
+  maxBackingWidth: number;
+  maxBackingHeight: number;
+  devicePixelRatio?: number;
+} & Partial<PixelPerfectViewTuning>;
+
+/** Resolved (defaults-merged) shape used inside the viewport core. */
+export type PixelPerfectViewportCoreResolved = Omit<
+  PixelPerfectViewportCoreInput,
+  keyof PixelPerfectViewTuning
+> &
+  PixelPerfectViewTuning;
 
 export type PixelPerfectViewState = {
   cameraZoomCurrent: number;
@@ -89,3 +150,10 @@ export type PixelPerfectViewPose = {
 };
 
 export type PixelSnapMode = "nearest" | "floor" | "ceil";
+
+/** Merge a partial tuning over {@link PixelPerfectDefaults}. */
+export function resolvePixelPerfectTuning<T extends Partial<PixelPerfectViewTuning>>(
+  input: T
+): T & PixelPerfectViewTuning {
+  return { ...PixelPerfectDefaults, ...input } as T & PixelPerfectViewTuning;
+}

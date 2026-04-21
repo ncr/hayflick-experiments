@@ -27,7 +27,6 @@ import { createTilePalette, TILE_PALETTE_WIDTH } from "./tile-palette";
 
 const GRID_TILES = 20;
 const CAMERA_DISTANCE = 50;
-const ISO_YAW = Math.PI / 4;
 
 function createPaneElement(parent: HTMLElement, style: Partial<CSSStyleDeclaration>): HTMLDivElement {
   const el = document.createElement("div");
@@ -43,17 +42,10 @@ const SHARED_VIEW_CONFIG = {
   fixedRenderHeight: 360,
   baseOrthoHeight: GRID_TILES * LEVEL_EDITOR_WORLD_UNIT * 0.4,
   cameraDistance: CAMERA_DISTANCE,
-  basePixelZoom: 1,
-  zoomMin: 1,
   zoomMax: 6,
   zoomStep: 0.5,
-  zoomAnimationRate: 12,
-  zoomAnimationBurstRate: 24,
-  zoomAnimationEpsilon: 0.01,
   rotationAnimationRate: 12,
-  rotationAnimationEpsilon: 0.005,
-  zoomBurstIdleMs: 300,
-  outputOverscanLowPixels: 2
+  rotationAnimationEpsilon: 0.005
 };
 
 const experiment: ExperimentModule = {
@@ -205,8 +197,6 @@ const experiment: ExperimentModule = {
       width: rightPaneEl.clientWidth || width * 0.45,
       height: rightPaneEl.clientHeight || height,
       scene,
-      cameraPitch: "iso-2to1",
-      cameraYaw: ISO_YAW,
       clearColor: 0x14181e,
       maxBackingWidth: stage.maxBackingWidth,
       maxBackingHeight: stage.maxBackingHeight,

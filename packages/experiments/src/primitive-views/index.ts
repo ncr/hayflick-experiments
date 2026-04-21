@@ -10,20 +10,15 @@ import type { ExperimentModule } from "../runtime/types";
 // All four panes share these projection parameters so the on-screen pixel
 // scale is the same — only the camera mode (and base yaw) differs per pane.
 const SHARED_VIEW_CONFIG = {
-  fixedRenderHeight: 240,
   baseOrthoHeight: 6,
   cameraDistance: 30,
-  basePixelZoom: 1,
-  zoomMin: 1,
   zoomMax: 6,
-  zoomStep: 1,
   zoomAnimationRate: 14,
   zoomAnimationBurstRate: 42,
   zoomAnimationEpsilon: 0.001,
   rotationAnimationRate: 18,
   rotationAnimationEpsilon: 0.001,
-  zoomBurstIdleMs: 200,
-  outputOverscanLowPixels: 2
+  zoomBurstIdleMs: 200
 };
 
 type PaneSpec = {
