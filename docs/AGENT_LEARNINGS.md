@@ -3644,13 +3644,15 @@ full outline-walls test matrix.
 
 Architecture:
 - Two suppression modes, selectable via `OutlineTuning.suppressMode`:
-  - `"depth"` (default, cheapest): sameSurface fires when
-    `|dC - dL| < uSuppressDepthEps`. No extra RT.
-  - `"world-position"`: sameSurface fires when
+  - `"world-position"` (default): sameSurface fires when
     `length(worldPosC - worldPosL) < uSuppressWorldEps`. Costs one extra
     half-float RGBA G-buffer + one render pass. Geometrically
     unambiguous (camera-invariant; two parallel surfaces at the same
-    camera depth still distinguish cleanly).
+    camera depth still distinguish cleanly) — picked as default because
+    the invariant holds by construction rather than by tuning.
+  - `"depth"`: sameSurface fires when
+    `|dC - dL| < uSuppressDepthEps`. No extra RT — cheapest path, but
+    aliases when two parallel surfaces land at the same camera depth.
 - `WorldPositionMaterial` (new, `common-render/src/outline/`) writes
   per-fragment world position to the G-buffer during the extra pass.
 - Runtime toggle: `PixelPerfectOutlinedView.setSuppressMode()` or

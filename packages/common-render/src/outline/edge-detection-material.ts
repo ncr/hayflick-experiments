@@ -30,7 +30,7 @@ const POST_FS = /* glsl */ `
   uniform float uIdSuppressNormalDot;
   uniform float uSuppressDepthEps;
   uniform float uSuppressWorldEps;
-  uniform int uSuppressMode; // 0 = depth-gate (legacy), 1 = world-position.
+  uniform int uSuppressMode; // 0 = depth-gate, 1 = world-position (default).
   uniform float uOutlineBrightness;
   uniform float uOutlineMix;
   uniform int uDebugMode; // 0=final, 1=color, 2=depth, 3=normal, 4=id, 5=edgeOnly, 6=depthEdge, 7=normalEdge
@@ -224,7 +224,7 @@ export type EdgeDetectionConfig = {
   idTexture: THREE.Texture;
   /** Required when {@link suppressMode} is `"world-position"`. */
   worldPosTexture?: THREE.Texture;
-  /** Which same-surface test to use. Default `"depth"`. */
+  /** Which same-surface test to use. Default `"world-position"`. */
   suppressMode?: SuppressMode;
   resolution: THREE.Vector2Like;
   near: number;
@@ -279,7 +279,7 @@ export class EdgeDetectionMaterial extends THREE.ShaderMaterial {
         uIdSuppressNormalDot: { value: config.idSuppressNormalDot ?? 0.5 },
         uSuppressDepthEps: { value: config.suppressDepthEps ?? 1.0 },
         uSuppressWorldEps: { value: config.suppressWorldEps ?? 0.1 },
-        uSuppressMode: { value: config.suppressMode === "world-position" ? 1 : 0 },
+        uSuppressMode: { value: config.suppressMode === "depth" ? 0 : 1 },
         uOutlineBrightness: { value: config.outlineBrightness ?? 1.35 },
         uOutlineMix: { value: config.outlineMix ?? 1.0 },
         uDebugMode: { value: 0 }

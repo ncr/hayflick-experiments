@@ -47,14 +47,14 @@ describe("EdgeDetectionMaterial", () => {
     expect(m.uniforms.uIdSuppressNormalDot.value).toBe(0.5);
     expect(m.uniforms.uSuppressDepthEps.value).toBe(1.0);
     expect(m.uniforms.uSuppressWorldEps.value).toBe(0.1);
-    // Default suppressMode is "depth" (0), for backward-compatible behaviour.
-    expect(m.uniforms.uSuppressMode.value).toBe(0);
+    // Default suppressMode is "world-position" (1) — the camera-invariant gate.
+    expect(m.uniforms.uSuppressMode.value).toBe(1);
     expect(m.uniforms.uOutlineBrightness.value).toBeCloseTo(1.35);
     expect(m.uniforms.uOutlineMix.value).toBe(1.0);
     expect(m.uniforms.uDebugMode.value).toBe(0);
   });
 
-  it("switches uSuppressMode to 1 for world-position mode", () => {
+  it("keeps uSuppressMode at 1 when explicitly set to world-position", () => {
     const m = new EdgeDetectionMaterial({
       colorTexture: stubTexture(),
       depthTexture: stubTexture(),
@@ -67,6 +67,20 @@ describe("EdgeDetectionMaterial", () => {
       suppressMode: "world-position"
     });
     expect(m.uniforms.uSuppressMode.value).toBe(1);
+  });
+
+  it("switches uSuppressMode to 0 when depth mode is explicitly selected", () => {
+    const m = new EdgeDetectionMaterial({
+      colorTexture: stubTexture(),
+      depthTexture: stubTexture(),
+      normalTexture: stubTexture(),
+      idTexture: stubTexture(),
+      resolution: { x: 1, y: 1 },
+      near: 0,
+      far: 1,
+      suppressMode: "depth"
+    });
+    expect(m.uniforms.uSuppressMode.value).toBe(0);
   });
 
   it("honours caller overrides for tuning", () => {

@@ -152,11 +152,12 @@ const experiment: ExperimentModule = {
       Math.min(8, Number(params.get("outlineZoom") ?? "1") | 0)
     );
     const idSuppression = (params.get("outlineMask") ?? "1") !== "0" ? "on" : "off";
-    // Switch same-surface suppression between depth-delta ("depth") and
-    // world-position-distance ("world-position"). Defaults to "depth" to
-    // match current shipped behaviour.
+    // Switch same-surface suppression between world-position distance
+    // ("world-position", default) and the cheaper camera-depth delta
+    // ("depth"). The world-position gate is the shipped default; pass
+    // ?outlineSuppress=depth to opt into the lighter-weight path.
     const suppressMode =
-      params.get("outlineSuppress") === "world-position" ? "world-position" : "depth";
+      params.get("outlineSuppress") === "depth" ? "depth" : "world-position";
     const staggerMiddle = params.get("outlineStagger") === "1";
     const tilesetId = params.get("outlineTileset") ?? "greek_island_white";
     const splitGroups = params.get("outlineGroups") === "split";

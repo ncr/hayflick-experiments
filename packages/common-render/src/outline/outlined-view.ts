@@ -35,10 +35,12 @@ export type OutlineTuning = {
   suppressWorldEps: number;
   /**
    * Which same-surface test to use for flush-seam suppression.
-   * - `"depth"` (default): camera-space depth delta. Cheap, fails if two
-   *   parallel surfaces sit at the same camera depth.
-   * - `"world-position"`: per-fragment world-space distance. Unambiguous
-   *   but allocates an extra half-float RGBA target.
+   * - `"world-position"` (default): per-fragment world-space distance.
+   *   Camera-invariant and architecturally unambiguous — two parallel
+   *   surfaces that alias at the same camera depth still distinguish
+   *   cleanly. Costs one half-float RGBA G-buffer pass.
+   * - `"depth"`: camera-space depth delta. Cheaper (no extra RT) but
+   *   fails when two parallel surfaces sit at the same camera depth.
    */
   suppressMode: SuppressMode;
   /** Multiplier applied to outlined pixel color. Default 1.35. */
@@ -53,7 +55,7 @@ export const OutlineDefaults: Readonly<OutlineTuning> = Object.freeze({
   idSuppressNormalDot: 0.5,
   suppressDepthEps: 1.0,
   suppressWorldEps: 0.1,
-  suppressMode: "depth",
+  suppressMode: "world-position",
   outlineBrightness: 1.35,
   outlineMix: 1.0
 });
