@@ -222,19 +222,46 @@ const experiment: ExperimentModule = {
           outlined.assignOutlineGroupsUnder(instance, groupKeyForMesh);
         };
 
-        for (let i = -1; i <= 1; i++) {
-          for (let j = -1; j <= 1; j++) {
-            place("floor_tile", i, j);
+        // Minimal reproducers for the concave-corner V-gap
+        // (docs/AGENT_LEARNINGS.md 2026-04-22). `two-corners` is the smallest
+        // setup that exhibits a same-group silhouette behind a same-normal
+        // front mesh; the others isolate individual tile-tile interactions.
+        const onlyCorner = params.get("onlyCorner") === "1";
+        const variant = params.get("outlineVariant") ?? "";
+        if (variant === "compare") {
+          place("corner", -3, 0, 0);
+          place("corner", 3, 0, 0);
+          place("floor_tile", 3.75, 0);
+          place("floor_tile", 3.75, 0.75);
+          place("floor_tile", 3, 0.75);
+        } else if (variant === "corner-floor") {
+          place("corner", 0, 0, 0);
+          place("floor_tile", 0.75, 0);
+          place("floor_tile", 0.75, 0.75);
+          place("floor_tile", 0, 0.75);
+        } else if (variant === "two-corners") {
+          place("corner", -0.75, 0, 0);
+          place("corner", 0.75, 0, Math.PI / 2);
+        } else if (variant === "corner-wall") {
+          place("corner", 0, 0, 0);
+          place("wall", 0, 1.5);
+        } else if (onlyCorner) {
+          place("corner", 0, 0, 0);
+        } else {
+          for (let i = -1; i <= 1; i++) {
+            for (let j = -1; j <= 1; j++) {
+              place("floor_tile", i, j);
+            }
           }
+          place("wall", 0, -1.5);
+          place("door", 0, 1.5);
+          place("window_middle", -1.5, 0, Math.PI / 2);
+          place("window_middle", 1.5, 0, Math.PI / 2);
+          place("corner", -1.5, -1.5, (3 * Math.PI) / 2);
+          place("corner", 1.5, -1.5, Math.PI);
+          place("corner", 1.5, 1.5, Math.PI / 2);
+          place("corner", -1.5, 1.5, 0);
         }
-        place("wall", 0, -1.5);
-        place("door", 0, 1.5);
-        place("window_middle", -1.5, 0, Math.PI / 2);
-        place("window_middle", 1.5, 0, Math.PI / 2);
-        place("corner", -1.5, -1.5, (3 * Math.PI) / 2);
-        place("corner", 1.5, -1.5, Math.PI);
-        place("corner", 1.5, 1.5, Math.PI / 2);
-        place("corner", -1.5, 1.5, 0);
       } else if (sceneKind === "grid") {
         const template = await loadTileTemplate(tilesetId, "window_middle");
         setNearestFiltering(template);

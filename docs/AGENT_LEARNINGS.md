@@ -3490,3 +3490,137 @@ Preventive checklist:
 - `assets/materials/polyhaven/` is not checked in. Full `pnpm run rebuild:all`
   needs those PNGs on disk; `scripts/_extract-glb-textures.mjs` recovers them
   from committed GLBs when the source pixart files are missing.
+
+## 2026-04-22 - Inner-elbow pan flicker from nearest-filter UV sampling at exact texel boundaries
+Root cause:
+- Blender's `_assign_box_projection_uvs` (`blender/geometry.py`) uses
+  `uv_scale = UV_SCALE_AUTH_UNITS = 128`. The L-shape corner wall has wall
+  thickness 16 cm, so the two faces meeting at the concave elbow get world
+  coordinates that land on EXACT texel boundaries of the 64×64 pixart
+  textures: U ∈ {0.125, 0.875} → 0.125·64 = 8.0 and 0.875·64 = 56.0, both
+  integer multiples of one texel.
+- With `THREE.NearestFilter` on those textures, hardware sampling at an
+  exact texel boundary has no deterministic tie-break. Sub-ULP drift in
+  interpolated UVs — caused by the camera view matrix changing by tiny
+  amounts each pan step — flips the sampled texel between N-1 and N.
+- The flicker was only visible at the concave inner elbow because that is
+  the one place two UV-boundary faces meet on a *vertical screen line* (1
+  pixel wide) in iso-2:1 projection. Every pan step shifts UV by exactly
+  one texel, so the alternation period = 1 low-res pixel of pan.
+
+Detection signal:
+- User reported a "big pixel vertical line changing color all at once from
+  darker to lighter and back" at the inner elbow during pan at zoom=4.
+- Narrowing with URL params pinpointed it: `?onlyCorner=1` (single corner
+  tile, no adjacent geometry) kept the flicker. `?noMsaa=1`, `?noSmooth=1`,
+  `?noOrbitLight=1`, and `?unlit=1` (MeshBasicMaterial with texture) all
+  preserved it — ruling out MSAA, the smooth-transition output shader,
+  lighting, and PBR normal/AO maps.
+- The definitive cut: `?solid=1` (`MeshBasicMaterial({ color, map: null })`)
+  made the flicker disappear. With flat color no flicker; with *any* texture,
+  flicker. That localised the bug to texture sampling, not rasterisation.
+- Dumping the corner GLB's vertex/UV attributes showed the elbow vertex
+  `(16, 0, -16)` with UVs `(0.125, 1.0)` on one face and `(8.875, 1.0)` on
+  the other — both multiples of 1/64 to the bit, i.e., on exact texel
+  boundaries of a 64-texel texture.
+
+Fix:
+- `packages/common-render/src/pixel-art-textures.ts` exports three helpers:
+  `applyPixelArtTextureDefaults(texture)` (nearest + no mipmaps + half-texel
+  offset on a single texture), `applyPixelArtTextureDefaultsToTree(root)`
+  (walks an `Object3D` tree, applies to every map on every
+  `MeshStandardMaterial`), and `applyTexelCenterOffset(texture)` (the offset
+  alone, for cases where the filter is chosen externally). Shifting sample
+  coords by half a texel converts `floor(uv·W)` into `round(uv·W)` — the
+  semantically-correct "nearest texel center" rule, and unambiguous at
+  every boundary.
+- `outline-walls` consumes `applyPixelArtTextureDefaultsToTree` for every
+  loaded tile template (strip, room, grid scenes).
+
+Preventive checklist:
+- Any code path that forces `THREE.NearestFilter` on a world-space tileable
+  texture MUST use `applyPixelArtTextureDefaults` or
+  `applyPixelArtTextureDefaultsToTree` from `@common/render`. Do NOT write
+  raw `texture.magFilter = NearestFilter` on a GLB-sourced map — the
+  default GPU nearest rule (floor) is non-deterministic at exact UV
+  boundaries, and any geometry whose dimensions are integer multiples of
+  `uv_scale / texture_width` will hit those boundaries.
+- Render-target textures sampled with screen-space coords (e.g. the
+  low-res target in `PixelPerfectViewportCore`, the outline buffers in
+  `outlined-view.ts`) do NOT need the offset — they're not UV-boundary
+  sensitive. Keep using raw `NearestFilter` for those.
+- When diagnosing pan-synchronous flicker on textured meshes: test with
+  `MeshBasicMaterial({ map: null })` to eliminate texture sampling as the
+  cause. If the flicker disappears, inspect UVs at the problem vertex and
+  compute `uv.u * texture_width`; if it equals an integer, you have found
+  your bug.
+
+## 2026-04-22 - Concave-corner V-gap is unsolvable in the current outline architecture
+
+Root cause:
+- `edge-detection-material.ts` POST_FS suppresses edges with
+  `keepL = 1 - (sameIdL * sameNormalL)`: if a pixel and its neighbour share
+  an outline group AND have matching normals, no depth or normal edge fires
+  between them.
+- This predicate serves two different physical situations with a single rule:
+  - **Flush coplanar tile seam** (two tiles' tops abutting at the same world-Y):
+    same group + same normal + identical depth → no edge wanted. Works.
+  - **Silhouette behind same-group mesh** (a wall in front of another wall
+    where both are in the "wall" outline group, back surface a few cm away):
+    same group + same normal + *different* depth. The suppression swallows
+    the silhouette, leaving a 1–2 pixel V-shaped gap at concave inner corners
+    where the vertical inside-seam edge should meet the top-face chevron.
+- The shader has no information to distinguish the two cases. Outline-group,
+  normal, and depth are the only inputs. Flush seams have near-zero depth∆;
+  mesh-behind-mesh has centimetre-to-metre depth∆. A threshold between those
+  ranges looks attractive but isn't robust: at rotation-dependent angles the
+  rasterizer produces small depth variations at flush boundaries that exceed
+  the 0.05 depth-edge threshold, producing spurious lines at tile tops.
+
+Detection signal:
+- User marks 1–2 missing outline pixels at the top of an inner concave corner
+  where the vertical edge meets the chevron. `outlineMask=0` does not close
+  the gap (suppression isn't the only culprit). `onlyCorner=1` renders the
+  corner cleanly (isolated → neighbouring sky gives depth∆, edge fires).
+- Minimal reproducer: place two corner tiles as close neighbours. The inner
+  vertical seam draws only partway then fades out where the back mesh is
+  behind at similar depth.
+
+Attempted fixes and why they fail:
+- **Per-tile unique outline groups** (each place() gets a distinct group name):
+  closes the V-gap everywhere but emits seam stripes at every coplanar tile
+  boundary. Trades one cosmetic bug for many.
+- **Geometry bevel at the concave axis** (modify corner tile GLB to include a
+  1-px step so the edge detector picks up a depth or normal discontinuity):
+  requires modifying every tileset and is out of bounds for "must handle
+  arbitrary geometry" policy.
+- **Remove keepL from depth edges** (`dEdgeL = step(threshold, |dC-dL|) * depthFrontL`
+  with no suppression gate): closes the V-gap AND produces the genuine
+  silhouette, but under rotation the tile-top boundaries at certain yaws have
+  depth variation >0.05 in linearized units (z-fighting between overlapping
+  mesh edges, rasterizer precision), so extra horizontal lines appear at the
+  top ring. Visible in `outlineScene=room&outlineZoom=4` with `rotE=1`.
+- **Tight sameDepth gate** (`keepL = 1 - (sameIdL * sameNormalL * sameDepthL)`,
+  with `sameDepthL = step(|dC-dL|, 1e-3)`): functionally identical to the
+  previous approach in terms of which pixels fire; same artifacts under
+  rotation.
+
+Preventive checklist:
+- Do **not** re-attempt fixing this by tweaking `uDepthThreshold`,
+  `uIdSuppressNormalDot`, or removing `keepL` from the depth/normal edge
+  rules. Any change to the `keepL` predicate will trade the V-gap for
+  rotation-dependent flush-seam artifacts or tile-boundary stripes.
+- A real fix requires architectural change outside the current
+  depth/normal/outline-group inputs. Candidates:
+  - **Per-instance ID texture** (second channel encoding per-mesh UUID):
+    suppression predicate becomes "same group AND same normal AND same
+    instance" or "same group AND same normal AND |depth∆| < strict". Needs
+    plumbing through `outline-group-material.ts` and
+    `assignOutlineGroupsUnder`.
+  - **World-position G-buffer**: pass per-fragment world position into a
+    4-channel texture; suppression gate uses proximity in world space
+    rather than depth. More GPU cost, but unambiguous.
+- When adding diagnostic scenes for outline regressions, use the
+  `outlineVariant` param on `outline-walls` (values: `corner-floor`,
+  `two-corners`, `corner-wall`, `compare`). These are pre-wired minimal
+  reproducers for corner-behind-corner, corner-next-to-floor, etc.
