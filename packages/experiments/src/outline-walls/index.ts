@@ -152,12 +152,37 @@ const experiment: ExperimentModule = {
       Math.min(8, Number(params.get("outlineZoom") ?? "1") | 0)
     );
     const idSuppression = (params.get("outlineMask") ?? "1") !== "0" ? "on" : "off";
+    // Switch same-surface suppression between depth-delta ("depth") and
+    // world-position-distance ("world-position"). Defaults to "depth" to
+    // match current shipped behaviour.
+    const suppressMode =
+      params.get("outlineSuppress") === "world-position" ? "world-position" : "depth";
     const staggerMiddle = params.get("outlineStagger") === "1";
     const tilesetId = params.get("outlineTileset") ?? "greek_island_white";
     const splitGroups = params.get("outlineGroups") === "split";
     // Expose the post-target to diagnostic scripts when ?outlineReadback=1.
     // Forces a GPU stall per frame; do not enable in production.
     const lowPixelReadback = params.get("outlineReadback") === "1";
+    // ?outlineFreezeOrbit=1 locks the orbiting point light at angle 0 so
+    // edge-only screenshots are pixel-deterministic across runs (testbed).
+    const freezeOrbit = params.get("outlineFreezeOrbit") === "1";
+    // ?outlineHideHud=1 skips the HUD overlay so testbed classification is
+    // not polluted by white-on-dark text pixels in edges-only screenshots.
+    const hideHud = params.get("outlineHideHud") === "1";
+    // ?outlineProbe=x,y dumps the depth/normal/id values of the LR pixel at
+    // (x,y) and its 4 neighbours to console once the scene settles.
+    const probeParam = params.get("outlineProbe");
+    const probeCoord = probeParam
+      ? probeParam.split(",").map((s) => Number(s.trim()) | 0)
+      : null;
+    // When the probe is enabled we also expose a window function for direct
+    // playwright page.evaluate() calls so multi-probe scripts don't need to
+    // round-trip a page navigation per probe.
+    if (probeParam) {
+      (window as unknown as {
+        __outlineProbe__?: (x: number, y: number, stride?: number) => unknown;
+      }).__outlineProbe__ = (x, y, stride) => outlined.debugReadAuxSamples(x, y, stride);
+    }
 
     const rawSceneKind = params.get("outlineScene");
     const sceneKind: "strip" | "room" | "grid" =
@@ -182,6 +207,7 @@ const experiment: ExperimentModule = {
       debugMode
     });
     outlined.setIdSuppression(idSuppression);
+    outlined.setSuppressMode(suppressMode);
     const unbindInput = bindPixelPerfectViewInput({ view: outlined.view });
 
     const wallsGroup = new THREE.Group();
@@ -311,7 +337,7 @@ const experiment: ExperimentModule = {
     };
     updateHud();
     mount.style.position = "relative";
-    mount.appendChild(hud);
+    if (!hideHud) mount.appendChild(hud);
 
     const onKey = (e: KeyboardEvent) => {
       if (e.code === "KeyD" && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -324,6 +350,8 @@ const experiment: ExperimentModule = {
 
     let raf = 0;
     let prev = performance.now();
+    let framesSinceStart = 0;
+    let probeDone = false;
     const ORBIT_PERIOD_S = 6.0;
     let readbackBuf: Uint8Array | undefined;
     const tick = () => {
@@ -332,8 +360,15 @@ const experiment: ExperimentModule = {
       const dt = Math.min((now - prev) / 1000, 0.1);
       prev = now;
       const t = (now / 1000) * ((Math.PI * 2) / ORBIT_PERIOD_S);
-      orbitPivot.rotation.y = t;
+      orbitPivot.rotation.y = freezeOrbit ? 0 : t;
       outlined.frame(now, dt);
+      framesSinceStart++;
+      if (probeCoord && !probeDone && framesSinceStart > 60) {
+        const [px, py] = probeCoord;
+        const sample = outlined.debugReadAuxSamples(px, py);
+        console.log("[outline-probe]", JSON.stringify(sample));
+        probeDone = true;
+      }
       if (lowPixelReadback) {
         const snapshot = outlined.readLowResolutionPixels(readbackBuf);
         readbackBuf = snapshot.pixels;

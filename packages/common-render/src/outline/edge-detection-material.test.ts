@@ -45,9 +45,28 @@ describe("EdgeDetectionMaterial", () => {
     expect(m.uniforms.uDepthThreshold.value).toBe(0.05);
     expect(m.uniforms.uNormalThreshold.value).toBe(0.3);
     expect(m.uniforms.uIdSuppressNormalDot.value).toBe(0.5);
+    expect(m.uniforms.uSuppressDepthEps.value).toBe(1.0);
+    expect(m.uniforms.uSuppressWorldEps.value).toBe(0.1);
+    // Default suppressMode is "depth" (0), for backward-compatible behaviour.
+    expect(m.uniforms.uSuppressMode.value).toBe(0);
     expect(m.uniforms.uOutlineBrightness.value).toBeCloseTo(1.35);
     expect(m.uniforms.uOutlineMix.value).toBe(1.0);
     expect(m.uniforms.uDebugMode.value).toBe(0);
+  });
+
+  it("switches uSuppressMode to 1 for world-position mode", () => {
+    const m = new EdgeDetectionMaterial({
+      colorTexture: stubTexture(),
+      depthTexture: stubTexture(),
+      normalTexture: stubTexture(),
+      idTexture: stubTexture(),
+      worldPosTexture: stubTexture(),
+      resolution: { x: 1, y: 1 },
+      near: 0,
+      far: 1,
+      suppressMode: "world-position"
+    });
+    expect(m.uniforms.uSuppressMode.value).toBe(1);
   });
 
   it("honours caller overrides for tuning", () => {
@@ -62,12 +81,14 @@ describe("EdgeDetectionMaterial", () => {
       depthThreshold: 0.1,
       normalThreshold: 0.5,
       idSuppressNormalDot: 0.8,
+      suppressDepthEps: 0.25,
       outlineBrightness: 2.0,
       outlineMix: 0.5
     });
     expect(m.uniforms.uDepthThreshold.value).toBe(0.1);
     expect(m.uniforms.uNormalThreshold.value).toBe(0.5);
     expect(m.uniforms.uIdSuppressNormalDot.value).toBe(0.8);
+    expect(m.uniforms.uSuppressDepthEps.value).toBe(0.25);
     expect(m.uniforms.uOutlineBrightness.value).toBe(2.0);
     expect(m.uniforms.uOutlineMix.value).toBe(0.5);
   });

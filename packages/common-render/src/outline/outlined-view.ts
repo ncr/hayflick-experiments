@@ -4,10 +4,12 @@ import type { PixelPerfectViewConfig } from "../pixel-perfect-types";
 import {
   EDGE_DETECTION_DEBUG_MODES,
   EdgeDetectionMaterial,
-  type EdgeDetectionDebugMode
+  type EdgeDetectionDebugMode,
+  type SuppressMode
 } from "./edge-detection-material";
 import { LinearDepthMaterial } from "./linear-depth-material";
 import { OutlineGroupMaterial } from "./outline-group-material";
+import { WorldPositionMaterial } from "./world-position-material";
 
 export type OutlineTuning = {
   /** Linear-depth difference (world units) that counts as a silhouette. Default 0.05. */
@@ -20,6 +22,25 @@ export type OutlineTuning = {
    * `"off"` via {@link setIdSuppression}) to show all seams.
    */
   idSuppressNormalDot: number;
+  /**
+   * Suppression is skipped when the linear-depth delta exceeds this value.
+   * Default 1.0 world unit. Only used when {@link suppressMode} is `"depth"`.
+   */
+  suppressDepthEps: number;
+  /**
+   * Suppression is skipped when the world-space distance between fragments
+   * exceeds this value. Default 0.1 (10 cm). Only used when {@link suppressMode}
+   * is `"world-position"`.
+   */
+  suppressWorldEps: number;
+  /**
+   * Which same-surface test to use for flush-seam suppression.
+   * - `"depth"` (default): camera-space depth delta. Cheap, fails if two
+   *   parallel surfaces sit at the same camera depth.
+   * - `"world-position"`: per-fragment world-space distance. Unambiguous
+   *   but allocates an extra half-float RGBA target.
+   */
+  suppressMode: SuppressMode;
   /** Multiplier applied to outlined pixel color. Default 1.35. */
   outlineBrightness: number;
   /** How much of the brightened color to mix in (0..1). Default 1.0. */
@@ -30,6 +51,9 @@ export const OutlineDefaults: Readonly<OutlineTuning> = Object.freeze({
   depthThreshold: 0.05,
   normalThreshold: 0.3,
   idSuppressNormalDot: 0.5,
+  suppressDepthEps: 1.0,
+  suppressWorldEps: 0.1,
+  suppressMode: "depth",
   outlineBrightness: 1.35,
   outlineMix: 1.0
 });
@@ -72,10 +96,12 @@ export class PixelPerfectOutlinedView {
   private readonly colorTarget: THREE.WebGLRenderTarget;
   private readonly normalTarget: THREE.WebGLRenderTarget;
   private readonly depthPackedTarget: THREE.WebGLRenderTarget;
+  private readonly worldPosTarget: THREE.WebGLRenderTarget;
   private readonly idTarget: THREE.WebGLRenderTarget;
   private readonly postTarget: THREE.WebGLRenderTarget;
   private readonly normalMaterial: THREE.MeshNormalMaterial;
   private readonly depthMaterial: LinearDepthMaterial;
+  private readonly worldPosMaterial: WorldPositionMaterial;
   private readonly postMaterial: EdgeDetectionMaterial;
   private readonly postScene: THREE.Scene;
   private readonly postCamera: THREE.OrthographicCamera;
@@ -138,8 +164,24 @@ export class PixelPerfectOutlinedView {
     );
     this.depthPackedTarget.texture.generateMipmaps = false;
 
+    // World-position target for the "world-position" suppression mode.
+    // Half-float RGBA covers our < 100-unit scene scale with ~4-digit precision.
+    this.worldPosTarget = new THREE.WebGLRenderTarget(
+      this.colorTarget.width,
+      this.colorTarget.height,
+      {
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        format: THREE.RGBAFormat,
+        type: THREE.HalfFloatType,
+        stencilBuffer: false
+      }
+    );
+    this.worldPosTarget.texture.generateMipmaps = false;
+
     this.normalMaterial = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });
     this.depthMaterial = new LinearDepthMaterial(this.view.camera.near, this.view.camera.far);
+    this.worldPosMaterial = new WorldPositionMaterial();
 
     const tuning = { ...OutlineDefaults, ...(config.outline ?? {}) };
     this.postMaterial = new EdgeDetectionMaterial({
@@ -147,12 +189,16 @@ export class PixelPerfectOutlinedView {
       depthTexture: this.depthPackedTarget.texture,
       normalTexture: this.normalTarget.texture,
       idTexture: this.idTarget.texture,
+      worldPosTexture: this.worldPosTarget.texture,
       resolution: { x: this.colorTarget.width, y: this.colorTarget.height },
       near: this.view.camera.near,
       far: this.view.camera.far,
       depthThreshold: tuning.depthThreshold,
       normalThreshold: tuning.normalThreshold,
       idSuppressNormalDot: tuning.idSuppressNormalDot,
+      suppressDepthEps: tuning.suppressDepthEps,
+      suppressWorldEps: tuning.suppressWorldEps,
+      suppressMode: tuning.suppressMode,
       outlineBrightness: tuning.outlineBrightness,
       outlineMix: tuning.outlineMix
     });
@@ -264,6 +310,15 @@ export class PixelPerfectOutlinedView {
   }
 
   /**
+   * Switch between the "depth-delta" and "world-position-distance" variants
+   * of same-surface suppression at runtime. Useful for side-by-side visual
+   * comparison in diagnostic scenes.
+   */
+  setSuppressMode(mode: SuppressMode): void {
+    this.postMaterial.uniforms.uSuppressMode.value = mode === "world-position" ? 1 : 0;
+  }
+
+  /**
    * Read the final composited low-resolution buffer back to CPU. Forces a GPU
    * stall, so reserve for test / diagnostic paths, not hot loops.
    */
@@ -277,6 +332,71 @@ export class PixelPerfectOutlinedView {
     const buffer = out && out.length === w * h * 4 ? out : new Uint8Array(w * h * 4);
     this.view.renderer.readRenderTargetPixels(this.postTarget, 0, 0, w, h, buffer);
     return { width: w, height: h, pixels: buffer };
+  }
+
+  /**
+   * Read the depth / normal / id aux targets at a single low-res pixel plus
+   * its 4 neighbours. Depth is decoded from the half-float target back into
+   * world-space view-Z (uNear..uFar). Intended for diagnostic probes only —
+   * three GPU stalls per call.
+   */
+  debugReadAuxSamples(bufX: number, bufY: number, stride = 1): OutlineAuxProbe {
+    const w = this.depthPackedTarget.width;
+    const h = this.depthPackedTarget.height;
+    const clampX = Math.max(0, Math.min(w - 1, bufX | 0));
+    const clampY = Math.max(0, Math.min(h - 1, bufY | 0));
+    const sx = Math.max(1, stride | 0);
+    // depthPackedTarget: RGBA half-float. readPixels returns a Uint16Array
+    // whose entries are raw IEEE-754 half-float bit patterns.
+    const depthBuf = new Uint16Array(w * h * 4);
+    this.view.renderer.readRenderTargetPixels(this.depthPackedTarget, 0, 0, w, h, depthBuf);
+    const normalBuf = new Uint8Array(w * h * 4);
+    this.view.renderer.readRenderTargetPixels(this.normalTarget, 0, 0, w, h, normalBuf);
+    const idBuf = new Uint8Array(w * h * 4);
+    this.view.renderer.readRenderTargetPixels(this.idTarget, 0, 0, w, h, idBuf);
+    const near = this.view.camera.near;
+    const far = this.view.camera.far;
+    const readOne = (x: number, y: number): OutlineAuxSample => {
+      // Texture rows come back bottom-up from gl.readPixels; caller is
+      // expected to pass data-row indices directly (no extra flip here).
+      const offset = (y * w + x) * 4;
+      const depthNorm = halfToFloat32(depthBuf[offset]);
+      const viewZ = depthNorm * (far - near) + near;
+      return {
+        x,
+        y,
+        depthNorm,
+        viewZ,
+        normal: [normalBuf[offset] / 255, normalBuf[offset + 1] / 255, normalBuf[offset + 2] / 255],
+        id: [idBuf[offset] / 255, idBuf[offset + 1] / 255, idBuf[offset + 2] / 255]
+      };
+    };
+    // Also compute depth-buffer histogram so probe scripts can sanity-check
+    // that the probe coordinates are actually hitting rendered geometry.
+    let renderedCount = 0;
+    let depthMin = Infinity;
+    let depthMax = -Infinity;
+    for (let i = 0; i < depthBuf.length; i += 4) {
+      const d = halfToFloat32(depthBuf[i]);
+      if (d < 0.999) {
+        renderedCount++;
+        if (d < depthMin) depthMin = d;
+        if (d > depthMax) depthMax = d;
+      }
+    }
+    return {
+      width: w,
+      height: h,
+      near,
+      far,
+      renderedFraction: renderedCount / (w * h),
+      depthRange: renderedCount > 0 ? [depthMin, depthMax] : null,
+      center: readOne(clampX, clampY),
+      left: clampX - sx >= 0 ? readOne(clampX - sx, clampY) : null,
+      right: clampX + sx < w ? readOne(clampX + sx, clampY) : null,
+      up: clampY - sx >= 0 ? readOne(clampX, clampY - sx) : null,
+      down: clampY + sx < h ? readOne(clampX, clampY + sx) : null
+    };
   }
 
   /* ---------------------------------------------------------------- */
@@ -307,6 +427,16 @@ export class PixelPerfectOutlinedView {
     this.scene.overrideMaterial = this.depthMaterial;
     renderer.setRenderTarget(this.depthPackedTarget);
     renderer.setClearColor(0xffffff, 1);
+    renderer.clear();
+    renderer.render(this.scene, this.view.camera);
+    this.scene.overrideMaterial = null;
+
+    // Pass 2c: world-position. Background stays null. Clear to a sentinel
+    // position well outside any plausible scene span so the neighbour-distance
+    // check at sky silhouettes is always well above uSuppressWorldEps.
+    this.scene.overrideMaterial = this.worldPosMaterial;
+    renderer.setRenderTarget(this.worldPosTarget);
+    renderer.setClearColor(0x808080, 1);
     renderer.clear();
     renderer.render(this.scene, this.view.camera);
     this.scene.overrideMaterial = null;
@@ -346,6 +476,9 @@ export class PixelPerfectOutlinedView {
     if (this.depthPackedTarget.width !== w || this.depthPackedTarget.height !== h) {
       this.depthPackedTarget.setSize(w, h);
     }
+    if (this.worldPosTarget.width !== w || this.worldPosTarget.height !== h) {
+      this.worldPosTarget.setSize(w, h);
+    }
     if (this.postTarget.width !== w || this.postTarget.height !== h) {
       this.postTarget.setSize(w, h);
     }
@@ -363,9 +496,11 @@ export class PixelPerfectOutlinedView {
     this.normalTarget.dispose();
     this.idTarget.dispose();
     this.depthPackedTarget.dispose();
+    this.worldPosTarget.dispose();
     this.postTarget.dispose();
     this.colorTarget.dispose();
     this.depthMaterial.dispose();
+    this.worldPosMaterial.dispose();
     this.normalMaterial.dispose();
     this.postMaterial.dispose();
     this.postQuad.geometry.dispose();
@@ -377,6 +512,42 @@ export class PixelPerfectOutlinedView {
     this.meshEntries.clear();
     this.view.dispose();
   }
+}
+
+export type OutlineAuxSample = {
+  x: number;
+  y: number;
+  depthNorm: number;
+  viewZ: number;
+  normal: [number, number, number];
+  id: [number, number, number];
+};
+
+export type OutlineAuxProbe = {
+  width: number;
+  height: number;
+  near: number;
+  far: number;
+  renderedFraction: number;
+  depthRange: [number, number] | null;
+  center: OutlineAuxSample;
+  left: OutlineAuxSample | null;
+  right: OutlineAuxSample | null;
+  up: OutlineAuxSample | null;
+  down: OutlineAuxSample | null;
+};
+
+/**
+ * Decode an IEEE-754 binary16 bit pattern (stored in a Uint16 lane by the
+ * WebGL half-float readback path) into a Float32.
+ */
+function halfToFloat32(h: number): number {
+  const s = (h & 0x8000) >> 15;
+  const e = (h & 0x7c00) >> 10;
+  const f = h & 0x03ff;
+  if (e === 0) return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+  if (e === 31) return f ? NaN : (s ? -Infinity : Infinity);
+  return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
 }
 
 /** Deterministic hash from a string key into a small-int group id (0..65535). */

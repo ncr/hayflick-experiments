@@ -20,6 +20,7 @@ const POST_FS = /* glsl */ `
   uniform sampler2D uDepthTex;
   uniform sampler2D uNormalTex;
   uniform sampler2D uIdTex;
+  uniform sampler2D uWorldPosTex;
 
   uniform vec2 uResolution;
   uniform float uNear;
@@ -27,6 +28,9 @@ const POST_FS = /* glsl */ `
   uniform float uDepthThreshold;
   uniform float uNormalThreshold;
   uniform float uIdSuppressNormalDot;
+  uniform float uSuppressDepthEps;
+  uniform float uSuppressWorldEps;
+  uniform int uSuppressMode; // 0 = depth-gate (legacy), 1 = world-position.
   uniform float uOutlineBrightness;
   uniform float uOutlineMix;
   uniform int uDebugMode; // 0=final, 1=color, 2=depth, 3=normal, 4=id, 5=edgeOnly, 6=depthEdge, 7=normalEdge
@@ -113,10 +117,40 @@ const POST_FS = /* glsl */ `
     float sameNormalU = step(uIdSuppressNormalDot, dot(nC, nU));
     float sameNormalD = step(uIdSuppressNormalDot, dot(nC, nD));
 
-    float keepL = 1.0 - (sameIdL * sameNormalL);
-    float keepR = 1.0 - (sameIdR * sameNormalR);
-    float keepU = 1.0 - (sameIdU * sameNormalU);
-    float keepD = 1.0 - (sameIdD * sameNormalD);
+    // Same-surface suppression only fires when center and neighbour are on a
+    // truly coplanar flush seam: same group, same normal, AND evidently on
+    // the same physical surface. A silhouette of a same-group mesh in front
+    // of another same-group mesh must draw even when group and normal match.
+    //
+    // Two tests for "same surface":
+    //   - uSuppressMode=0: camera-space depth delta under uSuppressDepthEps.
+    //     Cheaper (no extra RT) but conflates two parallel surfaces at equal
+    //     camera depth.
+    //   - uSuppressMode=1: world-space distance between the two fragments
+    //     under uSuppressWorldEps. Unambiguous but costs a world-position RT.
+    vec3 wpC = texture2D(uWorldPosTex, cUv).xyz;
+    vec3 wpL = texture2D(uWorldPosTex, lUv).xyz;
+    vec3 wpR = texture2D(uWorldPosTex, rUv).xyz;
+    vec3 wpU = texture2D(uWorldPosTex, uUvc).xyz;
+    vec3 wpD = texture2D(uWorldPosTex, dUv).xyz;
+
+    float sameSurfL, sameSurfR, sameSurfU, sameSurfD;
+    if (uSuppressMode == 1) {
+      sameSurfL = step(length(wpC - wpL), uSuppressWorldEps);
+      sameSurfR = step(length(wpC - wpR), uSuppressWorldEps);
+      sameSurfU = step(length(wpC - wpU), uSuppressWorldEps);
+      sameSurfD = step(length(wpC - wpD), uSuppressWorldEps);
+    } else {
+      sameSurfL = step(abs(dC - dL), uSuppressDepthEps);
+      sameSurfR = step(abs(dC - dR), uSuppressDepthEps);
+      sameSurfU = step(abs(dC - dU), uSuppressDepthEps);
+      sameSurfD = step(abs(dC - dD), uSuppressDepthEps);
+    }
+
+    float keepL = 1.0 - (sameIdL * sameNormalL * sameSurfL);
+    float keepR = 1.0 - (sameIdR * sameNormalR * sameSurfR);
+    float keepU = 1.0 - (sameIdU * sameNormalU * sameSurfU);
+    float keepD = 1.0 - (sameIdD * sameNormalD * sameSurfD);
 
     float dEdgeL = step(uDepthThreshold, abs(dC - dL)) * depthFrontL * keepL;
     float dEdgeR = step(uDepthThreshold, abs(dC - dR)) * depthFrontR * keepR;
@@ -181,11 +215,17 @@ export function edgeDetectionDebugModeIndex(mode: EdgeDetectionDebugMode): numbe
   return EDGE_DETECTION_DEBUG_MODES.indexOf(mode);
 }
 
+export type SuppressMode = "depth" | "world-position";
+
 export type EdgeDetectionConfig = {
   colorTexture: THREE.Texture;
   depthTexture: THREE.Texture;
   normalTexture: THREE.Texture;
   idTexture: THREE.Texture;
+  /** Required when {@link suppressMode} is `"world-position"`. */
+  worldPosTexture?: THREE.Texture;
+  /** Which same-surface test to use. Default `"depth"`. */
+  suppressMode?: SuppressMode;
   resolution: THREE.Vector2Like;
   near: number;
   far: number;
@@ -199,6 +239,21 @@ export type EdgeDetectionConfig = {
    * entirely (all seams draw).
    */
   idSuppressNormalDot?: number;
+  /**
+   * Max linear-depth delta (world units) for same-group-same-normal
+   * suppression when `suppressMode = "depth"`. Depth deltas above this mean
+   * the neighbour is a silhouette behind (or in front of) the centre and
+   * must draw even when group and normal match. Default 1.0.
+   */
+  suppressDepthEps?: number;
+  /**
+   * Max world-space distance between neighbouring fragments for
+   * same-group-same-normal suppression when `suppressMode = "world-position"`.
+   * Default 0.1 (10 cm). Must be larger than the per-pixel world delta on a
+   * flat surface at the selected camera zoom, but smaller than the smallest
+   * legitimate silhouette gap.
+   */
+  suppressWorldEps?: number;
   /** How much brighter outlined pixels are than their source (default 1.35). */
   outlineBrightness?: number;
   /** 0 = outline disabled (pass through), 1 = full strength (default). */
@@ -213,6 +268,7 @@ export class EdgeDetectionMaterial extends THREE.ShaderMaterial {
         uDepthTex: { value: config.depthTexture },
         uNormalTex: { value: config.normalTexture },
         uIdTex: { value: config.idTexture },
+        uWorldPosTex: { value: config.worldPosTexture ?? config.depthTexture },
         uResolution: {
           value: new THREE.Vector2(config.resolution.x, config.resolution.y)
         },
@@ -221,6 +277,9 @@ export class EdgeDetectionMaterial extends THREE.ShaderMaterial {
         uDepthThreshold: { value: config.depthThreshold ?? 0.05 },
         uNormalThreshold: { value: config.normalThreshold ?? 0.3 },
         uIdSuppressNormalDot: { value: config.idSuppressNormalDot ?? 0.5 },
+        uSuppressDepthEps: { value: config.suppressDepthEps ?? 1.0 },
+        uSuppressWorldEps: { value: config.suppressWorldEps ?? 0.1 },
+        uSuppressMode: { value: config.suppressMode === "world-position" ? 1 : 0 },
         uOutlineBrightness: { value: config.outlineBrightness ?? 1.35 },
         uOutlineMix: { value: config.outlineMix ?? 1.0 },
         uDebugMode: { value: 0 }

@@ -3624,3 +3624,47 @@ Preventive checklist:
   `outlineVariant` param on `outline-walls` (values: `corner-floor`,
   `two-corners`, `corner-wall`, `compare`). These are pre-wired minimal
   reproducers for corner-behind-corner, corner-next-to-floor, etc.
+
+## 2026-04-22 - Concave-corner V-gap resolved by same-surface gate on `keepL`
+
+Fix landed after the post-mortem above. The previous attempt at a
+sameDepth gate used `eps=0.001` (and later `0.02`) — both too tight. With
+`uDepthThreshold=0.05` for the depth-edge test and rasterizer noise at
+flush tile tops sitting around 0.03-0.15 under rotation, any threshold
+in that same range trades the V-gap for horizontal stripe regressions at
+tile-top boundaries.
+
+The working threshold is **one whole world unit** (`uSuppressDepthEps =
+1.0` for the depth-mode gate, `uSuppressWorldEps = 0.1` for the
+world-position-mode gate). That sits well above rasterizer precision at
+flush seams and well below the smallest legitimate silhouette jump
+(wall heights are 2.8-ish world units, tile tops differ by 1+ world unit
+across a corner). Both modes produce identical edge output across the
+full outline-walls test matrix.
+
+Architecture:
+- Two suppression modes, selectable via `OutlineTuning.suppressMode`:
+  - `"depth"` (default, cheapest): sameSurface fires when
+    `|dC - dL| < uSuppressDepthEps`. No extra RT.
+  - `"world-position"`: sameSurface fires when
+    `length(worldPosC - worldPosL) < uSuppressWorldEps`. Costs one extra
+    half-float RGBA G-buffer + one render pass. Geometrically
+    unambiguous (camera-invariant; two parallel surfaces at the same
+    camera depth still distinguish cleanly).
+- `WorldPositionMaterial` (new, `common-render/src/outline/`) writes
+  per-fragment world position to the G-buffer during the extra pass.
+- Runtime toggle: `PixelPerfectOutlinedView.setSuppressMode()` or
+  `?outlineSuppress=world-position` URL param on outline-walls.
+
+Testbed:
+- `scripts/outline-testbed/run.mjs` captures PNG + ASCII grid for every
+  variant at multiple rotations. Each run gets a label and can diff
+  against any previous label (`--diff bl3`).
+- `scripts/outline-testbed/probe.mjs` and siblings: Playwright-driven
+  depth/normal/id probes at named pixels via `window.__outlineProbe__`.
+  Used to quantify "actual delta at V-gap" vs "actual delta at flush
+  seam" before picking the threshold.
+
+Side effect: the previous learning said `two-corners-q2/q3` had a
+same-group silhouette suppressed; the new gate now draws it correctly
+(visible in the testbed comparison against baseline).
