@@ -72,6 +72,15 @@ export {
   OUTLINE_GROUP_ID_EPS,
   encodeOutlineGroupColor
 } from "./outline/outline-group-material";
+export {
+  applyPixelArtTextureDefaults,
+  applyPixelArtTextureDefaultsToTree,
+  applyTexelCenterOffset
+} from "./pixel-art-textures";
+export {
+  TILESET_VIEWER_TARGET_CONFIG,
+  TILESET_VIEWER_NORMAL_CONFIG
+} from "./tileset-viewer-config";
 export function makeRenderer(width: number, height: number, dpr: number): THREE.WebGLRenderer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(dpr);

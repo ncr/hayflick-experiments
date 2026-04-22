@@ -2,10 +2,11 @@ import * as THREE from "three";
 import {
   SharedScissorStage,
   PixelPerfectViewportCore,
-  PixelPerfectScissorPane
+  PixelPerfectScissorPane,
+  TILESET_VIEWER_TARGET_CONFIG,
+  TILESET_VIEWER_NORMAL_CONFIG
 } from "@common/render";
 import { bindPixelPerfectPaneBroadcast } from "@common/input";
-import { LEVEL_EDITOR_WORLD_UNIT } from "@common/level-editor";
 import type { ExperimentModule } from "../runtime/types";
 import { loadTilesetAssets, type TilesetAssets, type LoadedTile } from "../map-editor-2d/tileset-loader";
 
@@ -17,28 +18,8 @@ import { loadTilesetAssets, type TilesetAssets, type LoadedTile } from "../map-e
 const NORMAL_LAYER = 1;
 const TARGET_LAYER = 2;
 
-// ---------------------------------------------------------------------------
-// Canonical target view config (matches map-editor-2d 3D iso pane)
-// ---------------------------------------------------------------------------
-
-const GRID_TILES = 20;
-const CAMERA_DISTANCE = 50;
-
-const TARGET_VIEW_CONFIG = {
-  fixedRenderHeight: 360,
-  baseOrthoHeight: GRID_TILES * LEVEL_EDITOR_WORLD_UNIT * 0.4,
-  cameraDistance: CAMERA_DISTANCE,
-  zoomMax: 6,
-  zoomStep: 0.5,
-  rotationAnimationRate: 12,
-  rotationAnimationEpsilon: 0.005
-};
-
-// Normal view: same framing, higher fidelity render
-const NORMAL_VIEW_CONFIG = {
-  ...TARGET_VIEW_CONFIG,
-  fixedRenderHeight: 720
-};
+const TARGET_VIEW_CONFIG = TILESET_VIEWER_TARGET_CONFIG;
+const NORMAL_VIEW_CONFIG = TILESET_VIEWER_NORMAL_CONFIG;
 
 // ---------------------------------------------------------------------------
 // Tile selector UI (touch-friendly)
