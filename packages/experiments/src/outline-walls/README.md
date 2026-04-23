@@ -42,9 +42,9 @@ creases and silhouettes draw. The strip scene shares one id too, or one id
 per instance with `?outlineGroups=split` to verify the mask is at work.
 
 ## URL params
-- `outlineDebug=N` — 0=final, 1=color, 2=depth, 3=normals, 4=ids, 5=edges,
-  6=depth-edges, 7=normal-edges. Also cycles with `D` at runtime
-  (see `EdgeDetectionDebugMode` for the typed equivalent).
+- `outlineDebug=<mode>` — one of `final`, `color`, `depth`, `normals`,
+  `ids`, `edges`, `depth-edges`, `normal-edges`. Also cycles with `D` at
+  runtime (see `EdgeDetectionDebugMode` for the typed equivalent).
 - `outlineZoom=N` — initial pixel zoom (1–8).
 - `outlineTileset=greek_island_white|desert_sandstone` — which wall kit.
 - `outlineScene=strip|room` — `strip` (default) = 3 adjacent wall segments for

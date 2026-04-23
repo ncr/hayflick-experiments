@@ -14,7 +14,7 @@ apps/hub          — Vite + React experiment browser (the hub UI)
   src/pages/forge/     — Asset Forge v2 (route: #/forge-v2) — prop pipeline: concept image → mesh → physics colliders
   src/pages/forge-core/ — Forge shared processing (colliders, export, textures)
 packages/
-  common-render       — Pixel-perfect rendering primitives (PixelStage, PixelPerfectController, PixelPerfectView)
+  common-render       — Pixel-perfect iso-2:1 rendering pipeline (IsoGameView, SharedScissorStage, outlines, lighting preset)
   common-core         — Generic utilities and data logic
   common-gameplay     — Gameplay systems (inventory, state rules)
   common-level-editor — Tile/structure models, wall/door mesh kit, editor UI, bake pipeline

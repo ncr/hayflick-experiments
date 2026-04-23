@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import {
-  PixelPerfectScissorPane,
-  PixelPerfectViewportCore,
+  PixelPerfectPane,
   SharedScissorStage,
   type PixelView
 } from "@common/render";
@@ -220,35 +219,27 @@ const experiment: ExperimentModule = {
     type PaneEntry = {
       spec: PaneSpec;
       element: HTMLDivElement;
-      core: PixelPerfectViewportCore;
-      pane: PixelPerfectScissorPane;
+      pane: PixelPerfectPane;
     };
 
     const panes: PaneEntry[] = PANE_SPECS.map((spec) => {
       const element = createPaneElement(mount, spec);
-      const core = new PixelPerfectViewportCore({
-        ...SHARED_VIEW_CONFIG,
+      const pane = new PixelPerfectPane({
+        stage,
+        id: spec.id,
+        element,
+        scene,
         width: element.clientWidth || width / 2,
         height: element.clientHeight || height / 2,
-        scene,
+        ...SHARED_VIEW_CONFIG,
         cameraPitch: spec.cameraPitch,
         cameraYaw: spec.cameraYaw,
         clearColor: 0x14181e,
         // Pixel-perfect 2:1 stairs are crisp without MSAA — keep AA off so the
         // grid lines and primitive silhouettes show their true pixel pattern.
-        lowTargetSamples: 0,
-        maxBackingWidth: stage.maxBackingWidth,
-        maxBackingHeight: stage.maxBackingHeight,
-        devicePixelRatio: stage.getDevicePixelRatio()
+        lowTargetSamples: 0
       });
-      const pane = new PixelPerfectScissorPane({
-        id: spec.id,
-        element,
-        core,
-        devicePixelRatio: stage.getDevicePixelRatio()
-      });
-      stage.registerPane(pane);
-      return { spec, element, core, pane };
+      return { spec, element, pane };
     });
 
     createHud(mount);

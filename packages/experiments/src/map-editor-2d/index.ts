@@ -1,8 +1,7 @@
 import * as THREE from "three";
 import {
-  SharedScissorStage,
-  PixelPerfectViewportCore,
-  PixelPerfectScissorPane
+  PixelPerfectPane,
+  SharedScissorStage
 } from "@common/render";
 import { bindSharedScissorStageInput } from "@common/input";
 import { LEVEL_EDITOR_WORLD_UNIT, levelBuilderEdgeKey } from "@common/level-editor";
@@ -153,82 +152,57 @@ const experiment: ExperimentModule = {
       pixelRatio: Math.max(1, window.devicePixelRatio || 1),
       antialias: false,
       clearColor: 0x1a1e24,
-      clearAlpha: 1
+      clearAlpha: 1,
+      shadows: true
     });
 
-    // PBR / pixel-art colour pipeline:
-    // - sRGB output colour space for correct gamma on the canvas
-    // - PCF soft shadow maps for the key light's contact shadows
-    // - Tone mapping is toggled per-pane via beforeSceneRender hooks below
-    //   (ACES on the 3D iso pane, NoToneMapping on the 2D editor pane)
+    // sRGB output colour space for correct gamma on the canvas. Tone
+    // mapping is declared per-pane below (`toneMapping: "none" | "aces"`).
     stage.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    stage.renderer.toneMapping = THREE.NoToneMapping;
-    stage.renderer.toneMappingExposure = 1.0;
-    stage.renderer.shadowMap.enabled = true;
-    stage.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    // Left pane: top-down 2D editor
-    const leftCore = new PixelPerfectViewportCore({
-      ...SHARED_VIEW_CONFIG,
-      zoomMin: 0.25,
+    // Left pane: top-down 2D editor. `toneMapping: "none"` keeps this pane
+    // on NoToneMapping regardless of what the 3D pane / outline pipeline
+    // set on the shared renderer.
+    const leftPane = new PixelPerfectPane({
+      stage,
+      id: "editor-2d",
+      element: leftPaneEl,
+      scene,
       width: leftPaneEl.clientWidth || Math.max(1, width * 0.55 - TILE_PALETTE_WIDTH),
       height: leftPaneEl.clientHeight || height,
-      scene,
+      ...SHARED_VIEW_CONFIG,
+      zoomMin: 0.25,
       cameraPitch: "top-down",
       cameraYaw: 0,
       clearColor: 0x1a1e24,
-      maxBackingWidth: stage.maxBackingWidth,
-      maxBackingHeight: stage.maxBackingHeight,
-      devicePixelRatio: stage.getDevicePixelRatio()
+      layers: [LAYER_2D_TINT],
+      toneMapping: "none"
     });
-    leftCore.camera.layers.enable(LAYER_2D_TINT);
 
-    const leftPane = new PixelPerfectScissorPane({
-      id: "editor-2d",
-      element: leftPaneEl,
-      core: leftCore,
-      devicePixelRatio: stage.getDevicePixelRatio()
-    });
-    stage.registerPane(leftPane);
-
-    // Right pane: isometric 3D preview
-    const rightCore = new PixelPerfectViewportCore({
-      ...SHARED_VIEW_CONFIG,
-      width: rightPaneEl.clientWidth || width * 0.45,
-      height: rightPaneEl.clientHeight || height,
-      scene,
-      clearColor: 0x14181e,
-      maxBackingWidth: stage.maxBackingWidth,
-      maxBackingHeight: stage.maxBackingHeight,
-      devicePixelRatio: stage.getDevicePixelRatio(),
-      lowTargetSamples: 0
-    });
-    rightCore.camera.layers.enable(LAYER_3D_ONLY);
-
-    const rightPane = new PixelPerfectScissorPane({
+    // Right pane: isometric 3D preview with outlines + ACES + shadows.
+    // Blockstudio tile meshes use "blockstudio_accent" / "blockstudio_trim"
+    // material names; everything else falls through to "wall".
+    const rightPane = new PixelPerfectPane({
+      stage,
       id: "preview-3d",
       element: rightPaneEl,
-      core: rightCore,
-      devicePixelRatio: stage.getDevicePixelRatio()
+      scene,
+      width: rightPaneEl.clientWidth || width * 0.45,
+      height: rightPaneEl.clientHeight || height,
+      ...SHARED_VIEW_CONFIG,
+      clearColor: 0x14181e,
+      lowTargetSamples: 0,
+      layers: [LAYER_3D_ONLY],
+      toneMapping: "aces",
+      shadows: true,
+      outlines: true,
+      outlineGroups: {
+        byName: { blockstudio_accent: "glass", blockstudio_trim: "trim" },
+        default: "wall"
+      }
     });
-    stage.registerPane(rightPane);
 
-    // Tag the 3D pane's low render target as sRGB so the renderer's ACES
-    // tone map + gamma encoding apply when the scene is rendered into it.
-    // Without this the low target stays linear and tone mapping is skipped.
-    rightCore.getLowTarget().texture.colorSpace = THREE.SRGBColorSpace;
-
-    // Per-pane tone mapping. Global state gets flipped before each scene
-    // render and restored after, so:
-    //   - 3D iso pane: ACES tone mapping, sRGB low target
-    //   - 2D editor pane: no tone mapping, linear low target (unchanged
-    //     from the pre-PBR-upgrade behaviour)
-    rightCore.beforeSceneRender = (renderer) => {
-      renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    };
-    rightCore.afterSceneRender = (renderer) => {
-      renderer.toneMapping = THREE.NoToneMapping;
-    };
+    let lastOutlineRevision = -1;
 
     // --- Input ---
     let focusedPaneId: string | null = "editor-2d";
@@ -514,6 +488,11 @@ const experiment: ExperimentModule = {
       lastTime = now;
 
       sceneBuilder.update(state);
+
+      if (state.revision !== lastOutlineRevision) {
+        lastOutlineRevision = state.revision;
+        rightPane.reapplyOutlineGroups(sceneBuilder.root);
+      }
 
       toolbar.setStats(
         `${state.grid.tiles}\u00d7${state.grid.tiles} | E:${state.edgeStructures.size} C:${state.cellStructures.size} V:${state.vertexStructures.size}`

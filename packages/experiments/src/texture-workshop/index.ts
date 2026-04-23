@@ -1,8 +1,7 @@
 import * as THREE from "three";
 import {
   SharedScissorStage,
-  PixelPerfectViewportCore,
-  PixelPerfectScissorPane,
+  PixelPerfectPane,
   TILESET_VIEWER_TARGET_CONFIG,
   TILESET_VIEWER_NORMAL_CONFIG
 } from "@common/render";
@@ -264,59 +263,42 @@ const experiment: ExperimentModule = {
       pixelRatio: Math.max(1, window.devicePixelRatio || 1),
       antialias: false,
       clearColor: 0x14181e,
-      clearAlpha: 1
+      clearAlpha: 1,
+      shadows: true
     });
 
     stage.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    stage.renderer.toneMapping = THREE.NoToneMapping;
-    stage.renderer.toneMappingExposure = 1.0;
-    stage.renderer.shadowMap.enabled = true;
-    stage.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-    const dpr = stage.getDevicePixelRatio();
-    const maxW = stage.maxBackingWidth;
-    const maxH = stage.maxBackingHeight;
 
     // Normal pane (720p, MSAA)
-    const normalCore = new PixelPerfectViewportCore({
-      ...NORMAL_VIEW_CONFIG,
+    const normalPane = new PixelPerfectPane({
+      stage,
+      id: "normal",
+      element: topEl,
+      scene,
       width: topEl.clientWidth || (width - PANEL_WIDTH),
       height: topEl.clientHeight || Math.round(height / 2),
-      scene,
+      ...NORMAL_VIEW_CONFIG,
       clearColor: 0x14181e,
-      maxBackingWidth: maxW, maxBackingHeight: maxH,
-      devicePixelRatio: dpr
+      layers: [NORMAL_LAYER],
+      toneMapping: "aces",
+      shadows: true
     });
-    normalCore.camera.layers.enable(NORMAL_LAYER);
-    normalCore.getLowTarget().texture.colorSpace = THREE.SRGBColorSpace;
-    normalCore.beforeSceneRender = (r) => { r.toneMapping = THREE.ACESFilmicToneMapping; };
-    normalCore.afterSceneRender = (r) => { r.toneMapping = THREE.NoToneMapping; };
-
-    const normalPane = new PixelPerfectScissorPane({
-      id: "normal", element: topEl, core: normalCore, devicePixelRatio: dpr
-    });
-    stage.registerPane(normalPane);
 
     // Target pane (360p, no MSAA)
-    const targetCore = new PixelPerfectViewportCore({
-      ...TARGET_VIEW_CONFIG,
+    const targetPane = new PixelPerfectPane({
+      stage,
+      id: "target",
+      element: bottomEl,
+      scene,
       width: bottomEl.clientWidth || (width - PANEL_WIDTH),
       height: bottomEl.clientHeight || Math.round(height / 2),
-      scene,
+      ...TARGET_VIEW_CONFIG,
       clearColor: 0x14181e,
-      maxBackingWidth: maxW, maxBackingHeight: maxH,
-      devicePixelRatio: dpr,
-      lowTargetSamples: 0
+      lowTargetSamples: 0,
+      layers: [TARGET_LAYER],
+      toneMapping: "aces",
+      shadows: true
     });
-    targetCore.camera.layers.enable(TARGET_LAYER);
-    targetCore.getLowTarget().texture.colorSpace = THREE.SRGBColorSpace;
-    targetCore.beforeSceneRender = (r) => { r.toneMapping = THREE.ACESFilmicToneMapping; };
-    targetCore.afterSceneRender = (r) => { r.toneMapping = THREE.NoToneMapping; };
-
-    const targetPane = new PixelPerfectScissorPane({
-      id: "target", element: bottomEl, core: targetCore, devicePixelRatio: dpr
-    });
-    stage.registerPane(targetPane);
 
     // --- Control panel ---
 

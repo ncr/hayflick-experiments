@@ -1,6 +1,6 @@
 import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import * as THREE from "three";
-import { PixelPerfectView } from "@common/render";
+import { IsoGameView, addStandardGameLighting } from "@common/render";
 
 export type PixelViewportViewState = {
   target: [number, number, number];
@@ -30,7 +30,7 @@ interface Props {
 export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
   function ViewportPixel({ className, onViewChange, framingScale = 1 }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
-    const viewRef = useRef<PixelPerfectView | null>(null);
+    const viewRef = useRef<IsoGameView | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const modelRef = useRef<THREE.Group | null>(null);
     const desiredModelRef = useRef<THREE.Group | null>(null);
@@ -143,15 +143,15 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       const scene = new THREE.Scene();
       sceneRef.current = scene;
 
-      // Lighting — bright enough for pixel preview
-      const ambient = new THREE.AmbientLight(0xffffff, 1.0);
-      scene.add(ambient);
-      const keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
-      keyLight.position.set(3, 5, 2);
-      scene.add(keyLight);
-      const fillLight = new THREE.DirectionalLight(0x8899bb, 0.8);
-      fillLight.position.set(-2, 3, -1);
-      scene.add(fillLight);
+      addStandardGameLighting(scene, {
+        ambient: 1.0,
+        keyColor: 0xffffff,
+        keyDirection: [3, 5, 2],
+        fillColor: 0x8899bb,
+        fillIntensity: 0.8,
+        fillDirection: [-2, 3, -1],
+        hemisphere: false
+      });
 
       // Ground plane
       const groundGeo = new THREE.PlaneGeometry(20, 20);
@@ -168,7 +168,7 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       const effectiveFramingScale =
         Number.isFinite(framingScale) && framingScale > 0 ? framingScale : 1;
 
-      const view = new PixelPerfectView({
+      const view = new IsoGameView({
         mount: container,
         width,
         height,
@@ -185,7 +185,8 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
         rotationAnimationRate: 18,
         rotationAnimationEpsilon: 0.001,
         zoomBurstIdleMs: 200,
-        clearColor: 0x1a1a2e
+        clearColor: 0x1a1a2e,
+        outlines: false
       });
       viewRef.current = view;
 

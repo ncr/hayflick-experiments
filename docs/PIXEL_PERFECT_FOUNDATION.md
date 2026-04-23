@@ -1,118 +1,136 @@
 # Pixel-Perfect Foundation (2:1 Isometric)
 
 ## Scope
-This document captures the stable invariants and architecture behind
-`pixel-perfect-2to1`, and outlines how to extract the mechanics into reusable
-foundational code for game experiments.
 
-## Current Invariants
-1. Fixed canvas footprint:
-   - Canvas CSS size tracks mount size and does not change while zooming.
-2. Stable low-res sampling grid:
-   - Low-res render target is derived from viewport + DPR baseline (`zoom=1`).
-   - Zoom must not recompute low-res grid dimensions.
-3. World-to-game-pixel contract:
-   - 1 world tile edge (`128cm`) maps to `64` game pixels horizontally and `32`
-     game pixels vertically.
-   - Contract holds at all zoom levels.
-4. Integer upscale:
-   - Final scene is upscaled by integer render scale (`round(zoom * dpr)`).
-5. Pixel-stable pan:
-   - Pointer deltas convert through canvas CSS->device ratios.
-   - Camera advances in whole low-res pixel steps with carried remainder.
-6. Cursor-anchored zoom:
-   - Zoom changes are corrected by pan so world point under cursor stays fixed.
-7. Overscan guard band:
-   - Output viewport includes low-res overscan to prevent edge bars under
-     remainder shifts.
+Stable invariants and architecture of `@common/render`'s pixel-perfect iso-2:1
+pipeline. The package README covers API shape and usage; this doc is the
+authoritative source of truth for the pixel-stable math and the layering.
 
-## Runtime Pipeline
-1. Resolve device viewport:
-   - `css size * dpr`, clamped by WebGL caps.
-2. Resolve low-res target (zoom independent):
-   - Derived from device viewport and render scale at `zoom=1`.
-3. Resolve active output layout:
-   - Apply current render scale to low-res target + overscan.
+## Invariants
+
+1. **Fixed canvas footprint.** Canvas CSS size tracks mount size; does not
+   change while zooming.
+2. **Stable low-res sampling grid.** Low-res render target is derived from
+   viewport + DPR baseline at `zoom=1`; zoom must not recompute its
+   dimensions. Dimensions are rounded up to even values so the buffer centre
+   lands on an integer iso-col.
+3. **World→game-pixel contract.** 1 world tile edge (128 cm) = 32 game
+   pixels horizontal, 16 vertical. Holds at every zoom level.
+4. **Integer upscale.** Final scene upscaled by integer render scale
+   `round(zoom · dpr)`.
+5. **Pixel-stable pan.** Pointer deltas pass through canvas CSS→device
+   ratios; camera advances in whole low-res pixel steps with a carried
+   remainder to preserve sub-step input.
+6. **Cursor-anchored zoom.** Zoom changes are corrected by pan so the world
+   point under the cursor stays fixed.
+7. **Overscan guard band.** Output viewport includes a small low-res
+   overscan pad to prevent edge bars under remainder shifts.
+
+## Runtime pipeline
+
+1. Resolve device viewport: `css size * dpr`, clamped by WebGL caps.
+2. Resolve low-res target (zoom-independent): derived from device viewport
+   and render scale at `zoom=1`.
+3. Resolve active output layout: apply current render scale to low-res
+   target + overscan.
 4. Render passes:
-   - Scene -> low-res target.
-   - Low-res texture -> final viewport using nearest sampling and UV window.
-5. Input mapping:
-   - Client CSS coordinates map through active scene viewport (excluding
-     overscan pad) for both world pick and projection.
+   - Scene → low-res target (with optional outline sideband passes).
+   - Low-res texture → final viewport using nearest sampling + UV window.
+5. Input mapping: client CSS coordinates map through active scene viewport
+   (excluding overscan) for both world pick and projection.
 
-## Reusable Building Blocks (Now in `@common/render`)
-`packages/common-render/src/pixel-perfect.ts`
-- `computeRenderScale`
-- `computeViewportDeviceSize`
-- `computeLowResolutionSize`
-- `computeOutputViewportLayout`
-- `computeOrthoHeightForLowResolution`
+## Architecture
 
-`packages/common-render/src/pixel-perfect-controller.ts`
-- `PixelPerfectController`
-- zoom mode + safe ladder logic
-- pan phase state/stepping helpers
-- resize/layout recomputation against GPU caps
-- client <-> scene mapping helpers
-- yaw (quarter-turn) state for rotatable isometric cameras
+The pipeline is layered, not monolithic. Each layer has one job.
 
-`packages/common-render/src/pixel-stage.ts`
-- `PixelStage` host wrapper for renderer/canvas lifecycle
-- mount + canvas style ownership with cleanup restore
-- resize observer wiring
-- canvas css->device metrics helper
-- shared WebGL backing-size cap discovery
-
-## Extraction Plan (Foundational Library)
-### Phase 1: Core Primitives (done)
-- Keep pure sizing/projection helpers in `@common/render`.
-- Keep focused tests for invariants and edge cases.
-
-### Phase 2: Controller Layer (done)
-- `pixel-perfect-2to1` now delegates pan/zoom/rotate/layout state to
-  `PixelPerfectController`.
-- Wheel "burst lock" throttling was removed; each wheel event advances exactly
-  one zoom step.
-
-### Phase 3: Host Integration (started)
-- `pixel-perfect-2to1` now uses `PixelStage` for mount/canvas/resize/cap logic.
-- Remaining work: add a higher-level stage orchestration wrapper (optional HUD
-  and pluggable render-loop callbacks) so future experiments adopt with minimal glue.
-
-### Phase 4: Feature Extensions
-- Add optional modules:
-- inertial pan
-- bounded camera limits
-- touch pinch/zoom
-- deterministic replayable input events.
-
-## Camera-based Zoom Prototype
-- The `pixel-perfect-camera-zoom` experiment keeps the low-res render target fixed and drives zoom through the orthographic camera height instead of increasing the backing resolution.
-- It reuses `PixelStage`/`PixelPerfectController` for pan, layout, and input mappings while handling its own `cameraZoom` multiplier plus cursor-anchor correction so the point under the cursor stays stable.
-- This prototype shows how a future experiment can explore camera-based zoom without touching the promoted controller.
-
-## API Shape Proposal
-```ts
-type PixelStageConfig = {
-  referenceLowHeight: number;
-  baseOrthoHeight: number;
-  overscanLowPixels: number;
-  zoomRange: { min: number; max: number };
-};
-
-type PixelController = {
-  resize(cssWidth: number, cssHeight: number, dpr: number): void;
-  panByCss(deltaCssX: number, deltaCssY: number, sx: number, sy: number): void;
-  stepZoom(direction: -1 | 1): boolean;
-  rotateQuarterTurns(step: -1 | 1): number;
-  getScenePointFromClient(x: number, y: number, metrics: CanvasMetrics): Point | null;
-  getClientPointFromScene(x: number, y: number, metrics: CanvasMetrics): Point | null;
-  getState(): { /* viewport, low-res, scale, pads, zoom/yaw/pan metrics */ };
-};
+```
+IsoGameView (facade)                   src/iso-game-view.ts
+  └─ SharedScissorStage                src/stage/shared-scissor-stage.ts
+       └─ PixelPerfectPane             src/stage/pixel-perfect-pane.ts
+            └─ IsoViewport             src/internals/iso-viewport.ts  (orchestrator)
+                 ├─ IsoCamera          src/internals/iso-camera.ts
+                 ├─ LowResolutionTarget  src/internals/low-resolution-target.ts
+                 │    └─ OutputUpscaleMaterial
+                 ├─ PixelPerfectController  src/internals/pixel-perfect-controller.ts
+                 └─ RotationAnimation + ZoomAnimation  src/internals/viewport-animation.ts
+  └─ OutlinePipeline (optional)        src/outline/outline-pipeline.ts
+       ├─ LinearDepthMaterial
+       ├─ OutlineGroupMaterial
+       ├─ WorldPositionMaterial
+       └─ EdgeDetectionMaterial
 ```
 
-## Migration Notes
-- Keep current experiment as the integration test-bed for host/view wiring.
-- Keep scene setup and camera raycast/projection ownership in the experiment;
-  controller owns only deterministic pan/zoom/layout state.
-- Preserve existing Playwright interaction probes during extraction.
+- **`IsoGameView`** is a thin facade. Composes stage + pane + optional
+  outline; owns mount background save/restore and client↔local CSS.
+- **`SharedScissorStage`** owns the shared WebGL context, the single canvas
+  positioned behind DOM panes, the RAF loop, and per-frame scissor math.
+  Pane elements are DOM anchors measured via `getBoundingClientRect`.
+- **`PixelPerfectPane`** is a pane adapter. Auto-sizes its `IsoViewport`
+  against the stage's device-pixel backing caps and handles resize/dispose.
+- **`IsoViewport`** is the per-pane orchestrator. It runs the per-frame
+  update: advance animations → apply pose → resize low-res + output layout
+  → drive scene render → upscale to device framebuffer.
+- **`IsoCamera`** owns the `THREE.OrthographicCamera` plus screen↔world
+  basis. Understands "iso-2to1", "top-down", "side" pitches. Exposes
+  `worldAtNdc`, `snapWorldPointOnGround`.
+- **`LowResolutionTarget`** owns the low-res RT, the upscale fullscreen quad,
+  and the `OutputUpscaleMaterial` shader (smooth pixel transitions or hard
+  nearest). Handles MSAA tuning (`setLowTarget`).
+- **`PixelPerfectController`** is pure math: pan quantization via two-stage
+  carry+remainder accumulation, safe-ladder vs free zoom mode, render-scale
+  computation, layout composition.
+- **`RotationAnimation` / `ZoomAnimation`** are small state machines:
+  exponential approach + smoothstep snap for rotation; dual-rate
+  (base + burst) for zoom.
+
+## Outline pipeline (optional)
+
+4-pass pre-process that hooks into the viewport's `beforeSceneRender` /
+`afterSceneRender`:
+
+1. Color pass (the scene's normal render, into `colorTarget`).
+2. Normal pass (`MeshNormalMaterial` swap).
+3. Linear-depth pass (`LinearDepthMaterial`, packed to half-float RGBA).
+4. World-position or depth gate pass (same-surface suppression G-buffer).
+5. ID pass (`OutlineGroupMaterial` swap, encodes group id as 24-bit RGB).
+
+Edge composite (`EdgeDetectionMaterial`) reads the 5 textures and produces
+`postTarget`, which is then the upscale source.
+
+Group assignment controls silhouette merging: meshes with the same group key
+hash to the same id and suppress their coplanar seam. The
+`assignOutlineGroupsByMaterialName` preset covers the material-name-based
+convention.
+
+## Configuration surface
+
+`PixelPerfectDefaults` and `OutlineDefaults` are the frozen reference
+tuning; `IsoGameViewConfig` is a partial override. See the README for field
+rationale.
+
+## History
+
+The package was extracted from the `pixel-perfect-2to1` experiment in three
+phases:
+
+- **Phase 1** extracted pure sizing/projection helpers
+  (`computeRenderScale`, `computeViewportDeviceSize`,
+  `computeLowResolutionSize`, `computeOutputViewportLayout`).
+- **Phase 2** split pan/zoom/rotate state into `PixelPerfectController` and
+  layout/animation into viewport + animation classes.
+- **Phase 3** consolidated mount/canvas/resize/cap logic into
+  `SharedScissorStage` + `PixelPerfectPane` and wrapped both behind the
+  `IsoGameView` facade.
+
+A subsequent refactor renamed `PixelPerfectView → IsoGameView`,
+`PixelPerfectViewportCore → IsoViewport`, `ThreeScenePane → PerspectivePane`,
+flipped outlines default to on, and introduced the
+`addStandardGameLighting` / `assignOutlineGroupsByMaterialName` presets to
+consolidate duplicated consumer code.
+
+## Migration notes (for integrators)
+
+- Keep scene setup and raycast/projection ownership in the experiment;
+  `IsoViewport` owns only deterministic pan/zoom/layout state.
+- Preserve existing Playwright interaction probes (`e2e/render-invariants/`)
+  during any touch — they are the primary gate on pixel stability.

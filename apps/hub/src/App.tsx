@@ -3,16 +3,22 @@ import { experiments, getExperimentById } from "@experiments/catalog";
 import { ExperimentRouteDrawer } from "./components/ExperimentRouteDrawer";
 import { Stage } from "./components/Stage";
 import { Forge } from "./pages/Forge";
+import { DiagPage } from "./pages/diag/DiagPage";
 
 type Route =
   | { type: "experiment"; id: string }
   | { type: "forge" }
+  | { type: "diag"; slug: string }
   | null;
 
 function readRouteFromHash(): Route {
   const hash = window.location.hash;
   if (hash === "#/forge") {
     return { type: "forge" };
+  }
+  if (hash.startsWith("#/diag/")) {
+    const slug = hash.replace("#/diag/", "").trim();
+    return slug ? { type: "diag", slug } : null;
   }
   if (hash.startsWith("#/exp/")) {
     const id = hash.replace("#/exp/", "").trim();
@@ -43,6 +49,8 @@ export function App() {
     if (!route) return;
     if (route.type === "forge") {
       window.history.replaceState({}, "", "#/forge");
+    } else if (route.type === "diag") {
+      window.history.replaceState({}, "", `#/diag/${route.slug}`);
     } else {
       window.history.replaceState({}, "", `#/exp/${route.id}`);
     }
@@ -64,6 +72,9 @@ export function App() {
   };
   if (route?.type === "forge") {
     return <Forge />;
+  }
+  if (route?.type === "diag") {
+    return <DiagPage slug={route.slug} />;
   }
 
   return (

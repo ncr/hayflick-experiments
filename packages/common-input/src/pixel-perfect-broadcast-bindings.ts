@@ -1,4 +1,4 @@
-import type { PixelPerfectScissorPane, SharedScissorStage } from "@common/render";
+import type { PixelPerfectPane, SharedScissorStage } from "@common/render";
 import { attachTouchGestures } from "./touch-gestures";
 
 /**
@@ -11,7 +11,7 @@ import { attachTouchGestures } from "./touch-gestures";
  */
 export type PixelPerfectPaneBroadcastOptions = {
   stage: SharedScissorStage;
-  panes: readonly PixelPerfectScissorPane[];
+  panes: readonly PixelPerfectPane[];
   /** Where to attach pointer + wheel listeners. Defaults to `stage.canvas`. */
   pointerTarget?: HTMLElement;
   /** Where to attach keyboard listeners. Defaults to `window`. */

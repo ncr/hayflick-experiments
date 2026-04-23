@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import RAPIER3D from "@dimforge/rapier3d-compat";
-import { PixelPerfectView } from "@common/render";
-import { bindPixelPerfectViewInput } from "@common/input";
+import { IsoGameView } from "@common/render";
+import { bindIsoGameViewInput } from "@common/input";
 import type { EID } from "@common/gameplay";
 import type { ExperimentModule } from "../runtime/types";
 
@@ -391,7 +391,7 @@ const experiment: ExperimentModule = {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x2a2e38);
 
-    const view = new PixelPerfectView({
+    const view = new IsoGameView({
       mount,
       width,
       height,
@@ -400,15 +400,18 @@ const experiment: ExperimentModule = {
       cameraDistance: 30,
       rotationAnimationRate: 12,
       rotationAnimationEpsilon: 0.005,
-      clearColor: 0x2a2e38
+      clearColor: 0x2a2e38,
+      outlines: false,
+      toneMapping: "aces",
+      shadows: true
     });
 
-    view.renderer.shadowMap.enabled = true;
-    view.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // The ACES tone map runs at exposure 1.25 for this scene. Exposure is
+    // not part of the declarative config, so keep it as a direct renderer
+    // tweak; the pane's toneMapping hook reads whatever exposure was set.
     view.renderer.toneMappingExposure = 1.25;
 
-    const unbindInput = bindPixelPerfectViewInput({ view });
+    const unbindInput = bindIsoGameViewInput({ view });
 
     // Resize
     const resizeObserver = new ResizeObserver((entries) => {

@@ -1,11 +1,27 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
-  EDGE_DETECTION_DEBUG_MODES,
-  PixelPerfectOutlinedView,
+  applyPixelArtTextureDefaultsToTree,
+  assignOutlineGroupsByMaterialName,
+  IsoGameView,
   type EdgeDetectionDebugMode
 } from "@common/render";
-import { bindPixelPerfectViewInput } from "@common/input";
+
+// Outline debug modes exposed via the `?outlineDebug=<name>` URL parameter.
+// The library's `EdgeDetectionDebugMode` string union is the source of truth;
+// this literal array lets us validate user input without coupling the diag
+// experiment to a runtime export.
+const OUTLINE_DEBUG_MODES = [
+  "final",
+  "color",
+  "depth",
+  "normals",
+  "ids",
+  "edges",
+  "depth-edges",
+  "normal-edges"
+] as const satisfies readonly EdgeDetectionDebugMode[];
+import { bindIsoGameViewInput } from "@common/input";
 import type { ExperimentModule } from "../runtime/types";
 
 const KNOWN_TILESETS = new Set(["greek_island_white", "desert_sandstone"]);
@@ -53,34 +69,28 @@ async function loadRoomTemplates(
   return out;
 }
 
+/**
+ * Nearest filtering + half-texel UV offset. Required for box-projected
+ * world-space UVs — two coplanar sub-meshes on a corner tile share the same
+ * UV scale and the half-texel offset keeps their nearest-filtered sampling
+ * on the same texel, hiding the sub-mesh seam. Linear filter + mipmaps would
+ * reintroduce the seam because adjacent sub-meshes fetch slightly different
+ * mipmap samples.
+ */
 function setNearestFiltering(group: THREE.Object3D): void {
-  group.traverse((obj) => {
-    if (!(obj instanceof THREE.Mesh)) return;
-    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-    for (const m of mats) {
-      if (!(m instanceof THREE.MeshStandardMaterial)) continue;
-      const maps: (THREE.Texture | null | undefined)[] = [
-        m.map,
-        m.normalMap,
-        m.roughnessMap,
-        m.metalnessMap,
-        m.aoMap
-      ];
-      for (const t of maps) {
-        if (!t) continue;
-        t.magFilter = THREE.NearestFilter;
-        t.minFilter = THREE.NearestFilter;
-        t.generateMipmaps = false;
-        t.needsUpdate = true;
-      }
-    }
-  });
+  applyPixelArtTextureDefaultsToTree(group);
 }
 
 /**
  * 4 cm glass in iso-2:1 lands on sub-pixel verticals, producing inconsistent
  * rasterisation across yaws. Scaling the thin axis to ≥2 iso rows forces a
  * clean 1-pixel separation between silhouette and crease.
+ *
+ * Also nudges the glass's rendered depth toward the camera via polygonOffset,
+ * so its end-cap face always wins the tie against the coplanar opaque face of
+ * the adjacent corner / wall tile at the cell boundary. Without this, the
+ * shared z-plane flickers because the GPU's depth tie-break picks differently
+ * per fragment as the camera pans.
  */
 function thickenGlass(root: THREE.Object3D, scale = 4.0): void {
   root.traverse((obj) => {
@@ -97,18 +107,21 @@ function thickenGlass(root: THREE.Object3D, scale = 4.0): void {
     if (sx <= sy && sx <= sz) obj.scale.x = scale;
     else if (sy <= sz) obj.scale.y = scale;
     else obj.scale.z = scale;
+    for (const mat of mats) {
+      if (mat) {
+        mat.polygonOffset = true;
+        mat.polygonOffsetFactor = -1;
+        mat.polygonOffsetUnits = -1;
+        mat.needsUpdate = true;
+      }
+    }
   });
 }
 
-function groupKeyForMesh(mesh: THREE.Mesh): string {
-  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-  for (const m of mats) {
-    const name = m?.name ?? "";
-    if (name === "blockstudio_accent") return "glass";
-    if (name === "blockstudio_trim") return "trim";
-  }
-  return "wall";
-}
+const ROOM_OUTLINE_GROUPS = {
+  byName: { blockstudio_accent: "glass", blockstudio_trim: "trim" },
+  default: "wall"
+} as const;
 
 const experiment: ExperimentModule = {
   id: "outline-walls",
@@ -127,26 +140,14 @@ const experiment: ExperimentModule = {
     fill.position.set(-3, 4, -2);
     scene.add(fill);
 
-    // Orbiting point light — washes across the wall face so the normal-map
-    // relief and roughness highlights are visibly active.
-    const orbitLight = new THREE.PointLight(0xffe7c4, 4.0, 12.0, 1.2);
-    const orbitPivot = new THREE.Object3D();
-    orbitPivot.position.set(0, 0.2, 0);
-    orbitPivot.add(orbitLight);
-    orbitLight.position.set(2.2, 0.4, 0.0);
-    scene.add(orbitPivot);
-
     const params = new URLSearchParams(window.location.search);
-    const debugMode: EdgeDetectionDebugMode =
-      EDGE_DETECTION_DEBUG_MODES[
-        Math.max(
-          0,
-          Math.min(
-            EDGE_DETECTION_DEBUG_MODES.length - 1,
-            Number(params.get("outlineDebug") ?? "0") | 0
-          )
-        )
-      ] ?? "final";
+
+    const debugModeParam = params.get("outlineDebug");
+    const debugMode: EdgeDetectionDebugMode = OUTLINE_DEBUG_MODES.includes(
+      debugModeParam as EdgeDetectionDebugMode
+    )
+      ? (debugModeParam as EdgeDetectionDebugMode)
+      : "final";
     const initialZoom = Math.max(
       1,
       Math.min(8, Number(params.get("outlineZoom") ?? "1") | 0)
@@ -164,9 +165,6 @@ const experiment: ExperimentModule = {
     // Expose the post-target to diagnostic scripts when ?outlineReadback=1.
     // Forces a GPU stall per frame; do not enable in production.
     const lowPixelReadback = params.get("outlineReadback") === "1";
-    // ?outlineFreezeOrbit=1 locks the orbiting point light at angle 0 so
-    // edge-only screenshots are pixel-deterministic across runs (testbed).
-    const freezeOrbit = params.get("outlineFreezeOrbit") === "1";
     // ?outlineHideHud=1 skips the HUD overlay so testbed classification is
     // not polluted by white-on-dark text pixels in edges-only screenshots.
     const hideHud = params.get("outlineHideHud") === "1";
@@ -182,7 +180,7 @@ const experiment: ExperimentModule = {
     if (probeParam) {
       (window as unknown as {
         __outlineProbe__?: (x: number, y: number, stride?: number) => unknown;
-      }).__outlineProbe__ = (x, y, stride) => outlined.debugReadAuxSamples(x, y, stride);
+      }).__outlineProbe__ = (x, y, stride) => outline.debugReadAuxSamples(x, y, stride);
     }
 
     const rawSceneKind = params.get("outlineScene");
@@ -194,7 +192,8 @@ const experiment: ExperimentModule = {
     );
     const gridAxis = (params.get("outlineGridAxis") ?? "diag") as "x" | "z" | "diag";
 
-    const outlined = new PixelPerfectOutlinedView({
+    const smoothPixels = params.get("outlineSmooth") !== "0";
+    const view = new IsoGameView({
       mount,
       width,
       height,
@@ -205,11 +204,14 @@ const experiment: ExperimentModule = {
       rotationAnimationRate: 20,
       rotationAnimationEpsilon: 0.08,
       clearColor: 0x1d2029,
-      debugMode
+      smoothPixelTransitions: smoothPixels,
+      outlines: true
     });
-    outlined.setIdSuppression(idSuppression);
-    outlined.setSuppressMode(suppressMode);
-    const unbindInput = bindPixelPerfectViewInput({ view: outlined.view });
+    const outline = view.outline!;
+    outline.setDebugMode(debugMode);
+    outline.setIdSuppression(idSuppression);
+    outline.setSuppressMode(suppressMode);
+    const unbindInput = bindIsoGameViewInput({ view });
 
     const wallsGroup = new THREE.Group();
     const WORLD_UNIT = 1.28;
@@ -225,7 +227,7 @@ const experiment: ExperimentModule = {
           instance.position.set((i - 1) * WORLD_UNIT, 0, z);
           wallsGroup.add(instance);
           const groupKey = splitGroups ? `wall-${i}` : "wall";
-          outlined.assignOutlineGroupsUnder(instance, () => groupKey);
+          outline.assignOutlineGroupsUnder(instance, () => groupKey);
         }
       } else if (sceneKind === "room") {
         const templates = await loadRoomTemplates(tilesetId);
@@ -246,7 +248,7 @@ const experiment: ExperimentModule = {
           instance.rotation.y = yaw;
           thickenGlass(instance);
           wallsGroup.add(instance);
-          outlined.assignOutlineGroupsUnder(instance, groupKeyForMesh);
+          assignOutlineGroupsByMaterialName(instance, outline, ROOM_OUTLINE_GROUPS);
         };
 
         // Minimal reproducers for the concave-corner V-gap
@@ -267,6 +269,16 @@ const experiment: ExperimentModule = {
           place("floor_tile", 0.75, 0.75);
           place("floor_tile", 0, 0.75);
         } else if (variant === "two-corners") {
+          // Butt-joint (no overlap). Arm tips meet at x=0.
+          place("corner", -1, 0, 0);
+          place("corner", 1, 0, Math.PI / 2);
+        } else if (variant === "two-corners-overlap") {
+          // Historic ±0.75 placement. The +X arm of corner 1 and the rotated
+          // −X arm of corner 2 coincide in x ∈ [−0.32, +0.32] — two coplanar
+          // same-material same-normal faces. Reproduces both the concave-corner
+          // V-gap (for outline-detection work) and the z-fighting flicker that
+          // the GPU tie-break produces across pan steps. Use this variant when
+          // you want either artifact visible.
           place("corner", -0.75, 0, 0);
           place("corner", 0.75, 0, Math.PI / 2);
         } else if (variant === "corner-wall") {
@@ -309,7 +321,7 @@ const experiment: ExperimentModule = {
           instance.rotation.y = Math.PI / 2;
           thickenGlass(instance);
           wallsGroup.add(instance);
-          outlined.assignOutlineGroupsUnder(instance, groupKeyForMesh);
+          assignOutlineGroupsByMaterialName(instance, outline, ROOM_OUTLINE_GROUPS);
         }
       }
     } catch (err) {
@@ -322,7 +334,7 @@ const experiment: ExperimentModule = {
     const observer = new ResizeObserver((entries) => {
       for (const e of entries) {
         if (e.contentRect.width > 0 && e.contentRect.height > 0) {
-          outlined.resize(e.contentRect.width, e.contentRect.height);
+          view.resize(e.contentRect.width, e.contentRect.height);
         }
       }
     });
@@ -342,7 +354,7 @@ const experiment: ExperimentModule = {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.code === "KeyD" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        currentDebug = outlined.cycleDebugMode();
+        currentDebug = outline.cycleDebugMode();
         updateHud();
         e.preventDefault();
       }
@@ -353,25 +365,22 @@ const experiment: ExperimentModule = {
     let prev = performance.now();
     let framesSinceStart = 0;
     let probeDone = false;
-    const ORBIT_PERIOD_S = 6.0;
     let readbackBuf: Uint8Array | undefined;
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const now = performance.now();
       const dt = Math.min((now - prev) / 1000, 0.1);
       prev = now;
-      const t = (now / 1000) * ((Math.PI * 2) / ORBIT_PERIOD_S);
-      orbitPivot.rotation.y = freezeOrbit ? 0 : t;
-      outlined.frame(now, dt);
+      view.frame(now, dt);
       framesSinceStart++;
       if (probeCoord && !probeDone && framesSinceStart > 60) {
         const [px, py] = probeCoord;
-        const sample = outlined.debugReadAuxSamples(px, py);
+        const sample = outline.debugReadAuxSamples(px, py);
         console.log("[outline-probe]", JSON.stringify(sample));
         probeDone = true;
       }
       if (lowPixelReadback) {
-        const snapshot = outlined.readLowResolutionPixels(readbackBuf);
+        const snapshot = outline.readLowResolutionPixels(readbackBuf);
         readbackBuf = snapshot.pixels;
         (window as unknown as { __outlineLow__?: unknown }).__outlineLow__ = {
           width: snapshot.width,
@@ -389,8 +398,7 @@ const experiment: ExperimentModule = {
       window.removeEventListener("keydown", onKey);
       hud.remove();
       scene.remove(wallsGroup);
-      scene.remove(orbitPivot);
-      outlined.dispose();
+      view.dispose();
     };
   }
 };

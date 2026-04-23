@@ -6,9 +6,9 @@ import {
   useRef
 } from "react";
 import {
-  PixelPerfectScissorPane,
-  PixelPerfectViewportCore,
-  SharedScissorStage
+  PixelPerfectPane,
+  SharedScissorStage,
+  addStandardGameLighting
 } from "@common/render";
 import * as THREE from "three";
 import type { PixelViewportViewState } from "../forge-core/ViewportPixel";
@@ -104,7 +104,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
   });
 
   const stageRef = useRef<SharedScissorStage | null>(null);
-  const paneRefs = useRef<Record<PixelAngle["key"], PixelPerfectScissorPane | null>>({
+  const paneRefs = useRef<Record<PixelAngle["key"], PixelPerfectPane | null>>({
     north: null,
     east: null,
     south: null,
@@ -225,14 +225,15 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
-    const ambient = new THREE.AmbientLight(0xffffff, 1.0);
-    scene.add(ambient);
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
-    keyLight.position.set(3, 5, 2);
-    scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0x8899bb, 0.8);
-    fillLight.position.set(-2, 3, -1);
-    scene.add(fillLight);
+    addStandardGameLighting(scene, {
+      ambient: 1.0,
+      keyColor: 0xffffff,
+      keyDirection: [3, 5, 2],
+      fillColor: 0x8899bb,
+      fillIntensity: 0.8,
+      fillDirection: [-2, 3, -1],
+      hemisphere: false
+    });
 
     const ownsStage = !sharedScissorStage;
     const stage =
@@ -260,10 +261,13 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
       if (!cell) {
         continue;
       }
-      const core = new PixelPerfectViewportCore({
+      const pane = new PixelPerfectPane({
+        stage,
+        id: paneIdForAngle(angle.key),
+        element: cell,
+        scene,
         width: Math.max(1, cell.clientWidth || 1),
         height: Math.max(1, cell.clientHeight || 1),
-        scene,
         fixedRenderHeight: 270,
         baseOrthoHeight: DEFAULT_BASE_ORTHO_HEIGHT * framingScale,
         cameraDistance: 30,
@@ -277,18 +281,9 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         rotationAnimationEpsilon: 0.001,
         zoomBurstIdleMs: 200,
         clearColor: CLEAR_COLOR,
-        verticalBias,
-        maxBackingWidth: stage.maxBackingWidth,
-        maxBackingHeight: stage.maxBackingHeight
-      });
-
-      const pane = new PixelPerfectScissorPane({
-        id: paneIdForAngle(angle.key),
-        element: cell,
-        core
+        verticalBias
       });
       paneRefs.current[angle.key] = pane;
-      stage.registerPane(pane);
     }
 
     applyModelToScene(desiredModelRef.current);

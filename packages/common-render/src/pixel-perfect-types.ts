@@ -28,11 +28,11 @@ export function pitchForPixelView(view: PixelView): number {
 }
 
 /**
- * Everything about a {@link PixelPerfectView} that the caller *might* want to
+ * Everything about a {@link IsoGameView} that the caller *might* want to
  * tune. All are optional; defaults in {@link PixelPerfectDefaults} match the
  * iso-2:1 art pipeline (240 low-res lines, tile centres on integer iso rows/cols).
  */
-export type PixelPerfectViewTuning = {
+export type IsoGameViewTuning = {
   fixedRenderHeight: number;
   baseOrthoHeight: number;
   cameraDistance: number;
@@ -55,6 +55,24 @@ export type PixelPerfectViewTuning = {
   smoothPixelTransitions: boolean;
   /** Where the camera target sits vertically on screen: 0.5 = centered, 1/3 = lower third. */
   verticalBias: number;
+  /**
+   * Per-pane tone mapping. `"aces"` enables ACESFilmic + tags the pane's
+   * low target as `SRGBColorSpace`; `"none"` forces `NoToneMapping`. The
+   * pane installs internal before/after hooks to apply the mode and restore
+   * the renderer state after the scene is rendered, so multi-pane scenes
+   * can mix modes without contaminating each other.
+   *
+   * Default: `"none"` (unchanged from pre-config behavior).
+   */
+  toneMapping: "none" | "aces";
+  /**
+   * When true, the pane requests shadow rendering. Shadows are actually
+   * enabled at the stage level (renderer is shared across panes); this
+   * field only validates that the hosting stage has shadows on. If the
+   * stage does not, the pane logs a one-time warning and renders without
+   * shadows.
+   */
+  shadows: boolean;
 };
 
 /**
@@ -62,10 +80,10 @@ export type PixelPerfectViewTuning = {
  * `baseOrthoHeight = 4.8·√2` so tile centres (1.28 m spacing) and 8 cm mesh
  * features land on integer iso-pixels, canonical yaw = π/4.
  *
- * Don't change these — override fields via {@link PixelPerfectViewConfig} when
+ * Don't change these — override fields via {@link IsoGameViewConfig} when
  * a scene genuinely needs a different framing. The defaults are reference values.
  */
-export const PixelPerfectDefaults: Readonly<PixelPerfectViewTuning> = Object.freeze({
+export const PixelPerfectDefaults: Readonly<IsoGameViewTuning> = Object.freeze({
   fixedRenderHeight: 240,
   baseOrthoHeight: 4.8 * Math.SQRT2,
   cameraDistance: 40,
@@ -84,10 +102,12 @@ export const PixelPerfectDefaults: Readonly<PixelPerfectViewTuning> = Object.fre
   outputOverscanLowPixels: 2,
   lowTargetSamples: 4,
   smoothPixelTransitions: true,
-  verticalBias: 0.5
+  verticalBias: 0.5,
+  toneMapping: "none",
+  shadows: false
 });
 
-export type PixelPerfectViewConfig = {
+export type IsoGameViewConfig = {
   mount: HTMLElement;
   width: number;
   height: number;
@@ -96,14 +116,14 @@ export type PixelPerfectViewConfig = {
   clearAlpha?: number;
   mountBackground?: string;
   canvasBackground?: string;
-} & Partial<PixelPerfectViewTuning>;
+} & Partial<IsoGameViewTuning>;
 
 /**
- * Internal config for {@link PixelPerfectViewportCore}. Callers get the same
- * partial tuning story as {@link PixelPerfectViewConfig} — defaults from
+ * Internal config for {@link IsoViewport}. Callers get the same
+ * partial tuning story as {@link IsoGameViewConfig} — defaults from
  * {@link PixelPerfectDefaults} are applied inside the constructor.
  */
-export type PixelPerfectViewportCoreInput = {
+export type IsoViewportInput = {
   width: number;
   height: number;
   scene: THREE.Scene;
@@ -112,16 +132,16 @@ export type PixelPerfectViewportCoreInput = {
   maxBackingWidth: number;
   maxBackingHeight: number;
   devicePixelRatio?: number;
-} & Partial<PixelPerfectViewTuning>;
+} & Partial<IsoGameViewTuning>;
 
 /** Resolved (defaults-merged) shape used inside the viewport core. */
-export type PixelPerfectViewportCoreResolved = Omit<
-  PixelPerfectViewportCoreInput,
-  keyof PixelPerfectViewTuning
+export type IsoViewportResolved = Omit<
+  IsoViewportInput,
+  keyof IsoGameViewTuning
 > &
-  PixelPerfectViewTuning;
+  IsoGameViewTuning;
 
-export type PixelPerfectViewState = {
+export type IsoGameViewState = {
   cameraZoomCurrent: number;
   cameraZoomTarget: number;
   zoomAnimationActive: boolean;
@@ -136,7 +156,7 @@ export type PixelPerfectViewState = {
   devicePixelRatio: number;
 };
 
-export type PixelPerfectViewPose = {
+export type IsoGameViewPose = {
   targetX: number;
   targetZ: number;
   /**
@@ -152,8 +172,8 @@ export type PixelPerfectViewPose = {
 export type PixelSnapMode = "nearest" | "floor" | "ceil";
 
 /** Merge a partial tuning over {@link PixelPerfectDefaults}. */
-export function resolvePixelPerfectTuning<T extends Partial<PixelPerfectViewTuning>>(
+export function resolvePixelPerfectTuning<T extends Partial<IsoGameViewTuning>>(
   input: T
-): T & PixelPerfectViewTuning {
-  return { ...PixelPerfectDefaults, ...input } as T & PixelPerfectViewTuning;
+): T & IsoGameViewTuning {
+  return { ...PixelPerfectDefaults, ...input } as T & IsoGameViewTuning;
 }

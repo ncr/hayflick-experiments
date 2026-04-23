@@ -1,5 +1,5 @@
 /**
- * Canonical `PixelPerfectView` tuning for experiments that browse a single
+ * Canonical `IsoGameView` tuning for experiments that browse a single
  * tileset in a framed iso preview (tile-viewer, texture-workshop).
  *
  * `baseOrthoHeight` = 20 tiles * 1.28 world units per tile * 0.4 framing factor

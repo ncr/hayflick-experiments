@@ -1,40 +1,29 @@
-import * as THREE from "three";
+/**
+ * @common/render — pixel-perfect iso-2:1 rendering foundation.
+ *
+ * Public surface is intentionally slim. Three ways to put a scene on screen:
+ *
+ *   new IsoGameView({ mount, width, height, scene })               // single-scene facade
+ *   new IsoGameView({ ..., outlines: true })                       // + 4-pass outlines
+ *   new PixelPerfectPane({ stage, id, element, scene, ...config })      // shared-stage pane
+ *
+ * For raw (non-pixel-perfect) three.js scenes in a shared-stage layout, use
+ * {@link PerspectivePane}.
+ */
+
+// ========== Facades ==========
+
 export {
-  clamp,
-  computeLowResolutionSize,
-  computeOrthoHeightForLowResolution,
-  computeOutputViewportLayout,
-  computeRenderScale,
-  computeViewportDeviceSize,
-  type DeviceSize,
-  type OutputViewportLayout
-} from "./pixel-perfect";
-export {
-  PixelPerfectView,
-  type PixelPerfectViewConfig,
-  type PixelPerfectViewPose,
-  type PixelPerfectViewState,
-  type PixelSnapMode
-} from "./pixel-perfect-view";
-export {
-  OutputUpscaleMaterial,
-  type OutputUpscaleConfig
-} from "./output-upscale-material";
-export {
-  PixelPerfectDefaults,
-  pitchForPixelView,
-  resolvePixelPerfectTuning,
-  type PixelPerfectViewTuning,
-  type PixelPerfectViewportCoreInput,
-  type PixelPerfectViewportCoreResolved,
-  type PixelView
-} from "./pixel-perfect-types";
-export {
-  PixelPerfectViewportCore,
-  type PixelPerfectViewportCoreConfig,
-  type PixelPerfectRenderViewport,
-  type PixelPerfectViewportCoreVisualState
-} from "./pixel-perfect-viewport-core";
+  IsoGameView,
+  type IsoGameViewConfig,
+  type IsoGameViewPose,
+  type IsoGameViewState,
+  type PixelSnapMode,
+  type OutlineTuning
+} from "./iso-game-view";
+
+// ========== Multi-pane stage ==========
+
 export {
   SharedScissorStage,
   type SharedScissorStageConfig,
@@ -42,49 +31,61 @@ export {
   type SharedScissorPaneRect,
   type SharedScissorFrameContext,
   type SharedScissorPaneHit
-} from "./shared-scissor-stage";
+} from "./stage/shared-scissor-stage";
+
 export {
-  PixelPerfectScissorPane,
-  type PixelPerfectScissorPaneConfig
-} from "./pixel-perfect-scissor-pane";
+  PixelPerfectPane,
+  type PixelPerfectPaneConfig
+} from "./stage/pixel-perfect-pane";
+
 export {
-  ThreeSceneScissorPane,
-  type ThreeSceneScissorPaneConfig
-} from "./three-scene-scissor-pane";
+  PerspectivePane,
+  type PerspectivePaneConfig
+} from "./stage/perspective-pane";
+
+// ========== Config / defaults ==========
+
 export {
-  PixelPerfectOutlinedView,
-  OutlineDefaults,
-  type PixelPerfectOutlinedViewConfig,
-  type OutlineTuning
-} from "./outline/outlined-view";
+  PixelPerfectDefaults,
+  type PixelView
+} from "./pixel-perfect-types";
+
+export { OutlineDefaults } from "./outline/outline-pipeline";
+
+// ========== Outline API surface ==========
+// The OutlinePipeline instance lives on `PixelPerfectPane.outline` /
+// `IsoGameView.outline` when the pane/view is constructed with
+// `outlines: true | {...}`. The class is intentionally *not* exported as a
+// value — construction flows through pane/view config only. The type
+// export is kept so consumers can annotate `view.outline`.
+//
+// Only the debug-mode string-union stays public for consumers that want
+// to set or display mode labels (outline-walls experiment).
+
+export { type EdgeDetectionDebugMode } from "./outline/edge-detection-material";
+export { type OutlinePipeline } from "./outline/outline-pipeline";
+
+// ========== Presets ==========
+
 export {
-  EdgeDetectionMaterial,
-  EDGE_DETECTION_DEBUG_MODES,
-  edgeDetectionDebugModeIndex,
-  type EdgeDetectionConfig,
-  type EdgeDetectionDebugMode
-} from "./outline/edge-detection-material";
+  addStandardGameLighting,
+  type StandardGameLightingOptions,
+  type StandardGameLightingHandle
+} from "./presets/standard-lighting";
+
 export {
-  LinearDepthMaterial
-} from "./outline/linear-depth-material";
-export {
-  OutlineGroupMaterial,
-  OUTLINE_GROUP_ID_EPS,
-  encodeOutlineGroupColor
-} from "./outline/outline-group-material";
-export {
-  applyPixelArtTextureDefaults,
-  applyPixelArtTextureDefaultsToTree,
-  applyTexelCenterOffset
-} from "./pixel-art-textures";
+  assignOutlineGroupsByMaterialName,
+  type MaterialNameGroupMap
+} from "./presets/outline-groups";
+
 export {
   TILESET_VIEWER_TARGET_CONFIG,
   TILESET_VIEWER_NORMAL_CONFIG
 } from "./tileset-viewer-config";
-export function makeRenderer(width: number, height: number, dpr: number): THREE.WebGLRenderer {
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(dpr);
-  renderer.setSize(width, height, true);
-  renderer.domElement.style.display = "block";
-  return renderer;
-}
+
+// ========== Texture helpers ==========
+
+export {
+  applyPixelArtTextureDefaults,
+  applyPixelArtTextureDefaultsToTree
+} from "./texture-helpers";

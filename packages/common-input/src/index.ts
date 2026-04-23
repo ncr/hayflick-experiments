@@ -3,9 +3,9 @@ export {
   type TouchGestureCallbacks
 } from "./touch-gestures";
 export {
-  bindPixelPerfectViewInput,
+  bindIsoGameViewInput,
   bindSharedScissorStageInput,
-  type PixelPerfectViewInputBindingOptions,
+  type IsoGameViewInputBindingOptions,
   type SharedScissorStageInputBindingOptions
 } from "./pixel-perfect-input-bindings";
 export {

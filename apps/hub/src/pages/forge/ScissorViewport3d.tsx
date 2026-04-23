@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode
 } from "react";
-import { SharedScissorStage, ThreeSceneScissorPane } from "@common/render";
+import { SharedScissorStage, PerspectivePane, addStandardGameLighting } from "@common/render";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -145,7 +145,7 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
     const hostRef = useRef<HTMLDivElement | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-    const paneRef = useRef<ThreeSceneScissorPane | null>(null);
+    const paneRef = useRef<PerspectivePane | null>(null);
     const controlsRef = useRef<OrbitControls | null>(null);
     const modelRef = useRef<THREE.Group | null>(null);
     const colliderPreviewRef = useRef<THREE.Object3D | null>(null);
@@ -366,7 +366,7 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
           const camera = cameraRef.current;
           if (!currentStage || !scene || !camera) return null;
 
-          const renderer = currentStage.getRenderer();
+          const renderer = currentStage.renderer;
           const rt = new THREE.WebGLRenderTarget(width, height);
           const prevRT = renderer.getRenderTarget();
           const prevScissor = renderer.getScissorTest();
@@ -491,17 +491,17 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
         controls.addEventListener("change", handleControlsChange);
       }
 
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
-      scene.add(ambientLight);
-      const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
-      keyLight.position.set(3, 4, 2);
-      scene.add(keyLight);
-      const fillLight = new THREE.DirectionalLight(0x8899bb, 0.6);
-      fillLight.position.set(-2, 2, -1);
-      scene.add(fillLight);
-      const rimLight = new THREE.DirectionalLight(0xffffff, 0.3);
-      rimLight.position.set(0, 1, -3);
-      scene.add(rimLight);
+      addStandardGameLighting(scene, {
+        ambient: 0.4,
+        keyColor: 0xffffff,
+        keyIntensity: 1.2,
+        keyDirection: [3, 4, 2],
+        fillColor: 0x8899bb,
+        fillIntensity: 0.6,
+        fillDirection: [-2, 2, -1],
+        hemisphere: false,
+        rim: { color: 0xffffff, intensity: 0.3, direction: [0, 1, -3] }
+      });
 
       const grid = new THREE.GridHelper(10, 10, 0x444466, 0x333355);
       gridRef.current = grid;
@@ -512,7 +512,8 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
       axes.visible = axesVisibleRef.current;
       scene.add(axes);
 
-      const pane = new ThreeSceneScissorPane({
+      const pane = new PerspectivePane({
+        stage,
         id: paneId,
         element: host,
         scene,
@@ -530,7 +531,6 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
         }
       });
       paneRef.current = pane;
-      stage.registerPane(pane);
 
       applyModel(pendingModelRef.current);
       applyColliderPreviewObject(pendingColliderPreviewRef.current);

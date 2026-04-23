@@ -2,6 +2,7 @@ import { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { addStandardGameLighting } from "@common/render";
 import type { ColliderParams } from "./processing/colliders";
 import { createColliderHelper } from "./processing/colliders";
 import { createBBoxHelper, createDimensionLabels, computeBBox, type BBox } from "./processing/dimensions";
@@ -410,21 +411,17 @@ export const Viewport = forwardRef<ViewportHandle, ViewportProps>(
       controls.enableDamping = true;
       controls.dampingFactor = 0.08;
 
-      // Lighting — studio setup
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
-      scene.add(ambientLight);
-
-      const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
-      keyLight.position.set(3, 4, 2);
-      scene.add(keyLight);
-
-      const fillLight = new THREE.DirectionalLight(0x8899bb, 0.6);
-      fillLight.position.set(-2, 2, -1);
-      scene.add(fillLight);
-
-      const rimLight = new THREE.DirectionalLight(0xffffff, 0.3);
-      rimLight.position.set(0, 1, -3);
-      scene.add(rimLight);
+      addStandardGameLighting(scene, {
+        ambient: 0.4,
+        keyColor: 0xffffff,
+        keyIntensity: 1.2,
+        keyDirection: [3, 4, 2],
+        fillColor: 0x8899bb,
+        fillIntensity: 0.6,
+        fillDirection: [-2, 2, -1],
+        hemisphere: false,
+        rim: { color: 0xffffff, intensity: 0.3, direction: [0, 1, -3] }
+      });
 
       // Grid
       const grid = new THREE.GridHelper(10, 10, 0x444466, 0x333355);

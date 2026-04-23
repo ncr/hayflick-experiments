@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  bindPixelPerfectViewInput,
+  bindIsoGameViewInput,
   bindSharedScissorStageInput
 } from "./pixel-perfect-input-bindings";
 
@@ -67,7 +67,7 @@ describe("@common/input iso view bindings", () => {
       toggleZoomMode: vi.fn()
     };
 
-    const detach = bindPixelPerfectViewInput({
+    const detach = bindIsoGameViewInput({
       view: view as unknown as any,
       pointerTarget: pointerTarget as unknown as HTMLElement,
       keyboardTarget: keyboardTarget as unknown as Window,
@@ -108,7 +108,7 @@ describe("@common/input iso view bindings", () => {
       toggleZoomMode: vi.fn()
     };
 
-    const detach = bindPixelPerfectViewInput({
+    const detach = bindIsoGameViewInput({
       view: view as unknown as any,
       pointerTarget: pointerTarget as unknown as HTMLElement,
       keyboardTarget: keyboardTarget as unknown as Window,
@@ -169,7 +169,7 @@ describe("@common/input iso view bindings", () => {
       toggleZoomMode: vi.fn()
     };
 
-    const detach = bindPixelPerfectViewInput({
+    const detach = bindIsoGameViewInput({
       view: view as unknown as any,
       pointerTarget: pointerTarget as unknown as HTMLElement,
       keyboardTarget: keyboardTarget as unknown as Window,
@@ -230,7 +230,7 @@ describe("@common/input iso view bindings", () => {
       toggleZoomMode: vi.fn()
     };
 
-    const detach = bindPixelPerfectViewInput({
+    const detach = bindIsoGameViewInput({
       view: view as unknown as any,
       pointerTarget: pointerTarget as unknown as HTMLElement,
       keyboardTarget: keyboardTarget as unknown as Window,

@@ -3,8 +3,8 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { FXAAShader } from "three/examples/jsm/shaders/FXAAShader.js";
 import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
 import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
-import { PixelPerfectView } from "@common/render";
-import { bindPixelPerfectViewInput } from "@common/input";
+import { IsoGameView, addStandardGameLighting } from "@common/render";
+import { bindIsoGameViewInput } from "@common/input";
 import type { ExperimentModule } from "../runtime/types";
 
 /* ------------------------------------------------------------------ */
@@ -65,28 +65,21 @@ const AA_LABELS: Record<AAMode, string> = {
 /* ------------------------------------------------------------------ */
 
 function createLighting(scene: THREE.Scene): void {
-  const ambient = new THREE.AmbientLight(0xffffff, 1.0);
-  scene.add(ambient);
-
-  const key = new THREE.DirectionalLight(0xfff4e0, 1.8);
-  key.position.set(4, 8, 3);
-  key.castShadow = true;
-  key.shadow.mapSize.set(1024, 1024);
-  key.shadow.camera.near = 0.5;
-  key.shadow.camera.far = 30;
-  key.shadow.camera.left = -5;
-  key.shadow.camera.right = 5;
-  key.shadow.camera.top = 5;
-  key.shadow.camera.bottom = -5;
-  key.shadow.bias = -0.002;
-  scene.add(key);
-
-  const fill = new THREE.DirectionalLight(0xb0c4de, 0.65);
-  fill.position.set(-3, 4, -2);
-  scene.add(fill);
-
-  const hemi = new THREE.HemisphereLight(0xe8edf5, 0x8a8070, 0.6);
-  scene.add(hemi);
+  const lights = addStandardGameLighting(scene, {
+    ambient: 1.0,
+    keyDirection: [4, 8, 3],
+    fillIntensity: 0.65,
+    hemisphere: { intensity: 0.6 },
+    shadows: true
+  });
+  lights.key.shadow.mapSize.set(1024, 1024);
+  lights.key.shadow.camera.near = 0.5;
+  lights.key.shadow.camera.far = 30;
+  lights.key.shadow.camera.left = -5;
+  lights.key.shadow.camera.right = 5;
+  lights.key.shadow.camera.top = 5;
+  lights.key.shadow.camera.bottom = -5;
+  lights.key.shadow.bias = -0.002;
 }
 
 function createGround(scene: THREE.Scene): void {
@@ -134,7 +127,7 @@ const experiment: ExperimentModule = {
     createLighting(scene);
     createGround(scene);
 
-    const view = new PixelPerfectView({
+    const view = new IsoGameView({
       mount,
       width,
       height,
@@ -143,15 +136,16 @@ const experiment: ExperimentModule = {
       cameraDistance: 20,
       rotationAnimationRate: 12,
       rotationAnimationEpsilon: 0.005,
-      clearColor: 0x2a2e38
+      clearColor: 0x2a2e38,
+      outlines: false,
+      toneMapping: "aces",
+      shadows: true
     });
 
-    view.renderer.shadowMap.enabled = true;
-    view.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    view.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // Exposure is a renderer-wide knob outside the pane's declarative config.
     view.renderer.toneMappingExposure = 1.25;
 
-    const unbindInput = bindPixelPerfectViewInput({ view });
+    const unbindInput = bindIsoGameViewInput({ view });
 
     // Resize
     const resizeObserver = new ResizeObserver((entries) => {

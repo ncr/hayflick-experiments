@@ -1,11 +1,11 @@
-import type { PixelPerfectScissorPane } from "@common/render";
-import { PixelPerfectView, SharedScissorStage } from "@common/render";
+import type { PixelPerfectPane } from "@common/render";
+import { IsoGameView, SharedScissorStage } from "@common/render";
 import { attachTouchGestures } from "./touch-gestures";
 
 type KeyboardTarget = Window;
 
-export type PixelPerfectViewInputBindingOptions = {
-  view: PixelPerfectView;
+export type IsoGameViewInputBindingOptions = {
+  view: IsoGameView;
   pointerTarget?: HTMLElement;
   keyboardTarget?: KeyboardTarget;
   enableTouch?: boolean;
@@ -24,7 +24,7 @@ export type SharedScissorStageInputBindingOptions = {
 };
 
 type SharedScissorStagePaneInputTarget = Pick<
-  PixelPerfectScissorPane,
+  PixelPerfectPane,
   | "element"
   | "beginPanDrag"
   | "updatePanDrag"
@@ -73,8 +73,8 @@ function drainZoomAccumulator(
   return accum;
 }
 
-export function bindPixelPerfectViewInput(
-  options: PixelPerfectViewInputBindingOptions
+export function bindIsoGameViewInput(
+  options: IsoGameViewInputBindingOptions
 ): () => void {
   const view = options.view;
   const pointerTarget = options.pointerTarget ?? view.canvas;
