@@ -4,8 +4,6 @@ import type { ExperimentRegistryEntry } from "./runtime/meta";
 // AUTO_IMPORTS_START
 import { meta as physicsPropDropMeta } from "./physics-prop-drop/meta";
 import { meta as mapEditor2dMeta } from "./map-editor-2d/meta";
-import { meta as tileViewerMeta } from "./tile-viewer/meta";
-import { meta as textureWorkshopMeta } from "./texture-workshop/meta";
 import { meta as materialStudioMeta } from "./material-studio/meta";
 import { meta as outlineWallsMeta } from "./outline-walls/meta";
 // AUTO_IMPORTS_END
@@ -18,14 +16,6 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...materialStudioMeta,
     load: () => import("./material-studio/index")
-  },
-  {
-    ...textureWorkshopMeta,
-    load: () => import("./texture-workshop/index")
-  },
-  {
-    ...tileViewerMeta,
-    load: () => import("./tile-viewer/index")
   },
   {
     ...mapEditor2dMeta,
