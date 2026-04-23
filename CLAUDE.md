@@ -83,6 +83,17 @@ Iteration loop: edit `assets/tilesets/<id>/tileset.json` → `pnpm run rebuild <
 
 See `docs/blockstudio/` for the full contract (game consumer, wall kit, tilekit improvement plan).
 
+## Textured-Mesh Catalog (Material Studio)
+
+Separate from the procedural tileset pipeline above. Uses a flat, two-layer model:
+
+- **Base meshes** — `assets/meshes/<id>.glb`. Pre-authored geometry with `textureRole` extras on each mesh node. Input side; grown in Blender when new geometry is needed.
+- **Textured meshes** — `assets/textured-meshes/<name>/`. The atomic game-ready unit: one base mesh + authored textures baked into a single `artifact.glb`, plus a `manifest.json` (provenance: base mesh id, prompts, timestamp) and the per-role texture PNGs under `textures/<role>/`.
+
+The `material-studio` experiment is the authoring UI: pick a base mesh, name an entry, walk each texturable surface (discovered from textureRole), prompt the AI, approve, bake. The bake endpoint (`/api/textured-mesh/bake` in `apps/hub/plugins/api-proxy.ts`) invokes `scripts/blockstudio/bake-textured-mesh.py` — a lightweight Blender driver that opens the base GLB, applies per-role PBR materials (or the synthetic glass preset for `accent`), and exports. UV wrapping is inherited from the base mesh.
+
+`accent` roles (glass) are synthetic — shader-driven transmission/IOR, not AI-generated.
+
 ## Testing Conventions
 
 - Promoted packages require `test:coverage` script with enforced thresholds
