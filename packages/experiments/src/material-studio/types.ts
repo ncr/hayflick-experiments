@@ -1,38 +1,46 @@
 /** Parameters for PBR map derivation from a baseColor image. */
 export type PbrParams = {
-  /** Normal map strength multiplier (Sobel gradient scale). */
   strength: number;
-  /** Base roughness level (darker pixels add on top of this). */
   baseRoughness: number;
-  /** How much roughness varies with luminance. */
   roughnessRange: number;
-  /** Minimum AO value — prevents harsh crevice darkening under ACES. */
   aoFloor: number;
-  /** AO edge magnitude multiplier. */
   aoMultiplier: number;
 };
 
-/** Derived PBR map set. */
+/** Derived PBR map set — 64×64 baseColor, normal, ARM. */
 export type GeneratedMaps = {
   baseColor: ImageData;
   normal: ImageData;
   arm: ImageData;
 };
 
-/** A material role within a kit, mapping to a blockstudio_<role> material name. */
-export type MaterialRole = {
-  /** Role key — e.g. "wall", "trim", "asphalt". Used as blockstudio_{role} in GLBs. */
+/** A texturable surface within a base mesh. Matches the `textureRole` custom property on the GLB node. */
+export type Surface = {
+  /** Role key — also used as the `blockstudio_<role>` material name in the GLB. */
   role: string;
-  /** Registry material ID — e.g. "white_plaster_02". */
-  materialId: string;
+  /** PBR surfaces are authored via prompt; synthetic surfaces use a preset shader (e.g. glass). */
+  kind: "pbr" | "synthetic";
+  /** If kind === "synthetic", the preset id the bake script will use. */
+  synthetic?: string;
 };
 
-/** Tileset info extracted from tileset.json for the control panel. */
-export type KitInfo = {
+/** A base mesh in the flat catalog. */
+export type BaseMesh = {
+  /** File stem — `assets/meshes/<id>.glb`. */
   id: string;
-  name: string;
-  kind: "wall_kit" | "ground";
-  roles: MaterialRole[];
+  /** Discovered by walking the loaded GLB for textureRole extras. */
+  surfaces: Surface[];
+};
+
+/** Per-surface authoring state for the current entry. */
+export type SurfaceState = {
+  surface: Surface;
+  /** Prompt text — seeded from material-description table when a role is first visited. */
+  prompt: string;
+  /** Latest generated maps. Null until the user has hit Generate for this surface. */
+  maps: GeneratedMaps | null;
+  /** Becomes true when the user clicks "Approve". Synthetic surfaces start approved. */
+  approved: boolean;
 };
 
 export const DEFAULT_PBR_PARAMS: PbrParams = {

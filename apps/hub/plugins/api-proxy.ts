@@ -1,11 +1,17 @@
 import type { Plugin, ViteDevServer } from "vite";
 import { IncomingMessage, ServerResponse } from "node:http";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { ForgeStore } from "./forge-store";
 
 const ASSETS_ROOT = path.resolve(process.cwd(), "../../assets");
 const FORGE_ROOT = path.resolve(process.cwd(), "../../assets/forge");
+const MESHES_ROOT = path.resolve(ASSETS_ROOT, "meshes");
+const TEXTURED_MESHES_ROOT = path.resolve(ASSETS_ROOT, "textured-meshes");
+const BAKE_DRIVER = path.resolve(process.cwd(), "../../scripts/blockstudio/bake-textured-mesh.py");
+const BLENDER_BIN = process.env.BLENDER_BIN || "/opt/homebrew/bin/blender";
 const forgeStore = new ForgeStore(FORGE_ROOT);
 
 // Load .env files — Vite only exposes VITE_* to client; we need raw keys for server middleware
@@ -293,6 +299,174 @@ async function handleFs(
   errorResponse(res, 404, "Unknown FS endpoint");
 }
 
+// --- Textured mesh authoring ---
+
+/**
+ * Per-role material definition as sent from the client.
+ *
+ * - PBR: base64 PNG for baseColor, normal, arm (+ optional scalar factors).
+ * - Synthetic: a preset name like "glass" — the bake script builds a
+ *   procedural shader instead of sampling textures.
+ */
+type TexturedMeshRoleBody =
+  | {
+      baseColorPng: string;
+      normalPng: string;
+      armPng: string;
+      roughnessFactor?: number;
+      metallicFactor?: number;
+    }
+  | { synthetic: string };
+
+type BakeRequestBody = {
+  name: string;
+  baseMeshId: string;
+  materials: Record<string, TexturedMeshRoleBody>;
+  /** Optional metadata: prompts that produced each role — saved alongside the artifact for provenance. */
+  prompts?: Record<string, string>;
+};
+
+function safeEntryName(name: string): string | null {
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(name)) return null;
+  return name;
+}
+
+function writePngFromBase64(filePath: string, b64: string): void {
+  const buf = Buffer.from(b64, "base64");
+  fs.writeFileSync(filePath, buf);
+}
+
+async function handleTexturedMesh(
+  req: IncomingMessage,
+  res: ServerResponse,
+  subpath: string
+) {
+  // GET /list — enumerate existing textured-mesh entries
+  if (subpath === "/list" && req.method === "GET") {
+    if (!fs.existsSync(TEXTURED_MESHES_ROOT)) {
+      return jsonResponse(res, 200, { entries: [] });
+    }
+    const entries = fs
+      .readdirSync(TEXTURED_MESHES_ROOT, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
+      .map((e) => {
+        const manifestPath = path.join(TEXTURED_MESHES_ROOT, e.name, "manifest.json");
+        let manifest: unknown = null;
+        if (fs.existsSync(manifestPath)) {
+          try {
+            manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+          } catch {
+            // ignore malformed manifest
+          }
+        }
+        return { name: e.name, manifest };
+      });
+    return jsonResponse(res, 200, { entries });
+  }
+
+  // GET /meshes — list available base meshes
+  if (subpath === "/meshes" && req.method === "GET") {
+    if (!fs.existsSync(MESHES_ROOT)) {
+      return jsonResponse(res, 200, { meshes: [] });
+    }
+    const meshes = fs
+      .readdirSync(MESHES_ROOT)
+      .filter((f) => f.endsWith(".glb"))
+      .map((f) => f.replace(/\.glb$/, ""));
+    return jsonResponse(res, 200, { meshes });
+  }
+
+  // POST /bake — write textures, invoke Blender, produce artifact.glb
+  if (subpath === "/bake" && req.method === "POST") {
+    const body = (await readJson(req)) as BakeRequestBody;
+
+    const entryName = body.name && safeEntryName(body.name);
+    if (!entryName) {
+      return errorResponse(res, 400, "Invalid entry name (alphanumeric/underscore/dash, ≤64 chars)");
+    }
+    if (!body.baseMeshId || typeof body.baseMeshId !== "string") {
+      return errorResponse(res, 400, "Missing baseMeshId");
+    }
+
+    const baseMeshPath = path.join(MESHES_ROOT, `${body.baseMeshId}.glb`);
+    if (!fs.existsSync(baseMeshPath)) {
+      return errorResponse(res, 404, `Base mesh not found: ${body.baseMeshId}`);
+    }
+
+    const entryDir = path.join(TEXTURED_MESHES_ROOT, entryName);
+    const texturesDir = path.join(entryDir, "textures");
+    ensureDir(texturesDir);
+
+    // Write each role's PNGs to disk, build the job materials dict.
+    const jobMaterials: Record<string, unknown> = {};
+    for (const [role, matBody] of Object.entries(body.materials || {})) {
+      if ("synthetic" in matBody) {
+        jobMaterials[role] = { synthetic: matBody.synthetic };
+        continue;
+      }
+      const roleDir = path.join(texturesDir, role);
+      ensureDir(roleDir);
+      const bc = path.join(roleDir, "baseColor.png");
+      const nr = path.join(roleDir, "normal.png");
+      const ar = path.join(roleDir, "arm.png");
+      writePngFromBase64(bc, matBody.baseColorPng);
+      writePngFromBase64(nr, matBody.normalPng);
+      writePngFromBase64(ar, matBody.armPng);
+      jobMaterials[role] = {
+        baseColor: bc,
+        normal: nr,
+        arm: ar,
+        roughnessFactor: matBody.roughnessFactor ?? 0.85,
+        metallicFactor: matBody.metallicFactor ?? 0.0,
+      };
+    }
+
+    const artifactPath = path.join(entryDir, "artifact.glb");
+    const jobPath = path.join(os.tmpdir(), `bake-${entryName}-${Date.now()}.json`);
+    fs.writeFileSync(
+      jobPath,
+      JSON.stringify({
+        baseMeshPath,
+        materials: jobMaterials,
+        outputPath: artifactPath,
+      })
+    );
+
+    try {
+      if (!fs.existsSync(BLENDER_BIN)) {
+        return errorResponse(res, 500, `Blender not found at ${BLENDER_BIN}`);
+      }
+      execFileSync(
+        BLENDER_BIN,
+        ["--background", "--python", BAKE_DRIVER, "--", "--job", jobPath],
+        { stdio: "inherit" }
+      );
+    } catch (err) {
+      return errorResponse(res, 500, `Bake failed: ${(err as Error).message}`);
+    } finally {
+      try {
+        fs.unlinkSync(jobPath);
+      } catch {
+        // ignore
+      }
+    }
+
+    // Write manifest for provenance
+    const manifest = {
+      name: entryName,
+      baseMeshId: body.baseMeshId,
+      roles: Object.keys(body.materials || {}),
+      prompts: body.prompts ?? {},
+      bakedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(entryDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+
+    return jsonResponse(res, 200, { ok: true, name: entryName, artifactPath: `textured-meshes/${entryName}/artifact.glb` });
+  }
+
+  errorResponse(res, 404, "Unknown textured-mesh endpoint");
+}
+
 function serveBinaryFile(res: ServerResponse, filePath: string) {
   if (!fs.existsSync(filePath)) {
     return errorResponse(res, 404, "Not found");
@@ -466,6 +640,11 @@ export function apiProxyPlugin(): Plugin {
           if (url.startsWith("/api/fs/")) {
             const subpath = url.replace("/api/fs", "").split("?")[0];
             return await handleFs(req, res, subpath, FORGE_ROOT);
+          }
+
+          if (url.startsWith("/api/textured-mesh/")) {
+            const subpath = url.replace("/api/textured-mesh", "").split("?")[0];
+            return await handleTexturedMesh(req, res, subpath);
           }
 
           errorResponse(res, 404, "Unknown API route");

@@ -1,13 +1,16 @@
 /**
- * API wrappers for the texture workshop.
+ * API wrappers for the Material Studio tool.
  *
  * - generateBaseColor: prompt → 1024×1024 via OpenAI → nearest-downsample to 64×64
- * - loadMaterialRegistry: GET registry.json
- * - saveTexturesToAssets: write 3 PNGs + patch registry
+ * - listBaseMeshes: GET /api/textured-mesh/meshes
+ * - bakeTexturedMesh: POST authored textures to the bake endpoint, producing
+ *   a baked artifact under `assets/textured-meshes/<name>/`
  */
 
+import type { GeneratedMaps } from "./types";
+
 // ---------------------------------------------------------------------------
-// Year 2200 style preamble — same as the former generate-pixart-textures.mjs
+// Year 2200 style preamble — shared across prompts
 // ---------------------------------------------------------------------------
 
 const STYLE_PREAMBLE = [
@@ -22,55 +25,21 @@ const STYLE_PREAMBLE = [
 const TARGET_SIZE = 64;
 
 // ---------------------------------------------------------------------------
-// Material descriptions (embedded from generate-pixart-textures.mjs)
+// Per-role prompt seeds — keyed by textureRole, not by material id
 // ---------------------------------------------------------------------------
 
-export const MATERIAL_DESCRIPTIONS: Record<string, { desc: string; palette: string }> = {
-  white_plaster_02: {
-    desc: "interior wall panel surface, dense white mineral ceramic, very subtle rectilinear panel seams forming a large modular grid, almost flat white with barely visible hairline joints",
-    palette: "pure white, off-white, very faint cool grey for panel seams"
-  },
-  blue_painted_planks: {
-    desc: "accent trim strip, clean horizontal bands of burnt industrial amber on a dark structural substrate, functional marker stripe at an architectural datum, not decorative",
-    palette: "burnt amber #B8430E, dark amber #8A3000, near-black structural dark #1a1a1a"
-  },
-  sandstone_cracks: {
-    desc: "exterior wall panel, dense white architectural ceramic with fine structural joints forming a clean rectangular grid, very minimal surface variation, monolithic and heavy",
-    palette: "warm white, faint cream, very subtle warm grey joint lines"
-  },
-  weathered_brown_planks: {
-    desc: "accent structural panel, clean amber-tinted horizontal bands, functional infrastructure marking, subtle grain-like linear texture within each band",
-    palette: "burnt amber #B8430E, dark amber, very dark brown structural base"
-  },
-  cobblestone_floor_04: {
-    desc: "modular floor tile, clean white mineral ceramic, precise square grid pattern with thin recessed joints, each tile perfectly flat and uniform, no variation between tiles except the joint lines",
-    palette: "light warm grey, white, thin dark grey joint lines"
-  },
-  asphalt_04: {
-    desc: "utility floor surface, dark neutral composite, subtle rectilinear grid embossed into the surface, clean and well-maintained, infrastructure-grade",
-    palette: "dark charcoal #2a2a2a, slightly lighter grey grid lines, very dark neutral"
-  },
-  concrete_wall_004: {
-    desc: "interior wall surface, white mineral panel with very faint formwork marks, large flat areas with minimal texture, clean and pristine, monolithic feel",
-    palette: "white, off-white, barely visible cool grey marks"
-  },
-  forrest_ground_01: {
-    desc: "exterior ground surface, pale mineral aggregate with sparse subdued vegetation breaking through joints, muted and calm, passive aging only",
-    palette: "pale grey, muted sage green, faint warm stone"
-  },
-  aerial_grass_rock: {
-    desc: "exterior terrain, white mineral pavers with sparse muted ground cover between joints, depopulated and well-maintained but slightly overgrown, calm and structured",
-    palette: "light grey stone, muted olive green, warm sand"
-  },
-  beige_wall_001: {
-    desc: "interior wall panel, warm-toned mineral ceramic, smooth and pristine with barely visible modular panel seams, monolithic and heavy",
-    palette: "warm white, faint cream, very subtle warm grey seams"
-  },
-  rusty_metal_02: {
-    desc: "structural utility panel, dark metal composite with amber indicator markings, recessed control surface with clean geometric cutouts, functional not decorative",
-    palette: "dark gunmetal grey, amber #B8430E indicator lines, near-black"
-  }
+export const ROLE_PROMPT_SEEDS: Record<string, string> = {
+  wall: "exterior wall panel, dense white architectural ceramic with fine structural joints forming a clean rectangular grid, very minimal surface variation, monolithic and heavy. Limited palette: warm white, faint cream, very subtle warm grey joint lines.",
+  trim: "accent trim strip, clean horizontal bands of burnt industrial amber on a dark structural substrate, functional marker stripe at an architectural datum, not decorative. Limited palette: burnt amber #B8430E, dark amber #8A3000, near-black structural dark #1a1a1a.",
+  grass: "exterior ground, pale mineral aggregate with sparse subdued vegetation breaking through joints, muted and calm, passive aging only. Limited palette: pale grey, muted sage green, faint warm stone.",
+  sandstone: "exterior pavers, warm mineral stone with subtle rectilinear grid, clean and well-maintained. Limited palette: warm beige, cream, soft grey joint lines.",
+  asphalt: "utility floor surface, dark neutral composite, subtle rectilinear grid embossed into the surface, clean and well-maintained, infrastructure-grade. Limited palette: dark charcoal #2a2a2a, slightly lighter grey grid lines, very dark neutral.",
+  concrete_walk: "exterior paving tile, pale mineral composite with clean rectilinear joints, infrastructure-grade, pristine. Limited palette: light grey, near-white, faint cool grey joint lines.",
 };
+
+export function defaultPromptForRole(role: string): string {
+  return ROLE_PROMPT_SEEDS[role] ?? role.replace(/_/g, " ");
+}
 
 // ---------------------------------------------------------------------------
 // Image generation
@@ -104,109 +73,100 @@ export async function generateBaseColor(prompt: string): Promise<ImageData> {
   const b64: string | undefined = data.data?.[0]?.b64_json;
   if (!b64) throw new Error("No image data in response");
 
-  // Decode b64 PNG → Image → nearest-downsample to 64×64
   const img = await decodeB64Png(b64);
   return nearestDownsample(img, TARGET_SIZE);
 }
 
-/** Build the full prompt for a material, including style preamble + description + palette. */
-export function buildPromptForMaterial(materialId: string, customPrompt?: string): string {
-  const info = MATERIAL_DESCRIPTIONS[materialId];
-  if (customPrompt) return customPrompt;
-  if (!info) return materialId.replace(/_/g, " ");
-  return `${info.desc}. Limited palette: ${info.palette}.`;
-}
-
 // ---------------------------------------------------------------------------
-// Registry
+// Catalog queries
 // ---------------------------------------------------------------------------
 
-export type MaterialRegistryEntry = {
-  source: string;
-  sourceId: string;
-  category: string;
-  maps: { baseColor: string; normal: string; arm: string };
-  defaults: { roughnessFactor: number; metallicFactor: number };
-  physicalScaleM: number;
-  resolution: string;
-  style?: {
-    kind: string;
-    targetSize: number;
-    generator: string;
-    generatedAt: string;
-  };
-};
-
-export type MaterialRegistry = {
-  materials: Record<string, MaterialRegistryEntry>;
-};
-
-export async function loadMaterialRegistry(): Promise<MaterialRegistry> {
-  const res = await fetch("/api/assets/read?path=materials/registry.json");
-  if (!res.ok) throw new Error(`Failed to load registry: ${res.status}`);
+export async function listBaseMeshes(): Promise<string[]> {
+  const res = await fetch("/api/textured-mesh/meshes");
+  if (!res.ok) throw new Error(`Failed to list base meshes: ${res.status}`);
   const json = await res.json();
-  const content = typeof json.content === "string" ? JSON.parse(json.content) : json;
-  return content as MaterialRegistry;
+  return (json.meshes ?? []) as string[];
+}
+
+export type TexturedMeshEntry = {
+  name: string;
+  manifest: {
+    baseMeshId: string;
+    roles: string[];
+    prompts?: Record<string, string>;
+    bakedAt: string;
+  } | null;
+};
+
+export async function listTexturedMeshEntries(): Promise<TexturedMeshEntry[]> {
+  const res = await fetch("/api/textured-mesh/list");
+  if (!res.ok) throw new Error(`Failed to list entries: ${res.status}`);
+  const json = await res.json();
+  return (json.entries ?? []) as TexturedMeshEntry[];
 }
 
 // ---------------------------------------------------------------------------
-// Save
+// Bake
 // ---------------------------------------------------------------------------
 
-/**
- * Save generated textures to assets and update the registry.
- *
- * Writes 3 PNGs (baseColor, normal, arm) under polyhaven/<materialId>/
- * and patches registry.json with updated maps + style metadata.
- */
-export async function saveTexturesToAssets(
-  materialId: string,
-  maps: { baseColor: ImageData; normal: ImageData; arm: ImageData }
-): Promise<void> {
-  const dir = `materials/polyhaven/${materialId}`;
+export type BakeMaterialBody =
+  | {
+      baseColorPng: string;
+      normalPng: string;
+      armPng: string;
+      roughnessFactor?: number;
+      metallicFactor?: number;
+    }
+  | { synthetic: string };
 
-  // Write each map as PNG
-  const writes = [
-    { key: "baseColor" as const, suffix: "diff_pixart" },
-    { key: "normal" as const, suffix: "nor_pixart" },
-    { key: "arm" as const, suffix: "arm_pixart" }
-  ];
-
-  for (const { key, suffix } of writes) {
-    const arrayBuf = await imageDataToPngArrayBuffer(maps[key]);
-    const filename = `${materialId}_${suffix}.png`;
-    const writePath = `${dir}/${filename}`;
-    const res = await fetch(`/api/assets/write?path=${encodeURIComponent(writePath)}`, {
-      method: "POST",
-      headers: { "Content-Type": "image/png" },
-      body: arrayBuf
-    });
-    if (!res.ok) throw new Error(`Failed to write ${writePath}: ${res.status}`);
+export async function bakeTexturedMesh(args: {
+  name: string;
+  baseMeshId: string;
+  materials: Record<string, BakeMaterialBody>;
+  prompts: Record<string, string>;
+}): Promise<{ ok: true; artifactPath: string }> {
+  const res = await fetch("/api/textured-mesh/bake", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args)
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Bake failed: ${err}`);
   }
+  return res.json();
+}
 
-  // Patch registry
-  const registry = await loadMaterialRegistry();
-  const entry = registry.materials[materialId];
-  if (entry) {
-    entry.maps.baseColor = `${materialId}_diff_pixart.png`;
-    entry.maps.normal = `${materialId}_nor_pixart.png`;
-    entry.maps.arm = `${materialId}_arm_pixart.png`;
-    entry.resolution = "64";
-    entry.style = {
-      kind: "pixel_art_generated",
-      targetSize: TARGET_SIZE,
-      generator: "gpt-image-1",
-      generatedAt: new Date().toISOString()
-    };
+/** Convert ImageData to base64 PNG (for POSTing to the bake endpoint). */
+export async function imageDataToBase64Png(imageData: ImageData): Promise<string> {
+  const canvas = document.createElement("canvas");
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  const ctx = canvas.getContext("2d")!;
+  ctx.putImageData(imageData, 0, 0);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(async (blob) => {
+      if (!blob) return reject(new Error("Failed to encode PNG"));
+      const buf = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let bin = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)) as number[]);
+      }
+      resolve(btoa(bin));
+    }, "image/png");
+  });
+}
 
-    const regJson = JSON.stringify(registry, null, 2) + "\n";
-    const res = await fetch("/api/assets/write?path=materials/registry.json", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: regJson
-    });
-    if (!res.ok) throw new Error(`Failed to update registry: ${res.status}`);
-  }
+/** Serialize a set of generated maps to base64 PNGs, ready for the bake POST body. */
+export async function mapsToBakeMaterial(maps: GeneratedMaps): Promise<BakeMaterialBody> {
+  const [baseColorPng, normalPng, armPng] = await Promise.all([
+    imageDataToBase64Png(maps.baseColor),
+    imageDataToBase64Png(maps.normal),
+    imageDataToBase64Png(maps.arm)
+  ]);
+  return { baseColorPng, normalPng, armPng };
 }
 
 // ---------------------------------------------------------------------------
@@ -230,18 +190,4 @@ function nearestDownsample(img: HTMLImageElement, size: number): ImageData {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(img, 0, 0, size, size);
   return ctx.getImageData(0, 0, size, size);
-}
-
-function imageDataToPngArrayBuffer(imageData: ImageData): Promise<ArrayBuffer> {
-  const canvas = document.createElement("canvas");
-  canvas.width = imageData.width;
-  canvas.height = imageData.height;
-  const ctx = canvas.getContext("2d")!;
-  ctx.putImageData(imageData, 0, 0);
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) blob.arrayBuffer().then(resolve, reject);
-      else reject(new Error("Failed to encode PNG"));
-    }, "image/png");
-  });
 }

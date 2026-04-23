@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   SharedScissorStage,
   PixelPerfectPane,
@@ -7,26 +8,26 @@ import {
 } from "@common/render";
 import { bindPixelPerfectPaneBroadcast } from "@common/input";
 import type { ExperimentModule } from "../runtime/types";
-import { loadTilesetAssets, type LoadedTile } from "../map-editor-2d/tileset-loader";
 
-import type { KitInfo, MaterialRole, GeneratedMaps } from "./types";
+import type { Surface, SurfaceState } from "./types";
 import { DEFAULT_PBR_PARAMS } from "./types";
 import { derivePbrMaps } from "./pbr-derive";
-import { generateBaseColor, saveTexturesToAssets, buildPromptForMaterial } from "./api-client";
+import {
+  generateBaseColor,
+  listBaseMeshes,
+  bakeTexturedMesh,
+  mapsToBakeMaterial
+} from "./api-client";
 import { createTextureSet, applyTexturesToGroup } from "./texture-swap";
 import { createControlPanel } from "./control-panel";
 
 // ---------------------------------------------------------------------------
-// Layers
+// Layers & layout
 // ---------------------------------------------------------------------------
 
 const NORMAL_LAYER = 1;
 const TARGET_LAYER = 2;
-
-const PANEL_WIDTH = 320;
-
-const TARGET_VIEW_CONFIG = TILESET_VIEWER_TARGET_CONFIG;
-const NORMAL_VIEW_CONFIG = TILESET_VIEWER_NORMAL_CONFIG;
+const PANEL_WIDTH = 340;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,48 +58,47 @@ function setLayerRecursive(obj: THREE.Object3D, layer: number): void {
   for (const child of obj.children) setLayerRecursive(child, layer);
 }
 
-function setTextureFiltering(group: THREE.Group, filter: THREE.MagnificationTextureFilter): void {
+function setLinearTextureFiltering(group: THREE.Group): void {
   group.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return;
     const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
     for (const mat of mats) {
       if (mat instanceof THREE.MeshStandardMaterial && mat.map) {
-        mat.map.magFilter = filter;
-        mat.map.minFilter = filter;
+        mat.map.magFilter = THREE.LinearFilter;
+        mat.map.minFilter = THREE.LinearFilter;
         mat.map.needsUpdate = true;
       }
     }
   });
 }
 
-// ---------------------------------------------------------------------------
-// Kit metadata extraction
-// ---------------------------------------------------------------------------
+const gltfLoader = new GLTFLoader();
 
-/** Tileset directory names — same order as tileset-loader's KIT_IDS. */
-const KIT_DIR_IDS: ReadonlyArray<string> = ["desert_sandstone", "greek_island_white", "ground_tiles"];
+async function loadBaseMesh(meshId: string): Promise<THREE.Group> {
+  const url = `/api/assets/read?path=${encodeURIComponent(`meshes/${meshId}.glb`)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to load mesh ${meshId}: ${res.status}`);
+  const buffer = await res.arrayBuffer();
+  const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) => {
+    gltfLoader.parse(buffer, "", resolve, reject);
+  });
+  return gltf.scene;
+}
 
-async function loadKitRoles(dirId: string): Promise<{ kind: "wall_kit" | "ground"; roles: MaterialRole[] }> {
-  const res = await fetch(`/api/assets/read?path=tilesets/${dirId}/tileset.json`);
-  if (!res.ok) throw new Error(`Failed to load tileset.json for ${dirId}`);
-  const json = await res.json();
-  const spec = typeof json.content === "string" ? JSON.parse(json.content) : json;
-
-  const roles: MaterialRole[] = [];
-  const kind = spec.kind === "ground" ? "ground" as const : "wall_kit" as const;
-  const authoring = spec.textures?.authoring;
-
-  if (kind === "wall_kit" && authoring) {
-    if (authoring.wallMaterial) roles.push({ role: "wall", materialId: authoring.wallMaterial });
-    if (authoring.trimMaterial) roles.push({ role: "trim", materialId: authoring.trimMaterial });
-    // accent (glass) is synthetic — skip it
-  } else if (kind === "ground" && authoring?.tileMaterials) {
-    for (const [tileName, matId] of Object.entries(authoring.tileMaterials)) {
-      roles.push({ role: tileName, materialId: matId as string });
-    }
-  }
-
-  return { kind, roles };
+/** Walk a GLB group and collect unique textureRole surfaces, keyed by role. */
+function discoverSurfaces(group: THREE.Object3D): Surface[] {
+  const byRole = new Map<string, Surface>();
+  group.traverse((obj) => {
+    const role = obj.userData?.textureRole as string | undefined;
+    if (!role || byRole.has(role)) return;
+    const isGlass = role === "accent";
+    byRole.set(role, {
+      role,
+      kind: isGlass ? "synthetic" : "pbr",
+      synthetic: isGlass ? "glass" : undefined
+    });
+  });
+  return Array.from(byRole.values());
 }
 
 // ---------------------------------------------------------------------------
@@ -114,14 +114,14 @@ const experiment: ExperimentModule = {
     const { mount, width, height } = ctx;
     mount.style.position = "relative";
 
-    // Scene shared by both panes
+    // --- Scene ---
     const scene = new THREE.Scene();
     scene.add(createGroundPlane());
 
-    // Lighting (same as tile-viewer)
+    // Lighting (same as the old tile-viewer)
     const KEY_RADIUS = 20;
     const KEY_HEIGHT = 18;
-    const KEY_ORBIT_SPEED = 2 * Math.PI / 10;
+    const KEY_ORBIT_SPEED = (2 * Math.PI) / 10;
 
     const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.8);
     keyLight.castShadow = true;
@@ -146,152 +146,63 @@ const experiment: ExperimentModule = {
     scene.add(rimLight);
     scene.add(rimLight.target);
 
-    // Tile groups on private layers
     const normalTileGroup = new THREE.Group();
     const targetTileGroup = new THREE.Group();
     scene.add(normalTileGroup);
     scene.add(targetTileGroup);
 
-    // Load tileset assets + build kit info
-    const assets = await loadTilesetAssets();
-
-    const kitInfos: KitInfo[] = assets.tilesets.map((kit, i) => ({
-      id: KIT_DIR_IDS[i],
-      name: kit.manifest.name,
-      kind: "wall_kit" as const,
-      roles: []
-    }));
-
-    // Load roles for each kit
-    await Promise.all(kitInfos.map(async (info) => {
-      const { kind, roles } = await loadKitRoles(info.id);
-      info.kind = kind;
-      info.roles = roles;
-    }));
-
-    // --- State ---
-    let currentRole: MaterialRole | null = null;
-    let currentBaseColor: ImageData | null = null;
-    let currentMaps: GeneratedMaps | null = null;
-    let currentTextures: ReturnType<typeof createTextureSet> | null = null;
-
-    // Pick the first tile from a kit to show in the 3D view
-    function getDefaultTileForKit(kit: KitInfo): LoadedTile | undefined {
-      const idx = kitInfos.indexOf(kit);
-      const kitAsset = idx >= 0 ? assets.tilesets[idx] : undefined;
-      if (!kitAsset) return undefined;
-      // For wall kits, show "wall"; for ground, show the first tile
-      if (kit.kind === "wall_kit") {
-        return kitAsset.tiles.get("wall") ?? kitAsset.tiles.values().next().value;
-      }
-      return kitAsset.tiles.values().next().value;
-    }
-
-    function showTile(tile: LoadedTile): void {
-      while (normalTileGroup.children.length > 0) normalTileGroup.remove(normalTileGroup.children[0]);
-      while (targetTileGroup.children.length > 0) targetTileGroup.remove(targetTileGroup.children[0]);
-
-      const measure = tile.template.clone();
-      const box = new THREE.Box3().setFromObject(measure);
-      const center = new THREE.Vector3();
-      box.getCenter(center);
-      const ox = -center.x, oy = -box.min.y, oz = -center.z;
-
-      const normalClone = tile.template.clone();
-      normalClone.position.set(ox, oy, oz);
-      setTextureFiltering(normalClone, THREE.LinearFilter);
-      normalClone.traverse((o) => {
-        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
-      });
-      setLayerRecursive(normalClone, NORMAL_LAYER);
-      normalTileGroup.add(normalClone);
-
-      const targetClone = tile.template.clone();
-      targetClone.position.set(ox, oy, oz);
-      setTextureFiltering(targetClone, THREE.LinearFilter);
-      targetClone.traverse((o) => {
-        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
-      });
-      setLayerRecursive(targetClone, TARGET_LAYER);
-      targetTileGroup.add(targetClone);
-
-      // Clear texture state when tile changes
-      currentBaseColor = null;
-      currentMaps = null;
-      currentTextures = null;
-    }
-
-    function applyCurrentTextures(): void {
-      if (!currentTextures || !currentRole) return;
-      for (const child of normalTileGroup.children) {
-        applyTexturesToGroup(child, currentRole.role, currentTextures);
-      }
-      for (const child of targetTileGroup.children) {
-        applyTexturesToGroup(child, currentRole.role, currentTextures);
-      }
-    }
-
-    // --- Layout: control panel (left) + 3D view (right) ---
-
+    // --- Layout: control panel + dual pane ---
     const viewContainer = document.createElement("div");
-    viewContainer.style.cssText = `
-      position: absolute; top: 0; left: ${PANEL_WIDTH}px; right: 0; bottom: 0;
-    `;
+    viewContainer.style.cssText = `position: absolute; top: 0; left: ${PANEL_WIDTH}px; right: 0; bottom: 0;`;
     mount.appendChild(viewContainer);
 
     const topEl = document.createElement("div");
-    topEl.style.cssText = `
-      position: absolute; top: 0; left: 0; right: 0;
-      height: 50%;
-    `;
+    topEl.style.cssText = "position: absolute; top: 0; left: 0; right: 0; height: 50%;";
     viewContainer.appendChild(topEl);
     addPaneLabel(topEl, "normal");
 
     const bottomEl = document.createElement("div");
     bottomEl.style.cssText = `
-      position: absolute; bottom: 0; left: 0; right: 0;
-      height: 50%;
+      position: absolute; bottom: 0; left: 0; right: 0; height: 50%;
       border-top: 1px solid #2a2e36;
     `;
     viewContainer.appendChild(bottomEl);
     addPaneLabel(bottomEl, "target");
 
-    // Stage
     const stage = new SharedScissorStage({
-      mount: viewContainer, width: width - PANEL_WIDTH, height,
+      mount: viewContainer,
+      width: width - PANEL_WIDTH,
+      height,
       pixelRatio: Math.max(1, window.devicePixelRatio || 1),
       antialias: false,
       clearColor: 0x14181e,
       clearAlpha: 1,
       shadows: true
     });
-
     stage.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    // Normal pane (720p, MSAA)
     const normalPane = new PixelPerfectPane({
       stage,
       id: "normal",
       element: topEl,
       scene,
-      width: topEl.clientWidth || (width - PANEL_WIDTH),
+      width: topEl.clientWidth || width - PANEL_WIDTH,
       height: topEl.clientHeight || Math.round(height / 2),
-      ...NORMAL_VIEW_CONFIG,
+      ...TILESET_VIEWER_NORMAL_CONFIG,
       clearColor: 0x14181e,
       layers: [NORMAL_LAYER],
       toneMapping: "aces",
       shadows: true
     });
 
-    // Target pane (360p, no MSAA)
     const targetPane = new PixelPerfectPane({
       stage,
       id: "target",
       element: bottomEl,
       scene,
-      width: bottomEl.clientWidth || (width - PANEL_WIDTH),
+      width: bottomEl.clientWidth || width - PANEL_WIDTH,
       height: bottomEl.clientHeight || Math.round(height / 2),
-      ...TARGET_VIEW_CONFIG,
+      ...TILESET_VIEWER_TARGET_CONFIG,
       clearColor: 0x14181e,
       lowTargetSamples: 0,
       layers: [TARGET_LAYER],
@@ -299,68 +210,134 @@ const experiment: ExperimentModule = {
       shadows: true
     });
 
+    // --- State ---
+    let currentSurfaces: Surface[] = [];
+    let currentTextures: Map<string, ReturnType<typeof createTextureSet>> = new Map();
+
+    function clearGroups(): void {
+      while (normalTileGroup.children.length > 0) normalTileGroup.remove(normalTileGroup.children[0]);
+      while (targetTileGroup.children.length > 0) targetTileGroup.remove(targetTileGroup.children[0]);
+      currentTextures = new Map();
+    }
+
+    function installMesh(group: THREE.Group): void {
+      clearGroups();
+
+      // Center & settle on ground plane
+      const box = new THREE.Box3().setFromObject(group);
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const ox = -center.x;
+      const oy = -box.min.y;
+      const oz = -center.z;
+
+      const normalClone = group.clone();
+      normalClone.position.set(ox, oy, oz);
+      setLinearTextureFiltering(normalClone);
+      normalClone.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+      setLayerRecursive(normalClone, NORMAL_LAYER);
+      normalTileGroup.add(normalClone);
+
+      const targetClone = group.clone();
+      targetClone.position.set(ox, oy, oz);
+      setLinearTextureFiltering(targetClone);
+      targetClone.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+        }
+      });
+      setLayerRecursive(targetClone, TARGET_LAYER);
+      targetTileGroup.add(targetClone);
+    }
+
+    function applyTexturesForRole(role: string, textures: ReturnType<typeof createTextureSet>): void {
+      currentTextures.set(role, textures);
+      for (const child of normalTileGroup.children) applyTexturesToGroup(child, role, textures);
+      for (const child of targetTileGroup.children) applyTexturesToGroup(child, role, textures);
+    }
+
     // --- Control panel ---
-
     const controlPanel = createControlPanel({
-      onKitChange(kit: KitInfo): void {
-        const tile = getDefaultTileForKit(kit);
-        if (tile) showTile(tile);
-      },
-
-      onRoleChange(role: MaterialRole): void {
-        currentRole = role;
-      },
-
-      async onGenerate(prompt: string) {
-        if (!currentRole) return;
-        controlPanel.setGenerating(true);
-        controlPanel.setStatus("Generating...");
-
+      async onMeshChange(meshId) {
         try {
-          const fullPrompt = prompt || buildPromptForMaterial(currentRole.materialId);
-          currentBaseColor = await generateBaseColor(fullPrompt);
-          controlPanel.setPreview(currentBaseColor);
-
-          currentMaps = derivePbrMaps(currentBaseColor, DEFAULT_PBR_PARAMS);
-          currentTextures = createTextureSet(currentMaps);
-          applyCurrentTextures();
-
-          controlPanel.setStatus("Done — tweak prompt and regenerate to iterate");
+          const group = await loadBaseMesh(meshId);
+          installMesh(group);
+          currentSurfaces = discoverSurfaces(group);
+          controlPanel.setSurfaces(currentSurfaces);
         } catch (err) {
-          controlPanel.setStatus(`Error: ${(err as Error).message}`);
-        } finally {
-          controlPanel.setGenerating(false);
+          controlPanel.setStatus(`Load error: ${(err as Error).message}`);
         }
       },
 
-      async onSave() {
-        if (!currentRole || !currentMaps) {
-          controlPanel.setStatus("Nothing to save — generate first");
-          return;
-        }
+      onSurfaceFocus() {
+        // No 3D highlight for now — surface focus is a UI-only cue in the panel.
+      },
 
-        controlPanel.setSaving(true);
-        controlPanel.setStatus("Saving...");
+      async onGenerate(role, prompt) {
+        const baseColor = await generateBaseColor(prompt);
+        const maps = derivePbrMaps(baseColor, DEFAULT_PBR_PARAMS);
+        const textures = createTextureSet(maps);
+        applyTexturesForRole(role, textures);
+        return maps;
+      },
 
-        try {
-          await saveTexturesToAssets(currentRole.materialId, currentMaps);
-          controlPanel.setStatus(`Saved ${currentRole.materialId} textures`);
-        } catch (err) {
-          controlPanel.setStatus(`Save error: ${(err as Error).message}`);
-        } finally {
-          controlPanel.setSaving(false);
+      onApprove() {
+        // No-op; the panel marks it approved and gates the Bake button.
+      },
+
+      async onBake(entryName, states) {
+        const materials: Record<string, unknown> = {};
+        const prompts: Record<string, string> = {};
+        for (const s of states) {
+          if (s.surface.kind === "synthetic") {
+            materials[s.surface.role] = { synthetic: s.surface.synthetic ?? "glass" };
+          } else if (s.maps) {
+            materials[s.surface.role] = await mapsToBakeMaterial(s.maps);
+            prompts[s.surface.role] = s.prompt;
+          }
         }
+        await bakeTexturedMesh({
+          name: entryName,
+          baseMeshId: baseMeshIdFromPanel() ?? "",
+          materials: materials as never,
+          prompts
+        });
       }
     });
 
     mount.appendChild(controlPanel.element);
-    controlPanel.setKits(kitInfos);
 
-    // Show default tile
-    if (kitInfos.length > 0) {
-      const defaultKit = kitInfos[0];
-      const tile = getDefaultTileForKit(defaultKit);
-      if (tile) showTile(tile);
+    // We track the base mesh id via the last onMeshChange call. Simpler than
+    // threading it into panel state.
+    let currentBaseMeshId: string | null = null;
+    function baseMeshIdFromPanel(): string | null {
+      return currentBaseMeshId;
+    }
+
+    // Populate meshes catalog
+    try {
+      const meshes = await listBaseMeshes();
+      controlPanel.setMeshList(meshes);
+      // setMeshList may trigger onMeshChange synchronously for the first mesh
+      if (meshes.length > 0) currentBaseMeshId = meshes[0];
+    } catch (err) {
+      controlPanel.setStatus(`Catalog error: ${(err as Error).message}`);
+    }
+
+    // Shadow the onMeshChange to also track the id — we rebuild the panel
+    // with a wrapped callback so the base id stays in scope.
+    // (The simpler alternative is storing on the DOM; this avoids that.)
+    const meshSelect = controlPanel.element.querySelector("select") as HTMLSelectElement | null;
+    if (meshSelect) {
+      meshSelect.addEventListener("change", () => {
+        currentBaseMeshId = meshSelect.value;
+      });
     }
 
     const unbindInput = bindPixelPerfectPaneBroadcast({
@@ -369,7 +346,6 @@ const experiment: ExperimentModule = {
     });
 
     // --- Resize ---
-
     const resizeObs = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width: w, height: h } = entry.contentRect;
@@ -379,7 +355,6 @@ const experiment: ExperimentModule = {
     resizeObs.observe(viewContainer);
 
     // --- Frame loop ---
-
     let animId = 0;
     let lastTime = performance.now();
     let keyAngle = 0;
@@ -400,8 +375,6 @@ const experiment: ExperimentModule = {
     };
     animId = requestAnimationFrame(frame);
 
-    // --- Cleanup ---
-
     return () => {
       cancelAnimationFrame(animId);
       resizeObs.disconnect();
@@ -416,3 +389,7 @@ const experiment: ExperimentModule = {
 };
 
 export default experiment;
+
+// Keep the state types exported so the panel file can import them without
+// pulling index.ts into a circular dep.
+export type { Surface, SurfaceState };
