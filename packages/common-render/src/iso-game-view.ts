@@ -199,9 +199,8 @@ export class IsoGameView {
    *
    * Prefer `toneMapping` / `outlines` / `shadows` config on construction.
    * These escape hatches exist for cases the declarative API can't cover —
-   * primarily custom antialiasing. See `PixelPerfectPane` for the full
-   * rationale; `packages/experiments/src/prop-test-scene/` is the
-   * canonical FXAA / SMAA reference.
+   * primarily custom antialiasing (FXAA / SMAA / MSAA). See
+   * `PixelPerfectPane` for the full rationale.
    */
 
   /** @advanced See PixelPerfectPane.getLowTarget. */

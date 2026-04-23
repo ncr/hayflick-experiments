@@ -385,7 +385,7 @@ export class PixelPerfectPane implements SharedScissorPane {
    *   - `shadows: true` (on the stage) instead of touching `renderer.shadowMap`
    *
    * The remaining legitimate use case is custom antialiasing (FXAA, SMAA,
-   * MSAA sample-count swaps) — see `packages/experiments/src/prop-test-scene/`.
+   * MSAA sample-count swaps) that runs on the low-res render target.
    */
 
   /** @advanced Prefer `toneMapping` / `outlines` / `shadows` declarative config. */

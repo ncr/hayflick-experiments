@@ -5,9 +5,10 @@ import { attachTouchGestures } from "./touch-gestures";
  * Options for {@link bindPixelPerfectPaneBroadcast}.
  *
  * Use this when you want *every* pane under a `SharedScissorStage` to react
- * to every input event (e.g. the primitive-views demo that keeps four cameras
- * in lockstep). For *focus-based* routing — each pointer event targets only
- * the pane under the cursor — use `bindSharedScissorStageInput` instead.
+ * to every input event — typical for multi-view setups that keep multiple
+ * cameras in lockstep. For *focus-based* routing — each pointer event
+ * targets only the pane under the cursor — use `bindSharedScissorStageInput`
+ * instead.
  */
 export type PixelPerfectPaneBroadcastOptions = {
   stage: SharedScissorStage;

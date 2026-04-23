@@ -21,7 +21,7 @@ packages/
   common-input        — Input handling
   common-physics-rapier — Rapier physics integration
   common-collider-vhacd — V-HACD convex decomposition for colliders
-  experiments         — Active experiment modules (physics-prop-drop, prop-test-scene, prop-physics-3d, auto-collider)
+  experiments         — Active experiment modules (physics-prop-drop, prop-physics-3d, auto-collider)
 docs/               — Architecture docs, learnings, promotion guide
 e2e/                — Playwright end-to-end tests
 scripts/            — CLI helpers (new-experiment scaffold, HTTPS dev server)

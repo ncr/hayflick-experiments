@@ -290,11 +290,10 @@ assembly if the preset isn't what you want.
 The pane exposes `getLowTarget`, `setLowTarget`, `setOutputSourceTexture`,
 and the `beforeSceneRender` / `afterSceneRender` setters for cases the
 declarative config can't cover — most commonly a post-process AA pass
-that runs on the low-res render target. The reference implementation
-lives in `packages/experiments/src/prop-test-scene/` (FXAA / SMAA / MSAA
-swapping). Reach for declarative `toneMapping` / `shadows` / `outlines`
-first; only drop down to the hooks when you genuinely need a pass the
-library doesn't ship.
+(FXAA / SMAA / MSAA swapping) that runs on the low-res render target.
+Reach for declarative `toneMapping` / `shadows` / `outlines` first; only
+drop down to the hooks when you genuinely need a pass the library
+doesn't ship.
 
 ## Pixel-perfect invariants
 
