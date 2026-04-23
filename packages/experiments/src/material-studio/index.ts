@@ -85,6 +85,19 @@ async function loadBaseMesh(meshId: string): Promise<THREE.Group> {
   return gltf.scene;
 }
 
+type BaseMeshSidecar = {
+  id: string;
+  part: { dimensions: [number, number, number] };
+};
+
+async function loadBaseMeshSidecar(meshId: string): Promise<BaseMeshSidecar | null> {
+  const url = `/api/assets/read?path=${encodeURIComponent(`meshes/${meshId}.manifest.json`)}`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const json = await res.json();
+  return (typeof json.content === "string" ? JSON.parse(json.content) : json) as BaseMeshSidecar;
+}
+
 /** Walk a GLB group and collect unique textureRole surfaces, keyed by role. */
 function discoverSurfaces(group: THREE.Object3D): Surface[] {
   const byRole = new Map<string, Surface>();
@@ -266,10 +279,14 @@ const experiment: ExperimentModule = {
     const controlPanel = createControlPanel({
       async onMeshChange(meshId) {
         try {
-          const group = await loadBaseMesh(meshId);
+          const [group, sidecar] = await Promise.all([
+            loadBaseMesh(meshId),
+            loadBaseMeshSidecar(meshId)
+          ]);
           installMesh(group);
           currentSurfaces = discoverSurfaces(group);
           controlPanel.setSurfaces(currentSurfaces);
+          controlPanel.setDimensions(sidecar?.part?.dimensions ?? null);
         } catch (err) {
           controlPanel.setStatus(`Load error: ${(err as Error).message}`);
         }

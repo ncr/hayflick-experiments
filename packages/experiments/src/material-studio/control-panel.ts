@@ -50,9 +50,25 @@ export type ControlPanel = {
   setMeshList: (meshes: string[]) => void;
   /** Called by index.ts after a mesh is loaded and its surfaces discovered. */
   setSurfaces: (surfaces: Surface[]) => void;
+  /** Render the selected mesh's size in cm + game pixels. Null clears it. */
+  setDimensions: (cm: [number, number, number] | null) => void;
   setStatus: (text: string) => void;
   destroy: () => void;
 };
+
+// Iso 2:1 ortho render constants — see CLAUDE.md "Pixel-Perfect Rendering".
+// 1 base unit = 128 cm; ground edges project at 32 large px, vertical (up) at 16 px.
+const CM_PER_HORIZONTAL_PX = 128 / 32; // 4
+const CM_PER_VERTICAL_PX = 128 / 16; // 8
+
+function cmToLargePx(cm: [number, number, number]): [number, number, number] {
+  return [cm[0] / CM_PER_HORIZONTAL_PX, cm[1] / CM_PER_VERTICAL_PX, cm[2] / CM_PER_HORIZONTAL_PX];
+}
+
+function fmtTriple(v: [number, number, number], unit: string): string {
+  const round = (n: number): string => (Number.isInteger(n) ? `${n}` : n.toFixed(1));
+  return `${round(v[0])} × ${round(v[1])} × ${round(v[2])} ${unit}`;
+}
 
 // ---------------------------------------------------------------------------
 // Tiny DOM helpers
@@ -114,6 +130,13 @@ export function createControlPanel(callbacks: ControlPanelCallbacks): ControlPan
   // --- Base mesh selector ---
   label("Base mesh", panel);
   const meshSelect = select(panel);
+
+  // Dimensions readout (w × h × d) in cm and iso-projected large pixels
+  const dimsEl = el(
+    "div",
+    "margin-top: 4px; font: 10px/1.4 monospace; color: #778; min-height: 28px;",
+    panel
+  );
 
   // --- Entry name ---
   const nameRow = el("div", "margin-top: 8px;", panel);
@@ -303,6 +326,7 @@ export function createControlPanel(callbacks: ControlPanelCallbacks): ControlPan
     currentMeshId = id;
     surfaceStates = new Map();
     currentRole = null;
+    dimsEl.textContent = "";
     renderSurfaceTabs();
     updateBakeGate();
     statusEl.textContent = "Loading mesh…";
@@ -402,6 +426,15 @@ export function createControlPanel(callbacks: ControlPanelCallbacks): ControlPan
         meshSelect.value = currentMeshId;
         callbacks.onMeshChange(currentMeshId);
       }
+    },
+
+    setDimensions(cm: [number, number, number] | null): void {
+      if (!cm) {
+        dimsEl.textContent = "";
+        return;
+      }
+      const px = cmToLargePx(cm);
+      dimsEl.innerHTML = `${fmtTriple(cm, "cm")}<br>${fmtTriple(px, "px (large)")}`;
     },
 
     setSurfaces(surfaces: Surface[]): void {
