@@ -136,22 +136,124 @@ async function loadOneKit(kitId: string): Promise<LoadedTileset> {
   return { manifest, tiles };
 }
 
+// ---------------------------------------------------------------------------
+// Flat textured-mesh catalog (assets/textured-meshes/<name>/)
+// ---------------------------------------------------------------------------
+
+/**
+ * Placement metadata sidecar for a base mesh.
+ * Written at `assets/meshes/<baseMeshId>.manifest.json`. Shape mirrors the
+ * `part` + `artifactTransform` subset of per-tile manifests from the kit
+ * pipeline, minus kit-specific fields like kitId/kitName/textures.
+ */
+type BaseMeshManifest = {
+  id: string;
+  artifactTransform: unknown;
+  part: {
+    name: string;
+    kind: string;
+    anchorClass: string;
+    articulationType: string | null;
+    meshEnvelope: [number, number, number];
+    logicalFootprint: TileFootprint;
+  };
+};
+
+/** Entry manifest written by the bake endpoint. */
+type TexturedMeshEntryManifest = {
+  name: string;
+  baseMeshId: string;
+  roles: string[];
+  prompts?: Record<string, string>;
+  bakedAt: string;
+};
+
+async function tryFetchJson<T>(assetPath: string): Promise<T | null> {
+  const url = `/api/assets/read?path=${encodeURIComponent(assetPath)}`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const json = await res.json();
+  return (typeof json.content === "string" ? JSON.parse(json.content) : json) as T;
+}
+
+async function loadTexturedMeshCatalog(): Promise<LoadedTileset | null> {
+  // Ask the API for entry names — it knows the directory layout.
+  const listRes = await fetch("/api/textured-mesh/list");
+  if (!listRes.ok) return null;
+  const listJson = (await listRes.json()) as { entries: Array<{ name: string }> };
+  if (listJson.entries.length === 0) return null;
+
+  const tiles = new Map<string, LoadedTile>();
+  const tileEntries: TileEntry[] = [];
+
+  for (const { name } of listJson.entries) {
+    const entryManifest = await tryFetchJson<TexturedMeshEntryManifest>(
+      `textured-meshes/${name}/manifest.json`
+    );
+    if (!entryManifest) {
+      console.warn(`[textured-meshes] skipping ${name}: no manifest.json`);
+      continue;
+    }
+    const baseManifest = await tryFetchJson<BaseMeshManifest>(
+      `meshes/${entryManifest.baseMeshId}.manifest.json`
+    );
+    if (!baseManifest) {
+      console.warn(
+        `[textured-meshes] skipping ${name}: base mesh manifest "${entryManifest.baseMeshId}" not found`
+      );
+      continue;
+    }
+
+    // Build a TileEntry — same shape as kit manifests, but the entry's
+    // display name is the user-chosen tilekit name, not the base mesh name.
+    const entry: TileEntry = {
+      name,
+      kind: baseManifest.part.kind,
+      anchorClass: baseManifest.part.anchorClass,
+      articulationType: baseManifest.part.articulationType,
+      meshEnvelope: baseManifest.part.meshEnvelope,
+      logicalFootprint: baseManifest.part.logicalFootprint
+    };
+
+    const group = await loadGlb(`textured-meshes/${name}/artifact.glb`);
+    group.scale.setScalar(LEVEL_EDITOR_WORLD_UNIT);
+    prepareTileMaterials(group);
+
+    tiles.set(name, { entry, template: group });
+    tileEntries.push(entry);
+  }
+
+  if (tiles.size === 0) return null;
+
+  const manifest: TilesManifest = {
+    kitId: "textured-meshes",
+    name: "custom",
+    tiles: tileEntries
+  };
+  console.log(`[textured-meshes] loaded ${tiles.size} entries`);
+  return { manifest, tiles };
+}
+
 export async function loadTilesetAssets(): Promise<TilesetAssets> {
-  // Load all configured kits in parallel
-  const tilesets = await Promise.all(KIT_IDS.map(loadOneKit));
+  // Load all configured kits + the flat textured-mesh catalog in parallel.
+  const [kitResults, catalog] = await Promise.all([
+    Promise.all(KIT_IDS.map(loadOneKit)),
+    loadTexturedMeshCatalog()
+  ]);
+  const tilesets: LoadedTileset[] = catalog ? [...kitResults, catalog] : kitResults;
 
   // Merge into a flat lookup so callers that resolve by tile name (scene
-  // builder, pointer tools, persisted state) don't need to know which kit a
-  // tile came from. Tile-name collisions across kits would silently overwrite
-  // — fine for now since current kits don't overlap, revisit if it changes.
+  // builder, pointer tools, persisted state) don't need to know which tileset
+  // a tile came from. Name collisions across kits/entries silently overwrite
+  // with a warning — rare and fixable by renaming.
   const tiles = new Map<string, LoadedTile>();
   const byKind = new Map<string, LoadedTile[]>();
   for (const kit of tilesets) {
     for (const tile of kit.tiles.values()) {
       if (tiles.has(tile.entry.name)) {
         console.warn(
-          `[tileset] tile-name collision: "${tile.entry.name}" appears in multiple kits; ` +
-          `the later kit (${kit.manifest.name}) wins`
+          `[tileset] tile-name collision: "${tile.entry.name}" appears in multiple sources; ` +
+          `the later source (${kit.manifest.name}) wins`
         );
       }
       tiles.set(tile.entry.name, tile);
