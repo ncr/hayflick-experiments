@@ -29,7 +29,13 @@
     "@gltf-transform/extensions": "^4.3.0",
     "fflate": "^0.8.0",
     "meshoptimizer": "^1.0.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "three": "^0.173.0",
     "three-bvh-csg": "^0.0.18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3"
   }
 }

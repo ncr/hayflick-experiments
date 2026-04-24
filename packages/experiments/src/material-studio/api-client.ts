@@ -1,13 +1,11 @@
 /**
- * API wrappers for the Material Studio tool.
+ * Prompt + image-generation primitives for Material Studio.
  *
- * - generateBaseColor: prompt → 1024×1024 via OpenAI → nearest-downsample to 64×64
- * - listBaseMeshes: GET /api/textured-mesh/meshes
- * - bakeTexturedMesh: POST authored textures to the bake endpoint, producing
- *   a baked artifact under `assets/textured-meshes/<name>/`
+ * Catalog calls live in ./api/catalog-client.ts; bake calls live in
+ * ./api/bake-client.ts. This module is just the things both sides need:
+ * prompt seeds, the OpenAI-backed baseColor generator, and PNG <-> ImageData
+ * helpers.
  */
-
-import type { GeneratedMaps } from "./types";
 
 // ---------------------------------------------------------------------------
 // Year 2200 style preamble — shared across prompts
@@ -78,64 +76,8 @@ export async function generateBaseColor(prompt: string): Promise<ImageData> {
 }
 
 // ---------------------------------------------------------------------------
-// Catalog queries
+// PNG <-> ImageData
 // ---------------------------------------------------------------------------
-
-export async function listBaseMeshes(): Promise<string[]> {
-  const res = await fetch("/api/textured-mesh/meshes");
-  if (!res.ok) throw new Error(`Failed to list base meshes: ${res.status}`);
-  const json = await res.json();
-  return (json.meshes ?? []) as string[];
-}
-
-export type TexturedMeshEntry = {
-  name: string;
-  manifest: {
-    baseMeshId: string;
-    roles: string[];
-    prompts?: Record<string, string>;
-    bakedAt: string;
-  } | null;
-};
-
-export async function listTexturedMeshEntries(): Promise<TexturedMeshEntry[]> {
-  const res = await fetch("/api/textured-mesh/list");
-  if (!res.ok) throw new Error(`Failed to list entries: ${res.status}`);
-  const json = await res.json();
-  return (json.entries ?? []) as TexturedMeshEntry[];
-}
-
-// ---------------------------------------------------------------------------
-// Bake
-// ---------------------------------------------------------------------------
-
-export type BakeMaterialBody =
-  | {
-      baseColorPng: string;
-      normalPng: string;
-      armPng: string;
-      roughnessFactor?: number;
-      metallicFactor?: number;
-    }
-  | { synthetic: string };
-
-export async function bakeTexturedMesh(args: {
-  name: string;
-  baseMeshId: string;
-  materials: Record<string, BakeMaterialBody>;
-  prompts: Record<string, string>;
-}): Promise<{ ok: true; artifactPath: string }> {
-  const res = await fetch("/api/textured-mesh/bake", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(args)
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Bake failed: ${err}`);
-  }
-  return res.json();
-}
 
 /** Convert ImageData to base64 PNG (for POSTing to the bake endpoint). */
 export async function imageDataToBase64Png(imageData: ImageData): Promise<string> {
@@ -159,16 +101,6 @@ export async function imageDataToBase64Png(imageData: ImageData): Promise<string
   });
 }
 
-/** Serialize a set of generated maps to base64 PNGs, ready for the bake POST body. */
-export async function mapsToBakeMaterial(maps: GeneratedMaps): Promise<BakeMaterialBody> {
-  const [baseColorPng, normalPng, armPng] = await Promise.all([
-    imageDataToBase64Png(maps.baseColor),
-    imageDataToBase64Png(maps.normal),
-    imageDataToBase64Png(maps.arm)
-  ]);
-  return { baseColorPng, normalPng, armPng };
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -180,6 +112,23 @@ function decodeB64Png(b64: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error("Failed to decode base64 PNG"));
     img.src = `data:image/png;base64,${b64}`;
   });
+}
+
+/**
+ * Decode a base64 PNG into ImageData at its native size — used for the edit
+ * round-trip. The bytes-on-disk are top-down (the same orientation as
+ * `generateBaseColor` produces), so no flipping happens here; the flip is
+ * applied downstream by `createTextureSet`.
+ */
+export async function base64PngToImageData(b64: string): Promise<ImageData> {
+  const img = await decodeB64Png(b64);
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, 0, 0);
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
 }
 
 function nearestDownsample(img: HTMLImageElement, size: number): ImageData {

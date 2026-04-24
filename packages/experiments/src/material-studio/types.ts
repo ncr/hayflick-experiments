@@ -32,6 +32,13 @@ export type BaseMesh = {
   surfaces: Surface[];
 };
 
+export type GlassParams = {
+  tint: string;
+  roughness: number;
+  ior: number;
+  alpha: number;
+};
+
 /** Per-surface authoring state for the current entry. */
 export type SurfaceState = {
   surface: Surface;
@@ -39,8 +46,14 @@ export type SurfaceState = {
   prompt: string;
   /** Latest generated maps. Null until the user has hit Generate for this surface. */
   maps: GeneratedMaps | null;
+  /** Previous maps (for single-step Undo after a new Generate). */
+  prevMaps: GeneratedMaps | null;
+  /** In-memory prompt history for this surface in the current session. Newest first, deduped. */
+  promptHistory: string[];
   /** Becomes true when the user clicks "Approve". Synthetic surfaces start approved. */
   approved: boolean;
+  /** Only set when surface.kind === "synthetic". */
+  glassParams?: GlassParams;
 };
 
 export const DEFAULT_PBR_PARAMS: PbrParams = {

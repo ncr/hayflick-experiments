@@ -81,8 +81,10 @@ async function handleOpenAI(
       prompt: string;
       size?: string;
       quality?: string;
+      n?: number;
     };
 
+    const n = Math.max(1, Math.min(8, body.n ?? 1));
     const response = await fetch(
       "https://api.openai.com/v1/images/generations",
       {
@@ -92,11 +94,12 @@ async function handleOpenAI(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-image-1",
+          model: "gpt-image-2",
           prompt: body.prompt,
-          n: 1,
+          n,
           size: body.size || "1024x1024",
           quality: body.quality || "high",
+          output_format: "png",
         }),
       }
     );
@@ -336,12 +339,56 @@ function writePngFromBase64(filePath: string, b64: string): void {
   fs.writeFileSync(filePath, buf);
 }
 
+type StoredManifest = {
+  name?: string;
+  baseMeshId?: string;
+  roles?: string[];
+  prompts?: Record<string, string>;
+  bakedAt?: string;
+  updatedAt?: string;
+  protected?: boolean;
+};
+
+function readManifest(entryDir: string): StoredManifest | null {
+  const manifestPath = path.join(entryDir, "manifest.json");
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as StoredManifest;
+  } catch {
+    return null;
+  }
+}
+
+function writeManifest(entryDir: string, manifest: StoredManifest): void {
+  fs.writeFileSync(path.join(entryDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+}
+
+function copyDirRecursive(src: string, dst: string): void {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dst, entry.name);
+    if (entry.isDirectory()) copyDirRecursive(s, d);
+    else fs.copyFileSync(s, d);
+  }
+}
+
+function rmDirRecursive(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+function readRoleTexture(entryDir: string, role: string, file: string): string | null {
+  const p = path.join(entryDir, "textures", role, file);
+  if (!fs.existsSync(p)) return null;
+  return fs.readFileSync(p).toString("base64");
+}
+
 async function handleTexturedMesh(
   req: IncomingMessage,
   res: ServerResponse,
   subpath: string
 ) {
-  // GET /list — enumerate existing textured-mesh entries
+  // GET /list — enumerate existing textured-mesh entries (manifest inlined, unchanged shape)
   if (subpath === "/list" && req.method === "GET") {
     if (!fs.existsSync(TEXTURED_MESHES_ROOT)) {
       return jsonResponse(res, 200, { entries: [] });
@@ -349,18 +396,7 @@ async function handleTexturedMesh(
     const entries = fs
       .readdirSync(TEXTURED_MESHES_ROOT, { withFileTypes: true })
       .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
-      .map((e) => {
-        const manifestPath = path.join(TEXTURED_MESHES_ROOT, e.name, "manifest.json");
-        let manifest: unknown = null;
-        if (fs.existsSync(manifestPath)) {
-          try {
-            manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-          } catch {
-            // ignore malformed manifest
-          }
-        }
-        return { name: e.name, manifest };
-      });
+      .map((e) => ({ name: e.name, manifest: readManifest(path.join(TEXTURED_MESHES_ROOT, e.name)) }));
     return jsonResponse(res, 200, { entries });
   }
 
@@ -374,6 +410,87 @@ async function handleTexturedMesh(
       .filter((f) => f.endsWith(".glb"))
       .map((f) => f.replace(/\.glb$/, ""));
     return jsonResponse(res, 200, { meshes });
+  }
+
+  // /entries/:name (+ optional /duplicate) — single-entry management
+  if (subpath.startsWith("/entries/")) {
+    const rest = subpath.slice("/entries/".length);
+    const [rawName, op] = rest.split("/");
+    const entryName = rawName ? safeEntryName(rawName) : null;
+    if (!entryName) return errorResponse(res, 400, "Invalid entry name");
+    const entryDir = path.join(TEXTURED_MESHES_ROOT, entryName);
+    const manifest = readManifest(entryDir);
+
+    // POST /entries/:name/duplicate — server-side copy
+    if (op === "duplicate" && req.method === "POST") {
+      if (!fs.existsSync(entryDir)) return errorResponse(res, 404, "Entry not found");
+      const body = (await readJson(req)) as { name: string };
+      const newName = body.name && safeEntryName(body.name);
+      if (!newName) return errorResponse(res, 400, "Invalid target name");
+      const newDir = path.join(TEXTURED_MESHES_ROOT, newName);
+      if (fs.existsSync(newDir)) return errorResponse(res, 409, "Target already exists");
+      copyDirRecursive(entryDir, newDir);
+      const copied = readManifest(newDir);
+      if (copied) {
+        const now = new Date().toISOString();
+        writeManifest(newDir, { ...copied, name: newName, protected: false, bakedAt: now, updatedAt: now });
+      }
+      return jsonResponse(res, 200, { ok: true, name: newName });
+    }
+
+    // GET /entries/:name — full entry including texture base64s
+    if (!op && req.method === "GET") {
+      if (!fs.existsSync(entryDir)) return errorResponse(res, 404, "Entry not found");
+      const roles = manifest?.roles ?? [];
+      const textures: Record<string, { baseColorB64: string; normalB64: string; armB64: string }> = {};
+      for (const role of roles) {
+        const bc = readRoleTexture(entryDir, role, "baseColor.png");
+        const nr = readRoleTexture(entryDir, role, "normal.png");
+        const ar = readRoleTexture(entryDir, role, "arm.png");
+        if (bc && nr && ar) textures[role] = { baseColorB64: bc, normalB64: nr, armB64: ar };
+      }
+      return jsonResponse(res, 200, { manifest, textures });
+    }
+
+    // DELETE /entries/:name — refuse if protected
+    if (!op && req.method === "DELETE") {
+      if (!fs.existsSync(entryDir)) return errorResponse(res, 404, "Entry not found");
+      if (manifest?.protected) return errorResponse(res, 409, "Entry is protected — unlock before deleting");
+      rmDirRecursive(entryDir);
+      return jsonResponse(res, 200, { ok: true });
+    }
+
+    // PATCH /entries/:name — rename and/or protected
+    if (!op && req.method === "PATCH") {
+      if (!fs.existsSync(entryDir)) return errorResponse(res, 404, "Entry not found");
+      const body = (await readJson(req)) as { rename?: string; protected?: boolean };
+      if (manifest?.protected && body.rename !== undefined) {
+        return errorResponse(res, 409, "Entry is protected — unlock before renaming");
+      }
+      let finalName = entryName;
+      let finalDir = entryDir;
+      if (body.rename !== undefined) {
+        const newName = safeEntryName(body.rename);
+        if (!newName) return errorResponse(res, 400, "Invalid target name");
+        if (newName !== entryName) {
+          const newDir = path.join(TEXTURED_MESHES_ROOT, newName);
+          if (fs.existsSync(newDir)) return errorResponse(res, 409, "Target already exists");
+          fs.renameSync(entryDir, newDir);
+          finalName = newName;
+          finalDir = newDir;
+        }
+      }
+      const cur = readManifest(finalDir) ?? {};
+      const next: StoredManifest = {
+        ...cur,
+        name: finalName,
+        ...(body.protected !== undefined ? { protected: body.protected } : {}),
+      };
+      writeManifest(finalDir, next);
+      return jsonResponse(res, 200, { ok: true, name: finalName, manifest: next });
+    }
+
+    return errorResponse(res, 404, "Unknown entry endpoint");
   }
 
   // POST /bake — write textures, invoke Blender, produce artifact.glb
@@ -394,6 +511,10 @@ async function handleTexturedMesh(
     }
 
     const entryDir = path.join(TEXTURED_MESHES_ROOT, entryName);
+    const existingManifest = fs.existsSync(entryDir) ? readManifest(entryDir) : null;
+    if (existingManifest?.protected) {
+      return errorResponse(res, 409, "Entry is protected — unlock before re-baking");
+    }
     const texturesDir = path.join(entryDir, "textures");
     ensureDir(texturesDir);
 
@@ -451,17 +572,24 @@ async function handleTexturedMesh(
       }
     }
 
-    // Write manifest for provenance
-    const manifest = {
+    const now = new Date().toISOString();
+    const manifest: StoredManifest = {
       name: entryName,
       baseMeshId: body.baseMeshId,
       roles: Object.keys(body.materials || {}),
       prompts: body.prompts ?? {},
-      bakedAt: new Date().toISOString(),
+      bakedAt: existingManifest?.bakedAt ?? now,
+      updatedAt: now,
+      protected: existingManifest?.protected ?? false,
     };
-    fs.writeFileSync(path.join(entryDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    writeManifest(entryDir, manifest);
 
-    return jsonResponse(res, 200, { ok: true, name: entryName, artifactPath: `textured-meshes/${entryName}/artifact.glb` });
+    return jsonResponse(res, 200, {
+      ok: true,
+      name: entryName,
+      artifactPath: `textured-meshes/${entryName}/artifact.glb`,
+      manifest,
+    });
   }
 
   errorResponse(res, 404, "Unknown textured-mesh endpoint");
