@@ -19,6 +19,8 @@ vi.mock("./stage/shared-scissor-stage", () => {
     });
     readonly resize = vi.fn();
     readonly drawFrame = vi.fn();
+    readonly start = vi.fn();
+    readonly stop = vi.fn();
     readonly dispose = vi.fn();
     private readonly _dpr: number;
     private _pane: unknown = null;
@@ -108,6 +110,9 @@ vi.mock("./stage/pixel-perfect-pane", () => {
 });
 
 import { IsoGameView } from "./iso-game-view";
+import { setCommonRenderWarningsEnabled } from "./presets/dev-warnings";
+
+setCommonRenderWarningsEnabled(false);
 
 type RectLike = {
   left: number;
@@ -162,8 +167,6 @@ function makeConfig(mount: HTMLElement): any {
     smoothPixelTransitions: false,
     clearColor: 0x0b0f14,
     clearAlpha: 1,
-    mountBackground: "#123456",
-    canvasBackground: "#654321",
     outlines: false
   };
 }
@@ -226,9 +229,6 @@ describe("@common/render IsoGameView facade", () => {
     expect(view.canvas).toBe(stage.canvas);
     expect(view.camera).toBe(pane.camera);
     expect(view.cameraTarget).toBe(pane.cameraTarget);
-
-    expect((mount as any).style.background).toBe("#123456");
-    expect(stage.canvas.style.background).toBe("#654321");
   });
 
   it("delegates state, commands, frame, and resize to the pane/stage", () => {
@@ -304,20 +304,15 @@ describe("@common/render IsoGameView facade", () => {
     expect(pane.updatePanDrag).toHaveBeenCalledTimes(0);
   });
 
-  it("restores backgrounds and disposes stage exactly once", () => {
+  it("disposes stage exactly once", () => {
     const mount = makeMount(makeRect(0, 0, 160, 120)) as HTMLElement;
     const view = new IsoGameView(makeConfig(mount));
     const stage = mockState.stageInstances[0];
-
-    expect((mount as any).style.background).toBe("#123456");
-    expect(stage.canvas.style.background).toBe("#654321");
 
     view.dispose();
     view.dispose();
 
     expect(stage.dispose).toHaveBeenCalledTimes(1);
-    expect((mount as any).style.background).toBe("mount-before");
-    expect(stage.canvas.style.background).toBe("stage-canvas-before");
   });
 
   it("does not attach DOM input listeners from the facade", () => {

@@ -9,33 +9,32 @@ default because the game uses them.
 
 ```ts
 import * as THREE from "three";
-import { IsoGameView, addStandardGameLighting } from "@common/render";
+import { IsoGameView } from "@common/render";
 import { bindIsoGameViewInput } from "@common/input";
 
 const scene = new THREE.Scene();
-addStandardGameLighting(scene);
 scene.add(myWorld);
 
 const view = new IsoGameView({
-  mount,    // HTMLElement that already has layout dimensions
-  width,    // initial CSS width
-  height,   // initial CSS height
-  scene
+  mount,            // HTMLElement that already has layout dimensions
+  width,            // initial CSS width
+  height,           // initial CSS height
+  scene,
+  lighting: true    // auto-adds addStandardGameLighting; removed on dispose
 });
 // Defaults: pixelated canvas, outlines ON (OutlineDefaults), iso-2:1 pitch,
 // cameraYaw π/4, MSAA 4×, smooth pixel transitions on.
 
 bindIsoGameViewInput({ view });   // MMB pan, Q/E rotate, wheel zoom
+view.start();                     // built-in RAF loop
 
-let prev = performance.now();
-function tick(now: number) {
-  const dt = Math.min((now - prev) / 1000, 0.1);
-  prev = now;
-  view.frame(now, dt);
-  requestAnimationFrame(tick);
-}
-requestAnimationFrame(tick);
+// When tearing down:
+// view.dispose();  // stops the loop, removes lighting, disposes the stage
 ```
+
+For custom integration (deterministic test frames, interleaved physics step),
+use `view.frame(nowMs, deltaSeconds)` in your own tick loop instead of
+`view.start()`.
 
 ## Entry points
 
@@ -58,8 +57,16 @@ new IsoGameView({
   mount, width, height, scene,
   clearColor: 0x1d2029,
   basePixelZoom: 2,
-  outlines: false                   // opt out when prop-inspecting
+  outlines: false,                  // opt out when prop-inspecting
+  lighting: true                    // auto-adds the standard game rig
 });
+
+// Lifecycle:
+view.start();       // built-in RAF loop (delegates to stage.start)
+view.stop();        // pauses the loop
+view.dispose();     // stop + remove lighting + dispose stage
+// For deterministic / interleaved ticks, call view.frame(now, dt) yourself
+// instead of view.start().
 ```
 
 `IsoGameView` composes `SharedScissorStage` + `PixelPerfectPane` + (optional)
@@ -109,7 +116,7 @@ const rightPane = new PixelPerfectPane({
 });
 
 // When you rebuild a subtree of the scene, re-apply the outline groups:
-rightPane.reapplyOutlineGroups(sceneBuilder.root);
+rightPane.setOutlineGroups(OUTLINE_GROUP_MAP, sceneBuilder.root);
 ```
 
 ### `SharedScissorStage` + `PerspectivePane` — asset inspection
@@ -179,10 +186,31 @@ assignOutlineGroupsByMaterialName(root, view.outline!, {
 });
 ```
 
-### Tileset viewer configs
+### Framing presets
 
-`TILESET_VIEWER_TARGET_CONFIG` and `TILESET_VIEWER_NORMAL_CONFIG` — canonical
-`IsoGameView` tuning for framing a single tileset in a preview pane.
+Framing fields (`fixedRenderHeight`, `baseOrthoHeight`, `cameraDistance`,
+`basePixelZoom`) and animation-feel fields interact — tuning one without
+the others breaks pixel-lock. These presets pin known-good tuples so you
+don't have to remember the interactions:
+
+- `PROP_PREVIEW_FRAMING` — tighter framing + snappier animations for prop
+  viewports (Asset Forge, PixelQuad). Multiply `baseOrthoHeight` by a scale
+  factor to zoom out for larger props:
+
+  ```ts
+  new IsoGameView({
+    mount, width, height, scene,
+    ...PROP_PREVIEW_FRAMING,
+    baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * framingScale,
+    outlines: false
+  });
+  ```
+
+- `TILESET_VIEWER_TARGET_CONFIG` / `TILESET_VIEWER_NORMAL_CONFIG` — canonical
+  framing for single-tileset preview panes (Material Studio).
+
+If the game defaults are what you want, pass nothing — the defaults in
+`PixelPerfectDefaults` are the game-view framing.
 
 ### Pixel-art texture helpers
 
@@ -191,6 +219,20 @@ assignOutlineGroupsByMaterialName(root, view.outline!, {
 offset for box-projected world-space UVs, required for tilesets where two
 coplanar sub-meshes share the same UV scale. The `ToTree` helper traverses
 a subtree and applies the defaults to every `MeshStandardMaterial`'s maps.
+
+### Dev-time warnings
+
+In non-production builds, the library logs one-time warnings for the
+most common setup mistakes:
+
+- Pane ancestor with opaque background that would mask the shared canvas.
+- `shadows: true` requested on a pane whose stage doesn't have shadows.
+- Scene with no lights (a black-canvas trap).
+- `outlineGroups.byName` keys that matched no mesh material.
+
+`process.env.NODE_ENV === "production"` silences them. For tests that
+need to run against a deliberately broken setup, call
+`setCommonRenderWarningsEnabled(false)`.
 
 ## Configuration
 
@@ -259,16 +301,19 @@ outline.assignOutlineGroup(wallMesh, "wall");
 outline.assignOutlineGroupsUnder(root, (mesh) => "wall");
 
 // Declarative form — set `outlineGroups` on the pane/view and the first
-// frame applies it. Re-apply after scene-graph rebuilds:
+// frame applies it. Re-apply after scene-graph rebuilds via
+// `setOutlineGroups(map, root?)` — one method that stores the map and
+// reapplies it. Hold a reference to the map so you can pass it back in:
+const OUTLINE_GROUP_MAP = {
+  byName: { blockstudio_accent: "glass", blockstudio_trim: "trim" },
+  default: "wall"
+};
 const paneWithGroups = new PixelPerfectPane({
   stage, id: "iso", element, scene,
   outlines: true,
-  outlineGroups: {
-    byName: { blockstudio_accent: "glass", blockstudio_trim: "trim" },
-    default: "wall"
-  }
+  outlineGroups: OUTLINE_GROUP_MAP
 });
-paneWithGroups.reapplyOutlineGroups(sceneBuilder.root);
+paneWithGroups.setOutlineGroups(OUTLINE_GROUP_MAP, sceneBuilder.root);
 
 // Typed debug views:
 //   "final" | "color" | "depth" | "normals" | "ids" |

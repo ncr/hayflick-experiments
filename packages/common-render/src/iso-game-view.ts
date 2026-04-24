@@ -9,6 +9,12 @@ import {
 } from "./pixel-perfect-types";
 import { type OutlinePipeline, type OutlineTuning } from "./outline/outline-pipeline";
 import type { MaterialNameGroupMap } from "./presets/outline-groups";
+import {
+  addStandardGameLighting,
+  type StandardGameLightingHandle,
+  type StandardGameLightingOptions
+} from "./presets/standard-lighting";
+import { warnIfSceneHasNoLights } from "./presets/dev-warnings";
 
 export type {
   IsoGameViewPose,
@@ -29,7 +35,8 @@ export type IsoGameViewConfig = IsoGameViewConfigBase & {
   /**
    * Initial outline-group assignment applied once on the first frame.
    * See {@link MaterialNameGroupMap}. Use
-   * {@link IsoGameView.reapplyOutlineGroups} for scene-graph rebuilds.
+   * {@link IsoGameView.setOutlineGroups} to replace the map after scene-graph
+   * rebuilds.
    */
   outlineGroups?: MaterialNameGroupMap;
   /**
@@ -37,6 +44,14 @@ export type IsoGameViewConfig = IsoGameViewConfigBase & {
    * {@link PixelPerfectPaneConfig.layers}.
    */
   layers?: number[];
+  /**
+   * Auto-managed lighting. `true` adds {@link addStandardGameLighting} with
+   * default options; an object passes through as options. The handle is
+   * exposed as {@link IsoGameView.lighting}, and the lights are removed on
+   * {@link IsoGameView.dispose}. Default `undefined` (consumer supplies
+   * their own lighting).
+   */
+  lighting?: boolean | StandardGameLightingOptions;
 };
 
 const SINGLE_PANE_ID = "main";
@@ -54,16 +69,20 @@ export class IsoGameView {
    */
   readonly outline: OutlinePipeline | null;
 
+  /**
+   * Set when the view was created with `lighting: true | {...}`. Holds the
+   * {@link StandardGameLightingHandle} returned by
+   * {@link addStandardGameLighting}. Null when `lighting` was not passed.
+   */
+  readonly lighting: StandardGameLightingHandle | null;
+
   private readonly mount: HTMLElement;
   private readonly pane: PixelPerfectPane;
-  private readonly savedMountBackground: string;
-  private readonly savedCanvasBackground: string;
   private readonly projectLocal = new THREE.Vector2();
   private disposed = false;
 
   constructor(config: IsoGameViewConfig) {
     this.mount = config.mount;
-    this.savedMountBackground = this.mount.style.background;
 
     this.stage = new SharedScissorStage({
       mount: config.mount,
@@ -76,13 +95,12 @@ export class IsoGameView {
       shadows: config.shadows ?? false
     });
     this.renderer = this.stage.renderer;
-    this.savedCanvasBackground = this.stage.canvas.style.background;
 
-    if (config.mountBackground !== undefined) {
-      this.mount.style.background = config.mountBackground;
-    }
-    if (config.canvasBackground !== undefined) {
-      this.stage.canvas.style.background = config.canvasBackground;
+    if (config.lighting) {
+      const opts = config.lighting === true ? undefined : config.lighting;
+      this.lighting = addStandardGameLighting(config.scene, opts);
+    } else {
+      this.lighting = null;
     }
 
     // Strip facade-only fields from the pane config so the pane's stage-facing
@@ -94,8 +112,7 @@ export class IsoGameView {
       height: _h,
       clearColor: _cc,
       clearAlpha: _ca,
-      mountBackground: _mb,
-      canvasBackground: _cb,
+      lighting: _lighting,
       ...paneConfig
     } = config;
     this.pane = new PixelPerfectPane({
@@ -115,18 +132,23 @@ export class IsoGameView {
     this.camera = this.pane.camera;
     this.cameraTarget = this.pane.cameraTarget;
     this.outline = this.pane.outline;
+
+    warnIfSceneHasNoLights(config.scene, "IsoGameView");
   }
 
   /**
-   * Re-apply the configured outline-group assignment. Call after rebuilding
-   * a subtree of the scene so newly-added meshes pick up their outline group.
-   * See {@link PixelPerfectPane.reapplyOutlineGroups}.
+   * Replace the outline-group map and reapply to the scene. Use after
+   * rebuilding a subtree so new meshes pick up their groups. Pass `null` to
+   * clear the stored map (future rebuilds won't reapply).
+   *
+   * The optional `root` scopes the reapply to a subtree; omit it to reapply
+   * to the whole scene.
    */
-  reapplyOutlineGroups(
-    root?: THREE.Object3D,
-    map?: MaterialNameGroupMap
+  setOutlineGroups(
+    map: MaterialNameGroupMap | null,
+    root?: THREE.Object3D
   ): void {
-    this.pane.reapplyOutlineGroups(root, map);
+    this.pane.setOutlineGroups(map, root);
   }
 
   getState(): IsoGameViewState {
@@ -258,6 +280,24 @@ export class IsoGameView {
     this.stage.resize(nextWidth, nextHeight, Math.max(1, window.devicePixelRatio || 1));
   }
 
+  /**
+   * Begin the render loop. Equivalent to a requestAnimationFrame loop that
+   * calls {@link frame} each tick. Safe to call when already running.
+   */
+  start(): void {
+    this.stage.start();
+  }
+
+  /** Stop the render loop started by {@link start}. Safe to call when idle. */
+  stop(): void {
+    this.stage.stop();
+  }
+
+  /**
+   * Render a single frame. Use when integrating with a caller-owned tick loop
+   * or for deterministic test frames. For normal runtime, prefer
+   * {@link start} / {@link stop}.
+   */
   frame(nowMs: number, deltaSeconds: number): void {
     this.stage.drawFrame(nowMs, deltaSeconds);
   }
@@ -293,10 +333,10 @@ export class IsoGameView {
       return;
     }
     this.disposed = true;
+    this.stage.stop();
+    this.lighting?.remove();
     // The outline pipeline is owned by the pane; stage.dispose() disposes panes.
-    this.stage.canvas.style.background = this.savedCanvasBackground;
     this.stage.dispose();
-    this.mount.style.background = this.savedMountBackground;
   }
 
   private toLocalCss(clientX: number, clientY: number): { x: number; y: number } | null {

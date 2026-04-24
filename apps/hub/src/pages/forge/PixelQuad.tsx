@@ -7,6 +7,7 @@ import {
 } from "react";
 import {
   PixelPerfectPane,
+  PROP_PREVIEW_FRAMING,
   SharedScissorStage,
   addStandardGameLighting
 } from "@common/render";
@@ -28,7 +29,6 @@ const ANGLES: PixelAngle[] = [
 ];
 
 const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
-const DEFAULT_BASE_ORTHO_HEIGHT = 5.966213466261495;
 const CLEAR_COLOR = 0x1a1a2e;
 
 type DragState = {
@@ -268,18 +268,9 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         scene,
         width: Math.max(1, cell.clientWidth || 1),
         height: Math.max(1, cell.clientHeight || 1),
-        fixedRenderHeight: 270,
-        baseOrthoHeight: DEFAULT_BASE_ORTHO_HEIGHT * framingScale,
-        cameraDistance: 30,
+        ...PROP_PREVIEW_FRAMING,
+        baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * framingScale,
         cameraYaw: CAMERA_BASE_YAW,
-        basePixelZoom: 2,
-        zoomMax: 6,
-        zoomAnimationRate: 14,
-        zoomAnimationBurstRate: 42,
-        zoomAnimationEpsilon: 0.001,
-        rotationAnimationRate: 18,
-        rotationAnimationEpsilon: 0.001,
-        zoomBurstIdleMs: 200,
         clearColor: CLEAR_COLOR,
         verticalBias
       });

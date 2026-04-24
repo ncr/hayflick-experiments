@@ -20,6 +20,7 @@ import {
   assignOutlineGroupsByMaterialName,
   type MaterialNameGroupMap
 } from "../presets/outline-groups";
+import { warnIfOutlineGroupsUnmatched } from "../presets/dev-warnings";
 
 export type PixelPerfectPaneConfig = {
   /** Stage to host this pane. The pane auto-registers on construction. */
@@ -48,7 +49,7 @@ export type PixelPerfectPaneConfig = {
   /**
    * Initial outline-group assignment to run once on the first `render()`
    * call. See {@link assignOutlineGroupsByMaterialName}. Use
-   * {@link PixelPerfectPane.reapplyOutlineGroups} to re-run when the
+   * {@link PixelPerfectPane.setOutlineGroups} to replace the map when the
    * scene graph is rebuilt.
    */
   outlineGroups?: MaterialNameGroupMap;
@@ -84,7 +85,7 @@ export class PixelPerfectPane implements SharedScissorPane {
   private readonly stage: SharedScissorStage;
   private readonly fixedDevicePixelRatio: number;
   private readonly scene: THREE.Scene;
-  private readonly outlineGroupsMap: MaterialNameGroupMap | null;
+  private outlineGroupsMap: MaterialNameGroupMap | null;
   private warnedMissingStageShadows = false;
   private initialOutlineGroupsApplied = false;
 
@@ -174,23 +175,22 @@ export class PixelPerfectPane implements SharedScissorPane {
   }
 
   /**
-   * Re-apply the configured outline-group assignment. Call after rebuilding
-   * a subtree of the scene so newly-added meshes pick up their outline group.
+   * Replace the outline-group map and reapply to the scene. Use after
+   * rebuilding a subtree so new meshes pick up their groups. Pass `null` for
+   * `map` to clear the stored map (future rebuilds become no-ops).
    *
-   * - `reapplyOutlineGroups()` — re-apply to the whole pane scene with the
-   *   map supplied at construction.
-   * - `reapplyOutlineGroups(root)` — re-apply to a subtree with the config map.
-   * - `reapplyOutlineGroups(root, map)` — explicit root and map.
+   * The optional `root` scopes the reapply to a subtree; omit it to reapply
+   * to the whole pane scene.
    */
-  reapplyOutlineGroups(
-    root?: THREE.Object3D,
-    map?: MaterialNameGroupMap
+  setOutlineGroups(
+    map: MaterialNameGroupMap | null,
+    root?: THREE.Object3D
   ): void {
-    if (!this.outline) return;
-    const resolvedMap = map ?? this.outlineGroupsMap;
-    if (!resolvedMap) return;
+    this.outlineGroupsMap = map;
+    if (!this.outline || !map) return;
     const resolvedRoot = root ?? this.scene;
-    assignOutlineGroupsByMaterialName(resolvedRoot, this.outline, resolvedMap);
+    assignOutlineGroupsByMaterialName(resolvedRoot, this.outline, map);
+    warnIfOutlineGroupsUnmatched(resolvedRoot, map, `PixelPerfectPane "${this.id}"`);
   }
 
   private installToneMappingHooksForMode(
@@ -237,6 +237,11 @@ export class PixelPerfectPane implements SharedScissorPane {
       this.outlineGroupsMap
     ) {
       assignOutlineGroupsByMaterialName(this.scene, this.outline, this.outlineGroupsMap);
+      warnIfOutlineGroupsUnmatched(
+        this.scene,
+        this.outlineGroupsMap,
+        `PixelPerfectPane "${this.id}"`
+      );
       this.initialOutlineGroupsApplied = true;
     }
     this.core.renderToRenderer(

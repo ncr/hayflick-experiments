@@ -114,8 +114,6 @@ export type IsoGameViewConfig = {
   scene: THREE.Scene;
   clearColor?: number;
   clearAlpha?: number;
-  mountBackground?: string;
-  canvasBackground?: string;
 } & Partial<IsoGameViewTuning>;
 
 /**

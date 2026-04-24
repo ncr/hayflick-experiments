@@ -27,10 +27,7 @@ export {
 export {
   SharedScissorStage,
   type SharedScissorStageConfig,
-  type SharedScissorPane,
-  type SharedScissorPaneRect,
-  type SharedScissorFrameContext,
-  type SharedScissorPaneHit
+  type SharedScissorPane
 } from "./stage/shared-scissor-stage";
 
 export {
@@ -79,9 +76,12 @@ export {
 } from "./presets/outline-groups";
 
 export {
+  PROP_PREVIEW_FRAMING,
   TILESET_VIEWER_TARGET_CONFIG,
   TILESET_VIEWER_NORMAL_CONFIG
-} from "./tileset-viewer-config";
+} from "./presets/framing";
+
+export { setCommonRenderWarningsEnabled } from "./presets/dev-warnings";
 
 // ========== Texture helpers ==========
 

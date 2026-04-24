@@ -1,6 +1,6 @@
 import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import * as THREE from "three";
-import { IsoGameView, addStandardGameLighting } from "@common/render";
+import { IsoGameView, PROP_PREVIEW_FRAMING } from "@common/render";
 
 export type PixelViewportViewState = {
   target: [number, number, number];
@@ -139,21 +139,9 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       const width = Math.floor(rect.width) || 400;
       const height = Math.floor(rect.height) || 300;
 
-      // Create scene with lighting
       const scene = new THREE.Scene();
       sceneRef.current = scene;
 
-      addStandardGameLighting(scene, {
-        ambient: 1.0,
-        keyColor: 0xffffff,
-        keyDirection: [3, 5, 2],
-        fillColor: 0x8899bb,
-        fillIntensity: 0.8,
-        fillDirection: [-2, 3, -1],
-        hemisphere: false
-      });
-
-      // Ground plane
       const groundGeo = new THREE.PlaneGeometry(20, 20);
       const groundMat = new THREE.MeshStandardMaterial({
         color: 0x556655,
@@ -173,20 +161,20 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
         width,
         height,
         scene,
-        fixedRenderHeight: 270,
+        ...PROP_PREVIEW_FRAMING,
         // Wider framing helps multi-panel quad previews fit tall props at zoom=1.
-        baseOrthoHeight: 5.966213466261495 * effectiveFramingScale,
-        cameraDistance: 30,
-        basePixelZoom: 2,
-        zoomMax: 6,
-        zoomAnimationRate: 14,
-        zoomAnimationBurstRate: 42,
-        zoomAnimationEpsilon: 0.001,
-        rotationAnimationRate: 18,
-        rotationAnimationEpsilon: 0.001,
-        zoomBurstIdleMs: 200,
+        baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * effectiveFramingScale,
         clearColor: 0x1a1a2e,
-        outlines: false
+        outlines: false,
+        lighting: {
+          ambient: 1.0,
+          keyColor: 0xffffff,
+          keyDirection: [3, 5, 2],
+          fillColor: 0x8899bb,
+          fillIntensity: 0.8,
+          fillDirection: [-2, 3, -1],
+          hemisphere: false
+        }
       });
       viewRef.current = view;
 

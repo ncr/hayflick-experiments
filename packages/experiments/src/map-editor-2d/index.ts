@@ -179,6 +179,11 @@ const experiment: ExperimentModule = {
       toneMapping: "none"
     });
 
+    const OUTLINE_GROUP_MAP = {
+      byName: { blockstudio_accent: "glass", blockstudio_trim: "trim" },
+      default: "wall"
+    };
+
     // Right pane: isometric 3D preview with outlines + ACES + shadows.
     // Blockstudio tile meshes use "blockstudio_accent" / "blockstudio_trim"
     // material names; everything else falls through to "wall".
@@ -196,10 +201,7 @@ const experiment: ExperimentModule = {
       toneMapping: "aces",
       shadows: true,
       outlines: true,
-      outlineGroups: {
-        byName: { blockstudio_accent: "glass", blockstudio_trim: "trim" },
-        default: "wall"
-      }
+      outlineGroups: OUTLINE_GROUP_MAP
     });
 
     let lastOutlineRevision = -1;
@@ -491,7 +493,7 @@ const experiment: ExperimentModule = {
 
       if (state.revision !== lastOutlineRevision) {
         lastOutlineRevision = state.revision;
-        rightPane.reapplyOutlineGroups(sceneBuilder.root);
+        rightPane.setOutlineGroups(OUTLINE_GROUP_MAP, sceneBuilder.root);
       }
 
       toolbar.setStats(

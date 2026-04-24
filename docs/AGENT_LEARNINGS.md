@@ -1,5 +1,31 @@
 # Agent Learnings
 
+## 2026-04-24 - @common/render dev-warning net
+Four dev-time warnings (gated on `process.env.NODE_ENV !== "production"`)
+catch the most common setup mistakes without adding any runtime cost in
+production builds:
+
+1. **Opaque pane background masks shared canvas** — fires when a pane
+   element (or ancestor up to stage mount) has an opaque background.
+   Set `data-shared-scissor-allow-opaque-background="true"` on the
+   offending element if intentional. Lives in
+   `SharedScissorStage.warnIfPaneAncestorChainMasksCanvas`.
+2. **Pane requests shadows, stage doesn't have them** — pane config
+   `shadows: true` with stage built without `shadows: true` is a silent
+   render difference. Lives in
+   `PixelPerfectPane.warnIfStageShadowsMissing`.
+3. **Scene has no lights** — `MeshStandardMaterial` renders black without
+   lights; the warning points at `addStandardGameLighting(scene)` or the
+   `lighting: true` config option. Lives in
+   `warnIfSceneHasNoLights` (`presets/dev-warnings.ts`).
+4. **`outlineGroups.byName` keys unmatched** — typos and stale material
+   names are otherwise silent, because the pipeline just falls through to
+   `default`. Lives in `warnIfOutlineGroupsUnmatched`
+   (`presets/dev-warnings.ts`).
+
+To silence in tests: `setCommonRenderWarningsEnabled(false)` from
+`@common/render`.
+
 ## 2026-02-07 - Camera looked off-center despite "centered" math
 Root cause:
 - Canvas CSS size and drawing-buffer size diverged on high-DPI/mobile paths.
