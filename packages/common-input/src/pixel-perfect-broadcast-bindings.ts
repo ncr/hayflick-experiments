@@ -73,7 +73,14 @@ export function bindPixelPerfectPaneBroadcast(
   const enableKeyboard = options.enableKeyboard ?? true;
   const enableTouch = options.enableTouch ?? true;
 
-  let dragPointerId: number | null = null;
+  let drag:
+    | {
+        pointerId: number;
+        pane: PixelPerfectPane;
+        lastLocalX: number;
+        lastLocalY: number;
+      }
+    | null = null;
   let wheelZoomAccum = 0;
   let wheelZoomLastMs = 0;
   let pinchLog2Accum = 0;
@@ -93,19 +100,19 @@ export function bindPixelPerfectPaneBroadcast(
     for (const p of panes) p.rotateQuarterTurns(delta);
   };
 
-  const beginDrag = (paneId: string, localX: number, localY: number): boolean => {
-    const pane = panes.find((p) => p.id === paneId);
-    if (!pane) return false;
-    pane.beginPanDrag(localX, localY);
-    return true;
-  };
-
   const onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 1) return;
     const hit = stage.hitTestPane(event.clientX, event.clientY);
     if (!hit) return;
-    if (!beginDrag(hit.paneId, hit.localX, hit.localY)) return;
-    dragPointerId = event.pointerId;
+    const pane = panes.find((p) => p.id === hit.paneId);
+    if (!pane) return;
+    pane.beginPanDrag(hit.localX, hit.localY);
+    drag = {
+      pointerId: event.pointerId,
+      pane,
+      lastLocalX: hit.localX,
+      lastLocalY: hit.localY
+    };
     try {
       pointerTarget.setPointerCapture(event.pointerId);
     } catch {
@@ -115,18 +122,17 @@ export function bindPixelPerfectPaneBroadcast(
   };
 
   const onPointerMove = (event: PointerEvent): void => {
-    if (dragPointerId == null || event.pointerId !== dragPointerId) return;
-    const hit = stage.hitTestPane(event.clientX, event.clientY);
-    if (!hit) return;
-    const anchor = panes.find((p) => p.id === hit.paneId);
-    if (!anchor) return;
-    // Drive the drag pane's delta; broadcast the resulting CSS delta to peers.
-    const prevX = (anchor as unknown as { lastClientX?: number }).lastClientX ?? hit.localX;
-    const prevY = (anchor as unknown as { lastClientY?: number }).lastClientY ?? hit.localY;
-    const didUpdate = anchor.updatePanDrag(hit.localX, hit.localY);
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const rect = drag.pane.element.getBoundingClientRect();
+    const localX = event.clientX - rect.left;
+    const localY = event.clientY - rect.top;
+    const dx = localX - drag.lastLocalX;
+    const dy = localY - drag.lastLocalY;
+    drag.lastLocalX = localX;
+    drag.lastLocalY = localY;
+    const anchor = drag.pane;
+    const didUpdate = anchor.updatePanDrag(localX, localY);
     if (didUpdate) {
-      const dx = hit.localX - prevX;
-      const dy = hit.localY - prevY;
       for (const p of panes) {
         if (p === anchor) continue;
         p.panByCss(dx, dy);
@@ -136,8 +142,8 @@ export function bindPixelPerfectPaneBroadcast(
   };
 
   const onPointerUp = (event: PointerEvent): void => {
-    if (dragPointerId == null || event.pointerId !== dragPointerId) return;
-    dragPointerId = null;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    drag = null;
     let consumed = false;
     for (const p of panes) {
       consumed = p.endPanDrag() || consumed;

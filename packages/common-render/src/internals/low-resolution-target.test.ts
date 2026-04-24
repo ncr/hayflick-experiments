@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   LowResolutionTarget,
   type LowResolutionDisplayState
@@ -78,6 +78,18 @@ describe("LowResolutionTarget", () => {
     // The original has been disposed; double-dispose on three WebGLRenderTarget
     // is safe, but we assert setLowTarget drops it via identity.
     expect(lr.getLowTarget()).not.toBe(first);
+  });
+
+  it("setLowTarget can preserve the previous target for reversible pipelines", () => {
+    const lr = makeTarget();
+    const first = lr.getLowTarget();
+    const disposeSpy = vi.spyOn(first, "dispose");
+    const replacement = new THREE.WebGLRenderTarget(1, 1);
+
+    lr.setLowTarget(replacement, 64, 64, { disposePrevious: false });
+
+    expect(lr.getLowTarget()).toBe(replacement);
+    expect(disposeSpy).not.toHaveBeenCalled();
   });
 
   it("setOutputSourceTexture overrides the sampler until set back to null", () => {

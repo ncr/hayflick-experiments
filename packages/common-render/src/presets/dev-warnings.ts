@@ -24,6 +24,15 @@ export function setCommonRenderWarningsEnabled(enabled: boolean): void {
   warningsEnabled = enabled;
 }
 
+export function commonRenderWarningsEnabled(): boolean {
+  return warningsEnabled;
+}
+
+export function warnCommonRender(context: string, message: string): void {
+  if (!warningsEnabled) return;
+  console.warn(`${WARN_PREFIX} ${context}: ${message}`);
+}
+
 export function warnIfSceneHasNoLights(
   scene: THREE.Scene,
   context: string
@@ -36,9 +45,10 @@ export function warnIfSceneHasNoLights(
     }
   });
   if (hasLight) return;
-  console.warn(
-    `${WARN_PREFIX} ${context}: scene has no lights. MeshStandardMaterial will render black. ` +
-      `Call addStandardGameLighting(scene) before construction, or pass \`lighting: true\` in config.`
+  warnCommonRender(
+    context,
+    "scene has no lights. MeshStandardMaterial will render black. " +
+      "Call addStandardGameLighting(scene) before construction, or pass `lighting: true` in config."
   );
 }
 
@@ -78,8 +88,9 @@ export function warnIfOutlineGroupsUnmatched(
   const sceneNames = collectMaterialNames(root);
   const unmatched = requestedKeys.filter((k) => !sceneNames.has(k));
   if (unmatched.length === 0) return;
-  console.warn(
-    `${WARN_PREFIX} ${context}: outlineGroups.byName keys did not match any mesh material: ` +
+  warnCommonRender(
+    context,
+    "outlineGroups.byName keys did not match any mesh material: " +
       `${unmatched.join(", ")}. Fix the keys or remove them from the map.`
   );
 }

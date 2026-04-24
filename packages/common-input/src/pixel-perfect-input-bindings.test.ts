@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  bindPixelPerfectPaneBroadcast,
   bindIsoGameViewInput,
   bindSharedScissorStageInput
-} from "./pixel-perfect-input-bindings";
+} from "./index";
 
 class FakeTarget {
   style = { touchAction: "" };
@@ -339,6 +340,68 @@ describe("@common/input shared scissor stage bindings", () => {
     detach();
     pointerTarget.emit("pointerdown", pointerDownEvent);
     expect(pane.beginPanDrag).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("@common/input pixel pane broadcast bindings", () => {
+  it("broadcasts drag deltas to peer panes without reading pane internals", () => {
+    const pointerTarget = new FakeTarget();
+    const paneElement = {
+      getBoundingClientRect: () => ({ left: 90, top: 180 })
+    };
+    const paneA = {
+      id: "north",
+      element: paneElement,
+      beginPanDrag: vi.fn(),
+      updatePanDrag: vi.fn(() => true),
+      endPanDrag: vi.fn(() => true),
+      panByCss: vi.fn(),
+      stepCameraZoomAtLocalCss: vi.fn(),
+      rotateQuarterTurns: vi.fn(),
+      toggleZoomMode: vi.fn()
+    };
+    const paneB = {
+      id: "east",
+      element: paneElement,
+      beginPanDrag: vi.fn(),
+      updatePanDrag: vi.fn(() => true),
+      endPanDrag: vi.fn(() => true),
+      panByCss: vi.fn(),
+      stepCameraZoomAtLocalCss: vi.fn(),
+      rotateQuarterTurns: vi.fn(),
+      toggleZoomMode: vi.fn()
+    };
+    const stage = {
+      canvas: pointerTarget as unknown as HTMLCanvasElement,
+      hitTestPane: vi
+        .fn()
+        .mockReturnValueOnce({ paneId: "north", localX: 10, localY: 20, rect: {} })
+        .mockReturnValueOnce({ paneId: "north", localX: 16, localY: 27, rect: {} })
+    };
+
+    const detach = bindPixelPerfectPaneBroadcast({
+      stage: stage as unknown as SharedScissorStage,
+      panes: [paneA, paneB] as unknown as any[],
+      pointerTarget: pointerTarget as unknown as HTMLElement,
+      keyboardTarget: new FakeTarget() as unknown as Window,
+      enableKeyboard: false,
+      enableTouch: false
+    });
+
+    pointerTarget.emit(
+      "pointerdown",
+      makePreventable({ button: 1, pointerId: 7, clientX: 100, clientY: 200 })
+    );
+    pointerTarget.emit(
+      "pointermove",
+      makePreventable({ pointerId: 7, clientX: 106, clientY: 207 })
+    );
+
+    expect(paneA.beginPanDrag).toHaveBeenCalledWith(10, 20);
+    expect(paneA.updatePanDrag).toHaveBeenCalledWith(16, 27);
+    expect(paneB.panByCss).toHaveBeenCalledWith(6, 7);
+
+    detach();
   });
 });
 

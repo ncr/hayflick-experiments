@@ -1,5 +1,9 @@
 import * as THREE from "three";
 import { queryMaxBackingSize } from "../internals/gl-caps";
+import {
+  commonRenderWarningsEnabled,
+  warnCommonRender
+} from "../presets/dev-warnings";
 
 export type SharedScissorPaneRect = {
   cssLeft: number;
@@ -153,6 +157,7 @@ export class SharedScissorStage {
     if (!entry) return;
     this.panes.delete(id);
     this.paneRects.delete(id);
+    entry.pane.dispose?.();
   }
 
   start(): void {
@@ -375,6 +380,9 @@ export class SharedScissorStage {
   }
 
   private warnIfPaneAncestorChainMasksCanvas(entry: PaneEntry): void {
+    if (!commonRenderWarningsEnabled()) {
+      return;
+    }
     if (entry.warnedOpaqueBackgroundMask) {
       return;
     }
@@ -402,8 +410,9 @@ export class SharedScissorStage {
     }
 
     entry.warnedOpaqueBackgroundMask = true;
-    console.warn(
-      `[SharedScissorStage] Pane "${entry.pane.id}" may be visually masked by opaque backgrounds between pane element and stage mount. ` +
+    warnCommonRender(
+      "SharedScissorStage",
+      `Pane "${entry.pane.id}" may be visually masked by opaque backgrounds between pane element and stage mount. ` +
         `Shared scissor canvases render behind pane DOM overlays, so pane ancestor backgrounds must stay transparent. ` +
         `Offenders: ${offenders.join(" -> ")}. ` +
         `If this is intentional, set data-shared-scissor-allow-opaque-background="true" on that element.`

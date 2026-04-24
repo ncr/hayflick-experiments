@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { IsoCamera } from "./iso-camera";
 import { LowResolutionTarget } from "./low-resolution-target";
+import type { SetLowTargetOptions } from "./low-resolution-target";
 import { PixelPerfectController } from "./pixel-perfect-controller";
 import {
   resolvePixelPerfectTuning,
@@ -286,9 +287,14 @@ export class IsoViewport {
   }
 
   /** Replace the low-res render target (e.g. to change MSAA sample count). */
-  setLowTarget(target: THREE.WebGLRenderTarget): void {
+  setLowTarget(target: THREE.WebGLRenderTarget, options?: SetLowTargetOptions): void {
     const state = this.controller.getState();
-    this.lowRes.setLowTarget(target, state.lowRenderWidth, state.lowRenderHeight);
+    this.lowRes.setLowTarget(
+      target,
+      state.lowRenderWidth,
+      state.lowRenderHeight,
+      options
+    );
   }
 
   /** Override the texture the output upscale quad reads from.

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const viewportCoreState = vi.hoisted(() => ({
   lastRenderArgs: null as null | Parameters<
@@ -41,6 +41,7 @@ vi.mock("../internals/iso-viewport", () => {
 import { PixelPerfectPane } from "./pixel-perfect-pane";
 import { PerspectivePane } from "./perspective-pane";
 import type { SharedScissorFrameContext, SharedScissorPane, SharedScissorPaneRect } from "./shared-scissor-stage";
+import { setCommonRenderWarningsEnabled } from "../presets/dev-warnings";
 
 function makeRect(overrides: Partial<SharedScissorPaneRect> = {}): SharedScissorPaneRect {
   return {
@@ -68,6 +69,7 @@ function makeFakeStage() {
       registerPane: (pane: SharedScissorPane) => {
         registered.push(pane);
       },
+      renderer: { shadowMap: { enabled: false } },
       maxBackingWidth: 4096,
       maxBackingHeight: 4096,
       getDevicePixelRatio: () => 2
@@ -77,6 +79,11 @@ function makeFakeStage() {
 }
 
 describe("@common/render shared scissor contract regressions", () => {
+  afterEach(() => {
+    setCommonRenderWarningsEnabled(true);
+    vi.restoreAllMocks();
+  });
+
   it("PerspectivePane uses clipped scissor but unclipped viewport for partial offscreen panes", () => {
     const calls: Array<[string, ...unknown[]]> = [];
     const renderer = {
@@ -165,5 +172,24 @@ describe("@common/render shared scissor contract regressions", () => {
     );
 
     expect(viewportCoreState.lastResizeArgs).toEqual([80, 60, 2, 160, 120]);
+  });
+
+  it("honors the shared warning gate for missing stage shadows diagnostics", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { stage } = makeFakeStage();
+    setCommonRenderWarningsEnabled(false);
+
+    new PixelPerfectPane({
+      stage,
+      id: "shadowed-pixel",
+      element: { clientWidth: 80, clientHeight: 60 } as HTMLElement,
+      scene: {} as any,
+      width: 80,
+      height: 60,
+      shadows: true
+    });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    setCommonRenderWarningsEnabled(true);
   });
 });

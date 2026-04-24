@@ -95,6 +95,7 @@ type MeshEntry = {
 export class OutlinePipeline {
   private readonly view: OutlineHost;
   private readonly scene: THREE.Scene;
+  private readonly originalLowTarget: THREE.WebGLRenderTarget;
   private readonly colorTarget: THREE.WebGLRenderTarget;
   private readonly normalTarget: THREE.WebGLRenderTarget;
   private readonly depthPackedTarget: THREE.WebGLRenderTarget;
@@ -131,6 +132,7 @@ export class OutlinePipeline {
     this.clearAlpha = config.clearAlpha;
 
     const initialLow = this.view.getLowTarget();
+    this.originalLowTarget = initialLow;
     const depthTexture = new THREE.DepthTexture(
       initialLow.width,
       initialLow.height,
@@ -145,7 +147,7 @@ export class OutlinePipeline {
       depthTexture
     });
     this.colorTarget.texture.generateMipmaps = false;
-    this.view.setLowTarget(this.colorTarget);
+    this.view.setLowTarget(this.colorTarget, { disposePrevious: false });
 
     const makeAuxTarget = (w: number, h: number) => {
       const t = new THREE.WebGLRenderTarget(w, h, {
@@ -237,9 +239,12 @@ export class OutlinePipeline {
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
     };
     this.view.afterSceneRender = (renderer, lowTarget) => {
-      this.renderOutlinePasses(renderer, lowTarget);
-      renderer.toneMapping = this.savedToneMapping;
-      prevAfter?.(renderer, lowTarget);
+      try {
+        this.renderOutlinePasses(renderer, lowTarget);
+      } finally {
+        renderer.toneMapping = this.savedToneMapping;
+        prevAfter?.(renderer, lowTarget);
+      }
     };
   }
 
@@ -367,6 +372,7 @@ export class OutlinePipeline {
 
     const savedOverrideMaterial = this.scene.overrideMaterial;
     const savedBackground = this.scene.background;
+    let idMaterialsInstalled = false;
 
     try {
       renderer.toneMapping = THREE.NoToneMapping;
@@ -395,19 +401,22 @@ export class OutlinePipeline {
       for (const entry of this.meshEntries.values()) {
         entry.mesh.material = entry.idMaterial;
       }
+      idMaterialsInstalled = true;
       renderer.setRenderTarget(this.idTarget);
       renderer.setClearColor(0x000000, 1);
       renderer.clear();
       renderer.render(this.scene, this.view.camera);
-      for (const entry of this.meshEntries.values()) {
-        entry.mesh.material = entry.originalMaterial;
-      }
+      this.restoreOriginalMeshMaterials();
+      idMaterialsInstalled = false;
       renderer.setClearColor(this.clearColorHex, this.clearAlpha);
 
       renderer.setRenderTarget(this.postTarget);
       renderer.clear();
       renderer.render(this.postScene, this.postCamera);
     } finally {
+      if (idMaterialsInstalled) {
+        this.restoreOriginalMeshMaterials();
+      }
       this.scene.overrideMaterial = savedOverrideMaterial;
       this.scene.background = savedBackground;
     }
@@ -444,6 +453,7 @@ export class OutlinePipeline {
     this.view.beforeSceneRender = this.prevBeforeSceneRender;
     this.view.afterSceneRender = this.prevAfterSceneRender;
     this.view.setOutputSourceTexture(null);
+    this.view.setLowTarget(this.originalLowTarget, { disposePrevious: false });
     this.normalTarget.dispose();
     this.idTarget.dispose();
     this.depthPackedTarget.dispose();
@@ -461,6 +471,12 @@ export class OutlinePipeline {
     }
     this.idGroups.clear();
     this.meshEntries.clear();
+  }
+
+  private restoreOriginalMeshMaterials(): void {
+    for (const entry of this.meshEntries.values()) {
+      entry.mesh.material = entry.originalMaterial;
+    }
   }
 }
 

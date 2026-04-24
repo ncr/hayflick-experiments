@@ -165,8 +165,8 @@ function makeConfig(mount: HTMLElement): any {
     outputOverscanLowPixels: 2,
     lowTargetSamples: 0,
     smoothPixelTransitions: false,
-    clearColor: 0x0b0f14,
-    clearAlpha: 1,
+    clearColor: 0x123456,
+    clearAlpha: 0.75,
     outlines: false
   };
 }
@@ -221,6 +221,8 @@ describe("@common/render IsoGameView facade", () => {
     expect(pane.config.element).toBe(mount);
     expect(pane.config.width).toBe(160);
     expect(pane.config.height).toBe(120);
+    expect(pane.config.clearColor).toBe(0x123456);
+    expect(pane.config.clearAlpha).toBe(0.75);
     expect(pane.config.lowTargetSamples).toBe(0);
     expect(pane.config.smoothPixelTransitions).toBe(false);
     expect(pane.config.verticalBias).toBe(0.34);

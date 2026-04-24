@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { PixelPerfectPane } from "./stage/pixel-perfect-pane";
 import { SharedScissorStage } from "./stage/shared-scissor-stage";
+import type { SetLowTargetOptions } from "./internals/low-resolution-target";
 import {
   type IsoGameViewConfig as IsoGameViewConfigBase,
   type IsoGameViewPose,
@@ -103,15 +104,14 @@ export class IsoGameView {
       this.lighting = null;
     }
 
-    // Strip facade-only fields from the pane config so the pane's stage-facing
-    // clear path doesn't double-clear with the stage's own clear.
+    // Strip facade-only fields from the pane config. Keep clearColor /
+    // clearAlpha flowing through: IsoViewport clears its own pane rect after
+    // the stage-level full-canvas clear, so both layers need the same color.
     const {
       mount: _mount,
       scene: _scene,
       width: _w,
       height: _h,
-      clearColor: _cc,
-      clearAlpha: _ca,
       lighting: _lighting,
       ...paneConfig
     } = config;
@@ -231,8 +231,8 @@ export class IsoGameView {
   }
 
   /** @advanced See PixelPerfectPane.setLowTarget. */
-  setLowTarget(target: THREE.WebGLRenderTarget): void {
-    this.pane.setLowTarget(target);
+  setLowTarget(target: THREE.WebGLRenderTarget, options?: SetLowTargetOptions): void {
+    this.pane.setLowTarget(target, options);
   }
 
   /** @advanced See PixelPerfectPane.setOutputSourceTexture. */

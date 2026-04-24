@@ -1,5 +1,42 @@
 # Agent Learnings
 
+## 2026-04-24 - @common/render consumer-surface tests must guard refactors
+Root cause:
+- Existing render goldens covered core iso math, outlines, and scissor clipping, but not enough consumer-shaped combinations.
+- Prop previews and mixed editor/preview stages exercise important public contracts: framing presets, `outlines: false`, pane layers, per-pane tone mapping, shadows, and outline-on mixed-stage rendering.
+
+Detection signal:
+- Rendering-library review found fixes that could have changed consumer output without being obviously covered by unit tests alone.
+- Adding `consumer-prop-preview` and `consumer-mixed-stage` diag routes produced zero-diff Playwright baselines that stayed stable across the refactor.
+
+Preventive checklist:
+- Before refactoring `@common/render`, run `pnpm exec playwright test e2e/render-invariants`.
+- Keep consumer-shaped diag routes deterministic and asset-free so screenshots are stable under SwiftShader.
+- Treat `maxDiffPixels: 0` failures as regressions unless the visual contract change is explicit and snapshots are intentionally regenerated.
+
+## 2026-04-24 - @common/render lifecycle/input leaks hid behind passing pixel tests
+Root cause:
+- `IsoGameView` treated `clearColor` / `clearAlpha` as facade-only and did not pass them to the pane clear path.
+- `SharedScissorStage.unregisterPane()` removed panes without disposing pane-owned GPU resources.
+- Some dev warnings bypassed the shared `setCommonRenderWarningsEnabled(false)` gate.
+- Broadcast pane drag tried to read private/nonexistent pane fields for delta calculation.
+- `OutlinePipeline` replaced the low target without reversible ownership and did not restore mesh materials if an auxiliary render pass threw.
+
+Detection signal:
+- Targeted regression tests failed before the fixes:
+  - clear color missing from `PixelPerfectPane` config
+  - unregister did not call pane `dispose`
+  - warning gate did not suppress opaque-background / missing-shadow warnings
+  - broadcast drag sent peer panes `(0, 0)` deltas
+  - outline pipeline needed explicit low-target restoration and exception-safe material restore
+
+Preventive checklist:
+- Add unit tests for lifecycle semantics before render refactors; pixel goldens are necessary but not sufficient.
+- Keep pane unregister/dispose behavior explicit and idempotent.
+- Route all library diagnostics through the shared warning gate.
+- Do not depend on private pane internals from `@common/input`; store gesture state in the binder.
+- Treat render target swaps as owned resources that must be reversible or deliberately destructive.
+
 ## 2026-04-24 - @common/render dev-warning net
 Four dev-time warnings (gated on `process.env.NODE_ENV !== "production"`)
 catch the most common setup mistakes without adding any runtime cost in

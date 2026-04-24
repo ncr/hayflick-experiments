@@ -18,6 +18,10 @@ export type LowResolutionDisplayState = {
   readonly viewportDeviceHeight: number;
 };
 
+export type SetLowTargetOptions = {
+  disposePrevious?: boolean;
+};
+
 /**
  * The low-resolution render target that the scene is drawn into, together with
  * the full-screen quad that upscales it onto the device framebuffer. Owns all
@@ -75,14 +79,21 @@ export class LowResolutionTarget {
     return this.lowTarget;
   }
 
-  setLowTarget(next: THREE.WebGLRenderTarget, lowWidth: number, lowHeight: number): void {
+  setLowTarget(
+    next: THREE.WebGLRenderTarget,
+    lowWidth: number,
+    lowHeight: number,
+    options: SetLowTargetOptions = {}
+  ): void {
     const old = this.lowTarget;
     this.lowTarget = next;
     next.setSize(lowWidth, lowHeight);
     if (!this.customOutputSource) {
       this.outputMaterial.uniforms.uSource.value = this.lowTarget.texture;
     }
-    old.dispose();
+    if (options.disposePrevious !== false) {
+      old.dispose();
+    }
   }
 
   setOutputSourceTexture(texture: THREE.Texture | null): void {

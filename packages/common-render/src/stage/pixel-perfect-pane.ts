@@ -6,6 +6,7 @@ import type {
   PixelSnapMode
 } from "../pixel-perfect-types";
 import { IsoViewport } from "../internals/iso-viewport";
+import type { SetLowTargetOptions } from "../internals/low-resolution-target";
 import type {
   SharedScissorFrameContext,
   SharedScissorPane,
@@ -20,7 +21,10 @@ import {
   assignOutlineGroupsByMaterialName,
   type MaterialNameGroupMap
 } from "../presets/outline-groups";
-import { warnIfOutlineGroupsUnmatched } from "../presets/dev-warnings";
+import {
+  warnCommonRender,
+  warnIfOutlineGroupsUnmatched
+} from "../presets/dev-warnings";
 
 export type PixelPerfectPaneConfig = {
   /** Stage to host this pane. The pane auto-registers on construction. */
@@ -88,6 +92,7 @@ export class PixelPerfectPane implements SharedScissorPane {
   private outlineGroupsMap: MaterialNameGroupMap | null;
   private warnedMissingStageShadows = false;
   private initialOutlineGroupsApplied = false;
+  private disposed = false;
 
   constructor(config: PixelPerfectPaneConfig) {
     this.id = config.id;
@@ -222,8 +227,9 @@ export class PixelPerfectPane implements SharedScissorPane {
     if (this.warnedMissingStageShadows) return;
     if (this.stage.renderer.shadowMap.enabled) return;
     this.warnedMissingStageShadows = true;
-    console.warn(
-      `[PixelPerfectPane] Pane "${this.id}" requested shadows: true but the ` +
+    warnCommonRender(
+      "PixelPerfectPane",
+      `Pane "${this.id}" requested shadows: true but the ` +
         `hosting SharedScissorStage was not constructed with shadows: true. ` +
         `Shadow casting requires the shared renderer to enable shadowMap.enabled, ` +
         `so this pane will render without shadows.`
@@ -279,6 +285,8 @@ export class PixelPerfectPane implements SharedScissorPane {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.outline?.dispose();
     this.core.dispose();
   }
@@ -399,8 +407,8 @@ export class PixelPerfectPane implements SharedScissorPane {
   }
 
   /** @advanced Prefer `lowTargetSamples` in pane config over swapping the RT. */
-  setLowTarget(target: THREE.WebGLRenderTarget): void {
-    this.core.setLowTarget(target);
+  setLowTarget(target: THREE.WebGLRenderTarget, options?: SetLowTargetOptions): void {
+    this.core.setLowTarget(target, options);
   }
 
   /** @advanced For custom-AA output; the library drives this when `outlines: true`. */

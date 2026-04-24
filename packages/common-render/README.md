@@ -325,10 +325,10 @@ outline.setIdSuppression("on");            // "on" | "off"
 outline.setSuppressMode("world-position"); // "world-position" | "depth"
 ```
 
-All 5 materials (`LinearDepthMaterial`, `OutlineGroupMaterial`,
-`EdgeDetectionMaterial`, `WorldPositionMaterial`, plus
-`OutputUpscaleMaterial` for the upscale path) are exported for custom
-assembly if the preset isn't what you want.
+Outline materials stay internal; construction flows through `outlines` /
+`outlineGroups` so pane lifecycle, target ownership, and hook chaining remain
+library-managed. If a consumer needs a new pass, add it behind declarative
+pane config instead of importing pipeline internals.
 
 ### Advanced: custom antialiasing
 
@@ -407,6 +407,9 @@ Pixel regressions are caught by a Playwright golden suite under
 `e2e/render-invariants/`. Scenes live at `/#/diag/<slug>` (see
 `apps/hub/src/pages/diag/registry.ts`). Tests run against a Chromium +
 SwiftShader build with `maxDiffPixels: 0` — any pixel shift fails the suite.
+`consumer-surfaces.spec.ts` adds consumer-shaped baselines for prop-preview
+framing and mixed shared-stage panes; keep those green before/after render
+library refactors.
 
 Deep outline inspection uses `scripts/outline-testbed/`: captures edge-mode
 screenshots + ASCII edge grids for the outline-walls tilesets, with diff
@@ -420,7 +423,7 @@ goldens.
 
 ## Migration from `PixelPerfectView`
 
-Renames in this release (deprecated aliases stay for one cycle):
+Renames in this release:
 
 | Old | New |
 |---|---|

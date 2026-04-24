@@ -84,6 +84,7 @@ vi.mock("three", () => {
 
 import { SharedScissorStage, type SharedScissorPane } from "./shared-scissor-stage";
 import { PerspectivePane } from "./perspective-pane";
+import { setCommonRenderWarningsEnabled } from "../presets/dev-warnings";
 
 class FakeResizeObserver {
   constructor(private readonly _callback: ResizeObserverCallback) {}
@@ -224,6 +225,7 @@ describe("@common/render SharedScissorStage", () => {
   });
 
   afterEach(() => {
+    setCommonRenderWarningsEnabled(true);
     vi.restoreAllMocks();
   });
 
@@ -326,7 +328,7 @@ describe("@common/render SharedScissorStage", () => {
     stage.dispose();
   });
 
-  it("unregisterPane removes the pane without disposing it", () => {
+  it("unregisterPane disposes pane-owned resources exactly once", () => {
     const mount = makeElement(makeRect(0, 0, 200, 100));
     const paneEl = makeElement(makeRect(0, 0, 80, 80));
     const pane = makePane("pane-a", paneEl);
@@ -337,10 +339,10 @@ describe("@common/render SharedScissorStage", () => {
     stage.unregisterPane("pane-a");
 
     expect(stage.getPaneRects().has("pane-a")).toBe(false);
-    expect(pane.disposeSpy).not.toHaveBeenCalled();
+    expect(pane.disposeSpy).toHaveBeenCalledTimes(1);
 
     stage.dispose();
-    expect(pane.disposeSpy).not.toHaveBeenCalled();
+    expect(pane.disposeSpy).toHaveBeenCalledTimes(1);
   });
 
   it("renders only panes with meaningful device size and resets scissor test state", () => {
@@ -448,5 +450,31 @@ describe("@common/render SharedScissorStage", () => {
     expect(String(warnSpy.mock.calls[0]?.[0] ?? "")).toContain("row-card");
 
     stage.dispose();
+  });
+
+  it("honors the shared warning gate for opaque background diagnostics", () => {
+    const mount = makeElement(makeRect(0, 0, 300, 200));
+    const row = makeElement(makeRect(0, 0, 300, 120));
+    row.style.backgroundColor = "rgb(32, 39, 52)";
+    const paneEl = makeElement(makeRect(10, 10, 100, 80));
+    mount.appendChild(row);
+    row.appendChild(paneEl);
+    const pane = makePane("pane-a", paneEl);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setCommonRenderWarningsEnabled(false);
+
+    const stage = new SharedScissorStage({
+      mount: mount as unknown as HTMLElement,
+      width: 300,
+      height: 200,
+      pixelRatio: 1
+    });
+    stage.registerPane(pane);
+    stage.drawFrame(1000, 1 / 60);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    stage.dispose();
+    setCommonRenderWarningsEnabled(true);
   });
 });

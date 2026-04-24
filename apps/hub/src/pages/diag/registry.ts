@@ -46,6 +46,11 @@ const LOADERS: Record<string, Loader> = {
   "default-game-view-plain": () =>
     import("./scenes/default-game-view").then((m) => m.defaultGameViewPlain),
 
+  "consumer-prop-preview": () =>
+    import("./scenes/consumer-surfaces").then((m) => m.consumerPropPreview),
+  "consumer-mixed-stage": () =>
+    import("./scenes/consumer-surfaces").then((m) => m.consumerMixedStage),
+
   invariants: () => import("./scenes/internal-state").then((m) => m.invariants)
 };
 
