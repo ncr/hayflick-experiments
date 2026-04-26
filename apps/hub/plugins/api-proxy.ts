@@ -113,6 +113,85 @@ async function handleOpenAI(
     return jsonResponse(res, 200, result);
   }
 
+  if (subpath === "/edit-image" && req.method === "POST") {
+    const body = (await readJson(req)) as {
+      prompt: string;
+      imageBase64: string;
+      size?: string;
+      quality?: string;
+      n?: number;
+    };
+
+    if (!body.imageBase64) {
+      return errorResponse(res, 400, "imageBase64 is required");
+    }
+
+    // gpt-image-2's legacy /v1/images/edits endpoint is gated (returns 403
+    // "organization must be verified" even for verified orgs as of late
+    // April 2026 — see OpenAI community threads). The same model IS
+    // accessible via the Responses API with `tools:[{type:"image_generation",
+    // model:"gpt-image-2"}]`. We always go through Responses; both v1 and
+    // v2 work that way and the token-based pricing is the same.
+    const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+    const chatModel = process.env.OPENAI_RESPONSES_MODEL || "gpt-5.5";
+    const responsesBody = {
+      model: chatModel,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: body.prompt },
+            {
+              type: "input_image",
+              image_url: `data:image/png;base64,${body.imageBase64}`,
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          type: "image_generation",
+          model: imageModel,
+          size: body.size || "1024x1024",
+          quality: body.quality || "low",
+        },
+      ],
+    };
+
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(responsesBody),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      return errorResponse(res, response.status, err);
+    }
+
+    const result = (await response.json()) as {
+      output?: Array<{ type: string; result?: string }>;
+    };
+    const igCall = result.output?.find(
+      (o) => o.type === "image_generation_call"
+    );
+    if (!igCall?.result) {
+      return errorResponse(
+        res,
+        500,
+        `No image_generation_call.result in Responses output: ${JSON.stringify(result).slice(0, 500)}`
+      );
+    }
+    // Adapt to the legacy /v1/images/* response shape so existing client
+    // code (`data.data[0].b64_json`) keeps working unchanged.
+    return jsonResponse(res, 200, {
+      data: [{ b64_json: igCall.result }],
+    });
+  }
+
   errorResponse(res, 404, "Unknown OpenAI endpoint");
 }
 

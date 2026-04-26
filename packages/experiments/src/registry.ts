@@ -6,9 +6,14 @@ import { meta as physicsPropDropMeta } from "./physics-prop-drop/meta";
 import { meta as mapEditor2dMeta } from "./map-editor-2d/meta";
 import { meta as materialStudioMeta } from "./material-studio/meta";
 import { meta as outlineWallsMeta } from "./outline-walls/meta";
+import { meta as pixelArtTexMeta } from "./pixel-art-tex/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...pixelArtTexMeta,
+    load: () => import("./pixel-art-tex/index")
+  },
   {
     ...outlineWallsMeta,
     load: () => import("./outline-walls/index")
