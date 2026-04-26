@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { generateImage } from "./api/openai";
+import { FORGE_CONCEPT_CACHE_SOURCE, generateImage } from "./api/openai";
+import { HistoryPicker } from "./HistoryPicker";
 import type { StyleGuide } from "./StyleGuidePanel";
 
 interface Props {
@@ -22,6 +23,7 @@ export function GenerateImagePanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState("1024x1024");
+  const [showHistory, setShowHistory] = useState(false);
 
   const composePrompt = () => {
     const parts = [
@@ -88,16 +90,36 @@ export function GenerateImagePanel({
         <div className="forge-prompt-preview">{composePrompt()}</div>
       </div>
 
-      <button
-        className="forge-btn forge-btn-primary"
-        onClick={handleGenerate}
-        disabled={loading || !propDescription.trim()}
-        data-testid="generate-image-btn"
-      >
-        {loading ? "Generating..." : "Generate Image"}
-      </button>
+      <div className="forge-button-row">
+        <button
+          className="forge-btn forge-btn-primary"
+          onClick={handleGenerate}
+          disabled={loading || !propDescription.trim()}
+          data-testid="generate-image-btn"
+        >
+          {loading ? "Generating..." : "Generate Image"}
+        </button>
+        <button
+          className="forge-btn"
+          onClick={() => setShowHistory(true)}
+          disabled={loading}
+        >
+          History
+        </button>
+      </div>
 
       {error && <div className="forge-error">{error}</div>}
+
+      {showHistory && (
+        <HistoryPicker
+          source={FORGE_CONCEPT_CACHE_SOURCE}
+          onClose={() => setShowHistory(false)}
+          onPick={(entry) => {
+            onConceptImage(`data:${entry.outputMimeType};base64,${entry.outputB64}`);
+            if (entry.prompt && !propDescription) onPropDescription(entry.prompt);
+          }}
+        />
+      )}
 
       {conceptImage && (
         <div className="forge-concept-preview" data-testid="concept-image">

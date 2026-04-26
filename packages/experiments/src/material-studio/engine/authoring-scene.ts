@@ -2,14 +2,18 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { SharedScissorStage, PixelPerfectPane, TILESET_VIEWER_TARGET_CONFIG } from "@common/render";
 import { bindPixelPerfectPaneBroadcast } from "@common/input";
-import type { GeneratedMaps, GlassParams, Surface } from "../types";
+import type { GeneratedMaps, GlassParams, Surface, SubmeshUvData } from "../types";
 import { applyTexturesToGroup, createTextureSet, type TextureSet } from "../texture-swap";
 
 const gltfLoader = new GLTFLoader();
 
 const KEY_RADIUS = 20;
 const KEY_HEIGHT = 18;
-const KEY_ORBIT_SPEED = (2 * Math.PI) / 10;
+/** Static angle for the key light. The light no longer orbits — keeping it
+ *  stationary means the directional shadow map can be cached (autoUpdate=false)
+ *  instead of re-rendered every frame, which is what was making the panel
+ *  stutter during interaction. */
+const KEY_ANGLE = Math.PI * 0.25;
 
 function createGroundPlane(): THREE.Mesh {
   const geo = new THREE.PlaneGeometry(8, 8);
@@ -35,8 +39,14 @@ function setLinearTextureFiltering(group: THREE.Object3D): void {
   });
 }
 
-function discoverSurfaces(group: THREE.Object3D): Surface[] {
+type DiscoveryResult = {
+  surfaces: Surface[];
+  uvData: Map<string, SubmeshUvData>;
+};
+
+function discoverSurfaces(group: THREE.Object3D): DiscoveryResult {
   const byRole = new Map<string, Surface>();
+  const uvData = new Map<string, SubmeshUvData>();
   group.traverse((obj) => {
     const role = obj.userData?.textureRole as string | undefined;
     if (!role || byRole.has(role)) return;
@@ -46,8 +56,40 @@ function discoverSurfaces(group: THREE.Object3D): Surface[] {
       kind: isGlass ? "synthetic" : "pbr",
       synthetic: isGlass ? "glass" : undefined,
     });
+    if (!isGlass && obj instanceof THREE.Mesh) {
+      const data = extractSubmeshUvData(obj, role);
+      if (data) uvData.set(role, data);
+    }
   });
-  return Array.from(byRole.values());
+  return { surfaces: Array.from(byRole.values()), uvData };
+}
+
+function extractSubmeshUvData(mesh: THREE.Mesh, role: string): SubmeshUvData | null {
+  const geom = mesh.geometry;
+  if (!(geom instanceof THREE.BufferGeometry)) return null;
+  const uvAttr = geom.attributes.uv;
+  if (!uvAttr) return null;
+  const vertexCount = uvAttr.count;
+  // Use getX/getY so this works for both BufferAttribute and InterleavedBufferAttribute.
+  const uvBuffer = new Float32Array(vertexCount * 2);
+  for (let i = 0; i < vertexCount; i++) {
+    uvBuffer[i * 2] = uvAttr.getX(i);
+    uvBuffer[i * 2 + 1] = uvAttr.getY(i);
+  }
+  const indexAttr = geom.index;
+  let indexBuffer: Uint32Array | Uint16Array;
+  if (indexAttr) {
+    const src = indexAttr.array;
+    if (src instanceof Uint32Array) indexBuffer = new Uint32Array(src);
+    else indexBuffer = new Uint16Array(src as ArrayLike<number>);
+  } else {
+    indexBuffer = new Uint32Array(vertexCount);
+    for (let i = 0; i < vertexCount; i++) indexBuffer[i] = i;
+  }
+  const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  const materialName =
+    mat instanceof THREE.Material && mat.name ? mat.name : `blockstudio_${role}`;
+  return { indexBuffer, uvBuffer, vertexCount, materialName };
 }
 
 async function loadBaseMeshGroup(meshId: string): Promise<THREE.Group> {
@@ -96,10 +138,10 @@ export class AuthoringScene {
   private keyLight: THREE.DirectionalLight;
   private meshGroup = new THREE.Group();
   private textures = new Map<string, TextureSet>();
+  private submeshUvData = new Map<string, SubmeshUvData>();
   private resizeObs: ResizeObserver;
   private animId = 0;
   private lastTime = performance.now();
-  private keyAngle = 0;
   private disposed = false;
 
   constructor(private readonly container: HTMLElement) {
@@ -112,7 +154,7 @@ export class AuthoringScene {
 
     this.keyLight = new THREE.DirectionalLight(0xfff1d6, 2.8);
     this.keyLight.castShadow = true;
-    this.keyLight.shadow.mapSize.set(2048, 2048);
+    this.keyLight.shadow.mapSize.set(1024, 1024);
     const s = 6;
     this.keyLight.shadow.camera.left = -s;
     this.keyLight.shadow.camera.right = s;
@@ -123,6 +165,14 @@ export class AuthoringScene {
     this.keyLight.shadow.bias = -0.0004;
     this.keyLight.shadow.normalBias = 0.02;
     this.keyLight.shadow.radius = 3;
+    this.keyLight.position.set(
+      Math.cos(KEY_ANGLE) * KEY_RADIUS,
+      KEY_HEIGHT,
+      Math.sin(KEY_ANGLE) * KEY_RADIUS
+    );
+    // Render the shadow map once per scene change; not every frame.
+    this.keyLight.shadow.autoUpdate = false;
+    this.keyLight.shadow.needsUpdate = true;
     this.scene.add(this.keyLight);
     this.scene.add(this.keyLight.target);
     this.scene.add(new THREE.HemisphereLight(0xa9c6ff, 0x4d3a26, 0.85));
@@ -171,15 +221,13 @@ export class AuthoringScene {
       this.animId = requestAnimationFrame(frame);
       const dt = Math.min((now - this.lastTime) / 1000, 0.1);
       this.lastTime = now;
-      this.keyAngle += KEY_ORBIT_SPEED * dt;
-      this.keyLight.position.set(
-        Math.cos(this.keyAngle) * KEY_RADIUS,
-        KEY_HEIGHT,
-        Math.sin(this.keyAngle) * KEY_RADIUS
-      );
       this.stage.drawFrame(now, dt);
     };
     this.animId = requestAnimationFrame(frame);
+  }
+
+  private requestShadowUpdate(): void {
+    this.keyLight.shadow.needsUpdate = true;
   }
 
   async loadBaseMesh(meshId: string): Promise<Surface[]> {
@@ -197,22 +245,41 @@ export class AuthoringScene {
       }
     });
     this.meshGroup.add(group);
-    return discoverSurfaces(group);
+    const { surfaces, uvData } = discoverSurfaces(group);
+    this.submeshUvData = uvData;
+    this.requestShadowUpdate();
+    return surfaces;
+  }
+
+  getSubmeshUvData(role: string): SubmeshUvData | null {
+    return this.submeshUvData.get(role) ?? null;
   }
 
   applyPbrTextures(role: string, maps: GeneratedMaps): void {
     const textures = createTextureSet(maps);
+    this.disposeTextureSet(this.textures.get(role));
     this.textures.set(role, textures);
     for (const child of this.meshGroup.children) applyTexturesToGroup(child, role, textures);
+    this.requestShadowUpdate();
   }
 
   applyPreloadedTextureSet(role: string, textures: TextureSet): void {
+    this.disposeTextureSet(this.textures.get(role));
     this.textures.set(role, textures);
     for (const child of this.meshGroup.children) applyTexturesToGroup(child, role, textures);
+    this.requestShadowUpdate();
+  }
+
+  private disposeTextureSet(prev: TextureSet | undefined): void {
+    if (!prev) return;
+    prev.baseColor.dispose();
+    prev.normal.dispose();
+    prev.arm.dispose();
   }
 
   applyGlass(role: string, params: GlassParams): void {
     for (const child of this.meshGroup.children) applyGlassMaterial(child, role, params);
+    this.requestShadowUpdate();
   }
 
   private clearMesh(): void {
@@ -231,6 +298,7 @@ export class AuthoringScene {
       tex.arm.dispose();
     }
     this.textures.clear();
+    this.submeshUvData.clear();
   }
 
   dispose(): void {

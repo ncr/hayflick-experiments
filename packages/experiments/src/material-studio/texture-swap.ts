@@ -2,7 +2,7 @@
  * Three.js texture hot-swap: ImageData → CanvasTexture on loaded meshes.
  *
  * Materials in GLBs are named `blockstudio_<role>` (e.g. blockstudio_wall,
- * blockstudio_trim, blockstudio_asphalt). The role key from the control
+ * blockstudio_trim, blockstudio_floor_tile). The role key from the control
  * panel matches this suffix.
  */
 

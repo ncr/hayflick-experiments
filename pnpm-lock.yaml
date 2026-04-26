@@ -47,6 +47,9 @@ importers:
       '@common/collider-vhacd':
         specifier: workspace:*
         version: link:../../packages/common-collider-vhacd
+      '@common/core':
+        specifier: workspace:*
+        version: link:../../packages/common-core
       '@common/render':
         specifier: workspace:^
         version: link:../../packages/common-render

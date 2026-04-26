@@ -170,11 +170,99 @@ export function deriveArmMap(
 // Combined derivation
 // ---------------------------------------------------------------------------
 
+/**
+ * Maximum side length used for normal/ARM derivation. UV-template atlases
+ * arrive at 1024² (or larger), but the Sobel kernel cost scales with pixel
+ * count — running it at full atlas resolution blocks the main thread for
+ * hundreds of ms per generation. Pixel-art content has no detail beyond
+ * what the atlas's cell grid can express, so a 256² nearest-neighbour
+ * downsample preserves all real edges and lets the GPU's bilinear filter
+ * upscale the maps back at sample time. baseColor itself stays full-res.
+ */
+const PBR_DERIVE_MAX_SIDE = 256;
+
 /** Derive both normal and ARM maps from a baseColor ImageData. */
 export function derivePbrMaps(src: ImageData, params: PbrParams): GeneratedMaps {
-  return {
-    baseColor: src,
-    normal: deriveNormalMap(src, params.strength),
-    arm: deriveArmMap(src, params)
-  };
+  const work = src.width > PBR_DERIVE_MAX_SIDE || src.height > PBR_DERIVE_MAX_SIDE
+    ? downsampleImageDataNearest(src, PBR_DERIVE_MAX_SIDE)
+    : src;
+  const W = work.width;
+  const H = work.height;
+  const N = W * H;
+  // Sobel is the dominant cost — compute once and reuse for both maps
+  // (deriveNormalMap / deriveArmMap each independently recomputed it).
+  const { gx, gy } = sobelGradientsRGB(work.data, W, H);
+
+  const normal = new ImageData(W, H);
+  const nd = normal.data;
+  for (let i = 0; i < N; i++) {
+    const sx = gx[i] * params.strength;
+    const sy = gy[i] * params.strength;
+    let nx = -sx;
+    let ny = sy;
+    let nz = 1.0;
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    nx /= len; ny /= len; nz /= len;
+    const o = i * 4;
+    nd[o]     = Math.round(Math.min(255, Math.max(0, (nx * 0.5 + 0.5) * 255)));
+    nd[o + 1] = Math.round(Math.min(255, Math.max(0, (ny * 0.5 + 0.5) * 255)));
+    nd[o + 2] = Math.round(Math.min(255, Math.max(0, (nz * 0.5 + 0.5) * 255)));
+    nd[o + 3] = 255;
+  }
+
+  const arm = new ImageData(W, H);
+  const ad = arm.data;
+  const wd = work.data;
+  for (let i = 0; i < N; i++) {
+    const edgeMag = Math.sqrt(gx[i] * gx[i] + gy[i] * gy[i]);
+    const ao = Math.min(1.0, Math.max(params.aoFloor, 1.0 - edgeMag * params.aoMultiplier));
+    const r = wd[i * 4] / 255;
+    const g = wd[i * 4 + 1] / 255;
+    const b = wd[i * 4 + 2] / 255;
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const roughness = Math.min(
+      1.0,
+      Math.max(0.0, params.baseRoughness + (1.0 - lum) * params.roughnessRange)
+    );
+    const o = i * 4;
+    ad[o]     = Math.round(ao * 255);
+    ad[o + 1] = Math.round(roughness * 255);
+    ad[o + 2] = 0;
+    ad[o + 3] = 255;
+  }
+
+  return { baseColor: src, normal, arm };
+}
+
+/**
+ * Nearest-neighbour ImageData downsample. Pixel art is blocky by construction,
+ * so picking one sample per N×N block preserves edge contrast — exactly what
+ * the Sobel pass cares about. Pure data, no DOM.
+ */
+function downsampleImageDataNearest(src: ImageData, maxSide: number): ImageData {
+  const sw = src.width;
+  const sh = src.height;
+  const long = Math.max(sw, sh);
+  if (long <= maxSide) return src;
+  const scale = long / maxSide;
+  const tW = Math.max(1, Math.round(sw / scale));
+  const tH = Math.max(1, Math.round(sh / scale));
+  const out = new ImageData(tW, tH);
+  const od = out.data;
+  const sd = src.data;
+  const ratioX = sw / tW;
+  const ratioY = sh / tH;
+  for (let y = 0; y < tH; y++) {
+    const sy = Math.min(sh - 1, Math.floor((y + 0.5) * ratioY));
+    for (let x = 0; x < tW; x++) {
+      const sx = Math.min(sw - 1, Math.floor((x + 0.5) * ratioX));
+      const si = (sy * sw + sx) * 4;
+      const oi = (y * tW + x) * 4;
+      od[oi]     = sd[si];
+      od[oi + 1] = sd[si + 1];
+      od[oi + 2] = sd[si + 2];
+      od[oi + 3] = sd[si + 3];
+    }
+  }
+  return out;
 }

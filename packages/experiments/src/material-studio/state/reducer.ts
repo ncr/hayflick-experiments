@@ -1,5 +1,6 @@
 import type { AppState, AuthoringSession, LibraryEntry, Toast, ToastLevel } from "./types";
-import type { GeneratedMaps, Surface, SurfaceState } from "../types";
+import type { GeneratedMaps, IslandLayout, Surface, SurfaceState } from "../types";
+import type { RgbaBuffer } from "../../uv-template-probe/uv-template";
 
 export type Action =
   | { type: "LIBRARY_LOAD_START" }
@@ -24,7 +25,17 @@ export type Action =
   | { type: "AUTHORING_LOAD_BASE_FAIL"; error: string }
   | { type: "AUTHORING_SELECT_SURFACE"; role: string }
   | { type: "AUTHORING_SET_PROMPT"; role: string; prompt: string }
-  | { type: "AUTHORING_GENERATED"; role: string; maps: GeneratedMaps; prevMaps: GeneratedMaps | null; prompt: string }
+  | {
+      type: "AUTHORING_GENERATED";
+      role: string;
+      maps: GeneratedMaps;
+      prevMaps: GeneratedMaps | null;
+      islandLayout: IslandLayout;
+      prevIslandLayout: IslandLayout | null;
+      templateSent: RgbaBuffer;
+      aiRaw: RgbaBuffer;
+      prompt: string;
+    }
   | { type: "AUTHORING_UNDO_LAST_GEN"; role: string }
   | { type: "AUTHORING_APPROVE"; role: string }
   | { type: "AUTHORING_UNAPPROVE"; role: string }
@@ -161,6 +172,10 @@ export function reducer(state: AppState, action: Action): AppState {
                   ...state.authoring.surfaceStates[action.role],
                   maps: action.maps,
                   prevMaps: action.prevMaps,
+                  islandLayout: action.islandLayout,
+                  prevIslandLayout: action.prevIslandLayout,
+                  templateSent: action.templateSent,
+                  aiRaw: action.aiRaw,
                   approved: false,
                   prompt: action.prompt,
                   promptHistory: [
@@ -183,7 +198,14 @@ export function reducer(state: AppState, action: Action): AppState {
           dirty: true,
           surfaceStates: {
             ...state.authoring.surfaceStates,
-            [action.role]: { ...cur, maps: cur.prevMaps, prevMaps: null, approved: false },
+            [action.role]: {
+              ...cur,
+              maps: cur.prevMaps,
+              prevMaps: null,
+              islandLayout: cur.prevIslandLayout ?? null,
+              prevIslandLayout: null,
+              approved: false,
+            },
           },
         },
       };

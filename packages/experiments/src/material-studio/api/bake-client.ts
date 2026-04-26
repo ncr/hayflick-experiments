@@ -3,8 +3,18 @@ import type { AuthoringSession } from "../state/types";
 import type { LibraryEntry } from "../state/types";
 
 export type BakeMaterialBody =
-  | { baseColorPng: string; normalPng: string; armPng: string; roughnessFactor?: number; metallicFactor?: number }
-  | { synthetic: string };
+  | {
+      baseColorPng: string;
+      normalPng: string;
+      armPng: string;
+      /** New UV attribute as a plain number array (length = vertexCount*2). */
+      newUv: number[];
+      /** glTF material name in the base GLB, e.g. "blockstudio_wall". */
+      materialName: string;
+      roughnessFactor?: number;
+      metallicFactor?: number;
+    }
+  | { synthetic: string; materialName: string };
 
 export type BakeResult = {
   ok: true;
@@ -26,15 +36,22 @@ export async function bakeFromAuthoring(session: AuthoringSession): Promise<Bake
   for (const s of session.surfaces) {
     const state = session.surfaceStates[s.role];
     if (!state) continue;
+    const materialName = `blockstudio_${s.role}`;
     if (s.kind === "synthetic") {
-      materials[s.role] = { synthetic: s.synthetic ?? "glass" };
-    } else if (state.maps) {
+      materials[s.role] = { synthetic: s.synthetic ?? "glass", materialName };
+    } else if (state.maps && state.islandLayout) {
       const [baseColorPng, normalPng, armPng] = await Promise.all([
         imageDataToBase64Png(state.maps.baseColor),
         imageDataToBase64Png(state.maps.normal),
         imageDataToBase64Png(state.maps.arm),
       ]);
-      materials[s.role] = { baseColorPng, normalPng, armPng };
+      materials[s.role] = {
+        baseColorPng,
+        normalPng,
+        armPng,
+        newUv: Array.from(state.islandLayout.newUvBuffer),
+        materialName,
+      };
       prompts[s.role] = state.prompt;
     }
   }

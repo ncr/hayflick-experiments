@@ -743,3 +743,94 @@
     border-bottom: 1px solid #333;
   }
 }
+
+/* History picker modal */
+.forge-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+.forge-modal {
+  background: #1f242c;
+  border: 1px solid #2c3540;
+  border-radius: 6px;
+  width: min(960px, 90vw);
+  max-height: 88vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  color: #e6ecf2;
+}
+.forge-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #2c3540;
+  font-weight: 600;
+  font-size: 13px;
+}
+.forge-modal-empty {
+  padding: 32px;
+  text-align: center;
+  color: #8a96a6;
+  font-size: 13px;
+}
+.forge-history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+}
+.forge-history-card {
+  display: flex;
+  flex-direction: column;
+  background: #262d36;
+  border: 1px solid #2c3540;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.forge-history-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  background: #111;
+  display: block;
+}
+.forge-history-card-body {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.forge-history-card-prompt {
+  font-size: 11px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 38px;
+}
+.forge-history-card-meta {
+  font-size: 10px;
+  color: #8a96a6;
+}
+.forge-history-card-actions {
+  display: flex;
+  gap: 6px;
+}
+.forge-history-card-actions .forge-btn {
+  flex: 1;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.forge-button-row {
+  display: flex;
+  gap: 8px;
+}

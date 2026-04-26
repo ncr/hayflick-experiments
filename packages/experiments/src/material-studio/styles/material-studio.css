@@ -258,7 +258,7 @@
 .ms-authoring-body {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 1fr 440px;
   min-height: 0;
   background: var(--ms-bg);
 }
@@ -468,6 +468,148 @@
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+/* History picker modal */
+.ms-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+.ms-modal {
+  background: var(--ms-panel);
+  border: 1px solid var(--ms-border);
+  border-radius: 6px;
+  width: min(960px, 90vw);
+  max-height: 88vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+.ms-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ms-border);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ms-text);
+}
+.ms-modal-error {
+  padding: 8px 16px;
+  background: #4a1a1a;
+  color: #f5c0c0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--ms-border);
+}
+.ms-modal-empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--ms-text-muted);
+  font-size: 13px;
+}
+.ms-history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+}
+.ms-history-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--ms-panel-alt);
+  border: 1px solid var(--ms-border-strong);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.ms-history-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  image-rendering: pixelated;
+  background: #111;
+  display: block;
+}
+.ms-history-card-body {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ms-history-card-prompt {
+  font-size: 11px;
+  color: var(--ms-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 38px;
+}
+.ms-history-card-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--ms-text-muted);
+  letter-spacing: 0.04em;
+}
+.ms-history-card-actions {
+  display: flex;
+  gap: 6px;
+}
+.ms-history-card-actions .ms-btn {
+  flex: 1;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
+/* QA inspection previews — template / AI raw / final atlas, full panel width. */
+.ms-qa-previews {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ms-border);
+}
+.ms-qa-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ms-qa-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ms-text);
+}
+.ms-qa-sub {
+  color: var(--ms-text-muted);
+  font-size: 10px;
+}
+.ms-qa-canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  image-rendering: pixelated;
+  border: 1px solid var(--ms-border-strong);
+  border-radius: 3px;
+  background: var(--ms-panel-alt);
+  display: block;
+}
+.ms-qa-empty {
+  font-size: 11px;
+  color: var(--ms-text-muted);
+  padding: 24px;
+  text-align: center;
+  border: 1px dashed var(--ms-border-strong);
+  border-radius: 3px;
 }
 
 .ms-btn-success-on {

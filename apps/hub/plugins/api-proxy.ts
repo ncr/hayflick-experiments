@@ -1,17 +1,14 @@
 import type { Plugin, ViteDevServer } from "vite";
 import { IncomingMessage, ServerResponse } from "node:http";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
 import { ForgeStore } from "./forge-store";
+import { buildArtifact, type BakeRole } from "./build-artifact";
 
 const ASSETS_ROOT = path.resolve(process.cwd(), "../../assets");
 const FORGE_ROOT = path.resolve(process.cwd(), "../../assets/forge");
 const MESHES_ROOT = path.resolve(ASSETS_ROOT, "meshes");
 const TEXTURED_MESHES_ROOT = path.resolve(ASSETS_ROOT, "textured-meshes");
-const BAKE_DRIVER = path.resolve(process.cwd(), "../../scripts/blockstudio/bake-textured-mesh.py");
-const BLENDER_BIN = process.env.BLENDER_BIN || "/opt/homebrew/bin/blender";
 const forgeStore = new ForgeStore(FORGE_ROOT);
 
 // Load .env files — Vite only exposes VITE_* to client; we need raw keys for server middleware
@@ -386,19 +383,23 @@ async function handleFs(
 /**
  * Per-role material definition as sent from the client.
  *
- * - PBR: base64 PNG for baseColor, normal, arm (+ optional scalar factors).
- * - Synthetic: a preset name like "glass" — the bake script builds a
- *   procedural shader instead of sampling textures.
+ * - PBR: base64 PNG for baseColor, normal, arm (+ optional scalar factors)
+ *   plus the new TEXCOORD_0 buffer derived from UV-template repacking
+ *   and the glTF material name to find in the base GLB.
+ * - Synthetic: a preset name like "glass" — the GLB material is left
+ *   untouched and the runtime applies a procedural shader.
  */
 type TexturedMeshRoleBody =
   | {
       baseColorPng: string;
       normalPng: string;
       armPng: string;
+      newUv: number[];
+      materialName: string;
       roughnessFactor?: number;
       metallicFactor?: number;
     }
-  | { synthetic: string };
+  | { synthetic: string; materialName: string };
 
 type BakeRequestBody = {
   name: string;
@@ -597,11 +598,18 @@ async function handleTexturedMesh(
     const texturesDir = path.join(entryDir, "textures");
     ensureDir(texturesDir);
 
-    // Write each role's PNGs to disk, build the job materials dict.
-    const jobMaterials: Record<string, unknown> = {};
+    // Write each role's PNGs to disk, build the bake roles dict.
+    const bakeRoles: Record<string, BakeRole> = {};
     for (const [role, matBody] of Object.entries(body.materials || {})) {
       if ("synthetic" in matBody) {
-        jobMaterials[role] = { synthetic: matBody.synthetic };
+        if (matBody.synthetic !== "glass") {
+          return errorResponse(res, 400, `Unsupported synthetic preset: ${matBody.synthetic}`);
+        }
+        bakeRoles[role] = {
+          kind: "synthetic",
+          preset: "glass",
+          materialName: matBody.materialName,
+        };
         continue;
       }
       const roleDir = path.join(texturesDir, role);
@@ -612,43 +620,27 @@ async function handleTexturedMesh(
       writePngFromBase64(bc, matBody.baseColorPng);
       writePngFromBase64(nr, matBody.normalPng);
       writePngFromBase64(ar, matBody.armPng);
-      jobMaterials[role] = {
-        baseColor: bc,
-        normal: nr,
-        arm: ar,
+      bakeRoles[role] = {
+        kind: "pbr",
+        baseColorPath: bc,
+        normalPath: nr,
+        armPath: ar,
+        newUvBuffer: new Float32Array(matBody.newUv),
+        materialName: matBody.materialName,
         roughnessFactor: matBody.roughnessFactor ?? 0.85,
         metallicFactor: matBody.metallicFactor ?? 0.0,
       };
     }
 
     const artifactPath = path.join(entryDir, "artifact.glb");
-    const jobPath = path.join(os.tmpdir(), `bake-${entryName}-${Date.now()}.json`);
-    fs.writeFileSync(
-      jobPath,
-      JSON.stringify({
-        baseMeshPath,
-        materials: jobMaterials,
-        outputPath: artifactPath,
-      })
-    );
-
     try {
-      if (!fs.existsSync(BLENDER_BIN)) {
-        return errorResponse(res, 500, `Blender not found at ${BLENDER_BIN}`);
-      }
-      execFileSync(
-        BLENDER_BIN,
-        ["--background", "--python", BAKE_DRIVER, "--", "--job", jobPath],
-        { stdio: "inherit" }
-      );
+      await buildArtifact({
+        baseMeshPath,
+        outputPath: artifactPath,
+        roles: bakeRoles,
+      });
     } catch (err) {
       return errorResponse(res, 500, `Bake failed: ${(err as Error).message}`);
-    } finally {
-      try {
-        fs.unlinkSync(jobPath);
-      } catch {
-        // ignore
-      }
     }
 
     const now = new Date().toISOString();

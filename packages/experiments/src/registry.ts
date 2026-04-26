@@ -7,9 +7,14 @@ import { meta as mapEditor2dMeta } from "./map-editor-2d/meta";
 import { meta as materialStudioMeta } from "./material-studio/meta";
 import { meta as outlineWallsMeta } from "./outline-walls/meta";
 import { meta as pixelArtTexMeta } from "./pixel-art-tex/meta";
+import { meta as uvTemplateProbeMeta } from "./uv-template-probe/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...uvTemplateProbeMeta,
+    load: () => import("./uv-template-probe/index")
+  },
   {
     ...pixelArtTexMeta,
     load: () => import("./pixel-art-tex/index")
