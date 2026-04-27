@@ -27,6 +27,11 @@ export type SubmeshUvData = {
   indexBuffer: Uint32Array | Uint16Array;
   /** Interleaved UV buffer (length = vertexCount * 2). Original mesh UVs. */
   uvBuffer: Float32Array;
+  /** Vertex positions in world units (length = vertexCount * 3). Used to
+   *  size each UV island's atlas cells from its actual iso-projected
+   *  screen extent, not from UV bbox aspect — the latter doesn't account
+   *  for non-square faces or per-face screen density under iso 2:1. */
+  positionBuffer: Float32Array;
   /** Number of vertices in the geometry. */
   vertexCount: number;
   /** Material name in the GLB (e.g. "blockstudio_wall"). */
@@ -47,9 +52,44 @@ export type IslandLayout = {
   newUvBuffer: Float32Array;
 };
 
+/**
+ * Atlas: the per-surface pixel buffer that drives the live texture and
+ * survives across paint strokes and AI regenerations. One atlas pixel ==
+ * one template grid cell == one mesh-surface texel. The mask flags which
+ * pixels the user has painted (so they're preserved by AI fills).
+ *
+ * Buffers are explicitly `ArrayBuffer`-backed (not the broader
+ * `ArrayBufferLike`) so the rgba can be passed straight to `new ImageData`.
+ */
+export type Atlas = {
+  rgba: Uint8ClampedArray<ArrayBuffer>;
+  /** Length = width × height. 0 = empty / AI-fillable; 1 = user-painted (preserved). */
+  mask: Uint8Array<ArrayBuffer>;
+  width: number;
+  height: number;
+};
+
+/**
+ * One step in a surface's edit history. Snapshots are full atlas copies —
+ * cheap at 256² (~262 KB) and far simpler than operation-based replay.
+ */
+export type AtlasSnapshot = {
+  rgba: Uint8ClampedArray<ArrayBuffer>;
+  mask: Uint8Array<ArrayBuffer>;
+  /** What produced this snapshot — for telemetry / future-UI labels. */
+  tag: "init" | "paint" | "generate" | "clear-mask";
+};
+
+/** Wrap an Atlas's rgba buffer as ImageData — same buffer, no copy. */
+export function atlasToImageData(atlas: Atlas): ImageData {
+  return new ImageData(atlas.rgba, atlas.width, atlas.height);
+}
+
 /** Output of `generateBaseColorFromTemplate` — the new generation primitive. */
 export type GeneratedFromTemplate = {
-  baseColor: ImageData;
+  /** Post-generation atlas. After Phase 4 wiring, painted pixels (mask=1)
+   *  in the input atlas survive into this output unchanged. */
+  atlas: Atlas;
   /** Raw AI output before extraction; useful for the dev preview. */
   aiRaw: RgbaBuffer;
   /** Template image we sent to the AI; useful for the dev preview. */
@@ -87,18 +127,22 @@ export type SurfaceState = {
   surface: Surface;
   /** Prompt text — seeded from material-description table when a role is first visited. */
   prompt: string;
-  /** Latest generated maps. Null until the user has hit Generate for this surface. */
+  /** Source-of-truth pixel buffer for paint + AI fill. Initialized at
+   *  mesh-load time by `prepareSurface` for PBR surfaces; null for synthetic. */
+  atlas: Atlas | null;
+  /** Layout that maps atlas pixels to mesh UVs. Stable across regenerates
+   *  for a given mesh; persisted so the bake step can replay the UV remap. */
+  islandLayout: IslandLayout | null;
+  /** Latest generated PBR maps (baseColor mirrors atlas.rgba). Null until first paint or Generate. */
   maps: GeneratedMaps | null;
-  /** Previous maps (for single-step Undo after a new Generate). */
-  prevMaps: GeneratedMaps | null;
-  /** Layout used to generate `maps`. Persisted so the bake step can replay the UV remap. */
-  islandLayout?: IslandLayout | null;
-  /** Layout that produced `prevMaps`, kept in lock-step for single-step Undo. */
-  prevIslandLayout?: IslandLayout | null;
+  /** Per-surface undo stack of pre-action snapshots. Capped at MAX_HISTORY. */
+  editHistory: AtlasSnapshot[];
+  /** Per-surface redo stack — populated when user undoes. Cleared on any new commit. */
+  editFuture: AtlasSnapshot[];
   /** Template image sent to the AI for the latest generation — for the QA preview. */
-  templateSent?: RgbaBuffer | null;
+  templateSent: RgbaBuffer | null;
   /** Raw AI output for the latest generation — for the QA preview. */
-  aiRaw?: RgbaBuffer | null;
+  aiRaw: RgbaBuffer | null;
   /** In-memory prompt history for this surface in the current session. Newest first, deduped. */
   promptHistory: string[];
   /** Becomes true when the user clicks "Approve". Synthetic surfaces start approved. */
@@ -106,6 +150,8 @@ export type SurfaceState = {
   /** Only set when surface.kind === "synthetic". */
   glassParams?: GlassParams;
 };
+
+export const MAX_EDIT_HISTORY = 30;
 
 export const DEFAULT_PBR_PARAMS: PbrParams = {
   strength: 1.5,

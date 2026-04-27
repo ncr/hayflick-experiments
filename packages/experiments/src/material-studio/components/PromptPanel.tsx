@@ -8,7 +8,13 @@ import {
   generateBaseColorFromTemplate
 } from "../api-client";
 import { derivePbrMaps } from "../pbr-derive";
-import { DEFAULT_PBR_PARAMS, type GeneratedMaps, type IslandLayout } from "../types";
+import {
+  DEFAULT_PBR_PARAMS,
+  atlasToImageData,
+  type Atlas,
+  type GeneratedMaps,
+  type IslandLayout,
+} from "../types";
 import type { RgbaBuffer } from "../../uv-template-probe/uv-template";
 import { HistoryPicker } from "./HistoryPicker";
 
@@ -60,17 +66,18 @@ export function PromptPanel() {
       const result = await generateBaseColorFromTemplate({
         uvData,
         prompt,
+        atlas: state.atlas ?? undefined,
         cacheTags: { baseMeshId: authoring.baseMeshId, role: active },
       });
-      const maps: GeneratedMaps = derivePbrMaps(result.baseColor, DEFAULT_PBR_PARAMS);
+      const baseColor = atlasToImageData(result.atlas);
+      const maps: GeneratedMaps = derivePbrMaps(baseColor, DEFAULT_PBR_PARAMS);
       sceneRef.current?.applyAtlasUvs(active, result.islandLayout.newUvBuffer);
       sceneRef.current?.applyPbrTextures(active, maps);
       dispatch({
         type: "AUTHORING_GENERATED",
         role: active,
+        atlas: result.atlas,
         maps,
-        prevMaps: state.maps,
-        prevIslandLayout: state.islandLayout ?? null,
         islandLayout: result.islandLayout,
         templateSent: result.templateSent,
         aiRaw: result.aiRaw,
@@ -89,10 +96,29 @@ export function PromptPanel() {
   };
 
   const handleUndo = () => {
-    if (!state.prevMaps) return;
-    sceneRef.current?.applyAtlasUvs(active, state.prevIslandLayout?.newUvBuffer ?? null);
-    sceneRef.current?.applyPbrTextures(active, state.prevMaps);
-    dispatch({ type: "AUTHORING_UNDO_LAST_GEN", role: active });
+    if (!state.atlas || state.editHistory.length === 0) return;
+    const top = state.editHistory[state.editHistory.length - 1];
+    const baseColor = new ImageData(
+      new Uint8ClampedArray(top.rgba),
+      state.atlas.width,
+      state.atlas.height
+    );
+    const maps = derivePbrMaps(baseColor, DEFAULT_PBR_PARAMS);
+    sceneRef.current?.applyPbrTextures(active, maps);
+    dispatch({ type: "AUTHORING_UNDO", role: active, maps });
+  };
+
+  const handleRedo = () => {
+    if (!state.atlas || state.editFuture.length === 0) return;
+    const top = state.editFuture[state.editFuture.length - 1];
+    const baseColor = new ImageData(
+      new Uint8ClampedArray(top.rgba),
+      state.atlas.width,
+      state.atlas.height
+    );
+    const maps = derivePbrMaps(baseColor, DEFAULT_PBR_PARAMS);
+    sceneRef.current?.applyPbrTextures(active, maps);
+    dispatch({ type: "AUTHORING_REDO", role: active, maps });
   };
 
   const handleApprove = () => {
@@ -132,6 +158,12 @@ export function PromptPanel() {
       vertexToIslandId: ctx.islandLayout.vertexToIslandId,
       newUvBuffer: new Float32Array(ctx.islandLayout.newUv)
     };
+    const atlas: Atlas = {
+      rgba: new Uint8ClampedArray(baseColor.data),
+      mask: new Uint8Array(baseColor.width * baseColor.height),
+      width: baseColor.width,
+      height: baseColor.height,
+    };
     const maps: GeneratedMaps = derivePbrMaps(baseColor, DEFAULT_PBR_PARAMS);
     sceneRef.current?.applyAtlasUvs(active, islandLayout.newUvBuffer);
     sceneRef.current?.applyPbrTextures(active, maps);
@@ -141,9 +173,8 @@ export function PromptPanel() {
     dispatch({
       type: "AUTHORING_GENERATED",
       role: active,
+      atlas,
       maps,
-      prevMaps: state.maps,
-      prevIslandLayout: state.islandLayout ?? null,
       islandLayout,
       templateSent: makeBlankRgba(1, 1),
       aiRaw: makeBlankRgba(1, 1),
@@ -205,20 +236,29 @@ export function PromptPanel() {
         >
           History
         </button>
-        {state.maps && (
-          <button className="ms-btn" disabled={!state.prevMaps || generating} onClick={handleUndo}>
-            Undo
-          </button>
-        )}
-        {state.maps && (
-          <button
-            className={`ms-btn ${state.approved ? "ms-btn-success-on" : ""}`}
-            onClick={handleApprove}
-            disabled={generating}
-          >
-            {state.approved ? "Approved ✓" : "Approve"}
-          </button>
-        )}
+        <button
+          className="ms-btn"
+          disabled={state.editHistory.length === 0 || generating}
+          onClick={handleUndo}
+          title="Undo last paint stroke or generate"
+        >
+          Undo
+        </button>
+        <button
+          className="ms-btn"
+          disabled={state.editFuture.length === 0 || generating}
+          onClick={handleRedo}
+          title="Redo"
+        >
+          Redo
+        </button>
+        <button
+          className={`ms-btn ${state.approved ? "ms-btn-success-on" : ""}`}
+          onClick={handleApprove}
+          disabled={generating}
+        >
+          {state.approved ? "Approved ✓" : "Approve"}
+        </button>
       </div>
       {showHistory && (
         <HistoryPicker

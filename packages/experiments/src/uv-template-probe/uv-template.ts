@@ -254,6 +254,78 @@ function median(values: number[]): number {
 }
 
 /**
+ * Overlay user-painted cells onto an existing template buffer (mutated in
+ * place). For each island, only cells whose mask byte is non-zero are
+ * filled with their RGBA — empty cells stay as the template's `fillColor`
+ * so the AI knows to paint them.
+ *
+ * This is the bridge between the in-app paint canvas (which works in
+ * atlas-cell units) and the 1024² template the AI actually sees.
+ */
+export function paintCellsIntoTemplate(
+  template: RgbaBuffer,
+  islands: Island[],
+  paintedCellsPerIsland: ReadonlyArray<{ rgba: Uint8ClampedArray; mask: Uint8Array }>,
+  opts: { lineThicknessPx?: number } = {}
+): void {
+  if (paintedCellsPerIsland.length !== islands.length) {
+    throw new Error(
+      `paintCellsIntoTemplate: ${paintedCellsPerIsland.length} cell sets, ${islands.length} islands`
+    );
+  }
+  const lineThicknessPx = opts.lineThicknessPx ?? 4;
+
+  for (let idx = 0; idx < islands.length; idx++) {
+    const island = islands[idx];
+    const cells = paintedCellsPerIsland[idx];
+    const expectedRgba = island.cellsX * island.cellsY * 4;
+    const expectedMask = island.cellsX * island.cellsY;
+    if (cells.rgba.length !== expectedRgba) {
+      throw new Error(
+        `paintCellsIntoTemplate: island ${idx} rgba length ${cells.rgba.length} != ${expectedRgba}`
+      );
+    }
+    if (cells.mask.length !== expectedMask) {
+      throw new Error(
+        `paintCellsIntoTemplate: island ${idx} mask length ${cells.mask.length} != ${expectedMask}`
+      );
+    }
+
+    const islW = island.cellsX * island.cellPx;
+    const islH = island.cellsY * island.cellPx;
+    for (let ly = 0; ly < islH; ly++) {
+      const y = island.y + ly;
+      if (y < 0 || y >= template.height) continue;
+      const yIntoCell = ly % island.cellPx;
+      const onHLine =
+        yIntoCell < lineThicknessPx || yIntoCell >= island.cellPx - lineThicknessPx;
+      if (onHLine) continue;
+      const cy = Math.floor(ly / island.cellPx);
+
+      for (let lx = 0; lx < islW; lx++) {
+        const x = island.x + lx;
+        if (x < 0 || x >= template.width) continue;
+        const xIntoCell = lx % island.cellPx;
+        const onVLine =
+          xIntoCell < lineThicknessPx || xIntoCell >= island.cellPx - lineThicknessPx;
+        if (onVLine) continue;
+        const cx = Math.floor(lx / island.cellPx);
+
+        const cellIdx = cy * island.cellsX + cx;
+        if (cells.mask[cellIdx] === 0) continue; // unpainted — leave AI fill prompt intact
+
+        const ci = cellIdx * 4;
+        const ti = (y * template.width + x) * 4;
+        template.data[ti] = cells.rgba[ci];
+        template.data[ti + 1] = cells.rgba[ci + 1];
+        template.data[ti + 2] = cells.rgba[ci + 2];
+        template.data[ti + 3] = 255;
+      }
+    }
+  }
+}
+
+/**
  * For unit tests: paint per-island patterns onto a template-shaped buffer
  * with islands' grid lines preserved, leaving the background untouched.
  * Lets us round-trip the extractor without a real AI call.

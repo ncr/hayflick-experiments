@@ -90,7 +90,9 @@ Separate from the procedural tileset pipeline above. Uses a flat, two-layer mode
 - **Base meshes** — `assets/meshes/<id>.glb`. Pre-authored geometry with `textureRole` extras on each mesh node. Input side; grown in Blender when new geometry is needed.
 - **Textured meshes** — `assets/textured-meshes/<name>/`. The atomic game-ready unit: one base mesh + authored textures baked into a single `artifact.glb`, plus a `manifest.json` (provenance: base mesh id, prompts, timestamp) and the per-role texture PNGs under `textures/<role>/`.
 
-The `material-studio` experiment is the authoring UI: pick a base mesh, name an entry, walk each texturable surface (discovered from textureRole), prompt the AI, approve, bake. The bake endpoint (`/api/textured-mesh/bake` in `apps/hub/plugins/api-proxy.ts`) invokes `scripts/blockstudio/bake-textured-mesh.py` — a lightweight Blender driver that opens the base GLB, applies per-role PBR materials (or the synthetic glass preset for `accent`), and exports. UV wrapping is inherited from the base mesh.
+The `material-studio` experiment is the authoring UI: pick a base mesh; for each PBR surface, paint pixels into a small UV atlas and/or call gpt-image-2 to fill unpainted cells; bake. UV islands are detected at mesh-load time by `uv-template/prepare.ts` (atlas: 256² with `cellPx=1`; template: 1024² with `cellPx=16` — same `cellsX × cellsY` per island in both, so AI output extracts 1:1 into the atlas). The bake endpoint (`/api/textured-mesh/bake` in `apps/hub/plugins/api-proxy.ts`) calls in-process `apps/hub/plugins/build-artifact.ts`, which uses `@gltf-transform/core` to replace `TEXCOORD_0` with the remapped UVs and attach baseColor/normal/MR/occlusion textures with NEAREST samplers.
+
+NEAREST sampling end-to-end is load-bearing: `material-studio/texture-swap.ts` uses `THREE.NearestFilter` (no mipmaps), and the baked GLB sets `TextureInfo.MagFilter/MinFilter.NEAREST`. One atlas pixel must equal one game pixel under the iso pixel-perfect renderer — never insert LinearFilter anywhere along this chain.
 
 `accent` roles (glass) are synthetic — shader-driven transmission/IOR, not AI-generated.
 
@@ -99,6 +101,17 @@ The `material-studio` experiment is the authoring UI: pick a base mesh, name an 
 - Promoted packages require `test:coverage` script with enforced thresholds
 - Browser-level smoke coverage for critical user flows using Playwright
 - Run `pnpm typecheck` before committing changes
+
+## Verification — UI changes are not complete without a passing Playwright test
+
+If you touch UI, browser-running code, an experiment view, or anything visible in the page, **write or update a Playwright e2e spec that proves the change works** and run it. Without that, "it typechecks" is not "it works".
+
+- Spec files live in `e2e/`. Run them with `pnpm test:e2e` or `npx playwright test e2e/<file>.spec.ts`.
+- **Use the dev server (`pnpm dev`) for tests that hit backend APIs.** The Vite preview server (the default `webServer` in `playwright.config.ts`) does **not** run plugins like `api-proxy`, so any test that needs `/api/assets/read`, `/api/textured-mesh/*`, `/api/openai/*`, etc. will silently fail to load data. Override `baseURL` to the dev server (e.g. `http://localhost:5174`) — see `e2e/pixel-art-tex.spec.ts` for the pattern.
+- **For pixel-exact tests, expose internals via a `window.__<expName>` handle.** The test then calls into the experiment to read framebuffer pixels, force frames, etc. — see `pixel-art-tex.spec.ts` for the canonical NEAREST/no-MSAA proof.
+- **When you rename a class or restructure layout, search for it in `e2e/` and fix the selectors.** Tests using stale selectors fail with confusing "Timed out waiting for selector" errors that look like product bugs.
+- Don't mark a UI task complete based on "the dev server compiled" — Vite happily serves broken modules until React mounts and crashes. Only a Playwright run answers "does it work?".
+- The Chrome MCP browser is unreliable in agent runs (extension may not be connected). Playwright is the source of truth.
 
 ## Dev Server
 

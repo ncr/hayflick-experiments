@@ -11,13 +11,23 @@ import { saveEntry } from "@common/core/imagegen-cache";
 import {
   buildIslandTemplate,
   extractIslandPixelArt,
+  paintCellsIntoTemplate,
   type Island
 } from "../uv-template-probe/uv-template";
 import { detectIslands } from "./uv-template/island-detect";
 import { repackIslands } from "./uv-template/repack";
 import { recomposeIslandsAsAtlas } from "./uv-template/recompose";
+import {
+  ATLAS_CELL_PX,
+  ATLAS_OUTLINE_PADDING_PX,
+  DEFAULT_ATLAS_H,
+  DEFAULT_ATLAS_W,
+  DEFAULT_CELL_PX_TARGET,
+  computeCellsPerIsland
+} from "./uv-template/prepare";
 import { remapUvs } from "./uv-template/remap-uvs";
 import type {
+  Atlas,
   GeneratedFromTemplate,
   IslandLayout,
   SubmeshUvData
@@ -58,6 +68,10 @@ export function defaultPromptForRole(role: string): string {
 export type GenerateBaseColorRequest = {
   uvData: SubmeshUvData;
   prompt: string;
+  /** Current atlas state (rgba + paint mask). When provided, painted cells
+   *  (mask=1) are baked into the template before sending and preserved in
+   *  the merged output. Pass a fresh-with-no-paint atlas on the first call. */
+  atlas?: Atlas;
   /** Template resolution sent to gpt-image-2 (must be 1024² / 1024×1536 / 1536×1024). */
   templateWidth?: number;
   templateHeight?: number;
@@ -80,17 +94,9 @@ export type GenerateBaseColorRequest = {
 const DEFAULT_TEMPLATE_W = 1024;
 const DEFAULT_TEMPLATE_H = 1024;
 const DEFAULT_TEMPLATE_CELL_PX = 16;
-const DEFAULT_CELL_PX_TARGET = 16;
 
-// Atlas = the final pixel-dense texture stored in the GLB and the cache.
-// One atlas pixel = one logical pixel-art cell. 256² has plenty of room for
-// dozens of typical mesh islands while keeping baked PNGs ~10× smaller than
-// the template would have been. Bump to 512² via opts if a mesh has more
-// islands than will pack.
-const DEFAULT_ATLAS_W = 256;
-const DEFAULT_ATLAS_H = 256;
-const ATLAS_CELL_PX = 1;
-const ATLAS_OUTLINE_PADDING_PX = 3; // matches the recompose seam-bleed default
+// Atlas dimensions / cell sizing live in `uv-template/prepare.ts` so they
+// can be reused at mesh-load time when seeding a blank starter atlas.
 
 const DEFAULT_QUALITY: "low" | "medium" | "high" = "medium";
 
@@ -114,17 +120,25 @@ export async function generateBaseColorFromTemplate(
   //     gpt-image-2 to paint legibly. Transient.
   //   * atlasPack — one cell per atlas pixel on a 256² canvas. This is what
   //     the GLB samples at runtime and what the cache stores.
+  // cellsX/cellsY per island come from the iso-projected screen extent of
+  // each island's world vertices — one atlas cell == one game pixel — so
+  // both packings share the same per-island cell shapes (a hard
+  // requirement: extractIslandPixelArt indexes the AI raw at template-cell
+  // granularity and writes into atlas cells at 1:1 cellsX×cellsY).
+  const cellsPerIsland = computeCellsPerIsland(req.uvData.positionBuffer, detected.islands);
   const templatePack = repackIslands(detected, {
     templateWidth,
     templateHeight,
     cellPx: templateCellPx,
-    cellPxTarget
+    cellPxTarget,
+    cellsPerIsland
   });
   const atlasPack = repackIslands(detected, {
     templateWidth: atlasWidth,
     templateHeight: atlasHeight,
     cellPx: ATLAS_CELL_PX,
     cellPxTarget,
+    cellsPerIsland,
     outlinePaddingPx: ATLAS_OUTLINE_PADDING_PX
   });
 
@@ -142,9 +156,20 @@ export async function generateBaseColorFromTemplate(
     islands: templatePack.islands
   };
   const templateSent = buildIslandTemplate(templateOpts);
+
+  // If the user has painted any cells, bake them into the template at
+  // template-cell scale. The AI still sees magenta outlines + grid lines
+  // so the painted cells read as "preserve me" rather than "this image
+  // already exists, copy it".
+  const hasPainted = !!req.atlas && hasAnyPaintedCell(req.atlas.mask);
+  if (req.atlas && hasPainted) {
+    const cellsPerIsland = atlasPack.islands.map((isl) => extractIslandCellsFromAtlas(req.atlas!, isl));
+    paintCellsIntoTemplate(templateSent, templatePack.islands, cellsPerIsland);
+  }
+
   const templateB64 = await rgbaBufferToBase64Png(templateSent);
 
-  const fullPrompt = buildPrompt(req.prompt, templatePack.islands);
+  const fullPrompt = buildPrompt(req.prompt, templatePack.islands, hasPainted);
 
   const res = await fetch("/api/openai/edit-image", {
     method: "POST",
@@ -179,11 +204,30 @@ export async function generateBaseColorFromTemplate(
     islandPixelArt
   );
 
-  const baseColor = new ImageData(
-    new Uint8ClampedArray(recomposed.data),
-    recomposed.width,
-    recomposed.height
-  );
+  // Merge: where the user has painted (mask=1 in the input atlas), keep
+  // the painted RGBA; everywhere else, accept the AI fill. The output
+  // mask preserves the input mask so painted bits survive future
+  // regenerates without re-painting.
+  const atlasRgba = new Uint8ClampedArray(recomposed.data);
+  const outputMask = new Uint8Array(recomposed.width * recomposed.height);
+  if (req.atlas && hasPainted) {
+    for (let p = 0; p < req.atlas.mask.length; p++) {
+      if (req.atlas.mask[p] === 0) continue;
+      outputMask[p] = 1;
+      const di = p * 4;
+      atlasRgba[di] = req.atlas.rgba[di];
+      atlasRgba[di + 1] = req.atlas.rgba[di + 1];
+      atlasRgba[di + 2] = req.atlas.rgba[di + 2];
+      atlasRgba[di + 3] = 255;
+    }
+  }
+
+  const atlas: Atlas = {
+    rgba: atlasRgba,
+    mask: outputMask,
+    width: recomposed.width,
+    height: recomposed.height
+  };
 
   const islandLayout: IslandLayout = {
     templateWidth: atlasWidth,
@@ -219,15 +263,15 @@ export async function generateBaseColorFromTemplate(
     contextJson
   }).catch((err) => console.warn("[imagegen-cache] save failed:", err));
 
-  return { baseColor, aiRaw, templateSent, islandLayout };
+  return { atlas, aiRaw, templateSent, islandLayout };
 }
 
-function buildPrompt(userPrompt: string, islands: Island[]): string {
+function buildPrompt(userPrompt: string, islands: Island[], hasPainted: boolean): string {
   const islandLines = islands.map((isl, idx) => {
     const name = isl.name ?? `Region ${idx + 1}`;
     return `- ${name} (${isl.cellsX}×${isl.cellsY} cells): ${userPrompt}`;
   });
-  return [
+  const lines: string[] = [
     STYLE_PREAMBLE,
     `The provided image has a neutral mid-grey background with several rectangular regions outlined in bright magenta.`,
     `Inside each magenta-outlined region is a grid of square cells separated by thin black lines.`,
@@ -235,9 +279,52 @@ function buildPrompt(userPrompt: string, islands: Island[]): string {
     `Each cell must be filled with a single FLAT solid colour from edge to edge — no gradients, no anti-aliasing, no shading inside any cell.`,
     `Do NOT paint anything outside the outlined regions; the grey background must remain UNTOUCHED.`,
     `Do NOT redraw the magenta outlines or the black grid lines.`,
+  ];
+  if (hasPainted) {
+    lines.push(
+      `Some cells have ALREADY been filled with specific colours by the artist. Those non-white cells must remain EXACTLY as-is — do not change their colour, brightness, or hue. Only paint the remaining white cells.`
+    );
+  }
+  lines.push(
     `Each region depicts the same material; paint each region according to the subject below:`,
     ...islandLines
-  ].join(" ");
+  );
+  return lines.join(" ");
+}
+
+function hasAnyPaintedCell(mask: Uint8Array<ArrayBuffer>): boolean {
+  for (let i = 0; i < mask.length; i++) if (mask[i] !== 0) return true;
+  return false;
+}
+
+/**
+ * Pull a `cellsX × cellsY` rectangle of RGBA + mask out of the atlas at
+ * the island's atlas-space bbox (cellPx=1, so cells == pixels).
+ */
+function extractIslandCellsFromAtlas(
+  atlas: Atlas,
+  island: Island
+): { rgba: Uint8ClampedArray; mask: Uint8Array } {
+  const w = island.cellsX;
+  const h = island.cellsY;
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  const mask = new Uint8Array(w * h);
+  for (let cy = 0; cy < h; cy++) {
+    for (let cx = 0; cx < w; cx++) {
+      const ax = island.x + cx;
+      const ay = island.y + cy;
+      if (ax < 0 || ax >= atlas.width || ay < 0 || ay >= atlas.height) continue;
+      const aIdx = ay * atlas.width + ax;
+      const ai = aIdx * 4;
+      const ci = (cy * w + cx) * 4;
+      rgba[ci] = atlas.rgba[ai];
+      rgba[ci + 1] = atlas.rgba[ai + 1];
+      rgba[ci + 2] = atlas.rgba[ai + 2];
+      rgba[ci + 3] = 255;
+      mask[cy * w + cx] = atlas.mask[aIdx];
+    }
+  }
+  return { rgba, mask };
 }
 
 // ---------------------------------------------------------------------------

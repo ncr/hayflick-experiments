@@ -33,8 +33,9 @@ export function imageDataToCanvasTexture(
   const tex = new THREE.CanvasTexture(canvas);
   tex.flipY = false;
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
-  tex.magFilter = THREE.LinearFilter;
-  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.needsUpdate = true;
@@ -97,17 +98,20 @@ export function applyTexturesToGroup(
       mat.name = targetName;
 
       mat.map = textures.baseColor;
-      mat.normalMap = textures.normal;
-      mat.normalMapType = THREE.TangentSpaceNormalMap;
-
-      // ARM: R=AO, G=Roughness, B=Metalness — same texture for all three
-      mat.aoMap = textures.arm;
-      mat.roughnessMap = textures.arm;
-      mat.metalnessMap = textures.arm;
-
-      // Factors: 1.0 means "use the map value directly"
-      mat.roughness = 1.0;
-      mat.metalness = 1.0;
+      // Editor preview is intentionally FLAT-PBR: only baseColor × Lambert
+      // lighting. If we attached the Sobel-derived normal/AO/roughness maps
+      // here, painting one atlas pixel would visibly bleed shading into its
+      // neighbours (a 3×3 Sobel kernel produces a dark halo around any
+      // edge). That breaks the 1:1 atlas-pixel-to-game-pixel invariant the
+      // editor exists to expose. The maps are still derived and stored on
+      // SurfaceState so the bake step can write them into the artifact GLB
+      // — consumers (level editor, runtime) get the full ceramic PBR look.
+      mat.normalMap = null;
+      mat.aoMap = null;
+      mat.roughnessMap = null;
+      mat.metalnessMap = null;
+      mat.roughness = 0.7;
+      mat.metalness = 0;
 
       mat.needsUpdate = true;
 

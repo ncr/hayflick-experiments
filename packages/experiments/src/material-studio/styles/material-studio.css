@@ -258,15 +258,33 @@
 .ms-authoring-body {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 440px;
+  grid-template-columns: minmax(0, 1fr) 480px;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   background: var(--ms-bg);
 }
 
+.ms-paint-pane {
+  min-height: 0;
+  overflow: auto;
+  background: var(--ms-bg);
+  padding: 12px;
+}
+
+.ms-right-pane {
+  border-left: 1px solid var(--ms-border);
+  background: var(--ms-panel);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+}
+
 .ms-viewport {
   position: relative;
-  min-height: 0;
+  flex: 0 0 360px;
   background: var(--ms-bg);
+  border-bottom: 1px solid var(--ms-border);
 }
 
 .ms-viewport-overlay {
@@ -859,3 +877,99 @@
 .ms-toast-success { border-color: var(--ms-success); }
 .ms-toast-error { border-color: var(--ms-danger); color: #ffdcdc; }
 .ms-toast-info { border-color: var(--ms-accent); }
+
+/* ---------- Paint editor ---------- */
+
+.ms-paint-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+}
+
+.ms-paint-empty {
+  color: var(--ms-text-muted);
+  font-size: 13px;
+  padding: 16px;
+}
+
+.ms-paint-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px;
+  background: var(--ms-panel);
+  border: 1px solid var(--ms-border);
+  border-radius: 4px;
+}
+
+.ms-palette {
+  display: flex;
+  gap: 4px;
+}
+
+.ms-swatch-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--ms-border);
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.ms-swatch-btn-active {
+  outline: 2px solid var(--ms-accent);
+  outline-offset: 1px;
+}
+
+.ms-color-input {
+  width: 28px;
+  height: 24px;
+  border: 1px solid var(--ms-border);
+  border-radius: 3px;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.ms-zoom-select {
+  background: var(--ms-bg);
+  color: var(--ms-text);
+  border: 1px solid var(--ms-border);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.ms-paint-canvas-scroll {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--ms-border);
+  background: #18181c;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 16px;
+}
+
+.ms-paint-canvas-wrap {
+  position: relative;
+  cursor: crosshair;
+  /* Subtle outer outline so the paintable region is visually distinct
+     from the dark background of the scroll area. */
+  outline: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ms-island-overlay {
+  display: block;
+}
+
+.ms-paint-status {
+  font-size: 11px;
+  color: var(--ms-text-muted);
+  display: flex;
+  gap: 6px;
+  padding: 0 4px;
+}

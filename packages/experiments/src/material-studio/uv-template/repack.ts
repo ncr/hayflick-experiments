@@ -21,8 +21,15 @@ export type RepackOptions = {
   templateHeight: number;
   /** Cell-pixel size; one "cell" is one pixel of the final pixel-art atlas. */
   cellPx: number;
-  /** Cells along the longer side of an island. Shorter side scales by aspect. */
+  /** Cells along the longer side of an island, used when `cellsPerIsland`
+   *  isn't provided. Shorter side scales by UV-bbox aspect. */
   cellPxTarget: number;
+  /** Optional override: explicit (cellsX, cellsY) per detected island, in
+   *  the same order as `detected.islands`. When provided, this fully
+   *  bypasses the `cellPxTarget` + UV-aspect heuristic — cells are taken
+   *  verbatim. Used by `prepareSurface` to size cells from the island's
+   *  iso-projected screen extent so atlas pixels map 1:1 to game pixels. */
+  cellsPerIsland?: ReadonlyArray<{ cellsX: number; cellsY: number }>;
   /** Gap between packed islands, in template pixels. Default 0. */
   paddingPx?: number;
   /** Reserved room for outline magenta around each island, in template pixels. Default 8. */
@@ -73,19 +80,27 @@ export function repackIslands(
     boxH: number;
   };
 
+  if (opts.cellsPerIsland && opts.cellsPerIsland.length !== detected.islands.length) {
+    throw new Error(
+      `repackIslands: cellsPerIsland length ${opts.cellsPerIsland.length} != island count ${detected.islands.length}`
+    );
+  }
+
   const sized: Sized[] = detected.islands.map((isl, idx) => {
-    const wUv = Math.max(1e-9, isl.bboxUv.u1 - isl.bboxUv.u0);
-    const hUv = Math.max(1e-9, isl.bboxUv.v1 - isl.bboxUv.v0);
-    const longest = Math.max(wUv, hUv);
-    const cellsLong = opts.cellPxTarget;
-    const cellsX =
-      wUv >= hUv
-        ? cellsLong
-        : Math.max(MIN_CELLS, Math.round((wUv / longest) * cellsLong));
-    const cellsY =
-      hUv >= wUv
-        ? cellsLong
-        : Math.max(MIN_CELLS, Math.round((hUv / longest) * cellsLong));
+    let cellsX: number;
+    let cellsY: number;
+    if (opts.cellsPerIsland) {
+      const explicit = opts.cellsPerIsland[idx];
+      cellsX = Math.max(MIN_CELLS, explicit.cellsX);
+      cellsY = Math.max(MIN_CELLS, explicit.cellsY);
+    } else {
+      const wUv = Math.max(1e-9, isl.bboxUv.u1 - isl.bboxUv.u0);
+      const hUv = Math.max(1e-9, isl.bboxUv.v1 - isl.bboxUv.v0);
+      const longest = Math.max(wUv, hUv);
+      const cellsLong = opts.cellPxTarget;
+      cellsX = wUv >= hUv ? cellsLong : Math.max(MIN_CELLS, Math.round((wUv / longest) * cellsLong));
+      cellsY = hUv >= wUv ? cellsLong : Math.max(MIN_CELLS, Math.round((hUv / longest) * cellsLong));
+    }
     const pixelW = cellsX * opts.cellPx;
     const pixelH = cellsY * opts.cellPx;
     return {

@@ -10,13 +10,76 @@ import { SurfaceList } from "../components/SurfaceList";
 import { PromptPanel } from "../components/PromptPanel";
 import { GlassControls } from "../components/GlassControls";
 import { SaveBar } from "../components/SaveBar";
-import type { SurfaceState } from "../types";
+import { PaintCanvas } from "../components/PaintCanvas";
+import { prepareSurface } from "../uv-template/prepare";
+import { derivePbrMaps } from "../pbr-derive";
+import {
+  DEFAULT_PBR_PARAMS,
+  atlasToImageData,
+  type Atlas,
+  type GeneratedMaps,
+  type IslandLayout,
+  type Surface,
+  type SubmeshUvData,
+  type SurfaceState,
+} from "../types";
+
+function freshPbrSurfaceState(opts: {
+  surface: Surface;
+  prompt: string;
+  atlas: Atlas;
+  islandLayout: IslandLayout;
+  maps: GeneratedMaps;
+  approved?: boolean;
+}): SurfaceState {
+  return {
+    surface: opts.surface,
+    prompt: opts.prompt,
+    atlas: opts.atlas,
+    islandLayout: opts.islandLayout,
+    maps: opts.maps,
+    editHistory: [],
+    editFuture: [],
+    templateSent: null,
+    aiRaw: null,
+    promptHistory: opts.prompt ? [opts.prompt] : [],
+    approved: opts.approved ?? false,
+  };
+}
+
+function freshSyntheticSurfaceState(s: Surface, glassParams: NonNullable<SurfaceState["glassParams"]>): SurfaceState {
+  return {
+    surface: s,
+    prompt: "",
+    atlas: null,
+    islandLayout: null,
+    maps: null,
+    editHistory: [],
+    editFuture: [],
+    templateSent: null,
+    aiRaw: null,
+    promptHistory: [],
+    approved: true,
+    glassParams,
+  };
+}
+
+function seedFromUvData(uvData: SubmeshUvData): { atlas: Atlas; islandLayout: IslandLayout; maps: GeneratedMaps } {
+  const prep = prepareSurface(uvData);
+  const maps = derivePbrMaps(atlasToImageData(prep.atlas), DEFAULT_PBR_PARAMS);
+  return { atlas: prep.atlas, islandLayout: prep.islandLayout, maps };
+}
 
 export function AuthoringView() {
-  const { authoring } = useAppState();
+  const appState = useAppState();
+  const { authoring } = appState;
   const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<AuthoringScene | null>(null);
+  // Live ref into app state so the test handle below can read the current
+  // active surface from a useEffect-captured closure.
+  const stateRef = useRef(appState);
+  stateRef.current = appState;
   const [sceneReady, setSceneReady] = useState(false);
 
   useEffect(() => {
@@ -24,10 +87,58 @@ export function AuthoringView() {
     disposeThumbnailRenderer();
     const scene = new AuthoringScene(containerRef.current);
     sceneRef.current = scene;
+    // Test hook — Playwright reads framebuffer pixels through this handle.
+    // No-op when window is undefined (SSR safety).
+    if (typeof window !== "undefined") {
+      (window as Window & {
+        __materialStudio?: {
+          scene: AuthoringScene;
+          getActiveSurfaceState: () => SurfaceState | null;
+          getActiveRole: () => string | null;
+          /** Test helper: paint one atlas pixel programmatically and push
+           *  the change to the live texture. Bypasses the PaintCanvas DOM
+           *  pointer flow so e2e specs can target islands packed beyond
+           *  the viewport's CSS extent. */
+          testPaintAtlasPixel: (
+            role: string,
+            x: number,
+            y: number,
+            r: number,
+            g: number,
+            b: number
+          ) => boolean;
+        };
+      }).__materialStudio = {
+        scene,
+        getActiveSurfaceState: () => {
+          const a = stateRef.current.authoring;
+          if (!a || !a.activeRole) return null;
+          return a.surfaceStates[a.activeRole] ?? null;
+        },
+        getActiveRole: () => stateRef.current.authoring?.activeRole ?? null,
+        testPaintAtlasPixel: (role, x, y, r, g, b) => {
+          const surf = stateRef.current.authoring?.surfaceStates?.[role];
+          if (!surf?.atlas) return false;
+          const { atlas } = surf;
+          if (x < 0 || x >= atlas.width || y < 0 || y >= atlas.height) return false;
+          const i = (y * atlas.width + x) * 4;
+          atlas.rgba[i] = r;
+          atlas.rgba[i + 1] = g;
+          atlas.rgba[i + 2] = b;
+          atlas.rgba[i + 3] = 255;
+          atlas.mask[y * atlas.width + x] = 1;
+          scene.updateBaseColor(role, atlas.rgba, atlas.width, atlas.height);
+          return true;
+        },
+      };
+    }
     setSceneReady(true);
     return () => {
       scene.dispose();
       sceneRef.current = null;
+      if (typeof window !== "undefined") {
+        delete (window as Window & { __materialStudio?: unknown }).__materialStudio;
+      }
       setSceneReady(false);
     };
   }, []);
@@ -51,56 +162,72 @@ export function AuthoringView() {
       .loadBaseMesh(baseMeshId)
       .then((surfaces) => {
         if (cancelled) return;
-        if (mode === "edit" && sessionStatesSnapshot) {
-          for (const s of surfaces) {
-            const st = sessionStatesSnapshot[s.role];
-            if (!st) continue;
-            if (s.kind === "synthetic" && st.glassParams) {
-              scene.applyGlass(s.role, st.glassParams);
-            } else if (st.maps) {
-              scene.applyAtlasUvs(s.role, st.islandLayout?.newUvBuffer ?? null);
-              scene.applyPbrTextures(s.role, st.maps);
-            }
-          }
-          dispatch({
-            type: "AUTHORING_LOAD_BASE_DONE",
-            surfaces,
-            surfaceStates: sessionStatesSnapshot,
-            activeRole: sessionActiveRoleSnapshot,
-          });
-          return;
-        }
-        const initial: Record<string, SurfaceState> = {};
+        const finalStates: Record<string, SurfaceState> = {};
         for (const s of surfaces) {
           if (s.kind === "synthetic") {
-            const params = { ...DEFAULT_GLASS_PARAMS };
+            const hydrated = sessionStatesSnapshot?.[s.role];
+            const params = hydrated?.glassParams ?? { ...DEFAULT_GLASS_PARAMS };
             scene.applyGlass(s.role, params);
-            initial[s.role] = {
-              surface: s,
-              prompt: "",
-              maps: null,
-              prevMaps: null,
-              promptHistory: [],
-              approved: true,
-              glassParams: params,
+            finalStates[s.role] = hydrated ?? freshSyntheticSurfaceState(s, params);
+            continue;
+          }
+
+          const uvData = scene.getSubmeshUvData(s.role);
+          if (!uvData) {
+            finalStates[s.role] =
+              sessionStatesSnapshot?.[s.role] ??
+              freshSyntheticSurfaceState(s, { ...DEFAULT_GLASS_PARAMS });
+            continue;
+          }
+
+          const seeded = seedFromUvData(uvData);
+          const hydrated = mode === "edit" ? sessionStatesSnapshot?.[s.role] : undefined;
+
+          // Hydrate atlas pixels from saved baseColor when re-opening an
+          // existing entry; otherwise use the blank starter atlas.
+          let atlas: Atlas = seeded.atlas;
+          let maps: GeneratedMaps = seeded.maps;
+          if (hydrated?.atlas) {
+            atlas = hydrated.atlas;
+          } else if (hydrated?.maps?.baseColor) {
+            atlas = {
+              rgba: new Uint8ClampedArray(hydrated.maps.baseColor.data),
+              mask: new Uint8Array(hydrated.maps.baseColor.width * hydrated.maps.baseColor.height),
+              width: hydrated.maps.baseColor.width,
+              height: hydrated.maps.baseColor.height,
             };
-          } else {
-            initial[s.role] = {
-              surface: s,
-              prompt: defaultPromptForRole(s.role),
-              maps: null,
-              prevMaps: null,
-              promptHistory: [],
-              approved: false,
-            };
+          }
+          if (hydrated?.maps) maps = hydrated.maps;
+          else if (atlas !== seeded.atlas) {
+            // Atlas pixels came from hydration but maps didn't — re-derive.
+            maps = derivePbrMaps(atlasToImageData(atlas), DEFAULT_PBR_PARAMS);
+          }
+
+          scene.applyAtlasUvs(s.role, seeded.islandLayout.newUvBuffer);
+          scene.applyPbrTextures(s.role, maps);
+
+          finalStates[s.role] = freshPbrSurfaceState({
+            surface: s,
+            prompt: hydrated?.prompt ?? defaultPromptForRole(s.role),
+            atlas,
+            islandLayout: seeded.islandLayout,
+            maps,
+            approved: hydrated?.approved ?? false,
+          });
+          if (hydrated?.promptHistory?.length) {
+            finalStates[s.role].promptHistory = hydrated.promptHistory;
           }
         }
         const firstPbr = surfaces.find((s) => s.kind === "pbr");
+        const activeRole =
+          mode === "edit"
+            ? sessionActiveRoleSnapshot ?? firstPbr?.role ?? surfaces[0]?.role ?? null
+            : firstPbr?.role ?? surfaces[0]?.role ?? null;
         dispatch({
           type: "AUTHORING_LOAD_BASE_DONE",
           surfaces,
-          surfaceStates: initial,
-          activeRole: firstPbr?.role ?? surfaces[0]?.role ?? null,
+          surfaceStates: finalStates,
+          activeRole,
         });
       })
       .catch((err: Error) => {
@@ -194,12 +321,23 @@ export function AuthoringView() {
           </div>
         </header>
         <div className="ms-authoring-body">
-          <div className="ms-viewport" ref={containerRef}>
-            {authoring.loadingBase && <div className="ms-viewport-overlay">Loading mesh…</div>}
-            {authoring.error && <div className="ms-viewport-overlay ms-hint-error">{authoring.error}</div>}
-            {authoring.baking && <div className="ms-viewport-overlay">Baking — this usually takes about 30 seconds.</div>}
+          <div className="ms-paint-pane">
+            {activeState?.surface.kind === "pbr" ? (
+              <PaintCanvas />
+            ) : (
+              <div className="ms-paint-empty">
+                {activeState ? "Glass surface — no atlas to paint." : "Select a surface to start."}
+              </div>
+            )}
           </div>
-          <aside className="ms-side-panel">
+          <aside className="ms-right-pane">
+            <div className="ms-viewport" ref={containerRef}>
+              {authoring.loadingBase && <div className="ms-viewport-overlay">Loading mesh…</div>}
+              {authoring.error && <div className="ms-viewport-overlay ms-hint-error">{authoring.error}</div>}
+              {authoring.baking && (
+                <div className="ms-viewport-overlay">Baking — this usually takes about 30 seconds.</div>
+              )}
+            </div>
             <SurfaceList />
             {activeState?.surface.kind === "pbr" ? <PromptPanel /> : activeState ? <GlassControls /> : null}
             <SaveBar onSave={handleSave} busy={authoring.baking} />

@@ -1,5 +1,13 @@
 import type { AppState, AuthoringSession, LibraryEntry, Toast, ToastLevel } from "./types";
-import type { GeneratedMaps, IslandLayout, Surface, SurfaceState } from "../types";
+import {
+  MAX_EDIT_HISTORY,
+  type Atlas,
+  type AtlasSnapshot,
+  type GeneratedMaps,
+  type IslandLayout,
+  type Surface,
+  type SurfaceState,
+} from "../types";
 import type { RgbaBuffer } from "../../uv-template-probe/uv-template";
 
 export type Action =
@@ -21,22 +29,36 @@ export type Action =
   | { type: "START_NEW"; baseMeshId: string }
   | { type: "START_EDIT"; session: AuthoringSession }
   | { type: "AUTHORING_LOAD_BASE_START" }
-  | { type: "AUTHORING_LOAD_BASE_DONE"; surfaces: Surface[]; surfaceStates: Record<string, SurfaceState>; activeRole: string | null }
+  | {
+      type: "AUTHORING_LOAD_BASE_DONE";
+      surfaces: Surface[];
+      surfaceStates: Record<string, SurfaceState>;
+      activeRole: string | null;
+    }
   | { type: "AUTHORING_LOAD_BASE_FAIL"; error: string }
   | { type: "AUTHORING_SELECT_SURFACE"; role: string }
   | { type: "AUTHORING_SET_PROMPT"; role: string; prompt: string }
   | {
+      type: "AUTHORING_PAINT_COMMIT";
+      role: string;
+      nextRgba: Uint8ClampedArray<ArrayBuffer>;
+      nextMask: Uint8Array<ArrayBuffer>;
+      maps: GeneratedMaps;
+      tag: AtlasSnapshot["tag"];
+    }
+  | { type: "AUTHORING_UNDO"; role: string; maps: GeneratedMaps }
+  | { type: "AUTHORING_REDO"; role: string; maps: GeneratedMaps }
+  | { type: "AUTHORING_CLEAR_MASK"; role: string }
+  | {
       type: "AUTHORING_GENERATED";
       role: string;
+      atlas: Atlas;
       maps: GeneratedMaps;
-      prevMaps: GeneratedMaps | null;
       islandLayout: IslandLayout;
-      prevIslandLayout: IslandLayout | null;
       templateSent: RgbaBuffer;
       aiRaw: RgbaBuffer;
       prompt: string;
     }
-  | { type: "AUTHORING_UNDO_LAST_GEN"; role: string }
   | { type: "AUTHORING_APPROVE"; role: string }
   | { type: "AUTHORING_UNAPPROVE"; role: string }
   | { type: "AUTHORING_SET_NAME"; name: string }
@@ -52,6 +74,33 @@ export type Action =
 let toastIdSeq = 1;
 function mkToast(level: ToastLevel, message: string): Toast {
   return { id: toastIdSeq++, level, message };
+}
+
+function patchSurface(state: AppState, role: string, patch: Partial<SurfaceState>, dirty = true): AppState {
+  if (!state.authoring) return state;
+  const cur = state.authoring.surfaceStates[role];
+  if (!cur) return state;
+  return {
+    ...state,
+    authoring: {
+      ...state.authoring,
+      dirty: dirty || state.authoring.dirty,
+      surfaceStates: { ...state.authoring.surfaceStates, [role]: { ...cur, ...patch } },
+    },
+  };
+}
+
+function snapshotOf(atlas: Atlas, tag: AtlasSnapshot["tag"]): AtlasSnapshot {
+  return { rgba: atlas.rgba, mask: atlas.mask, tag };
+}
+
+function pushHistory(history: AtlasSnapshot[], snap: AtlasSnapshot): AtlasSnapshot[] {
+  const next = [...history, snap];
+  return next.length > MAX_EDIT_HISTORY ? next.slice(next.length - MAX_EDIT_HISTORY) : next;
+}
+
+function makeBlankMask(rgba: Uint8ClampedArray<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(rgba.length / 4);
 }
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -146,98 +195,114 @@ export function reducer(state: AppState, action: Action): AppState {
     case "AUTHORING_SELECT_SURFACE":
       return state.authoring ? { ...state, authoring: { ...state.authoring, activeRole: action.role } } : state;
     case "AUTHORING_SET_PROMPT":
-      return state.authoring
-        ? {
-            ...state,
-            authoring: {
-              ...state.authoring,
-              dirty: true,
-              surfaceStates: {
-                ...state.authoring.surfaceStates,
-                [action.role]: { ...state.authoring.surfaceStates[action.role], prompt: action.prompt },
-              },
-            },
-          }
-        : state;
-    case "AUTHORING_GENERATED":
-      return state.authoring
-        ? {
-            ...state,
-            authoring: {
-              ...state.authoring,
-              dirty: true,
-              surfaceStates: {
-                ...state.authoring.surfaceStates,
-                [action.role]: {
-                  ...state.authoring.surfaceStates[action.role],
-                  maps: action.maps,
-                  prevMaps: action.prevMaps,
-                  islandLayout: action.islandLayout,
-                  prevIslandLayout: action.prevIslandLayout,
-                  templateSent: action.templateSent,
-                  aiRaw: action.aiRaw,
-                  approved: false,
-                  prompt: action.prompt,
-                  promptHistory: [
-                    action.prompt,
-                    ...(state.authoring.surfaceStates[action.role]?.promptHistory ?? []).filter((p) => p !== action.prompt),
-                  ].slice(0, 8),
-                },
-              },
-            },
-          }
-        : state;
-    case "AUTHORING_UNDO_LAST_GEN": {
+      return patchSurface(state, action.role, { prompt: action.prompt });
+    case "AUTHORING_PAINT_COMMIT": {
       if (!state.authoring) return state;
       const cur = state.authoring.surfaceStates[action.role];
-      if (!cur?.prevMaps) return state;
-      return {
-        ...state,
-        authoring: {
-          ...state.authoring,
-          dirty: true,
-          surfaceStates: {
-            ...state.authoring.surfaceStates,
-            [action.role]: {
-              ...cur,
-              maps: cur.prevMaps,
-              prevMaps: null,
-              islandLayout: cur.prevIslandLayout ?? null,
-              prevIslandLayout: null,
-              approved: false,
-            },
-          },
-        },
+      if (!cur || !cur.atlas) return state;
+      const prevSnap = snapshotOf(cur.atlas, action.tag);
+      const nextAtlas: Atlas = {
+        rgba: action.nextRgba,
+        mask: action.nextMask,
+        width: cur.atlas.width,
+        height: cur.atlas.height,
       };
+      return patchSurface(state, action.role, {
+        atlas: nextAtlas,
+        maps: action.maps,
+        editHistory: pushHistory(cur.editHistory, prevSnap),
+        editFuture: [],
+        approved: false,
+      });
+    }
+    case "AUTHORING_UNDO": {
+      if (!state.authoring) return state;
+      const cur = state.authoring.surfaceStates[action.role];
+      if (!cur || !cur.atlas || cur.editHistory.length === 0) return state;
+      const top = cur.editHistory[cur.editHistory.length - 1];
+      const futureSnap = snapshotOf(cur.atlas, top.tag);
+      const prevAtlas: Atlas = {
+        rgba: top.rgba,
+        mask: top.mask,
+        width: cur.atlas.width,
+        height: cur.atlas.height,
+      };
+      return patchSurface(state, action.role, {
+        atlas: prevAtlas,
+        maps: action.maps,
+        editHistory: cur.editHistory.slice(0, -1),
+        editFuture: [...cur.editFuture, futureSnap],
+        approved: false,
+      });
+    }
+    case "AUTHORING_REDO": {
+      if (!state.authoring) return state;
+      const cur = state.authoring.surfaceStates[action.role];
+      if (!cur || !cur.atlas || cur.editFuture.length === 0) return state;
+      const top = cur.editFuture[cur.editFuture.length - 1];
+      const historySnap = snapshotOf(cur.atlas, top.tag);
+      const nextAtlas: Atlas = {
+        rgba: top.rgba,
+        mask: top.mask,
+        width: cur.atlas.width,
+        height: cur.atlas.height,
+      };
+      return patchSurface(state, action.role, {
+        atlas: nextAtlas,
+        maps: action.maps,
+        editFuture: cur.editFuture.slice(0, -1),
+        editHistory: pushHistory(cur.editHistory, historySnap),
+        approved: false,
+      });
+    }
+    case "AUTHORING_CLEAR_MASK": {
+      if (!state.authoring) return state;
+      const cur = state.authoring.surfaceStates[action.role];
+      if (!cur || !cur.atlas) return state;
+      const prevSnap = snapshotOf(cur.atlas, "clear-mask");
+      const nextAtlas: Atlas = {
+        rgba: cur.atlas.rgba,
+        mask: makeBlankMask(cur.atlas.rgba),
+        width: cur.atlas.width,
+        height: cur.atlas.height,
+      };
+      return patchSurface(state, action.role, {
+        atlas: nextAtlas,
+        editHistory: pushHistory(cur.editHistory, prevSnap),
+        editFuture: [],
+      });
+    }
+    case "AUTHORING_GENERATED": {
+      if (!state.authoring) return state;
+      const cur = state.authoring.surfaceStates[action.role];
+      if (!cur) return state;
+      const history = cur.atlas
+        ? pushHistory(cur.editHistory, snapshotOf(cur.atlas, "generate"))
+        : cur.editHistory;
+      return patchSurface(state, action.role, {
+        atlas: action.atlas,
+        maps: action.maps,
+        islandLayout: action.islandLayout,
+        templateSent: action.templateSent,
+        aiRaw: action.aiRaw,
+        prompt: action.prompt,
+        promptHistory: [
+          action.prompt,
+          ...cur.promptHistory.filter((p) => p !== action.prompt),
+        ].slice(0, 8),
+        editHistory: history,
+        editFuture: [],
+        approved: false,
+      });
     }
     case "AUTHORING_APPROVE":
-      return state.authoring
-        ? {
-            ...state,
-            authoring: {
-              ...state.authoring,
-              surfaceStates: {
-                ...state.authoring.surfaceStates,
-                [action.role]: { ...state.authoring.surfaceStates[action.role], approved: true },
-              },
-            },
-          }
-        : state;
+      return patchSurface(state, action.role, { approved: true }, false);
     case "AUTHORING_UNAPPROVE":
-      return state.authoring
-        ? {
-            ...state,
-            authoring: {
-              ...state.authoring,
-              surfaceStates: {
-                ...state.authoring.surfaceStates,
-                [action.role]: { ...state.authoring.surfaceStates[action.role], approved: false },
-              },
-            },
-          }
-        : state;
+      return patchSurface(state, action.role, { approved: false }, false);
     case "AUTHORING_SET_NAME":
-      return state.authoring ? { ...state, authoring: { ...state.authoring, entryName: action.name, dirty: true } } : state;
+      return state.authoring
+        ? { ...state, authoring: { ...state.authoring, entryName: action.name, dirty: true } }
+        : state;
     case "AUTHORING_SET_PROTECTED":
       return state.authoring ? { ...state, authoring: { ...state.authoring, protected: action.value } } : state;
     case "AUTHORING_SET_DIRTY":
@@ -248,26 +313,14 @@ export function reducer(state: AppState, action: Action): AppState {
       return state.authoring ? { ...state, authoring: { ...state.authoring, baking: false, dirty: false } } : state;
     case "AUTHORING_BAKE_FAIL":
       return state.authoring ? { ...state, authoring: { ...state.authoring, baking: false, error: action.error } } : state;
-    case "AUTHORING_GLASS_SET":
-      return state.authoring
-        ? {
-            ...state,
-            authoring: {
-              ...state.authoring,
-              dirty: true,
-              surfaceStates: {
-                ...state.authoring.surfaceStates,
-                [action.role]: {
-                  ...state.authoring.surfaceStates[action.role],
-                  glassParams: {
-                    ...(state.authoring.surfaceStates[action.role]?.glassParams ?? DEFAULT_GLASS_PARAMS),
-                    ...action.params,
-                  },
-                },
-              },
-            },
-          }
-        : state;
+    case "AUTHORING_GLASS_SET": {
+      if (!state.authoring) return state;
+      const cur = state.authoring.surfaceStates[action.role];
+      if (!cur) return state;
+      return patchSurface(state, action.role, {
+        glassParams: { ...(cur.glassParams ?? DEFAULT_GLASS_PARAMS), ...action.params },
+      });
+    }
     case "TOAST_ADD":
       return { ...state, toasts: [...state.toasts, mkToast(action.level, action.message)] };
     case "TOAST_DISMISS":

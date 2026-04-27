@@ -9,8 +9,16 @@
  */
 
 import * as fs from "node:fs";
-import { Accessor, NodeIO, type Material } from "@gltf-transform/core";
+import { Accessor, NodeIO, TextureInfo, type Material } from "@gltf-transform/core";
 import { KHRMaterialsIOR, KHRMaterialsTransmission } from "@gltf-transform/extensions";
+
+/** Apply NEAREST filtering to a texture binding so the baked atlas reads
+ *  pixel-perfect in any consumer (level editor, runtime). */
+function setNearest(info: TextureInfo | null): void {
+  if (!info) return;
+  info.setMagFilter(TextureInfo.MagFilter.NEAREST);
+  info.setMinFilter(TextureInfo.MinFilter.NEAREST);
+}
 
 export type BakePbrRole = {
   kind: "pbr";
@@ -116,6 +124,11 @@ export async function buildArtifact(input: BuildArtifactInput): Promise<void> {
           .setOcclusionTexture(armTex)
           .setRoughnessFactor(role.roughnessFactor)
           .setMetallicFactor(role.metallicFactor);
+        // Pixel-perfect: every atlas texel must map to one game pixel.
+        setNearest(mat.getBaseColorTextureInfo());
+        setNearest(mat.getNormalTextureInfo());
+        setNearest(mat.getMetallicRoughnessTextureInfo());
+        setNearest(mat.getOcclusionTextureInfo());
       }
     }
   }

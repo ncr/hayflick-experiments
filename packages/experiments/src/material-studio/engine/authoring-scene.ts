@@ -3,7 +3,13 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { IsoGameView } from "@common/render";
 import { bindIsoGameViewInput } from "@common/input";
 import type { GeneratedMaps, GlassParams, Surface, SubmeshUvData } from "../types";
-import { applyTexturesToGroup, createTextureSet, type TextureSet } from "../texture-swap";
+import {
+  applyTexturesToGroup,
+  createTextureSet,
+  imageDataToCanvasTexture,
+  updateCanvasTexture,
+  type TextureSet,
+} from "../texture-swap";
 
 const gltfLoader = new GLTFLoader();
 
@@ -85,12 +91,19 @@ function extractSubmeshUvData(mesh: THREE.Mesh, role: string): SubmeshUvData | n
   if (!(geom instanceof THREE.BufferGeometry)) return null;
   const uvAttr = geom.attributes.uv;
   if (!uvAttr) return null;
+  const posAttr = geom.attributes.position;
+  if (!posAttr) return null;
   const vertexCount = uvAttr.count;
-  // Use getX/getY so this works for both BufferAttribute and InterleavedBufferAttribute.
   const uvBuffer = new Float32Array(vertexCount * 2);
   for (let i = 0; i < vertexCount; i++) {
     uvBuffer[i * 2] = uvAttr.getX(i);
     uvBuffer[i * 2 + 1] = uvAttr.getY(i);
+  }
+  const positionBuffer = new Float32Array(vertexCount * 3);
+  for (let i = 0; i < vertexCount; i++) {
+    positionBuffer[i * 3] = posAttr.getX(i);
+    positionBuffer[i * 3 + 1] = posAttr.getY(i);
+    positionBuffer[i * 3 + 2] = posAttr.getZ(i);
   }
   const indexAttr = geom.index;
   let indexBuffer: Uint32Array | Uint16Array;
@@ -105,7 +118,7 @@ function extractSubmeshUvData(mesh: THREE.Mesh, role: string): SubmeshUvData | n
   const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
   const materialName =
     mat instanceof THREE.Material && mat.name ? mat.name : `blockstudio_${role}`;
-  return { indexBuffer, uvBuffer, vertexCount, materialName };
+  return { indexBuffer, uvBuffer, positionBuffer, vertexCount, materialName };
 }
 
 async function loadBaseMeshGroup(meshId: string): Promise<THREE.Group> {
@@ -294,6 +307,36 @@ export class AuthoringScene {
     this.requestShadowUpdate();
   }
 
+  /**
+   * Hot-path for live paint preview: rewrite the role's existing baseColor
+   * texture pixels in-place. Avoids the GeneratedMaps allocation + shader
+   * recompile that `applyPbrTextures` triggers each call. Call this from
+   * pointer-move; call `applyPbrTextures` once on stroke end to settle
+   * normal/ARM. If no baseColor texture is attached yet (very first paint
+   * stroke before any Generate), we synthesize one from the rgba data.
+   */
+  updateBaseColor(role: string, rgba: Uint8ClampedArray<ArrayBuffer>, w: number, h: number): void {
+    const data = new ImageData(rgba, w, h);
+    const set = this.textures.get(role);
+    if (set?.baseColor) {
+      updateCanvasTexture(set.baseColor, data);
+      this.requestShadowUpdate();
+      return;
+    }
+    // First-touch: stand up a partial TextureSet so the mesh has a base
+    // colour. Normal + ARM remain unset until the next applyPbrTextures.
+    const baseColor = imageDataToCanvasTexture(data, true);
+    const newSet: TextureSet = {
+      baseColor,
+      normal: set?.normal ?? imageDataToCanvasTexture(data, false),
+      arm: set?.arm ?? imageDataToCanvasTexture(data, false),
+    };
+    this.disposeTextureSet(set);
+    this.textures.set(role, newSet);
+    for (const child of this.meshGroup.children) applyTexturesToGroup(child, role, newSet);
+    this.requestShadowUpdate();
+  }
+
   applyPreloadedTextureSet(role: string, textures: TextureSet): void {
     this.disposeTextureSet(this.textures.get(role));
     this.textures.set(role, textures);
@@ -311,6 +354,39 @@ export class AuthoringScene {
   applyGlass(role: string, params: GlassParams): void {
     for (const child of this.meshGroup.children) applyGlassMaterial(child, role, params);
     this.requestShadowUpdate();
+  }
+
+  /**
+   * Test-only: force-render N frames in synchronous succession. Used by the
+   * Playwright suite to settle the iso preview before reading framebuffer
+   * pixels — without this, the WebGL drawing buffer is wiped between tasks
+   * and `readCanvasImageData` would return black.
+   */
+  forceFrame(n = 2): void {
+    const now = performance.now();
+    for (let i = 0; i < n; i++) {
+      this.view.frame(now + i * 16, 0.016);
+    }
+  }
+
+  /**
+   * Test-only: render once and copy the resulting WebGL canvas into a 2D
+   * context so callers can read pixels via `getImageData` after the fact.
+   * The render + drawImage happens in one synchronous call so the drawing
+   * buffer is still valid.
+   */
+  readCanvasImageData(): ImageData {
+    const now = performance.now();
+    this.view.frame(now, 0.016);
+    const src = this.view.canvas;
+    const tmp = document.createElement("canvas");
+    tmp.width = src.width;
+    tmp.height = src.height;
+    const ctx = tmp.getContext("2d");
+    if (!ctx) throw new Error("AuthoringScene.readCanvasImageData: 2D context unavailable");
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(src, 0, 0);
+    return ctx.getImageData(0, 0, tmp.width, tmp.height);
   }
 
   private clearMesh(): void {
