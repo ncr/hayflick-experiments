@@ -58,6 +58,7 @@ export function AuthoringView() {
             if (s.kind === "synthetic" && st.glassParams) {
               scene.applyGlass(s.role, st.glassParams);
             } else if (st.maps) {
+              scene.applyAtlasUvs(s.role, st.islandLayout?.newUvBuffer ?? null);
               scene.applyPbrTextures(s.role, st.maps);
             }
           }

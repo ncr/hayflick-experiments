@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { SharedScissorStage, PixelPerfectPane, TILESET_VIEWER_TARGET_CONFIG } from "@common/render";
-import { bindPixelPerfectPaneBroadcast } from "@common/input";
+import { IsoGameView } from "@common/render";
+import { bindIsoGameViewInput } from "@common/input";
 import type { GeneratedMaps, GlassParams, Surface, SubmeshUvData } from "../types";
 import { applyTexturesToGroup, createTextureSet, type TextureSet } from "../texture-swap";
 
@@ -25,16 +25,27 @@ function createGroundPlane(): THREE.Mesh {
   return mesh;
 }
 
-function setLinearTextureFiltering(group: THREE.Object3D): void {
+function stripBlockstudioTextures(group: THREE.Object3D): void {
   group.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return;
     const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
     for (const mat of mats) {
-      if (mat instanceof THREE.MeshStandardMaterial && mat.map) {
-        mat.map.magFilter = THREE.LinearFilter;
-        mat.map.minFilter = THREE.LinearFilter;
-        mat.map.needsUpdate = true;
-      }
+      if (!(mat instanceof THREE.MeshStandardMaterial)) continue;
+      if (!mat.name.startsWith("blockstudio_")) continue;
+      mat.map?.dispose?.();
+      mat.normalMap?.dispose?.();
+      mat.aoMap?.dispose?.();
+      mat.roughnessMap?.dispose?.();
+      mat.metalnessMap?.dispose?.();
+      mat.map = null;
+      mat.normalMap = null;
+      mat.aoMap = null;
+      mat.roughnessMap = null;
+      mat.metalnessMap = null;
+      mat.color = new THREE.Color(0x9a9a9a);
+      mat.roughness = 0.7;
+      mat.metalness = 0;
+      mat.needsUpdate = true;
     }
   });
 }
@@ -42,11 +53,13 @@ function setLinearTextureFiltering(group: THREE.Object3D): void {
 type DiscoveryResult = {
   surfaces: Surface[];
   uvData: Map<string, SubmeshUvData>;
+  meshes: Map<string, THREE.Mesh>;
 };
 
 function discoverSurfaces(group: THREE.Object3D): DiscoveryResult {
   const byRole = new Map<string, Surface>();
   const uvData = new Map<string, SubmeshUvData>();
+  const meshes = new Map<string, THREE.Mesh>();
   group.traverse((obj) => {
     const role = obj.userData?.textureRole as string | undefined;
     if (!role || byRole.has(role)) return;
@@ -58,10 +71,13 @@ function discoverSurfaces(group: THREE.Object3D): DiscoveryResult {
     });
     if (!isGlass && obj instanceof THREE.Mesh) {
       const data = extractSubmeshUvData(obj, role);
-      if (data) uvData.set(role, data);
+      if (data) {
+        uvData.set(role, data);
+        meshes.set(role, obj);
+      }
     }
   });
-  return { surfaces: Array.from(byRole.values()), uvData };
+  return { surfaces: Array.from(byRole.values()), uvData, meshes };
 }
 
 function extractSubmeshUvData(mesh: THREE.Mesh, role: string): SubmeshUvData | null {
@@ -132,13 +148,14 @@ function applyGlassMaterial(group: THREE.Object3D, roleKey: string, params: Glas
 
 export class AuthoringScene {
   private scene: THREE.Scene;
-  private stage: SharedScissorStage;
-  private pane: PixelPerfectPane;
+  private view: IsoGameView;
   private unbindInput: () => void;
   private keyLight: THREE.DirectionalLight;
   private meshGroup = new THREE.Group();
   private textures = new Map<string, TextureSet>();
   private submeshUvData = new Map<string, SubmeshUvData>();
+  private submeshMeshes = new Map<string, THREE.Mesh>();
+  private originalUvBuffers = new Map<string, Float32Array>();
   private resizeObs: ResizeObserver;
   private animId = 0;
   private lastTime = performance.now();
@@ -181,37 +198,31 @@ export class AuthoringScene {
     this.scene.add(rim);
     this.scene.add(rim.target);
 
-    this.stage = new SharedScissorStage({
+    this.view = new IsoGameView({
       mount: container,
       width,
       height,
-      pixelRatio: Math.max(1, window.devicePixelRatio || 1),
-      antialias: false,
-      clearColor: 0x0f1115,
-      clearAlpha: 1,
-      shadows: true,
-    });
-    this.stage.renderer.outputColorSpace = THREE.SRGBColorSpace;
-
-    this.pane = new PixelPerfectPane({
-      stage: this.stage,
-      id: "matstudio-author",
-      element: container,
       scene: this.scene,
-      width,
-      height,
-      ...TILESET_VIEWER_TARGET_CONFIG,
+      basePixelZoom: 1,
+      zoomMin: 1,
+      zoomMax: 4,
+      zoomStep: 1,
+      rotationAnimationRate: 20,
+      rotationAnimationEpsilon: 0.08,
+      lowTargetSamples: 1,
+      outlines: false,
       clearColor: 0x0f1115,
       toneMapping: "aces",
       shadows: true,
     });
+    this.view.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    this.unbindInput = bindPixelPerfectPaneBroadcast({ stage: this.stage, panes: [this.pane] });
+    this.unbindInput = bindIsoGameViewInput({ view: this.view });
 
     this.resizeObs = new ResizeObserver((entries) => {
       for (const e of entries) {
         const { width: w, height: h } = e.contentRect;
-        if (w > 0 && h > 0) this.stage.resize(w, h, Math.max(1, window.devicePixelRatio || 1));
+        if (w > 0 && h > 0) this.view.resize(w, h);
       }
     });
     this.resizeObs.observe(container);
@@ -221,7 +232,7 @@ export class AuthoringScene {
       this.animId = requestAnimationFrame(frame);
       const dt = Math.min((now - this.lastTime) / 1000, 0.1);
       this.lastTime = now;
-      this.stage.drawFrame(now, dt);
+      this.view.frame(now, dt);
     };
     this.animId = requestAnimationFrame(frame);
   }
@@ -237,7 +248,7 @@ export class AuthoringScene {
     const centre = new THREE.Vector3();
     box.getCenter(centre);
     group.position.set(-centre.x, -box.min.y, -centre.z);
-    setLinearTextureFiltering(group);
+    stripBlockstudioTextures(group);
     group.traverse((o) => {
       if (o instanceof THREE.Mesh) {
         o.castShadow = true;
@@ -245,10 +256,30 @@ export class AuthoringScene {
       }
     });
     this.meshGroup.add(group);
-    const { surfaces, uvData } = discoverSurfaces(group);
+    const { surfaces, uvData, meshes } = discoverSurfaces(group);
     this.submeshUvData = uvData;
+    this.submeshMeshes = meshes;
+    for (const [role, data] of uvData) {
+      this.originalUvBuffers.set(role, new Float32Array(data.uvBuffer));
+    }
     this.requestShadowUpdate();
     return surfaces;
+  }
+
+  /**
+   * Replace the role's submesh UV attribute. Pass `newUvBuffer` (length =
+   * vertexCount × 2, atlas-space [0,1]) to point the mesh at the packed
+   * atlas; pass `null` to restore the original GLB UVs.
+   */
+  applyAtlasUvs(role: string, newUvBuffer: Float32Array | null): void {
+    const mesh = this.submeshMeshes.get(role);
+    if (!mesh) return;
+    const buffer = newUvBuffer ?? this.originalUvBuffers.get(role);
+    if (!buffer) return;
+    const geom = mesh.geometry;
+    if (!(geom instanceof THREE.BufferGeometry)) return;
+    geom.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(buffer), 2));
+    geom.attributes.uv.needsUpdate = true;
   }
 
   getSubmeshUvData(role: string): SubmeshUvData | null {
@@ -299,6 +330,8 @@ export class AuthoringScene {
     }
     this.textures.clear();
     this.submeshUvData.clear();
+    this.submeshMeshes.clear();
+    this.originalUvBuffers.clear();
   }
 
   dispose(): void {
@@ -308,6 +341,6 @@ export class AuthoringScene {
     this.resizeObs.disconnect();
     this.unbindInput();
     this.clearMesh();
-    this.stage.dispose();
+    this.view.dispose();
   }
 }

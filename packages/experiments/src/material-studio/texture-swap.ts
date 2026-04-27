@@ -15,9 +15,11 @@ import * as THREE from "three";
 /**
  * Create a new THREE.CanvasTexture from ImageData.
  *
- * glTF textures use flipY=false (OpenGL convention: UV origin at bottom-left).
- * We draw the ImageData flipped so the CanvasTexture can also use flipY=false,
- * avoiding shader recompilation when swapping onto a glTF material.
+ * The ImageData uses top-left origin (canvas convention, also glTF UV
+ * convention). We draw it 1:1 and set `flipY=false` on the texture so
+ * three.js samples it without flipping — keeping UV (0,0) on the top-left
+ * pixel of the source data, which is what the atlas-recompose pipeline
+ * (and the GLB's authored UVs) expects.
  */
 export function imageDataToCanvasTexture(
   data: ImageData,
@@ -26,20 +28,10 @@ export function imageDataToCanvasTexture(
   const canvas = document.createElement("canvas");
   canvas.width = data.width;
   canvas.height = data.height;
-  const ctx = canvas.getContext("2d")!;
-
-  // Flip vertically so we can set flipY=false (matching glTF convention)
-  ctx.translate(0, data.height);
-  ctx.scale(1, -1);
-  // Need a temp canvas to drawImage since putImageData ignores transforms
-  const tmp = document.createElement("canvas");
-  tmp.width = data.width;
-  tmp.height = data.height;
-  tmp.getContext("2d")!.putImageData(data, 0, 0);
-  ctx.drawImage(tmp, 0, 0);
+  canvas.getContext("2d")!.putImageData(data, 0, 0);
 
   const tex = new THREE.CanvasTexture(canvas);
-  tex.flipY = false; // match glTF convention
+  tex.flipY = false;
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
   tex.magFilter = THREE.LinearFilter;
   tex.minFilter = THREE.LinearFilter;
@@ -60,15 +52,7 @@ export function updateCanvasTexture(
   const canvas = tex.image as HTMLCanvasElement;
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.save();
-  ctx.translate(0, canvas.height);
-  ctx.scale(1, -1);
-  const tmp = document.createElement("canvas");
-  tmp.width = data.width;
-  tmp.height = data.height;
-  tmp.getContext("2d")!.putImageData(data, 0, 0);
-  ctx.drawImage(tmp, 0, 0);
-  ctx.restore();
+  ctx.putImageData(data, 0, 0);
   tex.needsUpdate = true;
 }
 

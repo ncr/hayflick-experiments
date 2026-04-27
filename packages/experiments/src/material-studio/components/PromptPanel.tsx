@@ -63,6 +63,7 @@ export function PromptPanel() {
         cacheTags: { baseMeshId: authoring.baseMeshId, role: active },
       });
       const maps: GeneratedMaps = derivePbrMaps(result.baseColor, DEFAULT_PBR_PARAMS);
+      sceneRef.current?.applyAtlasUvs(active, result.islandLayout.newUvBuffer);
       sceneRef.current?.applyPbrTextures(active, maps);
       dispatch({
         type: "AUTHORING_GENERATED",
@@ -89,6 +90,7 @@ export function PromptPanel() {
 
   const handleUndo = () => {
     if (!state.prevMaps) return;
+    sceneRef.current?.applyAtlasUvs(active, state.prevIslandLayout?.newUvBuffer ?? null);
     sceneRef.current?.applyPbrTextures(active, state.prevMaps);
     dispatch({ type: "AUTHORING_UNDO_LAST_GEN", role: active });
   };
@@ -131,6 +133,7 @@ export function PromptPanel() {
       newUvBuffer: new Float32Array(ctx.islandLayout.newUv)
     };
     const maps: GeneratedMaps = derivePbrMaps(baseColor, DEFAULT_PBR_PARAMS);
+    sceneRef.current?.applyAtlasUvs(active, islandLayout.newUvBuffer);
     sceneRef.current?.applyPbrTextures(active, maps);
     // Template + AI raw aren't persisted any more (would balloon cache to ~3 MB
     // per entry for transient QA data). The previews show the atlas only after
