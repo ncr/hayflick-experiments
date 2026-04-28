@@ -26,6 +26,11 @@ import {
   computeCellsPerIsland
 } from "./uv-template/prepare";
 import { remapUvs } from "./uv-template/remap-uvs";
+import {
+  computeIslandSpatialContext,
+  type IslandSpatialContext
+} from "./uv-template/spatial-context";
+import { renderColorCodedReference } from "./uv-template/reference-render";
 import type {
   Atlas,
   GeneratedFromTemplate,
@@ -115,6 +120,16 @@ export async function generateBaseColorFromTemplate(
     throw new Error("No UV islands detected on this submesh.");
   }
 
+  // Per-island spatial labels (front/back/top/...) + distinct colours.
+  // Used both as outline colours on the template and as the face tint on
+  // the 3D iso reference image. Same colour in both → AI can match
+  // "outlined region X in unwrap" to "face X on the mesh" by colour alone.
+  const spatial = computeIslandSpatialContext(
+    req.uvData.positionBuffer,
+    req.uvData.indexBuffer,
+    detected.islands
+  );
+
   // Two independent packings, same logical island count + cellsX×cellsY:
   //   * templatePack — chunky cells (cellPx=16) on a 1024² canvas, just for
   //     gpt-image-2 to paint legibly. Transient.
@@ -131,13 +146,21 @@ export async function generateBaseColorFromTemplate(
     req.uvData.indexBuffer,
     detected.islands
   );
-  const templatePack = repackIslands(detected, {
+  // Try to pack into the AI template at the requested cellPx, then shrink
+  // and retry until the shelf-pack fits. Walls produce 6 islands one of
+  // which is ~67 cells tall — that doesn't fit in 1024² at cellPx=16, so
+  // we walk down to 14 → 12 → 10 → 8. Larger cell sizes give the AI more
+  // legibility, so we always start at the requested size.
+  const TEMPLATE_OUTLINE_PAD_PX = 16;
+  const templatePack = packTemplateWithRetry(
+    detected,
     templateWidth,
     templateHeight,
-    cellPx: templateCellPx,
+    templateCellPx,
     cellPxTarget,
-    cellsPerIsland
-  });
+    cellsPerIsland,
+    TEMPLATE_OUTLINE_PAD_PX
+  );
   const atlasPack = repackIslands(detected, {
     templateWidth: atlasWidth,
     templateHeight: atlasHeight,
@@ -155,10 +178,20 @@ export async function generateBaseColorFromTemplate(
     atlasHeight
   );
 
+  // Use the per-island spatial colours as outline colours so each region
+  // is uniquely identifiable, and the AI can cross-reference with the 3D
+  // ref image which uses the exact same palette.
+  const outlineColors = spatial.map((s) => s.color);
+  const templateLineThickness = Math.max(
+    1,
+    Math.floor((templatePack.islands[0]?.cellPx ?? 16) / 4)
+  );
   const templateOpts = {
     width: templateWidth,
     height: templateHeight,
-    islands: templatePack.islands
+    islands: templatePack.islands,
+    outlineColors,
+    lineThicknessPx: templateLineThickness
   };
   const templateSent = buildIslandTemplate(templateOpts);
 
@@ -169,12 +202,29 @@ export async function generateBaseColorFromTemplate(
   const hasPainted = !!req.atlas && hasAnyPaintedCell(req.atlas.mask);
   if (req.atlas && hasPainted) {
     const cellsPerIsland = atlasPack.islands.map((isl) => extractIslandCellsFromAtlas(req.atlas!, isl));
-    paintCellsIntoTemplate(templateSent, templatePack.islands, cellsPerIsland);
+    paintCellsIntoTemplate(templateSent, templatePack.islands, cellsPerIsland, {
+      lineThicknessPx: templateLineThickness,
+    });
   }
 
   const templateB64 = await rgbaBufferToBase64Png(templateSent);
 
-  const fullPrompt = buildPrompt(req.prompt, templatePack.islands, hasPainted);
+  // 3D iso reference image: same submesh, same camera as the renderer,
+  // each face flat-tinted with its island colour. Sent as a second
+  // input_image so the model sees the spatial relationships of the
+  // unwrap regions on the actual mesh (front/top/side, depth, where
+  // edges meet).
+  const referenceBuffer = renderColorCodedReference({
+    positions: req.uvData.positionBuffer,
+    indexBuffer: req.uvData.indexBuffer,
+    islands: detected.islands,
+    vertexToIslandId: detected.vertexToIslandId,
+    spatial,
+    size: templateWidth
+  });
+  const referenceB64 = await rgbaBufferToBase64Png(referenceBuffer);
+
+  const fullPrompt = buildPrompt(req.prompt, templatePack.islands, spatial, hasPainted);
 
   const res = await fetch("/api/openai/edit-image", {
     method: "POST",
@@ -182,6 +232,7 @@ export async function generateBaseColorFromTemplate(
     body: JSON.stringify({
       prompt: fullPrompt,
       imageBase64: templateB64,
+      referenceImageBase64: referenceB64,
       size: `${templateWidth}x${templateHeight}`,
       quality: req.quality ?? DEFAULT_QUALITY
     })
@@ -271,19 +322,30 @@ export async function generateBaseColorFromTemplate(
   return { atlas, aiRaw, templateSent, islandLayout };
 }
 
-function buildPrompt(userPrompt: string, islands: Island[], hasPainted: boolean): string {
+function buildPrompt(
+  userPrompt: string,
+  islands: Island[],
+  spatial: ReadonlyArray<IslandSpatialContext>,
+  hasPainted: boolean
+): string {
   const islandLines = islands.map((isl, idx) => {
-    const name = isl.name ?? `Region ${idx + 1}`;
-    return `- ${name} (${isl.cellsX}×${isl.cellsY} cells): ${userPrompt}`;
+    const sp = spatial[idx];
+    const colorTag = sp ? hexTag(sp.color) : "";
+    const role = sp ? `${sp.label} face (normal ${sp.axisName})` : "face";
+    return `- Region ${idx + 1} — outlined in ${colorTag}, ${role}, ${isl.cellsX}×${isl.cellsY} cells: ${userPrompt}`;
   });
   const lines: string[] = [
     STYLE_PREAMBLE,
-    `The provided image has a neutral mid-grey background with several rectangular regions outlined in bright magenta.`,
-    `Inside each magenta-outlined region is a grid of square cells separated by thin black lines.`,
+    `You receive TWO images. Image 1 is the UV unwrap to PAINT INTO. Image 2 is a 3D iso reference of the SAME mesh: each face is flat-shaded in the SAME colour used to outline that face's region in image 1.`,
+    `Use image 2 only as spatial context — the mapping between an outlined region in the unwrap and a physical face on the mesh is encoded purely by its outline colour.`,
+    `Image 1 has a neutral mid-grey background with several rectangular regions, each surrounded by a uniquely coloured outline.`,
+    `Inside each outlined region is a grid of square cells separated by thin black lines.`,
     `Paint pixel art INSIDE the cells of each outlined region, treating each cell as ONE pixel.`,
     `Each cell must be filled with a single FLAT solid colour from edge to edge — no gradients, no anti-aliasing, no shading inside any cell.`,
+    `Adjacent regions on the mesh share edges; visible motifs (joints, panel breaks, datum stripes) should align across regions that share a 3D edge — use image 2 to identify which regions are neighbours and which axis is up.`,
     `Do NOT paint anything outside the outlined regions; the grey background must remain UNTOUCHED.`,
-    `Do NOT redraw the magenta outlines or the black grid lines.`,
+    `Do NOT redraw the coloured outlines or the black grid lines.`,
+    `Do NOT paint into image 2; output only the modified image 1.`,
   ];
   if (hasPainted) {
     lines.push(
@@ -291,10 +353,45 @@ function buildPrompt(userPrompt: string, islands: Island[], hasPainted: boolean)
     );
   }
   lines.push(
-    `Each region depicts the same material; paint each region according to the subject below:`,
+    `Each region depicts the same material on a different face of the mesh; paint each region with placement appropriate to its face role:`,
     ...islandLines
   );
   return lines.join(" ");
+}
+
+function hexTag(hex: number): string {
+  return "#" + hex.toString(16).padStart(6, "0");
+}
+
+function packTemplateWithRetry(
+  detected: ReturnType<typeof detectIslands>,
+  templateWidth: number,
+  templateHeight: number,
+  preferredCellPx: number,
+  cellPxTarget: number,
+  cellsPerIsland: ReadonlyArray<{ cellsX: number; cellsY: number }>,
+  outlinePaddingPx: number
+): ReturnType<typeof repackIslands> {
+  const candidates: number[] = [];
+  for (let px = preferredCellPx; px >= 6; px -= 2) candidates.push(px);
+  let lastErr: unknown = null;
+  for (const cellPx of candidates) {
+    try {
+      return repackIslands(detected, {
+        templateWidth,
+        templateHeight,
+        cellPx,
+        cellPxTarget,
+        cellsPerIsland,
+        outlinePaddingPx
+      });
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error(
+    `Could not pack islands into ${templateWidth}×${templateHeight} template even at cellPx=6. Last error: ${(lastErr as Error)?.message}`
+  );
 }
 
 function hasAnyPaintedCell(mask: Uint8Array<ArrayBuffer>): boolean {

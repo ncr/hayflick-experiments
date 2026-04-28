@@ -639,6 +639,100 @@ test.describe("material studio", () => {
     expect(sortedSizes.length).toBeLessThanOrEqual(3);
   });
 
+  test("generate request includes a 3D reference image and per-island spatial roles in the prompt", async ({
+    page,
+  }) => {
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    // Intercept the edit-image call. Capture the request body for assertion
+    // and return the user's own template back as the "AI" output so the
+    // downstream extraction + PBR derive succeed without a real API call.
+    let captured: {
+      prompt: string;
+      imageBase64: string;
+      referenceImageBase64?: string;
+    } | null = null;
+    await page.route("**/api/openai/edit-image", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}") as {
+        prompt: string;
+        imageBase64: string;
+        referenceImageBase64?: string;
+      };
+      captured = body;
+      // Echo template back as the AI output — same dimensions, satisfies
+      // the extractIslandPixelArt + recompose path.
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [{ b64_json: body.imageBase64 }] }),
+      });
+    });
+
+    // Click Generate (prompt is auto-seeded for known roles like "wall").
+    const genBtn = page.getByRole("button", { name: /^(Generate|Regenerate)$/ });
+    await expect(genBtn).toBeEnabled({ timeout: 5_000 });
+    await genBtn.click();
+    // Wait for the request to be captured (and the AUTHORING_GENERATED
+    // dispatch that follows).
+    await expect.poll(() => captured !== null, { timeout: 15_000 }).toBe(true);
+
+    const cap = captured!;
+    expect(cap.imageBase64.length).toBeGreaterThan(100);
+    expect(cap.referenceImageBase64?.length ?? 0).toBeGreaterThan(100);
+
+    // Prompt must call out the dual-image setup, per-island colours, and
+    // the role-tagged region list (front/back/top/...).
+    expect(cap.prompt).toMatch(/two images/i);
+    expect(cap.prompt).toMatch(/Region 1/);
+    // For wall.glb the 6 cube faces produce all 6 axis labels — front +
+    // back + top + bottom + left + right. We only require the four most
+    // discriminative ones.
+    const labels = ["front", "back", "top", "bottom"];
+    for (const l of labels) {
+      expect(cap.prompt.toLowerCase()).toContain(l);
+    }
+    // Each region listing carries an outline colour hex tag.
+    expect(cap.prompt).toMatch(/outlined in #[0-9a-f]{6}/i);
+
+    // The reference image must decode as a 1024×1024 PNG with multiple
+    // distinct colours (one per island, on a grey background).
+    const refStats = await page.evaluate(async (b64) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + b64;
+      await new Promise((res, rej) => {
+        img.onload = () => res(null);
+        img.onerror = () => rej(new Error("ref image decode failed"));
+      });
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const ctx = c.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+      const id = ctx.getImageData(0, 0, c.width, c.height);
+      // Quantise to 5-bit-per-channel buckets and count distinct buckets.
+      const seen = new Set<number>();
+      for (let i = 0; i < id.data.length; i += 4) {
+        const r = id.data[i] >> 3;
+        const g = id.data[i + 1] >> 3;
+        const b = id.data[i + 2] >> 3;
+        seen.add((r << 10) | (g << 5) | b);
+      }
+      return { w: c.width, h: c.height, distinctColors: seen.size };
+    }, cap.referenceImageBase64!);
+    expect(refStats.w).toBe(1024);
+    expect(refStats.h).toBe(1024);
+    // Background grey + black outlines + ≥3 visible face colours = ≥5 buckets.
+    expect(refStats.distinctColors).toBeGreaterThanOrEqual(5);
+  });
+
   test("paint canvas: undo reverts the last stroke", async ({ page }) => {
     await page.goto("/#/exp/material-studio");
     await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });

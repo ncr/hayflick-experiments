@@ -114,6 +114,11 @@ async function handleOpenAI(
     const body = (await readJson(req)) as {
       prompt: string;
       imageBase64: string;
+      /** Optional second image — e.g. a 3D iso reference whose colour
+       *  coding matches outline colours in the primary template. The
+       *  Responses API accepts multiple input_image blocks; we forward
+       *  this as a second one in the same user turn. */
+      referenceImageBase64?: string;
       size?: string;
       quality?: string;
       n?: number;
@@ -131,18 +136,25 @@ async function handleOpenAI(
     // v2 work that way and the token-based pricing is the same.
     const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
     const chatModel = process.env.OPENAI_RESPONSES_MODEL || "gpt-5.5";
+    const userContent: Array<Record<string, unknown>> = [
+      { type: "input_text", text: body.prompt },
+      {
+        type: "input_image",
+        image_url: `data:image/png;base64,${body.imageBase64}`,
+      },
+    ];
+    if (body.referenceImageBase64) {
+      userContent.push({
+        type: "input_image",
+        image_url: `data:image/png;base64,${body.referenceImageBase64}`,
+      });
+    }
     const responsesBody = {
       model: chatModel,
       input: [
         {
           role: "user",
-          content: [
-            { type: "input_text", text: body.prompt },
-            {
-              type: "input_image",
-              image_url: `data:image/png;base64,${body.imageBase64}`,
-            },
-          ],
+          content: userContent,
         },
       ],
       tools: [

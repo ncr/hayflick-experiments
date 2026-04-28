@@ -47,6 +47,10 @@ export type IslandTemplateOptions = {
   outlineColor?: number;
   /** Outline thickness in template-source pixels. Default 6. */
   outlineThicknessPx?: number;
+  /** Optional per-island outline colour, 0xRRGGBB. Length must match
+   *  `islands` if provided. Lets the spatial-context layer give every
+   *  island a distinct colour that matches the 3D reference image. */
+  outlineColors?: ReadonlyArray<number>;
 };
 
 /**
@@ -88,11 +92,22 @@ export function buildIslandTemplate(opts: IslandTemplateOptions): RgbaBuffer {
   const lineR = (lineColor >> 16) & 0xff;
   const lineG = (lineColor >> 8) & 0xff;
   const lineB = lineColor & 0xff;
-  const outR = (outlineColor >> 16) & 0xff;
-  const outG = (outlineColor >> 8) & 0xff;
-  const outB = outlineColor & 0xff;
+  const defaultOutR = (outlineColor >> 16) & 0xff;
+  const defaultOutG = (outlineColor >> 8) & 0xff;
+  const defaultOutB = outlineColor & 0xff;
 
-  for (const island of islands) {
+  if (opts.outlineColors && opts.outlineColors.length !== islands.length) {
+    throw new Error(
+      `buildIslandTemplate: outlineColors length ${opts.outlineColors.length} != islands ${islands.length}`
+    );
+  }
+
+  for (let islandIdx = 0; islandIdx < islands.length; islandIdx++) {
+    const island = islands[islandIdx];
+    const perIslandHex = opts.outlineColors?.[islandIdx];
+    const outR = perIslandHex !== undefined ? (perIslandHex >> 16) & 0xff : defaultOutR;
+    const outG = perIslandHex !== undefined ? (perIslandHex >> 8) & 0xff : defaultOutG;
+    const outB = perIslandHex !== undefined ? perIslandHex & 0xff : defaultOutB;
     const islW = island.cellsX * island.cellPx;
     const islH = island.cellsY * island.cellPx;
 
