@@ -733,6 +733,140 @@ test.describe("material studio", () => {
     expect(refStats.distinctColors).toBeGreaterThanOrEqual(5);
   });
 
+  test("FULL coverage: every atlas cell of the front face renders to ≥1 lowpixel (no holes anywhere)", async ({
+    page,
+  }) => {
+    // The "no atlas column or row is skipped" test only sweeps the centre
+    // row and centre column. The user observed individual pixels missing
+    // when drawing arbitrary lines across the face — a 1D sweep can't see
+    // those. This test paints every single cell of the largest visible
+    // island and reports any cell whose paint produced zero lowpixel
+    // change in the framebuffer.
+    test.setTimeout(120_000);
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    const result = await page.evaluate(async () => {
+      type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveRole: () => string | null;
+          getActiveSurfaceState: () => { islandLayout: { islands: Island[] } | null } | null;
+          scene: { forceFrame: (n: number) => void; readCanvasImageData: () => ImageData };
+          testPaintAtlasPixel: (role: string, x: number, y: number, r: number, g: number, b: number) => boolean;
+        };
+      }).__materialStudio;
+      const role = handle.getActiveRole()!;
+      const islands = (handle.getActiveSurfaceState()!.islandLayout!.islands ?? []) as Island[];
+      const grab = () => {
+        handle.scene.forceFrame(2);
+        return new Uint8ClampedArray(handle.scene.readCanvasImageData().data);
+      };
+      const diffCount = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
+        let n = 0;
+        for (let i = 0; i < a.length; i += 4) {
+          if (
+            Math.abs(a[i] - b[i]) > 6 ||
+            Math.abs(a[i + 1] - b[i + 1]) > 6 ||
+            Math.abs(a[i + 2] - b[i + 2]) > 6
+          )
+            n++;
+        }
+        return n;
+      };
+
+      // Identify the largest *visible* island (camera-facing). Paint a
+      // single marker, see if any lowpixel changed; if yes it is on a
+      // visible face. Use the largest such island so we get the widest
+      // coverage check.
+      const sorted = [...islands].sort((a, b) => b.cellsX * b.cellsY - a.cellsX * a.cellsY);
+      let target: Island | null = null;
+      for (const isl of sorted) {
+        const before = grab();
+        const cx = isl.x + Math.floor((isl.cellsX * isl.cellPx) / 2);
+        const cy = isl.y + Math.floor((isl.cellsY * isl.cellPx) / 2);
+        handle.testPaintAtlasPixel(role, cx, cy, 255, 0, 0);
+        const visible = diffCount(before, grab()) > 0;
+        handle.testPaintAtlasPixel(role, cx, cy, 255, 255, 255);
+        if (visible) {
+          target = isl;
+          break;
+        }
+      }
+      if (!target) return { error: "no visible island" } as const;
+
+      // Aggregate test first: paint EVERY cell red, count red-dominant
+      // lowpixels. Under perfect 1:1 mapping the count equals cellsX *
+      // cellsY (the parallelogram area in lowpixels). Any skipped cell
+      // shows up as a deficit.
+      const before = grab();
+      for (let cy = 0; cy < target.cellsY; cy++) {
+        for (let cx = 0; cx < target.cellsX; cx++) {
+          handle.testPaintAtlasPixel(role, target.x + cx, target.y + cy, 255, 0, 0);
+        }
+      }
+      handle.scene.forceFrame(3);
+      const after = handle.scene.readCanvasImageData().data;
+      let redLowpixels = 0;
+      for (let i = 0; i < after.length; i += 4) {
+        const dr = Math.abs(after[i] - before[i]);
+        const dg = Math.abs(after[i + 1] - before[i + 1]);
+        const db = Math.abs(after[i + 2] - before[i + 2]);
+        if (dr < 4 && dg < 4 && db < 4) continue;
+        const r = after[i],
+          g = after[i + 1],
+          b = after[i + 2];
+        if (r > g + 6 && r > b + 6) redLowpixels++;
+      }
+
+      // Per-cell sweep to identify exactly WHICH cells are missing.
+      // Restore island to white, then paint+grab+restore one cell at a time.
+      for (let cy = 0; cy < target.cellsY; cy++) {
+        for (let cx = 0; cx < target.cellsX; cx++) {
+          handle.testPaintAtlasPixel(role, target.x + cx, target.y + cy, 255, 255, 255);
+        }
+      }
+      const baseFrame = grab();
+      const skippedCells: Array<[number, number]> = [];
+      for (let cy = 0; cy < target.cellsY; cy++) {
+        for (let cx = 0; cx < target.cellsX; cx++) {
+          handle.testPaintAtlasPixel(role, target.x + cx, target.y + cy, 255, 0, 0);
+          const f = grab();
+          if (diffCount(baseFrame, f) === 0) skippedCells.push([cx, cy]);
+          handle.testPaintAtlasPixel(role, target.x + cx, target.y + cy, 255, 255, 255);
+        }
+      }
+
+      return {
+        cellsX: target.cellsX,
+        cellsY: target.cellsY,
+        totalCells: target.cellsX * target.cellsY,
+        redLowpixels,
+        skippedCells,
+      } as const;
+    });
+
+    if ("error" in result) throw new Error(result.error);
+    // Aggregate: every cell must contribute ≥1 lowpixel of red. With the
+    // current iso projection, the parallelogram area in lowpixels equals
+    // cellsX × cellsY, so the count should be exactly that — but allow
+    // a tiny slack for ACES tone-mapping crushing R values to ~equal
+    // G/B at low intensities on edge fragments.
+    expect(result.redLowpixels).toBeGreaterThanOrEqual(Math.floor(result.totalCells * 0.99));
+
+    // Per-cell: the strict invariant — no atlas cell may render to zero
+    // lowpixels. If this fails, the array tells us exactly which cells
+    // are dark holes so we can chase the projection bug.
+    expect(result.skippedCells).toEqual([]);
+  });
+
   test("paint canvas: undo reverts the last stroke", async ({ page }) => {
     await page.goto("/#/exp/material-studio");
     await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
