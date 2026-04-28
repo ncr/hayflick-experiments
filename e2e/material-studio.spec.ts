@@ -1087,6 +1087,116 @@ test.describe("material studio", () => {
     expect(result.filter((r) => !r.hidden).length).toBe(3);
   });
 
+  test("Generate preserves orientation flips: post-regenerate, painted atlas stays unmirrored on the mesh", async ({
+    page,
+  }) => {
+    // Regression for the "post-generate mesh is mirrored" bug. The
+    // editor's IslandLayout has per-island U/V flips applied by
+    // prepareSurface so atlas axes match screen axes. Generate USED
+    // to repack from scratch (dropping the flips) — after a regenerate
+    // the mesh would sample the new texture mirrored relative to what
+    // the user had painted. Test: paint asymmetric markers, capture
+    // mesh framebuffer, intercept Generate to echo the template back
+    // unchanged, run Generate, capture mesh framebuffer, assert the
+    // marker positions on the mesh moved by no more than a few lowpixels
+    // (i.e. NO mirror).
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    // Paint a TL-only red marker on the largest visible island.
+    const before = await page.evaluate(() => {
+      type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveRole: () => string | null;
+          getActiveSurfaceState: () => {
+            islandLayout: { islands: Island[]; spatial: { hiddenFromCamera: boolean }[] } | null;
+          } | null;
+          scene: { forceFrame: (n: number) => void; readCanvasImageData: () => ImageData };
+          testPaintAtlasPixel: (role: string, x: number, y: number, r: number, g: number, b: number) => boolean;
+        };
+      }).__materialStudio;
+      const role = handle.getActiveRole()!;
+      const surf = handle.getActiveSurfaceState()!;
+      const islands = surf.islandLayout!.islands;
+      const spatial = surf.islandLayout!.spatial;
+      const visibleIsls = islands.filter((_, i) => !spatial[i].hiddenFromCamera);
+      const target = [...visibleIsls].sort((a, b) => b.cellsX * b.cellsY - a.cellsX * a.cellsY)[0];
+      // Plant a 4×4 red block at the island's TOP-LEFT corner only.
+      for (let dy = 0; dy < 4; dy++) {
+        for (let dx = 0; dx < 4; dx++) {
+          handle.testPaintAtlasPixel(role, target.x + dx, target.y + dy, 255, 0, 0);
+        }
+      }
+      handle.scene.forceFrame(3);
+      const fb = handle.scene.readCanvasImageData();
+      // Centroid of red-dominant lowpixels in the framebuffer.
+      let sx = 0, sy = 0, n = 0;
+      for (let i = 0; i < fb.data.length; i += 4) {
+        const r = fb.data[i], g = fb.data[i + 1], b = fb.data[i + 2];
+        if (r > g + 10 && r > b + 10 && r > 12) {
+          const px = (i / 4) % fb.width;
+          const py = Math.floor(i / 4 / fb.width);
+          sx += px; sy += py; n++;
+        }
+      }
+      return { cx: n > 0 ? sx / n : -1, cy: n > 0 ? sy / n : -1, n, w: fb.width, h: fb.height, target };
+    });
+    expect(before.n).toBeGreaterThan(0);
+
+    // Intercept the AI fetch — echo the template back so the AI raw
+    // exactly matches what we sent. The recompose path then writes the
+    // template's chunky cells into the small atlas.
+    await page.route("**/api/openai/edit-image", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}") as { imageBase64: string };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [{ b64_json: body.imageBase64 }] }),
+      });
+    });
+
+    await page.getByRole("button", { name: /^(Generate|Regenerate)$/ }).click();
+    // Generate dispatches AUTHORING_GENERATED + applyAtlasUvs + applyPbrTextures.
+    // Wait for the texture to settle.
+    await page.waitForTimeout(800);
+
+    const after = await page.evaluate(() => {
+      const handle = (window as unknown as {
+        __materialStudio: { scene: { forceFrame: (n: number) => void; readCanvasImageData: () => ImageData } };
+      }).__materialStudio;
+      handle.scene.forceFrame(3);
+      const fb = handle.scene.readCanvasImageData();
+      let sx = 0, sy = 0, n = 0;
+      for (let i = 0; i < fb.data.length; i += 4) {
+        const r = fb.data[i], g = fb.data[i + 1], b = fb.data[i + 2];
+        if (r > g + 10 && r > b + 10 && r > 12) {
+          const px = (i / 4) % fb.width;
+          const py = Math.floor(i / 4 / fb.width);
+          sx += px; sy += py; n++;
+        }
+      }
+      return { cx: n > 0 ? sx / n : -1, cy: n > 0 ? sy / n : -1, n, w: fb.width, h: fb.height };
+    });
+
+    // Sanity: the red marker still rendered after generate.
+    expect(after.n).toBeGreaterThan(0);
+
+    // The marker centroid must NOT have flipped to the opposite side of
+    // the framebuffer. Mirroring would push cx by ~half the framebuffer
+    // width (or similar for cy). Allow ≤ 8 lowpixels of jitter from
+    // recompose's seam-bleed and AI-extraction sampling differences.
+    expect(Math.abs(after.cx - before.cx)).toBeLessThanOrEqual(8);
+    expect(Math.abs(after.cy - before.cy)).toBeLessThanOrEqual(8);
+  });
+
   test("paint canvas: undo reverts the last stroke", async ({ page }) => {
     await page.goto("/#/exp/material-studio");
     await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });

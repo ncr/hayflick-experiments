@@ -67,6 +67,7 @@ export function PromptPanel() {
         uvData,
         prompt,
         atlas: state.atlas ?? undefined,
+        existingLayout: state.islandLayout ?? undefined,
         cacheTags: { baseMeshId: authoring.baseMeshId, role: active },
       });
       const baseColor = atlasToImageData(result.atlas);

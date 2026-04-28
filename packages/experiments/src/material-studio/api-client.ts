@@ -77,6 +77,15 @@ export type GenerateBaseColorRequest = {
    *  (mask=1) are baked into the template before sending and preserved in
    *  the merged output. Pass a fresh-with-no-paint atlas on the first call. */
   atlas?: Atlas;
+  /** The surface's *existing* island layout, exactly as `prepareSurface`
+   *  produced it at mesh-load time. The atlas-side packing — island
+   *  positions, uvRemap (with orientation flips!), and `newUvBuffer` —
+   *  must be reused verbatim across regenerates so:
+   *    1. Painted cells stay registered to the same atlas pixels.
+   *    2. The mesh's sampled orientation doesn't flip back to GLB-raw.
+   *  When omitted, a fresh atlasPack is computed (initial generate
+   *  before a layout exists). */
+  existingLayout?: IslandLayout;
   /** Template resolution sent to gpt-image-2 (must be 1024² / 1024×1536 / 1536×1024). */
   templateWidth?: number;
   templateHeight?: number;
@@ -130,22 +139,21 @@ export async function generateBaseColorFromTemplate(
     detected.islands
   );
 
-  // Two independent packings, same logical island count + cellsX×cellsY:
-  //   * templatePack — chunky cells (cellPx=16) on a 1024² canvas, just for
-  //     gpt-image-2 to paint legibly. Transient.
-  //   * atlasPack — one cell per atlas pixel on a 256² canvas. This is what
-  //     the GLB samples at runtime and what the cache stores.
-  // cellsX/cellsY per island come from the face's UV→world Jacobian sized
-  // at WORLD_CM_PER_CELL so 1 atlas cell = 1 large game pixel. Both packings
-  // share the same per-island cell shapes (a hard requirement:
-  // extractIslandPixelArt indexes the AI raw at template-cell granularity
-  // and writes into atlas cells at 1:1 cellsX×cellsY).
-  const cellsPerIsland = computeCellsPerIsland(
-    req.uvData.positionBuffer,
-    req.uvData.uvBuffer,
-    req.uvData.indexBuffer,
-    detected.islands
-  );
+  // The atlas-side packing must come from the surface's already-prepared
+  // layout (where prepareSurface applied the orientation flips that align
+  // atlas axes with screen axes). If we re-pack here we drop those flips
+  // and the mesh ends up sampling the texture mirrored. cellsX × cellsY
+  // per island is taken from the existing layout so the templatePack
+  // matches it exactly — extractIslandPixelArt + recompose require it.
+  const atlasIslands = req.existingLayout?.islands ?? null;
+  const cellsPerIsland: ReadonlyArray<{ cellsX: number; cellsY: number }> = atlasIslands
+    ? atlasIslands.map((isl) => ({ cellsX: isl.cellsX, cellsY: isl.cellsY }))
+    : computeCellsPerIsland(
+        req.uvData.positionBuffer,
+        req.uvData.uvBuffer,
+        req.uvData.indexBuffer,
+        detected.islands
+      );
   // Try to pack into the AI template at the requested cellPx, then shrink
   // and retry until the shelf-pack fits. Walls produce 6 islands one of
   // which is ~67 cells tall — that doesn't fit in 1024² at cellPx=16, so
@@ -161,22 +169,32 @@ export async function generateBaseColorFromTemplate(
     cellsPerIsland,
     TEMPLATE_OUTLINE_PAD_PX
   );
-  const atlasPack = repackIslands(detected, {
-    templateWidth: atlasWidth,
-    templateHeight: atlasHeight,
-    cellPx: ATLAS_CELL_PX,
-    cellPxTarget,
-    cellsPerIsland,
-    outlinePaddingPx: ATLAS_OUTLINE_PADDING_PX
-  });
-
-  const newUvBuffer = remapUvs(
-    req.uvData.uvBuffer,
-    detected.vertexToIslandId,
-    atlasPack.uvRemap,
-    atlasWidth,
-    atlasHeight
-  );
+  // Fall back to a fresh atlas pack only when the caller has no existing
+  // layout (truly first generate). This branch will not have orientation
+  // flips applied, but on first generate there's no painted atlas to
+  // mismatch and the mesh's flip is still on the original GLB UVs until
+  // applyAtlasUvs runs — so the bake matches itself.
+  const fallbackPack = req.existingLayout
+    ? null
+    : repackIslands(detected, {
+        templateWidth: atlasWidth,
+        templateHeight: atlasHeight,
+        cellPx: ATLAS_CELL_PX,
+        cellPxTarget,
+        cellsPerIsland,
+        outlinePaddingPx: ATLAS_OUTLINE_PADDING_PX,
+      });
+  const atlasIslandsFinal: Island[] = req.existingLayout?.islands ?? fallbackPack!.islands;
+  const atlasUvRemap = req.existingLayout?.uvRemap ?? fallbackPack!.uvRemap;
+  const newUvBuffer = req.existingLayout?.newUvBuffer
+    ? new Float32Array(req.existingLayout.newUvBuffer)
+    : remapUvs(
+        req.uvData.uvBuffer,
+        detected.vertexToIslandId,
+        atlasUvRemap,
+        atlasWidth,
+        atlasHeight
+      );
 
   // Use the per-island spatial colours as outline colours so each region
   // is uniquely identifiable, and the AI can cross-reference with the 3D
@@ -201,7 +219,7 @@ export async function generateBaseColorFromTemplate(
   // already exists, copy it".
   const hasPainted = !!req.atlas && hasAnyPaintedCell(req.atlas.mask);
   if (req.atlas && hasPainted) {
-    const cellsPerIsland = atlasPack.islands.map((isl) => extractIslandCellsFromAtlas(req.atlas!, isl));
+    const cellsPerIsland = atlasIslandsFinal.map((isl) => extractIslandCellsFromAtlas(req.atlas!, isl));
     paintCellsIntoTemplate(templateSent, templatePack.islands, cellsPerIsland, {
       lineThicknessPx: templateLineThickness,
     });
@@ -256,7 +274,7 @@ export async function generateBaseColorFromTemplate(
   const recomposed = recomposeIslandsAsAtlas(
     atlasWidth,
     atlasHeight,
-    atlasPack.islands,
+    atlasIslandsFinal,
     islandPixelArt
   );
 
@@ -288,8 +306,8 @@ export async function generateBaseColorFromTemplate(
   const islandLayout: IslandLayout = {
     templateWidth: atlasWidth,
     templateHeight: atlasHeight,
-    islands: atlasPack.islands,
-    uvRemap: atlasPack.uvRemap,
+    islands: atlasIslandsFinal,
+    uvRemap: atlasUvRemap,
     vertexToIslandId: detected.vertexToIslandId,
     newUvBuffer,
     spatial
