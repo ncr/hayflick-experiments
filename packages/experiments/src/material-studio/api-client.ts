@@ -154,27 +154,9 @@ export async function generateBaseColorFromTemplate(
         req.uvData.indexBuffer,
         detected.islands
       );
-  // Try to pack into the AI template at the requested cellPx, then shrink
-  // and retry until the shelf-pack fits. Walls produce 6 islands one of
-  // which is ~67 cells tall — that doesn't fit in 1024² at cellPx=16, so
-  // we walk down to 14 → 12 → 10 → 8. Larger cell sizes give the AI more
-  // legibility, so we always start at the requested size.
-  const TEMPLATE_OUTLINE_PAD_PX = 16;
-  const templatePack = packTemplateWithRetry(
-    detected,
-    templateWidth,
-    templateHeight,
-    templateCellPx,
-    cellPxTarget,
-    cellsPerIsland,
-    TEMPLATE_OUTLINE_PAD_PX
-  );
-  // Fall back to a fresh atlas pack only when the caller has no existing
-  // layout (truly first generate). This branch will not have orientation
-  // flips applied, but on first generate there's no painted atlas to
-  // mismatch and the mesh's flip is still on the original GLB UVs until
-  // applyAtlasUvs runs — so the bake matches itself.
-  const fallbackPack = req.existingLayout
+  // First-generate has no existingLayout, so we have to fresh-pack the
+  // atlas now (we need its positions to scale into the template).
+  const atlasPackForScale = req.existingLayout
     ? null
     : repackIslands(detected, {
         templateWidth: atlasWidth,
@@ -184,8 +166,23 @@ export async function generateBaseColorFromTemplate(
         cellsPerIsland,
         outlinePaddingPx: ATLAS_OUTLINE_PADDING_PX,
       });
-  const atlasIslandsFinal: Island[] = req.existingLayout?.islands ?? fallbackPack!.islands;
-  const atlasUvRemap = req.existingLayout?.uvRemap ?? fallbackPack!.uvRemap;
+  const sourceAtlasIslands: Island[] =
+    req.existingLayout?.islands ?? atlasPackForScale!.islands;
+  // Build the AI template by scaling up the atlas's shelf-pack 1:1.
+  // This guarantees the user sees the SAME layout in both views (paint
+  // editor's atlas and the AI-template QA preview), eliminating the
+  // "why are top/bottom in different places?" confusion. Pick the
+  // largest integer scale where all islands still fit; cellPx falls out
+  // of the same scale so the AI gets nice chunky cells.
+  const templatePack = packTemplateAsScaledAtlas(
+    sourceAtlasIslands,
+    atlasWidth,
+    atlasHeight,
+    templateWidth,
+    templateHeight
+  );
+  const atlasIslandsFinal: Island[] = sourceAtlasIslands;
+  const atlasUvRemap = req.existingLayout?.uvRemap ?? atlasPackForScale!.uvRemap;
   const newUvBuffer = req.existingLayout?.newUvBuffer
     ? new Float32Array(req.existingLayout.newUvBuffer)
     : remapUvs(
@@ -383,35 +380,67 @@ function hexTag(hex: number): string {
   return "#" + hex.toString(16).padStart(6, "0");
 }
 
-function packTemplateWithRetry(
-  detected: ReturnType<typeof detectIslands>,
+/** Build the AI template's island layout by SCALING the atlas's existing
+ *  shelf-pack instead of running an independent pack. Each template
+ *  island sits at (atlasIsland.x * scale, atlasIsland.y * scale) with
+ *  cellPx = scale. The largest integer scale where every island still
+ *  fits inside the template canvas wins, with a floor of 4 (any smaller
+ *  and the cell interior collapses to <2 px and the AI can't tell cells
+ *  apart). The atlas's compact 256² layout means scales of 4–6 are
+ *  typical, giving the AI 4–6 px cells.
+ *
+ *  Why not just shelf-pack the template independently?
+ *    Independent packs put islands in different relative positions
+ *    (different cellPx + canvas size → different shelf wraps). The user
+ *    paints in the atlas's layout, sees the AI template in a different
+ *    layout, and reasonably concludes "the bake is wrong" even though
+ *    extraction is correct via [i] indexing. Forcing the same layout
+ *    removes the perceived mismatch entirely. */
+function packTemplateAsScaledAtlas(
+  atlasIslands: Island[],
+  atlasWidth: number,
+  atlasHeight: number,
   templateWidth: number,
-  templateHeight: number,
-  preferredCellPx: number,
-  cellPxTarget: number,
-  cellsPerIsland: ReadonlyArray<{ cellsX: number; cellsY: number }>,
-  outlinePaddingPx: number
-): ReturnType<typeof repackIslands> {
-  const candidates: number[] = [];
-  for (let px = preferredCellPx; px >= 6; px -= 2) candidates.push(px);
-  let lastErr: unknown = null;
-  for (const cellPx of candidates) {
-    try {
-      return repackIslands(detected, {
-        templateWidth,
-        templateHeight,
-        cellPx,
-        cellPxTarget,
-        cellsPerIsland,
-        outlinePaddingPx
-      });
-    } catch (err) {
-      lastErr = err;
+  templateHeight: number
+): { islands: Island[] } {
+  const MIN_SCALE = 4;
+  const maxScaleW = Math.floor(templateWidth / atlasWidth);
+  const maxScaleH = Math.floor(templateHeight / atlasHeight);
+  const scaleByDim = Math.max(MIN_SCALE, Math.min(maxScaleW, maxScaleH));
+  // Even if the atlas canvas is large, only the *used* region needs to
+  // fit. Compute the right/bottom extents of every island to allow a
+  // larger scale when the atlas has unused tail.
+  let usedRight = 0;
+  let usedBottom = 0;
+  for (const isl of atlasIslands) {
+    const r = isl.x + isl.cellsX * isl.cellPx;
+    const b = isl.y + isl.cellsY * isl.cellPx;
+    if (r > usedRight) usedRight = r;
+    if (b > usedBottom) usedBottom = b;
+  }
+  const scaleByUsedW = Math.floor(templateWidth / Math.max(1, usedRight));
+  const scaleByUsedH = Math.floor(templateHeight / Math.max(1, usedBottom));
+  const scale = Math.max(MIN_SCALE, Math.min(scaleByUsedW, scaleByUsedH, 16));
+  const islands: Island[] = atlasIslands.map((src, idx) => ({
+    x: src.x * scale,
+    y: src.y * scale,
+    cellsX: src.cellsX,
+    cellsY: src.cellsY,
+    cellPx: scale,
+    name: src.name ?? `isl${idx}`,
+  }));
+  // Sanity: every island must lie inside the template canvas.
+  for (const isl of islands) {
+    if (
+      isl.x + isl.cellsX * isl.cellPx > templateWidth ||
+      isl.y + isl.cellsY * isl.cellPx > templateHeight
+    ) {
+      throw new Error(
+        `packTemplateAsScaledAtlas: island spills outside ${templateWidth}×${templateHeight} at scale=${scale}`
+      );
     }
   }
-  throw new Error(
-    `Could not pack islands into ${templateWidth}×${templateHeight} template even at cellPx=6. Last error: ${(lastErr as Error)?.message}`
-  );
+  return { islands };
 }
 
 function hasAnyPaintedCell(mask: Uint8Array<ArrayBuffer>): boolean {
