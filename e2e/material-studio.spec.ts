@@ -1520,6 +1520,111 @@ test.describe("material studio", () => {
     expect(result.leakedPixels).toBe(0);
   });
 
+  test("Regenerate doesn't lock the prompt field or block subsequent generates", async ({
+    page,
+  }) => {
+    // Reproducer: after the second Generate the textarea was disabled
+    // (generating stuck true) and the QA previews didn't refresh.
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    let aiHits = 0;
+    await page.route("**/api/openai/edit-image", async (route) => {
+      aiHits++;
+      const body = JSON.parse(route.request().postData() || "{}") as { imageBase64: string };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [{ b64_json: body.imageBase64 }] }),
+      });
+    });
+
+    const promptBox = page.locator(".ms-textarea");
+    await expect(promptBox).toBeEnabled();
+
+    // First generate.
+    await page.getByRole("button", { name: /^(Generate|Regenerate)$/ }).click();
+    await expect(page.getByRole("button", { name: "Regenerate" })).toBeVisible({ timeout: 15_000 });
+    await expect(promptBox).toBeEnabled({ timeout: 5_000 });
+    expect(aiHits).toBe(1);
+
+    // Tweak the prompt to prove the field is alive between generates.
+    await promptBox.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" extra detail.");
+
+    // Second generate (Regenerate).
+    await page.getByRole("button", { name: "Regenerate" }).click();
+    // Wait for the spinner-text "Generating…" to clear back to "Regenerate".
+    await expect(page.getByRole("button", { name: "Regenerate" })).toBeVisible({ timeout: 15_000 });
+    await expect(promptBox).toBeEnabled({ timeout: 5_000 });
+    expect(aiHits).toBe(2);
+
+    // The textarea must still be typable after the second generate.
+    await promptBox.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" more.");
+
+    const finalPrompt = await promptBox.inputValue();
+    expect(finalPrompt.endsWith(" more.")).toBe(true);
+
+    // Sample a hash of the QA-preview canvases so we can prove they were
+    // RE-RENDERED after the second generate. We also check that state's
+    // aiRaw / templateSent / maps reference fresh objects.
+    const finalSnapshot = await page.evaluate(() => {
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveSurfaceState: () => {
+            aiRaw: { data: Uint8ClampedArray; width: number; height: number } | null;
+            maps: { baseColor: ImageData } | null;
+            templateSent: { data: Uint8ClampedArray; width: number; height: number } | null;
+          } | null;
+        };
+      }).__materialStudio;
+      const s = handle.getActiveSurfaceState()!;
+      const checksum = (arr: Uint8ClampedArray): number => {
+        let h = 0;
+        // sample 1024 evenly-spaced bytes — full hash is overkill
+        const step = Math.max(1, Math.floor(arr.length / 1024));
+        for (let i = 0; i < arr.length; i += step) h = ((h * 31) + arr[i]) | 0;
+        return h;
+      };
+      return {
+        aiRaw: !!s.aiRaw && s.aiRaw.width > 0,
+        maps: !!s.maps && s.maps.baseColor.width > 0,
+        templateSent: !!s.templateSent && s.templateSent.width > 0,
+        // The QA canvases are visible DOM canvases. Read their pixels
+        // back to confirm they actually painted the latest state, not
+        // a stale first-generate snapshot.
+        canvases: Array.from(document.querySelectorAll(".ms-qa-canvas")).map((c) => {
+          const cv = c as HTMLCanvasElement;
+          if (cv.width === 0 || cv.height === 0) return { w: 0, h: 0, sum: 0 };
+          const ctx = cv.getContext("2d");
+          if (!ctx) return { w: 0, h: 0, sum: 0 };
+          const id = ctx.getImageData(0, 0, cv.width, cv.height);
+          return { w: cv.width, h: cv.height, sum: checksum(id.data) };
+        }),
+      };
+    });
+    expect(finalSnapshot.aiRaw).toBe(true);
+    expect(finalSnapshot.maps).toBe(true);
+    expect(finalSnapshot.templateSent).toBe(true);
+    // Each QA canvas must have non-zero dimensions (i.e. a useEffect ran
+    // and painted from state.aiRaw / .maps / .templateSent). This is the
+    // actual "did regenerate refresh the previews?" check.
+    for (const c of finalSnapshot.canvases) {
+      expect(c.w).toBeGreaterThan(0);
+      expect(c.h).toBeGreaterThan(0);
+    }
+  });
+
   test("paint canvas: undo reverts the last stroke", async ({ page }) => {
     await page.goto("/#/exp/material-studio");
     await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });

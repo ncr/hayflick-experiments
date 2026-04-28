@@ -241,17 +241,37 @@ export async function generateBaseColorFromTemplate(
 
   const fullPrompt = buildPrompt(req.prompt, templatePack.islands, spatial, hasPainted);
 
-  const res = await fetch("/api/openai/edit-image", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      prompt: fullPrompt,
-      imageBase64: templateB64,
-      referenceImageBase64: referenceB64,
-      size: `${templateWidth}x${templateHeight}`,
-      quality: req.quality ?? DEFAULT_QUALITY
-    })
-  });
+  // Hard-cap the AI roundtrip so a stuck/slow gpt-image-2 call surfaces
+  // as a recoverable error instead of leaving the UI's `generating`
+  // flag wedged on (which disables the prompt textarea and the
+  // Generate button forever). 90 s is comfortably above gpt-image-2's
+  // typical 5–40 s tail and below the point where the user assumes
+  // the app is broken.
+  const FETCH_TIMEOUT_MS = 90_000;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch("/api/openai/edit-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: fullPrompt,
+        imageBase64: templateB64,
+        referenceImageBase64: referenceB64,
+        size: `${templateWidth}x${templateHeight}`,
+        quality: req.quality ?? DEFAULT_QUALITY
+      }),
+      signal: ac.signal,
+    });
+  } catch (err) {
+    if ((err as { name?: string }).name === "AbortError") {
+      throw new Error(`gpt-image-2 edit timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     const text = await res.text();
