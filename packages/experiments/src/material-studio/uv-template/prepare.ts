@@ -30,6 +30,7 @@ import { remapUvs } from "./remap-uvs";
 export const DEFAULT_ATLAS_W = 256;
 export const DEFAULT_ATLAS_H = 256;
 
+
 /** Cells along the longest island side — fallback only, used when
  *  `cellsPerIsland` is not provided to `repackIslands`. */
 export const DEFAULT_CELL_PX_TARGET = 16;
@@ -48,26 +49,40 @@ const INSIDE_ISLAND_RGB = 0xffffff;
 const OUTSIDE_ISLAND_RGB = 0x808080;
 
 // ---------------------------------------------------------------------------
-// Iso projection — calibrated against the "1 world tile edge (128cm) =
-// 32 game pixels horizontal, 16 vertical" invariant in CLAUDE.md.
+// Iso projection — calibrated against the *actual* IsoGameView defaults:
+// pitch = π/6 (30°), yaw = π/4, baseOrthoHeight = 4.8·√2, referenceLowHeight = 240.
 // ---------------------------------------------------------------------------
 //
-// In iso 2:1 (yaw π/4, pitch atan(½)):
-//   - 128 cm of world X →  (16 horizontal,  8 vertical) screen pixels
-//   - 128 cm of world Z →  (16 horizontal, -8 vertical)
-//   - 128 cm of world Y →  ( 0 horizontal, 16 vertical)  (Y up = vertical extent)
+// Going backwards from "1 large pixel in 3D = 1 lowpixel in the renderer's
+// pixelation grid" (the user's framing), we want each atlas cell to map to
+// exactly one rendered lowpixel. So we project each face's world vertices
+// through the renderer's actual camera basis and size cells from the
+// resulting screen bbox.
 //
-// The base mesh GLBs in this project store positions in *centimetres*
-// (a 1-tile cube measures 128 along an axis), so the per-cm constants
-// are the ratios above:
-const ISO_PX_PER_CM_X_HORIZ = 16 / 128;
-const ISO_PX_PER_CM_X_VERT = 8 / 128;
-const ISO_PX_PER_CM_Z_HORIZ = 16 / 128;
-const ISO_PX_PER_CM_Z_VERT = -8 / 128;
-const ISO_PX_PER_CM_Y_VERT = 16 / 128; // absolute extent (Y up = negative screen-y)
+// At the canonical reference resolution (240 lowpixels tall, baseOrthoHeight
+// = 4.8·√2), the screen-per-world ratio R = 240 / (4.8·√2) = 25·√2.
+// With yaw=π/4 and pitch=π/6:
+//   cam_right = (cos π/4, 0, -sin π/4) = (√2/2, 0, -√2/2)
+//   cam_up    = (cos π/4 · sin π/6, cos π/6, sin π/4 · sin π/6)
+//             = (√2/4,  √3/2,  √2/4)
+// 1 world unit projects:
+//   X  → ( cos(π/4)·R,         -cos(π/4)·sin(π/6)·R) = ( 25, -12.5)
+//   Z  → (-sin(π/4)·R,         -sin(π/4)·sin(π/6)·R) = (-25, -12.5)
+//   Y  → ( 0,                  -cos(π/6)·R)          = (  0, -25·√6/2 ≈ -30.62)
+//
+// Mesh GLBs store positions in cm with the parent node scaling by 1/128.
+// So one cm of mesh-local position = one cm of world space (1/128 unit).
+// The per-cm projection ratios are the world-unit ratios divided by 128.
+const ISO_R = (240 / (4.8 * Math.SQRT2)); // 25·√2
+const ISO_PX_PER_CM_X_HORIZ = (Math.SQRT2 / 2) * ISO_R / 128;
+const ISO_PX_PER_CM_X_VERT = -((Math.SQRT2 / 2) * (1 / 2) * ISO_R) / 128;
+const ISO_PX_PER_CM_Z_HORIZ = -((Math.SQRT2 / 2) * ISO_R) / 128;
+const ISO_PX_PER_CM_Z_VERT = -((Math.SQRT2 / 2) * (1 / 2) * ISO_R) / 128;
+const ISO_PX_PER_CM_Y_VERT = -((Math.sqrt(3) / 2) * ISO_R) / 128;
 
-/** Project a world position to iso screen coordinates (game pixels at zoom=1).
- *  World inputs are in centimetres (this project's GLB convention). */
+/** Project a world position to iso-screen lowpixel coordinates at the
+ *  renderer's reference resolution. World inputs are in centimetres
+ *  (this project's GLB convention). */
 export function projectWorldToIsoScreen(
   worldX: number,
   worldY: number,
@@ -75,47 +90,151 @@ export function projectWorldToIsoScreen(
 ): { sx: number; sy: number } {
   const sx = worldX * ISO_PX_PER_CM_X_HORIZ + worldZ * ISO_PX_PER_CM_Z_HORIZ;
   const sy =
-    worldX * ISO_PX_PER_CM_X_VERT + worldZ * ISO_PX_PER_CM_Z_VERT - worldY * ISO_PX_PER_CM_Y_VERT;
+    worldX * ISO_PX_PER_CM_X_VERT +
+    worldZ * ISO_PX_PER_CM_Z_VERT +
+    worldY * ISO_PX_PER_CM_Y_VERT;
   return { sx, sy };
 }
 
-/** Compute (cellsX, cellsY) per detected island from its world-space
- *  vertices, projected to iso screen. Exported so the AI-template repack
- *  in `api-client.ts` can use the same per-island cell counts (otherwise
- *  the AI's template islands wouldn't line up with the atlas islands and
- *  pixel-art extraction would be off-by-one). */
+/** Compute (cellsX, cellsY) per detected island from the iso-screen length
+ *  of each UV axis on the face. cellsX = how many lowpixels you traverse
+ *  walking from u_min to u_max along the face's U direction; cellsY same
+ *  for V.
+ *
+ *  Critical for consistent unwraps: faces sharing a 3D edge use the same
+ *  axis in world space, so they get identical cell counts along that
+ *  shared edge — wall-front top edge (X) and wall-top long edge (X) both
+ *  reduce to "128 cm of X axis projected" → identical cell count. Earlier
+ *  screen-bbox sizing inflated cell counts with the parallelogram slant
+ *  (depth axis contributing to sy), making shared edges differ between
+ *  faces and yielding visibly mis-shaped islands.
+ *
+ *  Exported so the AI-template repack in `api-client.ts` can use the same
+ *  per-island cell counts — otherwise the AI's template islands wouldn't
+ *  line up with the atlas islands and pixel-art extraction would be
+ *  off-by-one. */
 export function computeCellsPerIsland(
   positions: Float32Array,
+  uvs: Float32Array,
+  indexBuffer: Uint32Array | Uint16Array,
   islands: ReadonlyArray<DetectedIsland>
 ): Array<{ cellsX: number; cellsY: number }> {
-  return islands.map((isl) => islandCellsFromScreenBbox(positions, isl));
+  return islands.map((isl) => islandCellsFromAxisProjection(positions, uvs, indexBuffer, isl));
 }
 
-/** Compute (cellsX, cellsY) for an island as the iso-screen extent of its
- *  world-space vertices. One atlas cell ≈ one game pixel by construction. */
-function islandCellsFromScreenBbox(
+function islandCellsFromAxisProjection(
   positions: Float32Array,
+  uvs: Float32Array,
+  indexBuffer: Uint32Array | Uint16Array,
   island: DetectedIsland
 ): { cellsX: number; cellsY: number } {
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const v of island.vertexIndices) {
-    const { sx, sy } = projectWorldToIsoScreen(
-      positions[v * 3],
-      positions[v * 3 + 1],
-      positions[v * 3 + 2]
-    );
-    if (sx < minX) minX = sx;
-    if (sx > maxX) maxX = sx;
-    if (sy < minY) minY = sy;
-    if (sy > maxY) maxY = sy;
-  }
-  const w = Math.max(0, maxX - minX);
-  const h = Math.max(0, maxY - minY);
-  return { cellsX: Math.max(2, Math.ceil(w)), cellsY: Math.max(2, Math.ceil(h)) };
+  const triIdx = island.triangleIndices[0];
+  if (triIdx === undefined) return { cellsX: 2, cellsY: 2 };
+  const i0 = indexBuffer[triIdx * 3];
+  const i1 = indexBuffer[triIdx * 3 + 1];
+  const i2 = indexBuffer[triIdx * 3 + 2];
+  const u0 = uvs[i0 * 2], v0 = uvs[i0 * 2 + 1];
+  const u1 = uvs[i1 * 2], v1 = uvs[i1 * 2 + 1];
+  const u2 = uvs[i2 * 2], v2 = uvs[i2 * 2 + 1];
+  const du1 = u1 - u0, dv1 = v1 - v0;
+  const du2 = u2 - u0, dv2 = v2 - v0;
+  const det = du1 * dv2 - dv1 * du2;
+  const bbW = Math.abs(island.bboxUv.u1 - island.bboxUv.u0);
+  const bbH = Math.abs(island.bboxUv.v1 - island.bboxUv.v0);
+  if (Math.abs(det) < 1e-9) return { cellsX: 2, cellsY: 2 };
+  const dpx1 = positions[i1 * 3] - positions[i0 * 3];
+  const dpy1 = positions[i1 * 3 + 1] - positions[i0 * 3 + 1];
+  const dpz1 = positions[i1 * 3 + 2] - positions[i0 * 3 + 2];
+  const dpx2 = positions[i2 * 3] - positions[i0 * 3];
+  const dpy2 = positions[i2 * 3 + 1] - positions[i0 * 3 + 1];
+  const dpz2 = positions[i2 * 3 + 2] - positions[i0 * 3 + 2];
+  // J columns: ∂pos/∂u and ∂pos/∂v in world cm.
+  const dpu_x = (dpx1 * dv2 - dpx2 * dv1) / det;
+  const dpu_y = (dpy1 * dv2 - dpy2 * dv1) / det;
+  const dpu_z = (dpz1 * dv2 - dpz2 * dv1) / det;
+  const dpv_x = (dpx2 * du1 - dpx1 * du2) / det;
+  const dpv_y = (dpy2 * du1 - dpy1 * du2) / det;
+  const dpv_z = (dpz2 * du1 - dpz1 * du2) / det;
+  // Project ∂pos/∂u and ∂pos/∂v onto iso screen.
+  const su_x = dpu_x * ISO_PX_PER_CM_X_HORIZ + dpu_z * ISO_PX_PER_CM_Z_HORIZ;
+  const su_y = dpu_x * ISO_PX_PER_CM_X_VERT + dpu_z * ISO_PX_PER_CM_Z_VERT + dpu_y * ISO_PX_PER_CM_Y_VERT;
+  const sv_x = dpv_x * ISO_PX_PER_CM_X_HORIZ + dpv_z * ISO_PX_PER_CM_Z_HORIZ;
+  const sv_y = dpv_x * ISO_PX_PER_CM_X_VERT + dpv_z * ISO_PX_PER_CM_Z_VERT + dpv_y * ISO_PX_PER_CM_Y_VERT;
+  // Use the dominant SCREEN-AXIS extent (max of |sx|, |sy|), not the
+  // Euclidean length of the slanted projection. Reason: NEAREST sampling
+  // along a horizontal scanline samples 25 distinct cells across a 25-px
+  // parallelogram width, but the slanted axis length is sqrt(25² + 12.5²)
+  // ≈ 28 — using 28 cells means 3 atlas columns get sampled by zero
+  // fragments and never render (the "column 9 disappears" bug).
+  const lenU_screen = Math.max(Math.abs(su_x), Math.abs(su_y));
+  const lenV_screen = Math.max(Math.abs(sv_x), Math.abs(sv_y));
+  return {
+    cellsX: Math.max(2, Math.round(lenU_screen * bbW)),
+    cellsY: Math.max(2, Math.round(lenV_screen * bbH)),
+  };
 }
+
+/**
+ * Per-island UV→iso-screen Jacobian sign. Used to flip atlas U/V axes so
+ * the painted atlas reads in the same orientation as the rendered mesh
+ * under the canonical iso view (yaw=π/4 with the camera looking down the
+ * +X+Z corner): atlas-left ↔ screen-left, atlas-top ↔ screen-top.
+ *
+ * Box-faces in this project ship from Blender with arbitrary UV winding —
+ * front and back of the same wall are mirror UVs of each other. Without
+ * this fix, the visible front face renders X-mirrored relative to the
+ * paint editor, which is the bug the user observed.
+ *
+ * For each island we pick its first triangle, recover ∂pos/∂u and ∂pos/∂v,
+ * iso-project them, and inspect the dominant screen-axis component:
+ *   flipU iff U's dominant screen component is negative
+ *   flipV iff V's dominant screen component is negative
+ * "Dominant" matters because non-axis-aligned faces (rare here) have UV
+ * directions that aren't purely screen-X or screen-Y.
+ */
+export function computeIslandOrientations(
+  positions: Float32Array,
+  uvs: Float32Array,
+  indexBuffer: Uint32Array | Uint16Array,
+  islands: ReadonlyArray<DetectedIsland>
+): Array<{ flipU: boolean; flipV: boolean }> {
+  return islands.map((isl) => {
+    const triIdx = isl.triangleIndices[0];
+    if (triIdx === undefined) return { flipU: false, flipV: false };
+    const i0 = indexBuffer[triIdx * 3];
+    const i1 = indexBuffer[triIdx * 3 + 1];
+    const i2 = indexBuffer[triIdx * 3 + 2];
+    const u0 = uvs[i0 * 2], v0 = uvs[i0 * 2 + 1];
+    const u1 = uvs[i1 * 2], v1 = uvs[i1 * 2 + 1];
+    const u2 = uvs[i2 * 2], v2 = uvs[i2 * 2 + 1];
+    const p0x = positions[i0 * 3], p0y = positions[i0 * 3 + 1], p0z = positions[i0 * 3 + 2];
+    const p1x = positions[i1 * 3], p1y = positions[i1 * 3 + 1], p1z = positions[i1 * 3 + 2];
+    const p2x = positions[i2 * 3], p2y = positions[i2 * 3 + 1], p2z = positions[i2 * 3 + 2];
+    const du1 = u1 - u0, dv1 = v1 - v0;
+    const du2 = u2 - u0, dv2 = v2 - v0;
+    const det = du1 * dv2 - dv1 * du2;
+    if (Math.abs(det) < 1e-9) return { flipU: false, flipV: false };
+    const dpx1 = p1x - p0x, dpy1 = p1y - p0y, dpz1 = p1z - p0z;
+    const dpx2 = p2x - p0x, dpy2 = p2y - p0y, dpz2 = p2z - p0z;
+    // J = [dp1 dp2] * M^-1 where M = [[du1 du2];[dv1 dv2]].
+    // Column 0 of J (∂pos/∂u): (dp1*dv2 - dp2*dv1) / det
+    // Column 1 of J (∂pos/∂v): (dp2*du1 - dp1*du2) / det
+    const dpu_x = (dpx1 * dv2 - dpx2 * dv1) / det;
+    const dpu_y = (dpy1 * dv2 - dpy2 * dv1) / det;
+    const dpu_z = (dpz1 * dv2 - dpz2 * dv1) / det;
+    const dpv_x = (dpx2 * du1 - dpx1 * du2) / det;
+    const dpv_y = (dpy2 * du1 - dpy1 * du2) / det;
+    const dpv_z = (dpz2 * du1 - dpz1 * du2) / det;
+    const dsx_du = dpu_x * ISO_PX_PER_CM_X_HORIZ + dpu_z * ISO_PX_PER_CM_Z_HORIZ;
+    const dsy_du = dpu_x * ISO_PX_PER_CM_X_VERT + dpu_z * ISO_PX_PER_CM_Z_VERT + dpu_y * ISO_PX_PER_CM_Y_VERT;
+    const dsx_dv = dpv_x * ISO_PX_PER_CM_X_HORIZ + dpv_z * ISO_PX_PER_CM_Z_HORIZ;
+    const dsy_dv = dpv_x * ISO_PX_PER_CM_X_VERT + dpv_z * ISO_PX_PER_CM_Z_VERT + dpv_y * ISO_PX_PER_CM_Y_VERT;
+    const flipU = Math.abs(dsx_du) >= Math.abs(dsy_du) ? dsx_du < 0 : dsy_du < 0;
+    const flipV = Math.abs(dsy_dv) >= Math.abs(dsx_dv) ? dsy_dv < 0 : dsx_dv < 0;
+    return { flipU, flipV };
+  });
+}
+
 
 export type PrepareSurfaceOptions = {
   atlasWidth?: number;
@@ -139,9 +258,16 @@ export function prepareSurface(
     throw new Error("prepareSurface: no UV islands detected on this submesh.");
   }
 
-  // Size each island's atlas cells from its iso-projected screen extent so
-  // one atlas pixel maps to one game pixel regardless of face orientation.
-  const cellsPerIsland = computeCellsPerIsland(uvData.positionBuffer, detected.islands);
+  // Size each island's atlas cells in world-space extent so one atlas cell
+  // = WORLD_CM_PER_CELL of mesh surface along its UV axis. For meshes whose
+  // rectangular faces are multiples of 8 cm this gives clean integer cells
+  // and one atlas pixel = one game pixel under iso 2:1.
+  const cellsPerIsland = computeCellsPerIsland(
+    uvData.positionBuffer,
+    uvData.uvBuffer,
+    uvData.indexBuffer,
+    detected.islands
+  );
 
   const atlasPack = repackIslands(detected, {
     templateWidth: atlasWidth,
@@ -151,6 +277,28 @@ export function prepareSurface(
     cellsPerIsland,
     outlinePaddingPx: ATLAS_OUTLINE_PADDING_PX
   });
+
+  // Flip per-island U/V so atlas axes match iso-screen axes under the
+  // canonical view. This is what makes "paint atlas pixel (0,0) → top-left
+  // of the visible mesh face" a stable invariant.
+  const orientations = computeIslandOrientations(
+    uvData.positionBuffer,
+    uvData.uvBuffer,
+    uvData.indexBuffer,
+    detected.islands
+  );
+  for (let i = 0; i < atlasPack.uvRemap.length; i++) {
+    const entry = atlasPack.uvRemap[i];
+    const orient = orientations[i];
+    if (orient.flipU) {
+      entry.scaleU = -entry.scaleU;
+      entry.offsetX = entry.offsetX + entry.pixelW;
+    }
+    if (orient.flipV) {
+      entry.scaleV = -entry.scaleV;
+      entry.offsetY = entry.offsetY + entry.pixelH;
+    }
+  }
 
   const newUvBuffer = remapUvs(
     uvData.uvBuffer,

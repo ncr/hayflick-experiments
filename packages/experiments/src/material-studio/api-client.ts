@@ -120,12 +120,17 @@ export async function generateBaseColorFromTemplate(
   //     gpt-image-2 to paint legibly. Transient.
   //   * atlasPack — one cell per atlas pixel on a 256² canvas. This is what
   //     the GLB samples at runtime and what the cache stores.
-  // cellsX/cellsY per island come from the iso-projected screen extent of
-  // each island's world vertices — one atlas cell == one game pixel — so
-  // both packings share the same per-island cell shapes (a hard
-  // requirement: extractIslandPixelArt indexes the AI raw at template-cell
-  // granularity and writes into atlas cells at 1:1 cellsX×cellsY).
-  const cellsPerIsland = computeCellsPerIsland(req.uvData.positionBuffer, detected.islands);
+  // cellsX/cellsY per island come from the face's UV→world Jacobian sized
+  // at WORLD_CM_PER_CELL so 1 atlas cell = 1 large game pixel. Both packings
+  // share the same per-island cell shapes (a hard requirement:
+  // extractIslandPixelArt indexes the AI raw at template-cell granularity
+  // and writes into atlas cells at 1:1 cellsX×cellsY).
+  const cellsPerIsland = computeCellsPerIsland(
+    req.uvData.positionBuffer,
+    req.uvData.uvBuffer,
+    req.uvData.indexBuffer,
+    detected.islands
+  );
   const templatePack = repackIslands(detected, {
     templateWidth,
     templateHeight,

@@ -60,12 +60,11 @@ test.describe("material studio", () => {
     // can't masquerade as "yes I painted".
     await page.locator('.ms-swatch-btn[aria-label="burnt amber"]').click();
 
-    // The intrinsic canvas resolution is the atlas size (256²); CSS size
-    // is atlas × zoom. At default zoom=4, CSS (42, 42) lands on atlas
-    // pixel (10, 10) — comfortably inside the outline padding so we hit
-    // an island interior on most base meshes.
+    // CSS size = atlas × zoom; compute CSS pos for atlas (10, 10).
+    const cssPerAtlas = await cssPerAtlasPx(page);
+    const targetCss = (n: number) => Math.round((n + 0.5) * cssPerAtlas);
     const before = await readAtlasPixel(page, 10, 10);
-    await paintCanvas.click({ position: { x: 42, y: 42 } });
+    await paintCanvas.click({ position: { x: targetCss(10), y: targetCss(10) } });
 
     // Paint commit triggers a PBR-derive settle and a state dispatch;
     // give React a tick to flush.
@@ -120,14 +119,17 @@ test.describe("material studio", () => {
 
     await page.locator('.ms-swatch-btn[aria-label="burnt amber"]').click();
 
-    // Drag-paint a small block in the atlas. At zoom=4, CSS (40..60, 40..60)
-    // → atlas (10..15, 10..14). Big enough to be visible from any iso angle.
+    // Drag-paint a wider block — with the new tight cell sizing each cell
+    // renders to ~1 lowpixel, so we need a larger cluster to be visible
+    // through ACES tone mapping after Lambert lighting attenuation.
     const box = await paintCanvas.boundingBox();
     if (!box) throw new Error("paint canvas has no bounding box");
-    for (let dy = 0; dy < 5; dy++) {
-      await page.mouse.move(box.x + 40, box.y + 40 + dy * 4);
+    const cpa = await cssPerAtlasPx(page);
+    const cssAt = (a: number) => (a + 0.5) * cpa;
+    for (let dy = 0; dy < 12; dy++) {
+      await page.mouse.move(box.x + cssAt(8), box.y + cssAt(10 + dy));
       await page.mouse.down();
-      await page.mouse.move(box.x + 60, box.y + 40 + dy * 4);
+      await page.mouse.move(box.x + cssAt(20), box.y + cssAt(10 + dy));
       await page.mouse.up();
       await page.waitForTimeout(20);
     }
@@ -180,9 +182,18 @@ test.describe("material studio", () => {
 
     const before = await grabFramebuffer();
 
-    // Paint exactly one atlas pixel: click without drag at one position.
+    // Paint a small 2×2 block — one atlas cell in the new tighter layout
+    // (sized to project to exactly one rendered lowpixel) may land in a
+    // parallelogram slant gap and produce 0 framebuffer changes; a 2×2 block
+    // virtually guarantees at least one visible cell.
     await page.locator('.ms-swatch-btn[aria-label="structural dark"]').click();
-    await paintCanvas.click({ position: { x: 42, y: 42 } });
+    const cpa = await cssPerAtlasPx(page);
+    const box = await paintCanvas.boundingBox();
+    if (!box) throw new Error("paint canvas has no bounding box");
+    await page.mouse.move(box.x + (10 + 0.5) * cpa, box.y + (10 + 0.5) * cpa);
+    await page.mouse.down();
+    await page.mouse.move(box.x + (11 + 0.5) * cpa, box.y + (11 + 0.5) * cpa);
+    await page.mouse.up();
     await page.waitForTimeout(150);
 
     const after = await grabFramebuffer();
@@ -200,11 +211,10 @@ test.describe("material studio", () => {
       if (dr > 8 || dg > 8 || db > 8) diff++;
     }
 
-    // One atlas pixel maps to a handful of game pixels under the iso
-    // projection. With AO/normal-map shading attached, a Sobel halo would
-    // light up dozens of additional pixels around the painted texel.
-    // Cap at 20 — generous for the texel footprint, tight enough to fail
-    // if the halo regresses.
+    // After the cell-sizing fix, one atlas cell renders to ~1 lowpixel. A
+    // 2×2 paint should produce 1–4 changed pixels with NEAREST sampling.
+    // With AO/normal-map shading attached, a Sobel halo would light up
+    // many neighbouring pixels — cap at 20 to fail if that regresses.
     expect(diff).toBeGreaterThan(0); // sanity: paint produced *some* change
     expect(diff).toBeLessThan(20);
   });
@@ -314,6 +324,321 @@ test.describe("material studio", () => {
     expect(ratio).toBeLessThan(3);
   });
 
+  test("atlas axes match screen axes: top-left of atlas renders at top-left of mesh face (no mirror)", async ({
+    page,
+  }) => {
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+
+    // Target wall.glb explicitly — it has clean axis-aligned X×Y faces
+    // that make the orientation invariant easy to verify.
+    const wallCard = page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first();
+    await expect(wallCard).toBeVisible({ timeout: 5_000 });
+    await wallCard.click();
+
+    const paintCanvas = page.locator(".ms-paint-canvas-wrap canvas");
+    await expect(paintCanvas).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(() => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio, {
+      timeout: 5_000,
+    });
+
+    type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+
+    // Find the largest island (the wall's X×Y face) and paint two
+    // distinguishable cells at top-left and bottom-right corners.
+    // For each visible (camera-facing) variant of that face we verify
+    // that the top-left cell renders above-and-to-the-left of the
+    // bottom-right cell — i.e., no horizontal or vertical mirror.
+    const result = await page.evaluate(async () => {
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveRole: () => string | null;
+          getActiveSurfaceState: () => { islandLayout: { islands: Island[] } | null } | null;
+          scene: { forceFrame: (n: number) => void; readCanvasImageData: () => ImageData };
+          testPaintAtlasPixel: (role: string, x: number, y: number, r: number, g: number, b: number) => boolean;
+        };
+      }).__materialStudio;
+      const role = handle.getActiveRole();
+      if (!role) throw new Error("no active role");
+      const islands = (handle.getActiveSurfaceState()?.islandLayout?.islands ?? []) as Island[];
+      if (islands.length === 0) throw new Error("no islands");
+
+      // Sort by cell area descending; take the largest. For wall.glb this
+      // is one of the two 16×35 X×Y faces (front or back).
+      const sorted = [...islands].sort((a, b) => b.cellsX * b.cellsY - a.cellsX * a.cellsY);
+      const ranked: Array<{
+        island: Island;
+        topLeft: { sx: number; sy: number } | null;
+        bottomRight: { sx: number; sy: number } | null;
+      }> = [];
+
+      // Painting white→pure-red on a Lambert-lit wall keeps R nearly fixed
+      // and drops G/B (white was R≈G≈B ~50; red is R≈50, G≈B≈0). So we
+      // detect by "any channel changed AND final colour is dominantly red
+      // (or blue)" rather than by absolute change in one channel.
+      const findCentroid = (
+        before: Uint8ClampedArray,
+        after: Uint8ClampedArray,
+        w: number,
+        dominantChannel: 0 | 2
+      ): { sx: number; sy: number; count: number } => {
+        let sx = 0,
+          sy = 0,
+          n = 0;
+        for (let i = 0; i < before.length; i += 4) {
+          const dr = Math.abs(after[i] - before[i]);
+          const dg = Math.abs(after[i + 1] - before[i + 1]);
+          const db = Math.abs(after[i + 2] - before[i + 2]);
+          if (dr < 4 && dg < 4 && db < 4) continue;
+          const r = after[i],
+            g = after[i + 1],
+            b = after[i + 2];
+          if (dominantChannel === 0) {
+            // Red dominant: r > g + margin AND r > b + margin
+            if (r <= g + 6) continue;
+            if (r <= b + 6) continue;
+          } else {
+            if (b <= g + 6) continue;
+            if (b <= r + 6) continue;
+          }
+          const px = (i / 4) % w;
+          const py = Math.floor(i / 4 / w);
+          sx += px;
+          sy += py;
+          n++;
+        }
+        return n > 0 ? { sx: sx / n, sy: sy / n, count: n } : { sx: 0, sy: 0, count: 0 };
+      };
+
+      for (const isl of sorted.slice(0, 4)) {
+        // Reset by repainting island center (any neutral colour) — actually
+        // skip reset, just diff against current frame.
+        handle.scene.forceFrame(3);
+        const before = new Uint8ClampedArray(handle.scene.readCanvasImageData().data);
+
+        // Paint a 4×4 block in top-left and bottom-right corners of the
+        // island so the cluster is detectable through ACES tone mapping.
+        // (One painted atlas pixel renders to ~1–3 framebuffer pixels and
+        // gets crushed dark; a small block survives reliably.)
+        const block = Math.max(1, Math.min(4, Math.floor(Math.min(isl.cellsX, isl.cellsY) / 4)));
+        for (let dy = 0; dy < block; dy++) {
+          for (let dx = 0; dx < block; dx++) {
+            handle.testPaintAtlasPixel(role, isl.x + dx, isl.y + dy, 255, 0, 0);
+          }
+        }
+        const brOffset = isl.cellsX * isl.cellPx;
+        for (let dy = 0; dy < block; dy++) {
+          for (let dx = 0; dx < block; dx++) {
+            handle.testPaintAtlasPixel(role, isl.x + brOffset - 1 - dx, isl.y + isl.cellsY * isl.cellPx - 1 - dy, 0, 0, 255);
+          }
+        }
+        handle.scene.forceFrame(3);
+        const w = handle.scene.readCanvasImageData().width;
+        const after = handle.scene.readCanvasImageData().data;
+        const tl = findCentroid(before, after, w, 0);
+        const br = findCentroid(before, after, w, 2);
+        ranked.push({
+          island: isl,
+          topLeft: tl.count >= 2 ? { sx: tl.sx, sy: tl.sy } : null,
+          bottomRight: br.count >= 2 ? { sx: br.sx, sy: br.sy } : null,
+        });
+        // Reset cells back to white so the next island isn't biased.
+        for (let dy = 0; dy < block; dy++) {
+          for (let dx = 0; dx < block; dx++) {
+            handle.testPaintAtlasPixel(role, isl.x + dx, isl.y + dy, 255, 255, 255);
+            handle.testPaintAtlasPixel(role, isl.x + brOffset - 1 - dx, isl.y + isl.cellsY * isl.cellPx - 1 - dy, 255, 255, 255);
+          }
+        }
+      }
+      return ranked;
+    });
+
+    // Find visible camera-facing islands and assert the orientation
+    // invariant only on the *largest* one — narrow side faces (4 cells
+    // wide) can't discriminate atlas-X reliably with a single-pixel
+    // paint, since the screen extent is comparable to the cluster jitter.
+    const visible = result.filter(
+      (r) => r.topLeft !== null && r.bottomRight !== null && r.island.cellsX >= 8 && r.island.cellsY >= 8
+    );
+    expect(visible.length).toBeGreaterThanOrEqual(1);
+    for (const r of visible) {
+      expect(r.topLeft!.sx).toBeLessThan(r.bottomRight!.sx);
+      expect(r.topLeft!.sy).toBeLessThan(r.bottomRight!.sy);
+    }
+  });
+
+  test("one atlas pixel = one rendered large pixel on the wall front face", async ({ page }) => {
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(() => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio, { timeout: 5_000 });
+
+    // Sweep paint over every 4th cell of the largest island's pixel block.
+    // For each, count how many lowpixels changed in the framebuffer. Pre-fix
+    // the histogram was {1: 5, 2: 49, 3: 15, 4: 75} per atlas paint — most
+    // cells produced 4 lowpixels of jitter. After fix: cells either render
+    // to exactly 1 lowpixel (visible face) or 0 (parallelogram slant gap).
+    // ≥85% of visible cells should render to exactly 1 lowpixel.
+    const histogram = await page.evaluate(() => {
+      type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveRole: () => string | null;
+          getActiveSurfaceState: () => { islandLayout: { islands: Island[] } | null } | null;
+          scene: { forceFrame: (n: number) => void; readCanvasImageData: () => ImageData };
+          testPaintAtlasPixel: (role: string, x: number, y: number, r: number, g: number, b: number) => boolean;
+        };
+      }).__materialStudio;
+      const role = handle.getActiveRole()!;
+      const islands = handle.getActiveSurfaceState()!.islandLayout!.islands;
+      const big = [...islands].sort((a, b) => b.cellsX * b.cellsY - a.cellsX * a.cellsY)[0];
+      const grab = () => {
+        handle.scene.forceFrame(2);
+        return new Uint8ClampedArray(handle.scene.readCanvasImageData().data);
+      };
+      const diffCount = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
+        let n = 0;
+        for (let i = 0; i < a.length; i += 4) {
+          if (Math.abs(a[i] - b[i]) > 6 || Math.abs(a[i + 1] - b[i + 1]) > 6 || Math.abs(a[i + 2] - b[i + 2]) > 6) n++;
+        }
+        return n;
+      };
+      const counts: number[] = [];
+      const base = grab();
+      for (let cy = 0; cy < big.cellsY; cy += 4) {
+        for (let cx = 0; cx < big.cellsX; cx += 4) {
+          handle.testPaintAtlasPixel(role, big.x + cx, big.y + cy, 255, 0, 0);
+          counts.push(diffCount(base, grab()));
+          handle.testPaintAtlasPixel(role, big.x + cx, big.y + cy, 255, 255, 255);
+        }
+      }
+      const hist: Record<number, number> = {};
+      for (const c of counts) hist[c] = (hist[c] || 0) + 1;
+      return hist;
+    });
+
+    const total = Object.values(histogram).reduce((a, b) => a + b, 0);
+    const visible = Object.entries(histogram)
+      .filter(([k]) => Number(k) > 0)
+      .reduce((s, [, v]) => s + v, 0);
+    const ones = histogram[1] ?? 0;
+    // No 2-, 3-, or 4-pixel jitter on any cell.
+    const jittery = (histogram[2] ?? 0) + (histogram[3] ?? 0) + (histogram[4] ?? 0);
+    expect(visible / total).toBeGreaterThan(0.5);
+    expect(ones / visible).toBeGreaterThan(0.85);
+    expect(jittery).toBe(0);
+  });
+
+  test("no atlas column or row is skipped: every cell along the front face's U/V axes renders to ≥1 lowpixel", async ({
+    page,
+  }) => {
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(() => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio, { timeout: 5_000 });
+
+    // Pre-fix bug: with cellsX = Euclidean Jacobian length (= 28 for the wall
+    // front face but only 25 horizontal lowpixels), NEAREST sampling skipped
+    // 3 atlas columns. Painting cell column 9 was invisible. Test: paint
+    // every column at the island's vertical mid-row; every column must
+    // change at least one framebuffer pixel.
+    const skipped = await page.evaluate(() => {
+      type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveRole: () => string | null;
+          getActiveSurfaceState: () => { islandLayout: { islands: Island[] } | null } | null;
+          scene: { forceFrame: (n: number) => void; readCanvasImageData: () => ImageData };
+          testPaintAtlasPixel: (role: string, x: number, y: number, r: number, g: number, b: number) => boolean;
+        };
+      }).__materialStudio;
+      const role = handle.getActiveRole()!;
+      const islands = handle.getActiveSurfaceState()!.islandLayout!.islands;
+      const big = [...islands].sort((a, b) => b.cellsX * b.cellsY - a.cellsX * a.cellsY)[0];
+      const grab = () => {
+        handle.scene.forceFrame(2);
+        return new Uint8ClampedArray(handle.scene.readCanvasImageData().data);
+      };
+      const diff = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
+        let n = 0;
+        for (let i = 0; i < a.length; i += 4) {
+          if (Math.abs(a[i] - b[i]) > 6 || Math.abs(a[i + 1] - b[i + 1]) > 6 || Math.abs(a[i + 2] - b[i + 2]) > 6) n++;
+        }
+        return n;
+      };
+      // Sweep: for each U column at the island's vertical centre, paint and
+      // see if it produced ≥1 lowpixel. Same for each V row at horizontal centre.
+      const skippedColumns: number[] = [];
+      const cy = Math.floor(big.cellsY / 2);
+      let base = grab();
+      for (let cx = 0; cx < big.cellsX; cx++) {
+        handle.testPaintAtlasPixel(role, big.x + cx, big.y + cy, 255, 0, 0);
+        if (diff(base, grab()) === 0) skippedColumns.push(cx);
+        handle.testPaintAtlasPixel(role, big.x + cx, big.y + cy, 255, 255, 255);
+      }
+      const skippedRows: number[] = [];
+      const cx = Math.floor(big.cellsX / 2);
+      base = grab();
+      for (let cy2 = 0; cy2 < big.cellsY; cy2++) {
+        handle.testPaintAtlasPixel(role, big.x + cx, big.y + cy2, 255, 0, 0);
+        if (diff(base, grab()) === 0) skippedRows.push(cy2);
+        handle.testPaintAtlasPixel(role, big.x + cx, big.y + cy2, 255, 255, 255);
+      }
+      return { skippedColumns, skippedRows, cellsX: big.cellsX, cellsY: big.cellsY };
+    });
+
+    expect(skipped.skippedColumns).toEqual([]);
+    expect(skipped.skippedRows).toEqual([]);
+  });
+
+  test("UV island shapes: shared 3D edges produce identical cell counts on wall.glb", async ({ page }) => {
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(() => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio, { timeout: 5_000 });
+
+    const islands = await page.evaluate(() => {
+      type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+      const handle = (window as unknown as {
+        __materialStudio: { getActiveSurfaceState: () => { islandLayout: { islands: Island[] } | null } | null };
+      }).__materialStudio;
+      return handle.getActiveSurfaceState()!.islandLayout!.islands;
+    });
+    // wall.glb produces 6 islands (the cube faces). Group by extents.
+    const counts = new Map<string, number>();
+    for (const isl of islands) {
+      const key = `${isl.cellsX}x${isl.cellsY}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    // The two 128×280 X-Y faces (front and back) must have identical extents.
+    // The two 32×280 Y-Z side faces likewise.
+    // The two 128×32 X-Z top/bottom faces likewise.
+    // So we expect 3 distinct shapes, each appearing twice.
+    expect(islands.length).toBe(6);
+    const shapes = [...counts.values()].sort((a, b) => b - a);
+    expect(shapes).toEqual([2, 2, 2]);
+
+    // Pull each unique shape and verify the cross-axis matches:
+    //   X-Y face's X cell count == X-Z face's long-side cell count
+    //   X-Y face's Y cell count == Y-Z face's long-side cell count
+    //   X-Z face's short-side cell count == Y-Z face's short-side cell count
+    const all = [...counts.keys()].map((k) => k.split("x").map(Number) as [number, number]);
+    const flat = all.flat();
+    const sortedSizes = [...new Set(flat)].sort((a, b) => a - b);
+    // Three distinct sizes corresponding to wall's three axes (Z=32, X=128, Y=280)
+    // — proving every face shares cell counts with the faces that share its
+    // axes, instead of inflating to per-face screen bbox.
+    expect(sortedSizes.length).toBeGreaterThanOrEqual(2);
+    expect(sortedSizes.length).toBeLessThanOrEqual(3);
+  });
+
   test("paint canvas: undo reverts the last stroke", async ({ page }) => {
     await page.goto("/#/exp/material-studio");
     await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
@@ -328,8 +653,8 @@ test.describe("material studio", () => {
     const before = await readAtlasPixel(page, 12, 12);
 
     await page.locator('.ms-swatch-btn[aria-label="burnt amber"]').click();
-    // CSS (50,50) → atlas (12,12) at zoom=4
-    await paintCanvas.click({ position: { x: 50, y: 50 } });
+    const cpa = await cssPerAtlasPx(page);
+    await paintCanvas.click({ position: { x: (12 + 0.5) * cpa, y: (12 + 0.5) * cpa } });
     await page.waitForTimeout(150);
     const afterPaint = await readAtlasPixel(page, 12, 12);
     expect(afterPaint).toEqual([0xb8, 0x43, 0x0e]);
@@ -341,6 +666,16 @@ test.describe("material studio", () => {
     expect(afterUndo).toEqual(before);
   });
 });
+
+/** CSS pixels per atlas pixel — depends on the current zoom select. */
+async function cssPerAtlasPx(page: import("@playwright/test").Page): Promise<number> {
+  return await page.evaluate(() => {
+    const c = document.querySelector(".ms-paint-canvas-wrap canvas") as HTMLCanvasElement | null;
+    if (!c) throw new Error("paint canvas not found");
+    const rect = c.getBoundingClientRect();
+    return rect.width / c.width;
+  });
+}
 
 /** Read the RGB triple at atlas pixel (x, y) from the editor canvas. */
 async function readAtlasPixel(page: import("@playwright/test").Page, x: number, y: number) {

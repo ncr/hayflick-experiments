@@ -8,8 +8,10 @@ import { derivePbrMaps } from "../pbr-derive";
 
 type Tool = "pencil" | "eraser";
 
-const ZOOM_LEVELS = [1, 2, 3, 4, 6, 8] as const;
-const DEFAULT_ZOOM = 4;
+const ZOOM_LEVELS = [1, 2, 4, 8, 12, 16, 24] as const;
+const DEFAULT_ZOOM = 8;
+/** Grid auto-shows from this zoom up; below it the lines obscure pixels. */
+const GRID_AUTO_ZOOM = 4;
 
 export function PaintCanvas() {
   const { authoring } = useAppState();
@@ -24,6 +26,7 @@ export function PaintCanvas() {
   const [tool, setTool] = useState<Tool>("pencil");
   const [color, setColor] = useState<string>(DEFAULT_COLOR);
   const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
+  const [gridOn, setGridOn] = useState<boolean>(true);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokeRef = useRef<{
@@ -197,6 +200,13 @@ export function PaintCanvas() {
             </option>
           ))}
         </select>
+        <button
+          className={`ms-btn ${gridOn ? "ms-btn-success-on" : ""}`}
+          onClick={() => setGridOn((v) => !v)}
+          title="Toggle pixel grid"
+        >
+          # Grid
+        </button>
       </div>
       <div className="ms-paint-canvas-scroll">
         <div
@@ -224,8 +234,12 @@ export function PaintCanvas() {
               width={cssW}
               height={cssH}
               viewBox={`0 0 ${atlas.width} ${atlas.height}`}
+              shapeRendering="crispEdges"
               style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
             >
+              {gridOn && zoom >= GRID_AUTO_ZOOM && islandLayout.islands.map((isl, i) => (
+                <IslandGrid key={`g${i}`} isl={isl} />
+              ))}
               {islandLayout.islands.map((isl, i) => (
                 <rect
                   key={i}
@@ -259,4 +273,45 @@ function countPainted(mask: Uint8Array<ArrayBuffer>): number {
   let n = 0;
   for (let i = 0; i < mask.length; i++) if (mask[i] !== 0) n++;
   return n;
+}
+
+function IslandGrid({ isl }: { isl: { x: number; y: number; cellsX: number; cellsY: number; cellPx: number } }) {
+  const x0 = isl.x;
+  const y0 = isl.y;
+  const x1 = isl.x + isl.cellsX * isl.cellPx;
+  const y1 = isl.y + isl.cellsY * isl.cellPx;
+  const verts: number[] = [];
+  for (let cx = 1; cx < isl.cellsX; cx++) verts.push(x0 + cx * isl.cellPx);
+  const horiz: number[] = [];
+  for (let cy = 1; cy < isl.cellsY; cy++) horiz.push(y0 + cy * isl.cellPx);
+  return (
+    <g>
+      {verts.map((x, i) => (
+        <line
+          key={`v${i}`}
+          x1={x}
+          x2={x}
+          y1={y0}
+          y2={y1}
+          stroke="#000000"
+          strokeOpacity="0.45"
+          strokeWidth={1}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      {horiz.map((y, i) => (
+        <line
+          key={`h${i}`}
+          x1={x0}
+          x2={x1}
+          y1={y}
+          y2={y}
+          stroke="#000000"
+          strokeOpacity="0.45"
+          strokeWidth={1}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </g>
+  );
 }
