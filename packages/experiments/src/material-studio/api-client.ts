@@ -272,7 +272,13 @@ export async function generateBaseColorFromTemplate(
     atlasWidth,
     atlasHeight,
     atlasIslandsFinal,
-    islandPixelArt
+    islandPixelArt,
+    // No seam-bleed in the live editor atlas: with NEAREST end-to-end
+    // and one cell == one atlas pixel, samples never land outside an
+    // island's rectangle, so dilating edge colours just paints the
+    // user's "background" with leaked island colours that show up
+    // in the paint canvas after every Regenerate.
+    { seamBleedPx: 0 }
   );
 
   // Merge: where the user has painted (mask=1 in the input atlas), keep

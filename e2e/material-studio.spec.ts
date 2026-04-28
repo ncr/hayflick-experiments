@@ -1443,6 +1443,83 @@ test.describe("material studio", () => {
     expect(result.foundScale).toBeLessThanOrEqual(16);
   });
 
+  test("Generate doesn't bleed colours outside island rectangles in the atlas", async ({ page }) => {
+    // Pre-fix recompose dilated each island's edge colours by 3 px into
+    // the surrounding background as seam-bleed insurance. With NEAREST
+    // end-to-end and 1px cells that bleed never gets sampled — but it
+    // shows up in the editor canvas as coloured noise around every
+    // island outline. Test: after Generate, every pixel strictly outside
+    // every island's rectangle must remain the atlas background grey.
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    // Echo the template back so the AI returns a fully-painted island
+    // set — bleed would maximally leak coloured edge pixels.
+    await page.route("**/api/openai/edit-image", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}") as { imageBase64: string };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [{ b64_json: body.imageBase64 }] }),
+      });
+    });
+
+    await page.getByRole("button", { name: /^(Generate|Regenerate)$/ }).click();
+    await page.waitForTimeout(800);
+
+    const result = await page.evaluate(() => {
+      type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveSurfaceState: () => {
+            atlas: { rgba: Uint8ClampedArray; width: number; height: number };
+            islandLayout: { islands: Island[] } | null;
+          } | null;
+        };
+      }).__materialStudio;
+      const surf = handle.getActiveSurfaceState()!;
+      const atlas = surf.atlas;
+      const islands = surf.islandLayout!.islands;
+      // Build a per-pixel "is inside any island" mask.
+      const inside = new Uint8Array(atlas.width * atlas.height);
+      for (const isl of islands) {
+        const x1 = isl.x + isl.cellsX * isl.cellPx;
+        const y1 = isl.y + isl.cellsY * isl.cellPx;
+        for (let y = isl.y; y < y1; y++) {
+          for (let x = isl.x; x < x1; x++) {
+            if (x >= 0 && x < atlas.width && y >= 0 && y < atlas.height) {
+              inside[y * atlas.width + x] = 1;
+            }
+          }
+        }
+      }
+      // Count pixels OUTSIDE islands that are non-grey (anything beyond
+      // a small jitter band around the 0x80 background).
+      let bgPixels = 0, leakedPixels = 0;
+      for (let i = 0; i < inside.length; i++) {
+        if (inside[i]) continue;
+        bgPixels++;
+        const j = i * 4;
+        const r = atlas.rgba[j], g = atlas.rgba[j + 1], b = atlas.rgba[j + 2];
+        // Background should be exact 0x808080. Allow ±2 jitter just in case.
+        if (Math.abs(r - 0x80) > 2 || Math.abs(g - 0x80) > 2 || Math.abs(b - 0x80) > 2) {
+          leakedPixels++;
+        }
+      }
+      return { bgPixels, leakedPixels };
+    });
+
+    expect(result.bgPixels).toBeGreaterThan(0); // sanity: there ARE outside-island pixels
+    expect(result.leakedPixels).toBe(0);
+  });
+
   test("paint canvas: undo reverts the last stroke", async ({ page }) => {
     await page.goto("/#/exp/material-studio");
     await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
