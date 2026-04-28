@@ -1,5 +1,6 @@
 import type { Island, RgbaBuffer } from "../uv-template-probe/uv-template";
 import type { UvRemapEntry } from "./uv-template/repack";
+import type { IslandSpatialContext } from "./uv-template/spatial-context";
 
 /** Parameters for PBR map derivation from a baseColor image. */
 export type PbrParams = {
@@ -50,6 +51,11 @@ export type IslandLayout = {
   vertexToIslandId: number[];
   /** New UV buffer (length = vertexCount * 2), [0,1] in atlas space. */
   newUvBuffer: Float32Array;
+  /** Per-island role / colour / camera-visibility, in the same order as
+   *  `islands`. The paint editor uses this to label each region (front /
+   *  top / back-hidden / …) so the user can tell which atlas patch maps
+   *  to which face on the mesh. */
+  spatial: IslandSpatialContext[];
 };
 
 /**

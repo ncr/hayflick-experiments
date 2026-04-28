@@ -237,24 +237,96 @@ export function PaintCanvas() {
               shapeRendering="crispEdges"
               style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
             >
+              {/* Hidden-face shading: hatch-darken islands whose normal
+                  points away from the iso camera. Painting on these does
+                  nothing visible on the mesh — making that obvious is the
+                  whole point of this overlay. */}
+              {islandLayout.islands.map((isl, i) => {
+                const sp = islandLayout.spatial?.[i];
+                if (!sp?.hiddenFromCamera) return null;
+                return (
+                  <rect
+                    key={`hide${i}`}
+                    x={isl.x}
+                    y={isl.y}
+                    width={isl.cellsX * isl.cellPx}
+                    height={isl.cellsY * isl.cellPx}
+                    fill="#000000"
+                    fillOpacity="0.35"
+                  />
+                );
+              })}
               {gridOn && zoom >= GRID_AUTO_ZOOM && islandLayout.islands.map((isl, i) => (
                 <IslandGrid key={`g${i}`} isl={isl} />
               ))}
-              {islandLayout.islands.map((isl, i) => (
-                <rect
-                  key={i}
-                  x={isl.x}
-                  y={isl.y}
-                  width={isl.cellsX * isl.cellPx}
-                  height={isl.cellsY * isl.cellPx}
-                  fill="none"
-                  stroke="#ff00ff"
-                  strokeOpacity="0.6"
-                  strokeWidth={1}
-                  vectorEffect="non-scaling-stroke"
-                />
-              ))}
+              {islandLayout.islands.map((isl, i) => {
+                const sp = islandLayout.spatial?.[i];
+                const stroke = sp ? `#${sp.color.toString(16).padStart(6, "0")}` : "#ff00ff";
+                return (
+                  <rect
+                    key={i}
+                    x={isl.x}
+                    y={isl.y}
+                    width={isl.cellsX * isl.cellPx}
+                    height={isl.cellsY * isl.cellPx}
+                    fill="none"
+                    stroke={stroke}
+                    strokeOpacity="0.85"
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                );
+              })}
             </svg>
+          )}
+          {islandLayout && (
+            <div
+              className="ms-island-labels"
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: cssW,
+                height: cssH,
+                pointerEvents: "none",
+              }}
+            >
+              {islandLayout.islands.map((isl, i) => {
+                const sp = islandLayout.spatial?.[i];
+                const label = sp
+                  ? sp.hiddenFromCamera
+                    ? `${sp.label} (hidden)`
+                    : sp.label
+                  : `region ${i + 1}`;
+                const color = sp ? `#${sp.color.toString(16).padStart(6, "0")}` : "#ff00ff";
+                const left = (isl.x + 1) * zoom;
+                const top = (isl.y + 1) * zoom;
+                return (
+                  <span
+                    key={i}
+                    style={{
+                      position: "absolute",
+                      left,
+                      top,
+                      background: color,
+                      color: "#000",
+                      font: "10px/1 system-ui, sans-serif",
+                      padding: "1px 4px",
+                      borderRadius: 2,
+                      whiteSpace: "nowrap",
+                      opacity: sp?.hiddenFromCamera ? 0.7 : 1,
+                    }}
+                    title={
+                      sp?.hiddenFromCamera
+                        ? `Face is hidden under the iso camera — paint will not appear on the 3D mesh.`
+                        : undefined
+                    }
+                  >
+                    {label}
+                  </span>
+                );
+              })}
+            </div>
           )}
         </div>
       </div>

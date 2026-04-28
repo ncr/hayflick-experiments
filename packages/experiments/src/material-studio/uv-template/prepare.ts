@@ -21,6 +21,7 @@ import type { Atlas, IslandLayout, SubmeshUvData } from "../types";
 import { detectIslands, type DetectedIsland } from "./island-detect";
 import { repackIslands } from "./repack";
 import { remapUvs } from "./remap-uvs";
+import { computeIslandSpatialContext } from "./spatial-context";
 
 /**
  * Atlas size — the number of logical pixel-art cells we can fit on a
@@ -308,13 +309,20 @@ export function prepareSurface(
     atlasHeight
   );
 
+  const spatial = computeIslandSpatialContext(
+    uvData.positionBuffer,
+    uvData.indexBuffer,
+    detected.islands
+  );
+
   const islandLayout: IslandLayout = {
     templateWidth: atlasWidth,
     templateHeight: atlasHeight,
     islands: atlasPack.islands,
     uvRemap: atlasPack.uvRemap,
     vertexToIslandId: detected.vertexToIslandId,
-    newUvBuffer
+    newUvBuffer,
+    spatial
   };
 
   const rgba = new Uint8ClampedArray(atlasWidth * atlasHeight * 4);

@@ -145,6 +145,7 @@ export function PromptPanel() {
         uvRemap: IslandLayout["uvRemap"];
         vertexToIslandId: number[];
         newUv: number[];
+        spatial?: IslandLayout["spatial"];
       };
     };
     const atlasB64 = entry.outputB64 || ctx.finalAtlasB64;
@@ -156,7 +157,11 @@ export function PromptPanel() {
       islands: ctx.islandLayout.islands,
       uvRemap: ctx.islandLayout.uvRemap,
       vertexToIslandId: ctx.islandLayout.vertexToIslandId,
-      newUvBuffer: new Float32Array(ctx.islandLayout.newUv)
+      newUvBuffer: new Float32Array(ctx.islandLayout.newUv),
+      // Older cache entries pre-date spatial context. Falling back to an
+      // empty array means the paint editor renders without role labels —
+      // the user can still paint, but won't see hidden-face warnings.
+      spatial: ctx.islandLayout.spatial ?? []
     };
     const atlas: Atlas = {
       rgba: new Uint8ClampedArray(baseColor.data),

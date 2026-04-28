@@ -43,6 +43,11 @@ export type IslandSpatialContext = {
   color: number;
   /** "+X" / "-Z" etc — used in prompt text. */
   axisName: string;
+  /** True when this face is back-facing under the canonical iso camera and
+   *  therefore renders to ZERO lowpixels. Painting onto a hidden island
+   *  changes the atlas but the mesh stays unchanged — the editor should
+   *  warn the user. */
+  hiddenFromCamera: boolean;
 };
 
 /** Map an axis tag to a directional label.
@@ -78,12 +83,18 @@ export function computeIslandSpatialContext(
   return islands.map((isl, idx) => {
     const normal = averageFaceNormal(positions, indexBuffer, isl);
     const axis = dominantAxis(normal);
+    // Iso camera sits at (+X, +Y, +Z) corner looking at origin. A face is
+    // visible iff its normal has a non-trivial positive component along
+    // any of the camera-facing axes. With only axis-aligned faces (the
+    // common case here), that reduces to: the dominant axis sign is +.
+    const hiddenFromCamera = axis === "-x" || axis === "-y" || axis === "-z";
     return {
       normal,
       axis,
       label: AXIS_LABEL[axis],
       color: PALETTE[idx % PALETTE.length],
       axisName: AXIS_NAME[axis],
+      hiddenFromCamera,
     };
   });
 }

@@ -291,7 +291,8 @@ export async function generateBaseColorFromTemplate(
     islands: atlasPack.islands,
     uvRemap: atlasPack.uvRemap,
     vertexToIslandId: detected.vertexToIslandId,
-    newUvBuffer
+    newUvBuffer,
+    spatial
   };
 
   // Store ONLY what we need to restore the surface: the small final atlas
@@ -307,7 +308,8 @@ export async function generateBaseColorFromTemplate(
       islands: islandLayout.islands,
       uvRemap: islandLayout.uvRemap,
       vertexToIslandId: islandLayout.vertexToIslandId,
-      newUv: Array.from(islandLayout.newUvBuffer)
+      newUv: Array.from(islandLayout.newUvBuffer),
+      spatial: islandLayout.spatial
     }
   });
   saveEntry({

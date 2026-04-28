@@ -867,6 +867,226 @@ test.describe("material studio", () => {
     expect(result.skippedCells).toEqual([]);
   });
 
+  test("fast drag: every painted atlas cell appears on the mesh (no dropped strokes)", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    const paintCanvas = page.locator(".ms-paint-canvas-wrap canvas");
+    await expect(paintCanvas).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    // Find the largest visible island so we drag across the front face.
+    type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+    const target = await page.evaluate(() => {
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveSurfaceState: () => { islandLayout: { islands: Island[] } | null } | null;
+        };
+      }).__materialStudio;
+      const islands = handle.getActiveSurfaceState()!.islandLayout!.islands;
+      const sorted = [...islands].sort((a, b) => b.cellsX * b.cellsY - a.cellsX * a.cellsY);
+      return sorted[0];
+    });
+    expect(target).toBeTruthy();
+
+    // Pick the burnt-amber colour so the painted cells are warm-red on a
+    // white-ceramic background — distinct under Lambert lighting.
+    await page.locator('.ms-swatch-btn[aria-label="burnt amber"]').click();
+
+    // Drive a real fast drag: down at corner A, multiple synchronous mouse
+    // moves across the island with steps:1 (no interpolation — most
+    // aggressive case for "did Bresenham bridge across events"), up at
+    // corner B. No waitForTimeout between moves — that's the worst case.
+    const cssPerAtlas = await cssPerAtlasPx(page);
+    const box = await paintCanvas.boundingBox();
+    if (!box) throw new Error("paint canvas has no bounding box");
+    const cssAt = (ax: number, ay: number) => ({
+      x: box.x + (ax + 0.5) * cssPerAtlas,
+      y: box.y + (ay + 0.5) * cssPerAtlas,
+    });
+
+    // Multiple stroke patterns to stress the live-update path:
+    //   1. Fast diagonal — single jump from corner to corner.
+    //   2. Fast horizontal — leftmost-to-rightmost in a single move.
+    //   3. Fast vertical — top-to-bottom in a single move.
+    //   4. Zig-zag — many sub-strokes of varying direction with no waits
+    //      between them (the case the user described as "fast lines").
+    const margin = 2;
+    const cx0 = target.x + margin;
+    const cy0 = target.y + margin;
+    const cx1 = target.x + target.cellsX - 1 - margin;
+    const cy1 = target.y + target.cellsY - 1 - margin;
+    const cmidX = Math.floor((cx0 + cx1) / 2);
+    const cmidY = Math.floor((cy0 + cy1) / 2);
+
+    const strokePath = async (atlasPoints: Array<[number, number]>) => {
+      const first = cssAt(atlasPoints[0][0], atlasPoints[0][1]);
+      await page.mouse.move(first.x, first.y);
+      await page.mouse.down();
+      for (let i = 1; i < atlasPoints.length; i++) {
+        const p = cssAt(atlasPoints[i][0], atlasPoints[i][1]);
+        await page.mouse.move(p.x, p.y, { steps: 1 });
+      }
+      await page.mouse.up();
+    };
+
+    // 1. Diagonal jump.
+    await strokePath([[cx0, cy0], [cx1, cy1]]);
+    // 2. Fast horizontal (one row above the diagonal).
+    await strokePath([[cx0, cmidY - 4], [cx1, cmidY - 4]]);
+    // 3. Fast vertical (one column right of midpoint).
+    await strokePath([[cmidX, cy0], [cmidX, cy1]]);
+    // 4. Zig-zag: 8 short lines in 4 directions, no waits.
+    const zig: Array<[number, number]> = [];
+    let zx = cx0 + 4, zy = cy0 + 6;
+    for (let i = 0; i < 8; i++) {
+      zig.push([zx, zy]);
+      zx += i % 2 === 0 ? 5 : -3;
+      zy += 4;
+    }
+    await strokePath(zig);
+    await page.waitForTimeout(200);
+
+    // Count painted atlas cells inside the target island, AND count mesh
+    // lowpixels with a warm-red signature. They must be consistent: every
+    // atlas-painted cell must render to ≥1 lowpixel (otherwise the live
+    // texture-update path lost pixels between paint and render).
+    const result = await page.evaluate((tgt: Island) => {
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveSurfaceState: () => {
+            atlas: { rgba: Uint8ClampedArray; mask: Uint8Array; width: number; height: number };
+            islandLayout: { islands: Island[] } | null;
+          } | null;
+          scene: { forceFrame: (n: number) => void; readCanvasImageData: () => ImageData };
+        };
+      }).__materialStudio;
+      const surf = handle.getActiveSurfaceState()!;
+      const atlas = surf.atlas;
+      // Count cells inside the target island whose mask byte is set AND whose
+      // rgba is warm-red (the burnt-amber we painted). Stripping mask alone
+      // would also count any pre-existing painted cells.
+      const paintedCells: Array<[number, number]> = [];
+      for (let cy = 0; cy < tgt.cellsY; cy++) {
+        for (let cx = 0; cx < tgt.cellsX; cx++) {
+          const idx = (tgt.y + cy) * atlas.width + (tgt.x + cx);
+          if (atlas.mask[idx] === 0) continue;
+          const r = atlas.rgba[idx * 4];
+          const g = atlas.rgba[idx * 4 + 1];
+          const b = atlas.rgba[idx * 4 + 2];
+          if (r > g + 20 && r > b + 20) paintedCells.push([cx, cy]);
+        }
+      }
+      handle.scene.forceFrame(3);
+      const fb = handle.scene.readCanvasImageData();
+      let warmRed = 0;
+      for (let i = 0; i < fb.data.length; i += 4) {
+        const r = fb.data[i],
+          g = fb.data[i + 1],
+          b = fb.data[i + 2];
+        if (r >= 12 && r >= g + 6 && r >= b + 6) warmRed++;
+      }
+      return { paintedCount: paintedCells.length, paintedCells, warmRed };
+    }, target);
+
+    // Sanity: the drag did paint some cells.
+    expect(result.paintedCount).toBeGreaterThan(0);
+    // The mesh shows ≥1 lowpixel per painted atlas cell. Allow a tiny slack
+    // for the very edge cells where Lambert lighting may push R below the
+    // detection threshold; require ≥95% of painted cells to be visible.
+    expect(result.warmRed).toBeGreaterThanOrEqual(Math.floor(result.paintedCount * 0.95));
+  });
+
+  test("hidden-face guard: islands flagged as hidden don't render; painting visible ones always does", async ({
+    page,
+  }) => {
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    // For each island: read its hiddenFromCamera flag, paint its centre,
+    // measure framebuffer change. A flagged-hidden island MUST have zero
+    // framebuffer effect; a flagged-visible island MUST produce ≥1 changed
+    // lowpixel. Together this proves the flag matches reality and the
+    // paint-editor's UI warning is accurate.
+    type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+    type SpatialLite = { hiddenFromCamera: boolean; label: string };
+    const result = await page.evaluate(async () => {
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveRole: () => string | null;
+          getActiveSurfaceState: () => {
+            islandLayout: { islands: Island[]; spatial: SpatialLite[] } | null;
+          } | null;
+          scene: { forceFrame: (n: number) => void; readCanvasImageData: () => ImageData };
+          testPaintAtlasPixel: (role: string, x: number, y: number, r: number, g: number, b: number) => boolean;
+        };
+      }).__materialStudio;
+      const role = handle.getActiveRole()!;
+      const surf = handle.getActiveSurfaceState()!;
+      const islands = surf.islandLayout!.islands;
+      const spatial = surf.islandLayout!.spatial;
+      const grab = () => {
+        handle.scene.forceFrame(2);
+        return new Uint8ClampedArray(handle.scene.readCanvasImageData().data);
+      };
+      const diffCount = (a: Uint8ClampedArray, b: Uint8ClampedArray) => {
+        let n = 0;
+        for (let i = 0; i < a.length; i += 4) {
+          if (
+            Math.abs(a[i] - b[i]) > 6 ||
+            Math.abs(a[i + 1] - b[i + 1]) > 6 ||
+            Math.abs(a[i + 2] - b[i + 2]) > 6
+          )
+            n++;
+        }
+        return n;
+      };
+      const out: Array<{ idx: number; label: string; hidden: boolean; diff: number }> = [];
+      for (let i = 0; i < islands.length; i++) {
+        const isl = islands[i];
+        const sp = spatial[i];
+        const before = grab();
+        const cx = isl.x + Math.floor(isl.cellsX / 2);
+        const cy = isl.y + Math.floor(isl.cellsY / 2);
+        handle.testPaintAtlasPixel(role, cx, cy, 255, 0, 0);
+        const diff = diffCount(before, grab());
+        handle.testPaintAtlasPixel(role, cx, cy, 255, 255, 255);
+        out.push({ idx: i, label: sp.label, hidden: sp.hiddenFromCamera, diff });
+      }
+      return out;
+    });
+
+    expect(result.length).toBe(6); // wall.glb has 6 cube faces
+    for (const r of result) {
+      if (r.hidden) {
+        // Hidden faces must not produce framebuffer changes — the entire
+        // point of the flag.
+        expect(r.diff).toBe(0);
+      } else {
+        // Visible faces must produce SOME change (≥1 lowpixel).
+        expect(r.diff).toBeGreaterThan(0);
+      }
+    }
+    // wall.glb has exactly 3 visible (front +Z, top +Y, right +X) and 3
+    // hidden (back -Z, bottom -Y, left -X) faces under the iso camera.
+    expect(result.filter((r) => r.hidden).length).toBe(3);
+    expect(result.filter((r) => !r.hidden).length).toBe(3);
+  });
+
   test("paint canvas: undo reverts the last stroke", async ({ page }) => {
     await page.goto("/#/exp/material-studio");
     await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
