@@ -369,6 +369,18 @@ export class AuthoringScene {
     }
   }
 
+  /** Test-only: rotate the iso camera by N quarter-turns synchronously
+   *  (skipping the rotation animation). Lets specs verify back / side
+   *  face orientation by viewing from different yaws. */
+  testRotateBy(quarterTurns: number): void {
+    const sign = quarterTurns >= 0 ? 1 : -1;
+    const n = Math.abs(quarterTurns);
+    for (let i = 0; i < n; i++) this.view.rotateQuarterTurns(sign as -1 | 1);
+    // Drain the rotation animation so subsequent forceFrame calls
+    // see the final pose, not an interpolated mid-rotation state.
+    for (let i = 0; i < 60; i++) this.view.frame(performance.now() + i * 32, 0.032);
+  }
+
   /**
    * Test-only: render once and copy the resulting WebGL canvas into a 2D
    * context so callers can read pixels via `getImageData` after the fact.

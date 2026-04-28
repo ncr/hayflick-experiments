@@ -1625,6 +1625,242 @@ test.describe("material studio", () => {
     }
   });
 
+  test("Regenerate twice preserves hand-painted cells even if AI overwrites them", async ({
+    page,
+  }) => {
+    // The "regenerate deleted my hand paint" reproducer. The merge step
+    // in api-client should byte-copy mask=1 cells from the INPUT atlas
+    // back onto the recomposed atlas — even if the AI returned cells
+    // with totally different colours. Test this by having the AI return
+    // a fresh-white image (simulating an AI that ignored painted cells).
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+
+    // Paint a distinctive 4×4 burnt-amber block at TL of the largest
+    // visible island.
+    const target: Island = await page.evaluate(() => {
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveRole: () => string | null;
+          getActiveSurfaceState: () => {
+            islandLayout: { islands: Island[]; spatial: { hiddenFromCamera: boolean }[] } | null;
+          } | null;
+          testPaintAtlasPixel: (role: string, x: number, y: number, r: number, g: number, b: number) => boolean;
+        };
+      }).__materialStudio;
+      const role = handle.getActiveRole()!;
+      const surf = handle.getActiveSurfaceState()!;
+      const visible = surf.islandLayout!.islands.filter((_, i) => !surf.islandLayout!.spatial[i].hiddenFromCamera);
+      const t = [...visible].sort((a, b) => b.cellsX * b.cellsY - a.cellsX * a.cellsY)[0];
+      for (let dy = 0; dy < 4; dy++) {
+        for (let dx = 0; dx < 4; dx++) {
+          handle.testPaintAtlasPixel(role, t.x + dx, t.y + dy, 0xb8, 0x43, 0x0e);
+        }
+      }
+      return t;
+    });
+
+    // Build a "blank white" PNG of the same size the api-client requests
+    // (1024×1024). This simulates an AI that returned no useful content.
+    const whiteB64 = await page.evaluate(() => {
+      const c = document.createElement("canvas");
+      c.width = 1024;
+      c.height = 1024;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, 1024, 1024);
+      const url = c.toDataURL("image/png");
+      return url.replace(/^data:image\/png;base64,/, "");
+    });
+
+    let aiHits = 0;
+    await page.route("**/api/openai/edit-image", async (route) => {
+      aiHits++;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [{ b64_json: whiteB64 }] }),
+      });
+    });
+
+    // First Generate.
+    await page.getByRole("button", { name: /^(Generate|Regenerate)$/ }).click();
+    await expect(page.getByRole("button", { name: "Regenerate" })).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(300);
+
+    const after1 = await page.evaluate((t: Island) => {
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveSurfaceState: () => {
+            atlas: { rgba: Uint8ClampedArray; mask: Uint8Array; width: number };
+          } | null;
+        };
+      }).__materialStudio;
+      const a = handle.getActiveSurfaceState()!.atlas;
+      const samples: Array<{ rgba: number[]; mask: number }> = [];
+      for (let dy = 0; dy < 4; dy++) {
+        for (let dx = 0; dx < 4; dx++) {
+          const idx = (t.y + dy) * a.width + (t.x + dx);
+          samples.push({
+            rgba: [a.rgba[idx * 4], a.rgba[idx * 4 + 1], a.rgba[idx * 4 + 2]],
+            mask: a.mask[idx],
+          });
+        }
+      }
+      return samples;
+    }, target);
+
+    // After first generate every painted cell must still be burnt amber.
+    for (const s of after1) {
+      expect(s.rgba, `after Generate #1`).toEqual([0xb8, 0x43, 0x0e]);
+      expect(s.mask).toBe(1);
+    }
+
+    // Second Generate (Regenerate).
+    await page.getByRole("button", { name: "Regenerate" }).click();
+    await expect(page.getByRole("button", { name: "Regenerate" })).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(300);
+    expect(aiHits).toBe(2);
+
+    const after2 = await page.evaluate((t: Island) => {
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveSurfaceState: () => {
+            atlas: { rgba: Uint8ClampedArray; mask: Uint8Array; width: number };
+          } | null;
+        };
+      }).__materialStudio;
+      const a = handle.getActiveSurfaceState()!.atlas;
+      const samples: Array<{ rgba: number[]; mask: number }> = [];
+      for (let dy = 0; dy < 4; dy++) {
+        for (let dx = 0; dx < 4; dx++) {
+          const idx = (t.y + dy) * a.width + (t.x + dx);
+          samples.push({
+            rgba: [a.rgba[idx * 4], a.rgba[idx * 4 + 1], a.rgba[idx * 4 + 2]],
+            mask: a.mask[idx],
+          });
+        }
+      }
+      return samples;
+    }, target);
+
+    // After the SECOND generate every painted cell must STILL be burnt
+    // amber. If hand-paint preservation breaks across regenerates, this
+    // is where the regression shows up.
+    for (const s of after2) {
+      expect(s.rgba, `after Regenerate (#2)`).toEqual([0xb8, 0x43, 0x0e]);
+      expect(s.mask).toBe(1);
+    }
+  });
+
+  test("back face is NOT mirrored: atlas TL maps to top-left of the back face when rotated to view", async ({
+    page,
+  }) => {
+    // Per-face local axes: atlas TL of every island (front + back +
+    // sides + top + bottom) should map to the face's top-left when
+    // viewed from the face's outward normal direction. Rotating the
+    // camera to look at the back face must NOT show the texture
+    // mirrored relative to how it appears in the editor.
+    await page.goto("/#/exp/material-studio");
+    await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "+ New" }).first().click();
+    await page.locator(".ms-base-picker .ms-card", { hasText: "wall" }).first().click();
+    await expect(page.locator(".ms-paint-canvas-wrap canvas")).toBeVisible({ timeout: 15_000 });
+    await page.waitForFunction(
+      () => !!(window as unknown as { __materialStudio?: unknown }).__materialStudio,
+      { timeout: 5_000 }
+    );
+
+    const result = await page.evaluate(async () => {
+      type Island = { x: number; y: number; cellsX: number; cellsY: number; cellPx: number };
+      type Spatial = { hiddenFromCamera: boolean; axis: string; label: string };
+      const handle = (window as unknown as {
+        __materialStudio: {
+          getActiveRole: () => string | null;
+          getActiveSurfaceState: () => {
+            islandLayout: { islands: Island[]; spatial: Spatial[] } | null;
+          } | null;
+          scene: {
+            forceFrame: (n: number) => void;
+            readCanvasImageData: () => ImageData;
+            testRotateBy: (q: number) => void;
+          };
+          testPaintAtlasPixel: (
+            role: string,
+            x: number,
+            y: number,
+            r: number,
+            g: number,
+            b: number
+          ) => boolean;
+        };
+      }).__materialStudio;
+      const role = handle.getActiveRole()!;
+      const surf = handle.getActiveSurfaceState()!;
+      const islands = surf.islandLayout!.islands;
+      const spatial = surf.islandLayout!.spatial;
+      // Find the back island (axis === "-z").
+      const backIdx = spatial.findIndex((s) => s.axis === "-z");
+      if (backIdx < 0) throw new Error("no back face island");
+      const back = islands[backIdx];
+      // Plant red at TL, blue at BR of the back island.
+      const block = 4;
+      for (let dy = 0; dy < block; dy++) {
+        for (let dx = 0; dx < block; dx++) {
+          handle.testPaintAtlasPixel(role, back.x + dx, back.y + dy, 255, 0, 0);
+          handle.testPaintAtlasPixel(
+            role,
+            back.x + back.cellsX - 1 - dx,
+            back.y + back.cellsY - 1 - dy,
+            0, 0, 255
+          );
+        }
+      }
+      // Rotate the camera 180° (2 quarter-turns) so the back face is
+      // now the camera-facing side.
+      handle.scene.testRotateBy(2);
+      handle.scene.forceFrame(3);
+      const fb = handle.scene.readCanvasImageData();
+      const findCentroid = (
+        domR: number, domG: number, domB: number
+      ): { sx: number; sy: number; n: number } => {
+        let sx = 0, sy = 0, n = 0;
+        for (let i = 0; i < fb.data.length; i += 4) {
+          const r = fb.data[i], g = fb.data[i + 1], b = fb.data[i + 2];
+          const ok =
+            (domR && r > g + 8 && r > b + 8) ||
+            (domB && b > g + 8 && b > r + 8);
+          if (!ok) continue;
+          const px = (i / 4) % fb.width;
+          const py = Math.floor(i / 4 / fb.width);
+          sx += px; sy += py; n++;
+        }
+        return n > 0 ? { sx: sx / n, sy: sy / n, n } : { sx: 0, sy: 0, n: 0 };
+      };
+      const tl = findCentroid(1, 0, 0);
+      const br = findCentroid(0, 0, 1);
+      return { tl, br, w: fb.width, h: fb.height };
+    });
+
+    // Both markers must be present (the back face is now visible).
+    expect(result.tl.n).toBeGreaterThan(0);
+    expect(result.br.n).toBeGreaterThan(0);
+    // After rotation the back face's atlas TL must render above-and-to-
+    // the-left of the back face's atlas BR. If the back was mirrored,
+    // TL.sx > BR.sx (or TL.sy > BR.sy).
+    expect(result.tl.sx).toBeLessThan(result.br.sx);
+    expect(result.tl.sy).toBeLessThan(result.br.sy);
+  });
+
   test("paint canvas: undo reverts the last stroke", async ({ page }) => {
     await page.goto("/#/exp/material-studio");
     await expect(page.locator(".matstudio-app")).toBeVisible({ timeout: 10_000 });

@@ -176,22 +176,31 @@ function islandCellsFromAxisProjection(
 }
 
 /**
- * Per-island UV→iso-screen Jacobian sign. Used to flip atlas U/V axes so
- * the painted atlas reads in the same orientation as the rendered mesh
- * under the canonical iso view (yaw=π/4 with the camera looking down the
- * +X+Z corner): atlas-left ↔ screen-left, atlas-top ↔ screen-top.
+ * Per-island UV→face-local Jacobian sign. Used to flip atlas U/V axes so
+ * the painted atlas always reads in the same orientation as that face
+ * when viewed from OUTSIDE — regardless of where the camera currently
+ * is. atlas-left ↔ face-localRight=0, atlas-top ↔ face-localDown=0.
  *
- * Box-faces in this project ship from Blender with arbitrary UV winding —
- * front and back of the same wall are mirror UVs of each other. Without
- * this fix, the visible front face renders X-mirrored relative to the
- * paint editor, which is the bug the user observed.
+ * Earlier this was canonical-screen-aligned: front + visible side + top
+ * looked correct under the default iso view, but rotating the camera
+ * 180° to see the back / hidden faces showed those textures mirrored
+ * (the GLB winds front and back UVs in opposite directions; the screen
+ * convention only happened to match the camera-facing side). Per-face
+ * local axes give every face a consistent "atlas TL = face's
+ * top-left when looking at it from its outward normal" mapping, which
+ * is what the user actually wants when they rotate around the model.
  *
- * For each island we pick its first triangle, recover ∂pos/∂u and ∂pos/∂v,
- * iso-project them, and inspect the dominant screen-axis component:
- *   flipU iff U's dominant screen component is negative
- *   flipV iff V's dominant screen component is negative
- * "Dominant" matters because non-axis-aligned faces (rare here) have UV
- * directions that aren't purely screen-X or screen-Y.
+ * Local axis convention (right-hand-rule, viewer looking AT the face):
+ *   - localRight = cross(worldUp=+Y, faceNormal). Falls back to +X for
+ *     horizontal faces where worldUp ‖ normal.
+ *   - localDown  = -worldUp for non-horizontal faces. For horizontal
+ *     faces (top / bottom) it's chosen so localRight × localDown = -n.
+ *
+ * For each island we take its first triangle, recover the face normal
+ * via cross of edges, derive localRight/localDown, then test whether
+ * the UV axes (∂pos/∂u, ∂pos/∂v) point along those local axes:
+ *   flipU iff dpu's projection onto localRight is negative
+ *   flipV iff dpv's projection onto localDown is negative
  */
 export function computeIslandOrientations(
   positions: Float32Array,
@@ -217,21 +226,53 @@ export function computeIslandOrientations(
     if (Math.abs(det) < 1e-9) return { flipU: false, flipV: false };
     const dpx1 = p1x - p0x, dpy1 = p1y - p0y, dpz1 = p1z - p0z;
     const dpx2 = p2x - p0x, dpy2 = p2y - p0y, dpz2 = p2z - p0z;
-    // J = [dp1 dp2] * M^-1 where M = [[du1 du2];[dv1 dv2]].
-    // Column 0 of J (∂pos/∂u): (dp1*dv2 - dp2*dv1) / det
-    // Column 1 of J (∂pos/∂v): (dp2*du1 - dp1*du2) / det
+    // J columns: ∂pos/∂u and ∂pos/∂v in world cm.
     const dpu_x = (dpx1 * dv2 - dpx2 * dv1) / det;
     const dpu_y = (dpy1 * dv2 - dpy2 * dv1) / det;
     const dpu_z = (dpz1 * dv2 - dpz2 * dv1) / det;
     const dpv_x = (dpx2 * du1 - dpx1 * du2) / det;
     const dpv_y = (dpy2 * du1 - dpy1 * du2) / det;
     const dpv_z = (dpz2 * du1 - dpz1 * du2) / det;
-    const dsx_du = dpu_x * ISO_PX_PER_CM_X_HORIZ + dpu_z * ISO_PX_PER_CM_Z_HORIZ;
-    const dsy_du = dpu_x * ISO_PX_PER_CM_X_VERT + dpu_z * ISO_PX_PER_CM_Z_VERT + dpu_y * ISO_PX_PER_CM_Y_VERT;
-    const dsx_dv = dpv_x * ISO_PX_PER_CM_X_HORIZ + dpv_z * ISO_PX_PER_CM_Z_HORIZ;
-    const dsy_dv = dpv_x * ISO_PX_PER_CM_X_VERT + dpv_z * ISO_PX_PER_CM_Z_VERT + dpv_y * ISO_PX_PER_CM_Y_VERT;
-    const flipU = Math.abs(dsx_du) >= Math.abs(dsy_du) ? dsx_du < 0 : dsy_du < 0;
-    const flipV = Math.abs(dsy_dv) >= Math.abs(dsx_dv) ? dsy_dv < 0 : dsx_dv < 0;
+    // Face normal from edge cross product (winding order matches GLB).
+    const nx = dpy1 * dpz2 - dpz1 * dpy2;
+    const ny = dpz1 * dpx2 - dpx1 * dpz2;
+    const nz = dpx1 * dpy2 - dpy1 * dpx2;
+    const nLen = Math.hypot(nx, ny, nz) || 1;
+    const fnx = nx / nLen, fny = ny / nLen, fnz = nz / nLen;
+    // localRight = cross(+Y, n) = (n.z, 0, -n.x). Falls back to +X
+    // when face is horizontal (|n.y| ≈ 1).
+    let rx: number, ry: number, rz: number;
+    let dx: number, dy: number, dz: number;
+    if (Math.abs(fny) > 0.9) {
+      // Top / bottom: localRight = +X, localDown chosen so
+      // localRight × localDown = -n. For top (+Y): down = +Z.
+      // For bottom (-Y): down = -Z.
+      rx = 1; ry = 0; rz = 0;
+      const downSign = fny > 0 ? 1 : -1;
+      dx = 0; dy = 0; dz = downSign;
+    } else {
+      const cx = fnz, cy = 0, cz = -fnx;
+      const cLen = Math.hypot(cx, cy, cz) || 1;
+      rx = cx / cLen; ry = cy / cLen; rz = cz / cLen;
+      // localDown = -worldUp = -Y for vertical / near-vertical faces.
+      dx = 0; dy = -1; dz = 0;
+    }
+    // Project ∂pos/∂u onto localRight; project ∂pos/∂v onto localDown.
+    const u_along_right = dpu_x * rx + dpu_y * ry + dpu_z * rz;
+    const u_along_down = dpu_x * dx + dpu_y * dy + dpu_z * dz;
+    const v_along_right = dpv_x * rx + dpv_y * ry + dpv_z * rz;
+    const v_along_down = dpv_x * dx + dpv_y * dy + dpv_z * dz;
+    // Dominant axis check: U should align with localRight (mostly),
+    // V with localDown (mostly). Fall back to the other axis if the
+    // primary projection is near zero.
+    const flipU =
+      Math.abs(u_along_right) >= Math.abs(u_along_down)
+        ? u_along_right < 0
+        : u_along_down < 0;
+    const flipV =
+      Math.abs(v_along_down) >= Math.abs(v_along_right)
+        ? v_along_down < 0
+        : v_along_right < 0;
     return { flipU, flipV };
   });
 }
