@@ -1,3 +1,4 @@
+import type { PbrTweakParams } from "../types";
 import type { LibraryEntry } from "../state/types";
 
 const API = "/api/textured-mesh";
@@ -29,6 +30,7 @@ type RawManifest = {
   bakedAt?: string;
   updatedAt?: string;
   protected?: boolean;
+  pbrTweaks?: Record<string, PbrTweakParams>;
 };
 
 function normaliseEntry(name: string, manifest: RawManifest | null): LibraryEntry {

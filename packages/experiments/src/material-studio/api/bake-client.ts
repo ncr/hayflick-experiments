@@ -1,4 +1,5 @@
 import { imageDataToBase64Png } from "../api-client";
+import { DEFAULT_PBR_TWEAK, type PbrTweakParams } from "../types";
 import type { AuthoringSession } from "../state/types";
 import type { LibraryEntry } from "../state/types";
 
@@ -13,6 +14,7 @@ export type BakeMaterialBody =
       materialName: string;
       roughnessFactor?: number;
       metallicFactor?: number;
+      pbrTweak?: PbrTweakParams;
     }
   | { synthetic: string; materialName: string };
 
@@ -27,6 +29,7 @@ export type BakeResult = {
     bakedAt: string;
     updatedAt: string;
     protected: boolean;
+    pbrTweaks?: Record<string, PbrTweakParams>;
   };
 };
 
@@ -45,12 +48,14 @@ export async function bakeFromAuthoring(session: AuthoringSession): Promise<Bake
         imageDataToBase64Png(state.maps.normal),
         imageDataToBase64Png(state.maps.arm),
       ]);
+      const pbrTweak = state.pbrTweak ?? DEFAULT_PBR_TWEAK;
       materials[s.role] = {
         baseColorPng,
         normalPng,
         armPng,
         newUv: Array.from(state.islandLayout.newUvBuffer),
         materialName,
+        pbrTweak,
       };
       prompts[s.role] = state.prompt;
     }

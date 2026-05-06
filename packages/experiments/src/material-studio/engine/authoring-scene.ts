@@ -2,8 +2,9 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { IsoGameView } from "@common/render";
 import { bindIsoGameViewInput } from "@common/input";
-import type { GeneratedMaps, GlassParams, Surface, SubmeshUvData } from "../types";
+import { DEFAULT_PBR_TWEAK, type GeneratedMaps, type GlassParams, type PbrTweakParams, type Surface, type SubmeshUvData } from "../types";
 import {
+  applyPbrTweakToGroup,
   applyTexturesToGroup,
   createTextureSet,
   imageDataToCanvasTexture,
@@ -173,6 +174,9 @@ export class AuthoringScene {
   private animId = 0;
   private lastTime = performance.now();
   private disposed = false;
+  private lightOrbitEnabled = false;
+  private lightOrbitSpeed = 0.6; // radians/second
+  private lightAngle = KEY_ANGLE;
 
   constructor(private readonly container: HTMLElement) {
     const width = Math.max(1, container.clientWidth);
@@ -245,9 +249,41 @@ export class AuthoringScene {
       this.animId = requestAnimationFrame(frame);
       const dt = Math.min((now - this.lastTime) / 1000, 0.1);
       this.lastTime = now;
+      if (this.lightOrbitEnabled) {
+        this.lightAngle += this.lightOrbitSpeed * dt;
+        this.keyLight.position.set(
+          Math.cos(this.lightAngle) * KEY_RADIUS,
+          KEY_HEIGHT,
+          Math.sin(this.lightAngle) * KEY_RADIUS
+        );
+        this.keyLight.shadow.needsUpdate = true;
+      }
       this.view.frame(now, dt);
     };
     this.animId = requestAnimationFrame(frame);
+  }
+
+  /**
+   * Toggle a slow azimuth orbit on the key light. Useful in the studio for
+   * revealing relief from normal/AO maps. Shadow-map updates are
+   * re-enabled per frame only while orbiting; the static-shadow caching
+   * (autoUpdate=false) is restored when the orbit stops.
+   */
+  setLightOrbit(opts: { enabled: boolean; speed?: number }): void {
+    this.lightOrbitEnabled = opts.enabled;
+    if (opts.speed !== undefined) this.lightOrbitSpeed = opts.speed;
+    this.keyLight.shadow.autoUpdate = opts.enabled;
+    if (!opts.enabled) {
+      // Snap back to the canonical static angle so the cached shadow map
+      // matches the visible light direction.
+      this.lightAngle = KEY_ANGLE;
+      this.keyLight.position.set(
+        Math.cos(KEY_ANGLE) * KEY_RADIUS,
+        KEY_HEIGHT,
+        Math.sin(KEY_ANGLE) * KEY_RADIUS
+      );
+      this.keyLight.shadow.needsUpdate = true;
+    }
   }
 
   private requestShadowUpdate(): void {
@@ -299,11 +335,18 @@ export class AuthoringScene {
     return this.submeshUvData.get(role) ?? null;
   }
 
-  applyPbrTextures(role: string, maps: GeneratedMaps): void {
+  applyPbrTextures(role: string, maps: GeneratedMaps, tweak: PbrTweakParams = DEFAULT_PBR_TWEAK): void {
     const textures = createTextureSet(maps);
     this.disposeTextureSet(this.textures.get(role));
     this.textures.set(role, textures);
-    for (const child of this.meshGroup.children) applyTexturesToGroup(child, role, textures);
+    for (const child of this.meshGroup.children) applyTexturesToGroup(child, role, textures, tweak);
+    this.requestShadowUpdate();
+  }
+
+  /** Live-mutate the per-role MeshStandardMaterial scalar factors. Cheap;
+   *  slider-drag rate. */
+  applyPbrTweak(role: string, tweak: PbrTweakParams): void {
+    for (const child of this.meshGroup.children) applyPbrTweakToGroup(child, role, tweak);
     this.requestShadowUpdate();
   }
 

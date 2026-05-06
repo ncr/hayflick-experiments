@@ -8,6 +8,8 @@
 
 import * as THREE from "three";
 
+import { DEFAULT_PBR_TWEAK, type PbrTweakParams } from "./types";
+
 // ---------------------------------------------------------------------------
 // ImageData → CanvasTexture
 // ---------------------------------------------------------------------------
@@ -77,7 +79,8 @@ export type TextureSet = {
 export function applyTexturesToGroup(
   group: THREE.Object3D,
   roleKey: string,
-  textures: TextureSet
+  textures: TextureSet,
+  tweak: PbrTweakParams = DEFAULT_PBR_TWEAK
 ): void {
   const targetName = `blockstudio_${roleKey}`;
 
@@ -97,21 +100,21 @@ export function applyTexturesToGroup(
       const mat = orig.clone();
       mat.name = targetName;
 
+      // Full PBR: baseColor + Sobel-derived normal/AO/roughness/metalness.
+      // The ARM map packs A=occlusion, R=metallic, G=roughness — three.js
+      // reads the right channel per slot when the same texture is assigned
+      // to aoMap / metalnessMap / roughnessMap. NEAREST filtering on each
+      // texture is enforced in `imageDataToCanvasTexture`, preserving the
+      // 1:1 atlas-pixel-to-game-pixel relationship in the preview.
       mat.map = textures.baseColor;
-      // Editor preview is intentionally FLAT-PBR: only baseColor × Lambert
-      // lighting. If we attached the Sobel-derived normal/AO/roughness maps
-      // here, painting one atlas pixel would visibly bleed shading into its
-      // neighbours (a 3×3 Sobel kernel produces a dark halo around any
-      // edge). That breaks the 1:1 atlas-pixel-to-game-pixel invariant the
-      // editor exists to expose. The maps are still derived and stored on
-      // SurfaceState so the bake step can write them into the artifact GLB
-      // — consumers (level editor, runtime) get the full ceramic PBR look.
-      mat.normalMap = null;
-      mat.aoMap = null;
-      mat.roughnessMap = null;
-      mat.metalnessMap = null;
-      mat.roughness = 0.7;
-      mat.metalness = 0;
+      mat.normalMap = textures.normal;
+      mat.normalScale = new THREE.Vector2(tweak.normalScale, tweak.normalScale);
+      mat.aoMap = textures.arm;
+      mat.aoMapIntensity = tweak.aoStrength;
+      mat.roughnessMap = textures.arm;
+      mat.metalnessMap = textures.arm;
+      mat.roughness = tweak.roughnessFactor;
+      mat.metalness = tweak.metallicFactor;
 
       mat.needsUpdate = true;
 
@@ -121,6 +124,31 @@ export function applyTexturesToGroup(
       } else {
         obj.material = mat;
       }
+    }
+  });
+}
+
+/**
+ * Update the live preview factors on the cloned material(s) for a role.
+ * Slider-drag hot path: no texture re-bind, no shader recompile — just
+ * scalar mutations on the existing MeshStandardMaterial.
+ */
+export function applyPbrTweakToGroup(
+  group: THREE.Object3D,
+  roleKey: string,
+  tweak: PbrTweakParams
+): void {
+  const targetName = `blockstudio_${roleKey}`;
+  group.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const m of mats) {
+      if (!(m instanceof THREE.MeshStandardMaterial)) continue;
+      if (m.name !== targetName) continue;
+      m.normalScale.set(tweak.normalScale, tweak.normalScale);
+      m.aoMapIntensity = tweak.aoStrength;
+      m.roughness = tweak.roughnessFactor;
+      m.metalness = tweak.metallicFactor;
     }
   });
 }

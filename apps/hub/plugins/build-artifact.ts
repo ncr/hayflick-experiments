@@ -32,6 +32,10 @@ export type BakePbrRole = {
   materialName: string;
   roughnessFactor: number;
   metallicFactor: number;
+  /** Multiplied into the sampled normal map (`normalTextureInfo.scale`). */
+  normalScale: number;
+  /** Multiplied into the sampled occlusion (`occlusionTextureInfo.strength`). */
+  aoStrength: number;
 };
 
 export type BakeSyntheticRole = {
@@ -123,7 +127,9 @@ export async function buildArtifact(input: BuildArtifactInput): Promise<void> {
           .setMetallicRoughnessTexture(armTex)
           .setOcclusionTexture(armTex)
           .setRoughnessFactor(role.roughnessFactor)
-          .setMetallicFactor(role.metallicFactor);
+          .setMetallicFactor(role.metallicFactor)
+          .setNormalScale(role.normalScale)
+          .setOcclusionStrength(role.aoStrength);
         // Pixel-perfect: every atlas texel must map to one game pixel.
         setNearest(mat.getBaseColorTextureInfo());
         setNearest(mat.getNormalTextureInfo());

@@ -9,16 +9,20 @@ import { bakeFromAuthoring, bakeResultToLibraryEntry } from "../api/bake-client"
 import { SurfaceList } from "../components/SurfaceList";
 import { PromptPanel } from "../components/PromptPanel";
 import { GlassControls } from "../components/GlassControls";
+import { PbrControls } from "../components/PbrControls";
+import { LightControls } from "../components/LightControls";
 import { SaveBar } from "../components/SaveBar";
 import { PaintCanvas } from "../components/PaintCanvas";
 import { prepareSurface } from "../uv-template/prepare";
 import { derivePbrMaps } from "../pbr-derive";
 import {
   DEFAULT_PBR_PARAMS,
+  DEFAULT_PBR_TWEAK,
   atlasToImageData,
   type Atlas,
   type GeneratedMaps,
   type IslandLayout,
+  type PbrTweakParams,
   type Surface,
   type SubmeshUvData,
   type SurfaceState,
@@ -31,6 +35,7 @@ function freshPbrSurfaceState(opts: {
   islandLayout: IslandLayout;
   maps: GeneratedMaps;
   approved?: boolean;
+  pbrTweak?: PbrTweakParams;
 }): SurfaceState {
   return {
     surface: opts.surface,
@@ -44,6 +49,7 @@ function freshPbrSurfaceState(opts: {
     aiRaw: null,
     promptHistory: opts.prompt ? [opts.prompt] : [],
     approved: opts.approved ?? false,
+    pbrTweak: opts.pbrTweak ?? { ...DEFAULT_PBR_TWEAK },
   };
 }
 
@@ -203,8 +209,9 @@ export function AuthoringView() {
             maps = derivePbrMaps(atlasToImageData(atlas), DEFAULT_PBR_PARAMS);
           }
 
+          const pbrTweak = hydrated?.pbrTweak ?? { ...DEFAULT_PBR_TWEAK };
           scene.applyAtlasUvs(s.role, seeded.islandLayout.newUvBuffer);
-          scene.applyPbrTextures(s.role, maps);
+          scene.applyPbrTextures(s.role, maps, pbrTweak);
 
           finalStates[s.role] = freshPbrSurfaceState({
             surface: s,
@@ -213,6 +220,7 @@ export function AuthoringView() {
             islandLayout: seeded.islandLayout,
             maps,
             approved: hydrated?.approved ?? false,
+            pbrTweak,
           });
           if (hydrated?.promptHistory?.length) {
             finalStates[s.role].promptHistory = hydrated.promptHistory;
@@ -338,8 +346,14 @@ export function AuthoringView() {
                 <div className="ms-viewport-overlay">Baking — this usually takes about 30 seconds.</div>
               )}
             </div>
+            {activeState?.surface.kind === "pbr" ? <PbrControls /> : null}
+            <LightControls />
             <SurfaceList />
-            {activeState?.surface.kind === "pbr" ? <PromptPanel /> : activeState ? <GlassControls /> : null}
+            {activeState?.surface.kind === "pbr" ? (
+              <PromptPanel />
+            ) : activeState ? (
+              <GlassControls />
+            ) : null}
             <SaveBar onSave={handleSave} busy={authoring.baking} />
           </aside>
         </div>

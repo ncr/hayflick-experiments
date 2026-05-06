@@ -128,6 +128,18 @@ export type GlassParams = {
   alpha: number;
 };
 
+/**
+ * Per-PBR-surface live preview tweaks. Mirrors glTF's `normalScale`,
+ * `occlusionStrength`, `roughnessFactor`, `metallicFactor` — so the values
+ * survive 1:1 from the studio preview into the baked artifact GLB.
+ */
+export type PbrTweakParams = {
+  normalScale: number;
+  aoStrength: number;
+  roughnessFactor: number;
+  metallicFactor: number;
+};
+
 /** Per-surface authoring state for the current entry. */
 export type SurfaceState = {
   surface: Surface;
@@ -155,6 +167,9 @@ export type SurfaceState = {
   approved: boolean;
   /** Only set when surface.kind === "synthetic". */
   glassParams?: GlassParams;
+  /** Only set when surface.kind === "pbr". Drives live preview factors and
+   *  is forwarded into the baked GLB material on save. */
+  pbrTweak?: PbrTweakParams;
 };
 
 export const MAX_EDIT_HISTORY = 30;
@@ -165,4 +180,11 @@ export const DEFAULT_PBR_PARAMS: PbrParams = {
   roughnessRange: 0.15,
   aoFloor: 0.55,
   aoMultiplier: 1.5
+};
+
+export const DEFAULT_PBR_TWEAK: PbrTweakParams = {
+  normalScale: 1.0,
+  aoStrength: 1.0,
+  roughnessFactor: 0.85,
+  metallicFactor: 0.0
 };

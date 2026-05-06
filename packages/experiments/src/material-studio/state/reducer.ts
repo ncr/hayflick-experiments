@@ -1,5 +1,6 @@
 import type { AppState, AuthoringSession, LibraryEntry, Toast, ToastLevel } from "./types";
 import {
+  DEFAULT_PBR_TWEAK,
   MAX_EDIT_HISTORY,
   type Atlas,
   type AtlasSnapshot,
@@ -68,6 +69,7 @@ export type Action =
   | { type: "AUTHORING_BAKE_DONE" }
   | { type: "AUTHORING_BAKE_FAIL"; error: string }
   | { type: "AUTHORING_GLASS_SET"; role: string; params: Partial<NonNullable<SurfaceState["glassParams"]>> }
+  | { type: "AUTHORING_PBR_TWEAK_SET"; role: string; params: Partial<NonNullable<SurfaceState["pbrTweak"]>> }
   | { type: "TOAST_ADD"; level: ToastLevel; message: string }
   | { type: "TOAST_DISMISS"; id: number };
 
@@ -319,6 +321,14 @@ export function reducer(state: AppState, action: Action): AppState {
       if (!cur) return state;
       return patchSurface(state, action.role, {
         glassParams: { ...(cur.glassParams ?? DEFAULT_GLASS_PARAMS), ...action.params },
+      });
+    }
+    case "AUTHORING_PBR_TWEAK_SET": {
+      if (!state.authoring) return state;
+      const cur = state.authoring.surfaceStates[action.role];
+      if (!cur) return state;
+      return patchSurface(state, action.role, {
+        pbrTweak: { ...(cur.pbrTweak ?? DEFAULT_PBR_TWEAK), ...action.params },
       });
     }
     case "TOAST_ADD":

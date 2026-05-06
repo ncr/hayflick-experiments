@@ -1,6 +1,7 @@
 import { useAppDispatch, useAppState } from "../state/context";
 import { useSceneRef } from "../engine/scene-context";
 import { DEFAULT_GLASS_PARAMS } from "../state/reducer";
+import { Slider } from "./Slider";
 
 export function GlassControls() {
   const { authoring } = useAppState();
@@ -38,37 +39,5 @@ export function GlassControls() {
       <Slider label="IOR" value={params.ior} min={1} max={2.5} step={0.01} onChange={(v) => update({ ior: v })} />
       <Slider label="Opacity" value={params.alpha} min={0.05} max={1} step={0.01} onChange={(v) => update({ alpha: v })} />
     </div>
-  );
-}
-
-function Slider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <label className="ms-field">
-      <span>
-        {label}: {value.toFixed(2)}
-      </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-      />
-    </label>
   );
 }

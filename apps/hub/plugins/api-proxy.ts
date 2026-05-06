@@ -401,6 +401,13 @@ async function handleFs(
  * - Synthetic: a preset name like "glass" — the GLB material is left
  *   untouched and the runtime applies a procedural shader.
  */
+type PbrTweakBody = {
+  normalScale: number;
+  aoStrength: number;
+  roughnessFactor: number;
+  metallicFactor: number;
+};
+
 type TexturedMeshRoleBody =
   | {
       baseColorPng: string;
@@ -410,6 +417,7 @@ type TexturedMeshRoleBody =
       materialName: string;
       roughnessFactor?: number;
       metallicFactor?: number;
+      pbrTweak?: PbrTweakBody;
     }
   | { synthetic: string; materialName: string };
 
@@ -439,6 +447,7 @@ type StoredManifest = {
   bakedAt?: string;
   updatedAt?: string;
   protected?: boolean;
+  pbrTweaks?: Record<string, PbrTweakBody>;
 };
 
 function readManifest(entryDir: string): StoredManifest | null {
@@ -632,6 +641,7 @@ async function handleTexturedMesh(
       writePngFromBase64(bc, matBody.baseColorPng);
       writePngFromBase64(nr, matBody.normalPng);
       writePngFromBase64(ar, matBody.armPng);
+      const tweak = matBody.pbrTweak;
       bakeRoles[role] = {
         kind: "pbr",
         baseColorPath: bc,
@@ -639,8 +649,10 @@ async function handleTexturedMesh(
         armPath: ar,
         newUvBuffer: new Float32Array(matBody.newUv),
         materialName: matBody.materialName,
-        roughnessFactor: matBody.roughnessFactor ?? 0.85,
-        metallicFactor: matBody.metallicFactor ?? 0.0,
+        roughnessFactor: tweak?.roughnessFactor ?? matBody.roughnessFactor ?? 0.85,
+        metallicFactor: tweak?.metallicFactor ?? matBody.metallicFactor ?? 0.0,
+        normalScale: tweak?.normalScale ?? 1.0,
+        aoStrength: tweak?.aoStrength ?? 1.0,
       };
     }
 
@@ -655,6 +667,13 @@ async function handleTexturedMesh(
       return errorResponse(res, 500, `Bake failed: ${(err as Error).message}`);
     }
 
+    const pbrTweaks: Record<string, PbrTweakBody> = {};
+    for (const [role, matBody] of Object.entries(body.materials || {})) {
+      if (!("synthetic" in matBody) && matBody.pbrTweak) {
+        pbrTweaks[role] = matBody.pbrTweak;
+      }
+    }
+
     const now = new Date().toISOString();
     const manifest: StoredManifest = {
       name: entryName,
@@ -664,6 +683,7 @@ async function handleTexturedMesh(
       bakedAt: existingManifest?.bakedAt ?? now,
       updatedAt: now,
       protected: existingManifest?.protected ?? false,
+      ...(Object.keys(pbrTweaks).length > 0 ? { pbrTweaks } : {}),
     };
     writeManifest(entryDir, manifest);
 

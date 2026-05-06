@@ -216,6 +216,9 @@ export function LibraryView() {
           aiRaw: null,
           promptHistory: prompt ? [prompt] : [],
           approved: true,
+          pbrTweak: loaded.manifest.pbrTweaks?.[s.role]
+            ? { ...loaded.manifest.pbrTweaks[s.role] }
+            : undefined,
         };
       }
       const firstPbr = surfaces.find((s) => s.kind === "pbr");
