@@ -28,6 +28,7 @@
     "@gltf-transform/core": "^4.3.0",
     "@gltf-transform/extensions": "^4.3.0",
     "fflate": "^0.8.0",
+    "lil-gui": "^0.20.0",
     "meshoptimizer": "^1.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

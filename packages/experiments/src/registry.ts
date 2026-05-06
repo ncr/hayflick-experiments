@@ -2,6 +2,7 @@ import type { ExperimentRegistryEntry } from "./runtime/meta";
 
 // Registry is kept explicit so lazy import boundaries stay obvious.
 // AUTO_IMPORTS_START
+import { meta as falloutWaystationMeta } from "./fallout-waystation/meta";
 import { meta as physicsPropDropMeta } from "./physics-prop-drop/meta";
 import { meta as mapEditor2dMeta } from "./map-editor-2d/meta";
 import { meta as materialStudioMeta } from "./material-studio/meta";
@@ -11,6 +12,10 @@ import { meta as uvTemplateProbeMeta } from "./uv-template-probe/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...falloutWaystationMeta,
+    load: () => import("./fallout-waystation/index")
+  },
   {
     ...uvTemplateProbeMeta,
     load: () => import("./uv-template-probe/index")
