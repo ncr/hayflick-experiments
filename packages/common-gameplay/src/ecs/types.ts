@@ -14,6 +14,10 @@ export type Persistent = {
   kind: string;
 };
 
+export type SceneRef = {
+  id: string;
+};
+
 export type InputState = {
   up: boolean;
   down: boolean;

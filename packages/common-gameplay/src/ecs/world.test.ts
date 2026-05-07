@@ -22,6 +22,7 @@ describe("World", () => {
     expect(world.transforms.has(eid)).toBe(false);
     expect(world.velocities.has(eid)).toBe(false);
     expect(world.playerTags.has(eid)).toBe(false);
+    expect(world.sceneRefs.has(eid)).toBe(false);
   });
 
   it("serializes and deserializes component state without persisting runtime EIDs", () => {

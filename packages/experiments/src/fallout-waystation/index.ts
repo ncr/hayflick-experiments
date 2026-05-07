@@ -16,7 +16,6 @@ import {
 import {
   buildGui,
   loadConfig,
-  type SceneConfig,
   type GuiHandle
 } from "./gui";
 import { fogHeightUniforms } from "./fog";
@@ -25,6 +24,7 @@ import {
   aoGroundUniforms,
   aoBoxEdgeUniforms
 } from "./ao-patch";
+import { createWaystationLevel } from "./level";
 
 const CHIMNEY_TOP = new THREE.Vector3(-2.2, 4.2, -0.2);
 const PIPE_VENT = new THREE.Vector3(-2.9, 1.4, -0.5);
@@ -60,6 +60,7 @@ const experiment: ExperimentModule = {
         config.fog.density
       );
     }
+    const level = createWaystationLevel(scene);
 
     const view = new IsoGameView({
       mount,
@@ -118,30 +119,30 @@ const experiment: ExperimentModule = {
 
     // Ground.
     const ground = createGround();
-    scene.add(ground);
+    level.add("ground", ground);
 
     // Building.
     const building: BuildingHandles = createBuilding();
-    scene.add(building.group);
+    level.add("building", building.group);
 
     // Props (lamp / chimney / pipe / crates / door).
     const { group: propsGroup, lamp } = createProps();
-    scene.add(propsGroup);
+    level.add("props", propsGroup);
     const lampHandle: LampHandle = lamp;
 
     // Light shafts (additive god-ray geometry). Per-frame `aimAtCamera`
     // keeps each shaft's plane facing the iso camera.
     const shafts: ShaftHandle = createLightShafts(building);
-    scene.add(shafts.group);
+    level.add("light-shafts", shafts.group);
     shafts.aimAtCamera(view.camera);
 
     // Particles.
     const dust: ParticleField = createDustMotes();
-    scene.add(dust.points);
+    level.add("dust", dust.points);
     const smoke: ParticleField = createSmoke(CHIMNEY_TOP);
-    scene.add(smoke.points);
+    level.add("smoke", smoke.points);
     const steam: ParticleField = createSteam(PIPE_VENT);
-    scene.add(steam.points);
+    level.add("steam", steam.points);
 
     const applyShafts = (): void => {
       const color = new THREE.Color(hexFromCss(config.shafts.color));
@@ -279,6 +280,31 @@ const experiment: ExperimentModule = {
 
     const unbindInput = bindIsoGameViewInput({ view });
 
+    level.system((world) => {
+      // Lamp flicker — sin + small chaotic perturbation.
+      const f = config.lamp.flickerAmount;
+      const hz = config.lamp.flickerHz;
+      const elapsed = world.time.t;
+      const wobble =
+        Math.sin(elapsed * hz * 2 * Math.PI) * 0.7 +
+        Math.sin(elapsed * 23.7) * 0.18 +
+        Math.sin(elapsed * 11.3) * 0.12;
+      const factor = 1 + wobble * f;
+      const intensity = Math.max(0, lampHandle.baseEmissive * factor);
+      lampHandle.bulbMaterial.emissiveIntensity = intensity;
+      lampHandle.bulbLight.intensity = intensity;
+    });
+
+    level.system((world) => {
+      dust.step(world.time.dt);
+      smoke.step(world.time.dt);
+      steam.step(world.time.dt);
+    });
+
+    level.system(() => {
+      shafts.aimAtCamera(view.camera);
+    });
+
     const observer = new ResizeObserver((entries) => {
       for (const e of entries) {
         if (e.contentRect.width > 0 && e.contentRect.height > 0) {
@@ -290,32 +316,13 @@ const experiment: ExperimentModule = {
 
     let raf = 0;
     let prev = performance.now();
-    const tStart = prev;
     const tick = (): void => {
       raf = requestAnimationFrame(tick);
       const now = performance.now();
       const dt = Math.min((now - prev) / 1000, 0.1);
       prev = now;
-      const elapsed = (now - tStart) / 1000;
 
-      // Lamp flicker — sin + small chaotic perturbation.
-      const f = config.lamp.flickerAmount;
-      const hz = config.lamp.flickerHz;
-      const wobble =
-        Math.sin(elapsed * hz * 2 * Math.PI) * 0.7 +
-        Math.sin(elapsed * 23.7) * 0.18 +
-        Math.sin(elapsed * 11.3) * 0.12;
-      const factor = 1 + wobble * f;
-      const intensity = Math.max(0, lampHandle.baseEmissive * factor);
-      lampHandle.bulbMaterial.emissiveIntensity = intensity;
-      lampHandle.bulbLight.intensity = intensity;
-
-      dust.step(dt);
-      smoke.step(dt);
-      steam.step(dt);
-
-      shafts.aimAtCamera(view.camera);
-
+      level.step(dt);
       view.frame(now, dt);
     };
     tick();
@@ -329,13 +336,7 @@ const experiment: ExperimentModule = {
       observer.disconnect();
       unbindInput();
       gui.destroy();
-      scene.remove(ground);
-      scene.remove(building.group);
-      scene.remove(propsGroup);
-      scene.remove(shafts.group);
-      scene.remove(dust.points);
-      scene.remove(smoke.points);
-      scene.remove(steam.points);
+      level.dispose();
       view.dispose();
     };
   }

@@ -15,6 +15,7 @@ import type {
   LevelResource,
   LevelSnapshot,
   Persistent,
+  SceneRef,
   SaveGame,
   TimeResource,
   Transform,
@@ -33,6 +34,7 @@ export class World {
   readonly velocities = new DataStore<Velocity>();
   readonly playerTags = new TagStore();
   readonly persistents = new DataStore<Persistent>();
+  readonly sceneRefs = new DataStore<SceneRef>();
 
   readonly time: TimeResource = {
     dt: 0,
@@ -74,6 +76,7 @@ export class World {
     this.velocities.remove(eid);
     this.playerTags.remove(eid);
     this.persistents.remove(eid);
+    this.sceneRefs.remove(eid);
   }
 
   alive(eid: EID): boolean {
@@ -100,6 +103,7 @@ export class World {
     this.velocities.clear();
     this.playerTags.clear();
     this.persistents.clear();
+    this.sceneRefs.clear();
     this.events.clear();
   }
 
@@ -113,6 +117,14 @@ export class World {
 
   *queryTransformPlayer(): Iterable<EID> {
     for (const eid of this.playerTags.entries()) {
+      if (this.alive(eid) && this.transforms.has(eid)) {
+        yield eid;
+      }
+    }
+  }
+
+  *queryTransformSceneRef(): Iterable<EID> {
+    for (const eid of this.sceneRefs.entries()) {
       if (this.alive(eid) && this.transforms.has(eid)) {
         yield eid;
       }
