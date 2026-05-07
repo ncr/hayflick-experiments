@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import {
+  ISO_VIEW_CONTRACT,
   IsoGameView,
   PixelPerfectDefaults,
   applyPixelArtTextureDefaults
@@ -11,21 +12,19 @@ import type { RgbaBuffer } from "./pixel-grid";
  *
  * Two surfaces share one source texture:
  *
- *   - **Calibration quad**: a programmatically built 1.28 m × 1.0451 m plane
+ *   - **Calibration quad**: a programmatically built 1.28 m × ~0.82 m plane
  *     standing vertically in the XY plane (normal +Z), with explicit UVs
- *     mapping the entire texture to its full surface. Sized so that 32 texels
- *     map to 32 screen pixels along *both* iso-X and screen-vertical at
- *     zoom 1 (one texel = one screen pixel exactly along screen vertical;
- *     one texel per screen-X column with a half-texel-per-column V skew —
- *     see notes in `pixel-grid.ts`).
+ *     mapping the entire texture to its full surface. The vertical
+ *     dimension is computed from the locked iso contract so that 32 texels
+ *     map to exactly 32 screen pixels at zoom 1.
  *
  *   - **Wall mesh** (wall.glb, 128 × 280 × 32 cm): the production base mesh.
  *     Box-projected UVs apply at runtime via Three.js by overriding the
  *     mesh's UV channel with one we compute from world position. At a
  *     128-cm UV scale, 32 texels horizontal land on exactly 32 screen
- *     pixels horizontal (1:1) and 32 texels vertical land on ~39.2 screen
- *     pixels vertical (a small ~22% stretch — inherent to iso-2:1 since
- *     world-up is not on the same lattice as the iso ground axes).
+ *     pixels horizontal (1:1) and 32 texels vertical land on
+ *     `R · cos(π/6) · 1.28 ≈ 50.18` screen pixels — inherent to iso-2:1
+ *     since world-up is not on the same lattice as the iso ground axes.
  *
  * The MSAA / output filter knobs are pinned to OFF: `lowTargetSamples: 0`
  * and `smoothPixelTransitions: false`. With either of those on, neighbouring
@@ -37,11 +36,13 @@ const WALL_MESH_URL = "/api/assets/read?path=meshes%2Fwall.glb";
 
 /**
  * World units that yield 32 vertical screen pixels exactly at zoom 1, given
- * the IsoGameView default tuning (orthoHeight 4.8·√2, fixedRenderHeight 240,
- * iso-2:1 pitch). 1 m world Y → cos(π/6) · 240 / (4.8·√2) ≈ 30.6186 px
- * vertical. 32 / 30.6186 = 1.0451 m. Used for the calibration quad height.
+ * the locked IsoGameView iso contract (R = 32·√2, pitch = π/6). World-Y
+ * projects to screen-V via R · cos(π/6) lowpixels per world unit. So
+ * 32 / (R · cos(π/6)) world units yields 32 lowpixels vertical.
+ * At R = 32·√2 → 32 / (32·√2 · √3/2) = 1 / (√6/2) = 2/√6 ≈ 0.8165 m.
  */
-const CALIBRATION_QUAD_HEIGHT_M = (32 * (4.8 * Math.SQRT2)) / (240 * Math.cos(Math.PI / 6));
+const CALIBRATION_QUAD_HEIGHT_M =
+  32 / (ISO_VIEW_CONTRACT.R * Math.cos(Math.PI / 6));
 
 /** Width matches one tile (128 cm), so the quad is 32 horizontal screen px wide. */
 const CALIBRATION_QUAD_WIDTH_M = 1.28;

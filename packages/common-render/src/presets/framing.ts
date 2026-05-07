@@ -1,17 +1,21 @@
 /**
- * Named IsoGameView tuning bundles.
+ * Named PixelPerfectPane tuning bundles for **tool views** (forge prop
+ * preview, quad inspector, etc.). Framing fields (`fixedRenderHeight`,
+ * `baseOrthoHeight`, `cameraDistance`, `basePixelZoom`) and animation-feel
+ * fields are tuned together; spread the bundle into a
+ * `PixelPerfectPaneConfig`.
  *
- * Framing fields (`fixedRenderHeight`, `baseOrthoHeight`, `cameraDistance`,
- * `basePixelZoom`) and animation-feel fields must be tuned together to keep
- * the pixel-lock invariants (see `docs/PIXEL_PERFECT_FOUNDATION.md`). These
- * presets pin sets of values that are known to work so consumers can spread
- * them into `IsoGameViewConfig` without reinventing the tuple.
+ * The game render path uses `IsoGameView`, which locks scale to
+ * `ISO_VIEW_CONTRACT` and does NOT accept these tuples. Tool views (which
+ * intentionally deviate from the game look) use `PixelPerfectPane` —
+ * either directly or via a thin wrapper.
  *
  * ```ts
- * new IsoGameView({
- *   mount, width, height, scene,
+ * const pane = new PixelPerfectPane({
+ *   stage, id, element, scene, width, height,
  *   ...PROP_PREVIEW_FRAMING,
- *   // override individual fields below the spread
+ *   cameraPitch: "iso-2to1",
+ *   cameraYaw: Math.PI / 4,
  *   baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * zoomOutFactor
  * });
  * ```

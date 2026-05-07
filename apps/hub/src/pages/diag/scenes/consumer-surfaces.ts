@@ -1,9 +1,9 @@
 import * as THREE from "three";
 import {
-  IsoGameView,
   PixelPerfectPane,
   PROP_PREVIEW_FRAMING,
-  SharedScissorStage
+  SharedScissorStage,
+  addStandardGameLighting
 } from "@common/render";
 import type { DiagHandle, DiagSceneContext, DiagSceneModule } from "../types";
 
@@ -43,44 +43,62 @@ function buildConsumerPreviewScene(): THREE.Scene {
 export const consumerPropPreview: DiagSceneModule = {
   init(ctx: DiagSceneContext) {
     const scene = buildConsumerPreviewScene();
-    const view = new IsoGameView({
+
+    // Tool view — uses PixelPerfectPane (configurable scale) since the
+    // prop preview framing intentionally deviates from the locked iso
+    // contract used by the game's IsoGameView.
+    const stage = new SharedScissorStage({
       mount: ctx.mount,
       width: ctx.width,
       height: ctx.height,
-      scene,
-      ...PROP_PREVIEW_FRAMING,
-      baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * 1.2,
+      pixelRatio: Math.max(1, window.devicePixelRatio || 1),
+      antialias: false,
       clearColor: 0x203047,
-      outlines: false,
-      lighting: {
-        ambient: 1.0,
-        keyColor: 0xffffff,
-        keyDirection: [3, 5, 2],
-        fillColor: 0x8899bb,
-        fillIntensity: 0.8,
-        fillDirection: [-2, 3, -1],
-        hemisphere: false
-      }
+      clearAlpha: 1
     });
 
-    view.setViewPose({ targetX: 0, targetZ: 0, yawIndex: 0, zoom: 1 });
+    const lighting = addStandardGameLighting(scene, {
+      ambient: 1.0,
+      keyColor: 0xffffff,
+      keyDirection: [3, 5, 2],
+      fillColor: 0x8899bb,
+      fillIntensity: 0.8,
+      fillDirection: [-2, 3, -1],
+      hemisphere: false
+    });
+
+    const pane = new PixelPerfectPane({
+      stage,
+      id: "prop-preview",
+      element: ctx.mount,
+      scene,
+      width: ctx.width,
+      height: ctx.height,
+      ...PROP_PREVIEW_FRAMING,
+      baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * 1.2,
+      cameraPitch: "iso-2to1",
+      cameraYaw: Math.PI / 4,
+      outlines: false
+    });
+
+    pane.setViewPose({ targetX: 0, targetZ: 0, yawIndex: 0, zoom: 1 });
 
     const handle: DiagHandle = {
       forceFrame(n = 2) {
         const now = performance.now();
         for (let i = 0; i < n; i += 1) {
-          view.frame(now + i * 16, 0);
+          stage.drawFrame(now + i * 16, 0);
         }
       },
       getLowResSize() {
-        const s = view.getState();
+        const s = pane.getState();
         return { width: s.lowRenderWidth, height: s.lowRenderHeight };
       },
       getRenderScale() {
-        return view.getState().controllerRenderScale;
+        return pane.getState().controllerRenderScale;
       },
       getPose() {
-        return view.getViewPose();
+        return pane.getViewPose();
       }
     };
 
@@ -91,7 +109,8 @@ export const consumerPropPreview: DiagSceneModule = {
     return () => {
       delete window.__diag;
       ctx.mount.removeAttribute("data-render-ready");
-      view.dispose();
+      lighting.remove();
+      stage.dispose();
     };
   }
 };

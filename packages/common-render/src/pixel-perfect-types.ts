@@ -1,4 +1,9 @@
 import * as THREE from "three";
+import {
+  ISO_VIEW_CONTRACT,
+  TOPDOWN_VIEW_CONTRACT,
+  SIDE_VIEW_CONTRACT
+} from "./iso-contract";
 
 /**
  * Discrete camera modes for the pixel-perfect renderer. Each value resolves to a
@@ -18,21 +23,22 @@ export type PixelView = "top-down" | "iso-2to1" | "side";
 export function pitchForPixelView(view: PixelView): number {
   switch (view) {
     case "top-down":
-      // Avoid the camera lookAt singularity at exactly π/2.
-      return Math.PI / 2 - 1e-3;
+      return TOPDOWN_VIEW_CONTRACT.pitch;
     case "iso-2to1":
-      return Math.PI / 6;
+      return ISO_VIEW_CONTRACT.pitch;
     case "side":
-      return 0;
+      return SIDE_VIEW_CONTRACT.pitch;
   }
 }
 
 /**
- * Everything about a {@link IsoGameView} that the caller *might* want to
- * tune. All are optional; defaults in {@link PixelPerfectDefaults} match the
- * iso-2:1 art pipeline (240 low-res lines, tile centres on integer iso rows/cols).
+ * Lower-level configurable tuning. Used by {@link IsoViewport} and
+ * {@link PixelPerfectPane} — the pre-locked path tools take when they
+ * need custom framing (forge prop preview, tileset inspector, diag
+ * scenes). The game render path uses {@link IsoGameView}, which exposes
+ * only the locked subset (see {@link IsoGameViewTuning}).
  */
-export type IsoGameViewTuning = {
+export type IsoCoreTuning = {
   fixedRenderHeight: number;
   baseOrthoHeight: number;
   cameraDistance: number;
@@ -57,38 +63,63 @@ export type IsoGameViewTuning = {
   verticalBias: number;
   /**
    * Per-pane tone mapping. `"aces"` enables ACESFilmic + tags the pane's
-   * low target as `SRGBColorSpace`; `"none"` forces `NoToneMapping`. The
-   * pane installs internal before/after hooks to apply the mode and restore
-   * the renderer state after the scene is rendered, so multi-pane scenes
-   * can mix modes without contaminating each other.
-   *
-   * Default: `"none"` (unchanged from pre-config behavior).
+   * low target as `SRGBColorSpace`; `"none"` forces `NoToneMapping`.
    */
   toneMapping: "none" | "aces";
   /**
    * When true, the pane requests shadow rendering. Shadows are actually
-   * enabled at the stage level (renderer is shared across panes); this
-   * field only validates that the hosting stage has shadows on. If the
-   * stage does not, the pane logs a one-time warning and renders without
-   * shadows.
+   * enabled at the stage level.
    */
   shadows: boolean;
 };
 
 /**
- * Baseline tuning tuned for the game's iso-2:1 art: 240 low-res scanlines,
- * `baseOrthoHeight = 4.8·√2` so tile centres (1.28 m spacing) and 8 cm mesh
- * features land on integer iso-pixels, canonical yaw = π/4.
+ * Locked public tuning for {@link IsoGameView}. The cornerstone iso-2:1
+ * view aesthetic is non-configurable on the game render path:
+ *   - scale (`fixedRenderHeight`, `baseOrthoHeight`) is sourced from
+ *     {@link ISO_VIEW_CONTRACT} / {@link TOPDOWN_VIEW_CONTRACT} /
+ *     {@link SIDE_VIEW_CONTRACT}
+ *   - yaw is restricted to quarter-turn rotations from the view's base
+ *     via {@link IsoGameViewTuning.yawIndex} (0..3)
+ *   - pitch is fixed by `cameraPitch` to one of three discrete values
  *
- * Don't change these — override fields via {@link IsoGameViewConfig} when
- * a scene genuinely needs a different framing. The defaults are reference values.
+ * Tools that need different framing must construct {@link PixelPerfectPane}
+ * directly (which accepts the configurable {@link IsoCoreTuning}).
  */
-export const PixelPerfectDefaults: Readonly<IsoGameViewTuning> = Object.freeze({
-  fixedRenderHeight: 240,
-  baseOrthoHeight: 4.8 * Math.SQRT2,
+export type IsoGameViewTuning = {
+  cameraPitch: PixelView;
+  /** Cardinal yaw rotation: 0..3 quarter-turns from the view's base yaw. */
+  yawIndex: number;
+  cameraDistance: number;
+  basePixelZoom: number;
+  zoomMin: number;
+  zoomMax: number;
+  zoomStep: number;
+  zoomAnimationRate: number;
+  zoomAnimationBurstRate: number;
+  zoomAnimationEpsilon: number;
+  rotationAnimationRate: number;
+  rotationAnimationEpsilon: number;
+  zoomBurstIdleMs: number;
+  outputOverscanLowPixels: number;
+  lowTargetSamples: number;
+  smoothPixelTransitions: boolean;
+  verticalBias: number;
+  toneMapping: "none" | "aces";
+  shadows: boolean;
+};
+
+/**
+ * Defaults for the lower-level {@link IsoCoreTuning}. Iso scale fields
+ * are sourced from {@link ISO_VIEW_CONTRACT}; tools building
+ * {@link PixelPerfectPane} pass overrides as needed.
+ */
+export const IsoCoreDefaults: Readonly<IsoCoreTuning> = Object.freeze({
+  fixedRenderHeight: ISO_VIEW_CONTRACT.referenceLowHeight,
+  baseOrthoHeight: ISO_VIEW_CONTRACT.baseOrthoHeight,
   cameraDistance: 40,
   cameraPitch: "iso-2to1",
-  cameraYaw: Math.PI / 4,
+  cameraYaw: ISO_VIEW_CONTRACT.baseYaw,
   basePixelZoom: 1,
   zoomMin: 1,
   zoomMax: 8,
@@ -107,6 +138,33 @@ export const PixelPerfectDefaults: Readonly<IsoGameViewTuning> = Object.freeze({
   shadows: false
 });
 
+/**
+ * Defaults for the locked {@link IsoGameViewTuning}. A subset of
+ * {@link IsoCoreDefaults} — the scale fields are not present (sourced
+ * from the per-view contract at construction time).
+ */
+export const PixelPerfectDefaults: Readonly<IsoGameViewTuning> = Object.freeze({
+  cameraPitch: IsoCoreDefaults.cameraPitch,
+  yawIndex: 0,
+  cameraDistance: IsoCoreDefaults.cameraDistance,
+  basePixelZoom: IsoCoreDefaults.basePixelZoom,
+  zoomMin: IsoCoreDefaults.zoomMin,
+  zoomMax: IsoCoreDefaults.zoomMax,
+  zoomStep: IsoCoreDefaults.zoomStep,
+  zoomAnimationRate: IsoCoreDefaults.zoomAnimationRate,
+  zoomAnimationBurstRate: IsoCoreDefaults.zoomAnimationBurstRate,
+  zoomAnimationEpsilon: IsoCoreDefaults.zoomAnimationEpsilon,
+  rotationAnimationRate: IsoCoreDefaults.rotationAnimationRate,
+  rotationAnimationEpsilon: IsoCoreDefaults.rotationAnimationEpsilon,
+  zoomBurstIdleMs: IsoCoreDefaults.zoomBurstIdleMs,
+  outputOverscanLowPixels: IsoCoreDefaults.outputOverscanLowPixels,
+  lowTargetSamples: IsoCoreDefaults.lowTargetSamples,
+  smoothPixelTransitions: IsoCoreDefaults.smoothPixelTransitions,
+  verticalBias: IsoCoreDefaults.verticalBias,
+  toneMapping: IsoCoreDefaults.toneMapping,
+  shadows: IsoCoreDefaults.shadows
+});
+
 export type IsoGameViewConfig = {
   mount: HTMLElement;
   width: number;
@@ -117,9 +175,9 @@ export type IsoGameViewConfig = {
 } & Partial<IsoGameViewTuning>;
 
 /**
- * Internal config for {@link IsoViewport}. Callers get the same
- * partial tuning story as {@link IsoGameViewConfig} — defaults from
- * {@link PixelPerfectDefaults} are applied inside the constructor.
+ * Internal config for {@link IsoViewport}. Accepts the full configurable
+ * {@link IsoCoreTuning} — defaults from {@link IsoCoreDefaults} are applied
+ * inside the constructor.
  */
 export type IsoViewportInput = {
   width: number;
@@ -130,14 +188,14 @@ export type IsoViewportInput = {
   maxBackingWidth: number;
   maxBackingHeight: number;
   devicePixelRatio?: number;
-} & Partial<IsoGameViewTuning>;
+} & Partial<IsoCoreTuning>;
 
 /** Resolved (defaults-merged) shape used inside the viewport core. */
 export type IsoViewportResolved = Omit<
   IsoViewportInput,
-  keyof IsoGameViewTuning
+  keyof IsoCoreTuning
 > &
-  IsoGameViewTuning;
+  IsoCoreTuning;
 
 export type IsoGameViewState = {
   cameraZoomCurrent: number;
@@ -169,9 +227,37 @@ export type IsoGameViewPose = {
 
 export type PixelSnapMode = "nearest" | "floor" | "ceil";
 
-/** Merge a partial tuning over {@link PixelPerfectDefaults}. */
-export function resolvePixelPerfectTuning<T extends Partial<IsoGameViewTuning>>(
+/** Merge a partial CORE tuning over {@link IsoCoreDefaults}. */
+export function resolvePixelPerfectTuning<T extends Partial<IsoCoreTuning>>(
   input: T
-): T & IsoGameViewTuning {
-  return { ...PixelPerfectDefaults, ...input } as T & IsoGameViewTuning;
+): T & IsoCoreTuning {
+  return { ...IsoCoreDefaults, ...input } as T & IsoCoreTuning;
+}
+
+/**
+ * Translate the locked `(cameraPitch, yawIndex)` pair into the underlying
+ * scale + continuous yaw the {@link IsoViewport} consumes. Sourced from
+ * the per-view contract — never compute these manually on the game render
+ * path. Used internally by {@link IsoGameView}.
+ */
+export function resolveLockedView(
+  cameraPitch: PixelView,
+  yawIndex: number
+): {
+  fixedRenderHeight: number;
+  baseOrthoHeight: number;
+  cameraYaw: number;
+} {
+  const contract =
+    cameraPitch === "iso-2to1"
+      ? ISO_VIEW_CONTRACT
+      : cameraPitch === "top-down"
+        ? TOPDOWN_VIEW_CONTRACT
+        : SIDE_VIEW_CONTRACT;
+  const idx = ((Math.round(yawIndex) % 4) + 4) % 4;
+  return {
+    fixedRenderHeight: contract.referenceLowHeight,
+    baseOrthoHeight: contract.baseOrthoHeight,
+    cameraYaw: contract.baseYaw + idx * (Math.PI / 2)
+  };
 }

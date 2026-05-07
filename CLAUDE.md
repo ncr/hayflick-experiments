@@ -61,7 +61,7 @@ See `docs/PIXEL_PERFECT_FOUNDATION.md` for full architecture.
 **Critical invariants — do not break these:**
 1. Canvas CSS size tracks mount size; does not change while zooming
 2. Low-res render target derived from viewport + DPR baseline (zoom=1); zoom must not recompute it
-3. 1 world tile edge (128cm) = 32 game pixels horizontal, 16 vertical — holds at all zoom levels
+3. 1 world tile edge (128 cm) = **32 game pixels horizontal × 16 vertical**, locked at `R = 32·√2` lowpixels per world unit. Sourced from `ISO_VIEW_CONTRACT` in `@common/render` — do NOT override `fixedRenderHeight` / `baseOrthoHeight` / `cameraYaw` / `cameraPitch` on the game render path; they are the cornerstone of the view aesthetic. Vertical world-Y projects irrationally (cos π/6 = √3/2): 1.28 m of vertical world = `16·√6 ≈ 39.19` lowpixels. Tools that need different framing (forge prop preview, tileset inspector) construct `PixelPerfectPane` directly with custom values, not `IsoGameView`.
 4. Final scene upscaled by integer render scale (`round(zoom * dpr)`)
 5. Pan advances in whole low-res pixel steps with carried remainder
 6. Zoom changes corrected by pan so world point under cursor stays fixed

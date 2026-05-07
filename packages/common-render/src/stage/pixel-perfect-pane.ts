@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import type {
+  IsoCoreTuning,
   IsoGameViewPose,
   IsoGameViewState,
-  IsoGameViewTuning,
   PixelSnapMode
 } from "../pixel-perfect-types";
 import { IsoViewport } from "../internals/iso-viewport";
@@ -63,7 +63,7 @@ export type PixelPerfectPaneConfig = {
    * camera via `.layers.set(...)`.
    */
   layers?: number[];
-} & Partial<IsoGameViewTuning>;
+} & Partial<IsoCoreTuning>;
 
 /**
  * A pane attached to a {@link SharedScissorStage} that renders a scene through

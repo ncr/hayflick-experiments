@@ -1,12 +1,16 @@
 # Render pixel-scale cleanup + Material-Studio prompt tightening
 
-**Status:** parked. Picked up Friday 2026-05-01, paused mid-design.
-Re-engage Monday 2026-05-04 (reminder scheduled).
+**Status:** §1–§2 + §4 + §6 (renderer pixel-scale cleanup) **LANDED 2026-05-07**.
+Iso scale locked at R = 32·√2 (32 H × 16 V per 1.28 m tile) via
+`ISO_VIEW_CONTRACT` in `@common/render`. `IsoGameView` no longer accepts
+`fixedRenderHeight` / `baseOrthoHeight` / `cameraYaw` — tools that need
+custom framing use `PixelPerfectPane` directly. See
+`packages/common-render/src/iso-contract.ts` and root `CLAUDE.md`
+invariant #3 for the live contract.
 
-This doc captures two intertwined pieces of work that came up in
-conversation. Neither is implementation-ready yet — both have
-open decisions that need to be made before code lands. The point of
-this file is to keep the analysis from evaporating between sessions.
+§3 (Material-Studio prompt recipe) — **still parked**, do this next.
+
+The historical analysis below is preserved for context on §3.
 
 ---
 

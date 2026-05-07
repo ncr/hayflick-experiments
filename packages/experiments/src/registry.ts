@@ -9,9 +9,14 @@ import { meta as materialStudioMeta } from "./material-studio/meta";
 import { meta as outlineWallsMeta } from "./outline-walls/meta";
 import { meta as pixelArtTexMeta } from "./pixel-art-tex/meta";
 import { meta as uvTemplateProbeMeta } from "./uv-template-probe/meta";
+import { meta as isoScaleProbeMeta } from "./iso-scale-probe/meta";
 // AUTO_IMPORTS_END
 export const experiments: ExperimentRegistryEntry[] = [
   // AUTO_ENTRIES_START
+  {
+    ...isoScaleProbeMeta,
+    load: () => import("./iso-scale-probe/index")
+  },
   {
     ...falloutWaystationMeta,
     load: () => import("./fallout-waystation/index")

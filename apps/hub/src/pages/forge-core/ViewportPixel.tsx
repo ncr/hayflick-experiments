@@ -1,6 +1,12 @@
 import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import * as THREE from "three";
-import { IsoGameView, PROP_PREVIEW_FRAMING } from "@common/render";
+import {
+  PixelPerfectPane,
+  PROP_PREVIEW_FRAMING,
+  SharedScissorStage,
+  addStandardGameLighting,
+  type StandardGameLightingHandle
+} from "@common/render";
 
 export type PixelViewportViewState = {
   target: [number, number, number];
@@ -27,10 +33,19 @@ interface Props {
   framingScale?: number;
 }
 
+// Tool viewport — uses PixelPerfectPane (configurable scale) directly
+// because the prop preview framing intentionally deviates from the locked
+// iso contract enforced by IsoGameView.
+type PixelViewportSetup = {
+  stage: SharedScissorStage;
+  pane: PixelPerfectPane;
+  lighting: StandardGameLightingHandle;
+};
+
 export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
   function ViewportPixel({ className, onViewChange, framingScale = 1 }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
-    const viewRef = useRef<IsoGameView | null>(null);
+    const setupRef = useRef<PixelViewportSetup | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const modelRef = useRef<THREE.Group | null>(null);
     const desiredModelRef = useRef<THREE.Group | null>(null);
@@ -40,11 +55,11 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
     onViewChangeRef.current = onViewChange;
 
     const readViewState = (): PixelViewportViewState | null => {
-      const view = viewRef.current;
-      if (!view) {
+      const setup = setupRef.current;
+      if (!setup) {
         return null;
       }
-      const pose = view.getViewPose();
+      const pose = setup.pane.getViewPose();
       return {
         target: [pose.targetX, 0, pose.targetZ],
         yawTurns: pose.yawIndex,
@@ -71,25 +86,26 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
     };
 
     const applyViewState = (state: PixelViewportViewState): void => {
-      const view = viewRef.current;
-      if (!view) {
+      const setup = setupRef.current;
+      if (!setup) {
         pendingViewStateRef.current = state;
         return;
       }
+      const pane = setup.pane;
       const target = state.target;
       const zoom = Math.round(
         THREE.MathUtils.clamp(
-          Number.isFinite(state.zoom) ? state.zoom : view.getState().cameraZoomTarget,
+          Number.isFinite(state.zoom) ? state.zoom : pane.getState().cameraZoomTarget,
           1,
           6
         )
       );
-      view.setViewPose({
-        targetX: Number.isFinite(target[0]) ? target[0] : view.cameraTarget.x,
-        targetZ: Number.isFinite(target[2]) ? target[2] : view.cameraTarget.z,
+      pane.setViewPose({
+        targetX: Number.isFinite(target[0]) ? target[0] : pane.cameraTarget.x,
+        targetZ: Number.isFinite(target[2]) ? target[2] : pane.cameraTarget.z,
         yawIndex: Number.isFinite(state.yawTurns)
           ? ((Math.round(state.yawTurns) % 4) + 4) % 4
-          : ((view.getYawIndex() % 4) + 4) % 4,
+          : ((pane.getYawIndex() % 4) + 4) % 4,
         zoom
       });
       pendingViewStateRef.current = null;
@@ -156,27 +172,41 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
       const effectiveFramingScale =
         Number.isFinite(framingScale) && framingScale > 0 ? framingScale : 1;
 
-      const view = new IsoGameView({
+      const stage = new SharedScissorStage({
         mount: container,
         width,
         height,
+        pixelRatio: Math.max(1, window.devicePixelRatio || 1),
+        antialias: false,
+        clearColor: 0x1a1a2e,
+        clearAlpha: 1
+      });
+
+      const lighting = addStandardGameLighting(scene, {
+        ambient: 1.0,
+        keyColor: 0xffffff,
+        keyDirection: [3, 5, 2],
+        fillColor: 0x8899bb,
+        fillIntensity: 0.8,
+        fillDirection: [-2, 3, -1],
+        hemisphere: false
+      });
+
+      const pane = new PixelPerfectPane({
+        stage,
+        id: "forge-prop-preview",
+        element: container,
         scene,
+        width,
+        height,
         ...PROP_PREVIEW_FRAMING,
         // Wider framing helps multi-panel quad previews fit tall props at zoom=1.
         baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * effectiveFramingScale,
-        clearColor: 0x1a1a2e,
-        outlines: false,
-        lighting: {
-          ambient: 1.0,
-          keyColor: 0xffffff,
-          keyDirection: [3, 5, 2],
-          fillColor: 0x8899bb,
-          fillIntensity: 0.8,
-          fillDirection: [-2, 3, -1],
-          hemisphere: false
-        }
+        cameraPitch: "iso-2to1",
+        cameraYaw: Math.PI / 4,
+        outlines: false
       });
-      viewRef.current = view;
+      setupRef.current = { stage, pane, lighting };
 
       // Apply any imperative updates that arrived before the internal renderer finished mounting.
       applyModelToScene(desiredModelRef.current);
@@ -192,7 +222,7 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
         const now = performance.now();
         const dt = (now - lastTime) / 1000;
         lastTime = now;
-        view.frame(now, dt);
+        stage.drawFrame(now, dt);
 
         const current = readViewState();
         if (current) {
@@ -207,8 +237,9 @@ export const ViewportPixel = forwardRef<ViewportPixelHandle, Props>(
 
       return () => {
         cancelAnimationFrame(raf);
-        view.dispose();
-        viewRef.current = null;
+        lighting.remove();
+        stage.dispose();
+        setupRef.current = null;
         sceneRef.current = null;
       };
     }, []);

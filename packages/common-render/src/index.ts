@@ -83,6 +83,14 @@ export {
 
 export { setCommonRenderWarningsEnabled } from "./presets/dev-warnings";
 
+// ========== Iso view contract (locked) ==========
+
+export {
+  ISO_VIEW_CONTRACT,
+  TOPDOWN_VIEW_CONTRACT,
+  SIDE_VIEW_CONTRACT
+} from "./iso-contract";
+
 // ========== Texture helpers ==========
 
 export {

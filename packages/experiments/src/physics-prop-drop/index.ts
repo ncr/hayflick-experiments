@@ -396,7 +396,9 @@ const experiment: ExperimentModule = {
       width,
       height,
       scene,
-      baseOrthoHeight: 5.0,
+      // Adopts the locked iso contract (R = 32·√2). Previously had a
+      // baseOrthoHeight: 5.0 override; that path is no longer permitted on
+      // IsoGameView. Tools that need different framing use PixelPerfectPane.
       cameraDistance: 30,
       rotationAnimationRate: 12,
       rotationAnimationEpsilon: 0.005,

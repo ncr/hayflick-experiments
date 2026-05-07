@@ -14,8 +14,19 @@ authoritative source of truth for the pixel-stable math and the layering.
    viewport + DPR baseline at `zoom=1`; zoom must not recompute its
    dimensions. Dimensions are rounded up to even values so the buffer centre
    lands on an integer iso-col.
-3. **World→game-pixel contract.** 1 world tile edge (128 cm) = 32 game
-   pixels horizontal, 16 vertical. Holds at every zoom level.
+3. **World→game-pixel contract** (locked, see `ISO_VIEW_CONTRACT` in
+   `@common/render`). 1 world tile edge (128 cm) = **32 game pixels
+   horizontal × 16 vertical**, derived from `R = 32·√2` lowpixels per
+   world unit at yaw = π/4 and pitch = π/6. Holds at every zoom level
+   and at every viewport size. Vertical world-Y projects irrationally
+   (cos π/6 = √3/2 → `16·√6 ≈ 39.19` lowpixels per 1.28 m of vertical
+   world axis); the orthographic projection is exact in world space and
+   the rasterizer rounds to nearest pixel per draw, so stacked geometry
+   stays pixel-coherent without accumulating error.
+   **Do NOT override `fixedRenderHeight` / `baseOrthoHeight` / `cameraYaw`
+   / `cameraPitch` on the game render path.** Tool views (forge prop
+   preview, tileset inspector) construct `PixelPerfectPane` directly
+   with custom values, never `IsoGameView`.
 4. **Integer upscale.** Final scene upscaled by integer render scale
    `round(zoom · dpr)`.
 5. **Pixel-stable pan.** Pointer deltas pass through canvas CSS→device

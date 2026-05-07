@@ -17,6 +17,7 @@
  * Pure data manipulation — no DOM, no THREE.
  */
 
+import { ISO_VIEW_CONTRACT } from "@common/render";
 import type { Atlas, IslandLayout, SubmeshUvData } from "../types";
 import { detectIslands, type DetectedIsland } from "./island-detect";
 import { repackIslands } from "./repack";
@@ -50,31 +51,28 @@ const INSIDE_ISLAND_RGB = 0xffffff;
 const OUTSIDE_ISLAND_RGB = 0x808080;
 
 // ---------------------------------------------------------------------------
-// Iso projection — calibrated against the *actual* IsoGameView defaults:
-// pitch = π/6 (30°), yaw = π/4, baseOrthoHeight = 4.8·√2, referenceLowHeight = 240.
+// Iso projection — sourced from ISO_VIEW_CONTRACT (the locked iso-2:1
+// contract in @common/render). DO NOT hardcode R, pitch, or yaw separately.
 // ---------------------------------------------------------------------------
 //
-// Going backwards from "1 large pixel in 3D = 1 lowpixel in the renderer's
-// pixelation grid" (the user's framing), we want each atlas cell to map to
-// exactly one rendered lowpixel. So we project each face's world vertices
-// through the renderer's actual camera basis and size cells from the
-// resulting screen bbox.
+// Each atlas cell maps to exactly one rendered lowpixel (the "1 atlas
+// pixel = 1 screen pixel under NEAREST" invariant). To size cells, we
+// project each face's world vertices through the renderer's actual
+// camera basis and read the resulting screen bbox.
 //
-// At the canonical reference resolution (240 lowpixels tall, baseOrthoHeight
-// = 4.8·√2), the screen-per-world ratio R = 240 / (4.8·√2) = 25·√2.
-// With yaw=π/4 and pitch=π/6:
+// With yaw=π/4 and pitch=π/6 (locked):
 //   cam_right = (cos π/4, 0, -sin π/4) = (√2/2, 0, -√2/2)
 //   cam_up    = (cos π/4 · sin π/6, cos π/6, sin π/4 · sin π/6)
 //             = (√2/4,  √3/2,  √2/4)
-// 1 world unit projects:
-//   X  → ( cos(π/4)·R,         -cos(π/4)·sin(π/6)·R) = ( 25, -12.5)
-//   Z  → (-sin(π/4)·R,         -sin(π/4)·sin(π/6)·R) = (-25, -12.5)
-//   Y  → ( 0,                  -cos(π/6)·R)          = (  0, -25·√6/2 ≈ -30.62)
+// 1 world unit (= 1.28 m tile) projects, at R = 32·√2:
+//   X  → ( cos(π/4)·R,         -cos(π/4)·sin(π/6)·R) = ( 32, -16)
+//   Z  → (-sin(π/4)·R,         -sin(π/4)·sin(π/6)·R) = (-32, -16)
+//   Y  → ( 0,                  -cos(π/6)·R)          = (  0, -16·√6 ≈ -39.19)
 //
 // Mesh GLBs store positions in cm with the parent node scaling by 1/128.
 // So one cm of mesh-local position = one cm of world space (1/128 unit).
 // The per-cm projection ratios are the world-unit ratios divided by 128.
-const ISO_R = (240 / (4.8 * Math.SQRT2)); // 25·√2
+const ISO_R = ISO_VIEW_CONTRACT.R;
 const ISO_PX_PER_CM_X_HORIZ = (Math.SQRT2 / 2) * ISO_R / 128;
 const ISO_PX_PER_CM_X_VERT = -((Math.SQRT2 / 2) * (1 / 2) * ISO_R) / 128;
 const ISO_PX_PER_CM_Z_HORIZ = -((Math.SQRT2 / 2) * ISO_R) / 128;
@@ -163,10 +161,11 @@ function islandCellsFromAxisProjection(
   const sv_y = dpv_x * ISO_PX_PER_CM_X_VERT + dpv_z * ISO_PX_PER_CM_Z_VERT + dpv_y * ISO_PX_PER_CM_Y_VERT;
   // Use the dominant SCREEN-AXIS extent (max of |sx|, |sy|), not the
   // Euclidean length of the slanted projection. Reason: NEAREST sampling
-  // along a horizontal scanline samples 25 distinct cells across a 25-px
-  // parallelogram width, but the slanted axis length is sqrt(25² + 12.5²)
-  // ≈ 28 — using 28 cells means 3 atlas columns get sampled by zero
-  // fragments and never render (the "column 9 disappears" bug).
+  // along a horizontal scanline samples 32 distinct cells across a 32-px
+  // parallelogram width (one tile at R = 32·√2), but the slanted axis
+  // length is sqrt(32² + 16²) ≈ 35.78 — using 36 cells means several
+  // atlas columns get sampled by zero fragments and never render
+  // (the "column N disappears" bug).
   const lenU_screen = Math.max(Math.abs(su_x), Math.abs(su_y));
   const lenV_screen = Math.max(Math.abs(sv_x), Math.abs(sv_y));
   return {

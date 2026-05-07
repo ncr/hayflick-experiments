@@ -3,6 +3,8 @@ import { PixelPerfectPane } from "./stage/pixel-perfect-pane";
 import { SharedScissorStage } from "./stage/shared-scissor-stage";
 import type { SetLowTargetOptions } from "./internals/low-resolution-target";
 import {
+  PixelPerfectDefaults,
+  resolveLockedView,
   type IsoGameViewConfig as IsoGameViewConfigBase,
   type IsoGameViewPose,
   type IsoGameViewState,
@@ -113,8 +115,19 @@ export class IsoGameView {
       width: _w,
       height: _h,
       lighting: _lighting,
+      yawIndex: _yawIndex,
       ...paneConfig
     } = config;
+
+    // Lock-down: the cornerstone iso-2:1 contract is enforced here.
+    // Resolve the locked (cameraPitch, yawIndex) pair into the underlying
+    // (fixedRenderHeight, baseOrthoHeight, continuous cameraYaw) the pane
+    // consumes. Tools that need a different scale must construct
+    // PixelPerfectPane directly — IsoGameView is the locked surface.
+    const cameraPitch = paneConfig.cameraPitch ?? PixelPerfectDefaults.cameraPitch;
+    const lockedYawIndex = config.yawIndex ?? PixelPerfectDefaults.yawIndex;
+    const lockedScale = resolveLockedView(cameraPitch, lockedYawIndex);
+
     this.pane = new PixelPerfectPane({
       stage: this.stage,
       id: SINGLE_PANE_ID,
@@ -123,6 +136,10 @@ export class IsoGameView {
       width: config.width,
       height: config.height,
       ...paneConfig,
+      cameraPitch,
+      cameraYaw: lockedScale.cameraYaw,
+      fixedRenderHeight: lockedScale.fixedRenderHeight,
+      baseOrthoHeight: lockedScale.baseOrthoHeight,
       // IsoGameView keeps the historical default of outlines-ON. Raw
       // PixelPerfectPane defaults to OFF (explicit opt-in); the facade
       // flips that so `new IsoGameView({...})` ships with outlines.
