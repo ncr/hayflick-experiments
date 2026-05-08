@@ -25,6 +25,10 @@ import {
   warnCommonRender,
   warnIfOutlineGroupsUnmatched
 } from "../presets/dev-warnings";
+import {
+  resolvePixelPerfectPaneProfile,
+  type PixelPerfectPaneProfileConfig
+} from "../presets/framing";
 
 export type PixelPerfectPaneConfig = {
   /** Stage to host this pane. The pane auto-registers on construction. */
@@ -63,6 +67,12 @@ export type PixelPerfectPaneConfig = {
    * camera via `.layers.set(...)`.
    */
   layers?: number[];
+  /**
+   * Named tool-view tuning profile. Explicit tuning fields on this config
+   * still win, so callers can keep local one-off overrides without copying
+   * the full profile bundle.
+   */
+  profile?: PixelPerfectPaneProfileConfig;
 } & Partial<IsoCoreTuning>;
 
 /**
@@ -114,11 +124,14 @@ export class PixelPerfectPane implements SharedScissorPane {
       outlines: _outlines,
       outlineGroups: _outlineGroups,
       layers: _layers,
+      profile: _profile,
       toneMapping: _toneMapping,
       shadows: _shadows,
       ...tuning
     } = config;
+    const profileTuning = resolvePixelPerfectPaneProfile(config.profile);
     this.core = new IsoViewport({
+      ...profileTuning,
       ...tuning,
       width: measuredWidth,
       height: measuredHeight,

@@ -8,9 +8,9 @@ import {
 } from "../../ScissorViewport3d";
 import { PixelQuad } from "../../PixelQuad";
 import * as THREE from "three";
-import type { PixelViewportViewState } from "../../../forge-core/ViewportPixel";
+import type { PixelViewportViewState } from "../../shared/viewport-state";
 import type { ForgeGenerationDraftProp } from "../../types";
-import type { PivotPreset } from "../../../forge-core/processing/dimensions";
+import type { PivotPreset } from "../../shared/processing/dimensions";
 import { UNIT_SCALE_METERS_PER_UNIT } from "../../model/MeshProcessor";
 
 export function MeshWorkspace() {

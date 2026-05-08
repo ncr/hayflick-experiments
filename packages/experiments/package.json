@@ -6,8 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./registry": "./src/registry.ts",
-    "./runtime": "./src/runtime/types.ts",
-    "./auto-collider": "./src/auto-collider/index.ts"
+    "./runtime": "./src/runtime/types.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -16,24 +15,16 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@common/collider-vhacd": "workspace:*",
     "@common/core": "workspace:*",
     "@common/gameplay": "workspace:*",
     "@common/input": "workspace:*",
     "@common/level-editor": "workspace:*",
-    "@common/physics-rapier": "workspace:*",
     "@common/render": "workspace:*",
-    "@dimforge/rapier2d-compat": "^0.19.3",
     "@dimforge/rapier3d-compat": "^0.19.3",
-    "@gltf-transform/core": "^4.3.0",
-    "@gltf-transform/extensions": "^4.3.0",
-    "fflate": "^0.8.0",
     "lil-gui": "^0.20.0",
-    "meshoptimizer": "^1.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "three": "^0.173.0",
-    "three-bvh-csg": "^0.0.18"
+    "three": "^0.173.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.8",

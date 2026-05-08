@@ -7,12 +7,11 @@ import {
 } from "react";
 import {
   PixelPerfectPane,
-  PROP_PREVIEW_FRAMING,
   SharedScissorStage,
   addStandardGameLighting
 } from "@common/render";
 import * as THREE from "three";
-import type { PixelViewportViewState } from "../forge-core/ViewportPixel";
+import type { PixelViewportViewState } from "./shared/viewport-state";
 import { useForgeScissorViewportStage } from "./ScissorViewport3d";
 
 type PixelAngle = {
@@ -28,7 +27,6 @@ const ANGLES: PixelAngle[] = [
   { key: "west", label: "West", offset: 3 }
 ];
 
-const CAMERA_BASE_YAW = THREE.MathUtils.degToRad(45);
 const CLEAR_COLOR = 0x1a1a2e;
 
 type DragState = {
@@ -268,9 +266,7 @@ export const PixelQuad = forwardRef<PixelQuadHandle, Props>(function PixelQuad(
         scene,
         width: Math.max(1, cell.clientWidth || 1),
         height: Math.max(1, cell.clientHeight || 1),
-        ...PROP_PREVIEW_FRAMING,
-        baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * framingScale,
-        cameraYaw: CAMERA_BASE_YAW,
+        profile: { name: "prop-preview", framingScale },
         clearColor: CLEAR_COLOR,
         verticalBias
       });

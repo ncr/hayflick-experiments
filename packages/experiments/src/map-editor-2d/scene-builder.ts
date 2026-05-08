@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import type { GridConfig, MapEditorState, PlacedEdge, PlacedCell, PlacedVertex } from "./editor-state";
 import type { TilesetAssets } from "./tileset-loader";
-import type { Selection } from "./pointer-tools";
 
 // Layer 0 = default: placed structures with real materials, both cameras see them
 // Layer 2 = 2D-only overlays (grid, hover, 2D ghost preview)

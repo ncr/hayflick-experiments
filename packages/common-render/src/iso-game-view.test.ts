@@ -14,17 +14,13 @@ vi.mock("./stage/shared-scissor-stage", () => {
     readonly canvas = { style: { background: "stage-canvas-before" } } as any;
     readonly maxBackingWidth = 8192;
     readonly maxBackingHeight = 4096;
-    readonly registerPane = vi.fn((pane: unknown) => {
-      this._pane = pane;
-    });
+    readonly registerPane = vi.fn();
     readonly resize = vi.fn();
     readonly drawFrame = vi.fn();
     readonly start = vi.fn();
     readonly stop = vi.fn();
     readonly dispose = vi.fn();
     private readonly _dpr: number;
-    private _pane: unknown = null;
-
     constructor(public readonly config: any) {
       this.mount = config.mount;
       this._dpr = config.pixelRatio ?? 1;

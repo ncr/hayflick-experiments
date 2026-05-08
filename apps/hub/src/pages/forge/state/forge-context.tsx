@@ -10,8 +10,8 @@ import {
 import * as THREE from "three";
 import type { ForgeScissorViewportHandle } from "../ScissorViewport3d";
 import type { PixelQuadHandle } from "../PixelQuad";
-import type { PixelViewportViewState } from "../../forge-core/ViewportPixel";
-import type { Viewport3dViewState } from "../../forge-core/Viewport";
+import type { PixelViewportViewState } from "../shared/viewport-state";
+import type { Viewport3dViewState } from "../shared/viewport-state";
 import { createVhacdWorkerRunner, type VhacdWorkerRunner } from "@common/collider-vhacd";
 import {
   createInitialState,

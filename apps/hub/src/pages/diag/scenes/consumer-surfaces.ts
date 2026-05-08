@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import {
   PixelPerfectPane,
-  PROP_PREVIEW_FRAMING,
   SharedScissorStage,
   addStandardGameLighting
 } from "@common/render";
@@ -74,10 +73,7 @@ export const consumerPropPreview: DiagSceneModule = {
       scene,
       width: ctx.width,
       height: ctx.height,
-      ...PROP_PREVIEW_FRAMING,
-      baseOrthoHeight: PROP_PREVIEW_FRAMING.baseOrthoHeight * 1.2,
-      cameraPitch: "iso-2to1",
-      cameraYaw: Math.PI / 4,
+      profile: { name: "prop-preview", framingScale: 1.2 },
       outlines: false
     });
 

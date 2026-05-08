@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import { computeBBox, type BBox } from "../../forge-core/processing/dimensions";
-import { resolveForgeMass } from "../../forge-core/processing/physics";
+import { computeBBox, type BBox } from "../shared/processing/dimensions";
+import { resolveForgeMass } from "../shared/processing/physics";
 import { deepCloneWithMaterials } from "../model/MeshProcessor";
-import type { ColliderParams } from "../../forge-core/processing/colliders";
-import type { PropPhysicsSettings } from "../../forge-core/types";
+import type { ColliderParams } from "../shared/processing/colliders";
+import type { PropPhysicsSettings } from "../shared/types";
 import type { ForgeColliderResultEntry } from "../types";
 import type { ForgeRuntimeRefs } from "../state/forge-context";
 

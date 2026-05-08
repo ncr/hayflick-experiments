@@ -30,7 +30,6 @@ type PixelModelListener = (model: THREE.Group | null) => void;
 // ---------------------------------------------------------------------------
 
 export class ForgeController {
-  private disposed = false;
   private rebuildRaf: number | null = null;
   private physicsSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private pixelModelListeners = new Set<PixelModelListener>();
@@ -235,7 +234,6 @@ export class ForgeController {
   // ---------------------------------------------------------------------------
 
   dispose(): void {
-    this.disposed = true;
     if (this.rebuildRaf !== null) {
       cancelAnimationFrame(this.rebuildRaf);
       this.rebuildRaf = null;

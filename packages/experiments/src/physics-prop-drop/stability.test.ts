@@ -18,7 +18,7 @@ import {
   PHYSICS_LAYER,
   PHYSICS_MASK
 } from "../prop-physics-3d/physics-settings";
-import { parseForgePropMeta, type ForgePropMetaSnapshot } from "./forge-v2-props";
+import { parseForgePropMeta, type ForgePropMetaSnapshot } from "./forge-props";
 import { generatePropPlacements } from "./placement-layout";
 import {
   deriveRoomSupportFloorPart,

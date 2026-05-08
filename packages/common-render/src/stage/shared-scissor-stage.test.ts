@@ -87,7 +87,7 @@ import { PerspectivePane } from "./perspective-pane";
 import { setCommonRenderWarningsEnabled } from "../presets/dev-warnings";
 
 class FakeResizeObserver {
-  constructor(private readonly _callback: ResizeObserverCallback) {}
+  constructor(_callback: ResizeObserverCallback) {}
   observe(_target: unknown): void {}
   disconnect(): void {}
 }

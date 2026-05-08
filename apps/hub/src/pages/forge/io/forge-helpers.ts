@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { Object3D } from "three";
-import type { StyleGuide } from "../../forge-core/StyleGuidePanel";
+import type { StyleGuide } from "../shared/StyleGuidePanel";
 
 export function slugifyPropId(description: string): string {
   return description

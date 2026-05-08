@@ -7,7 +7,7 @@ import { StatusStrip } from "./StatusStrip";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { usePipelineActions } from "../hooks/usePipelineActions";
 import { ExperimentRouteDrawer } from "../../../components/ExperimentRouteDrawer";
-import { StyleGuidePanel } from "../../forge-core/StyleGuidePanel";
+import { StyleGuidePanel } from "../shared/StyleGuidePanel";
 
 function ForgeShellInner() {
   const state = useForgeState();

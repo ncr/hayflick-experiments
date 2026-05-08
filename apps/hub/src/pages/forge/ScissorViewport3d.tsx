@@ -13,8 +13,8 @@ import { SharedScissorStage, PerspectivePane, addStandardGameLighting } from "@c
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import type { Viewport3dViewState } from "../forge-core/Viewport";
-import { computeBBox, type BBox } from "../forge-core/processing/dimensions";
+import type { Viewport3dViewState } from "./shared/viewport-state";
+import { computeBBox, type BBox } from "./shared/processing/dimensions";
 
 type StageContextValue = {
   stage: SharedScissorStage | null;
@@ -357,8 +357,8 @@ export const ForgeScissorViewportPane = forwardRef<ForgeScissorViewportHandle, F
             axesRef.current.visible = on;
           }
         },
-        setBBoxVisible: (_on) => {
-          // Intentionally unsupported here: Forge V2 scissor view keeps bbox helpers out of the scene.
+        setBBoxVisible: () => {
+          // Intentionally unsupported here: Forge scissor view keeps bbox helpers out of the scene.
         },
         captureScreenshot: (width, height) => {
           const currentStage = stageRef.current;

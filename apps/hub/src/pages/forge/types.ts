@@ -1,12 +1,12 @@
 import type { VhacdOptions } from "@common/collider-vhacd";
-import type { ColliderParams } from "../forge-core/processing/colliders";
-import type { ForgeColliderGenerationMetadata } from "../forge-core/processing/collider-vhacd";
+import type { ColliderParams } from "./shared/processing/colliders";
+import type { ForgeColliderGenerationMetadata } from "./shared/processing/collider-vhacd";
 import type {
   PropPhysicsSettings,
   PropPhysicsMaterial,
   PropPhysicsMobility
-} from "../forge-core/types";
-import type { PivotPreset, ScaleMode } from "../forge-core/processing/dimensions";
+} from "./shared/types";
+import type { PivotPreset, ScaleMode } from "./shared/processing/dimensions";
 
 export type ForgeLifecycleStatus =
   | "draft"

@@ -178,7 +178,7 @@ export class AuthoringScene {
   private lightOrbitSpeed = 0.6; // radians/second
   private lightAngle = KEY_ANGLE;
 
-  constructor(private readonly container: HTMLElement) {
+  constructor(container: HTMLElement) {
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
 

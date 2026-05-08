@@ -8,17 +8,17 @@ import {
   ForgeScissorViewportStage,
 } from "../../ScissorViewport3d";
 import { PixelQuad } from "../../PixelQuad";
-import { PhysicsPanel } from "../../../forge-core/PhysicsPanel";
+import { PhysicsPanel } from "../../shared/PhysicsPanel";
 import {
   normalizeForgePhysicsSettings,
   resolveForgeMass,
-} from "../../../forge-core/processing/physics";
-import { computeBBox, normalizeTransforms } from "../../../forge-core/processing/dimensions";
-import { createColliderHelper, scaleColliderParams } from "../../../forge-core/processing/colliders";
+} from "../../shared/processing/physics";
+import { computeBBox, normalizeTransforms } from "../../shared/processing/dimensions";
+import { createColliderHelper, scaleColliderParams } from "../../shared/processing/colliders";
 import { readPropProcessedModelGlb, readPropRawGlb } from "../../io/forge-client";
 import { deepCloneWithMaterials } from "../../model/MeshProcessor";
-import type { PixelViewportViewState } from "../../../forge-core/ViewportPixel";
-import type { Viewport3dViewState } from "../../../forge-core/Viewport";
+import type { PixelViewportViewState } from "../../shared/viewport-state";
+import type { Viewport3dViewState } from "../../shared/viewport-state";
 import type { ForgePhysicsKindPresetFile } from "../../types";
 
 type PhysicsPreviewScenario = "floorDrop" | "slope30Drop" | "edgeDrop";

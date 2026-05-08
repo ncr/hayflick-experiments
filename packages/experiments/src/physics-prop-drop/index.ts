@@ -23,7 +23,7 @@ import {
   PHYSICS_MASK,
   PHYSICS_MATERIAL_PRESETS
 } from "../prop-physics-3d/physics-settings";
-import { parseForgePropMeta, type ForgePropMetaSnapshot } from "./forge-v2-props";
+import { parseForgePropMeta, type ForgePropMetaSnapshot } from "./forge-props";
 import {
   deriveRoomSupportFloorPart,
   omitRoomSupportSurfaceParts,

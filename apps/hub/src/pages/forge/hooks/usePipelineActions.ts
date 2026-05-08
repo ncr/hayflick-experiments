@@ -1,18 +1,18 @@
 import { useCallback } from "react";
 import { useForgeState, useForgeDispatch, useForgeRefs } from "../state/forge-context";
-import { generateImage } from "../../forge-core/api/openai";
-import { generateModel } from "../../forge-core/api/tripo";
+import { generateImage } from "../shared/api/openai";
+import { generateModel } from "../shared/api/tripo";
 import {
   type PivotPreset,
-} from "../../forge-core/processing/dimensions";
+} from "../shared/processing/dimensions";
 import {
   buildColliderExportSceneFromParams,
   buildVhacdColliderForObject,
-} from "../../forge-core/processing/collider-vhacd";
-import { createColliderHelper } from "../../forge-core/processing/colliders";
+} from "../shared/processing/collider-vhacd";
+import { createColliderHelper } from "../shared/processing/colliders";
 import {
   normalizeForgePhysicsSettings,
-} from "../../forge-core/processing/physics";
+} from "../shared/processing/physics";
 import { buildComposedPrompt, exportObjectToGlb, slugifyPropId } from "../io/forge-helpers";
 import {
   createForgeProp,
@@ -37,7 +37,7 @@ import type {
   ForgeGenerationDraftProp,
 } from "../types";
 import type { VhacdProgress } from "@common/collider-vhacd";
-import { computeBBox, computePivotOffset } from "../../forge-core/processing/dimensions";
+import { computeBBox, computePivotOffset } from "../shared/processing/dimensions";
 import {
   applyDraftMeshToMeta,
   applyDraftReferenceToMeta,
@@ -45,8 +45,6 @@ import {
   canLoadPhysicsForLifecycle,
   draftFromSavedProp,
 } from "../model/prop-mappers";
-
-const DEFAULT_FACE_LIMIT = 5_000;
 
 function formatVhacdProgress(progress: VhacdProgress): string {
   return `${progress.message} (${Math.round(progress.propProgress * 100)}%)`;
@@ -372,7 +370,7 @@ export function usePipelineActions() {
       return;
     }
 
-    refs.vhacdRunner.current.restart("Forge V2 collider recompute");
+    refs.vhacdRunner.current.restart("Forge collider recompute");
     dispatch({
       type: "SET_PHYSICS_BUILD_STATE",
       state: { running: true, progressText: "starting...", statusText: `Running ${allPresets.length} collider preset(s)...`, error: null },

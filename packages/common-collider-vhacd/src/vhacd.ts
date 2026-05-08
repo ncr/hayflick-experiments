@@ -275,8 +275,6 @@ type SplitWorkerEvaluateRequest = {
   voxelIds: Uint32Array;
 };
 
-type SplitWorkerRequest = SplitWorkerInitRequest | SplitWorkerEvaluateRequest;
-
 type SplitWorkerReadyResponse = {
   type: "ready";
 };

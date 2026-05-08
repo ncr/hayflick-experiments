@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
  *
  * The lower-level render invariant suite pins camera math, outlines, and
  * scissor clipping. These routes intentionally look like real consumers:
- * prop previews use `IsoGameView` + `PROP_PREVIEW_FRAMING`, while mixed-stage
+ * prop previews use `PixelPerfectPane` with the prop-preview profile, while mixed-stage
  * editor previews use `SharedScissorStage` + layered `PixelPerfectPane`s with
  * different tone-mapping modes. Keep zero tolerance; refactors should preserve
  * these pixels unless the visual contract changes intentionally.

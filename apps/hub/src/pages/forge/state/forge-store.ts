@@ -1,7 +1,7 @@
-import type { StyleGuide } from "../../forge-core/StyleGuidePanel";
-import type { PropPhysicsSettings } from "../../forge-core/types";
-import type { BBox, PivotPreset, ScaleMode } from "../../forge-core/processing/dimensions";
-import { scaleColliderParams } from "../../forge-core/processing/colliders";
+import type { StyleGuide } from "../shared/StyleGuidePanel";
+import type { PropPhysicsSettings } from "../shared/types";
+import type { BBox, PivotPreset, ScaleMode } from "../shared/processing/dimensions";
+import { scaleColliderParams } from "../shared/processing/colliders";
 import type {
   ForgeColliderPresetFile,
   ForgeColliderResultEntry,
@@ -339,7 +339,7 @@ export type ForgeAction =
 // Initial state factory
 // ---------------------------------------------------------------------------
 
-import { DEFAULT_FORGE_PHYSICS_SETTINGS } from "../../forge-core/processing/physics";
+import { DEFAULT_FORGE_PHYSICS_SETTINGS } from "../shared/processing/physics";
 
 const DEFAULT_FACE_LIMIT = 5_000;
 

@@ -11,8 +11,8 @@ Monorepo managed with **pnpm workspaces**.
 
 ```
 apps/hub          — Vite + React experiment browser (the hub UI)
-  src/pages/forge/     — Asset Forge v2 (route: #/forge-v2) — prop pipeline: concept image → mesh → physics colliders
-  src/pages/forge-core/ — Forge shared processing (colliders, export, textures)
+  src/pages/forge/        — Asset Forge (route: #/forge) — prop pipeline: concept image → mesh → physics colliders
+  src/pages/forge/shared/ — Forge-local shared APIs, processing helpers, and narrow viewport-state types
 packages/
   common-render       — Pixel-perfect iso-2:1 rendering pipeline (IsoGameView, SharedScissorStage, outlines, lighting preset)
   common-core         — Generic utilities and data logic
@@ -21,7 +21,7 @@ packages/
   common-input        — Input handling
   common-physics-rapier — Rapier physics integration
   common-collider-vhacd — V-HACD convex decomposition for colliders
-  experiments         — Active experiment modules (physics-prop-drop, prop-physics-3d, auto-collider)
+  experiments         — Active experiment modules and local experiment-only helpers
 docs/               — Architecture docs, learnings, promotion guide
 e2e/                — Playwright end-to-end tests
 scripts/            — CLI helpers (new-experiment scaffold, HTTPS dev server)

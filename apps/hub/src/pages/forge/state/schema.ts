@@ -1,10 +1,10 @@
 import type { VhacdOptions } from "@common/collider-vhacd";
-import { DEFAULT_VHACD_OPTIONS, normalizeVhacdOptions } from "../../forge-core/processing/collider-vhacd";
+import { DEFAULT_VHACD_OPTIONS, normalizeVhacdOptions } from "../shared/processing/collider-vhacd";
 import {
   DEFAULT_FORGE_PHYSICS_SETTINGS,
   normalizeForgePhysicsSettings
-} from "../../forge-core/processing/physics";
-import type { PropPhysicsSettings } from "../../forge-core/types";
+} from "../shared/processing/physics";
+import type { PropPhysicsSettings } from "../shared/types";
 import type {
   ForgeBBoxJson,
   ForgeColliderPresetFile,

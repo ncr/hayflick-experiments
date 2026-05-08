@@ -15,9 +15,9 @@ import {
   type BBox,
   type PivotPreset,
   type ScaleMode,
-} from "../../forge-core/processing/dimensions";
-import { downsampleMeshTextures } from "../../forge-core/processing/textures";
-import { countTotalFaces } from "../../forge-core/processing/simplify";
+} from "../shared/processing/dimensions";
+import { downsampleMeshTextures } from "../shared/processing/textures";
+import { countTotalFaces } from "../shared/processing/simplify";
 
 // ---------------------------------------------------------------------------
 // Types

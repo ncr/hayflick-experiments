@@ -1,5 +1,5 @@
-import type { PixelViewportViewState } from "../../forge-core/ViewportPixel";
-import type { StyleGuide } from "../../forge-core/StyleGuidePanel";
+import type { PixelViewportViewState } from "../shared/viewport-state";
+import type { StyleGuide } from "../shared/StyleGuidePanel";
 import type { ForgeScaleMode } from "./MeshProcessor";
 import type {
   ForgeColliderResultEntry,

@@ -77,6 +77,7 @@ export {
 
 export {
   PROP_PREVIEW_FRAMING,
+  type PixelPerfectPaneProfileConfig,
   TILESET_VIEWER_TARGET_CONFIG,
   TILESET_VIEWER_NORMAL_CONFIG
 } from "./presets/framing";
