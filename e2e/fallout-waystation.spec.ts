@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const DEV_BASE_URL = process.env.WAYSTATION_BASE_URL || "http://localhost:5173";
+const DEV_BASE_URL = process.env.WAYSTATION_BASE_URL || "http://127.0.0.1:4173";
 
 test.use({
   viewport: { width: 1024, height: 768 },

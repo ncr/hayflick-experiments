@@ -1,5 +1,23 @@
 # Agent Learnings
 
+## 2026-05-08 - Fallout Waystation Playwright smoke test targeted the wrong default port
+Root cause:
+- `e2e/fallout-waystation.spec.ts` overrode Playwright's shared `baseURL` with
+  a local default of `http://localhost:5173`, while `playwright.config.ts`
+  starts the preview server on `http://127.0.0.1:4173`.
+
+Detection signal:
+- Running `pnpm exec playwright test e2e/fallout-waystation.spec.ts` failed at
+  `page.goto()` with `net::ERR_CONNECTION_REFUSED` even though the configured
+  preview server was started successfully.
+
+Preventive checklist:
+- Keep per-spec default base URLs aligned with `playwright.config.ts`.
+- Prefer `127.0.0.1:4173` for hub preview-backed e2e specs unless a test
+  intentionally starts a separate dev server.
+- If a spec supports an override env var, verify its fallback still matches the
+  default Playwright web server before relying on it in validation.
+
 ## 2026-04-24 - @common/render consumer-surface tests must guard refactors
 Root cause:
 - Existing render goldens covered core iso math, outlines, and scissor clipping, but not enough consumer-shaped combinations.
