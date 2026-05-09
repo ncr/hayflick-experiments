@@ -2,9 +2,9 @@ import type { ExperimentMeta } from "../runtime/meta";
 
 export const meta: ExperimentMeta = {
   id: "map-editor-2d",
-  title: "2D Map Editor",
-  description: "Top-down 2D map editor for laying out walls, doors, windows, and terrain on a tile grid.",
-  tags: ["threejs", "editor", "level-design", "top-down"],
+  title: "Greybox Level Editor",
+  description: "Dual-pane tile-grid editor for semantic greybox floors, terrain, walls, doors, windows, and corners.",
+  tags: ["threejs", "editor", "level-design", "greybox"],
   status: "draft",
-  updatedAt: "2026-03-28"
+  updatedAt: "2026-05-09"
 };

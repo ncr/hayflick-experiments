@@ -9,6 +9,7 @@ import {
   removeVertexStructure
 } from "./editor-state";
 import { levelBuilderEdgeKey } from "@common/level-editor";
+import { resolveGreyboxDefinitionState } from "@common/level-editor";
 import type { HoverTarget } from "./grid-renderer";
 import type { TilesetAssets } from "./tileset-loader";
 
@@ -174,7 +175,11 @@ function applyBrush(
   } else {
     const edge = pickNearestEdge(worldX, worldZ, state.grid);
     if (!edge) return;
-    setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, brush, toolState.edgeFlipped);
+    const definition = assets.tiles.get(brush)?.definition;
+    const doorState = definition?.semantic.kind === "door"
+      ? resolveGreyboxDefinitionState(definition).semantic.doorState
+      : undefined;
+    setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, brush, toolState.edgeFlipped, doorState);
   }
 }
 
@@ -236,7 +241,7 @@ export type PointerToolsOptions = {
 export function bindPointerTools(opts: PointerToolsOptions): PointerToolsBinding {
   const { element, worldAtLocal, state, assets, onHover } = opts;
   const toolState: PointerToolState = {
-    brush: "wall",
+    brush: assets.tiles.has("wall_solid") ? "wall_solid" : (assets.tiles.keys().next().value ?? SELECT_BRUSH),
     vertexRotation: 0,
     edgeFlipped: false,
     selection: null

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { createGreyboxMeshTemplate, disposeGreyboxMeshTemplate, type GreyboxDoorState } from "@common/level-editor";
 import type { GridConfig, MapEditorState, PlacedEdge, PlacedCell, PlacedVertex } from "./editor-state";
 import type { TilesetAssets } from "./tileset-loader";
 
@@ -26,6 +27,7 @@ export class SceneBuilder {
   private tileSize: number;
   /** Cached "what does the 3D ghost of tile X look like" templates. */
   private readonly ghost3DTemplates = new Map<string, THREE.Group>();
+  private readonly stateTemplates = new Map<string, THREE.Group>();
   /** Cloned ghost materials we own and must dispose. */
   private readonly ghost3DMaterials: THREE.Material[] = [];
   private lastRevision = -1;
@@ -220,6 +222,10 @@ export class SceneBuilder {
     for (const mat of this.ghost3DMaterials) mat.dispose();
     this.ghost3DMaterials.length = 0;
     this.ghost3DTemplates.clear();
+    for (const template of this.stateTemplates.values()) {
+      disposeGreyboxMeshTemplate(template);
+    }
+    this.stateTemplates.clear();
     clearGroup(this.root);
     clearGroup(this.preview);
     clearGroup(this.selectionHighlight);
@@ -256,7 +262,7 @@ export class SceneBuilder {
     outline.layers.set(LAYER_2D_TINT);
     this.root.add(outline);
 
-    this.placeMesh(loaded.template, worldX, worldZ, yaw);
+    this.placeMesh(this.getTemplate(structure.tileName, structure.doorState) ?? loaded.template, worldX, worldZ, yaw);
   }
 
   private placeVertex(structure: PlacedVertex, grid: GridConfig): void {
@@ -291,6 +297,20 @@ export class SceneBuilder {
     original.position.set(worldX, 0, worldZ);
     original.rotation.y = yaw;
     this.root.add(original);
+  }
+
+  private getTemplate(tileName: string, state?: GreyboxDoorState): THREE.Group | null {
+    const loaded = this.assets.tiles.get(tileName);
+    if (!loaded) return null;
+    if (!state) return loaded.template;
+
+    const key = `${tileName}:${state}`;
+    const cached = this.stateTemplates.get(key);
+    if (cached) return cached;
+
+    const template = createGreyboxMeshTemplate(loaded.definition, { state });
+    this.stateTemplates.set(key, template);
+    return template;
   }
 
 }

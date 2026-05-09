@@ -1,5 +1,17 @@
 # Agent Learnings
 
+## 2026-05-09 - Greybox editor inherited stale Blockstudio outline groups
+Root cause:
+- `map-editor-2d` was migrated from GLB tilekit meshes to procedural greybox meshes, but kept material-name outline grouping for `blockstudio_*` materials.
+
+Detection signal:
+- Browser smoke on `#/exp/map-editor-2d` rendered correctly but console warnings reported unmatched `outlineGroups.byName` keys for the preview pane.
+
+Preventive checklist:
+- When replacing an editor asset backend, audit renderer material-name hooks (`outlineGroups`, shader/material filters, palette loaders) alongside the mesh loader.
+- Prefer default outline grouping for procedural greyboxes unless there is a concrete material split that needs seam suppression.
+- Include a browser console check after asset-backend swaps, not only unit tests and typecheck.
+
 ## 2026-05-08 - Fallout Waystation Playwright smoke test targeted the wrong default port
 Root cause:
 - `e2e/fallout-waystation.spec.ts` overrode Playwright's shared `baseURL` with

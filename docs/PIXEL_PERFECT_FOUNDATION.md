@@ -5,6 +5,8 @@
 Stable invariants and architecture of `@common/render`'s pixel-perfect iso-2:1
 pipeline. The package README covers API shape and usage; this doc is the
 authoritative source of truth for the pixel-stable math and the layering.
+For the consolidated gameplay-facing unit/grid/texel contract, see
+`docs/greybox-level-rules.md`.
 
 ## Invariants
 

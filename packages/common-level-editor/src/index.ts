@@ -6,4 +6,7 @@ export * from "./autotile";
 export * from "./editor-hud";
 export * from "./editor-controls";
 export * from "./structure-meshes";
+export * from "./greybox";
+export * from "./greybox-bake";
+export * from "./greybox-runtime";
 export * from "./constants";

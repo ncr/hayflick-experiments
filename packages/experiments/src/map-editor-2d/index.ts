@@ -4,7 +4,7 @@ import {
   SharedScissorStage
 } from "@common/render";
 import { bindSharedScissorStageInput } from "@common/input";
-import { LEVEL_EDITOR_WORLD_UNIT, levelBuilderEdgeKey } from "@common/level-editor";
+import { LEVEL_EDITOR_WORLD_UNIT, levelBuilderEdgeKey, serializeBakedLevel } from "@common/level-editor";
 import type { ExperimentModule } from "../runtime/types";
 
 import { clearAll, createUndoManager } from "./editor-state";
@@ -16,13 +16,15 @@ import {
   removeCellStructure,
   removeVertexStructure,
   setEdgeStructure,
-  setVertexStructure
+  setVertexStructure,
+  toggleEdgeDoorState
 } from "./editor-state";
 import type { HoverTarget } from "./grid-renderer";
 import { loadEditorState, debouncedSave } from "./persistence";
 import { loadTilesetAssets } from "./tileset-loader";
 import { createEditorToolbar, TOOLBAR_HEIGHT } from "./editor-toolbar";
 import { createTilePalette, TILE_PALETTE_WIDTH } from "./tile-palette";
+import { bakeMapEditorStateForEcs } from "./semantic-bake";
 
 const GRID_TILES = 20;
 const CAMERA_DISTANCE = 50;
@@ -49,8 +51,8 @@ const SHARED_VIEW_CONFIG = {
 
 const experiment: ExperimentModule = {
   id: "map-editor-2d",
-  title: "2D Map Editor",
-  tags: ["editor", "level-design", "top-down"],
+  title: "Greybox Level Editor",
+  tags: ["editor", "level-design", "greybox"],
 
   async init(ctx) {
     const { mount, width, height } = ctx;
@@ -129,7 +131,7 @@ const experiment: ExperimentModule = {
     const gridRenderer = new GridRenderer(state.grid);
     scene.add(gridRenderer.root);
 
-    // Load tileset assets and create scene builder
+    // Load the flat greybox catalog and create scene builder.
     const assets = await loadTilesetAssets();
     const sceneBuilder = new SceneBuilder(assets, state.grid.tileSize);
     scene.add(sceneBuilder.root);
@@ -179,14 +181,7 @@ const experiment: ExperimentModule = {
       toneMapping: "none"
     });
 
-    const OUTLINE_GROUP_MAP = {
-      byName: { blockstudio_accent: "glass", blockstudio_trim: "trim" },
-      default: "wall"
-    };
-
     // Right pane: isometric 3D preview with outlines + ACES + shadows.
-    // Blockstudio tile meshes use "blockstudio_accent" / "blockstudio_trim"
-    // material names; everything else falls through to "wall".
     const rightPane = new PixelPerfectPane({
       stage,
       id: "preview-3d",
@@ -200,11 +195,8 @@ const experiment: ExperimentModule = {
       layers: [LAYER_3D_ONLY],
       toneMapping: "aces",
       shadows: true,
-      outlines: true,
-      outlineGroups: OUTLINE_GROUP_MAP
+      outlines: true
     });
-
-    let lastOutlineRevision = -1;
 
     // --- Input ---
     let focusedPaneId: string | null = "editor-2d";
@@ -344,14 +336,16 @@ const experiment: ExperimentModule = {
     });
     actionGroup.append(undoBtn, toolbar.createSeparator(), redoBtn, toolbar.createSeparator(), clearAllBtn);
 
-    // Reload kits — fetches manifests + GLBs again. Brutal page reload
-    // (kit data is loaded once at init); structures survive via localStorage
-    // and the URL hash brings us back to this experiment.
     const fileGroup = toolbar.createGroup("");
-    const reloadBtn = toolbar.createButton("Reload Kits", () => {
+    const reloadBtn = toolbar.createButton("Reload Greyboxes", () => {
       location.reload();
     });
-    fileGroup.append(reloadBtn);
+    const bakeBtn = toolbar.createButton("Bake ECS", () => {
+      const bake = bakeMapEditorStateForEcs(state);
+      localStorage.setItem("map-editor-2d:greybox-bake:last", serializeBakedLevel(bake));
+      console.info("[map-editor-2d] baked greybox level", bake);
+    });
+    fileGroup.append(reloadBtn, toolbar.createSeparator(), bakeBtn);
 
     // --- Tile palette (right of the 2D pane) ---
     const palette = createTilePalette({
@@ -413,7 +407,16 @@ const experiment: ExperimentModule = {
             if (sel.kind === "edge") {
               const edge = state.edgeStructures.get(sel.key);
               if (edge) {
-                setEdgeStructure(state, edge.ax, edge.az, edge.bx, edge.bz, edge.tileName, !edge.flipped);
+                setEdgeStructure(
+                  state,
+                  edge.ax,
+                  edge.az,
+                  edge.bx,
+                  edge.bz,
+                  edge.tileName,
+                  !edge.flipped,
+                  edge.doorState
+                );
                 updateSelectionHighlight(sel);
               }
             } else if (sel.kind === "vertex") {
@@ -449,6 +452,14 @@ const experiment: ExperimentModule = {
             }
             pointerBinding.toolState.selection = null;
             sceneBuilder.setSelection(null);
+          }
+          break;
+        }
+        case "KeyO": {
+          const sel = pointerBinding.toolState.selection;
+          if (pointerBinding.toolState.brush === SELECT_BRUSH && sel?.kind === "edge") {
+            undoManager.checkpoint(state);
+            toggleEdgeDoorState(state, sel.ax, sel.az, sel.bx, sel.bz);
           }
           break;
         }
@@ -490,11 +501,6 @@ const experiment: ExperimentModule = {
       lastTime = now;
 
       sceneBuilder.update(state);
-
-      if (state.revision !== lastOutlineRevision) {
-        lastOutlineRevision = state.revision;
-        rightPane.setOutlineGroups(OUTLINE_GROUP_MAP, sceneBuilder.root);
-      }
 
       toolbar.setStats(
         `${state.grid.tiles}\u00d7${state.grid.tiles} | E:${state.edgeStructures.size} C:${state.cellStructures.size} V:${state.vertexStructures.size}`

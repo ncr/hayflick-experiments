@@ -1,6 +1,7 @@
 import {
   levelBuilderEdgeKey,
   LEVEL_EDITOR_WORLD_UNIT,
+  type GreyboxDoorState
 } from "@common/level-editor";
 
 export type GridConfig = {
@@ -18,6 +19,7 @@ export type PlacedEdge = {
   bz: number;
   /** When true the tile is rotated 180° around Y (front faces the other side) */
   flipped: boolean;
+  doorState?: GreyboxDoorState;
 };
 
 /** A placed cell structure (floor tile, etc.) */
@@ -110,11 +112,29 @@ export function setEdgeStructure(
   bx: number,
   bz: number,
   tileName: string,
-  flipped: boolean
+  flipped: boolean,
+  doorState?: GreyboxDoorState
 ): void {
   const key = levelBuilderEdgeKey(ax, az, bx, bz);
-  state.edgeStructures.set(key, { tileName, ax, az, bx, bz, flipped });
+  state.edgeStructures.set(key, { tileName, ax, az, bx, bz, flipped, doorState });
   state.revision++;
+}
+
+export function toggleEdgeDoorState(
+  state: MapEditorState,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number
+): boolean {
+  const key = levelBuilderEdgeKey(ax, az, bx, bz);
+  const edge = state.edgeStructures.get(key);
+  if (!edge?.doorState) {
+    return false;
+  }
+  edge.doorState = edge.doorState === "open" ? "closed" : "open";
+  state.revision++;
+  return true;
 }
 
 export function removeEdgeStructure(
@@ -146,7 +166,7 @@ export function clearAll(state: MapEditorState): void {
 
 export type SerializedState = {
   grid: GridConfig;
-  edgeStructures: Array<{ tileName: string; ax: number; az: number; bx: number; bz: number; flipped?: boolean }>;
+  edgeStructures: Array<{ tileName: string; ax: number; az: number; bx: number; bz: number; flipped?: boolean; doorState?: GreyboxDoorState }>;
   cellStructures: Array<{ tileName: string; x: number; z: number }>;
   vertexStructures: Array<{ tileName: string; x: number; z: number; rotation: number }>;
 };
@@ -155,7 +175,13 @@ export function serializeState(state: MapEditorState): SerializedState {
   return {
     grid: { ...state.grid },
     edgeStructures: [...state.edgeStructures.values()].map((s) => ({
-      tileName: s.tileName, ax: s.ax, az: s.az, bx: s.bx, bz: s.bz, flipped: s.flipped
+      tileName: s.tileName,
+      ax: s.ax,
+      az: s.az,
+      bx: s.bx,
+      bz: s.bz,
+      flipped: s.flipped,
+      doorState: s.doorState
     })),
     cellStructures: [...state.cellStructures.values()].map((s) => ({
       tileName: s.tileName, x: s.x, z: s.z

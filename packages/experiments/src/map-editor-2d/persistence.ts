@@ -5,8 +5,9 @@ import {
   type MapEditorState,
   type SerializedState
 } from "./editor-state";
+import type { GreyboxDoorState } from "@common/level-editor";
 
-const STORAGE_KEY = "map-editor-2d:state:v3";
+const STORAGE_KEY = "map-editor-2d:greybox-state:v1";
 
 export function saveEditorState(state: MapEditorState): void {
   try {
@@ -73,7 +74,9 @@ function validateSerialized(raw: Record<string, unknown>): SerializedState | nul
     const bz = asNumber(entry.bz);
     if (typeof tileName !== "string" || ax === null || az === null || bx === null || bz === null) continue;
     const flipped = entry.flipped === true;
-    edgeStructures.push({ tileName, ax, az, bx, bz, flipped });
+    const doorState: GreyboxDoorState | undefined =
+      entry.doorState === "open" || entry.doorState === "closed" ? entry.doorState : undefined;
+    edgeStructures.push({ tileName, ax, az, bx, bz, flipped, doorState });
   }
 
   const cellsRaw = Array.isArray(raw.cellStructures) ? raw.cellStructures : [];

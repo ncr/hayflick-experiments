@@ -2,6 +2,10 @@
 
 This is the source-of-truth contract for wall-kit pivots, part composition, and geometry ownership.
 
+For the current procedural greybox level pieces, use
+`docs/greybox-level-rules.md` instead. This document remains the historical
+Blockstudio/GLB wall-kit contract.
+
 ## Required Parts
 
 The minimal kit is:
