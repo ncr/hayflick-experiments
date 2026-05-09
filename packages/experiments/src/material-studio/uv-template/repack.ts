@@ -11,7 +11,7 @@
  * Pure data manipulation — no DOM, no THREE.
  */
 
-import type { Island } from "../../uv-template-probe/uv-template";
+import type { Island } from "./template";
 import type { DetectedIslands } from "./island-detect";
 
 export type RepackOptions = {

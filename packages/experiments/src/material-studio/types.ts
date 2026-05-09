@@ -1,4 +1,4 @@
-import type { Island, RgbaBuffer } from "../uv-template-probe/uv-template";
+import type { Island, RgbaBuffer } from "./uv-template/template";
 import type { UvRemapEntry } from "./uv-template/repack";
 import type { IslandSpatialContext } from "./uv-template/spatial-context";
 

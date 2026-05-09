@@ -11,7 +11,7 @@
  * Pure data manipulation — no DOM, no THREE.
  */
 
-import type { Island, RgbaBuffer } from "../../uv-template-probe/uv-template";
+import type { Island, RgbaBuffer } from "./template";
 
 export type RecomposeOptions = {
   /** RGB packed as 0xRRGGBB. Default neutral mid-grey. */

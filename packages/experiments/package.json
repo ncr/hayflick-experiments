@@ -21,7 +21,6 @@
     "@common/level-editor": "workspace:*",
     "@common/render": "workspace:*",
     "@dimforge/rapier3d-compat": "^0.19.3",
-    "lil-gui": "^0.20.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.173.0"

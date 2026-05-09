@@ -16,8 +16,7 @@
     "rebuild": "node scripts/blockstudio/rebuild-tileset.mjs",
     "rebuild:all": "for id in greek_island_white desert_sandstone ground_tiles; do node scripts/blockstudio/rebuild-tileset.mjs $id; done",
     "forge:retrofit-colliders": "pnpm --filter @apps/hub forge:retrofit-colliders",
-    "forge:precompute-colliders": "pnpm --filter @apps/hub forge:precompute-colliders",
-    "outline:testbed": "node scripts/outline-testbed/run.mjs"
+    "forge:precompute-colliders": "pnpm --filter @apps/hub forge:precompute-colliders"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",

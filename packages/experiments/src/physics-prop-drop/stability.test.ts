@@ -8,16 +8,16 @@ import { describe, expect, it } from "vitest";
 import {
   createPhysics3dResource,
   type Physics3dConvexHullPart
-} from "../prop-physics-3d/game-physics-3d";
+} from "./physics/game-physics-3d";
 import {
   bodyTranslationFromRootPose,
   type PhysicsQuaternion
-} from "../prop-physics-3d/prop-physics-math";
+} from "./physics/prop-physics-math";
 import {
   collisionGroups,
   PHYSICS_LAYER,
   PHYSICS_MASK
-} from "../prop-physics-3d/physics-settings";
+} from "./physics/physics-settings";
 import { parseForgePropMeta, type ForgePropMetaSnapshot } from "./forge-props";
 import { generatePropPlacements } from "./placement-layout";
 import {

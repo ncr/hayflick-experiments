@@ -9,7 +9,7 @@ import {
   type Surface,
   type SurfaceState,
 } from "../types";
-import type { RgbaBuffer } from "../../uv-template-probe/uv-template";
+import type { RgbaBuffer } from "../uv-template/template";
 
 export type Action =
   | { type: "LIBRARY_LOAD_START" }

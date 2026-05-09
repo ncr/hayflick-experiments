@@ -11,18 +11,18 @@ import {
   type Physics3dBoxPart,
   type Physics3dConvexHullPart,
   type Physics3dResource
-} from "../prop-physics-3d/game-physics-3d";
+} from "./physics/game-physics-3d";
 import {
   rootPoseFromBodyPose,
   bodyTranslationFromRootPose,
   type PhysicsQuaternion
-} from "../prop-physics-3d/prop-physics-math";
+} from "./physics/prop-physics-math";
 import {
   collisionGroups,
   PHYSICS_LAYER,
   PHYSICS_MASK,
   PHYSICS_MATERIAL_PRESETS
-} from "../prop-physics-3d/physics-settings";
+} from "./physics/physics-settings";
 import { parseForgePropMeta, type ForgePropMetaSnapshot } from "./forge-props";
 import {
   deriveRoomSupportFloorPart,

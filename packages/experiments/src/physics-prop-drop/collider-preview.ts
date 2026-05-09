@@ -4,7 +4,7 @@ import { ConvexGeometry } from "three/examples/jsm/geometries/ConvexGeometry.js"
 import type {
   Physics3dBoxPart,
   Physics3dConvexHullPart
-} from "../prop-physics-3d/game-physics-3d";
+} from "./physics/game-physics-3d";
 
 function colorForIndex(index: number): THREE.Color {
   const hue = ((index * 137.508) % 360) / 360;

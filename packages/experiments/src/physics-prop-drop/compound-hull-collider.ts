@@ -1,4 +1,4 @@
-import type { Physics3dConvexHullPart } from "../prop-physics-3d/game-physics-3d";
+import type { Physics3dConvexHullPart } from "./physics/game-physics-3d";
 
 type RecordLike = Record<string, unknown>;
 

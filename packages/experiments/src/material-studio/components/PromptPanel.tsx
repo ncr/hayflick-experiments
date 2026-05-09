@@ -15,7 +15,7 @@ import {
   type GeneratedMaps,
   type IslandLayout,
 } from "../types";
-import type { RgbaBuffer } from "../../uv-template-probe/uv-template";
+import type { RgbaBuffer } from "../uv-template/template";
 import { HistoryPicker } from "./HistoryPicker";
 
 const DELTA_CHIPS = [

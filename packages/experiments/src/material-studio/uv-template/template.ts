@@ -6,7 +6,8 @@
  * synthetic rectangular islands (not real mesh UVs) just to validate that
  * the model respects island boundaries and the background.
  *
- * Pure data manipulation — no DOM. Same pattern as `pixel-art-tex/pixel-grid.ts`.
+ * Pure data manipulation — no DOM. Kept local to Material Studio because the
+ * active UI is the only consumer of this UV-template pipeline.
  */
 
 export type RgbaBuffer = {
@@ -205,7 +206,7 @@ export type ExtractIslandsOptions = {
  * Recover one pixel-art buffer per island from an AI-generated template image.
  *
  * Per-cell median sampling of the central region — same robustness story as
- * `extractPixelArt` in pixel-art-tex.
+ * the original pixel-grid extraction path.
  */
 export function extractIslandPixelArt(
   source: RgbaBuffer,

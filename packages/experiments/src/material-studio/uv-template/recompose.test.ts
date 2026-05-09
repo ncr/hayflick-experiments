@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { recomposeIslandsAsAtlas } from "./recompose";
-import type { Island, RgbaBuffer } from "../../uv-template-probe/uv-template";
+import type { Island, RgbaBuffer } from "./template";
 
 function pixelAt(buf: RgbaBuffer, x: number, y: number): [number, number, number] {
   const i = (y * buf.width + x) * 4;

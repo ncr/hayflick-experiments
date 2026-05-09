@@ -13,7 +13,7 @@ import {
   extractIslandPixelArt,
   paintCellsIntoTemplate,
   type Island
-} from "../uv-template-probe/uv-template";
+} from "./uv-template/template";
 import { detectIslands } from "./uv-template/island-detect";
 import { repackIslands } from "./uv-template/repack";
 import { recomposeIslandsAsAtlas } from "./uv-template/recompose";
@@ -91,8 +91,6 @@ export type GenerateBaseColorRequest = {
   templateHeight?: number;
   /** Cells along longest island side. */
   cellPxTarget?: number;
-  /** Cell size in *template* pixels (chunky for AI legibility). */
-  cellPx?: number;
   /** Final stored atlas size — keep small. Defaults to 256². */
   atlasWidth?: number;
   atlasHeight?: number;
@@ -107,8 +105,6 @@ export type GenerateBaseColorRequest = {
 // stored; only the small atlas below is.
 const DEFAULT_TEMPLATE_W = 1024;
 const DEFAULT_TEMPLATE_H = 1024;
-const DEFAULT_TEMPLATE_CELL_PX = 16;
-
 // Atlas dimensions / cell sizing live in `uv-template/prepare.ts` so they
 // can be reused at mesh-load time when seeding a blank starter atlas.
 
@@ -119,7 +115,6 @@ export async function generateBaseColorFromTemplate(
 ): Promise<GeneratedFromTemplate> {
   const templateWidth = req.templateWidth ?? DEFAULT_TEMPLATE_W;
   const templateHeight = req.templateHeight ?? DEFAULT_TEMPLATE_H;
-  const templateCellPx = req.cellPx ?? DEFAULT_TEMPLATE_CELL_PX;
   const cellPxTarget = req.cellPxTarget ?? DEFAULT_CELL_PX_TARGET;
   const atlasWidth = req.atlasWidth ?? DEFAULT_ATLAS_W;
   const atlasHeight = req.atlasHeight ?? DEFAULT_ATLAS_H;
@@ -430,9 +425,6 @@ function packTemplateAsScaledAtlas(
   templateHeight: number
 ): { islands: Island[] } {
   const MIN_SCALE = 4;
-  const maxScaleW = Math.floor(templateWidth / atlasWidth);
-  const maxScaleH = Math.floor(templateHeight / atlasHeight);
-  const scaleByDim = Math.max(MIN_SCALE, Math.min(maxScaleW, maxScaleH));
   // Even if the atlas canvas is large, only the *used* region needs to
   // fit. Compute the right/bottom extents of every island to allow a
   // larger scale when the atlas has unused tail.

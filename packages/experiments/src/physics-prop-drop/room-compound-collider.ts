@@ -1,7 +1,7 @@
 import type {
   Physics3dBoxPart,
   Physics3dConvexHullPart
-} from "../prop-physics-3d/game-physics-3d";
+} from "./physics/game-physics-3d";
 import { parseCompoundConvexHullParts } from "./compound-hull-collider";
 
 type RecordLike = Record<string, unknown>;

@@ -5,7 +5,7 @@ import {
   renderPatternsThroughTemplate,
   type Island,
   type RgbaBuffer
-} from "./uv-template";
+} from "./template";
 
 const sampleIslands: Island[] = [
   { x: 64, y: 64, cellsX: 8, cellsY: 8, cellPx: 16, name: "A" },
