@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { experiments, getExperimentById } from "./registry";
+import { experiments, getExperimentById, getGameById } from "./registry";
 import { ExperimentRouteDrawer } from "./components/ExperimentRouteDrawer";
 import { Stage } from "./components/Stage";
 import { Forge } from "@studios/forge";
+import { GameStudio } from "@studios/game-studio";
 import { DiagPage } from "./pages/diag/DiagPage";
 
 type Route =
   | { type: "experiment"; id: string }
   | { type: "forge" }
+  | { type: "play"; id: string }
   | { type: "diag"; slug: string }
   | null;
 
@@ -23,6 +25,10 @@ function readRouteFromHash(): Route {
   if (hash.startsWith("#/exp/")) {
     const id = hash.replace("#/exp/", "").trim();
     return id ? { type: "experiment", id } : null;
+  }
+  if (hash.startsWith("#/play/")) {
+    const id = hash.replace("#/play/", "").trim();
+    return id ? { type: "play", id } : null;
   }
   return null;
 }
@@ -51,6 +57,8 @@ export function App() {
       window.history.replaceState({}, "", "#/forge");
     } else if (route.type === "diag") {
       window.history.replaceState({}, "", `#/diag/${route.slug}`);
+    } else if (route.type === "play") {
+      window.history.replaceState({}, "", `#/play/${route.id}`);
     } else {
       window.history.replaceState({}, "", `#/exp/${route.id}`);
     }
@@ -84,6 +92,17 @@ export function App() {
         )}
       />
     );
+  }
+  if (route?.type === "play") {
+    const game = getGameById(route.id);
+    if (!game) {
+      return (
+        <div className="game-studio-fallback game-studio-fallback-error">
+          No game with id "{route.id}"
+        </div>
+      );
+    }
+    return <GameStudio loadGame={game.load} />;
   }
   if (route?.type === "diag") {
     return <DiagPage slug={route.slug} />;

@@ -50,12 +50,18 @@ importers:
       '@common/core':
         specifier: workspace:*
         version: link:../../packages/common-core
+      '@common/gameplay':
+        specifier: workspace:*
+        version: link:../../packages/common-gameplay
       '@common/render':
         specifier: workspace:^
         version: link:../../packages/common-render
       '@dimforge/rapier3d-compat':
         specifier: ^0.19.3
         version: 0.19.3
+      '@experiments/grid-walker':
+        specifier: workspace:*
+        version: link:../../experiments/grid-walker
       '@experiments/physics-prop-drop':
         specifier: workspace:*
         version: link:../../experiments/physics-prop-drop
@@ -71,6 +77,9 @@ importers:
       '@studios/forge':
         specifier: workspace:*
         version: link:../../studios/forge
+      '@studios/game-studio':
+        specifier: workspace:*
+        version: link:../../studios/game-studio
       '@studios/map-editor':
         specifier: workspace:*
         version: link:../../studios/map-editor
@@ -110,6 +119,18 @@ importers:
         version: 1.5.5(esbuild@0.25.12)(vite@6.4.1(@types/node@22.19.9))
 
   experiments/_runtime: {}
+
+  experiments/grid-walker:
+    dependencies:
+      '@common/gameplay':
+        specifier: workspace:*
+        version: link:../../packages/common-gameplay
+      '@experiments/runtime':
+        specifier: workspace:*
+        version: link:../_runtime
+      three:
+        specifier: ^0.173.0
+        version: 0.173.0
 
   experiments/physics-prop-drop:
     dependencies:
@@ -208,6 +229,31 @@ importers:
       '@types/react':
         specifier: ^19.0.8
         version: 19.2.13
+
+  studios/game-studio:
+    dependencies:
+      '@common/gameplay':
+        specifier: workspace:*
+        version: link:../../packages/common-gameplay
+      '@common/render':
+        specifier: workspace:*
+        version: link:../../packages/common-render
+      react:
+        specifier: ^19.0.0
+        version: 19.2.4
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.4(react@19.2.4)
+      three:
+        specifier: ^0.173.0
+        version: 0.173.0
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.8
+        version: 19.2.13
+      '@types/react-dom':
+        specifier: ^19.0.3
+        version: 19.2.3(@types/react@19.2.13)
 
   studios/map-editor:
     dependencies:

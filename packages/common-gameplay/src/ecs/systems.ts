@@ -77,7 +77,10 @@ export function createInputSystem(keyboard: KeyboardTracker): System {
 }
 
 // PlayerInputSystem maps intent to velocity for player-tagged entities.
-export function createPlayerInputSystem(speed = 4): System {
+// `speed` can be a constant or a getter — pass a getter when the value
+// is driven by a runtime knob and must update without re-creating the system.
+export function createPlayerInputSystem(speed: number | (() => number) = 4): System {
+  const getSpeed = typeof speed === "function" ? speed : () => speed;
   return (world: World) => {
     const { up, down, left, right } = world.input;
 
@@ -95,8 +98,9 @@ export function createPlayerInputSystem(speed = 4): System {
       dy /= length;
     }
 
-    const vx = dx * speed;
-    const vy = dy * speed;
+    const s = getSpeed();
+    const vx = dx * s;
+    const vy = dy * s;
 
     for (const eid of world.queryTransformPlayer()) {
       if (!world.velocities.has(eid)) {

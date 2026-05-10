@@ -12,3 +12,4 @@ export function mergeInventory(items: InventoryItem[]): Record<string, number> {
 
 export * from "./ecs";
 export * from "./level-runtime";
+export * from "./devtools/types";

@@ -1,0 +1,220 @@
+.game-studio {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: 48px 1fr 200px;
+  grid-template-columns: 1fr;
+  background: #1a1c20;
+  color: #e8e3d6;
+  font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", sans-serif;
+  font-size: 13px;
+}
+
+.game-studio-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: #2a2d33;
+  border-bottom: 1px solid #3a3d44;
+}
+
+.game-studio-hamburger {
+  background: transparent;
+  border: 1px solid #3a3d44;
+  color: inherit;
+  border-radius: 4px;
+  padding: 4px 6px;
+  cursor: pointer;
+  display: inline-flex;
+}
+
+.game-studio-hamburger:hover {
+  background: #3a3d44;
+}
+
+.game-studio-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.game-studio-title strong {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.game-studio-desc {
+  font-size: 11px;
+  color: #a8a294;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60vw;
+}
+
+.game-studio-main {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  min-height: 0;
+}
+
+.game-studio-viewport-pane {
+  position: relative;
+  background: #0e1014;
+  overflow: hidden;
+}
+
+.game-studio-viewport-mount {
+  position: absolute;
+  inset: 0;
+}
+
+.game-studio-tweaks-pane {
+  background: #22252b;
+  border-left: 1px solid #3a3d44;
+  padding: 12px 14px;
+  overflow-y: auto;
+}
+
+.game-studio-tweaks-pane h3,
+.game-studio-console-header h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #d97706;
+}
+
+.game-studio-tweaks-empty {
+  color: #6a6558;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.game-studio-tweaks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.knob {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: #1a1c20;
+  border: 1px solid #3a3d44;
+  border-radius: 4px;
+}
+
+.knob-key {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: #d6d0c2;
+  word-break: break-all;
+}
+
+.knob-number {
+  grid-template-columns: 1fr 100px 48px;
+}
+
+.knob-number input[type="range"] {
+  grid-column: 2;
+  width: 100%;
+  accent-color: #d97706;
+}
+
+.knob-number .knob-value {
+  grid-column: 3;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: #f4d4a0;
+  text-align: right;
+}
+
+.knob-toggle input[type="checkbox"] {
+  accent-color: #d97706;
+}
+
+.knob-select select {
+  background: #2a2d33;
+  color: inherit;
+  border: 1px solid #3a3d44;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.game-studio-console-pane {
+  display: flex;
+  flex-direction: column;
+  background: #15171b;
+  border-top: 1px solid #3a3d44;
+  min-height: 0;
+}
+
+.game-studio-console-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  border-bottom: 1px solid #2a2d33;
+}
+
+.game-studio-console-clear {
+  background: transparent;
+  border: 1px solid #3a3d44;
+  color: #a8a294;
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.game-studio-console-clear:hover {
+  background: #2a2d33;
+  color: inherit;
+}
+
+.game-studio-console-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 14px 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.game-studio-console-empty {
+  color: #6a6558;
+  font-style: italic;
+}
+
+.game-studio-console-line {
+  color: #d6d0c2;
+  white-space: pre-wrap;
+}
+
+.game-studio-console-frame {
+  color: #6a6558;
+  margin-right: 6px;
+}
+
+.game-studio-fallback {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1c20;
+  color: #d6d0c2;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.game-studio-fallback-error {
+  color: #ff7b6b;
+}

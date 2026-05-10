@@ -25,11 +25,13 @@ studios/                     — Authoring tools. Each is its own workspace pack
   material-studio/           — Per-surface UV-atlas paint editor with AI fill + GLB bake (route: #/exp/material-studio)
   map-editor/                — Greybox dual-pane tile-grid editor (route: #/exp/map-editor)
   blockstudio/               — Blender bridge / planner (CLI only; runs via `pnpm rebuild`)
+  game-studio/               — Playtest shell (route: #/play/<game-id>) — viewport + tweaks + console panes. Hosts a `GameModule` from any strict experiment. Contract types live in `@common/gameplay`.
 experiments/                 — Game prototypes + free playground. Each is its own workspace package.
                                 Per-experiment manifest declares `mode: "strict" | "free"`.
                                 strict → may only import @common/* (mirrors a real game consumer for API hardening).
                                 free   → may import anything (raw three.js, ad-hoc deps, fast prototyping).
   _runtime/                  — Type-only contract (ExperimentMeta, ExperimentModule). Leaf, zero deps.
+  grid-walker/               — `mode: strict`. Smallest GameModule: arrow-key player on a tile floor — anchors the game-studio shell.
   physics-prop-drop/         — `mode: free`. Forge props dropped on a room with Rapier 3D physics.
 docs/                        — Architecture docs, learnings, promotion guide
 e2e/                         — Playwright end-to-end tests
