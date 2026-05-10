@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createDefaultForgeMeta } from "../src/pages/forge/state/schema";
+import { createDefaultForgeMeta } from "@studios/forge/internal/state/schema";
 import { ForgeStore } from "./forge-store";
 
 const PNG_DATA_URL =

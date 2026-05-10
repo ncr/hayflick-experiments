@@ -9,16 +9,18 @@
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
-    "test": "vitest run",
-    "forge:retrofit-colliders": "node scripts/retrofit-collider-meshes.mjs",
-    "forge:precompute-colliders": "node scripts/precompute-vhacd-colliders.mjs --preset=Balanced"
+    "test": "vitest run"
   },
   "dependencies": {
     "@common/collider-vhacd": "workspace:*",
     "@common/core": "workspace:*",
     "@common/render": "workspace:^",
     "@dimforge/rapier3d-compat": "^0.19.3",
-    "@experiments/catalog": "workspace:*",
+    "@experiments/physics-prop-drop": "workspace:*",
+    "@experiments/runtime": "workspace:*",
+    "@studios/forge": "workspace:*",
+    "@studios/map-editor": "workspace:*",
+    "@studios/material-studio": "workspace:*",
     "@gltf-transform/core": "^4.3.0",
     "@gltf-transform/extensions": "^4.3.0",
     "@types/three": "^0.173.0",

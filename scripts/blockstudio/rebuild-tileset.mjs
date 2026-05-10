@@ -18,8 +18,8 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { buildBlenderMaterialMap } from "../../packages/blockstudio/src/server/pbr-library.js";
-import { writeTilesetGameMetadata } from "../../packages/blockstudio/src/server/tileset-files.js";
+import { buildBlenderMaterialMap } from "../../studios/blockstudio/src/server/pbr-library.js";
+import { writeTilesetGameMetadata } from "../../studios/blockstudio/src/server/tileset-files.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -46,7 +46,7 @@ function main() {
   process.stderr.write(`[rebuild-tileset] Planning ${tilesetId}...\n`);
   const planJson = execFileSync(
     "node",
-    [path.join(REPO_ROOT, "packages/blockstudio/src/planner/plan-kit.js"), "--spec", tilesetFile, "--rules", RULES_FILE],
+    [path.join(REPO_ROOT, "studios/blockstudio/src/planner/plan-kit.js"), "--spec", tilesetFile, "--rules", RULES_FILE],
     { encoding: "utf-8", maxBuffer: 16 * 1024 * 1024 }
   );
   const plan = JSON.parse(planJson);
@@ -125,7 +125,7 @@ function rebuildExampleRoom({ tilesetId, tilesetFile, tilesetDir, materials }) {
     roomJson = execFileSync(
       "node",
       [
-        path.join(REPO_ROOT, "packages/blockstudio/src/planner/plan-kit.js"),
+        path.join(REPO_ROOT, "studios/blockstudio/src/planner/plan-kit.js"),
         "--spec", tilesetFile,
         "--rules", RULES_FILE,
         "--room",

@@ -1,5 +1,7 @@
 # Agent Learnings
 
+> **Note on stale paths in older entries.** Entries below are appended chronologically and reflect the repo layout *at the time the entry was written*. The 2026-05-10 restructure moved authoring tools to `studios/*`, deleted `packages/experiments/`, and split runtime types into `@experiments/runtime`. When acting on an older entry's preventive checklist, translate paths via `CLAUDE.md` ("Project Structure" section).
+
 ## 2026-05-09 - Greybox editor inherited stale Blockstudio outline groups
 Root cause:
 - `map-editor-2d` was migrated from GLB tilekit meshes to procedural greybox meshes, but kept material-name outline grouping for `blockstudio_*` materials.

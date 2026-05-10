@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { experiments, getExperimentById } from "@experiments/catalog";
+import { experiments, getExperimentById } from "./registry";
 import { ExperimentRouteDrawer } from "./components/ExperimentRouteDrawer";
 import { Stage } from "./components/Stage";
-import { Forge } from "./pages/Forge";
+import { Forge } from "@studios/forge";
 import { DiagPage } from "./pages/diag/DiagPage";
 
 type Route =
@@ -71,7 +71,19 @@ export function App() {
     setMenuOpen(false);
   };
   if (route?.type === "forge") {
-    return <Forge />;
+    return (
+      <Forge
+        renderDrawer={(open, onClose) => (
+          <ExperimentRouteDrawer
+            open={open}
+            active={{ type: "forge" }}
+            onClose={onClose}
+            onSelectForge={selectForge}
+            onSelectExperiment={selectExperiment}
+          />
+        )}
+      />
+    );
   }
   if (route?.type === "diag") {
     return <DiagPage slug={route.slug} />;

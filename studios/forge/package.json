@@ -1,0 +1,31 @@
+{
+  "name": "@studios/forge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./internal/state/schema": "./src/state/schema.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "test": "vitest run",
+    "forge:retrofit-colliders": "node scripts/retrofit-collider-meshes.mjs",
+    "forge:precompute-colliders": "node scripts/precompute-vhacd-colliders.mjs --preset=Balanced"
+  },
+  "dependencies": {
+    "@common/collider-vhacd": "workspace:*",
+    "@common/core": "workspace:*",
+    "@common/render": "workspace:*",
+    "@dimforge/rapier3d-compat": "^0.19.3",
+    "@gltf-transform/core": "^4.3.0",
+    "meshoptimizer": "^1.0.1",
+    "react": "^19.0.0",
+    "three": "^0.173.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.8"
+  }
+}

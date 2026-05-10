@@ -160,7 +160,7 @@ The "pixel-art with realistic PBR lighting" look is produced by the consumer, no
 - Use an orthographic 2:1 iso camera (pitch 30°, yaw 45°) if you want the canonical Blockstudio camera.
 - Light the scene with tone-mapped PBR lights (ACES / AgX + sRGB output) — the baked baseColor palette is small on purpose, so the lighting layer is what gives tiles their form.
 
-The reference implementation is the map editor under `packages/experiments/src/map-editor-2d/` — see its `tileset-loader.ts` (texture filtering) and `index.ts` (lighting rig).
+The reference implementation is the map editor under `studios/map-editor/src/` — see its `tileset-loader.ts` (texture filtering) and `index.ts` (lighting rig).
 
 ## 8. Gotchas
 

@@ -1,4 +1,4 @@
-import { experiments } from "@experiments/catalog";
+import { experiments } from "../registry";
 
 type ExperimentRouteDrawerProps = {
   open: boolean;

@@ -7,25 +7,47 @@ Before making any technical decisions, read:
 
 ## Project Structure
 
-Monorepo managed with **pnpm workspaces**.
+Monorepo managed with **pnpm workspaces**. Three layers, enforced by package.json deps and lint:
 
 ```
-apps/hub          — Vite + React experiment browser (the hub UI)
-  src/pages/forge/        — Asset Forge (route: #/forge) — prop pipeline: concept image → mesh → physics colliders
-  src/pages/forge/shared/ — Forge-local shared APIs, processing helpers, and narrow viewport-state types
-packages/
-  common-render       — Pixel-perfect iso-2:1 rendering pipeline (IsoGameView, SharedScissorStage, outlines, lighting preset)
-  common-core         — Generic utilities and data logic
-  common-gameplay     — Gameplay systems (inventory, state rules)
-  common-level-editor — Tile/structure models, wall/door mesh kit, editor UI, bake pipeline
-  common-input        — Input handling
-  common-physics-rapier — Rapier physics integration
-  common-collider-vhacd — V-HACD convex decomposition for colliders
-  experiments         — Active experiment modules and local experiment-only helpers
-docs/               — Architecture docs, learnings, promotion guide
-e2e/                — Playwright end-to-end tests
-scripts/            — CLI helpers (new-experiment scaffold, HTTPS dev server)
+apps/
+  hub/                       — Vite + React shell. Hosts studios + experiments via the hub registry.
+packages/                    — Engine layer. Names: @common/*. Engine packages may only import other @common/*.
+  common-render              — Pixel-perfect iso-2:1 rendering (IsoGameView, SharedScissorStage, outlines, lighting preset)
+  common-core                — Generic utilities and data logic
+  common-gameplay            — ECS runtime + level resource interface
+  common-level-editor        — Greybox model + bake pipeline (tile/structure/door semantics)
+  common-input               — Input handling
+  common-physics-rapier      — Rapier physics integration
+  common-collider-vhacd      — V-HACD convex decomposition for colliders
+studios/                     — Authoring tools. Each is its own workspace package. May only import @common/*.
+  forge/                     — Asset Forge (route: #/forge) — prop pipeline: concept image → mesh → physics colliders
+  material-studio/           — Per-surface UV-atlas paint editor with AI fill + GLB bake (route: #/exp/material-studio)
+  map-editor/                — Greybox dual-pane tile-grid editor (route: #/exp/map-editor)
+  blockstudio/               — Blender bridge / planner (CLI only; runs via `pnpm rebuild`)
+experiments/                 — Game prototypes + free playground. Each is its own workspace package.
+                                Per-experiment manifest declares `mode: "strict" | "free"`.
+                                strict → may only import @common/* (mirrors a real game consumer for API hardening).
+                                free   → may import anything (raw three.js, ad-hoc deps, fast prototyping).
+  _runtime/                  — Type-only contract (ExperimentMeta, ExperimentModule). Leaf, zero deps.
+  physics-prop-drop/         — `mode: free`. Forge props dropped on a room with Rapier 3D physics.
+docs/                        — Architecture docs, learnings, promotion guide
+e2e/                         — Playwright end-to-end tests
+scripts/                     — CLI helpers (new-experiment scaffold, blockstudio rebuild orchestrator, HTTPS dev server)
 ```
+
+**Layer rules** (enforced via package.json `dependencies`, validated by `pnpm check:layers`):
+
+| Layer | May import from |
+|---|---|
+| `@common/*` (engine) | other `@common/*` + `@experiments/runtime` |
+| `@studios/*` | `@common/*` + `@experiments/runtime` |
+| `@experiments/*` (`mode: strict`) | `@common/*` + `@experiments/runtime` |
+| `@experiments/*` (`mode: free`) | `@common/*` + `@experiments/runtime` + `@studios/*` + other `@experiments/*` |
+| `@apps/hub` | everything except cross-app |
+| `@experiments/runtime` | nothing (leaf, type-only) |
+
+The check-script (`scripts/check-layer-deps.mjs`) walks every workspace `package.json`, classifies each by directory, reads the experiment's `meta.ts` for `mode`, and fails on any cross-layer dependency. Run it locally with `pnpm check:layers` and in CI alongside `pnpm typecheck` and `pnpm lint`.
 
 ## Key Commands
 
@@ -36,6 +58,7 @@ scripts/            — CLI helpers (new-experiment scaffold, HTTPS dev server)
 | `pnpm build` | Build all packages |
 | `pnpm typecheck` | TypeScript check across all packages |
 | `pnpm lint` | Lint all packages |
+| `pnpm check:layers` | Validate package.json deps against the engine / studios / experiments layer rules |
 | `pnpm test` | Run all tests |
 | `pnpm test:promoted` | Run coverage-gated tests for promoted packages |
 | `pnpm test:e2e` | Run Playwright end-to-end tests |
@@ -48,7 +71,7 @@ scripts/            — CLI helpers (new-experiment scaffold, HTTPS dev server)
 Experiments follow a **build → validate → promote** lifecycle.
 See `docs/promotion.md` for full process.
 
-1. Build locally in `packages/experiments/src/<name>/`
+1. Build locally in `experiments/<name>/` (set `mode: "strict"` to constrain to engine deps, or `mode: "free"` for the playground)
 2. Validate with at least one additional usage scenario
 3. Extract stable API into `@common/render`, `@common/core`, or `@common/gameplay`
 4. Add tests with coverage gates in the shared package
@@ -71,7 +94,7 @@ See `docs/PIXEL_PERFECT_FOUNDATION.md` for full architecture.
 
 The isometric wall / ground tileset pipeline lives in three places:
 
-- `packages/blockstudio/` — planner, shared kit logic, pbr-library, tileset-files, vitest unit tests
+- `studios/blockstudio/` — planner, shared kit logic, pbr-library, tileset-files, vitest unit tests
 - `scripts/blockstudio/` — orchestrators that shell out to Blender for the actual mesh build and export
 - `blender/*.py` — Blender-side Python (geometry, materials, export, capture, project)
 
@@ -81,7 +104,7 @@ Material registry and Polyhaven downloads live under `assets/materials/`. The `p
 
 Iteration loop: edit `assets/tilesets/<id>/tileset.json` → `pnpm run rebuild <id>` → reload the map editor in the hub.
 
-See `docs/blockstudio/` for the full contract (game consumer, wall kit, tilekit improvement plan).
+See `docs/blockstudio/` for the full contract (game consumer, wall kit).
 
 ## Textured-Mesh Catalog (Material Studio)
 
@@ -90,7 +113,7 @@ Separate from the procedural tileset pipeline above. Uses a flat, two-layer mode
 - **Base meshes** — `assets/meshes/<id>.glb`. Pre-authored geometry with `textureRole` extras on each mesh node. Input side; grown in Blender when new geometry is needed.
 - **Textured meshes** — `assets/textured-meshes/<name>/`. The atomic game-ready unit: one base mesh + authored textures baked into a single `artifact.glb`, plus a `manifest.json` (provenance: base mesh id, prompts, timestamp) and the per-role texture PNGs under `textures/<role>/`.
 
-The `material-studio` experiment is the authoring UI: pick a base mesh; for each PBR surface, paint pixels into a small UV atlas and/or call gpt-image-2 to fill unpainted cells; bake. UV islands are detected at mesh-load time by `uv-template/prepare.ts` (atlas: 256² with `cellPx=1`; template: 1024² with `cellPx=16` — same `cellsX × cellsY` per island in both, so AI output extracts 1:1 into the atlas). The bake endpoint (`/api/textured-mesh/bake` in `apps/hub/plugins/api-proxy.ts`) calls in-process `apps/hub/plugins/build-artifact.ts`, which uses `@gltf-transform/core` to replace `TEXCOORD_0` with the remapped UVs and attach baseColor/normal/MR/occlusion textures with NEAREST samplers.
+The `material-studio` studio is the authoring UI: pick a base mesh; for each PBR surface, paint pixels into a small UV atlas and/or call gpt-image-2 to fill unpainted cells; bake. UV islands are detected at mesh-load time by `uv-template/prepare.ts` (atlas: 256² with `cellPx=1`; template: 1024² with `cellPx=16` — same `cellsX × cellsY` per island in both, so AI output extracts 1:1 into the atlas). The bake endpoint (`/api/textured-mesh/bake` in `apps/hub/plugins/api-proxy.ts`) calls in-process `apps/hub/plugins/build-artifact.ts`, which uses `@gltf-transform/core` to replace `TEXCOORD_0` with the remapped UVs and attach baseColor/normal/MR/occlusion textures with NEAREST samplers.
 
 NEAREST sampling end-to-end is load-bearing: `material-studio/texture-swap.ts` uses `THREE.NearestFilter` (no mipmaps), and the baked GLB sets `TextureInfo.MagFilter/MinFilter.NEAREST`. One atlas pixel must equal one game pixel under the iso pixel-perfect renderer — never insert LinearFilter anywhere along this chain.
 

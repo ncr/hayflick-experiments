@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ExperimentRegistryEntry } from "@experiments/catalog";
+import type { ExperimentRegistryEntry } from "@experiments/runtime";
 
 type StageProps = {
   experiment: ExperimentRegistryEntry | undefined;

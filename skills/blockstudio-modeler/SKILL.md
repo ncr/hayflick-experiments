@@ -11,17 +11,17 @@ Use this skill when you need to create or revise a versioned tileset in this rep
 
 There are three layers. You orchestrate them:
 
-1. **Shared rules** (`tilesets/_rules/general.tileset-rules.json`) — fixed geometry contract (base unit, pixel ratios, anchors, required parts). Already defined. Do not re-ask the user for these values.
-2. **Geometry planner** (`node src/planner/plan-kit.js`) — deterministic code that turns a kit spec + rules into a precise scene plan with exact coordinates, pivots, and UVs. You run this via bash.
+1. **Shared rules** (`assets/tilesets/_rules/general.tileset-rules.json`) — fixed geometry contract (base unit, pixel ratios, anchors, required parts). Already defined. Do not re-ask the user for these values.
+2. **Geometry planner** (`node studios/blockstudio/src/planner/plan-kit.js`) — deterministic code that turns a kit spec + rules into a precise scene plan with exact coordinates, pivots, and UVs. You run this via bash.
 3. **MCP tools** — generic Blender automation. You call these to render scene plans, apply PBR materials, capture viewports, and export GLBs.
 
 ## Persistent files
 
-- Shared rules: `tilesets/_rules/general.tileset-rules.json`
-- Per-tileset profile: `tilesets/<id>/tileset.json`
-- Blender working files: `tilesets/<id>/project/<id>.blend` + `project/captures/`
-- Game-ready exports: `tilesets/<id>/artifacts/`
-- Game-ready metadata: `tilesets/<id>/artifacts/tileset.game.json`
+- Shared rules: `assets/tilesets/_rules/general.tileset-rules.json`
+- Per-tileset profile: `assets/tilesets/<id>/tileset.json`
+- Blender working files: `assets/tilesets/<id>/project/<id>.blend` + `project/captures/`
+- Game-ready exports: `assets/tilesets/<id>/artifacts/`
+- Game-ready metadata: `assets/tilesets/<id>/artifacts/tileset.game.json`
 
 Treat `artifacts/` as the game-facing copy source. Git is the versioning system.
 
@@ -50,13 +50,13 @@ Ask for:
 - Style notes, reference images, artistic vision
 - Required parts and variants (e.g. "arched windows with casement articulation", "wooden door", "corner pieces")
 - Any geometry overrides from the shared rules (wall height, thickness, etc.)
-- Which PBR materials to use per role (`wallMaterial`, `trimMaterial`, `accentMaterial` for wall kits; `tileMaterials: { <tile>: <id> }` for ground kits). Browse `materials/registry.json` or pull from Polyhaven via `material.download`.
+- Which PBR materials to use per role (`wallMaterial`, `trimMaterial`, `accentMaterial` for wall kits; `tileMaterials: { <tile>: <id> }` for ground kits). Browse `assets/materials/registry.json` or pull from Polyhaven via `material.download`.
 
 Save with `tileset.init` or `tileset.save_profile`.
 
 ### Shared rules
 
-The shared rules file should already exist with correct values. If it is missing or needs updating, write it directly as JSON to `tilesets/_rules/general.tileset-rules.json`. Do not ask the user to reconfigure values that are already defined there.
+The shared rules file should already exist with correct values. If it is missing or needs updating, write it directly as JSON to `assets/tilesets/_rules/general.tileset-rules.json`. Do not ask the user to reconfigure values that are already defined there.
 
 ## Kit spec format
 
@@ -134,10 +134,10 @@ For ground kits, use `tileMaterials` instead:
 
 1. Confirm the Blender bridge is running (`bridge.status` → `connected: true`).
 2. Call `tileset.init` to create the versioned workspace and open a Blender project.
-3. Write or edit `tilesets/<id>/tileset.json` with the kit spec and material choices.
+3. Write or edit `assets/tilesets/<id>/tileset.json` with the kit spec and material choices.
 4. Run the geometry planner to inspect the plan:
    ```bash
-   node src/planner/plan-kit.js --spec tilesets/<id>/tileset.json --rules tilesets/_rules/general.tileset-rules.json
+   node studios/blockstudio/src/planner/plan-kit.js --spec assets/tilesets/<id>/tileset.json --rules assets/tilesets/_rules/general.tileset-rules.json
    ```
 5. Call `scene.build` with the scene plan and manifest from the planner output.
 6. Call `material.apply` to apply PBR materials from the kit's `textures.authoring` block. Missing materials can be pulled via `material.download` first.
@@ -145,7 +145,7 @@ For ground kits, use `tileMaterials` instead:
 8. Review captures with the user. Revise geometry or materials as needed.
 9. Call `project.save` to persist the `.blend`.
 10. Call `tileset.save_profile` if the tileset metadata changed.
-11. Call `export.assets` to write GLB files to `tilesets/<id>/artifacts/`.
+11. Call `export.assets` to write GLB files to `assets/tilesets/<id>/artifacts/`.
 12. Call `project.close` when the run is finished.
 
 For a non-interactive one-shot rebuild of an existing tileset, use `npm run rebuild <id>` — it runs planner → Blender → artifacts without the MCP/HTTP bridge.
@@ -160,7 +160,7 @@ To add a variant (e.g. an articulated window):
 ### Building an example room
 
 ```bash
-node src/planner/plan-kit.js --spec tilesets/<id>/tileset.json --rules tilesets/_rules/general.tileset-rules.json --room
+node studios/blockstudio/src/planner/plan-kit.js --spec assets/tilesets/<id>/tileset.json --rules assets/tilesets/_rules/general.tileset-rules.json --room
 ```
 
 Then call `scene.build` with the room scene plan.
@@ -175,7 +175,7 @@ Then call `scene.build` with the room scene plan.
 
 ## Texturing guidance
 
-- Prefer PBR materials from the Polyhaven library (`materials/registry.json`). If a material isn't downloaded yet, use `material.download` to fetch it and populate the registry.
+- Prefer PBR materials from the Polyhaven library (`assets/materials/registry.json`). If a material isn't downloaded yet, use `material.download` to fetch it and populate the registry.
 - Each role (wall/trim/accent for wall kits; one per tile for ground kits) gets its own Principled BSDF with baseColor, normal, and ARM (AO/Roughness/Metalness) maps.
 - Texture files live under `materials/polyhaven/<id>/` and are gitignored — the GLB embeds them so downstream consumers don't need the registry.
-- Tune `roughnessFactor` / `metallicFactor` defaults in `materials/registry.json` if a material looks wrong out-of-the-box.
+- Tune `roughnessFactor` / `metallicFactor` defaults in `assets/materials/registry.json` if a material looks wrong out-of-the-box.

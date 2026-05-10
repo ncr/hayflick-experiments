@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { experiments } from "@experiments/catalog";
+import { experiments } from "./registry";
 
 describe("hub data wiring", () => {
   it("has at least one experiment", () => {

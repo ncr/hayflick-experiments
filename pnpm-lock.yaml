@@ -56,15 +56,27 @@ importers:
       '@dimforge/rapier3d-compat':
         specifier: ^0.19.3
         version: 0.19.3
-      '@experiments/catalog':
+      '@experiments/physics-prop-drop':
         specifier: workspace:*
-        version: link:../../packages/experiments
+        version: link:../../experiments/physics-prop-drop
+      '@experiments/runtime':
+        specifier: workspace:*
+        version: link:../../experiments/_runtime
       '@gltf-transform/core':
         specifier: ^4.3.0
         version: 4.3.0
       '@gltf-transform/extensions':
         specifier: ^4.3.0
         version: 4.3.0
+      '@studios/forge':
+        specifier: workspace:*
+        version: link:../../studios/forge
+      '@studios/map-editor':
+        specifier: workspace:*
+        version: link:../../studios/map-editor
+      '@studios/material-studio':
+        specifier: workspace:*
+        version: link:../../studios/material-studio
       '@types/three':
         specifier: ^0.173.0
         version: 0.173.0
@@ -97,7 +109,28 @@ importers:
         specifier: ^1.3.1
         version: 1.5.5(esbuild@0.25.12)(vite@6.4.1(@types/node@22.19.9))
 
-  packages/blockstudio: {}
+  experiments/_runtime: {}
+
+  experiments/physics-prop-drop:
+    dependencies:
+      '@common/gameplay':
+        specifier: workspace:*
+        version: link:../../packages/common-gameplay
+      '@common/input':
+        specifier: workspace:*
+        version: link:../../packages/common-input
+      '@common/render':
+        specifier: workspace:*
+        version: link:../../packages/common-render
+      '@dimforge/rapier3d-compat':
+        specifier: ^0.19.3
+        version: 0.19.3
+      '@experiments/runtime':
+        specifier: workspace:*
+        version: link:../_runtime
+      three:
+        specifier: ^0.173.0
+        version: 0.173.0
 
   packages/common-collider-vhacd:
     dependencies:
@@ -143,26 +176,74 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(vitest@3.2.4(@types/node@22.19.9))
 
-  packages/experiments:
+  studios/blockstudio: {}
+
+  studios/forge:
     dependencies:
+      '@common/collider-vhacd':
+        specifier: workspace:*
+        version: link:../../packages/common-collider-vhacd
       '@common/core':
         specifier: workspace:*
-        version: link:../common-core
-      '@common/gameplay':
-        specifier: workspace:*
-        version: link:../common-gameplay
-      '@common/input':
-        specifier: workspace:*
-        version: link:../common-input
-      '@common/level-editor':
-        specifier: workspace:*
-        version: link:../common-level-editor
+        version: link:../../packages/common-core
       '@common/render':
         specifier: workspace:*
-        version: link:../common-render
+        version: link:../../packages/common-render
       '@dimforge/rapier3d-compat':
         specifier: ^0.19.3
         version: 0.19.3
+      '@gltf-transform/core':
+        specifier: ^4.3.0
+        version: 4.3.0
+      meshoptimizer:
+        specifier: ^1.0.1
+        version: 1.0.1
+      react:
+        specifier: ^19.0.0
+        version: 19.2.4
+      three:
+        specifier: ^0.173.0
+        version: 0.173.0
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.8
+        version: 19.2.13
+
+  studios/map-editor:
+    dependencies:
+      '@common/gameplay':
+        specifier: workspace:*
+        version: link:../../packages/common-gameplay
+      '@common/input':
+        specifier: workspace:*
+        version: link:../../packages/common-input
+      '@common/level-editor':
+        specifier: workspace:*
+        version: link:../../packages/common-level-editor
+      '@common/render':
+        specifier: workspace:*
+        version: link:../../packages/common-render
+      '@experiments/runtime':
+        specifier: workspace:*
+        version: link:../../experiments/_runtime
+      three:
+        specifier: ^0.173.0
+        version: 0.173.0
+
+  studios/material-studio:
+    dependencies:
+      '@common/core':
+        specifier: workspace:*
+        version: link:../../packages/common-core
+      '@common/input':
+        specifier: workspace:*
+        version: link:../../packages/common-input
+      '@common/render':
+        specifier: workspace:*
+        version: link:../../packages/common-render
+      '@experiments/runtime':
+        specifier: workspace:*
+        version: link:../../experiments/_runtime
       react:
         specifier: ^19.0.0
         version: 19.2.4

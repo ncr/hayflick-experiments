@@ -33,7 +33,7 @@ Conversions:
 - Grid coordinates are integer `(x, z)` cell indices on the ground plane.
 - `grid.origin` is the world position of grid vertex `(0, 0)`.
 - `grid.tileSize` is `1u` in the active world coordinate system.
-- In `map-editor-2d`, `grid.tileSize = 1.28` because the editor stores Three.js world positions.
+- In the map-editor studio, `grid.tileSize = 1.28` because the editor stores Three.js world positions.
 
 Placement formulas in official `u` coordinates:
 

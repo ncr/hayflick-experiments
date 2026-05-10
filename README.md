@@ -4,9 +4,12 @@ Monorepo for many independent game experiments with a single browser hub.
 
 ## Stack
 
-- React + Vite shell app (`apps/hub`)
-- Three.js-first experiments (`packages/experiments`)
-- Shared code promotion packages (`@common/core`, `@common/render`, `@common/gameplay`)
+Three layers (see `CLAUDE.md` for layer rules):
+
+- **Engine** (`packages/common-*`) — `@common/render`, `@common/core`, `@common/gameplay`, `@common/input`, `@common/level-editor`, `@common/physics-rapier`, `@common/collider-vhacd`
+- **Studios** (`studios/*`) — authoring tools: `forge`, `material-studio`, `map-editor`, `blockstudio`
+- **Experiments** (`experiments/*`) — game prototypes + free-form playground; per-experiment `mode: "strict" | "free"` flag controls which deps are allowed
+- **Hub app** (`apps/hub`) — Vite shell that hosts studios + experiments
 - GitHub Actions CI + GitHub Pages deployment
 
 ## Quick start
@@ -22,6 +25,7 @@ pnpm dev
 - `pnpm build` - build all workspaces
 - `pnpm typecheck` - typecheck all workspaces
 - `pnpm lint` - lint all workspaces
+- `pnpm check:layers` - validate package.json deps against the engine / studios / experiments layer rules
 - `pnpm test` - run all tests
 - `pnpm test:promoted` - enforce coverage thresholds for promoted shared modules
 - `pnpm test:e2e` - run Playwright browser smoke tests
