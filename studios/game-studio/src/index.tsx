@@ -1,21 +1,23 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import type * as THREE from "three";
 import type { GameModule } from "@common/gameplay";
 import { GameStudioShell } from "./GameStudio";
 import "./styles.css";
 
+export type GameSource = { path: string; code: string };
+
 export type GameStudioProps = {
-  loadGame: () => Promise<{ default: GameModule<THREE.Object3D> }>;
+  loadGame: () => Promise<{ default: GameModule }>;
+  loadSources?: () => Promise<GameSource[]>;
   renderDrawer?: (open: boolean, onClose: () => void) => ReactNode;
 };
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "loaded"; game: GameModule<THREE.Object3D> }
+  | { kind: "loaded"; game: GameModule }
   | { kind: "error"; message: string };
 
-export function GameStudio({ loadGame, renderDrawer }: GameStudioProps) {
+export function GameStudio({ loadGame, loadSources, renderDrawer }: GameStudioProps) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
 
   useEffect(() => {
@@ -50,5 +52,11 @@ export function GameStudio({ loadGame, renderDrawer }: GameStudioProps) {
       </div>
     );
   }
-  return <GameStudioShell game={state.game} renderDrawer={renderDrawer} />;
+  return (
+    <GameStudioShell
+      game={state.game}
+      loadSources={loadSources}
+      renderDrawer={renderDrawer}
+    />
+  );
 }

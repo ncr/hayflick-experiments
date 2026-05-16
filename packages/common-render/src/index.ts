@@ -98,3 +98,17 @@ export {
   applyPixelArtTextureDefaults,
   applyPixelArtTextureDefaultsToTree
 } from "./texture-helpers";
+
+// ========== Scene adapter (three.js impl of @common/gameplay Scene) ==========
+
+export { createThreeScene } from "./scene/three-scene";
+export {
+  IsoGeometryViolation,
+  isoCleanGeometryValidator,
+  isIsoStairAlignedWu,
+  isIsoPixelAlignedWu,
+  nearestIsoStairAlignedWu,
+  type GeometryValidator,
+  type IsoGeometryRole,
+  type IsoGeometryDescriptor
+} from "./scene/iso-geometry-validator";

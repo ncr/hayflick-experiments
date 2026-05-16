@@ -78,6 +78,10 @@ export function App() {
     setRoute({ type: "forge" });
     setMenuOpen(false);
   };
+  const selectGame = (id: string) => {
+    setRoute({ type: "play", id });
+    setMenuOpen(false);
+  };
   if (route?.type === "forge") {
     return (
       <Forge
@@ -88,6 +92,7 @@ export function App() {
             onClose={onClose}
             onSelectForge={selectForge}
             onSelectExperiment={selectExperiment}
+            onSelectGame={selectGame}
           />
         )}
       />
@@ -102,7 +107,23 @@ export function App() {
         </div>
       );
     }
-    return <GameStudio loadGame={game.load} />;
+    const playRoute = route;
+    return (
+      <GameStudio
+        loadGame={game.load}
+        loadSources={game.loadSources}
+        renderDrawer={(open, onClose) => (
+          <ExperimentRouteDrawer
+            open={open}
+            active={playRoute}
+            onClose={onClose}
+            onSelectForge={selectForge}
+            onSelectExperiment={selectExperiment}
+            onSelectGame={selectGame}
+          />
+        )}
+      />
+    );
   }
   if (route?.type === "diag") {
     return <DiagPage slug={route.slug} />;
@@ -116,6 +137,7 @@ export function App() {
         onClose={() => setMenuOpen(false)}
         onSelectForge={selectForge}
         onSelectExperiment={selectExperiment}
+        onSelectGame={selectGame}
       />
       <main className="main-pane">
         <header className="main-header">

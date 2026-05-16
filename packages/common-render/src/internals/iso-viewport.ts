@@ -521,10 +521,23 @@ export class IsoViewport {
   snapWorldPointOnGround(
     world: THREE.Vector3,
     out: THREE.Vector3,
-    mode: PixelSnapMode = "nearest"
+    mode: PixelSnapMode = "nearest",
+    granularity?: { a: number; b: number }
   ): boolean {
     this.ensureScreenBasis();
-    return this.isoCamera.snapWorldPointOnGround(world, out, mode);
+    return this.isoCamera.snapWorldPointOnGround(world, out, mode, granularity);
+  }
+
+  getSnapBasis(): {
+    centerX: number;
+    centerZ: number;
+    ux: number;
+    uz: number;
+    vx: number;
+    vz: number;
+  } | null {
+    this.ensureScreenBasis();
+    return this.isoCamera.getSnapBasis();
   }
 
   dispose(): void {

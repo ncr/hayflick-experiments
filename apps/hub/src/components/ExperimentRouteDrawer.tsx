@@ -1,11 +1,16 @@
-import { experiments } from "../registry";
+import { experiments, games } from "../registry";
 
 type ExperimentRouteDrawerProps = {
   open: boolean;
-  active: { type: "forge" } | { type: "experiment"; id: string } | null;
+  active:
+    | { type: "forge" }
+    | { type: "experiment"; id: string }
+    | { type: "play"; id: string }
+    | null;
   onClose: () => void;
   onSelectForge: () => void;
   onSelectExperiment: (id: string) => void;
+  onSelectGame: (id: string) => void;
 };
 
 export function ExperimentRouteDrawer({
@@ -13,7 +18,8 @@ export function ExperimentRouteDrawer({
   active,
   onClose,
   onSelectForge,
-  onSelectExperiment
+  onSelectExperiment,
+  onSelectGame
 }: ExperimentRouteDrawerProps) {
   const isForgeActive = active?.type === "forge";
 
@@ -42,6 +48,26 @@ export function ExperimentRouteDrawer({
             );
           })}
         </ul>
+        {games.length > 0 && (
+          <>
+            <h1 className="sidebar-section">Games</h1>
+            <ul>
+              {games.map((entry) => {
+                const isActive = active?.type === "play" && active.id === entry.id;
+                return (
+                  <li key={entry.id}>
+                    <button
+                      className={isActive ? "active" : ""}
+                      onClick={() => onSelectGame(entry.id)}
+                    >
+                      <span>{entry.title}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        )}
       </aside>
     </>
   );

@@ -3765,3 +3765,130 @@ Testbed:
 Side effect: the previous learning said `two-corners-q2/q3` had a
 same-group silhouette suppressed; the new gate now draws it correctly
 (visible in the testbed comparison against baseline).
+
+## 2026-05-16 — iso 2:1 diagonal wobble + geometry alignment
+
+Three independent bugs surfaced together in the new game-studio playtest
+shell. Easy to conflate; each has a distinct root cause and fix.
+
+### Symptom #1 — diagonal wobble (input mapping)
+
+Pressing A+W (screen up-left) made the player box wobble: motion ticked
+predominantly horizontally with occasional vertical kicks, instead of
+walking a clean diagonal.
+
+Root cause: input was mapped to the camera's `(right, forward)` world-XZ
+basis. The screen-pixel lattice `(a, b)` uses different magnitudes —
+`|(vx, vz)| = 1/(R·cos π/6)` is `1.155×` `|(ux, uz)|` because the
+vertical-on-screen direction is foreshortened. So at constant world
+speed in the (right, forward) basis, the `b` coord accumulates ~0.866×
+the rate of `a`. Independent `Math.round(a)` and `Math.round(b)` then
+cross thresholds on different frames → per-frame deltas alternate
+`(1, 0)` / `(0, 1)` → visible wobble.
+
+Wrong fix (don't): coarsen snap to `{a:2, b:1}` ("force" the stair
+shape via the lattice). That makes each tick a 2 H or 1 V hop and
+amplifies the wobble — the independent rounding problem doesn't go away,
+each axis just jumps in bigger chunks.
+
+Right fix: map input directly onto the `(a, b)` lattice with an iso 2:1
+ratio in the input itself. `aDir = inputX`, `bDir = -inputY * 0.5`,
+normalize. Now a combined-key input traces direction `(2, 1)` in
+`(a, b)` space. The independent rounding produces a clean Bresenham
+walk: `(1, 0), (1, 0), (0, 1), (1, 0), (1, 0), (0, 1), …` — a perfect
+iso 2:1 staircase. Speed becomes screen-pixels-per-second along the
+diagonal direction.
+
+Diagnostic / proof: `/Users/ncr/dev/wobble` worktree (detached at
+commit `d69cb53`) holds the historical pixel-stable-moving-mesh
+experiment retrofitted with the new input mapping and three snap modes
+toggleable via N. The wobble is observable side-by-side. The e2e spec
+`e2e/game-studio.spec.ts → "A+W diagonal traces a perfect iso 2:1
+staircase (no wobble)"` enforces the invariant `|qa - 2·qb| ≤ 1` plus
+no-reverse-hops.
+
+### Symptom #2 — outline staircase has mixed-width treads
+
+Even with the wobble killed, the box's silhouette outline showed
+irregular treads: some 2 pixels wide, some 3 pixels wide, not a clean
+`(2, 1) × N` repeat. This was independent of motion (visible on a
+stationary box).
+
+Root cause: grid-walker set `PLAYER_SIZE = 0.8` wu. The horizontal
+silhouette edge has projected length `0.8 × 32 = 25.6 px` over
+`0.8 × 16 = 12.8 px` vertical — the angle is exactly 2:1, but the
+rasterizer must emit integer pixel runs. To approximate 25.6/12.8 it
+alternates 2-wide and 3-wide treads. To the eye that's "the staircase
+is broken".
+
+Right fix: every XZ dimension must be a multiple of `0.0625 wu` (= 2 H
++ 1 V px = one whole iso 2:1 stair step). Grid-walker's `PLAYER_SIZE`
+changed to `1` (= 32 H × 16 V = 16 perfect (2,1) steps). General clean
+sizes: 1, 0.75, 0.5, 0.25, 0.125, 0.0625 wu.
+
+Y is exempt — `cos π/6 = √3/2` is irrational, so Y always projects to
+fractional pixels. Vertical edges of cubes still project purely
+vertical and don't affect the stair pattern.
+
+### Symptom #3 — user can shoot themselves in the foot with #2
+
+A game author setting a "natural-looking" size like `0.8` or `1.2` gets
+no error at construction time, only visible artifacts at runtime.
+That's a bad API contract for a "rock-solid renderer".
+
+Right fix: `isoCleanGeometryValidator` (in
+`packages/common-render/src/scene/iso-geometry-validator.ts`) is wired
+into `createThreeScene` via the new `validateGeometry` option and
+called at every spawn. Misaligned XZ throws `IsoGeometryViolation` at
+the bad call site, with a message naming the bad value, its projected
+pixel size, and the nearest valid size. Wired in
+`studios/game-studio/src/panes/ViewportPane.tsx` so every game running
+through game-studio gets the guard for free.
+
+### Detection signals for future regressions
+
+- Wobble: `e2e/game-studio.spec.ts` (line-drift invariant in A+W).
+- Mesh cornerstone: same spec's screenshot diff at two snap cells; must
+  be exactly 0 differing pixels.
+- Geometry alignment: `IsoGeometryViolation` thrown at spawn time; unit
+  tests in `packages/common-render/src/scene/iso-geometry-validator.test.ts`
+  cover the predicate + validator surface.
+
+### Preventive checklist
+
+- New `Scene.spawn*` primitives must thread XZ dimensions through the
+  validator. Don't add a primitive that bypasses it.
+- New experiments must pick stair-aligned XZ sizes. Use multiples of
+  `0.0625` as the smallest unit; if you genuinely need a non-stair size
+  for a debug primitive, do not wire the validator (and document why).
+- Don't reintroduce coarser snap granularity as a "stair stabilizer";
+  the stair shape belongs in input shaping, not in snap quantization.
+  See CLAUDE.md invariants #8 and #9.
+
+### Symptom #4 — low-speed motion looks choppy / non-stair
+
+Set player speed below ~60 px/s and pressing A+W produces "left tick …
+long pause … up tick … long pause" rather than a connected staircase.
+
+Root cause: at low speed, the per-frame `(da, db)` deltas are sub-1-pixel,
+so `Math.round(a)` and `Math.round(b)` cross thresholds many frames
+apart. The cumulative trajectory still hugs the iso 2:1 line (the test
+still passes — drift stays ≤ 1) but the timing between ticks is now
+visible. The math:
+
+  At 60 fps, dominant-axis advance per frame = `ISO_INPUT_DIAGONAL_A_RATE × v / 60`
+  ≈ 0.0149·v. For ≥ 1 advance/frame: `v ≥ 60 / 0.894 ≈ 67 px/s`.
+
+Right fix: `recommendedMinPxPerSecForIso({ targetFps })` in
+`@common/gameplay`. Returns the dominant-axis-fluid threshold (default
+67 @ 60 fps) or the full-stair-per-frame threshold (134 @ 60 fps).
+
+Use it as a knob `min` so the tweak UI can't dial below the smooth zone:
+grid-walker does `min: ceil(recommended/10)*10 = 70`. This is a
+*recommendation*, not a hard floor — slow motion is sometimes desirable
+(stealth, cinematic). Below the threshold motion is still **correct**
+(no wobble, no drift), just visibly discrete.
+
+What this is NOT: a renderer bug. The cornerstone and trajectory
+invariants both hold below the threshold. The threshold is a perceptual
+property of the snap, not a stability property.

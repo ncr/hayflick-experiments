@@ -1,53 +1,54 @@
-import * as THREE from "three";
 import {
   createEventSystem,
   createInputSystem,
   createMovementSystem,
   createPlayerInputSystem,
+  recommendedMinPxPerSecForIso,
   type GameModule
 } from "@common/gameplay";
 
 const FLOOR_SIZE = 20;
-const PLAYER_SIZE = 0.8;
+// World XZ sizes for game props must be multiples of 1/32 wu (= 1 horizontal
+// screen pixel at the iso projection ratio) so silhouette edges rasterize
+// to integer pixel counts. For a clean 2:1 staircase outline (no mixed
+// 2-wide / 3-wide treads), pick multiples of 2/32 = 0.0625 wu — one whole
+// stair step. PLAYER_SIZE = 1 wu = 32 H × 16 V px = 16 perfect (2,1) steps.
+const PLAYER_SIZE = 1;
 const PLAYER_HEIGHT = PLAYER_SIZE / 2;
 
-const gridWalker: GameModule<THREE.Object3D> = {
+const gridWalker: GameModule = {
   id: "grid-walker",
   title: "Grid Walker",
   description: "Tiny ECS demo: arrow keys move a player on a flat tile floor.",
 
-  create({ rootNode, world, keyboard, debug, knobs }) {
+  create({ scene, world, keyboard, debug, knobs }) {
+    // Speed is in **screen pixels per second** (the scene supplies an iso
+    // pixel basis, so the input system reads `speed` in that unit).
+    //
+    // Floor at the smoothness threshold (≈67 px/s @ 60fps): below this the
+    // a-axis advances < 1 px/frame on diagonals, so the box ticks one axis
+    // at a time with visible gaps instead of walking a connected stair.
+    // Round up to step=10 → min 70.
+    const SMOOTH_MIN = Math.ceil(recommendedMinPxPerSecForIso() / 10) * 10;
     const speedKnob = knobs.number("player.speed", {
-      min: 0.5,
-      max: 12,
-      default: 4,
-      step: 0.5
+      min: SMOOTH_MIN,
+      max: 240,
+      default: 80,
+      step: 10
     });
     const showGridKnob = knobs.toggle("debug.showGrid", { default: true });
 
-    const grid = new THREE.GridHelper(FLOOR_SIZE, FLOOR_SIZE, 0x6a6558, 0x3a3d44);
-    grid.position.y = 0.001;
-    rootNode.add(grid);
-
-    const floorGeo = new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE);
-    const floorMat = new THREE.MeshStandardMaterial({
-      color: 0x1f2329,
-      roughness: 0.95,
-      metalness: 0
+    const grid = scene.spawnGrid({
+      size: FLOOR_SIZE,
+      color: 0x6a6558,
+      secondaryColor: 0x3a3d44
     });
-    const floor = new THREE.Mesh(floorGeo, floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    rootNode.add(floor);
-
-    const playerGeo = new THREE.BoxGeometry(PLAYER_SIZE, PLAYER_SIZE, PLAYER_SIZE);
-    const playerMat = new THREE.MeshStandardMaterial({
+    const floor = scene.spawnFloor({ size: FLOOR_SIZE, color: 0x1f2329 });
+    const player = scene.spawnBox({
+      size: PLAYER_SIZE,
       color: 0xd97706,
-      roughness: 0.4,
-      metalness: 0.05
+      position: { x: 0, y: PLAYER_HEIGHT, z: 0 }
     });
-    const playerMesh = new THREE.Mesh(playerGeo, playerMat);
-    playerMesh.position.set(0, PLAYER_HEIGHT, 0);
-    rootNode.add(playerMesh);
 
     const playerEid = world.createEntity();
     world.transforms.add(playerEid, { x: 0, y: 0 });
@@ -56,7 +57,10 @@ const gridWalker: GameModule<THREE.Object3D> = {
 
     const systems = {
       inputSystem: createInputSystem(keyboard),
-      playerInputSystem: createPlayerInputSystem(() => speedKnob()),
+      playerInputSystem: createPlayerInputSystem(
+        () => speedKnob(),
+        () => scene.getScreenPixelBasis()
+      ),
       movementSystem: createMovementSystem(),
       eventSystem: createEventSystem(debug)
     };
@@ -66,24 +70,14 @@ const gridWalker: GameModule<THREE.Object3D> = {
       step() {
         const t = world.transforms.get(playerEid);
         if (t) {
-          playerMesh.position.set(t.x, PLAYER_HEIGHT, t.y);
+          player.setPosition(t.x, PLAYER_HEIGHT, t.y);
         }
-        grid.visible = showGridKnob();
+        grid.setVisible(showGridKnob());
       },
       dispose() {
-        rootNode.remove(grid);
-        rootNode.remove(floor);
-        rootNode.remove(playerMesh);
-        playerGeo.dispose();
-        playerMat.dispose();
-        floorGeo.dispose();
-        floorMat.dispose();
-        if (Array.isArray(grid.material)) {
-          for (const m of grid.material) m.dispose();
-        } else {
-          (grid.material as THREE.Material).dispose();
-        }
-        grid.geometry.dispose();
+        player.dispose();
+        floor.dispose();
+        grid.dispose();
       }
     };
   }

@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@common/gameplay": "workspace:*",
-    "@experiments/runtime": "workspace:*",
-    "three": "^0.173.0"
+    "@experiments/runtime": "workspace:*"
   }
 }

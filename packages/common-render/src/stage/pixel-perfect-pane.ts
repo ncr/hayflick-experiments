@@ -393,9 +393,21 @@ export class PixelPerfectPane implements SharedScissorPane {
   snapWorldPointOnGround(
     world: THREE.Vector3,
     out: THREE.Vector3,
-    mode?: PixelSnapMode
+    mode?: PixelSnapMode,
+    granularity?: { a: number; b: number }
   ): boolean {
-    return this.core.snapWorldPointOnGround(world, out, mode);
+    return this.core.snapWorldPointOnGround(world, out, mode, granularity);
+  }
+
+  getSnapBasis(): {
+    centerX: number;
+    centerZ: number;
+    ux: number;
+    uz: number;
+    vx: number;
+    vz: number;
+  } | null {
+    return this.core.getSnapBasis();
   }
 
   /* ---------- AA extension hooks (advanced) ---------- *

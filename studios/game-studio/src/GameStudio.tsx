@@ -1,47 +1,56 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type * as THREE from "three";
-import type { GameModule, KnobRegistry, World } from "@common/gameplay";
-import { ViewportPane } from "./panes/ViewportPane";
+import type { GameModule, KnobRegistry, Scene, World } from "@common/gameplay";
+import { ViewportPane, type ViewportController } from "./panes/ViewportPane";
 import { TweaksPane } from "./panes/TweaksPane";
 import { ConsolePane } from "./panes/ConsolePane";
+import { CodePane } from "./panes/CodePane";
+import { ZoomRadio } from "./panes/ZoomRadio";
 import { createKnobRegistry } from "./runtime/createKnobRegistry";
 import { createDebugSink, type DebugSinkHandle } from "./runtime/createDebugSink";
+import type { GameSource } from "./index";
 
 declare global {
   interface Window {
     __gameStudio?: {
       gameId: string;
       world: World | null;
+      scene: Scene | null;
       knobs: KnobRegistry;
       debug: DebugSinkHandle;
+      viewport: ViewportController | null;
     };
   }
 }
 
 type ShellProps = {
-  game: GameModule<THREE.Object3D>;
+  game: GameModule;
+  loadSources?: () => Promise<GameSource[]>;
   renderDrawer?: (open: boolean, onClose: () => void) => ReactNode;
 };
 
-export function GameStudioShell({ game, renderDrawer }: ShellProps) {
+type TopTab = "studio" | "code";
+
+export function GameStudioShell({ game, loadSources, renderDrawer }: ShellProps) {
   const [registry] = useState(() => createKnobRegistry());
   const [debugHandle] = useState(() => createDebugSink({ maxEntries: 200 }));
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [topTab, setTopTab] = useState<TopTab>("studio");
+  const [viewportController, setViewportController] =
+    useState<ViewportController | null>(null);
 
-  // Stable handle object — mutated when world arrives, published in an
-  // effect. This avoids a render-order race where the child viewport
-  // effect runs before the parent effect that would otherwise create
-  // window.__gameStudio.
   const handleRef = useRef({
     gameId: game.id,
     world: null as World | null,
+    scene: null as Scene | null,
     knobs: registry,
-    debug: debugHandle
+    debug: debugHandle,
+    viewport: null as ViewportController | null
   });
   handleRef.current.gameId = game.id;
   handleRef.current.knobs = registry;
   handleRef.current.debug = debugHandle;
+  handleRef.current.viewport = viewportController;
 
   useEffect(() => {
     window.__gameStudio = handleRef.current;
@@ -54,8 +63,12 @@ export function GameStudioShell({ game, renderDrawer }: ShellProps) {
     handleRef.current.world = world;
   }, []);
 
+  const onScene = useCallback((scene: Scene | null) => {
+    handleRef.current.scene = scene;
+  }, []);
+
   return (
-    <div className="game-studio">
+    <div className={`game-studio game-studio-tab-${topTab}`}>
       <header className="game-studio-header">
         {renderDrawer && (
           <button
@@ -77,6 +90,30 @@ export function GameStudioShell({ game, renderDrawer }: ShellProps) {
             <span className="game-studio-desc">{game.description}</span>
           )}
         </div>
+        <nav className="game-studio-top-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={topTab === "studio"}
+            className={
+              "game-studio-top-tab" + (topTab === "studio" ? " active" : "")
+            }
+            onClick={() => setTopTab("studio")}
+          >
+            Game Studio
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={topTab === "code"}
+            className={
+              "game-studio-top-tab" + (topTab === "code" ? " active" : "")
+            }
+            onClick={() => setTopTab("code")}
+          >
+            Code
+          </button>
+        </nav>
       </header>
       <main className="game-studio-main">
         <section className="game-studio-viewport-pane">
@@ -85,15 +122,19 @@ export function GameStudioShell({ game, renderDrawer }: ShellProps) {
             knobs={registry}
             debug={debugHandle.sink}
             onWorld={onWorld}
+            onScene={onScene}
+            onController={setViewportController}
           />
         </section>
         <aside className="game-studio-tweaks-pane">
-          <h3>Tweaks</h3>
+          <h3>Zoom</h3>
+          <ZoomRadio controller={viewportController} />
+          <h3 className="game-studio-tweaks-h3">Tweaks</h3>
           <TweaksPane registry={registry} />
         </aside>
       </main>
-      <footer className="game-studio-console-pane">
-        <div className="game-studio-console-header">
+      <footer className="game-studio-footer">
+        <div className="game-studio-footer-header">
           <h3>Console</h3>
           <button
             type="button"
@@ -105,6 +146,11 @@ export function GameStudioShell({ game, renderDrawer }: ShellProps) {
         </div>
         <ConsolePane handle={debugHandle} />
       </footer>
+      {topTab === "code" && (
+        <div className="game-studio-code-fullscreen">
+          <CodePane loadSources={loadSources} />
+        </div>
+      )}
       {renderDrawer && renderDrawer(drawerOpen, () => setDrawerOpen(false))}
     </div>
   );

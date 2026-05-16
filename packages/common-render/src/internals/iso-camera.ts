@@ -149,11 +149,49 @@ export class IsoCamera {
     return this.raycaster.ray.intersectPlane(this.groundPlane, out) !== null;
   }
 
-  /** Snap `world` to the nearest/floor/ceil cell of the screen-pixel lattice on Y=0. */
+  /**
+   * Return the current screen-pixel basis on the ground plane:
+   *   {centerX, centerZ}: ground point at NDC (0,0).
+   *   {ux, uz}: world XZ delta corresponding to +1 screen pixel right.
+   *   {vx, vz}: world XZ delta corresponding to +1 screen pixel down on screen.
+   * Returns null in side mode (no ground basis exists). The snap function
+   * uses exactly these vectors; tests/diagnostics use this to compute
+   * (a, b) snap-cell coords for arbitrary world points.
+   */
+  getSnapBasis(): {
+    centerX: number;
+    centerZ: number;
+    ux: number;
+    uz: number;
+    vx: number;
+    vz: number;
+  } | null {
+    if (this.viewMode === "side") {
+      return null;
+    }
+    return {
+      centerX: this.centerGround.x,
+      centerZ: this.centerGround.z,
+      ux: this.screenRightWorld.x,
+      uz: this.screenRightWorld.z,
+      vx: this.screenDownWorld.x,
+      vz: this.screenDownWorld.z
+    };
+  }
+
+  /**
+   * Snap `world` to the nearest/floor/ceil cell of the screen-pixel lattice
+   * on Y=0. `granularity` widens the lattice along each axis: with the
+   * default {a:1, b:1} every screen pixel is a cell; pass {a:2, b:1} for
+   * the iso 2:1 stair-step lattice, where every snap step on (a, b)
+   * corresponds to one perfect stair (2 px right + 1 px down) instead of
+   * landing on arbitrary sub-stair pixels that break the 2:1 outline.
+   */
   snapWorldPointOnGround(
     world: THREE.Vector3,
     out: THREE.Vector3,
-    mode: PixelSnapMode
+    mode: PixelSnapMode,
+    granularity: { a: number; b: number } = { a: 1, b: 1 }
   ): boolean {
     if (this.viewMode === "side") {
       return false;
@@ -168,10 +206,12 @@ export class IsoCamera {
     if (Math.abs(det) < 1e-8) {
       return false;
     }
+    const ga = Math.max(1, granularity.a);
+    const gb = Math.max(1, granularity.b);
     const a = (wx * vz - wz * vx) / det;
     const b = (wz * ux - wx * uz) / det;
-    const qa = quantizeSnap(a, mode);
-    const qb = quantizeSnap(b, mode);
+    const qa = quantizeSnap(a / ga, mode) * ga;
+    const qb = quantizeSnap(b / gb, mode) * gb;
     out.set(
       this.centerGround.x + ux * qa + vx * qb,
       world.y,

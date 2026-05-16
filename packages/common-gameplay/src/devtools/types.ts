@@ -1,10 +1,12 @@
 import type { World } from "../ecs/world";
 import type { DebugSink } from "../ecs/types";
 import type { KeyboardTracker, SystemPipeline } from "../ecs/systems";
+import type { Scene } from "./scene";
 
 // Contract types between a game-studio shell and a playable game module.
-// Generic `TNode` keeps gameplay three-agnostic; the studio specializes it
-// (typically with `THREE.Object3D`).
+// Game code is fully three-agnostic: it puts geometry on screen through
+// the abstract `Scene` interface, which the studio implements (the three
+// adapter lives in @common/render).
 
 export type KnobNumberSpec = {
   kind: "number";
@@ -50,8 +52,8 @@ export type KnobRegistry = {
   subscribe(listener: () => void): () => void;
 };
 
-export type GameStudioContext<TNode = unknown> = {
-  rootNode: TNode;
+export type GameStudioContext = {
+  scene: Scene;
   world: World;
   keyboard: KeyboardTracker;
   debug: DebugSink;
@@ -66,9 +68,9 @@ export type GameInstance = {
   dispose(): void;
 };
 
-export type GameModule<TNode = unknown> = {
+export type GameModule = {
   id: string;
   title: string;
   description?: string;
-  create(ctx: GameStudioContext<TNode>): GameInstance | Promise<GameInstance>;
+  create(ctx: GameStudioContext): GameInstance | Promise<GameInstance>;
 };

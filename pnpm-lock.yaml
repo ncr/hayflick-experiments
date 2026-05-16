@@ -128,9 +128,6 @@ importers:
       '@experiments/runtime':
         specifier: workspace:*
         version: link:../_runtime
-      three:
-        specifier: ^0.173.0
-        version: 0.173.0
 
   experiments/physics-prop-drop:
     dependencies:
@@ -189,6 +186,9 @@ importers:
 
   packages/common-render:
     dependencies:
+      '@common/gameplay':
+        specifier: workspace:*
+        version: link:../common-gameplay
       three:
         specifier: ^0.173.0
         version: 0.173.0

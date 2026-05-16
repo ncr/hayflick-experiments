@@ -82,6 +82,7 @@ export class IsoGameView {
   private readonly mount: HTMLElement;
   private readonly pane: PixelPerfectPane;
   private readonly projectLocal = new THREE.Vector2();
+  private readonly zoomLadderValues: readonly number[];
   private disposed = false;
 
   constructor(config: IsoGameViewConfig) {
@@ -150,6 +151,15 @@ export class IsoGameView {
     this.cameraTarget = this.pane.cameraTarget;
     this.outline = this.pane.outline;
 
+    const zMin = paneConfig.zoomMin ?? PixelPerfectDefaults.zoomMin;
+    const zMax = paneConfig.zoomMax ?? PixelPerfectDefaults.zoomMax;
+    const zStep = paneConfig.zoomStep ?? PixelPerfectDefaults.zoomStep;
+    const levels: number[] = [];
+    for (let z = zMin; z <= zMax + 1e-9; z += zStep) {
+      levels.push(Number(z.toFixed(6)));
+    }
+    this.zoomLadderValues = Object.freeze(levels);
+
     warnIfSceneHasNoLights(config.scene, "IsoGameView");
   }
 
@@ -178,6 +188,58 @@ export class IsoGameView {
 
   setViewPose(pose: IsoGameViewPose): void {
     this.pane.setViewPose(pose);
+  }
+
+  /**
+   * Discrete zoom levels resolved from the pane's `zoomMin/Max/Step` tuning.
+   * These are the values the radio-style UI surfaces to the user; staying
+   * on the ladder keeps the upscale on its quantized rail and avoids
+   * sub-pixel shimmer.
+   */
+  getZoomLadder(): readonly number[] {
+    return this.zoomLadderValues;
+  }
+
+  /** Set the target zoom. Thin wrapper over {@link setViewPose}. */
+  setZoom(zoom: number): void {
+    this.setViewPose({ ...this.getViewPose(), zoom });
+  }
+
+  /**
+   * Physical mm one low-res texel occupies on screen at `zoom`, using the
+   * W3C convention that 1 CSS px ≈ 1/96 inch. The OS doesn't expose real
+   * mm so this varies by display — treat as a sensible default. Depends on
+   * `baseRenderScale`, which depends on canvas size, so values shift on
+   * resize.
+   */
+  getTexelMmForZoom(zoom: number, devicePixelRatioOverride?: number): number {
+    const dpr =
+      devicePixelRatioOverride ??
+      (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
+    const cssPxPerMm = 96 / 25.4;
+    const baseRenderScale = Math.max(1, this.getState().baseRenderScale);
+    return (baseRenderScale * zoom) / dpr / cssPxPerMm;
+  }
+
+  /**
+   * Pick the ladder entry whose on-screen texel size is closest to
+   * `targetMm`. Use to choose a sensible default that lives on the
+   * quantized zoom rail.
+   */
+  pickClosestZoomForTexelMm(
+    targetMm: number,
+    devicePixelRatioOverride?: number
+  ): number {
+    let best = this.zoomLadderValues[0] ?? 1;
+    let bestDiff = Infinity;
+    for (const z of this.zoomLadderValues) {
+      const diff = Math.abs(this.getTexelMmForZoom(z, devicePixelRatioOverride) - targetMm);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = z;
+      }
+    }
+    return best;
   }
 
   getYawIndex(): number {
@@ -327,6 +389,11 @@ export class IsoGameView {
     return this.pane.worldAtLocalCss(local.x, local.y, out);
   }
 
+  /** Project a world point to mount-local CSS pixel coords (origin at top-left of the viewport mount). */
+  projectWorldToLocalCss(world: THREE.Vector3, out: THREE.Vector2): boolean {
+    return this.pane.projectWorldToLocalCss(world, out);
+  }
+
   projectWorldToClient(world: THREE.Vector3, out: THREE.Vector2): boolean {
     const local = this.projectLocal;
     if (!this.pane.projectWorldToLocalCss(world, local)) {
@@ -337,12 +404,47 @@ export class IsoGameView {
     return true;
   }
 
+  /**
+   * Snap a world point to the screen-pixel lattice on the ground plane.
+   * The default {a:1, b:1} quantizes to every screen pixel — under
+   * orthographic projection, translating by integer screen pixels is
+   * rasterization-identical (the cornerstone), so the rendered outline
+   * is pixel-stable across all snap cells regardless of granularity.
+   *
+   * The staircase *trajectory* of a moving box (the iso 2:1 walk you
+   * see when moving diagonally) is shaped by how the input system feeds
+   * deltas into the (a, b) basis, NOT by snap granularity: see
+   * `createPlayerInputSystem` for the iso 2:1 input mapping.
+   *
+   * `granularity` is retained as an escape hatch for tools that want to
+   * pin objects to coarser cells; the game render path should keep the
+   * default.
+   */
   snapWorldPointOnGround(
     world: THREE.Vector3,
     out: THREE.Vector3,
-    mode: PixelSnapMode = "nearest"
+    mode: PixelSnapMode = "nearest",
+    granularity: { a: number; b: number } = { a: 1, b: 1 }
   ): boolean {
-    return this.pane.snapWorldPointOnGround(world, out, mode);
+    return this.pane.snapWorldPointOnGround(world, out, mode, granularity);
+  }
+
+  /**
+   * Returns the current screen-pixel basis on the ground plane (center +
+   * u (one screen-pixel right in world XZ) + v (one screen-pixel down in
+   * world XZ)) — the basis used by {@link snapWorldPointOnGround}. Null
+   * in side mode. Diagnostic / test surface; the game render path uses
+   * `snapWorldPointOnGround` instead.
+   */
+  getSnapBasis(): {
+    centerX: number;
+    centerZ: number;
+    ux: number;
+    uz: number;
+    vx: number;
+    vz: number;
+  } | null {
+    return this.pane.getSnapBasis();
   }
 
   dispose(): void {

@@ -91,6 +91,9 @@ See `docs/PIXEL_PERFECT_FOUNDATION.md` for full architecture.
 5. Pan advances in whole low-res pixel steps with carried remainder
 6. Zoom changes corrected by pan so world point under cursor stays fixed
 7. Overscan guard band prevents edge bars under remainder shifts
+8. **Geometry XZ dimensions must be multiples of `0.0625 wu`** (= 2 H + 1 V px = one iso 2:1 stair step). Non-stair sizes (e.g. `0.8 wu` → `25.6 px`) rasterize to irregular silhouette outlines mixing 2-wide and 3-wide treads. Enforced by `isoCleanGeometryValidator` (wired into `createThreeScene` from game-studio); construction throws `IsoGeometryViolation` on misaligned spawns. Y is exempt (the iso projection makes Y irrational regardless; vertical edges project purely vertical and don't affect the stair pattern).
+9. **Snap math is uniform `(1, 1)` granularity** on the screen-pixel lattice. The iso 2:1 *trajectory* of a moving box comes from how the input system feeds deltas (`createPlayerInputSystem` with a pixel basis maps input.y by 0.5 so diagonal walks trace a clean Bresenham 2:1 stair). Do **not** be tempted to coarsen snap to `{a:2, b:1}` to "force" stair-shaped trajectory — that produces visible wobble because per-axis rounding decouples motion. See `docs/AGENT_LEARNINGS.md` → "iso 2:1 diagonal wobble".
+10. **Player speed has a smoothness floor.** Below `recommendedMinPxPerSecForIso()` (≈67 px/s @ 60 fps), the dominant snap axis advances less than 1 cell per frame, so motion ticks one axis at a time with visible gaps. The cornerstone (mesh stable) and trajectory invariant (stays on the iso 2:1 line) still hold, but the eye sees discrete ticks. Use the helper as a knob `min` (preferred) or as a system-level clamp. Going below is allowed for design reasons (slow-walk, paused world); the helper just makes the trade-off explicit.
 
 ## Tileset Pipeline (Blockstudio)
 

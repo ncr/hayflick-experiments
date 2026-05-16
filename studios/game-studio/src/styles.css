@@ -10,6 +10,7 @@
   font-size: 13px;
 }
 
+
 .game-studio-header {
   display: flex;
   align-items: center;
@@ -54,6 +55,37 @@
   max-width: 60vw;
 }
 
+.game-studio-top-tabs {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  align-self: stretch;
+  align-items: stretch;
+}
+
+.game-studio-top-tab {
+  background: transparent;
+  border: none;
+  color: #6a6558;
+  padding: 0 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.game-studio-top-tab:hover {
+  color: #d6d0c2;
+}
+
+.game-studio-top-tab.active {
+  color: #d97706;
+  border-bottom-color: #d97706;
+}
+
 .game-studio-main {
   display: grid;
   grid-template-columns: 1fr 280px;
@@ -78,14 +110,61 @@
   overflow-y: auto;
 }
 
-.game-studio-tweaks-pane h3,
-.game-studio-console-header h3 {
+.game-studio-tweaks-pane h3 {
   margin: 0 0 8px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #d97706;
+}
+
+.game-studio-tweaks-pane h3.game-studio-tweaks-h3 {
+  margin-top: 16px;
+}
+
+.game-studio-zoom {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
+.game-studio-zoom-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #1a1c20;
+  border: 1px solid #3a3d44;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.game-studio-zoom-option:hover {
+  border-color: #5a6068;
+}
+
+.game-studio-zoom-option.active {
+  border-color: #d97706;
+  background: #2a201a;
+}
+
+.game-studio-zoom-option input[type="radio"] {
+  margin: 0;
+  accent-color: #d97706;
+}
+
+.game-studio-zoom-label {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: #f4d4a0;
+}
+
+.game-studio-zoom-mm {
+  margin-left: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: #a8a294;
+  font-size: 10px;
 }
 
 .game-studio-tweaks-empty {
@@ -149,7 +228,7 @@
   font-size: 12px;
 }
 
-.game-studio-console-pane {
+.game-studio-footer {
   display: flex;
   flex-direction: column;
   background: #15171b;
@@ -157,12 +236,21 @@
   min-height: 0;
 }
 
-.game-studio-console-header {
+.game-studio-footer-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 6px 14px;
   border-bottom: 1px solid #2a2d33;
+}
+
+.game-studio-footer-header h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #d97706;
 }
 
 .game-studio-console-clear {
@@ -202,6 +290,82 @@
 .game-studio-console-frame {
   color: #6a6558;
   margin-right: 6px;
+}
+
+.game-studio-code {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.game-studio-code-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 12px 0;
+  border-bottom: 1px solid #2a2d33;
+  overflow-x: auto;
+}
+
+.game-studio-code-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: #a8a294;
+  padding: 4px 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 4px 4px 0 0;
+  white-space: nowrap;
+  margin-bottom: -1px;
+}
+
+.game-studio-code-tab:hover {
+  color: #e8e3d6;
+}
+
+.game-studio-code-tab.active {
+  color: #f4d4a0;
+  background: #0e1014;
+  border-color: #2a2d33;
+  border-bottom-color: #0e1014;
+}
+
+.game-studio-code-body {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 14px;
+  background: #0e1014;
+  color: #d6d0c2;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.game-studio-code-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6a6558;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.game-studio-code-fullscreen {
+  position: absolute;
+  top: 48px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0e1014;
+  z-index: 10;
 }
 
 .game-studio-fallback {
