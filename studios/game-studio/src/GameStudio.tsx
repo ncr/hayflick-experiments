@@ -36,8 +36,26 @@ export function GameStudioShell({ game, loadSources, renderDrawer }: ShellProps)
   const [debugHandle] = useState(() => createDebugSink({ maxEntries: 200 }));
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [topTab, setTopTab] = useState<TopTab>("studio");
+  const [outlines, setOutlines] = useState(true);
   const [viewportController, setViewportController] =
     useState<ViewportController | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (target?.isContentEditable) return;
+      if (e.key === "g" || e.key === "G") {
+        setTopTab("studio");
+      } else if (e.key === "c" || e.key === "C") {
+        setTopTab("code");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const handleRef = useRef({
     gameId: game.id,
@@ -121,6 +139,7 @@ export function GameStudioShell({ game, loadSources, renderDrawer }: ShellProps)
             game={game}
             knobs={registry}
             debug={debugHandle.sink}
+            outlines={outlines}
             onWorld={onWorld}
             onScene={onScene}
             onController={setViewportController}
@@ -129,6 +148,15 @@ export function GameStudioShell({ game, loadSources, renderDrawer }: ShellProps)
         <aside className="game-studio-tweaks-pane">
           <h3>Zoom</h3>
           <ZoomRadio controller={viewportController} />
+          <h3 className="game-studio-tweaks-h3">Render</h3>
+          <label className="knob knob-toggle">
+            <span className="knob-key">outlines</span>
+            <input
+              type="checkbox"
+              checked={outlines}
+              onChange={(e) => setOutlines(e.target.checked)}
+            />
+          </label>
           <h3 className="game-studio-tweaks-h3">Tweaks</h3>
           <TweaksPane registry={registry} />
         </aside>

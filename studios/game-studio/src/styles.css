@@ -346,6 +346,17 @@
   white-space: pre;
 }
 
+.game-studio-code-body .tok-comment { color: #6a6558; font-style: italic; }
+.game-studio-code-body .tok-string  { color: #a6c98a; }
+.game-studio-code-body .tok-regex   { color: #d6a06b; }
+.game-studio-code-body .tok-number  { color: #d29a5b; }
+.game-studio-code-body .tok-keyword { color: #c98ed1; }
+.game-studio-code-body .tok-type    { color: #6dbfd1; }
+.game-studio-code-body .tok-builtin { color: #e0b97a; }
+.game-studio-code-body .tok-operator{ color: #d97706; }
+.game-studio-code-body .tok-punct   { color: #8a8579; }
+.game-studio-code-body .tok-ident   { color: #d6d0c2; }
+
 .game-studio-code-empty {
   flex: 1;
   display: flex;

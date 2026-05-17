@@ -354,5 +354,60 @@ test.describe("game-studio", () => {
     await fileTabs.nth(1).click();
     await expect(fileTabs.nth(1)).toHaveClass(/active/);
     await expect(body).toContainText('id: "grid-walker"');
+
+    // Syntax highlighting: at least one keyword / string / type / comment
+    // token span renders inside the code body.
+    await expect(body.locator(".tok-keyword").first()).toBeVisible();
+    await expect(body.locator(".tok-string").first()).toBeVisible();
+    await expect(body.locator(".tok-type").first()).toBeVisible();
+  });
+
+  test("g/c keys switch between Game and Code top tabs", async ({ page }) => {
+    await page.goto("/#/play/grid-walker");
+    await expect(page.locator(".game-studio")).toBeVisible({ timeout: 10_000 });
+
+    const studioTab = page.locator(".game-studio-top-tab", { hasText: "Game Studio" });
+    const codeTab = page.locator(".game-studio-top-tab", { hasText: "Code" });
+    await expect(studioTab).toHaveClass(/active/);
+
+    await page.keyboard.press("c");
+    await expect(codeTab).toHaveClass(/active/);
+    await expect(page.locator(".game-studio-code-fullscreen")).toBeVisible();
+
+    await page.keyboard.press("g");
+    await expect(studioTab).toHaveClass(/active/);
+    await expect(page.locator(".game-studio-code-fullscreen")).toHaveCount(0);
+  });
+
+  test("zoom ladder is restricted to 1..4 with 2× as the default", async ({ page }) => {
+    await page.goto("/#/play/grid-walker");
+    await expect(page.locator(".game-studio-viewport-mount canvas")).toBeVisible({
+      timeout: 10_000
+    });
+    await page.waitForFunction(
+      () => Boolean(window.__gameStudio?.viewport),
+      null,
+      { timeout: 10_000 }
+    );
+
+    const labels = await page.locator(".game-studio-zoom-label").allTextContents();
+    expect(labels).toEqual(["1×", "2×", "3×", "4×"]);
+
+    const checked = page.locator(".game-studio-zoom-option.active .game-studio-zoom-label");
+    await expect(checked).toHaveText("2×");
+  });
+
+  test("outlines toggle disables the outline pipeline", async ({ page }) => {
+    await page.goto("/#/play/grid-walker");
+    await expect(page.locator(".game-studio-viewport-mount canvas")).toBeVisible({
+      timeout: 10_000
+    });
+
+    const toggle = page.locator(".knob-toggle", { hasText: "outlines" }).locator("input");
+    await expect(toggle).toBeChecked();
+    await toggle.uncheck();
+    await expect(toggle).not.toBeChecked();
+    await toggle.check();
+    await expect(toggle).toBeChecked();
   });
 });

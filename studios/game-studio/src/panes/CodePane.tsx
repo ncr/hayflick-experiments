@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { GameSource } from "../index";
+import { tokenize } from "./highlight";
 
 type LoadState =
   | { kind: "loading" }
@@ -70,8 +71,21 @@ export function CodePane({ loadSources }: CodePaneProps) {
         ))}
       </div>
       <pre className="game-studio-code-body">
-        <code>{active.code}</code>
+        <Highlighted code={active.code} />
       </pre>
     </div>
+  );
+}
+
+function Highlighted({ code }: { code: string }) {
+  const tokens = useMemo(() => tokenize(code), [code]);
+  return (
+    <code>
+      {tokens.map((t, idx) => (
+        <span key={idx} className={`tok-${t.kind}`}>
+          {t.text}
+        </span>
+      ))}
+    </code>
   );
 }

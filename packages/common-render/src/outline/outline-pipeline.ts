@@ -291,6 +291,10 @@ export class OutlinePipeline {
     return mode;
   }
 
+  setOutlineMix(mix: number): void {
+    this.postMaterial.uniforms.uOutlineMix.value = Math.max(0, Math.min(1, mix));
+  }
+
   setIdSuppression(state: "on" | "off"): void {
     this.postMaterial.uniforms.uIdSuppressNormalDot.value = state === "on" ? 0.5 : 2.0;
   }

@@ -58,21 +58,26 @@ type Props = {
   game: GameModule;
   knobs: KnobRegistry;
   debug: DebugSink;
+  outlines: boolean;
   onWorld?: (world: World) => void;
   onScene?: (scene: Scene | null) => void;
   onController?: (controller: ViewportController | null) => void;
 };
 
-const DEFAULT_TEXEL_MM = 1;
+const DEFAULT_ZOOM = 2;
 
 export function ViewportPane({
   game,
   knobs,
   debug,
+  outlines,
   onWorld,
   onScene,
   onController
 }: Props) {
+  const outlinesRef = useRef(outlines);
+  outlinesRef.current = outlines;
+  const viewRef = useRef<IsoGameView | null>(null);
   const mountRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -98,11 +103,19 @@ export function ViewportPane({
       clearColor: 0x121419,
       shadows: true,
       outlines: true,
-      lighting: true
+      lighting: true,
+      zoomMin: 1,
+      zoomMax: 4,
+      zoomStep: 1
     });
-    cleanups.push(() => view.dispose());
+    viewRef.current = view;
+    view.outline?.setOutlineMix(outlinesRef.current ? 1 : 0);
+    cleanups.push(() => {
+      viewRef.current = null;
+      view.dispose();
+    });
 
-    let currentZoom = view.pickClosestZoomForTexelMm(DEFAULT_TEXEL_MM);
+    let currentZoom = DEFAULT_ZOOM;
     view.setZoom(currentZoom);
 
     let ladderCache: readonly ZoomLadderEntry[] = view
@@ -260,6 +273,10 @@ export function ViewportPane({
       instanceRef = null;
     };
   }, [game, knobs, debug, onWorld, onScene, onController]);
+
+  useEffect(() => {
+    viewRef.current?.outline?.setOutlineMix(outlines ? 1 : 0);
+  }, [outlines]);
 
   return <div className="game-studio-viewport-mount" ref={mountRef} />;
 }
