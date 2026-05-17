@@ -3,49 +3,74 @@ import {
   ISO_INPUT_DIAGONAL_A_RATE,
   ISO_INPUT_DIAGONAL_B_RATE,
   KeyboardTracker,
+  createControlledInputSystem,
   createEventSystem,
   createInputSystem,
   createMovementSystem,
-  createPlayerInputSystem,
   recommendedMinPxPerSecForIso
 } from "./systems";
 import { World } from "./world";
 
-describe("createPlayerInputSystem", () => {
-  it("normalizes diagonal input and writes velocity for player-tagged entities", () => {
+describe("createControlledInputSystem", () => {
+  it("normalizes diagonal input and writes velocity for controlled entities (world-axis fallback)", () => {
     const world = new World();
     const player = world.createEntity();
     world.transforms.add(player, { x: 0, y: 0 });
-    world.playerTags.add(player, true);
+    // Pick a speed well above the iso smoothness floor so the system's
+    // internal clamp doesn't change it. Floor ≈ 67 px/s at 60 fps.
+    world.controlled.add(player, { speed: 80 });
 
     world.input.up = true;
     world.input.right = true;
 
-    createPlayerInputSystem(4)(world);
+    createControlledInputSystem()(world);
 
     const velocity = world.velocities.get(player);
     expect(velocity).toBeDefined();
-    expect(velocity?.vx ?? 0).toBeCloseTo(2.828427, 5);
-    expect(velocity?.vy ?? 0).toBeCloseTo(2.828427, 5);
+    // 80 * (1/√2) ≈ 56.5685 on each world axis (no pixel basis here).
+    expect(velocity?.vx ?? 0).toBeCloseTo(80 / Math.SQRT2, 5);
+    expect(velocity?.vy ?? 0).toBeCloseTo(80 / Math.SQRT2, 5);
   });
 
-  it("tolerates unexpected missing velocity reads without throwing", () => {
+  it("clamps speeds below the iso smoothness floor up to the floor", () => {
     const world = new World();
-    const player = world.createEntity();
-    world.transforms.add(player, { x: 0, y: 0 });
-    world.playerTags.add(player, true);
+    const eid = world.createEntity();
+    world.transforms.add(eid, { x: 0, y: 0 });
+    world.controlled.add(eid, { speed: 10 });
 
-    const originalGet = world.velocities.get.bind(world.velocities);
-    let first = true;
-    world.velocities.get = ((eid: number) => {
-      if (first) {
-        first = false;
-        return undefined;
-      }
-      return originalGet(eid);
-    }) as typeof world.velocities.get;
+    world.input.right = true;
+    createControlledInputSystem()(world);
 
-    expect(() => createPlayerInputSystem(4)(world)).not.toThrow();
+    const velocity = world.velocities.get(eid);
+    expect(velocity?.vx ?? 0).toBeCloseTo(recommendedMinPxPerSecForIso(), 5);
+  });
+
+  it("reads getter speeds for live-knob tracking", () => {
+    const world = new World();
+    const eid = world.createEntity();
+    world.transforms.add(eid, { x: 0, y: 0 });
+    let current = 100;
+    world.controlled.add(eid, { speed: () => current });
+
+    world.input.right = true;
+    createControlledInputSystem()(world);
+    expect(world.velocities.get(eid)?.vx ?? 0).toBeCloseTo(100, 5);
+
+    current = 200;
+    createControlledInputSystem()(world);
+    expect(world.velocities.get(eid)?.vx ?? 0).toBeCloseTo(200, 5);
+  });
+
+  it("zeroes velocity when no input is held", () => {
+    const world = new World();
+    const eid = world.createEntity();
+    world.transforms.add(eid, { x: 0, y: 0 });
+    world.controlled.add(eid, { speed: 100 });
+    world.velocities.add(eid, { vx: 50, vy: 50 });
+
+    createControlledInputSystem()(world);
+
+    expect(world.velocities.get(eid)).toEqual({ vx: 0, vy: 0 });
   });
 });
 

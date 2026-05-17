@@ -414,7 +414,7 @@ export class IsoGameView {
    * The staircase *trajectory* of a moving box (the iso 2:1 walk you
    * see when moving diagonally) is shaped by how the input system feeds
    * deltas into the (a, b) basis, NOT by snap granularity: see
-   * `createPlayerInputSystem` for the iso 2:1 input mapping.
+   * `createControlledInputSystem` for the iso 2:1 input mapping.
    *
    * `granularity` is retained as an escape hatch for tools that want to
    * pin objects to coarser cells; the game render path should keep the

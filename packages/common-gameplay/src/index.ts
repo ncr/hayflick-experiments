@@ -14,3 +14,4 @@ export * from "./ecs";
 export * from "./level-runtime";
 export * from "./devtools/types";
 export * from "./devtools/scene";
+export * from "./devtools/define-game";

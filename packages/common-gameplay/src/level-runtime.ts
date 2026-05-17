@@ -1,4 +1,4 @@
-import type { EID, Persistent, Transform, Velocity } from "./ecs/types";
+import type { Controlled, EID, Persistent, Transform, Velocity } from "./ecs/types";
 import type { System } from "./ecs/systems";
 import { World } from "./ecs/world";
 
@@ -14,7 +14,7 @@ export type LevelRuntimeObjectInput<TNode = unknown> = {
   transform?: Transform;
   velocity?: Velocity;
   persistent?: Persistent;
-  player?: boolean;
+  controlled?: Controlled;
 };
 
 export type LevelRuntimeOptions<TNode = unknown> = {
@@ -68,8 +68,8 @@ export class LevelRuntime<TNode = unknown> {
     if (input.persistent) {
       this.world.persistents.add(eid, { ...input.persistent });
     }
-    if (input.player) {
-      this.world.playerTags.add(eid, true);
+    if (input.controlled) {
+      this.world.controlled.add(eid, { speed: input.controlled.speed });
     }
 
     this.objects.set(input.id, object);

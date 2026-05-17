@@ -73,21 +73,21 @@ describe("common-physics-rapier", () => {
     cleanup.push(() => physics.dispose());
 
     const player = world.createEntity();
-    world.playerTags.add(player, true);
+    world.controlled.add(player, { speed: 0 });
     world.transforms.add(player, { x: 2, y: 2 });
     world.velocities.add(player, { vx: 1.5, vy: 0.4 });
 
     physicsEnsureSystem({
       world,
       physics,
-      entities: world.queryTransformPlayer(),
+      entities: world.queryTransformControlled(),
       capsule: { radius: 0.25 }
     });
 
     physicsSyncInSystem({
       world,
       physics,
-      entities: world.queryTransformPlayer()
+      entities: world.queryTransformControlled()
     });
 
     for (let i = 0; i < 12; i += 1) {
@@ -97,7 +97,7 @@ describe("common-physics-rapier", () => {
     physicsSyncOutSystem({
       world,
       physics,
-      entities: world.queryTransformPlayer()
+      entities: world.queryTransformControlled()
     });
 
     const playerTransform = world.transforms.get(player);
@@ -149,7 +149,7 @@ describe("common-physics-rapier", () => {
     cleanup.push(() => physics.dispose());
 
     const player = world.createEntity();
-    world.playerTags.add(player, true);
+    world.controlled.add(player, { speed: 0 });
     world.transforms.add(player, { x: 0, y: 0 });
     world.velocities.add(player, { vx: 2, vy: 2 });
 
@@ -158,14 +158,14 @@ describe("common-physics-rapier", () => {
     physicsEnsureSystem({
       world,
       physics,
-      entities: world.queryTransformPlayer(),
+      entities: world.queryTransformControlled(),
       capsule: { radius: 0.25 }
     });
 
     physicsSyncInSystem({
       world,
       physics,
-      entities: world.queryTransformPlayer()
+      entities: world.queryTransformControlled()
     });
 
     for (let i = 0; i < 60; i += 1) {
@@ -175,7 +175,7 @@ describe("common-physics-rapier", () => {
     physicsSyncOutSystem({
       world,
       physics,
-      entities: world.queryTransformPlayer()
+      entities: world.queryTransformControlled()
     });
 
     const playerTransform = world.transforms.get(player);
@@ -232,7 +232,7 @@ describe("common-physics-rapier", () => {
     cleanup.push(() => physics.dispose());
 
     const player = world.createEntity();
-    world.playerTags.add(player, true);
+    world.controlled.add(player, { speed: 0 });
     world.transforms.add(player, { x: 1, y: 1 });
     world.velocities.add(player, { vx: 0, vy: 0 });
 
@@ -240,7 +240,7 @@ describe("common-physics-rapier", () => {
     physicsEnsureSystem({
       world,
       physics,
-      entities: world.queryTransformPlayer(),
+      entities: world.queryTransformControlled(),
       capsule: { radius: 0.2 }
     });
 

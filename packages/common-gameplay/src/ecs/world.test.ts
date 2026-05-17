@@ -11,17 +11,17 @@ describe("World", () => {
 
     world.transforms.add(eid, { x: 1, y: 2 });
     world.velocities.add(eid, { vx: 3, vy: 4 });
-    world.playerTags.add(eid, true);
+    world.controlled.add(eid, { speed: 80 });
 
     expect([...world.queryTransformVelocity()]).toEqual([eid]);
-    expect([...world.queryTransformPlayer()]).toEqual([eid]);
+    expect([...world.queryTransformControlled()]).toEqual([eid]);
 
     world.destroyEntity(eid);
 
     expect(world.alive(eid)).toBe(false);
     expect(world.transforms.has(eid)).toBe(false);
     expect(world.velocities.has(eid)).toBe(false);
-    expect(world.playerTags.has(eid)).toBe(false);
+    expect(world.controlled.has(eid)).toBe(false);
     expect(world.sceneRefs.has(eid)).toBe(false);
   });
 
@@ -33,7 +33,9 @@ describe("World", () => {
     const player = source.createEntity();
     source.transforms.add(player, { x: 5, y: 6 });
     source.velocities.add(player, { vx: 1, vy: 0 });
-    source.playerTags.add(player, true);
+    // `controlled` is intentionally runtime-only — it carries a function
+    // speed that can't serialize. The game re-attaches the binding in
+    // its setup after load.
     source.persistents.add(player, { kind: "player" });
     source.time.t = 9.5;
 
@@ -51,7 +53,6 @@ describe("World", () => {
     expect(eid).toBe(1);
     expect(restored.transforms.get(eid)).toEqual({ x: 5, y: 6 });
     expect(restored.velocities.get(eid)).toEqual({ vx: 1, vy: 0 });
-    expect(restored.playerTags.has(eid)).toBe(true);
     expect(restored.persistents.get(eid)).toEqual({ kind: "player" });
     expect(restored.level.id).toBe("save-level");
     expect(restored.level.version).toBe(7);
@@ -75,7 +76,6 @@ describe("World", () => {
     });
     const eid = world.createEntity();
     world.transforms.add(eid, { x: 2, y: 3 });
-    world.playerTags.add(eid, true);
     world.time.t = 7;
 
     world.saveToLocalStorage("wrapper-key");
@@ -100,18 +100,21 @@ describe("frame", () => {
       inputSystem() {
         calls.push("input");
       },
-      playerInputSystem() {
-        calls.push("player");
+      controlledInputSystem() {
+        calls.push("controlled");
       },
       movementSystem() {
         calls.push("movement");
+      },
+      meshSyncSystem() {
+        calls.push("meshSync");
       },
       eventSystem() {
         calls.push("event");
       }
     });
 
-    expect(calls).toEqual(["input", "player", "movement", "event"]);
+    expect(calls).toEqual(["input", "controlled", "movement", "meshSync", "event"]);
     expect(world.time.dt).toBe(0.25);
     expect(world.time.t).toBe(0.25);
     expect(world.time.frame).toBe(1);

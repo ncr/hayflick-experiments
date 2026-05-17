@@ -5,8 +5,9 @@ export type System = (world: World) => void;
 
 export type SystemPipeline = {
   inputSystem: System;
-  playerInputSystem: System;
+  controlledInputSystem: System;
   movementSystem: System;
+  meshSyncSystem: System;
   eventSystem: System;
 };
 
@@ -92,8 +93,8 @@ export type PlayerInputPixelBasis = {
 };
 
 /**
- * The iso 2:1 input mapping (in `createPlayerInputSystem`) scales the y
- * component of input by 0.5, so a diagonal A+W direction normalizes to
+ * The iso 2:1 input mapping (in `createControlledInputSystem`) scales the
+ * y component of input by 0.5, so a diagonal A+W direction normalizes to
  * `(aDir, bDir) = (2/√5, 1/√5)` on the screen-pixel lattice. Re-exported
  * as named constants so the smoothness math + tests can pin them.
  */
@@ -129,79 +130,90 @@ export function recommendedMinPxPerSecForIso(
 }
 
 /**
- * PlayerInputSystem — maps WASD/arrows to velocity for player-tagged entities.
- *
- * `speed` (constant or getter) is interpreted by `pixelBasis`:
- *   - **With** `pixelBasis`: speed is **screen pixels per second** along
- *     whichever direction the input maps to. Diagonal input (e.g. A+W)
- *     is shaped so that on-screen motion follows the iso 2:1 staircase
- *     direction (Δa = 2·Δb), eliminating the diagonal wobble caused by
- *     foreshortening. This is the right mode for pixel-perfect iso games.
- *   - **Without** `pixelBasis`: speed is **world units per second** along
- *     world XZ. Diagonal input is a 45° unit vector in world XZ. Use
- *     only for non-pixel-snapped scenes or unit tests.
+ * ControlledInputSystem — maps WASD/arrows to velocity for every entity
+ * with a `Controlled` component. Each entity carries its own `speed`
+ * (number, or a getter for live-knob tracking). Speed is interpreted in
+ * screen pixels per second on the iso lattice; below the iso smoothness
+ * floor (`recommendedMinPxPerSecForIso`) the system clamps up so visible
+ * motion stays fluid regardless of what the knob says. Games that need
+ * to go below the floor (paused world, stealth crawl) attach their own
+ * input system instead of using this one.
  *
  * `pixelBasis` is a getter (recompute each frame — basis tracks camera
- * yaw / zoom). It may return null in poses with no ground basis (side
+ * yaw / zoom). May return null in poses with no ground basis (side
  * mode); the system falls back to the world-axis path in that case.
  */
-export function createPlayerInputSystem(
-  speed: number | (() => number) = 4,
+export function createControlledInputSystem(
   pixelBasis?: () => PlayerInputPixelBasis | null
 ): System {
-  const getSpeed = typeof speed === "function" ? speed : () => speed;
+  const smoothnessFloor = recommendedMinPxPerSecForIso();
   return (world: World) => {
     const { up, down, left, right } = world.input;
 
     const inputX = (right ? 1 : 0) - (left ? 1 : 0);
     const inputY = (up ? 1 : 0) - (down ? 1 : 0);
-    const s = getSpeed();
 
-    let vx = 0;
-    let vy = 0;
+    let aDir = 0;
+    let bDir = 0;
+    let dx = 0;
+    let dy = 0;
+    const basis = pixelBasis ? pixelBasis() : null;
 
     if (inputX !== 0 || inputY !== 0) {
-      const basis = pixelBasis ? pixelBasis() : null;
       if (basis) {
         // Map input onto the (a, b) screen-pixel lattice with iso 2:1
         // ratio: scale the y component to half of x so a combined input
         // traces a clean (2, 1) direction — the iso staircase angle —
         // instead of a 1:1 (45°) screen diagonal. Single-cardinal input
         // stays pure horizontal or pure vertical on screen.
-        //
-        // After normalize, a diagonal direction = (ISO_INPUT_DIAGONAL_A_RATE,
-        // ISO_INPUT_DIAGONAL_B_RATE) = (2/√5, 1/√5). The smoothness threshold
-        // in `recommendedMinPxPerSecForIso` is derived from these rates.
-        let aDir = inputX;
-        let bDir = -inputY * 0.5;
+        aDir = inputX;
+        bDir = -inputY * 0.5;
         const len = Math.hypot(aDir, bDir);
         aDir /= len;
         bDir /= len;
-        vx = (aDir * basis.ux + bDir * basis.vx) * s;
-        vy = (aDir * basis.uz + bDir * basis.vz) * s;
       } else {
-        let dx = inputX;
-        let dy = inputY;
+        dx = inputX;
+        dy = inputY;
         const length = Math.hypot(dx, dy);
         dx /= length;
         dy /= length;
-        vx = dx * s;
-        vy = dy * s;
       }
     }
 
-    for (const eid of world.queryTransformPlayer()) {
+    for (const eid of world.queryTransformControlled()) {
+      const controlled = world.controlled.get(eid);
+      if (!controlled) {
+        continue;
+      }
+
+      const rawSpeed =
+        typeof controlled.speed === "function"
+          ? controlled.speed()
+          : controlled.speed;
+      // Below the iso smoothness floor, the dominant axis advances less
+      // than one screen-pixel per frame, so motion ticks one axis at a
+      // time with visible gaps. The engine clamps so games never have to
+      // know about this constraint. (Engine quirk = engine's problem.)
+      const s = rawSpeed > 0 ? Math.max(rawSpeed, smoothnessFloor) : 0;
+
       if (!world.velocities.has(eid)) {
         world.velocities.add(eid, { vx: 0, vy: 0 });
       }
-
       const velocity = world.velocities.get(eid);
       if (!velocity) {
         continue;
       }
 
-      velocity.vx = vx;
-      velocity.vy = vy;
+      if (inputX === 0 && inputY === 0) {
+        velocity.vx = 0;
+        velocity.vy = 0;
+      } else if (basis) {
+        velocity.vx = (aDir * basis.ux + bDir * basis.vx) * s;
+        velocity.vy = (aDir * basis.uz + bDir * basis.vz) * s;
+      } else {
+        velocity.vx = dx * s;
+        velocity.vy = dy * s;
+      }
     }
   };
 }
@@ -255,6 +267,23 @@ export function createEventSystem(debugSink?: DebugSink): System {
   };
 }
 
+// MeshSyncSystem copies each entity's ground-plane transform into its
+// bound SceneObject. With `anchor: "bottom"` on the mesh, passing y=0
+// puts the bottom face on the floor — entities live in 2D (x, y on the
+// ground), and the renderer handles the vertical resting position.
+export function createMeshSyncSystem(): System {
+  return (world: World) => {
+    for (const eid of world.queryTransformMesh()) {
+      const transform = world.transforms.get(eid);
+      const mesh = world.meshes.get(eid);
+      if (!transform || !mesh) {
+        continue;
+      }
+      mesh.setPosition(transform.x, 0, transform.y);
+    }
+  };
+}
+
 // Per-frame entrypoint: update Time then run systems in fixed order.
 export function frame(world: World, dt: number, systems: SystemPipeline): void {
   world.time.dt = dt;
@@ -262,7 +291,8 @@ export function frame(world: World, dt: number, systems: SystemPipeline): void {
   world.time.frame += 1;
 
   systems.inputSystem(world);
-  systems.playerInputSystem(world);
+  systems.controlledInputSystem(world);
   systems.movementSystem(world);
+  systems.meshSyncSystem(world);
   systems.eventSystem(world);
 }

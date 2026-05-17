@@ -199,7 +199,7 @@ export function ViewportPane({
     //
     // The same view also exposes the (a, b) lattice basis the gameplay
     // input system needs to express motion in screen-pixels/sec along
-    // the iso 2:1 staircase — see `createPlayerInputSystem`.
+    // the iso 2:1 staircase — see `createControlledInputSystem`.
     const snapIn = new THREE.Vector3();
     const snapOut = new THREE.Vector3();
     const gameScene = createThreeScene(rootNode, {

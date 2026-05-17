@@ -75,18 +75,23 @@ class ThreeSceneObject implements SceneObject {
     private readonly parent: THREE.Object3D,
     private readonly node: THREE.Object3D,
     private readonly resources: ReadonlyArray<{ dispose(): void }>,
-    private readonly snap: SnapFn | undefined
+    private readonly snap: SnapFn | undefined,
+    // World-space y added before snap. For anchor:"bottom" on a box of
+    // height sy, this is sy/2 so the caller can pass y=0 and have the
+    // bottom face sit on the floor. Always 0 for flat primitives.
+    private readonly yOffset: number = 0
   ) {}
 
   setPosition(x: number, y: number, z: number): void {
+    const worldY = y + this.yOffset;
     if (this.snap) {
-      const snapped = this.snap(x, y, z);
+      const snapped = this.snap(x, worldY, z);
       if (snapped) {
         this.node.position.set(snapped.x, snapped.y, snapped.z);
         return;
       }
     }
-    this.node.position.set(x, y, z);
+    this.node.position.set(x, worldY, z);
   }
 
   setVisible(visible: boolean): void {
@@ -156,11 +161,12 @@ export function createThreeScene(
         metalness: 0.05
       });
       const mesh = new THREE.Mesh(geo, mat);
-      const obj = new ThreeSceneObject(root, mesh, [geo, mat], snap);
+      const yOffset = opts.anchor === "bottom" ? sy / 2 : 0;
+      const obj = new ThreeSceneObject(root, mesh, [geo, mat], snap, yOffset);
+      root.add(mesh);
       if (opts.position) {
         obj.setPosition(opts.position.x, opts.position.y, opts.position.z);
       }
-      root.add(mesh);
       return obj;
     }
   };

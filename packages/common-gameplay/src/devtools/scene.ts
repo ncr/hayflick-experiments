@@ -20,6 +20,15 @@ export type SceneBoxOptions = {
   size: number | Vec3;
   color?: number;
   position?: Vec3;
+  /**
+   * Where on the box `setPosition(x, y, z)`'s y refers to:
+   *   - `"center"` (default): y is the mesh center. y=0 makes the box overlap
+   *     the floor by half its height.
+   *   - `"bottom"`: y is the bottom face. y=0 makes the box sit on the floor.
+   * The renderer adds the geometry offset internally; game code never has
+   * to write `y: size/2`.
+   */
+  anchor?: "center" | "bottom";
 };
 
 export interface SceneObject {

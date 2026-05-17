@@ -10,6 +10,20 @@ export type Velocity = {
   vy: number;
 };
 
+/**
+ * Marks an entity as input-controlled on the iso lattice. The engine's
+ * input system writes velocity into every entity with this component,
+ * scaling by `speed` (in screen pixels per second). Speed can be a getter
+ * so live-knob tracking works without re-adding the component each frame.
+ *
+ * The component is intentionally not serialized — function speeds can't
+ * round-trip through JSON, and on load the game's setup re-attaches the
+ * binding anyway.
+ */
+export type Controlled = {
+  speed: number | (() => number);
+};
+
 export type Persistent = {
   kind: string;
 };
@@ -50,13 +64,10 @@ export type EcsEvent =
   | { type: "Moved"; e: EID }
   | { type: "BumpedWall"; e: EID };
 
-export type PlayerTag = true;
-
 export type SaveEntityRecord = {
   components: {
     Transform?: Transform;
     Velocity?: Velocity;
-    PlayerTag?: true;
     Persistent?: Persistent;
   };
 };

@@ -19,8 +19,8 @@ test.describe("game-studio", () => {
     });
 
     // Tweaks pane shows the two registered knobs.
-    await expect(page.locator(".knob-key", { hasText: "player.speed" })).toBeVisible();
-    await expect(page.locator(".knob-key", { hasText: "debug.showGrid" })).toBeVisible();
+    await expect(page.locator(".knob-key", { hasText: "speed" })).toBeVisible();
+    await expect(page.locator(".knob-key", { hasText: "showGrid" })).toBeVisible();
 
     // window.__gameStudio.world is wired by ViewportPane.
     await page.waitForFunction(() => Boolean(window.__gameStudio?.world), null, {
@@ -29,7 +29,7 @@ test.describe("game-studio", () => {
 
     const initialPos = await page.evaluate(() => {
       const w = window.__gameStudio!.world!;
-      const playerEid = Array.from(w.playerTags.entries())[0];
+      const playerEid = Array.from(w.controlled.entries())[0];
       const t = w.transforms.get(playerEid)!;
       return { x: t.x, y: t.y };
     });
@@ -40,9 +40,9 @@ test.describe("game-studio", () => {
     // ensures the body has focus.
     await page.locator(".game-studio-viewport-mount").click();
 
-    // Hold ArrowUp for ~250ms — at default speed 4 that's ~1 unit traveled.
-    // Input is remapped to screen axes, so motion is diagonal in world XZ
-    // (not pure +y). Check displacement magnitude rather than a single axis.
+    // Hold ArrowUp for ~250ms — at default speed 80 px/s ≈ 0.625 wu along
+    // the b screen-axis. Input is remapped to screen axes, so motion is
+    // diagonal in world XZ (not pure +y). Check displacement magnitude.
     await page.keyboard.down("ArrowUp");
     await page.waitForTimeout(250);
     await page.keyboard.up("ArrowUp");
@@ -50,7 +50,7 @@ test.describe("game-studio", () => {
 
     const movedPos = await page.evaluate(() => {
       const w = window.__gameStudio!.world!;
-      const playerEid = Array.from(w.playerTags.entries())[0];
+      const playerEid = Array.from(w.controlled.entries())[0];
       const t = w.transforms.get(playerEid)!;
       return { x: t.x, y: t.y };
     });
@@ -69,7 +69,7 @@ test.describe("game-studio", () => {
     // now (default 80), so bump to 200 to exceed it.
     await page.evaluate(() => {
       const knobs = window.__gameStudio!.knobs;
-      const speed = knobs.entries().find((e) => e.spec.key === "player.speed")!;
+      const speed = knobs.entries().find((e) => e.spec.key === "speed")!;
       speed.set(200);
     });
     await expect(page.locator(".knob-value").first()).toContainText("200");
@@ -81,7 +81,7 @@ test.describe("game-studio", () => {
 
     const afterFastPos = await page.evaluate(() => {
       const w = window.__gameStudio!.world!;
-      const playerEid = Array.from(w.playerTags.entries())[0];
+      const playerEid = Array.from(w.controlled.entries())[0];
       const t = w.transforms.get(playerEid)!;
       return { x: t.x, y: t.y };
     });
@@ -113,7 +113,7 @@ test.describe("game-studio", () => {
       page.evaluate(() => {
         const gs = window.__gameStudio!;
         const w = gs.world!;
-        const eid = Array.from(w.playerTags.entries())[0];
+        const eid = Array.from(w.controlled.entries())[0];
         const t = w.transforms.get(eid)!;
         const coords = gs.viewport!.worldToScreenPixelCoords(t.x, t.y);
         if (!coords) return null;
@@ -210,11 +210,11 @@ test.describe("game-studio", () => {
           const worldX = basis.centerX + qa * basis.ux + qb * basis.vx;
           const worldZ = basis.centerZ + qa * basis.uz + qb * basis.vz;
           const w = window.__gameStudio!.world!;
-          const pid = Array.from(w.playerTags.entries())[0];
+          const pid = Array.from(w.controlled.entries())[0];
           const t = w.transforms.get(pid)!;
           t.x = worldX;
           t.y = worldZ;
-          // Also zero velocity so PlayerInputSystem (running on key=none)
+          // Also zero velocity so ControlledInputSystem (running on key=none)
           // doesn't overwrite us; the movement system integrates 0.
           if (w.velocities.has(pid)) {
             const v = w.velocities.get(pid)!;
@@ -241,8 +241,8 @@ test.describe("game-studio", () => {
       const screen = await page.evaluate(
         ({ x, z }) => {
           const vc = window.__gameStudio!.viewport!;
-          // PLAYER_HEIGHT in grid-walker is PLAYER_SIZE/2 = 0.4.
-          return vc.projectWorldToCanvasPixel(x, 0.4, z);
+          // Box is 1 wu with anchor:"bottom", so its center sits at y = 0.5.
+          return vc.projectWorldToCanvasPixel(x, 0.5, z);
         },
         { x: setup.worldX, z: setup.worldZ }
       );

@@ -76,7 +76,6 @@ function hasAnyComponent(components: SaveEntityRecord["components"]): boolean {
   return (
     components.Transform !== undefined ||
     components.Velocity !== undefined ||
-    components.PlayerTag === true ||
     components.Persistent !== undefined
   );
 }
@@ -122,9 +121,10 @@ function migrateV1(raw: Record<string, unknown>): SaveGame | null {
       components.Velocity = velocity;
     }
 
-    if (componentsRaw.PlayerTag === true) {
-      components.PlayerTag = true;
-    }
+    // `Controlled` (formerly `PlayerTag`) is intentionally not in the save
+    // format: it carries a function speed that can't round-trip through
+    // JSON, and the game's setup re-attaches the binding on load anyway.
+    // Old `PlayerTag` fields in legacy saves are ignored silently.
 
     const persistent = readPersistent(componentsRaw.Persistent);
     if (persistent) {
@@ -184,10 +184,6 @@ export function serializeWorld(world: World): SaveGame {
       components.Velocity = { vx: velocity.vx, vy: velocity.vy };
     }
 
-    if (world.playerTags.has(eid)) {
-      components.PlayerTag = true;
-    }
-
     const persistent = world.persistents.get(eid);
     if (persistent) {
       components.Persistent = { kind: persistent.kind };
@@ -244,10 +240,6 @@ export function deserializeWorld(world: World, save: SaveGame): void {
         vx: components.Velocity.vx,
         vy: components.Velocity.vy
       });
-    }
-
-    if (components.PlayerTag === true) {
-      world.playerTags.add(eid, true);
     }
 
     if (components.Persistent) {

@@ -30,6 +30,8 @@ describe("migrateSave", () => {
           components: {
             Transform: { x: 1, y: 2 },
             Velocity: { vx: 3, vy: 4 },
+            // Legacy PlayerTag fields in old saves are silently ignored —
+            // `Controlled` is now runtime-only.
             PlayerTag: true,
             Persistent: { kind: "player" }
           }
@@ -39,7 +41,7 @@ describe("migrateSave", () => {
 
     expect(valid).not.toBeNull();
     expect(valid?.entities).toHaveLength(1);
-    expect(valid?.entities[0]?.components.PlayerTag).toBe(true);
+    expect(valid?.entities[0]?.components.Persistent).toEqual({ kind: "player" });
     expect(migrateSave({ schemaVersion: 999 })).toBeNull();
     expect(migrateSave({ level: {}, time: {}, entities: [] })).toBeNull();
     expect(migrateSave(null)).toBeNull();
@@ -76,7 +78,6 @@ describe("serializeWorld", () => {
     });
     const eid = world.createEntity();
     world.transforms.add(eid, { x: 9, y: 8 });
-    world.playerTags.add(eid, true);
 
     const save = serializeWorld(world);
     expect(save.schemaVersion).toBe(SAVE_SCHEMA_VERSION);
@@ -107,7 +108,6 @@ describe("localStorage save/load helpers", () => {
     const source = new World();
     const eid = source.createEntity();
     source.transforms.add(eid, { x: 3, y: 4 });
-    source.playerTags.add(eid, true);
     source.time.t = 5;
 
     saveWorldToLocalStorage(source, "save-key");

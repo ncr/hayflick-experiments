@@ -7,8 +7,10 @@ import {
   saveWorldToLocalStorage,
   serializeWorld
 } from "./save-load";
-import { DataStore, TagStore } from "./store";
+import { DataStore } from "./store";
+import type { SceneObject } from "../devtools/scene";
 import type {
+  Controlled,
   EID,
   InputState,
   LevelResolver,
@@ -32,7 +34,15 @@ export class World {
 
   readonly transforms = new DataStore<Transform>();
   readonly velocities = new DataStore<Velocity>();
-  readonly playerTags = new TagStore();
+  // `controlled` marks input-driven entities. The engine's input system
+  // iterates this store, reads each entity's speed, and writes velocity.
+  // "Player" doesn't appear in the engine — the game decides which
+  // entities to mark.
+  readonly controlled = new DataStore<Controlled>();
+  // `meshes` binds an entity to a scene primitive; the engine's mesh-sync
+  // system writes `transform → SceneObject.setPosition` each frame so the
+  // game never has to copy positions itself.
+  readonly meshes = new DataStore<SceneObject>();
   readonly persistents = new DataStore<Persistent>();
   readonly sceneRefs = new DataStore<SceneRef>();
 
@@ -74,7 +84,8 @@ export class World {
     this.aliveEntities.delete(eid);
     this.transforms.remove(eid);
     this.velocities.remove(eid);
-    this.playerTags.remove(eid);
+    this.controlled.remove(eid);
+    this.meshes.remove(eid);
     this.persistents.remove(eid);
     this.sceneRefs.remove(eid);
   }
@@ -101,7 +112,8 @@ export class World {
 
     this.transforms.clear();
     this.velocities.clear();
-    this.playerTags.clear();
+    this.controlled.clear();
+    this.meshes.clear();
     this.persistents.clear();
     this.sceneRefs.clear();
     this.events.clear();
@@ -115,8 +127,16 @@ export class World {
     }
   }
 
-  *queryTransformPlayer(): Iterable<EID> {
-    for (const eid of this.playerTags.entries()) {
+  *queryTransformControlled(): Iterable<EID> {
+    for (const eid of this.controlled.entries()) {
+      if (this.alive(eid) && this.transforms.has(eid)) {
+        yield eid;
+      }
+    }
+  }
+
+  *queryTransformMesh(): Iterable<EID> {
+    for (const eid of this.meshes.entries()) {
       if (this.alive(eid) && this.transforms.has(eid)) {
         yield eid;
       }
