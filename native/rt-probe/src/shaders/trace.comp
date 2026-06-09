@@ -22,11 +22,16 @@ layout(set = 0, binding = 3, scalar) readonly buffer Indices { uint indices[]; }
 layout(set = 0, binding = 4, scalar) readonly buffer Geoms { GeomInfo geoms[]; };
 layout(set = 0, binding = 5, scalar) readonly buffer Mats { Material mats[]; };
 layout(set = 0, binding = 6) uniform sampler2D textures[];
+// Emissive practicals as NEE lights: bounding sphere (xyz, radius) + radiance.
+// Count rides in pc.misc2.w (0 = no list bound beyond the dummy entry).
+struct Light { vec4 posRad; vec4 color; };
+layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
 
 layout(push_constant) uniform Push {
   vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos;
   ivec4 misc;  // W, H, bounces, spp
-  ivec4 misc2; // seed, debugAlbedo, aaJitter
+  ivec4 misc2; // seed, debugAlbedo, aaJitter, lightCount
+  vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight (wu falloff)
 } pc;
 
 uint hash(uint x){x^=x>>16;x*=0x7feb352dU;x^=x>>15;x*=0x846ca68bU;x^=x>>16;return x;}
@@ -37,7 +42,16 @@ vec3 sky(vec3 d){
   vec3 horizon = vec3(0.80, 0.83, 0.90);
   vec3 zenith  = vec3(0.28, 0.45, 0.92);
   vec3 ground  = vec3(0.14, 0.13, 0.12);
-  return (d.y > 0.0 ? mix(horizon, zenith, pow(t, 1.4)) : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0))) * 0.18;
+  return (d.y > 0.0 ? mix(horizon, zenith, pow(t, 1.4)) : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0))) * 0.18 * pc.env0.y;
+}
+
+// Optical depth of the exponential ground mist sigma(y) = D * exp(-y / H)
+// along o + s*d for s in [0, t] (closed form; caller keeps y >= 0 on the
+// segment so the exponential never blows up).
+float fogOD(vec3 o, vec3 d, float t){
+  float D = pc.env0.z, H = pc.env0.w;
+  if (abs(d.y) < 1e-4) return D * exp(-o.y / H) * t;
+  return D * (H / d.y) * (exp(-o.y / H) - exp(-(o.y + d.y * t) / H));
 }
 
 struct Hit { float t; vec3 n; vec2 uv; int mat; };
@@ -78,7 +92,7 @@ void main(){
   uint seed = hash(uint(px.x) * 1973u + uint(px.y) * 9277u + uint(pc.misc2.x) * 26699u + 1u);
 
   vec3 sunDir = normalize(vec3(0.62, 0.55, 0.38)); // lower angle -> long, readable shadows
-  vec3 sun = vec3(1.0, 0.88, 0.70) * 6.0;          // dominant warm key; sky fill kept dim for contrast
+  vec3 sun = vec3(1.0, 0.88, 0.70) * 6.0 * pc.env0.x; // dominant warm key; sky fill kept dim for contrast
 
   vec3 sum = vec3(0.0);
   for (int s = 0; s < spp; s++) {
@@ -96,9 +110,34 @@ void main(){
     vec3 d = normalize(pc.camDir.xyz);
 
     vec3 thru = vec3(1.0), col = vec3(0.0);
+    bool fromSpec = true; // camera and mirror chains see emissive surfaces directly
     for (int b = 0; b <= bounces; b++) {
       Hit h;
-      if (!trace(o, d, 300.0, h)) { col += thru * sky(d); break; }
+      bool hitb = trace(o, d, 300.0, h);
+      // Exponential ground mist on the PRIMARY segment only: attenuate what
+      // lies beyond it, add ambient inscatter, and estimate the single-scatter
+      // sun term with one sample per path (noise converges with accumulation).
+      // Fog never moves the hit — it re-weights radiance smoothly — so pixel
+      // edges stay binary (the pixel-look invariant holds).
+      if (b == 0 && pc.env0.z > 0.0 && pc.misc2.y == 0) {
+        // cap the segment at the y=0 plane so the exponential stays bounded
+        // (a miss would otherwise integrate unbounded depth below the void)
+        float tseg = hitb ? h.t : min(300.0, o.y / max(-d.y, 1e-4));
+        float T = exp(-fogOD(o, d, tseg));
+        vec3 fogCol = vec3(0.55, 0.58, 0.66) * 0.18 * pc.env0.y;
+        // sun shaft: sample only the last stretch of the segment — that's
+        // where the height-falloff mist actually lives
+        float L = min(tseg, 8.0 * pc.env0.w / max(-d.y, 0.05));
+        float ts = tseg - rnd(seed) * L;
+        vec3 ps = o + d * ts;
+        float ss = pc.env0.z * exp(-max(ps.y, 0.0) / pc.env0.w);
+        vec3 shaft = vec3(0.0);
+        if (pc.env0.x > 0.0 && ss > 1e-5 && !occluded(ps, sunDir, 200.0))
+          shaft = sun * ss * exp(-fogOD(o, d, ts)) * L * 0.08; // ~isotropic phase
+        col += thru * (fogCol * (1.0 - T) + shaft);
+        thru *= T;
+      }
+      if (!hitb) { col += thru * sky(d); break; }
       Material m = mats[h.mat];
       vec3 albedo = m.baseColor.rgb;
       if (m.texIndex >= 0) albedo *= texture(textures[nonuniformEXT(m.texIndex)], h.uv).rgb;
@@ -106,14 +145,50 @@ void main(){
       vec3 n = h.n; if (dot(n, d) > 0.0) n = -n;
       vec3 p = o + h.t * d + n * 0.003;
 
-      col += thru * m.emissive.rgb;
+      // Emission counts only when the light is seen directly or via a mirror
+      // chain (fromSpec); diffuse paths get it through NEE below instead —
+      // adding both would double-count.
+      if (fromSpec) col += thru * m.emissive.rgb;
 
       float ndl = max(dot(n, sunDir), 0.0);
-      if (ndl > 0.0 && !occluded(p, sunDir, 200.0)) col += thru * albedo * sun * ndl;
+      if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0)) col += thru * albedo * sun * ndl;
 
       vec3 t1 = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0, 1, 0)) : cross(n, vec3(1, 0, 0)));
       vec3 t2 = cross(n, t1);
       float specProb = mix(0.04, 1.0, m.metallic);
+
+      // NEE: sample a few practicals per hit (uniform picks, x count/samples
+      // to unbias). Solid-angle weight of each light's bounding sphere;
+      // diffuse lobe only (specular paths find lights via fromSpec emission).
+      // Shadow rays are cheap here (~0.6ms frames) — 4 samples kills most of
+      // the 1-of-N selection variance that makes lamp pools speckle.
+      int lc = pc.misc2.w;
+      if (lc > 0) {
+        const int NEE_S = 4;
+        float lw = float(lc) / float(NEE_S);
+        for (int ls = 0; ls < NEE_S; ls++) {
+          int li = clamp(int(rnd(seed) * float(lc)), 0, lc - 1);
+          Light lt = lights[li];
+          vec3 toL = lt.posRad.xyz - p;
+          float dist = max(length(toL), 1e-4);
+          if (dist <= lt.posRad.w) continue;
+          vec3 ldir = toL / dist;
+          float ndl2 = dot(n, ldir);
+          if (ndl2 <= 0.0) continue;
+          float sinT = clamp(lt.posRad.w / dist, 0.0, 1.0);
+          float omega = 6.2831853 * (1.0 - sqrt(1.0 - sinT * sinT));
+          if (!occluded(p, ldir, dist - lt.posRad.w)) {
+            vec3 c = thru * (1.0 - specProb) * albedo * (1.0 / 3.14159265)
+                   * lt.color.rgb * ndl2 * omega * lw;
+            // firefly clamp on INDIRECT lamp hits: a bounce ray landing right
+            // next to a lamp gets a huge solid angle through `thru`; clamping
+            // those rare spikes trades a hair of GI energy for fast convergence
+            if (b > 0) c = min(c, vec3(2.5));
+            col += c;
+          }
+        }
+      }
+
       if (rnd(seed) < specProb) {
         vec3 r = reflect(d, n);
         float a = m.roughness * m.roughness;
@@ -122,7 +197,9 @@ void main(){
         d = normalize(r + jit);
         if (dot(d, n) < 0.0) d = r;
         thru *= mix(vec3(1.0), albedo, m.metallic);
+        fromSpec = true;
       } else {
+        fromSpec = false;
         thru *= albedo;
         float r1 = rnd(seed), r2 = rnd(seed);
         float phi = 6.2831853 * r1, sr = sqrt(r2), cz = sqrt(1.0 - r2);

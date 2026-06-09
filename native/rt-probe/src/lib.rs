@@ -35,6 +35,8 @@ pub struct Push {
     pub cam_pos: [f32; 4],
     pub misc: [i32; 4],
     pub misc2: [i32; 4],
+    /// [sun_scale, sky_scale, fog_density, fog_height] — see `Scene::lighting`.
+    pub env0: [f32; 4],
 }
 
 pub unsafe extern "system" fn debug_callback(
@@ -266,9 +268,220 @@ pub fn build_grid_walker() -> Result<Scene, Box<dyn std::error::Error>> {
     Ok(scene)
 }
 
+/// Near-wall hide bits for a camera at `yaw_q` quarter-turns from canonical:
+/// which OUTWARD wall directions (bit0=+X, bit1=+Z, bit2=-X, bit3=-Z) face the
+/// camera and should be hidden for the dollhouse view. At the canonical yaw the
+/// camera sits in the +X+Z quadrant, so the +X and +Z perimeter walls hide.
+pub fn near_hide_bits(yaw_q: u32) -> u8 {
+    let yaw = (ISO_YAW_DEG + 90.0 * (yaw_q & 3) as f32).to_radians();
+    (if yaw.sin() > 0.0 { 1 } else { 4 }) | (if yaw.cos() > 0.0 { 2 } else { 8 })
+}
+
+/// Fallout-flavoured example house assembled from the blockstudio tile kits
+/// (`desert_sandstone` wall kit + `ground_tiles` floors), following
+/// `docs/blockstudio/game-consumer-contract.md`: 1 glTF unit = 1 cell = 1 wu;
+/// floors at cell centres, walls at edge midpoints (rotate 90° for Z-runs),
+/// corners at vertices (canonical legs +X/-Z, one cell long — adjacent wall
+/// segments are skipped). Three rooms (common room, lab, storage), doors +
+/// windows, forge props inside, grass/asphalt yard with a road outside.
+/// Perimeter walls carry `prim_hide_mask` outward tags so the viewer can hide
+/// the camera-near sides per quarter-turn (Q/E).
+pub fn build_house() -> Result<Scene, Box<dyn std::error::Error>> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let mut scene = Scene::new();
+    let tiles = "assets/tilesets/desert_sandstone/artifacts/tiles";
+    let ground = "assets/tilesets/ground_tiles/artifacts/tiles";
+    let wall = scene.preload(&format!("{tiles}/wall/wall.glb"))?;
+    let door = scene.preload(&format!("{tiles}/door/door.glb"))?;
+    let win = scene.preload(&format!("{tiles}/window_middle/window_middle.glb"))?;
+    let corner = scene.preload(&format!("{tiles}/corner/corner.glb"))?;
+    let concrete = scene.preload(&format!("{ground}/concrete_walk/concrete_walk.glb"))?;
+    let grass = scene.preload(&format!("{ground}/grass/grass.glb"))?;
+    let asphalt = scene.preload(&format!("{ground}/asphalt/asphalt.glb"))?;
+    let sandstone = scene.preload(&format!("{ground}/sandstone/sandstone.glb"))?;
+
+    // House footprint: cells [0,14) x [0,10). Interior walls split off a lab
+    // (x>=8, z<5) and a storage room (x>=8, z>=5) from the common room.
+    const FLOOR_TOP: f32 = 6.0 / 128.0; // ground tiles are 6 cm thick
+
+    // ---- floors: concrete inside; grass yard, asphalt road, sandstone path
+    for gx in -3..17 {
+        for gz in -3..13 {
+            let inside = (0..14).contains(&gx) && (0..10).contains(&gz);
+            let cm = if inside {
+                &concrete
+            } else if gz >= 11 {
+                &asphalt // the road along the south side
+            } else if gx == 4 && gz == 10 {
+                &sandstone // door step path
+            } else {
+                &grass
+            };
+            scene.place(cm, Mat4::from_translation(Vec3::new(gx as f32 + 0.5, 0.0, gz as f32 + 0.5)));
+        }
+    }
+
+    let rot_q = |q: i32| Mat4::from_rotation_y(q as f32 * FRAC_PI_2);
+    // ---- perimeter walls (tagged with their outward direction for the
+    // per-yaw dollhouse hide). Corner legs are one cell long, so each edge run
+    // starts at 1 and ends at len-1.
+    for x in 1..13 {
+        // north edge (z=0), outward -Z (bit3)
+        let cm = if [3, 6, 10].contains(&x) { &win } else { &wall };
+        let first = scene.place(cm, Mat4::from_translation(Vec3::new(x as f32 + 0.5, 0.0, 0.0)));
+        scene.tag_hide(first, 0b1000);
+        // south edge (z=10), outward +Z (bit1); main door at x=4
+        let cm = if x == 4 { &door } else if [8, 11].contains(&x) { &win } else { &wall };
+        let t = Mat4::from_translation(Vec3::new(x as f32 + 0.5, 0.0, 10.0)) * Mat4::from_rotation_y(PI);
+        let first = scene.place(cm, t);
+        scene.tag_hide(first, 0b0010);
+    }
+    for z in 1..9 {
+        // west edge (x=0), outward -X (bit2)
+        let cm = if z == 4 { &win } else { &wall };
+        let t = Mat4::from_translation(Vec3::new(0.0, 0.0, z as f32 + 0.5)) * rot_q(1);
+        let first = scene.place(cm, t);
+        scene.tag_hide(first, 0b0100);
+        // east edge (x=14), outward +X (bit0)
+        let cm = if [2, 7].contains(&z) { &win } else { &wall };
+        let t = Mat4::from_translation(Vec3::new(14.0, 0.0, z as f32 + 0.5)) * rot_q(1);
+        let first = scene.place(cm, t);
+        scene.tag_hide(first, 0b0001);
+    }
+    // perimeter corners: (vertex, quarter-turns, outward bits of both sides)
+    for (vx, vz, q, bits) in [(0, 0, 3, 0b1100u8), (14, 0, 2, 0b1001), (14, 10, 1, 0b0011), (0, 10, 0, 0b0110)] {
+        let t = Mat4::from_translation(Vec3::new(vx as f32, 0.0, vz as f32)) * rot_q(q);
+        let first = scene.place(&corner, t);
+        scene.tag_hide(first, bits);
+    }
+
+    // ---- interior walls (never hidden; rotate with Q/E to see past them)
+    for z in 0..10 {
+        // x=8 divider, doors into the lab (z=2) and storage (z=7)
+        let cm = if z == 2 || z == 7 { &door } else { &wall };
+        scene.place(cm, Mat4::from_translation(Vec3::new(8.0, 0.0, z as f32 + 0.5)) * rot_q(1));
+    }
+    for x in 8..14 {
+        // z=5 divider between lab and storage, door at x=11
+        let cm = if x == 11 { &door } else { &wall };
+        scene.place(cm, Mat4::from_translation(Vec3::new(x as f32 + 0.5, 0.0, 5.0)));
+    }
+
+    // ---- props (forge catalogue), scaled to real-world heights (1 wu = 1.28 m)
+    let mut prop_cache: std::collections::HashMap<&str, gltf_scene::CachedModel> = Default::default();
+    let props: &[(&str, f32, f32, f32, f32)] = &[
+        // (prop id, target height wu, x, z, rotation deg)
+        ("mainframe-with-many-distinct-status-lights", 1.40, 2.0, 1.1, 180.0),
+        ("commodore-pet-inspired-computer", 0.45, 3.6, 1.0, 180.0),
+        ("large-desk-without-drawers", 0.62, 3.0, 3.2, 0.0),
+        ("professional-workbench-chair", 0.75, 3.0, 4.2, 180.0),
+        ("eames-style-chair-but-in-our-scifi-style", 0.68, 6.2, 7.6, -45.0),
+        ("tall-standing-lamp", 1.35, 7.2, 0.9, 0.0),
+        ("braun-inspired-desk", 0.60, 10.5, 1.3, 0.0),
+        ("microscope", 0.35, 9.3, 1.4, 30.0),
+        ("chemical-flask", 0.22, 11.9, 1.5, 0.0),
+        ("professional-workbench-chair", 0.75, 10.5, 2.3, 180.0),
+        ("mainframe-with-many-distinct-status-lights", 1.40, 13.1, 2.5, 270.0),
+        ("ammo-crate", 0.40, 9.3, 8.7, 10.0),
+        ("ammo-crate", 0.40, 10.3, 8.6, 35.0),
+        ("ammo-crate", 0.40, 9.7, 7.8, 75.0),
+        ("tall-standing-lamp", 1.35, 13.2, 9.1, 0.0),
+        ("stop-sign", 1.70, 16.2, 10.6, 200.0),
+        ("ammo-crate", 0.40, -1.4, 5.2, 50.0),
+    ];
+    for &(id, target_h, x, z, rot_deg) in props {
+        let path = format!("assets/forge/props/{id}/processed/model.glb");
+        if !prop_cache.contains_key(id) {
+            match scene.preload(&path) {
+                Ok(cm) => {
+                    prop_cache.insert(id, cm);
+                }
+                Err(e) => {
+                    eprintln!("skip prop {id}: {e}");
+                    continue;
+                }
+            }
+        }
+        let cm = &prop_cache[id];
+        let (pmin, pmax) = cm.bounds();
+        let pc = (pmin + pmax) * 0.5;
+        let s = target_h / (pmax.y - pmin.y).max(1e-4);
+        let t = Mat4::from_translation(Vec3::new(x, FLOOR_TOP, z))
+            * Mat4::from_rotation_y(rot_deg.to_radians())
+            * Mat4::from_scale(Vec3::splat(s))
+            * Mat4::from_translation(Vec3::new(-pc.x, -pmin.y, -pc.z));
+        scene.place(cm, t);
+    }
+
+    // ---- emissive practicals: with the sun dimmed (lighting below) these
+    // carry the interiors. The path tracer treats emissive boxes as real area
+    // lights — warm pools + colored bounce for free. Sizes stay on the 0.0625
+    // wu lattice (invariant #8). Walls are ±0.125 wu thick, so sconces sit at
+    // 0.156 off the wall line (proud of the inner face).
+    // EMIT env var scales all practicals (tuning knob, default 1)
+    let emit: f32 = std::env::var("EMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let warm = move |s: f32| [1.0 * s * emit, 0.64 * s * emit, 0.30 * s * emit, 1.0];
+    let mut bulb = |p: Vec3, half: f32, e: [f32; 4]| {
+        scene.add_box_world(p - Vec3::splat(half), p + Vec3::splat(half), [1.0, 0.95, 0.85, 1.0], e, 0.6, 0.0);
+    };
+    // heads of the two tall-standing-lamp props (1.35 wu tall)
+    bulb(Vec3::new(7.2, 1.125, 0.9), 0.0625, warm(150.0));
+    bulb(Vec3::new(13.2, 1.125, 9.1), 0.0625, warm(150.0));
+    // ceiling lights: the main interior lights (no sun — interiors are
+    // lamp-lit). CONCEPTUAL emitters: no fixture geometry is rendered (there
+    // is no ceiling to mount one on) — they exist only in the NEE light list,
+    // so rooms get lit from above with nothing floating in view.
+    let ceiling_lamps = [(2.5f32, 2.5f32), (5.0, 7.0), (11.0, 2.5), (11.0, 7.5)];
+    for (x, z) in ceiling_lamps {
+        let c = warm(80.0);
+        scene.point_lights.push([x, 2.0, z, 0.25, c[0], c[1], c[2], 0.0]);
+    }
+    // wall sconces: (center, which axis is the wall normal)
+    let sconces: &[(f32, f32, f32, bool)] = &[
+        (2.5, 1.625, 0.156, false),    // common room, north wall
+        (0.156, 1.625, 6.5, true),     // common room, west wall
+        (6.5, 1.625, 9.844, false),    // common room, south wall
+        (9.5, 1.625, 0.156, false),    // lab, north wall
+        (12.5, 1.625, 4.844, false),   // lab, divider wall
+        (4.5, 1.875, 10.156, false),   // porch light over the front door
+    ];
+    for &(x, y, z, x_normal) in sconces {
+        let (hx, hz) = if x_normal { (0.03125, 0.09375) } else { (0.09375, 0.03125) };
+        let (min, max) = (Vec3::new(x - hx, y - 0.0625, z - hz), Vec3::new(x + hx, y + 0.0625, z + hz));
+        scene.add_box_world(min, max, [1.0, 0.9, 0.75, 1.0], warm(90.0), 0.7, 0.0);
+    }
+    // status-light glow strips on the two mainframes (teal, faint) — placed
+    // just proud of each prop's front face, sized from the cached bounds
+    if let Some(cm) = prop_cache.get("mainframe-with-many-distinct-status-lights") {
+        let (pmin, pmax) = cm.bounds();
+        let teal = [0.25 * 12.0 * emit, 1.0 * 12.0 * emit, 0.8 * 12.0 * emit, 1.0];
+        let s = 1.40 / (pmax.y - pmin.y).max(1e-4);
+        let half_d = (pmax.z - pmin.z) * 0.5 * s;
+        // (2.0, 1.1) rot 180 -> front faces +Z
+        let f = 1.1 + half_d + 0.03;
+        scene.add_box_world(Vec3::new(1.875, 0.5625, f), Vec3::new(2.125, 0.9375, f + 0.03), [0.1, 0.3, 0.25, 1.0], teal, 0.8, 0.0);
+        // (13.1, 2.5) rot 270 -> front faces -X (depth becomes the x extent)
+        let f = 13.1 - half_d - 0.06;
+        scene.add_box_world(Vec3::new(f, 0.5625, 2.375), Vec3::new(f + 0.03, 0.9375, 2.625), [0.1, 0.3, 0.25, 1.0], teal, 0.8, 0.0);
+    }
+
+    scene.recompute_bounds();
+    scene.prim_hide_mask.resize(scene.primitives.len(), 0);
+    scene.floor_rect = [0.3, 0.3, 13.7, 9.7];
+    scene.dynamic_prim = None; // no player — WASD pans the camera
+    scene.player_start = Vec3::new(7.0, 0.0, 5.0); // seeds the camera target
+    // night mood: NO sun — interiors are entirely lamp-lit (ceiling lamps +
+    // sconces + practicals); a faint sky fill keeps the yard readable and a
+    // knee-deep ground mist sits outside. SUN/SKY/FOG/FOG_H override for tuning.
+    scene.lighting = [0.0, 0.45, 0.3, 0.6];
+    Ok(scene)
+}
+
 pub fn build_scene() -> Result<Scene, Box<dyn std::error::Error>> {
-    if std::env::var("SCENE").map(|s| s == "grid" || s == "grid-walker").unwrap_or(false) {
-        return build_grid_walker();
+    match std::env::var("SCENE").as_deref() {
+        Ok("grid") | Ok("grid-walker") => return build_grid_walker(),
+        Ok("house") => return build_house(),
+        _ => {}
     }
     if std::env::var("SHOWCASE").is_ok() {
         return build_showcase();
@@ -461,6 +674,97 @@ pub fn iso_frame_size(scene: &Scene, orbit: bool, margin: u32) -> (u32, u32) {
     }
 }
 
+// ---- stylized post stack (CPU mirror of tonemap.comp — keep in sync) -------
+// Applied per LOW-RES texel (one game pixel = one post sample) after
+// exposure/Reinhard/gamma: grade -> film grain -> ordered-dither palette.
+
+/// Hand-designed 32-colour palette (gamma space): teal shadow ramp, olive
+/// midtones, lamp amber, bone highlights + terminal/rust/hazard/grass accents.
+/// Mirrored in tonemap.comp `PAL` — keep in sync.
+pub const PALETTE32: [[f32; 3]; 32] = [
+    [0.0196, 0.0235, 0.0314], [0.0510, 0.0549, 0.0784],
+    [0.0824, 0.0941, 0.1373], [0.1137, 0.1412, 0.2000],
+    [0.1529, 0.2039, 0.2784], [0.1961, 0.2118, 0.1686],
+    [0.2588, 0.2745, 0.2275], [0.3333, 0.3529, 0.2784],
+    [0.4157, 0.4392, 0.3373], [0.5137, 0.5373, 0.4078],
+    [0.6157, 0.6392, 0.4941], [0.2275, 0.1647, 0.1098],
+    [0.3608, 0.2549, 0.1569], [0.5216, 0.3608, 0.2000],
+    [0.6902, 0.4902, 0.2549], [0.8392, 0.6431, 0.3373],
+    [0.9490, 0.8118, 0.5412], [0.7098, 0.7020, 0.6039],
+    [0.8157, 0.8039, 0.7059], [0.9098, 0.8941, 0.8118],
+    [0.9804, 0.9647, 0.9020], [0.1137, 0.2902, 0.2902],
+    [0.1843, 0.4784, 0.4314], [0.3216, 0.7686, 0.6588],
+    [0.2902, 0.1137, 0.1137], [0.5412, 0.2000, 0.1529],
+    [0.7608, 0.3373, 0.2118], [0.6510, 0.4157, 0.1216],
+    [0.8784, 0.6039, 0.1686], [0.1647, 0.2118, 0.1333],
+    [0.2667, 0.3294, 0.1882], [0.3961, 0.4667, 0.2902],
+];
+
+/// 8x8 Bayer matrix value for a low-res pixel, centred to [-0.5, 0.5).
+pub fn bayer8(lx: u32, ly: u32) -> f32 {
+    const B: [u8; 64] = [
+        0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26,
+        12, 44, 4, 36, 14, 46, 6, 38, 60, 28, 52, 20, 62, 30, 54, 22,
+        3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25,
+        15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
+    ];
+    (B[((lx & 7) + (ly & 7) * 8) as usize] as f32 + 0.5) / 64.0 - 0.5
+}
+
+fn post_luma(c: [f32; 3]) -> f32 {
+    c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722
+}
+
+/// Fallout-ish grade: desaturate a touch, split-tone teal shadows / amber
+/// highlights, soft lift, gentle s-curve. Mirror of tonemap.comp `grade()`.
+pub fn post_grade(c: [f32; 3]) -> [f32; 3] {
+    let y = post_luma(c);
+    let teal = [0.04f32, 0.10, 0.10];
+    let amber = [0.10f32, 0.06, -0.04];
+    let mut g = [0.0f32; 3];
+    for i in 0..3 {
+        let v = c[i] + (y - c[i]) * 0.22;
+        let v = v + teal[i] * (1.0 - y) * 0.55 + amber[i] * y * 0.55;
+        let v = (v * 0.92 + 0.02).clamp(0.0, 1.0);
+        let s = v * v * (3.0 - 2.0 * v);
+        g[i] = (v + (s - v) * 0.35).clamp(0.0, 1.0);
+    }
+    g
+}
+
+/// Animated film grain, per game pixel, luminance-weighted toward shadows.
+/// Same hash + weighting as tonemap.comp.
+pub fn post_grain(c: [f32; 3], lx: u32, ly: u32, frame: u32, strength: f32) -> [f32; 3] {
+    if strength <= 0.0 {
+        return c;
+    }
+    let mut x = lx.wrapping_mul(1973).wrapping_add(ly.wrapping_mul(9277)).wrapping_add(frame.wrapping_mul(26699)).wrapping_add(1);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846ca68b);
+    x ^= x >> 16;
+    let g = x as f32 * (1.0 / 4294967296.0) - 0.5;
+    let w = strength * (0.35 + 0.65 * (1.0 - post_luma(c)));
+    [(c[0] + g * w).clamp(0.0, 1.0), (c[1] + g * w).clamp(0.0, 1.0), (c[2] + g * w).clamp(0.0, 1.0)]
+}
+
+/// Ordered-dither quantize to PALETTE32. Mirror of tonemap.comp.
+pub fn post_palette(c: [f32; 3], lx: u32, ly: u32) -> [f32; 3] {
+    let bay = bayer8(lx, ly) * 0.07;
+    let c2 = [(c[0] + bay).clamp(0.0, 1.0), (c[1] + bay).clamp(0.0, 1.0), (c[2] + bay).clamp(0.0, 1.0)];
+    let mut best = f32::INFINITY;
+    let mut bc = c2;
+    for p in &PALETTE32 {
+        let d = (p[0] - c2[0]).powi(2) + (p[1] - c2[1]).powi(2) + (p[2] - c2[2]).powi(2);
+        if d < best {
+            best = d;
+            bc = *p;
+        }
+    }
+    bc
+}
+
 /// Build the pixel-perfect ISO_VIEW_CONTRACT camera: orthographic, scale locked
 /// to R lowpixels/wu, scene centred in a `low_w × low_h` buffer.
 pub fn iso_camera(scene: &Scene, low_w: u32, low_h: u32, yaw_off_deg: f32) -> Push {
@@ -487,7 +791,20 @@ pub fn iso_camera_at(scene: &Scene, low_w: u32, low_h: u32, yaw_off_deg: f32, ta
         cam_pos: [pos.x, pos.y, pos.z, 0.0],
         misc: [low_w as i32, low_h as i32, BOUNCES, SPP_PER],
         misc2: [0; 4],
+        env0: lighting_env(scene),
     }
+}
+
+/// Scene lighting defaults with SUN / SKY / FOG / FOG_H env-var overrides
+/// (live-tuning knobs; see `Scene::lighting` for the meaning of each slot).
+pub fn lighting_env(scene: &Scene) -> [f32; 4] {
+    let mut e = scene.lighting;
+    for (i, var) in ["SUN", "SKY", "FOG", "FOG_H"].iter().enumerate() {
+        if let Some(v) = std::env::var(var).ok().and_then(|s| s.parse().ok()) {
+            e[i] = v;
+        }
+    }
+    e
 }
 
 // ---- pixel-perfect interactive-view math (pure, unit-tested) ----------------
@@ -557,8 +874,8 @@ impl Level {
 /// floor direction; vertical pixels are foreshortened by sin(pitch) = 1/2, so
 /// one px down is **2/R** wu toward the camera. (Getting this 2× wrong halves
 /// vertical screen speed and turns the 2:1 diagonal stair into 4:1.)
-pub fn iso_pixel_basis() -> (Vec3, Vec3) {
-    let yaw = ISO_YAW_DEG.to_radians();
+pub fn iso_pixel_basis(yaw_off_deg: f32) -> (Vec3, Vec3) {
+    let yaw = (ISO_YAW_DEG + yaw_off_deg).to_radians();
     let sin_pitch = ISO_PITCH_DEG.to_radians().sin(); // 1/2 exact
     let right_floor = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
     let toward_cam = Vec3::new(yaw.sin(), 0.0, yaw.cos()); // -fwd_floor
@@ -566,8 +883,8 @@ pub fn iso_pixel_basis() -> (Vec3, Vec3) {
 }
 
 /// Convert a screen-pixel delta (x right, y down) into a world ground delta.
-pub fn screen_px_to_world(d: glam::Vec2) -> Vec3 {
-    let (u, v) = iso_pixel_basis();
+pub fn screen_px_to_world(d: glam::Vec2, yaw_off_deg: f32) -> Vec3 {
+    let (u, v) = iso_pixel_basis(yaw_off_deg);
     u * d.x + v * d.y
 }
 
@@ -577,9 +894,9 @@ pub fn screen_px_to_world(d: glam::Vec2) -> Vec3 {
 /// granularity the engine mandates (CLAUDE.md invariant #9). The web routes
 /// every mesh `setPosition` through this so a moving box renders identically
 /// on every frame it occupies a pixel cell.
-pub fn snap_ground_to_lattice(p: Vec3) -> Vec3 {
-    let (_dir, right, up) = iso_basis(0.0);
-    let (u, v) = iso_pixel_basis();
+pub fn snap_ground_to_lattice(p: Vec3, yaw_off_deg: f32) -> Vec3 {
+    let (_dir, right, up) = iso_basis(yaw_off_deg);
+    let (u, v) = iso_pixel_basis(yaw_off_deg);
     let a = p.dot(right) * ISO_R; // screen px right
     let b = -p.dot(up) * ISO_R; // screen px down
     p + u * (a.round() - a) + v * (b.round() - b)
@@ -658,7 +975,7 @@ pub unsafe fn make_pool(ctx: &Ctx, ntex: u32) -> vk::DescriptorPool {
     let sizes = [
         vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 1 },
         vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 1 },
-        vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 4 },
+        vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 5 },
         vk::DescriptorPoolSize { ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER, descriptor_count: ntex.max(1) },
     ];
     ctx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None).unwrap()
@@ -675,6 +992,7 @@ pub unsafe fn make_set(
     ibuf: &Buffer,
     gbuf: &Buffer,
     mbuf: &Buffer,
+    lbuf: &Buffer,
     texes: &[GpuTex],
     sampler: vk::Sampler,
 ) -> vk::DescriptorSet {
@@ -691,6 +1009,7 @@ pub unsafe fn make_set(
     let ib = [vk::DescriptorBufferInfo::default().buffer(ibuf.buffer).range(vk::WHOLE_SIZE)];
     let gb = [vk::DescriptorBufferInfo::default().buffer(gbuf.buffer).range(vk::WHOLE_SIZE)];
     let mb = [vk::DescriptorBufferInfo::default().buffer(mbuf.buffer).range(vk::WHOLE_SIZE)];
+    let lb = [vk::DescriptorBufferInfo::default().buffer(lbuf.buffer).range(vk::WHOLE_SIZE)];
     let tex_info: Vec<vk::DescriptorImageInfo> = texes.iter().map(|t| vk::DescriptorImageInfo::default().image_view(t.view).sampler(sampler).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)).collect();
 
     let writes = [
@@ -701,6 +1020,7 @@ pub unsafe fn make_set(
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&gb),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mb),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(6).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&tex_info),
+        vk::WriteDescriptorSet::default().dst_set(set).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&lb),
     ];
     ctx.device.update_descriptor_sets(&writes, &[]);
     set
@@ -714,6 +1034,8 @@ pub struct SceneGpu {
     pub ibuf: Buffer,
     pub gbuf: Buffer,
     pub mbuf: Buffer,
+    pub lbuf: Buffer, // emissive light list for NEE (see build)
+    pub light_count: u32,
     pub texes: Vec<GpuTex>,
     pub sampler: vk::Sampler,
     pub blas_list: Vec<(vk::AccelerationStructureKHR, Buffer, Buffer)>,
@@ -723,6 +1045,9 @@ pub struct SceneGpu {
     pub inst_buf: Buffer, // host-visible: the dynamic instance transform is updated in place
     pub n_inst: u32,
     pub dynamic_instance: Option<u32>, // TLAS instance index of the movable player
+    /// Per-instance near-wall hide bitmask (from `Scene::prim_hide_mask`); all
+    /// zero when the scene doesn't use the dollhouse hide.
+    pub hide_masks: Vec<u8>,
     pub set_layout: vk::DescriptorSetLayout,
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
@@ -738,6 +1063,38 @@ impl SceneGpu {
         let geom_infos = scene.geom_infos();
         let gbuf = ctx.device_local(&geom_infos, vk::BufferUsageFlags::STORAGE_BUFFER);
         let mbuf = ctx.device_local(&scene.materials, vk::BufferUsageFlags::STORAGE_BUFFER);
+
+        // ---- emissive light list for NEE: small bright emitters (lamps,
+        // sconces) never converge by random bounces alone, so the shader
+        // samples them directly. One bounding sphere + radiance per emissive
+        // primitive: [cx, cy, cz, radius, r, g, b, 0]. The dynamic player prim
+        // is skipped (its geometry is local space and it isn't a lamp).
+        let mut lights: Vec<[f32; 8]> = Vec::new();
+        for (i, p) in scene.primitives.iter().enumerate() {
+            if scene.dynamic_prim == Some(i) {
+                continue;
+            }
+            let e = scene.materials[p.material_id as usize].emissive;
+            if e[0].max(e[1]).max(e[2]) < 3.0 {
+                continue;
+            }
+            let vs = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
+            let mut mn = Vec3::splat(f32::INFINITY);
+            let mut mx = Vec3::splat(f32::NEG_INFINITY);
+            for v in vs {
+                mn = mn.min(Vec3::from(v.pos));
+                mx = mx.max(Vec3::from(v.pos));
+            }
+            let c = (mn + mx) * 0.5;
+            let r = (mx - mn).length() * 0.5;
+            lights.push([c.x, c.y, c.z, r, e[0], e[1], e[2], 0.0]);
+        }
+        lights.extend_from_slice(&scene.point_lights); // conceptual (geometry-less) lights
+        let light_count = lights.len() as u32;
+        if lights.is_empty() {
+            lights.push([0.0; 8]); // keep the binding valid
+        }
+        let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER);
 
         let mut texes: Vec<GpuTex> = scene.images.iter().map(|im| ctx.upload_texture(im)).collect();
         if texes.is_empty() {
@@ -826,6 +1183,7 @@ impl SceneGpu {
             dslb(4, vk::DescriptorType::STORAGE_BUFFER, 1),
             dslb(5, vk::DescriptorType::STORAGE_BUFFER, 1),
             dslb(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER, texes.len() as u32),
+            dslb(7, vk::DescriptorType::STORAGE_BUFFER, 1),
         ];
         let set_layout = ctx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None)?;
         let set_layouts = [set_layout];
@@ -840,7 +1198,8 @@ impl SceneGpu {
             .create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(shader).name(&name)).layout(pipeline_layout)], None)
             .map_err(|(_, e)| e)?[0];
 
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, set_layout, pipeline_layout, pipeline, shader })
+        let hide_masks: Vec<u8> = (0..scene.primitives.len()).map(|i| scene.prim_hide_mask.get(i).copied().unwrap_or(0)).collect();
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, hide_masks, set_layout, pipeline_layout, pipeline, shader })
     }
 
     /// Patch the movable player's instance transform in the host-visible
@@ -853,6 +1212,32 @@ impl SceneGpu {
         let ptr = ctx.device.map_memory(self.inst_buf.memory, off, 48, vk::MemoryMapFlags::empty()).unwrap() as *mut f32;
         let t = mat_to_transform(m);
         std::ptr::copy_nonoverlapping(t.matrix.as_ptr(), ptr, 12);
+        ctx.device.unmap_memory(self.inst_buf.memory);
+    }
+
+    /// Apply the dollhouse near-wall hide for a camera at `yaw_q` quarter
+    /// turns: tagged instances whose outward direction faces the camera get
+    /// TLAS visibility mask 0 (rays with cull mask 0xFF skip them); everything
+    /// else 0xFF. Patches the host-visible instance buffer in place — call
+    /// `record_tlas_rebuild` afterwards to take effect.
+    pub unsafe fn set_yaw_masks(&self, ctx: &Ctx, yaw_q: u32) {
+        let near = near_hide_bits(yaw_q);
+        let stride = std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
+        let ptr = ctx.device.map_memory(self.inst_buf.memory, 0, stride * self.n_inst as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+        for (i, &bits) in self.hide_masks.iter().enumerate() {
+            if bits == 0 {
+                continue;
+            }
+            // subset match: hide only when EVERY tagged side faces the camera.
+            // Single-bit walls hide as soon as their side is near; two-bit
+            // corners survive while either adjacent wall run survives, so the
+            // kept run still ends in a capped corner instead of an open
+            // cross-section.
+            let mask: u32 = if bits & near == bits { 0 } else { 0xff };
+            let word: u32 = (i as u32 & 0x00ff_ffff) | (mask << 24);
+            // instanceCustomIndex:24 | mask:8 sits right after the 48-byte transform
+            std::ptr::copy_nonoverlapping(word.to_le_bytes().as_ptr(), ptr.add(i * stride as usize + 48), 4);
+        }
         ctx.device.unmap_memory(self.inst_buf.memory);
     }
 
@@ -904,6 +1289,7 @@ impl SceneGpu {
         ctx.destroy_buffer(&self.ibuf);
         ctx.destroy_buffer(&self.gbuf);
         ctx.destroy_buffer(&self.mbuf);
+        ctx.destroy_buffer(&self.lbuf);
     }
 }
 
@@ -911,6 +1297,25 @@ impl SceneGpu {
 mod tests {
     use super::*;
     use glam::Vec2;
+
+    #[test]
+    fn post_palette_returns_palette_member_deterministically() {
+        let c = post_palette([0.31, 0.29, 0.27], 5, 9);
+        assert!(PALETTE32.contains(&c), "quantized colour must be a palette entry");
+        assert_eq!(c, post_palette([0.31, 0.29, 0.27], 5, 9)); // same pixel -> same colour
+        // a different Bayer cell may dither to a different entry, but stays in-palette
+        assert!(PALETTE32.contains(&post_palette([0.31, 0.29, 0.27], 6, 9)));
+    }
+
+    #[test]
+    fn post_grain_zero_strength_is_identity_and_is_per_pixel() {
+        let c = [0.4, 0.5, 0.6];
+        assert_eq!(post_grain(c, 3, 4, 7, 0.0), c);
+        let a = post_grain(c, 3, 4, 7, 0.1);
+        let b = post_grain(c, 3, 5, 7, 0.1);
+        assert_eq!(a, post_grain(c, 3, 4, 7, 0.1)); // deterministic per (pixel, frame)
+        assert_ne!(a, b); // varies across pixels
+    }
 
     #[test]
     fn render_scale_is_integer_steps() {
@@ -1000,7 +1405,7 @@ mod tests {
     #[test]
     fn pixel_basis_maps_exactly_one_screen_pixel() {
         let (_d, right, up) = iso_basis(0.0);
-        let (u, v) = iso_pixel_basis();
+        let (u, v) = iso_pixel_basis(0.0);
         // u projects to exactly (1, 0) screen px, v to (0, 1) (down-positive)
         assert!((u.dot(right) * ISO_R - 1.0).abs() < 1e-4);
         assert!((-u.dot(up) * ISO_R).abs() < 1e-4);
@@ -1018,7 +1423,7 @@ mod tests {
         // iso_input_dir + the pixel basis must reproduce the engine's screen
         // rates: up+right = (2/sqrt5 right, 1/sqrt5 up) px per unit time.
         let dir = iso_input_dir(1.0, 1.0).unwrap();
-        let w = screen_px_to_world(dir);
+        let w = screen_px_to_world(dir, 0.0);
         let (_d, right, up) = iso_basis(0.0);
         let sx = w.dot(right) * ISO_R;
         let sy = -w.dot(up) * ISO_R; // screen down
@@ -1028,17 +1433,49 @@ mod tests {
     }
 
     #[test]
+    fn near_hide_bits_track_the_camera_quadrant() {
+        // q=0: camera in +X+Z -> hide east(+X, bit0) + south(+Z, bit1) walls
+        assert_eq!(near_hide_bits(0), 0b0011);
+        assert_eq!(near_hide_bits(1), 0b1001); // +X -Z
+        assert_eq!(near_hide_bits(2), 0b1100); // -X -Z
+        assert_eq!(near_hide_bits(3), 0b0110); // -X +Z
+        assert_eq!(near_hide_bits(4), near_hide_bits(0)); // wraps
+        // consistency with the actual camera basis: the offset direction's
+        // signs must match the bits for every quarter turn
+        for q in 0..4u32 {
+            let yaw = (ISO_YAW_DEG + 90.0 * q as f32).to_radians();
+            let bits = near_hide_bits(q);
+            assert_eq!(bits & 0b0101 != 0, true); // exactly one X bit
+            assert_eq!((bits & 1 != 0), yaw.sin() > 0.0);
+            assert_eq!((bits & 2 != 0), yaw.cos() > 0.0);
+        }
+    }
+
+    #[test]
+    fn pixel_basis_holds_at_every_quarter_turn() {
+        for q in 0..4 {
+            let yaw_off = 90.0 * q as f32;
+            let (_d, right, up) = iso_basis(yaw_off);
+            let (u, v) = iso_pixel_basis(yaw_off);
+            assert!((u.dot(right) * ISO_R - 1.0).abs() < 1e-4, "q{q}");
+            assert!((-v.dot(up) * ISO_R - 1.0).abs() < 1e-4, "q{q}");
+            assert!((v.dot(right) * ISO_R).abs() < 1e-4, "q{q}");
+            assert!((-u.dot(up) * ISO_R).abs() < 1e-4, "q{q}");
+        }
+    }
+
+    #[test]
     fn snap_ground_lands_on_integer_lattice() {
         let (_d, right, up) = iso_basis(0.0);
         let p = Vec3::new(1.234, 0.0, -3.456);
-        let s = snap_ground_to_lattice(p);
+        let s = snap_ground_to_lattice(p, 0.0);
         let a = s.dot(right) * ISO_R;
         let b = -s.dot(up) * ISO_R;
         assert!((a - a.round()).abs() < 1e-3, "a {a}");
         assert!((b - b.round()).abs() < 1e-3, "b {b}");
         assert_eq!(s.y, 0.0); // stays on the ground plane
         // idempotent + never moves more than ~a pixel cell
-        assert!((snap_ground_to_lattice(s) - s).length() < 1e-4);
+        assert!((snap_ground_to_lattice(s, 0.0) - s).length() < 1e-4);
         assert!((s - p).length() < 3.0 / ISO_R);
     }
 }

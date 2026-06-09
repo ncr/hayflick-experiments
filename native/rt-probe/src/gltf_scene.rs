@@ -70,6 +70,25 @@ pub struct Scene {
     /// props the player can't walk through. Consumed by `Level` in lib.rs.
     pub floor_rect: [f32; 4],
     pub solids: Vec<[f32; 4]>,
+    /// Per-primitive near-wall hide tag (dollhouse cull under camera rotation).
+    /// Bitmask of OUTWARD directions: bit0=+X, bit1=+Z, bit2=-X, bit3=-Z;
+    /// 0 = never hidden. `SceneGpu` turns these into per-yaw TLAS instance
+    /// visibility masks. Empty vec = feature unused (all visible). When used,
+    /// must be exactly `primitives.len()` long — see `tag_hide`.
+    pub prim_hide_mask: Vec<u8>,
+    /// Conceptual lights: NEE-only emitters with NO geometry — nothing renders
+    /// at their position, nothing occludes right at them; light simply arrives
+    /// (e.g. lamps recessed in a ceiling that is never drawn). Same layout as
+    /// the extracted emissive-prim lights: [cx, cy, cz, radius, r, g, b, 0].
+    /// SceneGpu::build appends these to the light list.
+    pub point_lights: Vec<[f32; 8]>,
+    /// Per-scene lighting environment, fed to the trace shader as `env0`:
+    /// [sun_scale, sky_scale, fog_density, fog_height_falloff_wu].
+    /// sun/sky scale the shader's built-in key + sky dome; fog is an
+    /// exponential ground-mist (sigma = density * exp(-y/height)) with a
+    /// single-scatter sun term, applied on the primary segment only.
+    /// Overridable at runtime via SUN / SKY / FOG / FOG_H env vars.
+    pub lighting: [f32; 4],
 }
 
 /// A single loaded file, geometry already in file-world space (node transforms baked).
@@ -242,7 +261,75 @@ pub struct WallCull {
     pub thresh: f32,    // cull when (centroid-center)·toward_h exceeds this (world units)
 }
 
+/// A glTF file parsed once and registered with a `Scene` (materials + images
+/// pushed a single time); `Scene::place` then instantiates its geometry under
+/// any number of transforms without duplicating textures. The tile-based house
+/// builder places the same handful of wall/floor GLBs dozens of times.
+pub struct CachedModel {
+    model: Model,
+    material_base: i32,
+}
+
+impl CachedModel {
+    /// Local-space AABB of the model (for placement scaling decisions).
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        (self.model.min, self.model.max)
+    }
+}
+
 impl Scene {
+    /// Parse `path` once and register its materials/images with this scene.
+    pub fn preload(&mut self, path: &str) -> Result<CachedModel, Box<dyn std::error::Error>> {
+        let m = load_model(path)?;
+        let image_base = self.images.len() as i32;
+        let material_base = self.materials.len() as i32;
+        let mut model = m;
+        for mat in &mut model.materials {
+            if mat.tex_index >= 0 {
+                mat.tex_index += image_base;
+            }
+            self.materials.push(*mat);
+        }
+        self.images.append(&mut model.images);
+        Ok(CachedModel { model, material_base })
+    }
+
+    /// Instantiate a preloaded model under `transform` (geometry baked to world
+    /// space, materials shared). Returns the index of the first primitive added.
+    pub fn place(&mut self, cm: &CachedModel, transform: Mat4) -> usize {
+        let first = self.primitives.len();
+        let normal_mat = Mat3::from_mat4(transform).inverse().transpose();
+        for p in &cm.model.primitives {
+            let vbase = self.vertices.len() as u32;
+            let ibase = self.indices.len() as u32;
+            for li in 0..p.vertex_count {
+                let v = cm.model.vertices[(p.vertex_offset + li) as usize];
+                let wp = transform.transform_point3(Vec3::from(v.pos));
+                let wn = (normal_mat * Vec3::from(v.nrm)).normalize_or_zero();
+                self.vertices.push(Vertex { pos: wp.to_array(), nrm: wn.to_array(), uv: v.uv });
+            }
+            let tris = &cm.model.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
+            self.indices.extend_from_slice(tris);
+            self.primitives.push(Primitive {
+                vertex_offset: vbase,
+                index_offset: ibase,
+                vertex_count: p.vertex_count,
+                index_count: p.index_count,
+                material_id: p.material_id + cm.material_base,
+            });
+        }
+        first
+    }
+
+    /// Tag every primitive from `from` to the current end with a near-wall hide
+    /// bitmask (see `prim_hide_mask`), padding untagged predecessors with 0.
+    pub fn tag_hide(&mut self, from: usize, bits: u8) {
+        self.prim_hide_mask.resize(self.primitives.len(), 0);
+        for m in &mut self.prim_hide_mask[from..] {
+            *m = bits;
+        }
+    }
+
     /// Load a file and merge it under `transform`. Triangles whose world-space
     /// centroid Y is at or above `clip_y` are dropped (used to open the room's
     /// ceiling for a top-down dollhouse view); pass `f32::INFINITY` to keep all.
@@ -453,7 +540,12 @@ impl Scene {
     }
 
     pub fn new() -> Self {
-        Scene { min: Vec3::splat(f32::INFINITY), max: Vec3::splat(f32::NEG_INFINITY), ..Default::default() }
+        Scene {
+            min: Vec3::splat(f32::INFINITY),
+            max: Vec3::splat(f32::NEG_INFINITY),
+            lighting: [1.0, 1.0, 0.0, 1.0], // full sun/sky, no fog
+            ..Default::default()
+        }
     }
 
     /// World-space AABB of a freshly loaded file (for placement/scaling decisions).

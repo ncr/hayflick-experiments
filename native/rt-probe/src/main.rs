@@ -180,7 +180,7 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     let scale: u32 = std::env::var("SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(4).max(1);
     let (image, img_mem, view) = make_storage_image(&ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
     let desc_pool = make_pool(&ctx, gpu.texes.len() as u32);
-    let set = make_set(&ctx, gpu.set_layout, desc_pool, gpu.tlas, view, &gpu.vbuf, &gpu.ibuf, &gpu.gbuf, &gpu.mbuf, &gpu.texes, gpu.sampler);
+    let set = make_set(&ctx, gpu.set_layout, desc_pool, gpu.tlas, view, &gpu.vbuf, &gpu.ibuf, &gpu.gbuf, &gpu.mbuf, &gpu.lbuf, &gpu.texes, gpu.sampler);
 
     let readback = ctx.create_buffer((low_w * low_h * 16) as u64, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
     let exposure: f32 = std::env::var("EXPOSURE").ok().and_then(|s| s.parse().ok()).unwrap_or(0.85);
@@ -213,6 +213,7 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut push = iso_camera(&scene, low_w, low_h, *az);
         push.misc2[1] = debug_albedo;
         push.misc2[2] = aa;
+        push.misc2[3] = gpu.light_count as i32;
         render_frame(&ctx, image, &readback, gpu.pipeline, gpu.pipeline_layout, set, &mut push, dispatches, exposure, low_w, low_h, scale, out);
     }
     println!("  {} frame(s) in {:.2}s{}\n", frames.len(), t0.elapsed().as_secs_f32(), if orbit { " -> frames/" } else { "" });
@@ -221,9 +222,10 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     let query_pool = ctx.device.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(3), None)?;
     let (pimg, pmem, pview) = make_storage_image(&ctx, 480, 270, vk::Format::R32G32B32A32_SFLOAT);
     let ppool = make_pool(&ctx, gpu.texes.len() as u32);
-    let pset = make_set(&ctx, gpu.set_layout, ppool, gpu.tlas, pview, &gpu.vbuf, &gpu.ibuf, &gpu.gbuf, &gpu.mbuf, &gpu.texes, gpu.sampler);
+    let pset = make_set(&ctx, gpu.set_layout, ppool, gpu.tlas, pview, &gpu.vbuf, &gpu.ibuf, &gpu.gbuf, &gpu.mbuf, &gpu.lbuf, &gpu.texes, gpu.sampler);
     ctx.one_time(|cmd| barrier(&ctx.device, cmd, pimg, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER));
     let mut perf_push = iso_camera(&scene, 480, 270, 0.0);
+    perf_push.misc2[3] = gpu.light_count as i32;
     perf_push.misc[3] = 4; // spp
     let mut sum_tlas = 0.0f64;
     let mut sum_trace = 0.0f64;

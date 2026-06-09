@@ -3950,3 +3950,42 @@ Preventive checklist:
 - "Integer NEAREST upscale" alone does not guarantee the pixel look — the
   low-res buffer contents must also be aliased (one binary visibility sample
   per pixel). Check both ends when a port looks soft.
+
+## 2026-06-09 — lamp-lit path tracing needs NEE; "conceptual" lights need no geometry
+
+Context: stylizing `rt-probe` (no sun, interiors lit by lamps; grade + fixed
+palette + grain + height fog).
+
+Root cause of the first failure: small emissive boxes (sconces, bulbs) were
+added as geometry only. Random hemisphere bounces almost never hit a
+0.1-wu-radius emitter, so even 2000 spp stayed salt-and-pepper noisy and the
+rooms barely lit. Brute-forcing radiance up just trades darkness for fireflies.
+
+What works:
+- **Next-event estimation**: extract every emissive primitive (plus explicit
+  geometry-less entries) into a light buffer (bounding sphere + radiance);
+  sample a few per diffuse hit with solid-angle weighting; add surface
+  emission only on directly/specularly-seen hits (`fromSpec`) to avoid double
+  counting. 4 NEE samples/hit is ~free at this scene scale (0.6 ms frames).
+- **Firefly clamp**: clamp the NEE term on indirect (b>0) hits — a bounce ray
+  landing next to a lamp otherwise gets a huge solid angle through `thru`.
+- **Conceptual lights** (user request: no visible ceiling fixtures): entries
+  appended to the NEE list with NO geometry behind them. Nothing renders,
+  nothing occludes at the source; rooms are lit "from the ceiling" that is
+  never drawn. `Scene::point_lights` → appended in `SceneGpu::build`.
+- Bigger emitter area at lower radiance converges fundamentally better than
+  small-and-bright.
+
+Stylized post stack invariants:
+- All post (grade → grain → ordered-dither palette) runs **per LOW-RES texel**
+  inside the tonemap pass, before the integer upscale — one game pixel = one
+  post sample, so the pixel look survives. Ordered Bayer dither (not error
+  diffusion) keeps it deterministic per pixel: no temporal shimmer.
+- The GPU shader (`tonemap.comp`) and the CPU capture path
+  (`capture_denoised` in viewer.rs, via `post_grade/post_grain/post_palette`
+  in lib.rs) implement the same stack — keep them in sync or DENOISE=1 shots
+  silently diverge from the live view.
+- Height fog lives in the TRACE pass (primary segment only, closed-form
+  optical depth, y clamped ≥ 0 so a void miss doesn't integrate unbounded
+  density). It re-weights radiance smoothly and never moves hits, so fog is
+  pixel-look-safe.

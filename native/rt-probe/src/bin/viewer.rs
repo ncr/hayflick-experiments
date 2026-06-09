@@ -5,8 +5,16 @@
 //! swapchain.
 //!
 //! Controls: WASD / arrows = walk the player (held = continuous, camera
-//! follows); drag = nudge the player; scroll / +- = zoom; 0 = reset; j = toggle
-//! OIDN denoise; Esc = quit.
+//! follows) or pan the camera in scenes without a player; drag = nudge the
+//! player / pan; q / e = rotate a quarter turn (web rotateQuarterTurns);
+//! scroll / +- = zoom in whole steps 1-4 (web zoom ladder); 0 = reset;
+//! j = toggle OIDN denoise; Esc = quit.
+//!
+//! SCENE=house — example scene from the blockstudio wall/floor tile kits: a
+//! Fallout-flavoured three-room house with forge props and a yard
+//! (`build_house` in lib.rs). No player: WASD/drag pan, q/e orbit the camera
+//! in quarter turns; the camera-near perimeter walls hide per turn via TLAS
+//! instance masks (`set_yaw_masks`) so the interior reads like a dollhouse.
 //!
 //! SCENE=grid — the native rematch of the web `experiments/grid-walker`
 //! GameModule: 20×20 tile floor + grid lines + a 1-wu orange box, FIXED camera
@@ -52,14 +60,14 @@ use winit::window::{Window, WindowId};
 const MAX_SAMPLES: i32 = 4096; // stop dispatching once converged (idle = no GPU burn)
 const MARGIN: u32 = 32; // low-res overscan border so pan/zoom never reveal edge bars
 const ZOOM_MIN: f32 = 1.0;
-const ZOOM_MAX: f32 = 8.0;
+const ZOOM_MAX: f32 = 4.0; // web game-studio: zoomMin 1, zoomMax 4, zoomStep 1
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct TonePush {
     dims: [i32; 4], // low_w, low_h, out_w, out_h
     cfg: [i32; 4],  // scale, samples, pan_x, pan_y
-    fcfg: [f32; 4], // exposure, _, _, _
+    fcfg: [f32; 4], // exposure, grain, frame, flags (bit0 grade, bit1 palette)
 }
 
 /// Window-size-dependent resources, recreated on resize.
@@ -106,6 +114,8 @@ struct Renderer {
     // view / accumulation state
     base_scale: u32, // integer render scale at zoom=1 (the DPR baseline, #2/#4)
     exposure: f32,
+    post_flags: i32, // bit0 grade, bit1 palette (tonemap.comp post stack)
+    grain: f32,      // film grain strength (0 = off)
     debug: i32,
     aa: i32, // AA=1: jitter primary rays (soft edges); default 0 = crisp pixel look
     samples: i32,
@@ -114,8 +124,12 @@ struct Renderer {
     // pan is a float low-pixel crop offset; the GPU gets round(pan) and the
     // remainder is carried frame-to-frame so motion stays on the pixel lattice.
     zoom: f32,
+    // camera yaw in quarter-turns from canonical (web rotateQuarterTurns):
+    // Q = -1, E = +1. Tagged scenes re-mask near walls per turn (dollhouse).
+    yaw_q: u32,
     pan: Vec2,
     cursor: Vec2, // window-space cursor (physical px)
+    wheel_accum: f32, // accumulates scroll into discrete zoom steps
     dragging: bool,
     // camera-follow motion: panning moves the world look-at target (re-renders,
     // so the path-traced grain returns while moving and resolves when still).
@@ -283,12 +297,24 @@ impl Renderer {
         let sem_denoise_done = make_exportable_sem();
 
         let base_scale: u32 = std::env::var("PIXEL").ok().and_then(|s| s.parse().ok()).unwrap_or(4).max(1);
-        let exposure: f32 = std::env::var("EXPOSURE").ok().and_then(|s| s.parse().ok()).unwrap_or(0.22);
+        // house is now lamp-lit (no sun) — it needs more exposure than the
+        // daylight scenes, not less.
+        let default_exposure = if std::env::var("SCENE").as_deref() == Ok("house") { 0.7 } else { 0.22 };
+        let exposure: f32 = std::env::var("EXPOSURE").ok().and_then(|s| s.parse().ok()).unwrap_or(default_exposure);
+        // stylized post stack (tonemap.comp): grade + grain everywhere by
+        // default; palette quantize defaults on for the house look it was
+        // designed around. GRADE/GRAIN/PALETTE env vars override (0 = off).
+        let grade_on = std::env::var("GRADE").map(|v| v != "0").unwrap_or(true);
+        let palette_on = std::env::var("PALETTE").map(|v| v != "0").unwrap_or_else(|_| std::env::var("SCENE").as_deref() == Ok("house"));
+        let post_flags = (grade_on as i32) | ((palette_on as i32) << 1);
+        let grain: f32 = std::env::var("GRAIN").ok().and_then(|s| s.parse().ok()).unwrap_or(0.05);
         let debug = std::env::var("DEBUG_ALBEDO").is_ok() as i32;
         let aa = std::env::var("AA").is_ok() as i32;
         // grid-walker rematch: fixed camera + the web knob's default speed (80 px/s)
-        let grid_mode = std::env::var("SCENE").map(|s| s == "grid" || s == "grid-walker").unwrap_or(false);
-        let default_speed = if grid_mode { 80.0 } else { 140.0 };
+        let scene_kind = std::env::var("SCENE").unwrap_or_default();
+        let grid_mode = scene_kind == "grid" || scene_kind == "grid-walker";
+        // grid: the web knob default (80 px/s). house: camera-pan speed. room: legacy.
+        let default_speed = if grid_mode { 80.0 } else if scene_kind == "house" { 240.0 } else { 140.0 };
 
         let mut r = Renderer {
             _entry: entry,
@@ -313,13 +339,17 @@ impl Renderer {
             swap: None,
             base_scale,
             exposure,
+            post_flags,
+            grain,
             debug,
             aa,
             samples: 0,
             frame: 0,
-            zoom: std::env::var("ZOOM").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0_f32).clamp(ZOOM_MIN, ZOOM_MAX),
+            zoom: std::env::var("ZOOM").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0).round().clamp(ZOOM_MIN, ZOOM_MAX),
+            yaw_q: std::env::var("YAW_Q").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) & 3,
             pan: Vec2::ZERO,
             cursor: Vec2::ZERO,
+            wheel_accum: 0.0,
             dragging: false,
             target: player0,
             move_accum: Vec2::ZERO,
@@ -353,12 +383,23 @@ impl Renderer {
             frame_time_sum: 0.0,
             exit_requested: false,
         };
+        if !r.scene.prim_hide_mask.is_empty() {
+            r.gpu.set_yaw_masks(&r.ctx, r.yaw_q);
+            r.player_dirty = true; // first TLAS rebuild applies the masks
+        }
         r.recreate_swapchain(window.inner_size().width.max(1), window.inner_size().height.max(1));
         // optional initial pan offset (low pixels), for headless capture tests
         let px: f32 = std::env::var("PAN_X").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let py: f32 = std::env::var("PAN_Y").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
         if px != 0.0 || py != 0.0 {
             r.pan_by_low(Vec2::new(px, py));
+        }
+        // optional camera look-at override (world units), for framing captures
+        let tx = std::env::var("TARGET_X").ok().and_then(|s| s.parse::<f32>().ok());
+        let tz = std::env::var("TARGET_Z").ok().and_then(|s| s.parse::<f32>().ok());
+        if tx.is_some() || tz.is_some() {
+            let t = Vec3::new(tx.unwrap_or(r.target.x), 0.0, tz.unwrap_or(r.target.z));
+            r.target = snap_ground_to_lattice(t, r.yaw_deg());
         }
         // optional player world offset (camera NOT moved) — proves the dynamic
         // TLAS rebuild displaces the marker in headless capture tests.
@@ -392,15 +433,36 @@ impl Renderer {
         }
     }
 
-    /// Zoom by `factor` keeping the world point under window-pixel `c` fixed (#6).
-    fn zoom_at(&mut self, factor: f32, c: Vec2) {
+    /// Camera yaw offset in degrees for the current quarter-turn count.
+    fn yaw_deg(&self) -> f32 {
+        90.0 * self.yaw_q as f32
+    }
+
+    /// Step the zoom by whole increments (web `stepCameraZoom`: target +
+    /// direction * zoomStep, clamped to [zoomMin, zoomMax]), keeping the world
+    /// point under window-pixel `c` fixed (#6).
+    fn zoom_step(&mut self, dir: i32, c: Vec2) {
         let rs0 = self.rs() as f32;
-        self.zoom = (self.zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
+        self.zoom = (self.zoom + dir as f32).clamp(ZOOM_MIN, ZOOM_MAX);
         let rs1 = self.rs() as f32;
         if rs1 != rs0 {
             self.pan = zoom_anchor_pan(self.pan, c, rs0, rs1);
         }
         self.clamp_pan_to_buffer();
+    }
+
+    /// Rotate the view by quarter turns (web `rotateQuarterTurns`; Q = -1,
+    /// E = +1). The camera orbits its target; dollhouse-tagged scenes re-mask
+    /// which perimeter walls are hidden, applied by the next TLAS rebuild.
+    fn rotate(&mut self, delta: i32) {
+        self.yaw_q = (self.yaw_q as i32 + delta).rem_euclid(4) as u32;
+        if !self.scene.prim_hide_mask.is_empty() {
+            unsafe { self.gpu.set_yaw_masks(&self.ctx, self.yaw_q) };
+        }
+        self.move_accum = Vec2::ZERO;
+        self.snap_target_to_lattice();
+        self.player_dirty = true; // TLAS rebuild applies the new masks
+        self.reset_render();
     }
 
     fn reset_render(&mut self) {
@@ -599,7 +661,7 @@ impl Renderer {
     /// lattice (shift by the sub-pixel projection remainder along right/up) —
     /// keeps the scene crisp regardless of the player's continuous position.
     fn snap_target_to_lattice(&mut self) {
-        let (_d, right, up) = iso_basis(0.0);
+        let (_d, right, up) = iso_basis(self.yaw_deg());
         let px = self.target.dot(right) * ISO_R;
         let py = self.target.dot(up) * ISO_R;
         self.target += right * ((px.round() - px) / ISO_R) + up * ((py.round() - py) / ISO_R);
@@ -612,10 +674,24 @@ impl Renderer {
         let (whole, rem) = whole_pixel_step(self.move_accum);
         self.move_accum = rem;
         if whole != Vec2::ZERO {
-            let world = screen_px_to_world(whole);
-            let (nx, nz) = (self.player_pos.x + world.x, self.player_pos.z + world.z);
-            self.commit_player(nx, nz);
+            let world = screen_px_to_world(whole, self.yaw_deg());
+            if self.scene.dynamic_prim.is_none() {
+                // no player (house scene): drag pans the camera — the world
+                // follows the cursor, so the target moves opposite the drag.
+                self.pan_target(-world);
+            } else {
+                let (nx, nz) = (self.player_pos.x + world.x, self.player_pos.z + world.z);
+                self.commit_player(nx, nz);
+            }
         }
+    }
+
+    /// Move the camera target by a world delta (whole-pixel quantisation has
+    /// already happened in screen space), keeping it on the pixel lattice.
+    fn pan_target(&mut self, world: Vec3) {
+        self.target += world;
+        self.snap_target_to_lattice();
+        self.reset_render();
     }
 
     /// Apply a new continuous player position — the web engine's contract:
@@ -625,10 +701,10 @@ impl Renderer {
     /// accumulation reset only happen when the snapped point crosses a pixel
     /// cell. In follow mode (room scene) the camera target tracks the player.
     fn commit_player(&mut self, nx: f32, nz: f32) {
-        let old_snap = snap_ground_to_lattice(self.player_pos);
+        let old_snap = snap_ground_to_lattice(self.player_pos, self.yaw_deg());
         self.player_pos.x = nx;
         self.player_pos.z = nz;
-        let new_snap = snap_ground_to_lattice(self.player_pos);
+        let new_snap = snap_ground_to_lattice(self.player_pos, self.yaw_deg());
         if self.follow_cam {
             self.target = self.player_pos;
             self.snap_target_to_lattice();
@@ -652,7 +728,20 @@ impl Renderer {
         let Some(dir) = iso_input_dir(input_x, input_y) else { return };
         let speed = self.player_speed.max(recommended_min_px_per_sec(60.0));
         let dpx = dir * speed * dt; // screen pixels this frame (right, down)
-        let world = screen_px_to_world(dpx);
+        let world = screen_px_to_world(dpx, self.yaw_deg());
+
+        if self.scene.dynamic_prim.is_none() {
+            // no player (house scene): WASD pans the camera in whole-low-pixel
+            // steps with the remainder carried (#5 applied to the camera).
+            self.move_accum += dpx;
+            let (whole, rem) = whole_pixel_step(self.move_accum);
+            self.move_accum = rem;
+            if whole != Vec2::ZERO {
+                let w = screen_px_to_world(whole, self.yaw_deg());
+                self.pan_target(w);
+            }
+            return;
+        }
 
         let (ox, oz) = (self.player_pos.x, self.player_pos.z);
         let (nx, nz) = (ox + world.x, oz + world.z);
@@ -795,21 +884,38 @@ impl Renderer {
         }
         let dms = t.elapsed().as_secs_f32() * 1000.0;
 
-        // CPU tonemap (Reinhard+gamma) + integer NEAREST upscale by base_scale
+        // CPU tonemap + the stylized post stack (mirror of tonemap.comp:
+        // Reinhard -> gamma -> grade -> grain -> palette, per LOW-RES pixel),
+        // then integer NEAREST upscale by base_scale.
         let scale = self.base_scale;
         let (ow, oh) = (lw * scale, lh * scale);
+        let mut low = vec![[0.0f32; 3]; (lw * lh) as usize];
+        for ly in 0..lh {
+            for lx in 0..lw {
+                let s = ((ly * lw + lx) * 3) as usize;
+                let mut c = [0.0f32; 3];
+                for i in 0..3 {
+                    let v = color[s + i] * self.exposure;
+                    c[i] = (v / (v + 1.0)).powf(1.0 / 2.2);
+                }
+                if self.post_flags & 1 != 0 {
+                    c = post_grade(c);
+                }
+                c = post_grain(c, lx, ly, self.frame, self.grain);
+                if self.post_flags & 2 != 0 {
+                    c = post_palette(c, lx, ly);
+                }
+                low[(ly * lw + lx) as usize] = c;
+            }
+        }
         let mut big = vec![0u8; (ow * oh * 4) as usize];
         for y in 0..oh {
-            let sy = (y / scale) as usize;
+            let sy = y / scale;
             for x in 0..ow {
-                let sx = (x / scale) as usize;
-                let s = (sy * lw as usize + sx) * 3;
+                let c = low[(sy * lw + x / scale) as usize];
                 let d = ((y * ow + x) * 4) as usize;
-                for c in 0..3 {
-                    let mut v = color[s + c] * self.exposure;
-                    v = v / (v + 1.0);
-                    v = v.powf(1.0 / 2.2);
-                    big[d + c] = (v.clamp(0.0, 1.0) * 255.0) as u8;
+                for i in 0..3 {
+                    big[d + i] = (c[i].clamp(0.0, 1.0) * 255.0) as u8;
                 }
                 big[d + 3] = 255;
             }
@@ -882,7 +988,7 @@ impl Renderer {
 
         // descriptor sets
         let trace_pool = make_pool(&self.ctx, self.gpu.texes.len() as u32);
-        let trace_set = make_set(&self.ctx, self.gpu.set_layout, trace_pool, self.gpu.tlas, accum.2, &self.gpu.vbuf, &self.gpu.ibuf, &self.gpu.gbuf, &self.gpu.mbuf, &self.gpu.texes, self.gpu.sampler);
+        let trace_set = make_set(&self.ctx, self.gpu.set_layout, trace_pool, self.gpu.tlas, accum.2, &self.gpu.vbuf, &self.gpu.ibuf, &self.gpu.gbuf, &self.gpu.mbuf, &self.gpu.lbuf, &self.gpu.texes, self.gpu.sampler);
         let tone_pool = {
             let sizes = [vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 4 }];
             self.ctx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(2).pool_sizes(&sizes), None).unwrap()
@@ -972,7 +1078,7 @@ impl Renderer {
         // mesh setPosition routes through the ground snap; the ECS transform in
         // `player_pos` stays continuous).
         if self.player_dirty {
-            self.gpu.set_player_transform(&self.ctx, Mat4::from_translation(snap_ground_to_lattice(self.player_pos)));
+            self.gpu.set_player_transform(&self.ctx, Mat4::from_translation(snap_ground_to_lattice(self.player_pos, self.yaw_deg())));
         }
         let rebuild = self.player_dirty;
 
@@ -982,10 +1088,11 @@ impl Renderer {
         let sc_image = swap.images[idx as usize];
 
         // camera: ISO_VIEW_CONTRACT at the movable look-at target
-        let mut cam = iso_camera_at(&self.scene, low_w, low_h, 0.0, self.target);
+        let mut cam = iso_camera_at(&self.scene, low_w, low_h, self.yaw_deg(), self.target);
         cam.misc2[0] = self.frame as i32;
         cam.misc2[1] = self.debug;
         cam.misc2[2] = self.aa;
+        cam.misc2[3] = self.gpu.light_count as i32;
 
         let samples_now = if dispatch_trace { self.samples + SPP_PER } else { self.samples.max(SPP_PER) };
 
@@ -1071,7 +1178,7 @@ impl Renderer {
         let tp = TonePush {
             dims: [low_w as i32, low_h as i32, extent.width as i32, extent.height as i32],
             cfg: [rs, tone_samples, pan.x as i32, pan.y as i32],
-            fcfg: [self.exposure, 0.0, 0.0, 0.0],
+            fcfg: [self.exposure, self.grain, self.frame as f32, self.post_flags as f32],
         };
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline_layout, 0, &[tone_set], &[]);
@@ -1195,19 +1302,25 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::Escape) => event_loop.exit(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.cursor;
-                        r.zoom_at(1.25, c);
+                        r.zoom_step(1, c);
                     }
                     Key::Character("-") | Key::Character("_") => {
                         let c = r.cursor;
-                        r.zoom_at(0.8, c);
+                        r.zoom_step(-1, c);
                     }
+                    Key::Character("q") => r.rotate(-1),
+                    Key::Character("e") => r.rotate(1),
                     Key::Character("0") => {
                         r.zoom = 1.0;
                         r.player_pos = r.scene.player_start;
                         r.target = r.player_pos;
-                        r.snap_target_to_lattice();
                         r.move_accum = Vec2::ZERO;
                         r.recenter_pan();
+                        if r.yaw_q != 0 {
+                            r.rotate(-(r.yaw_q as i32)); // back to canonical (re-masks + snaps)
+                        } else {
+                            r.snap_target_to_lattice();
+                        }
                         r.player_dirty = true;
                         r.reset_render();
                     }
@@ -1240,8 +1353,19 @@ impl ApplicationHandler for App {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(p) => p.y as f32 / 50.0,
                     };
-                    let c = r.cursor;
-                    r.zoom_at(1.15f32.powf(dy), c);
+                    // accumulate (trackpads send fractional deltas) and zoom in
+                    // whole steps, cursor-anchored — web zoomStepAtClient.
+                    r.wheel_accum += dy;
+                    while r.wheel_accum >= 1.0 {
+                        let c = r.cursor;
+                        r.zoom_step(1, c);
+                        r.wheel_accum -= 1.0;
+                    }
+                    while r.wheel_accum <= -1.0 {
+                        let c = r.cursor;
+                        r.zoom_step(-1, c);
+                        r.wheel_accum += 1.0;
+                    }
                 }
             }
             WindowEvent::Resized(size) => {
