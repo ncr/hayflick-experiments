@@ -17,6 +17,7 @@ import {
 import { detectIslands } from "./uv-template/island-detect";
 import { repackIslands } from "./uv-template/repack";
 import { recomposeIslandsAsAtlas } from "./uv-template/recompose";
+import { quantizeIslandsToSharedPalette } from "./uv-template/quantize";
 import {
   ATLAS_CELL_PX,
   ATLAS_OUTLINE_PADDING_PX,
@@ -41,25 +42,36 @@ import type {
 export const MATERIAL_STUDIO_CACHE_SOURCE = "material-studio.uv-template";
 
 // ---------------------------------------------------------------------------
-// Year 2200 style preamble — shared across prompts
+// Style preamble + negatives — shared across prompts
 // ---------------------------------------------------------------------------
+// The cm-per-texel numbers below are tied to the current IsoGameView
+// reference resolution (R = 25·√2 lowpixels per world unit). Update them
+// when the pixel-scale cleanup lands — see docs/render-pixel-scale-cleanup.md.
 
 const STYLE_PREAMBLE = [
-  "Year 2200 sci-fi architectural surface.",
-  "Material looks carved from dense white mineral or architectural ceramic.",
-  "Pristine, clean, no damage, no grime, no decay, no texture clutter.",
-  "Flat, non-dramatic, even lighting baked into the albedo (no shadows, no specular highlights — PBR handles that at runtime).",
-  "Crisp pixel art with large flat-colour blocks, no anti-aliasing, no gradients, no dithering."
+  "STYLE: pixel-art albedo texture for a low-resolution 3D isometric game (orthographic 2:1), nearest-neighbour filtering, where one texel covers a large physical area (~5 cm horizontal, ~4 cm vertical).",
+  "Aesthetic: looks like hand-authored pixel art for a 90s isometric game — extremely clean, controlled, no randomness, almost UI-like clarity. Minimalist retro-futuristic architecture, Dieter Rams / Braun-inspired engineered surfaces.",
+  "ALBEDO ONLY: no lighting, no shadows, no highlights, no gradients implying light direction, no ambient occlusion, no bevel shading. Flat matte material — runtime PBR handles all light.",
+  "PIXEL DISCIPLINE: no high-frequency detail, no noise, no grain, no random texture variation, no sub-texel features. Every contiguous patch of one colour MUST be a solid rectangle at least 6 cells wide AND 6 cells tall (≥ 36 cells total). Single-cell or thin-line colour variations are forbidden. Two cells of different colours must NEVER touch except along the straight edge of one of these large rectangles. If you find yourself placing two different colours within 5 cells of each other anywhere except along a deliberate straight panel seam, you are wrong — redo the region with one solid colour and a single big block.",
+  "VALUE STRUCTURE: HARD LIMIT 2–3 distinct colours total across the entire output (one base, one shadow/accent, optionally one seam line). Do NOT introduce additional hues, tints, or value steps to suggest material variation. Tones must be clearly separated with no smooth transitions, no dithering, no stippling. Count your colours before emitting; if you have used 4+ colours, redo it with 3.",
+  "SHAPE LANGUAGE: each region should look like 1–3 BIG RECTANGLES of the accent colour stamped onto a single solid base-colour field. No clusters of small shapes, no per-cell mosaic, no chequerboards, no pinstripes thinner than 2 cells. Panel seams are clean, straight, consistent thickness, and run edge-to-edge of the region. Spacing is regular and grid-aligned. Repetition is controlled and tileable.",
+  "MATERIAL DEFINITION: identity comes from colour and simple value variation only. The default state of the material is one solid base colour filling MOST of every region (≥ 70% of cells). Any accent is a SINGLE big block of ≥ 6×6 cells, not many small marks. No micro surface detail, no per-pixel speckling.",
+  "CONSTRAINTS: tileable, no photorealism, no PBR detail simulation, no dirt / damage / scratches / aging unless explicitly requested."
 ].join(" ");
+
+const STYLE_NEGATIVES =
+  "photorealistic, PBR material, high-frequency detail, noise, grain, film grain, scratches, cracks, dirt, grunge, weathering, edge wear, lighting, shadows, highlights, ambient occlusion, bevel shading, normal-map detail, micro detail, texture noise, uneven randomness, dithering, stippling, scattered pixels, salt-and-pepper specks, per-pixel colour variation, multi-tone gradients, more than 3 colours, palette beyond 3 tones";
 
 // ---------------------------------------------------------------------------
 // Per-role prompt seeds — keyed by textureRole, not by material id
 // ---------------------------------------------------------------------------
+// Seeds are neutral function hints only; all aesthetic comes from the
+// base style preamble + the user's typed prompt.
 
 export const ROLE_PROMPT_SEEDS: Record<string, string> = {
-  wall: "dense white architectural ceramic with fine structural joints, monolithic and heavy. Limited palette: warm white, faint cream, very subtle warm grey joint lines.",
-  trim: "burnt industrial amber accent on a dark structural substrate, functional marker stripe at an architectural datum, not decorative. Limited palette: burnt amber #B8430E, dark amber #8A3000, near-black structural dark #1a1a1a.",
-  floor_tile: "smooth architectural floor tile in pale mineral composite with subtle rectilinear joints, infrastructure-grade, pristine. Limited palette: light grey, near-white, faint cool grey joint lines."
+  wall: "large flat wall panels with thin vertical seam lines",
+  trim: "narrow accent stripe at an architectural datum",
+  floor_tile: "square floor tiles with thin grid seams"
 };
 
 export function defaultPromptForRole(role: string): string {
@@ -171,8 +183,6 @@ export async function generateBaseColorFromTemplate(
   // of the same scale so the AI gets nice chunky cells.
   const templatePack = packTemplateAsScaledAtlas(
     sourceAtlasIslands,
-    atlasWidth,
-    atlasHeight,
     templateWidth,
     templateHeight
   );
@@ -283,6 +293,16 @@ export async function generateBaseColorFromTemplate(
   // 256² space). cellsX × cellsY is identical across the two packings, so the
   // pixel-art buffers slot in 1:1.
   const islandPixelArt = extractIslandPixelArt(aiRaw, templatePack.islands);
+  // gpt-image-2 always emits per-pixel near-identical colour variation
+  // (thousands of unique RGB values across a few thousand pixels) even when
+  // the prompt explicitly bans it. Snap the AI output to a shared 3-colour
+  // palette across all islands so neighbouring faces match and the texture
+  // actually reads as flat-shaded pixel art.
+  const palette = quantizeIslandsToSharedPalette(islandPixelArt, { k: 3 });
+  console.log(
+    "[material-studio] quantized AI output to palette:",
+    palette.map(([r, g, b]) => `rgb(${r},${g},${b})`).join(", ")
+  );
   const recomposed = recomposeIslandsAsAtlas(
     atlasWidth,
     atlasHeight,
@@ -384,6 +404,7 @@ function buildPrompt(
     `Do NOT paint anything outside the outlined regions; the grey background must remain UNTOUCHED.`,
     `Do NOT redraw the coloured outlines or the black grid lines.`,
     `Do NOT paint into image 2; output only the modified image 1.`,
+    `Do NOT include any of the following in the output: ${STYLE_NEGATIVES}.`,
   ];
   if (hasPainted) {
     lines.push(
@@ -391,7 +412,9 @@ function buildPrompt(
     );
   }
   lines.push(
-    `Each region depicts the same material on a different face of the mesh; paint each region with placement appropriate to its face role:`,
+    `All regions depict the SAME material on different faces of the same mesh — they MUST share one palette of 2–3 colours total across the entire output. Do NOT pick different hues per region. Do NOT vary tone per region.`,
+    `Within each region, the base colour fills AT LEAST 70% of the cells as one continuous field. Any accent colour appears as a SINGLE solid rectangle of at least 6×6 cells (or a single straight seam stripe at least 2 cells thick spanning the full region width or height) — never as scattered marks, never as small repeating shapes, never as per-cell noise. Most regions should contain zero or one accent block, not many.`,
+    `Paint each region with placement appropriate to its face role:`,
     ...islandLines
   );
   return lines.join(" ");
@@ -419,8 +442,6 @@ function hexTag(hex: number): string {
  *    removes the perceived mismatch entirely. */
 function packTemplateAsScaledAtlas(
   atlasIslands: Island[],
-  atlasWidth: number,
-  atlasHeight: number,
   templateWidth: number,
   templateHeight: number
 ): { islands: Island[] } {

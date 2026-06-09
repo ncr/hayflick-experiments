@@ -8,6 +8,14 @@
     "wall": "dense white architectural ceramic with fine structural joints, monolithic and heavy. Limited palette: warm white, faint cream, very subtle warm grey joint lines.\n\na little bit grime on the bottom"
   },
   "bakedAt": "2026-04-28T13:38:01.077Z",
-  "updatedAt": "2026-04-28T13:38:01.077Z",
-  "protected": false
+  "updatedAt": "2026-05-01T11:47:56.553Z",
+  "protected": false,
+  "pbrTweaks": {
+    "wall": {
+      "normalScale": 0.1,
+      "aoStrength": 0,
+      "roughnessFactor": 0,
+      "metallicFactor": 0
+    }
+  }
 }
