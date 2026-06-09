@@ -229,7 +229,47 @@ pub unsafe fn barrier(device: &ash::Device, cmd: vk::CommandBuffer, image: vk::I
     device.cmd_pipeline_barrier(cmd, ss, ds, vk::DependencyFlags::empty(), &[], &[], &[b]);
 }
 
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// 0xRRGGBB (three.js-style sRGB hex) -> linear rgba, like THREE.Color does
+/// before a material colour reaches the renderer.
+pub fn hex_linear(hex: u32) -> [f32; 4] {
+    let r = ((hex >> 16) & 0xff) as f32 / 255.0;
+    let g = ((hex >> 8) & 0xff) as f32 / 255.0;
+    let b = (hex & 0xff) as f32 / 255.0;
+    [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), 1.0]
+}
+
+/// Native rematch of `experiments/grid-walker` — the smallest web GameModule:
+/// a 20×20-tile floor (0x1f2329) with GridHelper tile lines (centre 0x6a6558,
+/// rest 0x3a3d44) and a 1-wu orange box (0xd97706, anchor bottom) at the
+/// origin, driven by arrows/WASD. The web version uses the engine's OPEN level
+/// (nothing blocks), a FIXED camera, and snaps the box mesh to the screen-pixel
+/// lattice each frame — the viewer mirrors all three when SCENE=grid.
+pub fn build_grid_walker() -> Result<Scene, Box<dyn std::error::Error>> {
+    let mut scene = Scene::new();
+    let size = 20.0; // wu = tiles (1 tile = 1 wu = 1.28 m)
+    let half = size * 0.5;
+    scene.add_floor(-half, half, -half, half, 0.0, hex_linear(0x1f2329));
+    // GridHelper(20, 20, 0x6a6558, 0x3a3d44) at y = 0.001, lines ~1 lowpixel wide
+    scene.add_ground_grid(size, 20, 0.001, 1.0 / 32.0, hex_linear(0x6a6558), hex_linear(0x3a3d44));
+    scene.recompute_bounds();
+    // grid-walker runs on the engine's open level: nothing ever blocks.
+    scene.floor_rect = [-1e30, -1e30, 1e30, 1e30];
+    scene.solids = Vec::new();
+    // spawnBox({ size: 1, color: 0xd97706, anchor: "bottom" }) at (0, 0)
+    let pidx = scene.add_box_local(0.5, 1.0, 0.5, hex_linear(0xd97706), [0.0; 4]);
+    scene.dynamic_prim = Some(pidx);
+    scene.player_start = Vec3::ZERO;
+    Ok(scene)
+}
+
 pub fn build_scene() -> Result<Scene, Box<dyn std::error::Error>> {
+    if std::env::var("SCENE").map(|s| s == "grid" || s == "grid-walker").unwrap_or(false) {
+        return build_grid_walker();
+    }
     if std::env::var("SHOWCASE").is_ok() {
         return build_showcase();
     }
@@ -509,6 +549,40 @@ impl Level {
         }
         self.solids.iter().any(|s| x >= s[0] && z >= s[1] && x <= s[2] && z <= s[3])
     }
+}
+
+/// World-space ground-plane deltas for one screen pixel: `u` = +1 px right,
+/// `v` = +1 px down. The native mirror of the web `IsoCamera.getSnapBasis()`
+/// ground-raycast basis. Horizontal pixels move 1/R wu along the screen-right
+/// floor direction; vertical pixels are foreshortened by sin(pitch) = 1/2, so
+/// one px down is **2/R** wu toward the camera. (Getting this 2× wrong halves
+/// vertical screen speed and turns the 2:1 diagonal stair into 4:1.)
+pub fn iso_pixel_basis() -> (Vec3, Vec3) {
+    let yaw = ISO_YAW_DEG.to_radians();
+    let sin_pitch = ISO_PITCH_DEG.to_radians().sin(); // 1/2 exact
+    let right_floor = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+    let toward_cam = Vec3::new(yaw.sin(), 0.0, yaw.cos()); // -fwd_floor
+    (right_floor / ISO_R, toward_cam / (ISO_R * sin_pitch))
+}
+
+/// Convert a screen-pixel delta (x right, y down) into a world ground delta.
+pub fn screen_px_to_world(d: glam::Vec2) -> Vec3 {
+    let (u, v) = iso_pixel_basis();
+    u * d.x + v * d.y
+}
+
+/// Snap a ground point to the nearest cell of the screen-pixel lattice,
+/// staying on its ground plane (y preserved) — the native mirror of
+/// `IsoGameView.snapWorldPointOnGround(.., "nearest")` with the uniform (1, 1)
+/// granularity the engine mandates (CLAUDE.md invariant #9). The web routes
+/// every mesh `setPosition` through this so a moving box renders identically
+/// on every frame it occupies a pixel cell.
+pub fn snap_ground_to_lattice(p: Vec3) -> Vec3 {
+    let (_dir, right, up) = iso_basis(0.0);
+    let (u, v) = iso_pixel_basis();
+    let a = p.dot(right) * ISO_R; // screen px right
+    let b = -p.dot(up) * ISO_R; // screen px down
+    p + u * (a.round() - a) + v * (b.round() - b)
 }
 
 /// The iso 2:1 input direction (mirrors `createControlledInputSystem`): combine
@@ -921,5 +995,50 @@ mod tests {
     #[test]
     fn smoothness_floor_matches_engine() {
         assert!((recommended_min_px_per_sec(60.0) - 67.082).abs() < 0.01);
+    }
+
+    #[test]
+    fn pixel_basis_maps_exactly_one_screen_pixel() {
+        let (_d, right, up) = iso_basis(0.0);
+        let (u, v) = iso_pixel_basis();
+        // u projects to exactly (1, 0) screen px, v to (0, 1) (down-positive)
+        assert!((u.dot(right) * ISO_R - 1.0).abs() < 1e-4);
+        assert!((-u.dot(up) * ISO_R).abs() < 1e-4);
+        assert!((v.dot(right) * ISO_R).abs() < 1e-4);
+        assert!((-v.dot(up) * ISO_R - 1.0).abs() < 1e-4);
+        // both are ground-plane vectors
+        assert_eq!(u.y, 0.0);
+        assert_eq!(v.y, 0.0);
+        // vertical foreshortening: one px down covers 2x the ground of one px right
+        assert!((v.length() / u.length() - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn diagonal_input_traces_2to1_screen_stair_through_the_basis() {
+        // iso_input_dir + the pixel basis must reproduce the engine's screen
+        // rates: up+right = (2/sqrt5 right, 1/sqrt5 up) px per unit time.
+        let dir = iso_input_dir(1.0, 1.0).unwrap();
+        let w = screen_px_to_world(dir);
+        let (_d, right, up) = iso_basis(0.0);
+        let sx = w.dot(right) * ISO_R;
+        let sy = -w.dot(up) * ISO_R; // screen down
+        assert!((sx - 2.0 / 5.0_f32.sqrt()).abs() < 1e-4, "a-rate {sx}");
+        assert!((sy + 1.0 / 5.0_f32.sqrt()).abs() < 1e-4, "b-rate {sy}");
+        assert!((sx / -sy - 2.0).abs() < 1e-3); // the 2:1 stair
+    }
+
+    #[test]
+    fn snap_ground_lands_on_integer_lattice() {
+        let (_d, right, up) = iso_basis(0.0);
+        let p = Vec3::new(1.234, 0.0, -3.456);
+        let s = snap_ground_to_lattice(p);
+        let a = s.dot(right) * ISO_R;
+        let b = -s.dot(up) * ISO_R;
+        assert!((a - a.round()).abs() < 1e-3, "a {a}");
+        assert!((b - b.round()).abs() < 1e-3, "b {b}");
+        assert_eq!(s.y, 0.0); // stays on the ground plane
+        // idempotent + never moves more than ~a pixel cell
+        assert!((snap_ground_to_lattice(s) - s).length() < 1e-4);
+        assert!((s - p).length() < 3.0 / ISO_R);
     }
 }

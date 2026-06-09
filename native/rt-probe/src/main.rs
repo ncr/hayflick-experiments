@@ -185,6 +185,9 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     let readback = ctx.create_buffer((low_w * low_h * 16) as u64, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
     let exposure: f32 = std::env::var("EXPOSURE").ok().and_then(|s| s.parse().ok()).unwrap_or(0.85);
     let debug_albedo = std::env::var("DEBUG_ALBEDO").is_ok() as i32;
+    // AA=1 jitters primary rays (soft photoreal edges); default is pixel-centre
+    // sampling = the crisp low-res game look.
+    let aa = std::env::var("AA").is_ok() as i32;
 
     // Frame list: an orbit sequence (ORBIT=1) or a single still. The value is a
     // yaw offset; iso_camera adds the contract's base yaw (π/4) internally.
@@ -209,6 +212,7 @@ unsafe fn run() -> Result<(), Box<dyn std::error::Error>> {
     for (az, out) in &frames {
         let mut push = iso_camera(&scene, low_w, low_h, *az);
         push.misc2[1] = debug_albedo;
+        push.misc2[2] = aa;
         render_frame(&ctx, image, &readback, gpu.pipeline, gpu.pipeline_layout, set, &mut push, dispatches, exposure, low_w, low_h, scale, out);
     }
     println!("  {} frame(s) in {:.2}s{}\n", frames.len(), t0.elapsed().as_secs_f32(), if orbit { " -> frames/" } else { "" });

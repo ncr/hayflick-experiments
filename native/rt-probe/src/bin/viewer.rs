@@ -8,6 +8,13 @@
 //! follows); drag = nudge the player; scroll / +- = zoom; 0 = reset; j = toggle
 //! OIDN denoise; Esc = quit.
 //!
+//! SCENE=grid — the native rematch of the web `experiments/grid-walker`
+//! GameModule: 20×20 tile floor + grid lines + a 1-wu orange box, FIXED camera
+//! (the box moves across the screen), speed 80 px/s (the web knob default),
+//! open level (nothing blocks). Movement semantics mirror @common/gameplay
+//! exactly: iso 2:1 input mapping, smoothness-floor clamp, continuous ECS
+//! transform with the rendered mesh snapped to the screen-pixel lattice.
+//!
 //! Game runtime (mirrors @common/gameplay): held keys feed the iso 2:1 input
 //! mapping (`iso_input_dir`), the player walks at a smoothness-floored speed and
 //! is blocked by the `Level` (floor rect + prop footprints, `is_blocked`),
@@ -100,6 +107,7 @@ struct Renderer {
     base_scale: u32, // integer render scale at zoom=1 (the DPR baseline, #2/#4)
     exposure: f32,
     debug: i32,
+    aa: i32, // AA=1: jitter primary rays (soft edges); default 0 = crisp pixel look
     samples: i32,
     frame: u32,
     // pixel-perfect interactive view (#5 pan, #6 zoom-anchor, #7 guard band).
@@ -124,10 +132,17 @@ struct Renderer {
     held: [bool; 4],
     player_speed: f32,
     level: Level,
+    // grid-walker rematch (SCENE=grid): the web experiment has a FIXED camera —
+    // the box moves across the screen. Room scene keeps camera-follow.
+    follow_cam: bool,
     last_frame: Option<std::time::Instant>,
     // headless-capture mode: dump `out` to PNG at `shot_spp` samples, then exit
     shot: Option<String>,
     shot_spp: i32,
+    // headless walk test: hold up+right for WALK seconds from launch, then
+    // release — drives the real held-key/update_motion path without a keyboard.
+    walk: Option<f32>,
+    start_time: std::time::Instant,
     denoise: bool,      // headless DENOISE capture
     denoise_live: bool, // interactive denoise dial ('j')
     denoiser: Option<oidn::Denoiser>, // persistent host-copy OIDN (fallback)
@@ -270,6 +285,10 @@ impl Renderer {
         let base_scale: u32 = std::env::var("PIXEL").ok().and_then(|s| s.parse().ok()).unwrap_or(4).max(1);
         let exposure: f32 = std::env::var("EXPOSURE").ok().and_then(|s| s.parse().ok()).unwrap_or(0.22);
         let debug = std::env::var("DEBUG_ALBEDO").is_ok() as i32;
+        let aa = std::env::var("AA").is_ok() as i32;
+        // grid-walker rematch: fixed camera + the web knob's default speed (80 px/s)
+        let grid_mode = std::env::var("SCENE").map(|s| s == "grid" || s == "grid-walker").unwrap_or(false);
+        let default_speed = if grid_mode { 80.0 } else { 140.0 };
 
         let mut r = Renderer {
             _entry: entry,
@@ -295,6 +314,7 @@ impl Renderer {
             base_scale,
             exposure,
             debug,
+            aa,
             samples: 0,
             frame: 0,
             zoom: std::env::var("ZOOM").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0_f32).clamp(ZOOM_MIN, ZOOM_MAX),
@@ -307,11 +327,14 @@ impl Renderer {
             player_pos: player0,
             player_dirty: false,
             held: [false; 4],
-            player_speed: std::env::var("PLAYER_SPEED").ok().and_then(|s| s.parse().ok()).unwrap_or(140.0_f32),
+            player_speed: std::env::var("PLAYER_SPEED").ok().and_then(|s| s.parse().ok()).unwrap_or(default_speed),
             level,
+            follow_cam: !grid_mode,
             last_frame: None,
             shot: std::env::var("SHOT").ok(),
             shot_spp: std::env::var("SHOT_SPP").ok().and_then(|s| s.parse().ok()).unwrap_or(512),
+            walk: std::env::var("WALK").ok().and_then(|s| s.parse().ok()),
+            start_time: std::time::Instant::now(),
             denoise: std::env::var("DENOISE").is_ok(),
             denoise_live: std::env::var("DENOISE").is_ok(),
             denoiser: None,
@@ -583,24 +606,35 @@ impl Renderer {
     }
 
     /// Move the player on the floor by a screen-space delta in low pixels,
-    /// quantised to whole low pixels with the remainder carried (#5). The camera
-    /// follows (target = player), re-rendering — so motion shows grain and
-    /// resolves when still.
+    /// quantised to whole low pixels with the remainder carried (#5).
     fn move_player(&mut self, d_low: Vec2) {
         self.move_accum += d_low;
         let (whole, rem) = whole_pixel_step(self.move_accum);
         self.move_accum = rem;
         if whole != Vec2::ZERO {
-            // floor basis: right is already horizontal; fwd is the floor "north"
-            // (camera forward projected to the ground plane).
-            let yaw = ISO_YAW_DEG.to_radians();
-            let right_floor = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
-            let fwd_floor = -Vec3::new(yaw.sin(), 0.0, yaw.cos());
-            // screen +x = right, +y = down (down = toward camera = -fwd)
-            self.player_pos += right_floor * (whole.x / ISO_R) - fwd_floor * (whole.y / ISO_R);
+            let world = screen_px_to_world(whole);
+            let (nx, nz) = (self.player_pos.x + world.x, self.player_pos.z + world.z);
+            self.commit_player(nx, nz);
+        }
+    }
+
+    /// Apply a new continuous player position — the web engine's contract:
+    /// the ECS transform stays continuous, but the RENDERED mesh is snapped to
+    /// the screen-pixel lattice on every setPosition (`snapWorldPointOnGround`,
+    /// nearest, uniform (1,1) granularity). So the TLAS transform + the costly
+    /// accumulation reset only happen when the snapped point crosses a pixel
+    /// cell. In follow mode (room scene) the camera target tracks the player.
+    fn commit_player(&mut self, nx: f32, nz: f32) {
+        let old_snap = snap_ground_to_lattice(self.player_pos);
+        self.player_pos.x = nx;
+        self.player_pos.z = nz;
+        let new_snap = snap_ground_to_lattice(self.player_pos);
+        if self.follow_cam {
             self.target = self.player_pos;
             self.snap_target_to_lattice();
             self.recenter_pan();
+        }
+        if new_snap != old_snap {
             self.player_dirty = true;
             self.reset_render();
         }
@@ -608,21 +642,17 @@ impl Renderer {
 
     /// Continuous held-key movement (the native @common/gameplay loop): map the
     /// held inputs through the iso 2:1 direction, integrate at `player_speed`
-    /// (floored to the smoothness minimum) over `dt`, then collide against the
-    /// level. Blocked moves slide along the unobstructed axis. The camera
-    /// follows (target snaps to the pixel lattice) and the frame re-renders.
+    /// (floored to the smoothness minimum) over `dt` on the screen-pixel basis
+    /// (`screen_px_to_world` — 1 px right = 1/R wu, 1 px down = 2/R wu), then
+    /// collide against the level. Blocked moves slide along the unobstructed
+    /// axis. Moving re-renders (grain) once the snapped position changes.
     fn update_motion(&mut self, dt: f32) {
         let input_x = (self.held[3] as i32 - self.held[2] as i32) as f32; // right - left
         let input_y = (self.held[0] as i32 - self.held[1] as i32) as f32; // up - down
         let Some(dir) = iso_input_dir(input_x, input_y) else { return };
         let speed = self.player_speed.max(recommended_min_px_per_sec(60.0));
         let dpx = dir * speed * dt; // screen pixels this frame (right, down)
-
-        // floor basis per screen pixel: +x = right_floor, +y (down) = -fwd_floor.
-        let yaw = ISO_YAW_DEG.to_radians();
-        let right_floor = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
-        let fwd_floor = -Vec3::new(yaw.sin(), 0.0, yaw.cos());
-        let world = (right_floor * dpx.x - fwd_floor * dpx.y) / ISO_R;
+        let world = screen_px_to_world(dpx);
 
         let (ox, oz) = (self.player_pos.x, self.player_pos.z);
         let (nx, nz) = (ox + world.x, oz + world.z);
@@ -640,13 +670,7 @@ impl Renderer {
             }
         }
         if px != ox || pz != oz {
-            self.player_pos.x = px;
-            self.player_pos.z = pz;
-            self.target = self.player_pos;
-            self.snap_target_to_lattice();
-            self.recenter_pan();
-            self.player_dirty = true;
-            self.reset_render();
+            self.commit_player(px, pz);
         }
     }
 
@@ -918,6 +942,10 @@ impl Renderer {
         let now = std::time::Instant::now();
         let dt = self.last_frame.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(0.0);
         self.last_frame = Some(now);
+        // headless walk test: synthesize a held up+right for the first WALK secs
+        if let Some(w) = self.walk {
+            self.held = if self.start_time.elapsed().as_secs_f32() < w { [true, false, false, true] } else { [false; 4] };
+        }
         if self.held != [false; 4] {
             self.update_motion(dt);
         }
@@ -940,8 +968,11 @@ impl Renderer {
 
         // Player moved: patch its dynamic instance transform (fence wait above
         // guarantees no in-flight TLAS read), then the TLAS is rebuilt below.
+        // The rendered position is the lattice-SNAPPED one (web invariant: every
+        // mesh setPosition routes through the ground snap; the ECS transform in
+        // `player_pos` stays continuous).
         if self.player_dirty {
-            self.gpu.set_player_transform(&self.ctx, Mat4::from_translation(self.player_pos));
+            self.gpu.set_player_transform(&self.ctx, Mat4::from_translation(snap_ground_to_lattice(self.player_pos)));
         }
         let rebuild = self.player_dirty;
 
@@ -954,6 +985,7 @@ impl Renderer {
         let mut cam = iso_camera_at(&self.scene, low_w, low_h, 0.0, self.target);
         cam.misc2[0] = self.frame as i32;
         cam.misc2[1] = self.debug;
+        cam.misc2[2] = self.aa;
 
         let samples_now = if dispatch_trace { self.samples + SPP_PER } else { self.samples.max(SPP_PER) };
 

@@ -3892,3 +3892,61 @@ grid-walker does `min: ceil(recommended/10)*10 = 70`. This is a
 What this is NOT: a renderer bug. The cornerstone and trajectory
 invariants both hold below the threshold. The threshold is a perceptual
 property of the snap, not a stability property.
+
+## 2026-06-09 — native viewer screen-px→world basis missed the iso vertical foreshortening
+
+Root cause:
+- `native/rt-probe`'s held-key movement converted screen-pixel deltas to world
+  ground deltas as `right_floor·(dx/R) - fwd_floor·(dy/R)` — treating one
+  vertical screen pixel as the same ground distance as one horizontal pixel.
+  In the iso 2:1 view the ground is foreshortened vertically by
+  `sin(pitch) = 1/2`, so **one px down = 2/R wu** toward the camera (the web
+  `IsoCamera.getSnapBasis()` gets this for free from its ground-plane raycast).
+  Effect: vertical screen speed halved; an up+right walk traced a 4:1 screen
+  line instead of the engine's 2:1 stair.
+
+Detection signal:
+- No visual test caught it — the existing lib tests pinned `iso_input_dir`
+  (the px-space direction) but not the px→world mapping that followed it.
+  Found by line-by-line comparison against `createControlledInputSystem` +
+  `getSnapBasis` while rematching the web grid-walker.
+
+Preventive checklist:
+- When mirroring engine math natively, mirror the *basis* functions too and
+  unit-test round trips: project the native world delta back to screen px and
+  assert the engine's published rates (`ISO_INPUT_DIAGONAL_A/B_RATE`, the 2:1
+  ratio). `rt-probe` now has `iso_pixel_basis()` / `screen_px_to_world()` /
+  `snap_ground_to_lattice()` with exactly those tests.
+- The web engine snaps every rendered mesh position to the screen-pixel
+  lattice (`snapWorldPointOnGround`, nearest, (1,1)) while the ECS transform
+  stays continuous. A native port must do the same split: continuous
+  `player_pos`, snapped TLAS instance transform — and can use "snapped cell
+  changed" as the re-render trigger (saves accumulation resets in a path
+  tracer).
+- `SCENE=grid` runs the native grid-walker rematch (fixed camera, speed 80,
+  open level); `WALK=<secs>` + `SHOT=` is the headless held-key harness since
+  winit input can't be scripted.
+
+## 2026-06-09 — path tracer primary-ray jitter destroys the low-res pixel look
+
+Root cause:
+- `rt-probe`'s trace shader jittered the primary ray inside each low-res pixel
+  (`px + rnd()`), which is standard path-tracer AA. Under the pixel-perfect
+  contract that is exactly wrong: edge pixels accumulate fractional coverage,
+  so the 2:1 staircase and 1-px grid lines render soft even though the
+  upscale is integer-NEAREST. The web raster path is binary per low pixel
+  (MSAA deliberately off — see the 2026-04-21 entry).
+
+Detection signal:
+- User compared screenshots: native box edges smooth, web box edges hard
+  pixel stairs. The pipeline-level invariants (#2/#4 integer upscale) all
+  held — the blur was baked into the accumulation buffer itself.
+
+Preventive checklist:
+- In any stochastic renderer feeding the pixel-perfect pipeline, the primary
+  ray must go through the **pixel centre deterministically**; keep randomness
+  only in bounce/light sampling (lighting converges, geometry stays binary).
+  Crisp is the default; `AA=1` env opts into jitter for photoreal stills.
+- "Integer NEAREST upscale" alone does not guarantee the pixel look — the
+  low-res buffer contents must also be aliased (one binary visibility sample
+  per pixel). Check both ends when a port looks soft.

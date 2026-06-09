@@ -333,6 +333,51 @@ impl Scene {
         self.primitives.push(Primitive { vertex_offset: vbase, index_offset: ibase, vertex_count: 4, index_count: 6, material_id });
     }
 
+    /// GridHelper-style tile lines (mirrors `THREE.GridHelper(size, divisions,
+    /// centerColor, color)` as the web grid-walker uses it): `divisions` cells
+    /// over a `size`×`size` square centred at the origin, drawn as thin quads
+    /// `line_w` wide at height `y`. The two centre lines take `center_color`,
+    /// the rest `color`. One primitive per colour.
+    pub fn add_ground_grid(&mut self, size: f32, divisions: u32, y: f32, line_w: f32, center_color: [f32; 4], color: [f32; 4]) {
+        let half = size * 0.5;
+        let step = size / divisions.max(1) as f32;
+        let mut center: Vec<(bool, f32)> = Vec::new();
+        let mut others: Vec<(bool, f32)> = Vec::new();
+        for i in 0..=divisions {
+            let k = -half + i as f32 * step;
+            let is_center = k.abs() < step * 1e-3;
+            for along_x in [true, false] {
+                if is_center { center.push((along_x, k)) } else { others.push((along_x, k)) }
+            }
+        }
+        self.add_line_quads(&center, half, y, line_w * 0.5, center_color);
+        self.add_line_quads(&others, half, y, line_w * 0.5, color);
+    }
+
+    fn add_line_quads(&mut self, lines: &[(bool, f32)], half: f32, y: f32, hw: f32, color: [f32; 4]) {
+        if lines.is_empty() {
+            return;
+        }
+        let material_id = self.materials.len() as i32;
+        self.materials.push(Material { base_color: color, emissive: [0.0; 4], metallic: 0.0, roughness: 1.0, tex_index: -1, _pad: 0 });
+        let vbase = self.vertices.len() as u32;
+        let ibase = self.indices.len() as u32;
+        let mut vi = 0u32;
+        for &(along_x, k) in lines {
+            let quad: [(f32, f32); 4] = if along_x {
+                [(-half, k - hw), (half, k - hw), (half, k + hw), (-half, k + hw)]
+            } else {
+                [(k - hw, -half), (k + hw, -half), (k + hw, half), (k - hw, half)]
+            };
+            for (x, z) in quad {
+                self.vertices.push(Vertex { pos: [x, y, z], nrm: [0.0, 1.0, 0.0], uv: [0.0, 0.0] });
+            }
+            self.indices.extend_from_slice(&[vi, vi + 1, vi + 2, vi, vi + 2, vi + 3]);
+            vi += 4;
+        }
+        self.primitives.push(Primitive { vertex_offset: vbase, index_offset: ibase, vertex_count: vi, index_count: vi / 4 * 6, material_id });
+    }
+
     /// Append a box in LOCAL space (centred on XZ, base at y=0, top at y=height)
     /// and return its primitive index. Kept local so a TLAS instance transform
     /// can move it. Used for the movable player marker.
