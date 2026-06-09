@@ -31,6 +31,10 @@ body,
   z-index: 200;
   border-right: 1px solid #a8b5c4;
   background: rgba(246, 250, 255, 0.96);
+  /* Explicit so the drawer reads correctly even when mounted inside a
+     dark-themed host (e.g. game-studio sets color:#e8e3d6, which the
+     sidebar would otherwise inherit → light text on its light bg). */
+  color: #162130;
   backdrop-filter: blur(10px);
   transform: translateX(-100%);
   transition: transform 0.2s ease;

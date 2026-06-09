@@ -18,6 +18,7 @@
     "@common/render": "workspace:^",
     "@dimforge/rapier3d-compat": "^0.19.3",
     "@experiments/grid-walker": "workspace:*",
+    "@experiments/pathtrace-probe": "workspace:*",
     "@experiments/physics-prop-drop": "workspace:*",
     "@experiments/runtime": "workspace:*",
     "@studios/forge": "workspace:*",

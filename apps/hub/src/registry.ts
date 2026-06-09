@@ -5,6 +5,7 @@ import type { GameSource } from "@studios/game-studio";
 import { meta as materialStudioMeta } from "@studios/material-studio/meta";
 import { meta as mapEditorMeta } from "@studios/map-editor/meta";
 import { meta as physicsPropDropMeta } from "@experiments/physics-prop-drop/meta";
+import { meta as pathtraceProbeMeta } from "@experiments/pathtrace-probe/meta";
 import { meta as gridWalkerMeta } from "@experiments/grid-walker/meta";
 
 const experimentSources = import.meta.glob(
@@ -37,6 +38,10 @@ export const experiments: ExperimentRegistryEntry[] = [
   {
     ...physicsPropDropMeta,
     load: () => import("@experiments/physics-prop-drop")
+  },
+  {
+    ...pathtraceProbeMeta,
+    load: () => import("@experiments/pathtrace-probe")
   },
   {
     ...mapEditorMeta,

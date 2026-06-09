@@ -62,6 +62,9 @@ importers:
       '@experiments/grid-walker':
         specifier: workspace:*
         version: link:../../experiments/grid-walker
+      '@experiments/pathtrace-probe':
+        specifier: workspace:*
+        version: link:../../experiments/pathtrace-probe
       '@experiments/physics-prop-drop':
         specifier: workspace:*
         version: link:../../experiments/physics-prop-drop
@@ -128,6 +131,21 @@ importers:
       '@experiments/runtime':
         specifier: workspace:*
         version: link:../_runtime
+
+  experiments/pathtrace-probe:
+    dependencies:
+      '@experiments/runtime':
+        specifier: workspace:*
+        version: link:../_runtime
+      three:
+        specifier: ^0.173.0
+        version: 0.173.0
+      three-gpu-pathtracer:
+        specifier: 0.0.23
+        version: 0.0.23(three-mesh-bvh@0.7.8(three@0.173.0))(three@0.173.0)(xatlas-web@0.1.0)
+      three-mesh-bvh:
+        specifier: 0.7.8
+        version: 0.7.8(three@0.173.0)
 
   experiments/physics-prop-drop:
     dependencies:
@@ -1521,6 +1539,19 @@ packages:
     resolution: {integrity: sha512-pFYqmTw68LXVjeWJMST4+borgQP2AyMNbg1BpZh9LbyhUeNkeaPF9gzfPGUAnSMV3qPYdWUwDIjjCLiSDOl7vg==}
     engines: {node: '>=18'}
 
+  three-gpu-pathtracer@0.0.23:
+    resolution: {integrity: sha512-CjMX5YU3ajDklOv3hW1EQ4CCkPLiLR+jB31w6G5WLf6Nasemib62tmCj45vBK5ItKAD0aHG1NWc479gXzk6fOQ==}
+    peerDependencies:
+      three: '>=0.151.0'
+      three-mesh-bvh: '>=0.7.4'
+      xatlas-web: ^0.1.0
+
+  three-mesh-bvh@0.7.8:
+    resolution: {integrity: sha512-BGEZTOIC14U0XIRw3tO4jY7IjP7n7v24nv9JXS1CyeVRWOCkcOMhRnmENUjuV39gktAw4Ofhr0OvIAiTspQrrw==}
+    deprecated: Deprecated due to three.js version incompatibility. Please use v0.8.0, instead.
+    peerDependencies:
+      three: '>= 0.151.0'
+
   three@0.173.0:
     resolution: {integrity: sha512-AUwVmViIEUgBwxJJ7stnF0NkPpZxx1aZ6WiAbQ/Qq61h6I9UR4grXtZDmO8mnlaNORhHnIBlXJ1uBxILEKuVyw==}
 
@@ -1687,6 +1718,9 @@ packages:
   wrap-ansi@8.1.0:
     resolution: {integrity: sha512-si7QWI6zUMq56bESFvagtmzMdGOtoxfR+Sez11Mobfc7tm+VkUckk9bW2UeffTGVUbOksxmSw0AA2gs8g71NCQ==}
     engines: {node: '>=12'}
+
+  xatlas-web@0.1.0:
+    resolution: {integrity: sha512-PprVfuXbaIskxLTLBUQRaWfgSy9xUQqAMIRooOw0P6NYqwgh6T0voeer6+Z5M7AFt5SGXUybuww/uDGs1yw8vQ==}
 
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
@@ -2872,6 +2906,16 @@ snapshots:
       glob: 10.5.0
       minimatch: 9.0.5
 
+  three-gpu-pathtracer@0.0.23(three-mesh-bvh@0.7.8(three@0.173.0))(three@0.173.0)(xatlas-web@0.1.0):
+    dependencies:
+      three: 0.173.0
+      three-mesh-bvh: 0.7.8(three@0.173.0)
+      xatlas-web: 0.1.0
+
+  three-mesh-bvh@0.7.8(three@0.173.0):
+    dependencies:
+      three: 0.173.0
+
   three@0.173.0: {}
 
   tinybench@2.9.0: {}
@@ -3024,6 +3068,8 @@ snapshots:
       ansi-styles: 6.2.3
       string-width: 5.1.2
       strip-ansi: 7.1.2
+
+  xatlas-web@0.1.0: {}
 
   yallist@3.1.1: {}
 

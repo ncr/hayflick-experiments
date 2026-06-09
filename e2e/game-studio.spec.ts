@@ -397,6 +397,58 @@ test.describe("game-studio", () => {
     await expect(checked).toHaveText("2×");
   });
 
+  test("drawer text stays legible inside the dark studio shell", async ({ page }) => {
+    await page.goto("/#/play/grid-walker");
+    await expect(page.locator(".game-studio")).toBeVisible({ timeout: 10_000 });
+
+    // Open the route drawer via the studio hamburger. The drawer is rendered
+    // INSIDE .game-studio (which sets color:#e8e3d6), so it must declare its
+    // own text colour rather than inherit the host's light-on-dark scheme —
+    // otherwise it renders light text on its own light background.
+    await page.locator(".game-studio-hamburger").click();
+    await expect(page.locator(".sidebar.open")).toBeVisible();
+
+    const target = page.locator(".sidebar button").first();
+    await expect(target).toBeVisible();
+
+    // Relative luminance (WCAG) of the resolved text colour vs the element's
+    // own (or inherited) background. Light-on-light collapses this delta.
+    const { textLum, bgLum } = await target.evaluate((el) => {
+      const parseRgb = (s: string): [number, number, number] => {
+        const m = s.match(/[\d.]+/g)!.map(Number);
+        return [m[0], m[1], m[2]];
+      };
+      const rel = ([r, g, b]: [number, number, number]) => {
+        const lin = (c: number) => {
+          const x = c / 255;
+          return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+      };
+      // Walk up for the first non-transparent background.
+      let bgEl: HTMLElement | null = el as HTMLElement;
+      let bg = "rgba(0, 0, 0, 0)";
+      while (bgEl) {
+        const c = getComputedStyle(bgEl).backgroundColor;
+        if (c && !/rgba?\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(c) && c !== "transparent") {
+          bg = c;
+          break;
+        }
+        bgEl = bgEl.parentElement;
+      }
+      return {
+        textLum: rel(parseRgb(getComputedStyle(el as HTMLElement).color)),
+        bgLum: rel(parseRgb(bg))
+      };
+    });
+
+    const contrast =
+      (Math.max(textLum, bgLum) + 0.05) / (Math.min(textLum, bgLum) + 0.05);
+    // WCAG AA for normal text is 4.5:1; the light-on-light regression sits
+    // near 1:1. Require comfortably-readable contrast.
+    expect(contrast).toBeGreaterThan(4.5);
+  });
+
   test("outlines toggle disables the outline pipeline", async ({ page }) => {
     await page.goto("/#/play/grid-walker");
     await expect(page.locator(".game-studio-viewport-mount canvas")).toBeVisible({
