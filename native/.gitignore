@@ -1,0 +1,2 @@
+# Rust build artifacts — ignore target/ in any native subproject.
+**/target/

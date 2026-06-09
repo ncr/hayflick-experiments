@@ -1,0 +1,17 @@
+[package]
+name = "rt-probe"
+version = "0.1.0"
+edition = "2021"
+description = "Stage 0 native hardware ray-tracing probe (Vulkan ray_query) — the native rematch of the web pathtrace-probe."
+
+[dependencies]
+ash = "0.38"
+glam = "0.30"
+png = "0.17"
+gltf = { version = "1.4", features = ["import", "utils", "KHR_materials_emissive_strength"] }
+winit = "0.30"
+ash-window = "0.13"
+raw-window-handle = "0.6"
+
+[profile.release]
+debug = true
