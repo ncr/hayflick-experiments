@@ -44,6 +44,8 @@ extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn oidnSetFilterImage(f: Filter, name: *const c_char, buf: Buffer, format: c_int, w: usize, h: usize, byte_offset: usize, pixel_stride: usize, row_stride: usize);
     fn oidnSetFilterBool(f: Filter, name: *const c_char, v: bool);
+    fn oidnSetFilterFloat(f: Filter, name: *const c_char, v: f32);
+    fn oidnSetFilterInt(f: Filter, name: *const c_char, v: c_int);
     fn oidnCommitFilter(f: Filter);
     fn oidnExecuteFilter(f: Filter);
     fn oidnReleaseFilter(f: Filter);
@@ -61,6 +63,28 @@ extern "C" {
 
 const OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD: c_int = 1 << 0;
 
+// OIDNQuality (OIDN 2.2+): the RT filter's speed/quality trade-off.
+const OIDN_QUALITY_FAST: c_int = 4;
+const OIDN_QUALITY_BALANCED: c_int = 5;
+const OIDN_QUALITY_HIGH: c_int = 6;
+
+/// Filter quality from DN_QUALITY (fast | balanced | high). Default FAST: this
+/// is a real-time per-frame denoiser; at our low-res + guided (cleanAux) inputs
+/// the fast model is visually equivalent and roughly halves the OIDN cost,
+/// which otherwise eats most of a 60 fps frame budget at large window sizes.
+fn quality_from_env() -> c_int {
+    match std::env::var("DN_QUALITY").as_deref() {
+        Ok("high") => OIDN_QUALITY_HIGH,
+        Ok("balanced") => OIDN_QUALITY_BALANCED,
+        _ => OIDN_QUALITY_FAST,
+    }
+}
+
+unsafe fn set_quality(filter: Filter) {
+    let q = CString::new("quality").unwrap();
+    oidnSetFilterInt(filter, q.as_ptr(), quality_from_env());
+}
+
 unsafe fn device_error(dev: Device) -> Option<String> {
     let mut msg: *const c_char = std::ptr::null();
     if oidnGetDeviceError(dev, &mut msg) != 0 {
@@ -75,6 +99,8 @@ pub struct Denoiser {
     dev: Device,
     filter: Filter,
     buf: Buffer,
+    abuf: Buffer,
+    nbuf: Buffer,
     w: usize,
     h: usize,
     bytes: usize,
@@ -84,7 +110,7 @@ pub struct Denoiser {
 impl Denoiser {
     /// Build a denoiser for `w×h` FLOAT3. Tries the CUDA device, falls back to
     /// CPU. The expensive device/commit cost is paid here, once.
-    pub fn new(w: usize, h: usize) -> Result<Denoiser, String> {
+    pub fn new(w: usize, h: usize, input_scale: f32) -> Result<Denoiser, String> {
         unsafe {
             // try CUDA, else CPU
             let (dev, cuda) = {
@@ -110,23 +136,38 @@ impl Denoiser {
             }
             let bytes = w * h * 3 * 4;
             let buf = oidnNewBuffer(dev, bytes);
-            if buf.is_null() {
+            let abuf = oidnNewBuffer(dev, bytes);
+            let nbuf = oidnNewBuffer(dev, bytes);
+            if buf.is_null() || abuf.is_null() || nbuf.is_null() {
                 oidnReleaseDevice(dev);
                 return Err("oidnNewBuffer null".into());
             }
             let filter = oidnNewFilter(dev, CString::new("RT").unwrap().as_ptr());
             let (cn, on, hn) = (CString::new("color").unwrap(), CString::new("output").unwrap(), CString::new("hdr").unwrap());
+            let (an, nn, ca) = (CString::new("albedo").unwrap(), CString::new("normal").unwrap(), CString::new("cleanAux").unwrap());
             oidnSetFilterImage(filter, cn.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, 0, 0, 0);
             oidnSetFilterImage(filter, on.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, 0, 0, 0);
+            oidnSetFilterImage(filter, an.as_ptr(), abuf, OIDN_FORMAT_FLOAT3, w, h, 0, 0, 0);
+            oidnSetFilterImage(filter, nn.as_ptr(), nbuf, OIDN_FORMAT_FLOAT3, w, h, 0, 0, 0);
             oidnSetFilterBool(filter, hn.as_ptr(), true);
+            oidnSetFilterBool(filter, ca.as_ptr(), true); // guides are deterministic primary hits
+            // FIXED input scale: without it OIDN re-estimates exposure from the
+            // image every execution, which pulses the output during camera
+            // sweeps (per-frame content -> per-frame estimate). Stability needs
+            // a constant; the exact value only has to be in the right ballpark.
+            let is = CString::new("inputScale").unwrap();
+            oidnSetFilterFloat(filter, is.as_ptr(), input_scale);
+            set_quality(filter);
             oidnCommitFilter(filter); // one-time model load
             if let Some(e) = device_error(dev) {
                 oidnReleaseFilter(filter);
                 oidnReleaseBuffer(buf);
+                oidnReleaseBuffer(abuf);
+                oidnReleaseBuffer(nbuf);
                 oidnReleaseDevice(dev);
                 return Err(e);
             }
-            Ok(Denoiser { dev, filter, buf, w, h, bytes, cuda })
+            Ok(Denoiser { dev, filter, buf, abuf, nbuf, w, h, bytes, cuda })
         }
     }
 
@@ -142,11 +183,16 @@ impl Denoiser {
         }
     }
 
-    /// Denoise an HDR linear-RGB image in place (FLOAT3, len = w·h·3).
-    pub fn denoise(&self, color: &mut [f32]) -> Result<(), String> {
+    /// Denoise an HDR linear-RGB image in place (FLOAT3, len = w·h·3), guided
+    /// by the matching albedo + normal G-buffers (same packing).
+    pub fn denoise(&self, color: &mut [f32], albedo: &[f32], normal: &[f32]) -> Result<(), String> {
         assert_eq!(color.len(), self.w * self.h * 3);
+        assert_eq!(albedo.len(), color.len());
+        assert_eq!(normal.len(), color.len());
         unsafe {
             oidnWriteBuffer(self.buf, 0, self.bytes, color.as_ptr() as *const c_void);
+            oidnWriteBuffer(self.abuf, 0, self.bytes, albedo.as_ptr() as *const c_void);
+            oidnWriteBuffer(self.nbuf, 0, self.bytes, normal.as_ptr() as *const c_void);
             oidnExecuteFilter(self.filter);
             if let Some(e) = device_error(self.dev) {
                 return Err(e);
@@ -162,6 +208,8 @@ impl Drop for Denoiser {
         unsafe {
             oidnReleaseFilter(self.filter);
             oidnReleaseBuffer(self.buf);
+            oidnReleaseBuffer(self.abuf);
+            oidnReleaseBuffer(self.nbuf);
             oidnReleaseDevice(self.dev);
         }
     }
@@ -185,7 +233,7 @@ impl InteropDenoiser {
     /// `fd` is a Vulkan-exported OPAQUE_FD for a `byte_size`-byte allocation
     /// holding an rgba32f `w×h` image (16-byte stride). OIDN takes ownership of
     /// the fd. Denoises the RGB in place, skipping alpha.
-    pub fn from_fd(fd: i32, byte_size: usize, w: usize, h: usize) -> Result<InteropDenoiser, String> {
+    pub fn from_fd(fd: i32, byte_size: usize, w: usize, h: usize, input_scale: f32) -> Result<InteropDenoiser, String> {
         unsafe {
             let dev = oidnNewDevice(OIDN_DEVICE_TYPE_CUDA);
             if dev.is_null() {
@@ -204,11 +252,19 @@ impl InteropDenoiser {
             }
             let filter = oidnNewFilter(dev, CString::new("RT").unwrap().as_ptr());
             let (cn, on, hn) = (CString::new("color").unwrap(), CString::new("output").unwrap(), CString::new("hdr").unwrap());
+            let (an, nn, ca) = (CString::new("albedo").unwrap(), CString::new("normal").unwrap(), CString::new("cleanAux").unwrap());
             let stride = 16usize; // rgba32f
             let row = w * stride;
+            let plane = w * h * stride; // color @0, albedo @plane, normal @2·plane
             oidnSetFilterImage(filter, cn.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, 0, stride, row);
             oidnSetFilterImage(filter, on.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, 0, stride, row);
+            oidnSetFilterImage(filter, an.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, plane, stride, row);
+            oidnSetFilterImage(filter, nn.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, 2 * plane, stride, row);
             oidnSetFilterBool(filter, hn.as_ptr(), true);
+            oidnSetFilterBool(filter, ca.as_ptr(), true); // guides are deterministic primary hits
+            let is = CString::new("inputScale").unwrap();
+            oidnSetFilterFloat(filter, is.as_ptr(), input_scale); // fixed: no per-frame autoexposure pulse
+            set_quality(filter);
             oidnCommitFilter(filter);
             if let Some(e) = device_error(dev) {
                 oidnReleaseFilter(filter);
@@ -266,7 +322,7 @@ pub struct AsyncInteropDenoiser {
 impl AsyncInteropDenoiser {
     /// `stream` is a CUstream (== cudaStream_t) the OIDN device should enqueue
     /// onto. `fd` is the Vulkan-exported OPAQUE_FD for the shared rgba32f image.
-    pub fn from_fd_and_stream(fd: i32, byte_size: usize, w: usize, h: usize, stream: *mut c_void) -> Result<AsyncInteropDenoiser, String> {
+    pub fn from_fd_and_stream(fd: i32, byte_size: usize, w: usize, h: usize, stream: *mut c_void, input_scale: f32) -> Result<AsyncInteropDenoiser, String> {
         unsafe {
             let ids = [0i32];
             let streams = [stream];
@@ -287,10 +343,18 @@ impl AsyncInteropDenoiser {
             }
             let filter = oidnNewFilter(dev, CString::new("RT").unwrap().as_ptr());
             let (cn, on, hn) = (CString::new("color").unwrap(), CString::new("output").unwrap(), CString::new("hdr").unwrap());
+            let (an, nn, ca) = (CString::new("albedo").unwrap(), CString::new("normal").unwrap(), CString::new("cleanAux").unwrap());
             let (stride, row) = (16usize, w * 16);
+            let plane = w * h * stride; // color @0, albedo @plane, normal @2·plane
             oidnSetFilterImage(filter, cn.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, 0, stride, row);
             oidnSetFilterImage(filter, on.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, 0, stride, row);
+            oidnSetFilterImage(filter, an.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, plane, stride, row);
+            oidnSetFilterImage(filter, nn.as_ptr(), buf, OIDN_FORMAT_FLOAT3, w, h, 2 * plane, stride, row);
             oidnSetFilterBool(filter, hn.as_ptr(), true);
+            oidnSetFilterBool(filter, ca.as_ptr(), true); // guides are deterministic primary hits
+            let is = CString::new("inputScale").unwrap();
+            oidnSetFilterFloat(filter, is.as_ptr(), input_scale); // fixed: no per-frame autoexposure pulse
+            set_quality(filter);
             oidnCommitFilter(filter);
             if let Some(e) = device_error(dev) {
                 oidnReleaseFilter(filter);

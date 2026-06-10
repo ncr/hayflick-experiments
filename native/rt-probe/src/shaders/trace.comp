@@ -6,7 +6,16 @@
 // Textured path tracer over a GLTF scene. Geometry is in world space (one BLAS
 // per primitive, identity instances); the hit's primitive + barycentrics fetch
 // interpolated world normal + UV, and the material's base-colour texture is
-// sampled from a bindless array. HDR radiance is accumulated additively.
+// sampled from a bindless array.
+//
+// Accumulation is a per-pixel RUNNING MEAN: rgb holds mean radiance, alpha the
+// sample count. Per-pixel counts (instead of one global divisor) are what let
+// the viewer shift the converged buffer on whole-pixel camera pans and clear
+// only the rect a moving prop touched — shifted pixels keep their convergence,
+// fresh ones restart at zero, and every consumer reads radiance directly with
+// no division. The count is capped so a pixel never goes fully stale: new
+// samples always keep at least 1/COUNT_CAP weight (heals e.g. a shadow edge
+// the rect invalidation under-covered, within ~COUNT_CAP/spp frames).
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -24,8 +33,15 @@ layout(set = 0, binding = 5, scalar) readonly buffer Mats { Material mats[]; };
 layout(set = 0, binding = 6) uniform sampler2D textures[];
 // Emissive practicals as NEE lights: bounding sphere (xyz, radius) + radiance.
 // Count rides in pc.misc2.w (0 = no list bound beyond the dummy entry).
-struct Light { vec4 posRad; vec4 color; };
+struct Light { vec4 posRad; vec4 color; vec4 dir; }; // dir: mean surface normal (w=1) or isotropic (w=0)
 layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
+// Primary-hit G-buffers — OIDN denoise guides (albedo + shading normal).
+// Written once per dispatch from the first sample's primary hit. With AA off
+// the primary ray is the deterministic pixel centre, so these are NOISE-FREE
+// (cleanAux): the denoiser preserves texture/edges and only smooths lighting.
+layout(set = 0, binding = 8, rgba32f) uniform image2D albedoImg;
+layout(set = 0, binding = 9, rgba32f) uniform image2D normalImg;
+layout(set = 0, binding = 10, rgba32f) uniform image2D posImg; // primary-hit world position (w=1 hit, 0 miss) — history reprojection
 
 layout(push_constant) uniform Push {
   vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos;
@@ -33,6 +49,12 @@ layout(push_constant) uniform Push {
   ivec4 misc2; // seed, debugAlbedo, aaJitter, lightCount
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight (wu falloff)
 } pc;
+
+// Cap matches the viewer's MAX_SAMPLES idle gate: noise decreases MONOTONICALLY
+// until dispatch stops (no perpetual random-walk at a fixed floor, which read
+// as shimmer-then-sudden-freeze). Stale under-invalidated pixels still heal,
+// just over ~1-2 s of motion instead of a fraction of one.
+const float COUNT_CAP = 4096.0;
 
 uint hash(uint x){x^=x>>16;x*=0x7feb352dU;x^=x>>15;x*=0x846ca68bU;x^=x>>16;return x;}
 float rnd(inout uint s){s=hash(s);return float(s)*(1.0/4294967296.0);}
@@ -56,9 +78,12 @@ float fogOD(vec3 o, vec3 d, float t){
 
 struct Hit { float t; vec3 n; vec2 uv; int mat; };
 
-bool trace(vec3 o, vec3 dir, float tmax, out Hit h){
+// `mask`: 0x01 for PRIMARY rays (skips dollhouse-hidden walls so the camera
+// sees inside), 0xFF for bounce rays (hidden walls still block + bounce light
+// so the room stays enclosed; the lighting must rotate with the WORLD).
+bool trace(vec3 o, vec3 dir, float tmax, uint mask, out Hit h){
   rayQueryEXT rq;
-  rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, o, 0.001, dir, tmax);
+  rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, mask, o, 0.001, dir, tmax);
   while (rayQueryProceedEXT(rq)) {}
   if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return false;
   h.t = rayQueryGetIntersectionTEXT(rq, true);
@@ -113,7 +138,7 @@ void main(){
     bool fromSpec = true; // camera and mirror chains see emissive surfaces directly
     for (int b = 0; b <= bounces; b++) {
       Hit h;
-      bool hitb = trace(o, d, 300.0, h);
+      bool hitb = trace(o, d, 300.0, b == 0 ? 0x01u : 0xFFu, h);
       // Exponential ground mist on the PRIMARY segment only: attenuate what
       // lies beyond it, add ambient inscatter, and estimate the single-scatter
       // sun term with one sample per path (noise converges with accumulation).
@@ -137,12 +162,25 @@ void main(){
         col += thru * (fogCol * (1.0 - T) + shaft);
         thru *= T;
       }
-      if (!hitb) { col += thru * sky(d); break; }
+      if (!hitb) {
+        if (s == 0 && b == 0) { // G-buffer: sky miss
+          imageStore(albedoImg, px, vec4(1.0));
+          imageStore(normalImg, px, vec4(0.0));
+          imageStore(posImg, px, vec4(0.0));
+        }
+        col += thru * sky(d);
+        break;
+      }
       Material m = mats[h.mat];
       vec3 albedo = m.baseColor.rgb;
       if (m.texIndex >= 0) albedo *= texture(textures[nonuniformEXT(m.texIndex)], h.uv).rgb;
       if (pc.misc2.y == 1) { col += albedo; break; } // debug: raw base-colour
       vec3 n = h.n; if (dot(n, d) > 0.0) n = -n;
+      if (s == 0 && b == 0) { // G-buffer: primary-hit denoise guides + position
+        imageStore(albedoImg, px, vec4(albedo, 1.0));
+        imageStore(normalImg, px, vec4(n, 0.0));
+        imageStore(posImg, px, vec4(o + h.t * d, 1.0));
+      }
       vec3 p = o + h.t * d + n * 0.003;
 
       // Emission counts only when the light is seen directly or via a mirror
@@ -175,11 +213,16 @@ void main(){
           vec3 ldir = toL / dist;
           float ndl2 = dot(n, ldir);
           if (ndl2 <= 0.0) continue;
+          // one-sided Lambertian emitters: a screen/panel lights its facing
+          // hemisphere (cosine), not the space behind it. x2 keeps the frontal
+          // pool near the old isotropic level.
+          float emit = lt.dir.w > 0.0 ? 2.0 * max(dot(-ldir, lt.dir.xyz), 0.0) : 1.0;
+          if (emit <= 0.0) continue;
           float sinT = clamp(lt.posRad.w / dist, 0.0, 1.0);
           float omega = 6.2831853 * (1.0 - sqrt(1.0 - sinT * sinT));
           if (!occluded(p, ldir, dist - lt.posRad.w)) {
             vec3 c = thru * (1.0 - specProb) * albedo * (1.0 / 3.14159265)
-                   * lt.color.rgb * ndl2 * omega * lw;
+                   * lt.color.rgb * ndl2 * omega * lw * emit;
             // firefly clamp on INDIRECT lamp hits: a bounce ray landing right
             // next to a lamp gets a huge solid angle through `thru`; clamping
             // those rare spikes trades a hair of GI energy for fast convergence
@@ -211,6 +254,8 @@ void main(){
     sum += col;
   }
 
-  vec3 prev = imageLoad(accumImg, px).rgb;
-  imageStore(accumImg, px, vec4(prev + sum, 1.0));
+  vec4 prev = imageLoad(accumImg, px);
+  float n = min(prev.a, COUNT_CAP);
+  float nn = n + float(spp);
+  imageStore(accumImg, px, vec4((prev.rgb * n + sum) / nn, nn));
 }

@@ -76,6 +76,10 @@ pub struct Scene {
     /// visibility masks. Empty vec = feature unused (all visible). When used,
     /// must be exactly `primitives.len()` long — see `tag_hide`.
     pub prim_hide_mask: Vec<u8>,
+    /// Authored NEE emission direction per primitive (zero = none/isotropic;
+    /// overrides the geometric heuristic). Sparse: may be shorter than
+    /// `primitives` — index with `.get(i)`.
+    pub prim_light_dir: Vec<[f32; 3]>,
     /// Conceptual lights: NEE-only emitters with NO geometry — nothing renders
     /// at their position, nothing occludes right at them; light simply arrives
     /// (e.g. lamps recessed in a ceiling that is never drawn). Same layout as
@@ -157,11 +161,17 @@ fn load_model(path: &str) -> Result<Model, Box<dyn std::error::Error>> {
             .unwrap_or(-1);
         let es = m.emissive_strength().unwrap_or(1.0);
         let ef = m.emissive_factor();
-        // AI / Tripo exports often leave metallic-roughness at the glTF defaults
-        // (1.0 / 1.0) with no MR texture, which renders as pure rough metal.
-        // Treat unauthored metalness as dielectric so the base-colour shows.
+        // glTF defaults metallicFactor to 1.0, and we never SAMPLE the
+        // metallic-roughness texture (only base colour is bound) — so a
+        // full-metal factor is "unspecified", not gold, whether or not an MR
+        // texture exists. Trusting it rendered the whole tile-kit house
+        // (Polyhaven walls/floors, MR texture present, factor 1.0) as rough
+        // MIRRORS: NEE off on every kit surface, all light via specular
+        // chains — dim, slow-converging, and impossible to match with a
+        // Lambertian direct pass. Treat factor >= 1 as dielectric; authored
+        // partial metalness (< 1) is preserved.
         let mut metallic = pbr.metallic_factor();
-        if pbr.metallic_roughness_texture().is_none() && metallic >= 0.999 {
+        if metallic >= 0.999 {
             metallic = 0.0;
         }
         materials.push(Material {

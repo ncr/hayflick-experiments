@@ -3989,3 +3989,45 @@ Stylized post stack invariants:
   optical depth, y clamped ≥ 0 so a void miss doesn't integrate unbounded
   density). It re-weights radiance smoothly and never moves hits, so fog is
   pixel-look-safe.
+
+## 2026-06-10 — per-frame Monte Carlo can't be patched into stability; move the randomness to world space
+
+Context: a dozen rounds of stabilizing `rt-probe`'s progressive path tracer
+during camera motion (accumulation shift, seed correlation, SPP bursts,
+always-on guided OIDN, demodulated + reprojected + clamped temporal history,
+settle snapping). Every patch reduced one artifact and exposed another:
+flicker became mush, mush became smear, smear became "lights dance".
+
+Root cause (first principles): the per-frame image was a RANDOM VARIABLE — a
+screen-space Monte Carlo estimate that re-rolls under any camera change. The
+web renderer is stable because a rasterized frame is a pure deterministic
+function of (scene, camera). No amount of variance-hiding gives you that
+property back; the stack of stabilizers IS the artifact generator.
+
+What works (`DET` mode, now the viewer default):
+- **World-space irradiance probe cache** (`probes.comp`): ambient-cube probes
+  on a 0.5-wu grid, path-traced with fixed spherical-Fibonacci ray sets at
+  startup (~13k probes × 2048 rays ≈ 100 ms on the 5080), then FROZEN. Camera
+  motion cannot invalidate world space. The dynamic player is excluded via a
+  TLAS mask channel (player 0x05; probe rays cull 0x0A) so the cache never
+  goes stale as it moves.
+- **Deterministic per-frame shade** (`shade.comp`): 1 primary ray per pixel
+  centre + deterministic shadow rays (sun + every significant light,
+  contribution-culled) + probe lookup for GI. ZERO randomness per frame.
+- Result: fixed camera ⇒ bit-identical frames (max pixel diff 0 across 70+
+  frames, lab AND house); every rotation-sweep frame has settled quality
+  (no convergence tail at all); house frames ~0.4 ms at >1M low-res px where
+  the burst path tracer took 79 ms. The whole temporal stack goes dormant.
+- Split of labour: shade owns direct light + camera-visible emission; probes
+  own 1+-bounce light + sky and never count first-hit emissive (no double
+  counting). Probes assume Lambertian — fine for the matte iso look.
+
+Companion bug that blocked the comparison: glTF defaults `metallicFactor` to
+1.0, and rt-probe never samples metallic-roughness textures — so every
+Polyhaven tile-kit wall/floor (MR texture present, factor 1.0) loaded as
+metallic=1: specProb=1, NEE disabled on all kit surfaces, the whole house lit
+only via rough-specular chains (dim, slow, impossible to match with a
+Lambertian pass). An unsampled MR texture means factor 1.0 is "unspecified",
+not "gold" — treat ≥0.999 as dielectric (`gltf_scene.rs`). The fix brightened
+the path-traced house ~2× (NEE finally applies); EXPOSURE/EMIT are the mood
+knobs to retune on top.

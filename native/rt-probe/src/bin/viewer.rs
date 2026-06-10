@@ -6,9 +6,11 @@
 //!
 //! Controls: WASD / arrows = walk the player (held = continuous, camera
 //! follows) or pan the camera in scenes without a player; drag = nudge the
-//! player / pan; q / e = rotate a quarter turn (web rotateQuarterTurns);
-//! scroll / +- = zoom in whole steps 1-4 (web zoom ladder); 0 = reset;
-//! j = toggle OIDN denoise; Esc = quit.
+//! player / pan; q / e = smooth eased quarter turn (the web RotationAnimation:
+//! exponential approach + snap settle; presses stack); scroll / +- = zoom in
+//! whole steps 1-4 (web zoom ladder); 0 = reset; j = toggle the guided OIDN
+//! denoiser (ON by default — it never hands off, so no estimator switch is
+//! ever visible; DENOISE=0 starts raw); Esc = quit.
 //!
 //! SCENE=house — example scene from the blockstudio wall/floor tile kits: a
 //! Fallout-flavoured three-room house with forge props and a yard
@@ -26,9 +28,19 @@
 //! Game runtime (mirrors @common/gameplay): held keys feed the iso 2:1 input
 //! mapping (`iso_input_dir`), the player walks at a smoothness-floored speed and
 //! is blocked by the `Level` (floor rect + prop footprints, `is_blocked`),
-//! sliding along walls. The player is a dynamic TLAS instance; moving re-renders
-//! (TLAS rebuild ~0.05ms), so the path-traced grain returns while walking and
-//! resolves when still; the camera target snaps to the pixel lattice so the
+//! sliding along walls. The player is a dynamic TLAS instance (rebuild ~0.05ms).
+//!
+//! Motion is (nearly) noise-free by construction: the ortho camera pans in
+//! whole low-res pixel steps, so on pan/walk the converged accumulation buffer
+//! is SHIFTED (exact reuse — parallel rays), never reset; fresh border strips
+//! converge inside the overscan margin before they scroll into view. A moving
+//! player invalidates only its own screen rect (+ shadow margin), and those
+//! frames trace at a burst sample rate (SPP0, default 32) so the rect resolves
+//! in 1-2 frames. Only q/e rotation truly resets — also cushioned by the
+//! burst. The accumulator stores per-pixel running means (count in alpha,
+//! capped so under-invalidated pixels heal in ~2 s).
+//!
+//! The camera target snaps to the pixel lattice so the
 //! world stays crisp. Zoom is an integer render-scale (#4) display-crop,
 //! cursor-anchored (#6), no re-render; fixed low-res target (#2) + overscan
 //! margin + guard band (#7). The pan/zoom/input/collision math is in `lib.rs`
@@ -46,7 +58,7 @@
 //! NO_ASYNC=1 forces path 2 (benchmark A/B); FRAMES=N logs avg CPU frame time.
 
 use ash::vk;
-use glam::{Mat4, Vec2, Vec3};
+use glam::{IVec2, Mat4, Vec2, Vec3};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
@@ -66,8 +78,49 @@ const ZOOM_MAX: f32 = 4.0; // web game-studio: zoomMin 1, zoomMax 4, zoomStep 1
 #[derive(Clone, Copy)]
 struct TonePush {
     dims: [i32; 4], // low_w, low_h, out_w, out_h
-    cfg: [i32; 4],  // scale, samples, pan_x, pan_y
+    cfg: [i32; 4],  // scale, temporal blend ×256, pan_x, pan_y
     fcfg: [f32; 4], // exposure, grain, frame, flags (bit0 grade, bit1 palette)
+    // PREVIOUS frame's screen projection (history reprojection): buffer px of
+    // world point P = (dot(P, prev_a.xyz) + prev_a.w, dot(P, prev_b.xyz) + prev_b.w)
+    prev_a: [f32; 4],
+    prev_b: [f32; 4],
+}
+
+/// Interactive quarter-turn animation — the native mirror of the web
+/// `RotationAnimation` (`viewport-animation.ts`, framing preset): exponential
+/// approach toward the integer target at ROT_RATE/s, then a fixed 0.08s
+/// smoothstep settle once within ROT_EPS so it lands EXACTLY. Extra q/e
+/// presses mid-flight just move `target` and the ease redirects.
+struct RotAnim {
+    turns: f32, // animated absolute quarter-turns (unbounded; yaw = 90°·turns)
+    target: i32,
+    settle: Option<(f32, f32)>, // (from_turns, elapsed_secs) of the snap settle
+}
+const ROT_RATE: f32 = 18.0; // web framing preset rotationAnimationRate
+// Wider than the web's 0.001: each native sweep frame is a fresh path-trace
+// estimate, so the exponential's sub-perceptual crawl near the target shows as
+// estimate-change with no motion to mask it. Hand over to the fixed 0.08s
+// settle at ~1° out instead.
+const ROT_EPS: f32 = 0.012;
+const ROT_SETTLE: f32 = 0.08; // web RotationAnimation.SNAP_SETTLE_SECONDS
+/// Fixed OIDN input scale (DN_SCALE env): a constant exposure normalisation
+/// for the denoiser. Left unset OIDN re-estimates it per frame from the image,
+/// which pulses the output tone during camera sweeps.
+fn dn_input_scale() -> f32 {
+    std::env::var("DN_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(2.0)
+}
+
+/// The spp burst keeps tracing SPP0 paths per frame until the accumulator
+/// reaches this many samples, then drops to SPP_PER until the idle gate.
+const BURST_SPP: i32 = 3000;
+/// Burst frames never trace fewer paths than this (keeps the OIDN input above
+/// junk quality even when the budget controller clamps hard).
+const SPP_BURST_MIN: i32 = 16;
+/// Per-frame trace budget in ms for burst frames (TRACE_MS env). The adaptive
+/// controller picks the spp that fits this; OIDN (~fast quality) + tonemap +
+/// present take the rest of a 16.6ms frame.
+fn trace_budget_ms() -> f32 {
+    std::env::var("TRACE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0)
 }
 
 /// Window-size-dependent resources, recreated on resize.
@@ -80,6 +133,12 @@ struct Swap {
     accum: (vk::Image, vk::DeviceMemory, vk::ImageView),
     out: (vk::Image, vk::DeviceMemory, vk::ImageView),
     denoised: (vk::Image, vk::DeviceMemory, vk::ImageView), // OIDN result (HDR mean), tonemapped when the dial is on
+    scratch: (vk::Image, vk::DeviceMemory, vk::ImageView), // staging for the whole-pixel accumulation shift (pan reuse)
+    albedo: (vk::Image, vk::DeviceMemory, vk::ImageView), // primary-hit albedo G-buffer (OIDN guide + demodulation)
+    normal: (vk::Image, vk::DeviceMemory, vk::ImageView), // primary-hit normal G-buffer (OIDN guide)
+    irr_hist: (vk::Image, vk::DeviceMemory, vk::ImageView), // demodulated-irradiance history (sweep temporal blend)
+    posg: (vk::Image, vk::DeviceMemory, vk::ImageView), // primary-hit world-position G-buffer (history reprojection)
+    zeros: Buffer, // zero-filled TRANSFER_SRC source for rect invalidation clears
     trace_pool: vk::DescriptorPool,
     trace_set: vk::DescriptorSet,
     tone_pool: vk::DescriptorPool,
@@ -87,6 +146,67 @@ struct Swap {
     tone_set_dn: vk::DescriptorSet, // tonemap reads denoised
     // one render-finished semaphore per swapchain image (avoids reuse hazard)
     render_finished: Vec<vk::Semaphore>,
+}
+
+/// Scripted camera move for MOVIE mode. Each command drives the SAME code
+/// path the matching interactive input uses (rotate / zoom_step / pan_target),
+/// so the movie shows real app behaviour, not a synthetic camera.
+enum MovieCmd {
+    /// Capture N frames at the current camera. Accumulation keeps converging
+    /// across the hold and the tonemap grain animates per frame.
+    Hold(u32),
+    /// q/e quarter-turn snap (instant, like the app).
+    #[allow(dead_code)]
+    Rotate(i32),
+    /// Fluid quarter-turn: sweep the yaw 90°·dq over N captured frames with
+    /// smoothstep easing, swapping the dollhouse masks side-on at 45°, then
+    /// land through the real `rotate` path.
+    Orbit(i32, u32),
+    /// One integer zoom step anchored at the window centre. Zoom never resets
+    /// accumulation, so the cut stays fully converged.
+    Zoom(i32),
+    /// Glide the look-at target to world (x, z) over N captured frames.
+    PanTo(f32, f32, u32),
+}
+
+/// MOVIE=dir: run `movie_script()` headlessly, dumping every settled frame as
+/// dir/m_NNNNN.png (the exact presented image: denoise + grade/grain/palette),
+/// then exit. Assemble with ffmpeg at ~12 fps.
+struct Movie {
+    dir: String,
+    cmds: Vec<MovieCmd>,
+    seg: usize,
+    seg_done: u32, // frames captured (Hold) / pan steps taken (PanTo) in this segment
+    out_idx: u32,
+}
+
+/// The showcase tour: establish the canonical view, a fluid full e-revolution
+/// with short holds at each iso yaw, then glide to a detail (DETAIL_X/DETAIL_Z,
+/// default the lab mainframe) and zoom in step by step. ~226 frames ≈ 19 s
+/// at 12 fps.
+fn movie_script() -> Vec<MovieCmd> {
+    let dx: f32 = std::env::var("DETAIL_X").ok().and_then(|s| s.parse().ok()).unwrap_or(11.5);
+    let dz: f32 = std::env::var("DETAIL_Z").ok().and_then(|s| s.parse().ok()).unwrap_or(2.0);
+    use MovieCmd::*;
+    vec![
+        Hold(24),
+        Orbit(1, 18),
+        Hold(10),
+        Orbit(1, 18),
+        Hold(10),
+        Orbit(1, 18),
+        Hold(10),
+        Orbit(1, 18),
+        Hold(16),
+        PanTo(dx, dz, 24),
+        Hold(8),
+        Zoom(1),
+        Hold(10),
+        Zoom(1),
+        Hold(10),
+        Zoom(1),
+        Hold(36),
+    ]
 }
 
 #[allow(dead_code)]
@@ -127,15 +247,54 @@ struct Renderer {
     // camera yaw in quarter-turns from canonical (web rotateQuarterTurns):
     // Q = -1, E = +1. Tagged scenes re-mask near walls per turn (dollhouse).
     yaw_q: u32,
+    // in-flight smooth quarter-turn (q/e); None when settled at yaw_q
+    rot: Option<RotAnim>,
+    // yaw of the previous frame — drives the sweep's velocity-adaptive
+    // temporal blend (TAA-style EMA on the output, no reprojection: heavy
+    // history only when the turn is slow, where re-roll flicker shows and
+    // ghosting doesn't). The weight decays over a few frames after landing
+    // instead of cutting off (an instant cut showed as a single-frame bump).
+    last_yaw: f32,
+    sweep_blend: f32,
+    // the camera (yaw, target) the PREVIOUS presented frame rendered with —
+    // builds the reprojection rows the tonemap uses to fetch history where a
+    // world point was on screen last frame
+    prev_cam: Option<(f32, Vec3)>,
+    // which quarter the dollhouse masks are currently set for (swaps at the
+    // nearest-quarter crossing during a rotation sweep)
+    mask_q: u32,
+    // the last denoise output in `denoised` matches the current accumulator —
+    // when converged + idle the frame is presented from it with zero GPU work
+    denoised_valid: bool,
+    // transient extra yaw in degrees during a MOVIE orbit sweep (0 when idle —
+    // interactive play only ever sees the locked quarter-turn yaws)
+    yaw_anim: f32,
     pan: Vec2,
     cursor: Vec2, // window-space cursor (physical px)
     wheel_accum: f32, // accumulates scroll into discrete zoom steps
     dragging: bool,
-    // camera-follow motion: panning moves the world look-at target (re-renders,
-    // so the path-traced grain returns while moving and resolves when still).
+    // camera-follow motion: panning moves the world look-at target in whole
+    // low-pixel steps; accumulation is shifted along (see `retarget`).
     target: Vec3,
     move_accum: Vec2, // sub-low-pixel remainder carried between moves (#5)
     reset_accum: bool,
+    // temporal reuse: the ortho camera panning in whole-pixel steps shifts the
+    // image EXACTLY, so instead of resetting accumulation we shift the buffer
+    // (`pending_shift`, content px) and restart only what actually changed —
+    // the world AABBs in `pending_clears` (moved player + its shadow). Fresh
+    // border strips enter through the overscan margin already converging.
+    pending_shift: IVec2,
+    pending_clears: Vec<(Vec3, Vec3)>,
+    // spp for the first dispatch after a full reset / for rect-invalidation
+    // frames (SPP0 env, default 32): burns idle GPU headroom to converge a
+    // rotate cut or a walking player in 1-2 frames instead of a grainy second.
+    spp_burst: i32,
+    // adaptive burst: measured trace cost in ms-per-spp (EMA across dispatched
+    // frames). Burst frames trace `TRACE_MS / cost` spp instead of a fixed
+    // SPP0, so the frame rate holds 60+ at any window size / scene weight —
+    // a sweep then delivers MORE (slightly noisier) frames, and the temporal
+    // blend + denoiser carry the per-frame quality. 0 until first measurement.
+    spp_cost_ema: f32,
     // player (a dynamic TLAS instance): WASD moves it on the floor, camera follows
     player_pos: Vec3,
     player_dirty: bool,
@@ -156,6 +315,15 @@ struct Renderer {
     // headless walk test: hold up+right for WALK seconds from launch, then
     // release — drives the real held-key/update_motion path without a keyboard.
     walk: Option<f32>,
+    // headless rotate test: fire one smooth e-turn ROTATE_AT seconds in
+    rotate_at: Option<f32>,
+    // frame-dump diagnostics: DUMP=dir records every presented frame (plus a
+    // state log line) for DUMP_N frames once ROTATE_AT fires, then exits
+    dump_dir: Option<String>,
+    dump_left: i32,
+    dump_idx: u32,
+    // captured in memory (subsampled to exact game pixels) — PNGs written at exit
+    dump_frames: Vec<(u32, u32, Vec<u8>)>,
     start_time: std::time::Instant,
     denoise: bool,      // headless DENOISE capture
     denoise_live: bool, // interactive denoise dial ('j')
@@ -174,9 +342,23 @@ struct Renderer {
     sem_denoise_done: vk::Semaphore, // CUDA signals (denoise done) -> Vulkan waits
     copy_cmd: vk::CommandBuffer,     // dedicated buffer for the async copy-in submit
     async_failed: bool,
+    // scripted camera movie (MOVIE=dir): see `Movie` / `movie_tick`
+    movie: Option<Movie>,
     // benchmark: FRAMES=N -> log avg frame time and exit after N rendered frames
     frames_limit: Option<u32>,
     frame_time_sum: f32,
+    // TIMING=1: per-frame phase breakdown (wait/acquire, trace+denoise enqueue,
+    // submit+present) on stdout — where does the frame budget go?
+    timing: bool,
+    // DETERMINISTIC render mode (DET=0 disables): per-frame shade.comp
+    // (primary ray + fixed shadow rays + probe-cache GI) instead of the
+    // progressive path tracer. The image is a pure function of (scene,
+    // camera): fixed camera -> bit-identical frames, rotation sweeps -> every
+    // frame settled-quality. No accumulation, no OIDN, no temporal blend.
+    // Monte Carlo runs ONCE at startup into the world-space probe cache.
+    det: bool,
+    probes_baked: i32,
+    probe_rays_total: i32,
     exit_requested: bool,
 }
 
@@ -268,7 +450,14 @@ impl Renderer {
         let gpu = SceneGpu::build(&ctx, &scene)?;
 
         // tonemap pipeline (window-independent)
-        let tone_bindings = [dslb(0, vk::DescriptorType::STORAGE_IMAGE, 1), dslb(1, vk::DescriptorType::STORAGE_IMAGE, 1)];
+        let tone_bindings = [
+            dslb(0, vk::DescriptorType::STORAGE_IMAGE, 1), // mean radiance (accum or denoised)
+            dslb(1, vk::DescriptorType::STORAGE_IMAGE, 1), // 8-bit output
+            dslb(2, vk::DescriptorType::STORAGE_IMAGE, 1), // primary-hit albedo (demodulation)
+            dslb(3, vk::DescriptorType::STORAGE_IMAGE, 1), // irradiance history READ (scratch copy — avoids the read/write race across the scale^2 upscale threads)
+            dslb(4, vk::DescriptorType::STORAGE_IMAGE, 1), // irradiance history WRITE
+            dslb(5, vk::DescriptorType::STORAGE_IMAGE, 1), // world-position G-buffer (reprojection)
+        ];
         let tone_set_layout = ctx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&tone_bindings), None)?;
         let tone_sl = [tone_set_layout];
         let tone_push = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).offset(0).size(std::mem::size_of::<TonePush>() as u32)];
@@ -301,14 +490,18 @@ impl Renderer {
         // daylight scenes, not less.
         let default_exposure = if std::env::var("SCENE").as_deref() == Ok("house") { 0.7 } else { 0.22 };
         let exposure: f32 = std::env::var("EXPOSURE").ok().and_then(|s| s.parse().ok()).unwrap_or(default_exposure);
-        // stylized post stack (tonemap.comp): grade + grain everywhere by
-        // default; palette quantize defaults on for the house look it was
-        // designed around. GRADE/GRAIN/PALETTE env vars override (0 = off).
-        let grade_on = std::env::var("GRADE").map(|v| v != "0").unwrap_or(true);
-        let palette_on = std::env::var("PALETTE").map(|v| v != "0").unwrap_or_else(|_| std::env::var("SCENE").as_deref() == Ok("house"));
+        // stylized post stack (tonemap.comp): ALL OFF by default while the
+        // clean-render path is being evaluated — the animated grain + palette
+        // dither sparkle against residual path-trace noise and read as "noise
+        // appearing from nowhere" once the denoiser hands back to raw. Opt back
+        // in per-effect: GRADE=1, PALETTE=1, GRAIN=0.05.
+        let grade_on = std::env::var("GRADE").map(|v| v != "0").unwrap_or(false);
+        let palette_on = std::env::var("PALETTE").map(|v| v != "0").unwrap_or(false);
         let post_flags = (grade_on as i32) | ((palette_on as i32) << 1);
-        let grain: f32 = std::env::var("GRAIN").ok().and_then(|s| s.parse().ok()).unwrap_or(0.05);
-        let debug = std::env::var("DEBUG_ALBEDO").is_ok() as i32;
+        let grain: f32 = std::env::var("GRAIN").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        // debug channels (misc2.y): 1 = raw albedo, 2 = probe GI only (det),
+        // 3 = direct only (det) — for isolating light-budget mismatches
+        let debug = if std::env::var("DEBUG_ALBEDO").is_ok() { 1 } else if std::env::var("DEBUG_GI").is_ok() { 2 } else if std::env::var("DEBUG_DIRECT").is_ok() { 3 } else { 0 };
         let aa = std::env::var("AA").is_ok() as i32;
         // grid-walker rematch: fixed camera + the web knob's default speed (80 px/s)
         let scene_kind = std::env::var("SCENE").unwrap_or_default();
@@ -347,6 +540,13 @@ impl Renderer {
             frame: 0,
             zoom: std::env::var("ZOOM").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0).round().clamp(ZOOM_MIN, ZOOM_MAX),
             yaw_q: std::env::var("YAW_Q").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) & 3,
+            rot: None,
+            last_yaw: 90.0 * (std::env::var("YAW_Q").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) & 3) as f32,
+            sweep_blend: 0.0,
+            prev_cam: None,
+            mask_q: std::env::var("YAW_Q").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) & 3,
+            denoised_valid: false,
+            yaw_anim: 0.0,
             pan: Vec2::ZERO,
             cursor: Vec2::ZERO,
             wheel_accum: 0.0,
@@ -354,6 +554,10 @@ impl Renderer {
             target: player0,
             move_accum: Vec2::ZERO,
             reset_accum: false,
+            pending_shift: IVec2::ZERO,
+            pending_clears: Vec::new(),
+            spp_burst: std::env::var("SPP0").ok().and_then(|s| s.parse().ok()).unwrap_or(192),
+            spp_cost_ema: 0.0,
             player_pos: player0,
             player_dirty: false,
             held: [false; 4],
@@ -364,9 +568,17 @@ impl Renderer {
             shot: std::env::var("SHOT").ok(),
             shot_spp: std::env::var("SHOT_SPP").ok().and_then(|s| s.parse().ok()).unwrap_or(512),
             walk: std::env::var("WALK").ok().and_then(|s| s.parse().ok()),
+            rotate_at: std::env::var("ROTATE_AT").ok().and_then(|s| s.parse().ok()),
+            dump_dir: std::env::var("DUMP").ok(),
+            dump_left: 0,
+            dump_idx: 0,
+            dump_frames: Vec::new(),
             start_time: std::time::Instant::now(),
             denoise: std::env::var("DENOISE").is_ok(),
-            denoise_live: std::env::var("DENOISE").is_ok(),
+            // guided OIDN runs permanently by default (an estimator switch is
+            // visible as "grain appearing"; AAA denoisers never turn off).
+            // DENOISE=0 starts raw; 'j' toggles live.
+            denoise_live: std::env::var("DENOISE").map(|v| v != "0").unwrap_or(true),
             denoiser: None,
             interop: None,
             shared_buf: None,
@@ -379,13 +591,28 @@ impl Renderer {
             sem_denoise_done,
             copy_cmd,
             async_failed: std::env::var("NO_ASYNC").is_ok(), // force the sync-interop path (benchmark A/B)
+            movie: std::env::var("MOVIE").ok().map(|dir| {
+                std::fs::create_dir_all(&dir).ok();
+                Movie { dir, cmds: movie_script(), seg: 0, seg_done: 0, out_idx: 0 }
+            }),
             frames_limit: std::env::var("FRAMES").ok().and_then(|s| s.parse().ok()),
             frame_time_sum: 0.0,
+            timing: std::env::var("TIMING").is_ok(),
+            det: std::env::var("DET").map(|v| v != "0").unwrap_or(true),
+            probes_baked: 0,
+            probe_rays_total: std::env::var("PROBE_RAYS").ok().and_then(|s| s.parse().ok()).unwrap_or(2048),
             exit_requested: false,
         };
         if !r.scene.prim_hide_mask.is_empty() {
-            r.gpu.set_yaw_masks(&r.ctx, r.yaw_q);
+            // MASK_Q (diagnostic): decouple the dollhouse masks from the camera
+            // quarter to prove/disprove mask-dependent light transport.
+            let mq = std::env::var("MASK_Q").ok().and_then(|s| s.parse().ok()).unwrap_or(r.yaw_q);
+            r.gpu.set_yaw_masks(&r.ctx, mq);
+            r.mask_q = mq;
             r.player_dirty = true; // first TLAS rebuild applies the masks
+        }
+        if r.movie.is_some() {
+            r.denoise_live = true; // movie frames are always the denoised image
         }
         r.recreate_swapchain(window.inner_size().width.max(1), window.inner_size().height.max(1));
         // optional initial pan offset (low pixels), for headless capture tests
@@ -433,9 +660,82 @@ impl Renderer {
         }
     }
 
-    /// Camera yaw offset in degrees for the current quarter-turn count.
+    /// Camera yaw offset in degrees: the animated quarter-turn sweep when one
+    /// is in flight, else the settled quarter-turn count; plus the transient
+    /// movie-orbit sweep (0 outside MOVIE mode).
     fn yaw_deg(&self) -> f32 {
-        90.0 * self.yaw_q as f32
+        let base = match &self.rot {
+            Some(r) => 90.0 * r.turns,
+            None => 90.0 * self.yaw_q as f32,
+        };
+        base + self.yaw_anim
+    }
+
+    /// q/e: start (or extend) the smooth quarter-turn — web semantics: the
+    /// integer target moves immediately, the camera eases after it.
+    fn start_rotate(&mut self, delta: i32) {
+        let target = match &mut self.rot {
+            Some(r) => {
+                r.target += delta;
+                r.settle = None; // retargeted mid-settle -> back to the ease
+                r.target
+            }
+            None => {
+                let target = self.yaw_q as i32 + delta;
+                self.rot = Some(RotAnim { turns: self.yaw_q as f32, target, settle: None });
+                target
+            }
+        };
+        // Align the target to the DESTINATION yaw's pixel lattice NOW: snapping
+        // at landing instead shifts the whole image by a subpixel hop in the
+        // final (slow, attention-grabbing) frame. Here the half-px hop is
+        // swallowed by the sweep's own motion.
+        self.snap_target_for_yaw(90.0 * target as f32);
+    }
+
+    /// Advance the in-flight rotation by `dt`. Every frame of the sweep is a
+    /// fresh viewpoint (full reset + spp burst, auto-denoised); the dollhouse
+    /// masks swap when the sweep crosses into a new nearest quarter. Lands
+    /// exactly on the target through the same tail `rotate` uses.
+    fn advance_rotation(&mut self, dt: f32) {
+        let Some(r) = &mut self.rot else { return };
+        let tgt = r.target as f32;
+        let mut landed = false;
+        if let Some((from, elapsed)) = &mut r.settle {
+            *elapsed += dt.max(0.0);
+            let t = (*elapsed / ROT_SETTLE).clamp(0.0, 1.0);
+            let e = t * t * (3.0 - 2.0 * t);
+            r.turns = *from + (tgt - *from) * e;
+            if t >= 1.0 {
+                r.turns = tgt;
+                landed = true;
+            }
+        } else {
+            r.turns += (tgt - r.turns) * (1.0 - (-ROT_RATE * dt).exp());
+            if (r.turns - tgt).abs() <= ROT_EPS {
+                r.settle = Some((r.turns, 0.0));
+            }
+        }
+        // swap the dollhouse masks at the nearest-quarter crossing (side-on),
+        // exactly like the movie orbit
+        let mq = (r.turns.round() as i32).rem_euclid(4) as u32;
+        let target_q = r.target.rem_euclid(4) as u32;
+        if landed {
+            self.yaw_q = target_q;
+            self.rot = None;
+            self.move_accum = Vec2::ZERO;
+            self.snap_target_to_lattice();
+        }
+        if mq != self.mask_q {
+            self.mask_q = mq;
+            if !self.scene.prim_hide_mask.is_empty() {
+                unsafe { self.gpu.set_yaw_masks(&self.ctx, mq) };
+            }
+            self.player_dirty = true;
+        }
+        // the viewpoint changed this frame -> accumulation restarts (burst +
+        // auto-denoise keep it presentable)
+        self.reset_render();
     }
 
     /// Step the zoom by whole increments (web `stepCameraZoom`: target +
@@ -456,6 +756,8 @@ impl Renderer {
     /// which perimeter walls are hidden, applied by the next TLAS rebuild.
     fn rotate(&mut self, delta: i32) {
         self.yaw_q = (self.yaw_q as i32 + delta).rem_euclid(4) as u32;
+        self.rot = None; // instant turn supersedes any in-flight sweep
+        self.mask_q = self.yaw_q;
         if !self.scene.prim_hide_mask.is_empty() {
             unsafe { self.gpu.set_yaw_masks(&self.ctx, self.yaw_q) };
         }
@@ -468,6 +770,47 @@ impl Renderer {
     fn reset_render(&mut self) {
         self.samples = 0;
         self.reset_accum = true;
+        // a full reset supersedes any queued shift / rect invalidation
+        self.pending_shift = IVec2::ZERO;
+        self.pending_clears.clear();
+    }
+
+    /// Screen-px projection (x right, y down — buffer convention) of a world
+    /// point at the current yaw, on the same lattice `snap_*` uses.
+    fn proj_px(&self, p: Vec3) -> Vec2 {
+        let (_d, right, up) = iso_basis(self.yaw_deg());
+        Vec2::new(p.dot(right) * ISO_R, -p.dot(up) * ISO_R)
+    }
+
+    /// Re-aim the camera at `new_target` (snapped to the lattice) WITHOUT
+    /// discarding accumulation. The camera is orthographic and only ever moves
+    /// in whole low-pixel steps, so the previous converged image is EXACTLY the
+    /// new image shifted by that pixel delta (parallel rays: even speculars are
+    /// identical). The shift is applied to the accum buffer before the next
+    /// trace; only newly exposed border strips restart at zero samples, and
+    /// those sit inside the overscan margin until they've already converged.
+    fn retarget(&mut self, new_target: Vec3) {
+        let before = self.proj_px(self.target);
+        self.target = new_target;
+        self.snap_target_to_lattice();
+        let d = self.proj_px(self.target) - before;
+        let s = IVec2::new(d.x.round() as i32, d.y.round() as i32);
+        if s != IVec2::ZERO && !self.reset_accum {
+            self.pending_shift += s;
+            // re-open the idle dispatch gate so fresh strips get samples
+            self.samples = self.samples.min(64);
+        }
+    }
+
+    /// Queue an accumulation restart for the screen rect the player covers at
+    /// ground point `p` — generous margins take in the sun shadow (cast toward
+    /// -x/-z for the fixed key light) and nearby bounce bleed.
+    fn invalidate_player(&mut self, p: Vec3) {
+        if self.reset_accum {
+            return;
+        }
+        self.pending_clears.push((p - Vec3::new(2.4, 0.0, 2.4), p + Vec3::new(1.5, 2.4, 1.5)));
+        self.samples = self.samples.min(64);
     }
 
     /// Ensure the zero-copy interop denoiser (Vulkan-exported buffer aliased by
@@ -487,9 +830,10 @@ impl Renderer {
             self.ensure_denoiser(lw as usize, lh as usize);
             return;
         }
-        let (buf, size) = self.ctx.create_exportable_buffer((lw * lh * 16) as u64, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST);
+        // 3 rgba32f planes: color (in/out) + albedo + normal denoise guides
+        let (buf, size) = self.ctx.create_exportable_buffer((lw * lh * 16 * 3) as u64, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST);
         match self.ctx.export_memory_fd(&buf) {
-            Ok(fd) => match oidn::InteropDenoiser::from_fd(fd, size as usize, lw as usize, lh as usize) {
+            Ok(fd) => match oidn::InteropDenoiser::from_fd(fd, size as usize, lw as usize, lh as usize, dn_input_scale()) {
                 Ok(it) => {
                     println!("interop denoiser ready: zero-copy OIDN CUDA, {lw}x{lh} (no host readback)");
                     self.interop = Some(it);
@@ -514,7 +858,7 @@ impl Renderer {
     /// Host-copy OIDN fallback (used when interop is unavailable).
     fn ensure_denoiser(&mut self, lw: usize, lh: usize) {
         if self.denoiser.as_ref().map(|d| d.matches(lw, lh)) != Some(true) {
-            match oidn::Denoiser::new(lw, lh) {
+            match oidn::Denoiser::new(lw, lh, dn_input_scale()) {
                 Ok(d) => {
                     println!("denoiser ready: host-copy OIDN {} device, {lw}x{lh}", d.device_name());
                     self.denoiser = Some(d);
@@ -524,20 +868,16 @@ impl Renderer {
         }
     }
 
-    /// Zero-copy denoise: copy the summed accumulator into the shared buffer
-    /// (GPU), OIDN-denoise it in place (no host transfer), copy the result into
-    /// the `denoised` image (GPU). The tonemap then divides by the sample count.
+    /// Zero-copy denoise: copy the mean-radiance accumulator into the shared
+    /// buffer (GPU), OIDN-denoise it in place (no host transfer), copy the
+    /// result into the `denoised` image (GPU) for the tonemap to read.
     unsafe fn denoise_interop_inplace(&self) {
         let swap = self.swap.as_ref().unwrap();
         let shared = self.shared_buf.as_ref().unwrap();
         let (lw, lh) = (swap.low_w, swap.low_h);
         let region = vk::BufferImageCopy::default().image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 }).image_extent(vk::Extent3D { width: lw, height: lh, depth: 1 });
-        // accum image (sum) -> shared buffer
-        self.ctx.one_time(|cmd| {
-            barrier(&self.ctx.device, cmd, swap.accum.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
-            self.ctx.device.cmd_copy_image_to_buffer(cmd, swap.accum.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, shared.buffer, &[region]);
-            barrier(&self.ctx.device, cmd, swap.accum.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
-        });
+        // accum (mean) + albedo/normal guides -> the shared buffer's 3 planes
+        self.ctx.one_time(|cmd| self.record_copy_in(cmd));
         // OIDN in place on the shared VRAM (Vulkan idle above; sync inside)
         if let Some(it) = self.interop.as_ref() {
             if let Err(e) = it.denoise() {
@@ -590,9 +930,10 @@ impl Renderer {
         let r: Result<(), String> = (|s: &mut Self| {
             s.ensure_cuda()?;
             let stream = s.cuda.as_ref().unwrap().stream;
-            let (buf, size) = s.ctx.create_exportable_buffer((lw * lh * 16) as u64, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST);
+            // 3 rgba32f planes: color (in/out) + albedo + normal denoise guides
+            let (buf, size) = s.ctx.create_exportable_buffer((lw * lh * 16 * 3) as u64, vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST);
             let fd = s.ctx.export_memory_fd(&buf).map_err(|e| format!("export_memory_fd: {e:?}"))?;
-            match oidn::AsyncInteropDenoiser::from_fd_and_stream(fd, size as usize, lw as usize, lh as usize, stream) {
+            match oidn::AsyncInteropDenoiser::from_fd_and_stream(fd, size as usize, lw as usize, lh as usize, stream, dn_input_scale()) {
                 Ok(it) => {
                     s.async_interop = Some(it);
                     s.shared_buf = Some(buf);
@@ -619,17 +960,29 @@ impl Renderer {
     /// Submit the copy accum(sum) -> shared buffer on its own command buffer,
     /// signalling `sem_copy_done` (no fence, no wait). CUDA then waits that
     /// semaphore before denoising. Non-blocking on the CPU.
-    unsafe fn submit_copy_in_async(&self) {
+    /// Record the OIDN copy-in: the mean-radiance accumulator plus the albedo
+    /// and normal guide G-buffers into the shared buffer's three planes
+    /// (color @0, albedo @plane, normal @2·plane — matching the OIDN filter).
+    unsafe fn record_copy_in(&self, cmd: vk::CommandBuffer) {
         let swap = self.swap.as_ref().unwrap();
         let shared = self.shared_buf.as_ref().unwrap();
         let (lw, lh) = (swap.low_w, swap.low_h);
-        let region = vk::BufferImageCopy::default().image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 }).image_extent(vk::Extent3D { width: lw, height: lh, depth: 1 });
+        let d = &self.ctx.device;
+        let layers = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 };
+        let plane = (lw * lh * 16) as u64;
+        for (i, img) in [swap.accum.0, swap.albedo.0, swap.normal.0].into_iter().enumerate() {
+            let region = vk::BufferImageCopy::default().buffer_offset(i as u64 * plane).image_subresource(layers).image_extent(vk::Extent3D { width: lw, height: lh, depth: 1 });
+            barrier(d, cmd, img, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            d.cmd_copy_image_to_buffer(cmd, img, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, shared.buffer, &[region]);
+            barrier(d, cmd, img, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+        }
+    }
+
+    unsafe fn submit_copy_in_async(&self) {
         let d = &self.ctx.device;
         d.reset_command_buffer(self.copy_cmd, vk::CommandBufferResetFlags::empty()).unwrap();
         d.begin_command_buffer(self.copy_cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
-        barrier(d, self.copy_cmd, swap.accum.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
-        d.cmd_copy_image_to_buffer(self.copy_cmd, swap.accum.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, shared.buffer, &[region]);
-        barrier(d, self.copy_cmd, swap.accum.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+        self.record_copy_in(self.copy_cmd);
         d.end_command_buffer(self.copy_cmd).unwrap();
         let cmds = [self.copy_cmd];
         let sig = [self.sem_copy_done];
@@ -661,7 +1014,11 @@ impl Renderer {
     /// lattice (shift by the sub-pixel projection remainder along right/up) —
     /// keeps the scene crisp regardless of the player's continuous position.
     fn snap_target_to_lattice(&mut self) {
-        let (_d, right, up) = iso_basis(self.yaw_deg());
+        self.snap_target_for_yaw(self.yaw_deg());
+    }
+
+    fn snap_target_for_yaw(&mut self, yaw_deg: f32) {
+        let (_d, right, up) = iso_basis(yaw_deg);
         let px = self.target.dot(right) * ISO_R;
         let py = self.target.dot(up) * ISO_R;
         self.target += right * ((px.round() - px) / ISO_R) + up * ((py.round() - py) / ISO_R);
@@ -688,10 +1045,9 @@ impl Renderer {
 
     /// Move the camera target by a world delta (whole-pixel quantisation has
     /// already happened in screen space), keeping it on the pixel lattice.
+    /// Accumulation is shifted, not reset — panning stays noise-free.
     fn pan_target(&mut self, world: Vec3) {
-        self.target += world;
-        self.snap_target_to_lattice();
-        self.reset_render();
+        self.retarget(self.target + world);
     }
 
     /// Apply a new continuous player position — the web engine's contract:
@@ -706,13 +1062,16 @@ impl Renderer {
         self.player_pos.z = nz;
         let new_snap = snap_ground_to_lattice(self.player_pos, self.yaw_deg());
         if self.follow_cam {
-            self.target = self.player_pos;
-            self.snap_target_to_lattice();
+            // shift (don't reset) the accumulation along with the camera
+            self.retarget(self.player_pos);
             self.recenter_pan();
         }
         if new_snap != old_snap {
             self.player_dirty = true;
-            self.reset_render();
+            // the static world keeps its convergence; only the screen rects the
+            // player vacated / entered (incl. shadow) restart accumulating
+            self.invalidate_player(old_snap);
+            self.invalidate_player(new_snap);
         }
     }
 
@@ -721,7 +1080,7 @@ impl Renderer {
     /// (floored to the smoothness minimum) over `dt` on the screen-pixel basis
     /// (`screen_px_to_world` — 1 px right = 1/R wu, 1 px down = 2/R wu), then
     /// collide against the level. Blocked moves slide along the unobstructed
-    /// axis. Moving re-renders (grain) once the snapped position changes.
+    /// axis. Crossing a pixel cell invalidates only the player's screen rect.
     fn update_motion(&mut self, dt: f32) {
         let input_x = (self.held[3] as i32 - self.held[2] as i32) as f32; // right - left
         let input_y = (self.held[0] as i32 - self.held[1] as i32) as f32; // up - down
@@ -763,7 +1122,131 @@ impl Renderer {
         }
     }
 
+    /// Advance the scripted movie one tick. Runs at the end of draw(), when
+    /// `out` holds the frame just presented. Captures wait for a minimum spp
+    /// so motion frames aren't raw 8-spp smears; instantaneous commands
+    /// (rotate / zoom) apply between captures, exactly like a key press.
+    unsafe fn movie_tick(&mut self) {
+        const HOLD_SPP: i32 = 64; // settle threshold after a camera change
+        const PAN_SPP: i32 = 96; // motion frames: below this, OIDN leaves shimmering blotches
+        let Some(mut mv) = self.movie.take() else { return };
+        loop {
+            let Some(cmd) = mv.cmds.get(mv.seg) else {
+                self.ctx.device.device_wait_idle().ok();
+                println!("movie: {} frames -> {}/", mv.out_idx, mv.dir);
+                self.exit_requested = true;
+                return;
+            };
+            match *cmd {
+                MovieCmd::Hold(n) => {
+                    if self.samples < HOLD_SPP {
+                        break; // keep converging before the first captured frame
+                    }
+                    self.ctx.device.device_wait_idle().ok();
+                    self.capture(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
+                    mv.out_idx += 1;
+                    mv.seg_done += 1;
+                    if mv.seg_done >= n {
+                        mv.seg += 1;
+                        mv.seg_done = 0;
+                        continue; // an instantaneous command may follow right away
+                    }
+                    break;
+                }
+                MovieCmd::Rotate(d) => {
+                    self.rotate(d);
+                    mv.seg += 1;
+                    break; // accumulation reset: render before the next capture
+                }
+                MovieCmd::Orbit(dq, n) => {
+                    if self.samples < PAN_SPP {
+                        break;
+                    }
+                    self.ctx.device.device_wait_idle().ok();
+                    self.capture(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
+                    mv.out_idx += 1;
+                    mv.seg_done += 1;
+                    if mv.seg_done >= n {
+                        // land exactly on the next quarter through the real
+                        // interactive path (re-masks, re-snaps, resets accum)
+                        self.yaw_anim = 0.0;
+                        self.rotate(dq);
+                        mv.seg += 1;
+                        mv.seg_done = 0;
+                    } else {
+                        let t = mv.seg_done as f32 / n as f32;
+                        self.yaw_anim = 90.0 * dq as f32 * (t * t * (3.0 - 2.0 * t));
+                        // swap the dollhouse masks side-on, halfway through the turn
+                        if mv.seg_done == n / 2 && !self.scene.prim_hide_mask.is_empty() {
+                            let next_q = (self.yaw_q as i32 + dq).rem_euclid(4) as u32;
+                            self.gpu.set_yaw_masks(&self.ctx, next_q);
+                            self.player_dirty = true; // TLAS rebuild applies them
+                        }
+                        self.reset_render();
+                    }
+                    break;
+                }
+                MovieCmd::Zoom(d) => {
+                    let e = self.swap.as_ref().unwrap().extent;
+                    self.zoom_step(d, Vec2::new(e.width as f32 / 2.0, e.height as f32 / 2.0));
+                    mv.seg += 1;
+                    break; // zoom keeps accumulation; next tick captures converged
+                }
+                MovieCmd::PanTo(x, z, n) => {
+                    if self.samples < PAN_SPP {
+                        break;
+                    }
+                    self.ctx.device.device_wait_idle().ok();
+                    self.capture(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
+                    mv.out_idx += 1;
+                    // step toward the goal by 1/remaining of what's left — lands
+                    // exactly on (x, z) regardless of lattice re-snapping
+                    let remaining = (n - mv.seg_done).max(1) as f32;
+                    let step = Vec3::new((x - self.target.x) / remaining, 0.0, (z - self.target.z) / remaining);
+                    self.pan_target(step);
+                    mv.seg_done += 1;
+                    if mv.seg_done >= n {
+                        mv.seg += 1;
+                        mv.seg_done = 0;
+                    }
+                    break;
+                }
+            }
+        }
+        self.movie = Some(mv);
+    }
+
     /// Dump the `out` image (the exact thing blitted to the swapchain) to a PNG.
+    /// Read back `out` and take every render-scale-th pixel — the exact
+    /// low-res game image (the upscale is integer NEAREST). RGBA bytes.
+    unsafe fn readback_out_subsampled(&self) -> (u32, u32, Vec<u8>) {
+        let swap = self.swap.as_ref().unwrap();
+        let (w, h) = (swap.extent.width, swap.extent.height);
+        let n = (w * h) as usize;
+        let readback = self.ctx.create_buffer((n * 4) as u64, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+        self.ctx.one_time(|cmd| {
+            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            let region = vk::BufferImageCopy::default().image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 }).image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
+            self.ctx.device.cmd_copy_image_to_buffer(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, readback.buffer, &[region]);
+            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+        });
+        let ptr = self.ctx.device.map_memory(readback.memory, 0, (n * 4) as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
+        let full = std::slice::from_raw_parts(ptr, n * 4);
+        let rs = self.rs() as u32;
+        let (sw, sh) = (w / rs, h / rs);
+        let mut sub = vec![0u8; (sw * sh * 4) as usize];
+        for y in 0..sh {
+            for x in 0..sw {
+                let src = (((y * rs) * w + x * rs) * 4) as usize;
+                let dst = ((y * sw + x) * 4) as usize;
+                sub[dst..dst + 4].copy_from_slice(&full[src..src + 4]);
+            }
+        }
+        self.ctx.device.unmap_memory(readback.memory);
+        self.ctx.destroy_buffer(&readback);
+        (sw, sh, sub)
+    }
+
     unsafe fn capture(&self, path: &str) {
         let swap = self.swap.as_ref().unwrap();
         let (w, h) = (swap.extent.width, swap.extent.height);
@@ -791,10 +1274,122 @@ impl Renderer {
     /// tonemap + integer-NEAREST upscale (by base_scale) to a PNG. This is the
     /// denoise dial proving low-spp frames can be cleaned (the grainy per-move
     /// frame, made clean).
-    /// Record (clear +) one trace dispatch into the accumulator via a blocking
-    /// submit. Used by the denoise dial so the accumulator is ready to read back
-    /// before the present command is built.
-    unsafe fn trace_one_time(&self, do_clear: bool, dispatch: bool, rebuild_tlas: bool, cam: &Push) {
+    /// Record the pending accumulation maintenance into `cmd`: a full clear
+    /// (reset), or the whole-pixel content shift (camera pan reuse) plus the
+    /// rect invalidations (moved player). Runs before the trace dispatch so the
+    /// shifted/cleared pixels accumulate correctly this same frame.
+    unsafe fn record_accum_maintenance(&self, cmd: vk::CommandBuffer) {
+        let swap = self.swap.as_ref().unwrap();
+        let d = &self.ctx.device;
+        let (w, h) = (swap.low_w as i32, swap.low_h as i32);
+        let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
+        let layers = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 };
+
+        if self.reset_accum {
+            d.cmd_clear_color_image(cmd, swap.accum.0, vk::ImageLayout::GENERAL, &vk::ClearColorValue { float32: [0.0; 4] }, &[range]);
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_WRITE)], &[], &[]);
+            return;
+        }
+        let s = self.pending_shift;
+        if s == IVec2::ZERO && self.pending_clears.is_empty() {
+            return;
+        }
+
+        // accum -> TRANSFER_DST for everything below (shift copy-back + rect clears)
+        if s != IVec2::ZERO {
+            // shift: accum -> scratch (full), wipe accum, copy the surviving
+            // window back offset by -s (new[q] = old[q + s])
+            barrier(d, cmd, swap.accum.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            barrier(d, cmd, swap.scratch.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
+            let full = vk::ImageCopy::default().src_subresource(layers).dst_subresource(layers).extent(vk::Extent3D { width: w as u32, height: h as u32, depth: 1 });
+            d.cmd_copy_image(cmd, swap.accum.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, swap.scratch.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[full]);
+            barrier(d, cmd, swap.scratch.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER);
+            barrier(d, cmd, swap.accum.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER);
+            d.cmd_clear_color_image(cmd, swap.accum.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &vk::ClearColorValue { float32: [0.0; 4] }, &[range]);
+            let (cw, ch) = (w - s.x.abs(), h - s.y.abs());
+            if cw > 0 && ch > 0 {
+                d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)], &[], &[]);
+                let shifted = vk::ImageCopy::default()
+                    .src_subresource(layers)
+                    .src_offset(vk::Offset3D { x: s.x.max(0), y: s.y.max(0), z: 0 })
+                    .dst_subresource(layers)
+                    .dst_offset(vk::Offset3D { x: (-s.x).max(0), y: (-s.y).max(0), z: 0 })
+                    .extent(vk::Extent3D { width: cw as u32, height: ch as u32, depth: 1 });
+                d.cmd_copy_image(cmd, swap.scratch.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, swap.accum.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[shifted]);
+            }
+            barrier(d, cmd, swap.scratch.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::empty(), vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE);
+        } else {
+            barrier(d, cmd, swap.accum.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+        }
+
+        // rect invalidations: zero the screen rects of the queued world AABBs
+        // (projected with the CURRENT, post-shift target)
+        if !self.pending_clears.is_empty() {
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)], &[], &[]);
+            let centre = Vec2::new(w as f32 * 0.5, h as f32 * 0.5);
+            let t = self.proj_px(self.target);
+            for (mn, mx) in &self.pending_clears {
+                let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+                for cx in [mn.x, mx.x] {
+                    for cy in [mn.y, mx.y] {
+                        for cz in [mn.z, mx.z] {
+                            let q = centre + self.proj_px(Vec3::new(cx, cy, cz)) - t;
+                            lo = lo.min(q);
+                            hi = hi.max(q);
+                        }
+                    }
+                }
+                let x0 = (lo.x.floor() as i32 - 2).clamp(0, w);
+                let y0 = (lo.y.floor() as i32 - 2).clamp(0, h);
+                let x1 = (hi.x.ceil() as i32 + 2).clamp(0, w);
+                let y1 = (hi.y.ceil() as i32 + 2).clamp(0, h);
+                if x1 <= x0 || y1 <= y0 {
+                    continue;
+                }
+                let region = vk::BufferImageCopy::default()
+                    .image_subresource(layers)
+                    .image_offset(vk::Offset3D { x: x0, y: y0, z: 0 })
+                    .image_extent(vk::Extent3D { width: (x1 - x0) as u32, height: (y1 - y0) as u32, depth: 1 });
+                d.cmd_copy_buffer_to_image(cmd, swap.zeros.buffer, swap.accum.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+            }
+        }
+
+        barrier(d, cmd, swap.accum.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+    }
+
+    /// Bake the world-space irradiance probe cache to convergence (blocking,
+    /// once at startup, ~tens of ms): PROBE_RAYS spherical-Fibonacci rays per
+    /// probe in fixed batches. Fully deterministic — same scene, same cache,
+    /// every run. Camera motion never invalidates it (world space), so the
+    /// per-frame shade pass stays a pure function of (scene, camera).
+    unsafe fn bake_probes(&mut self) {
+        if self.probes_baked >= self.probe_rays_total {
+            return;
+        }
+        let t = std::time::Instant::now();
+        const BATCH: i32 = 256;
+        let trace_set = self.swap.as_ref().unwrap().trace_set;
+        while self.probes_baked < self.probe_rays_total {
+            let mut cam = iso_camera_at(&self.scene, 8, 8, 0.0, Vec3::ZERO); // only env0 (sun/sky/fog) matters here
+            cam.misc = [self.gpu.probe_count as i32, self.probe_rays_total, 4, BATCH];
+            cam.misc2 = [self.probes_baked, 0, 0, self.gpu.light_count as i32];
+            self.ctx.one_time(|cmd| {
+                let d = &self.ctx.device;
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.probe_pipeline);
+                d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[trace_set], &[]);
+                let bytes = std::slice::from_raw_parts((&cam as *const Push) as *const u8, std::mem::size_of::<Push>());
+                d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytes);
+                d.cmd_dispatch(cmd, self.gpu.probe_count.div_ceil(64), 1, 1);
+            });
+            self.probes_baked += BATCH;
+        }
+        println!("probes: baked {} rays x {} probes in {:.0} ms", self.probe_rays_total, self.gpu.probe_count, t.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// Record (maintenance +) one trace dispatch into the accumulator via a
+    /// blocking submit. Used by the denoise dial so the accumulator is ready to
+    /// read back before the present command is built.
+    unsafe fn trace_one_time(&self, dispatch: bool, rebuild_tlas: bool, cam: &Push) {
         let swap = self.swap.as_ref().unwrap();
         let (lw, lh) = (swap.low_w, swap.low_h);
         self.ctx.one_time(|cmd| {
@@ -802,11 +1397,7 @@ impl Renderer {
             if rebuild_tlas {
                 self.gpu.record_tlas_rebuild(&self.ctx, cmd);
             }
-            if do_clear {
-                let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
-                d.cmd_clear_color_image(cmd, swap.accum.0, vk::ImageLayout::GENERAL, &vk::ClearColorValue { float32: [0.0; 4] }, &[range]);
-                d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_WRITE)], &[], &[]);
-            }
+            self.record_accum_maintenance(cmd);
             if dispatch {
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline);
                 d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[swap.trace_set], &[]);
@@ -817,26 +1408,25 @@ impl Renderer {
         });
     }
 
-    /// Read back the low-res HDR accumulator and normalise summed radiance to
-    /// the per-pixel mean, packed FLOAT3 (what OIDN wants).
-    unsafe fn readback_accum_mean(&self) -> Vec<f32> {
+    /// Read back a low-res rgba32f image as packed FLOAT3 (what OIDN wants) —
+    /// the mean-radiance accumulator or an albedo/normal guide G-buffer.
+    unsafe fn readback_rgb(&self, image: vk::Image) -> Vec<f32> {
         let swap = self.swap.as_ref().unwrap();
         let (lw, lh) = (swap.low_w, swap.low_h);
         let n = (lw * lh) as usize;
         let readback = self.ctx.create_buffer((n * 16) as u64, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
         self.ctx.one_time(|cmd| {
-            barrier(&self.ctx.device, cmd, swap.accum.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            barrier(&self.ctx.device, cmd, image, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
             let region = vk::BufferImageCopy::default().image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 }).image_extent(vk::Extent3D { width: lw, height: lh, depth: 1 });
-            self.ctx.device.cmd_copy_image_to_buffer(cmd, swap.accum.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, readback.buffer, &[region]);
-            barrier(&self.ctx.device, cmd, swap.accum.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+            self.ctx.device.cmd_copy_image_to_buffer(cmd, image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, readback.buffer, &[region]);
+            barrier(&self.ctx.device, cmd, image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
         });
         let ptr = self.ctx.device.map_memory(readback.memory, 0, (n * 16) as u64, vk::MemoryMapFlags::empty()).unwrap() as *const f32;
         let acc = std::slice::from_raw_parts(ptr, n * 4);
-        let samples = self.samples.max(SPP_PER) as f32;
         let mut color = vec![0.0f32; n * 3];
         for i in 0..n {
             for c in 0..3 {
-                color[i * 3 + c] = acc[i * 4 + c] / samples;
+                color[i * 3 + c] = acc[i * 4 + c];
             }
         }
         self.ctx.device.unmap_memory(readback.memory);
@@ -871,12 +1461,14 @@ impl Renderer {
     unsafe fn capture_denoised(&self, path: &str) {
         let swap = self.swap.as_ref().unwrap();
         let (lw, lh) = (swap.low_w, swap.low_h);
-        let mut color = self.readback_accum_mean();
+        let mut color = self.readback_rgb(swap.accum.0);
+        let albedo = self.readback_rgb(swap.albedo.0);
+        let normal = self.readback_rgb(swap.normal.0);
 
         let t = std::time::Instant::now();
-        match oidn::Denoiser::new(lw as usize, lh as usize) {
+        match oidn::Denoiser::new(lw as usize, lh as usize, dn_input_scale()) {
             Ok(dn) => {
-                if let Err(e) = dn.denoise(&mut color) {
+                if let Err(e) = dn.denoise(&mut color, &albedo, &normal) {
                     eprintln!("denoise failed: {e}");
                 }
             }
@@ -976,21 +1568,34 @@ impl Renderer {
 
         let accum = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
         let denoised = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
+        let scratch = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
+        let albedo = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
+        let normal = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
+        let irr_hist = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
+        let posg = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
         let out = make_storage_image(&self.ctx, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM);
-        // accum: UNDEFINED -> GENERAL + clear; denoised + out: UNDEFINED -> GENERAL
+        // zero-filled transfer source for rect invalidation clears (any rect fits)
+        let zeros = self.ctx.create_buffer((low_w * low_h * 16) as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+        self.ctx.upload(&zeros, &vec![0.0f32; (low_w * low_h * 4) as usize]);
+        // accum: UNDEFINED -> GENERAL + clear; denoised + scratch + out: UNDEFINED -> GENERAL
         let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
         self.ctx.one_time(|cmd| {
             barrier(&self.ctx.device, cmd, accum.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
             self.ctx.device.cmd_clear_color_image(cmd, accum.0, vk::ImageLayout::GENERAL, &vk::ClearColorValue { float32: [0.0; 4] }, &[range]);
             barrier(&self.ctx.device, cmd, denoised.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
+            barrier(&self.ctx.device, cmd, scratch.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
+            barrier(&self.ctx.device, cmd, albedo.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER);
+            barrier(&self.ctx.device, cmd, normal.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER);
+            barrier(&self.ctx.device, cmd, irr_hist.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER);
+            barrier(&self.ctx.device, cmd, posg.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER);
             barrier(&self.ctx.device, cmd, out.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER);
         });
 
         // descriptor sets
         let trace_pool = make_pool(&self.ctx, self.gpu.texes.len() as u32);
-        let trace_set = make_set(&self.ctx, self.gpu.set_layout, trace_pool, self.gpu.tlas, accum.2, &self.gpu.vbuf, &self.gpu.ibuf, &self.gpu.gbuf, &self.gpu.mbuf, &self.gpu.lbuf, &self.gpu.texes, self.gpu.sampler);
+        let trace_set = make_set(&self.ctx, self.gpu.set_layout, trace_pool, self.gpu.tlas, accum.2, albedo.2, normal.2, posg.2, &self.gpu.vbuf, &self.gpu.ibuf, &self.gpu.gbuf, &self.gpu.mbuf, &self.gpu.lbuf, &self.gpu.probe_buf, &self.gpu.texes, self.gpu.sampler);
         let tone_pool = {
-            let sizes = [vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 4 }];
+            let sizes = [vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 12 }];
             self.ctx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(2).pool_sizes(&sizes), None).unwrap()
         };
         let make_tone_set = |src_view: vk::ImageView| {
@@ -998,9 +1603,17 @@ impl Renderer {
             let set = self.ctx.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(tone_pool).set_layouts(&layouts)).unwrap()[0];
             let a = [vk::DescriptorImageInfo::default().image_view(src_view).image_layout(vk::ImageLayout::GENERAL)];
             let o = [vk::DescriptorImageInfo::default().image_view(out.2).image_layout(vk::ImageLayout::GENERAL)];
+            let al = [vk::DescriptorImageInfo::default().image_view(albedo.2).image_layout(vk::ImageLayout::GENERAL)];
+            let hp = [vk::DescriptorImageInfo::default().image_view(scratch.2).image_layout(vk::ImageLayout::GENERAL)];
+            let hi = [vk::DescriptorImageInfo::default().image_view(irr_hist.2).image_layout(vk::ImageLayout::GENERAL)];
+            let po = [vk::DescriptorImageInfo::default().image_view(posg.2).image_layout(vk::ImageLayout::GENERAL)];
             let writes = [
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&a),
                 vk::WriteDescriptorSet::default().dst_set(set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&o),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&al),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&hp),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(4).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&hi),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&po),
             ];
             self.ctx.device.update_descriptor_sets(&writes, &[]);
             set
@@ -1011,7 +1624,8 @@ impl Renderer {
         let render_finished: Vec<vk::Semaphore> = images.iter().map(|_| self.ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap()).collect();
 
         self.samples = 0;
-        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, accum, out, denoised, trace_pool, trace_set, tone_pool, tone_set, tone_set_dn, render_finished });
+        self.denoised_valid = false;
+        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, accum, out, denoised, scratch, albedo, normal, irr_hist, posg, zeros, trace_pool, trace_set, tone_pool, tone_set, tone_set_dn, render_finished });
         self.recenter_pan(); // start centred in the buffer
         println!("swapchain {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
     }
@@ -1031,11 +1645,12 @@ impl Renderer {
         }
         d.destroy_descriptor_pool(s.trace_pool, None);
         d.destroy_descriptor_pool(s.tone_pool, None);
-        for (img, mem, view) in [s.accum, s.denoised, s.out] {
+        for (img, mem, view) in [s.accum, s.denoised, s.scratch, s.albedo, s.normal, s.irr_hist, s.posg, s.out] {
             d.destroy_image_view(view, None);
             d.destroy_image(img, None);
             d.free_memory(mem, None);
         }
+        self.ctx.destroy_buffer(&s.zeros);
         self.swapchain_loader.destroy_swapchain(s.swapchain, None);
     }
 
@@ -1055,9 +1670,27 @@ impl Renderer {
         if self.held != [false; 4] {
             self.update_motion(dt);
         }
+        // headless rotate test: one synthetic smooth e-turn at ROTATE_AT secs
+        if let Some(t) = self.rotate_at {
+            if self.start_time.elapsed().as_secs_f32() >= t {
+                self.rotate_at = None;
+                self.start_rotate(1);
+                if self.dump_dir.is_some() {
+                    self.dump_left = std::env::var("DUMP_N").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+                }
+            }
+        }
+        // smooth quarter-turn in flight: ease the yaw, swap masks, reset accum
+        self.advance_rotation(dt);
+        // deterministic mode: make sure the probe cache is converged (no-op
+        // after startup), and keep the whole denoise/temporal stack dormant.
+        if self.det {
+            self.bake_probes();
+        }
+        let dn_live = self.denoise_live && !self.det;
         // (re)build the denoiser (async interop, then sync interop, then host
         // fallback) before the long `swap` borrow
-        if self.denoise_live {
+        if dn_live {
             let (lw, lh) = { let s = self.swap.as_ref().unwrap(); (s.low_w, s.low_h) };
             self.ensure_denoise(lw, lh);
         }
@@ -1071,6 +1704,7 @@ impl Renderer {
             Err(e) => panic!("acquire: {e:?}"),
         };
         d.reset_fences(&[self.in_flight]).unwrap();
+        let t_acq = std::time::Instant::now(); // fence wait + acquire done
 
         // Player moved: patch its dynamic instance transform (fence wait above
         // guarantees no in-flight TLAS read), then the TLAS is rebuilt below.
@@ -1082,52 +1716,78 @@ impl Renderer {
         }
         let rebuild = self.player_dirty;
 
-        let dispatch_trace = self.samples < MAX_SAMPLES;
-        let do_clear = self.reset_accum;
+        let dispatch_trace = self.det || self.samples < MAX_SAMPLES;
         let (low_w, low_h, extent) = (swap.low_w, swap.low_h, swap.extent);
         let sc_image = swap.images[idx as usize];
 
         // camera: ISO_VIEW_CONTRACT at the movable look-at target
         let mut cam = iso_camera_at(&self.scene, low_w, low_h, self.yaw_deg(), self.target);
-        cam.misc2[0] = self.frame as i32;
+        // RNG seed = samples accumulated since the last reset (a per-reset
+        // dispatch counter, NOT wall-clock frame). Three things follow:
+        // (1) every sweep frame resets -> seed 0 -> correlated noise across the
+        //     sweep (no per-frame boil);
+        // (2) the FIRST dispatch after landing also uses seed 0 -> identical
+        //     estimate to the last sweep frame -> no whole-image re-roll at the
+        //     worst (motionless) moment;
+        // (3) later dispatches get distinct seeds (64, 128, ...) so the
+        //     accumulation stays unbiased — and fully deterministic.
+        cam.misc2[0] = self.samples;
         cam.misc2[1] = self.debug;
         cam.misc2[2] = self.aa;
         cam.misc2[3] = self.gpu.light_count as i32;
 
-        let samples_now = if dispatch_trace { self.samples + SPP_PER } else { self.samples.max(SPP_PER) };
+        // sample-rate burst: anywhere below the denoise-handoff quality (fresh
+        // reset, pan strips, player rects), trace as many paths per frame as
+        // the TRACE_MS budget allows (capped at SPP0) so the image converges
+        // fast WITHOUT dropping below 60 fps at big windows / heavy scenes.
+        // Idle tail beyond that accumulates at SPP_PER until MAX_SAMPLES.
+        let spp = if self.samples < BURST_SPP || !self.pending_clears.is_empty() {
+            let fit = if self.spp_cost_ema > 0.0 { (trace_budget_ms() / self.spp_cost_ema) as i32 } else { self.spp_burst };
+            fit.clamp(SPP_BURST_MIN, self.spp_burst).max(SPP_PER)
+        } else {
+            SPP_PER
+        };
+        cam.misc[3] = spp;
 
         // Denoise dial: trace + OIDN run out-of-band producing the `denoised`
         // HDR image; the present cmd then just tonemaps that (samples=1, since it
         // holds mean radiance). Fast path records the trace into the present cmd
         // and tonemaps the raw accumulator.
         let mut wait_denoise = false; // present cmd must wait CUDA's denoise (async path)
-        let (tone_set, tone_samples, trace_in_present) = if self.denoise_live && self.async_interop.is_some() {
+        let (tone_set, trace_in_present) = if dn_live && !dispatch_trace && !rebuild && self.denoised_valid {
+            // converged + idle: the accumulator hasn't changed, so the last
+            // denoised frame is exact — present it with no trace, no OIDN
+            (swap.tone_set_dn, false)
+        } else if dn_live && self.async_interop.is_some() {
             // ASYNC zero-copy path: trace, submit copy-in (signals sem_copy_done),
             // CUDA waits it + OIDN-denoises on its stream + signals sem_denoise_done.
             // No CPU-blocking sync; the present cmd waits sem_denoise_done.
-            self.trace_one_time(do_clear, dispatch_trace, rebuild, &cam);
+            self.trace_one_time(dispatch_trace, rebuild, &cam);
             self.submit_copy_in_async();
             let _ = self.cuda.as_ref().unwrap().enqueue_wait();
             let _ = self.async_interop.as_ref().unwrap().execute_async();
             let _ = self.cuda.as_ref().unwrap().enqueue_signal();
             wait_denoise = true;
-            (swap.tone_set_dn, samples_now, false)
-        } else if self.denoise_live && self.interop.is_some() {
-            // zero-copy path: denoise the SUM in shared VRAM, tonemap divides it
-            self.trace_one_time(do_clear, dispatch_trace, rebuild, &cam);
+            (swap.tone_set_dn, false)
+        } else if dn_live && self.interop.is_some() {
+            // zero-copy path: denoise the MEAN in shared VRAM
+            self.trace_one_time(dispatch_trace, rebuild, &cam);
             let t = std::time::Instant::now();
             self.denoise_interop_inplace();
             if self.frame % 60 == 5 {
                 println!("OIDN zero-copy denoise: {:.2}ms ({}x{})", t.elapsed().as_secs_f32() * 1000.0, low_w, low_h);
             }
-            (swap.tone_set_dn, samples_now, false)
-        } else if self.denoise_live {
-            // host-copy fallback: denoise the MEAN, tonemap divides by 1
-            self.trace_one_time(do_clear, dispatch_trace, rebuild, &cam);
-            let mut color = self.readback_accum_mean();
+            (swap.tone_set_dn, false)
+        } else if dn_live {
+            // host-copy fallback: denoise the MEAN on the CPU
+            self.trace_one_time(dispatch_trace, rebuild, &cam);
+            let (acc_img, alb_img, nrm_img) = { let sw = self.swap.as_ref().unwrap(); (sw.accum.0, sw.albedo.0, sw.normal.0) };
+            let mut color = self.readback_rgb(acc_img);
+            let albedo = self.readback_rgb(alb_img);
+            let normal = self.readback_rgb(nrm_img);
             if let Some(dn) = self.denoiser.as_ref() {
                 let t = std::time::Instant::now();
-                if let Err(e) = dn.denoise(&mut color) {
+                if let Err(e) = dn.denoise(&mut color, &albedo, &normal) {
                     eprintln!("denoise: {e}");
                 }
                 if self.frame % 60 == 5 {
@@ -1135,10 +1795,19 @@ impl Renderer {
                 }
             }
             self.upload_denoised(&color);
-            (swap.tone_set_dn, 1, false)
+            (swap.tone_set_dn, false)
         } else {
-            (swap.tone_set, samples_now, true)
+            (swap.tone_set, true)
         };
+        let t_trace = std::time::Instant::now(); // trace + denoise enqueue done
+        // adaptive burst: track the measured ms-per-spp (the out-of-band trace
+        // submit blocks, so this is real GPU time; resolution/scene/zoom
+        // changes are absorbed by the EMA within a few frames). The in-present
+        // fast path (denoise off) isn't measured here — it keeps SPP0.
+        if dispatch_trace && !trace_in_present {
+            let cost = (t_trace - t_acq).as_secs_f32() * 1000.0 / spp.max(1) as f32;
+            self.spp_cost_ema = if self.spp_cost_ema > 0.0 { self.spp_cost_ema * 0.7 + cost * 0.3 } else { cost };
+        }
 
         d.reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty()).unwrap();
         d.begin_command_buffer(self.cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
@@ -1154,14 +1823,13 @@ impl Renderer {
             if rebuild {
                 self.gpu.record_tlas_rebuild(&self.ctx, cmd);
             }
-            if do_clear {
-                // camera moved -> wipe the HDR accumulator and start fresh (grain).
-                let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
-                d.cmd_clear_color_image(cmd, swap.accum.0, vk::ImageLayout::GENERAL, &vk::ClearColorValue { float32: [0.0; 4] }, &[range]);
-                d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_WRITE)], &[], &[]);
+            // reset / shift / rect-invalidate the accumulator before tracing
+            // (det mode has no accumulator: shade.comp overwrites every pixel)
+            if !self.det {
+                self.record_accum_maintenance(cmd);
             }
             if dispatch_trace {
-                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline);
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, if self.det { self.gpu.shade_pipeline } else { self.gpu.pipeline });
                 d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[swap.trace_set], &[]);
                 let bytes = std::slice::from_raw_parts((&cam as *const Push) as *const u8, std::mem::size_of::<Push>());
                 d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytes);
@@ -1175,11 +1843,54 @@ impl Renderer {
         // on the CPU side so the upscale lattice is always integer-aligned.
         let rs = self.rs();
         let pan = self.pan.round();
+        // sweep temporal blend: weight of the PREVIOUS output frame, scaled by
+        // angular velocity — 0 when fast (fresh frames, no ghosting), up to
+        // 0.85 as the turn decelerates into the settle (max stability where
+        // per-pixel estimate re-rolls would otherwise flicker). Off outside
+        // rotation (pan shifts content; blending would ghost).
+        let yaw_now = self.yaw_deg();
+        let dyaw = (yaw_now - self.last_yaw).abs();
+        self.last_yaw = yaw_now;
+        let _ = dyaw;
+        self.sweep_blend = if self.det {
+            0.0 // deterministic frames need no history — blending would only soften
+        } else if self.rot.is_some() {
+            0.85 // reprojected history stays valid at any sweep speed
+        } else {
+            let b = self.sweep_blend * 0.66; // post-landing fade-out
+            if b < 0.04 { 0.0 } else { b }
+        };
+        if self.pending_shift != IVec2::ZERO {
+            self.sweep_blend = 0.0; // pan shifts content; blending would ghost
+        }
+        let blend = self.sweep_blend;
+        // previous frame's screen projection: buffer px of world P was
+        // (P·right - T·right)·R + W/2 - 0.5 (x), -(P·up - T·up)·R + H/2 - 0.5 (y)
+        let (pyaw, ptarget) = self.prev_cam.unwrap_or((yaw_now, self.target));
+        let (_pd, pright, pup) = iso_basis(pyaw);
+        let pa = pright * ISO_R;
+        let pb = -pup * ISO_R;
+        let off_x = -ptarget.dot(pright) * ISO_R + low_w as f32 * 0.5 - 0.5;
+        let off_y = ptarget.dot(pup) * ISO_R + low_h as f32 * 0.5 - 0.5;
+        self.prev_cam = Some((yaw_now, self.target));
         let tp = TonePush {
             dims: [low_w as i32, low_h as i32, extent.width as i32, extent.height as i32],
-            cfg: [rs, tone_samples, pan.x as i32, pan.y as i32],
+            cfg: [rs, (blend * 256.0) as i32, pan.x as i32, pan.y as i32], // cfg.y = temporal blend ×256
             fcfg: [self.exposure, self.grain, self.frame as f32, self.post_flags as f32],
+            prev_a: [pa.x, pa.y, pa.z, off_x],
+            prev_b: [pb.x, pb.y, pb.z, off_y],
         };
+        // sweep blend: stage last frame's irradiance history into scratch so the
+        // tonemap reads a stable copy while writing the new history (no race)
+        if blend > 0.0 {
+            let layers2 = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 };
+            let full = vk::ImageCopy::default().src_subresource(layers2).dst_subresource(layers2).extent(vk::Extent3D { width: low_w, height: low_h, depth: 1 });
+            barrier(d, cmd, swap.irr_hist.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            barrier(d, cmd, swap.scratch.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
+            d.cmd_copy_image(cmd, swap.irr_hist.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, swap.scratch.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[full]);
+            barrier(d, cmd, swap.irr_hist.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+            barrier(d, cmd, swap.scratch.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+        }
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline_layout, 0, &[tone_set], &[]);
         let tbytes = std::slice::from_raw_parts((&tp as *const TonePush) as *const u8, std::mem::size_of::<TonePush>());
@@ -1196,8 +1907,9 @@ impl Renderer {
             .dst_subresource(layers)
             .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: extent.width as i32, y: extent.height as i32, z: 1 }]);
         d.cmd_blit_image(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::NEAREST);
-        // out back to GENERAL for next frame; swapchain -> PRESENT
-        barrier(d, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+        // out back to GENERAL for next frame (tonemap reads it for the sweep
+        // temporal blend, then overwrites); swapchain -> PRESENT
+        barrier(d, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
         barrier(d, cmd, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::empty(), vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE);
 
         d.end_command_buffer(cmd).unwrap();
@@ -1223,17 +1935,35 @@ impl Renderer {
         };
 
         if dispatch_trace {
-            self.samples += SPP_PER;
+            self.samples += spp;
+        }
+        if self.det {
+            self.samples = MAX_SAMPLES; // every det frame IS the converged image
+        }
+        if dn_live {
+            self.denoised_valid = true; // every non-reuse dn branch re-denoised
         }
         self.reset_accum = false;
+        self.pending_shift = IVec2::ZERO;
+        self.pending_clears.clear();
         self.player_dirty = false;
         self.frame = self.frame.wrapping_add(1);
 
         // CPU frame-time (how long draw() blocks the main thread). The async
         // denoise path's win shows up here: no per-frame OIDN/copy fence waits.
         let cpu_ms = now.elapsed().as_secs_f32() * 1000.0;
+        if self.timing {
+            let wait_ms = (t_acq - now).as_secs_f32() * 1000.0;
+            let trace_ms = (t_trace - t_acq).as_secs_f32() * 1000.0;
+            let tail_ms = t_trace.elapsed().as_secs_f32() * 1000.0;
+            println!(
+                "TIME f={:04} total={:6.2}ms wait={:6.2} trace+dn={:6.2} tail={:6.2} spp={} samples={} rot={} reuse={}",
+                self.frame, cpu_ms, wait_ms, trace_ms, tail_ms, spp, self.samples, self.rot.is_some(),
+                dn_live && !dispatch_trace && !rebuild
+            );
+        }
         self.frame_time_sum += cpu_ms;
-        if self.denoise_live && self.frame % 60 == 5 {
+        if dn_live && self.frame % 60 == 5 {
             let path = if self.async_interop.is_some() { "async (no CPU sync)" } else if self.interop.is_some() { "sync interop" } else { "host-copy" };
             println!("denoise {path}: CPU frame {cpu_ms:.2}ms ({low_w}x{low_h})");
         }
@@ -1245,10 +1975,46 @@ impl Renderer {
             }
         }
 
+        // frame-dump diagnostics: grab the presented frame into memory,
+        // subsampled at the render scale (one sample per GAME pixel — exact,
+        // since the upscale is integer NEAREST). PNG encoding happens at exit
+        // so the dump barely perturbs frame pacing (~2-4ms readback).
+        if self.dump_left > 0 && self.dump_dir.is_some() {
+            let (w, h, rgba) = self.readback_out_subsampled();
+            self.dump_frames.push((w, h, rgba));
+            let (turns, settle) = match &self.rot {
+                Some(r) => (r.turns, r.settle.is_some()),
+                None => (self.yaw_q as f32, false),
+            };
+            println!("DUMP {:04} t={:.4} turns={:.6} settle={} rot={} samples={} spp={} dn={} maskq={}", self.dump_idx, self.start_time.elapsed().as_secs_f32(), turns, settle, self.rot.is_some(), self.samples, spp, dn_live, self.mask_q);
+            self.dump_idx += 1;
+            self.dump_left -= 1;
+            if self.dump_left == 0 {
+                let dir = self.dump_dir.clone().unwrap();
+                for (i, (w, h, data)) in self.dump_frames.iter().enumerate() {
+                    let f = std::fs::File::create(format!("{dir}/d_{i:04}.png")).unwrap();
+                    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), *w, *h);
+                    enc.set_color(png::ColorType::Rgba);
+                    enc.set_depth(png::BitDepth::Eight);
+                    enc.write_header().unwrap().write_image_data(data).unwrap();
+                }
+                println!("DUMP wrote {} frames to {dir}", self.dump_frames.len());
+                self.dump_frames.clear();
+                self.exit_requested = true;
+            }
+        }
+
+        // scripted movie: capture / advance the camera script
+        if self.movie.is_some() {
+            self.movie_tick();
+        }
+
         // headless capture: once a few hundred spp have accumulated, dump + exit.
+        // SHOT_DELAY=secs defers the trigger (e.g. capture mid-WALK in steady state).
         if let Some(path) = self.shot.clone() {
-            if self.samples >= self.shot_spp {
-                d.device_wait_idle().unwrap();
+            let delay: f32 = std::env::var("SHOT_DELAY").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            if self.samples >= self.shot_spp && self.start_time.elapsed().as_secs_f32() >= delay {
+                self.ctx.device.device_wait_idle().unwrap();
                 if self.denoise && !self.denoise_live {
                     self.capture_denoised(&path); // headless denoise without the live dial
                 } else {
@@ -1308,24 +2074,22 @@ impl ApplicationHandler for App {
                         let c = r.cursor;
                         r.zoom_step(-1, c);
                     }
-                    Key::Character("q") => r.rotate(-1),
-                    Key::Character("e") => r.rotate(1),
+                    Key::Character("q") => r.start_rotate(-1),
+                    Key::Character("e") => r.start_rotate(1),
                     Key::Character("0") => {
                         r.zoom = 1.0;
                         r.player_pos = r.scene.player_start;
                         r.target = r.player_pos;
                         r.move_accum = Vec2::ZERO;
                         r.recenter_pan();
-                        if r.yaw_q != 0 {
-                            r.rotate(-(r.yaw_q as i32)); // back to canonical (re-masks + snaps)
-                        } else {
-                            r.snap_target_to_lattice();
-                        }
+                        // back to canonical: cancels any in-flight sweep,
+                        // restores masks, snaps the target, resets accum
+                        r.rotate(-(r.yaw_q as i32));
                         r.player_dirty = true;
-                        r.reset_render();
                     }
                     Key::Character("j") => {
                         r.denoise_live = !r.denoise_live;
+                        r.denoised_valid = false; // raw frames may advance accum
                         println!("denoise dial: {}", if r.denoise_live { "ON" } else { "OFF" });
                     }
                     _ => {}

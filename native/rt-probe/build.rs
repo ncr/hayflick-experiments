@@ -2,7 +2,12 @@ use std::process::Command;
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    for (src, stage) in [("src/shaders/trace.comp", "comp"), ("src/shaders/tonemap.comp", "comp")] {
+    for (src, stage) in [
+        ("src/shaders/trace.comp", "comp"),
+        ("src/shaders/tonemap.comp", "comp"),
+        ("src/shaders/shade.comp", "comp"),
+        ("src/shaders/probes.comp", "comp"),
+    ] {
         println!("cargo:rerun-if-changed={src}");
         let name = std::path::Path::new(src).file_name().unwrap().to_str().unwrap();
         let spv = format!("{out_dir}/{name}.spv");

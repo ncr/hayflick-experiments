@@ -268,6 +268,36 @@ pub fn build_grid_walker() -> Result<Scene, Box<dyn std::error::Error>> {
     Ok(scene)
 }
 
+/// Minimal synthetic isolation scene (SCENE=lab) — small enough to reason
+/// about every pixel: an 8×8 flat floor, three matte boxes of distinct colour
+/// and height (hard silhouettes + shadow edges), one isotropic emissive lamp
+/// pillar and one directional emissive "screen" slab (both NEE light shapes),
+/// moderate sun + sky, NO fog, NO textures, NO dollhouse masks, no player
+/// (q/e orbits, WASD pans — same camera paths as the house). Anything that
+/// flickers here is the renderer, not the content.
+pub fn build_lab() -> Result<Scene, Box<dyn std::error::Error>> {
+    let mut scene = Scene::new();
+    scene.add_floor(-4.0, 4.0, -4.0, 4.0, 0.0, [0.45, 0.44, 0.42, 1.0]);
+    // three matte boxes: tall blue, mid red, low broad green slab
+    scene.add_box_world(Vec3::new(-1.5, 0.0, -1.5), Vec3::new(-0.5, 2.0, -0.5), [0.20, 0.30, 0.75, 1.0], [0.0; 4], 0.9, 0.0);
+    scene.add_box_world(Vec3::new(0.75, 0.0, 0.25), Vec3::new(1.75, 1.0, 1.25), [0.75, 0.22, 0.18, 1.0], [0.0; 4], 0.9, 0.0);
+    scene.add_box_world(Vec3::new(-1.0, 0.0, 1.5), Vec3::new(1.0, 0.25, 2.5), [0.25, 0.62, 0.28, 1.0], [0.0; 4], 0.9, 0.0);
+    // isotropic NEE lamp: warm pillar near a corner (closed box -> isotropic)
+    scene.add_box_world(Vec3::new(2.4, 0.0, -2.6), Vec3::new(2.6, 0.8, -2.4), [1.0, 0.8, 0.5, 1.0], [8.0, 5.6, 2.4, 1.0], 0.4, 0.0);
+    // directional NEE screen: thin teal slab facing +Z (authored facing) — the
+    // exact shape the house terminal screens use, minus everything else
+    scene.add_box_world(Vec3::new(-2.6, 0.4, -2.0), Vec3::new(-2.2, 1.0, -1.97), [0.1, 0.3, 0.25, 1.0], [3.0, 12.0, 9.6, 1.0], 0.8, 0.0);
+    scene.prim_light_dir.resize(scene.primitives.len(), [0.0; 3]);
+    *scene.prim_light_dir.last_mut().unwrap() = [0.0, 0.0, 1.0];
+    scene.recompute_bounds();
+    scene.floor_rect = [-3.7, -3.7, 3.7, 3.7];
+    scene.solids = Vec::new();
+    scene.dynamic_prim = None; // no player — WASD pans, q/e orbits (house camera)
+    scene.player_start = Vec3::ZERO; // camera target seed
+    scene.lighting = [0.6, 0.5, 0.0, 1.0]; // gentle sun + sky, NO fog
+    Ok(scene)
+}
+
 /// Near-wall hide bits for a camera at `yaw_q` quarter-turns from canonical:
 /// which OUTWARD wall directions (bit0=+X, bit1=+Z, bit2=-X, bit3=-Z) face the
 /// camera and should be hidden for the dollhouse view. At the canonical yaw the
@@ -460,9 +490,13 @@ pub fn build_house() -> Result<Scene, Box<dyn std::error::Error>> {
         // (2.0, 1.1) rot 180 -> front faces +Z
         let f = 1.1 + half_d + 0.03;
         scene.add_box_world(Vec3::new(1.875, 0.5625, f), Vec3::new(2.125, 0.9375, f + 0.03), [0.1, 0.3, 0.25, 1.0], teal, 0.8, 0.0);
+        scene.prim_light_dir.resize(scene.primitives.len(), [0.0; 3]);
+        *scene.prim_light_dir.last_mut().unwrap() = [0.0, 0.0, 1.0]; // screen emits forward (+Z), not through the desk
         // (13.1, 2.5) rot 270 -> front faces -X (depth becomes the x extent)
         let f = 13.1 - half_d - 0.06;
         scene.add_box_world(Vec3::new(f, 0.5625, 2.375), Vec3::new(f + 0.03, 0.9375, 2.625), [0.1, 0.3, 0.25, 1.0], teal, 0.8, 0.0);
+        scene.prim_light_dir.resize(scene.primitives.len(), [0.0; 3]);
+        *scene.prim_light_dir.last_mut().unwrap() = [-1.0, 0.0, 0.0]; // screen emits forward (-X)
     }
 
     scene.recompute_bounds();
@@ -481,6 +515,7 @@ pub fn build_scene() -> Result<Scene, Box<dyn std::error::Error>> {
     match std::env::var("SCENE").as_deref() {
         Ok("grid") | Ok("grid-walker") => return build_grid_walker(),
         Ok("house") => return build_house(),
+        Ok("lab") => return build_lab(),
         _ => {}
     }
     if std::env::var("SHOWCASE").is_ok() {
@@ -789,7 +824,7 @@ pub fn iso_camera_at(scene: &Scene, low_w: u32, low_h: u32, yaw_off_deg: f32, ta
         cam_up: [up.x, up.y, up.z, half_h],
         cam_dir: [dir.x, dir.y, dir.z, 0.0],
         cam_pos: [pos.x, pos.y, pos.z, 0.0],
-        misc: [low_w as i32, low_h as i32, BOUNCES, SPP_PER],
+        misc: [low_w as i32, low_h as i32, std::env::var("BOUNCES").ok().and_then(|s| s.parse().ok()).unwrap_or(BOUNCES), SPP_PER],
         misc2: [0; 4],
         env0: lighting_env(scene),
     }
@@ -974,8 +1009,8 @@ pub unsafe fn make_storage_image(ctx: &Ctx, w: u32, h: u32, format: vk::Format) 
 pub unsafe fn make_pool(ctx: &Ctx, ntex: u32) -> vk::DescriptorPool {
     let sizes = [
         vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 1 },
-        vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 1 },
-        vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 5 },
+        vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 4 },
+        vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 6 },
         vk::DescriptorPoolSize { ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER, descriptor_count: ntex.max(1) },
     ];
     ctx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None).unwrap()
@@ -988,11 +1023,15 @@ pub unsafe fn make_set(
     pool: vk::DescriptorPool,
     tlas: vk::AccelerationStructureKHR,
     image_view: vk::ImageView,
+    albedo_view: vk::ImageView,
+    normal_view: vk::ImageView,
+    pos_view: vk::ImageView,
     vbuf: &Buffer,
     ibuf: &Buffer,
     gbuf: &Buffer,
     mbuf: &Buffer,
     lbuf: &Buffer,
+    pbuf: &Buffer,
     texes: &[GpuTex],
     sampler: vk::Sampler,
 ) -> vk::DescriptorSet {
@@ -1005,11 +1044,15 @@ pub unsafe fn make_set(
     w_as.descriptor_count = 1;
 
     let img_info = [vk::DescriptorImageInfo::default().image_view(image_view).image_layout(vk::ImageLayout::GENERAL)];
+    let alb_info = [vk::DescriptorImageInfo::default().image_view(albedo_view).image_layout(vk::ImageLayout::GENERAL)];
+    let nrm_info = [vk::DescriptorImageInfo::default().image_view(normal_view).image_layout(vk::ImageLayout::GENERAL)];
+    let pos_info = [vk::DescriptorImageInfo::default().image_view(pos_view).image_layout(vk::ImageLayout::GENERAL)];
     let vb = [vk::DescriptorBufferInfo::default().buffer(vbuf.buffer).range(vk::WHOLE_SIZE)];
     let ib = [vk::DescriptorBufferInfo::default().buffer(ibuf.buffer).range(vk::WHOLE_SIZE)];
     let gb = [vk::DescriptorBufferInfo::default().buffer(gbuf.buffer).range(vk::WHOLE_SIZE)];
     let mb = [vk::DescriptorBufferInfo::default().buffer(mbuf.buffer).range(vk::WHOLE_SIZE)];
     let lb = [vk::DescriptorBufferInfo::default().buffer(lbuf.buffer).range(vk::WHOLE_SIZE)];
+    let pb = [vk::DescriptorBufferInfo::default().buffer(pbuf.buffer).range(vk::WHOLE_SIZE)];
     let tex_info: Vec<vk::DescriptorImageInfo> = texes.iter().map(|t| vk::DescriptorImageInfo::default().image_view(t.view).sampler(sampler).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)).collect();
 
     let writes = [
@@ -1021,6 +1064,10 @@ pub unsafe fn make_set(
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mb),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(6).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&tex_info),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&lb),
+        vk::WriteDescriptorSet::default().dst_set(set).dst_binding(8).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&alb_info),
+        vk::WriteDescriptorSet::default().dst_set(set).dst_binding(9).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&nrm_info),
+        vk::WriteDescriptorSet::default().dst_set(set).dst_binding(10).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&pos_info),
+        vk::WriteDescriptorSet::default().dst_set(set).dst_binding(11).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&pb),
     ];
     ctx.device.update_descriptor_sets(&writes, &[]);
     set
@@ -1052,6 +1099,17 @@ pub struct SceneGpu {
     pub pipeline_layout: vk::PipelineLayout,
     pub pipeline: vk::Pipeline,
     pub shader: vk::ShaderModule,
+    /// Deterministic per-frame shade pass (shade.comp) — primary ray + fixed
+    /// shadow rays + probe-cache GI; zero per-frame randomness.
+    pub shade_pipeline: vk::Pipeline,
+    pub shade_shader: vk::ShaderModule,
+    /// World-space irradiance probe bake (probes.comp) + its cache buffer:
+    /// 16-float header (origin, spacing, dims) + 20 floats per probe
+    /// (6-face ambient cube sums + ray count).
+    pub probe_pipeline: vk::Pipeline,
+    pub probe_shader: vk::ShaderModule,
+    pub probe_buf: Buffer,
+    pub probe_count: u32,
 }
 
 impl SceneGpu {
@@ -1066,10 +1124,14 @@ impl SceneGpu {
 
         // ---- emissive light list for NEE: small bright emitters (lamps,
         // sconces) never converge by random bounces alone, so the shader
-        // samples them directly. One bounding sphere + radiance per emissive
-        // primitive: [cx, cy, cz, radius, r, g, b, 0]. The dynamic player prim
-        // is skipped (its geometry is local space and it isn't a lamp).
-        let mut lights: Vec<[f32; 8]> = Vec::new();
+        // samples them directly. Per emissive primitive: bounding sphere,
+        // radiance, and the area-weighted MEAN SURFACE NORMAL — a screen or
+        // panel emits one-sided (Lambertian) toward its facing, not
+        // isotropically (an isotropic screen lights the floor BEHIND the desk,
+        // which reads as the light re-aiming itself as the camera orbits).
+        // Emitters whose normals point many ways (focus < 0.7) stay isotropic.
+        // Record: [cx, cy, cz, radius, r, g, b, 0, nx, ny, nz, directionalFlag].
+        let mut lights: Vec<[f32; 12]> = Vec::new();
         for (i, p) in scene.primitives.iter().enumerate() {
             if scene.dynamic_prim == Some(i) {
                 continue;
@@ -1087,12 +1149,36 @@ impl SceneGpu {
             }
             let c = (mn + mx) * 0.5;
             let r = (mx - mn).length() * 0.5;
-            lights.push([c.x, c.y, c.z, r, e[0], e[1], e[2], 0.0]);
+            let idx = &scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
+            let mut nsum = Vec3::ZERO;
+            let mut area2 = 0.0f32;
+            for t in idx.chunks_exact(3) {
+                let a = Vec3::from(vs[t[0] as usize].pos);
+                let b = Vec3::from(vs[t[1] as usize].pos);
+                let c2 = Vec3::from(vs[t[2] as usize].pos);
+                let f = (b - a).cross(c2 - a); // face normal * 2A
+                nsum += f;
+                area2 += f.length();
+            }
+            let focus = if area2 > 1e-9 { nsum.length() / area2 } else { 0.0 };
+            let authored = scene.prim_light_dir.get(i).copied().unwrap_or([0.0; 3]);
+            let (nd, df) = if authored != [0.0; 3] {
+                (Vec3::from(authored).normalize(), 1.0) // authored facing (e.g. screens)
+            } else if focus > 0.7 {
+                (nsum.normalize(), 1.0) // open emissive surface: geometric facing
+            } else {
+                (Vec3::ZERO, 0.0) // closed/mixed shape (boxes): isotropic
+            };
+            println!("  NEE light: pos ({:.1},{:.1},{:.1}) r {:.2} rgb ({:.1},{:.1},{:.1}) focus {:.2} -> {}", c.x, c.y, c.z, r, e[0], e[1], e[2], focus, if df > 0.0 { "directional" } else { "isotropic" });
+            lights.push([c.x, c.y, c.z, r, e[0], e[1], e[2], 0.0, nd.x, nd.y, nd.z, df]);
         }
-        lights.extend_from_slice(&scene.point_lights); // conceptual (geometry-less) lights
+        for pl in &scene.point_lights {
+            // conceptual (geometry-less) lights stay isotropic
+            lights.push([pl[0], pl[1], pl[2], pl[3], pl[4], pl[5], pl[6], pl[7], 0.0, 0.0, 0.0, 0.0]);
+        }
         let light_count = lights.len() as u32;
         if lights.is_empty() {
-            lights.push([0.0; 8]); // keep the binding valid
+            lights.push([0.0; 12]); // keep the binding valid
         }
         let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER);
 
@@ -1149,7 +1235,12 @@ impl SceneGpu {
             .enumerate()
             .map(|(i, &addr)| vk::AccelerationStructureInstanceKHR {
                 transform: if Some(i as u32) == dynamic_instance { mat_to_transform(Mat4::from_translation(scene.player_start)) } else { identity },
-                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, 0xff),
+                // mask channels: 0x01 primary visibility, 0x02 dollhouse-hidden
+                // walls, 0x04 dynamic. The movable player is 0x01|0x04 = 0x05:
+                // camera (0x01) and shadow/bounce rays (0xFF) see it, but probe
+                // BAKE rays (0x0A) skip it so the world-space GI cache never
+                // goes stale as it walks.
+                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, if Some(i as u32) == dynamic_instance { 0x05 } else { 0xff }),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: addr },
             })
@@ -1184,22 +1275,65 @@ impl SceneGpu {
             dslb(5, vk::DescriptorType::STORAGE_BUFFER, 1),
             dslb(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER, texes.len() as u32),
             dslb(7, vk::DescriptorType::STORAGE_BUFFER, 1),
+            dslb(8, vk::DescriptorType::STORAGE_IMAGE, 1), // albedo G-buffer (denoise guide)
+            dslb(9, vk::DescriptorType::STORAGE_IMAGE, 1), // normal G-buffer (denoise guide)
+            dslb(10, vk::DescriptorType::STORAGE_IMAGE, 1), // world-position G-buffer (history reprojection)
+            dslb(11, vk::DescriptorType::STORAGE_BUFFER, 1), // irradiance probe cache (shade reads, probes.comp writes)
         ];
         let set_layout = ctx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings), None)?;
         let set_layouts = [set_layout];
         let push_range = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).offset(0).size(std::mem::size_of::<Push>() as u32)];
         let pipeline_layout = ctx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts).push_constant_ranges(&push_range), None)?;
-        const SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/trace.comp.spv"));
-        let code = ash::util::read_spv(&mut std::io::Cursor::new(&SPV[..]))?;
-        let shader = ctx.device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&code), None)?;
         let name = CString::new("main").unwrap();
-        let pipeline = ctx
-            .device
-            .create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(shader).name(&name)).layout(pipeline_layout)], None)
-            .map_err(|(_, e)| e)?[0];
+        let make_pipeline = |spv: &[u8]| -> Result<(vk::Pipeline, vk::ShaderModule), Box<dyn std::error::Error>> {
+            let code = ash::util::read_spv(&mut std::io::Cursor::new(spv))?;
+            let shader = ctx.device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&code), None)?;
+            let pipeline = ctx
+                .device
+                .create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(shader).name(&name)).layout(pipeline_layout)], None)
+                .map_err(|(_, e)| e)?[0];
+            Ok((pipeline, shader))
+        };
+        const SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/trace.comp.spv"));
+        const SHADE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shade.comp.spv"));
+        const PROBE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/probes.comp.spv"));
+        let (pipeline, shader) = make_pipeline(SPV)?;
+        let (shade_pipeline, shade_shader) = make_pipeline(SHADE_SPV)?;
+        let (probe_pipeline, probe_shader) = make_pipeline(PROBE_SPV)?;
+
+        // ---- world-space irradiance probe grid (deterministic render mode) —
+        // scene AABB + one-spacing pad, spacing widened until the count fits.
+        // Header floats: origin.xyz, spacing, dims.xyz, pad.
+        let spacing0: f32 = std::env::var("PROBE_SPACING").ok().and_then(|s| s.parse().ok()).unwrap_or(0.5);
+        let mut spacing = spacing0.max(0.05);
+        let pmin = scene.min - Vec3::splat(spacing);
+        let pmax = scene.max + Vec3::splat(spacing);
+        let ext = (pmax - pmin).max(Vec3::splat(0.1));
+        let dims = loop {
+            let d = [
+                ((ext.x / spacing).ceil() as u32 + 1).max(2),
+                ((ext.y / spacing).ceil() as u32 + 1).max(2),
+                ((ext.z / spacing).ceil() as u32 + 1).max(2),
+            ];
+            if d[0] as u64 * d[1] as u64 * d[2] as u64 <= 262_144 {
+                break d;
+            }
+            spacing *= 1.25;
+        };
+        let probe_count = dims[0] * dims[1] * dims[2];
+        let mut pdata = vec![0.0f32; 16 + probe_count as usize * 20];
+        pdata[0] = pmin.x;
+        pdata[1] = pmin.y;
+        pdata[2] = pmin.z;
+        pdata[3] = spacing;
+        pdata[4] = dims[0] as f32;
+        pdata[5] = dims[1] as f32;
+        pdata[6] = dims[2] as f32;
+        let probe_buf = ctx.device_local(&pdata, vk::BufferUsageFlags::STORAGE_BUFFER);
+        println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB)", dims[0], dims[1], dims[2], probe_count, spacing, probe_count as f32 * 80.0 / 1e6);
 
         let hide_masks: Vec<u8> = (0..scene.primitives.len()).map(|i| scene.prim_hide_mask.get(i).copied().unwrap_or(0)).collect();
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, hide_masks, set_layout, pipeline_layout, pipeline, shader })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, hide_masks, set_layout, pipeline_layout, pipeline, shader, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count })
     }
 
     /// Patch the movable player's instance transform in the host-visible
@@ -1233,7 +1367,13 @@ impl SceneGpu {
             // corners survive while either adjacent wall run survives, so the
             // kept run still ends in a capped corner instead of an open
             // cross-section.
-            let mask: u32 = if bits & near == bits { 0 } else { 0xff };
+            // Hidden walls keep mask 0x02: PRIMARY rays cull with 0x01 (the
+            // dollhouse see-through), but shadow/bounce rays cull with 0xFF and
+            // still hit them — the room stays ENCLOSED for light transport.
+            // (Mask 0 removed them from sunlight too, so sun/sky flooded in
+            // through the camera-side openings and the lighting followed the
+            // camera instead of the world.)
+            let mask: u32 = if bits & near == bits { 0x02 } else { 0xff };
             let word: u32 = (i as u32 & 0x00ff_ffff) | (mask << 24);
             // instanceCustomIndex:24 | mask:8 sits right after the 48-byte transform
             std::ptr::copy_nonoverlapping(word.to_le_bytes().as_ptr(), ptr.add(i * stride as usize + 48), 4);
