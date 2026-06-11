@@ -42,6 +42,7 @@ pub struct LoadedImage {
     pub pixels: Vec<u8>, // rgba8
 }
 
+#[derive(Clone, Copy)]
 pub struct Primitive {
     pub vertex_offset: u32,
     pub index_offset: u32,
@@ -329,6 +330,106 @@ impl Scene {
             });
         }
         first
+    }
+
+    /// Carve an emissive sub-surface out of a placed primitive — the "make the
+    /// screen itself glow" model edit, done at load time. Triangles of `prim`
+    /// whose geometric normal aligns with `dir` (dot > 0.6), whose centroid
+    /// lies inside the world AABB, and whose base-colour texel is DARK
+    /// (luma < dark_max — CRT glass is dark in the texture, the case is light)
+    /// move into a NEW primitive sharing the same vertex window, with a cloned
+    /// material whose emissive is set. The original prim's index range is
+    /// compacted in place; the vacated tail goes unused (per-prim BLAS ranges
+    /// make that harmless). NEE light extraction then sees the new prim as an
+    /// emissive surface at its TRUE position with its TRUE facing.
+    /// Returns the new prim index if any triangle matched.
+    /// Debug helper: dump every triangle of a primitive as CSV
+    /// (centroid xyz, world normal xyz, texel luma at the UV centroid).
+    pub fn dump_tris_csv(&self, prim: usize, path: &str) {
+        use std::io::Write;
+        let p = self.primitives[prim];
+        let vbase = p.vertex_offset as usize;
+        let mat = self.materials[p.material_id as usize];
+        let img = if mat.tex_index >= 0 { self.images.get(mat.tex_index as usize) } else { None };
+        let mut f = std::fs::File::create(path).unwrap();
+        writeln!(f, "cx,cy,cz,nx,ny,nz,luma,ax,ay,az,bx,by,bz,qx,qy,qz").unwrap();
+        let idx = &self.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
+        for t in idx.chunks_exact(3) {
+            let va = self.vertices[vbase + t[0] as usize];
+            let vb = self.vertices[vbase + t[1] as usize];
+            let vc = self.vertices[vbase + t[2] as usize];
+            let (a, b, c) = (Vec3::from(va.pos), Vec3::from(vb.pos), Vec3::from(vc.pos));
+            let n = (b - a).cross(c - a).normalize_or_zero();
+            let ctr = (a + b + c) / 3.0;
+            let mut luma = -1.0;
+            if let Some(im) = img {
+                let u = (va.uv[0] + vb.uv[0] + vc.uv[0]) / 3.0;
+                let v = (va.uv[1] + vb.uv[1] + vc.uv[1]) / 3.0;
+                let tx = (u.rem_euclid(1.0) * im.width as f32) as usize % im.width.max(1) as usize;
+                let ty = (v.rem_euclid(1.0) * im.height as f32) as usize % im.height.max(1) as usize;
+                let s = (ty * im.width as usize + tx) * 4;
+                luma = (0.2126 * im.pixels[s] as f32 + 0.7152 * im.pixels[s + 1] as f32 + 0.0722 * im.pixels[s + 2] as f32) / 255.0;
+            }
+            writeln!(
+                f,
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                ctr.x, ctr.y, ctr.z, n.x, n.y, n.z, luma, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z
+            )
+            .unwrap();
+        }
+    }
+
+    /// `flip_winding` reverses each carved triangle (its geometric normal ends
+    /// up at -dir): for surfaces the source model authored INSIDE-OUT (e.g. a
+    /// recessed CRT plane facing into the case) — the flip makes the carved
+    /// screen face outward, so NEE light extraction gets the true facing.
+    pub fn carve_emissive_region(&mut self, prim: usize, dir: Vec3, min: Vec3, max: Vec3, dark_max: f32, emissive: [f32; 4], flip_winding: bool) -> Option<usize> {
+        let p = self.primitives[prim];
+        let vbase = p.vertex_offset as usize;
+        let mat = self.materials[p.material_id as usize];
+        let img = if mat.tex_index >= 0 { self.images.get(mat.tex_index as usize) } else { None };
+        let idx: Vec<u32> = self.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize].to_vec();
+        let (mut keep, mut carved): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
+        for t in idx.chunks_exact(3) {
+            let va = self.vertices[vbase + t[0] as usize];
+            let vb = self.vertices[vbase + t[1] as usize];
+            let vc = self.vertices[vbase + t[2] as usize];
+            let (a, b, c) = (Vec3::from(va.pos), Vec3::from(vb.pos), Vec3::from(vc.pos));
+            let n = (b - a).cross(c - a).normalize_or_zero();
+            let ctr = (a + b + c) / 3.0;
+            let inside = ctr.cmpge(min).all() && ctr.cmple(max).all();
+            let mut dark = true;
+            if let Some(im) = img {
+                let u = (va.uv[0] + vb.uv[0] + vc.uv[0]) / 3.0;
+                let v = (va.uv[1] + vb.uv[1] + vc.uv[1]) / 3.0;
+                let tx = (u.rem_euclid(1.0) * im.width as f32) as usize % im.width.max(1) as usize;
+                let ty = (v.rem_euclid(1.0) * im.height as f32) as usize % im.height.max(1) as usize;
+                let s = (ty * im.width as usize + tx) * 4;
+                let luma = (0.2126 * im.pixels[s] as f32 + 0.7152 * im.pixels[s + 1] as f32 + 0.0722 * im.pixels[s + 2] as f32) / 255.0;
+                dark = luma < dark_max;
+            }
+            if n.dot(dir) > 0.6 && inside && dark {
+                if flip_winding {
+                    carved.extend_from_slice(&[t[0], t[2], t[1]]);
+                } else {
+                    carved.extend_from_slice(t);
+                }
+            } else {
+                keep.extend_from_slice(t);
+            }
+        }
+        if carved.is_empty() {
+            return None;
+        }
+        let off = p.index_offset as usize;
+        self.indices[off..off + keep.len()].copy_from_slice(&keep);
+        self.primitives[prim].index_count = keep.len() as u32;
+        let ibase = self.indices.len() as u32;
+        self.indices.extend_from_slice(&carved);
+        let mid = self.materials.len() as i32;
+        self.materials.push(Material { emissive, ..mat });
+        self.primitives.push(Primitive { vertex_offset: p.vertex_offset, index_offset: ibase, vertex_count: p.vertex_count, index_count: carved.len() as u32, material_id: mid });
+        Some(self.primitives.len() - 1)
     }
 
     /// Tag every primitive from `from` to the current end with a near-wall hide

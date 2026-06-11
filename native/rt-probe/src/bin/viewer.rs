@@ -10,7 +10,13 @@
 //! exponential approach + snap settle; presses stack); scroll / +- = zoom in
 //! whole steps 1-4 (web zoom ladder); 0 = reset; j = toggle the guided OIDN
 //! denoiser (ON by default — it never hands off, so no estimator switch is
-//! ever visible; DENOISE=0 starts raw); Esc = quit.
+//! ever visible; DENOISE=0 starts raw); r = record a clip (also a menu row):
+//! frames are captured at exact game resolution and encoded on stop into BOTH
+//! clips/clip_NNNN.mp4 (x264, NEAREST 4x) and .gif (palette, 1x, half rate) —
+//! knobs: CLIP_FPS (50), CLIP_MP4_SCALE (4), CLIP_GIF_SCALE (1), CLIP_MAX_S
+//! (60); Esc = tune menu (sliders + toggles + quit; also the hamburger icon
+//! top-left). Closing the menu prints the env string that reproduces the
+//! dialed-in values.
 //!
 //! SCENE=house — example scene from the blockstudio wall/floor tile kits: a
 //! Fallout-flavoured three-room house with forge props and a yard
@@ -79,11 +85,209 @@ const ZOOM_MAX: f32 = 4.0; // web game-studio: zoomMin 1, zoomMax 4, zoomStep 1
 struct TonePush {
     dims: [i32; 4], // low_w, low_h, out_w, out_h
     cfg: [i32; 4],  // scale, temporal blend ×256, pan_x, pan_y
-    fcfg: [f32; 4], // exposure, grain, frame, flags (bit0 grade, bit1 palette)
+    fcfg: [f32; 4], // exposure, grain, frame, unused
     // PREVIOUS frame's screen projection (history reprojection): buffer px of
     // world point P = (dot(P, prev_a.xyz) + prev_a.w, dot(P, prev_b.xyz) + prev_b.w)
     prev_a: [f32; 4],
     prev_b: [f32; 4],
+    style1: [f32; 4], // grade preset, poster bands, dither mode, dither amount
+    style2: [f32; 4], // palette mode, palette param, vignette, outline strength
+    style3: [f32; 4], // grain size px, grain static flag, bloom strength, bloom threshold
+    style4: [f32; 4], // shadow dither: strength, levels, luma threshold, unused
+}
+
+/// Stylized post-stack knobs (tonemap.comp). All env-driven via `style_cfg()`;
+/// `STYLE=<preset>` sets a bundle, individual vars override on top.
+#[derive(Clone, Copy)]
+struct StyleCfg {
+    grade: f32,        // 0 off, 1 fallout, 2 noir, 3 sepia, 4 neon, 5 bleach, 6 midnight
+    poster: f32,       // cel bands on demodulated irradiance (0 off)
+    dither: f32,       // 0 off, 1 bayer8, 2 bayer4, 3 bayer2, 4 IGN, 5 white(animated)
+    dither_amt: f32,   // dither amplitude fed into the quantizer (<0 = pick per palette mode)
+    palette: f32,      // 0 off, 1 pal32, 2 rgb posterize, 3 duotone, 4 gameboy
+    pal_p: f32,        // posterize levels / duotone pair (<0 = default per mode)
+    vignette: f32,     // 0..1 corner darkening
+    outline: f32,      // 0..1 depth-edge silhouette darkening
+    grain: f32,        // film grain strength (0 = off)
+    grain_sz: f32,     // grain cell size in game px
+    grain_static: f32, // 1 = frozen plate grain (no animation)
+    bloom: f32,        // HDR bloom strength (0 = off)
+    bloom_th: f32,     // bloom bright-pass threshold (exposed luma)
+    sdither: f32,      // shadow dither strength 0..1 (0 = off)
+    sdither_n: f32,    // shadow dither luma levels (band count)
+    sdither_th: f32,   // luma below which the shadow dither fades in
+}
+
+fn style_cfg() -> StyleCfg {
+    // shadow dither ON by default (user-tuned 2026-06-10: strength 1, 16 luma
+    // bands, fade-in below luma 0.35) — the subtle retro texture in shadow
+    // gradients is part of the base look now. SDITHER=0 for a fully clean frame.
+    let mut s = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th: 0.35 };
+    if let Ok(name) = std::env::var("STYLE") {
+        match name.as_str() {
+            "fallout" => { s.grade = 1.0; s.palette = 1.0; s.grain = 0.04; }
+            "noir" => { s.grade = 2.0; s.grain = 0.07; s.vignette = 0.4; }
+            "sepia" => { s.grade = 3.0; s.grain = 0.05; s.vignette = 0.25; }
+            "neon" => { s.grade = 4.0; s.bloom = 0.7; s.bloom_th = 0.75; s.grain = 0.03; }
+            "bleach" => { s.grade = 5.0; s.grain = 0.05; }
+            "midnight" => { s.grade = 6.0; s.bloom = 0.5; s.bloom_th = 0.8; }
+            "cel" => { s.poster = 4.0; s.outline = 0.85; }
+            "comic" => { s.poster = 3.0; s.outline = 0.9; s.palette = 2.0; s.pal_p = 8.0; }
+            "posterize" => { s.palette = 2.0; s.pal_p = 6.0; }
+            "duotone" => { s.palette = 3.0; s.pal_p = 0.0; }
+            "crt" => { s.palette = 3.0; s.pal_p = 2.0; s.dither = 4.0; s.grain = 0.04; }
+            "gameboy" => { s.palette = 4.0; s.dither_amt = 0.16; }
+            "clean" => {}
+            other => eprintln!("STYLE={other}: unknown preset (fallout noir sepia neon bleach midnight cel comic posterize duotone crt gameboy clean)"),
+        }
+    }
+    let f = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    s.grade = f("GRADE", s.grade);
+    s.poster = f("POSTER", s.poster);
+    s.dither = f("DITHER", s.dither);
+    s.dither_amt = f("DITHER_AMT", s.dither_amt);
+    s.palette = f("PALETTE", s.palette);
+    s.pal_p = f("PAL_N", s.pal_p);
+    s.vignette = f("VIGNETTE", s.vignette);
+    s.outline = f("OUTLINE", s.outline);
+    s.grain = f("GRAIN", s.grain);
+    s.grain_sz = f("GRAIN_SZ", s.grain_sz);
+    s.grain_static = f("GRAIN_STATIC", s.grain_static);
+    s.bloom = f("BLOOM", s.bloom);
+    s.bloom_th = f("BLOOM_TH", s.bloom_th);
+    s.sdither = f("SDITHER", s.sdither);
+    s.sdither_n = f("SDITHER_N", s.sdither_n);
+    s.sdither_th = f("SDITHER_TH", s.sdither_th);
+    if s.pal_p < 0.0 {
+        s.pal_p = if s.palette as i32 == 2 { 6.0 } else { 0.0 };
+    }
+    if s.dither_amt < 0.0 {
+        // default amplitude scaled to the quantizer's step size
+        s.dither_amt = match s.palette as i32 {
+            1 => 0.07,
+            2 => 1.0 / (s.pal_p.max(2.0) - 1.0),
+            3 => 0.10,
+            4 => 0.16,
+            _ => 0.0,
+        };
+    }
+    s
+}
+
+// ---------------- in-viewer tune menu (ESC) ----------------
+//
+// The live-tune UI lives IN the viewer: ESC toggles a hamburger menu drawn
+// with an 8x8 pixel font on the CPU, expanded by an integer UI scale, and
+// copied onto the presented swapchain image after the blit (never onto
+// swap.out — SHOT/MOVIE/DUMP captures stay clean). Values land in the SAME
+// fields the env vars seed, so det mode picks them up the very next frame;
+// closing the menu prints the matching env string to stdout to lock a look in.
+
+/// One row of the ESC menu. `key` is the tune id; uppercased it is also the
+/// env var printed on menu close.
+enum ItemKind {
+    /// continuous value; `step` is also the arrow-key increment
+    Slider { min: f32, max: f32, step: f32 },
+    Toggle,
+    /// start/stop clip recording (also the `r` key) — not a tune value,
+    /// excluded from the env string
+    Record,
+    Quit,
+}
+struct MenuItem {
+    key: &'static str,
+    label: &'static str,
+    kind: ItemKind,
+}
+
+const MENU: &[MenuItem] = &[
+    MenuItem { key: "exposure", label: "exposure", kind: ItemKind::Slider { min: 0.05, max: 1.5, step: 0.01 } },
+    MenuItem { key: "ao", label: "ao strength", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
+    MenuItem { key: "ao_r", label: "ao radius", kind: ItemKind::Slider { min: 0.1, max: 3.0, step: 0.05 } },
+    MenuItem { key: "ao_n", label: "ao rays", kind: ItemKind::Slider { min: 1.0, max: 32.0, step: 1.0 } },
+    MenuItem { key: "sdither", label: "sd strength", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
+    MenuItem { key: "sdither_n", label: "sd levels", kind: ItemKind::Slider { min: 2.0, max: 48.0, step: 1.0 } },
+    MenuItem { key: "sdither_th", label: "sd threshold", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.01 } },
+    MenuItem { key: "dither", label: "sd pattern", kind: ItemKind::Slider { min: 1.0, max: 5.0, step: 1.0 } },
+    MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
+    MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
+    MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
+];
+
+// menu layout, in LOGICAL pixels (8x8 font units); physical = logical * menu_scale
+const MPAD: i32 = 6;
+const MROW: i32 = 12;
+const MLABEL_X: i32 = 8;
+const MTRACK_X: i32 = 110; // label column: 12 chars + gap
+const MTRACK_W: i32 = 70;
+const MVAL_X: i32 = 186;
+const MPANEL_W: i32 = 242;
+const MPANEL_H: i32 = MPAD * 2 + MROW * (MENU.len() as i32 + 2); // title + items + footer
+const MICON_W: i32 = 18; // hamburger icon shown when the menu is closed
+const MICON_H: i32 = 14;
+const MENU_MARGIN: i32 = 12; // physical px from the window's top-left
+
+fn mrect(canvas: &mut [u32], cw: i32, x: i32, y: i32, w: i32, h: i32, color: u32) {
+    for py in y.max(0)..(y + h).min(canvas.len() as i32 / cw) {
+        for px in x.max(0)..(x + w).min(cw) {
+            canvas[(py * cw + px) as usize] = color;
+        }
+    }
+}
+
+fn mtext(canvas: &mut [u32], cw: i32, x: i32, y: i32, s: &str, color: u32) {
+    let ch_rows = canvas.len() as i32 / cw;
+    let mut cx = x;
+    for ch in s.chars() {
+        let g = font8x8::legacy::BASIC_LEGACY.get(ch as usize).copied().unwrap_or_default();
+        for (ry, row) in g.iter().enumerate() {
+            for rx in 0..8 {
+                if row & (1 << rx) != 0 {
+                    let (px, py) = (cx + rx, y + ry as i32);
+                    if px >= 0 && py >= 0 && px < cw && py < ch_rows {
+                        canvas[(py * cw + px) as usize] = color;
+                    }
+                }
+            }
+        }
+        cx += 8;
+    }
+}
+
+/// Slider value as shown in the menu (pattern slider shows names).
+fn fmt_val(key: &str, v: f32, step: f32) -> String {
+    if key == "dither" {
+        return ["off", "bay8", "bay4", "bay2", "ign", "white"].get(v as usize).copied().unwrap_or("?").to_string();
+    }
+    if step >= 1.0 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.2}")
+    }
+}
+
+/// Expand the logical canvas by an integer scale and emit bytes in the
+/// swapchain's channel order (rows built once, then repeated).
+fn expand_canvas(canvas: &[u32], w: i32, h: i32, scale: u32, bgra: bool) -> Vec<u8> {
+    let (w, h, scale) = (w as usize, h as usize, scale as usize);
+    let sw = w * scale;
+    let mut out = vec![0u8; sw * h * scale * 4];
+    for y in 0..h {
+        let mut row = vec![0u8; sw * 4];
+        for x in 0..w {
+            let c = canvas[y * w + x];
+            let (r, g, b) = ((c >> 16) as u8, (c >> 8) as u8, c as u8);
+            let px = if bgra { [b, g, r, 255] } else { [r, g, b, 255] };
+            for s in 0..scale {
+                row[(x * scale + s) * 4..(x * scale + s) * 4 + 4].copy_from_slice(&px);
+            }
+        }
+        for s in 0..scale {
+            let o = (y * scale + s) * sw * 4;
+            out[o..o + sw * 4].copy_from_slice(&row);
+        }
+    }
+    out
 }
 
 /// Interactive quarter-turn animation — the native mirror of the web
@@ -139,6 +343,8 @@ struct Swap {
     irr_hist: (vk::Image, vk::DeviceMemory, vk::ImageView), // demodulated-irradiance history (sweep temporal blend)
     posg: (vk::Image, vk::DeviceMemory, vk::ImageView), // primary-hit world-position G-buffer (history reprojection)
     zeros: Buffer, // zero-filled TRANSFER_SRC source for rect invalidation clears
+    menu_buf: Buffer, // host-visible staging for the ESC tune-menu overlay
+    menu_scale: u32,  // integer UI scale (from window height; pixel font stays readable)
     trace_pool: vk::DescriptorPool,
     trace_set: vk::DescriptorSet,
     tone_pool: vk::DescriptorPool,
@@ -210,13 +416,140 @@ fn movie_script() -> Vec<MovieCmd> {
 }
 
 #[allow(dead_code)]
+/// In-viewer clip recording ('r' or the menu row): the presented frame is
+/// grabbed subsampled to exact GAME pixels (same path as DUMP) at a fixed
+/// wall-clock rate, buffered in RAM, and encoded on stop through ffmpeg into
+/// BOTH deliverables at once — an MP4 (x264, NEAREST integer upscale) and a
+/// palette GIF at half rate. Capturing at game resolution is what keeps the
+/// files small: a typical 316x250 clip is ~20 KB/s as MP4.
+/// The UI overlay only ever touches the swapchain image, so clips never
+/// contain the menu even while it's open.
+struct Rec {
+    w: u32,
+    h: u32,
+    fps: u32,
+    next_due: f32,     // start_time-relative capture clock (secs)
+    max_frames: usize, // auto-stop bound (CLIP_MAX_S) — RAM, not storage
+    // wall-clock stamps of the first/last collected frame: the clip encodes
+    // at the MEASURED rate, so playback duration matches reality even when
+    // the render loop can't hold the target capture rate
+    t_first: f32,
+    t_last: f32,
+    frames: Vec<Vec<u8>>,
+}
+
+/// Persistent GPU-side capture target: `out` (already in TRANSFER_SRC for the
+/// swapchain blit) is NEAREST-blitted down to exact game pixels into `img`,
+/// then copied into the host-visible `buf` — all inside the frame's own
+/// command buffer. The CPU reads `buf` on the NEXT draw, after the in-flight
+/// fence, so recording never blocks the loop (the first version did a
+/// synchronous full-window readback per captured frame, which halved the
+/// framerate and made clips play fast).
+struct Cap {
+    img: (vk::Image, vk::DeviceMemory, vk::ImageView),
+    buf: Buffer,
+    w: u32,
+    h: u32,
+    pending: bool, // a capture was recorded this frame; collect after the fence
+}
+
+/// Capture rate. GIF frame delays are whole centiseconds, so the rate is
+/// chosen so BOTH outputs land on exact timing: mp4 at CLIP_FPS (default 50,
+/// 2 cs) and gif at half that (25 fps, 4 cs) — no ffmpeg delay-jitter.
+fn clip_fps() -> u32 {
+    std::env::var("CLIP_FPS").ok().and_then(|s| s.parse().ok()).unwrap_or(50).clamp(2, 120)
+}
+
+/// Encode buffered RGBA game-pixel frames into clips/clip_NNNN.{mp4,gif}.
+/// Runs on a worker thread (joined at exit) so stopping a recording never
+/// hitches the render loop.
+fn encode_clip(frames: Vec<Vec<u8>>, w: u32, h: u32, fps: f64) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    if frames.len() < 2 {
+        println!("clip: too short, discarded");
+        return;
+    }
+    if std::fs::create_dir_all("clips").is_err() {
+        println!("clip: cannot create clips/ — discarded");
+        return;
+    }
+    let mut idx = 1;
+    let (mp4, gif) = loop {
+        let m = format!("clips/clip_{idx:04}.mp4");
+        let g = format!("clips/clip_{idx:04}.gif");
+        if !std::path::Path::new(&m).exists() && !std::path::Path::new(&g).exists() {
+            break (m, g);
+        }
+        idx += 1;
+    };
+    let mp4_s: u32 = std::env::var("CLIP_MP4_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(4).clamp(1, 8);
+    // gif defaults to 1x: it has no motion compensation, so a camera pan is a
+    // full redraw per frame — size scales with raw area. 1x game pixels keeps
+    // a worst-case panning clip ~0.4 MB/s; bump CLIP_GIF_SCALE for crisp 2x.
+    let gif_s: u32 = std::env::var("CLIP_GIF_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1).clamp(1, 8);
+    let gif_fps = (fps / 2.0).max(1.0);
+    // (filter, extra output args, path) per deliverable; both read the same
+    // raw frames from stdin. The gif filter is the standard two-pass palette
+    // in one graph (palettegen -> paletteuse); bayer dither keeps the lamp
+    // glow from banding without speckling the flat pixel-art regions.
+    let jobs = [
+        (
+            format!("scale=iw*{mp4_s}:ih*{mp4_s}:flags=neighbor,format=yuv420p"),
+            vec!["-c:v", "libx264", "-crf", "16", "-preset", "slow", "-movflags", "+faststart"],
+            &mp4,
+        ),
+        (
+            format!("fps={gif_fps:.3},scale=iw*{gif_s}:ih*{gif_s}:flags=neighbor,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5"),
+            vec!["-loop", "0"],
+            &gif,
+        ),
+    ];
+    for (filter, extra, path) in &jobs {
+        let spawn = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba"])
+            .args(["-s", &format!("{w}x{h}"), "-framerate", &format!("{fps:.3}"), "-i", "-"])
+            .args(["-vf", filter])
+            .args(extra)
+            .arg(path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn();
+        let mut child = match spawn {
+            Ok(c) => c,
+            Err(e) => {
+                println!("clip: ffmpeg not runnable ({e}) — frames discarded");
+                return;
+            }
+        };
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            for f in &frames {
+                if stdin.write_all(f).is_err() {
+                    break; // ffmpeg died; wait() below reports it
+                }
+            }
+        }
+        match child.wait() {
+            Ok(st) if st.success() => {
+                let kb = std::fs::metadata(path).map(|m| m.len() / 1024).unwrap_or(0);
+                println!("clip: wrote {path} ({w}x{h} game px, {} frames, {kb} KB)", frames.len());
+            }
+            _ => println!("clip: ffmpeg failed for {path}"),
+        }
+    }
+}
+
 struct Renderer {
+    // underscore fields: never read after init, stored only so the Vulkan
+    // handles stay alive for the renderer's lifetime
     _entry: ash::Entry,
-    instance: ash::Instance,
+    _instance: ash::Instance,
     surface_loader: ash::khr::surface::Instance,
     surface: vk::SurfaceKHR,
     pdev: vk::PhysicalDevice,
-    qf: u32,
+    _qf: u32,
     ctx: Ctx,
     swapchain_loader: ash::khr::swapchain::Device,
     surface_format: vk::SurfaceFormatKHR,
@@ -226,7 +559,7 @@ struct Renderer {
     tone_set_layout: vk::DescriptorSetLayout,
     tone_pipeline_layout: vk::PipelineLayout,
     tone_pipeline: vk::Pipeline,
-    tone_shader: vk::ShaderModule,
+    _tone_shader: vk::ShaderModule,
     cmd: vk::CommandBuffer,
     image_available: vk::Semaphore,
     in_flight: vk::Fence,
@@ -234,8 +567,16 @@ struct Renderer {
     // view / accumulation state
     base_scale: u32, // integer render scale at zoom=1 (the DPR baseline, #2/#4)
     exposure: f32,
-    post_flags: i32, // bit0 grade, bit1 palette (tonemap.comp post stack)
-    grain: f32,      // film grain strength (0 = off)
+    style: StyleCfg, // stylized post stack (tonemap.comp), env-driven
+    ao: f32,         // det RT-AO strength (0 = off)
+    ao_r: f32,       // det RT-AO range in wu
+    ao_n: i32,       // det RT-AO ray count
+    light_anim: bool, // animated practicals (LIGHT_ANIM=0 freezes; det only)
+    // in-viewer tune menu (ESC): selection + slider-drag state. The values
+    // themselves live in the fields above (ao, style, exposure, ...).
+    menu_open: bool,
+    menu_sel: usize,
+    menu_drag: bool,
     debug: i32,
     aa: i32, // AA=1: jitter primary rays (soft edges); default 0 = crisp pixel look
     samples: i32,
@@ -320,6 +661,7 @@ struct Renderer {
     // frame-dump diagnostics: DUMP=dir records every presented frame (plus a
     // state log line) for DUMP_N frames once ROTATE_AT fires, then exits
     dump_dir: Option<String>,
+    dump_at: Option<f32>, // DUMP_AT=secs — start the dump without a rotate
     dump_left: i32,
     dump_idx: u32,
     // captured in memory (subsampled to exact game pixels) — PNGs written at exit
@@ -344,6 +686,12 @@ struct Renderer {
     async_failed: bool,
     // scripted camera movie (MOVIE=dir): see `Movie` / `movie_tick`
     movie: Option<Movie>,
+    // in-viewer clip recording ('r' / menu row): see `Rec` / `encode_clip`.
+    // Encoding runs on worker threads; the handles are joined at exit so a
+    // quit never truncates an in-flight encode.
+    rec: Option<Rec>,
+    rec_jobs: Vec<std::thread::JoinHandle<()>>,
+    cap: Option<Cap>, // persistent capture image+buffer (kept across clips)
     // benchmark: FRAMES=N -> log avg frame time and exit after N rendered frames
     frames_limit: Option<u32>,
     frame_time_sum: f32,
@@ -488,34 +836,41 @@ impl Renderer {
         let base_scale: u32 = std::env::var("PIXEL").ok().and_then(|s| s.parse().ok()).unwrap_or(4).max(1);
         // house is now lamp-lit (no sun) — it needs more exposure than the
         // daylight scenes, not less.
-        let default_exposure = if std::env::var("SCENE").as_deref() == Ok("house") { 0.7 } else { 0.22 };
+        // house 0.35: retuned after the gltf metallic fix brightened the scene
+        // ~2x (the old 0.7 was compensating for dead NEE on kit surfaces)
+        let default_exposure = if std::env::var("SCENE").as_deref() == Ok("house") { 0.35 } else { 0.22 };
         let exposure: f32 = std::env::var("EXPOSURE").ok().and_then(|s| s.parse().ok()).unwrap_or(default_exposure);
         // stylized post stack (tonemap.comp): ALL OFF by default while the
         // clean-render path is being evaluated — the animated grain + palette
         // dither sparkle against residual path-trace noise and read as "noise
         // appearing from nowhere" once the denoiser hands back to raw. Opt back
-        // in per-effect: GRADE=1, PALETTE=1, GRAIN=0.05.
-        let grade_on = std::env::var("GRADE").map(|v| v != "0").unwrap_or(false);
-        let palette_on = std::env::var("PALETTE").map(|v| v != "0").unwrap_or(false);
-        let post_flags = (grade_on as i32) | ((palette_on as i32) << 1);
-        let grain: f32 = std::env::var("GRAIN").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        // in per-effect: GRADE=1, PALETTE=1, GRAIN=0.05 — or STYLE=<preset>
+        // for a whole bundle (see style_cfg()).
+        let style = style_cfg();
         // debug channels (misc2.y): 1 = raw albedo, 2 = probe GI only (det),
-        // 3 = direct only (det) — for isolating light-budget mismatches
-        let debug = if std::env::var("DEBUG_ALBEDO").is_ok() { 1 } else if std::env::var("DEBUG_GI").is_ok() { 2 } else if std::env::var("DEBUG_DIRECT").is_ok() { 3 } else { 0 };
+        // 3 = direct only (det), 4 = RT-AO term only (det) — for isolating
+        // light-budget mismatches
+        let debug = if std::env::var("DEBUG_ALBEDO").is_ok() { 1 } else if std::env::var("DEBUG_GI").is_ok() { 2 } else if std::env::var("DEBUG_DIRECT").is_ok() { 3 } else if std::env::var("DEBUG_AO").is_ok() { 4 } else { 0 };
+        // deterministic RT-AO (det mode, shade.comp): contact-scale occlusion
+        // multiplied onto the probe GI term. AO=strength, AO_R=range wu, AO_N=rays.
+        let fenv = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let ao = fenv("AO", 1.0);
+        let ao_r = fenv("AO_R", 0.8);
+        let ao_n = fenv("AO_N", 8.0) as i32;
         let aa = std::env::var("AA").is_ok() as i32;
         // grid-walker rematch: fixed camera + the web knob's default speed (80 px/s)
         let scene_kind = std::env::var("SCENE").unwrap_or_default();
         let grid_mode = scene_kind == "grid" || scene_kind == "grid-walker";
-        // grid: the web knob default (80 px/s). house: camera-pan speed. room: legacy.
-        let default_speed = if grid_mode { 80.0 } else if scene_kind == "house" { 240.0 } else { 140.0 };
+        // grid: the web knob default (80 px/s). house: player walk speed. room: legacy.
+        let default_speed = if grid_mode { 80.0 } else { 140.0 };
 
         let mut r = Renderer {
             _entry: entry,
-            instance,
+            _instance: instance,
             surface_loader,
             surface,
             pdev,
-            qf,
+            _qf: qf,
             ctx,
             swapchain_loader,
             surface_format,
@@ -525,15 +880,21 @@ impl Renderer {
             tone_set_layout,
             tone_pipeline_layout,
             tone_pipeline,
-            tone_shader,
+            _tone_shader: tone_shader,
             cmd,
             image_available,
             in_flight,
             swap: None,
             base_scale,
             exposure,
-            post_flags,
-            grain,
+            style,
+            ao,
+            ao_r,
+            ao_n,
+            light_anim: std::env::var("LIGHT_ANIM").map(|v| v != "0").unwrap_or(true),
+            menu_open: false,
+            menu_sel: 0,
+            menu_drag: false,
             debug,
             aa,
             samples: 0,
@@ -570,6 +931,7 @@ impl Renderer {
             walk: std::env::var("WALK").ok().and_then(|s| s.parse().ok()),
             rotate_at: std::env::var("ROTATE_AT").ok().and_then(|s| s.parse().ok()),
             dump_dir: std::env::var("DUMP").ok(),
+            dump_at: std::env::var("DUMP_AT").ok().and_then(|s| s.parse().ok()),
             dump_left: 0,
             dump_idx: 0,
             dump_frames: Vec::new(),
@@ -595,6 +957,9 @@ impl Renderer {
                 std::fs::create_dir_all(&dir).ok();
                 Movie { dir, cmds: movie_script(), seg: 0, seg_done: 0, out_idx: 0 }
             }),
+            rec: None,
+            rec_jobs: Vec::new(),
+            cap: None,
             frames_limit: std::env::var("FRAMES").ok().and_then(|s| s.parse().ok()),
             frame_time_sum: 0.0,
             timing: std::env::var("TIMING").is_ok(),
@@ -1490,11 +1855,14 @@ impl Renderer {
                     let v = color[s + i] * self.exposure;
                     c[i] = (v / (v + 1.0)).powf(1.0 / 2.2);
                 }
-                if self.post_flags & 1 != 0 {
+                // legacy CPU mirror — covers only the classic trio (fallout
+                // grade / pal32 / grain). Styled captures go through
+                // `capture()` (the GPU `out` image) in det mode instead.
+                if self.style.grade as i32 == 1 {
                     c = post_grade(c);
                 }
-                c = post_grain(c, lx, ly, self.frame, self.grain);
-                if self.post_flags & 2 != 0 {
+                c = post_grain(c, lx, ly, self.frame, self.style.grain);
+                if self.style.palette as i32 == 1 {
                     c = post_palette(c, lx, ly);
                 }
                 low[(ly * lw + lx) as usize] = c;
@@ -1577,6 +1945,13 @@ impl Renderer {
         // zero-filled transfer source for rect invalidation clears (any rect fits)
         let zeros = self.ctx.create_buffer((low_w * low_h * 16) as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
         self.ctx.upload(&zeros, &vec![0.0f32; (low_w * low_h * 4) as usize]);
+        // ESC tune-menu overlay staging (sized for the full panel at this scale)
+        let menu_scale = (extent.height / 400).clamp(2, 6);
+        let menu_buf = self.ctx.create_buffer(
+            (MPANEL_W * MPANEL_H) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
         // accum: UNDEFINED -> GENERAL + clear; denoised + scratch + out: UNDEFINED -> GENERAL
         let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
         self.ctx.one_time(|cmd| {
@@ -1625,7 +2000,7 @@ impl Renderer {
 
         self.samples = 0;
         self.denoised_valid = false;
-        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, accum, out, denoised, scratch, albedo, normal, irr_hist, posg, zeros, trace_pool, trace_set, tone_pool, tone_set, tone_set_dn, render_finished });
+        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, accum, out, denoised, scratch, albedo, normal, irr_hist, posg, zeros, menu_buf, menu_scale, trace_pool, trace_set, tone_pool, tone_set, tone_set_dn, render_finished });
         self.recenter_pan(); // start centred in the buffer
         println!("swapchain {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
     }
@@ -1636,6 +2011,327 @@ impl Renderer {
             let (low, vis) = self.low_and_vis();
             self.pan = (low - vis) * 0.5;
         }
+    }
+
+    // ---- ESC tune menu: values are read/written through a key so the menu,
+    // the env seeding, and the close-time env-string printout stay in sync
+
+    fn tune_get(&self, key: &str) -> f32 {
+        match key {
+            "ao" => self.ao,
+            "ao_r" => self.ao_r,
+            "ao_n" => self.ao_n as f32,
+            "sdither" => self.style.sdither,
+            "sdither_n" => self.style.sdither_n,
+            "sdither_th" => self.style.sdither_th,
+            "dither" => self.style.dither,
+            "exposure" => self.exposure,
+            "light_anim" => self.light_anim as i32 as f32,
+            _ => 0.0,
+        }
+    }
+
+    fn tune_set(&mut self, key: &str, v: f32) {
+        match key {
+            "ao" => self.ao = v,
+            "ao_r" => self.ao_r = v,
+            "ao_n" => self.ao_n = v as i32,
+            "sdither" => self.style.sdither = v,
+            "sdither_n" => self.style.sdither_n = v,
+            "sdither_th" => self.style.sdither_th = v,
+            "dither" => self.style.dither = v,
+            "exposure" => self.exposure = v,
+            "light_anim" => self.light_anim = v != 0.0,
+            _ => {}
+        }
+    }
+
+    /// The env vars that reproduce the current menu values (printed on close).
+    fn env_string(&self) -> String {
+        MENU.iter()
+            .filter(|i| !matches!(i.kind, ItemKind::Quit | ItemKind::Record))
+            .map(|i| {
+                let v = self.tune_get(i.key);
+                let s = match i.kind {
+                    ItemKind::Slider { step, .. } if step < 1.0 => format!("{v:.2}"),
+                    _ => format!("{v:.0}"),
+                };
+                format!("{}={}", i.key.to_uppercase(), s)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// 'r' / the menu row: start a recording, or stop + encode the current one.
+    fn toggle_recording(&mut self) {
+        if self.rec.is_some() {
+            self.finish_recording();
+            return;
+        }
+        let fps = clip_fps();
+        let max_s: f32 = std::env::var("CLIP_MAX_S").ok().and_then(|s| s.parse().ok()).unwrap_or(60.0);
+        // first capture on the very next presented frame
+        self.rec = Some(Rec {
+            w: 0,
+            h: 0,
+            fps,
+            next_due: self.start_time.elapsed().as_secs_f32(),
+            max_frames: (max_s * fps as f32).max(2.0) as usize,
+            t_first: 0.0,
+            t_last: 0.0,
+            frames: Vec::new(),
+        });
+        println!("clip: recording at {fps} fps (game pixels) — 'r' to stop");
+    }
+
+    /// Stop recording and hand the frames to a background encode (no-op when
+    /// idle, so it doubles as the at-exit flush).
+    fn finish_recording(&mut self) {
+        let Some(rec) = self.rec.take() else { return };
+        let n = rec.frames.len();
+        // encode at the rate the frames were ACTUALLY collected at, so the
+        // clip's duration matches wall-clock even if capture fell behind
+        let fps = if n >= 2 && rec.t_last - rec.t_first > 0.001 {
+            (n - 1) as f64 / (rec.t_last - rec.t_first) as f64
+        } else {
+            rec.fps as f64
+        };
+        println!("clip: stopped ({n} frames, {:.1}s @ {fps:.1} fps) — encoding mp4 + gif...", (n.max(1) - 1) as f64 / fps);
+        self.rec_jobs.push(std::thread::spawn(move || encode_clip(rec.frames, rec.w, rec.h, fps)));
+    }
+
+    /// Per-frame recording bookkeeping, run BEFORE the frame's commands are
+    /// recorded: collect the previous frame's capture (the in-flight fence
+    /// guarantees its copy completed), then decide whether this frame
+    /// captures and (re)fit the capture target. Returns true when the draw
+    /// below should record the capture blit+copy into its command buffer.
+    unsafe fn prepare_capture(&mut self) -> bool {
+        if self.cap.as_ref().is_some_and(|c| c.pending) {
+            self.ctx.device.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();
+            let cap = self.cap.as_mut().unwrap();
+            cap.pending = false;
+            if let Some(rec) = &mut self.rec {
+                let n = (cap.w * cap.h) as usize * 4;
+                let ptr = self.ctx.device.map_memory(cap.buf.memory, 0, n as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
+                let pixels = std::slice::from_raw_parts(ptr, n).to_vec();
+                self.ctx.device.unmap_memory(cap.buf.memory);
+                let t = self.start_time.elapsed().as_secs_f32();
+                if rec.frames.is_empty() {
+                    (rec.w, rec.h) = (cap.w, cap.h);
+                    rec.t_first = t;
+                }
+                rec.t_last = t;
+                rec.frames.push(pixels);
+            }
+        }
+        if self.rec.as_ref().is_some_and(|r| r.frames.len() >= r.max_frames) {
+            println!("clip: length cap reached (CLIP_MAX_S)");
+            self.finish_recording();
+        }
+        let t = self.start_time.elapsed().as_secs_f32();
+        if self.swap.is_none() || !self.rec.as_ref().is_some_and(|r| t >= r.next_due) {
+            return false;
+        }
+        let rs = self.rs() as u32;
+        let ext = self.swap.as_ref().unwrap().extent;
+        let (cw, ch) = (ext.width / rs, ext.height / rs);
+        if self.cap.as_ref().is_some_and(|c| (c.w, c.h) != (cw, ch)) {
+            if !self.rec.as_ref().unwrap().frames.is_empty() {
+                println!("clip: view size changed — finishing the clip at the old size");
+                self.finish_recording();
+                return false;
+            }
+            // nothing collected yet: refit silently (safe — the fence wait in
+            // a previous draw retired the old target's last GPU use)
+            let c = self.cap.take().unwrap();
+            self.destroy_cap(c);
+        }
+        if self.cap.is_none() {
+            let img = make_storage_image(&self.ctx, cw, ch, vk::Format::R8G8B8A8_UNORM);
+            let buf = self.ctx.create_buffer(
+                (cw * ch * 4) as u64,
+                vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.cap = Some(Cap { img, buf, w: cw, h: ch, pending: false });
+        }
+        let rec = self.rec.as_mut().unwrap();
+        rec.next_due += 1.0 / rec.fps as f32;
+        if rec.next_due < t - 0.25 {
+            rec.next_due = t; // a stall: drop the backlog, don't burst
+        }
+        self.cap.as_mut().unwrap().pending = true;
+        true
+    }
+
+    unsafe fn destroy_cap(&self, c: Cap) {
+        let d = &self.ctx.device;
+        d.destroy_image_view(c.img.2, None);
+        d.destroy_image(c.img.0, None);
+        d.free_memory(c.img.1, None);
+        self.ctx.destroy_buffer(&c.buf);
+    }
+
+    /// Wait for in-flight clip encodes (called once on the way out).
+    fn join_clip_jobs(&mut self) {
+        for j in self.rec_jobs.drain(..) {
+            let _ = j.join();
+        }
+    }
+
+    fn menu_toggle(&mut self) {
+        self.menu_open = !self.menu_open;
+        self.menu_drag = false;
+        if !self.menu_open {
+            println!("tune: {}", self.env_string());
+        }
+    }
+
+    /// Arrow left/right on the selected row.
+    fn menu_adjust(&mut self, dir: f32) {
+        let item = &MENU[self.menu_sel];
+        match item.kind {
+            ItemKind::Slider { min, max, step } => {
+                let v = self.tune_get(item.key) + dir * step;
+                let v = min + ((v - min) / step).round() * step;
+                self.tune_set(item.key, v.clamp(min, max));
+            }
+            ItemKind::Toggle => self.menu_activate(),
+            ItemKind::Record | ItemKind::Quit => {}
+        }
+    }
+
+    /// Enter/space/click on the selected row.
+    fn menu_activate(&mut self) {
+        let item = &MENU[self.menu_sel];
+        match item.kind {
+            ItemKind::Toggle => {
+                let v = self.tune_get(item.key);
+                self.tune_set(item.key, if v != 0.0 { 0.0 } else { 1.0 });
+            }
+            ItemKind::Record => self.toggle_recording(),
+            ItemKind::Quit => self.exit_requested = true,
+            ItemKind::Slider { .. } => {}
+        }
+    }
+
+    /// UI scale of the current swapchain (panel physical px = logical * scale).
+    fn menu_scale(&self) -> f32 {
+        self.swap.as_ref().map(|s| s.menu_scale as f32).unwrap_or(2.0)
+    }
+
+    /// Left-press routing. Returns true when the menu consumed the click.
+    fn menu_click(&mut self, p: Vec2) -> bool {
+        let ms = self.menu_scale();
+        let org = Vec2::splat(MENU_MARGIN as f32);
+        if !self.menu_open {
+            // hamburger icon
+            if p.x >= org.x && p.y >= org.y && p.x < org.x + MICON_W as f32 * ms && p.y < org.y + MICON_H as f32 * ms {
+                self.menu_toggle();
+                return true;
+            }
+            return false;
+        }
+        let l = (p - org) / ms;
+        if l.x < 0.0 || l.y < 0.0 || l.x >= MPANEL_W as f32 || l.y >= MPANEL_H as f32 {
+            return false; // outside the open panel: fall through to player drag
+        }
+        let row = (l.y as i32 - MPAD) / MROW - 1; // row 0 is the title
+        if row >= 0 && (row as usize) < MENU.len() {
+            self.menu_sel = row as usize;
+            if matches!(MENU[self.menu_sel].kind, ItemKind::Slider { .. }) {
+                self.menu_drag = true;
+                self.menu_drag_to(p);
+            } else {
+                self.menu_activate();
+            }
+        }
+        true
+    }
+
+    /// Slider drag: set the selected value from the cursor's track position.
+    fn menu_drag_to(&mut self, p: Vec2) {
+        let ms = self.menu_scale();
+        let lx = (p.x - MENU_MARGIN as f32) / ms;
+        if let ItemKind::Slider { min, max, step } = MENU[self.menu_sel].kind {
+            let t = ((lx - MTRACK_X as f32) / MTRACK_W as f32).clamp(0.0, 1.0);
+            let v = min + ((t * (max - min)) / step).round() * step;
+            self.tune_set(MENU[self.menu_sel].key, v.clamp(min, max));
+        }
+    }
+
+    /// Draw the overlay at logical resolution: the open panel, or the
+    /// hamburger icon when closed.
+    fn menu_canvas(&self) -> (Vec<u32>, i32, i32) {
+        const BG: u32 = 0x16161c;
+        const BORDER: u32 = 0x6a6a78;
+        const TEXT: u32 = 0xc8c8d0;
+        if !self.menu_open {
+            // hamburger icon; while recording, a REC badge rides next to it
+            // (the badge is overlay-only — clips capture swap.out, never UI)
+            let w = if self.rec.is_some() { MICON_W + 78 } else { MICON_W };
+            let h = MICON_H;
+            let mut c = vec![BG; (w * h) as usize];
+            mrect(&mut c, w, 0, 0, w, 1, BORDER);
+            mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
+            mrect(&mut c, w, 0, 0, 1, h, BORDER);
+            mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
+            for k in 0..3 {
+                mrect(&mut c, w, 4, 3 + k * 3, MICON_W - 8, 1, TEXT);
+            }
+            if let Some(rec) = &self.rec {
+                mrect(&mut c, w, MICON_W + 3, 4, 6, 6, 0xdd4444);
+                let secs = rec.frames.len() as f32 / rec.fps as f32;
+                mtext(&mut c, w, MICON_W + 12, 3, &format!("{secs:5.1}s"), 0xdd8888);
+            }
+            return (c, w, h);
+        }
+        let (w, h) = (MPANEL_W, MPANEL_H);
+        let mut c = vec![BG; (w * h) as usize];
+        mrect(&mut c, w, 0, 0, w, 1, BORDER);
+        mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
+        mrect(&mut c, w, 0, 0, 1, h, BORDER);
+        mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
+        mtext(&mut c, w, MLABEL_X, MPAD + 2, "rt-probe tune", 0xaaccaa);
+        for (i, item) in MENU.iter().enumerate() {
+            let y = MPAD + MROW * (1 + i as i32);
+            if i == self.menu_sel {
+                mrect(&mut c, w, 2, y, w - 4, MROW, 0x24242e);
+            }
+            let label_c = match item.kind {
+                ItemKind::Quit => 0xcc8888,
+                _ if i == self.menu_sel => 0xe8e8f0,
+                _ => TEXT,
+            };
+            mtext(&mut c, w, MLABEL_X, y + 2, item.label, label_c);
+            match item.kind {
+                ItemKind::Slider { min, max, step } => {
+                    let v = self.tune_get(item.key);
+                    let t = ((v - min) / (max - min)).clamp(0.0, 1.0);
+                    mrect(&mut c, w, MTRACK_X, y + MROW / 2, MTRACK_W, 2, 0x34343c);
+                    mrect(&mut c, w, MTRACK_X, y + MROW / 2, (MTRACK_W as f32 * t) as i32, 2, 0x7aa86a);
+                    let kx = MTRACK_X + (t * (MTRACK_W - 2) as f32) as i32;
+                    mrect(&mut c, w, kx, y + 2, 2, MROW - 4, 0xd8e8c8);
+                    mtext(&mut c, w, MVAL_X, y + 2, &fmt_val(item.key, v, step), 0x99cc99);
+                }
+                ItemKind::Toggle => {
+                    let on = self.tune_get(item.key) != 0.0;
+                    mtext(&mut c, w, MTRACK_X, y + 2, if on { "[on]" } else { "[off]" }, if on { 0x99cc99 } else { 0x808088 });
+                }
+                ItemKind::Record => match &self.rec {
+                    Some(rec) => {
+                        mrect(&mut c, w, MTRACK_X, y + 3, 6, 6, 0xdd4444);
+                        let secs = rec.frames.len() as f32 / rec.fps as f32;
+                        mtext(&mut c, w, MTRACK_X + 10, y + 2, &format!("stop {secs:.1}s"), 0xdd8888);
+                    }
+                    None => mtext(&mut c, w, MTRACK_X, y + 2, "[r] mp4+gif", 0x808088),
+                },
+                ItemKind::Quit => {}
+            }
+        }
+        let fy = MPAD + MROW * (1 + MENU.len() as i32) + 2;
+        mtext(&mut c, w, MLABEL_X, fy, "esc close+log  arrows/drag", 0x707078);
+        (c, w, h)
     }
 
     unsafe fn destroy_swap(&self, s: Swap) {
@@ -1651,6 +2347,7 @@ impl Renderer {
             d.free_memory(mem, None);
         }
         self.ctx.destroy_buffer(&s.zeros);
+        self.ctx.destroy_buffer(&s.menu_buf);
         self.swapchain_loader.destroy_swapchain(s.swapchain, None);
     }
 
@@ -1680,6 +2377,16 @@ impl Renderer {
                 }
             }
         }
+        // DUMP_AT=secs: start the frame dump with NO camera command (e.g. to
+        // record frames mid-WALK for pan-stability analysis)
+        if let Some(t) = self.dump_at {
+            if self.start_time.elapsed().as_secs_f32() >= t {
+                self.dump_at = None;
+                if self.dump_dir.is_some() {
+                    self.dump_left = std::env::var("DUMP_N").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+                }
+            }
+        }
         // smooth quarter-turn in flight: ease the yaw, swap masks, reset accum
         self.advance_rotation(dt);
         // deterministic mode: make sure the probe cache is converged (no-op
@@ -1694,6 +2401,9 @@ impl Renderer {
             let (lw, lh) = { let s = self.swap.as_ref().unwrap(); (s.low_w, s.low_h) };
             self.ensure_denoise(lw, lh);
         }
+        // clip recording: collect last frame's capture + decide if this frame
+        // captures (all &mut self work, so it runs before the `swap` borrow)
+        let cap_issue = self.prepare_capture();
         let swap = self.swap.as_ref().unwrap();
         let d = &self.ctx.device;
         d.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();
@@ -1733,8 +2443,14 @@ impl Renderer {
         //     accumulation stays unbiased — and fully deterministic.
         cam.misc2[0] = self.samples;
         cam.misc2[1] = self.debug;
-        cam.misc2[2] = self.aa;
+        // det: shade.comp reads the AO ray count here (trace's aaJitter slot —
+        // trace is never dispatched in det mode, shade never jitters)
+        cam.misc2[2] = if self.det { self.ao_n } else { self.aa };
         cam.misc2[3] = self.gpu.light_count as i32;
+        if self.det {
+            cam.cam_dir[3] = self.ao_r; // AO radius
+            cam.cam_pos[3] = self.ao; // AO strength
+        }
 
         // sample-rate burst: anywhere below the denoise-handoff quality (fresh
         // reset, pan strips, player rects), trace as many paths per frame as
@@ -1820,6 +2536,13 @@ impl Renderer {
         }
 
         if trace_in_present {
+            // animated practicals (flicker/pulse): stream this frame's light +
+            // emissive values before the shade dispatch. Det only — the legacy
+            // accumulator would smear a moving target. LIGHT_ANIM=0 freezes
+            // (needed for bit-stability tests).
+            if self.light_anim && self.det {
+                self.gpu.record_light_anim(&self.ctx, cmd, self.start_time.elapsed().as_secs_f32());
+            }
             if rebuild {
                 self.gpu.record_tlas_rebuild(&self.ctx, cmd);
             }
@@ -1873,12 +2596,31 @@ impl Renderer {
         let off_x = -ptarget.dot(pright) * ISO_R + low_w as f32 * 0.5 - 0.5;
         let off_y = ptarget.dot(pup) * ISO_R + low_h as f32 * 0.5 - 0.5;
         self.prev_cam = Some((yaw_now, self.target));
+        // world-anchored dither/grain phase: the CURRENT camera's screen
+        // position of the world origin, rounded to the pixel lattice. The
+        // tonemap subtracts it from lp, so ordered-dither/grain patterns
+        // travel WITH the scene during WASD pans instead of crawling against
+        // it (the camera moves in whole pixels, so the fraction is constant
+        // within a pan and the glue is exact).
+        // quantize with round(x - 0.25): the value is INTEGRAL when the low
+        // dim is even but HALF-INTEGRAL when odd (the dim/2 - 0.5 term), and
+        // f32 noise (~1e-4) flips floor() at integers and round() at halves —
+        // either choice slips the pattern 1 px on some window parities. The
+        // -0.25 bias puts the decision points a full 0.25 from BOTH lattices,
+        // and integer camera steps still advance the phase by exactly 1.
+        let (_cd, cright, cup) = iso_basis(yaw_now);
+        let dphase_x = (-self.target.dot(cright) * ISO_R + low_w as f32 * 0.5 - 0.75).round();
+        let dphase_y = (self.target.dot(cup) * ISO_R + low_h as f32 * 0.5 - 0.75).round();
         let tp = TonePush {
             dims: [low_w as i32, low_h as i32, extent.width as i32, extent.height as i32],
             cfg: [rs, (blend * 256.0) as i32, pan.x as i32, pan.y as i32], // cfg.y = temporal blend ×256
-            fcfg: [self.exposure, self.grain, self.frame as f32, self.post_flags as f32],
+            fcfg: [self.exposure, self.style.grain, self.frame as f32, dphase_x],
             prev_a: [pa.x, pa.y, pa.z, off_x],
             prev_b: [pb.x, pb.y, pb.z, off_y],
+            style1: [self.style.grade, self.style.poster, self.style.dither, self.style.dither_amt],
+            style2: [self.style.palette, self.style.pal_p, self.style.vignette, self.style.outline],
+            style3: [self.style.grain_sz, self.style.grain_static, self.style.bloom, self.style.bloom_th],
+            style4: [self.style.sdither, self.style.sdither_n, self.style.sdither_th, dphase_y],
         };
         // sweep blend: stage last frame's irradiance history into scratch so the
         // tonemap reads a stable copy while writing the new history (no race)
@@ -1907,6 +2649,45 @@ impl Renderer {
             .dst_subresource(layers)
             .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: extent.width as i32, y: extent.height as i32, z: 1 }]);
         d.cmd_blit_image(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::NEAREST);
+        // ESC tune-menu overlay (panel, or the hamburger icon when closed):
+        // CPU-drawn, copied onto the PRESENTED image only — swap.out stays
+        // clean, so SHOT/MOVIE/DUMP captures never contain UI. Headless modes
+        // skip it entirely.
+        if self.shot.is_none() && self.movie.is_none() && self.dump_dir.is_none() {
+            let (canvas, mw, mh) = self.menu_canvas();
+            let bgra = matches!(self.surface_format.format, vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB);
+            let bytes = expand_canvas(&canvas, mw, mh, swap.menu_scale, bgra);
+            let (pw, ph) = (mw as u32 * swap.menu_scale, mh as u32 * swap.menu_scale);
+            if MENU_MARGIN as u32 + pw <= extent.width && MENU_MARGIN as u32 + ph <= extent.height {
+                self.ctx.upload(&swap.menu_buf, &bytes);
+                let region = vk::BufferImageCopy::default()
+                    .image_subresource(layers)
+                    .image_offset(vk::Offset3D { x: MENU_MARGIN, y: MENU_MARGIN, z: 0 })
+                    .image_extent(vk::Extent3D { width: pw, height: ph, depth: 1 });
+                d.cmd_copy_buffer_to_image(cmd, swap.menu_buf.buffer, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+            }
+        }
+        // clip capture: NEAREST blit `out` (still TRANSFER_SRC from the blit
+        // above) down to exact game pixels — every texel of an rs x rs block
+        // is identical after the integer-NEAREST upscale, so any sample is
+        // the game pixel — then copy to the host-visible buffer, collected
+        // next frame after the fence wait. Async by construction: no stalls.
+        if cap_issue {
+            let cap = self.cap.as_ref().unwrap();
+            let rs = self.rs();
+            barrier(d, cmd, cap.img.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
+            let down = vk::ImageBlit::default()
+                .src_subresource(layers)
+                .src_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: (cap.w as i32) * rs, y: (cap.h as i32) * rs, z: 1 }])
+                .dst_subresource(layers)
+                .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: cap.w as i32, y: cap.h as i32, z: 1 }]);
+            d.cmd_blit_image(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, cap.img.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[down], vk::Filter::NEAREST);
+            barrier(d, cmd, cap.img.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER);
+            let region = vk::BufferImageCopy::default().image_subresource(layers).image_extent(vk::Extent3D { width: cap.w, height: cap.h, depth: 1 });
+            d.cmd_copy_image_to_buffer(cmd, cap.img.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, cap.buf.buffer, &[region]);
+            // make the buffer write visible to the host read after the fence
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::HOST, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::HOST_READ)], &[], &[]);
+        }
         // out back to GENERAL for next frame (tonemap reads it for the sweep
         // temporal blend, then overwrites); swapchain -> PRESENT
         barrier(d, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
@@ -2015,10 +2796,12 @@ impl Renderer {
             let delay: f32 = std::env::var("SHOT_DELAY").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
             if self.samples >= self.shot_spp && self.start_time.elapsed().as_secs_f32() >= delay {
                 self.ctx.device.device_wait_idle().unwrap();
-                if self.denoise && !self.denoise_live {
+                if !self.det && self.denoise && !self.denoise_live {
                     self.capture_denoised(&path); // headless denoise without the live dial
                 } else {
-                    self.capture(&path); // `out` already holds the live-denoised result
+                    // det frames are final as-presented; `out` carries the full
+                    // GPU style stack (the CPU mirror only knows the classic trio)
+                    self.capture(&path);
                 }
                 self.exit_requested = true;
             }
@@ -2049,6 +2832,32 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
                 let Some(r) = self.renderer.as_mut() else { return };
+                // open menu captures the arrows + enter (WASD still walks)
+                if r.menu_open && event.state.is_pressed() {
+                    match event.logical_key.as_ref() {
+                        Key::Named(NamedKey::ArrowUp) => {
+                            r.menu_sel = (r.menu_sel + MENU.len() - 1) % MENU.len();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            r.menu_sel = (r.menu_sel + 1) % MENU.len();
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            r.menu_adjust(-1.0);
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            r.menu_adjust(1.0);
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                            r.menu_activate();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 // movement keys are held-state (continuous walk); index = [up,down,left,right]
                 let held_idx = match event.logical_key.as_ref() {
                     Key::Named(NamedKey::ArrowUp) | Key::Character("w") => Some(0),
@@ -2065,7 +2874,7 @@ impl ApplicationHandler for App {
                     return; // discrete actions fire on press only
                 }
                 match event.logical_key.as_ref() {
-                    Key::Named(NamedKey::Escape) => event_loop.exit(),
+                    Key::Named(NamedKey::Escape) => r.menu_toggle(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.cursor;
                         r.zoom_step(1, c);
@@ -2087,6 +2896,7 @@ impl ApplicationHandler for App {
                         r.rotate(-(r.yaw_q as i32));
                         r.player_dirty = true;
                     }
+                    Key::Character("r") => r.toggle_recording(),
                     Key::Character("j") => {
                         r.denoise_live = !r.denoise_live;
                         r.denoised_valid = false; // raw frames may advance accum
@@ -2098,7 +2908,9 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(r) = self.renderer.as_mut() {
                     let np = Vec2::new(position.x as f32, position.y as f32);
-                    if r.dragging {
+                    if r.menu_drag {
+                        r.menu_drag_to(np); // slider drag
+                    } else if r.dragging {
                         let rs = r.rs() as f32;
                         let d = np - r.cursor;
                         r.move_player(d / rs); // drag moves the player
@@ -2108,7 +2920,15 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } if button == MouseButton::Left => {
                 if let Some(r) = self.renderer.as_mut() {
-                    r.dragging = state == ElementState::Pressed;
+                    if state == ElementState::Pressed {
+                        let c = r.cursor;
+                        if !r.menu_click(c) {
+                            r.dragging = true;
+                        }
+                    } else {
+                        r.dragging = false;
+                        r.menu_drag = false;
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -2170,5 +2990,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     let mut app = App { window: None, renderer: None };
     event_loop.run_app(&mut app)?;
+    // quitting mid-recording still delivers the clip: flush the buffered
+    // frames into an encode, then wait for every encode worker to finish
+    if let Some(r) = app.renderer.as_mut() {
+        r.finish_recording();
+        r.join_clip_jobs();
+    }
     Ok(())
 }

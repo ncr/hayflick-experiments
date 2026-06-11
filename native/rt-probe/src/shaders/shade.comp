@@ -40,9 +40,9 @@ layout(set = 0, binding = 10, rgba32f) uniform image2D posImg;
 layout(set = 0, binding = 11, scalar) readonly buffer Probes { float pd[]; };
 
 layout(push_constant) uniform Push {
-  vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos;
+  vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos; // camDir.w = AO radius, camPos.w = AO strength
   ivec4 misc;  // W, H, bounces(unused), spp(unused)
-  ivec4 misc2; // seed(unused), debugAlbedo, aaJitter(unused), lightCount
+  ivec4 misc2; // seed(unused), debug channel, AO ray count (det repurposes the trace aaJitter slot), lightCount
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
 } pc;
 
@@ -90,6 +90,36 @@ bool occluded(vec3 o, vec3 dir, float tmax){
   return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
+// AO visibility with linear distance falloff: 1 on miss, t/R on a hit within
+// range R (first-hit t, not nearest — slight over-darkening, fine for AO).
+float aoVis(vec3 o, vec3 dir, float R){
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, o, 0.001, dir, R);
+  while (rayQueryProceedEXT(rq)) {}
+  if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return 1.0;
+  return clamp(rayQueryGetIntersectionTEXT(rq, true) / R, 0.0, 1.0);
+}
+
+// Deterministic short-range RT ambient occlusion at (p, n): a FIXED
+// cosine-hemisphere ray set (spherical-Fibonacci, oriented by a world-space
+// tangent frame derived from n only) — no randomness, so a fixed camera stays
+// bit-identical and the term is rotation-invariant. Rays use mask 0xFF: the
+// player and dollhouse-hidden walls both occlude, which grounds the player
+// (the probe cache deliberately ignores it) and keeps the term yaw-invariant.
+float rtAO(vec3 p, vec3 n, int N, float R, float strength){
+  vec3 t1 = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0.0, 1.0, 0.0)) : cross(n, vec3(1.0, 0.0, 0.0)));
+  vec3 t2 = cross(n, t1);
+  float vis = 0.0;
+  for (int i = 0; i < N; i++) {
+    float u = (float(i) + 0.5) / float(N);
+    float r = sqrt(u);
+    float ph = 6.2831853 * fract(float(i) * 0.6180339887);
+    vec3 d = t1 * (r * cos(ph)) + t2 * (r * sin(ph)) + n * sqrt(max(1.0 - u, 0.0));
+    vis += aoVis(p, d, R);
+  }
+  return mix(1.0, vis / float(N), strength);
+}
+
 // Irradiance at (p, n) from the ambient-cube probe grid: trilinear over the 8
 // surrounding probes, each evaluated HL2-style (n^2-weighted axis faces). The
 // sample point is pushed off the surface so probes buried in the wall behind
@@ -132,9 +162,16 @@ void main(){
   vec3 sunDir = normalize(vec3(0.62, 0.55, 0.38));
   vec3 sun = vec3(1.0, 0.88, 0.70) * 6.0 * pc.env0.x;
 
-  // primary ray through the pixel CENTRE — deterministic, hard pixel edges
-  float u = ((float(px.x) + 0.5) / float(W)) * 2.0 - 1.0;
-  float v = -(((float(px.y) + 0.5) / float(H)) * 2.0 - 1.0);
+  // primary ray through the pixel CENTRE — deterministic, hard pixel edges.
+  // The +1/64 px bias is the RT analogue of the rasterizer top-left rule:
+  // panel seams sit on the world lattice, which aligns EXACTLY with pixel
+  // centres at certain window parities — a ray on the seam plane slips
+  // between the two panels' BLASes (watertightness is per-BLAS) and draws a
+  // dark vertical crack line. The fixed bias keeps rays off all seam planes
+  // at every alignment; 1/64 px is sub-perceptual and constant per frame.
+  const float TIE = 1.0 / 64.0;
+  float u = ((float(px.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;
+  float v = -(((float(px.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);
   vec3 o = pc.camPos.xyz + u * pc.camRight.w * pc.camRight.xyz + v * pc.camUp.w * pc.camUp.xyz;
   vec3 d = normalize(pc.camDir.xyz);
 
@@ -213,8 +250,18 @@ void main(){
     if (!occluded(p, ldir, dist - lt.posRad.w)) col += c;
   }
 
-  // ---- indirect: world-space irradiance cache (misc2.y == 3: direct only) ----
-  if (pc.misc2.y != 3) col += albedo * (1.0 / 3.14159265) * probeE(p, n);
+  // ---- indirect: world-space irradiance cache (misc2.y == 3: direct only),
+  // modulated by deterministic short-range RT-AO — the contact-scale occlusion
+  // the 0.5-wu probe grid can't resolve. AO never touches direct light (the
+  // shadow rays above already are exact occlusion).
+  float ao = 1.0;
+  if (pc.camPos.w > 0.0 && pc.misc2.z > 0 && pc.camDir.w > 0.0)
+    ao = rtAO(p, n, pc.misc2.z, pc.camDir.w, pc.camPos.w);
+  if (pc.misc2.y == 4) { // debug: AO term only
+    imageStore(accumImg, px, vec4(vec3(ao), 1.0));
+    return;
+  }
+  if (pc.misc2.y != 3) col += albedo * (1.0 / 3.14159265) * probeE(p, n) * ao;
 
   col = col * fogT + fogAdd;
   imageStore(accumImg, px, vec4(col, 1.0));

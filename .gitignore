@@ -11,3 +11,6 @@ test-results
 # blockstudio inherited rules
 assets/materials/polyhaven/
 blender/__pycache__/
+
+# rt-probe in-viewer recordings
+clips/

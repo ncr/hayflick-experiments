@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Build and run the rt-probe viewer.
+#
+#   bin/run            # house scene
+#   bin/run lab        # any SCENE value as the first arg
+#   AO_R=1.2 bin/run   # every viewer env knob passes through
+#
+# The live-tune UI is IN the viewer now: press ESC (or click the hamburger
+# icon top-left) for sliders + toggles + quit. Closing the menu prints the
+# env string that reproduces the dialed-in values.
+#
+# 'r' records a clip (game-pixel capture): stop writes clips/clip_NNNN.mp4
+# AND .gif. Knobs: CLIP_FPS=50 CLIP_MP4_SCALE=4 CLIP_GIF_SCALE=1 CLIP_MAX_S=60.
+#
+# The viewer must run from the repo root (asset paths) — this script cd's
+# there itself, so it works from anywhere.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+SCENE="${1:-${SCENE:-house}}"
+
+cargo build --release --manifest-path native/rt-probe/Cargo.toml
+
+SCENE="$SCENE" exec ./native/rt-probe/target/release/viewer

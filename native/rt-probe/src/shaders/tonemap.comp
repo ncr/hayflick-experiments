@@ -9,10 +9,12 @@
 //
 // Stylized post stack, applied per LOW-RES texel (one game pixel = one post
 // sample, so the pixel-look invariant holds; the upscale only repeats values):
-//   tonemap -> grade -> film grain -> ordered-dither palette quantize
-// Everything is deterministic per (texel, frame) — no temporal shimmer beyond
-// the intentional animated grain. The CPU capture path in viewer.rs
-// (capture_denoised) mirrors this stack EXACTLY — keep them in sync.
+//   cel-posterize lighting -> bloom -> tonemap -> grade -> outline -> vignette
+//   -> film grain -> ordered-dither quantize (palette / posterize / duotone)
+// Every stage is deterministic per (texel, frame) — no temporal shimmer beyond
+// intentionally animated grain. All knobs come from the style push constants
+// (env-driven, see style_cfg() in viewer.rs). Captures read the GPU `out`
+// image directly, so this shader is the single source of truth for the look.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -26,16 +28,21 @@ layout(set = 0, binding = 5, rgba32f) uniform readonly image2D posImg; // primar
 layout(push_constant) uniform Push {
   ivec4 dims; // low_w, low_h, out_w, out_h
   ivec4 cfg;  // scale, temporal blend ×256 (rotation sweeps), pan_x, pan_y
-  vec4  fcfg; // exposure, grain strength, frame, flags (bit0 grade, bit1 palette)
+  vec4  fcfg; // exposure, grain strength, frame, dither world-phase x
   vec4  prevA; // previous frame's projection: px.x = dot(P, prevA.xyz) + prevA.w
   vec4  prevB; //                              px.y = dot(P, prevB.xyz) + prevB.w
-} pc;
+  vec4  style1; // grade preset, poster bands, dither mode, dither amount
+  vec4  style2; // palette mode, palette param, vignette, outline strength
+  vec4  style3; // grain size px, grain static flag, bloom strength, bloom threshold
+  vec4  style4; // shadow dither: strength, levels, luma threshold, dither world-phase y
+} pc;            // 144 B — over the 128 B Vulkan minimum, fine on NVIDIA (256)
 
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
-// Fallout-ish grade: desaturate a touch, split-tone teal shadows / amber
-// highlights, soft lift, gentle s-curve. Mirrored in lib.rs post_grade().
-vec3 grade(vec3 g){
+// ---- grade presets (style1.x) -------------------------------------------
+// 1: Fallout-ish — desaturate a touch, split-tone teal shadows / amber
+//    highlights, soft lift, gentle s-curve.
+vec3 gradeFallout(vec3 g){
   float y = luma(g);
   g = mix(g, vec3(y), 0.22);
   g += vec3(0.04, 0.10, 0.10) * (1.0 - y) * 0.55
@@ -45,15 +52,69 @@ vec3 grade(vec3 g){
   vec3 s = g * g * (3.0 - 2.0 * g);
   return clamp(mix(g, s, 0.35), 0.0, 1.0);
 }
+// 2: noir — heavy desaturation, lifted contrast, cool shadows
+vec3 gradeNoir(vec3 g){
+  float y = luma(g);
+  g = mix(g, vec3(y), 0.85);
+  g += vec3(-0.02, 0.00, 0.04) * (1.0 - y) * 0.6;
+  g = (g - 0.5) * 1.28 + 0.46;
+  g = clamp(g, 0.0, 1.0);
+  vec3 s = g * g * (3.0 - 2.0 * g);
+  return clamp(mix(g, s, 0.5), 0.0, 1.0);
+}
+// 3: sepia / dustbowl — warm monochrome pull with a soft lift
+vec3 gradeSepia(vec3 g){
+  float y = luma(g);
+  vec3 sep = vec3(1.10, 0.96, 0.72) * pow(y, 0.95);
+  g = mix(g, sep, 0.7);
+  return clamp(g * 0.94 + 0.03, 0.0, 1.0);
+}
+// 4: neon — teal-pushed shadows, magenta-pushed highlights, punchy curve
+vec3 gradeNeon(vec3 g){
+  float y = luma(g);
+  g += vec3(-0.06, 0.06, 0.14) * (1.0 - y) * 0.8
+     + vec3(0.16, -0.03, 0.12) * y * 0.6;
+  g = clamp(g, 0.0, 1.0);
+  vec3 s = g * g * (3.0 - 2.0 * g);
+  return clamp(mix(g, s, 0.45), 0.0, 1.0);
+}
+// 5: bleach bypass — desaturate, overlay against own luma (silver retention)
+vec3 gradeBleach(vec3 g){
+  float y = luma(g);
+  vec3 d = mix(g, vec3(y), 0.55);
+  vec3 ov = mix(2.0 * d * y, 1.0 - 2.0 * (1.0 - d) * (1.0 - y), step(0.5, y));
+  return clamp(mix(d, ov, 0.6), 0.0, 1.0);
+}
+// 6: midnight — shadows pulled toward indigo, highlights untouched (lamps glow)
+vec3 gradeMidnight(vec3 g){
+  float y = luma(g);
+  float sh = 1.0 - smoothstep(0.0, 0.55, y);
+  vec3 ind = vec3(0.45, 0.40, 1.00) * y * 1.15;
+  return clamp(mix(g, ind, 0.55 * sh), 0.0, 1.0);
+}
 
 uint hashu(uint x){ x^=x>>16; x*=0x7feb352dU; x^=x>>15; x*=0x846ca68bU; x^=x>>16; return x; }
 
-// 8x8 Bayer threshold matrix, centred to [-0.5, 0.5)
+// Ordered-dither threshold matrices, centred to [-0.5, 0.5)
 const float BAYER[64] = float[64](
    0., 32.,  8., 40.,  2., 34., 10., 42., 48., 16., 56., 24., 50., 18., 58., 26.,
   12., 44.,  4., 36., 14., 46.,  6., 38., 60., 28., 52., 20., 62., 30., 54., 22.,
    3., 35., 11., 43.,  1., 33.,  9., 41., 51., 19., 59., 27., 49., 17., 57., 25.,
   15., 47.,  7., 39., 13., 45.,  5., 37., 63., 31., 55., 23., 61., 29., 53., 21.);
+const float BAYER4[16] = float[16](
+   0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
+const float BAYER2[4] = float[4](0., 2., 3., 1.);
+
+// ordered-dither threshold for game pixel lp, centred to [-0.5, 0.5)
+// (mode: 1 bayer8, 2 bayer4, 3 bayer2, 4 IGN static, 5 white animated)
+float ditherAt(int dm, ivec2 lp){
+  if (dm == 1) return (BAYER[(lp.x & 7) + (lp.y & 7) * 8] + 0.5) / 64.0 - 0.5;
+  if (dm == 2) return (BAYER4[(lp.x & 3) + (lp.y & 3) * 4] + 0.5) / 16.0 - 0.5;
+  if (dm == 3) return (BAYER2[(lp.x & 1) + (lp.y & 1) * 2] + 0.5) / 4.0 - 0.5;
+  if (dm == 4) return fract(52.9829189 * fract(0.06711056 * float(lp.x) + 0.00583715 * float(lp.y))) - 0.5; // IGN, static
+  if (dm == 5) return float(hashu(uint(lp.x) * 7919u + uint(lp.y) * 104729u + uint(pc.fcfg.z) * 15485863u)) * (1.0 / 4294967296.0) - 0.5; // white, animated
+  return 0.0;
+}
 
 // Hand-designed 32-colour palette (gamma space): teal shadow ramp, olive
 // midtones, lamp amber, bone highlights + terminal/rust/hazard/grass accents.
@@ -75,6 +136,11 @@ const vec3 PAL[32] = vec3[32](
   vec3(0.7608, 0.3373, 0.2118), vec3(0.6510, 0.4157, 0.1216),
   vec3(0.8784, 0.6039, 0.1686), vec3(0.1647, 0.2118, 0.1333),
   vec3(0.2667, 0.3294, 0.1882), vec3(0.3961, 0.4667, 0.2902));
+
+// DMG Game Boy 4-tone (darkest -> lightest)
+const vec3 GB[4] = vec3[4](
+  vec3(0.059, 0.220, 0.059), vec3(0.188, 0.384, 0.188),
+  vec3(0.545, 0.675, 0.059), vec3(0.608, 0.737, 0.059));
 
 void main(){
   ivec2 o = ivec2(gl_GlobalInvocationID.xy);
@@ -129,36 +195,146 @@ void main(){
     }
     // one writer per low-res texel (the upscale maps scale^2 outputs to one lp)
     if ((o.x % scale) == 0 && (o.y % scale) == 0) imageStore(irrHistImg, lp, vec4(irr, 1.0));
+
+    // world-anchored lattice for dither + grain: subtract the screen position
+    // of the world origin (pushed by the CPU per frame), so the patterns are
+    // glued to the scene during pans instead of crawling against the content
+    ivec2 dlp = lp - ivec2(int(pc.fcfg.w), int(pc.style4.w));
+
+    // cel-posterized lighting: quantize the DEMODULATED irradiance luma into
+    // N bands (in Reinhard 0..1 domain so HDR lamps band sensibly), then
+    // re-modulate with crisp albedo — flat toon light, textures untouched.
+    int poster = int(pc.style1.y + 0.5);
+    if (poster > 0) {
+      float y = luma(irr) * pc.fcfg.x;
+      if (y > 1e-5) {
+        float t = y / (y + 1.0);
+        float tq = (floor(t * float(poster)) + 0.5) / float(poster);
+        float yq = tq / max(1.0 - tq, 1e-3);
+        irr *= yq / y;
+      }
+    }
     radiance = irr * alb;
 
     vec3 hdr = radiance * pc.fcfg.x;
+
+    // bloom: octagonal HDR gather at 3 radii (2/4/8 px), bright pass over the
+    // threshold — lamps and screens glow, fog shafts feather. Pre-tonemap.
+    if (pc.style3.z > 0.0) {
+      const ivec2 OCT[8] = ivec2[8](ivec2(1,0), ivec2(1,1), ivec2(0,1), ivec2(-1,1), ivec2(-1,0), ivec2(-1,-1), ivec2(0,-1), ivec2(1,-1));
+      vec3 bacc = vec3(0.0);
+      float bw = 0.0;
+      for (int r = 0; r < 3; r++) {
+        int rad = 2 << r;
+        float w = 1.0 / float(1 << r);
+        for (int k = 0; k < 8; k++) {
+          ivec2 q = clamp(lp + OCT[k] * rad, ivec2(0), ivec2(pc.dims.x - 1, pc.dims.y - 1));
+          vec3 s = imageLoad(accumImg, q).rgb * pc.fcfg.x;
+          float l = luma(s);
+          bacc += s * (max(l - pc.style3.w, 0.0) / max(l, 1e-4)) * w;
+          bw += w;
+        }
+      }
+      hdr += bacc / bw * pc.style3.z;
+    }
+
     col = hdr / (hdr + vec3(1.0));          // Reinhard
     col = pow(col, vec3(1.0 / 2.2));        // gamma
 
-    int flags = int(pc.fcfg.w);
-    if ((flags & 1) != 0) col = grade(col);
+    int gp = int(pc.style1.x + 0.5);
+    if      (gp == 1) col = gradeFallout(col);
+    else if (gp == 2) col = gradeNoir(col);
+    else if (gp == 3) col = gradeSepia(col);
+    else if (gp == 4) col = gradeNeon(col);
+    else if (gp == 5) col = gradeBleach(col);
+    else if (gp == 6) col = gradeMidnight(col);
 
-    // animated film grain, per game pixel, luminance-weighted toward shadows
+    // shadow dither: ordered-dither the LUMA of shadow pixels onto an N-level
+    // ladder, hue preserved (colour is rescaled by yq/y). The pattern only
+    // materialises where a shadow gradient crosses a band boundary — flat
+    // areas and lit areas stay perfectly clean. Dither amplitude is exactly
+    // one band step (classic ordered dithering). style4: strength (blend),
+    // levels, shadow luma threshold (weight fades in below it).
+    if (pc.style4.x > 0.0) {
+      float y = luma(col);
+      float sw = (1.0 - smoothstep(pc.style4.z * 0.55, pc.style4.z, y)) * pc.style4.x;
+      if (sw > 1e-3 && y > 1e-4) {
+        float dth = ditherAt(int(pc.style1.z + 0.5), dlp);
+        float L = max(pc.style4.y, 2.0) - 1.0;
+        float yq = floor(clamp(y + dth / L, 0.0, 1.0) * L + 0.5) / L;
+        col = mix(col, col * (yq / y), sw);
+      }
+    }
+
+    // outline: darken pixels whose neighbour is meaningfully FARTHER along the
+    // camera forward (near-object silhouette, 1 px) or is sky. Forward is
+    // recovered from the projection rows: right × (-up) = camDir for the
+    // right-handed iso basis. Threshold 0.28 wu sits above any surface
+    // gradient at iso pitch but below real depth discontinuities.
+    if (pc.style2.w > 0.0) {
+      vec3 f = normalize(cross(pc.prevA.xyz, pc.prevB.xyz));
+      vec4 P0 = imageLoad(posImg, lp);
+      if (P0.w > 0.0) {
+        float d0 = dot(P0.xyz, f);
+        float edge = 0.0;
+        const ivec2 N4[4] = ivec2[4](ivec2(1,0), ivec2(-1,0), ivec2(0,1), ivec2(0,-1));
+        for (int k = 0; k < 4; k++) {
+          ivec2 q = clamp(lp + N4[k], ivec2(0), ivec2(pc.dims.x - 1, pc.dims.y - 1));
+          vec4 Pn = imageLoad(posImg, q);
+          if (Pn.w == 0.0 || dot(Pn.xyz, f) - d0 > 0.28) { edge = 1.0; break; }
+        }
+        col = mix(col, col * 0.30, pc.style2.w * edge);
+      }
+    }
+
+    // vignette: radial falloff over the VISIBLE crop (computed per game pixel
+    // so a scale^2 block stays one value — the pixel-look invariant holds)
+    if (pc.style2.z > 0.0) {
+      vec2 vis = vec2(pc.dims.zw) / float(scale);
+      vec2 uvv = (vec2(lp - ivec2(pc.cfg.z, pc.cfg.w)) + 0.5) / vis - 0.5;
+      float v2 = dot(uvv, uvv) * 2.0;
+      col *= 1.0 - pc.style2.z * smoothstep(0.2, 1.0, v2);
+    }
+
+    // film grain, per grain cell (style3.x px), luminance-weighted toward
+    // shadows; style3.y freezes the animation (plate grain)
     if (pc.fcfg.y > 0.0) {
-      uint h = hashu(uint(lp.x) * 1973u + uint(lp.y) * 9277u + uint(pc.fcfg.z) * 26699u + 1u);
+      int gs = max(int(pc.style3.x + 0.5), 1);
+      ivec2 gq = ivec2(floor(vec2(dlp) / float(gs)));
+      uint fr = pc.style3.y > 0.5 ? 0u : uint(pc.fcfg.z);
+      uint h = hashu(uint(gq.x) * 1973u + uint(gq.y) * 9277u + fr * 26699u + 1u);
       float g = float(h) * (1.0 / 4294967296.0) - 0.5;
       col += g * pc.fcfg.y * (0.35 + 0.65 * (1.0 - luma(col)));
       col = clamp(col, 0.0, 1.0);
     }
 
-    // ordered-dither quantize to the fixed palette (grain above feeds the
-    // dither, so residual path-trace noise reads as palette sparkle)
-    if ((flags & 2) != 0) {
-      float bay = (BAYER[(lp.x & 7) + (lp.y & 7) * 8] + 0.5) / 64.0 - 0.5;
-      vec3 c2 = clamp(col + bay * 0.07, 0.0, 1.0);
-      float best = 1e9;
-      vec3 bc = c2;
-      for (int i = 0; i < 32; i++) {
-        vec3 dd = PAL[i] - c2;
-        float d2 = dot(dd, dd);
-        if (d2 < best) { best = d2; bc = PAL[i]; }
+    // ordered-dither quantize (the dither feeds whichever quantizer is on)
+    int pm = int(pc.style2.x + 0.5);
+    if (pm > 0) {
+      float dth = ditherAt(int(pc.style1.z + 0.5), dlp);
+      vec3 c2 = clamp(col + dth * pc.style1.w, 0.0, 1.0);
+      if (pm == 1) { // nearest in the 32-colour palette
+        float best = 1e9;
+        vec3 bc = c2;
+        for (int i = 0; i < 32; i++) {
+          vec3 dd = PAL[i] - c2;
+          float d2 = dot(dd, dd);
+          if (d2 < best) { best = d2; bc = PAL[i]; }
+        }
+        col = bc;
+      } else if (pm == 2) { // per-channel posterize to N levels
+        float L = max(pc.style2.y, 2.0) - 1.0;
+        col = floor(c2 * L + 0.5) / L;
+      } else if (pm == 3) { // duotone luma ramp (param picks the pair)
+        int pair = int(pc.style2.y + 0.5);
+        vec3 A, B;
+        if      (pair == 1) { A = vec3(0.04, 0.16, 0.18); B = vec3(0.98, 0.76, 0.62); } // teal -> rose cream
+        else if (pair == 2) { A = vec3(0.01, 0.05, 0.02); B = vec3(0.45, 0.95, 0.45); } // green phosphor
+        else                { A = vec3(0.08, 0.07, 0.20); B = vec3(0.99, 0.82, 0.50); } // indigo -> amber
+        col = mix(A, B, luma(c2));
+      } else if (pm == 4) { // Game Boy 4-tone
+        col = GB[clamp(int(luma(c2) * 4.0), 0, 3)];
       }
-      col = bc;
     }
   }
   imageStore(outImg, o, vec4(clamp(col, 0.0, 1.0), 1.0));

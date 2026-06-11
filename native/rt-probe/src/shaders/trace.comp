@@ -127,7 +127,10 @@ void main(){
     // staircase that defines the game look. Randomness stays in the bounce
     // directions only (lighting converges, geometry never blurs).
     // misc2.z = 1 restores sub-pixel jitter (photoreal AA, softens pixels).
-    float jx = 0.5, jy = 0.5;
+    // The +1/64 px tie-break bias keeps centre rays off panel-seam planes
+    // (cracks between per-panel BLASes at aligned window parities) — see the
+    // matching comment in shade.comp.
+    float jx = 0.5 + 1.0 / 64.0, jy = 0.5 + 1.0 / 64.0;
     if (pc.misc2.z == 1) { jx = rnd(seed); jy = rnd(seed); }
     float u = ((float(px.x) + jx) / float(W)) * 2.0 - 1.0;
     float v = ((float(px.y) + jy) / float(H)) * 2.0 - 1.0; v = -v;

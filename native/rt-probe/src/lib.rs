@@ -398,28 +398,35 @@ pub fn build_house() -> Result<Scene, Box<dyn std::error::Error>> {
     }
 
     // ---- props (forge catalogue), scaled to real-world heights (1 wu = 1.28 m)
+    const PLAYER_R: f32 = 0.18;
+    let mut solids: Vec<[f32; 4]> = Vec::new();
     let mut prop_cache: std::collections::HashMap<&str, gltf_scene::CachedModel> = Default::default();
-    let props: &[(&str, f32, f32, f32, f32)] = &[
-        // (prop id, target height wu, x, z, rotation deg)
-        ("mainframe-with-many-distinct-status-lights", 1.40, 2.0, 1.1, 180.0),
-        ("commodore-pet-inspired-computer", 0.45, 3.6, 1.0, 180.0),
-        ("large-desk-without-drawers", 0.62, 3.0, 3.2, 0.0),
-        ("professional-workbench-chair", 0.75, 3.0, 4.2, 180.0),
-        ("eames-style-chair-but-in-our-scifi-style", 0.68, 6.2, 7.6, -45.0),
-        ("tall-standing-lamp", 1.35, 7.2, 0.9, 0.0),
-        ("braun-inspired-desk", 0.60, 10.5, 1.3, 0.0),
-        ("microscope", 0.35, 9.3, 1.4, 30.0),
-        ("chemical-flask", 0.22, 11.9, 1.5, 0.0),
-        ("professional-workbench-chair", 0.75, 10.5, 2.3, 180.0),
-        ("mainframe-with-many-distinct-status-lights", 1.40, 13.1, 2.5, 270.0),
-        ("ammo-crate", 0.40, 9.3, 8.7, 10.0),
-        ("ammo-crate", 0.40, 10.3, 8.6, 35.0),
-        ("ammo-crate", 0.40, 9.7, 7.8, 75.0),
-        ("tall-standing-lamp", 1.35, 13.2, 9.1, 0.0),
-        ("stop-sign", 1.70, 16.2, 10.6, 200.0),
-        ("ammo-crate", 0.40, -1.4, 5.2, 50.0),
+    let props: &[(&str, f32, f32, f32, f32, f32)] = &[
+        // (prop id, target height wu, x, height above floor, z, rotation deg)
+        ("mainframe-with-many-distinct-status-lights", 1.40, 2.0, 0.0, 1.1, 180.0),
+        // on the desk, screen toward the chair. The model's painted CRT screen
+        // is the dark texture patch on its +X face (NOT the slanted cream
+        // face, which is styling over a sealed internal cavity) — rot -90 maps
+        // model +X -> world +Z.
+        ("commodore-pet-inspired-computer", 0.45, 3.0, 0.62, 3.2, -90.0),
+        ("large-desk-without-drawers", 0.62, 3.0, 0.0, 3.2, 0.0),
+        ("professional-workbench-chair", 0.75, 3.0, 0.0, 4.2, 180.0),
+        ("eames-style-chair-but-in-our-scifi-style", 0.68, 6.2, 0.0, 7.6, -45.0),
+        ("tall-standing-lamp", 1.35, 7.2, 0.0, 0.9, 0.0),
+        ("braun-inspired-desk", 0.60, 10.5, 0.0, 1.3, 0.0),
+        ("microscope", 0.35, 9.3, 0.6, 1.4, 30.0),
+        ("chemical-flask", 0.22, 11.9, 0.6, 1.5, 0.0),
+        ("professional-workbench-chair", 0.75, 10.5, 0.0, 2.3, 180.0),
+        ("mainframe-with-many-distinct-status-lights", 1.40, 13.1, 0.0, 2.5, 270.0),
+        ("ammo-crate", 0.40, 9.3, 0.0, 8.7, 10.0),
+        ("ammo-crate", 0.40, 10.3, 0.0, 8.6, 35.0),
+        ("ammo-crate", 0.40, 9.7, 0.0, 7.8, 75.0),
+        ("tall-standing-lamp", 1.35, 13.2, 0.0, 9.1, 0.0),
+        ("stop-sign", 1.70, 16.2, 0.0, 10.6, 200.0),
+        ("ammo-crate", 0.40, -1.4, 0.0, 5.2, 50.0),
     ];
-    for &(id, target_h, x, z, rot_deg) in props {
+    let mut pet_prim: Option<usize> = None;
+    for &(id, target_h, x, y_off, z, rot_deg) in props {
         let path = format!("assets/forge/props/{id}/processed/model.glb");
         if !prop_cache.contains_key(id) {
             match scene.preload(&path) {
@@ -436,11 +443,19 @@ pub fn build_house() -> Result<Scene, Box<dyn std::error::Error>> {
         let (pmin, pmax) = cm.bounds();
         let pc = (pmin + pmax) * 0.5;
         let s = target_h / (pmax.y - pmin.y).max(1e-4);
-        let t = Mat4::from_translation(Vec3::new(x, FLOOR_TOP, z))
+        let t = Mat4::from_translation(Vec3::new(x, FLOOR_TOP + y_off, z))
             * Mat4::from_rotation_y(rot_deg.to_radians())
             * Mat4::from_scale(Vec3::splat(s))
             * Mat4::from_translation(Vec3::new(-pc.x, -pmin.y, -pc.z));
-        scene.place(cm, t);
+        let first = scene.place(cm, t);
+        if id == "commodore-pet-inspired-computer" {
+            pet_prim = Some(first);
+        }
+        // floor-standing props block the player; tabletop items don't
+        if y_off == 0.0 {
+            let r = s * (pmax.x - pmin.x).max(pmax.z - pmin.z) * 0.5 + PLAYER_R;
+            solids.push([x - r, z - r, x + r, z + r]);
+        }
     }
 
     // ---- emissive practicals: with the sun dimmed (lighting below) these
@@ -498,12 +513,65 @@ pub fn build_house() -> Result<Scene, Box<dyn std::error::Error>> {
         scene.prim_light_dir.resize(scene.primitives.len(), [0.0; 3]);
         *scene.prim_light_dir.last_mut().unwrap() = [-1.0, 0.0, 0.0]; // screen emits forward (-X)
     }
+    // PET computer screen: make the ACTUAL screen surface emissive — the dark
+    // texture patch the model paints as its CRT (on model +X, world +Z after
+    // the rot above). Texture-keyed: that patch is the only dark region on
+    // the +Z face (the case is cream). Carving it gives NEE a directional
+    // light at the true screen surface; the animator pulses it (green ->
+    // screen kind). Re-measure with PET_DUMP=1 if the prop moves.
+    if let Some(pp) = pet_prim {
+        if std::env::var("PET_DUMP").is_ok() {
+            scene.dump_tris_csv(pp, "/tmp/pet_tris.csv");
+        }
+        let g = 8.0 * emit;
+        let carved = scene.carve_emissive_region(
+            pp,
+            Vec3::Z,
+            Vec3::new(2.70, 0.80, 2.90),
+            Vec3::new(3.30, 1.12, 3.50),
+            0.45, // dark texels only: the painted CRT glass
+            [0.35 * g, 1.0 * g, 0.45 * g, 1.0],
+            false,
+        );
+        match carved {
+            Some(np) => {
+                let p = &scene.primitives[np];
+                let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                for &i in &scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize] {
+                    let v = Vec3::from(scene.vertices[p.vertex_offset as usize + i as usize].pos);
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                }
+                println!("PET screen carve: {} tris, aabb {:.3?}..{:.3?}", p.index_count / 3, lo, hi);
+            }
+            None => eprintln!("PET screen carve matched no triangles"),
+        }
+    }
 
-    scene.recompute_bounds();
+    // ---- player collision: interior dividers + perimeter (door gaps open).
+    // Inflate by wall half-thickness (0.125) + the player radius.
+    let w = 0.125 + PLAYER_R;
+    for (z0, z1) in [(0.0, 2.0), (3.0, 7.0), (8.0, 10.0)] {
+        solids.push([8.0 - w, z0, 8.0 + w, z1]); // x=8 divider (doors at z=2, z=7)
+    }
+    for (x0, x1) in [(8.0, 11.0), (12.0, 14.0)] {
+        solids.push([x0, 5.0 - w, x1, 5.0 + w]); // z=5 divider (door at x=11)
+    }
+    solids.push([0.0, -w, 14.0, w]); // north perimeter
+    solids.push([0.0, 10.0 - w, 4.0, 10.0 + w]); // south, west of the front door
+    solids.push([5.0, 10.0 - w, 14.0, 10.0 + w]); // south, east of the front door
+    solids.push([-w, 0.0, w, 10.0]); // west
+    solids.push([14.0 - w, 0.0, 14.0 + w, 10.0]); // east
+
+    scene.recompute_bounds(); // bounds = world WITHOUT the movable player
+    // placeholder player: a matte light-grey pillar (lattice-aligned footprint)
+    // — neutral albedo shows the coloured light pools and the AO grounding
+    let pidx = scene.add_box_local(0.1875, 1.3, 0.1875, [0.62, 0.64, 0.70, 1.0], [0.0; 4]);
     scene.prim_hide_mask.resize(scene.primitives.len(), 0);
-    scene.floor_rect = [0.3, 0.3, 13.7, 9.7];
-    scene.dynamic_prim = None; // no player — WASD pans the camera
-    scene.player_start = Vec3::new(7.0, 0.0, 5.0); // seeds the camera target
+    scene.floor_rect = [-2.7, -2.7, 16.7, 12.7]; // full grounds; walls are solids
+    scene.solids = solids;
+    scene.dynamic_prim = Some(pidx);
+    scene.player_start = Vec3::new(4.0, FLOOR_TOP, 6.0); // common room
     // night mood: NO sun — interiors are entirely lamp-lit (ceiling lamps +
     // sconces + practicals); a faint sky fill keeps the yard readable and a
     // knee-deep ground mist sits outside. SUN/SKY/FOG/FOG_H override for tuning.
@@ -1083,6 +1151,14 @@ pub struct SceneGpu {
     pub mbuf: Buffer,
     pub lbuf: Buffer, // emissive light list for NEE (see build)
     pub light_count: u32,
+    // light animation (record_light_anim): CPU shadows of lbuf/mbuf, the
+    // per-light anim link (material id or -1, base rgb, kind), and the
+    // persistent host-visible staging buffers for the per-frame copies
+    pub lights_cpu: Vec<[f32; 12]>,
+    pub mats_cpu: Vec<gltf_scene::Material>,
+    pub light_link: Vec<(i32, [f32; 3], u32)>,
+    pub light_stage: Buffer,
+    pub mat_stage: Buffer,
     pub texes: Vec<GpuTex>,
     pub sampler: vk::Sampler,
     pub blas_list: Vec<(vk::AccelerationStructureKHR, Buffer, Buffer)>,
@@ -1120,7 +1196,7 @@ impl SceneGpu {
         let ibuf = ctx.device_local(&scene.indices, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
         let geom_infos = scene.geom_infos();
         let gbuf = ctx.device_local(&geom_infos, vk::BufferUsageFlags::STORAGE_BUFFER);
-        let mbuf = ctx.device_local(&scene.materials, vk::BufferUsageFlags::STORAGE_BUFFER);
+        let mbuf = ctx.device_local(&scene.materials, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
 
         // ---- emissive light list for NEE: small bright emitters (lamps,
         // sconces) never converge by random bounces alone, so the shader
@@ -1132,6 +1208,9 @@ impl SceneGpu {
         // Emitters whose normals point many ways (focus < 0.7) stay isotropic.
         // Record: [cx, cy, cz, radius, r, g, b, 0, nx, ny, nz, directionalFlag].
         let mut lights: Vec<[f32; 12]> = Vec::new();
+        // per-light animation link: (material id or -1, base rgb, kind)
+        // kind: 1 incandescent flicker, 2 screen pulse, 3 gentle drift
+        let mut light_link: Vec<(i32, [f32; 3], u32)> = Vec::new();
         for (i, p) in scene.primitives.iter().enumerate() {
             if scene.dynamic_prim == Some(i) {
                 continue;
@@ -1140,16 +1219,22 @@ impl SceneGpu {
             if e[0].max(e[1]).max(e[2]) < 3.0 {
                 continue;
             }
+            light_link.push((p.material_id, [e[0], e[1], e[2]], if e[0] >= e[1] { 1 } else { 2 }));
             let vs = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
+            let idx = &scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
+            // bound the vertices the indices actually REFERENCE, not the whole
+            // vertex window — carved prims (PET screen) share their parent's
+            // window, and bounding that puts the light at the prop's center
+            // with the prop's radius instead of on the carved surface
             let mut mn = Vec3::splat(f32::INFINITY);
             let mut mx = Vec3::splat(f32::NEG_INFINITY);
-            for v in vs {
-                mn = mn.min(Vec3::from(v.pos));
-                mx = mx.max(Vec3::from(v.pos));
+            for &i in idx {
+                let v = Vec3::from(vs[i as usize].pos);
+                mn = mn.min(v);
+                mx = mx.max(v);
             }
             let c = (mn + mx) * 0.5;
             let r = (mx - mn).length() * 0.5;
-            let idx = &scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
             let mut nsum = Vec3::ZERO;
             let mut area2 = 0.0f32;
             for t in idx.chunks_exact(3) {
@@ -1175,12 +1260,19 @@ impl SceneGpu {
         for pl in &scene.point_lights {
             // conceptual (geometry-less) lights stay isotropic
             lights.push([pl[0], pl[1], pl[2], pl[3], pl[4], pl[5], pl[6], pl[7], 0.0, 0.0, 0.0, 0.0]);
+            light_link.push((-1, [pl[4], pl[5], pl[6]], 3));
         }
         let light_count = lights.len() as u32;
         if lights.is_empty() {
             lights.push([0.0; 12]); // keep the binding valid
         }
-        let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER);
+        // TRANSFER_DST so record_light_anim can stream animated values in
+        let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let light_stage = ctx.create_buffer(std::mem::size_of_val(&lights[..]) as u64, vk::BufferUsageFlags::TRANSFER_SRC, host);
+        let mat_stage = ctx.create_buffer(std::mem::size_of_val(&scene.materials[..]) as u64, vk::BufferUsageFlags::TRANSFER_SRC, host);
+        let lights_cpu = lights.clone();
+        let mats_cpu = scene.materials.clone();
 
         let mut texes: Vec<GpuTex> = scene.images.iter().map(|im| ctx.upload_texture(im)).collect();
         if texes.is_empty() {
@@ -1333,7 +1425,7 @@ impl SceneGpu {
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB)", dims[0], dims[1], dims[2], probe_count, spacing, probe_count as f32 * 80.0 / 1e6);
 
         let hide_masks: Vec<u8> = (0..scene.primitives.len()).map(|i| scene.prim_hide_mask.get(i).copied().unwrap_or(0)).collect();
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, hide_masks, set_layout, pipeline_layout, pipeline, shader, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, hide_masks, set_layout, pipeline_layout, pipeline, shader, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count })
     }
 
     /// Patch the movable player's instance transform in the host-visible
@@ -1354,6 +1446,69 @@ impl SceneGpu {
     /// TLAS visibility mask 0 (rays with cull mask 0xFF skip them); everything
     /// else 0xFF. Patches the host-visible instance buffer in place — call
     /// `record_tlas_rebuild` afterwards to take effect.
+    /// Animate the practicals: deterministic-in-time flicker/pulse written
+    /// over the NEE light list AND each linked material's emissive, so the
+    /// visible bulb/screen brightens exactly in sync with the light it casts.
+    /// Records the stage->device copies + barrier into `cmd` (run it BEFORE
+    /// the shade dispatch). Kinds: 1 = incandescent flicker (value noise +
+    /// slow breathing + rare deeper dips), 2 = screen pulse (slow throb + hue
+    /// wobble), 3 = gentle drift (conceptual ceiling lights — barely alive).
+    /// The probe cache keeps the baked BASE levels — the modulation is direct
+    /// light only, which dominates near the fixtures; indirect stays steady.
+    pub unsafe fn record_light_anim(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, t: f32) {
+        fn h01(x: u32) -> f32 {
+            let mut v = x.wrapping_mul(0x9E37_79B9);
+            v ^= v >> 16;
+            v = v.wrapping_mul(0x7feb_352d);
+            v ^= v >> 15;
+            (v & 0xFF_FFFF) as f32 / 16_777_216.0
+        }
+        // smooth value noise in [0,1] at integer lattice `t`
+        let vnoise = |t: f32, seed: u32| {
+            let i = t.floor();
+            let f = t - i;
+            let s = f * f * (3.0 - 2.0 * f);
+            let a = h01((i as i32 as u32).wrapping_add(seed.wrapping_mul(7919)));
+            let b = h01((i as i32 as u32).wrapping_add(1).wrapping_add(seed.wrapping_mul(7919)));
+            a + (b - a) * s
+        };
+        for (li, &(mid, base, kind)) in self.light_link.iter().enumerate() {
+            let seed = li as u32 + 1;
+            let ph = h01(seed) * 6.2832;
+            let (f, tint): (f32, [f32; 3]) = match kind {
+                1 => {
+                    let n = vnoise(t * 9.0 + ph, seed);
+                    let dipn = vnoise(t * 1.7 + ph, seed.wrapping_mul(31));
+                    let dip = if dipn > 0.93 { (dipn - 0.93) * 6.0 } else { 0.0 };
+                    (1.0 + (n - 0.5) * 0.22 + (t * 0.7 + ph).sin() * 0.05 - dip, [1.0; 3])
+                }
+                2 => {
+                    let p = 1.0 + (t * 1.3 + ph).sin() * 0.18 + (vnoise(t * 5.0 + ph, seed) - 0.5) * 0.10;
+                    let hue = (t * 0.45 + ph).sin() * 0.5 + 0.5;
+                    (p, [1.0 - 0.25 * hue, 1.0, 1.0 - 0.15 * (1.0 - hue)])
+                }
+                3 => (1.0 + (vnoise(t * 2.2 + ph, seed) - 0.5) * 0.08, [1.0; 3]),
+                _ => (1.0, [1.0; 3]),
+            };
+            let f = f.max(0.05);
+            let c = [base[0] * f * tint[0], base[1] * f * tint[1], base[2] * f * tint[2]];
+            self.lights_cpu[li][4] = c[0];
+            self.lights_cpu[li][5] = c[1];
+            self.lights_cpu[li][6] = c[2];
+            if mid >= 0 {
+                self.mats_cpu[mid as usize].emissive = [c[0], c[1], c[2], 1.0];
+            }
+        }
+        ctx.upload(&self.light_stage, &self.lights_cpu);
+        ctx.upload(&self.mat_stage, &self.mats_cpu);
+        let lc = vk::BufferCopy::default().size(std::mem::size_of_val(&self.lights_cpu[..]) as u64);
+        ctx.device.cmd_copy_buffer(cmd, self.light_stage.buffer, self.lbuf.buffer, &[lc]);
+        let mc = vk::BufferCopy::default().size(std::mem::size_of_val(&self.mats_cpu[..]) as u64);
+        ctx.device.cmd_copy_buffer(cmd, self.mat_stage.buffer, self.mbuf.buffer, &[mc]);
+        let mb = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
+        ctx.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[mb], &[], &[]);
+    }
+
     pub unsafe fn set_yaw_masks(&self, ctx: &Ctx, yaw_q: u32) {
         let near = near_hide_bits(yaw_q);
         let stride = std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
@@ -1430,6 +1585,8 @@ impl SceneGpu {
         ctx.destroy_buffer(&self.gbuf);
         ctx.destroy_buffer(&self.mbuf);
         ctx.destroy_buffer(&self.lbuf);
+        ctx.destroy_buffer(&self.light_stage);
+        ctx.destroy_buffer(&self.mat_stage);
     }
 }
 
