@@ -218,8 +218,15 @@ void main(){
           if (ndl2 <= 0.0) continue;
           // one-sided Lambertian emitters: a screen/panel lights its facing
           // hemisphere (cosine), not the space behind it. x2 keeps the frontal
-          // pool near the old isotropic level.
-          float emit = lt.dir.w > 0.0 ? 2.0 * max(dot(-ldir, lt.dir.xyz), 0.0) : 1.0;
+          // pool near the old isotropic level. dir.w == 2.0 is the player
+          // flashlight: a smooth-edged spotlight cone (color.w = cos outer).
+          float emit = 1.0;
+          if (lt.dir.w == 2.0) {
+            float co = lt.color.w;
+            emit = smoothstep(co, mix(co, 1.0, 0.6), dot(-ldir, lt.dir.xyz));
+          } else if (lt.dir.w > 0.0) {
+            emit = 2.0 * max(dot(-ldir, lt.dir.xyz), 0.0);
+          }
           if (emit <= 0.0) continue;
           float sinT = clamp(lt.posRad.w / dist, 0.0, 1.0);
           float omega = 6.2831853 * (1.0 - sqrt(1.0 - sinT * sinT));

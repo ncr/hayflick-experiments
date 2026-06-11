@@ -1151,6 +1151,9 @@ pub struct SceneGpu {
     pub mbuf: Buffer,
     pub lbuf: Buffer, // emissive light list for NEE (see build)
     pub light_count: u32,
+    /// Index of the reserved flashlight slot in `lights_cpu` (== light_count;
+    /// past the probe bake's light range, so the frozen cache never sees it).
+    pub flash_idx: usize,
     // light animation (record_light_anim): CPU shadows of lbuf/mbuf, the
     // per-light anim link (material id or -1, base rgb, kind), and the
     // persistent host-visible staging buffers for the per-frame copies
@@ -1263,9 +1266,14 @@ impl SceneGpu {
             light_link.push((-1, [pl[4], pl[5], pl[6]], 3));
         }
         let light_count = lights.len() as u32;
-        if lights.is_empty() {
-            lights.push([0.0; 12]); // keep the binding valid
-        }
+        // reserved flashlight slot: the viewer streams a player-held spotlight
+        // (dir.w = 2.0 → cone falloff in shade/trace) into this trailing entry.
+        // It sits PAST light_count so the frozen probe bake never sees it — a
+        // light that moves with the player must stay direct-only. The shade
+        // dispatch passes lightCount+1 while the flashlight is on. (Also keeps
+        // the binding valid in scenes with zero real lights.)
+        let flash_idx = lights.len();
+        lights.push([0.0; 12]);
         // TRANSFER_DST so record_light_anim can stream animated values in
         let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
@@ -1413,7 +1421,9 @@ impl SceneGpu {
             spacing *= 1.25;
         };
         let probe_count = dims[0] * dims[1] * dims[2];
-        let mut pdata = vec![0.0f32; 16 + probe_count as usize * 20];
+        // TWO banks of probe payload (bank 0 = practicals off, bank 1 = full —
+        // shade.comp lerps them by the room-lights dim; transport is linear)
+        let mut pdata = vec![0.0f32; 16 + probe_count as usize * 20 * 2];
         pdata[0] = pmin.x;
         pdata[1] = pmin.y;
         pdata[2] = pmin.z;
@@ -1421,11 +1431,12 @@ impl SceneGpu {
         pdata[4] = dims[0] as f32;
         pdata[5] = dims[1] as f32;
         pdata[6] = dims[2] as f32;
-        let probe_buf = ctx.device_local(&pdata, vk::BufferUsageFlags::STORAGE_BUFFER);
+        // TRANSFER_DST so reset_probes can zero the accumulators for a re-bake
+        let probe_buf = ctx.device_local(&pdata, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB)", dims[0], dims[1], dims[2], probe_count, spacing, probe_count as f32 * 80.0 / 1e6);
 
         let hide_masks: Vec<u8> = (0..scene.primitives.len()).map(|i| scene.prim_hide_mask.get(i).copied().unwrap_or(0)).collect();
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, hide_masks, set_layout, pipeline_layout, pipeline, shader, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, flash_idx, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, hide_masks, set_layout, pipeline_layout, pipeline, shader, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count })
     }
 
     /// Patch the movable player's instance transform in the host-visible
@@ -1455,7 +1466,19 @@ impl SceneGpu {
     /// wobble), 3 = gentle drift (conceptual ceiling lights — barely alive).
     /// The probe cache keeps the baked BASE levels — the modulation is direct
     /// light only, which dominates near the fixtures; indirect stays steady.
-    pub unsafe fn record_light_anim(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, t: f32) {
+    ///
+    /// `anim = false` skips the flicker (frozen practicals — bit-stability
+    /// tests); `scale` is the room-lights master dim (0 = all practicals off,
+    /// fixture emissives included). The viewer re-bakes the probe cache when
+    /// `scale` changes, so indirect follows.
+    pub unsafe fn record_light_anim(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, t: f32, anim: bool, scale: f32) {
+        self.compute_practicals(t, anim, scale);
+        self.record_practicals_upload(ctx, cmd);
+    }
+
+    /// CPU half of `record_light_anim`: fill `lights_cpu` / `mats_cpu` from
+    /// the per-light base values. Never touches the reserved flashlight slot.
+    pub fn compute_practicals(&mut self, t: f32, anim: bool, scale: f32) {
         fn h01(x: u32) -> f32 {
             let mut v = x.wrapping_mul(0x9E37_79B9);
             v ^= v >> 16;
@@ -1483,14 +1506,25 @@ impl SceneGpu {
                     (1.0 + (n - 0.5) * 0.22 + (t * 0.7 + ph).sin() * 0.05 - dip, [1.0; 3])
                 }
                 2 => {
-                    let p = 1.0 + (t * 1.3 + ph).sin() * 0.18 + (vnoise(t * 5.0 + ph, seed) - 0.5) * 0.10;
+                    // CRT screen: slow throb + mid value-noise + fast refresh
+                    // shimmer + rare horizontal-roll-style dips
+                    let p = 1.0
+                        + (t * 1.3 + ph).sin() * 0.20
+                        + (vnoise(t * 5.0 + ph, seed) - 0.5) * 0.18
+                        + (vnoise(t * 16.0 + ph, seed.wrapping_mul(13)) - 0.5) * 0.14;
+                    let rolln = vnoise(t * 2.3 + ph, seed.wrapping_mul(37));
+                    let roll = if rolln > 0.90 { (rolln - 0.90) * 4.0 } else { 0.0 };
                     let hue = (t * 0.45 + ph).sin() * 0.5 + 0.5;
-                    (p, [1.0 - 0.25 * hue, 1.0, 1.0 - 0.15 * (1.0 - hue)])
+                    (p - roll, [1.0 - 0.25 * hue, 1.0, 1.0 - 0.15 * (1.0 - hue)])
                 }
                 3 => (1.0 + (vnoise(t * 2.2 + ph, seed) - 0.5) * 0.08, [1.0; 3]),
                 _ => (1.0, [1.0; 3]),
             };
-            let f = f.max(0.05);
+            // screens (kind 2) are devices, not room lighting — the wall
+            // switch (room-lights dim) never touches them. The probe-bank
+            // lerp stays exact: their bounce is a constant term in BOTH banks.
+            let f = (if anim { f.max(0.05) } else { 1.0 }) * (if kind == 2 { 1.0 } else { scale });
+            let tint = if anim { tint } else { [1.0; 3] };
             let c = [base[0] * f * tint[0], base[1] * f * tint[1], base[2] * f * tint[2]];
             self.lights_cpu[li][4] = c[0];
             self.lights_cpu[li][5] = c[1];
@@ -1499,6 +1533,12 @@ impl SceneGpu {
                 self.mats_cpu[mid as usize].emissive = [c[0], c[1], c[2], 1.0];
             }
         }
+    }
+
+    /// GPU half of `record_light_anim`: stream `lights_cpu` + `mats_cpu` to
+    /// the device buffers. Record BEFORE the trace/shade dispatch. Also the
+    /// flashlight-only path (the reserved slot rides along in `lights_cpu`).
+    pub unsafe fn record_practicals_upload(&self, ctx: &Ctx, cmd: vk::CommandBuffer) {
         ctx.upload(&self.light_stage, &self.lights_cpu);
         ctx.upload(&self.mat_stage, &self.mats_cpu);
         let lc = vk::BufferCopy::default().size(std::mem::size_of_val(&self.lights_cpu[..]) as u64);
@@ -1507,6 +1547,17 @@ impl SceneGpu {
         ctx.device.cmd_copy_buffer(cmd, self.mat_stage.buffer, self.mbuf.buffer, &[mc]);
         let mb = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
         ctx.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[mb], &[], &[]);
+    }
+
+    /// Zero both probe-cache banks (keeps the 16-float field header) so the
+    /// next `bake_probes` re-converges from scratch — only needed if scene
+    /// content (not the room-lights dim, which is a shader-side bank lerp)
+    /// invalidates the cache.
+    pub unsafe fn reset_probes(&self, ctx: &Ctx) {
+        let bytes = self.probe_count as u64 * 20 * 4 * 2;
+        ctx.one_time(|cmd| {
+            ctx.device.cmd_fill_buffer(cmd, self.probe_buf.buffer, 16 * 4, bytes, 0);
+        });
     }
 
     pub unsafe fn set_yaw_masks(&self, ctx: &Ctx, yaw_q: u32) {

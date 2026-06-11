@@ -12,6 +12,12 @@
 # 'r' records a clip (game-pixel capture): stop writes clips/clip_NNNN.mp4
 # AND .gif. Knobs: CLIP_FPS=50 CLIP_MP4_SCALE=4 CLIP_GIF_SCALE=1 CLIP_MAX_S=60.
 #
+# 'f' toggles the player flashlight (aims where the player last walked).
+# Knobs: FLASH=1 FLASH_POWER=1.0 FLASH_CONE=22 — also live in the ESC menu.
+# 'l' toggles the room lights (LIGHTS=0..1 dims all practicals; indirect
+# follows instantly via pre-baked probe banks). LIGHTS=0 FLASH=1 = darkness
+# + torch.
+#
 # The viewer must run from the repo root (asset paths) — this script cd's
 # there itself, so it works from anywhere.
 set -euo pipefail

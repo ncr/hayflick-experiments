@@ -42,7 +42,7 @@ layout(set = 0, binding = 11, scalar) readonly buffer Probes { float pd[]; };
 layout(push_constant) uniform Push {
   vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos; // camDir.w = AO radius, camPos.w = AO strength
   ivec4 misc;  // W, H, bounces(unused), spp(unused)
-  ivec4 misc2; // seed(unused), debug channel, AO ray count (det repurposes the trace aaJitter slot), lightCount
+  ivec4 misc2; // probe-bank lerp 16.16 fixed point (room-lights dim; trace uses this slot as seed), debug channel, AO ray count (det repurposes the trace aaJitter slot), lightCount
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
 } pc;
 
@@ -124,10 +124,21 @@ float rtAO(vec3 p, vec3 n, int N, float R, float strength){
 // surrounding probes, each evaluated HL2-style (n^2-weighted axis faces). The
 // sample point is pushed off the surface so probes buried in the wall behind
 // a surface contribute less.
+//
+// The cache holds TWO banks (probes.comp): bank 0 = practicals off (sun/sky
+// only), bank 1 = full. Light transport is linear in emission, so lerping the
+// banks by the room-lights dim (misc2.x, 16.16 fixed point) is EXACT at every
+// level — no re-bake on a light switch.
+vec3 axisFaces(uint b0, uint b1, uint off, float lerp_){
+  return mix(vec3(pd[b0 + off], pd[b0 + off + 1u], pd[b0 + off + 2u]),
+             vec3(pd[b1 + off], pd[b1 + off + 1u], pd[b1 + off + 2u]), lerp_);
+}
 vec3 probeE(vec3 p, vec3 n){
   vec3 origin = vec3(pd[0], pd[1], pd[2]);
   float spacing = pd[3];
   ivec3 dims = ivec3(int(pd[4]), int(pd[5]), int(pd[6]));
+  uint bankStride = uint(dims.x * dims.y * dims.z) * 20u;
+  float lerp_ = float(pc.misc2.x) / 65536.0;
   vec3 f = (p + n * (0.3 * spacing) - origin) / spacing;
   f = clamp(f, vec3(0.0), vec3(dims) - 1.001);
   ivec3 i0 = ivec3(floor(f));
@@ -142,11 +153,12 @@ vec3 probeE(vec3 p, vec3 n){
     if (w <= 1e-5) continue;
     uint pi = uint(ic.x + ic.y * dims.x + ic.z * dims.x * dims.y);
     uint base = 16u + pi * 20u;
+    uint base1 = base + bankStride;
     float cnt = pd[base + 18u];
     if (cnt < 1.0) continue;
-    vec3 fx = n.x > 0.0 ? vec3(pd[base + 0u], pd[base + 1u], pd[base + 2u]) : vec3(pd[base + 3u], pd[base + 4u], pd[base + 5u]);
-    vec3 fy = n.y > 0.0 ? vec3(pd[base + 6u], pd[base + 7u], pd[base + 8u]) : vec3(pd[base + 9u], pd[base + 10u], pd[base + 11u]);
-    vec3 fz = n.z > 0.0 ? vec3(pd[base + 12u], pd[base + 13u], pd[base + 14u]) : vec3(pd[base + 15u], pd[base + 16u], pd[base + 17u]);
+    vec3 fx = n.x > 0.0 ? axisFaces(base, base1, 0u, lerp_) : axisFaces(base, base1, 3u, lerp_);
+    vec3 fy = n.y > 0.0 ? axisFaces(base, base1, 6u, lerp_) : axisFaces(base, base1, 9u, lerp_);
+    vec3 fz = n.z > 0.0 ? axisFaces(base, base1, 12u, lerp_) : axisFaces(base, base1, 15u, lerp_);
     vec3 E = (n2.x * fx + n2.y * fy + n2.z * fz) * (12.566370 / cnt); // 4pi/N uniform-sphere estimator
     e += w * E;
     wsum += w;
@@ -239,7 +251,15 @@ void main(){
     vec3 ldir = toL / dist;
     float ndl2 = dot(n, ldir);
     if (ndl2 <= 0.0) continue;
-    float emit = lt.dir.w > 0.0 ? 2.0 * max(dot(-ldir, lt.dir.xyz), 0.0) : 1.0;
+    float emit = 1.0;
+    if (lt.dir.w == 2.0) {
+      // spotlight (the player flashlight): color.w = cos(outer half-angle),
+      // soft edge over the outer 40% of the cone
+      float co = lt.color.w;
+      emit = smoothstep(co, mix(co, 1.0, 0.6), dot(-ldir, lt.dir.xyz));
+    } else if (lt.dir.w > 0.0) {
+      emit = 2.0 * max(dot(-ldir, lt.dir.xyz), 0.0); // one-sided Lambertian (screens)
+    }
     if (emit <= 0.0) continue;
     float sinT = clamp(lt.posRad.w / dist, 0.0, 1.0);
     float omega = 6.2831853 * (1.0 - sqrt(1.0 - sinT * sinT));

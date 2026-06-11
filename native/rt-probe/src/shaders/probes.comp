@@ -43,7 +43,7 @@ layout(set = 0, binding = 11, scalar) buffer Probes { float pd[]; };
 layout(push_constant) uniform Push {
   vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos; // unused (bake has no camera)
   ivec4 misc;  // probeCount, raysTotal (Fibonacci N), bounces, raysThisBatch
-  ivec4 misc2; // batchStartRay, _, _, lightCount
+  ivec4 misc2; // batchStartRay, bank (0 = practicals off, 1 = full), _, lightCount
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
 } pc;
 
@@ -158,7 +158,10 @@ void main(){
   int nx = int(pd[4]), ny = int(pd[5]);
   ivec3 g = ivec3(int(pi) % nx, (int(pi) / nx) % ny, int(pi) / (nx * ny));
   vec3 P = origin + vec3(g) * spacing;
-  uint base = 16u + pi * 20u;
+  // misc2.y selects the bank: 0 = practicals off (sun/sky only), 1 = full.
+  // shade.comp lerps the two by the room-lights dim — light transport is
+  // linear in emission, so two banks cover every dim level exactly.
+  uint base = 16u + (uint(pc.misc2.y) * uint(pc.misc.x) + pi) * 20u;
 
   vec3 sums[6];
   for (int f = 0; f < 6; f++) sums[f] = vec3(pd[base + f * 3u], pd[base + f * 3u + 1u], pd[base + f * 3u + 2u]);

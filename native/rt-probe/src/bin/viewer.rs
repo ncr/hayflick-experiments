@@ -14,9 +14,14 @@
 //! frames are captured at exact game resolution and encoded on stop into BOTH
 //! clips/clip_NNNN.mp4 (x264, NEAREST 4x) and .gif (palette, 1x, half rate) —
 //! knobs: CLIP_FPS (50), CLIP_MP4_SCALE (4), CLIP_GIF_SCALE (1), CLIP_MAX_S
-//! (60); Esc = tune menu (sliders + toggles + quit; also the hamburger icon
-//! top-left). Closing the menu prints the env string that reproduces the
-//! dialed-in values.
+//! (60); f = toggle the player flashlight — a spotlight aimed where the player
+//! last walked (power / cone in the menu; FLASH / FLASH_POWER / FLASH_CONE
+//! seed it); l = room lights on/off (the menu's "room lights" slider dims all
+//! practicals continuously; LIGHTS seeds it; the probe cache holds two baked
+//! banks — practicals off / full — lerped in-shader, so indirect light follows
+//! instantly with no re-bake); Esc = tune menu (sliders + toggles + quit; also
+//! the hamburger icon top-left). Closing the menu prints the env string that
+//! reproduces the dialed-in values.
 //!
 //! SCENE=house — example scene from the blockstudio wall/floor tile kits: a
 //! Fallout-flavoured three-room house with forge props and a yard
@@ -201,7 +206,8 @@ struct MenuItem {
 }
 
 const MENU: &[MenuItem] = &[
-    MenuItem { key: "exposure", label: "exposure", kind: ItemKind::Slider { min: 0.05, max: 1.5, step: 0.01 } },
+    MenuItem { key: "exposure", label: "exposure", kind: ItemKind::Slider { min: 0.01, max: 4.0, step: 0.01 } },
+    MenuItem { key: "lights", label: "room lights", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     MenuItem { key: "ao", label: "ao strength", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     MenuItem { key: "ao_r", label: "ao radius", kind: ItemKind::Slider { min: 0.1, max: 3.0, step: 0.05 } },
     MenuItem { key: "ao_n", label: "ao rays", kind: ItemKind::Slider { min: 1.0, max: 32.0, step: 1.0 } },
@@ -210,6 +216,9 @@ const MENU: &[MenuItem] = &[
     MenuItem { key: "sdither_th", label: "sd threshold", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.01 } },
     MenuItem { key: "dither", label: "sd pattern", kind: ItemKind::Slider { min: 1.0, max: 5.0, step: 1.0 } },
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
+    MenuItem { key: "flash", label: "flashlight", kind: ItemKind::Toggle },
+    MenuItem { key: "flash_power", label: "fl power", kind: ItemKind::Slider { min: 0.1, max: 4.0, step: 0.05 } },
+    MenuItem { key: "flash_cone", label: "fl cone", kind: ItemKind::Slider { min: 8.0, max: 50.0, step: 1.0 } },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
 ];
@@ -572,6 +581,19 @@ struct Renderer {
     ao_r: f32,       // det RT-AO range in wu
     ao_n: i32,       // det RT-AO ray count
     light_anim: bool, // animated practicals (LIGHT_ANIM=0 freezes; det only)
+    // player flashlight: a spotlight streamed into the reserved trailing NEE
+    // slot (SceneGpu::flash_idx). Direct light only — the frozen probe cache
+    // never sees it (it moves with the player). 'f' toggles; menu tunes.
+    flash_on: bool,
+    flash_power: f32, // 1.0 ≈ a strong hand torch (slot radiance = power * 1500)
+    flash_cone: f32,  // outer cone half-angle, degrees
+    flash_pending: bool, // lights_cpu changed; upload before the next dispatch
+    player_facing: Vec2, // world-XZ unit dir of the last walk input — beam aim
+    // room-lights master dim ('l' toggles 0/1, menu slider for in-between):
+    // scales every practical (NEE light + fixture emissive) EXCEPT the
+    // flashlight. Indirect follows in the SAME frame: the probe cache holds
+    // two banks (practicals off / full) and shade.comp lerps them by this.
+    room_lights: f32,
     // in-viewer tune menu (ESC): selection + slider-drag state. The values
     // themselves live in the fields above (ao, style, exposure, ...).
     menu_open: bool,
@@ -892,6 +914,12 @@ impl Renderer {
             ao_r,
             ao_n,
             light_anim: std::env::var("LIGHT_ANIM").map(|v| v != "0").unwrap_or(true),
+            flash_on: std::env::var("FLASH").map(|v| v != "0").unwrap_or(false),
+            flash_power: fenv("FLASH_POWER", 1.0),
+            flash_cone: fenv("FLASH_CONE", 22.0),
+            flash_pending: false,
+            player_facing: Vec2::ZERO, // seeded toward screen-down after construction
+            room_lights: fenv("LIGHTS", 1.0).clamp(0.0, 1.0),
             menu_open: false,
             menu_sel: 0,
             menu_drag: false,
@@ -1000,6 +1028,17 @@ impl Renderer {
         if plx != 0.0 || plz != 0.0 {
             r.player_pos += Vec3::new(plx, 0.0, plz);
             r.player_dirty = true;
+        }
+        // default flashlight aim: toward the camera (screen-down), until the
+        // first walk input sets a real facing
+        let down = screen_px_to_world(Vec2::new(0.0, 1.0), r.yaw_deg());
+        r.player_facing = Vec2::new(down.x, down.z).try_normalize().unwrap_or(Vec2::new(0.0, 1.0));
+        // LIGHTS env seeds a dimmed room: push the scaled practicals for the
+        // legacy (DET=0) path, which has no per-frame practicals stream. The
+        // det probe bake manages its own per-bank uploads.
+        if r.room_lights != 1.0 && !r.det {
+            r.gpu.compute_practicals(0.0, false, r.room_lights);
+            r.ctx.one_time(|cmd| r.gpu.record_practicals_upload(&r.ctx, cmd));
         }
         Ok(r)
     }
@@ -1467,6 +1506,12 @@ impl Renderer {
             return;
         }
 
+        // walk input aims the flashlight, even when the move itself is blocked
+        // (turning in place against a wall)
+        if let Some(f) = Vec2::new(world.x, world.z).try_normalize() {
+            self.player_facing = f;
+        }
+
         let (ox, oz) = (self.player_pos.x, self.player_pos.z);
         let (nx, nz) = (ox + world.x, oz + world.z);
         let (mut px, mut pz) = (ox, oz);
@@ -1484,6 +1529,43 @@ impl Renderer {
         }
         if px != ox || pz != oz {
             self.commit_player(px, pz);
+        }
+    }
+
+    /// 'f' / the menu toggle: the player-held spotlight.
+    fn toggle_flashlight(&mut self) {
+        self.flash_on = !self.flash_on;
+        println!("flashlight: {}", if self.flash_on { "on" } else { "off" });
+    }
+
+    /// Refresh the reserved NEE flashlight slot from the player pose + knobs.
+    /// Cheap enough to run every frame; sets `flash_pending` when the slot
+    /// actually changed so draw() knows to stream the light buffer (the
+    /// LIGHT_ANIM path re-uploads the whole list anyway and clears it).
+    fn update_flashlight(&mut self) {
+        let rec: [f32; 12] = if self.flash_on && self.scene.dynamic_prim.is_some() {
+            let p = snap_ground_to_lattice(self.player_pos, self.yaw_deg());
+            let f = self.player_facing;
+            // held at hand height, far enough in front of the pillar (half
+            // extent 0.1875) that the body never occludes its own beam; aimed
+            // ahead and pitched down so the cone pools a couple of tiles out
+            let pos = Vec3::new(p.x + f.x * 0.32, p.y + 0.95, p.z + f.y * 0.32);
+            let dir = Vec3::new(f.x, -0.55, f.y).normalize();
+            // the NEE solid angle of an r=0.06 emitter is tiny (~3e-3 sr at
+            // 2 wu) — slot radiance must be huge for a visible pool
+            let c = self.flash_power * 1500.0;
+            let cone_cos = self.flash_cone.to_radians().cos();
+            [pos.x, pos.y, pos.z, 0.06, c, c * 0.97, c * 0.88, cone_cos, dir.x, dir.y, dir.z, 2.0]
+        } else {
+            [0.0; 12]
+        };
+        let i = self.gpu.flash_idx;
+        if self.gpu.lights_cpu[i] != rec {
+            self.gpu.lights_cpu[i] = rec;
+            self.flash_pending = true;
+            if !self.det {
+                self.reset_accum = true; // the legacy accumulator can't track a moving light
+            }
         }
     }
 
@@ -1734,21 +1816,32 @@ impl Renderer {
         let t = std::time::Instant::now();
         const BATCH: i32 = 256;
         let trace_set = self.swap.as_ref().unwrap().trace_set;
-        while self.probes_baked < self.probe_rays_total {
-            let mut cam = iso_camera_at(&self.scene, 8, 8, 0.0, Vec3::ZERO); // only env0 (sun/sky/fog) matters here
-            cam.misc = [self.gpu.probe_count as i32, self.probe_rays_total, 4, BATCH];
-            cam.misc2 = [self.probes_baked, 0, 0, self.gpu.light_count as i32];
-            self.ctx.one_time(|cmd| {
-                let d = &self.ctx.device;
-                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.probe_pipeline);
-                d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[trace_set], &[]);
-                let bytes = std::slice::from_raw_parts((&cam as *const Push) as *const u8, std::mem::size_of::<Push>());
-                d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytes);
-                d.cmd_dispatch(cmd, self.gpu.probe_count.div_ceil(64), 1, 1);
-            });
-            self.probes_baked += BATCH;
+        // TWO banks: 0 = practicals off (sun/sky only), 1 = practicals full.
+        // shade.comp lerps them by the room-lights dim (transport is linear in
+        // emission), so a light switch — or any slider level — needs no
+        // re-bake: indirect changes in the same frame as direct. Each bank
+        // bakes against an explicitly uploaded light state.
+        for bank in 0..2i32 {
+            self.gpu.compute_practicals(0.0, false, bank as f32);
+            self.ctx.one_time(|cmd| self.gpu.record_practicals_upload(&self.ctx, cmd));
+            let mut baked = 0;
+            while baked < self.probe_rays_total {
+                let mut cam = iso_camera_at(&self.scene, 8, 8, 0.0, Vec3::ZERO); // only env0 (sun/sky/fog) matters here
+                cam.misc = [self.gpu.probe_count as i32, self.probe_rays_total, 4, BATCH];
+                cam.misc2 = [baked, bank, 0, self.gpu.light_count as i32];
+                self.ctx.one_time(|cmd| {
+                    let d = &self.ctx.device;
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.probe_pipeline);
+                    d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[trace_set], &[]);
+                    let bytes = std::slice::from_raw_parts((&cam as *const Push) as *const u8, std::mem::size_of::<Push>());
+                    d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytes);
+                    d.cmd_dispatch(cmd, self.gpu.probe_count.div_ceil(64), 1, 1);
+                });
+                baked += BATCH;
+            }
         }
-        println!("probes: baked {} rays x {} probes in {:.0} ms", self.probe_rays_total, self.gpu.probe_count, t.elapsed().as_secs_f32() * 1000.0);
+        self.probes_baked = self.probe_rays_total;
+        println!("probes: baked {} rays x {} probes x 2 light banks in {:.0} ms", self.probe_rays_total, self.gpu.probe_count, t.elapsed().as_secs_f32() * 1000.0);
     }
 
     /// Record (maintenance +) one trace dispatch into the accumulator via a
@@ -2026,7 +2119,11 @@ impl Renderer {
             "sdither_th" => self.style.sdither_th,
             "dither" => self.style.dither,
             "exposure" => self.exposure,
+            "lights" => self.room_lights,
             "light_anim" => self.light_anim as i32 as f32,
+            "flash" => self.flash_on as i32 as f32,
+            "flash_power" => self.flash_power,
+            "flash_cone" => self.flash_cone,
             _ => 0.0,
         }
     }
@@ -2041,7 +2138,19 @@ impl Renderer {
             "sdither_th" => self.style.sdither_th = v,
             "dither" => self.style.dither = v,
             "exposure" => self.exposure = v,
+            "lights" => {
+                self.room_lights = v;
+                // det: direct (per-frame practicals upload) and indirect (the
+                // shader's probe-bank lerp) both follow next frame — no rebake
+                if !self.det {
+                    self.flash_pending = true; // forces the legacy lights upload
+                    self.reset_accum = true;
+                }
+            }
             "light_anim" => self.light_anim = v != 0.0,
+            "flash" => self.flash_on = v != 0.0,
+            "flash_power" => self.flash_power = v,
+            "flash_cone" => self.flash_cone = v,
             _ => {}
         }
     }
@@ -2404,6 +2513,9 @@ impl Renderer {
         // clip recording: collect last frame's capture + decide if this frame
         // captures (all &mut self work, so it runs before the `swap` borrow)
         let cap_issue = self.prepare_capture();
+        // flashlight: refresh the reserved slot from the player pose (&mut
+        // self work too — before the `swap` borrow)
+        self.update_flashlight();
         let swap = self.swap.as_ref().unwrap();
         let d = &self.ctx.device;
         d.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();
@@ -2441,12 +2553,18 @@ impl Renderer {
         //     worst (motionless) moment;
         // (3) later dispatches get distinct seeds (64, 128, ...) so the
         //     accumulation stays unbiased — and fully deterministic.
-        cam.misc2[0] = self.samples;
+        // det repurposes the trace seed slot as the probe-bank lerp (16.16
+        // fixed point): shade.comp mixes the practicals-off / practicals-full
+        // probe banks by the room-lights dim — indirect light follows a light
+        // switch in the same frame, no re-bake.
+        cam.misc2[0] = if self.det { (self.room_lights * 65536.0).round() as i32 } else { self.samples };
         cam.misc2[1] = self.debug;
         // det: shade.comp reads the AO ray count here (trace's aaJitter slot —
         // trace is never dispatched in det mode, shade never jitters)
         cam.misc2[2] = if self.det { self.ao_n } else { self.aa };
-        cam.misc2[3] = self.gpu.light_count as i32;
+        // +1 includes the reserved flashlight slot while it's lit (the probe
+        // bake always gets the bare light_count — the cache stays torch-free)
+        cam.misc2[3] = self.gpu.light_count as i32 + (self.flash_on && self.scene.dynamic_prim.is_some()) as i32;
         if self.det {
             cam.cam_dir[3] = self.ao_r; // AO radius
             cam.cam_pos[3] = self.ao; // AO strength
@@ -2536,12 +2654,18 @@ impl Renderer {
         }
 
         if trace_in_present {
-            // animated practicals (flicker/pulse): stream this frame's light +
-            // emissive values before the shade dispatch. Det only — the legacy
-            // accumulator would smear a moving target. LIGHT_ANIM=0 freezes
-            // (needed for bit-stability tests).
-            if self.light_anim && self.det {
-                self.gpu.record_light_anim(&self.ctx, cmd, self.start_time.elapsed().as_secs_f32());
+            // practicals (room-lights dim + optional flicker/pulse anim) and
+            // the flashlight slot: stream this frame's light + emissive values
+            // before the shade dispatch. Every det frame (LIGHT_ANIM=0 just
+            // freezes the flicker — constant values stay bit-stable); in
+            // legacy MC mode only when something actually changed (the
+            // accumulator was reset by whoever set flash_pending).
+            if self.det {
+                self.gpu.record_light_anim(&self.ctx, cmd, self.start_time.elapsed().as_secs_f32(), self.light_anim, self.room_lights);
+                self.flash_pending = false; // rode along with the full upload
+            } else if self.flash_pending {
+                self.gpu.record_light_anim(&self.ctx, cmd, 0.0, false, self.room_lights);
+                self.flash_pending = false;
             }
             if rebuild {
                 self.gpu.record_tlas_rebuild(&self.ctx, cmd);
@@ -2896,7 +3020,14 @@ impl ApplicationHandler for App {
                         r.rotate(-(r.yaw_q as i32));
                         r.player_dirty = true;
                     }
-                    Key::Character("r") => r.toggle_recording(),
+                    // toggles ignore key repeat: holding the key must not strobe
+                    Key::Character("r") if !event.repeat => r.toggle_recording(),
+                    Key::Character("f") if !event.repeat => r.toggle_flashlight(),
+                    Key::Character("l") if !event.repeat => {
+                        let v = if r.room_lights > 0.0 { 0.0 } else { 1.0 };
+                        r.tune_set("lights", v);
+                        println!("room lights: {}", if v > 0.0 { "on" } else { "off" });
+                    }
                     Key::Character("j") => {
                         r.denoise_live = !r.denoise_live;
                         r.denoised_valid = false; // raw frames may advance accum
