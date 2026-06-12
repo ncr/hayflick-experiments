@@ -193,9 +193,18 @@ solids, doors `{id, hinge, axis_y, closed_solid, open_angle, anim_ticks, name}`,
 `{id, room, kind: Incandescent|Screen|Drift, base_rgb, name}`, targets
 `{id, center, normal, radius}`, `player_start`, `seed`. For the NEW game scene, LevelSpec
 generates BOTH collision and visual geometry (builder lives in rt-viewer's adapter,
-composing rt_probe::Scene from the spec + tile GLBs) — kills the hand-synced
-solids-vs-walls duplication. The three existing scenes (grid/lab/house) and their goldens
-stay byte-untouched; the game gets a NEW scene + NEW golden.
+composing rt_probe::Scene from the spec) — kills the hand-synced solids-vs-walls
+duplication. The three existing scenes (grid/lab/house) and their goldens stay
+byte-untouched; the game gets a NEW scene + NEW golden.
+
+**Greybox visuals (owner directive 2026-06-13): the game scene uses NO textured tile
+GLBs for walls/doors/floors.** Walls, door leaves, floors are nicely colored greyboxes
+(`add_box_world` / local-space boxes for door leaves) with **dimensions identical to the
+tile-kit assets they replace** (read the dims from the kit placement code in scenes.rs /
+the kit manifest — tile module = 1.28 wu; all XZ dims stay multiples of 0.0625 wu per the
+iso stair-step invariant). Use a deliberate, cohesive palette (per-room wall tints, darker
+floor, contrasting door + target colors), not uniform grey. **Forge props are kept as-is**
+(textured GLBs via Scene::preload/place) for furnishing.
 
 **Components:** `Pos`, `Facing`, `Player{speed_px}` (floored by
 `recommended_min_px_per_sec(60)`), `WalkTarget`, `Flashlight{on}`,
@@ -281,8 +290,9 @@ Per-room probe banks are a renderer follow-up if content review demands it.
    ticks before capture or input-free bit-stable prefix).
 10. **Flicker out of renderer**: compute_practicals shrinks to "apply FrameState
     .light_emission"; kind-from-hue heuristic deleted (kind comes from LevelSpec).
-11. **Game content**: new scene built from LevelSpec (named doors via place_dynamic,
-    wall targets, named lights), NEW golden + CMDS replay golden; adapter asserts
+11. **Game content**: new scene built from LevelSpec (colored-greybox walls/doors/floors
+    at tile-kit dimensions — NO textured tilesets; props as-is; named doors via
+    place_dynamic, wall targets, named lights), NEW golden + CMDS replay golden; adapter asserts
     name-join completeness AND geometry consistency (door closed_solid matches the named
     prim's footprint).
 12. **Cleanup**: Config split RenderCfg/GameCfg/HarnessCfg (env-var names preserved —
