@@ -44,7 +44,11 @@ native/
                         #   Plus a `headless` [[bin]]: plays a trace.ron N ticks → state digest.
     rt-viewer/          # shell. [[bin]] name = "viewer" (binary path stays native/target/release/viewer).
                         #   deps: rt-probe, house-game, sim-core, iso-core, winit, ash-window,
-                        #   raw-window-handle, font8x8. Owns: winit loop, FixedLoop driver,
+                        #   raw-window-handle, font8x8 + ash/glam/png (viewer code uses them
+                        #   first-hand: vk types in renderer.rs, PNG encode in capture.rs).
+                        #   Shaders stay in rt-probe (build.rs is per-crate): rt-probe exports
+                        #   render::TONE_SPV for the viewer's swapchain tonemap pipeline.
+                        #   Owns: winit loop, FixedLoop driver,
                         #   input mapping (winit → Command via iso-core unprojection), camera
                         #   presentation (RotAnim easing, follow-cam pan with whole-pixel
                         #   remainder carry), snapshot→FrameState adapter, scene builder from
