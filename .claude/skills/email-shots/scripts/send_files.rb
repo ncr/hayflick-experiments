@@ -42,7 +42,11 @@ Mail.defaults do
     user_name: "brix@trix.pl",
     password: password,
     authentication: "plain",
-    enable_starttls_auto: true
+    enable_starttls_auto: true,
+    # large attachments (videos) can take minutes to upload; the net-smtp
+    # default read_timeout of 60s aborts mid-DATA on slow upstream
+    open_timeout: 30,
+    read_timeout: 600
   }
 end
 
