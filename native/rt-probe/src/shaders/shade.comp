@@ -21,7 +21,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
-layout(set = 0, binding = 1, rgba32f) uniform image2D accumImg; // radiance out (a=1; tonemap reads rgb directly)
+layout(set = 0, binding = 1, rgba32f) uniform image2D colorImg; // radiance out (a=1; tonemap reads rgb directly)
 
 struct Vertex { vec3 pos; vec3 nrm; vec2 uv; };
 struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };
@@ -34,15 +34,15 @@ layout(set = 0, binding = 5, scalar) readonly buffer Mats { Material mats[]; };
 layout(set = 0, binding = 6) uniform sampler2D textures[];
 struct Light { vec4 posRad; vec4 color; vec4 dir; };
 layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
-layout(set = 0, binding = 8, rgba32f) uniform image2D albedoImg; // kept: tonemap demodulation reads it
-layout(set = 0, binding = 9, rgba32f) uniform image2D normalImg;
-layout(set = 0, binding = 10, rgba32f) uniform image2D posImg;
-layout(set = 0, binding = 11, scalar) readonly buffer Probes { float pd[]; };
+layout(set = 0, binding = 8, rgba32f) uniform image2D albedoImg; // primary-hit albedo (tonemap demodulation)
+layout(set = 0, binding = 9, rgba32f) uniform image2D posImg;    // primary-hit world position (tonemap outline; w=0: sky)
+layout(set = 0, binding = 10, scalar) readonly buffer Probes { float pd[]; };
 
+// Mirrors render::ShadePush — field-for-field.
 layout(push_constant) uniform Push {
   vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos; // camDir.w = AO radius, camPos.w = AO strength
-  ivec4 misc;  // W, H, bounces(unused), spp(unused)
-  ivec4 misc2; // probe-bank lerp 16.16 fixed point (room-lights dim; trace uses this slot as seed), debug channel, AO ray count (det repurposes the trace aaJitter slot), lightCount
+  ivec4 misc;  // W, H, aoRays, debug (0 off, 1 albedo, 2 probe GI, 3 direct only, 4 AO term)
+  ivec4 misc2; // roomLights dim 16.16 fixed point (probe-bank lerp), lightCount, _, _
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
 } pc;
 
@@ -212,10 +212,9 @@ void main(){
 
   if (!hitb) {
     imageStore(albedoImg, px, vec4(1.0));
-    imageStore(normalImg, px, vec4(0.0));
     imageStore(posImg, px, vec4(0.0));
     col = sky(d) * fogT + fogAdd;
-    imageStore(accumImg, px, vec4(col, 1.0));
+    imageStore(colorImg, px, vec4(col, 1.0));
     return;
   }
 
@@ -224,15 +223,14 @@ void main(){
   if (m.texIndex >= 0) albedo *= texture(textures[nonuniformEXT(m.texIndex)], h.uv).rgb;
   vec3 n = h.n; if (dot(n, d) > 0.0) n = -n;
   imageStore(albedoImg, px, vec4(albedo, 1.0));
-  imageStore(normalImg, px, vec4(n, 0.0));
   imageStore(posImg, px, vec4(o + h.t * d, 1.0));
-  if (pc.misc2.y == 1) { // debug: raw base colour
-    imageStore(accumImg, px, vec4(albedo, 1.0));
+  if (pc.misc.w == 1) { // debug: raw base colour
+    imageStore(colorImg, px, vec4(albedo, 1.0));
     return;
   }
   vec3 p = o + h.t * d + n * 0.003;
-  if (pc.misc2.y == 2) { // debug: probe GI only
-    imageStore(accumImg, px, vec4(albedo * (1.0 / 3.14159265) * probeE(p, n), 1.0));
+  if (pc.misc.w == 2) { // debug: probe GI only
+    imageStore(colorImg, px, vec4(albedo * (1.0 / 3.14159265) * probeE(p, n), 1.0));
     return;
   }
 
@@ -242,7 +240,7 @@ void main(){
   float ndl = max(dot(n, sunDir), 0.0);
   if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0)) col += albedo * sun * ndl;
 
-  int lc = pc.misc2.w;
+  int lc = pc.misc2.y;
   for (int li = 0; li < lc; li++) {
     Light lt = lights[li];
     vec3 toL = lt.posRad.xyz - p;
@@ -270,19 +268,19 @@ void main(){
     if (!occluded(p, ldir, dist - lt.posRad.w)) col += c;
   }
 
-  // ---- indirect: world-space irradiance cache (misc2.y == 3: direct only),
+  // ---- indirect: world-space irradiance cache (debug 3: direct only),
   // modulated by deterministic short-range RT-AO — the contact-scale occlusion
   // the 0.5-wu probe grid can't resolve. AO never touches direct light (the
   // shadow rays above already are exact occlusion).
   float ao = 1.0;
-  if (pc.camPos.w > 0.0 && pc.misc2.z > 0 && pc.camDir.w > 0.0)
-    ao = rtAO(p, n, pc.misc2.z, pc.camDir.w, pc.camPos.w);
-  if (pc.misc2.y == 4) { // debug: AO term only
-    imageStore(accumImg, px, vec4(vec3(ao), 1.0));
+  if (pc.camPos.w > 0.0 && pc.misc.z > 0 && pc.camDir.w > 0.0)
+    ao = rtAO(p, n, pc.misc.z, pc.camDir.w, pc.camPos.w);
+  if (pc.misc.w == 4) { // debug: AO term only
+    imageStore(colorImg, px, vec4(vec3(ao), 1.0));
     return;
   }
-  if (pc.misc2.y != 3) col += albedo * (1.0 / 3.14159265) * probeE(p, n) * ao;
+  if (pc.misc.w != 3) col += albedo * (1.0 / 3.14159265) * probeE(p, n) * ao;
 
   col = col * fogT + fogAdd;
-  imageStore(accumImg, px, vec4(col, 1.0));
+  imageStore(colorImg, px, vec4(col, 1.0));
 }

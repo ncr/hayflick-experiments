@@ -3,7 +3,6 @@ use std::process::Command;
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     for (src, stage) in [
-        ("src/shaders/trace.comp", "comp"),
         ("src/shaders/tonemap.comp", "comp"),
         ("src/shaders/shade.comp", "comp"),
         ("src/shaders/probes.comp", "comp"),

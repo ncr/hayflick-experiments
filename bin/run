@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Build and run the rt-probe viewer.
+# Build and run the rt-probe viewer (deterministic hardware-RT renderer).
 #
 #   bin/run            # house scene
-#   bin/run lab        # any SCENE value as the first arg
-#   AO_R=1.2 bin/run   # every viewer env knob passes through
+#   bin/run lab        # any SCENE value as the first arg (house | lab | grid)
+#   AO_R=1.2 bin/run   # every Config env knob passes through (see config.rs)
 #
-# The live-tune UI is IN the viewer now: press ESC (or click the hamburger
-# icon top-left) for sliders + toggles + quit. Closing the menu prints the
-# env string that reproduces the dialed-in values.
+# The live-tune UI is IN the viewer: press ESC (or click the hamburger icon
+# top-left) for sliders + toggles + quit. Closing the menu prints the env
+# string that reproduces the dialed-in values.
 #
 # 'r' records a clip (game-pixel capture): stop writes clips/clip_NNNN.mp4
 # AND .gif. Knobs: CLIP_FPS=50 CLIP_MP4_SCALE=4 CLIP_GIF_SCALE=1 CLIP_MAX_S=60.
@@ -15,8 +15,10 @@
 # 'f' toggles the player flashlight (aims where the player last walked).
 # Knobs: FLASH=1 FLASH_POWER=1.0 FLASH_CONE=22 — also live in the ESC menu.
 # 'l' toggles the room lights (LIGHTS=0..1 dims all practicals; indirect
-# follows instantly via pre-baked probe banks). LIGHTS=0 FLASH=1 = darkness
-# + torch.
+# follows instantly via the pre-baked probe banks). LIGHTS=0 FLASH=1 =
+# darkness + torch.
+#
+# bin/golden runs the golden-frame regression check (bit-exact SHOT compare).
 #
 # The viewer must run from the repo root (asset paths) — this script cd's
 # there itself, so it works from anywhere.

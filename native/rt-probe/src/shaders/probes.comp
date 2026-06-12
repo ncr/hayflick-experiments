@@ -38,12 +38,13 @@ struct Light { vec4 posRad; vec4 color; vec4 dir; };
 layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
 // Probe field: 16-float header [origin.xyz, spacing, dims.xyz, _] then per
 // probe 20 floats: 6 axis faces (+X,-X,+Y,-Y,+Z,-Z) x rgb sums, ray count, pad.
-layout(set = 0, binding = 11, scalar) buffer Probes { float pd[]; };
+layout(set = 0, binding = 10, scalar) buffer Probes { float pd[]; };
 
+// Mirrors render::ProbePush — field-for-field (camera block unused padding).
 layout(push_constant) uniform Push {
   vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos; // unused (bake has no camera)
   ivec4 misc;  // probeCount, raysTotal (Fibonacci N), bounces, raysThisBatch
-  ivec4 misc2; // batchStartRay, bank (0 = practicals off, 1 = full), _, lightCount
+  ivec4 misc2; // batchStartRay, bank (0 = practicals off, 1 = full), lightCount, _
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
 } pc;
 
@@ -112,7 +113,7 @@ vec3 radiance(vec3 o, vec3 d, uint seed){
     float ndl = max(dot(n, sunDir), 0.0);
     if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0)) col += thru * albedo * sun * ndl;
 
-    int lc = pc.misc2.w;
+    int lc = pc.misc2.z;
     if (lc > 0) {
       const int NEE_S = 4;
       float lw = float(lc) / float(NEE_S);

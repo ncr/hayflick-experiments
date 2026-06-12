@@ -14,3 +14,11 @@ blender/__pycache__/
 
 # rt-probe in-viewer recordings
 clips/
+
+# rt-probe generated artifacts (debug shots, dumps, movie frames, renders)
+native/rt-probe/*.png
+native/rt-probe/target/
+frames/
+movie_frames/
+house_tour.mp4
+beauty.png

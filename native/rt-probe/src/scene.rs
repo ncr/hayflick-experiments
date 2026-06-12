@@ -1,4 +1,4 @@
-//! Minimal GLTF → ray-tracing scene loader.
+//! Scene model + minimal GLTF loader.
 //!
 //! Bakes node-world transforms into vertices (positions + normals) so each
 //! primitive's geometry lands in world space; the renderer then uses one BLAS
@@ -68,7 +68,7 @@ pub struct Scene {
     /// Collision data for the native game runtime (mirrors @common/gameplay
     /// `LevelResource.isBlocked`): the walkable floor rect (xmin, zmin, xmax,
     /// zmax) — already inset for the walls — and the XZ footprints of solid
-    /// props the player can't walk through. Consumed by `Level` in lib.rs.
+    /// props the player can't walk through. Consumed by `game::Level`.
     pub floor_rect: [f32; 4],
     pub solids: Vec<[f32; 4]>,
     /// Per-primitive near-wall hide tag (dollhouse cull under camera rotation).
@@ -87,12 +87,12 @@ pub struct Scene {
     /// the extracted emissive-prim lights: [cx, cy, cz, radius, r, g, b, 0].
     /// SceneGpu::build appends these to the light list.
     pub point_lights: Vec<[f32; 8]>,
-    /// Per-scene lighting environment, fed to the trace shader as `env0`:
+    /// Per-scene lighting environment, fed to the shaders as `env0`:
     /// [sun_scale, sky_scale, fog_density, fog_height_falloff_wu].
     /// sun/sky scale the shader's built-in key + sky dome; fog is an
     /// exponential ground-mist (sigma = density * exp(-y/height)) with a
     /// single-scatter sun term, applied on the primary segment only.
-    /// Overridable at runtime via SUN / SKY / FOG / FOG_H env vars.
+    /// Overridable at runtime via SUN / SKY / FOG / FOG_H (see `Config`).
     pub lighting: [f32; 4],
 }
 
@@ -105,6 +105,19 @@ struct Model {
     images: Vec<LoadedImage>,
     min: Vec3,
     max: Vec3,
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// 0xRRGGBB (three.js-style sRGB hex) -> linear rgba, like THREE.Color does
+/// before a material colour reaches the renderer.
+pub fn hex_linear(hex: u32) -> [f32; 4] {
+    let r = ((hex >> 16) & 0xff) as f32 / 255.0;
+    let g = ((hex >> 8) & 0xff) as f32 / 255.0;
+    let b = (hex & 0xff) as f32 / 255.0;
+    [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), 1.0]
 }
 
 fn to_rgba8(img: &gltf::image::Data) -> LoadedImage {
@@ -261,17 +274,6 @@ fn load_model(path: &str) -> Result<Model, Box<dyn std::error::Error>> {
     Ok(Model { vertices, indices, primitives, materials, images, min, max })
 }
 
-/// Dollhouse near-wall cull: drop vertical-ish ("wall") triangles whose
-/// centroid sits on the camera-near side of the room, so a fixed iso camera
-/// looking down `toward_h` sees the interior. Floors (near-horizontal normal)
-/// and far walls survive — so shadows / GI bounce off them as normal.
-#[derive(Clone, Copy)]
-pub struct WallCull {
-    pub toward_h: Vec3, // horizontal unit dir from room centre toward the camera
-    pub center: Vec3,   // room centre
-    pub thresh: f32,    // cull when (centroid-center)·toward_h exceeds this (world units)
-}
-
 /// A glTF file parsed once and registered with a `Scene` (materials + images
 /// pushed a single time); `Scene::place` then instantiates its geometry under
 /// any number of transforms without duplicating textures. The tile-based house
@@ -289,6 +291,15 @@ impl CachedModel {
 }
 
 impl Scene {
+    pub fn new() -> Self {
+        Scene {
+            min: Vec3::splat(f32::INFINITY),
+            max: Vec3::splat(f32::NEG_INFINITY),
+            lighting: [1.0, 1.0, 0.0, 1.0], // full sun/sky, no fog
+            ..Default::default()
+        }
+    }
+
     /// Parse `path` once and register its materials/images with this scene.
     pub fn preload(&mut self, path: &str) -> Result<CachedModel, Box<dyn std::error::Error>> {
         let m = load_model(path)?;
@@ -332,17 +343,6 @@ impl Scene {
         first
     }
 
-    /// Carve an emissive sub-surface out of a placed primitive — the "make the
-    /// screen itself glow" model edit, done at load time. Triangles of `prim`
-    /// whose geometric normal aligns with `dir` (dot > 0.6), whose centroid
-    /// lies inside the world AABB, and whose base-colour texel is DARK
-    /// (luma < dark_max — CRT glass is dark in the texture, the case is light)
-    /// move into a NEW primitive sharing the same vertex window, with a cloned
-    /// material whose emissive is set. The original prim's index range is
-    /// compacted in place; the vacated tail goes unused (per-prim BLAS ranges
-    /// make that harmless). NEE light extraction then sees the new prim as an
-    /// emissive surface at its TRUE position with its TRUE facing.
-    /// Returns the new prim index if any triangle matched.
     /// Debug helper: dump every triangle of a primitive as CSV
     /// (centroid xyz, world normal xyz, texel luma at the UV centroid).
     pub fn dump_tris_csv(&self, prim: usize, path: &str) {
@@ -379,10 +379,24 @@ impl Scene {
         }
     }
 
+    /// Carve an emissive sub-surface out of a placed primitive — the "make the
+    /// screen itself glow" model edit, done at load time. Triangles of `prim`
+    /// whose geometric normal aligns with `dir` (dot > 0.6), whose centroid
+    /// lies inside the world AABB, and whose base-colour texel is DARK
+    /// (luma < dark_max — CRT glass is dark in the texture, the case is light)
+    /// move into a NEW primitive sharing the same vertex window, with a cloned
+    /// material whose emissive is set. The original prim's index range is
+    /// compacted in place; the vacated tail goes unused (per-prim BLAS ranges
+    /// make that harmless). NEE light extraction then sees the new prim as an
+    /// emissive surface at its TRUE position with its TRUE facing.
+    ///
     /// `flip_winding` reverses each carved triangle (its geometric normal ends
     /// up at -dir): for surfaces the source model authored INSIDE-OUT (e.g. a
     /// recessed CRT plane facing into the case) — the flip makes the carved
     /// screen face outward, so NEE light extraction gets the true facing.
+    ///
+    /// Returns the new prim index if any triangle matched.
+    #[allow(clippy::too_many_arguments)]
     pub fn carve_emissive_region(&mut self, prim: usize, dir: Vec3, min: Vec3, max: Vec3, dark_max: f32, emissive: [f32; 4], flip_winding: bool) -> Option<usize> {
         let p = self.primitives[prim];
         let vbase = p.vertex_offset as usize;
@@ -441,81 +455,8 @@ impl Scene {
         }
     }
 
-    /// Load a file and merge it under `transform`. Triangles whose world-space
-    /// centroid Y is at or above `clip_y` are dropped (used to open the room's
-    /// ceiling for a top-down dollhouse view); pass `f32::INFINITY` to keep all.
-    pub fn add_file(&mut self, path: &str, transform: Mat4, clip_y: f32) -> Result<(), Box<dyn std::error::Error>> {
-        self.add_file_ex(path, transform, clip_y, None)
-    }
-
-    /// As `add_file`, plus an optional near-wall cull (see `WallCull`).
-    pub fn add_file_ex(
-        &mut self,
-        path: &str,
-        transform: Mat4,
-        clip_y: f32,
-        cull: Option<WallCull>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let m = load_model(path)?;
-        let image_base = self.images.len() as i32;
-        let material_base = self.materials.len() as i32;
-        for mut mat in m.materials {
-            if mat.tex_index >= 0 {
-                mat.tex_index += image_base;
-            }
-            self.materials.push(mat);
-        }
-        self.images.extend(m.images);
-
-        let normal_mat = Mat3::from_mat4(transform).inverse().transpose();
-        for p in &m.primitives {
-            let vbase = self.vertices.len() as u32;
-            let ibase = self.indices.len() as u32;
-            for li in 0..p.vertex_count {
-                let v = m.vertices[(p.vertex_offset + li) as usize];
-                let wp = transform.transform_point3(Vec3::from(v.pos));
-                let wn = (normal_mat * Vec3::from(v.nrm)).normalize_or_zero();
-                self.vertices.push(Vertex { pos: wp.to_array(), nrm: wn.to_array(), uv: v.uv });
-            }
-            let tris = &m.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
-            let mut kept = 0u32;
-            for t in tris.chunks_exact(3) {
-                let pos = |li: u32| Vec3::from(self.vertices[(vbase + li) as usize].pos);
-                let (p0, p1, p2) = (pos(t[0]), pos(t[1]), pos(t[2]));
-                let centroid = (p0 + p1 + p2) / 3.0;
-                if centroid.y >= clip_y {
-                    continue;
-                }
-                if let Some(c) = cull {
-                    // geometric face normal; a "wall" is near-vertical.
-                    let n = (p1 - p0).cross(p2 - p0).normalize_or_zero();
-                    let is_wall = n.y.abs() < 0.5;
-                    let near = (centroid - c.center).dot(c.toward_h) > c.thresh;
-                    if is_wall && near {
-                        continue;
-                    }
-                }
-                self.indices.extend_from_slice(t);
-                kept += 3;
-            }
-            if kept == 0 {
-                continue;
-            }
-            self.primitives.push(Primitive {
-                vertex_offset: vbase,
-                index_offset: ibase,
-                vertex_count: p.vertex_count,
-                index_count: kept,
-                material_id: p.material_id + material_base,
-            });
-        }
-        Ok(())
-    }
-
     /// Add a flat horizontal quad (a procedural floor) spanning `[xmin,xmax] ×
-    /// [zmin,zmax]` at height `y`. `example_room.glb` is walls-only, so the
-    /// dollhouse view needs a ground plane for the props to sit on and for the
-    /// sun/GI to bounce off.
+    /// [zmin,zmax]` at height `y` — the ground plane for procedural scenes.
     pub fn add_floor(&mut self, xmin: f32, xmax: f32, zmin: f32, zmax: f32, y: f32, color: [f32; 4]) {
         let material_id = self.materials.len() as i32;
         self.materials.push(Material { base_color: color, emissive: [0.0; 4], metallic: 0.0, roughness: 0.92, tex_index: -1, _pad: 0 });
@@ -580,38 +521,20 @@ impl Scene {
     /// and return its primitive index. Kept local so a TLAS instance transform
     /// can move it. Used for the movable player marker.
     pub fn add_box_local(&mut self, hx: f32, height: f32, hz: f32, color: [f32; 4], emissive: [f32; 4]) -> usize {
-        let material_id = self.materials.len() as i32;
-        self.materials.push(Material { base_color: color, emissive, metallic: 0.0, roughness: 0.5, tex_index: -1, _pad: 0 });
-        let vbase = self.vertices.len() as u32;
-        let ibase = self.indices.len() as u32;
-        let (lo, hi) = (0.0f32, height);
-        let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
-            ([1., 0., 0.], [[hx, lo, -hz], [hx, lo, hz], [hx, hi, hz], [hx, hi, -hz]]),
-            ([-1., 0., 0.], [[-hx, lo, hz], [-hx, lo, -hz], [-hx, hi, -hz], [-hx, hi, hz]]),
-            ([0., 0., 1.], [[-hx, lo, hz], [hx, lo, hz], [hx, hi, hz], [-hx, hi, hz]]),
-            ([0., 0., -1.], [[hx, lo, -hz], [-hx, lo, -hz], [-hx, hi, -hz], [hx, hi, -hz]]),
-            ([0., 1., 0.], [[-hx, hi, -hz], [hx, hi, -hz], [hx, hi, hz], [-hx, hi, hz]]),
-            ([0., -1., 0.], [[-hx, lo, hz], [hx, lo, hz], [hx, lo, -hz], [-hx, lo, -hz]]),
-        ];
-        let mut vi = 0u32;
-        for (n, quad) in faces {
-            for p in quad {
-                self.vertices.push(Vertex { pos: p, nrm: n, uv: [0.0, 0.0] });
-            }
-            self.indices.extend_from_slice(&[vi, vi + 1, vi + 2, vi, vi + 2, vi + 3]);
-            vi += 4;
-        }
         let idx = self.primitives.len();
-        self.primitives.push(Primitive { vertex_offset: vbase, index_offset: ibase, vertex_count: 24, index_count: 36, material_id });
+        self.add_box(Vec3::new(-hx, 0.0, -hz), Vec3::new(hx, height, hz), color, emissive, 0.5, 0.0);
         idx
     }
 
     /// Append an axis-aligned box in WORLD space spanning `[min, max]` with the
-    /// given material (static, identity instance). Used for coloured emissive
-    /// accent lights: the path tracer bounces their colour onto the otherwise
-    /// pale clay scene, so the render reads as lit/colourful rather than flat.
+    /// given material (static, identity instance). Used for emissive practicals
+    /// (bulbs, sconces, screens) and any quick blockout geometry.
     #[allow(clippy::too_many_arguments)]
     pub fn add_box_world(&mut self, min: Vec3, max: Vec3, color: [f32; 4], emissive: [f32; 4], roughness: f32, metallic: f32) {
+        self.add_box(min, max, color, emissive, roughness, metallic);
+    }
+
+    fn add_box(&mut self, min: Vec3, max: Vec3, color: [f32; 4], emissive: [f32; 4], roughness: f32, metallic: f32) {
         let material_id = self.materials.len() as i32;
         self.materials.push(Material { base_color: color, emissive, metallic, roughness, tex_index: -1, _pad: 0 });
         let vbase = self.vertices.len() as u32;
@@ -648,21 +571,6 @@ impl Scene {
                 self.max = self.max.max(v);
             }
         }
-    }
-
-    pub fn new() -> Self {
-        Scene {
-            min: Vec3::splat(f32::INFINITY),
-            max: Vec3::splat(f32::NEG_INFINITY),
-            lighting: [1.0, 1.0, 0.0, 1.0], // full sun/sky, no fog
-            ..Default::default()
-        }
-    }
-
-    /// World-space AABB of a freshly loaded file (for placement/scaling decisions).
-    pub fn file_bounds(path: &str) -> Result<(Vec3, Vec3), Box<dyn std::error::Error>> {
-        let m = load_model(path)?;
-        Ok((m.min, m.max))
     }
 
     pub fn geom_infos(&self) -> Vec<GeomInfo> {
