@@ -142,6 +142,85 @@ pub fn snap_ground_to_lattice(p: Vec3, yaw_off_deg: f32) -> Vec3 {
     p + u * (a.round() - a) + v * (b.round() - b)
 }
 
+// ---- unprojection: window pixel -> world (inverse of the render chain) -----
+
+/// shade.comp's pixel-centre tie-break: primary rays go through
+/// `px + 0.5 + 1/64` so they never lie exactly on a world-lattice seam plane
+/// (see the "primary ray through the pixel CENTRE" block there). The inverse
+/// must use the same offset — drop it and every unprojected point is biased
+/// 1/64 px toward the top-left.
+pub const PIXEL_CENTER_TIE: f32 = 1.0 / 64.0;
+
+/// How far behind the on-screen point `window_px_to_ray` starts its origin
+/// (world units). The ground intersection is independent of it; occlusion
+/// tests need the origin to precede all geometry — 64 wu comfortably exceeds
+/// the renderer's own camera backoff (scene diagonal · 1.5 + 5) at house scale.
+pub const RAY_BACKOFF: f32 = 64.0;
+
+/// The view transform a frame actually rendered with — everything needed to
+/// invert the tonemap upscale + pan crop + iso ortho camera for one window
+/// pixel. The viewer builds one per click: `target` / `yaw_off_deg` from the
+/// SETTLED camera (clicks during a rotation tween unproject at the target
+/// quarter — sim determinism), `pan` is the float crop pan (the GPU crops at
+/// `round(pan)` and so do we; the carried #5 remainder must not shift picks),
+/// `render_scale` the integer upscale (#4), `low` / `vis` the low-buffer and
+/// visible-region sizes in low pixels (`Renderer::low_and_vis`).
+#[derive(Clone, Copy, Debug)]
+pub struct ViewXform {
+    pub target: Vec3,
+    pub yaw_off_deg: f32,
+    pub pan: Vec2,
+    pub render_scale: i32,
+    pub low: Vec2,
+    pub vis: Vec2,
+}
+
+/// The integer low pixel a window pixel shows — exactly tonemap.comp's
+/// `lp = o / scale + ivec2(round(pan))` (integer division = floor for o ≥ 0;
+/// floor(win/rs) equals floor(floor(win)/rs), so fractional cursor positions
+/// pick the pixel they sit in).
+fn window_px_to_low(win: Vec2, v: &ViewXform) -> Vec2 {
+    let rs = v.render_scale.max(1) as f32;
+    (win / rs).floor() + v.pan.round()
+}
+
+/// The camera ray that rendered low pixel `lp` — shade.comp's primary ray:
+/// through the pixel centre + TIE bias, along the fixed iso view direction.
+fn low_px_ray(lp: Vec2, v: &ViewXform) -> (Vec3, Vec3) {
+    let (dir, right, up) = iso_basis(v.yaw_off_deg);
+    let sx = lp.x + 0.5 + PIXEL_CENTER_TIE - v.low.x * 0.5; // px right of buffer centre
+    let sy = lp.y + 0.5 + PIXEL_CENTER_TIE - v.low.y * 0.5; // px down
+    let through = v.target + right * (sx / ISO_R) - up * (sy / ISO_R);
+    (through - dir * RAY_BACKOFF, dir)
+}
+
+/// Pick ray for a window pixel (physical px, top-left origin) → (origin, unit
+/// dir). Bit-faithful to the render: all rs×rs window pixels of one upscale
+/// block return the SAME ray — the one whose colour they show on screen.
+pub fn window_px_to_ray(win: Vec2, v: &ViewXform) -> (Vec3, Vec3) {
+    low_px_ray(window_px_to_low(win, v), v)
+}
+
+/// Ground-plane (y = 0) pick for a window pixel. `None` when the pixel maps
+/// outside the visible region or into the overscan guard band (#7 — those
+/// pixels show no world); the game treats such clicks as no-ops (no
+/// clamp-to-edge in v1).
+pub fn window_px_to_ground(win: Vec2, v: &ViewXform) -> Option<Vec3> {
+    let rs = v.render_scale.max(1) as f32;
+    let s = win / rs;
+    if win.x < 0.0 || win.y < 0.0 || s.x >= v.vis.x || s.y >= v.vis.y {
+        return None;
+    }
+    let lp = window_px_to_low(win, v);
+    if lp.x < 0.0 || lp.y < 0.0 || lp.x >= v.low.x || lp.y >= v.low.y {
+        return None;
+    }
+    let (o, d) = low_px_ray(lp, v);
+    let t = -o.y / d.y; // iso pitch is fixed at 30°: d.y = -1/2, never parallel
+    let p = o + d * t;
+    Some(Vec3::new(p.x, 0.0, p.z))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +323,99 @@ mod tests {
         // idempotent + never moves more than ~a pixel cell
         assert!((snap_ground_to_lattice(s, 0.0) - s).length() < 1e-4);
         assert!((s - p).length() < 3.0 / ISO_R);
+    }
+
+    // ---- unprojection ------------------------------------------------------
+
+    /// Forward-project a world point to continuous low-pixel coordinates the
+    /// way shade.comp renders it: pixel `lp` shows p iff its centre ray
+    /// (lp + 0.5 + TIE about the buffer centre) passes through p. Written from
+    /// the shader formula, independent of the unprojection implementation.
+    fn project_to_low_px(p: Vec3, v: &ViewXform) -> Vec2 {
+        let (_d, right, up) = iso_basis(v.yaw_off_deg);
+        let a = (p - v.target).dot(right) * ISO_R + v.low.x * 0.5 - 0.5 - PIXEL_CENTER_TIE;
+        let b = -(p - v.target).dot(up) * ISO_R + v.low.y * 0.5 - 0.5 - PIXEL_CENTER_TIE;
+        Vec2::new(a, b)
+    }
+
+    #[test]
+    fn unproject_ground_round_trips_at_all_quarters() {
+        // adversarial view at every yaw quarter: integer upscale > 1 AND a pan
+        // with a fractional remainder (the carried #5 remainder must not shift
+        // picks — the GPU crops at round(pan); one-pixel drift hides here).
+        let low = Vec2::new(360.0, 260.0);
+        let vis = Vec2::new(342.0, 214.0);
+        let pan = Vec2::new(9.4, 22.6); // rounds to (9, 23)
+        for q in 0..4 {
+            let v = ViewXform { target: Vec3::new(1.7, 0.4, -2.3), yaw_off_deg: 90.0 * q as f32, pan, render_scale: 3, low, vis };
+            let g0 = Vec3::new(0.83, 0.0, -1.91); // arbitrary ground point
+            let lp = project_to_low_px(g0, &v).round(); // nearest pixel-centre ray
+            // any window pixel inside that low pixel's 3×3 upscale block
+            let win = (lp - pan.round()) * 3.0 + Vec2::new(1.0, 2.7);
+            let g1 = window_px_to_ground(win, &v).expect("inside the buffer (q{q})");
+            assert_eq!(g1.y, 0.0, "q{q}");
+            // exact inversion: g1 reprojects to EXACTLY that pixel centre
+            let back = project_to_low_px(g1, &v);
+            assert!((back - lp).abs().max_element() < 1e-3, "q{q}: {back:?} vs {lp:?}");
+            // and stays within the half-pixel quantisation of the click point
+            assert!((g1 - g0).length() < 1.5 / ISO_R, "q{q}: {g1:?} vs {g0:?}");
+        }
+    }
+
+    #[test]
+    fn unproject_is_block_constant_and_steps_one_pixel() {
+        // one upscale block = one low pixel = one ground point, bit-identical;
+        // crossing into the next block steps by EXACTLY the one-screen-pixel
+        // ground basis (iso_pixel_basis / screen_px_to_world) — this is the
+        // direct detector for one-pixel click drift under remainder + scale.
+        let v = ViewXform { target: Vec3::new(-0.4, 0.25, 3.1), yaw_off_deg: 90.0, pan: Vec2::new(40.6, 23.4), render_scale: 5, low: Vec2::new(400.0, 300.0), vis: Vec2::new(380.0, 280.0) };
+        let base = Vec2::new(35.0 * 5.0, 17.0 * 5.0); // top-left of one block
+        let g = window_px_to_ground(base, &v).unwrap();
+        for ox in 0..5 {
+            for oy in 0..5 {
+                let w = base + Vec2::new(ox as f32 + 0.49, oy as f32);
+                assert_eq!(window_px_to_ground(w, &v), Some(g), "block px ({ox},{oy})");
+            }
+        }
+        let gr = window_px_to_ground(base + Vec2::new(5.0, 0.0), &v).unwrap();
+        let gd = window_px_to_ground(base + Vec2::new(0.0, 5.0), &v).unwrap();
+        let step_r = g + screen_px_to_world(Vec2::new(1.0, 0.0), v.yaw_off_deg);
+        let step_d = g + screen_px_to_world(Vec2::new(0.0, 1.0), v.yaw_off_deg);
+        assert!((gr - step_r).length() < 1e-4, "{gr:?} vs {step_r:?}");
+        assert!((gd - step_d).length() < 1e-4, "{gd:?} vs {step_d:?}");
+    }
+
+    #[test]
+    fn unproject_ray_passes_through_wall_point() {
+        let v = ViewXform { target: Vec3::new(0.5, 0.0, 0.25), yaw_off_deg: 0.0, pan: Vec2::new(12.0, 8.0), render_scale: 2, low: Vec2::new(300.0, 200.0), vis: Vec2::new(280.0, 180.0) };
+        let (dir, right, up) = iso_basis(0.0);
+        // construct an off-ground "wall" point exactly on pixel (97, 41)'s
+        // centre ray, 1 wu along it
+        let lp = Vec2::new(97.0, 41.0);
+        let sx = lp.x + 0.5 + PIXEL_CENTER_TIE - v.low.x * 0.5;
+        let sy = lp.y + 0.5 + PIXEL_CENTER_TIE - v.low.y * 0.5;
+        let w = v.target + right * (sx / ISO_R) - up * (sy / ISO_R) + dir * 1.0;
+        assert!(w.y.abs() > 0.1, "genuinely off the ground plane: {w:?}");
+        let win = (lp - v.pan) * 2.0 + Vec2::new(1.0, 0.0); // interior of the block
+        let (o, d) = window_px_to_ray(win, &v);
+        assert!((d - dir).length() < 1e-6);
+        let t = (w - o).dot(d);
+        assert!(t > 0.0, "wall point must be in FRONT of the ray origin");
+        assert!((o + d * t - w).length() < 1e-4, "ray misses the wall point");
+        // and the ground pick is exactly this ray's y=0 intersection
+        let g = window_px_to_ground(win, &v).unwrap();
+        assert!((o + d * (-o.y / d.y) - g).length() < 1e-4);
+    }
+
+    #[test]
+    fn unproject_rejects_off_window_and_guard_band() {
+        let v = ViewXform { target: Vec3::ZERO, yaw_off_deg: 0.0, pan: Vec2::ZERO, render_scale: 2, low: Vec2::new(300.0, 200.0), vis: Vec2::new(280.0, 180.0) };
+        assert!(window_px_to_ground(Vec2::new(-1.0, 5.0), &v).is_none());
+        assert!(window_px_to_ground(Vec2::new(280.0 * 2.0, 5.0), &v).is_none()); // past vis
+        assert!(window_px_to_ground(Vec2::new(5.0, 180.0 * 2.0), &v).is_none());
+        assert!(window_px_to_ground(Vec2::new(1.0, 1.0), &v).is_some());
+        // an unclamped pan lands in the guard band -> None, never a bogus point
+        let v2 = ViewXform { pan: Vec2::new(-30.0, 0.0), ..v };
+        assert!(window_px_to_ground(Vec2::new(1.0, 1.0), &v2).is_none());
     }
 }
