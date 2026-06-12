@@ -22,7 +22,8 @@
 //! Scenes (SCENE=): house (default, dollhouse walls + player), lab (renderer
 //! isolation), grid (the web grid-walker rematch: fixed camera, open level).
 //!
-//! Headless harness (see config.rs): SHOT / SHOT_DELAY one-frame capture,
+//! Headless harness (see config.rs): SHOT / SHOT_DELAY one-frame capture
+//! (truly window-less — no surface/swapchain, extent taken from WINDOW),
 //! WALK / ROTATE_AT synthetic input, DUMP / DUMP_AT / DUMP_N frame dumps,
 //! MOVIE scripted tour, FRAMES / TIMING perf, WINDOW=WxH exact size.
 
@@ -57,7 +58,7 @@ impl ApplicationHandler for App {
         let (w, h) = cfg.window.unwrap_or((1280, 800));
         let attrs = Window::default_attributes().with_title("rt-probe — iso viewer").with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
-        let renderer = unsafe { Renderer::new(&window, cfg).expect("renderer init") };
+        let renderer = unsafe { Renderer::new(Some(&window), cfg).expect("renderer init") };
         self.window = Some(window);
         self.renderer = Some(renderer);
     }
@@ -223,9 +224,22 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = Config::from_env();
+    // SHOT runs FULLY headless: no winit loop, no window, no surface/swapchain
+    // device extensions. The offscreen extent comes verbatim from WINDOW
+    // (default 1280x800), so golden captures are byte-reproducible — the WM
+    // never gets a say in the size. Same frame sequence as the windowed
+    // capture: draw() until harness_post_frame fires the SHOT and exits.
+    if cfg.shot.is_some() {
+        let mut r = unsafe { Renderer::new(None, cfg)? };
+        while !r.exit_requested {
+            unsafe { r.draw() };
+        }
+        return Ok(());
+    }
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    let mut app = App { cfg: Some(Config::from_env()), window: None, renderer: None };
+    let mut app = App { cfg: Some(cfg), window: None, renderer: None };
     event_loop.run_app(&mut app)?;
     // quitting mid-recording still delivers the clip: flush the buffered
     // frames into an encode, then wait for every encode worker to finish

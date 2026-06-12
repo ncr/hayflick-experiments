@@ -10,8 +10,9 @@
 # (GPU + driver shade exact float behaviour): regenerate after a driver update
 # if all three fail identically.
 #
-# WINDOW pins the requested inner size; the hyprctl rule floats the window so
-# the tiling WM honours it (session-scoped, lost on Hyprland reload — fine).
+# SHOT runs FULLY headless (no window, no surface, no swapchain) — WINDOW
+# pins the offscreen capture extent exactly, so golden dimensions are
+# reproducible with no window manager in the loop.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,7 +22,6 @@ UPDATE="${1:-}"
 
 cargo build --release --manifest-path native/rt-probe/Cargo.toml
 mkdir -p "$OUT" "$GOLD"
-hyprctl keyword windowrulev2 'float,title:^(rt-probe)' >/dev/null 2>&1 || true
 
 fail=0
 for s in house lab grid; do

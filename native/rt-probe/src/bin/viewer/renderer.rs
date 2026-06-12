@@ -37,7 +37,9 @@ pub struct TonePush {
     pub style4: [f32; 4], // shadow dither: strength, levels, luma threshold, dither world-phase y
 }
 
-/// Window-size-dependent resources, recreated on resize.
+/// Window-size-dependent resources, recreated on resize. Headless SHOT mode
+/// builds one too (the extent comes verbatim from WINDOW) — `swapchain` is
+/// then null and `images` / `render_finished` are empty.
 pub struct Swap {
     pub swapchain: vk::SwapchainKHR,
     pub extent: vk::Extent2D,
@@ -58,19 +60,26 @@ pub struct Swap {
     pub render_finished: Vec<vk::Semaphore>,
 }
 
+/// Presentation half: surface + swapchain machinery. `None` for headless SHOT
+/// captures — the renderer then draws into the offscreen `out` image only and
+/// the in-flight fence is the only synchronisation.
+pub struct Present {
+    pub surface_loader: ash::khr::surface::Instance,
+    pub surface: vk::SurfaceKHR,
+    pub swapchain_loader: ash::khr::swapchain::Device,
+    pub surface_format: vk::SurfaceFormatKHR,
+    pub present_mode: vk::PresentModeKHR,
+    pub image_available: vk::Semaphore,
+}
+
 pub struct Renderer {
     // ---- Vulkan device & presentation (underscore fields: kept alive only)
     pub _entry: ash::Entry,
     pub _instance: ash::Instance,
-    pub surface_loader: ash::khr::surface::Instance,
-    pub surface: vk::SurfaceKHR,
     pub pdev: vk::PhysicalDevice,
     pub ctx: Ctx,
-    pub swapchain_loader: ash::khr::swapchain::Device,
-    pub surface_format: vk::SurfaceFormatKHR,
-    pub present_mode: vk::PresentModeKHR,
+    pub present: Option<Present>,
     pub cmd: vk::CommandBuffer,
-    pub image_available: vk::Semaphore,
     pub in_flight: vk::Fence,
     pub swap: Option<Swap>,
     // ---- scene + GPU resources
@@ -113,14 +122,21 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub unsafe fn new(window: &Window, cfg: Config) -> Result<Renderer, Box<dyn std::error::Error>> {
+    /// `window: None` runs fully headless (SHOT captures): no surface, no
+    /// swapchain device extension, no present-capable queue required — the
+    /// offscreen extent is taken verbatim from `WINDOW` so capture sizes are
+    /// reproducible regardless of what a window manager would grant.
+    pub unsafe fn new(window: Option<&Window>, cfg: Config) -> Result<Renderer, Box<dyn std::error::Error>> {
         let entry = ash::Entry::load()?;
         let validation = CString::new("VK_LAYER_KHRONOS_validation").unwrap();
         let have_val = entry.enumerate_instance_layer_properties()?.iter().any(|l| (CStr::from_ptr(l.layer_name.as_ptr())) == validation.as_c_str());
 
-        let display_handle = window.display_handle()?.as_raw();
-        let window_handle = window.window_handle()?.as_raw();
-        let mut iexts: Vec<*const c_char> = ash_window::enumerate_required_extensions(display_handle)?.to_vec();
+        // instance extensions: the platform surface set only when a window
+        // exists (headless needs none — it never touches WSI)
+        let mut iexts: Vec<*const c_char> = match window {
+            Some(w) => ash_window::enumerate_required_extensions(w.display_handle()?.as_raw())?.to_vec(),
+            None => Vec::new(),
+        };
         let mut layers: Vec<*const c_char> = Vec::new();
         if have_val {
             layers.push(validation.as_ptr());
@@ -129,16 +145,23 @@ impl Renderer {
         let app = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_3);
         let instance = entry.create_instance(&vk::InstanceCreateInfo::default().application_info(&app).enabled_layer_names(&layers).enabled_extension_names(&iexts), None)?;
 
-        let surface = ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)?;
-        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
+        let surface_pair = match window {
+            Some(w) => {
+                let surface = ash_window::create_surface(&entry, &instance, w.display_handle()?.as_raw(), w.window_handle()?.as_raw(), None)?;
+                Some((ash::khr::surface::Instance::new(&entry, &instance), surface))
+            }
+            None => None,
+        };
 
-        // physical device: RT + swapchain + present support on our surface
-        let req_exts = [
+        // physical device: RT, plus swapchain + present support when windowed
+        let mut req_exts = vec![
             ash::khr::acceleration_structure::NAME,
             ash::khr::ray_query::NAME,
             ash::khr::deferred_host_operations::NAME,
-            ash::khr::swapchain::NAME,
         ];
+        if window.is_some() {
+            req_exts.push(ash::khr::swapchain::NAME);
+        }
         let (pdev, qf) = instance
             .enumerate_physical_devices()?
             .iter()
@@ -150,11 +173,11 @@ impl Renderer {
                 let qfp = instance.get_physical_device_queue_family_properties(pd);
                 let q = (0..qfp.len() as u32).find(|&i| {
                     qfp[i as usize].queue_flags.contains(vk::QueueFlags::COMPUTE)
-                        && surface_loader.get_physical_device_surface_support(pd, i, surface).unwrap_or(false)
+                        && surface_pair.as_ref().map_or(true, |(sl, s)| sl.get_physical_device_surface_support(pd, i, *s).unwrap_or(false))
                 })?;
                 Some((pd, q))
             })
-            .ok_or("no RT+present device")?;
+            .ok_or("no RT device")?;
         let props = instance.get_physical_device_properties(pdev);
         let mem_props = instance.get_physical_device_memory_properties(pdev);
 
@@ -174,19 +197,26 @@ impl Renderer {
         let queue = device.get_device_queue(qf, 0);
         let as_dev = ash::khr::acceleration_structure::Device::new(&instance, &device);
         let pool = device.create_command_pool(&vk::CommandPoolCreateInfo::default().queue_family_index(qf).flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER), None)?;
-        let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &device);
         let ctx = Ctx { device, as_dev, queue, pool, mem_props };
         println!("device: {}", CStr::from_ptr(props.device_name.as_ptr()).to_string_lossy());
 
-        // surface format + present mode
-        let formats = surface_loader.get_physical_device_surface_formats(pdev, surface)?;
-        let surface_format = formats
-            .iter()
-            .copied()
-            .find(|f| f.format == vk::Format::B8G8R8A8_UNORM && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
-            .unwrap_or(formats[0]);
-        let modes = surface_loader.get_physical_device_surface_present_modes(pdev, surface)?;
-        let present_mode = if modes.contains(&vk::PresentModeKHR::MAILBOX) { vk::PresentModeKHR::MAILBOX } else { vk::PresentModeKHR::FIFO };
+        // presentation half (windowed only): surface format + present mode
+        let present = match surface_pair {
+            Some((surface_loader, surface)) => {
+                let formats = surface_loader.get_physical_device_surface_formats(pdev, surface)?;
+                let surface_format = formats
+                    .iter()
+                    .copied()
+                    .find(|f| f.format == vk::Format::B8G8R8A8_UNORM && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
+                    .unwrap_or(formats[0]);
+                let modes = surface_loader.get_physical_device_surface_present_modes(pdev, surface)?;
+                let present_mode = if modes.contains(&vk::PresentModeKHR::MAILBOX) { vk::PresentModeKHR::MAILBOX } else { vk::PresentModeKHR::FIFO };
+                let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &ctx.device);
+                let image_available = ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
+                Some(Present { surface_loader, surface, swapchain_loader, surface_format, present_mode, image_available })
+            }
+            None => None,
+        };
 
         // scene + acceleration structures + pipelines
         let scene = build_scene(&cfg)?;
@@ -218,22 +248,16 @@ impl Renderer {
             .map_err(|(_, e)| e)?[0];
 
         let cmd = ctx.device.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1))?[0];
-        let image_available = ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
         let in_flight = ctx.device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)?;
 
         let grid_mode = cfg.scene == "grid";
         let mut r = Renderer {
             _entry: entry,
             _instance: instance,
-            surface_loader,
-            surface,
             pdev,
             ctx,
-            swapchain_loader,
-            surface_format,
-            present_mode,
+            present,
             cmd,
-            image_available,
             in_flight,
             swap: None,
             gpu,
@@ -301,7 +325,13 @@ impl Renderer {
             r.view.mask_q = mq;
             r.player.dirty = true; // first TLAS rebuild applies the masks
         }
-        r.recreate_swapchain(window.inner_size().width.max(1), window.inner_size().height.max(1));
+        // windowed: whatever inner size the WM actually granted; headless: the
+        // WINDOW request verbatim — identical extent math from there on
+        let (w0, h0) = match window {
+            Some(w) => (w.inner_size().width, w.inner_size().height),
+            None => r.cfg.window.unwrap_or((1280, 800)),
+        };
+        r.recreate_swapchain(w0.max(1), h0.max(1));
         // bake the GI probe cache (blocking, once — both light banks)
         let set = r.swap.as_ref().unwrap().scene_set;
         r.gpu.bake_probes(&r.ctx, set, r.env0, r.cfg.probe_rays);
@@ -365,39 +395,47 @@ impl Renderer {
             self.destroy_swap(old);
         }
 
-        let caps = self.surface_loader.get_physical_device_surface_capabilities(self.pdev, self.surface).unwrap();
-        let extent = if caps.current_extent.width != u32::MAX {
-            caps.current_extent
-        } else {
-            vk::Extent2D {
-                width: win_w.clamp(caps.min_image_extent.width, caps.max_image_extent.width),
-                height: win_h.clamp(caps.min_image_extent.height, caps.max_image_extent.height),
+        // headless: no swapchain — the extent IS the requested size, so SHOT
+        // dimensions are exactly WINDOW with no WM in the loop
+        let (extent, swapchain, images) = match &self.present {
+            Some(p) => {
+                let caps = p.surface_loader.get_physical_device_surface_capabilities(self.pdev, p.surface).unwrap();
+                let extent = if caps.current_extent.width != u32::MAX {
+                    caps.current_extent
+                } else {
+                    vk::Extent2D {
+                        width: win_w.clamp(caps.min_image_extent.width, caps.max_image_extent.width),
+                        height: win_h.clamp(caps.min_image_extent.height, caps.max_image_extent.height),
+                    }
+                };
+                let mut count = caps.min_image_count + 1;
+                if caps.max_image_count > 0 {
+                    count = count.min(caps.max_image_count);
+                }
+                let swapchain = p
+                    .swapchain_loader
+                    .create_swapchain(
+                        &vk::SwapchainCreateInfoKHR::default()
+                            .surface(p.surface)
+                            .min_image_count(count)
+                            .image_format(p.surface_format.format)
+                            .image_color_space(p.surface_format.color_space)
+                            .image_extent(extent)
+                            .image_array_layers(1)
+                            .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
+                            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+                            .pre_transform(caps.current_transform)
+                            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+                            .present_mode(p.present_mode)
+                            .clipped(true),
+                        None,
+                    )
+                    .unwrap();
+                let images = p.swapchain_loader.get_swapchain_images(swapchain).unwrap();
+                (extent, swapchain, images)
             }
+            None => (vk::Extent2D { width: win_w, height: win_h }, vk::SwapchainKHR::null(), Vec::new()),
         };
-        let mut count = caps.min_image_count + 1;
-        if caps.max_image_count > 0 {
-            count = count.min(caps.max_image_count);
-        }
-        let swapchain = self
-            .swapchain_loader
-            .create_swapchain(
-                &vk::SwapchainCreateInfoKHR::default()
-                    .surface(self.surface)
-                    .min_image_count(count)
-                    .image_format(self.surface_format.format)
-                    .image_color_space(self.surface_format.color_space)
-                    .image_extent(extent)
-                    .image_array_layers(1)
-                    .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
-                    .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-                    .pre_transform(caps.current_transform)
-                    .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-                    .present_mode(self.present_mode)
-                    .clipped(true),
-                None,
-            )
-            .unwrap();
-        let images = self.swapchain_loader.get_swapchain_images(swapchain).unwrap();
 
         // pixel-perfect low-res buffer (#2): window / base-scale at zoom=1, plus
         // an overscan border so the pan crop never reveals edge bars (#7).
@@ -449,7 +487,7 @@ impl Renderer {
 
         self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, render_finished });
         self.recenter_pan(); // start centred in the buffer
-        println!("swapchain {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
+        println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
     }
 
     pub unsafe fn destroy_swap(&self, s: Swap) {
@@ -465,7 +503,9 @@ impl Renderer {
             d.free_memory(mem, None);
         }
         self.ctx.destroy_buffer(&s.menu_buf);
-        self.swapchain_loader.destroy_swapchain(s.swapchain, None);
+        if let Some(p) = &self.present {
+            p.swapchain_loader.destroy_swapchain(s.swapchain, None);
+        }
     }
 
     /// Render + present one frame. Returns false if the swapchain needs rebuild.
@@ -493,10 +533,15 @@ impl Renderer {
         let d = &self.ctx.device;
         d.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();
 
-        let (idx, _suboptimal) = match self.swapchain_loader.acquire_next_image(swap.swapchain, u64::MAX, self.image_available, vk::Fence::null()) {
-            Ok(r) => r,
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return false,
-            Err(e) => panic!("acquire: {e:?}"),
+        // windowed: acquire the swapchain image to blit + present into;
+        // headless SHOT renders into `out` only — nothing to acquire
+        let idx = match &self.present {
+            Some(p) => match p.swapchain_loader.acquire_next_image(swap.swapchain, u64::MAX, p.image_available, vk::Fence::null()) {
+                Ok((idx, _suboptimal)) => Some(idx),
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return false,
+                Err(e) => panic!("acquire: {e:?}"),
+            },
+            None => None,
         };
         d.reset_fences(&[self.in_flight]).unwrap();
         let t_acq = std::time::Instant::now(); // fence wait + acquire done
@@ -512,7 +557,7 @@ impl Renderer {
         let rebuild = self.player.dirty;
 
         let (low_w, low_h, extent) = (swap.low_w, swap.low_h, swap.extent);
-        let sc_image = swap.images[idx as usize];
+        let sc_image = idx.map(|i| swap.images[i as usize]);
 
         // camera: ISO_VIEW_CONTRACT at the movable look-at target. The
         // flashlight rides in the reserved trailing NEE slot: +1 includes it
@@ -582,32 +627,36 @@ impl Renderer {
         d.cmd_push_constants(cmd, self.tone_pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&tp));
         d.cmd_dispatch(cmd, extent.width.div_ceil(8), extent.height.div_ceil(8), 1);
 
-        // out: GENERAL (compute write) -> TRANSFER_SRC; swapchain: UNDEFINED -> TRANSFER_DST
+        // out: GENERAL (compute write) -> TRANSFER_SRC (swapchain blit + clip
+        // capture source; headless keeps the same layout round-trip)
         barrier(d, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
-        barrier(d, cmd, sc_image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
         let layers = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 };
-        let blit = vk::ImageBlit::default()
-            .src_subresource(layers)
-            .src_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: extent.width as i32, y: extent.height as i32, z: 1 }])
-            .dst_subresource(layers)
-            .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: extent.width as i32, y: extent.height as i32, z: 1 }]);
-        d.cmd_blit_image(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::NEAREST);
-        // ESC tune-menu overlay (panel, or the hamburger icon when closed):
-        // CPU-drawn, copied onto the PRESENTED image only — swap.out stays
-        // clean, so SHOT/MOVIE/DUMP captures never contain UI. Headless modes
-        // skip it entirely.
-        if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() {
-            let (canvas, mw, mh) = self.menu_canvas();
-            let bgra = matches!(self.surface_format.format, vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB);
-            let bytes = crate::menu::expand_canvas(&canvas, mw, mh, swap.menu_scale, bgra);
-            let (pw, ph) = (mw as u32 * swap.menu_scale, mh as u32 * swap.menu_scale);
-            if MENU_MARGIN as u32 + pw <= extent.width && MENU_MARGIN as u32 + ph <= extent.height {
-                self.ctx.upload(&swap.menu_buf, &bytes);
-                let region = vk::BufferImageCopy::default()
-                    .image_subresource(layers)
-                    .image_offset(vk::Offset3D { x: MENU_MARGIN, y: MENU_MARGIN, z: 0 })
-                    .image_extent(vk::Extent3D { width: pw, height: ph, depth: 1 });
-                d.cmd_copy_buffer_to_image(cmd, swap.menu_buf.buffer, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+        if let Some(sc_image) = sc_image {
+            // swapchain: UNDEFINED -> TRANSFER_DST, then the integer-NEAREST blit
+            barrier(d, cmd, sc_image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
+            let blit = vk::ImageBlit::default()
+                .src_subresource(layers)
+                .src_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: extent.width as i32, y: extent.height as i32, z: 1 }])
+                .dst_subresource(layers)
+                .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: extent.width as i32, y: extent.height as i32, z: 1 }]);
+            d.cmd_blit_image(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::NEAREST);
+            // ESC tune-menu overlay (panel, or the hamburger icon when closed):
+            // CPU-drawn, copied onto the PRESENTED image only — swap.out stays
+            // clean, so SHOT/MOVIE/DUMP captures never contain UI. Headless modes
+            // skip it entirely.
+            if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() {
+                let (canvas, mw, mh) = self.menu_canvas();
+                let bgra = matches!(self.present.as_ref().unwrap().surface_format.format, vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB);
+                let bytes = crate::menu::expand_canvas(&canvas, mw, mh, swap.menu_scale, bgra);
+                let (pw, ph) = (mw as u32 * swap.menu_scale, mh as u32 * swap.menu_scale);
+                if MENU_MARGIN as u32 + pw <= extent.width && MENU_MARGIN as u32 + ph <= extent.height {
+                    self.ctx.upload(&swap.menu_buf, &bytes);
+                    let region = vk::BufferImageCopy::default()
+                        .image_subresource(layers)
+                        .image_offset(vk::Offset3D { x: MENU_MARGIN, y: MENU_MARGIN, z: 0 })
+                        .image_extent(vk::Extent3D { width: pw, height: ph, depth: 1 });
+                    d.cmd_copy_buffer_to_image(cmd, swap.menu_buf.buffer, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+                }
             }
         }
         // clip capture: NEAREST blit `out` (still TRANSFER_SRC from the blit
@@ -632,23 +681,34 @@ impl Renderer {
         }
         // out back to GENERAL for next frame; swapchain -> PRESENT
         barrier(d, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
-        barrier(d, cmd, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::empty(), vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE);
+        if let Some(sc_image) = sc_image {
+            barrier(d, cmd, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::empty(), vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE);
+        }
 
         d.end_command_buffer(cmd).unwrap();
 
-        let wait = [self.image_available];
-        let wait_stage = [vk::PipelineStageFlags::COMPUTE_SHADER];
-        let sig = [swap.render_finished[idx as usize]];
         let cmds = [cmd];
-        d.queue_submit(self.ctx.queue, &[vk::SubmitInfo::default().wait_semaphores(&wait).wait_dst_stage_mask(&wait_stage).command_buffers(&cmds).signal_semaphores(&sig)], self.in_flight).unwrap();
+        let ok = match (&self.present, idx) {
+            (Some(p), Some(idx)) => {
+                let wait = [p.image_available];
+                let wait_stage = [vk::PipelineStageFlags::COMPUTE_SHADER];
+                let sig = [swap.render_finished[idx as usize]];
+                d.queue_submit(self.ctx.queue, &[vk::SubmitInfo::default().wait_semaphores(&wait).wait_dst_stage_mask(&wait_stage).command_buffers(&cmds).signal_semaphores(&sig)], self.in_flight).unwrap();
 
-        let swapchains = [swap.swapchain];
-        let indices = [idx];
-        let present = vk::PresentInfoKHR::default().wait_semaphores(&sig).swapchains(&swapchains).image_indices(&indices);
-        let ok = match self.swapchain_loader.queue_present(self.ctx.queue, &present) {
-            Ok(false) => true,
-            Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => false,
-            Err(e) => panic!("present: {e:?}"),
+                let swapchains = [swap.swapchain];
+                let indices = [idx];
+                let present = vk::PresentInfoKHR::default().wait_semaphores(&sig).swapchains(&swapchains).image_indices(&indices);
+                match p.swapchain_loader.queue_present(self.ctx.queue, &present) {
+                    Ok(false) => true,
+                    Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => false,
+                    Err(e) => panic!("present: {e:?}"),
+                }
+            }
+            // headless: nothing presents — the in-flight fence is the only sync
+            _ => {
+                d.queue_submit(self.ctx.queue, &[vk::SubmitInfo::default().command_buffers(&cmds)], self.in_flight).unwrap();
+                true
+            }
         };
 
         self.player.dirty = false;
