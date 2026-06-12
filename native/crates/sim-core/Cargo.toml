@@ -1,0 +1,9 @@
+[package]
+name = "sim-core"
+version = "0.1.0"
+edition = "2021"
+description = "Generic game-loop/ECS framework (ARCHITECTURE.md area B): fixed-tick loop, tick-stamped commands, deterministic RNG, Simulation/Runner, audio cue boundary. No GPU, no window, no game content."
+
+[dependencies]
+hecs = "0.10"
+glam = "0.30"
