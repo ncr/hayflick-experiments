@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["rt-probe"]
+
+# Package-level profiles are ignored inside a workspace — hoisted from rt-probe.
+[profile.release]
+debug = true

@@ -28,6 +28,6 @@ cd "$(dirname "$0")/.."
 
 SCENE="${1:-${SCENE:-house}}"
 
-cargo build --release --manifest-path native/rt-probe/Cargo.toml
+cargo build --release --manifest-path native/Cargo.toml
 
-SCENE="$SCENE" exec ./native/rt-probe/target/release/viewer
+SCENE="$SCENE" exec ./native/target/release/viewer

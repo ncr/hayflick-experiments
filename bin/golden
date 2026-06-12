@@ -20,13 +20,13 @@ GOLD=native/rt-probe/golden
 OUT="${TMPDIR:-/tmp}/rt-golden"
 UPDATE="${1:-}"
 
-cargo build --release --manifest-path native/rt-probe/Cargo.toml
+cargo build --release --manifest-path native/Cargo.toml
 mkdir -p "$OUT" "$GOLD"
 
 fail=0
 for s in house lab grid; do
   SCENE=$s WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" \
-    ./native/rt-probe/target/release/viewer >/dev/null 2>&1
+    ./native/target/release/viewer >/dev/null 2>&1
   if [ "$UPDATE" = "--update" ]; then
     cp "$OUT/$s.png" "$GOLD/$s.png"
     echo "golden updated: $s ($(stat -c%s "$GOLD/$s.png") bytes)"

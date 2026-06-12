@@ -13,6 +13,3 @@ winit = "0.30"
 ash-window = "0.13"
 raw-window-handle = "0.6"
 font8x8 = { version = "0.3", default-features = false }
-
-[profile.release]
-debug = true
