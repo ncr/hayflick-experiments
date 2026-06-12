@@ -17,6 +17,11 @@ use ash::vk;
 use glam::{Mat4, Vec3};
 use std::ffi::CString;
 
+/// Compiled tonemap/blit shader. All SPIR-V is produced by rt-probe's
+/// build.rs (rt-viewer has no build script), so the viewer's swapchain
+/// tonemap pipeline pulls its bytes from here.
+pub const TONE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tonemap.comp.spv"));
+
 /// Push constants for shade.comp. Field names match the shader's `pc` block.
 #[repr(C)]
 #[derive(Clone, Copy)]

@@ -1222,12 +1222,22 @@ name = "rt-probe"
 version = "0.1.0"
 dependencies = [
  "ash",
- "ash-window",
- "font8x8",
  "glam",
  "gltf",
  "png 0.17.16",
+]
+
+[[package]]
+name = "rt-viewer"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "ash-window",
+ "font8x8",
+ "glam",
+ "png 0.17.16",
  "raw-window-handle",
+ "rt-probe",
  "winit",
 ]
 

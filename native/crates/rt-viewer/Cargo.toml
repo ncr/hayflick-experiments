@@ -1,0 +1,19 @@
+[package]
+name = "rt-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Interactive window + capture harness for the rt-probe deterministic renderer (winit shell; binary name stays `viewer`)."
+
+[[bin]]
+name = "viewer"
+path = "src/main.rs"
+
+[dependencies]
+rt-probe = { path = "../../rt-probe" }
+ash = "0.38"
+glam = "0.30"
+png = "0.17"
+winit = "0.30"
+ash-window = "0.13"
+raw-window-handle = "0.6"
+font8x8 = { version = "0.3", default-features = false }

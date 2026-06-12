@@ -238,8 +238,7 @@ impl Renderer {
         let tone_sl = [tone_set_layout];
         let tone_push = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).offset(0).size(std::mem::size_of::<TonePush>() as u32)];
         let tone_pipeline_layout = ctx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&tone_sl).push_constant_ranges(&tone_push), None)?;
-        const TONE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tonemap.comp.spv"));
-        let tone_code = ash::util::read_spv(&mut std::io::Cursor::new(TONE_SPV))?;
+        let tone_code = ash::util::read_spv(&mut std::io::Cursor::new(TONE_SPV))?; // rt_probe::TONE_SPV — shaders build in rt-probe
         let tone_shader = ctx.device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&tone_code), None)?;
         let tone_name = CString::new("main").unwrap();
         let tone_pipeline = ctx

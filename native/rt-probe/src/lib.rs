@@ -12,7 +12,7 @@
 //! - [`iso`]    — ISO_VIEW_CONTRACT camera + pixel-perfect view math (tested)
 //! - [`game`]   — native mirror of @common/gameplay (collision, iso input)
 //!
-//! The interactive window is `src/bin/viewer/`.
+//! The interactive window is the `rt-viewer` crate (`native/crates/rt-viewer`).
 //!
 //! Rendering model: shade.comp runs every frame as a PURE FUNCTION of
 //! (scene, camera) — primary ray per pixel centre, exact shadow rays, GI from
@@ -38,6 +38,6 @@ pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx, GpuTex};
 pub use iso::{
     clamp_pan, iso_basis, iso_camera_at, iso_pixel_basis, iso_target, render_scale, screen_px_to_world, snap_ground_to_lattice, whole_pixel_step, zoom_anchor_pan, CamFrame, ISO_PITCH_DEG, ISO_R, ISO_YAW_DEG,
 };
-pub use render::{make_pool, make_set, mat_to_transform, push_bytes, SceneGpu, ShadePush};
+pub use render::{make_pool, make_set, mat_to_transform, push_bytes, SceneGpu, ShadePush, TONE_SPV};
 pub use scene::Scene;
 pub use scenes::build_scene;
