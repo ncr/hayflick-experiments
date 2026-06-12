@@ -4,6 +4,7 @@
 
 use crate::renderer::{Renderer, ZOOM_MAX, ZOOM_MIN};
 use glam::{Vec2, Vec3};
+use house_game::{collide_and_slide, flashlight_pose, iso_input_dir, recommended_min_px_per_sec, Level};
 use rt_probe::*;
 
 /// Interactive quarter-turn animation — the native mirror of the web
@@ -259,20 +260,8 @@ impl Renderer {
         }
 
         let (ox, oz) = (self.player.pos.x, self.player.pos.z);
-        let (nx, nz) = (ox + world.x, oz + world.z);
-        let (mut px, mut pz) = (ox, oz);
-        if !self.player.level.is_blocked(nx, nz) {
-            px = nx;
-            pz = nz;
-        } else {
-            // slide: keep whichever axis is clear (nicer than a hard wall stop)
-            if world.x != 0.0 && !self.player.level.is_blocked(nx, oz) {
-                px = nx;
-            }
-            if world.z != 0.0 && !self.player.level.is_blocked(px, nz) {
-                pz = nz;
-            }
-        }
+        let lvl = &self.player.level;
+        let (px, pz) = collide_and_slide(|x, z| lvl.is_blocked(x, z), ox, oz, world.x, world.z);
         if px != ox || pz != oz {
             self.commit_player(px, pz);
         }
@@ -290,13 +279,10 @@ impl Renderer {
     /// else (compute_practicals never touches it).
     pub fn update_flashlight(&mut self) {
         let rec: [f32; 12] = if self.flash_on && self.scene.dynamic_prim.is_some() {
+            // hand-height pose math lives in house-game (the game's
+            // flashlight_system uses the same function)
             let p = snap_ground_to_lattice(self.player.pos, self.yaw_deg());
-            let f = self.player.facing;
-            // held at hand height, far enough in front of the pillar (half
-            // extent 0.1875) that the body never occludes its own beam; aimed
-            // ahead and pitched down so the cone pools a couple of tiles out
-            let pos = Vec3::new(p.x + f.x * 0.32, p.y + 0.95, p.z + f.y * 0.32);
-            let dir = Vec3::new(f.x, -0.55, f.y).normalize();
+            let (pos, dir) = flashlight_pose(p, self.player.facing);
             // the NEE solid angle of an r=0.06 emitter is tiny (~3e-3 sr at
             // 2 wu) — slot radiance must be huge for a visible pool
             let c = self.flash_power * 1500.0;

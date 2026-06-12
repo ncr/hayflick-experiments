@@ -11,6 +11,7 @@ use crate::menu::{MenuState, MENU_MARGIN, MPANEL_H, MPANEL_W};
 use crate::view::{PlayerState, ViewState};
 use ash::vk;
 use glam::{Vec2, Vec3};
+use house_game::Level;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
@@ -222,7 +223,9 @@ impl Renderer {
         let scene = build_scene(&cfg)?;
         println!("scene: {} prims, {} tris, {} textures", scene.primitives.len(), scene.indices.len() / 3, scene.images.len());
         let player0 = scene.player_start;
-        let level = Level::from_scene(&scene);
+        // Level is built directly from the scene's collision fields (the old
+        // Level::from_scene — house-game must never see rt_probe::Scene)
+        let level = Level { floor: scene.floor_rect, solids: scene.solids.clone() };
         println!("level: floor rect {:?}, {} solids", level.floor, level.solids.len());
         let gpu = SceneGpu::build(&ctx, &scene, cfg.probe_spacing)?;
         let env0 = cfg.lighting_env(scene.lighting);

@@ -11,9 +11,9 @@
 //!   animated practicals, the two-bank GI probe cache
 //! - [`iso`]    — re-export shim over the `iso-core` crate (ISO_VIEW_CONTRACT
 //!   camera + pixel-perfect view math, tested there)
-//! - [`game`]   — native mirror of @common/gameplay (collision, iso input)
 //!
-//! The interactive window is the `rt-viewer` crate (`native/crates/rt-viewer`).
+//! The interactive window is the `rt-viewer` crate (`native/crates/rt-viewer`);
+//! game logic (collision, iso input, ECS systems) is the `house-game` crate.
 //!
 //! Rendering model: shade.comp runs every frame as a PURE FUNCTION of
 //! (scene, camera) — primary ray per pixel centre, exact shadow rays, GI from
@@ -26,7 +26,6 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod config;
-pub mod game;
 pub mod gpu;
 /// Compat shim — iso math lives in the `iso-core` crate now (pure-math leaf,
 /// glam-only); consumers keep using `rt_probe::iso::*` / the lib re-exports.
@@ -38,7 +37,6 @@ pub mod scene;
 pub mod scenes;
 
 pub use config::{Config, StyleCfg};
-pub use game::{iso_input_dir, recommended_min_px_per_sec, Level};
 pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx, GpuTex};
 pub use iso::{
     clamp_pan, iso_basis, iso_camera_at, iso_pixel_basis, iso_target, render_scale, screen_px_to_world, snap_ground_to_lattice, whole_pixel_step, zoom_anchor_pan, CamFrame, ISO_PITCH_DEG, ISO_R, ISO_YAW_DEG,

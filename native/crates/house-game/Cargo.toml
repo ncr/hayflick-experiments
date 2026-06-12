@@ -1,0 +1,10 @@
+[package]
+name = "house-game"
+version = "0.1.0"
+edition = "2021"
+description = "The house game (ARCHITECTURE.md area C): level collision, commands, ECS systems, snapshot/state-hash — runs and tests fully headless (no GPU, no window)."
+
+[dependencies]
+sim-core = { path = "../sim-core" }
+iso-core = { path = "../iso-core" }
+glam = "0.30"

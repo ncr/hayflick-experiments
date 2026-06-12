@@ -68,7 +68,7 @@ pub struct Scene {
     /// Collision data for the native game runtime (mirrors @common/gameplay
     /// `LevelResource.isBlocked`): the walkable floor rect (xmin, zmin, xmax,
     /// zmax) — already inset for the walls — and the XZ footprints of solid
-    /// props the player can't walk through. Consumed by `game::Level`.
+    /// props the player can't walk through. Consumed by house-game's `Level`.
     pub floor_rect: [f32; 4],
     pub solids: Vec<[f32; 4]>,
     /// Per-primitive near-wall hide tag (dollhouse cull under camera rotation).
