@@ -1,0 +1,8 @@
+[package]
+name = "iso-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-math leaf: the ISO_VIEW_CONTRACT camera + pixel-perfect view math (no Vulkan, no window)."
+
+[dependencies]
+glam = "0.30"

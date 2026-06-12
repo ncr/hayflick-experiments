@@ -571,6 +571,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a257582fdcde896fd96463bf2d40eefea0580021c0712a0e2b028b60b47a837a"
 
 [[package]]
+name = "iso-core"
+version = "0.1.0"
+dependencies = [
+ "glam",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1224,6 +1231,7 @@ dependencies = [
  "ash",
  "glam",
  "gltf",
+ "iso-core",
  "png 0.17.16",
 ]
 

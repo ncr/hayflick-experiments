@@ -9,7 +9,8 @@
 //! - [`scenes`] — content: the house / lab / grid-walker scene builders
 //! - [`render`] — `SceneGpu`: AS build, shade + probe pipelines, NEE lights,
 //!   animated practicals, the two-bank GI probe cache
-//! - [`iso`]    — ISO_VIEW_CONTRACT camera + pixel-perfect view math (tested)
+//! - [`iso`]    — re-export shim over the `iso-core` crate (ISO_VIEW_CONTRACT
+//!   camera + pixel-perfect view math, tested there)
 //! - [`game`]   — native mirror of @common/gameplay (collision, iso input)
 //!
 //! The interactive window is the `rt-viewer` crate (`native/crates/rt-viewer`).
@@ -27,7 +28,11 @@
 pub mod config;
 pub mod game;
 pub mod gpu;
-pub mod iso;
+/// Compat shim — iso math lives in the `iso-core` crate now (pure-math leaf,
+/// glam-only); consumers keep using `rt_probe::iso::*` / the lib re-exports.
+pub mod iso {
+    pub use iso_core::*;
+}
 pub mod render;
 pub mod scene;
 pub mod scenes;
