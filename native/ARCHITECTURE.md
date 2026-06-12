@@ -32,8 +32,12 @@ native/
                         #   sheds deps: winit, ash-window, raw-window-handle, font8x8 (move to rt-viewer)
   crates/
     iso-core/           # pure-math leaf. deps: glam only. iso.rs verbatim + ViewXform,
-                        #   window_px_to_ground, window_px_to_ray unprojection.
-    sim-core/           # (B). deps: hecs, glam. Tick, FixedLoop, InputQueue<C>, Events<E>,
+                        #   window_px_to_ground, window_px_to_ray unprojection. Plus two
+                        #   consts the inverse needs: PIXEL_CENTER_TIE (shade.comp's 1/64 px
+                        #   tie bias) and RAY_BACKOFF (fixed 64 wu pick-ray origin backoff —
+                        #   ViewXform carries no scene bounds; ground hits are independent).
+    sim-core/           # (B). deps: hecs, glam. Tick, FixedLoop (+ MAX_FRAME_DT = 0.1 s
+                        #   clamp const), InputQueue<C>, Events<E>,
                         #   Pcg32, Simulation trait, Runner, AudioCue/AudioSink/VecSink/NullSink.
                         #   NO winit, NO ash, NO rt-probe. Public surface FROZEN to these items;
                         #   pinned by a re-export-list test. Game-flavored helpers stay in house-game
