@@ -143,3 +143,80 @@ pub fn fixture() -> LevelSpec {
         seed: 42,
     }
 }
+
+/// The actual game level (ARCHITECTURE.md step 11): a five-room house on the
+/// tile-kit grid (1 cell = 1.0 wu, wall lines on integer cell boundaries,
+/// wall thickness 0.25 wu so the faces land on ±0.125 — multiples of 0.0625,
+/// the iso stair step). The rt-viewer adapter builds the greybox `rt_probe
+/// ::Scene` straight from THIS spec — collision and visuals share one source.
+///
+/// Footprint x∈[0,12], z∈[0,8]. Interior wall lines at x=4, x=8, z=4 split:
+///   A (west)   x[0,4]  z[0,8]    — the entry hall, player spawns here
+///   B (mid-N)  x[4,8]  z[0,4]
+///   C (mid-S)  x[4,8]  z[4,8]
+///   D (east-N) x[8,12] z[0,4]
+///   E (east-S) x[8,12] z[4,8]
+/// Four doors connect adjacent rooms: door_ab (x=4, z[3,4]: A↔B), door_bd
+/// (x=8, z[1,2]: B↔D), door_ce (x=8, z[6,7]: C↔E), door_bc (z=4, x[6,7]: B↔C).
+/// Five wall targets, six named lights (one Incandescent per room + a Screen
+/// device in B). Every XZ dim is a multiple of 0.0625 wu.
+pub fn game_level() -> LevelSpec {
+    const T: f32 = 0.125; // wall half-thickness (0.25 wu wall, kit = 32 cm)
+    // a wall segment ON the vertical line x=cx, spanning z[z0,z1] (thickness 2T)
+    let vseg = |cx: f32, z0: f32, z1: f32| [cx - T, z0, cx + T, z1];
+    // a wall segment ON the horizontal line z=cz, spanning x[x0,x1]
+    let hseg = |x0: f32, cz: f32, x1: f32| [x0, cz - T, x1, cz + T];
+    // a door leaf footprint filling a 1-cell gap on a vertical line
+    let vdoor = |cx: f32, z0: f32, z1: f32| [cx - T, z0, cx + T, z1];
+    let hdoor = |x0: f32, cz: f32, x1: f32| [x0, cz - T, x1, cz + T];
+    let open = 100.0_f32.to_radians();
+
+    LevelSpec {
+        rooms: vec![
+            RoomSpec { id: RoomId(0), floor_rect: [0.0, 0.0, 4.0, 8.0] },
+            RoomSpec { id: RoomId(1), floor_rect: [4.0, 0.0, 8.0, 4.0] },
+            RoomSpec { id: RoomId(2), floor_rect: [4.0, 4.0, 8.0, 8.0] },
+            RoomSpec { id: RoomId(3), floor_rect: [8.0, 0.0, 12.0, 4.0] },
+            RoomSpec { id: RoomId(4), floor_rect: [8.0, 4.0, 12.0, 8.0] },
+        ],
+        static_solids: vec![
+            // x=4 line z[0,8], door gap z[3,4] (A↔B)
+            vseg(4.0, 0.0, 3.0),
+            vseg(4.0, 4.0, 8.0),
+            // x=8 line z[0,8], door gaps z[1,2] (B↔D) and z[6,7] (C↔E)
+            vseg(8.0, 0.0, 1.0),
+            vseg(8.0, 2.0, 6.0),
+            vseg(8.0, 7.0, 8.0),
+            // z=4 line x[4,12], door gap x[6,7] (B↔C); x[8,12] solid (D|E)
+            hseg(4.0, 4.0, 6.0),
+            hseg(7.0, 4.0, 12.0),
+            // a free-standing crate in room A (slide-along furnishing)
+            [0.75, 5.5, 1.75, 6.5],
+        ],
+        doors: vec![
+            DoorSpec { id: DoorId(0), hinge: Vec3::new(4.0, 0.0, 3.0), axis_y: 1.0, closed_solid: vdoor(4.0, 3.0, 4.0), open_angle: open, anim_ticks: 24, name: "door_ab".into() },
+            DoorSpec { id: DoorId(1), hinge: Vec3::new(8.0, 0.0, 1.0), axis_y: -1.0, closed_solid: vdoor(8.0, 1.0, 2.0), open_angle: open, anim_ticks: 24, name: "door_bd".into() },
+            DoorSpec { id: DoorId(2), hinge: Vec3::new(8.0, 0.0, 7.0), axis_y: 1.0, closed_solid: vdoor(8.0, 6.0, 7.0), open_angle: open, anim_ticks: 24, name: "door_ce".into() },
+            DoorSpec { id: DoorId(3), hinge: Vec3::new(6.0, 0.0, 4.0), axis_y: 1.0, closed_solid: hdoor(6.0, 4.0, 7.0), open_angle: open, anim_ticks: 24, name: "door_bc".into() },
+        ],
+        lights: vec![
+            LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.85, 0.6], name: "lamp_a".into() },
+            LightSpec { id: LightId(1), room: RoomId(1), kind: LightKind::Incandescent, base_rgb: [1.0, 0.82, 0.58], name: "lamp_b".into() },
+            LightSpec { id: LightId(2), room: RoomId(1), kind: LightKind::Screen, base_rgb: [0.45, 0.9, 0.75], name: "crt_b".into() },
+            LightSpec { id: LightId(3), room: RoomId(2), kind: LightKind::Incandescent, base_rgb: [1.0, 0.8, 0.62], name: "lamp_c".into() },
+            LightSpec { id: LightId(4), room: RoomId(3), kind: LightKind::Drift, base_rgb: [0.85, 0.92, 1.0], name: "ceil_d".into() },
+            LightSpec { id: LightId(5), room: RoomId(4), kind: LightKind::Incandescent, base_rgb: [1.0, 0.78, 0.5], name: "lamp_e".into() },
+        ],
+        targets: vec![
+            // discs ON inner wall faces (normal points into the room). The wall
+            // face the disc sits on ties at the disc plane (does not occlude).
+            TargetSpec { id: TargetId(0), center: Vec3::new(0.125, 1.25, 2.0), normal: Vec3::new(1.0, 0.0, 0.0), radius: 0.3 }, // A, west wall
+            TargetSpec { id: TargetId(1), center: Vec3::new(2.0, 1.25, 0.125), normal: Vec3::new(0.0, 0.0, 1.0), radius: 0.3 }, // A, north wall
+            TargetSpec { id: TargetId(2), center: Vec3::new(6.0, 1.25, 0.125), normal: Vec3::new(0.0, 0.0, 1.0), radius: 0.3 }, // B, north wall
+            TargetSpec { id: TargetId(3), center: Vec3::new(11.875, 1.25, 2.0), normal: Vec3::new(-1.0, 0.0, 0.0), radius: 0.3 }, // D, east wall
+            TargetSpec { id: TargetId(4), center: Vec3::new(6.0, 1.25, 7.875), normal: Vec3::new(0.0, 0.0, -1.0), radius: 0.3 }, // C, south wall
+        ],
+        player_start: Vec3::new(2.0, 0.0, 3.5), // room A, aligned with door_ab's gap row
+        seed: 7,
+    }
+}

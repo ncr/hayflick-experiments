@@ -20,7 +20,7 @@ pub mod trace;
 
 pub use flicker::flicker;
 pub use game::{Command, DoorState, FlashPose, GameEvent, GameSnapshot, HouseGame, PickRay, Res, TICK_DT};
-pub use spec::{fixture, DoorId, DoorSpec, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TargetId, TargetSpec};
+pub use spec::{fixture, game_level, DoorId, DoorSpec, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TargetId, TargetSpec};
 pub use trace::parse_trace;
 
 use glam::{Vec2, Vec3};

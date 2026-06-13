@@ -1097,4 +1097,101 @@ mod tests {
     }
 
     const REPLAY_GOLDEN_HASH: u64 = 0x6efef65b2724fcda;
+
+    // ---- the real game level (spec::game_level) ------------------------------
+
+    /// Driver over the actual game level (the SCENE=game content), so the
+    /// content trace is exercised headless before the renderer ever sees it.
+    struct GameDrv {
+        g: HouseGame<VecSink>,
+        t: u64,
+    }
+    impl GameDrv {
+        fn new() -> GameDrv {
+            GameDrv { g: HouseGame::new(&crate::spec::game_level(), VecSink::default()), t: 0 }
+        }
+        fn cmd(&mut self, c: Command) {
+            self.g.tick(Tick(self.t), &[c]);
+            self.t += 1;
+        }
+        fn run(&mut self, n: u64) {
+            for _ in 0..n {
+                self.g.tick(Tick(self.t), &[]);
+                self.t += 1;
+            }
+        }
+        fn pos(&self) -> Vec3 {
+            self.g.world.get::<&Pos>(self.g.player).unwrap().0
+        }
+    }
+
+    #[test]
+    fn game_level_geometry_is_consistent() {
+        let spec = crate::spec::game_level();
+        // floor bounds = the full footprint, every dim a multiple of 0.0625
+        assert_eq!(spec.floor_bounds(), [0.0, 0.0, 12.0, 8.0]);
+        let on_lattice = |v: f32| (v / 0.0625).fract().abs() < 1e-4;
+        for s in spec.static_solids.iter().chain(spec.doors.iter().map(|d| &d.closed_solid)) {
+            for &c in s {
+                assert!(on_lattice(c), "off-lattice coord {c} in {s:?}");
+            }
+        }
+        // every door's closed_solid spans exactly one cell (1.0 wu) along its run
+        for d in &spec.doors {
+            let s = d.closed_solid;
+            let run = (s[2] - s[0]).max(s[3] - s[1]);
+            assert!((run - 1.0).abs() < 1e-4, "door {:?} run {run}", d.id);
+        }
+    }
+
+    #[test]
+    fn game_level_walk_open_door_through_and_shoot_twice() {
+        let mut d = GameDrv::new();
+        // shut door_ab blocks the way east at z=3.5
+        d.cmd(click_ground(6.0, 3.5));
+        d.run(120);
+        assert!(d.pos().x < 4.0, "closed door_ab blocks the corridor: {:?}", d.pos());
+        // open door_ab (straight down onto its slab)
+        d.cmd(Command::Click { ray: down_ray(4.0, 3.5), ground: Some(Vec2::new(4.0, 3.5)) });
+        d.run(26); // anim_ticks = 24 (+ the tick the click lands on)
+        assert_eq!(d.g.snapshot().doors[0].0, DoorId(0));
+        assert!(d.g.snapshot().doors[0].1 > 0.0, "door_ab must be opening/open");
+        // now walk through into room B
+        d.cmd(click_ground(6.0, 2.0));
+        d.run(180);
+        assert!((d.pos() - Vec3::new(6.0, 0.0, 2.0)).length() < 0.1, "reached room B: {:?}", d.pos());
+        // shoot target 2 (B north wall) twice, spaced past the cooldown
+        d.cmd(shoot(Vec3::new(6.0, 1.25, 2.0), Vec3::new(0.0, 0.0, -1.0)));
+        assert_eq!(d.g.snapshot().score, 1);
+        d.run(20);
+        d.cmd(shoot(Vec3::new(6.0, 1.25, 2.0), Vec3::new(0.0, 0.0, -1.0)));
+        assert_eq!(d.g.snapshot().score, 2, "two spaced shots score twice");
+        assert_eq!(d.g.world.get::<&Target>(d.g.targets[2]).unwrap().hits, 2);
+    }
+
+    /// The SCENE=game CMDS replay golden: the SAME checked-in trace the viewer
+    /// plays as its startup prefix (traces/replay_game.txt), pinned end state.
+    /// Machine-local artifact (f32 + libm) — regenerate via
+    /// `cargo run -p house-game --bin headless -- traces/replay_game.txt 420 game`
+    /// ONLY when the content/behavior change is intended and reviewed.
+    #[test]
+    fn replay_game_golden() {
+        let trace = parse_trace(include_str!("../traces/replay_game.txt")).unwrap();
+        let mut r = Runner::new(HouseGame::new(&crate::spec::game_level(), VecSink::default()));
+        r.feed(trace);
+        let h = r.run_ticks(420);
+        let snap = r.sim.snapshot();
+        // semantic checkpoints first, so a drift diagnoses itself
+        assert_eq!(snap.score, 2, "both spaced shots must land on target 2");
+        assert_eq!(snap.doors[0].0, DoorId(0));
+        assert_eq!(snap.doors[0].1, GAME_OPEN, "door_ab fully open");
+        assert!(snap.flashlight);
+        assert_eq!(snap.room_lights, 0.0, "room lights toggled off");
+        // the player walked through into room B (x past the x=4 divider)
+        assert!(snap.player_pos.x > 5.5 && snap.player_pos.z < 2.5, "{:?}", snap.player_pos);
+        assert_eq!(h, REPLAY_GAME_HASH, "got {h:#018x}");
+    }
+
+    const GAME_OPEN: f32 = 1.7453293; // 100 deg in radians (game_level open_angle)
+    const REPLAY_GAME_HASH: u64 = 0x53f268fde4e6b19a;
 }
