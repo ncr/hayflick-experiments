@@ -27,7 +27,7 @@ pub struct MenuItem {
 
 pub const MENU: &[MenuItem] = &[
     MenuItem { key: "exposure", label: "exposure", kind: ItemKind::Slider { min: 0.01, max: 4.0, step: 0.01 } },
-    MenuItem { key: "lights", label: "room lights", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
+    MenuItem { key: "lights", label: "room lights", kind: ItemKind::Toggle },
     MenuItem { key: "ao", label: "ao strength", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     MenuItem { key: "ao_r", label: "ao radius", kind: ItemKind::Slider { min: 0.1, max: 3.0, step: 0.05 } },
     MenuItem { key: "ao_n", label: "ao rays", kind: ItemKind::Slider { min: 1.0, max: 32.0, step: 1.0 } },
@@ -140,7 +140,7 @@ impl Renderer {
             "sdither_th" => self.style.sdither_th,
             "dither" => self.style.dither,
             "exposure" => self.exposure,
-            "lights" => self.room_lights,
+            "lights" => self.game.sim.res.master_lights as i32 as f32, // sim state
             "light_anim" => self.light_anim as i32 as f32,
             "flash" => self.game.snap.flashlight as i32 as f32, // sim state
             "flash_power" => self.flash_power,
@@ -159,9 +159,14 @@ impl Renderer {
             "sdither_th" => self.style.sdither_th = v,
             "dither" => self.style.dither = v,
             "exposure" => self.exposure = v,
-            // direct light follows via the per-frame practicals upload;
-            // indirect via the shader's probe-bank lerp — same frame, no rebake
-            "lights" => self.room_lights = v,
+            // the room-lights MASTER is sim state: route as a Command (direct
+            // light follows via the emission build, indirect via the probe-
+            // bank lerp — same frame, no rebake)
+            "lights" => {
+                if (v != 0.0) != self.game.sim.res.master_lights {
+                    self.game.push(house_game::Command::ToggleRoomLights);
+                }
+            }
             "light_anim" => self.light_anim = v != 0.0,
             // flashlight is sim state: route the change as a Command (applied
             // next tick; the row reads the snapshot, so it follows)

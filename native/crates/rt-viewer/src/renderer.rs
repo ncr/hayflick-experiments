@@ -100,7 +100,10 @@ pub struct Renderer {
     pub ao_r: f32,
     pub ao_n: i32,
     pub light_anim: bool,
-    pub room_lights: f32, // master dim: direct via per-frame practicals, indirect via probe-bank lerp
+    /// LIGHTS env: a presentation multiplier on the switchable lights (direct
+    /// via the emission build, indirect via the probe-bank lerp). The on/off
+    /// MASTER is sim state (Command::ToggleRoomLights) — this is just a dim.
+    pub lights_dim: f32,
     pub flash_power: f32,
     pub flash_cone: f32,
     pub debug: i32,
@@ -223,12 +226,13 @@ impl Renderer {
         let scene = build_scene(&cfg)?;
         println!("scene: {} prims, {} tris, {} textures", scene.primitives.len(), scene.indices.len() / 3, scene.images.len());
         let player0 = scene.player_start;
-        // the sim side: a house-game instance over the interim mirror of the
-        // scene's collision fields (house-game never sees rt_probe::Scene —
-        // GameLoop/mirror_spec is the adapter that knows both)
-        let game = GameLoop::new(&scene, &cfg);
-        println!("level: floor rect {:?}, {} solids", scene.floor_rect, scene.solids.len());
         let gpu = SceneGpu::build(&ctx, &scene, cfg.probe_spacing)?;
+        // the sim side: a house-game instance over the interim mirror of the
+        // scene's collision fields + named lights (house-game never sees
+        // rt_probe::Scene — GameLoop/mirror_spec is the adapter knowing both;
+        // it joins the spec lights onto gpu.handles in slot order, loudly)
+        let game = GameLoop::new(&scene, &gpu.handles, gpu.light_count, &cfg);
+        println!("level: floor rect {:?}, {} solids, {} game lights", scene.floor_rect, scene.solids.len(), game.light_keys.len());
         let env0 = cfg.lighting_env(scene.lighting);
 
         // tonemap pipeline (window-independent)
@@ -276,7 +280,7 @@ impl Renderer {
             ao_r: cfg.ao_r,
             ao_n: cfg.ao_n,
             light_anim: cfg.light_anim,
-            room_lights: cfg.lights,
+            lights_dim: cfg.lights,
             flash_power: cfg.flash_power,
             flash_cone: cfg.flash_cone,
             debug: cfg.debug,
@@ -580,13 +584,19 @@ impl Renderer {
             .then(|| self.gpu.handles.instances.get("player").copied())
             .flatten()
             .map(|k| (k, glam::Mat4::from_translation(self.game.snap.player_pos)));
+        // game-authored light emission (flicker lives in house-game's
+        // light_system; LIGHT_ANIM=0 freezes to the authored base values) and
+        // the probe-bank lerp scalar: the sim's lit fraction × the LIGHTS dim.
+        // Scenes whose lights aren't game-owned (grid: none) keep the plain
+        // dim — there is nothing to toggle and the banks are identical anyway.
+        let emission = self.game.light_emission(self.light_anim, self.lights_dim);
+        let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
         let fs = FrameState {
             cam,
             yaw_q: self.view.mask_q,
-            room_lights: self.room_lights,
+            room_lights,
             time: self.game.time(), // SIM time — the light-anim clock is replayable now
-            anim: self.light_anim,  // LIGHT_ANIM=0 freezes to constants — bit-stable
-            light_emission: &[],    // flicker stays renderer-side until step 10
+            light_emission: &emission,
             spotlights: spot.as_slice(),
             instances: player_inst.as_slice(),
         };
@@ -597,7 +607,7 @@ impl Renderer {
 
         self.gpu.record_frame(&self.ctx, cmd, &fs);
         let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
-        let push = ShadePush::new(&cam, low_w, low_h, self.env0, self.room_lights, light_count, self.ao, self.ao_r, self.ao_n, self.debug);
+        let push = ShadePush::new(&cam, low_w, low_h, self.env0, fs.room_lights, light_count, self.ao, self.ao_r, self.ao_n, self.debug);
         // deterministic shade: one dispatch, every pixel final
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.shade_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[swap.scene_set], &[]);

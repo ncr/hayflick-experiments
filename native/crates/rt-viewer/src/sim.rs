@@ -12,8 +12,8 @@
 use crate::renderer::Renderer;
 use glam::{IVec2, Vec2, Vec3};
 use house_game::game::{Facing, Flashlight, Player, Pos};
-use house_game::{parse_trace, Command, GameSnapshot, HouseGame, LevelSpec, RoomId, RoomSpec, TICK_DT};
-use rt_probe::{screen_px_to_world, Config, Scene};
+use house_game::{parse_trace, Command, GameSnapshot, HouseGame, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TICK_DT};
+use rt_probe::{screen_px_to_world, Config, LightKey, Scene, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, NullSink, Simulation, Tick};
 
 /// The viewer's game-loop state: the fixed-timestep accumulator, the
@@ -38,18 +38,27 @@ pub struct GameLoop {
     /// Otherwise (lab) they pan the camera viewer-side — presentation only.
     pub has_player: bool,
     pub follow_cam: bool,
+    /// Per spec light, in slot order (spec index == NEE slot == game flicker
+    /// index): the renderer key, the kind, and the authored base rgb — the
+    /// per-frame emission build and the LIGHT_ANIM=0 freeze read these.
+    pub light_keys: Vec<(LightKey, LightKind, [f32; 3])>,
 }
 
 impl GameLoop {
-    pub fn new(scene: &Scene, cfg: &Config) -> GameLoop {
-        let spec = mirror_spec(scene);
+    pub fn new(scene: &Scene, handles: &SceneHandles, light_count: u32, cfg: &Config) -> GameLoop {
+        let lights = mirror_lights(scene, handles, light_count);
+        let spec = mirror_spec(scene, &lights);
+        let light_keys = lights.into_iter().map(|(_, kind, base, key)| (key, kind, base)).collect();
         let mut sim: HouseGame<NullSink> = HouseGame::new(&spec, NullSink);
         // ---- Config seeding: DIRECT pre-tick state writes (world setup, not
         // play), then re-derive. Flashlight boot state, the camera quarter
-        // (yaw_q is sim state), walk speed, and the default facing toward the
-        // camera at THAT yaw — the exact expression the old viewer used.
+        // (yaw_q is sim state), walk speed, the room-lights master (LIGHTS=0
+        // boots dark; fractional LIGHTS stays a viewer-side dim), and the
+        // default facing toward the camera at THAT yaw — the exact expression
+        // the old viewer used.
         sim.world.get::<&mut Flashlight>(sim.player).unwrap().on = cfg.flash;
         sim.res.yaw_q = cfg.yaw_q;
+        sim.res.master_lights = cfg.lights > 0.0;
         sim.world.get::<&mut Player>(sim.player).unwrap().speed_px = cfg.player_speed.unwrap_or(cfg.default_player_speed());
         let down = screen_px_to_world(Vec2::new(0.0, 1.0), 90.0 * cfg.yaw_q as f32);
         sim.world.get::<&mut Facing>(sim.player).unwrap().0 = Vec2::new(down.x, down.z).try_normalize().unwrap_or(Vec2::new(0.0, 1.0));
@@ -67,7 +76,19 @@ impl GameLoop {
             held: [false; 4],
             has_player,
             follow_cam: has_player && cfg.scene != "grid",
+            light_keys,
         }
+    }
+
+    /// This frame's game-authored per-light emission, slot-aligned (the
+    /// snapshot's LightId order IS the slot order — ids are assigned in spec
+    /// order, which `mirror_lights` builds slot-sorted). `light_anim = false`
+    /// freezes the flicker to base values while still honouring on/off
+    /// (golden bit-stability: LIGHT_ANIM=0); `dim` is the LIGHTS env
+    /// multiplier on switchable (non-screen) lights — exactly the old
+    /// renderer-side dim semantics.
+    pub fn light_emission(&self, light_anim: bool, dim: f32) -> Vec<(LightKey, [f32; 3])> {
+        emission_frame(&self.snap.lights, &self.light_keys, light_anim, dim)
     }
 
     /// PLAYER_X/Z seeding: offset the player's continuous position pre-tick.
@@ -143,15 +164,71 @@ impl GameLoop {
     }
 }
 
+/// Join the scene's named lights (emissive prims + conceptual point lights)
+/// onto their frozen NEE slots, returned in SLOT order: (name, kind, base
+/// rgb, key). The game's flicker index is the spec order, which must equal
+/// the renderer slot for the curves to line up — so EVERY slot must be named
+/// (the adapter reports a gap loudly instead of letting a light silently
+/// freeze at base). Kinds: marked screens → Screen, other prims →
+/// Incandescent, conceptual points → Drift — the renderer's old hue-kind
+/// assignments, now authored.
+pub fn mirror_lights(scene: &Scene, handles: &SceneHandles, light_count: u32) -> Vec<(String, LightKind, [f32; 3], LightKey)> {
+    assert!(
+        handles.lights.len() == light_count as usize,
+        "adapter name-join incomplete: {} named lights over {} NEE slots — name every emissive prim / point light in the scene builder so game flicker indices match renderer slots",
+        handles.lights.len(),
+        light_count
+    );
+    let mut by_slot: Vec<(&String, LightKey)> = handles.lights.iter().map(|(n, &k)| (n, k)).collect();
+    by_slot.sort_by_key(|&(_, k)| k);
+    by_slot
+        .into_iter()
+        .map(|(name, key)| {
+            if let Some(&(_, prim)) = scene.named_lights.iter().find(|(n, _)| n == name) {
+                let e = scene.materials[scene.primitives[prim].material_id as usize].emissive;
+                let kind = if scene.screen_prims.contains(&prim) { LightKind::Screen } else { LightKind::Incandescent };
+                (name.clone(), kind, [e[0], e[1], e[2]], key)
+            } else if let Some(&(_, idx)) = scene.named_point_lights.iter().find(|(n, _)| n == name) {
+                let p = scene.point_lights[idx];
+                (name.clone(), LightKind::Drift, [p[4], p[5], p[6]], key)
+            } else {
+                unreachable!("SceneHandles light {name:?} missing from the scene's name lists")
+            }
+        })
+        .collect()
+}
+
+/// Per-frame emission build, free-fn form for tests: snapshot light rgb →
+/// (LightKey, rgb) in slot order, with the LIGHT_ANIM=0 freeze (base value
+/// when lit, dark stays dark) and the LIGHTS dim on non-screen lights.
+pub fn emission_frame(snap_lights: &[(LightId, [f32; 3])], keys: &[(LightKey, LightKind, [f32; 3])], light_anim: bool, dim: f32) -> Vec<(LightKey, [f32; 3])> {
+    snap_lights
+        .iter()
+        .zip(keys)
+        .map(|((_id, rgb), &(key, kind, base))| {
+            let rgb = if light_anim {
+                *rgb
+            } else if *rgb != [0.0; 3] {
+                base // frozen: lit lights at authored base, exactly LIGHT_ANIM=0 of old
+            } else {
+                [0.0; 3]
+            };
+            let s = if kind == LightKind::Screen { 1.0 } else { dim }; // devices ignore the dim
+            (key, [rgb[0] * s, rgb[1] * s, rgb[2] * s])
+        })
+        .collect()
+}
+
 /// INTERIM level spec: mirror the renderer scene's collision fields (one room
-/// = the floor rect, scene solids verbatim, no doors/targets). The content
-/// stage replaces this with a spec that GENERATES the scene instead.
-pub fn mirror_spec(scene: &Scene) -> LevelSpec {
+/// = the floor rect, scene solids verbatim, no doors/targets) + the named
+/// lights in slot order. The content stage replaces this with a spec that
+/// GENERATES the scene instead.
+pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightKey)]) -> LevelSpec {
     LevelSpec {
         rooms: vec![RoomSpec { id: RoomId(0), floor_rect: scene.floor_rect }],
         static_solids: scene.solids.clone(),
         doors: Vec::new(),
-        lights: Vec::new(),
+        lights: lights.iter().enumerate().map(|(i, (name, kind, base, _))| LightSpec { id: LightId(i as u32), room: RoomId(0), kind: *kind, base_rgb: *base, name: name.clone() }).collect(),
         targets: Vec::new(),
         player_start: scene.player_start,
         seed: 42,
@@ -209,18 +286,86 @@ mod tests {
         }
     }
 
-    #[test]
-    fn mirror_spec_carries_the_scene_collision_verbatim() {
+    /// A small named-lights scene: warm box (slot 0), marked screen (slot 1),
+    /// named conceptual point (slot 2). Names sort AGAINST slot order so a
+    /// name-ordered join would flip everything.
+    fn lit_scene() -> Scene {
         let mut scene = Scene::new();
         scene.floor_rect = [-2.5, -1.0, 16.5, 12.0];
         scene.solids = vec![[0.0, 0.0, 1.0, 1.0], [3.0, 4.0, 5.0, 6.5]];
         scene.player_start = Vec3::new(4.0, 0.046875, 6.0);
-        let spec = mirror_spec(&scene);
+        scene.add_box_world(Vec3::ZERO, Vec3::new(0.25, 0.5, 0.25), [1.0; 4], [9.0, 6.0, 3.0, 1.0], 0.6, 0.0);
+        scene.name_light("zz_warm", 0);
+        scene.add_box_world(Vec3::new(1.0, 0.4, 1.0), Vec3::new(1.4, 1.0, 1.03), [0.1, 0.3, 0.25, 1.0], [3.0, 12.0, 9.6, 1.0], 0.8, 0.0);
+        scene.name_light("mm_screen", 1);
+        scene.mark_screen(1);
+        scene.point_lights.push([1.0, 2.0, 3.0, 0.25, 5.0, 4.0, 3.0, 0.0]);
+        scene.name_point_light("aa_ceiling", 0);
+        scene
+    }
+
+    fn lit_handles(scene: &Scene) -> (rt_probe::SceneHandles, u32) {
+        let scan = rt_probe::scan_lights(scene).unwrap();
+        (rt_probe::SceneHandles { lights: scan.names, instances: Default::default() }, scan.light_count)
+    }
+
+    #[test]
+    fn mirror_spec_carries_the_scene_collision_and_slot_ordered_lights() {
+        let scene = lit_scene();
+        let (handles, light_count) = lit_handles(&scene);
+        let lights = mirror_lights(&scene, &handles, light_count);
+        // slot order, NOT name order: warm prim, screen prim, then the point
+        let want = [("zz_warm", LightKind::Incandescent, [9.0, 6.0, 3.0]), ("mm_screen", LightKind::Screen, [3.0, 12.0, 9.6]), ("aa_ceiling", LightKind::Drift, [5.0, 4.0, 3.0])];
+        for (i, (name, kind, base)) in want.iter().enumerate() {
+            assert_eq!(lights[i].0, *name, "slot {i}");
+            assert_eq!(lights[i].1, *kind);
+            assert_eq!(lights[i].2, *base);
+        }
+        let spec = mirror_spec(&scene, &lights);
         assert_eq!(spec.rooms.len(), 1);
         assert_eq!(spec.rooms[0].floor_rect, scene.floor_rect);
         assert_eq!(spec.floor_bounds(), scene.floor_rect);
         assert_eq!(spec.static_solids, scene.solids);
         assert_eq!(spec.player_start, scene.player_start);
         assert!(spec.doors.is_empty() && spec.targets.is_empty());
+        // spec light ids = spec order = slot order (the game's flicker index)
+        for (i, l) in spec.lights.iter().enumerate() {
+            assert_eq!(l.id, LightId(i as u32));
+            assert_eq!(l.name, want[i].0);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "name-join incomplete")]
+    fn mirror_lights_reports_an_unnamed_slot_loudly() {
+        let mut scene = lit_scene();
+        scene.point_lights.push([9.0, 2.0, 9.0, 0.25, 2.0, 2.0, 2.0, 0.0]); // unnamed slot 3
+        let scan = rt_probe::scan_lights(&scene).unwrap();
+        let handles = rt_probe::SceneHandles { lights: scan.names, instances: Default::default() };
+        mirror_lights(&scene, &handles, scan.light_count);
+    }
+
+    #[test]
+    fn emission_freeze_and_dim_match_the_old_renderer_semantics() {
+        let scene = lit_scene();
+        let (handles, light_count) = lit_handles(&scene);
+        let lights = mirror_lights(&scene, &handles, light_count);
+        let keys: Vec<_> = lights.into_iter().map(|(_, kind, base, key)| (key, kind, base)).collect();
+        // a snapshot with flickered values: lit warm + screen, point dark
+        let snap = [(LightId(0), [9.9f32, 6.6, 3.3]), (LightId(1), [2.5, 11.0, 9.0]), (LightId(2), [0.0; 3])];
+        // anim on, dim 1: snapshot rgb passes through verbatim
+        let live = emission_frame(&snap, &keys, true, 1.0);
+        assert_eq!(live[0].1, [9.9, 6.6, 3.3]);
+        assert_eq!(live[1].1, [2.5, 11.0, 9.0]);
+        // anim OFF: lit lights freeze at authored base (LIGHT_ANIM=0 golden
+        // semantics), dark stays dark
+        let frozen = emission_frame(&snap, &keys, false, 1.0);
+        assert_eq!(frozen[0].1, [9.0, 6.0, 3.0]);
+        assert_eq!(frozen[1].1, [3.0, 12.0, 9.6]);
+        assert_eq!(frozen[2].1, [0.0; 3]);
+        // LIGHTS dim scales switchable lights only — devices ignore it
+        let dimmed = emission_frame(&snap, &keys, false, 0.5);
+        assert_eq!(dimmed[0].1, [4.5, 3.0, 1.5]);
+        assert_eq!(dimmed[1].1, [3.0, 12.0, 9.6], "screens ignore the dim");
     }
 }

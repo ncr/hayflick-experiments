@@ -75,6 +75,16 @@ pub struct Scene {
     /// onto the emissive-scan slot order into `SceneHandles.lights`; naming a
     /// prim that lands no NEE slot is a loud build error, never a silent skip.
     pub named_lights: Vec<(String, usize)>,
+    /// Named conceptual point lights: (name, index into `point_lights`).
+    /// Their slots come after every emissive prim's in the NEE list.
+    pub named_point_lights: Vec<(String, usize)>,
+    /// Primitives whose NEE light is a DEVICE screen, not room lighting: they
+    /// ignore the wall switch and bake at base level into BOTH probe banks
+    /// (their bounce is a constant term, so the bank-lerp scalar stays exact).
+    /// Authored, replacing the old emission-hue kind heuristic — flicker
+    /// CURVES live in the game now (house-game `flicker`); the renderer keeps
+    /// only this bake-bank distinction.
+    pub screen_prims: Vec<usize>,
     pub player_start: Vec3,
     /// Collision data for the native game runtime (mirrors @common/gameplay
     /// `LevelResource.isBlocked`): the walkable floor rect (xmin, zmin, xmax,
@@ -396,6 +406,17 @@ impl Scene {
     /// order — naming never reorders the scan.
     pub fn name_light(&mut self, name: &str, prim: usize) {
         self.named_lights.push((name.to_string(), prim));
+    }
+
+    /// Name a conceptual point light (index into `point_lights`) for per-light
+    /// game control; its slot follows every emissive prim's.
+    pub fn name_point_light(&mut self, name: &str, idx: usize) {
+        self.named_point_lights.push((name.to_string(), idx));
+    }
+
+    /// Tag a primitive's NEE light as a device screen (see `screen_prims`).
+    pub fn mark_screen(&mut self, prim: usize) {
+        self.screen_prims.push(prim);
     }
 
     /// Debug helper: dump every triangle of a primitive as CSV

@@ -115,8 +115,6 @@ pub struct FrameState<'a> {
     pub yaw_q: u32,                                  // dollhouse mask quarter
     pub room_lights: f32,                            // probe-bank lerp (instant GI switch)
     pub time: f32,                                   // SIM time, not wall clock
-    pub anim: bool,                                  // TRANSITIONAL until step 10: freezes the
-                                                     //   renderer-side flicker (LIGHT_ANIM)
     pub light_emission: &'a [(LightKey, [f32; 3])],  // game-authored per-light rgb
     pub spotlights: &'a [Spotlight],                 // ≤ N_RESERVED trailing NEE slots
     pub instances: &'a [(InstanceKey, Mat4)],        // movers → inst_buf + TLAS rebuild
@@ -158,6 +156,24 @@ its whole-pixel/remainder behaviour is pinned by a unit test in sim.rs. The
 command). The muzzle flash renders as a placeholder wide warm spotlight in the
 second reserved slot. `q`/`e`/instant rotates queue `Command::RotateCamera`;
 the ease is presentation-only and picks unproject at the settled quarter.
+
+**Step-10 reality notes (implemented):** `compute_practicals` and its hue-kind
+heuristic are GONE — `frame_lights_cpu` only applies `light_emission` (+ the
+linked material) and packs the spotlight slots; slots not addressed keep their
+previous values (initial = authored base). The transitional `FrameState.anim`
+is deleted: LIGHT_ANIM=0 is now an ADAPTER freeze (emission = authored base
+for lit lights), and LIGHT_ANIM=1 is replayable (flicker = house-game curves
+at sim time, bit-equal to the old renderer curves by the stage-3 pin). The
+renderer keeps ONE authored bit per light: `Scene::mark_screen(prim)` (device
+screens stay at base in BOTH probe banks — the bake fill is inline in
+`bake_probes`). Scenes must NAME every NEE light — emissive prims via
+`name_light`, conceptual point lights via `name_point_light` (slots after all
+emissive prims) — because the adapter (`mirror_lights`) asserts full coverage:
+the game's flicker index (spec order) must equal the NEE slot. LIGHTS env =
+master seed (0 boots dark) + a viewer-side dim multiplier on switchable
+lights; the menu "lights" row is a Toggle routing `Command::ToggleRoomLights`
+(env round-trip prints LIGHTS=0/1 — fractional dims are env-only until the
+step-12 Config split).
 
 **Reserved spotlight slots: N_RESERVED = 2** (flashlight + muzzle flash). The slot count,
 the shade-dispatch arithmetic (`light_count + n_active`), and the probe-bake exclusion

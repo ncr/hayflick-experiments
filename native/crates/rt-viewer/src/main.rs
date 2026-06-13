@@ -149,9 +149,8 @@ impl ApplicationHandler for App {
                         println!("flashlight: {}", if r.game.snap.flashlight { "off" } else { "on" });
                     }
                     Key::Character("l") if !event.repeat => {
-                        let v = if r.room_lights > 0.0 { 0.0 } else { 1.0 };
-                        r.tune_set("lights", v);
-                        println!("room lights: {}", if v > 0.0 { "on" } else { "off" });
+                        r.game.push(Command::ToggleRoomLights);
+                        println!("room lights: {}", if r.game.sim.res.master_lights { "off" } else { "on" });
                     }
                     _ => {}
                 }

@@ -57,9 +57,13 @@ pub fn build_lab() -> Result<Scene, Box<dyn std::error::Error>> {
     scene.add_box_world(Vec3::new(-1.0, 0.0, 1.5), Vec3::new(1.0, 0.25, 2.5), [0.25, 0.62, 0.28, 1.0], [0.0; 4], 0.9, 0.0);
     // isotropic NEE lamp: warm pillar near a corner (closed box -> isotropic)
     scene.add_box_world(Vec3::new(2.4, 0.0, -2.6), Vec3::new(2.6, 0.8, -2.4), [1.0, 0.8, 0.5, 1.0], [8.0, 5.6, 2.4, 1.0], 0.4, 0.0);
+    scene.name_light("lab_lamp", scene.primitives.len() - 1);
     // directional NEE screen: thin teal slab facing +Z (authored facing) — the
     // exact shape the house terminal screens use, minus everything else
     scene.add_box_world(Vec3::new(-2.6, 0.4, -2.0), Vec3::new(-2.2, 1.0, -1.97), [0.1, 0.3, 0.25, 1.0], [3.0, 12.0, 9.6, 1.0], 0.8, 0.0);
+    let slab = scene.primitives.len() - 1;
+    scene.name_light("lab_screen", slab);
+    scene.mark_screen(slab); // device: ignores the wall switch, constant in both probe banks
     scene.prim_light_dir.resize(scene.primitives.len(), [0.0; 3]);
     *scene.prim_light_dir.last_mut().unwrap() = [0.0, 0.0, 1.0];
     scene.recompute_bounds();
@@ -228,22 +232,29 @@ pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
     // wu lattice (invariant #8). Walls are ±0.125 wu thick, so sconces sit at
     // 0.156 off the wall line (proud of the inner face).
     // cfg.emit scales all practicals (tuning knob, default 1)
+    // Every practical is NAMED (name_light / name_point_light): the viewer's
+    // adapter mirrors them into the game's LevelSpec, and house-game's
+    // light_system authors their per-tick emission (flicker curves live
+    // there now). An unnamed light would freeze at base — the adapter
+    // asserts full name coverage instead of letting that slip.
     let emit = cfg.emit;
     let warm = move |s: f32| [1.0 * s * emit, 0.64 * s * emit, 0.30 * s * emit, 1.0];
-    let mut bulb = |p: Vec3, half: f32, e: [f32; 4]| {
+    let mut bulb = |name: &str, p: Vec3, half: f32, e: [f32; 4]| {
         scene.add_box_world(p - Vec3::splat(half), p + Vec3::splat(half), [1.0, 0.95, 0.85, 1.0], e, 0.6, 0.0);
+        scene.name_light(name, scene.primitives.len() - 1);
     };
     // heads of the two tall-standing-lamp props (1.35 wu tall)
-    bulb(Vec3::new(7.2, 1.125, 0.9), 0.0625, warm(150.0));
-    bulb(Vec3::new(13.2, 1.125, 9.1), 0.0625, warm(150.0));
+    bulb("lamp_floor_w", Vec3::new(7.2, 1.125, 0.9), 0.0625, warm(150.0));
+    bulb("lamp_floor_e", Vec3::new(13.2, 1.125, 9.1), 0.0625, warm(150.0));
     // ceiling lights: the main interior lights (no sun — interiors are
     // lamp-lit). CONCEPTUAL emitters: no fixture geometry is rendered (there
     // is no ceiling to mount one on) — they exist only in the NEE light list,
     // so rooms get lit from above with nothing floating in view.
     let ceiling_lamps = [(2.5f32, 2.5f32), (5.0, 7.0), (11.0, 2.5), (11.0, 7.5)];
-    for (x, z) in ceiling_lamps {
+    for (i, (x, z)) in ceiling_lamps.into_iter().enumerate() {
         let c = warm(80.0);
         scene.point_lights.push([x, 2.0, z, 0.25, c[0], c[1], c[2], 0.0]);
+        scene.name_point_light(&format!("ceiling_{i}"), scene.point_lights.len() - 1);
     }
     // wall sconces: (center, which axis is the wall normal)
     let sconces: &[(f32, f32, f32, bool)] = &[
@@ -254,10 +265,11 @@ pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
         (12.5, 1.625, 4.844, false), // lab, divider wall
         (4.5, 1.875, 10.156, false), // porch light over the front door
     ];
-    for &(x, y, z, x_normal) in sconces {
+    for (si, &(x, y, z, x_normal)) in sconces.iter().enumerate() {
         let (hx, hz) = if x_normal { (0.03125, 0.09375) } else { (0.09375, 0.03125) };
         let (min, max) = (Vec3::new(x - hx, y - 0.0625, z - hz), Vec3::new(x + hx, y + 0.0625, z + hz));
         scene.add_box_world(min, max, [1.0, 0.9, 0.75, 1.0], warm(90.0), 0.7, 0.0);
+        scene.name_light(&format!("sconce_{si}"), scene.primitives.len() - 1);
     }
     // status-light glow strips on the two mainframes (teal, faint) — placed
     // just proud of each prop's front face, sized from the cached bounds
@@ -269,11 +281,17 @@ pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
         // (2.0, 1.1) rot 180 -> front faces +Z
         let f = 1.1 + half_d + 0.03;
         scene.add_box_world(Vec3::new(1.875, 0.5625, f), Vec3::new(2.125, 0.9375, f + 0.03), [0.1, 0.3, 0.25, 1.0], teal, 0.8, 0.0);
+        let glow = scene.primitives.len() - 1;
+        scene.name_light("mainframe_glow_w", glow);
+        scene.mark_screen(glow); // device glow: ignores the wall switch
         scene.prim_light_dir.resize(scene.primitives.len(), [0.0; 3]);
         *scene.prim_light_dir.last_mut().unwrap() = [0.0, 0.0, 1.0]; // screen emits forward (+Z), not through the desk
         // (13.1, 2.5) rot 270 -> front faces -X (depth becomes the x extent)
         let f = 13.1 - half_d - 0.06;
         scene.add_box_world(Vec3::new(f, 0.5625, 2.375), Vec3::new(f + 0.03, 0.9375, 2.625), [0.1, 0.3, 0.25, 1.0], teal, 0.8, 0.0);
+        let glow = scene.primitives.len() - 1;
+        scene.name_light("mainframe_glow_e", glow);
+        scene.mark_screen(glow);
         scene.prim_light_dir.resize(scene.primitives.len(), [0.0; 3]);
         *scene.prim_light_dir.last_mut().unwrap() = [-1.0, 0.0, 0.0]; // screen emits forward (-X)
     }
@@ -299,6 +317,8 @@ pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
         );
         match carved {
             Some(np) => {
+                scene.name_light("pet_screen", np);
+                scene.mark_screen(np); // CRT: pulses on its own, never the wall switch
                 let p = &scene.primitives[np];
                 let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
                 for &i in &scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize] {

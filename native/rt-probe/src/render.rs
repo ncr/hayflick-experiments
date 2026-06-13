@@ -141,15 +141,12 @@ pub struct FrameState<'a> {
     pub yaw_q: u32,
     /// Room-lights master dim — probe-bank lerp factor (instant GI switch).
     pub room_lights: f32,
-    /// Light-anim clock: SIM time once the loop moves (the old viewer feeds
-    /// its wall clock).
+    /// SIM time (ticks · TICK_DT) — replayable; no wall clock below the shell.
     pub time: f32,
-    /// TRANSITIONAL (until migration step 10): freeze flag for the renderer's
-    /// built-in flicker (`compute_practicals`). Once flicker moves into the
-    /// game, `light_emission` is authoritative and this field goes away.
-    pub anim: bool,
-    /// Game-authored per-light rgb, applied OVER the flicker pass (and onto
-    /// the linked material so the visible fixture matches its light).
+    /// Game-authored per-light rgb — THE light animation (flicker curves live
+    /// in house-game now). Applied to the NEE record and the linked material,
+    /// so the visible fixture matches the light it casts; slots not addressed
+    /// keep their previous (initial = authored base) values.
     pub light_emission: &'a [(LightKey, [f32; 3])],
     /// Active spotlights, packed into the ≤ N_RESERVED trailing NEE slots.
     pub spotlights: &'a [Spotlight],
@@ -161,10 +158,13 @@ pub struct FrameState<'a> {
 /// the slot order is testable without a GPU: scan emissive primitives in
 /// PRIMITIVE ORDER (dynamic runs skipped), append the conceptual point
 /// lights, then the N_RESERVED zeroed spotlight slots; join the scene's named
-/// lights onto the resulting slot order.
+/// lights (prims AND point lights) onto the resulting slot order.
 pub struct LightScan {
     pub lights: Vec<[f32; 12]>, // light_count real records + N_RESERVED reserved
-    pub light_link: Vec<(i32, [f32; 3], u32)>, // real lights only
+    /// Per real light: (material id or -1, authored base rgb, screen flag —
+    /// device lights bake at base into BOTH probe banks). Flicker curves live
+    /// in the game; the renderer keeps no animation knowledge.
+    pub light_link: Vec<(i32, [f32; 3], bool)>,
     pub names: BTreeMap<String, LightKey>,
     pub light_count: u32,
     pub flash_idx: usize, // first reserved slot (== light_count)
@@ -189,9 +189,8 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
     // (focus < 0.7) stay isotropic.
     // Record: [cx, cy, cz, radius, r, g, b, 0, nx, ny, nz, directionalFlag].
     let mut lights: Vec<[f32; 12]> = Vec::new();
-    // per-light animation link: (material id or -1, base rgb, kind)
-    // kind: 1 incandescent flicker, 2 screen pulse, 3 gentle drift
-    let mut light_link: Vec<(i32, [f32; 3], u32)> = Vec::new();
+    // per-light link: (material id or -1, base rgb, authored screen flag)
+    let mut light_link: Vec<(i32, [f32; 3], bool)> = Vec::new();
     let mut slot_of_prim: Vec<(usize, u32)> = Vec::new(); // (prim, NEE slot)
     for (i, p) in scene.primitives.iter().enumerate() {
         if dyn_flag[i] {
@@ -201,7 +200,7 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
         if e[0].max(e[1]).max(e[2]) < 3.0 {
             continue;
         }
-        light_link.push((p.material_id, [e[0], e[1], e[2]], if e[0] >= e[1] { 1 } else { 2 }));
+        light_link.push((p.material_id, [e[0], e[1], e[2]], scene.screen_prims.contains(&i)));
         let vs = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
         let idx = &scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
         // bound the vertices the indices actually REFERENCE, not the whole
@@ -240,10 +239,11 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
         slot_of_prim.push((i, lights.len() as u32));
         lights.push([c.x, c.y, c.z, r, e[0], e[1], e[2], 0.0, nd.x, nd.y, nd.z, df]);
     }
+    let emissive_count = lights.len() as u32; // point-light slots start here
     for pl in &scene.point_lights {
         // conceptual (geometry-less) lights stay isotropic
         lights.push([pl[0], pl[1], pl[2], pl[3], pl[4], pl[5], pl[6], pl[7], 0.0, 0.0, 0.0, 0.0]);
-        light_link.push((-1, [pl[4], pl[5], pl[6]], 3));
+        light_link.push((-1, [pl[4], pl[5], pl[6]], false));
     }
     let light_count = lights.len() as u32;
     // join the authored names onto the frozen slot order — loudly
@@ -252,6 +252,14 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
         let slot = slot_of_prim.iter().find(|&&(p, _)| p == *prim).map(|&(_, s)| s).ok_or_else(|| format!("named light {name:?}: prim {prim} landed no NEE slot (dim emissive, or a dynamic prim)"))?;
         if names.insert(name.clone(), LightKey(slot)).is_some() {
             return Err(format!("named light {name:?}: duplicate name"));
+        }
+    }
+    for (name, idx) in &scene.named_point_lights {
+        if *idx >= scene.point_lights.len() {
+            return Err(format!("named point light {name:?}: index {idx} out of range ({} point lights)", scene.point_lights.len()));
+        }
+        if names.insert(name.clone(), LightKey(emissive_count + *idx as u32)).is_some() {
+            return Err(format!("named point light {name:?}: duplicate name"));
         }
     }
     // reserved spotlight slots: the viewer/game streams transient spotlights
@@ -368,12 +376,12 @@ pub struct SceneGpu {
     /// Index of the reserved flashlight slot in `lights_cpu` (== light_count;
     /// past the probe bake's light range, so the frozen cache never sees it).
     pub flash_idx: usize,
-    // light animation (record_light_anim): CPU shadows of lbuf/mbuf, the
-    // per-light anim link (material id or -1, base rgb, kind), and the
+    // per-frame light streaming (record_frame): CPU shadows of lbuf/mbuf, the
+    // per-light link (material id or -1, base rgb, screen flag), and the
     // persistent host-visible staging buffers for the per-frame copies
     pub lights_cpu: Vec<[f32; 12]>,
     pub mats_cpu: Vec<scene::Material>,
-    pub light_link: Vec<(i32, [f32; 3], u32)>,
+    pub light_link: Vec<(i32, [f32; 3], bool)>,
     pub light_stage: Buffer,
     pub mat_stage: Buffer,
     pub texes: Vec<GpuTex>,
@@ -432,7 +440,7 @@ impl SceneGpu {
         // ---- NEE light list (scan factored into `scan_lights` — slot order
         // pinned by CPU tests) + the scene's name → handle joins
         let LightScan { lights, light_link, names: light_names, light_count, flash_idx } = scan_lights(scene)?;
-        // TRANSFER_DST so record_light_anim can stream animated values in
+        // TRANSFER_DST so record_frame can stream the per-frame light state in
         let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
         let light_stage = ctx.create_buffer(std::mem::size_of_val(&lights[..]) as u64, vk::BufferUsageFlags::TRANSFER_SRC, host);
@@ -650,12 +658,12 @@ impl SceneGpu {
     }
 
     /// Record one frame's scene-state update, composing the existing calls in
-    /// the existing order: lights CPU pass (practicals flicker + game-authored
-    /// emission + reserved spotlight slots) → patch mover instance transforms
-    /// → stream lights/materials to the device → TLAS rebuild iff anything
-    /// moved. Recorded command order and barriers are identical to the old
-    /// viewer-driven sequence (practicals upload → TLAS rebuild → the caller's
-    /// shade dispatch). Caller must hold the in-flight fence: this writes
+    /// the existing order: lights CPU pass (game-authored emission + reserved
+    /// spotlight slots) → patch mover instance transforms → stream lights/
+    /// materials to the device → TLAS rebuild iff anything moved. Recorded
+    /// command order and barriers are identical to the old viewer-driven
+    /// sequence (practicals upload → TLAS rebuild → the caller's shade
+    /// dispatch). Caller must hold the in-flight fence: this writes
     /// host-visible memory the GPU reads.
     pub unsafe fn record_frame(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, fs: &FrameState<'_>) {
         self.n_spot_active = frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, self.flash_idx, fs);
@@ -669,33 +677,10 @@ impl SceneGpu {
         }
     }
 
-    /// Animate the practicals: deterministic-in-time flicker/pulse written
-    /// over the NEE light list AND each linked material's emissive, so the
-    /// visible bulb/screen brightens exactly in sync with the light it casts.
-    /// Records the stage->device copies + barrier into `cmd` (run it BEFORE
-    /// the shade dispatch). Kinds: 1 = incandescent flicker (value noise +
-    /// slow breathing + rare deeper dips), 2 = screen pulse (throb + refresh
-    /// shimmer + hue wobble), 3 = gentle drift (conceptual ceiling lights).
-    /// The probe cache keeps the baked BASE levels — the modulation is direct
-    /// light only, which dominates near the fixtures; indirect stays steady.
-    ///
-    /// `anim = false` freezes the flicker (constant values — bit-stability
-    /// tests); `scale` is the room-lights master dim (0 = practicals off;
-    /// indirect follows via the shader's probe-bank lerp).
-    pub unsafe fn record_light_anim(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, t: f32, anim: bool, scale: f32) {
-        self.compute_practicals(t, anim, scale);
-        self.record_practicals_upload(ctx, cmd);
-    }
-
-    /// CPU half of `record_light_anim`: fill `lights_cpu` / `mats_cpu` from
-    /// the per-light base values. Never touches the reserved spotlight slots.
-    pub fn compute_practicals(&mut self, t: f32, anim: bool, scale: f32) {
-        compute_practicals_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, t, anim, scale);
-    }
-
-    /// GPU half of `record_light_anim`: stream `lights_cpu` + `mats_cpu` to
-    /// the device buffers. Record BEFORE the shade dispatch. The reserved
-    /// spotlight slots ride along in `lights_cpu`.
+    /// GPU half of the per-frame light streaming: stage `lights_cpu` +
+    /// `mats_cpu` and record the copies + barrier into `cmd` (BEFORE the
+    /// shade dispatch). The reserved spotlight slots ride along in
+    /// `lights_cpu`.
     pub unsafe fn record_practicals_upload(&self, ctx: &Ctx, cmd: vk::CommandBuffer) {
         ctx.upload(&self.light_stage, &self.lights_cpu);
         ctx.upload(&self.mat_stage, &self.mats_cpu);
@@ -708,74 +693,16 @@ impl SceneGpu {
     }
 }
 
-/// `compute_practicals` in free-function form (no Vulkan, no `SceneGpu`): the
-/// deterministic flicker/pulse curves over the plain CPU light shadow state,
-/// so the per-frame lights mutation is unit-testable. Body moved verbatim.
-pub fn compute_practicals_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], u32)], t: f32, anim: bool, scale: f32) {
-    use std::f32::consts::TAU;
-    fn h01(x: u32) -> f32 {
-        let mut v = x.wrapping_mul(0x9E37_79B9);
-        v ^= v >> 16;
-        v = v.wrapping_mul(0x7feb_352d);
-        v ^= v >> 15;
-        (v & 0xFF_FFFF) as f32 / 16_777_216.0
-    }
-    // smooth value noise in [0,1] at integer lattice `t`
-    let vnoise = |t: f32, seed: u32| {
-        let i = t.floor();
-        let f = t - i;
-        let s = f * f * (3.0 - 2.0 * f);
-        let a = h01((i as i32 as u32).wrapping_add(seed.wrapping_mul(7919)));
-        let b = h01((i as i32 as u32).wrapping_add(1).wrapping_add(seed.wrapping_mul(7919)));
-        a + (b - a) * s
-    };
-    for (li, &(mid, base, kind)) in light_link.iter().enumerate() {
-        let seed = li as u32 + 1;
-        let ph = h01(seed) * TAU;
-        let (f, tint): (f32, [f32; 3]) = match kind {
-            1 => {
-                let n = vnoise(t * 9.0 + ph, seed);
-                let dipn = vnoise(t * 1.7 + ph, seed.wrapping_mul(31));
-                let dip = if dipn > 0.93 { (dipn - 0.93) * 6.0 } else { 0.0 };
-                (1.0 + (n - 0.5) * 0.22 + (t * 0.7 + ph).sin() * 0.05 - dip, [1.0; 3])
-            }
-            2 => {
-                // CRT screen: slow throb + mid value-noise + fast refresh
-                // shimmer + rare horizontal-roll-style dips
-                let p = 1.0
-                    + (t * 1.3 + ph).sin() * 0.20
-                    + (vnoise(t * 5.0 + ph, seed) - 0.5) * 0.18
-                    + (vnoise(t * 16.0 + ph, seed.wrapping_mul(13)) - 0.5) * 0.14;
-                let rolln = vnoise(t * 2.3 + ph, seed.wrapping_mul(37));
-                let roll = if rolln > 0.90 { (rolln - 0.90) * 4.0 } else { 0.0 };
-                let hue = (t * 0.45 + ph).sin() * 0.5 + 0.5;
-                (p - roll, [1.0 - 0.25 * hue, 1.0, 1.0 - 0.15 * (1.0 - hue)])
-            }
-            3 => (1.0 + (vnoise(t * 2.2 + ph, seed) - 0.5) * 0.08, [1.0; 3]),
-            _ => (1.0, [1.0; 3]),
-        };
-        // screens (kind 2) are devices, not room lighting — the wall
-        // switch (room-lights dim) never touches them. The probe-bank
-        // lerp stays exact: their bounce is a constant term in BOTH banks.
-        let f = (if anim { f.max(0.05) } else { 1.0 }) * (if kind == 2 { 1.0 } else { scale });
-        let tint = if anim { tint } else { [1.0; 3] };
-        let c = [base[0] * f * tint[0], base[1] * f * tint[1], base[2] * f * tint[2]];
-        lights_cpu[li][4] = c[0];
-        lights_cpu[li][5] = c[1];
-        lights_cpu[li][6] = c[2];
-        if mid >= 0 {
-            mats_cpu[mid as usize].emissive = [c[0], c[1], c[2], 1.0];
-        }
-    }
-}
-
-/// CPU half of `record_frame`, free-function form (no Vulkan): the practicals
-/// flicker pass at `fs.time`, the game-authored per-light emission overrides,
-/// then the reserved trailing spotlight slots (unused slots zeroed). Returns
-/// the number of active spotlights — the shade dispatch adds it to
-/// `light_count`; the probe bake never sees these slots.
-pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], u32)], flash_idx: usize, fs: &FrameState<'_>) -> u32 {
-    compute_practicals_cpu(lights_cpu, mats_cpu, light_link, fs.time, fs.anim, fs.room_lights);
+/// CPU half of `record_frame`, free-function form (no Vulkan): apply the
+/// game-authored per-light emission (the flicker curves live in house-game —
+/// the old renderer-side `compute_practicals` and its hue-kind heuristic are
+/// gone), then the reserved trailing spotlight slots (unused slots zeroed).
+/// Slots not addressed by `light_emission` keep their previous values
+/// (initial = authored base, restored by the bank-1 bake fill) — a scene
+/// that names no lights renders constants. Returns the number of active
+/// spotlights — the shade dispatch adds it to `light_count`; the probe bake
+/// never sees these slots.
+pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], bool)], flash_idx: usize, fs: &FrameState<'_>) -> u32 {
     for &(key, rgb) in fs.light_emission {
         let li = key.0 as usize;
         assert!(li < light_link.len(), "light_emission key {li} past light_count {}", light_link.len());
@@ -866,7 +793,19 @@ impl SceneGpu {
         const BATCH: i32 = 256;
         let t = std::time::Instant::now();
         for bank in 0..2i32 {
-            self.compute_practicals(0.0, false, bank as f32);
+            // bank light state: 0 = practicals off — EXCEPT screens, which
+            // ignore the wall switch (their bounce must be a constant term in
+            // both banks for the lerp scalar to stay exact); 1 = all at base.
+            // Materials follow so emissive surfaces read right to bake rays.
+            for (li, &(mid, base, screen)) in self.light_link.iter().enumerate() {
+                let c = if bank == 1 || screen { base } else { [0.0; 3] };
+                self.lights_cpu[li][4] = c[0];
+                self.lights_cpu[li][5] = c[1];
+                self.lights_cpu[li][6] = c[2];
+                if mid >= 0 {
+                    self.mats_cpu[mid as usize].emissive = [c[0], c[1], c[2], 1.0];
+                }
+            }
             ctx.one_time(|cmd| self.record_practicals_upload(ctx, cmd));
             let mut baked = 0;
             while baked < rays_total {
@@ -960,7 +899,7 @@ mod tests {
     }
 
     /// A throwaway CPU scene exercising every scan case: a non-emissive floor,
-    /// two emissive boxes (one warm → kind 1, one screen-ish → kind 2), an
+    /// two emissive boxes (one warm, one marked as a device screen), an
     /// EMISSIVE legacy-dynamic player (must be skipped), and one point light.
     fn scan_fixture() -> Scene {
         let mut s = Scene::new();
@@ -969,6 +908,7 @@ mod tests {
         let dynp = s.add_box_local(0.2, 1.0, 0.2, [1.0; 4], [20.0, 5.0, 5.0, 1.0]); // prim 2: bright but DYNAMIC
         s.dynamic_prim = Some(dynp);
         s.add_box_world(Vec3::new(1.0, 0.4, 1.0), Vec3::new(1.4, 1.0, 1.03), [0.1, 0.3, 0.25, 1.0], [2.0, 8.0, 6.0, 1.0], 0.8, 0.0); // prim 3 → slot 1
+        s.mark_screen(3); // authored device flag (the hue heuristic is gone)
         s.point_lights.push([1.0, 2.0, 3.0, 0.25, 5.0, 4.0, 3.0, 0.0]); // slot 2
         s
     }
@@ -980,6 +920,7 @@ mod tests {
         // the BTreeMap sorts keys, the LightKeys must still follow prim order
         s.name_light("zzz_warm_box", 1);
         s.name_light("aaa_screen", 3);
+        s.name_point_light("mmm_point", 0);
         let scan = scan_lights(&s).unwrap();
         assert_eq!(scan.light_count, 3); // 2 emissive prims + 1 point light; dynamic skipped
         assert_eq!(scan.flash_idx, 3);
@@ -988,10 +929,11 @@ mod tests {
         assert_eq!(scan.lights[4], [0.0; 12]);
         assert_eq!(scan.names["zzz_warm_box"], LightKey(0));
         assert_eq!(scan.names["aaa_screen"], LightKey(1));
-        // link kinds pin the scan rules: r>=g warm, g>r screen, points drift
-        assert_eq!(scan.light_link[0].2, 1);
-        assert_eq!(scan.light_link[1].2, 2);
-        assert_eq!(scan.light_link[2], (-1, [5.0, 4.0, 3.0], 3));
+        assert_eq!(scan.names["mmm_point"], LightKey(2)); // points slot after every emissive prim
+        // link pins the scan rules: authored screen flag, points never screens
+        assert_eq!(scan.light_link[0], (1, [9.0, 6.0, 3.0], false));
+        assert_eq!(scan.light_link[1].2, true);
+        assert_eq!(scan.light_link[2], (-1, [5.0, 4.0, 3.0], false));
         // the dynamic prim's 20.0-bright emissive landed NO slot
         assert!(scan.lights[..3].iter().all(|l| l[4] != 20.0));
     }
@@ -1007,6 +949,13 @@ mod tests {
         let mut s = scan_fixture();
         s.name_light("twice", 1);
         s.name_light("twice", 3); // duplicate name
+        assert!(scan_lights(&s).is_err());
+        let mut s = scan_fixture();
+        s.name_point_light("ghost", 1); // only one point light exists
+        assert!(scan_lights(&s).is_err());
+        let mut s = scan_fixture();
+        s.name_light("twice", 1);
+        s.name_point_light("twice", 0); // duplicate across prim/point names
         assert!(scan_lights(&s).is_err());
     }
 
@@ -1032,20 +981,22 @@ mod tests {
     #[test]
     fn record_frame_cpu_half_mutates_lights_without_vulkan() {
         // two real lights (slot 0 material-linked) + the reserved slots
-        let light_link = vec![(0i32, [8.0f32, 5.0, 2.0], 1u32), (-1, [3.0, 4.0, 5.0], 3)];
+        let light_link = vec![(0i32, [8.0f32, 5.0, 2.0], false), (-1, [3.0, 4.0, 5.0], false)];
         let flash_idx = 2;
-        let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2 + N_RESERVED];
-        let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [0.0; 4], metallic: 0.0, roughness: 0.5, tex_index: -1, _pad: 0 }];
+        let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2 + N_RESERVED];
+        let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, tex_index: -1, _pad: 0 }];
         let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06 };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), yaw_q: 0, room_lights: 1.0, time: 0.0, anim: false, light_emission: &emis, spotlights: &spots, instances: &[] };
+        let fs = FrameState { cam: dummy_cam(), yaw_q: 0, room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[] };
         let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs);
         assert_eq!(n, 1);
-        // anim=false, scale=1 → light 0 carries its base rgb; linked material follows
+        // an unaddressed slot keeps its previous values (light 0 holds base);
+        // the linked material is untouched too — emission is game-authored,
+        // not recomputed renderer-side
         assert_eq!(&lights[0][4..7], &[8.0, 5.0, 2.0]);
         assert_eq!(mats[0].emissive, [8.0, 5.0, 2.0, 1.0]);
-        // game-authored emission override wins on light 1
+        // game-authored emission lands on light 1
         assert_eq!(&lights[1][4..7], &[0.5, 0.6, 0.7]);
         // position/radius/dir of real lights untouched by the whole pass
         assert_eq!(&lights[0][0..4], &[1.0, 2.0, 3.0, 0.5]);
@@ -1056,10 +1007,12 @@ mod tests {
         let fs2 = FrameState { spotlights: &[], ..fs };
         assert_eq!(frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs2), 0);
         assert_eq!(lights[flash_idx], [0.0; 12]);
-        // room-lights dim at 0 zeroes non-screen lights but NOT the override
-        let fs3 = FrameState { room_lights: 0.0, light_emission: &emis, ..fs2 };
+        // a material-linked override drives the fixture's emissive with it
+        let emis2 = [(LightKey(0), [0.1f32, 0.2, 0.3])];
+        let fs3 = FrameState { light_emission: &emis2, ..fs2 };
         frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs3);
-        assert_eq!(&lights[0][4..7], &[0.0, 0.0, 0.0]);
-        assert_eq!(&lights[1][4..7], &[0.5, 0.6, 0.7]);
+        assert_eq!(&lights[0][4..7], &[0.1, 0.2, 0.3]);
+        assert_eq!(mats[0].emissive, [0.1, 0.2, 0.3, 1.0]);
+        assert_eq!(&lights[1][4..7], &[0.5, 0.6, 0.7], "stays at its last value");
     }
 }
