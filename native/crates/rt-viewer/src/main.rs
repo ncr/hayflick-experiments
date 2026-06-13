@@ -262,6 +262,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // DEMO runs FULLY headless like SHOT — no winit loop, no window, no surface
+    // — but plays a gameplay trace one tick per draw(), dumping a PNG per tick
+    // (the wall clock never ticks the sim; the per-tick command drain does).
+    if cfg.harness.demo.is_some() {
+        let mut r = unsafe { Renderer::new(None, cfg)? };
+        while !r.exit_requested {
+            unsafe { r.draw() };
+        }
+        return Ok(());
+    }
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     let mut app = App { cfg: Some(cfg), window: None, renderer: None };

@@ -173,6 +173,37 @@ impl GameLoop {
         println!("CMDS: {n_cmds} commands over {ticks} ticks — state {:016x}", self.sim.state_hash());
     }
 
+    /// DEMO=trace.txt: load the trace and queue every command at its stamp,
+    /// returning the tick count to play (DEMO_TICKS override, else last stamp
+    /// + 1). Unlike `run_cmds` (a startup PREFIX that runs all ticks before
+    /// frame 0 with no per-frame output), DEMO leaves the queue loaded and the
+    /// caller advances ONE tick per rendered frame via `demo_advance_tick`, so
+    /// every tick of real gameplay becomes a captured frame.
+    pub fn demo_load(&mut self, cfg: &Config) -> u64 {
+        let path = cfg.harness.demo.as_ref().expect("demo_load only on DEMO path");
+        let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("DEMO {path}: {e}"));
+        let trace = parse_trace(&text).unwrap_or_else(|e| panic!("DEMO: {e}"));
+        let ticks = cfg.harness.demo_ticks.unwrap_or_else(|| trace.iter().map(|(t, _)| t.0 + 1).max().unwrap_or(0));
+        let n_cmds = trace.len();
+        for (t, c) in trace {
+            self.queue.push(t, c);
+        }
+        println!("DEMO: {n_cmds} commands, playing {ticks} ticks from {path}");
+        ticks
+    }
+
+    /// Drain the current tick's queued commands, tick the sim once, refresh the
+    /// snapshot. The per-tick command-drain mirrors `run_cmds`/`run_due` (the
+    /// queue is the single source of truth for what the sim sees this tick), but
+    /// runs on the render cadence (one call per drawn frame) instead of the wall
+    /// clock — DEMO is a fixed-tick gameplay capture, not a perf trace.
+    pub fn demo_advance_tick(&mut self) {
+        let cmds = self.queue.drain_for(self.tick);
+        self.sim.tick(self.tick, &cmds);
+        self.tick.0 += 1;
+        self.snap = self.sim.snapshot();
+    }
+
     /// Advance the accumulator by a real frame delta and run the due ticks.
     /// Commands drain PER TICK (live play and trace replay must agree); held
     /// movement keys synthesize one `Command::Move` per tick (continuous

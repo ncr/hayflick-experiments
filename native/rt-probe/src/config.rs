@@ -179,6 +179,13 @@ pub struct HarnessCfg {
     pub dump_n: i32,               // DUMP_N: frames per dump
     pub movie: Option<String>,     // MOVIE=dir: run the scripted camera tour
     pub detail: (f32, f32),        // DETAIL_X/DETAIL_Z: movie's zoom-in target
+    // DEMO=trace.txt: fully-headless trace-driven gameplay frame dump. Like
+    // SHOT (present:None, no window) but instead of one frame it plays the
+    // CMDS-format trace live — one tick per frame, draining that tick's
+    // commands and ticking the sim — and writes DEMO_DIR/d_NNNNN.png per tick.
+    pub demo: Option<String>,      // DEMO=trace.txt: the gameplay trace to play
+    pub demo_dir: Option<String>,  // DEMO_DIR: where the per-tick PNGs land
+    pub demo_ticks: Option<u64>,   // DEMO_TICKS: tick count (default: last stamp + 1)
     pub frames_limit: Option<u32>, // FRAMES=N: exit after N frames, log avg time
     pub timing: bool,              // TIMING=1: per-frame phase breakdown
     pub clip_fps: u32,             // CLIP_FPS
@@ -262,6 +269,9 @@ impl Config {
                 dump_n: i("DUMP_N", 120),
                 movie: s("MOVIE"),
                 detail: (f("DETAIL_X", 11.5), f("DETAIL_Z", 2.0)),
+                demo: s("DEMO"),
+                demo_dir: s("DEMO_DIR"),
+                demo_ticks: s("DEMO_TICKS").and_then(|v| v.parse().ok()),
                 frames_limit: s("FRAMES").and_then(|v| v.parse().ok()),
                 timing: b("TIMING", false),
                 clip_fps: (i("CLIP_FPS", 50) as u32).clamp(2, 120),

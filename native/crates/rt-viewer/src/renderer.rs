@@ -380,6 +380,17 @@ impl Renderer {
         // state. A trace that rotated the camera leaves the view + dollhouse
         // masks resynced to the sim's settled quarter.
         r.game.run_cmds(&r.cfg);
+        // DEMO=trace.txt: arm the headless per-tick gameplay dump. The trace is
+        // loaded into the live command queue (NOT run as a startup prefix like
+        // CMDS) — draw() advances one tick per frame and harness_post_frame
+        // writes d_NNNNN.png. Runs after CMDS so a DEMO could even start from a
+        // CMDS-seeded state, though the showcase traces don't use both.
+        if r.cfg.harness.demo.is_some() {
+            let dir = r.cfg.harness.demo_dir.clone().unwrap_or_else(|| "demo".into());
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("DEMO_DIR {dir}: {e}"));
+            let ticks = r.game.demo_load(&r.cfg);
+            r.harness.demo = Some(crate::capture::Demo { dir, ticks, done: 0 });
+        }
         if r.game.snap.yaw_q != r.view.yaw_q {
             r.view.yaw_q = r.game.snap.yaw_q;
             r.view.mask_q = r.view.yaw_q;
@@ -555,12 +566,24 @@ impl Renderer {
         let dt = self.last_frame.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(0.0);
         self.last_frame = Some(now);
         self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
-        // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
-        // keeps the wall clock OUT of the sim entirely — the capture frame is
-        // a pure function of (scene, config, CMDS trace); the only ticks that
-        // ever ran are the deterministic CMDS prefix (asserted at capture).
-        let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
-        self.game.run_due(sim_dt);
+        // DEMO mode: the sim is driven ONE tick per rendered frame (the trace's
+        // commands drain per tick), NOT by the wall clock — a deterministic,
+        // fixed-tick gameplay capture. Live `run_due` is bypassed entirely.
+        if self.harness.demo.is_some() {
+            self.game.demo_advance_tick();
+            // a DEMO trace may `rotate` the camera (yaw_q is sim state): catch
+            // the viewer up to the sim's settled quarter WITHOUT re-queuing the
+            // command. Hard snap per quarter (no eased tween) — the DEMO path
+            // is a fixed-tick capture, so each angle holds for its trace ticks.
+            self.sync_view_yaw(self.game.snap.yaw_q);
+        } else {
+            // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
+            // keeps the wall clock OUT of the sim entirely — the capture frame is
+            // a pure function of (scene, config, CMDS trace); the only ticks that
+            // ever ran are the deterministic CMDS prefix (asserted at capture).
+            let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
+            self.game.run_due(sim_dt);
+        }
         // playerless scenes (lab): WASD pans the camera — presentation only,
         // on the wall clock like every other camera move
         if !self.game.has_player && self.game.held != [false; 4] {
@@ -710,7 +733,7 @@ impl Renderer {
             // CPU-drawn, copied onto the PRESENTED image only — swap.out stays
             // clean, so SHOT/MOVIE/DUMP captures never contain UI. Headless modes
             // skip it entirely.
-            if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() {
+            if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
                 let (canvas, mw, mh) = self.menu_canvas();
                 let bgra = matches!(self.present.as_ref().unwrap().surface_format.format, vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB);
                 let bytes = crate::menu::expand_canvas(&canvas, mw, mh, swap.menu_scale, bgra);

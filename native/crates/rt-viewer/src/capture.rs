@@ -22,6 +22,20 @@ pub struct Harness {
     pub dump_left: i32,
     pub dump_idx: u32,
     pub dump_frames: Vec<(u32, u32, Vec<u8>)>,
+    /// DEMO mode: a fully-headless trace-driven gameplay frame dump. `Some`
+    /// while a DEMO is active; `dir` is the PNG output directory, `ticks` the
+    /// total ticks to play, `done` how many have rendered so far.
+    pub demo: Option<Demo>,
+}
+
+/// DEMO=trace.txt headless capture state. Each rendered frame advances exactly
+/// one sim tick (the trace's commands drain per tick) and writes the readback
+/// `out` image to dir/d_NNNNN.png — a per-tick dump of real gameplay under the
+/// live follow-cam. Window-less like SHOT; the wall clock never ticks the sim.
+pub struct Demo {
+    pub dir: String,
+    pub ticks: u64,
+    pub done: u64,
 }
 
 impl Harness {
@@ -36,6 +50,7 @@ impl Harness {
             dump_left: 0,
             dump_idx: 0,
             dump_frames: Vec::new(),
+            demo: None, // armed in Renderer::new once the GameLoop trace is loaded
         }
     }
 }
@@ -432,6 +447,21 @@ impl Renderer {
                 }
                 println!("DUMP wrote {} frames to {dir}", self.harness.dump_frames.len());
                 self.harness.dump_frames.clear();
+                self.exit_requested = true;
+            }
+        }
+
+        // DEMO: this frame already advanced one sim tick (draw()) under the live
+        // follow-cam; capture the readback `out` to dir/d_NNNNN.png via the SAME
+        // path SHOT uses (capture()), then exit once every tick has rendered.
+        if let Some(demo) = self.harness.demo.as_ref() {
+            let (dir, ticks, done) = (demo.dir.clone(), demo.ticks, demo.done);
+            self.ctx.device.device_wait_idle().unwrap();
+            self.capture(&format!("{dir}/d_{done:05}.png"));
+            let demo = self.harness.demo.as_mut().unwrap();
+            demo.done += 1;
+            if demo.done >= ticks {
+                println!("DEMO: wrote {} frames to {dir}/ — score {}", demo.done, self.game.snap.score);
                 self.exit_requested = true;
             }
         }

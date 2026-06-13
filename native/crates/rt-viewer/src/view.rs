@@ -157,6 +157,26 @@ impl Renderer {
         self.snap_target_to_lattice();
     }
 
+    /// Snap the viewer's quarter to `target_q` WITHOUT queuing a RotateCamera
+    /// command. `rotate` is for viewer-INITIATED turns (it tells the sim to
+    /// follow); this is the inverse — the SIM already turned (a DEMO trace's
+    /// `rotate` command, or any replay that rotated) and the viewer must catch
+    /// up: re-mask the dollhouse, re-snap the target onto the new yaw's lattice.
+    /// No-op when already aligned (idle ticks never touch the TLAS masks).
+    pub fn sync_view_yaw(&mut self, target_q: u32) {
+        if self.view.yaw_q == target_q && self.view.mask_q == target_q && self.view.rot.is_none() {
+            return;
+        }
+        self.view.yaw_q = target_q;
+        self.view.rot = None;
+        self.view.mask_q = target_q;
+        if !self.scene.prim_hide_mask.is_empty() {
+            unsafe { self.gpu.set_yaw_masks(&self.ctx, self.view.yaw_q) };
+        }
+        self.view.move_accum = Vec2::ZERO;
+        self.snap_target_to_lattice();
+    }
+
     /// Snap the camera target so the rendered world lands on the low-pixel
     /// lattice (shift by the sub-pixel projection remainder along right/up) —
     /// keeps the scene crisp regardless of the player's continuous position.
