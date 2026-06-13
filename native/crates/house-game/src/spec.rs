@@ -205,12 +205,16 @@ pub fn game_level() -> LevelSpec {
         // renderer slots AFTER every emissive prim). The room each light
         // belongs to is carried in `room` regardless of order.
         lights: vec![
-            LightSpec { id: LightId(0), room: RoomId(1), kind: LightKind::Screen, base_rgb: [0.45, 0.9, 0.75], name: "crt_b".into() },
-            LightSpec { id: LightId(1), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.85, 0.6], name: "lamp_a".into() },
-            LightSpec { id: LightId(2), room: RoomId(1), kind: LightKind::Incandescent, base_rgb: [1.0, 0.82, 0.58], name: "lamp_b".into() },
-            LightSpec { id: LightId(3), room: RoomId(2), kind: LightKind::Incandescent, base_rgb: [1.0, 0.8, 0.62], name: "lamp_c".into() },
-            LightSpec { id: LightId(4), room: RoomId(3), kind: LightKind::Drift, base_rgb: [0.85, 0.92, 1.0], name: "ceil_d".into() },
-            LightSpec { id: LightId(5), room: RoomId(4), kind: LightKind::Incandescent, base_rgb: [1.0, 0.78, 0.5], name: "lamp_e".into() },
+            // Retuned to near-neutral bright daylight: the old heavy warm-orange
+            // cast muddied the clean pastels. Still flicker-driven (kind), still
+            // in NEE slot order (screen first). See game_scene::place_light for
+            // the raised emission multipliers that make the pastels read.
+            LightSpec { id: LightId(0), room: RoomId(1), kind: LightKind::Screen, base_rgb: [0.55, 0.95, 0.82], name: "crt_b".into() },
+            LightSpec { id: LightId(1), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "lamp_a".into() },
+            LightSpec { id: LightId(2), room: RoomId(1), kind: LightKind::Incandescent, base_rgb: [1.0, 0.96, 0.9], name: "lamp_b".into() },
+            LightSpec { id: LightId(3), room: RoomId(2), kind: LightKind::Incandescent, base_rgb: [1.0, 0.96, 0.91], name: "lamp_c".into() },
+            LightSpec { id: LightId(4), room: RoomId(3), kind: LightKind::Drift, base_rgb: [0.94, 0.97, 1.0], name: "ceil_d".into() },
+            LightSpec { id: LightId(5), room: RoomId(4), kind: LightKind::Incandescent, base_rgb: [1.0, 0.96, 0.9], name: "lamp_e".into() },
         ],
         targets: vec![
             // discs ON inner wall faces (normal points into the room). The wall
