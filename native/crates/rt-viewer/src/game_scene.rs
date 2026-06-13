@@ -146,25 +146,47 @@ fn box_world(scene: &mut Scene, rect: [f32; 4], height: f32, hex: u32) -> usize 
     first
 }
 
-/// A wall target: a pale backing plate flush on the wall, then a small bright
-/// disc box just proud of it along the inward normal. The disc front face sits
+/// One iso 2:1 stair step (`0.0625 wu` = 2 H + 1 V px). Every target XZ
+/// half-extent and every along-normal offset is a multiple of this so the
+/// backing plate + disc boxes rasterize clean silhouettes (invariant #8). The
+/// spec target centers are already on the lattice (wall face + tangent both
+/// land on multiples of `STAIR`), so on-lattice center ± stair-multiple
+/// half-extent keeps every box min/max on the lattice too.
+const STAIR: f32 = 0.0625;
+/// Backing-plate / disc dimensions, all stair multiples. The original `radius`
+/// (0.3 wu) snaps to the nearest stair grid: plate face = 0.5 wu (8 steps),
+/// disc face = 0.375 wu (6 steps); both are flat box-faces, not analytic discs.
+const PLATE_HALF: f32 = 0.25; // 4 steps → 0.5 wu plate face
+const DISC_HALF: f32 = 0.1875; // 3 steps → 0.375 wu disc face
+const FACE_DEPTH: f32 = STAIR; // 0.0625 wu box thickness along the wall normal
+
+/// A wall target: a pale backing plate flush on the wall, then a smaller bright
+/// disc box just proud of it along the inward normal. Both faces are sized to
+/// stair-step multiples (invariant #8) — the analytic `TargetDisc` the game
+/// hitscan uses keeps the spec's `center`/`radius`, so snapping the *rendered*
+/// greybox to the lattice does not move the hitbox. The disc's back face sits
 /// at the wall plane (`center` is on the inner wall face), so the hitscan tie
 /// (wall slab vs disc) does NOT block — exactly the shoot_system contract.
 fn place_target(scene: &mut Scene, tg: &TargetSpec) {
     let n = tg.normal;
-    let r = tg.radius;
     let c = tg.center;
-    // tangent extents: the disc spans `r` in the two axes perpendicular to n
-    let along_x = n.x.abs() > 0.5; // wall normal is ±X → the plate spans Z (+ Y)
-    let (hx, hz) = if along_x { (0.04, r) } else { (r, 0.04) };
-    // backing plate: flush on the wall (thickness 0.04 into the room)
-    let depth = 0.04;
-    let inset = n * (depth * 0.5);
-    let pc = c + inset;
-    scene.add_box_world(Vec3::new(pc.x - hx.max(0.02), pc.y - r, pc.z - hz.max(0.02)), Vec3::new(pc.x + hx.max(0.02), pc.y + r, pc.z + hz.max(0.02)), hex_linear(TARGET_RING), [0.0; 4], 0.9, 0.0);
-    // red disc proud of the plate, front face essentially AT the wall plane
-    let dc = c + n * 0.005;
-    scene.add_box_world(Vec3::new(dc.x - hx * 0.7 - 0.001, dc.y - r * 0.7, dc.z - hz * 0.7 - 0.001), Vec3::new(dc.x + hx * 0.7 + 0.001, dc.y + r * 0.7, dc.z + hz * 0.7 + 0.001), hex_linear(TARGET_COLOR), [0.0; 4], 0.7, 0.0);
+    let along_x = n.x.abs() > 0.5; // wall normal is ±X → the face spans Z (+ Y)
+    // Build each box from explicit min/max. The two axes perpendicular to n get
+    // the tangent half-extent (a stair multiple, so center ± it stays on the
+    // lattice). Along n the box runs from the wall plane (`c`) `depth` into the
+    // room: min/max are `c` and `c + n*depth`, both on the lattice. Y is exempt.
+    let face_box = |tangent_half: f32, depth: f32| -> (Vec3, Vec3) {
+        let (lo_n, hi_n) = if n.x + n.z >= 0.0 { (0.0, depth) } else { (-depth, 0.0) };
+        let (lx, hx, lz, hz) = if along_x { (lo_n, hi_n, -tangent_half, tangent_half) } else { (-tangent_half, tangent_half, lo_n, hi_n) };
+        (Vec3::new(c.x + lx, c.y - tangent_half, c.z + lz), Vec3::new(c.x + hx, c.y + tangent_half, c.z + hz))
+    };
+    // backing plate: one stair-step deep into the room, flush on the wall.
+    let (plo, phi) = face_box(PLATE_HALF, FACE_DEPTH);
+    scene.add_box_world(plo, phi, hex_linear(TARGET_RING), [0.0; 4], 0.9, 0.0);
+    // red disc proud of the plate: back face AT the wall plane (= center, so the
+    // hitscan tie does not occlude), front face two stair-steps into the room.
+    let (dlo, dhi) = face_box(DISC_HALF, FACE_DEPTH * 2.0);
+    scene.add_box_world(dlo, dhi, hex_linear(TARGET_COLOR), [0.0; 4], 0.7, 0.0);
 }
 
 /// Place a named light. The Screen device is an emissive WALL SLAB (the only
@@ -267,6 +289,44 @@ mod tests {
         }
         // exactly one screen device (crt_b), marked for the constant probe bank
         assert_eq!(scene.screen_prims.len(), 1, "one screen device");
+    }
+
+    /// Every greybox target box (backing plate + disc) has XZ dimensions AND
+    /// min/max corners on the iso 2:1 stair lattice (multiples of 0.0625 wu) —
+    /// invariant #8. The native `rt_probe::Scene` has no validator (unlike the
+    /// web `isoCleanGeometryValidator`), so this test is the native equivalent:
+    /// a regression that reintroduces sub-pixel insets (e.g. 0.005 wu) or a
+    /// raw `radius`-derived extent (0.3 wu → 9.6 px) fails here.
+    #[test]
+    fn target_boxes_are_iso_stair_aligned() {
+        const STEP: f32 = 0.0625;
+        let on_lattice = |v: f32| (v / STEP - (v / STEP).round()).abs() < 1e-4;
+        let spec = game_level();
+        for tg in &spec.targets {
+            let mut scene = Scene::new();
+            place_target(&mut scene, tg);
+            assert_eq!(scene.primitives.len(), 2, "target {:?}: plate + disc", tg.id);
+            for (pi, p) in scene.primitives.iter().enumerate() {
+                let verts = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
+                let (mut xmin, mut xmax, mut zmin, mut zmax) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+                for v in verts {
+                    xmin = xmin.min(v.pos[0]);
+                    xmax = xmax.max(v.pos[0]);
+                    zmin = zmin.min(v.pos[2]);
+                    zmax = zmax.max(v.pos[2]);
+                }
+                // corners on the lattice (the web validator only checks dims;
+                // the finding asks for both — on-lattice center keeps min/max on
+                // the lattice iff every extent is a stair multiple).
+                for (axis, v) in [("xmin", xmin), ("xmax", xmax), ("zmin", zmin), ("zmax", zmax)] {
+                    assert!(on_lattice(v), "target {:?} box {pi}: {axis}={v} off the 0.0625 lattice", tg.id);
+                }
+                // dimensions are stair multiples (multiple of 0.0625 ⇒ d*32 even)
+                for (axis, d) in [("x", xmax - xmin), ("z", zmax - zmin)] {
+                    assert!(on_lattice(d), "target {:?} box {pi}: {axis} dim {d} not a 0.0625 multiple", tg.id);
+                }
+            }
+        }
     }
 
     /// A closed door leaf (angle 0) occupies exactly its spec closed_solid
