@@ -54,11 +54,20 @@ pub struct StyleCfg {
 }
 
 impl StyleCfg {
-    fn from_env() -> StyleCfg {
+    fn from_env(scene: &str) -> StyleCfg {
         // shadow dither ON by default (user-tuned 2026-06-10: strength 1, 16
-        // luma bands, fade-in below luma 0.35) — the subtle retro texture in
-        // shadow gradients is part of the base look. SDITHER=0 for fully clean.
-        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th: 0.35 };
+        // luma bands) — the subtle retro texture in shadow gradients is part of
+        // the base look. SDITHER=0 for fully clean.
+        //
+        // sdither_th is the luma below which the dither fades in. The game scene
+        // uses a HIGHER threshold (0.75 vs 0.35): its bright pastel surfaces push
+        // ambient-occlusion crevices above the old 0.35 cutoff, so the dither
+        // stopped triggering where AO darkens contact shadows. The brighter the
+        // base albedo, the higher the threshold must sit for AO regions to read.
+        // (Per-scene — the darker textured scenes keep 0.35 so their goldens and
+        // look are unchanged.)
+        let sdither_th = if scene == "game" { 0.75 } else { 0.35 };
+        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th };
         if let Some(name) = s("STYLE") {
             match name.as_str() {
                 "fallout" => { st.grade = 1.0; st.palette = 1.0; st.grain = 0.04; }
@@ -241,7 +250,7 @@ impl Config {
                 ao_r: f("AO_R", 0.8),
                 ao_n: i("AO_N", 8),
                 debug,
-                style: StyleCfg::from_env(),
+                style: StyleCfg::from_env(&scene),
             },
             game: GameCfg {
                 lights: f("LIGHTS", 1.0).clamp(0.0, 1.0),
