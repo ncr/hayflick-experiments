@@ -231,13 +231,13 @@ pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
     // lights — warm pools + colored bounce for free. Sizes stay on the 0.0625
     // wu lattice (invariant #8). Walls are ±0.125 wu thick, so sconces sit at
     // 0.156 off the wall line (proud of the inner face).
-    // cfg.emit scales all practicals (tuning knob, default 1)
+    // cfg.render.emit scales all practicals (tuning knob, default 1)
     // Every practical is NAMED (name_light / name_point_light): the viewer's
     // adapter mirrors them into the game's LevelSpec, and house-game's
     // light_system authors their per-tick emission (flicker curves live
     // there now). An unnamed light would freeze at base — the adapter
     // asserts full name coverage instead of letting that slip.
-    let emit = cfg.emit;
+    let emit = cfg.render.emit;
     let warm = move |s: f32| [1.0 * s * emit, 0.64 * s * emit, 0.30 * s * emit, 1.0];
     let mut bulb = |name: &str, p: Vec3, half: f32, e: [f32; 4]| {
         scene.add_box_world(p - Vec3::splat(half), p + Vec3::splat(half), [1.0, 0.95, 0.85, 1.0], e, 0.6, 0.0);
@@ -302,7 +302,7 @@ pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
     // light at the true screen surface; the animator pulses it (green ->
     // screen kind). Re-measure with PET_DUMP=1 if the prop moves.
     if let Some(pp) = pet_prim {
-        if cfg.pet_dump {
+        if cfg.render.pet_dump {
             scene.dump_tris_csv(pp, "/tmp/pet_tris.csv");
         }
         let g = 8.0 * emit;

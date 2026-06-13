@@ -234,7 +234,7 @@ impl Renderer {
         };
         println!("scene: {} prims, {} tris, {} textures", scene.primitives.len(), scene.indices.len() / 3, scene.images.len());
         let player0 = scene.player_start;
-        let gpu = SceneGpu::build(&ctx, &scene, cfg.probe_spacing)?;
+        let gpu = SceneGpu::build(&ctx, &scene, cfg.render.probe_spacing)?;
         // the sim side: SCENE=game runs the AUTHORED spec (doors + targets +
         // lights, the spec built the scene above); everything else runs the
         // interim mirror of the scene's collision fields + named lights
@@ -285,22 +285,22 @@ impl Renderer {
             tone_pipeline_layout,
             tone_pipeline,
             _tone_shader: tone_shader,
-            base_scale: cfg.pixel,
-            exposure: cfg.exposure,
-            style: cfg.style,
-            ao: cfg.ao,
-            ao_r: cfg.ao_r,
-            ao_n: cfg.ao_n,
-            light_anim: cfg.light_anim,
-            lights_dim: cfg.lights,
-            flash_power: cfg.flash_power,
-            flash_cone: cfg.flash_cone,
-            debug: cfg.debug,
-            pan_speed: cfg.player_speed.unwrap_or(cfg.default_player_speed()),
+            base_scale: cfg.render.pixel,
+            exposure: cfg.render.exposure,
+            style: cfg.render.style,
+            ao: cfg.render.ao,
+            ao_r: cfg.render.ao_r,
+            ao_n: cfg.render.ao_n,
+            light_anim: cfg.game.light_anim,
+            lights_dim: cfg.game.lights,
+            flash_power: cfg.game.flash_power,
+            flash_cone: cfg.game.flash_cone,
+            debug: cfg.render.debug,
+            pan_speed: cfg.game.player_speed.unwrap_or(cfg.default_player_speed()),
             view: ViewState {
-                zoom: cfg.zoom.round().clamp(ZOOM_MIN, ZOOM_MAX),
-                yaw_q: cfg.yaw_q,
-                mask_q: cfg.yaw_q,
+                zoom: cfg.game.zoom.round().clamp(ZOOM_MIN, ZOOM_MAX),
+                yaw_q: cfg.game.yaw_q,
+                mask_q: cfg.game.yaw_q,
                 rot: None,
                 yaw_anim: 0.0,
                 pan: Vec2::ZERO,
@@ -316,7 +316,7 @@ impl Renderer {
             rec: None,
             rec_jobs: Vec::new(),
             cap: None,
-            movie: cfg.movie.clone().map(|dir| {
+            movie: cfg.harness.movie.clone().map(|dir| {
                 std::fs::create_dir_all(&dir).ok();
                 crate::capture::Movie::new(dir, &cfg)
             }),
@@ -330,7 +330,7 @@ impl Renderer {
         if !r.scene.prim_hide_mask.is_empty() {
             // MASK_Q (diagnostic): decouple the dollhouse masks from the camera
             // quarter to prove/disprove mask-dependent light transport.
-            let mq = r.cfg.mask_q.unwrap_or(r.view.yaw_q);
+            let mq = r.cfg.game.mask_q.unwrap_or(r.view.yaw_q);
             r.gpu.set_yaw_masks(&r.ctx, mq); // marks the TLAS dirty: the first record_frame applies the masks
             r.view.mask_q = mq;
         }
@@ -338,28 +338,28 @@ impl Renderer {
         // WINDOW request verbatim — identical extent math from there on
         let (w0, h0) = match window {
             Some(w) => (w.inner_size().width, w.inner_size().height),
-            None => r.cfg.window.unwrap_or((1280, 800)),
+            None => r.cfg.harness.window.unwrap_or((1280, 800)),
         };
         r.recreate_swapchain(w0.max(1), h0.max(1));
         // bake the GI probe cache (blocking, once — both light banks)
         let set = r.swap.as_ref().unwrap().scene_set;
-        r.gpu.bake_probes(&r.ctx, set, r.env0, r.cfg.probe_rays);
+        r.gpu.bake_probes(&r.ctx, set, r.env0, r.cfg.render.probe_rays);
         // optional initial pan offset (low pixels), for headless capture tests
-        if r.cfg.pan != (0.0, 0.0) {
-            let d = Vec2::new(r.cfg.pan.0, r.cfg.pan.1);
+        if r.cfg.game.pan != (0.0, 0.0) {
+            let d = Vec2::new(r.cfg.game.pan.0, r.cfg.game.pan.1);
             r.view.pan += d;
             r.clamp_pan_to_buffer();
         }
         // optional camera look-at override (world units), for framing captures
-        if r.cfg.target.0.is_some() || r.cfg.target.1.is_some() {
-            let t = Vec3::new(r.cfg.target.0.unwrap_or(r.view.target.x), 0.0, r.cfg.target.1.unwrap_or(r.view.target.z));
+        if r.cfg.game.target.0.is_some() || r.cfg.game.target.1.is_some() {
+            let t = Vec3::new(r.cfg.game.target.0.unwrap_or(r.view.target.x), 0.0, r.cfg.game.target.1.unwrap_or(r.view.target.z));
             r.view.target = snap_ground_to_lattice(t, r.yaw_deg());
         }
         // optional player world offset (camera NOT moved) — proves the dynamic
         // TLAS rebuild displaces the marker in headless capture tests (the
         // moved snapped transform makes record_frame patch + rebuild).
-        if r.cfg.player_off != (0.0, 0.0) {
-            r.game.offset_player(r.cfg.player_off.0, r.cfg.player_off.1);
+        if r.cfg.game.player_off != (0.0, 0.0) {
+            r.game.offset_player(r.cfg.game.player_off.0, r.cfg.game.player_off.1);
         }
         // CMDS replay prefix (deterministic; the wall-clock WALK hack's
         // replacement) — runs LAST so the trace acts on the fully seeded
@@ -782,12 +782,12 @@ impl Renderer {
 
         // CPU frame-time (how long draw() blocks the main thread)
         let cpu_ms = now.elapsed().as_secs_f32() * 1000.0;
-        if self.cfg.timing {
+        if self.cfg.harness.timing {
             let wait_ms = (t_acq - now).as_secs_f32() * 1000.0;
             println!("TIME f={:04} total={:6.2}ms wait={:6.2} record+present={:6.2} rot={}", self.frame, cpu_ms, wait_ms, cpu_ms - wait_ms, self.view.rot.is_some());
         }
         self.frame_time_sum += cpu_ms;
-        if let Some(limit) = self.cfg.frames_limit {
+        if let Some(limit) = self.cfg.harness.frames_limit {
             if self.frame >= limit {
                 d.device_wait_idle().unwrap();
                 println!("FRAMES={limit}: avg CPU frame {:.2}ms", self.frame_time_sum / limit as f32);

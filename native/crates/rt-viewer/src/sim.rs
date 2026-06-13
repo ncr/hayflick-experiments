@@ -98,11 +98,11 @@ impl GameLoop {
         // boots dark; fractional LIGHTS stays a viewer-side dim), and the
         // default facing toward the camera at THAT yaw — the exact expression
         // the old viewer used.
-        sim.world.get::<&mut Flashlight>(sim.player).unwrap().on = cfg.flash;
-        sim.res.yaw_q = cfg.yaw_q;
-        sim.res.master_lights = cfg.lights > 0.0;
-        sim.world.get::<&mut Player>(sim.player).unwrap().speed_px = cfg.player_speed.unwrap_or(cfg.default_player_speed());
-        let down = screen_px_to_world(Vec2::new(0.0, 1.0), 90.0 * cfg.yaw_q as f32);
+        sim.world.get::<&mut Flashlight>(sim.player).unwrap().on = cfg.game.flash;
+        sim.res.yaw_q = cfg.game.yaw_q;
+        sim.res.master_lights = cfg.game.lights > 0.0;
+        sim.world.get::<&mut Player>(sim.player).unwrap().speed_px = cfg.game.player_speed.unwrap_or(cfg.default_player_speed());
+        let down = screen_px_to_world(Vec2::new(0.0, 1.0), 90.0 * cfg.game.yaw_q as f32);
         sim.world.get::<&mut Facing>(sim.player).unwrap().0 = Vec2::new(down.x, down.z).try_normalize().unwrap_or(Vec2::new(0.0, 1.0));
         sim.reseed();
         let snap = sim.snapshot();
@@ -155,10 +155,10 @@ impl GameLoop {
     /// pre-trace value so a trace that walked the player triggers one follow
     /// retarget before the first frame (the camera shows the walk's result).
     pub fn run_cmds(&mut self, cfg: &Config) {
-        let Some(path) = &cfg.cmds else { return };
+        let Some(path) = &cfg.game.cmds else { return };
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("CMDS {path}: {e}"));
         let trace = parse_trace(&text).unwrap_or_else(|e| panic!("CMDS: {e}"));
-        let ticks = cfg.cmds_ticks.unwrap_or_else(|| trace.iter().map(|(t, _)| t.0 + 1).max().unwrap_or(0));
+        let ticks = cfg.game.cmds_ticks.unwrap_or_else(|| trace.iter().map(|(t, _)| t.0 + 1).max().unwrap_or(0));
         let n_cmds = trace.len();
         for (t, c) in trace {
             self.queue.push(t, c);

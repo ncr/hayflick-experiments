@@ -36,7 +36,7 @@ pub mod render;
 pub mod scene;
 pub mod scenes;
 
-pub use config::{Config, StyleCfg};
+pub use config::{Config, GameCfg, HarnessCfg, RenderCfg, StyleCfg};
 pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx, GpuTex};
 pub use iso::{
     clamp_pan, iso_basis, iso_camera_at, iso_pixel_basis, iso_target, render_scale, screen_px_to_world, snap_ground_to_lattice, whole_pixel_step, zoom_anchor_pan, CamFrame, ISO_PITCH_DEG, ISO_R, ISO_YAW_DEG,

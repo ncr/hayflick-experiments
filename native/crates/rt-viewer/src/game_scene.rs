@@ -97,7 +97,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // the NEE slot order equals the spec / flicker index. The Screen device is
     // a thin wall slab marked as a screen (constant in both probe banks).
     for l in &spec.lights {
-        place_light(&mut scene, l, room_center(spec, l), cfg.emit);
+        place_light(&mut scene, l, room_center(spec, l), cfg.render.emit);
     }
 
     scene.recompute_bounds(); // bounds = the static world (no player, no doors)
@@ -239,7 +239,7 @@ mod tests {
     use rt_probe::{scan_lights, SceneHandles};
 
     fn game_cfg() -> Config {
-        // a default-ish config; build_game only reads cfg.emit
+        // a default-ish config; build_game only reads cfg.render.emit
         std::env::set_var("SCENE", "game");
         Config::from_env()
     }

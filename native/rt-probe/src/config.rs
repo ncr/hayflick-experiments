@@ -3,6 +3,17 @@
 //! Nothing else in the crate reads `std::env` — every knob flows through this
 //! struct, so the full inventory of tuning surface is visible here, and the
 //! ESC menu / env-string round-trip (`viewer`) has a single source of truth.
+//!
+//! `Config` is split along the three natural axes the knobs fall into:
+//! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).
+//! - [`GameCfg`]   — game / input / camera-seeding knobs (sim state at boot).
+//! - [`HarnessCfg`] — window size + capture/movie/clip harness knobs.
+//!
+//! `Config::from_env` resolves all three; `scene` is the shared identity field
+//! both the renderer's scene builders and the game adapter read, so it lives on
+//! the top-level `Config` rather than in any one group. Env var names and the
+//! ESC menu env-string round-trip are UNCHANGED by the split — saved tunings
+//! keep working (pinned by `config::tests::env_string_round_trip`).
 
 fn f(k: &str, d: f32) -> f32 {
     std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
@@ -99,17 +110,17 @@ impl StyleCfg {
     }
 }
 
-pub struct Config {
-    // ---- scene ----
-    pub scene: String,             // SCENE: house (default) | lab | grid
+/// Renderer look + GI/probe bake knobs. No game, no window — everything here
+/// feeds the shade/probe pipelines and the post stack. `default_exposure`
+/// depends on the scene, so EXPOSURE is resolved against the scene name at
+/// `from_env` time.
+pub struct RenderCfg {
     pub emit: f32,                 // EMIT: master scale on authored practical emission
     pub sun: Option<f32>,          // SUN/SKY/FOG/FOG_H override the scene's lighting env
     pub sky: Option<f32>,
     pub fog: Option<f32>,
     pub fog_h: Option<f32>,
     pub pet_dump: bool,            // PET_DUMP: dump the PET prop's triangles as CSV
-
-    // ---- renderer ----
     pub pixel: u32,                // PIXEL: integer render scale at zoom=1
     pub exposure: f32,             // EXPOSURE (default depends on scene)
     pub probe_spacing: f32,        // PROBE_SPACING: GI probe grid spacing (wu)
@@ -119,15 +130,31 @@ pub struct Config {
     pub ao_n: i32,                 // AO_N: RT-AO ray count
     pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4
     pub style: StyleCfg,
+}
 
-    // ---- lights ----
+impl RenderCfg {
+    /// The scene's lighting env with the SUN/SKY/FOG/FOG_H overrides applied.
+    pub fn lighting_env(&self, scene_lighting: [f32; 4]) -> [f32; 4] {
+        let mut e = scene_lighting;
+        for (slot, ov) in e.iter_mut().zip([self.sun, self.sky, self.fog, self.fog_h]) {
+            if let Some(v) = ov {
+                *slot = v;
+            }
+        }
+        e
+    }
+}
+
+/// Game / input / camera-seeding knobs. These write SIM STATE at boot (flash,
+/// room-lights master, player speed/offset, settled yaw quarter) plus the
+/// camera presentation seeds (zoom, pan, look-at target) and the deterministic
+/// command-replay prefix.
+pub struct GameCfg {
     pub lights: f32,               // LIGHTS: room-lights master dim 0..1
     pub light_anim: bool,          // LIGHT_ANIM=0 freezes practical flicker
     pub flash: bool,               // FLASH: flashlight on at boot
     pub flash_power: f32,          // FLASH_POWER
     pub flash_cone: f32,           // FLASH_CONE: outer half-angle, degrees
-
-    // ---- view / player seeding ----
     pub zoom: f32,                 // ZOOM (whole steps 1-4)
     pub yaw_q: u32,                // YAW_Q: start quarter-turn
     pub mask_q: Option<u32>,       // MASK_Q: decouple dollhouse masks (diagnostic)
@@ -135,13 +162,17 @@ pub struct Config {
     pub target: (Option<f32>, Option<f32>), // TARGET_X/TARGET_Z: camera look-at override
     pub player_off: (f32, f32),    // PLAYER_X/PLAYER_Z: player offset from spawn
     pub player_speed: Option<f32>, // PLAYER_SPEED (px/s; default depends on scene)
-    pub window: Option<(u32, u32)>, // WINDOW=WxH: requested inner size (goldens)
-
-    // ---- capture / harness ----
-    pub shot: Option<String>,      // SHOT=path.png: capture one frame, exit
-    pub shot_delay: f32,           // SHOT_DELAY: seconds before the capture
     pub cmds: Option<String>,      // CMDS=trace.txt: deterministic command-replay prefix
     pub cmds_ticks: Option<u64>,   // CMDS_TICKS: prefix length (default: last stamp + 1)
+}
+
+/// Window size + capture / movie / clip harness knobs. None of these touch the
+/// look or the game — they drive the headless SHOT path, the scripted MOVIE
+/// tour, the DUMP/FRAMES diagnostics, and clip encoding.
+pub struct HarnessCfg {
+    pub window: Option<(u32, u32)>, // WINDOW=WxH: requested inner size (goldens)
+    pub shot: Option<String>,      // SHOT=path.png: capture one frame, exit
+    pub shot_delay: f32,           // SHOT_DELAY: seconds before the capture
     pub rotate_at: Option<f32>,    // ROTATE_AT=secs: fire one smooth e-turn
     pub dump: Option<String>,      // DUMP=dir: record presented frames as PNGs
     pub dump_at: Option<f32>,      // DUMP_AT=secs: start the dump on a timer
@@ -156,6 +187,13 @@ pub struct Config {
     pub clip_gif_scale: u32,       // CLIP_GIF_SCALE
 }
 
+pub struct Config {
+    pub scene: String,             // SCENE: house (default) | lab | grid | game
+    pub render: RenderCfg,
+    pub game: GameCfg,
+    pub harness: HarnessCfg,
+}
+
 impl Config {
     pub fn from_env() -> Config {
         let scene = s("SCENE").unwrap_or_else(|| "house".into());
@@ -165,7 +203,6 @@ impl Config {
         // sample as sRGB (hardware-linearized, darker albedo + darker bounce),
         // and the bump restores the previous overall brightness.
         let default_exposure = if scene == "house" || scene == "game" { 0.40 } else { 0.22 };
-        // grid: the web knob default (80 px/s); elsewhere: player walk speed
         let window = s("WINDOW").and_then(|v| {
             let (w, h) = v.split_once('x')?;
             Some((w.parse().ok()?, h.parse().ok()?))
@@ -182,66 +219,121 @@ impl Config {
             0
         };
         Config {
-            emit: f("EMIT", 1.0),
-            sun: fo("SUN"),
-            sky: fo("SKY"),
-            fog: fo("FOG"),
-            fog_h: fo("FOG_H"),
-            pet_dump: b("PET_DUMP", false),
-            pixel: (i("PIXEL", 4) as u32).max(1),
-            exposure: f("EXPOSURE", default_exposure),
-            probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
-            probe_rays: i("PROBE_RAYS", 2048),
-            ao: f("AO", 1.0),
-            ao_r: f("AO_R", 0.8),
-            ao_n: i("AO_N", 8),
-            debug,
-            style: StyleCfg::from_env(),
-            lights: f("LIGHTS", 1.0).clamp(0.0, 1.0),
-            light_anim: b("LIGHT_ANIM", true),
-            flash: b("FLASH", false),
-            flash_power: f("FLASH_POWER", 1.0),
-            flash_cone: f("FLASH_CONE", 22.0),
-            zoom: f("ZOOM", 1.0),
-            yaw_q: (i("YAW_Q", 0) as u32) & 3,
-            mask_q: fo("MASK_Q").map(|v| (v as u32) & 3),
-            pan: (f("PAN_X", 0.0), f("PAN_Y", 0.0)),
-            target: (fo("TARGET_X"), fo("TARGET_Z")),
-            player_off: (f("PLAYER_X", 0.0), f("PLAYER_Z", 0.0)),
-            player_speed: fo("PLAYER_SPEED"),
-            window,
-            shot: s("SHOT"),
-            shot_delay: f("SHOT_DELAY", 0.0),
-            cmds: s("CMDS"),
-            cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
-            rotate_at: fo("ROTATE_AT"),
-            dump: s("DUMP"),
-            dump_at: fo("DUMP_AT"),
-            dump_n: i("DUMP_N", 120),
-            movie: s("MOVIE"),
-            detail: (f("DETAIL_X", 11.5), f("DETAIL_Z", 2.0)),
-            frames_limit: s("FRAMES").and_then(|v| v.parse().ok()),
-            timing: b("TIMING", false),
-            clip_fps: (i("CLIP_FPS", 50) as u32).clamp(2, 120),
-            clip_max_s: f("CLIP_MAX_S", 60.0),
-            clip_mp4_scale: (i("CLIP_MP4_SCALE", 4) as u32).clamp(1, 8),
-            clip_gif_scale: (i("CLIP_GIF_SCALE", 1) as u32).clamp(1, 8),
+            render: RenderCfg {
+                emit: f("EMIT", 1.0),
+                sun: fo("SUN"),
+                sky: fo("SKY"),
+                fog: fo("FOG"),
+                fog_h: fo("FOG_H"),
+                pet_dump: b("PET_DUMP", false),
+                pixel: (i("PIXEL", 4) as u32).max(1),
+                exposure: f("EXPOSURE", default_exposure),
+                probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
+                probe_rays: i("PROBE_RAYS", 2048),
+                ao: f("AO", 1.0),
+                ao_r: f("AO_R", 0.8),
+                ao_n: i("AO_N", 8),
+                debug,
+                style: StyleCfg::from_env(),
+            },
+            game: GameCfg {
+                lights: f("LIGHTS", 1.0).clamp(0.0, 1.0),
+                light_anim: b("LIGHT_ANIM", true),
+                flash: b("FLASH", false),
+                flash_power: f("FLASH_POWER", 1.0),
+                flash_cone: f("FLASH_CONE", 22.0),
+                zoom: f("ZOOM", 1.0),
+                yaw_q: (i("YAW_Q", 0) as u32) & 3,
+                mask_q: fo("MASK_Q").map(|v| (v as u32) & 3),
+                pan: (f("PAN_X", 0.0), f("PAN_Y", 0.0)),
+                target: (fo("TARGET_X"), fo("TARGET_Z")),
+                player_off: (f("PLAYER_X", 0.0), f("PLAYER_Z", 0.0)),
+                player_speed: fo("PLAYER_SPEED"),
+                cmds: s("CMDS"),
+                cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
+            },
+            harness: HarnessCfg {
+                window,
+                shot: s("SHOT"),
+                shot_delay: f("SHOT_DELAY", 0.0),
+                rotate_at: fo("ROTATE_AT"),
+                dump: s("DUMP"),
+                dump_at: fo("DUMP_AT"),
+                dump_n: i("DUMP_N", 120),
+                movie: s("MOVIE"),
+                detail: (f("DETAIL_X", 11.5), f("DETAIL_Z", 2.0)),
+                frames_limit: s("FRAMES").and_then(|v| v.parse().ok()),
+                timing: b("TIMING", false),
+                clip_fps: (i("CLIP_FPS", 50) as u32).clamp(2, 120),
+                clip_max_s: f("CLIP_MAX_S", 60.0),
+                clip_mp4_scale: (i("CLIP_MP4_SCALE", 4) as u32).clamp(1, 8),
+                clip_gif_scale: (i("CLIP_GIF_SCALE", 1) as u32).clamp(1, 8),
+            },
             scene,
         }
     }
 
     /// The scene's lighting env with the SUN/SKY/FOG/FOG_H overrides applied.
+    /// (Forwards to [`RenderCfg::lighting_env`].)
     pub fn lighting_env(&self, scene_lighting: [f32; 4]) -> [f32; 4] {
-        let mut e = scene_lighting;
-        for (slot, ov) in e.iter_mut().zip([self.sun, self.sky, self.fog, self.fog_h]) {
-            if let Some(v) = ov {
-                *slot = v;
-            }
-        }
-        e
+        self.render.lighting_env(scene_lighting)
     }
 
+    /// Default player walk speed — depends on the scene (grid mirrors the web
+    /// knob default; the rest walk faster), so it bridges `scene` + `game`.
     pub fn default_player_speed(&self) -> f32 {
         if self.scene == "grid" { 80.0 } else { 140.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ESC menu prints an env string of dialed-in looks; re-feeding it must
+    /// reproduce the same resolved values. The menu reads Renderer fields (not
+    /// Config), but every menu key is seeded by a Config field, so this pins
+    /// that the env names the split exposes still parse 1:1 to the same slots.
+    /// Env access is process-global, so this runs serially within one test.
+    #[test]
+    fn env_string_round_trip() {
+        // A representative dialed-in look spanning all three groups.
+        let pairs = [
+            ("SCENE", "house"),
+            ("EXPOSURE", "0.37"),
+            ("AO", "0.65"),
+            ("AO_R", "1.20"),
+            ("AO_N", "12"),
+            ("SDITHER", "0.80"),
+            ("SDITHER_N", "20"),
+            ("SDITHER_TH", "0.40"),
+            ("DITHER", "4"),
+            ("LIGHTS", "0"),
+            ("LIGHT_ANIM", "0"),
+            ("FLASH", "1"),
+            ("FLASH_POWER", "1.50"),
+            ("FLASH_CONE", "18"),
+        ];
+        for (k, v) in pairs {
+            std::env::set_var(k, v);
+        }
+        let cfg = Config::from_env();
+        assert_eq!(cfg.scene, "house");
+        assert_eq!(cfg.render.exposure, 0.37);
+        assert_eq!(cfg.render.ao, 0.65);
+        assert_eq!(cfg.render.ao_r, 1.20);
+        assert_eq!(cfg.render.ao_n, 12);
+        assert_eq!(cfg.render.style.sdither, 0.80);
+        assert_eq!(cfg.render.style.sdither_n, 20.0);
+        assert_eq!(cfg.render.style.sdither_th, 0.40);
+        assert_eq!(cfg.render.style.dither, 4.0);
+        assert_eq!(cfg.game.lights, 0.0);
+        assert!(!cfg.game.light_anim);
+        assert!(cfg.game.flash);
+        assert_eq!(cfg.game.flash_power, 1.50);
+        assert_eq!(cfg.game.flash_cone, 18.0);
+        for (k, _) in pairs {
+            std::env::remove_var(k);
+        }
     }
 }

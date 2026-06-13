@@ -27,12 +27,12 @@ pub struct Harness {
 impl Harness {
     pub fn from_cfg(cfg: &Config) -> Harness {
         Harness {
-            shot: cfg.shot.clone(),
-            shot_delay: cfg.shot_delay,
-            rotate_at: cfg.rotate_at,
-            dump_dir: cfg.dump.clone(),
-            dump_at: cfg.dump_at,
-            dump_n: cfg.dump_n,
+            shot: cfg.harness.shot.clone(),
+            shot_delay: cfg.harness.shot_delay,
+            rotate_at: cfg.harness.rotate_at,
+            dump_dir: cfg.harness.dump.clone(),
+            dump_at: cfg.harness.dump_at,
+            dump_n: cfg.harness.dump_n,
             dump_left: 0,
             dump_idx: 0,
             dump_frames: Vec::new(),
@@ -107,7 +107,7 @@ impl Movie {
     /// (cfg.detail, default the lab mainframe) and zoom in step by step.
     pub fn new(dir: String, cfg: &Config) -> Movie {
         use MovieCmd::*;
-        let (dx, dz) = cfg.detail;
+        let (dx, dz) = cfg.harness.detail;
         let cmds = vec![
             Hold(24),
             Orbit(1, 18),
@@ -225,14 +225,14 @@ impl Renderer {
             self.finish_recording();
             return;
         }
-        let fps = self.cfg.clip_fps;
+        let fps = self.cfg.harness.clip_fps;
         // first capture on the very next presented frame
         self.rec = Some(Rec {
             w: 0,
             h: 0,
             fps,
             next_due: self.start_time.elapsed().as_secs_f32(),
-            max_frames: (self.cfg.clip_max_s * fps as f32).max(2.0) as usize,
+            max_frames: (self.cfg.harness.clip_max_s * fps as f32).max(2.0) as usize,
             t_first: 0.0,
             t_last: 0.0,
             frames: Vec::new(),
@@ -253,7 +253,7 @@ impl Renderer {
             rec.fps as f64
         };
         println!("clip: stopped ({n} frames, {:.1}s @ {fps:.1} fps) — encoding mp4 + gif...", (n.max(1) - 1) as f64 / fps);
-        let (ms, gs) = (self.cfg.clip_mp4_scale, self.cfg.clip_gif_scale);
+        let (ms, gs) = (self.cfg.harness.clip_mp4_scale, self.cfg.harness.clip_gif_scale);
         self.rec_jobs.push(std::thread::spawn(move || encode_clip(rec.frames, rec.w, rec.h, fps, ms, gs)));
     }
 

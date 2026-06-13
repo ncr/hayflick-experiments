@@ -65,7 +65,7 @@ impl ApplicationHandler for App {
             return;
         }
         let cfg = self.cfg.take().expect("config consumed once");
-        let (w, h) = cfg.window.unwrap_or((1280, 800));
+        let (w, h) = cfg.harness.window.unwrap_or((1280, 800));
         let attrs = Window::default_attributes().with_title("rt-probe — iso viewer").with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let renderer = unsafe { Renderer::new(Some(&window), cfg).expect("renderer init") };
@@ -255,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (default 1280x800), so golden captures are byte-reproducible — the WM
     // never gets a say in the size. Same frame sequence as the windowed
     // capture: draw() until harness_post_frame fires the SHOT and exits.
-    if cfg.shot.is_some() {
+    if cfg.harness.shot.is_some() {
         let mut r = unsafe { Renderer::new(None, cfg)? };
         while !r.exit_requested {
             unsafe { r.draw() };
