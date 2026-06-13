@@ -63,7 +63,18 @@ pub struct Scene {
     /// Primitive index of the movable player marker, if any. Its geometry is in
     /// LOCAL space (centred on XZ, base at y=0), so the TLAS instance transform
     /// places it — letting it move via per-frame TLAS rebuild (dynamic scene).
+    /// LEGACY single-mover shim: merged (as the named run "player") into
+    /// `dynamic_list` alongside `dynamics` — existing scenes keep compiling.
     pub dynamic_prim: Option<usize>,
+    /// Named dynamic (TLAS-movable) primitive runs beyond the legacy player:
+    /// (name, first prim, prim count, start instance transform). Geometry
+    /// stays in LOCAL space; the per-frame instance transform places it
+    /// (door leaves, movers). Filled by `place_dynamic` / `register_dynamic`.
+    pub dynamics: Vec<(String, usize, usize, Mat4)>,
+    /// Named NEE lights: (name, prim index). `SceneGpu::build` joins these
+    /// onto the emissive-scan slot order into `SceneHandles.lights`; naming a
+    /// prim that lands no NEE slot is a loud build error, never a silent skip.
+    pub named_lights: Vec<(String, usize)>,
     pub player_start: Vec3,
     /// Collision data for the native game runtime (mirrors @common/gameplay
     /// `LevelResource.isBlocked`): the walkable floor rect (xmin, zmin, xmax,
@@ -341,6 +352,50 @@ impl Scene {
             });
         }
         first
+    }
+
+    /// Every dynamic primitive run with its name + start transform, in a fixed
+    /// order: the legacy `dynamic_prim` Option (the unnamed movable player)
+    /// merges FIRST under the name "player", starting at `player_start`, then
+    /// `dynamics` in registration order. This is the renderer's single source
+    /// for NEE-scan exclusion, bake-ray masking (0x05) and instance handles.
+    pub fn dynamic_list(&self) -> Vec<(String, usize, usize, Mat4)> {
+        let mut v: Vec<(String, usize, usize, Mat4)> = Vec::new();
+        if let Some(p) = self.dynamic_prim {
+            v.push(("player".to_string(), p, 1, Mat4::from_translation(self.player_start)));
+        }
+        v.extend(self.dynamics.iter().cloned());
+        v
+    }
+
+    /// Instantiate a preloaded model as a NAMED DYNAMIC primitive run:
+    /// geometry is baked through `local` only (pivot authoring — e.g. put a
+    /// door leaf's hinge at the origin) and stays in LOCAL space; the TLAS
+    /// instance transform (identity at start, patched per frame through
+    /// `SceneGpu::record_frame`) places it in the world. Returns the first
+    /// primitive index. Per-instance policy (ARCHITECTURE.md flag table):
+    /// excluded from the NEE emissive scan, bake-ray mask 0x05 (the frozen GI
+    /// cache never sees movers), never dollhouse-hidden. Like the player, call
+    /// `recompute_bounds` BEFORE placing dynamics — local-space geometry must
+    /// not stretch the world AABB.
+    pub fn place_dynamic(&mut self, cm: &CachedModel, name: &str, local: Mat4) -> usize {
+        let first = self.place(cm, local);
+        let count = self.primitives.len() - first;
+        self.register_dynamic(name, first, count, Mat4::IDENTITY);
+        first
+    }
+
+    /// Register an already-appended primitive run (e.g. an `add_box_local`
+    /// door leaf) as a named dynamic instance starting at `start`.
+    pub fn register_dynamic(&mut self, name: &str, first: usize, count: usize, start: Mat4) {
+        self.dynamics.push((name.to_string(), first, count, start));
+    }
+
+    /// Name an emissive primitive for per-light game control. The NEE slot
+    /// (`LightKey`) is resolved at `SceneGpu::build` from the emissive-scan
+    /// order — naming never reorders the scan.
+    pub fn name_light(&mut self, name: &str, prim: usize) {
+        self.named_lights.push((name.to_string(), prim));
     }
 
     /// Debug helper: dump every triangle of a primitive as CSV

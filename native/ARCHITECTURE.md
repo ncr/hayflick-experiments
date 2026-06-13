@@ -115,6 +115,8 @@ pub struct FrameState<'a> {
     pub yaw_q: u32,                                  // dollhouse mask quarter
     pub room_lights: f32,                            // probe-bank lerp (instant GI switch)
     pub time: f32,                                   // SIM time, not wall clock
+    pub anim: bool,                                  // TRANSITIONAL until step 10: freezes the
+                                                     //   renderer-side flicker (LIGHT_ANIM)
     pub light_emission: &'a [(LightKey, [f32; 3])],  // game-authored per-light rgb
     pub spotlights: &'a [Spotlight],                 // ≤ N_RESERVED trailing NEE slots
     pub instances: &'a [(InstanceKey, Mat4)],        // movers → inst_buf + TLAS rebuild
@@ -124,6 +126,18 @@ impl SceneGpu { pub unsafe fn record_frame(&mut self, ctx:&Ctx, cmd: vk::Command
 // Scene: place_dynamic(&mut self, cm, name, local: Mat4) -> usize  (dynamic_prim → Vec)
 //        name_light(&mut self, name, prim)
 ```
+
+**Step-8 reality notes (implemented):** `SceneHandles` lives at `SceneGpu.handles`.
+The legacy `Scene.dynamic_prim` Option stays as a compat shim and merges into the
+dynamic list as the named run **"player"** (start = `player_start`), so existing scenes
+get an instance handle for free; `place_dynamic` bakes `local` as the pivot frame and
+starts at identity. The NEE scan is factored into CPU-testable `scan_lights` (slot order
+pinned without a GPU). `Spotlight.power` is the PACKED slot radiance (the viewer maps its
+knob via ×1500) and `pack()` carries the flashlight's warm white (1.0/0.97/0.88) +
+`dir.w = 2.0`. `FrameState.yaw_q` is recorded but not yet consumed: dollhouse mask writes
+stay event-driven (`set_yaw_masks`, which now marks the TLAS dirty) until the step-9 loop;
+`record_frame` patches mover transforms only on bit-change (CPU shadow), so idle frames
+never rebuild the TLAS.
 
 **Reserved spotlight slots: N_RESERVED = 2** (flashlight + muzzle flash). The slot count,
 the shade-dispatch arithmetic (`light_count + n_active`), and the probe-bake exclusion

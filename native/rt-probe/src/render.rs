@@ -15,6 +15,7 @@ use crate::iso::CamFrame;
 use crate::scene::{self, Scene, Vertex};
 use ash::vk;
 use glam::{Mat4, Vec3};
+use std::collections::BTreeMap;
 use std::ffi::CString;
 
 /// Compiled tonemap/blit shader. All SPIR-V is produced by rt-probe's
@@ -82,6 +83,188 @@ struct ProbePush {
 
 pub fn push_bytes<T: Copy>(p: &T) -> &[u8] {
     unsafe { std::slice::from_raw_parts((p as *const T) as *const u8, std::mem::size_of::<T>()) }
+}
+
+// ---- typed renderer surface (the only things the game side ever sees) ------
+
+/// NEE light-list slot of a named light, frozen at `SceneGpu::build` — names
+/// join onto the EXISTING emissive-scan order (pinned by the no-reorder test).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LightKey(u32);
+
+/// Handle of a named dynamic run (player, door leaves) for per-frame
+/// instance-transform updates through `FrameState.instances`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InstanceKey(u32);
+
+/// Name → handle maps built once at `SceneGpu::build`; the viewer adapter
+/// joins game ids onto these (and must report missing names loudly).
+pub struct SceneHandles {
+    pub lights: BTreeMap<String, LightKey>,
+    pub instances: BTreeMap<String, InstanceKey>,
+}
+
+/// Reserved trailing NEE spotlight slots (flashlight + muzzle flash). The
+/// slot count, the shade-dispatch `light_count + n_active` arithmetic, and
+/// the probe-bake exclusion (the bake uses bare `light_count`) generalize
+/// TOGETHER — an off-by-one leaks a moving spotlight into the frozen GI.
+pub const N_RESERVED: usize = 2;
+
+/// A transient/held spotlight (player flashlight, muzzle flash) — replaces
+/// the raw `[f32; 12]` slot writes the viewer used to hand-build.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spotlight {
+    pub pos: Vec3,
+    pub dir: Vec3,
+    pub cone_cos: f32, // cos of the outer half-angle
+    pub power: f32,    // packed slot radiance (the viewer maps its knob via ×1500)
+    pub radius: f32,   // emitter radius (wu); tiny → huge radiance for a visible pool
+}
+
+impl Spotlight {
+    /// Pack into the NEE light record shade.comp expects. `dir.w = 2.0` marks
+    /// the spotlight cone path (color.w = cos outer half-angle, soft edge over
+    /// the outer 40%); the rgb carries the warm white the flashlight always
+    /// used (1.0 / 0.97 / 0.88 of `power`).
+    pub fn pack(&self) -> [f32; 12] {
+        let c = self.power;
+        [self.pos.x, self.pos.y, self.pos.z, self.radius, c, c * 0.97, c * 0.88, self.cone_cos, self.dir.x, self.dir.y, self.dir.z, 2.0]
+    }
+}
+
+/// Everything the game/viewer hands the renderer for one frame. Consumed by
+/// `SceneGpu::record_frame`; nothing else crosses per frame.
+pub struct FrameState<'a> {
+    pub cam: CamFrame,
+    /// Dollhouse mask quarter. Recorded for the step-9 adapter; mask writes
+    /// stay event-driven through `set_yaw_masks` until the sim loop moves.
+    pub yaw_q: u32,
+    /// Room-lights master dim — probe-bank lerp factor (instant GI switch).
+    pub room_lights: f32,
+    /// Light-anim clock: SIM time once the loop moves (the old viewer feeds
+    /// its wall clock).
+    pub time: f32,
+    /// TRANSITIONAL (until migration step 10): freeze flag for the renderer's
+    /// built-in flicker (`compute_practicals`). Once flicker moves into the
+    /// game, `light_emission` is authoritative and this field goes away.
+    pub anim: bool,
+    /// Game-authored per-light rgb, applied OVER the flicker pass (and onto
+    /// the linked material so the visible fixture matches its light).
+    pub light_emission: &'a [(LightKey, [f32; 3])],
+    /// Active spotlights, packed into the ≤ N_RESERVED trailing NEE slots.
+    pub spotlights: &'a [Spotlight],
+    /// Mover transforms — patched into inst_buf; any change rebuilds the TLAS.
+    pub instances: &'a [(InstanceKey, Mat4)],
+}
+
+/// CPU half of the NEE light-list build, factored out of `SceneGpu::build` so
+/// the slot order is testable without a GPU: scan emissive primitives in
+/// PRIMITIVE ORDER (dynamic runs skipped), append the conceptual point
+/// lights, then the N_RESERVED zeroed spotlight slots; join the scene's named
+/// lights onto the resulting slot order.
+pub struct LightScan {
+    pub lights: Vec<[f32; 12]>, // light_count real records + N_RESERVED reserved
+    pub light_link: Vec<(i32, [f32; 3], u32)>, // real lights only
+    pub names: BTreeMap<String, LightKey>,
+    pub light_count: u32,
+    pub flash_idx: usize, // first reserved slot (== light_count)
+}
+
+pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
+    // dynamic prims never join the scan: their light would bake into the
+    // frozen GI at the START pose and stay there as they move
+    let mut dyn_flag = vec![false; scene.primitives.len()];
+    for (_, first, count, _) in scene.dynamic_list() {
+        for f in &mut dyn_flag[first..first + count] {
+            *f = true;
+        }
+    }
+    // emissive light list for NEE: small bright emitters (lamps, sconces)
+    // never converge by random bounces alone, so the shader samples them
+    // directly. Per emissive primitive: bounding sphere, radiance, and the
+    // area-weighted MEAN SURFACE NORMAL — a screen or panel emits one-sided
+    // (Lambertian) toward its facing, not isotropically (an isotropic screen
+    // lights the floor BEHIND the desk, which reads as the light re-aiming
+    // itself as the camera orbits). Emitters whose normals point many ways
+    // (focus < 0.7) stay isotropic.
+    // Record: [cx, cy, cz, radius, r, g, b, 0, nx, ny, nz, directionalFlag].
+    let mut lights: Vec<[f32; 12]> = Vec::new();
+    // per-light animation link: (material id or -1, base rgb, kind)
+    // kind: 1 incandescent flicker, 2 screen pulse, 3 gentle drift
+    let mut light_link: Vec<(i32, [f32; 3], u32)> = Vec::new();
+    let mut slot_of_prim: Vec<(usize, u32)> = Vec::new(); // (prim, NEE slot)
+    for (i, p) in scene.primitives.iter().enumerate() {
+        if dyn_flag[i] {
+            continue;
+        }
+        let e = scene.materials[p.material_id as usize].emissive;
+        if e[0].max(e[1]).max(e[2]) < 3.0 {
+            continue;
+        }
+        light_link.push((p.material_id, [e[0], e[1], e[2]], if e[0] >= e[1] { 1 } else { 2 }));
+        let vs = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
+        let idx = &scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
+        // bound the vertices the indices actually REFERENCE, not the whole
+        // vertex window — carved prims (PET screen) share their parent's
+        // window, and bounding that puts the light at the prop's center
+        // with the prop's radius instead of on the carved surface
+        let mut mn = Vec3::splat(f32::INFINITY);
+        let mut mx = Vec3::splat(f32::NEG_INFINITY);
+        for &i in idx {
+            let v = Vec3::from(vs[i as usize].pos);
+            mn = mn.min(v);
+            mx = mx.max(v);
+        }
+        let c = (mn + mx) * 0.5;
+        let r = (mx - mn).length() * 0.5;
+        let mut nsum = Vec3::ZERO;
+        let mut area2 = 0.0f32;
+        for t in idx.chunks_exact(3) {
+            let a = Vec3::from(vs[t[0] as usize].pos);
+            let b = Vec3::from(vs[t[1] as usize].pos);
+            let c2 = Vec3::from(vs[t[2] as usize].pos);
+            let f = (b - a).cross(c2 - a); // face normal * 2A
+            nsum += f;
+            area2 += f.length();
+        }
+        let focus = if area2 > 1e-9 { nsum.length() / area2 } else { 0.0 };
+        let authored = scene.prim_light_dir.get(i).copied().unwrap_or([0.0; 3]);
+        let (nd, df) = if authored != [0.0; 3] {
+            (Vec3::from(authored).normalize(), 1.0) // authored facing (e.g. screens)
+        } else if focus > 0.7 {
+            (nsum.normalize(), 1.0) // open emissive surface: geometric facing
+        } else {
+            (Vec3::ZERO, 0.0) // closed/mixed shape (boxes): isotropic
+        };
+        println!("  NEE light: pos ({:.1},{:.1},{:.1}) r {:.2} rgb ({:.1},{:.1},{:.1}) focus {:.2} -> {}", c.x, c.y, c.z, r, e[0], e[1], e[2], focus, if df > 0.0 { "directional" } else { "isotropic" });
+        slot_of_prim.push((i, lights.len() as u32));
+        lights.push([c.x, c.y, c.z, r, e[0], e[1], e[2], 0.0, nd.x, nd.y, nd.z, df]);
+    }
+    for pl in &scene.point_lights {
+        // conceptual (geometry-less) lights stay isotropic
+        lights.push([pl[0], pl[1], pl[2], pl[3], pl[4], pl[5], pl[6], pl[7], 0.0, 0.0, 0.0, 0.0]);
+        light_link.push((-1, [pl[4], pl[5], pl[6]], 3));
+    }
+    let light_count = lights.len() as u32;
+    // join the authored names onto the frozen slot order — loudly
+    let mut names: BTreeMap<String, LightKey> = BTreeMap::new();
+    for (name, prim) in &scene.named_lights {
+        let slot = slot_of_prim.iter().find(|&&(p, _)| p == *prim).map(|&(_, s)| s).ok_or_else(|| format!("named light {name:?}: prim {prim} landed no NEE slot (dim emissive, or a dynamic prim)"))?;
+        if names.insert(name.clone(), LightKey(slot)).is_some() {
+            return Err(format!("named light {name:?}: duplicate name"));
+        }
+    }
+    // reserved spotlight slots: the viewer/game streams transient spotlights
+    // (dir.w = 2.0 → cone falloff in shade.comp) into these trailing entries.
+    // They sit PAST light_count so the frozen probe bake never sees them — a
+    // light that moves must stay direct-only. The shade dispatch passes
+    // light_count + n_active. (Also keeps the binding valid in scenes with
+    // zero real lights.)
+    let flash_idx = lights.len();
+    for _ in 0..N_RESERVED {
+        lights.push([0.0; 12]);
+    }
+    Ok(LightScan { lights, light_link, names, light_count, flash_idx })
 }
 
 /// Near-wall hide bits for a camera at `yaw_q` quarter-turns from canonical:
@@ -199,9 +382,24 @@ pub struct SceneGpu {
     pub tlas: vk::AccelerationStructureKHR,
     pub tlas_buf: Buffer,
     pub tlas_scratch: Buffer,
-    pub inst_buf: Buffer, // host-visible: the dynamic instance transform is updated in place
+    pub inst_buf: Buffer, // host-visible: dynamic instance transforms are updated in place
     pub n_inst: u32,
-    pub dynamic_instance: Option<u32>, // TLAS instance index of the movable player
+    pub dynamic_instance: Option<u32>, // TLAS instance index of the movable player (legacy shim)
+    /// Name → key maps for the game-facing surface (lights frozen at the
+    /// emissive-scan order, instances at the dynamic-run order).
+    pub handles: SceneHandles,
+    /// Per dynamic run: (first TLAS instance, instance count) — `InstanceKey`
+    /// indexes this table.
+    pub dyn_insts: Vec<(u32, u32)>,
+    /// CPU shadow of each run's last-patched transform: `record_frame` skips
+    /// the patch (and the TLAS rebuild) when a mover didn't actually move.
+    dyn_shadow: Vec<Mat4>,
+    /// Spotlights packed into the reserved trailing slots by the last
+    /// `record_frame` — the shade dispatch passes `light_count + n_spot_active`.
+    pub n_spot_active: u32,
+    /// An instance transform or visibility mask changed since the last
+    /// recorded rebuild; `record_frame` consumes it.
+    pub tlas_dirty: bool,
     /// Per-instance near-wall hide bitmask (from `Scene::prim_hide_mask`); all
     /// zero when the scene doesn't use the dollhouse hide.
     pub hide_masks: Vec<u8>,
@@ -231,79 +429,9 @@ impl SceneGpu {
         let gbuf = ctx.device_local(&geom_infos, vk::BufferUsageFlags::STORAGE_BUFFER);
         let mbuf = ctx.device_local(&scene.materials, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
 
-        // ---- emissive light list for NEE: small bright emitters (lamps,
-        // sconces) never converge by random bounces alone, so the shader
-        // samples them directly. Per emissive primitive: bounding sphere,
-        // radiance, and the area-weighted MEAN SURFACE NORMAL — a screen or
-        // panel emits one-sided (Lambertian) toward its facing, not
-        // isotropically (an isotropic screen lights the floor BEHIND the desk,
-        // which reads as the light re-aiming itself as the camera orbits).
-        // Emitters whose normals point many ways (focus < 0.7) stay isotropic.
-        // Record: [cx, cy, cz, radius, r, g, b, 0, nx, ny, nz, directionalFlag].
-        let mut lights: Vec<[f32; 12]> = Vec::new();
-        // per-light animation link: (material id or -1, base rgb, kind)
-        // kind: 1 incandescent flicker, 2 screen pulse, 3 gentle drift
-        let mut light_link: Vec<(i32, [f32; 3], u32)> = Vec::new();
-        for (i, p) in scene.primitives.iter().enumerate() {
-            if scene.dynamic_prim == Some(i) {
-                continue;
-            }
-            let e = scene.materials[p.material_id as usize].emissive;
-            if e[0].max(e[1]).max(e[2]) < 3.0 {
-                continue;
-            }
-            light_link.push((p.material_id, [e[0], e[1], e[2]], if e[0] >= e[1] { 1 } else { 2 }));
-            let vs = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
-            let idx = &scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize];
-            // bound the vertices the indices actually REFERENCE, not the whole
-            // vertex window — carved prims (PET screen) share their parent's
-            // window, and bounding that puts the light at the prop's center
-            // with the prop's radius instead of on the carved surface
-            let mut mn = Vec3::splat(f32::INFINITY);
-            let mut mx = Vec3::splat(f32::NEG_INFINITY);
-            for &i in idx {
-                let v = Vec3::from(vs[i as usize].pos);
-                mn = mn.min(v);
-                mx = mx.max(v);
-            }
-            let c = (mn + mx) * 0.5;
-            let r = (mx - mn).length() * 0.5;
-            let mut nsum = Vec3::ZERO;
-            let mut area2 = 0.0f32;
-            for t in idx.chunks_exact(3) {
-                let a = Vec3::from(vs[t[0] as usize].pos);
-                let b = Vec3::from(vs[t[1] as usize].pos);
-                let c2 = Vec3::from(vs[t[2] as usize].pos);
-                let f = (b - a).cross(c2 - a); // face normal * 2A
-                nsum += f;
-                area2 += f.length();
-            }
-            let focus = if area2 > 1e-9 { nsum.length() / area2 } else { 0.0 };
-            let authored = scene.prim_light_dir.get(i).copied().unwrap_or([0.0; 3]);
-            let (nd, df) = if authored != [0.0; 3] {
-                (Vec3::from(authored).normalize(), 1.0) // authored facing (e.g. screens)
-            } else if focus > 0.7 {
-                (nsum.normalize(), 1.0) // open emissive surface: geometric facing
-            } else {
-                (Vec3::ZERO, 0.0) // closed/mixed shape (boxes): isotropic
-            };
-            println!("  NEE light: pos ({:.1},{:.1},{:.1}) r {:.2} rgb ({:.1},{:.1},{:.1}) focus {:.2} -> {}", c.x, c.y, c.z, r, e[0], e[1], e[2], focus, if df > 0.0 { "directional" } else { "isotropic" });
-            lights.push([c.x, c.y, c.z, r, e[0], e[1], e[2], 0.0, nd.x, nd.y, nd.z, df]);
-        }
-        for pl in &scene.point_lights {
-            // conceptual (geometry-less) lights stay isotropic
-            lights.push([pl[0], pl[1], pl[2], pl[3], pl[4], pl[5], pl[6], pl[7], 0.0, 0.0, 0.0, 0.0]);
-            light_link.push((-1, [pl[4], pl[5], pl[6]], 3));
-        }
-        let light_count = lights.len() as u32;
-        // reserved flashlight slot: the viewer streams a player-held spotlight
-        // (dir.w = 2.0 → cone falloff in shade.comp) into this trailing entry.
-        // It sits PAST light_count so the frozen probe bake never sees it — a
-        // light that moves with the player must stay direct-only. The shade
-        // dispatch passes lightCount+1 while the flashlight is on. (Also keeps
-        // the binding valid in scenes with zero real lights.)
-        let flash_idx = lights.len();
-        lights.push([0.0; 12]);
+        // ---- NEE light list (scan factored into `scan_lights` — slot order
+        // pinned by CPU tests) + the scene's name → handle joins
+        let LightScan { lights, light_link, names: light_names, light_count, flash_idx } = scan_lights(scene)?;
         // TRANSFER_DST so record_light_anim can stream animated values in
         let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
@@ -355,26 +483,50 @@ impl SceneGpu {
         }
 
         // ---- TLAS ----
-        // Most primitives are baked to world space -> identity instances. The
-        // movable player primitive is in local space -> its instance carries the
-        // start transform and is updated per frame (dynamic scene).
+        // Most primitives are baked to world space -> identity instances.
+        // Dynamic runs (the movable player, named movers) are in local space
+        // -> their instances carry the start transform and are updated per
+        // frame (dynamic scene). One instance per primitive, 1:1.
+        let dyn_list = scene.dynamic_list();
+        let mut dyn_of_prim: Vec<Option<usize>> = vec![None; scene.primitives.len()];
+        for (di, (_, first, count, _)) in dyn_list.iter().enumerate() {
+            for slot in &mut dyn_of_prim[*first..first + count] {
+                *slot = Some(di);
+            }
+        }
         let dynamic_instance = scene.dynamic_prim.map(|p| p as u32);
         let identity = vk::TransformMatrixKHR { matrix: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] };
         let instances: Vec<vk::AccelerationStructureInstanceKHR> = blas_addrs
             .iter()
             .enumerate()
             .map(|(i, &addr)| vk::AccelerationStructureInstanceKHR {
-                transform: if Some(i as u32) == dynamic_instance { mat_to_transform(Mat4::from_translation(scene.player_start)) } else { identity },
+                transform: match dyn_of_prim[i] {
+                    Some(di) => mat_to_transform(dyn_list[di].3),
+                    None => identity,
+                },
                 // mask channels: 0x01 primary visibility, 0x02 dollhouse-hidden
-                // walls, 0x04 dynamic. The movable player is 0x01|0x04 = 0x05:
-                // camera (0x01) and shadow/AO rays (0xFF) see it, but probe
-                // BAKE rays (0x0A) skip it so the world-space GI cache never
-                // goes stale as it walks.
-                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, if Some(i as u32) == dynamic_instance { 0x05 } else { 0xff }),
+                // walls, 0x04 dynamic. Movers are 0x01|0x04 = 0x05: camera
+                // (0x01) and shadow/AO rays (0xFF) see them, but probe BAKE
+                // rays (0x0A) skip them so the world-space GI cache never goes
+                // stale as they move.
+                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, if dyn_of_prim[i].is_some() { 0x05 } else { 0xff }),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: addr },
             })
             .collect();
+        // name → instance handle map + the per-run patch ranges and the CPU
+        // transform shadow (record_frame patches only on change)
+        let mut inst_names: BTreeMap<String, InstanceKey> = BTreeMap::new();
+        let mut dyn_insts: Vec<(u32, u32)> = Vec::new();
+        let mut dyn_shadow: Vec<Mat4> = Vec::new();
+        for (di, (name, first, count, start)) in dyn_list.iter().enumerate() {
+            if inst_names.insert(name.clone(), InstanceKey(di as u32)).is_some() {
+                return Err(format!("dynamic run {name:?}: duplicate name").into());
+            }
+            dyn_insts.push((*first as u32, *count as u32));
+            dyn_shadow.push(*start);
+        }
+        let handles = SceneHandles { lights: light_names, instances: inst_names };
         // host-visible so the dynamic instance transform can be patched in place
         let inst_buf = ctx.create_buffer(
             std::mem::size_of_val(&instances[..]) as u64,
@@ -460,21 +612,61 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&pdata, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", dims[0], dims[1], dims[2], probe_count, spacing, probe_count as f32 * 80.0 / 1e6);
 
-        let hide_masks: Vec<u8> = (0..scene.primitives.len()).map(|i| scene.prim_hide_mask.get(i).copied().unwrap_or(0)).collect();
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, flash_idx, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, hide_masks, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
+        // flag table: dynamic prims are NEVER dollhouse-hidden (doors sit
+        // inside, not on outward walls; the player is the player)
+        let hide_masks: Vec<u8> = (0..scene.primitives.len()).map(|i| if dyn_of_prim[i].is_some() { 0 } else { scene.prim_hide_mask.get(i).copied().unwrap_or(0) }).collect();
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, flash_idx, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, hide_masks, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
     }
 
-    /// Patch the movable player's instance transform in the host-visible
-    /// instance buffer. Call `record_tlas_rebuild` afterwards to apply it.
-    pub unsafe fn set_player_transform(&self, ctx: &Ctx, m: Mat4) {
+    /// Patch the movable player's instance transform (legacy per-field API —
+    /// a shim over `set_instance_transform` so the dyn shadow stays coherent).
+    /// Call `record_tlas_rebuild` (or `record_frame`) afterwards to apply it.
+    pub unsafe fn set_player_transform(&mut self, ctx: &Ctx, m: Mat4) {
         let Some(i) = self.dynamic_instance else { return };
+        let di = self.dyn_insts.iter().position(|&(first, _)| first == i).expect("legacy player run registered by build");
+        self.set_instance_transform(ctx, InstanceKey(di as u32), m);
+    }
+
+    /// Patch a named dynamic run's instance transform in the host-visible
+    /// instance buffer — a no-op when the transform is bit-unchanged (CPU
+    /// shadow compare), so idle movers never force TLAS rebuilds. On change,
+    /// marks the TLAS dirty; `record_frame` rebuilds it.
+    pub unsafe fn set_instance_transform(&mut self, ctx: &Ctx, key: InstanceKey, m: Mat4) {
+        let di = key.0 as usize;
+        if self.dyn_shadow[di] == m {
+            return;
+        }
+        let (first, count) = self.dyn_insts[di];
         let stride = std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
-        let off = i as u64 * stride;
-        // the transform (12 f32) is the first field of the instance struct
-        let ptr = ctx.device.map_memory(self.inst_buf.memory, off, 48, vk::MemoryMapFlags::empty()).unwrap() as *mut f32;
         let t = mat_to_transform(m);
-        std::ptr::copy_nonoverlapping(t.matrix.as_ptr(), ptr, 12);
+        // the transform (12 f32) is the first field of each instance struct
+        let ptr = ctx.device.map_memory(self.inst_buf.memory, first as u64 * stride, count as u64 * stride, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+        for k in 0..count as usize {
+            std::ptr::copy_nonoverlapping(t.matrix.as_ptr(), ptr.add(k * stride as usize) as *mut f32, 12);
+        }
         ctx.device.unmap_memory(self.inst_buf.memory);
+        self.dyn_shadow[di] = m;
+        self.tlas_dirty = true;
+    }
+
+    /// Record one frame's scene-state update, composing the existing calls in
+    /// the existing order: lights CPU pass (practicals flicker + game-authored
+    /// emission + reserved spotlight slots) → patch mover instance transforms
+    /// → stream lights/materials to the device → TLAS rebuild iff anything
+    /// moved. Recorded command order and barriers are identical to the old
+    /// viewer-driven sequence (practicals upload → TLAS rebuild → the caller's
+    /// shade dispatch). Caller must hold the in-flight fence: this writes
+    /// host-visible memory the GPU reads.
+    pub unsafe fn record_frame(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, fs: &FrameState<'_>) {
+        self.n_spot_active = frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, self.flash_idx, fs);
+        for &(key, m) in fs.instances {
+            self.set_instance_transform(ctx, key, m);
+        }
+        self.record_practicals_upload(ctx, cmd);
+        if self.tlas_dirty {
+            self.record_tlas_rebuild(ctx, cmd);
+            self.tlas_dirty = false;
+        }
     }
 
     /// Animate the practicals: deterministic-in-time flicker/pulse written
@@ -496,68 +688,14 @@ impl SceneGpu {
     }
 
     /// CPU half of `record_light_anim`: fill `lights_cpu` / `mats_cpu` from
-    /// the per-light base values. Never touches the reserved flashlight slot.
+    /// the per-light base values. Never touches the reserved spotlight slots.
     pub fn compute_practicals(&mut self, t: f32, anim: bool, scale: f32) {
-        use std::f32::consts::TAU;
-        fn h01(x: u32) -> f32 {
-            let mut v = x.wrapping_mul(0x9E37_79B9);
-            v ^= v >> 16;
-            v = v.wrapping_mul(0x7feb_352d);
-            v ^= v >> 15;
-            (v & 0xFF_FFFF) as f32 / 16_777_216.0
-        }
-        // smooth value noise in [0,1] at integer lattice `t`
-        let vnoise = |t: f32, seed: u32| {
-            let i = t.floor();
-            let f = t - i;
-            let s = f * f * (3.0 - 2.0 * f);
-            let a = h01((i as i32 as u32).wrapping_add(seed.wrapping_mul(7919)));
-            let b = h01((i as i32 as u32).wrapping_add(1).wrapping_add(seed.wrapping_mul(7919)));
-            a + (b - a) * s
-        };
-        for (li, &(mid, base, kind)) in self.light_link.iter().enumerate() {
-            let seed = li as u32 + 1;
-            let ph = h01(seed) * TAU;
-            let (f, tint): (f32, [f32; 3]) = match kind {
-                1 => {
-                    let n = vnoise(t * 9.0 + ph, seed);
-                    let dipn = vnoise(t * 1.7 + ph, seed.wrapping_mul(31));
-                    let dip = if dipn > 0.93 { (dipn - 0.93) * 6.0 } else { 0.0 };
-                    (1.0 + (n - 0.5) * 0.22 + (t * 0.7 + ph).sin() * 0.05 - dip, [1.0; 3])
-                }
-                2 => {
-                    // CRT screen: slow throb + mid value-noise + fast refresh
-                    // shimmer + rare horizontal-roll-style dips
-                    let p = 1.0
-                        + (t * 1.3 + ph).sin() * 0.20
-                        + (vnoise(t * 5.0 + ph, seed) - 0.5) * 0.18
-                        + (vnoise(t * 16.0 + ph, seed.wrapping_mul(13)) - 0.5) * 0.14;
-                    let rolln = vnoise(t * 2.3 + ph, seed.wrapping_mul(37));
-                    let roll = if rolln > 0.90 { (rolln - 0.90) * 4.0 } else { 0.0 };
-                    let hue = (t * 0.45 + ph).sin() * 0.5 + 0.5;
-                    (p - roll, [1.0 - 0.25 * hue, 1.0, 1.0 - 0.15 * (1.0 - hue)])
-                }
-                3 => (1.0 + (vnoise(t * 2.2 + ph, seed) - 0.5) * 0.08, [1.0; 3]),
-                _ => (1.0, [1.0; 3]),
-            };
-            // screens (kind 2) are devices, not room lighting — the wall
-            // switch (room-lights dim) never touches them. The probe-bank
-            // lerp stays exact: their bounce is a constant term in BOTH banks.
-            let f = (if anim { f.max(0.05) } else { 1.0 }) * (if kind == 2 { 1.0 } else { scale });
-            let tint = if anim { tint } else { [1.0; 3] };
-            let c = [base[0] * f * tint[0], base[1] * f * tint[1], base[2] * f * tint[2]];
-            self.lights_cpu[li][4] = c[0];
-            self.lights_cpu[li][5] = c[1];
-            self.lights_cpu[li][6] = c[2];
-            if mid >= 0 {
-                self.mats_cpu[mid as usize].emissive = [c[0], c[1], c[2], 1.0];
-            }
-        }
+        compute_practicals_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, t, anim, scale);
     }
 
     /// GPU half of `record_light_anim`: stream `lights_cpu` + `mats_cpu` to
     /// the device buffers. Record BEFORE the shade dispatch. The reserved
-    /// flashlight slot rides along in `lights_cpu`.
+    /// spotlight slots ride along in `lights_cpu`.
     pub unsafe fn record_practicals_upload(&self, ctx: &Ctx, cmd: vk::CommandBuffer) {
         ctx.upload(&self.light_stage, &self.lights_cpu);
         ctx.upload(&self.mat_stage, &self.mats_cpu);
@@ -568,15 +706,103 @@ impl SceneGpu {
         let mb = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
         ctx.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[mb], &[], &[]);
     }
+}
 
+/// `compute_practicals` in free-function form (no Vulkan, no `SceneGpu`): the
+/// deterministic flicker/pulse curves over the plain CPU light shadow state,
+/// so the per-frame lights mutation is unit-testable. Body moved verbatim.
+pub fn compute_practicals_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], u32)], t: f32, anim: bool, scale: f32) {
+    use std::f32::consts::TAU;
+    fn h01(x: u32) -> f32 {
+        let mut v = x.wrapping_mul(0x9E37_79B9);
+        v ^= v >> 16;
+        v = v.wrapping_mul(0x7feb_352d);
+        v ^= v >> 15;
+        (v & 0xFF_FFFF) as f32 / 16_777_216.0
+    }
+    // smooth value noise in [0,1] at integer lattice `t`
+    let vnoise = |t: f32, seed: u32| {
+        let i = t.floor();
+        let f = t - i;
+        let s = f * f * (3.0 - 2.0 * f);
+        let a = h01((i as i32 as u32).wrapping_add(seed.wrapping_mul(7919)));
+        let b = h01((i as i32 as u32).wrapping_add(1).wrapping_add(seed.wrapping_mul(7919)));
+        a + (b - a) * s
+    };
+    for (li, &(mid, base, kind)) in light_link.iter().enumerate() {
+        let seed = li as u32 + 1;
+        let ph = h01(seed) * TAU;
+        let (f, tint): (f32, [f32; 3]) = match kind {
+            1 => {
+                let n = vnoise(t * 9.0 + ph, seed);
+                let dipn = vnoise(t * 1.7 + ph, seed.wrapping_mul(31));
+                let dip = if dipn > 0.93 { (dipn - 0.93) * 6.0 } else { 0.0 };
+                (1.0 + (n - 0.5) * 0.22 + (t * 0.7 + ph).sin() * 0.05 - dip, [1.0; 3])
+            }
+            2 => {
+                // CRT screen: slow throb + mid value-noise + fast refresh
+                // shimmer + rare horizontal-roll-style dips
+                let p = 1.0
+                    + (t * 1.3 + ph).sin() * 0.20
+                    + (vnoise(t * 5.0 + ph, seed) - 0.5) * 0.18
+                    + (vnoise(t * 16.0 + ph, seed.wrapping_mul(13)) - 0.5) * 0.14;
+                let rolln = vnoise(t * 2.3 + ph, seed.wrapping_mul(37));
+                let roll = if rolln > 0.90 { (rolln - 0.90) * 4.0 } else { 0.0 };
+                let hue = (t * 0.45 + ph).sin() * 0.5 + 0.5;
+                (p - roll, [1.0 - 0.25 * hue, 1.0, 1.0 - 0.15 * (1.0 - hue)])
+            }
+            3 => (1.0 + (vnoise(t * 2.2 + ph, seed) - 0.5) * 0.08, [1.0; 3]),
+            _ => (1.0, [1.0; 3]),
+        };
+        // screens (kind 2) are devices, not room lighting — the wall
+        // switch (room-lights dim) never touches them. The probe-bank
+        // lerp stays exact: their bounce is a constant term in BOTH banks.
+        let f = (if anim { f.max(0.05) } else { 1.0 }) * (if kind == 2 { 1.0 } else { scale });
+        let tint = if anim { tint } else { [1.0; 3] };
+        let c = [base[0] * f * tint[0], base[1] * f * tint[1], base[2] * f * tint[2]];
+        lights_cpu[li][4] = c[0];
+        lights_cpu[li][5] = c[1];
+        lights_cpu[li][6] = c[2];
+        if mid >= 0 {
+            mats_cpu[mid as usize].emissive = [c[0], c[1], c[2], 1.0];
+        }
+    }
+}
+
+/// CPU half of `record_frame`, free-function form (no Vulkan): the practicals
+/// flicker pass at `fs.time`, the game-authored per-light emission overrides,
+/// then the reserved trailing spotlight slots (unused slots zeroed). Returns
+/// the number of active spotlights — the shade dispatch adds it to
+/// `light_count`; the probe bake never sees these slots.
+pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], u32)], flash_idx: usize, fs: &FrameState<'_>) -> u32 {
+    compute_practicals_cpu(lights_cpu, mats_cpu, light_link, fs.time, fs.anim, fs.room_lights);
+    for &(key, rgb) in fs.light_emission {
+        let li = key.0 as usize;
+        assert!(li < light_link.len(), "light_emission key {li} past light_count {}", light_link.len());
+        lights_cpu[li][4] = rgb[0];
+        lights_cpu[li][5] = rgb[1];
+        lights_cpu[li][6] = rgb[2];
+        let (mid, _, _) = light_link[li];
+        if mid >= 0 {
+            mats_cpu[mid as usize].emissive = [rgb[0], rgb[1], rgb[2], 1.0];
+        }
+    }
+    assert!(fs.spotlights.len() <= N_RESERVED, "{} spotlights > N_RESERVED {N_RESERVED}", fs.spotlights.len());
+    for s in 0..N_RESERVED {
+        lights_cpu[flash_idx + s] = fs.spotlights.get(s).map(|sp| sp.pack()).unwrap_or([0.0; 12]);
+    }
+    fs.spotlights.len() as u32
+}
+
+impl SceneGpu {
     /// Apply the dollhouse near-wall hide for a camera at `yaw_q` quarter
     /// turns: tagged instances whose outward direction faces the camera get
     /// TLAS visibility mask 0x02 (primary rays cull with 0x01 and skip them —
     /// the see-through; shadow/AO rays cull with 0xFF and still hit them, so
     /// the room stays ENCLOSED for light transport). Everything else 0xFF.
-    /// Patches the host-visible instance buffer in place — call
-    /// `record_tlas_rebuild` afterwards to take effect.
-    pub unsafe fn set_yaw_masks(&self, ctx: &Ctx, yaw_q: u32) {
+    /// Patches the host-visible instance buffer in place and marks the TLAS
+    /// dirty — `record_frame` (or an explicit `record_tlas_rebuild`) applies it.
+    pub unsafe fn set_yaw_masks(&mut self, ctx: &Ctx, yaw_q: u32) {
         let near = near_hide_bits(yaw_q);
         let stride = std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
         let ptr = ctx.device.map_memory(self.inst_buf.memory, 0, stride * self.n_inst as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
@@ -597,6 +823,7 @@ impl SceneGpu {
             std::ptr::copy_nonoverlapping(word.to_le_bytes().as_ptr(), ptr.add(i * stride as usize + 48), 4);
         }
         ctx.device.unmap_memory(self.inst_buf.memory);
+        self.tlas_dirty = true;
     }
 
     /// Record a TLAS rebuild + an AS-build→ray-trace barrier into `cmd` (cheap:
@@ -730,5 +957,109 @@ mod tests {
     fn push_structs_share_one_layout_size() {
         assert_eq!(std::mem::size_of::<ShadePush>(), std::mem::size_of::<ProbePush>());
         assert_eq!(std::mem::size_of::<ShadePush>(), 112);
+    }
+
+    /// A throwaway CPU scene exercising every scan case: a non-emissive floor,
+    /// two emissive boxes (one warm → kind 1, one screen-ish → kind 2), an
+    /// EMISSIVE legacy-dynamic player (must be skipped), and one point light.
+    fn scan_fixture() -> Scene {
+        let mut s = Scene::new();
+        s.add_floor(-2.0, 2.0, -2.0, 2.0, 0.0, [0.5, 0.5, 0.5, 1.0]); // prim 0: dark
+        s.add_box_world(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.25, 0.5, 0.25), [1.0; 4], [9.0, 6.0, 3.0, 1.0], 0.6, 0.0); // prim 1 → slot 0
+        let dynp = s.add_box_local(0.2, 1.0, 0.2, [1.0; 4], [20.0, 5.0, 5.0, 1.0]); // prim 2: bright but DYNAMIC
+        s.dynamic_prim = Some(dynp);
+        s.add_box_world(Vec3::new(1.0, 0.4, 1.0), Vec3::new(1.4, 1.0, 1.03), [0.1, 0.3, 0.25, 1.0], [2.0, 8.0, 6.0, 1.0], 0.8, 0.0); // prim 3 → slot 1
+        s.point_lights.push([1.0, 2.0, 3.0, 0.25, 5.0, 4.0, 3.0, 0.0]); // slot 2
+        s
+    }
+
+    #[test]
+    fn scene_handles_join_the_emissive_scan_order_without_reordering() {
+        let mut s = scan_fixture();
+        // names chosen so any name-ordered assignment would FLIP the slots:
+        // the BTreeMap sorts keys, the LightKeys must still follow prim order
+        s.name_light("zzz_warm_box", 1);
+        s.name_light("aaa_screen", 3);
+        let scan = scan_lights(&s).unwrap();
+        assert_eq!(scan.light_count, 3); // 2 emissive prims + 1 point light; dynamic skipped
+        assert_eq!(scan.flash_idx, 3);
+        assert_eq!(scan.lights.len(), 3 + N_RESERVED); // reserved slots appended, zeroed
+        assert_eq!(scan.lights[3], [0.0; 12]);
+        assert_eq!(scan.lights[4], [0.0; 12]);
+        assert_eq!(scan.names["zzz_warm_box"], LightKey(0));
+        assert_eq!(scan.names["aaa_screen"], LightKey(1));
+        // link kinds pin the scan rules: r>=g warm, g>r screen, points drift
+        assert_eq!(scan.light_link[0].2, 1);
+        assert_eq!(scan.light_link[1].2, 2);
+        assert_eq!(scan.light_link[2], (-1, [5.0, 4.0, 3.0], 3));
+        // the dynamic prim's 20.0-bright emissive landed NO slot
+        assert!(scan.lights[..3].iter().all(|l| l[4] != 20.0));
+    }
+
+    #[test]
+    fn naming_a_slotless_prim_is_a_loud_error() {
+        let mut s = scan_fixture();
+        s.name_light("the_floor", 0); // not emissive → no slot
+        assert!(scan_lights(&s).is_err());
+        let mut s = scan_fixture();
+        s.name_light("the_player", 2); // dynamic → excluded from the scan
+        assert!(scan_lights(&s).is_err());
+        let mut s = scan_fixture();
+        s.name_light("twice", 1);
+        s.name_light("twice", 3); // duplicate name
+        assert!(scan_lights(&s).is_err());
+    }
+
+    #[test]
+    fn spotlight_packs_the_documented_12float_record() {
+        // exactly the record view.rs::update_flashlight hand-built: warm white
+        // (1.0/0.97/0.88), color.w = cos(outer half-angle), dir.w = 2.0 (the
+        // shade.comp spotlight-cone marker)
+        let (pos, dir) = (Vec3::new(4.2, 0.9, 6.1), Vec3::new(0.6, -0.3, 0.74));
+        let (flash_power, flash_cone) = (2.5f32, 32.0f32);
+        let c = flash_power * 1500.0;
+        let cone_cos = flash_cone.to_radians().cos();
+        let rec = [pos.x, pos.y, pos.z, 0.06, c, c * 0.97, c * 0.88, cone_cos, dir.x, dir.y, dir.z, 2.0];
+        let sp = Spotlight { pos, dir, cone_cos, power: c, radius: 0.06 };
+        assert_eq!(sp.pack(), rec);
+        assert_eq!(sp.pack()[11], 2.0);
+    }
+
+    fn dummy_cam() -> CamFrame {
+        CamFrame { right: Vec3::X, up: Vec3::Y, dir: -Vec3::Z, pos: Vec3::ZERO, half_w: 1.0, half_h: 1.0 }
+    }
+
+    #[test]
+    fn record_frame_cpu_half_mutates_lights_without_vulkan() {
+        // two real lights (slot 0 material-linked) + the reserved slots
+        let light_link = vec![(0i32, [8.0f32, 5.0, 2.0], 1u32), (-1, [3.0, 4.0, 5.0], 3)];
+        let flash_idx = 2;
+        let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2 + N_RESERVED];
+        let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [0.0; 4], metallic: 0.0, roughness: 0.5, tex_index: -1, _pad: 0 }];
+        let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06 };
+        let spots = [sp];
+        let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
+        let fs = FrameState { cam: dummy_cam(), yaw_q: 0, room_lights: 1.0, time: 0.0, anim: false, light_emission: &emis, spotlights: &spots, instances: &[] };
+        let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs);
+        assert_eq!(n, 1);
+        // anim=false, scale=1 → light 0 carries its base rgb; linked material follows
+        assert_eq!(&lights[0][4..7], &[8.0, 5.0, 2.0]);
+        assert_eq!(mats[0].emissive, [8.0, 5.0, 2.0, 1.0]);
+        // game-authored emission override wins on light 1
+        assert_eq!(&lights[1][4..7], &[0.5, 0.6, 0.7]);
+        // position/radius/dir of real lights untouched by the whole pass
+        assert_eq!(&lights[0][0..4], &[1.0, 2.0, 3.0, 0.5]);
+        // spotlight packed into the first reserved slot, the rest zeroed
+        assert_eq!(lights[flash_idx], sp.pack());
+        assert_eq!(lights[flash_idx + 1], [0.0; 12]);
+        // next frame without the spotlight: the slot zeroes again
+        let fs2 = FrameState { spotlights: &[], ..fs };
+        assert_eq!(frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs2), 0);
+        assert_eq!(lights[flash_idx], [0.0; 12]);
+        // room-lights dim at 0 zeroes non-screen lights but NOT the override
+        let fs3 = FrameState { room_lights: 0.0, light_emission: &emis, ..fs2 };
+        frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs3);
+        assert_eq!(&lights[0][4..7], &[0.0, 0.0, 0.0]);
+        assert_eq!(&lights[1][4..7], &[0.5, 0.6, 0.7]);
     }
 }
