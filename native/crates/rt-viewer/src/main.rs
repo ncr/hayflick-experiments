@@ -130,7 +130,6 @@ impl ApplicationHandler for App {
                         // back to canonical: cancels any in-flight sweep,
                         // restores masks, snaps the target
                         r.rotate(-(r.view.yaw_q as i32));
-                        r.player.dirty = true;
                     }
                     // toggles ignore key repeat: holding the key must not strobe
                     Key::Character("r") if !event.repeat => r.toggle_recording(),

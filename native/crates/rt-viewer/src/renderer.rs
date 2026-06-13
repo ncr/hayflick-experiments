@@ -297,7 +297,6 @@ impl Renderer {
             player: PlayerState {
                 pos: player0,
                 facing: Vec2::ZERO, // seeded toward screen-down below
-                dirty: false,
                 held: [false; 4],
                 speed: cfg.player_speed.unwrap_or(cfg.default_player_speed()),
                 level,
@@ -323,9 +322,8 @@ impl Renderer {
             // MASK_Q (diagnostic): decouple the dollhouse masks from the camera
             // quarter to prove/disprove mask-dependent light transport.
             let mq = r.cfg.mask_q.unwrap_or(r.view.yaw_q);
-            r.gpu.set_yaw_masks(&r.ctx, mq);
+            r.gpu.set_yaw_masks(&r.ctx, mq); // marks the TLAS dirty: the first record_frame applies the masks
             r.view.mask_q = mq;
-            r.player.dirty = true; // first TLAS rebuild applies the masks
         }
         // windowed: whatever inner size the WM actually granted; headless: the
         // WINDOW request verbatim — identical extent math from there on
@@ -349,10 +347,10 @@ impl Renderer {
             r.view.target = snap_ground_to_lattice(t, r.yaw_deg());
         }
         // optional player world offset (camera NOT moved) — proves the dynamic
-        // TLAS rebuild displaces the marker in headless capture tests.
+        // TLAS rebuild displaces the marker in headless capture tests (the
+        // moved snapped transform makes record_frame patch + rebuild).
         if r.cfg.player_off != (0.0, 0.0) {
             r.player.pos += Vec3::new(r.cfg.player_off.0, 0.0, r.cfg.player_off.1);
-            r.player.dirty = true;
         }
         // default flashlight aim: toward the camera (screen-down), until the
         // first walk input sets a real facing
@@ -528,8 +526,6 @@ impl Renderer {
         // clip recording: collect last frame's capture + decide if this frame
         // captures (all &mut self work, so it runs before the `swap` borrow)
         let cap_issue = self.prepare_capture();
-        // flashlight: refresh the reserved NEE slot from the player pose
-        self.update_flashlight();
 
         let swap = self.swap.as_ref().unwrap();
         let d = &self.ctx.device;
@@ -548,38 +544,50 @@ impl Renderer {
         d.reset_fences(&[self.in_flight]).unwrap();
         let t_acq = std::time::Instant::now(); // fence wait + acquire done
 
-        // Player moved: patch its dynamic instance transform (fence wait above
-        // guarantees no in-flight TLAS read), then the TLAS is rebuilt below.
-        // The rendered position is the lattice-SNAPPED one (web invariant: every
-        // mesh setPosition routes through the ground snap; the game transform in
-        // `player.pos` stays continuous).
-        if self.player.dirty {
-            self.gpu.set_player_transform(&self.ctx, glam::Mat4::from_translation(snap_ground_to_lattice(self.player.pos, self.yaw_deg())));
-        }
-        let rebuild = self.player.dirty;
-
         let (low_w, low_h, extent) = (swap.low_w, swap.low_h, swap.extent);
         let sc_image = idx.map(|i| swap.images[i as usize]);
 
-        // camera: ISO_VIEW_CONTRACT at the movable look-at target. The
-        // flashlight rides in the reserved trailing NEE slot: +1 includes it
-        // while lit (the probe bake always used the bare light_count — the GI
-        // cache stays torch-free; a light that moves must be direct-only).
+        // camera: ISO_VIEW_CONTRACT at the movable look-at target
         let cam = iso_camera_at(self.scene.min, self.scene.max, low_w, low_h, self.yaw_deg(), self.view.target);
-        let light_count = self.gpu.light_count as i32 + (self.flash_on && self.scene.dynamic_prim.is_some()) as i32;
-        let push = ShadePush::new(&cam, low_w, low_h, self.env0, self.room_lights, light_count, self.ao, self.ao_r, self.ao_n, self.debug);
+
+        // This frame's scene state, typed — the step-8 inversion: draw()
+        // builds a FrameState from its own wall clock / player / flashlight
+        // and routes through record_frame (same calls, same recorded order,
+        // same barriers as the old per-field sequence).
+        // - the flashlight rides in the reserved trailing NEE slots; the shade
+        //   dispatch adds n_spot_active while lit (the probe bake always used
+        //   the bare light_count — the GI cache stays torch-free; a light that
+        //   moves must be direct-only)
+        // - the player mover renders at the lattice-SNAPPED position (web
+        //   invariant: every mesh setPosition routes through the ground snap;
+        //   the game transform in `player.pos` stays continuous). record_frame
+        //   patches the instance + rebuilds the TLAS only when the snapped
+        //   transform actually changed (the fence wait above guarantees no
+        //   in-flight TLAS read), or when a mask swap marked it dirty.
+        let spot = self.flashlight_spotlight();
+        let player_inst = self
+            .scene
+            .dynamic_prim
+            .and_then(|_| self.gpu.handles.instances.get("player").copied())
+            .map(|k| (k, glam::Mat4::from_translation(snap_ground_to_lattice(self.player.pos, self.yaw_deg()))));
+        let fs = FrameState {
+            cam,
+            yaw_q: self.view.mask_q,
+            room_lights: self.room_lights,
+            time: self.start_time.elapsed().as_secs_f32(),
+            anim: self.light_anim, // LIGHT_ANIM=0 freezes to constants — bit-stable
+            light_emission: &[],   // flicker stays renderer-side until step 10
+            spotlights: spot.as_slice(),
+            instances: player_inst.as_slice(),
+        };
 
         d.reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty()).unwrap();
         d.begin_command_buffer(self.cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
         let cmd = self.cmd;
 
-        // stream this frame's light values: practicals (flicker anim + room
-        // dim; LIGHT_ANIM=0 freezes to constants — bit-stable) + the
-        // flashlight slot, which rides along in the same upload.
-        self.gpu.record_light_anim(&self.ctx, cmd, self.start_time.elapsed().as_secs_f32(), self.light_anim, self.room_lights);
-        if rebuild {
-            self.gpu.record_tlas_rebuild(&self.ctx, cmd);
-        }
+        self.gpu.record_frame(&self.ctx, cmd, &fs);
+        let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
+        let push = ShadePush::new(&cam, low_w, low_h, self.env0, self.room_lights, light_count, self.ao, self.ao_r, self.ao_n, self.debug);
         // deterministic shade: one dispatch, every pixel final
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.shade_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[swap.scene_set], &[]);
@@ -713,7 +721,6 @@ impl Renderer {
             }
         };
 
-        self.player.dirty = false;
         self.frame = self.frame.wrapping_add(1);
 
         // CPU frame-time (how long draw() blocks the main thread)

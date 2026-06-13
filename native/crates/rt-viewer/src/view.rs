@@ -51,7 +51,6 @@ pub struct ViewState {
 pub struct PlayerState {
     pub pos: Vec3,
     pub facing: Vec2, // world-XZ unit dir of the last walk input — beam aim
-    pub dirty: bool,  // snapped position changed -> TLAS rebuild this frame
     pub held: [bool; 4], // up, down, left, right
     pub speed: f32,   // px/s (floored to the iso smoothness minimum)
     pub level: Level,
@@ -126,9 +125,9 @@ impl Renderer {
         if mq != self.view.mask_q {
             self.view.mask_q = mq;
             if !self.scene.prim_hide_mask.is_empty() {
+                // marks the TLAS dirty; record_frame rebuilds with the masks
                 unsafe { self.gpu.set_yaw_masks(&self.ctx, mq) };
             }
-            self.player.dirty = true; // TLAS rebuild applies the masks
         }
     }
 
@@ -154,11 +153,11 @@ impl Renderer {
         self.view.rot = None; // instant turn supersedes any in-flight sweep
         self.view.mask_q = self.view.yaw_q;
         if !self.scene.prim_hide_mask.is_empty() {
+            // marks the TLAS dirty; record_frame rebuilds with the new masks
             unsafe { self.gpu.set_yaw_masks(&self.ctx, self.view.yaw_q) };
         }
         self.view.move_accum = Vec2::ZERO;
         self.snap_target_to_lattice();
-        self.player.dirty = true; // TLAS rebuild applies the new masks
     }
 
     /// Snap the camera target so the rendered world lands on the low-pixel
@@ -210,19 +209,15 @@ impl Renderer {
     /// the game transform stays continuous, but the RENDERED mesh is snapped
     /// to the screen-pixel lattice on every move (`snapWorldPointOnGround`,
     /// nearest, uniform (1,1) granularity). The TLAS rebuild only happens when
-    /// the snapped point crosses a pixel cell. In follow mode the camera
-    /// target tracks the player.
+    /// the snapped point crosses a pixel cell — `record_frame` compares the
+    /// snapped transform against its shadow. In follow mode the camera target
+    /// tracks the player.
     pub fn commit_player(&mut self, nx: f32, nz: f32) {
-        let old_snap = snap_ground_to_lattice(self.player.pos, self.yaw_deg());
         self.player.pos.x = nx;
         self.player.pos.z = nz;
-        let new_snap = snap_ground_to_lattice(self.player.pos, self.yaw_deg());
         if self.player.follow_cam {
             self.retarget(self.player.pos);
             self.recenter_pan();
-        }
-        if new_snap != old_snap {
-            self.player.dirty = true;
         }
     }
 
@@ -273,24 +268,20 @@ impl Renderer {
         println!("flashlight: {}", if self.flash_on { "on" } else { "off" });
     }
 
-    /// Refresh the reserved NEE flashlight slot from the player pose + knobs.
-    /// Runs every frame before the command buffer records; the per-frame
-    /// practicals upload streams the slot to the GPU along with everything
-    /// else (compute_practicals never touches it).
-    pub fn update_flashlight(&mut self) {
-        let rec: [f32; 12] = if self.flash_on && self.scene.dynamic_prim.is_some() {
-            // hand-height pose math lives in house-game (the game's
-            // flashlight_system uses the same function)
-            let p = snap_ground_to_lattice(self.player.pos, self.yaw_deg());
-            let (pos, dir) = flashlight_pose(p, self.player.facing);
-            // the NEE solid angle of an r=0.06 emitter is tiny (~3e-3 sr at
-            // 2 wu) — slot radiance must be huge for a visible pool
-            let c = self.flash_power * 1500.0;
-            let cone_cos = self.flash_cone.to_radians().cos();
-            [pos.x, pos.y, pos.z, 0.06, c, c * 0.97, c * 0.88, cone_cos, dir.x, dir.y, dir.z, 2.0]
-        } else {
-            [0.0; 12]
-        };
-        self.gpu.lights_cpu[self.gpu.flash_idx] = rec;
+    /// The player-held spotlight for this frame, from the player pose + the
+    /// menu knobs — None when off (or in scenes without a player). Routed into
+    /// the reserved trailing NEE slots through `FrameState.spotlights`; the
+    /// per-frame practicals pass never touches those.
+    pub fn flashlight_spotlight(&self) -> Option<Spotlight> {
+        if !(self.flash_on && self.scene.dynamic_prim.is_some()) {
+            return None;
+        }
+        // hand-height pose math lives in house-game (the game's
+        // flashlight_system uses the same function)
+        let p = snap_ground_to_lattice(self.player.pos, self.yaw_deg());
+        let (pos, dir) = flashlight_pose(p, self.player.facing);
+        // the NEE solid angle of an r=0.06 emitter is tiny (~3e-3 sr at
+        // 2 wu) — slot radiance must be huge for a visible pool
+        Some(Spotlight { pos, dir, cone_cos: self.flash_cone.to_radians().cos(), power: self.flash_power * 1500.0, radius: 0.06 })
     }
 }

@@ -498,8 +498,8 @@ impl Renderer {
                         // swap the dollhouse masks side-on, halfway through the turn
                         if mv.seg_done == n / 2 && !self.scene.prim_hide_mask.is_empty() {
                             let next_q = (self.view.yaw_q as i32 + dq).rem_euclid(4) as u32;
+                            // marks the TLAS dirty; record_frame applies them
                             self.gpu.set_yaw_masks(&self.ctx, next_q);
-                            self.player.dirty = true; // TLAS rebuild applies them
                         }
                     }
                     break;
