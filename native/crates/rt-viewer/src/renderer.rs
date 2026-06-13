@@ -17,6 +17,20 @@ use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
 use winit::window::Window;
 
+/// The sim timestep `draw()` feeds the fixed loop. In SHOT (golden capture)
+/// mode it is ALWAYS 0, so the wall clock never advances the sim and the
+/// captured frame is a pure function of (scene, config, CMDS prefix) — the
+/// "provably sim-independent" guarantee (ARCHITECTURE step 9). Extracted from
+/// the draw() ternary so the selection is unit-testable WITHOUT a Vulkan
+/// device (the runtime assert at capture time only fires on the GPU path).
+pub fn shot_sim_dt(shot: bool, dt: f32) -> f32 {
+    if shot {
+        0.0
+    } else {
+        dt
+    }
+}
+
 pub const MARGIN: u32 = 32; // low-res overscan border so pan/zoom never reveal edge bars
 pub const ZOOM_MIN: f32 = 1.0;
 pub const ZOOM_MAX: f32 = 4.0; // web game-studio: zoomMin 1, zoomMax 4, zoomStep 1
@@ -545,7 +559,7 @@ impl Renderer {
         // keeps the wall clock OUT of the sim entirely — the capture frame is
         // a pure function of (scene, config, CMDS trace); the only ticks that
         // ever ran are the deterministic CMDS prefix (asserted at capture).
-        let sim_dt = if self.harness.shot.is_some() { 0.0 } else { dt };
+        let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
         self.game.run_due(sim_dt);
         // playerless scenes (lab): WASD pans the camera — presentation only,
         // on the wall clock like every other camera move

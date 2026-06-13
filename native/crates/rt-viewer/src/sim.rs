@@ -339,7 +339,46 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::shot_sim_dt;
     use rt_probe::iso::{iso_basis, snap_ground_to_lattice, ISO_R};
+
+    /// SHOT mode selects dt = 0 regardless of the wall-clock delta — the pure
+    /// selection that `draw()` makes before feeding the fixed loop. This pins
+    /// the "provably sim-independent" capture claim (ARCHITECTURE step 9) at
+    /// the CPU/`cargo test` level instead of leaning only on the GPU-path
+    /// runtime assert in `capture.rs` (which fires only inside `bin/golden`).
+    #[test]
+    fn shot_mode_feeds_zero_dt() {
+        for dt in [0.0, 1.0 / 60.0, 0.1, 1.0, 9999.0] {
+            assert_eq!(shot_sim_dt(true, dt), 0.0, "SHOT must feed dt=0 (wall clock got {dt})");
+            assert_eq!(shot_sim_dt(false, dt), dt, "live mode passes the wall clock through");
+        }
+    }
+
+    /// Feeding the fixed loop dt = 0 (what SHOT mode does every frame) runs
+    /// ZERO ticks and leaves the tick counter pinned at the CMDS prefix — so a
+    /// SHOT capture is a pure function of (scene, config, CMDS prefix). This is
+    /// the sim-independence guarantee the GPU-path assert
+    /// (`tick.0 == cmds_prefix`) checks, proven here without Vulkan: a
+    /// regression that ran wall-clock ticks under SHOT would fail this test.
+    #[test]
+    fn run_due_zero_dt_adds_no_ticks() {
+        std::env::set_var("SCENE", "lab"); // a playerless mirror scene → no Move synth
+        let cfg = Config::from_env();
+        let scene = lit_scene();
+        let (handles, light_count) = lit_handles(&scene);
+        let mut game = GameLoop::new(&scene, &handles, light_count, &cfg);
+        // simulate a CMDS prefix having run (set tick == cmds_prefix, as run_cmds does)
+        game.tick = Tick(5);
+        game.cmds_prefix = 5;
+        let before = game.sim.state_hash();
+        for dt in [0.0f32, 0.0, 0.0] {
+            let n = game.run_due(dt);
+            assert_eq!(n, 0, "dt=0 must advance no ticks");
+        }
+        assert_eq!(game.tick.0, game.cmds_prefix, "tick must stay pinned at the CMDS prefix under dt=0");
+        assert_eq!(game.sim.state_hash(), before, "dt=0 must not mutate sim state");
+    }
 
     #[test]
     fn follow_cam_steps_whole_pixels_and_carries_the_remainder() {
