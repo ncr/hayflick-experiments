@@ -45,7 +45,8 @@ native/
     house-game/         # (C). deps: sim-core, iso-core, glam. LevelSpec, components, systems,
                         #   Command, GameSnapshot, state_hash, flicker authoring, Level collision
                         #   (moved from rt-probe/src/game.rs), iso_input_dir, speed floor.
-                        #   Plus a `headless` [[bin]]: plays a trace.ron N ticks → state digest.
+                        #   Plus a `headless` [[bin]]: plays a trace file N ticks → state digest
+                        #   (plain-text format, trace.rs — no RON dep; one command per line).
     rt-viewer/          # shell. [[bin]] name = "viewer" (binary path stays native/target/release/viewer).
                         #   deps: rt-probe, house-game, sim-core, iso-core, winit, ash-window,
                         #   raw-window-handle, font8x8 + ash/glam/png (viewer code uses them
@@ -209,7 +210,7 @@ floor, contrasting door + target colors), not uniform grey. **Forge props are ke
 **Components:** `Pos`, `Facing`, `Player{speed_px}` (floored by
 `recommended_min_px_per_sec(60)`), `WalkTarget`, `Flashlight{on}`,
 `Pistol{cooldown_ticks}`, `Door{id, state: Closed|Opening(u32)|Open|Closing(u32)}` +
-`DoorBody{hinge, axis, open_angle, closed_solid}`, `Light{id, on, kind, base_rgb}`,
+`DoorBody{hinge, axis, open_angle, anim_ticks, closed_solid}`, `Light{id, on, kind, base_rgb}`,
 `Target{id, hits}` + `TargetDisc{center, normal, radius}`.
 Resources: `Level{floor, static_solids}`, `DynSolids`, `Score`, `Pcg32`,
 `Events<GameEvent>`, `FlashPose`.
@@ -237,7 +238,9 @@ yaw_q, score }` — all lists StableId-sorted.
 
 **Known GI approximation (accepted for v1, documented):** the probe cache has exactly two
 global banks (all-on/all-off) lerped by ONE scalar — per-room toggles get exact direct
-light but blended-average indirect. `room_lights = lit_fraction` of named lights.
+light but blended-average indirect. `room_lights = lit_fraction` of the SWITCHABLE
+(non-screen) named lights — screens ignore the wall switch and their bounce is a
+constant term in both probe banks, so they stay out of the lerp scalar.
 Per-room probe banks are a renderer follow-up if content review demands it.
 
 ## Test strategy (per crate)
@@ -252,13 +255,13 @@ Per-room probe banks are a renderer follow-up if content review demands it.
   open-admits-after-anim-ticks, door-state-machine-tick-exact, door-cant-close-on-player,
   shot-hits-scores / miss / through-open-door / blocked-by-closed-door, cooldown-swallows-
   spam, flashlight-pose-tracks-facing, toggle-lights-zeroes-emission, flicker-bit-equal-at-
-  tick, audio-cues-exact, **replay_golden** (checked-in trace.ron + pinned state_hash),
+  tick, audio-cues-exact, **replay_golden** (checked-in trace + pinned state_hash),
   determinism-two-runs-identical, snapshot-twice-side-effect-free.
   Land the determinism tests in the FIRST house-game commit, not last.
 - **rt-probe:** existing 4 tests + scene-handles-no-reorder, record_frame CPU-half
   (lights_cpu mutation testable sans Vulkan), spotlight-packs-documented-12float.
   GPU truth stays **bin/golden** (bit-exact cmp of grid/lab/house SHOTs) — run after EVERY step.
-- **rt-viewer:** thin; adapter name-join-reports-missing-loudly + a CMDS=trace.ron replay
+- **rt-viewer:** thin; adapter name-join-reports-missing-loudly + a CMDS=trace.txt replay
   golden through the real loop (replaces the held-key WALK hack; WASD stays as a live
   Command::Move during migration).
 
