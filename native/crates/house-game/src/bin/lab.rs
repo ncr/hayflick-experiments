@@ -9,12 +9,12 @@
 //! runs it with a NullSink while recording every `GameEvent`, then prints the
 //! tick-stamped timeline, the metrics summary, and the final hash/score.
 
-use house_game::{fixture, game_level, parse_trace, run_scenario, Scenario};
+use house_game::{fixture, game_level, parse_trace, run_scenario, survival_level, Scenario};
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let (Some(path), Some(ticks)) = (args.next(), args.next()) else {
-        eprintln!("usage: lab <trace.txt> <ticks> [fixture|game]");
+        eprintln!("usage: lab <trace.txt> <ticks> [fixture|game|survival]");
         std::process::exit(2);
     };
     let ticks: u64 = ticks.parse().expect("ticks must be an integer");
@@ -22,8 +22,9 @@ fn main() {
     let spec = match level.as_str() {
         "fixture" => fixture(),
         "game" => game_level(),
+        "survival" => survival_level(),
         other => {
-            eprintln!("unknown level {other:?} (fixture | game)");
+            eprintln!("unknown level {other:?} (fixture | game | survival)");
             std::process::exit(2);
         }
     };
