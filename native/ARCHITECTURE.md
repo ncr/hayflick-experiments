@@ -317,36 +317,75 @@ Per-room probe banks are a renderer follow-up if content review demands it.
 
 ## Migration steps (each leaves the build green: `cargo test` + `bin/golden` byte-identical)
 
-1. **Workspace**: native/Cargo.toml, hoist `[profile.release] debug=true`, update
+**Status (2026-06-13): all 12 steps DONE and merged.** Both gates green at every
+commit (cargo test 60: house_game 27, iso_core 11, rt_probe 7, viewer 6, sim_core 9;
+`bin/golden` OK house/lab/grid/game/game_replay). Per-step deviations are recorded
+inline below and in the step-reality-notes blocks above (steps 8/9/10). The list
+is kept as the historical map; ☑ marks completion.
+
+1. ☑ **Workspace**: native/Cargo.toml, hoist `[profile.release] debug=true`, update
    `bin/golden` + `bin/run` paths (`native/rt-probe/target/release/viewer` →
    `native/target/release/viewer`, `--manifest-path`). **Verify from a CLEAN build; delete
    the old `native/rt-probe/target/` in the same commit** (stale binary = vacuous gate).
-2. **Move viewer** to crates/rt-viewer (`[[bin]] name="viewer"`), unchanged; rt-probe sheds
-   winit/ash-window/raw-window-handle/font8x8 from its Cargo.toml.
-3. **Extract iso-core** (pure code motion + re-export shim in rt-probe).
-4. **iso-core unprojection** (ViewXform, window_px_to_ground/ray + round-trip tests).
-5. **sim-core** (full surface + tests). Pure addition.
-6. **Move game.rs** → house-game (Level minus from_scene, iso_input_dir, speed floor);
+2. ☑ **Move viewer** to crates/rt-viewer (`[[bin]] name="viewer"`), unchanged; rt-probe sheds
+   winit/ash-window/raw-window-handle/font8x8 from its Cargo.toml. *Deviation: rt-viewer's
+   Cargo.toml also carries ash/glam/png (the moved viewer code uses them first-hand); one
+   forced line — tonemap SPIR-V `include_bytes!(OUT_DIR)` can't cross crates, so rt-probe
+   exports `render::TONE_SPV` and renderer.rs consumes it.*
+3. ☑ **Extract iso-core** (pure code motion + re-export shim in rt-probe).
+4. ☑ **iso-core unprojection** (ViewXform, window_px_to_ground/ray + round-trip tests).
+   *PIXEL_CENTER_TIE = 1/64, RAY_BACKOFF = 64 wu as specified.*
+5. ☑ **sim-core** (full surface + tests). Pure addition. *Deviations: MAX_FRAME_DT is a pub
+   const on the surface (not only an internal clamp); hecs is a curated 13-item re-export
+   list (not `pub use hecs::*`), pinned by the public_api_snapshot test.*
+6. ☑ **Move game.rs** → house-game (Level minus from_scene, iso_input_dir, speed floor);
    port update_motion collide-and-slide + flashlight pose as pure functions, unit-tested;
-   rt-viewer switches imports, old call path intact.
-7. **Full game** in house-game (components, systems, snapshot, fixture, whole headless
+   rt-viewer switches imports, old call path intact. *collide_and_slide takes an abstract
+   `blocked: impl Fn` closure (it runs against Level alone in the viewer and Level+DynSolids
+   in walk_system).*
+7. ☑ **Full game** in house-game (components, systems, snapshot, fixture, whole headless
    suite incl. replay_golden; flicker curves bit-compared against render.rs at sampled t
-   BEFORE touching the renderer).
-8. **rt-probe typed surface** (SceneHandles, Spotlight×2 slots, FrameState, record_frame
+   BEFORE touching the renderer). *Deviations: trace format is plain text (trace.rs), not
+   trace.ron (no serde/ron dep); DoorBody carries anim_ticks per-entity; flicker bit-compare
+   used a standalone rustc oracle of the render.rs formula block (SceneGpu needs a live Ctx,
+   so it couldn't be called CPU-side); door interact volume = CLOSED slab inflated 0.3 wu
+   tested regardless of door state.*
+8. ☑ **rt-probe typed surface** (SceneHandles, Spotlight×2 slots, FrameState, record_frame
    composing existing calls; place_dynamic generalization per the flag table). Then
    **invert inside the OLD viewer first**: draw() builds a FrameState from its own state
    and routes through record_frame while the old binary still lives — byte-parity proven
-   BEFORE the loop moves (turns step 9 into delete-only).
-9. **Sim loop in rt-viewer**: FixedLoop accumulator, winit→Command mapping, adapter,
+   BEFORE the loop moves (turns step 9 into delete-only). *See the step-8 reality notes
+   above; transitional `FrameState.anim` added here (deleted at step 10); record_frame does
+   NOT consume `FrameState.yaw_q` — masks stay event-driven via set_yaw_masks.*
+9. ☑ **Sim loop in rt-viewer**: FixedLoop accumulator, winit→Command mapping, adapter,
    delete in-draw sim. Preserve Config seeding order (pan offset, target override, player
    offset) verbatim. Frame-2 SHOT capture must be provably sim-independent (assert zero
-   ticks before capture or input-free bit-stable prefix).
-10. **Flicker out of renderer**: compute_practicals shrinks to "apply FrameState
-    .light_emission"; kind-from-hue heuristic deleted (kind comes from LevelSpec).
-11. **Game content**: new scene built from LevelSpec (colored-greybox walls/doors/floors
+   ticks before capture or input-free bit-stable prefix). *See step-9 reality notes; SHOT
+   feeds the FixedLoop dt=0 (sim-independence by construction); '0' reset is camera-only;
+   HouseGame::reseed() added; LMB is click-to-walk (drag-pan kept for playerless scenes).*
+10. ☑ **Flicker out of renderer**: compute_practicals shrinks to "apply FrameState
+    .light_emission"; kind-from-hue heuristic deleted (kind comes from LevelSpec). *See
+    step-10 reality notes; added Scene::name_point_light + Scene::mark_screen because every
+    NEE light must be named/bank-authored once the hue heuristic dies.*
+11. ☑ **Game content**: new scene built from LevelSpec (colored-greybox walls/doors/floors
     at tile-kit dimensions — NO textured tilesets; props as-is; named doors via
     place_dynamic, wall targets, named lights), NEW golden + CMDS replay golden; adapter asserts
     name-join completeness AND geometry consistency (door closed_solid matches the named
-    prim's footprint).
-12. **Cleanup**: Config split RenderCfg/GameCfg/HarnessCfg (env-var names preserved —
+    prim's footprint). *Deviations: the game scene is a FIVE-room spec (`house_game::game_level`),
+    built by `rt-viewer/src/game_scene.rs::build_game` (the LevelSpec→Scene greybox builder
+    lives in the adapter, as the doc prescribes). Door leaves use `register_dynamic` over
+    local boxes (not place_dynamic); lamps are point lights and the Screen is the only
+    emissive prim, so slot order is Screen-then-lamps matching spec order; per-room floor
+    tints + warm-perimeter/cool-interior walls; player_start in room E for a lit default
+    view. DOOR_LEAF_H 1.71875 / WALL_TOP 2.1875 distinct from WALL_H 2.56. Two new goldens:
+    `game` (lit spawn) + `game_replay` (dark, door open, score 2 — the CMDS replay end state,
+    hash matches house-game's replay_game_golden 0xf3783d2d43fe4009).*
+12. ☑ **Cleanup**: Config split RenderCfg/GameCfg/HarnessCfg (env-var names preserved —
     menu env_string round-trip is how dialed-in looks are saved), docs + memory updates.
+    *`Config` composes the three sub-cfgs + the shared `scene` identity field (read by both
+    the rt-probe scene builders and the viewer's game adapter); `lighting_env` forwards to
+    RenderCfg, `default_player_speed` bridges scene+game. The ESC menu reads Renderer fields
+    (not Config), so its env_string round-trip is unchanged by the split; pinned by
+    `config::tests::env_string_round_trip`. rt-probe's lib.rs re-export surface trimmed to
+    exactly what crosses the boundary (CamFrame/GpuTex/LightScan/frame_lights_cpu/
+    mat_to_transform/ISO_*_DEG/iso_pixel_basis/iso_target are rt-probe-internal now).*
