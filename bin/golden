@@ -8,7 +8,14 @@
 # LIGHT_ANIM=0 freezes the practicals), so a byte-compare of the PNGs is the
 # whole test. Goldens live in native/rt-probe/golden/ and are MACHINE-SPECIFIC
 # (GPU + driver shade exact float behaviour): regenerate after a driver update
-# if all three fail identically.
+# if all fail identically.
+#
+# Five goldens: house / lab / grid (the legacy scenes), plus the SCENE=game
+# greybox content scene at its spawn state (game) and at the end of the
+# checked-in CMDS replay trace (game_replay — door open, score 2, lights off;
+# the SHOT-mode wall clock never ticks the sim, so this is a pure function of
+# the scene + the trace). CMDS replay is byte-reproducible and matches the
+# house-game replay_game_golden state_hash.
 #
 # SHOT runs FULLY headless (no window, no surface, no swapchain) — WINDOW
 # pins the offscreen capture extent exactly, so golden dimensions are
@@ -23,10 +30,15 @@ UPDATE="${1:-}"
 cargo build --release --manifest-path native/Cargo.toml
 mkdir -p "$OUT" "$GOLD"
 
+GAME_TRACE=native/crates/house-game/traces/replay_game.txt
+
 fail=0
-for s in house lab grid; do
-  SCENE=$s WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" \
-    ./native/target/release/viewer >/dev/null 2>&1
+for s in house lab grid game game_replay; do
+  case "$s" in
+    game)        SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./native/target/release/viewer >/dev/null 2>&1 ;;
+    game_replay) SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 CMDS="$GAME_TRACE" SHOT="$OUT/$s.png" ./native/target/release/viewer >/dev/null 2>&1 ;;
+    *)           SCENE=$s WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./native/target/release/viewer >/dev/null 2>&1 ;;
+  esac
   if [ "$UPDATE" = "--update" ]; then
     cp "$OUT/$s.png" "$GOLD/$s.png"
     echo "golden updated: $s ($(stat -c%s "$GOLD/$s.png") bytes)"
