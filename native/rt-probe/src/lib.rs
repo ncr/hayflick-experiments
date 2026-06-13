@@ -3,17 +3,25 @@
 //! pathtrace-probe experiment).
 //!
 //! Module map:
-//! - [`config`] — every env knob, resolved once (`Config::from_env`)
+//! - [`config`] — every env knob, resolved once (`Config::from_env`), split
+//!   into `RenderCfg` / `GameCfg` / `HarnessCfg` along look / game / harness
+//!   lines (the shared `scene` identity stays on `Config`)
 //! - [`gpu`]    — generic Vulkan plumbing (context, buffers, images)
 //! - [`scene`]  — scene model + GLTF loader (world-space baked geometry)
 //! - [`scenes`] — content: the house / lab / grid-walker scene builders
 //! - [`render`] — `SceneGpu`: AS build, shade + probe pipelines, NEE lights,
-//!   animated practicals, the two-bank GI probe cache
+//!   the typed FrameState/SceneHandles/Spotlight frame surface, the two-bank
+//!   GI probe cache. Practical flicker is NOT here — `frame_lights_cpu` only
+//!   applies the game-authored `FrameState.light_emission` (house-game owns
+//!   the flicker curves; see step 10 in `native/ARCHITECTURE.md`)
 //! - [`iso`]    — re-export shim over the `iso-core` crate (ISO_VIEW_CONTRACT
-//!   camera + pixel-perfect view math, tested there)
+//!   camera + pixel-perfect view math + unprojection, tested there)
 //!
-//! The interactive window is the `rt-viewer` crate (`native/crates/rt-viewer`);
-//! game logic (collision, iso input, ECS systems) is the `house-game` crate.
+//! The interactive window is the `rt-viewer` crate (`native/crates/rt-viewer`):
+//! winit loop, the FixedLoop sim driver, the snapshot→FrameState adapter, and
+//! the LevelSpec→Scene greybox builder. Game logic (collision, iso input, ECS
+//! systems, flicker authoring) is the `house-game` crate. rt-probe and
+//! house-game never see each other — only rt-viewer's adapter knows both.
 //!
 //! Rendering model: shade.comp runs every frame as a PURE FUNCTION of
 //! (scene, camera) — primary ray per pixel centre, exact shadow rays, GI from
@@ -36,11 +44,15 @@ pub mod render;
 pub mod scene;
 pub mod scenes;
 
+// Re-export surface = exactly what crosses the rt-probe boundary (rt-viewer +
+// its `use rt_probe::*`). The split sub-cfgs (RenderCfg/GameCfg/HarnessCfg) are
+// the public shape of `Config`'s fields; items used only inside rt-probe
+// (CamFrame, GpuTex, LightScan, frame_lights_cpu, mat_to_transform, the
+// ISO_*_DEG angle consts, the iso_*_basis helpers) stay `pub` in their modules
+// but are NOT re-exported here — nothing outside the crate names them.
 pub use config::{Config, GameCfg, HarnessCfg, RenderCfg, StyleCfg};
-pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx, GpuTex};
-pub use iso::{
-    clamp_pan, iso_basis, iso_camera_at, iso_pixel_basis, iso_target, render_scale, screen_px_to_world, snap_ground_to_lattice, whole_pixel_step, zoom_anchor_pan, CamFrame, ISO_PITCH_DEG, ISO_R, ISO_YAW_DEG,
-};
-pub use render::{frame_lights_cpu, make_pool, make_set, mat_to_transform, push_bytes, scan_lights, FrameState, InstanceKey, LightKey, LightScan, SceneGpu, SceneHandles, ShadePush, Spotlight, N_RESERVED, TONE_SPV};
+pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx};
+pub use iso::{clamp_pan, iso_basis, iso_camera_at, render_scale, screen_px_to_world, snap_ground_to_lattice, whole_pixel_step, zoom_anchor_pan, ISO_R};
+pub use render::{make_pool, make_set, push_bytes, scan_lights, FrameState, InstanceKey, LightKey, SceneGpu, SceneHandles, ShadePush, Spotlight, N_RESERVED, TONE_SPV};
 pub use scene::{hex_linear, Scene};
 pub use scenes::build_scene;
