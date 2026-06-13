@@ -344,6 +344,8 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
         doors: Vec::new(),
         lights: lights.iter().enumerate().map(|(i, (name, kind, base, _))| LightSpec { id: LightId(i as u32), room: RoomId(0), kind: *kind, base_rgb: *base, name: name.clone() }).collect(),
         targets: Vec::new(),
+        items: Vec::new(), // survival is per-level opt-in; the mirror spec leaves it off
+        survival: None,
         player_start: scene.player_start,
         seed: 42,
     }

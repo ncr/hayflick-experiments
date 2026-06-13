@@ -10,12 +10,14 @@
 //! <tick> flash                            # ToggleFlashlight
 //! <tick> lights                           # ToggleRoomLights
 //! <tick> rotate dq
+//! <tick> use    food | battery             # Command::Use (consume a carried item)
 //! ```
 //!
 //! Ray directions are normalised on parse, so traces can be written with
 //! whole-number aim vectors.
 
 use crate::game::{Command, PickRay};
+use crate::spec::ItemKind;
 use glam::{IVec2, Vec2, Vec3};
 use sim_core::Tick;
 
@@ -30,6 +32,17 @@ pub fn parse_trace(text: &str) -> Result<Vec<(Tick, Command)>, String> {
         let mut it = line.split_whitespace();
         let tick = Tick(it.next().ok_or_else(|| err("missing tick"))?.parse::<u64>().map_err(|_| err("bad tick"))?);
         let op = it.next().ok_or_else(|| err("missing op"))?;
+        // `use <food|battery>` takes a word arg, not floats — handle it before
+        // the rest is parsed as a float list.
+        if op == "use" {
+            let kind = match it.next().ok_or_else(|| err("missing item kind"))? {
+                "food" => ItemKind::Food,
+                "battery" => ItemKind::Battery,
+                other => return Err(err(&format!("unknown item kind {other:?}"))),
+            };
+            out.push((tick, Command::Use { kind }));
+            continue;
+        }
         let mut f = {
             let rest: Vec<f32> = it.map(|s| s.parse::<f32>().map_err(|_| err("bad number"))).collect::<Result<_, _>>()?;
             rest.into_iter()
@@ -72,9 +85,11 @@ mod tests {
 10 move 1 -1
 11 flash
 12 rotate -1
+13 use food
+14 use battery
 ";
         let t = parse_trace(text).unwrap();
-        assert_eq!(t.len(), 7);
+        assert_eq!(t.len(), 9);
         assert_eq!(t[0], (Tick(0), Command::ToggleRoomLights));
         match &t[1].1 {
             Command::Click { ray, ground } => {
@@ -97,7 +112,11 @@ mod tests {
         assert_eq!(t[4], (Tick(10), Command::Move { dir: IVec2::new(1, -1) }));
         assert_eq!(t[5], (Tick(11), Command::ToggleFlashlight));
         assert_eq!(t[6], (Tick(12), Command::RotateCamera { dq: -1 }));
+        assert_eq!(t[7], (Tick(13), Command::Use { kind: ItemKind::Food }));
+        assert_eq!(t[8], (Tick(14), Command::Use { kind: ItemKind::Battery }));
         assert!(parse_trace("5 frobnicate").is_err());
+        assert!(parse_trace("1 use gold").is_err()); // unknown item kind
+        assert!(parse_trace("1 use").is_err()); // missing item kind
         assert!(parse_trace("x click 0 0 0 1 0 0 0 0").is_err());
         assert!(parse_trace("1 shoot 0 0 0").is_err()); // missing dir
         assert!(parse_trace("1 shoot 0 0 0 0 0 0").is_err()); // zero dir

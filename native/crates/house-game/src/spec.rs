@@ -15,6 +15,72 @@ pub struct DoorId(pub u32);
 pub struct LightId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct TargetId(pub u32);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ItemId(pub u32);
+
+/// What a world item restores when consumed. `Food` → hunger, `Battery` →
+/// flashlight battery. Copy + Eq so it rides in `GameEvent` (which derives
+/// Copy) and in the inventory Vec without lifetimes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ItemKind {
+    Food,
+    Battery,
+}
+
+/// A pickup sitting on the floor. `id` is the StableId (iteration is id-sorted
+/// everywhere, no HashMap), `kind` the consume effect, `pos` the world-XZ
+/// centre (y is the floor; pickup is a flat XZ radius test).
+#[derive(Clone, Copy, Debug)]
+pub struct ItemSpec {
+    pub id: ItemId,
+    pub kind: ItemKind,
+    pub pos: Vec3,
+}
+
+/// All the survival tuning for a level, in one struct so the lab can sweep it
+/// (`Scenario` clones the LevelSpec; vary these fields per run). Needs are
+/// f32 in 0..=1 and START FULL at 1.0. A level with `survival: None` spawns
+/// NO needs/inventory/item components — it hashes and behaves exactly as
+/// before this feature existed (the hash-stability invariant).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SurvivalParams {
+    /// Hunger lost per tick (always; the clock of the run).
+    pub hunger_decay: f32,
+    /// Battery lost per tick WHILE the flashlight is on (zero while off).
+    pub battery_drain: f32,
+    /// A need is "critical" once it drops below this (edge-triggered event).
+    pub critical: f32,
+    /// Hunger restored by consuming one Food (clamped to 1.0).
+    pub food_restore: f32,
+    /// Battery restored by consuming one Battery (clamped to 1.0).
+    pub battery_restore: f32,
+    /// Max items the player can carry.
+    pub inventory_cap: u32,
+    /// World-XZ radius within which a WorldItem is auto-picked-up.
+    pub pickup_radius: f32,
+    /// Walk-speed multiplier applied while hunger == 0 (starving = sluggish).
+    pub hunger_zero_speed_mul: f32,
+}
+
+impl Default for SurvivalParams {
+    fn default() -> SurvivalParams {
+        SURVIVAL_DEFAULT
+    }
+}
+
+/// The canonical default tuning, as a const so the lab can name it without an
+/// allocation and tests can reference exact numbers. ~60 s to empty hunger and
+/// ~30 s of torch-on to empty battery at 60 fps; critical at the last fifth.
+pub const SURVIVAL_DEFAULT: SurvivalParams = SurvivalParams {
+    hunger_decay: 1.0 / 3600.0, // full → 0 in 3600 ticks (60 s @ 60 fps)
+    battery_drain: 1.0 / 1800.0, // full → 0 in 1800 torch-on ticks (30 s)
+    critical: 0.2,
+    food_restore: 0.5,
+    battery_restore: 0.5,
+    inventory_cap: 8,
+    pickup_radius: 0.4,
+    hunger_zero_speed_mul: 0.5,
+};
 
 /// Practical-light animation family — maps 1:1 onto the renderer's numeric
 /// flicker kinds (render.rs compute_practicals / [`crate::flicker`]). With the
@@ -84,6 +150,12 @@ pub struct LevelSpec {
     pub doors: Vec<DoorSpec>,
     pub lights: Vec<LightSpec>,
     pub targets: Vec<TargetSpec>,
+    /// World pickups. EMPTY unless `survival` is `Some` — item entities are
+    /// only spawned when survival is enabled (so a disabled level is unchanged).
+    pub items: Vec<ItemSpec>,
+    /// Survival tuning. `None` = survival OFF: no needs/inventory/item
+    /// components spawn, nothing new enters state_hash or the snapshot.
+    pub survival: Option<SurvivalParams>,
     pub player_start: Vec3,
     pub seed: u64,
 }
@@ -139,6 +211,8 @@ pub fn fixture() -> LevelSpec {
             TargetSpec { id: TargetId(1), center: Vec3::new(0.0, 1.25, -2.5), normal: Vec3::new(0.0, 0.0, 1.0), radius: 0.3 },
             TargetSpec { id: TargetId(2), center: Vec3::new(5.0, 1.25, 0.0), normal: Vec3::new(-1.0, 0.0, 0.0), radius: 0.3 },
         ],
+        items: vec![],     // survival off → no pickups
+        survival: None,    // survival off → fixture hashes exactly as before
         player_start: Vec3::new(-3.5, 0.0, 0.0),
         seed: 42,
     }
@@ -225,7 +299,39 @@ pub fn game_level() -> LevelSpec {
             TargetSpec { id: TargetId(3), center: Vec3::new(11.875, 1.25, 2.0), normal: Vec3::new(-1.0, 0.0, 0.0), radius: 0.3 }, // D, east wall
             TargetSpec { id: TargetId(4), center: Vec3::new(6.0, 1.25, 7.875), normal: Vec3::new(0.0, 0.0, -1.0), radius: 0.3 }, // C, south wall
         ],
+        items: vec![],     // survival off → game_level hashes exactly as before
+        survival: None,    // (survival_level() below is the opt-in sandbox)
         player_start: Vec3::new(9.5, 0.0, 6.5), // room E (SE corner, faces the camera), aligned with door_ce's gap row
         seed: 7,
+    }
+}
+
+/// The survival experimentation sandbox: the SAME five-room house geometry as
+/// [`game_level`] (rooms / walls / doors / lights / targets are cloned, so the
+/// collision world and the renderer scene are identical), but with survival
+/// ENABLED ([`SurvivalParams::default`]) and a handful of Food + Battery items
+/// scattered across the rooms. This is the only level the survival systems run
+/// on; `game_level()` and `fixture()` stay survival-off and hash-stable.
+///
+/// Item layout (all on room floors, away from the 0.125-thick walls):
+///   Food    in A (entry hall, near spawn path), C (mid-S), D (east-N)
+///   Battery in A (far corner), B (mid-N), E (east-S, by the spawn)
+pub fn survival_level() -> LevelSpec {
+    LevelSpec {
+        items: vec![
+            // A — entry hall x[0,4] z[0,8]
+            ItemSpec { id: ItemId(0), kind: ItemKind::Food, pos: Vec3::new(2.0, 0.0, 2.0) },
+            ItemSpec { id: ItemId(1), kind: ItemKind::Battery, pos: Vec3::new(1.0, 0.0, 7.0) },
+            // B — mid-N x[4,8] z[0,4]
+            ItemSpec { id: ItemId(2), kind: ItemKind::Battery, pos: Vec3::new(5.5, 0.0, 1.5) },
+            // C — mid-S x[4,8] z[4,8]
+            ItemSpec { id: ItemId(3), kind: ItemKind::Food, pos: Vec3::new(5.5, 0.0, 6.0) },
+            // D — east-N x[8,12] z[0,4]
+            ItemSpec { id: ItemId(4), kind: ItemKind::Food, pos: Vec3::new(10.0, 0.0, 2.0) },
+            // E — east-S x[8,12] z[4,8] (player spawns at 9.5, 6.5)
+            ItemSpec { id: ItemId(5), kind: ItemKind::Battery, pos: Vec3::new(11.0, 0.0, 5.0) },
+        ],
+        survival: Some(SurvivalParams::default()),
+        ..game_level()
     }
 }

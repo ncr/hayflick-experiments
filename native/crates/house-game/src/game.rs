@@ -6,7 +6,7 @@
 //! milliseconds with no GPU and no window.
 
 use crate::flicker::flicker;
-use crate::spec::{DoorId, LevelSpec, LightId, LightKind, TargetId};
+use crate::spec::{DoorId, ItemId, ItemKind, LevelSpec, LightId, LightKind, SurvivalParams, TargetId};
 use crate::{collide_and_slide, flashlight_pose, iso_input_dir, recommended_min_px_per_sec, Level};
 use glam::{IVec2, Vec2, Vec3};
 use iso_core::{iso_basis, screen_px_to_world, snap_ground_to_lattice, ISO_R};
@@ -57,6 +57,9 @@ pub enum Command {
     ToggleRoomLights,
     /// Quarter-turns are SIM state: walk trajectories depend on yaw_q.
     RotateCamera { dq: i8 },
+    /// Consume one carried item of `kind` → restore the matching need (clamped
+    /// to 1.0), emit `Consumed`. No-op if none carried or survival is off.
+    Use { kind: ItemKind },
 }
 
 // ---- components -------------------------------------------------------------
@@ -116,6 +119,31 @@ pub struct TargetDisc {
     pub radius: f32,
 }
 
+// ---- survival components (spawned ONLY when spec.survival.is_some()) --------
+
+/// The two needs are plain f32 in 0..=1 (full at 1.0), one component each so
+/// the queries read cleanly. Present on the player iff survival is enabled.
+pub struct Hunger(pub f32);
+pub struct Battery(pub f32);
+/// Carried items, push-ordered (FIFO is irrelevant — Use consumes by kind).
+pub struct Inventory {
+    pub items: Vec<ItemKind>,
+    pub cap: u32,
+}
+/// A pickup entity: its StableId, its consume effect, and a `Pos` (separate
+/// component, reusing the player's `Pos`) for the proximity test.
+pub struct WorldItem {
+    pub id: ItemId,
+    pub kind: ItemKind,
+}
+
+/// Which need an edge-triggered survival event refers to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NeedKind {
+    Hunger,
+    Battery,
+}
+
 // ---- resources ---------------------------------------------------------------
 
 /// Domain events, emitted by systems and drained by audio (same tick).
@@ -126,6 +154,14 @@ pub enum GameEvent {
     ShotFired(Vec3),
     TargetHit(TargetId, Vec3),
     Switch, // flashlight / room-lights toggle
+    /// A world item entered the inventory (id, kind, world-XZ it was lying at).
+    PickedUp(ItemId, ItemKind, Vec3),
+    /// One carried item was consumed to restore its need.
+    Consumed(ItemKind),
+    /// A need crossed BELOW `critical` this tick (edge-triggered, fires once).
+    NeedCritical(NeedKind),
+    /// A need climbed back to/above `critical` this tick (edge-triggered).
+    NeedRecovered(NeedKind),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -164,6 +200,18 @@ pub struct Res {
     shot_intents: Vec<PickRay>,
     use_door: Vec<DoorId>,
     move_dir: IVec2,
+    /// Use-item intents this tick (kind to consume), filled by resolve_commands,
+    /// applied by use_system. Cleared each tick like the other staging Vecs.
+    use_items: Vec<ItemKind>,
+    /// Survival tuning when enabled; `None` = survival OFF (all survival
+    /// systems are no-ops and nothing survival-shaped enters the hash).
+    pub survival: Option<SurvivalParams>,
+    /// Edge-trigger memory for `NeedCritical`/`NeedRecovered`: was [hunger,
+    /// battery] below `critical` LAST tick? Compared against this tick's level
+    /// so the event fires once per crossing, not every tick below threshold.
+    /// (Not hashed directly — it is derivable from the hashed need levels, and
+    /// only exists in survival-enabled games.)
+    need_was_critical: [bool; 2],
     /// Structural changes queue here all tick; applied at ONE fixed point.
     pub buf: CommandBuffer,
 }
@@ -181,6 +229,12 @@ pub struct GameSnapshot {
     pub room_lights: f32,
     pub yaw_q: u32,
     pub score: u32,
+    // ---- survival (for the future HUD). When survival is OFF: hunger and
+    // battery are 1.0 and inventory is empty — the disabled-level snapshot is
+    // therefore independent of this feature (and the hash excludes them too).
+    pub hunger: f32,
+    pub battery: f32,
+    pub inventory: Vec<ItemKind>,
 }
 
 pub struct HouseGame<S: AudioSink = NullSink> {
@@ -193,6 +247,9 @@ pub struct HouseGame<S: AudioSink = NullSink> {
     doors: Vec<Entity>,
     lights: Vec<Entity>,
     targets: Vec<Entity>,
+    /// World item entities, ItemId-sorted (empty when survival is off). The
+    /// list is the StableId iteration order; pickup despawns drop entries.
+    items: Vec<Entity>,
 }
 
 impl<S: AudioSink> HouseGame<S> {
@@ -204,6 +261,21 @@ impl<S: AudioSink> HouseGame<S> {
         let down = screen_px_to_world(Vec2::new(0.0, 1.0), 0.0);
         let facing = Vec2::new(down.x, down.z).normalize();
         let player = world.spawn((Pos(spec.player_start), Facing(facing), Player { speed_px: PLAYER_SPEED_PX }, Flashlight { on: false }, Pistol { cooldown_ticks: 0 }));
+        // Survival is per-level opt-in: ONLY when enabled do the needs +
+        // inventory components exist (so a disabled level's player archetype,
+        // snapshot, and hash are byte-identical to before this feature).
+        if let Some(sp) = spec.survival {
+            world.insert(player, (Hunger(1.0), Battery(1.0), Inventory { items: Vec::new(), cap: sp.inventory_cap })).unwrap();
+        }
+
+        // World items, ItemId-sorted (no HashMap iteration). Spawned only when
+        // survival is enabled; spec.items is empty otherwise by construction.
+        let mut items: Vec<(ItemId, Entity)> = if spec.survival.is_some() {
+            spec.items.iter().map(|it| (it.id, world.spawn((WorldItem { id: it.id, kind: it.kind }, Pos(it.pos))))).collect()
+        } else {
+            Vec::new()
+        };
+        items.sort_by_key(|(id, _)| *id);
 
         let mut doors: Vec<(DoorId, Entity)> = spec
             .doors
@@ -249,9 +321,12 @@ impl<S: AudioSink> HouseGame<S> {
             shot_intents: Vec::new(),
             use_door: Vec::new(),
             move_dir: IVec2::ZERO,
+            use_items: Vec::new(),
+            survival: spec.survival,
+            need_was_critical: [false; 2], // needs start full (1.0) → not critical
             buf: CommandBuffer::new(),
         };
-        let mut g = HouseGame { world, res, sink, player, doors: doors.into_iter().map(|(_, e)| e).collect(), lights: lights.into_iter().map(|(_, e)| e).collect(), targets: targets.into_iter().map(|(_, e)| e).collect() };
+        let mut g = HouseGame { world, res, sink, player, doors: doors.into_iter().map(|(_, e)| e).collect(), lights: lights.into_iter().map(|(_, e)| e).collect(), targets: targets.into_iter().map(|(_, e)| e).collect(), items: items.into_iter().map(|(_, e)| e).collect() };
         g.reseed();
         g
     }
@@ -308,6 +383,7 @@ impl<S: AudioSink> HouseGame<S> {
         self.res.move_dir = IVec2::ZERO;
         self.res.shot_intents.clear();
         self.res.use_door.clear();
+        self.res.use_items.clear();
         for c in cmds {
             match c {
                 Command::Click { ray, ground } => {
@@ -322,18 +398,36 @@ impl<S: AudioSink> HouseGame<S> {
                 Command::Shoot { ray } => self.res.shot_intents.push(*ray),
                 Command::Move { dir } => self.res.move_dir = *dir, // last press this tick wins
                 Command::ToggleFlashlight => {
+                    // A dead battery (battery == 0) makes turning the torch ON
+                    // a no-op: you can't light a flashlight with no charge.
+                    // Turning it off always works. (Survival-off games have no
+                    // Battery component → the guard is vacuously true.)
+                    let dead = self.battery_dead();
                     let mut fl = self.world.get::<&mut Flashlight>(self.player).unwrap();
-                    fl.on = !fl.on;
-                    drop(fl);
-                    self.res.events.emit(GameEvent::Switch);
+                    let want_on = !fl.on;
+                    if want_on && dead {
+                        // swallowed: no state change, no Switch cue
+                    } else {
+                        fl.on = want_on;
+                        drop(fl);
+                        self.res.events.emit(GameEvent::Switch);
+                    }
                 }
                 Command::ToggleRoomLights => {
                     self.res.master_lights = !self.res.master_lights;
                     self.res.events.emit(GameEvent::Switch);
                 }
                 Command::RotateCamera { dq } => self.res.yaw_q = (self.res.yaw_q as i32 + *dq as i32).rem_euclid(4) as u32,
+                Command::Use { kind } => self.res.use_items.push(*kind), // applied by use_system
             }
         }
+    }
+
+    /// True when survival is on AND the battery is empty. Used to gate the
+    /// flashlight toggle (and to force it off in needs_system). Survival-off
+    /// games have no Battery component, so this is always false there.
+    fn battery_dead(&self) -> bool {
+        self.res.survival.is_some() && self.world.get::<&Battery>(self.player).map(|b| b.0 <= 0.0).unwrap_or(false)
     }
 
     /// 2. Door state machines on tick counters. The leaf collision solid is
@@ -404,7 +498,21 @@ impl<S: AudioSink> HouseGame<S> {
         let yaw = 90.0 * self.res.yaw_q as f32;
         let speed = {
             let pl = self.world.get::<&Player>(self.player).unwrap();
-            pl.speed_px.max(recommended_min_px_per_sec(60.0))
+            // Starving (hunger == 0) scales the effective px/s by
+            // hunger_zero_speed_mul. We scale BEFORE the smoothness floor so a
+            // slow-walk can dip below recommendedMinPxPerSec by design (the
+            // cornerstone trajectory + mesh stability still hold; the eye just
+            // sees discrete ticks — see CLAUDE.md invariant 10).
+            let mul = if let Some(sp) = self.res.survival {
+                if self.world.get::<&Hunger>(self.player).map(|h| h.0 <= 0.0).unwrap_or(false) {
+                    sp.hunger_zero_speed_mul
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+            (pl.speed_px * mul).max(recommended_min_px_per_sec(60.0) * mul)
         };
         let pos = self.player_pos();
         let manual = self.res.move_dir != IVec2::ZERO;
@@ -460,6 +568,123 @@ impl<S: AudioSink> HouseGame<S> {
                     }
                 }
             }
+        }
+    }
+
+    /// 3b. Pickups: after the player has moved, any WorldItem within
+    /// `pickup_radius` (world-XZ) is collected if the inventory has room —
+    /// kind pushed to the inventory, item despawned via the command buffer,
+    /// `PickedUp` emitted. Items iterate in ItemId-sorted order (self.items is
+    /// id-sorted; despawns drop entries) so two items inside the radius on the
+    /// same tick are picked in a deterministic, hash-stable order. No-op when
+    /// survival is off (self.items is empty).
+    fn pickup_system(&mut self) {
+        let Some(sp) = self.res.survival else { return };
+        if self.items.is_empty() {
+            return;
+        }
+        let p = self.player_pos();
+        let r2 = sp.pickup_radius * sp.pickup_radius;
+        let mut picked: Vec<Entity> = Vec::new();
+        for &e in &self.items {
+            // room left this tick = cap − (carried so far including this tick's picks)
+            let (count, cap) = {
+                let inv = self.world.get::<&Inventory>(self.player).unwrap();
+                (inv.items.len() as u32, inv.cap)
+            };
+            if count >= cap {
+                break; // full; remaining items stay on the floor
+            }
+            let (id, kind, ipos) = {
+                let wi = self.world.get::<&WorldItem>(e).unwrap();
+                (wi.id, wi.kind, self.world.get::<&Pos>(e).unwrap().0)
+            };
+            let dx = ipos.x - p.x;
+            let dz = ipos.z - p.z;
+            if dx * dx + dz * dz <= r2 {
+                self.world.get::<&mut Inventory>(self.player).unwrap().items.push(kind);
+                self.res.buf.despawn(e); // the one structural-change point per tick
+                self.res.events.emit(GameEvent::PickedUp(id, kind, ipos));
+                picked.push(e);
+            }
+        }
+        // drop the picked entities from the iteration list (the despawn lands
+        // at the per-tick buffer flush; keep self.items consistent with it)
+        if !picked.is_empty() {
+            self.items.retain(|e| !picked.contains(e));
+        }
+    }
+
+    /// Consume-item handling: each `Command::Use { kind }` this tick removes one
+    /// carried item of that kind and restores the matching need (clamped 1.0),
+    /// emitting `Consumed`. A Use with no matching item carried is a silent
+    /// no-op (no event, no restore). No-op entirely when survival is off.
+    fn use_system(&mut self) {
+        let Some(sp) = self.res.survival else {
+            return;
+        };
+        let intents = std::mem::take(&mut self.res.use_items);
+        for kind in intents {
+            // remove one carried item of this kind (FIFO; order is irrelevant)
+            let removed = {
+                let mut inv = self.world.get::<&mut Inventory>(self.player).unwrap();
+                if let Some(i) = inv.items.iter().position(|k| *k == kind) {
+                    inv.items.remove(i);
+                    true
+                } else {
+                    false
+                }
+            };
+            if !removed {
+                continue; // nothing carried → no-op
+            }
+            match kind {
+                ItemKind::Food => {
+                    let mut h = self.world.get::<&mut Hunger>(self.player).unwrap();
+                    h.0 = (h.0 + sp.food_restore).min(1.0);
+                }
+                ItemKind::Battery => {
+                    let mut b = self.world.get::<&mut Battery>(self.player).unwrap();
+                    b.0 = (b.0 + sp.battery_restore).min(1.0);
+                }
+            }
+            self.res.events.emit(GameEvent::Consumed(kind));
+        }
+    }
+
+    /// Needs tick (run near the end of the tick, after movement/use): hunger
+    /// always decays; battery drains ONLY while the flashlight is on. Pressure
+    /// effects: a dead battery (0) forces the flashlight OFF (and the toggle is
+    /// already gated off in resolve_commands). NeedCritical fires the FIRST tick
+    /// a need crosses BELOW `critical`; NeedRecovered when it climbs back to/
+    /// above. Edge state lives in `need_was_critical`. Hunger-zero slowdown is
+    /// applied in walk_system (it reads hunger there). No-op when survival off.
+    fn needs_system(&mut self) {
+        let Some(sp) = self.res.survival else { return };
+        let flashlight_on = self.world.get::<&Flashlight>(self.player).unwrap().on;
+        let (hunger, battery) = {
+            let mut h = self.world.get::<&mut Hunger>(self.player).unwrap();
+            h.0 = (h.0 - sp.hunger_decay).max(0.0);
+            let mut b = self.world.get::<&mut Battery>(self.player).unwrap();
+            if flashlight_on {
+                b.0 = (b.0 - sp.battery_drain).max(0.0);
+            }
+            (h.0, b.0)
+        };
+        // dead battery → torch off (a no-op if already off; no Switch cue: the
+        // torch dying is not a player-driven switch)
+        if battery <= 0.0 {
+            self.world.get::<&mut Flashlight>(self.player).unwrap().on = false;
+        }
+        // edge-triggered critical/recovered, hunger then battery (stable order)
+        for (i, (level, need)) in [(hunger, NeedKind::Hunger), (battery, NeedKind::Battery)].into_iter().enumerate() {
+            let now = level < sp.critical;
+            if now && !self.res.need_was_critical[i] {
+                self.res.events.emit(GameEvent::NeedCritical(need));
+            } else if !now && self.res.need_was_critical[i] {
+                self.res.events.emit(GameEvent::NeedRecovered(need));
+            }
+            self.res.need_was_critical[i] = now;
         }
     }
 
@@ -584,6 +809,10 @@ impl<S: AudioSink> HouseGame<S> {
                 GameEvent::ShotFired(p) => AudioCue { id: CueId("pistol_fire"), pos: Some(p), gain: 1.0 },
                 GameEvent::TargetHit(_, p) => AudioCue { id: CueId("target_hit"), pos: Some(p), gain: 1.0 },
                 GameEvent::Switch => AudioCue { id: CueId("switch"), pos: None, gain: 0.6 },
+                GameEvent::PickedUp(_, _, p) => AudioCue { id: CueId("pickup"), pos: Some(p), gain: 0.8 },
+                GameEvent::Consumed(_) => AudioCue { id: CueId("eat"), pos: None, gain: 0.7 },
+                // need-state crossings are HUD/feedback events, no audio cue yet
+                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) => continue,
             };
             self.sink.play(cue);
         }
@@ -612,9 +841,12 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         self.resolve_commands(cmds);
         self.door_system();
         self.walk_system();
+        self.pickup_system(); // after movement: collect items the walk reached
+        self.use_system(); // consume carried items → restore needs
         self.shoot_system();
         self.flashlight_system();
         self.light_system(sim_t);
+        self.needs_system(); // decay/drain + pressure effects, late in the tick
         self.audio_system();
         // the ONE fixed structural point per tick
         let mut buf = std::mem::replace(&mut self.res.buf, CommandBuffer::new());
@@ -635,6 +867,11 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
             room_lights: self.res.room_lights,
             yaw_q: self.res.yaw_q,
             score: self.res.score,
+            // survival fields read the components when present; survival-off
+            // games have none → full needs, empty inventory (HUD-neutral).
+            hunger: self.world.get::<&Hunger>(self.player).map(|h| h.0).unwrap_or(1.0),
+            battery: self.world.get::<&Battery>(self.player).map(|b| b.0).unwrap_or(1.0),
+            inventory: self.world.get::<&Inventory>(self.player).map(|i| i.items.clone()).unwrap_or_default(),
         }
     }
 
@@ -678,7 +915,34 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         }
         // RNG state probe (fields are private; a clone-advance reads it purely)
         h.u64(self.res.rng.clone().next_u32() as u64);
+        // Survival fields fold in ONLY when enabled, so a survival-OFF level
+        // (game_level / fixture) hashes byte-identically to before this
+        // feature: needs, inventory contents, and remaining world items. When
+        // survival is None this whole block is skipped → no new bytes.
+        if self.res.survival.is_some() {
+            h.f32(self.world.get::<&Hunger>(self.player).unwrap().0);
+            h.f32(self.world.get::<&Battery>(self.player).unwrap().0);
+            let inv = self.world.get::<&Inventory>(self.player).unwrap();
+            h.u64(inv.items.len() as u64);
+            for k in &inv.items {
+                h.u64(item_kind_tag(*k));
+            }
+            // remaining world items, id-sorted (self.items already is)
+            for &e in &self.items {
+                let wi = self.world.get::<&WorldItem>(e).unwrap();
+                h.u64(wi.id.0 as u64).u64(item_kind_tag(wi.kind));
+            }
+        }
         h.0
+    }
+}
+
+/// Stable hash tag for an item kind (the enum discriminant is not guaranteed
+/// stable across reorders, so we pin it here for the state_hash fold).
+fn item_kind_tag(k: ItemKind) -> u64 {
+    match k {
+        ItemKind::Food => 0,
+        ItemKind::Battery => 1,
     }
 }
 
@@ -1209,4 +1473,210 @@ mod tests {
 
     const GAME_OPEN: f32 = 1.7453293; // 100 deg in radians (game_level open_angle)
     const REPLAY_GAME_HASH: u64 = 0xf3783d2d43fe4009;
+
+    // ---- survival systems (spec::survival_level, opt-in) ---------------------
+
+    use crate::spec::{game_level, survival_level, ItemKind, ItemSpec, LevelSpec, SurvivalParams};
+
+    /// Driver over a survival-enabled level. Defaults to `survival_level()` but
+    /// `with_spec` lets a test build a minimal one-item world for a tight assert.
+    struct SurvDrv {
+        g: HouseGame<VecSink>,
+        t: u64,
+    }
+    impl SurvDrv {
+        fn new() -> SurvDrv {
+            SurvDrv { g: HouseGame::new(&survival_level(), VecSink::default()), t: 0 }
+        }
+        fn with_spec(spec: LevelSpec) -> SurvDrv {
+            SurvDrv { g: HouseGame::new(&spec, VecSink::default()), t: 0 }
+        }
+        fn cmd(&mut self, c: Command) {
+            self.g.tick(Tick(self.t), &[c]);
+            self.t += 1;
+        }
+        fn run(&mut self, n: u64) {
+            for _ in 0..n {
+                self.g.tick(Tick(self.t), &[]);
+                self.t += 1;
+            }
+        }
+        fn hunger(&self) -> f32 {
+            self.g.world.get::<&Hunger>(self.g.player).unwrap().0
+        }
+        fn battery(&self) -> f32 {
+            self.g.world.get::<&Battery>(self.g.player).unwrap().0
+        }
+        fn inv(&self) -> Vec<ItemKind> {
+            self.g.world.get::<&Inventory>(self.g.player).unwrap().items.clone()
+        }
+        fn flashlight(&self) -> bool {
+            self.g.world.get::<&Flashlight>(self.g.player).unwrap().on
+        }
+        fn cue_ids(&self) -> Vec<&'static str> {
+            self.g.sink.0.iter().map(|c| c.id.0).collect()
+        }
+        fn set_hunger(&mut self, v: f32) {
+            self.g.world.get::<&mut Hunger>(self.g.player).unwrap().0 = v;
+        }
+        fn set_battery(&mut self, v: f32) {
+            self.g.world.get::<&mut Battery>(self.g.player).unwrap().0 = v;
+        }
+    }
+
+    /// A 1-room survival level with a single food item at `food_pos` (player
+    /// spawns at the room's south, like game_level). Tight worlds for asserts.
+    fn one_item_level(kind: ItemKind, item_pos: Vec3, sp: SurvivalParams) -> LevelSpec {
+        LevelSpec { items: vec![ItemSpec { id: ItemId(0), kind, pos: item_pos }], survival: Some(sp), ..game_level() }
+    }
+
+    #[test]
+    fn pickup_on_proximity() {
+        // food sitting right where the player will arrive; walk onto it
+        let item = Vec3::new(9.5, 0.0, 5.0); // room E, north of spawn (9.5, 6.5)
+        let mut d = SurvDrv::with_spec(one_item_level(ItemKind::Food, item, SurvivalParams::default()));
+        assert_eq!(d.inv(), vec![], "starts empty");
+        assert_eq!(d.g.items.len(), 1, "one world item spawned");
+        d.cmd(click_ground(9.5, 5.0));
+        d.run(120);
+        assert_eq!(d.inv(), vec![ItemKind::Food], "food entered the inventory");
+        assert_eq!(d.g.items.len(), 0, "world item despawned");
+        // PickedUp emitted → "pickup" cue
+        assert!(d.cue_ids().contains(&"pickup"), "{:?}", d.cue_ids());
+    }
+
+    #[test]
+    fn use_restores_need() {
+        let item = Vec3::new(9.5, 0.0, 5.0);
+        let mut d = SurvDrv::with_spec(one_item_level(ItemKind::Food, item, SurvivalParams::default()));
+        // Use with an empty inventory is a no-op
+        d.cmd(Command::Use { kind: ItemKind::Food });
+        assert!(!d.cue_ids().contains(&"eat"), "empty Use is a no-op");
+        // grab the food, drop hunger, then consume to restore (clamped <= 1)
+        d.cmd(click_ground(9.5, 5.0));
+        d.run(120);
+        assert_eq!(d.inv(), vec![ItemKind::Food]);
+        d.set_hunger(0.3);
+        d.cmd(Command::Use { kind: ItemKind::Food }); // use_system: +0.5 → 0.8, then needs_system decays one tick
+        let expect = (0.8 - SurvivalParams::default().hunger_decay).max(0.0);
+        assert!((d.hunger() - expect).abs() < 1e-5, "hunger restored (minus one tick decay): {}", d.hunger());
+        assert_eq!(d.inv(), vec![], "the food was consumed");
+        assert!(d.cue_ids().contains(&"eat"));
+        // restore clamps at 1.0
+        d.set_hunger(0.9);
+        // give a fresh food directly into the inventory for the clamp check
+        d.g.world.get::<&mut Inventory>(d.g.player).unwrap().items.push(ItemKind::Food);
+        d.cmd(Command::Use { kind: ItemKind::Food }); // use_system: 0.9 + 0.5 clamps to 1.0, then one tick decay
+        let clamped = (1.0 - SurvivalParams::default().hunger_decay).max(0.0);
+        assert!((d.hunger() - clamped).abs() < 1e-5 && d.hunger() <= 1.0, "clamped to full (minus one tick): {}", d.hunger());
+    }
+
+    #[test]
+    fn battery_drains_only_with_flashlight() {
+        let mut d = SurvDrv::new();
+        let b0 = d.battery();
+        d.run(60);
+        assert_eq!(d.battery(), b0, "battery constant while torch off");
+        d.cmd(Command::ToggleFlashlight);
+        assert!(d.flashlight());
+        let b1 = d.battery();
+        d.run(60);
+        assert!(d.battery() < b1, "battery drains while torch on: {} < {}", d.battery(), b1);
+        // and hunger always decays regardless
+        assert!(d.hunger() < 1.0, "hunger always decays");
+    }
+
+    #[test]
+    fn dead_battery_forces_torch_off() {
+        let mut d = SurvDrv::new();
+        d.cmd(Command::ToggleFlashlight);
+        assert!(d.flashlight());
+        d.set_battery(0.0001); // about to die
+        d.run(2); // needs_system drains below 0 → clamps 0 → forces torch off
+        assert_eq!(d.battery(), 0.0);
+        assert!(!d.flashlight(), "dead battery forces the torch off");
+        // toggle won't turn it back on with a dead battery (no Switch cue)
+        let cues_before = d.cue_ids().len();
+        d.cmd(Command::ToggleFlashlight);
+        assert!(!d.flashlight(), "can't relight a dead torch");
+        assert_eq!(d.cue_ids().len(), cues_before, "no Switch cue for the swallowed toggle");
+    }
+
+    #[test]
+    fn hunger_zero_slows() {
+        // two identical worlds, same Move input; one starved, one fed
+        let mk = || SurvDrv::with_spec(LevelSpec { items: vec![], survival: Some(SurvivalParams::default()), ..game_level() });
+        let mut fed = mk();
+        let mut starved = mk();
+        starved.set_hunger(0.0);
+        // hold screen-up for 30 ticks (away from spawn, into open room E)
+        for _ in 0..30 {
+            fed.cmd(Command::Move { dir: IVec2::new(0, 1) });
+            starved.cmd(Command::Move { dir: IVec2::new(0, 1) });
+        }
+        let fed_pos = fed.g.world.get::<&Pos>(fed.g.player).unwrap().0;
+        let starved_pos = starved.g.world.get::<&Pos>(starved.g.player).unwrap().0;
+        let fed_d = (fed_pos - Vec3::new(9.5, 0.0, 6.5)).length();
+        let starved_d = (starved_pos - Vec3::new(9.5, 0.0, 6.5)).length();
+        assert!(starved_d < fed_d, "starving covers less ground: {starved_d} < {fed_d}");
+        // hunger stays 0 (already empty); fed still has hunger
+        assert_eq!(starved.hunger(), 0.0);
+    }
+
+    #[test]
+    fn need_critical_edge_triggered() {
+        let mut d = SurvDrv::new();
+        d.g.res.event_tap = Some(Vec::new());
+        // sit just above critical, then cross below over two ticks
+        let crit = SurvivalParams::default().critical;
+        d.set_hunger(crit + SurvivalParams::default().hunger_decay * 0.5);
+        d.run(1); // crosses below critical → ONE NeedCritical
+        d.run(10); // stays below → must NOT re-fire
+        let tap = d.g.res.event_tap.as_ref().unwrap();
+        let crits = tap.iter().filter(|e| matches!(e, GameEvent::NeedCritical(NeedKind::Hunger))).count();
+        assert_eq!(crits, 1, "NeedCritical fires once on crossing, not every tick");
+        // recover above critical → NeedRecovered, then critical again re-arms
+        d.set_hunger(crit + 0.3);
+        d.run(1);
+        let recs = d.g.res.event_tap.as_ref().unwrap().iter().filter(|e| matches!(e, GameEvent::NeedRecovered(NeedKind::Hunger))).count();
+        assert_eq!(recs, 1, "NeedRecovered fires on the climb back");
+    }
+
+    #[test]
+    fn survival_determinism() {
+        // same survival scenario twice → identical timeline + hash
+        let trace = vec![
+            (Tick(0), Command::ToggleFlashlight),
+            (Tick(10), click_ground(9.5, 5.0)),
+            (Tick(120), Command::Use { kind: ItemKind::Battery }),
+        ];
+        let run = || {
+            let mut r = Runner::new(HouseGame::new(&survival_level(), VecSink::default()));
+            r.feed(trace.clone());
+            let h = r.run_ticks(200);
+            (h, r.sim.sink.0.clone(), r.sim.snapshot())
+        };
+        let (ha, cues_a, snap_a) = run();
+        let (hb, cues_b, snap_b) = run();
+        assert_eq!(ha, hb, "same survival trace, same hash");
+        assert_eq!(cues_a, cues_b, "cue streams identical");
+        assert_eq!(snap_a, snap_b, "snapshots identical");
+    }
+
+    #[test]
+    fn survival_off_is_hash_stable_and_hud_neutral() {
+        // a survival-OFF level (game_level) carries NO survival components: the
+        // snapshot reports full needs + empty inventory, and the hash is exactly
+        // the survival-disabled hash (the replay goldens pin the real value).
+        let g = HouseGame::new(&game_level(), VecSink::default());
+        let snap = g.snapshot();
+        assert_eq!(snap.hunger, 1.0);
+        assert_eq!(snap.battery, 1.0);
+        assert_eq!(snap.inventory, Vec::<ItemKind>::new());
+        // Use is a no-op on a survival-off level (no panic, no state change)
+        let mut d = GameDrv::new();
+        let h0 = d.g.state_hash();
+        d.cmd(Command::Use { kind: ItemKind::Food });
+        assert_eq!(d.g.state_hash(), h0, "Use must not perturb a survival-off level");
+    }
 }

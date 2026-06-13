@@ -22,9 +22,9 @@ pub mod spec;
 pub mod trace;
 
 pub use flicker::flicker;
-pub use game::{Command, DoorState, FlashPose, GameEvent, GameSnapshot, HouseGame, PickRay, Res, TICK_DT};
+pub use game::{Battery, Command, DoorState, FlashPose, GameEvent, GameSnapshot, HouseGame, Hunger, Inventory, NeedKind, PickRay, Res, WorldItem, TICK_DT};
 pub use lab::{first_tick_of, run_scenario, Metrics, Policy, Scenario, ScenarioReport};
-pub use spec::{fixture, game_level, DoorId, DoorSpec, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TargetId, TargetSpec};
+pub use spec::{fixture, game_level, survival_level, DoorId, DoorSpec, ItemId, ItemKind, ItemSpec, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, SurvivalParams, TargetId, TargetSpec, SURVIVAL_DEFAULT};
 pub use trace::parse_trace;
 
 use glam::{Vec2, Vec3};
