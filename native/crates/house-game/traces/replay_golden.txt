@@ -1,0 +1,15 @@
+# replay_golden — the checked-in determinism trace (fixture level, 240 ticks).
+# Exercises: toggles, door interact via click ray, click-to-walk through the
+# opened door, a scoring shot through the doorway, camera rotation + WASD.
+# The pinned state_hash lives in game.rs::tests::replay_golden.
+0 lights                                  # master off...
+1 lights                                  # ...and back on (two switch cues)
+0 flash                                   # flashlight on
+2 click -1.625 5 0 0 -1 0 -1.625 0        # straight down onto door_ab -> UseDoor
+40 click 0 5 0 0 -1 0 0 0                 # walk to room B centre (door open at 32)
+180 shoot -2 1.25 0.5 2 0 -3              # through the open doorway into target 1
+185 shoot -2 1.25 0.5 2 0 -3              # swallowed by the cooldown
+200 rotate 1                              # quarter-turn: sim state
+210 move 1 0
+211 move 1 0
+212 move 1 0

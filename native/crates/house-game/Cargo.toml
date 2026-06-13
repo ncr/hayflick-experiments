@@ -8,3 +8,8 @@ description = "The house game (ARCHITECTURE.md area C): level collision, command
 sim-core = { path = "../sim-core" }
 iso-core = { path = "../iso-core" }
 glam = "0.30"
+
+# Headless trace player: fixture level + trace.txt -> state digest. No GPU.
+[[bin]]
+name = "headless"
+path = "src/bin/headless.rs"

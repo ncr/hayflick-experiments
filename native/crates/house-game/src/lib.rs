@@ -5,6 +5,23 @@
 //! flashlight math extracted as PURE functions so the ECS systems and the
 //! interactive viewer share one implementation. No GPU, no window: everything
 //! here runs under plain `cargo test -p house-game`.
+//!
+//! Module map:
+//! - [`spec`]    — LevelSpec (ordered Vecs, the level's source of truth) + fixture
+//! - [`game`]    — Command, components, the 7 fixed-order systems, GameSnapshot,
+//!   state_hash (the `sim_core::Simulation` impl)
+//! - [`flicker`] — stateless practical-light curves (verbatim render.rs port)
+//! - [`trace`]   — plain-text command traces (headless bin + replay goldens)
+
+pub mod flicker;
+pub mod game;
+pub mod spec;
+pub mod trace;
+
+pub use flicker::flicker;
+pub use game::{Command, DoorState, FlashPose, GameEvent, GameSnapshot, HouseGame, PickRay, Res, TICK_DT};
+pub use spec::{fixture, DoorId, DoorSpec, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TargetId, TargetSpec};
+pub use trace::parse_trace;
 
 use glam::{Vec2, Vec3};
 
