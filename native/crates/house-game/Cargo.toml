@@ -13,3 +13,8 @@ glam = "0.30"
 [[bin]]
 name = "headless"
 path = "src/bin/headless.rs"
+
+# Scenario lab: trace.txt -> event TIMELINE + metrics (emergence experiments).
+[[bin]]
+name = "lab"
+path = "src/bin/lab.rs"

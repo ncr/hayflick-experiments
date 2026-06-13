@@ -12,14 +12,18 @@
 //!   state_hash (the `sim_core::Simulation` impl)
 //! - [`flicker`] — stateless practical-light curves (verbatim render.rs port)
 //! - [`trace`]   — plain-text command traces (headless bin + replay goldens)
+//! - [`lab`]     — scenario lab: headless event-timeline harness for emergence
+//!   experiments (Scenario → run_scenario → ScenarioReport + Metrics)
 
 pub mod flicker;
 pub mod game;
+pub mod lab;
 pub mod spec;
 pub mod trace;
 
 pub use flicker::flicker;
 pub use game::{Command, DoorState, FlashPose, GameEvent, GameSnapshot, HouseGame, PickRay, Res, TICK_DT};
+pub use lab::{first_tick_of, run_scenario, Metrics, Policy, Scenario, ScenarioReport};
 pub use spec::{fixture, game_level, DoorId, DoorSpec, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TargetId, TargetSpec};
 pub use trace::parse_trace;
 

@@ -145,6 +145,13 @@ pub struct Res {
     pub score: u32,
     pub rng: Pcg32,
     pub events: Events<GameEvent>,
+    /// OBSERVATION-ONLY event tap for the scenario lab (`lab.rs`). When `Some`,
+    /// `audio_system` pushes a copy of every drained `GameEvent` here, in the
+    /// same emission order the sink sees. It is NOT read by `state_hash` or
+    /// `snapshot` and never feeds back into any system — recording is provably
+    /// side-effect-free (pinned by `lab::tests::recording_is_side_effect_free`).
+    /// `None` by default: zero behavior change on the renderer/viewer path.
+    pub event_tap: Option<Vec<GameEvent>>,
     pub flash_pose: FlashPose,
     pub yaw_q: u32,
     pub master_lights: bool,
@@ -232,6 +239,7 @@ impl<S: AudioSink> HouseGame<S> {
             score: 0,
             rng: Pcg32::new(spec.seed),
             events: Events::new(),
+            event_tap: None,
             flash_pose: FlashPose { pos: Vec3::ZERO, dir: Vec3::NEG_Y },
             yaw_q: 0,
             master_lights: true,
@@ -564,6 +572,12 @@ impl<S: AudioSink> HouseGame<S> {
     /// 7. Domain events → audio cues into the injected sink, emission order.
     fn audio_system(&mut self) {
         for ev in self.res.events.drain() {
+            // Observation tap (lab only): record the STRUCTURED event before it
+            // is flattened to a (lossy) AudioCue. Pure copy into an Option buffer
+            // — touches nothing the hash reads.
+            if let Some(tap) = self.res.event_tap.as_mut() {
+                tap.push(ev);
+            }
             let cue = match ev {
                 GameEvent::DoorOpened(_, p) => AudioCue { id: CueId("door_open"), pos: Some(p), gain: 1.0 },
                 GameEvent::DoorClosed(_, p) => AudioCue { id: CueId("door_close"), pos: Some(p), gain: 1.0 },
