@@ -9,11 +9,12 @@ use glam::{Vec2, Vec3};
 use rt_probe::*;
 
 /// Mutable headless-harness state (seeded from `Config`, consumed as the
-/// triggers fire): SHOT / WALK / ROTATE_AT / DUMP / DUMP_AT.
+/// triggers fire): SHOT / ROTATE_AT / DUMP / DUMP_AT. Synthetic INPUT lives
+/// in CMDS (a deterministic command-trace prefix, run before the first
+/// frame — see `GameLoop::run_cmds`), not here.
 pub struct Harness {
     pub shot: Option<String>,
     pub shot_delay: f32,
-    pub walk: Option<f32>,
     pub rotate_at: Option<f32>,
     pub dump_dir: Option<String>,
     pub dump_at: Option<f32>,
@@ -28,7 +29,6 @@ impl Harness {
         Harness {
             shot: cfg.shot.clone(),
             shot_delay: cfg.shot_delay,
-            walk: cfg.walk,
             rotate_at: cfg.rotate_at,
             dump_dir: cfg.dump.clone(),
             dump_at: cfg.dump_at,
@@ -386,14 +386,12 @@ impl Renderer {
         println!("captured {path} ({w}x{h})");
     }
 
-    /// Synthetic-input harness, run at the top of draw(): WALK holds up+right
-    /// for its duration; ROTATE_AT fires one smooth e-turn (and arms the DUMP
-    /// counter); DUMP_AT arms the dump with no camera command.
+    /// Synthetic-input harness, run at the top of draw(): ROTATE_AT fires one
+    /// smooth e-turn (and arms the DUMP counter); DUMP_AT arms the dump with
+    /// no camera command. (Player input synthesis is CMDS — deterministic
+    /// tick-stamped replay, not wall-clock.)
     pub fn harness_pre_frame(&mut self) {
         let elapsed = self.start_time.elapsed().as_secs_f32();
-        if let Some(w) = self.harness.walk {
-            self.player.held = if elapsed < w { [true, false, false, true] } else { [false; 4] };
-        }
         if let Some(t) = self.harness.rotate_at {
             if elapsed >= t {
                 self.harness.rotate_at = None;
@@ -447,6 +445,10 @@ impl Renderer {
         // TLAS rebuild land on frame 1).
         if let Some(path) = self.harness.shot.clone() {
             if self.frame >= 2 && self.start_time.elapsed().as_secs_f32() >= self.harness.shot_delay {
+                // the capture is sim-independent BY CONSTRUCTION: draw() feeds
+                // the fixed loop dt = 0 in SHOT mode, so the wall clock never
+                // ran a tick — only the deterministic CMDS prefix did. Pin it.
+                assert_eq!(self.game.tick.0, self.game.cmds_prefix, "SHOT capture ran wall-clock sim ticks — goldens would depend on timing");
                 self.ctx.device.device_wait_idle().unwrap();
                 self.capture(&path);
                 self.exit_requested = true;

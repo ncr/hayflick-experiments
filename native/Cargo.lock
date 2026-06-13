@@ -1272,9 +1272,11 @@ dependencies = [
  "font8x8",
  "glam",
  "house-game",
+ "iso-core",
  "png 0.17.16",
  "raw-window-handle",
  "rt-probe",
+ "sim-core",
  "winit",
 ]
 

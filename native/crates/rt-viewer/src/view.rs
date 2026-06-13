@@ -1,10 +1,13 @@
-//! View + player state: camera yaw / quarter-turn animation, zoom, pan,
-//! lattice snapping, continuous held-key movement with collision, and the
-//! player flashlight. The native mirror of the web view/runtime semantics.
+//! View state + camera presentation: yaw / quarter-turn animation, zoom, pan,
+//! lattice snapping, playerless camera panning, the click unprojection into
+//! game commands, and the per-frame spotlight build from the game snapshot.
+//! Player MOTION lives in house-game now (walk_system) — the viewer only
+//! presents and translates input.
 
 use crate::renderer::{Renderer, ZOOM_MAX, ZOOM_MIN};
 use glam::{Vec2, Vec3};
-use house_game::{collide_and_slide, flashlight_pose, iso_input_dir, recommended_min_px_per_sec, Level};
+use house_game::{flashlight_pose, iso_input_dir, recommended_min_px_per_sec, Command, PickRay};
+use iso_core::{window_px_to_ground, window_px_to_ray, ViewXform};
 use rt_probe::*;
 
 /// Interactive quarter-turn animation — the native mirror of the web
@@ -26,6 +29,7 @@ pub struct ViewState {
     pub zoom: f32,
     /// camera yaw in quarter-turns from canonical (web rotateQuarterTurns):
     /// Q = -1, E = +1. Tagged scenes re-mask near walls per turn (dollhouse).
+    /// Mirrors the SIM's yaw_q (every change also queues RotateCamera).
     pub yaw_q: u32,
     /// which quarter the dollhouse masks are currently set for (swaps at the
     /// nearest-quarter crossing during a rotation sweep)
@@ -38,23 +42,11 @@ pub struct ViewState {
     pub pan: Vec2,
     /// the world look-at target (snapped to the pixel lattice)
     pub target: Vec3,
-    /// sub-low-pixel remainder carried between moves (#5)
+    /// sub-low-pixel remainder carried between camera pans (#5)
     pub move_accum: Vec2,
     pub cursor: Vec2, // window-space cursor (physical px)
     pub wheel_accum: f32, // accumulates scroll into discrete zoom steps
     pub dragging: bool,
-}
-
-/// Player state (the native @common/gameplay mirror): continuous position,
-/// held-key input, collision level, camera-follow flag, and the facing the
-/// flashlight aims along.
-pub struct PlayerState {
-    pub pos: Vec3,
-    pub facing: Vec2, // world-XZ unit dir of the last walk input — beam aim
-    pub held: [bool; 4], // up, down, left, right
-    pub speed: f32,   // px/s (floored to the iso smoothness minimum)
-    pub level: Level,
-    pub follow_cam: bool, // camera tracks the player (grid scene: fixed camera)
 }
 
 impl Renderer {
@@ -70,8 +62,11 @@ impl Renderer {
     }
 
     /// q/e: start (or extend) the smooth quarter-turn — web semantics: the
-    /// integer target moves immediately, the camera eases after it.
+    /// integer target moves immediately, the camera eases after it. The turn
+    /// is SIM state too: every press queues a matching RotateCamera command
+    /// (the game applies it next tick; the ease is presentation-only).
     pub fn start_rotate(&mut self, delta: i32) {
+        self.game.push(Command::RotateCamera { dq: delta as i8 });
         let target = match &mut self.view.rot {
             Some(r) => {
                 r.target += delta;
@@ -144,11 +139,13 @@ impl Renderer {
         self.clamp_pan_to_buffer();
     }
 
-    /// Rotate the view by quarter turns instantly (the movie's landing path;
-    /// interactive q/e goes through `start_rotate`). The camera orbits its
-    /// target; dollhouse-tagged scenes re-mask which perimeter walls are
-    /// hidden, applied by the next TLAS rebuild.
+    /// Rotate the view by quarter turns instantly (the movie's landing path
+    /// and the '0' reset; interactive q/e goes through `start_rotate`). Also
+    /// queues the matching RotateCamera so the sim's yaw_q follows. The camera
+    /// orbits its target; dollhouse-tagged scenes re-mask which perimeter
+    /// walls are hidden, applied by the next TLAS rebuild.
     pub fn rotate(&mut self, delta: i32) {
+        self.game.push(Command::RotateCamera { dq: delta as i8 });
         self.view.yaw_q = (self.view.yaw_q as i32 + delta).rem_euclid(4) as u32;
         self.view.rot = None; // instant turn supersedes any in-flight sweep
         self.view.mask_q = self.view.yaw_q;
@@ -186,102 +183,84 @@ impl Renderer {
         self.retarget(self.view.target + world);
     }
 
-    /// Move the player on the floor by a screen-space delta in low pixels,
-    /// quantised to whole low pixels with the remainder carried (#5).
-    pub fn move_player(&mut self, d_low: Vec2) {
+    /// Pan the camera by a screen-space delta in low pixels, quantised to
+    /// whole low pixels with the remainder carried (#5 applied to the
+    /// camera). Playerless scenes only — with a player the camera follows
+    /// the sim instead (`follow_camera`).
+    pub fn pan_camera_px(&mut self, d_low: Vec2) {
         self.view.move_accum += d_low;
         let (whole, rem) = whole_pixel_step(self.view.move_accum);
         self.view.move_accum = rem;
         if whole != Vec2::ZERO {
             let world = screen_px_to_world(whole, self.yaw_deg());
-            if self.scene.dynamic_prim.is_none() {
-                // no player (lab scene): drag pans the camera — the world
-                // follows the cursor, so the target moves opposite the drag.
-                self.pan_target(-world);
-            } else {
-                let (nx, nz) = (self.player.pos.x + world.x, self.player.pos.z + world.z);
-                self.commit_player(nx, nz);
-            }
+            self.pan_target(world);
         }
     }
 
-    /// Apply a new continuous player position — the web engine's contract:
-    /// the game transform stays continuous, but the RENDERED mesh is snapped
-    /// to the screen-pixel lattice on every move (`snapWorldPointOnGround`,
-    /// nearest, uniform (1,1) granularity). The TLAS rebuild only happens when
-    /// the snapped point crosses a pixel cell — `record_frame` compares the
-    /// snapped transform against its shadow. In follow mode the camera target
-    /// tracks the player.
-    pub fn commit_player(&mut self, nx: f32, nz: f32) {
-        self.player.pos.x = nx;
-        self.player.pos.z = nz;
-        if self.player.follow_cam {
-            self.retarget(self.player.pos);
-            self.recenter_pan();
-        }
-    }
-
-    /// Continuous held-key movement (the native @common/gameplay loop): map the
-    /// held inputs through the iso 2:1 direction, integrate at `player.speed`
-    /// (floored to the smoothness minimum) over `dt` on the screen-pixel basis
-    /// (`screen_px_to_world` — 1 px right = 1/R wu, 1 px down = 2/R wu), then
-    /// collide against the level. Blocked moves slide along the unobstructed
-    /// axis.
-    pub fn update_motion(&mut self, dt: f32) {
-        let input_x = (self.player.held[3] as i32 - self.player.held[2] as i32) as f32; // right - left
-        let input_y = (self.player.held[0] as i32 - self.player.held[1] as i32) as f32; // up - down
+    /// Held-key camera pan for scenes WITHOUT a player (lab) — the WASD
+    /// branch the sim can't own (there is nothing to walk). Player scenes
+    /// synthesize Command::Move per tick instead (`GameLoop::run_due`).
+    pub fn pan_camera_held(&mut self, dt: f32) {
+        let input_x = (self.game.held[3] as i32 - self.game.held[2] as i32) as f32; // right - left
+        let input_y = (self.game.held[0] as i32 - self.game.held[1] as i32) as f32; // up - down
         let Some(dir) = iso_input_dir(input_x, input_y) else { return };
-        let speed = self.player.speed.max(recommended_min_px_per_sec(60.0));
-        let dpx = dir * speed * dt; // screen pixels this frame (right, down)
-        let world = screen_px_to_world(dpx, self.yaw_deg());
+        let speed = self.pan_speed.max(recommended_min_px_per_sec(60.0));
+        self.pan_camera_px(dir * speed * dt);
+    }
 
-        if self.scene.dynamic_prim.is_none() {
-            // no player (lab scene): WASD pans the camera in whole-low-pixel
-            // steps with the remainder carried (#5 applied to the camera).
-            self.view.move_accum += dpx;
-            let (whole, rem) = whole_pixel_step(self.view.move_accum);
-            self.view.move_accum = rem;
-            if whole != Vec2::ZERO {
-                let w = screen_px_to_world(whole, self.yaw_deg());
-                self.pan_target(w);
-            }
+    /// The ViewXform this frame's picks unproject through. During a rotation
+    /// tween picks resolve at the SETTLED (target) quarter — sim determinism
+    /// (ARCHITECTURE.md); `start_rotate` already snapped the camera target
+    /// onto that yaw's lattice, so target and yaw are mutually consistent.
+    pub fn pick_xform(&self) -> ViewXform {
+        let q = self.view.rot.as_ref().map(|r| r.target).unwrap_or(self.view.yaw_q as i32);
+        let (low, vis) = self.low_and_vis();
+        ViewXform { target: self.view.target, yaw_off_deg: 90.0 * q as f32, pan: self.view.pan, render_scale: self.rs(), low, vis }
+    }
+
+    /// LMB in a player scene → Command::Click: the window pixel unprojects
+    /// into a world pick ray + optional ground point HERE (window px never
+    /// cross the game boundary); door-vs-walk resolution happens in-game.
+    pub fn click_command(&mut self, win: Vec2) {
+        let x = self.pick_xform();
+        let (origin, dir) = window_px_to_ray(win, &x);
+        let ground = window_px_to_ground(win, &x).map(|g| Vec2::new(g.x, g.z));
+        self.game.push(Command::Click { ray: PickRay { origin, dir }, ground });
+    }
+
+    /// RMB → Command::Shoot (hitscan along the pick ray).
+    pub fn shoot_command(&mut self, win: Vec2) {
+        if !self.game.has_player {
             return;
         }
-
-        // walk input aims the flashlight, even when the move itself is blocked
-        // (turning in place against a wall)
-        if let Some(f) = Vec2::new(world.x, world.z).try_normalize() {
-            self.player.facing = f;
-        }
-
-        let (ox, oz) = (self.player.pos.x, self.player.pos.z);
-        let lvl = &self.player.level;
-        let (px, pz) = collide_and_slide(|x, z| lvl.is_blocked(x, z), ox, oz, world.x, world.z);
-        if px != ox || pz != oz {
-            self.commit_player(px, pz);
-        }
+        let x = self.pick_xform();
+        let (origin, dir) = window_px_to_ray(win, &x);
+        self.game.push(Command::Shoot { ray: PickRay { origin, dir } });
     }
 
-    /// 'f' / the menu toggle: the player-held spotlight.
-    pub fn toggle_flashlight(&mut self) {
-        self.flash_on = !self.flash_on;
-        println!("flashlight: {}", if self.flash_on { "on" } else { "off" });
-    }
-
-    /// The player-held spotlight for this frame, from the player pose + the
-    /// menu knobs — None when off (or in scenes without a player). Routed into
-    /// the reserved trailing NEE slots through `FrameState.spotlights`; the
-    /// per-frame practicals pass never touches those.
-    pub fn flashlight_spotlight(&self) -> Option<Spotlight> {
-        if !(self.flash_on && self.scene.dynamic_prim.is_some()) {
-            return None;
+    /// This frame's transient spotlights, read off the snapshot: the player
+    /// flashlight (pose from the same pure fn the game's flashlight_system
+    /// uses, at the lattice-SNAPPED snapshot position) and the 2-tick muzzle
+    /// flash — at most N_RESERVED, packed into the reserved trailing NEE
+    /// slots by record_frame.
+    pub fn frame_spotlights(&self) -> Vec<Spotlight> {
+        let mut v = Vec::new();
+        if !self.game.has_player {
+            return v;
         }
-        // hand-height pose math lives in house-game (the game's
-        // flashlight_system uses the same function)
-        let p = snap_ground_to_lattice(self.player.pos, self.yaw_deg());
-        let (pos, dir) = flashlight_pose(p, self.player.facing);
-        // the NEE solid angle of an r=0.06 emitter is tiny (~3e-3 sr at
-        // 2 wu) — slot radiance must be huge for a visible pool
-        Some(Spotlight { pos, dir, cone_cos: self.flash_cone.to_radians().cos(), power: self.flash_power * 1500.0, radius: 0.06 })
+        let snap = &self.game.snap;
+        if snap.flashlight {
+            let (pos, dir) = flashlight_pose(snap.player_pos, snap.facing);
+            // the NEE solid angle of an r=0.06 emitter is tiny (~3e-3 sr at
+            // 2 wu) — slot radiance must be huge for a visible pool
+            v.push(Spotlight { pos, dir, cone_cos: self.flash_cone.to_radians().cos(), power: self.flash_power * 1500.0, radius: 0.06 });
+        }
+        if snap.muzzle_flash {
+            // brief wide warm burst at the muzzle (placeholder content values;
+            // the content stage owns the final look)
+            let (pos, dir) = flashlight_pose(snap.player_pos, snap.facing);
+            v.push(Spotlight { pos, dir, cone_cos: 60.0f32.to_radians().cos(), power: 6000.0, radius: 0.05 });
+        }
+        v
     }
 }

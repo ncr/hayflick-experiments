@@ -139,6 +139,26 @@ stay event-driven (`set_yaw_masks`, which now marks the TLAS dirty) until the st
 `record_frame` patches mover transforms only on bit-change (CPU shadow), so idle frames
 never rebuild the TLAS.
 
+**Step-9 reality notes (implemented):** the viewer's sim side is
+`rt-viewer/src/sim.rs::GameLoop` (FixedLoop + InputQueue + HouseGame<NullSink> +
+cached snapshot). The level is an INTERIM `mirror_spec(scene)` of the renderer
+scene's collision fields (one room = floor rect, solids verbatim, no doors/
+targets) until step 11 generates the scene from a real spec. Config seeding
+(FLASH, YAW_Q, PLAYER_SPEED, PLAYER_X/Z) writes sim state DIRECTLY pre-tick
+(+ `HouseGame::reseed()` re-derives caches) — world setup, not play — keeping
+the pan→target→player-offset seeding order verbatim. **SHOT mode feeds the
+fixed loop dt = 0**, so the wall clock NEVER ticks the sim; captures are pure
+functions of (scene, config, CMDS trace), pinned by an assert at capture time.
+`CMDS=trace.txt` (+ `CMDS_TICKS`, default last-stamp+1) replaces the WALK
+wall-clock hack: a deterministic tick-stamped replay prefix run before the
+first frame (house-game trace format). The follow-cam retargets ONLY when the
+snapshot player position changed (startup parity with TARGET_X/Z overrides);
+its whole-pixel/remainder behaviour is pinned by a unit test in sim.rs. The
+'0' reset is camera-only now (player position is sim state; no teleport
+command). The muzzle flash renders as a placeholder wide warm spotlight in the
+second reserved slot. `q`/`e`/instant rotates queue `Command::RotateCamera`;
+the ease is presentation-only and picks unproject at the settled quarter.
+
 **Reserved spotlight slots: N_RESERVED = 2** (flashlight + muzzle flash). The slot count,
 the shade-dispatch arithmetic (`light_count + n_active`), and the probe-bake exclusion
 (bake uses bare `light_count`) generalize TOGETHER — off-by-one leaks a spotlight into

@@ -8,10 +8,10 @@
 
 use crate::capture::Harness;
 use crate::menu::{MenuState, MENU_MARGIN, MPANEL_H, MPANEL_W};
-use crate::view::{PlayerState, ViewState};
+use crate::sim::GameLoop;
+use crate::view::ViewState;
 use ash::vk;
 use glam::{Vec2, Vec3};
-use house_game::Level;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
@@ -101,13 +101,13 @@ pub struct Renderer {
     pub ao_n: i32,
     pub light_anim: bool,
     pub room_lights: f32, // master dim: direct via per-frame practicals, indirect via probe-bank lerp
-    pub flash_on: bool,
     pub flash_power: f32,
     pub flash_cone: f32,
     pub debug: i32,
+    pub pan_speed: f32, // playerless camera pan speed (px/s; the lab's WASD)
     // ---- grouped state
     pub view: ViewState,
-    pub player: PlayerState,
+    pub game: GameLoop,
     pub menu: MenuState,
     pub harness: Harness,
     pub rec: Option<crate::capture::Rec>,
@@ -223,10 +223,11 @@ impl Renderer {
         let scene = build_scene(&cfg)?;
         println!("scene: {} prims, {} tris, {} textures", scene.primitives.len(), scene.indices.len() / 3, scene.images.len());
         let player0 = scene.player_start;
-        // Level is built directly from the scene's collision fields (the old
-        // Level::from_scene — house-game must never see rt_probe::Scene)
-        let level = Level { floor: scene.floor_rect, solids: scene.solids.clone() };
-        println!("level: floor rect {:?}, {} solids", level.floor, level.solids.len());
+        // the sim side: a house-game instance over the interim mirror of the
+        // scene's collision fields (house-game never sees rt_probe::Scene —
+        // GameLoop/mirror_spec is the adapter that knows both)
+        let game = GameLoop::new(&scene, &cfg);
+        println!("level: floor rect {:?}, {} solids", scene.floor_rect, scene.solids.len());
         let gpu = SceneGpu::build(&ctx, &scene, cfg.probe_spacing)?;
         let env0 = cfg.lighting_env(scene.lighting);
 
@@ -252,7 +253,6 @@ impl Renderer {
         let cmd = ctx.device.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1))?[0];
         let in_flight = ctx.device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)?;
 
-        let grid_mode = cfg.scene == "grid";
         let mut r = Renderer {
             _entry: entry,
             _instance: instance,
@@ -277,10 +277,10 @@ impl Renderer {
             ao_n: cfg.ao_n,
             light_anim: cfg.light_anim,
             room_lights: cfg.lights,
-            flash_on: cfg.flash,
             flash_power: cfg.flash_power,
             flash_cone: cfg.flash_cone,
             debug: cfg.debug,
+            pan_speed: cfg.player_speed.unwrap_or(cfg.default_player_speed()),
             view: ViewState {
                 zoom: cfg.zoom.round().clamp(ZOOM_MIN, ZOOM_MAX),
                 yaw_q: cfg.yaw_q,
@@ -294,14 +294,7 @@ impl Renderer {
                 wheel_accum: 0.0,
                 dragging: false,
             },
-            player: PlayerState {
-                pos: player0,
-                facing: Vec2::ZERO, // seeded toward screen-down below
-                held: [false; 4],
-                speed: cfg.player_speed.unwrap_or(cfg.default_player_speed()),
-                level,
-                follow_cam: !grid_mode,
-            },
+            game,
             menu: MenuState { open: false, sel: 0, drag: false },
             harness: Harness::from_cfg(&cfg),
             rec: None,
@@ -350,12 +343,21 @@ impl Renderer {
         // TLAS rebuild displaces the marker in headless capture tests (the
         // moved snapped transform makes record_frame patch + rebuild).
         if r.cfg.player_off != (0.0, 0.0) {
-            r.player.pos += Vec3::new(r.cfg.player_off.0, 0.0, r.cfg.player_off.1);
+            r.game.offset_player(r.cfg.player_off.0, r.cfg.player_off.1);
         }
-        // default flashlight aim: toward the camera (screen-down), until the
-        // first walk input sets a real facing
-        let down = screen_px_to_world(Vec2::new(0.0, 1.0), r.yaw_deg());
-        r.player.facing = Vec2::new(down.x, down.z).try_normalize().unwrap_or(Vec2::new(0.0, 1.0));
+        // CMDS replay prefix (deterministic; the wall-clock WALK hack's
+        // replacement) — runs LAST so the trace acts on the fully seeded
+        // state. A trace that rotated the camera leaves the view + dollhouse
+        // masks resynced to the sim's settled quarter.
+        r.game.run_cmds(&r.cfg);
+        if r.game.snap.yaw_q != r.view.yaw_q {
+            r.view.yaw_q = r.game.snap.yaw_q;
+            r.view.mask_q = r.view.yaw_q;
+            if !r.scene.prim_hide_mask.is_empty() {
+                r.gpu.set_yaw_masks(&r.ctx, r.view.yaw_q);
+            }
+            r.snap_target_to_lattice();
+        }
         Ok(r)
     }
 
@@ -513,14 +515,22 @@ impl Renderer {
         if self.swap.is_none() {
             return true;
         }
-        // advance the held-key game loop (dt clamped so a stall can't teleport)
         let now = std::time::Instant::now();
         let dt = self.last_frame.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(0.0);
         self.last_frame = Some(now);
-        self.harness_pre_frame(); // WALK / ROTATE_AT / DUMP_AT synthetic inputs
-        if self.player.held != [false; 4] {
-            self.update_motion(dt);
+        self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
+        // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
+        // keeps the wall clock OUT of the sim entirely — the capture frame is
+        // a pure function of (scene, config, CMDS trace); the only ticks that
+        // ever ran are the deterministic CMDS prefix (asserted at capture).
+        let sim_dt = if self.harness.shot.is_some() { 0.0 } else { dt };
+        self.game.run_due(sim_dt);
+        // playerless scenes (lab): WASD pans the camera — presentation only,
+        // on the wall clock like every other camera move
+        if !self.game.has_player && self.game.held != [false; 4] {
+            self.pan_camera_held(dt);
         }
+        self.follow_camera(); // retarget at the player when the sim moved it
         // smooth quarter-turn in flight: ease the yaw, swap masks at crossings
         self.advance_rotation(dt);
         // clip recording: collect last frame's capture + decide if this frame
@@ -550,33 +560,33 @@ impl Renderer {
         // camera: ISO_VIEW_CONTRACT at the movable look-at target
         let cam = iso_camera_at(self.scene.min, self.scene.max, low_w, low_h, self.yaw_deg(), self.view.target);
 
-        // This frame's scene state, typed — the step-8 inversion: draw()
-        // builds a FrameState from its own wall clock / player / flashlight
-        // and routes through record_frame (same calls, same recorded order,
-        // same barriers as the old per-field sequence).
-        // - the flashlight rides in the reserved trailing NEE slots; the shade
-        //   dispatch adds n_spot_active while lit (the probe bake always used
-        //   the bare light_count — the GI cache stays torch-free; a light that
-        //   moves must be direct-only)
-        // - the player mover renders at the lattice-SNAPPED position (web
-        //   invariant: every mesh setPosition routes through the ground snap;
-        //   the game transform in `player.pos` stays continuous). record_frame
+        // This frame's scene state, typed — built from the game SNAPSHOT (the
+        // step-9 adapter): nothing below reads sim internals, only what the
+        // snapshot publishes.
+        // - the flashlight + muzzle flash ride in the reserved trailing NEE
+        //   slots; the shade dispatch adds n_spot_active while lit (the probe
+        //   bake always used the bare light_count — the GI cache stays
+        //   torch-free; a light that moves must be direct-only)
+        // - the player mover renders at the snapshot's lattice-SNAPPED
+        //   position (web invariant: every mesh setPosition routes through
+        //   the ground snap; the game's Pos stays continuous). record_frame
         //   patches the instance + rebuilds the TLAS only when the snapped
         //   transform actually changed (the fence wait above guarantees no
         //   in-flight TLAS read), or when a mask swap marked it dirty.
-        let spot = self.flashlight_spotlight();
+        let spot = self.frame_spotlights();
         let player_inst = self
-            .scene
-            .dynamic_prim
-            .and_then(|_| self.gpu.handles.instances.get("player").copied())
-            .map(|k| (k, glam::Mat4::from_translation(snap_ground_to_lattice(self.player.pos, self.yaw_deg()))));
+            .game
+            .has_player
+            .then(|| self.gpu.handles.instances.get("player").copied())
+            .flatten()
+            .map(|k| (k, glam::Mat4::from_translation(self.game.snap.player_pos)));
         let fs = FrameState {
             cam,
             yaw_q: self.view.mask_q,
             room_lights: self.room_lights,
-            time: self.start_time.elapsed().as_secs_f32(),
-            anim: self.light_anim, // LIGHT_ANIM=0 freezes to constants — bit-stable
-            light_emission: &[],   // flicker stays renderer-side until step 10
+            time: self.game.time(), // SIM time — the light-anim clock is replayable now
+            anim: self.light_anim,  // LIGHT_ANIM=0 freezes to constants — bit-stable
+            light_emission: &[],    // flicker stays renderer-side until step 10
             spotlights: spot.as_slice(),
             instances: player_inst.as_slice(),
         };

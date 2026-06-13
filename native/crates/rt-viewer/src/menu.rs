@@ -142,7 +142,7 @@ impl Renderer {
             "exposure" => self.exposure,
             "lights" => self.room_lights,
             "light_anim" => self.light_anim as i32 as f32,
-            "flash" => self.flash_on as i32 as f32,
+            "flash" => self.game.snap.flashlight as i32 as f32, // sim state
             "flash_power" => self.flash_power,
             "flash_cone" => self.flash_cone,
             _ => 0.0,
@@ -163,7 +163,13 @@ impl Renderer {
             // indirect via the shader's probe-bank lerp — same frame, no rebake
             "lights" => self.room_lights = v,
             "light_anim" => self.light_anim = v != 0.0,
-            "flash" => self.flash_on = v != 0.0,
+            // flashlight is sim state: route the change as a Command (applied
+            // next tick; the row reads the snapshot, so it follows)
+            "flash" => {
+                if (v != 0.0) != self.game.snap.flashlight {
+                    self.game.push(house_game::Command::ToggleFlashlight);
+                }
+            }
             "flash_power" => self.flash_power = v,
             "flash_cone" => self.flash_cone = v,
             _ => {}

@@ -140,7 +140,8 @@ pub struct Config {
     // ---- capture / harness ----
     pub shot: Option<String>,      // SHOT=path.png: capture one frame, exit
     pub shot_delay: f32,           // SHOT_DELAY: seconds before the capture
-    pub walk: Option<f32>,         // WALK=secs: synthesize held up+right
+    pub cmds: Option<String>,      // CMDS=trace.txt: deterministic command-replay prefix
+    pub cmds_ticks: Option<u64>,   // CMDS_TICKS: prefix length (default: last stamp + 1)
     pub rotate_at: Option<f32>,    // ROTATE_AT=secs: fire one smooth e-turn
     pub dump: Option<String>,      // DUMP=dir: record presented frames as PNGs
     pub dump_at: Option<f32>,      // DUMP_AT=secs: start the dump on a timer
@@ -211,7 +212,8 @@ impl Config {
             window,
             shot: s("SHOT"),
             shot_delay: f("SHOT_DELAY", 0.0),
-            walk: fo("WALK"),
+            cmds: s("CMDS"),
+            cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
             rotate_at: fo("ROTATE_AT"),
             dump: s("DUMP"),
             dump_at: fo("DUMP_AT"),

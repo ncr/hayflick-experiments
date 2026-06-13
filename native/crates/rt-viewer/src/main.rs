@@ -4,15 +4,20 @@
 //! temporal state. Monte Carlo runs once at startup into the world-space GI
 //! probe cache (two light banks: room lights off / full, lerped in-shader).
 //!
-//! Controls:
-//! - WASD / arrows — walk the player (held = continuous, camera follows) or
-//!   pan the camera in scenes without a player; drag does the same
-//! - q / e — smooth eased quarter turn (web RotationAnimation; presses stack)
-//! - scroll / +- — integer zoom steps 1-4, cursor-anchored; 0 = reset
-//! - f — player flashlight (aims where the player last walked; power/cone in
-//!   the menu; FLASH / FLASH_POWER / FLASH_CONE seed it)
-//! - l — room lights on/off (LIGHTS=0..1 dims continuously; indirect follows
-//!   in the same frame via the pre-baked probe banks)
+//! Controls (player input becomes tick-stamped `house_game::Command`s — the
+//! sim runs on a fixed 60 Hz loop; the viewer only presents):
+//! - LMB — click-to-walk (unprojected to a world pick ray + ground point;
+//!   the game resolves door-vs-walk); in scenes without a player, drag pans
+//! - RMB — shoot (hitscan along the pick ray)
+//! - WASD / arrows — walk the player (held = one Move command per tick,
+//!   camera follows) or pan the camera in scenes without a player
+//! - q / e — smooth eased quarter turn (presentation; the quarter itself is
+//!   SIM state via Command::RotateCamera, so walks/replays are deterministic)
+//! - scroll / +- — integer zoom steps 1-4, cursor-anchored; 0 = camera reset
+//! - f — player flashlight (Command::ToggleFlashlight; power/cone in the
+//!   menu; FLASH / FLASH_POWER / FLASH_CONE seed it)
+//! - l — room lights on/off (LIGHTS dims; indirect follows in the same frame
+//!   via the pre-baked probe banks)
 //! - r — record a clip at exact game resolution: stop writes BOTH
 //!   clips/clip_NNNN.mp4 (x264, NEAREST 4x) and .gif (palette, 1x, half rate)
 //! - Esc — tune menu (sliders + toggles + quit; also the hamburger icon
@@ -23,16 +28,20 @@
 //! isolation), grid (the web grid-walker rematch: fixed camera, open level).
 //!
 //! Headless harness (see config.rs): SHOT / SHOT_DELAY one-frame capture
-//! (truly window-less — no surface/swapchain, extent taken from WINDOW),
-//! WALK / ROTATE_AT synthetic input, DUMP / DUMP_AT / DUMP_N frame dumps,
+//! (truly window-less — no surface/swapchain, extent taken from WINDOW;
+//! the wall clock NEVER ticks the sim in SHOT mode), CMDS / CMDS_TICKS
+//! deterministic command-trace replay prefix (house-game trace format),
+//! ROTATE_AT synthetic input, DUMP / DUMP_AT / DUMP_N frame dumps,
 //! MOVIE scripted tour, FRAMES / TIMING perf, WINDOW=WxH exact size.
 
 mod capture;
 mod menu;
 mod renderer;
+mod sim;
 mod view;
 
 use glam::Vec2;
+use house_game::Command;
 use menu::MENU;
 use renderer::Renderer;
 use rt_probe::Config;
@@ -103,7 +112,7 @@ impl ApplicationHandler for App {
                     _ => None,
                 };
                 if let Some(i) = held_idx {
-                    r.player.held[i] = event.state.is_pressed();
+                    r.game.held[i] = event.state.is_pressed();
                     return;
                 }
                 if !event.state.is_pressed() {
@@ -122,9 +131,11 @@ impl ApplicationHandler for App {
                     Key::Character("q") => r.start_rotate(-1),
                     Key::Character("e") => r.start_rotate(1),
                     Key::Character("0") => {
+                        // camera reset only — the player's position is SIM
+                        // state now (no teleport command exists; recentre on
+                        // the player instead of moving them home)
                         r.view.zoom = 1.0;
-                        r.player.pos = r.scene.player_start;
-                        r.view.target = r.player.pos;
+                        r.view.target = r.game.snap.player_pos;
                         r.view.move_accum = Vec2::ZERO;
                         r.recenter_pan();
                         // back to canonical: cancels any in-flight sweep,
@@ -133,7 +144,10 @@ impl ApplicationHandler for App {
                     }
                     // toggles ignore key repeat: holding the key must not strobe
                     Key::Character("r") if !event.repeat => r.toggle_recording(),
-                    Key::Character("f") if !event.repeat => r.toggle_flashlight(),
+                    Key::Character("f") if !event.repeat => {
+                        r.game.push(Command::ToggleFlashlight);
+                        println!("flashlight: {}", if r.game.snap.flashlight { "off" } else { "on" });
+                    }
                     Key::Character("l") if !event.repeat => {
                         let v = if r.room_lights > 0.0 { 0.0 } else { 1.0 };
                         r.tune_set("lights", v);
@@ -148,9 +162,11 @@ impl ApplicationHandler for App {
                     if r.menu.drag {
                         r.menu_drag_to(np); // slider drag
                     } else if r.view.dragging {
+                        // playerless scenes only: the world follows the
+                        // cursor, so the target moves opposite the drag
                         let rs = r.rs() as f32;
                         let d = np - r.view.cursor;
-                        r.move_player(d / rs); // drag moves the player / pans
+                        r.pan_camera_px(-(d / rs));
                     }
                     r.view.cursor = np;
                 }
@@ -160,12 +176,22 @@ impl ApplicationHandler for App {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
                         if !r.menu_click(c) {
-                            r.view.dragging = true;
+                            if r.game.has_player {
+                                r.click_command(c); // click-to-walk / use door
+                            } else {
+                                r.view.dragging = true; // lab: drag pans
+                            }
                         }
                     } else {
                         r.view.dragging = false;
                         r.menu.drag = false;
                     }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                if let Some(r) = self.renderer.as_mut() {
+                    let c = r.view.cursor;
+                    r.shoot_command(c);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {

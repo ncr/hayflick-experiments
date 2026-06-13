@@ -244,11 +244,19 @@ impl<S: AudioSink> HouseGame<S> {
             buf: CommandBuffer::new(),
         };
         let mut g = HouseGame { world, res, sink, player, doors: doors.into_iter().map(|(_, e)| e).collect(), lights: lights.into_iter().map(|(_, e)| e).collect(), targets: targets.into_iter().map(|(_, e)| e).collect() };
-        // seed the derived state so a pre-tick snapshot is already coherent
-        g.rebuild_dyn_solids();
-        g.flashlight_system();
-        g.light_system(0.0);
+        g.reseed();
         g
+    }
+
+    /// Re-derive the cached state (door solids, flash pose, per-light rgb at
+    /// t = 0) so a pre-tick snapshot is coherent. Called once by `new`; the
+    /// shell calls it again after its DIRECT Config seeding writes (flashlight
+    /// boot state, yaw quarter, player offset bypass the command stream by
+    /// design — they are world setup, not play).
+    pub fn reseed(&mut self) {
+        self.rebuild_dyn_solids();
+        self.flashlight_system();
+        self.light_system(0.0);
     }
 
     fn player_pos(&self) -> Vec3 {

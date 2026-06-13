@@ -11,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 rt-probe = { path = "../../rt-probe" }
 house-game = { path = "../house-game" }
+sim-core = { path = "../sim-core" }
+iso-core = { path = "../iso-core" }
 ash = "0.38"
 glam = "0.30"
 png = "0.17"
