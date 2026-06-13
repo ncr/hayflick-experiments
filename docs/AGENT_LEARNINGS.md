@@ -4031,3 +4031,47 @@ Lambertian pass). An unsampled MR texture means factor 1.0 is "unspecified",
 not "gold" — treat ≥0.999 as dielectric (`gltf_scene.rs`). The fix brightened
 the path-traced house ~2× (NEE finally applies); EXPOSURE/EMIT are the mood
 knobs to retune on top.
+
+## 2026-06-13 — bit-exact goldens silently captured at the window manager's size, not the requested one
+
+Context: `rt-probe`'s golden gate (`bin/golden`) byte-compares SHOT PNGs of the
+house/lab/grid scenes against checked-in references — the ship gate for the
+deterministic renderer. SHOT originally ran through the real winit event loop:
+it opened a window, let the swapchain take whatever inner size the compositor
+granted, rendered, and captured. The checked-in goldens were 1143×652 — a size
+nobody asked for. `WINDOW=1024x640` was set, but Hyprland tiled/decorated the
+window to its own dimensions, so the capture extent was the WM's decision, not
+the env var's.
+
+Root cause: the capture size was an OUTPUT of the windowing system, not an
+INPUT to the renderer. That makes the golden a function of (scene, camera,
+**compositor layout, window rules, decorations, monitor**) — none of which are
+in the repo. The gate passed only on the exact machine + WM state that
+generated it; a different monitor, a tiling-rule change, or a headless CI box
+would re-render at a new size and fail every scene identically, looking like a
+renderer regression when nothing in the renderer changed. A `hyprctl
+windowrule` hack was bolted on to force the size — papering over the coupling
+rather than removing it.
+
+Fix (the headless SHOT path): when `SHOT` is set, short-circuit before the
+winit loop entirely. Build the Vulkan instance with no WSI/surface extensions,
+pick the device on RT extensions + a bare compute queue (no swapchain, no
+present support), and build the offscreen storage images at an extent taken
+**verbatim from `WINDOW`** (default 1280×800). No window, no compositor, no
+present — the capture size is now a pure input. Goldens regenerated once at
+exactly 1024×640 and verified bit-stable across three independent runs per
+scene. The `hyprctl` hack is gone; `bin/golden` no longer needs Hyprland (or
+any display) at all.
+
+Preventive checklist:
+- For any pixel-exact/byte-exact capture gate, the capture dimensions MUST be an
+  explicit input the test controls — never whatever a window manager, monitor,
+  or DPI setting hands back. Assert the captured size equals the requested size.
+- Treat "all goldens fail by the same amount" as a likely *environment* change
+  (size, driver, GPU), not a content regression — re-check the capture extent
+  and hardware before hunting the renderer.
+- Goldens that depend on a specific GPU + driver float behaviour are
+  machine-local artifacts; keep them out of generic CI unless the hardware is
+  pinned, and document that in the gate script header (done in `bin/golden`).
+- If you find yourself adding a compositor/WM rule to make a test pass, that is
+  the smell: remove the dependency on the WM instead of constraining it.
