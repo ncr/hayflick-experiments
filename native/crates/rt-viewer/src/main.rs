@@ -35,6 +35,7 @@
 //! MOVIE scripted tour, FRAMES / TIMING perf, WINDOW=WxH exact size.
 
 mod capture;
+mod game_scene;
 mod menu;
 mod renderer;
 mod sim;

@@ -1147,26 +1147,27 @@ mod tests {
     #[test]
     fn game_level_walk_open_door_through_and_shoot_twice() {
         let mut d = GameDrv::new();
-        // shut door_ab blocks the way east at z=3.5
-        d.cmd(click_ground(6.0, 3.5));
+        // door_ce (DoorId(2)) is the SE room E -> room C door at x=8, z[6,7];
+        // shut, it blocks the way west at z=6.5
+        d.cmd(click_ground(6.0, 6.5));
         d.run(120);
-        assert!(d.pos().x < 4.0, "closed door_ab blocks the corridor: {:?}", d.pos());
-        // open door_ab (straight down onto its slab)
-        d.cmd(Command::Click { ray: down_ray(4.0, 3.5), ground: Some(Vec2::new(4.0, 3.5)) });
+        assert!(d.pos().x > 8.0, "closed door_ce blocks the way west: {:?}", d.pos());
+        // open door_ce (straight down onto its slab centre)
+        d.cmd(Command::Click { ray: down_ray(8.0, 6.5), ground: Some(Vec2::new(8.0, 6.5)) });
         d.run(26); // anim_ticks = 24 (+ the tick the click lands on)
-        assert_eq!(d.g.snapshot().doors[0].0, DoorId(0));
-        assert!(d.g.snapshot().doors[0].1 > 0.0, "door_ab must be opening/open");
-        // now walk through into room B
-        d.cmd(click_ground(6.0, 2.0));
+        assert_eq!(d.g.snapshot().doors[2].0, DoorId(2));
+        assert!(d.g.snapshot().doors[2].1 > 0.0, "door_ce must be opening/open");
+        // now walk through into room C, under target 4 (C south wall)
+        d.cmd(click_ground(6.0, 6.0));
         d.run(180);
-        assert!((d.pos() - Vec3::new(6.0, 0.0, 2.0)).length() < 0.1, "reached room B: {:?}", d.pos());
-        // shoot target 2 (B north wall) twice, spaced past the cooldown
-        d.cmd(shoot(Vec3::new(6.0, 1.25, 2.0), Vec3::new(0.0, 0.0, -1.0)));
+        assert!(d.pos().x < 7.0 && d.pos().z > 4.0, "reached room C: {:?}", d.pos());
+        // shoot target 4 (C south wall, faces -z) twice, spaced past the cooldown
+        d.cmd(shoot(Vec3::new(6.0, 1.25, 6.0), Vec3::new(0.0, 0.0, 1.0)));
         assert_eq!(d.g.snapshot().score, 1);
         d.run(20);
-        d.cmd(shoot(Vec3::new(6.0, 1.25, 2.0), Vec3::new(0.0, 0.0, -1.0)));
+        d.cmd(shoot(Vec3::new(6.0, 1.25, 6.0), Vec3::new(0.0, 0.0, 1.0)));
         assert_eq!(d.g.snapshot().score, 2, "two spaced shots score twice");
-        assert_eq!(d.g.world.get::<&Target>(d.g.targets[2]).unwrap().hits, 2);
+        assert_eq!(d.g.world.get::<&Target>(d.g.targets[4]).unwrap().hits, 2);
     }
 
     /// The SCENE=game CMDS replay golden: the SAME checked-in trace the viewer
@@ -1182,16 +1183,16 @@ mod tests {
         let h = r.run_ticks(420);
         let snap = r.sim.snapshot();
         // semantic checkpoints first, so a drift diagnoses itself
-        assert_eq!(snap.score, 2, "both spaced shots must land on target 2");
-        assert_eq!(snap.doors[0].0, DoorId(0));
-        assert_eq!(snap.doors[0].1, GAME_OPEN, "door_ab fully open");
+        assert_eq!(snap.score, 2, "both spaced shots must land on target 4");
+        assert_eq!(snap.doors[2].0, DoorId(2));
+        assert_eq!(snap.doors[2].1, GAME_OPEN, "door_ce fully open");
         assert!(snap.flashlight);
         assert_eq!(snap.room_lights, 0.0, "room lights toggled off");
-        // the player walked through into room B (x past the x=4 divider)
-        assert!(snap.player_pos.x > 5.5 && snap.player_pos.z < 2.5, "{:?}", snap.player_pos);
+        // the player walked west through door_ce into room C (x < the x=8 divider, z in C)
+        assert!(snap.player_pos.x < 7.0 && snap.player_pos.z > 4.0, "{:?}", snap.player_pos);
         assert_eq!(h, REPLAY_GAME_HASH, "got {h:#018x}");
     }
 
     const GAME_OPEN: f32 = 1.7453293; // 100 deg in radians (game_level open_angle)
-    const REPLAY_GAME_HASH: u64 = 0x53f268fde4e6b19a;
+    const REPLAY_GAME_HASH: u64 = 0xf3783d2d43fe4009;
 }

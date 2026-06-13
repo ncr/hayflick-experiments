@@ -52,6 +52,7 @@ pub struct Swap {
     pub posg: (vk::Image, vk::DeviceMemory, vk::ImageView),   // primary-hit world-position G-buffer
     pub out: (vk::Image, vk::DeviceMemory, vk::ImageView),    // 8-bit window image
     pub menu_buf: Buffer, // host-visible staging for the ESC tune-menu overlay
+    pub hud_buf: Buffer,  // host-visible staging for the corner score HUD (overlay-only)
     pub menu_scale: u32,  // integer UI scale (from window height; pixel font stays readable)
     pub scene_pool: vk::DescriptorPool,
     pub scene_set: vk::DescriptorSet,
@@ -222,16 +223,27 @@ impl Renderer {
             None => None,
         };
 
-        // scene + acceleration structures + pipelines
-        let scene = build_scene(&cfg)?;
+        // scene + acceleration structures + pipelines. SCENE=game is built by
+        // the rt-viewer adapter FROM the authored LevelSpec (single source of
+        // truth: the same spec drives collision + the greybox visuals); the
+        // three legacy scenes (grid/lab/house) stay in rt_probe::build_scene.
+        let game_spec = (cfg.scene == "game").then(house_game::game_level);
+        let scene = match &game_spec {
+            Some(spec) => crate::game_scene::build_game(spec, &cfg),
+            None => build_scene(&cfg)?,
+        };
         println!("scene: {} prims, {} tris, {} textures", scene.primitives.len(), scene.indices.len() / 3, scene.images.len());
         let player0 = scene.player_start;
         let gpu = SceneGpu::build(&ctx, &scene, cfg.probe_spacing)?;
-        // the sim side: a house-game instance over the interim mirror of the
-        // scene's collision fields + named lights (house-game never sees
-        // rt_probe::Scene — GameLoop/mirror_spec is the adapter knowing both;
-        // it joins the spec lights onto gpu.handles in slot order, loudly)
-        let game = GameLoop::new(&scene, &gpu.handles, gpu.light_count, &cfg);
+        // the sim side: SCENE=game runs the AUTHORED spec (doors + targets +
+        // lights, the spec built the scene above); everything else runs the
+        // interim mirror of the scene's collision fields + named lights
+        // (house-game never sees rt_probe::Scene — GameLoop is the adapter
+        // knowing both, joining lights onto gpu.handles, loudly).
+        let game = match game_spec {
+            Some(spec) => GameLoop::from_spec(spec, &scene, &gpu.handles, gpu.light_count, &cfg),
+            None => GameLoop::new(&scene, &gpu.handles, gpu.light_count, &cfg),
+        };
         println!("level: floor rect {:?}, {} solids, {} game lights", scene.floor_rect, scene.solids.len(), game.light_keys.len());
         let env0 = cfg.lighting_env(scene.lighting);
 
@@ -459,6 +471,11 @@ impl Renderer {
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
+        let hud_buf = self.ctx.create_buffer(
+            (crate::menu::HUD_W * crate::menu::HUD_H) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
         self.ctx.one_time(|cmd| {
             for img in [color.0, albedo.0, posg.0, out.0] {
                 barrier(&self.ctx.device, cmd, img, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER);
@@ -491,7 +508,7 @@ impl Renderer {
 
         let render_finished: Vec<vk::Semaphore> = images.iter().map(|_| self.ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap()).collect();
 
-        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, render_finished });
+        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, hud_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, render_finished });
         self.recenter_pan(); // start centred in the buffer
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
     }
@@ -509,6 +526,7 @@ impl Renderer {
             d.free_memory(mem, None);
         }
         self.ctx.destroy_buffer(&s.menu_buf);
+        self.ctx.destroy_buffer(&s.hud_buf);
         if let Some(p) = &self.present {
             p.swapchain_loader.destroy_swapchain(s.swapchain, None);
         }
@@ -578,12 +596,16 @@ impl Renderer {
         //   transform actually changed (the fence wait above guarantees no
         //   in-flight TLAS read), or when a mask swap marked it dirty.
         let spot = self.frame_spotlights();
-        let player_inst = self
-            .game
-            .has_player
-            .then(|| self.gpu.handles.instances.get("player").copied())
-            .flatten()
-            .map(|k| (k, glam::Mat4::from_translation(self.game.snap.player_pos)));
+        // movers this frame: the player marker at its lattice-snapped position,
+        // plus every door leaf swung to its snapshot angle (record_frame
+        // patches each only on a bit-change, so idle movers never rebuild).
+        let mut instances: Vec<(InstanceKey, glam::Mat4)> = Vec::new();
+        if self.game.has_player {
+            if let Some(&k) = self.gpu.handles.instances.get("player") {
+                instances.push((k, glam::Mat4::from_translation(self.game.snap.player_pos)));
+            }
+        }
+        instances.extend(self.game.door_instances());
         // game-authored light emission (flicker lives in house-game's
         // light_system; LIGHT_ANIM=0 freezes to the authored base values) and
         // the probe-bank lerp scalar: the sim's lit fraction × the LIGHTS dim.
@@ -598,7 +620,7 @@ impl Renderer {
             time: self.game.time(), // SIM time — the light-anim clock is replayable now
             light_emission: &emission,
             spotlights: spot.as_slice(),
-            instances: player_inst.as_slice(),
+            instances: &instances,
         };
 
         d.reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty()).unwrap();
@@ -686,6 +708,21 @@ impl Renderer {
                         .image_offset(vk::Offset3D { x: MENU_MARGIN, y: MENU_MARGIN, z: 0 })
                         .image_extent(vk::Extent3D { width: pw, height: ph, depth: 1 });
                     d.cmd_copy_buffer_to_image(cmd, swap.menu_buf.buffer, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+                }
+                // score HUD: player scenes only, top-right corner (same
+                // overlay-only path — never on swap.out, so captures stay UI-free)
+                if self.game.has_player {
+                    let (canvas, hw, hh) = self.score_canvas();
+                    let bytes = crate::menu::expand_canvas(&canvas, hw, hh, swap.menu_scale, bgra);
+                    let (pw, ph) = (hw as u32 * swap.menu_scale, hh as u32 * swap.menu_scale);
+                    if pw + MENU_MARGIN as u32 <= extent.width && ph + MENU_MARGIN as u32 <= extent.height {
+                        self.ctx.upload(&swap.hud_buf, &bytes);
+                        let region = vk::BufferImageCopy::default()
+                            .image_subresource(layers)
+                            .image_offset(vk::Offset3D { x: extent.width as i32 - MENU_MARGIN - pw as i32, y: MENU_MARGIN, z: 0 })
+                            .image_extent(vk::Extent3D { width: pw, height: ph, depth: 1 });
+                        d.cmd_copy_buffer_to_image(cmd, swap.hud_buf.buffer, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+                    }
                 }
             }
         }

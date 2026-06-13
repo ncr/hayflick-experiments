@@ -42,5 +42,5 @@ pub use iso::{
     clamp_pan, iso_basis, iso_camera_at, iso_pixel_basis, iso_target, render_scale, screen_px_to_world, snap_ground_to_lattice, whole_pixel_step, zoom_anchor_pan, CamFrame, ISO_PITCH_DEG, ISO_R, ISO_YAW_DEG,
 };
 pub use render::{frame_lights_cpu, make_pool, make_set, mat_to_transform, push_bytes, scan_lights, FrameState, InstanceKey, LightKey, LightScan, SceneGpu, SceneHandles, ShadePush, Spotlight, N_RESERVED, TONE_SPV};
-pub use scene::Scene;
+pub use scene::{hex_linear, Scene};
 pub use scenes::build_scene;

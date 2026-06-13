@@ -199,10 +199,15 @@ pub fn game_level() -> LevelSpec {
             DoorSpec { id: DoorId(2), hinge: Vec3::new(8.0, 0.0, 7.0), axis_y: 1.0, closed_solid: vdoor(8.0, 6.0, 7.0), open_angle: open, anim_ticks: 24, name: "door_ce".into() },
             DoorSpec { id: DoorId(3), hinge: Vec3::new(6.0, 0.0, 4.0), axis_y: 1.0, closed_solid: hdoor(6.0, 4.0, 7.0), open_angle: open, anim_ticks: 24, name: "door_bc".into() },
         ],
+        // light ORDER is the NEE slot order (== the game's flicker index): the
+        // emissive Screen device comes FIRST (it is the only emissive prim;
+        // the room lamps are conceptual ceiling point lights, which the
+        // renderer slots AFTER every emissive prim). The room each light
+        // belongs to is carried in `room` regardless of order.
         lights: vec![
-            LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.85, 0.6], name: "lamp_a".into() },
-            LightSpec { id: LightId(1), room: RoomId(1), kind: LightKind::Incandescent, base_rgb: [1.0, 0.82, 0.58], name: "lamp_b".into() },
-            LightSpec { id: LightId(2), room: RoomId(1), kind: LightKind::Screen, base_rgb: [0.45, 0.9, 0.75], name: "crt_b".into() },
+            LightSpec { id: LightId(0), room: RoomId(1), kind: LightKind::Screen, base_rgb: [0.45, 0.9, 0.75], name: "crt_b".into() },
+            LightSpec { id: LightId(1), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.85, 0.6], name: "lamp_a".into() },
+            LightSpec { id: LightId(2), room: RoomId(1), kind: LightKind::Incandescent, base_rgb: [1.0, 0.82, 0.58], name: "lamp_b".into() },
             LightSpec { id: LightId(3), room: RoomId(2), kind: LightKind::Incandescent, base_rgb: [1.0, 0.8, 0.62], name: "lamp_c".into() },
             LightSpec { id: LightId(4), room: RoomId(3), kind: LightKind::Drift, base_rgb: [0.85, 0.92, 1.0], name: "ceil_d".into() },
             LightSpec { id: LightId(5), room: RoomId(4), kind: LightKind::Incandescent, base_rgb: [1.0, 0.78, 0.5], name: "lamp_e".into() },
@@ -216,7 +221,7 @@ pub fn game_level() -> LevelSpec {
             TargetSpec { id: TargetId(3), center: Vec3::new(11.875, 1.25, 2.0), normal: Vec3::new(-1.0, 0.0, 0.0), radius: 0.3 }, // D, east wall
             TargetSpec { id: TargetId(4), center: Vec3::new(6.0, 1.25, 7.875), normal: Vec3::new(0.0, 0.0, -1.0), radius: 0.3 }, // C, south wall
         ],
-        player_start: Vec3::new(2.0, 0.0, 3.5), // room A, aligned with door_ab's gap row
+        player_start: Vec3::new(9.5, 0.0, 6.5), // room E (SE corner, faces the camera), aligned with door_ce's gap row
         seed: 7,
     }
 }

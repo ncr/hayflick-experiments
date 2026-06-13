@@ -56,6 +56,12 @@ const MICON_W: i32 = 18; // hamburger icon shown when the menu is closed
 const MICON_H: i32 = 14;
 pub const MENU_MARGIN: i32 = 12; // physical px from the window's top-left
 
+// corner score HUD (player scenes only): a small badge in the TOP-RIGHT,
+// drawn like the menu (overlay-only, never onto swap.out — SHOT/MOVIE/DUMP
+// captures stay clean), at the same integer UI scale as the menu.
+pub const HUD_W: i32 = 72;
+pub const HUD_H: i32 = 14;
+
 /// Menu interaction state (the tunable values live on `Renderer`).
 pub struct MenuState {
     pub open: bool,
@@ -276,6 +282,22 @@ impl Renderer {
             let v = min + ((t * (max - min)) / step).round() * step;
             self.tune_set(MENU[self.menu.sel].key, v.clamp(min, max));
         }
+    }
+
+    /// The corner score badge canvas (logical px): "SCORE n" on a bordered
+    /// dark plate. Drawn for player scenes only; copied to the top-right of the
+    /// PRESENTED image, never onto swap.out (clean captures, like the menu).
+    pub fn score_canvas(&self) -> (Vec<u32>, i32, i32) {
+        const BG: u32 = 0x16161c;
+        const BORDER: u32 = 0x6a6a78;
+        let (w, h) = (HUD_W, HUD_H);
+        let mut c = vec![BG; (w * h) as usize];
+        mrect(&mut c, w, 0, 0, w, 1, BORDER);
+        mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
+        mrect(&mut c, w, 0, 0, 1, h, BORDER);
+        mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
+        mtext(&mut c, w, 4, 3, &format!("SCORE {}", self.game.snap.score), 0x99cc99);
+        (c, w, h)
     }
 
     /// Draw the overlay at logical resolution: the open panel, or the

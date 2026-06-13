@@ -164,7 +164,7 @@ impl Config {
         // scenes. Retuned 0.35 -> 0.40 on 2026-06-12: base-colour textures now
         // sample as sRGB (hardware-linearized, darker albedo + darker bounce),
         // and the bump restores the previous overall brightness.
-        let default_exposure = if scene == "house" { 0.40 } else { 0.22 };
+        let default_exposure = if scene == "house" || scene == "game" { 0.40 } else { 0.22 };
         // grid: the web knob default (80 px/s); elsewhere: player walk speed
         let window = s("WINDOW").and_then(|v| {
             let (w, h) = v.split_once('x')?;

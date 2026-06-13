@@ -10,11 +10,22 @@
 //! against exactly what the eye sees.
 
 use crate::renderer::Renderer;
-use glam::{IVec2, Vec2, Vec3};
+use glam::{IVec2, Mat4, Vec2, Vec3};
 use house_game::game::{Facing, Flashlight, Player, Pos};
-use house_game::{parse_trace, Command, GameSnapshot, HouseGame, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TICK_DT};
-use rt_probe::{screen_px_to_world, Config, LightKey, Scene, SceneHandles};
+use house_game::{parse_trace, Command, DoorId, GameSnapshot, HouseGame, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TICK_DT};
+use rt_probe::{screen_px_to_world, Config, InstanceKey, LightKey, Scene, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, NullSink, Simulation, Tick};
+
+/// Per-door render binding: the renderer instance handle for the leaf, plus the
+/// hinge + signed swing axis the per-frame transform needs (the snapshot gives
+/// only the angle). Built from the spec's DoorSpecs joined onto the scene's
+/// named dynamic instances.
+pub struct DoorRender {
+    pub id: DoorId,
+    pub inst: InstanceKey,
+    pub hinge: Vec3,
+    pub axis_y: f32,
+}
 
 /// The viewer's game-loop state: the fixed-timestep accumulator, the
 /// tick-stamped command queue, the running game, and the cached snapshot the
@@ -42,13 +53,44 @@ pub struct GameLoop {
     /// index): the renderer key, the kind, and the authored base rgb — the
     /// per-frame emission build and the LIGHT_ANIM=0 freeze read these.
     pub light_keys: Vec<(LightKey, LightKind, [f32; 3])>,
+    /// Per door: the leaf instance handle + hinge/axis for the swing transform.
+    /// Empty for the interim mirror scenes (no doors); populated for SCENE=game.
+    pub doors: Vec<DoorRender>,
 }
 
 impl GameLoop {
+    /// Interim mirror path (grid / lab / house): the level is reverse-derived
+    /// from the renderer scene's collision fields + named lights (no doors /
+    /// targets). The game scene uses [`GameLoop::from_spec`] instead.
     pub fn new(scene: &Scene, handles: &SceneHandles, light_count: u32, cfg: &Config) -> GameLoop {
         let lights = mirror_lights(scene, handles, light_count);
         let spec = mirror_spec(scene, &lights);
-        let light_keys = lights.into_iter().map(|(_, kind, base, key)| (key, kind, base)).collect();
+        let light_keys: Vec<_> = lights.into_iter().map(|(_, kind, base, key)| (key, kind, base)).collect();
+        GameLoop::assemble(spec, scene, handles, light_keys, Vec::new(), cfg)
+    }
+
+    /// The SCENE=game path: the AUTHORED spec drives both the scene (built by
+    /// `game_scene::build_game`) and the game. Joins the spec's lights onto the
+    /// NEE slots IN SPEC ORDER (asserting the slot order equals the spec order,
+    /// so the game's flicker index == the renderer slot) and binds each door's
+    /// leaf instance handle. The light join + slot-order assert is the game
+    /// analogue of `mirror_lights`' completeness check.
+    pub fn from_spec(spec: LevelSpec, scene: &Scene, handles: &SceneHandles, light_count: u32, cfg: &Config) -> GameLoop {
+        let light_keys = join_game_lights(&spec, handles, light_count);
+        let doors = spec
+            .doors
+            .iter()
+            .map(|d| {
+                let inst = *handles.instances.get(&d.name).unwrap_or_else(|| panic!("game scene missing door instance {:?} — the builder must register_dynamic every spec door", d.name));
+                DoorRender { id: d.id, inst, hinge: d.hinge, axis_y: d.axis_y }
+            })
+            .collect();
+        GameLoop::assemble(spec, scene, handles, light_keys, doors, cfg)
+    }
+
+    /// Shared construction: seed the game from Config (DIRECT pre-tick state
+    /// writes — world setup, not play), snapshot, and wire follow-cam.
+    fn assemble(spec: LevelSpec, scene: &Scene, _handles: &SceneHandles, light_keys: Vec<(LightKey, LightKind, [f32; 3])>, doors: Vec<DoorRender>, cfg: &Config) -> GameLoop {
         let mut sim: HouseGame<NullSink> = HouseGame::new(&spec, NullSink);
         // ---- Config seeding: DIRECT pre-tick state writes (world setup, not
         // play), then re-derive. Flashlight boot state, the camera quarter
@@ -77,6 +119,7 @@ impl GameLoop {
             has_player,
             follow_cam: has_player && cfg.scene != "grid",
             light_keys,
+            doors,
         }
     }
 
@@ -158,6 +201,20 @@ impl GameLoop {
         self.queue.push(self.tick, c);
     }
 
+    /// This frame's door leaf instance transforms: for each bound door, the
+    /// snapshot's swing angle through `door_instance` (rotate about the hinge).
+    /// record_frame patches each only on a bit-change, so idle doors never
+    /// rebuild the TLAS.
+    pub fn door_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        self.doors
+            .iter()
+            .map(|dr| {
+                let angle = self.snap.doors.iter().find(|(id, _)| *id == dr.id).map(|(_, a)| *a).unwrap_or(0.0);
+                (dr.inst, crate::game_scene::door_instance(dr.hinge, dr.axis_y, angle))
+            })
+            .collect()
+    }
+
     /// Sim time for `FrameState.time` — ticks, never the wall clock.
     pub fn time(&self) -> f32 {
         self.tick.0 as f32 * TICK_DT
@@ -194,6 +251,32 @@ pub fn mirror_lights(scene: &Scene, handles: &SceneHandles, light_count: u32) ->
             } else {
                 unreachable!("SceneHandles light {name:?} missing from the scene's name lists")
             }
+        })
+        .collect()
+}
+
+/// SCENE=game light join: walk the AUTHORED spec lights IN ORDER, look each
+/// name up in the scene's NEE slot table, and return (key, kind, base) in spec
+/// order. Asserts (a) full coverage — every NEE slot is a named spec light and
+/// vice versa, and (b) the slot order EQUALS the spec order, so the game's
+/// flicker index (spec order) is the renderer slot. A mismatch means the
+/// builder placed lights out of spec order (or named the wrong prim).
+pub fn join_game_lights(spec: &LevelSpec, handles: &SceneHandles, light_count: u32) -> Vec<(LightKey, LightKind, [f32; 3])> {
+    assert!(
+        handles.lights.len() == light_count as usize && light_count as usize == spec.lights.len(),
+        "game light join incomplete: {} named NEE slots, {} NEE slots, {} spec lights — name every emissive prim in spec order in build_game",
+        handles.lights.len(),
+        light_count,
+        spec.lights.len()
+    );
+    let mut prev: Option<LightKey> = None;
+    spec.lights
+        .iter()
+        .map(|l| {
+            let key = *handles.lights.get(&l.name).unwrap_or_else(|| panic!("spec light {:?} has no NEE slot — build_game must name_light it", l.name));
+            assert!(prev.map_or(true, |p| key > p), "spec light {:?} slot {key:?} is out of spec order (prev {prev:?}) — the builder must place lights in spec order so flicker index == NEE slot", l.name);
+            prev = Some(key);
+            (key, l.kind, l.base_rgb)
         })
         .collect()
 }

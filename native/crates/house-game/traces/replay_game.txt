@@ -1,12 +1,13 @@
 # replay_game — the SCENE=game content trace (spec::game_level, 420 ticks).
-# Walk to door_ab, open it, walk through into room B, shoot wall target 2
-# twice (spaced past the pistol cooldown), toggle the room lights off. The
-# end state (door open, score 2, lights off) is the SHOT golden's content;
-# the pinned state_hash lives in game.rs::tests::replay_game_golden.
+# Spawn in room E (SE); walk to door_ce, open it, walk west through it into
+# room C, shoot wall target 4 (C south wall) twice (spaced past the pistol
+# cooldown), toggle the room lights off. The end state (door open, score 2,
+# lights off) is the SHOT golden's content; the pinned state_hash lives in
+# game.rs::tests::replay_game_golden.
 0 flash                                   # flashlight on
-2 click 4 5 3.5 0 -1 0 4 3.5             # straight down onto door_ab -> UseDoor
-30 click 5.5 5 3.5 0 -1 0 5.5 3.5        # walk east through the gap (door open at 26) into room B
-150 click 6 5 2 0 -1 0 6 2               # turn north under target 2
-280 shoot 6 1.25 2 0 0 -1                 # first hit on target 2 (B north wall)
-300 shoot 6 1.25 2 0 0 -1                 # second hit (pistol cooldown is 15 ticks)
+2 click 8 5 6.5 0 -1 0 8 6.5             # straight down onto door_ce -> UseDoor
+30 click 6 5 6.5 0 -1 0 6 6.5            # walk west through the gap (door open at 26) into room C
+150 click 6 5 5.5 0 -1 0 6 5.5           # stand back from the south wall, under target 4
+280 shoot 6 1.25 5.5 0 0 1                # first hit on target 4 (C south wall, faces -z)
+300 shoot 6 1.25 5.5 0 0 1                # second hit (pistol cooldown is 15 ticks)
 360 lights                                # room lights off
