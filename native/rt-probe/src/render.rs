@@ -516,46 +516,29 @@ impl SceneGpu {
         // Dynamic runs (the movable player, named movers) are in local space
         // -> their instances carry the start transform and are updated per
         // frame (dynamic scene). One instance per primitive, 1:1.
-        let dyn_list = scene.dynamic_list();
-        let mut dyn_of_prim: Vec<Option<usize>> = vec![None; scene.primitives.len()];
-        for (di, (_, first, count, _)) in dyn_list.iter().enumerate() {
-            for slot in &mut dyn_of_prim[*first..first + count] {
-                *slot = Some(di);
-            }
-        }
-        let dynamic_instance = scene.dynamic_prim.map(|p| p as u32);
+        // backend-agnostic instance/mask table (the dynamic-run join, the build-
+        // time masks, hide_masks, the per-run patch ranges + CPU transform
+        // shadow) — shared with the Metal backend; see crate::gpu_scene.
+        let dynamic_instance = scene.dynamic_prim.map(|p| p as u32); // Vulkan-only legacy shim
+        let table = crate::gpu_scene::InstanceTable::build(scene)?;
         let identity = vk::TransformMatrixKHR { matrix: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] };
         let instances: Vec<vk::AccelerationStructureInstanceKHR> = blas_addrs
             .iter()
             .enumerate()
             .map(|(i, &addr)| vk::AccelerationStructureInstanceKHR {
-                transform: match dyn_of_prim[i] {
-                    Some(di) => mat_to_transform(dyn_list[di].3),
-                    None => identity,
-                },
-                // mask channels: 0x01 primary visibility, 0x02 dollhouse-hidden
-                // walls, 0x04 dynamic. Movers are 0x01|0x04 = 0x05: camera
-                // (0x01) and shadow/AO rays (0xFF) see them, but probe BAKE
-                // rays (0x0A) skip them so the world-space GI cache never goes
-                // stale as they move.
-                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, if dyn_of_prim[i].is_some() { 0x05 } else { 0xff }),
+                // statics keep the literal identity const (bit-identical to
+                // mat_to_transform(IDENTITY)); dynamics carry their start xform.
+                // mask: 0x05 dynamic (0x01 primary | 0x04 dynamic) / 0xff static;
+                // the 0x02 dollhouse hide is applied event-driven (set_yaw_masks).
+                transform: if table.is_dynamic[i] { mat_to_transform(table.transforms[i]) } else { identity },
+                instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, table.masks[i]),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: addr },
             })
             .collect();
-        // name → instance handle map + the per-run patch ranges and the CPU
-        // transform shadow (record_frame patches only on change)
-        let mut inst_names: BTreeMap<String, InstanceKey> = BTreeMap::new();
-        let mut dyn_insts: Vec<(u32, u32)> = Vec::new();
-        let mut dyn_shadow: Vec<Mat4> = Vec::new();
-        for (di, (name, first, count, start)) in dyn_list.iter().enumerate() {
-            if inst_names.insert(name.clone(), InstanceKey(di as u32)).is_some() {
-                return Err(format!("dynamic run {name:?}: duplicate name").into());
-            }
-            dyn_insts.push((*first as u32, *count as u32));
-            dyn_shadow.push(*start);
-        }
-        let handles = SceneHandles { lights: light_names, instances: inst_names };
+        let handles = SceneHandles { lights: light_names, instances: table.instances };
+        let dyn_insts = table.dyn_insts;
+        let dyn_shadow = table.dyn_shadow;
         // host-visible so the dynamic instance transform can be patched in place
         let inst_buf = ctx.create_buffer(
             std::mem::size_of_val(&instances[..]) as u64,
@@ -609,41 +592,15 @@ impl SceneGpu {
         let (shade_pipeline, shade_shader) = make_pipeline(SHADE_SPV)?;
         let (probe_pipeline, probe_shader) = make_pipeline(PROBE_SPV)?;
 
-        // ---- world-space irradiance probe grid — scene AABB + one-spacing
-        // pad, spacing widened until the count fits.
-        // Header floats: origin.xyz, spacing, dims.xyz, pad.
-        let mut spacing = probe_spacing;
-        let pmin = scene.min - Vec3::splat(spacing);
-        let pmax = scene.max + Vec3::splat(spacing);
-        let ext = (pmax - pmin).max(Vec3::splat(0.1));
-        let dims = loop {
-            let d = [
-                ((ext.x / spacing).ceil() as u32 + 1).max(2),
-                ((ext.y / spacing).ceil() as u32 + 1).max(2),
-                ((ext.z / spacing).ceil() as u32 + 1).max(2),
-            ];
-            if d[0] as u64 * d[1] as u64 * d[2] as u64 <= 262_144 {
-                break d;
-            }
-            spacing *= 1.25;
-        };
-        let probe_count = dims[0] * dims[1] * dims[2];
-        // TWO banks of probe payload (bank 0 = practicals off / sun+sky only,
-        // bank 1 = full — shade.comp lerps them by the room-lights dim)
-        let mut pdata = vec![0.0f32; 16 + probe_count as usize * 20 * 2];
-        pdata[0] = pmin.x;
-        pdata[1] = pmin.y;
-        pdata[2] = pmin.z;
-        pdata[3] = spacing;
-        pdata[4] = dims[0] as f32;
-        pdata[5] = dims[1] as f32;
-        pdata[6] = dims[2] as f32;
-        let probe_buf = ctx.device_local(&pdata, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
-        println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", dims[0], dims[1], dims[2], probe_count, spacing, probe_count as f32 * 80.0 / 1e6);
+        // ---- world-space irradiance probe grid (shared with Metal; the header
+        // float buffer is what TWO banks of payload — bank 0 practicals off,
+        // bank 1 full — hang off, zeroed until bake_probes fills them).
+        let grid = crate::gpu_scene::ProbeGrid::build(scene.min, scene.max, probe_spacing);
+        let probe_count = grid.count;
+        let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        // flag table: dynamic prims are NEVER dollhouse-hidden (doors sit
-        // inside, not on outward walls; the player is the player)
-        let hide_masks: Vec<u8> = (0..scene.primitives.len()).map(|i| if dyn_of_prim[i].is_some() { 0 } else { scene.prim_hide_mask.get(i).copied().unwrap_or(0) }).collect();
+        let hide_masks = table.hide_masks;
         Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, flash_idx, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, hide_masks, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
     }
 
@@ -758,14 +715,11 @@ impl SceneGpu {
             if bits == 0 {
                 continue;
             }
-            // subset match: hide only when EVERY tagged side faces the camera.
-            // Single-bit walls hide as soon as their side is near; two-bit
-            // corners survive while either adjacent wall run survives, so the
-            // kept run still ends in a capped corner instead of an open
-            // cross-section. (Mask 0 instead of 0x02 removed hidden walls from
-            // sunlight too, so light flooded in through the camera-side
+            // subset match (shared with Metal): hide only when EVERY tagged
+            // side faces the camera. (Mask 0 instead of 0x02 removed hidden
+            // walls from sunlight too, so light flooded through the camera-side
             // openings and the lighting followed the camera, not the world.)
-            let mask: u32 = if bits & near == bits { 0x02 } else { 0xff };
+            let mask = crate::gpu_scene::yaw_instance_mask(bits, near) as u32;
             let word: u32 = (i as u32 & 0x00ff_ffff) | (mask << 24);
             // instanceCustomIndex:24 | mask:8 sits right after the 48-byte transform
             std::ptr::copy_nonoverlapping(word.to_le_bytes().as_ptr(), ptr.add(i * stride as usize + 48), 4);
@@ -814,19 +768,11 @@ impl SceneGpu {
         const BATCH: i32 = 256;
         let t = std::time::Instant::now();
         for bank in 0..2i32 {
-            // bank light state: 0 = practicals off — EXCEPT screens, which
-            // ignore the wall switch (their bounce must be a constant term in
-            // both banks for the lerp scalar to stay exact); 1 = all at base.
-            // Materials follow so emissive surfaces read right to bake rays.
-            for (li, &(mid, base, screen)) in self.light_link.iter().enumerate() {
-                let c = if bank == 1 || screen { base } else { [0.0; 3] };
-                self.lights_cpu[li][4] = c[0];
-                self.lights_cpu[li][5] = c[1];
-                self.lights_cpu[li][6] = c[2];
-                if mid >= 0 {
-                    self.mats_cpu[mid as usize].emissive = [c[0], c[1], c[2], 1.0];
-                }
-            }
+            // bank light/material state (shared with Metal): 0 = practicals off
+            // EXCEPT screens (constant in both banks so the lerp stays exact),
+            // 1 = all at base. In place so bank 1 leaves the full state the first
+            // record_frame expects.
+            crate::gpu_scene::bake_bank_emission(bank, &self.light_link, &mut self.lights_cpu, &mut self.mats_cpu);
             ctx.one_time(|cmd| self.record_practicals_upload(ctx, cmd));
             let mut baked = 0;
             while baked < rays_total {

@@ -14,11 +14,11 @@
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
 use crate::backend::{build_tone_push, FramePresent, RenderBackend};
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Vec2};
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, near_hide_bits, scan_lights, LightScan};
 use rt_probe::scene::{LoadedImage, Material, Vertex};
-use rt_probe::{render_scale, Config, InstanceKey, Scene, SceneHandles, ISO_R};
+use rt_probe::{bake_bank_emission, render_scale, yaw_instance_mask, Config, InstanceTable, ProbeGrid, Scene, SceneHandles, ISO_R};
 use std::ffi::c_void;
 use std::mem::size_of;
 use winit::window::Window;
@@ -189,31 +189,13 @@ impl MetalBackend {
         let ntex = texes.len();
         println!("scene: {} prims, {} tris, {ntex} textures (metal)", scene.primitives.len(), scene.indices.len() / 3);
 
-        // ---- world-space probe grid (mirrors SceneGpu::build): scene AABB +
-        // one-spacing pad, spacing widened until the count fits.
-        let mut spacing = cfg.render.probe_spacing;
-        let dims = loop {
-            let pmin = scene.min - Vec3::splat(spacing);
-            let pmax = scene.max + Vec3::splat(spacing);
-            let ext = (pmax - pmin).max(Vec3::splat(0.1));
-            let d = [((ext.x / spacing).ceil() as u32 + 1).max(2), ((ext.y / spacing).ceil() as u32 + 1).max(2), ((ext.z / spacing).ceil() as u32 + 1).max(2)];
-            if d[0] as u64 * d[1] as u64 * d[2] as u64 <= 262_144 {
-                break d;
-            }
-            spacing *= 1.25;
-        };
-        let probe_count = dims[0] * dims[1] * dims[2];
-        let pmin = scene.min - Vec3::splat(spacing);
-        let mut pdata = vec![0.0f32; 16 + probe_count as usize * 20 * 2];
-        pdata[0] = pmin.x;
-        pdata[1] = pmin.y;
-        pdata[2] = pmin.z;
-        pdata[3] = spacing;
-        pdata[4] = dims[0] as f32;
-        pdata[5] = dims[1] as f32;
-        pdata[6] = dims[2] as f32;
-        let probe_buf = make_buf(&device, &pdata);
-        println!("probes: {}x{}x{} = {probe_count} @ {spacing:.2} wu (metal)", dims[0], dims[1], dims[2]);
+        // ---- world-space probe grid (shared with Vulkan via gpu_scene; the
+        // frozen-pad form is canonical — the old inline Metal loop re-derived the
+        // pad with the widened spacing, which diverged once widening kicked in).
+        let grid = ProbeGrid::build(scene.min, scene.max, cfg.render.probe_spacing);
+        let probe_count = grid.count;
+        let probe_buf = make_buf(&device, &grid.header);
+        println!("probes: {}x{}x{} = {probe_count} @ {:.2} wu (metal)", grid.dims[0], grid.dims[1], grid.dims[2], grid.spacing);
 
         // ---- one BLAS per primitive, sharing the global vertex/index buffers
         let mut blas_list: Vec<AccelerationStructure> = Vec::with_capacity(scene.primitives.len());
@@ -250,44 +232,25 @@ impl MetalBackend {
         }
 
         // ---- TLAS: one instance per primitive, instance_id == i == offset row.
-        // Masks mirror SceneGpu::build at BUILD: dynamic 0x05, static 0xff (the
-        // dollhouse 0x02 hide is applied event-driven via set_yaw_masks, exactly
-        // like the Vulkan flow — keeps the Viewer orchestration identical).
-        let dyn_list = scene.dynamic_list();
+        // The build-time masks (0x05 dynamic / 0xff static), the dynamic-run
+        // join, and the per-run patch ranges/shadow come from the shared
+        // InstanceTable (same source the Vulkan SceneGpu uses); the dollhouse
+        // 0x02 hide is applied event-driven via set_yaw_masks.
+        let table = InstanceTable::build(scene)?;
         let nprim = scene.primitives.len();
-        let mut dyn_of_prim: Vec<Option<usize>> = vec![None; nprim];
-        for (di, (_, first, count, _)) in dyn_list.iter().enumerate() {
-            for slot in &mut dyn_of_prim[*first..*first + *count] {
-                *slot = Some(di);
-            }
-        }
         let instances: Vec<MTLAccelerationStructureInstanceDescriptor> = (0..nprim)
-            .map(|i| {
-                let (mask, m) = match dyn_of_prim[i] {
-                    Some(di) => (0x05u32, dyn_list[di].3),
-                    None => (0xffu32, Mat4::IDENTITY),
-                };
-                MTLAccelerationStructureInstanceDescriptor {
-                    transformation_matrix: to_packed(m),
-                    options: MTLAccelerationStructureInstanceOptions::Opaque,
-                    mask,
-                    intersection_function_table_offset: 0,
-                    acceleration_structure_index: i as u32,
-                }
+            .map(|i| MTLAccelerationStructureInstanceDescriptor {
+                transformation_matrix: to_packed(table.transforms[i]),
+                options: MTLAccelerationStructureInstanceOptions::Opaque,
+                mask: table.masks[i] as u32,
+                intersection_function_table_offset: 0,
+                acceleration_structure_index: i as u32,
             })
             .collect();
-        // name → handle maps + per-run patch ranges + the CPU transform shadow
-        let mut inst_names: std::collections::BTreeMap<String, InstanceKey> = std::collections::BTreeMap::new();
-        let mut dyn_insts: Vec<(u32, u32)> = Vec::new();
-        let mut dyn_shadow: Vec<Mat4> = Vec::new();
-        for (di, (name, first, count, start)) in dyn_list.iter().enumerate() {
-            if inst_names.insert(name.clone(), InstanceKey::from_index(di as u32)).is_some() {
-                return Err(format!("dynamic run {name:?}: duplicate name").into());
-            }
-            dyn_insts.push((*first as u32, *count as u32));
-            dyn_shadow.push(*start);
-        }
-        let handles = SceneHandles { lights: light_names, instances: inst_names };
+        let handles = SceneHandles { lights: light_names, instances: table.instances };
+        let dyn_insts = table.dyn_insts;
+        let dyn_shadow = table.dyn_shadow;
+        let hide_masks = table.hide_masks;
         let inst_buf = make_buf(&device, &instances);
 
         let tlas_desc = tlas_descriptor(&blas_list, &inst_buf, instances.len() as u64);
@@ -303,9 +266,6 @@ impl MetalBackend {
             cb.wait_until_completed();
             assert_eq!(cb.status(), MTLCommandBufferStatus::Completed, "TLAS build failed");
         }
-
-        // flag table: dynamic prims are NEVER dollhouse-hidden
-        let hide_masks: Vec<u8> = (0..nprim).map(|i| if dyn_of_prim[i].is_some() { 0 } else { scene.prim_hide_mask.get(i).copied().unwrap_or(0) }).collect();
 
         // ---- compile the three kernels at runtime (the driver compiler).
         let opts = CompileOptions::new();
@@ -384,17 +344,11 @@ impl MetalBackend {
         const BOUNCES: i32 = 4;
         let t0 = std::time::Instant::now();
         for bank in 0..2i32 {
+            // clone the lit state, apply the shared 2-bank emission, upload;
+            // the full state is restored after the loop for the shade pass.
             let mut lights = self.lights_cpu.clone();
             let mut mats = self.mats_cpu.clone();
-            for (li, (mid, base, screen)) in self.light_link.iter().enumerate() {
-                let c = if bank == 1 || *screen { *base } else { [0.0; 3] };
-                lights[li][4] = c[0];
-                lights[li][5] = c[1];
-                lights[li][6] = c[2];
-                if *mid >= 0 {
-                    mats[*mid as usize].emissive = [c[0], c[1], c[2], 1.0];
-                }
-            }
+            bake_bank_emission(bank, &self.light_link, &mut lights, &mut mats);
             write_buf(&self.lbuf, &lights);
             write_buf(&self.mbuf, &mats);
             let mut baked = 0;
@@ -551,8 +505,7 @@ impl RenderBackend for MetalBackend {
             if bits == 0 {
                 continue;
             }
-            // subset match: hide only when EVERY tagged side faces the camera
-            self.instances[i].mask = if bits & near == bits { 0x02 } else { 0xff };
+            self.instances[i].mask = yaw_instance_mask(bits, near) as u32;
         }
         write_buf(&self.inst_buf, &self.instances);
         self.tlas_dirty = true;
@@ -736,4 +689,26 @@ unsafe fn attach_metal_layer(device: &Device, window: &Window) -> Option<MetalLa
     let _: () = msg_send![ns_view, setWantsLayer: YES];
     let _: () = msg_send![ns_view, setLayer: layer.as_ref()];
     Some(layer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_packed;
+    use glam::{Mat4, Vec3};
+
+    /// The one piece of instance-transform math written on both sides of the API
+    /// boundary: Metal's `to_packed` (column-major 4×3) must encode the same
+    /// affine transform as Vulkan's `mat_to_transform` (row-major 3×4). Pins it
+    /// without a GPU or a window.
+    #[test]
+    fn to_packed_matches_mat_to_transform_rows() {
+        let m = Mat4::from_translation(Vec3::new(1.5, -2.0, 3.25)) * Mat4::from_rotation_y(0.7);
+        let packed = to_packed(m); // [col][row]
+        let vk = rt_probe::render::mat_to_transform(m).matrix; // row-major 3×4
+        for col in 0..4 {
+            for row in 0..3 {
+                assert!((packed[col][row] - vk[row * 4 + col]).abs() < 1e-6, "mismatch at col {col} row {row}");
+            }
+        }
+    }
 }
