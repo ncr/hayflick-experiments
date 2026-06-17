@@ -1,12 +1,13 @@
 //! Capture + headless-harness tooling: SHOT one-frame captures, DUMP frame
 //! sequences, in-viewer clip recording (mp4 + gif), and the scripted MOVIE
-//! camera tour. All capture paths read the GPU `out` image — the exact
-//! presented pixels (the UI overlay only ever touches the swapchain image).
+//! camera tour. All capture paths read the GPU `out` image through the backend
+//! (`capture_png` / `readback_out_subsampled` / the deferred clip target) —
+//! the exact presented pixels (the UI overlay only ever touches the swapchain
+//! image). PNG/mp4/gif encoding here is pure CPU and backend-agnostic.
 
-use crate::renderer::Renderer;
-use ash::vk;
+use crate::viewer::Viewer;
 use glam::{Vec2, Vec3};
-use rt_probe::*;
+use rt_probe::Config;
 
 /// Mutable headless-harness state (seeded from `Config`, consumed as the
 /// triggers fire): SHOT / ROTATE_AT / DUMP / DUMP_AT. Synthetic INPUT lives
@@ -50,7 +51,7 @@ impl Harness {
             dump_left: 0,
             dump_idx: 0,
             dump_frames: Vec::new(),
-            demo: None, // armed in Renderer::new once the GameLoop trace is loaded
+            demo: None, // armed in Viewer::new once the GameLoop trace is loaded
         }
     }
 }
@@ -73,20 +74,6 @@ pub struct Rec {
     pub t_first: f32,
     pub t_last: f32,
     pub frames: Vec<Vec<u8>>,
-}
-
-/// Persistent GPU-side capture target: `out` (already in TRANSFER_SRC for the
-/// swapchain blit) is NEAREST-blitted down to exact game pixels into `img`,
-/// then copied into the host-visible `buf` — all inside the frame's own
-/// command buffer. The CPU reads `buf` on the NEXT draw, after the in-flight
-/// fence, so recording never blocks the loop (a synchronous readback per
-/// captured frame halved the framerate and made clips play fast).
-pub struct Cap {
-    pub img: (vk::Image, vk::DeviceMemory, vk::ImageView),
-    pub buf: Buffer,
-    pub w: u32,
-    pub h: u32,
-    pub pending: bool, // a capture was recorded this frame; collect after the fence
 }
 
 /// Scripted camera move for MOVIE mode. Each command drives the SAME code
@@ -225,7 +212,7 @@ pub fn encode_clip(frames: Vec<Vec<u8>>, w: u32, h: u32, fps: f64, mp4_scale: u3
     }
 }
 
-fn write_png(path: &str, w: u32, h: u32, rgba: &[u8]) {
+pub(crate) fn write_png(path: &str, w: u32, h: u32, rgba: &[u8]) {
     let f = std::fs::File::create(path).unwrap();
     let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
     enc.set_color(png::ColorType::Rgba);
@@ -233,7 +220,7 @@ fn write_png(path: &str, w: u32, h: u32, rgba: &[u8]) {
     enc.write_header().unwrap().write_image_data(rgba).unwrap();
 }
 
-impl Renderer {
+impl Viewer {
     /// 'r' / the menu row: start a recording, or stop + encode the current one.
     pub fn toggle_recording(&mut self) {
         if self.rec.is_some() {
@@ -273,23 +260,17 @@ impl Renderer {
     }
 
     /// Per-frame recording bookkeeping, run BEFORE the frame's commands are
-    /// recorded: collect the previous frame's capture (the in-flight fence
-    /// guarantees its copy completed), then decide whether this frame
-    /// captures and (re)fit the capture target. Returns true when the draw
-    /// below should record the capture blit+copy into its command buffer.
-    pub unsafe fn prepare_capture(&mut self) -> bool {
-        if self.cap.as_ref().is_some_and(|c| c.pending) {
-            self.ctx.device.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();
-            let cap = self.cap.as_mut().unwrap();
-            cap.pending = false;
+    /// recorded: collect the previous frame's deferred capture (the backend's
+    /// in-flight fence guarantees its copy completed), then decide whether this
+    /// frame captures and at what size. Returns `Some((cw, ch))` when the draw
+    /// below should record the down-blit into this frame's command buffer (the
+    /// caller sizes the capture target + sets `FramePresent.capture`).
+    pub unsafe fn prepare_capture(&mut self) -> Option<(u32, u32)> {
+        if let Some((w, h, pixels)) = self.backend.collect_pending_capture() {
+            let t = self.start_time.elapsed().as_secs_f32();
             if let Some(rec) = &mut self.rec {
-                let n = (cap.w * cap.h) as usize * 4;
-                let ptr = self.ctx.device.map_memory(cap.buf.memory, 0, n as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
-                let pixels = std::slice::from_raw_parts(ptr, n).to_vec();
-                self.ctx.device.unmap_memory(cap.buf.memory);
-                let t = self.start_time.elapsed().as_secs_f32();
                 if rec.frames.is_empty() {
-                    (rec.w, rec.h) = (cap.w, cap.h);
+                    (rec.w, rec.h) = (w, h);
                     rec.t_first = t;
                 }
                 rec.t_last = t;
@@ -301,47 +282,27 @@ impl Renderer {
             self.finish_recording();
         }
         let t = self.start_time.elapsed().as_secs_f32();
-        if self.swap.is_none() || !self.rec.as_ref().is_some_and(|r| t >= r.next_due) {
-            return false;
+        if !self.backend.has_target() || !self.rec.as_ref().is_some_and(|r| t >= r.next_due) {
+            return None;
         }
         let rs = self.rs() as u32;
-        let ext = self.swap.as_ref().unwrap().extent;
-        let (cw, ch) = (ext.width / rs, ext.height / rs);
-        if self.cap.as_ref().is_some_and(|c| (c.w, c.h) != (cw, ch)) {
-            if !self.rec.as_ref().unwrap().frames.is_empty() {
-                println!("clip: view size changed — finishing the clip at the old size");
-                self.finish_recording();
-                return false;
-            }
-            // nothing collected yet: refit silently (safe — the fence wait in
-            // a previous draw retired the old target's last GPU use)
-            let c = self.cap.take().unwrap();
-            self.destroy_cap(c);
-        }
-        if self.cap.is_none() {
-            let img = make_storage_image(&self.ctx, cw, ch, vk::Format::R8G8B8A8_UNORM);
-            let buf = self.ctx.create_buffer(
-                (cw * ch * 4) as u64,
-                vk::BufferUsageFlags::TRANSFER_DST,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            );
-            self.cap = Some(Cap { img, buf, w: cw, h: ch, pending: false });
+        let (ew, eh) = self.backend.extent();
+        let (cw, ch) = (ew / rs, eh / rs);
+        // view size changed mid-clip with frames already collected: finish at
+        // the old size. (Nothing collected yet → the caller's
+        // ensure_capture_target refits silently, safe because a previous draw's
+        // fence retired the old target's last GPU use.)
+        if self.backend.capture_target_size().is_some_and(|sz| sz != (cw, ch)) && !self.rec.as_ref().unwrap().frames.is_empty() {
+            println!("clip: view size changed — finishing the clip at the old size");
+            self.finish_recording();
+            return None;
         }
         let rec = self.rec.as_mut().unwrap();
         rec.next_due += 1.0 / rec.fps as f32;
         if rec.next_due < t - 0.25 {
             rec.next_due = t; // a stall: drop the backlog, don't burst
         }
-        self.cap.as_mut().unwrap().pending = true;
-        true
-    }
-
-    pub unsafe fn destroy_cap(&self, c: Cap) {
-        let d = &self.ctx.device;
-        d.destroy_image_view(c.img.2, None);
-        d.destroy_image(c.img.0, None);
-        d.free_memory(c.img.1, None);
-        self.ctx.destroy_buffer(&c.buf);
+        Some((cw, ch))
     }
 
     /// Wait for in-flight clip encodes (called once on the way out).
@@ -349,56 +310,6 @@ impl Renderer {
         for j in self.rec_jobs.drain(..) {
             let _ = j.join();
         }
-    }
-
-    /// Read back `out` and take every render-scale-th pixel — the exact
-    /// low-res game image (the upscale is integer NEAREST). RGBA bytes.
-    pub unsafe fn readback_out_subsampled(&self) -> (u32, u32, Vec<u8>) {
-        let swap = self.swap.as_ref().unwrap();
-        let (w, h) = (swap.extent.width, swap.extent.height);
-        let n = (w * h) as usize;
-        let readback = self.ctx.create_buffer((n * 4) as u64, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
-        self.ctx.one_time(|cmd| {
-            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
-            let region = vk::BufferImageCopy::default().image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 }).image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
-            self.ctx.device.cmd_copy_image_to_buffer(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, readback.buffer, &[region]);
-            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
-        });
-        let ptr = self.ctx.device.map_memory(readback.memory, 0, (n * 4) as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
-        let full = std::slice::from_raw_parts(ptr, n * 4);
-        let rs = self.rs() as u32;
-        let (sw, sh) = (w / rs, h / rs);
-        let mut sub = vec![0u8; (sw * sh * 4) as usize];
-        for y in 0..sh {
-            for x in 0..sw {
-                let src = (((y * rs) * w + x * rs) * 4) as usize;
-                let dst = ((y * sw + x) * 4) as usize;
-                sub[dst..dst + 4].copy_from_slice(&full[src..src + 4]);
-            }
-        }
-        self.ctx.device.unmap_memory(readback.memory);
-        self.ctx.destroy_buffer(&readback);
-        (sw, sh, sub)
-    }
-
-    /// Dump the `out` image (the exact thing blitted to the swapchain) to a PNG.
-    pub unsafe fn capture(&self, path: &str) {
-        let swap = self.swap.as_ref().unwrap();
-        let (w, h) = (swap.extent.width, swap.extent.height);
-        let n = (w * h) as usize;
-        let readback = self.ctx.create_buffer((n * 4) as u64, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
-        self.ctx.one_time(|cmd| {
-            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
-            let region = vk::BufferImageCopy::default().image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 }).image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
-            self.ctx.device.cmd_copy_image_to_buffer(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, readback.buffer, &[region]);
-            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
-        });
-        let ptr = self.ctx.device.map_memory(readback.memory, 0, (n * 4) as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
-        let pixels = std::slice::from_raw_parts(ptr, n * 4).to_vec();
-        self.ctx.device.unmap_memory(readback.memory);
-        self.ctx.destroy_buffer(&readback);
-        write_png(path, w, h, &pixels);
-        println!("captured {path} ({w}x{h})");
     }
 
     /// Synthetic-input harness, run at the top of draw(): ROTATE_AT fires one
@@ -431,7 +342,7 @@ impl Renderer {
     /// advance the scripted movie, fire the SHOT capture.
     pub unsafe fn harness_post_frame(&mut self) {
         if self.harness.dump_left > 0 && self.harness.dump_dir.is_some() {
-            let (w, h, rgba) = self.readback_out_subsampled();
+            let (w, h, rgba) = self.backend.readback_out_subsampled(self.rs());
             self.harness.dump_frames.push((w, h, rgba));
             let (turns, settle) = match &self.view.rot {
                 Some(r) => (r.turns, r.settle.is_some()),
@@ -453,11 +364,11 @@ impl Renderer {
 
         // DEMO: this frame already advanced one sim tick (draw()) under the live
         // follow-cam; capture the readback `out` to dir/d_NNNNN.png via the SAME
-        // path SHOT uses (capture()), then exit once every tick has rendered.
+        // path SHOT uses (capture_png waits the device idle), then exit once
+        // every tick has rendered.
         if let Some(demo) = self.harness.demo.as_ref() {
             let (dir, ticks, done) = (demo.dir.clone(), demo.ticks, demo.done);
-            self.ctx.device.device_wait_idle().unwrap();
-            self.capture(&format!("{dir}/d_{done:05}.png"));
+            self.backend.capture_png(&format!("{dir}/d_{done:05}.png"));
             let demo = self.harness.demo.as_mut().unwrap();
             demo.done += 1;
             if demo.done >= ticks {
@@ -479,8 +390,7 @@ impl Renderer {
                 // the fixed loop dt = 0 in SHOT mode, so the wall clock never
                 // ran a tick — only the deterministic CMDS prefix did. Pin it.
                 assert_eq!(self.game.tick.0, self.game.cmds_prefix, "SHOT capture ran wall-clock sim ticks — goldens would depend on timing");
-                self.ctx.device.device_wait_idle().unwrap();
-                self.capture(&path);
+                self.backend.capture_png(&path);
                 self.exit_requested = true;
             }
         }
@@ -494,15 +404,14 @@ impl Renderer {
         let Some(mut mv) = self.movie.take() else { return };
         loop {
             let Some(cmd) = mv.cmds.get(mv.seg) else {
-                self.ctx.device.device_wait_idle().ok();
+                self.backend.wait_idle();
                 println!("movie: {} frames -> {}/", mv.out_idx, mv.dir);
                 self.exit_requested = true;
                 return;
             };
             match *cmd {
                 MovieCmd::Hold(n) => {
-                    self.ctx.device.device_wait_idle().ok();
-                    self.capture(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
+                    self.backend.capture_png(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
                     mv.out_idx += 1;
                     mv.seg_done += 1;
                     if mv.seg_done >= n {
@@ -513,8 +422,7 @@ impl Renderer {
                     break;
                 }
                 MovieCmd::Orbit(dq, n) => {
-                    self.ctx.device.device_wait_idle().ok();
-                    self.capture(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
+                    self.backend.capture_png(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
                     mv.out_idx += 1;
                     mv.seg_done += 1;
                     if mv.seg_done >= n {
@@ -530,21 +438,20 @@ impl Renderer {
                         // swap the dollhouse masks side-on, halfway through the turn
                         if mv.seg_done == n / 2 && !self.scene.prim_hide_mask.is_empty() {
                             let next_q = (self.view.yaw_q as i32 + dq).rem_euclid(4) as u32;
-                            // marks the TLAS dirty; record_frame applies them
-                            self.gpu.set_yaw_masks(&self.ctx, next_q);
+                            // marks the TLAS dirty; render_present applies them
+                            self.backend.set_yaw_masks(next_q);
                         }
                     }
                     break;
                 }
                 MovieCmd::Zoom(d) => {
-                    let e = self.swap.as_ref().unwrap().extent;
-                    self.zoom_step(d, Vec2::new(e.width as f32 / 2.0, e.height as f32 / 2.0));
+                    let (ew, eh) = self.backend.extent();
+                    self.zoom_step(d, Vec2::new(ew as f32 / 2.0, eh as f32 / 2.0));
                     mv.seg += 1;
                     break;
                 }
                 MovieCmd::PanTo(x, z, n) => {
-                    self.ctx.device.device_wait_idle().ok();
-                    self.capture(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
+                    self.backend.capture_png(&format!("{}/m_{:05}.png", mv.dir, mv.out_idx));
                     mv.out_idx += 1;
                     // step toward the goal by 1/remaining of what's left — lands
                     // exactly on (x, z) regardless of lattice re-snapping

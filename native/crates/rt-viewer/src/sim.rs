@@ -9,7 +9,7 @@
 //! rect + solids verbatim, no doors/targets), so click-to-walk collides
 //! against exactly what the eye sees.
 
-use crate::renderer::Renderer;
+use crate::viewer::Viewer;
 use glam::{IVec2, Mat4, Vec2, Vec3};
 use house_game::game::{Facing, Flashlight, Player, Pos};
 use house_game::{parse_trace, Command, DoorId, GameSnapshot, HouseGame, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TICK_DT};
@@ -351,7 +351,7 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
     }
 }
 
-impl Renderer {
+impl Viewer {
     /// Follow-cam: when the (lattice-snapped) player moved, retarget the
     /// camera at it. The whole-low-pixel step with carried remainder (#5)
     /// is inherent in the lattice snap: consecutive snapped positions differ
@@ -372,7 +372,7 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::shot_sim_dt;
+    use crate::viewer::shot_sim_dt;
     use rt_probe::iso::{iso_basis, snap_ground_to_lattice, ISO_R};
 
     /// SHOT mode selects dt = 0 regardless of the wall-clock delta — the pure

@@ -4,7 +4,7 @@
 //! Player MOTION lives in house-game now (walk_system) — the viewer only
 //! presents and translates input.
 
-use crate::renderer::{Renderer, ZOOM_MAX, ZOOM_MIN};
+use crate::viewer::{Viewer, ZOOM_MAX, ZOOM_MIN};
 use glam::{Vec2, Vec3};
 use house_game::{flashlight_pose, iso_input_dir, recommended_min_px_per_sec, Command, PickRay};
 use iso_core::{window_px_to_ground, window_px_to_ray, ViewXform};
@@ -49,7 +49,7 @@ pub struct ViewState {
     pub dragging: bool,
 }
 
-impl Renderer {
+impl Viewer {
     /// Camera yaw offset in degrees: the animated quarter-turn sweep when one
     /// is in flight, else the settled quarter-turn count; plus the transient
     /// movie-orbit sweep (0 outside MOVIE mode).
@@ -120,8 +120,8 @@ impl Renderer {
         if mq != self.view.mask_q {
             self.view.mask_q = mq;
             if !self.scene.prim_hide_mask.is_empty() {
-                // marks the TLAS dirty; record_frame rebuilds with the masks
-                unsafe { self.gpu.set_yaw_masks(&self.ctx, mq) };
+                // marks the TLAS dirty; render_present rebuilds with the masks
+                unsafe { self.backend.set_yaw_masks(mq) };
             }
         }
     }
@@ -150,8 +150,8 @@ impl Renderer {
         self.view.rot = None; // instant turn supersedes any in-flight sweep
         self.view.mask_q = self.view.yaw_q;
         if !self.scene.prim_hide_mask.is_empty() {
-            // marks the TLAS dirty; record_frame rebuilds with the new masks
-            unsafe { self.gpu.set_yaw_masks(&self.ctx, self.view.yaw_q) };
+            // marks the TLAS dirty; render_present rebuilds with the new masks
+            unsafe { self.backend.set_yaw_masks(self.view.yaw_q) };
         }
         self.view.move_accum = Vec2::ZERO;
         self.snap_target_to_lattice();
@@ -171,7 +171,7 @@ impl Renderer {
         self.view.rot = None;
         self.view.mask_q = target_q;
         if !self.scene.prim_hide_mask.is_empty() {
-            unsafe { self.gpu.set_yaw_masks(&self.ctx, self.view.yaw_q) };
+            unsafe { self.backend.set_yaw_masks(self.view.yaw_q) };
         }
         self.view.move_accum = Vec2::ZERO;
         self.snap_target_to_lattice();

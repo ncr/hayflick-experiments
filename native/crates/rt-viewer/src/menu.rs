@@ -5,7 +5,7 @@
 //! vars seed, so the renderer picks them up the very next frame; closing the
 //! menu prints the matching env string to stdout to lock a look in.
 
-use crate::renderer::Renderer;
+use crate::viewer::Viewer;
 use glam::Vec2;
 
 /// One row of the ESC menu. `key` is the tune id; uppercased it is also the
@@ -132,7 +132,7 @@ pub fn expand_canvas(canvas: &[u32], w: i32, h: i32, scale: u32, bgra: bool) -> 
     out
 }
 
-impl Renderer {
+impl Viewer {
     // ---- tune values are read/written through a key so the menu, the env
     // seeding (Config), and the close-time env-string printout stay in sync
 
@@ -241,7 +241,7 @@ impl Renderer {
 
     /// UI scale of the current swapchain (panel physical px = logical * scale).
     fn menu_ui_scale(&self) -> f32 {
-        self.swap.as_ref().map(|s| s.menu_scale as f32).unwrap_or(2.0)
+        self.backend.menu_scale() as f32
     }
 
     /// Left-press routing. Returns true when the menu consumed the click.

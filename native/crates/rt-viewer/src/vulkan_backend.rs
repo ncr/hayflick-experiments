@@ -1,56 +1,24 @@
-//! Renderer core: Vulkan device + swapchain init, per-frame draw.
+//! `VulkanBackend` — the GPU half of the renderer on hardware ray-query
+//! (NVIDIA/desktop). Owns the Vulkan device + presentation, the `SceneGpu`
+//! (geometry/AS/pipelines/probe cache), the tonemap pipeline, and the clip
+//! capture target. Implements `RenderBackend`; `Viewer` drives it.
 //!
 //! The frame is DETERMINISTIC end to end: stream this frame's light values
-//! (practicals + flashlight slot), rebuild the TLAS if the player moved,
-//! one shade.comp dispatch (pure function of scene + camera), tonemap with
-//! the integer-NEAREST upscale, blit, present. No accumulation, no denoiser,
-//! no temporal state — a fixed camera produces bit-identical frames.
+//! (practicals + flashlight slot), rebuild the TLAS if a mover moved, one
+//! shade.comp dispatch (pure function of scene + camera), tonemap with the
+//! integer-NEAREST upscale, blit, present. No accumulation, no denoiser, no
+//! temporal state — a fixed camera produces bit-identical frames.
 
-use crate::capture::Harness;
-use crate::menu::{MenuState, MENU_MARGIN, MPANEL_H, MPANEL_W};
-use crate::sim::GameLoop;
-use crate::view::ViewState;
+use crate::backend::{build_tone_push, FramePresent, RenderBackend};
+use crate::menu::{HUD_H, HUD_W, MENU_MARGIN, MPANEL_H, MPANEL_W};
 use ash::vk;
-use glam::{Vec2, Vec3};
+use glam::Vec2;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
 use winit::window::Window;
 
-/// The sim timestep `draw()` feeds the fixed loop. In SHOT (golden capture)
-/// mode it is ALWAYS 0, so the wall clock never advances the sim and the
-/// captured frame is a pure function of (scene, config, CMDS prefix) — the
-/// "provably sim-independent" guarantee (ARCHITECTURE step 9). Extracted from
-/// the draw() ternary so the selection is unit-testable WITHOUT a Vulkan
-/// device (the runtime assert at capture time only fires on the GPU path).
-pub fn shot_sim_dt(shot: bool, dt: f32) -> f32 {
-    if shot {
-        0.0
-    } else {
-        dt
-    }
-}
-
 pub const MARGIN: u32 = 32; // low-res overscan border so pan/zoom never reveal edge bars
-pub const ZOOM_MIN: f32 = 1.0;
-pub const ZOOM_MAX: f32 = 4.0; // web game-studio: zoomMin 1, zoomMax 4, zoomStep 1
-
-/// Push constants for tonemap.comp. Field names match the shader's `pc` block.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TonePush {
-    pub dims: [i32; 4], // low_w, low_h, out_w, out_h
-    pub cfg: [i32; 4],  // scale, pan_x, pan_y, _
-    pub fcfg: [f32; 4], // exposure, grain, frame, dither world-phase x
-    // current frame's screen projection rows (outline forward recovery):
-    // buffer px of world P = (dot(P, proj_a.xyz) + proj_a.w, dot(P, proj_b.xyz) + proj_b.w)
-    pub proj_a: [f32; 4],
-    pub proj_b: [f32; 4],
-    pub style1: [f32; 4], // grade preset, poster bands, dither mode, dither amount
-    pub style2: [f32; 4], // palette mode, palette param, vignette, outline strength
-    pub style3: [f32; 4], // grain size px, grain static flag, bloom strength, bloom threshold
-    pub style4: [f32; 4], // shadow dither: strength, levels, luma threshold, dither world-phase y
-}
 
 /// Window-size-dependent resources, recreated on resize. Headless SHOT mode
 /// builds one too (the extent comes verbatim from WINDOW) — `swapchain` is
@@ -77,7 +45,7 @@ pub struct Swap {
 }
 
 /// Presentation half: surface + swapchain machinery. `None` for headless SHOT
-/// captures — the renderer then draws into the offscreen `out` image only and
+/// captures — the backend then draws into the offscreen `out` image only and
 /// the in-flight fence is the only synchronisation.
 pub struct Present {
     pub surface_loader: ash::khr::surface::Instance,
@@ -88,7 +56,20 @@ pub struct Present {
     pub image_available: vk::Semaphore,
 }
 
-pub struct Renderer {
+/// Persistent GPU-side clip-capture target: `out` (already in TRANSFER_SRC for
+/// the swapchain blit) is NEAREST-blitted down to exact game pixels into `img`,
+/// then copied into the host-visible `buf` — all inside the frame's own command
+/// buffer. The CPU reads `buf` on the NEXT draw, after the in-flight fence
+/// (`collect_pending_capture`), so recording never blocks the loop.
+pub struct Cap {
+    pub img: (vk::Image, vk::DeviceMemory, vk::ImageView),
+    pub buf: Buffer,
+    pub w: u32,
+    pub h: u32,
+    pub pending: bool, // a capture was recorded this frame; collect after the fence
+}
+
+pub struct VulkanBackend {
     // ---- Vulkan device & presentation (underscore fields: kept alive only)
     pub _entry: ash::Entry,
     pub _instance: ash::Instance,
@@ -98,54 +79,25 @@ pub struct Renderer {
     pub cmd: vk::CommandBuffer,
     pub in_flight: vk::Fence,
     pub swap: Option<Swap>,
-    // ---- scene + GPU resources
+    // ---- scene GPU resources + resolved lighting environment
     pub gpu: SceneGpu,
-    pub scene: Scene,
-    pub env0: [f32; 4], // resolved lighting environment (scene defaults + overrides)
+    pub env0: [f32; 4],
+    // ---- tonemap pipeline (window-independent)
     pub tone_set_layout: vk::DescriptorSetLayout,
     pub tone_pipeline_layout: vk::PipelineLayout,
     pub tone_pipeline: vk::Pipeline,
     pub _tone_shader: vk::ShaderModule,
-    // ---- resolved config + live tunables (the ESC menu writes these)
-    pub cfg: Config,
+    // ---- render scale baseline + clip capture target
     pub base_scale: u32, // integer render scale at zoom=1 (the DPR baseline, #2/#4)
-    pub exposure: f32,
-    pub style: StyleCfg,
-    pub ao: f32,
-    pub ao_r: f32,
-    pub ao_n: i32,
-    pub light_anim: bool,
-    /// LIGHTS env: a presentation multiplier on the switchable lights (direct
-    /// via the emission build, indirect via the probe-bank lerp). The on/off
-    /// MASTER is sim state (Command::ToggleRoomLights) — this is just a dim.
-    pub lights_dim: f32,
-    pub flash_power: f32,
-    pub flash_cone: f32,
-    pub debug: i32,
-    pub pan_speed: f32, // playerless camera pan speed (px/s; the lab's WASD)
-    // ---- grouped state
-    pub view: ViewState,
-    pub game: GameLoop,
-    pub menu: MenuState,
-    pub harness: Harness,
-    pub rec: Option<crate::capture::Rec>,
-    pub rec_jobs: Vec<std::thread::JoinHandle<()>>,
-    pub cap: Option<crate::capture::Cap>,
-    pub movie: Option<crate::capture::Movie>,
-    // ---- frame clock / lifecycle
-    pub frame: u32,
-    pub start_time: std::time::Instant,
-    pub last_frame: Option<std::time::Instant>,
-    pub frame_time_sum: f32,
-    pub exit_requested: bool,
+    pub cap: Option<Cap>,
 }
 
-impl Renderer {
+impl VulkanBackend {
     /// `window: None` runs fully headless (SHOT captures): no surface, no
     /// swapchain device extension, no present-capable queue required — the
     /// offscreen extent is taken verbatim from `WINDOW` so capture sizes are
     /// reproducible regardless of what a window manager would grant.
-    pub unsafe fn new(window: Option<&Window>, cfg: Config) -> Result<Renderer, Box<dyn std::error::Error>> {
+    pub unsafe fn new(window: Option<&Window>, scene: &Scene, cfg: &Config) -> Result<VulkanBackend, Box<dyn std::error::Error>> {
         let entry = ash::Entry::load()?;
         let validation = CString::new("VK_LAYER_KHRONOS_validation").unwrap();
         let have_val = entry.enumerate_instance_layer_properties()?.iter().any(|l| (CStr::from_ptr(l.layer_name.as_ptr())) == validation.as_c_str());
@@ -237,28 +189,10 @@ impl Renderer {
             None => None,
         };
 
-        // scene + acceleration structures + pipelines. SCENE=game is built by
-        // the rt-viewer adapter FROM the authored LevelSpec (single source of
-        // truth: the same spec drives collision + the greybox visuals); the
-        // three legacy scenes (grid/lab/house) stay in rt_probe::build_scene.
-        let game_spec = (cfg.scene == "game").then(house_game::game_level);
-        let scene = match &game_spec {
-            Some(spec) => crate::game_scene::build_game(spec, &cfg),
-            None => build_scene(&cfg)?,
-        };
-        println!("scene: {} prims, {} tris, {} textures", scene.primitives.len(), scene.indices.len() / 3, scene.images.len());
-        let player0 = scene.player_start;
-        let gpu = SceneGpu::build(&ctx, &scene, cfg.render.probe_spacing)?;
-        // the sim side: SCENE=game runs the AUTHORED spec (doors + targets +
-        // lights, the spec built the scene above); everything else runs the
-        // interim mirror of the scene's collision fields + named lights
-        // (house-game never sees rt_probe::Scene — GameLoop is the adapter
-        // knowing both, joining lights onto gpu.handles, loudly).
-        let game = match game_spec {
-            Some(spec) => GameLoop::from_spec(spec, &scene, &gpu.handles, gpu.light_count, &cfg),
-            None => GameLoop::new(&scene, &gpu.handles, gpu.light_count, &cfg),
-        };
-        println!("level: floor rect {:?}, {} solids, {} game lights", scene.floor_rect, scene.solids.len(), game.light_keys.len());
+        // scene GPU resources + acceleration structures + the resolved lighting
+        // environment. The scene itself is owned by the Viewer (orchestration);
+        // the backend only consumes it to build geometry/AS/lights.
+        let gpu = SceneGpu::build(&ctx, scene, cfg.render.probe_spacing)?;
         let env0 = cfg.lighting_env(scene.lighting);
 
         // tonemap pipeline (window-independent)
@@ -270,7 +204,7 @@ impl Renderer {
         ];
         let tone_set_layout = ctx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&tone_bindings), None)?;
         let tone_sl = [tone_set_layout];
-        let tone_push = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).offset(0).size(std::mem::size_of::<TonePush>() as u32)];
+        let tone_push = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).offset(0).size(std::mem::size_of::<crate::backend::TonePush>() as u32)];
         let tone_pipeline_layout = ctx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&tone_sl).push_constant_ranges(&tone_push), None)?;
         let tone_code = ash::util::read_spv(&mut std::io::Cursor::new(TONE_SPV))?; // rt_probe::TONE_SPV — shaders build in rt-probe
         let tone_shader = ctx.device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&tone_code), None)?;
@@ -283,7 +217,7 @@ impl Renderer {
         let cmd = ctx.device.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1))?[0];
         let in_flight = ctx.device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)?;
 
-        let mut r = Renderer {
+        let mut b = VulkanBackend {
             _entry: entry,
             _instance: instance,
             pdev,
@@ -293,146 +227,31 @@ impl Renderer {
             in_flight,
             swap: None,
             gpu,
-            scene,
             env0,
             tone_set_layout,
             tone_pipeline_layout,
             tone_pipeline,
             _tone_shader: tone_shader,
             base_scale: cfg.render.pixel,
-            exposure: cfg.render.exposure,
-            style: cfg.render.style,
-            ao: cfg.render.ao,
-            ao_r: cfg.render.ao_r,
-            ao_n: cfg.render.ao_n,
-            light_anim: cfg.game.light_anim,
-            lights_dim: cfg.game.lights,
-            flash_power: cfg.game.flash_power,
-            flash_cone: cfg.game.flash_cone,
-            debug: cfg.render.debug,
-            pan_speed: cfg.game.player_speed.unwrap_or(cfg.default_player_speed()),
-            view: ViewState {
-                zoom: cfg.game.zoom.round().clamp(ZOOM_MIN, ZOOM_MAX),
-                yaw_q: cfg.game.yaw_q,
-                mask_q: cfg.game.yaw_q,
-                rot: None,
-                yaw_anim: 0.0,
-                pan: Vec2::ZERO,
-                target: player0,
-                move_accum: Vec2::ZERO,
-                cursor: Vec2::ZERO,
-                wheel_accum: 0.0,
-                dragging: false,
-            },
-            game,
-            menu: MenuState { open: false, sel: 0, drag: false },
-            harness: Harness::from_cfg(&cfg),
-            rec: None,
-            rec_jobs: Vec::new(),
             cap: None,
-            movie: cfg.harness.movie.clone().map(|dir| {
-                std::fs::create_dir_all(&dir).ok();
-                crate::capture::Movie::new(dir, &cfg)
-            }),
-            frame: 0,
-            start_time: std::time::Instant::now(),
-            last_frame: None,
-            frame_time_sum: 0.0,
-            exit_requested: false,
-            cfg,
         };
-        if !r.scene.prim_hide_mask.is_empty() {
-            // MASK_Q (diagnostic): decouple the dollhouse masks from the camera
-            // quarter to prove/disprove mask-dependent light transport.
-            let mq = r.cfg.game.mask_q.unwrap_or(r.view.yaw_q);
-            r.gpu.set_yaw_masks(&r.ctx, mq); // marks the TLAS dirty: the first record_frame applies the masks
-            r.view.mask_q = mq;
-        }
+
         // windowed: whatever inner size the WM actually granted; headless: the
         // WINDOW request verbatim — identical extent math from there on
         let (w0, h0) = match window {
             Some(w) => (w.inner_size().width, w.inner_size().height),
-            None => r.cfg.harness.window.unwrap_or((1280, 800)),
+            None => cfg.harness.window.unwrap_or((1280, 800)),
         };
-        r.recreate_swapchain(w0.max(1), h0.max(1));
+        b.recreate_gpu(w0.max(1), h0.max(1));
         // bake the GI probe cache (blocking, once — both light banks)
-        let set = r.swap.as_ref().unwrap().scene_set;
-        r.gpu.bake_probes(&r.ctx, set, r.env0, r.cfg.render.probe_rays);
-        // optional initial pan offset (low pixels), for headless capture tests
-        if r.cfg.game.pan != (0.0, 0.0) {
-            let d = Vec2::new(r.cfg.game.pan.0, r.cfg.game.pan.1);
-            r.view.pan += d;
-            r.clamp_pan_to_buffer();
-        }
-        // optional camera look-at override (world units), for framing captures
-        if r.cfg.game.target.0.is_some() || r.cfg.game.target.1.is_some() {
-            let t = Vec3::new(r.cfg.game.target.0.unwrap_or(r.view.target.x), 0.0, r.cfg.game.target.1.unwrap_or(r.view.target.z));
-            r.view.target = snap_ground_to_lattice(t, r.yaw_deg());
-        }
-        // optional player world offset (camera NOT moved) — proves the dynamic
-        // TLAS rebuild displaces the marker in headless capture tests (the
-        // moved snapped transform makes record_frame patch + rebuild).
-        if r.cfg.game.player_off != (0.0, 0.0) {
-            r.game.offset_player(r.cfg.game.player_off.0, r.cfg.game.player_off.1);
-        }
-        // CMDS replay prefix (deterministic; the wall-clock WALK hack's
-        // replacement) — runs LAST so the trace acts on the fully seeded
-        // state. A trace that rotated the camera leaves the view + dollhouse
-        // masks resynced to the sim's settled quarter.
-        r.game.run_cmds(&r.cfg);
-        // DEMO=trace.txt: arm the headless per-tick gameplay dump. The trace is
-        // loaded into the live command queue (NOT run as a startup prefix like
-        // CMDS) — draw() advances one tick per frame and harness_post_frame
-        // writes d_NNNNN.png. Runs after CMDS so a DEMO could even start from a
-        // CMDS-seeded state, though the showcase traces don't use both.
-        if r.cfg.harness.demo.is_some() {
-            let dir = r.cfg.harness.demo_dir.clone().unwrap_or_else(|| "demo".into());
-            std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("DEMO_DIR {dir}: {e}"));
-            let ticks = r.game.demo_load(&r.cfg);
-            r.harness.demo = Some(crate::capture::Demo { dir, ticks, done: 0 });
-        }
-        if r.game.snap.yaw_q != r.view.yaw_q {
-            r.view.yaw_q = r.game.snap.yaw_q;
-            r.view.mask_q = r.view.yaw_q;
-            if !r.scene.prim_hide_mask.is_empty() {
-                r.gpu.set_yaw_masks(&r.ctx, r.view.yaw_q);
-            }
-            r.snap_target_to_lattice();
-        }
-        Ok(r)
+        let set = b.swap.as_ref().unwrap().scene_set;
+        b.gpu.bake_probes(&b.ctx, set, b.env0, cfg.render.probe_rays);
+        Ok(b)
     }
 
-    /// Whole-low-pixel render scale for the current zoom (#4).
-    pub fn rs(&self) -> i32 {
-        render_scale(self.view.zoom, self.base_scale)
-    }
-
-    /// (low buffer size, visible-region size) in low pixels, for pan clamping.
-    pub fn low_and_vis(&self) -> (Vec2, Vec2) {
-        let swap = self.swap.as_ref().unwrap();
-        let rs = self.rs() as f32;
-        let low = Vec2::new(swap.low_w as f32, swap.low_h as f32);
-        let vis = Vec2::new((swap.extent.width as f32 / rs).ceil(), (swap.extent.height as f32 / rs).ceil());
-        (low, vis)
-    }
-
-    pub fn clamp_pan_to_buffer(&mut self) {
-        if self.swap.is_some() {
-            let (low, vis) = self.low_and_vis();
-            self.view.pan = clamp_pan(self.view.pan, low, vis);
-        }
-    }
-
-    /// Centre the visible crop in the low buffer.
-    pub fn recenter_pan(&mut self) {
-        if self.swap.is_some() {
-            let (low, vis) = self.low_and_vis();
-            self.view.pan = (low - vis) * 0.5;
-        }
-    }
-
-    /// (Re)build the swapchain and all window-size-dependent resources.
-    pub unsafe fn recreate_swapchain(&mut self, win_w: u32, win_h: u32) {
+    /// (Re)build the swapchain and all window-size-dependent GPU resources.
+    /// Pure GPU — the Viewer re-centres pan after calling this.
+    pub unsafe fn recreate_gpu(&mut self, win_w: u32, win_h: u32) {
         self.ctx.device.device_wait_idle().ok();
         if let Some(old) = self.swap.take() {
             self.destroy_swap(old);
@@ -497,7 +316,7 @@ impl Renderer {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         let hud_buf = self.ctx.create_buffer(
-            (crate::menu::HUD_W * crate::menu::HUD_H) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
+            (HUD_W * HUD_H) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
@@ -534,7 +353,6 @@ impl Renderer {
         let render_finished: Vec<vk::Semaphore> = images.iter().map(|_| self.ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap()).collect();
 
         self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, hud_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, render_finished });
-        self.recenter_pan(); // start centred in the buffer
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
     }
 
@@ -557,45 +375,69 @@ impl Renderer {
         }
     }
 
-    /// Render + present one frame. Returns false if the swapchain needs rebuild.
-    pub unsafe fn draw(&mut self) -> bool {
-        if self.swap.is_none() {
-            return true;
-        }
-        let now = std::time::Instant::now();
-        let dt = self.last_frame.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(0.0);
-        self.last_frame = Some(now);
-        self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
-        // DEMO mode: the sim is driven ONE tick per rendered frame (the trace's
-        // commands drain per tick), NOT by the wall clock — a deterministic,
-        // fixed-tick gameplay capture. Live `run_due` is bypassed entirely.
-        if self.harness.demo.is_some() {
-            self.game.demo_advance_tick();
-            // a DEMO trace may `rotate` the camera (yaw_q is sim state): catch
-            // the viewer up to the sim's settled quarter WITHOUT re-queuing the
-            // command. Hard snap per quarter (no eased tween) — the DEMO path
-            // is a fixed-tick capture, so each angle holds for its trace ticks.
-            self.sync_view_yaw(self.game.snap.yaw_q);
-        } else {
-            // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
-            // keeps the wall clock OUT of the sim entirely — the capture frame is
-            // a pure function of (scene, config, CMDS trace); the only ticks that
-            // ever ran are the deterministic CMDS prefix (asserted at capture).
-            let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
-            self.game.run_due(sim_dt);
-        }
-        // playerless scenes (lab): WASD pans the camera — presentation only,
-        // on the wall clock like every other camera move
-        if !self.game.has_player && self.game.held != [false; 4] {
-            self.pan_camera_held(dt);
-        }
-        self.follow_camera(); // retarget at the player when the sim moved it
-        // smooth quarter-turn in flight: ease the yaw, swap masks at crossings
-        self.advance_rotation(dt);
-        // clip recording: collect last frame's capture + decide if this frame
-        // captures (all &mut self work, so it runs before the `swap` borrow)
-        let cap_issue = self.prepare_capture();
+    unsafe fn destroy_cap(&self, c: Cap) {
+        let d = &self.ctx.device;
+        d.destroy_image_view(c.img.2, None);
+        d.destroy_image(c.img.0, None);
+        d.free_memory(c.img.1, None);
+        self.ctx.destroy_buffer(&c.buf);
+    }
+}
 
+impl RenderBackend for VulkanBackend {
+    fn handles(&self) -> &SceneHandles {
+        &self.gpu.handles
+    }
+    fn light_count(&self) -> u32 {
+        self.gpu.light_count
+    }
+
+    fn rs(&self, zoom: f32) -> i32 {
+        render_scale(zoom, self.base_scale)
+    }
+
+    fn low_and_vis(&self, zoom: f32) -> (Vec2, Vec2) {
+        let swap = self.swap.as_ref().unwrap();
+        let rs = self.rs(zoom) as f32;
+        let low = Vec2::new(swap.low_w as f32, swap.low_h as f32);
+        let vis = Vec2::new((swap.extent.width as f32 / rs).ceil(), (swap.extent.height as f32 / rs).ceil());
+        (low, vis)
+    }
+
+    fn low_dims(&self) -> (u32, u32) {
+        let s = self.swap.as_ref().unwrap();
+        (s.low_w, s.low_h)
+    }
+
+    fn extent(&self) -> (u32, u32) {
+        let e = self.swap.as_ref().unwrap().extent;
+        (e.width, e.height)
+    }
+
+    fn menu_scale(&self) -> u32 {
+        self.swap.as_ref().map(|s| s.menu_scale).unwrap_or(2)
+    }
+
+    fn has_target(&self) -> bool {
+        self.swap.is_some()
+    }
+
+    unsafe fn recreate(&mut self, w: u32, h: u32) {
+        self.recreate_gpu(w, h);
+    }
+
+    unsafe fn set_yaw_masks(&mut self, yaw_q: u32) {
+        self.gpu.set_yaw_masks(&self.ctx, yaw_q);
+    }
+
+    unsafe fn wait_idle(&self) {
+        self.ctx.device.device_wait_idle().unwrap();
+    }
+
+    /// Render + (windowed) present one frame. The GPU half of the old
+    /// `Renderer::draw`, from the fence wait onward — moved verbatim so the
+    /// command sequence/barriers (and thus the golden bytes) are unchanged.
+    unsafe fn render_present(&mut self, fp: &FramePresent) -> bool {
         let swap = self.swap.as_ref().unwrap();
         let d = &self.ctx.device;
         d.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();
@@ -611,63 +453,19 @@ impl Renderer {
             None => None,
         };
         d.reset_fences(&[self.in_flight]).unwrap();
-        let t_acq = std::time::Instant::now(); // fence wait + acquire done
 
         let (low_w, low_h, extent) = (swap.low_w, swap.low_h, swap.extent);
         let sc_image = idx.map(|i| swap.images[i as usize]);
-
-        // camera: ISO_VIEW_CONTRACT at the movable look-at target
-        let cam = iso_camera_at(self.scene.min, self.scene.max, low_w, low_h, self.yaw_deg(), self.view.target);
-
-        // This frame's scene state, typed — built from the game SNAPSHOT (the
-        // step-9 adapter): nothing below reads sim internals, only what the
-        // snapshot publishes.
-        // - the flashlight + muzzle flash ride in the reserved trailing NEE
-        //   slots; the shade dispatch adds n_spot_active while lit (the probe
-        //   bake always used the bare light_count — the GI cache stays
-        //   torch-free; a light that moves must be direct-only)
-        // - the player mover renders at the snapshot's lattice-SNAPPED
-        //   position (web invariant: every mesh setPosition routes through
-        //   the ground snap; the game's Pos stays continuous). record_frame
-        //   patches the instance + rebuilds the TLAS only when the snapped
-        //   transform actually changed (the fence wait above guarantees no
-        //   in-flight TLAS read), or when a mask swap marked it dirty.
-        let spot = self.frame_spotlights();
-        // movers this frame: the player marker at its lattice-snapped position,
-        // plus every door leaf swung to its snapshot angle (record_frame
-        // patches each only on a bit-change, so idle movers never rebuild).
-        let mut instances: Vec<(InstanceKey, glam::Mat4)> = Vec::new();
-        if self.game.has_player {
-            if let Some(&k) = self.gpu.handles.instances.get("player") {
-                instances.push((k, glam::Mat4::from_translation(self.game.snap.player_pos)));
-            }
-        }
-        instances.extend(self.game.door_instances());
-        // game-authored light emission (flicker lives in house-game's
-        // light_system; LIGHT_ANIM=0 freezes to the authored base values) and
-        // the probe-bank lerp scalar: the sim's lit fraction × the LIGHTS dim.
-        // Scenes whose lights aren't game-owned (grid: none) keep the plain
-        // dim — there is nothing to toggle and the banks are identical anyway.
-        let emission = self.game.light_emission(self.light_anim, self.lights_dim);
-        let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
-        let fs = FrameState {
-            cam,
-            yaw_q: self.view.mask_q,
-            room_lights,
-            time: self.game.time(), // SIM time — the light-anim clock is replayable now
-            light_emission: &emission,
-            spotlights: spot.as_slice(),
-            instances: &instances,
-        };
 
         d.reset_command_buffer(self.cmd, vk::CommandBufferResetFlags::empty()).unwrap();
         d.begin_command_buffer(self.cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)).unwrap();
         let cmd = self.cmd;
 
-        self.gpu.record_frame(&self.ctx, cmd, &fs);
+        // This frame's scene-state update (lights → mover instances → TLAS
+        // refit iff dirty), then the deterministic shade dispatch.
+        self.gpu.record_frame(&self.ctx, cmd, fp.fs);
         let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
-        let push = ShadePush::new(&cam, low_w, low_h, self.env0, fs.room_lights, light_count, self.ao, self.ao_r, self.ao_n, self.debug);
-        // deterministic shade: one dispatch, every pixel final
+        let push = ShadePush::new(&fp.fs.cam, low_w, low_h, self.env0, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.shade_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[swap.scene_set], &[]);
         d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
@@ -677,40 +475,8 @@ impl Renderer {
 
         // #5: the GPU crop origin is round(pan); the fractional remainder stays
         // on the CPU side so the upscale lattice is always integer-aligned.
-        let rs = self.rs();
-        let pan = self.view.pan.round();
-        let yaw_now = self.yaw_deg();
-        // current projection rows: buffer px of world P (outline forward recovery)
-        let (_cd, cright, cup) = iso_basis(yaw_now);
-        let pa = cright * ISO_R;
-        let pb = -cup * ISO_R;
-        let off_x = -self.view.target.dot(cright) * ISO_R + low_w as f32 * 0.5 - 0.5;
-        let off_y = self.view.target.dot(cup) * ISO_R + low_h as f32 * 0.5 - 0.5;
-        // world-anchored dither/grain phase: the CURRENT camera's screen
-        // position of the world origin, rounded to the pixel lattice. The
-        // tonemap subtracts it from lp, so ordered-dither/grain patterns
-        // travel WITH the scene during WASD pans instead of crawling against
-        // it (the camera moves in whole pixels, so the fraction is constant
-        // within a pan and the glue is exact).
-        // quantize with round(x - 0.25): the value is INTEGRAL when the low
-        // dim is even but HALF-INTEGRAL when odd (the dim/2 - 0.5 term), and
-        // f32 noise (~1e-4) flips floor() at integers and round() at halves —
-        // either choice slips the pattern 1 px on some window parities. The
-        // -0.25 bias puts the decision points a full 0.25 from BOTH lattices,
-        // and integer camera steps still advance the phase by exactly 1.
-        let dphase_x = (-self.view.target.dot(cright) * ISO_R + low_w as f32 * 0.5 - 0.75).round();
-        let dphase_y = (self.view.target.dot(cup) * ISO_R + low_h as f32 * 0.5 - 0.75).round();
-        let tp = TonePush {
-            dims: [low_w as i32, low_h as i32, extent.width as i32, extent.height as i32],
-            cfg: [rs, pan.x as i32, pan.y as i32, 0],
-            fcfg: [self.exposure, self.style.grain, self.frame as f32, dphase_x],
-            proj_a: [pa.x, pa.y, pa.z, off_x],
-            proj_b: [pb.x, pb.y, pb.z, off_y],
-            style1: [self.style.grade, self.style.poster, self.style.dither, self.style.dither_amt],
-            style2: [self.style.palette, self.style.pal_p, self.style.vignette, self.style.outline],
-            style3: [self.style.grain_sz, self.style.grain_static, self.style.bloom, self.style.bloom_th],
-            style4: [self.style.sdither, self.style.sdither_n, self.style.sdither_th, dphase_y],
-        };
+        let rs = self.rs(fp.zoom);
+        let tp = build_tone_push(low_w, low_h, extent.width, extent.height, rs, fp.pan, fp.target, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline_layout, 0, &[swap.tone_set], &[]);
         d.cmd_push_constants(cmd, self.tone_pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&tp));
@@ -732,11 +498,11 @@ impl Renderer {
             // ESC tune-menu overlay (panel, or the hamburger icon when closed):
             // CPU-drawn, copied onto the PRESENTED image only — swap.out stays
             // clean, so SHOT/MOVIE/DUMP captures never contain UI. Headless modes
-            // skip it entirely.
-            if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
-                let (canvas, mw, mh) = self.menu_canvas();
+            // pass no overlay.
+            if let Some(ov) = &fp.overlay {
                 let bgra = matches!(self.present.as_ref().unwrap().surface_format.format, vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB);
-                let bytes = crate::menu::expand_canvas(&canvas, mw, mh, swap.menu_scale, bgra);
+                let (canvas, mw, mh) = ov.menu;
+                let bytes = crate::menu::expand_canvas(canvas, mw, mh, swap.menu_scale, bgra);
                 let (pw, ph) = (mw as u32 * swap.menu_scale, mh as u32 * swap.menu_scale);
                 if MENU_MARGIN as u32 + pw <= extent.width && MENU_MARGIN as u32 + ph <= extent.height {
                     self.ctx.upload(&swap.menu_buf, &bytes);
@@ -748,9 +514,8 @@ impl Renderer {
                 }
                 // score HUD: player scenes only, top-right corner (same
                 // overlay-only path — never on swap.out, so captures stay UI-free)
-                if self.game.has_player {
-                    let (canvas, hw, hh) = self.score_canvas();
-                    let bytes = crate::menu::expand_canvas(&canvas, hw, hh, swap.menu_scale, bgra);
+                if let Some((canvas, hw, hh)) = ov.score {
+                    let bytes = crate::menu::expand_canvas(canvas, hw, hh, swap.menu_scale, bgra);
                     let (pw, ph) = (hw as u32 * swap.menu_scale, hh as u32 * swap.menu_scale);
                     if pw + MENU_MARGIN as u32 <= extent.width && ph + MENU_MARGIN as u32 <= extent.height {
                         self.ctx.upload(&swap.hud_buf, &bytes);
@@ -768,20 +533,24 @@ impl Renderer {
         // is identical after the integer-NEAREST upscale, so any sample is
         // the game pixel — then copy to the host-visible buffer, collected
         // next frame after the fence wait. Async by construction: no stalls.
-        if cap_issue {
-            let cap = self.cap.as_ref().unwrap();
-            barrier(d, cmd, cap.img.0, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
+        if fp.capture {
+            let (cap_img, cap_buf, cap_w, cap_h) = {
+                let cap = self.cap.as_ref().unwrap();
+                (cap.img.0, cap.buf.buffer, cap.w, cap.h)
+            };
+            barrier(d, cmd, cap_img, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
             let down = vk::ImageBlit::default()
                 .src_subresource(layers)
-                .src_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: (cap.w as i32) * rs, y: (cap.h as i32) * rs, z: 1 }])
+                .src_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: (cap_w as i32) * rs, y: (cap_h as i32) * rs, z: 1 }])
                 .dst_subresource(layers)
-                .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: cap.w as i32, y: cap.h as i32, z: 1 }]);
-            d.cmd_blit_image(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, cap.img.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[down], vk::Filter::NEAREST);
-            barrier(d, cmd, cap.img.0, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER);
-            let region = vk::BufferImageCopy::default().image_subresource(layers).image_extent(vk::Extent3D { width: cap.w, height: cap.h, depth: 1 });
-            d.cmd_copy_image_to_buffer(cmd, cap.img.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, cap.buf.buffer, &[region]);
+                .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: cap_w as i32, y: cap_h as i32, z: 1 }]);
+            d.cmd_blit_image(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, cap_img, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[down], vk::Filter::NEAREST);
+            barrier(d, cmd, cap_img, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER);
+            let region = vk::BufferImageCopy::default().image_subresource(layers).image_extent(vk::Extent3D { width: cap_w, height: cap_h, depth: 1 });
+            d.cmd_copy_image_to_buffer(cmd, cap_img, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, cap_buf, &[region]);
             // make the buffer write visible to the host read after the fence
             d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::HOST, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::HOST_READ)], &[], &[]);
+            self.cap.as_mut().unwrap().pending = true;
         }
         // out back to GENERAL for next frame; swapchain -> PRESENT
         barrier(d, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
@@ -792,7 +561,7 @@ impl Renderer {
         d.end_command_buffer(cmd).unwrap();
 
         let cmds = [cmd];
-        let ok = match (&self.present, idx) {
+        match (&self.present, idx) {
             (Some(p), Some(idx)) => {
                 let wait = [p.image_available];
                 let wait_stage = [vk::PipelineStageFlags::COMPUTE_SHADER];
@@ -813,28 +582,93 @@ impl Renderer {
                 d.queue_submit(self.ctx.queue, &[vk::SubmitInfo::default().command_buffers(&cmds)], self.in_flight).unwrap();
                 true
             }
-        };
-
-        self.frame = self.frame.wrapping_add(1);
-
-        // CPU frame-time (how long draw() blocks the main thread)
-        let cpu_ms = now.elapsed().as_secs_f32() * 1000.0;
-        if self.cfg.harness.timing {
-            let wait_ms = (t_acq - now).as_secs_f32() * 1000.0;
-            println!("TIME f={:04} total={:6.2}ms wait={:6.2} record+present={:6.2} rot={}", self.frame, cpu_ms, wait_ms, cpu_ms - wait_ms, self.view.rot.is_some());
         }
-        self.frame_time_sum += cpu_ms;
-        if let Some(limit) = self.cfg.harness.frames_limit {
-            if self.frame >= limit {
-                d.device_wait_idle().unwrap();
-                println!("FRAMES={limit}: avg CPU frame {:.2}ms", self.frame_time_sum / limit as f32);
-                self.exit_requested = true;
+    }
+
+    /// Read back `out` and take every render-scale-th pixel — the exact
+    /// low-res game image (the upscale is integer NEAREST). RGBA bytes.
+    unsafe fn readback_out_subsampled(&self, rs: i32) -> (u32, u32, Vec<u8>) {
+        let swap = self.swap.as_ref().unwrap();
+        let (w, h) = (swap.extent.width, swap.extent.height);
+        let n = (w * h) as usize;
+        let readback = self.ctx.create_buffer((n * 4) as u64, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+        self.ctx.one_time(|cmd| {
+            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            let region = vk::BufferImageCopy::default().image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 }).image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
+            self.ctx.device.cmd_copy_image_to_buffer(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, readback.buffer, &[region]);
+            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+        });
+        let ptr = self.ctx.device.map_memory(readback.memory, 0, (n * 4) as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
+        let full = std::slice::from_raw_parts(ptr, n * 4);
+        let rs = rs as u32;
+        let (sw, sh) = (w / rs, h / rs);
+        let mut sub = vec![0u8; (sw * sh * 4) as usize];
+        for y in 0..sh {
+            for x in 0..sw {
+                let src = (((y * rs) * w + x * rs) * 4) as usize;
+                let dst = ((y * sw + x) * 4) as usize;
+                sub[dst..dst + 4].copy_from_slice(&full[src..src + 4]);
             }
         }
+        self.ctx.device.unmap_memory(readback.memory);
+        self.ctx.destroy_buffer(&readback);
+        (sw, sh, sub)
+    }
 
-        // harness outputs: DUMP frame collection, the scripted movie, SHOT
-        self.harness_post_frame();
+    /// Dump the `out` image (the exact thing blitted to the swapchain) to a PNG.
+    unsafe fn capture_png(&self, path: &str) {
+        self.ctx.device.device_wait_idle().unwrap();
+        let swap = self.swap.as_ref().unwrap();
+        let (w, h) = (swap.extent.width, swap.extent.height);
+        let n = (w * h) as usize;
+        let readback = self.ctx.create_buffer((n * 4) as u64, vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+        self.ctx.one_time(|cmd| {
+            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            let region = vk::BufferImageCopy::default().image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 }).image_extent(vk::Extent3D { width: w, height: h, depth: 1 });
+            self.ctx.device.cmd_copy_image_to_buffer(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, readback.buffer, &[region]);
+            barrier(&self.ctx.device, cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+        });
+        let ptr = self.ctx.device.map_memory(readback.memory, 0, (n * 4) as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
+        let pixels = std::slice::from_raw_parts(ptr, n * 4).to_vec();
+        self.ctx.device.unmap_memory(readback.memory);
+        self.ctx.destroy_buffer(&readback);
+        crate::capture::write_png(path, w, h, &pixels);
+        println!("captured {path} ({w}x{h})");
+    }
 
-        ok
+    fn capture_target_size(&self) -> Option<(u32, u32)> {
+        self.cap.as_ref().map(|c| (c.w, c.h))
+    }
+
+    unsafe fn ensure_capture_target(&mut self, w: u32, h: u32) {
+        if self.cap.as_ref().is_some_and(|c| (c.w, c.h) != (w, h)) {
+            // size change with nothing collected yet: refit silently — the
+            // Viewer only reaches here after the fence retired the old use.
+            let c = self.cap.take().unwrap();
+            self.destroy_cap(c);
+        }
+        if self.cap.is_none() {
+            let img = make_storage_image(&self.ctx, w, h, vk::Format::R8G8B8A8_UNORM);
+            let buf = self.ctx.create_buffer(
+                (w * h * 4) as u64,
+                vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            self.cap = Some(Cap { img, buf, w, h, pending: false });
+        }
+    }
+
+    unsafe fn collect_pending_capture(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+        if !self.cap.as_ref().is_some_and(|c| c.pending) {
+            return None;
+        }
+        self.ctx.device.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();
+        let cap = self.cap.as_mut().unwrap();
+        cap.pending = false;
+        let n = (cap.w * cap.h) as usize * 4;
+        let ptr = self.ctx.device.map_memory(cap.buf.memory, 0, n as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
+        let pixels = std::slice::from_raw_parts(ptr, n).to_vec();
+        self.ctx.device.unmap_memory(cap.buf.memory);
+        Some((cap.w, cap.h, pixels))
     }
 }

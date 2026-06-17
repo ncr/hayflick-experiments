@@ -34,18 +34,20 @@
 //! ROTATE_AT synthetic input, DUMP / DUMP_AT / DUMP_N frame dumps,
 //! MOVIE scripted tour, FRAMES / TIMING perf, WINDOW=WxH exact size.
 
+mod backend;
 mod capture;
 mod game_scene;
 mod menu;
-mod renderer;
 mod sim;
 mod view;
+mod viewer;
+mod vulkan_backend;
 
 use glam::Vec2;
 use house_game::Command;
 use menu::MENU;
-use renderer::Renderer;
 use rt_probe::Config;
+use viewer::Viewer;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -56,7 +58,7 @@ use winit::window::{Window, WindowId};
 struct App {
     cfg: Option<Config>,
     window: Option<Arc<Window>>,
-    renderer: Option<Renderer>,
+    renderer: Option<Viewer>,
 }
 
 impl ApplicationHandler for App {
@@ -68,7 +70,7 @@ impl ApplicationHandler for App {
         let (w, h) = cfg.harness.window.unwrap_or((1280, 800));
         let attrs = Window::default_attributes().with_title("rt-probe — iso viewer").with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
-        let renderer = unsafe { Renderer::new(Some(&window), cfg).expect("renderer init") };
+        let renderer = unsafe { Viewer::new(Some(&window), cfg).expect("renderer init") };
         self.window = Some(window);
         self.renderer = Some(renderer);
     }
@@ -218,7 +220,7 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     if size.width > 0 && size.height > 0 {
-                        unsafe { r.recreate_swapchain(size.width, size.height) };
+                        unsafe { r.recreate(size.width, size.height) };
                     }
                 }
             }
@@ -232,7 +234,7 @@ impl ApplicationHandler for App {
                     if !ok {
                         let s = w.inner_size();
                         if s.width > 0 && s.height > 0 {
-                            unsafe { r.recreate_swapchain(s.width, s.height) };
+                            unsafe { r.recreate(s.width, s.height) };
                         }
                     }
                 }
@@ -256,7 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // never gets a say in the size. Same frame sequence as the windowed
     // capture: draw() until harness_post_frame fires the SHOT and exits.
     if cfg.harness.shot.is_some() {
-        let mut r = unsafe { Renderer::new(None, cfg)? };
+        let mut r = unsafe { Viewer::new(None, cfg)? };
         while !r.exit_requested {
             unsafe { r.draw() };
         }
@@ -266,7 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // — but plays a gameplay trace one tick per draw(), dumping a PNG per tick
     // (the wall clock never ticks the sim; the per-tick command drain does).
     if cfg.harness.demo.is_some() {
-        let mut r = unsafe { Renderer::new(None, cfg)? };
+        let mut r = unsafe { Viewer::new(None, cfg)? };
         while !r.exit_requested {
             unsafe { r.draw() };
         }
