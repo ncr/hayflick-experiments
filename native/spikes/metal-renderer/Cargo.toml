@@ -1,0 +1,23 @@
+# Headless Metal renderer of a real rt-probe Scene — the Apple-Silicon render
+# path grown from the Phase-0 spike, fully verifiable on the M2 Pro (SHOT→PNG).
+# Own [workspace] table → excluded from the native/ workspace, so the
+# NVIDIA/Vulkan build is untouched. Consumes the REAL rt_probe::Scene +
+# scan_lights + iso-core (the plan's shared Vulkan-free types). macOS-only.
+[package]
+name = "metal-renderer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "metal-renderer"
+path = "src/main.rs"
+
+[dependencies]
+metal = "0.33.0"
+glam = "0.30"
+png = "0.17"
+rt-probe = { path = "../../rt-probe" }
+iso-core = { path = "../../crates/iso-core" }

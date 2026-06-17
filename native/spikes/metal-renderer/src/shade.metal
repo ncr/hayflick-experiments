@@ -1,0 +1,265 @@
+// shade.metal — MSL port of rt-probe/src/shaders/shade.comp.
+//
+// Deterministic per-frame ray-traced shade: one primary ray per pixel centre,
+// exact shadow rays to the sun + every NEE light, short-range RT-AO, and an
+// (optional) world-space irradiance-probe GI lookup. No randomness → a fixed
+// camera gives a bit-identical image. This is the Apple-Silicon twin of the
+// Vulkan ray_query shader; structs are byte-for-byte ports (packed_float3 to
+// match GL_EXT_scalar_block_layout vec3 = 12 B).
+//
+// Differences from the GLSL while the headless renderer grows:
+//   * textures (binding 6 in Vulkan) deferred → albedo = baseColor (M3 adds the
+//     bindless texture array). texIndex is ignored here.
+//   * probe GI gated by pc.hasProbes; M1 binds a dummy header and skips it.
+// Everything else (sun NEE, light NEE incl. spotlight/screen falloff, AO, fog,
+// sky, the +1/64 px tie bias) is a faithful port.
+
+#include <metal_stdlib>
+#include <metal_raytracing>
+using namespace metal;
+using namespace metal::raytracing;
+
+struct Vertex   { packed_float3 pos; packed_float3 nrm; float2 uv; };                 // 32 B
+struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };   // 16 B
+struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int texIndex; int pad; }; // 48 B
+struct Light    { float4 posRad; float4 color; float4 dir; };                         // 48 B
+
+// Mirrors the Rust Push struct (see main.rs). cam*.w carries half-extents / AO.
+struct Push {
+    float4 camRight;  // xyz basis, w = ortho half-width (wu)
+    float4 camUp;     // xyz basis, w = ortho half-height (wu)
+    float4 camDir;    // xyz forward, w = RT-AO radius (wu)
+    float4 camPos;    // xyz eye,     w = RT-AO strength
+    int4   misc;      // W, H, aoRays, debug
+    int4   misc2;     // lightCount, hasProbes, roomLights16, _
+    float4 env0;      // sunScale, skyScale, fogDensity, fogHeight
+};
+
+constant float PI    = 3.14159265;
+constant float TWOPI = 6.2831853;
+constant float TIE   = 1.0 / 64.0;
+
+// NEAREST + REPEAT, no mips — one atlas texel = one game pixel (the pixel-perfect
+// invariant; never LinearFilter on this chain). Base-colour textures are sampled
+// from sRGB-format MTLTextures, so the GPU returns linear, matching hex_linear.
+constexpr sampler texSamp(filter::nearest, mip_filter::none, address::repeat);
+
+struct Hit { float t; float3 n; float2 uv; int mat; };
+
+static float3 skyCol(float3 d, constant Push& pc) {
+    float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+    float3 horizon = float3(0.80, 0.83, 0.90);
+    float3 zenith  = float3(0.28, 0.45, 0.92);
+    float3 ground  = float3(0.14, 0.13, 0.12);
+    float3 c = (d.y > 0.0) ? mix(horizon, zenith, pow(t, 1.4))
+                           : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0));
+    return c * 0.18 * pc.env0.y;
+}
+
+static float fogOD(float3 o, float3 d, float t, constant Push& pc) {
+    float D = pc.env0.z, H = pc.env0.w;
+    if (abs(d.y) < 1e-4) return D * exp(-o.y / H) * t;
+    return D * (H / d.y) * (exp(-o.y / H) - exp(-(o.y + d.y * t) / H));
+}
+
+// closest-hit trace with the offset-table geometry fetch (shade.comp:65-84)
+static bool trace(float3 o, float3 dir, float tmax, uint mask,
+                  instance_acceleration_structure accel,
+                  device const Vertex* verts, device const uint* indices,
+                  device const GeomInfo* geoms, thread Hit& h) {
+    ray r; r.origin = o; r.direction = dir; r.min_distance = 0.001; r.max_distance = tmax;
+    intersector<instancing, triangle_data> isect;
+    isect.assume_geometry_type(geometry_type::triangle);
+    isect.force_opacity(forced_opacity::opaque);
+    intersection_result<instancing, triangle_data> it = isect.intersect(r, accel, mask);
+    if (it.type == intersection_type::none) return false;
+    h.t = it.distance;
+    int gi = int(it.instance_id);            // == instanceCustomIndex == prim row
+    uint prim = it.primitive_id;
+    float2 bc = it.triangle_barycentric_coord;
+    float b0 = 1.0 - bc.x - bc.y, b1 = bc.x, b2 = bc.y;
+    GeomInfo g = geoms[gi];
+    uint i0 = indices[g.indexOffset + prim * 3u + 0u] + g.vertexOffset;
+    uint i1 = indices[g.indexOffset + prim * 3u + 1u] + g.vertexOffset;
+    uint i2 = indices[g.indexOffset + prim * 3u + 2u] + g.vertexOffset;
+    Vertex v0 = verts[i0], v1 = verts[i1], v2 = verts[i2];
+    h.n  = normalize(b0 * float3(v0.nrm) + b1 * float3(v1.nrm) + b2 * float3(v2.nrm));
+    h.uv = b0 * v0.uv + b1 * v1.uv + b2 * v2.uv;
+    h.mat = g.materialId;
+    return true;
+}
+
+static bool occluded(float3 o, float3 dir, float tmax, instance_acceleration_structure accel) {
+    ray r; r.origin = o; r.direction = dir; r.min_distance = 0.001; r.max_distance = tmax;
+    intersector<instancing, triangle_data> isect;
+    isect.assume_geometry_type(geometry_type::triangle);
+    isect.force_opacity(forced_opacity::opaque);
+    isect.accept_any_intersection(true);  // gl_RayFlagsTerminateOnFirstHitEXT
+    return isect.intersect(r, accel, 0xFFu).type != intersection_type::none;
+}
+
+// AO visibility: 1 on miss, t/R on a first hit within range R.
+static float aoVis(float3 o, float3 dir, float R, instance_acceleration_structure accel) {
+    ray r; r.origin = o; r.direction = dir; r.min_distance = 0.001; r.max_distance = R;
+    intersector<instancing, triangle_data> isect;
+    isect.assume_geometry_type(geometry_type::triangle);
+    isect.force_opacity(forced_opacity::opaque);
+    isect.accept_any_intersection(true);
+    intersection_result<instancing, triangle_data> it = isect.intersect(r, accel, 0xFFu);
+    if (it.type == intersection_type::none) return 1.0;
+    return clamp(it.distance / R, 0.0, 1.0);
+}
+
+static float rtAO(float3 p, float3 n, int N, float R, float strength, instance_acceleration_structure accel) {
+    float3 t1 = normalize(abs(n.y) < 0.99 ? cross(n, float3(0,1,0)) : cross(n, float3(1,0,0)));
+    float3 t2 = cross(n, t1);
+    float vis = 0.0;
+    for (int i = 0; i < N; i++) {
+        float u = (float(i) + 0.5) / float(N);
+        float rr = sqrt(u);
+        float ph = TWOPI * fract(float(i) * 0.6180339887);
+        float3 d = t1 * (rr * cos(ph)) + t2 * (rr * sin(ph)) + n * sqrt(max(1.0 - u, 0.0));
+        vis += aoVis(p, d, R, accel);
+    }
+    return mix(1.0, vis / float(N), strength);
+}
+
+// world-space irradiance probe lookup (shade.comp:132-167). Two banks lerped by
+// roomLights16/65536. M1 binds a dummy header (dims 0) → returns 0.
+static float3 axisFaces(device const float* pd, uint b0, uint b1, uint off, float lp) {
+    return mix(float3(pd[b0+off], pd[b0+off+1u], pd[b0+off+2u]),
+               float3(pd[b1+off], pd[b1+off+1u], pd[b1+off+2u]), lp);
+}
+static float3 probeE(float3 p, float3 n, device const float* pd, constant Push& pc) {
+    float3 origin = float3(pd[0], pd[1], pd[2]);
+    float spacing = pd[3];
+    int3 dims = int3(int(pd[4]), int(pd[5]), int(pd[6]));
+    if (dims.x < 1 || dims.y < 1 || dims.z < 1) return float3(0.0);
+    uint bankStride = uint(dims.x * dims.y * dims.z) * 20u;
+    float lp = float(pc.misc2.z) / 65536.0;
+    float3 f = (p + n * (0.3 * spacing) - origin) / spacing;
+    f = clamp(f, float3(0.0), float3(dims) - 1.001);
+    int3 i0 = int3(floor(f));
+    float3 t = f - float3(i0);
+    float3 n2 = n * n;
+    float3 e = float3(0.0);
+    float wsum = 0.0;
+    for (int c = 0; c < 8; c++) {
+        int3 ic = i0 + int3(c & 1, (c >> 1) & 1, (c >> 2) & 1);
+        float3 w3 = mix(1.0 - t, t, float3(ic - i0));
+        float w = w3.x * w3.y * w3.z;
+        if (w <= 1e-5) continue;
+        uint pi = uint(ic.x + ic.y * dims.x + ic.z * dims.x * dims.y);
+        uint base = 16u + pi * 20u;
+        uint base1 = base + bankStride;
+        float cnt = pd[base + 18u];
+        if (cnt < 1.0) continue;
+        float3 fx = n.x > 0.0 ? axisFaces(pd, base, base1, 0u, lp)  : axisFaces(pd, base, base1, 3u, lp);
+        float3 fy = n.y > 0.0 ? axisFaces(pd, base, base1, 6u, lp)  : axisFaces(pd, base, base1, 9u, lp);
+        float3 fz = n.z > 0.0 ? axisFaces(pd, base, base1, 12u, lp) : axisFaces(pd, base, base1, 15u, lp);
+        float3 E = (n2.x * fx + n2.y * fy + n2.z * fz) * (12.566370 / cnt);
+        e += w * E;
+        wsum += w;
+    }
+    return wsum > 1e-5 ? e / wsum : float3(0.0);
+}
+
+kernel void shade(
+    instance_acceleration_structure accel [[buffer(0)]],
+    device const Vertex*   verts   [[buffer(1)]],
+    device const uint*     indices [[buffer(2)]],
+    device const GeomInfo* geoms   [[buffer(3)]],
+    device const Material* mats    [[buffer(4)]],
+    device const Light*    lights  [[buffer(5)]],
+    device const float*    pd      [[buffer(6)]],
+    constant Push&         pc      [[buffer(7)]],
+    device float4*         outRadiance [[buffer(8)]],
+    array<texture2d<float>, NTEX_COUNT> texs [[texture(0)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    int W = pc.misc.x, H = pc.misc.y;
+    if (int(gid.x) >= W || int(gid.y) >= H) return;
+    uint idx = gid.y * uint(W) + gid.x;
+
+    float3 sunDir = normalize(float3(0.62, 0.55, 0.38));
+    float3 sun = float3(1.0, 0.88, 0.70) * 6.0 * pc.env0.x;
+
+    float u = ((float(gid.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;
+    float v = -(((float(gid.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);
+    float3 o = float3(pc.camPos.xyz) + u * pc.camRight.w * float3(pc.camRight.xyz)
+                                     + v * pc.camUp.w    * float3(pc.camUp.xyz);
+    float3 d = normalize(float3(pc.camDir.xyz));
+
+    Hit h;
+    bool hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
+
+    float fogT = 1.0;
+    float3 fogAdd = float3(0.0);
+    if (pc.env0.z > 0.0) {
+        float tseg = hitb ? h.t : min(300.0, o.y / max(-d.y, 1e-4));
+        fogT = exp(-fogOD(o, d, tseg, pc));
+        float3 fogCol = float3(0.55, 0.58, 0.66) * 0.18 * pc.env0.y;
+        fogAdd = fogCol * (1.0 - fogT);
+        if (pc.env0.x > 0.0) {
+            float L = min(tseg, 8.0 * pc.env0.w / max(-d.y, 0.05));
+            float ts = tseg - 0.5 * L;
+            float3 ps = o + d * ts;
+            float ss = pc.env0.z * exp(-max(ps.y, 0.0) / pc.env0.w);
+            if (ss > 1e-5 && !occluded(ps, sunDir, 200.0, accel))
+                fogAdd += sun * ss * exp(-fogOD(o, d, ts, pc)) * L * 0.08;
+        }
+    }
+
+    float3 col;
+    if (!hitb) {
+        col = skyCol(d, pc) * fogT + fogAdd;
+        outRadiance[idx] = float4(col, 1.0);
+        return;
+    }
+
+    Material m = mats[h.mat];
+    float3 albedo = m.baseColor.rgb;
+    if (m.texIndex >= 0) albedo *= texs[m.texIndex].sample(texSamp, h.uv).rgb;
+    float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
+    if (pc.misc.w == 1) { outRadiance[idx] = float4(albedo, 1.0); return; }
+    float3 p = o + h.t * d + n * 0.003;
+    if (pc.misc.w == 2) { outRadiance[idx] = float4(albedo * (1.0/PI) * probeE(p, n, pd, pc), 1.0); return; }
+
+    col = m.emissive.rgb; // camera sees emitters
+
+    float ndl = max(dot(n, sunDir), 0.0);
+    if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0, accel)) col += albedo * sun * ndl;
+
+    int lc = pc.misc2.x;
+    for (int li = 0; li < lc; li++) {
+        Light lt = lights[li];
+        float3 toL = lt.posRad.xyz - p;
+        float dist = max(length(toL), 1e-4);
+        if (dist <= lt.posRad.w) continue;
+        float3 ldir = toL / dist;
+        float ndl2 = dot(n, ldir);
+        if (ndl2 <= 0.0) continue;
+        float emit = 1.0;
+        if (lt.dir.w == 2.0) {
+            float co = lt.color.w;
+            emit = smoothstep(co, mix(co, 1.0, 0.6), dot(-ldir, lt.dir.xyz));
+        } else if (lt.dir.w > 0.0) {
+            emit = 2.0 * max(dot(-ldir, lt.dir.xyz), 0.0);
+        }
+        if (emit <= 0.0) continue;
+        float sinT = clamp(lt.posRad.w / dist, 0.0, 1.0);
+        float omega = TWOPI * (1.0 - sqrt(1.0 - sinT * sinT));
+        float3 c = albedo * (1.0/PI) * lt.color.rgb * ndl2 * omega * emit;
+        if (max(c.r, max(c.g, c.b)) < 0.0015) continue;
+        if (!occluded(p, ldir, dist - lt.posRad.w, accel)) col += c;
+    }
+
+    float ao = 1.0;
+    if (pc.camPos.w > 0.0 && pc.misc.z > 0 && pc.camDir.w > 0.0)
+        ao = rtAO(p, n, pc.misc.z, pc.camDir.w, pc.camPos.w, accel);
+    if (pc.misc.w == 4) { outRadiance[idx] = float4(float3(ao), 1.0); return; }
+    if (pc.misc.w != 3 && pc.misc2.y != 0) col += albedo * (1.0/PI) * probeE(p, n, pd, pc) * ao;
+
+    col = col * fogT + fogAdd;
+    outRadiance[idx] = float4(col, 1.0);
+}
