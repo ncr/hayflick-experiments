@@ -97,6 +97,27 @@ pub struct LightKey(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InstanceKey(u32);
 
+// Opaque-key (de)construction for backends that build their own handle maps
+// outside this crate (the Metal backend mirrors SceneGpu's dynamic-run join).
+// The Vulkan path constructs these directly (same crate); these accessors keep
+// the wrapped index private while letting another crate round-trip a key.
+impl LightKey {
+    pub fn from_index(i: u32) -> LightKey {
+        LightKey(i)
+    }
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+impl InstanceKey {
+    pub fn from_index(i: u32) -> InstanceKey {
+        InstanceKey(i)
+    }
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+
 /// Name → handle maps built once at `SceneGpu::build`; the viewer adapter
 /// joins game ids onto these (and must report missing names loudly).
 pub struct SceneHandles {

@@ -151,10 +151,15 @@ pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, 
 }
 
 /// Construct the GPU backend for this platform. Selected at compile time by
-/// target OS (the NVIDIA/Vulkan path stays untouched; Apple Silicon gets
-/// Metal). Phase 1: Vulkan everywhere — `ash` compiles on macOS (it just
-/// won't run), so the refactor compile-checks on the Mac and the byte-for-byte
-/// golden runs on the RTX box. The macOS branch flips to Metal in a later commit.
+/// target OS: Apple Silicon gets the Metal backend (MoltenVK has no ray
+/// tracing); everywhere else the hardware-ray-query Vulkan backend. Both
+/// satisfy `RenderBackend`, so `Viewer` is identical across platforms.
+#[cfg(target_os = "macos")]
 pub fn new_backend(window: Option<&Window>, scene: &Scene, cfg: &Config) -> Box<dyn RenderBackend> {
-    Box::new(unsafe { crate::vulkan_backend::VulkanBackend::new(window, scene, cfg).expect("backend init") })
+    Box::new(unsafe { crate::metal_backend::MetalBackend::new(window, scene, cfg).expect("metal backend init") })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn new_backend(window: Option<&Window>, scene: &Scene, cfg: &Config) -> Box<dyn RenderBackend> {
+    Box::new(unsafe { crate::vulkan_backend::VulkanBackend::new(window, scene, cfg).expect("vulkan backend init") })
 }

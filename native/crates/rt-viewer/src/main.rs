@@ -41,6 +41,12 @@ mod menu;
 mod sim;
 mod view;
 mod viewer;
+// Backend selected at compile time by target OS (the plan): Metal on Apple
+// Silicon, Vulkan everywhere else. The Vulkan path is verified byte-for-byte on
+// the RTX box; the Metal path runs + is golden-checked on the M2 Pro.
+#[cfg(target_os = "macos")]
+mod metal_backend;
+#[cfg(not(target_os = "macos"))]
 mod vulkan_backend;
 
 use glam::Vec2;

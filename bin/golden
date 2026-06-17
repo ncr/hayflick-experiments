@@ -23,7 +23,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-GOLD=native/rt-probe/golden
+# Goldens are MACHINE-SPECIFIC (GPU + driver exact float behaviour) AND
+# BACKEND-specific: the Vulkan (NVIDIA) and Metal (Apple Silicon) paths produce
+# different floats, so each keeps its own set. GOLDEN_DIR selects which — the
+# default is the Vulkan set; the M2 Pro uses
+# `GOLDEN_DIR=native/rt-probe/golden-metal bin/golden`.
+GOLD="${GOLDEN_DIR:-native/rt-probe/golden}"
 OUT="${TMPDIR:-/tmp}/rt-golden"
 UPDATE="${1:-}"
 
@@ -41,7 +46,8 @@ for s in house lab grid game game_replay; do
   esac
   if [ "$UPDATE" = "--update" ]; then
     cp "$OUT/$s.png" "$GOLD/$s.png"
-    echo "golden updated: $s ($(stat -c%s "$GOLD/$s.png") bytes)"
+    # portable byte count (GNU stat -c%s vs BSD/macOS stat -f%z differ)
+    echo "golden updated: $s ($(wc -c < "$GOLD/$s.png" | tr -d ' ') bytes)"
   elif [ ! -f "$GOLD/$s.png" ]; then
     echo "MISS $s — no golden yet (run bin/golden --update)"
     fail=1

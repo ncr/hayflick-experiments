@@ -137,6 +137,48 @@ stay event-driven (`set_yaw_masks`, which now marks the TLAS dirty) until the st
 `record_frame` patches mover transforms only on bit-change (CPU shadow), so idle frames
 never rebuild the TLAS.
 
+### Render backends — `RenderBackend` trait (Vulkan + Metal)
+
+The GPU half is swappable behind a `RenderBackend` trait (`rt-viewer/src/backend.rs`),
+selected at compile time by target OS (`new_backend`). The `Viewer`
+(`rt-viewer/src/viewer.rs`) owns the sim/camera/pan/harness orchestration and the
+`Scene`, and drives the GPU exclusively through the trait — it never names a Vulkan or
+Metal type. Everything crossing the boundary is plain data (`FrameState`, `Spotlight`,
+`SceneHandles` — all Vulkan-free, in `rt-probe`) plus the small `FramePresent` /
+`TonePush` bundles in `backend.rs`.
+
+```
+Viewer (sim loop, camera/pan, harness, FrameState builder)
+  └── RenderBackend  ── #[cfg(target_os = "…")]
+        ├── VulkanBackend  (rt-viewer/src/vulkan_backend.rs) — hardware ray_query (NVIDIA/desktop)
+        └── MetalBackend   (rt-viewer/src/metal_backend.rs)  — Metal compute RT (Apple Silicon)
+```
+
+- **Why two backends, not MoltenVK:** MoltenVK still implements no ray tracing /
+  acceleration structures (June 2026), so the Vulkan binary can't run on Apple Silicon at
+  all. `MetalBackend` uses Metal's own `metal::raytracing::intersector` + an
+  `MTLInstanceAccelerationStructure`, via `metal-rs` 0.33. Bindless geometry is the
+  **concatenated scalar buffers + offset table** (indexed by `intersection.instance_id`),
+  NOT `gpuAddress`. Scalar byte-match is load-bearing: `packed_float3` not `float3`
+  (`Vertex` 32 B, `Material` 48 B asserted both sides).
+- **Shaders:** the three GLSL compute shaders (`rt-probe/src/shaders/*.comp`, SPIR-V via
+  `glslangValidator`) are hand-ported to MSL in `rt-viewer/src/shaders_metal/`
+  (`shade.metal` + `probes.metal` + `tonemap.metal`), compiled at runtime with the driver
+  compiler. `tonemap.metal` is the full stylized post stack (poster → bloom → tonemap →
+  grade → shadow-dither → outline → vignette → grain → ordered-dither quantize).
+- **Per-frame parity:** both backends preserve the exact intra-frame order — stream this
+  frame's lights/materials → patch mover instance transforms → TLAS refit iff dirty →
+  shade → tonemap (integer-NEAREST upscale) → present / readback. Dollhouse `set_yaw_masks`
+  and mover transforms are event-driven (dirty bit), so idle frames never rebuild the TLAS.
+- **Determinism + goldens:** each backend is bit-stable (a fixed camera gives bit-identical
+  frames). Goldens are machine- AND backend-specific (GPU float behaviour differs):
+  `bin/golden` (default `native/rt-probe/golden`, Vulkan/RTX) takes a `GOLDEN_DIR` switch;
+  the M2 Pro set lives in `native/rt-probe/golden-metal`. The cross-platform invariant
+  stays the `house-game` logical replay hashes (platform-independent).
+- **Deps:** `metal` is a `[target.'cfg(target_os = "macos")']` dep so the Linux/NVIDIA
+  build never sees it; `ash` stays common (it compiles on macOS — just doesn't run — so the
+  Mac still compile-checks shared code).
+
 **Step-9 reality notes (implemented):** the viewer's sim side is
 `rt-viewer/src/sim.rs::GameLoop` (FixedLoop + InputQueue + HouseGame<NullSink> +
 cached snapshot). The level is an INTERIM `mirror_spec(scene)` of the renderer
