@@ -5,6 +5,11 @@
 #   bin/run house      # any SCENE value as the first arg (cave | house | lab | grid | game)
 #   AO_R=1.2 bin/run   # every Config env knob passes through (see config.rs)
 #
+# Cave knobs: CAVE_SEED=N (reroll), CAVE_ROOMS=18 (count, grid scales to fit),
+# CAVE_LOOPS=5 (extra routes), CAVE_WALLS=rock (thick wall-tops vs thin+void).
+# The GI bake is cached per-scene on disk, so re-launches are instant
+# (PROBE_CACHE=0 to disable, =<dir> to relocate).
+#
 # The live-tune UI is IN the viewer: press ESC (or click the hamburger icon
 # top-left) for sliders + toggles + quit. Closing the menu prints the env
 # string that reproduces the dialed-in values.
