@@ -34,11 +34,23 @@ pub struct CaveParams {
     pub room_min: i32, // min room side
     pub room_max: i32, // max room side (inclusive)
     pub attempts: u32, // placement tries before giving up
+    pub loops: u32,    // extra corridors beyond the spanning tree (cycles → multiple routes)
 }
 
 impl Default for CaveParams {
     fn default() -> CaveParams {
-        CaveParams { grid_w: 40, grid_h: 32, rooms: 10, room_min: 4, room_max: 7, attempts: 200 }
+        CaveParams::for_rooms(10, 3)
+    }
+}
+
+impl CaveParams {
+    /// A preset scaled to `rooms`: the grid grows with √rooms so rejection
+    /// sampling stays easy (≈25% fill), and the placement budget tracks the
+    /// count. `loops` adds cycles on top of the connecting spanning tree.
+    pub fn for_rooms(rooms: u32, loops: u32) -> CaveParams {
+        let rooms = rooms.max(1);
+        let side = ((rooms as f32).sqrt() * 13.0).round() as i32;
+        CaveParams { grid_w: side.max(20), grid_h: (side * 4 / 5).max(16), rooms, room_min: 4, room_max: 7, attempts: 40 * rooms, loops }
     }
 }
 
@@ -125,24 +137,39 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
             floor[at(x, z)] = true;
         }
     };
-    for i in 1..rooms.len() {
-        let (ax, az) = (rooms[i].cx(), rooms[i].cz());
-        let j = (0..i).min_by_key(|&j| (rooms[j].cx() - ax).abs() + (rooms[j].cz() - az).abs()).unwrap();
-        let (bx, bz) = (rooms[j].cx(), rooms[j].cz());
+    // L-shaped 1-cell corridor between two cells (horizontal-then-vertical or
+    // vice-versa, by coin), carving floor.
+    let carve_path = |floor: &mut [bool], rng: &mut Rng, a: (i32, i32), b: (i32, i32)| {
+        let ((ax, az), (bx, bz)) = (a, b);
         if rng.coin() {
             for x in ax.min(bx)..=ax.max(bx) {
-                carve(&mut floor, x, az);
+                carve(floor, x, az);
             }
             for z in az.min(bz)..=az.max(bz) {
-                carve(&mut floor, bx, z);
+                carve(floor, bx, z);
             }
         } else {
             for z in az.min(bz)..=az.max(bz) {
-                carve(&mut floor, ax, z);
+                carve(floor, ax, z);
             }
             for x in ax.min(bx)..=ax.max(bx) {
-                carve(&mut floor, x, bz);
+                carve(floor, x, bz);
             }
+        }
+    };
+    // spanning tree: join each room to its nearest predecessor (connected)
+    for i in 1..rooms.len() {
+        let c = (rooms[i].cx(), rooms[i].cz());
+        let j = (0..i).min_by_key(|&j| (rooms[j].cx() - c.0).abs() + (rooms[j].cz() - c.1).abs()).unwrap();
+        carve_path(&mut floor, &mut rng, c, (rooms[j].cx(), rooms[j].cz()));
+    }
+    // loops: a few extra corridors between nearby rooms → cycles, so the dungeon
+    // has more than one route (Manhattan threshold keeps them local, not crossing).
+    for _ in 0..p.loops {
+        let i = rng.range(0, rooms.len() as i32) as usize;
+        let j = rng.range(0, rooms.len() as i32) as usize;
+        if i != j && (rooms[i].cx() - rooms[j].cx()).abs() + (rooms[i].cz() - rooms[j].cz()).abs() <= 16 {
+            carve_path(&mut floor, &mut rng, (rooms[i].cx(), rooms[i].cz()), (rooms[j].cx(), rooms[j].cz()));
         }
     }
 

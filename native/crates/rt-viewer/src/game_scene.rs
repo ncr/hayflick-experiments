@@ -163,10 +163,11 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     scene.solids = spec.static_solids.clone();
     scene.player_start = Vec3::new(spec.player_start.x, FLOOR_TOP, spec.player_start.z);
 
-    // bright flat-design mood: lamp-lit interiors (no sun), a LIFTED sky fill
-    // (so the void/ground outside the room walls reads bright, not black — per
-    // the judge tweak) and lighter mist so the clean pastels stay clean.
-    scene.lighting = [0.0, 5.0, 0.18, 0.5];
+    // mood: lamp-lit interiors, no sun. The authored house keeps the bright
+    // LIFTED sky fill (void outside the walls reads bright, not black). The cave
+    // is a DUNGEON — a dimmer sky fill sinks the void into shadow so the lamp-lit
+    // chambers pop, with a touch more mist for depth between the rooms.
+    scene.lighting = if cave { [0.0, 2.2, 0.26, 0.45] } else { [0.0, 5.0, 0.18, 0.5] };
     scene
 }
 

@@ -174,6 +174,8 @@ pub struct GameCfg {
     pub cmds: Option<String>,      // CMDS=trace.txt: deterministic command-replay prefix
     pub cmds_ticks: Option<u64>,   // CMDS_TICKS: prefix length (default: last stamp + 1)
     pub cave_seed: u64,            // CAVE_SEED: procedural cave generator seed (SCENE=cave)
+    pub cave_rooms: u32,           // CAVE_ROOMS: target room count (grid scales to fit)
+    pub cave_loops: u32,           // CAVE_LOOPS: extra corridors beyond the spanning tree
 }
 
 /// Window size + capture / movie / clip harness knobs. None of these touch the
@@ -269,6 +271,8 @@ impl Config {
                 cmds: s("CMDS"),
                 cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
                 cave_seed: s("CAVE_SEED").and_then(|v| v.parse().ok()).unwrap_or(1),
+                cave_rooms: (i("CAVE_ROOMS", 10) as u32).clamp(1, 80),
+                cave_loops: i("CAVE_LOOPS", 3).max(0) as u32,
             },
             harness: HarnessCfg {
                 window,
