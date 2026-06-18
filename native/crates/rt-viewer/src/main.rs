@@ -74,9 +74,16 @@ impl ApplicationHandler for App {
         }
         let cfg = self.cfg.take().expect("config consumed once");
         let (w, h) = cfg.harness.window.unwrap_or((1280, 800));
-        let attrs = Window::default_attributes().with_title("rt-probe — iso viewer").with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
+        // Create the window HIDDEN: `Viewer::new` blocks the main thread for the
+        // one-time GI probe bake (~1.6 s on the M2's software RT), and a visible
+        // window with a stalled run loop is exactly what makes macOS draw the
+        // beachball. No drawable is acquired during init (the bake is pure
+        // compute), so revealing the window only once it's ready is safe — the
+        // user sees a normal cold-start delay, then a window that draws at once.
+        let attrs = Window::default_attributes().with_title("rt-probe — iso viewer").with_visible(false).with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let renderer = unsafe { Viewer::new(Some(&window), cfg).expect("renderer init") };
+        window.set_visible(true);
         self.window = Some(window);
         self.renderer = Some(renderer);
     }

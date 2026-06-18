@@ -14,6 +14,7 @@
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
 use crate::backend::{build_tone_push, FramePresent, RenderBackend};
+use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec2};
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, near_hide_bits, scan_lights, LightScan};
@@ -491,10 +492,17 @@ impl RenderBackend for MetalBackend {
         desc.set_usage(MTLTextureUsage::ShaderWrite | MTLTextureUsage::ShaderRead);
         let out_tex = self.device.new_texture(&desc);
         let menu_scale = (ext_h / 400).clamp(2, 6);
-        // The CAMetalLayer auto-sizes its drawable to the view's physical pixels
-        // (= winit inner_size = ext), which matches out_tex, so the present blit
-        // is a same-size copy. (No set_drawable_size: it pulls in a second
-        // core-graphics-types CGSize that skews against metal-rs's own.)
+        // Pin the drawable to the PHYSICAL extent (= winit inner_size = ext =
+        // out_tex). A CAMetalLayer's drawableSize otherwise defaults to
+        // bounds(points)·contentsScale(1.0) = the LOGICAL size, so on a Retina
+        // display (2×) the drawable would be half `ext` in each axis and the
+        // present blit (a same-size copy of `ext`) would land only the top-left
+        // quarter — the centred player ends up in a corner. `contentsScale` is
+        // set at attach time (needs the window's scale factor); both share the
+        // 0.2.0 `CGSize` metal-rs uses, so no type skew.
+        if let Some(layer) = &self.layer {
+            layer.set_drawable_size(CGSize { width: ext_w as f64, height: ext_h as f64 });
+        }
         self.target = Some(MetalTarget { low_w, low_h, ext_w, ext_h, menu_scale, radiance, albedo, pos, out_tex, cap_size: None, pending_capture: None });
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2}) (metal)", if self.layer.is_some() { "layer" } else { "offscreen" }, ext_w, ext_h, low_w, low_h, self.base_scale, ISO_R);
     }
@@ -674,7 +682,6 @@ impl RenderBackend for MetalBackend {
 
 /// Attach a `CAMetalLayer` to the winit window's `NSView` (macOS). Returns the
 /// layer for present, or `None` if the raw handle isn't an AppKit view.
-#[allow(unexpected_cfgs)] // objc 0.2's msg_send! macro emits a cargo-clippy cfg
 unsafe fn attach_metal_layer(device: &Device, window: &Window) -> Option<MetalLayer> {
     use objc::runtime::YES;
     use objc::{msg_send, sel, sel_impl};
@@ -685,6 +692,9 @@ unsafe fn attach_metal_layer(device: &Device, window: &Window) -> Option<MetalLa
     layer.set_device(device);
     layer.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
     layer.set_presents_with_transaction(false);
+    // Map the layer's point-space bounds to physical pixels (Retina). The
+    // drawable's exact size is then pinned per-resize in `recreate`.
+    layer.set_contents_scale(window.scale_factor());
     let ns_view = h.ns_view.as_ptr() as *mut objc::runtime::Object;
     let _: () = msg_send![ns_view, setWantsLayer: YES];
     let _: () = msg_send![ns_view, setLayer: layer.as_ref()];

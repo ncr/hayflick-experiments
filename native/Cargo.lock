@@ -1311,6 +1311,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "ash-window",
+ "core-graphics-types 0.2.0",
  "font8x8",
  "glam",
  "house-game",
