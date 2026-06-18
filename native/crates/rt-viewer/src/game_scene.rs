@@ -102,23 +102,26 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         }
     }
 
-    // ---- interior structure: each static solid is either a wall (thin: one
-    // XZ dim == the wall thickness) or furniture (the free-standing crate).
-    // Walls render full height in the wall tint; furniture as a low box. Cave
-    // walls are tagged with their layout-derived outward direction so the
-    // dollhouse cull lets the iso camera see into every chamber.
+    // ---- interior structure. Authored house: each static solid is a wall
+    // (thin: one XZ dim == the wall thickness) or furniture (the free-standing
+    // crate, a low box). Cave: EVERY solid is a wall — a thin boundary slab or a
+    // full 1×1 rock block — rendered full height and tagged with its
+    // layout-derived outward direction so the dollhouse cull lets the iso camera
+    // see into every chamber.
     for s in &spec.static_solids {
         let (w, d) = (s[2] - s[0], s[3] - s[1]);
-        if w.min(d) <= t + 1e-3 {
-            let first = box_world(&mut scene, *s, WALL_TOP, wall_hex);
-            if cave {
-                let bits = wall_outward_bits(s, spec);
-                if bits != 0 {
-                    scene.tag_hide(first, bits);
-                }
+        if !cave {
+            if w.min(d) <= t + 1e-3 {
+                box_world(&mut scene, *s, WALL_TOP, wall_hex);
+            } else {
+                box_world(&mut scene, *s, 0.6, FURNITURE); // crate-height greybox
             }
-        } else {
-            box_world(&mut scene, *s, 0.6, FURNITURE); // crate-height greybox
+            continue;
+        }
+        let first = box_world(&mut scene, *s, WALL_TOP, wall_hex);
+        let bits = if w.min(d) >= 0.9 { rock_block_bits(s, spec) } else { wall_outward_bits(s, spec) };
+        if bits != 0 {
+            scene.tag_hide(first, bits);
         }
     }
 
@@ -206,6 +209,47 @@ fn wall_outward_bits(s: &[f32; 4], spec: &LevelSpec) -> u8 {
         }
         if north && !south {
             bits |= 0b0010; // floor north → exterior south (+Z)
+        }
+    }
+    bits
+}
+
+/// The dollhouse outward-hide bits of a THICK 1×1 rock block: a bit for every
+/// side that fronts a floor cell (so the block hides when the camera looks at it
+/// from the exterior of a room it borders). Cardinal neighbours first; if the
+/// block only touches floor diagonally (an outer corner), the two bits of the
+/// outward diagonal. Bit convention matches the perimeter / `wall_outward_bits`.
+fn rock_block_bits(s: &[f32; 4], spec: &LevelSpec) -> u8 {
+    let (mx, mz) = ((s[0] + s[2]) * 0.5, (s[1] + s[3]) * 0.5);
+    let e = 0.1;
+    let on = |x: f32, z: f32| spec.rooms.iter().any(|r| x >= r.floor_rect[0] && x <= r.floor_rect[2] && z >= r.floor_rect[1] && z <= r.floor_rect[3]);
+    let mut bits = 0u8;
+    if on(mx, s[3] + e) {
+        bits |= 0b1000; // floor south → outward north (-Z)
+    }
+    if on(mx, s[1] - e) {
+        bits |= 0b0010; // floor north → outward south (+Z)
+    }
+    if on(s[2] + e, mz) {
+        bits |= 0b0100; // floor east → outward west (-X)
+    }
+    if on(s[0] - e, mz) {
+        bits |= 0b0001; // floor west → outward east (+X)
+    }
+    if bits == 0 {
+        // diagonal-only contact (outer corner): outward is the 2-bit diagonal
+        // pointing away from the room the block touches.
+        if on(s[2] + e, s[3] + e) {
+            bits |= 0b1000 | 0b0100; // floor SE → outward NW
+        }
+        if on(s[0] - e, s[3] + e) {
+            bits |= 0b1000 | 0b0001; // floor SW → outward NE
+        }
+        if on(s[2] + e, s[1] - e) {
+            bits |= 0b0010 | 0b0100; // floor NE → outward SW
+        }
+        if on(s[0] - e, s[1] - e) {
+            bits |= 0b0010 | 0b0001; // floor NW → outward SE
         }
     }
     bits

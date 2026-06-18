@@ -89,7 +89,10 @@ impl Viewer {
         // LevelSpec; the three legacy scenes (grid/lab/house) stay in build_scene.
         let game_spec: Option<house_game::LevelSpec> = match cfg.scene.as_str() {
             "game" => Some(house_game::game_level()),
-            "cave" => Some(house_game::cave_level_with(cfg.game.cave_seed, house_game::CaveParams::for_rooms(cfg.game.cave_rooms, cfg.game.cave_loops))),
+            "cave" => Some(house_game::cave_level_with(
+                cfg.game.cave_seed,
+                house_game::CaveParams { thick_walls: cfg.game.cave_thick, ..house_game::CaveParams::for_rooms(cfg.game.cave_rooms, cfg.game.cave_loops) },
+            )),
             _ => None,
         };
         let scene = match &game_spec {

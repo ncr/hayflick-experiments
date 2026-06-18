@@ -36,6 +36,7 @@ pub struct CaveParams {
     pub attempts: u32,    // placement tries before giving up
     pub loops: u32,       // extra corridors beyond the spanning tree (cycles → multiple routes)
     pub door_chance: f32, // 0..1: fraction of room↔corridor openings that get a swinging door
+    pub thick_walls: bool, // true: fill the gaps with full 1×1 rock blocks (Diablo); false: thin boundary walls + void
 }
 
 impl Default for CaveParams {
@@ -51,7 +52,7 @@ impl CaveParams {
     pub fn for_rooms(rooms: u32, loops: u32) -> CaveParams {
         let rooms = rooms.max(1);
         let side = ((rooms as f32).sqrt() * 13.0).round() as i32;
-        CaveParams { grid_w: side.max(20), grid_h: (side * 4 / 5).max(16), rooms, room_min: 4, room_max: 7, attempts: 40 * rooms, loops, door_chance: 0.7 }
+        CaveParams { grid_w: side.max(20), grid_h: (side * 4 / 5).max(16), rooms, room_min: 4, room_max: 7, attempts: 40 * rooms, loops, door_chance: 0.7, thick_walls: false }
     }
 }
 
@@ -198,41 +199,56 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
         }
     }
 
-    // ---- walls: thin (0.25 wu) slabs on every floor↔non-floor grid edge, runs
-    // merged but SPLIT where the floor side flips (so each run has one outward
-    // side for build_game's dollhouse cull) ----
-    const T: f32 = 0.125; // wall half-thickness (0.25 wu wall, kit = 32 cm)
+    // ---- walls ----
+    const T: f32 = 0.125; // thin-wall half-thickness (0.25 wu wall, kit = 32 cm)
     let is_floor = |x: i32, z: i32| (0..w).contains(&x) && (0..h).contains(&z) && floor[at(x, z)];
     let mut solids: Vec<[f32; 4]> = Vec::new();
-    // vertical slabs on line x=k (between cells k-1 and k), spanning z
-    for k in 0..=w {
-        let mut z = 0;
-        while z < h {
-            let side = is_floor(k - 1, z); // floor on the -X side?
-            if side ^ is_floor(k, z) {
-                let z0 = z;
-                while z < h && is_floor(k - 1, z) == side && (side ^ is_floor(k, z)) {
-                    z += 1;
+    if p.thick_walls {
+        // THICK ROCK: fill every non-floor cell 8-adjacent to a floor cell with a
+        // full 1×1 block, flush against the room/corridor edges (rock between the
+        // rooms, with visible wall-tops). build_game derives each block's
+        // dollhouse-hide direction from its floor-facing neighbours.
+        for z in 0..h {
+            for x in 0..w {
+                if !is_floor(x, z) && (-1..=1).any(|dz| (-1..=1).any(|dx| (dx, dz) != (0, 0) && is_floor(x + dx, z + dz))) {
+                    solids.push([x as f32, z as f32, (x + 1) as f32, (z + 1) as f32]);
                 }
-                solids.push([k as f32 - T, z0 as f32, k as f32 + T, z as f32]);
-            } else {
-                z += 1;
             }
         }
-    }
-    // horizontal slabs on line z=k (between cells k-1 and k), spanning x
-    for k in 0..=h {
-        let mut x = 0;
-        while x < w {
-            let side = is_floor(x, k - 1); // floor on the -Z side?
-            if side ^ is_floor(x, k) {
-                let x0 = x;
-                while x < w && is_floor(x, k - 1) == side && (side ^ is_floor(x, k)) {
+    } else {
+        // THIN walls: 0.25 wu slabs on every floor↔non-floor grid edge, runs
+        // merged but SPLIT where the floor side flips (so each run has one outward
+        // side for build_game's dollhouse cull).
+        // vertical slabs on line x=k (between cells k-1 and k), spanning z
+        for k in 0..=w {
+            let mut z = 0;
+            while z < h {
+                let side = is_floor(k - 1, z); // floor on the -X side?
+                if side ^ is_floor(k, z) {
+                    let z0 = z;
+                    while z < h && is_floor(k - 1, z) == side && (side ^ is_floor(k, z)) {
+                        z += 1;
+                    }
+                    solids.push([k as f32 - T, z0 as f32, k as f32 + T, z as f32]);
+                } else {
+                    z += 1;
+                }
+            }
+        }
+        // horizontal slabs on line z=k (between cells k-1 and k), spanning x
+        for k in 0..=h {
+            let mut x = 0;
+            while x < w {
+                let side = is_floor(x, k - 1); // floor on the -Z side?
+                if side ^ is_floor(x, k) {
+                    let x0 = x;
+                    while x < w && is_floor(x, k - 1) == side && (side ^ is_floor(x, k)) {
+                        x += 1;
+                    }
+                    solids.push([x0 as f32, k as f32 - T, x as f32, k as f32 + T]);
+                } else {
                     x += 1;
                 }
-                solids.push([x0 as f32, k as f32 - T, x as f32, k as f32 + T]);
-            } else {
-                x += 1;
             }
         }
     }
@@ -377,6 +393,28 @@ mod tests {
             let fr = r.floor_rect;
             let (mx, mz) = (((fr[0] + fr[2]) * 0.5) as i32, ((fr[1] + fr[3]) * 0.5) as i32);
             assert!(seen[(mz * w + mx) as usize], "room {:?} at ({mx},{mz}) unreachable from spawn", r.id);
+        }
+    }
+
+    /// Thick-rock mode emits unit (1×1 wu) blocks on the lattice, filling gaps
+    /// only — never a room floor cell.
+    #[test]
+    fn thick_walls_are_unit_rock_blocks() {
+        const STEP: f32 = 0.0625;
+        let on = |v: f32| (v / STEP - (v / STEP).round()).abs() < 1e-4;
+        let p = CaveParams { thick_walls: true, ..CaveParams::for_rooms(10, 3) };
+        let spec = cave_level_with(2, p);
+        assert!(!spec.static_solids.is_empty(), "thick mode must place rock blocks");
+        let rooms: Vec<_> = spec.rooms.iter().filter(|r| r.id.0 < CORRIDOR_ROOM_ID_BASE).map(|r| r.floor_rect).collect();
+        for s in &spec.static_solids {
+            assert!((s[2] - s[0] - 1.0).abs() < 1e-4 && (s[3] - s[1] - 1.0).abs() < 1e-4, "thick wall not a 1×1 block: {s:?}");
+            for v in *s {
+                assert!(on(v), "block corner {v} off the lattice");
+            }
+            let (cx, cz) = ((s[0] + s[2]) * 0.5, (s[1] + s[3]) * 0.5);
+            for r in &rooms {
+                assert!(!(cx > r[0] && cx < r[2] && cz > r[1] && cz < r[3]), "rock block centre ({cx},{cz}) inside room {r:?}");
+            }
         }
     }
 
