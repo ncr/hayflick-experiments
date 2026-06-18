@@ -109,6 +109,11 @@ pub struct MetalBackend {
     target: Option<MetalTarget>,
     layer: Option<MetalLayer>,
     probes_baked: bool,
+    // GI probe disk cache: enabled only on the interactive (windowed) path so
+    // headless capture stays a fresh deterministic bake. `probe_key` is the
+    // content hash of the bake inputs (geometry/materials/lights/grid/env/rays).
+    probe_cache: bool,
+    probe_key: u64,
 }
 
 /// glam column-major Mat4 → Metal row-packed 4×3 instance transform.
@@ -283,6 +288,19 @@ impl MetalBackend {
 
         let env0 = cfg.lighting_env(scene.lighting);
 
+        // content hash of every input the bake reads — the probe-cache filename.
+        // Any geometry/material/light/grid/env/ray change (e.g. a palette edit)
+        // produces a new key and re-bakes; identical inputs reload from disk.
+        let probe_key = rt_probe::probe_cache::content_key(&[
+            rt_probe::probe_cache::bytes_of(&scene.vertices),
+            rt_probe::probe_cache::bytes_of(&scene.indices),
+            rt_probe::probe_cache::bytes_of(&scene.materials),
+            rt_probe::probe_cache::bytes_of(&lights_cpu),
+            rt_probe::probe_cache::bytes_of(&grid.header),
+            rt_probe::probe_cache::bytes_of(&env0),
+            rt_probe::probe_cache::bytes_of(&[cfg.render.probe_rays]),
+        ]);
+
         let mut b = MetalBackend {
             device,
             queue,
@@ -318,9 +336,12 @@ impl MetalBackend {
             target: None,
             layer: None,
             probes_baked: false,
+            probe_cache: window.is_some(), // interactive only — capture bakes fresh
+            probe_key,
         };
 
-        // bake the GI probe cache (blocking, once — both light banks)
+        // bake the GI probe cache (blocking, once — both light banks), or load
+        // it from the disk cache on the interactive path if the inputs match.
         b.bake_probes(cfg.render.probe_rays);
 
         // present surface (windowed only) + the window-size resources
@@ -340,6 +361,19 @@ impl MetalBackend {
     unsafe fn bake_probes(&mut self, rays_total: i32) {
         if self.probes_baked {
             return;
+        }
+        // interactive path: reload the baked banks from disk if the scene inputs
+        // are unchanged (skips ~4.5 s of software-RT baking on the M2). The lit
+        // light/material buffers are already in their post-bake state (built lit
+        // in new()), so a cache hit needs nothing but the probe bytes.
+        let probe_bytes = self.probe_buf.length() as usize;
+        if self.probe_cache {
+            if let Some(bytes) = rt_probe::probe_cache::load(self.probe_key, probe_bytes) {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.probe_buf.contents() as *mut u8, probe_bytes);
+                self.probes_baked = true;
+                println!("probes: loaded {} probes from cache ({:016x}) (metal)", self.probe_count, self.probe_key);
+                return;
+            }
         }
         const BATCH: i32 = 32; // small per-cb batch keeps each dispatch under the GPU watchdog
         const BOUNCES: i32 = 4;
@@ -383,6 +417,11 @@ impl MetalBackend {
         write_buf(&self.mbuf, &self.mats_cpu);
         self.probes_baked = true;
         println!("probes: baked {rays_total} rays × {} probes × 2 banks in {:.0} ms (metal)", self.probe_count, t0.elapsed().as_secs_f32() * 1000.0);
+        // persist the baked banks for the next interactive launch (best-effort).
+        if self.probe_cache {
+            let bytes = std::slice::from_raw_parts(self.probe_buf.contents() as *const u8, probe_bytes);
+            rt_probe::probe_cache::store(self.probe_key, bytes);
+        }
     }
 
     /// Rebuild the TLAS from the (patched) instance buffer — cheap full build

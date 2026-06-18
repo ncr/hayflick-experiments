@@ -44,6 +44,9 @@ pub mod gpu_scene;
 pub mod iso {
     pub use iso_core::*;
 }
+/// Disk cache for baked GI probe banks — the interactive viewer skips re-baking
+/// when the scene inputs are unchanged (headless capture paths bake fresh).
+pub mod probe_cache;
 pub mod render;
 pub mod scene;
 pub mod scenes;
