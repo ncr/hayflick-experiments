@@ -66,7 +66,7 @@ impl StyleCfg {
         // base albedo, the higher the threshold must sit for AO regions to read.
         // (Per-scene — the darker textured scenes keep 0.35 so their goldens and
         // look are unchanged.)
-        let sdither_th = if scene == "game" { 0.75 } else { 0.35 };
+        let sdither_th = if scene == "game" || scene == "cave" { 0.75 } else { 0.35 };
         let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th };
         if let Some(name) = s("STYLE") {
             match name.as_str() {
@@ -173,6 +173,7 @@ pub struct GameCfg {
     pub player_speed: Option<f32>, // PLAYER_SPEED (px/s; default depends on scene)
     pub cmds: Option<String>,      // CMDS=trace.txt: deterministic command-replay prefix
     pub cmds_ticks: Option<u64>,   // CMDS_TICKS: prefix length (default: last stamp + 1)
+    pub cave_seed: u64,            // CAVE_SEED: procedural cave generator seed (SCENE=cave)
 }
 
 /// Window size + capture / movie / clip harness knobs. None of these touch the
@@ -204,7 +205,7 @@ pub struct HarnessCfg {
 }
 
 pub struct Config {
-    pub scene: String,             // SCENE: house (default) | lab | grid | game
+    pub scene: String,             // SCENE: cave (bin/run default) | house | lab | grid | game
     pub render: RenderCfg,
     pub game: GameCfg,
     pub harness: HarnessCfg,
@@ -218,7 +219,7 @@ impl Config {
         // scenes. Retuned 0.35 -> 0.40 on 2026-06-12: base-colour textures now
         // sample as sRGB (hardware-linearized, darker albedo + darker bounce),
         // and the bump restores the previous overall brightness.
-        let default_exposure = if scene == "house" || scene == "game" { 0.40 } else { 0.22 };
+        let default_exposure = if scene == "house" || scene == "game" || scene == "cave" { 0.40 } else { 0.22 };
         let window = s("WINDOW").and_then(|v| {
             let (w, h) = v.split_once('x')?;
             Some((w.parse().ok()?, h.parse().ok()?))
@@ -267,6 +268,7 @@ impl Config {
                 player_speed: fo("PLAYER_SPEED"),
                 cmds: s("CMDS"),
                 cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
+                cave_seed: s("CAVE_SEED").and_then(|v| v.parse().ok()).unwrap_or(1),
             },
             harness: HarnessCfg {
                 window,

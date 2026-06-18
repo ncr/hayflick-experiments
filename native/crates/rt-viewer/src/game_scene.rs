@@ -55,43 +55,68 @@ const FURNITURE: u32 = 0xe39a6b; // soft terracotta crate / prop greybox
 const DOOR_COLOR: u32 = 0xff7a4d; // saturated coral door leaf
 const TARGET_COLOR: u32 = 0xe83b46; // bright clean red disc face
 const TARGET_RING: u32 = 0xfdfaf2; // crisp near-white backing plate
+/// Cave walls: a single clean Greek-island stone white (the owner's call —
+/// "a regular wall can be just white"), no warm/cool split. Pastel room floors
+/// stay; the white walls read as crisp separators around every chamber.
+const WALL_STONE: u32 = 0xf6f2e8;
+/// Cave corridor floor — a neutral pale stone, distinct from the coloured
+/// rooms so the connectors read as connectors, not chambers.
+const CORRIDOR_FLOOR: u32 = 0xd8d4cc;
 
 /// Build the greybox game scene from the spec. Returns the scene; the caller
 /// (renderer) bakes probes and constructs the GameLoop over the SAME spec.
 pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     let mut scene = Scene::new();
     let f = spec.floor_bounds();
+    // The procedural cave provides its OWN irregular boundary walls (so the
+    // rectangular auto-perimeter below is skipped) and gets the clean stone-white
+    // wall palette; the authored house (`game`) keeps its near-white walls +
+    // enclosing perimeter.
+    let cave = cfg.scene == "cave";
+    let wall_hex = if cave { WALL_STONE } else { WALL_INNER };
 
-    // ---- floors: one quad per room, each in its own tint (darker than the
-    // walls); the room order is the spec order so the palette reads stable.
-    for (i, r) in spec.rooms.iter().enumerate() {
-        let c = FLOOR_TINTS[i % FLOOR_TINTS.len()];
+    // ---- floors: one quad per room in its own pastel tint (cave corridors get
+    // the neutral stone tint); the room order is the spec order so the palette
+    // reads stable. Keyed off `RoomId` so cave corridor ids select CORRIDOR_FLOOR.
+    for r in spec.rooms.iter() {
+        let c = if r.id.0 >= house_game::CORRIDOR_ROOM_ID_BASE { CORRIDOR_FLOOR } else { FLOOR_TINTS[(r.id.0 as usize) % FLOOR_TINTS.len()] };
         scene.add_floor(r.floor_rect[0], r.floor_rect[2], r.floor_rect[1], r.floor_rect[3], FLOOR_TOP, hex_linear(c));
     }
 
     // ---- perimeter walls: four slabs around the footprint, WALL_TOP tall,
     // 0.25 wu thick, sitting just OUTSIDE the walkable floor rect (the inner
     // face on the rect edge). Tagged with their outward direction so the
-    // dollhouse cull hides the camera-near sides per quarter-turn (Q/E).
+    // dollhouse cull hides the camera-near sides per quarter-turn (Q/E). The
+    // cave skips this — its generated wall slabs already enclose every region.
     let t = WALL_HT * 2.0;
-    let perim: [([f32; 4], u8); 4] = [
-        ([f[0] - t, f[1] - t, f[0], f[3] + t], 0b0100), // west wall, outward -X
-        ([f[2], f[1] - t, f[2] + t, f[3] + t], 0b0001), // east wall, outward +X
-        ([f[0] - t, f[1] - t, f[2] + t, f[1]], 0b1000), // north wall, outward -Z
-        ([f[0] - t, f[3], f[2] + t, f[3] + t], 0b0010), // south wall, outward +Z
-    ];
-    for (rect, bits) in perim {
-        let first = box_world(&mut scene, rect, WALL_TOP, WALL_PERIM);
-        scene.tag_hide(first, bits);
+    if !cave {
+        let perim: [([f32; 4], u8); 4] = [
+            ([f[0] - t, f[1] - t, f[0], f[3] + t], 0b0100), // west wall, outward -X
+            ([f[2], f[1] - t, f[2] + t, f[3] + t], 0b0001), // east wall, outward +X
+            ([f[0] - t, f[1] - t, f[2] + t, f[1]], 0b1000), // north wall, outward -Z
+            ([f[0] - t, f[3], f[2] + t, f[3] + t], 0b0010), // south wall, outward +Z
+        ];
+        for (rect, bits) in perim {
+            let first = box_world(&mut scene, rect, WALL_TOP, WALL_PERIM);
+            scene.tag_hide(first, bits);
+        }
     }
 
     // ---- interior structure: each static solid is either a wall (thin: one
     // XZ dim == the wall thickness) or furniture (the free-standing crate).
-    // Walls render full height in the inner tint; furniture as a low box.
+    // Walls render full height in the wall tint; furniture as a low box. Cave
+    // walls are tagged with their layout-derived outward direction so the
+    // dollhouse cull lets the iso camera see into every chamber.
     for s in &spec.static_solids {
         let (w, d) = (s[2] - s[0], s[3] - s[1]);
         if w.min(d) <= t + 1e-3 {
-            box_world(&mut scene, *s, WALL_TOP, WALL_INNER);
+            let first = box_world(&mut scene, *s, WALL_TOP, wall_hex);
+            if cave {
+                let bits = wall_outward_bits(s, spec);
+                if bits != 0 {
+                    scene.tag_hide(first, bits);
+                }
+            }
         } else {
             box_world(&mut scene, *s, 0.6, FURNITURE); // crate-height greybox
         }
@@ -150,6 +175,39 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
 fn room_center(spec: &LevelSpec, l: &LightSpec) -> Vec3 {
     let r = spec.rooms.iter().find(|r| r.id == l.room).map(|r| r.floor_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
     Vec3::new((r[0] + r[2]) * 0.5, 2.0, (r[1] + r[3]) * 0.5)
+}
+
+/// The dollhouse outward-hide bits of a cave wall slab, derived from the floor
+/// layout: the side with NO floor is the exterior the iso camera should see
+/// past. A thin-in-X slab is a vertical wall (test ±X); thin-in-Z is horizontal
+/// (test ±Z). Each generated cave slab is a floor↔rock boundary, so exactly one
+/// side is floor → exactly one bit (bit convention matches the perimeter above).
+fn wall_outward_bits(s: &[f32; 4], spec: &LevelSpec) -> u8 {
+    let (w, d) = (s[2] - s[0], s[3] - s[1]);
+    let (mx, mz) = ((s[0] + s[2]) * 0.5, (s[1] + s[3]) * 0.5);
+    // sample just outside the 0.25-thick slab; the neighbouring cell centre is
+    // 0.5 away, so 0.1 past the face lands cleanly inside it (or in the void).
+    let eps = 0.1;
+    let on_floor = |x: f32, z: f32| spec.rooms.iter().any(|r| x >= r.floor_rect[0] && x <= r.floor_rect[2] && z >= r.floor_rect[1] && z <= r.floor_rect[3]);
+    let mut bits = 0u8;
+    if w <= d {
+        let (west, east) = (on_floor(s[0] - eps, mz), on_floor(s[2] + eps, mz));
+        if east && !west {
+            bits |= 0b0100; // floor east → exterior west (-X)
+        }
+        if west && !east {
+            bits |= 0b0001; // floor west → exterior east (+X)
+        }
+    } else {
+        let (north, south) = (on_floor(mx, s[1] - eps), on_floor(mx, s[3] + eps));
+        if south && !north {
+            bits |= 0b1000; // floor south → exterior north (-Z)
+        }
+        if north && !south {
+            bits |= 0b0010; // floor north → exterior south (+Z)
+        }
+    }
+    bits
 }
 
 /// Add an axis-aligned box spanning the XZ rect from the floor (y=0) to

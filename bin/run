@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build and run the rt-probe viewer (deterministic hardware-RT renderer).
 #
-#   bin/run            # house scene
-#   bin/run lab        # any SCENE value as the first arg (house | lab | grid)
+#   bin/run            # procedural graybox cave (default; CAVE_SEED=N to reroll)
+#   bin/run house      # any SCENE value as the first arg (cave | house | lab | grid | game)
 #   AO_R=1.2 bin/run   # every Config env knob passes through (see config.rs)
 #
 # The live-tune UI is IN the viewer: press ESC (or click the hamburger icon
@@ -26,7 +26,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SCENE="${1:-${SCENE:-house}}"
+SCENE="${1:-${SCENE:-cave}}"
 
 cargo build --release --manifest-path native/Cargo.toml
 

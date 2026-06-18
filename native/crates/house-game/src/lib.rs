@@ -8,6 +8,7 @@
 //!
 //! Module map:
 //! - [`spec`]    — LevelSpec (ordered Vecs, the level's source of truth) + fixture
+//! - [`cave`]    — procedural cave/dungeon generator → LevelSpec (deterministic in seed)
 //! - [`game`]    — Command, components, the 7 fixed-order systems, GameSnapshot,
 //!   state_hash (the `sim_core::Simulation` impl)
 //! - [`flicker`] — stateless practical-light curves (verbatim render.rs port)
@@ -15,12 +16,14 @@
 //! - [`lab`]     — scenario lab: headless event-timeline harness for emergence
 //!   experiments (Scenario → run_scenario → ScenarioReport + Metrics)
 
+pub mod cave;
 pub mod flicker;
 pub mod game;
 pub mod lab;
 pub mod spec;
 pub mod trace;
 
+pub use cave::{cave_level, cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE};
 pub use flicker::flicker;
 pub use game::{Battery, Command, DoorState, FlashPose, GameEvent, GameSnapshot, HouseGame, Hunger, Inventory, NeedKind, PickRay, Res, WorldItem, TICK_DT};
 pub use lab::{first_tick_of, run_scenario, Metrics, Policy, Scenario, ScenarioReport};

@@ -84,7 +84,14 @@ impl Viewer {
         // start_time.elapsed() to an absolute threshold (ROTATE_AT / DUMP_AT /
         // MOVIE / clip next_due) sees the same nonzero offset on the first frame.
         let start_time = std::time::Instant::now();
-        let game_spec = (cfg.scene == "game").then(house_game::game_level);
+        // SCENE=game → the authored five-room house; SCENE=cave → a procedural
+        // dungeon (seeded by CAVE_SEED). Both build the graybox Scene from a
+        // LevelSpec; the three legacy scenes (grid/lab/house) stay in build_scene.
+        let game_spec: Option<house_game::LevelSpec> = match cfg.scene.as_str() {
+            "game" => Some(house_game::game_level()),
+            "cave" => Some(house_game::cave_level(cfg.game.cave_seed)),
+            _ => None,
+        };
         let scene = match &game_spec {
             Some(spec) => crate::game_scene::build_game(spec, &cfg),
             None => build_scene(&cfg)?,
