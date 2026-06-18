@@ -16,7 +16,7 @@
 //! on the iso 2:1 stair lattice (multiples of 0.0625 wu — invariant #8). Pinned
 //! by `cave::tests::geometry_is_iso_stair_aligned`.
 
-use crate::spec::{LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec};
+use crate::spec::{DoorId, DoorSpec, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec};
 use glam::Vec3;
 
 /// A `RoomSpec` whose `id` is at or above this is a CORRIDOR floor quad (neutral
@@ -33,8 +33,9 @@ pub struct CaveParams {
     pub rooms: u32,    // target room count (rejection sampling may yield fewer)
     pub room_min: i32, // min room side
     pub room_max: i32, // max room side (inclusive)
-    pub attempts: u32, // placement tries before giving up
-    pub loops: u32,    // extra corridors beyond the spanning tree (cycles → multiple routes)
+    pub attempts: u32,    // placement tries before giving up
+    pub loops: u32,       // extra corridors beyond the spanning tree (cycles → multiple routes)
+    pub door_chance: f32, // 0..1: fraction of room↔corridor openings that get a swinging door
 }
 
 impl Default for CaveParams {
@@ -50,7 +51,7 @@ impl CaveParams {
     pub fn for_rooms(rooms: u32, loops: u32) -> CaveParams {
         let rooms = rooms.max(1);
         let side = ((rooms as f32).sqrt() * 13.0).round() as i32;
-        CaveParams { grid_w: side.max(20), grid_h: (side * 4 / 5).max(16), rooms, room_min: 4, room_max: 7, attempts: 40 * rooms, loops }
+        CaveParams { grid_w: side.max(20), grid_h: (side * 4 / 5).max(16), rooms, room_min: 4, room_max: 7, attempts: 40 * rooms, loops, door_chance: 0.7 }
     }
 }
 
@@ -236,6 +237,63 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
         }
     }
 
+    // ---- doors: fill 1-cell room↔corridor openings with a swinging leaf. Each
+    // such opening is a break the corridor punched in a room wall (both sides
+    // floor → no wall slab there); a fraction get a door (the rest stay arches).
+    // 100° swing, 24-tick sweep — matching the authored house leaves. ----
+    const DOOR_OPEN: f32 = 1.745_329_3; // 100° in radians
+    let kind = |x: i32, z: i32| -> u8 {
+        if !is_floor(x, z) {
+            0 // rock/void
+        } else if room_of[at(x, z)] >= 0 {
+            2 // room
+        } else {
+            1 // corridor
+        }
+    };
+    let is_opening = |a: u8, b: u8| (a == 2 && b == 1) || (a == 1 && b == 2);
+    let mut doors: Vec<DoorSpec> = Vec::new();
+    let add_door = |doors: &mut Vec<DoorSpec>, rng: &mut Rng, hinge: Vec3, closed: [f32; 4]| {
+        if (rng.next_u64() % 1000) as f32 / 1000.0 < p.door_chance {
+            let id = doors.len() as u32;
+            doors.push(DoorSpec { id: DoorId(id), hinge, axis_y: 1.0, closed_solid: closed, open_angle: DOOR_OPEN, anim_ticks: 24, name: format!("cave_door_{id}") });
+        }
+    };
+    // vertical openings on line x=k (door slab spans one z cell)
+    for k in 1..w {
+        let mut z = 0;
+        while z < h {
+            if is_opening(kind(k - 1, z), kind(k, z)) {
+                let z0 = z;
+                while z < h && is_opening(kind(k - 1, z), kind(k, z)) {
+                    z += 1;
+                }
+                if z - z0 == 1 {
+                    add_door(&mut doors, &mut rng, Vec3::new(k as f32, 0.0, z0 as f32), [k as f32 - T, z0 as f32, k as f32 + T, (z0 + 1) as f32]);
+                }
+            } else {
+                z += 1;
+            }
+        }
+    }
+    // horizontal openings on line z=k (door slab spans one x cell)
+    for k in 1..h {
+        let mut x = 0;
+        while x < w {
+            if is_opening(kind(x, k - 1), kind(x, k)) {
+                let x0 = x;
+                while x < w && is_opening(kind(x, k - 1), kind(x, k)) {
+                    x += 1;
+                }
+                if x - x0 == 1 {
+                    add_door(&mut doors, &mut rng, Vec3::new(x0 as f32, 0.0, k as f32), [x0 as f32, k as f32 - T, (x0 + 1) as f32, k as f32 + T]);
+                }
+            } else {
+                x += 1;
+            }
+        }
+    }
+
     // ---- one warm-white ceiling lamp per room (point lights, no emissive prims
     // → NEE slot order == spec order, which join_game_lights asserts) ----
     let lights: Vec<LightSpec> = rooms
@@ -248,7 +306,7 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
     LevelSpec {
         rooms: room_specs,
         static_solids: solids,
-        doors: Vec::new(),   // open passages for now (doors are a follow-up)
+        doors,
         lights,
         targets: Vec::new(),
         items: Vec::new(),
@@ -270,6 +328,7 @@ mod tests {
         let b = cave_level(7);
         assert_eq!(a.static_solids, b.static_solids);
         assert_eq!(a.rooms.len(), b.rooms.len());
+        assert_eq!(a.doors.len(), b.doors.len());
         assert_eq!(a.player_start, b.player_start);
         let c = cave_level(8);
         assert!(a.static_solids != c.static_solids, "seed 7 and 8 should differ");
@@ -330,6 +389,34 @@ mod tests {
             for b in &rms[i + 1..] {
                 let disjoint = a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1];
                 assert!(disjoint, "rooms {a:?} and {b:?} overlap");
+            }
+        }
+    }
+
+    /// Each door is a 0.25×1.0 wu leaf slab filling one room↔corridor opening,
+    /// on the iso lattice, hinged centred across its thickness at one end of the
+    /// gap (so build_game's place_door reconstructs the closed footprint).
+    #[test]
+    fn doors_are_one_cell_leaf_slabs() {
+        const STEP: f32 = 0.0625;
+        let on = |v: f32| (v / STEP - (v / STEP).round()).abs() < 1e-4;
+        let p = CaveParams { door_chance: 1.0, ..CaveParams::for_rooms(10, 3) };
+        let spec = cave_level_with(5, p);
+        assert!(!spec.doors.is_empty(), "door_chance 1.0 must place doors");
+        for d in &spec.doors {
+            let s = d.closed_solid;
+            let (w, h) = (s[2] - s[0], s[3] - s[1]);
+            assert!((w.min(h) - 0.25).abs() < 1e-4 && (w.max(h) - 1.0).abs() < 1e-4, "door {:?}: want a 0.25×1.0 slab, got {w}×{h}", d.id);
+            for v in s {
+                assert!(on(v), "door {:?} corner {v} off the lattice", d.id);
+            }
+            if w < h {
+                // vertical: hinge centred in x, at a z end
+                assert!((d.hinge.x - (s[0] + s[2]) * 0.5).abs() < 1e-4, "door {:?} hinge x not on the wall line", d.id);
+                assert!((d.hinge.z - s[1]).abs() < 1e-4 || (d.hinge.z - s[3]).abs() < 1e-4, "door {:?} hinge z not at a gap end", d.id);
+            } else {
+                assert!((d.hinge.z - (s[1] + s[3]) * 0.5).abs() < 1e-4, "door {:?} hinge z not on the wall line", d.id);
+                assert!((d.hinge.x - s[0]).abs() < 1e-4 || (d.hinge.x - s[2]).abs() < 1e-4, "door {:?} hinge x not at a gap end", d.id);
             }
         }
     }
