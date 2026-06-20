@@ -118,10 +118,26 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
             }
             continue;
         }
-        let first = box_world(&mut scene, *s, WALL_TOP, wall_hex);
         let bits = if w.min(d) >= 0.9 { rock_block_bits(s, spec) } else { wall_outward_bits(s, spec) };
+        let first = box_world(&mut scene, *s, WALL_TOP, wall_hex);
         if bits != 0 {
+            // full wall: hide when its side faces the camera. Tag it BEFORE adding the
+            // stub — `tag_hide` writes `[from..end]`, so each prim must be tagged while
+            // it is the last one.
             scene.tag_hide(first, bits);
+            // dollhouse cut-away: instead of vanishing, a camera-near wall leaves a
+            // low WAVY stub — the bottom ~30 cm with an irregular top edge that reads
+            // as "cut" so the iso view still sees in. The stub is shown by the INVERSE
+            // dollhouse mask (visible exactly when the full wall is culled) and is
+            // coincident with the wall's base, so the full wall keeps occluding for
+            // shadows/GI (no light-transport change, no re-bake artefacts). CAVE_CUTAWAY=0
+            // skips the stub for the original see-through dollhouse.
+            if cfg.game.cave_cutaway {
+                let run_x = (s[2] - s[0]) >= (s[3] - s[1]);
+                let heights = wavy_stub_heights(*s, run_x);
+                let stub = scene.add_wavy_top(*s, run_x, &heights, hex_linear(wall_hex), 0.85, 0.0);
+                scene.tag_hide(stub, bits | rt_probe::HIDE_INVERT); // shown only when the wall is culled
+            }
         }
     }
 
@@ -179,6 +195,30 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
 fn room_center(spec: &LevelSpec, l: &LightSpec) -> Vec3 {
     let r = spec.rooms.iter().find(|r| r.id == l.room).map(|r| r.floor_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
     Vec3::new((r[0] + r[2]) * 0.5, 2.0, (r[1] + r[3]) * 0.5)
+}
+
+/// Cut-away stub baseboard height (~32 cm = the owner's "say 30 cm") and the
+/// wavy half-amplitude (≈ ±12 cm) around it.
+const STUB_BASE: f32 = 0.25;
+const STUB_AMP: f32 = 0.09;
+
+/// Sample a gently wavy top contour for a cut-away wall stub along its run axis.
+/// The phase is the WORLD coordinate along the run, so the undulation is coherent
+/// across adjacent walls; two sine octaves keep it organic (not a flat repeat).
+/// Heights snap to whole vertical low-pixels (Y projects 16·√6 ≈ 39.19 lowpx/wu)
+/// so the cut edge reads crisp under the pixel-perfect downsample.
+fn wavy_stub_heights(rect: [f32; 4], run_along_x: bool) -> Vec<f32> {
+    let (lo, hi) = if run_along_x { (rect[0], rect[2]) } else { (rect[1], rect[3]) };
+    let len = hi - lo;
+    let segs = ((len * 4.0).round() as usize).clamp(3, 28); // ≈ one station / 0.25 wu
+    let lp = 1.0 / (16.0 * 6.0_f32.sqrt()); // one vertical low-pixel, in world units
+    (0..=segs)
+        .map(|i| {
+            let u = lo + (i as f32 / segs as f32) * len;
+            let w = 0.62 * (u * 2.2).sin() + 0.38 * (u * 4.7 + 1.3).sin();
+            ((STUB_BASE + STUB_AMP * w) / lp).round() * lp
+        })
+        .collect()
 }
 
 /// The dollhouse outward-hide bits of a cave wall slab, derived from the floor
@@ -444,6 +484,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every cullable cave wall pairs with an INVERSE cut-away stub: same
+    /// direction nibble + HIDE_INVERT, footprint coincident with the wall, and a
+    /// low wavy top (a cut baseboard, ≈30 cm). The authored `game` scene must
+    /// emit NO inverse tags (its goldens stay byte-identical).
+    #[test]
+    fn cave_walls_get_inverse_cutaway_stubs() {
+        use house_game::cave_level;
+        // set cfg.scene directly (not via $SCENE) — the env is shared across the
+        // parallel test threads, so `game_cfg()` elsewhere would race it.
+        let mut cfg = game_cfg();
+        cfg.scene = "cave".to_string();
+        let spec = cave_level(1);
+        let scene = build_game(&spec, &cfg);
+        let inv = rt_probe::HIDE_INVERT;
+        let walls = scene.prim_hide_mask.iter().filter(|&&m| m != 0 && m & inv == 0).count();
+        let stubs = scene.prim_hide_mask.iter().filter(|&&m| m & inv != 0).count();
+        assert!(stubs > 0, "cave should emit cut-away stubs");
+        assert_eq!(walls, stubs, "exactly one stub per cullable wall");
+        // each stub: direction nibble is a real wall direction, the cut stays low,
+        // and its XZ footprint corners land on the iso stair lattice.
+        const STEP: f32 = 0.0625;
+        let on = |v: f32| (v / STEP - (v / STEP).round()).abs() < 1e-3;
+        for (pi, &m) in scene.prim_hide_mask.iter().enumerate() {
+            if m & inv == 0 {
+                continue;
+            }
+            assert_ne!(m & 0x0F, 0, "stub prim {pi}: lost its direction nibble");
+            let p = &scene.primitives[pi];
+            let vs = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
+            let (mut xmn, mut xmx, mut zmn, mut zmx, mut ymx) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY, 0.0f32);
+            for v in vs {
+                xmn = xmn.min(v.pos[0]);
+                xmx = xmx.max(v.pos[0]);
+                zmn = zmn.min(v.pos[2]);
+                zmx = zmx.max(v.pos[2]);
+                ymx = ymx.max(v.pos[1]);
+            }
+            assert!(ymx > 0.12 && ymx < 0.45, "stub prim {pi}: cut height {ymx} off (~30 cm)");
+            for (axis, v) in [("xmn", xmn), ("xmx", xmx), ("zmn", zmn), ("zmx", zmx)] {
+                assert!(on(v), "stub prim {pi}: footprint {axis}={v} off the lattice");
+            }
+        }
+    }
+
+    /// Golden guard: the authored `game` scene never uses the cut-away (inverse)
+    /// dollhouse tag, so its dollhouse masks — and goldens — are untouched.
+    #[test]
+    fn authored_game_scene_has_no_inverse_tags() {
+        let spec = game_level();
+        let scene = build_game(&spec, &game_cfg());
+        assert!(scene.prim_hide_mask.iter().all(|&m| m & rt_probe::HIDE_INVERT == 0), "non-cave scene must not emit cut-away stubs");
     }
 
     /// A closed door leaf (angle 0) occupies exactly its spec closed_solid

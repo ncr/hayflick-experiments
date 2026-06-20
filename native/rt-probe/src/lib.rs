@@ -59,7 +59,7 @@ pub mod scenes;
 // but are NOT re-exported here — nothing outside the crate names them.
 pub use config::{Config, GameCfg, HarnessCfg, RenderCfg, StyleCfg};
 pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx};
-pub use gpu_scene::{bake_bank_emission, yaw_instance_mask, InstanceTable, ProbeGrid, PROBE_CAP};
+pub use gpu_scene::{bake_bank_emission, yaw_instance_mask, InstanceTable, ProbeGrid, HIDE_INVERT, PROBE_CAP};
 pub use iso::{clamp_pan, iso_basis, iso_camera_at, render_scale, screen_px_to_world, snap_ground_to_lattice, whole_pixel_step, zoom_anchor_pan, ISO_R};
 pub use render::{make_pool, make_set, push_bytes, scan_lights, FrameState, InstanceKey, LightKey, SceneGpu, SceneHandles, ShadePush, Spotlight, N_RESERVED, TONE_SPV};
 pub use scene::{hex_linear, Scene};

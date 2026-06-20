@@ -139,14 +139,27 @@ pub fn bake_bank_emission(bank: i32, link: &[(i32, [f32; 3], bool)], lights: &mu
     }
 }
 
+/// `Scene::prim_hide_mask` flag ABOVE the four direction bits (`0x0F`): an
+/// INVERTED dollhouse tag. A prim tagged `dir | HIDE_INVERT` is primary-visible
+/// exactly when a plain `dir` wall would be HIDDEN — the cut-away wall stub,
+/// shown only while the full wall is dollhouse-culled. The stub is coincident
+/// with the wall's base, so binary occlusion leaves light transport unchanged;
+/// only its primary-ray visibility toggles, opposite the wall.
+pub const HIDE_INVERT: u8 = 0x10;
+
 /// Resolve a tagged instance's dollhouse visibility mask for a camera whose
 /// near-wall directions are `near` (from `near_hide_bits`): `0x02` (primary-ray
 /// see-through, still lit + occluding) iff EVERY tagged side faces the camera,
 /// else `0xff`. Single-bit walls hide as soon as their side is near; two-bit
 /// corners survive while either adjacent wall run survives (the kept run ends in
-/// a capped corner, not an open cross-section). Caller does the buffer patch.
+/// a capped corner, not an open cross-section). A `HIDE_INVERT` prim (cut-away
+/// stub) takes the OPPOSITE state — `0xff` when the wall hides, `0x02` when it
+/// shows. Caller does the buffer patch.
 pub fn yaw_instance_mask(bits: u8, near: u8) -> u8 {
-    if bits & near == bits {
+    let dir = bits & 0x0F;
+    let wall_hidden = dir & near == dir; // every tagged side faces the camera
+    let hide = if bits & HIDE_INVERT != 0 { !wall_hidden } else { wall_hidden };
+    if hide {
         0x02
     } else {
         0xff
@@ -281,6 +294,26 @@ mod tests {
             let _ = (ISO_YAW_DEG + 90.0 * q as f32).to_radians();
             assert_eq!(yaw_instance_mask(0, near_hide_bits(q)), 0x02); // empty set ⊆ anything
         }
+    }
+
+    #[test]
+    fn hide_invert_stub_is_the_exact_opposite_of_its_wall() {
+        // a cut-away stub (dir | HIDE_INVERT) is primary-visible (0xff) exactly
+        // when the plain-dir wall is hidden (0x02), and primary-hidden otherwise —
+        // so the two are never both visible (no z-fight) and never both gone.
+        for q in 0..4u32 {
+            let near = near_hide_bits(q);
+            for dir in [0x01u8, 0x02, 0x04, 0x08, 0x03, 0x09, 0x06, 0x0c] {
+                let wall = yaw_instance_mask(dir, near);
+                let stub = yaw_instance_mask(dir | HIDE_INVERT, near);
+                assert!((wall, stub) == (0x02, 0xff) || (wall, stub) == (0xff, 0x02), "q{q} dir{dir:#04x}: wall {wall:#04x} / stub {stub:#04x} not opposite");
+            }
+        }
+        // the flag must not perturb the plain-wall path (goldens): bits < 0x10
+        // resolve identically to before.
+        let near = near_hide_bits(0);
+        assert_eq!(yaw_instance_mask(0x01, near), 0x02);
+        assert_eq!(yaw_instance_mask(0x04, near), 0xff);
     }
 
     // ---- bake_bank_emission (pure) -------------------------------------------
