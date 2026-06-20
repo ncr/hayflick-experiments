@@ -8,6 +8,9 @@ description = "The house game (ARCHITECTURE.md area C): level collision, command
 sim-core = { path = "../sim-core" }
 iso-core = { path = "../iso-core" }
 glam = "0.30"
+# Used only by the `roommap` dev-tool bin to write top-down PNG maps of the
+# procedural cave generator (quality assessment). Pure CPU encoder, no GPU.
+png = "0.17"
 
 # Headless trace player: fixture level + trace.txt -> state digest. No GPU.
 [[bin]]

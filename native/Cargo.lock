@@ -585,6 +585,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "iso-core",
+ "png 0.17.16",
  "sim-core",
 ]
 
