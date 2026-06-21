@@ -227,7 +227,13 @@ kernel void shade(
             inContour = true;
             wallPos = o + d * h.t;
         }
-        if (wv > bayer4(int2(gid) - int2(pc.roi2.xy))) {
+        // Anchor the screen-door dither to the WORLD, not the player: project the
+        // world origin to low-res px (the same iso::project_lowres mapping that placed
+        // the disc centre) so the stipple stays glued to the scene as the player walks.
+        float3 orel = -float3(pc.camPos.xyz);
+        int2 wpx = int2((dot(orel, float3(pc.camRight.xyz)) / pc.camRight.w * 0.5 + 0.5) * float(W),
+                        (0.5 - dot(orel, float3(pc.camUp.xyz)) / pc.camUp.w * 0.5) * float(H));
+        if (wv > bayer4(int2(gid) - wpx)) {
             for (int it = 0; it < 10 && hitb && mats[h.mat].pad == 1; it++) {
                 // Gate on FLOOR position, not 3D view-depth: a plane perpendicular
                 // to the tilted view dir slices tall walls diagonally by height,

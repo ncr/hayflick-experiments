@@ -207,7 +207,8 @@ void main(){
   // screen disc, by marching the SAME primary ray past them (re-trace, mask 0x01).
   // The far wall (at/behind the player) and everything outside the disc stay
   // solid; the screen-door Bayer keep test makes crisp holes, never alpha. The
-  // dither lattice is anchored to the player pixel so it rides with the disc.
+  // dither lattice is anchored to the WORLD (see wpx below) so the stipple stays
+  // glued to the scene as the player walks, rather than riding with the disc.
   // roi2.w carries the ghost coverage cap in its MAGNITUDE and the contour flag in
   // its SIGN: <0 = GHOST+CONTOUR hybrid (faint Bayer stipple of the wall AND its
   // silhouette drawn as faint line-art — the dissolved wall's front face is
@@ -228,7 +229,14 @@ void main(){
       inContour = true;
       wallPos = o + d * h.t;
     }
-    if (wv > bayer4(px - ivec2(pc.roi2.xy))) {
+    // Anchor the screen-door dither to the WORLD, not the player: project the
+    // world origin to low-res px (the same iso::project_lowres mapping that placed
+    // the disc centre) and key the Bayer lattice off it, so the stipple stays glued
+    // to the scene as the player walks instead of riding along with them.
+    vec3 orel = -pc.camPos.xyz;
+    ivec2 wpx = ivec2((dot(orel, pc.camRight.xyz) / pc.camRight.w * 0.5 + 0.5) * float(W),
+                      (0.5 - dot(orel, pc.camUp.xyz) / pc.camUp.w * 0.5) * float(H));
+    if (wv > bayer4(px - wpx)) {
       for (int it = 0; it < 10 && hitb && mats[h.mat].pad == 1; it++) {
         // Gate on the hit's FLOOR position, not its 3D view-depth: a plane
         // perpendicular to the tilted iso view dir slices a tall wall diagonally
