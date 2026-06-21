@@ -426,10 +426,6 @@ impl RenderBackend for VulkanBackend {
         self.recreate_gpu(w, h);
     }
 
-    unsafe fn set_yaw_masks(&mut self, yaw_q: u32) {
-        self.gpu.set_yaw_masks(&self.ctx, yaw_q);
-    }
-
     unsafe fn wait_idle(&self) {
         self.ctx.device.device_wait_idle().unwrap();
     }
@@ -465,7 +461,12 @@ impl RenderBackend for VulkanBackend {
         // refit iff dirty), then the deterministic shade dispatch.
         self.gpu.record_frame(&self.ctx, cmd, fp.fs);
         let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
-        let push = ShadePush::new(&fp.fs.cam, low_w, low_h, self.env0, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);
+        let mut push = ShadePush::new(&fp.fs.cam, low_w, low_h, self.env0, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);
+        if let Some(roi) = &fp.roi {
+            let rp = rt_probe::roi_push(&fp.fs.cam, low_w as i32, low_h as i32, roi.player, roi.radius_px, roi.falloff_px, roi.ghost);
+            push.roi = rp.roi;
+            push.roi2 = rp.roi2;
+        }
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.shade_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[swap.scene_set], &[]);
         d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));

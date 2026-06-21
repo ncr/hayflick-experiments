@@ -71,6 +71,19 @@ pub fn iso_camera_at(scene_min: Vec3, scene_max: Vec3, low_w: u32, low_h: u32, y
     CamFrame { right, up, dir, pos, half_w, half_h }
 }
 
+/// Project a world point to its low-res pixel centre under the orthographic iso
+/// camera — the inverse of shade.comp's per-pixel ray basis (`u = dot(rel,right)
+/// / half_w`, then `px = (u·0.5+0.5)·W`; Y is flipped because screen Y runs down).
+/// Both GPU backends call THIS one Rust fn to derive the dollhouse-reveal disc
+/// centre, so the projection is bit-identical across Metal and Vulkan (no
+/// in-shader projection → no FP-parity hazard against the golden compare).
+pub fn project_lowres(cam: &CamFrame, w: i32, h: i32, p: Vec3) -> (f32, f32) {
+    let rel = p - cam.pos;
+    let u = rel.dot(cam.right) / cam.half_w;
+    let v = rel.dot(cam.up) / cam.half_h;
+    ((u * 0.5 + 0.5) * w as f32, (0.5 - v * 0.5) * h as f32)
+}
+
 /// The look-at target that centres the scene: the AABB centroid shifted to the
 /// middle of its projected bbox. The viewer seeds its movable target with this.
 pub fn iso_target(scene_min: Vec3, scene_max: Vec3) -> Vec3 {

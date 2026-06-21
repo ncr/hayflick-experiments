@@ -144,7 +144,24 @@ impl Viewer {
         // GameLoop (the layout is static, so this is a one-time bake).
         let minimap = if cfg.game.minimap { game_spec.as_ref().map(crate::minimap::Minimap::from_spec) } else { None };
         let game = match game_spec {
-            Some(spec) => GameLoop::from_spec(spec, &scene, backend.handles(), backend.light_count(), &cfg),
+            Some(mut spec) => {
+                // AABB collision for the GENERATED thin-wall scenes: the sim collides
+                // the player as a POINT (`Level::is_blocked`), so the rendered 0.375-wide
+                // pillar would sink into the 0.25 wall slabs ("no colliders" + the player
+                // centre reaching the wall, which made the CAVE_ROI reveal slice the wall
+                // behind it). Inflate the COLLISION solids by the player half-extent so the
+                // pillar stops flush against walls. The spec was already handed to
+                // `build_game` (VISUALS use the un-inflated slabs); this only grows the
+                // collision footprints. The authored game/house keep their own tuned
+                // collision (and goldens) untouched.
+                if matches!(cfg.scene.as_str(), "cave" | "village" | "home" | "hospital" | "office" | "factory") {
+                    let r = house_game::game::PLAYER_HALF;
+                    for s in &mut spec.static_solids {
+                        *s = [s[0] - r, s[1] - r, s[2] + r, s[3] + r];
+                    }
+                }
+                GameLoop::from_spec(spec, &scene, backend.handles(), backend.light_count(), &cfg)
+            }
             None => GameLoop::new(&scene, backend.handles(), backend.light_count(), &cfg),
         };
         println!("level: floor rect {:?}, {} solids, {} game lights", scene.floor_rect, scene.solids.len(), game.light_keys.len());
@@ -166,7 +183,6 @@ impl Viewer {
             view: ViewState {
                 zoom: cfg.game.zoom.round().clamp(ZOOM_MIN, ZOOM_MAX),
                 yaw_q: cfg.game.yaw_q,
-                mask_q: cfg.game.yaw_q,
                 rot: None,
                 yaw_anim: 0.0,
                 pan: Vec2::ZERO,
@@ -196,16 +212,6 @@ impl Viewer {
         // backend.new already built the swapchain (and baked probes); centre the
         // visible crop now that the view exists (the old recreate did this).
         r.recenter_pan();
-        if !r.scene.prim_hide_mask.is_empty() {
-            // MASK_Q (diagnostic): decouple the dollhouse masks from the camera
-            // quarter to prove/disprove mask-dependent light transport. Marks
-            // the TLAS dirty; the first render_present applies the masks. Probe
-            // bake already ran with the as-built masks (bake never rebuilds the
-            // TLAS), so this ordering is byte-identical to the old new().
-            let mq = r.cfg.game.mask_q.unwrap_or(r.view.yaw_q);
-            r.backend.set_yaw_masks(mq);
-            r.view.mask_q = mq;
-        }
         // optional initial pan offset (low pixels), for headless capture tests
         if r.cfg.game.pan != (0.0, 0.0) {
             let d = Vec2::new(r.cfg.game.pan.0, r.cfg.game.pan.1);
@@ -234,10 +240,6 @@ impl Viewer {
         }
         if r.game.snap.yaw_q != r.view.yaw_q {
             r.view.yaw_q = r.game.snap.yaw_q;
-            r.view.mask_q = r.view.yaw_q;
-            if !r.scene.prim_hide_mask.is_empty() {
-                r.backend.set_yaw_masks(r.view.yaw_q);
-            }
             r.snap_target_to_lattice();
         }
         Ok(r)
@@ -333,7 +335,6 @@ impl Viewer {
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
         let fs = FrameState {
             cam,
-            yaw_q: self.view.mask_q,
             room_lights,
             time: self.game.time(), // SIM time — the light-anim clock is replayable now
             light_emission: &emission,
@@ -392,6 +393,16 @@ impl Viewer {
             frame: self.frame,
             overlay,
             minimap,
+            roi: if self.cfg.game.roi {
+                // Anchor the reveal disc on the player's MID-HEIGHT, not its feet:
+                // the marker pillar is 1.3 wu tall, so projecting the feet (y≈0)
+                // puts the disc centre low on screen. +0.65 wu = the pillar's
+                // visual centre, so the cutout sits over the player, not under it.
+                let center = self.game.snap.player_pos + glam::Vec3::new(0.0, 0.65, 0.0);
+                Some(crate::backend::RoiInfo { player: center, radius_px: self.cfg.game.roi_radius, falloff_px: self.cfg.game.roi_falloff, ghost: self.cfg.game.roi_ghost })
+            } else {
+                None
+            },
             capture,
         };
         let ok = self.backend.render_present(&fp);

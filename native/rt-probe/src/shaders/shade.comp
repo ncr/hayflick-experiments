@@ -44,7 +44,17 @@ layout(push_constant) uniform Push {
   ivec4 misc;  // W, H, aoRays, debug (0 off, 1 albedo, 2 probe GI, 3 direct only, 4 AO term)
   ivec4 misc2; // roomLights dim 16.16 fixed point (probe-bank lerp), lightCount, _, _
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
+  vec4 roi;    // CAVE_ROI: player world xyz, w = disc radius (low-res px)
+  vec4 roi2;   // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
 } pc;
+
+// 4x4 ordered-Bayer threshold in [0,1) for a screen lattice cell — the shade-pass
+// twin of tonemap.comp's `ditherAt` mode 2 (same matrix, shifted from its centred
+// [-0.5,0.5) range into [0,1) so it compares directly against a [0,1] coverage).
+float bayer4(ivec2 lp){
+  const float B[16] = float[16](0.,8.,2.,10., 12.,4.,14.,6., 3.,11.,1.,9., 15.,7.,13.,5.);
+  return (B[(lp.x & 3) + (lp.y & 3) * 4] + 0.5) / 16.0;
+}
 
 vec3 sky(vec3 d){
   float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
@@ -104,8 +114,9 @@ float aoVis(vec3 o, vec3 dir, float R){
 // cosine-hemisphere ray set (spherical-Fibonacci, oriented by a world-space
 // tangent frame derived from n only) — no randomness, so a fixed camera stays
 // bit-identical and the term is rotation-invariant. Rays use mask 0xFF: the
-// player and dollhouse-hidden walls both occlude, which grounds the player
-// (the probe cache deliberately ignores it) and keeps the term yaw-invariant.
+// player and the walls both occlude, which grounds the player (the probe cache
+// deliberately ignores it) and keeps the term yaw-invariant. Walls are solid in
+// the TLAS — the CAVE_ROI see-through is a primary-ray-only effect.
 float rtAO(vec3 p, vec3 n, int N, float R, float strength){
   vec3 t1 = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0.0, 1.0, 0.0)) : cross(n, vec3(1.0, 0.0, 0.0)));
   vec3 t2 = cross(n, t1);
@@ -186,9 +197,44 @@ void main(){
   float v = -(((float(px.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);
   vec3 o = pc.camPos.xyz + u * pc.camRight.w * pc.camRight.xyz + v * pc.camUp.w * pc.camUp.xyz;
   vec3 d = normalize(pc.camDir.xyz);
+  vec3 o0 = o; // camera origin, kept for fog / world-distance after a ROI advance
 
   Hit h;
-  bool hitb = trace(o, d, 300.0, 0x01u, h); // dollhouse cull on primary only
+  bool hitb = trace(o, d, 300.0, 0x01u, h); // primary ray; CAVE_ROI sees through walls per-pixel below
+
+  // CAVE_ROI dithered see-through: dissolve occluder-wall hits (mats[h.mat].pad==1)
+  // that lie BETWEEN the camera and the player AND inside a soft, player-anchored
+  // screen disc, by marching the SAME primary ray past them (re-trace, mask 0x01).
+  // The far wall (at/behind the player) and everything outside the disc stay
+  // solid; the screen-door Bayer keep test makes crisp holes, never alpha. The
+  // dither lattice is anchored to the player pixel so it rides with the disc.
+  if (pc.roi2.w > 0.0) {
+    float sd = distance(vec2(px) + vec2(0.5), pc.roi2.xy);
+    // reveal weight, CAPPED by the ghost factor (roi2.w): at the disc centre the
+    // coverage tops out at `ghost`<1, so a sparse Bayer stipple of the wall always
+    // survives — the faint x-ray ghost of the dissolved wall over the room behind.
+    float wv = (1.0 - smoothstep(pc.roi.w - max(pc.roi2.z, 1.0), pc.roi.w, sd)) * pc.roi2.w;
+    if (wv > bayer4(px - ivec2(pc.roi2.xy))) {
+      vec2 fwd = normalize(d.xz); // camera ground-forward (horizontal view dir)
+      for (int it = 0; it < 10 && hitb && mats[h.mat].pad == 1; it++) {
+        // Gate on the hit's FLOOR position, not its 3D view-depth: a plane
+        // perpendicular to the tilted iso view dir slices a tall wall diagonally
+        // by HEIGHT (its top sits at a smaller view-depth than its base), which
+        // revealed the upper part of walls BEHIND the player. Comparing the XZ
+        // footprint along the ground-forward axis keeps behind-player walls fully
+        // solid regardless of height — only walls whose footprint is between the
+        // camera and the player dissolve. Gate ONLY a FRESH occluder (a real ray
+        // gap, h.t large): a hit within ~one slab thickness is the FAR FACE of the
+        // wall we are already dissolving — pass it through, else its back face
+        // (which sits right at the player's depth plane) is kept as a sliver.
+        if (h.t > 0.6 && dot((o + d * h.t).xz - pc.roi.xyz.xz, fwd) >= 0.0) break;
+        o = o + d * (h.t + (1.0 / 256.0));
+        hitb = trace(o, d, 300.0, 0x01u, h);
+      }
+    }
+  }
+  float tcam = hitb ? (h.t + dot(o - o0, d)) : 0.0; // camera→final-hit distance
+
   vec3 col;
   float fogT = 1.0;
   vec3 fogAdd = vec3(0.0);
@@ -196,17 +242,17 @@ void main(){
     // exponential ground mist on the primary segment — fully analytic
     // (transmittance + ambient inscatter) plus ONE fixed-position sun-shaft
     // sample: deterministic, so it shades identically every frame.
-    float tseg = hitb ? h.t : min(300.0, o.y / max(-d.y, 1e-4));
-    fogT = exp(-fogOD(o, d, tseg));
+    float tseg = hitb ? tcam : min(300.0, o0.y / max(-d.y, 1e-4));
+    fogT = exp(-fogOD(o0, d, tseg));
     vec3 fogCol = vec3(0.55, 0.58, 0.66) * 0.18 * pc.env0.y;
     fogAdd = fogCol * (1.0 - fogT);
     if (pc.env0.x > 0.0) {
       float L = min(tseg, 8.0 * pc.env0.w / max(-d.y, 0.05));
       float ts = tseg - 0.5 * L;
-      vec3 ps = o + d * ts;
+      vec3 ps = o0 + d * ts;
       float ss = pc.env0.z * exp(-max(ps.y, 0.0) / pc.env0.w);
       if (ss > 1e-5 && !occluded(ps, sunDir, 200.0))
-        fogAdd += sun * ss * exp(-fogOD(o, d, ts)) * L * 0.08;
+        fogAdd += sun * ss * exp(-fogOD(o0, d, ts)) * L * 0.08;
     }
   }
 

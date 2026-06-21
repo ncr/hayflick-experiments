@@ -28,12 +28,9 @@ const ROT_SETTLE: f32 = 0.08; // web RotationAnimation.SNAP_SETTLE_SECONDS
 pub struct ViewState {
     pub zoom: f32,
     /// camera yaw in quarter-turns from canonical (web rotateQuarterTurns):
-    /// Q = -1, E = +1. Tagged scenes re-mask near walls per turn (dollhouse).
-    /// Mirrors the SIM's yaw_q (every change also queues RotateCamera).
+    /// Q = -1, E = +1. Mirrors the SIM's yaw_q (every change also queues
+    /// RotateCamera).
     pub yaw_q: u32,
-    /// which quarter the dollhouse masks are currently set for (swaps at the
-    /// nearest-quarter crossing during a rotation sweep)
-    pub mask_q: u32,
     /// in-flight smooth quarter-turn (q/e); None when settled at yaw_q
     pub rot: Option<RotAnim>,
     /// transient extra yaw in degrees during a MOVIE orbit sweep (0 when idle)
@@ -87,8 +84,7 @@ impl Viewer {
     }
 
     /// Advance the in-flight rotation by `dt`. Every det frame of the sweep is
-    /// fully converged by construction; the dollhouse masks swap when the
-    /// sweep crosses into a new nearest quarter.
+    /// fully converged by construction.
     pub fn advance_rotation(&mut self, dt: f32) {
         let Some(r) = &mut self.view.rot else { return };
         let tgt = r.target as f32;
@@ -108,21 +104,12 @@ impl Viewer {
                 r.settle = Some((r.turns, 0.0));
             }
         }
-        // swap the dollhouse masks at the nearest-quarter crossing (side-on)
-        let mq = (r.turns.round() as i32).rem_euclid(4) as u32;
         let target_q = r.target.rem_euclid(4) as u32;
         if landed {
             self.view.yaw_q = target_q;
             self.view.rot = None;
             self.view.move_accum = Vec2::ZERO;
             self.snap_target_to_lattice();
-        }
-        if mq != self.view.mask_q {
-            self.view.mask_q = mq;
-            if !self.scene.prim_hide_mask.is_empty() {
-                // marks the TLAS dirty; render_present rebuilds with the masks
-                unsafe { self.backend.set_yaw_masks(mq) };
-            }
         }
     }
 
@@ -142,17 +129,11 @@ impl Viewer {
     /// Rotate the view by quarter turns instantly (the movie's landing path
     /// and the '0' reset; interactive q/e goes through `start_rotate`). Also
     /// queues the matching RotateCamera so the sim's yaw_q follows. The camera
-    /// orbits its target; dollhouse-tagged scenes re-mask which perimeter
-    /// walls are hidden, applied by the next TLAS rebuild.
+    /// orbits its target.
     pub fn rotate(&mut self, delta: i32) {
         self.game.push(Command::RotateCamera { dq: delta as i8 });
         self.view.yaw_q = (self.view.yaw_q as i32 + delta).rem_euclid(4) as u32;
         self.view.rot = None; // instant turn supersedes any in-flight sweep
-        self.view.mask_q = self.view.yaw_q;
-        if !self.scene.prim_hide_mask.is_empty() {
-            // marks the TLAS dirty; render_present rebuilds with the new masks
-            unsafe { self.backend.set_yaw_masks(self.view.yaw_q) };
-        }
         self.view.move_accum = Vec2::ZERO;
         self.snap_target_to_lattice();
     }
@@ -161,18 +142,14 @@ impl Viewer {
     /// command. `rotate` is for viewer-INITIATED turns (it tells the sim to
     /// follow); this is the inverse — the SIM already turned (a DEMO trace's
     /// `rotate` command, or any replay that rotated) and the viewer must catch
-    /// up: re-mask the dollhouse, re-snap the target onto the new yaw's lattice.
-    /// No-op when already aligned (idle ticks never touch the TLAS masks).
+    /// up: re-snap the target onto the new yaw's lattice.
+    /// No-op when already aligned.
     pub fn sync_view_yaw(&mut self, target_q: u32) {
-        if self.view.yaw_q == target_q && self.view.mask_q == target_q && self.view.rot.is_none() {
+        if self.view.yaw_q == target_q && self.view.rot.is_none() {
             return;
         }
         self.view.yaw_q = target_q;
         self.view.rot = None;
-        self.view.mask_q = target_q;
-        if !self.scene.prim_hide_mask.is_empty() {
-            unsafe { self.backend.set_yaw_masks(self.view.yaw_q) };
-        }
         self.view.move_accum = Vec2::ZERO;
         self.snap_target_to_lattice();
     }

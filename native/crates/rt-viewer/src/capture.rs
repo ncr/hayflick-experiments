@@ -83,8 +83,7 @@ pub enum MovieCmd {
     /// Capture N frames at the current camera.
     Hold(u32),
     /// Fluid quarter-turn: sweep the yaw 90°·dq over N captured frames with
-    /// smoothstep easing, swapping the dollhouse masks side-on at 45°, then
-    /// land through the real `rotate` path.
+    /// smoothstep easing, then land through the real `rotate` path.
     Orbit(i32, u32),
     /// One integer zoom step anchored at the window centre.
     Zoom(i32),
@@ -348,7 +347,7 @@ impl Viewer {
                 Some(r) => (r.turns, r.settle.is_some()),
                 None => (self.view.yaw_q as f32, false),
             };
-            println!("DUMP {:04} t={:.4} turns={:.6} settle={} rot={} maskq={}", self.harness.dump_idx, self.start_time.elapsed().as_secs_f32(), turns, settle, self.view.rot.is_some(), self.view.mask_q);
+            println!("DUMP {:04} t={:.4} turns={:.6} settle={} rot={}", self.harness.dump_idx, self.start_time.elapsed().as_secs_f32(), turns, settle, self.view.rot.is_some());
             self.harness.dump_idx += 1;
             self.harness.dump_left -= 1;
             if self.harness.dump_left == 0 {
@@ -427,7 +426,7 @@ impl Viewer {
                     mv.seg_done += 1;
                     if mv.seg_done >= n {
                         // land exactly on the next quarter through the real
-                        // interactive path (re-masks, re-snaps)
+                        // interactive path (re-snaps)
                         self.view.yaw_anim = 0.0;
                         self.rotate(dq);
                         mv.seg += 1;
@@ -435,12 +434,6 @@ impl Viewer {
                     } else {
                         let t = mv.seg_done as f32 / n as f32;
                         self.view.yaw_anim = 90.0 * dq as f32 * (t * t * (3.0 - 2.0 * t));
-                        // swap the dollhouse masks side-on, halfway through the turn
-                        if mv.seg_done == n / 2 && !self.scene.prim_hide_mask.is_empty() {
-                            let next_q = (self.view.yaw_q as i32 + dq).rem_euclid(4) as u32;
-                            // marks the TLAS dirty; render_present applies them
-                            self.backend.set_yaw_masks(next_q);
-                        }
                     }
                     break;
                 }

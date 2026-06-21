@@ -166,7 +166,6 @@ pub struct GameCfg {
     pub flash_cone: f32,           // FLASH_CONE: outer half-angle, degrees
     pub zoom: f32,                 // ZOOM (whole steps 1-4)
     pub yaw_q: u32,                // YAW_Q: start quarter-turn
-    pub mask_q: Option<u32>,       // MASK_Q: decouple dollhouse masks (diagnostic)
     pub pan: (f32, f32),           // PAN_X/PAN_Y: initial crop offset (low px)
     pub target: (Option<f32>, Option<f32>), // TARGET_X/TARGET_Z: camera look-at override
     pub player_off: (f32, f32),    // PLAYER_X/PLAYER_Z: player offset from spawn
@@ -177,8 +176,11 @@ pub struct GameCfg {
     pub cave_rooms: u32,           // CAVE_ROOMS: target room count (grid scales to fit)
     pub cave_loops: u32,           // CAVE_LOOPS: extra corridors beyond the spanning tree
     pub cave_thick: bool,          // CAVE_WALLS=rock: thick 1×1 rock blocks vs thin walls + void
-    pub cave_cutaway: bool,        // CAVE_CUTAWAY=0: dollhouse-cull near walls fully (no cut-away stub)
     pub minimap: bool,             // MINIMAP: draw the top-down minimap HUD (default on for SCENE=village)
+    pub roi: bool,                 // CAVE_ROI: dithered player-anchored see-through reveal — the sole wall occlusion (default on for all player+wall scenes)
+    pub roi_radius: f32,           // ROI_R: reveal-disc radius in low-res px
+    pub roi_falloff: f32,          // ROI_FALLOFF: soft dither edge width in low-res px
+    pub roi_ghost: f32,            // ROI_GHOST: max reveal coverage at disc centre (<1 leaves a faint stipple ghost of the wall)
 }
 
 /// Window size + capture / movie / clip harness knobs. None of these touch the
@@ -266,7 +268,6 @@ impl Config {
                 flash_cone: f("FLASH_CONE", 22.0),
                 zoom: f("ZOOM", 1.0),
                 yaw_q: (i("YAW_Q", 0) as u32) & 3,
-                mask_q: fo("MASK_Q").map(|v| (v as u32) & 3),
                 pan: (f("PAN_X", 0.0), f("PAN_Y", 0.0)),
                 target: (fo("TARGET_X"), fo("TARGET_Z")),
                 player_off: (f("PLAYER_X", 0.0), f("PLAYER_Z", 0.0)),
@@ -277,8 +278,11 @@ impl Config {
                 cave_rooms: (i("CAVE_ROOMS", 10) as u32).clamp(1, 80),
                 cave_loops: i("CAVE_LOOPS", 3).max(0) as u32,
                 cave_thick: s("CAVE_WALLS").map(|v| v == "rock" || v == "thick").unwrap_or(false),
-                cave_cutaway: s("CAVE_CUTAWAY").map(|v| v != "0" && v != "off").unwrap_or(true),
                 minimap: b("MINIMAP", matches!(scene.as_str(), "village" | "home" | "hospital" | "office" | "factory")),
+                roi: b("CAVE_ROI", matches!(scene.as_str(), "game" | "house" | "cave" | "village" | "home" | "hospital" | "office" | "factory")),
+                roi_radius: fo("ROI_R").unwrap_or(79.0),
+                roi_falloff: fo("ROI_FALLOFF").unwrap_or(33.0),
+                roi_ghost: fo("ROI_GHOST").unwrap_or(0.85),
             },
             harness: HarnessCfg {
                 window,

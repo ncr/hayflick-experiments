@@ -92,12 +92,6 @@ pub struct Scene {
     /// props the player can't walk through. Consumed by house-game's `Level`.
     pub floor_rect: [f32; 4],
     pub solids: Vec<[f32; 4]>,
-    /// Per-primitive near-wall hide tag (dollhouse cull under camera rotation).
-    /// Bitmask of OUTWARD directions: bit0=+X, bit1=+Z, bit2=-X, bit3=-Z;
-    /// 0 = never hidden. `SceneGpu` turns these into per-yaw TLAS instance
-    /// visibility masks. Empty vec = feature unused (all visible). When used,
-    /// must be exactly `primitives.len()` long — see `tag_hide`.
-    pub prim_hide_mask: Vec<u8>,
     /// Authored NEE emission direction per primitive (zero = none/isotropic;
     /// overrides the geometric heuristic). Sparse: may be shorter than
     /// `primitives` — index with `.get(i)`.
@@ -385,7 +379,7 @@ impl Scene {
     /// `SceneGpu::record_frame`) places it in the world. Returns the first
     /// primitive index. Per-instance policy (ARCHITECTURE.md flag table):
     /// excluded from the NEE emissive scan, bake-ray mask 0x05 (the frozen GI
-    /// cache never sees movers), never dollhouse-hidden. Like the player, call
+    /// cache never sees movers). Like the player, call
     /// `recompute_bounds` BEFORE placing dynamics — local-space geometry must
     /// not stretch the world AABB.
     pub fn place_dynamic(&mut self, cm: &CachedModel, name: &str, local: Mat4) -> usize {
@@ -522,15 +516,6 @@ impl Scene {
         Some(self.primitives.len() - 1)
     }
 
-    /// Tag every primitive from `from` to the current end with a near-wall hide
-    /// bitmask (see `prim_hide_mask`), padding untagged predecessors with 0.
-    pub fn tag_hide(&mut self, from: usize, bits: u8) {
-        self.prim_hide_mask.resize(self.primitives.len(), 0);
-        for m in &mut self.prim_hide_mask[from..] {
-            *m = bits;
-        }
-    }
-
     /// Add a flat horizontal quad (a procedural floor) spanning `[xmin,xmax] ×
     /// [zmin,zmax]` at height `y` — the ground plane for procedural scenes.
     pub fn add_floor(&mut self, xmin: f32, xmax: f32, zmin: f32, zmax: f32, y: f32, color: [f32; 4]) {
@@ -633,65 +618,6 @@ impl Scene {
             vi += 4;
         }
         self.primitives.push(Primitive { vertex_offset: vbase, index_offset: ibase, vertex_count: 24, index_count: 36, material_id });
-    }
-
-    /// Append a "cut-away" wall stub: a box on the XZ `rect` rising from y=0 to a
-    /// WAVY top edge. `heights[i]` is the top height at the i-th of `heights.len()`
-    /// uniform stations spanning the rect from its low to high end along
-    /// `run_along_x ? X : Z`. Front/back/end faces rise to the wavy edge and a thin
-    /// top ribbon follows it, so a dollhouse-culled wall can read as a low cut
-    /// baseboard instead of vanishing. One primitive (returns its index); no bottom
-    /// face (it sits on the floor). Y is exempt from the iso stair lattice
-    /// (invariant #8), so the wavy edge is unconstrained.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_wavy_top(&mut self, rect: [f32; 4], run_along_x: bool, heights: &[f32], color: [f32; 4], roughness: f32, metallic: f32) -> usize {
-        assert!(heights.len() >= 2, "add_wavy_top: need >= 2 height samples");
-        let idx = self.primitives.len();
-        let material_id = self.materials.len() as i32;
-        self.materials.push(Material { base_color: color, emissive: [0.0; 4], metallic, roughness, tex_index: -1, _pad: 0 });
-        let vbase = self.vertices.len() as u32;
-        let ibase = self.indices.len() as u32;
-        let [x0, z0, x1, z1] = rect;
-        let n = heights.len() - 1; // segments
-        let mut verts: Vec<Vertex> = Vec::new();
-        let mut inds: Vec<u32> = Vec::new();
-        let mut quad = |p: [[f32; 3]; 4], nrm: [f32; 3]| {
-            let b = verts.len() as u32;
-            for pos in p {
-                verts.push(Vertex { pos, nrm, uv: [0.0, 0.0] });
-            }
-            inds.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
-        };
-        let (lo, hi) = if run_along_x { (x0, x1) } else { (z0, z1) };
-        let stn = |i: usize| lo + (i as f32 / n as f32) * (hi - lo);
-        for i in 0..n {
-            let (a0, a1) = (stn(i), stn(i + 1));
-            let (h0, h1) = (heights[i], heights[i + 1]);
-            let (da, dh) = (a1 - a0, h1 - h0);
-            let l = (da * da + dh * dh).sqrt().max(1e-6); // top-ribbon slope normal
-            if run_along_x {
-                quad([[a0, 0., z1], [a1, 0., z1], [a1, h1, z1], [a0, h0, z1]], [0., 0., 1.]); // front +Z
-                quad([[a1, 0., z0], [a0, 0., z0], [a0, h0, z0], [a1, h1, z0]], [0., 0., -1.]); // back -Z
-                quad([[a0, h0, z0], [a1, h1, z0], [a1, h1, z1], [a0, h0, z1]], [-dh / l, da / l, 0.]); // top
-            } else {
-                quad([[x1, 0., a1], [x1, 0., a0], [x1, h0, a0], [x1, h1, a1]], [1., 0., 0.]); // front +X
-                quad([[x0, 0., a0], [x0, 0., a1], [x0, h1, a1], [x0, h0, a0]], [-1., 0., 0.]); // back -X
-                quad([[x0, h0, a0], [x0, h1, a1], [x1, h1, a1], [x1, h0, a0]], [0., da / l, -dh / l]); // top
-            }
-        }
-        let (ha, hb) = (heights[0], heights[n]); // end caps at the run's two ends
-        if run_along_x {
-            quad([[x0, 0., z1], [x0, 0., z0], [x0, ha, z0], [x0, ha, z1]], [-1., 0., 0.]);
-            quad([[x1, 0., z0], [x1, 0., z1], [x1, hb, z1], [x1, hb, z0]], [1., 0., 0.]);
-        } else {
-            quad([[x1, 0., z0], [x0, 0., z0], [x0, ha, z0], [x1, ha, z0]], [0., 0., -1.]);
-            quad([[x0, 0., z1], [x1, 0., z1], [x1, hb, z1], [x0, hb, z1]], [0., 0., 1.]);
-        }
-        let (vcount, icount) = (verts.len() as u32, inds.len() as u32);
-        self.vertices.extend_from_slice(&verts);
-        self.indices.extend_from_slice(&inds);
-        self.primitives.push(Primitive { vertex_offset: vbase, index_offset: ibase, vertex_count: vcount, index_count: icount, material_id });
-        idx
     }
 
     /// Recompute the AABB from only the vertices actually referenced by kept triangles.

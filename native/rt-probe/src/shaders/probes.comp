@@ -48,8 +48,9 @@ layout(push_constant) uniform Push {
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
 } pc;
 
-// probe rays ignore the dynamic player (bit 0x04 absent) but DO hit
-// dollhouse-hidden walls (0x02) — baked light transport is yaw-invariant
+// probe rays ignore the dynamic player (bit 0x04 absent) but DO hit every
+// static wall (0xff) — baked light transport is yaw-invariant (walls are solid
+// in the TLAS; the CAVE_ROI see-through is a primary-ray-only effect)
 const uint PROBE_MASK = 0x0Au;
 
 uint hash(uint x){x^=x>>16;x*=0x7feb352dU;x^=x>>15;x*=0x846ca68bU;x^=x>>16;return x;}

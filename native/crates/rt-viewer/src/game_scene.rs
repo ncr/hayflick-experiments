@@ -96,61 +96,38 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     }
 
     // ---- perimeter walls: four slabs around the footprint, WALL_TOP tall,
-    // 0.25 wu thick, sitting just OUTSIDE the walkable floor rect (the inner
-    // face on the rect edge). Tagged with their outward direction so the
-    // dollhouse cull hides the camera-near sides per quarter-turn (Q/E). The
-    // cave skips this — its generated wall slabs already enclose every region.
+    // 0.25 wu thick, sitting just OUTSIDE the walkable floor rect (the inner face
+    // on the rect edge). Solid full-height geometry — the per-pixel CAVE_ROI
+    // reveal sees through them around the player. The generated scenes
+    // (`dollhouse`) skip this: their own boundary slabs already enclose every
+    // region.
     let t = WALL_HT * 2.0;
     if !dollhouse {
-        let perim: [([f32; 4], u8); 4] = [
-            ([f[0] - t, f[1] - t, f[0], f[3] + t], 0b0100), // west wall, outward -X
-            ([f[2], f[1] - t, f[2] + t, f[3] + t], 0b0001), // east wall, outward +X
-            ([f[0] - t, f[1] - t, f[2] + t, f[1]], 0b1000), // north wall, outward -Z
-            ([f[0] - t, f[3], f[2] + t, f[3] + t], 0b0010), // south wall, outward +Z
+        let perim: [[f32; 4]; 4] = [
+            [f[0] - t, f[1] - t, f[0], f[3] + t], // west wall
+            [f[2], f[1] - t, f[2] + t, f[3] + t], // east wall
+            [f[0] - t, f[1] - t, f[2] + t, f[1]], // north wall
+            [f[0] - t, f[3], f[2] + t, f[3] + t], // south wall
         ];
-        for (rect, bits) in perim {
+        for rect in perim {
             let first = box_world(&mut scene, rect, WALL_TOP, WALL_PERIM);
-            scene.tag_hide(first, bits);
+            mark_occluder(&mut scene, first);
         }
     }
 
     // ---- interior structure. Authored house: each static solid is a wall
     // (thin: one XZ dim == the wall thickness) or furniture (the free-standing
-    // crate, a low box). Cave: EVERY solid is a wall — a thin boundary slab or a
-    // full 1×1 rock block — rendered full height and tagged with its
-    // layout-derived outward direction so the dollhouse cull lets the iso camera
-    // see into every chamber.
+    // crate, a low box). Generated scenes: EVERY solid is a wall — a thin
+    // boundary slab or a full 1×1 rock block. All walls are solid full-height
+    // geometry; the CAVE_ROI reveal opens them per-pixel around the player.
     for s in &spec.static_solids {
         let (w, d) = (s[2] - s[0], s[3] - s[1]);
-        if !dollhouse {
-            if w.min(d) <= t + 1e-3 {
-                box_world(&mut scene, *s, WALL_TOP, wall_hex);
-            } else {
-                box_world(&mut scene, *s, 0.6, FURNITURE); // crate-height greybox
-            }
+        if !dollhouse && w.min(d) > t + 1e-3 {
+            box_world(&mut scene, *s, 0.6, FURNITURE); // crate-height greybox (not an occluder)
             continue;
         }
-        let bits = if w.min(d) >= 0.9 { rock_block_bits(s, spec) } else { wall_outward_bits(s, spec) };
         let first = box_world(&mut scene, *s, WALL_TOP, wall_hex);
-        if bits != 0 {
-            // full wall: hide when its side faces the camera. Tag it BEFORE adding the
-            // stub — `tag_hide` writes `[from..end]`, so each prim must be tagged while
-            // it is the last one.
-            scene.tag_hide(first, bits);
-            // dollhouse cut-away: instead of vanishing, a camera-near wall leaves a
-            // low WAVY stub — the bottom ~30 cm with an irregular top edge that reads
-            // as "cut" so the iso view still sees in. The stub is shown by the INVERSE
-            // dollhouse mask (visible exactly when the full wall is culled) and is
-            // coincident with the wall's base, so the full wall keeps occluding for
-            // shadows/GI (no light-transport change, no re-bake artefacts). CAVE_CUTAWAY=0
-            // skips the stub for the original see-through dollhouse.
-            if cfg.game.cave_cutaway {
-                let run_x = (s[2] - s[0]) >= (s[3] - s[1]);
-                let heights = wavy_stub_heights(*s, run_x);
-                let stub = scene.add_wavy_top(*s, run_x, &heights, hex_linear(wall_hex), 0.85, 0.0);
-                scene.tag_hide(stub, bits | rt_probe::HIDE_INVERT); // shown only when the wall is culled
-            }
-        }
+        mark_occluder(&mut scene, first);
     }
 
     // ---- wall targets: a pale backing plate flush on the wall + a bright red
@@ -183,7 +160,6 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // actor against the bright scene (judge tweak: the old mid-grey pillar capped
     // dark/muddy), while still picking up the colored light pools and AO grounding.
     let pidx = scene.add_box_local(house_game::game::PLAYER_HALF, 1.3, house_game::game::PLAYER_HALF, [0.82, 0.84, 0.88, 1.0], [0.0; 4]);
-    scene.prim_hide_mask.resize(scene.primitives.len(), 0);
     scene.dynamic_prim = Some(pidx);
 
     // collision is the game's job; the scene only needs floor_rect + solids for
@@ -218,118 +194,22 @@ fn room_center(spec: &LevelSpec, l: &LightSpec) -> Vec3 {
     Vec3::new((r[0] + r[2]) * 0.5, 2.0, (r[1] + r[3]) * 0.5)
 }
 
-/// Cut-away stub baseboard height (~32 cm = the owner's "say 30 cm") and the
-/// wavy half-amplitude (≈ ±12 cm) around it.
-const STUB_BASE: f32 = 0.25;
-const STUB_AMP: f32 = 0.09;
-
-/// Sample a gently wavy top contour for a cut-away wall stub along its run axis.
-/// The phase is the WORLD coordinate along the run, so the undulation is coherent
-/// across adjacent walls; two sine octaves keep it organic (not a flat repeat).
-/// Heights snap to whole vertical low-pixels (Y projects 16·√6 ≈ 39.19 lowpx/wu)
-/// so the cut edge reads crisp under the pixel-perfect downsample.
-fn wavy_stub_heights(rect: [f32; 4], run_along_x: bool) -> Vec<f32> {
-    let (lo, hi) = if run_along_x { (rect[0], rect[2]) } else { (rect[1], rect[3]) };
-    let len = hi - lo;
-    let segs = ((len * 4.0).round() as usize).clamp(3, 28); // ≈ one station / 0.25 wu
-    let lp = 1.0 / (16.0 * 6.0_f32.sqrt()); // one vertical low-pixel, in world units
-    (0..=segs)
-        .map(|i| {
-            let u = lo + (i as f32 / segs as f32) * len;
-            let w = 0.62 * (u * 2.2).sin() + 0.38 * (u * 4.7 + 1.3).sin();
-            ((STUB_BASE + STUB_AMP * w) / lp).round() * lp
-        })
-        .collect()
-}
-
-/// The dollhouse outward-hide bits of a cave wall slab, derived from the floor
-/// layout: the side with NO floor is the exterior the iso camera should see
-/// past. A thin-in-X slab is a vertical wall (test ±X); thin-in-Z is horizontal
-/// (test ±Z). Each generated cave slab is a floor↔rock boundary, so exactly one
-/// side is floor → exactly one bit (bit convention matches the perimeter above).
-fn wall_outward_bits(s: &[f32; 4], spec: &LevelSpec) -> u8 {
-    let (w, d) = (s[2] - s[0], s[3] - s[1]);
-    let (mx, mz) = ((s[0] + s[2]) * 0.5, (s[1] + s[3]) * 0.5);
-    // sample just outside the 0.25-thick slab; the neighbouring cell centre is
-    // 0.5 away, so 0.1 past the face lands cleanly inside it (or in the void).
-    let eps = 0.1;
-    let on_floor = |x: f32, z: f32| spec.rooms.iter().any(|r| x >= r.floor_rect[0] && x <= r.floor_rect[2] && z >= r.floor_rect[1] && z <= r.floor_rect[3]);
-    let mut bits = 0u8;
-    if w <= d {
-        let (west, east) = (on_floor(s[0] - eps, mz), on_floor(s[2] + eps, mz));
-        if east && !west {
-            bits |= 0b0100; // floor east → exterior west (-X)
-        }
-        if west && !east {
-            bits |= 0b0001; // floor west → exterior east (+X)
-        }
-        if west && east {
-            bits |= 0b0100 | 0b0001; // INTERIOR partition (floor both sides): cut from
-                                     // BOTH sides so whichever room is behind it is never
-                                     // occluded — the wall always shows as a low stub.
-        }
-    } else {
-        let (north, south) = (on_floor(mx, s[1] - eps), on_floor(mx, s[3] + eps));
-        if south && !north {
-            bits |= 0b1000; // floor south → exterior north (-Z)
-        }
-        if north && !south {
-            bits |= 0b0010; // floor north → exterior south (+Z)
-        }
-        if north && south {
-            bits |= 0b1000 | 0b0010; // interior partition: cut from both sides
-        }
-    }
-    bits
-}
-
-/// The dollhouse outward-hide bits of a THICK 1×1 rock block: a bit for every
-/// side that fronts a floor cell (so the block hides when the camera looks at it
-/// from the exterior of a room it borders). Cardinal neighbours first; if the
-/// block only touches floor diagonally (an outer corner), the two bits of the
-/// outward diagonal. Bit convention matches the perimeter / `wall_outward_bits`.
-fn rock_block_bits(s: &[f32; 4], spec: &LevelSpec) -> u8 {
-    let (mx, mz) = ((s[0] + s[2]) * 0.5, (s[1] + s[3]) * 0.5);
-    let e = 0.1;
-    let on = |x: f32, z: f32| spec.rooms.iter().any(|r| x >= r.floor_rect[0] && x <= r.floor_rect[2] && z >= r.floor_rect[1] && z <= r.floor_rect[3]);
-    let mut bits = 0u8;
-    if on(mx, s[3] + e) {
-        bits |= 0b1000; // floor south → outward north (-Z)
-    }
-    if on(mx, s[1] - e) {
-        bits |= 0b0010; // floor north → outward south (+Z)
-    }
-    if on(s[2] + e, mz) {
-        bits |= 0b0100; // floor east → outward west (-X)
-    }
-    if on(s[0] - e, mz) {
-        bits |= 0b0001; // floor west → outward east (+X)
-    }
-    if bits == 0 {
-        // diagonal-only contact (outer corner): outward is the 2-bit diagonal
-        // pointing away from the room the block touches.
-        if on(s[2] + e, s[3] + e) {
-            bits |= 0b1000 | 0b0100; // floor SE → outward NW
-        }
-        if on(s[0] - e, s[3] + e) {
-            bits |= 0b1000 | 0b0001; // floor SW → outward NE
-        }
-        if on(s[2] + e, s[1] - e) {
-            bits |= 0b0010 | 0b0100; // floor NE → outward SW
-        }
-        if on(s[0] - e, s[1] - e) {
-            bits |= 0b0010 | 0b0001; // floor NW → outward SE
-        }
-    }
-    bits
-}
-
 /// Add an axis-aligned box spanning the XZ rect from the floor (y=0) to
 /// `height`, with a solid color (no emission). Returns the first prim index.
 fn box_world(scene: &mut Scene, rect: [f32; 4], height: f32, hex: u32) -> usize {
     let first = scene.primitives.len();
     scene.add_box_world(Vec3::new(rect[0], 0.0, rect[1]), Vec3::new(rect[2], height, rect[3]), hex_linear(hex), [0.0; 4], 0.85, 0.0);
     first
+}
+
+/// Flag a wall primitive's material as a see-through OCCLUDER (Material._pad = 1),
+/// the bit the shade pass reads (`mats[h.mat].pad`) to know a primary-ray hit is
+/// a wall the CAVE_ROI reveal may dither away. `add_box` mints one material per
+/// box, so this targets exactly this wall. Floors/furniture/lights/doors/the
+/// player/cut-away stubs are left at 0 and never dissolve.
+fn mark_occluder(scene: &mut Scene, prim: usize) {
+    let mid = scene.primitives[prim].material_id as usize;
+    scene.materials[mid]._pad = 1;
 }
 
 /// One iso 2:1 stair step (`0.0625 wu` = 2 H + 1 V px). Every target XZ
@@ -513,59 +393,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// Every cullable cave wall pairs with an INVERSE cut-away stub: same
-    /// direction nibble + HIDE_INVERT, footprint coincident with the wall, and a
-    /// low wavy top (a cut baseboard, ≈30 cm). The authored `game` scene must
-    /// emit NO inverse tags (its goldens stay byte-identical).
-    #[test]
-    fn cave_walls_get_inverse_cutaway_stubs() {
-        use house_game::cave_level;
-        // set cfg.scene directly (not via $SCENE) — the env is shared across the
-        // parallel test threads, so `game_cfg()` elsewhere would race it.
-        let mut cfg = game_cfg();
-        cfg.scene = "cave".to_string();
-        let spec = cave_level(1);
-        let scene = build_game(&spec, &cfg);
-        let inv = rt_probe::HIDE_INVERT;
-        let walls = scene.prim_hide_mask.iter().filter(|&&m| m != 0 && m & inv == 0).count();
-        let stubs = scene.prim_hide_mask.iter().filter(|&&m| m & inv != 0).count();
-        assert!(stubs > 0, "cave should emit cut-away stubs");
-        assert_eq!(walls, stubs, "exactly one stub per cullable wall");
-        // each stub: direction nibble is a real wall direction, the cut stays low,
-        // and its XZ footprint corners land on the iso stair lattice.
-        const STEP: f32 = 0.0625;
-        let on = |v: f32| (v / STEP - (v / STEP).round()).abs() < 1e-3;
-        for (pi, &m) in scene.prim_hide_mask.iter().enumerate() {
-            if m & inv == 0 {
-                continue;
-            }
-            assert_ne!(m & 0x0F, 0, "stub prim {pi}: lost its direction nibble");
-            let p = &scene.primitives[pi];
-            let vs = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
-            let (mut xmn, mut xmx, mut zmn, mut zmx, mut ymx) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY, 0.0f32);
-            for v in vs {
-                xmn = xmn.min(v.pos[0]);
-                xmx = xmx.max(v.pos[0]);
-                zmn = zmn.min(v.pos[2]);
-                zmx = zmx.max(v.pos[2]);
-                ymx = ymx.max(v.pos[1]);
-            }
-            assert!(ymx > 0.12 && ymx < 0.45, "stub prim {pi}: cut height {ymx} off (~30 cm)");
-            for (axis, v) in [("xmn", xmn), ("xmx", xmx), ("zmn", zmn), ("zmx", zmx)] {
-                assert!(on(v), "stub prim {pi}: footprint {axis}={v} off the lattice");
-            }
-        }
-    }
-
-    /// Golden guard: the authored `game` scene never uses the cut-away (inverse)
-    /// dollhouse tag, so its dollhouse masks — and goldens — are untouched.
-    #[test]
-    fn authored_game_scene_has_no_inverse_tags() {
-        let spec = game_level();
-        let scene = build_game(&spec, &game_cfg());
-        assert!(scene.prim_hide_mask.iter().all(|&m| m & rt_probe::HIDE_INVERT == 0), "non-cave scene must not emit cut-away stubs");
     }
 
     /// A closed door leaf (angle 0) occupies exactly its spec closed_solid

@@ -33,11 +33,20 @@ struct Push {
     int4   misc;      // W, H, aoRays, debug
     int4   misc2;     // lightCount, hasProbes, roomLights16, _
     float4 env0;      // sunScale, skyScale, fogDensity, fogHeight
+    float4 roi;       // CAVE_ROI: player world xyz, w = disc radius (low-res px)
+    float4 roi2;      // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
 };
 
 constant float PI    = 3.14159265;
 constant float TWOPI = 6.2831853;
 constant float TIE   = 1.0 / 64.0;
+
+// 4x4 ordered-Bayer threshold in [0,1) — byte-identical twin of shade.comp's
+// bayer4 (same matrix, same shift) so the dithered reveal matches Vulkan.
+static float bayer4(int2 lp){
+  const float B[16] = {0.,8.,2.,10., 12.,4.,14.,6., 3.,11.,1.,9., 15.,7.,13.,5.};
+  return (B[(lp.x & 3) + (lp.y & 3) * 4] + 0.5) / 16.0;
+}
 
 // NEAREST + REPEAT, no mips — one atlas texel = one game pixel (the pixel-perfect
 // invariant; never LinearFilter on this chain). Base-colour textures are sampled
@@ -191,24 +200,51 @@ kernel void shade(
     float3 o = float3(pc.camPos.xyz) + u * pc.camRight.w * float3(pc.camRight.xyz)
                                      + v * pc.camUp.w    * float3(pc.camUp.xyz);
     float3 d = normalize(float3(pc.camDir.xyz));
+    float3 o0 = o; // camera origin, kept for fog / world-distance after a ROI advance
 
     Hit h;
     bool hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
 
+    // CAVE_ROI dithered see-through — byte-identical twin of shade.comp: dissolve
+    // occluder-wall hits (mats[h.mat].pad==1) between camera and player AND inside
+    // the player-anchored screen disc, marching the same primary ray past them.
+    if (pc.roi2.w > 0.0) {
+        float sd = distance(float2(gid) + float2(0.5), pc.roi2.xy);
+        // reveal weight CAPPED by the ghost factor (roi2.w): coverage tops out at
+        // `ghost`<1 so a sparse Bayer stipple of the wall survives — the faint x-ray.
+        float wv = (1.0 - smoothstep(pc.roi.w - max(pc.roi2.z, 1.0), pc.roi.w, sd)) * pc.roi2.w;
+        if (wv > bayer4(int2(gid) - int2(pc.roi2.xy))) {
+            float2 fwd = normalize(d.xz); // camera ground-forward (horizontal view dir)
+            for (int it = 0; it < 10 && hitb && mats[h.mat].pad == 1; it++) {
+                // Gate on FLOOR position, not 3D view-depth: a plane perpendicular
+                // to the tilted view dir slices tall walls diagonally by height,
+                // revealing the tops of walls BEHIND the player. XZ-footprint along
+                // the ground-forward axis keeps behind-player walls fully solid.
+                // Gate ONLY a FRESH occluder (h.t large): a hit within ~one slab
+                // thickness is the FAR FACE of the wall already dissolving — pass it
+                // through, else its back face is kept as a sliver at the player plane.
+                if (h.t > 0.6 && dot((o + d * h.t).xz - pc.roi.xyz.xz, fwd) >= 0.0) break;
+                o = o + d * (h.t + (1.0 / 256.0));
+                hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
+            }
+        }
+    }
+    float tcam = hitb ? (h.t + dot(o - o0, d)) : 0.0; // camera→final-hit distance
+
     float fogT = 1.0;
     float3 fogAdd = float3(0.0);
     if (pc.env0.z > 0.0) {
-        float tseg = hitb ? h.t : min(300.0, o.y / max(-d.y, 1e-4));
-        fogT = exp(-fogOD(o, d, tseg, pc));
+        float tseg = hitb ? tcam : min(300.0, o0.y / max(-d.y, 1e-4));
+        fogT = exp(-fogOD(o0, d, tseg, pc));
         float3 fogCol = float3(0.55, 0.58, 0.66) * 0.18 * pc.env0.y;
         fogAdd = fogCol * (1.0 - fogT);
         if (pc.env0.x > 0.0) {
             float L = min(tseg, 8.0 * pc.env0.w / max(-d.y, 0.05));
             float ts = tseg - 0.5 * L;
-            float3 ps = o + d * ts;
+            float3 ps = o0 + d * ts;
             float ss = pc.env0.z * exp(-max(ps.y, 0.0) / pc.env0.w);
             if (ss > 1e-5 && !occluded(ps, sunDir, 200.0, accel))
-                fogAdd += sun * ss * exp(-fogOD(o, d, ts, pc)) * L * 0.08;
+                fogAdd += sun * ss * exp(-fogOD(o0, d, ts, pc)) * L * 0.08;
         }
     }
 

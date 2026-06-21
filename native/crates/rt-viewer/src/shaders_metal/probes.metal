@@ -6,7 +6,8 @@
 // practicals off / sun+sky only, 1 = full) that shade.metal lerps by the
 // room-lights dim. Deterministic — fixed per-probe/per-ray seeds reproduce the
 // cache bit-for-bit. Probe rays use mask 0x0A: skip dynamics (0x04 absent), hit
-// dollhouse-hidden walls (0x02) so baked transport is yaw-invariant.
+// every static wall (0xff) so baked transport is yaw-invariant (walls are solid;
+// the CAVE_ROI see-through is a primary-ray-only effect).
 //
 // Double-count contract with shade.metal: probe rays NEVER count emissive seen
 // directly (the pixel samples lights via NEE); they DO evaluate sun + NEE light

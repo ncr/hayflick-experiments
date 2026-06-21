@@ -17,9 +17,9 @@ use crate::backend::{build_tone_push, FramePresent, RenderBackend};
 use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec2};
 use metal::*;
-use rt_probe::render::{frame_lights_cpu, near_hide_bits, scan_lights, LightScan};
+use rt_probe::render::{frame_lights_cpu, scan_lights, LightScan};
 use rt_probe::scene::{LoadedImage, Material, Vertex};
-use rt_probe::{bake_bank_emission, render_scale, yaw_instance_mask, Config, InstanceTable, ProbeGrid, Scene, SceneHandles, ISO_R};
+use rt_probe::{bake_bank_emission, render_scale, Config, InstanceTable, ProbeGrid, Scene, SceneHandles, ISO_R};
 use std::ffi::c_void;
 use std::mem::size_of;
 use winit::window::Window;
@@ -38,6 +38,8 @@ struct Push {
     misc: [i32; 4],      // W, H, aoRays, debug
     misc2: [i32; 4],     // lightCount, hasProbes, roomLights16, _
     env0: [f32; 4],      // sun, sky, fogD, fogH
+    roi: [f32; 4],       // CAVE_ROI: player world xyz + disc radius (low-res px)
+    roi2: [f32; 4],      // projected player px xy + disc falloff px + enabled (>0.5)
 }
 
 /// Probe-bake push constants — byte-identical to probes.metal's `ProbePush`.
@@ -99,10 +101,9 @@ pub struct MetalBackend {
     light_count: u32,
     flash_idx: usize,
     n_spot_active: u32,
-    // movers / dollhouse masks
+    // movers
     dyn_insts: Vec<(u32, u32)>,
     dyn_shadow: Vec<Mat4>,
-    hide_masks: Vec<u8>,
     tlas_dirty: bool,
     handles: SceneHandles,
     // window-size resources + present surface
@@ -240,8 +241,8 @@ impl MetalBackend {
         // ---- TLAS: one instance per primitive, instance_id == i == offset row.
         // The build-time masks (0x05 dynamic / 0xff static), the dynamic-run
         // join, and the per-run patch ranges/shadow come from the shared
-        // InstanceTable (same source the Vulkan SceneGpu uses); the dollhouse
-        // 0x02 hide is applied event-driven via set_yaw_masks.
+        // InstanceTable (same source the Vulkan SceneGpu uses). Walls are seen
+        // through per-pixel on the primary ray (CAVE_ROI) — no per-yaw hiding.
         let table = InstanceTable::build(scene)?;
         let nprim = scene.primitives.len();
         let instances: Vec<MTLAccelerationStructureInstanceDescriptor> = (0..nprim)
@@ -256,7 +257,6 @@ impl MetalBackend {
         let handles = SceneHandles { lights: light_names, instances: table.instances };
         let dyn_insts = table.dyn_insts;
         let dyn_shadow = table.dyn_shadow;
-        let hide_masks = table.hide_masks;
         let inst_buf = make_buf(&device, &instances);
 
         let tlas_desc = tlas_descriptor(&blas_list, &inst_buf, instances.len() as u64);
@@ -330,7 +330,6 @@ impl MetalBackend {
             n_spot_active: 0,
             dyn_insts,
             dyn_shadow,
-            hide_masks,
             tlas_dirty: false,
             handles,
             target: None,
@@ -546,18 +545,6 @@ impl RenderBackend for MetalBackend {
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2}) (metal)", if self.layer.is_some() { "layer" } else { "offscreen" }, ext_w, ext_h, low_w, low_h, self.base_scale, ISO_R);
     }
 
-    unsafe fn set_yaw_masks(&mut self, yaw_q: u32) {
-        let near = near_hide_bits(yaw_q);
-        for (i, &bits) in self.hide_masks.iter().enumerate() {
-            if bits == 0 {
-                continue;
-            }
-            self.instances[i].mask = yaw_instance_mask(bits, near) as u32;
-        }
-        write_buf(&self.inst_buf, &self.instances);
-        self.tlas_dirty = true;
-    }
-
     unsafe fn wait_idle(&self) {
         // Each command buffer is waited inline; nothing is in flight.
     }
@@ -598,6 +585,10 @@ impl RenderBackend for MetalBackend {
         let cam = &fp.fs.cam;
         let light_count = (self.light_count + self.n_spot_active) as i32;
         let room_lights16 = (fp.fs.room_lights * 65536.0).round() as i32;
+        let roi = match &fp.roi {
+            Some(r) => rt_probe::roi_push(cam, low_w as i32, low_h as i32, r.player, r.radius_px, r.falloff_px, r.ghost),
+            None => rt_probe::ROI_OFF,
+        };
         let push = Push {
             cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
             cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
@@ -606,6 +597,8 @@ impl RenderBackend for MetalBackend {
             misc: [low_w as i32, low_h as i32, fp.ao_n, fp.debug],
             misc2: [light_count, 1, room_lights16, 0],
             env0: self.env0,
+            roi: roi.roi,
+            roi2: roi.roi2,
         };
         let rs = self.rs(fp.zoom);
         let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);

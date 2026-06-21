@@ -58,9 +58,22 @@ pub struct FramePresent<'a> {
     /// burns this into `out_tex` (the present + readback source), so it lands in
     /// SHOT/DUMP/DEMO captures too. `None` when the minimap is off.
     pub minimap: Option<(&'a [u32], i32, i32)>,
+    /// Dollhouse see-through reveal (CAVE_ROI): player world pos + disc radius /
+    /// falloff in low-res px. The backend projects the disc centre via the shared
+    /// `rt_probe::roi_push` and packs it into the shade push. `None` → no reveal.
+    pub roi: Option<RoiInfo>,
     /// Record the clip down-blit (`out` → exact game px) into this frame's
     /// command buffer; the backend must hold a capture target this size.
     pub capture: bool,
+}
+
+/// Player-anchored see-through reveal request (CAVE_ROI), resolved per frame.
+#[derive(Clone, Copy)]
+pub struct RoiInfo {
+    pub player: Vec3,
+    pub radius_px: f32,
+    pub falloff_px: f32,
+    pub ghost: f32,
 }
 
 /// CPU-drawn overlay canvases (logical px, ARGB), expanded + copied onto the
@@ -96,11 +109,6 @@ pub trait RenderBackend {
     /// (Re)build the swapchain + all window-size-dependent GPU resources. Pure
     /// GPU work — the Viewer re-centres pan afterwards.
     unsafe fn recreate(&mut self, w: u32, h: u32);
-
-    /// Mark the dollhouse near-wall hide masks for a camera at `yaw_q` quarter
-    /// turns. Patches the instance buffer + marks the TLAS dirty; the next
-    /// `render_present` rebuilds it.
-    unsafe fn set_yaw_masks(&mut self, yaw_q: u32);
 
     /// Render + (windowed) present one frame. Returns false if the swapchain
     /// needs rebuild. Records the deterministic per-frame state (lights →

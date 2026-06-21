@@ -76,14 +76,12 @@ pub struct InstanceTable {
     /// `Mat4::IDENTITY`).
     pub transforms: Vec<Mat4>,
     /// Build-time visibility mask: `0x05` dynamic (0x01 primary | 0x04 dynamic),
-    /// `0xff` static. The dollhouse `0x02` hide is applied later, event-driven.
+    /// `0xff` static. Walls are seen through per-pixel on the primary ray by the
+    /// CAVE_ROI reveal in shade.comp — there is no per-yaw instance hiding.
     pub masks: Vec<u8>,
     /// Explicit dynamic flag. Do NOT infer dynamics from `masks[i] & 0x04` —
     /// `0xff & 0x04 != 0`, so statics would falsely test dynamic.
     pub is_dynamic: Vec<bool>,
-    /// Per-instance dollhouse near-wall hide bits (from `Scene::prim_hide_mask`);
-    /// dynamics are forced to 0 (doors sit inside, the player is the player).
-    pub hide_masks: Vec<u8>,
     /// Per dynamic run: `(first instance, count)` in `dynamic_list` order.
     pub dyn_insts: Vec<(u32, u32)>,
     /// Per dynamic run: the start transform (the CPU shadow backends compare
@@ -106,7 +104,6 @@ impl InstanceTable {
         let transforms: Vec<Mat4> = (0..nprim).map(|i| dyn_of_prim[i].map_or(Mat4::IDENTITY, |di| dyn_list[di].3)).collect();
         let masks: Vec<u8> = (0..nprim).map(|i| if dyn_of_prim[i].is_some() { 0x05 } else { 0xff }).collect();
         let is_dynamic: Vec<bool> = (0..nprim).map(|i| dyn_of_prim[i].is_some()).collect();
-        let hide_masks: Vec<u8> = (0..nprim).map(|i| if dyn_of_prim[i].is_some() { 0 } else { scene.prim_hide_mask.get(i).copied().unwrap_or(0) }).collect();
         let mut instances: BTreeMap<String, InstanceKey> = BTreeMap::new();
         let mut dyn_insts: Vec<(u32, u32)> = Vec::new();
         let mut dyn_shadow: Vec<Mat4> = Vec::new();
@@ -117,7 +114,7 @@ impl InstanceTable {
             dyn_insts.push((*first as u32, *count as u32));
             dyn_shadow.push(*start);
         }
-        Ok(InstanceTable { transforms, masks, is_dynamic, hide_masks, dyn_insts, dyn_shadow, instances })
+        Ok(InstanceTable { transforms, masks, is_dynamic, dyn_insts, dyn_shadow, instances })
     }
 }
 
@@ -139,38 +136,10 @@ pub fn bake_bank_emission(bank: i32, link: &[(i32, [f32; 3], bool)], lights: &mu
     }
 }
 
-/// `Scene::prim_hide_mask` flag ABOVE the four direction bits (`0x0F`): an
-/// INVERTED dollhouse tag. A prim tagged `dir | HIDE_INVERT` is primary-visible
-/// exactly when a plain `dir` wall would be HIDDEN — the cut-away wall stub,
-/// shown only while the full wall is dollhouse-culled. The stub is coincident
-/// with the wall's base, so binary occlusion leaves light transport unchanged;
-/// only its primary-ray visibility toggles, opposite the wall.
-pub const HIDE_INVERT: u8 = 0x10;
-
-/// Resolve a tagged instance's dollhouse visibility mask for a camera whose
-/// near-wall directions are `near` (from `near_hide_bits`): `0x02` (primary-ray
-/// see-through, still lit + occluding) iff EVERY tagged side faces the camera,
-/// else `0xff`. Single-bit walls hide as soon as their side is near; two-bit
-/// corners survive while either adjacent wall run survives (the kept run ends in
-/// a capped corner, not an open cross-section). A `HIDE_INVERT` prim (cut-away
-/// stub) takes the OPPOSITE state — `0xff` when the wall hides, `0x02` when it
-/// shows. Caller does the buffer patch.
-pub fn yaw_instance_mask(bits: u8, near: u8) -> u8 {
-    let dir = bits & 0x0F;
-    let wall_hidden = dir & near == dir; // every tagged side faces the camera
-    let hide = if bits & HIDE_INVERT != 0 { !wall_hidden } else { wall_hidden };
-    if hide {
-        0x02
-    } else {
-        0xff
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::iso::ISO_YAW_DEG;
-    use crate::render::near_hide_bits;
     use crate::scene::Scene;
 
     // ---- ProbeGrid (pure; no Scene needed) -----------------------------------
@@ -228,7 +197,7 @@ mod tests {
 
     /// floor + static wall (prims 0,1) + two named dynamic runs (prims 2,3) with
     /// names that SORT opposite to registration order (to prove the join follows
-    /// run order, not name order); the statics carry a hide bit.
+    /// run order, not name order).
     fn inst_fixture() -> Scene {
         let mut s = Scene::new();
         s.add_floor(-2.0, 2.0, -2.0, 2.0, 0.0, [0.5, 0.5, 0.5, 1.0]); // prim 0 static
@@ -237,7 +206,6 @@ mod tests {
         let b = s.add_box_local(0.2, 1.0, 0.2, [1.0; 4], [0.0; 4]); // prim 3 dynamic run "aaa"
         s.register_dynamic("zzz", a, 1, Mat4::from_translation(Vec3::X));
         s.register_dynamic("aaa", b, 1, Mat4::from_translation(Vec3::Z));
-        s.tag_hide(0, 0x03); // every prim tagged; dynamics get forced back to 0
         s
     }
 
@@ -249,12 +217,6 @@ mod tests {
         // statics identity, dynamics carry their start transform
         assert_eq!(t.transforms[1], Mat4::IDENTITY);
         assert_eq!(t.transforms[2], Mat4::from_translation(Vec3::X));
-    }
-
-    #[test]
-    fn hide_masks_exclude_dynamics() {
-        let t = InstanceTable::build(&inst_fixture()).unwrap();
-        assert_eq!(t.hide_masks, vec![0x03, 0x03, 0, 0]); // dynamics (2,3) forced 0
     }
 
     #[test]
@@ -275,45 +237,6 @@ mod tests {
         s.register_dynamic("dup", a, 1, Mat4::IDENTITY);
         s.register_dynamic("dup", b, 1, Mat4::IDENTITY);
         assert!(InstanceTable::build(&s).is_err());
-    }
-
-    // ---- yaw_instance_mask (pure) --------------------------------------------
-
-    #[test]
-    fn yaw_instance_mask_hides_only_when_every_tagged_side_faces_camera() {
-        // q=0: camera in +X+Z → near = east(+X,bit0) | south(+Z,bit1) = 0b0011
-        let near = near_hide_bits(0);
-        assert_eq!(near, 0b0011);
-        assert_eq!(yaw_instance_mask(0x01, near), 0x02); // single +X wall: side is near → hide
-        assert_eq!(yaw_instance_mask(0x04, near), 0xff); // single -X wall: not near → keep
-        assert_eq!(yaw_instance_mask(0x03, near), 0x02); // corner: BOTH sides near → hide
-        // a corner whose two sides span a near and a far side survives
-        assert_eq!(yaw_instance_mask(0x09, near), 0xff); // +X(near) | -Z(far) → keep
-        // consistency with the basis at every quarter
-        for q in 0..4u32 {
-            let _ = (ISO_YAW_DEG + 90.0 * q as f32).to_radians();
-            assert_eq!(yaw_instance_mask(0, near_hide_bits(q)), 0x02); // empty set ⊆ anything
-        }
-    }
-
-    #[test]
-    fn hide_invert_stub_is_the_exact_opposite_of_its_wall() {
-        // a cut-away stub (dir | HIDE_INVERT) is primary-visible (0xff) exactly
-        // when the plain-dir wall is hidden (0x02), and primary-hidden otherwise —
-        // so the two are never both visible (no z-fight) and never both gone.
-        for q in 0..4u32 {
-            let near = near_hide_bits(q);
-            for dir in [0x01u8, 0x02, 0x04, 0x08, 0x03, 0x09, 0x06, 0x0c] {
-                let wall = yaw_instance_mask(dir, near);
-                let stub = yaw_instance_mask(dir | HIDE_INVERT, near);
-                assert!((wall, stub) == (0x02, 0xff) || (wall, stub) == (0xff, 0x02), "q{q} dir{dir:#04x}: wall {wall:#04x} / stub {stub:#04x} not opposite");
-            }
-        }
-        // the flag must not perturb the plain-wall path (goldens): bits < 0x10
-        // resolve identically to before.
-        let near = near_hide_bits(0);
-        assert_eq!(yaw_instance_mask(0x01, near), 0x02);
-        assert_eq!(yaw_instance_mask(0x04, near), 0xff);
     }
 
     // ---- bake_bank_emission (pure) -------------------------------------------

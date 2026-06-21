@@ -45,7 +45,7 @@ pub fn build_grid_walker() -> Result<Scene, Box<dyn std::error::Error>> {
 /// about every pixel: an 8×8 flat floor, three matte boxes of distinct colour
 /// and height (hard silhouettes + shadow edges), one isotropic emissive lamp
 /// pillar and one directional emissive "screen" slab (both NEE light shapes),
-/// moderate sun + sky, NO fog, NO textures, NO dollhouse masks, no player
+/// moderate sun + sky, NO fog, NO textures, no player
 /// (q/e orbits, WASD pans — same camera paths as the house). Anything that
 /// flickers here is the renderer, not the content.
 pub fn build_lab() -> Result<Scene, Box<dyn std::error::Error>> {
@@ -82,8 +82,8 @@ pub fn build_lab() -> Result<Scene, Box<dyn std::error::Error>> {
 /// corners at vertices (canonical legs +X/-Z, one cell long — adjacent wall
 /// segments are skipped). Three rooms (common room, lab, storage), doors +
 /// windows, forge props inside, grass/asphalt yard with a road outside.
-/// Perimeter walls carry `prim_hide_mask` outward tags so the viewer can hide
-/// the camera-near sides per quarter-turn (Q/E).
+/// Walls are solid; the per-pixel CAVE_ROI reveal sees through them around the
+/// player.
 pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
     use std::f32::consts::{FRAC_PI_2, PI};
     let mut scene = Scene::new();
@@ -120,40 +120,35 @@ pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
     }
 
     let rot_q = |q: i32| Mat4::from_rotation_y(q as f32 * FRAC_PI_2);
-    // ---- perimeter walls (tagged with their outward direction for the
-    // per-yaw dollhouse hide). Corner legs are one cell long, so each edge run
-    // starts at 1 and ends at len-1.
+    // ---- perimeter walls. Solid full-height geometry — the CAVE_ROI reveal
+    // sees through them per-pixel around the player. Corner legs are one cell
+    // long, so each edge run starts at 1 and ends at len-1.
     for x in 1..13 {
-        // north edge (z=0), outward -Z (bit3)
+        // north edge (z=0)
         let cm = if [3, 6, 10].contains(&x) { &win } else { &wall };
-        let first = scene.place(cm, Mat4::from_translation(Vec3::new(x as f32 + 0.5, 0.0, 0.0)));
-        scene.tag_hide(first, 0b1000);
-        // south edge (z=10), outward +Z (bit1); main door at x=4
+        scene.place(cm, Mat4::from_translation(Vec3::new(x as f32 + 0.5, 0.0, 0.0)));
+        // south edge (z=10); main door at x=4
         let cm = if x == 4 { &door } else if [8, 11].contains(&x) { &win } else { &wall };
         let t = Mat4::from_translation(Vec3::new(x as f32 + 0.5, 0.0, 10.0)) * Mat4::from_rotation_y(PI);
-        let first = scene.place(cm, t);
-        scene.tag_hide(first, 0b0010);
+        scene.place(cm, t);
     }
     for z in 1..9 {
-        // west edge (x=0), outward -X (bit2)
+        // west edge (x=0)
         let cm = if z == 4 { &win } else { &wall };
         let t = Mat4::from_translation(Vec3::new(0.0, 0.0, z as f32 + 0.5)) * rot_q(1);
-        let first = scene.place(cm, t);
-        scene.tag_hide(first, 0b0100);
-        // east edge (x=14), outward +X (bit0)
+        scene.place(cm, t);
+        // east edge (x=14)
         let cm = if [2, 7].contains(&z) { &win } else { &wall };
         let t = Mat4::from_translation(Vec3::new(14.0, 0.0, z as f32 + 0.5)) * rot_q(1);
-        let first = scene.place(cm, t);
-        scene.tag_hide(first, 0b0001);
+        scene.place(cm, t);
     }
-    // perimeter corners: (vertex, quarter-turns, outward bits of both sides)
-    for (vx, vz, q, bits) in [(0, 0, 3, 0b1100u8), (14, 0, 2, 0b1001), (14, 10, 1, 0b0011), (0, 10, 0, 0b0110)] {
+    // perimeter corners: (vertex, quarter-turns)
+    for (vx, vz, q) in [(0, 0, 3), (14, 0, 2), (14, 10, 1), (0, 10, 0)] {
         let t = Mat4::from_translation(Vec3::new(vx as f32, 0.0, vz as f32)) * rot_q(q);
-        let first = scene.place(&corner, t);
-        scene.tag_hide(first, bits);
+        scene.place(&corner, t);
     }
 
-    // ---- interior walls (never hidden; rotate with Q/E to see past them)
+    // ---- interior walls (rotate with Q/E to see past them)
     for z in 0..10 {
         // x=8 divider, doors into the lab (z=2) and storage (z=7)
         let cm = if z == 2 || z == 7 { &door } else { &wall };
@@ -351,7 +346,6 @@ pub fn build_house(cfg: &Config) -> Result<Scene, Box<dyn std::error::Error>> {
     // placeholder player: a matte light-grey pillar (lattice-aligned footprint)
     // — neutral albedo shows the coloured light pools and the AO grounding
     let pidx = scene.add_box_local(0.1875, 1.3, 0.1875, [0.62, 0.64, 0.70, 1.0], [0.0; 4]);
-    scene.prim_hide_mask.resize(scene.primitives.len(), 0);
     scene.floor_rect = [-2.7, -2.7, 16.7, 12.7]; // full grounds; walls are solids
     scene.solids = solids;
     scene.dynamic_prim = Some(pidx);

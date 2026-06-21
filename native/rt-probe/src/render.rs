@@ -41,6 +41,32 @@ pub struct ShadePush {
     pub _r0: i32,
     pub _r1: i32,
     pub env0: [f32; 4], // sun, sky, fog density, fog height
+    /// Dollhouse see-through region of interest (CAVE_ROI). `roi` = player world
+    /// xyz + disc radius (low-res px); `roi2` = projected player pixel xy +
+    /// disc falloff px + enabled flag (>0.5). Disabled → both zeroed and the
+    /// shader early-outs, reproducing the pre-ROI image bit-for-bit.
+    pub roi: [f32; 4],
+    pub roi2: [f32; 4],
+}
+
+/// Packed CAVE_ROI see-through reveal fields for [`ShadePush`] / the Metal `Push` twin.
+#[derive(Clone, Copy)]
+pub struct RoiPush {
+    pub roi: [f32; 4],
+    pub roi2: [f32; 4],
+}
+
+/// Disabled ROI: shader sees `roi2.w == 0` and skips the whole reveal block.
+pub const ROI_OFF: RoiPush = RoiPush { roi: [0.0; 4], roi2: [0.0; 4] };
+
+/// Build the ROI push fields for a player at world `p`, projecting the disc
+/// centre with the shared [`iso::project_lowres`] so Metal and Vulkan agree.
+/// `ghost` (0..1] is the max reveal coverage at the disc centre: <1 leaves a
+/// faint Bayer-stipple ghost of the wall (the x-ray look). Doubles as the
+/// shader's enable flag (`roi2.w > 0`).
+pub fn roi_push(cam: &CamFrame, w: i32, h: i32, p: Vec3, radius_px: f32, falloff_px: f32, ghost: f32) -> RoiPush {
+    let (px, py) = crate::iso::project_lowres(cam, w, h, p);
+    RoiPush { roi: [p.x, p.y, p.z, radius_px], roi2: [px, py, falloff_px, ghost] }
 }
 
 impl ShadePush {
@@ -60,6 +86,8 @@ impl ShadePush {
             _r0: 0,
             _r1: 0,
             env0,
+            roi: ROI_OFF.roi,
+            roi2: ROI_OFF.roi2,
         }
     }
 }
@@ -79,6 +107,7 @@ struct ProbePush {
     light_count: i32,
     _r0: i32,
     env0: [f32; 4],
+    _roi: [f32; 8], // pad to ShadePush size (shared push-constant range); unused by probes.comp
 }
 
 pub fn push_bytes<T: Copy>(p: &T) -> &[u8] {
@@ -157,9 +186,6 @@ impl Spotlight {
 /// `SceneGpu::record_frame`; nothing else crosses per frame.
 pub struct FrameState<'a> {
     pub cam: CamFrame,
-    /// Dollhouse mask quarter. Recorded for the step-9 adapter; mask writes
-    /// stay event-driven through `set_yaw_masks` until the sim loop moves.
-    pub yaw_q: u32,
     /// Room-lights master dim — probe-bank lerp factor (instant GI switch).
     pub room_lights: f32,
     /// SIM time (ticks · TICK_DT) — replayable; no wall clock below the shell.
@@ -296,14 +322,6 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
     Ok(LightScan { lights, light_link, names, light_count, flash_idx })
 }
 
-/// Near-wall hide bits for a camera at `yaw_q` quarter-turns from canonical:
-/// which OUTWARD wall directions (bit0=+X, bit1=+Z, bit2=-X, bit3=-Z) face the
-/// camera and should be hidden for the dollhouse view. At the canonical yaw the
-/// camera sits in the +X+Z quadrant, so the +X and +Z perimeter walls hide.
-pub fn near_hide_bits(yaw_q: u32) -> u8 {
-    let yaw = (crate::iso::ISO_YAW_DEG + 90.0 * (yaw_q & 3) as f32).to_radians();
-    (if yaw.sin() > 0.0 { 1 } else { 4 }) | (if yaw.cos() > 0.0 { 2 } else { 8 })
-}
 
 /// glam column-major Mat4 -> Vulkan row-major 3x4 instance transform.
 pub fn mat_to_transform(m: Mat4) -> vk::TransformMatrixKHR {
@@ -429,9 +447,6 @@ pub struct SceneGpu {
     /// An instance transform or visibility mask changed since the last
     /// recorded rebuild; `record_frame` consumes it.
     pub tlas_dirty: bool,
-    /// Per-instance near-wall hide bitmask (from `Scene::prim_hide_mask`); all
-    /// zero when the scene doesn't use the dollhouse hide.
-    pub hide_masks: Vec<u8>,
     pub set_layout: vk::DescriptorSetLayout,
     pub pipeline_layout: vk::PipelineLayout,
     /// Deterministic per-frame shade pass (shade.comp) — primary ray + exact
@@ -517,7 +532,7 @@ impl SceneGpu {
         // -> their instances carry the start transform and are updated per
         // frame (dynamic scene). One instance per primitive, 1:1.
         // backend-agnostic instance/mask table (the dynamic-run join, the build-
-        // time masks, hide_masks, the per-run patch ranges + CPU transform
+        // time masks, the per-run patch ranges + CPU transform
         // shadow) — shared with the Metal backend; see crate::gpu_scene.
         let dynamic_instance = scene.dynamic_prim.map(|p| p as u32); // Vulkan-only legacy shim
         let table = crate::gpu_scene::InstanceTable::build(scene)?;
@@ -528,8 +543,9 @@ impl SceneGpu {
             .map(|(i, &addr)| vk::AccelerationStructureInstanceKHR {
                 // statics keep the literal identity const (bit-identical to
                 // mat_to_transform(IDENTITY)); dynamics carry their start xform.
-                // mask: 0x05 dynamic (0x01 primary | 0x04 dynamic) / 0xff static;
-                // the 0x02 dollhouse hide is applied event-driven (set_yaw_masks).
+                // mask: 0x05 dynamic (0x01 primary | 0x04 dynamic) / 0xff static.
+                // Walls are seen through per-pixel on the primary ray (CAVE_ROI),
+                // so there is no per-yaw instance hiding.
                 transform: if table.is_dynamic[i] { mat_to_transform(table.transforms[i]) } else { identity },
                 instance_custom_index_and_mask: vk::Packed24_8::new(i as u32, table.masks[i]),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8),
@@ -600,8 +616,7 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        let hide_masks = table.hide_masks;
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, flash_idx, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, hide_masks, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, flash_idx, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
     }
 
     /// Patch the movable player's instance transform (legacy per-field API —
@@ -700,34 +715,6 @@ pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Mat
 }
 
 impl SceneGpu {
-    /// Apply the dollhouse near-wall hide for a camera at `yaw_q` quarter
-    /// turns: tagged instances whose outward direction faces the camera get
-    /// TLAS visibility mask 0x02 (primary rays cull with 0x01 and skip them —
-    /// the see-through; shadow/AO rays cull with 0xFF and still hit them, so
-    /// the room stays ENCLOSED for light transport). Everything else 0xFF.
-    /// Patches the host-visible instance buffer in place and marks the TLAS
-    /// dirty — `record_frame` (or an explicit `record_tlas_rebuild`) applies it.
-    pub unsafe fn set_yaw_masks(&mut self, ctx: &Ctx, yaw_q: u32) {
-        let near = near_hide_bits(yaw_q);
-        let stride = std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
-        let ptr = ctx.device.map_memory(self.inst_buf.memory, 0, stride * self.n_inst as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
-        for (i, &bits) in self.hide_masks.iter().enumerate() {
-            if bits == 0 {
-                continue;
-            }
-            // subset match (shared with Metal): hide only when EVERY tagged
-            // side faces the camera. (Mask 0 instead of 0x02 removed hidden
-            // walls from sunlight too, so light flooded through the camera-side
-            // openings and the lighting followed the camera, not the world.)
-            let mask = crate::gpu_scene::yaw_instance_mask(bits, near) as u32;
-            let word: u32 = (i as u32 & 0x00ff_ffff) | (mask << 24);
-            // instanceCustomIndex:24 | mask:8 sits right after the 48-byte transform
-            std::ptr::copy_nonoverlapping(word.to_le_bytes().as_ptr(), ptr.add(i * stride as usize + 48), 4);
-        }
-        ctx.device.unmap_memory(self.inst_buf.memory);
-        self.tlas_dirty = true;
-    }
-
     /// Record a TLAS rebuild + an AS-build→ray-trace barrier into `cmd` (cheap:
     /// ~0.05ms on the 5080). Run after `set_player_transform`, before tracing.
     pub unsafe fn record_tlas_rebuild(&self, ctx: &Ctx, cmd: vk::CommandBuffer) {
@@ -787,6 +774,7 @@ impl SceneGpu {
                     light_count: self.light_count as i32,
                     _r0: 0,
                     env0,
+                    _roi: [0.0; 8],
                 };
                 ctx.one_time(|cmd| {
                     let d = &ctx.device;
@@ -838,31 +826,11 @@ impl SceneGpu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::iso::ISO_YAW_DEG;
-
-    #[test]
-    fn near_hide_bits_track_the_camera_quadrant() {
-        // q=0: camera in +X+Z -> hide east(+X, bit0) + south(+Z, bit1) walls
-        assert_eq!(near_hide_bits(0), 0b0011);
-        assert_eq!(near_hide_bits(1), 0b1001); // +X -Z
-        assert_eq!(near_hide_bits(2), 0b1100); // -X -Z
-        assert_eq!(near_hide_bits(3), 0b0110); // -X +Z
-        assert_eq!(near_hide_bits(4), near_hide_bits(0)); // wraps
-        // consistency with the actual camera basis: the offset direction's
-        // signs must match the bits for every quarter turn
-        for q in 0..4u32 {
-            let yaw = (ISO_YAW_DEG + 90.0 * q as f32).to_radians();
-            let bits = near_hide_bits(q);
-            assert!(bits & 0b0101 != 0); // exactly one X bit
-            assert_eq!(bits & 1 != 0, yaw.sin() > 0.0);
-            assert_eq!(bits & 2 != 0, yaw.cos() > 0.0);
-        }
-    }
 
     #[test]
     fn push_structs_share_one_layout_size() {
         assert_eq!(std::mem::size_of::<ShadePush>(), std::mem::size_of::<ProbePush>());
-        assert_eq!(std::mem::size_of::<ShadePush>(), 112);
+        assert_eq!(std::mem::size_of::<ShadePush>(), 144);
     }
 
     /// A throwaway CPU scene exercising every scan case: a non-emissive floor,
@@ -955,7 +923,7 @@ mod tests {
         let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06 };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), yaw_q: 0, room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[] };
         let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs);
         assert_eq!(n, 1);
         // an unaddressed slot keeps its previous values (light 0 holds base);
