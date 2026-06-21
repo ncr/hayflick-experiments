@@ -40,6 +40,8 @@ struct Push {
     env0: [f32; 4],      // sun, sky, fogD, fogH
     roi: [f32; 4],       // CAVE_ROI: player world xyz + disc radius (low-res px)
     roi2: [f32; 4],      // projected player px xy + disc falloff px + enabled (>0.5)
+    look: [f32; 4],      // spec strength, bump strength, bump scale, gloss (look knobs)
+    look2: [f32; 4],     // gi scale, _, _, _
 }
 
 /// Probe-bake push constants — byte-identical to probes.metal's `ProbePush`.
@@ -599,6 +601,8 @@ impl RenderBackend for MetalBackend {
             env0: self.env0,
             roi: roi.roi,
             roi2: roi.roi2,
+            look: [fp.spec, fp.bump, fp.bump_scale, fp.gloss],
+            look2: [fp.gi, 0.0, 0.0, 0.0],
         };
         let rs = self.rs(fp.zoom);
         let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);

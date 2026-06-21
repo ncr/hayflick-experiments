@@ -46,6 +46,8 @@ layout(push_constant) uniform Push {
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
   vec4 roi;    // CAVE_ROI: player world xyz, w = disc radius (low-res px)
   vec4 roi2;   // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
+  vec4 look;   // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
+  vec4 look2;  // gi scale, _, _, _
 } pc;
 
 // 4x4 ordered-Bayer threshold in [0,1) for a screen lattice cell — the shade-pass
@@ -177,6 +179,43 @@ vec3 probeE(vec3 p, vec3 n){
   return wsum > 1e-5 ? e / wsum : vec3(0.0);
 }
 
+// ---- aesthetic look helpers (SPEC / BUMP / GLOSS) — all deterministic ----
+// Cheap hash-based 3D value noise: a pure function of world position, so the
+// surface detail it drives is bit-identical every frame (no temporal shimmer)
+// and rotation-invariant. Used only when the look knobs are on; BUMP=0 / SPEC=0
+// leave the image byte-for-byte unchanged.
+float hash13(vec3 p){
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+float vnoise(vec3 x){
+  vec3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  float n000 = hash13(i + vec3(0,0,0)), n100 = hash13(i + vec3(1,0,0));
+  float n010 = hash13(i + vec3(0,1,0)), n110 = hash13(i + vec3(1,1,0));
+  float n001 = hash13(i + vec3(0,0,1)), n101 = hash13(i + vec3(1,0,1));
+  float n011 = hash13(i + vec3(0,1,1)), n111 = hash13(i + vec3(1,1,1));
+  return mix(mix(mix(n000,n100,f.x), mix(n010,n110,f.x), f.y),
+             mix(mix(n001,n101,f.x), mix(n011,n111,f.x), f.y), f.z);
+}
+float fbm(vec3 p){ return 0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + 11.1); } // 2 octaves, ~[0,1]
+
+// Stylized point-light specular: GGX normal-distribution × Schlick-Fresnel, no
+// solid-angle or geometry term (SPEC is the master gain). D is clamped so a
+// near-mirror highlight stays a soft plateau instead of a single-pixel firefly
+// at the low render resolution.
+vec3 specBRDF(vec3 n, vec3 v, vec3 l, float reff, vec3 F0){
+  vec3 hh = normalize(v + l);
+  float ndh = max(dot(n, hh), 0.0);
+  float voh = max(dot(v, hh), 0.0);
+  float a = max(reff * reff, 1e-3), a2 = a * a;
+  float den = ndh * ndh * (a2 - 1.0) + 1.0;
+  float D = min(a2 / (3.14159265 * den * den), 40.0);
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - voh, 5.0);
+  return D * F;
+}
+
 void main(){
   int W = pc.misc.x, H = pc.misc.y;
   ivec2 px = ivec2(gl_GlobalInvocationID.xy);
@@ -289,6 +328,24 @@ void main(){
   vec3 albedo = m.baseColor.rgb;
   if (m.texIndex >= 0) albedo *= texture(textures[nonuniformEXT(m.texIndex)], h.uv).rgb;
   vec3 n = h.n; if (dot(n, d) > 0.0) n = -n;
+  // ---- procedural surface detail (BUMP): subtle "signs of use" on greybox
+  // walls/floors (flat-coloured = no texture, non-emissive). A world-space
+  // value-noise height field perturbs the normal by its tangent-plane gradient
+  // (so the light catches micro-unevenness) and adds a faint ± albedo wear.
+  // Deterministic; only greybox surfaces, only when BUMP>0 → goldens unchanged.
+  vec3 wpos = o + h.t * d;
+  if (pc.look.y > 0.0 && m.texIndex < 0 && dot(m.emissive.rgb, vec3(1.0)) <= 0.0) {
+    const float AMP = 0.04;                      // relief scale (keeps slopes gentle)
+    float freq = pc.look.z;
+    float e = 0.5 / max(freq, 0.01);
+    float h0 = fbm(wpos * freq);
+    vec3 g = AMP * (vec3(fbm((wpos + vec3(e,0,0)) * freq),
+                         fbm((wpos + vec3(0,e,0)) * freq),
+                         fbm((wpos + vec3(0,0,e)) * freq)) - h0) / e;
+    g = g - n * dot(g, n);                       // tangent-plane gradient
+    n = normalize(n - pc.look.y * g);
+    albedo *= 1.0 - 0.07 * pc.look.y * (h0 - 0.5) * 2.0; // faint wear
+  }
   imageStore(albedoImg, px, vec4(albedo, 1.0));
   // CONTOUR: re-project the dissolved wall's front face (w=2) so the tonemap outline
   // pass traces its silhouette as x-ray line-art; the radiance/albedo we store is
@@ -307,8 +364,17 @@ void main(){
   // ---- direct light: all deterministic ----
   col = m.emissive.rgb; // camera sees emitters
 
+  // specular params (SPEC>0): effective roughness pulled toward polished by
+  // GLOSS, dielectric F0 lerped to albedo by metallic. v points at the camera.
+  vec3 vdir = -d;
+  float reff = clamp(mix(m.roughness, 0.12, pc.look.w), 0.10, 1.0);
+  vec3 F0 = mix(vec3(0.04), albedo, m.metallic);
+
   float ndl = max(dot(n, sunDir), 0.0);
-  if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0)) col += albedo * sun * ndl;
+  if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0)) {
+    col += albedo * sun * ndl;
+    if (pc.look.x > 0.0) col += sun * pc.look.x * specBRDF(n, vdir, sunDir, reff, F0) * ndl;
+  }
 
   int lc = pc.misc2.y;
   for (int li = 0; li < lc; li++) {
@@ -335,7 +401,10 @@ void main(){
     // contribution cull: skip the shadow ray when the unshadowed term is
     // already invisible — most pixels only pay for the 2-4 lights that matter
     if (max(c.r, max(c.g, c.b)) < 0.0015) continue;
-    if (!occluded(p, ldir, dist - lt.posRad.w)) col += c;
+    if (!occluded(p, ldir, dist - lt.posRad.w)) {
+      col += c;
+      if (pc.look.x > 0.0) col += lt.color.rgb * emit * pc.look.x * specBRDF(n, vdir, ldir, reff, F0) * ndl2;
+    }
   }
 
   // ---- indirect: world-space irradiance cache (debug 3: direct only),
@@ -349,7 +418,7 @@ void main(){
     imageStore(colorImg, px, vec4(vec3(ao), 1.0));
     return;
   }
-  if (pc.misc.w != 3) col += albedo * (1.0 / 3.14159265) * probeE(p, n) * ao;
+  if (pc.misc.w != 3) col += albedo * (1.0 / 3.14159265) * probeE(p, n) * ao * pc.look2.x;
 
   col = col * fogT + fogAdd;
   imageStore(colorImg, px, vec4(col, 1.0));

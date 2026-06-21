@@ -462,6 +462,8 @@ impl RenderBackend for VulkanBackend {
         self.gpu.record_frame(&self.ctx, cmd, fp.fs);
         let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
         let mut push = ShadePush::new(&fp.fs.cam, low_w, low_h, self.env0, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);
+        push.look = [fp.spec, fp.bump, fp.bump_scale, fp.gloss];
+        push.look2 = [fp.gi, 0.0, 0.0, 0.0];
         if let Some(roi) = &fp.roi {
             let rp = rt_probe::roi_push(&fp.fs.cam, low_w as i32, low_h as i32, roi.player, roi.radius_px, roi.falloff_px, roi.ghost);
             push.roi = rp.roi;

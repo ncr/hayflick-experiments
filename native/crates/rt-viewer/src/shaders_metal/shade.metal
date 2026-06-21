@@ -35,6 +35,8 @@ struct Push {
     float4 env0;      // sunScale, skyScale, fogDensity, fogHeight
     float4 roi;       // CAVE_ROI: player world xyz, w = disc radius (low-res px)
     float4 roi2;      // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
+    float4 look;      // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
+    float4 look2;     // gi scale, _, _, _
 };
 
 constant float PI    = 3.14159265;
@@ -173,6 +175,39 @@ static float3 probeE(float3 p, float3 n, device const float* pd, constant Push& 
     return wsum > 1e-5 ? e / wsum : float3(0.0);
 }
 
+// ---- aesthetic look helpers (SPEC / BUMP / GLOSS) — byte-identical twin of
+// shade.comp. Deterministic value noise → bit-identical surface detail; the
+// knobs default off so BUMP=0 / SPEC=0 leave the image unchanged.
+static float hash13(float3 p){
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+static float vnoise(float3 x){
+    float3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    float n000 = hash13(i + float3(0,0,0)), n100 = hash13(i + float3(1,0,0));
+    float n010 = hash13(i + float3(0,1,0)), n110 = hash13(i + float3(1,1,0));
+    float n001 = hash13(i + float3(0,0,1)), n101 = hash13(i + float3(1,0,1));
+    float n011 = hash13(i + float3(0,1,1)), n111 = hash13(i + float3(1,1,1));
+    return mix(mix(mix(n000,n100,f.x), mix(n010,n110,f.x), f.y),
+               mix(mix(n001,n101,f.x), mix(n011,n111,f.x), f.y), f.z);
+}
+static float fbm(float3 p){ return 0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + 11.1); }
+
+// stylized point-light specular: GGX D × Schlick F, no solid-angle/geometry term
+// (SPEC is the master gain); D clamped so a near-mirror lobe stays a soft plateau.
+static float3 specBRDF(float3 n, float3 v, float3 l, float reff, float3 F0){
+    float3 hh = normalize(v + l);
+    float ndh = max(dot(n, hh), 0.0);
+    float voh = max(dot(v, hh), 0.0);
+    float a = max(reff * reff, 1e-3), a2 = a * a;
+    float den = ndh * ndh * (a2 - 1.0) + 1.0;
+    float D = min(a2 / (PI * den * den), 40.0);
+    float3 F = F0 + (1.0 - F0) * pow(1.0 - voh, 5.0);
+    return D * F;
+}
+
 kernel void shade(
     instance_acceleration_structure accel [[buffer(0)]],
     device const Vertex*   verts   [[buffer(1)]],
@@ -280,6 +315,22 @@ kernel void shade(
     float3 albedo = m.baseColor.rgb;
     if (m.texIndex >= 0) albedo *= texs[m.texIndex].sample(texSamp, h.uv).rgb;
     float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
+    // procedural surface detail (BUMP) — twin of shade.comp: world-space value-noise
+    // height perturbs the normal by its tangent-plane gradient + faint albedo wear,
+    // on greybox walls/floors only (no texture, non-emissive). BUMP=0 → unchanged.
+    float3 wpos = o + h.t * d;
+    if (pc.look.y > 0.0 && m.texIndex < 0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0) {
+        const float AMP = 0.04;                  // relief scale (keeps slopes gentle)
+        float freq = pc.look.z;
+        float e = 0.5 / max(freq, 0.01);
+        float h0 = fbm(wpos * freq);
+        float3 g = AMP * (float3(fbm((wpos + float3(e,0,0)) * freq),
+                                 fbm((wpos + float3(0,e,0)) * freq),
+                                 fbm((wpos + float3(0,0,e)) * freq)) - h0) / e;
+        g = g - n * dot(g, n);
+        n = normalize(n - pc.look.y * g);
+        albedo *= 1.0 - 0.07 * pc.look.y * (h0 - 0.5) * 2.0;
+    }
     outAlbedo[idx] = float4(albedo, 1.0);
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
@@ -290,8 +341,17 @@ kernel void shade(
 
     col = m.emissive.rgb; // camera sees emitters
 
+    // specular params (SPEC>0): GLOSS remaps roughness toward polished; F0 dielectric
+    // lerped to albedo by metallic; v toward camera.
+    float3 vdir = -d;
+    float reff = clamp(mix(m.roughness, 0.12, pc.look.w), 0.10, 1.0);
+    float3 F0 = mix(float3(0.04), albedo, m.metallic);
+
     float ndl = max(dot(n, sunDir), 0.0);
-    if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0, accel)) col += albedo * sun * ndl;
+    if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0, accel)) {
+        col += albedo * sun * ndl;
+        if (pc.look.x > 0.0) col += sun * pc.look.x * specBRDF(n, vdir, sunDir, reff, F0) * ndl;
+    }
 
     int lc = pc.misc2.x;
     for (int li = 0; li < lc; li++) {
@@ -314,14 +374,17 @@ kernel void shade(
         float omega = TWOPI * (1.0 - sqrt(1.0 - sinT * sinT));
         float3 c = albedo * (1.0/PI) * lt.color.rgb * ndl2 * omega * emit;
         if (max(c.r, max(c.g, c.b)) < 0.0015) continue;
-        if (!occluded(p, ldir, dist - lt.posRad.w, accel)) col += c;
+        if (!occluded(p, ldir, dist - lt.posRad.w, accel)) {
+            col += c;
+            if (pc.look.x > 0.0) col += lt.color.rgb * emit * pc.look.x * specBRDF(n, vdir, ldir, reff, F0) * ndl2;
+        }
     }
 
     float ao = 1.0;
     if (pc.camPos.w > 0.0 && pc.misc.z > 0 && pc.camDir.w > 0.0)
         ao = rtAO(p, n, pc.misc.z, pc.camDir.w, pc.camPos.w, accel);
     if (pc.misc.w == 4) { outRadiance[idx] = float4(float3(ao), 1.0); return; }
-    if (pc.misc.w != 3 && pc.misc2.y != 0) col += albedo * (1.0/PI) * probeE(p, n, pd, pc) * ao;
+    if (pc.misc.w != 3 && pc.misc2.y != 0) col += albedo * (1.0/PI) * probeE(p, n, pd, pc) * ao * pc.look2.x;
 
     col = col * fogT + fogAdd;
     outRadiance[idx] = float4(col, 1.0);

@@ -30,6 +30,7 @@ pub struct TonePush {
     pub style2: [f32; 4], // palette mode, palette param, vignette, outline strength
     pub style3: [f32; 4], // grain size px, grain static flag, bloom strength, bloom threshold
     pub style4: [f32; 4], // shadow dither: strength, levels, luma threshold, dither world-phase y
+    pub style5: [f32; 4], // saturation, contrast, _, _ (post-grade colour shaping)
 }
 
 /// The view/camera + look knobs the GPU half needs to build this frame's
@@ -46,6 +47,11 @@ pub struct FramePresent<'a> {
     pub ao: f32,
     pub ao_r: f32,
     pub ao_n: i32,
+    pub spec: f32,
+    pub gloss: f32,
+    pub bump: f32,
+    pub bump_scale: f32,
+    pub gi: f32,
     pub debug: i32,
     // tonemap tunables (TonePush)
     pub exposure: f32,
@@ -159,6 +165,7 @@ pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, 
         style2: [style.palette, style.pal_p, style.vignette, style.outline],
         style3: [style.grain_sz, style.grain_static, style.bloom, style.bloom_th],
         style4: [style.sdither, style.sdither_n, style.sdither_th, dphase_y],
+        style5: [style.sat, style.contrast, 0.0, 0.0],
     }
 }
 

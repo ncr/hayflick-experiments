@@ -34,6 +34,7 @@ layout(push_constant) uniform Push {
   vec4  style2; // palette mode, palette param, vignette, outline strength
   vec4  style3; // grain size px, grain static flag, bloom strength, bloom threshold
   vec4  style4; // shadow dither: strength, levels, luma threshold, dither world-phase y
+  vec4  style5; // saturation, contrast, _, _ (post-grade colour shaping)
 } pc;
 
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -208,6 +209,15 @@ void main(){
     else if (gp == 4) col = gradeNeon(col);
     else if (gp == 5) col = gradeBleach(col);
     else if (gp == 6) col = gradeMidnight(col);
+
+    // punchy colour shaping (style5): saturation around luma, then contrast
+    // around mid-grey. Neutral (1,1) skips → byte-identical to the old look.
+    if (pc.style5.x != 1.0 || pc.style5.y != 1.0) {
+      float yl = luma(col);
+      col = yl + (col - yl) * pc.style5.x;
+      col = (col - 0.5) * pc.style5.y + 0.5;
+      col = clamp(col, 0.0, 1.0);
+    }
 
     // shadow dither: ordered-dither the LUMA of shadow pixels onto an N-level
     // ladder, hue preserved (colour is rescaled by yq/y). The pattern only

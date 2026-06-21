@@ -47,6 +47,12 @@ pub struct ShadePush {
     /// shader early-outs, reproducing the pre-ROI image bit-for-bit.
     pub roi: [f32; 4],
     pub roi2: [f32; 4],
+    /// Aesthetic look knobs (all default-neutral so the goldens stay byte-identical):
+    /// `look` = [specular strength, bump strength, bump scale (wu^-1), gloss (0..1
+    /// roughness remap)]; `look2` = [GI ambient scale, _, _, _]. Spec 0 / bump 0 /
+    /// gloss 0 / gi 1 reproduces the pre-look image exactly (× 1.0 and + 0.0 are exact).
+    pub look: [f32; 4],
+    pub look2: [f32; 4],
 }
 
 /// Packed CAVE_ROI see-through reveal fields for [`ShadePush`] / the Metal `Push` twin.
@@ -88,6 +94,8 @@ impl ShadePush {
             env0,
             roi: ROI_OFF.roi,
             roi2: ROI_OFF.roi2,
+            look: [0.0, 0.0, 0.0, 0.0], // spec, bump, bump_scale, gloss — neutral (off)
+            look2: [1.0, 0.0, 0.0, 0.0], // gi scale = 1.0 (neutral), rest reserved
         }
     }
 }
@@ -107,7 +115,7 @@ struct ProbePush {
     light_count: i32,
     _r0: i32,
     env0: [f32; 4],
-    _roi: [f32; 8], // pad to ShadePush size (shared push-constant range); unused by probes.comp
+    _roi: [f32; 16], // pad to ShadePush size (shared push-constant range); unused by probes.comp
 }
 
 pub fn push_bytes<T: Copy>(p: &T) -> &[u8] {
@@ -774,7 +782,7 @@ impl SceneGpu {
                     light_count: self.light_count as i32,
                     _r0: 0,
                     env0,
-                    _roi: [0.0; 8],
+                    _roi: [0.0; 16],
                 };
                 ctx.one_time(|cmd| {
                     let d = &ctx.device;
@@ -830,7 +838,7 @@ mod tests {
     #[test]
     fn push_structs_share_one_layout_size() {
         assert_eq!(std::mem::size_of::<ShadePush>(), std::mem::size_of::<ProbePush>());
-        assert_eq!(std::mem::size_of::<ShadePush>(), 144);
+        assert_eq!(std::mem::size_of::<ShadePush>(), 176);
     }
 
     /// A throwaway CPU scene exercising every scan case: a non-emissive floor,

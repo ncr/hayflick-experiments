@@ -28,6 +28,7 @@ struct Push {
     float4 style2; // palette mode, palette param, vignette, outline strength
     float4 style3; // grain size px, grain static flag, bloom strength, bloom threshold
     float4 style4; // shadow dither: strength, levels, luma threshold, dither world-phase y
+    float4 style5; // saturation, contrast, _, _ (post-grade colour shaping)
 };
 
 static float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
@@ -198,6 +199,15 @@ kernel void tonemap(
         else if (gp == 4) col = gradeNeon(col);
         else if (gp == 5) col = gradeBleach(col);
         else if (gp == 6) col = gradeMidnight(col);
+
+        // punchy colour shaping (style5): saturation around luma, then contrast
+        // around mid-grey. Neutral (1,1) skips → byte-identical to the old look.
+        if (pc.style5.x != 1.0 || pc.style5.y != 1.0) {
+            float yl = luma(col);
+            col = yl + (col - yl) * pc.style5.x;
+            col = (col - 0.5) * pc.style5.y + 0.5;
+            col = clamp(col, 0.0, 1.0);
+        }
 
         // shadow dither (style4)
         if (pc.style4.x > 0.0) {

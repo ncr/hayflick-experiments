@@ -31,6 +31,14 @@ fn s(k: &str) -> Option<String> {
     std::env::var(k).ok()
 }
 
+/// The flat-coloured "greybox" scene family (procedural floor plans, the cave
+/// dungeon, the village, and the `game` content scene). These get the punchy /
+/// shiny / bumped look defaults; the textured legacy scenes (house/lab/grid) do
+/// not, so their established look + goldens are untouched.
+fn is_clean_greybox(scene: &str) -> bool {
+    matches!(scene, "home" | "hospital" | "office" | "factory" | "cave" | "village" | "game")
+}
+
 /// Stylized post-stack knobs (tonemap.comp). `STYLE=<preset>` sets a bundle,
 /// individual vars override on top.
 #[derive(Clone, Copy)]
@@ -51,6 +59,8 @@ pub struct StyleCfg {
     pub sdither: f32,      // shadow dither strength 0..1 (0 = off)
     pub sdither_n: f32,    // shadow dither luma levels (band count)
     pub sdither_th: f32,   // luma below which the shadow dither fades in
+    pub sat: f32,          // SAT: saturation multiplier post-grade (1 = neutral, >1 punchier)
+    pub contrast: f32,     // CONTRAST: contrast around 0.5 post-grade (1 = neutral)
 }
 
 impl StyleCfg {
@@ -67,7 +77,11 @@ impl StyleCfg {
         // (Per-scene — the darker textured scenes keep 0.35 so their goldens and
         // look are unchanged.)
         let sdither_th = if scene == "game" || scene == "cave" { 0.75 } else { 0.35 };
-        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th };
+        // The "Punchy & Moody" greybox look (chosen 2026-06-21): the flat-coloured
+        // floor-plan / dungeon / content scenes get richer colour by default. The
+        // textured legacy scenes (house/lab/grid) keep their established neutral grade.
+        let clean = is_clean_greybox(scene);
+        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th, sat: if clean { 1.4 } else { 1.0 }, contrast: if clean { 1.12 } else { 1.0 } };
         if let Some(name) = s("STYLE") {
             match name.as_str() {
                 "fallout" => { st.grade = 1.0; st.palette = 1.0; st.grain = 0.04; }
@@ -102,6 +116,8 @@ impl StyleCfg {
         st.sdither = f("SDITHER", st.sdither);
         st.sdither_n = f("SDITHER_N", st.sdither_n);
         st.sdither_th = f("SDITHER_TH", st.sdither_th);
+        st.sat = f("SAT", st.sat);
+        st.contrast = f("CONTRAST", st.contrast);
         if st.pal_p < 0.0 {
             st.pal_p = if st.palette as i32 == 2 { 6.0 } else { 0.0 };
         }
@@ -137,6 +153,11 @@ pub struct RenderCfg {
     pub ao: f32,                   // AO: RT-AO strength
     pub ao_r: f32,                 // AO_R: RT-AO radius (wu)
     pub ao_n: i32,                 // AO_N: RT-AO ray count
+    pub spec: f32,                 // SPEC: specular highlight strength (0 = off, matte)
+    pub gloss: f32,                // GLOSS: 0..1 remap of effective roughness toward polished
+    pub bump: f32,                 // BUMP: procedural surface-detail normal strength (0 = off)
+    pub bump_scale: f32,           // BUMP_SCALE: surface-detail noise frequency (wu^-1)
+    pub gi: f32,                   // GI: ambient probe-irradiance scale (1 = neutral, <1 = moodier)
     pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4
     pub style: StyleCfg,
 }
@@ -243,9 +264,13 @@ impl Config {
         } else {
             0
         };
+        // greybox scenes default to the "Punchy & Moody" look (chosen 2026-06-21):
+        // ambient turned down + lamps up so light is directional (shadows read),
+        // a glossy specular highlight, procedural surface bump, and softer AO.
+        let clean = is_clean_greybox(&scene);
         Config {
             render: RenderCfg {
-                emit: f("EMIT", 1.0),
+                emit: f("EMIT", if clean { 1.7 } else { 1.0 }),
                 sun: fo("SUN"),
                 sky: fo("SKY"),
                 fog: fo("FOG"),
@@ -255,9 +280,14 @@ impl Config {
                 exposure: f("EXPOSURE", default_exposure),
                 probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
                 probe_rays: i("PROBE_RAYS", 2048),
-                ao: f("AO", 1.0),
+                ao: f("AO", if clean { 0.55 } else { 1.0 }),
                 ao_r: f("AO_R", 0.8),
                 ao_n: i("AO_N", 8),
+                spec: f("SPEC", if clean { 2.0 } else { 0.0 }),
+                gloss: f("GLOSS", if clean { 0.85 } else { 0.0 }).clamp(0.0, 1.0),
+                bump: f("BUMP", if clean { 0.6 } else { 0.0 }),
+                bump_scale: f("BUMP_SCALE", if clean { 8.0 } else { 6.0 }).max(0.01),
+                gi: f("GI", if clean { 0.42 } else { 1.0 }),
                 debug,
                 style: StyleCfg::from_env(&scene),
             },

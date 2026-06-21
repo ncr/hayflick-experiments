@@ -69,7 +69,11 @@ for s in house lab grid game game_replay; do
     # pixel budget, but still fail on real look regressions (which move many
     # pixels well past the fuzz). Knobs: GOLDEN_FUZZ (default 2%), GOLDEN_TOL
     # (default 256 px ≈ 0.04% of a 1024×640 frame).
-    n=$(magick compare -metric AE -fuzz "${GOLDEN_FUZZ:-2%}" "$OUT/$s.png" "$GOLD/$s.png" null: 2>&1 | awk '{print $1}')
+    # magick compare exits non-zero when the images differ beyond the fuzz — that
+    # is the NORMAL "candidate moved" path, not a script error, so `|| true` keeps
+    # `set -e` from killing the loop before we can report FAIL (and reach later scenes).
+    ae=$(magick compare -metric AE -fuzz "${GOLDEN_FUZZ:-2%}" "$OUT/$s.png" "$GOLD/$s.png" null: 2>&1) || true
+    n=$(printf '%s' "$ae" | awk '{print $1}')
     n=${n%%.*}
     if [ "${n:-999999}" -le "${GOLDEN_TOL:-256}" ] 2>/dev/null; then
       echo "OK~  $s ($n px > ${GOLDEN_FUZZ:-2%}, within GOLDEN_TOL=${GOLDEN_TOL:-256})"
