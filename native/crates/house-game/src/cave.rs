@@ -57,8 +57,9 @@ impl CaveParams {
 }
 
 /// SplitMix64 — a tiny deterministic PRNG. No `rand` dep: the spec's whole point
-/// is reproducibility, so the generator owns its own stream.
-struct Rng(u64);
+/// is reproducibility, so the generator owns its own stream. `pub(crate)` so the
+/// hand-authored `village` layout can seed the shared `emit_grid_spec` tail.
+pub(crate) struct Rng(pub(crate) u64);
 impl Rng {
     fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -76,12 +77,14 @@ impl Rng {
     }
 }
 
+/// A placed rectangle on the cell grid. `pub(crate)` so `village` can build its
+/// own deterministic layout and hand it to the shared `emit_grid_spec` tail.
 #[derive(Clone, Copy)]
-struct Room {
-    x: i32,
-    z: i32,
-    w: i32,
-    h: i32,
+pub(crate) struct Room {
+    pub(crate) x: i32,
+    pub(crate) z: i32,
+    pub(crate) w: i32,
+    pub(crate) h: i32,
 }
 impl Room {
     fn cx(&self) -> i32 {
@@ -175,6 +178,24 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
         }
     }
 
+    // ---- emit floors + walls + doors + lights from the carved grid. Shared
+    // with the hand-authored `village` layout (same machinery; only the grid
+    // differs). The spawn is room 0's centre, exactly as before.
+    let r0 = &rooms[0];
+    let player_start = Vec3::new(r0.x as f32 + r0.w as f32 * 0.5, 0.0, r0.z as f32 + r0.h as f32 * 0.5);
+    emit_grid_spec(w, h, &floor, &room_of, &rooms, p.door_chance, p.thick_walls, &mut rng, player_start, seed)
+}
+
+/// Turn a carved cell grid (floor mask + per-cell `room_of`) plus the placed
+/// rooms into a [`LevelSpec`]: coloured room floors, merged corridor runs, the
+/// thin/thick wall slabs on every floor↔void edge, the room↔corridor doors, and
+/// one ceiling lamp per room. Factored out of [`cave_level_with`] so `village`
+/// reuses the identical wall/door emission (and its dollhouse cull metadata).
+/// The RNG is consumed ONLY by door placement, in the same order as before, so
+/// the cave's output stays byte-identical.
+pub(crate) fn emit_grid_spec(w: i32, h: i32, floor: &[bool], room_of: &[i32], rooms: &[Room], door_chance: f32, thick_walls: bool, rng: &mut Rng, player_start: Vec3, seed: u64) -> LevelSpec {
+    let at = |x: i32, z: i32| (z * w + x) as usize;
+
     // ---- floor quads: one RoomSpec per room (coloured), plus corridor floor
     // as merged horizontal runs of carved-but-roomless cells (neutral stone) ----
     let mut room_specs: Vec<RoomSpec> = rooms
@@ -203,7 +224,7 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
     const T: f32 = 0.125; // thin-wall half-thickness (0.25 wu wall, kit = 32 cm)
     let is_floor = |x: i32, z: i32| (0..w).contains(&x) && (0..h).contains(&z) && floor[at(x, z)];
     let mut solids: Vec<[f32; 4]> = Vec::new();
-    if p.thick_walls {
+    if thick_walls {
         // THICK ROCK: fill every non-floor cell 8-adjacent to a floor cell with a
         // full 1×1 block, flush against the room/corridor edges (rock between the
         // rooms, with visible wall-tops). build_game derives each block's
@@ -270,7 +291,7 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
     let is_opening = |a: u8, b: u8| (a == 2 && b == 1) || (a == 1 && b == 2);
     let mut doors: Vec<DoorSpec> = Vec::new();
     let add_door = |doors: &mut Vec<DoorSpec>, rng: &mut Rng, hinge: Vec3, closed: [f32; 4]| {
-        if (rng.next_u64() % 1000) as f32 / 1000.0 < p.door_chance {
+        if (rng.next_u64() % 1000) as f32 / 1000.0 < door_chance {
             let id = doors.len() as u32;
             doors.push(DoorSpec { id: DoorId(id), hinge, axis_y: 1.0, closed_solid: closed, open_angle: DOOR_OPEN, anim_ticks: 24, name: format!("cave_door_{id}") });
         }
@@ -285,7 +306,7 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
                     z += 1;
                 }
                 if z - z0 == 1 {
-                    add_door(&mut doors, &mut rng, Vec3::new(k as f32, 0.0, z0 as f32), [k as f32 - T, z0 as f32, k as f32 + T, (z0 + 1) as f32]);
+                    add_door(&mut doors, rng, Vec3::new(k as f32, 0.0, z0 as f32), [k as f32 - T, z0 as f32, k as f32 + T, (z0 + 1) as f32]);
                 }
             } else {
                 z += 1;
@@ -302,7 +323,7 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
                     x += 1;
                 }
                 if x - x0 == 1 {
-                    add_door(&mut doors, &mut rng, Vec3::new(x0 as f32, 0.0, k as f32), [x0 as f32, k as f32 - T, (x0 + 1) as f32, k as f32 + T]);
+                    add_door(&mut doors, rng, Vec3::new(x0 as f32, 0.0, k as f32), [x0 as f32, k as f32 - T, (x0 + 1) as f32, k as f32 + T]);
                 }
             } else {
                 x += 1;
@@ -318,18 +339,7 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
         .map(|(ri, _)| LightSpec { id: LightId(ri as u32), room: RoomId(ri as u32), kind: LightKind::Incandescent, base_rgb: [1.0, 0.96, 0.9], name: format!("cave_lamp_{ri}") })
         .collect();
 
-    let r0 = &rooms[0];
-    LevelSpec {
-        rooms: room_specs,
-        static_solids: solids,
-        doors,
-        lights,
-        targets: Vec::new(),
-        items: Vec::new(),
-        survival: None,
-        player_start: Vec3::new(r0.x as f32 + r0.w as f32 * 0.5, 0.0, r0.z as f32 + r0.h as f32 * 0.5),
-        seed,
-    }
+    LevelSpec { rooms: room_specs, static_solids: solids, doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, player_start, seed }
 }
 
 #[cfg(test)]
