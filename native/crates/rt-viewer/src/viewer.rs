@@ -399,7 +399,11 @@ impl Viewer {
                 // puts the disc centre low on screen. +0.65 wu = the pillar's
                 // visual centre, so the cutout sits over the player, not under it.
                 let center = self.game.snap.player_pos + glam::Vec3::new(0.0, 0.65, 0.0);
-                Some(crate::backend::RoiInfo { player: center, radius_px: self.cfg.game.roi_radius, falloff_px: self.cfg.game.roi_falloff, ghost: self.cfg.game.roi_ghost })
+                // ROI_XRAY=contour adds faint wall-silhouette lines ON TOP of the ghost
+                // stipple. Encoded by NEGATING the ghost cap: the shader reads roi2.w<0
+                // as hybrid mode and |roi2.w| as the coverage cap, so the stipple stays.
+                let ghost = if self.cfg.game.roi_contour { -self.cfg.game.roi_ghost } else { self.cfg.game.roi_ghost };
+                Some(crate::backend::RoiInfo { player: center, radius_px: self.cfg.game.roi_radius, falloff_px: self.cfg.game.roi_falloff, ghost })
             } else {
                 None
             },

@@ -181,6 +181,7 @@ pub struct GameCfg {
     pub roi_radius: f32,           // ROI_R: reveal-disc radius in low-res px
     pub roi_falloff: f32,          // ROI_FALLOFF: soft dither edge width in low-res px
     pub roi_ghost: f32,            // ROI_GHOST: max reveal coverage at disc centre (<1 leaves a faint stipple ghost of the wall)
+    pub roi_contour: bool,         // ROI_XRAY: default on — adds faint wall-silhouette line-art over the ghost stipple; ROI_XRAY=ghost turns it off (plain stipple)
 }
 
 /// Window size + capture / movie / clip harness knobs. None of these touch the
@@ -283,6 +284,7 @@ impl Config {
                 roi_radius: fo("ROI_R").unwrap_or(79.0),
                 roi_falloff: fo("ROI_FALLOFF").unwrap_or(33.0),
                 roi_ghost: fo("ROI_GHOST").unwrap_or(0.85),
+                roi_contour: s("ROI_XRAY").map(|v| v != "ghost").unwrap_or(true),
             },
             harness: HarnessCfg {
                 window,

@@ -211,19 +211,42 @@ kernel void tonemap(
             }
         }
 
-        // outline (style2.w): darken silhouette / sky-adjacent pixels
-        if (pc.style2.w > 0.0) {
+        // outline (style2.w): darken silhouette / sky-adjacent pixels. A dissolved
+        // wall (ROI contour) is tagged P0.w==2 and MUST outline even when the global
+        // outline knob is off — the contour IS the x-ray feature.
+        float4 P0 = posBuf[li];
+        bool isContour = P0.w > 1.5;
+        if (P0.w > 0.0 && (pc.style2.w > 0.0 || isContour)) {
             float3 f = normalize(cross(pc.projA.xyz, pc.projB.xyz));
-            float4 P0 = posBuf[li];
-            if (P0.w > 0.0) {
-                float d0 = dot(P0.xyz, f);
-                float edge = 0.0;
-                const int2 N4[4] = { int2(1,0), int2(-1,0), int2(0,1), int2(0,-1) };
-                for (int k = 0; k < 4; k++) {
-                    int2 q = clamp(lp + N4[k], int2(0), int2(lowW - 1, lowH - 1));
-                    float4 Pn = posBuf[uint(q.y * lowW + q.x)];
-                    if (Pn.w == 0.0 || dot(Pn.xyz, f) - d0 > 0.28) { edge = 1.0; break; }
-                }
+            float d0 = dot(P0.xyz, f);
+            float edge = 0.0;
+            const int2 N4[4] = { int2(1,0), int2(-1,0), int2(0,1), int2(0,-1) };
+            for (int k = 0; k < 4; k++) {
+                int2 q = clamp(lp + N4[k], int2(0), int2(lowW - 1, lowH - 1));
+                float4 Pn = posBuf[uint(q.y * lowW + q.x)];
+                float dn = dot(Pn.xyz, f) - d0;
+                // contour traces the FULL wall silhouette → fire on a depth jump in
+                // EITHER direction (top + side silhouettes). Normal outline keeps the
+                // directional test so goldens stay byte-identical.
+                if (Pn.w == 0.0 || (isContour ? abs(dn) > 0.20 : dn > 0.28)) { edge = 1.0; break; }
+            }
+            // contour CREASE: the wall BASE meets the floor with a normal flip but
+            // almost no depth jump (same signature as the disc edge, which must stay
+            // clean). Curvature tells them apart: a crease bends the position field
+            // (Laplacian large), the disc edge keeps a flat wall plane (~0).
+            if (isContour && edge == 0.0) {
+                float4 PL = posBuf[uint(clamp(lp.y, 0, lowH - 1) * lowW + clamp(lp.x - 1, 0, lowW - 1))];
+                float4 PR = posBuf[uint(clamp(lp.y, 0, lowH - 1) * lowW + clamp(lp.x + 1, 0, lowW - 1))];
+                float4 PU = posBuf[uint(clamp(lp.y - 1, 0, lowH - 1) * lowW + clamp(lp.x, 0, lowW - 1))];
+                float4 PD = posBuf[uint(clamp(lp.y + 1, 0, lowH - 1) * lowW + clamp(lp.x, 0, lowW - 1))];
+                if (PL.w > 0.0 && PR.w > 0.0 && length(PL.xyz + PR.xyz - 2.0 * P0.xyz) > 0.02) edge = 1.0;
+                if (PU.w > 0.0 && PD.w > 0.0 && length(PU.xyz + PD.xyz - 2.0 * P0.xyz) > 0.02) edge = 1.0;
+            }
+            if (isContour) {
+                // x-ray CONTOUR: dissolved-wall silhouette as a FAINT cool line over
+                // the ghost stipple + room behind — subtle additive cyan, half blend.
+                col = mix(col, clamp(col * 1.10 + float3(0.05, 0.12, 0.18), 0.0, 1.0), edge * 0.5);
+            } else {
                 col = mix(col, col * 0.30, pc.style2.w * edge);
             }
         }

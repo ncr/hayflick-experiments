@@ -208,14 +208,27 @@ void main(){
   // The far wall (at/behind the player) and everything outside the disc stay
   // solid; the screen-door Bayer keep test makes crisp holes, never alpha. The
   // dither lattice is anchored to the player pixel so it rides with the disc.
-  if (pc.roi2.w > 0.0) {
+  // roi2.w carries the ghost coverage cap in its MAGNITUDE and the contour flag in
+  // its SIGN: <0 = GHOST+CONTOUR hybrid (faint Bayer stipple of the wall AND its
+  // silhouette drawn as faint line-art — the dissolved wall's front face is
+  // re-projected into posImg with w=2 for the tonemap pass); >0 = GHOST only. The
+  // stipple lives purely in the COLOUR; the contour region is marked solid so its
+  // outline stays clean instead of breaking up over the stipple. Enable: roi.w>0.
+  bool roiContour = pc.roi2.w < 0.0;
+  bool inContour = false;
+  vec3 wallPos = vec3(0.0);
+  if (pc.roi.w > 0.0) {
     float sd = distance(vec2(px) + vec2(0.5), pc.roi2.xy);
-    // reveal weight, CAPPED by the ghost factor (roi2.w): at the disc centre the
-    // coverage tops out at `ghost`<1, so a sparse Bayer stipple of the wall always
-    // survives — the faint x-ray ghost of the dissolved wall over the room behind.
-    float wv = (1.0 - smoothstep(pc.roi.w - max(pc.roi2.z, 1.0), pc.roi.w, sd)) * pc.roi2.w;
+    float wv = (1.0 - smoothstep(pc.roi.w - max(pc.roi2.z, 1.0), pc.roi.w, sd)) * abs(pc.roi2.w);
+    vec2 fwd = normalize(d.xz); // camera ground-forward (horizontal view dir)
+    // Contour region: nearest hit is a FRONT occluder wall inside the disc (same
+    // front-of-player gate as the dissolve loop), marked dissolved OR stipple-kept.
+    if (roiContour && hitb && wv > 0.0 && mats[h.mat].pad == 1
+        && !(h.t > 0.6 && dot((o + d * h.t).xz - pc.roi.xyz.xz, fwd) >= 0.0)) {
+      inContour = true;
+      wallPos = o + d * h.t;
+    }
     if (wv > bayer4(px - ivec2(pc.roi2.xy))) {
-      vec2 fwd = normalize(d.xz); // camera ground-forward (horizontal view dir)
       for (int it = 0; it < 10 && hitb && mats[h.mat].pad == 1; it++) {
         // Gate on the hit's FLOOR position, not its 3D view-depth: a plane
         // perpendicular to the tilted iso view dir slices a tall wall diagonally
@@ -258,7 +271,7 @@ void main(){
 
   if (!hitb) {
     imageStore(albedoImg, px, vec4(1.0));
-    imageStore(posImg, px, vec4(0.0));
+    imageStore(posImg, px, inContour ? vec4(wallPos, 2.0) : vec4(0.0));
     col = sky(d) * fogT + fogAdd;
     imageStore(colorImg, px, vec4(col, 1.0));
     return;
@@ -269,7 +282,10 @@ void main(){
   if (m.texIndex >= 0) albedo *= texture(textures[nonuniformEXT(m.texIndex)], h.uv).rgb;
   vec3 n = h.n; if (dot(n, d) > 0.0) n = -n;
   imageStore(albedoImg, px, vec4(albedo, 1.0));
-  imageStore(posImg, px, vec4(o + h.t * d, 1.0));
+  // CONTOUR: re-project the dissolved wall's front face (w=2) so the tonemap outline
+  // pass traces its silhouette as x-ray line-art; the radiance/albedo we store is
+  // still the room BEHIND, so colour shows through while only the wall edges draw.
+  imageStore(posImg, px, inContour ? vec4(wallPos, 2.0) : vec4(o + h.t * d, 1.0));
   if (pc.misc.w == 1) { // debug: raw base colour
     imageStore(colorImg, px, vec4(albedo, 1.0));
     return;

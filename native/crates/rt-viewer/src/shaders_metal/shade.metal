@@ -208,13 +208,26 @@ kernel void shade(
     // CAVE_ROI dithered see-through — byte-identical twin of shade.comp: dissolve
     // occluder-wall hits (mats[h.mat].pad==1) between camera and player AND inside
     // the player-anchored screen disc, marching the same primary ray past them.
-    if (pc.roi2.w > 0.0) {
+    // roi2.w carries the ghost cap in its MAGNITUDE and the contour flag in its SIGN:
+    // <0 = GHOST+CONTOUR hybrid (faint stipple AND faint silhouette line-art, the
+    // dissolved wall re-projected into outPos w=2); >0 = GHOST only. The stipple
+    // lives in the COLOUR; the contour region is marked solid so its outline stays
+    // clean. Enable is roi.w (radius)>0.
+    bool roiContour = pc.roi2.w < 0.0;
+    bool inContour = false;
+    float3 wallPos = float3(0.0);
+    if (pc.roi.w > 0.0) {
         float sd = distance(float2(gid) + float2(0.5), pc.roi2.xy);
-        // reveal weight CAPPED by the ghost factor (roi2.w): coverage tops out at
-        // `ghost`<1 so a sparse Bayer stipple of the wall survives — the faint x-ray.
-        float wv = (1.0 - smoothstep(pc.roi.w - max(pc.roi2.z, 1.0), pc.roi.w, sd)) * pc.roi2.w;
+        float wv = (1.0 - smoothstep(pc.roi.w - max(pc.roi2.z, 1.0), pc.roi.w, sd)) * abs(pc.roi2.w);
+        float2 fwd = normalize(d.xz); // camera ground-forward (horizontal view dir)
+        // Contour region: nearest hit is a FRONT occluder wall inside the disc (same
+        // front-of-player gate as the dissolve loop), marked dissolved OR stipple-kept.
+        if (roiContour && hitb && wv > 0.0 && mats[h.mat].pad == 1
+            && !(h.t > 0.6 && dot((o + d * h.t).xz - pc.roi.xyz.xz, fwd) >= 0.0)) {
+            inContour = true;
+            wallPos = o + d * h.t;
+        }
         if (wv > bayer4(int2(gid) - int2(pc.roi2.xy))) {
-            float2 fwd = normalize(d.xz); // camera ground-forward (horizontal view dir)
             for (int it = 0; it < 10 && hitb && mats[h.mat].pad == 1; it++) {
                 // Gate on FLOOR position, not 3D view-depth: a plane perpendicular
                 // to the tilted view dir slices tall walls diagonally by height,
@@ -251,7 +264,7 @@ kernel void shade(
     float3 col;
     if (!hitb) {
         outAlbedo[idx] = float4(1.0);
-        outPos[idx] = float4(0.0); // w=0 → sky (tonemap outline)
+        outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(0.0); // w=0 → sky, w=2 → x-ray wall
         col = skyCol(d, pc) * fogT + fogAdd;
         outRadiance[idx] = float4(col, 1.0);
         return;
@@ -262,7 +275,9 @@ kernel void shade(
     if (m.texIndex >= 0) albedo *= texs[m.texIndex].sample(texSamp, h.uv).rgb;
     float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
     outAlbedo[idx] = float4(albedo, 1.0);
-    outPos[idx] = float4(o + h.t * d, 1.0); // raw hit point, w=1 (matches shade.comp posImg)
+    // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
+    // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
+    outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, 1.0); // w=1 matches shade.comp
     if (pc.misc.w == 1) { outRadiance[idx] = float4(albedo, 1.0); return; }
     float3 p = o + h.t * d + n * 0.003;
     if (pc.misc.w == 2) { outRadiance[idx] = float4(albedo * (1.0/PI) * probeE(p, n, pd, pc), 1.0); return; }
