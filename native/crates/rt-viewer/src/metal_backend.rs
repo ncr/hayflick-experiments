@@ -651,6 +651,25 @@ impl RenderBackend for MetalBackend {
             cb.wait_until_completed();
         }
 
+        // ---- minimap HUD: burn into out_tex (the present + readback source) so
+        // it lands in the live view AND in SHOT/DUMP/DEMO captures, unlike the
+        // menu/score overlay (drawable only). Bottom-left corner.
+        if let Some((mc, mw, mh)) = fp.minimap {
+            let (ext_w, ext_h, scale) = { let t = self.target.as_ref().unwrap(); (t.ext_w, t.ext_h, t.menu_scale) };
+            let m: i64 = 12;
+            let dy = ext_h as i64 - m - mh as i64 * scale as i64;
+            let cbm = self.queue.new_command_buffer();
+            let blit = cbm.new_blit_command_encoder();
+            let mut staging: Vec<Texture> = Vec::new();
+            {
+                let t = self.target.as_ref().unwrap();
+                self.blit_overlay(blit, &t.out_tex, mc, mw, mh, scale, m, dy, ext_w, ext_h, &mut staging);
+            }
+            blit.end_encoding();
+            cbm.commit();
+            cbm.wait_until_completed();
+        }
+
         // ---- deferred clip capture: subsample the just-rendered out texture
         // (the Viewer collects it on the next frame, mirroring the Vulkan defer)
         if fp.capture {

@@ -31,6 +31,12 @@ pub fn shot_sim_dt(shot: bool, dt: f32) -> f32 {
     }
 }
 
+/// Wall-synthesis options for floor-plan scenes: `DOORS=1` keeps swinging door
+/// leaves; otherwise openings are plain arches (the walkable default).
+fn wall_opts() -> house_game::WallOpts {
+    house_game::WallOpts { keep_door_leaves: std::env::var("DOORS").is_ok(), ..house_game::WallOpts::default() }
+}
+
 pub const ZOOM_MIN: f32 = 1.0;
 pub const ZOOM_MAX: f32 = 4.0; // web game-studio: zoomMin 1, zoomMax 4, zoomStep 1
 
@@ -62,6 +68,9 @@ pub struct Viewer {
     pub rec: Option<crate::capture::Rec>,
     pub rec_jobs: Vec<std::thread::JoinHandle<()>>,
     pub movie: Option<crate::capture::Movie>,
+    /// Top-down minimap HUD (built from the spec when `cfg.game.minimap`), burned
+    /// into the captured frame each draw. `None` when off or on a specless scene.
+    pub minimap: Option<crate::minimap::Minimap>,
     // ---- frame clock / lifecycle
     pub frame: u32,
     pub start_time: std::time::Instant,
@@ -89,6 +98,16 @@ impl Viewer {
         // LevelSpec; the three legacy scenes (grid/lab/house) stay in build_scene.
         let game_spec: Option<house_game::LevelSpec> = match cfg.scene.as_str() {
             "game" => Some(house_game::game_level()),
+            "village" => Some(house_game::village_level(cfg.game.cave_seed)),
+            // Floor-plan-derived levels: a believable PLAN (rooms + doors) run
+            // through `floorplan::enclose` to synthesize walls + collision. Each
+            // is fully playable; future plan generators slot in the same way.
+            // DOORS=1 keeps swinging leaves (closed, interactive); default is
+            // open arches (walkable end-to-end, what the headless capture wants).
+            "home" => Some(house_game::enclose(house_game::house_floor(cfg.game.cave_seed), wall_opts())),
+            "hospital" => Some(house_game::enclose(house_game::building_floor(cfg.game.cave_seed, house_game::BuildingParams::hospital()), wall_opts())),
+            "office" => Some(house_game::enclose(house_game::building_floor(cfg.game.cave_seed, house_game::BuildingParams::office()), wall_opts())),
+            "factory" => Some(house_game::enclose(house_game::factory_floor(cfg.game.cave_seed), wall_opts())),
             "cave" => Some(house_game::cave_level_with(
                 cfg.game.cave_seed,
                 house_game::CaveParams { thick_walls: cfg.game.cave_thick, ..house_game::CaveParams::for_rooms(cfg.game.cave_rooms, cfg.game.cave_loops) },
@@ -108,6 +127,22 @@ impl Viewer {
         // the interim mirror of the scene's collision fields + named lights.
         // GameLoop is the adapter knowing both, joining lights onto the
         // backend's handles, loudly.
+        // DUMP_ROOMS=1: print the room rects + door slabs (for authoring walk
+        // traces against a generated layout). Cheap, off by default.
+        if std::env::var("DUMP_ROOMS").is_ok() {
+            if let Some(s) = &game_spec {
+                println!("START {} {}", s.player_start.x, s.player_start.z);
+                for r in &s.rooms {
+                    println!("ROOM {} {:?}", r.id.0, r.floor_rect);
+                }
+                for d in &s.doors {
+                    println!("DOOR {} {:?}", d.id.0, d.closed_solid);
+                }
+            }
+        }
+        // Build the minimap schematic from the spec BEFORE it is moved into the
+        // GameLoop (the layout is static, so this is a one-time bake).
+        let minimap = if cfg.game.minimap { game_spec.as_ref().map(crate::minimap::Minimap::from_spec) } else { None };
         let game = match game_spec {
             Some(spec) => GameLoop::from_spec(spec, &scene, backend.handles(), backend.light_count(), &cfg),
             None => GameLoop::new(&scene, backend.handles(), backend.light_count(), &cfg),
@@ -150,6 +185,7 @@ impl Viewer {
                 std::fs::create_dir_all(&dir).ok();
                 crate::capture::Movie::new(dir, &cfg)
             }),
+            minimap,
             frame: 0,
             start_time,
             last_frame: None,
@@ -330,6 +366,17 @@ impl Viewer {
             None => false,
         };
 
+        // minimap HUD: stamp the player onto the prebaked schematic this frame.
+        // Held in a local so the &[u32] slice in `fp` stays alive through present.
+        let mini_hold;
+        let minimap = match &self.minimap {
+            Some(mm) => {
+                mini_hold = mm.frame(self.game.snap.player_pos, self.game.snap.facing);
+                Some((mini_hold.0.as_slice(), mini_hold.1, mini_hold.2))
+            }
+            None => None,
+        };
+
         let fp = FramePresent {
             fs: &fs,
             pan: self.view.pan,
@@ -344,6 +391,7 @@ impl Viewer {
             style: self.style,
             frame: self.frame,
             overlay,
+            minimap,
             capture,
         };
         let ok = self.backend.render_present(&fp);

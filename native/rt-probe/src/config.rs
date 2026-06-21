@@ -178,6 +178,7 @@ pub struct GameCfg {
     pub cave_loops: u32,           // CAVE_LOOPS: extra corridors beyond the spanning tree
     pub cave_thick: bool,          // CAVE_WALLS=rock: thick 1×1 rock blocks vs thin walls + void
     pub cave_cutaway: bool,        // CAVE_CUTAWAY=0: dollhouse-cull near walls fully (no cut-away stub)
+    pub minimap: bool,             // MINIMAP: draw the top-down minimap HUD (default on for SCENE=village)
 }
 
 /// Window size + capture / movie / clip harness knobs. None of these touch the
@@ -223,7 +224,7 @@ impl Config {
         // scenes. Retuned 0.35 -> 0.40 on 2026-06-12: base-colour textures now
         // sample as sRGB (hardware-linearized, darker albedo + darker bounce),
         // and the bump restores the previous overall brightness.
-        let default_exposure = if scene == "house" || scene == "game" || scene == "cave" { 0.40 } else { 0.22 };
+        let default_exposure = if matches!(scene.as_str(), "house" | "game" | "cave" | "village" | "home" | "hospital" | "office" | "factory") { 0.40 } else { 0.22 };
         let window = s("WINDOW").and_then(|v| {
             let (w, h) = v.split_once('x')?;
             Some((w.parse().ok()?, h.parse().ok()?))
@@ -277,6 +278,7 @@ impl Config {
                 cave_loops: i("CAVE_LOOPS", 3).max(0) as u32,
                 cave_thick: s("CAVE_WALLS").map(|v| v == "rock" || v == "thick").unwrap_or(false),
                 cave_cutaway: s("CAVE_CUTAWAY").map(|v| v != "0" && v != "off").unwrap_or(true),
+                minimap: b("MINIMAP", matches!(scene.as_str(), "village" | "home" | "hospital" | "office" | "factory")),
             },
             harness: HarnessCfg {
                 window,

@@ -63,17 +63,29 @@ const WALL_STONE: u32 = 0xf6f2e8;
 /// rooms so the connectors read as connectors, not chambers.
 const CORRIDOR_FLOOR: u32 = 0xd8d4cc;
 
+/// Scenes that render with GENERATED walls (one slab per region boundary, with
+/// dollhouse cut-aways) rather than the authored rectangular auto-perimeter:
+/// the procedural cave, the hand-authored village, and every floor-plan-derived
+/// level (home / hospital / office / factory, via `floorplan::enclose`). Future
+/// generated scenes join here.
+pub fn is_dollhouse(scene: &str) -> bool {
+    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory")
+}
+
 /// Build the greybox game scene from the spec. Returns the scene; the caller
 /// (renderer) bakes probes and constructs the GameLoop over the SAME spec.
 pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     let mut scene = Scene::new();
     let f = spec.floor_bounds();
-    // The procedural cave provides its OWN irregular boundary walls (so the
-    // rectangular auto-perimeter below is skipped) and gets the clean stone-white
-    // wall palette; the authored house (`game`) keeps its near-white walls +
-    // enclosing perimeter.
-    let cave = cfg.scene == "cave";
-    let wall_hex = if cave { WALL_STONE } else { WALL_INNER };
+    // The procedural cave AND the hand-authored village provide their OWN
+    // generated boundary walls (one slab per floor↔void edge, with dollhouse
+    // cut-away metadata), so the rectangular auto-perimeter below is skipped and
+    // they get the clean stone-white wall palette. The authored house (`game`)
+    // keeps its near-white walls + enclosing perimeter. `dollhouse` gates the
+    // shared generated-wall path; the village then takes a brighter daylit mood
+    // (see `scene.lighting` below) since it is an open street, not a dungeon.
+    let dollhouse = is_dollhouse(&cfg.scene);
+    let wall_hex = if dollhouse { WALL_STONE } else { WALL_INNER };
 
     // ---- floors: one quad per room in its own pastel tint (cave corridors get
     // the neutral stone tint); the room order is the spec order so the palette
@@ -89,7 +101,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // dollhouse cull hides the camera-near sides per quarter-turn (Q/E). The
     // cave skips this — its generated wall slabs already enclose every region.
     let t = WALL_HT * 2.0;
-    if !cave {
+    if !dollhouse {
         let perim: [([f32; 4], u8); 4] = [
             ([f[0] - t, f[1] - t, f[0], f[3] + t], 0b0100), // west wall, outward -X
             ([f[2], f[1] - t, f[2] + t, f[3] + t], 0b0001), // east wall, outward +X
@@ -110,7 +122,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // see into every chamber.
     for s in &spec.static_solids {
         let (w, d) = (s[2] - s[0], s[3] - s[1]);
-        if !cave {
+        if !dollhouse {
             if w.min(d) <= t + 1e-3 {
                 box_world(&mut scene, *s, WALL_TOP, wall_hex);
             } else {
@@ -186,7 +198,16 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // LIFTED sky fill (void outside the walls reads bright, not black). The cave
     // is a DUNGEON — a dimmer sky fill sinks the void into shadow so the lamp-lit
     // chambers pop, with a touch more mist for depth between the rooms.
-    scene.lighting = if cave { [0.0, 2.2, 0.26, 0.45] } else { [0.0, 5.0, 0.18, 0.5] };
+    scene.lighting = if cfg.scene == "cave" {
+        [0.0, 2.2, 0.26, 0.45]
+    } else if dollhouse {
+        // open street / daylit floor plan, not a dungeon: a brighter sky fill
+        // carries the circulation (corridor floor has no lamp), interiors still
+        // pop from their per-room lamp.
+        [0.0, 5.5, 0.30, 0.42]
+    } else {
+        [0.0, 5.0, 0.18, 0.5]
+    };
     scene
 }
 
@@ -242,6 +263,11 @@ fn wall_outward_bits(s: &[f32; 4], spec: &LevelSpec) -> u8 {
         if west && !east {
             bits |= 0b0001; // floor west → exterior east (+X)
         }
+        if west && east {
+            bits |= 0b0100 | 0b0001; // INTERIOR partition (floor both sides): cut from
+                                     // BOTH sides so whichever room is behind it is never
+                                     // occluded — the wall always shows as a low stub.
+        }
     } else {
         let (north, south) = (on_floor(mx, s[1] - eps), on_floor(mx, s[3] + eps));
         if south && !north {
@@ -249,6 +275,9 @@ fn wall_outward_bits(s: &[f32; 4], spec: &LevelSpec) -> u8 {
         }
         if north && !south {
             bits |= 0b0010; // floor north → exterior south (+Z)
+        }
+        if north && south {
+            bits |= 0b1000 | 0b0010; // interior partition: cut from both sides
         }
     }
     bits

@@ -54,6 +54,10 @@ pub struct FramePresent<'a> {
     /// UI overlay copied onto the PRESENTED image only (never `out`, so SHOT/
     /// MOVIE/DUMP captures stay clean). `None` for headless modes.
     pub overlay: Option<Overlay<'a>>,
+    /// Minimap HUD canvas (RGBA logical px, w, h). Unlike `overlay`, the backend
+    /// burns this into `out_tex` (the present + readback source), so it lands in
+    /// SHOT/DUMP/DEMO captures too. `None` when the minimap is off.
+    pub minimap: Option<(&'a [u32], i32, i32)>,
     /// Record the clip down-blit (`out` → exact game px) into this frame's
     /// command buffer; the backend must hold a capture target this size.
     pub capture: bool,
