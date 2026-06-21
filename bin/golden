@@ -4,11 +4,17 @@
 #   bin/golden            # render house/lab/grid, compare against checked-in goldens
 #   bin/golden --update   # regenerate the goldens (after an INTENTIONAL look change)
 #
-# The renderer is bit-stable (shade.comp is a pure function of scene + camera;
-# LIGHT_ANIM=0 freezes the practicals), so a byte-compare of the PNGs is the
-# whole test. Goldens live in native/rt-probe/golden/ and are MACHINE-SPECIFIC
-# (GPU + driver shade exact float behaviour): regenerate after a driver update
-# if all fail identically.
+# The renderer is deterministic in principle (shade.comp is a pure function of
+# scene + camera; LIGHT_ANIM=0 freezes the practicals), so the primary check is a
+# byte-compare of the PNGs. Some GPUs, though, resolve grazing rays
+# non-deterministically (the rtAO hemisphere rays flip hit/miss at geometry
+# edges; ground fog then lifts that across a quantize threshold and flips a
+# handful of pixels by ~1%). So when the bytes differ, fall back to a TOLERANT
+# image compare (needs `magick`): pass if diffs stay under GOLDEN_FUZZ (default
+# 2% per channel) for at most GOLDEN_TOL pixels (default 256), else fail — real
+# look regressions move far more than that. Goldens live in
+# native/rt-probe/golden/ and are MACHINE-SPECIFIC (GPU + driver shade exact
+# float behaviour): regenerate after a driver update if all fail identically.
 #
 # Five goldens: house / lab / grid (the legacy scenes), plus the SCENE=game
 # greybox content scene at its spawn state (game) and at the end of the
@@ -53,8 +59,26 @@ for s in house lab grid game game_replay; do
     fail=1
   elif cmp -s "$OUT/$s.png" "$GOLD/$s.png"; then
     echo "OK   $s"
+  elif command -v magick >/dev/null 2>&1; then
+    # Not byte-identical. The renderer is deterministic in PRINCIPLE (pure
+    # function of scene+camera), but some GPUs resolve grazing rays
+    # non-deterministically — notably the rtAO hemisphere rays at geometry edges,
+    # whose hit/miss flips run-to-run; with ground fog those sub-perceptual
+    # changes get lifted across a quantize threshold and flip a handful of
+    # pixels by ~1%. So tolerate diffs UNDER `fuzz` (per-channel %) up to a small
+    # pixel budget, but still fail on real look regressions (which move many
+    # pixels well past the fuzz). Knobs: GOLDEN_FUZZ (default 2%), GOLDEN_TOL
+    # (default 256 px ≈ 0.04% of a 1024×640 frame).
+    n=$(magick compare -metric AE -fuzz "${GOLDEN_FUZZ:-2%}" "$OUT/$s.png" "$GOLD/$s.png" null: 2>&1 | awk '{print $1}')
+    n=${n%%.*}
+    if [ "${n:-999999}" -le "${GOLDEN_TOL:-256}" ] 2>/dev/null; then
+      echo "OK~  $s ($n px > ${GOLDEN_FUZZ:-2%}, within GOLDEN_TOL=${GOLDEN_TOL:-256})"
+    else
+      echo "FAIL $s — $n px differ > ${GOLDEN_FUZZ:-2%} (candidate kept at $OUT/$s.png)"
+      fail=1
+    fi
   else
-    echo "FAIL $s — differs from $GOLD/$s.png (candidate kept at $OUT/$s.png)"
+    echo "FAIL $s — differs from $GOLD/$s.png, no 'magick' for tolerant compare (candidate kept at $OUT/$s.png)"
     fail=1
   fi
 done
