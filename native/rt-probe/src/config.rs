@@ -266,7 +266,8 @@ impl Config {
         };
         // greybox scenes default to the "Punchy & Moody" look (chosen 2026-06-21):
         // ambient turned down + lamps up so light is directional (shadows read),
-        // a glossy specular highlight, procedural surface bump, and softer AO.
+        // multi-scale procedural wear (grime patches + relief), and softer AO.
+        // (Specular sheen was trialled then turned off — matte reads cleaner.)
         let clean = is_clean_greybox(&scene);
         Config {
             render: RenderCfg {
@@ -283,10 +284,10 @@ impl Config {
                 ao: f("AO", if clean { 0.55 } else { 1.0 }),
                 ao_r: f("AO_R", 0.8),
                 ao_n: i("AO_N", 8),
-                spec: f("SPEC", if clean { 2.0 } else { 0.0 }),
+                spec: f("SPEC", 0.0), // matte floors/walls — specular sheen turned off (2026-06-21)
                 gloss: f("GLOSS", if clean { 0.85 } else { 0.0 }).clamp(0.0, 1.0),
-                bump: f("BUMP", if clean { 0.6 } else { 0.0 }),
-                bump_scale: f("BUMP_SCALE", if clean { 8.0 } else { 6.0 }).max(0.01),
+                bump: f("BUMP", if clean { 0.8 } else { 0.0 }),
+                bump_scale: f("BUMP_SCALE", if clean { 7.0 } else { 6.0 }).max(0.01),
                 gi: f("GI", if clean { 0.42 } else { 1.0 }),
                 debug,
                 style: StyleCfg::from_env(&scene),

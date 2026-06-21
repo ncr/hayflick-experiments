@@ -315,28 +315,49 @@ kernel void shade(
     float3 albedo = m.baseColor.rgb;
     if (m.texIndex >= 0) albedo *= texs[m.texIndex].sample(texSamp, h.uv).rgb;
     float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
-    // procedural surface detail (BUMP) — twin of shade.comp: world-space value-noise
-    // height perturbs the normal by its tangent-plane gradient + faint albedo wear,
-    // on greybox walls/floors only (no texture, non-emissive). BUMP=0 → unchanged.
+    // procedural WEAR & TEAR on greybox walls/floors — twin of shade.comp: (1) relief
+    // normal bump; (2) broad worn zones + fine scuff + sparse scratches in the albedo;
+    // (3) contact grime in occluded crevices (below, once AO is known). BUMP=0 → unchanged.
     float3 wpos = o + h.t * d;
-    if (pc.look.y > 0.0 && m.texIndex < 0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0) {
-        const float AMP = 0.04;                  // relief scale (keeps slopes gentle)
+    bool greybox = pc.look.y > 0.0 && m.texIndex < 0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0;
+    float wstr = pc.look.y;
+    float floorw = 0.55 + 0.45 * clamp(n.y, 0.0, 1.0);
+    if (greybox) {
         float freq = pc.look.z;
+        const float AMP = 0.045;
         float e = 0.5 / max(freq, 0.01);
         float h0 = fbm(wpos * freq);
         float3 g = AMP * (float3(fbm((wpos + float3(e,0,0)) * freq),
                                  fbm((wpos + float3(0,e,0)) * freq),
                                  fbm((wpos + float3(0,0,e)) * freq)) - h0) / e;
         g = g - n * dot(g, n);
-        n = normalize(n - pc.look.y * g);
-        albedo *= 1.0 - 0.07 * pc.look.y * (h0 - 0.5) * 2.0;
+        n = normalize(n - wstr * g);
+        floorw = 0.55 + 0.45 * clamp(n.y, 0.0, 1.0);
+        float broad = fbm(wpos * freq * 0.30 + 17.0);
+        float fine  = fbm(wpos * freq * 2.30 + 41.0);
+        float dirt = wstr * floorw * (0.40 * (1.0 - broad) * (1.0 - broad) + 0.10 * (1.0 - fine));
+        float sc1 = vnoise(wpos * float3(freq * 0.5, freq * 4.5, freq * 4.5) + 7.0);
+        float sc2 = vnoise(wpos * float3(freq * 4.5, freq * 4.5, freq * 0.5) + 23.0);
+        float scratch = max(smoothstep(0.66, 0.78, sc1), smoothstep(0.66, 0.78, sc2));
+        dirt += wstr * floorw * 0.22 * scratch;
+        dirt = clamp(dirt, 0.0, 0.6);
+        albedo *= 1.0 - dirt;
+        albedo = mix(albedo, float3(dot(albedo, float3(0.299, 0.587, 0.114))), dirt * 0.5);
+    }
+    float3 p = o + h.t * d + n * 0.003;
+    // AO computed ONCE (reused for contact grime + the indirect term below).
+    float ao = 1.0;
+    if (pc.camPos.w > 0.0 && pc.misc.z > 0 && pc.camDir.w > 0.0)
+        ao = rtAO(p, n, pc.misc.z, pc.camDir.w, pc.camPos.w, accel);
+    if (greybox) { // (3) contact grime: dirt cakes into occluded crevices
+        float c = clamp((1.0 - ao) * 1.8 * wstr, 0.0, 1.0);
+        albedo = mix(albedo, albedo * float3(0.50, 0.47, 0.43), c * 0.7);
     }
     outAlbedo[idx] = float4(albedo, 1.0);
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
     outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, 1.0); // w=1 matches shade.comp
     if (pc.misc.w == 1) { outRadiance[idx] = float4(albedo, 1.0); return; }
-    float3 p = o + h.t * d + n * 0.003;
     if (pc.misc.w == 2) { outRadiance[idx] = float4(albedo * (1.0/PI) * probeE(p, n, pd, pc), 1.0); return; }
 
     col = m.emissive.rgb; // camera sees emitters
@@ -380,9 +401,6 @@ kernel void shade(
         }
     }
 
-    float ao = 1.0;
-    if (pc.camPos.w > 0.0 && pc.misc.z > 0 && pc.camDir.w > 0.0)
-        ao = rtAO(p, n, pc.misc.z, pc.camDir.w, pc.camPos.w, accel);
     if (pc.misc.w == 4) { outRadiance[idx] = float4(float3(ao), 1.0); return; }
     if (pc.misc.w != 3 && pc.misc2.y != 0) col += albedo * (1.0/PI) * probeE(p, n, pd, pc) * ao * pc.look2.x;
 
