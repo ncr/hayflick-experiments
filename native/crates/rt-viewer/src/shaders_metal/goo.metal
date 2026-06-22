@@ -26,7 +26,7 @@ struct GooPush {
     int4   dims;     // W, H, ballCount, _
     float4 emis;     // emissive rgb, w = glow intensity
     float4 absorb;   // absorption rgb (per wu), w = surface alpha
-    float4 params;   // x = smin k, y = ground-glow strength, z = inv sigma², w = gain
+    float4 params;   // x = smin merge radius k; yzw unused
 };
 
 // soft-min: smoothly merges two SDFs so nearby balls fuse into one lump.
@@ -76,26 +76,12 @@ kernel void goo_composite(
     float3 ro = pc.camPos.xyz + u * pc.camRight.w * pc.camRight.xyz + v * pc.camUp.w * pc.camUp.xyz;
     float3 rd = normalize(pc.camDir.xyz);
 
-    // scene occlusion: distance along the ray to the primary hit (sky = far)
+    // scene occlusion: distance along the ray to the primary hit (sky = far).
+    // (The goo also lights the floor for REAL — one RT light per blob with
+    // ray-traced shadows in the shade pass — so this composite only draws the
+    // translucent body itself.)
     float4 hp = posBuf[idx];
-    bool sceneHit = (hp.w > 0.5 && hp.w < 1.5);
-    float sceneT = sceneHit ? dot(hp.xyz - ro, rd) : 1e9;
-
-    // EMITTED LIGHT on the surrounding surface: the goo is a real light source,
-    // so the floor (and nearby walls) near a blob pool with its green glow.
-    // Accumulate a horizontal-distance falloff from every metaball at this
-    // pixel's lit surface point, then saturate so the pool brightness depends on
-    // PROXIMITY, not particle count. Purely additive on the scene radiance.
-    float3 groundGlow = float3(0.0);
-    if (sceneHit && pc.params.y > 0.0) {
-        float gd = 0.0;
-        for (int i = 0; i < N; ++i) {
-            float2 dxz = hp.xz - balls[i].xz;
-            gd += exp(-dot(dxz, dxz) * pc.params.z);
-        }
-        float pool = 1.0 - exp(-gd * pc.params.w); // 0..1, saturating
-        groundGlow = pc.emis.xyz * pc.emis.w * pc.params.y * pool;
-    }
+    float sceneT = (hp.w > 0.5 && hp.w < 1.5) ? dot(hp.xyz - ro, rd) : 1e9;
 
     // sphere-trace to the goo surface
     const int STEPS = 96;
@@ -109,11 +95,7 @@ kernel void goo_composite(
         t += max(d, 0.003);
         if (t > tmax) break;
     }
-    if (!hit) {
-        // no goo body here, but the surface may still be lit by nearby blobs
-        if (sceneHit) radiance[idx] = float4(radiance[idx].xyz + groundGlow, 1.0);
-        return;
-    }
+    if (!hit) return; // no goo on this pixel — leave the scene colour untouched
 
     // march on through the body to the exit surface → thickness (for absorption)
     float3 pen = ro + rd * t; // entry point

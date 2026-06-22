@@ -42,8 +42,6 @@ pub const GOO_AGGRO: f32 = 1.5;
 pub const GOO_VERLET_DAMP: f32 = 0.82;
 /// Fraction of head inertia carried each tick (the rest is steering drive).
 pub const GOO_HEAD_INERTIA: f32 = 0.45;
-/// Per-tick random jitter on the particles — the "shakes a bit" wobble.
-pub const GOO_JITTER: f32 = 0.004;
 /// Max heading turn per tick (radians) — gummy, not instant.
 pub const GOO_MAX_TURN: f32 = 0.05;
 /// Rest spine length (head↔tail span) as a fraction of body radius. The spine
@@ -94,8 +92,8 @@ pub const GOO_TRAP_MAX: f32 = 22.0;
 // incompressibility (a density constraint), surface-tension cohesion (the
 // tensile s_corr term — what makes it clump and slime), and XSPH viscosity (the
 // gooey drag). It genuinely flows, pools on the floor, drapes over traps, and
-// splashes when shot. An external body force pulls the fluid toward the two
-// spine ends (the "muscle" that drives locomotion + the two-lobe shape) and
+// splashes when shot. An external body force pulls the fluid toward the spine
+// capsule (the "muscle" that drives locomotion + the single round body) and
 // toward any trap. CPU + f32 → deterministic and hashed like the player path.
 /// Fluid particles per blob. Denser = smoother metaball surface (cheap on CPU).
 pub const GOO_PARTICLES: usize = 40;
@@ -351,10 +349,10 @@ impl Goo {
 }
 
 /// Build a fresh blob: head at `head`, tail trailing `body_len` along
-/// `-heading`, and the particles scattered between the two ends (half pooling
-/// near each, so the dumbbell forms immediately). `vel` (per-tick displacement)
-/// is baked into every `prev` so the whole body drifts on its first tick (split
-/// separation). `heading` must be unit; `id`-derived scatter keeps it
+/// `-heading`, and the particles scattered as a small grid over the spine (the
+/// capsule muscle rounds them into one blob within a few ticks). `vel` (per-tick
+/// displacement) is baked into every `prev` so the whole body drifts on its
+/// first tick (split separation). `heading` must be unit; `id`-derived scatter keeps it
 /// deterministic without consuming the shared RNG.
 fn fresh_goo(id: MobId, tier: u8, head: Vec2, heading: Vec2, seed_vel: Vec2, timer: u16) -> Goo {
     let body_len = goo_tier_radius(tier) * GOO_BODY_FRAC;
@@ -535,16 +533,15 @@ pub struct Res {
     pub goo_rho0: f32,
 }
 
-/// Renderer-facing pose of one goo blob: the two spine end anchors and the goo
-/// particle cloud as world points (Y lifted to body / particle radius so the
-/// goo rests on the floor), plus the body radius and the per-particle metaball
-/// radius. The renderer raymarches a translucent metaball SDF over `parts`.
-/// Presentation-only — a pure read of the hashed particle field.
+/// Renderer-facing pose of one goo blob: the goo particle cloud as world points
+/// (Y lifted to the particle radius so the goo rests on the floor), plus the
+/// body radius and the per-particle metaball radius. The renderer raymarches a
+/// translucent metaball SDF over `parts` (and instances one shadow-proxy sphere
+/// per particle). Presentation-only — a pure read of the hashed particle field.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MobRender {
     pub id: MobId,
     pub tier: u8,
-    pub ends: [Vec3; 2],
     pub parts: [Vec3; GOO_PARTICLES],
     pub radius: f32,
     pub part_radius: f32,
@@ -1077,10 +1074,13 @@ impl<S: AudioSink> HouseGame<S> {
     }
 
     /// 3c. Goo blobs crawl: per blob, a deliberately-dumb wander/seek/idle AI
-    /// steers the head, the head moves via `collide_and_slide` (so walls stop
-    /// it just like the player), the trailing nodes follow by Verlet with a
-    /// little random jitter (the "shakes a bit" wobble), and 2 head-pinned
-    /// stick-constraint passes pull the body into a follow-the-leader crawl.
+    /// steers the head anchor (which moves via `collide_and_slide`, so walls stop
+    /// it like the player); the tail trails it and the integer gait clock
+    /// oscillates the spine length (bunch → lunge → reflow) for a crawling gait.
+    /// The fluid body is then a full Position-Based Fluids step — a capsule
+    /// muscle force toward the spine pulls the particles along, then a density
+    /// (incompressibility) solve, tensile cohesion, wall clamp and XSPH
+    /// viscosity. A blob mid-fusion instead just collapses into its survivor.
     /// No-op (and no RNG draw) when the level has no mobs, so mob-free levels
     /// stay byte-identical. Runs after walk (it is a mover) and before shoot
     /// (so hit tests see the current pose).
@@ -1408,8 +1408,8 @@ impl<S: AudioSink> HouseGame<S> {
                     let c2 = g.centroid();
                     let r = goo_tier_radius(g.tier);
                     let center = Vec3::new(c2.x, r, c2.y);
-                    // hit sphere covers the whole fluid spread (the dumbbell is
-                    // ~body_len long), so a shot anywhere on the body connects.
+                    // hit sphere covers the whole fluid spread (the body spans
+                    // ~body_len), so a shot anywhere on the blob connects.
                     if let Some(t) = ray_sphere(&ray, center, r + g.body_len * 0.7) {
                         if t > t_start + 1e-4 && mob_best.map_or(true, |(bt, _)| t < bt) {
                             mob_best = Some((t, me));
@@ -1704,9 +1704,8 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     // Identical to goo_tier_radius(tier) for a settled blob.
                     let r = g.body_len / GOO_BODY_FRAC;
                     let pr = r * GOO_PART_RADIUS_FRAC;
-                    let ends = g.ends.map(|p| Vec3::new(p.x, r, p.y));
                     let parts = g.parts.map(|p| Vec3::new(p.x, pr, p.y));
-                    MobRender { id: g.id, tier: g.tier, ends, parts, radius: r, part_radius: pr }
+                    MobRender { id: g.id, tier: g.tier, parts, radius: r, part_radius: pr }
                 })
                 .collect(),
         }
@@ -2589,10 +2588,10 @@ mod tests {
         d.run(120);
         let c1 = d.centroid_of(MobId(0)).unwrap();
         assert!((c1 - c0).length() > 0.05, "the blob crawled: {c0:?} -> {c1:?}");
-        // the snapshot exposes a render pose per blob: ends + particle cloud
+        // the snapshot exposes a render pose per blob: the lifted particle cloud
         let snap = d.g.snapshot();
         assert_eq!(snap.mobs.len(), 4);
-        assert!(snap.mobs.iter().all(|m| m.ends[0].y > 0.0 && m.radius > 0.0 && m.part_radius > 0.0));
+        assert!(snap.mobs.iter().all(|m| m.radius > 0.0 && m.part_radius > 0.0));
         assert!(snap.mobs.iter().all(|m| m.parts.iter().all(|p| p.y > 0.0)));
     }
 

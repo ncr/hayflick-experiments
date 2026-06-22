@@ -811,10 +811,7 @@ impl RenderBackend for MetalBackend {
                     dims: [low_w as i32, low_h as i32, goo_n as i32, 0],
                     emis: [0.55, 3.3, 1.15, 2.8],
                     absorb: [3.4, 0.42, 2.9, 0.9],
-                    // x = smin k; yzw = legacy fake ground-glow (strength now 0 —
-                    // the goo lights the floor for REAL via per-blob RT lights +
-                    // shadow rays now, so the screen-space pool is retired).
-                    params: [GOO_SMIN_K, 0.0, 6.0, 0.22],
+                    params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
                 };
                 let genc = cb.new_compute_command_encoder();
                 genc.set_compute_pipeline_state(&self.goo_pso);
