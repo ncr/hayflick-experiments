@@ -265,15 +265,18 @@ mod tests {
         assert_eq!(door_of(&open.1), Some(DoorId(2)), "door_ce is the one opened");
         assert!((open.0.0 as i64 - 26).abs() <= 2, "door opens ~tick 26, got {:?}", open.0);
 
-        // exactly two TargetHit on target 4, fired at ticks 280 and 300.
+        // exactly two TargetHit on target 4. The shots are FIRED at ticks 280 and
+        // 300; the slugs now travel, so each hit lands a few ticks LATER (same
+        // geometry → same travel time, so the hits keep the 20-tick spacing).
         let hits: Vec<_> = report.timeline.iter().filter(|(_, ev)| is_target_hit(ev)).collect();
         assert_eq!(hits.len(), 2, "two hits");
         assert!(hits.iter().all(|(_, ev)| target_of(ev) == Some(TargetId(4))), "both on target 4");
-        assert_eq!(hits[0].0, Tick(280));
-        assert_eq!(hits[1].0, Tick(300));
+        let (h0, h1) = (hits[0].0 .0, hits[1].0 .0);
+        assert!(h0 > 280 && h0 <= 280 + 30, "first hit shortly after the 280 shot, got {h0}");
+        assert_eq!(h1 - h0, 20, "the two hits keep the shots' 20-tick spacing");
 
-        // first shot/hit lookup via the helper
-        assert_eq!(first_tick_of(&report.timeline, is_target_hit), Some(Tick(280)));
+        // first shot/hit lookup via the helper points at the first landed hit
+        assert_eq!(first_tick_of(&report.timeline, is_target_hit), Some(hits[0].0));
     }
 
     /// Recording must not perturb the sim: a lab run (tap armed) and a plain

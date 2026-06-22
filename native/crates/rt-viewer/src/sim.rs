@@ -60,6 +60,9 @@ pub struct GameLoop {
     /// Empty unless the scene authored a goo pool (SCENE=goo). The adapter skins
     /// these onto the snapshot's live blob spine nodes each frame.
     pub goo_slots: Vec<InstanceKey>,
+    /// Reserved projectile tracer instance slots ("proj_slot_N"), moved onto the
+    /// live projectiles each frame; empty when the scene authored no pool.
+    pub proj_slots: Vec<InstanceKey>,
 }
 
 impl GameLoop {
@@ -101,6 +104,11 @@ impl GameLoop {
         while let Some(&k) = handles.instances.get(&format!("goo_slot_{}", goo_slots.len())) {
             goo_slots.push(k);
         }
+        // discover the reserved projectile tracer pool ("proj_slot_N") likewise.
+        let mut proj_slots: Vec<InstanceKey> = Vec::new();
+        while let Some(&k) = handles.instances.get(&format!("proj_slot_{}", proj_slots.len())) {
+            proj_slots.push(k);
+        }
         let mut sim: HouseGame<NullSink> = HouseGame::new(&spec, NullSink);
         // ---- Config seeding: DIRECT pre-tick state writes (world setup, not
         // play), then re-derive. Flashlight boot state, the camera quarter
@@ -131,6 +139,7 @@ impl GameLoop {
             light_keys,
             doors,
             goo_slots,
+            proj_slots,
         }
     }
 
@@ -277,6 +286,28 @@ impl GameLoop {
         }
         while slot < self.goo_slots.len() {
             out.push((self.goo_slots[slot], Mat4::from_scale(Vec3::ZERO)));
+            slot += 1;
+        }
+        out
+    }
+
+    /// Per-frame projectile tracer instances: skin one small emissive sphere onto
+    /// each live projectile (translate · uniform scale), collapsing every unused
+    /// pool slot to zero scale. Pure read of the snapshot's hashed projectile
+    /// state — the same instance-mover path the goo ellipsoids use.
+    pub fn projectile_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let mut out: Vec<(InstanceKey, Mat4)> = Vec::with_capacity(self.proj_slots.len());
+        let mut slot = 0usize;
+        for p in &self.snap.projectiles {
+            if slot >= self.proj_slots.len() {
+                break;
+            }
+            let xform = Mat4::from_translation(Vec3::new(p.pos.x, p.pos.y, p.pos.z)) * Mat4::from_scale(Vec3::splat(p.radius));
+            out.push((self.proj_slots[slot], xform));
+            slot += 1;
+        }
+        while slot < self.proj_slots.len() {
+            out.push((self.proj_slots[slot], Mat4::from_scale(Vec3::ZERO)));
             slot += 1;
         }
         out

@@ -23,6 +23,11 @@ pub struct ItemId(pub u32);
 /// iteration stays id-sorted regardless of archetype layout.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct MobId(pub u32);
+/// Stable id for a live projectile (a physically-simulated shot). Drawn from a
+/// seeded monotonic counter at fire time, so the projectile handle list stays
+/// id-sorted regardless of hecs archetype layout (same discipline as MobId).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ProjectileId(pub u32);
 
 /// What a world item restores when consumed. `Food` → hunger, `Battery` →
 /// flashlight battery. Copy + Eq so it rides in `GameEvent` (which derives
@@ -397,6 +402,46 @@ pub fn playground_level() -> LevelSpec {
         ],
         traps: vec![TrapSpec { id: 0, pos: Vec3::new(0.1, 0.0, -0.2), strength: 1.4, radius: 4.0 }],
         player_start: Vec3::new(-0.5, 0.0, -0.5),
+        ..game_level()
+    }
+}
+
+/// A SHOOTING RANGE for the physical-projectile weapon work (`SCENE=range`): an
+/// open lane (far backstop walls on −x/−z, like the playground, so nothing near
+/// the camera blocks the view) with a row of shootable wall discs at the back,
+/// plus goo blobs standing in the lane as soft targets. The player stands at the
+/// near (+z) end and fires down the lane: slugs visibly travel, drop nothing
+/// (flat pistol), splat the goo on impact, and split a Medium that drops. Not
+/// hash-stable / not a golden — a free demo stage. Edit freely.
+pub fn shooting_range_level() -> LevelSpec {
+    LevelSpec {
+        // SAME open footprint + camera framing as the playground (proven to frame
+        // the goo well): far backstop walls on −x/−z (top/back of the iso view),
+        // the floor opening toward the camera (+x/+z).
+        rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-3.0, -3.0, 9.0, 9.0] }],
+        static_solids: vec![
+            [-3.0, -3.0, 9.0, -2.75], // north (far) backstop wall — the discs hang here
+            [-3.0, -3.0, -2.75, 9.0], // west (far) wall
+        ],
+        doors: vec![],
+        lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "range_lamp".into() }],
+        // discs ON the −z backstop face (z = −2.75), facing the shooter (+z), at
+        // staggered x and heights — the back-wall row the slugs fly up-range to.
+        targets: vec![
+            TargetSpec { id: TargetId(0), center: Vec3::new(-1.8, 1.25, -2.75), normal: Vec3::new(0.0, 0.0, 1.0), radius: 0.40 },
+            TargetSpec { id: TargetId(1), center: Vec3::new(0.3, 1.55, -2.75), normal: Vec3::new(0.0, 0.0, 1.0), radius: 0.32 },
+            TargetSpec { id: TargetId(2), center: Vec3::new(2.2, 1.00, -2.75), normal: Vec3::new(0.0, 0.0, 1.0), radius: 0.32 },
+        ],
+        // soft targets out on the floor in front of the shooter: two Larges
+        // (survive a hit → splat & recoil) flanking a Medium (one kill → splits).
+        // No trap — they stay three distinct, slow-crawling targets to shoot.
+        mobs: vec![
+            MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(-1.9, 0.0, -1.0) },
+            MobSpec { id: MobId(1), tier: 1, pos: Vec3::new(0.2, 0.0, -0.4) },
+            MobSpec { id: MobId(2), tier: 0, pos: Vec3::new(1.7, 0.0, -1.3) },
+        ],
+        traps: vec![],
+        player_start: Vec3::new(-0.5, 0.0, 0.9),
         ..game_level()
     }
 }

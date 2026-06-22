@@ -6,7 +6,7 @@
 //! milliseconds with no GPU and no window.
 
 use crate::flicker::flicker;
-use crate::spec::{DoorId, ItemId, ItemKind, LevelSpec, LightId, LightKind, MobId, SurvivalParams, TargetId};
+use crate::spec::{DoorId, ItemId, ItemKind, LevelSpec, LightId, LightKind, MobId, ProjectileId, SurvivalParams, TargetId};
 use crate::{collide_and_slide, flashlight_pose, iso_input_dir, recommended_min_px_per_sec, Level};
 use glam::{IVec2, Vec2, Vec3};
 use iso_core::{iso_basis, screen_px_to_world, snap_ground_to_lattice, ISO_R};
@@ -273,6 +273,90 @@ pub struct Pistol {
     pub cooldown_ticks: u32,
 }
 
+/// A data-driven weapon. Firing spawns `pellets` physical [`Projectile`]s along
+/// the aim ray; each travels under `gravity`, sweeps for collisions every tick,
+/// and deals `damage` (+ `knockback` momentum into goo) on impact. New weapons
+/// are just new `WeaponSpec` values — no new code path. All fields are exact
+/// f32/int so the sim stays deterministic & hashable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponSpec {
+    /// Initial speed (wu/s) imparted along the aim direction.
+    pub muzzle_speed: f32,
+    /// Downward acceleration (wu/s²). 0 = flat laser; >0 = ballistic arc.
+    pub gravity: f32,
+    /// Projectile collision radius (wu) — the swept contact sphere.
+    pub radius: f32,
+    /// HP removed from a goo blob per hit (a target disc always counts as 1).
+    pub damage: u16,
+    /// Momentum (wu/s) punched into the goo fluid at the impact point.
+    pub knockback: f32,
+    /// Ticks a projectile lives before it expires (range cap).
+    pub max_age: u16,
+    /// Shots per trigger pull (1 = single; >1 = a spread of pellets).
+    pub pellets: u8,
+    /// Cone half-angle (rad) the pellets fan over (ignored when `pellets == 1`).
+    pub spread: f32,
+}
+
+/// The starter sidearm: a single fast flat slug that one-shots a Medium blob.
+pub const PISTOL: WeaponSpec = WeaponSpec {
+    muzzle_speed: 26.0,
+    gravity: 0.0,
+    radius: 0.06,
+    damage: GOO_DAMAGE,
+    knockback: 2.4,
+    max_age: 120,
+    pellets: 1,
+    spread: 0.0,
+};
+
+/// Render radius (wu) of the glowing projectile tracer sphere.
+pub const PROJ_RENDER_RADIUS: f32 = 0.14;
+
+/// A live, physically-simulated shot. Integrated each tick by `projectile_system`
+/// (gravity → position → swept collision). Self-contained: it carries the impact
+/// params copied from its [`WeaponSpec`] at fire time, so the system never needs
+/// to look the weapon back up. Folded into `state_hash`/`snapshot` while alive.
+#[derive(Clone, Copy, Debug)]
+pub struct Projectile {
+    pub id: ProjectileId,
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub age: u16,
+    pub radius: f32,
+    pub damage: u16,
+    pub knockback: f32,
+    pub gravity: f32,
+    pub max_age: u16,
+}
+
+/// The first thing a projectile's swept path meets this tick (carries the world
+/// impact point so the effect lands where the slug actually struck).
+#[derive(Clone, Copy)]
+enum ProjImpact {
+    Target(Entity, TargetId, Vec3),
+    Goo(Entity, Vec3),
+    Solid, // wall / door / floor — the slug just stops (no effect but despawn)
+}
+
+/// Direction for pellet `k` of `n` fired through `base`, fanned over a `spread`
+/// cone via a deterministic golden-angle spiral (no RNG — replays bit-exact).
+fn pellet_dir(base: Vec3, k: u8, n: u8, spread: f32) -> Vec3 {
+    if n <= 1 || spread <= 0.0 {
+        return base;
+    }
+    // orthonormal basis around the aim direction
+    let aux = if base.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+    let right = base.cross(aux).normalize_or_zero();
+    let up = right.cross(base).normalize_or_zero();
+    // Vogel/golden-angle disc sampling, mapped onto the cone
+    let ga = 2.399_963_2_f32; // 2π·(1 − 1/φ)
+    let frac = (k as f32 + 0.5) / n as f32;
+    let r = spread * frac.sqrt();
+    let ang = ga * k as f32;
+    (base + right * (r * ang.cos()) + up * (r * ang.sin())).normalize_or_zero()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DoorState {
     Closed,
@@ -530,6 +614,12 @@ pub struct Res {
     /// Set when this tick queued a mob spawn/despawn, so the post-flush
     /// `rebuild_mobs` runs only when the mob set actually changed.
     mobs_dirty: bool,
+    /// Seeded monotonic id for runtime-spawned projectiles, so the handle list
+    /// stays id-sorted. Advances on every fired pellet.
+    next_projectile_id: u32,
+    /// Set when this tick queued a projectile spawn/despawn, so the post-flush
+    /// `rebuild_projectiles` runs only when the set actually changed.
+    projectiles_dirty: bool,
     /// Goo traps (floor gravity emitters): (xz position, strength, radius).
     /// Static for the level's life; read by `goo_system` to pull blobs.
     pub traps: Vec<(Vec2, f32, f32)>,
@@ -549,6 +639,16 @@ pub struct MobRender {
     pub parts: [Vec3; GOO_PARTICLES],
     pub radius: f32,
     pub part_radius: f32,
+}
+
+/// Renderer-facing pose of one live projectile: a glowing tracer sphere. A pure
+/// read of the hashed projectile state, ProjectileId-sorted. Empty when nothing
+/// is in flight (so non-shooting frames carry no projectile draw data).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProjectileRender {
+    pub id: ProjectileId,
+    pub pos: Vec3,
+    pub radius: f32,
 }
 
 /// Renderer-facing view of one tick's world: StableId-sorted lists, lattice-
@@ -572,6 +672,9 @@ pub struct GameSnapshot {
     pub inventory: Vec<ItemKind>,
     /// Goo blobs to draw this tick, MobId-sorted. Empty on mob-free levels.
     pub mobs: Vec<MobRender>,
+    /// Projectiles in flight this tick, ProjectileId-sorted. Empty when nothing
+    /// has been fired / everything has landed.
+    pub projectiles: Vec<ProjectileRender>,
 }
 
 pub struct HouseGame<S: AudioSink = NullSink> {
@@ -591,6 +694,9 @@ pub struct HouseGame<S: AudioSink = NullSink> {
     /// Rebuilt from a World query after any split flush, so iteration order is
     /// the stable MobId order regardless of hecs archetype layout.
     mobs: Vec<Entity>,
+    /// Live projectile entities, ProjectileId-sorted (empty when nothing is in
+    /// flight). Rebuilt from a World query after any fire/impact flush.
+    projectiles: Vec<Entity>,
 }
 
 impl<S: AudioSink> HouseGame<S> {
@@ -669,6 +775,8 @@ impl<S: AudioSink> HouseGame<S> {
             // children spawn above every authored id (0 when the level has none)
             next_mob_id: spec.mobs.iter().map(|m| m.id.0 + 1).max().unwrap_or(0),
             mobs_dirty: false,
+            next_projectile_id: 0,
+            projectiles_dirty: false,
             traps: spec.traps.iter().map(|t| (Vec2::new(t.pos.x, t.pos.z), t.strength, t.radius)).collect(),
             goo_rho0: goo_rho0(),
         };
@@ -703,6 +811,7 @@ impl<S: AudioSink> HouseGame<S> {
             targets: targets.into_iter().map(|(_, e)| e).collect(),
             items: items.into_iter().map(|(_, e)| e).collect(),
             mobs: mob_pairs.into_iter().map(|(_, e)| e).collect(),
+            projectiles: Vec::new(),
         };
         g.reseed();
         g
@@ -729,6 +838,15 @@ impl<S: AudioSink> HouseGame<S> {
         let mut pairs: Vec<(MobId, Entity)> = self.world.query::<&Goo>().iter().map(|(e, g)| (g.id, e)).collect();
         pairs.sort_by_key(|(id, _)| *id);
         self.mobs = pairs.into_iter().map(|(_, e)| e).collect();
+    }
+
+    /// Same discipline as `rebuild_mobs`: the command buffer's spawn/despawn
+    /// don't return handles, so after a fire/impact flush we re-find every live
+    /// `Projectile` and sort by the stable `ProjectileId`.
+    fn rebuild_projectiles(&mut self) {
+        let mut pairs: Vec<(ProjectileId, Entity)> = self.world.query::<&Projectile>().iter().map(|(e, p)| (p.id, e)).collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        self.projectiles = pairs.into_iter().map(|(_, e)| e).collect();
     }
 
     fn player_pos(&self) -> Vec3 {
@@ -1364,10 +1482,11 @@ impl<S: AudioSink> HouseGame<S> {
         f
     }
 
-    /// 4. Cooldown-gated hitscan along the pick ray, starting at the muzzle
-    /// (hits behind the player don't count). First-occluder test against
-    /// perimeter walls + static solids + present door leaves in the [0, WALL_H]
-    /// band vs the target discs; an exact plane tie (disc ON a wall face) hits.
+    /// 4. Cooldown-gated FIRING: each trigger pull spawns the weapon's pellets as
+    /// physical [`Projectile`]s on the aim ray, starting at the muzzle-forward
+    /// point (so shots behind the player never spawn). The projectiles then fly
+    /// and resolve their own hits in `projectile_system` — this system only
+    /// births them. No-op (byte-identical) on a tick with no shot intents.
     fn shoot_system(&mut self) {
         self.res.muzzle_ticks = self.res.muzzle_ticks.saturating_sub(1);
         {
@@ -1381,6 +1500,7 @@ impl<S: AudioSink> HouseGame<S> {
         let pos = self.player_pos();
         let facing = self.player_facing();
         let (muzzle, _) = flashlight_pose(pos, facing); // hand height = muzzle height
+        let w = PISTOL;
         for ray in intents {
             {
                 let mut pistol = self.world.get::<&mut Pistol>(self.player).unwrap();
@@ -1391,112 +1511,166 @@ impl<S: AudioSink> HouseGame<S> {
             }
             self.res.muzzle_ticks = MUZZLE_FLASH_TICKS;
             self.res.events.emit(GameEvent::ShotFired(muzzle));
-            // shots only count from the muzzle forward along the ray
+            // birth the slug ON the aim ray, at the point level with the muzzle —
+            // so its flat flight path is exactly the old hitscan line (the same
+            // target/blob it would have hit, just reached over time).
             let t_start = (muzzle - ray.origin).dot(ray.dir).max(0.0);
-            // nearest target disc past the muzzle
-            let mut best: Option<(f32, Entity, TargetId, Vec3)> = None;
-            for &e in &self.targets {
-                let disc = self.world.get::<&TargetDisc>(e).unwrap();
-                let denom = ray.dir.dot(disc.normal);
+            let spawn = ray.origin + ray.dir * t_start;
+            for k in 0..w.pellets {
+                let d = pellet_dir(ray.dir, k, w.pellets, w.spread);
+                let id = ProjectileId(self.res.next_projectile_id);
+                self.res.next_projectile_id += 1;
+                self.res.buf.spawn((Projectile {
+                    id,
+                    pos: spawn,
+                    vel: d * w.muzzle_speed,
+                    age: 0,
+                    radius: w.radius,
+                    damage: w.damage,
+                    knockback: w.knockback,
+                    gravity: w.gravity,
+                    max_age: w.max_age,
+                },));
+            }
+            self.res.projectiles_dirty = true;
+        }
+    }
+
+    /// 4b. Advance every live projectile one fixed tick and resolve the FIRST
+    /// thing its swept path hits this tick: a target disc (score), a goo blob
+    /// (damage/split + knockback), or a wall / the floor / its range cap (just
+    /// despawn). Deterministic: integrate (semi-implicit), then take the nearest
+    /// impact parameter along the old→new segment. No-op when nothing is in
+    /// flight, so non-shooting levels never enter it.
+    fn projectile_system(&mut self) {
+        if self.projectiles.is_empty() {
+            return;
+        }
+        let dt = TICK_DT;
+        let floor = self.res.level.floor;
+        let handles = self.projectiles.clone(); // damage_goo mutates buffers, not this list
+        for e in handles {
+            let mut p = *self.world.get::<&Projectile>(e).unwrap();
+            p.vel.y -= p.gravity * dt; // semi-implicit Euler
+            let old = p.pos;
+            let new = old + p.vel * dt;
+            let seg = new - old;
+            let seg_len = seg.length();
+            // candidate impacts along the segment, parameterised by t ∈ [0, seg_len]
+            let dir = if seg_len > 1e-6 { seg / seg_len } else { p.vel.normalize_or_zero() };
+            let ray = PickRay { origin: old, dir };
+            // 1) target discs
+            let mut hit: Option<(f32, ProjImpact)> = None;
+            let consider = |t: f32, what: ProjImpact, hit: &mut Option<(f32, ProjImpact)>| {
+                if t >= -1e-4 && t <= seg_len + 1e-4 && hit.map_or(true, |(bt, _)| t < bt) {
+                    *hit = Some((t.max(0.0), what));
+                }
+            };
+            for &te in &self.targets {
+                let disc = self.world.get::<&TargetDisc>(te).unwrap();
+                let denom = dir.dot(disc.normal);
                 if denom.abs() < 1e-6 {
                     continue;
                 }
-                let t = (disc.center - ray.origin).dot(disc.normal) / denom;
-                if t <= t_start + 1e-4 {
+                let t = (disc.center - old).dot(disc.normal) / denom;
+                if t < -1e-4 || t > seg_len + 1e-4 {
                     continue;
                 }
-                let p = ray.origin + ray.dir * t;
-                if (p - disc.center).length() <= disc.radius && best.map_or(true, |(bt, ..)| t < bt) {
-                    let id = self.world.get::<&Target>(e).unwrap().id;
-                    best = Some((t, e, id, p));
+                let q = old + dir * t;
+                if (q - disc.center).length() <= disc.radius {
+                    let id = self.world.get::<&Target>(te).unwrap().id;
+                    consider(t, ProjImpact::Target(te, id, q), &mut hit);
                 }
             }
-            // Goo blobs are shootable too: find the nearest blob bounding-sphere
-            // the ray crosses past the muzzle. If a blob is closer than any disc
-            // (and not behind a wall), the shot is spent on it — damage/split —
-            // and we move to the next ray. No-op on mob-free levels (the disc
-            // path below is then byte-identical to before).
-            if !self.mobs.is_empty() {
-                let mut mob_best: Option<(f32, Entity)> = None;
-                for &me in &self.mobs {
-                    let g = self.world.get::<&Goo>(me).unwrap();
-                    if g.fusing > 0 {
-                        continue; // a collapsing blob isn't a shot target (it's despawning)
-                    }
-                    let c2 = g.centroid();
-                    let r = goo_tier_radius(g.tier);
-                    let center = Vec3::new(c2.x, r, c2.y);
-                    // hit sphere covers the whole fluid spread (the body spans
-                    // ~body_len), so a shot anywhere on the blob connects.
-                    if let Some(t) = ray_sphere(&ray, center, r + g.body_len * 0.7) {
-                        if t > t_start + 1e-4 && mob_best.map_or(true, |(bt, _)| t < bt) {
-                            mob_best = Some((t, me));
-                        }
-                    }
+            // 2) goo blobs (swept contact sphere)
+            for &me in &self.mobs {
+                let g = self.world.get::<&Goo>(me).unwrap();
+                if g.fusing > 0 {
+                    continue;
                 }
-                if let Some((t_mob, me)) = mob_best {
-                    let disc_t = best.map_or(f32::MAX, |(t, ..)| t);
-                    if t_mob < disc_t {
-                        let wall_block = self.res.static_occluders.iter().chain(self.res.dyn_solids.iter().map(|(_, s)| s)).any(|s| {
-                            let lo = Vec3::new(s[0], 0.0, s[1]);
-                            let hi = Vec3::new(s[2], WALL_H, s[3]);
-                            ray_aabb(&ray, lo, hi).is_some_and(|(tmin, _)| tmin > t_start + 1e-4 && tmin < t_mob - 1e-4)
-                        });
-                        if !wall_block {
-                            self.damage_goo(me, &ray);
-                        }
-                        continue; // shot spent on the blob (or the wall in front of it)
-                    }
+                let c2 = g.centroid();
+                let r = goo_tier_radius(g.tier);
+                let center = Vec3::new(c2.x, r, c2.y);
+                if let Some(t) = ray_sphere(&ray, center, r + g.body_len * 0.7 + p.radius) {
+                    let q = old + dir * t.max(0.0);
+                    consider(t, ProjImpact::Goo(me, q), &mut hit);
                 }
             }
-            let Some((t_disc, e, id, p)) = best else { continue };
-            // strict comparison: an occluder must be GENUINELY in front of the
-            // disc to block (the disc's own wall face ties and does not)
-            let occluded = self
-                .res
-                .static_occluders
-                .iter()
-                .chain(self.res.dyn_solids.iter().map(|(_, s)| s))
-                .any(|s| {
-                    let lo = Vec3::new(s[0], 0.0, s[1]);
-                    let hi = Vec3::new(s[2], WALL_H, s[3]);
-                    ray_aabb(&ray, lo, hi).is_some_and(|(tmin, _)| tmin > t_start + 1e-4 && tmin < t_disc - 1e-4)
-                });
-            if !occluded {
-                self.world.get::<&mut Target>(e).unwrap().hits += 1;
-                self.res.score += 1;
-                self.res.events.emit(GameEvent::TargetHit(id, p));
+            // 3) walls / doors (occluder slabs, floor→WALL_H band). A wall is
+            // biased back by WALL_BIAS so a disc sitting ON its own backing wall
+            // (coincident t) is NOT pre-empted by that wall — only a wall
+            // GENUINELY in front blocks (mirrors the old hitscan occluder rule).
+            const WALL_BIAS: f32 = 1e-3;
+            for s in self.res.static_occluders.iter().chain(self.res.dyn_solids.iter().map(|(_, s)| s)) {
+                let lo = Vec3::new(s[0], 0.0, s[1]);
+                let hi = Vec3::new(s[2], WALL_H, s[3]);
+                if let Some((tmin, _)) = ray_aabb(&ray, lo, hi) {
+                    consider(tmin + WALL_BIAS, ProjImpact::Solid, &mut hit);
+                }
+            }
+            // 4) the floor plane (y = 0), only while descending
+            if p.vel.y < 0.0 && new.y <= 0.0 && old.y > 0.0 {
+                let frac = old.y / (old.y - new.y);
+                consider(seg_len * frac + WALL_BIAS, ProjImpact::Solid, &mut hit);
+            }
+
+            if let Some((_, what)) = hit {
+                match what {
+                    ProjImpact::Target(te, id, q) => {
+                        self.world.get::<&mut Target>(te).unwrap().hits += 1;
+                        self.res.score += 1;
+                        self.res.events.emit(GameEvent::TargetHit(id, q));
+                    }
+                    ProjImpact::Goo(me, q) => self.damage_goo(me, q, dir, p.damage, p.knockback),
+                    ProjImpact::Solid => {}
+                }
+                self.res.buf.despawn(e);
+                self.res.projectiles_dirty = true;
+                continue;
+            }
+            // no hit: advance, age, retire on range cap or once it leaves the floor
+            p.pos = new;
+            p.age += 1;
+            let oob = new.x < floor[0] - 1.0 || new.z < floor[1] - 1.0 || new.x > floor[2] + 1.0 || new.z > floor[3] + 1.0;
+            if p.age >= p.max_age || oob {
+                self.res.buf.despawn(e);
+                self.res.projectiles_dirty = true;
+            } else {
+                *self.world.get::<&mut Projectile>(e).unwrap() = p;
             }
         }
     }
 
-    /// Apply one pistol shot to a goo blob: deduct HP, shove the head for a
-    /// jiggle tell, and on death either split into two smaller blobs (one tier
-    /// down, born perpendicular to the shot with outward separation velocity)
-    /// or — for a Small blob, or when the live cap would be exceeded — die
-    /// terminally. All spawns/despawns queue on the per-tick buffer and land at
-    /// the ONE flush; `mobs_dirty` triggers the post-flush handle rebuild.
-    fn damage_goo(&mut self, e: Entity, ray: &PickRay) {
+    /// Apply one projectile impact to a goo blob at world point `hit`, travelling
+    /// `dir` (XZ heading of the slug). Deducts `damage` HP and punches `knockback`
+    /// momentum into the fluid LOCALISED at the entry wound (strongest at `hit`,
+    /// falling off across the body) — a directional splat, not a uniform shove.
+    /// On death the blob splits into two smaller ones (one tier down, separated
+    /// perpendicular to the slug), or — Small / over-cap — dies terminally. All
+    /// spawns/despawns queue on the per-tick buffer (post-flush `rebuild_mobs`).
+    fn damage_goo(&mut self, e: Entity, hit: Vec3, dir: Vec3, damage: u16, knockback: f32) {
         let (id, tier, centroid) = {
             let g = self.world.get::<&Goo>(e).unwrap();
             (g.id, g.tier, g.centroid())
         };
-        let hit_pt = Vec3::new(centroid.x, goo_tier_radius(tier), centroid.y);
+        let kdir = Vec2::new(dir.x, dir.z).normalize_or_zero();
+        let hit_xz = Vec2::new(hit.x, hit.z);
+        let reach = goo_tier_radius(tier).max(0.2);
         let dead = {
             let mut g = self.world.get::<&mut Goo>(e).unwrap();
-            g.hp = g.hp.saturating_sub(GOO_DAMAGE);
-            // knockback: shove the spine ends + splash the fluid velocity along
-            // the shot → a visible recoil splatter
-            let kdir = Vec2::new(ray.dir.x, ray.dir.z).normalize_or_zero();
-            g.ends_prev[0] -= kdir * 0.06;
-            g.ends_prev[1] -= kdir * 0.03;
-            for v in g.vel.iter_mut() {
-                *v += kdir * 1.5; // wu/s impulse into the fluid (a recoil splash)
+            g.hp = g.hp.saturating_sub(damage);
+            // momentum transfer: push the fluid along the slug's heading, weighted
+            // by closeness to the impact point so the hit side caves/sprays.
+            g.ends_prev[0] -= kdir * (0.05 * knockback);
+            for i in 0..GOO_PARTICLES {
+                let w = (1.0 - (g.parts[i] - hit_xz).length() / reach).clamp(0.0, 1.0);
+                g.vel[i] += kdir * (knockback * w);
             }
             g.hp == 0
         };
+        let hit_evt = Vec3::new(centroid.x, goo_tier_radius(tier), centroid.y);
         if !dead {
-            self.res.events.emit(GameEvent::MobHit(id, hit_pt));
+            self.res.events.emit(GameEvent::MobHit(id, hit_evt));
             return;
         }
         // death — remove the parent at the flush
@@ -1506,24 +1680,27 @@ impl<S: AudioSink> HouseGame<S> {
         // division can never outrun the renderer's instance pool.
         let live_after_split = self.mobs.len() - 1 + 2;
         if tier >= 2 || live_after_split > GOO_LIVE_CAP {
-            self.res.events.emit(GameEvent::MobKilled(id, hit_pt));
+            self.res.events.emit(GameEvent::MobKilled(id, hit_evt));
             return;
         }
         // split: two children one tier down, separated along the axis
-        // perpendicular to the shot ray ("split along the bullet")
-        let perp = Vec2::new(-ray.dir.z, ray.dir.x).normalize_or_zero();
+        // perpendicular to the slug heading ("split along the bullet")
+        let mut perp = Vec2::new(-kdir.y, kdir.x).normalize_or_zero();
+        if perp.length_squared() < 1e-6 {
+            perp = Vec2::X; // dead-vertical impact: pick a stable split axis
+        }
         let parent_r = goo_tier_radius(tier);
         let sep = parent_r * 0.6;
         for s in [-1.0f32, 1.0] {
             let cid = MobId(self.res.next_mob_id);
             self.res.next_mob_id += 1;
-            let dir = (perp * s).normalize_or_zero();
-            let chead = centroid + dir * sep;
-            let vel = dir * (parent_r * 0.05); // outward separation, baked into prev
+            let d = (perp * s).normalize_or_zero();
+            let chead = centroid + d * sep;
+            let vel = d * (parent_r * 0.05); // outward separation, baked into prev
             let timer = 20 + (self.res.rng.next_f32() * 60.0) as u16;
-            self.res.buf.spawn((fresh_goo(cid, tier + 1, chead, dir, vel, timer),));
+            self.res.buf.spawn((fresh_goo(cid, tier + 1, chead, d, vel, timer),));
         }
-        self.res.events.emit(GameEvent::MobSplit(id, hit_pt));
+        self.res.events.emit(GameEvent::MobSplit(id, hit_evt));
     }
 
     /// Blob fusion — the inverse of the shot-split. Two LIVE blobs of the SAME
@@ -1675,6 +1852,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         self.pickup_system(); // after movement: collect items the walk reached
         self.use_system(); // consume carried items → restore needs
         self.shoot_system();
+        self.projectile_system(); // advance live shots, resolve impacts (after they spawn)
         self.merge_system(); // blobs that drifted together fuse (skipped if a shot already changed the set)
         self.flashlight_system();
         self.light_system(sim_t);
@@ -1689,6 +1867,10 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         if self.res.mobs_dirty {
             self.rebuild_mobs();
             self.res.mobs_dirty = false;
+        }
+        if self.res.projectiles_dirty {
+            self.rebuild_projectiles();
+            self.res.projectiles_dirty = false;
         }
     }
 
@@ -1724,6 +1906,15 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     let pr = r * GOO_PART_RADIUS_FRAC;
                     let parts = g.parts.map(|p| Vec3::new(p.x, pr, p.y));
                     MobRender { id: g.id, tier: g.tier, parts, radius: r, part_radius: pr }
+                })
+                .collect(),
+            // projectiles in flight (ProjectileId-sorted) — empty when idle.
+            projectiles: self
+                .projectiles
+                .iter()
+                .map(|&e| {
+                    let p = self.world.get::<&Projectile>(e).unwrap();
+                    ProjectileRender { id: p.id, pos: p.pos, radius: PROJ_RENDER_RADIUS }
                 })
                 .collect(),
         }
@@ -1803,6 +1994,18 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     h.f32(g.parts[k].x).f32(g.parts[k].y).f32(g.vel[k].x).f32(g.vel[k].y);
                 }
                 h.f32(g.heading.x).f32(g.heading.y).u64(g.gait_phase as u64).u64(g.merge_grace as u64).u64(g.fusing as u64).f32(g.fuse_pt.x).f32(g.fuse_pt.y);
+            }
+        }
+        // Projectiles block — ProjectileId-sorted, folded ONLY while shots are in
+        // flight (empty → skipped, like mobs, so idle/non-shooting frames hash
+        // exactly as before this feature). The counter is folded inside the block.
+        if !self.projectiles.is_empty() {
+            h.u64(self.res.next_projectile_id as u64);
+            for &e in &self.projectiles {
+                let p = self.world.get::<&Projectile>(e).unwrap();
+                h.u64(p.id.0 as u64).u64(p.age as u64);
+                h.f32(p.pos.x).f32(p.pos.y).f32(p.pos.z);
+                h.f32(p.vel.x).f32(p.vel.y).f32(p.vel.z);
             }
         }
         h.0
@@ -1940,6 +2143,9 @@ mod tests {
     }
 
     const OPEN: f32 = 1.9198622; // 110 deg in radians (fixture open_angle)
+    /// Ticks to let a close-range slug fly to an in-room target before asserting
+    /// the (now travel-delayed) hit — generous: 24·(26/60) ≈ 10 wu of travel.
+    const PROJ_FLY: u64 = 24;
 
     #[test]
     fn walk_reaches_click_and_blocked_points_are_noops() {
@@ -2047,22 +2253,64 @@ mod tests {
         // the perimeter slab ties at the disc plane and must not block)
         d.cmd(shoot(Vec3::new(-3.5, 1.25, 0.0), Vec3::new(0.0, 0.0, -1.0)));
         let snap = d.g.snapshot();
-        assert_eq!(snap.score, 1);
+        // the slug is now in flight: muzzle is armed, but the hit lands later.
         assert!(snap.muzzle_flash, "armed for 2 ticks");
-        assert_eq!(d.cue_ids(), vec!["pistol_fire", "target_hit"]);
+        assert_eq!(snap.score, 0, "score waits for the slug to reach the disc");
+        assert_eq!(d.cue_ids(), vec!["pistol_fire"]);
         d.run(1);
         assert!(d.g.snapshot().muzzle_flash);
         d.run(1);
         assert!(!d.g.snapshot().muzzle_flash, "exactly 2 ticks");
+        // let the projectile travel to the wall and resolve the hit
+        d.run(PROJ_FLY);
+        assert_eq!(d.g.snapshot().score, 1, "the slug landed on the disc");
         assert_eq!(d.g.world.get::<&Target>(d.g.targets[0]).unwrap().hits, 1);
+        assert_eq!(d.cue_ids(), vec!["pistol_fire", "target_hit"]);
     }
 
     #[test]
     fn shot_misses_off_disc() {
         let mut d = Drv::new();
         d.cmd(shoot(Vec3::new(-4.5, 1.25, 0.0), Vec3::new(0.0, 0.0, -1.0)));
+        d.run(PROJ_FLY);
         assert_eq!(d.g.snapshot().score, 0);
         assert_eq!(d.cue_ids(), vec!["pistol_fire"]); // fired, no hit
+    }
+
+    #[test]
+    fn projectile_flies_over_ticks_then_lands() {
+        let mut d = Drv::new();
+        d.cmd(shoot(Vec3::new(-3.5, 1.25, 0.0), Vec3::new(0.0, 0.0, -1.0)));
+        // the slug is a live entity now, exposed to the renderer, NOT yet landed
+        let s0 = d.g.snapshot();
+        assert_eq!(s0.projectiles.len(), 1, "the shot is a physical projectile in flight");
+        assert_eq!(s0.score, 0, "it has not reached the disc yet");
+        // it travels a measurable distance each tick (not a hitscan)
+        d.run(1);
+        let a = d.g.snapshot().projectiles[0].pos;
+        d.run(1);
+        let b = d.g.snapshot().projectiles[0].pos;
+        assert!((b - a).length() > 0.1, "the slug moved between ticks: {a:?} -> {b:?}");
+        // and eventually lands, scores, and despawns (no leak)
+        d.run(PROJ_FLY);
+        assert_eq!(d.g.snapshot().score, 1, "the slug reached and scored the disc");
+        assert!(d.g.snapshot().projectiles.is_empty(), "a landed slug is removed");
+    }
+
+    #[test]
+    fn projectile_flight_replays_bit_identically() {
+        // a shot in mid-flight folds into the hash; two runs must agree exactly.
+        let run = || {
+            let mut d = Drv::new();
+            d.cmd(shoot(Vec3::new(-3.5, 1.25, 0.0), Vec3::new(0.0, 0.0, -1.0)));
+            d.run(3); // freeze the world mid-flight (slug still travelling)
+            d
+        };
+        let a = run();
+        let b = run();
+        assert_eq!(a.g.snapshot().projectiles.len(), 1, "still in flight at the checkpoint");
+        assert_eq!(a.g.state_hash(), b.g.state_hash(), "projectile flight must be deterministic");
+        assert_eq!(a.g.snapshot().projectiles, b.g.snapshot().projectiles, "render poses must match");
     }
 
     #[test]
@@ -2072,12 +2320,14 @@ mod tests {
         let dir = Vec3::new(2.0, 0.0, -3.0);
         let mut closed = Drv::new();
         closed.cmd(shoot(o, dir));
+        closed.run(PROJ_FLY);
         assert_eq!(closed.g.snapshot().score, 0, "closed leaf occludes");
         assert_eq!(closed.cue_ids(), vec!["pistol_fire"]);
         let mut open = Drv::new();
         open.cmd(click_door_ab());
         open.run(31);
         open.cmd(shoot(o, dir));
+        open.run(PROJ_FLY);
         assert_eq!(open.g.snapshot().score, 1, "open doorway admits the shot");
         assert_eq!(open.g.world.get::<&Target>(open.g.targets[1]).unwrap().hits, 1);
     }
@@ -2086,18 +2336,24 @@ mod tests {
     fn cooldown_swallows_spam() {
         let mut d = Drv::new();
         let at_t0 = || shoot(Vec3::new(-3.5, 1.25, 0.0), Vec3::new(0.0, 0.0, -1.0));
-        // two shots in ONE tick: the second is swallowed
+        let fired = |d: &Drv| d.cue_ids().iter().filter(|c| **c == "pistol_fire").count();
+        // two shots in ONE tick: the second is swallowed → one slug leaves
         d.cmds(&[at_t0(), at_t0()]);
-        assert_eq!(d.g.snapshot().score, 1);
+        assert_eq!(fired(&d), 1);
         // spamming every tick inside the cooldown adds nothing
         for _ in 0..PISTOL_COOLDOWN_TICKS - 1 {
             d.cmd(at_t0());
         }
-        assert_eq!(d.g.snapshot().score, 1);
+        assert_eq!(fired(&d), 1);
         // first tick past the cooldown fires again
         d.cmd(at_t0());
-        assert_eq!(d.g.snapshot().score, 2);
-        assert_eq!(d.cue_ids(), vec!["pistol_fire", "target_hit", "pistol_fire", "target_hit"]);
+        assert_eq!(fired(&d), 2);
+        // let both slugs land; both score (order of fire/hit cues can interleave
+        // with travel time, so assert the counts, not the sequence)
+        d.run(PROJ_FLY);
+        assert_eq!(d.g.snapshot().score, 2, "both fired slugs hit the disc");
+        let hits = d.cue_ids().iter().filter(|c| **c == "target_hit").count();
+        assert_eq!(hits, 2);
     }
 
     #[test]
@@ -2171,6 +2427,7 @@ mod tests {
         d.cmd(click_door_ab());
         d.run(30); // door_open lands on the last of these
         d.cmd(shoot(Vec3::new(-3.5, 1.25, 0.0), Vec3::new(0.0, 0.0, -1.0)));
+        d.run(PROJ_FLY); // the slug flies to the disc, THEN the hit cue lands
         assert_eq!(d.cue_ids(), vec!["switch", "switch", "door_open", "pistol_fire", "target_hit"]);
         let cues = &d.g.sink.0;
         assert_eq!(cues[0].pos, None);
@@ -2324,11 +2581,13 @@ mod tests {
         d.cmd(click_ground(6.0, 6.0));
         d.run(180);
         assert!(d.pos().x < 7.0 && d.pos().z > 4.0, "reached room C: {:?}", d.pos());
-        // shoot target 4 (C south wall, faces -z) twice, spaced past the cooldown
+        // shoot target 4 (C south wall, faces -z) twice, spaced past the cooldown;
+        // each slug now flies before it scores, so wait for it to land
         d.cmd(shoot(Vec3::new(6.0, 1.25, 6.0), Vec3::new(0.0, 0.0, 1.0)));
-        assert_eq!(d.g.snapshot().score, 1);
         d.run(20);
+        assert_eq!(d.g.snapshot().score, 1);
         d.cmd(shoot(Vec3::new(6.0, 1.25, 6.0), Vec3::new(0.0, 0.0, 1.0)));
+        d.run(20);
         assert_eq!(d.g.snapshot().score, 2, "two spaced shots score twice");
         assert_eq!(d.g.world.get::<&Target>(d.g.targets[4]).unwrap().hits, 2);
     }
@@ -2665,12 +2924,13 @@ mod tests {
         let before = d.mob_count();
         let c = d.centroid_of(MobId(3)).unwrap();
         d.shoot_at(c);
+        d.run(10); // the first slug flies to the Large and wounds it
         assert_eq!(d.mob_count(), before, "first shot only wounds the Large");
         assert!(d.g.sink.0.iter().any(|q| q.id.0 == "goo_hit"), "first shot registered a hit");
-        d.run(16);
         let c = d.centroid_of(MobId(3)).expect("still alive after one shot");
+        d.run(8); // clear the 15-tick cooldown before the second shot
         d.shoot_at(c);
-        d.run(1); // let the despawn/spawn flush + handle rebuild land
+        d.run(12); // the second slug flies + the despawn/spawn flush + rebuild land
         assert!(d.centroid_of(MobId(3)).is_none(), "the Large is gone");
         assert_eq!(d.mob_count(), before + 1, "one Large became two Mediums (+1 net)");
         assert_eq!(d.world_goo_count(), d.mob_count(), "handle list matches the World");

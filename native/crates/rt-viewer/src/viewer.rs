@@ -103,6 +103,8 @@ impl Viewer {
             "goo" => Some(house_game::goo_level()),
             // a clean open stage for goo authoring (far walls only).
             "playground" => Some(house_game::playground_level()),
+            // the physical-projectile shooting range (lane + discs + goo targets).
+            "range" => Some(house_game::shooting_range_level()),
             "village" => Some(house_game::village_level(cfg.game.cave_seed)),
             // Floor-plan-derived levels: a believable PLAN (rooms + doors) run
             // through `floorplan::enclose` to synthesize walls + collision. Each
@@ -342,6 +344,7 @@ impl Viewer {
         }
         instances.extend(self.game.door_instances());
         instances.extend(self.game.goo_instances());
+        instances.extend(self.game.projectile_instances());
         let goo = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };

@@ -45,6 +45,21 @@ const GOO_BASE_COLOR: [f32; 4] = [0.03, 0.10, 0.04, 1.0];
 /// future goo-id/IOR encode).
 const GOO_EMISSIVE: [f32; 4] = [1.3, 6.5, 2.0, 1.0];
 
+/// Projectile tracer sphere tessellation (tiny — a bright bolt, not a detailed
+/// ball). Coarse keeps the per-slug geometry cheap.
+const PROJ_SPHERE_RINGS: u32 = 6;
+const PROJ_SPHERE_SECTORS: u32 = 8;
+/// Near-black base so the unlit slug stays dark; the emissive carries the glow.
+const PROJ_BASE_COLOR: [f32; 4] = [0.05, 0.04, 0.02, 1.0];
+/// Hot white-gold tracer emission — reads as a fiery slug, distinct from the
+/// green goo and the magenta trap rings. Linear, on the renderer emissive scale.
+const PROJ_EMISSIVE: [f32; 4] = [11.0, 8.0, 3.5, 1.0];
+/// Reserved projectile tracer pool size (max slugs drawn at once; extra live
+/// projectiles simply aren't drawn, like the goo slot overflow).
+pub fn proj_pool_size() -> usize {
+    24
+}
+
 /// Reserved ellipsoid pool size: the live-blob cap × goo particles. Honors the
 /// renderer constraint `live_cap × particles ≤ pool` by construction. Used by
 /// the Vulkan fallback path (the Metal path renders goo via the SDF composite
@@ -101,7 +116,7 @@ const CORRIDOR_FLOOR: u32 = 0xd8d4cc;
 pub fn is_dollhouse(scene: &str) -> bool {
     // "playground" joins so the rectangular auto-perimeter is skipped — it
     // provides its OWN far-edge walls as static_solids (open near the camera).
-    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground")
+    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground" | "range")
 }
 
 /// Build the greybox game scene from the spec. Returns the scene; the caller
@@ -213,6 +228,20 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         }
     }
 
+    // ---- projectile tracer pool: PROJ-cap emissive spheres as named dynamics
+    // ("proj_slot_N"), moved onto the live projectiles each frame (the Metal SDF
+    // path needs no goo triangles but DOES want these — they are real primary-
+    // visible geometry, unlike the goo SDF). Gated on authored mobs (the same
+    // gate as goo) so mob-free golden scenes (game / cave / house) add no slug
+    // geometry and stay byte-identical. Local-space dynamics (after
+    // recompute_bounds), excluded from NEE/probe-bake like the goo pool.
+    if !spec.mobs.is_empty() {
+        for i in 0..proj_pool_size() {
+            let first = scene.add_sphere_local(PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, PROJ_BASE_COLOR, PROJ_EMISSIVE, 0.4);
+            scene.register_dynamic(&format!("proj_slot_{i}"), first, 1, Mat4::from_scale(Vec3::ZERO));
+        }
+    }
+
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat
     // emissive annulus (outer square minus inner square as four thin bars) reads
     // as a ring under the iso grid; the magenta glow contrasts the green goo.
@@ -232,7 +261,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // LIFTED sky fill (void outside the walls reads bright, not black). The cave
     // is a DUNGEON — a dimmer sky fill sinks the void into shadow so the lamp-lit
     // chambers pop, with a touch more mist for depth between the rooms.
-    scene.lighting = if cfg.scene == "playground" {
+    scene.lighting = if cfg.scene == "playground" || cfg.scene == "range" {
         [0.0, 9.0, 0.0, 0.5] // open studio stage: bright even sky fill, no fog
     } else if cfg.scene == "cave" {
         [0.0, 2.2, 0.26, 0.45]
