@@ -86,6 +86,10 @@ pub const GOO_GROW_RATE: f32 = 0.03;
 /// held, not flung — the inverse-square law alone spikes to absurd force at the
 /// singularity (what made merged blobs spin). Far-field pull is unchanged.
 pub const GOO_TRAP_MAX: f32 = 22.0;
+/// Extra clearance (wu) the goo keeps around the player's pillar footprint, so
+/// the fluid SURFACE drapes against it rather than the particle centres sinking
+/// into the face. The goo treats the player as solid (it can't, walking freely).
+pub const GOO_COLLIDER_MARGIN: f32 = 0.10;
 
 // ---- goo fluid (Position-Based Fluids: Macklin & Müller 2013) ---------------
 // The body is a real fluid — a cloud of SPH particles solved each tick for
@@ -741,6 +745,19 @@ impl<S: AudioSink> HouseGame<S> {
         self.res.level.is_blocked(x, z) || self.res.dyn_solids.iter().any(|(_, s)| x >= s[0] && z >= s[1] && x <= s[2] && z <= s[3])
     }
 
+    /// Solidity the GOO sees: everything `walk_blocked` blocks PLUS the player's
+    /// pillar footprint (inflated by the goo's surface clearance). The player
+    /// itself never tests this — it walks freely through its own marker — so the
+    /// fluid flows and drapes around the player while the player is unobstructed.
+    fn goo_solid(&self, x: f32, z: f32) -> bool {
+        if self.walk_blocked(x, z) {
+            return true;
+        }
+        let p = self.player_pos();
+        let m = PLAYER_HALF + GOO_COLLIDER_MARGIN;
+        (x - p.x).abs() < m && (z - p.z).abs() < m
+    }
+
     /// Nearest door whose interact volume (closed slab inflated 0.3 wu) the
     /// ray passes through, regardless of current state.
     fn door_under_ray(&self, ray: &PickRay) -> Option<DoorId> {
@@ -1178,7 +1195,7 @@ impl<S: AudioSink> HouseGame<S> {
             let inertia = (g.ends[0] - g.ends_prev[0]) * GOO_VERLET_DAMP * GOO_HEAD_INERTIA;
             let drive = g.heading * (speed * mv * (0.5 + 0.5 * stretch) * TICK_DT);
             let d = inertia + drive + self.trap_accel(g.ends[0]) * GOO_END_TRAP;
-            let (nx, nz) = collide_and_slide(|x, z| self.walk_blocked(x, z), g.ends[0].x, g.ends[0].y, d.x, d.y);
+            let (nx, nz) = collide_and_slide(|x, z| self.goo_solid(x, z), g.ends[0].x, g.ends[0].y, d.x, d.y);
             g.ends_prev[0] = g.ends[0];
             g.ends[0] = Vec2::new(nx, nz);
 
@@ -1286,13 +1303,14 @@ impl<S: AudioSink> HouseGame<S> {
                     }
                     xp[i] += dp;
                 }
-                // walls: keep the fluid out of solids (per-axis slide back)
+                // walls + player pillar: keep the fluid out of solids (per-axis
+                // slide back), so the body drapes against geometry and the player.
                 for i in 0..GOO_PARTICLES {
-                    if self.walk_blocked(xp[i].x, xp[i].y) {
+                    if self.goo_solid(xp[i].x, xp[i].y) {
                         let o = g.parts[i];
-                        if !self.walk_blocked(xp[i].x, o.y) {
+                        if !self.goo_solid(xp[i].x, o.y) {
                             xp[i].y = o.y;
-                        } else if !self.walk_blocked(o.x, xp[i].y) {
+                        } else if !self.goo_solid(o.x, xp[i].y) {
                             xp[i].x = o.x;
                         } else {
                             xp[i] = o;
@@ -2738,6 +2756,29 @@ mod tests {
         assert_eq!(a.state_hash(), b.state_hash(), "merge replay must be bit-identical");
         assert_eq!(a.snapshot().mobs, b.snapshot().mobs, "render poses must match");
         assert_eq!(a.mobs.len(), 1, "the pair actually fused");
+    }
+
+    #[test]
+    fn goo_drapes_around_player_pillar_not_through() {
+        use crate::spec::{playground_level, MobSpec};
+        // the goo treats the player's pillar as solid (the player does not):
+        // a blob seeking the player crawls up and drapes AROUND it — no particle
+        // ever ends inside the pillar footprint.
+        let mut spec = playground_level();
+        spec.player_start = Vec3::new(2.0, 0.0, 2.0);
+        spec.mobs = vec![MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(0.8, 0.0, 2.0) }];
+        spec.traps = vec![];
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        for t in 0..150 {
+            g.tick(Tick(t), &[]);
+        }
+        let blob = *g.world.get::<&Goo>(g.mobs[0]).unwrap();
+        let pp = Vec2::new(2.0, 2.0);
+        for p in &blob.parts {
+            assert!((p.x - pp.x).abs() >= PLAYER_HALF || (p.y - pp.y).abs() >= PLAYER_HALF, "a particle penetrated the player pillar: {p:?}");
+        }
+        // and it really came up to the player (so the assertion above is meaningful)
+        assert!((blob.centroid() - pp).length() < 1.4, "the blob crawled up to the player: {:?}", blob.centroid());
     }
 
     #[test]
