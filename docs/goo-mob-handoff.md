@@ -1,140 +1,132 @@
-# Goo-Mob Handoff — continuation plan
+# Goo-Mob Handoff — continuation notes
 
-Pick-up notes for a new session continuing the goo blob NPC. Read this +
-`docs/goo-mob-fissionite-design.md` (original design) first. Everything below is
-**native Rust only** (`native/`), Metal backend (Apple Silicon). All changes so
-far keep the deterministic, golden-hashed architecture intact.
+Pick-up notes for a new session continuing the goo blob NPC. **Native Rust only**
+(`native/`), **Metal backend** (Apple Silicon). Everything is deterministic and
+golden-hashed: all goo work is gated on `!mobs.is_empty()`, so mob-free levels
+stay **byte-identical** (the Metal goldens pin this).
 
-## Current state (done)
+On `main` as of the last session: commits for the feature, the cleanup, and the
+player-collision are pushed. Read this + `docs/goo-mob-fissionite-design.md`.
 
-A gooey, splittable, fluorescent blob mob, fully working:
+## What the goo is now (all DONE)
 
-- **Real fluid body** — Position-Based Fluids (Macklin & Müller 2013) per blob:
-  incompressible density solve + tensile surface-tension cohesion + XSPH
-  viscosity, wall collisions. CPU, f32, deterministic, folded into `state_hash`.
-- **Two-lobe dumbbell** — each particle is assigned to one of two spine-end
-  anchors (the AI-driven "muscle"); the fluid pools into two lobes joined by a
-  density-coupled neck.
-- **Lies flat on the ground** — the SDF render squashes metaballs vertically and
-  clamps the field to the floor plane → a flat puddle with a flat underside.
-- **Traps** — `TrapSpec` floor emitters pull the fluid (and the spine anchors)
-  with an inverse-square force → the creature is dragged in and pools into a
-  flat captured splat.
-- **Splits when shot** — `shoot_system` ray-vs-sphere → HP/tier → two children
-  one tier down (runtime `CommandBuffer::spawn` + handle recovery).
-- **Translucent SDF render (Metal)** — screen-space metaball composite
-  (`goo.metal`): raymarched `smin`, Beer–Lambert green absorption, additive
-  glow, Fresnel rim; depth-occluded against the scene.
-- **Playground scene** — `SCENE=playground`: large flat plane, walls only on the
-  far edges, nothing obscured. The authoring stage for all goo work.
+A single, round, fluorescent, splittable/mergeable goo blob that crawls, lights
+the scene, casts shadows, and collides with geometry + the player:
 
-Status: **65 house-game tests green; Metal goldens byte-identical** (`game` /
-`game_replay` untouched — the whole feature is gated on `!spec.mobs.is_empty()`).
+- **Real fluid body** — Position-Based Fluids (Macklin & Müller 2013) per blob,
+  40 particles, CPU + f32, folded into `state_hash`.
+- **Single round blob + crawl gait** — an internal 2-anchor **capsule spine** is
+  a deformation skeleton (NOT a dumbbell). Particles pull toward the nearest
+  point on the head↔tail segment. An integer `gait_phase` clock oscillates the
+  spine length (bunch → lunge → reflow) so it inchworm-crawls, not slides. The
+  head is AI-steered (wander/seek/idle); the tail trails for gooey lag.
+- **Translucent SDF render** — `goo.metal` screen-space metaball composite
+  (Beer–Lambert green absorption, additive glow, Fresnel rim, ground-flattened).
+- **Goo emits REAL light + shadows** — one RT light per blob streamed into a
+  reserved NEE slot (`sim.rs::goo_lights`), with soft 12-tap area shadows
+  (`shade.metal::softVis`). The blob bodies are **proxy spheres in the
+  acceleration structure** (mask `0x02` = shadow/AO only, invisible to the
+  primary ray), so blobs self-shadow, shadow each other, and the room lamp casts
+  their shadows. (This was "Phase C"; it is the permanent default — the old
+  `GOO_BODY_RT` toggle and the fake screen-space ground-glow are removed.)
+- **Split** — shooting a blob drops HP; on death it splits into two smaller
+  blobs one tier down (`damage_goo`).
+- **Merge** — two same-tier blobs (≥ Medium) that overlap fuse into one a tier
+  larger (`merge_system`), the inverse of the split. The absorbed blob does NOT
+  pop: it enters a **fusing collapse** (`Goo.fusing`/`fuse_pt`) — oozes into the
+  survivor and deflates over ~⅓ s, then despawns, so no metaballs vanish in one
+  frame. Survivor grows into its new tier smoothly (`body_len` lerps via
+  `GOO_GROW_RATE`; render radius is derived from `body_len`). A 45-tick
+  `merge_grace` on newborns stops instant re-fusing.
+- **Traps** — floor gravity emitters pull blobs in (`trap_accel`), force **capped**
+  (`GOO_TRAP_MAX`) so a blob on the singularity is held, not flung.
+- **Collision** — walls/static solids/doors via `walk_blocked`, AND the player's
+  pillar via `goo_solid` (goo-only; the player walks through its own marker).
+  Blobs drape around the pillar instead of passing through.
+
+Status: **68 house-game tests pass, Metal goldens byte-identical.**
 
 ## Where things live
 
 | Area | File |
 |---|---|
-| Fluid sim, AI, split, traps, hashing, all `GOO_*` consts | `native/crates/house-game/src/game.rs` (`goo_system`, `damage_goo`, `trap_accel`, `goo_w`/`goo_dw`/`goo_rho0`, `Goo`, `MobRender`) |
+| Sim: `Goo`, `goo_system` (PBF+gait+fusing), `merge_system`, `damage_goo` (split), `trap_accel`, `goo_solid` (player collision), snapshot/state_hash mob blocks, ALL `GOO_*` consts, tests | `native/crates/house-game/src/game.rs` |
 | Level specs (`goo_level`, `playground_level`), `MobSpec`/`TrapSpec` | `native/crates/house-game/src/spec.rs` |
-| SDF composite shader | `native/crates/rt-viewer/src/shaders_metal/goo.metal` |
-| Metal pass wiring + `GooPush` + `GOO_SQUASH`/`GOO_FLOOR_Y`/`GOO_SMIN_K`/`GOO_MAX` | `native/crates/rt-viewer/src/metal_backend.rs` (`render_present`, search `goo_pso`) |
-| `FrameState.goo` + `GooBall` | `native/rt-probe/src/render.rs` |
-| `goo_balls()` (snapshot → metaballs), `goo_instances()` (Vulkan fallback pool) | `native/crates/rt-viewer/src/sim.rs` |
-| Scene build: goo pool gate, trap rings, playground lighting, `is_dollhouse` | `native/crates/rt-viewer/src/game_scene.rs` |
-| Scene select + ROI list | `viewer.rs` (`game_spec` match) ; `rt-probe/src/config.rs:~314` (`roi:` allowlist) |
+| Translucent body SDF composite | `native/crates/rt-viewer/src/shaders_metal/goo.metal` |
+| RT shade: `softVis` area shadows, NEE goo-light branch (`dir.w==2 && radius>0.15`) | `native/crates/rt-viewer/src/shaders_metal/shade.metal` |
+| Goo SDF pass wiring, `GooPush` (emis/absorb), goo proxy BLAS + instances (mask 0x02, parked far when idle), `unit_sphere_mesh`, `GOO_SQUASH/FLOOR_Y/SMIN_K/MAX/PROXY_CAP/PROXY_SCALE` | `native/crates/rt-viewer/src/metal_backend.rs` |
+| `goo_balls()` (metaballs), `goo_lights()` (per-blob RT lights), `goo_instances()` (Vulkan ellipsoid fallback) | `native/crates/rt-viewer/src/sim.rs` |
+| Per-frame assembly (spotlights + goo lights into FrameState) | `native/crates/rt-viewer/src/viewer.rs` |
+| `Spotlight` (+`tint`), `SPOT_WARM`, `N_RESERVED=16`, `frame_lights_cpu`, `scan_lights`, `FrameState`, `GooBall` | `native/rt-probe/src/render.rs` |
+| Scene build: player pillar (`PLAYER_HALF` box), goo pool gate, trap rings, playground lighting, `is_dollhouse` | `native/crates/rt-viewer/src/game_scene.rs` |
+| ROI scene allowlist | `native/rt-probe/src/config.rs` (`roi:` ~line 314) |
 
 ## How to run / capture
 
 ```bash
 cd ~/dev/hayflick-26-2
-# live (interactive)
-SCENE=playground bin/run
-# single frame
-SCENE=playground WINDOW=1024x640 SHOT=/tmp/x.png ./native/target/release/viewer
-# headless frame sequence → GIF (the way to show motion):
-printf "179 rotate 0\n" > /tmp/tr.txt   # a no-op trace just runs N ticks
-SCENE=playground WINDOW=720x450 LIGHT_ANIM=1 DEMO=/tmp/tr.txt DEMO_TICKS=180 \
-  DEMO_DIR=/tmp/goo-demo ./native/target/release/viewer
-ffmpeg -y -framerate 60 -i /tmp/goo-demo/d_%05d.png \
-  -vf "fps=24,scale=540:-1:flags=neighbor,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4" \
-  /tmp/goo.gif
+SCENE=playground bin/run                               # live (interactive)
+SCENE=playground WINDOW=1024x640 SHOT=/tmp/x.png \
+  ./native/target/release/viewer                       # single frame
+# headless frames → MP4 (the way to show motion):
+printf "239 rotate 0\n" > /tmp/tr.txt                  # no-op trace = run N ticks
+SCENE=playground WINDOW=720x450 LIGHT_ANIM=1 DEMO=/tmp/tr.txt DEMO_TICKS=240 \
+  DEMO_DIR=/tmp/d ./native/target/release/viewer
+ffmpeg -y -framerate 60 -i /tmp/d/d_%05d.png -c:v libx264 -pix_fmt yuv420p \
+  -crf 18 -vf "scale=720:450:flags=neighbor" -movflags +faststart /tmp/out.mp4
 ```
-DEMO bakes probes once then dumps `d_NNNNN.png` per tick. A trace line is
-`<tick> <op> <args>` (`shoot ox oy oz dx dy dz`, `rotate dq`, `click ...`).
-Always deliver motion as a **GIF** (animates in the client; inline it shows a
-still). Tests: `cargo test -p house-game`; goldens:
-`GOLDEN_DIR=native/rt-probe/golden-metal bin/golden` (must stay byte-identical).
+Trace line = `<tick> <op> <args>` (`shoot ox oy oz dx dy dz`, `rotate dq`).
+Deliver motion as MP4/GIF (animates in client; `Read` shows a still).
+Tests: `cargo test -p house-game`. Goldens (MUST stay byte-identical):
+`GOLDEN_DIR=native/rt-probe/golden-metal bin/golden`.
 
-## Proposed continuation work (priority order)
+The **playground** is the authoring stage (5 Mediums + a central trap → they
+crawl in, merge into Larges, under full C lighting; the player pillar is at
+`(-0.5,-0.5)`). Edit `playground_level()` freely — it is NOT a golden scene.
 
-### 1. More fluid behaviors — biggest "it's really a fluid" payoff
-- **Blob merging on contact**: when two blobs' fluids overlap, fuse into one
-  entity (sum particles up to a cap, combine HP/tier, drop one entity via the
-  command buffer). The SDF already visually merges; this makes it *gameplay*.
-  Watch the determinism: merge order must be id-sorted; route despawn through
-  `res.buf`; rebuild `self.mobs` (mobs_dirty). Cross-blob neighbor coupling in
-  PBF is currently OFF (each blob solves only its own particles) — merging needs
-  a touch test (centroid distance < r0+r1) before fusing, not full cross-blob SPH.
-- **Splash on hard landing / shot**: scale the existing knockback (`damage_goo`
-  adds `kdir * 1.5` to `vel`); add a splash when a fast-moving fluid hits a wall
-  (detect high incoming speed in the wall-clamp branch → spray velocity).
-- **Viscosity knob as a per-tier trait**: small blobs runnier, large ones thick
-  (`GOO_VISCOSITY` per tier). Cheap, adds character.
+## Proposed next work
 
-### 2. Look tuning (pairs with #1)
-- Thin the neck further / tune lobe roundness: `GOO_BODY_FRAC`,
-  `GOO_END_PULL`, the end-pull softening (`dist + 0.10` in `goo_system`), and
-  the render `GOO_SQUASH` / `GOO_SMIN_K`.
-- Push translucency/glow: `emis` / `absorb` in `metal_backend.rs::render_present`
-  (the `GooPush` literal). Consider a subtle emissive **breathing** pulse off
-  `FrameState.time` (presentation-only, already plumbed).
-- Optional: a thin specular **Fresnel highlight** rim color, and tint variation
-  per tier.
+1. **Splash** — bigger directional spray when a blob is shot (`damage_goo`
+   already adds `kdir*1.5` to `vel`); add a splash when fast fluid slaps a wall
+   or the player collider (detect high incoming speed at the clamp).
+2. **Per-tier viscosity** — small blobs runnier, big ones thick (`GOO_VISCOSITY`
+   as a per-tier value). Cheap character.
+3. **Level-authored prop colliders** — extend `goo_solid` to a list of authored
+   collider rects/circles so generated rooms can drop obstacles the goo flows
+   around (the player-pillar case generalizes directly).
+4. **Head-on jam fix** — a blob pulled DEAD-CENTRE into an obstacle (no lateral
+   component) can jam (point-head, no pathfinding). Add a small lateral nudge to
+   the head when it is blocked but the goal is beyond the obstacle.
+5. **Light polish** (optional) — lift `goo_lights()` `LIFT` / raise `power` to
+   brighten pool centres without losing the self-shadow contact.
+6. **Generator integration** — emit mobs/traps into procedurally generated rooms.
+7. **Vulkan parity** — the SDF body, goo lights, and RT shadows are Metal-only;
+   Vulkan has the opaque sphere-pool fallback (`goo_instances`), no goo lights.
 
-### 3. Locomotion gait
-- Right now the spine ends crawl (head steered by AI, tail trails) and the fluid
-  is dragged along — it *slides*. Make it read as goo locomotion: oscillate the
-  two ends' target separation (peristalsis) or add an inchworm phase so the body
-  bunches and extends. All in `goo_system`'s ends section; keep it deterministic
-  (drive off the sim tick, not wall clock).
+## Determinism + tuning gotchas (read before touching the sim/render)
 
-### 4. Demo framing polish (mostly done via playground)
-- `playground_level()` is the stage. Possible: hide/relocate the player marker
-  pillar (it's a reference; for pure goo shots set it aside or skip
-  `scene.dynamic_prim` for playground), add a couple more blobs/tiers, and a
-  second trap to show interactions.
-
-### 5. Scale / perf check
-- PBF is O(N²) per blob (N=40). At the live cap (12 blobs × 40) it's ~tens of µs
-  — fine. If you ever want 80–100+ particles/blob, add a spatial-hash neighbor
-  grid (per blob, or a shared grid if cross-blob coupling lands in #1).
-
-## Determinism + tuning gotchas (read before touching the sim)
-
-- **Mob-free levels must stay byte-identical.** Everything is gated on
-  `!self.mobs.is_empty()` in `state_hash`/`snapshot`/`goo_system`. Don't draw RNG
-  or touch state for mob-free levels. Re-run goldens after any sim change.
-- **PBF stability is delicate.** The density correction MUST be clamped
-  (`GOO_MAX_DP`) and the CFM relaxation kept soft (`GOO_CFM_EPS`≈25), or the
-  fluid explodes and disperses into scattered puddles. Change `GOO_H` /
-  `GOO_SPACING` / particle count together and re-check (rho0 self-calibrates via
-  `goo_rho0()`, but the gradient scale shifts).
-- **A real incompressible fluid won't spontaneously form two lobes** — the
-  per-particle end assignment (`i < N/2`) is what makes the dumbbell. Keep it.
-- **Force scales:** `trap_accel` is wu/s² (integrated by dt for the fluid);
-  the spine ends multiply it by `GOO_END_TRAP`≈8e-4 to get a per-tick Verlet
-  displacement. Mixing these up makes traps ~1000× too weak/strong.
-- **New scenes need ROI added** to the `roi:` allowlist in `config.rs:~314` or
-  they get no dithered reveal (playground deliberately omits it — open stage).
-- **`GOO_MAX`** (metal_backend) caps total metaballs = live_cap × particles;
-  bump if you raise either.
-- Tune in **small steps + screenshot/GIF** — the fluid is sensitive.
+- **Mob-free levels MUST stay byte-identical.** Everything is gated on
+  `!mobs.is_empty()`. Re-run goldens after ANY sim/shader change.
+- **Idle goo proxies MUST stay parked far away** (`y=-1000`, mask `0x00`). At the
+  origin, 480 degenerate instances perturbed the BVH/probe-bake enough to flip
+  ROI-dither pixels and FAIL the `game` golden (657px). `goo_proxy_parked()`.
+- **`softVis` is gated to goo lights only** (`dir.w==2.0 && radius>0.15`) and the
+  non-goo NEE path is kept VERBATIM, so scene-lamp/flashlight codegen is
+  unchanged. Don't restructure the shared loop.
+- **PBF stability is delicate** — the density correction MUST be Δp-clamped
+  (`GOO_MAX_DP`) with soft CFM (`GOO_CFM_EPS`≈25) or it disperses. Tune in small
+  steps + capture.
+- **Render radius is derived from `body_len`** (`r = body_len / GOO_BODY_FRAC`),
+  so the merge growth ramps. Keep that link.
+- **Merge/split are deterministic**: id-sorted, one per tick, `merge_grace`
+  prevents instant re-fuse, fusing blobs are skipped by merge AND shoot (no
+  double-despawn). `next_mob_id` + all new `Goo` fields are hashed.
+- **`N_RESERVED=16`** holds the flashlight + up to `GOO_LIVE_CAP`(12) goo lights.
+- **Cost**: C adds ~+6.8 ms/frame at 720×450 (per-frame TLAS rebuild of ~480
+  proxies + soft-shadow taps). Optimisations if needed: one ellipsoid proxy per
+  blob (480→12), TLAS refit vs rebuild.
 
 ## Open product questions for the owner
-- Merging: should two blobs of different tiers fuse up a tier, or just pool?
-- Should the goo damage the player / have an attack, or stay passive prey?
-- Generator integration: emit mobs into procedurally generated rooms (the design
-  doc's level-integration step — not started).
-- Vulkan: goo currently renders only on Metal (Vulkan has the opaque sphere-pool
-  fallback via `GOO_SDF=0`). Port `goo.metal` → a Vulkan compute pass if needed.
+- Should the goo damage/attack the player on contact, or stay passive prey?
+- Merge across different tiers, or same-tier only (current)?
+- Is Vulkan goo parity needed, or is Metal the shipping path?
