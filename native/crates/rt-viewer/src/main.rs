@@ -8,7 +8,7 @@
 //! sim runs on a fixed 60 Hz loop; the viewer only presents):
 //! - LMB — click-to-walk (unprojected to a world pick ray + ground point;
 //!   the game resolves door-vs-walk); in scenes without a player, drag pans
-//! - RMB — shoot (hitscan along the pick ray)
+//! - RMB — shoot (fires a projectile along the pick ray)
 //! - WASD / arrows — walk the player (held = one Move command per tick,
 //!   camera follows) or pan the camera in scenes without a player
 //! - q / e — smooth eased quarter turn (presentation; the quarter itself is

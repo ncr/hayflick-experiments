@@ -98,17 +98,11 @@ impl GameLoop {
     /// Shared construction: seed the game from Config (DIRECT pre-tick state
     /// writes — world setup, not play), snapshot, and wire follow-cam.
     fn assemble(spec: LevelSpec, scene: &Scene, handles: &SceneHandles, light_keys: Vec<(LightKey, LightKind, [f32; 3])>, doors: Vec<DoorRender>, cfg: &Config) -> GameLoop {
-        // discover the reserved goo ellipsoid pool ("goo_slot_0", "goo_slot_1",
-        // …) in slot order — empty when the scene authored no pool.
-        let mut goo_slots: Vec<InstanceKey> = Vec::new();
-        while let Some(&k) = handles.instances.get(&format!("goo_slot_{}", goo_slots.len())) {
-            goo_slots.push(k);
-        }
-        // discover the reserved projectile tracer pool ("proj_slot_N") likewise.
-        let mut proj_slots: Vec<InstanceKey> = Vec::new();
-        while let Some(&k) = handles.instances.get(&format!("proj_slot_{}", proj_slots.len())) {
-            proj_slots.push(k);
-        }
+        // discover the reserved goo ellipsoid + projectile tracer pools
+        // ("goo_slot_N" / "proj_slot_N") in slot order — empty when the scene
+        // authored no such pool.
+        let goo_slots = discover_pool(handles, "goo_slot");
+        let proj_slots = discover_pool(handles, "proj_slot");
         let mut sim: HouseGame<NullSink> = HouseGame::new(&spec, NullSink);
         // ---- Config seeding: DIRECT pre-tick state writes (world setup, not
         // play), then re-derive. Flashlight boot state, the camera quarter
@@ -267,28 +261,13 @@ impl GameLoop {
     }
 
     /// Per-frame goo blob instances: skin one emissive ellipsoid onto each live
-    /// blob's spine nodes (translate · scale, with a head→tail size falloff for
-    /// a teardrop body that rests on the floor), then collapse every unused pool
-    /// slot to zero scale (invisible). Presentation-only — a pure read of the
-    /// snapshot's hashed spine; nothing here feeds back into the sim.
+    /// blob's particle nodes (translate · uniform scale by the metaball radius),
+    /// then collapse every unused pool slot to zero scale (invisible).
+    /// Presentation-only — a pure read of the snapshot's hashed particle field;
+    /// nothing here feeds back into the sim.
     pub fn goo_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let mut out: Vec<(InstanceKey, Mat4)> = Vec::with_capacity(self.goo_slots.len());
-        let mut slot = 0usize;
-        for m in &self.snap.mobs {
-            for part in &m.parts {
-                if slot >= self.goo_slots.len() {
-                    break;
-                }
-                let xform = Mat4::from_translation(Vec3::new(part.x, part.y, part.z)) * Mat4::from_scale(Vec3::splat(m.part_radius));
-                out.push((self.goo_slots[slot], xform));
-                slot += 1;
-            }
-        }
-        while slot < self.goo_slots.len() {
-            out.push((self.goo_slots[slot], Mat4::from_scale(Vec3::ZERO)));
-            slot += 1;
-        }
-        out
+        let xforms = self.snap.mobs.iter().flat_map(|m| m.parts.iter().map(move |part| Mat4::from_translation(Vec3::new(part.x, part.y, part.z)) * Mat4::from_scale(Vec3::splat(m.part_radius))));
+        skin_pool(&self.goo_slots, xforms)
     }
 
     /// Per-frame projectile tracer instances: skin one small emissive sphere onto
@@ -296,21 +275,8 @@ impl GameLoop {
     /// pool slot to zero scale. Pure read of the snapshot's hashed projectile
     /// state — the same instance-mover path the goo ellipsoids use.
     pub fn projectile_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let mut out: Vec<(InstanceKey, Mat4)> = Vec::with_capacity(self.proj_slots.len());
-        let mut slot = 0usize;
-        for p in &self.snap.projectiles {
-            if slot >= self.proj_slots.len() {
-                break;
-            }
-            let xform = Mat4::from_translation(Vec3::new(p.pos.x, p.pos.y, p.pos.z)) * Mat4::from_scale(Vec3::splat(p.radius));
-            out.push((self.proj_slots[slot], xform));
-            slot += 1;
-        }
-        while slot < self.proj_slots.len() {
-            out.push((self.proj_slots[slot], Mat4::from_scale(Vec3::ZERO)));
-            slot += 1;
-        }
-        out
+        let xforms = self.snap.projectiles.iter().map(|p| Mat4::from_translation(Vec3::new(p.pos.x, p.pos.y, p.pos.z)) * Mat4::from_scale(Vec3::splat(p.radius)));
+        skin_pool(&self.proj_slots, xforms)
     }
 
     /// This frame's goo metaballs for the screen-space SDF composite. Each blob
@@ -377,6 +343,26 @@ impl GameLoop {
     pub fn time(&self) -> f32 {
         self.tick.0 as f32 * TICK_DT
     }
+}
+
+/// Discover a reserved named instance pool ("<prefix>_0", "<prefix>_1", …) in
+/// slot order, stopping at the first gap. Empty when the scene authored no pool.
+/// Shared by the goo-ellipsoid and projectile-tracer slot discovery.
+fn discover_pool(handles: &SceneHandles, prefix: &str) -> Vec<InstanceKey> {
+    let mut slots: Vec<InstanceKey> = Vec::new();
+    while let Some(&k) = handles.instances.get(&format!("{prefix}_{}", slots.len())) {
+        slots.push(k);
+    }
+    slots
+}
+
+/// Skin an ordered pool of reserved instance slots onto a stream of per-item
+/// transforms: fill the slots in order from `xforms`, then collapse every
+/// leftover slot to zero scale (invisible). Transforms beyond the pool size are
+/// dropped (the pool caps how many items draw at once). Shared by the
+/// goo-ellipsoid and projectile-tracer movers — a pure read of the snapshot.
+fn skin_pool(slots: &[InstanceKey], mut xforms: impl Iterator<Item = Mat4>) -> Vec<(InstanceKey, Mat4)> {
+    slots.iter().map(|&slot| (slot, xforms.next().unwrap_or_else(|| Mat4::from_scale(Vec3::ZERO)))).collect()
 }
 
 /// Join the scene's named lights (emissive prims + conceptual point lights)

@@ -225,7 +225,7 @@ impl Viewer {
         self.game.push(Command::Click { ray: PickRay { origin, dir }, ground });
     }
 
-    /// RMB → Command::Shoot (hitscan along the pick ray).
+    /// RMB → Command::Shoot (fires a projectile along the pick ray).
     pub fn shoot_command(&mut self, win: Vec2) {
         if !self.game.has_player {
             return;

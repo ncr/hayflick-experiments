@@ -23,7 +23,7 @@ use house_game::{DoorSpec, LevelSpec, LightKind, LightSpec, TargetSpec};
 use rt_probe::{hex_linear, Config, Scene};
 
 /// Greybox wall height — the kit wallHeight (280 cm = 2.1875 wu). Distinct
-/// from the hitscan occluder band (`house_game::game::WALL_H` = 2.56) — the
+/// from the projectile occluder band (`house_game::game::WALL_H` = 2.56) — the
 /// visual wall can be shorter than the shoot band without changing gameplay.
 pub const WALL_TOP: f32 = 2.1875;
 /// Door leaf height — the kit door height (220 cm = 1.71875 wu).
@@ -180,7 +180,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // ---- wall targets: a pale backing plate flush on the wall + a bright red
     // disc-ish box just proud of it (greybox: a small square reads as a target
     // under the iso pixel grid). The disc face sits AT the wall plane so the
-    // hitscan tie (wall face vs disc) does not occlude — matching shoot_system.
+    // projectile-sweep tie (wall face vs disc) does not occlude — matching projectile_system.
     for tg in &spec.targets {
         place_target(&mut scene, tg);
     }
@@ -222,10 +222,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // geometry and keep their goldens byte-identical. Skipped entirely when the
     // SDF composite is on (Metal renders goo screen-space, no triangles needed).
     if !spec.mobs.is_empty() && !goo_sdf_enabled() {
-        for i in 0..goo_pool_size() {
-            let first = scene.add_sphere_local(GOO_SPHERE_RINGS, GOO_SPHERE_SECTORS, GOO_BASE_COLOR, GOO_EMISSIVE, 0.3);
-            scene.register_dynamic(&format!("goo_slot_{i}"), first, 1, Mat4::from_scale(Vec3::ZERO));
-        }
+        register_sphere_pool(&mut scene, "goo_slot", goo_pool_size(), GOO_SPHERE_RINGS, GOO_SPHERE_SECTORS, GOO_BASE_COLOR, GOO_EMISSIVE, 0.3);
     }
 
     // ---- projectile tracer pool: PROJ-cap emissive spheres as named dynamics
@@ -236,10 +233,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // geometry and stay byte-identical. Local-space dynamics (after
     // recompute_bounds), excluded from NEE/probe-bake like the goo pool.
     if !spec.mobs.is_empty() {
-        for i in 0..proj_pool_size() {
-            let first = scene.add_sphere_local(PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, PROJ_BASE_COLOR, PROJ_EMISSIVE, 0.4);
-            scene.register_dynamic(&format!("proj_slot_{i}"), first, 1, Mat4::from_scale(Vec3::ZERO));
-        }
+        register_sphere_pool(&mut scene, "proj_slot", proj_pool_size(), PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, PROJ_BASE_COLOR, PROJ_EMISSIVE, 0.4);
     }
 
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat
@@ -317,11 +311,11 @@ const FACE_DEPTH: f32 = STAIR; // 0.0625 wu box thickness along the wall normal
 
 /// A wall target: a pale backing plate flush on the wall, then a smaller bright
 /// disc box just proud of it along the inward normal. Both faces are sized to
-/// stair-step multiples (invariant #8) — the analytic `TargetDisc` the game
-/// hitscan uses keeps the spec's `center`/`radius`, so snapping the *rendered*
-/// greybox to the lattice does not move the hitbox. The disc's back face sits
-/// at the wall plane (`center` is on the inner wall face), so the hitscan tie
-/// (wall slab vs disc) does NOT block — exactly the shoot_system contract.
+/// stair-step multiples (invariant #8) — the analytic `TargetDisc` the game's
+/// projectile sweep uses keeps the spec's `center`/`radius`, so snapping the
+/// *rendered* greybox to the lattice does not move the hitbox. The disc's back
+/// face sits at the wall plane (`center` is on the inner wall face), so the tie
+/// (wall slab vs disc) does NOT block — exactly the projectile_system contract.
 fn place_target(scene: &mut Scene, tg: &TargetSpec) {
     let n = tg.normal;
     let c = tg.center;
@@ -339,7 +333,7 @@ fn place_target(scene: &mut Scene, tg: &TargetSpec) {
     let (plo, phi) = face_box(PLATE_HALF, FACE_DEPTH);
     scene.add_box_world(plo, phi, hex_linear(TARGET_RING), [0.0; 4], 0.9, 0.0);
     // red disc proud of the plate: back face AT the wall plane (= center, so the
-    // hitscan tie does not occlude), front face two stair-steps into the room.
+    // projectile-sweep tie does not occlude), front face two stair-steps into the room.
     let (dlo, dhi) = face_box(DISC_HALF, FACE_DEPTH * 2.0);
     scene.add_box_world(dlo, dhi, hex_linear(TARGET_COLOR), [0.0; 4], 0.7, 0.0);
 }
@@ -422,6 +416,18 @@ fn place_trap_ring(scene: &mut Scene, cx: f32, cz: f32, r: f32) {
     // emissive ring is EXCLUDED from the NEE light scan + frozen probe bake — it
     // glows to camera without being named as a game light.
     scene.register_dynamic(&format!("trap_ring_{cx}_{cz}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
+}
+
+/// Register a pool of `count` named LOCAL-space emissive spheres ("<prefix>_0",
+/// "<prefix>_1", …) as zero-scale dynamic instances — the reserved slots the
+/// adapter skins onto live blobs / projectiles each frame. Shared by the goo
+/// ellipsoid pool and the projectile tracer pool (same instance-mover path,
+/// different tessellation / colours / radius).
+fn register_sphere_pool(scene: &mut Scene, prefix: &str, count: usize, rings: u32, sectors: u32, base: [f32; 4], emissive: [f32; 4], radius: f32) {
+    for i in 0..count {
+        let first = scene.add_sphere_local(rings, sectors, base, emissive, radius);
+        scene.register_dynamic(&format!("{prefix}_{i}"), first, 1, Mat4::from_scale(Vec3::ZERO));
+    }
 }
 
 /// The per-frame world transform of a door leaf at swing `angle` (radians):
