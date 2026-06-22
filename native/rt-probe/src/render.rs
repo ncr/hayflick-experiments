@@ -166,7 +166,7 @@ pub struct SceneHandles {
 /// slot count, the shade-dispatch `light_count + n_active` arithmetic, and
 /// the probe-bake exclusion (the bake uses bare `light_count`) generalize
 /// TOGETHER — an off-by-one leaks a moving spotlight into the frozen GI.
-pub const N_RESERVED: usize = 2;
+pub const N_RESERVED: usize = 16;
 
 /// A transient/held spotlight (player flashlight, muzzle flash) — replaces
 /// the raw `[f32; 12]` slot writes the viewer used to hand-build.
@@ -177,17 +177,33 @@ pub struct Spotlight {
     pub cone_cos: f32, // cos of the outer half-angle
     pub power: f32,    // packed slot radiance (the viewer maps its knob via ×1500)
     pub radius: f32,   // emitter radius (wu); tiny → huge radiance for a visible pool
+    pub tint: [f32; 3], // rgb multiplier on `power` (flashlight = warm white)
 }
+
+/// The flashlight/muzzle warm white (1.0 / 0.97 / 0.88) — the historical tint,
+/// used as the default so existing call sites are unchanged.
+pub const SPOT_WARM: [f32; 3] = [1.0, 0.97, 0.88];
 
 impl Spotlight {
     /// Pack into the NEE light record shade.comp expects. `dir.w = 2.0` marks
     /// the spotlight cone path (color.w = cos outer half-angle, soft edge over
-    /// the outer 40%); the rgb carries the warm white the flashlight always
-    /// used (1.0 / 0.97 / 0.88 of `power`).
+    /// the outer 40%); the rgb is `power × tint` (warm white for the flashlight,
+    /// fluorescent green for goo emitters).
     pub fn pack(&self) -> [f32; 12] {
         let c = self.power;
-        [self.pos.x, self.pos.y, self.pos.z, self.radius, c, c * 0.97, c * 0.88, self.cone_cos, self.dir.x, self.dir.y, self.dir.z, 2.0]
+        [self.pos.x, self.pos.y, self.pos.z, self.radius, c * self.tint[0], c * self.tint[1], c * self.tint[2], self.cone_cos, self.dir.x, self.dir.y, self.dir.z, 2.0]
     }
+}
+
+/// One goo metaball: world-space centre + radius (16 B, `packed` as `[f32; 4]`
+/// so it uploads byte-for-byte to a Metal `float4` — xyz = centre, w = radius).
+/// The screen-space goo composite pass raymarches the smooth `smin` union of
+/// these into a translucent fluorescent isosurface. Presentation-only.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GooBall {
+    pub center: [f32; 3],
+    pub radius: f32,
 }
 
 /// Everything the game/viewer hands the renderer for one frame. Consumed by
@@ -207,6 +223,9 @@ pub struct FrameState<'a> {
     pub spotlights: &'a [Spotlight],
     /// Mover transforms — patched into inst_buf; any change rebuilds the TLAS.
     pub instances: &'a [(InstanceKey, Mat4)],
+    /// Goo metaballs for the screen-space SDF composite pass (Metal). Empty when
+    /// no goo is visible; the Vulkan backend ignores it (triangle-pool fallback).
+    pub goo: &'a [GooBall],
 }
 
 /// CPU half of the NEE light-list build, factored out of `SceneGpu::build` so
@@ -912,7 +931,7 @@ mod tests {
         let c = flash_power * 1500.0;
         let cone_cos = flash_cone.to_radians().cos();
         let rec = [pos.x, pos.y, pos.z, 0.06, c, c * 0.97, c * 0.88, cone_cos, dir.x, dir.y, dir.z, 2.0];
-        let sp = Spotlight { pos, dir, cone_cos, power: c, radius: 0.06 };
+        let sp = Spotlight { pos, dir, cone_cos, power: c, radius: 0.06, tint: SPOT_WARM };
         assert_eq!(sp.pack(), rec);
         assert_eq!(sp.pack()[11], 2.0);
     }
@@ -928,10 +947,10 @@ mod tests {
         let flash_idx = 2;
         let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2 + N_RESERVED];
         let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, tex_index: -1, _pad: 0 }];
-        let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06 };
+        let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06, tint: SPOT_WARM };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: &[] };
         let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs);
         assert_eq!(n, 1);
         // an unaddressed slot keeps its previous values (light 0 holds base);

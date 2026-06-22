@@ -30,6 +30,36 @@ pub const WALL_TOP: f32 = 2.1875;
 pub const DOOR_LEAF_H: f32 = 1.71875;
 /// Wall half-thickness (kit 32 cm = 0.25 wu wall).
 const WALL_HT: f32 = 0.125;
+
+/// Goo sphere tessellation (coarse — read as soft lumps under the low-res grid).
+const GOO_SPHERE_RINGS: u32 = 8;
+const GOO_SPHERE_SECTORS: u32 = 12;
+/// Trap floor-ring color (hazard magenta), emissive so it glows. Linear.
+const GOO_TRAP_EMISSIVE: [f32; 4] = [4.0, 0.5, 5.0, 1.0];
+/// Near-black green body so unlit silhouette stays dark; the emissive carries
+/// the glow. Linear RGBA.
+const GOO_BASE_COLOR: [f32; 4] = [0.03, 0.10, 0.04, 1.0];
+/// Fluorescent radioactive-green emission (green-biased, bloomed by the tone
+/// stack). Magnitudes are on the renderer's emissive scale (screens emit ~10-17),
+/// so the blob self-glows and blooms. Linear; alpha left 1.0 (reserved for a
+/// future goo-id/IOR encode).
+const GOO_EMISSIVE: [f32; 4] = [1.3, 6.5, 2.0, 1.0];
+
+/// Reserved ellipsoid pool size: the live-blob cap × goo particles. Honors the
+/// renderer constraint `live_cap × particles ≤ pool` by construction. Used by
+/// the Vulkan fallback path (the Metal path renders goo via the SDF composite
+/// pass and needs no triangle pool).
+pub fn goo_pool_size() -> usize {
+    house_game::GOO_LIVE_CAP * house_game::GOO_PARTICLES
+}
+
+/// Whether the smooth translucent SDF goo composite is enabled (default on).
+/// When on, the goo renders via the Metal screen-space metaball pass and NO
+/// triangle sphere pool is built; set `GOO_SDF=0` for the opaque-sphere
+/// fallback (the only goo path on Vulkan). Both backends read this flag.
+pub fn goo_sdf_enabled() -> bool {
+    std::env::var("GOO_SDF").map(|v| v != "0").unwrap_or(true)
+}
 /// Floor slab top (kit floorThickness 6 cm).
 const FLOOR_TOP: f32 = 6.0 / 128.0;
 
@@ -69,7 +99,9 @@ const CORRIDOR_FLOOR: u32 = 0xd8d4cc;
 /// level (home / hospital / office / factory, via `floorplan::enclose`). Future
 /// generated scenes join here.
 pub fn is_dollhouse(scene: &str) -> bool {
-    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory")
+    // "playground" joins so the rectangular auto-perimeter is skipped — it
+    // provides its OWN far-edge walls as static_solids (open near the camera).
+    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground")
 }
 
 /// Build the greybox game scene from the spec. Returns the scene; the caller
@@ -162,6 +194,32 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     let pidx = scene.add_box_local(house_game::game::PLAYER_HALF, 1.3, house_game::game::PLAYER_HALF, [0.82, 0.84, 0.88, 1.0], [0.0; 4]);
     scene.dynamic_prim = Some(pidx);
 
+    // ---- goo blob ellipsoid pool: GOO_LIVE_CAP × 4 emissive unit spheres as
+    // named dynamic instances ("goo_slot_N"). The adapter skins them onto the
+    // live blobs' spine nodes each frame (translate · scale); unused slots
+    // collapse to zero scale (invisible). Like the door leaves and player
+    // marker, these are LOCAL-space dynamics added after recompute_bounds, so
+    // their geometry never stretches the world AABB. Fluorescent radioactive
+    // green: near-black base, strong green-biased emissive (camera sees it
+    // directly; movers are excluded from NEE so it self-glows without lighting
+    // the room — the documented v1 limitation).
+    // gated on authored mobs so mob-free scenes (game / cave / …) add no goo
+    // geometry and keep their goldens byte-identical. Skipped entirely when the
+    // SDF composite is on (Metal renders goo screen-space, no triangles needed).
+    if !spec.mobs.is_empty() && !goo_sdf_enabled() {
+        for i in 0..goo_pool_size() {
+            let first = scene.add_sphere_local(GOO_SPHERE_RINGS, GOO_SPHERE_SECTORS, GOO_BASE_COLOR, GOO_EMISSIVE, 0.3);
+            scene.register_dynamic(&format!("goo_slot_{i}"), first, 1, Mat4::from_scale(Vec3::ZERO));
+        }
+    }
+
+    // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat
+    // emissive annulus (outer square minus inner square as four thin bars) reads
+    // as a ring under the iso grid; the magenta glow contrasts the green goo.
+    for tr in &spec.traps {
+        place_trap_ring(&mut scene, tr.pos.x, tr.pos.z, 0.55);
+    }
+
     // collision is the game's job; the scene only needs floor_rect + solids for
     // the playerless camera paths and the legacy mirror — but for the game the
     // GameLoop builds its Level straight from the spec, so these stay the
@@ -174,7 +232,9 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // LIFTED sky fill (void outside the walls reads bright, not black). The cave
     // is a DUNGEON — a dimmer sky fill sinks the void into shadow so the lamp-lit
     // chambers pop, with a touch more mist for depth between the rooms.
-    scene.lighting = if cfg.scene == "cave" {
+    scene.lighting = if cfg.scene == "playground" {
+        [0.0, 9.0, 0.0, 0.5] // open studio stage: bright even sky fill, no fog
+    } else if cfg.scene == "cave" {
         [0.0, 2.2, 0.26, 0.45]
     } else if dollhouse {
         // open street / daylit floor plan, not a dungeon: a brighter sky fill
@@ -310,6 +370,29 @@ fn place_door(scene: &mut Scene, d: &DoorSpec) {
         "door {:?}: leaf footprint {recon:?} != closed_solid {s:?}",
         d.id
     );
+}
+
+/// A glowing trap ring on the floor centred at (cx, cz), outer half-extent `r`.
+/// Four thin emissive bars form a square annulus (a hazard ring) just above the
+/// floor. Magenta emissive so it glows and reads distinct from the green goo.
+fn place_trap_ring(scene: &mut Scene, cx: f32, cz: f32, r: f32) {
+    let y0 = FLOOR_TOP + 0.001;
+    let y1 = FLOOR_TOP + 0.06;
+    let t = 0.0625; // bar thickness (one iso stair step)
+    let bars = [
+        [cx - r, cz - r, cx + r, cz - r + t], // north
+        [cx - r, cz + r - t, cx + r, cz + r], // south
+        [cx - r, cz - r, cx - r + t, cz + r], // west
+        [cx + r - t, cz - r, cx + r, cz + r], // east
+    ];
+    let first = scene.primitives.len();
+    for b in bars {
+        scene.add_box_world(Vec3::new(b[0], y0, b[1]), Vec3::new(b[2], y1, b[3]), [0.2, 0.05, 0.25, 1.0], GOO_TRAP_EMISSIVE, 0.4, 0.0);
+    }
+    // register as a static dynamic run (identity transform, never patched) so the
+    // emissive ring is EXCLUDED from the NEE light scan + frozen probe bake — it
+    // glows to camera without being named as a game light.
+    scene.register_dynamic(&format!("trap_ring_{cx}_{cz}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
 }
 
 /// The per-frame world transform of a door leaf at swing `angle` (radians):

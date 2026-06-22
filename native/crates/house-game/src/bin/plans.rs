@@ -127,7 +127,7 @@ pub fn assemble(rooms: &[Rect], corridors: &[Rect], services: &[Rect], doors: Ve
     let lights = (0..n_lit as u32)
         .map(|i| LightSpec { id: LightId(i), room: RoomId(i), kind: LightKind::Incandescent, base_rgb: [1.0, 0.96, 0.9], name: format!("plan_lamp_{i}") })
         .collect();
-    LevelSpec { rooms: out, static_solids: Vec::new(), doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, player_start: start, seed }
+    LevelSpec { rooms: out, static_solids: Vec::new(), doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, mobs: Vec::new(), traps: Vec::new(), player_start: start, seed }
 }
 
 // --------------------------------------------------------------- metrics ---

@@ -98,6 +98,11 @@ impl Viewer {
         // LevelSpec; the three legacy scenes (grid/lab/house) stay in build_scene.
         let game_spec: Option<house_game::LevelSpec> = match cfg.scene.as_str() {
             "game" => Some(house_game::game_level()),
+            // the goo-mob demo: the five-room house populated with crawling,
+            // splittable fluorescent blobs (same geometry as `game`).
+            "goo" => Some(house_game::goo_level()),
+            // a clean open stage for goo authoring (far walls only).
+            "playground" => Some(house_game::playground_level()),
             "village" => Some(house_game::village_level(cfg.game.cave_seed)),
             // Floor-plan-derived levels: a believable PLAN (rooms + doors) run
             // through `floorplan::enclose` to synthesize walls + collision. Each
@@ -323,7 +328,12 @@ impl Viewer {
         // snapshot publishes (flashlight/muzzle ride the reserved spot slots;
         // the player + door leaves render at their lattice-snapped transforms;
         // record_frame patches + rebuilds only on an actual change).
-        let spot = self.frame_spotlights();
+        let mut spot = self.frame_spotlights();
+        // append one real RT light per goo blob (reserved NEE slots) → the goo
+        // lights the scene and casts shadows. Capped to the reserved headroom.
+        let goo_lights = self.game.goo_lights();
+        let room = rt_probe::N_RESERVED.saturating_sub(spot.len());
+        spot.extend(goo_lights.into_iter().take(room));
         let mut instances: Vec<(InstanceKey, Mat4)> = Vec::new();
         if self.game.has_player {
             if let Some(&k) = self.backend.handles().instances.get("player") {
@@ -331,6 +341,8 @@ impl Viewer {
             }
         }
         instances.extend(self.game.door_instances());
+        instances.extend(self.game.goo_instances());
+        let goo = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
         let fs = FrameState {
@@ -340,6 +352,7 @@ impl Viewer {
             light_emission: &emission,
             spotlights: spot.as_slice(),
             instances: &instances,
+            goo: &goo,
         };
 
         // ESC tune-menu + score HUD overlay (panel/hamburger), copied onto the

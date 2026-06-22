@@ -250,13 +250,13 @@ impl Viewer {
             let (pos, dir) = flashlight_pose(snap.player_pos, snap.facing);
             // the NEE solid angle of an r=0.06 emitter is tiny (~3e-3 sr at
             // 2 wu) — slot radiance must be huge for a visible pool
-            v.push(Spotlight { pos, dir, cone_cos: self.flash_cone.to_radians().cos(), power: self.flash_power * 1500.0, radius: 0.06 });
+            v.push(Spotlight { pos, dir, cone_cos: self.flash_cone.to_radians().cos(), power: self.flash_power * 1500.0, radius: 0.06, tint: rt_probe::render::SPOT_WARM });
         }
         if snap.muzzle_flash {
             // brief wide warm burst at the muzzle (placeholder content values;
             // the content stage owns the final look)
             let (pos, dir) = flashlight_pose(snap.player_pos, snap.facing);
-            v.push(Spotlight { pos, dir, cone_cos: 60.0f32.to_radians().cos(), power: 6000.0, radius: 0.05 });
+            v.push(Spotlight { pos, dir, cone_cos: 60.0f32.to_radians().cos(), power: 6000.0, radius: 0.05, tint: rt_probe::render::SPOT_WARM });
         }
         v
     }

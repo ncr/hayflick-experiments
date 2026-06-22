@@ -61,7 +61,7 @@ pub use config::{Config, GameCfg, HarnessCfg, RenderCfg, StyleCfg};
 pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx};
 pub use gpu_scene::{bake_bank_emission, InstanceTable, ProbeGrid, PROBE_CAP};
 pub use iso::{clamp_pan, iso_basis, iso_camera_at, render_scale, screen_px_to_world, snap_ground_to_lattice, whole_pixel_step, zoom_anchor_pan, ISO_R};
-pub use render::{make_pool, make_set, push_bytes, roi_push, scan_lights, FrameState, InstanceKey, LightKey, RoiPush, SceneGpu, SceneHandles, ShadePush, Spotlight, N_RESERVED, ROI_OFF, TONE_SPV};
+pub use render::{make_pool, make_set, push_bytes, roi_push, scan_lights, FrameState, GooBall, InstanceKey, LightKey, RoiPush, SceneGpu, SceneHandles, ShadePush, Spotlight, N_RESERVED, ROI_OFF, SPOT_WARM, TONE_SPV};
 pub use iso::project_lowres;
 pub use scene::{hex_linear, Scene};
 pub use scenes::build_scene;

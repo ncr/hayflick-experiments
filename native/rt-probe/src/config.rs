@@ -311,7 +311,7 @@ impl Config {
                 cave_loops: i("CAVE_LOOPS", 3).max(0) as u32,
                 cave_thick: s("CAVE_WALLS").map(|v| v == "rock" || v == "thick").unwrap_or(false),
                 minimap: b("MINIMAP", matches!(scene.as_str(), "village" | "home" | "hospital" | "office" | "factory")),
-                roi: b("CAVE_ROI", matches!(scene.as_str(), "game" | "house" | "cave" | "village" | "home" | "hospital" | "office" | "factory")),
+                roi: b("CAVE_ROI", matches!(scene.as_str(), "game" | "goo" | "house" | "cave" | "village" | "home" | "hospital" | "office" | "factory")),
                 roi_radius: fo("ROI_R").unwrap_or(79.0),
                 roi_falloff: fo("ROI_FALLOFF").unwrap_or(33.0),
                 roi_ghost: fo("ROI_GHOST").unwrap_or(0.85),

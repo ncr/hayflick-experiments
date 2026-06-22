@@ -587,6 +587,41 @@ impl Scene {
         idx
     }
 
+    /// Append a UV sphere of unit radius centred at the LOCAL origin and return
+    /// its primitive index. Kept local (like `add_box_local`) so a TLAS
+    /// instance transform `translate · scale` positions and sizes it per frame
+    /// — used for the goo-blob ellipsoid pool (one sphere skinned onto each
+    /// spine node). Vertex normals are the unit position (smooth shading).
+    pub fn add_sphere_local(&mut self, rings: u32, sectors: u32, color: [f32; 4], emissive: [f32; 4], roughness: f32) -> usize {
+        let material_id = self.materials.len() as i32;
+        self.materials.push(Material { base_color: color, emissive, metallic: 0.0, roughness, tex_index: -1, _pad: 0 });
+        let idx = self.primitives.len();
+        let vbase = self.vertices.len() as u32;
+        let ibase = self.indices.len() as u32;
+        for i in 0..=rings {
+            let phi = std::f32::consts::PI * i as f32 / rings as f32; // 0..π (pole to pole)
+            let (sp, cp) = phi.sin_cos();
+            for j in 0..=sectors {
+                let theta = std::f32::consts::TAU * j as f32 / sectors as f32;
+                let (st, ct) = theta.sin_cos();
+                let n = [sp * ct, cp, sp * st];
+                self.vertices.push(Vertex { pos: n, nrm: n, uv: [j as f32 / sectors as f32, i as f32 / rings as f32] });
+            }
+        }
+        let stride = sectors + 1;
+        for i in 0..rings {
+            for j in 0..sectors {
+                let a = i * stride + j;
+                let b = a + stride;
+                self.indices.extend_from_slice(&[a, a + 1, b, a + 1, b + 1, b]);
+            }
+        }
+        let vcount = (rings + 1) * (sectors + 1);
+        let icount = self.indices.len() as u32 - ibase;
+        self.primitives.push(Primitive { vertex_offset: vbase, index_offset: ibase, vertex_count: vcount, index_count: icount, material_id });
+        idx
+    }
+
     /// Append an axis-aligned box in WORLD space spanning `[min, max]` with the
     /// given material (static, identity instance). Used for emissive practicals
     /// (bulbs, sconces, screens) and any quick blockout geometry.

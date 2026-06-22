@@ -17,6 +17,12 @@ pub struct LightId(pub u32);
 pub struct TargetId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ItemId(pub u32);
+/// Stable id for an NPC mob. Authored ids come from the spec; runtime-spawned
+/// children (a goo blob splitting when shot) draw from a seeded monotonic
+/// counter that starts above every authored id, so the two never collide and
+/// iteration stays id-sorted regardless of archetype layout.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct MobId(pub u32);
 
 /// What a world item restores when consumed. `Food` → hunger, `Battery` →
 /// flashlight battery. Copy + Eq so it rides in `GameEvent` (which derives
@@ -131,6 +137,28 @@ pub struct LightSpec {
     pub name: String,
 }
 
+/// An authored NPC mob spawn: a gooey, splittable fluorescent blob crawling on
+/// the floor. `tier` sizes it (0 = Large, 1 = Medium, 2 = Small); `pos` is the
+/// world-XZ centre it spawns at (y is the floor — the blob hugs the ground).
+#[derive(Clone, Copy, Debug)]
+pub struct MobSpec {
+    pub id: MobId,
+    pub tier: u8,
+    pub pos: Vec3,
+}
+
+/// A goo trap: a floor emitter that exerts an inverse-square gravitational pull
+/// on nearby goo blobs (their particles AND their spine anchors, so the whole
+/// creature gets dragged in if it strays within `radius`). `strength` scales
+/// the pull; `radius` (wu) is the capture range outside which the trap is inert.
+#[derive(Clone, Copy, Debug)]
+pub struct TrapSpec {
+    pub id: u32,
+    pub pos: Vec3,
+    pub strength: f32,
+    pub radius: f32,
+}
+
 /// A shootable wall disc.
 #[derive(Clone, Debug)]
 pub struct TargetSpec {
@@ -156,6 +184,13 @@ pub struct LevelSpec {
     /// Survival tuning. `None` = survival OFF: no needs/inventory/item
     /// components spawn, nothing new enters state_hash or the snapshot.
     pub survival: Option<SurvivalParams>,
+    /// Authored NPC mobs (goo blobs). EMPTY on the existing levels so they stay
+    /// byte-identical: an empty `mobs` spawns no Goo entities, and the
+    /// mob block is skipped in state_hash/snapshot (same discipline as items).
+    pub mobs: Vec<MobSpec>,
+    /// Goo traps (floor gravity emitters). EMPTY on the existing levels. Read by
+    /// `goo_system` to pull nearby blobs; rendered as glowing floor rings.
+    pub traps: Vec<TrapSpec>,
     pub player_start: Vec3,
     pub seed: u64,
 }
@@ -213,6 +248,8 @@ pub fn fixture() -> LevelSpec {
         ],
         items: vec![],     // survival off → no pickups
         survival: None,    // survival off → fixture hashes exactly as before
+        mobs: vec![],      // no mobs → fixture hashes exactly as before
+        traps: vec![],
         player_start: Vec3::new(-3.5, 0.0, 0.0),
         seed: 42,
     }
@@ -301,8 +338,66 @@ pub fn game_level() -> LevelSpec {
         ],
         items: vec![],     // survival off → game_level hashes exactly as before
         survival: None,    // (survival_level() below is the opt-in sandbox)
+        mobs: vec![],      // no mobs → game_level hashes exactly as before (goo_level() is the demo)
+        traps: vec![],
         player_start: Vec3::new(9.5, 0.0, 6.5), // room E (SE corner, faces the camera), aligned with door_ce's gap row
         seed: 7,
+    }
+}
+
+/// The goo-mob demo level: the SAME five-room house geometry as [`game_level`]
+/// (collision world + renderer scene identical), but populated with a few
+/// fluorescent goo blobs to crawl, jiggle, and split when shot. This is the
+/// `SCENE=goo` content; `game_level()` and `fixture()` stay mob-free and
+/// hash-stable. Blobs spawn on open room floors (away from the 0.125 walls).
+pub fn goo_level() -> LevelSpec {
+    LevelSpec {
+        mobs: vec![
+            // a Large in the entry hall (room A), two more across the house, and
+            // one Large in room E in clear line-of-sight of the player spawn
+            // (9.5, 6.5) so a shot can reach it without crossing a wall.
+            MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(2.0, 0.0, 4.0) },
+            MobSpec { id: MobId(1), tier: 0, pos: Vec3::new(6.0, 0.0, 2.0) },
+            MobSpec { id: MobId(2), tier: 1, pos: Vec3::new(10.0, 0.0, 2.0) },
+            MobSpec { id: MobId(3), tier: 0, pos: Vec3::new(8.7, 0.0, 5.2) },
+        ],
+        traps: vec![
+            // a trap in the open centre of room E: it gently drags the room-E
+            // Large across the floor and pools the fluid onto the ring (a soft
+            // pull so the two-lobe dumbbell survives while it's dragged in).
+            TrapSpec { id: 0, pos: Vec3::new(9.2, 0.0, 4.3), strength: 1.2, radius: 2.5 },
+        ],
+        ..game_level()
+    }
+}
+
+/// A clean goo PLAYGROUND: one large flat plane with walls ONLY on the two far
+/// edges (−x / −z, which project to the top/back of the iso view), so nothing
+/// near the camera obscures the goo. A handful of blobs of mixed tiers and a
+/// trap sit on the open floor for unobstructed observation. Not hash-stable /
+/// not tested — a free authoring stage (`SCENE=playground`).
+pub fn playground_level() -> LevelSpec {
+    LevelSpec {
+        // far edges (−x/−z, top of view) close to the action as a backdrop;
+        // the floor opens out toward the camera (+x/+z) for the "large plane".
+        rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-3.0, -3.0, 9.0, 9.0] }],
+        static_solids: vec![
+            [-3.0, -3.0, 9.0, -2.75], // north (far) wall
+            [-3.0, -3.0, -2.75, 9.0], // west (far) wall
+        ],
+        doors: vec![],
+        lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "play_lamp".into() }],
+        targets: vec![],
+        mobs: vec![
+            MobSpec { id: MobId(0), tier: 1, pos: Vec3::new(-2.1, 0.0, -1.2) },
+            MobSpec { id: MobId(1), tier: 1, pos: Vec3::new(1.5, 0.0, -1.6) },
+            MobSpec { id: MobId(2), tier: 1, pos: Vec3::new(-1.7, 0.0, 0.9) },
+            MobSpec { id: MobId(3), tier: 1, pos: Vec3::new(1.6, 0.0, 0.7) },
+            MobSpec { id: MobId(4), tier: 1, pos: Vec3::new(-0.2, 0.0, 1.4) },
+        ],
+        traps: vec![TrapSpec { id: 0, pos: Vec3::new(0.1, 0.0, -0.2), strength: 1.4, radius: 4.0 }],
+        player_start: Vec3::new(-0.5, 0.0, -0.5),
+        ..game_level()
     }
 }
 

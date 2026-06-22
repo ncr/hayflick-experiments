@@ -205,6 +205,8 @@ mod tests {
             targets: vec![],
             items: vec![],
             survival: None,
+            mobs: vec![],
+            traps: vec![],
             player_start: Vec3::ZERO,
             seed: 0,
         };

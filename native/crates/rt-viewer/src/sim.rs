@@ -56,6 +56,10 @@ pub struct GameLoop {
     /// Per door: the leaf instance handle + hinge/axis for the swing transform.
     /// Empty for the interim mirror scenes (no doors); populated for SCENE=game.
     pub doors: Vec<DoorRender>,
+    /// Reserved goo-blob ellipsoid pool handles ("goo_slot_N", in slot order).
+    /// Empty unless the scene authored a goo pool (SCENE=goo). The adapter skins
+    /// these onto the snapshot's live blob spine nodes each frame.
+    pub goo_slots: Vec<InstanceKey>,
 }
 
 impl GameLoop {
@@ -90,7 +94,13 @@ impl GameLoop {
 
     /// Shared construction: seed the game from Config (DIRECT pre-tick state
     /// writes — world setup, not play), snapshot, and wire follow-cam.
-    fn assemble(spec: LevelSpec, scene: &Scene, _handles: &SceneHandles, light_keys: Vec<(LightKey, LightKind, [f32; 3])>, doors: Vec<DoorRender>, cfg: &Config) -> GameLoop {
+    fn assemble(spec: LevelSpec, scene: &Scene, handles: &SceneHandles, light_keys: Vec<(LightKey, LightKind, [f32; 3])>, doors: Vec<DoorRender>, cfg: &Config) -> GameLoop {
+        // discover the reserved goo ellipsoid pool ("goo_slot_0", "goo_slot_1",
+        // …) in slot order — empty when the scene authored no pool.
+        let mut goo_slots: Vec<InstanceKey> = Vec::new();
+        while let Some(&k) = handles.instances.get(&format!("goo_slot_{}", goo_slots.len())) {
+            goo_slots.push(k);
+        }
         let mut sim: HouseGame<NullSink> = HouseGame::new(&spec, NullSink);
         // ---- Config seeding: DIRECT pre-tick state writes (world setup, not
         // play), then re-derive. Flashlight boot state, the camera quarter
@@ -120,6 +130,7 @@ impl GameLoop {
             follow_cam: has_player && cfg.scene != "grid",
             light_keys,
             doors,
+            goo_slots,
         }
     }
 
@@ -246,6 +257,91 @@ impl GameLoop {
             .collect()
     }
 
+    /// Per-frame goo blob instances: skin one emissive ellipsoid onto each live
+    /// blob's spine nodes (translate · scale, with a head→tail size falloff for
+    /// a teardrop body that rests on the floor), then collapse every unused pool
+    /// slot to zero scale (invisible). Presentation-only — a pure read of the
+    /// snapshot's hashed spine; nothing here feeds back into the sim.
+    pub fn goo_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let mut out: Vec<(InstanceKey, Mat4)> = Vec::with_capacity(self.goo_slots.len());
+        let mut slot = 0usize;
+        for m in &self.snap.mobs {
+            for part in &m.parts {
+                if slot >= self.goo_slots.len() {
+                    break;
+                }
+                let xform = Mat4::from_translation(Vec3::new(part.x, part.y, part.z)) * Mat4::from_scale(Vec3::splat(m.part_radius));
+                out.push((self.goo_slots[slot], xform));
+                slot += 1;
+            }
+        }
+        while slot < self.goo_slots.len() {
+            out.push((self.goo_slots[slot], Mat4::from_scale(Vec3::ZERO)));
+            slot += 1;
+        }
+        out
+    }
+
+    /// This frame's goo metaballs for the screen-space SDF composite. Each blob
+    /// contributes TWO big lobe balls at its spine ends (the reliable dumbbell
+    /// structure — two concentrations joined by a thin `smin` waist with an
+    /// empty middle) plus a particle ball per goo particle for the organic
+    /// lumpy surface that wobbles/deforms. Centres sit at the flattened resting
+    /// height (`floor + radius·squash`) so the shader's vertical squash + floor
+    /// clamp settle each lump flat on the ground. Pure read of the hashed field.
+    pub fn goo_balls(&self) -> Vec<rt_probe::GooBall> {
+        const SQUASH: f32 = 0.45; // must match metal_backend::GOO_SQUASH
+        const FLOOR: f32 = 6.0 / 128.0; // must match metal_backend::GOO_FLOOR_Y
+        let mut out = Vec::new();
+        for m in &self.snap.mobs {
+            // one metaball per fluid particle — the solved fluid distribution IS
+            // the surface (two lobes + thin waist emerge from the sim itself).
+            let pr = m.part_radius;
+            let y = FLOOR + pr * SQUASH;
+            for p in &m.parts {
+                out.push(rt_probe::GooBall { center: [p.x, y, p.z], radius: pr });
+            }
+        }
+        out
+    }
+
+    /// One real RT light per live blob (streamed into reserved NEE slots), so
+    /// the goo genuinely illuminates the scene and casts ray-traced shadows. A
+    /// wide downward green cone sitting just above each blob's centroid: it
+    /// pools green light on the floor around the body and — via the shade pass's
+    /// per-light shadow rays — the player pillar, walls, and (with the goo proxy
+    /// geometry) the blobs themselves cast real shadows. Presentation-only:
+    /// a pure read of the snapshot, never baked into the static GI probes.
+    pub fn goo_lights(&self) -> Vec<rt_probe::Spotlight> {
+        const LIFT: f32 = 0.40; // light height above the floor (wu)
+        let mut out = Vec::with_capacity(self.snap.mobs.len());
+        for m in &self.snap.mobs {
+            if m.parts.is_empty() {
+                continue;
+            }
+            let mut cx = 0.0f32;
+            let mut cz = 0.0f32;
+            for p in &m.parts {
+                cx += p.x;
+                cz += p.z;
+            }
+            let n = m.parts.len() as f32;
+            let centroid = Vec3::new(cx / n, LIFT, cz / n);
+            // bigger blobs glow a touch brighter / wider; radius drives the soft
+            // shadow penumbra (Phase B reads posRad.w as the area-light radius).
+            let power = 9.0 + 3.0 * m.radius;
+            out.push(rt_probe::Spotlight {
+                pos: centroid,
+                dir: Vec3::new(0.0, -1.0, 0.0),
+                cone_cos: (115.0f32).to_radians().cos(), // wide downward pool
+                power,
+                radius: (m.radius * 0.8).max(0.25),
+                tint: [0.32, 1.0, 0.5], // fluorescent radioactive green
+            });
+        }
+        out
+    }
+
     /// Sim time for `FrameState.time` — ticks, never the wall clock.
     pub fn time(&self) -> f32 {
         self.tick.0 as f32 * TICK_DT
@@ -346,6 +442,8 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
         targets: Vec::new(),
         items: Vec::new(), // survival is per-level opt-in; the mirror spec leaves it off
         survival: None,
+        mobs: Vec::new(), // mobs are authored per-level; the mirror scenes have none
+        traps: Vec::new(),
         player_start: scene.player_start,
         seed: 42,
     }
