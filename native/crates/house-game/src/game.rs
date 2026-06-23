@@ -267,9 +267,13 @@ pub struct Res {
     /// Set when this tick queued a projectile spawn/despawn, so the post-flush
     /// `rebuild_projectiles` runs only when the set actually changed.
     projectiles_dirty: bool,
-    /// Goo traps (floor gravity emitters): (xz position, strength, radius).
-    /// Static for the level's life; read by `goo_system` to pull blobs.
-    pub traps: Vec<(Vec2, f32, f32)>,
+    /// Goo traps (floor gravity emitters): (xz position, strength, radius,
+    /// off_tick). Read by `goo_system` to pull blobs; a trap with a non-zero
+    /// `off_tick` goes inert once `cur_tick` reaches it (a timed hazard pulse).
+    pub traps: Vec<(Vec2, f32, f32, u32)>,
+    /// Current sim tick, mirrored each `tick()` so `trap_accel` (a `&self`
+    /// reader) can expire timed traps without threading the tick everywhere.
+    pub cur_tick: u64,
     /// Cached PBF rest density (kernel-calibrated; see `goo_rho0`).
     pub goo_rho0: f32,
 }
@@ -399,7 +403,8 @@ impl<S: AudioSink> HouseGame<S> {
             mobs_dirty: false,
             next_projectile_id: 0,
             projectiles_dirty: false,
-            traps: spec.traps.iter().map(|t| (Vec2::new(t.pos.x, t.pos.z), t.strength, t.radius)).collect(),
+            traps: spec.traps.iter().map(|t| (Vec2::new(t.pos.x, t.pos.z), t.strength, t.radius, t.off_tick)).collect(),
+            cur_tick: 0,
             goo_rho0: goo_rho0(),
         };
 
@@ -903,6 +908,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
 
     fn tick(&mut self, t: Tick, cmds: &[Command]) {
         let sim_t = t.0 as f32 * TICK_DT;
+        self.res.cur_tick = t.0; // for timed-trap expiry in trap_accel
         self.resolve_commands(cmds);
         self.door_system();
         self.walk_system();
@@ -960,10 +966,66 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     // render size follows the (smoothly ramped) spine length, so a
                     // just-merged blob grows into its new tier instead of popping.
                     // Identical to goo_tier_radius(tier) for a settled blob.
-                    let r = g.body_len / GOO_BODY_FRAC;
+                    // tension (the birth push) shrinks the drawn size in lockstep
+                    // with the fluid footprint, so she visibly balls up then swells
+                    // back — identical factor to goo_system's g_scale shrink.
+                    let tense = goo_tension(g.tier, g.spawn_timer, g.birth_glow);
+                    let r = g.body_len / GOO_BODY_FRAC * (1.0 - GOO_TENSE_SHRINK * tense);
                     let pr = r * GOO_PART_RADIUS_FRAC;
-                    let parts = g.parts.map(|p| Vec3::new(p.x, pr, p.y));
-                    MobRender { id: g.id, tier: g.tier, parts, radius: r, part_radius: pr }
+                    // jelly shake (render-side): anisotropically squash the cloud
+                    // about its centroid along the tear axis — stretch along it,
+                    // pinch across it (volume-ish kept) — by the decaying wobble.
+                    // The incompressible fluid can't flex this fast, so the crisp
+                    // visible quiver lives here; it reads as the body wobbling.
+                    let wob = goo_wobble_render(g.wobble_amp, g.wobble_phase);
+                    let parts = if wob != 0.0 && g.wobble_dir != glam::Vec2::ZERO {
+                        let c = g.centroid();
+                        let d = g.wobble_dir;
+                        let sa = 1.0 + wob * GOO_WOBBLE_RENDER; // along the tear axis
+                        let sp = 1.0 - 0.5 * wob * GOO_WOBBLE_RENDER; // across it
+                        g.parts.map(|p| {
+                            let rel = p - c;
+                            let al = rel.dot(d);
+                            let across = rel - d * al;
+                            let q = c + d * (al * sa) + across * sp;
+                            Vec3::new(q.x, pr, q.y)
+                        })
+                    } else {
+                        g.parts.map(|p| Vec3::new(p.x, pr, p.y))
+                    };
+                    // birth-glow: only while a mother gestates (spawn_dir set and
+                    // inside the gestation window). It swells 0→1 toward birth and
+                    // is concentrated at the bud site, falling off over the body —
+                    // so the colour change is localised "around the particle".
+                    let mut glow = [0.0f32; GOO_PARTICLES];
+                    let strength = if g.birth_glow > 0 {
+                        // AFTERGLOW: hold the bud colour at full while the mini
+                        // peels off (GOO_BIRTH_HOLD), then smoothstep back to green
+                        // over the rest — a gentle revert rather than an abrupt cut.
+                        let elapsed = GOO_BIRTH_FADE - g.birth_glow; // 0 → GOO_BIRTH_FADE
+                        if elapsed < GOO_BIRTH_HOLD {
+                            1.0
+                        } else {
+                            let u = (elapsed - GOO_BIRTH_HOLD) as f32 / (GOO_BIRTH_FADE - GOO_BIRTH_HOLD) as f32;
+                            1.0 - u * u * (3.0 - 2.0 * u)
+                        }
+                    } else if g.spawn_timer <= GOO_GESTATE_TICKS {
+                        // GESTATION: ramp 0→1 toward birth, sqrt-eased for a build.
+                        (1.0 - g.spawn_timer as f32 / GOO_GESTATE_TICKS as f32).sqrt()
+                    } else {
+                        0.0
+                    };
+                    if strength > 0.0 && g.spawn_dir != glam::Vec2::ZERO {
+                        let c = g.centroid();
+                        let mr = goo_tier_radius(g.tier);
+                        let site = c + g.spawn_dir * mr;
+                        let falloff = mr * 0.95; // tight around the bud so the vivid tint reads as the birth PLACE, not the whole body
+                        for k in 0..GOO_PARTICLES {
+                            let prox = (1.0 - (g.parts[k] - site).length() / falloff).clamp(0.0, 1.0);
+                            glow[k] = strength * prox;
+                        }
+                    }
+                    MobRender { id: g.id, tier: g.tier, parts, radius: r, part_radius: pr, glow }
                 })
                 .collect(),
             // projectiles in flight (ProjectileId-sorted) — empty when idle.
@@ -1052,6 +1114,9 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     h.f32(g.parts[k].x).f32(g.parts[k].y).f32(g.vel[k].x).f32(g.vel[k].y);
                 }
                 h.f32(g.heading.x).f32(g.heading.y).u64(g.gait_phase as u64).u64(g.merge_grace as u64).u64(g.fusing as u64).f32(g.fuse_pt.x).f32(g.fuse_pt.y);
+                h.u64(g.spawn_timer as u64).f32(g.spawn_dir.x).f32(g.spawn_dir.y).u64(g.birth_glow as u64).u64(g.birth_immune as u64);
+                h.u64(g.tether as u64).f32(g.tether_anchor.x).f32(g.tether_anchor.y).u64(g.tear_ticks as u64);
+                h.f32(g.wobble_amp).f32(g.wobble_dir.x).f32(g.wobble_dir.y).u64(g.wobble_phase as u64);
             }
         }
         // Projectiles block — ProjectileId-sorted, folded ONLY while shots are in
@@ -2037,7 +2102,7 @@ mod tests {
             MobSpec { id: MobId(0), tier: 1, pos: Vec3::new(4.0, 0.0, 3.0) },
             MobSpec { id: MobId(1), tier: 1, pos: Vec3::new(4.4, 0.0, 3.0) },
         ];
-        spec.traps = vec![TrapSpec { id: 0, pos: Vec3::new(4.2, 0.0, 3.0), strength: 2.0, radius: 3.0 }];
+        spec.traps = vec![TrapSpec { id: 0, pos: Vec3::new(4.2, 0.0, 3.0), strength: 2.0, radius: 3.0, off_tick: 0 }];
         spec
     }
 

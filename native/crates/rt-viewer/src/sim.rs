@@ -129,7 +129,7 @@ impl GameLoop {
             snap,
             held: [false; 4],
             has_player,
-            follow_cam: has_player && cfg.scene != "grid",
+            follow_cam: has_player && cfg.scene != "grid" && cfg.scene != "goofloor" && cfg.scene != "goonursery",
             light_keys,
             doors,
             goo_slots,
@@ -286,20 +286,22 @@ impl GameLoop {
     /// lumpy surface that wobbles/deforms. Centres sit at the flattened resting
     /// height (`floor + radius·squash`) so the shader's vertical squash + floor
     /// clamp settle each lump flat on the ground. Pure read of the hashed field.
-    pub fn goo_balls(&self) -> Vec<rt_probe::GooBall> {
-        const SQUASH: f32 = 0.45; // must match metal_backend::GOO_SQUASH
+    pub fn goo_balls(&self) -> (Vec<rt_probe::GooBall>, Vec<f32>) {
+        const SQUASH: f32 = 0.74; // must match metal_backend::GOO_SQUASH
         const FLOOR: f32 = 6.0 / 128.0; // must match metal_backend::GOO_FLOOR_Y
         let mut out = Vec::new();
+        let mut glow = Vec::new(); // PARALLEL to `out`: per-ball birth-glow 0..1
         for m in &self.snap.mobs {
             // one metaball per fluid particle — the solved fluid distribution IS
             // the surface (two lobes + thin waist emerge from the sim itself).
             let pr = m.part_radius;
             let y = FLOOR + pr * SQUASH;
-            for p in &m.parts {
+            for (p, &gl) in m.parts.iter().zip(m.glow.iter()) {
                 out.push(rt_probe::GooBall { center: [p.x, y, p.z], radius: pr });
+                glow.push(gl);
             }
         }
-        out
+        (out, glow)
     }
 
     /// One real RT light per live blob (streamed into reserved NEE slots), so

@@ -33,7 +33,7 @@ pub use cave::{cave_level, cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE};
 pub use flicker::flicker;
 pub use game::{Battery, Command, DoorState, FlashPose, GameEvent, GameSnapshot, Goo, GooState, HouseGame, Hunger, Inventory, MobRender, NeedKind, PickRay, Res, WorldItem, GOO_LIVE_CAP, GOO_PARTICLES, TICK_DT};
 pub use lab::{first_tick_of, run_scenario, Metrics, Policy, Scenario, ScenarioReport};
-pub use spec::{fixture, game_level, goo_level, playground_level, shooting_range_level, survival_level, DoorId, DoorSpec, ItemId, ItemKind, ItemSpec, LevelSpec, LightId, LightKind, LightSpec, MobId, MobSpec, RoomId, RoomSpec, SurvivalParams, TargetId, TargetSpec, TrapSpec, SURVIVAL_DEFAULT};
+pub use spec::{fixture, game_level, goo_level, goofloor_level, goonursery_level, playground_level, shooting_range_level, survival_level, DoorId, DoorSpec, ItemId, ItemKind, ItemSpec, LevelSpec, LightId, LightKind, LightSpec, MobId, MobSpec, RoomId, RoomSpec, SurvivalParams, TargetId, TargetSpec, TrapSpec, SURVIVAL_DEFAULT};
 pub use trace::parse_trace;
 pub use village::village_level;
 

@@ -103,6 +103,10 @@ impl Viewer {
             "goo" => Some(house_game::goo_level()),
             // a clean open stage for goo authoring (far walls only).
             "playground" => Some(house_game::playground_level()),
+            // a bare playerless floor — the simplest goo filming stage (no
+            // pillar, no walls, fixed camera).
+            "goofloor" => Some(house_game::goofloor_level()),
+            "goonursery" => Some(house_game::goonursery_level()),
             // the physical-projectile shooting range (lane + discs + goo targets).
             "range" => Some(house_game::shooting_range_level()),
             "village" => Some(house_game::village_level(cfg.game.cave_seed)),
@@ -337,15 +341,25 @@ impl Viewer {
         let room = rt_probe::N_RESERVED.saturating_sub(spot.len());
         spot.extend(goo_lights.into_iter().take(room));
         let mut instances: Vec<(InstanceKey, Mat4)> = Vec::new();
+        // SCENE=goofloor hides the player marker: the sim still has a player (so
+        // it can lure the goo via seek + drive the directed walk) but the marker
+        // renders invisible — collapsed to a zero-scale point — for a clean bare
+        // floor with no pillar. (Skipping the push entirely would leave the
+        // dynamic prim at its identity transform = a box at the origin.)
         if self.game.has_player {
             if let Some(&k) = self.backend.handles().instances.get("player") {
-                instances.push((k, Mat4::from_translation(self.game.snap.player_pos)));
+                let m = if self.cfg.scene == "goofloor" || self.cfg.scene == "goonursery" {
+                    Mat4::from_scale(glam::Vec3::ZERO)
+                } else {
+                    Mat4::from_translation(self.game.snap.player_pos)
+                };
+                instances.push((k, m));
             }
         }
         instances.extend(self.game.door_instances());
         instances.extend(self.game.goo_instances());
         instances.extend(self.game.projectile_instances());
-        let goo = self.game.goo_balls();
+        let (goo, goo_glow) = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
         let fs = FrameState {
@@ -356,6 +370,7 @@ impl Viewer {
             spotlights: spot.as_slice(),
             instances: &instances,
             goo: &goo,
+            goo_glow: &goo_glow,
         };
 
         // ESC tune-menu + score HUD overlay (panel/hamburger), copied onto the

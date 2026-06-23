@@ -162,6 +162,10 @@ pub struct TrapSpec {
     pub pos: Vec3,
     pub strength: f32,
     pub radius: f32,
+    /// Sim tick at which the trap goes permanently inert (0 = never expires).
+    /// A timed hazard: e.g. a pulse that gathers blobs into a merge and then
+    /// releases, so the survivor is free to crawl off instead of being held.
+    pub off_tick: u32,
 }
 
 /// A shootable wall disc.
@@ -370,7 +374,7 @@ pub fn goo_level() -> LevelSpec {
             // a trap in the open centre of room E: it gently drags the room-E
             // Large across the floor and pools the fluid onto the ring (a soft
             // pull so the two-lobe dumbbell survives while it's dragged in).
-            TrapSpec { id: 0, pos: Vec3::new(9.2, 0.0, 4.3), strength: 1.2, radius: 2.5 },
+            TrapSpec { id: 0, pos: Vec3::new(9.2, 0.0, 4.3), strength: 1.2, radius: 2.5, off_tick: 0 },
         ],
         ..game_level()
     }
@@ -400,8 +404,67 @@ pub fn playground_level() -> LevelSpec {
             MobSpec { id: MobId(3), tier: 1, pos: Vec3::new(1.6, 0.0, 0.7) },
             MobSpec { id: MobId(4), tier: 1, pos: Vec3::new(-0.2, 0.0, 1.4) },
         ],
-        traps: vec![TrapSpec { id: 0, pos: Vec3::new(0.1, 0.0, -0.2), strength: 1.4, radius: 4.0 }],
+        traps: vec![TrapSpec { id: 0, pos: Vec3::new(0.1, 0.0, -0.2), strength: 1.4, radius: 4.0, off_tick: 0 }],
         player_start: Vec3::new(-0.5, 0.0, -0.5),
+        ..game_level()
+    }
+}
+
+/// A bare open floor with NO player marker (`SCENE=goofloor`): the simplest
+/// possible stage for filming goo. No walls, no pillar — just a big lit plane
+/// and the blobs. Because there is no player, the camera is fixed (no follow)
+/// and nothing solid sits in the goo's way, so two blobs can actually MERGE and
+/// the survivor can crawl freely. A central TIMED trap pulls the pair together
+/// into a fuse, then expires; an offset trap out in +x then walks the survivor
+/// across the open plane. Not hash-stable / not a golden — a free movie stage.
+pub fn goofloor_level() -> LevelSpec {
+    LevelSpec {
+        // one large plane, centred on the origin, opening out in every direction
+        rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-8.0, -8.0, 12.0, 12.0] }],
+        static_solids: vec![], // NO walls
+        doors: vec![],
+        lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "floor_lamp".into() }],
+        targets: vec![],
+        // two blobs a z apart; a central timed trap holds + fuses them on the
+        // left until it expires (~t180). The trace then walks the INVISIBLE
+        // player marker (hidden in this scene) in as a lure: the merged goo seeks
+        // it and the trace leads it +x across the open plane — a clean, directed
+        // walk (traps can't steer a blob; only the head's seek can).
+        mobs: vec![
+            MobSpec { id: MobId(0), tier: 1, pos: Vec3::new(-2.0, 0.0, -1.0) },
+            MobSpec { id: MobId(1), tier: 1, pos: Vec3::new(-2.0, 0.0, 1.0) },
+        ],
+        traps: vec![TrapSpec { id: 0, pos: Vec3::new(-2.0, 0.0, 0.0), strength: 1.3, radius: 2.6, off_tick: 180 }],
+        player_start: Vec3::new(-2.0, 0.0, 3.0), // invisible lure, parked outside aggro during the merge
+        ..game_level()
+    }
+}
+
+/// A NURSERY stage for the mitosis showcase (`SCENE=goonursery`): a bare lit
+/// floor, no walls, no player marker, and a SINGLE Large (tier-0) mother sat in
+/// the middle. With nothing else around she spontaneously buds off mini goos on
+/// her mitosis clock — each one flashing a hot pink bud site as it forms, then
+/// popping off birth-immune so it crawls clear of her gravity well instead of
+/// being reeled straight back. No trap (a trap would pull the newborns back in),
+/// no lure. Not hash-stable / not a golden — a free movie stage. Edit freely.
+pub fn goonursery_level() -> LevelSpec {
+    LevelSpec {
+        rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-10.0, -10.0, 20.0, 20.0] }],
+        static_solids: vec![], // NO walls
+        doors: vec![],
+        lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "floor_lamp".into() }],
+        targets: vec![],
+        mobs: vec![MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(0.0, 0.0, 0.0) }],
+        // a SMALL central well grips only the slow Large mother's centre so she
+        // stays framed while she buds. Newborn minis are birth-immune to ALL
+        // wells (this trap included) until they leave her influence, so the trap
+        // can't recapture them — it just keeps mom centred. off_tick is far in
+        // the future purely to suppress the floor ring (timed traps draw none).
+        traps: vec![TrapSpec { id: 0, pos: Vec3::new(0.0, 0.0, 0.0), strength: 0.7, radius: 1.0, off_tick: 100_000 }],
+        // the player exists (so has_player → fixed camera path) but is parked far
+        // outside the mother's aggro radius and rendered invisible: she ignores it
+        // and just wanders/buds in place. Keeps the camera from following.
+        player_start: Vec3::new(0.0, 0.0, 8.0),
         ..game_level()
     }
 }

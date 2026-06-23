@@ -56,11 +56,15 @@ struct GooPush {
     emis: [f32; 4],      // emissive rgb, w = glow intensity
     absorb: [f32; 4],    // Beer-Lambert absorption rgb/wu, w = surface alpha
     params: [f32; 4],    // x = smin merge radius k, yzw spare
+    birth_emis: [f32; 4],   // emissive rgb the goo lerps TO at a gestating bud
+    birth_absorb: [f32; 4], // absorption rgb the goo lerps TO at a gestating bud
 }
 
 /// Vertical flatten applied to the goo metaballs so the body lies on the floor
 /// as a spread puddle (must match `GameLoop::goo_balls`' resting-height math).
-const GOO_SQUASH: f32 = 0.45;
+/// Raised toward 1 so the body domes UP into a fatter, more voluminous mound
+/// instead of a thin pancake — the render half of "thicker".
+const GOO_SQUASH: f32 = 0.74;
 /// Floor plane Y (kit floorThickness 6 cm) — the goo's flat underside.
 const GOO_FLOOR_Y: f32 = 6.0 / 128.0;
 /// `smin` merge radius: the smoothness of the dumbbell waist + lump fusing.
@@ -163,6 +167,7 @@ pub struct MetalBackend {
     // goo SDF composite pass (screen-space translucent metaballs)
     goo_pso: ComputePipelineState,
     goo_buf: Buffer,
+    goo_glow_buf: Buffer, // per-ball birth-glow 0..1, parallel to goo_buf
     goo_sdf: bool,
     // goo body proxies in the accel structure: one squashed unit sphere per
     // metaball, mask 0x02 (shadow/AO rays only — invisible to the primary ray,
@@ -418,6 +423,7 @@ impl MetalBackend {
         let goo_lib = device.new_library_with_source(include_str!("shaders_metal/goo.metal"), &opts).map_err(|e| format!("goo.metal: {e}"))?;
         let goo_pso = device.new_compute_pipeline_state_with_function(&goo_lib.get_function("goo_composite", None).unwrap()).map_err(|e| format!("goo pso: {e}"))?;
         let goo_buf = device.new_buffer((GOO_MAX * 16) as u64, MTLResourceOptions::StorageModeShared);
+        let goo_glow_buf = device.new_buffer((GOO_MAX * 4) as u64, MTLResourceOptions::StorageModeShared);
         let goo_sdf = crate::game_scene::goo_sdf_enabled();
 
         let env0 = cfg.lighting_env(scene.lighting);
@@ -454,6 +460,7 @@ impl MetalBackend {
             shade_pso,
             goo_pso,
             goo_buf,
+            goo_glow_buf,
             goo_sdf,
             goo_inst_first,
             goo_proxy_n: GOO_PROXY_CAP,
@@ -700,6 +707,11 @@ impl RenderBackend for MetalBackend {
         let goo_n = fp.fs.goo.len().min(GOO_MAX);
         if self.goo_sdf && goo_n > 0 {
             write_buf(&self.goo_buf, &fp.fs.goo[..goo_n]);
+            // parallel glow slice (same length as goo); guard in case it's empty
+            let gl_n = fp.fs.goo_glow.len().min(goo_n);
+            if gl_n > 0 {
+                write_buf(&self.goo_glow_buf, &fp.fs.goo_glow[..gl_n]);
+            }
         }
         // patch mover instance transforms (player + door leaves) on change
         let mut moved = false;
@@ -812,6 +824,14 @@ impl RenderBackend for MetalBackend {
                     emis: [0.55, 3.3, 1.15, 2.8],
                     absorb: [3.4, 0.42, 2.9, 0.9],
                     params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
+                    // a vivid, molten AMBER-GOLD bud: a saturated warm emissive
+                    // (strong R, healthy G, near-zero B) cranked bright (intensity
+                    // 4.8, up from 3.0) so the birth site glows hot, and a heavy
+                    // green+blue absorption (low R) so the body itself reads a
+                    // saturated orange where it buds — radiant and unmistakably not
+                    // pink, a vibrant contrast against the fluorescent-green goo.
+                    birth_emis: [9.5, 2.0, 0.08, 4.4],
+                    birth_absorb: [0.10, 4.4, 6.0, 0.97],
                 };
                 let genc = cb.new_compute_command_encoder();
                 genc.set_compute_pipeline_state(&self.goo_pso);
@@ -819,6 +839,7 @@ impl RenderBackend for MetalBackend {
                 genc.set_buffer(1, Some(&t.pos), 0);
                 genc.set_buffer(2, Some(&self.goo_buf), 0);
                 genc.set_bytes(3, size_of::<GooPush>() as u64, &gp as *const _ as *const c_void);
+                genc.set_buffer(4, Some(&self.goo_glow_buf), 0);
                 genc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
                 genc.end_encoding();
             }

@@ -27,6 +27,8 @@ struct GooPush {
     float4 emis;     // emissive rgb, w = glow intensity
     float4 absorb;   // absorption rgb (per wu), w = surface alpha
     float4 params;   // x = smin merge radius k; yzw unused
+    float4 birthEmis;   // emissive rgb/intensity lerped TO at a gestating bud
+    float4 birthAbsorb; // absorption rgb lerped TO at a gestating bud
 };
 
 // soft-min: smoothly merges two SDFs so nearby balls fuse into one lump.
@@ -49,6 +51,23 @@ static float goo_sdf(float3 p, device const float4* balls, int n, float k, float
     return max(d, floorY - p.y);
 }
 
+// birth-glow sampled at a world point: a localised, ellipsoid-weighted average
+// of the per-ball glow values (same Y-squash metric as the SDF) so the colour
+// signal concentrates around the budding particles and feathers out over the
+// body. 0 everywhere when nothing is gestating.
+static float goo_glow_at(float3 p, device const float4* balls, device const float* glows, int n, float squash) {
+    float wsum = 1e-4, gsum = 0.0;
+    for (int i = 0; i < n; ++i) {
+        float3 q = p - balls[i].xyz;
+        q.y /= squash;
+        float dn = length(q) / max(balls[i].w, 1e-4); // 0 at centre, ~1 at surface
+        float w = exp(-dn * dn * 2.5);                 // smooth localised falloff
+        wsum += w;
+        gsum += w * glows[i];
+    }
+    return clamp(gsum / wsum, 0.0, 1.0);
+}
+
 static inline float3 goo_normal(float3 p, device const float4* balls, int n, float k, float squash, float floorY) {
     const float e = 0.010;
     float2 h = float2(1.0, -1.0) * 0.5773;
@@ -60,6 +79,7 @@ kernel void goo_composite(
     device const float4* posBuf   [[buffer(1)]], // primary-hit world pos (w = hit flag)
     device const float4* balls    [[buffer(2)]], // metaballs (xyz centre, w radius)
     constant GooPush&    pc        [[buffer(3)]],
+    device const float*  glows    [[buffer(4)]], // per-ball birth-glow 0..1 (parallel to balls)
     uint2 gid [[thread_position_in_grid]])
 {
     int W = pc.dims.x, H = pc.dims.y, N = pc.dims.z;
@@ -112,13 +132,23 @@ kernel void goo_composite(
     float3 nrm = goo_normal(pen, balls, N, k, squash, floorY);
     float fres = pow(clamp(1.0 - max(dot(nrm, -rd), 0.0), 0.0, 1.0), 3.0); // rim
 
-    // Beer–Lambert: the scene colour behind the goo is tinted green by how much
-    // body the ray crossed (thin edges stay clear, thick centres go saturated).
-    float3 trans = exp(-pc.absorb.xyz * thickness);
+    // birth signal: lerp the body's emissive + absorption toward the hot bud
+    // tint by the glow sampled at the surface (localised around the budding
+    // particles). 0 ⇒ the ordinary green goo, unchanged. The sampled field is
+    // boosted so the colour change reads clearly (the smin average dilutes it).
+    float gmix = clamp(goo_glow_at(pen, balls, glows, N, squash) * 1.9, 0.0, 1.0);
+    gmix = smoothstep(0.0, 1.0, gmix);
+    float3 emisC = mix(pc.emis.xyz, pc.birthEmis.xyz, gmix);
+    float emisI = mix(pc.emis.w, pc.birthEmis.w, gmix);
+    float3 absorbC = mix(pc.absorb.xyz, pc.birthAbsorb.xyz, gmix);
+
+    // Beer–Lambert: the scene colour behind the goo is tinted by how much body
+    // the ray crossed (thin edges stay clear, thick centres go saturated).
+    float3 trans = exp(-absorbC * thickness);
     float3 bg = radiance[idx].xyz * trans;
 
     // additive fluorescent glow — brighter through more body and at the rim
-    float3 glow = pc.emis.xyz * pc.emis.w * (0.35 + 1.6 * (1.0 - trans) + 1.1 * fres);
+    float3 glow = emisC * emisI * (0.35 + 1.6 * (1.0 - trans) + 1.1 * fres);
 
     // coverage: full body opaque-ish, but the silhouette edge softens via Fresnel
     float alpha = clamp(pc.absorb.w + 0.5 * fres, 0.0, 1.0);

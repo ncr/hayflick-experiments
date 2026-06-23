@@ -116,7 +116,7 @@ const CORRIDOR_FLOOR: u32 = 0xd8d4cc;
 pub fn is_dollhouse(scene: &str) -> bool {
     // "playground" joins so the rectangular auto-perimeter is skipped — it
     // provides its OWN far-edge walls as static_solids (open near the camera).
-    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground" | "range")
+    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground" | "range" | "goofloor" | "goonursery")
 }
 
 /// Build the greybox game scene from the spec. Returns the scene; the caller
@@ -240,6 +240,12 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // emissive annulus (outer square minus inner square as four thin bars) reads
     // as a ring under the iso grid; the magenta glow contrasts the green goo.
     for tr in &spec.traps {
+        // timed traps (off_tick != 0) are transient pulses, not standing hazards
+        // — they don't get a permanent floor ring (it would linger inert after
+        // the pulse expires).
+        if tr.off_tick != 0 {
+            continue;
+        }
         place_trap_ring(&mut scene, tr.pos.x, tr.pos.z, 0.55);
     }
 
@@ -255,7 +261,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // LIFTED sky fill (void outside the walls reads bright, not black). The cave
     // is a DUNGEON — a dimmer sky fill sinks the void into shadow so the lamp-lit
     // chambers pop, with a touch more mist for depth between the rooms.
-    scene.lighting = if cfg.scene == "playground" || cfg.scene == "range" {
+    scene.lighting = if cfg.scene == "playground" || cfg.scene == "range" || cfg.scene == "goofloor" || cfg.scene == "goonursery" {
         [0.0, 9.0, 0.0, 0.5] // open studio stage: bright even sky fill, no fog
     } else if cfg.scene == "cave" {
         [0.0, 2.2, 0.26, 0.45]

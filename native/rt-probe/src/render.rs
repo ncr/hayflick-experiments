@@ -226,6 +226,11 @@ pub struct FrameState<'a> {
     /// Goo metaballs for the screen-space SDF composite pass (Metal). Empty when
     /// no goo is visible; the Vulkan backend ignores it (triangle-pool fallback).
     pub goo: &'a [GooBall],
+    /// Per-metaball birth-glow 0..1, PARALLEL to `goo` (same length/order). Kept
+    /// in a separate slice so `GooBall` stays a tidy 16 B `float4`; uploaded to
+    /// its own GPU buffer. The shader tints the goo toward a hot birth colour by
+    /// the glow sampled at the surface. Empty ⇒ no glow (shader reads 0).
+    pub goo_glow: &'a [f32],
 }
 
 /// CPU half of the NEE light-list build, factored out of `SceneGpu::build` so
@@ -950,7 +955,7 @@ mod tests {
         let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06, tint: SPOT_WARM };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: &[], goo_glow: &[] };
         let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs);
         assert_eq!(n, 1);
         // an unaddressed slot keeps its previous values (light 0 holds base);
