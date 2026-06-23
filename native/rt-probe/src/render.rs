@@ -246,7 +246,7 @@ pub struct LightScan {
     pub light_link: Vec<(i32, [f32; 3], bool)>,
     pub names: BTreeMap<String, LightKey>,
     pub light_count: u32,
-    pub flash_idx: usize, // first reserved slot (== light_count)
+    pub reserved_slot_start: usize, // first reserved slot (== light_count)
 }
 
 pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
@@ -314,7 +314,9 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
         } else {
             (Vec3::ZERO, 0.0) // closed/mixed shape (boxes): isotropic
         };
-        println!("  NEE light: pos ({:.1},{:.1},{:.1}) r {:.2} rgb ({:.1},{:.1},{:.1}) focus {:.2} -> {}", c.x, c.y, c.z, r, e[0], e[1], e[2], focus, if df > 0.0 { "directional" } else { "isotropic" });
+        // one-time scene-load diagnostic → stderr, consistent with the other
+        // rt-probe load diagnostics (this is the NEE-slot scan goo lights share).
+        eprintln!("  NEE light: pos ({:.1},{:.1},{:.1}) r {:.2} rgb ({:.1},{:.1},{:.1}) focus {:.2} -> {}", c.x, c.y, c.z, r, e[0], e[1], e[2], focus, if df > 0.0 { "directional" } else { "isotropic" });
         slot_of_prim.push((i, lights.len() as u32));
         lights.push([c.x, c.y, c.z, r, e[0], e[1], e[2], 0.0, nd.x, nd.y, nd.z, df]);
     }
@@ -347,11 +349,11 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
     // light that moves must stay direct-only. The shade dispatch passes
     // light_count + n_active. (Also keeps the binding valid in scenes with
     // zero real lights.)
-    let flash_idx = lights.len();
+    let reserved_slot_start = lights.len();
     for _ in 0..N_RESERVED {
         lights.push([0.0; 12]);
     }
-    Ok(LightScan { lights, light_link, names, light_count, flash_idx })
+    Ok(LightScan { lights, light_link, names, light_count, reserved_slot_start })
 }
 
 
@@ -446,7 +448,7 @@ pub struct SceneGpu {
     pub light_count: u32,
     /// Index of the reserved flashlight slot in `lights_cpu` (== light_count;
     /// past the probe bake's light range, so the frozen cache never sees it).
-    pub flash_idx: usize,
+    pub reserved_slot_start: usize,
     // per-frame light streaming (record_frame): CPU shadows of lbuf/mbuf, the
     // per-light link (material id or -1, base rgb, screen flag), and the
     // persistent host-visible staging buffers for the per-frame copies
@@ -507,7 +509,7 @@ impl SceneGpu {
 
         // ---- NEE light list (scan factored into `scan_lights` — slot order
         // pinned by CPU tests) + the scene's name → handle joins
-        let LightScan { lights, light_link, names: light_names, light_count, flash_idx } = scan_lights(scene)?;
+        let LightScan { lights, light_link, names: light_names, light_count, reserved_slot_start } = scan_lights(scene)?;
         // TRANSFER_DST so record_frame can stream the per-frame light state in
         let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
@@ -648,7 +650,7 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, flash_idx, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
     }
 
     /// Patch the movable player's instance transform (legacy per-field API —
@@ -691,7 +693,7 @@ impl SceneGpu {
     /// dispatch). Caller must hold the in-flight fence: this writes
     /// host-visible memory the GPU reads.
     pub unsafe fn record_frame(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, fs: &FrameState<'_>) {
-        self.n_spot_active = frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, self.flash_idx, fs);
+        self.n_spot_active = frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, self.reserved_slot_start, fs);
         for &(key, m) in fs.instances {
             self.set_instance_transform(ctx, key, m);
         }
@@ -727,7 +729,14 @@ impl SceneGpu {
 /// that names no lights renders constants. Returns the number of active
 /// spotlights — the shade dispatch adds it to `light_count`; the probe bake
 /// never sees these slots.
-pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], bool)], flash_idx: usize, fs: &FrameState<'_>) -> u32 {
+///
+/// DETERMINISM: both passes write FIXED indexed slots — each `(LightKey, rgb)`
+/// updates `lights_cpu[key]` and each spotlight `s` writes
+/// `lights_cpu[reserved_slot_start + s]` — so the result is independent of the
+/// emission order and of how many goo lights packed into the reserved region.
+/// The goo lights share these reserved slots (flashlight + up to GOO_LIVE_CAP),
+/// capped to `N_RESERVED` by the assert below.
+pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], bool)], reserved_slot_start: usize, fs: &FrameState<'_>) -> u32 {
     for &(key, rgb) in fs.light_emission {
         let li = key.0 as usize;
         assert!(li < light_link.len(), "light_emission key {li} past light_count {}", light_link.len());
@@ -741,7 +750,7 @@ pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Mat
     }
     assert!(fs.spotlights.len() <= N_RESERVED, "{} spotlights > N_RESERVED {N_RESERVED}", fs.spotlights.len());
     for s in 0..N_RESERVED {
-        lights_cpu[flash_idx + s] = fs.spotlights.get(s).map(|sp| sp.pack()).unwrap_or([0.0; 12]);
+        lights_cpu[reserved_slot_start + s] = fs.spotlights.get(s).map(|sp| sp.pack()).unwrap_or([0.0; 12]);
     }
     fs.spotlights.len() as u32
 }
@@ -890,7 +899,7 @@ mod tests {
         s.name_point_light("mmm_point", 0);
         let scan = scan_lights(&s).unwrap();
         assert_eq!(scan.light_count, 3); // 2 emissive prims + 1 point light; dynamic skipped
-        assert_eq!(scan.flash_idx, 3);
+        assert_eq!(scan.reserved_slot_start, 3);
         assert_eq!(scan.lights.len(), 3 + N_RESERVED); // reserved slots appended, zeroed
         assert_eq!(scan.lights[3], [0.0; 12]);
         assert_eq!(scan.lights[4], [0.0; 12]);
@@ -949,14 +958,14 @@ mod tests {
     fn record_frame_cpu_half_mutates_lights_without_vulkan() {
         // two real lights (slot 0 material-linked) + the reserved slots
         let light_link = vec![(0i32, [8.0f32, 5.0, 2.0], false), (-1, [3.0, 4.0, 5.0], false)];
-        let flash_idx = 2;
+        let reserved_slot_start = 2;
         let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2 + N_RESERVED];
         let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, tex_index: -1, _pad: 0 }];
         let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06, tint: SPOT_WARM };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
         let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: &[], goo_glow: &[] };
-        let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs);
+        let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs);
         assert_eq!(n, 1);
         // an unaddressed slot keeps its previous values (light 0 holds base);
         // the linked material is untouched too — emission is game-authored,
@@ -968,16 +977,16 @@ mod tests {
         // position/radius/dir of real lights untouched by the whole pass
         assert_eq!(&lights[0][0..4], &[1.0, 2.0, 3.0, 0.5]);
         // spotlight packed into the first reserved slot, the rest zeroed
-        assert_eq!(lights[flash_idx], sp.pack());
-        assert_eq!(lights[flash_idx + 1], [0.0; 12]);
+        assert_eq!(lights[reserved_slot_start], sp.pack());
+        assert_eq!(lights[reserved_slot_start + 1], [0.0; 12]);
         // next frame without the spotlight: the slot zeroes again
         let fs2 = FrameState { spotlights: &[], ..fs };
-        assert_eq!(frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs2), 0);
-        assert_eq!(lights[flash_idx], [0.0; 12]);
+        assert_eq!(frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs2), 0);
+        assert_eq!(lights[reserved_slot_start], [0.0; 12]);
         // a material-linked override drives the fixture's emissive with it
         let emis2 = [(LightKey(0), [0.1f32, 0.2, 0.3])];
         let fs3 = FrameState { light_emission: &emis2, ..fs2 };
-        frame_lights_cpu(&mut lights, &mut mats, &light_link, flash_idx, &fs3);
+        frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs3);
         assert_eq!(&lights[0][4..7], &[0.1, 0.2, 0.3]);
         assert_eq!(mats[0].emissive, [0.1, 0.2, 0.3, 1.0]);
         assert_eq!(&lights[1][4..7], &[0.5, 0.6, 0.7], "stays at its last value");

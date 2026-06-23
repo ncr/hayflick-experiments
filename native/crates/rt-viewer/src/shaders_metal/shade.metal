@@ -42,6 +42,9 @@ struct Push {
 constant float PI    = 3.14159265;
 constant float TWOPI = 6.2831853;
 constant float TIE   = 1.0 / 64.0;
+// Goo emitters (dir.w == 2) wider than this disc radius get the soft 12-tap area
+// shadow; smaller/non-goo lights keep the original single-tap hard test.
+constant float GOO_SHADOW_MIN_RADIUS = 0.15;
 
 // 4x4 ordered-Bayer threshold in [0,1) — byte-identical twin of shade.comp's
 // bayer4 (same matrix, same shift) so the dithered reveal matches Vulkan.
@@ -429,7 +432,7 @@ kernel void shade(
         // goo emitters (spotlight path, big disc) get soft area shadows; every
         // OTHER light keeps the original single-tap hard test VERBATIM, so the
         // codegen for golden scenes is byte-identical.
-        if (lt.dir.w == 2.0 && lt.posRad.w > 0.15) {
+        if (lt.dir.w == 2.0 && lt.posRad.w > GOO_SHADOW_MIN_RADIUS) {
             float vis = softVis(p, lt.posRad.xyz, lt.posRad.w, accel);
             if (vis > 0.0) {
                 col += c * vis;

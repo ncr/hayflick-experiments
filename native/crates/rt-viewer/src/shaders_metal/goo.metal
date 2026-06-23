@@ -18,6 +18,15 @@ using namespace metal;
 
 constant float TIE = 1.0 / 64.0; // pixel-centre tie bias (matches shade.metal)
 
+// Additive fluorescent-glow look knobs (presentation only). The glow brightens
+// with body thickness and toward the Fresnel rim:
+//   glow = emis * (BASE + THICKNESS·(1-trans) + RIM·fresnel)
+constant float GOO_GLOW_BASE = 0.35;      // ambient glow floor
+constant float GOO_GLOW_THICKNESS = 1.6;  // extra glow through more body
+constant float GOO_GLOW_RIM = 1.1;        // extra glow at the grazing rim
+constant float GOO_GLOW_FALLOFF = 2.5;    // birth-glow sample localisation
+constant float GOO_BIRTH_TINT_BOOST = 1.9; // birth-glow → tint mix gain
+
 struct GooPush {
     float4 camRight; // xyz basis, w = ortho half-width
     float4 camUp;    // xyz basis, w = ortho half-height
@@ -61,7 +70,7 @@ static float goo_glow_at(float3 p, device const float4* balls, device const floa
         float3 q = p - balls[i].xyz;
         q.y /= squash;
         float dn = length(q) / max(balls[i].w, 1e-4); // 0 at centre, ~1 at surface
-        float w = exp(-dn * dn * 2.5);                 // smooth localised falloff
+        float w = exp(-dn * dn * GOO_GLOW_FALLOFF);    // smooth localised falloff
         wsum += w;
         gsum += w * glows[i];
     }
@@ -136,7 +145,7 @@ kernel void goo_composite(
     // tint by the glow sampled at the surface (localised around the budding
     // particles). 0 ⇒ the ordinary green goo, unchanged. The sampled field is
     // boosted so the colour change reads clearly (the smin average dilutes it).
-    float gmix = clamp(goo_glow_at(pen, balls, glows, N, squash) * 1.9, 0.0, 1.0);
+    float gmix = clamp(goo_glow_at(pen, balls, glows, N, squash) * GOO_BIRTH_TINT_BOOST, 0.0, 1.0);
     gmix = smoothstep(0.0, 1.0, gmix);
     float3 emisC = mix(pc.emis.xyz, pc.birthEmis.xyz, gmix);
     float emisI = mix(pc.emis.w, pc.birthEmis.w, gmix);
@@ -148,7 +157,7 @@ kernel void goo_composite(
     float3 bg = radiance[idx].xyz * trans;
 
     // additive fluorescent glow — brighter through more body and at the rim
-    float3 glow = emisC * emisI * (0.35 + 1.6 * (1.0 - trans) + 1.1 * fres);
+    float3 glow = emisC * emisI * (GOO_GLOW_BASE + GOO_GLOW_THICKNESS * (1.0 - trans) + GOO_GLOW_RIM * fres);
 
     // coverage: full body opaque-ish, but the silhouette edge softens via Fresnel
     float alpha = clamp(pc.absorb.w + 0.5 * fres, 0.0, 1.0);

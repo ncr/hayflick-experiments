@@ -14,6 +14,7 @@
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
 use crate::backend::{build_tone_push, FramePresent, RenderBackend};
+use crate::sim::{GOO_FLOOR_Y, GOO_SQUASH};
 use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec2, Vec3};
 use metal::*;
@@ -60,13 +61,9 @@ struct GooPush {
     birth_absorb: [f32; 4], // absorption rgb the goo lerps TO at a gestating bud
 }
 
-/// Vertical flatten applied to the goo metaballs so the body lies on the floor
-/// as a spread puddle (must match `GameLoop::goo_balls`' resting-height math).
-/// Raised toward 1 so the body domes UP into a fatter, more voluminous mound
-/// instead of a thin pancake — the render half of "thicker".
-const GOO_SQUASH: f32 = 0.74;
-/// Floor plane Y (kit floorThickness 6 cm) — the goo's flat underside.
-const GOO_FLOOR_Y: f32 = 6.0 / 128.0;
+// The goo resting-height constants (`GOO_SQUASH`, `GOO_FLOOR_Y`) are owned by
+// `crate::sim` (the single source of truth shared with the CPU ball placement)
+// and imported here — see the import near the top of this file.
 /// `smin` merge radius: the smoothness of the dumbbell waist + lump fusing.
 const GOO_SMIN_K: f32 = 0.14;
 
@@ -79,13 +76,32 @@ const GOO_MAX: usize = 512;
 /// so the cast shadow matches the visible silhouette.
 const GOO_PROXY_CAP: usize = 480;
 const GOO_PROXY_SCALE: f32 = 1.35;
+/// Where an INACTIVE shadow proxy parks: far below the scene (see
+/// `goo_proxy_parked` for why this distance + a tiny scale + mask 0x00).
+const GOO_PROXY_PARK_Y: f32 = -1000.0;
+/// Coarse tessellation of the unit shadow-proxy sphere — it only casts
+/// shadows/AO (never seen by the primary ray), so a low-poly ball is plenty.
+const GOO_PROXY_SPHERE_RINGS: usize = 8;
+const GOO_PROXY_SPHERE_SECTORS: usize = 12;
+
+/// Goo body look fed to `goo.metal` (Beer–Lambert translucent composite):
+/// `GOO_EMIS` is emissive rgb + w glow intensity; `GOO_ABSORB` is absorption
+/// rgb per wu + w surface alpha.
+const GOO_EMIS: [f32; 4] = [0.55, 3.3, 1.15, 2.8];
+const GOO_ABSORB: [f32; 4] = [3.4, 0.42, 2.9, 0.9];
+/// A gestating bud lerps the look toward a vivid, molten AMBER-GOLD: a saturated
+/// warm emissive cranked bright so the birth site glows hot, plus heavy green +
+/// blue absorption (low R) so the body reads a radiant orange where it buds — an
+/// unmistakable warm contrast against the fluorescent-green goo (never pink).
+const GOO_BIRTH_EMIS: [f32; 4] = [9.5, 2.0, 0.08, 4.4];
+const GOO_BIRTH_ABSORB: [f32; 4] = [0.10, 4.4, 6.0, 0.97];
 
 /// Where an INACTIVE proxy parks: far below the scene, clustered into one
 /// distant BVH node that no scene/bake ray traverses — so the reserved slots
 /// never perturb traversal numerics on mob-free scenes (mask 0x00 also culls
 /// them; this keeps the spatial structure clean too). Tiny, not zero, scale.
 fn goo_proxy_parked() -> [[f32; 3]; 4] {
-    to_packed(Mat4::from_translation(Vec3::new(0.0, -1000.0, 0.0)) * Mat4::from_scale(Vec3::splat(1e-3)))
+    to_packed(Mat4::from_translation(Vec3::new(0.0, GOO_PROXY_PARK_Y, 0.0)) * Mat4::from_scale(Vec3::splat(1e-3)))
 }
 
 /// A unit UV sphere (radius 1, origin-centred) as `(Vertex, u32)` — the source
@@ -187,7 +203,7 @@ pub struct MetalBackend {
     mats_cpu: Vec<Material>,
     light_link: Vec<(i32, [f32; 3], bool)>,
     light_count: u32,
-    flash_idx: usize,
+    reserved_slot_start: usize,
     n_spot_active: u32,
     // movers
     dyn_insts: Vec<(u32, u32)>,
@@ -259,6 +275,10 @@ impl MetalBackend {
     pub unsafe fn new(window: Option<&Window>, scene: &Scene, cfg: &Config) -> Result<MetalBackend, Box<dyn std::error::Error>> {
         assert_eq!(size_of::<Vertex>(), 32, "Vertex must be 32 B (packed_float3 layout)");
         assert_eq!(size_of::<Material>(), 48, "Material must be 48 B");
+        // GooPush is uploaded raw to goo.metal's matching `GooPush` (set_bytes):
+        // 10 float4/int4 rows = 160 B. If a field is added on one side only this
+        // fires before the shader silently reads garbage. Keep both in lockstep.
+        assert_eq!(size_of::<GooPush>(), 160, "GooPush must be 160 B (matches goo.metal GooPush)");
 
         let device = Device::system_default().ok_or("no Metal device")?;
         println!("device: {} (raytracing: {})", device.name(), device.supports_raytracing());
@@ -270,7 +290,7 @@ impl MetalBackend {
         let ibuf = make_buf(&device, &scene.indices);
         let gbuf = make_buf(&device, &scene.geom_infos());
         let mbuf = make_buf(&device, &scene.materials);
-        let LightScan { lights, light_link, names: light_names, light_count, flash_idx } = scan_lights(scene)?;
+        let LightScan { lights, light_link, names: light_names, light_count, reserved_slot_start } = scan_lights(scene)?;
         let lbuf = make_buf(&device, &lights);
         let lights_cpu = lights.clone();
         let mats_cpu = scene.materials.clone();
@@ -329,7 +349,7 @@ impl MetalBackend {
         // ---- goo shadow-proxy BLAS (Phase C): one unit sphere, instanced once
         // per metaball each frame. Index == nprim (appended past the per-prim
         // BLASes), referenced by the reserved goo instances below.
-        let (goo_sv, goo_si) = unit_sphere_mesh(8, 12);
+        let (goo_sv, goo_si) = unit_sphere_mesh(GOO_PROXY_SPHERE_RINGS, GOO_PROXY_SPHERE_SECTORS);
         let goo_sphere_vbuf = make_buf(&device, &goo_sv);
         let goo_sphere_ibuf = make_buf(&device, &goo_si);
         let goo_blas_index = blas_list.len() as u32;
@@ -475,7 +495,7 @@ impl MetalBackend {
             mats_cpu,
             light_link,
             light_count,
-            flash_idx,
+            reserved_slot_start,
             n_spot_active: 0,
             dyn_insts,
             dyn_shadow,
@@ -700,7 +720,7 @@ impl RenderBackend for MetalBackend {
 
     unsafe fn render_present(&mut self, fp: &FramePresent) -> bool {
         // ---- per-frame scene-state update (CPU shadows → Shared buffers)
-        self.n_spot_active = frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, self.flash_idx, fp.fs);
+        self.n_spot_active = frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, self.reserved_slot_start, fp.fs);
         write_buf(&self.lbuf, &self.lights_cpu);
         write_buf(&self.mbuf, &self.mats_cpu);
         // upload this frame's goo metaballs for the SDF composite pass
@@ -821,17 +841,11 @@ impl RenderBackend for MetalBackend {
                     cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, GOO_SQUASH],
                     cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, GOO_FLOOR_Y],
                     dims: [low_w as i32, low_h as i32, goo_n as i32, 0],
-                    emis: [0.55, 3.3, 1.15, 2.8],
-                    absorb: [3.4, 0.42, 2.9, 0.9],
+                    emis: GOO_EMIS,
+                    absorb: GOO_ABSORB,
                     params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
-                    // a vivid, molten AMBER-GOLD bud: a saturated warm emissive
-                    // (strong R, healthy G, near-zero B) cranked bright (intensity
-                    // 4.8, up from 3.0) so the birth site glows hot, and a heavy
-                    // green+blue absorption (low R) so the body itself reads a
-                    // saturated orange where it buds — radiant and unmistakably not
-                    // pink, a vibrant contrast against the fluorescent-green goo.
-                    birth_emis: [9.5, 2.0, 0.08, 4.4],
-                    birth_absorb: [0.10, 4.4, 6.0, 0.97],
+                    birth_emis: GOO_BIRTH_EMIS,
+                    birth_absorb: GOO_BIRTH_ABSORB,
                 };
                 let genc = cb.new_compute_command_encoder();
                 genc.set_compute_pipeline_state(&self.goo_pso);

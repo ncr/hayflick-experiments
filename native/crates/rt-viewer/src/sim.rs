@@ -16,6 +16,16 @@ use house_game::{parse_trace, Command, DoorId, GameSnapshot, HouseGame, LevelSpe
 use rt_probe::{screen_px_to_world, Config, InstanceKey, LightKey, Scene, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, NullSink, Simulation, Tick};
 
+/// Vertical flatten applied to the goo metaballs so the body lies on the floor
+/// as a spread puddle: the resting-height math `floor + radius·squash` is shared
+/// by the CPU ball placement (`goo_balls`) AND the Metal proxy/shader squash, so
+/// they MUST agree. Single source of truth — `metal_backend` imports these (it
+/// is macOS-gated; `sim` always compiles, so the canonical home is here). A
+/// `goo_render_consts_agree` test pins them.
+pub(crate) const GOO_SQUASH: f32 = 0.74;
+/// Floor plane Y (kit floorThickness 6 cm) — the goo's flat underside.
+pub(crate) const GOO_FLOOR_Y: f32 = 6.0 / 128.0;
+
 /// Per-door render binding: the renderer instance handle for the leaf, plus the
 /// hinge + signed swing axis the per-frame transform needs (the snapshot gives
 /// only the angle). Built from the spec's DoorSpecs joined onto the scene's
@@ -287,15 +297,13 @@ impl GameLoop {
     /// height (`floor + radius·squash`) so the shader's vertical squash + floor
     /// clamp settle each lump flat on the ground. Pure read of the hashed field.
     pub fn goo_balls(&self) -> (Vec<rt_probe::GooBall>, Vec<f32>) {
-        const SQUASH: f32 = 0.74; // must match metal_backend::GOO_SQUASH
-        const FLOOR: f32 = 6.0 / 128.0; // must match metal_backend::GOO_FLOOR_Y
         let mut out = Vec::new();
         let mut glow = Vec::new(); // PARALLEL to `out`: per-ball birth-glow 0..1
         for m in &self.snap.mobs {
             // one metaball per fluid particle — the solved fluid distribution IS
             // the surface (two lobes + thin waist emerge from the sim itself).
             let pr = m.part_radius;
-            let y = FLOOR + pr * SQUASH;
+            let y = GOO_FLOOR_Y + pr * GOO_SQUASH;
             for (p, &gl) in m.parts.iter().zip(m.glow.iter()) {
                 out.push(rt_probe::GooBall { center: [p.x, y, p.z], radius: pr });
                 glow.push(gl);
@@ -313,29 +321,31 @@ impl GameLoop {
     /// a pure read of the snapshot, never baked into the static GI probes.
     pub fn goo_lights(&self) -> Vec<rt_probe::Spotlight> {
         const LIFT: f32 = 0.40; // light height above the floor (wu)
+        // Wide downward green cone. Power = base + per-radius boost, so bigger
+        // blobs glow a touch brighter; the area-light radius (the shade pass
+        // reads posRad.w) tracks the body size and drives the soft-shadow
+        // penumbra. The tint is FIXED so the pool colour never flickers.
+        const POWER_BASE: f32 = 9.0;
+        const POWER_PER_RADIUS: f32 = 3.0;
+        const CONE_DEG: f32 = 115.0;
+        const SHADOW_RADIUS_FRAC: f32 = 0.8;
+        const SHADOW_RADIUS_MIN: f32 = 0.25;
+        const TINT: [f32; 3] = [0.32, 1.0, 0.5]; // fluorescent radioactive green
         let mut out = Vec::with_capacity(self.snap.mobs.len());
         for m in &self.snap.mobs {
             if m.parts.is_empty() {
                 continue;
             }
-            let mut cx = 0.0f32;
-            let mut cz = 0.0f32;
-            for p in &m.parts {
-                cx += p.x;
-                cz += p.z;
-            }
-            let n = m.parts.len() as f32;
-            let centroid = Vec3::new(cx / n, LIFT, cz / n);
-            // bigger blobs glow a touch brighter / wider; radius drives the soft
-            // shadow penumbra (Phase B reads posRad.w as the area-light radius).
-            let power = 9.0 + 3.0 * m.radius;
+            let c = m.centroid();
+            let centroid = Vec3::new(c.x, LIFT, c.z);
+            let power = POWER_BASE + POWER_PER_RADIUS * m.radius;
             out.push(rt_probe::Spotlight {
                 pos: centroid,
                 dir: Vec3::new(0.0, -1.0, 0.0),
-                cone_cos: (115.0f32).to_radians().cos(), // wide downward pool
+                cone_cos: CONE_DEG.to_radians().cos(),
                 power,
-                radius: (m.radius * 0.8).max(0.25),
-                tint: [0.32, 1.0, 0.5], // fluorescent radioactive green
+                radius: (m.radius * SHADOW_RADIUS_FRAC).max(SHADOW_RADIUS_MIN),
+                tint: TINT,
             });
         }
         out

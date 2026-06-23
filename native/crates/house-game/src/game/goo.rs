@@ -631,6 +631,18 @@ pub struct MobRender {
     pub glow: [f32; GOO_PARTICLES],
 }
 
+impl MobRender {
+    /// Mean of the lifted particle positions (world XYZ). The accumulation order
+    /// matches the hand-rolled sum the renderer used so the result is bit-stable.
+    pub fn centroid(&self) -> Vec3 {
+        let mut c = Vec3::ZERO;
+        for p in &self.parts {
+            c += *p;
+        }
+        c / self.parts.len() as f32
+    }
+}
+
 /// A blob is free to take part in a fusion only once it is past its newborn
 /// merge-grace AND not already collapsing into another survivor. Shared by both
 /// ends of the `merge_system` pairing scan so the eligibility rule lives once.

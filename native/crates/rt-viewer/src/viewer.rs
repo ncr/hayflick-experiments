@@ -337,9 +337,7 @@ impl Viewer {
         let mut spot = self.frame_spotlights();
         // append one real RT light per goo blob (reserved NEE slots) → the goo
         // lights the scene and casts shadows. Capped to the reserved headroom.
-        let goo_lights = self.game.goo_lights();
-        let room = rt_probe::N_RESERVED.saturating_sub(spot.len());
-        spot.extend(goo_lights.into_iter().take(room));
+        append_goo_lights(&mut spot, self.game.goo_lights());
         let mut instances: Vec<(InstanceKey, Mat4)> = Vec::new();
         // SCENE=goofloor hides the player marker: the sim still has a player (so
         // it can lure the goo via seek + drive the directed walk) but the marker
@@ -468,4 +466,14 @@ impl Viewer {
 
         ok
     }
+}
+
+/// Append goo lights into the reserved spotlight region, after the scene
+/// spotlights and truncated to the remaining headroom (`N_RESERVED` slots
+/// total). Order is load-bearing: the existing spotlights keep their slots and
+/// the goo lights fill whatever is left, so the packed reserved region is
+/// deterministic regardless of how many blobs are alive.
+fn append_goo_lights(spot: &mut Vec<rt_probe::Spotlight>, goo_lights: Vec<rt_probe::Spotlight>) {
+    let room = rt_probe::N_RESERVED.saturating_sub(spot.len());
+    spot.extend(goo_lights.into_iter().take(room));
 }
