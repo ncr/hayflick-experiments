@@ -972,59 +972,10 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     let tense = goo_tension(g.tier, g.spawn_timer, g.birth_glow);
                     let r = g.body_len / GOO_BODY_FRAC * (1.0 - GOO_TENSE_SHRINK * tense);
                     let pr = r * GOO_PART_RADIUS_FRAC;
-                    // jelly shake (render-side): anisotropically squash the cloud
-                    // about its centroid along the tear axis — stretch along it,
-                    // pinch across it (volume-ish kept) — by the decaying wobble.
-                    // The incompressible fluid can't flex this fast, so the crisp
-                    // visible quiver lives here; it reads as the body wobbling.
-                    let wob = goo_wobble_render(g.wobble_amp, g.wobble_phase);
-                    let parts = if wob != 0.0 && g.wobble_dir != glam::Vec2::ZERO {
-                        let c = g.centroid();
-                        let d = g.wobble_dir;
-                        let sa = 1.0 + wob * GOO_WOBBLE_RENDER; // along the tear axis
-                        let sp = 1.0 - 0.5 * wob * GOO_WOBBLE_RENDER; // across it
-                        g.parts.map(|p| {
-                            let rel = p - c;
-                            let al = rel.dot(d);
-                            let across = rel - d * al;
-                            let q = c + d * (al * sa) + across * sp;
-                            Vec3::new(q.x, pr, q.y)
-                        })
-                    } else {
-                        g.parts.map(|p| Vec3::new(p.x, pr, p.y))
-                    };
-                    // birth-glow: only while a mother gestates (spawn_dir set and
-                    // inside the gestation window). It swells 0→1 toward birth and
-                    // is concentrated at the bud site, falling off over the body —
-                    // so the colour change is localised "around the particle".
-                    let mut glow = [0.0f32; GOO_PARTICLES];
-                    let strength = if g.birth_glow > 0 {
-                        // AFTERGLOW: hold the bud colour at full while the mini
-                        // peels off (GOO_BIRTH_HOLD), then smoothstep back to green
-                        // over the rest — a gentle revert rather than an abrupt cut.
-                        let elapsed = GOO_BIRTH_FADE - g.birth_glow; // 0 → GOO_BIRTH_FADE
-                        if elapsed < GOO_BIRTH_HOLD {
-                            1.0
-                        } else {
-                            let u = (elapsed - GOO_BIRTH_HOLD) as f32 / (GOO_BIRTH_FADE - GOO_BIRTH_HOLD) as f32;
-                            1.0 - u * u * (3.0 - 2.0 * u)
-                        }
-                    } else if g.spawn_timer <= GOO_GESTATE_TICKS {
-                        // GESTATION: ramp 0→1 toward birth, sqrt-eased for a build.
-                        (1.0 - g.spawn_timer as f32 / GOO_GESTATE_TICKS as f32).sqrt()
-                    } else {
-                        0.0
-                    };
-                    if strength > 0.0 && g.spawn_dir != glam::Vec2::ZERO {
-                        let c = g.centroid();
-                        let mr = goo_tier_radius(g.tier);
-                        let site = c + g.spawn_dir * mr;
-                        let falloff = mr * 0.95; // tight around the bud so the vivid tint reads as the birth PLACE, not the whole body
-                        for k in 0..GOO_PARTICLES {
-                            let prox = (1.0 - (g.parts[k] - site).length() / falloff).clamp(0.0, 1.0);
-                            glow[k] = strength * prox;
-                        }
-                    }
+                    // the render pose (jelly-wobble squash) + the per-particle
+                    // birth glow are pure presentation reads of the hashed state.
+                    let parts = goo_render_parts(&g, pr);
+                    let glow = goo_render_glow(&g);
                     MobRender { id: g.id, tier: g.tier, parts, radius: r, part_radius: pr, glow }
                 })
                 .collect(),
@@ -1043,6 +994,13 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
     /// FNV-1a over the canonical field order: player (pos, facing, flashlight,
     /// pistol cooldown, walk target), muzzle ticks, yaw_q, master switch,
     /// score, doors (id, state), lights (id, on), target hits, RNG probe.
+    ///
+    /// THE REPLAY ORACLE. This fold — its FIXED field-visit order, every float
+    /// op, and which components are folded — is the contract the golden replays
+    /// and the determinism tests assert against. Changing the order, switching a
+    /// sim float to f64, or reordering an accumulation that feeds it breaks every
+    /// golden. The mob and projectile blocks fold ONLY when non-empty, so
+    /// mob-free / shot-free levels stay byte-identical to before those features.
     fn state_hash(&self) -> u64 {
         let mut h = Fnv::new();
         let p = self.player_pos();
@@ -1979,6 +1937,16 @@ mod tests {
         }
     }
 
+    /// Build a fresh game on `spec` and advance it `ticks` ticks with no input —
+    /// the bare deterministic-sim loop shared by the merge/nursery scenarios.
+    fn run_ticks(spec: &LevelSpec, ticks: u64) -> HouseGame<VecSink> {
+        let mut g = HouseGame::new(spec, VecSink::default());
+        for t in 0..ticks {
+            g.tick(Tick(t), &[]);
+        }
+        g
+    }
+
     #[test]
     fn goo_spawns_and_crawls() {
         let mut d = GooDrv::new();
@@ -2128,13 +2096,7 @@ mod tests {
     fn goo_merge_round_trip_is_deterministic() {
         // fusion draws RNG + despawns via the command buffer — it must replay
         // bit-identically across two worlds.
-        let run = || {
-            let mut g = HouseGame::new(&merge_pair_level(), VecSink::default());
-            for t in 0..90 {
-                g.tick(Tick(t), &[]);
-            }
-            g
-        };
+        let run = || run_ticks(&merge_pair_level(), 90);
         let a = run();
         let b = run();
         assert_eq!(a.state_hash(), b.state_hash(), "merge replay must be bit-identical");
@@ -2152,10 +2114,7 @@ mod tests {
         spec.player_start = Vec3::new(2.0, 0.0, 2.0);
         spec.mobs = vec![MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(0.8, 0.0, 2.0) }];
         spec.traps = vec![];
-        let mut g = HouseGame::new(&spec, VecSink::default());
-        for t in 0..150 {
-            g.tick(Tick(t), &[]);
-        }
+        let g = run_ticks(&spec, 150);
         let blob = *g.world.get::<&Goo>(g.mobs[0]).unwrap();
         let pp = Vec2::new(2.0, 2.0);
         for p in &blob.parts {
@@ -2222,10 +2181,7 @@ mod tests {
 
     #[test]
     fn goo_sim_hash_oracle_nursery() {
-        let mut n = HouseGame::new(&crate::spec::goonursery_level(), VecSink::default());
-        for t in 0..400 {
-            n.tick(Tick(t), &[]);
-        }
+        let n = run_ticks(&crate::spec::goonursery_level(), 400);
         assert_eq!(n.state_hash(), ORACLE_GOONURSERY_400, "got {:#018x}", n.state_hash());
     }
 
@@ -2242,10 +2198,7 @@ mod tests {
 
     #[test]
     fn goo_sim_hash_oracle_merge() {
-        let mut m = HouseGame::new(&merge_pair_level(), VecSink::default());
-        for t in 0..90 {
-            m.tick(Tick(t), &[]);
-        }
+        let m = run_ticks(&merge_pair_level(), 90);
         assert_eq!(m.state_hash(), ORACLE_MERGE_90, "got {:#018x}", m.state_hash());
     }
 }

@@ -139,7 +139,7 @@ impl GameLoop {
             snap,
             held: [false; 4],
             has_player,
-            follow_cam: has_player && cfg.scene != "grid" && cfg.scene != "goofloor" && cfg.scene != "goonursery",
+            follow_cam: has_player && cfg.scene != "grid" && !crate::game_scene::is_goo_film_stage(&cfg.scene),
             light_keys,
             doors,
             goo_slots,

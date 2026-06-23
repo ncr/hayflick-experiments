@@ -119,6 +119,19 @@ pub fn is_dollhouse(scene: &str) -> bool {
     matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground" | "range" | "goofloor" | "goonursery")
 }
 
+/// The bare open "studio" stages for filming/inspecting the goo: one big lit
+/// plane, bright even sky fill, no fog. (playground/range keep far backstop
+/// walls; goofloor/goonursery have none.)
+pub fn is_open_studio_stage(scene: &str) -> bool {
+    matches!(scene, "playground" | "range" | "goofloor" | "goonursery")
+}
+
+/// The PLAYER-LESS goo film stages (no player marker, fixed camera): the goo
+/// merges/buds on its own with no player to lure it.
+pub fn is_goo_film_stage(scene: &str) -> bool {
+    matches!(scene, "goofloor" | "goonursery")
+}
+
 /// Build the greybox game scene from the spec. Returns the scene; the caller
 /// (renderer) bakes probes and constructs the GameLoop over the SAME spec.
 pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
@@ -261,7 +274,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // LIFTED sky fill (void outside the walls reads bright, not black). The cave
     // is a DUNGEON — a dimmer sky fill sinks the void into shadow so the lamp-lit
     // chambers pop, with a touch more mist for depth between the rooms.
-    scene.lighting = if cfg.scene == "playground" || cfg.scene == "range" || cfg.scene == "goofloor" || cfg.scene == "goonursery" {
+    scene.lighting = if is_open_studio_stage(&cfg.scene) {
         [0.0, 9.0, 0.0, 0.5] // open studio stage: bright even sky fill, no fog
     } else if cfg.scene == "cave" {
         [0.0, 2.2, 0.26, 0.45]

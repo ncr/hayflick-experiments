@@ -643,6 +643,64 @@ impl MobRender {
     }
 }
 
+/// Render-pose particle cloud (world XYZ, each lifted to height `pr`). While the
+/// jelly oscillator is live it anisotropically squashes the cloud about the
+/// centroid — stretched along the tear axis, pinched across it — so the crisp
+/// visible quiver lives here, where the incompressible fluid can't flex fast
+/// enough; otherwise a plain lift. Presentation-only (a pure read of the hashed
+/// wobble state, never re-hashed); the float ops are kept verbatim.
+pub(crate) fn goo_render_parts(g: &Goo, pr: f32) -> [Vec3; GOO_PARTICLES] {
+    let wob = goo_wobble_render(g.wobble_amp, g.wobble_phase);
+    if wob != 0.0 && g.wobble_dir != Vec2::ZERO {
+        let c = g.centroid();
+        let d = g.wobble_dir;
+        let sa = 1.0 + wob * GOO_WOBBLE_RENDER; // along the tear axis
+        let sp = 1.0 - 0.5 * wob * GOO_WOBBLE_RENDER; // across it
+        g.parts.map(|p| {
+            let rel = p - c;
+            let al = rel.dot(d);
+            let across = rel - d * al;
+            let q = c + d * (al * sa) + across * sp;
+            Vec3::new(q.x, pr, q.y)
+        })
+    } else {
+        g.parts.map(|p| Vec3::new(p.x, pr, p.y))
+    }
+}
+
+/// Per-particle birth-glow 0..1 for the render: nonzero only on a gestating /
+/// after-glowing mother, concentrated at the bud site and falling off across the
+/// body, so the hot birth tint reads as the birth PLACE. AFTERGLOW holds full
+/// then smoothsteps back to green; GESTATION ramps 0→1 (sqrt-eased). Presentation
+/// only — derived from the hashed spawn state, never hashed. Kept verbatim.
+pub(crate) fn goo_render_glow(g: &Goo) -> [f32; GOO_PARTICLES] {
+    let mut glow = [0.0f32; GOO_PARTICLES];
+    let strength = if g.birth_glow > 0 {
+        let elapsed = GOO_BIRTH_FADE - g.birth_glow; // 0 → GOO_BIRTH_FADE
+        if elapsed < GOO_BIRTH_HOLD {
+            1.0
+        } else {
+            let u = (elapsed - GOO_BIRTH_HOLD) as f32 / (GOO_BIRTH_FADE - GOO_BIRTH_HOLD) as f32;
+            1.0 - u * u * (3.0 - 2.0 * u)
+        }
+    } else if g.spawn_timer <= GOO_GESTATE_TICKS {
+        (1.0 - g.spawn_timer as f32 / GOO_GESTATE_TICKS as f32).sqrt()
+    } else {
+        0.0
+    };
+    if strength > 0.0 && g.spawn_dir != Vec2::ZERO {
+        let c = g.centroid();
+        let mr = goo_tier_radius(g.tier);
+        let site = c + g.spawn_dir * mr;
+        let falloff = mr * 0.95; // tight around the bud so the vivid tint reads as the birth PLACE
+        for k in 0..GOO_PARTICLES {
+            let prox = (1.0 - (g.parts[k] - site).length() / falloff).clamp(0.0, 1.0);
+            glow[k] = strength * prox;
+        }
+    }
+    glow
+}
+
 /// A blob is free to take part in a fusion only once it is past its newborn
 /// merge-grace AND not already collapsing into another survivor. Shared by both
 /// ends of the `merge_system` pairing scan so the eligibility rule lives once.

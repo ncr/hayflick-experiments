@@ -346,7 +346,7 @@ impl Viewer {
         // dynamic prim at its identity transform = a box at the origin.)
         if self.game.has_player {
             if let Some(&k) = self.backend.handles().instances.get("player") {
-                let m = if self.cfg.scene == "goofloor" || self.cfg.scene == "goonursery" {
+                let m = if crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
                     Mat4::from_scale(glam::Vec3::ZERO)
                 } else {
                     Mat4::from_translation(self.game.snap.player_pos)
