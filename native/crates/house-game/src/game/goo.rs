@@ -280,6 +280,97 @@ fn goo_dw(r: f32, h: f32) -> f32 {
         0.0
     }
 }
+
+// ---- PBF density solver passes ----------------------------------------------
+// One Jacobi iteration of the Position-Based-Fluids density constraint is a
+// LAMBDA pass (per-particle pressure multiplier) followed by a CORRECTION pass
+// (apply the resulting position deltas). Both are O(N²) over the blob's own
+// particles. Pulled out of `goo_system` VERBATIM — the i/j loop order, the
+// `i==j` / radius guards, and every float operation are unchanged, so the
+// state_hash is byte-identical (see `goo_sim_hash_oracle_*`). DO NOT reorder the
+// accumulations or reassociate the sums: f32 is non-associative and hashed.
+
+/// Density-constraint pass: the per-particle λ multiplier for predicted
+/// positions `xp` (rest density `rho0`, smoothing radius `h`).
+fn goo_pbf_lambda(xp: &[Vec2; GOO_PARTICLES], rho0: f32, h: f32) -> [f32; GOO_PARTICLES] {
+    let mut lambda = [0.0f32; GOO_PARTICLES];
+    for i in 0..GOO_PARTICLES {
+        let mut rho = 0.0;
+        let mut grad_i = Vec2::ZERO;
+        let mut sum_grad2 = 0.0;
+        for j in 0..GOO_PARTICLES {
+            let rij = xp[i] - xp[j];
+            let r = rij.length();
+            rho += goo_w(r, h);
+            if i != j && r > 1e-6 {
+                let gw = rij / r * goo_dw(r, h); // ∇W(p_i - p_j)
+                grad_i += gw;
+                sum_grad2 += gw.length_squared();
+            }
+        }
+        sum_grad2 += grad_i.length_squared();
+        let c = rho / rho0 - 1.0;
+        lambda[i] = -c / (sum_grad2 / (rho0 * rho0) + GOO_CFM_EPS);
+    }
+    lambda
+}
+
+/// Correction pass: apply the incompressibility + tensile-cohesion position
+/// deltas (from `lambda`) to `xp` in place, each clamped to `GOO_MAX_DP·g_scale`
+/// so the density solve can never overshoot. `scorr_denom` is the cohesion
+/// normaliser the caller computes once per blob.
+fn goo_pbf_correct(
+    xp: &mut [Vec2; GOO_PARTICLES],
+    lambda: &[f32; GOO_PARTICLES],
+    rho0: f32,
+    h: f32,
+    g_scale: f32,
+    scorr_denom: f32,
+) {
+    for i in 0..GOO_PARTICLES {
+        let mut dp = Vec2::ZERO;
+        for j in 0..GOO_PARTICLES {
+            if i == j {
+                continue;
+            }
+            let rij = xp[i] - xp[j];
+            let r = rij.length();
+            if r >= h || r < 1e-6 {
+                continue;
+            }
+            let scorr = -GOO_SCORR_K * (goo_w(r, h) / scorr_denom).powi(GOO_SCORR_N);
+            let gw = rij / r * goo_dw(r, h);
+            dp += gw * ((lambda[i] + lambda[j] + scorr) / rho0);
+        }
+        // clamp the correction so the density solve can never overshoot
+        // (scaled with the blob so a small one isn't over-corrected)
+        let dl = dp.length();
+        let max_dp = GOO_MAX_DP * g_scale;
+        if dl > max_dp {
+            dp *= max_dp / dl;
+        }
+        xp[i] += dp;
+    }
+}
+
+/// XSPH viscosity: nudge each particle's velocity toward its neighbours' so the
+/// body flows as one coherent slime. Snapshots the incoming velocities, then
+/// accumulates the symmetric pairwise delta (same `i==j` guard and order as the
+/// extracted loop) and applies `GOO_VISCOSITY` of it.
+fn goo_xsph_viscosity(vel: &mut [Vec2; GOO_PARTICLES], xp: &[Vec2; GOO_PARTICLES], h: f32) {
+    let vin = *vel;
+    for i in 0..GOO_PARTICLES {
+        let mut dv = Vec2::ZERO;
+        for j in 0..GOO_PARTICLES {
+            if i == j {
+                continue;
+            }
+            let r = (xp[i] - xp[j]).length();
+            dv += (vin[j] - vin[i]) * goo_w(r, h);
+        }
+        vel[i] += dv * GOO_VISCOSITY;
+    }
+}
 /// Per-blob fluid length scale by tier: R0/√2 per tier, matching the body
 /// radius. Scaling BOTH the smoothing radius `h` and the rest spacing by this
 /// leaves the rest density (a function of their ratio) unchanged — so the PBF
@@ -561,6 +652,237 @@ impl<S: AudioSink> HouseGame<S> {
         (x - p.x).abs() < m && (z - p.z).abs() < m
     }
 
+    /// Push any predicted particle position `xp[i]` that landed inside a solid
+    /// back out, axis by axis (X tried before Z — the order is deterministic and
+    /// hashed), falling back to the pre-step position when neither axis frees it.
+    /// `orig` is the blob's particle positions from the start of the tick.
+    fn goo_clamp_to_solids(&self, xp: &mut [Vec2; GOO_PARTICLES], orig: &[Vec2; GOO_PARTICLES]) {
+        for i in 0..GOO_PARTICLES {
+            if self.goo_solid(xp[i].x, xp[i].y) {
+                let o = orig[i];
+                if !self.goo_solid(xp[i].x, o.y) {
+                    xp[i].y = o.y;
+                } else if !self.goo_solid(o.x, xp[i].y) {
+                    xp[i].x = o.x;
+                } else {
+                    xp[i] = o;
+                }
+            }
+        }
+    }
+
+    /// FUSING step: a blob collapsing into a merge survivor. Ooze its particles
+    /// toward the fusion point and deflate it (render size follows `body_len`),
+    /// then despawn when the collapse completes. Returns `true` if the blob is
+    /// fusing (the caller writes it back and skips the rest of the tick — no
+    /// AI/gait/PBF while it just flows in and shrinks out). Verbatim extraction.
+    fn goo_step_fusing(&mut self, e: Entity, g: &mut Goo) -> bool {
+        if g.fusing == 0 {
+            return false;
+        }
+        g.fusing -= 1;
+        for p in g.parts.iter_mut() {
+            *p += (g.fuse_pt - *p) * GOO_FUSE_COLLAPSE;
+        }
+        for v in g.vel.iter_mut() {
+            *v *= 0.5;
+        }
+        g.body_len *= GOO_FUSE_DEFLATE;
+        g.ends = [g.fuse_pt, g.fuse_pt];
+        g.ends_prev = g.ends;
+        if g.fusing == 0 {
+            self.res.buf.despawn(e);
+            self.res.mobs_dirty = true;
+        }
+        true
+    }
+
+    /// MITOSIS / MOTHER-GRAVITY step. A Large (tier-0) mother counts down to
+    /// budding off a mini (drawing RNG in a fixed order, spawning via the buffer);
+    /// every smaller blob instead feels the inverse-square pull of any mother
+    /// whose well it sits in (unless still birth-immune). Returns the net
+    /// mother-gravity acceleration on this blob. `mothers` is the MobId-sorted
+    /// centroid snapshot — accumulating over it in order is hash-load-bearing.
+    /// Verbatim extraction: RNG draw count/order and float ops are unchanged.
+    fn goo_step_mitosis(&mut self, g: &mut Goo, mothers: &[Vec2]) -> Vec2 {
+        let mut mother_acc = Vec2::ZERO; // net mother-gravity on THIS blob (wu/s²)
+        if g.tier == 0 {
+            // tick down the post-birth afterglow; when it lapses the bud site
+            // is fully back to green, so release spawn_dir for the next cycle.
+            if g.birth_glow > 0 {
+                g.birth_glow -= 1;
+                if g.birth_glow == 0 {
+                    g.spawn_dir = Vec2::ZERO;
+                }
+            }
+            g.spawn_timer = g.spawn_timer.saturating_sub(1);
+            // tear countdown: armed at birth, it lapses in lockstep with the
+            // newborn's tether (both set GOO_TETHER_TICKS the same tick), so the
+            // bond snaps and her tear-site shakes on the SAME tick the mini does.
+            if g.tear_ticks > 0 {
+                g.tear_ticks -= 1;
+                if g.tear_ticks == 0 {
+                    // the bond gives: her tear-site sucks back and she rings.
+                    g.wobble_amp = GOO_WOBBLE_AMP0 * GOO_MOTHER_WOBBLE_FRAC;
+                    g.wobble_phase = GOO_WOBBLE_HALF; // first half-swing INWARD
+                    // wobble_dir (the tear axis) was set at birth.
+                }
+            }
+            if g.spawn_timer == GOO_GESTATE_TICKS {
+                // enter gestation: the bud forms toward the CAMERA so the birth
+                // always plays out clearly in view (in front of the mother, not
+                // occluded). The iso view sits in the +X+Z octant at yaw 45°, so
+                // world (+X,+Z) — angle π/4 — faces the viewer; a small random
+                // jitter (±~27°) keeps successive births from looking identical.
+                let a = std::f32::consts::FRAC_PI_4 + (self.res.rng.next_f32() - 0.5) * (std::f32::consts::PI * 0.30);
+                g.spawn_dir = Vec2::new(a.cos(), a.sin());
+            }
+            if g.spawn_timer == 0 {
+                // BIRTH — skipped (and the timer waits a full cycle) if it
+                // would breach the live cap, so mitosis never outruns the
+                // renderer's metaball pool.
+                if self.mobs.len() < GOO_LIVE_CAP {
+                    let c = g.centroid();
+                    let dir = g.spawn_dir.try_normalize().unwrap_or(g.heading);
+                    // the bud forms INSIDE her body at the bud site (just under
+                    // the surface), as a small deflated droplet, then inflates
+                    // and oozes out — a piece of her pinching off.
+                    let site = c + dir * (goo_tier_radius(g.tier) * 0.55);
+                    let cid = MobId(self.res.next_mob_id);
+                    self.res.next_mob_id += 1;
+                    let timer = 20 + (self.res.rng.next_f32() * 60.0) as u16;
+                    // born at REST (no outward pop): the tether spring must
+                    // build the neck tension itself, not fight an initial shove.
+                    let mut baby = fresh_goo(cid, GOO_BIRTH_TIER, site, dir, Vec2::ZERO, timer);
+                    // deflate to a droplet and shrink the cloud to match, so it
+                    // EMERGES (the gait's body_len ease re-inflates it) instead
+                    // of appearing full-size — the reverse of a fusion collapse.
+                    let seed_len = baby.body_len * GOO_BIRTH_SEED;
+                    let shrink = goo_body_scale(seed_len) / goo_tier_scale(GOO_BIRTH_TIER);
+                    let bc = baby.centroid();
+                    for p in baby.parts.iter_mut() {
+                        *p = site + (*p - bc) * shrink;
+                    }
+                    baby.vel = [Vec2::ZERO; GOO_PARTICLES];
+                    baby.body_len = seed_len;
+                    baby.ends = [site + dir * (seed_len * 0.5), site - dir * (seed_len * 0.5)];
+                    baby.ends_prev = baby.ends;
+                    baby.birth_immune = true; // ignores mom's pull until it clears the well
+                    // BOND: a yielding spring tethers the newborn to the frozen
+                    // bud site while its crawl hauls its head clear → a thinning
+                    // neck the render union draws, snapping at GOO_TETHER_TICKS.
+                    baby.tether = GOO_TETHER_TICKS;
+                    baby.tether_anchor = site;
+                    self.res.buf.spawn((baby,));
+                    self.res.mobs_dirty = true;
+                    // arm the mother's matching tear: same lifetime, set the SAME
+                    // tick, so her shake fires in lockstep with the mini's snap.
+                    g.tear_ticks = GOO_TETHER_TICKS;
+                    g.wobble_dir = dir; // tear axis: outward toward where the bud left
+                    self.res.events.emit(GameEvent::MobSplit(g.id, Vec3::new(c.x, goo_tier_radius(g.tier), c.y)));
+                }
+                g.spawn_timer = GOO_SPAWN_PERIOD;
+                // keep spawn_dir and start the afterglow: the bud colour holds
+                // through the mini's separation, then eases gently back to green.
+                g.birth_glow = GOO_BIRTH_FADE;
+            }
+        } else {
+            let c = g.centroid();
+            let mut inside = false;
+            for &mc in mothers {
+                let d = mc - c;
+                let dist = d.length();
+                if dist >= GOO_MOTHER_RADIUS || dist < 1e-3 {
+                    continue;
+                }
+                inside = true;
+                if !g.birth_immune {
+                    let d2 = dist * dist + GOO_SOFTEN;
+                    mother_acc += d / dist * (GOO_MOTHER_PULL / d2);
+                }
+            }
+            // a birth-immune mini becomes a normal blob the moment it leaves
+            // EVERY mother's well — then the well can draw it back if it returns.
+            if g.birth_immune && !inside {
+                g.birth_immune = false;
+            }
+            let ml = mother_acc.length();
+            if ml > GOO_TRAP_MAX {
+                mother_acc *= GOO_TRAP_MAX / ml;
+            }
+        }
+        mother_acc
+    }
+
+    /// AI step: pick a travel direction (wander/seek/idle) and steer the head
+    /// heading toward it. Draws RNG for the wander/idle re-rolls in a FIXED order
+    /// (count and order are hash-load-bearing — see the oracle). Returns
+    /// `(mv, speed)`: the move gate (0 while Idle) and this tier's crawl speed.
+    /// Verbatim extraction.
+    fn goo_step_ai(&mut self, g: &mut Goo, pxz: Vec2, aggro2: f32) -> (f32, f32) {
+        let head = g.ends[0];
+        let to_player = pxz - head;
+        let dist2 = to_player.length_squared();
+        g.timer = g.timer.saturating_sub(1);
+        // seek when the player is close; relax back to wander past a hysteresis band
+        if dist2 < aggro2 {
+            g.state = GooState::Seek;
+        } else if g.state == GooState::Seek && dist2 > aggro2 * 1.7 {
+            g.state = GooState::Wander;
+            g.timer = 0; // re-pick a wander heading next
+        }
+        if g.state != GooState::Seek && g.timer == 0 {
+            if self.res.rng.next_f32() < 0.25 {
+                g.state = GooState::Idle;
+                g.timer = 30 + (self.res.rng.next_f32() * 90.0) as u16;
+            } else {
+                let a = self.res.rng.next_f32() * std::f32::consts::TAU;
+                g.heading = Vec2::new(a.cos(), a.sin());
+                g.state = GooState::Wander;
+                g.timer = 60 + (self.res.rng.next_f32() * 120.0) as u16;
+            }
+        }
+        let target_dir = match g.state {
+            GooState::Seek => to_player.normalize_or_zero(),
+            GooState::Wander => g.heading,
+            GooState::Idle => Vec2::ZERO,
+        };
+        if let Some(td) = target_dir.try_normalize() {
+            g.heading = rotate_toward(g.heading, td, GOO_MAX_TURN);
+        }
+        let mv = if g.state == GooState::Idle { 0.0 } else { 1.0 };
+        let speed = goo_tier_speed(g.tier);
+        (mv, speed)
+    }
+
+    /// HEAD anchor step: Verlet inertia + steering drive + trap/mother pull,
+    /// resolved through `collide_and_slide` so walls stop it like the player. The
+    /// drive surges with the lunge (`stretch`) so the creature pushes off each
+    /// gait cycle rather than gliding. Verbatim extraction.
+    #[allow(clippy::too_many_arguments)]
+    fn goo_step_head_anchor(&self, g: &mut Goo, speed: f32, mv: f32, stretch: f32, tension: f32, well: f32, mother_acc: Vec2) {
+        let inertia = (g.ends[0] - g.ends_prev[0]) * GOO_VERLET_DECAY * GOO_HEAD_INERTIA;
+        // she all but stops crawling while she pushes (tension → 0 drive)
+        let drive = g.heading * (speed * mv * (0.5 + 0.5 * stretch) * (1.0 - 0.85 * tension) * TICK_DT);
+        let d = inertia + drive + (self.trap_accel(g.ends[0]) * well + mother_acc) * GOO_END_TRAP;
+        let (nx, nz) = collide_and_slide(|x, z| self.goo_solid(x, z), g.ends[0].x, g.ends[0].y, d.x, d.y);
+        g.ends_prev[0] = g.ends[0];
+        g.ends[0] = Vec2::new(nx, nz);
+    }
+
+    /// TAIL anchor step: Verlet + trap/mother pull, then a distance constraint
+    /// holding the tail the (gait-modulated) `gait_len` behind the head. As
+    /// `gait_len` shrinks the tail catches up (round-up); as it grows the body
+    /// extends (the inchworm reach). Verbatim extraction.
+    fn goo_step_tail_anchor(&self, g: &mut Goo, gait_len: f32, well: f32, mother_acc: Vec2) {
+        let tail_d = (g.ends[1] - g.ends_prev[1]) * GOO_VERLET_DECAY + (self.trap_accel(g.ends[1]) * well + mother_acc) * GOO_END_TRAP;
+        g.ends_prev[1] = g.ends[1];
+        g.ends[1] += tail_d;
+        let span = g.ends[1] - g.ends[0];
+        let dist = span.length().max(1e-5);
+        g.ends[1] = g.ends[0] + span * (gait_len / dist);
+    }
+
     /// 3c. Goo blobs crawl: per blob, a deliberately-dumb wander/seek/idle AI
     /// steers the head anchor (which moves via `collide_and_slide`, so walls stop
     /// it like the player); the tail trails it and the integer gait clock
@@ -597,138 +919,16 @@ impl<S: AudioSink> HouseGame<S> {
             // &self) and the RNG draws (which borrow &mut self.res).
             let mut g = *self.world.get::<&Goo>(e).unwrap();
 
-            // --- FUSING: this blob is collapsing into a survivor. Ooze its
-            // particles toward the fusion point and deflate it (render size
-            // follows body_len), then despawn when the collapse completes. No
-            // AI/gait/PBF while fusing — it just flows in and shrinks out. ---
-            if g.fusing > 0 {
-                g.fusing -= 1;
-                for p in g.parts.iter_mut() {
-                    *p += (g.fuse_pt - *p) * GOO_FUSE_COLLAPSE;
-                }
-                for v in g.vel.iter_mut() {
-                    *v *= 0.5;
-                }
-                g.body_len *= GOO_FUSE_DEFLATE;
-                g.ends = [g.fuse_pt, g.fuse_pt];
-                g.ends_prev = g.ends;
-                if g.fusing == 0 {
-                    self.res.buf.despawn(e);
-                    self.res.mobs_dirty = true;
-                }
+            // --- FUSING: a blob collapsing into a survivor handles its whole
+            // tick here (ooze in + deflate + despawn) and skips AI/gait/PBF. ---
+            if self.goo_step_fusing(e, &mut g) {
                 *self.world.get::<&mut Goo>(e).unwrap() = g;
                 continue;
             }
 
-            // --- MITOSIS / MOTHER-GRAVITY. A Large (tier-0) mother counts down
-            // to budding off a mini; every smaller blob instead feels the pull of
-            // any mother whose well it sits in (unless still birth-immune). ---
-            let mut mother_acc = Vec2::ZERO; // net mother-gravity on THIS blob (wu/s²)
-            if g.tier == 0 {
-                // tick down the post-birth afterglow; when it lapses the bud site
-                // is fully back to green, so release spawn_dir for the next cycle.
-                if g.birth_glow > 0 {
-                    g.birth_glow -= 1;
-                    if g.birth_glow == 0 {
-                        g.spawn_dir = Vec2::ZERO;
-                    }
-                }
-                g.spawn_timer = g.spawn_timer.saturating_sub(1);
-                // tear countdown: armed at birth, it lapses in lockstep with the
-                // newborn's tether (both set GOO_TETHER_TICKS the same tick), so the
-                // bond snaps and her tear-site shakes on the SAME tick the mini does.
-                if g.tear_ticks > 0 {
-                    g.tear_ticks -= 1;
-                    if g.tear_ticks == 0 {
-                        // the bond gives: her tear-site sucks back and she rings.
-                        g.wobble_amp = GOO_WOBBLE_AMP0 * GOO_MOTHER_WOBBLE_FRAC;
-                        g.wobble_phase = GOO_WOBBLE_HALF; // first half-swing INWARD
-                        // wobble_dir (the tear axis) was set at birth.
-                    }
-                }
-                if g.spawn_timer == GOO_GESTATE_TICKS {
-                    // enter gestation: the bud forms toward the CAMERA so the birth
-                    // always plays out clearly in view (in front of the mother, not
-                    // occluded). The iso view sits in the +X+Z octant at yaw 45°, so
-                    // world (+X,+Z) — angle π/4 — faces the viewer; a small random
-                    // jitter (±~27°) keeps successive births from looking identical.
-                    let a = std::f32::consts::FRAC_PI_4 + (self.res.rng.next_f32() - 0.5) * (std::f32::consts::PI * 0.30);
-                    g.spawn_dir = Vec2::new(a.cos(), a.sin());
-                }
-                if g.spawn_timer == 0 {
-                    // BIRTH — skipped (and the timer waits a full cycle) if it
-                    // would breach the live cap, so mitosis never outruns the
-                    // renderer's metaball pool.
-                    if self.mobs.len() < GOO_LIVE_CAP {
-                        let c = g.centroid();
-                        let dir = g.spawn_dir.try_normalize().unwrap_or(g.heading);
-                        // the bud forms INSIDE her body at the bud site (just under
-                        // the surface), as a small deflated droplet, then inflates
-                        // and oozes out — a piece of her pinching off.
-                        let site = c + dir * (goo_tier_radius(g.tier) * 0.55);
-                        let cid = MobId(self.res.next_mob_id);
-                        self.res.next_mob_id += 1;
-                        let timer = 20 + (self.res.rng.next_f32() * 60.0) as u16;
-                        // born at REST (no outward pop): the tether spring must
-                        // build the neck tension itself, not fight an initial shove.
-                        let mut baby = fresh_goo(cid, GOO_BIRTH_TIER, site, dir, Vec2::ZERO, timer);
-                        // deflate to a droplet and shrink the cloud to match, so it
-                        // EMERGES (the gait's body_len ease re-inflates it) instead
-                        // of appearing full-size — the reverse of a fusion collapse.
-                        let seed_len = baby.body_len * GOO_BIRTH_SEED;
-                        let shrink = goo_body_scale(seed_len) / goo_tier_scale(GOO_BIRTH_TIER);
-                        let bc = baby.centroid();
-                        for p in baby.parts.iter_mut() {
-                            *p = site + (*p - bc) * shrink;
-                        }
-                        baby.vel = [Vec2::ZERO; GOO_PARTICLES];
-                        baby.body_len = seed_len;
-                        baby.ends = [site + dir * (seed_len * 0.5), site - dir * (seed_len * 0.5)];
-                        baby.ends_prev = baby.ends;
-                        baby.birth_immune = true; // ignores mom's pull until it clears the well
-                        // BOND: a yielding spring tethers the newborn to the frozen
-                        // bud site while its crawl hauls its head clear → a thinning
-                        // neck the render union draws, snapping at GOO_TETHER_TICKS.
-                        baby.tether = GOO_TETHER_TICKS;
-                        baby.tether_anchor = site;
-                        self.res.buf.spawn((baby,));
-                        self.res.mobs_dirty = true;
-                        // arm the mother's matching tear: same lifetime, set the SAME
-                        // tick, so her shake fires in lockstep with the mini's snap.
-                        g.tear_ticks = GOO_TETHER_TICKS;
-                        g.wobble_dir = dir; // tear axis: outward toward where the bud left
-                        self.res.events.emit(GameEvent::MobSplit(g.id, Vec3::new(c.x, goo_tier_radius(g.tier), c.y)));
-                    }
-                    g.spawn_timer = GOO_SPAWN_PERIOD;
-                    // keep spawn_dir and start the afterglow: the bud colour holds
-                    // through the mini's separation, then eases gently back to green.
-                    g.birth_glow = GOO_BIRTH_FADE;
-                }
-            } else {
-                let c = g.centroid();
-                let mut inside = false;
-                for &mc in &mothers {
-                    let d = mc - c;
-                    let dist = d.length();
-                    if dist >= GOO_MOTHER_RADIUS || dist < 1e-3 {
-                        continue;
-                    }
-                    inside = true;
-                    if !g.birth_immune {
-                        let d2 = dist * dist + GOO_SOFTEN;
-                        mother_acc += d / dist * (GOO_MOTHER_PULL / d2);
-                    }
-                }
-                // a birth-immune mini becomes a normal blob the moment it leaves
-                // EVERY mother's well — then the well can draw it back if it returns.
-                if g.birth_immune && !inside {
-                    g.birth_immune = false;
-                }
-                let ml = mother_acc.length();
-                if ml > GOO_TRAP_MAX {
-                    mother_acc *= GOO_TRAP_MAX / ml;
-                }
-            }
+            // --- MITOSIS / MOTHER-GRAVITY: a Large mother counts down to budding;
+            // a smaller blob feels the pull of any mother well it sits in. ---
+            let mother_acc = self.goo_step_mitosis(&mut g, &mothers);
             // a birth-immune newborn ignores EVERY external well — the mother's
             // gravity (already gated above) AND any trap it buds inside — so it
             // pops cleanly off her instead of being recaptured by the nest.
@@ -740,39 +940,8 @@ impl<S: AudioSink> HouseGame<S> {
             // the visible "push". Shared with the snapshot so render size matches.
             let tension = goo_tension(g.tier, g.spawn_timer, g.birth_glow);
 
-            // --- AI: pick a target travel direction (steers the head anchor) ---
-            let head = g.ends[0];
-            let to_player = pxz - head;
-            let dist2 = to_player.length_squared();
-            g.timer = g.timer.saturating_sub(1);
-            // seek when the player is close; relax back to wander past a hysteresis band
-            if dist2 < aggro2 {
-                g.state = GooState::Seek;
-            } else if g.state == GooState::Seek && dist2 > aggro2 * 1.7 {
-                g.state = GooState::Wander;
-                g.timer = 0; // re-pick a wander heading next
-            }
-            if g.state != GooState::Seek && g.timer == 0 {
-                if self.res.rng.next_f32() < 0.25 {
-                    g.state = GooState::Idle;
-                    g.timer = 30 + (self.res.rng.next_f32() * 90.0) as u16;
-                } else {
-                    let a = self.res.rng.next_f32() * std::f32::consts::TAU;
-                    g.heading = Vec2::new(a.cos(), a.sin());
-                    g.state = GooState::Wander;
-                    g.timer = 60 + (self.res.rng.next_f32() * 120.0) as u16;
-                }
-            }
-            let target_dir = match g.state {
-                GooState::Seek => to_player.normalize_or_zero(),
-                GooState::Wander => g.heading,
-                GooState::Idle => Vec2::ZERO,
-            };
-            if let Some(td) = target_dir.try_normalize() {
-                g.heading = rotate_toward(g.heading, td, GOO_MAX_TURN);
-            }
-            let mv = if g.state == GooState::Idle { 0.0 } else { 1.0 };
-            let speed = goo_tier_speed(g.tier);
+            // --- AI: pick a target travel direction, steer the head heading. ---
+            let (mv, speed) = self.goo_step_ai(&mut g, pxz, aggro2);
 
             // --- crawl gait clock: advance the integer phase every tick (even
             // while Idle, so a resting blob still breathes) and read its
@@ -841,28 +1010,11 @@ impl<S: AudioSink> HouseGame<S> {
             let gait_base = g.body_len * (GOO_LEN_MIN + (GOO_LEN_MAX - GOO_LEN_MIN) * stretch) * (1.0 - tension * GOO_TENSE_CLENCH);
             let gait_len = (gait_base + g.body_len * wobble * GOO_WOBBLE_LEN).max(g.body_len * 0.2);
 
-            // --- head anchor: Verlet inertia + steering drive + trap pull,
-            // through collide_and_slide (walls stop it like the player). The
-            // drive surges with the lunge (`stretch`) so the creature pushes off
-            // each gait cycle rather than gliding at a constant rate. ---
-            let inertia = (g.ends[0] - g.ends_prev[0]) * GOO_VERLET_DECAY * GOO_HEAD_INERTIA;
-            // she all but stops crawling while she pushes (tension → 0 drive)
-            let drive = g.heading * (speed * mv * (0.5 + 0.5 * stretch) * (1.0 - 0.85 * tension) * TICK_DT);
-            let d = inertia + drive + (self.trap_accel(g.ends[0]) * well + mother_acc) * GOO_END_TRAP;
-            let (nx, nz) = collide_and_slide(|x, z| self.goo_solid(x, z), g.ends[0].x, g.ends[0].y, d.x, d.y);
-            g.ends_prev[0] = g.ends[0];
-            g.ends[0] = Vec2::new(nx, nz);
-
-            // --- tail anchor: Verlet + trap pull, then a distance constraint
-            // holding it the (gait-modulated) spine length behind the head. As
-            // `gait_len` shrinks the tail catches up (round-up) and as it grows
-            // the body extends (the inchworm reach). ---
-            let tail_d = (g.ends[1] - g.ends_prev[1]) * GOO_VERLET_DECAY + (self.trap_accel(g.ends[1]) * well + mother_acc) * GOO_END_TRAP;
-            g.ends_prev[1] = g.ends[1];
-            g.ends[1] += tail_d;
-            let span = g.ends[1] - g.ends[0];
-            let dist = span.length().max(1e-5);
-            g.ends[1] = g.ends[0] + span * (gait_len / dist);
+            // --- head anchor (Verlet + steering drive + trap/mother pull,
+            // resolved through collide_and_slide), then the trailing tail anchor
+            // pinned `gait_len` behind it (the squash-and-stretch inchworm reach). ---
+            self.goo_step_head_anchor(&mut g, speed, mv, stretch, tension, well, mother_acc);
+            self.goo_step_tail_anchor(&mut g, gait_len, well, mother_acc);
 
             // --- fluid body: Position-Based Fluids (Macklin & Müller 2013).
             // External body forces (pull toward the two spine ends + traps)
@@ -933,82 +1085,17 @@ impl<S: AudioSink> HouseGame<S> {
             }
             let scorr_denom = goo_w(0.2 * h, h).max(1e-6);
             for _ in 0..GOO_SOLVER_ITERS {
-                // density + per-particle lambda
-                let mut lambda = [0.0f32; GOO_PARTICLES];
-                for i in 0..GOO_PARTICLES {
-                    let mut rho = 0.0;
-                    let mut grad_i = Vec2::ZERO;
-                    let mut sum_grad2 = 0.0;
-                    for j in 0..GOO_PARTICLES {
-                        let rij = xp[i] - xp[j];
-                        let r = rij.length();
-                        rho += goo_w(r, h);
-                        if i != j && r > 1e-6 {
-                            let gw = rij / r * goo_dw(r, h); // ∇W(p_i - p_j)
-                            grad_i += gw;
-                            sum_grad2 += gw.length_squared();
-                        }
-                    }
-                    sum_grad2 += grad_i.length_squared();
-                    let c = rho / rho0 - 1.0;
-                    lambda[i] = -c / (sum_grad2 / (rho0 * rho0) + GOO_CFM_EPS);
-                }
-                // position corrections (incompressibility + cohesion)
-                for i in 0..GOO_PARTICLES {
-                    let mut dp = Vec2::ZERO;
-                    for j in 0..GOO_PARTICLES {
-                        if i == j {
-                            continue;
-                        }
-                        let rij = xp[i] - xp[j];
-                        let r = rij.length();
-                        if r >= h || r < 1e-6 {
-                            continue;
-                        }
-                        let scorr = -GOO_SCORR_K * (goo_w(r, h) / scorr_denom).powi(GOO_SCORR_N);
-                        let gw = rij / r * goo_dw(r, h);
-                        dp += gw * ((lambda[i] + lambda[j] + scorr) / rho0);
-                    }
-                    // clamp the correction so the density solve can never overshoot
-                    // (scaled with the blob so a small one isn't over-corrected)
-                    let dl = dp.length();
-                    let max_dp = GOO_MAX_DP * g_scale;
-                    if dl > max_dp {
-                        dp *= max_dp / dl;
-                    }
-                    xp[i] += dp;
-                }
+                let lambda = goo_pbf_lambda(&xp, rho0, h);
+                goo_pbf_correct(&mut xp, &lambda, rho0, h, g_scale, scorr_denom);
                 // walls + player pillar: keep the fluid out of solids (per-axis
                 // slide back), so the body drapes against geometry and the player.
-                for i in 0..GOO_PARTICLES {
-                    if self.goo_solid(xp[i].x, xp[i].y) {
-                        let o = g.parts[i];
-                        if !self.goo_solid(xp[i].x, o.y) {
-                            xp[i].y = o.y;
-                        } else if !self.goo_solid(o.x, xp[i].y) {
-                            xp[i].x = o.x;
-                        } else {
-                            xp[i] = o;
-                        }
-                    }
-                }
+                self.goo_clamp_to_solids(&mut xp, &g.parts);
             }
             // velocity from the solved motion, then XSPH viscosity for cohesion
             for i in 0..GOO_PARTICLES {
                 g.vel[i] = (xp[i] - g.parts[i]) / dt;
             }
-            let vin = g.vel;
-            for i in 0..GOO_PARTICLES {
-                let mut dv = Vec2::ZERO;
-                for j in 0..GOO_PARTICLES {
-                    if i == j {
-                        continue;
-                    }
-                    let r = (xp[i] - xp[j]).length();
-                    dv += (vin[j] - vin[i]) * goo_w(r, h);
-                }
-                g.vel[i] += dv * GOO_VISCOSITY;
-            }
+            goo_xsph_viscosity(&mut g.vel, &xp, h);
             g.parts = xp;
 
             *self.world.get::<&mut Goo>(e).unwrap() = g;
