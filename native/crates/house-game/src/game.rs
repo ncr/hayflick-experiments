@@ -2190,4 +2190,62 @@ mod tests {
         d.cmd(Command::Use { kind: ItemKind::Food });
         assert_eq!(d.g.state_hash(), h0, "Use must not perturb a survival-off level");
     }
+
+    // Goo-sim determinism oracle. // Golden anchor: must not change.
+    //
+    // The goo goldens (house/lab/grid/game/game_replay) are all MOB-FREE, so the
+    // goo sim's float results are NOT exercised by any image golden, and the
+    // round-trip tests above only compare new-vs-new (they catch non-determinism,
+    // not a float REORDER that is consistently wrong). These pinned hashes are
+    // the real guard: any change that perturbs the goo sim's float evaluation
+    // order moves a hash and fails here. Each scenario exercises a distinct slice
+    // of `goo_system`:
+    //   goo_level@300  — crawl/gait/AI/PBF + tier-0 mitosis (budding, mother
+    //                    gravity, tether, wobble) across a full spawn period.
+    //   goonursery@400 — the pure mitosis showcase (single tier-0 mother).
+    //   split@trace    — `damage_goo` shot-driven split cascade.
+    //   merge@90       — `merge_system` fusing-collapse + survivor promotion.
+    // If a hash changes from an INTENTIONAL behaviour change, re-capture and
+    // explain why in the commit; if it changes from a refactor, the refactor
+    // reordered floats and must be reverted.
+    const ORACLE_GOO_LEVEL_300: u64 = 0x432ad61a2b174649;
+    const ORACLE_GOONURSERY_400: u64 = 0x91a4a7c31419968f;
+    const ORACLE_SPLIT_TRACE: u64 = 0xdd430bf5221cf38a;
+    const ORACLE_MERGE_90: u64 = 0xbc851fa3489cf2a7;
+
+    #[test]
+    fn goo_sim_hash_oracle_crawl_and_mitosis() {
+        let mut a = GooDrv::new();
+        a.run(300);
+        assert_eq!(a.g.state_hash(), ORACLE_GOO_LEVEL_300, "got {:#018x}", a.g.state_hash());
+    }
+
+    #[test]
+    fn goo_sim_hash_oracle_nursery() {
+        let mut n = HouseGame::new(&crate::spec::goonursery_level(), VecSink::default());
+        for t in 0..400 {
+            n.tick(Tick(t), &[]);
+        }
+        assert_eq!(n.state_hash(), ORACLE_GOONURSERY_400, "got {:#018x}", n.state_hash());
+    }
+
+    #[test]
+    fn goo_sim_hash_oracle_split() {
+        let mut s = GooDrv::new();
+        for _ in 0..6 {
+            s.shoot_at(Vec2::new(9.5, 4.8));
+            s.run(16);
+        }
+        s.run(40);
+        assert_eq!(s.g.state_hash(), ORACLE_SPLIT_TRACE, "got {:#018x}", s.g.state_hash());
+    }
+
+    #[test]
+    fn goo_sim_hash_oracle_merge() {
+        let mut m = HouseGame::new(&merge_pair_level(), VecSink::default());
+        for t in 0..90 {
+            m.tick(Tick(t), &[]);
+        }
+        assert_eq!(m.state_hash(), ORACLE_MERGE_90, "got {:#018x}", m.state_hash());
+    }
 }
