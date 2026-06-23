@@ -105,6 +105,18 @@ crawl in, merge into Larges, under full C lighting; the player pillar is at
 
 ## Determinism + tuning gotchas (read before touching the sim/render)
 
+- **The goo image goldens are all MOB-FREE** — they verify the goo code didn't
+  perturb the *non-goo* path, but never exercise the goo sim's float results.
+  The guard for goo float behaviour is the **`goo_sim_hash_oracle_*` tests**
+  (`game.rs`): four pinned `state_hash` values (crawl+mitosis, nursery, split,
+  merge). Any refactor that reorders a goo float fails these. If you change goo
+  behaviour ON PURPOSE, re-capture the four constants and say why in the commit.
+  The goo *render* path (SDF/shaders/lights/proxies) also isn't golden-covered —
+  diff a `SCENE=goonursery … SHOT=` frame before/after a render-side change.
+- `goo_system` is a thin orchestrator over verbatim per-tick sub-steps
+  (`goo_step_fusing/_mitosis/_ai/_head_anchor/_tail_anchor`, `goo_pbf_lambda`/
+  `_correct`, `goo_xsph_viscosity`, `goo_clamp_to_solids`). They are extracted
+  to preserve float order EXACTLY — don't reorder/reassociate when editing.
 - **Mob-free levels MUST stay byte-identical.** Everything is gated on
   `!mobs.is_empty()`. Re-run goldens after ANY sim/shader change.
 - **Idle goo proxies MUST stay parked far away** (`y=-1000`, mask `0x00`). At the
