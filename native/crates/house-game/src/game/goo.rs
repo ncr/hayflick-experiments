@@ -24,7 +24,7 @@ pub const GOO_LIVE_CAP: usize = 12;
 /// short — slimes are dumb and slow, they don't beeline across a room.
 pub const GOO_AGGRO: f32 = 1.5;
 /// Verlet velocity retention per tick (1 = frictionless, <1 = gooey drag).
-pub const GOO_VERLET_DAMP: f32 = 0.82;
+pub const GOO_VERLET_DECAY: f32 = 0.82;
 /// Fraction of head inertia carried each tick (the rest is steering drive).
 pub const GOO_HEAD_INERTIA: f32 = 0.45;
 /// Max heading turn per tick (radians) — gummy, not instant.
@@ -199,6 +199,12 @@ pub const GOO_MOTHER_PULL: f32 = 1.6;
 // splashes when shot. An external body force pulls the fluid toward the spine
 // capsule (the "muscle" that drives locomotion + the single round body) and
 // toward any trap. CPU + f32 → deterministic and hashed like the player path.
+//
+// The solver constants below (`GOO_CFM_EPS`, `GOO_MAX_DP`, `GOO_SCORR_K`/`_N`,
+// `GOO_VISCOSITY`) are a COUPLED stability set, not independent knobs: each was
+// tuned against the others to keep the small 40-particle fluid from dispersing
+// or clustering, so retuning one usually means retuning its neighbours. Tune in
+// small steps and re-capture (the `goo_sim_hash_oracle_*` tests pin the result).
 /// Fluid particles per blob. Denser = smoother metaball surface (cheap on CPU).
 pub const GOO_PARTICLES: usize = 40;
 /// SPH smoothing radius (wu): a particle interacts with neighbours within this.
@@ -244,7 +250,7 @@ pub const GOO_MAX_VEL: f32 = 6.0;
 /// Left at the original value: nudging it toward 1 let kinetic energy build up
 /// across ticks and the body buzzed/jittered (the "glitchy shake") instead of
 /// settling between wobbles.
-pub const GOO_DAMP: f32 = 0.99;
+pub const GOO_VELOCITY_DECAY: f32 = 0.99;
 /// Inverse-distance softening (wu²) on the body-force denominators.
 pub const GOO_SOFTEN: f32 = 0.02;
 /// Particle metaball radius as a fraction of body radius (SDF lump size).
@@ -289,7 +295,7 @@ pub fn goo_tier_scale(tier: u8) -> f32 {
 /// blob `body_len` is the tier target, so this equals `goo_tier_scale(tier)`.
 /// Floored so a near-zero seed can't drive the smoothing radius to an unstable
 /// sliver; the seed sits at this floor and the footprint grows as it inflates.
-pub fn goo_body_scale(body_len: f32) -> f32 {
+pub(crate) fn goo_body_scale(body_len: f32) -> f32 {
     (body_len / (GOO_BASE_RADIUS * GOO_BODY_FRAC)).clamp(0.26, 1.0)
 }
 /// Birth-EFFORT tension 0..1 for a blob, from its (already-updated) spawn state.
@@ -297,7 +303,7 @@ pub fn goo_body_scale(body_len: f32) -> f32 {
 /// then relaxes out over the afterglow. Shared by the SIM (it clenches/shrinks
 /// the body) and the SNAPSHOT (it shrinks the rendered size to match), so the
 /// fluid footprint and the drawn silhouette contract in lockstep.
-pub fn goo_tension(tier: u8, spawn_timer: u16, birth_glow: u16) -> f32 {
+pub(crate) fn goo_tension(tier: u8, spawn_timer: u16, birth_glow: u16) -> f32 {
     if tier != 0 {
         0.0
     } else if birth_glow > 0 {
@@ -315,7 +321,7 @@ pub fn goo_tension(tier: u8, spawn_timer: u16, birth_glow: u16) -> f32 {
 /// drawn metaball cloud along the tear axis. Presentation-only (like `goo_tension`
 /// for the render size), so the visible jelly shake is crisp where the
 /// incompressible fluid itself cannot deform fast enough. 0 once settled.
-pub fn goo_wobble_render(wobble_amp: f32, wobble_phase: u16) -> f32 {
+pub(crate) fn goo_wobble_render(wobble_amp: f32, wobble_phase: u16) -> f32 {
     if wobble_amp <= 0.0 {
         0.0
     } else {
@@ -356,25 +362,25 @@ impl GooState {
     }
 }
 
+/// Per-tier game-balance curves, indexed by tier (0 Large, 1 Medium, 2 Small),
+/// surfaced as const tables next to the other `GOO_*` tuning so the balance is
+/// greppable rather than buried in `match` arms.
+/// Tier → hit points: Large takes two shots then splits, Medium/Small one.
+pub const GOO_TIER_HP: [u16; 3] = [12, 6, 3];
+/// Tier → crawl speed (wu/s): smaller blobs scurry faster.
+pub const GOO_TIER_SPEED: [f32; 3] = [0.8, 1.1, 1.5];
+
 /// Tier → body radius (wu): R0, R0/√2, R0/2 for Large/Medium/Small.
 pub fn goo_tier_radius(tier: u8) -> f32 {
     GOO_BASE_RADIUS * std::f32::consts::FRAC_1_SQRT_2.powi(tier as i32)
 }
-/// Tier → hit points. Large takes two shots then splits, Medium/Small one.
+/// Tier → hit points (see `GOO_TIER_HP`; tiers past Small clamp to Small).
 fn goo_tier_hp(tier: u8) -> u16 {
-    match tier {
-        0 => 12,
-        1 => 6,
-        _ => 3,
-    }
+    GOO_TIER_HP[(tier as usize).min(2)]
 }
-/// Tier → crawl speed (wu/s). Smaller blobs scurry faster.
+/// Tier → crawl speed (see `GOO_TIER_SPEED`; tiers past Small clamp to Small).
 fn goo_tier_speed(tier: u8) -> f32 {
-    match tier {
-        0 => 0.8,
-        1 => 1.1,
-        _ => 1.5,
-    }
+    GOO_TIER_SPEED[(tier as usize).min(2)]
 }
 
 /// A gooey, splittable fluorescent blob mob. The creature is a tiny two-anchor
@@ -430,6 +436,15 @@ impl Goo {
     }
 }
 
+/// FNV-1a 32-bit offset basis, reused here as a multiplier for RNG-free,
+/// id-derived deterministic scattering (particle jitter, gait-clock and mitosis
+/// desync) so split children and co-located mothers never line up in lockstep —
+/// all without consuming the shared RNG, which keeps the draw order stable.
+const GOO_ID_HASH: u32 = 2654435761;
+/// Secondary odd multiplier that mixes the particle index / mitosis-desync term
+/// (a different stride from `GOO_ID_HASH` so the two scrambles don't correlate).
+const GOO_ID_MIX: u32 = 40503;
+
 /// Build a fresh blob: head at `head`, tail trailing `body_len` along
 /// `-heading`, and the particles scattered as a small grid over the spine (the
 /// capsule muscle rounds them into one blob within a few ticks). `vel` (per-tick
@@ -451,18 +466,18 @@ pub(crate) fn fresh_goo(id: MobId, tier: u8, head: Vec2, heading: Vec2, seed_vel
     for (i, p) in parts.iter_mut().enumerate() {
         let gx = (i as i32 % cols) - cols / 2;
         let gz = (i as i32 / cols) - (GOO_PARTICLES as i32 / cols) / 2;
-        let h = ((id.0.wrapping_mul(2654435761)).wrapping_add(i as u32 * 40503)) as f32;
+        let h = ((id.0.wrapping_mul(GOO_ID_HASH)).wrapping_add(i as u32 * GOO_ID_MIX)) as f32;
         let jit = (h * 1e-7).fract() - 0.5;
         *p = mid + heading * (gx as f32 * spacing + jit * 0.02) + perp * (gz as f32 * spacing);
     }
     // desync the gait clock per blob from the same id hash (RNG-free), so split
     // children never pulse in lockstep with each other or the parent.
-    let gait_phase = ((id.0.wrapping_mul(2654435761)) % GOO_GAIT_PERIOD as u32) as u16;
+    let gait_phase = ((id.0.wrapping_mul(GOO_ID_HASH)) % GOO_GAIT_PERIOD as u32) as u16;
     // tier-0 mothers bud on the mitosis clock; desync the FIRST bud per-id (over
     // the back half of the cycle) so co-located mothers don't pulse in lockstep.
     // Non-mothers never bud (spawn_timer 0, the spawn block is tier-0-gated).
     let spawn_timer = if tier == 0 {
-        GOO_SPAWN_PERIOD - ((id.0.wrapping_mul(40503)) % (GOO_SPAWN_PERIOD as u32 / 2)) as u16
+        GOO_SPAWN_PERIOD - ((id.0.wrapping_mul(GOO_ID_MIX)) % (GOO_SPAWN_PERIOD as u32 / 2)) as u16
     } else {
         0
     };
@@ -523,6 +538,13 @@ pub struct MobRender {
     /// born. The shader lerps the goo colour toward a hot birth tint by this.
     /// Pure presentation — derived from the hashed spawn state, never hashed.
     pub glow: [f32; GOO_PARTICLES],
+}
+
+/// A blob is free to take part in a fusion only once it is past its newborn
+/// merge-grace AND not already collapsing into another survivor. Shared by both
+/// ends of the `merge_system` pairing scan so the eligibility rule lives once.
+fn goo_merge_ready(g: &Goo) -> bool {
+    g.merge_grace == 0 && g.fusing == 0
 }
 
 impl<S: AudioSink> HouseGame<S> {
@@ -823,7 +845,7 @@ impl<S: AudioSink> HouseGame<S> {
             // through collide_and_slide (walls stop it like the player). The
             // drive surges with the lunge (`stretch`) so the creature pushes off
             // each gait cycle rather than gliding at a constant rate. ---
-            let inertia = (g.ends[0] - g.ends_prev[0]) * GOO_VERLET_DAMP * GOO_HEAD_INERTIA;
+            let inertia = (g.ends[0] - g.ends_prev[0]) * GOO_VERLET_DECAY * GOO_HEAD_INERTIA;
             // she all but stops crawling while she pushes (tension → 0 drive)
             let drive = g.heading * (speed * mv * (0.5 + 0.5 * stretch) * (1.0 - 0.85 * tension) * TICK_DT);
             let d = inertia + drive + (self.trap_accel(g.ends[0]) * well + mother_acc) * GOO_END_TRAP;
@@ -835,7 +857,7 @@ impl<S: AudioSink> HouseGame<S> {
             // holding it the (gait-modulated) spine length behind the head. As
             // `gait_len` shrinks the tail catches up (round-up) and as it grows
             // the body extends (the inchworm reach). ---
-            let tail_d = (g.ends[1] - g.ends_prev[1]) * GOO_VERLET_DAMP + (self.trap_accel(g.ends[1]) * well + mother_acc) * GOO_END_TRAP;
+            let tail_d = (g.ends[1] - g.ends_prev[1]) * GOO_VERLET_DECAY + (self.trap_accel(g.ends[1]) * well + mother_acc) * GOO_END_TRAP;
             g.ends_prev[1] = g.ends[1];
             g.ends[1] += tail_d;
             let span = g.ends[1] - g.ends[0];
@@ -901,7 +923,7 @@ impl<S: AudioSink> HouseGame<S> {
                     // bond spring: haul the body back to the bud site → the neck.
                     a += (g.tether_anchor - p) * tether_k;
                 }
-                g.vel[i] = (g.vel[i] + a * dt) * GOO_DAMP;
+                g.vel[i] = (g.vel[i] + a * dt) * GOO_VELOCITY_DECAY;
                 let vl = g.vel[i].length();
                 let max_vel = GOO_MAX_VEL * g_scale; // scale the guard with the blob
                 if vl > max_vel {
@@ -1105,18 +1127,21 @@ impl<S: AudioSink> HouseGame<S> {
         let mut found: Option<(Entity, Entity, MobId, u8, Vec2, Vec2)> = None;
         'scan: for a in 0..mobs.len() {
             let ga = *self.world.get::<&Goo>(mobs[a]).unwrap();
-            if ga.tier == 0 || ga.merge_grace > 0 || ga.fusing > 0 {
+            if ga.tier == 0 || !goo_merge_ready(&ga) {
                 continue; // Large can't grow; newborns/fusing blobs are immune
             }
             let ca = ga.centroid();
             let touch = goo_tier_radius(ga.tier) * GOO_MERGE_FRAC;
             for b in (a + 1)..mobs.len() {
                 let gb = *self.world.get::<&Goo>(mobs[b]).unwrap();
-                if gb.tier != ga.tier || gb.merge_grace > 0 || gb.fusing > 0 {
+                if gb.tier != ga.tier || !goo_merge_ready(&gb) {
                     continue; // same-tier only, and both past grace / not fusing
                 }
-                if (ca - gb.centroid()).length() < touch {
-                    found = Some((mobs[a], mobs[b], ga.id, ga.tier, (ca + gb.centroid()) * 0.5, ga.heading));
+                let cb = gb.centroid();
+                if (ca - cb).length() < touch {
+                    // midpoint kept as the exact `(ca + cb) * 0.5` — f32 is
+                    // non-associative, so this expression is hashed verbatim.
+                    found = Some((mobs[a], mobs[b], ga.id, ga.tier, (ca + cb) * 0.5, ga.heading));
                     break 'scan;
                 }
             }
