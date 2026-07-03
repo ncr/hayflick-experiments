@@ -66,6 +66,9 @@ pub enum Command {
     /// Consume one carried item of `kind` → restore the matching need (clamped
     /// to 1.0), emit `Consumed`. No-op if none carried or survival is off.
     Use { kind: ItemKind },
+    /// Keys 1–5: select an arsenal weapon slot. No-op on levels without
+    /// `arena` (the arsenal state doesn't exist there) and for unknown slots.
+    SelectWeapon { slot: u8 },
 }
 
 // ---- components -------------------------------------------------------------
@@ -179,6 +182,12 @@ pub enum GameEvent {
     /// Two same-tier blobs touched and fused into one a tier larger — the
     /// surviving (lower) id and the fusion point.
     MobMerged(MobId, Vec3),
+    /// A cured blob died and SOLIDIFIED: a dead chunk now stands at the point
+    /// (id of the body that died, its centre).
+    MobSolidified(MobId, Vec3),
+    /// An uzi round tore a droplet off a surviving blob (id, impact point) —
+    /// a presentation event (the shell spawns render droplets; no audio).
+    MobBled(MobId, Vec3),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -246,6 +255,18 @@ pub struct Res {
     /// Survival tuning when enabled; `None` = survival OFF (all survival
     /// systems are no-ops and nothing survival-shaped enters the hash).
     pub survival: Option<SurvivalParams>,
+    /// Arsenal (arena-shooter weapon selection) when the level opts in via
+    /// `spec.arena`; `None` = arsenal OFF (SelectWeapon is a no-op and nothing
+    /// arsenal-shaped enters the hash — the survival-block discipline).
+    pub arsenal: Option<ArsenalState>,
+    /// A live explosion flash: blast point + ticks left. Armed by `explode`
+    /// (grenade detonations), decayed each tick, surfaced to the renderer as a
+    /// transient spotlight. Only ever `Some` on arsenal levels (grenades don't
+    /// exist elsewhere), and hashed inside the arsenal-gated block.
+    pub boom: Option<(Vec3, u32)>,
+    /// Wave-director state; `Some` on arena levels only (hashed in the
+    /// arsenal-gated block, like `boom`).
+    pub wave: Option<WaveState>,
     /// Edge-trigger memory for `NeedCritical`/`NeedRecovered`: was [hunger,
     /// battery] below `critical` LAST tick? Compared against this tick's level
     /// so the event fires once per crossing, not every tick below threshold.
@@ -261,6 +282,14 @@ pub struct Res {
     /// Set when this tick queued a mob spawn/despawn, so the post-flush
     /// `rebuild_mobs` runs only when the mob set actually changed.
     mobs_dirty: bool,
+    /// Net blob count change queued this tick (spawns − despawns, applied at
+    /// the flush). `self.mobs` only rebuilds post-flush, so every same-tick
+    /// GOO_LIVE_CAP decision (a birth, a shot-split) must add this to the
+    /// stale handle count — without it two same-tick splits/births each pass
+    /// the gate and overshoot the cap (overflowing the renderer's fixed
+    /// metaball/shadow-proxy pools). Reset every tick; never hashed (it is
+    /// derivable scratch, like `staging`).
+    pending_mob_delta: i32,
     /// Seeded monotonic id for runtime-spawned projectiles, so the handle list
     /// stays id-sorted. Advances on every fired pellet.
     next_projectile_id: u32,
@@ -276,6 +305,12 @@ pub struct Res {
     pub cur_tick: u64,
     /// Cached PBF rest density (kernel-calibrated; see `goo_rho0`).
     pub goo_rho0: f32,
+    /// Dead solid chunks (xmin, zmin, xmax, zmax): the remains of cured blobs.
+    /// Inert obstacles — they block walking (goo inherits via `walk_blocked`)
+    /// and low projectiles (a knee-high slab, `GOO_CHUNK_H`). Append-only,
+    /// capped at `GOO_CHUNK_CAP`; hashed only when non-empty (the mobs-block
+    /// pattern), so chunk-free levels hash exactly as before.
+    pub chunks: Vec<[f32; 4]>,
 }
 
 
@@ -299,11 +334,23 @@ pub struct GameSnapshot {
     pub hunger: f32,
     pub battery: f32,
     pub inventory: Vec<ItemKind>,
+    /// Arsenal HUD state: (selected weapon, cooldown ticks remaining, the
+    /// selected weapon's full cooldown). `None` on non-arena levels, so the
+    /// old-level snapshot is independent of the arena feature.
+    pub weapon: Option<(WeaponKind, u32, u32)>,
+    /// A live explosion flash: blast point + remaining intensity 0..1 (the
+    /// renderer turns it into a transient spotlight). `None` when quiet.
+    pub boom: Option<(Vec3, f32)>,
+    /// Current wave number (arena levels; 0 = the authored squad).
+    pub wave: Option<u16>,
     /// Goo blobs to draw this tick, MobId-sorted. Empty on mob-free levels.
     pub mobs: Vec<MobRender>,
     /// Projectiles in flight this tick, ProjectileId-sorted. Empty when nothing
     /// has been fired / everything has landed.
     pub projectiles: Vec<ProjectileRender>,
+    /// Dead solid chunks (xmin, zmin, xmax, zmax) — cured-blob remains the
+    /// renderer skins as matte domes. Empty everywhere but a fought arena.
+    pub chunks: Vec<[f32; 4]>,
 }
 
 pub struct HouseGame<S: AudioSink = NullSink> {
@@ -396,16 +443,21 @@ impl<S: AudioSink> HouseGame<S> {
             room_lights: 0.0,
             staging: Staging::default(),
             survival: spec.survival,
+            arsenal: spec.arena.map(|_| ArsenalState::default()),
+            boom: None,
+            wave: spec.arena.map(|a| WaveState { idx: 0, lull: a.wave_lull, lull_full: a.wave_lull }),
             need_was_critical: [false; 2], // needs start full (1.0) → not critical
             buf: CommandBuffer::new(),
             // children spawn above every authored id (0 when the level has none)
             next_mob_id: spec.mobs.iter().map(|m| m.id.0 + 1).max().unwrap_or(0),
             mobs_dirty: false,
+            pending_mob_delta: 0,
             next_projectile_id: 0,
             projectiles_dirty: false,
             traps: spec.traps.iter().map(|t| (Vec2::new(t.pos.x, t.pos.z), t.strength, t.radius, t.off_tick)).collect(),
             cur_tick: 0,
             goo_rho0: goo_rho0(),
+            chunks: Vec::new(),
         };
 
         // Goo blobs, MobId-sorted (no HashMap iteration). Spawned only when the
@@ -421,7 +473,7 @@ impl<S: AudioSink> HouseGame<S> {
                 let a = rng.next_f32() * std::f32::consts::TAU;
                 let heading = Vec2::new(a.cos(), a.sin());
                 let timer = 60 + (rng.next_f32() * 120.0) as u16;
-                (m.id, world.spawn((fresh_goo(m.id, m.tier, head, heading, Vec2::ZERO, timer),)))
+                (m.id, world.spawn((fresh_goo(m.id, m.tier, m.kind, head, heading, Vec2::ZERO, timer),)))
             })
             .collect();
         mob_pairs.sort_by_key(|(id, _)| *id);
@@ -483,7 +535,9 @@ impl<S: AudioSink> HouseGame<S> {
     /// True if ground point (x, z) is blocked for WALKING: level (floor rect +
     /// static solids) or any present door leaf solid.
     fn walk_blocked(&self, x: f32, z: f32) -> bool {
-        self.res.level.is_blocked(x, z) || self.res.dyn_solids.iter().any(|(_, s)| x >= s[0] && z >= s[1] && x <= s[2] && z <= s[3])
+        self.res.level.is_blocked(x, z)
+            || self.res.dyn_solids.iter().any(|(_, s)| x >= s[0] && z >= s[1] && x <= s[2] && z <= s[3])
+            || self.res.chunks.iter().any(|s| x >= s[0] && z >= s[1] && x <= s[2] && z <= s[3])
     }
 
 
@@ -547,6 +601,13 @@ impl<S: AudioSink> HouseGame<S> {
                 }
                 Command::RotateCamera { dq } => self.res.yaw_q = (self.res.yaw_q as i32 + *dq as i32).rem_euclid(4) as u32,
                 Command::Use { kind } => self.res.staging.use_items.push(*kind), // applied by use_system
+                Command::SelectWeapon { slot } => {
+                    // arsenal levels only; unknown slots are swallowed. Selection
+                    // is instant and does NOT reset the shared cooldown timer.
+                    if let (Some(a), Some(k)) = (self.res.arsenal.as_mut(), WeaponKind::from_slot(*slot)) {
+                        a.current = k;
+                    }
+                }
             }
         }
     }
@@ -881,8 +942,10 @@ impl<S: AudioSink> HouseGame<S> {
                 GameEvent::MobSplit(_, p) => AudioCue { id: CueId("goo_split"), pos: Some(p), gain: 1.0 },
                 GameEvent::MobKilled(_, p) => AudioCue { id: CueId("goo_die"), pos: Some(p), gain: 0.8 },
                 GameEvent::MobMerged(_, p) => AudioCue { id: CueId("goo_merge"), pos: Some(p), gain: 0.9 },
-                // need-state crossings are HUD/feedback events, no audio cue yet
-                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) => continue,
+                GameEvent::MobSolidified(_, p) => AudioCue { id: CueId("goo_solidify"), pos: Some(p), gain: 0.9 },
+                // need-state crossings are HUD/feedback events, no audio cue yet;
+                // bleed droplets are pure presentation (the hit cue already plays)
+                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) | GameEvent::MobBled(..) => continue,
             };
             self.sink.play(cue);
         }
@@ -909,6 +972,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
     fn tick(&mut self, t: Tick, cmds: &[Command]) {
         let sim_t = t.0 as f32 * TICK_DT;
         self.res.cur_tick = t.0; // for timed-trap expiry in trap_accel
+        self.res.pending_mob_delta = 0; // fresh tick: no queued blob spawns/despawns yet
         self.resolve_commands(cmds);
         self.door_system();
         self.walk_system();
@@ -918,6 +982,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         self.shoot_system();
         self.projectile_system(); // advance live shots, resolve impacts (after they spawn)
         self.merge_system(); // blobs that drifted together fuse (skipped if a shot already changed the set)
+        self.wave_system(); // arena: land the next squad once the floor is clear
         self.flashlight_system();
         self.light_system(sim_t);
         self.needs_system(); // decay/drain + pressure effects, late in the tick
@@ -956,6 +1021,13 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
             hunger: self.world.get::<&Hunger>(self.player).map(|h| h.0).unwrap_or(1.0),
             battery: self.world.get::<&Battery>(self.player).map(|b| b.0).unwrap_or(1.0),
             inventory: self.world.get::<&Inventory>(self.player).map(|i| i.items.clone()).unwrap_or_default(),
+            // arsenal HUD (arena levels): selected weapon + shared cooldown
+            weapon: self.res.arsenal.map(|a| {
+                let cd = self.world.get::<&Pistol>(self.player).unwrap().cooldown_ticks;
+                (a.current, cd, self.current_weapon().cooldown_ticks)
+            }),
+            boom: self.res.boom.map(|(at, t)| (at, t as f32 / BOOM_FLASH_TICKS as f32)),
+            wave: self.res.wave.map(|w| w.idx),
             // goo blobs (MobId-sorted): ends + particle cloud lifted to body
             // height. Pure read of the hashed field — empty on mob-free levels.
             mobs: self
@@ -972,11 +1044,13 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     let tense = goo_tension(g.tier, g.spawn_timer, g.birth_glow);
                     let r = g.body_len / GOO_BODY_FRAC * (1.0 - GOO_TENSE_SHRINK * tense);
                     let pr = r * GOO_PART_RADIUS_FRAC;
-                    // the render pose (jelly-wobble squash) + the per-particle
-                    // birth glow are pure presentation reads of the hashed state.
+                    // the render pose (jelly-wobble squash), the per-particle
+                    // birth glow, and the vertical body scale are pure
+                    // presentation reads of the hashed state.
                     let parts = goo_render_parts(&g, pr);
                     let glow = goo_render_glow(&g);
-                    MobRender { id: g.id, tier: g.tier, parts, radius: r, part_radius: pr, glow }
+                    let vscale = goo_render_vscale(&g);
+                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale }
                 })
                 .collect(),
             // projectiles in flight (ProjectileId-sorted) — empty when idle.
@@ -985,9 +1059,13 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                 .iter()
                 .map(|&e| {
                     let p = self.world.get::<&Projectile>(e).unwrap();
-                    ProjectileRender { id: p.id, pos: p.pos, radius: PROJ_RENDER_RADIUS }
+                    // tracer size follows the shot's physical radius so the five
+                    // weapons READ differently in flight (fat slug, pinprick uzi);
+                    // the pistol lands exactly on the historical 0.14.
+                    ProjectileRender { id: p.id, pos: p.pos, radius: p.radius * (PROJ_RENDER_RADIUS / PISTOL.radius) }
                 })
                 .collect(),
+            chunks: self.res.chunks.clone(),
         }
     }
 
@@ -1056,6 +1134,23 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                 h.u64(wi.id.0 as u64).u64(item_kind_tag(wi.kind));
             }
         }
+        // Arsenal folds in ONLY on arena levels (spec.arena), so every other
+        // level hashes byte-identically to before the arena feature. The boom
+        // flash rides inside the same gate (grenades exist only here).
+        if let Some(a) = self.res.arsenal {
+            h.u64(a.current.tag());
+            match self.res.boom {
+                Some((at, t)) => {
+                    h.u64(1).f32(at.x).f32(at.y).f32(at.z).u64(t as u64);
+                }
+                None => {
+                    h.u64(0);
+                }
+            }
+            if let Some(w) = self.res.wave {
+                h.u64(w.idx as u64).u64(w.lull as u64);
+            }
+        }
         // Goo mobs fold in ONLY when present, so a mob-free level (fixture /
         // game_level) hashes byte-identically to before this feature. The
         // seeded child-id counter is included so split determinism is pinned.
@@ -1075,6 +1170,11 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                 h.u64(g.spawn_timer as u64).f32(g.spawn_dir.x).f32(g.spawn_dir.y).u64(g.birth_glow as u64).u64(g.birth_immune as u64);
                 h.u64(g.tether as u64).f32(g.tether_anchor.x).f32(g.tether_anchor.y).u64(g.tear_ticks as u64);
                 h.f32(g.wobble_amp).f32(g.wobble_dir.x).f32(g.wobble_dir.y).u64(g.wobble_phase as u64);
+                // arena-species block (2026-07-03): kind + cure + harpoon pin.
+                // Appending these moved ALL FOUR goo oracles (hash bytes only —
+                // Green multipliers are exact 1.0 identities, so oracle-level
+                // BEHAVIOR is unchanged; see the dated recapture note there).
+                h.u64(g.kind.tag()).u64(g.cure as u64).u64(g.pinned as u64).f32(g.pin_pt.x).f32(g.pin_pt.y);
             }
         }
         // Projectiles block — ProjectileId-sorted, folded ONLY while shots are in
@@ -1087,6 +1187,14 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                 h.u64(p.id.0 as u64).u64(p.age as u64);
                 h.f32(p.pos.x).f32(p.pos.y).f32(p.pos.z);
                 h.f32(p.vel.x).f32(p.vel.y).f32(p.vel.z);
+            }
+        }
+        // Dead solid chunks fold in ONLY when one exists (they require a cured
+        // arena kill), so every chunk-free level hashes exactly as before.
+        if !self.res.chunks.is_empty() {
+            h.u64(self.res.chunks.len() as u64);
+            for c in &self.res.chunks {
+                h.f32(c[0]).f32(c[1]).f32(c[2]).f32(c[3]);
             }
         }
         h.0
@@ -1160,7 +1268,7 @@ fn ray_aabb(ray: &PickRay, lo: Vec3, hi: Vec3) -> Option<(f32, f32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::fixture;
+    use crate::spec::{fixture, MobSpec};
     use crate::trace::parse_trace;
     use sim_core::{Runner, VecSink};
 
@@ -1948,6 +2056,360 @@ mod tests {
     }
 
     #[test]
+    fn select_weapon_noop_without_arsenal() {
+        // SelectWeapon spam on a non-arena level must be byte-invisible: the
+        // arsenal doesn't exist there, so the command is swallowed with no
+        // state change (the gated-block discipline, like survival).
+        let spec = fixture();
+        let mut a = HouseGame::new(&spec, VecSink::default());
+        let mut b = HouseGame::new(&spec, VecSink::default());
+        for t in 0..60 {
+            a.tick(Tick(t), &[Command::SelectWeapon { slot: (t % 5 + 1) as u8 }]);
+            b.tick(Tick(t), &[]);
+        }
+        assert_eq!(a.state_hash(), b.state_hash(), "SelectWeapon must be a no-op without an arsenal");
+        assert_eq!(a.snapshot().weapon, None, "non-arena snapshots carry no weapon HUD");
+    }
+
+    #[test]
+    fn arena_select_weapon_is_hashed_and_selects() {
+        // On the arena level the selection is real sim state: it lands in the
+        // snapshot HUD tuple and moves state_hash (the arsenal-gated block).
+        let spec = crate::spec::arena_level();
+        let mut a = HouseGame::new(&spec, VecSink::default());
+        let mut b = HouseGame::new(&spec, VecSink::default());
+        a.tick(Tick(0), &[Command::SelectWeapon { slot: 3 }]);
+        b.tick(Tick(0), &[]);
+        assert_eq!(a.snapshot().weapon.map(|w| w.0), Some(WeaponKind::Shotgun));
+        assert_eq!(b.snapshot().weapon.map(|w| w.0), Some(WeaponKind::Slug), "default slot is 1 (slug)");
+        assert_ne!(a.state_hash(), b.state_hash(), "selection folds into the arena hash");
+        // out-of-range slots are swallowed (selection unchanged)
+        a.tick(Tick(1), &[Command::SelectWeapon { slot: 9 }]);
+        assert_eq!(a.snapshot().weapon.map(|w| w.0), Some(WeaponKind::Shotgun));
+    }
+
+    /// Aim ray from the arena spawn's muzzle toward a floor point — shared by
+    /// the arsenal tests below.
+    fn arena_aim(gx: f32, gz: f32) -> Command {
+        let muzzle = Vec3::new(0.0, 1.25, 6.0);
+        let dir = (Vec3::new(gx, GOO_BASE_RADIUS, gz) - muzzle).normalize();
+        Command::Shoot { ray: PickRay { origin: muzzle, dir } }
+    }
+
+    #[test]
+    fn arena_weapons_replay_deterministically() {
+        // the whole arsenal path (selection, bloom jitter, pellet fan) must be
+        // RNG-free: the same command trace twice → the same state hash.
+        let spec = crate::spec::arena_level();
+        let run = || {
+            let mut g = HouseGame::new(&spec, VecSink::default());
+            for t in 0..240u64 {
+                let cmds: Vec<Command> = match t {
+                    10 => vec![Command::SelectWeapon { slot: 2 }],
+                    20 | 26 | 32 => vec![arena_aim(0.0, 2.0), Command::Move { dir: IVec2::new(1, 0) }],
+                    60 => vec![Command::SelectWeapon { slot: 3 }],
+                    70 | 110 => vec![arena_aim(4.0, 0.5)],
+                    150 => vec![Command::SelectWeapon { slot: 1 }],
+                    160 => vec![arena_aim(-4.0, 1.0)],
+                    _ => vec![],
+                };
+                g.tick(Tick(t), &cmds);
+            }
+            g.state_hash()
+        };
+        assert_eq!(run(), run(), "arsenal fire must be bit-reproducible");
+    }
+
+    #[test]
+    fn shotgun_fires_seven_pellets_and_uzi_blooms_wider_moving() {
+        let spec = crate::spec::arena_level();
+        // shotgun: one trigger pull births `pellets` projectiles
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        g.tick(Tick(0), &[Command::SelectWeapon { slot: 3 }]);
+        g.tick(Tick(1), &[arena_aim(0.0, 2.0)]);
+        assert_eq!(g.snapshot().projectiles.len(), SHOTGUN.pellets as usize);
+
+        // uzi bloom: the same trigger tick fired while HOLDING a move key must
+        // leave the projectile on a different (wider-scattered) velocity than
+        // the planted shot — same id, same aim ray, only the movement differs.
+        let fire_at = |moving: bool| -> Vec3 {
+            let mut g = HouseGame::new(&spec, VecSink::default());
+            g.tick(Tick(0), &[Command::SelectWeapon { slot: 2 }]);
+            let mut cmds = vec![arena_aim(0.0, 2.0)];
+            if moving {
+                cmds.push(Command::Move { dir: IVec2::new(1, 0) });
+            }
+            g.tick(Tick(1), &cmds);
+            let e = g.projectiles[0];
+            let vel = g.world.get::<&Projectile>(e).unwrap().vel;
+            vel
+        };
+        let planted = fire_at(false);
+        let running = fire_at(true);
+        assert_ne!(planted, running, "moving must widen the bloom cone");
+        // both still fly at muzzle speed (jitter only bends, never brakes)
+        assert!((planted.length() - UZI.muzzle_speed).abs() < 1e-3);
+        assert!((running.length() - UZI.muzzle_speed).abs() < 1e-3);
+    }
+
+    #[test]
+    fn grenade_bounces_off_the_wall_and_replays_bit_exact() {
+        // fire a grenade at the arena's south wall (z = 10, 4 wu behind the
+        // spawn): it must SURVIVE the wall hit with its z-velocity reflected,
+        // then die by fuse — and the whole dance must replay to the same hash.
+        let spec = crate::spec::arena_level();
+        let run = || {
+            let mut g = HouseGame::new(&spec, VecSink::default());
+            g.tick(Tick(0), &[Command::SelectWeapon { slot: 4 }]);
+            let ray = PickRay { origin: Vec3::new(0.0, 1.25, 6.0), dir: Vec3::new(0.0, -0.05, 1.0).normalize() };
+            g.tick(Tick(1), &[Command::Shoot { ray }]);
+            let mut bounced = false;
+            let mut hashes = Vec::new();
+            for t in 2..140u64 {
+                g.tick(Tick(t), &[]);
+                if let Some(&e) = g.projectiles.first() {
+                    let p = *g.world.get::<&Projectile>(e).unwrap();
+                    if p.vel.z < 0.0 {
+                        bounced = true; // flying back off the south wall
+                    }
+                }
+                hashes.push(g.state_hash());
+            }
+            assert!(bounced, "the grenade must reflect off the wall, not despawn");
+            assert!(g.projectiles.is_empty(), "the fuse (max_age 90) must have detonated it");
+            hashes
+        };
+        assert_eq!(run(), run(), "grenade flight must be bit-reproducible");
+    }
+
+    #[test]
+    fn grenade_blast_damages_both_blobs_of_a_pair() {
+        // two Mediums 1.2 wu apart on an open floor; one grenade lobbed at the
+        // first must damage BOTH (contact/fuse detonation + 1.6 wu falloff).
+        let spec = LevelSpec {
+            mobs: vec![
+                MobSpec { id: MobId(0), tier: 1, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, 0.0) },
+                MobSpec { id: MobId(1), tier: 1, kind: crate::spec::GooKind::Green, pos: Vec3::new(1.2, 0.0, 0.0) },
+            ],
+            arena: Some(crate::spec::ArenaParams::default()),
+            player_start: Vec3::new(0.0, 0.0, 4.0),
+            ..crate::spec::goopair_level()
+        };
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        g.res.event_tap = Some(Vec::new());
+        g.tick(Tick(0), &[Command::SelectWeapon { slot: 4 }]);
+        let ray = PickRay { origin: Vec3::new(0.0, 1.25, 4.0), dir: Vec3::new(0.0, -0.9, -4.0).normalize() };
+        g.tick(Tick(1), &[Command::Shoot { ray }]);
+        for t in 2..220u64 {
+            g.tick(Tick(t), &[]);
+        }
+        let tap = g.res.event_tap.take().unwrap();
+        let touched = |id: MobId| tap.iter().any(|ev| matches!(ev, GameEvent::MobHit(i, _) | GameEvent::MobSplit(i, _) | GameEvent::MobKilled(i, _) if *i == id));
+        assert!(touched(MobId(0)), "the contact blob must take blast damage: {tap:?}");
+        assert!(touched(MobId(1)), "the neighbour inside the blast radius must take falloff damage: {tap:?}");
+    }
+
+    #[test]
+    fn tank_resists_small_arms_but_not_the_slug() {
+        // arena MobId(0) is the tier-0 Tank (hp 12): uzi damage quarters
+        // (2 -> 0 -> floored to 1), slug lands in full.
+        let spec = crate::spec::arena_level();
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        let e = g.mobs[0];
+        assert_eq!(g.world.get::<&Goo>(e).unwrap().kind, crate::spec::GooKind::Tank);
+        let hit = Vec3::new(-4.0, 0.3, 1.0);
+        g.damage_goo(e, hit, Vec3::Z, UZI.damage, 0.0, WeaponClass::Uzi);
+        assert_eq!(g.world.get::<&Goo>(e).unwrap().hp, 11, "uzi vs tank: 2/4 floored to 1");
+        g.damage_goo(e, hit, Vec3::Z, PISTOL.damage, 0.0, WeaponClass::Standard);
+        assert_eq!(g.world.get::<&Goo>(e).unwrap().hp, 5, "standard lands in full");
+    }
+
+    #[test]
+    fn harpoon_pins_a_blob_in_place() {
+        // pin the arena's fast Runner (tier 1 at (4, 0.5)) and let the sim run:
+        // its centroid must stay at the nail point instead of hunting off
+        // (an unpinned Runner covers ~1.76 wu/s — 5+ wu over the window).
+        let spec = crate::spec::arena_level();
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        let e = g.mobs[1];
+        assert_eq!(g.world.get::<&Goo>(e).unwrap().kind, crate::spec::GooKind::Runner);
+        g.damage_goo(e, Vec3::new(4.0, 0.3, 0.5), Vec3::Z, HARPOON.damage, HARPOON.knockback, WeaponClass::Harpoon);
+        let (pin_pt, pinned) = {
+            let gg = g.world.get::<&Goo>(e).unwrap();
+            (gg.pin_pt, gg.pinned)
+        };
+        assert_eq!(pinned, GOO_PIN_TICKS);
+        for t in 0..180u64 {
+            g.tick(Tick(t), &[]);
+        }
+        let gg = *g.world.get::<&Goo>(e).unwrap();
+        let drift = (gg.centroid() - pin_pt).length();
+        assert!(drift < 0.6, "pinned blob must stay nailed (drifted {drift:.2} wu)");
+        assert_eq!(gg.pinned, GOO_PIN_TICKS - 180, "the pin ticks down");
+    }
+
+    #[test]
+    fn blobs_merge_only_within_a_species() {
+        // two overlapping tier-1 blobs. Same kind -> they fuse into a tier-0;
+        // different kinds -> contact repulsion pushes them apart and NO fusion
+        // ever fires (the merge gate and the repulsion opt-out must agree).
+        let pair = |kind_b: crate::spec::GooKind| -> (usize, bool) {
+            let spec = LevelSpec {
+                mobs: vec![
+                    MobSpec { id: MobId(0), tier: 1, kind: crate::spec::GooKind::Green, pos: Vec3::new(-0.1, 0.0, 0.0) },
+                    MobSpec { id: MobId(1), tier: 1, kind: kind_b, pos: Vec3::new(0.1, 0.0, 0.0) },
+                ],
+                // the goofloor trick: a central well holds the pair together
+                // through the newborn grace (they repel until both merge-ready)
+                traps: vec![crate::spec::TrapSpec { id: 0, pos: Vec3::ZERO, strength: 1.3, radius: 2.6, off_tick: 0 }],
+                ..crate::spec::goopair_level()
+            };
+            let mut g = HouseGame::new(&spec, VecSink::default());
+            for t in 0..400u64 {
+                g.tick(Tick(t), &[]);
+            }
+            let any_large = g.mobs.iter().any(|&e| g.world.get::<&Goo>(e).unwrap().tier == 0);
+            (g.mobs.len(), any_large)
+        };
+        let (n_same, large_same) = pair(crate::spec::GooKind::Green);
+        // (a fused tier-0 is a MOTHER — by t400 it has budded a mini, so the
+        // count is survivor + brood; the tier-0's existence is the fusion proof)
+        assert!(large_same, "same-species overlap must fuse up: {n_same} mobs, large={large_same}");
+        let (n_mixed, large_mixed) = pair(crate::spec::GooKind::Runner);
+        assert!(!large_mixed && n_mixed == 2, "mixed species must never fuse: {n_mixed} mobs, large={large_mixed}");
+    }
+
+    /// One lone Large on an open floor (the chunk-mechanics fixture).
+    fn lone_large_spec() -> LevelSpec {
+        LevelSpec {
+            mobs: vec![MobSpec { id: MobId(0), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, 0.0) }],
+            traps: vec![],
+            ..crate::spec::goopair_level()
+        }
+    }
+
+    #[test]
+    fn three_slugs_solidify_a_large_into_a_chunk() {
+        // 4+4+4 slug damage kills the 12-hp Large AT the cure threshold: a
+        // dead solid chunk forms (blocks walking, enters hash + snapshot) and
+        // ONE small escapee squirms free instead of the usual two-way split.
+        let spec = lone_large_spec();
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        g.res.event_tap = Some(Vec::new());
+        let e = g.mobs[0];
+        let c = g.world.get::<&Goo>(e).unwrap().centroid();
+        let hit = Vec3::new(c.x, 0.3, c.y);
+        for _ in 0..3 {
+            g.damage_goo(e, hit, Vec3::Z, SLUG.damage, 0.0, WeaponClass::Slug);
+        }
+        g.tick(Tick(0), &[]); // flush the queued despawn/spawn
+        assert_eq!(g.res.chunks.len(), 1, "a chunk must stand");
+        let ch = g.res.chunks[0];
+        assert!(g.walk_blocked((ch[0] + ch[2]) * 0.5, (ch[1] + ch[3]) * 0.5), "the chunk blocks walking");
+        assert_eq!(g.mobs.len(), 1, "one escapee, not a two-way split");
+        assert_eq!(g.world.get::<&Goo>(g.mobs[0]).unwrap().tier, 1, "the escapee is a tier down");
+        assert_eq!(g.snapshot().chunks.len(), 1, "the renderer sees it");
+        let tap = g.res.event_tap.take().unwrap();
+        assert!(tap.iter().any(|ev| matches!(ev, GameEvent::MobSolidified(MobId(0), _))), "{tap:?}");
+    }
+
+    #[test]
+    fn an_uncured_kill_still_splits_in_two() {
+        // one slug (cure 1 < threshold 2) + pistol finish: the classic split.
+        let spec = lone_large_spec();
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        let e = g.mobs[0];
+        let c = g.world.get::<&Goo>(e).unwrap().centroid();
+        let hit = Vec3::new(c.x, 0.3, c.y);
+        g.damage_goo(e, hit, Vec3::Z, SLUG.damage, 0.0, WeaponClass::Slug); // hp 8, cure 1
+        g.damage_goo(e, hit, Vec3::Z, PISTOL.damage, 0.0, WeaponClass::Standard); // hp 2
+        g.damage_goo(e, hit, Vec3::Z, PISTOL.damage, 0.0, WeaponClass::Standard); // dead, cure 1
+        g.tick(Tick(0), &[]);
+        assert!(g.res.chunks.is_empty(), "no chunk below the cure threshold");
+        assert_eq!(g.mobs.len(), 2, "the classic two-way split");
+    }
+
+    #[test]
+    fn clearing_the_arena_summons_the_next_wave_deterministically() {
+        // a one-Small arena: kill it (terminal, +2 score), wait out the lull,
+        // and wave 1 lands — 4 mixed blobs on the north entrance ring. The
+        // whole cycle must replay to identical hashes.
+        let spec = LevelSpec {
+            mobs: vec![MobSpec { id: MobId(0), tier: 2, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, 2.0) }],
+            ..crate::spec::arena_level()
+        };
+        let lull = spec.arena.unwrap().wave_lull as u64;
+        let run = || {
+            let mut g = HouseGame::new(&spec, VecSink::default());
+            let e = g.mobs[0];
+            let c = g.world.get::<&Goo>(e).unwrap().centroid();
+            g.damage_goo(e, Vec3::new(c.x, 0.3, c.y), Vec3::Z, 99, 0.0, WeaponClass::Standard);
+            g.tick(Tick(0), &[]); // flush the kill
+            assert!(g.mobs.is_empty(), "arena clear");
+            assert_eq!(g.res.score, 2, "terminal kill scores 2");
+            assert_eq!(g.snapshot().wave, Some(0));
+            for t in 1..=(lull + 2) {
+                g.tick(Tick(t), &[]);
+            }
+            assert_eq!(g.snapshot().wave, Some(1), "wave 1 must have landed");
+            assert_eq!(g.mobs.len(), 4, "wave 1 = 3 + idx blobs");
+            // every entrant lands on the north half (z < 0), off the walls
+            for &e in &g.mobs {
+                let c = g.world.get::<&Goo>(e).unwrap().centroid();
+                assert!(c.y < 0.5 && c.x.abs() < 9.0, "ring spawn out of bounds: {c:?}");
+            }
+            let mut h = Vec::new();
+            for t in (lull + 3)..(lull + 120) {
+                g.tick(Tick(t), &[]);
+                h.push(g.state_hash());
+            }
+            h
+        };
+        assert_eq!(run(), run(), "wave landings must replay bit-exact");
+    }
+
+    #[test]
+    fn uzi_hits_emit_bleed_droplet_events() {
+        let spec = lone_large_spec();
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        g.res.event_tap = Some(Vec::new());
+        let e = g.mobs[0];
+        let c = g.world.get::<&Goo>(e).unwrap().centroid();
+        g.damage_goo(e, Vec3::new(c.x, 0.3, c.y), Vec3::Z, UZI.damage, 0.0, WeaponClass::Uzi);
+        g.tick(Tick(0), &[]);
+        let tap = g.res.event_tap.take().unwrap();
+        assert!(tap.iter().any(|ev| matches!(ev, GameEvent::MobBled(..))), "{tap:?}");
+        assert!(tap.iter().any(|ev| matches!(ev, GameEvent::MobHit(..))), "the hit still lands: {tap:?}");
+    }
+
+    #[test]
+    fn weak_flag_trips_at_a_third_of_tier_hp() {
+        // tier-0: 12 hp -> weak at hp <= 4 (the render shell's glitch gate)
+        let spec = lone_large_spec();
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        let e = g.mobs[0];
+        let c = g.world.get::<&Goo>(e).unwrap().centroid();
+        let hit = Vec3::new(c.x, 0.3, c.y);
+        assert!(!g.snapshot().mobs[0].weak);
+        g.damage_goo(e, hit, Vec3::Z, 7, 0.0, WeaponClass::Standard); // hp 5
+        assert!(!g.snapshot().mobs[0].weak, "hp 5 of 12 is not weak yet");
+        g.damage_goo(e, hit, Vec3::Z, 1, 0.0, WeaponClass::Standard); // hp 4
+        assert!(g.snapshot().mobs[0].weak, "hp 4 of 12 is weak");
+    }
+
+    #[test]
+    fn kill_scoring_is_arena_only() {
+        // the same terminal kill on a NON-arena level must not move score
+        let spec = lone_large_spec(); // goopair base: no arena
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        let e = g.mobs[0];
+        let c = g.world.get::<&Goo>(e).unwrap().centroid();
+        g.damage_goo(e, Vec3::new(c.x, 0.3, c.y), Vec3::Z, 99, 0.0, WeaponClass::Standard);
+        g.tick(Tick(0), &[]);
+        assert_eq!(g.res.score, 0, "score is gated on the arsenal");
+    }
+
+    #[test]
     fn goo_spawns_and_crawls() {
         let mut d = GooDrv::new();
         // goo_level authors four blobs; the mob-free levels stay empty
@@ -2037,6 +2499,29 @@ mod tests {
     }
 
     #[test]
+    fn second_projectile_on_a_dead_blob_same_tick_is_a_no_op() {
+        // Two projectiles can strike the SAME blob in one tick — the despawn
+        // only lands at the flush, so the corpse is still in `self.mobs` for
+        // the second impact. The hp-0 dead-guard must make that second hit a
+        // no-op; without it the blob died twice (a duplicate despawn, FOUR
+        // children, doubled split events).
+        let mut d = GooDrv::new();
+        let before = d.mob_count();
+        let e = *d.g.mobs.iter().find(|&&e| d.g.world.get::<&Goo>(e).unwrap().id == MobId(3)).unwrap();
+        let c = d.centroid_of(MobId(3)).unwrap();
+        let hit = Vec3::new(c.x, 0.3, c.y);
+        // kill the Large outright, then hit the corpse again the SAME tick
+        d.g.damage_goo(e, hit, Vec3::X, 12, 0.6, WeaponClass::Standard);
+        d.g.damage_goo(e, hit, Vec3::X, 12, 0.6, WeaponClass::Standard);
+        d.run(2); // flush + rebuild + audio drain
+        assert!(d.centroid_of(MobId(3)).is_none(), "the Large is dead");
+        assert_eq!(d.mob_count(), before + 1, "exactly one split: two children replace the parent");
+        assert_eq!(d.world_goo_count(), d.mob_count(), "handle list matches the World");
+        let splits = d.g.sink.0.iter().filter(|q| q.id.0 == "goo_split").count();
+        assert_eq!(splits, 1, "one split cue, not two");
+    }
+
+    #[test]
     fn goo_split_round_trip_is_deterministic() {
         // The novel mechanic — runtime CommandBuffer::spawn + handle recovery —
         // must replay bit-identically. Same shots, two worlds, equal hash. We
@@ -2067,8 +2552,8 @@ mod tests {
         use crate::spec::{MobSpec, TrapSpec};
         let mut spec = goo_level();
         spec.mobs = vec![
-            MobSpec { id: MobId(0), tier: 1, pos: Vec3::new(4.0, 0.0, 3.0) },
-            MobSpec { id: MobId(1), tier: 1, pos: Vec3::new(4.4, 0.0, 3.0) },
+            MobSpec { id: MobId(0), tier: 1, kind: crate::spec::GooKind::Green, pos: Vec3::new(4.0, 0.0, 3.0) },
+            MobSpec { id: MobId(1), tier: 1, kind: crate::spec::GooKind::Green, pos: Vec3::new(4.4, 0.0, 3.0) },
         ];
         spec.traps = vec![TrapSpec { id: 0, pos: Vec3::new(4.2, 0.0, 3.0), strength: 2.0, radius: 3.0, off_tick: 0 }];
         spec
@@ -2093,6 +2578,31 @@ mod tests {
     }
 
     #[test]
+    fn goo_overlapping_bodies_push_apart_not_through() {
+        use crate::spec::MobSpec;
+        // two Larges (tier 0 — NEVER merge-compatible) dropped superimposed in
+        // the open centre of room E must separate: the blob–blob contact
+        // repulsion pushes the bodies apart, where the old blind per-blob PBF
+        // left them crawling through each other (and the render's global smin
+        // union welded the pair into one lump). The player is parked across
+        // the house (no seek, no pillar) and the run stays under the first
+        // mitosis bud (~tick 100) so the scene is exactly the pair.
+        let mut spec = goo_level();
+        spec.mobs = vec![
+            MobSpec { id: MobId(0), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(9.5, 0.0, 5.5) },
+            MobSpec { id: MobId(1), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(9.8, 0.0, 5.5) },
+        ];
+        spec.traps = vec![];
+        spec.player_start = Vec3::new(1.5, 0.0, 1.5);
+        let g = run_ticks(&spec, 90);
+        assert_eq!(g.mobs.len(), 2, "tier-0 pairs never merge");
+        let a = g.world.get::<&Goo>(g.mobs[0]).unwrap().centroid();
+        let b = g.world.get::<&Goo>(g.mobs[1]).unwrap().centroid();
+        let d = (a - b).length();
+        assert!(d > 0.8, "overlapping bodies failed to push apart: centroids {d:.3} wu apart");
+    }
+
+    #[test]
     fn goo_merge_round_trip_is_deterministic() {
         // fusion draws RNG + despawns via the command buffer — it must replay
         // bit-identically across two worlds.
@@ -2112,7 +2622,7 @@ mod tests {
         // ever ends inside the pillar footprint.
         let mut spec = playground_level();
         spec.player_start = Vec3::new(2.0, 0.0, 2.0);
-        spec.mobs = vec![MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(0.8, 0.0, 2.0) }];
+        spec.mobs = vec![MobSpec { id: MobId(0), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.8, 0.0, 2.0) }];
         spec.traps = vec![];
         let g = run_ticks(&spec, 150);
         let blob = *g.world.get::<&Goo>(g.mobs[0]).unwrap();
@@ -2167,10 +2677,27 @@ mod tests {
     // If a hash changes from an INTENTIONAL behaviour change, re-capture and
     // explain why in the commit; if it changes from a refactor, the refactor
     // reordered floats and must be reverted.
-    const ORACLE_GOO_LEVEL_300: u64 = 0x432ad61a2b174649;
-    const ORACLE_GOONURSERY_400: u64 = 0x91a4a7c31419968f;
-    const ORACLE_SPLIT_TRACE: u64 = 0xdd430bf5221cf38a;
-    const ORACLE_MERGE_90: u64 = 0xbc851fa3489cf2a7;
+    // Re-captured 2026-07-02 (second pass): the gait `gather` envelope is now
+    // seam-free (the smoothstep release/rise replaces two per-cycle force
+    // steps — every blob every tick, so ALL FOUR moved), and blob–blob contact
+    // repulsion landed (goo_overlapping_bodies_push_apart_not_through pins the
+    // behaviour). The nursery hash is byte-identical under different repulsion
+    // tunings — the tether opt-out + the mini clearing the contact skin before
+    // the snap mean repulsion never fires there, so the birth choreography is
+    // pinned unperturbed; its movement is the gait smoothing alone.
+    // (First pass earlier today: tail-anchor collide_and_slide + damage_goo
+    // dead-guard/pending-cap — see the commit introducing them.)
+    // Re-captured 2026-07-03: the arena-species block (GooKind + cure +
+    // harpoon pin) appended five fields to the per-blob hash fold — HASH BYTES
+    // ONLY. Behavior on these all-Green levels is bit-identical by
+    // construction: Green multipliers are exact ×1.0 IEEE identities, cure/
+    // pinned default 0 (their branches never run), and the pin spring adds
+    // Vec2::ZERO through the mother-well channel. All new Goo fields were
+    // deliberately batched into this ONE recapture (see docs/goo-mob-handoff).
+    const ORACLE_GOO_LEVEL_300: u64 = 0x5644a8cc5c2f849c;
+    const ORACLE_GOONURSERY_400: u64 = 0x101f8d4981288431;
+    const ORACLE_SPLIT_TRACE: u64 = 0x0d970347abdd933b;
+    const ORACLE_MERGE_90: u64 = 0xb0f0b86bcd448008;
 
     #[test]
     fn goo_sim_hash_oracle_crawl_and_mitosis() {

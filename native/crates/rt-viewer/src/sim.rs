@@ -59,6 +59,9 @@ pub struct GameLoop {
     /// Otherwise (lab) they pan the camera viewer-side — presentation only.
     pub has_player: bool,
     pub follow_cam: bool,
+    /// Arena control scheme (`spec.arena`): LMB fires instead of walking
+    /// (WASD is the only locomotion) and the OS cursor becomes a crosshair.
+    pub lmb_shoots: bool,
     /// Per spec light, in slot order (spec index == NEE slot == game flicker
     /// index): the renderer key, the kind, and the authored base rgb — the
     /// per-frame emission build and the LIGHT_ANIM=0 freeze read these.
@@ -73,6 +76,38 @@ pub struct GameLoop {
     /// Reserved projectile tracer instance slots ("proj_slot_N"), moved onto the
     /// live projectiles each frame; empty when the scene authored no pool.
     pub proj_slots: Vec<InstanceKey>,
+    /// Reserved dead-chunk dome slots ("chunk_slot_N", arena scenes only).
+    pub chunk_slots: Vec<InstanceKey>,
+    /// Reserved bleed-droplet slots ("drop_slot_N", arena scenes only).
+    pub drop_slots: Vec<InstanceKey>,
+    /// Live render droplets (uzi bleed FX). PRESENTATION-ONLY: spawned off the
+    /// event tap, advanced on the tick clock, never touches the sim.
+    pub droplets: Vec<Droplet>,
+    /// Render-side scatter counter for droplet spray directions (not sim RNG).
+    drop_seed: u32,
+    /// Presentation frame counter (advances with sim ticks) for the glitch FX.
+    fx_frame: u32,
+    /// Netcode-lag glitch cache: WEAK blobs render from a STALE body snapshot
+    /// refreshed every ~8–15 ticks (per-id period), so a nearly-dead blob
+    /// stutter-teleports while its true hitbox crawls on — aim at where it IS,
+    /// not where it draws. Presentation-only (the sim never reads this).
+    glitch: Vec<GlitchEntry>,
+}
+
+/// One weak blob's cached render body (see `GameLoop::glitch`).
+struct GlitchEntry {
+    id: house_game::MobId,
+    parts: [Vec3; house_game::GOO_PARTICLES],
+    vscale: f32,
+    refreshed: u32,
+}
+
+/// One bleed droplet: a tiny glowing ball torn off a blob by uzi fire,
+/// ballistic to the floor, gone in half a second.
+pub struct Droplet {
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub age: f32,
 }
 
 impl GameLoop {
@@ -113,7 +148,14 @@ impl GameLoop {
         // authored no such pool.
         let goo_slots = discover_pool(handles, "goo_slot");
         let proj_slots = discover_pool(handles, "proj_slot");
+        let chunk_slots = discover_pool(handles, "chunk_slot");
+        let drop_slots = discover_pool(handles, "drop_slot");
         let mut sim: HouseGame<NullSink> = HouseGame::new(&spec, NullSink);
+        if spec.arena.is_some() {
+            // arena: tap the event stream for bleed droplets (observation-only;
+            // pinned side-effect-free by the lab's recording test)
+            sim.res.event_tap = Some(Vec::new());
+        }
         // ---- Config seeding: DIRECT pre-tick state writes (world setup, not
         // play), then re-derive. Flashlight boot state, the camera quarter
         // (yaw_q is sim state), walk speed, the room-lights master (LIGHTS=0
@@ -129,6 +171,7 @@ impl GameLoop {
         sim.reseed();
         let snap = sim.snapshot();
         let has_player = scene.dynamic_prim.is_some();
+        let lmb_shoots = spec.arena.is_some() && has_player;
         GameLoop {
             fixed: FixedLoop::new(TICK_DT),
             queue: InputQueue::new(),
@@ -140,10 +183,17 @@ impl GameLoop {
             held: [false; 4],
             has_player,
             follow_cam: has_player && cfg.scene != "grid" && !crate::game_scene::is_goo_film_stage(&cfg.scene),
+            lmb_shoots,
             light_keys,
             doors,
             goo_slots,
             proj_slots,
+            chunk_slots,
+            drop_slots,
+            droplets: Vec::new(),
+            drop_seed: 0,
+            fx_frame: 0,
+            glitch: Vec::new(),
         }
     }
 
@@ -271,12 +321,17 @@ impl GameLoop {
     }
 
     /// Per-frame goo blob instances: skin one emissive ellipsoid onto each live
-    /// blob's particle nodes (translate · uniform scale by the metaball radius),
-    /// then collapse every unused pool slot to zero scale (invisible).
-    /// Presentation-only — a pure read of the snapshot's hashed particle field;
-    /// nothing here feeds back into the sim.
+    /// blob's particle nodes, then collapse every unused pool slot to zero
+    /// scale (invisible). The Y scale (and the matching lift, so the lump
+    /// stays grounded) tracks the blob's `vscale` — the same per-blob height
+    /// breathing the SDF composite draws, so the fallback shows the gait
+    /// flatten / jelly bounce too. Presentation-only — a pure read of the
+    /// snapshot's hashed particle field; nothing here feeds back into the sim.
     pub fn goo_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.snap.mobs.iter().flat_map(|m| m.parts.iter().map(move |part| Mat4::from_translation(Vec3::new(part.x, part.y, part.z)) * Mat4::from_scale(Vec3::splat(m.part_radius))));
+        let xforms = self.snap.mobs.iter().flat_map(|m| {
+            let ry = m.part_radius * m.vscale;
+            m.parts.iter().map(move |part| Mat4::from_translation(Vec3::new(part.x, ry, part.z)) * Mat4::from_scale(Vec3::new(m.part_radius, ry, m.part_radius)))
+        });
         skin_pool(&self.goo_slots, xforms)
     }
 
@@ -289,27 +344,150 @@ impl GameLoop {
         skin_pool(&self.proj_slots, xforms)
     }
 
-    /// This frame's goo metaballs for the screen-space SDF composite. Each blob
-    /// contributes TWO big lobe balls at its spine ends (the reliable dumbbell
-    /// structure — two concentrations joined by a thin `smin` waist with an
-    /// empty middle) plus a particle ball per goo particle for the organic
-    /// lumpy surface that wobbles/deforms. Centres sit at the flattened resting
-    /// height (`floor + radius·squash`) so the shader's vertical squash + floor
-    /// clamp settle each lump flat on the ground. Pure read of the hashed field.
-    pub fn goo_balls(&self) -> (Vec<rt_probe::GooBall>, Vec<f32>) {
-        let mut out = Vec::new();
-        let mut glow = Vec::new(); // PARALLEL to `out`: per-ball birth-glow 0..1
-        for m in &self.snap.mobs {
-            // one metaball per fluid particle — the solved fluid distribution IS
-            // the surface (two lobes + thin waist emerge from the sim itself).
-            let pr = m.part_radius;
-            let y = GOO_FLOOR_Y + pr * GOO_SQUASH;
-            for (p, &gl) in m.parts.iter().zip(m.glow.iter()) {
-                out.push(rt_probe::GooBall { center: [p.x, y, p.z], radius: pr });
-                glow.push(gl);
+    /// Per-frame dead-chunk instances: one squashed matte dome per solidified
+    /// blob (translate to the rect centre, scale to its half-extents; the local
+    /// unit sphere's lower half sinks under the floor). Pure snapshot read.
+    pub fn chunk_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let xforms = self.snap.chunks.iter().map(|c| {
+            let cx = (c[0] + c[2]) * 0.5;
+            let cz = (c[1] + c[3]) * 0.5;
+            let hx = (c[2] - c[0]) * 0.5;
+            let hz = (c[3] - c[1]) * 0.5;
+            Mat4::from_translation(Vec3::new(cx, 0.0, cz)) * Mat4::from_scale(Vec3::new(hx, house_game::GOO_CHUNK_H, hz))
+        });
+        skin_pool(&self.chunk_slots, xforms)
+    }
+
+    /// Advance the bleed-droplet FX by `n` sim ticks: drain MobBled events
+    /// from the tap into fresh droplet sprays, integrate ballistics, retire on
+    /// the floor or age-out. Tick-clocked (not wall-clocked) so DEMO captures
+    /// stay reproducible. Presentation-only.
+    pub fn tick_droplets(&mut self, n: u32) {
+        self.fx_frame = self.fx_frame.wrapping_add(n);
+        self.update_glitch();
+        if let Some(tap) = self.sim.res.event_tap.as_mut() {
+            for ev in tap.drain(..) {
+                if let house_game::GameEvent::MobBled(_, at) = ev {
+                    for _ in 0..3 {
+                        self.drop_seed = self.drop_seed.wrapping_add(1);
+                        let h = self.drop_seed.wrapping_mul(2654435761);
+                        let a = (h >> 8) as f32 / 16_777_216.0 * std::f32::consts::TAU;
+                        let up = 1.6 + ((h & 0xff) as f32 / 255.0) * 1.2;
+                        self.droplets.push(Droplet { pos: at + Vec3::new(0.0, 0.1, 0.0), vel: Vec3::new(a.cos() * 1.4, up, a.sin() * 1.4), age: 0.0 });
+                    }
+                }
             }
         }
-        (out, glow)
+        if n > 0 && !self.droplets.is_empty() {
+            let dt = TICK_DT * n as f32;
+            for d in self.droplets.iter_mut() {
+                d.vel.y -= 9.0 * dt;
+                d.pos += d.vel * dt;
+                d.age += dt;
+            }
+            self.droplets.retain(|d| d.age < 0.6 && d.pos.y > 0.015);
+        }
+    }
+
+    /// Maintain the lag-glitch cache: every WEAK blob gets a cached body that
+    /// only refreshes on its own ~8–15-tick period (id-hashed, so a pack of
+    /// weak blobs never snaps in unison); healthy and dead blobs drop out.
+    fn update_glitch(&mut self) {
+        let frame = self.fx_frame;
+        self.glitch.retain(|e| self.snap.mobs.iter().any(|m| m.id == e.id && m.weak));
+        for m in &self.snap.mobs {
+            if !m.weak {
+                continue;
+            }
+            let period = 8 + ((m.id.0.wrapping_mul(2654435761) >> 28) % 8);
+            match self.glitch.iter_mut().find(|e| e.id == m.id) {
+                Some(e) => {
+                    if frame.wrapping_sub(e.refreshed) >= period {
+                        e.parts = m.parts;
+                        e.vscale = m.vscale;
+                        e.refreshed = frame;
+                    }
+                }
+                None => self.glitch.push(GlitchEntry { id: m.id, parts: m.parts, vscale: m.vscale, refreshed: frame }),
+            }
+        }
+    }
+
+    /// Per-frame droplet instances (tiny glowing balls on the drop pool).
+    pub fn droplet_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let xforms = self.droplets.iter().map(|d| Mat4::from_translation(d.pos) * Mat4::from_scale(Vec3::splat(0.045)));
+        skin_pool(&self.drop_slots, xforms)
+    }
+
+    /// This frame's goo metaballs for the screen-space SDF composite, plus the
+    /// parallel per-ball birth-glow and vertical-scale slices and the per-BLOB
+    /// bounding spheres. One metaball per fluid particle — the solved fluid
+    /// distribution IS the surface. Centres sit at the blob's flattened resting
+    /// height (`floor + radius·squash·vscale`) so the shader's vertical squash
+    /// and floor clamp settle each lump flat on the ground while the body
+    /// breathes in height (gait lunge flattens, jelly wobble bounces, birth
+    /// tension draws up — see `MobRender.vscale`). Each bound encloses its
+    /// blob's whole merged surface — every ball plus its radius at the LARGEST
+    /// axis scale, plus the outward smin bulge — so the shader's two-level
+    /// march can trust it as a conservative distance proxy. Pure read of the
+    /// hashed field.
+    pub fn goo_balls(&self) -> (Vec<rt_probe::GooBall>, Vec<f32>, Vec<f32>, Vec<rt_probe::GooBall>, Vec<[f32; 4]>) {
+        // Outward bulge of the smin union past the plain sphere union: at most
+        // k/4 (k = the shader's GOO_SMIN_K 0.14 → 0.035), plus slack. A too-
+        // generous margin only expands a blob's balls a step early — never a
+        // visual change — so this need not track k exactly.
+        const GOO_BOUND_MARGIN: f32 = 0.06;
+        let mut out = Vec::new();
+        let mut glow = Vec::new(); // PARALLEL to `out`: per-ball birth-glow 0..1
+        let mut vscales = Vec::new(); // PARALLEL to `out`: per-ball vertical scale
+        let mut bounds = Vec::new(); // one per BLOB (mob order = ball group order)
+        let mut tints = Vec::new(); // PARALLEL to `out`: per-ball species tint
+        for m in &self.snap.mobs {
+            // species tint, desaturated toward a dull gray-teal as cure stacks
+            // build (the visible "solidifying" read; full gray never quite hits)
+            let kt = goo_kind_body_tint(m.kind);
+            let k = (m.cure as f32 / house_game::GOO_CURE_MAX as f32) * 0.8;
+            const GRAY: [f32; 3] = [0.55, 0.09, 0.26]; // × GOO_EMIS ≈ dull stone-teal
+            let mut tint = [kt[0] + (GRAY[0] - kt[0]) * k, kt[1] + (GRAY[1] - kt[1]) * k, kt[2] + (GRAY[2] - kt[2]) * k, kt[3]];
+            // netcode-lag glitch: a WEAK blob renders its CACHED body (the true
+            // hitbox crawls on — shots resolve against the sim, not the draw),
+            // dimming as the snapshot ages so the pop-forward reads as a stutter
+            // and not a renderer bug.
+            let (parts, vscale) = match self.glitch.iter().find(|e| e.id == m.id) {
+                Some(e) if m.weak => {
+                    let stale = self.fx_frame.wrapping_sub(e.refreshed) as f32;
+                    let dim = (1.0 - 0.04 * stale).max(0.55);
+                    tint = [tint[0] * dim, tint[1] * dim, tint[2] * dim, tint[3]];
+                    (&e.parts, e.vscale)
+                }
+                _ => (&m.parts, m.vscale),
+            };
+            let pr = m.part_radius;
+            let y = GOO_FLOOR_Y + pr * GOO_SQUASH * vscale;
+            let mut c = Vec3::ZERO;
+            for p in parts.iter() {
+                c += *p;
+            }
+            let c = c / parts.len() as f32;
+            // enclosing-sphere radius of one squashed ball: the ellipsoid's
+            // largest semi-axis (horizontal pr, or vertical pr·squash·vscale —
+            // the jelly wobble can bulge the body above neutral)
+            let ball_r = pr * (GOO_SQUASH * vscale).max(1.0);
+            let mut reach = 0.0f32;
+            for p in parts.iter() {
+                let dx = p.x - c.x;
+                let dz = p.z - c.z;
+                reach = reach.max((dx * dx + dz * dz).sqrt());
+            }
+            bounds.push(rt_probe::GooBall { center: [c.x, y, c.z], radius: reach + ball_r + GOO_BOUND_MARGIN });
+            for (p, &gl) in parts.iter().zip(m.glow.iter()) {
+                out.push(rt_probe::GooBall { center: [p.x, y, p.z], radius: pr });
+                glow.push(gl);
+                vscales.push(vscale);
+                tints.push(tint);
+            }
+        }
+        (out, glow, vscales, bounds, tints)
     }
 
     /// One real RT light per live blob (streamed into reserved NEE slots), so
@@ -330,7 +508,7 @@ impl GameLoop {
         const CONE_DEG: f32 = 115.0;
         const SHADOW_RADIUS_FRAC: f32 = 0.8;
         const SHADOW_RADIUS_MIN: f32 = 0.25;
-        const TINT: [f32; 3] = [0.32, 1.0, 0.5]; // fluorescent radioactive green
+        // per-species pool colour (matches the body tint mapping below)
         let mut out = Vec::with_capacity(self.snap.mobs.len());
         for m in &self.snap.mobs {
             if m.parts.is_empty() {
@@ -345,7 +523,7 @@ impl GameLoop {
                 cone_cos: CONE_DEG.to_radians().cos(),
                 power,
                 radius: (m.radius * SHADOW_RADIUS_FRAC).max(SHADOW_RADIUS_MIN),
-                tint: TINT,
+                tint: goo_kind_light_tint(m.kind),
             });
         }
         out
@@ -354,6 +532,29 @@ impl GameLoop {
     /// Sim time for `FrameState.time` — ticks, never the wall clock.
     pub fn time(&self) -> f32 {
         self.tick.0 as f32 * TICK_DT
+    }
+}
+
+/// Species → body-emissive tint: a channel-wise multiplier on the shader's
+/// green GOO_EMIS, REWEIGHTED so the product is genuinely red/blue (the base
+/// is green-heavy — a naive red multiplier would land on orange). Green is
+/// exactly white = the historical look, bit-identical.
+fn goo_kind_body_tint(kind: house_game::GooKind) -> [f32; 4] {
+    match kind {
+        house_game::GooKind::Green => [1.0, 1.0, 1.0, 1.0],
+        // GOO_EMIS (0.55, 3.3, 1.15) × this ≈ (3.5, 0.6, 0.5) — hot red
+        house_game::GooKind::Runner => [6.4, 0.18, 0.43, 1.0],
+        // × this ≈ (0.45, 1.15, 4.0) — deep blue
+        house_game::GooKind::Tank => [0.8, 0.35, 3.5, 1.0],
+    }
+}
+
+/// Species → floor-pool light colour (the per-blob cone in `goo_lights`).
+fn goo_kind_light_tint(kind: house_game::GooKind) -> [f32; 3] {
+    match kind {
+        house_game::GooKind::Green => [0.32, 1.0, 0.5], // the historical green
+        house_game::GooKind::Runner => [1.0, 0.22, 0.28],
+        house_game::GooKind::Tank => [0.25, 0.45, 1.0],
     }
 }
 
@@ -473,6 +674,7 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
         survival: None,
         mobs: Vec::new(), // mobs are authored per-level; the mirror scenes have none
         traps: Vec::new(),
+        arena: None,
         player_start: scene.player_start,
         seed: 42,
     }

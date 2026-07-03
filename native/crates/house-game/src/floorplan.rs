@@ -207,6 +207,7 @@ mod tests {
             survival: None,
             mobs: vec![],
             traps: vec![],
+            arena: None,
             player_start: Vec3::ZERO,
             seed: 0,
         };

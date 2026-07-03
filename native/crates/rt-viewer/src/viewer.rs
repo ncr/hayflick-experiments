@@ -107,8 +107,13 @@ impl Viewer {
             // pillar, no walls, fixed camera).
             "goofloor" => Some(house_game::goofloor_level()),
             "goonursery" => Some(house_game::goonursery_level()),
+            // two Larges dropped superimposed — the contact-repulsion showcase.
+            "goopair" => Some(house_game::goopair_level()),
             // the physical-projectile shooting range (lane + discs + goo targets).
             "range" => Some(house_game::shooting_range_level()),
+            // the goo ARENA: walled 20×20 pit, arsenal controls (LMB shoots,
+            // keys 1–5 select), mixed-tier squad — the arena-shooter playtest.
+            "arena" => Some(house_game::arena_level()),
             "village" => Some(house_game::village_level(cfg.game.cave_seed)),
             // Floor-plan-derived levels: a believable PLAN (rooms + doors) run
             // through `floorplan::enclose` to synthesize walls + collision. Each
@@ -308,11 +313,13 @@ impl Viewer {
             // the viewer up to the sim's settled quarter WITHOUT re-queuing the
             // command. Hard snap per quarter (no eased tween).
             self.sync_view_yaw(self.game.snap.yaw_q);
+            self.game.tick_droplets(1); // bleed FX rides the tick clock
         } else {
             // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
             // keeps the wall clock OUT of the sim entirely.
             let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
-            self.game.run_due(sim_dt);
+            let n = self.game.run_due(sim_dt);
+            self.game.tick_droplets(n); // bleed FX rides the tick clock
         }
         // playerless scenes (lab): WASD pans the camera — presentation only
         if !self.game.has_player && self.game.held != [false; 4] {
@@ -357,7 +364,9 @@ impl Viewer {
         instances.extend(self.game.door_instances());
         instances.extend(self.game.goo_instances());
         instances.extend(self.game.projectile_instances());
-        let (goo, goo_glow) = self.game.goo_balls();
+        instances.extend(self.game.chunk_instances());
+        instances.extend(self.game.droplet_instances());
+        let (goo, goo_glow, goo_vscale, goo_bounds, goo_tint) = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
         let fs = FrameState {
@@ -369,6 +378,9 @@ impl Viewer {
             instances: &instances,
             goo: &goo,
             goo_glow: &goo_glow,
+            goo_vscale: &goo_vscale,
+            goo_bounds: &goo_bounds,
+            goo_tint: &goo_tint,
         };
 
         // ESC tune-menu + score HUD overlay (panel/hamburger), copied onto the

@@ -258,6 +258,20 @@ impl Viewer {
             let (pos, dir) = flashlight_pose(snap.player_pos, snap.facing);
             v.push(Spotlight { pos, dir, cone_cos: 60.0f32.to_radians().cos(), power: 6000.0, radius: 0.05, tint: rt_probe::render::SPOT_WARM });
         }
+        if let Some((at, k)) = snap.boom {
+            // grenade detonation: a hot wide downward cone hovering over the
+            // blast point, fading out over the flash ticks. Same tiny emitter
+            // radius as the muzzle — packed slot radiance scales inversely
+            // with emitter area, so a big radius quietly kills the flash.
+            v.push(Spotlight {
+                pos: at + glam::Vec3::new(0.0, 0.9, 0.0),
+                dir: glam::Vec3::NEG_Y,
+                cone_cos: 70.0f32.to_radians().cos(),
+                power: 26000.0 * k,
+                radius: 0.05,
+                tint: [1.0, 0.72, 0.4],
+            });
+        }
         v
     }
 }

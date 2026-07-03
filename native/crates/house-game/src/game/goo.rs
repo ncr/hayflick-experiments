@@ -6,7 +6,7 @@
 //! the 7-system tick order, snapshot, and state_hash stay in `game.rs`.
 use super::*;
 use crate::collide_and_slide;
-use crate::spec::MobId;
+use crate::spec::{GooKind, MobId};
 use glam::{Vec2, Vec3};
 use sim_core::{AudioSink, Entity};
 
@@ -180,6 +180,25 @@ pub const GOO_WOBBLE_RENDER: f32 = 0.52;
 pub const GOO_WOBBLE_KICK: f32 = 0.6;
 /// Amplitude floor: below this the oscillator settles to EXACTLY 0 (hash-clean).
 pub const GOO_WOBBLE_EPS: f32 = 0.04;
+
+// ---- render-side VERTICAL body language (presentation-only) ------------------
+// The composite's global vertical squash is modulated PER BLOB so the body
+// breathes in height (the fluid is world-XZ only — without this the goo never
+// changes height at all, the least jelly-like thing about it). All three
+// drivers are pure reads of already-hashed state (gait phase, wobble
+// oscillator, spawn state), fed to the renderer through `MobRender.vscale` —
+// like `tension` and the wobble squash, nothing here re-enters the hash.
+/// How much FLATTER the body draws at full lunge stretch: the plan-view
+/// elongation trades off height (volume-ish conservation, the inchworm reach
+/// pressing low as it extends).
+pub const GOO_VS_LUNGE: f32 = 0.22;
+/// Vertical bounce per unit of jelly wobble, in ANTIPHASE to the horizontal
+/// squash: as the cloud stretches out along the tear axis it flattens, and as
+/// it pinches back it bulges up — the classic jelly bounce.
+pub const GOO_VS_WOBBLE: f32 = 0.30;
+/// Extra height at peak birth tension: the tightening knot draws UP as its
+/// footprint shrinks, so the mother visibly balls up rather than just shrinking.
+pub const GOO_VS_TENSE: f32 = 0.25;
 /// A Large mother is a soft GRAVITY WELL on free (tier>0) blobs within this
 /// radius (wu): the inverse-square pull law below herds strays back toward her.
 pub const GOO_MOTHER_RADIUS: f32 = 2.8;
@@ -190,6 +209,34 @@ pub const GOO_MOTHER_RADIUS: f32 = 2.8;
 /// until it leaves the well, so it pops cleanly off her and crawls away; once
 /// outside, immunity drops and the gentle well can nudge it if it wanders back.
 pub const GOO_MOTHER_PULL: f32 = 1.6;
+
+// ---- blob–blob CONTACT: separate bodies stay separate ------------------------
+// Each blob's PBF solve is otherwise blind to every other blob, so two crawling
+// bodies pass straight through each other — and the render's global smin union
+// welds the crossing pair into one lump. A soft contact force between DIFFERENT
+// blobs' particles keeps the bodies apart while still letting surfaces kiss on
+// touch (a brief contact weld reads as goopy; full interpenetration reads as a
+// bug). Both sides of a pair read start-of-tick snapshots, so the force is
+// symmetric and independent of the MobId processing order. Pairs that are
+// ALLOWED to overlap opt out: a merge-compatible pair (fusion IS their contact
+// response), a fusing blob (it collapses INTO its survivor), and a tethered
+// newborn (the umbilical neck IS an overlap).
+/// Repulsion acceleration scale (wu/s²) per unit of summed linear overlap of
+/// foreign particles within the contact skin.
+pub const GOO_REPEL: f32 = 30.0;
+/// Cap on the summed repulsion at one sample point (wu/s²): ABOVE both the
+/// capsule muscle (`GOO_END_PULL` 11) and the trap ceiling (`GOO_TRAP_MAX` 22)
+/// so deep overlap ALWAYS resolves — via `GOO_END_TRAP` this converts to
+/// ~1.5 wu/s of spine push, which out-runs every tier's crawl, so a wandering
+/// head cannot grind through a body it's being pushed out of. (Merge-eligible
+/// pairs opt out entirely, so fusion under a trap is unaffected.)
+pub const GOO_REPEL_MAX: f32 = 32.0;
+/// Contact skin (wu, × the pair's mean fluid scale): foreign particles repel
+/// within this range. Wider than the smoothing radius `GOO_H` (0.30) — the
+/// metaball surface extends ~`GOO_PART_RADIUS_FRAC`·R past each particle, so
+/// the skin must engage while the CLOUDS are still apart or the silhouettes
+/// weld before any force builds.
+pub const GOO_REPEL_SKIN: f32 = 0.45;
 
 // ---- goo fluid (Position-Based Fluids: Macklin & Müller 2013) ---------------
 // The body is a real fluid — a cloud of SPH particles solved each tick for
@@ -420,6 +467,20 @@ pub(crate) fn goo_wobble_render(wobble_amp: f32, wobble_phase: u16) -> f32 {
     }
 }
 
+/// Per-blob VERTICAL scale for the render (1 = the resting `GOO_SQUASH`
+/// profile): the lunge flattens the body, the jelly wobble bounces it in
+/// antiphase to the horizontal squash, and birth tension draws it up into a
+/// taller knot. The lunge term mirrors the sim's tension-suppressed stretch so
+/// a pushing mother doesn't flatten mid-clench. Presentation-only — a pure
+/// read of hashed state, consumed by the snapshot (never re-hashed).
+pub(crate) fn goo_render_vscale(g: &Goo) -> f32 {
+    let (_, stretch) = gait_profile(g.gait_phase);
+    let tension = goo_tension(g.tier, g.spawn_timer, g.birth_glow);
+    let stretch = stretch * (1.0 - tension);
+    let wob = goo_wobble_render(g.wobble_amp, g.wobble_phase);
+    ((1.0 - GOO_VS_LUNGE * stretch) * (1.0 - GOO_VS_WOBBLE * wob) * (1.0 + GOO_VS_TENSE * tension)).clamp(0.5, 1.6)
+}
+
 /// Rest density: the kernel sum a particle sees in an infinite square packing
 /// at `GOO_SPACING`. Computed once (cheap) so the density target self-calibrates
 /// to the kernel instead of being a hand-tuned magic number.
@@ -469,9 +530,82 @@ pub fn goo_tier_radius(tier: u8) -> f32 {
 fn goo_tier_hp(tier: u8) -> u16 {
     GOO_TIER_HP[(tier as usize).min(2)]
 }
+
+/// A blob is WEAK below a third of its tier's hit points — the render shell
+/// gives weak bodies the netcode-lag glitch (their drawn body stutters behind
+/// the true, still-authoritative hitbox). Pure presentation read.
+pub(crate) fn goo_is_weak(g: &Goo) -> bool {
+    g.hp * 3 <= goo_tier_hp(g.tier)
+}
 /// Tier → crawl speed (see `GOO_TIER_SPEED`; tiers past Small clamp to Small).
 fn goo_tier_speed(tier: u8) -> f32 {
     GOO_TIER_SPEED[(tier as usize).min(2)]
+}
+
+/// Kind → (speed, turn, aggro) multipliers on the tier baselines. GREEN IS
+/// EXACTLY 1.0 EVERYWHERE — `x * 1.0` is a bit-exact identity in IEEE f32, so
+/// all-Green levels (every pre-kind level) simulate byte-identically and the
+/// goo oracles only moved for the hash-fold bytes, not behavior.
+pub fn goo_kind_moves(kind: GooKind) -> (f32, f32, f32) {
+    match kind {
+        GooKind::Green => (1.0, 1.0, 1.0),
+        // twitchy hunter: faster crawl, much sharper steering, and it smells
+        // the player from 3× the distance (4.5 wu) — the pressure enemy
+        GooKind::Runner => (1.6, 2.5, 3.0),
+        // slow wall of goo (its resistances are the threat, not its legs)
+        GooKind::Tank => (0.6, 0.7, 1.0),
+    }
+}
+
+/// Kind × weapon class → integer damage multiplier (numerator, denominator),
+/// applied as `(damage · n / d).max(1)` — exact integer math, no float drift.
+/// The Tank shrugs off small-arms: uzi pinpricks quarter, shotgun pellets
+/// halve. Everything else is ×1 (the slug/grenade/harpoon land in full).
+pub fn goo_kind_damage_mult(kind: GooKind, class: WeaponClass) -> (u16, u16) {
+    match (kind, class) {
+        (GooKind::Tank, WeaponClass::Uzi) => (1, 4),
+        (GooKind::Tank, WeaponClass::Shotgun) => (1, 2),
+        _ => (1, 1),
+    }
+}
+
+/// Ticks a harpooned blob stays pinned to the floor (4 s @ 60).
+pub const GOO_PIN_TICKS: u16 = 240;
+/// Pin spring stiffness (wu/s² per wu of displacement), fed through the same
+/// mother-well channel (anchors ×GOO_END_TRAP + fluid direct), capped at
+/// GOO_TRAP_MAX like every external well so it can't destabilise the solver.
+const GOO_PIN_PULL: f32 = 14.0;
+
+/// Cure stacks a body can hold (further slugs keep the count here).
+pub const GOO_CURE_MAX: u8 = 4;
+/// Dying with at least this many cure stacks SOLIDIFIES the body: a dead
+/// solid chunk is left on the floor (blocks walking + low shots) and only a
+/// single small live escapee squirms free — the slug's payoff over splitting.
+pub const GOO_CURE_CHUNK: u8 = 2;
+/// Crawl-speed penalty per cure stack (multiplier = 1 − 0.2·cure, floored).
+const GOO_CURE_SLOW: f32 = 0.2;
+/// Solid-chunk footprint half-extent as a fraction of the body radius.
+pub const GOO_CHUNK_FRAC: f32 = 0.8;
+/// Solid-chunk height (wu): knee-high — shots at muzzle height fly OVER it,
+/// grounded crawlers and low slugs are blocked.
+pub const GOO_CHUNK_H: f32 = 0.55;
+/// Hard cap on standing chunks (renderer pool size); at the cap a cured death
+/// degrades to a plain kill so the arena can't brick itself solid.
+pub const GOO_CHUNK_CAP: usize = 16;
+
+/// Wave entrance ring radius (wu): new squads land on the north semicircle,
+/// always up-screen of the player's spawn half.
+const GOO_WAVE_RING: f32 = 7.0;
+
+/// Wave-director state (arena levels): the current wave index (0 = the
+/// authored squad) and the lull countdown that runs while the floor is clear.
+#[derive(Clone, Copy, Debug)]
+pub struct WaveState {
+    pub idx: u16,
+    /// Ticks left before the next wave lands (counts down only while clear).
+    pub lull: u16,
+    /// Authored lull length (ArenaParams.wave_lull, re-armed every wave).
+    pub lull_full: u16,
 }
 
 /// A gooey, splittable fluorescent blob mob. The creature is a tiny two-anchor
@@ -490,6 +624,10 @@ fn goo_tier_speed(tier: u8) -> f32 {
 #[derive(Clone, Copy)]
 pub struct Goo {
     pub id: MobId,
+    pub kind: GooKind, // species: behavior multipliers + resistances + tint
+    pub cure: u8,      // slug "cure" stacks (solidify payload; behavior in M5)
+    pub pinned: u16,   // >0: harpooned to the floor — drive cut, pin spring on
+    pub pin_pt: Vec2,  // world-XZ point the harpoon nailed the body to
     pub ends: [Vec2; 2],      // spine end anchors: head (0), tail (1)
     pub ends_prev: [Vec2; 2], // Verlet previous (velocity = ends - ends_prev)
     pub parts: [Vec2; GOO_PARTICLES], // fluid particle positions (world-XZ)
@@ -542,7 +680,7 @@ const GOO_ID_MIX: u32 = 40503;
 /// displacement) is baked into every `prev` so the whole body drifts on its
 /// first tick (split separation). `heading` must be unit; `id`-derived scatter keeps it
 /// deterministic without consuming the shared RNG.
-pub(crate) fn fresh_goo(id: MobId, tier: u8, head: Vec2, heading: Vec2, seed_vel: Vec2, timer: u16) -> Goo {
+pub(crate) fn fresh_goo(id: MobId, tier: u8, kind: GooKind, head: Vec2, heading: Vec2, seed_vel: Vec2, timer: u16) -> Goo {
     let body_len = goo_tier_radius(tier) * GOO_BODY_FRAC;
     let tail = head - heading * body_len;
     let ends = [head, tail];
@@ -572,7 +710,7 @@ pub(crate) fn fresh_goo(id: MobId, tier: u8, head: Vec2, heading: Vec2, seed_vel
     } else {
         0
     };
-    Goo { id, ends, ends_prev: ends.map(|e| e - seed_vel), parts, vel: [seed_vel; GOO_PARTICLES], body_len, tier, hp: goo_tier_hp(tier), state: GooState::Wander, timer, heading, gait_phase, merge_grace: GOO_MERGE_GRACE, fusing: 0, fuse_pt: Vec2::ZERO, spawn_timer, spawn_dir: Vec2::ZERO, birth_glow: 0, birth_immune: false, tether: 0, tether_anchor: Vec2::ZERO, tear_ticks: 0, wobble_amp: 0.0, wobble_dir: Vec2::ZERO, wobble_phase: 0 }
+    Goo { id, kind, cure: 0, pinned: 0, pin_pt: Vec2::ZERO, ends, ends_prev: ends.map(|e| e - seed_vel), parts, vel: [seed_vel; GOO_PARTICLES], body_len, tier, hp: goo_tier_hp(tier), state: GooState::Wander, timer, heading, gait_phase, merge_grace: GOO_MERGE_GRACE, fusing: 0, fuse_pt: Vec2::ZERO, spawn_timer, spawn_dir: Vec2::ZERO, birth_glow: 0, birth_immune: false, tether: 0, tether_anchor: Vec2::ZERO, tear_ticks: 0, wobble_amp: 0.0, wobble_dir: Vec2::ZERO, wobble_phase: 0 }
 }
 
 /// Integer gait phase → (gather, stretch), both in [0,1], for the crawl cycle.
@@ -591,12 +729,23 @@ fn gait_profile(phase: u16) -> (f32, f32) {
     } else {
         0.0
     };
-    // gather: pull boost peaks during the contract/round-up, eases on the lunge.
+    // gather: the pull boost ramps up through the round-up, RELEASES smoothly
+    // across the early lunge, rests, then eases back up to the wrap value. The
+    // old profile snapped 1.0 → 0.2 at t=0.35 and 0.2 → 0.4 across the cycle
+    // wrap — a twice-per-cycle force STEP the whole fluid read as a pulse.
+    // smoothstep ends with zero slope and the u² ramp starts with zero slope,
+    // so even the wrap is kink-free.
     let gather = if t < 0.35 {
         let u = t / 0.35;
         0.4 + 0.6 * u * u
-    } else {
+    } else if t < 0.55 {
+        let v = (t - 0.35) / 0.20;
+        1.0 - 0.8 * (v * v * (3.0 - 2.0 * v)) // 1.0 → 0.2, eased both ends
+    } else if t < 0.85 {
         0.2
+    } else {
+        let v = (t - 0.85) / 0.15;
+        0.2 + 0.2 * (v * v * (3.0 - 2.0 * v)) // 0.2 → 0.4 = the t=0 ramp start
     };
     (gather, stretch)
 }
@@ -621,6 +770,12 @@ fn rotate_toward(from: Vec2, to: Vec2, max_rad: f32) -> Vec2 {
 pub struct MobRender {
     pub id: MobId,
     pub tier: u8,
+    /// Species — drives the render tint (green/red/blue) and light color.
+    pub kind: GooKind,
+    /// Cure stacks 0..=GOO_CURE_MAX — the renderer desaturates a curing body.
+    pub cure: u8,
+    /// Weak (hp ≤ ⅓ of tier max): the render shell applies the lag-glitch.
+    pub weak: bool,
     pub parts: [Vec3; GOO_PARTICLES],
     pub radius: f32,
     pub part_radius: f32,
@@ -629,6 +784,10 @@ pub struct MobRender {
     /// born. The shader lerps the goo colour toward a hot birth tint by this.
     /// Pure presentation — derived from the hashed spawn state, never hashed.
     pub glow: [f32; GOO_PARTICLES],
+    /// Per-blob vertical scale on the composite's resting squash (1 = neutral):
+    /// gait lunge flattens, jelly wobble bounces, birth tension draws up. See
+    /// `goo_render_vscale`. Pure presentation, like `glow`.
+    pub vscale: f32,
 }
 
 impl MobRender {
@@ -708,7 +867,89 @@ fn goo_merge_ready(g: &Goo) -> bool {
     g.merge_grace == 0 && g.fusing == 0
 }
 
+/// Start-of-tick contact snapshot of one blob, index-aligned with the mob
+/// handle list, for the blob–blob repulsion. Every blob repels against these
+/// FROZEN positions (not the live World, which mutates as the loop walks the
+/// MobId order), so the pair forces are symmetric and order-independent.
+struct GooContact {
+    centroid: Vec2,
+    /// Broad-phase reach: how far this blob's particles spread from `centroid`.
+    reach: f32,
+    parts: [Vec2; GOO_PARTICLES],
+    tier: u8,
+    /// Species: merge compatibility is same-tier AND same-kind now, so the
+    /// repulsion opt-out below must match or a mixed-kind pair would overlap
+    /// forever (each waiting for a fusion that never comes).
+    kind: GooKind,
+    /// `goo_body_scale(body_len)` — sizes the pair's contact skin.
+    scale: f32,
+    merge_ready: bool,
+    /// Fusing or tethered: this blob's overlap is the POINT — never repel it.
+    bonded: bool,
+}
+
+impl GooContact {
+    fn of(g: &Goo) -> Self {
+        let centroid = g.centroid();
+        let mut reach = 0.0f32;
+        for p in &g.parts {
+            reach = reach.max((*p - centroid).length());
+        }
+        GooContact { centroid, reach, parts: g.parts, tier: g.tier, kind: g.kind, scale: goo_body_scale(g.body_len), merge_ready: goo_merge_ready(g), bonded: g.fusing > 0 || g.tether > 0 }
+    }
+}
+
+/// Blob–blob contact repulsion (wu/s²) on world point `p` belonging to blob
+/// `me`: a soft push away from every OTHER blob's particles within the pair's
+/// contact skin (`GOO_REPEL_SKIN`, scaled to the pair), linear in overlap,
+/// capped at `GOO_REPEL_MAX`. Opt-outs per the constants block above.
+/// Accumulation walks the MobId-sorted snapshot in order — f32 is
+/// non-associative and hashed.
+fn goo_repel_at(p: Vec2, me: usize, contacts: &[GooContact]) -> Vec2 {
+    let my = &contacts[me];
+    if my.bonded {
+        return Vec2::ZERO;
+    }
+    let mut acc = Vec2::ZERO;
+    for (j, o) in contacts.iter().enumerate() {
+        if j == me || o.bonded {
+            continue;
+        }
+        // a merge-compatible pair may flow together (fusion handles the contact)
+        if o.tier == my.tier && o.kind == my.kind && my.tier > 0 && my.merge_ready && o.merge_ready {
+            continue;
+        }
+        let skin = GOO_REPEL_SKIN * 0.5 * (my.scale + o.scale);
+        let broad = o.reach + skin;
+        if (o.centroid - p).length_squared() > broad * broad {
+            continue;
+        }
+        for q in &o.parts {
+            let d = p - *q;
+            let r = d.length();
+            if r < skin && r > 1e-6 {
+                acc += d / r * (1.0 - r / skin);
+            }
+        }
+    }
+    let mut f = acc * GOO_REPEL;
+    let fl = f.length();
+    if fl > GOO_REPEL_MAX {
+        f *= GOO_REPEL_MAX / fl;
+    }
+    f
+}
+
 impl<S: AudioSink> HouseGame<S> {
+    /// Live blob count INCLUDING this tick's already-queued spawns/despawns.
+    /// `self.mobs` only rebuilds at the post-tick flush, so every same-tick
+    /// GOO_LIVE_CAP gate must count through this — otherwise two splits (or
+    /// two births) in one tick each read the same stale length, both pass,
+    /// and the cap overshoots into the renderer's fixed metaball/proxy pools.
+    fn goo_live_pending(&self) -> i32 {
+        self.mobs.len() as i32 + self.res.pending_mob_delta
+    }
+
     /// Solidity the GOO sees: everything `walk_blocked` blocks PLUS the player's
     /// pillar footprint (inflated by the goo's surface clearance). The player
     /// itself never tests this — it walks freely through its own marker — so the
@@ -763,6 +1004,7 @@ impl<S: AudioSink> HouseGame<S> {
         if g.fusing == 0 {
             self.res.buf.despawn(e);
             self.res.mobs_dirty = true;
+            self.res.pending_mob_delta -= 1;
         }
         true
     }
@@ -799,19 +1041,31 @@ impl<S: AudioSink> HouseGame<S> {
                 }
             }
             if g.spawn_timer == GOO_GESTATE_TICKS {
-                // enter gestation: the bud forms toward the CAMERA so the birth
-                // always plays out clearly in view (in front of the mother, not
-                // occluded). The iso view sits in the +X+Z octant at yaw 45°, so
-                // world (+X,+Z) — angle π/4 — faces the viewer; a small random
-                // jitter (±~27°) keeps successive births from looking identical.
-                let a = std::f32::consts::FRAC_PI_4 + (self.res.rng.next_f32() - 0.5) * (std::f32::consts::PI * 0.30);
-                g.spawn_dir = Vec2::new(a.cos(), a.sin());
+                // Enter gestation ONLY if the birth could actually land right
+                // now: at the cap the whole cycle waits instead. Gating here
+                // (not just at the birth tick) is what keeps a full nest from
+                // playing phantom labor — a mother straining, glowing amber
+                // and clenching for a second, then producing nothing.
+                if self.goo_live_pending() < GOO_LIVE_CAP as i32 {
+                    // the bud forms toward the CAMERA so the birth always plays
+                    // out clearly in view (in front of the mother, not
+                    // occluded). The iso view sits in the +X+Z octant at yaw
+                    // 45°, so world (+X,+Z) — angle π/4 — faces the viewer; a
+                    // small random jitter (±~27°) keeps successive births from
+                    // looking identical.
+                    let a = std::f32::consts::FRAC_PI_4 + (self.res.rng.next_f32() - 0.5) * (std::f32::consts::PI * 0.30);
+                    g.spawn_dir = Vec2::new(a.cos(), a.sin());
+                } else {
+                    g.spawn_timer = GOO_SPAWN_PERIOD; // full nest: try next cycle
+                }
             }
             if g.spawn_timer == 0 {
-                // BIRTH — skipped (and the timer waits a full cycle) if it
-                // would breach the live cap, so mitosis never outruns the
-                // renderer's metaball pool.
-                if self.mobs.len() < GOO_LIVE_CAP {
+                // BIRTH — skipped (and the timer waits a full cycle) if the cap
+                // filled up DURING gestation (a shot-split), so mitosis never
+                // outruns the renderer's metaball pool. Rare now that gestation
+                // entry is gated; the afterglow below still fades the already-
+                // played gestation glow out smoothly rather than cutting it.
+                if self.goo_live_pending() < GOO_LIVE_CAP as i32 {
                     let c = g.centroid();
                     let dir = g.spawn_dir.try_normalize().unwrap_or(g.heading);
                     // the bud forms INSIDE her body at the bud site (just under
@@ -823,7 +1077,8 @@ impl<S: AudioSink> HouseGame<S> {
                     let timer = 20 + (self.res.rng.next_f32() * 60.0) as u16;
                     // born at REST (no outward pop): the tether spring must
                     // build the neck tension itself, not fight an initial shove.
-                    let mut baby = fresh_goo(cid, GOO_BIRTH_TIER, site, dir, Vec2::ZERO, timer);
+                    // Buds inherit the mother's species.
+                    let mut baby = fresh_goo(cid, GOO_BIRTH_TIER, g.kind, site, dir, Vec2::ZERO, timer);
                     // deflate to a droplet and shrink the cloud to match, so it
                     // EMERGES (the gait's body_len ease re-inflates it) instead
                     // of appearing full-size — the reverse of a fusion collapse.
@@ -845,6 +1100,7 @@ impl<S: AudioSink> HouseGame<S> {
                     baby.tether_anchor = site;
                     self.res.buf.spawn((baby,));
                     self.res.mobs_dirty = true;
+                    self.res.pending_mob_delta += 1;
                     // arm the mother's matching tear: same lifetime, set the SAME
                     // tick, so her shake fires in lockstep with the mini's snap.
                     g.tear_ticks = GOO_TETHER_TICKS;
@@ -890,6 +1146,10 @@ impl<S: AudioSink> HouseGame<S> {
     /// `(mv, speed)`: the move gate (0 while Idle) and this tier's crawl speed.
     /// Verbatim extraction.
     fn goo_step_ai(&mut self, g: &mut Goo, pxz: Vec2, aggro2: f32) -> (f32, f32) {
+        // species multipliers — Green is exactly 1.0 across the board, so this
+        // block is a bit-exact no-op on all-Green (pre-kind) levels
+        let (kind_speed, kind_turn, kind_aggro) = goo_kind_moves(g.kind);
+        let aggro2 = aggro2 * (kind_aggro * kind_aggro);
         let head = g.ends[0];
         let to_player = pxz - head;
         let dist2 = to_player.length_squared();
@@ -918,23 +1178,39 @@ impl<S: AudioSink> HouseGame<S> {
             GooState::Idle => Vec2::ZERO,
         };
         if let Some(td) = target_dir.try_normalize() {
-            g.heading = rotate_toward(g.heading, td, GOO_MAX_TURN);
+            g.heading = rotate_toward(g.heading, td, GOO_MAX_TURN * kind_turn);
         }
         let mv = if g.state == GooState::Idle { 0.0 } else { 1.0 };
-        let speed = goo_tier_speed(g.tier);
+        // cure stiffens the legs: −20 %/stack, floored (cure 0 is exactly ×1.0)
+        let cure_mul = (1.0 - GOO_CURE_SLOW * g.cure as f32).max(0.4);
+        let speed = goo_tier_speed(g.tier) * kind_speed * cure_mul;
         (mv, speed)
     }
 
     /// HEAD anchor step: Verlet inertia + steering drive + trap/mother pull,
     /// resolved through `collide_and_slide` so walls stop it like the player. The
     /// drive surges with the lunge (`stretch`) so the creature pushes off each
-    /// gait cycle rather than gliding. Verbatim extraction.
+    /// gait cycle rather than gliding. `contact` is the blob–blob repulsion
+    /// sampled at the head — folded in like the trap pull so the whole SPINE
+    /// deflects off another body (fluid-only repulsion would leave the capsule
+    /// attractor driving the fluid into the foreign body it's pushed out of).
     #[allow(clippy::too_many_arguments)]
-    fn goo_step_head_anchor(&self, g: &mut Goo, speed: f32, mv: f32, stretch: f32, tension: f32, well: f32, mother_acc: Vec2) {
+    fn goo_step_head_anchor(&self, g: &mut Goo, speed: f32, mv: f32, stretch: f32, tension: f32, well: f32, mother_acc: Vec2, contact: Vec2) {
+        // contact YIELD: a body pressing into another cannot push through — the
+        // drive stalls with contact pressure and the heading is physically
+        // rotated toward the push, so a head-on pair slides apart around each
+        // other instead of grinding at a force equilibrium mid-overlap. The
+        // contact turn is 2× the AI turn rate: `goo_step_ai` re-aims at the
+        // wander target by GOO_MAX_TURN every tick, so an equal rate would
+        // cancel to zero net rotation and the stalemate would hold.
+        let yield_k = (contact.length() / GOO_REPEL_MAX).min(1.0);
+        if let Some(pd) = contact.try_normalize() {
+            g.heading = rotate_toward(g.heading, pd, GOO_MAX_TURN * 2.0 * yield_k);
+        }
         let inertia = (g.ends[0] - g.ends_prev[0]) * GOO_VERLET_DECAY * GOO_HEAD_INERTIA;
         // she all but stops crawling while she pushes (tension → 0 drive)
-        let drive = g.heading * (speed * mv * (0.5 + 0.5 * stretch) * (1.0 - 0.85 * tension) * TICK_DT);
-        let d = inertia + drive + (self.trap_accel(g.ends[0]) * well + mother_acc) * GOO_END_TRAP;
+        let drive = g.heading * (speed * mv * (0.5 + 0.5 * stretch) * (1.0 - 0.85 * tension) * (1.0 - 0.9 * yield_k) * TICK_DT);
+        let d = inertia + drive + (self.trap_accel(g.ends[0]) * well + mother_acc + contact) * GOO_END_TRAP;
         let (nx, nz) = collide_and_slide(|x, z| self.goo_solid(x, z), g.ends[0].x, g.ends[0].y, d.x, d.y);
         g.ends_prev[0] = g.ends[0];
         g.ends[0] = Vec2::new(nx, nz);
@@ -943,14 +1219,22 @@ impl<S: AudioSink> HouseGame<S> {
     /// TAIL anchor step: Verlet + trap/mother pull, then a distance constraint
     /// holding the tail the (gait-modulated) `gait_len` behind the head. As
     /// `gait_len` shrinks the tail catches up (round-up); as it grows the body
-    /// extends (the inchworm reach). Verbatim extraction.
-    fn goo_step_tail_anchor(&self, g: &mut Goo, gait_len: f32, well: f32, mother_acc: Vec2) {
-        let tail_d = (g.ends[1] - g.ends_prev[1]) * GOO_VERLET_DECAY + (self.trap_accel(g.ends[1]) * well + mother_acc) * GOO_END_TRAP;
-        g.ends_prev[1] = g.ends[1];
-        g.ends[1] += tail_d;
-        let span = g.ends[1] - g.ends[0];
+    /// extends (the inchworm reach). The constrained move is resolved through
+    /// `collide_and_slide` like the head — an unclamped tail could pin inside
+    /// a wall, dragging the capsule attractor in with it, and the fluid would
+    /// grind against the wall clamp every solver iteration instead of settling
+    /// flush. (The spine re-tensions next tick; the constraint is soft across
+    /// a wall contact.)
+    fn goo_step_tail_anchor(&self, g: &mut Goo, gait_len: f32, well: f32, mother_acc: Vec2, contact: Vec2) {
+        let tail_d = (g.ends[1] - g.ends_prev[1]) * GOO_VERLET_DECAY + (self.trap_accel(g.ends[1]) * well + mother_acc + contact) * GOO_END_TRAP;
+        let old = g.ends[1];
+        g.ends_prev[1] = old;
+        let free = old + tail_d;
+        let span = free - g.ends[0];
         let dist = span.length().max(1e-5);
-        g.ends[1] = g.ends[0] + span * (gait_len / dist);
+        let want = g.ends[0] + span * (gait_len / dist);
+        let (nx, nz) = collide_and_slide(|x, z| self.goo_solid(x, z), old.x, old.y, want.x - old.x, want.y - old.y);
+        g.ends[1] = Vec2::new(nx, nz);
     }
 
     /// 3c. Goo blobs crawl: per blob, a deliberately-dumb wander/seek/idle AI
@@ -983,7 +1267,11 @@ impl<S: AudioSink> HouseGame<S> {
                 (g.tier == 0 && g.fusing == 0).then(|| g.centroid())
             })
             .collect();
-        for e in mobs {
+        // start-of-tick contact snapshot (index-aligned with `mobs`): every blob
+        // repels against these frozen clouds, so blob A stepping before blob B
+        // in the MobId order doesn't skew the pair force.
+        let contacts: Vec<GooContact> = mobs.iter().map(|&e| GooContact::of(&self.world.get::<&Goo>(e).unwrap())).collect();
+        for (mi, &e) in mobs.iter().enumerate() {
             // lift the blob out as a local copy: mutating it in place would
             // hold a World borrow across the collide closure (which borrows
             // &self) and the RNG draws (which borrow &mut self.res).
@@ -1011,7 +1299,32 @@ impl<S: AudioSink> HouseGame<S> {
             let tension = goo_tension(g.tier, g.spawn_timer, g.birth_glow);
 
             // --- AI: pick a target travel direction, steer the head heading. ---
-            let (mv, speed) = self.goo_step_ai(&mut g, pxz, aggro2);
+            let (mut mv, speed) = self.goo_step_ai(&mut g, pxz, aggro2);
+
+            // --- HARPOON PIN: a pinned blob's crawl drive is cut and a stiff
+            // spring hauls the whole body back to the nail point. The AI still
+            // ran above — its RNG draw order is hash-load-bearing — the blob
+            // just strains against the pin instead of going anywhere. The
+            // spring rides the mother-well channel (spine ends ×GOO_END_TRAP +
+            // fluid direct) so it needs no new force plumbing, and is capped
+            // like every external well so the solver regime holds. ---
+            let pin_acc = if g.pinned > 0 {
+                g.pinned -= 1;
+                mv = 0.0;
+                let d = (g.pin_pt - g.centroid()) * GOO_PIN_PULL;
+                let dl = d.length();
+                if dl > GOO_TRAP_MAX {
+                    d * (GOO_TRAP_MAX / dl)
+                } else {
+                    d
+                }
+            } else {
+                Vec2::ZERO
+            };
+            // the pin spring joins the mother-well channel: every downstream
+            // consumer (head/tail anchors, fluid) already sums mother_acc.
+            // Adding ZERO is bit-exact — unpinned blobs are untouched.
+            let mother_acc = mother_acc + pin_acc;
 
             // --- crawl gait clock: advance the integer phase every tick (even
             // while Idle, so a resting blob still breathes) and read its
@@ -1080,11 +1393,14 @@ impl<S: AudioSink> HouseGame<S> {
             let gait_base = g.body_len * (GOO_LEN_MIN + (GOO_LEN_MAX - GOO_LEN_MIN) * stretch) * (1.0 - tension * GOO_TENSE_CLENCH);
             let gait_len = (gait_base + g.body_len * wobble * GOO_WOBBLE_LEN).max(g.body_len * 0.2);
 
-            // --- head anchor (Verlet + steering drive + trap/mother pull,
-            // resolved through collide_and_slide), then the trailing tail anchor
-            // pinned `gait_len` behind it (the squash-and-stretch inchworm reach). ---
-            self.goo_step_head_anchor(&mut g, speed, mv, stretch, tension, well, mother_acc);
-            self.goo_step_tail_anchor(&mut g, gait_len, well, mother_acc);
+            // --- head anchor (Verlet + steering drive + trap/mother/contact
+            // pull, resolved through collide_and_slide), then the trailing tail
+            // anchor pinned `gait_len` behind it (the squash-and-stretch
+            // inchworm reach). Contact repulsion is sampled at each end so the
+            // spine itself deflects off another body, not just the fluid. ---
+            let contact_ends = [goo_repel_at(g.ends[0], mi, &contacts), goo_repel_at(g.ends[1], mi, &contacts)];
+            self.goo_step_head_anchor(&mut g, speed, mv, stretch, tension, well, mother_acc, contact_ends[0]);
+            self.goo_step_tail_anchor(&mut g, gait_len, well, mother_acc, contact_ends[1]);
 
             // --- fluid body: Position-Based Fluids (Macklin & Müller 2013).
             // External body forces (pull toward the two spine ends + traps)
@@ -1140,6 +1456,7 @@ impl<S: AudioSink> HouseGame<S> {
                 // heading so turns don't smear the body sideways.
                 a -= perp * (g.vel[i].dot(perp) * GOO_LATERAL);
                 a += self.trap_accel(p) * well + mother_acc;
+                a += goo_repel_at(p, mi, &contacts); // blob–blob contact push
                 a += (cen - p) * squeeze; // tension: compact toward the centroid
                 if tether_k > 0.0 {
                     // bond spring: haul the body back to the bud site → the neck.
@@ -1207,17 +1524,39 @@ impl<S: AudioSink> HouseGame<S> {
     /// On death the blob splits into two smaller ones (one tier down, separated
     /// perpendicular to the slug), or — Small / over-cap — dies terminally. All
     /// spawns/despawns queue on the per-tick buffer (post-flush `rebuild_mobs`).
-    pub(crate) fn damage_goo(&mut self, e: Entity, hit: Vec3, dir: Vec3, damage: u16, knockback: f32) {
-        let (id, tier, centroid) = {
+    pub(crate) fn damage_goo(&mut self, e: Entity, hit: Vec3, dir: Vec3, damage: u16, knockback: f32, class: WeaponClass) {
+        let (id, tier, kind, cure0, centroid) = {
             let g = self.world.get::<&Goo>(e).unwrap();
-            (g.id, g.tier, g.centroid())
+            // hp 0 = already killed THIS tick (the despawn queues at the flush,
+            // so a second projectile still finds the body in `self.mobs`).
+            // Without this guard the corpse dies again: a duplicate despawn,
+            // a SECOND split (four children), and doubled events/audio.
+            if g.hp == 0 {
+                return;
+            }
+            (g.id, g.tier, g.kind, g.cure, g.centroid())
         };
+        // species resistance: exact integer scaling, floored at 1 so every hit
+        // at least chips (a Tank under uzi fire dies slowly, not never)
+        let (mn, md) = goo_kind_damage_mult(kind, class);
+        let damage = ((damage as u32 * mn as u32 / md as u32) as u16).max(1);
         let kdir = Vec2::new(dir.x, dir.z).normalize_or_zero();
         let hit_xz = Vec2::new(hit.x, hit.z);
         let reach = goo_tier_radius(tier).max(0.2);
         let dead = {
             let mut g = self.world.get::<&mut Goo>(e).unwrap();
             g.hp = g.hp.saturating_sub(damage);
+            // the harpoon's payload: nail the body to where it stands (a dying
+            // blob skips it — the pin would evaporate with the split anyway)
+            if class == WeaponClass::Harpoon && g.hp > 0 {
+                g.pinned = GOO_PIN_TICKS;
+                g.pin_pt = centroid;
+            }
+            // the slug's payload: a cure stack per hit (counted even on the
+            // killing blow — the death path below reads it for solidify)
+            if class == WeaponClass::Slug {
+                g.cure = (g.cure + 1).min(GOO_CURE_MAX);
+            }
             // momentum transfer: push the fluid along the slug's heading, weighted
             // by closeness to the impact point so the hit side caves/sprays.
             g.ends_prev[0] -= kdir * (0.05 * knockback);
@@ -1235,16 +1574,59 @@ impl<S: AudioSink> HouseGame<S> {
         };
         let hit_evt = Vec3::new(centroid.x, goo_tier_radius(tier), centroid.y);
         if !dead {
+            // uzi pinpricks visibly BLEED: a presentation-only droplet event
+            // (the render shell taps it; audio skips it; nothing is hashed)
+            if class == WeaponClass::Uzi {
+                self.res.events.emit(GameEvent::MobBled(id, hit));
+            }
             self.res.events.emit(GameEvent::MobHit(id, hit_evt));
             return;
         }
         // death — remove the parent at the flush
         self.res.buf.despawn(e);
         self.res.mobs_dirty = true;
+        self.res.pending_mob_delta -= 1;
+        // SOLIDIFIED death: a body that dies with enough cure stacks leaves a
+        // dead solid CHUNK (an inert obstacle) and a single small escapee —
+        // the un-cured remainder squirming free — instead of splitting in two.
+        // The cure counted on the killing blow too (cure0 read pre-hit, +1 if
+        // this was a slug). Degrades to a plain kill at the chunk cap, or if
+        // the chunk would form ON the player (never wall someone in), or on a
+        // terminal Small (no mass worth a chunk).
+        let cure_now = if class == WeaponClass::Slug { (cure0 + 1).min(GOO_CURE_MAX) } else { cure0 };
+        if cure_now >= GOO_CURE_CHUNK && tier < 2 && self.res.chunks.len() < GOO_CHUNK_CAP {
+            let half = goo_tier_radius(tier) * GOO_CHUNK_FRAC;
+            let p = self.player_pos();
+            let clear = PLAYER_HALF + 0.1;
+            let on_player = p.x > centroid.x - half - clear && p.x < centroid.x + half + clear && p.z > centroid.y - half - clear && p.z < centroid.y + half + clear;
+            if !on_player {
+                self.res.chunks.push([centroid.x - half, centroid.y - half, centroid.x + half, centroid.y + half]);
+                // one escapee (tier down), popped out past the chunk edge along
+                // the slug heading — if the cap has room for it
+                if self.goo_live_pending() + 1 <= GOO_LIVE_CAP as i32 {
+                    let cid = MobId(self.res.next_mob_id);
+                    self.res.next_mob_id += 1;
+                    let d = kdir.try_normalize().unwrap_or(Vec2::X);
+                    let chead = centroid + d * (half + goo_tier_radius(tier + 1) * 0.8);
+                    let timer = 20 + (self.res.rng.next_f32() * 60.0) as u16;
+                    self.res.buf.spawn((fresh_goo(cid, tier + 1, kind, chead, d, d * 0.05, timer),));
+                    self.res.pending_mob_delta += 1;
+                }
+                if self.res.arsenal.is_some() {
+                    self.res.score += 3; // solidify: the committed play
+                }
+                self.res.events.emit(GameEvent::MobSolidified(id, hit_evt));
+                return;
+            }
+        }
         // Small is terminal; an over-cap split also degrades to a plain kill so
-        // division can never outrun the renderer's instance pool.
-        let live_after_split = self.mobs.len() - 1 + 2;
-        if tier >= 2 || live_after_split > GOO_LIVE_CAP {
+        // division can never outrun the renderer's instance pool (the pending
+        // delta counts this tick's other queued splits/births toward the cap).
+        let live_after_split = self.goo_live_pending() + 2;
+        if tier >= 2 || live_after_split > GOO_LIVE_CAP as i32 {
+            if self.res.arsenal.is_some() {
+                self.res.score += 2; // terminal kill
+            }
             self.res.events.emit(GameEvent::MobKilled(id, hit_evt));
             return;
         }
@@ -1263,7 +1645,12 @@ impl<S: AudioSink> HouseGame<S> {
             let chead = centroid + d * sep;
             let vel = d * (parent_r * 0.05); // outward separation, baked into prev
             let timer = 20 + (self.res.rng.next_f32() * 60.0) as u16;
-            self.res.buf.spawn((fresh_goo(cid, tier + 1, chead, d, vel, timer),));
+            // children inherit the species — a Tank splits into small Tanks
+            self.res.buf.spawn((fresh_goo(cid, tier + 1, kind, chead, d, vel, timer),));
+            self.res.pending_mob_delta += 1;
+        }
+        if self.res.arsenal.is_some() {
+            self.res.score += 1; // a split still scores (the body broke)
         }
         self.res.events.emit(GameEvent::MobSplit(id, hit_evt));
     }
@@ -1291,8 +1678,8 @@ impl<S: AudioSink> HouseGame<S> {
             let touch = goo_tier_radius(ga.tier) * GOO_MERGE_FRAC;
             for b in (a + 1)..mobs.len() {
                 let gb = *self.world.get::<&Goo>(mobs[b]).unwrap();
-                if gb.tier != ga.tier || !goo_merge_ready(&gb) {
-                    continue; // same-tier only, and both past grace / not fusing
+                if gb.tier != ga.tier || gb.kind != ga.kind || !goo_merge_ready(&gb) {
+                    continue; // same tier AND species only, both past grace / not fusing
                 }
                 let cb = gb.centroid();
                 if (ca - cb).length() < touch {
@@ -1331,5 +1718,55 @@ impl<S: AudioSink> HouseGame<S> {
         }
         let pt = Vec3::new(mid.x, goo_tier_radius(tier - 1), mid.y);
         self.res.events.emit(GameEvent::MobMerged(id_a, pt));
+    }
+
+    /// 5b. WAVE DIRECTOR (arena levels): while the floor holds no live blob
+    /// (and none is queued this tick), a lull counts down; at zero the next —
+    /// bigger, mixed-species — squad lands on the north entrance ring. Spawn
+    /// placement is id-hash scattered (RNG-free); headings/timers draw the
+    /// shared RNG in fixed order exactly like authored spawns. No-op (and no
+    /// state touch) on non-arena levels: `wave` is None there.
+    pub(crate) fn wave_system(&mut self) {
+        let Some(mut w) = self.res.wave else { return };
+        if !self.mobs.is_empty() || self.res.pending_mob_delta != 0 || self.res.mobs_dirty {
+            // not clear: keep the countdown armed at full for the next clear
+            w.lull = w.lull_full;
+            self.res.wave = Some(w);
+            return;
+        }
+        if w.lull > 0 {
+            w.lull -= 1;
+            self.res.wave = Some(w);
+            return;
+        }
+        w.idx += 1;
+        w.lull = w.lull_full;
+        // squad size grows with the wave, capped well under GOO_LIVE_CAP so
+        // splits/mitosis have headroom before the renderer pool ceiling
+        let count = (3 + w.idx as u32).min(GOO_LIVE_CAP as u32 - 2);
+        for i in 0..count {
+            let cid = MobId(self.res.next_mob_id);
+            self.res.next_mob_id += 1;
+            // entrance ring over the north semicircle (z < 0), fanned by slot
+            // with a small id-hash jitter so waves never stamp the same line
+            let jit = (((cid.0.wrapping_mul(GOO_ID_HASH)) >> 8) & 0xff) as f32 / 255.0 - 0.5;
+            let a = std::f32::consts::PI * (1.0 + (i as f32 + 0.5 + jit * 0.5) / count as f32);
+            let head = Vec2::new(a.cos(), a.sin()) * GOO_WAVE_RING;
+            // composition: mediums anchor, smalls swarm, and from wave 2 on
+            // the third slot is a MOTHER (kill her first or she out-breeds you)
+            let tier = if w.idx >= 2 && i == 2 { 0 } else if i % 3 == 0 { 1 } else { 2 };
+            let kind = match (w.idx as u32 + i) % 3 {
+                0 => GooKind::Green,
+                1 => GooKind::Runner,
+                _ => GooKind::Tank,
+            };
+            let hd = self.res.rng.next_f32() * std::f32::consts::TAU;
+            let heading = Vec2::new(hd.cos(), hd.sin());
+            let timer = 60 + (self.res.rng.next_f32() * 120.0) as u16;
+            self.res.buf.spawn((fresh_goo(cid, tier, kind, head, heading, Vec2::ZERO, timer),));
+            self.res.pending_mob_delta += 1;
+            self.res.mobs_dirty = true;
+        }
+        self.res.wave = Some(w);
     }
 }

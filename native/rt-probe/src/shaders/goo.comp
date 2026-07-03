@@ -1,0 +1,225 @@
+#version 460
+// goo.comp — screen-space translucent metaball composite (the Vulkan port of
+// rt-viewer's goo.metal; KEEP THE TWO IN LOCKSTEP — same GooPush layout, same
+// constants, same look).
+//
+// Runs AFTER shade writes the HDR radiance + primary-hit world-position
+// G-buffers, and BEFORE tonemap. For each low-res pixel it rebuilds the SAME
+// orthographic primary ray shade used, sphere-traces the smooth `smin` union of
+// the goo metaballs, and — where the goo surface is in front of the scene —
+// composites a translucent, self-emitting fluorescent body over the scene
+// colour: Beer–Lambert green absorption through the marched thickness, a
+// screen-space refraction of the background, an additive radioactive-green
+// glow, a Fresnel rim, and a wet Blinn-Phong glint.
+//
+// The goo LIES ON THE GROUND: every metaball is flattened vertically (`squash`,
+// modulated per ball by `vscales` — the blob's height breathing), and the field
+// is clamped to the floor plane (`floorY`). Presentation-only. WRITES only its
+// own pixel of colorImg; background READS (incl. the refraction's neighbour
+// taps) go through bgImg, a pre-pass copy of the radiance — never colorImg
+// off-pixel, which would race the other invocations' in-place writes.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D colorImg;        // radiance: read+write OWN pixel only
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2D posImg; // primary-hit world pos (w = hit flag)
+layout(set = 0, binding = 2, rgba32f) uniform readonly image2D bgImg;  // pre-goo radiance snapshot
+layout(std430, set = 0, binding = 3) readonly buffer Balls   { vec4 balls[]; };    // xyz centre, w radius
+layout(std430, set = 0, binding = 4) readonly buffer Glows   { float glows[]; };   // per-ball birth-glow 0..1
+layout(std430, set = 0, binding = 5) readonly buffer Vscales { float vscales[]; }; // per-ball vertical scale
+layout(std430, set = 0, binding = 6) readonly buffer Bounds  { vec4 bnds[]; };     // per-BLOB bounding spheres
+layout(std430, set = 0, binding = 7) readonly buffer Tints   { vec4 tints[]; };    // per-ball species tint (rgb × emis)
+
+// byte-identical to metal_backend/vulkan_backend's `GooPush` (160 B)
+layout(push_constant) uniform PC {
+    vec4 camRight; // xyz basis, w = ortho half-width
+    vec4 camUp;    // xyz basis, w = ortho half-height
+    vec4 camDir;   // xyz forward, w = vertical squash (<1 = flatter)
+    vec4 camPos;   // xyz eye,     w = floor plane Y
+    ivec4 dims;    // W, H, ballCount, blobCount
+    vec4 emis;     // emissive rgb, w = glow intensity
+    vec4 absorb;   // absorption rgb (per wu), w = surface alpha
+    vec4 params;   // x = smin merge radius k; yzw unused
+    vec4 birthEmis;   // emissive rgb/intensity lerped TO at a gestating bud
+    vec4 birthAbsorb; // absorption rgb lerped TO at a gestating bud
+} pc;
+
+const float TIE = 1.0 / 64.0; // pixel-centre tie bias (matches shade.comp)
+
+// look knobs — mirror goo.metal exactly
+const float GOO_GLOW_BASE = 0.35;
+const float GOO_GLOW_THICKNESS = 1.6;
+const float GOO_GLOW_RIM = 1.1;
+const float GOO_GLOW_FALLOFF = 2.5;
+const float GOO_BIRTH_TINT_BOOST = 1.9;
+const float GOO_SPEC_POW = 90.0;
+const float GOO_SPEC = 3.0;
+const float GOO_VSCALE_MIN = 0.05;
+const float GOO_REFRACT_ETA = 0.752;
+const float GOO_REFRACT = 0.7;
+const int GOO_BLOB_BALLS = 40;   // balls per blob (house-game GOO_PARTICLES)
+const float GOO_CULL_NEAR = 0.30; // expand a blob's balls within this of its bound (> smin k)
+
+// soft-min: smoothly merges two SDFs so nearby balls fuse into one lump.
+float smin_(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+// signed distance to the ground-hugging metaball field. Two-level: per BLOB a
+// bounding-sphere test first — a far blob contributes its bound distance (a
+// safe under-estimate, plain min; smin only couples within k and far blobs are
+// beyond GOO_CULL_NEAR > k), a near blob expands its balls exactly, so
+// cross-blob welds (the birth-tether neck) keep the true smin field.
+float goo_sdf(vec3 p, int nblobs, int n, float k, float squash, float floorY) {
+    float d = 1e9;
+    for (int b = 0; b < nblobs; ++b) {
+        float bd = length(p - bnds[b].xyz) - bnds[b].w;
+        if (bd > GOO_CULL_NEAR) {
+            d = min(d, bd);
+            continue;
+        }
+        int i1 = min((b + 1) * GOO_BLOB_BALLS, n);
+        for (int i = b * GOO_BLOB_BALLS; i < i1; ++i) {
+            float sy = squash * max(vscales[i], GOO_VSCALE_MIN); // per-ball breathing
+            vec3 q = p - balls[i].xyz;
+            q.y /= sy; // stretch the query in Y → flat ellipsoid
+            // conservative: scale by the SMALLEST axis factor so the
+            // approximate ellipsoid SDF under-estimates distance
+            float di = (length(q) - balls[i].w) * min(sy, 1.0);
+            d = smin_(d, di, k);
+        }
+    }
+    // clamp to the floor: nothing exists below the ground → flat underside
+    return max(d, floorY - p.y);
+}
+
+// birth-glow sampled at a world point: ellipsoid-weighted average of per-ball
+// glow (same Y-squash metric as the SDF), concentrated around budding particles
+float goo_glow_at(vec3 p, int n, float squash) {
+    float wsum = 1e-4, gsum = 0.0;
+    for (int i = 0; i < n; ++i) {
+        vec3 q = p - balls[i].xyz;
+        q.y /= squash * max(vscales[i], GOO_VSCALE_MIN);
+        float dn = length(q) / max(balls[i].w, 1e-4);
+        float w = exp(-dn * dn * GOO_GLOW_FALLOFF);
+        wsum += w;
+        gsum += w * glows[i];
+    }
+    return clamp(gsum / wsum, 0.0, 1.0);
+}
+
+// species tint sampled at a world point: the same ellipsoid-weighted average
+// as the birth glow, over the per-ball tint (constant within a blob, so this
+// resolves to "whose body is this pixel" — and blends across a rare weld).
+vec3 goo_tint_at(vec3 p, int n, float squash) {
+    float wsum = 1e-4;
+    vec3 tsum = vec3(0.0);
+    for (int i = 0; i < n; ++i) {
+        vec3 q = p - balls[i].xyz;
+        q.y /= squash * max(vscales[i], GOO_VSCALE_MIN);
+        float dn = length(q) / max(balls[i].w, 1e-4);
+        float w = exp(-dn * dn * GOO_GLOW_FALLOFF);
+        wsum += w;
+        tsum += w * tints[i].rgb;
+    }
+    return tsum / wsum; // surface points always have a dominant nearby ball
+}
+
+vec3 goo_normal(vec3 p, int nblobs, int n, float k, float squash, float floorY) {
+    const float e = 0.010;
+    vec2 h = vec2(1.0, -1.0) * 0.5773;
+    return normalize(
+        h.xyy * goo_sdf(p + h.xyy * e, nblobs, n, k, squash, floorY) +
+        h.yyx * goo_sdf(p + h.yyx * e, nblobs, n, k, squash, floorY) +
+        h.yxy * goo_sdf(p + h.yxy * e, nblobs, n, k, squash, floorY) +
+        h.xxx * goo_sdf(p + h.xxx * e, nblobs, n, k, squash, floorY));
+}
+
+void main() {
+    int W = pc.dims.x, H = pc.dims.y, N = pc.dims.z, NB = pc.dims.w;
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= W || px.y >= H || N <= 0 || NB <= 0) return;
+
+    float squash = pc.camDir.w;
+    float floorY = pc.camPos.w;
+    float k = pc.params.x;
+
+    // rebuild shade's orthographic primary ray for this pixel
+    float u = ((float(px.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;
+    float v = -(((float(px.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);
+    vec3 ro = pc.camPos.xyz + u * pc.camRight.w * pc.camRight.xyz + v * pc.camUp.w * pc.camUp.xyz;
+    vec3 rd = normalize(pc.camDir.xyz);
+
+    // scene occlusion: distance along the ray to the primary hit (sky = far;
+    // w==2 marks ROI-contour ghost pixels — treated as unoccluded, like Metal)
+    vec4 hp = imageLoad(posImg, px);
+    float sceneT = (hp.w > 0.5 && hp.w < 1.5) ? dot(hp.xyz - ro, rd) : 1e9;
+
+    // sphere-trace to the goo surface
+    const int STEPS = 96;
+    float t = 0.0;
+    float tmax = min(sceneT, 90.0);
+    bool hit = false;
+    for (int i = 0; i < STEPS; ++i) {
+        vec3 p = ro + rd * t;
+        float d = goo_sdf(p, NB, N, k, squash, floorY);
+        if (d < 0.0012) { hit = true; break; }
+        t += max(d, 0.003);
+        if (t > tmax) break;
+    }
+    if (!hit) return; // no goo on this pixel — leave the scene colour untouched
+
+    // march on through the body to the exit surface → thickness (absorption)
+    vec3 pen = ro + rd * t; // entry point
+    float texit = t;
+    for (int i = 0; i < STEPS; ++i) {
+        vec3 p = ro + rd * texit;
+        float d = goo_sdf(p, NB, N, k, squash, floorY);
+        if (d > 0.0012) break;
+        texit += max(-d, 0.008);
+        if (texit > tmax) { texit = tmax; break; }
+    }
+    float thickness = max(texit - t, 0.0);
+
+    vec3 nrm = goo_normal(pen, NB, N, k, squash, floorY);
+    float fres = pow(clamp(1.0 - max(dot(nrm, -rd), 0.0), 0.0, 1.0), 3.0); // rim
+
+    // birth signal: lerp the body's emissive + absorption toward the hot bud
+    // tint by the glow sampled at the surface
+    float gmix = clamp(goo_glow_at(pen, N, squash) * GOO_BIRTH_TINT_BOOST, 0.0, 1.0);
+    gmix = smoothstep(0.0, 1.0, gmix);
+    // species tint reweights the body emissive (green stays exactly ×1);
+    // the amber birth flash deliberately overrides it (same tell for all kinds)
+    vec3 emisC = mix(pc.emis.xyz * goo_tint_at(pen, N, squash), pc.birthEmis.xyz, gmix);
+    float emisI = mix(pc.emis.w, pc.birthEmis.w, gmix);
+    vec3 absorbC = mix(pc.absorb.xyz, pc.birthAbsorb.xyz, gmix);
+
+    // screen-space refraction: bend the view ray at the entry surface and tap
+    // the pre-goo radiance snapshot where the bent ray lands after crossing the
+    // body. The ortho camera maps a lateral world shift linearly to pixels.
+    // Total internal reflection (refract() returns 0) falls back straight.
+    vec3 refr = refract(rd, nrm, GOO_REFRACT_ETA);
+    vec3 disp = (dot(refr, refr) > 1e-6 ? refr - rd : vec3(0.0)) * (thickness * GOO_REFRACT);
+    int rx = clamp(px.x + int(round(dot(disp, pc.camRight.xyz) * float(W) / (2.0 * pc.camRight.w))), 0, W - 1);
+    int ry = clamp(px.y + int(round(-dot(disp, pc.camUp.xyz) * float(H) / (2.0 * pc.camUp.w))), 0, H - 1);
+    vec3 scene = imageLoad(bgImg, ivec2(rx, ry)).xyz;
+
+    // Beer–Lambert: the scene behind the goo is tinted by the body crossed
+    vec3 trans = exp(-absorbC * thickness);
+    vec3 bg = scene * trans;
+
+    // additive fluorescent glow — brighter through more body and at the rim
+    vec3 glow = emisC * emisI * (GOO_GLOW_BASE + GOO_GLOW_THICKNESS * (1.0 - trans) + GOO_GLOW_RIM * fres);
+
+    // wet glint: Blinn-Phong from the overhead key (each blob carries its own
+    // downward cone light, so an overhead key is physically consistent)
+    vec3 hv = normalize(vec3(0.0, 1.0, 0.0) - rd);
+    float spec = pow(max(dot(nrm, hv), 0.0), GOO_SPEC_POW) * GOO_SPEC;
+
+    // coverage: full body opaque-ish, silhouette edge softens via Fresnel.
+    // The (1-alpha) leg is the STRAIGHT (unrefracted) scene tap.
+    float alpha = clamp(pc.absorb.w + 0.5 * fres, 0.0, 1.0);
+    vec3 outc = mix(imageLoad(bgImg, px).xyz, bg, alpha) + glow + vec3(0.92, 1.0, 0.95) * spec;
+    imageStore(colorImg, px, vec4(outc, 1.0));
+}

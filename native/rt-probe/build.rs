@@ -6,6 +6,7 @@ fn main() {
         ("src/shaders/tonemap.comp", "comp"),
         ("src/shaders/shade.comp", "comp"),
         ("src/shaders/probes.comp", "comp"),
+        ("src/shaders/goo.comp", "comp"),
     ] {
         println!("cargo:rerun-if-changed={src}");
         let name = std::path::Path::new(src).file_name().unwrap().to_str().unwrap();

@@ -22,6 +22,9 @@ use std::ffi::CString;
 /// build.rs (rt-viewer has no build script), so the viewer's swapchain
 /// tonemap pipeline pulls its bytes from here.
 pub const TONE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tonemap.comp.spv"));
+/// Compiled goo SDF-composite shader (the Vulkan port of the Metal goo pass);
+/// rt-viewer's Vulkan backend builds its goo pipeline from these bytes.
+pub const GOO_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/goo.comp.spv"));
 
 /// Push constants for shade.comp. Field names match the shader's `pc` block.
 #[repr(C)]
@@ -231,6 +234,20 @@ pub struct FrameState<'a> {
     /// its own GPU buffer. The shader tints the goo toward a hot birth colour by
     /// the glow sampled at the surface. Empty ⇒ no glow (shader reads 0).
     pub goo_glow: &'a [f32],
+    /// Per-metaball VERTICAL scale on the resting squash (1 = neutral),
+    /// PARALLEL to `goo` like `goo_glow` (its own GPU buffer). Drives the
+    /// per-blob height breathing: gait lunge flattens, jelly wobble bounces,
+    /// birth tension draws the body up. The shadow proxies scale with it too.
+    pub goo_vscale: &'a [f32],
+    /// Per-BLOB bounding spheres (one per GOO_PARTICLES-ball group in `goo`,
+    /// same order), each enclosing its blob's merged surface with margin. The
+    /// goo composite's SDF march tests these first and only expands a blob's
+    /// individual balls when the query point is near its bound — two-level
+    /// culling that keeps the march cost per blob, not per total ball count.
+    pub goo_bounds: &'a [GooBall],
+    /// PARALLEL to `goo`: per-ball species tint (vec4 rgb multiplier on the
+    /// body emissive; w unused). Empty = all-white (the shader falls back).
+    pub goo_tint: &'a [[f32; 4]],
 }
 
 /// CPU half of the NEE light-list build, factored out of `SceneGpu::build` so
@@ -964,7 +981,7 @@ mod tests {
         let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06, tint: SPOT_WARM };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: &[], goo_glow: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: &[], goo_glow: &[], goo_vscale: &[], goo_bounds: &[], goo_tint: &[] };
         let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs);
         assert_eq!(n, 1);
         // an unaddressed slot keeps its previous values (light 0 holds base);

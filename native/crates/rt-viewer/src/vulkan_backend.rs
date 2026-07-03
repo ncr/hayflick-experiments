@@ -9,8 +9,9 @@
 //! integer-NEAREST upscale, blit, present. No accumulation, no denoiser, no
 //! temporal state — a fixed camera produces bit-identical frames.
 
-use crate::backend::{build_tone_push, FramePresent, RenderBackend};
-use crate::menu::{HUD_H, HUD_W, MENU_MARGIN, MPANEL_H, MPANEL_W};
+use crate::backend::{build_tone_push, FramePresent, GooPush, RenderBackend, GOO_ABSORB, GOO_BIRTH_ABSORB, GOO_BIRTH_EMIS, GOO_BOUNDS_MAX, GOO_EMIS, GOO_MAX, GOO_SMIN_K};
+use crate::sim::{GOO_FLOOR_Y, GOO_SQUASH};
+use crate::menu::{HUD_H_MAX, HUD_W, MENU_MARGIN, MPANEL_H, MPANEL_W};
 use ash::vk;
 use glam::Vec2;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -40,6 +41,11 @@ pub struct Swap {
     pub scene_set: vk::DescriptorSet,
     pub tone_pool: vk::DescriptorPool,
     pub tone_set: vk::DescriptorSet,
+    /// Pre-goo radiance snapshot (copy target): the goo composite's race-free
+    /// background/refraction taps — it never reads `color` off-pixel.
+    pub goo_bg: (vk::Image, vk::DeviceMemory, vk::ImageView),
+    pub goo_pool: vk::DescriptorPool,
+    pub goo_set: vk::DescriptorSet,
     // one render-finished semaphore per swapchain image (avoids reuse hazard)
     pub render_finished: Vec<vk::Semaphore>,
 }
@@ -87,6 +93,18 @@ pub struct VulkanBackend {
     pub tone_pipeline_layout: vk::PipelineLayout,
     pub tone_pipeline: vk::Pipeline,
     pub _tone_shader: vk::ShaderModule,
+    // ---- goo SDF composite pass (screen-space translucent metaballs; the
+    // Vulkan port of goo.metal — shared GooPush/look in crate::backend)
+    pub goo_set_layout: vk::DescriptorSetLayout,
+    pub goo_pipeline_layout: vk::PipelineLayout,
+    pub goo_pipeline: vk::Pipeline,
+    pub _goo_shader: vk::ShaderModule,
+    pub goo_sdf: bool,
+    pub goo_buf: Buffer,        // GOO_MAX metaballs (float4: xyz centre, w radius)
+    pub goo_glow_buf: Buffer,   // per-ball birth-glow 0..1, parallel to goo_buf
+    pub goo_vscale_buf: Buffer, // per-ball vertical scale (1 = neutral), parallel
+    pub goo_bounds_buf: Buffer, // per-BLOB bounding spheres (two-level SDF cull)
+    pub goo_tint_buf: Buffer,   // per-ball species tint (vec4 rgb multiplier on emis)
     // ---- render scale baseline + clip capture target
     pub base_scale: u32, // integer render scale at zoom=1 (the DPR baseline, #2/#4)
     pub cap: Option<Cap>,
@@ -214,6 +232,40 @@ impl VulkanBackend {
             .create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(tone_shader).name(&tone_name)).layout(tone_pipeline_layout)], None)
             .map_err(|(_, e)| e)?[0];
 
+        // goo SDF composite pipeline (window-independent): the Vulkan port of
+        // the Metal goo pass. Per-frame ball/glow/vscale/bound data lives in
+        // small persistent host-visible storage buffers (uploaded between the
+        // fence wait and submit, so never racing an in-flight frame).
+        let goo_bindings = [
+            dslb(0, vk::DescriptorType::STORAGE_IMAGE, 1),  // radiance (read + write OWN pixel)
+            dslb(1, vk::DescriptorType::STORAGE_IMAGE, 1),  // primary-hit world pos
+            dslb(2, vk::DescriptorType::STORAGE_IMAGE, 1),  // pre-goo radiance snapshot
+            dslb(3, vk::DescriptorType::STORAGE_BUFFER, 1), // metaballs
+            dslb(4, vk::DescriptorType::STORAGE_BUFFER, 1), // birth glow
+            dslb(5, vk::DescriptorType::STORAGE_BUFFER, 1), // vertical scale
+            dslb(6, vk::DescriptorType::STORAGE_BUFFER, 1), // per-blob bounds
+            dslb(7, vk::DescriptorType::STORAGE_BUFFER, 1), // per-ball species tint
+        ];
+        let goo_set_layout = ctx.device.create_descriptor_set_layout(&vk::DescriptorSetLayoutCreateInfo::default().bindings(&goo_bindings), None)?;
+        let goo_sl = [goo_set_layout];
+        // GooPush is pushed raw to goo.comp's matching PC block:
+        assert_eq!(std::mem::size_of::<GooPush>(), 160, "GooPush must be 160 B (matches goo.comp PC block)");
+        let goo_push = [vk::PushConstantRange::default().stage_flags(vk::ShaderStageFlags::COMPUTE).offset(0).size(std::mem::size_of::<GooPush>() as u32)];
+        let goo_pipeline_layout = ctx.device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default().set_layouts(&goo_sl).push_constant_ranges(&goo_push), None)?;
+        let goo_code = ash::util::read_spv(&mut std::io::Cursor::new(GOO_SPV))?; // rt_probe::GOO_SPV — shaders build in rt-probe
+        let goo_shader = ctx.device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&goo_code), None)?;
+        let goo_name = CString::new("main").unwrap();
+        let goo_pipeline = ctx
+            .device
+            .create_compute_pipelines(vk::PipelineCache::null(), &[vk::ComputePipelineCreateInfo::default().stage(vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::COMPUTE).module(goo_shader).name(&goo_name)).layout(goo_pipeline_layout)], None)
+            .map_err(|(_, e)| e)?[0];
+        let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let goo_buf = ctx.create_buffer((GOO_MAX * 16) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, host);
+        let goo_glow_buf = ctx.create_buffer((GOO_MAX * 4) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, host);
+        let goo_vscale_buf = ctx.create_buffer((GOO_MAX * 4) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, host);
+        let goo_bounds_buf = ctx.create_buffer((GOO_BOUNDS_MAX * 16) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, host);
+        let goo_tint_buf = ctx.create_buffer((GOO_MAX * 16) as u64, vk::BufferUsageFlags::STORAGE_BUFFER, host);
+
         let cmd = ctx.device.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1))?[0];
         let in_flight = ctx.device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)?;
 
@@ -232,6 +284,16 @@ impl VulkanBackend {
             tone_pipeline_layout,
             tone_pipeline,
             _tone_shader: tone_shader,
+            goo_set_layout,
+            goo_pipeline_layout,
+            goo_pipeline,
+            _goo_shader: goo_shader,
+            goo_sdf: crate::game_scene::goo_sdf_enabled(),
+            goo_buf,
+            goo_glow_buf,
+            goo_vscale_buf,
+            goo_bounds_buf,
+            goo_tint_buf,
             base_scale: cfg.render.pixel,
             cap: None,
         };
@@ -307,6 +369,7 @@ impl VulkanBackend {
         let color = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
         let albedo = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
         let posg = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
+        let goo_bg = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
         let out = make_storage_image(&self.ctx, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM);
         // ESC tune-menu overlay staging (sized for the full panel at this scale)
         let menu_scale = (extent.height / 400).clamp(2, 6);
@@ -316,12 +379,12 @@ impl VulkanBackend {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         let hud_buf = self.ctx.create_buffer(
-            (HUD_W * HUD_H) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
+            (HUD_W * HUD_H_MAX) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
         self.ctx.one_time(|cmd| {
-            for img in [color.0, albedo.0, posg.0, out.0] {
+            for img in [color.0, albedo.0, posg.0, goo_bg.0, out.0] {
                 barrier(&self.ctx.device, cmd, img, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER);
             }
         });
@@ -350,9 +413,41 @@ impl VulkanBackend {
             set
         };
 
+        let goo_pool = {
+            let sizes = [
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 3 },
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 5 },
+            ];
+            self.ctx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None).unwrap()
+        };
+        let goo_set = {
+            let layouts = [self.goo_set_layout];
+            let set = self.ctx.device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(goo_pool).set_layouts(&layouts)).unwrap()[0];
+            let c = [vk::DescriptorImageInfo::default().image_view(color.2).image_layout(vk::ImageLayout::GENERAL)];
+            let po = [vk::DescriptorImageInfo::default().image_view(posg.2).image_layout(vk::ImageLayout::GENERAL)];
+            let bg = [vk::DescriptorImageInfo::default().image_view(goo_bg.2).image_layout(vk::ImageLayout::GENERAL)];
+            let bb = [vk::DescriptorBufferInfo::default().buffer(self.goo_buf.buffer).range(vk::WHOLE_SIZE)];
+            let gb = [vk::DescriptorBufferInfo::default().buffer(self.goo_glow_buf.buffer).range(vk::WHOLE_SIZE)];
+            let vb = [vk::DescriptorBufferInfo::default().buffer(self.goo_vscale_buf.buffer).range(vk::WHOLE_SIZE)];
+            let nb = [vk::DescriptorBufferInfo::default().buffer(self.goo_bounds_buf.buffer).range(vk::WHOLE_SIZE)];
+            let tb = [vk::DescriptorBufferInfo::default().buffer(self.goo_tint_buf.buffer).range(vk::WHOLE_SIZE)];
+            let writes = [
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&c),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&po),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&bg),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&bb),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&gb),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&vb),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(6).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&nb),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&tb),
+            ];
+            self.ctx.device.update_descriptor_sets(&writes, &[]);
+            set
+        };
+
         let render_finished: Vec<vk::Semaphore> = images.iter().map(|_| self.ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap()).collect();
 
-        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, hud_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, render_finished });
+        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, hud_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, goo_bg, goo_pool, goo_set, render_finished });
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
     }
 
@@ -363,7 +458,8 @@ impl VulkanBackend {
         }
         d.destroy_descriptor_pool(s.scene_pool, None);
         d.destroy_descriptor_pool(s.tone_pool, None);
-        for (img, mem, view) in [s.color, s.albedo, s.posg, s.out] {
+        d.destroy_descriptor_pool(s.goo_pool, None);
+        for (img, mem, view) in [s.color, s.albedo, s.posg, s.goo_bg, s.out] {
             d.destroy_image_view(view, None);
             d.destroy_image(img, None);
             d.free_memory(mem, None);
@@ -475,6 +571,58 @@ impl RenderBackend for VulkanBackend {
         d.cmd_dispatch(cmd, low_w.div_ceil(8), low_h.div_ceil(8), 1);
         // radiance write -> tonemap read (same GENERAL layout)
         d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ)], &[], &[]);
+
+        // goo: screen-space translucent metaball composite over the scene
+        // radiance (in-place, own-pixel writes), before tonemap reads it. The
+        // radiance is first COPIED into goo_bg: the composite's refraction taps
+        // NEIGHBOUR pixels' background, which would race the other invocations'
+        // in-place writes if it read the radiance image directly. Both images
+        // stay in GENERAL (valid for transfer src/dst); barriers order
+        // shade -> copy -> goo -> tonemap.
+        let goo_n = fp.fs.goo.len().min(GOO_MAX);
+        let goo_nb = fp.fs.goo_bounds.len().min(GOO_BOUNDS_MAX);
+        if self.goo_sdf && goo_n > 0 && goo_nb > 0 {
+            self.ctx.upload(&self.goo_buf, &fp.fs.goo[..goo_n]);
+            let gl_n = fp.fs.goo_glow.len().min(goo_n);
+            if gl_n > 0 {
+                self.ctx.upload(&self.goo_glow_buf, &fp.fs.goo_glow[..gl_n]);
+            }
+            let vs_n = fp.fs.goo_vscale.len().min(goo_n);
+            if vs_n > 0 {
+                self.ctx.upload(&self.goo_vscale_buf, &fp.fs.goo_vscale[..vs_n]);
+            }
+            self.ctx.upload(&self.goo_bounds_buf, &fp.fs.goo_bounds[..goo_nb]);
+            let tn = fp.fs.goo_tint.len().min(goo_n);
+            if tn > 0 {
+                self.ctx.upload(&self.goo_tint_buf, &fp.fs.goo_tint[..tn]);
+            }
+            barrier(d, cmd, swap.color.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            barrier(d, cmd, swap.goo_bg.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
+            let gl_layers = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 };
+            let region = vk::ImageCopy::default().src_subresource(gl_layers).dst_subresource(gl_layers).extent(vk::Extent3D { width: low_w, height: low_h, depth: 1 });
+            d.cmd_copy_image(cmd, swap.color.0, vk::ImageLayout::GENERAL, swap.goo_bg.0, vk::ImageLayout::GENERAL, &[region]);
+            barrier(d, cmd, swap.goo_bg.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+            barrier(d, cmd, swap.color.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
+            let cam = &fp.fs.cam;
+            let gp = GooPush {
+                cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
+                cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
+                cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, GOO_SQUASH],
+                cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, GOO_FLOOR_Y],
+                dims: [low_w as i32, low_h as i32, goo_n as i32, goo_nb as i32],
+                emis: GOO_EMIS,
+                absorb: GOO_ABSORB,
+                params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
+                birth_emis: GOO_BIRTH_EMIS,
+                birth_absorb: GOO_BIRTH_ABSORB,
+            };
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.goo_pipeline);
+            d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.goo_pipeline_layout, 0, &[swap.goo_set], &[]);
+            d.cmd_push_constants(cmd, self.goo_pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&gp));
+            d.cmd_dispatch(cmd, low_w.div_ceil(8), low_h.div_ceil(8), 1);
+            // goo writes -> tonemap reads
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ)], &[], &[]);
+        }
 
         // #5: the GPU crop origin is round(pan); the fractional remainder stays
         // on the CPU side so the upscale lattice is always integer-aligned.

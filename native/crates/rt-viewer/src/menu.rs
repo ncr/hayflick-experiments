@@ -61,6 +61,9 @@ pub const MENU_MARGIN: i32 = 12; // physical px from the window's top-left
 // captures stay clean), at the same integer UI scale as the menu.
 pub const HUD_W: i32 = 72;
 pub const HUD_H: i32 = 14;
+/// Tallest plate `score_canvas` can return (arena levels add a weapon row) —
+/// sizes the Vulkan staging buffer, which is allocated once per swapchain.
+pub const HUD_H_MAX: i32 = HUD_H + 14;
 
 /// Menu interaction state (the tunable values live on `Renderer`).
 pub struct MenuState {
@@ -287,16 +290,33 @@ impl Viewer {
     /// The corner score badge canvas (logical px): "SCORE n" on a bordered
     /// dark plate. Drawn for player scenes only; copied to the top-right of the
     /// PRESENTED image, never onto swap.out (clean captures, like the menu).
+    /// On arena levels (snapshot carries a weapon) the plate grows a second
+    /// row: the selected slot + weapon name and a cooldown bar that fills as
+    /// the shared weapon timer recovers (full bar = ready to fire).
     pub fn score_canvas(&self) -> (Vec<u32>, i32, i32) {
         const BG: u32 = 0x16161c;
         const BORDER: u32 = 0x6a6a78;
-        let (w, h) = (HUD_W, HUD_H);
+        let weapon = self.game.snap.weapon;
+        let (w, h) = (HUD_W, if weapon.is_some() { HUD_H + 14 } else { HUD_H });
         let mut c = vec![BG; (w * h) as usize];
         mrect(&mut c, w, 0, 0, w, 1, BORDER);
         mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
         mrect(&mut c, w, 0, 0, 1, h, BORDER);
         mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
         mtext(&mut c, w, 4, 3, &format!("SCORE {}", self.game.snap.score), 0x99cc99);
+        if let Some((kind, cd, total)) = weapon {
+            mtext(&mut c, w, 4, 15, &format!("{} {}", kind.slot(), kind.name()), 0xd0d0a0);
+            if let Some(wave) = self.game.snap.wave {
+                mtext(&mut c, w, w - 24, 15, &format!("W{wave}"), 0x9ab8e0);
+            }
+            // recovery bar under the label: empty right after a shot, full when
+            // the trigger is live again (green at ready, amber while cooling)
+            let track_w = w - 8;
+            let frac = if total == 0 { 1.0 } else { 1.0 - (cd as f32 / total as f32).clamp(0.0, 1.0) };
+            let fill = (track_w as f32 * frac) as i32;
+            mrect(&mut c, w, 4, h - 4, track_w, 2, 0x30303a);
+            mrect(&mut c, w, 4, h - 4, fill, 2, if cd == 0 { 0x8fd08f } else { 0xd0a860 });
+        }
         (c, w, h)
     }
 

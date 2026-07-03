@@ -84,6 +84,10 @@ impl ApplicationHandler for App {
         let attrs = Window::default_attributes().with_title("rt-probe — iso viewer").with_visible(false).with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let renderer = unsafe { Viewer::new(Some(&window), cfg).expect("renderer init") };
+        if renderer.game.lmb_shoots {
+            // arena control scheme: the pointer is a weapon, not a walk tool
+            window.set_cursor(winit::window::CursorIcon::Crosshair);
+        }
         window.set_visible(true);
         self.window = Some(window);
         self.renderer = Some(renderer);
@@ -169,6 +173,10 @@ impl ApplicationHandler for App {
                         r.game.push(Command::ToggleRoomLights);
                         println!("room lights: {}", if r.game.sim.res.master_lights { "off" } else { "on" });
                     }
+                    // arsenal slots (arena levels; a no-op elsewhere by design)
+                    Key::Character(c @ ("1" | "2" | "3" | "4" | "5")) => {
+                        r.game.push(Command::SelectWeapon { slot: c.as_bytes()[0] - b'0' });
+                    }
                     _ => {}
                 }
             }
@@ -192,7 +200,9 @@ impl ApplicationHandler for App {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
                         if !r.menu_click(c) {
-                            if r.game.has_player {
+                            if r.game.lmb_shoots {
+                                r.shoot_command(c); // arena: LMB fires (WASD walks)
+                            } else if r.game.has_player {
                                 r.click_command(c); // click-to-walk / use door
                             } else {
                                 r.view.dragging = true; // lab: drag pans

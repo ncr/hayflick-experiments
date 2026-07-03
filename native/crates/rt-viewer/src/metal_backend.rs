@@ -13,7 +13,7 @@
 //! buffers are indexed by `intersection.instance_id`. Scalar byte-match is
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
-use crate::backend::{build_tone_push, FramePresent, RenderBackend};
+use crate::backend::{build_tone_push, FramePresent, GooPush, RenderBackend, GOO_ABSORB, GOO_BIRTH_ABSORB, GOO_BIRTH_EMIS, GOO_BOUNDS_MAX, GOO_EMIS, GOO_MAX, GOO_SMIN_K};
 use crate::sim::{GOO_FLOOR_Y, GOO_SQUASH};
 use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec2, Vec3};
@@ -45,32 +45,12 @@ struct Push {
     look2: [f32; 4],     // gi scale, _, _, _
 }
 
-/// Goo composite push constants — byte-identical to goo.metal's `GooPush`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct GooPush {
-    cam_right: [f32; 4], // xyz, w = ortho half-width
-    cam_up: [f32; 4],    // xyz, w = ortho half-height
-    cam_dir: [f32; 4],   // xyz forward, w = vertical squash (<1 = flatter puddle)
-    cam_pos: [f32; 4],   // xyz eye, w = floor plane Y
-    dims: [i32; 4],      // W, H, ballCount, _
-    emis: [f32; 4],      // emissive rgb, w = glow intensity
-    absorb: [f32; 4],    // Beer-Lambert absorption rgb/wu, w = surface alpha
-    params: [f32; 4],    // x = smin merge radius k, yzw spare
-    birth_emis: [f32; 4],   // emissive rgb the goo lerps TO at a gestating bud
-    birth_absorb: [f32; 4], // absorption rgb the goo lerps TO at a gestating bud
-}
+// `GooPush` + the shared goo look/limit constants live in `crate::backend`
+// (one source for the Metal and Vulkan composite passes).
 
 // The goo resting-height constants (`GOO_SQUASH`, `GOO_FLOOR_Y`) are owned by
 // `crate::sim` (the single source of truth shared with the CPU ball placement)
 // and imported here — see the import near the top of this file.
-/// `smin` merge radius: the smoothness of the dumbbell waist + lump fusing.
-const GOO_SMIN_K: f32 = 0.14;
-
-/// Max goo metaballs the composite buffer holds (GOO_LIVE_CAP × GOO_PARTICLES,
-/// with headroom). Excess balls in a frame are clamped (never reallocates).
-const GOO_MAX: usize = 512;
-
 /// Phase C: shadow-proxy instance slots (one squashed sphere per metaball) and
 /// the radius scale that grows each proxy to roughly the `smin`-merged surface
 /// so the cast shadow matches the visible silhouette.
@@ -83,18 +63,6 @@ const GOO_PROXY_PARK_Y: f32 = -1000.0;
 /// shadows/AO (never seen by the primary ray), so a low-poly ball is plenty.
 const GOO_PROXY_SPHERE_RINGS: usize = 8;
 const GOO_PROXY_SPHERE_SECTORS: usize = 12;
-
-/// Goo body look fed to `goo.metal` (Beer–Lambert translucent composite):
-/// `GOO_EMIS` is emissive rgb + w glow intensity; `GOO_ABSORB` is absorption
-/// rgb per wu + w surface alpha.
-const GOO_EMIS: [f32; 4] = [0.55, 3.3, 1.15, 2.8];
-const GOO_ABSORB: [f32; 4] = [3.4, 0.42, 2.9, 0.9];
-/// A gestating bud lerps the look toward a vivid, molten AMBER-GOLD: a saturated
-/// warm emissive cranked bright so the birth site glows hot, plus heavy green +
-/// blue absorption (low R) so the body reads a radiant orange where it buds — an
-/// unmistakable warm contrast against the fluorescent-green goo (never pink).
-const GOO_BIRTH_EMIS: [f32; 4] = [9.5, 2.0, 0.08, 4.4];
-const GOO_BIRTH_ABSORB: [f32; 4] = [0.10, 4.4, 6.0, 0.97];
 
 /// Where an INACTIVE proxy parks: far below the scene, clustered into one
 /// distant BVH node that no scene/bake ray traverses — so the reserved slots
@@ -151,6 +119,7 @@ struct MetalTarget {
     radiance: Buffer, // low_w*low_h float4 (shade radiance out)
     albedo: Buffer,   // low_w*low_h float4 (primary-hit albedo G-buffer)
     pos: Buffer,      // low_w*low_h float4 (primary-hit world position)
+    goo_bg: Buffer,   // low_w*low_h float4: pre-goo radiance snapshot (blit target) — the goo pass's race-free background/refraction taps
     out_tex: Texture, // ext_w*ext_h RGBA8Unorm (tonemap out; present + readback source)
     /// Clip capture: the Viewer-requested game-pixel size, and the previous
     /// frame's subsampled readback awaiting collection (deferred one frame).
@@ -183,7 +152,9 @@ pub struct MetalBackend {
     // goo SDF composite pass (screen-space translucent metaballs)
     goo_pso: ComputePipelineState,
     goo_buf: Buffer,
-    goo_glow_buf: Buffer, // per-ball birth-glow 0..1, parallel to goo_buf
+    goo_glow_buf: Buffer,   // per-ball birth-glow 0..1, parallel to goo_buf
+    goo_vscale_buf: Buffer, // per-ball vertical scale (1 = neutral), parallel to goo_buf
+    goo_bounds_buf: Buffer, // per-BLOB bounding spheres for the two-level SDF cull
     goo_sdf: bool,
     // goo body proxies in the accel structure: one squashed unit sphere per
     // metaball, mask 0x02 (shadow/AO rays only — invisible to the primary ray,
@@ -444,6 +415,8 @@ impl MetalBackend {
         let goo_pso = device.new_compute_pipeline_state_with_function(&goo_lib.get_function("goo_composite", None).unwrap()).map_err(|e| format!("goo pso: {e}"))?;
         let goo_buf = device.new_buffer((GOO_MAX * 16) as u64, MTLResourceOptions::StorageModeShared);
         let goo_glow_buf = device.new_buffer((GOO_MAX * 4) as u64, MTLResourceOptions::StorageModeShared);
+        let goo_vscale_buf = device.new_buffer((GOO_MAX * 4) as u64, MTLResourceOptions::StorageModeShared);
+        let goo_bounds_buf = device.new_buffer((GOO_BOUNDS_MAX * 16) as u64, MTLResourceOptions::StorageModeShared);
         let goo_sdf = crate::game_scene::goo_sdf_enabled();
 
         let env0 = cfg.lighting_env(scene.lighting);
@@ -481,6 +454,8 @@ impl MetalBackend {
             goo_pso,
             goo_buf,
             goo_glow_buf,
+            goo_vscale_buf,
+            goo_bounds_buf,
             goo_sdf,
             goo_inst_first,
             goo_proxy_n: GOO_PROXY_CAP,
@@ -690,6 +665,7 @@ impl RenderBackend for MetalBackend {
         let radiance = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
         let albedo = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
         let pos = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
+        let goo_bg = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
         let desc = TextureDescriptor::new();
         desc.set_texture_type(MTLTextureType::D2);
         desc.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
@@ -710,7 +686,7 @@ impl RenderBackend for MetalBackend {
         if let Some(layer) = &self.layer {
             layer.set_drawable_size(CGSize { width: ext_w as f64, height: ext_h as f64 });
         }
-        self.target = Some(MetalTarget { low_w, low_h, ext_w, ext_h, menu_scale, radiance, albedo, pos, out_tex, cap_size: None, pending_capture: None });
+        self.target = Some(MetalTarget { low_w, low_h, ext_w, ext_h, menu_scale, radiance, albedo, pos, goo_bg, out_tex, cap_size: None, pending_capture: None });
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2}) (metal)", if self.layer.is_some() { "layer" } else { "offscreen" }, ext_w, ext_h, low_w, low_h, self.base_scale, ISO_R);
     }
 
@@ -725,12 +701,22 @@ impl RenderBackend for MetalBackend {
         write_buf(&self.mbuf, &self.mats_cpu);
         // upload this frame's goo metaballs for the SDF composite pass
         let goo_n = fp.fs.goo.len().min(GOO_MAX);
+        let goo_nb = fp.fs.goo_bounds.len().min(GOO_BOUNDS_MAX);
         if self.goo_sdf && goo_n > 0 {
             write_buf(&self.goo_buf, &fp.fs.goo[..goo_n]);
             // parallel glow slice (same length as goo); guard in case it's empty
             let gl_n = fp.fs.goo_glow.len().min(goo_n);
             if gl_n > 0 {
                 write_buf(&self.goo_glow_buf, &fp.fs.goo_glow[..gl_n]);
+            }
+            // parallel vertical-scale slice (same guard as glow)
+            let vs_n = fp.fs.goo_vscale.len().min(goo_n);
+            if vs_n > 0 {
+                write_buf(&self.goo_vscale_buf, &fp.fs.goo_vscale[..vs_n]);
+            }
+            // per-blob bounding spheres (two-level SDF culling)
+            if goo_nb > 0 {
+                write_buf(&self.goo_bounds_buf, &fp.fs.goo_bounds[..goo_nb]);
             }
         }
         // patch mover instance transforms (player + door leaves) on change
@@ -759,7 +745,11 @@ impl RenderBackend for MetalBackend {
                 if i < cap {
                     let b = fp.fs.goo[i];
                     let r = b.radius * GOO_PROXY_SCALE;
-                    inst.transformation_matrix = to_packed(Mat4::from_translation(Vec3::new(b.center[0], b.center[1], b.center[2])) * Mat4::from_scale(Vec3::new(r, r * GOO_SQUASH, r)));
+                    // vertical scale tracks the SDF's per-ball breathing (the
+                    // ball centre height already includes it), so the cast
+                    // shadow follows the body as it flattens/bulges.
+                    let vs = fp.fs.goo_vscale.get(i).copied().unwrap_or(1.0);
+                    inst.transformation_matrix = to_packed(Mat4::from_translation(Vec3::new(b.center[0], b.center[1], b.center[2])) * Mat4::from_scale(Vec3::new(r, r * GOO_SQUASH * vs, r)));
                     inst.mask = 0x02; // shadow/AO rays only
                 } else {
                     inst.transformation_matrix = goo_proxy_parked();
@@ -833,14 +823,22 @@ impl RenderBackend for MetalBackend {
             enc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
             enc.end_encoding();
             // goo: screen-space translucent metaball composite over the scene
-            // radiance (in-place, per-pixel), before tonemap reads it.
-            if self.goo_sdf && goo_n > 0 {
+            // radiance (in-place, per-pixel), before tonemap reads it. First a
+            // blit snapshots the shaded radiance into goo_bg: the composite's
+            // refraction taps NEIGHBOUR pixels' background, which would race
+            // the other threads' in-place writes if it read radiance directly.
+            // (Encoders in one command buffer are ordered by Metal's hazard
+            // tracking on these Shared buffers, so shade → blit → goo is safe.)
+            if self.goo_sdf && goo_n > 0 && goo_nb > 0 {
+                let blit = cb.new_blit_command_encoder();
+                blit.copy_from_buffer(&t.radiance, 0, &t.goo_bg, 0, (low_w as u64) * (low_h as u64) * 16);
+                blit.end_encoding();
                 let gp = GooPush {
                     cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
                     cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
                     cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, GOO_SQUASH],
                     cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, GOO_FLOOR_Y],
-                    dims: [low_w as i32, low_h as i32, goo_n as i32, 0],
+                    dims: [low_w as i32, low_h as i32, goo_n as i32, goo_nb as i32],
                     emis: GOO_EMIS,
                     absorb: GOO_ABSORB,
                     params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
@@ -854,6 +852,9 @@ impl RenderBackend for MetalBackend {
                 genc.set_buffer(2, Some(&self.goo_buf), 0);
                 genc.set_bytes(3, size_of::<GooPush>() as u64, &gp as *const _ as *const c_void);
                 genc.set_buffer(4, Some(&self.goo_glow_buf), 0);
+                genc.set_buffer(5, Some(&self.goo_vscale_buf), 0);
+                genc.set_buffer(6, Some(&t.goo_bg), 0);
+                genc.set_buffer(7, Some(&self.goo_bounds_buf), 0);
                 genc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
                 genc.end_encoding();
             }

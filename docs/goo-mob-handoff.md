@@ -100,8 +100,44 @@ crawl in, merge into Larges, under full C lighting; the player pillar is at
 5. **Light polish** (optional) — lift `goo_lights()` `LIFT` / raise `power` to
    brighten pool centres without losing the self-shadow contact.
 6. **Generator integration** — emit mobs/traps into procedurally generated rooms.
-7. **Vulkan parity** — the SDF body, goo lights, and RT shadows are Metal-only;
-   Vulkan has the opaque sphere-pool fallback (`goo_instances`), no goo lights.
+7. **Vulkan parity** — DONE for the SDF body (2026-07-02, see below) and the
+   goo lights (they always were cross-platform: `append_goo_lights` + the
+   `dir.w==2.0` cone path in shade.comp). Still Metal-only: the goo SHADOW
+   proxies (mask 0x02 spheres in the TLAS) — on Vulkan the body casts no shadow.
+
+## 2026-07-02 review round 2 (uncommitted, with the round-1 fixes)
+
+- **Blob–blob contact repulsion** (`GOO_REPEL`/`_MAX`/`_SKIN`, `GooContact`,
+  `goo_repel_at` in `goo.rs`): different blobs' particles softly repel within a
+  contact skin, sampled against start-of-tick snapshots (symmetric, order-free);
+  the spine ends feel it too, and a pressed head YIELDS (drive stalls, heading
+  rotates off at 2× the AI turn rate — an equal rate is cancelled by the AI
+  steer). Opt-outs: merge-compatible pairs, fusing blobs, tethered newborns
+  (the nursery oracle pinned the birth choreography untouched). Behaviour test:
+  `goo_overlapping_bodies_push_apart_not_through`.
+- **`gait_profile` gather is seam-free** — smoothstep release (t 0.35→0.55) and
+  pre-wrap rise (0.85→1.0) replace the two per-cycle force steps.
+- **Render (Metal-only, NOT yet compiled)**: `goo.metal` gained screen-space
+  refraction (pre-pass blit of radiance → `bgRad` buffer(6); never read
+  `radiance` off-pixel — it races other threads' writes) and two-level SDF
+  culling (per-blob bounding spheres from `goo_balls` → buffer(7), `dims.w` =
+  blob count; a far blob contributes its bound distance via plain `min` — a
+  safe under-estimate; `GOO_CULL_NEAR` must stay > smin k so cross-blob welds
+  like the tether neck expand exactly). First Mac run must verify this plus the
+  earlier vscale buffer(5) + specular glint.
+- All four `goo_sim_hash_oracle_*` constants re-captured (dated comment in
+  `game.rs` explains which change moved what).
+- **Vulkan SDF composite port (same day)**: `rt-probe/src/shaders/goo.comp` is
+  a line-for-line GLSL port of goo.metal (refraction, culling, specular,
+  vscale, birth glow — keep the two in lockstep), compiled by rt-probe's
+  build.rs and exported as `GOO_SPV`. `GooPush` + the shared look/limit
+  constants moved to `crate::backend` (one source for both backends);
+  vulkan_backend gained the pipeline, a `goo_bg` snapshot image (radiance is
+  COPIED before the pass — the refraction's neighbour taps would race the
+  in-place writes), and the pass between shade and tonemap. Verified live on
+  the RTX 5080 (goopair/goonursery/goo/goofloor clips). `GOO_SDF=0` still
+  selects the old opaque sphere-pool fallback. A new `goopair` film stage
+  (two Larges spawned superimposed) demos the contact repulsion.
 
 ## Determinism + tuning gotchas (read before touching the sim/render)
 
@@ -142,3 +178,27 @@ crawl in, merge into Larges, under full C lighting; the player pillar is at
 - Should the goo damage/attack the player on contact, or stay passive prey?
 - Merge across different tiers, or same-tier only (current)?
 - Is Vulkan goo parity needed, or is Metal the shipping path?
+
+## 2026-07-03 — Goo Arena pivot (arena shooter MVP)
+
+The prototype pivoted to an arena shooter built on the goo (see
+`SCENE=arena`): five weapons on keys 1–5 (slug / uzi / shotgun / grenade /
+harpoon — data-driven `WeaponSpec`s + a `WeaponClass` damage-typing enum),
+blob SPECIES (`GooKind`: Green baseline / red Runner / blue Tank) with
+per-kind movement multipliers, per-class damage resistances and per-kind
+render tint + light color, harpoon pinning (`Goo.pinned`/`pin_pt`), grenade
+bounce + AoE (`explode`, `Res.boom` flash), and an arsenal-gated hash block
+(`spec.arena`, the survival pattern).
+
+- **Oracle recapture 2026-07-03**: the per-blob hash fold grew five fields
+  (kind/cure/pinned/pin_pt) — all four `goo_sim_hash_oracle_*` constants
+  recaptured once. Behavior on all-Green levels is bit-identical (Green
+  multipliers are exact ×1.0; new fields default 0).
+- **METAL LOCKSTEP DEBT**: `goo.comp` gained SSBO **binding 7** (`tints[]`,
+  per-ball species tint sampled by `goo_tint_at`, applied to `pc.emis` before
+  the birth-amber mix). `goo.metal` does NOT have the twin yet — Metal still
+  compiles (GooPush unchanged at 160 B) and renders the uniform green for all
+  kinds. Port buffer(8?) + the tint sample before the Mac verify, and stream
+  `FrameState.goo_tint` in `metal_backend` like glow/vscale.
+- `Goo.cure` exists (hashed) but its behavior (slug solidify → dead chunks)
+  lands in the next milestone.

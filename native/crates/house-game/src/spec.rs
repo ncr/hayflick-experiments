@@ -142,13 +142,39 @@ pub struct LightSpec {
     pub name: String,
 }
 
+/// Blob SPECIES — the arena's enemy-variety axis. `Green` is the baseline:
+/// every kind multiplier is exactly 1.0, so pre-kind levels (all authored
+/// Green) behave bit-identically to before the kind existed. `Runner` is
+/// fast and twitchy and hunts the player from much further out; `Tank` is
+/// slow and shrugs off small-arms fire (uzi/shotgun damage divided). The
+/// renderer tints the body/light per kind (green / red / blue).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GooKind {
+    Green,
+    Runner,
+    Tank,
+}
+
+impl GooKind {
+    /// Stable hash tag (enum discriminants are not order-stable; pin them).
+    pub(crate) fn tag(self) -> u64 {
+        match self {
+            GooKind::Green => 0,
+            GooKind::Runner => 1,
+            GooKind::Tank => 2,
+        }
+    }
+}
+
 /// An authored NPC mob spawn: a gooey, splittable fluorescent blob crawling on
-/// the floor. `tier` sizes it (0 = Large, 1 = Medium, 2 = Small); `pos` is the
-/// world-XZ centre it spawns at (y is the floor — the blob hugs the ground).
+/// the floor. `tier` sizes it (0 = Large, 1 = Medium, 2 = Small); `kind` is
+/// its species (behavior + resistances + tint); `pos` is the world-XZ centre
+/// it spawns at (y is the floor — the blob hugs the ground).
 #[derive(Clone, Copy, Debug)]
 pub struct MobSpec {
     pub id: MobId,
     pub tier: u8,
+    pub kind: GooKind,
     pub pos: Vec3,
 }
 
@@ -177,6 +203,24 @@ pub struct TargetSpec {
     pub radius: f32,
 }
 
+/// Arena-mode tuning (the goo arena shooter). `Some` opts a level into the
+/// arsenal: weapon selection (`Command::SelectWeapon`, keys 1–5), the arena
+/// control scheme (the shell maps LMB to shoot instead of walk), kill
+/// scoring, and the WAVE DIRECTOR (clear the floor → a bigger squad drops in
+/// after `wave_lull`). A level with `arena: None` spawns none of it and
+/// hashes exactly as before this feature existed (the `survival` discipline).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ArenaParams {
+    /// Ticks of quiet between clearing the arena and the next wave landing.
+    pub wave_lull: u16,
+}
+
+impl Default for ArenaParams {
+    fn default() -> ArenaParams {
+        ArenaParams { wave_lull: 120 }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LevelSpec {
     pub rooms: Vec<RoomSpec>,
@@ -200,6 +244,9 @@ pub struct LevelSpec {
     /// Goo traps (floor gravity emitters). EMPTY on the existing levels. Read by
     /// `goo_system` to pull nearby blobs; rendered as glowing floor rings.
     pub traps: Vec<TrapSpec>,
+    /// Arena-shooter mode. `None` = arsenal OFF: no weapon-select state spawns,
+    /// nothing new enters state_hash (same opt-in discipline as `survival`).
+    pub arena: Option<ArenaParams>,
     pub player_start: Vec3,
     pub seed: u64,
 }
@@ -259,6 +306,7 @@ pub fn fixture() -> LevelSpec {
         survival: None,    // survival off → fixture hashes exactly as before
         mobs: vec![],      // no mobs → fixture hashes exactly as before
         traps: vec![],
+        arena: None,       // arsenal off → fixture hashes exactly as before
         player_start: Vec3::new(-3.5, 0.0, 0.0),
         seed: 42,
     }
@@ -349,6 +397,7 @@ pub fn game_level() -> LevelSpec {
         survival: None,    // (survival_level() below is the opt-in sandbox)
         mobs: vec![],      // no mobs → game_level hashes exactly as before (goo_level() is the demo)
         traps: vec![],
+        arena: None,       // arsenal off → game_level hashes exactly as before
         player_start: Vec3::new(9.5, 0.0, 6.5), // room E (SE corner, faces the camera), aligned with door_ce's gap row
         seed: 7,
     }
@@ -365,10 +414,10 @@ pub fn goo_level() -> LevelSpec {
             // a Large in the entry hall (room A), two more across the house, and
             // one Large in room E in clear line-of-sight of the player spawn
             // (9.5, 6.5) so a shot can reach it without crossing a wall.
-            MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(2.0, 0.0, 4.0) },
-            MobSpec { id: MobId(1), tier: 0, pos: Vec3::new(6.0, 0.0, 2.0) },
-            MobSpec { id: MobId(2), tier: 1, pos: Vec3::new(10.0, 0.0, 2.0) },
-            MobSpec { id: MobId(3), tier: 0, pos: Vec3::new(8.7, 0.0, 5.2) },
+            MobSpec { id: MobId(0), tier: 0, kind: GooKind::Green, pos: Vec3::new(2.0, 0.0, 4.0) },
+            MobSpec { id: MobId(1), tier: 0, kind: GooKind::Green, pos: Vec3::new(6.0, 0.0, 2.0) },
+            MobSpec { id: MobId(2), tier: 1, kind: GooKind::Green, pos: Vec3::new(10.0, 0.0, 2.0) },
+            MobSpec { id: MobId(3), tier: 0, kind: GooKind::Green, pos: Vec3::new(8.7, 0.0, 5.2) },
         ],
         traps: vec![
             // a trap in the open centre of room E: it gently drags the room-E
@@ -398,11 +447,11 @@ pub fn playground_level() -> LevelSpec {
         lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "play_lamp".into() }],
         targets: vec![],
         mobs: vec![
-            MobSpec { id: MobId(0), tier: 1, pos: Vec3::new(-2.1, 0.0, -1.2) },
-            MobSpec { id: MobId(1), tier: 1, pos: Vec3::new(1.5, 0.0, -1.6) },
-            MobSpec { id: MobId(2), tier: 1, pos: Vec3::new(-1.7, 0.0, 0.9) },
-            MobSpec { id: MobId(3), tier: 1, pos: Vec3::new(1.6, 0.0, 0.7) },
-            MobSpec { id: MobId(4), tier: 1, pos: Vec3::new(-0.2, 0.0, 1.4) },
+            MobSpec { id: MobId(0), tier: 1, kind: GooKind::Green, pos: Vec3::new(-2.1, 0.0, -1.2) },
+            MobSpec { id: MobId(1), tier: 1, kind: GooKind::Green, pos: Vec3::new(1.5, 0.0, -1.6) },
+            MobSpec { id: MobId(2), tier: 1, kind: GooKind::Green, pos: Vec3::new(-1.7, 0.0, 0.9) },
+            MobSpec { id: MobId(3), tier: 1, kind: GooKind::Green, pos: Vec3::new(1.6, 0.0, 0.7) },
+            MobSpec { id: MobId(4), tier: 1, kind: GooKind::Green, pos: Vec3::new(-0.2, 0.0, 1.4) },
         ],
         traps: vec![TrapSpec { id: 0, pos: Vec3::new(0.1, 0.0, -0.2), strength: 1.4, radius: 4.0, off_tick: 0 }],
         player_start: Vec3::new(-0.5, 0.0, -0.5),
@@ -431,8 +480,8 @@ pub fn goofloor_level() -> LevelSpec {
         // it and the trace leads it +x across the open plane — a clean, directed
         // walk (traps can't steer a blob; only the head's seek can).
         mobs: vec![
-            MobSpec { id: MobId(0), tier: 1, pos: Vec3::new(-2.0, 0.0, -1.0) },
-            MobSpec { id: MobId(1), tier: 1, pos: Vec3::new(-2.0, 0.0, 1.0) },
+            MobSpec { id: MobId(0), tier: 1, kind: GooKind::Green, pos: Vec3::new(-2.0, 0.0, -1.0) },
+            MobSpec { id: MobId(1), tier: 1, kind: GooKind::Green, pos: Vec3::new(-2.0, 0.0, 1.0) },
         ],
         traps: vec![TrapSpec { id: 0, pos: Vec3::new(-2.0, 0.0, 0.0), strength: 1.3, radius: 2.6, off_tick: 180 }],
         player_start: Vec3::new(-2.0, 0.0, 3.0), // invisible lure, parked outside aggro during the merge
@@ -454,7 +503,7 @@ pub fn goonursery_level() -> LevelSpec {
         doors: vec![],
         lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "floor_lamp".into() }],
         targets: vec![],
-        mobs: vec![MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(0.0, 0.0, 0.0) }],
+        mobs: vec![MobSpec { id: MobId(0), tier: 0, kind: GooKind::Green, pos: Vec3::new(0.0, 0.0, 0.0) }],
         // a SMALL central well grips only the slow Large mother's centre so she
         // stays framed while she buds. Newborn minis are birth-immune to ALL
         // wells (this trap included) until they leave her influence, so the trap
@@ -465,6 +514,31 @@ pub fn goonursery_level() -> LevelSpec {
         // outside the mother's aggro radius and rendered invisible: she ignores it
         // and just wanders/buds in place. Keeps the camera from following.
         player_start: Vec3::new(0.0, 0.0, 8.0),
+        ..game_level()
+    }
+}
+
+/// A PAIR-COLLISION stage (`SCENE=goopair`): bare lit floor, no walls, no
+/// traps, and two Large blobs dropped SUPERIMPOSED at the origin. Films the
+/// blob–blob contact repulsion: the overlapped bodies push apart, then wander,
+/// bump and SLIDE around each other (the pressed head yields and turns)
+/// instead of crawling through and welding into one lump. Both Larges are
+/// mothers, so a long take also shows their broods contact-mingling. The
+/// player marker is parked far outside aggro (hidden in this scene, fixed
+/// camera). Not hash-stable / not a golden — a free movie stage. Edit freely.
+pub fn goopair_level() -> LevelSpec {
+    LevelSpec {
+        rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-8.0, -8.0, 12.0, 12.0] }],
+        static_solids: vec![], // NO walls
+        doors: vec![],
+        lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "floor_lamp".into() }],
+        targets: vec![],
+        mobs: vec![
+            MobSpec { id: MobId(0), tier: 0, kind: GooKind::Green, pos: Vec3::new(-0.15, 0.0, 0.0) },
+            MobSpec { id: MobId(1), tier: 0, kind: GooKind::Green, pos: Vec3::new(0.15, 0.0, 0.0) },
+        ],
+        traps: vec![],
+        player_start: Vec3::new(-6.0, 0.0, 6.0),
         ..game_level()
     }
 }
@@ -499,12 +573,46 @@ pub fn shooting_range_level() -> LevelSpec {
         // (survive a hit → splat & recoil) flanking a Medium (one kill → splits).
         // No trap — they stay three distinct, slow-crawling targets to shoot.
         mobs: vec![
-            MobSpec { id: MobId(0), tier: 0, pos: Vec3::new(-1.9, 0.0, -1.0) },
-            MobSpec { id: MobId(1), tier: 1, pos: Vec3::new(0.2, 0.0, -0.4) },
-            MobSpec { id: MobId(2), tier: 0, pos: Vec3::new(1.7, 0.0, -1.3) },
+            MobSpec { id: MobId(0), tier: 0, kind: GooKind::Green, pos: Vec3::new(-1.9, 0.0, -1.0) },
+            MobSpec { id: MobId(1), tier: 1, kind: GooKind::Green, pos: Vec3::new(0.2, 0.0, -0.4) },
+            MobSpec { id: MobId(2), tier: 0, kind: GooKind::Green, pos: Vec3::new(1.7, 0.0, -1.3) },
         ],
         traps: vec![],
         player_start: Vec3::new(-0.5, 0.0, 0.9),
+        ..game_level()
+    }
+}
+
+/// The goo ARENA (`SCENE=arena`): a large square walled pit for the arena
+/// shooter — one 20×20 wu room whose rectangular auto-perimeter provides the
+/// four walls (deliberately NOT a dollhouse scene), a bright four-lamp grid,
+/// and a mixed-tier starting squad spread across the far half. The player
+/// spawns centre-south with clear sightlines. `arena: Some(..)` opts into the
+/// arsenal: keys 1–5 select a weapon and the shell maps LMB to shoot. Not
+/// hash-stable / not a golden — the playtest stage. Edit freely.
+pub fn arena_level() -> LevelSpec {
+    LevelSpec {
+        rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-10.0, -10.0, 10.0, 10.0] }],
+        static_solids: vec![],
+        doors: vec![],
+        // one centre lamp; the open-studio sky fill carries the pit evenly
+        // (lights place at the ROOM CENTRE — a lamp grid would need rooms)
+        lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "arena_lamp".into() }],
+        targets: vec![],
+        // the wave-0 squad: mixed tiers AND KINDS, spread across the up-screen
+        // half but INSIDE the spawn camera's ~14×9 wu view — the first frame
+        // must show targets (a shooter that opens on empty floor reads as
+        // broken). One blue Tank anchor, two red Runners for pressure.
+        mobs: vec![
+            MobSpec { id: MobId(0), tier: 0, kind: GooKind::Tank, pos: Vec3::new(-4.0, 0.0, 1.0) },
+            MobSpec { id: MobId(1), tier: 1, kind: GooKind::Runner, pos: Vec3::new(4.0, 0.0, 0.5) },
+            MobSpec { id: MobId(2), tier: 1, kind: GooKind::Green, pos: Vec3::new(0.0, 0.0, 2.0) },
+            MobSpec { id: MobId(3), tier: 2, kind: GooKind::Runner, pos: Vec3::new(-2.0, 0.0, 3.5) },
+            MobSpec { id: MobId(4), tier: 2, kind: GooKind::Green, pos: Vec3::new(2.5, 0.0, 3.0) },
+        ],
+        traps: vec![],
+        arena: Some(ArenaParams::default()),
+        player_start: Vec3::new(0.0, 0.0, 6.0),
         ..game_level()
     }
 }

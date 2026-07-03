@@ -169,6 +169,48 @@ pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, 
     }
 }
 
+// ---- goo SDF composite: shared push layout, look, and limits ----------------
+// One source for BOTH backends (goo.metal on macOS, goo.comp via Vulkan
+// everywhere else) so the two passes cannot drift apart. The resting-height
+// constants (`GOO_SQUASH`, `GOO_FLOOR_Y`) stay owned by `crate::sim` (shared
+// with the CPU ball placement).
+
+/// Goo composite push constants — byte-identical to `GooPush` in goo.metal AND
+/// the `PC` push_constant block in goo.comp (160 B; asserted at pipeline build).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GooPush {
+    pub cam_right: [f32; 4], // xyz, w = ortho half-width
+    pub cam_up: [f32; 4],    // xyz, w = ortho half-height
+    pub cam_dir: [f32; 4],   // xyz forward, w = vertical squash (<1 = flatter puddle)
+    pub cam_pos: [f32; 4],   // xyz eye, w = floor plane Y
+    pub dims: [i32; 4],      // W, H, ballCount, blobCount (bounding spheres)
+    pub emis: [f32; 4],      // emissive rgb, w = glow intensity
+    pub absorb: [f32; 4],    // Beer-Lambert absorption rgb/wu, w = surface alpha
+    pub params: [f32; 4],    // x = smin merge radius k, yzw spare
+    pub birth_emis: [f32; 4],   // emissive rgb the goo lerps TO at a gestating bud
+    pub birth_absorb: [f32; 4], // absorption rgb the goo lerps TO at a gestating bud
+}
+
+/// `smin` merge radius: the smoothness of the dumbbell waist + lump fusing.
+pub const GOO_SMIN_K: f32 = 0.14;
+/// Max goo metaballs the composite buffer holds (GOO_LIVE_CAP × GOO_PARTICLES,
+/// with headroom). Excess balls in a frame are clamped (never reallocates).
+pub const GOO_MAX: usize = 512;
+/// Max per-blob bounding spheres (GOO_MAX / 40 balls per blob, with headroom)
+/// for the composite's two-level culling.
+pub const GOO_BOUNDS_MAX: usize = 16;
+/// Goo body look (Beer–Lambert translucent composite): `GOO_EMIS` is emissive
+/// rgb + w glow intensity; `GOO_ABSORB` is absorption rgb per wu + w alpha.
+pub const GOO_EMIS: [f32; 4] = [0.55, 3.3, 1.15, 2.8];
+pub const GOO_ABSORB: [f32; 4] = [3.4, 0.42, 2.9, 0.9];
+/// A gestating bud lerps the look toward a vivid, molten AMBER-GOLD: a saturated
+/// warm emissive cranked bright so the birth site glows hot, plus heavy green +
+/// blue absorption (low R) so the body reads a radiant orange where it buds — an
+/// unmistakable warm contrast against the fluorescent-green goo (never pink).
+pub const GOO_BIRTH_EMIS: [f32; 4] = [9.5, 2.0, 0.08, 4.4];
+pub const GOO_BIRTH_ABSORB: [f32; 4] = [0.10, 4.4, 6.0, 0.97];
+
 /// Construct the GPU backend for this platform. Selected at compile time by
 /// target OS: Apple Silicon gets the Metal backend (MoltenVK has no ray
 /// tracing); everywhere else the hardware-ray-query Vulkan backend. Both

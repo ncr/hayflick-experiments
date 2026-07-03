@@ -47,10 +47,13 @@ build
 frames="$(mktemp -d -t recframes.XXXX)"
 trap 'rm -rf "$frames"' EXIT
 
+# `env` carries the optional DEMO_TICKS: a ${TICKS:+VAR=val} expansion is NOT
+# recognised as an assignment by the shell (expansions happen after assignment
+# parsing), so without `env` it would be executed as a command and fail.
 # shellcheck disable=SC2086  # TICKS is intentionally word-split into an env assignment or nothing
 SCENE="$scene" WINDOW="$window" LIGHT_ANIM="${LIGHT_ANIM:-0}" \
-  DEMO="$trace" DEMO_DIR="$frames" ${TICKS:+DEMO_TICKS=$TICKS} \
-  "$VIEWER" 2>&1 | tail -1
+  DEMO="$trace" DEMO_DIR="$frames" \
+  env ${TICKS:+DEMO_TICKS=$TICKS} "$VIEWER" 2>&1 | tail -1
 
 # even dims for yuv420p; nearest-neighbour keeps the pixel-art crisp if scaled
 ffmpeg -y -framerate "$fps" -i "$frames/d_%05d.png" \

@@ -6,7 +6,7 @@
 //! tick-stamped commands from the trace file, then prints the state digest (the
 //! replay oracle) and a snapshot summary.
 
-use house_game::{fixture, game_level, parse_trace, HouseGame};
+use house_game::{arena_level, fixture, game_level, goo_level, parse_trace, HouseGame};
 use sim_core::{NullSink, Runner, Simulation};
 
 fn main() {
@@ -20,8 +20,10 @@ fn main() {
     let spec = match level.as_str() {
         "fixture" => fixture(),
         "game" => game_level(),
+        "goo" => goo_level(),
+        "arena" => arena_level(),
         other => {
-            eprintln!("unknown level {other:?} (fixture | game)");
+            eprintln!("unknown level {other:?} (fixture | game | goo | arena)");
             std::process::exit(2);
         }
     };
@@ -42,5 +44,14 @@ fn main() {
     for (id, rgb) in &snap.lights {
         println!("light {:?}: [{:.3}, {:.3}, {:.3}]", id, rgb[0], rgb[1], rgb[2]);
     }
-    println!("room_lights: {:.3}  yaw_q: {}  score: {}", snap.room_lights, snap.yaw_q, snap.score);
+    println!("room_lights: {:.3}  yaw_q: {}  score: {}  wave: {:?}", snap.room_lights, snap.yaw_q, snap.score, snap.wave);
+    for c in &snap.chunks {
+        println!("chunk [{:.2}, {:.2}, {:.2}, {:.2}]", c[0], c[1], c[2], c[3]);
+    }
+    // goo blobs: where each body ended up (trace-authoring aid: aim shots at
+    // a blob's centroid at the tick you plan to fire)
+    for m in &snap.mobs {
+        let c = m.centroid();
+        println!("mob {:?} tier {}: centroid ({:.3}, {:.3})", m.id, m.tier, c.x, c.z);
+    }
 }

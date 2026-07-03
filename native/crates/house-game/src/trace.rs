@@ -11,6 +11,7 @@
 //! <tick> lights                           # ToggleRoomLights
 //! <tick> rotate dq
 //! <tick> use    food | battery             # Command::Use (consume a carried item)
+//! <tick> weapon slot                       # SelectWeapon 1–5 (arena levels)
 //! ```
 //!
 //! Ray directions are normalised on parse, so traces can be written with
@@ -63,6 +64,7 @@ pub fn parse_trace(text: &str) -> Result<Vec<(Tick, Command)>, String> {
             "flash" => Command::ToggleFlashlight,
             "lights" => Command::ToggleRoomLights,
             "rotate" => Command::RotateCamera { dq: next("dq")? as i8 },
+            "weapon" => Command::SelectWeapon { slot: next("slot")? as u8 },
             _ => return Err(err("unknown op")),
         };
         out.push((tick, cmd));
@@ -87,9 +89,10 @@ mod tests {
 12 rotate -1
 13 use food
 14 use battery
+15 weapon 3
 ";
         let t = parse_trace(text).unwrap();
-        assert_eq!(t.len(), 9);
+        assert_eq!(t.len(), 10);
         assert_eq!(t[0], (Tick(0), Command::ToggleRoomLights));
         match &t[1].1 {
             Command::Click { ray, ground } => {
@@ -114,6 +117,7 @@ mod tests {
         assert_eq!(t[6], (Tick(12), Command::RotateCamera { dq: -1 }));
         assert_eq!(t[7], (Tick(13), Command::Use { kind: ItemKind::Food }));
         assert_eq!(t[8], (Tick(14), Command::Use { kind: ItemKind::Battery }));
+        assert_eq!(t[9], (Tick(15), Command::SelectWeapon { slot: 3 }));
         assert!(parse_trace("5 frobnicate").is_err());
         assert!(parse_trace("1 use gold").is_err()); // unknown item kind
         assert!(parse_trace("1 use").is_err()); // missing item kind

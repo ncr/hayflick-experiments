@@ -57,7 +57,10 @@ const PROJ_EMISSIVE: [f32; 4] = [11.0, 8.0, 3.5, 1.0];
 /// Reserved projectile tracer pool size (max slugs drawn at once; extra live
 /// projectiles simply aren't drawn, like the goo slot overflow).
 pub fn proj_pool_size() -> usize {
-    24
+    // sized for the arena arsenal's worst case: three 7-pellet shotgun volleys
+    // in flight (max_age 20 ticks @ cooldown 35 keeps it to ~1, but uzi rounds
+    // linger 2 s — headroom is cheap, an overflowing shot just doesn't draw)
+    32
 }
 
 /// Reserved ellipsoid pool size: the live-blob cap × goo particles. Honors the
@@ -108,6 +111,10 @@ const WALL_STONE: u32 = 0xf6f2e8;
 /// rooms so the connectors read as connectors, not chambers.
 const CORRIDOR_FLOOR: u32 = 0xd8d4cc;
 
+/// Dead-chunk look: cold matte stone with a whisper of residual goo glow.
+const CHUNK_BASE_COLOR: [f32; 4] = [0.30, 0.33, 0.31, 1.0];
+const CHUNK_EMISSIVE: [f32; 4] = [0.04, 0.13, 0.07, 1.0];
+
 /// Scenes that render with GENERATED walls (one slab per region boundary, with
 /// dollhouse cut-aways) rather than the authored rectangular auto-perimeter:
 /// the procedural cave, the hand-authored village, and every floor-plan-derived
@@ -116,20 +123,21 @@ const CORRIDOR_FLOOR: u32 = 0xd8d4cc;
 pub fn is_dollhouse(scene: &str) -> bool {
     // "playground" joins so the rectangular auto-perimeter is skipped — it
     // provides its OWN far-edge walls as static_solids (open near the camera).
-    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground" | "range" | "goofloor" | "goonursery")
+    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground" | "range" | "goofloor" | "goonursery" | "goopair")
 }
 
 /// The bare open "studio" stages for filming/inspecting the goo: one big lit
 /// plane, bright even sky fill, no fog. (playground/range keep far backstop
-/// walls; goofloor/goonursery have none.)
+/// walls; goofloor/goonursery have none; arena keeps its auto-perimeter —
+/// it joins for the even fill, which a skill-shooter's readability wants.)
 pub fn is_open_studio_stage(scene: &str) -> bool {
-    matches!(scene, "playground" | "range" | "goofloor" | "goonursery")
+    matches!(scene, "playground" | "range" | "goofloor" | "goonursery" | "goopair" | "arena")
 }
 
 /// The PLAYER-LESS goo film stages (no player marker, fixed camera): the goo
 /// merges/buds on its own with no player to lure it.
 pub fn is_goo_film_stage(scene: &str) -> bool {
-    matches!(scene, "goofloor" | "goonursery")
+    matches!(scene, "goofloor" | "goonursery" | "goopair")
 }
 
 /// Build the greybox game scene from the spec. Returns the scene; the caller
@@ -247,6 +255,14 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // recompute_bounds), excluded from NEE/probe-bake like the goo pool.
     if !spec.mobs.is_empty() {
         register_sphere_pool(&mut scene, "proj_slot", proj_pool_size(), PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, PROJ_BASE_COLOR, PROJ_EMISSIVE, 0.4);
+    }
+    // dead-chunk pool (arena only): matte gray domes for solidified blob
+    // remains — real TLAS geometry, so they catch light and cast shadows.
+    // Slots skin from GameSnapshot.chunks; unused slots stay zero-scale.
+    if spec.arena.is_some() {
+        register_sphere_pool(&mut scene, "chunk_slot", house_game::GOO_CHUNK_CAP, 10, 14, CHUNK_BASE_COLOR, CHUNK_EMISSIVE, 0.9);
+        // bleed-droplet pool: tiny hot-green motes for the uzi's tear-off FX
+        register_sphere_pool(&mut scene, "drop_slot", 24, 5, 7, [0.02, 0.06, 0.03, 1.0], [2.5, 7.5, 3.0, 1.0], 0.5);
     }
 
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat
