@@ -169,9 +169,6 @@ pub fn is_door_opened(ev: &GameEvent) -> bool {
 pub fn is_target_hit(ev: &GameEvent) -> bool {
     matches!(ev, GameEvent::TargetHit(..))
 }
-pub fn is_shot_fired(ev: &GameEvent) -> bool {
-    matches!(ev, GameEvent::ShotFired(..))
-}
 
 // Payload accessors — the timeline keeps the structured event, so experiments
 // can pull the DoorId / TargetId out without re-deriving it from positions.

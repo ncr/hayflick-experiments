@@ -1303,7 +1303,6 @@ dependencies = [
  "glam",
  "gltf",
  "iso-core",
- "png 0.17.16",
 ]
 
 [[package]]

@@ -39,7 +39,12 @@ fi
 scene="${1:?usage: record.sh <scene> <trace.txt> [out.mp4]}"
 trace="${2:?usage: record.sh <scene> <trace.txt> [out.mp4]}"
 out="${3:-${TMPDIR:-/tmp}/${scene}-gameplay.mp4}"
-window="${WINDOW:-1280x800}"
+# the arena pit needs the wide frame: 1600x1000 at its PIXEL=2 default shows
+# the whole 20x20 wu floor; other scenes keep the classic 1280x800
+case "$scene" in
+  arena) window="${WINDOW:-1600x1000}" ;;
+  *)     window="${WINDOW:-1280x800}" ;;
+esac
 fps="${FPS:-60}"
 [ -f "$trace" ] || { echo "trace not found: $trace" >&2; exit 1; }
 

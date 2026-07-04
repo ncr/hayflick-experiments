@@ -482,7 +482,6 @@ pub struct SceneGpu {
     pub tlas_scratch: Buffer,
     pub inst_buf: Buffer, // host-visible: dynamic instance transforms are updated in place
     pub n_inst: u32,
-    pub dynamic_instance: Option<u32>, // TLAS instance index of the movable player (legacy shim)
     /// Name → key maps for the game-facing surface (lights frozen at the
     /// emissive-scan order, instances at the dynamic-run order).
     pub handles: SceneHandles,
@@ -585,7 +584,6 @@ impl SceneGpu {
         // backend-agnostic instance/mask table (the dynamic-run join, the build-
         // time masks, the per-run patch ranges + CPU transform
         // shadow) — shared with the Metal backend; see crate::gpu_scene.
-        let dynamic_instance = scene.dynamic_prim.map(|p| p as u32); // Vulkan-only legacy shim
         let table = crate::gpu_scene::InstanceTable::build(scene)?;
         let identity = vk::TransformMatrixKHR { matrix: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] };
         let instances: Vec<vk::AccelerationStructureInstanceKHR> = blas_addrs
@@ -667,16 +665,7 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, dynamic_instance, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
-    }
-
-    /// Patch the movable player's instance transform (legacy per-field API —
-    /// a shim over `set_instance_transform` so the dyn shadow stays coherent).
-    /// Call `record_tlas_rebuild` (or `record_frame`) afterwards to apply it.
-    pub unsafe fn set_player_transform(&mut self, ctx: &Ctx, m: Mat4) {
-        let Some(i) = self.dynamic_instance else { return };
-        let di = self.dyn_insts.iter().position(|&(first, _)| first == i).expect("legacy player run registered by build");
-        self.set_instance_transform(ctx, InstanceKey(di as u32), m);
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
     }
 
     /// Patch a named dynamic run's instance transform in the host-visible
@@ -774,7 +763,7 @@ pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Mat
 
 impl SceneGpu {
     /// Record a TLAS rebuild + an AS-build→ray-trace barrier into `cmd` (cheap:
-    /// ~0.05ms on the 5080). Run after `set_player_transform`, before tracing.
+    /// ~0.05ms on the 5080). Run after the instance-transform patches, before tracing.
     pub unsafe fn record_tlas_rebuild(&self, ctx: &Ctx, cmd: vk::CommandBuffer) {
         let geos = [tlas_geometry(self.inst_buf.address)];
         let b = vk::AccelerationStructureBuildGeometryInfoKHR::default()

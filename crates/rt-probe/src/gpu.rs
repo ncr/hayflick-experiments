@@ -3,17 +3,6 @@
 //! convenience layer every GPU-touching module builds on.
 
 use ash::vk;
-use std::ffi::CStr;
-
-pub unsafe extern "system" fn debug_callback(
-    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    _t: vk::DebugUtilsMessageTypeFlagsEXT,
-    data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
-    _u: *mut std::ffi::c_void,
-) -> vk::Bool32 {
-    eprintln!("[vk {severity:?}] {}", CStr::from_ptr((*data).p_message).to_string_lossy());
-    vk::FALSE
-}
 
 pub fn find_memory_type(mp: &vk::PhysicalDeviceMemoryProperties, bits: u32, flags: vk::MemoryPropertyFlags) -> u32 {
     (0..mp.memory_type_count)

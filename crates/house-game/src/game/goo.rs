@@ -1668,7 +1668,7 @@ impl<S: AudioSink> HouseGame<S> {
             return; // need a pair, and never fight a split/kill already queued
         }
         let mobs = self.mobs.clone(); // MobId-sorted → stable scan order
-        let mut found: Option<(Entity, Entity, MobId, u8, Vec2, Vec2)> = None;
+        let mut found: Option<(Entity, Entity, MobId, u8, Vec2)> = None;
         'scan: for a in 0..mobs.len() {
             let ga = *self.world.get::<&Goo>(mobs[a]).unwrap();
             if ga.tier == 0 || !goo_merge_ready(&ga) {
@@ -1685,12 +1685,12 @@ impl<S: AudioSink> HouseGame<S> {
                 if (ca - cb).length() < touch {
                     // midpoint kept as the exact `(ca + cb) * 0.5` — f32 is
                     // non-associative, so this expression is hashed verbatim.
-                    found = Some((mobs[a], mobs[b], ga.id, ga.tier, (ca + cb) * 0.5, ga.heading));
+                    found = Some((mobs[a], mobs[b], ga.id, ga.tier, (ca + cb) * 0.5));
                     break 'scan;
                 }
             }
         }
-        let Some((ea, eb, id_a, tier, mid, _heading)) = found else {
+        let Some((ea, eb, id_a, tier, mid)) = found else {
             return;
         };
         // The survivor (ea) grows one tier LARGER in place — goo_system eases its
