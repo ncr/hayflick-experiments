@@ -218,3 +218,27 @@ the shell renders the SELECTED slot's gun at the player rotated to
 others zero-scale. Metal `game`/`game_replay` goldens regenerated for the new
 body. **Vulkan golden debt**: crates/rt-probe/golden/{game,game_replay}.png
 are stale until regenerated on the spawner (RTX 5080).
+
+## 2026-07-04 — goo intelligence (tactics, comms, arena architecture)
+
+`game/tactics.rs` is the arena brain — composable, deterministic, RNG-free
+(ID_HASH_STRIDE timing), arena-gated so the four goo oracles stand untouched:
+LOS + a BFS flow field (0.125-wu grid from the player, derived cache in
+`Res.nav`) + wall-corner cover points + timed sprints compose into
+Direct / Flank / ToCover→Peek→Hide→Sprint / CoordWait / Sprint, selected by
+per-species doctrine (Runners flank, Greens cover-ambush, Tanks anchor).
+Comm pacts: two blobs with mutual LOS + player LOS agree a strike tick and
+blink an accelerating hot-white pulse (body tint + cone light, `comm_pulse`)
+until the synchronized rush. The arena gained thin-wall cover (mid-field L,
+east flank wall) and a north wall with a 0.5625-wu squeeze slot — a Large
+PBF body physically funnels through (`large_blob_squeezes_through` pins it).
+
+Presentation: per-blob thinking bubbles (`hud.rs::bubble`, anchored via
+`iso_core::world_to_window_px`) + the bottom weapon bar ride
+`FramePresent::stamps`, burned into out_tex on Metal so DEMO/SHOT captures
+show them. **Vulkan debt**: stamps (and the pre-existing minimap gap) are
+not burned by vulkan_backend yet — TODO at the top of its render_present.
+
+Ballistics fix: a projectile starting its tick INSIDE a blob's contact
+sphere registers contact at t=0 (grenades used to bounce in and coast
+through without detonating).
