@@ -67,6 +67,7 @@ pub fn parse_trace(text: &str) -> Result<Vec<(Tick, Command)>, String> {
             "rotate" => Command::RotateCamera { dq: next("dq")? as i8 },
             "weapon" => Command::SelectWeapon { slot: next("slot")? as u8 },
             "card" => Command::PickCard { slot: next("slot")? as u8 },
+            "aim" => Command::Aim { dir: Vec2::new(next("x")?, next("z")?).try_normalize().ok_or_else(|| err("zero aim dir"))? },
             _ => return Err(err("unknown op")),
         };
         out.push((tick, cmd));
@@ -150,5 +151,6 @@ pub fn format_command(tick: u64, cmd: &crate::Command) -> String {
         }),
         C::SelectWeapon { slot } => format!("{tick} weapon {slot}"),
         C::PickCard { slot } => format!("{tick} card {slot}"),
+        C::Aim { dir } => format!("{tick} aim {} {}", dir.x, dir.y),
     }
 }

@@ -332,6 +332,10 @@ impl Viewer {
             return;
         }
         self.game = crate::sim::GameLoop::from_spec(spec, &self.scene, self.backend.handles(), self.backend.light_count(), &self.cfg);
+        // a restart is a fresh SIM, not a fresh viewpoint: seed the new sim's
+        // yaw with the CURRENT camera quarter, or WASD (interpreted at the
+        // sim's boot yaw) comes out turned relative to the rotated screen
+        self.game.seed_yaw(self.view.yaw_q);
     }
 
     /// Whole-low-pixel render scale for the current zoom (#4).
@@ -386,13 +390,32 @@ impl Viewer {
             // the viewer up to the sim's settled quarter WITHOUT re-queuing the
             // command. Hard snap per quarter (no eased tween).
             self.sync_view_yaw(self.game.snap.yaw_q);
-            self.game.tick_droplets(1); // bleed FX rides the tick clock
+            self.game.tick_fx(1); // bleed/recoil/shake FX ride the tick clock
         } else {
-            // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
-            // keeps the wall clock OUT of the sim entirely.
-            let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
-            let n = self.game.run_due(sim_dt);
-            self.game.tick_droplets(n); // bleed FX rides the tick clock
+            // hitstop: a terminal kill / detonation freezes the LIVE sim a
+            // few frames for punch — the accumulator isn't fed, so there is
+            // no tick burst afterward. SHOT stays wall-clock-free (its dt is
+            // synthetic and must map 1:1 to ticks).
+            if self.game.freeze > 0 && self.harness.shot.is_none() {
+                self.game.freeze -= 1;
+            } else {
+                // arena turret: keep the gun trained on the cursor (pushes
+                // Command::Aim only when the direction actually moved)
+                let c = self.view.cursor;
+                self.aim_command(c);
+                // arena autofire: while LMB is held, re-push Shoot at the live
+                // cursor each frame BEFORE the due ticks run — the sim's cooldown
+                // gates the real fire rate (same-tick spam is swallowed), and the
+                // pushes land in the journal so the reel replays the burst.
+                if self.game.lmb_shoots && self.game.lmb_held {
+                    self.shoot_command(c);
+                }
+                // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
+                // keeps the wall clock OUT of the sim entirely.
+                let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
+                let n = self.game.run_due(sim_dt);
+                self.game.tick_fx(n); // bleed/recoil/shake FX ride the tick clock
+            }
         }
         // audio: drain this frame's sim cues into the synth (fail-soft None
         // just clears the queue), and tick the comm-pact blink sound on each
@@ -411,6 +434,10 @@ impl Viewer {
                     }
                 }
                 self.comm_lit = lit;
+                // hover-servo steps: the walk cadence accumulated by tick_fx
+                for _ in 0..self.game.take_steps() {
+                    a.play("step", 1.0);
+                }
             }
         }
         // death reel: the tick the run dies, write the journal as a
@@ -467,6 +494,26 @@ impl Viewer {
             if let Some(&k) = self.backend.handles().instances.get("player") {
                 let m = if hidden {
                     Mat4::from_scale(glam::Vec3::ZERO)
+                } else if self.game.lmb_shoots {
+                    // arena walk feel: the droid leans INTO its motion (tilt
+                    // about the ground-level axis perpendicular to the smoothed
+                    // velocity) and hovers on a soft bob — faster and shallower
+                    // while moving. Presentation-only, tick-clocked (lean_vel +
+                    // fx frames advance with sim ticks), arena-gated so the
+                    // cave goldens/replays keep the still, axis-aligned body.
+                    let v = self.game.lean_vel;
+                    let speed = v.length();
+                    let f = self.game.fx_frame() as f32;
+                    let sf = (speed / 2.0).min(1.0);
+                    let bob = 0.010 * (f * 0.11).sin() + 0.008 * sf * (f * 0.42).sin();
+                    let base = Mat4::from_translation(self.game.snap.player_pos + glam::Vec3::new(0.0, bob, 0.0));
+                    if speed > 0.15 {
+                        let d = v / speed;
+                        let angle = (speed * 0.055).min(0.10);
+                        base * Mat4::from_axis_angle(glam::Vec3::new(d.y, 0.0, -d.x), angle)
+                    } else {
+                        base
+                    }
                 } else {
                     Mat4::from_translation(self.game.snap.player_pos)
                 };
@@ -482,12 +529,37 @@ impl Viewer {
                 if let Some(&k) = self.backend.handles().instances.get(format!("gun_{slot}").as_str()) {
                     let m = if Some(slot) == sel && !hidden {
                         let f = self.game.snap.facing;
-                        Mat4::from_translation(self.game.snap.player_pos) * Mat4::from_rotation_y(f.x.atan2(f.y))
+                        // recoil: kick the gun back along its own -Z and pitch
+                        // the muzzle up, both riding the decaying `recoil`
+                        // transient (presentation-only, tick-clocked)
+                        let kick = self.game.recoil;
+                        Mat4::from_translation(self.game.snap.player_pos)
+                            * Mat4::from_rotation_y(f.x.atan2(f.y))
+                            * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.085 * kick))
+                            * Mat4::from_rotation_x(-0.22 * kick)
                     } else {
                         Mat4::from_scale(glam::Vec3::ZERO)
                     };
                     instances.push((k, m));
                 }
+            }
+            // muzzle flare: the VISIBLE flash at the barrel tip for the
+            // muzzle ticks — same tick, same point as the flash spotlight
+            // and the tracer birth, scaled by recoil so heavy guns bloom
+            // bigger. Zero-scale between shots.
+            if let Some(&k) = self.backend.handles().instances.get("flare_slot_0") {
+                let m = if self.game.snap.muzzle_flash && !hidden {
+                    let f = self.game.snap.facing;
+                    let fd = glam::Vec3::new(f.x, 0.0, f.y);
+                    let (mp, _) = house_game::flashlight_pose(self.game.snap.player_pos, f);
+                    let s = 0.12 + 0.16 * self.game.recoil;
+                    Mat4::from_translation(mp + fd * 0.55)
+                        * Mat4::from_quat(glam::Quat::from_rotation_arc(glam::Vec3::Z, fd))
+                        * Mat4::from_scale(glam::Vec3::new(s, s, s * 1.7))
+                } else {
+                    Mat4::from_scale(glam::Vec3::ZERO)
+                };
+                instances.push((k, m));
             }
         }
         instances.extend(self.game.door_instances());
@@ -495,6 +567,7 @@ impl Viewer {
         instances.extend(self.game.projectile_instances());
         instances.extend(self.game.chunk_instances());
         instances.extend(self.game.droplet_instances());
+        instances.extend(self.game.spark_instances());
         let (goo, goo_glow, goo_vscale, goo_bounds, goo_tint) = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
@@ -561,7 +634,9 @@ impl Viewer {
         let sky_dim = if crate::game_scene::is_open_studio_stage(&self.cfg.scene) { 0.06 + 0.94 * fs.room_lights } else { 1.0 };
         let fp = FramePresent {
             fs: &fs,
-            pan: self.view.pan,
+            // screenshake rides the PRESENTED pan only (never view.pan), so
+            // picks/aim stay true and the offset dies with the trauma decay
+            pan: self.view.pan + self.game.shake_px(),
             target: self.view.target,
             yaw_deg: self.yaw_deg(),
             zoom: self.view.zoom,

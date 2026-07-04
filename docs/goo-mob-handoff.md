@@ -216,8 +216,8 @@ grenade drum / harpoon rail — distinct silhouettes, amber muzzle accents);
 the shell renders the SELECTED slot's gun at the player rotated to
 `snap.facing` (guns are authored aiming +Z at the muzzle-flash hand height),
 others zero-scale. Metal `game`/`game_replay` goldens regenerated for the new
-body. **Vulkan golden debt**: crates/rt-probe/golden/{game,game_replay}.png
-are stale until regenerated on the spawner (RTX 5080).
+body. ~~Vulkan golden debt~~ **CLEARED 2026-07-04**: golden/{game,game_replay}.png
+regenerated on the RTX 5080; all five Vulkan goldens green.
 
 ## 2026-07-04 — goo intelligence (tactics, comms, arena architecture)
 
@@ -236,8 +236,13 @@ PBF body physically funnels through (`large_blob_squeezes_through` pins it).
 Presentation: per-blob thinking bubbles (`hud.rs::bubble`, anchored via
 `iso_core::world_to_window_px`) + the bottom weapon bar ride
 `FramePresent::stamps`, burned into out_tex on Metal so DEMO/SHOT captures
-show them. **Vulkan debt**: stamps (and the pre-existing minimap gap) are
-not burned by vulkan_backend yet — TODO at the top of its render_present.
+show them. ~~Vulkan debt~~ **CLEARED 2026-07-04**: vulkan_backend burns
+stamps + minimap into `out` between tonemap and the swapchain blit (packed
+into one `stamp_buf` staging buffer, buffer→image copies in GENERAL layout;
+out-of-bounds canvases skipped whole, matching Metal's blit_overlay). Lands
+in SHOT/DEMO/clip captures like Metal. Remaining Metal-only debt: the goo
+SHADOW proxies (mask 0x02 spheres in the TLAS) — on Vulkan the body still
+casts no shadow.
 
 Ballistics fix: a projectile starting its tick INSIDE a blob's contact
 sphere registers contact at t=0 (grenades used to bounce in and coast
@@ -322,3 +327,98 @@ Space restarts; the reel saves on wins too. Bodies closing on the drain
 telegraph with a cyan OUT! bubble (`MobRender.escaping`, derived within
 2.5 wu of the zone). Emergent keeper: drain-marching Greens can still be
 recruited into SYNC pacts mid-march and turn on the player.
+
+## 2026-07-04 — M5: game feel (owner playtest verdict: "raw, no gun feel")
+
+- **Hold-to-autofire**: `GameLoop.lmb_held` — LMB press fires AND latches;
+  the frame loop re-pushes `Shoot` at the live cursor until release
+  (viewer.rs, before `run_due`). The sim's per-weapon cooldown gates the
+  real rate (same-tick spam swallowed per-intent in shoot_system), pushes
+  ride the journal → the reel replays a held burst bit-exactly.
+- **Per-weapon reports**: `GameEvent::ShotFired` now carries `WeaponClass`;
+  cue map fans out to fire_slug/uzi/shotgun/grenade/harpoon voices
+  (audio.rs), pistol keeps pistol_fire. New `GameEvent::Detonated` →
+  "boom" (long rumble + sub thud); `GameEvent::WaveLanded` → "wave_land"
+  (door-slam + two-note warning). lab.rs metrics arm updated.
+- **Recoil/shake/hit-flash** (`tick_droplets` → **`tick_fx`**, all
+  PRESENTATION-ONLY off the arena event tap, tick-clocked): `recoil` kicks
+  the selected gun back along -Z + pitches the muzzle (viewer gun ring
+  matrix); `trauma` (per-class add, boom 0.65, wave 0.30) drives
+  `shake_px()` — trauma², hash-of-fx_frame direction, burned into the
+  PRESENTED pan only (view.pan/picks untouched); `hit_flash` blinks a
+  surviving shot blob hot white through the goo tint (comm-pulse pattern).
+- **Walk feel**: `Res.walk_vel_px` accel/decel ramp in walk_system
+  (WALK_ACCEL 0.35 / WALK_DECEL 0.25), GATED on `res.arsenal` so every
+  non-arena level keeps the verbatim instant-walk float path (goo oracles
+  + cave replay + goldens untouched — verified). Hashed in the arsenal
+  block. Shell: droid leans into the smoothed velocity + hover bob
+  (arena-gated, tick-clocked), servo "step" cues at speed cadence.
+- **Deck detail** (game_scene, arena-gated DECALS — no collision/occlusion,
+  quads FLOOR_TOP+0.004): seeded mint-family service panels (skip-if-under-
+  wall), amber hazard strips ringing spec.drain, three entrance-ring pads.
+  First cut used foreign grays — they crushed to black holes under the dim
+  teal light; stay in the floor's own family.
+- Verified: 153 tests green, all five Vulkan goldens byte-identical,
+  clips/feel_demo.mp4 (DEMO trace: uzi burst → slugs → grenade → shotgun →
+  movement tour).
+
+## 2026-07-04 — M5.5: turret aim + tactile round 2 (second playtest)
+
+Owner round-2 notes: WASD came out turned after a restart; wanted the gun
+to track the MOUSE (tank turret), visible barrel→target projectiles, and a
+synchronized muzzle flash + impact effect.
+
+- **Restart yaw fix**: `restart_run` rebuilds the sim at the cfg boot yaw
+  while the viewer kept the rotated camera → WASD interpreted at the wrong
+  quarter. `GameLoop::seed_yaw(q)` re-seeds the fresh sim with the CURRENT
+  view quarter (same pre-tick direct-write pattern as assemble's cfg
+  seeding, then reseed + re-snapshot).
+- **Turret aim** (`Command::Aim { dir }`, trace op `aim x z`): the shell
+  unprojects the cursor to ground every frame (`aim_command`) and pushes
+  Aim only when the direction moved ≥ ~0.5° (journal-lean). Apply sets
+  `Facing` directly, ARSENAL-GATED; walk_system's Facing write is now
+  arsenal-gated OFF — on arena the mouse owns the gun/torch/muzzle, walk
+  never wrenches it. Off arena nothing changes (facing still walk-owned;
+  cave traces/oracles untouched). Facing was already in the un-gated hash —
+  arena runs replay via the journaled Aim ops.
+- **Hitstop** (`GameLoop.freeze`): MobKilled 4 / MobSolidified 5 /
+  Detonated 3 frames; the LIVE draw skips run_due while frozen (accumulator
+  unfed — no tick burst after). DEMO/SHOT ignore it.
+- **Tracer streaks**: `ProjectileRender` gained `vel`; instances stretch
+  along flight (cross floored at 0.075 scale ≈ 1+ low-px so uzi lines never
+  dither out; length ≈ 2 ticks of travel — NOTE the pool sphere's LOCAL
+  radius is 0.4, visual = scale × 0.4).
+- **Muzzle flare**: `flare_slot_0` (arena-only hot emissive sphere, reg'd
+  with the gun ring) flashes at the barrel tip during `muzzle_flash` ticks,
+  recoil-scaled; the flash SPOTLIGHT power also scales ×(1+0.9·recoil).
+  Flare + spotlight + tracer birth share the same tick and point.
+- Impact side of the chain: blob hit-flash (white pop) + GooSplashed
+  droplet spray + hitstop. Verified: 153 tests, 5 goldens byte-identical,
+  turret/tracer/flare DEMO frames checked on the RTX 5080.
+
+## 2026-07-04 — M5.6: muzzle pop + the impact tell (third playtest round)
+
+Owner: "muzzle flash looks like a flashlight cone; nothing visible where
+bullets land (wall / floor / blob)."
+
+- **Muzzle light re-shaped** (view.rs frame_spotlights): was a forward
+  60°-cone at hand height — literally the torch shape. Now a wide cone
+  pointed straight DOWN from just above the barrel tip (goo-light
+  pattern): a hot local pool AROUND the gun, power 1500×(1+1.2·recoil),
+  radius 0.09. Reads as a pop, not a beam.
+- **`GameEvent::Impact(point, normal)`**: emitted where a hard round dies
+  on a wall / chunk / the floor (the non-bounce Solid arm of
+  projectile_system). Bounces don't emit; blob hits ride GooSplashed.
+  Cue "impact" (tiny debris thip, positional). Two door/disc tests updated
+  to expect the new cue (intentional).
+- **Sparks** (`GameLoop.sparks` + `spawn_sparks`, "spark_slot" pool of 24
+  hot-amber emissive motes, arena-gated with the drop pool): 6 thrown off
+  the surface normal on Impact, 3 on every GooSplashed (the green goo
+  motes alone read as goo, not as YOUR hit). Ballistic, shrink-and-gone
+  in 0.26 s. NOTE: tick_fx now drains the tap into a local Vec first so
+  arms can call &mut self helpers.
+- **Impact flash** (`GameLoop.impact_flash`): 3-tick fading downward light
+  pop at the last impact/splash point, pushed by frame_spotlights — the
+  target-side half of the muzzle flash.
+- Verified on the RTX 5080: muzzle pop frame, blob-kill spark burst frame,
+  153 tests, 5 goldens byte-identical.

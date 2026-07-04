@@ -211,7 +211,13 @@ impl ApplicationHandler for App {
                         let c = r.view.cursor;
                         if !r.menu_click(c) {
                             if r.game.lmb_shoots {
-                                r.shoot_command(c); // arena: LMB fires (WASD walks)
+                                // arena: LMB fires (WASD walks). Fire now for
+                                // click responsiveness AND latch held-state —
+                                // the frame loop keeps re-pushing Shoot at the
+                                // live cursor until release (autofire; the
+                                // sim cooldown owns the rate).
+                                r.shoot_command(c);
+                                r.game.lmb_held = true;
                             } else if r.game.has_player {
                                 r.click_command(c); // click-to-walk / use door
                             } else {
@@ -221,6 +227,7 @@ impl ApplicationHandler for App {
                     } else {
                         r.view.dragging = false;
                         r.menu.drag = false;
+                        r.game.lmb_held = false;
                     }
                 }
             }

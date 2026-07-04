@@ -366,6 +366,9 @@ pub struct ProjectileRender {
     pub id: ProjectileId,
     pub pos: Vec3,
     pub radius: f32,
+    /// Flight velocity (wu/s) — the shell stretches the tracer along it so
+    /// rounds read as streaks, not floating beads.
+    pub vel: Vec3,
 }
 
 /// Outward normal of the AABB face a ray ENTERS through: the axis whose slab
@@ -465,7 +468,7 @@ impl<S: AudioSink> HouseGame<S> {
                 pistol.cooldown_ticks = w.cooldown_ticks;
             }
             self.res.muzzle_ticks = MUZZLE_FLASH_TICKS;
-            self.res.events.emit(GameEvent::ShotFired(muzzle));
+            self.res.events.emit(GameEvent::ShotFired(muzzle, w.class));
             // birth the slug ON the aim ray, at the point level with the muzzle —
             // so its flat flight path is exactly the old hitscan line (the same
             // target/blob it would have hit, just reached over time).
@@ -620,6 +623,9 @@ impl<S: AudioSink> HouseGame<S> {
                             }
                             continue;
                         }
+                        // a hard round dies here: the impact tell (shell-side
+                        // sparks + flash + thip at the point)
+                        self.res.events.emit(GameEvent::Impact(old + dir * t, normal));
                     }
                 }
                 self.res.buf.despawn(e);
@@ -650,6 +656,7 @@ impl<S: AudioSink> HouseGame<S> {
     /// multi-kills safe. Arms the boom flash the renderer turns into light.
     fn explode(&mut self, at: Vec3, p: &Projectile) {
         self.res.boom = Some((at, BOOM_FLASH_TICKS));
+        self.res.events.emit(GameEvent::Detonated(at));
         let targets = self.mobs.clone(); // damage_goo mutates buffers, not this list
         for me in targets {
             let (center, r) = {

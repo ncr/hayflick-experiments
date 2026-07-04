@@ -66,6 +66,12 @@ pub struct GameLoop {
     /// Arena control scheme (`spec.arena`): LMB fires instead of walking
     /// (WASD is the only locomotion) and the OS cursor becomes a crosshair.
     pub lmb_shoots: bool,
+    /// LMB is currently held (arena): the shell re-pushes `Command::Shoot`
+    /// at the live cursor every frame while true — hold-to-autofire. The
+    /// sim's per-weapon cooldown gates the actual rate (same-tick spam is
+    /// swallowed), and the pushed commands ride the journal, so the death
+    /// reel replays a held burst bit-exactly.
+    pub lmb_held: bool,
     /// Per spec light, in slot order (spec index == NEE slot == game flicker
     /// index): the renderer key, the kind, and the authored base rgb — the
     /// per-frame emission build and the LIGHT_ANIM=0 freeze read these.
@@ -84,11 +90,45 @@ pub struct GameLoop {
     pub chunk_slots: Vec<InstanceKey>,
     /// Reserved bleed-droplet slots ("drop_slot_N", arena scenes only).
     pub drop_slots: Vec<InstanceKey>,
+    /// Reserved impact-spark slots ("spark_slot_N", arena scenes only).
+    pub spark_slots: Vec<InstanceKey>,
     /// Live render droplets (uzi bleed FX). PRESENTATION-ONLY: spawned off the
     /// event tap, advanced on the tick clock, never touches the sim.
     pub droplets: Vec<Droplet>,
     /// Render-side scatter counter for droplet spray directions (not sim RNG).
     drop_seed: u32,
+    /// Gun-feel FX (PRESENTATION-ONLY, fed by the arena event tap, decayed on
+    /// the tick clock so DEMO replays reproduce them exactly):
+    /// recoil 0..1 — the selected gun's kick-back/pitch-up, armed per shot.
+    pub recoil: f32,
+    /// Screenshake trauma 0..1 — shots and detonations add, offset is
+    /// trauma² (small hits barely tickle, a boom really throws the frame).
+    pub trauma: f32,
+    /// Per-blob hit flash 0..1 — a connecting shot blinks the body hot white.
+    pub hit_flash: Vec<(house_game::MobId, f32)>,
+    /// Walk-feel FX (arena only, tick-clocked like the rest):
+    /// last tick's player position — the shell-side velocity estimate.
+    prev_player: Vec3,
+    /// Smoothed player world-XZ velocity (wu/s) — drives the droid's lean
+    /// into the motion and the hover-bob amplitude.
+    pub lean_vel: glam::Vec2,
+    /// Servo-step cadence accumulator + cues due (drained by the shell).
+    step_accum: f32,
+    steps_due: u32,
+    /// Last aim direction pushed as Command::Aim — the shell only re-pushes
+    /// when the cursor direction actually moved (~0.5°), keeping the journal
+    /// lean while the gun tracks the mouse turret-style.
+    pub last_aim: Option<glam::Vec2>,
+    /// Live impact sparks: hot debris motes thrown where a round died
+    /// (wall/floor Impact events AND blob splashes). Tick-clocked twin of
+    /// `droplets`, rendered from the "spark_slot" pool.
+    pub sparks: Vec<Spark>,
+    /// The most recent impact point + ticks left of its light pop — the
+    /// target-side half of the muzzle flash (frame_spotlights reads it).
+    pub impact_flash: Option<(Vec3, u32)>,
+    /// Hitstop frames left: a terminal kill/solidify freezes the LIVE sim a
+    /// few frames for punch. DEMO/SHOT ignore it (tick-deterministic).
+    pub freeze: u32,
     /// Presentation frame counter (advances with sim ticks) for the glitch FX.
     fx_frame: u32,
     /// Netcode-lag glitch cache: WEAK blobs render from a STALE body snapshot
@@ -110,6 +150,16 @@ struct GlitchEntry {
 /// ballistic to the floor, gone in half a second.
 /// Seconds a landed splat spends spreading/fading before it despawns.
 const SPLAT_LIFE: f32 = 0.45;
+
+/// One impact spark: a hot debris mote thrown where a round died. Ballistic,
+/// gone in a quarter second — pure presentation, the droplets' hard twin.
+pub struct Spark {
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub age: f32,
+}
+/// Seconds a spark lives (shrinking the whole way).
+const SPARK_LIFE: f32 = 0.26;
 
 pub struct Droplet {
     pub pos: Vec3,
@@ -160,6 +210,7 @@ impl GameLoop {
         let proj_slots = discover_pool(handles, "proj_slot");
         let chunk_slots = discover_pool(handles, "chunk_slot");
         let drop_slots = discover_pool(handles, "drop_slot");
+        let spark_slots = discover_pool(handles, "spark_slot");
         let mut sim: HouseGame<VecSink> = HouseGame::new(&spec, VecSink::default());
         if spec.arena.is_some() {
             // arena: tap the event stream for bleed droplets (observation-only;
@@ -186,6 +237,7 @@ impl GameLoop {
         // `dynamic_list`).
         let has_player = scene.dynamic_list().iter().any(|(n, ..)| n == "player");
         let lmb_shoots = spec.arena.is_some() && has_player;
+        let player0 = snap.player_pos;
         GameLoop {
             fixed: FixedLoop::new(TICK_DT),
             queue: InputQueue::new(),
@@ -195,6 +247,7 @@ impl GameLoop {
             last_player: snap.player_pos,
             snap,
             held: [false; 4],
+            lmb_held: false,
             has_player,
             follow_cam: has_player && cfg.scene != "grid" && !crate::game_scene::is_goo_film_stage(&cfg.scene),
             journal: Vec::new(),
@@ -205,8 +258,20 @@ impl GameLoop {
             proj_slots,
             chunk_slots,
             drop_slots,
+            spark_slots,
             droplets: Vec::new(),
             drop_seed: 0,
+            recoil: 0.0,
+            trauma: 0.0,
+            hit_flash: Vec::new(),
+            prev_player: player0,
+            lean_vel: glam::Vec2::ZERO,
+            step_accum: 0.0,
+            steps_due: 0,
+            last_aim: None,
+            sparks: Vec::new(),
+            impact_flash: None,
+            freeze: 0,
             fx_frame: 0,
             glitch: Vec::new(),
         }
@@ -369,7 +434,23 @@ impl GameLoop {
     /// pool slot to zero scale. Pure read of the snapshot's hashed projectile
     /// state — the same instance-mover path the goo ellipsoids use.
     pub fn projectile_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.snap.projectiles.iter().map(|p| Mat4::from_translation(Vec3::new(p.pos.x, p.pos.y, p.pos.z)) * Mat4::from_scale(Vec3::splat(p.radius)));
+        let xforms = self.snap.projectiles.iter().map(|p| {
+            let t = Mat4::from_translation(Vec3::new(p.pos.x, p.pos.y, p.pos.z));
+            // tracer streak: thin cross-section (floored so fast small rounds
+            // never dither below a pixel — the pool sphere's LOCAL radius is
+            // 0.4, so visual size = scale × 0.4), length covering ~2 ticks of
+            // flight — rounds draw lines from barrel to target, the slow fat
+            // slug stays a chunky bolt.
+            let speed2 = p.vel.length_squared();
+            match (speed2 > 1e-6).then(|| p.vel.normalize()) {
+                Some(d) => {
+                    let cross = (p.radius * 0.5).max(0.075);
+                    let z_half = (p.radius * 1.2).max(speed2.sqrt() * house_game::TICK_DT * 2.2);
+                    t * Mat4::from_quat(glam::Quat::from_rotation_arc(Vec3::Z, d)) * Mat4::from_scale(Vec3::new(cross, cross, z_half))
+                }
+                None => t * Mat4::from_scale(Vec3::splat(p.radius)),
+            }
+        });
         skin_pool(&self.proj_slots, xforms)
     }
 
@@ -387,36 +468,138 @@ impl GameLoop {
         skin_pool(&self.chunk_slots, xforms)
     }
 
-    /// Advance the splash FX by `n` sim ticks: drain GooSplashed events from
-    /// the tap into directional droplet sprays (count + speed scale with the
-    /// hit's fluid punch), integrate ballistics, then let each droplet land as
-    /// a widening floor SPLAT that fades. Tick-clocked (not wall-clocked) so
-    /// DEMO captures stay reproducible. Presentation-only.
-    pub fn tick_droplets(&mut self, n: u32) {
+    /// Advance the presentation FX by `n` sim ticks: drain the arena event
+    /// tap into droplet sprays, gun recoil, screenshake trauma and blob hit
+    /// flashes, integrate droplet ballistics, and decay the transients.
+    /// Tick-clocked (not wall-clocked) so DEMO captures stay reproducible.
+    /// Presentation-only — nothing here feeds back into the sim.
+    pub fn tick_fx(&mut self, n: u32) {
         self.fx_frame = self.fx_frame.wrapping_add(n);
         self.update_glitch();
-        if let Some(tap) = self.sim.res.event_tap.as_mut() {
-            for ev in tap.drain(..) {
-                if let house_game::GameEvent::GooSplashed(_, at, dir, punch) = ev {
-                    // spray budget: a pinprick sheds a couple of motes, a slug
-                    // or point-blank volley tears off a real spray
-                    let count = (3.0 + punch * 0.9).min(14.0) as u32;
-                    let fwd = glam::Vec2::new(dir.x, dir.z).normalize_or_zero();
-                    let side = glam::Vec2::new(-fwd.y, fwd.x);
-                    for _ in 0..count {
-                        self.drop_seed = self.drop_seed.wrapping_add(1);
-                        let h = self.drop_seed.wrapping_mul(2654435761);
-                        let r0 = (h & 0xff) as f32 / 255.0;
-                        let r1 = ((h >> 8) & 0xff) as f32 / 255.0;
-                        let r2 = ((h >> 16) & 0xff) as f32 / 255.0;
-                        // mostly THROUGH the body along the shot, fanned to the
-                        // sides — an exit spray, not a fountain
-                        let xz = (fwd * (0.5 + r0 * 0.9) + side * (r1 - 0.5) * 1.3).normalize_or_zero() * (1.0 + punch * (0.18 + 0.12 * r2));
-                        let up = 1.3 + r2 * 1.3 + punch * 0.06;
-                        self.droplets.push(Droplet { pos: at + Vec3::new(0.0, 0.1, 0.0), vel: Vec3::new(xz.x, up, xz.y), age: 0.0, splat: -1.0 });
+        // drain the tap into a local list first so the arms below can call
+        // &mut self helpers (spawn_sparks) without fighting the tap borrow
+        let evs: Vec<house_game::GameEvent> = self.sim.res.event_tap.as_mut().map(|t| t.drain(..).collect()).unwrap_or_default();
+        {
+            for ev in evs {
+                match ev {
+                    house_game::GameEvent::GooSplashed(_, at, dir, punch) => {
+                        // spray budget: a pinprick sheds a couple of motes, a slug
+                        // or point-blank volley tears off a real spray
+                        let count = (3.0 + punch * 0.9).min(14.0) as u32;
+                        let fwd = glam::Vec2::new(dir.x, dir.z).normalize_or_zero();
+                        let side = glam::Vec2::new(-fwd.y, fwd.x);
+                        for _ in 0..count {
+                            self.drop_seed = self.drop_seed.wrapping_add(1);
+                            let h = self.drop_seed.wrapping_mul(2654435761);
+                            let r0 = (h & 0xff) as f32 / 255.0;
+                            let r1 = ((h >> 8) & 0xff) as f32 / 255.0;
+                            let r2 = ((h >> 16) & 0xff) as f32 / 255.0;
+                            // mostly THROUGH the body along the shot, fanned to the
+                            // sides — an exit spray, not a fountain
+                            let xz = (fwd * (0.5 + r0 * 0.9) + side * (r1 - 0.5) * 1.3).normalize_or_zero() * (1.0 + punch * (0.18 + 0.12 * r2));
+                            let up = 1.3 + r2 * 1.3 + punch * 0.06;
+                            self.droplets.push(Droplet { pos: at + Vec3::new(0.0, 0.1, 0.0), vel: Vec3::new(xz.x, up, xz.y), age: 0.0, splat: -1.0 });
+                        }
+                        // plus the hard-impact tell at the splash point: hot
+                        // sparks + a brief light pop (the goo motes alone
+                        // read as goo, not as YOUR hit landing)
+                        self.spawn_sparks(at + Vec3::new(0.0, 0.10, 0.0), Vec3::new(dir.x, 0.4, dir.z), 3);
+                        self.impact_flash = Some((at, 3));
                     }
+                    house_game::GameEvent::Impact(at, n) => {
+                        // a round died on a wall / chunk / the floor: debris
+                        // sparks off the surface + the impact light pop
+                        self.spawn_sparks(at, n * 1.1, 6);
+                        self.impact_flash = Some((at, 3));
+                    }
+                    house_game::GameEvent::ShotFired(_, class) => {
+                        // per-weapon hand feel: kick the gun model, bump the shake
+                        use house_game::WeaponClass as W;
+                        let (kick, shake) = match class {
+                            W::Slug => (1.0, 0.30),
+                            W::Uzi => (0.45, 0.09),
+                            W::Shotgun => (1.0, 0.42),
+                            W::Grenade => (0.7, 0.15),
+                            W::Harpoon => (0.9, 0.25),
+                            W::Standard => (0.6, 0.15),
+                        };
+                        self.recoil = self.recoil.max(kick);
+                        self.trauma = (self.trauma + shake).min(1.0);
+                    }
+                    house_game::GameEvent::Detonated(_) => {
+                        self.trauma = (self.trauma + 0.65).min(1.0);
+                        self.freeze = self.freeze.max(3);
+                    }
+                    house_game::GameEvent::WaveLanded(_) => {
+                        self.trauma = (self.trauma + 0.30).min(1.0);
+                    }
+                    house_game::GameEvent::MobHit(id, _) => {
+                        // blink the surviving body hot white (dead ones already
+                        // play the split/die choreography)
+                        match self.hit_flash.iter_mut().find(|(i, _)| *i == id) {
+                            Some((_, f)) => *f = 0.8,
+                            None => self.hit_flash.push((id, 0.8)),
+                        }
+                    }
+                    // hitstop: terminal kills freeze the live sim a beat —
+                    // the classic punch frame (the shell skips run_due while
+                    // freeze > 0; DEMO/SHOT ignore it)
+                    house_game::GameEvent::MobKilled(..) => {
+                        self.freeze = self.freeze.max(4);
+                        self.trauma = (self.trauma + 0.12).min(1.0);
+                    }
+                    house_game::GameEvent::MobSolidified(..) => {
+                        self.freeze = self.freeze.max(5);
+                        self.trauma = (self.trauma + 0.18).min(1.0);
+                    }
+                    _ => {}
                 }
             }
+        }
+        // decay the gun-feel transients on the tick clock (frame-rate free)
+        if n > 0 {
+            let (kr, kt, kf) = (0.80f32.powi(n as i32), 0.88f32.powi(n as i32), 0.76f32.powi(n as i32));
+            self.recoil = if self.recoil * kr > 0.01 { self.recoil * kr } else { 0.0 };
+            self.trauma = if self.trauma * kt > 0.01 { self.trauma * kt } else { 0.0 };
+            for (_, f) in self.hit_flash.iter_mut() {
+                *f *= kf;
+            }
+            self.hit_flash.retain(|(_, f)| *f > 0.03);
+            // walk-feel: estimate the player's world velocity off the snapshot
+            // deltas, smooth it into the lean, and run the servo-step cadence
+            // (arena only — the cave game keeps its stillness)
+            if self.lmb_shoots {
+                let dt = TICK_DT * n as f32;
+                let dp = self.snap.player_pos - self.prev_player;
+                let vel = glam::Vec2::new(dp.x, dp.z) / dt;
+                self.lean_vel += (vel - self.lean_vel) * (1.0 - 0.70f32.powi(n as i32));
+                // step cadence scales with speed; ~4.3 ticks between cues at a
+                // full 2 wu/s sprint, silent below a slow drift
+                let speed = self.lean_vel.length();
+                if speed > 0.25 {
+                    self.step_accum += (speed / 2.0).min(1.25) * n as f32 / 14.0;
+                    while self.step_accum >= 1.0 {
+                        self.step_accum -= 1.0;
+                        self.steps_due += 1;
+                    }
+                } else {
+                    self.step_accum = 0.0;
+                }
+            }
+            self.prev_player = self.snap.player_pos;
+        }
+        // sparks: fast hard ballistics, shrink-and-gone in a quarter second
+        if n > 0 && !self.sparks.is_empty() {
+            let dt = TICK_DT * n as f32;
+            for s in self.sparks.iter_mut() {
+                s.vel.y -= 13.0 * dt;
+                s.pos += s.vel * dt;
+                s.age += dt;
+            }
+            self.sparks.retain(|s| s.age < SPARK_LIFE && s.pos.y > -0.05);
+        }
+        if n > 0 {
+            self.impact_flash = self.impact_flash.and_then(|(at, ttl)| (ttl > n).then(|| (at, ttl - n)));
         }
         if n > 0 && !self.droplets.is_empty() {
             let dt = TICK_DT * n as f32;
@@ -436,6 +619,75 @@ impl GameLoop {
             }
             self.droplets.retain(|d| if d.splat < 0.0 { d.age < 0.9 } else { d.splat < SPLAT_LIFE });
         }
+    }
+
+    /// Re-seed the fresh sim's camera quarter to the viewer's CURRENT one —
+    /// a restart (Space) rebuilds the sim from the spec, whose boot yaw is
+    /// the cfg default; without this the screen keeps the rotated camera
+    /// while walk_system interprets WASD at the boot yaw, and every input
+    /// comes out turned. Same pre-tick direct-write pattern as the cfg boot
+    /// seeding in `assemble` (world setup, not play), then re-derive +
+    /// refresh the snapshot.
+    pub fn seed_yaw(&mut self, q: u32) {
+        self.sim.res.yaw_q = q;
+        let down = screen_px_to_world(Vec2::new(0.0, 1.0), 90.0 * q as f32);
+        self.sim.world.get::<&mut Facing>(self.sim.player).unwrap().0 = Vec2::new(down.x, down.z).try_normalize().unwrap_or(Vec2::new(0.0, 1.0));
+        self.sim.reseed();
+        self.snap = self.sim.snapshot();
+        self.last_player = self.snap.player_pos;
+        self.prev_player = self.snap.player_pos;
+    }
+
+    /// Throw `count` hot debris motes from `at`, biased along `bias` (the
+    /// surface normal, or the splash direction lifted a little) — the
+    /// particle half of the impact tell. Same hash scatter as the droplets.
+    fn spawn_sparks(&mut self, at: Vec3, bias: Vec3, count: u32) {
+        for _ in 0..count {
+            self.drop_seed = self.drop_seed.wrapping_add(1);
+            let h = self.drop_seed.wrapping_mul(2654435761);
+            let r0 = (h & 0xff) as f32 / 255.0 - 0.5;
+            let r1 = ((h >> 8) & 0xff) as f32 / 255.0 - 0.5;
+            let r2 = ((h >> 16) & 0xff) as f32 / 255.0;
+            let v = (bias * (1.2 + r2 * 1.6) + Vec3::new(r0 * 2.4, 1.2 + r2 * 1.0, r1 * 2.4)) * 1.4;
+            self.sparks.push(Spark { pos: at, vel: v, age: 0.0 });
+        }
+    }
+
+    /// Per-frame impact-spark instances: hot motes shrinking over their life.
+    pub fn spark_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let xforms = self.sparks.iter().map(|s| {
+            let k = 1.0 - (s.age / SPARK_LIFE).min(1.0);
+            Mat4::from_translation(s.pos) * Mat4::from_scale(Vec3::splat(0.018 + 0.030 * k))
+        });
+        skin_pool(&self.spark_slots, xforms)
+    }
+
+    /// Drain the servo-step cues accumulated by the walk cadence (the shell
+    /// plays one "step" tick per unit — presentation audio only).
+    pub fn take_steps(&mut self) -> u32 {
+        std::mem::take(&mut self.steps_due)
+    }
+
+    /// The presentation frame counter (advances with sim ticks) — the shell's
+    /// clock for tick-locked FX like the hover bob.
+    pub fn fx_frame(&self) -> u32 {
+        self.fx_frame
+    }
+
+    /// This frame's screenshake offset in low-res px. Trauma² scaling (small
+    /// arms tickle, a detonation throws the frame), direction from an integer
+    /// hash of the tick clock — deterministic, zero when calm, and bounded
+    /// well inside the low-buffer overscan margin.
+    pub fn shake_px(&self) -> glam::Vec2 {
+        if self.trauma <= 0.0 {
+            return glam::Vec2::ZERO;
+        }
+        const MAX_SHAKE_PX: f32 = 4.5;
+        let a = self.trauma * self.trauma;
+        let h = self.fx_frame.wrapping_mul(2654435761);
+        let nx = ((h >> 8) & 0xff) as f32 / 127.5 - 1.0;
+        let ny = ((h >> 16) & 0xff) as f32 / 127.5 - 1.0;
+        glam::Vec2::new(nx, ny) * (MAX_SHAKE_PX * a)
     }
 
     /// Maintain the lag-glitch cache: every WEAK blob gets a cached body that
@@ -516,6 +768,15 @@ impl GameLoop {
                 const FLASH: [f32; 3] = [2.6, 2.9, 3.4];
                 for (t, f) in tint.iter_mut().zip(FLASH) {
                     *t += (f - *t) * m.comm;
+                }
+            }
+            // hit flash: a shot that connected blinks the body hot white for
+            // a beat (shell-side decay off the arena event tap — the comm
+            // pulse pattern, just faster and per-hit)
+            if let Some((_, f)) = self.hit_flash.iter().find(|(id, _)| *id == m.id) {
+                const HOT: [f32; 3] = [3.1, 3.2, 3.5];
+                for (t, h) in tint.iter_mut().zip(HOT) {
+                    *t += (h - *t) * f;
                 }
             }
             // netcode-lag glitch: a WEAK blob renders its CACHED body (the true

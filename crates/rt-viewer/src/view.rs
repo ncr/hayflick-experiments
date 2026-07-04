@@ -235,6 +235,25 @@ impl Viewer {
         self.game.push(Command::Shoot { ray: PickRay { origin, dir } });
     }
 
+    /// Arena turret: keep the gun trained on the cursor. Unprojects the
+    /// cursor to its ground point and pushes `Command::Aim` with the
+    /// player→cursor world direction — but only when it moved ≥ ~0.5°, so a
+    /// parked mouse adds nothing to the journal. Called every frame before
+    /// the due ticks run.
+    pub fn aim_command(&mut self, win: Vec2) {
+        if !self.game.lmb_shoots {
+            return;
+        }
+        let x = self.pick_xform();
+        let Some(g) = window_px_to_ground(win, &x) else { return };
+        let p = self.game.snap.player_pos;
+        let Some(d) = (Vec2::new(g.x, g.z) - Vec2::new(p.x, p.z)).try_normalize() else { return };
+        if self.game.last_aim.is_none_or(|la| la.dot(d) < 0.99996) {
+            self.game.push(Command::Aim { dir: d });
+            self.game.last_aim = Some(d);
+        }
+    }
+
     /// This frame's transient spotlights, read off the snapshot: the player
     /// flashlight (pose from the same pure fn the game's flashlight_system
     /// uses, at the lattice-SNAPPED snapshot position) and the 2-tick muzzle
@@ -253,10 +272,22 @@ impl Viewer {
             v.push(Spotlight { pos, dir, cone_cos: self.flash_cone.to_radians().cos(), power: self.flash_power * 1500.0, radius: 0.06, tint: rt_probe::render::SPOT_WARM });
         }
         if snap.muzzle_flash {
-            // brief wide warm burst at the muzzle (placeholder content values;
-            // the content stage owns the final look)
-            let (pos, dir) = flashlight_pose(snap.player_pos, snap.facing);
-            v.push(Spotlight { pos, dir, cone_cos: 60.0f32.to_radians().cos(), power: 6000.0, radius: 0.05, tint: rt_probe::render::SPOT_WARM });
+            // a muzzle flash is a POP, not a beam: a wide cone pointed
+            // straight DOWN from just above the barrel tip pools hot light
+            // AROUND the gun (the goo-light pattern) instead of painting a
+            // flashlight cone across the floor. Recoil scales the burst.
+            let f = snap.facing;
+            let fd = glam::Vec3::new(f.x, 0.0, f.y);
+            let (mp, _) = flashlight_pose(snap.player_pos, f);
+            let pos = mp + fd * 0.55 + glam::Vec3::new(0.0, 0.30, 0.0);
+            v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 62.0f32.to_radians().cos(), power: 1500.0 * (1.0 + 1.2 * self.game.recoil), radius: 0.09, tint: rt_probe::render::SPOT_WARM });
+        }
+        // impact flash: a brief hot pop where the last round died (wall /
+        // floor / blob splash) — the target-side half of the muzzle flash,
+        // fading over its 3 ticks
+        if let Some((at, ttl)) = self.game.impact_flash {
+            let k = ttl as f32 / 3.0;
+            v.push(Spotlight { pos: at + glam::Vec3::new(0.0, 0.26, 0.0), dir: glam::Vec3::NEG_Y, cone_cos: 60.0f32.to_radians().cos(), power: 1000.0 * k, radius: 0.07, tint: rt_probe::render::SPOT_WARM });
         }
         if let Some((at, k)) = snap.boom {
             // grenade detonation: a hot wide downward cone hovering over the

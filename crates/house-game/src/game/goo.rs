@@ -1967,6 +1967,9 @@ impl<S: AudioSink> HouseGame<S> {
             self.res.pending_mob_delta += 1;
             self.res.mobs_dirty = true;
         }
+        // the squad is DOWN: the landing beat (cue + shell thump) — the lull
+        // is over and the player should feel the door slam
+        self.res.events.emit(GameEvent::WaveLanded(w.idx as u32));
         self.res.wave = Some(w);
     }
 }

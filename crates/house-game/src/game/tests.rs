@@ -198,7 +198,8 @@ fn shot_misses_off_disc() {
     d.cmd(shoot(Vec3::new(-4.5, 1.25, 0.0), Vec3::new(0.0, 0.0, -1.0)));
     d.run(PROJ_FLY);
     assert_eq!(d.g.snapshot().score, 0);
-    assert_eq!(d.cue_ids(), vec!["pistol_fire"]); // fired, no hit
+    // fired, no disc score — the round dies on the far wall with the impact tell
+    assert_eq!(d.cue_ids(), vec!["pistol_fire", "impact"]);
 }
 
 #[test]
@@ -246,7 +247,8 @@ fn shot_blocked_by_closed_door_admitted_when_open() {
     closed.cmd(shoot(o, dir));
     closed.run(PROJ_FLY);
     assert_eq!(closed.g.snapshot().score, 0, "closed leaf occludes");
-    assert_eq!(closed.cue_ids(), vec!["pistol_fire"]);
+    // the blocked round dies ON the leaf — fire cue plus the impact tell
+    assert_eq!(closed.cue_ids(), vec!["pistol_fire", "impact"]);
     let mut open = Drv::new();
     open.cmd(click_door_ab());
     open.run(31);

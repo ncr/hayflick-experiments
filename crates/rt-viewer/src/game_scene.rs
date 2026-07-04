@@ -163,6 +163,63 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         scene.add_floor(r.floor_rect[0], r.floor_rect[2], r.floor_rect[1], r.floor_rect[3], FLOOR_TOP, hex_linear(c));
     }
 
+    // ---- arena deck detail (render DECALS only — no collision, no occluder
+    // flags, no silhouette: flat quads a hair above the floor plane, ~0.2
+    // low-px, so the iso contract never sees an edge). Seeded from the level
+    // so a seed always deals the same deck. Three layers: scattered graphite
+    // service plates, amber hazard strips ringing the drain zone (the
+    // objective reads from across the pit), and dark landing pads on the
+    // north entrance ring (the squad-drop telegraph).
+    if spec.arena.is_some() {
+        let y = FLOOR_TOP + 0.004;
+        let quarter = |v: f32| (v * 4.0).round() * 0.25; // stair-grid snap
+        let rnd = |k: u32| {
+            let hh = (spec.seed as u32 ^ 0xa511e9b3).wrapping_add(k.wrapping_mul(2654435761)).wrapping_mul(2654435761);
+            (hh >> 8) as f32 / 16777216.0
+        };
+        for i in 0..10u32 {
+            let (r0, r1, r2, r3) = (rnd(i * 4), rnd(i * 4 + 1), rnd(i * 4 + 2), rnd(i * 4 + 3));
+            let w = [1.25, 1.5, 2.0][((r2 * 3.0) as usize).min(2)];
+            let d = [1.0, 1.25, 1.5][((r3 * 3.0) as usize).min(2)];
+            let x0 = quarter(f[0] + 0.5 + r0 * (f[2] - f[0] - 1.0 - w));
+            let z0 = quarter(f[1] + 0.5 + r1 * (f[3] - f[1] - 1.0 - d));
+            // skip a panel that runs under a wall/solid — seams read as bugs
+            let clear = spec.static_solids.iter().all(|s| x0 + w < s[0] - 0.2 || x0 > s[2] + 0.2 || z0 + d < s[1] - 0.2 || z0 > s[3] + 0.2);
+            if !clear {
+                continue;
+            }
+            // one step darker in the floor's own mint family — service
+            // panels, not holes (a foreign gray crushes to black under the
+            // dim teal light)
+            let c = if i & 1 == 0 { 0xafe2cb } else { 0xa5d8c1 };
+            scene.add_floor(x0, x0 + w, z0, z0 + d, y, hex_linear(c));
+        }
+        if let Some(dz) = spec.drain {
+            let c = hex_linear(0xd9a13a); // hazard amber
+            let (cx0, cx1) = ((dz[0] - 0.5).max(f[0]), (dz[2] + 0.5).min(f[2]));
+            let (cz0, cz1) = ((dz[1] - 0.5).max(f[1]), (dz[3] + 0.5).min(f[3]));
+            for [x0, z0, x1, z1] in [
+                [cx0, (dz[1] - 0.375).max(f[1]), cx1, (dz[1] - 0.125).max(f[1])], // north strip
+                [cx0, (dz[3] + 0.125).min(f[3]), cx1, (dz[3] + 0.375).min(f[3])], // south strip
+                [(dz[0] - 0.375).max(f[0]), cz0, (dz[0] - 0.125).max(f[0]), cz1], // west strip
+                [(dz[2] + 0.125).min(f[2]), cz0, (dz[2] + 0.375).min(f[2]), cz1], // east strip
+            ] {
+                if x1 > x0 && z1 > z0 {
+                    scene.add_floor(x0, x1, z0, z1, y + 0.002, c);
+                }
+            }
+        }
+        // wave entrance ring (goo.rs GOO_WAVE_RING = 7.0, north semicircle):
+        // two mint steps down — a clear telegraph, still floor-family
+        for k in 0..3 {
+            let a = std::f32::consts::PI * (1.25 + 0.25 * k as f32);
+            let (cx, cz) = (quarter(a.cos() * 7.0), quarter(a.sin() * 7.0));
+            if cx - 0.5 > f[0] && cx + 0.5 < f[2] && cz - 0.5 > f[1] && cz + 0.5 < f[3] {
+                scene.add_floor(cx - 0.5, cx + 0.5, cz - 0.5, cz + 0.5, y + 0.001, hex_linear(0x93c8b1));
+            }
+        }
+    }
+
     // ---- perimeter walls: four slabs around the footprint, WALL_TOP tall,
     // 0.25 wu thick, sitting just OUTSIDE the walkable floor rect (the inner face
     // on the rect edge). Solid full-height geometry — the per-pixel CAVE_ROI
@@ -239,6 +296,11 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // gun at the player, rotated to the facing (the aim tell), and keeps the
     // rest collapsed — the same reserve-slot trick as every pool below.
     if spec.arena.is_some() {
+        // muzzle flare: one hot emissive sphere the shell flashes AT the
+        // barrel tip for the muzzle ticks (zero-scale otherwise) — the
+        // visible half of the muzzle-flash spotlight, so the trigger, the
+        // light burst and the tracer leave the same point on the same tick.
+        register_sphere_pool(&mut scene, "flare_slot", 1, PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, [0.06, 0.05, 0.02, 1.0], [22.0, 16.0, 7.0, 1.0], 0.4);
         for slot in 1..=5u8 {
             let gfirst = scene.primitives.len();
             build_gun(&mut scene, slot);
@@ -280,6 +342,9 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         // splash-droplet pool: hot-green motes torn off by ANY hit (sized for a
         // shotgun volley of sprays + their floor splats)
         register_sphere_pool(&mut scene, "drop_slot", 48, 5, 7, [0.02, 0.06, 0.03, 1.0], [2.5, 7.5, 3.0, 1.0], 0.5);
+        // impact-spark pool: hot amber debris where rounds die (walls, floor,
+        // blob splashes) — the target-side tell of every shot
+        register_sphere_pool(&mut scene, "spark_slot", 24, 4, 6, [0.06, 0.04, 0.02, 1.0], [16.0, 10.0, 3.5, 1.0], 0.5);
     }
 
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat

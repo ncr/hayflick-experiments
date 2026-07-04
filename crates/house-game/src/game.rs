@@ -46,6 +46,10 @@ pub const WALL_T: f32 = 0.25;
 pub const WALK_ARRIVE_PX: f32 = 1.0;
 /// Consecutive fully-blocked ticks before a WalkTarget is abandoned.
 pub const WALK_BLOCKED_TICKS: u32 = 2;
+/// Arena walk momentum (see `Res.walk_vel_px`): per-tick lerp rates toward
+/// the input step (accel ~7 ticks to 95%) and back to zero (a shorter skid).
+pub const WALK_ACCEL: f32 = 0.35;
+pub const WALK_DECEL: f32 = 0.25;
 /// Knuth's multiplicative stride — the shared multiplier for RNG-free,
 /// id-salted deterministic scrambles (goo particle jitter, gait/mitosis
 /// desync, per-shot aim wobble). The stable id — already unique, already
@@ -86,6 +90,13 @@ pub enum Command {
     /// Keys Z/X/C (1-3): take a card from the open wave-lull draft hand.
     /// Swallowed when no hand is open or off arena levels.
     PickCard { slot: u8 },
+    /// Mouse aim (arena turret): world-XZ unit direction from the player to
+    /// the cursor's ground point. Sets `Facing` directly — the gun ring, the
+    /// muzzle pose and the torch all track the mouse, tank-turret style,
+    /// decoupled from the walk direction (walk no longer writes Facing on
+    /// arena levels). The shell pushes one only when the direction actually
+    /// moved (~0.5°), so the journal stays lean. No-op off arena.
+    Aim { dir: Vec2 },
 }
 
 // ---- components -------------------------------------------------------------
@@ -154,7 +165,18 @@ pub struct TargetDisc {
 pub enum GameEvent {
     DoorOpened(DoorId, Vec3),
     DoorClosed(DoorId, Vec3),
-    ShotFired(Vec3),
+    /// A weapon fired (muzzle point, the firing weapon's damage class — the
+    /// shell keys per-weapon fire sound + recoil kick + screenshake off it).
+    ShotFired(Vec3, WeaponClass),
+    /// A grenade detonated at the point — the boom cue + the big shake.
+    Detonated(Vec3),
+    /// A wave squad just landed (its 1-based index) — the lull-over beat.
+    WaveLanded(u32),
+    /// A hard round died on a wall / chunk / the floor (impact point, surface
+    /// normal) — the shell's spark burst + impact flash + thip live here.
+    /// Bounces don't emit (the grenade is still alive); blob hits use
+    /// `GooSplashed`.
+    Impact(Vec3, Vec3),
     TargetHit(TargetId, Vec3),
     Switch, // flashlight / room-lights toggle
     /// A world item entered the inventory (id, kind, world-XZ it was lying at).
@@ -363,6 +385,11 @@ pub struct Res {
     pub breach: u32,
     /// The drain-seeker flow field (derived cache, the `nav` twin).
     pub nav_drain: Option<NavField>,
+    /// Arena walk momentum: the screen-px step actually applied last tick.
+    /// `walk_system` ramps it toward the input step (accel) and back to zero
+    /// (a short skid) instead of binary start/stop — the hover-droid feel.
+    /// Only ever non-zero on arena levels; hashed under the arsenal gate.
+    pub walk_vel_px: Vec2,
 }
 
 
@@ -529,6 +556,7 @@ impl<S: AudioSink> HouseGame<S> {
             drain: spec.drain,
             breach: 0,
             nav_drain: None,
+            walk_vel_px: Vec2::ZERO,
         };
 
         // Goo blobs, MobId-sorted (no HashMap iteration). Spawned only when the
@@ -643,7 +671,7 @@ impl<S: AudioSink> HouseGame<S> {
         // swaps. Camera rotation and light toggles stay live (corpse cam).
         let downed = self.res.run.is_some_and(|r| r.dead || r.won);
         for c in cmds {
-            if downed && matches!(c, Command::Click { .. } | Command::Shoot { .. } | Command::Move { .. } | Command::SelectWeapon { .. } | Command::PickCard { .. }) {
+            if downed && matches!(c, Command::Click { .. } | Command::Shoot { .. } | Command::Move { .. } | Command::SelectWeapon { .. } | Command::PickCard { .. } | Command::Aim { .. }) {
                 continue;
             }
             match c {
@@ -658,6 +686,16 @@ impl<S: AudioSink> HouseGame<S> {
                 }
                 Command::Shoot { ray } => self.res.staging.shot_intents.push(*ray),
                 Command::Move { dir } => self.res.staging.move_dir = *dir, // last press this tick wins
+                Command::Aim { dir } => {
+                    // arena turret: the mouse owns Facing (walk_system's write
+                    // is arsenal-gated off). No-op elsewhere so cave traces /
+                    // the flashlight's walk-aim semantics never change.
+                    if self.res.arsenal.is_some() {
+                        if let Some(d) = dir.try_normalize() {
+                            self.world.get::<&mut Facing>(self.player).unwrap().0 = d;
+                        }
+                    }
+                }
                 Command::ToggleFlashlight => {
                     // A dead battery (battery == 0) makes turning the torch ON
                     // a no-op: you can't light a flashlight with no charge.
@@ -801,10 +839,32 @@ impl<S: AudioSink> HouseGame<S> {
         } else {
             None
         };
+        // Arena walk momentum: ramp the applied step toward the input step
+        // (accel) and back to zero (a short skid) instead of binary
+        // start/stop. GATED on the arsenal so every non-arena level keeps the
+        // verbatim instant-walk float path (goo oracles + cave replay).
+        let dpx = if self.res.arsenal.is_some() {
+            let desired = dpx.unwrap_or(Vec2::ZERO);
+            let v = &mut self.res.walk_vel_px;
+            let k = if desired.length_squared() >= v.length_squared() { WALK_ACCEL } else { WALK_DECEL };
+            *v += (desired - *v) * k;
+            // parked: kill the sub-hundredth-px tail so idle is exactly zero
+            if desired == Vec2::ZERO && v.length_squared() < 1e-4 {
+                *v = Vec2::ZERO;
+            }
+            if *v == Vec2::ZERO { None } else { Some(*v) }
+        } else {
+            dpx
+        };
         let Some(dpx) = dpx else { return };
         let world_d = screen_px_to_world(dpx, yaw);
-        if let Some(f) = Vec2::new(world_d.x, world_d.z).try_normalize() {
-            self.world.get::<&mut Facing>(self.player).unwrap().0 = f;
+        // Facing tracks the walk OFF arena only (torch aims where you walked).
+        // On arena the mouse owns Facing (Command::Aim, tank-turret) — the
+        // walk must not wrench the gun off the cursor every step.
+        if self.res.arsenal.is_none() {
+            if let Some(f) = Vec2::new(world_d.x, world_d.z).try_normalize() {
+                self.world.get::<&mut Facing>(self.player).unwrap().0 = f;
+            }
         }
         let (px, pz) = {
             let blocked = |x: f32, z: f32| self.walk_blocked(x, z);
@@ -886,7 +946,21 @@ impl<S: AudioSink> HouseGame<S> {
             let cue = match ev {
                 GameEvent::DoorOpened(_, p) => AudioCue { id: CueId("door_open"), pos: Some(p), gain: 1.0 },
                 GameEvent::DoorClosed(_, p) => AudioCue { id: CueId("door_close"), pos: Some(p), gain: 1.0 },
-                GameEvent::ShotFired(p) => AudioCue { id: CueId("pistol_fire"), pos: Some(p), gain: 1.0 },
+                GameEvent::ShotFired(p, class) => AudioCue {
+                    id: CueId(match class {
+                        WeaponClass::Standard => "pistol_fire",
+                        WeaponClass::Slug => "fire_slug",
+                        WeaponClass::Uzi => "fire_uzi",
+                        WeaponClass::Shotgun => "fire_shotgun",
+                        WeaponClass::Grenade => "fire_grenade",
+                        WeaponClass::Harpoon => "fire_harpoon",
+                    }),
+                    pos: Some(p),
+                    gain: 1.0,
+                },
+                GameEvent::Detonated(p) => AudioCue { id: CueId("boom"), pos: Some(p), gain: 1.0 },
+                GameEvent::WaveLanded(_) => AudioCue { id: CueId("wave_land"), pos: None, gain: 1.0 },
+                GameEvent::Impact(p, _) => AudioCue { id: CueId("impact"), pos: Some(p), gain: 0.6 },
                 GameEvent::TargetHit(_, p) => AudioCue { id: CueId("target_hit"), pos: Some(p), gain: 1.0 },
                 GameEvent::Switch => AudioCue { id: CueId("switch"), pos: None, gain: 0.6 },
                 GameEvent::PickedUp(_, _, p) => AudioCue { id: CueId("pickup"), pos: Some(p), gain: 0.8 },
@@ -1027,7 +1101,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     // tracer size follows the shot's physical radius so the five
                     // weapons READ differently in flight (fat slug, pinprick uzi);
                     // the pistol lands exactly on the historical 0.14.
-                    ProjectileRender { id: p.id, pos: p.pos, radius: p.radius * (PROJ_RENDER_RADIUS / PISTOL.radius) }
+                    ProjectileRender { id: p.id, pos: p.pos, radius: p.radius * (PROJ_RENDER_RADIUS / PISTOL.radius), vel: p.vel }
                 })
                 .collect(),
             chunks: self.res.chunks.clone(),
@@ -1105,6 +1179,8 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         if let Some(a) = self.res.arsenal {
             h.u64(a.current.tag());
             h.u64(self.res.next_comm_tick);
+            // walk momentum: persistent cross-tick state that steers positions
+            h.f32(self.res.walk_vel_px.x).f32(self.res.walk_vel_px.y);
             if let Some(r) = self.res.run {
                 h.f32(r.integrity).u64(r.dead as u64).u64(r.won as u64).u64(r.death_tick);
             }
