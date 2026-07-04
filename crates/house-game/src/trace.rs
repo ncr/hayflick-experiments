@@ -128,3 +128,27 @@ mod tests {
         assert!(parse_trace("1 shoot 0 0 0 0 0 0").is_err()); // zero dir
     }
 }
+
+/// The inverse of [`parse_trace`] for one command: the exact line that
+/// replays `cmd` at `tick`. Every command is representable (Click with no
+/// ground uses the `clickn` op) — the run journal round-trips losslessly,
+/// which is what makes the death reel a *proof* of the run and not a
+/// re-enactment.
+pub fn format_command(tick: u64, cmd: &crate::Command) -> String {
+    use crate::Command as C;
+    match cmd {
+        C::Click { ray, ground: Some(g) } => format!("{tick} click {} {} {} {} {} {} {} {}", ray.origin.x, ray.origin.y, ray.origin.z, ray.dir.x, ray.dir.y, ray.dir.z, g.x, g.y),
+        C::Click { ray, ground: None } => format!("{tick} clickn {} {} {} {} {} {}", ray.origin.x, ray.origin.y, ray.origin.z, ray.dir.x, ray.dir.y, ray.dir.z),
+        C::Shoot { ray } => format!("{tick} shoot {} {} {} {} {} {}", ray.origin.x, ray.origin.y, ray.origin.z, ray.dir.x, ray.dir.y, ray.dir.z),
+        C::Move { dir } => format!("{tick} move {} {}", dir.x, dir.y),
+        C::ToggleFlashlight => format!("{tick} flash"),
+        C::ToggleRoomLights => format!("{tick} lights"),
+        C::RotateCamera { dq } => format!("{tick} rotate {dq}"),
+        C::Use { kind } => format!("{tick} use {}", match kind {
+            crate::spec::ItemKind::Food => "food",
+            crate::spec::ItemKind::Battery => "battery",
+        }),
+        C::SelectWeapon { slot } => format!("{tick} weapon {slot}"),
+        C::PickCard { slot } => format!("{tick} card {slot}"),
+    }
+}

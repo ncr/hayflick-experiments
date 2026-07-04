@@ -131,7 +131,7 @@ pub fn is_dollhouse(scene: &str) -> bool {
 /// walls; goofloor/goonursery have none; arena keeps its auto-perimeter —
 /// it joins for the even fill, which a skill-shooter's readability wants.)
 pub fn is_open_studio_stage(scene: &str) -> bool {
-    matches!(scene, "playground" | "range" | "goofloor" | "goonursery" | "goopair" | "arena")
+    matches!(scene, "playground" | "range" | "goofloor" | "goonursery" | "goopair" | "arena" | "drain")
 }
 
 /// The PLAYER-LESS goo film stages (no player marker, fixed camera): the goo

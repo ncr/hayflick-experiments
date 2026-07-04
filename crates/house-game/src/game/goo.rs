@@ -151,6 +151,11 @@ pub const GOO_TETHER_SNAP: f32 = 0.22;
 // itself cannot deform fast enough). Coherent and low-frequency, never buzz.
 /// Initial wobble amplitude armed at the snap.
 pub const GOO_WOBBLE_AMP0: f32 = 1.0;
+/// The wave whose landing kills the pit lamps (the run's third act).
+pub const LIGHTS_OUT_WAVE: u16 = 3;
+/// Escaped tier mass that ends a containment run (4 Larges, 16 Smalls...).
+pub const BREACH_CAP: u32 = 16;
+
 // ---- integrity (the arena fail state) ---------------------------------------
 /// A fluid particle within this margin of the player pillar counts as
 /// CONTACT (wu beyond PLAYER_HALF). MUST exceed GOO_COLLIDER_MARGIN (0.10):
@@ -1005,6 +1010,43 @@ impl<S: AudioSink> HouseGame<S> {
         let p = self.player_pos();
         let m = PLAYER_HALF + GOO_COLLIDER_MARGIN;
         (x - p.x).abs() < m && (z - p.z).abs() < m
+    }
+
+    /// 3c-post. Containment: a blob whose centroid crossed into the drain
+    /// zone ESCAPES — despawn, tier mass onto the breach meter, klaxon.
+    /// Meter full = the run dies (the same latch as integrity zero; the
+    /// CONTAINMENT BREACHED panel finally means it literally). Ordered,
+    /// id-sorted, one pass; no-op off drain levels.
+    pub(crate) fn drain_system(&mut self) {
+        let Some(zone) = self.res.drain else { return };
+        if self.mobs.is_empty() {
+            return;
+        }
+        let mobs = self.mobs.clone();
+        for e in mobs {
+            let g = *self.world.get::<&Goo>(e).unwrap();
+            if g.fusing > 0 {
+                continue;
+            }
+            let c = g.centroid();
+            if c.x >= zone[0] && c.x <= zone[2] && c.y >= zone[1] && c.y <= zone[3] {
+                self.res.buf.despawn(e);
+                self.res.mobs_dirty = true;
+                self.res.pending_mob_delta -= 1;
+                self.res.breach += goo_tier_mass(g.tier);
+                self.res.events.emit(GameEvent::GooEscaped(goo_tier_mass(g.tier)));
+            }
+        }
+        if self.res.breach >= BREACH_CAP {
+            if let Some(mut run) = self.res.run {
+                if !run.dead {
+                    run.dead = true;
+                    run.death_tick = self.res.cur_tick;
+                    self.res.events.emit(GameEvent::PlayerDown);
+                }
+                self.res.run = Some(run);
+            }
+        }
     }
 
     /// 3d. Arena integrity: every fluid particle overlapping the player
@@ -1871,6 +1913,13 @@ impl<S: AudioSink> HouseGame<S> {
         w.idx += 1;
         w.lull = w.lull_full;
         self.res.draft = None; // the hand expires when the next squad lands
+        // THE THIRD ACT: from this wave on the pit fights in the dark — the
+        // lamps die, the torch snaps on, and the goo becomes the light.
+        if w.idx == LIGHTS_OUT_WAVE && self.res.master_lights {
+            self.res.master_lights = false;
+            self.world.get::<&mut Flashlight>(self.player).unwrap().on = true;
+            self.res.events.emit(GameEvent::LightsOut);
+        }
         // squad size grows with the wave, capped well under GOO_LIVE_CAP so
         // splits/mitosis have headroom before the renderer pool ceiling
         let count = (3 + w.idx as u32).min(GOO_LIVE_CAP as u32 - 2);

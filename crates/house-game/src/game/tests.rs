@@ -1595,3 +1595,48 @@ fn wave_lull_draft_deals_and_a_pick_applies() {
     let (h3, _) = run(false);
     assert_ne!(h1, h3, "the pick is real hashed state");
 }
+
+// ---- M3: containment (HOLD THE DRAIN) ----------------------------------------
+
+/// A lone Green on a drain level walks to the sieve, squeezes past and
+/// ESCAPES: breach meter up, blob gone. Deterministic across a re-run.
+#[test]
+fn green_seeks_the_drain_and_escapes() {
+    let run = || {
+        let mut spec = crate::spec::drain_level();
+        spec.mobs = vec![MobSpec { id: MobId(0), tier: 2, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.5, 0.0, -4.0) }];
+        spec.player_start = Vec3::new(-9.0, 0.0, -9.0); // far corner, out of the play
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        for t in 0..4000u64 {
+            g.tick(Tick(t), &[]);
+            if g.res.breach > 0 {
+                return (t, g.mobs.len());
+            }
+        }
+        panic!("the Green never escaped (breach 0 after 66 s)");
+    };
+    let (t1, left) = run();
+    let (t2, _) = run();
+    assert_eq!(t1, t2, "escape tick replays bit-exact");
+    assert_eq!(left, 0, "the escapee despawned");
+}
+
+/// Enough escaped mass ends the run: four Larges through the wide main
+/// drain hit BREACH_CAP (4 x 4 = 16) and latch the death.
+#[test]
+fn breach_cap_ends_the_run() {
+    let mut spec = crate::spec::drain_level();
+    spec.mobs = (0..4)
+        .map(|i| MobSpec { id: MobId(i), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(2.5 + i as f32 * 1.5, 0.0, 2.0 + (i % 2) as f32) })
+        .collect();
+    spec.player_start = Vec3::new(-9.0, 0.0, -9.0);
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    for t in 0..6000u64 {
+        g.tick(Tick(t), &[]);
+        if g.res.run.unwrap().dead {
+            assert!(g.res.breach >= crate::game::BREACH_CAP);
+            return;
+        }
+    }
+    panic!("the breach never filled: {} of {}", g.res.breach, crate::game::BREACH_CAP);
+}

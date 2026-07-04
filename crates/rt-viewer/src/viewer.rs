@@ -72,6 +72,8 @@ pub struct Viewer {
     /// Blob ids whose comm pulse was lit last frame (blink edge detector
     /// for the pact tick sound; presentation-only).
     pub comm_lit: Vec<u32>,
+    /// Death-reel latch: the run's death has been journaled to disk.
+    pub reel_saved: Option<std::path::PathBuf>,
     pub menu: MenuState,
     pub harness: Harness,
     pub rec: Option<crate::capture::Rec>,
@@ -122,10 +124,20 @@ impl Viewer {
             "range" => Some(house_game::shooting_range_level()),
             // the goo ARENA: walled 20×20 pit, arsenal controls (LMB shoots,
             // keys 1–5 select), mixed-tier squad — the arena-shooter playtest.
-            "arena" => Some(house_game::arena_level()),
+            "arena" => Some({
+                let mut sp = house_game::arena_level();
+                sp.seed = cfg.game.cave_seed; // SEED env: drafts + goo jitter
+                sp
+            }),
             // the squeeze film stage: one Large + the slotted north wall,
             // the player standing guard south (the show-your-friend clip).
             "squeeze" => Some(house_game::squeeze_level()),
+            // HOLD THE DRAIN: the containment variant — plug the sieve.
+            "drain" => Some({
+                let mut sp = house_game::drain_level();
+                sp.seed = cfg.game.cave_seed;
+                sp
+            }),
             "village" => Some(house_game::village_level(cfg.game.cave_seed)),
             // Floor-plan-derived levels: a believable PLAN (rooms + doors) run
             // through `floorplan::enclose` to synthesize walls + collision. Each
@@ -209,6 +221,7 @@ impl Viewer {
             run_spec,
             audio,
             comm_lit: Vec::new(),
+            reel_saved: None,
             exposure: cfg.render.exposure,
             style: cfg.render.style,
             ao: cfg.render.ao,
@@ -283,6 +296,29 @@ impl Viewer {
             r.snap_target_to_lattice();
         }
         Ok(r)
+    }
+
+    /// V after a death: render the saved reel to clips/last_run.mp4 in a
+    /// detached child (record.sh builds + replays + encodes; the game keeps
+    /// running). Fire-and-forget by design — the print is the receipt.
+    pub fn render_reel(&self) {
+        let Some(trace) = &self.reel_saved else {
+            println!("death reel: nothing saved yet (die first)");
+            return;
+        };
+        let scene = self.cfg.scene.clone();
+        let seed = self.game.sim.res.seed;
+        let trace = trace.display().to_string();
+        match std::process::Command::new(".claude/skills/record-gameplay/scripts/record.sh")
+            .args([scene.as_str(), trace.as_str(), "clips/last_run.mp4"])
+            .env("SEED", seed.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => println!("death reel: rendering clips/last_run.mp4 in the background..."),
+            Err(e) => println!("death reel: could not spawn record.sh: {e}"),
+        }
     }
 
     /// Death -> new run: rebuild a FRESH GameLoop from the stored spec (same
@@ -375,6 +411,25 @@ impl Viewer {
                     }
                 }
                 self.comm_lit = lit;
+            }
+        }
+        // death reel: the tick the run dies, write the journal as a
+        // replayable trace (live windowed play only — DEMO/SHOT replays ARE
+        // traces already). V then renders it to MP4 via record.sh.
+        if self.harness.demo.is_none() && self.harness.shot.is_none() {
+            let dead = self.game.snap.run.is_some_and(|r| r.dead);
+            if dead && self.reel_saved.is_none() {
+                let ticks = self.game.sim.res.cur_tick + 90; // a beat of aftermath
+                let trace = self.game.journal_trace(&self.cfg.scene, self.game.sim.res.seed, ticks);
+                let dir = std::path::Path::new("clips");
+                let _ = std::fs::create_dir_all(dir);
+                let path = dir.join("last_run.txt");
+                if std::fs::write(&path, trace).is_ok() {
+                    println!("death reel: journal saved to {} — press V to render the MP4", path.display());
+                    self.reel_saved = Some(path);
+                }
+            } else if !dead && self.reel_saved.is_some() {
+                self.reel_saved = None; // fresh run, fresh reel
             }
         }
         // playerless scenes (lab): WASD pans the camera — presentation only
@@ -496,10 +551,14 @@ impl Viewer {
         let stamps = if self.game.has_player && !crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
             let xf = self.pick_xform();
             let ext = self.backend.extent();
-            crate::hud::build_stamps(&self.game.snap.mobs, self.game.snap.weapon, self.game.snap.score, self.game.snap.wave, self.game.snap.run, self.game.snap.draft, self.game.sim.res.cur_tick, &xf, ext, self.rs() as u32)
+            crate::hud::build_stamps(&self.game.snap.mobs, self.game.snap.weapon, self.game.snap.score, self.game.snap.wave, self.game.snap.run, self.game.snap.draft, self.game.snap.breach, self.game.sim.res.cur_tick, &xf, ext, self.rs() as u32)
         } else {
             Vec::new()
         };
+        // arena blackout: on open-studio stages the sky fill follows the sim's
+        // room-lights master (floored so the goo glow still silhouettes the
+        // walls); every other scene keeps its authored env verbatim.
+        let sky_dim = if crate::game_scene::is_open_studio_stage(&self.cfg.scene) { 0.06 + 0.94 * fs.room_lights } else { 1.0 };
         let fp = FramePresent {
             fs: &fs,
             pan: self.view.pan,
@@ -520,6 +579,7 @@ impl Viewer {
             frame: self.frame,
             overlay,
             stamps: &stamps,
+            sky_dim,
             minimap,
             roi: if self.cfg.game.roi {
                 // Anchor the reveal disc on the player's MID-HEIGHT, not its feet:

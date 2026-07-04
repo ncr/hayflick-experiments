@@ -59,6 +59,10 @@ pub struct GameLoop {
     /// Otherwise (lab) they pan the camera viewer-side — presentation only.
     pub has_player: bool,
     pub follow_cam: bool,
+    /// Every command the sim consumed, tick-stamped — the run JOURNAL. On an
+    /// arena death the shell writes it out as a replayable trace (the death
+    /// reel): the journal + scene + seed reproduce the run bit-exactly.
+    pub journal: Vec<(u64, Command)>,
     /// Arena control scheme (`spec.arena`): LMB fires instead of walking
     /// (WASD is the only locomotion) and the OS cursor becomes a crosshair.
     pub lmb_shoots: bool,
@@ -193,6 +197,7 @@ impl GameLoop {
             held: [false; 4],
             has_player,
             follow_cam: has_player && cfg.scene != "grid" && !crate::game_scene::is_goo_film_stage(&cfg.scene),
+            journal: Vec::new(),
             lmb_shoots,
             light_keys,
             doors,
@@ -302,6 +307,9 @@ impl GameLoop {
                 }
             }
             let cmds = self.queue.drain_for(self.tick);
+            for c in &cmds {
+                self.journal.push((self.tick.0, c.clone()));
+            }
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
         }
@@ -309,6 +317,17 @@ impl GameLoop {
             self.snap = self.sim.snapshot();
         }
         n
+    }
+
+    /// The journal as a replayable CMDS/DEMO trace (see trace.rs format),
+    /// with a provenance header. `ticks` = how long the render should run.
+    pub fn journal_trace(&self, scene: &str, seed: u64, ticks: u64) -> String {
+        let mut out = format!("# death reel — SCENE={scene} SEED={seed} ticks={ticks}\n# render: .claude/skills/record-gameplay/scripts/record.sh {scene} <this file>\n");
+        for (t, c) in &self.journal {
+            out.push_str(&house_game::trace::format_command(*t, c));
+            out.push('\n');
+        }
+        out
     }
 
     /// Queue a command for the next simulated tick.
@@ -729,6 +748,7 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
         targets: Vec::new(),
         items: Vec::new(), // survival is per-level opt-in; the mirror spec leaves it off
         survival: None,
+        drain: None,
         sterile: false,
         mobs: Vec::new(), // mobs are authored per-level; the mirror scenes have none
         traps: Vec::new(),

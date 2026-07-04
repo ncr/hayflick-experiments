@@ -364,6 +364,12 @@ impl<S: AudioSink> HouseGame<S> {
         };
         if rebuild {
             self.res.nav = Some(build_nav(self.res.level.floor, &self.res.level.solids, player, tick));
+            // containment levels keep a SECOND field seeded from the drain —
+            // the seekers descend this one; hunters keep the player field
+            if let Some(z) = self.res.drain {
+                let mouth = Vec2::new((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5);
+                self.res.nav_drain = Some(build_nav(self.res.level.floor, &self.res.level.solids, mouth, tick));
+            }
         }
 
         // per-blob tactic transitions (id-sorted handles = fixed order)
@@ -539,7 +545,19 @@ impl<S: AudioSink> HouseGame<S> {
         let nav_to_player = || {
             self.res.nav.as_ref().and_then(|nf| nf.dir_at(head)).unwrap_or_else(|| (pxz - head).normalize_or_zero())
         };
+        // containment: non-Runner blobs in Direct want the DRAIN, not you.
+        // Runners (and anything mid-maneuver, pact or sprint) still hunt —
+        // the species doctrine keeps the player under real pressure while
+        // the Greens and Tanks play for the exit.
+        let seeks_drain = self.res.drain.is_some() && g.kind != GooKind::Runner;
+        let nav_to_drain = || {
+            self.res.nav_drain.as_ref().and_then(|nf| nf.dir_at(head)).unwrap_or_else(|| {
+                let z = self.res.drain.unwrap();
+                (Vec2::new((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5) - head).normalize_or_zero()
+            })
+        };
         let (dir, mv, smult, tmult) = match g.tac {
+            Tactic::Direct if seeks_drain => (nav_to_drain(), 1.0, 1.0, 1.0),
             Tactic::Direct => (nav_to_player(), 1.0, 1.0, 1.0),
             Tactic::Sprint => (nav_to_player(), 1.0, sprint_mult(g.kind), SPRINT_TURN),
             Tactic::Flank | Tactic::ToCover | Tactic::Hide => {

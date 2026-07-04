@@ -57,7 +57,7 @@ pub fn bubble(m: &MobRender) -> Option<(Vec<u32>, i32, i32)> {
 /// The bottom weapon bar: an integrity (HULL) plate, five weapon slot plates
 /// (selected = amber border, cooldown fill along its bottom), and a
 /// biomass/wave plate. Logical px.
-pub fn bottom_bar(weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>) -> (Vec<u32>, i32, i32) {
+pub fn bottom_bar(weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>, breach: Option<(u32, u32)>) -> (Vec<u32>, i32, i32) {
     const SLOT_W: i32 = 50;
     const H: i32 = 26;
     const GAP: i32 = 2;
@@ -120,8 +120,18 @@ pub fn bottom_bar(weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Opti
         c[dst..dst + INFO_W as usize].copy_from_slice(&p[src..src + INFO_W as usize]);
     }
     mtext(&mut c, w, x0 + 4, 4, &format!("BIO {score}"), 0x99cc99);
-    if let Some(wv) = wave {
-        mtext(&mut c, w, x0 + 4, 15, &format!("WAVE {wv}"), 0x9ab8e0);
+    match breach {
+        // containment: the LEAK meter owns the second row (reddening as it
+        // fills); wave lives inline after it
+        Some((b, cap)) => {
+            let col = if b * 2 >= cap { 0xe86858 } else { 0xd0a860 };
+            mtext(&mut c, w, x0 + 4, 15, &format!("LK{b:2}/{cap}"), col);
+        }
+        None => {
+            if let Some(wv) = wave {
+                mtext(&mut c, w, x0 + 4, 15, &format!("WAVE {wv}"), 0x9ab8e0);
+            }
+        }
     }
     (c, w, H)
 }
@@ -193,7 +203,7 @@ fn fit_scale(w: i32, rs: u32, ext_w: i64) -> u32 {
 
 /// Assemble this frame's stamps: one bubble per thinking blob (anchored just
 /// above the body via the forward iso projection) + the bottom bar, centred.
-pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>, draft: Option<DraftState>, now_tick: u64, xf: &iso_core::ViewXform, ext: (u32, u32), rs: u32) -> Vec<Stamp> {
+pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>, draft: Option<DraftState>, breach: Option<(u32, u32)>, now_tick: u64, xf: &iso_core::ViewXform, ext: (u32, u32), rs: u32) -> Vec<Stamp> {
     let mut out = Vec::new();
     let (ext_w, ext_h) = (ext.0 as i64, ext.1 as i64);
     let s = rs.max(1) as i64;
@@ -212,7 +222,7 @@ pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, 
         out.push(Stamp { pix, w, h, x, y, scale: rs });
     }
     if weapon.is_some() {
-        let (pix, w, h) = bottom_bar(weapon, score, wave, run);
+        let (pix, w, h) = bottom_bar(weapon, score, wave, run, breach);
         // a plate wider than the window steps down its scale instead of
         // clipping into oblivion (negative-x stamps never draw)
         let bs = fit_scale(w, rs, ext_w);

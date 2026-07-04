@@ -193,7 +193,7 @@ pub struct GameCfg {
     pub player_speed: Option<f32>, // PLAYER_SPEED (px/s; default depends on scene)
     pub cmds: Option<String>,      // CMDS=trace.txt: deterministic command-replay prefix
     pub cmds_ticks: Option<u64>,   // CMDS_TICKS: prefix length (default: last stamp + 1)
-    pub cave_seed: u64,            // CAVE_SEED: procedural cave generator seed (SCENE=cave)
+    pub cave_seed: u64,            // SEED / CAVE_SEED: the run/level seed (cave layout, arena drafts)
     pub cave_rooms: u32,           // CAVE_ROOMS: target room count (grid scales to fit)
     pub cave_loops: u32,           // CAVE_LOOPS: extra corridors beyond the spanning tree
     pub cave_thick: bool,          // CAVE_WALLS=rock: thick 1×1 rock blocks vs thin walls + void
@@ -282,7 +282,7 @@ impl Config {
                 // the arena pit (20×20 wu) needs the wide framing: at PIXEL=4
                 // a 1280×800 window sees only ~7 wu across — the shooter reads
                 // as a wall of goo. PIXEL=2 doubles the visible area.
-                pixel: (i("PIXEL", if matches!(scene.as_str(), "arena" | "squeeze") { 2 } else { 4 }) as u32).max(1),
+                pixel: (i("PIXEL", if matches!(scene.as_str(), "arena" | "squeeze" | "drain") { 2 } else { 4 }) as u32).max(1),
                 exposure: f("EXPOSURE", default_exposure),
                 probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
                 probe_rays: i("PROBE_RAYS", 2048),
@@ -311,7 +311,7 @@ impl Config {
                 player_speed: fo("PLAYER_SPEED"),
                 cmds: s("CMDS"),
                 cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
-                cave_seed: s("CAVE_SEED").and_then(|v| v.parse().ok()).unwrap_or(1),
+                cave_seed: s("SEED").or_else(|| s("CAVE_SEED")).and_then(|v| v.parse().ok()).unwrap_or(1),
                 cave_rooms: (i("CAVE_ROOMS", 10) as u32).clamp(1, 80),
                 cave_loops: i("CAVE_LOOPS", 3).max(0) as u32,
                 cave_thick: s("CAVE_WALLS").map(|v| v == "rock" || v == "thick").unwrap_or(false),

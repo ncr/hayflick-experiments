@@ -142,6 +142,14 @@ impl AudioOut {
                 self.voice(Wave::Square, 320.0, 34.0, 0.75, 0.55 * g);
                 self.voice(Wave::Noise, 2400.0, 200.0, 0.45, 0.35 * g);
             }
+            "lights_out" => {
+                self.voice(Wave::Square, 160.0, 30.0, 1.1, 0.45 * g);
+                self.voice(Wave::Sine, 90.0, 28.0, 1.3, 0.40 * g);
+            }
+            "breach" => {
+                self.voice(Wave::Square, 240.0, 120.0, 0.18, 0.45 * g);
+                self.voice(Wave::Noise, 700.0, 250.0, 0.14, 0.30 * g);
+            }
             // presentation-side: the comm-pact blink tick (per rising edge)
             "comm_blink" => self.voice(Wave::Sine, 1250.0, 1250.0, 0.035, 0.30 * g),
             _ => {}

@@ -42,7 +42,7 @@ out="${3:-${TMPDIR:-/tmp}/${scene}-gameplay.mp4}"
 # the arena pit needs the wide frame: 1600x1000 at its PIXEL=2 default shows
 # the whole 20x20 wu floor; other scenes keep the classic 1280x800
 case "$scene" in
-  arena) window="${WINDOW:-1600x1000}" ;;
+  arena|drain|squeeze) window="${WINDOW:-1600x1000}" ;;
   *)     window="${WINDOW:-1280x800}" ;;
 esac
 fps="${FPS:-60}"

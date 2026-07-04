@@ -793,7 +793,7 @@ impl RenderBackend for MetalBackend {
             cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, fp.ao],
             misc: [low_w as i32, low_h as i32, fp.ao_n, fp.debug],
             misc2: [light_count, 1, room_lights16, 0],
-            env0: self.env0,
+            env0: [self.env0[0] * fp.sky_dim, self.env0[1] * fp.sky_dim, self.env0[2], self.env0[3]],
             roi: roi.roi,
             roi2: roi.roi2,
             look: [fp.spec, fp.bump, fp.bump_scale, fp.gloss],

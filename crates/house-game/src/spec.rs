@@ -248,6 +248,13 @@ pub struct LevelSpec {
     /// Arena-shooter mode. `None` = arsenal OFF: no weapon-select state spawns,
     /// nothing new enters state_hash (same opt-in discipline as `survival`).
     pub arena: Option<ArenaParams>,
+    /// The DRAIN zone (xmin, zmin, xmax, zmax): goo that reaches it ESCAPES —
+    /// despawns and adds its tier mass to the breach meter; the meter full is
+    /// the loss. `Some` turns the level into a containment stage (the goo
+    /// seeks the drain, not you — only Runners and pacts still hunt). The
+    /// wall in front of it is ordinary static_solids with slot gaps: slot
+    /// width = squeeze time per tier, the sieve grammar.
+    pub drain: Option<[f32; 4]>,
     /// Film-stage knob: tier-0 mothers do NOT bud minis. The demo scenes use
     /// it to keep a staged beat readable (e.g. the squeeze film — one Large,
     /// no trailing newborns). Default false; no shipped gameplay level sets
@@ -313,6 +320,7 @@ pub fn fixture() -> LevelSpec {
         mobs: vec![],      // no mobs → fixture hashes exactly as before
         traps: vec![],
         arena: None,       // arsenal off → fixture hashes exactly as before
+        drain: None,
         sterile: false,
         player_start: Vec3::new(-3.5, 0.0, 0.0),
         seed: 42,
@@ -405,6 +413,7 @@ pub fn game_level() -> LevelSpec {
         mobs: vec![],      // no mobs → game_level hashes exactly as before (goo_level() is the demo)
         traps: vec![],
         arena: None,       // arsenal off → game_level hashes exactly as before
+        drain: None,
         sterile: false,
         player_start: Vec3::new(9.5, 0.0, 6.5), // room E (SE corner, faces the camera), aligned with door_ce's gap row
         seed: 7,
@@ -662,6 +671,44 @@ pub fn squeeze_level() -> LevelSpec {
         arena: Some(ArenaParams::default()),
         sterile: true, // one body, one slot — no trailing newborns in frame
         player_start: Vec3::new(-6.71875, 0.0, 2.0),
+        ..game_level()
+    }
+}
+
+/// HOLD THE DRAIN (`SCENE=drain`): the containment variant — the goo wants
+/// OUT, not you. The south wall is a sieve: a Small slit (0.3125 wu), a
+/// Medium slot (0.5625) and one wide, unsealable main drain (1.25). Goo
+/// that squeezes past despawns into the breach meter (LEAK n/cap on the
+/// HUD); the meter full ends the run. Kill-placement is the strategy: a
+/// cure-solidified corpse can permanently seal the narrow slots. Runners
+/// and comm pacts still hunt YOU while you play goalkeeper. Not a golden.
+pub fn drain_level() -> LevelSpec {
+    LevelSpec {
+        rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-10.0, -10.0, 10.0, 10.0] }],
+        static_solids: vec![
+            // mid-field cover (the arena's familiar L + east wall)
+            [-4.25, 0.875, -0.75, 1.125],
+            [-1.0, 1.125, -0.75, 3.125],
+            [2.75, -0.125, 3.0, 2.875],
+            // the sieve wall: slit [-6,-5.6875], slot [-1,-0.4375], main [4,5.25]
+            [-10.0, 8.25, -6.0, 8.5],
+            [-5.6875, 8.25, -1.0, 8.5],
+            [-0.4375, 8.25, 4.0, 8.5],
+            [5.25, 8.25, 10.0, 8.5],
+        ],
+        doors: vec![],
+        lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "arena_lamp".into() }],
+        targets: vec![],
+        mobs: vec![
+            MobSpec { id: MobId(0), tier: 0, kind: GooKind::Green, pos: Vec3::new(-5.0, 0.0, -6.0) },
+            MobSpec { id: MobId(1), tier: 1, kind: GooKind::Green, pos: Vec3::new(0.5, 0.0, -5.0) },
+            MobSpec { id: MobId(2), tier: 1, kind: GooKind::Runner, pos: Vec3::new(4.5, 0.0, -5.5) },
+            MobSpec { id: MobId(3), tier: 2, kind: GooKind::Green, pos: Vec3::new(-2.0, 0.0, -4.0) },
+        ],
+        traps: vec![],
+        arena: Some(ArenaParams::default()),
+        drain: Some([-10.0, 8.5, 10.0, 10.0]),
+        player_start: Vec3::new(0.0, 0.0, 6.5),
         ..game_level()
     }
 }

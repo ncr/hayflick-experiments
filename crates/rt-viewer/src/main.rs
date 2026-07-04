@@ -146,6 +146,7 @@ impl ApplicationHandler for App {
                     // dead run -> Space starts a new one (menu-open Space is
                     // consumed by menu_activate above and never lands here)
                     Key::Named(NamedKey::Space) => r.restart_run(),
+                    Key::Character("v") if !event.repeat => r.render_reel(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.view.cursor;
                         r.zoom_step(1, c);

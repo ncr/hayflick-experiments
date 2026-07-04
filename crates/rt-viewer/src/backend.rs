@@ -67,6 +67,11 @@ pub struct FramePresent<'a> {
     /// each logical canvas pixel is scaled by `scale` (pass the render
     /// scale for game-pixel-consistent chunk).
     pub stamps: &'a [Stamp],
+    /// Per-frame multiplier on the env sun/sky fill (1.0 = authored). The
+    /// arena blackout drives it from sim room_lights so the open-studio sky
+    /// fill dies WITH the lamps — gated by the viewer to open-studio scenes,
+    /// so the textured goldens (game_replay ends lights-off!) never move.
+    pub sky_dim: f32,
     /// Minimap HUD canvas (RGBA logical px, w, h). Unlike `overlay`, the backend
     /// burns this into `out_tex` (the present + readback source), so it lands in
     /// SHOT/DUMP/DEMO captures too. `None` when the minimap is off.

@@ -179,6 +179,11 @@ pub enum GameEvent {
     MobSolidified(MobId, Vec3),
     /// A draft card entered the run (the pick cue + HUD refresh).
     CardPicked(Card),
+    /// The pit lamps died (the wave-3 blackout) — the power-down cue.
+    LightsOut,
+    /// A blob squeezed past the sieve and escaped (its tier mass) — the
+    /// breach klaxon tick.
+    GooEscaped(u32),
     /// The run ended: goo contact drained suit integrity to zero. The shell
     /// shows the summary panel; a new run is a fresh sim (not a sim command).
     PlayerDown,
@@ -345,6 +350,13 @@ pub struct Res {
     pub picked: Vec<Card>,
     /// The level seed (mirrors spec.seed) — salts the draft hands.
     pub seed: u64,
+    /// The drain zone (spec.drain): goo reaching it escapes into `breach`.
+    pub drain: Option<[f32; 4]>,
+    /// Escaped tier mass. `breach >= BREACH_CAP` fails the run. Hashed
+    /// under the arsenal gate (only drain levels ever move it).
+    pub breach: u32,
+    /// The drain-seeker flow field (derived cache, the `nav` twin).
+    pub nav_drain: Option<NavField>,
 }
 
 
@@ -380,6 +392,8 @@ pub struct GameSnapshot {
     pub draft: Option<DraftState>,
     /// How many cards the run has taken (HUD tally).
     pub picked: u32,
+    /// Containment levels: (escaped mass, cap) for the LEAK meter.
+    pub breach: Option<(u32, u32)>,
     /// Current wave number (arena levels; 0 = the authored squad).
     pub wave: Option<u16>,
     /// Goo blobs to draw this tick, MobId-sorted. Empty on mob-free levels.
@@ -506,6 +520,9 @@ impl<S: AudioSink> HouseGame<S> {
             draft: None,
             picked: Vec::new(),
             seed: spec.seed,
+            drain: spec.drain,
+            breach: 0,
+            nav_drain: None,
         };
 
         // Goo blobs, MobId-sorted (no HashMap iteration). Spawned only when the
@@ -878,6 +895,8 @@ impl<S: AudioSink> HouseGame<S> {
                 GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) | GameEvent::GooSplashed(..) => continue,
                 GameEvent::CardPicked(_) => AudioCue { id: CueId("card_pick"), pos: None, gain: 0.8 },
                 GameEvent::PlayerDown => AudioCue { id: CueId("player_down"), pos: None, gain: 1.0 },
+                GameEvent::LightsOut => AudioCue { id: CueId("lights_out"), pos: None, gain: 1.0 },
+                GameEvent::GooEscaped(_) => AudioCue { id: CueId("breach"), pos: None, gain: 1.0 },
             };
             self.sink.play(cue);
         }
@@ -910,6 +929,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         self.walk_system();
         self.tactic_system(); // arena brain: advance tactics before the bodies move
         self.goo_system(); // blobs crawl (a mover) — after walk, before shoot
+        self.drain_system(); // containment: escapes despawn into the breach meter
         self.integrity_system(); // arena: contact drain + shove, on fresh poses
         self.pickup_system(); // after movement: collect items the walk reached
         self.use_system(); // consume carried items → restore needs
@@ -965,6 +985,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
             run: self.res.run,
             draft: self.res.draft,
             picked: self.res.picked.len() as u32,
+            breach: self.res.drain.map(|_| (self.res.breach, BREACH_CAP)),
             // goo blobs (MobId-sorted): ends + particle cloud lifted to body
             // height. Pure read of the hashed field — empty on mob-free levels.
             mobs: self
@@ -1095,6 +1116,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
             for c in &self.res.picked {
                 h.u64(c.tag());
             }
+            h.u64(self.res.breach as u64);
             match self.res.boom {
                 Some((at, t)) => {
                     h.u64(1).f32(at.x).f32(at.y).f32(at.z).u64(t as u64);

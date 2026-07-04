@@ -288,3 +288,25 @@ cover + a minimal audio backend (AudioSink is still a stub).
 - **HUD fit guard**: stamps auto-step their scale down when wider than the
   window (the widened bar at squeeze's old PIXEL=4 default clipped to
   nothing — negative-x stamps never draw); squeeze joined arena's PIXEL=2.
+
+## 2026-07-04 — M3: blackout act, death reel, HOLD THE DRAIN, seeds
+
+- **Blackout**: wave 3 (`LIGHTS_OUT_WAVE`) kills the lamps + snaps the
+  torch on (LightsOut event/cue). New `FramePresent.sky_dim` scales the
+  env sun/sky per frame; the viewer drives it from sim room_lights on
+  open-studio scenes ONLY (game_replay ends lights-off — its golden must
+  not move, and doesn't). The pit goes genuinely dark: goo glow + torch.
+- **Death reel**: GameLoop journals every live-drained command; on the
+  death tick the shell writes clips/last_run.txt (trace format via new
+  `trace::format_command`, lossless round-trip incl. clickn) and V spawns
+  record.sh to render clips/last_run.mp4 in the background.
+- **HOLD THE DRAIN** (`SCENE=drain`): spec.drain zone + sieve wall (slit
+  0.3125 / slot 0.5625 / main 1.25); non-Runner blobs descend a SECOND
+  flow field seeded from the drain (Res.nav_drain) while Runners + pacts
+  still hunt; `drain_system` despawns escapees into `Res.breach`
+  (tier mass, hashed under the arsenal gate) — `BREACH_CAP` (16) latches
+  the same death as integrity zero. HUD LEAK row (LKn/16, reddens past
+  half). Tests: a lone Green escapes at a replay-exact tick; four Larges
+  through the main drain end the run.
+- **Seeds**: SEED env aliases CAVE_SEED; arena/drain specs take it (drafts
+  + goo jitter already flow from spec.seed).
