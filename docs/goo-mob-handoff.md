@@ -204,3 +204,17 @@ bounce + AoE (`explode`, `Res.boom` flash), and an arsenal-gated hash block
   also passed their first Mac run the same day.
 - `Goo.cure` exists (hashed) but its behavior (slug solidify → dead chunks)
   lands in the next milestone.
+
+## 2026-07-04 — player droid + weapon ring (rust branch)
+
+The player is no longer a plain pillar: `game_scene::build_player_body` builds
+a small ceramic "warden" droid (graphite base, white torso, amber emissive
+power band, hovering visored head) as the named dynamic run "player";
+`has_player` now keys off that run, not the legacy `dynamic_prim`. On arena
+levels `build_gun` registers five "gun_N" runs (slug rifle / uzi / shotgun /
+grenade drum / harpoon rail — distinct silhouettes, amber muzzle accents);
+the shell renders the SELECTED slot's gun at the player rotated to
+`snap.facing` (guns are authored aiming +Z at the muzzle-flash hand height),
+others zero-scale. Metal `game`/`game_replay` goldens regenerated for the new
+body. **Vulkan golden debt**: crates/rt-probe/golden/{game,game_replay}.png
+are stale until regenerated on the spawner (RTX 5080).

@@ -223,12 +223,28 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         place_door(&mut scene, d);
     }
 
-    // ---- player marker: a matte near-white pillar (lattice-aligned footprint),
-    // exactly like the house scene — a clean light albedo reads as a crisp white
-    // actor against the bright scene (judge tweak: the old mid-grey pillar capped
-    // dark/muddy), while still picking up the colored light pools and AO grounding.
-    let pidx = scene.add_box_local(house_game::game::PLAYER_HALF, 1.3, house_game::game::PLAYER_HALF, [0.82, 0.84, 0.88, 1.0], [0.0; 4]);
-    scene.dynamic_prim = Some(pidx);
+    // ---- player: a small ceramic "warden" droid replacing the old plain
+    // pillar — graphite base, white-ceramic torso wearing an amber power band,
+    // a hovering head with a dark visor. Deliberately AXIS-ALIGNED (the body
+    // never rotates, so its box silhouette stays crisp on the iso pixel
+    // lattice); aim is shown by the weapon ring below, which DOES rotate.
+    // One named dynamic run ("player"), translated per frame exactly like the
+    // old single-box marker.
+    let pfirst = scene.primitives.len();
+    build_player_body(&mut scene);
+    scene.register_dynamic("player", pfirst, scene.primitives.len() - pfirst, Mat4::from_translation(Vec3::new(spec.player_start.x, FLOOR_TOP, spec.player_start.z)));
+
+    // ---- weapon ring (arena only): one gun model per arsenal slot, all
+    // registered zero-scale; each frame the shell shows the SELECTED slot's
+    // gun at the player, rotated to the facing (the aim tell), and keeps the
+    // rest collapsed — the same reserve-slot trick as every pool below.
+    if spec.arena.is_some() {
+        for slot in 1..=5u8 {
+            let gfirst = scene.primitives.len();
+            build_gun(&mut scene, slot);
+            scene.register_dynamic(&format!("gun_{slot}"), gfirst, scene.primitives.len() - gfirst, Mat4::from_scale(Vec3::ZERO));
+        }
+    }
 
     // ---- goo blob ellipsoid pool: GOO_LIVE_CAP × 4 emissive unit spheres as
     // named dynamic instances ("goo_slot_N"). The adapter skins them onto the
@@ -453,6 +469,86 @@ fn place_trap_ring(scene: &mut Scene, cx: f32, cz: f32, r: f32) {
     scene.register_dynamic(&format!("trap_ring_{cx}_{cz}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
 }
 
+// ---- player droid + weapon-ring geometry -----------------------------------
+// All parts are LOCAL-space boxes around the origin (feet at y=0), placed by
+// the per-frame "player"/"gun_N" instance transforms. XZ dims stay multiples
+// of 0.0625 wu at rest so the axis-aligned body rasterizes clean stair
+// silhouettes (the guns rotate with aim, so for them it only fixes the rest
+// pose — acceptable: they are thin).
+
+/// Year-2200 palette: clean white ceramic + amber accent (the project style).
+const P_CERAMIC: [f32; 4] = [0.85, 0.86, 0.88, 1.0];
+const P_GRAPHITE: [f32; 4] = [0.10, 0.11, 0.13, 1.0];
+const P_AMBER_BASE: [f32; 4] = [0.25, 0.15, 0.05, 1.0];
+const P_AMBER_GLOW: [f32; 4] = [4.5, 2.4, 0.7, 1.0];
+const P_VISOR: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
+const P_VISOR_GLOW: [f32; 4] = [0.35, 0.65, 0.85, 1.0];
+
+/// One local-space box part: XZ half-extents, a y span, colours. Matte
+/// (roughness 0.5, metallic 0) like the old marker so the body keeps picking
+/// up the coloured goo light pools and AO grounding.
+fn part(scene: &mut Scene, hx: f32, hz: f32, y0: f32, y1: f32, color: [f32; 4], emissive: [f32; 4]) {
+    scene.add_box_world(Vec3::new(-hx, y0, -hz), Vec3::new(hx, y1, hz), color, emissive, 0.5, 0.0);
+}
+
+/// A gun part authored along +Z (the aim axis): x half-extent, y span, z span.
+fn gpart(scene: &mut Scene, hx: f32, y0: f32, y1: f32, z0: f32, z1: f32, color: [f32; 4], emissive: [f32; 4]) {
+    scene.add_box_world(Vec3::new(-hx, y0, z0), Vec3::new(hx, y1, z1), color, emissive, 0.5, 0.0);
+}
+
+/// The warden droid body (feet at local y=0): base 0.28 tall, torso to 0.92,
+/// amber band proud of the torso at chest height, then a 0.08 hover gap and
+/// the visored head. Total 1.26 — reads at the old 1.3-pillar scale, so the
+/// ROI mid-height anchor (+0.65) and camera framing stay right.
+fn build_player_body(scene: &mut Scene) {
+    part(scene, 0.125, 0.125, 0.00, 0.28, P_GRAPHITE, [0.0; 4]); // base skirt
+    part(scene, 0.1875, 0.1875, 0.28, 0.92, P_CERAMIC, [0.0; 4]); // torso
+    part(scene, 0.21875, 0.21875, 0.52, 0.64, P_AMBER_BASE, P_AMBER_GLOW); // power band
+    part(scene, 0.125, 0.125, 1.00, 1.26, P_CERAMIC, [0.0; 4]); // hovering head
+    part(scene, 0.15625, 0.15625, 1.06, 1.18, P_VISOR, P_VISOR_GLOW); // visor wrap
+}
+
+/// One arsenal gun (slot 1–5), authored aiming +Z at hand height — the muzzle
+/// tip lands near the flashlight/muzzle-flash pose (feet +0.95, 0.32 forward),
+/// so the existing flash spotlight reads as firing FROM the barrel. Silhouette
+/// first: each weapon must be tellable apart at ~20 screen px.
+fn build_gun(scene: &mut Scene, slot: u8) {
+    match slot {
+        // SLUG rivet rifle: long heavy receiver + barrel, committed and slow.
+        1 => {
+            gpart(scene, 0.0625, 0.88, 1.02, 0.125, 0.4375, P_GRAPHITE, [0.0; 4]); // receiver
+            gpart(scene, 0.03125, 0.925, 0.985, 0.4375, 0.75, P_CERAMIC, [0.0; 4]); // barrel
+            gpart(scene, 0.05, 0.91, 1.0, 0.75, 0.8125, P_AMBER_BASE, P_AMBER_GLOW); // rivet head
+            gpart(scene, 0.03125, 0.74, 0.88, 0.1875, 0.28125, P_GRAPHITE, [0.0; 4]); // grip
+        }
+        // UZI stitcher: stubby compact block, tiny snout.
+        2 => {
+            gpart(scene, 0.0625, 0.88, 1.0, 0.125, 0.375, P_GRAPHITE, [0.0; 4]); // body
+            gpart(scene, 0.03125, 0.92, 0.97, 0.375, 0.53125, P_GRAPHITE, [0.0; 4]); // snout
+            gpart(scene, 0.04, 0.915, 0.975, 0.53125, 0.578125, P_AMBER_BASE, P_AMBER_GLOW); // tip
+            gpart(scene, 0.03125, 0.76, 0.88, 0.1875, 0.25, P_GRAPHITE, [0.0; 4]); // mag
+        }
+        // SHOTGUN: wide flat twin-barrel slab — the broadest silhouette.
+        3 => {
+            gpart(scene, 0.09375, 0.88, 1.0, 0.125, 0.34375, P_GRAPHITE, [0.0; 4]); // receiver
+            gpart(scene, 0.09375, 0.92, 0.98, 0.34375, 0.65625, P_CERAMIC, [0.0; 4]); // twin barrels
+            gpart(scene, 0.109375, 0.915, 0.985, 0.65625, 0.703125, P_AMBER_BASE, P_AMBER_GLOW); // muzzle band
+        }
+        // GRENADE launcher: fat white drum, unmistakably chunky.
+        4 => {
+            gpart(scene, 0.09375, 0.86, 1.04, 0.125, 0.46875, P_CERAMIC, [0.0; 4]); // drum
+            gpart(scene, 0.109375, 0.89, 1.01, 0.46875, 0.53125, P_AMBER_BASE, P_AMBER_GLOW); // muzzle ring
+            gpart(scene, 0.046875, 0.78, 0.86, 0.1875, 0.3125, P_GRAPHITE, [0.0; 4]); // under-grip
+        }
+        // HARPOON: the longest, thinnest profile — a rail with a hot prong.
+        _ => {
+            gpart(scene, 0.03125, 0.91, 0.97, 0.0625, 0.8125, P_GRAPHITE, [0.0; 4]); // rail
+            gpart(scene, 0.05, 0.9, 0.98, 0.8125, 0.90625, P_AMBER_BASE, P_AMBER_GLOW); // prong
+            gpart(scene, 0.0625, 0.84, 0.94, 0.125, 0.25, P_CERAMIC, [0.0; 4]); // reel
+        }
+    }
+}
+
 /// Register a pool of `count` named LOCAL-space emissive spheres ("<prefix>_0",
 /// "<prefix>_1", …) as zero-scale dynamic instances — the reserved slots the
 /// adapter skins onto live blobs / projectiles each frame. Shared by the goo
@@ -492,9 +588,10 @@ mod tests {
     fn build_game_joins_lights_and_doors_to_the_spec() {
         let spec = game_level();
         let scene = build_game(&spec, &game_cfg());
-        // a player marker + four dynamic door runs
-        assert!(scene.dynamic_prim.is_some(), "player marker present");
-        assert_eq!(scene.dynamics.len(), spec.doors.len(), "one dynamic run per door");
+        // a player run + four dynamic door runs (the player droid is a named
+        // multi-prim dynamic now, not the legacy dynamic_prim single box)
+        assert!(scene.dynamics.iter().any(|(n, ..)| n == "player"), "player run present");
+        assert_eq!(scene.dynamics.len(), spec.doors.len() + 1, "player + one dynamic run per door");
         for d in &spec.doors {
             assert!(scene.dynamics.iter().any(|(n, ..)| n == &d.name), "door {:?} registered", d.name);
         }

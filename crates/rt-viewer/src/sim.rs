@@ -170,7 +170,11 @@ impl GameLoop {
         sim.world.get::<&mut Facing>(sim.player).unwrap().0 = Vec2::new(down.x, down.z).try_normalize().unwrap_or(Vec2::new(0.0, 1.0));
         sim.reseed();
         let snap = sim.snapshot();
-        let has_player = scene.dynamic_prim.is_some();
+        // a "player" dynamic run marks a playable scene: the game scenes
+        // register the droid as a named multi-prim run; the legacy rt-probe
+        // scenes still use `dynamic_prim` (merged in as "player" by
+        // `dynamic_list`).
+        let has_player = scene.dynamic_list().iter().any(|(n, ..)| n == "player");
         let lmb_shoots = spec.arena.is_some() && has_player;
         GameLoop {
             fixed: FixedLoop::new(TICK_DT),

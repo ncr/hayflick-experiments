@@ -352,13 +352,31 @@ impl Viewer {
         // floor with no pillar. (Skipping the push entirely would leave the
         // dynamic prim at its identity transform = a box at the origin.)
         if self.game.has_player {
+            let hidden = crate::game_scene::is_goo_film_stage(&self.cfg.scene);
             if let Some(&k) = self.backend.handles().instances.get("player") {
-                let m = if crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
+                let m = if hidden {
                     Mat4::from_scale(glam::Vec3::ZERO)
                 } else {
                     Mat4::from_translation(self.game.snap.player_pos)
                 };
                 instances.push((k, m));
+            }
+            // weapon ring: the SELECTED arsenal gun renders at the player,
+            // rotated to the facing (guns are authored aiming +Z) — the aim
+            // tell the axis-aligned body deliberately doesn't give. Unequipped
+            // slots stay collapsed. `snap.weapon` is None off arena levels, so
+            // non-arena scenes never show a gun (their handles don't exist).
+            let sel = self.game.snap.weapon.map(|(k, _, _)| k.slot());
+            for slot in 1..=5u8 {
+                if let Some(&k) = self.backend.handles().instances.get(format!("gun_{slot}").as_str()) {
+                    let m = if Some(slot) == sel && !hidden {
+                        let f = self.game.snap.facing;
+                        Mat4::from_translation(self.game.snap.player_pos) * Mat4::from_rotation_y(f.x.atan2(f.y))
+                    } else {
+                        Mat4::from_scale(glam::Vec3::ZERO)
+                    };
+                    instances.push((k, m));
+                }
             }
         }
         instances.extend(self.game.door_instances());
