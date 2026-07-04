@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# record.sh — render a gameplay walkthrough video from the native rt-viewer
+# record.sh — render a gameplay walkthrough video from the rt-viewer
 # DEMO harness (deterministic per-tick capture) and encode it to an mp4.
 #
 #   record.sh --dump <scene>                 # print room rects + door gaps (to author a trace)
@@ -19,8 +19,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && git rev-parse --show-toplevel 2>/dev/null)" || ROOT=""
 [ -n "$ROOT" ] || ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 cd "$ROOT"
-VIEWER=./native/target/release/viewer
-MANIFEST=native/Cargo.toml
+VIEWER=./target/release/viewer
+MANIFEST=Cargo.toml
 
 build() { cargo build --release --manifest-path "$MANIFEST" >/dev/null; }
 

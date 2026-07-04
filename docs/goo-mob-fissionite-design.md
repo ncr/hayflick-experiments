@@ -1,6 +1,6 @@
 # Fissionite — the first NPC mob: a splittable fluorescent goo-toy blob
 
-Research + design report for the **native** hayflick game (`native/crates/house-game` + `native/crates/sim-core` + `native/rt-probe` / `native/crates/rt-viewer`).
+Research + design report for the **native** hayflick game (`crates/house-game` + `crates/sim-core` + `crates/rt-probe` / `crates/rt-viewer`).
 
 Status: design, not code. Decisive and buildable. File:line references are to the real tree.
 
@@ -22,14 +22,14 @@ The "aim-high" true-translucent-goo SDF intersector (Approach 3's Phases 3-4) is
 
 ### Two runtimes; native is the target
 
-The repo has a **web** stack (`packages/*`, three.js 0.173 WebGL, Rapier 2D kinematic, pixel-perfect iso rasterizer) and a **native** stack (`native/`, Rust workspace, `hecs` ECS, two real hardware ray tracers — Vulkan `rt-probe` + Metal `rt-viewer`).
+The repo has a **web** stack (`packages/*`, three.js 0.173 WebGL, Rapier 2D kinematic, pixel-perfect iso rasterizer) and a **native** stack (the Rust workspace, `hecs` ECS, two real hardware ray tracers — Vulkan `rt-probe` + Metal `rt-viewer`).
 
 The goo blob must ship native, and the web stack is not a prototyping shortcut:
 
 - **Rapier has no soft-body / FEM / fluid** (verified: `dynamics/` is rigid-body only; repo-wide grep for `softbody|deformable|fem|mass-spring|metaball|marching` → zero hits). A web goo would be a rigid capsule + cosmetic vertex wobble — findings don't transfer.
 - **No WebGPU / compute anywhere** (zero hits for `webgpu|GPUComputePipeline|navigator.gpu`). The user's "RTX/Metal for the simulation" only exists native.
 - **The pixel-perfect iso contract** (NEAREST, integer scale, no smooth gradients) actively forbids the volumetric/emissive/translucent look.
-- **Native is the live target:** 59/100 recent commits are `native:`, the 10 most recent are all native, and `native/ARCHITECTURE.md` is the binding design doc. Web is now an asset/tooling layer.
+- **Native is the live target:** 59/100 recent commits are `native:`, the 10 most recent are all native, and `ARCHITECTURE.md` is the binding design doc. Web is now an asset/tooling layer.
 
 At most, web is a disposable `mode: free` logic sketch (kinematic capsule + billboard) for iso footprint reads. The sim and the look do not port.
 

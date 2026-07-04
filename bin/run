@@ -33,6 +33,6 @@ cd "$(dirname "$0")/.."
 
 SCENE="${1:-${SCENE:-cave}}"
 
-cargo build --release --manifest-path native/Cargo.toml
+cargo build --release --manifest-path Cargo.toml
 
-SCENE="$SCENE" exec ./native/target/release/viewer
+SCENE="$SCENE" exec ./target/release/viewer

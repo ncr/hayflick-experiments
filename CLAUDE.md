@@ -1,149 +1,90 @@
-# CLAUDE.md — Project Conventions
+# CLAUDE.md — Project Conventions (rust branch)
+
+Native Rust only. The TypeScript web stack was removed in the `rust`-branch
+pivot (it lives on `main`).
 
 ## Required Reading
 
-Before making any technical decisions, read:
+Before making technical decisions, read:
 - `docs/AGENT_LEARNINGS.md` — post-mortems and failure patterns (per `AGENTS.md`)
+- `ARCHITECTURE.md` — binding design for the workspace split + ECS boundaries
+- `docs/goo-mob-handoff.md` — goo sim/render state, determinism gotchas, arena notes
 
-## Project Structure
+## Workspace
 
-Monorepo managed with **pnpm workspaces**. Three layers, enforced by package.json deps and lint:
+Cargo workspace at the repo root, members `crates/*`:
 
-```
-apps/
-  hub/                       — Vite + React shell. Hosts studios + experiments via the hub registry.
-packages/                    — Engine layer. Names: @common/*. Engine packages may only import other @common/*.
-  common-render              — Pixel-perfect iso-2:1 rendering (IsoGameView, SharedScissorStage, outlines, lighting preset)
-  common-core                — Generic utilities and data logic
-  common-gameplay            — ECS runtime + level resource interface
-  common-level-editor        — Greybox model + bake pipeline (tile/structure/door semantics)
-  common-input               — Input handling
-  common-physics-rapier      — Rapier physics integration
-  common-collider-vhacd      — V-HACD convex decomposition for colliders
-studios/                     — Authoring tools. Each is its own workspace package. May only import @common/*.
-  forge/                     — Asset Forge (route: #/forge) — prop pipeline: concept image → mesh → physics colliders
-  material-studio/           — Per-surface UV-atlas paint editor with AI fill + GLB bake (route: #/exp/material-studio)
-  map-editor/                — Greybox dual-pane tile-grid editor (route: #/exp/map-editor)
-  blockstudio/               — Blender bridge / planner (CLI only; runs via `pnpm rebuild`)
-  game-studio/               — Playtest shell (route: #/play/<game-id>) — viewport + tweaks + console panes. Hosts a `GameModule` from any strict experiment. Contract types live in `@common/gameplay`.
-experiments/                 — Game prototypes + free playground. Each is its own workspace package.
-                                Per-experiment manifest declares `mode: "strict" | "free"`.
-                                strict → may only import @common/* (mirrors a real game consumer for API hardening).
-                                free   → may import anything (raw three.js, ad-hoc deps, fast prototyping).
-  _runtime/                  — Type-only contract (ExperimentMeta, ExperimentModule). Leaf, zero deps.
-  grid-walker/               — `mode: strict`. Smallest GameModule: arrow-key player on a tile floor — anchors the game-studio shell.
-  physics-prop-drop/         — `mode: free`. Forge props dropped on a room with Rapier 3D physics.
-docs/                        — Architecture docs, learnings, promotion guide
-e2e/                         — Playwright end-to-end tests
-scripts/                     — CLI helpers (new-experiment scaffold, blockstudio rebuild orchestrator, HTTPS dev server)
-```
+| Crate | Role | May depend on |
+|---|---|---|
+| `iso-core` | pure iso 2:1 camera/lattice math | glam only |
+| `sim-core` | generic ECS runtime (hecs wrap, fixed tick, traces) | hecs, glam |
+| `house-game` | ALL game logic, fully headless | sim-core, iso-core |
+| `rt-probe` | deterministic renderer lib (Vulkan ray_query) + GLSL | iso-core |
+| `rt-viewer` | `viewer` binary: winit shell, Metal backend, capture | everything |
 
-**Layer rules** (enforced via package.json `dependencies`, validated by `pnpm check:layers`):
-
-| Layer | May import from |
-|---|---|
-| `@common/*` (engine) | other `@common/*` + `@experiments/runtime` |
-| `@studios/*` | `@common/*` + `@experiments/runtime` |
-| `@experiments/*` (`mode: strict`) | `@common/*` + `@experiments/runtime` |
-| `@experiments/*` (`mode: free`) | `@common/*` + `@experiments/runtime` + `@studios/*` + other `@experiments/*` |
-| `@apps/hub` | everything except cross-app |
-| `@experiments/runtime` | nothing (leaf, type-only) |
-
-The check-script (`scripts/check-layer-deps.mjs`) walks every workspace `package.json`, classifies each by directory, reads the experiment's `meta.ts` for `mode`, and fails on any cross-layer dependency. Run it locally with `pnpm check:layers` and in CI alongside `pnpm typecheck` and `pnpm lint`.
+**rt-probe and house-game never see each other** — only rt-viewer's adapter
+knows both. The game must build and test without a GPU.
 
 ## Key Commands
 
 | Command | Description |
 |---|---|
-| `pnpm dev` | Start Vite dev server (HTTP) |
-| `pnpm dev:s` | Start HTTPS dev server via Caddy reverse proxy |
-| `pnpm build` | Build all packages |
-| `pnpm typecheck` | TypeScript check across all packages |
-| `pnpm lint` | Lint all packages |
-| `pnpm check:layers` | Validate package.json deps against the engine / studios / experiments layer rules |
-| `pnpm test` | Run all tests |
-| `pnpm test:promoted` | Run coverage-gated tests for promoted packages |
-| `pnpm test:e2e` | Run Playwright end-to-end tests |
-| `pnpm exp:new` | Scaffold a new experiment |
-| `pnpm run rebuild <id>` | Rebuild one tileset through Blender (planner + export + sprite bake). Writes to `assets/tilesets/<id>/artifacts/`. Requires `$BLENDER_BIN` and `assets/materials/polyhaven/` populated. |
-| `pnpm run rebuild:all` | Rebuild all three checked-in tilesets in sequence. |
+| `bin/run [scene]` | Build + launch viewer (`cave` default; `arena` = goo shooter) |
+| `bin/golden` | Golden-frame gate; auto-picks `golden-metal/` on macOS. `--update` regenerates |
+| `cargo test` | Headless workspace tests incl. the goo hash oracles |
+| `.claude/skills/record-gameplay` | Headless trace → MP4/GIF clip |
 
-## Experiment Flow
+Env knobs pass through `bin/run` (see `crates/rt-probe/src/config.rs`):
+`WINDOW=WxH SHOT=out.png` renders one headless frame; `DEMO=<trace>
+DEMO_TICKS=N DEMO_DIR=<dir>` renders frame sequences; `CAVE_SEED=…` etc.
 
-Experiments follow a **build → validate → promote** lifecycle.
-See `docs/promotion.md` for full process.
+## Determinism — the load-bearing discipline
 
-1. Build locally in `experiments/<name>/` (set `mode: "strict"` to constrain to engine deps, or `mode: "free"` for the playground)
-2. Validate with at least one additional usage scenario
-3. Extract stable API into `@common/render`, `@common/core`, or `@common/gameplay`
-4. Add tests with coverage gates in the shared package
-5. Replace local experiment logic with shared package imports
+1. **Fixed tick, replayable command streams.** Sim time = `tick / 60`; traces
+   (`<tick> <op> <args>`) drive headless runs bit-identically.
+2. **`state_hash` oracles.** The four `goo_sim_hash_oracle_*` tests pin the goo
+   sim's exact float behaviour. A refactor that reorders any goo float fails
+   them. Intentional behaviour changes: re-capture the constants and say why in
+   the commit. `goo_system` sub-steps are extracted to preserve float order —
+   never reorder/reassociate inside them.
+3. **Byte-exact goldens.** `bin/golden` compares whole-frame PNGs. Goldens are
+   machine + backend specific: `crates/rt-probe/golden/` (Vulkan/RTX 5080) vs
+   `crates/rt-probe/golden-metal/` (this M2 Pro). Mob-free scenes must stay
+   byte-identical after ANY sim/shader change — the goo path is gated on
+   `!mobs.is_empty()`.
+4. **No wall-clock, no unseeded RNG in the sim.** All randomness via `Pcg32`
+   seeded from `LevelSpec.seed`; flicker is stateless `hash(tick, seed)`.
 
-## Pixel-Perfect Rendering
+## Two render backends — keep them in lockstep
 
-See `docs/PIXEL_PERFECT_FOUNDATION.md` for full architecture.
+`crates/rt-probe/src/shaders/*.comp` (GLSL/Vulkan) and
+`crates/rt-viewer/src/shaders_metal/*.metal` (MSL) are line-for-line twins
+(`goo.comp` ↔ `goo.metal`, `shade.comp` ↔ `shade.metal`). A feature added to
+one must be ported to the other in the same effort, or documented as debt in
+`docs/goo-mob-handoff.md`. Shared push-constant structs and look constants
+live once in `crates/rt-viewer/src/backend.rs`.
 
-**Critical invariants — do not break these:**
-1. Canvas CSS size tracks mount size; does not change while zooming
-2. Low-res render target derived from viewport + DPR baseline (zoom=1); zoom must not recompute it
-3. 1 world tile edge (128 cm) = **32 game pixels horizontal × 16 vertical**, locked at `R = 32·√2` lowpixels per world unit. Sourced from `ISO_VIEW_CONTRACT` in `@common/render` — do NOT override `fixedRenderHeight` / `baseOrthoHeight` / `cameraYaw` / `cameraPitch` on the game render path; they are the cornerstone of the view aesthetic. Vertical world-Y projects irrationally (cos π/6 = √3/2): 1.28 m of vertical world = `16·√6 ≈ 39.19` lowpixels. Tools that need different framing (forge prop preview, tileset inspector) construct `PixelPerfectPane` directly with custom values, not `IsoGameView`.
-4. Final scene upscaled by integer render scale (`round(zoom * dpr)`)
-5. Pan advances in whole low-res pixel steps with carried remainder
-6. Zoom changes corrected by pan so world point under cursor stays fixed
-7. Overscan guard band prevents edge bars under remainder shifts
-8. **Geometry XZ dimensions must be multiples of `0.0625 wu`** (= 2 H + 1 V px = one iso 2:1 stair step). Non-stair sizes (e.g. `0.8 wu` → `25.6 px`) rasterize to irregular silhouette outlines mixing 2-wide and 3-wide treads. Enforced by `isoCleanGeometryValidator` (wired into `createThreeScene` from game-studio); construction throws `IsoGeometryViolation` on misaligned spawns. Y is exempt (the iso projection makes Y irrational regardless; vertical edges project purely vertical and don't affect the stair pattern).
-9. **Snap math is uniform `(1, 1)` granularity** on the screen-pixel lattice. The iso 2:1 *trajectory* of a moving box comes from how the input system feeds deltas (`createPlayerInputSystem` with a pixel basis maps input.y by 0.5 so diagonal walks trace a clean Bresenham 2:1 stair). Do **not** be tempted to coarsen snap to `{a:2, b:1}` to "force" stair-shaped trajectory — that produces visible wobble because per-axis rounding decouples motion. See `docs/AGENT_LEARNINGS.md` → "iso 2:1 diagonal wobble".
-10. **Player speed has a smoothness floor.** Below `recommendedMinPxPerSecForIso()` (≈67 px/s @ 60 fps), the dominant snap axis advances less than 1 cell per frame, so motion ticks one axis at a time with visible gaps. The cornerstone (mesh stable) and trajectory invariant (stays on the iso 2:1 line) still hold, but the eye sees discrete ticks. Use the helper as a knob `min` (preferred) or as a system-level clamp. Going below is allowed for design reasons (slow-walk, paused world); the helper just makes the trade-off explicit.
+This dev machine (M2 Pro) runs the **Metal** backend; the Hetzner "spawner"
+box (RTX 5080) runs Vulkan and keeps its own golden set.
 
-## Tileset Pipeline (Blockstudio)
+## Pixel-perfect iso contract (inherited, still binding)
 
-The isometric wall / ground tileset pipeline lives in three places:
+- Primary rays go through pixel centres deterministically — no jitter (the
+  low-res buffer must stay aliased; `AA=1` opts into jitter for stills).
+- All post (grade → grain → dither) runs per low-res texel before the integer
+  NEAREST upscale.
+- Iso 2:1: input maps onto the screen-pixel lattice with `b = -y/2` so
+  diagonals trace a clean Bresenham stair (see `iso-core` tests and the
+  2026-05-16 learning).
 
-- `studios/blockstudio/` — planner, shared kit logic, pbr-library, tileset-files, vitest unit tests
-- `scripts/blockstudio/` — orchestrators that shell out to Blender for the actual mesh build and export
-- `blender/*.py` — Blender-side Python (geometry, materials, export, capture, project)
+## Verification
 
-Source specs are `assets/tilesets/<id>/tileset.json`. The rebuild pipeline writes outputs under `assets/tilesets/<id>/artifacts/` (per-tile GLBs, whole-kit GLB, manifests) and the authoring-debug `assets/tilesets/<id>/project/example_room.glb`. The map editor renders these GLBs directly at runtime — there is no sprite bake step.
+A change is not done until:
+- `cargo test` passes (the headless suite is the CI-able layer), and
+- `bin/golden` passes for render-side changes (or goldens are intentionally
+  regenerated with justification), and
+- for anything visible in motion: a recorded clip (record-gameplay skill or
+  the DEMO env path) actually shows the intended behaviour.
 
-Material registry and Polyhaven downloads live under `assets/materials/`. The `polyhaven/` subdirectory is gitignored.
-
-Iteration loop: edit `assets/tilesets/<id>/tileset.json` → `pnpm run rebuild <id>` → reload the map editor in the hub.
-
-See `docs/blockstudio/` for the full contract (game consumer, wall kit).
-
-## Textured-Mesh Catalog (Material Studio)
-
-Separate from the procedural tileset pipeline above. Uses a flat, two-layer model:
-
-- **Base meshes** — `assets/meshes/<id>.glb`. Pre-authored geometry with `textureRole` extras on each mesh node. Input side; grown in Blender when new geometry is needed.
-- **Textured meshes** — `assets/textured-meshes/<name>/`. The atomic game-ready unit: one base mesh + authored textures baked into a single `artifact.glb`, plus a `manifest.json` (provenance: base mesh id, prompts, timestamp) and the per-role texture PNGs under `textures/<role>/`.
-
-The `material-studio` studio is the authoring UI: pick a base mesh; for each PBR surface, paint pixels into a small UV atlas and/or call gpt-image-2 to fill unpainted cells; bake. UV islands are detected at mesh-load time by `uv-template/prepare.ts` (atlas: 256² with `cellPx=1`; template: 1024² with `cellPx=16` — same `cellsX × cellsY` per island in both, so AI output extracts 1:1 into the atlas). The bake endpoint (`/api/textured-mesh/bake` in `apps/hub/plugins/api-proxy.ts`) calls in-process `apps/hub/plugins/build-artifact.ts`, which uses `@gltf-transform/core` to replace `TEXCOORD_0` with the remapped UVs and attach baseColor/normal/MR/occlusion textures with NEAREST samplers.
-
-NEAREST sampling end-to-end is load-bearing: `material-studio/texture-swap.ts` uses `THREE.NearestFilter` (no mipmaps), and the baked GLB sets `TextureInfo.MagFilter/MinFilter.NEAREST`. One atlas pixel must equal one game pixel under the iso pixel-perfect renderer — never insert LinearFilter anywhere along this chain.
-
-`accent` roles (glass) are synthetic — shader-driven transmission/IOR, not AI-generated.
-
-## Testing Conventions
-
-- Promoted packages require `test:coverage` script with enforced thresholds
-- Browser-level smoke coverage for critical user flows using Playwright
-- Run `pnpm typecheck` before committing changes
-
-## Verification — UI changes are not complete without a passing Playwright test
-
-If you touch UI, browser-running code, an experiment view, or anything visible in the page, **write or update a Playwright e2e spec that proves the change works** and run it. Without that, "it typechecks" is not "it works".
-
-- Spec files live in `e2e/`. Run them with `pnpm test:e2e` or `npx playwright test e2e/<file>.spec.ts`.
-- **Use the dev server (`pnpm dev`) for tests that hit backend APIs.** The Vite preview server (the default `webServer` in `playwright.config.ts`) does **not** run plugins like `api-proxy`, so any test that needs `/api/assets/read`, `/api/textured-mesh/*`, `/api/openai/*`, etc. will silently fail to load data. Override `baseURL` to the dev server (e.g. `http://localhost:5174`) — see `e2e/material-studio.spec.ts` for the pattern.
-- **For pixel-exact tests, expose internals via a `window.__<expName>` handle.** The test then calls into the experiment to read framebuffer pixels, force frames, etc. — see `e2e/material-studio.spec.ts` for the active Material Studio proof.
-- **When you rename a class or restructure layout, search for it in `e2e/` and fix the selectors.** Tests using stale selectors fail with confusing "Timed out waiting for selector" errors that look like product bugs.
-- Don't mark a UI task complete based on "the dev server compiled" — Vite happily serves broken modules until React mounts and crashes. Only a Playwright run answers "does it work?".
-- The Chrome MCP browser is unreliable in agent runs (extension may not be connected). Playwright is the source of truth.
-
-## Dev Server
-
-On this devbox, use `pnpm dev` (plain HTTP via Vite). No Caddy needed here.
-
-`pnpm dev:s` (Caddy HTTPS reverse proxy) is only for the remote Hetzner machine.
-When the `/dev` skill is invoked, run `pnpm dev` — not `pnpm dev:s`.
+Renderer-visible goo changes aren't covered by goldens (they're mob-free):
+diff a `SCENE=goonursery … SHOT=` frame before/after instead.

@@ -1,7 +1,7 @@
 # Goo-Mob Handoff — continuation notes
 
 Pick-up notes for a new session continuing the goo blob NPC. **Native Rust only**
-(`native/`), **Metal backend** (Apple Silicon). Everything is deterministic and
+**Metal backend** (Apple Silicon). Everything is deterministic and
 golden-hashed: all goo work is gated on `!mobs.is_empty()`, so mob-free levels
 stay **byte-identical** (the Metal goldens pin this).
 
@@ -50,16 +50,16 @@ Status: **68 house-game tests pass, Metal goldens byte-identical.**
 
 | Area | File |
 |---|---|
-| Sim: `Goo`, `goo_system` (PBF+gait+fusing), `merge_system`, `damage_goo` (split), `trap_accel`, `goo_solid` (player collision), snapshot/state_hash mob blocks, ALL `GOO_*` consts, tests | `native/crates/house-game/src/game.rs` |
-| Level specs (`goo_level`, `playground_level`), `MobSpec`/`TrapSpec` | `native/crates/house-game/src/spec.rs` |
-| Translucent body SDF composite | `native/crates/rt-viewer/src/shaders_metal/goo.metal` |
-| RT shade: `softVis` area shadows, NEE goo-light branch (`dir.w==2 && radius>0.15`) | `native/crates/rt-viewer/src/shaders_metal/shade.metal` |
-| Goo SDF pass wiring, `GooPush` (emis/absorb), goo proxy BLAS + instances (mask 0x02, parked far when idle), `unit_sphere_mesh`, `GOO_SQUASH/FLOOR_Y/SMIN_K/MAX/PROXY_CAP/PROXY_SCALE` | `native/crates/rt-viewer/src/metal_backend.rs` |
-| `goo_balls()` (metaballs), `goo_lights()` (per-blob RT lights), `goo_instances()` (Vulkan ellipsoid fallback) | `native/crates/rt-viewer/src/sim.rs` |
-| Per-frame assembly (spotlights + goo lights into FrameState) | `native/crates/rt-viewer/src/viewer.rs` |
-| `Spotlight` (+`tint`), `SPOT_WARM`, `N_RESERVED=16`, `frame_lights_cpu`, `scan_lights`, `FrameState`, `GooBall` | `native/rt-probe/src/render.rs` |
-| Scene build: player pillar (`PLAYER_HALF` box), goo pool gate, trap rings, playground lighting, `is_dollhouse` | `native/crates/rt-viewer/src/game_scene.rs` |
-| ROI scene allowlist | `native/rt-probe/src/config.rs` (`roi:` ~line 314) |
+| Sim: `Goo`, `goo_system` (PBF+gait+fusing), `merge_system`, `damage_goo` (split), `trap_accel`, `goo_solid` (player collision), snapshot/state_hash mob blocks, ALL `GOO_*` consts, tests | `crates/house-game/src/game.rs` |
+| Level specs (`goo_level`, `playground_level`), `MobSpec`/`TrapSpec` | `crates/house-game/src/spec.rs` |
+| Translucent body SDF composite | `crates/rt-viewer/src/shaders_metal/goo.metal` |
+| RT shade: `softVis` area shadows, NEE goo-light branch (`dir.w==2 && radius>0.15`) | `crates/rt-viewer/src/shaders_metal/shade.metal` |
+| Goo SDF pass wiring, `GooPush` (emis/absorb), goo proxy BLAS + instances (mask 0x02, parked far when idle), `unit_sphere_mesh`, `GOO_SQUASH/FLOOR_Y/SMIN_K/MAX/PROXY_CAP/PROXY_SCALE` | `crates/rt-viewer/src/metal_backend.rs` |
+| `goo_balls()` (metaballs), `goo_lights()` (per-blob RT lights), `goo_instances()` (Vulkan ellipsoid fallback) | `crates/rt-viewer/src/sim.rs` |
+| Per-frame assembly (spotlights + goo lights into FrameState) | `crates/rt-viewer/src/viewer.rs` |
+| `Spotlight` (+`tint`), `SPOT_WARM`, `N_RESERVED=16`, `frame_lights_cpu`, `scan_lights`, `FrameState`, `GooBall` | `crates/rt-probe/src/render.rs` |
+| Scene build: player pillar (`PLAYER_HALF` box), goo pool gate, trap rings, playground lighting, `is_dollhouse` | `crates/rt-viewer/src/game_scene.rs` |
+| ROI scene allowlist | `crates/rt-probe/src/config.rs` (`roi:` ~line 314) |
 
 ## How to run / capture
 
@@ -67,18 +67,18 @@ Status: **68 house-game tests pass, Metal goldens byte-identical.**
 cd ~/dev/hayflick-26-2
 SCENE=playground bin/run                               # live (interactive)
 SCENE=playground WINDOW=1024x640 SHOT=/tmp/x.png \
-  ./native/target/release/viewer                       # single frame
+  ./target/release/viewer                       # single frame
 # headless frames → MP4 (the way to show motion):
 printf "239 rotate 0\n" > /tmp/tr.txt                  # no-op trace = run N ticks
 SCENE=playground WINDOW=720x450 LIGHT_ANIM=1 DEMO=/tmp/tr.txt DEMO_TICKS=240 \
-  DEMO_DIR=/tmp/d ./native/target/release/viewer
+  DEMO_DIR=/tmp/d ./target/release/viewer
 ffmpeg -y -framerate 60 -i /tmp/d/d_%05d.png -c:v libx264 -pix_fmt yuv420p \
   -crf 18 -vf "scale=720:450:flags=neighbor" -movflags +faststart /tmp/out.mp4
 ```
 Trace line = `<tick> <op> <args>` (`shoot ox oy oz dx dy dz`, `rotate dq`).
 Deliver motion as MP4/GIF (animates in client; `Read` shows a still).
 Tests: `cargo test -p house-game`. Goldens (MUST stay byte-identical):
-`GOLDEN_DIR=native/rt-probe/golden-metal bin/golden`.
+`bin/golden   # auto-picks the Metal set on macOS`.
 
 The **playground** is the authoring stage (5 Mediums + a central trap → they
 crawl in, merge into Larges, under full C lighting; the player pillar is at

@@ -1,3 +1,0 @@
-export const LEVEL_EDITOR_WORLD_UNIT = 1.28;
-export const LEVEL_EDITOR_PIXELS_PER_UNIT_X = 64;
-export const LEVEL_EDITOR_PIXELS_PER_UNIT_Y = 32;

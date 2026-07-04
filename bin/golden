@@ -13,7 +13,7 @@
 # image compare (needs `magick`): pass if diffs stay under GOLDEN_FUZZ (default
 # 2% per channel) for at most GOLDEN_TOL pixels (default 256), else fail — real
 # look regressions move far more than that. Goldens live in
-# native/rt-probe/golden/ and are MACHINE-SPECIFIC (GPU + driver shade exact
+# crates/rt-probe/golden/ and are MACHINE-SPECIFIC (GPU + driver shade exact
 # float behaviour): regenerate after a driver update if all fail identically.
 #
 # Five goldens: house / lab / grid (the legacy scenes), plus the SCENE=game
@@ -33,22 +33,24 @@ cd "$(dirname "$0")/.."
 # BACKEND-specific: the Vulkan (NVIDIA) and Metal (Apple Silicon) paths produce
 # different floats, so each keeps its own set. GOLDEN_DIR selects which — the
 # default is the Vulkan set; the M2 Pro uses
-# `GOLDEN_DIR=native/rt-probe/golden-metal bin/golden`.
-GOLD="${GOLDEN_DIR:-native/rt-probe/golden}"
+# `GOLDEN_DIR=crates/rt-probe/golden-metal bin/golden`.
+# Auto-pick by platform: Apple Silicon runs the Metal backend.
+if [ -z "${GOLDEN_DIR:-}" ] && [ "$(uname)" = "Darwin" ]; then GOLDEN_DIR=crates/rt-probe/golden-metal; fi
+GOLD="${GOLDEN_DIR:-crates/rt-probe/golden}"
 OUT="${TMPDIR:-/tmp}/rt-golden"
 UPDATE="${1:-}"
 
-cargo build --release --manifest-path native/Cargo.toml
+cargo build --release --manifest-path Cargo.toml
 mkdir -p "$OUT" "$GOLD"
 
-GAME_TRACE=native/crates/house-game/traces/replay_game.txt
+GAME_TRACE=crates/house-game/traces/replay_game.txt
 
 fail=0
 for s in house lab grid game game_replay; do
   case "$s" in
-    game)        SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./native/target/release/viewer >/dev/null 2>&1 ;;
-    game_replay) SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 CMDS="$GAME_TRACE" SHOT="$OUT/$s.png" ./native/target/release/viewer >/dev/null 2>&1 ;;
-    *)           SCENE=$s WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./native/target/release/viewer >/dev/null 2>&1 ;;
+    game)        SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 ;;
+    game_replay) SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 CMDS="$GAME_TRACE" SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 ;;
+    *)           SCENE=$s WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 ;;
   esac
   if [ "$UPDATE" = "--update" ]; then
     cp "$OUT/$s.png" "$GOLD/$s.png"

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Start Working Session"
-  short_description: "Sync repo and launch dev server"
-  default_prompt: "Start this project working session by pulling latest changes and launching the local server in background."

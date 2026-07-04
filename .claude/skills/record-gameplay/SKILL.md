@@ -1,6 +1,6 @@
 ---
 name: record-gameplay
-description: Record a gameplay walkthrough video of a native rt-viewer scene (the iso ray-traced renderer under native/). Use when the user asks to record/capture a gameplay clip, walkthrough, movie, or video of the player walking through a scene/house/building/rooms.
+description: Record a gameplay walkthrough video of a native rt-viewer scene (the iso ray-traced renderer). Use when the user asks to record/capture a gameplay clip, walkthrough, movie, or video of the player walking through a scene/house/building/rooms.
 ---
 
 # Record a gameplay walkthrough
@@ -31,7 +31,7 @@ encodes them to an iPhone-friendly H.264 mp4. The bundled
 
 3. **Author a trace** (`/tmp/<scene>_walk.txt`). One command per line,
    `# comments` allowed. Format (see
-   `native/crates/house-game/traces/replay_game.txt`):
+   `crates/house-game/traces/replay_game.txt`):
 
    ```
    <tick> click <ox> <oy> <oz> <dx> <dy> <dz> <gx> <gz>   # walk to floor point (gx,gz)
@@ -83,7 +83,7 @@ clicks were too close together — widen spacing or re-aim at the door centre.
 
 ## Notes
 
-- Needs `ffmpeg` on PATH and a built `native/target/release/viewer` (the script
+- Needs `ffmpeg` on PATH and a built `target/release/viewer` (the script
   builds it). DEMO is fully headless — no window required.
 - The clip shows the ROI x-ray reveal (ghost stipple + faint wall contours) in
   motion as the front walls dissolve around the moving player.

@@ -1,24 +1,27 @@
 .env
-node_modules
-.pnpm-store
 .DS_Store
-dist
-coverage
-test-results
 .vscode
-.playwright-cli
 
-# blockstudio inherited rules
-assets/materials/polyhaven/
-blender/__pycache__/
+# Rust build artifacts
+target/
 
-# rt-probe in-viewer recordings
+# in-viewer recordings ('r' key) and demo renders
 clips/
-
-# rt-probe generated artifacts (debug shots, dumps, movie frames, renders)
-native/rt-probe/*.png
-native/rt-probe/target/
 frames/
 movie_frames/
-house_tour.mp4
+*.mp4
+
+# generated debug shots and renders
+crates/rt-probe/*.png
 beauty.png
+
+# pre-pivot working dirs still on disk (used by the `main` branch checkout)
+node_modules/
+.pnpm-store/
+.playwright-cli/
+output/
+test-results/
+dist/
+coverage/
+assets/materials/polyhaven/
+blender/__pycache__/
