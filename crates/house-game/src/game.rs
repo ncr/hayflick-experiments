@@ -12,10 +12,12 @@ use glam::{IVec2, Vec2, Vec3};
 use iso_core::{iso_basis, screen_px_to_world, snap_ground_to_lattice, ISO_R};
 use sim_core::{AudioCue, AudioSink, CommandBuffer, Component, CueId, Entity, Events, NullSink, Pcg32, Simulation, Tick, World};
 
+mod draft;
 mod goo;
 mod survival;
 mod tactics;
 mod weapon;
+pub use draft::*;
 pub use goo::*;
 pub use survival::*;
 pub use tactics::*;
@@ -81,6 +83,9 @@ pub enum Command {
     /// Keys 1–5: select an arsenal weapon slot. No-op on levels without
     /// `arena` (the arsenal state doesn't exist there) and for unknown slots.
     SelectWeapon { slot: u8 },
+    /// Keys Z/X/C (1-3): take a card from the open wave-lull draft hand.
+    /// Swallowed when no hand is open or off arena levels.
+    PickCard { slot: u8 },
 }
 
 // ---- components -------------------------------------------------------------
@@ -172,6 +177,8 @@ pub enum GameEvent {
     /// A cured blob died and SOLIDIFIED: a dead chunk now stands at the point
     /// (id of the body that died, its centre).
     MobSolidified(MobId, Vec3),
+    /// A draft card entered the run (the pick cue + HUD refresh).
+    CardPicked(Card),
     /// The run ended: goo contact drained suit integrity to zero. The shell
     /// shows the summary panel; a new run is a fresh sim (not a sim command).
     PlayerDown,
@@ -332,6 +339,12 @@ pub struct Res {
     pub sterile: bool,
     /// Arena run state (integrity / death latch) — `Some` iff `spec.arena`.
     pub run: Option<RunState>,
+    /// The open wave-lull draft hand (arena; None between drafts).
+    pub draft: Option<DraftState>,
+    /// Cards taken this run, pick order (arena-gated hash fold).
+    pub picked: Vec<Card>,
+    /// The level seed (mirrors spec.seed) — salts the draft hands.
+    pub seed: u64,
 }
 
 
@@ -363,6 +376,10 @@ pub struct GameSnapshot {
     pub boom: Option<(Vec3, f32)>,
     /// Arena run state (suit integrity + death latch); `None` off arena.
     pub run: Option<RunState>,
+    /// The open draft hand, for the HUD card plates. `None` between drafts.
+    pub draft: Option<DraftState>,
+    /// How many cards the run has taken (HUD tally).
+    pub picked: u32,
     /// Current wave number (arena levels; 0 = the authored squad).
     pub wave: Option<u16>,
     /// Goo blobs to draw this tick, MobId-sorted. Empty on mob-free levels.
@@ -486,6 +503,9 @@ impl<S: AudioSink> HouseGame<S> {
             next_comm_tick: 0,
             sterile: spec.sterile,
             run: spec.arena.map(|_| RunState { integrity: 1.0, dead: false, death_tick: 0 }),
+            draft: None,
+            picked: Vec::new(),
+            seed: spec.seed,
         };
 
         // Goo blobs, MobId-sorted (no HashMap iteration). Spawned only when the
@@ -600,7 +620,7 @@ impl<S: AudioSink> HouseGame<S> {
         // swaps. Camera rotation and light toggles stay live (corpse cam).
         let downed = self.res.run.is_some_and(|r| r.dead);
         for c in cmds {
-            if downed && matches!(c, Command::Click { .. } | Command::Shoot { .. } | Command::Move { .. } | Command::SelectWeapon { .. }) {
+            if downed && matches!(c, Command::Click { .. } | Command::Shoot { .. } | Command::Move { .. } | Command::SelectWeapon { .. } | Command::PickCard { .. }) {
                 continue;
             }
             match c {
@@ -644,6 +664,7 @@ impl<S: AudioSink> HouseGame<S> {
                         a.current = k;
                     }
                 }
+                Command::PickCard { slot } => self.pick_card(*slot),
             }
         }
     }
@@ -730,6 +751,8 @@ impl<S: AudioSink> HouseGame<S> {
             } else {
                 1.0
             };
+            // draft SERVO LEGS stack multiplicatively on top (empty off arena)
+            let mul = mul * speed_mult(&self.res.picked);
             (pl.speed_px * mul).max(recommended_min_px_per_sec(60.0) * mul)
         };
         let pos = self.player_pos();
@@ -852,7 +875,9 @@ impl<S: AudioSink> HouseGame<S> {
                 GameEvent::MobSolidified(_, p) => AudioCue { id: CueId("goo_solidify"), pos: Some(p), gain: 0.9 },
                 // need-state crossings are HUD/feedback events, no audio cue yet;
                 // bleed droplets are pure presentation (the hit cue already plays)
-                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) | GameEvent::GooSplashed(..) | GameEvent::PlayerDown => continue,
+                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) | GameEvent::GooSplashed(..) => continue,
+                GameEvent::CardPicked(_) => AudioCue { id: CueId("card_pick"), pos: None, gain: 0.8 },
+                GameEvent::PlayerDown => AudioCue { id: CueId("player_down"), pos: None, gain: 1.0 },
             };
             self.sink.play(cue);
         }
@@ -938,6 +963,8 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
             boom: self.res.boom.map(|(at, t)| (at, t as f32 / BOOM_FLASH_TICKS as f32)),
             wave: self.res.wave.map(|w| w.idx),
             run: self.res.run,
+            draft: self.res.draft,
+            picked: self.res.picked.len() as u32,
             // goo blobs (MobId-sorted): ends + particle cloud lifted to body
             // height. Pure read of the hashed field — empty on mob-free levels.
             mobs: self
@@ -1052,6 +1079,21 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
             h.u64(self.res.next_comm_tick);
             if let Some(r) = self.res.run {
                 h.f32(r.integrity).u64(r.dead as u64).u64(r.death_tick);
+            }
+            match self.res.draft {
+                Some(d) => {
+                    h.u64(1).u64(d.wave as u64);
+                    for c in d.offers {
+                        h.u64(c.tag());
+                    }
+                }
+                None => {
+                    h.u64(0);
+                }
+            }
+            h.u64(self.res.picked.len() as u64);
+            for c in &self.res.picked {
+                h.u64(c.tag());
             }
             match self.res.boom {
                 Some((at, t)) => {

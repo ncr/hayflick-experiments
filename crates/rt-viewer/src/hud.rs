@@ -7,7 +7,7 @@
 
 use crate::backend::Stamp;
 use crate::menu::{mrect, mtext};
-use house_game::game::{RunState, Tactic};
+use house_game::game::{Card, DraftState, RunState, Tactic};
 use house_game::{MobRender, WeaponKind};
 
 const BG: u32 = 0x14141a;
@@ -126,6 +126,44 @@ pub fn bottom_bar(weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Opti
     (c, w, H)
 }
 
+/// The wave-lull draft hand: three card plates with their pick keys. Sits
+/// above the weapon bar while the hand is open; picking (or the next wave
+/// landing) removes it.
+pub fn draft_hand(d: &DraftState) -> (Vec<u32>, i32, i32) {
+    const CARD_W: i32 = 104;
+    const CARD_H: i32 = 40;
+    const GAP: i32 = 4;
+    let keys = ["Z", "X", "C"];
+    let w = 3 * CARD_W + 2 * GAP;
+    let mut c = vec![0u32; (w * CARD_H) as usize];
+    for (i, card) in d.offers.iter().enumerate() {
+        let x0 = i as i32 * (CARD_W + GAP);
+        let p = plate(CARD_W, CARD_H, 0x1a1a22, AMBER);
+        for y in 0..CARD_H {
+            let src = (y * CARD_W) as usize;
+            let dst = (y * w + x0) as usize;
+            c[dst..dst + CARD_W as usize].copy_from_slice(&p[src..src + CARD_W as usize]);
+        }
+        mtext(&mut c, w, x0 + 4, 4, keys[i], AMBER);
+        mtext(&mut c, w, x0 + 16, 4, card.name(), 0xe8e8d8);
+        mtext(&mut c, w, x0 + 4, 16, card.desc(), 0x9ab8e0);
+        mtext(&mut c, w, x0 + 4, 28, kind_line(*card), 0x767682);
+    }
+    (c, w, CARD_H)
+}
+
+/// Which system a card touches — the plate's bottom rubric.
+fn kind_line(c: Card) -> &'static str {
+    match c {
+        Card::HeavySlug | Card::LongRivet => "SLUG",
+        Card::DrumUzi | Card::SteadyAim => "UZI",
+        Card::WideChoke | Card::TightChoke => "SHOTGUN",
+        Card::BigBoom | Card::Bouncy => "GRENADE",
+        Card::BarbedHarpoon => "HARPOON",
+        Card::ServoLegs | Card::Plating | Card::NanoRepair => "DROID",
+    }
+}
+
 /// The run-over panel: containment breached, the tallies, and the restart
 /// prompt. Stamped dead-centre at the render scale.
 pub fn death_panel(wave: Option<u16>, score: u32, secs: f32) -> (Vec<u32>, i32, i32) {
@@ -142,9 +180,20 @@ pub fn death_panel(wave: Option<u16>, score: u32, secs: f32) -> (Vec<u32>, i32, 
     (c, W, H)
 }
 
+/// The largest integer stamp scale ≤ `rs` that fits `w` logical px into the
+/// window — HUD plates shrink before they clip (a stamp pushed to negative
+/// x simply never draws, which reads as "the HUD vanished").
+fn fit_scale(w: i32, rs: u32, ext_w: i64) -> u32 {
+    let mut bs = rs.max(1);
+    while bs > 1 && (w as i64) * bs as i64 > ext_w - 8 {
+        bs -= 1;
+    }
+    bs
+}
+
 /// Assemble this frame's stamps: one bubble per thinking blob (anchored just
 /// above the body via the forward iso projection) + the bottom bar, centred.
-pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>, now_tick: u64, xf: &iso_core::ViewXform, ext: (u32, u32), rs: u32) -> Vec<Stamp> {
+pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>, draft: Option<DraftState>, now_tick: u64, xf: &iso_core::ViewXform, ext: (u32, u32), rs: u32) -> Vec<Stamp> {
     let mut out = Vec::new();
     let (ext_w, ext_h) = (ext.0 as i64, ext.1 as i64);
     let s = rs.max(1) as i64;
@@ -164,9 +213,19 @@ pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, 
     }
     if weapon.is_some() {
         let (pix, w, h) = bottom_bar(weapon, score, wave, run);
-        let x = (ext_w - w as i64 * s) / 2;
-        let y = ext_h - h as i64 * s - 6;
-        out.push(Stamp { pix, w, h, x, y, scale: rs });
+        // a plate wider than the window steps down its scale instead of
+        // clipping into oblivion (negative-x stamps never draw)
+        let bs = fit_scale(w, rs, ext_w);
+        let x = (ext_w - w as i64 * bs as i64) / 2;
+        let y = ext_h - h as i64 * bs as i64 - 6;
+        out.push(Stamp { pix, w, h, x, y, scale: bs });
+    }
+    if let Some(d) = &draft {
+        let (pix, w, h) = draft_hand(d);
+        let bs = fit_scale(w, rs, ext_w);
+        let x = (ext_w - w as i64 * bs as i64) / 2;
+        let y = ext_h - (26 + 14) * s - h as i64 * bs as i64; // floats above the bar
+        out.push(Stamp { pix, w, h, x, y, scale: bs });
     }
     if let Some(r) = run {
         if r.dead {
@@ -174,9 +233,10 @@ pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, 
             let _ = secs;
             let survived = r.death_tick as f32 * house_game::TICK_DT;
             let (pix, w, h) = death_panel(wave, score, survived);
-            let x = (ext_w - w as i64 * s) / 2;
-            let y = (ext_h - h as i64 * s) / 2;
-            out.push(Stamp { pix, w, h, x, y, scale: rs });
+            let bs = fit_scale(w, rs, ext_w);
+            let x = (ext_w - w as i64 * bs as i64) / 2;
+            let y = (ext_h - h as i64 * bs as i64) / 2;
+            out.push(Stamp { pix, w, h, x, y, scale: bs });
         }
     }
     out

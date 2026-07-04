@@ -282,7 +282,7 @@ impl Config {
                 // the arena pit (20×20 wu) needs the wide framing: at PIXEL=4
                 // a 1280×800 window sees only ~7 wu across — the shooter reads
                 // as a wall of goo. PIXEL=2 doubles the visible area.
-                pixel: (i("PIXEL", if scene == "arena" { 2 } else { 4 }) as u32).max(1),
+                pixel: (i("PIXEL", if matches!(scene.as_str(), "arena" | "squeeze") { 2 } else { 4 }) as u32).max(1),
                 exposure: f("EXPOSURE", default_exposure),
                 probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
                 probe_rays: i("PROBE_RAYS", 2048),

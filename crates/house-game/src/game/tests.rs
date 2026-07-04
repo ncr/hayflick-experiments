@@ -1557,3 +1557,41 @@ fn biomass_pays_for_removal_not_splits() {
     assert_eq!(g.res.score, 1 + 4, "Large solidify pays 2x net mass");
     assert_eq!(g.res.chunks.len(), 1, "and leaves the chunk");
 }
+
+/// Clearing the floor deals a 3-card hand in the lull; `card` picks apply
+/// permanently and the whole exchange replays hash-stable.
+#[test]
+fn wave_lull_draft_deals_and_a_pick_applies() {
+    let run = |pick: bool| {
+        let mut spec = crate::spec::arena_level();
+        spec.static_solids = vec![];
+        spec.player_start = Vec3::new(0.0, 0.0, 9.0);
+        spec.mobs = vec![MobSpec { id: MobId(0), tier: 2, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, -6.0) }];
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        g.tick(Tick(0), &[]);
+        let e = g.mobs[0];
+        let c = g.world.get::<&Goo>(e).unwrap().centroid();
+        g.damage_goo(e, Vec3::new(c.x, 0.3, c.y), Vec3::Z, 99, 0.0, WeaponClass::Standard);
+        g.tick(Tick(1), &[]); // flush the kill -> floor clear
+        g.tick(Tick(2), &[]); // lull starts -> hand dealt
+        let snap = g.snapshot();
+        let d = snap.draft.expect("the lull deals a hand");
+        assert_eq!(d.offers, crate::game::deal(spec.seed, 0), "hand is hash(seed, wave)");
+        if pick {
+            g.tick(Tick(3), &[Command::PickCard { slot: 2 }]);
+            assert_eq!(g.res.picked.len(), 1, "the pick landed");
+            assert!(g.res.draft.is_none(), "the hand closes on pick");
+            assert_eq!(g.res.picked[0], d.offers[1]);
+        }
+        for t in 4..200u64 {
+            g.tick(Tick(t), &[]);
+        }
+        (g.state_hash(), g.res.picked.len())
+    };
+    let (h1, n1) = run(true);
+    let (h2, n2) = run(true);
+    assert_eq!(h1, h2, "drafted runs replay bit-exact");
+    assert_eq!((n1, n2), (1, 1));
+    let (h3, _) = run(false);
+    assert_ne!(h1, h3, "the pick is real hashed state");
+}

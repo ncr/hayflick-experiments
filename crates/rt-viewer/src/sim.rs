@@ -14,7 +14,7 @@ use glam::{IVec2, Mat4, Vec2, Vec3};
 use house_game::game::{Facing, Flashlight, Player, Pos};
 use house_game::{parse_trace, Command, DoorId, GameSnapshot, HouseGame, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TICK_DT};
 use rt_probe::{screen_px_to_world, Config, InstanceKey, LightKey, Scene, SceneHandles};
-use sim_core::{FixedLoop, InputQueue, NullSink, Simulation, Tick};
+use sim_core::{FixedLoop, InputQueue, Simulation, Tick, VecSink};
 
 /// Vertical flatten applied to the goo metaballs so the body lies on the floor
 /// as a spread puddle: the resting-height math `floor + radius·squash` is shared
@@ -43,7 +43,7 @@ pub struct DoorRender {
 pub struct GameLoop {
     pub fixed: FixedLoop,
     pub queue: InputQueue<Command>,
-    pub sim: HouseGame<NullSink>,
+    pub sim: HouseGame<VecSink>,
     /// Next tick to simulate (includes any CMDS replay prefix).
     pub tick: Tick,
     /// Ticks consumed by the deterministic CMDS prefix at startup — the SHOT
@@ -156,7 +156,7 @@ impl GameLoop {
         let proj_slots = discover_pool(handles, "proj_slot");
         let chunk_slots = discover_pool(handles, "chunk_slot");
         let drop_slots = discover_pool(handles, "drop_slot");
-        let mut sim: HouseGame<NullSink> = HouseGame::new(&spec, NullSink);
+        let mut sim: HouseGame<VecSink> = HouseGame::new(&spec, VecSink::default());
         if spec.arena.is_some() {
             // arena: tap the event stream for bleed droplets (observation-only;
             // pinned side-effect-free by the lab's recording test)

@@ -12,6 +12,7 @@
 //! <tick> rotate dq
 //! <tick> use    food | battery             # Command::Use (consume a carried item)
 //! <tick> weapon slot                       # SelectWeapon 1–5 (arena levels)
+//! <tick> card   slot                       # PickCard 1–3 (the wave-lull draft)
 //! ```
 //!
 //! Ray directions are normalised on parse, so traces can be written with
@@ -65,6 +66,7 @@ pub fn parse_trace(text: &str) -> Result<Vec<(Tick, Command)>, String> {
             "lights" => Command::ToggleRoomLights,
             "rotate" => Command::RotateCamera { dq: next("dq")? as i8 },
             "weapon" => Command::SelectWeapon { slot: next("slot")? as u8 },
+            "card" => Command::PickCard { slot: next("slot")? as u8 },
             _ => return Err(err("unknown op")),
         };
         out.push((tick, cmd));

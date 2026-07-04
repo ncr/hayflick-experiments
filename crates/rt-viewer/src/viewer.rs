@@ -67,6 +67,11 @@ pub struct Viewer {
     /// restart rebuilds a FRESH GameLoop from it (a new run is a new sim,
     /// not a sim command; traces stay per-run).
     pub run_spec: Option<house_game::LevelSpec>,
+    /// Synth-blip output (None = headless/no device/AUDIO=0 — fail-soft).
+    pub audio: Option<crate::audio::AudioOut>,
+    /// Blob ids whose comm pulse was lit last frame (blink edge detector
+    /// for the pact tick sound; presentation-only).
+    pub comm_lit: Vec<u32>,
     pub menu: MenuState,
     pub harness: Harness,
     pub rec: Option<crate::capture::Rec>,
@@ -190,10 +195,20 @@ impl Viewer {
         };
         println!("level: floor rect {:?}, {} solids, {} game lights", scene.floor_rect, scene.solids.len(), game.light_keys.len());
 
+        // audio: windowed sessions only (SHOT/DEMO stay silent + headless);
+        // AUDIO=<master> tunes volume, AUDIO=0 disables entirely
+        let audio = if window.is_some() {
+            let master: f32 = std::env::var("AUDIO").ok().and_then(|v| v.parse().ok()).unwrap_or(0.6);
+            if master > 0.0 { crate::audio::AudioOut::new(master) } else { None }
+        } else {
+            None
+        };
         let mut r = Viewer {
             scene,
             backend,
             run_spec,
+            audio,
+            comm_lit: Vec::new(),
             exposure: cfg.render.exposure,
             style: cfg.render.style,
             ao: cfg.render.ao,
@@ -343,6 +358,25 @@ impl Viewer {
             let n = self.game.run_due(sim_dt);
             self.game.tick_droplets(n); // bleed FX rides the tick clock
         }
+        // audio: drain this frame's sim cues into the synth (fail-soft None
+        // just clears the queue), and tick the comm-pact blink sound on each
+        // blob whose pulse LIT this frame (rising edge; both pact members
+        // share a phase, so the double-tick reads as one synced beep)
+        {
+            let cues: Vec<sim_core::AudioCue> = self.game.sim.sink.0.drain(..).collect();
+            if let Some(a) = &self.audio {
+                for c in &cues {
+                    a.play(c.id.0, c.gain);
+                }
+                let lit: Vec<u32> = self.game.snap.mobs.iter().filter(|m| m.comm > 0.0).map(|m| m.id.0).collect();
+                for id in &lit {
+                    if !self.comm_lit.contains(id) {
+                        a.play("comm_blink", 1.0);
+                    }
+                }
+                self.comm_lit = lit;
+            }
+        }
         // playerless scenes (lab): WASD pans the camera — presentation only
         if !self.game.has_player && self.game.held != [false; 4] {
             self.pan_camera_held(dt);
@@ -462,7 +496,7 @@ impl Viewer {
         let stamps = if self.game.has_player && !crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
             let xf = self.pick_xform();
             let ext = self.backend.extent();
-            crate::hud::build_stamps(&self.game.snap.mobs, self.game.snap.weapon, self.game.snap.score, self.game.snap.wave, self.game.snap.run, self.game.sim.res.cur_tick, &xf, ext, self.rs() as u32)
+            crate::hud::build_stamps(&self.game.snap.mobs, self.game.snap.weapon, self.game.snap.score, self.game.snap.wave, self.game.snap.run, self.game.snap.draft, self.game.sim.res.cur_tick, &xf, ext, self.rs() as u32)
         } else {
             Vec::new()
         };

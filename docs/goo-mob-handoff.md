@@ -266,3 +266,25 @@ Tests: engulf-death determinism (same death tick twice), downed-verb
 lockout, biomass accounting. Oracles + goldens untouched (all fields
 arena-gated). Next per the plan: M2 = wave-lull mutation draft + chunk-as-
 cover + a minimal audio backend (AudioSink is still a stub).
+
+## 2026-07-04 — M2: mutation draft, chunk cover, synth audio
+
+- **Draft** (`game/draft.rs`): clearing the floor deals a 3-card hand for
+  the wave lull — `deal(seed, wave)` through the Knuth stride (no RNG
+  draws), 12-card pool of pure data deltas (WeaponSpec transforms + droid
+  multipliers + hull regen). Keys Z/X/C -> `Command::PickCard`, trace op
+  `card <1-3>`; picks are hashed (arsenal gate) and permanent;
+  `apply_cards` mutates `current_weapon()` at read time; SERVO LEGS /
+  PLATING / NANO REPAIR apply in walk_system / integrity_system. The hand
+  expires when the next squad lands. HUD: amber card plates above the bar.
+- **Chunks are cover**: `los_clear2(solids, chunks, ..)` — the knee-high
+  corpses block goo-height sightlines, join `pick_cover` candidates, and
+  gate doctrine rolls + comm pacts. The horde hides behind your masonry.
+- **Audio** (`rt-viewer/src/audio.rs`): cpal + code-generated square/sine/
+  noise voices — no asset files. GameLoop's sink is now `VecSink`; the
+  viewer drains cues per frame (fail-soft `None` when headless/AUDIO=0)
+  and plays a comm_blink tick on each pact-pulse rising edge. New cues:
+  card_pick, player_down. Windowed sessions only; SHOT/DEMO stay silent.
+- **HUD fit guard**: stamps auto-step their scale down when wider than the
+  window (the widened bar at squeeze's old PIXEL=4 default clipped to
+  nothing — negative-x stamps never draw); squeeze joined arena's PIXEL=2.

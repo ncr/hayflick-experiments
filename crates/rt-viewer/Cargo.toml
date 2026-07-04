@@ -20,6 +20,8 @@ winit = "0.30"
 ash-window = "0.13"
 raw-window-handle = "0.6"
 font8x8 = { version = "0.3", default-features = false }
+# synth-blip audio backend (audio.rs) — no assets, waveforms generated in code
+cpal = "0.15"
 
 # objc 0.2's `msg_send!` expands to a `feature = "cargo-clippy"` cfg check that
 # rustc flags as unexpected. Declare it expected so genuine cfg typos still warn

@@ -411,13 +411,18 @@ impl<S: AudioSink> HouseGame<S> {
     pub fn current_weapon(&self) -> WeaponSpec {
         match self.res.arsenal {
             None => PISTOL,
-            Some(a) => match a.current {
-                WeaponKind::Slug => SLUG,
-                WeaponKind::Uzi => UZI,
-                WeaponKind::Shotgun => SHOTGUN,
-                WeaponKind::Grenade => GRENADE,
-                WeaponKind::Harpoon => HARPOON,
-            },
+            // the draft's picked cards mutate the base spec at read time
+            // (pure data deltas — see game/draft.rs)
+            Some(a) => apply_cards(
+                match a.current {
+                    WeaponKind::Slug => SLUG,
+                    WeaponKind::Uzi => UZI,
+                    WeaponKind::Shotgun => SHOTGUN,
+                    WeaponKind::Grenade => GRENADE,
+                    WeaponKind::Harpoon => HARPOON,
+                },
+                &self.res.picked,
+            ),
         }
     }
 

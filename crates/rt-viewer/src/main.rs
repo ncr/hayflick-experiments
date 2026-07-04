@@ -37,6 +37,7 @@
 mod backend;
 mod capture;
 mod game_scene;
+mod audio;
 mod hud;
 mod menu;
 mod minimap;
@@ -181,6 +182,10 @@ impl ApplicationHandler for App {
                     Key::Character(c @ ("1" | "2" | "3" | "4" | "5")) => {
                         r.game.push(Command::SelectWeapon { slot: c.as_bytes()[0] - b'0' });
                     }
+                    // wave-lull draft picks (a no-op when no hand is open)
+                    Key::Character("z") => r.game.push(Command::PickCard { slot: 1 }),
+                    Key::Character("x") => r.game.push(Command::PickCard { slot: 2 }),
+                    Key::Character("c") => r.game.push(Command::PickCard { slot: 3 }),
                     _ => {}
                 }
             }

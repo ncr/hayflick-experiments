@@ -135,6 +135,13 @@ impl Tactic {
 
 // ---- primitives ---------------------------------------------------------------
 
+/// LOS through walls AND dead chunks: a goo-height sightline is blocked by
+/// the knee-high stone corpses too (the player shoots over them; the goo
+/// cannot see past them) — so the horde treats your masonry as cover.
+pub fn los_clear2(solids: &[[f32; 4]], chunks: &[[f32; 4]], a: Vec2, b: Vec2) -> bool {
+    los_clear(solids, a, b) && los_clear(chunks, a, b)
+}
+
 /// Segment `a`→`b` vs every solid AABB (XZ, 2D slab test). `true` = clear.
 /// Pure; used for player sightlines AND blob↔blob comm eligibility.
 pub fn los_clear(solids: &[[f32; 4]], a: Vec2, b: Vec2) -> bool {
@@ -299,7 +306,11 @@ impl<S: AudioSink> HouseGame<S> {
         let solids = &self.res.level.solids;
         let floor = self.res.level.floor;
         let mut best: Option<(f32, Vec2)> = None;
-        for c in &self.res.cover {
+        // corners of the player's OWN masonry join the authored cover set:
+        // the horde hides behind the corpses you made (chunks are capped at
+        // GOO_CHUNK_CAP, so this stays a handful of candidates)
+        let chunk_cover: Vec<Vec2> = cover_points(&self.res.chunks);
+        for c in self.res.cover.iter().chain(chunk_cover.iter()) {
             // must be ON the floor (corner points of perimeter-adjacent walls
             // land outside it) and reachable per the flow field — a blob
             // grinding at a wall toward an unreachable corner reads as broken
@@ -320,7 +331,7 @@ impl<S: AudioSink> HouseGame<S> {
             if dp < 1.6 || dp > 8.5 {
                 continue;
             }
-            if los_clear(solids, *c, player) {
+            if los_clear2(solids, &self.res.chunks, *c, player) {
                 continue; // not cover — the player can see this corner
             }
             let db = (*c - from).length();
@@ -356,6 +367,7 @@ impl<S: AudioSink> HouseGame<S> {
         }
 
         // per-blob tactic transitions (id-sorted handles = fixed order)
+        let chunks = self.res.chunks.clone(); // ≤16 rects, cloned once per tick
         let mobs = self.mobs.clone();
         for e in mobs {
             let mut g = self.world.get::<&mut Goo>(e).unwrap();
@@ -380,7 +392,7 @@ impl<S: AudioSink> HouseGame<S> {
                     // keeps marching Direct instead of chasing corner points.
                     let window = (tick / DOCTRINE_WINDOW) as u32;
                     let due = (tac_hash(g.id, 7) as u64 % DOCTRINE_WINDOW) == tick % DOCTRINE_WINDOW;
-                    if due && dist > TACTIC_NEAR && dist < TACTIC_FAR && los_clear(solids, head, player) {
+                    if due && dist > TACTIC_NEAR && dist < TACTIC_FAR && los_clear2(solids, &chunks, head, player) {
                         let roll = tac_hash(g.id, window) % 100;
                         let cover = self.pick_cover(head, player);
                         // per-species doctrine: Runners flank, Greens ambush
@@ -498,7 +510,7 @@ impl<S: AudioSink> HouseGame<S> {
                     if (ga.ends[0] - gb.ends[0]).length() > COMM_RANGE {
                         continue;
                     }
-                    if !los_clear(&solids, ga.ends[0], gb.ends[0]) {
+                    if !los_clear2(&solids, &self.res.chunks, ga.ends[0], gb.ends[0]) {
                         continue; // they must SEE each other to signal
                     }
                     let strike = tick + COMM_DELAY + tac_hash(ga.id, 23) as u64 % COMM_JITTER;

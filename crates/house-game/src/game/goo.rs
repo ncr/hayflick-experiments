@@ -1040,7 +1040,8 @@ impl<S: AudioSink> HouseGame<S> {
             }
         }
         if w > 0.0 {
-            run.integrity = (run.integrity - GOO_DRAIN_PER_PART * w * TICK_DT).max(0.0);
+            // PLATING cards damp the drain (1.0 with none picked)
+            run.integrity = (run.integrity - GOO_DRAIN_PER_PART * drain_mult(&self.res.picked) * w * TICK_DT).max(0.0);
             // fluid pressure shoves the droid (wall-clamped like every mover)
             let push = away.normalize_or_zero() * (GOO_CONTACT_PUSH * w).min(GOO_CONTACT_PUSH_CAP) * TICK_DT;
             if push != Vec2::ZERO {
@@ -1051,6 +1052,15 @@ impl<S: AudioSink> HouseGame<S> {
                 run.dead = true;
                 run.death_tick = self.res.cur_tick;
                 self.res.events.emit(GameEvent::PlayerDown);
+            }
+        }
+        else {
+            // NANO REPAIR: the hull regrows while nothing is touching it
+            // (0.0/s without the card — exact no-op on the sub, and the
+            // branch only runs on arena levels)
+            let regen = regen_rate(&self.res.picked);
+            if regen > 0.0 {
+                run.integrity = (run.integrity + regen * TICK_DT).min(1.0);
             }
         }
         self.res.run = Some(run);
@@ -1851,12 +1861,16 @@ impl<S: AudioSink> HouseGame<S> {
             return;
         }
         if w.lull > 0 {
+            if w.lull == w.lull_full {
+                self.open_draft(); // the clear just landed: deal the lull hand
+            }
             w.lull -= 1;
             self.res.wave = Some(w);
             return;
         }
         w.idx += 1;
         w.lull = w.lull_full;
+        self.res.draft = None; // the hand expires when the next squad lands
         // squad size grows with the wave, capped well under GOO_LIVE_CAP so
         // splits/mitosis have headroom before the renderer pool ceiling
         let count = (3 + w.idx as u32).min(GOO_LIVE_CAP as u32 - 2);
