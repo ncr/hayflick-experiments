@@ -1019,24 +1019,30 @@ impl<S: AudioSink> HouseGame<S> {
         }
         let p = self.player_pos();
         let m = PLAYER_HALF + GOO_TOUCH_MARGIN;
-        let mut n = 0u32;
+        // Per-particle MASS weight: every tier carries GOO_PARTICLES(40)
+        // particles — a Small just packs them tighter, so a raw count would
+        // make the smallest blobs the deadliest (the inverted first cut).
+        // Weighting by tier mass (Large 1.0 / Medium 0.5 / Small 0.25) makes
+        // pressure proportional to how much goo is actually pressing.
+        let mut w = 0.0f32;
         let mut away = Vec2::ZERO;
         for &e in &self.mobs {
             let g = self.world.get::<&Goo>(e).unwrap();
             if g.fusing > 0 {
                 continue;
             }
+            let wgt = goo_tier_mass(g.tier) as f32 * 0.25;
             for q in &g.parts {
                 if (q.x - p.x).abs() < m && (q.y - p.z).abs() < m {
-                    n += 1;
-                    away += Vec2::new(p.x - q.x, p.z - q.y);
+                    w += wgt;
+                    away += Vec2::new(p.x - q.x, p.z - q.y) * wgt;
                 }
             }
         }
-        if n > 0 {
-            run.integrity = (run.integrity - GOO_DRAIN_PER_PART * n as f32 * TICK_DT).max(0.0);
+        if w > 0.0 {
+            run.integrity = (run.integrity - GOO_DRAIN_PER_PART * w * TICK_DT).max(0.0);
             // fluid pressure shoves the droid (wall-clamped like every mover)
-            let push = away.normalize_or_zero() * (GOO_CONTACT_PUSH * (n as f32)).min(GOO_CONTACT_PUSH_CAP) * TICK_DT;
+            let push = away.normalize_or_zero() * (GOO_CONTACT_PUSH * w).min(GOO_CONTACT_PUSH_CAP) * TICK_DT;
             if push != Vec2::ZERO {
                 let (nx, nz) = collide_and_slide(|x, z| self.walk_blocked(x, z), p.x, p.z, push.x, push.y);
                 self.world.get::<&mut Pos>(self.player).unwrap().0 = Vec3::new(nx, p.y, nz);
