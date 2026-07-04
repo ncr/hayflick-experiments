@@ -242,3 +242,27 @@ not burned by vulkan_backend yet — TODO at the top of its render_present.
 Ballistics fix: a projectile starting its tick INSIDE a blob's contact
 sphere registers contact at t=0 (grenades used to bounce in and coast
 through without detonating).
+
+## 2026-07-04 — M1 "It can kill you" (Warden Pit direction, docs/gameplay-directions.md)
+
+Arena levels now have a FAIL STATE. `Res.run: Option<RunState>` (arsenal
+pattern, hashed under the arena gate): `integrity_system` (goo.rs, right
+after goo_system) drains suit integrity per fluid particle overlapping the
+player pillar — GOO_TOUCH_MARGIN (0.28) must exceed GOO_COLLIDER_MARGIN
+(0.10), the wall clamp parks settled particles exactly at the collider
+margin so a tighter band never fires. The pressing fluid also SHOVES the
+droid (collide_and_slide, capped). Integrity 0 -> dead latch + PlayerDown
+event: player verbs (Move/Click/Shoot/SelectWeapon) are swallowed, camera
+ops stay live. HUD: HULL plate (green/amber/red) + centered CONTAINMENT
+BREACHED panel (wave/bio/survived + SPACE prompt); Space rebuilds a fresh
+GameLoop from the Viewer's stored spec clone (a new run is a new sim).
+
+BIOMASS scoring replaced the old arena score: splits pay 0 (nothing left
+the board), terminal kills pay the tier's mass (Large 4 / Medium 2 /
+Small 1, `goo_tier_mass`), solidify pays 2x the net mass removed (body
+minus escapee: Large +4, Medium +2). HUD label SC -> BIO.
+
+Tests: engulf-death determinism (same death tick twice), downed-verb
+lockout, biomass accounting. Oracles + goldens untouched (all fields
+arena-gated). Next per the plan: M2 = wave-lull mutation draft + chunk-as-
+cover + a minimal audio backend (AudioSink is still a stub).

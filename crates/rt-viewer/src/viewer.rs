@@ -63,6 +63,10 @@ pub struct Viewer {
     // ---- grouped state
     pub view: ViewState,
     pub game: GameLoop,
+    /// The authored LevelSpec the sim was built from (game scenes) — a death
+    /// restart rebuilds a FRESH GameLoop from it (a new run is a new sim,
+    /// not a sim command; traces stay per-run).
+    pub run_spec: Option<house_game::LevelSpec>,
     pub menu: MenuState,
     pub harness: Harness,
     pub rec: Option<crate::capture::Rec>,
@@ -162,6 +166,7 @@ impl Viewer {
         // Build the minimap schematic from the spec BEFORE it is moved into the
         // GameLoop (the layout is static, so this is a one-time bake).
         let minimap = if cfg.game.minimap { game_spec.as_ref().map(crate::minimap::Minimap::from_spec) } else { None };
+        let run_spec = game_spec.clone(); // kept for death->restart (fresh sim, same level)
         let game = match game_spec {
             Some(mut spec) => {
                 // AABB collision for the GENERATED thin-wall scenes: the sim collides
@@ -188,6 +193,7 @@ impl Viewer {
         let mut r = Viewer {
             scene,
             backend,
+            run_spec,
             exposure: cfg.render.exposure,
             style: cfg.render.style,
             ao: cfg.render.ao,
@@ -262,6 +268,19 @@ impl Viewer {
             r.snap_target_to_lattice();
         }
         Ok(r)
+    }
+
+    /// Death -> new run: rebuild a FRESH GameLoop from the stored spec (same
+    /// level, zeroed sim). View state (camera/zoom) survives; the follow-cam
+    /// recentres on the respawned player's first step. No-op when the scene
+    /// has no stored spec or the run isn't over.
+    pub fn restart_run(&mut self) {
+        let dead = self.game.snap.run.is_some_and(|r| r.dead);
+        let Some(spec) = self.run_spec.clone() else { return };
+        if !dead {
+            return;
+        }
+        self.game = crate::sim::GameLoop::from_spec(spec, &self.scene, self.backend.handles(), self.backend.light_count(), &self.cfg);
     }
 
     /// Whole-low-pixel render scale for the current zoom (#4).
@@ -443,7 +462,7 @@ impl Viewer {
         let stamps = if self.game.has_player && !crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
             let xf = self.pick_xform();
             let ext = self.backend.extent();
-            crate::hud::build_stamps(&self.game.snap.mobs, self.game.snap.weapon, self.game.snap.score, self.game.snap.wave, &xf, ext, self.rs() as u32)
+            crate::hud::build_stamps(&self.game.snap.mobs, self.game.snap.weapon, self.game.snap.score, self.game.snap.wave, self.game.snap.run, self.game.sim.res.cur_tick, &xf, ext, self.rs() as u32)
         } else {
             Vec::new()
         };

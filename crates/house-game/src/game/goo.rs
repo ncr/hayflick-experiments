@@ -151,6 +151,31 @@ pub const GOO_TETHER_SNAP: f32 = 0.22;
 // itself cannot deform fast enough). Coherent and low-frequency, never buzz.
 /// Initial wobble amplitude armed at the snap.
 pub const GOO_WOBBLE_AMP0: f32 = 1.0;
+// ---- integrity (the arena fail state) ---------------------------------------
+/// A fluid particle within this margin of the player pillar counts as
+/// CONTACT (wu beyond PLAYER_HALF). MUST exceed GOO_COLLIDER_MARGIN (0.10):
+/// the wall clamp keeps settled particles exactly that far out, so a touch
+/// band inside it never fires — the pressing body has to be read in the
+/// ring just outside the clamp. Metaball render radii overlap the pillar
+/// visually well before this, so contact reads honest on screen.
+pub const GOO_TOUCH_MARGIN: f32 = 0.28;
+/// Integrity drained per contacting particle per second. A full Large
+/// engulf wraps ~15+ particles -> lethal in ~3 s; a single pressing Medium
+/// (~8) gives ~6 s to react; a Small brushing with 2-3 chips slowly. Tier
+/// scaling IS the particle count.
+pub const GOO_DRAIN_PER_PART: f32 = 0.02;
+/// Droid shove per contacting particle (wu/s), capped — being pressed by
+/// fluid moves you like fluid, and an engulf can pin you against a wall.
+pub const GOO_CONTACT_PUSH: f32 = 0.06;
+pub const GOO_CONTACT_PUSH_CAP: f32 = 0.60;
+
+/// Tier -> biomass mass units (Large 4, Medium 2, Small 1): the conserved
+/// quantity the arena economy pays out in when mass PERMANENTLY leaves the
+/// board (see damage_goo scoring).
+pub fn goo_tier_mass(tier: u8) -> u32 {
+    [4, 2, 1][(tier as usize).min(2)]
+}
+
 /// Crater burst: fraction of a hit's knockback that particles near the impact
 /// receive RADIALLY away from the strike point (on top of the directional
 /// shove above) — the entry wound visibly caves and side-sprays (2026-07-04).
@@ -982,6 +1007,49 @@ impl<S: AudioSink> HouseGame<S> {
         (x - p.x).abs() < m && (z - p.z).abs() < m
     }
 
+    /// 3d. Arena integrity: every fluid particle overlapping the player
+    /// pillar drains the suit and shoves the droid (fluid pressure). Runs on
+    /// the tick's FRESH goo poses, right after goo_system. `None` off arena
+    /// levels -> hard no-op, so the four goo oracles and every non-arena
+    /// level are untouched.
+    pub(crate) fn integrity_system(&mut self) {
+        let Some(mut run) = self.res.run else { return };
+        if run.dead || self.mobs.is_empty() {
+            return;
+        }
+        let p = self.player_pos();
+        let m = PLAYER_HALF + GOO_TOUCH_MARGIN;
+        let mut n = 0u32;
+        let mut away = Vec2::ZERO;
+        for &e in &self.mobs {
+            let g = self.world.get::<&Goo>(e).unwrap();
+            if g.fusing > 0 {
+                continue;
+            }
+            for q in &g.parts {
+                if (q.x - p.x).abs() < m && (q.y - p.z).abs() < m {
+                    n += 1;
+                    away += Vec2::new(p.x - q.x, p.z - q.y);
+                }
+            }
+        }
+        if n > 0 {
+            run.integrity = (run.integrity - GOO_DRAIN_PER_PART * n as f32 * TICK_DT).max(0.0);
+            // fluid pressure shoves the droid (wall-clamped like every mover)
+            let push = away.normalize_or_zero() * (GOO_CONTACT_PUSH * (n as f32)).min(GOO_CONTACT_PUSH_CAP) * TICK_DT;
+            if push != Vec2::ZERO {
+                let (nx, nz) = collide_and_slide(|x, z| self.walk_blocked(x, z), p.x, p.z, push.x, push.y);
+                self.world.get::<&mut Pos>(self.player).unwrap().0 = Vec3::new(nx, p.y, nz);
+            }
+            if run.integrity <= 0.0 {
+                run.dead = true;
+                run.death_tick = self.res.cur_tick;
+                self.res.events.emit(GameEvent::PlayerDown);
+            }
+        }
+        self.res.run = Some(run);
+    }
+
     /// Push any predicted particle position `xp[i]` that landed inside a solid
     /// back out, axis by axis (X tried before Z — the order is deterministic and
     /// hashed), falling back to the pre-step position when neither axis frees it.
@@ -1653,7 +1721,9 @@ impl<S: AudioSink> HouseGame<S> {
                     self.res.pending_mob_delta += 1;
                 }
                 if self.res.arsenal.is_some() {
-                    self.res.score += 3; // solidify: the committed play
+                    // biomass: solidify pays 2x the NET mass removed (the
+                    // body minus its escapee) — the committed-play premium
+                    self.res.score += 2 * (goo_tier_mass(tier) - goo_tier_mass(tier + 1));
                 }
                 self.res.events.emit(GameEvent::MobSolidified(id, hit_evt));
                 return;
@@ -1665,7 +1735,8 @@ impl<S: AudioSink> HouseGame<S> {
         let live_after_split = self.goo_live_pending() + 2;
         if tier >= 2 || live_after_split > GOO_LIVE_CAP as i32 {
             if self.res.arsenal.is_some() {
-                self.res.score += 2; // terminal kill
+                // biomass: a terminal kill removes the whole body's mass
+                self.res.score += goo_tier_mass(tier);
             }
             self.res.events.emit(GameEvent::MobKilled(id, hit_evt));
             return;
@@ -1689,9 +1760,8 @@ impl<S: AudioSink> HouseGame<S> {
             self.res.buf.spawn((fresh_goo(cid, tier + 1, kind, chead, d, vel, timer),));
             self.res.pending_mob_delta += 1;
         }
-        if self.res.arsenal.is_some() {
-            self.res.score += 1; // a split still scores (the body broke)
-        }
+        // a split pays NOTHING: no mass left the board, it just got angrier
+        // (the biomass economy's core lesson, priced in from the first uzi)
         self.res.events.emit(GameEvent::MobSplit(id, hit_evt));
     }
 

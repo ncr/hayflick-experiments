@@ -142,6 +142,9 @@ impl ApplicationHandler for App {
                 }
                 match event.logical_key.as_ref() {
                     Key::Named(NamedKey::Escape) => r.menu_toggle(),
+                    // dead run -> Space starts a new one (menu-open Space is
+                    // consumed by menu_activate above and never lands here)
+                    Key::Named(NamedKey::Space) => r.restart_run(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.view.cursor;
                         r.zoom_step(1, c);

@@ -172,12 +172,27 @@ pub enum GameEvent {
     /// A cured blob died and SOLIDIFIED: a dead chunk now stands at the point
     /// (id of the body that died, its centre).
     MobSolidified(MobId, Vec3),
+    /// The run ended: goo contact drained suit integrity to zero. The shell
+    /// shows the summary panel; a new run is a fresh sim (not a sim command).
+    PlayerDown,
     /// A projectile splashed goo fluid: EVERY damaging hit emits one (uzi
     /// pinprick through grenade blast), carrying the impact point, the impact
     /// direction and the fluid punch (the weapon's knockback; killing blows
     /// boosted) — the shell scales its droplet spray from it. Presentation
     /// event only (no audio; the hit cue already plays).
     GooSplashed(MobId, Vec3, Vec3, f32),
+}
+
+/// Arena RUN state (the fail state): suit integrity 0..=1 drained by goo
+/// contact (per overlapping fluid particle — an engulf wraps more of the
+/// body and drains proportionally faster, so tier scaling falls out of the
+/// physics), the death latch, and the tick it happened. `Some` only on
+/// arena levels (the arsenal pattern); hashed under the same gate.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RunState {
+    pub integrity: f32,
+    pub dead: bool,
+    pub death_tick: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -315,6 +330,8 @@ pub struct Res {
     pub next_comm_tick: u64,
     /// Level-authored film knob (spec.sterile): tier-0 mothers skip budding.
     pub sterile: bool,
+    /// Arena run state (integrity / death latch) — `Some` iff `spec.arena`.
+    pub run: Option<RunState>,
 }
 
 
@@ -344,6 +361,8 @@ pub struct GameSnapshot {
     /// A live explosion flash: blast point + remaining intensity 0..1 (the
     /// renderer turns it into a transient spotlight). `None` when quiet.
     pub boom: Option<(Vec3, f32)>,
+    /// Arena run state (suit integrity + death latch); `None` off arena.
+    pub run: Option<RunState>,
     /// Current wave number (arena levels; 0 = the authored squad).
     pub wave: Option<u16>,
     /// Goo blobs to draw this tick, MobId-sorted. Empty on mob-free levels.
@@ -466,6 +485,7 @@ impl<S: AudioSink> HouseGame<S> {
             cover: cover_points(&spec.static_solids),
             next_comm_tick: 0,
             sterile: spec.sterile,
+            run: spec.arena.map(|_| RunState { integrity: 1.0, dead: false, death_tick: 0 }),
         };
 
         // Goo blobs, MobId-sorted (no HashMap iteration). Spawned only when the
@@ -576,7 +596,13 @@ impl<S: AudioSink> HouseGame<S> {
     /// walks to blocked/off-floor points are no-ops (no clamp-to-edge in v1).
     fn resolve_commands(&mut self, cmds: &[Command]) {
         self.res.staging.clear();
+        // a downed run ignores the player verbs — walking, shooting, weapon
+        // swaps. Camera rotation and light toggles stay live (corpse cam).
+        let downed = self.res.run.is_some_and(|r| r.dead);
         for c in cmds {
+            if downed && matches!(c, Command::Click { .. } | Command::Shoot { .. } | Command::Move { .. } | Command::SelectWeapon { .. }) {
+                continue;
+            }
             match c {
                 Command::Click { ray, ground } => {
                     if let Some(id) = self.door_under_ray(ray) {
@@ -826,7 +852,7 @@ impl<S: AudioSink> HouseGame<S> {
                 GameEvent::MobSolidified(_, p) => AudioCue { id: CueId("goo_solidify"), pos: Some(p), gain: 0.9 },
                 // need-state crossings are HUD/feedback events, no audio cue yet;
                 // bleed droplets are pure presentation (the hit cue already plays)
-                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) | GameEvent::GooSplashed(..) => continue,
+                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) | GameEvent::GooSplashed(..) | GameEvent::PlayerDown => continue,
             };
             self.sink.play(cue);
         }
@@ -859,6 +885,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         self.walk_system();
         self.tactic_system(); // arena brain: advance tactics before the bodies move
         self.goo_system(); // blobs crawl (a mover) — after walk, before shoot
+        self.integrity_system(); // arena: contact drain + shove, on fresh poses
         self.pickup_system(); // after movement: collect items the walk reached
         self.use_system(); // consume carried items → restore needs
         self.shoot_system();
@@ -910,6 +937,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
             }),
             boom: self.res.boom.map(|(at, t)| (at, t as f32 / BOOM_FLASH_TICKS as f32)),
             wave: self.res.wave.map(|w| w.idx),
+            run: self.res.run,
             // goo blobs (MobId-sorted): ends + particle cloud lifted to body
             // height. Pure read of the hashed field — empty on mob-free levels.
             mobs: self
@@ -1022,6 +1050,9 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         if let Some(a) = self.res.arsenal {
             h.u64(a.current.tag());
             h.u64(self.res.next_comm_tick);
+            if let Some(r) = self.res.run {
+                h.f32(r.integrity).u64(r.dead as u64).u64(r.death_tick);
+            }
             match self.res.boom {
                 Some((at, t)) => {
                     h.u64(1).f32(at.x).f32(at.y).f32(at.z).u64(t as u64);

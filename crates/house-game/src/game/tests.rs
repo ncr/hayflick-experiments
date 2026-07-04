@@ -1080,7 +1080,7 @@ fn clearing_the_arena_summons_the_next_wave_deterministically() {
         g.damage_goo(e, Vec3::new(c.x, 0.3, c.y), Vec3::Z, 99, 0.0, WeaponClass::Standard);
         g.tick(Tick(0), &[]); // flush the kill
         assert!(g.mobs.is_empty(), "arena clear");
-        assert_eq!(g.res.score, 2, "terminal kill scores 2");
+        assert_eq!(g.res.score, 1, "biomass: a terminal Small pays its mass (1)");
         assert_eq!(g.snapshot().wave, Some(0));
         for t in 1..=(lull + 2) {
             g.tick(Tick(t), &[]);
@@ -1462,4 +1462,98 @@ fn goo_sim_hash_oracle_split() {
 fn goo_sim_hash_oracle_merge() {
     let m = run_ticks(&merge_pair_level(), 90);
     assert_eq!(m.state_hash(), ORACLE_MERGE_90, "got {:#018x}", m.state_hash());
+}
+
+// ---- M1: the arena fail state + biomass economy ------------------------------
+
+/// A blob parked ON the player drains integrity to zero and downs the run at
+/// a deterministic tick; a re-run of the same setup dies at the SAME tick.
+#[test]
+fn engulf_drains_integrity_and_downs_the_run_deterministically() {
+    let run_once = || {
+        let mut spec = crate::spec::arena_level();
+        spec.static_solids = vec![];
+        // one Large dropped basically on the spawn point: it will engulf
+        spec.mobs = vec![MobSpec { id: MobId(0), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, 5.5) }];
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        assert_eq!(g.res.run.unwrap().integrity, 1.0);
+        for t in 0..3600u64 {
+            g.tick(Tick(t), &[]);
+            let r = g.res.run.unwrap();
+            if r.dead {
+                assert_eq!(r.integrity, 0.0);
+                return r.death_tick;
+            }
+        }
+        panic!("the engulf never downed the run in 60 s");
+    };
+    let a = run_once();
+    let b = run_once();
+    assert_eq!(a, b, "death tick replays bit-exact");
+    assert!(a > 30, "dying takes longer than half a second (tick {a})");
+}
+
+/// A downed run ignores the player verbs: Move/Shoot do nothing after death.
+#[test]
+fn downed_run_locks_out_player_verbs() {
+    let mut spec = crate::spec::arena_level();
+    spec.static_solids = vec![];
+    spec.mobs = vec![MobSpec { id: MobId(0), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, 5.5) }];
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    let mut t = 0u64;
+    while !g.res.run.unwrap().dead {
+        g.tick(Tick(t), &[]);
+        t += 1;
+        assert!(t < 3600, "must die within 60 s");
+    }
+    let p0 = g.player_pos();
+    let shots0 = g.projectiles.len();
+    for k in 0..30 {
+        g.tick(Tick(t + k), &[Command::Move { dir: IVec2::new(1, 0) }, Command::Shoot { ray: PickRay { origin: Vec3::new(p0.x, 0.95, p0.z), dir: Vec3::new(0.0, -0.1, -1.0).normalize() } }]);
+    }
+    let p1 = g.player_pos();
+    // the goo may still SHOVE the corpse, but walking must not engage: with
+    // the blob parked on us the shove is inward-symmetric, so any drift stays
+    // far below 30 ticks of walking (which would cover ~1.5 wu)
+    assert!((p1 - p0).length() < 0.5, "no player-driven walking while down: {p0:?} -> {p1:?}");
+    assert_eq!(g.projectiles.len(), shots0, "no shots fire while down");
+}
+
+/// Biomass pays only when mass leaves the board: a split pays 0, a terminal
+/// Small pays 1, a Large solidify pays 2x its net mass (4).
+#[test]
+fn biomass_pays_for_removal_not_splits() {
+    let mut spec = crate::spec::arena_level();
+    spec.static_solids = vec![];
+    spec.player_start = Vec3::new(0.0, 0.0, 9.0); // far corner: no engulf noise
+    spec.mobs = vec![
+        MobSpec { id: MobId(0), tier: 1, kind: crate::spec::GooKind::Green, pos: Vec3::new(-6.0, 0.0, -6.0) },
+        MobSpec { id: MobId(1), tier: 2, kind: crate::spec::GooKind::Green, pos: Vec3::new(6.0, 0.0, -6.0) },
+        MobSpec { id: MobId(2), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, 0.0) },
+    ];
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    g.tick(Tick(0), &[]);
+    // split a Medium: two Smalls appear, NOTHING leaves the board -> +0
+    let e0 = g.mobs[0];
+    let c0 = g.world.get::<&Goo>(e0).unwrap().centroid();
+    g.damage_goo(e0, Vec3::new(c0.x, 0.3, c0.y), Vec3::Z, 99, 0.0, WeaponClass::Standard);
+    g.tick(Tick(1), &[]);
+    assert_eq!(g.res.score, 0, "a split pays nothing");
+    // terminal-kill the authored Small -> +1 (its mass)
+    let small = g.mobs.iter().copied().find(|&e| g.world.get::<&Goo>(e).unwrap().id == MobId(1)).unwrap();
+    let c1 = g.world.get::<&Goo>(small).unwrap().centroid();
+    g.damage_goo(small, Vec3::new(c1.x, 0.3, c1.y), Vec3::Z, 99, 0.0, WeaponClass::Standard);
+    g.tick(Tick(2), &[]);
+    assert_eq!(g.res.score, 1, "terminal Small pays its mass");
+    // cure a Large to the chunk threshold, then kill: solidify pays
+    // 2 x (mass(L) - mass(escapee M)) = 2 x (4 - 2) = 4
+    let large = g.mobs.iter().copied().find(|&e| g.world.get::<&Goo>(e).unwrap().id == MobId(2)).unwrap();
+    let cl = g.world.get::<&Goo>(large).unwrap().centroid();
+    g.damage_goo(large, Vec3::new(cl.x, 0.3, cl.y), Vec3::Z, 1, 0.0, WeaponClass::Slug);
+    g.tick(Tick(3), &[]);
+    let cl = g.world.get::<&Goo>(large).unwrap().centroid();
+    g.damage_goo(large, Vec3::new(cl.x, 0.3, cl.y), Vec3::Z, 99, 0.0, WeaponClass::Slug);
+    g.tick(Tick(4), &[]);
+    assert_eq!(g.res.score, 1 + 4, "Large solidify pays 2x net mass");
+    assert_eq!(g.res.chunks.len(), 1, "and leaves the chunk");
 }
