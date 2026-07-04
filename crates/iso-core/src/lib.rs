@@ -215,6 +215,21 @@ pub fn window_px_to_ray(win: Vec2, v: &ViewXform) -> (Vec3, Vec3) {
     low_px_ray(window_px_to_low(win, v), v)
 }
 
+/// FORWARD projection: world point → window pixel (the top-left of the
+/// upscale block whose primary ray passes nearest the point). The inverse of
+/// `window_px_to_ray` up to the block quantization — used to anchor screen
+/// annotations (tactic bubbles) over world objects. Points off-screen come
+/// back with out-of-range coordinates; callers clamp or cull.
+pub fn world_to_window_px(p: Vec3, v: &ViewXform) -> Vec2 {
+    let (_dir, right, up) = iso_basis(v.yaw_off_deg);
+    let d = p - v.target;
+    let sx = d.dot(right) * ISO_R; // px right of the buffer centre
+    let sy = -d.dot(up) * ISO_R; // px down
+    let lp = Vec2::new(sx - 0.5 - PIXEL_CENTER_TIE + v.low.x * 0.5, sy - 0.5 - PIXEL_CENTER_TIE + v.low.y * 0.5);
+    let rs = v.render_scale.max(1) as f32;
+    (lp - v.pan.round().floor()) * rs
+}
+
 /// Ground-plane (y = 0) pick for a window pixel. `None` when the pixel maps
 /// outside the visible region or into the overscan guard band (#7 — those
 /// pixels show no world); the game treats such clicks as no-ops (no

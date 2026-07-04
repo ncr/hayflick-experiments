@@ -14,9 +14,11 @@ use sim_core::{AudioCue, AudioSink, CommandBuffer, Component, CueId, Entity, Eve
 
 mod goo;
 mod survival;
+mod tactics;
 mod weapon;
 pub use goo::*;
 pub use survival::*;
+pub use tactics::*;
 pub use weapon::*;
 
 /// Fixed simulation timestep (the shell's FixedLoop runs at the same rate).
@@ -300,6 +302,17 @@ pub struct Res {
     /// capped at `GOO_CHUNK_CAP`; hashed only when non-empty (the mobs-block
     /// pattern), so chunk-free levels hash exactly as before.
     pub chunks: Vec<[f32; 4]>,
+    /// Arena tactics: the BFS flow-field cache. DERIVED state — a pure
+    /// function of (floor, solids, player cell), rebuilt on a cadence by
+    /// `tactic_system`; never hashed (the `Level` precedent). `None` off
+    /// arena levels forever.
+    pub nav: Option<NavField>,
+    /// Wall-corner cover candidates, computed once from the spec's solids
+    /// (pure function of the spec — same standing as `Level.solids`).
+    pub cover: Vec<Vec2>,
+    /// Comm-pact cooldown: the next tick a new blob pact may form. Hashed
+    /// under the arsenal gate (it only ever moves on arena levels).
+    pub next_comm_tick: u64,
 }
 
 
@@ -447,6 +460,9 @@ impl<S: AudioSink> HouseGame<S> {
             cur_tick: 0,
             goo_rho0: goo_rho0(),
             chunks: Vec::new(),
+            nav: None,
+            cover: cover_points(&spec.static_solids),
+            next_comm_tick: 0,
         };
 
         // Goo blobs, MobId-sorted (no HashMap iteration). Spawned only when the
@@ -838,6 +854,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         self.resolve_commands(cmds);
         self.door_system();
         self.walk_system();
+        self.tactic_system(); // arena brain: advance tactics before the bodies move
         self.goo_system(); // blobs crawl (a mover) — after walk, before shoot
         self.pickup_system(); // after movement: collect items the walk reached
         self.use_system(); // consume carried items → restore needs
@@ -912,7 +929,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     let parts = goo_render_parts(&g, pr);
                     let glow = goo_render_glow(&g);
                     let vscale = goo_render_vscale(&g);
-                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale }
+                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale, comm: comm_pulse(g.tac, g.strike, self.res.cur_tick), tac: g.tac }
                 })
                 .collect(),
             // projectiles in flight (ProjectileId-sorted) — empty when idle.
@@ -1001,6 +1018,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
         // flash rides inside the same gate (grenades exist only here).
         if let Some(a) = self.res.arsenal {
             h.u64(a.current.tag());
+            h.u64(self.res.next_comm_tick);
             match self.res.boom {
                 Some((at, t)) => {
                     h.u64(1).f32(at.x).f32(at.y).f32(at.z).u64(t as u64);
@@ -1037,6 +1055,11 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                 // Green multipliers are exact 1.0 identities, so oracle-level
                 // BEHAVIOR is unchanged; see the dated recapture note there).
                 h.u64(g.kind.tag()).u64(g.cure as u64).u64(g.pinned as u64).f32(g.pin_pt.x).f32(g.pin_pt.y);
+                // tactics fold ONLY under the arena gate (they never mutate
+                // elsewhere), so the four pre-arena goo oracles stand as-is.
+                if self.res.arsenal.is_some() {
+                    h.u64(g.tac.tag()).u64(g.tac_timer as u64).f32(g.tac_point.x).f32(g.tac_point.y).u64(g.strike);
+                }
             }
         }
         // Projectiles block — ProjectileId-sorted, folded ONLY while shots are in

@@ -405,14 +405,11 @@ impl Viewer {
         // PRESENTED image only — never `out`, so SHOT/MOVIE/DUMP/DEMO captures
         // stay UI-free (those modes pass no overlay).
         let menu_canvas;
-        let score_canvas;
         let overlay = if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
             menu_canvas = self.menu_canvas();
-            score_canvas = if self.game.has_player { Some(self.score_canvas()) } else { None };
-            Some(Overlay {
-                menu: (&menu_canvas.0, menu_canvas.1, menu_canvas.2),
-                score: score_canvas.as_ref().map(|(c, w, h)| (&c[..], *w, *h)),
-            })
+            // the score plate moved into the burned-in bottom bar (stamps) —
+            // the overlay carries only shell UI (menu/hamburger) now
+            Some(Overlay { menu: (&menu_canvas.0, menu_canvas.1, menu_canvas.2), score: None })
         } else {
             None
         };
@@ -437,6 +434,16 @@ impl Viewer {
             None => None,
         };
 
+        // burned-in HUD stamps: tactic bubbles over thinking blobs + the
+        // bottom weapon bar. Game picture, not shell UI — they ride into
+        // SHOT/DEMO captures. Skipped on playerless film stages.
+        let stamps = if self.game.has_player && !crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
+            let xf = self.pick_xform();
+            let ext = self.backend.extent();
+            crate::hud::build_stamps(&self.game.snap.mobs, self.game.snap.weapon, self.game.snap.score, self.game.snap.wave, &xf, ext, self.rs() as u32)
+        } else {
+            Vec::new()
+        };
         let fp = FramePresent {
             fs: &fs,
             pan: self.view.pan,
@@ -456,6 +463,7 @@ impl Viewer {
             style: self.style,
             frame: self.frame,
             overlay,
+            stamps: &stamps,
             minimap,
             roi: if self.cfg.game.roi {
                 // Anchor the reveal disc on the player's MID-HEIGHT, not its feet:

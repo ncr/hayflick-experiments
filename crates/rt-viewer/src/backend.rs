@@ -60,6 +60,13 @@ pub struct FramePresent<'a> {
     /// UI overlay copied onto the PRESENTED image only (never `out`, so SHOT/
     /// MOVIE/DUMP captures stay clean). `None` for headless modes.
     pub overlay: Option<Overlay<'a>>,
+    /// World-anchored + HUD pixel-canvas stamps burned into `out_tex` (the
+    /// present AND readback source) — unlike `overlay`, these land in
+    /// SHOT/DUMP/DEMO captures: tactic bubbles and the bottom HUD bar are
+    /// part of the game picture, not the shell UI. Window-px positions;
+    /// each logical canvas pixel is scaled by `scale` (pass the render
+    /// scale for game-pixel-consistent chunk).
+    pub stamps: &'a [Stamp],
     /// Minimap HUD canvas (RGBA logical px, w, h). Unlike `overlay`, the backend
     /// burns this into `out_tex` (the present + readback source), so it lands in
     /// SHOT/DUMP/DEMO captures too. `None` when the minimap is off.
@@ -84,6 +91,18 @@ pub struct RoiInfo {
 
 /// CPU-drawn overlay canvases (logical px, ARGB), expanded + copied onto the
 /// swapchain image by the backend after the blit.
+/// One pre-rasterized canvas stamped onto the output image at (x, y) window
+/// px, each logical pixel expanded `scale`×. 0x00000000 pixels are DRAWN
+/// (opaque black) — the chunky-plate aesthetic wants no alpha.
+pub struct Stamp {
+    pub pix: Vec<u32>,
+    pub w: i32,
+    pub h: i32,
+    pub x: i64,
+    pub y: i64,
+    pub scale: u32,
+}
+
 pub struct Overlay<'a> {
     pub menu: (&'a [u32], i32, i32),         // canvas, w, h
     pub score: Option<(&'a [u32], i32, i32)>, // player scenes: corner HUD

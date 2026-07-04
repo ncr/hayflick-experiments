@@ -59,6 +59,9 @@ pub const MENU_MARGIN: i32 = 12; // physical px from the window's top-left
 // corner score HUD (player scenes only): a small badge in the TOP-RIGHT,
 // drawn like the menu (overlay-only, never onto swap.out — SHOT/MOVIE/DUMP
 // captures stay clean), at the same integer UI scale as the menu.
+// consumer is the Vulkan backend (its score-overlay staging buffer sizing);
+// the score plate itself moved into the burned-in bottom bar (hud.rs)
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const HUD_W: i32 = 72;
 pub const HUD_H: i32 = 14;
 /// Tallest plate `score_canvas` can return (arena levels add a weapon row) —
@@ -74,7 +77,7 @@ pub struct MenuState {
     pub drag: bool,
 }
 
-fn mrect(canvas: &mut [u32], cw: i32, x: i32, y: i32, w: i32, h: i32, color: u32) {
+pub(crate) fn mrect(canvas: &mut [u32], cw: i32, x: i32, y: i32, w: i32, h: i32, color: u32) {
     for py in y.max(0)..(y + h).min(canvas.len() as i32 / cw) {
         for px in x.max(0)..(x + w).min(cw) {
             canvas[(py * cw + px) as usize] = color;
@@ -82,7 +85,7 @@ fn mrect(canvas: &mut [u32], cw: i32, x: i32, y: i32, w: i32, h: i32, color: u32
     }
 }
 
-fn mtext(canvas: &mut [u32], cw: i32, x: i32, y: i32, s: &str, color: u32) {
+pub(crate) fn mtext(canvas: &mut [u32], cw: i32, x: i32, y: i32, s: &str, color: u32) {
     let ch_rows = canvas.len() as i32 / cw;
     let mut cx = x;
     for ch in s.chars() {
@@ -287,39 +290,6 @@ impl Viewer {
             let v = min + ((t * (max - min)) / step).round() * step;
             self.tune_set(MENU[self.menu.sel].key, v.clamp(min, max));
         }
-    }
-
-    /// The corner score badge canvas (logical px): "SCORE n" on a bordered
-    /// dark plate. Drawn for player scenes only; copied to the top-right of the
-    /// PRESENTED image, never onto swap.out (clean captures, like the menu).
-    /// On arena levels (snapshot carries a weapon) the plate grows a second
-    /// row: the selected slot + weapon name and a cooldown bar that fills as
-    /// the shared weapon timer recovers (full bar = ready to fire).
-    pub fn score_canvas(&self) -> (Vec<u32>, i32, i32) {
-        const BG: u32 = 0x16161c;
-        const BORDER: u32 = 0x6a6a78;
-        let weapon = self.game.snap.weapon;
-        let (w, h) = (HUD_W, if weapon.is_some() { HUD_H + 14 } else { HUD_H });
-        let mut c = vec![BG; (w * h) as usize];
-        mrect(&mut c, w, 0, 0, w, 1, BORDER);
-        mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
-        mrect(&mut c, w, 0, 0, 1, h, BORDER);
-        mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
-        mtext(&mut c, w, 4, 3, &format!("SCORE {}", self.game.snap.score), 0x99cc99);
-        if let Some((kind, cd, total)) = weapon {
-            mtext(&mut c, w, 4, 15, &format!("{} {}", kind.slot(), kind.name()), 0xd0d0a0);
-            if let Some(wave) = self.game.snap.wave {
-                mtext(&mut c, w, w - 24, 15, &format!("W{wave}"), 0x9ab8e0);
-            }
-            // recovery bar under the label: empty right after a shot, full when
-            // the trigger is live again (green at ready, amber while cooling)
-            let track_w = w - 8;
-            let frac = if total == 0 { 1.0 } else { 1.0 - (cd as f32 / total as f32).clamp(0.0, 1.0) };
-            let fill = (track_w as f32 * frac) as i32;
-            mrect(&mut c, w, 4, h - 4, track_w, 2, 0x30303a);
-            mrect(&mut c, w, 4, h - 4, fill, 2, if cd == 0 { 0x8fd08f } else { 0xd0a860 });
-        }
-        (c, w, h)
     }
 
     /// Draw the overlay at logical resolution: the open panel, or the

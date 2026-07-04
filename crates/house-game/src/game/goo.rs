@@ -543,7 +543,7 @@ pub(crate) fn goo_is_weak(g: &Goo) -> bool {
     g.hp * 3 <= goo_tier_hp(g.tier)
 }
 /// Tier → crawl speed (see `GOO_TIER_SPEED`; tiers past Small clamp to Small).
-fn goo_tier_speed(tier: u8) -> f32 {
+pub(crate) fn goo_tier_speed(tier: u8) -> f32 {
     GOO_TIER_SPEED[(tier as usize).min(2)]
 }
 
@@ -588,7 +588,7 @@ pub const GOO_CURE_MAX: u8 = 4;
 /// single small live escapee squirms free — the slug's payoff over splitting.
 pub const GOO_CURE_CHUNK: u8 = 2;
 /// Crawl-speed penalty per cure stack (multiplier = 1 − 0.2·cure, floored).
-const GOO_CURE_SLOW: f32 = 0.2;
+pub(crate) const GOO_CURE_SLOW: f32 = 0.2;
 /// Solid-chunk footprint half-extent as a fraction of the body radius.
 pub const GOO_CHUNK_FRAC: f32 = 0.8;
 /// Solid-chunk height (wu): knee-high — shots at muzzle height fly OVER it,
@@ -657,6 +657,12 @@ pub struct Goo {
     pub wobble_amp: f32,    // jelly oscillator amplitude (0 = at rest); decays each tick
     pub wobble_dir: Vec2,   // jelly oscillator squash axis (the tear direction)
     pub wobble_phase: u16,  // jelly oscillator integer phase clock (bit-exact, no f32 drift)
+    // ---- arena tactics (mutated ONLY by tactic_system on arena levels;
+    // hashed only under the arsenal gate — see state_hash)
+    pub tac: Tactic,     // current maneuver state
+    pub tac_timer: u16,  // phase clock within the maneuver
+    pub tac_point: Vec2, // maneuver waypoint (cover / peek / flank)
+    pub strike: u64,     // agreed comm-pact strike tick (0 = no pact)
 }
 
 impl Goo {
@@ -676,7 +682,7 @@ impl Goo {
 /// jitter, gait-clock and mitosis desync) keeps split children and co-located
 /// mothers out of lockstep without consuming the shared RNG, which keeps the
 /// draw order stable.
-const GOO_ID_MIX: u32 = 40503;
+pub(crate) const GOO_ID_MIX: u32 = 40503;
 
 /// Build a fresh blob: head at `head`, tail trailing `body_len` along
 /// `-heading`, and the particles scattered as a small grid over the spine (the
@@ -714,7 +720,7 @@ pub(crate) fn fresh_goo(id: MobId, tier: u8, kind: GooKind, head: Vec2, heading:
     } else {
         0
     };
-    Goo { id, kind, cure: 0, pinned: 0, pin_pt: Vec2::ZERO, ends, ends_prev: ends.map(|e| e - seed_vel), parts, vel: [seed_vel; GOO_PARTICLES], body_len, tier, hp: goo_tier_hp(tier), state: GooState::Wander, timer, heading, gait_phase, merge_grace: GOO_MERGE_GRACE, fusing: 0, fuse_pt: Vec2::ZERO, spawn_timer, spawn_dir: Vec2::ZERO, birth_glow: 0, birth_immune: false, tether: 0, tether_anchor: Vec2::ZERO, tear_ticks: 0, wobble_amp: 0.0, wobble_dir: Vec2::ZERO, wobble_phase: 0 }
+    Goo { id, kind, cure: 0, pinned: 0, pin_pt: Vec2::ZERO, ends, ends_prev: ends.map(|e| e - seed_vel), parts, vel: [seed_vel; GOO_PARTICLES], body_len, tier, hp: goo_tier_hp(tier), state: GooState::Wander, timer, heading, gait_phase, merge_grace: GOO_MERGE_GRACE, fusing: 0, fuse_pt: Vec2::ZERO, spawn_timer, spawn_dir: Vec2::ZERO, birth_glow: 0, birth_immune: false, tether: 0, tether_anchor: Vec2::ZERO, tear_ticks: 0, wobble_amp: 0.0, wobble_dir: Vec2::ZERO, wobble_phase: 0, tac: Tactic::Direct, tac_timer: 0, tac_point: Vec2::ZERO, strike: 0 }
 }
 
 /// Integer gait phase → (gather, stretch), both in [0,1], for the crawl cycle.
@@ -755,7 +761,7 @@ fn gait_profile(phase: u16) -> (f32, f32) {
 }
 
 /// Rotate unit vector `from` toward unit vector `to` by at most `max_rad`.
-fn rotate_toward(from: Vec2, to: Vec2, max_rad: f32) -> Vec2 {
+pub(crate) fn rotate_toward(from: Vec2, to: Vec2, max_rad: f32) -> Vec2 {
     let dot = from.dot(to).clamp(-1.0, 1.0);
     let ang = dot.acos();
     if ang <= max_rad || ang == 0.0 {
@@ -792,6 +798,15 @@ pub struct MobRender {
     /// gait lunge flattens, jelly wobble bounces, birth tension draws up. See
     /// `goo_render_vscale`. Pure presentation, like `glow`.
     pub vscale: f32,
+    /// Comm-pact blink 0..1 — the visible blob-to-blob telegraph: both pact
+    /// members pulse in sync (same strike tick), accelerating toward the
+    /// strike. The shell flashes the body tint + cone light by it. Pure
+    /// presentation, derived from hashed pact state (see `comm_pulse`).
+    pub comm: f32,
+    /// The blob's current tactic — the shell renders it as a "thinking"
+    /// bubble over the body (the live-readable mind). Pure presentation
+    /// read of the hashed arena brain state; `Direct` everywhere off arena.
+    pub tac: Tactic,
 }
 
 impl MobRender {
@@ -1150,6 +1165,12 @@ impl<S: AudioSink> HouseGame<S> {
     /// `(mv, speed)`: the move gate (0 while Idle) and this tier's crawl speed.
     /// Verbatim extraction.
     fn goo_step_ai(&mut self, g: &mut Goo, pxz: Vec2, aggro2: f32) -> (f32, f32) {
+        // arena levels run the tactics brain instead (game/tactics.rs): the
+        // legacy wander/seek below stays VERBATIM (same float ops, same RNG
+        // draw order) for every pre-arena level, so the oracles never move.
+        if self.res.arsenal.is_some() {
+            return self.goo_step_ai_arena(g, pxz);
+        }
         // species multipliers — Green is exactly 1.0 across the board, so this
         // block is a bit-exact no-op on all-Green (pre-kind) levels
         let (kind_speed, kind_turn, kind_aggro) = goo_kind_moves(g.kind);

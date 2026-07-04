@@ -37,6 +37,7 @@
 mod backend;
 mod capture;
 mod game_scene;
+mod hud;
 mod menu;
 mod minimap;
 mod sim;

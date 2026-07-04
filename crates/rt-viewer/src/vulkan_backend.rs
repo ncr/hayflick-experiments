@@ -529,6 +529,10 @@ impl RenderBackend for VulkanBackend {
     /// `Renderer::draw`, from the fence wait onward — moved verbatim so the
     /// command sequence/barriers (and thus the golden bytes) are unchanged.
     unsafe fn render_present(&mut self, fp: &FramePresent) -> bool {
+        // TODO(vulkan): burn fp.stamps into `out` like Metal does — rides the
+        // same gap as the ignored fp.minimap (this backend ships no HUD burn
+        // yet); tracked in docs/goo-mob-handoff.md.
+        let _ = &fp.stamps;
         let swap = self.swap.as_ref().unwrap();
         let d = &self.ctx.device;
         d.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();

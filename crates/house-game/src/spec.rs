@@ -594,7 +594,20 @@ pub fn shooting_range_level() -> LevelSpec {
 pub fn arena_level() -> LevelSpec {
     LevelSpec {
         rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-10.0, -10.0, 10.0, 10.0] }],
-        static_solids: vec![],
+        // Cover architecture (all thin 0.25-wu walls -> full-height render,
+        // honest LOS + projectile blockers; every dim a 0.0625 multiple).
+        // North wall with a 0.5625-wu SQUEEZE SLOT on the west lane: a Large
+        // blob (~1 wu wide) must physically squeeze its PBF body through;
+        // the east lane stays open. The mid-field L is a corner pointing at
+        // the player spawn, made for show-then-hide ambushes; the east wall
+        // is flank cover on the open lane.
+        static_solids: vec![
+            [-10.0, -2.125, -7.0, -1.875],
+            [-6.4375, -2.125, -3.25, -1.875],
+            [-4.25, 0.875, -0.75, 1.125],
+            [-1.0, 1.125, -0.75, 3.125],
+            [2.75, -0.125, 3.0, 2.875],
+        ],
         doors: vec![],
         // one centre lamp; the open-studio sky fill carries the pit evenly
         // (lights place at the ROOM CENTRE — a lamp grid would need rooms)
@@ -604,12 +617,14 @@ pub fn arena_level() -> LevelSpec {
         // half but INSIDE the spawn camera's ~14×9 wu view — the first frame
         // must show targets (a shooter that opens on empty floor reads as
         // broken). One blue Tank anchor, two red Runners for pressure.
+        // spawn positions steer clear of the new walls (the old squad sat
+        // where the L now stands); still inside the spawn camera's view
         mobs: vec![
-            MobSpec { id: MobId(0), tier: 0, kind: GooKind::Tank, pos: Vec3::new(-4.0, 0.0, 1.0) },
-            MobSpec { id: MobId(1), tier: 1, kind: GooKind::Runner, pos: Vec3::new(4.0, 0.0, 0.5) },
-            MobSpec { id: MobId(2), tier: 1, kind: GooKind::Green, pos: Vec3::new(0.0, 0.0, 2.0) },
-            MobSpec { id: MobId(3), tier: 2, kind: GooKind::Runner, pos: Vec3::new(-2.0, 0.0, 3.5) },
-            MobSpec { id: MobId(4), tier: 2, kind: GooKind::Green, pos: Vec3::new(2.5, 0.0, 3.0) },
+            MobSpec { id: MobId(0), tier: 0, kind: GooKind::Tank, pos: Vec3::new(-5.75, 0.0, -0.25) },
+            MobSpec { id: MobId(1), tier: 1, kind: GooKind::Runner, pos: Vec3::new(4.75, 0.0, 0.5) },
+            MobSpec { id: MobId(2), tier: 1, kind: GooKind::Green, pos: Vec3::new(0.5, 0.0, 2.0) },
+            MobSpec { id: MobId(3), tier: 2, kind: GooKind::Runner, pos: Vec3::new(-2.25, 0.0, 3.75) },
+            MobSpec { id: MobId(4), tier: 2, kind: GooKind::Green, pos: Vec3::new(1.75, 0.0, 3.5) },
         ],
         traps: vec![],
         arena: Some(ArenaParams::default()),

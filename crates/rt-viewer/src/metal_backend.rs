@@ -869,6 +869,26 @@ impl RenderBackend for MetalBackend {
             cb.wait_until_completed();
         }
 
+        // ---- stamps: tactic bubbles + the bottom HUD bar, burned into
+        // out_tex (present + readback source) so they land in SHOT/DEMO
+        // captures — the live "thinking" display is part of the game
+        // picture, not shell UI.
+        if !fp.stamps.is_empty() {
+            let (ext_w, ext_h) = { let t = self.target.as_ref().unwrap(); (t.ext_w, t.ext_h) };
+            let cbs = self.queue.new_command_buffer();
+            let blit = cbs.new_blit_command_encoder();
+            let mut staging: Vec<Texture> = Vec::new();
+            {
+                let t = self.target.as_ref().unwrap();
+                for st in fp.stamps {
+                    self.blit_overlay(blit, &t.out_tex, &st.pix, st.w, st.h, st.scale, st.x, st.y, ext_w, ext_h, &mut staging);
+                }
+            }
+            blit.end_encoding();
+            cbs.commit();
+            cbs.wait_until_completed();
+        }
+
         // ---- minimap HUD: burn into out_tex (the present + readback source) so
         // it lands in the live view AND in SHOT/DUMP/DEMO captures, unlike the
         // menu/score overlay (drawable only). Bottom-left corner.

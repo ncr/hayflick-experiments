@@ -490,6 +490,15 @@ impl GameLoop {
             let k = (m.cure as f32 / house_game::GOO_CURE_MAX as f32) * 0.8;
             const GRAY: [f32; 3] = [0.55, 0.09, 0.26]; // × GOO_EMIS ≈ dull stone-teal
             let mut tint = [kt[0] + (GRAY[0] - kt[0]) * k, kt[1] + (GRAY[1] - kt[1]) * k, kt[2] + (GRAY[2] - kt[2]) * k, kt[3]];
+            // comm-pact telegraph: flash the whole body toward a hot signal
+            // white (deliberately NOT the amber birth tint) by the pulse —
+            // both pact members share a strike tick, so they blink in sync.
+            if m.comm > 0.0 {
+                const FLASH: [f32; 3] = [2.6, 2.9, 3.4];
+                for (t, f) in tint.iter_mut().zip(FLASH) {
+                    *t += (f - *t) * m.comm;
+                }
+            }
             // netcode-lag glitch: a WEAK blob renders its CACHED body (the true
             // hitbox crawls on — shots resolve against the sim, not the draw),
             // dimming as the snapshot ages so the pop-forward reads as a stutter
@@ -557,14 +566,21 @@ impl GameLoop {
             }
             let c = m.centroid();
             let centroid = Vec3::new(c.x, LIFT, c.z);
-            let power = POWER_BASE + POWER_PER_RADIUS * m.radius;
+            // the comm blink also drives the floor pool: brighter and pulled
+            // toward white while signalling (readable even when the body is
+            // partly behind cover — which is exactly when pacts happen)
+            let power = (POWER_BASE + POWER_PER_RADIUS * m.radius) * (1.0 + 1.4 * m.comm);
+            let mut tint = goo_kind_light_tint(m.kind);
+            for t in tint.iter_mut() {
+                *t += (1.0 - *t) * (0.7 * m.comm);
+            }
             out.push(rt_probe::Spotlight {
                 pos: centroid,
                 dir: Vec3::new(0.0, -1.0, 0.0),
                 cone_cos: CONE_DEG.to_radians().cos(),
                 power,
                 radius: (m.radius * SHADOW_RADIUS_FRAC).max(SHADOW_RADIUS_MIN),
-                tint: goo_kind_light_tint(m.kind),
+                tint,
             });
         }
         out

@@ -533,7 +533,12 @@ impl<S: AudioSink> HouseGame<S> {
                     hit.consider(t, ProjImpact::Target(te, id, q));
                 }
             }
-            // 2) goo blobs (swept contact sphere)
+            // 2) goo blobs (swept contact sphere). A projectile whose tick
+            // STARTS inside the sphere is already touching the body — contact
+            // at t=0 (ray_sphere returns a negative entry there, which the
+            // in-range gate rejects; before this rule a grenade could bounce
+            // INTO a blob's contact sphere and coast through, never
+            // detonating — real physics says it is embedded in goo).
             for &me in &self.mobs {
                 let g = self.world.get::<&Goo>(me).unwrap();
                 if g.fusing > 0 {
@@ -542,7 +547,10 @@ impl<S: AudioSink> HouseGame<S> {
                 let c2 = g.centroid();
                 let r = goo_tier_radius(g.tier);
                 let center = Vec3::new(c2.x, r, c2.y);
-                if let Some(t) = ray_sphere(&ray, center, r + g.body_len * 0.7 + p.radius) {
+                let contact = r + g.body_len * 0.7 + p.radius;
+                if (old - center).length_squared() < contact * contact {
+                    hit.consider(0.0, ProjImpact::Goo(me, old));
+                } else if let Some(t) = ray_sphere(&ray, center, contact) {
                     let q = old + dir * t.max(0.0);
                     hit.consider(t, ProjImpact::Goo(me, q));
                 }
