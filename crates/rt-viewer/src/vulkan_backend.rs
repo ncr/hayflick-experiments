@@ -35,6 +35,11 @@ pub struct Swap {
     pub out: (vk::Image, vk::DeviceMemory, vk::ImageView),    // 8-bit window image
     pub menu_buf: Buffer, // host-visible staging for the ESC tune-menu overlay
     pub hud_buf: Buffer,  // host-visible staging for the corner score HUD (overlay-only)
+    /// Host-visible staging for the burned-in HUD (stamps + minimap): all
+    /// expanded canvases packed back-to-back, copied into `out` pre-blit so
+    /// they land in SHOT/DEMO/clip captures too. Sized one full window —
+    /// a safe upper bound for the whole HUD.
+    pub stamp_buf: Buffer,
     pub menu_scale: u32,  // integer UI scale (from window height; pixel font stays readable)
     pub scene_pool: vk::DescriptorPool,
     pub scene_set: vk::DescriptorSet,
@@ -382,6 +387,11 @@ impl VulkanBackend {
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
+        let stamp_buf = self.ctx.create_buffer(
+            extent.width as u64 * extent.height as u64 * 4,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
         self.ctx.one_time(|cmd| {
             for img in [color.0, albedo.0, posg.0, goo_bg.0, out.0] {
                 barrier(&self.ctx.device, cmd, img, vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::SHADER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER);
@@ -446,7 +456,7 @@ impl VulkanBackend {
 
         let render_finished: Vec<vk::Semaphore> = images.iter().map(|_| self.ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap()).collect();
 
-        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, hud_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, goo_bg, goo_pool, goo_set, render_finished });
+        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, hud_buf, stamp_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, goo_bg, goo_pool, goo_set, render_finished });
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
     }
 
@@ -465,6 +475,7 @@ impl VulkanBackend {
         }
         self.ctx.destroy_buffer(&s.menu_buf);
         self.ctx.destroy_buffer(&s.hud_buf);
+        self.ctx.destroy_buffer(&s.stamp_buf);
         if let Some(p) = &self.present {
             p.swapchain_loader.destroy_swapchain(s.swapchain, None);
         }
@@ -529,10 +540,6 @@ impl RenderBackend for VulkanBackend {
     /// `Renderer::draw`, from the fence wait onward — moved verbatim so the
     /// command sequence/barriers (and thus the golden bytes) are unchanged.
     unsafe fn render_present(&mut self, fp: &FramePresent) -> bool {
-        // TODO(vulkan): burn fp.stamps into `out` like Metal does — rides the
-        // same gap as the ignored fp.minimap (this backend ships no HUD burn
-        // yet); tracked in docs/goo-mob-handoff.md.
-        let _ = &fp.stamps;
         let swap = self.swap.as_ref().unwrap();
         let d = &self.ctx.device;
         d.wait_for_fences(&[self.in_flight], true, u64::MAX).unwrap();
@@ -625,10 +632,62 @@ impl RenderBackend for VulkanBackend {
         d.cmd_push_constants(cmd, self.tone_pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&tp));
         d.cmd_dispatch(cmd, extent.width.div_ceil(8), extent.height.div_ceil(8), 1);
 
-        // out: GENERAL (compute write) -> TRANSFER_SRC (swapchain blit + clip
-        // capture source; headless keeps the same layout round-trip)
-        barrier(d, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
         let layers = vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 };
+
+        // ---- stamps + minimap: burned into `out` (the present + readback
+        // source) BEFORE the swapchain blit / clip capture, so tactic bubbles
+        // and the bottom HUD bar land in SHOT/DEMO captures too — they are
+        // part of the game picture, not shell UI (Metal twin: blit_overlay
+        // onto out_tex after tonemap). All expanded canvases are packed into
+        // one staging buffer; an out-of-bounds canvas is skipped WHOLE,
+        // matching Metal's blit_overlay clip rule.
+        let mut burn_bytes: Vec<u8> = Vec::new();
+        let mut burn_regions: Vec<vk::BufferImageCopy> = Vec::new();
+        {
+            let cap = extent.width as usize * extent.height as usize * 4; // = stamp_buf size
+            let mut burn = |canvas: &[u32], cw: i32, ch: i32, scale: u32, dx: i64, dy: i64| {
+                let (pw, ph) = (cw as u64 * scale as u64, ch as u64 * scale as u64);
+                if dx < 0 || dy < 0 || dx as u64 + pw > extent.width as u64 || dy as u64 + ph > extent.height as u64 {
+                    return;
+                }
+                let bytes = crate::menu::expand_canvas(canvas, cw, ch, scale, false); // `out` is RGBA8
+                if burn_bytes.len() + bytes.len() > cap {
+                    return;
+                }
+                burn_regions.push(
+                    vk::BufferImageCopy::default()
+                        .buffer_offset(burn_bytes.len() as u64)
+                        .image_subresource(layers)
+                        .image_offset(vk::Offset3D { x: dx as i32, y: dy as i32, z: 0 })
+                        .image_extent(vk::Extent3D { width: pw as u32, height: ph as u32, depth: 1 }),
+                );
+                burn_bytes.extend_from_slice(&bytes);
+            };
+            for st in fp.stamps {
+                burn(&st.pix, st.w, st.h, st.scale, st.x, st.y);
+            }
+            // minimap: bottom-left corner, same placement as Metal
+            if let Some((mc, mw, mh)) = fp.minimap {
+                let m: i64 = 12;
+                let dy = extent.height as i64 - m - mh as i64 * swap.menu_scale as i64;
+                burn(mc, mw, mh, swap.menu_scale, m, dy);
+            }
+        }
+        if !burn_regions.is_empty() {
+            self.ctx.upload(&swap.stamp_buf, &burn_bytes);
+            // tonemap write -> transfer write, same GENERAL layout
+            barrier(d, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
+            d.cmd_copy_buffer_to_image(cmd, swap.stamp_buf.buffer, swap.out.0, vk::ImageLayout::GENERAL, &burn_regions);
+        }
+
+        // out: GENERAL (compute or burn write) -> TRANSFER_SRC (swapchain blit
+        // + clip capture source; headless keeps the same layout round-trip)
+        let (out_stage, out_access) = if burn_regions.is_empty() {
+            (vk::PipelineStageFlags::COMPUTE_SHADER, vk::AccessFlags::SHADER_WRITE)
+        } else {
+            (vk::PipelineStageFlags::TRANSFER, vk::AccessFlags::TRANSFER_WRITE)
+        };
+        barrier(d, cmd, swap.out.0, vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, out_access, vk::AccessFlags::TRANSFER_READ, out_stage, vk::PipelineStageFlags::TRANSFER);
         if let Some(sc_image) = sc_image {
             // swapchain: UNDEFINED -> TRANSFER_DST, then the integer-NEAREST blit
             barrier(d, cmd, sc_image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
