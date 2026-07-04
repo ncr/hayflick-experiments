@@ -205,6 +205,7 @@ mod tests {
             targets: vec![],
             items: vec![],
             survival: None,
+            sterile: false,
             mobs: vec![],
             traps: vec![],
             arena: None,

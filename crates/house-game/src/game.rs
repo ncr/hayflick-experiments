@@ -313,6 +313,8 @@ pub struct Res {
     /// Comm-pact cooldown: the next tick a new blob pact may form. Hashed
     /// under the arsenal gate (it only ever moves on arena levels).
     pub next_comm_tick: u64,
+    /// Level-authored film knob (spec.sterile): tier-0 mothers skip budding.
+    pub sterile: bool,
 }
 
 
@@ -463,6 +465,7 @@ impl<S: AudioSink> HouseGame<S> {
             nav: None,
             cover: cover_points(&spec.static_solids),
             next_comm_tick: 0,
+            sterile: spec.sterile,
         };
 
         // Goo blobs, MobId-sorted (no HashMap iteration). Spawned only when the

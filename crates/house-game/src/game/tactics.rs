@@ -306,8 +306,15 @@ impl<S: AudioSink> HouseGame<S> {
             if c.x < floor[0] + 0.5 || c.y < floor[1] + 0.5 || c.x > floor[2] - 0.5 || c.y > floor[3] - 0.5 {
                 continue;
             }
-            if self.res.nav.as_ref().is_some_and(|nf| nf.dist_at(*c) == u16::MAX) {
-                continue;
+            // must be reachable AND advancing: taking cover that the flow
+            // field says is FARTHER from the player than the blob already is
+            // reads as a retreat detour (the mother re-crossing the squeeze
+            // wall to hide on the wrong side, famously)
+            if let Some(nf) = self.res.nav.as_ref() {
+                let (dc, db) = (nf.dist_at(*c), nf.dist_at(from));
+                if dc == u16::MAX || (db != u16::MAX && dc >= db) {
+                    continue;
+                }
             }
             let dp = (*c - player).length();
             if dp < 1.6 || dp > 8.5 {
@@ -424,6 +431,10 @@ impl<S: AudioSink> HouseGame<S> {
                     if arrived || g.tac_timer == 0 {
                         g.tac = Tactic::Sprint;
                         g.tac_timer = SPRINT_TICKS;
+                        // commit SNAP: rotate_toward lerps through zero at the
+                        // 180° antipode (a maneuver often leaves the heading
+                        // pointing dead away), so the lunge aims itself
+                        g.heading = (player - head).normalize_or_zero();
                     }
                 }
                 Tactic::ToCover => {
@@ -449,6 +460,7 @@ impl<S: AudioSink> HouseGame<S> {
                     if g.tac_timer == 0 {
                         g.tac = Tactic::Sprint; // burst from around the corner
                         g.tac_timer = SPRINT_TICKS;
+                        g.heading = (player - head).normalize_or_zero(); // commit snap
                     }
                 }
                 Tactic::CoordWait => {
@@ -456,6 +468,7 @@ impl<S: AudioSink> HouseGame<S> {
                         g.tac = Tactic::Sprint;
                         g.tac_timer = SPRINT_TICKS;
                         g.strike = 0;
+                        g.heading = (player - head).normalize_or_zero(); // commit snap
                     }
                 }
                 Tactic::Sprint => {

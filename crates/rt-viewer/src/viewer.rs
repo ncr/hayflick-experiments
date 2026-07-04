@@ -114,6 +114,9 @@ impl Viewer {
             // the goo ARENA: walled 20×20 pit, arsenal controls (LMB shoots,
             // keys 1–5 select), mixed-tier squad — the arena-shooter playtest.
             "arena" => Some(house_game::arena_level()),
+            // the squeeze film stage: one Large + the slotted north wall,
+            // the player standing guard south (the show-your-friend clip).
+            "squeeze" => Some(house_game::squeeze_level()),
             "village" => Some(house_game::village_level(cfg.game.cave_seed)),
             // Floor-plan-derived levels: a believable PLAN (rooms + doors) run
             // through `floorplan::enclose` to synthesize walls + collision. Each

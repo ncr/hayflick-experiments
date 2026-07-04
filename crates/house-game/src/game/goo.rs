@@ -1046,7 +1046,10 @@ impl<S: AudioSink> HouseGame<S> {
                     g.spawn_dir = Vec2::ZERO;
                 }
             }
-            g.spawn_timer = g.spawn_timer.saturating_sub(1);
+            // sterile film stages freeze the bud clock (never reaches 0)
+            if !self.res.sterile {
+                g.spawn_timer = g.spawn_timer.saturating_sub(1);
+            }
             // tear countdown: armed at birth, it lapses in lockstep with the
             // newborn's tether (both set GOO_TETHER_TICKS the same tick), so the
             // bond snaps and her tear-site shakes on the SAME tick the mini does.

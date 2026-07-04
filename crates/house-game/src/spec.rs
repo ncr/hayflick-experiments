@@ -248,6 +248,11 @@ pub struct LevelSpec {
     /// Arena-shooter mode. `None` = arsenal OFF: no weapon-select state spawns,
     /// nothing new enters state_hash (same opt-in discipline as `survival`).
     pub arena: Option<ArenaParams>,
+    /// Film-stage knob: tier-0 mothers do NOT bud minis. The demo scenes use
+    /// it to keep a staged beat readable (e.g. the squeeze film — one Large,
+    /// no trailing newborns). Default false; no shipped gameplay level sets
+    /// it, so ordinary levels (and every hash oracle) are untouched.
+    pub sterile: bool,
     pub player_start: Vec3,
     pub seed: u64,
 }
@@ -308,6 +313,7 @@ pub fn fixture() -> LevelSpec {
         mobs: vec![],      // no mobs → fixture hashes exactly as before
         traps: vec![],
         arena: None,       // arsenal off → fixture hashes exactly as before
+        sterile: false,
         player_start: Vec3::new(-3.5, 0.0, 0.0),
         seed: 42,
     }
@@ -399,6 +405,7 @@ pub fn game_level() -> LevelSpec {
         mobs: vec![],      // no mobs → game_level hashes exactly as before (goo_level() is the demo)
         traps: vec![],
         arena: None,       // arsenal off → game_level hashes exactly as before
+        sterile: false,
         player_start: Vec3::new(9.5, 0.0, 6.5), // room E (SE corner, faces the camera), aligned with door_ce's gap row
         seed: 7,
     }
@@ -629,6 +636,32 @@ pub fn arena_level() -> LevelSpec {
         traps: vec![],
         arena: Some(ArenaParams::default()),
         player_start: Vec3::new(0.0, 0.0, 6.0),
+        ..game_level()
+    }
+}
+
+/// The SQUEEZE film stage (`SCENE=squeeze`): the arena's north wall with its
+/// 0.5625-wu slot, ONE Large blob north of it, the player standing guard due
+/// south with a clean sightline. Made for filming the signature beat: a
+/// ~1-wu body funnels itself through the slot (budding minis trail through
+/// after their mother), then walks into the arsenal. `arena: Some` powers
+/// the tactics brain (flow-field routing INTO the slot) + LMB shooting.
+/// Not hash-stable / not a golden — a demo stage. Edit freely.
+pub fn squeeze_level() -> LevelSpec {
+    LevelSpec {
+        rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-10.0, -10.0, 10.0, 10.0] }],
+        static_solids: vec![
+            [-10.0, -2.125, -7.0, -1.875],
+            [-6.4375, -2.125, -3.25, -1.875],
+        ],
+        doors: vec![],
+        lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "arena_lamp".into() }],
+        targets: vec![],
+        mobs: vec![MobSpec { id: MobId(0), tier: 0, kind: GooKind::Runner, pos: Vec3::new(-6.71875, 0.0, -5.0) }],
+        traps: vec![],
+        arena: Some(ArenaParams::default()),
+        sterile: true, // one body, one slot — no trailing newborns in frame
+        player_start: Vec3::new(-6.71875, 0.0, 2.0),
         ..game_level()
     }
 }

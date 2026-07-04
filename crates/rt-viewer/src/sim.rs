@@ -729,6 +729,7 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
         targets: Vec::new(),
         items: Vec::new(), // survival is per-level opt-in; the mirror spec leaves it off
         survival: None,
+        sterile: false,
         mobs: Vec::new(), // mobs are authored per-level; the mirror scenes have none
         traps: Vec::new(),
         arena: None,

@@ -345,7 +345,7 @@ pub(crate) fn emit_grid_spec(w: i32, h: i32, floor: &[bool], room_of: &[i32], ro
         .map(|(ri, _)| LightSpec { id: LightId(ri as u32), room: RoomId(ri as u32), kind: LightKind::Incandescent, base_rgb: [1.0, 0.96, 0.9], name: format!("cave_lamp_{ri}") })
         .collect();
 
-    LevelSpec { rooms: room_specs, static_solids: solids, doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start, seed }
+    LevelSpec { rooms: room_specs, static_solids: solids, doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, sterile: false, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start, seed }
 }
 
 #[cfg(test)]
