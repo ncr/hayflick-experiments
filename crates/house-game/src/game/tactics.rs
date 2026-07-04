@@ -543,10 +543,14 @@ impl<S: AudioSink> HouseGame<S> {
 /// only bodies currently approaching (Direct/Flank) with the player in
 /// sensing range join a pact.
 fn comm_ready(g: &Goo, player: Vec2, solids: &[[f32; 4]]) -> bool {
+    let d = (player - g.ends[0]).length();
     matches!(g.tac, Tactic::Direct | Tactic::Flank)
         && g.pinned == 0
         && g.fusing == 0
-        && (player - g.ends[0]).length() < COMM_SEE
+        // close enough to care, far enough that scheduling makes sense — a
+        // body already ON the player just attacks, it doesn't diarize
+        && d < COMM_SEE
+        && d > TACTIC_NEAR
         // you can't co-ordinate an attack on a target you can't see — and a
         // pact freeze behind a wall reads as a stuck blob, not menace
         && los_clear(solids, g.ends[0], player)
