@@ -54,7 +54,7 @@ mod vulkan_backend;
 
 use glam::Vec2;
 use house_game::Command;
-use menu::MENU;
+use menu::MenuMode;
 use rt_probe::Config;
 use viewer::Viewer;
 use std::sync::Arc;
@@ -100,15 +100,31 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
                 let Some(r) = self.renderer.as_mut() else { return };
-                // open menu captures the arrows + enter (WASD still walks)
-                if r.menu.open && event.state.is_pressed() {
+                // an open menu (game menu or settings) captures the arrows +
+                // enter; WASD also navigates the GAME menus (regular-game
+                // muscle memory), but still walks under the settings panel
+                if r.menu_open() && event.state.is_pressed() {
+                    let game_menu = matches!(r.menu.mode, MenuMode::Title | MenuMode::Pause);
+                    let n = r.menu_len();
                     match event.logical_key.as_ref() {
                         Key::Named(NamedKey::ArrowUp) => {
-                            r.menu.sel = (r.menu.sel + MENU.len() - 1) % MENU.len();
+                            r.menu.sel = (r.menu.sel + n - 1) % n;
+                            r.ui_blip("menu_move");
                             return;
                         }
                         Key::Named(NamedKey::ArrowDown) => {
-                            r.menu.sel = (r.menu.sel + 1) % MENU.len();
+                            r.menu.sel = (r.menu.sel + 1) % n;
+                            r.ui_blip("menu_move");
+                            return;
+                        }
+                        Key::Character("w") if game_menu => {
+                            r.menu.sel = (r.menu.sel + n - 1) % n;
+                            r.ui_blip("menu_move");
+                            return;
+                        }
+                        Key::Character("s") if game_menu => {
+                            r.menu.sel = (r.menu.sel + 1) % n;
+                            r.ui_blip("menu_move");
                             return;
                         }
                         Key::Named(NamedKey::ArrowLeft) => {
@@ -123,6 +139,11 @@ impl ApplicationHandler for App {
                             r.menu_activate();
                             return;
                         }
+                        Key::Named(NamedKey::Escape) => {
+                            r.menu_toggle();
+                            return;
+                        }
+                        _ if game_menu => return, // game menus are modal: swallow the rest
                         _ => {}
                     }
                 }
@@ -145,7 +166,7 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::Escape) => r.menu_toggle(),
                     // dead run -> Space starts a new one (menu-open Space is
                     // consumed by menu_activate above and never lands here)
-                    Key::Named(NamedKey::Space) => r.restart_run(),
+                    Key::Named(NamedKey::Space) => r.restart_run(false),
                     Key::Character("v") if !event.repeat => r.render_reel(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.view.cursor;

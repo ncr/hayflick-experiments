@@ -245,8 +245,20 @@ impl Viewer {
                 wheel_accum: 0.0,
                 dragging: false,
             },
+            // arena boots into the TITLE menu (a regular game start screen) —
+            // but only live windowed sessions; every harness mode (SHOT /
+            // DEMO / DUMP / MOVIE) must render the game, not a menu.
+            menu: MenuState {
+                mode: if game.lmb_shoots && cfg.harness.shot.is_none() && cfg.harness.demo.is_none() && cfg.harness.dump.is_none() && cfg.harness.movie.is_none() {
+                    crate::menu::MenuMode::Title
+                } else {
+                    crate::menu::MenuMode::Closed
+                },
+                back: crate::menu::MenuMode::Closed,
+                sel: 0,
+                drag: false,
+            },
             game,
-            menu: MenuState { open: false, sel: 0, drag: false },
             harness: Harness::from_cfg(&cfg),
             rec: None,
             rec_jobs: Vec::new(),
@@ -325,10 +337,13 @@ impl Viewer {
     /// level, zeroed sim). View state (camera/zoom) survives; the follow-cam
     /// recentres on the respawned player's first step. No-op when the scene
     /// has no stored spec or the run isn't over.
-    pub fn restart_run(&mut self) {
+    /// Rebuild a fresh run from the stored spec. `force` (the pause menu's
+    /// RESTART) skips the run-over guard; the bare Space restart keeps it so
+    /// a stray Space mid-fight can't wipe the run.
+    pub fn restart_run(&mut self, force: bool) {
         let over = self.game.snap.run.is_some_and(|r| r.dead || r.won);
         let Some(spec) = self.run_spec.clone() else { return };
-        if !over {
+        if !over && !force {
             return;
         }
         self.game = crate::sim::GameLoop::from_spec(spec, &self.scene, self.backend.handles(), self.backend.light_count(), &self.cfg);
@@ -336,6 +351,13 @@ impl Viewer {
         // yaw with the CURRENT camera quarter, or WASD (interpreted at the
         // sim's boot yaw) comes out turned relative to the rotated screen
         self.game.seed_yaw(self.view.yaw_q);
+    }
+
+    /// Fire-and-forget UI sound (menu nav/pick) — presentation only.
+    pub fn ui_blip(&self, id: &str) {
+        if let Some(a) = &self.audio {
+            a.play(id, 1.0);
+        }
     }
 
     /// Whole-low-pixel render scale for the current zoom (#4).
@@ -392,11 +414,17 @@ impl Viewer {
             self.sync_view_yaw(self.game.snap.yaw_q);
             self.game.tick_fx(1); // bleed/recoil/shake FX ride the tick clock
         } else {
+            // game-menu pause (arena, live): the sim clock stops dead while
+            // the TITLE / PAUSE / SETTINGS menu is up — the accumulator isn't
+            // fed, so RESUME continues exactly where it stopped.
+            if self.game.lmb_shoots && self.menu_open() && self.harness.shot.is_none() {
+                // paused — nothing ticks
+            }
             // hitstop: a terminal kill / detonation freezes the LIVE sim a
             // few frames for punch — the accumulator isn't fed, so there is
             // no tick burst afterward. SHOT stays wall-clock-free (its dt is
             // synthetic and must map 1:1 to ticks).
-            if self.game.freeze > 0 && self.harness.shot.is_none() {
+            else if self.game.freeze > 0 && self.harness.shot.is_none() {
                 self.game.freeze -= 1;
             } else {
                 // arena turret: keep the gun trained on the cursor (pushes
@@ -593,7 +621,8 @@ impl Viewer {
             menu_canvas = self.menu_canvas();
             // the score plate moved into the burned-in bottom bar (stamps) —
             // the overlay carries only shell UI (menu/hamburger) now
-            Some(Overlay { menu: (&menu_canvas.0, menu_canvas.1, menu_canvas.2), score: None })
+            let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause);
+            Some(Overlay { menu: (&menu_canvas.0, menu_canvas.1, menu_canvas.2), menu_center: center, score: None })
         } else {
             None
         };

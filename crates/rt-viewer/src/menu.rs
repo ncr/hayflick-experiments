@@ -1,9 +1,16 @@
-//! The in-viewer tune menu (ESC): a hamburger panel drawn with an 8x8 pixel
-//! font on the CPU, expanded by an integer UI scale, and copied onto the
-//! presented swapchain image after the blit (never onto swap.out — SHOT /
-//! MOVIE / DUMP captures stay clean). Values land in the SAME fields the env
-//! vars seed, so the renderer picks them up the very next frame; closing the
-//! menu prints the matching env string to stdout to lock a look in.
+//! The in-viewer menus, drawn with an 8x8 pixel font on the CPU, expanded by
+//! an integer UI scale, and copied onto the presented swapchain image after
+//! the blit (never onto swap.out — SHOT / MOVIE / DUMP captures stay clean).
+//!
+//! Two families share the machinery:
+//! - GAME menus (arena, windowed): a centered TITLE screen at boot (START
+//!   SHIFT / SETTINGS / QUIT) and an ESC PAUSE menu (RESUME / RESTART /
+//!   SETTINGS / QUIT). While either is open the sim clock is stopped dead.
+//! - SETTINGS: the render-tune panel (sliders + toggles + record), top-left.
+//!   Dev scenes open it directly on ESC (the old behaviour); on arena it is
+//!   a submenu that returns to the game menu it came from. Values land in
+//!   the SAME fields the env vars seed; leaving settings prints the env
+//!   string to stdout to lock a look in.
 
 use crate::viewer::Viewer;
 use glam::Vec2;
@@ -56,6 +63,11 @@ const MICON_W: i32 = 18; // hamburger icon shown when the menu is closed
 const MICON_H: i32 = 14;
 pub const MENU_MARGIN: i32 = 12; // physical px from the window's top-left
 
+/// Game-menu panel height for `items` rows (title band + rows + footer).
+pub(crate) fn gpanel_h(items: usize) -> i32 {
+    GPAD * 2 + GROW * (1 + items as i32) + 12
+}
+
 // corner score HUD (player scenes only): a small badge in the TOP-RIGHT,
 // drawn like the menu (overlay-only, never onto swap.out — SHOT/MOVIE/DUMP
 // captures stay clean), at the same integer UI scale as the menu.
@@ -70,9 +82,39 @@ pub const HUD_H: i32 = 14;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const HUD_H_MAX: i32 = HUD_H + 14;
 
+/// Which menu is on screen. `Title` and `Pause` are the GAME menus (centered
+/// panel, sim paused); `Settings` is the tune panel (top-left).
+#[derive(Clone, Copy, PartialEq)]
+pub enum MenuMode {
+    Closed,
+    Title,
+    Pause,
+    Settings,
+}
+
+/// One row of a game menu.
+#[derive(Clone, Copy)]
+pub enum GameAction {
+    Start,
+    Resume,
+    Restart,
+    Settings,
+    Quit,
+}
+pub const TITLE_MENU: &[(&str, GameAction)] = &[("start shift", GameAction::Start), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
+pub const PAUSE_MENU: &[(&str, GameAction)] = &[("resume", GameAction::Resume), ("restart shift", GameAction::Restart), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
+
+// game-menu panel layout (logical px; physical = logical * menu_scale)
+const GROW: i32 = 16; // taller rows than the tune panel
+const GPAD: i32 = 10;
+pub const GPANEL_W: i32 = MPANEL_W; // shares the settings panel's staging buffer
+
 /// Menu interaction state (the tunable values live on `Viewer`).
 pub struct MenuState {
-    pub open: bool,
+    pub mode: MenuMode,
+    /// Where Settings returns on ESC/back: the game menu it was opened from,
+    /// or Closed on dev scenes (ESC opens Settings directly there).
+    pub back: MenuMode,
     pub sel: usize,
     pub drag: bool,
 }
@@ -211,16 +253,49 @@ impl Viewer {
             .join(" ")
     }
 
-    pub fn menu_toggle(&mut self) {
-        self.menu.open = !self.menu.open;
-        self.menu.drag = false;
-        if !self.menu.open {
-            println!("tune: {}", self.env_string());
+    /// Any menu on screen (captures arrows/enter; game menus also pause).
+    pub fn menu_open(&self) -> bool {
+        self.menu.mode != MenuMode::Closed
+    }
+
+    /// Rows of the menu currently on screen (keyboard nav wraps on this).
+    pub fn menu_len(&self) -> usize {
+        match self.menu.mode {
+            MenuMode::Title => TITLE_MENU.len(),
+            MenuMode::Pause => PAUSE_MENU.len(),
+            _ => MENU.len(),
         }
     }
 
-    /// Arrow left/right on the selected row.
+    fn menu_set(&mut self, mode: MenuMode) {
+        self.menu.mode = mode;
+        self.menu.sel = 0;
+        self.menu.drag = false;
+    }
+
+    /// ESC. Closed → the scene's menu (arena: PAUSE; dev scenes: settings
+    /// directly). Settings → back where it came from (printing the env
+    /// string that reproduces the dialed-in look). Title stays — the game
+    /// hasn't started, there is nothing to close onto.
+    pub fn menu_toggle(&mut self) {
+        match self.menu.mode {
+            MenuMode::Closed => self.menu_set(if self.game.lmb_shoots { MenuMode::Pause } else { MenuMode::Settings }),
+            MenuMode::Pause => self.menu_set(MenuMode::Closed),
+            MenuMode::Title => {}
+            MenuMode::Settings => {
+                println!("tune: {}", self.env_string());
+                let back = self.menu.back;
+                self.menu_set(back);
+            }
+        }
+        self.ui_blip("menu_move");
+    }
+
+    /// Arrow left/right on the selected row (settings sliders only).
     pub fn menu_adjust(&mut self, dir: f32) {
+        if self.menu.mode != MenuMode::Settings {
+            return;
+        }
         let item = &MENU[self.menu.sel];
         match item.kind {
             ItemKind::Slider { min, max, step } => {
@@ -235,15 +310,38 @@ impl Viewer {
 
     /// Enter/space/click on the selected row.
     pub fn menu_activate(&mut self) {
-        let item = &MENU[self.menu.sel];
-        match item.kind {
-            ItemKind::Toggle => {
-                let v = self.tune_get(item.key);
-                self.tune_set(item.key, if v != 0.0 { 0.0 } else { 1.0 });
+        match self.menu.mode {
+            MenuMode::Title | MenuMode::Pause => {
+                let items = if self.menu.mode == MenuMode::Title { TITLE_MENU } else { PAUSE_MENU };
+                let (_, action) = items[self.menu.sel.min(items.len() - 1)];
+                self.ui_blip("menu_pick");
+                match action {
+                    GameAction::Start | GameAction::Resume => self.menu_set(MenuMode::Closed),
+                    GameAction::Restart => {
+                        self.restart_run(true);
+                        self.menu_set(MenuMode::Closed);
+                    }
+                    GameAction::Settings => {
+                        let from = self.menu.mode;
+                        self.menu_set(MenuMode::Settings);
+                        self.menu.back = from;
+                    }
+                    GameAction::Quit => self.exit_requested = true,
+                }
             }
-            ItemKind::Record => self.toggle_recording(),
-            ItemKind::Quit => self.exit_requested = true,
-            ItemKind::Slider { .. } => {}
+            MenuMode::Settings => {
+                let item = &MENU[self.menu.sel];
+                match item.kind {
+                    ItemKind::Toggle => {
+                        let v = self.tune_get(item.key);
+                        self.tune_set(item.key, if v != 0.0 { 0.0 } else { 1.0 });
+                    }
+                    ItemKind::Record => self.toggle_recording(),
+                    ItemKind::Quit => self.exit_requested = true,
+                    ItemKind::Slider { .. } => {}
+                }
+            }
+            MenuMode::Closed => {}
         }
     }
 
@@ -252,37 +350,75 @@ impl Viewer {
         self.backend.menu_scale() as f32
     }
 
+    /// Top-left window px of the on-screen panel: game menus are centered,
+    /// the settings panel/hamburger sit at the top-left margin.
+    fn menu_origin(&self, pw: i32, ph: i32) -> Vec2 {
+        match self.menu.mode {
+            MenuMode::Title | MenuMode::Pause => {
+                let ms = self.menu_ui_scale();
+                let (ew, eh) = self.backend.extent();
+                Vec2::new((ew as f32 - pw as f32 * ms) * 0.5, (eh as f32 - ph as f32 * ms) * 0.5)
+            }
+            _ => Vec2::splat(MENU_MARGIN as f32),
+        }
+    }
+
     /// Left-press routing. Returns true when the menu consumed the click.
     pub fn menu_click(&mut self, p: Vec2) -> bool {
         let ms = self.menu_ui_scale();
-        let org = Vec2::splat(MENU_MARGIN as f32);
-        if !self.menu.open {
-            // hamburger icon
-            if p.x >= org.x && p.y >= org.y && p.x < org.x + MICON_W as f32 * ms && p.y < org.y + MICON_H as f32 * ms {
-                self.menu_toggle();
-                return true;
+        match self.menu.mode {
+            MenuMode::Closed => {
+                // hamburger icon → the scene's menu (arena: PAUSE)
+                let org = Vec2::splat(MENU_MARGIN as f32);
+                if p.x >= org.x && p.y >= org.y && p.x < org.x + MICON_W as f32 * ms && p.y < org.y + MICON_H as f32 * ms {
+                    self.menu_toggle();
+                    return true;
+                }
+                false
             }
-            return false;
-        }
-        let l = (p - org) / ms;
-        if l.x < 0.0 || l.y < 0.0 || l.x >= MPANEL_W as f32 || l.y >= MPANEL_H as f32 {
-            return false; // outside the open panel: fall through to player drag
-        }
-        let row = (l.y as i32 - MPAD) / MROW - 1; // row 0 is the title
-        if row >= 0 && (row as usize) < MENU.len() {
-            self.menu.sel = row as usize;
-            if matches!(MENU[self.menu.sel].kind, ItemKind::Slider { .. }) {
-                self.menu.drag = true;
-                self.menu_drag_to(p);
-            } else {
-                self.menu_activate();
+            MenuMode::Title | MenuMode::Pause => {
+                let items = if self.menu.mode == MenuMode::Title { TITLE_MENU } else { PAUSE_MENU };
+                let (pw, ph) = (GPANEL_W, gpanel_h(items.len()));
+                let org = self.menu_origin(pw, ph);
+                let l = (p - org) / ms;
+                if l.x < 0.0 || l.y < 0.0 || l.x >= pw as f32 || l.y >= ph as f32 {
+                    return true; // a game menu is MODAL: clicks outside do nothing
+                }
+                // first GROW is the title band (guard BEFORE dividing —
+                // -6/16 truncates to 0 and would select the first row)
+                let dy = l.y as i32 - GPAD - GROW;
+                if dy >= 0 && ((dy / GROW) as usize) < items.len() {
+                    self.menu.sel = (dy / GROW) as usize;
+                    self.menu_activate();
+                }
+                true
+            }
+            MenuMode::Settings => {
+                let org = Vec2::splat(MENU_MARGIN as f32);
+                let l = (p - org) / ms;
+                if l.x < 0.0 || l.y < 0.0 || l.x >= MPANEL_W as f32 || l.y >= MPANEL_H as f32 {
+                    return false; // outside the open panel: fall through to player drag
+                }
+                let row = (l.y as i32 - MPAD) / MROW - 1; // row 0 is the title
+                if row >= 0 && (row as usize) < MENU.len() {
+                    self.menu.sel = row as usize;
+                    if matches!(MENU[self.menu.sel].kind, ItemKind::Slider { .. }) {
+                        self.menu.drag = true;
+                        self.menu_drag_to(p);
+                    } else {
+                        self.menu_activate();
+                    }
+                }
+                true
             }
         }
-        true
     }
 
     /// Slider drag: set the selected value from the cursor's track position.
     pub fn menu_drag_to(&mut self, p: Vec2) {
+        if self.menu.mode != MenuMode::Settings {
+            return;
+        }
         let ms = self.menu_ui_scale();
         let lx = (p.x - MENU_MARGIN as f32) / ms;
         if let ItemKind::Slider { min, max, step } = MENU[self.menu.sel].kind {
@@ -292,13 +428,49 @@ impl Viewer {
         }
     }
 
-    /// Draw the overlay at logical resolution: the open panel, or the
-    /// hamburger icon when closed.
+    /// Draw the overlay at logical resolution: the open panel (game menu /
+    /// settings), or the hamburger icon when closed.
     pub fn menu_canvas(&self) -> (Vec<u32>, i32, i32) {
         const BG: u32 = 0x16161c;
         const BORDER: u32 = 0x6a6a78;
         const TEXT: u32 = 0xc8c8d0;
-        if !self.menu.open {
+        // game menus: a centered panel with big rows — a REGULAR game menu,
+        // not the dev tune sheet
+        if matches!(self.menu.mode, MenuMode::Title | MenuMode::Pause) {
+            let items = if self.menu.mode == MenuMode::Title { TITLE_MENU } else { PAUSE_MENU };
+            let (w, h) = (GPANEL_W, gpanel_h(items.len()));
+            let mut c = vec![0x101018u32; (w * h) as usize];
+            // double border: outer line + inner amber accent
+            mrect(&mut c, w, 0, 0, w, 1, BORDER);
+            mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
+            mrect(&mut c, w, 0, 0, 1, h, BORDER);
+            mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
+            mrect(&mut c, w, 2, 2, w - 4, 1, 0x8a6a2a);
+            let title = if self.menu.mode == MenuMode::Title { "G O O  W A R D E N" } else { "P A U S E D" };
+            let tx = (w - title.len() as i32 * 8) / 2;
+            mtext(&mut c, w, tx, GPAD + 2, title, 0xe8b84a);
+            for (i, (label, action)) in items.iter().enumerate() {
+                let y = GPAD + GROW * (1 + i as i32);
+                let sel = i == self.menu.sel;
+                if sel {
+                    mrect(&mut c, w, 6, y, w - 12, GROW - 2, 0x2a2a1e);
+                }
+                let text = if sel { format!("> {label} <") } else { label.to_string() };
+                let x = (w - text.len() as i32 * 8) / 2;
+                let color = match action {
+                    GameAction::Quit => 0xcc8888,
+                    _ if sel => 0xf0e8c8,
+                    _ => TEXT,
+                };
+                mtext(&mut c, w, x, y + 3, &text, color);
+            }
+            let fy = GPAD + GROW * (1 + items.len() as i32) + 3;
+            let hint = if self.menu.mode == MenuMode::Title { "hold the drain. survive the shift." } else { "esc resumes" };
+            let hx = (w - hint.len() as i32 * 8) / 2;
+            mtext(&mut c, w, hx.max(2), fy, hint, 0x707078);
+            return (c, w, h);
+        }
+        if self.menu.mode == MenuMode::Closed {
             // hamburger icon; while recording, a REC badge rides next to it
             // (the badge is overlay-only — clips capture swap.out, never UI)
             let w = if self.rec.is_some() { MICON_W + 78 } else { MICON_W };

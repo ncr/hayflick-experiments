@@ -935,7 +935,14 @@ impl RenderBackend for MetalBackend {
                 if let Some(ov) = &fp.overlay {
                     let m = crate::menu::MENU_MARGIN as i64;
                     let (mc, mw, mh) = ov.menu;
-                    self.blit_overlay(blit, drawable.texture(), mc, mw, mh, menu_scale, m, m, ext_w, ext_h, &mut staging);
+                    // game menus center on the window; the tune panel /
+                    // hamburger pin to the top-left margin (Vulkan twin)
+                    let (mx, my) = if ov.menu_center {
+                        (((ext_w as i64 - mw as i64 * menu_scale as i64) / 2).max(0), ((ext_h as i64 - mh as i64 * menu_scale as i64) / 2).max(0))
+                    } else {
+                        (m, m)
+                    };
+                    self.blit_overlay(blit, drawable.texture(), mc, mw, mh, menu_scale, mx, my, ext_w, ext_h, &mut staging);
                     if let Some((sc, sw, sh)) = ov.score {
                         let dx = ext_w as i64 - m - sw as i64 * menu_scale as i64;
                         self.blit_overlay(blit, drawable.texture(), sc, sw, sh, menu_scale, dx, m, ext_w, ext_h, &mut staging);

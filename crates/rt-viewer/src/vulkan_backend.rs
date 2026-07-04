@@ -706,11 +706,18 @@ impl RenderBackend for VulkanBackend {
                 let (canvas, mw, mh) = ov.menu;
                 let bytes = crate::menu::expand_canvas(canvas, mw, mh, swap.menu_scale, bgra);
                 let (pw, ph) = (mw as u32 * swap.menu_scale, mh as u32 * swap.menu_scale);
-                if MENU_MARGIN as u32 + pw <= extent.width && MENU_MARGIN as u32 + ph <= extent.height {
+                // game menus center on the window; the tune panel/hamburger
+                // pin to the top-left margin
+                let (mx, my) = if ov.menu_center {
+                    ((extent.width.saturating_sub(pw) / 2) as i32, (extent.height.saturating_sub(ph) / 2) as i32)
+                } else {
+                    (MENU_MARGIN, MENU_MARGIN)
+                };
+                if mx as u32 + pw <= extent.width && my as u32 + ph <= extent.height {
                     self.ctx.upload(&swap.menu_buf, &bytes);
                     let region = vk::BufferImageCopy::default()
                         .image_subresource(layers)
-                        .image_offset(vk::Offset3D { x: MENU_MARGIN, y: MENU_MARGIN, z: 0 })
+                        .image_offset(vk::Offset3D { x: mx, y: my, z: 0 })
                         .image_extent(vk::Extent3D { width: pw, height: ph, depth: 1 });
                     d.cmd_copy_buffer_to_image(cmd, swap.menu_buf.buffer, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
                 }

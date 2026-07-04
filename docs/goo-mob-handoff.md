@@ -422,3 +422,32 @@ bullets land (wall / floor / blob)."
   target-side half of the muzzle flash.
 - Verified on the RTX 5080: muzzle pop frame, blob-kill spark burst frame,
   153 tests, 5 goldens byte-identical.
+
+## 2026-07-04 — M5.7: proper game menus (title / pause / settings)
+
+Owner: "proper game menus like a regular game — start, settings, quit —
+and the tune sliders move into settings."
+
+- `MenuMode { Closed, Title, Pause, Settings }` (menu.rs). Arena boots
+  into a CENTERED title screen ("G O O  W A R D E N": start shift /
+  settings / quit) — live windowed sessions only, every harness mode
+  (SHOT/DEMO/DUMP/MOVIE) boots Closed. ESC in-game opens PAUSE (resume /
+  restart shift / settings / quit). The old tune panel IS the Settings
+  submenu (unchanged rows, top-left); on arena it returns to the game
+  menu it came from (`MenuState.back`), on dev scenes ESC still opens it
+  directly and closes back to the game (old behaviour untouched).
+- **Pause is real**: while any menu is open on arena the draw loop skips
+  aim/autofire/run_due/tick_fx (accumulator unfed — RESUME continues
+  exactly where it stopped; same pattern as hitstop). Dev scenes keep the
+  sim running under the settings panel.
+- Game menus are MODAL: arrows AND W/S navigate, Enter/Space activate,
+  ESC back/close, clicks outside the panel are swallowed; menu_move /
+  menu_pick UI blips (audio.rs). Title band click-guard: compute the row
+  delta BEFORE dividing (Rust -6/16 == 0 would select the first row).
+- Centered placement rides a new `Overlay.menu_center` flag; both
+  backends compute the offset (Metal edit is line-for-line but NOT
+  compiled here — first Mac run must verify). The game panel reuses
+  GPANEL_W = MPANEL_W and stays under MPANEL_H so the Vulkan menu_buf
+  staging allocation still fits.
+- `restart_run(force)`: the pause menu's RESTART passes true (mid-run
+  restart); the bare Space keeps the run-over guard.

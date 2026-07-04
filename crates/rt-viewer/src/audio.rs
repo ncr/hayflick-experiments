@@ -202,6 +202,12 @@ impl AudioOut {
                 self.voice(Wave::Noise, 2100.0, 550.0, 0.035, 0.24 * g);
                 self.voice(Wave::Square, 160.0, 110.0, 0.02, 0.10 * g);
             }
+            // presentation-side: menu navigation blips
+            "menu_move" => self.voice(Wave::Square, 520.0, 520.0, 0.025, 0.18 * g),
+            "menu_pick" => {
+                self.voice(Wave::Square, 520.0, 700.0, 0.05, 0.22 * g);
+                self.voice(Wave::Square, 700.0, 940.0, 0.07, 0.18 * g);
+            }
             // presentation-side: hover-servo step tick (walk cadence)
             "step" => {
                 self.voice(Wave::Square, 210.0, 150.0, 0.022, 0.14 * g);
