@@ -129,9 +129,15 @@ available per hour spent. The pact blink NEEDS a sound.
 - **M3 — Third act (≈1 week).** Lights-out escalation event, death reel
   (auto-save trace, render last 20 s on demand), run summary polish, daily
   seed display. First A/B: the drain-grate arena variant from C.
-- **M4 — decision gate.** Pit is fun → ship it tight, then roomify (B).
-  Pit is flat → the breach meter (C) or the inversion (D) are the pivots,
-  both already specced.
+- **M4 — decision gate. RESOLVED 2026-07-04: the drain is the game.**
+  HOLD THE DRAIN exercises every engine-unique asset (conserved mass,
+  squeeze grammar, cure masonry as sealing, split attention between the
+  flood and the hunters) and SUBSUMES the pit — Runners + comm pacts keep
+  the integrity game alive as the harassment layer inside the containment
+  game. Shipped as `SCENE=drain` with the shift arc: survive SHIFT_WAVES
+  (8) → SHIFT COMPLETE. The classic pit stays as a stage type (`arena`).
+  Next fork when the shift proves out in play: tighten + ship small, or
+  roomify into the infested-building campaign (B).
 
 ## Standing constraints (unchanged by any direction)
 

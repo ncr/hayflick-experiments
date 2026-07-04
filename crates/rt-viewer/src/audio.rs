@@ -150,6 +150,11 @@ impl AudioOut {
                 self.voice(Wave::Square, 240.0, 120.0, 0.18, 0.45 * g);
                 self.voice(Wave::Noise, 700.0, 250.0, 0.14, 0.30 * g);
             }
+            "shift_done" => {
+                self.voice(Wave::Square, 392.0, 392.0, 0.14, 0.30 * g);
+                self.voice(Wave::Square, 494.0, 494.0, 0.22, 0.30 * g);
+                self.voice(Wave::Square, 587.0, 784.0, 0.5, 0.35 * g);
+            }
             // presentation-side: the comm-pact blink tick (per rising edge)
             "comm_blink" => self.voice(Wave::Sine, 1250.0, 1250.0, 0.035, 0.30 * g),
             _ => {}

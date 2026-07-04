@@ -32,6 +32,9 @@ pub fn bubble(m: &MobRender) -> Option<(Vec<u32>, i32, i32)> {
     // comm blink: the SYNC bubble flashes WITH the body pulse — the pact
     // members' bubbles strobe in the same phase (same strike tick)
     let (label, accent) = match m.tac {
+        // containment: a body closing on the drain telegraphs its escape —
+        // the read that turns "why did LEAK tick" into "I saw it coming"
+        Tactic::Direct if m.escaping => ("OUT!", 0x7fe8ff),
         Tactic::Direct => return None,
         Tactic::Flank => ("FLANK", 0x8fd08f),
         Tactic::ToCover => ("SNEAK", 0x9ab8e0),
@@ -176,17 +179,18 @@ fn kind_line(c: Card) -> &'static str {
 
 /// The run-over panel: containment breached, the tallies, and the restart
 /// prompt. Stamped dead-centre at the render scale.
-pub fn death_panel(wave: Option<u16>, score: u32, secs: f32) -> (Vec<u32>, i32, i32) {
+pub fn run_panel(won: bool, wave: Option<u16>, score: u32, secs: f32) -> (Vec<u32>, i32, i32) {
     const W: i32 = 176;
     const H: i32 = 58;
-    let mut c = plate(W, H, 0x1a1016, 0xe86858);
-    mrect(&mut c, W, 1, 1, W - 2, 1, 0xe86858); // doubled top rule — alarm plate
-    mtext(&mut c, W, (W - 20 * 8) / 2, 6, "CONTAINMENT BREACHED", 0xe86858);
+    let (title, accent, bg) = if won { ("SHIFT COMPLETE", 0x8fd08f, 0x101a12) } else { ("CONTAINMENT BREACHED", 0xe86858, 0x1a1016) };
+    let mut c = plate(W, H, bg, accent);
+    mrect(&mut c, W, 1, 1, W - 2, 1, accent); // doubled top rule — alarm plate
+    mtext(&mut c, W, (W - title.len() as i32 * 8) / 2, 6, title, accent);
     let line = format!("WAVE {}  BIO {}", wave.unwrap_or(0), score);
     mtext(&mut c, W, (W - line.len() as i32 * 8) / 2, 22, &line, 0xd0d0c0);
     let line2 = format!("SURVIVED {secs:.1}S");
     mtext(&mut c, W, (W - line2.len() as i32 * 8) / 2, 34, &line2, 0x9a9aa2);
-    mtext(&mut c, W, (W - 15 * 8) / 2, 46, "SPACE - NEW RUN", 0x8fd08f);
+    mtext(&mut c, W, (W - 15 * 8) / 2, 46, "SPACE - NEW RUN", if won { 0xd0d0a0 } else { 0x8fd08f });
     (c, W, H)
 }
 
@@ -238,11 +242,10 @@ pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, 
         out.push(Stamp { pix, w, h, x, y, scale: bs });
     }
     if let Some(r) = run {
-        if r.dead {
-            let secs = now_tick.saturating_sub(r.death_tick) as f32; // unused: freeze on survived time
-            let _ = secs;
+        if r.dead || r.won {
+            let _ = now_tick;
             let survived = r.death_tick as f32 * house_game::TICK_DT;
-            let (pix, w, h) = death_panel(wave, score, survived);
+            let (pix, w, h) = run_panel(r.won, wave, score, survived);
             let bs = fit_scale(w, rs, ext_w);
             let x = (ext_w - w as i64 * bs as i64) / 2;
             let y = (ext_h - h as i64 * bs as i64) / 2;

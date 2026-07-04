@@ -1640,3 +1640,51 @@ fn breach_cap_ends_the_run() {
     }
     panic!("the breach never filled: {} of {}", g.res.breach, crate::game::BREACH_CAP);
 }
+
+/// Clearing SHIFT_WAVES waves wins the run: the latch sets, the fanfare
+/// fires, no ninth squad lands, and the player verbs lock out.
+#[test]
+fn clearing_the_full_shift_wins_the_run() {
+    let mut spec = crate::spec::arena_level();
+    spec.static_solids = vec![];
+    spec.player_start = Vec3::new(0.0, 0.0, 9.0);
+    spec.mobs = vec![MobSpec { id: MobId(0), tier: 2, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, -6.0) }];
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    g.res.event_tap = Some(Vec::new());
+    let mut t = 0u64;
+    // executioner loop: every tick, terminal-kill whatever is alive; the
+    // wave director then counts the lull and lands the next squad
+    while t < 30_000 {
+        let victims = g.mobs.clone();
+        for e in victims {
+            let (c, tier) = {
+                let goo = g.world.get::<&Goo>(e).unwrap();
+                if goo.fusing > 0 {
+                    continue;
+                }
+                (goo.centroid(), goo.tier)
+            };
+            let _ = tier;
+            g.damage_goo(e, Vec3::new(c.x, 0.3, c.y), Vec3::Z, 99, 0.0, WeaponClass::Standard);
+        }
+        g.tick(Tick(t), &[]);
+        t += 1;
+        let run = g.res.run.unwrap();
+        if run.won {
+            assert!(!run.dead);
+            assert_eq!(g.snapshot().wave, Some(crate::game::SHIFT_WAVES), "won on clearing the final wave");
+            // no squad nine: the floor stays empty from here
+            for k in 0..300 {
+                g.tick(Tick(t + k), &[Command::Move { dir: IVec2::new(1, 0) }]);
+            }
+            assert!(g.mobs.is_empty(), "no wave lands after the win");
+            let p = g.player_pos();
+            assert!((p.x - 0.0).abs() < 0.5, "verbs locked after the win (no walking)");
+            let tap = g.res.event_tap.take().unwrap();
+            assert!(tap.iter().any(|e| matches!(e, GameEvent::ShiftComplete)), "the fanfare fired");
+            return;
+        }
+        assert!(!run.dead, "the executioner should never die (player far corner)");
+    }
+    panic!("never won the shift in 500 s of slaughter");
+}

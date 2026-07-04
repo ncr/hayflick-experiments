@@ -310,3 +310,15 @@ cover + a minimal audio backend (AudioSink is still a stub).
   through the main drain end the run.
 - **Seeds**: SEED env aliases CAVE_SEED; arena/drain specs take it (drafts
   + goo jitter already flow from spec.seed).
+
+## 2026-07-04 — M4: the shift (drain = flagship; decision recorded)
+
+Decision (docs/gameplay-directions.md M4): HOLD THE DRAIN subsumes the
+pit — it is the flagship mode. Added the run ARC: clearing SHIFT_WAVES
+(8) sets `RunState.won` (same latch family as dead; death_tick = end
+tick), fires ShiftComplete (fanfare cue), locks the verbs, and shows the
+green SHIFT COMPLETE panel (run_panel generalizes the death panel).
+Space restarts; the reel saves on wins too. Bodies closing on the drain
+telegraph with a cyan OUT! bubble (`MobRender.escaping`, derived within
+2.5 wu of the zone). Emergent keeper: drain-marching Greens can still be
+recruited into SYNC pacts mid-march and turn on the player.

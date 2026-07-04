@@ -326,9 +326,9 @@ impl Viewer {
     /// recentres on the respawned player's first step. No-op when the scene
     /// has no stored spec or the run isn't over.
     pub fn restart_run(&mut self) {
-        let dead = self.game.snap.run.is_some_and(|r| r.dead);
+        let over = self.game.snap.run.is_some_and(|r| r.dead || r.won);
         let Some(spec) = self.run_spec.clone() else { return };
-        if !dead {
+        if !over {
             return;
         }
         self.game = crate::sim::GameLoop::from_spec(spec, &self.scene, self.backend.handles(), self.backend.light_count(), &self.cfg);
@@ -417,7 +417,7 @@ impl Viewer {
         // replayable trace (live windowed play only — DEMO/SHOT replays ARE
         // traces already). V then renders it to MP4 via record.sh.
         if self.harness.demo.is_none() && self.harness.shot.is_none() {
-            let dead = self.game.snap.run.is_some_and(|r| r.dead);
+            let dead = self.game.snap.run.is_some_and(|r| r.dead || r.won);
             if dead && self.reel_saved.is_none() {
                 let ticks = self.game.sim.res.cur_tick + 90; // a beat of aftermath
                 let trace = self.game.journal_trace(&self.cfg.scene, self.game.sim.res.seed, ticks);

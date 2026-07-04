@@ -155,6 +155,8 @@ pub const GOO_WOBBLE_AMP0: f32 = 1.0;
 pub const LIGHTS_OUT_WAVE: u16 = 3;
 /// Escaped tier mass that ends a containment run (4 Larges, 16 Smalls...).
 pub const BREACH_CAP: u32 = 16;
+/// Waves to survive to CLEAR the shift — the run's win condition.
+pub const SHIFT_WAVES: u16 = 8;
 
 // ---- integrity (the arena fail state) ---------------------------------------
 /// A fluid particle within this margin of the player pillar counts as
@@ -837,6 +839,9 @@ pub struct MobRender {
     /// bubble over the body (the live-readable mind). Pure presentation
     /// read of the hashed arena brain state; `Direct` everywhere off arena.
     pub tac: Tactic,
+    /// Containment levels: this body is CLOSING ON THE DRAIN (within the
+    /// telegraph band) — the shell shows the OUT! bubble. Derived.
+    pub escaping: bool,
 }
 
 impl MobRender {
@@ -1019,7 +1024,7 @@ impl<S: AudioSink> HouseGame<S> {
     /// id-sorted, one pass; no-op off drain levels.
     pub(crate) fn drain_system(&mut self) {
         let Some(zone) = self.res.drain else { return };
-        if self.mobs.is_empty() {
+        if self.mobs.is_empty() || self.res.run.is_some_and(|r| r.won) {
             return;
         }
         let mobs = self.mobs.clone();
@@ -1056,7 +1061,7 @@ impl<S: AudioSink> HouseGame<S> {
     /// level are untouched.
     pub(crate) fn integrity_system(&mut self) {
         let Some(mut run) = self.res.run else { return };
-        if run.dead || self.mobs.is_empty() {
+        if run.dead || run.won || self.mobs.is_empty() {
             return;
         }
         let p = self.player_pos();
@@ -1907,6 +1912,22 @@ impl<S: AudioSink> HouseGame<S> {
                 self.open_draft(); // the clear just landed: deal the lull hand
             }
             w.lull -= 1;
+            self.res.wave = Some(w);
+            return;
+        }
+        // the SHIFT: the floor is clear and the lull has run out. If the wave
+        // just survived was the last one, end the run the good way — no squad
+        // nine, just the clock-out fanfare and the summary panel (idx stays at
+        // the final wave for the display).
+        if w.idx >= SHIFT_WAVES {
+            if let Some(mut run) = self.res.run {
+                if !run.dead && !run.won {
+                    run.won = true;
+                    run.death_tick = self.res.cur_tick;
+                    self.res.run = Some(run);
+                    self.res.events.emit(GameEvent::ShiftComplete);
+                }
+            }
             self.res.wave = Some(w);
             return;
         }

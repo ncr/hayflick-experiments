@@ -184,6 +184,8 @@ pub enum GameEvent {
     /// A blob squeezed past the sieve and escaped (its tier mass) — the
     /// breach klaxon tick.
     GooEscaped(u32),
+    /// The full shift survived (SHIFT_WAVES cleared) — the clock-out fanfare.
+    ShiftComplete,
     /// The run ended: goo contact drained suit integrity to zero. The shell
     /// shows the summary panel; a new run is a fresh sim (not a sim command).
     PlayerDown,
@@ -204,6 +206,10 @@ pub enum GameEvent {
 pub struct RunState {
     pub integrity: f32,
     pub dead: bool,
+    /// Survived the full shift (SHIFT_WAVES cleared) — the win latch. A run
+    /// is OVER when either latch is set; `death_tick` is the end tick for
+    /// both (the panel's SURVIVED line).
+    pub won: bool,
     pub death_tick: u64,
 }
 
@@ -516,7 +522,7 @@ impl<S: AudioSink> HouseGame<S> {
             cover: cover_points(&spec.static_solids),
             next_comm_tick: 0,
             sterile: spec.sterile,
-            run: spec.arena.map(|_| RunState { integrity: 1.0, dead: false, death_tick: 0 }),
+            run: spec.arena.map(|_| RunState { integrity: 1.0, dead: false, won: false, death_tick: 0 }),
             draft: None,
             picked: Vec::new(),
             seed: spec.seed,
@@ -635,7 +641,7 @@ impl<S: AudioSink> HouseGame<S> {
         self.res.staging.clear();
         // a downed run ignores the player verbs — walking, shooting, weapon
         // swaps. Camera rotation and light toggles stay live (corpse cam).
-        let downed = self.res.run.is_some_and(|r| r.dead);
+        let downed = self.res.run.is_some_and(|r| r.dead || r.won);
         for c in cmds {
             if downed && matches!(c, Command::Click { .. } | Command::Shoot { .. } | Command::Move { .. } | Command::SelectWeapon { .. } | Command::PickCard { .. }) {
                 continue;
@@ -897,6 +903,7 @@ impl<S: AudioSink> HouseGame<S> {
                 GameEvent::PlayerDown => AudioCue { id: CueId("player_down"), pos: None, gain: 1.0 },
                 GameEvent::LightsOut => AudioCue { id: CueId("lights_out"), pos: None, gain: 1.0 },
                 GameEvent::GooEscaped(_) => AudioCue { id: CueId("breach"), pos: None, gain: 1.0 },
+                GameEvent::ShiftComplete => AudioCue { id: CueId("shift_done"), pos: None, gain: 1.0 },
             };
             self.sink.play(cue);
         }
@@ -1008,7 +1015,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
                     let parts = goo_render_parts(&g, pr);
                     let glow = goo_render_glow(&g);
                     let vscale = goo_render_vscale(&g);
-                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale, comm: comm_pulse(g.tac, g.strike, self.res.cur_tick), tac: g.tac }
+                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale, comm: comm_pulse(g.tac, g.strike, self.res.cur_tick), tac: g.tac, escaping: self.res.drain.is_some_and(|z| g.kind != crate::spec::GooKind::Runner && g.centroid().y > z[1] - 2.5) }
                 })
                 .collect(),
             // projectiles in flight (ProjectileId-sorted) — empty when idle.
@@ -1099,7 +1106,7 @@ impl<S: AudioSink> Simulation for HouseGame<S> {
             h.u64(a.current.tag());
             h.u64(self.res.next_comm_tick);
             if let Some(r) = self.res.run {
-                h.f32(r.integrity).u64(r.dead as u64).u64(r.death_tick);
+                h.f32(r.integrity).u64(r.dead as u64).u64(r.won as u64).u64(r.death_tick);
             }
             match self.res.draft {
                 Some(d) => {
