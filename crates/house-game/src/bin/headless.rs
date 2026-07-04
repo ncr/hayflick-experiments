@@ -1,6 +1,6 @@
 //! Headless trace player: the whole game with no window, no GPU, no clock.
 //!
-//!     headless <trace.txt> <ticks> [level]      level = fixture (default) | game
+//!     headless <trace.txt> <ticks> [level]      level = fixture (default) | game | goo | arena
 //!
 //! Runs the chosen level for `<ticks>` fixed ticks with a NullSink, feeding the
 //! tick-stamped commands from the trace file, then prints the state digest (the
@@ -12,7 +12,7 @@ use sim_core::{NullSink, Runner, Simulation};
 fn main() {
     let mut args = std::env::args().skip(1);
     let (Some(path), Some(ticks)) = (args.next(), args.next()) else {
-        eprintln!("usage: headless <trace.txt> <ticks> [fixture|game]");
+        eprintln!("usage: headless <trace.txt> <ticks> [fixture|game|goo|arena]");
         std::process::exit(2);
     };
     let ticks: u64 = ticks.parse().expect("ticks must be an integer");

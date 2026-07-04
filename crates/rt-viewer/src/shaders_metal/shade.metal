@@ -8,8 +8,9 @@
 // match GL_EXT_scalar_block_layout vec3 = 12 B).
 //
 // Differences from the GLSL while the headless renderer grows:
-//   * textures (binding 6 in Vulkan) deferred → albedo = baseColor (M3 adds the
-//     bindless texture array). texIndex is ignored here.
+//   * textures ride a fixed-size texture-table array (`texs`, [[texture(0)]])
+//     instead of Vulkan's binding-6 descriptor array; texIndex selects the
+//     slot and albedo multiplies the NEAREST-sampled base colour, same result.
 //   * probe GI gated by pc.hasProbes; M1 binds a dummy header and skips it.
 // Everything else (sun NEE, light NEE incl. spotlight/screen falloff, AO, fog,
 // sky, the +1/64 px tie bias) is a faithful port.

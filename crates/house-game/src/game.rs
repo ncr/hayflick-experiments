@@ -42,6 +42,12 @@ pub const WALL_T: f32 = 0.25;
 pub const WALK_ARRIVE_PX: f32 = 1.0;
 /// Consecutive fully-blocked ticks before a WalkTarget is abandoned.
 pub const WALK_BLOCKED_TICKS: u32 = 2;
+/// Knuth's multiplicative stride — the shared multiplier for RNG-free,
+/// id-salted deterministic scrambles (goo particle jitter, gait/mitosis
+/// desync, per-shot aim wobble). The stable id — already unique, already
+/// hashed sim state — is the only entropy, so replays stay bit-exact with NO
+/// RNG draw and the shared RNG's draw order never shifts.
+pub(crate) const ID_HASH_STRIDE: u32 = 2654435761;
 
 /// A world-space pick ray (already unprojected by the shell via iso-core).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,7 +65,9 @@ pub enum Command {
     Click { ray: PickRay, ground: Option<Vec2> },
     /// RMB: fire the weapon (spawns physical projectiles on the aim ray).
     Shoot { ray: PickRay },
-    /// WASD fallback (kept through migration): x = right − left, y = up − down.
+    /// WASD movement: x = right − left, y = up − down. Load-bearing, not a
+    /// fallback: walk_system integrates it (a held key overrides click-walk),
+    /// and shoot_system's moving-bloom penalty reads the staged direction.
     Move { dir: IVec2 },
     ToggleFlashlight,
     ToggleRoomLights,
@@ -185,7 +193,8 @@ struct Staging {
     shot_intents: Vec<PickRay>,
     /// Door ids whose interact volume a Click hit — applied by door_system.
     use_door: Vec<DoorId>,
-    /// Last WASD direction pressed this tick (zero = none); walk_system reads it.
+    /// Last WASD direction pressed this tick (zero = none). Read by walk_system
+    /// (movement) AND shoot_system (the moving-bloom accuracy penalty).
     move_dir: IVec2,
     /// Use-item intents (kind to consume) — applied by use_system.
     use_items: Vec<ItemKind>,
@@ -396,7 +405,8 @@ impl<S: AudioSink> HouseGame<S> {
         targets.sort_by_key(|(id, _)| *id);
 
         // perimeter occluder slabs (targets sit ON the inner face: an exact
-        // plane tie does not block — see shoot_system's strict comparison)
+        // plane tie does not block — see NearestHit::consider's strict `<` and
+        // the WALL_BIAS rule in game/weapon.rs's projectile_system)
         let f = level.floor;
         let static_occluders: Vec<[f32; 4]> = [[f[0] - WALL_T, f[1] - WALL_T, f[0], f[3] + WALL_T], [f[2], f[1] - WALL_T, f[2] + WALL_T, f[3] + WALL_T], [f[0] - WALL_T, f[1] - WALL_T, f[2] + WALL_T, f[1]], [f[0] - WALL_T, f[3], f[2] + WALL_T, f[3] + WALL_T]]
             .into_iter()
@@ -536,9 +546,11 @@ impl<S: AudioSink> HouseGame<S> {
         best.map(|(_, id)| id)
     }
 
-    // ---- the 7 systems, fixed source order ------------------------------------
+    // ---- systems. The ONE authoritative per-tick order is `tick()` below
+    // (one commented call per step); more systems live in game/goo.rs,
+    // game/weapon.rs and game/survival.rs. -------------------------------------
 
-    /// 1. Commands → semantic intents. Click: door interact beats ground walk;
+    /// Commands → semantic intents. Click: door interact beats ground walk;
     /// walks to blocked/off-floor points are no-ops (no clamp-to-edge in v1).
     fn resolve_commands(&mut self, cmds: &[Command]) {
         self.res.staging.clear();
@@ -588,7 +600,7 @@ impl<S: AudioSink> HouseGame<S> {
         }
     }
 
-    /// 2. Door state machines on tick counters. The leaf collision solid is
+    /// Door state machines on tick counters. The leaf collision solid is
     /// present iff the door is not fully Open; the anti-trap rule refuses to
     /// re-insert it (i.e. to start Closing) while the player AABB overlaps.
     fn door_system(&mut self) {
@@ -648,7 +660,7 @@ impl<S: AudioSink> HouseGame<S> {
         // self.doors is id-sorted, so dyn_solids already is too
     }
 
-    /// 3. Movement: manual Move (iso 2:1 input dir) wins over a WalkTarget;
+    /// Movement: manual Move (iso 2:1 input dir) wins over a WalkTarget;
     /// both integrate at the floored speed on the screen-pixel basis at yaw_q
     /// and collide-and-slide. Arrive (< 1 px) or blocked-two-ticks clears the
     /// target. Facing tracks the ATTEMPTED direction (turning against a wall).
@@ -730,7 +742,7 @@ impl<S: AudioSink> HouseGame<S> {
     }
 
 
-    /// 5. Flashlight pose from the lattice-snapped position + facing (the same
+    /// Flashlight pose from the lattice-snapped position + facing (the same
     /// pure function the viewer uses).
     fn flashlight_system(&mut self) {
         let yaw = 90.0 * self.res.yaw_q as f32;
@@ -739,7 +751,7 @@ impl<S: AudioSink> HouseGame<S> {
         self.res.flash_pose = FlashPose { pos, dir };
     }
 
-    /// 6. Per-light emission at sim time `t`: room master AND per-light state
+    /// Per-light emission at sim time `t`: room master AND per-light state
     /// gate each light (screens ignore the wall switch, matching the renderer:
     /// devices are not room lighting), flicker modulates the lit ones.
     /// `room_lights` = lit fraction of the switchable (non-screen) lights —
@@ -768,7 +780,7 @@ impl<S: AudioSink> HouseGame<S> {
         self.res.room_lights = if switchable == 0 { 0.0 } else { lit as f32 / switchable as f32 };
     }
 
-    /// 7. Domain events → audio cues into the injected sink, emission order.
+    /// Domain events → audio cues into the injected sink, emission order.
     fn audio_system(&mut self) {
         for ev in self.res.events.drain() {
             // Observation tap (lab only): record the STRUCTURED event before it

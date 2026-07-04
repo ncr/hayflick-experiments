@@ -24,6 +24,12 @@ use glam::Vec3;
 /// Far above any real room count, so the two id spaces never collide.
 pub const CORRIDOR_ROOM_ID_BASE: u32 = 1_000_000;
 
+/// A `RoomSpec` whose `id.0` is in `[SERVICE_ROOM_ID_BASE, CORRIDOR_ROOM_ID_BASE)`
+/// is a SERVICE room (stairs / elevator / WC). Shared id-space convention of the
+/// generators (`building.rs`) and the map dev-tool renderer (`mapviz.rs`), which
+/// draws them a distinct utility colour marked "S".
+pub const SERVICE_ROOM_ID_BASE: u32 = 900_000;
+
 /// Generator tunables, in tile cells (1 cell = 1.0 wu). The default is the
 /// "medium ~10 rooms" preset.
 #[derive(Clone, Copy, Debug)]

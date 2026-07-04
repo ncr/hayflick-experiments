@@ -7,12 +7,8 @@
 //! a room (drawn a distinct pastel + its id). Doors are orange, the player spawn
 //! a green disc, and the optional `overlay` segments (room↔junction links) cyan.
 
+use crate::cave::SERVICE_ROOM_ID_BASE;
 use crate::{LevelSpec, CORRIDOR_ROOM_ID_BASE};
-
-/// A `RoomSpec` whose `id.0` is in `[SERVICE_ROOM_ID_BASE, CORRIDOR_ROOM_ID_BASE)`
-/// is a SERVICE room (stairs / elevator / WC) — drawn a distinct utility colour
-/// and marked "S" rather than coloured-by-index like a normal room.
-pub const SERVICE_ROOM_ID_BASE: u32 = 900_000;
 
 pub const PX: i32 = 16; // pixels per world cell
 pub const MARGIN: i32 = 10;
@@ -162,7 +158,7 @@ impl Canvas {
         }
     }
 
-    fn rect_outline(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: [u8; 3]) {
+    pub fn rect_outline(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: [u8; 3]) {
         for x in x0..x1 {
             self.put(x, y0, c);
             self.put(x, y1 - 1, c);
@@ -173,7 +169,7 @@ impl Canvas {
         }
     }
 
-    fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: [u8; 3]) {
+    pub fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, c: [u8; 3]) {
         let (mut x0, mut y0) = (x0, y0);
         let dx = (x1 - x0).abs();
         let dy = -(y1 - y0).abs();
@@ -228,7 +224,7 @@ impl Canvas {
         cx
     }
 
-    fn blit(&mut self, src: &Canvas, ox: i32, oy: i32) {
+    pub fn blit(&mut self, src: &Canvas, ox: i32, oy: i32) {
         for y in 0..src.h as i32 {
             for x in 0..src.w as i32 {
                 let i = (y as usize * src.w + x as usize) * 4;

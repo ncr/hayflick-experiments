@@ -4,10 +4,10 @@
 //! Vulkan, the renderer never sees commands; `GameSnapshot` → `FrameState` is
 //! everything that crosses per frame.
 //!
-//! Until the game-content stage (step 11) lands a spec-generated scene, the
-//! level is an INTERIM mirror of the renderer scene's collision fields (floor
-//! rect + solids verbatim, no doors/targets), so click-to-walk collides
-//! against exactly what the eye sees.
+//! The level is spec-generated (game-content stage, step 11): one `LevelSpec`
+//! drives both the renderer scene (`game_scene::build_game`) and the game's
+//! collision fields, so click-to-walk collides against exactly what the eye
+//! sees — by construction, not by mirroring.
 
 use crate::viewer::Viewer;
 use glam::{IVec2, Mat4, Vec2, Vec3};

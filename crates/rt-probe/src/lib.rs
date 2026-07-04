@@ -53,10 +53,11 @@ pub mod scenes;
 
 // Re-export surface = exactly what crosses the rt-probe boundary (rt-viewer +
 // its `use rt_probe::*`). The split sub-cfgs (RenderCfg/GameCfg/HarnessCfg) are
-// the public shape of `Config`'s fields; items used only inside rt-probe
-// (CamFrame, GpuTex, LightScan, frame_lights_cpu, mat_to_transform, the
-// ISO_*_DEG angle consts, the iso_*_basis helpers) stay `pub` in their modules
-// but are NOT re-exported here — nothing outside the crate names them.
+// the public shape of `Config`'s fields. Items NOT re-exported here stay `pub`
+// in their modules: some are internal-only (GpuTex, the ISO_*_DEG angle
+// consts, the iso_*_basis helpers), others rt-viewer names by module path
+// (rt_probe::render::{frame_lights_cpu, LightScan, mat_to_transform} and
+// rt_probe::iso::CamFrame — the Metal backend + the shared goo push builder).
 pub use config::{Config, GameCfg, HarnessCfg, RenderCfg, StyleCfg};
 pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx};
 pub use gpu_scene::{bake_bank_emission, InstanceTable, ProbeGrid, PROBE_CAP};

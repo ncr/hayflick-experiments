@@ -2,7 +2,7 @@
 name = "rt-probe"
 version = "0.1.0"
 edition = "2021"
-description = "Stage 0 native hardware ray-tracing probe (Vulkan ray_query) — the native rematch of the web pathtrace-probe."
+description = "The deterministic iso ray-traced renderer library — Vulkan ray_query reference path plus the shared frame surface consumed by rt-viewer's Metal twin."
 
 [dependencies]
 iso-core = { path = "../iso-core" }

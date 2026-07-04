@@ -65,16 +65,16 @@ pub fn proj_pool_size() -> usize {
 
 /// Reserved ellipsoid pool size: the live-blob cap × goo particles. Honors the
 /// renderer constraint `live_cap × particles ≤ pool` by construction. Used by
-/// the Vulkan fallback path (the Metal path renders goo via the SDF composite
-/// pass and needs no triangle pool).
+/// the `GOO_SDF=0` opaque-sphere fallback (the default SDF composite path
+/// needs no triangle pool).
 pub fn goo_pool_size() -> usize {
     house_game::GOO_LIVE_CAP * house_game::GOO_PARTICLES
 }
 
 /// Whether the smooth translucent SDF goo composite is enabled (default on).
-/// When on, the goo renders via the Metal screen-space metaball pass and NO
-/// triangle sphere pool is built; set `GOO_SDF=0` for the opaque-sphere
-/// fallback (the only goo path on Vulkan). Both backends read this flag.
+/// When on, BOTH backends render the goo via the screen-space metaball pass
+/// (goo.metal on macOS, goo.comp on Vulkan) and NO triangle sphere pool is
+/// built; set `GOO_SDF=0` for the opaque-sphere pool fallback.
 pub fn goo_sdf_enabled() -> bool {
     std::env::var("GOO_SDF").map(|v| v != "0").unwrap_or(true)
 }

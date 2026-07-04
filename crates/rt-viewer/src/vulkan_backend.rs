@@ -9,8 +9,7 @@
 //! integer-NEAREST upscale, blit, present. No accumulation, no denoiser, no
 //! temporal state — a fixed camera produces bit-identical frames.
 
-use crate::backend::{build_tone_push, FramePresent, GooPush, RenderBackend, GOO_ABSORB, GOO_BIRTH_ABSORB, GOO_BIRTH_EMIS, GOO_BOUNDS_MAX, GOO_EMIS, GOO_MAX, GOO_SMIN_K};
-use crate::sim::{GOO_FLOOR_Y, GOO_SQUASH};
+use crate::backend::{build_goo_push, build_tone_push, FramePresent, GooPush, RenderBackend, GOO_BOUNDS_MAX, GOO_MAX};
 use crate::menu::{HUD_H_MAX, HUD_W, MENU_MARGIN, MPANEL_H, MPANEL_W};
 use ash::vk;
 use glam::Vec2;
@@ -603,19 +602,7 @@ impl RenderBackend for VulkanBackend {
             d.cmd_copy_image(cmd, swap.color.0, vk::ImageLayout::GENERAL, swap.goo_bg.0, vk::ImageLayout::GENERAL, &[region]);
             barrier(d, cmd, swap.goo_bg.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
             barrier(d, cmd, swap.color.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::TRANSFER_READ, vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
-            let cam = &fp.fs.cam;
-            let gp = GooPush {
-                cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
-                cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
-                cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, GOO_SQUASH],
-                cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, GOO_FLOOR_Y],
-                dims: [low_w as i32, low_h as i32, goo_n as i32, goo_nb as i32],
-                emis: GOO_EMIS,
-                absorb: GOO_ABSORB,
-                params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
-                birth_emis: GOO_BIRTH_EMIS,
-                birth_absorb: GOO_BIRTH_ABSORB,
-            };
+            let gp = build_goo_push(&fp.fs.cam, low_w, low_h, goo_n, goo_nb);
             d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.goo_pipeline);
             d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.goo_pipeline_layout, 0, &[swap.goo_set], &[]);
             d.cmd_push_constants(cmd, self.goo_pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&gp));

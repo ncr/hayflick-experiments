@@ -276,22 +276,14 @@ impl ApplicationHandler for App {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::from_env();
-    // SHOT runs FULLY headless: no winit loop, no window, no surface/swapchain
-    // device extensions. The offscreen extent comes verbatim from WINDOW
-    // (default 1280x800), so golden captures are byte-reproducible — the WM
-    // never gets a say in the size. Same frame sequence as the windowed
-    // capture: draw() until harness_post_frame fires the SHOT and exits.
-    if cfg.harness.shot.is_some() {
-        let mut r = unsafe { Viewer::new(None, cfg)? };
-        while !r.exit_requested {
-            unsafe { r.draw() };
-        }
-        return Ok(());
-    }
-    // DEMO runs FULLY headless like SHOT — no winit loop, no window, no surface
-    // — but plays a gameplay trace one tick per draw(), dumping a PNG per tick
+    // SHOT and DEMO run FULLY headless: no winit loop, no window, no surface/
+    // swapchain device extensions. The offscreen extent comes verbatim from
+    // WINDOW (default 1280x800), so golden captures are byte-reproducible —
+    // the WM never gets a say in the size. SHOT keeps the windowed frame
+    // sequence: draw() until harness_post_frame fires the SHOT and exits.
+    // DEMO plays a gameplay trace one tick per draw(), dumping a PNG per tick
     // (the wall clock never ticks the sim; the per-tick command drain does).
-    if cfg.harness.demo.is_some() {
+    if cfg.harness.shot.is_some() || cfg.harness.demo.is_some() {
         let mut r = unsafe { Viewer::new(None, cfg)? };
         while !r.exit_requested {
             unsafe { r.draw() };

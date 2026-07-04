@@ -10,7 +10,7 @@
 //! below. No Vulkan/Metal type ever appears in `Viewer`.
 
 use glam::{Vec2, Vec3};
-use rt_probe::iso::{iso_basis, ISO_R};
+use rt_probe::iso::{iso_basis, CamFrame, ISO_R};
 use rt_probe::{Config, FrameState, Scene, SceneHandles, StyleCfg};
 use winit::window::Window;
 
@@ -210,6 +210,25 @@ pub const GOO_ABSORB: [f32; 4] = [3.4, 0.42, 2.9, 0.9];
 /// unmistakable warm contrast against the fluorescent-green goo (never pink).
 pub const GOO_BIRTH_EMIS: [f32; 4] = [9.5, 2.0, 0.08, 4.4];
 pub const GOO_BIRTH_ABSORB: [f32; 4] = [0.10, 4.4, 6.0, 0.97];
+
+/// Build this frame's goo-composite push constants. ONE site for both backends
+/// so the camera packing and the look wiring (squash, floor plane, smin k,
+/// emission/absorption) produce identical bytes regardless of GPU.
+pub fn build_goo_push(cam: &CamFrame, low_w: u32, low_h: u32, goo_n: usize, goo_nb: usize) -> GooPush {
+    use crate::sim::{GOO_FLOOR_Y, GOO_SQUASH};
+    GooPush {
+        cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
+        cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
+        cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, GOO_SQUASH],
+        cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, GOO_FLOOR_Y],
+        dims: [low_w as i32, low_h as i32, goo_n as i32, goo_nb as i32],
+        emis: GOO_EMIS,
+        absorb: GOO_ABSORB,
+        params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
+        birth_emis: GOO_BIRTH_EMIS,
+        birth_absorb: GOO_BIRTH_ABSORB,
+    }
+}
 
 /// Construct the GPU backend for this platform. Selected at compile time by
 /// target OS: Apple Silicon gets the Metal backend (MoltenVK has no ray

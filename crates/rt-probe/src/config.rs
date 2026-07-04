@@ -234,7 +234,9 @@ pub struct HarnessCfg {
 }
 
 pub struct Config {
-    pub scene: String,             // SCENE: cave (bin/run default) | house | lab | grid | game
+    // SCENE: cave (bin/run default) | arena | game | goo | village | home | hospital |
+    // office | factory | playground | range | goofloor | goonursery | goopair | house | lab | grid
+    pub scene: String,
     pub render: RenderCfg,
     pub game: GameCfg,
     pub harness: HarnessCfg,

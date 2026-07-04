@@ -15,8 +15,7 @@
 //! 1 grid cell = 1.0 wu, same lattice as the cave generator. Deterministic in
 //! `seed`.
 
-use crate::cave::CORRIDOR_ROOM_ID_BASE;
-use crate::mapviz::SERVICE_ROOM_ID_BASE;
+use crate::cave::{CORRIDOR_ROOM_ID_BASE, SERVICE_ROOM_ID_BASE};
 use crate::spec::{DoorId, DoorSpec, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec};
 use glam::Vec3;
 
@@ -144,22 +143,18 @@ pub fn building_floor(seed: u64, p: BuildingParams) -> LevelSpec {
 
     // ---- doors ----
     let mut doors: Vec<DoorSpec> = Vec::new();
-    let push_door = |doors: &mut Vec<DoorSpec>, hinge: Vec3, closed: [f32; 4]| {
-        let id = doors.len() as u32;
-        doors.push(DoorSpec { id: DoorId(id), hinge, axis_y: 1.0, closed_solid: closed, open_angle: DOOR_OPEN, anim_ticks: 24, name: format!("floor_door_{id}") });
-    };
     for pl in &plans {
         let cx = pl.x + pl.w / 2;
         let line = if pl.on_top { cz0 } else { cz1 };
-        push_door(&mut doors, Vec3::new(cx as f32, 0.0, line as f32), [cx as f32, line as f32 - T, (cx + 1) as f32, line as f32 + T]);
+        add_door(&mut doors, Vec3::new(cx as f32, 0.0, line as f32), [cx as f32, line as f32 - T, (cx + 1) as f32, line as f32 + T]);
     }
     // entrance: leaf at the left end of the main corridor
-    push_door(&mut doors, Vec3::new(0.0, 0.0, cz0 as f32), [-T, cz0 as f32, T, cz1 as f32]);
+    add_door(&mut doors, Vec3::new(0.0, 0.0, cz0 as f32), [-T, cz0 as f32, T, cz1 as f32]);
     // cross-corridor exterior exits (top & bottom)
     if let Some(xc) = cross {
         let cxc = xc + cw / 2;
-        push_door(&mut doors, Vec3::new(cxc as f32, 0.0, 0.0), [cxc as f32, -T, (cxc + 1) as f32, T]);
-        push_door(&mut doors, Vec3::new(cxc as f32, 0.0, h as f32), [cxc as f32, h as f32 - T, (cxc + 1) as f32, h as f32 + T]);
+        add_door(&mut doors, Vec3::new(cxc as f32, 0.0, 0.0), [cxc as f32, -T, (cxc + 1) as f32, T]);
+        add_door(&mut doors, Vec3::new(cxc as f32, 0.0, h as f32), [cxc as f32, h as f32 - T, (cxc + 1) as f32, h as f32 + T]);
     }
 
     let lights: Vec<LightSpec> = (0..n_rooms as u32)

@@ -1,7 +1,8 @@
 //! The pixel-perfect ISO_VIEW_CONTRACT camera + interactive-view math.
 //!
-//! Mirrors `packages/common-render/src/iso-contract.ts`: orthographic,
-//! yaw=π/4, pitch=π/6, and exactly R lowpixels per world unit (1 tile = 1 wu
+//! The contract originated in the (pre-pivot) web engine's `iso-contract.ts`;
+//! this crate is now the authoritative copy: orthographic, yaw=π/4,
+//! pitch=π/6, and exactly R lowpixels per world unit (1 tile = 1 wu
 //! -> 32 px H × 16 px V). Everything here is pure math (no Vulkan), so the
 //! interactive rules (#4 integer render scale, #5 whole-pixel pan, #6 zoom
 //! anchor, #7 guard band, lattice snapping) are regression-tested below.

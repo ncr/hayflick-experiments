@@ -226,8 +226,9 @@ pub struct FrameState<'a> {
     pub spotlights: &'a [Spotlight],
     /// Mover transforms — patched into inst_buf; any change rebuilds the TLAS.
     pub instances: &'a [(InstanceKey, Mat4)],
-    /// Goo metaballs for the screen-space SDF composite pass (Metal). Empty when
-    /// no goo is visible; the Vulkan backend ignores it (triangle-pool fallback).
+    /// Goo metaballs for the screen-space SDF composite pass (goo.metal on
+    /// macOS, goo.comp on Vulkan). Empty when no goo is visible or when
+    /// `GOO_SDF=0` routes the goo through the opaque triangle-pool fallback.
     pub goo: &'a [GooBall],
     /// Per-metaball birth-glow 0..1, PARALLEL to `goo` (same length/order). Kept
     /// in a separate slice so `GooBall` stays a tidy 16 B `float4`; uploaded to

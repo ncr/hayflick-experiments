@@ -320,11 +320,6 @@ impl NearestHit {
     }
 }
 
-/// Knuth multiplicative stride for the per-shot jitter scramble (the goo's
-/// GOO_ID_HASH idiom): the projectile id — already unique, already hashed sim
-/// state — is the only entropy, so replays stay bit-exact with NO RNG draw.
-const SHOT_ID_HASH: u32 = 2654435761;
-
 /// Deterministic aim wobble: deflect `base` inside a `cone` half-angle by a
 /// scramble of the projectile id. Disc-uniform-ish (sqrt radius), direction
 /// from the high hash bits so consecutive ids swing around the clock instead
@@ -336,7 +331,7 @@ fn shot_jitter(base: Vec3, cone: f32, salt: u32) -> Vec3 {
     }
     // +1 before the multiply: salt 0 (the game's very first shot) must not
     // collapse to h = 0 == zero deflection
-    let h = salt.wrapping_add(1).wrapping_mul(SHOT_ID_HASH);
+    let h = salt.wrapping_add(1).wrapping_mul(ID_HASH_STRIDE);
     let ang = (h >> 8) as f32 / 16_777_216.0 * std::f32::consts::TAU;
     let r = cone * ((h & 0xff) as f32 / 255.0).sqrt();
     let aux = if base.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
@@ -409,10 +404,10 @@ fn ray_sphere(ray: &PickRay, center: Vec3, radius: f32) -> Option<f32> {
 }
 
 impl<S: AudioSink> HouseGame<S> {
-    /// The WeaponSpec the player fires THIS tick: the arsenal's selected slot
-    /// on arena levels, the plain pistol everywhere else. All five slots map
-    /// to the pistol until their specs land (M2+ of the arena plan) — the
-    /// selection state is real, the ballistics are still shared.
+    /// The WeaponSpec the player fires THIS tick: on arena levels the
+    /// arsenal's selected slot maps to its real spec (slug, uzi, shotgun,
+    /// grenade, harpoon); non-arena levels have no arsenal and always fire
+    /// the plain PISTOL.
     pub fn current_weapon(&self) -> WeaponSpec {
         match self.res.arsenal {
             None => PISTOL,
@@ -426,7 +421,7 @@ impl<S: AudioSink> HouseGame<S> {
         }
     }
 
-    /// 4. Cooldown-gated FIRING: each trigger pull spawns the weapon's pellets as
+    /// Cooldown-gated FIRING: each trigger pull spawns the weapon's pellets as
     /// physical [`Projectile`]s on the aim ray, starting at the muzzle-forward
     /// point (so shots behind the player never spawn). The projectiles then fly
     /// and resolve their own hits in `projectile_system` — this system only

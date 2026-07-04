@@ -3,7 +3,8 @@
 //! `goo_system`, trap pull, shot damage/split, and same-tier fusion. These are
 //! `impl HouseGame` methods and free items in a CHILD module of `game`, so they
 //! reach `Res`'s private fields with no visibility widening. Pure relocation —
-//! the 7-system tick order, snapshot, and state_hash stay in `game.rs`.
+//! the authoritative per-tick system order (`tick()` in game.rs, one commented
+//! call per step), snapshot, and state_hash stay in `game.rs`.
 use super::*;
 use crate::collide_and_slide;
 use crate::spec::{GooKind, MobId};
@@ -665,13 +666,12 @@ impl Goo {
     }
 }
 
-/// FNV-1a 32-bit offset basis, reused here as a multiplier for RNG-free,
-/// id-derived deterministic scattering (particle jitter, gait-clock and mitosis
-/// desync) so split children and co-located mothers never line up in lockstep —
-/// all without consuming the shared RNG, which keeps the draw order stable.
-const GOO_ID_HASH: u32 = 2654435761;
 /// Secondary odd multiplier that mixes the particle index / mitosis-desync term
-/// (a different stride from `GOO_ID_HASH` so the two scrambles don't correlate).
+/// (a different stride from the shared [`ID_HASH_STRIDE`] Knuth multiplier so
+/// the two scrambles don't correlate). The id-derived scattering (particle
+/// jitter, gait-clock and mitosis desync) keeps split children and co-located
+/// mothers out of lockstep without consuming the shared RNG, which keeps the
+/// draw order stable.
 const GOO_ID_MIX: u32 = 40503;
 
 /// Build a fresh blob: head at `head`, tail trailing `body_len` along
@@ -695,13 +695,13 @@ pub(crate) fn fresh_goo(id: MobId, tier: u8, kind: GooKind, head: Vec2, heading:
     for (i, p) in parts.iter_mut().enumerate() {
         let gx = (i as i32 % cols) - cols / 2;
         let gz = (i as i32 / cols) - (GOO_PARTICLES as i32 / cols) / 2;
-        let h = ((id.0.wrapping_mul(GOO_ID_HASH)).wrapping_add(i as u32 * GOO_ID_MIX)) as f32;
+        let h = ((id.0.wrapping_mul(ID_HASH_STRIDE)).wrapping_add(i as u32 * GOO_ID_MIX)) as f32;
         let jit = (h * 1e-7).fract() - 0.5;
         *p = mid + heading * (gx as f32 * spacing + jit * 0.02) + perp * (gz as f32 * spacing);
     }
     // desync the gait clock per blob from the same id hash (RNG-free), so split
     // children never pulse in lockstep with each other or the parent.
-    let gait_phase = ((id.0.wrapping_mul(GOO_ID_HASH)) % GOO_GAIT_PERIOD as u32) as u16;
+    let gait_phase = ((id.0.wrapping_mul(ID_HASH_STRIDE)) % GOO_GAIT_PERIOD as u32) as u16;
     // tier-0 mothers bud on the mitosis clock; desync the FIRST bud per-id (over
     // the back half of the cycle) so co-located mothers don't pulse in lockstep.
     // Non-mothers never bud (spawn_timer 0, the spawn block is tier-0-gated).
@@ -1749,7 +1749,7 @@ impl<S: AudioSink> HouseGame<S> {
             self.res.next_mob_id += 1;
             // entrance ring over the north semicircle (z < 0), fanned by slot
             // with a small id-hash jitter so waves never stamp the same line
-            let jit = (((cid.0.wrapping_mul(GOO_ID_HASH)) >> 8) & 0xff) as f32 / 255.0 - 0.5;
+            let jit = (((cid.0.wrapping_mul(ID_HASH_STRIDE)) >> 8) & 0xff) as f32 / 255.0 - 0.5;
             let a = std::f32::consts::PI * (1.0 + (i as f32 + 0.5 + jit * 0.5) / count as f32);
             let head = Vec2::new(a.cos(), a.sin()) * GOO_WAVE_RING;
             // composition: mediums anchor, smalls swarm, and from wave 2 on

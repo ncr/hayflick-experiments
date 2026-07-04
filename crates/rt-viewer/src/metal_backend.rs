@@ -5,7 +5,8 @@
 //! TLAS refit if dirty → shade → tonemap → present / readback). Geometry,
 //! the concatenated scalar buffers, BLAS-per-primitive + TLAS, the two-bank GI
 //! probe cache, and the ported `shade.metal` / `probes.metal` / `tonemap.metal`
-//! kernels grow directly from the verified `spikes/metal-rt/`.
+//! kernels grew out of the verified `spikes/metal-rt/` spike (since deleted —
+//! this backend is the permanent implementation).
 //!
 //! M2 is software RT (Apple8) — intersection runs on shader cores (no dedicated
 //! RT block until M3); fine for this workload. Bindless geometry is the
@@ -13,8 +14,8 @@
 //! buffers are indexed by `intersection.instance_id`. Scalar byte-match is
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
-use crate::backend::{build_tone_push, FramePresent, GooPush, RenderBackend, GOO_ABSORB, GOO_BIRTH_ABSORB, GOO_BIRTH_EMIS, GOO_BOUNDS_MAX, GOO_EMIS, GOO_MAX, GOO_SMIN_K};
-use crate::sim::{GOO_FLOOR_Y, GOO_SQUASH};
+use crate::backend::{build_goo_push, build_tone_push, FramePresent, GooPush, RenderBackend, GOO_BOUNDS_MAX, GOO_MAX};
+use crate::sim::GOO_SQUASH;
 use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec2, Vec3};
 use metal::*;
@@ -45,19 +46,17 @@ struct Push {
     look2: [f32; 4],     // gi scale, _, _, _
 }
 
-// `GooPush` + the shared goo look/limit constants live in `crate::backend`
-// (one source for the Metal and Vulkan composite passes).
-
-// The goo resting-height constants (`GOO_SQUASH`, `GOO_FLOOR_Y`) are owned by
-// `crate::sim` (the single source of truth shared with the CPU ball placement)
-// and imported here — see the import near the top of this file.
+// `GooPush` + the shared goo look/limit constants + the `build_goo_push`
+// constructor live in `crate::backend` (one source for the Metal and Vulkan
+// composite passes). The resting-height constant `GOO_SQUASH` (used by the
+// shadow proxies below) is owned by `crate::sim`, the single source of truth
+// shared with the CPU ball placement.
 /// Phase C: shadow-proxy instance slots (one squashed sphere per metaball) and
 /// the radius scale that grows each proxy to roughly the `smin`-merged surface
 /// so the cast shadow matches the visible silhouette.
 const GOO_PROXY_CAP: usize = 480;
 const GOO_PROXY_SCALE: f32 = 1.35;
-/// Where an INACTIVE shadow proxy parks: far below the scene (see
-/// `goo_proxy_parked` for why this distance + a tiny scale + mask 0x00).
+/// Parking Y for an INACTIVE shadow proxy (rationale on `goo_proxy_parked`).
 const GOO_PROXY_PARK_Y: f32 = -1000.0;
 /// Coarse tessellation of the unit shadow-proxy sphere — it only casts
 /// shadows/AO (never seen by the primary ray), so a low-poly ball is plenty.
@@ -841,18 +840,7 @@ impl RenderBackend for MetalBackend {
                 let blit = cb.new_blit_command_encoder();
                 blit.copy_from_buffer(&t.radiance, 0, &t.goo_bg, 0, (low_w as u64) * (low_h as u64) * 16);
                 blit.end_encoding();
-                let gp = GooPush {
-                    cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
-                    cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
-                    cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, GOO_SQUASH],
-                    cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, GOO_FLOOR_Y],
-                    dims: [low_w as i32, low_h as i32, goo_n as i32, goo_nb as i32],
-                    emis: GOO_EMIS,
-                    absorb: GOO_ABSORB,
-                    params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
-                    birth_emis: GOO_BIRTH_EMIS,
-                    birth_absorb: GOO_BIRTH_ABSORB,
-                };
+                let gp = build_goo_push(cam, low_w, low_h, goo_n, goo_nb);
                 let genc = cb.new_compute_command_encoder();
                 genc.set_compute_pipeline_state(&self.goo_pso);
                 genc.set_buffer(0, Some(&t.radiance), 0);

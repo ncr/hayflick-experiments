@@ -29,7 +29,7 @@ pub mod village;
 
 pub use building::{building_floor, factory_floor, house_floor, BuildingParams};
 pub use floorplan::{enclose, WallOpts};
-pub use cave::{cave_level, cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE};
+pub use cave::{cave_level, cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE, SERVICE_ROOM_ID_BASE};
 pub use flicker::flicker;
 pub use game::{ArsenalState, Battery, Command, DoorState, FlashPose, GameEvent, GameSnapshot, Goo, GooState, HouseGame, Hunger, Inventory, MobRender, NeedKind, PickRay, Res, WeaponKind, WorldItem, GOO_CHUNK_CAP, GOO_CHUNK_H, GOO_CURE_MAX, GOO_LIVE_CAP, GOO_PARTICLES, TICK_DT};
 pub use lab::{first_tick_of, run_scenario, Metrics, Policy, Scenario, ScenarioReport};

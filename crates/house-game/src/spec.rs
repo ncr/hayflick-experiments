@@ -93,9 +93,10 @@ pub const SURVIVAL_DEFAULT: SurvivalParams = SurvivalParams {
     hunger_zero_speed_mul: 0.5,
 };
 
-/// Practical-light animation family — maps 1:1 onto the renderer's numeric
-/// flicker kinds (render.rs compute_practicals / [`crate::flicker`]). With the
-/// kind in the spec, the renderer's hue-based kind heuristic dies in step 10.
+/// Practical-light animation family — maps 1:1 onto [`crate::flicker`]'s
+/// numeric kinds (originally rt-probe render.rs compute_practicals). With the
+/// kind in the spec, the renderer needs no hue-based kind heuristic: rt-viewer
+/// consumes game-authored emission directly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LightKind {
     Incandescent, // kind 1: value-noise flicker + breathing + rare dips

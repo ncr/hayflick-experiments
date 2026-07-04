@@ -63,9 +63,11 @@ pub const HUD_W: i32 = 72;
 pub const HUD_H: i32 = 14;
 /// Tallest plate `score_canvas` can return (arena levels add a weapon row) —
 /// sizes the Vulkan staging buffer, which is allocated once per swapchain.
+// Its only consumer is the Vulkan backend, which is cfg'd out on macOS.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const HUD_H_MAX: i32 = HUD_H + 14;
 
-/// Menu interaction state (the tunable values live on `Renderer`).
+/// Menu interaction state (the tunable values live on `Viewer`).
 pub struct MenuState {
     pub open: bool,
     pub sel: usize,

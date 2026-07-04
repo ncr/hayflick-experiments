@@ -1,10 +1,11 @@
 //! Stateless flicker curves — the VERBATIM port of rt-probe
 //! `render.rs::compute_practicals`' per-kind animation formulas (hash noise,
 //! not RNG: a pure function of (kind, light index, time), so `snapshot()`
-//! never advances state and replay is exact). The renderer keeps its own copy
-//! until migration step 10 deletes it in favor of game-authored emission;
-//! until then `flicker_bit_equal_at_tick` pins this port bit-for-bit against
-//! values computed from the original code (method in the test).
+//! never advances state and replay is exact). This is now the ONE live copy:
+//! the game renderer (rt-viewer) consumes game-authored emission, and only the
+//! standalone rt-probe tool still carries the original formulas.
+//! `flicker_bit_equal_at_tick` pins this port bit-for-bit against values
+//! computed from that original code (method in the test).
 //!
 //! Kinds: 1 = incandescent flicker (value noise + slow breathing + rare
 //! deeper dips), 2 = screen pulse (throb + refresh shimmer + hue wobble),
