@@ -65,7 +65,7 @@ struct GooPush {
     float4 camUp;    // xyz basis, w = ortho half-height
     float4 camDir;   // xyz forward, w = vertical squash (<1 = flatter)
     float4 camPos;   // xyz eye,     w = floor plane Y
-    int4   dims;     // W, H, ballCount, _
+    int4   dims;     // W, H, ballCount, blobCount
     float4 emis;     // emissive rgb, w = glow intensity
     float4 absorb;   // absorption rgb (per wu), w = surface alpha
     float4 params;   // x = smin merge radius k; yzw unused
@@ -127,6 +127,23 @@ static float goo_glow_at(float3 p, device const float4* balls, device const floa
     return clamp(gsum / wsum, 0.0, 1.0);
 }
 
+// species tint sampled at a world point: the same ellipsoid-weighted average
+// as the birth glow, over the per-ball tint (constant within a blob, so this
+// resolves to "whose body is this pixel" — and blends across a rare weld).
+static float3 goo_tint_at(float3 p, device const float4* balls, device const float4* tints, device const float* vscales, int n, float squash) {
+    float wsum = 1e-4;
+    float3 tsum = float3(0.0);
+    for (int i = 0; i < n; ++i) {
+        float3 q = p - balls[i].xyz;
+        q.y /= squash * max(vscales[i], GOO_VSCALE_MIN);
+        float dn = length(q) / max(balls[i].w, 1e-4);
+        float w = exp(-dn * dn * GOO_GLOW_FALLOFF);
+        wsum += w;
+        tsum += w * tints[i].xyz;
+    }
+    return tsum / wsum; // surface points always have a dominant nearby ball
+}
+
 static inline float3 goo_normal(float3 p, device const float4* balls, device const float* vscales, device const float4* bounds, int nblobs, int n, float k, float squash, float floorY) {
     const float e = 0.010;
     float2 h = float2(1.0, -1.0) * 0.5773;
@@ -142,6 +159,7 @@ kernel void goo_composite(
     device const float*  vscales  [[buffer(5)]], // per-ball vertical scale (parallel to balls)
     device const float4* bgRad    [[buffer(6)]], // pre-goo radiance SNAPSHOT (blit before this pass): neighbour taps for refraction — reading `radiance` off-pixel would race other threads' writes
     device const float4* bnds     [[buffer(7)]], // per-BLOB bounding spheres (xyz centre, w radius), dims.w of them
+    device const float4* tints    [[buffer(8)]], // per-ball species tint (rgb × emis), parallel to balls
     uint2 gid [[thread_position_in_grid]])
 {
     int W = pc.dims.x, H = pc.dims.y, N = pc.dims.z, NB = pc.dims.w;
@@ -200,7 +218,9 @@ kernel void goo_composite(
     // boosted so the colour change reads clearly (the smin average dilutes it).
     float gmix = clamp(goo_glow_at(pen, balls, glows, vscales, N, squash) * GOO_BIRTH_TINT_BOOST, 0.0, 1.0);
     gmix = smoothstep(0.0, 1.0, gmix);
-    float3 emisC = mix(pc.emis.xyz, pc.birthEmis.xyz, gmix);
+    // species tint reweights the body emissive (green stays exactly ×1);
+    // the amber birth flash deliberately overrides it (same tell for all kinds)
+    float3 emisC = mix(pc.emis.xyz * goo_tint_at(pen, balls, tints, vscales, N, squash), pc.birthEmis.xyz, gmix);
     float emisI = mix(pc.emis.w, pc.birthEmis.w, gmix);
     float3 absorbC = mix(pc.absorb.xyz, pc.birthAbsorb.xyz, gmix);
 

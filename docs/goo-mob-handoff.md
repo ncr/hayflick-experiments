@@ -194,11 +194,13 @@ bounce + AoE (`explode`, `Res.boom` flash), and an arsenal-gated hash block
   (kind/cure/pinned/pin_pt) — all four `goo_sim_hash_oracle_*` constants
   recaptured once. Behavior on all-Green levels is bit-identical (Green
   multipliers are exact ×1.0; new fields default 0).
-- **METAL LOCKSTEP DEBT**: `goo.comp` gained SSBO **binding 7** (`tints[]`,
-  per-ball species tint sampled by `goo_tint_at`, applied to `pc.emis` before
-  the birth-amber mix). `goo.metal` does NOT have the twin yet — Metal still
-  compiles (GooPush unchanged at 160 B) and renders the uniform green for all
-  kinds. Port buffer(8?) + the tint sample before the Mac verify, and stream
-  `FrameState.goo_tint` in `metal_backend` like glow/vscale.
+- ~~METAL LOCKSTEP DEBT~~ **CLEARED 2026-07-04**: `goo.metal` now has the
+  tint twin (`tints` at buffer(8) — buffer(7) was already taken by the blob
+  bounds — `goo_tint_at`, and the `pc.emis × tint` reweight before the
+  birth-amber mix); `metal_backend` streams `FrameState.goo_tint` like
+  glow/vscale. Species colours verified live on the M2 Pro (blue Tank / red
+  Runner / green baseline), Metal goldens still byte-identical. The round-2
+  render features (refraction, two-level culling, vscale, specular glint)
+  also passed their first Mac run the same day.
 - `Goo.cure` exists (hashed) but its behavior (slug solidify → dead chunks)
   lands in the next milestone.

@@ -155,6 +155,7 @@ pub struct MetalBackend {
     goo_glow_buf: Buffer,   // per-ball birth-glow 0..1, parallel to goo_buf
     goo_vscale_buf: Buffer, // per-ball vertical scale (1 = neutral), parallel to goo_buf
     goo_bounds_buf: Buffer, // per-BLOB bounding spheres for the two-level SDF cull
+    goo_tint_buf: Buffer,   // per-ball species tint (vec4 rgb multiplier on emis)
     goo_sdf: bool,
     // goo body proxies in the accel structure: one squashed unit sphere per
     // metaball, mask 0x02 (shadow/AO rays only — invisible to the primary ray,
@@ -417,6 +418,7 @@ impl MetalBackend {
         let goo_glow_buf = device.new_buffer((GOO_MAX * 4) as u64, MTLResourceOptions::StorageModeShared);
         let goo_vscale_buf = device.new_buffer((GOO_MAX * 4) as u64, MTLResourceOptions::StorageModeShared);
         let goo_bounds_buf = device.new_buffer((GOO_BOUNDS_MAX * 16) as u64, MTLResourceOptions::StorageModeShared);
+        let goo_tint_buf = device.new_buffer((GOO_MAX * 16) as u64, MTLResourceOptions::StorageModeShared);
         let goo_sdf = crate::game_scene::goo_sdf_enabled();
 
         let env0 = cfg.lighting_env(scene.lighting);
@@ -456,6 +458,7 @@ impl MetalBackend {
             goo_glow_buf,
             goo_vscale_buf,
             goo_bounds_buf,
+            goo_tint_buf,
             goo_sdf,
             goo_inst_first,
             goo_proxy_n: GOO_PROXY_CAP,
@@ -718,6 +721,11 @@ impl RenderBackend for MetalBackend {
             if goo_nb > 0 {
                 write_buf(&self.goo_bounds_buf, &fp.fs.goo_bounds[..goo_nb]);
             }
+            // parallel species-tint slice (same guard as glow)
+            let tn = fp.fs.goo_tint.len().min(goo_n);
+            if tn > 0 {
+                write_buf(&self.goo_tint_buf, &fp.fs.goo_tint[..tn]);
+            }
         }
         // patch mover instance transforms (player + door leaves) on change
         let mut moved = false;
@@ -855,6 +863,7 @@ impl RenderBackend for MetalBackend {
                 genc.set_buffer(5, Some(&self.goo_vscale_buf), 0);
                 genc.set_buffer(6, Some(&t.goo_bg), 0);
                 genc.set_buffer(7, Some(&self.goo_bounds_buf), 0);
+                genc.set_buffer(8, Some(&self.goo_tint_buf), 0);
                 genc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
                 genc.end_encoding();
             }
