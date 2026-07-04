@@ -277,8 +277,9 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // Slots skin from GameSnapshot.chunks; unused slots stay zero-scale.
     if spec.arena.is_some() {
         register_sphere_pool(&mut scene, "chunk_slot", house_game::GOO_CHUNK_CAP, 10, 14, CHUNK_BASE_COLOR, CHUNK_EMISSIVE, 0.9);
-        // bleed-droplet pool: tiny hot-green motes for the uzi's tear-off FX
-        register_sphere_pool(&mut scene, "drop_slot", 24, 5, 7, [0.02, 0.06, 0.03, 1.0], [2.5, 7.5, 3.0, 1.0], 0.5);
+        // splash-droplet pool: hot-green motes torn off by ANY hit (sized for a
+        // shotgun volley of sprays + their floor splats)
+        register_sphere_pool(&mut scene, "drop_slot", 48, 5, 7, [0.02, 0.06, 0.03, 1.0], [2.5, 7.5, 3.0, 1.0], 0.5);
     }
 
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat

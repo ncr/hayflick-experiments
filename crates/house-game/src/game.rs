@@ -170,9 +170,12 @@ pub enum GameEvent {
     /// A cured blob died and SOLIDIFIED: a dead chunk now stands at the point
     /// (id of the body that died, its centre).
     MobSolidified(MobId, Vec3),
-    /// An uzi round tore a droplet off a surviving blob (id, impact point) —
-    /// a presentation event (the shell spawns render droplets; no audio).
-    MobBled(MobId, Vec3),
+    /// A projectile splashed goo fluid: EVERY damaging hit emits one (uzi
+    /// pinprick through grenade blast), carrying the impact point, the impact
+    /// direction and the fluid punch (the weapon's knockback; killing blows
+    /// boosted) — the shell scales its droplet spray from it. Presentation
+    /// event only (no audio; the hit cue already plays).
+    GooSplashed(MobId, Vec3, Vec3, f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -804,7 +807,7 @@ impl<S: AudioSink> HouseGame<S> {
                 GameEvent::MobSolidified(_, p) => AudioCue { id: CueId("goo_solidify"), pos: Some(p), gain: 0.9 },
                 // need-state crossings are HUD/feedback events, no audio cue yet;
                 // bleed droplets are pure presentation (the hit cue already plays)
-                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) | GameEvent::MobBled(..) => continue,
+                GameEvent::NeedCritical(_) | GameEvent::NeedRecovered(_) | GameEvent::GooSplashed(..) => continue,
             };
             self.sink.play(cue);
         }

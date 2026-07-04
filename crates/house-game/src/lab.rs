@@ -135,7 +135,7 @@ impl Metrics {
                     }
                 }
                 // goo-mob events are not part of the survival-lab metrics
-                GameEvent::MobHit(..) | GameEvent::MobSplit(..) | GameEvent::MobKilled(..) | GameEvent::MobMerged(..) | GameEvent::MobSolidified(..) | GameEvent::MobBled(..) => {}
+                GameEvent::MobHit(..) | GameEvent::MobSplit(..) | GameEvent::MobKilled(..) | GameEvent::MobMerged(..) | GameEvent::MobSolidified(..) | GameEvent::GooSplashed(..) => {}
             }
         }
         // close still-open spans at the run end

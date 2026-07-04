@@ -1103,16 +1103,17 @@ fn clearing_the_arena_summons_the_next_wave_deterministically() {
 }
 
 #[test]
-fn uzi_hits_emit_bleed_droplet_events() {
+fn goo_hits_emit_splash_events() {
     let spec = lone_large_spec();
     let mut g = HouseGame::new(&spec, VecSink::default());
     g.res.event_tap = Some(Vec::new());
     let e = g.mobs[0];
     let c = g.world.get::<&Goo>(e).unwrap().centroid();
-    g.damage_goo(e, Vec3::new(c.x, 0.3, c.y), Vec3::Z, UZI.damage, 0.0, WeaponClass::Uzi);
+    g.damage_goo(e, Vec3::new(c.x, 0.3, c.y), Vec3::Z, UZI.damage, 0.6, WeaponClass::Uzi);
     g.tick(Tick(0), &[]);
     let tap = g.res.event_tap.take().unwrap();
-    assert!(tap.iter().any(|ev| matches!(ev, GameEvent::MobBled(..))), "{tap:?}");
+    // every damaging hit splashes, carrying the impact dir + the fluid punch
+    assert!(tap.iter().any(|ev| matches!(ev, GameEvent::GooSplashed(_, _, d, p) if *d == Vec3::Z && *p == 0.6)), "{tap:?}");
     assert!(tap.iter().any(|ev| matches!(ev, GameEvent::MobHit(..))), "the hit still lands: {tap:?}");
 }
 

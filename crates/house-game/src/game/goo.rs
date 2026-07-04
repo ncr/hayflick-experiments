@@ -151,6 +151,10 @@ pub const GOO_TETHER_SNAP: f32 = 0.22;
 // itself cannot deform fast enough). Coherent and low-frequency, never buzz.
 /// Initial wobble amplitude armed at the snap.
 pub const GOO_WOBBLE_AMP0: f32 = 1.0;
+/// Crater burst: fraction of a hit's knockback that particles near the impact
+/// receive RADIALLY away from the strike point (on top of the directional
+/// shove above) — the entry wound visibly caves and side-sprays (2026-07-04).
+pub const GOO_CRATER_FRAC: f32 = 0.45;
 /// The mother rings a little less than the mini (more mass / inertia).
 pub const GOO_MOTHER_WOBBLE_FRAC: f32 = 0.85;
 /// Geometric ring-down per tick: 0.955^66 ≈ 0.045 → ~4 visible swings over ~1.1 s.
@@ -1564,6 +1568,18 @@ impl<S: AudioSink> HouseGame<S> {
                 let w = (1.0 - (g.parts[i] - hit_xz).length() / reach).clamp(0.0, 1.0);
                 g.vel[i] += kdir * (knockback * w);
             }
+            // crater burst (2026-07-04): particles near the impact ALSO fly
+            // radially away from the strike point — the hit side visibly
+            // caves in and sprays sideways before the PBF density reflows
+            // it. w² concentrates the burst at the entry wound; particles
+            // exactly on the hit point fall back to the slug heading.
+            for i in 0..GOO_PARTICLES {
+                let d = g.parts[i] - hit_xz;
+                let r = d.length();
+                let w = (1.0 - r / reach).clamp(0.0, 1.0);
+                let out = if r > 1e-4 { d / r } else { kdir };
+                g.vel[i] += out * (knockback * GOO_CRATER_FRAC * w * w);
+            }
             // a struck blob wobbles like jelly: arm the same oscillator the birth
             // snap uses, squashing along the slug heading (don't damp an existing
             // stronger ring). Cheap, deterministic, and makes every goo springy.
@@ -1573,12 +1589,12 @@ impl<S: AudioSink> HouseGame<S> {
             g.hp == 0
         };
         let hit_evt = Vec3::new(centroid.x, goo_tier_radius(tier), centroid.y);
+        // every damaging hit splashes fluid (presentation-only; the shell
+        // scales its droplet spray from the punch — a killing blow tears the
+        // body open, so it sprays harder)
+        let punch = if dead { knockback * 1.6 } else { knockback };
+        self.res.events.emit(GameEvent::GooSplashed(id, hit, dir, punch));
         if !dead {
-            // uzi pinpricks visibly BLEED: a presentation-only droplet event
-            // (the render shell taps it; audio skips it; nothing is hashed)
-            if class == WeaponClass::Uzi {
-                self.res.events.emit(GameEvent::MobBled(id, hit));
-            }
             self.res.events.emit(GameEvent::MobHit(id, hit_evt));
             return;
         }

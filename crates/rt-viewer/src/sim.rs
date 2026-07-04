@@ -104,10 +104,16 @@ struct GlitchEntry {
 
 /// One bleed droplet: a tiny glowing ball torn off a blob by uzi fire,
 /// ballistic to the floor, gone in half a second.
+/// Seconds a landed splat spends spreading/fading before it despawns.
+const SPLAT_LIFE: f32 = 0.45;
+
 pub struct Droplet {
     pub pos: Vec3,
     pub vel: Vec3,
     pub age: f32,
+    /// <0 = airborne; >=0 = seconds since it hit the floor and became a
+    /// flattening SPLAT (a widening puddle disc that fades out).
+    pub splat: f32,
 }
 
 impl GameLoop {
@@ -362,22 +368,33 @@ impl GameLoop {
         skin_pool(&self.chunk_slots, xforms)
     }
 
-    /// Advance the bleed-droplet FX by `n` sim ticks: drain MobBled events
-    /// from the tap into fresh droplet sprays, integrate ballistics, retire on
-    /// the floor or age-out. Tick-clocked (not wall-clocked) so DEMO captures
-    /// stay reproducible. Presentation-only.
+    /// Advance the splash FX by `n` sim ticks: drain GooSplashed events from
+    /// the tap into directional droplet sprays (count + speed scale with the
+    /// hit's fluid punch), integrate ballistics, then let each droplet land as
+    /// a widening floor SPLAT that fades. Tick-clocked (not wall-clocked) so
+    /// DEMO captures stay reproducible. Presentation-only.
     pub fn tick_droplets(&mut self, n: u32) {
         self.fx_frame = self.fx_frame.wrapping_add(n);
         self.update_glitch();
         if let Some(tap) = self.sim.res.event_tap.as_mut() {
             for ev in tap.drain(..) {
-                if let house_game::GameEvent::MobBled(_, at) = ev {
-                    for _ in 0..3 {
+                if let house_game::GameEvent::GooSplashed(_, at, dir, punch) = ev {
+                    // spray budget: a pinprick sheds a couple of motes, a slug
+                    // or point-blank volley tears off a real spray
+                    let count = (3.0 + punch * 0.9).min(14.0) as u32;
+                    let fwd = glam::Vec2::new(dir.x, dir.z).normalize_or_zero();
+                    let side = glam::Vec2::new(-fwd.y, fwd.x);
+                    for _ in 0..count {
                         self.drop_seed = self.drop_seed.wrapping_add(1);
                         let h = self.drop_seed.wrapping_mul(2654435761);
-                        let a = (h >> 8) as f32 / 16_777_216.0 * std::f32::consts::TAU;
-                        let up = 1.6 + ((h & 0xff) as f32 / 255.0) * 1.2;
-                        self.droplets.push(Droplet { pos: at + Vec3::new(0.0, 0.1, 0.0), vel: Vec3::new(a.cos() * 1.4, up, a.sin() * 1.4), age: 0.0 });
+                        let r0 = (h & 0xff) as f32 / 255.0;
+                        let r1 = ((h >> 8) & 0xff) as f32 / 255.0;
+                        let r2 = ((h >> 16) & 0xff) as f32 / 255.0;
+                        // mostly THROUGH the body along the shot, fanned to the
+                        // sides — an exit spray, not a fountain
+                        let xz = (fwd * (0.5 + r0 * 0.9) + side * (r1 - 0.5) * 1.3).normalize_or_zero() * (1.0 + punch * (0.18 + 0.12 * r2));
+                        let up = 1.3 + r2 * 1.3 + punch * 0.06;
+                        self.droplets.push(Droplet { pos: at + Vec3::new(0.0, 0.1, 0.0), vel: Vec3::new(xz.x, up, xz.y), age: 0.0, splat: -1.0 });
                     }
                 }
             }
@@ -385,11 +402,20 @@ impl GameLoop {
         if n > 0 && !self.droplets.is_empty() {
             let dt = TICK_DT * n as f32;
             for d in self.droplets.iter_mut() {
-                d.vel.y -= 9.0 * dt;
-                d.pos += d.vel * dt;
-                d.age += dt;
+                if d.splat < 0.0 {
+                    d.vel.y -= 9.0 * dt;
+                    d.pos += d.vel * dt;
+                    d.age += dt;
+                    // touchdown → become a floor splat (skip if it aged out)
+                    if d.pos.y <= 0.03 && d.vel.y < 0.0 {
+                        d.pos.y = 0.02;
+                        d.splat = 0.0;
+                    }
+                } else {
+                    d.splat += dt;
+                }
             }
-            self.droplets.retain(|d| d.age < 0.6 && d.pos.y > 0.015);
+            self.droplets.retain(|d| if d.splat < 0.0 { d.age < 0.9 } else { d.splat < SPLAT_LIFE });
         }
     }
 
@@ -417,9 +443,20 @@ impl GameLoop {
         }
     }
 
-    /// Per-frame droplet instances (tiny glowing balls on the drop pool).
+    /// Per-frame droplet instances: airborne motes are tiny glowing balls;
+    /// landed ones flatten into widening, thinning puddle discs (the same
+    /// sphere squashed to the floor) that vanish at SPLAT_LIFE.
     pub fn droplet_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.droplets.iter().map(|d| Mat4::from_translation(d.pos) * Mat4::from_scale(Vec3::splat(0.045)));
+        let xforms = self.droplets.iter().map(|d| {
+            if d.splat < 0.0 {
+                Mat4::from_translation(d.pos) * Mat4::from_scale(Vec3::splat(0.045))
+            } else {
+                let t = (d.splat / SPLAT_LIFE).min(1.0);
+                let r = 0.05 + t * 0.13; // spreads out...
+                let h = 0.020 * (1.0 - t) + 0.004; // ...as it drains away
+                Mat4::from_translation(d.pos) * Mat4::from_scale(Vec3::new(r, h, r))
+            }
+        });
         skin_pool(&self.drop_slots, xforms)
     }
 
