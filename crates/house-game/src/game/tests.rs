@@ -1052,6 +1052,75 @@ fn tank_resists_small_arms_but_not_the_slug() {
 }
 
 #[test]
+fn kind_gait_period_and_viscosity_keep_green_exact() {
+    // G2/G4: species motion identity is kind-gated. Green keeps the EXACT
+    // historical constants — the all-Green hash oracles pin the float path,
+    // this pins the mapping itself.
+    assert_eq!(goo_kind_gait_period(crate::spec::GooKind::Green), GOO_GAIT_PERIOD);
+    assert!(goo_kind_gait_period(crate::spec::GooKind::Runner) < GOO_GAIT_PERIOD, "the Runner inchworms faster");
+    assert!(goo_kind_gait_period(crate::spec::GooKind::Tank) > GOO_GAIT_PERIOD, "the Tank heaves slower");
+    assert_eq!(goo_kind_viscosity(crate::spec::GooKind::Green, 0), GOO_VISCOSITY);
+    assert_eq!(goo_kind_viscosity(crate::spec::GooKind::Green, 2), GOO_VISCOSITY);
+    assert!(goo_kind_viscosity(crate::spec::GooKind::Runner, 1) < GOO_VISCOSITY, "Runner goo runs thin");
+    assert!(goo_kind_viscosity(crate::spec::GooKind::Runner, 0) < goo_kind_viscosity(crate::spec::GooKind::Runner, 1), "Smalls splash hardest");
+    assert!(goo_kind_viscosity(crate::spec::GooKind::Tank, 1) > GOO_VISCOSITY, "Tank goo is tar");
+}
+
+#[test]
+fn runner_gait_clock_wraps_on_its_own_period() {
+    // G2: the Runner's crawl cycle advances +1 per tick modulo ITS period
+    // (47), not the Green baseline 66.
+    let mut spec = crate::spec::arena_level();
+    spec.mobs = vec![MobSpec { id: MobId(0), tier: 1, kind: crate::spec::GooKind::Runner, pos: Vec3::new(0.0, 0.0, 0.0) }];
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    let p0 = g.world.get::<&Goo>(g.mobs[0]).unwrap().gait_phase as u32;
+    assert!(p0 < 47, "the id-desync seed already lands inside the Runner period");
+    for t in 0..50u64 {
+        g.tick(Tick(t), &[]);
+    }
+    let p1 = g.world.get::<&Goo>(g.mobs[0]).unwrap().gait_phase as u32;
+    assert_eq!(p1, (p0 + 50) % 47, "50 ticks advance the phase mod the Runner period");
+}
+
+#[test]
+fn runner_winds_up_before_the_sprint_and_green_does_not() {
+    // G3: a Runner arriving at its flank point CROUCHES (Windup: spine
+    // clench + MobWindup event + rising cue) for ~WINDUP_TICKS before the
+    // sprint; a Green in the same spot lunges straight into Sprint.
+    let run = |kind: crate::spec::GooKind| {
+        let mut spec = crate::spec::arena_level();
+        spec.static_solids = vec![];
+        spec.mobs = vec![MobSpec { id: MobId(0), tier: 1, kind, pos: Vec3::new(0.0, 0.0, 0.0) }];
+        let mut g = HouseGame::new(&spec, VecSink::default());
+        g.res.event_tap = Some(Vec::new());
+        {
+            let e = g.mobs[0];
+            let mut gg = g.world.get::<&mut Goo>(e).unwrap();
+            gg.tac = Tactic::Flank;
+            gg.tac_point = gg.ends[0]; // already arrived — commits next tick
+            gg.tac_timer = 300;
+        }
+        let mut tacs = Vec::new();
+        for t in 0..30u64 {
+            g.tick(Tick(t), &[]);
+            tacs.push(g.world.get::<&Goo>(g.mobs[0]).unwrap().tac);
+        }
+        let windup_ev = g.res.event_tap.take().unwrap().iter().any(|ev| matches!(ev, GameEvent::MobWindup(..)));
+        let windup_cue = g.sink.0.iter().any(|c| c.id.0 == "goo_windup");
+        (tacs, windup_ev, windup_cue)
+    };
+    let (tacs, ev, cue) = run(crate::spec::GooKind::Runner);
+    assert!(tacs.contains(&Tactic::Sprint), "the Runner still sprints: {tacs:?}");
+    let windups = tacs.iter().filter(|t| **t == Tactic::Windup).count();
+    assert!((9..=11).contains(&windups), "the crouch holds ~WINDUP_TICKS: {windups} in {tacs:?}");
+    assert!(ev, "MobWindup announces the crouch");
+    assert!(cue, "the rising two-note cue plays");
+    let (tacs, ev, cue) = run(crate::spec::GooKind::Green);
+    assert!(tacs.contains(&Tactic::Sprint), "the Green commits directly: {tacs:?}");
+    assert!(!tacs.contains(&Tactic::Windup) && !ev && !cue, "no tell for non-Runners: {tacs:?}");
+}
+
+#[test]
 fn harpoon_pins_a_blob_in_place() {
     // pin the arena's fast Runner (tier 1 at (4, 0.5)) and let the sim run:
     // its centroid must stay at the nail point instead of hunting off

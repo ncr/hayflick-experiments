@@ -113,8 +113,9 @@ fn goo_pbf_correct(
 /// XSPH viscosity: nudge each particle's velocity toward its neighbours' so the
 /// body flows as one coherent slime. Snapshots the incoming velocities, then
 /// accumulates the symmetric pairwise delta (same `i==j` guard and order as the
-/// extracted loop) and applies `GOO_VISCOSITY` of it.
-fn goo_xsph_viscosity(vel: &mut [Vec2; GOO_PARTICLES], xp: &[Vec2; GOO_PARTICLES], h: f32) {
+/// extracted loop) and applies `visc` of it — the caller's per-kind/tier value
+/// ([`goo_kind_viscosity`], G4); Green passes exactly `GOO_VISCOSITY`.
+fn goo_xsph_viscosity(vel: &mut [Vec2; GOO_PARTICLES], xp: &[Vec2; GOO_PARTICLES], h: f32, visc: f32) {
     let vin = *vel;
     for i in 0..GOO_PARTICLES {
         let mut dv = Vec2::ZERO;
@@ -125,7 +126,7 @@ fn goo_xsph_viscosity(vel: &mut [Vec2; GOO_PARTICLES], xp: &[Vec2; GOO_PARTICLES
             let r = (xp[i] - xp[j]).length();
             dv += (vin[j] - vin[i]) * goo_w(r, h);
         }
-        vel[i] += dv * GOO_VISCOSITY;
+        vel[i] += dv * visc;
     }
 }
 /// The fluid scale a blob ACTUALLY runs at — derived from its live `body_len`
@@ -176,7 +177,7 @@ pub(crate) fn goo_wobble_render(wobble_amp: f32, wobble_phase: u16) -> f32 {
 /// a pushing mother doesn't flatten mid-clench. Presentation-only — a pure
 /// read of hashed state, consumed by the snapshot (never re-hashed).
 pub(crate) fn goo_render_vscale(g: &Goo) -> f32 {
-    let (_, stretch) = gait_profile(g.gait_phase);
+    let (_, stretch) = gait_profile(g.gait_phase, goo_kind_gait_period(g.kind));
     let tension = goo_tension(g.tier, g.spawn_timer, g.birth_glow);
     let stretch = stretch * (1.0 - tension);
     let wob = goo_wobble_render(g.wobble_amp, g.wobble_phase);
@@ -332,8 +333,9 @@ pub(crate) fn fresh_goo(id: MobId, tier: u8, kind: GooKind, head: Vec2, heading:
         *p = mid + heading * (gx as f32 * spacing + jit * 0.02) + perp * (gz as f32 * spacing);
     }
     // desync the gait clock per blob from the same id hash (RNG-free), so split
-    // children never pulse in lockstep with each other or the parent.
-    let gait_phase = ((id.0.wrapping_mul(ID_HASH_STRIDE)) % GOO_GAIT_PERIOD as u32) as u16;
+    // children never pulse in lockstep with each other or the parent. Modulo
+    // the KIND's period (G2) so a fast-cycling Runner never starts out of range.
+    let gait_phase = ((id.0.wrapping_mul(ID_HASH_STRIDE)) % goo_kind_gait_period(kind) as u32) as u16;
     // tier-0 mothers bud on the mitosis clock; desync the FIRST bud per-id (over
     // the back half of the cycle) so co-located mothers don't pulse in lockstep.
     // Non-mothers never bud (spawn_timer 0, the spawn block is tier-0-gated).
@@ -345,14 +347,55 @@ pub(crate) fn fresh_goo(id: MobId, tier: u8, kind: GooKind, head: Vec2, heading:
     Goo { id, kind, cure: 0, pinned: 0, pin_pt: Vec2::ZERO, ends, ends_prev: ends.map(|e| e - seed_vel), parts, vel: [seed_vel; GOO_PARTICLES], body_len, tier, hp: goo_tier_hp(tier), state: GooState::Wander, timer, heading, gait_phase, merge_grace: GOO_MERGE_GRACE, fusing: 0, fuse_pt: Vec2::ZERO, spawn_timer, spawn_dir: Vec2::ZERO, birth_glow: 0, birth_immune: false, tether: 0, tether_anchor: Vec2::ZERO, tear_ticks: 0, wobble_amp: 0.0, wobble_dir: Vec2::ZERO, wobble_phase: 0, tac: Tactic::Direct, tac_timer: 0, tac_point: Vec2::ZERO, strike: 0 }
 }
 
+/// Species → crawl-cycle period (ticks), G2 motion identity: the Runner's
+/// twitchy inchworm cycles ~40% faster, the Tank heaves ~30% slower (its
+/// bunch stretches with it — the ominous heave). GREEN IS EXACTLY
+/// `GOO_GAIT_PERIOD`: every all-Green scene (the four hash oracles) keeps
+/// the verbatim clock modulus and profile float path.
+pub(crate) fn goo_kind_gait_period(kind: GooKind) -> u16 {
+    match kind {
+        GooKind::Green => GOO_GAIT_PERIOD,
+        GooKind::Runner => 47,
+        GooKind::Tank => 86,
+    }
+}
+
+/// Species/tier → XSPH viscosity (G4): the fluid itself carries identity.
+/// Runner goo runs THIN (splashier under fire, tier-0 Smalls splashiest);
+/// Tank goo is tar — it barely ripples under small arms, the same lesson
+/// D2's resist flash teaches, told by the fluid. GREEN IS EXACTLY
+/// `GOO_VISCOSITY`, so all-Green scenes multiply by the identical constant
+/// and stay bit-stable.
+pub(crate) fn goo_kind_viscosity(kind: GooKind, tier: u8) -> f32 {
+    match kind {
+        GooKind::Green => GOO_VISCOSITY,
+        GooKind::Runner => {
+            if tier == 0 {
+                0.09
+            } else {
+                0.11
+            }
+        }
+        GooKind::Tank => {
+            if tier == 0 {
+                0.26
+            } else {
+                0.30
+            }
+        }
+    }
+}
+
 /// Integer gait phase → (gather, stretch), both in [0,1], for the crawl cycle.
 /// BUNCH (gather pull ramps up, the body rounds up and the tail catches the
 /// head) → LUNGE (the spine stretches forward, the body elongates) → REFLOW
 /// (length eases back, the rear flows in). A pure int→f32 map: deterministic,
 /// no wall clock. `gather` boosts the capsule pull; `stretch` drives the live
-/// spine length between `GOO_LEN_MIN` and `GOO_LEN_MAX`.
-fn gait_profile(phase: u16) -> (f32, f32) {
-    let t = phase as f32 / GOO_GAIT_PERIOD as f32; // 0..1
+/// spine length between `GOO_LEN_MIN` and `GOO_LEN_MAX`. `period` is the
+/// kind's cycle length ([`goo_kind_gait_period`]) — Green passes the
+/// historical constant, so its float path is unchanged.
+fn gait_profile(phase: u16, period: u16) -> (f32, f32) {
+    let t = phase as f32 / period as f32; // 0..1
     // stretch: contracted through the gather window, a sin² bell over the lunge.
     let stretch = if (0.35..0.75).contains(&t) {
         let u = (t - 0.35) / 0.40;
@@ -1084,7 +1127,7 @@ impl<S: AudioSink> HouseGame<S> {
             // (gather, stretch) envelope. `stretch` sets the live spine length
             // → the body squashes and stretches; `gather` boosts the capsule
             // pull during the round-up. Deterministic, hashed as u64. ---
-            g.gait_phase = (g.gait_phase + 1) % GOO_GAIT_PERIOD;
+            g.gait_phase = (g.gait_phase + 1) % goo_kind_gait_period(g.kind);
             g.merge_grace = g.merge_grace.saturating_sub(1); // newborn merge immunity ticks down
             // ease the rest spine length toward this tier's target — normally a
             // no-op (already there), but after a merge it grows the blob into its
@@ -1134,16 +1177,27 @@ impl<S: AudioSink> HouseGame<S> {
                 0.0
             };
 
-            let (gather, mut stretch) = gait_profile(g.gait_phase);
+            let (gather, mut stretch) = gait_profile(g.gait_phase, goo_kind_gait_period(g.kind));
             // tension holds her round: suppress the lunge stretch so she doesn't
             // elongate, and draw the spine shorter (a clench) for a tight ball.
             stretch *= 1.0 - tension;
+            // G3: a Runner mid-WINDUP clenches for the pounce — the lunge
+            // stretch dies and the spine draws under rest length, the 10-tick
+            // readable bunch before the sprint. Only arena Runners ever hold
+            // Windup, so every other blob keeps this float path verbatim.
+            let windup = g.tac == Tactic::Windup;
+            if windup {
+                stretch = 0.0;
+            }
             // the wobble rides the spine length as an ADDITIVE delta: a real flex
             // along the body axis as it rings down (the snapshot squash carries the
             // crisp visible part). Additive (not a multiplier) so the birth tension
             // clench, still relaxing through the afterglow, can't scale it away.
             // Clamped to a small positive so a deep swing can't invert the spine.
-            let gait_base = g.body_len * (GOO_LEN_MIN + (GOO_LEN_MAX - GOO_LEN_MIN) * stretch) * (1.0 - tension * GOO_TENSE_CLENCH);
+            let mut gait_base = g.body_len * (GOO_LEN_MIN + (GOO_LEN_MAX - GOO_LEN_MIN) * stretch) * (1.0 - tension * GOO_TENSE_CLENCH);
+            if windup {
+                gait_base *= GOO_WINDUP_CLENCH;
+            }
             let gait_len = (gait_base + g.body_len * wobble * GOO_WOBBLE_LEN).max(g.body_len * 0.2);
 
             // --- head anchor (Verlet + steering drive + trap/mother/contact
@@ -1232,10 +1286,11 @@ impl<S: AudioSink> HouseGame<S> {
                 self.goo_clamp_to_solids(&mut xp, &g.parts);
             }
             // velocity from the solved motion, then XSPH viscosity for cohesion
+            // (per-kind/tier thickness, G4 — Green passes the exact old const)
             for i in 0..GOO_PARTICLES {
                 g.vel[i] = (xp[i] - g.parts[i]) / dt;
             }
-            goo_xsph_viscosity(&mut g.vel, &xp, h);
+            goo_xsph_viscosity(&mut g.vel, &xp, h, goo_kind_viscosity(g.kind, g.tier));
             g.parts = xp;
 
             *self.world.get::<&mut Goo>(e).unwrap() = g;

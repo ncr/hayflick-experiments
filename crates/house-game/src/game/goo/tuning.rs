@@ -39,6 +39,10 @@ pub const GOO_GAIT_PERIOD: u16 = 66;
 /// the body gathers) and extended (the forward lunge that stretches it out).
 pub const GOO_LEN_MIN: f32 = 0.55;
 pub const GOO_LEN_MAX: f32 = 1.3;
+/// G3: extra spine shortening while a Runner holds `Tactic::Windup` — the
+/// pre-sprint crouch draws the body under its contracted rest length so the
+/// pounce telegraph reads in silhouette. Only Windup blobs ever multiply it.
+pub const GOO_WINDUP_CLENCH: f32 = 0.72;
 /// Floor on the gait-modulated capsule pull (gather ramps it up over this), so
 /// cohesion always wins and the blob never lets go of itself between pulses.
 pub const GOO_PULL_BASE: f32 = 0.6;

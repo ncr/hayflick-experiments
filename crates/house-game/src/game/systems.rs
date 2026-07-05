@@ -348,6 +348,9 @@ impl<S: AudioSink> HouseGame<S> {
                 // resisted hits sound ARMORED, not juicy — the player learns
                 // the ×¼ from the thunk, not the wiki (D2)
                 GameEvent::MobHit(_, p, resisted) => AudioCue { id: CueId(if resisted { "goo_thunk" } else { "goo_hit" }), pos: Some(p), gain: 0.7 },
+                // the Runner's pre-pounce tell: a rising two-note (G3) — hear
+                // the sprint coming before it launches
+                GameEvent::MobWindup(_, p) => AudioCue { id: CueId("goo_windup"), pos: Some(p), gain: 0.8 },
                 GameEvent::MobSplit(_, p) => AudioCue { id: CueId("goo_split"), pos: Some(p), gain: 1.0 },
                 GameEvent::MobKilled(_, p) => AudioCue { id: CueId("goo_die"), pos: Some(p), gain: 0.8 },
                 GameEvent::MobMerged(_, p) => AudioCue { id: CueId("goo_merge"), pos: Some(p), gain: 0.9 },

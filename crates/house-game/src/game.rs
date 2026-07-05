@@ -202,6 +202,9 @@ pub enum GameEvent {
     /// vs uzi/shotgun) — the shell teaches the resist with a dull grey flash
     /// + thunk cue instead of the hot white pop.
     MobHit(MobId, Vec3, bool),
+    /// A Runner entered its pre-sprint WINDUP crouch (id, head) — the G3
+    /// anticipation beat; the shell plays the rising two-note tell.
+    MobWindup(MobId, Vec3),
     /// A goo blob's HP hit zero and it split into two smaller blobs (id, pos).
     MobSplit(MobId, Vec3),
     /// A goo blob died terminally (a Small blob, or a capped split) (id, pos).

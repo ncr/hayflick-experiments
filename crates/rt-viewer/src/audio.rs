@@ -164,6 +164,13 @@ impl AudioOut {
                 self.voice(Wave::Sine, 130.0, 85.0, 0.07, 0.42 * g);
                 self.voice(Wave::Noise, 420.0, 180.0, 0.03, 0.12 * g);
             }
+            "goo_windup" => {
+                // the Runner's pre-pounce crouch (G3): a quick rising
+                // two-note — short low blip under a longer climbing sweep
+                // (the wave_land warning pattern, smaller and hungrier)
+                self.voice(Wave::Sine, 340.0, 340.0, 0.05, 0.26 * g);
+                self.voice(Wave::Sine, 430.0, 620.0, 0.11, 0.30 * g);
+            }
             "goo_split" => {
                 self.voice(Wave::Sine, 420.0, 180.0, 0.12, 0.45 * g);
                 self.voice(Wave::Noise, 1800.0, 500.0, 0.10, 0.30 * g);

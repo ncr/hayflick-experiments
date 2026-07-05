@@ -71,6 +71,8 @@ const HIDE_JITTER: u32 = 65;
 /// Sprint burst: duration and per-kind speed multipliers (turn also x1.6).
 const SPRINT_TICKS: u16 = 105;
 const SPRINT_TURN: f32 = 1.6;
+/// G3: ticks a Runner holds the pre-sprint Windup crouch before committing.
+pub(crate) const WINDUP_TICKS: u16 = 10;
 /// Give up on a maneuver that hasn't arrived in this long (wall snag etc).
 const MANEUVER_TIMEOUT: u16 = 300;
 /// Comms: pairing range (wu), strike delay (ticks) + id jitter, and the
@@ -114,6 +116,10 @@ pub enum Tactic {
     Hide,
     /// ...paired pact: hold until the agreed `strike` tick, blinking.
     CoordWait,
+    /// The Runner's pre-pounce crouch (G3): ~10 ticks nearly parked, spine
+    /// clenched (see `goo_system`), turret-turning onto the player — then
+    /// Sprint. Only Runners enter it; the fastest threat telegraphs loudest.
+    Windup,
     /// The committed attack burst (speed + turn up), then back to Direct.
     Sprint,
 }
@@ -129,6 +135,7 @@ impl Tactic {
             Tactic::Hide => 4,
             Tactic::CoordWait => 5,
             Tactic::Sprint => 6,
+            Tactic::Windup => 7,
         }
     }
 }
@@ -447,12 +454,20 @@ impl<S: AudioSink> HouseGame<S> {
                 Tactic::Flank => {
                     let arrived = (g.tac_point - head).length() < ARRIVE;
                     if arrived || g.tac_timer == 0 {
-                        g.tac = Tactic::Sprint;
-                        g.tac_timer = SPRINT_TICKS;
                         // commit SNAP: rotate_toward lerps through zero at the
                         // 180° antipode (a maneuver often leaves the heading
-                        // pointing dead away), so the lunge aims itself
+                        // pointing dead away), so the lunge aims itself.
+                        // Runners hold a WINDUP crouch first (G3) — the
+                        // readable anticipation beat + the rising shell cue.
                         g.heading = (player - head).normalize_or_zero();
+                        if g.kind == GooKind::Runner {
+                            g.tac = Tactic::Windup;
+                            g.tac_timer = WINDUP_TICKS;
+                            self.res.events.emit(GameEvent::MobWindup(g.id, Vec3::new(head.x, 0.3, head.y)));
+                        } else {
+                            g.tac = Tactic::Sprint;
+                            g.tac_timer = SPRINT_TICKS;
+                        }
                     }
                 }
                 Tactic::ToCover => {
@@ -476,17 +491,38 @@ impl<S: AudioSink> HouseGame<S> {
                 }
                 Tactic::Hide => {
                     if g.tac_timer == 0 {
-                        g.tac = Tactic::Sprint; // burst from around the corner
-                        g.tac_timer = SPRINT_TICKS;
+                        // burst from around the corner (Runners wind up, G3)
                         g.heading = (player - head).normalize_or_zero(); // commit snap
+                        if g.kind == GooKind::Runner {
+                            g.tac = Tactic::Windup;
+                            g.tac_timer = WINDUP_TICKS;
+                            self.res.events.emit(GameEvent::MobWindup(g.id, Vec3::new(head.x, 0.3, head.y)));
+                        } else {
+                            g.tac = Tactic::Sprint;
+                            g.tac_timer = SPRINT_TICKS;
+                        }
                     }
                 }
                 Tactic::CoordWait => {
                     if tick >= g.strike {
-                        g.tac = Tactic::Sprint;
-                        g.tac_timer = SPRINT_TICKS;
                         g.strike = 0;
                         g.heading = (player - head).normalize_or_zero(); // commit snap
+                        if g.kind == GooKind::Runner {
+                            g.tac = Tactic::Windup;
+                            g.tac_timer = WINDUP_TICKS;
+                            self.res.events.emit(GameEvent::MobWindup(g.id, Vec3::new(head.x, 0.3, head.y)));
+                        } else {
+                            g.tac = Tactic::Sprint;
+                            g.tac_timer = SPRINT_TICKS;
+                        }
+                    }
+                }
+                Tactic::Windup => {
+                    if g.tac_timer == 0 {
+                        g.tac = Tactic::Sprint;
+                        g.tac_timer = SPRINT_TICKS;
+                        // re-snap: the crouch turret-tracked a moving player
+                        g.heading = (player - head).normalize_or_zero();
                     }
                 }
                 Tactic::Sprint => {
@@ -573,6 +609,9 @@ impl<S: AudioSink> HouseGame<S> {
             }
             // creep forward very slowly while blinking (menace, not statue)
             Tactic::CoordWait => (nav_to_player(), 1.0, 0.22, 0.7),
+            // G3 crouch: nearly parked, turning hard onto the player — the
+            // spring visibly loads before the pounce
+            Tactic::Windup => (nav_to_player(), 1.0, 0.08, 1.8),
         };
         if let Some(td) = dir.try_normalize() {
             g.heading = rotate_toward(g.heading, td, GOO_MAX_TURN * kind_turn * tmult);
@@ -683,7 +722,7 @@ mod tests {
             for &e in &g.mobs {
                 let gg = g.world.get::<&Goo>(e).unwrap();
                 match gg.tac {
-                    Tactic::Flank | Tactic::ToCover | Tactic::Peek | Tactic::Hide | Tactic::CoordWait => seen_maneuver = true,
+                    Tactic::Flank | Tactic::ToCover | Tactic::Peek | Tactic::Hide | Tactic::CoordWait | Tactic::Windup => seen_maneuver = true,
                     Tactic::Sprint => seen_sprint = true,
                     Tactic::Direct => {}
                 }
@@ -716,7 +755,8 @@ mod tests {
             }
         }
         let strike = agreed.expect("the pair agreed a strike tick within 15 s");
-        // ... and both sprint AT the agreed tick
+        // ... and both COMMIT at the agreed tick — Runners crouch into the
+        // G3 windup together (the synchronized tell), then sprint together
         let mut t = g.res.cur_tick;
         while t < strike + 2 {
             t += 1;
@@ -724,7 +764,15 @@ mod tests {
         }
         for &e in &g.mobs {
             let gg = g.world.get::<&Goo>(e).unwrap();
-            assert_eq!(gg.tac, Tactic::Sprint, "both pact members sprint at the strike tick");
+            assert_eq!(gg.tac, Tactic::Windup, "both pact Runners wind up at the strike tick");
+        }
+        for _ in 0..WINDUP_TICKS + 1 {
+            t += 1;
+            g.tick(Tick(t), &[]);
+        }
+        for &e in &g.mobs {
+            let gg = g.world.get::<&Goo>(e).unwrap();
+            assert_eq!(gg.tac, Tactic::Sprint, "both sprint once the shared crouch ends");
         }
     }
 

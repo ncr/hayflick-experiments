@@ -41,6 +41,9 @@ pub fn bubble(m: &MobRender) -> Option<(Vec<u32>, i32, i32)> {
         Tactic::Peek => ("PEEK", 0xe0c060),
         Tactic::Hide => ("...", 0x9a9aa2),
         Tactic::CoordWait => ("SYNC", if m.comm > 0.0 { 0xbef2ff } else { 0x5a8a96 }),
+        // the Runner's loaded spring (G3): amber — one shade cooler than the
+        // RUSH red it's about to become
+        Tactic::Windup => ("LUNGE", 0xf0a050),
         Tactic::Sprint => ("RUSH!", 0xe86858),
     };
     let w = 8 + label.len() as i32 * 8;
