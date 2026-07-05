@@ -485,6 +485,55 @@ What a returning session needs to know:
   run-to-run on the M2 Pro (grazing-ray wobble, documented in bin/golden's
   header) — treat `OK~` there as pass, anything in the other four as real.
 
+## 2026-07-05 — P1+P2 feel pass: the REST of the feel-polish plan (W2 W3 G2 G3 G4 L1–L6 W6 W7 D3 D4 D5 D6)
+
+Every remaining item of docs/feel-polish-plan.md, one commit per group.
+Sim-touching items keep the lane discipline: [ARENA-SIM] under the arsenal
+gate, [KIND-SIM] with Green mapping to the exact historical constants — the
+four goo hash oracles and cave replay stand untouched; goldens verified.
+
+- **W2/W3 (arena-sim)**: shotgun self-knockback through `walk_vel_px`
+  (SHOTGUN_SHOVE_PX ≈ 6 px settled travel); WEAPON_RAISE_TICKS (12) swap
+  raise via `GunCooldown.max()` — never shortens, re-select free. Shell:
+  `Fx.raise` lerps the gun up from the holster off the snapshot slot edge.
+- **G2/G3/G4 (kind-sim)**: `goo_kind_gait_period` (Runner 47 / Tank 86 /
+  Green EXACTLY 66 — gait_profile takes the period, clock + id-desync mod
+  it); new `Tactic::Windup` (tag 7) — Runners crouch WINDUP_TICKS (10)
+  before every sprint commit (spine clench GOO_WINDUP_CLENCH, MobWindup
+  event → rising "goo_windup" cue + amber LUNGE bubble; pact Runners crouch
+  in sync); `goo_kind_viscosity` (Runner thin, tier-0 thinnest / Tank tar /
+  Green EXACTLY GOO_VISCOSITY — XSPH takes the caller's value).
+- **L1**: `WaveIncoming` exactly WAVE_TELEGRAPH_TICKS (60) pre-landing
+  (event-only) → "wave_warn" klaxon + entrance pads pulse amber→red,
+  accelerating (spotlight overlay; `Fx.wave_warn`).
+- **L2/L3**: drain current — "flow_slot" mote lanes per sieve slot (lanes
+  from `game_scene::sieve_slots`, the spec's drain-wall gap scan), gurgle
+  retrigger, past-half-LEAK red wash light; grate bars per slot (3/2/1
+  broken stub — pure dress, no occluder).
+- **L4**: `LevelSpec.low_solids` SEEDS `res.chunks` — the whole chunk band
+  (walk/goo/low-shot/AI-cover/hash/cap) applies verbatim, no new sim path.
+  Arena + drain author LOW_COVER_PAIR at z 4.375..4.875. game_scene draws
+  authored cover as masonry boxes; `chunk_instances` skips the authored
+  prefix (GameLoop.authored_chunks). Empty list = nothing hashed moves.
+- **L5/L6**: corner service lamps = NEE-EXCLUDED glowing fixtures (the
+  trap-ring register_dynamic trick — the light join and the 16-slot
+  spotlight budget never see them) + 2 end washes on drain (cyan out /
+  warm home, deliberately alive in blackout); kill/solidify launches 2–3
+  `Fx.bio_motes` that arc into the HUD BIO plate (stamps) and blip it.
+- **W6/W7**: `MobHit` carries WeaponClass — surviving slug hits freeze 2
+  frames; one shared 46 Hz sub-thud under every fire cue, gain ∝ weight.
+- **D3/D4/D5**: cure stiffens vscale toward rigid (gated cure > 0) +
+  crackle shimmer at GOO_CURE_CHUNK−1; MobRender.pin/pin_pt → "pin_slot"
+  bolt (strobes the last second) + pinned squash ×0.85; GrenadeBounced
+  event → "gren_bounce" tok + fuse_hiss retrigger, pitch ∝ age/max_age.
+- **D6 retunes, one commit each** (revert independently after playtests):
+  uzi bloom 0.075, shotgun 9×1 dmg kb 6, slug muzzle 11.
+- Determinism traps found: the wave telegraph must emit BEFORE the lull
+  decrement (landing takes one extra tick after exhaustion — off-by-one
+  pinned in wave_incoming_telegraphs_the_landing); D3's stiffening must
+  gate on `cure > 0` because `1.0 + (v − 1.0)` is NOT bit-exact; L4's
+  seeded chunks shifted the biomass test's chunk-count assert.
+
 ## 2026-07-05 — P0 feel pass: weapon + species identity (feel-polish plan W1 W4 W5 D1 D2 G1 G5)
 
 All [SHELL]-lane per docs/feel-polish-plan.md — zero sim-hash impact (events
