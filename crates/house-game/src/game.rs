@@ -51,7 +51,7 @@ pub const WALL_T: f32 = 0.25;
 pub const WALK_ARRIVE_PX: f32 = 1.0;
 /// Consecutive fully-blocked ticks before a WalkTarget is abandoned.
 pub const WALK_BLOCKED_TICKS: u32 = 2;
-/// Arena walk momentum (see `Res.walk_vel_px`): per-tick lerp rates toward
+/// Arena walk momentum (see `ArenaRes.walk_vel_px`): per-tick lerp rates toward
 /// the input step (accel ~7 ticks to 95%) and back to zero (a shorter skid).
 pub const WALK_ACCEL: f32 = 0.35;
 pub const WALK_DECEL: f32 = 0.25;
@@ -121,7 +121,11 @@ pub struct WalkTarget {
 pub struct Flashlight {
     pub on: bool,
 }
-pub struct Pistol {
+/// The player's shared fire-cooldown component. Born as the pistol's
+/// component; since the arsenal landed it is the ONE cooldown every weapon
+/// draws down (switching mid-cooldown never resets the timer — the
+/// anti-exploit, see `shoot_system`).
+pub struct GunCooldown {
     pub cooldown_ticks: u32,
 }
 
@@ -275,6 +279,57 @@ impl Staging {
     }
 }
 
+/// The arena-shooter resource block: everything that only ever moves on
+/// levels with `spec.arena` (the arsenal/survival opt-in discipline). Grouped
+/// so `Res` reads as core + gated blocks; the fields keep their individual
+/// `Option`/default gates (drain is `None` on the plain pit, etc.), and the
+/// `state_hash` fold order is unchanged — only field PATHS moved
+/// (`res.arsenal` → `res.arena.arsenal`).
+pub struct ArenaRes {
+    /// Arsenal (arena-shooter weapon selection) when the level opts in via
+    /// `spec.arena`; `None` = arsenal OFF (SelectWeapon is a no-op and nothing
+    /// arsenal-shaped enters the hash — the survival-block discipline).
+    pub arsenal: Option<ArsenalState>,
+    /// A live explosion flash: blast point + ticks left. Armed by `explode`
+    /// (grenade detonations), decayed each tick, surfaced to the renderer as a
+    /// transient spotlight. Only ever `Some` on arsenal levels (grenades don't
+    /// exist elsewhere), and hashed inside the arsenal-gated block.
+    pub boom: Option<(Vec3, u32)>,
+    /// Wave-director state; `Some` on arena levels only (hashed in the
+    /// arsenal-gated block, like `boom`).
+    pub wave: Option<WaveState>,
+    /// Arena tactics: the BFS flow-field cache. DERIVED state — a pure
+    /// function of (floor, solids, player cell), rebuilt on a cadence by
+    /// `tactic_system`; never hashed (the `Level` precedent). `None` off
+    /// arena levels forever.
+    pub nav: Option<NavField>,
+    /// Wall-corner cover candidates, computed once from the spec's solids
+    /// (pure function of the spec — same standing as `Level.solids`).
+    /// Populated on every level, read only by the arena brain.
+    pub cover: Vec<Vec2>,
+    /// Comm-pact cooldown: the next tick a new blob pact may form. Hashed
+    /// under the arsenal gate (it only ever moves on arena levels).
+    pub next_comm_tick: u64,
+    /// Arena run state (integrity / death latch) — `Some` iff `spec.arena`.
+    pub run: Option<RunState>,
+    /// The open wave-lull draft hand (arena; None between drafts).
+    pub draft: Option<DraftState>,
+    /// Cards taken this run, pick order (arena-gated hash fold).
+    pub picked: Vec<Card>,
+    /// The drain zone (spec.drain): goo reaching it escapes into `breach`.
+    pub drain: Option<[f32; 4]>,
+    /// Escaped tier mass. `breach >= BREACH_CAP` fails the run. Hashed
+    /// under the arsenal gate (only drain levels ever move it).
+    pub breach: u32,
+    /// The drain-seeker flow field (derived cache, the `nav` twin).
+    pub nav_drain: Option<NavField>,
+    /// Arena walk momentum: the screen-px step actually applied last tick.
+    /// `walk_system` ramps it toward the input step (accel) and back to zero
+    /// (a short skid) instead of binary start/stop — the hover-droid feel.
+    /// Only ever non-zero on arena levels; hashed under the arsenal gate.
+    pub walk_vel_px: Vec2,
+}
+
 /// Plain-struct resources (no type-map indirection — determinism reads best
 /// when the data flow is spelled out).
 pub struct Res {
@@ -306,18 +361,10 @@ pub struct Res {
     /// Survival tuning when enabled; `None` = survival OFF (all survival
     /// systems are no-ops and nothing survival-shaped enters the hash).
     pub survival: Option<SurvivalParams>,
-    /// Arsenal (arena-shooter weapon selection) when the level opts in via
-    /// `spec.arena`; `None` = arsenal OFF (SelectWeapon is a no-op and nothing
-    /// arsenal-shaped enters the hash — the survival-block discipline).
-    pub arsenal: Option<ArsenalState>,
-    /// A live explosion flash: blast point + ticks left. Armed by `explode`
-    /// (grenade detonations), decayed each tick, surfaced to the renderer as a
-    /// transient spotlight. Only ever `Some` on arsenal levels (grenades don't
-    /// exist elsewhere), and hashed inside the arsenal-gated block.
-    pub boom: Option<(Vec3, u32)>,
-    /// Wave-director state; `Some` on arena levels only (hashed in the
-    /// arsenal-gated block, like `boom`).
-    pub wave: Option<WaveState>,
+    /// The arena-shooter block (see [`ArenaRes`]): arsenal, waves, run
+    /// state, draft, drain, tactics caches, walk momentum. Always present;
+    /// each field keeps its own arena gate.
+    pub arena: ArenaRes,
     /// Edge-trigger memory for `NeedCritical`/`NeedRecovered`: was [hunger,
     /// battery] below `critical` LAST tick? Compared against this tick's level
     /// so the event fires once per crossing, not every tick below threshold.
@@ -362,39 +409,11 @@ pub struct Res {
     /// capped at `GOO_CHUNK_CAP`; hashed only when non-empty (the mobs-block
     /// pattern), so chunk-free levels hash exactly as before.
     pub chunks: Vec<[f32; 4]>,
-    /// Arena tactics: the BFS flow-field cache. DERIVED state — a pure
-    /// function of (floor, solids, player cell), rebuilt on a cadence by
-    /// `tactic_system`; never hashed (the `Level` precedent). `None` off
-    /// arena levels forever.
-    pub nav: Option<NavField>,
-    /// Wall-corner cover candidates, computed once from the spec's solids
-    /// (pure function of the spec — same standing as `Level.solids`).
-    pub cover: Vec<Vec2>,
-    /// Comm-pact cooldown: the next tick a new blob pact may form. Hashed
-    /// under the arsenal gate (it only ever moves on arena levels).
-    pub next_comm_tick: u64,
     /// Level-authored film knob (spec.sterile): tier-0 mothers skip budding.
     pub sterile: bool,
-    /// Arena run state (integrity / death latch) — `Some` iff `spec.arena`.
-    pub run: Option<RunState>,
-    /// The open wave-lull draft hand (arena; None between drafts).
-    pub draft: Option<DraftState>,
-    /// Cards taken this run, pick order (arena-gated hash fold).
-    pub picked: Vec<Card>,
-    /// The level seed (mirrors spec.seed) — salts the draft hands.
+    /// The level seed (mirrors spec.seed) — salts the draft hands; the shell
+    /// also reads it for trace/reel naming.
     pub seed: u64,
-    /// The drain zone (spec.drain): goo reaching it escapes into `breach`.
-    pub drain: Option<[f32; 4]>,
-    /// Escaped tier mass. `breach >= BREACH_CAP` fails the run. Hashed
-    /// under the arsenal gate (only drain levels ever move it).
-    pub breach: u32,
-    /// The drain-seeker flow field (derived cache, the `nav` twin).
-    pub nav_drain: Option<NavField>,
-    /// Arena walk momentum: the screen-px step actually applied last tick.
-    /// `walk_system` ramps it toward the input step (accel) and back to zero
-    /// (a short skid) instead of binary start/stop — the hover-droid feel.
-    /// Only ever non-zero on arena levels; hashed under the arsenal gate.
-    pub walk_vel_px: Vec2,
 }
 
 
@@ -474,7 +493,7 @@ impl<S: AudioSink> HouseGame<S> {
         // default facing: toward the camera (screen-down) until the first walk
         let down = screen_px_to_world(Vec2::new(0.0, 1.0), 0.0);
         let facing = Vec2::new(down.x, down.z).normalize();
-        let player = world.spawn((Pos(spec.player_start), Facing(facing), Player { speed_px: PLAYER_SPEED_PX }, Flashlight { on: false }, Pistol { cooldown_ticks: 0 }));
+        let player = world.spawn((Pos(spec.player_start), Facing(facing), Player { speed_px: PLAYER_SPEED_PX }, Flashlight { on: false }, GunCooldown { cooldown_ticks: 0 }));
         // Survival is per-level opt-in: ONLY when enabled do the needs +
         // inventory components exist (so a disabled level's player archetype,
         // snapshot, and hash are byte-identical to before this feature).
@@ -535,9 +554,21 @@ impl<S: AudioSink> HouseGame<S> {
             room_lights: 0.0,
             staging: Staging::default(),
             survival: spec.survival,
-            arsenal: spec.arena.map(|_| ArsenalState::default()),
-            boom: None,
-            wave: spec.arena.map(|a| WaveState { idx: 0, lull: a.wave_lull, lull_full: a.wave_lull }),
+            arena: ArenaRes {
+                arsenal: spec.arena.map(|_| ArsenalState::default()),
+                boom: None,
+                wave: spec.arena.map(|a| WaveState { idx: 0, lull: a.wave_lull, lull_full: a.wave_lull }),
+                nav: None,
+                cover: cover_points(&spec.static_solids),
+                next_comm_tick: 0,
+                run: spec.arena.map(|_| RunState { integrity: 1.0, dead: false, won: false, death_tick: 0 }),
+                draft: None,
+                picked: Vec::new(),
+                drain: spec.drain,
+                breach: 0,
+                nav_drain: None,
+                walk_vel_px: Vec2::ZERO,
+            },
             need_was_critical: [false; 2], // needs start full (1.0) → not critical
             buf: CommandBuffer::new(),
             // children spawn above every authored id (0 when the level has none)
@@ -550,18 +581,8 @@ impl<S: AudioSink> HouseGame<S> {
             cur_tick: 0,
             goo_rho0: goo_rho0(),
             chunks: Vec::new(),
-            nav: None,
-            cover: cover_points(&spec.static_solids),
-            next_comm_tick: 0,
             sterile: spec.sterile,
-            run: spec.arena.map(|_| RunState { integrity: 1.0, dead: false, won: false, death_tick: 0 }),
-            draft: None,
-            picked: Vec::new(),
             seed: spec.seed,
-            drain: spec.drain,
-            breach: 0,
-            nav_drain: None,
-            walk_vel_px: Vec2::ZERO,
         };
 
         // Goo blobs, MobId-sorted (no HashMap iteration). Spawned only when the

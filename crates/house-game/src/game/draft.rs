@@ -186,23 +186,23 @@ pub fn regen_rate(picked: &[Card]) -> f32 {
 impl<S: AudioSink> HouseGame<S> {
     /// Open the lull hand (called by wave_system the tick a clear starts).
     pub(crate) fn open_draft(&mut self) {
-        let Some(w) = self.res.wave else { return };
-        if self.res.run.is_some_and(|r| r.dead) {
+        let Some(w) = self.res.arena.wave else { return };
+        if self.res.arena.run.is_some_and(|r| r.dead) {
             return; // no drafting from the grave
         }
-        self.res.draft = Some(DraftState { offers: deal(self.res.seed, w.idx), wave: w.idx });
+        self.res.arena.draft = Some(DraftState { offers: deal(self.res.seed, w.idx), wave: w.idx });
     }
 
     /// `Command::PickCard` — take card `slot` (1-3) from the open hand.
     /// Swallowed when no hand is open (spam-safe, replay-stable).
     pub(crate) fn pick_card(&mut self, slot: u8) {
-        let Some(d) = self.res.draft else { return };
+        let Some(d) = self.res.arena.draft else { return };
         if !(1..=3).contains(&slot) {
             return;
         }
         let card = d.offers[(slot - 1) as usize];
-        self.res.picked.push(card);
-        self.res.draft = None;
+        self.res.arena.picked.push(card);
+        self.res.arena.draft = None;
         self.res.events.emit(GameEvent::CardPicked(card));
     }
 }

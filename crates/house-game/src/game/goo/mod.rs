@@ -613,8 +613,8 @@ impl<S: AudioSink> HouseGame<S> {
     /// CONTAINMENT BREACHED panel finally means it literally). Ordered,
     /// id-sorted, one pass; no-op off drain levels.
     pub(crate) fn drain_system(&mut self) {
-        let Some(zone) = self.res.drain else { return };
-        if self.mobs.is_empty() || self.res.run.is_some_and(|r| r.won) {
+        let Some(zone) = self.res.arena.drain else { return };
+        if self.mobs.is_empty() || self.res.arena.run.is_some_and(|r| r.won) {
             return;
         }
         let mobs = self.mobs.clone();
@@ -628,18 +628,18 @@ impl<S: AudioSink> HouseGame<S> {
                 self.res.buf.despawn(e);
                 self.res.mobs_dirty = true;
                 self.res.pending_mob_delta -= 1;
-                self.res.breach += goo_tier_mass(g.tier);
+                self.res.arena.breach += goo_tier_mass(g.tier);
                 self.res.events.emit(GameEvent::GooEscaped(goo_tier_mass(g.tier)));
             }
         }
-        if self.res.breach >= BREACH_CAP {
-            if let Some(mut run) = self.res.run {
+        if self.res.arena.breach >= BREACH_CAP {
+            if let Some(mut run) = self.res.arena.run {
                 if !run.dead {
                     run.dead = true;
                     run.death_tick = self.res.cur_tick;
                     self.res.events.emit(GameEvent::PlayerDown);
                 }
-                self.res.run = Some(run);
+                self.res.arena.run = Some(run);
             }
         }
     }
@@ -650,7 +650,7 @@ impl<S: AudioSink> HouseGame<S> {
     /// levels -> hard no-op, so the four goo oracles and every non-arena
     /// level are untouched.
     pub(crate) fn integrity_system(&mut self) {
-        let Some(mut run) = self.res.run else { return };
+        let Some(mut run) = self.res.arena.run else { return };
         if run.dead || run.won || self.mobs.is_empty() {
             return;
         }
@@ -678,7 +678,7 @@ impl<S: AudioSink> HouseGame<S> {
         }
         if w > 0.0 {
             // PLATING cards damp the drain (1.0 with none picked)
-            run.integrity = (run.integrity - GOO_DRAIN_PER_PART * drain_mult(&self.res.picked) * w * TICK_DT).max(0.0);
+            run.integrity = (run.integrity - GOO_DRAIN_PER_PART * drain_mult(&self.res.arena.picked) * w * TICK_DT).max(0.0);
             // fluid pressure shoves the droid (wall-clamped like every mover)
             let push = away.normalize_or_zero() * (GOO_CONTACT_PUSH * w).min(GOO_CONTACT_PUSH_CAP) * TICK_DT;
             if push != Vec2::ZERO {
@@ -695,12 +695,12 @@ impl<S: AudioSink> HouseGame<S> {
             // NANO REPAIR: the hull regrows while nothing is touching it
             // (0.0/s without the card — exact no-op on the sub, and the
             // branch only runs on arena levels)
-            let regen = regen_rate(&self.res.picked);
+            let regen = regen_rate(&self.res.arena.picked);
             if regen > 0.0 {
                 run.integrity = (run.integrity + regen * TICK_DT).min(1.0);
             }
         }
-        self.res.run = Some(run);
+        self.res.arena.run = Some(run);
     }
 
     /// Push any predicted particle position `xp[i]` that landed inside a solid
@@ -892,7 +892,7 @@ impl<S: AudioSink> HouseGame<S> {
         // arena levels run the tactics brain instead (game/tactics.rs): the
         // legacy wander/seek below stays VERBATIM (same float ops, same RNG
         // draw order) for every pre-arena level, so the oracles never move.
-        if self.res.arsenal.is_some() {
+        if self.res.arena.arsenal.is_some() {
             return self.goo_step_ai_arena(g, pxz);
         }
         // species multipliers — Green is exactly 1.0 across the board, so this
@@ -1377,7 +1377,7 @@ impl<S: AudioSink> HouseGame<S> {
                     self.res.buf.spawn((fresh_goo(cid, tier + 1, kind, chead, d, d * 0.05, timer),));
                     self.res.pending_mob_delta += 1;
                 }
-                if self.res.arsenal.is_some() {
+                if self.res.arena.arsenal.is_some() {
                     // biomass: solidify pays 2x the NET mass removed (the
                     // body minus its escapee) — the committed-play premium
                     self.res.score += 2 * (goo_tier_mass(tier) - goo_tier_mass(tier + 1));
@@ -1391,7 +1391,7 @@ impl<S: AudioSink> HouseGame<S> {
         // delta counts this tick's other queued splits/births toward the cap).
         let live_after_split = self.goo_live_pending() + 2;
         if tier >= 2 || live_after_split > GOO_LIVE_CAP as i32 {
-            if self.res.arsenal.is_some() {
+            if self.res.arena.arsenal.is_some() {
                 // biomass: a terminal kill removes the whole body's mass
                 self.res.score += goo_tier_mass(tier);
             }
@@ -1494,11 +1494,11 @@ impl<S: AudioSink> HouseGame<S> {
     /// shared RNG in fixed order exactly like authored spawns. No-op (and no
     /// state touch) on non-arena levels: `wave` is None there.
     pub(crate) fn wave_system(&mut self) {
-        let Some(mut w) = self.res.wave else { return };
+        let Some(mut w) = self.res.arena.wave else { return };
         if !self.mobs.is_empty() || self.res.pending_mob_delta != 0 || self.res.mobs_dirty {
             // not clear: keep the countdown armed at full for the next clear
             w.lull = w.lull_full;
-            self.res.wave = Some(w);
+            self.res.arena.wave = Some(w);
             return;
         }
         if w.lull > 0 {
@@ -1506,7 +1506,7 @@ impl<S: AudioSink> HouseGame<S> {
                 self.open_draft(); // the clear just landed: deal the lull hand
             }
             w.lull -= 1;
-            self.res.wave = Some(w);
+            self.res.arena.wave = Some(w);
             return;
         }
         // the SHIFT: the floor is clear and the lull has run out. If the wave
@@ -1514,20 +1514,20 @@ impl<S: AudioSink> HouseGame<S> {
         // nine, just the clock-out fanfare and the summary panel (idx stays at
         // the final wave for the display).
         if w.idx >= SHIFT_WAVES {
-            if let Some(mut run) = self.res.run {
+            if let Some(mut run) = self.res.arena.run {
                 if !run.dead && !run.won {
                     run.won = true;
                     run.death_tick = self.res.cur_tick;
-                    self.res.run = Some(run);
+                    self.res.arena.run = Some(run);
                     self.res.events.emit(GameEvent::ShiftComplete);
                 }
             }
-            self.res.wave = Some(w);
+            self.res.arena.wave = Some(w);
             return;
         }
         w.idx += 1;
         w.lull = w.lull_full;
-        self.res.draft = None; // the hand expires when the next squad lands
+        self.res.arena.draft = None; // the hand expires when the next squad lands
         // THE THIRD ACT: from this wave on the pit fights in the dark — the
         // lamps die, the torch snaps on, and the goo becomes the light.
         if w.idx == LIGHTS_OUT_WAVE && self.res.master_lights {
@@ -1564,6 +1564,6 @@ impl<S: AudioSink> HouseGame<S> {
         // the squad is DOWN: the landing beat (cue + shell thump) — the lull
         // is over and the player should feel the door slam
         self.res.events.emit(GameEvent::WaveLanded(w.idx as u32));
-        self.res.wave = Some(w);
+        self.res.arena.wave = Some(w);
     }
 }

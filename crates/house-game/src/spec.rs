@@ -600,6 +600,21 @@ pub fn shooting_range_level() -> LevelSpec {
     }
 }
 
+// ---- shared arena cover geometry (all thin 0.25-wu walls → full-height
+// render, honest LOS + projectile blockers; every dim a 0.0625 multiple).
+// Named once so arena / drain / squeeze provably share the same cover — a
+// tweak here moves all three stages together.
+
+/// North wall in two segments with a 0.5625-wu SQUEEZE SLOT between them on
+/// the west lane: a Large blob (~1 wu wide) must physically squeeze its PBF
+/// body through; the east lane stays open. (arena + squeeze stages)
+const NORTH_SQUEEZE_WALL: [[f32; 4]; 2] = [[-10.0, -2.125, -7.0, -1.875], [-6.4375, -2.125, -3.25, -1.875]];
+/// Mid-field L — a corner pointing at the player spawn, made for
+/// show-then-hide ambushes. (arena + drain stages)
+const MID_FIELD_L: [[f32; 4]; 2] = [[-4.25, 0.875, -0.75, 1.125], [-1.0, 1.125, -0.75, 3.125]];
+/// East flank wall — cover on the open lane. (arena + drain stages)
+const EAST_FLANK_WALL: [f32; 4] = [2.75, -0.125, 3.0, 2.875];
+
 /// The goo ARENA (`SCENE=arena`): a large square walled pit for the arena
 /// shooter — one 20×20 wu room whose rectangular auto-perimeter provides the
 /// four walls (deliberately NOT a dollhouse scene), a bright four-lamp grid,
@@ -610,19 +625,13 @@ pub fn shooting_range_level() -> LevelSpec {
 pub fn arena_level() -> LevelSpec {
     LevelSpec {
         rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-10.0, -10.0, 10.0, 10.0] }],
-        // Cover architecture (all thin 0.25-wu walls -> full-height render,
-        // honest LOS + projectile blockers; every dim a 0.0625 multiple).
-        // North wall with a 0.5625-wu SQUEEZE SLOT on the west lane: a Large
-        // blob (~1 wu wide) must physically squeeze its PBF body through;
-        // the east lane stays open. The mid-field L is a corner pointing at
-        // the player spawn, made for show-then-hide ambushes; the east wall
-        // is flank cover on the open lane.
+        // Cover architecture: the shared named pieces (see the consts above).
         static_solids: vec![
-            [-10.0, -2.125, -7.0, -1.875],
-            [-6.4375, -2.125, -3.25, -1.875],
-            [-4.25, 0.875, -0.75, 1.125],
-            [-1.0, 1.125, -0.75, 3.125],
-            [2.75, -0.125, 3.0, 2.875],
+            NORTH_SQUEEZE_WALL[0],
+            NORTH_SQUEEZE_WALL[1],
+            MID_FIELD_L[0],
+            MID_FIELD_L[1],
+            EAST_FLANK_WALL,
         ],
         doors: vec![],
         // one centre lamp; the open-studio sky fill carries the pit evenly
@@ -659,10 +668,7 @@ pub fn arena_level() -> LevelSpec {
 pub fn squeeze_level() -> LevelSpec {
     LevelSpec {
         rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-10.0, -10.0, 10.0, 10.0] }],
-        static_solids: vec![
-            [-10.0, -2.125, -7.0, -1.875],
-            [-6.4375, -2.125, -3.25, -1.875],
-        ],
+        static_solids: vec![NORTH_SQUEEZE_WALL[0], NORTH_SQUEEZE_WALL[1]],
         doors: vec![],
         lights: vec![LightSpec { id: LightId(0), room: RoomId(0), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: "arena_lamp".into() }],
         targets: vec![],
@@ -687,9 +693,9 @@ pub fn drain_level() -> LevelSpec {
         rooms: vec![RoomSpec { id: RoomId(0), floor_rect: [-10.0, -10.0, 10.0, 10.0] }],
         static_solids: vec![
             // mid-field cover (the arena's familiar L + east wall)
-            [-4.25, 0.875, -0.75, 1.125],
-            [-1.0, 1.125, -0.75, 3.125],
-            [2.75, -0.125, 3.0, 2.875],
+            MID_FIELD_L[0],
+            MID_FIELD_L[1],
+            EAST_FLANK_WALL,
             // the sieve wall: slit [-6,-5.6875], slot [-1,-0.4375], main [4,5.25]
             [-10.0, 8.25, -6.0, 8.5],
             [-5.6875, 8.25, -1.0, 8.5],

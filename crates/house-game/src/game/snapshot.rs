@@ -27,16 +27,16 @@ impl<S: AudioSink> HouseGame<S> {
             battery: self.world.get::<&Battery>(self.player).map(|b| b.0).unwrap_or(1.0),
             inventory: self.world.get::<&Inventory>(self.player).map(|i| i.items.clone()).unwrap_or_default(),
             // arsenal HUD (arena levels): selected weapon + shared cooldown
-            weapon: self.res.arsenal.map(|a| {
-                let cd = self.world.get::<&Pistol>(self.player).unwrap().cooldown_ticks;
+            weapon: self.res.arena.arsenal.map(|a| {
+                let cd = self.world.get::<&GunCooldown>(self.player).unwrap().cooldown_ticks;
                 (a.current, cd, self.current_weapon().cooldown_ticks)
             }),
-            boom: self.res.boom.map(|(at, t)| (at, t as f32 / BOOM_FLASH_TICKS as f32)),
-            wave: self.res.wave.map(|w| w.idx),
-            run: self.res.run,
-            draft: self.res.draft,
-            picked: self.res.picked.len() as u32,
-            breach: self.res.drain.map(|_| (self.res.breach, BREACH_CAP)),
+            boom: self.res.arena.boom.map(|(at, t)| (at, t as f32 / BOOM_FLASH_TICKS as f32)),
+            wave: self.res.arena.wave.map(|w| w.idx),
+            run: self.res.arena.run,
+            draft: self.res.arena.draft,
+            picked: self.res.arena.picked.len() as u32,
+            breach: self.res.arena.drain.map(|_| (self.res.arena.breach, BREACH_CAP)),
             // goo blobs (MobId-sorted): ends + particle cloud lifted to body
             // height. Pure read of the hashed field — empty on mob-free levels.
             mobs: self
@@ -59,7 +59,7 @@ impl<S: AudioSink> HouseGame<S> {
                     let parts = goo_render_parts(&g, pr);
                     let glow = goo_render_glow(&g);
                     let vscale = goo_render_vscale(&g);
-                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale, comm: comm_pulse(g.tac, g.strike, self.res.cur_tick), tac: g.tac, escaping: self.res.drain.is_some_and(|z| g.kind != crate::spec::GooKind::Runner && g.centroid().y > z[1] - 2.5) }
+                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale, comm: comm_pulse(g.tac, g.strike, self.res.cur_tick), tac: g.tac, escaping: self.res.arena.drain.is_some_and(|z| g.kind != crate::spec::GooKind::Runner && g.centroid().y > z[1] - 2.5) }
                 })
                 .collect(),
             // projectiles in flight (ProjectileId-sorted) — empty when idle.
@@ -95,7 +95,7 @@ impl<S: AudioSink> HouseGame<S> {
         let f = self.player_facing();
         h.f32(f.x).f32(f.y);
         h.u64(self.world.get::<&Flashlight>(self.player).unwrap().on as u64);
-        h.u64(self.world.get::<&Pistol>(self.player).unwrap().cooldown_ticks as u64);
+        h.u64(self.world.get::<&GunCooldown>(self.player).unwrap().cooldown_ticks as u64);
         match self.world.get::<&WalkTarget>(self.player) {
             Ok(wt) => {
                 h.u64(1).f32(wt.ground.x).f32(wt.ground.y).u64(wt.blocked_ticks as u64);
@@ -146,15 +146,15 @@ impl<S: AudioSink> HouseGame<S> {
         // Arsenal folds in ONLY on arena levels (spec.arena), so every other
         // level hashes byte-identically to before the arena feature. The boom
         // flash rides inside the same gate (grenades exist only here).
-        if let Some(a) = self.res.arsenal {
+        if let Some(a) = self.res.arena.arsenal {
             h.u64(a.current.tag());
-            h.u64(self.res.next_comm_tick);
+            h.u64(self.res.arena.next_comm_tick);
             // walk momentum: persistent cross-tick state that steers positions
-            h.f32(self.res.walk_vel_px.x).f32(self.res.walk_vel_px.y);
-            if let Some(r) = self.res.run {
+            h.f32(self.res.arena.walk_vel_px.x).f32(self.res.arena.walk_vel_px.y);
+            if let Some(r) = self.res.arena.run {
                 h.f32(r.integrity).u64(r.dead as u64).u64(r.won as u64).u64(r.death_tick);
             }
-            match self.res.draft {
+            match self.res.arena.draft {
                 Some(d) => {
                     h.u64(1).u64(d.wave as u64);
                     for c in d.offers {
@@ -165,12 +165,12 @@ impl<S: AudioSink> HouseGame<S> {
                     h.u64(0);
                 }
             }
-            h.u64(self.res.picked.len() as u64);
-            for c in &self.res.picked {
+            h.u64(self.res.arena.picked.len() as u64);
+            for c in &self.res.arena.picked {
                 h.u64(c.tag());
             }
-            h.u64(self.res.breach as u64);
-            match self.res.boom {
+            h.u64(self.res.arena.breach as u64);
+            match self.res.arena.boom {
                 Some((at, t)) => {
                     h.u64(1).f32(at.x).f32(at.y).f32(at.z).u64(t as u64);
                 }
@@ -178,7 +178,7 @@ impl<S: AudioSink> HouseGame<S> {
                     h.u64(0);
                 }
             }
-            if let Some(w) = self.res.wave {
+            if let Some(w) = self.res.arena.wave {
                 h.u64(w.idx as u64).u64(w.lull as u64);
             }
         }
@@ -208,7 +208,7 @@ impl<S: AudioSink> HouseGame<S> {
                 h.u64(g.kind.tag()).u64(g.cure as u64).u64(g.pinned as u64).f32(g.pin_pt.x).f32(g.pin_pt.y);
                 // tactics fold ONLY under the arena gate (they never mutate
                 // elsewhere), so the four pre-arena goo oracles stand as-is.
-                if self.res.arsenal.is_some() {
+                if self.res.arena.arsenal.is_some() {
                     h.u64(g.tac.tag()).u64(g.tac_timer as u64).f32(g.tac_point.x).f32(g.tac_point.y).u64(g.strike);
                 }
             }

@@ -412,7 +412,7 @@ impl<S: AudioSink> HouseGame<S> {
     /// grenade, harpoon); non-arena levels have no arsenal and always fire
     /// the plain PISTOL.
     pub fn current_weapon(&self) -> WeaponSpec {
-        match self.res.arsenal {
+        match self.res.arena.arsenal {
             None => PISTOL,
             // the draft's picked cards mutate the base spec at read time
             // (pure data deltas — see game/draft.rs)
@@ -424,7 +424,7 @@ impl<S: AudioSink> HouseGame<S> {
                     WeaponKind::Grenade => GRENADE,
                     WeaponKind::Harpoon => HARPOON,
                 },
-                &self.res.picked,
+                &self.res.arena.picked,
             ),
         }
     }
@@ -439,9 +439,9 @@ impl<S: AudioSink> HouseGame<S> {
         // decay a live explosion flash (armed by `explode` LATER in the tick —
         // projectile_system runs after this — so a fresh boom always presents
         // at full intensity for its first frame)
-        self.res.boom = self.res.boom.and_then(|(at, t)| (t > 1).then_some((at, t - 1)));
+        self.res.arena.boom = self.res.arena.boom.and_then(|(at, t)| (t > 1).then_some((at, t - 1)));
         {
-            let mut pistol = self.world.get::<&mut Pistol>(self.player).unwrap();
+            let mut pistol = self.world.get::<&mut GunCooldown>(self.player).unwrap();
             pistol.cooldown_ticks = pistol.cooldown_ticks.saturating_sub(1);
         }
         if self.res.staging.shot_intents.is_empty() {
@@ -459,7 +459,7 @@ impl<S: AudioSink> HouseGame<S> {
         let bloom = w.bloom * if moving { 1.0 } else { 0.25 };
         for ray in intents {
             {
-                let mut pistol = self.world.get::<&mut Pistol>(self.player).unwrap();
+                let mut pistol = self.world.get::<&mut GunCooldown>(self.player).unwrap();
                 if pistol.cooldown_ticks > 0 {
                     continue; // swallowed: spam never queues
                 }
@@ -655,7 +655,7 @@ impl<S: AudioSink> HouseGame<S> {
     /// `damage_goo`'s dead-guard + pending-cap accounting make same-blast
     /// multi-kills safe. Arms the boom flash the renderer turns into light.
     fn explode(&mut self, at: Vec3, p: &Projectile) {
-        self.res.boom = Some((at, BOOM_FLASH_TICKS));
+        self.res.arena.boom = Some((at, BOOM_FLASH_TICKS));
         self.res.events.emit(GameEvent::Detonated(at));
         let targets = self.mobs.clone(); // damage_goo mutates buffers, not this list
         for me in targets {

@@ -1478,10 +1478,10 @@ fn engulf_drains_integrity_and_downs_the_run_deterministically() {
         // one Large dropped basically on the spawn point: it will engulf
         spec.mobs = vec![MobSpec { id: MobId(0), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, 5.5) }];
         let mut g = HouseGame::new(&spec, VecSink::default());
-        assert_eq!(g.res.run.unwrap().integrity, 1.0);
+        assert_eq!(g.res.arena.run.unwrap().integrity, 1.0);
         for t in 0..3600u64 {
             g.tick(Tick(t), &[]);
-            let r = g.res.run.unwrap();
+            let r = g.res.arena.run.unwrap();
             if r.dead {
                 assert_eq!(r.integrity, 0.0);
                 return r.death_tick;
@@ -1503,7 +1503,7 @@ fn downed_run_locks_out_player_verbs() {
     spec.mobs = vec![MobSpec { id: MobId(0), tier: 0, kind: crate::spec::GooKind::Green, pos: Vec3::new(0.0, 0.0, 5.5) }];
     let mut g = HouseGame::new(&spec, VecSink::default());
     let mut t = 0u64;
-    while !g.res.run.unwrap().dead {
+    while !g.res.arena.run.unwrap().dead {
         g.tick(Tick(t), &[]);
         t += 1;
         assert!(t < 3600, "must die within 60 s");
@@ -1581,14 +1581,14 @@ fn wave_lull_draft_deals_and_a_pick_applies() {
         assert_eq!(d.offers, crate::game::deal(spec.seed, 0), "hand is hash(seed, wave)");
         if pick {
             g.tick(Tick(3), &[Command::PickCard { slot: 2 }]);
-            assert_eq!(g.res.picked.len(), 1, "the pick landed");
-            assert!(g.res.draft.is_none(), "the hand closes on pick");
-            assert_eq!(g.res.picked[0], d.offers[1]);
+            assert_eq!(g.res.arena.picked.len(), 1, "the pick landed");
+            assert!(g.res.arena.draft.is_none(), "the hand closes on pick");
+            assert_eq!(g.res.arena.picked[0], d.offers[1]);
         }
         for t in 4..200u64 {
             g.tick(Tick(t), &[]);
         }
-        (g.state_hash(), g.res.picked.len())
+        (g.state_hash(), g.res.arena.picked.len())
     };
     let (h1, n1) = run(true);
     let (h2, n2) = run(true);
@@ -1611,7 +1611,7 @@ fn green_seeks_the_drain_and_escapes() {
         let mut g = HouseGame::new(&spec, VecSink::default());
         for t in 0..4000u64 {
             g.tick(Tick(t), &[]);
-            if g.res.breach > 0 {
+            if g.res.arena.breach > 0 {
                 return (t, g.mobs.len());
             }
         }
@@ -1635,12 +1635,12 @@ fn breach_cap_ends_the_run() {
     let mut g = HouseGame::new(&spec, VecSink::default());
     for t in 0..6000u64 {
         g.tick(Tick(t), &[]);
-        if g.res.run.unwrap().dead {
-            assert!(g.res.breach >= crate::game::BREACH_CAP);
+        if g.res.arena.run.unwrap().dead {
+            assert!(g.res.arena.breach >= crate::game::BREACH_CAP);
             return;
         }
     }
-    panic!("the breach never filled: {} of {}", g.res.breach, crate::game::BREACH_CAP);
+    panic!("the breach never filled: {} of {}", g.res.arena.breach, crate::game::BREACH_CAP);
 }
 
 /// Clearing SHIFT_WAVES waves wins the run: the latch sets, the fanfare
@@ -1671,7 +1671,7 @@ fn clearing_the_full_shift_wins_the_run() {
         }
         g.tick(Tick(t), &[]);
         t += 1;
-        let run = g.res.run.unwrap();
+        let run = g.res.arena.run.unwrap();
         if run.won {
             assert!(!run.dead);
             assert_eq!(g.snapshot().wave, Some(crate::game::SHIFT_WAVES), "won on clearing the final wave");

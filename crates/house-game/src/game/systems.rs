@@ -41,7 +41,7 @@ impl<S: AudioSink> HouseGame<S> {
         self.res.staging.clear();
         // a downed run ignores the player verbs — walking, shooting, weapon
         // swaps. Camera rotation and light toggles stay live (corpse cam).
-        let downed = self.res.run.is_some_and(|r| r.dead || r.won);
+        let downed = self.res.arena.run.is_some_and(|r| r.dead || r.won);
         for c in cmds {
             if downed && matches!(c, Command::Click { .. } | Command::Shoot { .. } | Command::Move { .. } | Command::SelectWeapon { .. } | Command::PickCard { .. } | Command::Aim { .. }) {
                 continue;
@@ -62,7 +62,7 @@ impl<S: AudioSink> HouseGame<S> {
                     // arena turret: the mouse owns Facing (walk_system's write
                     // is arsenal-gated off). No-op elsewhere so cave traces /
                     // the flashlight's walk-aim semantics never change.
-                    if self.res.arsenal.is_some() {
+                    if self.res.arena.arsenal.is_some() {
                         if let Some(d) = dir.try_normalize() {
                             self.world.get::<&mut Facing>(self.player).unwrap().0 = d;
                         }
@@ -93,7 +93,7 @@ impl<S: AudioSink> HouseGame<S> {
                 Command::SelectWeapon { slot } => {
                     // arsenal levels only; unknown slots are swallowed. Selection
                     // is instant and does NOT reset the shared cooldown timer.
-                    if let (Some(a), Some(k)) = (self.res.arsenal.as_mut(), WeaponKind::from_slot(*slot)) {
+                    if let (Some(a), Some(k)) = (self.res.arena.arsenal.as_mut(), WeaponKind::from_slot(*slot)) {
                         a.current = k;
                     }
                 }
@@ -185,7 +185,7 @@ impl<S: AudioSink> HouseGame<S> {
                 1.0
             };
             // draft SERVO LEGS stack multiplicatively on top (empty off arena)
-            let mul = mul * speed_mult(&self.res.picked);
+            let mul = mul * speed_mult(&self.res.arena.picked);
             (pl.speed_px * mul).max(recommended_min_px_per_sec(60.0) * mul)
         };
         let pos = self.player_pos();
@@ -215,9 +215,9 @@ impl<S: AudioSink> HouseGame<S> {
         // (accel) and back to zero (a short skid) instead of binary
         // start/stop. GATED on the arsenal so every non-arena level keeps the
         // verbatim instant-walk float path (goo oracles + cave replay).
-        let dpx = if self.res.arsenal.is_some() {
+        let dpx = if self.res.arena.arsenal.is_some() {
             let desired = dpx.unwrap_or(Vec2::ZERO);
-            let v = &mut self.res.walk_vel_px;
+            let v = &mut self.res.arena.walk_vel_px;
             let k = if desired.length_squared() >= v.length_squared() { WALK_ACCEL } else { WALK_DECEL };
             *v += (desired - *v) * k;
             // parked: kill the sub-hundredth-px tail so idle is exactly zero
@@ -233,7 +233,7 @@ impl<S: AudioSink> HouseGame<S> {
         // Facing tracks the walk OFF arena only (torch aims where you walked).
         // On arena the mouse owns Facing (Command::Aim, tank-turret) — the
         // walk must not wrench the gun off the cursor every step.
-        if self.res.arsenal.is_none() {
+        if self.res.arena.arsenal.is_none() {
             if let Some(f) = Vec2::new(world_d.x, world_d.z).try_normalize() {
                 self.world.get::<&mut Facing>(self.player).unwrap().0 = f;
             }

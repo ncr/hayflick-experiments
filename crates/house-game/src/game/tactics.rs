@@ -310,7 +310,7 @@ impl<S: AudioSink> HouseGame<S> {
         // the horde hides behind the corpses you made (chunks are capped at
         // GOO_CHUNK_CAP, so this stays a handful of candidates)
         let chunk_cover: Vec<Vec2> = cover_points(&self.res.chunks);
-        for c in self.res.cover.iter().chain(chunk_cover.iter()) {
+        for c in self.res.arena.cover.iter().chain(chunk_cover.iter()) {
             // must be ON the floor (corner points of perimeter-adjacent walls
             // land outside it) and reachable per the flow field — a blob
             // grinding at a wall toward an unreachable corner reads as broken
@@ -321,7 +321,7 @@ impl<S: AudioSink> HouseGame<S> {
             // field says is FARTHER from the player than the blob already is
             // reads as a retreat detour (the mother re-crossing the squeeze
             // wall to hide on the wrong side, famously)
-            if let Some(nf) = self.res.nav.as_ref() {
+            if let Some(nf) = self.res.arena.nav.as_ref() {
                 let (dc, db) = (nf.dist_at(*c), nf.dist_at(from));
                 if dc == u16::MAX || (db != u16::MAX && dc >= db) {
                     continue;
@@ -350,7 +350,7 @@ impl<S: AudioSink> HouseGame<S> {
     /// `goo_system`; a hard no-op (and RNG-free) off arena levels, so
     /// nothing outside the arena ever sees it.
     pub(crate) fn tactic_system(&mut self) {
-        if self.res.arsenal.is_none() || self.mobs.is_empty() {
+        if self.res.arena.arsenal.is_none() || self.mobs.is_empty() {
             return;
         }
         let tick = self.res.cur_tick;
@@ -358,17 +358,17 @@ impl<S: AudioSink> HouseGame<S> {
         let player = Vec2::new(p3.x, p3.z);
 
         // flow field upkeep (derived cache — cadence + player-cell change)
-        let rebuild = match &self.res.nav {
+        let rebuild = match &self.res.arena.nav {
             None => true,
             Some(nf) => tick.wrapping_sub(nf.built_at) >= NAV_REBUILD_TICKS || nf.cell_of(player) != nf.player_cell,
         };
         if rebuild {
-            self.res.nav = Some(build_nav(self.res.level.floor, &self.res.level.solids, player, tick));
+            self.res.arena.nav = Some(build_nav(self.res.level.floor, &self.res.level.solids, player, tick));
             // containment levels keep a SECOND field seeded from the drain —
             // the seekers descend this one; hunters keep the player field
-            if let Some(z) = self.res.drain {
+            if let Some(z) = self.res.arena.drain {
                 let mouth = Vec2::new((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5);
-                self.res.nav_drain = Some(build_nav(self.res.level.floor, &self.res.level.solids, mouth, tick));
+                self.res.arena.nav_drain = Some(build_nav(self.res.level.floor, &self.res.level.solids, mouth, tick));
             }
         }
 
@@ -500,7 +500,7 @@ impl<S: AudioSink> HouseGame<S> {
 
         // comms: one pact per cooldown window. Scan id-sorted pairs; the
         // first eligible pair agrees a strike tick and both start blinking.
-        if tick >= self.res.next_comm_tick && self.mobs.len() >= 2 {
+        if tick >= self.res.arena.next_comm_tick && self.mobs.len() >= 2 {
             let solids = self.res.level.solids.clone();
             let mut pact: Option<(sim_core::Entity, sim_core::Entity, u64)> = None;
             'pair: for a in 0..self.mobs.len() {
@@ -531,7 +531,7 @@ impl<S: AudioSink> HouseGame<S> {
                     g.strike = strike;
                     g.tac_timer = 0;
                 }
-                self.res.next_comm_tick = strike + COMM_COOLDOWN;
+                self.res.arena.next_comm_tick = strike + COMM_COOLDOWN;
             }
         }
     }
@@ -543,16 +543,16 @@ impl<S: AudioSink> HouseGame<S> {
         let head = g.ends[0];
         // (target direction, move gate, speed multiplier, turn multiplier)
         let nav_to_player = || {
-            self.res.nav.as_ref().and_then(|nf| nf.dir_at(head)).unwrap_or_else(|| (pxz - head).normalize_or_zero())
+            self.res.arena.nav.as_ref().and_then(|nf| nf.dir_at(head)).unwrap_or_else(|| (pxz - head).normalize_or_zero())
         };
         // containment: non-Runner blobs in Direct want the DRAIN, not you.
         // Runners (and anything mid-maneuver, pact or sprint) still hunt —
         // the species doctrine keeps the player under real pressure while
         // the Greens and Tanks play for the exit.
-        let seeks_drain = self.res.drain.is_some() && g.kind != GooKind::Runner;
+        let seeks_drain = self.res.arena.drain.is_some() && g.kind != GooKind::Runner;
         let nav_to_drain = || {
-            self.res.nav_drain.as_ref().and_then(|nf| nf.dir_at(head)).unwrap_or_else(|| {
-                let z = self.res.drain.unwrap();
+            self.res.arena.nav_drain.as_ref().and_then(|nf| nf.dir_at(head)).unwrap_or_else(|| {
+                let z = self.res.arena.drain.unwrap();
                 (Vec2::new((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5) - head).normalize_or_zero()
             })
         };
