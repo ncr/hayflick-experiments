@@ -10,10 +10,11 @@
 // Buffer-based twin of the Vulkan storage-image version: shade.metal writes
 // device float4* radiance/albedo/pos buffers (low_w*low_h), and this writes a
 // device uchar4* out buffer (out_w*out_h). The full stylized post stack is a
-// faithful port (cel-posterize -> bloom -> tonemap -> grade -> shadow dither
-// -> outline -> vignette -> grain -> ordered-dither quantize); every stage is
-// deterministic per (texel, frame). Push constants are byte-identical to the
-// Rust TonePush (backend.rs).
+// faithful port (analog tear -> cel-posterize -> bloom -> tonemap -> grade
+// -> luma quantize -> shadow dither -> outline -> vignette -> grain ->
+// ordered-dither quantize -> analog noise, plus the per-OUTPUT-pixel CRT
+// shadow mask after the upscale); every stage is deterministic per (texel,
+// frame). Push constants are byte-identical to the Rust TonePush (backend.rs).
 
 #include <metal_stdlib>
 using namespace metal;
@@ -28,7 +29,8 @@ struct Push {
     float4 style2; // palette mode, palette param, vignette, outline strength
     float4 style3; // grain size px, grain static flag, bloom strength, bloom threshold
     float4 style4; // shadow dither: strength, levels, luma threshold, dither world-phase y
-    float4 style5; // saturation, contrast, _, _ (post-grade colour shaping)
+    float4 style5; // saturation, contrast, luma quantize levels, _
+    float4 style6; // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
 };
 
 static float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
@@ -143,6 +145,22 @@ kernel void tonemap(
     // output pixel -> low-res source texel (+ whole-pixel pan)
     int2 lp = o / scale + int2(pc.cfg.y, pc.cfg.z);
 
+    // ANALOG horizontal tear (style6.z) — twin of tonemap.comp: whole game-pixel
+    // scanlines sample a displaced source texel, pure hash(row, frame). A sparse
+    // ±1 px per-row jitter plus a rare 8-row glitch band with a large shove
+    // (which can drag the guard band into view — the torn edge). Screen-anchored:
+    // the tape, not the world.
+    if (pc.style6.z > 0.0) {
+        float tr = pc.style6.z;
+        uint rh = hashu(uint(lp.y + 4096) * 3571u + frame * 26699u + 19u);
+        float r1 = float(rh) * (1.0 / 4294967296.0);
+        int off = r1 < 0.12 * tr ? (int(rh >> 8) & 2) - 1 : 0;
+        uint bh = hashu(uint((lp.y + 4096) >> 3) * 7919u + frame * 104729u + 5u);
+        float b1 = float(bh) * (1.0 / 4294967296.0);
+        if (b1 < 0.05 * tr) off += int((float(hashu(bh)) * (1.0 / 4294967296.0) - 0.5) * 26.0 * tr);
+        lp.x += off;
+    }
+
     float3 col;
     if (lp.x < 0 || lp.y < 0 || lp.x >= lowW || lp.y >= lowH) {
         col = float3(0.05, 0.05, 0.06); // guard band
@@ -207,6 +225,18 @@ kernel void tonemap(
             col = yl + (col - yl) * pc.style5.x;
             col = (col - 0.5) * pc.style5.y + 0.5;
             col = clamp(col, 0.0, 1.0);
+        }
+
+        // LIMITED LIGHT LEVELS (style5.z >= 2) — twin of tonemap.comp: snap
+        // luminance onto an N-step ladder, hue preserved, deliberately
+        // UNDITHERED (hard contour lines between light levels are the effect).
+        if (pc.style5.z >= 2.0) {
+            float L = pc.style5.z - 1.0;
+            float y = luma(col);
+            if (y > 1e-4) {
+                float yq = floor(y * L + 0.5) / L;
+                col = clamp(col * (yq / y), 0.0, 1.0);
+            }
         }
 
         // shadow dither (style4)
@@ -308,6 +338,40 @@ kernel void tonemap(
                 col = GB[clamp(int(luma(c2) * 4.0), 0, 3)];
             }
         }
+
+        // ANALOG NOISE (style6.x luma, style6.y chroma) — twin of tonemap.comp:
+        // composite-signal noise ON the final signal, AFTER the quantizer (the
+        // noise rides the cable, not the framebuffer), uniform across tones.
+        // Chroma noise on a half-res cell lattice (chroma subsampling), built
+        // luma-neutral: R/B wander, G takes the negative half.
+        // Knob is a 0..1 STRENGTH, not a raw amplitude: 1.0 = heavy signal
+        // noise that still leaves the picture readable (luma ±0.07, chroma ±0.10).
+        if (pc.style6.x > 0.0 || pc.style6.y > 0.0) {
+            if (pc.style6.x > 0.0) {
+                uint hn = hashu(uint(lp.x + 4096) * 4241u + uint(lp.y + 4096) * 10007u + frame * 31337u + 7u);
+                col += (float(hn) * (1.0 / 4294967296.0) - 0.5) * (0.14 * pc.style6.x);
+            }
+            if (pc.style6.y > 0.0) {
+                int2 cq = int2((lp.x + 4096) >> 1, (lp.y + 4096) >> 1);
+                uint h1 = hashu(uint(cq.x) * 6007u + uint(cq.y) * 12289u + frame * 48611u + 3u);
+                uint h2 = hashu(h1 + 0x9e3779b9u);
+                float n1 = float(h1) * (1.0 / 4294967296.0) - 0.5;
+                float n2 = float(h2) * (1.0 / 4294967296.0) - 0.5;
+                col += float3(n1, -0.5 * (n1 + n2), n2) * (0.20 * pc.style6.y);
+            }
+            col = clamp(col, 0.0, 1.0);
+        }
+    }
+
+    // CRT SHADOW MASK (style6.w) — twin of tonemap.comp: the one stage that runs
+    // per OUTPUT pixel, after the integer upscale — it models the DISPLAY, not
+    // the image. RGB aperture-grille columns (period 3) + a soft scanline every
+    // 3rd row; ×1.35 roughly refunds the mask's energy loss.
+    if (pc.style6.w > 0.0) {
+        int cx = o.x % 3;
+        float3 ph = cx == 0 ? float3(1.0, 0.62, 0.62) : cx == 1 ? float3(0.62, 1.0, 0.62) : float3(0.62, 0.62, 1.0);
+        float sl = (o.y % 3) == 2 ? 0.78 : 1.0;
+        col = mix(col, col * ph * (1.35 * sl), pc.style6.w);
     }
     outTex.write(float4(clamp(col, 0.0, 1.0), 1.0), uint2(gid));
 }

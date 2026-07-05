@@ -9,12 +9,15 @@
 //
 // Stylized post stack, applied per LOW-RES texel (one game pixel = one post
 // sample, so the pixel-look invariant holds; the upscale only repeats values):
-//   cel-posterize lighting -> bloom -> tonemap -> grade -> shadow dither
-//   -> outline -> vignette -> film grain -> ordered-dither quantize
+//   analog tear -> cel-posterize lighting -> bloom -> tonemap -> grade
+//   -> luma quantize -> shadow dither -> outline -> vignette -> film grain
+//   -> ordered-dither quantize -> analog noise
+// ...plus ONE deliberate exception: the CRT shadow mask runs per OUTPUT pixel
+// after the upscale — it models the display glass, not the image.
 // Every stage is deterministic per (texel, frame) — no temporal shimmer beyond
-// intentionally animated grain. All knobs come from the style push constants
-// (env-driven, see config.rs StyleCfg). Captures read the GPU `out` image
-// directly, so this shader is the single source of truth for the look.
+// intentionally animated grain/noise. All knobs come from the style push
+// constants (env-driven, see config.rs StyleCfg). Captures read the GPU `out`
+// image directly, so this shader is the single source of truth for the look.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -34,7 +37,8 @@ layout(push_constant) uniform Push {
   vec4  style2; // palette mode, palette param, vignette, outline strength
   vec4  style3; // grain size px, grain static flag, bloom strength, bloom threshold
   vec4  style4; // shadow dither: strength, levels, luma threshold, dither world-phase y
-  vec4  style5; // saturation, contrast, _, _ (post-grade colour shaping)
+  vec4  style5; // saturation, contrast, luma quantize levels, _
+  vec4  style6; // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
 } pc;
 
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -149,6 +153,23 @@ void main(){
   // output pixel -> low-res source texel (+ whole-pixel pan)
   ivec2 lp = o / scale + ivec2(pc.cfg.y, pc.cfg.z);
 
+  // ANALOG horizontal tear (style6.z): the signal loses sync — whole game-pixel
+  // scanlines shift sideways by sampling a displaced source texel. Two layers,
+  // both pure hash(row, frame): a sparse ±1 px per-row jitter, and a rare 8-row
+  // glitch band with a large shove (which can drag the guard band into view —
+  // the torn edge). Screen-anchored (the tape, not the world), so it rides the
+  // display like real tracking error.
+  if (pc.style6.z > 0.0) {
+    float tr = pc.style6.z;
+    uint rh = hashu(uint(lp.y + 4096) * 3571u + uint(pc.fcfg.z) * 26699u + 19u);
+    float r1 = float(rh) * (1.0 / 4294967296.0);
+    int off = r1 < 0.12 * tr ? (int(rh >> 8) & 2) - 1 : 0;
+    uint bh = hashu(uint((lp.y + 4096) >> 3) * 7919u + uint(pc.fcfg.z) * 104729u + 5u);
+    float b1 = float(bh) * (1.0 / 4294967296.0);
+    if (b1 < 0.05 * tr) off += int((float(hashu(bh)) * (1.0 / 4294967296.0) - 0.5) * 26.0 * tr);
+    lp.x += off;
+  }
+
   vec3 col;
   if (lp.x < 0 || lp.y < 0 || lp.x >= pc.dims.x || lp.y >= pc.dims.y) {
     col = vec3(0.05, 0.05, 0.06); // guard band
@@ -217,6 +238,19 @@ void main(){
       col = yl + (col - yl) * pc.style5.x;
       col = (col - 0.5) * pc.style5.y + 0.5;
       col = clamp(col, 0.0, 1.0);
+    }
+
+    // LIMITED LIGHT LEVELS (style5.z >= 2): snap luminance onto an N-step
+    // ladder, hue preserved (colour rescaled by yq/y). Deliberately UNDITHERED
+    // — hard contour lines between light levels are the effect (the dithered
+    // cousin is the shadow-dither stage below, which only works the shadows).
+    if (pc.style5.z >= 2.0) {
+      float L = pc.style5.z - 1.0;
+      float y = luma(col);
+      if (y > 1e-4) {
+        float yq = floor(y * L + 0.5) / L;
+        col = clamp(col * (yq / y), 0.0, 1.0);
+      }
     }
 
     // shadow dither: ordered-dither the LUMA of shadow pixels onto an N-level
@@ -330,6 +364,43 @@ void main(){
         col = GB[clamp(int(luma(c2) * 4.0), 0, 3)];
       }
     }
+
+    // ANALOG NOISE (style6.x luma, style6.y chroma): composite-signal noise
+    // ON the final signal — applied AFTER the quantizer (the noise rides the
+    // cable, not the framebuffer), uniform across tones (unlike the shadow-
+    // weighted film grain). Chroma noise lives on a half-res cell lattice
+    // (chroma subsampling) and is built luma-neutral: R and B wander, G takes
+    // the negative half so the luma stays put and only the colour fizzes.
+    // Knob is a 0..1 STRENGTH, not a raw amplitude: 1.0 = heavy signal noise
+    // that still leaves the picture readable (luma ±0.07, chroma ±0.10).
+    if (pc.style6.x > 0.0 || pc.style6.y > 0.0) {
+      uint fr = uint(pc.fcfg.z);
+      if (pc.style6.x > 0.0) {
+        uint hn = hashu(uint(lp.x + 4096) * 4241u + uint(lp.y + 4096) * 10007u + fr * 31337u + 7u);
+        col += (float(hn) * (1.0 / 4294967296.0) - 0.5) * (0.14 * pc.style6.x);
+      }
+      if (pc.style6.y > 0.0) {
+        ivec2 cq = ivec2((lp.x + 4096) >> 1, (lp.y + 4096) >> 1);
+        uint h1 = hashu(uint(cq.x) * 6007u + uint(cq.y) * 12289u + fr * 48611u + 3u);
+        uint h2 = hashu(h1 + 0x9e3779b9u);
+        float n1 = float(h1) * (1.0 / 4294967296.0) - 0.5;
+        float n2 = float(h2) * (1.0 / 4294967296.0) - 0.5;
+        col += vec3(n1, -0.5 * (n1 + n2), n2) * (0.20 * pc.style6.y);
+      }
+      col = clamp(col, 0.0, 1.0);
+    }
+  }
+
+  // CRT SHADOW MASK (style6.w): the one stage that runs per OUTPUT pixel, after
+  // the integer upscale — it models the DISPLAY, not the image (the per-texel
+  // post invariant governs image content; the phosphor grid is glass). RGB
+  // aperture-grille columns (period 3) + a soft scanline every 3rd row; ×1.35
+  // roughly refunds the mask's energy loss so perceived brightness holds.
+  if (pc.style6.w > 0.0) {
+    int cx = o.x % 3;
+    vec3 ph = cx == 0 ? vec3(1.0, 0.62, 0.62) : cx == 1 ? vec3(0.62, 1.0, 0.62) : vec3(0.62, 0.62, 1.0);
+    float sl = (o.y % 3) == 2 ? 0.78 : 1.0;
+    col = mix(col, col * ph * (1.35 * sl), pc.style6.w);
   }
   imageStore(outImg, o, vec4(clamp(col, 0.0, 1.0), 1.0));
 }

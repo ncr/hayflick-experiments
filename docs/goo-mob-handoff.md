@@ -484,3 +484,23 @@ What a returning session needs to know:
 - The `house` Metal golden flips between byte-exact and `OK~ (0 px > 2%)`
   run-to-run on the M2 Pro (grazing-ray wobble, documented in bin/golden's
   header) — treat `OK~` there as pass, anything in the other four as real.
+
+## 2026-07-05 — Retro post-effects pass (six knob-gated effects, both backends)
+
+Six opt-in retro effects, all OFF by default — every knob at 0 reproduces the
+old image byte-for-byte (goldens + a goonursery SHOT byte-diff prove it).
+GLSL/MSL twins ported in the same effort; no sim changes, oracles untouched.
+
+| Effect | Env knob(s) | Where |
+|---|---|---|
+| Analog noise (luma/chroma + h-tear) | `ANALOG=0..1` (`ANALOG_CHROMA`/`ANALOG_TEAR` override) | tonemap, post-quantizer |
+| Limited light levels | `LUMAQ=<levels>` (8–16 sane) | tonemap, post-grade (undithered — SDITHER is the dithered cousin) |
+| CRT shadow mask | `CRT_MASK=0..1` | tonemap, per OUTPUT pixel after the upscale (deliberate invariant exception — models the display glass) |
+| Material posterize (albedo+roughness) | `MATQ=<levels>` | shade, after wear/grime, feeds the G-buffer too |
+| Dithered shadows (RT-AO → stipple) | `AO_DITHER=1` | shade; on Metal also stipples the goo softVis penumbra (that path is Metal-only, documented divergence) |
+| Pixelated reflections | `REFL=0..1` + `REFL_PX=<block>` | shade; block-anchor primary re-derive (ortho: same dir, shifted origin) = low-res reflection buffer without a second pass. Floors (n.y>0.8) + metals reflect; bounce shaded cheaply (emissive + sun NEE + probe GI) |
+
+Plumbing: `TonePush` grew `style6` (+16 B, both backends' size math follows
+`size_of`); `ShadePush` stays 176 B — MATQ/AO_DITHER/REFL ride the spare
+`look2.yzw`, block size in the former `_r0` (now `refl_px`; Metal misc2.w).
+`StyleCfg` carries the tonemap knobs, `RenderCfg` the shade knobs.

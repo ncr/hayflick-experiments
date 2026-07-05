@@ -38,12 +38,12 @@ struct Push {
     cam_dir: [f32; 4],   // xyz forward, w = AO radius
     cam_pos: [f32; 4],   // xyz eye, w = AO strength
     misc: [i32; 4],      // W, H, aoRays, debug
-    misc2: [i32; 4],     // lightCount, hasProbes, roomLights16, _
+    misc2: [i32; 4],     // lightCount, hasProbes, roomLights16, reflBlockPx
     env0: [f32; 4],      // sun, sky, fogD, fogH
     roi: [f32; 4],       // CAVE_ROI: player world xyz + disc radius (low-res px)
     roi2: [f32; 4],      // projected player px xy + disc falloff px + enabled (>0.5)
     look: [f32; 4],      // spec strength, bump strength, bump scale, gloss (look knobs)
-    look2: [f32; 4],     // gi scale, _, _, _
+    look2: [f32; 4],     // gi scale, matPoster levels, aoDither, reflStrength
 }
 
 // `GooPush` + the shared goo look/limit constants + the `build_goo_push`
@@ -771,12 +771,12 @@ impl RenderBackend for MetalBackend {
             cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, fp.ao_r],
             cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, fp.ao],
             misc: [low_w as i32, low_h as i32, fp.ao_n, fp.debug],
-            misc2: [light_count, 1, room_lights16, 0],
+            misc2: [light_count, 1, room_lights16, fp.refl_px],
             env0: [self.env0[0] * fp.sky_dim, self.env0[1] * fp.sky_dim, self.env0[2], self.env0[3]],
             roi: roi.roi,
             roi2: roi.roi2,
             look: [fp.spec, fp.bump, fp.bump_scale, fp.gloss],
-            look2: [fp.gi, 0.0, 0.0, 0.0],
+            look2: [fp.gi, fp.matq, fp.ao_dither, fp.refl],
         };
         let rs = self.rs(fp.zoom);
         let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);

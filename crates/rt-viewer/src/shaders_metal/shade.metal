@@ -37,7 +37,7 @@ struct Push {
     float4 roi;       // CAVE_ROI: player world xyz, w = disc radius (low-res px)
     float4 roi2;      // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
     float4 look;      // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
-    float4 look2;     // gi scale, _, _, _
+    float4 look2;     // gi scale, matPoster levels, aoDither, reflStrength
 };
 
 constant float PI    = 3.14159265;
@@ -388,6 +388,22 @@ kernel void shade(
         float c = clamp((1.0 - ao) * 1.8 * wstr, 0.0, 1.0);
         albedo = mix(albedo, albedo * float3(0.50, 0.47, 0.43), c * 0.7);
     }
+    // ---- MATERIAL POSTERIZE (MATQ = look2.y >= 2) — twin of shade.comp: clamp
+    // the material's tonal range — albedo snapped to N levels per channel AFTER
+    // wear/grime (roughness snaps below, at reff). The quantized albedo feeds
+    // the G-buffer too, so tonemap's poster demodulation stays consistent.
+    if (pc.look2.y >= 2.0) {
+        float Lq = pc.look2.y - 1.0;
+        albedo = floor(albedo * Lq + 0.5) / Lq;
+    }
+    // ---- DITHERED SHADOWS (AO_DITHER = look2.z > 0) — twin of shade.comp: the
+    // smooth RT-AO gradient collapses to a binary per-pixel stipple — remap AO
+    // to its [1-strength, 1] envelope, threshold against the ordered 4x4 Bayer,
+    // snap to floor or full. Applied AFTER contact grime (wants the smooth term).
+    if (pc.look2.z > 0.0 && pc.camPos.w > 0.0) {
+        float aot = (ao - (1.0 - pc.camPos.w)) / max(pc.camPos.w, 1e-4);
+        ao = aot >= bayer4(int2(gid)) ? 1.0 : 1.0 - pc.camPos.w;
+    }
     outAlbedo[idx] = float4(albedo, 1.0);
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
@@ -401,6 +417,7 @@ kernel void shade(
     // lerped to albedo by metallic; v toward camera.
     float3 vdir = -d;
     float reff = clamp(mix(m.roughness, 0.12, pc.look.w), 0.10, 1.0);
+    if (pc.look2.y >= 2.0) reff = clamp(floor(reff * 3.0 + 0.5) / 3.0, 0.10, 1.0); // MATQ: roughness in coarse steps too
     float3 F0 = mix(float3(0.04), albedo, m.metallic);
 
     float ndl = max(dot(n, sunDir), 0.0);
@@ -435,6 +452,10 @@ kernel void shade(
         // codegen for golden scenes is byte-identical.
         if (lt.dir.w == 2.0 && lt.posRad.w > GOO_SHADOW_MIN_RADIUS) {
             float vis = softVis(p, lt.posRad.xyz, lt.posRad.w, accel);
+            // AO_DITHER also stipples the goo-light penumbra (this soft path is
+            // Metal-only — the GLSL twin keeps hard single-tap goo shadows, so
+            // there is nothing to mirror; divergence documented in the handoff).
+            if (pc.look2.z > 0.0) vis = vis >= bayer4(int2(gid)) ? 1.0 : 0.0;
             if (vis > 0.0) {
                 col += c * vis;
                 if (pc.look.x > 0.0) col += lt.color.rgb * emit * pc.look.x * specBRDF(n, vdir, ldir, reff, F0) * ndl2 * vis;
@@ -447,6 +468,50 @@ kernel void shade(
 
     if (pc.misc.w == 4) { outRadiance[idx] = float4(float3(ao), 1.0); return; }
     if (pc.misc.w != 3 && pc.misc2.y != 0) col += albedo * (1.0/PI) * probeE(p, n, pd, pc) * ao * pc.look2.x;
+
+    // ---- PIXELATED REFLECTIONS (REFL = look2.w > 0) — twin of shade.comp: a
+    // mirror bounce rendered at 1/REFL_PX resolution and composited over the
+    // full-res image. Every pixel in a REFL_PX×REFL_PX screen block re-derives
+    // the BLOCK ANCHOR's primary ray (ortho camera: same direction, shifted
+    // origin), so the whole block computes one identical reflection — the same
+    // picture a low-res reflection buffer + NEAREST upsample would give,
+    // without a second pass. Floors and metals reflect; the bounce is shaded
+    // cheaply (emissive + sun NEE + probe GI, no per-light loop) and added at
+    // knob strength — a stylized wet-floor sheen, not PBR. REFL=0 → no rays.
+    if (pc.look2.w > 0.0 && (m.metallic > 0.5 || n.y > 0.8)) {
+        int B = max(pc.misc2.w, 1);
+        int2 bp = (int2(gid) / B) * B;
+        float ub = ((float(bp.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;
+        float vb = -(((float(bp.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);
+        float3 ob = float3(pc.camPos.xyz) + ub * pc.camRight.w * float3(pc.camRight.xyz)
+                                          + vb * pc.camUp.w    * float3(pc.camUp.xyz);
+        Hit bh;
+        float3 rc = float3(0.0);
+        if (trace(ob, d, 300.0, 0x01u, accel, verts, indices, geoms, bh)) {
+            float3 bn = bh.n; if (dot(bn, d) > 0.0) bn = -bn;
+            float3 bpos = ob + d * bh.t + bn * 0.003;
+            float3 rdir = reflect(d, bn);
+            Hit rh;
+            // mask 0x05 (primary | dynamic): the player shows in the floor, but
+            // the goo SHADOW PROXIES (mask 0x02) stay out — they are black dummy
+            // geometry, and a floor that reflects them paints black blotches
+            // through every translucent blob standing on it.
+            if (trace(bpos, rdir, 60.0, 0x05u, accel, verts, indices, geoms, rh)) {
+                Material rm = mats[rh.mat];
+                float3 ralb = rm.baseColor.rgb;
+                if (rm.texIndex >= 0) ralb *= texs[rm.texIndex].sample(texSamp, rh.uv).rgb;
+                float3 rn = rh.n; if (dot(rn, rdir) > 0.0) rn = -rn;
+                float3 rp = bpos + rdir * rh.t + rn * 0.003;
+                rc = rm.emissive.rgb;
+                float rndl = max(dot(rn, sunDir), 0.0);
+                if (pc.env0.x > 0.0 && rndl > 0.0 && !occluded(rp, sunDir, 200.0, accel)) rc += ralb * sun * rndl;
+                if (pc.misc2.y != 0) rc += ralb * (1.0/PI) * probeE(rp, rn, pd, pc) * pc.look2.x;
+            } else {
+                rc = skyCol(rdir, pc);
+            }
+        }
+        col += rc * pc.look2.w;
+    }
 
     col = col * fogT + fogAdd;
     outRadiance[idx] = float4(col, 1.0);

@@ -41,7 +41,8 @@ pub struct ShadePush {
     /// Room-lights dim in 16.16 fixed point — the probe-bank lerp factor.
     pub room_lights16: i32,
     pub light_count: i32,
-    pub _r0: i32,
+    /// REFL_PX: pixelated-reflection block size in low-res px (REFL > 0 only).
+    pub refl_px: i32,
     pub _r1: i32,
     pub env0: [f32; 4], // sun, sky, fog density, fog height
     /// Dollhouse see-through region of interest (CAVE_ROI). `roi` = player world
@@ -52,8 +53,9 @@ pub struct ShadePush {
     pub roi2: [f32; 4],
     /// Aesthetic look knobs (all default-neutral so the goldens stay byte-identical):
     /// `look` = [specular strength, bump strength, bump scale (wu^-1), gloss (0..1
-    /// roughness remap)]; `look2` = [GI ambient scale, _, _, _]. Spec 0 / bump 0 /
-    /// gloss 0 / gi 1 reproduces the pre-look image exactly (× 1.0 and + 0.0 are exact).
+    /// roughness remap)]; `look2` = [GI ambient scale, MATQ poster levels, AO_DITHER,
+    /// REFL strength]. Spec 0 / bump 0 / gloss 0 / gi 1 / matq 0 / aoDither 0 / refl 0
+    /// reproduces the pre-look image exactly (× 1.0 and + 0.0 are exact).
     pub look: [f32; 4],
     pub look2: [f32; 4],
 }
@@ -92,7 +94,7 @@ impl ShadePush {
             debug,
             room_lights16: (room_lights * 65536.0).round() as i32,
             light_count,
-            _r0: 0,
+            refl_px: 1,
             _r1: 0,
             env0,
             roi: ROI_OFF.roi,

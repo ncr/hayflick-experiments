@@ -129,6 +129,11 @@ pub struct StyleCfg {
     pub sdither_th: f32,   // luma below which the shadow dither fades in
     pub sat: f32,          // SAT: saturation multiplier post-grade (1 = neutral, >1 punchier)
     pub contrast: f32,     // CONTRAST: contrast around 0.5 post-grade (1 = neutral)
+    pub lumaq: f32,        // LUMAQ: quantize luminance to N hard levels, hue kept (0 = off)
+    pub analog: f32,       // ANALOG: analog-signal luma noise strength (0 = off)
+    pub analog_chroma: f32, // ANALOG_CHROMA: chroma noise strength (defaults to ANALOG)
+    pub analog_tear: f32,  // ANALOG_TEAR: horizontal scanline-tear strength (defaults to ANALOG)
+    pub crt_mask: f32,     // CRT_MASK: RGB phosphor triad + scanline on the FINAL image (0 = off)
 }
 
 impl StyleCfg {
@@ -144,7 +149,7 @@ impl StyleCfg {
         // floor-plan / dungeon / content scenes get richer colour by default. The
         // textured legacy scenes (house/lab/grid) keep their established neutral grade.
         let clean = is_clean_greybox(scene);
-        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th, sat: if clean { 1.4 } else { 1.0 }, contrast: if clean { 1.12 } else { 1.0 } };
+        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th, sat: if clean { 1.4 } else { 1.0 }, contrast: if clean { 1.12 } else { 1.0 }, lumaq: 0.0, analog: 0.0, analog_chroma: -1.0, analog_tear: -1.0, crt_mask: 0.0 };
         if let Some(name) = s("STYLE") {
             match name.as_str() {
                 "fallout" => { st.grade = 1.0; st.palette = 1.0; st.grain = 0.04; }
@@ -181,6 +186,18 @@ impl StyleCfg {
         st.sdither_th = f("SDITHER_TH", st.sdither_th);
         st.sat = f("SAT", st.sat);
         st.contrast = f("CONTRAST", st.contrast);
+        st.lumaq = f("LUMAQ", st.lumaq);
+        st.analog = f("ANALOG", st.analog);
+        // chroma/tear ride the master ANALOG strength unless overridden
+        st.analog_chroma = f("ANALOG_CHROMA", st.analog_chroma);
+        st.analog_tear = f("ANALOG_TEAR", st.analog_tear);
+        if st.analog_chroma < 0.0 {
+            st.analog_chroma = st.analog;
+        }
+        if st.analog_tear < 0.0 {
+            st.analog_tear = st.analog;
+        }
+        st.crt_mask = f("CRT_MASK", st.crt_mask);
         if st.pal_p < 0.0 {
             st.pal_p = if st.palette as i32 == 2 { 6.0 } else { 0.0 };
         }
@@ -221,6 +238,10 @@ pub struct RenderCfg {
     pub bump: f32,                 // BUMP: procedural surface-detail normal strength (0 = off)
     pub bump_scale: f32,           // BUMP_SCALE: surface-detail noise frequency (wu^-1)
     pub gi: f32,                   // GI: ambient probe-irradiance scale (1 = neutral, <1 = moodier)
+    pub matq: f32,                 // MATQ: posterize materials — albedo/roughness snapped to N levels (0 = off)
+    pub ao_dither: f32,            // AO_DITHER: RT-AO gradient → binary Bayer stipple (0 = off)
+    pub refl: f32,                 // REFL: pixelated mirror-reflection composite strength (0 = off)
+    pub refl_px: i32,              // REFL_PX: reflection block size in low-res px (the pixelation)
     pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4
     pub style: StyleCfg,
 }
@@ -352,6 +373,10 @@ impl Config {
                 bump: f("BUMP", if clean { 0.8 } else { 0.0 }),
                 bump_scale: f("BUMP_SCALE", if clean { 7.0 } else { 6.0 }).max(0.01),
                 gi: f("GI", if clean { 0.42 } else { 1.0 }),
+                matq: f("MATQ", 0.0),
+                ao_dither: f("AO_DITHER", 0.0),
+                refl: f("REFL", 0.0),
+                refl_px: i("REFL_PX", 3).max(1),
                 debug,
                 style: StyleCfg::from_env(&scene),
             },
