@@ -1,0 +1,65 @@
+# P1+P2 showcase, drain scene — goalkeeper kiting along the sieve wall.
+# Shows: L3 grate bars in the three sieve gaps, L2 drain-current motes,
+# L5 corner service lamps, L4 low cover, plus the feel kit (raise lerp,
+# shotgun skid, slug hitstop, grenade bank, harpoon pin) on a new stage.
+# Lane: z=7 between the low cover (z<=4.875) and the sieve wall (z>=8.25).
+# walk east along the sieve — passes the slot + main-drain grates
+5 click 6.5 5 7 0 -1 0 6.5 7
+# slugs north into the advancing squad
+55 aim 0 -1
+60 shoot 1.7 1.25 6.9 -0.104 -0.083 -0.991
+115 aim -0.4 -1
+120 shoot 3.5 1.25 6.95 -0.464 -0.080 -0.882
+175 aim 0 -1
+180 shoot 5.4 1.25 7 -0.081 -0.086 -0.993
+# turn west: the full sieve wall scrolls by — motes + grate stubs in frame
+210 click -6.5 5 7 0 -1 0 -6.5 7
+# shotgun the closers mid-pass (raise lerp + self-knockback skid)
+240 weapon 3
+270 aim 0 -1
+280 shoot 3.0 1.25 7 -0.140 -0.133 -0.982
+350 shoot -0.5 1.25 7 -0.082 -0.156 -0.985
+420 shoot -4.0 1.25 7 -0.151 -0.143 -0.979
+# grenades banked off the mid-field L into the pursuit
+470 weapon 4
+485 aim 0.6 -0.7
+490 shoot -6.5 1.25 7 0.663 -0.140 -0.736
+550 shoot -6.5 1.25 7 0.845 -0.124 -0.520
+# harpoon a closer (pin bolt + squash), then turn east and slug the lane
+620 weapon 5
+635 aim 0.6 -0.6
+640 shoot -6.5 1.25 7 0.744 -0.202 -0.637
+660 click 6.5 5 7 0 -1 0 6.5 7
+680 weapon 1
+700 shoot -4.5 1.25 7 0.489 -0.310 -0.815
+760 shoot -1.5 1.25 7 0.343 -0.217 -0.915
+820 shoot 1.5 1.25 7 0.283 -0.179 -0.942
+880 shoot 4.5 1.25 7 0.032 -0.302 -0.953
+# duck behind the east low-cover block, uzi over the top
+930 click 3.1 5 5.6 0 -1 0 3.1 5.6
+1030 weapon 2
+1050 aim -0.1 -1
+1060 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1066 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1072 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1078 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1084 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1090 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1096 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1102 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1108 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+1114 shoot 3.1 1.25 5.6 -0.105 -0.166 -0.980
+# slide west to the other cover block — never park for long
+1180 click -3.1 5 5.6 0 -1 0 -3.1 5.6
+1210 weapon 3
+1250 shoot -0.4 1.25 5.6 0.656 -0.260 -0.710
+1310 shoot -3.1 1.25 5.6 0.803 -0.246 -0.544
+1370 shoot -3.1 1.25 5.6 0.509 -0.440 -0.740
+# fall back to centre-south, slug finish
+1420 weapon 1
+1440 click 0 5 6.8 0 -1 0 0 6.8
+1470 shoot -1.7 1.25 6.15 0.371 -0.207 -0.906
+1540 shoot 0 1.25 6.8 -0.248 -0.235 -0.941
+1620 shoot 0 1.25 6.8 0.400 -0.253 -0.880
+1700 shoot 0 1.25 6.8 -0.248 -0.235 -0.941
+1710 aim 0 -1
