@@ -230,6 +230,23 @@ impl GameLoop {
         skin_pool(&self.trc.puff, xforms)
     }
 
+    /// Per-frame harpoon pin bolts (D4): one thin cyan nail standing in each
+    /// pinned body at its pin point, blinking through the last second of the
+    /// hold — the countdown that sets up the slug follow-up shot. Empty when
+    /// nothing is pinned.
+    pub fn pin_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let frame = self.fx.fx_frame;
+        let xforms = self.snap.mobs.iter().filter(|m| m.pin > 0).map(move |m| {
+            // last-second countdown: the bolt strobes ~4 Hz
+            let on = m.pin > 60 || (frame / 8).is_multiple_of(2);
+            if !on {
+                return Mat4::from_scale(Vec3::ZERO);
+            }
+            Mat4::from_translation(Vec3::new(m.pin_pt.x, 0.30, m.pin_pt.y)) * Mat4::from_scale(Vec3::new(0.035, 0.30, 0.035))
+        });
+        skin_pool(&self.pin_slots, xforms)
+    }
+
     /// Per-frame drain-current motes (L2): four cyan dashes per sieve lane,
     /// drifting from 2.5 wu out INTO each mouth on the tick clock and
     /// swallowed as they arrive — the zone visibly PULLS without a sim
@@ -308,6 +325,19 @@ impl GameLoop {
                     }
                 }
             }
+            // D3: one more slug SOLIDIFIES it — once the NEXT stack would
+            // cross the chunk threshold, a crackle shimmer strobes the tint
+            // (hash flicker on the tick clock, per-blob phase)
+            if m.cure > 0 && m.cure + 1 >= house_game::game::GOO_CURE_CHUNK {
+                let h = self.fx.fx_frame.wrapping_mul(2654435761) ^ m.id.0.wrapping_mul(0x9E37_79B9);
+                let n = ((h >> 9) & 0xff) as f32 / 255.0;
+                if n > 0.55 {
+                    let s = 1.0 + 0.6 * (n - 0.55) / 0.45;
+                    for t in tint.iter_mut().take(3) {
+                        *t *= s;
+                    }
+                }
+            }
             // netcode-lag glitch: a WEAK blob renders its CACHED body (the true
             // hitbox crawls on — shots resolve against the sim, not the draw),
             // dimming as the snapshot ages so the pop-forward reads as a stutter
@@ -327,7 +357,20 @@ impl GameLoop {
             // goo film stages, every pre-species level) stay byte-stable.
             let (vs_mul, r_mul) = goo_kind_stance(m.kind);
             let pr = m.part_radius * r_mul;
-            let vscale = vscale * vs_mul;
+            let mut vscale = vscale * vs_mul;
+            // D3: cure stiffens the BODY, not just the color — each stack
+            // flattens the gait/jelly wobble toward a rigid 1.0 (a
+            // solidifying blob stops breathing). Gated on cure > 0 so
+            // uncured bodies keep the verbatim float path.
+            if m.cure > 0 {
+                let stiff = (m.cure as f32 / house_game::GOO_CURE_MAX as f32) * 0.75;
+                vscale = 1.0 + (vscale - 1.0) * (1.0 - stiff);
+            }
+            // D4: a nailed body squats FLAT under the pin spring — the
+            // strain reads in silhouette while the bolt prim marks the nail
+            if m.pin > 0 {
+                vscale *= 0.85;
+            }
             // G1 sprint tell: a sprinting Runner TILTS into its motion — the
             // per-ball vscale rises toward the front of the body (shell-side
             // motion estimate; None while it hasn't moved yet).

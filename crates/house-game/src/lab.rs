@@ -135,7 +135,7 @@ impl Metrics {
                     }
                 }
                 // goo-mob events are not part of the survival-lab metrics
-                GameEvent::MobHit(..) | GameEvent::MobWindup(..) | GameEvent::MobSplit(..) | GameEvent::MobKilled(..) | GameEvent::MobMerged(..) | GameEvent::MobSolidified(..) | GameEvent::GooSplashed(..) | GameEvent::Detonated(..) | GameEvent::WaveIncoming(..) | GameEvent::WaveLanded(..) | GameEvent::Impact(..) | GameEvent::PlayerDown | GameEvent::CardPicked(..) | GameEvent::LightsOut | GameEvent::GooEscaped(..) | GameEvent::ShiftComplete => {}
+                GameEvent::MobHit(..) | GameEvent::MobWindup(..) | GameEvent::MobSplit(..) | GameEvent::MobKilled(..) | GameEvent::MobMerged(..) | GameEvent::MobSolidified(..) | GameEvent::GooSplashed(..) | GameEvent::Detonated(..) | GameEvent::GrenadeBounced(..) | GameEvent::WaveIncoming(..) | GameEvent::WaveLanded(..) | GameEvent::Impact(..) | GameEvent::PlayerDown | GameEvent::CardPicked(..) | GameEvent::LightsOut | GameEvent::GooEscaped(..) | GameEvent::ShiftComplete => {}
             }
         }
         // close still-open spans at the run end

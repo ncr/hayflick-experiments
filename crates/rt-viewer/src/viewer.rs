@@ -69,6 +69,8 @@ pub struct Viewer {
     pub comm_lit: Vec<u32>,
     /// fx_frame of the last drain-gurgle retrigger (the L2 positional loop).
     pub gurgle_frame: u32,
+    /// fx_frame of the last grenade fuse-hiss retrigger (the D5 timer loop).
+    pub hiss_frame: u32,
     /// Death-reel latch: the run's death has been journaled to disk.
     pub reel_saved: Option<std::path::PathBuf>,
     pub menu: MenuState,
@@ -173,6 +175,7 @@ impl Viewer {
             audio,
             comm_lit: Vec::new(),
             gurgle_frame: 0,
+            hiss_frame: 0,
             reel_saved: None,
             exposure: cfg.render.exposure,
             style: cfg.render.style,
@@ -413,6 +416,7 @@ impl Viewer {
         instances.extend(self.game.rail_instances());
         instances.extend(self.game.puff_instances());
         instances.extend(self.game.flow_instances());
+        instances.extend(self.game.pin_instances());
         let goo = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
@@ -579,6 +583,23 @@ impl Viewer {
             // hover-servo steps: the walk cadence accumulated by tick_fx
             for _ in 0..self.game.take_steps() {
                 a.play("step", 1.0);
+            }
+            // D5: the grenade fuse hiss — one tick per ~8 frames per live
+            // shell, pitch climbing through its fuse (an audible timer)
+            {
+                let f = self.game.fx_frame();
+                if f.wrapping_sub(self.hiss_frame) >= 8 {
+                    let mut any = false;
+                    for p in &self.game.snap.projectiles {
+                        if p.class == house_game::WeaponClass::Grenade {
+                            any = true;
+                            a.fuse_hiss(p.age as f32 / p.max_age.max(1) as f32, 1.0);
+                        }
+                    }
+                    if any {
+                        self.hiss_frame = f;
+                    }
+                }
             }
             // L2: the drain gurgle — a soft wet loop re-triggered on the
             // tick clock from the mouth, louder standing near it and as

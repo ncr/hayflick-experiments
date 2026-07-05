@@ -367,6 +367,9 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
             let lanes = sieve_slots(spec).len().max(1);
             register_sphere_pool(&mut scene, "flow_slot", lanes * 4, 4, 6, [0.02, 0.05, 0.06, 1.0], [1.6, 4.2, 5.0, 1.0], 0.5);
         }
+        // D4: harpoon pin bolts — one cyan nail standing in each pinned body
+        // at its pin point, blinking through the last second of the hold
+        register_sphere_pool(&mut scene, "pin_slot", 4, 4, 6, [0.02, 0.05, 0.06, 1.0], [4.0, 11.0, 13.0, 1.0], 0.5);
     }
 
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat

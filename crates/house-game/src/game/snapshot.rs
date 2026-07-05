@@ -59,7 +59,7 @@ impl<S: AudioSink> HouseGame<S> {
                     let parts = goo_render_parts(&g, pr);
                     let glow = goo_render_glow(&g);
                     let vscale = goo_render_vscale(&g);
-                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale, comm: comm_pulse(g.tac, g.strike, self.res.cur_tick), tac: g.tac, escaping: self.res.arena.drain.is_some_and(|z| g.kind != crate::spec::GooKind::Runner && g.centroid().y > z[1] - 2.5) }
+                    MobRender { id: g.id, tier: g.tier, kind: g.kind, cure: g.cure, weak: goo_is_weak(&g), parts, radius: r, part_radius: pr, glow, vscale, comm: comm_pulse(g.tac, g.strike, self.res.cur_tick), tac: g.tac, escaping: self.res.arena.drain.is_some_and(|z| g.kind != crate::spec::GooKind::Runner && g.centroid().y > z[1] - 2.5), pin: g.pinned, pin_pt: g.pin_pt }
                 })
                 .collect(),
             // projectiles in flight (ProjectileId-sorted) — empty when idle.

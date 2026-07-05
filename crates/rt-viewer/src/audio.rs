@@ -108,6 +108,14 @@ impl AudioOut {
         q.push(Voice { wave, f0, f1, dur, gain: gain * self.master, t: 0.0, phase: 0.0, rng: 0x9e3779b9 });
     }
 
+    /// D5: the grenade fuse hiss — retriggered on the tick clock while a
+    /// shell is in flight, pitch climbing with the fuse phase (0..1): bank
+    /// shots become audible timers, not just visual ones.
+    pub fn fuse_hiss(&self, phase: f32, gain: f32) {
+        let f = 650.0 + 1100.0 * phase;
+        self.voice(Wave::Noise, f, f * 1.2, 0.10, (0.08 + 0.10 * phase) * gain);
+    }
+
     /// One sim cue → one or two synth voices. Unknown ids stay silent (a
     /// new cue is a design decision, not a crash).
     pub fn play(&self, id: &str, gain: f32) {
@@ -158,6 +166,12 @@ impl AudioOut {
                 // rail whip: fast metallic downsweep + air crack
                 self.voice(Wave::Square, 1500.0, 190.0, 0.12, 0.32 * g);
                 self.voice(Wave::Noise, 2800.0, 700.0, 0.08, 0.35 * g);
+            }
+            "gren_bounce" => {
+                // D5: the bank shot's hollow tok — every rebound is audible,
+                // the geometry weapon becomes an instrument
+                self.voice(Wave::Square, 265.0, 140.0, 0.055, 0.30 * g);
+                self.voice(Wave::Noise, 950.0, 420.0, 0.03, 0.14 * g);
             }
             "boom" => {
                 // grenade detonation: long low rumble + sub thud + debris hiss

@@ -184,6 +184,9 @@ pub enum GameEvent {
     WaveIncoming(u32),
     /// A wave squad just landed (its 1-based index) — the lull-over beat.
     WaveLanded(u32),
+    /// A bouncy round (the grenade) rebounded off a solid/floor (impact
+    /// point) — the D5 bounce "tok"; the shot stays alive, so no Impact.
+    GrenadeBounced(Vec3),
     /// A hard round died on a wall / chunk / the floor (impact point, surface
     /// normal, the round's knockback). The shell's spark burst, impact flash
     /// and thip live here, scaled by the knockback so a slug crater visibly

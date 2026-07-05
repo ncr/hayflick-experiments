@@ -343,6 +343,9 @@ impl<S: AudioSink> HouseGame<S> {
                 GameEvent::WaveIncoming(_) => AudioCue { id: CueId("wave_warn"), pos: None, gain: 0.9 },
                 GameEvent::WaveLanded(_) => AudioCue { id: CueId("wave_land"), pos: None, gain: 1.0 },
                 GameEvent::Impact(p, _, _) => AudioCue { id: CueId("impact"), pos: Some(p), gain: 0.6 },
+                // D5: the geometry weapon becomes an instrument — every bank
+                // shot plays its hollow tok at the rebound point
+                GameEvent::GrenadeBounced(p) => AudioCue { id: CueId("gren_bounce"), pos: Some(p), gain: 0.7 },
                 GameEvent::TargetHit(_, p) => AudioCue { id: CueId("target_hit"), pos: Some(p), gain: 1.0 },
                 GameEvent::Switch => AudioCue { id: CueId("switch"), pos: None, gain: 0.6 },
                 GameEvent::PickedUp(_, _, p) => AudioCue { id: CueId("pickup"), pos: Some(p), gain: 0.8 },

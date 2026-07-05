@@ -475,6 +475,11 @@ pub struct MobRender {
     /// Containment levels: this body is CLOSING ON THE DRAIN (within the
     /// telegraph band) — the shell shows the OUT! bubble. Derived.
     pub escaping: bool,
+    /// Harpoon pin ticks remaining (0 = free) + the nail point (D4): the
+    /// shell draws the bolt prim, squashes the nailed body, and blinks the
+    /// bolt through the last second. Pure read of the hashed pin state.
+    pub pin: u16,
+    pub pin_pt: Vec2,
 }
 
 impl MobRender {

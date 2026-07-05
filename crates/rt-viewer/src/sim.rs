@@ -90,6 +90,9 @@ pub struct GameLoop {
     /// Reserved drain-current mote slots ("flow_slot_N", containment scenes
     /// only) — scrolled into the sieve mouths by `flow_instances` (L2).
     pub flow_slots: Vec<InstanceKey>,
+    /// Reserved harpoon pin-bolt slots ("pin_slot_N", arena scenes only) —
+    /// one cyan nail per pinned blob (D4).
+    pub pin_slots: Vec<InstanceKey>,
     /// One (start, mouth) pair per sieve slot: the lane each flow mote
     /// drifts down. Derived from the spec at build (empty off drain scenes).
     pub(crate) flow_lanes: Vec<(glam::Vec2, glam::Vec2)>,
@@ -145,6 +148,7 @@ impl GameLoop {
         let spark_slots = discover_pool(handles, "spark_slot");
         let trc = TracerPools::discover(handles);
         let flow_slots = discover_pool(handles, "flow_slot");
+        let pin_slots = discover_pool(handles, "pin_slot");
         // L2: one flow lane per sieve slot — motes drift from 2.5 wu out
         // toward the mouth's centre (the drain zone visibly PULLS)
         let flow_lanes: Vec<(Vec2, Vec2)> = spec
@@ -211,6 +215,7 @@ impl GameLoop {
             spark_slots,
             trc,
             flow_slots,
+            pin_slots,
             flow_lanes,
             last_aim: None,
             fx: Fx::new(player0),

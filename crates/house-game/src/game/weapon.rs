@@ -645,6 +645,8 @@ impl<S: AudioSink> HouseGame<S> {
                             // bounce: reflect about the face normal, bleed energy,
                             // re-seat just off the surface. The fuse keeps running —
                             // the shot stays alive, so DON'T fall through to despawn.
+                            // The bounce announces itself (D5's "tok" cue).
+                            self.res.events.emit(GameEvent::GrenadeBounced(old + dir * t));
                             p.pos = old + dir * t + normal * 0.02;
                             p.vel = (p.vel - normal * (2.0 * p.vel.dot(normal))) * p.restitution;
                             p.age += 1;
