@@ -116,7 +116,10 @@ pub const UZI: WeaponSpec = WeaponSpec {
     max_age: 120,
     pellets: 1,
     spread: 0.0,
-    bloom: 0.055,
+    // D6 retune (2026-07-05): 0.055 → 0.075 — sharpen the planted-vs-moving
+    // skill gap now that aim is turret-driven. Revert this knob alone if
+    // playtests read it as punishing.
+    bloom: 0.075,
     restitution: 0.0,
     aoe_radius: 0.0,
     class: WeaponClass::Uzi,
