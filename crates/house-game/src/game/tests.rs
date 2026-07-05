@@ -859,7 +859,7 @@ fn arena_weapons_replay_deterministically() {
 }
 
 #[test]
-fn shotgun_fires_seven_pellets_and_uzi_blooms_wider_moving() {
+fn shotgun_fires_a_full_pellet_fan_and_uzi_blooms_wider_moving() {
     let spec = crate::spec::arena_level();
     // shotgun: one trigger pull births `pellets` projectiles (fired after
     // the W3 raise window so the pull isn't swallowed)

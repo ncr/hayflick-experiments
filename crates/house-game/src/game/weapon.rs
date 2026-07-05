@@ -126,17 +126,19 @@ pub const UZI: WeaponSpec = WeaponSpec {
     cooldown_ticks: 5,
 };
 
-/// Slot 3 — the SHOTGUN: seven pellets over a wide fan, hard knockback per
+/// Slot 3 — the SHOTGUN: nine pellets over a wide fan, hard knockback per
 /// pellet (a point-blank volley visibly SPLASHES the fluid), and a short fuse
-/// (max_age caps reach at ~7 wu — a panic tool, not a rifle).
+/// (max_age caps reach at ~7 wu — a panic tool, not a rifle). D6 retune
+/// (2026-07-05): pellets 7→9, damage 2→1, knockback 5→6 — more WALL, less
+/// delete (volley damage 14→9, volley shove 35→54). One knob, one commit.
 pub const SHOTGUN: WeaponSpec = WeaponSpec {
     muzzle_speed: 22.0,
     gravity: 0.0,
     radius: 0.05,
-    damage: 2,
-    knockback: 5.0,
+    damage: 1,
+    knockback: 6.0,
     max_age: 20,
-    pellets: 7,
+    pellets: 9,
     spread: 0.22,
     bloom: 0.02,
     restitution: 0.0,
