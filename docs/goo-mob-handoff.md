@@ -50,16 +50,20 @@ Status: **68 house-game tests pass, Metal goldens byte-identical.**
 
 | Area | File |
 |---|---|
-| Sim: `Goo`, `goo_system` (PBF+gait+fusing), `merge_system`, `damage_goo` (split), `trap_accel`, `goo_solid` (player collision), snapshot/state_hash mob blocks, ALL `GOO_*` consts, tests | `crates/house-game/src/game.rs` |
-| Level specs (`goo_level`, `playground_level`), `MobSpec`/`TrapSpec` | `crates/house-game/src/spec.rs` |
+| Sim: `Goo`, `goo_system` (PBF+gait+fusing), `merge_system`, `damage_goo` (split), `trap_accel`, `goo_solid` (player collision), tests | `crates/house-game/src/game/goo/mod.rs` |
+| ALL `GOO_*` tuning consts + tier/kind balance tables | `crates/house-game/src/game/goo/tuning.rs` |
+| snapshot/state_hash mob blocks (THE REPLAY ORACLE — edit with care) | `crates/house-game/src/game/snapshot.rs` |
+| Level specs (`goo_level`, `playground_level`), `MobSpec`/`TrapSpec`, named arena cover consts | `crates/house-game/src/spec.rs` |
 | Translucent body SDF composite | `crates/rt-viewer/src/shaders_metal/goo.metal` |
 | RT shade: `softVis` area shadows, NEE goo-light branch (`dir.w==2 && radius>0.15`) | `crates/rt-viewer/src/shaders_metal/shade.metal` |
 | Goo SDF pass wiring, `GooPush` (emis/absorb), goo proxy BLAS + instances (mask 0x02, parked far when idle), `unit_sphere_mesh`, `GOO_SQUASH/FLOOR_Y/SMIN_K/MAX/PROXY_CAP/PROXY_SCALE` | `crates/rt-viewer/src/metal_backend.rs` |
-| `goo_balls()` (metaballs), `goo_lights()` (per-blob RT lights), `goo_instances()` (Vulkan ellipsoid fallback) | `crates/rt-viewer/src/sim.rs` |
+| `goo_balls()` → `GooFrameData` (metaballs), `goo_lights()` (per-blob RT lights), `goo_instances()` (Vulkan ellipsoid fallback), all `*_instances()` pool skinners | `crates/rt-viewer/src/sim/render_adapter.rs` |
+| Shell FX (`Fx`: recoil/trauma/hit-flash/sparks/hitstop), `tick_fx` | `crates/rt-viewer/src/sim/fx.rs` |
 | Per-frame assembly (spotlights + goo lights into FrameState) | `crates/rt-viewer/src/viewer.rs` |
-| `Spotlight` (+`tint`), `SPOT_WARM`, `N_RESERVED=16`, `frame_lights_cpu`, `scan_lights`, `FrameState`, `GooBall` | `crates/rt-probe/src/render.rs` |
-| Scene build: player pillar (`PLAYER_HALF` box), goo pool gate, trap rings, playground lighting, `is_dollhouse` | `crates/rt-viewer/src/game_scene.rs` |
-| ROI scene allowlist | `crates/rt-probe/src/config.rs` (`roi:` ~line 314) |
+| `Spotlight` (+`tint`), `SPOT_WARM`, `N_RESERVED=16`, `frame_lights_cpu`, `scan_lights`, `FrameState`, `GooBall`, `GooFrame` | `crates/rt-probe/src/render.rs` |
+| Scene build: player pillar (`PLAYER_HALF` box), goo pool gate, trap rings | `crates/rt-viewer/src/game_scene.rs` |
+| Scene registry: spec builders + dollhouse/open-studio/film flags (one row per scene) | `crates/rt-viewer/src/scene_registry.rs` |
+| Scene look table: greybox/exposure/pixel/minimap/ROI per scene (`SCENE_LOOKS`) | `crates/rt-probe/src/config.rs` |
 
 ## How to run / capture
 
@@ -451,3 +455,32 @@ and the tune sliders move into settings."
   staging allocation still fits.
 - `restart_run(force)`: the pause menu's RESTART passes true (mid-run
   restart); the bare Space keeps the run-over guard.
+
+## 2026-07-05 — A+ refactor pass (six commits, e54e0f3..bea7fc1)
+
+Structure-only; every step gated on cargo test + the goo oracles + Metal
+goldens (goo-path motion additionally proven by goonursery SHOT byte-diffs).
+What a returning session needs to know:
+
+- **Paths moved** (see the table above): `game.rs` split into `game.rs`
+  (commands/components/Res/tick order) + `game/systems.rs` +
+  `game/snapshot.rs` (the replay oracle, isolated file) + `game/goo/{mod,
+  tuning}.rs`. rt-viewer `sim.rs` split into `sim.rs` + `sim/fx.rs` (the
+  `Fx` sub-struct — FX state is no longer flat on GameLoop) +
+  `sim/render_adapter.rs`; `Viewer::draw()` is eight named phase methods.
+- **Arena state is grouped**: `res.arsenal` → `res.arena.arsenal` etc.
+  (`ArenaRes`, 13 fields). Hash fold order unchanged — oracles did not move.
+  The shared weapon-cooldown component is `GunCooldown` (was `Pistol`).
+- **Scene identity is data now**: one row per scene in
+  `rt-viewer/src/scene_registry.rs` (spec builder + shell flags) and one in
+  rt-probe `config.rs::SCENE_LOOKS` (look defaults). The old scattered
+  string allowlists are gone; equivalence tests pin the old answers.
+- **Public surfaces trimmed**: house-game/rt-probe root re-exports cut to
+  what crosses each boundary; sim-core's hecs re-export is 4 items
+  (freeze test updated); the `rt_probe::iso` shim is deleted — import
+  `iso_core` directly. `FrameState`'s five goo slices are one
+  `GooFrame`; `goo_balls()` returns `GooFrameData`.
+- Clippy is ZERO warnings workspace-wide (`--all-targets`) — keep it there.
+- The `house` Metal golden flips between byte-exact and `OK~ (0 px > 2%)`
+  run-to-run on the M2 Pro (grazing-ray wobble, documented in bin/golden's
+  header) — treat `OK~` there as pass, anything in the other four as real.

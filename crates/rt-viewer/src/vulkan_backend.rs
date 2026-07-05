@@ -164,7 +164,7 @@ impl VulkanBackend {
                 let qfp = instance.get_physical_device_queue_family_properties(pd);
                 let q = (0..qfp.len() as u32).find(|&i| {
                     qfp[i as usize].queue_flags.contains(vk::QueueFlags::COMPUTE)
-                        && surface_pair.as_ref().map_or(true, |(sl, s)| sl.get_physical_device_surface_support(pd, i, *s).unwrap_or(false))
+                        && surface_pair.as_ref().is_none_or(|(sl, s)| sl.get_physical_device_surface_support(pd, i, *s).unwrap_or(false))
                 })?;
                 Some((pd, q))
             })

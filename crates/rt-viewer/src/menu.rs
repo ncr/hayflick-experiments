@@ -204,19 +204,17 @@ impl Viewer {
             // the room-lights MASTER is sim state: route as a Command (direct
             // light follows via the emission build, indirect via the probe-
             // bank lerp — same frame, no rebake)
-            "lights" => {
-                if (v != 0.0) != self.game.sim.res.master_lights {
-                    self.game.push(house_game::Command::ToggleRoomLights);
-                }
+            "lights" if (v != 0.0) != self.game.sim.res.master_lights => {
+                self.game.push(house_game::Command::ToggleRoomLights);
             }
+            "lights" => {}
             "light_anim" => self.light_anim = v != 0.0,
             // flashlight is sim state: route the change as a Command (applied
             // next tick; the row reads the snapshot, so it follows)
-            "flash" => {
-                if (v != 0.0) != self.game.snap.flashlight {
-                    self.game.push(house_game::Command::ToggleFlashlight);
-                }
+            "flash" if (v != 0.0) != self.game.snap.flashlight => {
+                self.game.push(house_game::Command::ToggleFlashlight);
             }
+            "flash" => {}
             "flash_power" => self.flash_power = v,
             "flash_cone" => self.flash_cone = v,
             _ => {}
