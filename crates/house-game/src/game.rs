@@ -594,7 +594,10 @@ impl<S: AudioSink> HouseGame<S> {
             traps: spec.traps.iter().map(|t| (Vec2::new(t.pos.x, t.pos.z), t.strength, t.radius, t.off_tick)).collect(),
             cur_tick: 0,
             goo_rho0: goo_rho0(),
-            chunks: Vec::new(),
+            // L4: authored low cover seeds the chunk list — the knee-high
+            // masonry band (goo/player/low-shot blocking, AI cover, hash)
+            // applies to it verbatim; solidified corpses append after.
+            chunks: spec.low_solids.clone(),
             sterile: spec.sterile,
             seed: spec.seed,
         };

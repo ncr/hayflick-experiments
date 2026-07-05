@@ -1052,6 +1052,40 @@ fn tank_resists_small_arms_but_not_the_slug() {
 }
 
 #[test]
+fn authored_low_cover_seeds_the_chunk_band() {
+    // L4: low_solids seed res.chunks — the knee-high masonry band (walk
+    // block, goo block, low-shot block, hashed state) applies to authored
+    // cover verbatim, while muzzle-height fire clears it by geometry.
+    let spec = crate::spec::arena_level();
+    let g = HouseGame::new(&spec, VecSink::default());
+    assert_eq!(&g.res.chunks[..], &spec.low_solids[..], "authored cover seeds the chunk list");
+    assert!(g.walk_blocked(-3.1, 4.6), "the player can't walk through the west block");
+    assert!(g.goo_solid(3.1, 4.6), "the goo can't flow through the east block");
+    assert!(!g.walk_blocked(0.0, 4.6), "the lane between the pair stays open");
+
+    let mut bare = crate::spec::arena_level();
+    bare.low_solids = vec![];
+    let gb = HouseGame::new(&bare, VecSink::default());
+    assert_ne!(g.state_hash(), gb.state_hash(), "authored cover is real hashed state");
+
+    // a slug aimed DOWN INTO the west block dies on it; with the cover
+    // stripped the same shot flies through the empty band to the floor
+    let impact = |spec: &LevelSpec| -> Vec3 {
+        let mut g = HouseGame::new(spec, VecSink::default());
+        g.res.event_tap = Some(Vec::new());
+        g.tick(Tick(0), &[arena_aim(-3.125, 4.625)]);
+        for t in 1..40u64 {
+            g.tick(Tick(t), &[]);
+        }
+        g.res.event_tap.take().unwrap().iter().find_map(|ev| if let GameEvent::Impact(p, _, _) = ev { Some(*p) } else { None }).expect("the slug died somewhere")
+    };
+    let hit = impact(&spec);
+    assert!(hit.x >= -3.8 && hit.x <= -2.4 && hit.z >= 4.3, "the low slug dies ON the cover: {hit:?}");
+    let miss = impact(&bare);
+    assert!(miss.x < -3.8, "with the cover stripped the shot flies past: {miss:?}");
+}
+
+#[test]
 fn wave_incoming_telegraphs_the_landing() {
     // L1: WaveIncoming fires exactly WAVE_TELEGRAPH_TICKS before the squad
     // lands, names the incoming wave, and rides the klaxon cue.
@@ -1750,7 +1784,8 @@ fn biomass_pays_for_removal_not_splits() {
     g.damage_goo(large, Vec3::new(cl.x, 0.3, cl.y), Vec3::Z, 99, 0.0, WeaponClass::Slug);
     g.tick(Tick(4), &[]);
     assert_eq!(g.res.score, 1 + 4, "Large solidify pays 2x net mass");
-    assert_eq!(g.res.chunks.len(), 1, "and leaves the chunk");
+    // the solidify appends ONE corpse after the authored low-cover seeds (L4)
+    assert_eq!(g.res.chunks.len(), spec.low_solids.len() + 1, "and leaves the chunk");
 }
 
 /// Clearing the floor deals a 3-card hand in the lull; `card` picks apply

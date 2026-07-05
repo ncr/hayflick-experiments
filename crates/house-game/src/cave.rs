@@ -347,6 +347,7 @@ pub(crate) fn emit_grid_spec(w: i32, h: i32, floor: &[bool], room_of: &[i32], ro
         .collect();
 
     LevelSpec { rooms: room_specs, static_solids: solids, doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, drain: None,
+        low_solids: Vec::new(),
         sterile: false, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start, seed }
 }
 

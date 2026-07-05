@@ -96,6 +96,10 @@ pub struct GameLoop {
     /// One (start, mouth) pair per sieve slot: the lane each flow mote
     /// drifts down. Derived from the spec at build (empty off drain scenes).
     pub(crate) flow_lanes: Vec<(glam::Vec2, glam::Vec2)>,
+    /// The spec's authored low-cover count (L4): snapshot.chunks starts with
+    /// these — chunk_instances skips them (they render as authored masonry,
+    /// not solidify domes).
+    pub(crate) authored_chunks: usize,
     /// Last aim direction pushed as Command::Aim — the shell only re-pushes
     /// when the cursor direction actually moved (~0.5°), keeping the journal
     /// lean while the gun tracks the mouse turret-style.
@@ -149,6 +153,7 @@ impl GameLoop {
         let trc = TracerPools::discover(handles);
         let flow_slots = discover_pool(handles, "flow_slot");
         let pin_slots = discover_pool(handles, "pin_slot");
+        let authored_chunks = spec.low_solids.len();
         // L2: one flow lane per sieve slot — motes drift from 2.5 wu out
         // toward the mouth's centre (the drain zone visibly PULLS)
         let flow_lanes: Vec<(Vec2, Vec2)> = spec
@@ -217,6 +222,7 @@ impl GameLoop {
             flow_slots,
             pin_slots,
             flow_lanes,
+            authored_chunks,
             last_aim: None,
             fx: Fx::new(player0),
         }
@@ -465,6 +471,7 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
         survival: None,
         drain: None,
         sterile: false,
+        low_solids: Vec::new(), // authored cover is per-level opt-in, like mobs
         mobs: Vec::new(), // mobs are authored per-level; the mirror scenes have none
         traps: Vec::new(),
         arena: None,

@@ -204,6 +204,7 @@ mod tests {
             lights: vec![],
             targets: vec![],
             items: vec![],
+            low_solids: vec![],
             survival: None,
             drain: None,
         sterile: false,

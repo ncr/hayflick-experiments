@@ -174,7 +174,10 @@ impl GameLoop {
     /// blob (translate to the rect centre, scale to its half-extents; the local
     /// unit sphere's lower half sinks under the floor). Pure snapshot read.
     pub fn chunk_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.snap.chunks.iter().map(|c| {
+        // L4: the first `authored_chunks` entries are the spec's low cover —
+        // already built as crisp masonry boxes by game_scene; only the
+        // runtime-solidified corpses take dome slots.
+        let xforms = self.snap.chunks.iter().skip(self.authored_chunks).map(|c| {
             let cx = (c[0] + c[2]) * 0.5;
             let cz = (c[1] + c[3]) * 0.5;
             let hx = (c[2] - c[0]) * 0.5;

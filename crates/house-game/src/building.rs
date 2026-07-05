@@ -170,6 +170,7 @@ pub fn building_floor(seed: u64, p: BuildingParams) -> LevelSpec {
         items: Vec::new(),
         survival: None,
         drain: None,
+        low_solids: Vec::new(),
         sterile: false,
         mobs: Vec::new(),
         traps: Vec::new(),
@@ -323,6 +324,7 @@ pub fn house_floor(seed: u64) -> LevelSpec {
     let lights: Vec<LightSpec> = (0..n as u32).map(|i| LightSpec { id: LightId(i), room: RoomId(i), kind: LightKind::Incandescent, base_rgb: [1.0, 0.96, 0.9], name: format!("house_lamp_{i}") }).collect();
 
     LevelSpec { rooms, static_solids: Vec::new(), doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, drain: None,
+        low_solids: Vec::new(),
         sterile: false, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start: Vec3::new(exc + 0.5, 0.0, h as f32 - 1.5), seed }
 }
 
@@ -363,6 +365,7 @@ pub fn factory_floor(seed: u64) -> LevelSpec {
     let lights: Vec<LightSpec> = (0..oid).map(|i| LightSpec { id: LightId(i), room: RoomId(i), kind: LightKind::Incandescent, base_rgb: [1.0, 0.97, 0.92], name: format!("factory_lamp_{i}") }).collect();
 
     LevelSpec { rooms, static_solids: Vec::new(), doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, drain: None,
+        low_solids: Vec::new(),
         sterile: false, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start: Vec3::new(((ow + w) / 2) as f32, 0.0, hz), seed }
 }
 

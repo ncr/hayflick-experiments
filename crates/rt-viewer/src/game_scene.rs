@@ -252,6 +252,14 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         mark_occluder(&mut scene, first);
     }
 
+    // ---- L4 low cover: authored knee-high masonry (GOO_CHUNK_H, the chunk
+    // band) — crisp warm-gray blocks the player shoots OVER and the goo must
+    // flow around. Sim collision comes from spec.low_solids seeding
+    // res.chunks; this is only the visual. Not an occluder (knee-high).
+    for s in &spec.low_solids {
+        box_world(&mut scene, *s, house_game::GOO_CHUNK_H, 0x9aa0a4);
+    }
+
     // ---- wall targets: a pale backing plate flush on the wall + a bright red
     // disc-ish box just proud of it (greybox: a small square reads as a target
     // under the iso pixel grid). The disc face sits AT the wall plane so the

@@ -255,6 +255,15 @@ pub struct LevelSpec {
     /// wall in front of it is ordinary static_solids with slot gaps: slot
     /// width = squeeze time per tier, the sieve grammar.
     pub drain: Option<[f32; 4]>,
+    /// L4: authored knee-high cover (xmin, zmin, xmax, zmax). Seeds
+    /// `res.chunks` at build, so the pieces behave EXACTLY like solidified
+    /// goo masonry — the GOO_CHUNK_H band blocks goo, the player and low
+    /// shots while muzzle-height rounds fly over, the AI treats them as
+    /// cover/LOS blocks, and they count against GOO_CHUNK_CAP. EMPTY on
+    /// every existing level (an empty list changes nothing hashed — the
+    /// same opt-in discipline as `mobs`). Rendered as authored masonry
+    /// blocks, not domes.
+    pub low_solids: Vec<[f32; 4]>,
     /// Film-stage knob: tier-0 mothers do NOT bud minis. The demo scenes use
     /// it to keep a staged beat readable (e.g. the squeeze film — one Large,
     /// no trailing newborns). Default false; no shipped gameplay level sets
@@ -321,6 +330,7 @@ pub fn fixture() -> LevelSpec {
         traps: vec![],
         arena: None,       // arsenal off → fixture hashes exactly as before
         drain: None,
+        low_solids: Vec::new(),
         sterile: false,
         player_start: Vec3::new(-3.5, 0.0, 0.0),
         seed: 42,
@@ -414,6 +424,7 @@ pub fn game_level() -> LevelSpec {
         traps: vec![],
         arena: None,       // arsenal off → game_level hashes exactly as before
         drain: None,
+        low_solids: Vec::new(),
         sterile: false,
         player_start: Vec3::new(9.5, 0.0, 6.5), // room E (SE corner, faces the camera), aligned with door_ce's gap row
         seed: 7,
@@ -614,6 +625,10 @@ const NORTH_SQUEEZE_WALL: [[f32; 4]; 2] = [[-10.0, -2.125, -7.0, -1.875], [-6.43
 const MID_FIELD_L: [[f32; 4]; 2] = [[-4.25, 0.875, -0.75, 1.125], [-1.0, 1.125, -0.75, 3.125]];
 /// East flank wall — cover on the open lane. (arena + drain stages)
 const EAST_FLANK_WALL: [f32; 4] = [2.75, -0.125, 3.0, 2.875];
+/// L4 knee-high cover pair flanking the defense line: shoot-over masonry the
+/// player fires across and the goo must flow around (low_solids — the
+/// GOO_CHUNK_H band, stair-clean 1.25×0.5 footprints). (arena + drain stages)
+const LOW_COVER_PAIR: [[f32; 4]; 2] = [[-3.75, 4.375, -2.5, 4.875], [2.5, 4.375, 3.75, 4.875]];
 
 /// The goo ARENA (`SCENE=arena`): a large square walled pit for the arena
 /// shooter — one 20×20 wu room whose rectangular auto-perimeter provides the
@@ -653,6 +668,7 @@ pub fn arena_level() -> LevelSpec {
         ],
         traps: vec![],
         arena: Some(ArenaParams::default()),
+        low_solids: vec![LOW_COVER_PAIR[0], LOW_COVER_PAIR[1]],
         player_start: Vec3::new(0.0, 0.0, 6.0),
         ..game_level()
     }
@@ -714,6 +730,7 @@ pub fn drain_level() -> LevelSpec {
         traps: vec![],
         arena: Some(ArenaParams::default()),
         drain: Some([-10.0, 8.5, 10.0, 10.0]),
+        low_solids: vec![LOW_COVER_PAIR[0], LOW_COVER_PAIR[1]],
         player_start: Vec3::new(0.0, 0.0, 6.5),
         ..game_level()
     }
