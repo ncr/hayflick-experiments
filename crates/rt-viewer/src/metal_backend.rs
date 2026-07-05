@@ -14,20 +14,19 @@
 //! buffers are indexed by `intersection.instance_id`. Scalar byte-match is
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
-use crate::backend::{build_goo_push, build_tone_push, FramePresent, GooPush, RenderBackend, GOO_BOUNDS_MAX, GOO_MAX};
+use crate::backend::{build_goo_push, build_tone_push, clamp_goo, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, GooPush, RenderBackend, GOO_BOUNDS_MAX, GOO_MAX};
+use crate::capture::subsample_rgba;
 use crate::sim::GOO_SQUASH;
 use core_graphics_types::geometry::CGSize;
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Vec3};
+use iso_core::ISO_R;
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, scan_lights, LightScan};
 use rt_probe::scene::{LoadedImage, Material, Vertex};
-use iso_core::{render_scale, ISO_R};
 use rt_probe::{bake_bank_emission, Config, InstanceTable, ProbeGrid, Scene, SceneHandles};
 use std::ffi::c_void;
 use std::mem::size_of;
 use winit::window::Window;
-
-const MARGIN: u32 = 32; // low-res overscan border (mirrors VulkanBackend)
 
 /// Shade push constants — byte-identical to shade.metal's `Push` (the spike
 /// layout, NOT the Vulkan ShadePush: this carries `hasProbes` in misc2.y).
@@ -589,7 +588,7 @@ impl MetalBackend {
     #[allow(clippy::too_many_arguments)]
     unsafe fn blit_overlay(&self, blit: &BlitCommandEncoderRef, dst: &TextureRef, canvas: &[u32], cw: i32, ch: i32, scale: u32, dx: i64, dy: i64, ext_w: u32, ext_h: u32, staging: &mut Vec<Texture>) {
         let (pw, ph) = (cw as u64 * scale as u64, ch as u64 * scale as u64);
-        if dx < 0 || dy < 0 || dx as u64 + pw > ext_w as u64 || dy as u64 + ph > ext_h as u64 {
+        if !stamp_in_bounds(dx, dy, pw, ph, ext_w, ext_h) {
             return;
         }
         let bytes = crate::menu::expand_canvas(canvas, cw, ch, scale, false); // RGBA (drawable is RGBA8Unorm)
@@ -615,16 +614,7 @@ impl MetalBackend {
         let mut full = vec![0u8; (w * h * 4) as usize];
         let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w as u64, height: h as u64, depth: 1 } };
         tgt.out_tex.get_bytes(full.as_mut_ptr() as *mut c_void, w as u64 * 4, region, 0);
-        let (sw, sh) = (w / rs, h / rs);
-        let mut sub = vec![0u8; (sw * sh * 4) as usize];
-        for y in 0..sh {
-            for x in 0..sw {
-                let src = (((y * rs) * w + x * rs) * 4) as usize;
-                let dst = ((y * sw + x) * 4) as usize;
-                sub[dst..dst + 4].copy_from_slice(&full[src..src + 4]);
-            }
-        }
-        (sw, sh, sub)
+        subsample_rgba(&full, w, h, rs)
     }
 }
 
@@ -635,15 +625,8 @@ impl RenderBackend for MetalBackend {
     fn light_count(&self) -> u32 {
         self.light_count
     }
-    fn rs(&self, zoom: f32) -> i32 {
-        render_scale(zoom, self.base_scale)
-    }
-    fn low_and_vis(&self, zoom: f32) -> (Vec2, Vec2) {
-        let tgt = self.target.as_ref().unwrap();
-        let rs = self.rs(zoom) as f32;
-        let low = Vec2::new(tgt.low_w as f32, tgt.low_h as f32);
-        let vis = Vec2::new((tgt.ext_w as f32 / rs).ceil(), (tgt.ext_h as f32 / rs).ceil());
-        (low, vis)
+    fn base_scale(&self) -> u32 {
+        self.base_scale
     }
     fn low_dims(&self) -> (u32, u32) {
         let t = self.target.as_ref().unwrap();
@@ -662,8 +645,7 @@ impl RenderBackend for MetalBackend {
 
     unsafe fn recreate(&mut self, win_w: u32, win_h: u32) {
         let (ext_w, ext_h) = (win_w.max(1), win_h.max(1));
-        let low_w = ext_w.div_ceil(self.base_scale).max(1) + 2 * MARGIN;
-        let low_h = ext_h.div_ceil(self.base_scale).max(1) + 2 * MARGIN;
+        let (low_w, low_h) = low_dims_for(ext_w, ext_h, self.base_scale);
         let n_low = (low_w * low_h) as usize;
         let radiance = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
         let albedo = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
@@ -677,7 +659,7 @@ impl RenderBackend for MetalBackend {
         desc.set_storage_mode(MTLStorageMode::Shared);
         desc.set_usage(MTLTextureUsage::ShaderWrite | MTLTextureUsage::ShaderRead);
         let out_tex = self.device.new_texture(&desc);
-        let menu_scale = (ext_h / 400).clamp(2, 6);
+        let menu_scale = menu_scale_for(ext_h);
         // Pin the drawable to the PHYSICAL extent (= winit inner_size = ext =
         // out_tex). A CAMetalLayer's drawableSize otherwise defaults to
         // bounds(points)·contentsScale(1.0) = the LOGICAL size, so on a Retina
@@ -703,28 +685,24 @@ impl RenderBackend for MetalBackend {
         write_buf(&self.lbuf, &self.lights_cpu);
         write_buf(&self.mbuf, &self.mats_cpu);
         // upload this frame's goo metaballs for the SDF composite pass
-        let goo_n = fp.fs.goo.len().min(GOO_MAX);
-        let goo_nb = fp.fs.goo_bounds.len().min(GOO_BOUNDS_MAX);
+        // (slices pre-clamped to the shared pool caps — one rule, both backends)
+        let goo = clamp_goo(fp.fs);
+        let (goo_n, goo_nb) = (goo.balls.len(), goo.bounds.len());
         if self.goo_sdf && goo_n > 0 {
-            write_buf(&self.goo_buf, &fp.fs.goo[..goo_n]);
-            // parallel glow slice (same length as goo); guard in case it's empty
-            let gl_n = fp.fs.goo_glow.len().min(goo_n);
-            if gl_n > 0 {
-                write_buf(&self.goo_glow_buf, &fp.fs.goo_glow[..gl_n]);
+            write_buf(&self.goo_buf, goo.balls);
+            // parallel slices (same length as balls); guard in case one's empty
+            if !goo.glow.is_empty() {
+                write_buf(&self.goo_glow_buf, goo.glow);
             }
-            // parallel vertical-scale slice (same guard as glow)
-            let vs_n = fp.fs.goo_vscale.len().min(goo_n);
-            if vs_n > 0 {
-                write_buf(&self.goo_vscale_buf, &fp.fs.goo_vscale[..vs_n]);
+            if !goo.vscale.is_empty() {
+                write_buf(&self.goo_vscale_buf, goo.vscale);
             }
             // per-blob bounding spheres (two-level SDF culling)
             if goo_nb > 0 {
-                write_buf(&self.goo_bounds_buf, &fp.fs.goo_bounds[..goo_nb]);
+                write_buf(&self.goo_bounds_buf, goo.bounds);
             }
-            // parallel species-tint slice (same guard as glow)
-            let tn = fp.fs.goo_tint.len().min(goo_n);
-            if tn > 0 {
-                write_buf(&self.goo_tint_buf, &fp.fs.goo_tint[..tn]);
+            if !goo.tint.is_empty() {
+                write_buf(&self.goo_tint_buf, goo.tint);
             }
         }
         // patch mover instance transforms (player + door leaves) on change
@@ -751,12 +729,12 @@ impl RenderBackend for MetalBackend {
             for i in 0..self.goo_proxy_n {
                 let inst = &mut self.instances[self.goo_inst_first + i];
                 if i < cap {
-                    let b = fp.fs.goo[i];
+                    let b = goo.balls[i];
                     let r = b.radius * GOO_PROXY_SCALE;
                     // vertical scale tracks the SDF's per-ball breathing (the
                     // ball centre height already includes it), so the cast
                     // shadow follows the body as it flattens/bulges.
-                    let vs = fp.fs.goo_vscale.get(i).copied().unwrap_or(1.0);
+                    let vs = goo.vscale.get(i).copied().unwrap_or(1.0);
                     inst.transformation_matrix = to_packed(Mat4::from_translation(Vec3::new(b.center[0], b.center[1], b.center[2])) * Mat4::from_scale(Vec3::new(r, r * GOO_SQUASH * vs, r)));
                     inst.mask = 0x02; // shadow/AO rays only
                 } else {
@@ -934,15 +912,10 @@ impl RenderBackend for MetalBackend {
                 }
                 let mut staging: Vec<Texture> = Vec::new(); // keep overlay textures alive until commit
                 if let Some(ov) = &fp.overlay {
-                    let m = crate::menu::MENU_MARGIN as i64;
                     let (mc, mw, mh) = ov.menu;
-                    // game menus center on the window; the tune panel /
-                    // hamburger pin to the top-left margin (Vulkan twin)
-                    let (mx, my) = if ov.menu_center {
-                        (((ext_w as i64 - mw as i64 * menu_scale as i64) / 2).max(0), ((ext_h as i64 - mh as i64 * menu_scale as i64) / 2).max(0))
-                    } else {
-                        (m, m)
-                    };
+                    // shared placement rule: centered game menus vs top-left
+                    // tune panel (Vulkan twin uses the same fn)
+                    let (mx, my) = overlay_origin(ov.menu_center, ext_w, ext_h, mw as u64 * menu_scale as u64, mh as u64 * menu_scale as u64, crate::menu::MENU_MARGIN as i64);
                     self.blit_overlay(blit, drawable.texture(), mc, mw, mh, menu_scale, mx, my, ext_w, ext_h, &mut staging);
                 }
                 blit.end_encoding();

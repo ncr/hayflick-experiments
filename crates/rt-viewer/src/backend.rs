@@ -10,8 +10,8 @@
 //! below. No Vulkan/Metal type ever appears in `Viewer`.
 
 use glam::{Vec2, Vec3};
-use iso_core::{iso_basis, CamFrame, ISO_R};
-use rt_probe::{Config, FrameState, Scene, SceneHandles, StyleCfg};
+use iso_core::{iso_basis, render_scale, CamFrame, ISO_R};
+use rt_probe::{Config, FrameState, GooFrame, Scene, SceneHandles, StyleCfg};
 use winit::window::Window;
 
 /// Push constants for tonemap.comp / tonemap.metal. Field names match the
@@ -125,10 +125,21 @@ pub trait RenderBackend {
     /// Real NEE light count (excludes the reserved spotlight slots).
     fn light_count(&self) -> u32;
 
+    /// The zoom=1 integer upscale factor (BASE_SCALE / the PIXEL env knob).
+    fn base_scale(&self) -> u32;
     /// Whole-low-pixel render scale for `zoom` (#4).
-    fn rs(&self, zoom: f32) -> i32;
+    fn rs(&self, zoom: f32) -> i32 {
+        render_scale(zoom, self.base_scale())
+    }
     /// (low buffer size, visible-region size) in low pixels, for pan clamping.
-    fn low_and_vis(&self, zoom: f32) -> (Vec2, Vec2);
+    fn low_and_vis(&self, zoom: f32) -> (Vec2, Vec2) {
+        let (low_w, low_h) = self.low_dims();
+        let (ext_w, ext_h) = self.extent();
+        let rs = self.rs(zoom) as f32;
+        let low = Vec2::new(low_w as f32, low_h as f32);
+        let vis = Vec2::new((ext_w as f32 / rs).ceil(), (ext_h as f32 / rs).ceil());
+        (low, vis)
+    }
     /// Low-res radiance-buffer dimensions (for the Viewer's camera build).
     fn low_dims(&self) -> (u32, u32);
     /// Presented/offscreen extent in window pixels.
@@ -195,6 +206,43 @@ pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, 
     }
 }
 
+// ---- shared target / overlay geometry ---------------------------------------
+// One source for BOTH backends: the low-res buffer sizing, the UI scale rule,
+// and the overlay placement/clipping must agree bit-for-bit or the two
+// golden sets drift for non-GPU reasons.
+
+/// Low-res overscan border (low px) so the pan crop never reveals edge bars.
+pub const MARGIN: u32 = 32;
+
+/// Low-res G-buffer dimensions for a window extent: window / base-scale at
+/// zoom=1 (whole pixels, floored at 1) plus the overscan border on all sides.
+pub fn low_dims_for(ext_w: u32, ext_h: u32, base_scale: u32) -> (u32, u32) {
+    (ext_w.div_ceil(base_scale).max(1) + 2 * MARGIN, ext_h.div_ceil(base_scale).max(1) + 2 * MARGIN)
+}
+
+/// Integer UI scale for menus/HUD at a window height (chunky-plate rule).
+pub fn menu_scale_for(ext_h: u32) -> u32 {
+    (ext_h / 400).clamp(2, 6)
+}
+
+/// Window-px origin for the CPU menu overlay: game menus (TITLE/PAUSE) centre
+/// on the window; the tune panel / hamburger pin at the top-left margin.
+/// `pw`/`ph` are the expanded (logical × scale) canvas size.
+pub fn overlay_origin(center: bool, ext_w: u32, ext_h: u32, pw: u64, ph: u64, margin: i64) -> (i64, i64) {
+    if center {
+        (((ext_w as i64 - pw as i64) / 2).max(0), ((ext_h as i64 - ph as i64) / 2).max(0))
+    } else {
+        (margin, margin)
+    }
+}
+
+/// The shared overlay/stamp clip rule: a canvas that does not fit WHOLE inside
+/// the target is skipped entirely (negative-origin or overhanging stamps never
+/// draw — both backends must agree or HUD bytes diverge between golden sets).
+pub fn stamp_in_bounds(dx: i64, dy: i64, pw: u64, ph: u64, ext_w: u32, ext_h: u32) -> bool {
+    dx >= 0 && dy >= 0 && dx as u64 + pw <= ext_w as u64 && dy as u64 + ph <= ext_h as u64
+}
+
 // ---- goo SDF composite: shared push layout, look, and limits ----------------
 // One source for BOTH backends (goo.metal on macOS, goo.comp via Vulkan
 // everywhere else) so the two passes cannot drift apart. The resting-height
@@ -253,6 +301,23 @@ pub fn build_goo_push(cam: &CamFrame, low_w: u32, low_h: u32, goo_n: usize, goo_
         params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
         birth_emis: GOO_BIRTH_EMIS,
         birth_absorb: GOO_BIRTH_ABSORB,
+    }
+}
+
+/// Clamp one frame's goo slices to the shared GPU pool capacities: at most
+/// [`GOO_MAX`] balls (glow/vscale/tint clamped to the ball count — a parallel
+/// slice can only ever be read up to it) and [`GOO_BOUNDS_MAX`] blob bounds.
+/// One site for both backends so an over-cap frame truncates identically.
+pub fn clamp_goo<'a>(fs: &FrameState<'a>) -> GooFrame<'a> {
+    let g = &fs.goo;
+    let n = g.balls.len().min(GOO_MAX);
+    let nb = g.bounds.len().min(GOO_BOUNDS_MAX);
+    GooFrame {
+        balls: &g.balls[..n],
+        glow: &g.glow[..g.glow.len().min(n)],
+        vscale: &g.vscale[..g.vscale.len().min(n)],
+        bounds: &g.bounds[..nb],
+        tint: &g.tint[..g.tint.len().min(n)],
     }
 }
 

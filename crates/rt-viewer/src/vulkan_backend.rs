@@ -9,17 +9,15 @@
 //! integer-NEAREST upscale, blit, present. No accumulation, no denoiser, no
 //! temporal state — a fixed camera produces bit-identical frames.
 
-use crate::backend::{build_goo_push, build_tone_push, FramePresent, GooPush, RenderBackend, GOO_BOUNDS_MAX, GOO_MAX};
+use crate::backend::{build_goo_push, build_tone_push, clamp_goo, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, GooPush, RenderBackend, GOO_BOUNDS_MAX, GOO_MAX};
+use crate::capture::subsample_rgba;
 use crate::menu::{MENU_MARGIN, MPANEL_H, MPANEL_W};
 use ash::vk;
-use glam::Vec2;
-use iso_core::{render_scale, ISO_R};
+use iso_core::ISO_R;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
 use winit::window::Window;
-
-pub const MARGIN: u32 = 32; // low-res overscan border so pan/zoom never reveal edge bars
 
 /// Window-size-dependent resources, recreated on resize. Headless SHOT mode
 /// builds one too (the extent comes verbatim from WINDOW) — `swapchain` is
@@ -367,8 +365,7 @@ impl VulkanBackend {
 
         // pixel-perfect low-res buffer (#2): window / base-scale at zoom=1, plus
         // an overscan border so the pan crop never reveals edge bars (#7).
-        let low_w = extent.width.div_ceil(self.base_scale).max(1) + 2 * MARGIN;
-        let low_h = extent.height.div_ceil(self.base_scale).max(1) + 2 * MARGIN;
+        let (low_w, low_h) = low_dims_for(extent.width, extent.height, self.base_scale);
 
         let color = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
         let albedo = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
@@ -376,7 +373,7 @@ impl VulkanBackend {
         let goo_bg = make_storage_image(&self.ctx, low_w, low_h, vk::Format::R32G32B32A32_SFLOAT);
         let out = make_storage_image(&self.ctx, extent.width, extent.height, vk::Format::R8G8B8A8_UNORM);
         // ESC tune-menu overlay staging (sized for the full panel at this scale)
-        let menu_scale = (extent.height / 400).clamp(2, 6);
+        let menu_scale = menu_scale_for(extent.height);
         let menu_buf = self.ctx.create_buffer(
             (MPANEL_W * MPANEL_H) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
             vk::BufferUsageFlags::TRANSFER_SRC,
@@ -492,16 +489,8 @@ impl RenderBackend for VulkanBackend {
         self.gpu.light_count
     }
 
-    fn rs(&self, zoom: f32) -> i32 {
-        render_scale(zoom, self.base_scale)
-    }
-
-    fn low_and_vis(&self, zoom: f32) -> (Vec2, Vec2) {
-        let swap = self.swap.as_ref().unwrap();
-        let rs = self.rs(zoom) as f32;
-        let low = Vec2::new(swap.low_w as f32, swap.low_h as f32);
-        let vis = Vec2::new((swap.extent.width as f32 / rs).ceil(), (swap.extent.height as f32 / rs).ceil());
-        (low, vis)
+    fn base_scale(&self) -> u32 {
+        self.base_scale
     }
 
     fn low_dims(&self) -> (u32, u32) {
@@ -584,22 +573,20 @@ impl RenderBackend for VulkanBackend {
         // in-place writes if it read the radiance image directly. Both images
         // stay in GENERAL (valid for transfer src/dst); barriers order
         // shade -> copy -> goo -> tonemap.
-        let goo_n = fp.fs.goo.len().min(GOO_MAX);
-        let goo_nb = fp.fs.goo_bounds.len().min(GOO_BOUNDS_MAX);
+        // slices pre-clamped to the shared pool caps — one rule, both backends
+        let goo = clamp_goo(fp.fs);
+        let (goo_n, goo_nb) = (goo.balls.len(), goo.bounds.len());
         if self.goo_sdf && goo_n > 0 && goo_nb > 0 {
-            self.ctx.upload(&self.goo_buf, &fp.fs.goo[..goo_n]);
-            let gl_n = fp.fs.goo_glow.len().min(goo_n);
-            if gl_n > 0 {
-                self.ctx.upload(&self.goo_glow_buf, &fp.fs.goo_glow[..gl_n]);
+            self.ctx.upload(&self.goo_buf, goo.balls);
+            if !goo.glow.is_empty() {
+                self.ctx.upload(&self.goo_glow_buf, goo.glow);
             }
-            let vs_n = fp.fs.goo_vscale.len().min(goo_n);
-            if vs_n > 0 {
-                self.ctx.upload(&self.goo_vscale_buf, &fp.fs.goo_vscale[..vs_n]);
+            if !goo.vscale.is_empty() {
+                self.ctx.upload(&self.goo_vscale_buf, goo.vscale);
             }
-            self.ctx.upload(&self.goo_bounds_buf, &fp.fs.goo_bounds[..goo_nb]);
-            let tn = fp.fs.goo_tint.len().min(goo_n);
-            if tn > 0 {
-                self.ctx.upload(&self.goo_tint_buf, &fp.fs.goo_tint[..tn]);
+            self.ctx.upload(&self.goo_bounds_buf, goo.bounds);
+            if !goo.tint.is_empty() {
+                self.ctx.upload(&self.goo_tint_buf, goo.tint);
             }
             barrier(d, cmd, swap.color.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::SHADER_WRITE, vk::AccessFlags::TRANSFER_READ, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::TRANSFER);
             barrier(d, cmd, swap.goo_bg.0, vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
@@ -641,7 +628,7 @@ impl RenderBackend for VulkanBackend {
             let cap = extent.width as usize * extent.height as usize * 4; // = stamp_buf size
             let mut burn = |canvas: &[u32], cw: i32, ch: i32, scale: u32, dx: i64, dy: i64| {
                 let (pw, ph) = (cw as u64 * scale as u64, ch as u64 * scale as u64);
-                if dx < 0 || dy < 0 || dx as u64 + pw > extent.width as u64 || dy as u64 + ph > extent.height as u64 {
+                if !stamp_in_bounds(dx, dy, pw, ph, extent.width, extent.height) {
                     return;
                 }
                 let bytes = crate::menu::expand_canvas(canvas, cw, ch, scale, false); // `out` is RGBA8
@@ -700,13 +687,10 @@ impl RenderBackend for VulkanBackend {
                 let (canvas, mw, mh) = ov.menu;
                 let bytes = crate::menu::expand_canvas(canvas, mw, mh, swap.menu_scale, bgra);
                 let (pw, ph) = (mw as u32 * swap.menu_scale, mh as u32 * swap.menu_scale);
-                // game menus center on the window; the tune panel/hamburger
-                // pin to the top-left margin
-                let (mx, my) = if ov.menu_center {
-                    ((extent.width.saturating_sub(pw) / 2) as i32, (extent.height.saturating_sub(ph) / 2) as i32)
-                } else {
-                    (MENU_MARGIN, MENU_MARGIN)
-                };
+                // shared placement rule: centered game menus vs top-left tune
+                // panel (Metal twin uses the same fn)
+                let (mx, my) = overlay_origin(ov.menu_center, extent.width, extent.height, pw as u64, ph as u64, MENU_MARGIN as i64);
+                let (mx, my) = (mx as i32, my as i32);
                 if mx as u32 + pw <= extent.width && my as u32 + ph <= extent.height {
                     self.ctx.upload(&swap.menu_buf, &bytes);
                     let region = vk::BufferImageCopy::default()
@@ -789,19 +773,10 @@ impl RenderBackend for VulkanBackend {
         });
         let ptr = self.ctx.device.map_memory(readback.memory, 0, (n * 4) as u64, vk::MemoryMapFlags::empty()).unwrap() as *const u8;
         let full = std::slice::from_raw_parts(ptr, n * 4);
-        let rs = rs as u32;
-        let (sw, sh) = (w / rs, h / rs);
-        let mut sub = vec![0u8; (sw * sh * 4) as usize];
-        for y in 0..sh {
-            for x in 0..sw {
-                let src = (((y * rs) * w + x * rs) * 4) as usize;
-                let dst = ((y * sw + x) * 4) as usize;
-                sub[dst..dst + 4].copy_from_slice(&full[src..src + 4]);
-            }
-        }
+        let out = subsample_rgba(full, w, h, rs as u32);
         self.ctx.device.unmap_memory(readback.memory);
         self.ctx.destroy_buffer(&readback);
-        (sw, sh, sub)
+        out
     }
 
     /// Dump the `out` image (the exact thing blitted to the swapchain) to a PNG.

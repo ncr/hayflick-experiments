@@ -209,6 +209,43 @@ pub struct GooBall {
     pub radius: f32,
 }
 
+/// One frame's goo-composite input: the metaball set plus its parallel
+/// per-ball / per-blob slices, bundled so the five slices travel (and stay
+/// length-consistent) as one unit. Each slice still uploads to its own GPU
+/// buffer — the grouping is CPU-side only.
+#[derive(Clone, Copy)]
+pub struct GooFrame<'a> {
+    /// Goo metaballs for the screen-space SDF composite pass (goo.metal on
+    /// macOS, goo.comp on Vulkan). Empty when no goo is visible or when
+    /// `GOO_SDF=0` routes the goo through the opaque triangle-pool fallback.
+    pub balls: &'a [GooBall],
+    /// Per-metaball birth-glow 0..1, PARALLEL to `balls` (same length/order).
+    /// Kept a separate slice so `GooBall` stays a tidy 16 B `float4`. The
+    /// shader tints the goo toward a hot birth colour by the glow sampled at
+    /// the surface. Empty ⇒ no glow (shader reads 0).
+    pub glow: &'a [f32],
+    /// Per-metaball VERTICAL scale on the resting squash (1 = neutral),
+    /// PARALLEL to `balls` like `glow`. Drives the per-blob height breathing:
+    /// gait lunge flattens, jelly wobble bounces, birth tension draws the
+    /// body up. The shadow proxies scale with it too.
+    pub vscale: &'a [f32],
+    /// Per-BLOB bounding spheres (one per GOO_PARTICLES-ball group in
+    /// `balls`, same order), each enclosing its blob's merged surface with
+    /// margin. The composite's SDF march tests these first and only expands a
+    /// blob's individual balls when the query point is near its bound —
+    /// two-level culling that keeps the march cost per blob, not per ball.
+    pub bounds: &'a [GooBall],
+    /// PARALLEL to `balls`: per-ball species tint (vec4 rgb multiplier on the
+    /// body emissive; w unused). Empty = all-white (the shader falls back).
+    pub tint: &'a [[f32; 4]],
+}
+
+impl GooFrame<'_> {
+    /// The mob-free frame: every slice empty (how "no goo" has always been
+    /// expressed — the backends skip the whole composite pass on it).
+    pub const EMPTY: GooFrame<'static> = GooFrame { balls: &[], glow: &[], vscale: &[], bounds: &[], tint: &[] };
+}
+
 /// Everything the game/viewer hands the renderer for one frame. Consumed by
 /// `SceneGpu::record_frame`; nothing else crosses per frame.
 pub struct FrameState<'a> {
@@ -226,29 +263,8 @@ pub struct FrameState<'a> {
     pub spotlights: &'a [Spotlight],
     /// Mover transforms — patched into inst_buf; any change rebuilds the TLAS.
     pub instances: &'a [(InstanceKey, Mat4)],
-    /// Goo metaballs for the screen-space SDF composite pass (goo.metal on
-    /// macOS, goo.comp on Vulkan). Empty when no goo is visible or when
-    /// `GOO_SDF=0` routes the goo through the opaque triangle-pool fallback.
-    pub goo: &'a [GooBall],
-    /// Per-metaball birth-glow 0..1, PARALLEL to `goo` (same length/order). Kept
-    /// in a separate slice so `GooBall` stays a tidy 16 B `float4`; uploaded to
-    /// its own GPU buffer. The shader tints the goo toward a hot birth colour by
-    /// the glow sampled at the surface. Empty ⇒ no glow (shader reads 0).
-    pub goo_glow: &'a [f32],
-    /// Per-metaball VERTICAL scale on the resting squash (1 = neutral),
-    /// PARALLEL to `goo` like `goo_glow` (its own GPU buffer). Drives the
-    /// per-blob height breathing: gait lunge flattens, jelly wobble bounces,
-    /// birth tension draws the body up. The shadow proxies scale with it too.
-    pub goo_vscale: &'a [f32],
-    /// Per-BLOB bounding spheres (one per GOO_PARTICLES-ball group in `goo`,
-    /// same order), each enclosing its blob's merged surface with margin. The
-    /// goo composite's SDF march tests these first and only expands a blob's
-    /// individual balls when the query point is near its bound — two-level
-    /// culling that keeps the march cost per blob, not per total ball count.
-    pub goo_bounds: &'a [GooBall],
-    /// PARALLEL to `goo`: per-ball species tint (vec4 rgb multiplier on the
-    /// body emissive; w unused). Empty = all-white (the shader falls back).
-    pub goo_tint: &'a [[f32; 4]],
+    /// This frame's goo composite input (metaballs + parallel slices).
+    pub goo: GooFrame<'a>,
 }
 
 /// CPU half of the NEE light-list build, factored out of `SceneGpu::build` so
@@ -971,7 +987,7 @@ mod tests {
         let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06, tint: SPOT_WARM };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: &[], goo_glow: &[], goo_vscale: &[], goo_bounds: &[], goo_tint: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: GooFrame::EMPTY };
         let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs);
         assert_eq!(n, 1);
         // an unaddressed slot keeps its previous values (light 0 holds base);

@@ -56,6 +56,6 @@ pub mod scenes;
 pub use config::{Config, StyleCfg};
 pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx};
 pub use gpu_scene::{bake_bank_emission, InstanceTable, ProbeGrid};
-pub use render::{make_pool, make_set, push_bytes, roi_push, scan_lights, FrameState, GooBall, InstanceKey, LightKey, SceneGpu, SceneHandles, ShadePush, Spotlight, GOO_SPV, N_RESERVED, ROI_OFF, SPOT_WARM, TONE_SPV};
+pub use render::{make_pool, make_set, push_bytes, roi_push, scan_lights, FrameState, GooBall, GooFrame, InstanceKey, LightKey, SceneGpu, SceneHandles, ShadePush, Spotlight, GOO_SPV, N_RESERVED, ROI_OFF, SPOT_WARM, TONE_SPV};
 pub use scene::{hex_linear, Scene};
 pub use scenes::build_scene;

@@ -9,7 +9,7 @@ use super::fx::{SPARK_LIFE, SPLAT_LIFE};
 use super::GameLoop;
 use glam::{Mat4, Vec3};
 use house_game::DoorId;
-use rt_probe::{InstanceKey, SceneHandles};
+use rt_probe::{GooBall, GooFrame, InstanceKey, SceneHandles};
 
 /// Vertical flatten applied to the goo metaballs so the body lies on the floor
 /// as a spread puddle: the resting-height math `floor + radius·squash` is shared
@@ -20,6 +20,25 @@ use rt_probe::{InstanceKey, SceneHandles};
 pub(crate) const GOO_SQUASH: f32 = 0.74;
 /// Floor plane Y (kit floorThickness 6 cm) — the goo's flat underside.
 pub(crate) const GOO_FLOOR_Y: f32 = 6.0 / 128.0;
+
+/// One frame's OWNED goo composite data, built by [`GameLoop::goo_balls`].
+/// The renderer consumes it as borrowed slices via [`GooFrameData::frame`]
+/// (`rt_probe::GooFrame` — the FrameState field). Same parallel-slice
+/// semantics as the borrowed view; see its field docs.
+pub struct GooFrameData {
+    pub balls: Vec<GooBall>,
+    pub glow: Vec<f32>,
+    pub vscale: Vec<f32>,
+    pub bounds: Vec<GooBall>,
+    pub tint: Vec<[f32; 4]>,
+}
+
+impl GooFrameData {
+    /// Borrow as the FrameState-facing slice bundle.
+    pub fn frame(&self) -> GooFrame<'_> {
+        GooFrame { balls: &self.balls, glow: &self.glow, vscale: &self.vscale, bounds: &self.bounds, tint: &self.tint }
+    }
+}
 
 /// Per-door render binding: the renderer instance handle for the leaf, plus the
 /// hinge + signed swing axis the per-frame transform needs (the snapshot gives
@@ -140,7 +159,7 @@ impl GameLoop {
     /// march can trust it as a conservative distance proxy. Pure read of the
     /// hashed field.
     #[allow(clippy::type_complexity)] // five parallel SoA slices; bundling into a GooFrame struct is queued follow-up work
-    pub fn goo_balls(&self) -> (Vec<rt_probe::GooBall>, Vec<f32>, Vec<f32>, Vec<rt_probe::GooBall>, Vec<[f32; 4]>) {
+    pub fn goo_balls(&self) -> GooFrameData {
         // Outward bulge of the smin union past the plain sphere union: at most
         // k/4 (k = the shader's GOO_SMIN_K 0.14 → 0.035), plus slack. A too-
         // generous margin only expands a blob's balls a step early — never a
@@ -214,7 +233,7 @@ impl GameLoop {
                 tints.push(tint);
             }
         }
-        (out, glow, vscales, bounds, tints)
+        GooFrameData { balls: out, glow, vscale: vscales, bounds, tint: tints }
     }
 
     /// One real RT light per live blob (streamed into reserved NEE slots), so

@@ -439,7 +439,7 @@ impl Viewer {
         instances.extend(self.game.chunk_instances());
         instances.extend(self.game.droplet_instances());
         instances.extend(self.game.spark_instances());
-        let (goo, goo_glow, goo_vscale, goo_bounds, goo_tint) = self.game.goo_balls();
+        let goo = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
         let fs = FrameState {
@@ -449,11 +449,7 @@ impl Viewer {
             light_emission: &emission,
             spotlights: spot.as_slice(),
             instances: &instances,
-            goo: &goo,
-            goo_glow: &goo_glow,
-            goo_vscale: &goo_vscale,
-            goo_bounds: &goo_bounds,
-            goo_tint: &goo_tint,
+            goo: goo.frame(),
         };
 
         // ESC tune-menu overlay (panel/hamburger), copied onto the PRESENTED

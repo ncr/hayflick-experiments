@@ -219,6 +219,22 @@ pub(crate) fn write_png(path: &str, w: u32, h: u32, rgba: &[u8]) {
     enc.write_header().unwrap().write_image_data(rgba).unwrap();
 }
 
+/// Take every `rs`-th pixel of a full-extent RGBA readback — the exact
+/// low-res game image (the upscale is integer NEAREST, so any sample of an
+/// rs×rs block IS the game pixel). Shared by both backends' readback paths.
+pub(crate) fn subsample_rgba(full: &[u8], w: u32, h: u32, rs: u32) -> (u32, u32, Vec<u8>) {
+    let (sw, sh) = (w / rs, h / rs);
+    let mut sub = vec![0u8; (sw * sh * 4) as usize];
+    for y in 0..sh {
+        for x in 0..sw {
+            let src = (((y * rs) * w + x * rs) * 4) as usize;
+            let dst = ((y * sw + x) * 4) as usize;
+            sub[dst..dst + 4].copy_from_slice(&full[src..src + 4]);
+        }
+    }
+    (sw, sh, sub)
+}
+
 impl Viewer {
     /// 'r' / the menu row: start a recording, or stop + encode the current one.
     pub fn toggle_recording(&mut self) {
