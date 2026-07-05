@@ -1045,7 +1045,7 @@ fn tank_resists_small_arms_but_not_the_slug() {
     // standard hit stays a plain juicy hit.
     g.res.event_tap = Some(Vec::new());
     g.tick(Tick(0), &[]);
-    let flags: Vec<bool> = g.res.event_tap.take().unwrap().iter().filter_map(|ev| if let GameEvent::MobHit(_, _, r) = ev { Some(*r) } else { None }).collect();
+    let flags: Vec<bool> = g.res.event_tap.take().unwrap().iter().filter_map(|ev| if let GameEvent::MobHit(_, _, r, _) = ev { Some(*r) } else { None }).collect();
     assert_eq!(flags, vec![true, false], "uzi hit resisted, standard hit full: {flags:?}");
     assert!(g.sink.0.iter().any(|c| c.id.0 == "goo_thunk"), "resisted hit plays the dull thunk cue");
     assert!(g.sink.0.iter().any(|c| c.id.0 == "goo_hit"), "the full hit keeps the juicy cue");

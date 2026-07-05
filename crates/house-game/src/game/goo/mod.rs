@@ -1402,7 +1402,7 @@ impl<S: AudioSink> HouseGame<S> {
         let punch = if dead { knockback * 1.6 } else { knockback };
         self.res.events.emit(GameEvent::GooSplashed(id, hit, dir, punch));
         if !dead {
-            self.res.events.emit(GameEvent::MobHit(id, hit_evt, resisted));
+            self.res.events.emit(GameEvent::MobHit(id, hit_evt, resisted, class));
             return;
         }
         // death — remove the parent at the flush

@@ -112,6 +112,21 @@ impl AudioOut {
     /// new cue is a design decision, not a crash).
     pub fn play(&self, id: &str, gain: f32) {
         let g = gain;
+        // W7: ONE shared sub-thud bed mixed under every fire cue, gain
+        // following the round's weight — the slug and the grenade boom the
+        // chest, the uzi barely tickles it. The chest hears the damage
+        // numbers before the eyes do.
+        if let Some(sub) = match id {
+            "fire_slug" => Some(0.55),
+            "fire_shotgun" => Some(0.48),
+            "fire_grenade" => Some(0.58),
+            "fire_uzi" => Some(0.10),
+            "fire_harpoon" => Some(0.15),
+            "pistol_fire" => Some(0.28),
+            _ => None,
+        } {
+            self.voice(Wave::Sine, 46.0, 29.0, 0.17, sub * g);
+        }
         match id {
             "pistol_fire" => {
                 self.voice(Wave::Noise, 3400.0, 900.0, 0.09, 0.50 * g);

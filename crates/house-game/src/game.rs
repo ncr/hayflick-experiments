@@ -200,11 +200,12 @@ pub enum GameEvent {
     NeedCritical(NeedKind),
     /// A need climbed back to/above `critical` this tick (edge-triggered).
     NeedRecovered(NeedKind),
-    /// A goo blob was shot but survived (id, hit point, resisted). `resisted`
-    /// = the species damage multiplier floored the hit below face value (Tank
-    /// vs uzi/shotgun) — the shell teaches the resist with a dull grey flash
-    /// + thunk cue instead of the hot white pop.
-    MobHit(MobId, Vec3, bool),
+    /// A goo blob was shot but survived (id, hit point, resisted, class).
+    /// `resisted` = the species damage multiplier floored the hit below face
+    /// value (Tank vs uzi/shotgun) — the shell teaches the resist with a dull
+    /// grey flash + thunk cue instead of the hot white pop. The class lets
+    /// the shell weigh the hit (W6: a surviving SLUG hit chunks time).
+    MobHit(MobId, Vec3, bool, WeaponClass),
     /// A Runner entered its pre-sprint WINDUP crouch (id, head) — the G3
     /// anticipation beat; the shell plays the rising two-note tell.
     MobWindup(MobId, Vec3),

@@ -282,7 +282,7 @@ impl GameLoop {
                         self.fx.trauma = (self.fx.trauma + 0.30).min(1.0);
                         self.fx.wave_warn = 0; // the drop closes its own countdown
                     }
-                    house_game::GameEvent::MobHit(id, _, resisted) => {
+                    house_game::GameEvent::MobHit(id, _, resisted, class) => {
                         // blink the surviving body hot white (dead ones already
                         // play the split/die choreography); a RESISTED hit
                         // blinks a dull grey instead — the ×¼ lesson lands in
@@ -294,6 +294,12 @@ impl GameLoop {
                                 *r = resisted;
                             }
                             None => self.fx.hit_flash.push((id, peak, resisted)),
+                        }
+                        // W6: the heaviest round CHUNKS time — a surviving
+                        // slug hit freezes the live sim two frames (terminal
+                        // kills keep their bigger stops; DEMO/SHOT ignore it)
+                        if class == house_game::WeaponClass::Slug {
+                            self.fx.freeze = self.fx.freeze.max(2);
                         }
                     }
                     // hitstop: terminal kills freeze the live sim a beat —
