@@ -314,7 +314,7 @@ impl NearestHit {
     }
 
     fn consider(&mut self, t: f32, what: ProjImpact) {
-        if t >= -1e-4 && t <= self.seg_len + 1e-4 && self.best.map_or(true, |(bt, _)| t < bt) {
+        if t >= -1e-4 && t <= self.seg_len + 1e-4 && self.best.is_none_or(|(bt, _)| t < bt) {
             self.best = Some((t.max(0.0), what));
         }
     }

@@ -12,7 +12,9 @@ glam = "0.30"
 # the map dev-tool bins (roommap, floormap). Pure CPU encoder, no GPU.
 png = "0.17"
 
-# Headless trace player: fixture level + trace.txt -> state digest. No GPU.
+# All five bins declared explicitly (none ride auto-discovery). No GPU anywhere.
+
+# Headless trace player: fixture level + trace.txt -> state digest.
 [[bin]]
 name = "headless"
 path = "src/bin/headless.rs"
@@ -21,3 +23,17 @@ path = "src/bin/headless.rs"
 [[bin]]
 name = "lab"
 path = "src/bin/lab.rs"
+
+# Map dev tools: top-down PNG renders of generated levels (mapviz consumers).
+[[bin]]
+name = "roommap"
+path = "src/bin/roommap.rs"
+
+[[bin]]
+name = "floormap"
+path = "src/bin/floormap.rs"
+
+# Cave tour planner: BFS a route through a generated cave -> DEMO trace.
+[[bin]]
+name = "cave_tour"
+path = "src/bin/cave_tour.rs"

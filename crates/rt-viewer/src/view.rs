@@ -7,7 +7,7 @@
 use crate::viewer::{Viewer, ZOOM_MAX, ZOOM_MIN};
 use glam::{Vec2, Vec3};
 use house_game::{flashlight_pose, iso_input_dir, recommended_min_px_per_sec, Command, PickRay};
-use iso_core::{window_px_to_ground, window_px_to_ray, ViewXform};
+use iso_core::{iso_basis, screen_px_to_world, whole_pixel_step, window_px_to_ground, window_px_to_ray, zoom_anchor_pan, ViewXform, ISO_R};
 use rt_probe::*;
 
 /// Interactive quarter-turn animation — the native mirror of the web

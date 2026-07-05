@@ -33,8 +33,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 # Apple-Silicon (Metal) backend. metal-rs 0.33 (frozen/maintenance) — every RT
 # symbol present + linked, verified on the M2 Pro (Phase-0 spike). Default
 # feature `link` links the Metal framework; no build.rs. macOS-only target dep
-# so the Linux/NVIDIA build never sees it; `ash` stays a common dep so the Mac
-# still compile-checks the Vulkan path (it compiles, just won't run).
+# so the Linux/NVIDIA build never sees it. `ash` stays a common dep (used by
+# rt-probe's shared types); vulkan_backend.rs itself is cfg'd out on macOS,
+# so the Vulkan render path is compile-checked on the spawner box, not here.
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.33.0"
 objc = "0.2"

@@ -68,20 +68,6 @@ pub(crate) fn gpanel_h(items: usize) -> i32 {
     GPAD * 2 + GROW * (1 + items as i32) + 12
 }
 
-// corner score HUD (player scenes only): a small badge in the TOP-RIGHT,
-// drawn like the menu (overlay-only, never onto swap.out — SHOT/MOVIE/DUMP
-// captures stay clean), at the same integer UI scale as the menu.
-// consumer is the Vulkan backend (its score-overlay staging buffer sizing);
-// the score plate itself moved into the burned-in bottom bar (hud.rs)
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-pub const HUD_W: i32 = 72;
-pub const HUD_H: i32 = 14;
-/// Tallest plate `score_canvas` can return (arena levels add a weapon row) —
-/// sizes the Vulkan staging buffer, which is allocated once per swapchain.
-// Its only consumer is the Vulkan backend, which is cfg'd out on macOS.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-pub const HUD_H_MAX: i32 = HUD_H + 14;
-
 /// Which menu is on screen. `Title` and `Pause` are the GAME menus (centered
 /// panel, sim paused); `Settings` is the tune panel (top-left).
 #[derive(Clone, Copy, PartialEq)]

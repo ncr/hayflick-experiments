@@ -15,6 +15,7 @@ use crate::menu::MenuState;
 use crate::sim::GameLoop;
 use crate::view::ViewState;
 use glam::{Mat4, Vec2, Vec3};
+use iso_core::{clamp_pan, iso_camera_at, snap_ground_to_lattice};
 use rt_probe::*;
 use winit::window::Window;
 
@@ -613,16 +614,15 @@ impl Viewer {
             goo_tint: &goo_tint,
         };
 
-        // ESC tune-menu + score HUD overlay (panel/hamburger), copied onto the
-        // PRESENTED image only — never `out`, so SHOT/MOVIE/DUMP/DEMO captures
-        // stay UI-free (those modes pass no overlay).
+        // ESC tune-menu overlay (panel/hamburger), copied onto the PRESENTED
+        // image only — never `out`, so SHOT/MOVIE/DUMP/DEMO captures stay
+        // UI-free (those modes pass no overlay). Game HUD (score, weapon bar)
+        // is burned in via stamps instead.
         let menu_canvas;
         let overlay = if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
             menu_canvas = self.menu_canvas();
-            // the score plate moved into the burned-in bottom bar (stamps) —
-            // the overlay carries only shell UI (menu/hamburger) now
             let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause);
-            Some(Overlay { menu: (&menu_canvas.0, menu_canvas.1, menu_canvas.2), menu_center: center, score: None })
+            Some(Overlay { menu: (&menu_canvas.0, menu_canvas.1, menu_canvas.2), menu_center: center })
         } else {
             None
         };
@@ -653,7 +653,7 @@ impl Viewer {
         let stamps = if self.game.has_player && !crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
             let xf = self.pick_xform();
             let ext = self.backend.extent();
-            crate::hud::build_stamps(&self.game.snap.mobs, self.game.snap.weapon, self.game.snap.score, self.game.snap.wave, self.game.snap.run, self.game.snap.draft, self.game.snap.breach, self.game.sim.res.cur_tick, &xf, ext, self.rs() as u32)
+            crate::hud::build_stamps(&self.game.snap, &xf, ext, self.rs() as u32)
         } else {
             Vec::new()
         };

@@ -7,13 +7,17 @@
 //! here runs under plain `cargo test -p house-game`.
 //!
 //! Module map:
-//! - [`spec`]    — LevelSpec (ordered Vecs, the level's source of truth) + fixture
-//! - [`cave`]    — procedural cave/dungeon generator → LevelSpec (deterministic in seed)
-//! - [`game`]    — Command, components, the 7 fixed-order systems, GameSnapshot,
+//! - [`spec`]      — LevelSpec (ordered Vecs, the level's source of truth) + fixture
+//! - [`cave`]      — procedural cave/dungeon generator → LevelSpec (deterministic in seed)
+//! - [`building`]  — rectangular building floors (house/hospital/office/factory) → LevelSpec
+//! - [`floorplan`] — wall/door enclosure helpers shared by the floor generators
+//! - [`village`]   — multi-building outdoor village stage → LevelSpec
+//! - [`game`]      — Command, components, the fixed-order systems, GameSnapshot,
 //!   state_hash (the `sim_core::Simulation` impl)
-//! - [`flicker`] — stateless practical-light curves (verbatim render.rs port)
-//! - [`trace`]   — plain-text command traces (headless bin + replay goldens)
-//! - [`lab`]     — scenario lab: headless event-timeline harness for emergence
+//! - [`flicker`]   — stateless practical-light curves (verbatim render.rs port)
+//! - [`trace`]     — plain-text command traces (headless bin + replay goldens)
+//! - [`mapviz`]    — PNG canvas for the roommap/floormap map-tool bins
+//! - [`lab`]       — scenario lab: headless event-timeline harness for emergence
 //!   experiments (Scenario → run_scenario → ScenarioReport + Metrics)
 
 pub mod building;
@@ -27,13 +31,15 @@ pub mod spec;
 pub mod trace;
 pub mod village;
 
+// Root re-exports: ONLY what external users (rt-viewer, the src/bin tools)
+// actually import — the minimal-public-surface rule (ARCHITECTURE.md). Every
+// other item stays reachable through its module path.
 pub use building::{building_floor, factory_floor, house_floor, BuildingParams};
+pub use cave::{cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE};
 pub use floorplan::{enclose, WallOpts};
-pub use cave::{cave_level, cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE, SERVICE_ROOM_ID_BASE};
-pub use flicker::flicker;
-pub use game::{ArsenalState, Battery, Command, DoorState, FlashPose, GameEvent, GameSnapshot, Goo, GooState, HouseGame, Hunger, Inventory, MobRender, NeedKind, PickRay, Res, WeaponClass, WeaponKind, WorldItem, GOO_CHUNK_CAP, GOO_CHUNK_H, GOO_CURE_MAX, GOO_LIVE_CAP, GOO_PARTICLES, TICK_DT};
-pub use lab::{first_tick_of, run_scenario, Metrics, Policy, Scenario, ScenarioReport};
-pub use spec::{arena_level, fixture, game_level, goo_level, goofloor_level, goonursery_level, goopair_level, playground_level, drain_level, shooting_range_level, squeeze_level, survival_level, ArenaParams, DoorId, GooKind, DoorSpec, ItemId, ItemKind, ItemSpec, LevelSpec, LightId, LightKind, LightSpec, MobId, MobSpec, RoomId, RoomSpec, SurvivalParams, TargetId, TargetSpec, TrapSpec, SURVIVAL_DEFAULT};
+pub use game::{Command, GameEvent, GameSnapshot, HouseGame, MobRender, PickRay, WeaponClass, WeaponKind, GOO_CHUNK_CAP, GOO_CHUNK_H, GOO_CURE_MAX, GOO_LIVE_CAP, GOO_PARTICLES, TICK_DT};
+pub use lab::{run_scenario, Scenario};
+pub use spec::{arena_level, drain_level, fixture, game_level, goo_level, goofloor_level, goonursery_level, goopair_level, playground_level, shooting_range_level, squeeze_level, survival_level, DoorId, DoorSpec, GooKind, ItemKind, LevelSpec, LightId, LightKind, LightSpec, MobId, RoomId, RoomSpec, TargetSpec};
 pub use trace::parse_trace;
 pub use village::village_level;
 

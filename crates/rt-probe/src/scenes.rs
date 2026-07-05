@@ -1,8 +1,10 @@
-//! Scene builders — the content side of the probe. Three scenes:
+//! Scene builders — rt-probe's OWN three scenes (all golden-pinned). The game
+//! scenes (cave, arena, the goo stages, …) are built from LevelSpecs by
+//! rt-viewer's adapter (`game_scene.rs`); `bin/run`'s default scene is cave.
 //!
 //! - `grid`  — native rematch of the web `experiments/grid-walker` GameModule
 //! - `lab`   — minimal synthetic isolation scene for renderer debugging
-//! - `house` — Fallout-flavoured three-room example house (the default)
+//! - `house` — Fallout-flavoured three-room example house
 
 use crate::config::Config;
 use crate::scene::{hex_linear, CachedModel, Scene};

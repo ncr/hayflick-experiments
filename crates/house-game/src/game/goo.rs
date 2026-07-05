@@ -100,9 +100,6 @@ pub const GOO_BIRTH_TIER: u8 = 2;
 /// body_len ease while crawling clear — emerging as a piece of her, the reverse
 /// of a fusion collapse, rather than popping into existence fully formed.
 pub const GOO_BIRTH_SEED: f32 = 0.18;
-/// Gentle outward per-tick displacement baked into a newborn so it oozes off the
-/// mother's surface rather than popping — the crawl AI then carries it clear.
-pub const GOO_BIRTH_SPEED: f32 = 0.02;
 /// Birth EFFORT: through the final push the mother tenses — she clenches toward
 /// a rounder, tighter ball and all but stops crawling — then relaxes over the
 /// afterglow. `PULL` is the extra capsule-cohesion fraction at peak tension (she
@@ -906,9 +903,9 @@ pub(crate) fn goo_render_glow(g: &Goo) -> [f32; GOO_PARTICLES] {
         let mr = goo_tier_radius(g.tier);
         let site = c + g.spawn_dir * mr;
         let falloff = mr * 0.95; // tight around the bud so the vivid tint reads as the birth PLACE
-        for k in 0..GOO_PARTICLES {
-            let prox = (1.0 - (g.parts[k] - site).length() / falloff).clamp(0.0, 1.0);
-            glow[k] = strength * prox;
+        for (gl, p) in glow.iter_mut().zip(g.parts.iter()) {
+            let prox = (1.0 - (*p - site).length() / falloff).clamp(0.0, 1.0);
+            *gl = strength * prox;
         }
     }
     glow
@@ -1271,7 +1268,7 @@ impl<S: AudioSink> HouseGame<S> {
             for &mc in mothers {
                 let d = mc - c;
                 let dist = d.length();
-                if dist >= GOO_MOTHER_RADIUS || dist < 1e-3 {
+                if !(1e-3..GOO_MOTHER_RADIUS).contains(&dist) {
                     continue;
                 }
                 inside = true;
@@ -1407,6 +1404,10 @@ impl<S: AudioSink> HouseGame<S> {
     /// No-op (and no RNG draw) when the level has no mobs, so mob-free levels
     /// stay byte-identical. Runs after walk (it is a mover) and before shoot
     /// (so hit tests see the current pose).
+    // needless_range_loop: the PBF integration loops index parts/vel/xp in
+    // lockstep — their shape (and float order) is pinned by the hash oracles;
+    // an iterator-zip rewrite is churn on the one function that must not move.
+    #[allow(clippy::needless_range_loop)]
     pub(crate) fn goo_system(&mut self) {
         if self.mobs.is_empty() {
             return;
@@ -1774,7 +1775,7 @@ impl<S: AudioSink> HouseGame<S> {
                 self.res.chunks.push([centroid.x - half, centroid.y - half, centroid.x + half, centroid.y + half]);
                 // one escapee (tier down), popped out past the chunk edge along
                 // the slug heading — if the cap has room for it
-                if self.goo_live_pending() + 1 <= GOO_LIVE_CAP as i32 {
+                if self.goo_live_pending() < GOO_LIVE_CAP as i32 {
                     let cid = MobId(self.res.next_mob_id);
                     self.res.next_mob_id += 1;
                     let d = kdir.try_normalize().unwrap_or(Vec2::X);

@@ -11,8 +11,8 @@
 //! linear in emission, so any dim level is exact with no re-bake.
 
 use crate::gpu::{dslb, Buffer, Ctx, GpuTex};
-use crate::iso::CamFrame;
 use crate::scene::{self, Scene, Vertex};
+use iso_core::CamFrame;
 use ash::vk;
 use glam::{Mat4, Vec3};
 use std::collections::BTreeMap;
@@ -69,12 +69,12 @@ pub struct RoiPush {
 pub const ROI_OFF: RoiPush = RoiPush { roi: [0.0; 4], roi2: [0.0; 4] };
 
 /// Build the ROI push fields for a player at world `p`, projecting the disc
-/// centre with the shared [`iso::project_lowres`] so Metal and Vulkan agree.
+/// centre with the shared [`iso_core::project_lowres`] so Metal and Vulkan agree.
 /// `ghost` (0..1] is the max reveal coverage at the disc centre: <1 leaves a
 /// faint Bayer-stipple ghost of the wall (the x-ray look). Doubles as the
 /// shader's enable flag (`roi2.w > 0`).
 pub fn roi_push(cam: &CamFrame, w: i32, h: i32, p: Vec3, radius_px: f32, falloff_px: f32, ghost: f32) -> RoiPush {
-    let (px, py) = crate::iso::project_lowres(cam, w, h, p);
+    let (px, py) = iso_core::project_lowres(cam, w, h, p);
     RoiPush { roi: [p.x, p.y, p.z, radius_px], roi2: [px, py, falloff_px, ghost] }
 }
 
@@ -673,7 +673,7 @@ impl SceneGpu {
     /// instance buffer — a no-op when the transform is bit-unchanged (CPU
     /// shadow compare), so idle movers never force TLAS rebuilds. On change,
     /// marks the TLAS dirty; `record_frame` rebuilds it.
-    pub unsafe fn set_instance_transform(&mut self, ctx: &Ctx, key: InstanceKey, m: Mat4) {
+    unsafe fn set_instance_transform(&mut self, ctx: &Ctx, key: InstanceKey, m: Mat4) {
         let di = key.0 as usize;
         if self.dyn_shadow[di] == m {
             return;
@@ -715,7 +715,7 @@ impl SceneGpu {
     /// `mats_cpu` and record the copies + barrier into `cmd` (BEFORE the
     /// shade dispatch). The reserved spotlight slots ride along in
     /// `lights_cpu`.
-    pub unsafe fn record_practicals_upload(&self, ctx: &Ctx, cmd: vk::CommandBuffer) {
+    unsafe fn record_practicals_upload(&self, ctx: &Ctx, cmd: vk::CommandBuffer) {
         ctx.upload(&self.light_stage, &self.lights_cpu);
         ctx.upload(&self.mat_stage, &self.mats_cpu);
         let lc = vk::BufferCopy::default().size(std::mem::size_of_val(&self.lights_cpu[..]) as u64);
@@ -915,7 +915,7 @@ mod tests {
         assert_eq!(scan.names["mmm_point"], LightKey(2)); // points slot after every emissive prim
         // link pins the scan rules: authored screen flag, points never screens
         assert_eq!(scan.light_link[0], (1, [9.0, 6.0, 3.0], false));
-        assert_eq!(scan.light_link[1].2, true);
+        assert!(scan.light_link[1].2);
         assert_eq!(scan.light_link[2], (-1, [5.0, 4.0, 3.0], false));
         // the dynamic prim's 20.0-bright emissive landed NO slot
         assert!(scan.lights[..3].iter().all(|l| l[4] != 20.0));

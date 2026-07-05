@@ -558,6 +558,7 @@ fn part(scene: &mut Scene, hx: f32, hz: f32, y0: f32, y1: f32, color: [f32; 4], 
 }
 
 /// A gun part authored along +Z (the aim axis): x half-extent, y span, z span.
+#[allow(clippy::too_many_arguments)] // private box helper; the args ARE the box
 fn gpart(scene: &mut Scene, hx: f32, y0: f32, y1: f32, z0: f32, z1: f32, color: [f32; 4], emissive: [f32; 4]) {
     scene.add_box_world(Vec3::new(-hx, y0, z0), Vec3::new(hx, y1, z1), color, emissive, 0.5, 0.0);
 }
@@ -620,6 +621,7 @@ fn build_gun(scene: &mut Scene, slot: u8) {
 /// adapter skins onto live blobs / projectiles each frame. Shared by the goo
 /// ellipsoid pool and the projectile tracer pool (same instance-mover path,
 /// different tessellation / colours / radius).
+#[allow(clippy::too_many_arguments)] // private helper; the args ARE the pool recipe
 fn register_sphere_pool(scene: &mut Scene, prefix: &str, count: usize, rings: u32, sectors: u32, base: [f32; 4], emissive: [f32; 4], radius: f32) {
     for i in 0..count {
         let first = scene.add_sphere_local(rings, sectors, base, emissive, radius);

@@ -10,9 +10,10 @@
 //! temporal state — a fixed camera produces bit-identical frames.
 
 use crate::backend::{build_goo_push, build_tone_push, FramePresent, GooPush, RenderBackend, GOO_BOUNDS_MAX, GOO_MAX};
-use crate::menu::{HUD_H_MAX, HUD_W, MENU_MARGIN, MPANEL_H, MPANEL_W};
+use crate::menu::{MENU_MARGIN, MPANEL_H, MPANEL_W};
 use ash::vk;
 use glam::Vec2;
+use iso_core::{render_scale, ISO_R};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
@@ -34,7 +35,6 @@ pub struct Swap {
     pub posg: (vk::Image, vk::DeviceMemory, vk::ImageView),   // primary-hit world-position G-buffer
     pub out: (vk::Image, vk::DeviceMemory, vk::ImageView),    // 8-bit window image
     pub menu_buf: Buffer, // host-visible staging for the ESC tune-menu overlay
-    pub hud_buf: Buffer,  // host-visible staging for the corner score HUD (overlay-only)
     /// Host-visible staging for the burned-in HUD (stamps + minimap): all
     /// expanded canvases packed back-to-back, copied into `out` pre-blit so
     /// they land in SHOT/DEMO/clip captures too. Sized one full window —
@@ -382,11 +382,6 @@ impl VulkanBackend {
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
-        let hud_buf = self.ctx.create_buffer(
-            (HUD_W * HUD_H_MAX) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
         let stamp_buf = self.ctx.create_buffer(
             extent.width as u64 * extent.height as u64 * 4,
             vk::BufferUsageFlags::TRANSFER_SRC,
@@ -456,7 +451,7 @@ impl VulkanBackend {
 
         let render_finished: Vec<vk::Semaphore> = images.iter().map(|_| self.ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap()).collect();
 
-        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, hud_buf, stamp_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, goo_bg, goo_pool, goo_set, render_finished });
+        self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, stamp_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, goo_bg, goo_pool, goo_set, render_finished });
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
     }
 
@@ -474,7 +469,6 @@ impl VulkanBackend {
             d.free_memory(mem, None);
         }
         self.ctx.destroy_buffer(&s.menu_buf);
-        self.ctx.destroy_buffer(&s.hud_buf);
         self.ctx.destroy_buffer(&s.stamp_buf);
         if let Some(p) = &self.present {
             p.swapchain_loader.destroy_swapchain(s.swapchain, None);
@@ -720,20 +714,6 @@ impl RenderBackend for VulkanBackend {
                         .image_offset(vk::Offset3D { x: mx, y: my, z: 0 })
                         .image_extent(vk::Extent3D { width: pw, height: ph, depth: 1 });
                     d.cmd_copy_buffer_to_image(cmd, swap.menu_buf.buffer, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
-                }
-                // score HUD: player scenes only, top-right corner (same
-                // overlay-only path — never on swap.out, so captures stay UI-free)
-                if let Some((canvas, hw, hh)) = ov.score {
-                    let bytes = crate::menu::expand_canvas(canvas, hw, hh, swap.menu_scale, bgra);
-                    let (pw, ph) = (hw as u32 * swap.menu_scale, hh as u32 * swap.menu_scale);
-                    if pw + MENU_MARGIN as u32 <= extent.width && ph + MENU_MARGIN as u32 <= extent.height {
-                        self.ctx.upload(&swap.hud_buf, &bytes);
-                        let region = vk::BufferImageCopy::default()
-                            .image_subresource(layers)
-                            .image_offset(vk::Offset3D { x: extent.width as i32 - MENU_MARGIN - pw as i32, y: MENU_MARGIN, z: 0 })
-                            .image_extent(vk::Extent3D { width: pw, height: ph, depth: 1 });
-                        d.cmd_copy_buffer_to_image(cmd, swap.hud_buf.buffer, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
-                    }
                 }
             }
         }

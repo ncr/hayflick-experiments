@@ -651,7 +651,7 @@ impl<S: AudioSink> HouseGame<S> {
             let lo = Vec3::new(s[0] - DOOR_INTERACT_INFLATE, -DOOR_INTERACT_INFLATE, s[1] - DOOR_INTERACT_INFLATE);
             let hi = Vec3::new(s[2] + DOOR_INTERACT_INFLATE, DOOR_H + DOOR_INTERACT_INFLATE, s[3] + DOOR_INTERACT_INFLATE);
             if let Some((tmin, _)) = ray_aabb(ray, lo, hi) {
-                if tmin >= 0.0 && best.map_or(true, |(bt, _)| tmin < bt) {
+                if tmin >= 0.0 && best.is_none_or(|(bt, _)| tmin < bt) {
                     best = Some((tmin, door.id));
                 }
             }

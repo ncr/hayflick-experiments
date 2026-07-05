@@ -9,6 +9,7 @@
 //!     linked to the corridor-junction centroids that join them) so loops and
 //!     dead-ends read at a glance;
 //!   * stamps each room's id, and a header line of stats.
+//!
 //! It also writes a montage of all the seeds and prints per-seed metrics
 //! (placed vs target rooms, doors, fill %, realised loops, dead-ends, room-area
 //! spread) to stdout.
@@ -73,7 +74,7 @@ fn main() {
     }
 
     // montage: a grid of all the tiles (all share dimensions for fixed `rooms`)
-    let cols = (count as i32).min(3).max(1);
+    let cols = (count as i32).clamp(1, 3);
     let rows = ((count as i32) + cols - 1) / cols;
     let (tw, th) = (tiles[0].w as i32, tiles[0].h as i32);
     let pad = 14;

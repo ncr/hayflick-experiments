@@ -30,6 +30,7 @@ pub struct Minimap {
     pad: i32,         // border padding in canvas px
 }
 
+#[allow(clippy::too_many_arguments)] // private rect blit; a struct would just rename the args
 fn fill(c: &mut [u32], cw: i32, ch: i32, x: i32, y: i32, w: i32, h: i32, col: u32) {
     for py in y.max(0)..(y + h).min(ch) {
         for px in x.max(0)..(x + w).min(cw) {

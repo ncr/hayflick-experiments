@@ -199,6 +199,7 @@ pub fn cave_level_with(seed: u64, p: CaveParams) -> LevelSpec {
 /// reuses the identical wall/door emission (and its dollhouse cull metadata).
 /// The RNG is consumed ONLY by door placement, in the same order as before, so
 /// the cave's output stays byte-identical.
+#[allow(clippy::too_many_arguments)] // the whole generator state crosses here once; a struct would just rename it
 pub(crate) fn emit_grid_spec(w: i32, h: i32, floor: &[bool], room_of: &[i32], rooms: &[Room], door_chance: f32, thick_walls: bool, rng: &mut Rng, player_start: Vec3, seed: u64) -> LevelSpec {
     let at = |x: i32, z: i32| (z * w + x) as usize;
 

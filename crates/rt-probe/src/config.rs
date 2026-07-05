@@ -1,8 +1,11 @@
 //! All runtime configuration, resolved from the environment ONCE at startup.
 //!
-//! Nothing else in the crate reads `std::env` — every knob flows through this
-//! struct, so the full inventory of tuning surface is visible here, and the
-//! ESC menu / env-string round-trip (`viewer`) has a single source of truth.
+//! Every tuning knob flows through this struct, so the inventory of tuning
+//! surface is visible here and the ESC menu / env-string round-trip (`viewer`)
+//! has a single source of truth. One deliberate exception reads `std::env`
+//! directly: `probe_cache::dir` (PROBE_CACHE) — a dev-machine cache location,
+//! not a look/sim knob, and never part of the round-trip. (rt-viewer keeps a
+//! few shell-only reads of its own: DOORS, DUMP_ROOMS, AUDIO.)
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
 //! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).

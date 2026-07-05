@@ -21,7 +21,8 @@ use glam::{Mat4, Vec2, Vec3};
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, scan_lights, LightScan};
 use rt_probe::scene::{LoadedImage, Material, Vertex};
-use rt_probe::{bake_bank_emission, render_scale, Config, InstanceTable, ProbeGrid, Scene, SceneHandles, ISO_R};
+use iso_core::{render_scale, ISO_R};
+use rt_probe::{bake_bank_emission, Config, InstanceTable, ProbeGrid, Scene, SceneHandles};
 use std::ffi::c_void;
 use std::mem::size_of;
 use winit::window::Window;
@@ -943,10 +944,6 @@ impl RenderBackend for MetalBackend {
                         (m, m)
                     };
                     self.blit_overlay(blit, drawable.texture(), mc, mw, mh, menu_scale, mx, my, ext_w, ext_h, &mut staging);
-                    if let Some((sc, sw, sh)) = ov.score {
-                        let dx = ext_w as i64 - m - sw as i64 * menu_scale as i64;
-                        self.blit_overlay(blit, drawable.texture(), sc, sw, sh, menu_scale, dx, m, ext_w, ext_h, &mut staging);
-                    }
                 }
                 blit.end_encoding();
                 cb.present_drawable(drawable);

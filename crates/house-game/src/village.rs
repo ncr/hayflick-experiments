@@ -35,6 +35,7 @@ const ROAD_Z1: i32 = 15; // exclusive (rows 12, 13, 14)
 /// Fill a room rectangle (cells) into the grid and register it; returns nothing
 /// (the room index is just `rooms.len()` before the push). Free fns rather than
 /// closures so the three buffers can be borrowed mutably without aliasing.
+#[allow(clippy::too_many_arguments)] // grid buffers + a rect; a struct would just rename the args
 fn add_room(floor: &mut [bool], room_of: &mut [i32], rooms: &mut Vec<Room>, w: i32, x: i32, z: i32, rw: i32, rh: i32) {
     let ri = rooms.len() as i32;
     for zz in z..z + rh {
@@ -87,7 +88,7 @@ pub fn village_level(seed: u64) -> LevelSpec {
 
     // spawn on the road, just in front of the three-room house's front door.
     let player_start = Vec3::new(8.5, 0.0, (ROAD_Z0 + ROAD_Z1) as f32 * 0.5);
-    let mut rng = crate::cave::Rng(seed ^ 0x71117A6E_5EEDu64);
+    let mut rng = crate::cave::Rng(seed ^ 0x7111_7A6E_5EED_u64);
     emit_grid_spec(w, h, &floor, &room_of, &rooms, 0.0, false, &mut rng, player_start, seed)
 }
 

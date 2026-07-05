@@ -13,7 +13,7 @@ use glam::Vec3;
 
 // The ECS, behind sim_core (games import only `sim_core::*`). Curated list —
 // anything more is surface growth and goes through the API snapshot.
-pub use hecs::{Bundle, CommandBuffer, Component, DynamicBundle, Entity, EntityBuilder, Query, QueryBorrow, Ref, RefMut, With, Without, World};
+pub use hecs::{CommandBuffer, Component, Entity, World};
 
 /// Simulation tick number. Sim time is `tick · dt` — no wall clock anywhere
 /// below the shell.
@@ -263,19 +263,21 @@ mod tests {
     /// be added here AND to the pinned string below — that diff is the review
     /// gate against framework creep (ARCHITECTURE.md).
     const PUBLIC_API: &[&str] = &[
-        "AudioCue", "AudioSink", "Bundle", "CommandBuffer", "Component", "CueId", "DynamicBundle", "Entity", "EntityBuilder", "Events", "FixedLoop", "InputQueue", "MAX_FRAME_DT", "NullSink", "Pcg32", "Query", "QueryBorrow", "Ref", "RefMut", "Runner", "Simulation", "Tick", "VecSink", "With", "Without", "World",
+        "AudioCue", "AudioSink", "CommandBuffer", "Component", "CueId", "Entity", "Events", "FixedLoop", "InputQueue", "MAX_FRAME_DT", "NullSink", "Pcg32", "Runner", "Simulation", "Tick", "VecSink", "World",
     ];
 
     // Removals/renames of exported items break compilation HERE; additions
     // must extend PUBLIC_API. (Generic params cover the traits; value params
-    // cover the types; With/Without are query adapters, hence PhantomData.)
+    // cover the types; Component is covered via PhantomData.) The hecs
+    // re-export list is trimmed to what the game actually names (2026-07-05):
+    // queries use tuple syntax, so the adapter/builder types never crossed
+    // the boundary.
     #[allow(dead_code, clippy::too_many_arguments)]
-    fn surface_exists<C: Component, B: Bundle, D: DynamicBundle, Q: Query, S: Simulation>(
+    fn surface_exists<C: Component, S: Simulation>(
         _: Tick, _: FixedLoop, _: InputQueue<()>, _: Events<()>, _: Pcg32,
         _: AudioCue, _: CueId, _: VecSink, _: NullSink, _: &mut dyn AudioSink,
-        _: Runner<S>, _: World, _: Entity, _: CommandBuffer, _: EntityBuilder,
-        _: QueryBorrow<'_, &'static u32>, _: Ref<'_, u32>, _: RefMut<'_, u32>,
-        _: std::marker::PhantomData<(With<&'static u32, ()>, Without<&'static u32, ()>)>,
+        _: Runner<S>, _: World, _: Entity, _: CommandBuffer,
+        _: std::marker::PhantomData<C>,
     ) -> f32 {
         MAX_FRAME_DT
     }
@@ -287,10 +289,9 @@ mod tests {
         assert_eq!(sorted, PUBLIC_API, "keep PUBLIC_API sorted");
         assert_eq!(
             PUBLIC_API.join(" "),
-            "AudioCue AudioSink Bundle CommandBuffer Component CueId DynamicBundle \
-             Entity EntityBuilder Events FixedLoop InputQueue MAX_FRAME_DT NullSink \
-             Pcg32 Query QueryBorrow Ref RefMut Runner Simulation Tick VecSink \
-             With Without World",
+            "AudioCue AudioSink CommandBuffer Component CueId Entity Events \
+             FixedLoop InputQueue MAX_FRAME_DT NullSink Pcg32 Runner Simulation \
+             Tick VecSink World",
         );
     }
 

@@ -217,7 +217,7 @@ fn fill_span(rng: &mut Rng, plans: &mut Vec<Plan>, x0: i32, span: i32, z0: i32, 
     // service: tag 2 consecutive middle slots
     let svc = if service && slots.len() >= 4 { Some(slots.len() / 2) } else { None };
     for (i, &(xo, wd)) in slots.iter().enumerate() {
-        let is_svc = svc.map_or(false, |s| i == s || i == s + 1);
+        let is_svc = svc.is_some_and(|s| i == s || i == s + 1);
         plans.push(Plan { x: x0 + xo, z: z0, w: wd, d: depth, on_top, service: is_svc });
     }
 }
@@ -277,7 +277,7 @@ pub fn house_floor(seed: u64) -> LevelSpec {
     let mut stack = vec![[0, 0, w, h]];
     while let Some(r) = stack.pop() {
         let long = (r[2] - r[0]).max(r[3] - r[1]);
-        let can = long >= 2 * room_min + 1;
+        let can = long > 2 * room_min;
         let must = long > room_max;
         if can && (must || rng.chance(3, 5)) {
             if r[2] - r[0] >= r[3] - r[1] {

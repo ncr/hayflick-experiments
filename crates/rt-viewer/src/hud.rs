@@ -8,7 +8,7 @@
 use crate::backend::Stamp;
 use crate::menu::{mrect, mtext};
 use house_game::game::{Card, DraftState, RunState, Tactic};
-use house_game::{MobRender, WeaponKind};
+use house_game::{GameSnapshot, MobRender, WeaponKind};
 
 const BG: u32 = 0x14141a;
 const BG_SEL: u32 = 0x24242e;
@@ -207,11 +207,13 @@ fn fit_scale(w: i32, rs: u32, ext_w: i64) -> u32 {
 
 /// Assemble this frame's stamps: one bubble per thinking blob (anchored just
 /// above the body via the forward iso projection) + the bottom bar, centred.
-pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>, draft: Option<DraftState>, breach: Option<(u32, u32)>, now_tick: u64, xf: &iso_core::ViewXform, ext: (u32, u32), rs: u32) -> Vec<Stamp> {
+/// Everything HUD-shaped reads off the snapshot — one argument, one source.
+pub fn build_stamps(snap: &GameSnapshot, xf: &iso_core::ViewXform, ext: (u32, u32), rs: u32) -> Vec<Stamp> {
+    let (weapon, score, wave, run, draft, breach) = (snap.weapon, snap.score, snap.wave, snap.run, snap.draft, snap.breach);
     let mut out = Vec::new();
     let (ext_w, ext_h) = (ext.0 as i64, ext.1 as i64);
     let s = rs.max(1) as i64;
-    for m in mobs {
+    for m in &snap.mobs {
         let Some((pix, w, h)) = bubble(m) else { continue };
         let c = m.centroid();
         let top = glam::Vec3::new(c.x, m.radius * 1.1 + 0.35, c.z);
@@ -243,7 +245,6 @@ pub fn build_stamps(mobs: &[MobRender], weapon: Option<(WeaponKind, u32, u32)>, 
     }
     if let Some(r) = run {
         if r.dead || r.won {
-            let _ = now_tick;
             let survived = r.death_tick as f32 * house_game::TICK_DT;
             let (pix, w, h) = run_panel(r.won, wave, score, survived);
             let bs = fit_scale(w, rs, ext_w);

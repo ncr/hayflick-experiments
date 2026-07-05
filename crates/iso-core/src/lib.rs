@@ -26,27 +26,6 @@ pub fn iso_basis(yaw_off_deg: f32) -> (Vec3, Vec3, Vec3) {
     (dir, right, up)
 }
 
-/// Project an AABB into low-res screen space (lowpixels) at scale R for the
-/// given basis, returning (xmin, xmax, ymin, ymax) about the AABB centroid.
-pub fn iso_screen_bounds(min: Vec3, max: Vec3, right: Vec3, up: Vec3) -> (f32, f32, f32, f32) {
-    let centroid = (min + max) * 0.5;
-    let (mut xmin, mut xmax, mut ymin, mut ymax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-    for cx in [min.x, max.x] {
-        for cy in [min.y, max.y] {
-            for cz in [min.z, max.z] {
-                let rel = Vec3::new(cx, cy, cz) - centroid;
-                let sx = rel.dot(right) * ISO_R;
-                let sy = rel.dot(up) * ISO_R;
-                xmin = xmin.min(sx);
-                xmax = xmax.max(sx);
-                ymin = ymin.min(sy);
-                ymax = ymax.max(sy);
-            }
-        }
-    }
-    (xmin, xmax, ymin, ymax)
-}
-
 /// The camera frame an iso view renders with: basis vectors, eye position and
 /// ortho half-extents in world units. Pure data — `render::ShadePush` packs it
 /// for the shader.
@@ -83,15 +62,6 @@ pub fn project_lowres(cam: &CamFrame, w: i32, h: i32, p: Vec3) -> (f32, f32) {
     let u = rel.dot(cam.right) / cam.half_w;
     let v = rel.dot(cam.up) / cam.half_h;
     ((u * 0.5 + 0.5) * w as f32, (0.5 - v * 0.5) * h as f32)
-}
-
-/// The look-at target that centres the scene: the AABB centroid shifted to the
-/// middle of its projected bbox. The viewer seeds its movable target with this.
-pub fn iso_target(scene_min: Vec3, scene_max: Vec3) -> Vec3 {
-    let (_dir, right, up) = iso_basis(0.0);
-    let centroid = (scene_min + scene_max) * 0.5;
-    let (xmin, xmax, ymin, ymax) = iso_screen_bounds(scene_min, scene_max, right, up);
-    centroid + right * ((xmin + xmax) * 0.5 / ISO_R) + up * ((ymin + ymax) * 0.5 / ISO_R)
 }
 
 // ---- pixel-perfect interactive-view rules ----------------------------------

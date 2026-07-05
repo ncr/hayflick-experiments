@@ -13,7 +13,8 @@ use crate::viewer::Viewer;
 use glam::{IVec2, Mat4, Vec2, Vec3};
 use house_game::game::{Facing, Flashlight, Player, Pos};
 use house_game::{parse_trace, Command, DoorId, GameSnapshot, HouseGame, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TICK_DT};
-use rt_probe::{screen_px_to_world, Config, InstanceKey, LightKey, Scene, SceneHandles};
+use iso_core::screen_px_to_world;
+use rt_probe::{Config, InstanceKey, LightKey, Scene, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, Simulation, Tick, VecSink};
 
 /// Vertical flatten applied to the goo metaballs so the body lies on the floor
@@ -330,9 +331,9 @@ impl GameLoop {
     /// DEMO=trace.txt: load the trace and queue every command at its stamp,
     /// returning the tick count to play (DEMO_TICKS override, else last stamp
     /// + 1). Unlike `run_cmds` (a startup PREFIX that runs all ticks before
-    /// frame 0 with no per-frame output), DEMO leaves the queue loaded and the
-    /// caller advances ONE tick per rendered frame via `demo_advance_tick`, so
-    /// every tick of real gameplay becomes a captured frame.
+    ///   frame 0 with no per-frame output), DEMO leaves the queue loaded and the
+    ///   caller advances ONE tick per rendered frame via `demo_advance_tick`, so
+    ///   every tick of real gameplay becomes a captured frame.
     pub fn demo_load(&mut self, cfg: &Config) -> u64 {
         let path = cfg.harness.demo.as_ref().expect("demo_load only on DEMO path");
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("DEMO {path}: {e}"));
@@ -478,7 +479,7 @@ impl GameLoop {
         self.update_glitch();
         // drain the tap into a local list first so the arms below can call
         // &mut self helpers (spawn_sparks) without fighting the tap borrow
-        let evs: Vec<house_game::GameEvent> = self.sim.res.event_tap.as_mut().map(|t| t.drain(..).collect()).unwrap_or_default();
+        let evs: Vec<house_game::GameEvent> = self.sim.res.event_tap.as_mut().map(std::mem::take).unwrap_or_default();
         {
             for ev in evs {
                 match ev {
@@ -743,6 +744,7 @@ impl GameLoop {
     /// axis scale, plus the outward smin bulge — so the shader's two-level
     /// march can trust it as a conservative distance proxy. Pure read of the
     /// hashed field.
+    #[allow(clippy::type_complexity)] // five parallel SoA slices; bundling into a GooFrame struct is queued follow-up work
     pub fn goo_balls(&self) -> (Vec<rt_probe::GooBall>, Vec<f32>, Vec<f32>, Vec<rt_probe::GooBall>, Vec<[f32; 4]>) {
         // Outward bulge of the smin union past the plain sphere union: at most
         // k/4 (k = the shader's GOO_SMIN_K 0.14 → 0.035), plus slack. A too-
@@ -968,7 +970,7 @@ pub fn join_game_lights(spec: &LevelSpec, handles: &SceneHandles, light_count: u
         .iter()
         .map(|l| {
             let key = *handles.lights.get(&l.name).unwrap_or_else(|| panic!("spec light {:?} has no NEE slot — build_game must name_light it", l.name));
-            assert!(prev.map_or(true, |p| key > p), "spec light {:?} slot {key:?} is out of spec order (prev {prev:?}) — the builder must place lights in spec order so flicker index == NEE slot", l.name);
+            assert!(prev.is_none_or(|p| key > p), "spec light {:?} slot {key:?} is out of spec order (prev {prev:?}) — the builder must place lights in spec order so flicker index == NEE slot", l.name);
             prev = Some(key);
             (key, l.kind, l.base_rgb)
         })
@@ -1041,7 +1043,7 @@ impl Viewer {
 mod tests {
     use super::*;
     use crate::viewer::shot_sim_dt;
-    use rt_probe::iso::{iso_basis, snap_ground_to_lattice, ISO_R};
+    use iso_core::{iso_basis, snap_ground_to_lattice, ISO_R};
 
     /// SHOT mode selects dt = 0 regardless of the wall-clock delta — the pure
     /// selection that `draw()` makes before feeding the fixed loop. This pins

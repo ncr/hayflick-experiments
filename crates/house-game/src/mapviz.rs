@@ -25,10 +25,13 @@ const LABEL: [u8; 3] = [22, 22, 28];
 const HDR_FG: [u8; 3] = [220, 224, 235];
 const OUTLINE: [u8; 3] = [12, 13, 17];
 
+/// A world-space overlay segment: (from, to) in world XZ.
+pub type Seg = ((f32, f32), (f32, f32));
+
 /// Render `spec` (its grid is `gw`×`gh` cells) into a labelled top-down map.
 /// `header` is the stats line; `overlay` draws cyan connectivity segments in
 /// world coordinates (pass `&[]` for none).
-pub fn render(spec: &LevelSpec, gw: i32, gh: i32, header: &str, overlay: &[((f32, f32), (f32, f32))]) -> Canvas {
+pub fn render(spec: &LevelSpec, gw: i32, gh: i32, header: &str, overlay: &[Seg]) -> Canvas {
     let cw = (MARGIN * 2 + gw * PX) as usize;
     let ch = (MARGIN * 2 + HDR + gh * PX) as usize;
     let mut c = Canvas::new(cw, ch, BG);

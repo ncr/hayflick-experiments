@@ -328,7 +328,7 @@ impl<S: AudioSink> HouseGame<S> {
                 }
             }
             let dp = (*c - player).length();
-            if dp < 1.6 || dp > 8.5 {
+            if !(1.6..=8.5).contains(&dp) {
                 continue;
             }
             if los_clear2(solids, &self.res.chunks, *c, player) {
@@ -338,7 +338,7 @@ impl<S: AudioSink> HouseGame<S> {
             if db > 7.0 {
                 continue;
             }
-            if best.map_or(true, |(bd, _)| db < bd) {
+            if best.is_none_or(|(bd, _)| db < bd) {
                 best = Some((db, *c));
             }
         }
@@ -609,7 +609,7 @@ pub fn comm_pulse(tac: Tactic, strike: u64, tick: u64) -> f32 {
     let rem = strike - tick;
     // blink period tightens as the strike nears: 20 ticks -> 5
     let period = (rem / 8).clamp(5, 20);
-    let on = (rem / period) % 2 == 0;
+    let on = (rem / period).is_multiple_of(2);
     if on {
         // brighter as it gets closer
         let total = COMM_DELAY + COMM_JITTER;
@@ -768,7 +768,7 @@ mod tests {
         // somewhere in the countdown it is lit, and it goes dark in between
         let lit: Vec<f32> = (900..1000).map(|t| comm_pulse(Tactic::CoordWait, strike, t)).collect();
         assert!(lit.iter().any(|&v| v > 0.0), "blinks on");
-        assert!(lit.iter().any(|&v| v == 0.0), "blinks off");
+        assert!(lit.contains(&0.0), "blinks off");
         // late pulses are brighter than early ones
         let early = lit.iter().take(20).cloned().fold(0.0f32, f32::max);
         let late = lit.iter().rev().take(20).cloned().fold(0.0f32, f32::max);

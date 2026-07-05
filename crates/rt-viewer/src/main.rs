@@ -20,12 +20,19 @@
 //!   via the pre-baked probe banks)
 //! - r — record a clip at exact game resolution: stop writes BOTH
 //!   clips/clip_NNNN.mp4 (x264, NEAREST 4x) and .gif (palette, 1x, half rate)
-//! - Esc — tune menu (sliders + toggles + quit; also the hamburger icon
-//!   top-left). Closing the menu prints the env string that reproduces the
-//!   dialed-in values.
+//! - Arena levels (SCENE=arena / drain): mouse aims the turret
+//!   (Command::Aim), LMB fires + holds for autofire, 1–5 select weapons,
+//!   Z/X/C pick draft cards, Space restarts after a run ends, V saves the
+//!   death-reel clip
+//! - Esc — dev scenes: tune menu (sliders + toggles + quit; also the
+//!   hamburger icon top-left; closing prints the env string that reproduces
+//!   the dialed-in values). Arena: the PAUSE menu (settings is a submenu)
 //!
-//! Scenes (SCENE=): house (default, dollhouse walls + player), lab (renderer
-//! isolation), grid (the web grid-walker rematch: fixed camera, open level).
+//! Scenes (SCENE=): cave (default, procedural dungeon), arena (the goo
+//! shooter) + drain/squeeze variants, the goo film stages (goo, goofloor,
+//! goonursery, goopair, playground, range), house/lab/grid (golden-pinned
+//! render scenes), village + the building floors (home/hospital/office/
+//! factory). The full dispatch is `Viewer::new`.
 //!
 //! Headless harness (see config.rs): SHOT / SHOT_DELAY one-frame capture
 //! (truly window-less — no surface/swapchain, extent taken from WINDOW;

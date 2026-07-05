@@ -10,7 +10,7 @@
 //! below. No Vulkan/Metal type ever appears in `Viewer`.
 
 use glam::{Vec2, Vec3};
-use rt_probe::iso::{iso_basis, CamFrame, ISO_R};
+use iso_core::{iso_basis, CamFrame, ISO_R};
 use rt_probe::{Config, FrameState, Scene, SceneHandles, StyleCfg};
 use winit::window::Window;
 
@@ -109,11 +109,10 @@ pub struct Stamp {
 }
 
 pub struct Overlay<'a> {
-    pub menu: (&'a [u32], i32, i32),         // canvas, w, h
+    pub menu: (&'a [u32], i32, i32), // canvas, w, h
     /// Center the menu canvas on the window (the arena TITLE / PAUSE game
     /// menus) instead of pinning it at the top-left margin (tune panel).
     pub menu_center: bool,
-    pub score: Option<(&'a [u32], i32, i32)>, // player scenes: corner HUD
 }
 
 /// The GPU half of the renderer. Owns the device, scene GPU resources, the
