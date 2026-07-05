@@ -81,15 +81,16 @@ pub const PISTOL: WeaponSpec = WeaponSpec {
     cooldown_ticks: PISTOL_COOLDOWN_TICKS,
 };
 
-/// Slot 1 — the RIVET slug gun: slow trigger, a fat SLOW round (12 wu/s vs the
-/// pistol's 26 — you LEAD a crawling blob or you miss) and a brutal fluid
+/// Slot 1 — the RIVET slug gun: slow trigger, a fat SLOW round (11 wu/s vs the
+/// pistol's 26 — you LEAD a crawling blob or you miss; D6 retune 12→11 leans
+/// harder into the commitment) and a brutal fluid
 /// punch. Zero bloom: where you aim is where it flies. Each hit adds a CURE
 /// stack (slows + stiffens); a body that dies with ≥GOO_CURE_CHUNK stacks
 /// SOLIDIFIES into a dead chunk instead of splitting free. Damage 4 on
 /// purpose: a Large takes three committed slugs (4+4+4 = 12 hp) and dies
 /// exactly at the chunk threshold — the weapon is a plan, not a delete key.
 pub const SLUG: WeaponSpec = WeaponSpec {
-    muzzle_speed: 12.0,
+    muzzle_speed: 11.0,
     gravity: 0.0,
     radius: 0.12,
     damage: 4,
