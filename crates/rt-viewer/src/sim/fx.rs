@@ -71,6 +71,13 @@ pub struct Fx {
     /// Ticks since the arming shot (drives the linear rail recover and the
     /// shotgun's 1-tick whole-gun shove).
     pub recoil_age: u32,
+    /// Weapon-raise 1→0 (W3): armed when the snapshot's selected slot
+    /// changes, drained over the sim's WEAPON_RAISE_TICKS window — the gun
+    /// ring lerps up from the holster exactly while the sim's raise
+    /// cooldown blocks the trigger.
+    pub raise: f32,
+    /// Last frame's selected weapon — the swap edge detector for `raise`.
+    pub(super) prev_weapon: Option<house_game::WeaponKind>,
     /// Screenshake trauma 0..1 — shots and detonations add, offset is
     /// trauma² (small hits barely tickle, a boom really throws the frame).
     pub trauma: f32,
@@ -126,6 +133,8 @@ impl Fx {
             recoil_class: house_game::WeaponClass::Standard,
             recoil_peak: 0.0,
             recoil_age: 0,
+            raise: 0.0,
+            prev_weapon: None,
             trauma: 0.0,
             hit_flash: Vec::new(),
             prev_player: player0,
@@ -167,6 +176,20 @@ impl GameLoop {
         // the frame drawn right after this call sees age 0 on the shot tick
         // (the shotgun's 1-tick shove and the harpoon's linear ramp read it)
         self.fx.recoil_age = self.fx.recoil_age.saturating_add(n);
+        // W3: a weapon swap raises the NEW gun from the holster — the lerp
+        // runs 1→0 over the same WEAPON_RAISE_TICKS window the sim's raise
+        // cooldown blocks the trigger for. First-frame arming (prev None)
+        // stays quiet: the spawn gun is already up.
+        let sel = self.snap.weapon.map(|w| w.0);
+        if sel != self.fx.prev_weapon {
+            if self.fx.prev_weapon.is_some() && sel.is_some() {
+                self.fx.raise = 1.0;
+            }
+            self.fx.prev_weapon = sel;
+        }
+        if n > 0 && self.fx.raise > 0.0 {
+            self.fx.raise = (self.fx.raise - n as f32 / house_game::WEAPON_RAISE_TICKS as f32).max(0.0);
+        }
         self.update_glitch();
         // drain the tap into a local list first so the arms below can call
         // &mut self helpers (spawn_sparks) without fighting the tap borrow

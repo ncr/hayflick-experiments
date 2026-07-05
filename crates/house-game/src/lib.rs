@@ -37,7 +37,7 @@ pub mod village;
 pub use building::{building_floor, factory_floor, house_floor, BuildingParams};
 pub use cave::{cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE};
 pub use floorplan::{enclose, WallOpts};
-pub use game::{Command, GameEvent, GameSnapshot, HouseGame, MobRender, PickRay, WeaponClass, WeaponKind, GOO_CHUNK_CAP, GOO_CHUNK_H, GOO_CURE_MAX, GOO_LIVE_CAP, GOO_PARTICLES, TICK_DT};
+pub use game::{Command, GameEvent, GameSnapshot, HouseGame, MobRender, PickRay, WeaponClass, WeaponKind, GOO_CHUNK_CAP, GOO_CHUNK_H, GOO_CURE_MAX, GOO_LIVE_CAP, GOO_PARTICLES, TICK_DT, WEAPON_RAISE_TICKS};
 pub use lab::{run_scenario, Scenario};
 pub use spec::{arena_level, drain_level, fixture, game_level, goo_level, goofloor_level, goonursery_level, goopair_level, playground_level, shooting_range_level, squeeze_level, survival_level, DoorId, DoorSpec, GooKind, ItemKind, LevelSpec, LightId, LightKind, LightSpec, MobId, RoomId, RoomSpec, TargetSpec};
 pub use trace::parse_trace;

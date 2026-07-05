@@ -5,7 +5,8 @@
 use super::*;
 use crate::flashlight_pose;
 use crate::spec::{ProjectileId, TargetId};
-use glam::Vec3;
+use glam::{Vec2, Vec3};
+use iso_core::{iso_basis, ISO_R};
 use sim_core::{AudioSink, Entity};
 
 /// A data-driven weapon. Firing spawns `pellets` physical [`Projectile`]s along
@@ -185,6 +186,18 @@ pub const HARPOON: WeaponSpec = WeaponSpec {
 /// Ticks the explosion flash spotlight stays lit (longer than the 2-tick
 /// muzzle blink — a detonation lingers).
 pub const BOOM_FLASH_TICKS: u32 = 6;
+
+/// W3: a REAL weapon swap arms a raise — the shared [`GunCooldown`] extends
+/// to at least this many ticks, so the new gun takes a beat to come up
+/// before it can fire (kills swap-scumming; the shell lerps the gun ring up
+/// over the same window). Re-selecting the current slot is free.
+pub const WEAPON_RAISE_TICKS: u32 = 12;
+
+/// W2: total screen-px the shotgun's blast shoves the SHOOTER back along
+/// −aim (Newton for free). The impulse lands in the arena walk-momentum
+/// channel and decays under [`WALK_DECEL`], so this is the settled travel,
+/// not the per-tick step.
+pub const SHOTGUN_SHOVE_PX: f32 = 6.0;
 
 /// The five arena weapon slots (keys 1–5). Selection state, not ballistics:
 /// each kind maps to a [`WeaponSpec`] in [`HouseGame::current_weapon`].
@@ -476,6 +489,22 @@ impl<S: AudioSink> HouseGame<S> {
             }
             self.res.muzzle_ticks = MUZZLE_FLASH_TICKS;
             self.res.events.emit(GameEvent::ShotFired(muzzle, w.class));
+            // W2: the shotgun blast shoves the SHOOTER back along −aim
+            // through the walk-momentum channel (arena state by
+            // construction — only an arsenal fires Shotgun-class rounds).
+            // Point-blank volleys reposition you; the first weapon felt in
+            // the legs, not the hands.
+            if w.class == WeaponClass::Shotgun {
+                if let Some(back) = Vec2::new(-ray.dir.x, -ray.dir.z).try_normalize() {
+                    let yaw = 90.0 * self.res.yaw_q as f32;
+                    let (_d, right, up) = iso_basis(yaw);
+                    let bw = Vec3::new(back.x, 0.0, back.y);
+                    let px = Vec2::new(bw.dot(right) * ISO_R, -bw.dot(up) * ISO_R);
+                    // impulse = travel × decay rate: the WALK_DECEL geometric
+                    // tail integrates back to ~SHOTGUN_SHOVE_PX of skid
+                    self.res.arena.walk_vel_px += px.normalize_or_zero() * (SHOTGUN_SHOVE_PX * WALK_DECEL);
+                }
+            }
             // birth the slug ON the aim ray, at the point level with the muzzle —
             // so its flat flight path is exactly the old hitscan line (the same
             // target/blob it would have hit, just reached over time).

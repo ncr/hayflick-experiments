@@ -91,10 +91,18 @@ impl<S: AudioSink> HouseGame<S> {
                 Command::RotateCamera { dq } => self.res.yaw_q = (self.res.yaw_q as i32 + *dq as i32).rem_euclid(4) as u32,
                 Command::Use { kind } => self.res.staging.use_items.push(*kind), // applied by use_system
                 Command::SelectWeapon { slot } => {
-                    // arsenal levels only; unknown slots are swallowed. Selection
-                    // is instant and does NOT reset the shared cooldown timer.
+                    // arsenal levels only; unknown slots are swallowed. A REAL
+                    // swap arms a raise (W3): the shared cooldown extends to at
+                    // least WEAPON_RAISE_TICKS — the new gun takes a beat to
+                    // come up, and swap-scumming can never SHORTEN a running
+                    // timer (max, the anti-exploit). Re-selecting the current
+                    // slot stays free.
                     if let (Some(a), Some(k)) = (self.res.arena.arsenal.as_mut(), WeaponKind::from_slot(*slot)) {
-                        a.current = k;
+                        if a.current != k {
+                            a.current = k;
+                            let mut cd = self.world.get::<&mut GunCooldown>(self.player).unwrap();
+                            cd.cooldown_ticks = cd.cooldown_ticks.max(WEAPON_RAISE_TICKS);
+                        }
                     }
                 }
                 Command::PickCard { slot } => self.pick_card(*slot),

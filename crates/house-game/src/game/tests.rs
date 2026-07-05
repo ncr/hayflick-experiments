@@ -840,13 +840,15 @@ fn arena_weapons_replay_deterministically() {
     let run = || {
         let mut g = HouseGame::new(&spec, VecSink::default());
         for t in 0..240u64 {
+            // shots land ≥ WEAPON_RAISE_TICKS after each swap so every
+            // trigger pull actually fires (the W3 raise swallows earlier ones)
             let cmds: Vec<Command> = match t {
                 10 => vec![Command::SelectWeapon { slot: 2 }],
-                20 | 26 | 32 => vec![arena_aim(0.0, 2.0), Command::Move { dir: IVec2::new(1, 0) }],
+                24 | 30 | 36 => vec![arena_aim(0.0, 2.0), Command::Move { dir: IVec2::new(1, 0) }],
                 60 => vec![Command::SelectWeapon { slot: 3 }],
-                70 | 110 => vec![arena_aim(4.0, 0.5)],
+                74 | 114 => vec![arena_aim(4.0, 0.5)],
                 150 => vec![Command::SelectWeapon { slot: 1 }],
-                160 => vec![arena_aim(-4.0, 1.0)],
+                164 => vec![arena_aim(-4.0, 1.0)],
                 _ => vec![],
             };
             g.tick(Tick(t), &cmds);
@@ -859,10 +861,14 @@ fn arena_weapons_replay_deterministically() {
 #[test]
 fn shotgun_fires_seven_pellets_and_uzi_blooms_wider_moving() {
     let spec = crate::spec::arena_level();
-    // shotgun: one trigger pull births `pellets` projectiles
+    // shotgun: one trigger pull births `pellets` projectiles (fired after
+    // the W3 raise window so the pull isn't swallowed)
     let mut g = HouseGame::new(&spec, VecSink::default());
     g.tick(Tick(0), &[Command::SelectWeapon { slot: 3 }]);
-    g.tick(Tick(1), &[arena_aim(0.0, 2.0)]);
+    for t in 1..13u64 {
+        g.tick(Tick(t), &[]);
+    }
+    g.tick(Tick(13), &[arena_aim(0.0, 2.0)]);
     assert_eq!(g.snapshot().projectiles.len(), SHOTGUN.pellets as usize);
 
     // uzi bloom: the same trigger tick fired while HOLDING a move key must
@@ -871,11 +877,14 @@ fn shotgun_fires_seven_pellets_and_uzi_blooms_wider_moving() {
     let fire_at = |moving: bool| -> Vec3 {
         let mut g = HouseGame::new(&spec, VecSink::default());
         g.tick(Tick(0), &[Command::SelectWeapon { slot: 2 }]);
+        for t in 1..13u64 {
+            g.tick(Tick(t), &[]);
+        }
         let mut cmds = vec![arena_aim(0.0, 2.0)];
         if moving {
             cmds.push(Command::Move { dir: IVec2::new(1, 0) });
         }
-        g.tick(Tick(1), &cmds);
+        g.tick(Tick(13), &cmds);
         let e = g.projectiles[0];
         let vel = g.world.get::<&Projectile>(e).unwrap().vel;
         vel
@@ -889,6 +898,73 @@ fn shotgun_fires_seven_pellets_and_uzi_blooms_wider_moving() {
 }
 
 #[test]
+fn weapon_swap_arms_a_raise_before_firing() {
+    // W3: a REAL swap extends the shared cooldown to ≥ WEAPON_RAISE_TICKS so
+    // the new gun takes a beat to come up; re-selecting the current slot is
+    // free; and a swap can never SHORTEN a running cooldown.
+    let spec = crate::spec::arena_level();
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    g.tick(Tick(0), &[Command::SelectWeapon { slot: 2 }]);
+    g.tick(Tick(1), &[arena_aim(0.0, 2.0)]);
+    assert!(g.projectiles.is_empty(), "trigger during the raise is swallowed");
+    for t in 2..12u64 {
+        g.tick(Tick(t), &[]);
+    }
+    g.tick(Tick(12), &[arena_aim(0.0, 2.0)]);
+    assert_eq!(g.projectiles.len(), 1, "the raise is over — the uzi fires");
+
+    // re-selecting the CURRENT slot must not re-arm the raise: the same
+    // fire tick still works
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    g.tick(Tick(0), &[Command::SelectWeapon { slot: 2 }]);
+    g.tick(Tick(2), &[Command::SelectWeapon { slot: 2 }]);
+    for t in 3..12u64 {
+        g.tick(Tick(t), &[]);
+    }
+    g.tick(Tick(12), &[arena_aim(0.0, 2.0)]);
+    assert_eq!(g.projectiles.len(), 1, "re-selecting the held slot is free");
+
+    // swapping mid-cooldown keeps the LONGER timer (the anti-exploit)
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    g.tick(Tick(0), &[arena_aim(0.0, 2.0)]); // slug fires, cd = 45
+    assert_eq!(g.projectiles.len(), 1);
+    g.tick(Tick(1), &[Command::SelectWeapon { slot: 2 }]);
+    let cd = g.world.get::<&GunCooldown>(g.player).unwrap().cooldown_ticks;
+    assert!(cd > WEAPON_RAISE_TICKS, "the slug's cooldown survives the swap: {cd}");
+}
+
+#[test]
+fn shotgun_blast_shoves_the_shooter_back() {
+    // W2: firing the shotgun kicks the SHOOTER back along −aim through the
+    // walk-momentum channel. The spawn aim points −z, so the skid drifts the
+    // player +z; the slug (default slot) pays no self-knockback.
+    let spec = crate::spec::arena_level();
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    g.tick(Tick(0), &[Command::SelectWeapon { slot: 3 }]);
+    for t in 1..13u64 {
+        g.tick(Tick(t), &[]);
+    }
+    let before = g.player_pos();
+    g.tick(Tick(13), &[arena_aim(0.0, 2.0)]);
+    assert!(!g.projectiles.is_empty(), "the volley fired");
+    for t in 14..40u64 {
+        g.tick(Tick(t), &[]);
+    }
+    let after = g.player_pos();
+    assert!(after.z - before.z > 0.05, "the volley shoves the shooter back (+z): {} -> {}", before.z, after.z);
+    assert!((after.x - before.x).abs() < 0.02, "the shove is along −aim only");
+
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    let before = g.player_pos();
+    g.tick(Tick(0), &[arena_aim(0.0, 2.0)]);
+    assert!(!g.projectiles.is_empty());
+    for t in 1..30u64 {
+        g.tick(Tick(t), &[]);
+    }
+    assert_eq!(g.player_pos(), before, "only the shotgun kicks the shooter");
+}
+
+#[test]
 fn grenade_bounces_off_the_wall_and_replays_bit_exact() {
     // fire a grenade at the arena's south wall (z = 10, 4 wu behind the
     // spawn): it must SURVIVE the wall hit with its z-velocity reflected,
@@ -897,11 +973,14 @@ fn grenade_bounces_off_the_wall_and_replays_bit_exact() {
     let run = || {
         let mut g = HouseGame::new(&spec, VecSink::default());
         g.tick(Tick(0), &[Command::SelectWeapon { slot: 4 }]);
+        for t in 1..13u64 {
+            g.tick(Tick(t), &[]);
+        }
         let ray = PickRay { origin: Vec3::new(0.0, 1.25, 6.0), dir: Vec3::new(0.0, -0.05, 1.0).normalize() };
-        g.tick(Tick(1), &[Command::Shoot { ray }]);
+        g.tick(Tick(13), &[Command::Shoot { ray }]);
         let mut bounced = false;
         let mut hashes = Vec::new();
-        for t in 2..140u64 {
+        for t in 14..152u64 {
             g.tick(Tick(t), &[]);
             if let Some(&e) = g.projectiles.first() {
                 let p = *g.world.get::<&Projectile>(e).unwrap();
@@ -934,9 +1013,12 @@ fn grenade_blast_damages_both_blobs_of_a_pair() {
     let mut g = HouseGame::new(&spec, VecSink::default());
     g.res.event_tap = Some(Vec::new());
     g.tick(Tick(0), &[Command::SelectWeapon { slot: 4 }]);
+    for t in 1..13u64 {
+        g.tick(Tick(t), &[]);
+    }
     let ray = PickRay { origin: Vec3::new(0.0, 1.25, 4.0), dir: Vec3::new(0.0, -0.9, -4.0).normalize() };
-    g.tick(Tick(1), &[Command::Shoot { ray }]);
-    for t in 2..220u64 {
+    g.tick(Tick(13), &[Command::Shoot { ray }]);
+    for t in 14..232u64 {
         g.tick(Tick(t), &[]);
     }
     let tap = g.res.event_tap.take().unwrap();

@@ -658,7 +658,14 @@ impl Viewer {
                     use house_game::WeaponClass as W;
                     let f = self.game.snap.facing;
                     let kick = self.game.fx.recoil;
-                    let base = Mat4::from_translation(self.game.snap.player_pos) * Mat4::from_rotation_y(f.x.atan2(f.y));
+                    let mut base = Mat4::from_translation(self.game.snap.player_pos) * Mat4::from_rotation_y(f.x.atan2(f.y));
+                    // W3 raise: a fresh swap lerps the NEW gun up from the
+                    // holster (dropped + pitched down) over the same window
+                    // the sim's raise cooldown blocks the trigger for
+                    let raise = self.game.fx.raise;
+                    if raise > 0.0 {
+                        base = base * Mat4::from_translation(glam::Vec3::new(0.0, -0.16 * raise, -0.04 * raise)) * Mat4::from_rotation_x(0.55 * raise);
+                    }
                     match self.game.fx.recoil_class {
                         // deep kick, slow recover — the gun REMEMBERS the shot
                         W::Slug => base * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.13 * kick)) * Mat4::from_rotation_x(-0.30 * kick),
