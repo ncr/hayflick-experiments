@@ -67,6 +67,8 @@ pub struct Viewer {
     /// Blob ids whose comm pulse was lit last frame (blink edge detector
     /// for the pact tick sound; presentation-only).
     pub comm_lit: Vec<u32>,
+    /// fx_frame of the last drain-gurgle retrigger (the L2 positional loop).
+    pub gurgle_frame: u32,
     /// Death-reel latch: the run's death has been journaled to disk.
     pub reel_saved: Option<std::path::PathBuf>,
     pub menu: MenuState,
@@ -170,6 +172,7 @@ impl Viewer {
             run_spec,
             audio,
             comm_lit: Vec::new(),
+            gurgle_frame: 0,
             reel_saved: None,
             exposure: cfg.render.exposure,
             style: cfg.render.style,
@@ -409,6 +412,7 @@ impl Viewer {
         instances.extend(self.game.spark_instances());
         instances.extend(self.game.rail_instances());
         instances.extend(self.game.puff_instances());
+        instances.extend(self.game.flow_instances());
         let goo = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
@@ -575,6 +579,21 @@ impl Viewer {
             // hover-servo steps: the walk cadence accumulated by tick_fx
             for _ in 0..self.game.take_steps() {
                 a.play("step", 1.0);
+            }
+            // L2: the drain gurgle — a soft wet loop re-triggered on the
+            // tick clock from the mouth, louder standing near it and as
+            // LEAK climbs (containment scenes only)
+            if let Some(z) = self.game.sim.res.arena.drain {
+                let f = self.game.fx_frame();
+                if f.wrapping_sub(self.gurgle_frame) >= 52 {
+                    self.gurgle_frame = f;
+                    let c = glam::Vec2::new((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5);
+                    let p = self.game.snap.player_pos;
+                    let d = (glam::Vec2::new(p.x, p.z) - c).length();
+                    let leak = self.game.snap.breach.map(|(l, cap)| l as f32 / cap as f32).unwrap_or(0.0);
+                    let gain = ((1.1 - d * 0.07) * (0.55 + 0.45 * leak)).clamp(0.12, 0.9);
+                    a.play("drain_gurgle", gain);
+                }
             }
         }
     }

@@ -1052,6 +1052,39 @@ fn tank_resists_small_arms_but_not_the_slug() {
 }
 
 #[test]
+fn wave_incoming_telegraphs_the_landing() {
+    // L1: WaveIncoming fires exactly WAVE_TELEGRAPH_TICKS before the squad
+    // lands, names the incoming wave, and rides the klaxon cue.
+    let mut spec = crate::spec::arena_level();
+    spec.mobs = vec![]; // clear floor: the first lull runs immediately
+    let mut g = HouseGame::new(&spec, VecSink::default());
+    g.res.event_tap = Some(Vec::new());
+    let (mut warn_at, mut land_at) = (None, None);
+    for t in 0..400u64 {
+        g.tick(Tick(t), &[]);
+        for ev in g.res.event_tap.as_mut().unwrap().drain(..) {
+            match ev {
+                GameEvent::WaveIncoming(i) => {
+                    warn_at.get_or_insert((t, i));
+                }
+                GameEvent::WaveLanded(i) => {
+                    land_at.get_or_insert((t, i));
+                }
+                _ => {}
+            }
+        }
+        if land_at.is_some() {
+            break;
+        }
+    }
+    let (wt, wi) = warn_at.expect("the telegraph fired");
+    let (lt, li) = land_at.expect("the squad landed");
+    assert_eq!(wi, li, "the telegraph names the incoming wave");
+    assert_eq!(lt - wt, WAVE_TELEGRAPH_TICKS as u64, "fired exactly the telegraph window ahead");
+    assert!(g.sink.0.iter().any(|c| c.id.0 == "wave_warn"), "the klaxon cue plays");
+}
+
+#[test]
 fn kind_gait_period_and_viscosity_keep_green_exact() {
     // G2/G4: species motion identity is kind-gated. Green keeps the EXACT
     // historical constants — the all-Green hash oracles pin the float path,

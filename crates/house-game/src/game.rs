@@ -179,6 +179,9 @@ pub enum GameEvent {
     ShotFired(Vec3, WeaponClass),
     /// A grenade detonated at the point — the boom cue + the big shake.
     Detonated(Vec3),
+    /// A squad lands in WAVE_TELEGRAPH_TICKS (its 1-based index) — the L1
+    /// countdown beat: klaxon swell + the entrance pads pulse amber→red.
+    WaveIncoming(u32),
     /// A wave squad just landed (its 1-based index) — the lull-over beat.
     WaveLanded(u32),
     /// A hard round died on a wall / chunk / the floor (impact point, surface

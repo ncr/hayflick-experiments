@@ -1563,6 +1563,14 @@ impl<S: AudioSink> HouseGame<S> {
             if w.lull == w.lull_full {
                 self.open_draft(); // the clear just landed: deal the lull hand
             }
+            // L1: the landing telegraph — checked BEFORE the decrement so the
+            // squad lands exactly WAVE_TELEGRAPH_TICKS later (the spawn takes
+            // one extra tick after the lull exhausts). Only when a squad is
+            // actually coming, not before the win beat. Event-only: nothing
+            // hashed moves.
+            if w.lull == WAVE_TELEGRAPH_TICKS && w.idx < SHIFT_WAVES {
+                self.res.events.emit(GameEvent::WaveIncoming(w.idx as u32 + 1));
+            }
             w.lull -= 1;
             self.res.arena.wave = Some(w);
             return;

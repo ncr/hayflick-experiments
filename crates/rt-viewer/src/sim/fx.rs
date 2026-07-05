@@ -76,6 +76,10 @@ pub struct Fx {
     /// ring lerps up from the holster exactly while the sim's raise
     /// cooldown blocks the trigger.
     pub raise: f32,
+    /// Ticks left of the incoming-wave telegraph (L1): armed by
+    /// `WaveIncoming` at WAVE_TELEGRAPH_TICKS, drained on the tick clock —
+    /// frame_spotlights pulses the entrance pads amber→red while it runs.
+    pub wave_warn: u32,
     /// Last frame's selected weapon — the swap edge detector for `raise`.
     pub(super) prev_weapon: Option<house_game::WeaponKind>,
     /// Screenshake trauma 0..1 — shots and detonations add, offset is
@@ -135,6 +139,7 @@ impl Fx {
             recoil_age: 0,
             raise: 0.0,
             prev_weapon: None,
+            wave_warn: 0,
             trauma: 0.0,
             hit_flash: Vec::new(),
             prev_player: player0,
@@ -268,8 +273,14 @@ impl GameLoop {
                         self.fx.trauma = (self.fx.trauma + 0.65).min(1.0);
                         self.fx.freeze = self.fx.freeze.max(3);
                     }
+                    house_game::GameEvent::WaveIncoming(_) => {
+                        // L1: open the telegraph window — the pads pulse and
+                        // the blink accelerates until the squad hits
+                        self.fx.wave_warn = house_game::game::WAVE_TELEGRAPH_TICKS as u32;
+                    }
                     house_game::GameEvent::WaveLanded(_) => {
                         self.fx.trauma = (self.fx.trauma + 0.30).min(1.0);
+                        self.fx.wave_warn = 0; // the drop closes its own countdown
                     }
                     house_game::GameEvent::MobHit(id, _, resisted) => {
                         // blink the surviving body hot white (dead ones already
@@ -381,6 +392,7 @@ impl GameLoop {
         }
         if n > 0 {
             self.fx.impact_flash = self.fx.impact_flash.and_then(|(at, ttl, w)| (ttl > n).then(|| (at, ttl - n, w)));
+            self.fx.wave_warn = self.fx.wave_warn.saturating_sub(n);
         }
         // per-blob motion estimate off centroid deltas (tick-clocked): the
         // Runner's light flickers with agitation and its sprint tilts along

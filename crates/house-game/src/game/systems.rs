@@ -339,6 +339,8 @@ impl<S: AudioSink> HouseGame<S> {
                     gain: 1.0,
                 },
                 GameEvent::Detonated(p) => AudioCue { id: CueId("boom"), pos: Some(p), gain: 1.0 },
+                // L1: the incoming-squad klaxon — a full second of "get ready"
+                GameEvent::WaveIncoming(_) => AudioCue { id: CueId("wave_warn"), pos: None, gain: 0.9 },
                 GameEvent::WaveLanded(_) => AudioCue { id: CueId("wave_land"), pos: None, gain: 1.0 },
                 GameEvent::Impact(p, _, _) => AudioCue { id: CueId("impact"), pos: Some(p), gain: 0.6 },
                 GameEvent::TargetHit(_, p) => AudioCue { id: CueId("target_hit"), pos: Some(p), gain: 1.0 },

@@ -333,6 +333,45 @@ impl Viewer {
                 tint: [1.0, 0.72, 0.4],
             });
         }
+        // L1: the incoming-wave telegraph — the three north entrance pads
+        // pulse, amber cooling to red with the blink accelerating as the
+        // drop nears (the countdown the body can feel). A spotlight overlay
+        // on the authored pad decals; wave_warn only ever arms on arena
+        // levels, so no other scene sees it.
+        let warn = self.game.fx.wave_warn;
+        if warn > 0 {
+            let t = 1.0 - warn as f32 / house_game::game::WAVE_TELEGRAPH_TICKS as f32;
+            let period = (12.0 - 8.0 * t).max(3.0);
+            if ((self.game.fx_frame() as f32 / period) as u32).is_multiple_of(2) {
+                let tint = [1.0, 0.55 - 0.40 * t, 0.12 * (1.0 - t)]; // amber → red
+                for k in 0..3 {
+                    let a = std::f32::consts::PI * (1.25 + 0.25 * k as f32);
+                    let q = |x: f32| (x * 4.0).round() * 0.25; // the pads' stair-grid snap
+                    let (cx, cz) = (q(a.cos() * 7.0), q(a.sin() * 7.0));
+                    v.push(Spotlight { pos: glam::Vec3::new(cx, 0.55, cz), dir: glam::Vec3::NEG_Y, cone_cos: 55.0f32.to_radians().cos(), power: 300.0 + 500.0 * t, radius: 0.10, tint });
+                }
+            }
+        }
+        // L2: past half LEAK the drain zone runs HOT — a low red wash over
+        // the mouth (the strips can't recolor; the light can) that deepens
+        // with the meter. Drain scenes only (breach is None elsewhere).
+        if let Some((leak, cap)) = snap.breach {
+            let ratio = leak as f32 / cap as f32;
+            if ratio >= 0.5 {
+                if let Some(z) = self.game.sim.res.arena.drain {
+                    let heat = (ratio - 0.5) * 2.0; // 0 at half, 1 at cap
+                    let (cx, cz) = ((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5);
+                    v.push(Spotlight {
+                        pos: glam::Vec3::new(cx, 1.4, cz),
+                        dir: glam::Vec3::NEG_Y,
+                        cone_cos: 80.0f32.to_radians().cos(),
+                        power: 900.0 + 1400.0 * heat,
+                        radius: 0.30,
+                        tint: [1.0, 0.22, 0.10],
+                    });
+                }
+            }
+        }
         v
     }
 }

@@ -154,6 +154,9 @@ pub const LIGHTS_OUT_WAVE: u16 = 3;
 pub const BREACH_CAP: u32 = 16;
 /// Waves to survive to CLEAR the shift — the run's win condition.
 pub const SHIFT_WAVES: u16 = 8;
+/// L1: ticks before a squad lands that `WaveIncoming` fires — the shell's
+/// klaxon + entrance-pad pulse window (the countdown the body can feel).
+pub const WAVE_TELEGRAPH_TICKS: u16 = 60;
 
 // ---- integrity (the arena fail state) ---------------------------------------
 /// A fluid particle within this margin of the player pillar counts as

@@ -87,6 +87,12 @@ pub struct GameLoop {
     /// Per-class tracer pools + muzzle-FX pools (arena scenes only; all
     /// empty elsewhere, which selects the legacy shared-pool tracer path).
     pub trc: TracerPools,
+    /// Reserved drain-current mote slots ("flow_slot_N", containment scenes
+    /// only) — scrolled into the sieve mouths by `flow_instances` (L2).
+    pub flow_slots: Vec<InstanceKey>,
+    /// One (start, mouth) pair per sieve slot: the lane each flow mote
+    /// drifts down. Derived from the spec at build (empty off drain scenes).
+    pub(crate) flow_lanes: Vec<(glam::Vec2, glam::Vec2)>,
     /// Last aim direction pushed as Command::Aim — the shell only re-pushes
     /// when the cursor direction actually moved (~0.5°), keeping the journal
     /// lean while the gun tracks the mouse turret-style.
@@ -138,6 +144,23 @@ impl GameLoop {
         let drop_slots = discover_pool(handles, "drop_slot");
         let spark_slots = discover_pool(handles, "spark_slot");
         let trc = TracerPools::discover(handles);
+        let flow_slots = discover_pool(handles, "flow_slot");
+        // L2: one flow lane per sieve slot — motes drift from 2.5 wu out
+        // toward the mouth's centre (the drain zone visibly PULLS)
+        let flow_lanes: Vec<(Vec2, Vec2)> = spec
+            .drain
+            .map(|dz| {
+                let dc = Vec2::new((dz[0] + dz[2]) * 0.5, (dz[1] + dz[3]) * 0.5);
+                crate::game_scene::sieve_slots(&spec)
+                    .iter()
+                    .map(|g| {
+                        let mouth = Vec2::new((g[0] + g[1]) * 0.5, (g[2] + g[3]) * 0.5);
+                        let dir = (dc - mouth).normalize_or_zero();
+                        (mouth - dir * 2.5, mouth)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut sim: HouseGame<VecSink> = HouseGame::new(&spec, VecSink::default());
         if spec.arena.is_some() {
             // arena: tap the event stream for bleed droplets (observation-only;
@@ -187,6 +210,8 @@ impl GameLoop {
             drop_slots,
             spark_slots,
             trc,
+            flow_slots,
+            flow_lanes,
             last_aim: None,
             fx: Fx::new(player0),
         }

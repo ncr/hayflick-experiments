@@ -150,6 +150,13 @@ impl AudioOut {
                 self.voice(Wave::Sine, 72.0, 26.0, 0.45, 0.60 * g);
                 self.voice(Wave::Square, 52.0, 30.0, 0.20, 0.30 * g);
             }
+            "wave_warn" => {
+                // L1: incoming-squad klaxon — a slow two-tone PA swell, a
+                // full second of "get ready" before the door slams
+                self.voice(Wave::Square, 208.0, 312.0, 0.55, 0.26 * g);
+                self.voice(Wave::Square, 156.0, 234.0, 0.55, 0.20 * g);
+                self.voice(Wave::Sine, 52.0, 44.0, 0.5, 0.30 * g);
+            }
             "wave_land" => {
                 // squad drop: deep door-slam + a rising two-note warning
                 self.voice(Wave::Sine, 58.0, 36.0, 0.45, 0.55 * g);
@@ -210,6 +217,12 @@ impl AudioOut {
             }
             // presentation-side: the comm-pact blink tick (per rising edge)
             "comm_blink" => self.voice(Wave::Sine, 1250.0, 1250.0, 0.035, 0.30 * g),
+            // presentation-side: the drain's wet pull (L2), retriggered on the
+            // tick clock — a descending burble, "the goo wants OUT"
+            "drain_gurgle" => {
+                self.voice(Wave::Noise, 320.0, 85.0, 0.38, 0.16 * g);
+                self.voice(Wave::Sine, 115.0, 58.0, 0.32, 0.22 * g);
+            }
             "impact" => {
                 // round dies on a hard surface: tiny debris thip
                 self.voice(Wave::Noise, 2100.0, 550.0, 0.035, 0.24 * g);

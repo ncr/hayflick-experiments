@@ -196,6 +196,25 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
                 scene.add_floor(cx - 0.5, cx + 0.5, cz - 0.5, cz + 0.5, y + 0.001, hex_linear(0x93c8b1));
             }
         }
+        // L3: grate bars over each sieve slot — pure dress (no mark_occluder,
+        // so the sim's shots and the goo squeeze exactly as before) that makes
+        // the slot grammar readable at a glance: slit = 3 thin bars, slot = 2,
+        // main = one BROKEN stub (unsealable — the bar already lost).
+        for gap in sieve_slots(spec) {
+            let (x0, x1, z0, z1) = (gap[0], gap[1], gap[2], gap[3]);
+            let w = x1 - x0;
+            let bars: &[(f32, f32, f32)] = if w < 0.4 {
+                &[(0.25, 0.03, 0.6), (0.5, 0.03, 0.6), (0.75, 0.03, 0.6)] // (frac, half-width, height)
+            } else if w < 0.8 {
+                &[(0.33, 0.04, 0.6), (0.67, 0.04, 0.6)]
+            } else {
+                &[(0.38, 0.05, 0.28)] // the main drain's snapped-off stub
+            };
+            for &(frac, hw, h) in bars {
+                let bx = x0 + w * frac;
+                box_world(&mut scene, [bx - hw, z0 + 0.02, bx + hw, z1 - 0.02], h, 0x4e5358);
+            }
+        }
     }
 
     // ---- perimeter walls: four slabs around the footprint, WALL_TOP tall,
@@ -341,6 +360,13 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         // flash) — faint warm-grey motes, barely emissive so they read in
         // the dim pit without glowing
         register_sphere_pool(&mut scene, "puff_slot", 6, 5, 7, [0.30, 0.29, 0.27, 1.0], [0.55, 0.52, 0.48, 1.0], 0.5);
+        // L2: drain-current motes — one 4-mote lane per sieve slot, scrolled
+        // INTO the mouths by flow_instances (cold cyan: the exit's color).
+        // The pool only exists on containment scenes.
+        if spec.drain.is_some() {
+            let lanes = sieve_slots(spec).len().max(1);
+            register_sphere_pool(&mut scene, "flow_slot", lanes * 4, 4, 6, [0.02, 0.05, 0.06, 1.0], [1.6, 4.2, 5.0, 1.0], 0.5);
+        }
     }
 
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat
@@ -493,6 +519,30 @@ fn place_door(scene: &mut Scene, d: &DoorSpec) {
         "door {:?}: leaf footprint {recon:?} != closed_solid {s:?}",
         d.id
     );
+}
+
+/// The sieve-slot gaps in a containment level's drain wall (L2/L3): scan the
+/// static solids whose far z-edge lands ON the drain zone's near edge (the
+/// authored sieve-wall segments), sort them along x, and return each gap
+/// between neighbours as `[x0, x1, z0, z1]` (the gap's footprint at the wall's
+/// own thickness). Empty when the level has no drain. Pure spec read — the
+/// sim's collision never sees any of this.
+pub fn sieve_slots(spec: &LevelSpec) -> Vec<[f32; 4]> {
+    let Some(dz) = spec.drain else {
+        return Vec::new();
+    };
+    let mut segs: Vec<[f32; 4]> = spec.static_solids.iter().filter(|s| (s[3] - dz[1]).abs() < 1e-3).copied().collect();
+    if segs.len() < 2 {
+        return Vec::new();
+    }
+    segs.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+    let mut out = Vec::new();
+    for w in segs.windows(2) {
+        if w[1][0] - w[0][2] > 0.05 {
+            out.push([w[0][2], w[1][0], w[0][1], w[0][3]]);
+        }
+    }
+    out
 }
 
 /// A glowing trap ring on the floor centred at (cx, cz), outer half-extent `r`.

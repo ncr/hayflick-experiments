@@ -230,6 +230,26 @@ impl GameLoop {
         skin_pool(&self.trc.puff, xforms)
     }
 
+    /// Per-frame drain-current motes (L2): four cyan dashes per sieve lane,
+    /// drifting from 2.5 wu out INTO each mouth on the tick clock and
+    /// swallowed as they arrive — the zone visibly PULLS without a sim
+    /// change. Empty off containment scenes (no lanes, no pool).
+    pub fn flow_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let frame = self.fx.fx_frame;
+        let xforms = self.flow_lanes.iter().enumerate().flat_map(move |(li, &(start, mouth))| {
+            let dir = (mouth - start).normalize_or_zero();
+            let d3 = Vec3::new(dir.x, 0.0, dir.y);
+            (0..4u32).map(move |i| {
+                // ~2 s per approach, staggered per mote and per lane
+                let phase = (frame as f32 * 0.008 + i as f32 * 0.25 + li as f32 * 0.37).fract();
+                let p = start + (mouth - start) * phase;
+                let s = 0.055 * (1.0 - phase * phase); // swallowed at the grate
+                Mat4::from_translation(Vec3::new(p.x, 0.035, p.y)) * Mat4::from_quat(glam::Quat::from_rotation_arc(Vec3::Z, d3)) * Mat4::from_scale(Vec3::new(s * 0.5, s * 0.22, s * 1.7))
+            })
+        });
+        skin_pool(&self.flow_slots, xforms)
+    }
+
     /// This frame's goo metaballs for the screen-space SDF composite, plus the
     /// parallel per-ball birth-glow and vertical-scale slices and the per-BLOB
     /// bounding spheres. One metaball per fluid particle — the solved fluid
