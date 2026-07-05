@@ -290,20 +290,34 @@ impl Viewer {
         if snap.muzzle_flash {
             // a muzzle flash is a POP, not a beam: a wide cone pointed
             // straight DOWN from just above the barrel tip pools hot light
-            // AROUND the gun (the goo-light pattern) instead of painting a
-            // flashlight cone across the floor. Recoil scales the burst.
+            // AROUND the gun (the goo-light pattern). Per-class signature
+            // (W4): slug big warm pop, uzi small chattering pop, shotgun
+            // wide short fan, harpoon cyan rail burst, grenade NO flash
+            // (its thunk + smoke mote carry the shot). Recoil scales the
+            // burst. Standard (non-arena pistol) keeps the historical pop
+            // expression-identical — the game_replay golden depends on it.
+            use house_game::WeaponClass as W;
             let f = snap.facing;
             let fd = glam::Vec3::new(f.x, 0.0, f.y);
             let (mp, _) = flashlight_pose(snap.player_pos, f);
             let pos = mp + fd * 0.55 + glam::Vec3::new(0.0, 0.30, 0.0);
-            v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 62.0f32.to_radians().cos(), power: 1500.0 * (1.0 + 1.2 * self.game.fx.recoil), radius: 0.09, tint: rt_probe::render::SPOT_WARM });
+            let k = self.game.fx.recoil;
+            match self.game.fx.recoil_class {
+                W::Grenade => {}
+                W::Slug => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 62.0f32.to_radians().cos(), power: 2400.0 * (1.0 + 1.2 * k), radius: 0.10, tint: rt_probe::render::SPOT_WARM }),
+                W::Uzi => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 55.0f32.to_radians().cos(), power: 650.0, radius: 0.07, tint: rt_probe::render::SPOT_WARM }),
+                W::Shotgun => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 82.0f32.to_radians().cos(), power: 2000.0 * (1.0 + 1.2 * k), radius: 0.13, tint: rt_probe::render::SPOT_WARM }),
+                W::Harpoon => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 58.0f32.to_radians().cos(), power: 900.0, radius: 0.07, tint: [0.40, 0.85, 1.0] }),
+                W::Standard => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 62.0f32.to_radians().cos(), power: 1500.0 * (1.0 + 1.2 * self.game.fx.recoil), radius: 0.09, tint: rt_probe::render::SPOT_WARM }),
+            }
         }
         // impact flash: a brief hot pop where the last round died (wall /
         // floor / blob splash) — the target-side half of the muzzle flash,
-        // fading over its 3 ticks
-        if let Some((at, ttl)) = self.game.fx.impact_flash {
+        // fading over its 3 ticks; the stored weight scales the power so a
+        // slug crater visibly outranks an uzi tick (W5)
+        if let Some((at, ttl, w)) = self.game.fx.impact_flash {
             let k = ttl as f32 / 3.0;
-            v.push(Spotlight { pos: at + glam::Vec3::new(0.0, 0.26, 0.0), dir: glam::Vec3::NEG_Y, cone_cos: 60.0f32.to_radians().cos(), power: 1000.0 * k, radius: 0.07, tint: rt_probe::render::SPOT_WARM });
+            v.push(Spotlight { pos: at + glam::Vec3::new(0.0, 0.26, 0.0), dir: glam::Vec3::NEG_Y, cone_cos: 60.0f32.to_radians().cos(), power: 1000.0 * k * w, radius: 0.07, tint: rt_probe::render::SPOT_WARM });
         }
         if let Some((at, k)) = snap.boom {
             // grenade detonation: a hot wide downward cone hovering over the

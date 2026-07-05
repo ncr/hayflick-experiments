@@ -332,12 +332,14 @@ impl<S: AudioSink> HouseGame<S> {
                 },
                 GameEvent::Detonated(p) => AudioCue { id: CueId("boom"), pos: Some(p), gain: 1.0 },
                 GameEvent::WaveLanded(_) => AudioCue { id: CueId("wave_land"), pos: None, gain: 1.0 },
-                GameEvent::Impact(p, _) => AudioCue { id: CueId("impact"), pos: Some(p), gain: 0.6 },
+                GameEvent::Impact(p, _, _) => AudioCue { id: CueId("impact"), pos: Some(p), gain: 0.6 },
                 GameEvent::TargetHit(_, p) => AudioCue { id: CueId("target_hit"), pos: Some(p), gain: 1.0 },
                 GameEvent::Switch => AudioCue { id: CueId("switch"), pos: None, gain: 0.6 },
                 GameEvent::PickedUp(_, _, p) => AudioCue { id: CueId("pickup"), pos: Some(p), gain: 0.8 },
                 GameEvent::Consumed(_) => AudioCue { id: CueId("eat"), pos: None, gain: 0.7 },
-                GameEvent::MobHit(_, p) => AudioCue { id: CueId("goo_hit"), pos: Some(p), gain: 0.7 },
+                // resisted hits sound ARMORED, not juicy — the player learns
+                // the ×¼ from the thunk, not the wiki (D2)
+                GameEvent::MobHit(_, p, resisted) => AudioCue { id: CueId(if resisted { "goo_thunk" } else { "goo_hit" }), pos: Some(p), gain: 0.7 },
                 GameEvent::MobSplit(_, p) => AudioCue { id: CueId("goo_split"), pos: Some(p), gain: 1.0 },
                 GameEvent::MobKilled(_, p) => AudioCue { id: CueId("goo_die"), pos: Some(p), gain: 0.8 },
                 GameEvent::MobMerged(_, p) => AudioCue { id: CueId("goo_merge"), pos: Some(p), gain: 0.9 },

@@ -182,10 +182,11 @@ pub enum GameEvent {
     /// A wave squad just landed (its 1-based index) — the lull-over beat.
     WaveLanded(u32),
     /// A hard round died on a wall / chunk / the floor (impact point, surface
-    /// normal) — the shell's spark burst + impact flash + thip live here.
-    /// Bounces don't emit (the grenade is still alive); blob hits use
-    /// `GooSplashed`.
-    Impact(Vec3, Vec3),
+    /// normal, the round's knockback). The shell's spark burst, impact flash
+    /// and thip live here, scaled by the knockback so a slug crater visibly
+    /// outranks an uzi tick. Bounces don't emit (the grenade is still
+    /// alive); blob hits use `GooSplashed`.
+    Impact(Vec3, Vec3, f32),
     TargetHit(TargetId, Vec3),
     Switch, // flashlight / room-lights toggle
     /// A world item entered the inventory (id, kind, world-XZ it was lying at).
@@ -196,8 +197,11 @@ pub enum GameEvent {
     NeedCritical(NeedKind),
     /// A need climbed back to/above `critical` this tick (edge-triggered).
     NeedRecovered(NeedKind),
-    /// A goo blob was shot but survived (id, hit point).
-    MobHit(MobId, Vec3),
+    /// A goo blob was shot but survived (id, hit point, resisted). `resisted`
+    /// = the species damage multiplier floored the hit below face value (Tank
+    /// vs uzi/shotgun) — the shell teaches the resist with a dull grey flash
+    /// + thunk cue instead of the hot white pop.
+    MobHit(MobId, Vec3, bool),
     /// A goo blob's HP hit zero and it split into two smaller blobs (id, pos).
     MobSplit(MobId, Vec3),
     /// A goo blob died terminally (a Small blob, or a capped split) (id, pos).

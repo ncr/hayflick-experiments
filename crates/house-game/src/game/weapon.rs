@@ -369,6 +369,13 @@ pub struct ProjectileRender {
     /// Flight velocity (wu/s) — the shell stretches the tracer along it so
     /// rounds read as streaks, not floating beads.
     pub vel: Vec3,
+    /// Damage class — the shell routes each round to its class-tinted tracer
+    /// pool and shapes it (fat bolt / needle / spark / shell / line).
+    pub class: WeaponClass,
+    /// Fuse readout: age / max_age let the shell blink the grenade's fuse
+    /// glow faster as detonation nears (a readable bank-shot timer).
+    pub age: u16,
+    pub max_age: u16,
 }
 
 /// Outward normal of the AABB face a ray ENTERS through: the axis whose slab
@@ -624,8 +631,9 @@ impl<S: AudioSink> HouseGame<S> {
                             continue;
                         }
                         // a hard round dies here: the impact tell (shell-side
-                        // sparks + flash + thip at the point)
-                        self.res.events.emit(GameEvent::Impact(old + dir * t, normal));
+                        // sparks + flash + thip at the point, weight-scaled
+                        // by the round's knockback)
+                        self.res.events.emit(GameEvent::Impact(old + dir * t, normal, p.knockback));
                     }
                 }
                 self.res.buf.despawn(e);

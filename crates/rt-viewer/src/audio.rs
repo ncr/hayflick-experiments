@@ -158,6 +158,12 @@ impl AudioOut {
                 self.voice(Wave::Square, 660.0, 660.0, 0.14, 0.22 * g);
             }
             "goo_hit" => self.voice(Wave::Sine, 190.0, 115.0, 0.08, 0.55 * g),
+            "goo_thunk" => {
+                // resisted hit (Tank vs small arms): a dull ARMORED thud with
+                // none of the juicy splash — the ×¼ lesson by ear (D2)
+                self.voice(Wave::Sine, 130.0, 85.0, 0.07, 0.42 * g);
+                self.voice(Wave::Noise, 420.0, 180.0, 0.03, 0.12 * g);
+            }
             "goo_split" => {
                 self.voice(Wave::Sine, 420.0, 180.0, 0.12, 0.45 * g);
                 self.voice(Wave::Noise, 1800.0, 500.0, 0.10, 0.30 * g);

@@ -71,7 +71,7 @@ impl<S: AudioSink> HouseGame<S> {
                     // tracer size follows the shot's physical radius so the five
                     // weapons READ differently in flight (fat slug, pinprick uzi);
                     // the pistol lands exactly on the historical 0.14.
-                    ProjectileRender { id: p.id, pos: p.pos, radius: p.radius * (PROJ_RENDER_RADIUS / PISTOL.radius), vel: p.vel }
+                    ProjectileRender { id: p.id, pos: p.pos, radius: p.radius * (PROJ_RENDER_RADIUS / PISTOL.radius), vel: p.vel, class: p.class, age: p.age, max_age: p.max_age }
                 })
                 .collect(),
             chunks: self.res.chunks.clone(),

@@ -323,6 +323,24 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         // impact-spark pool: hot amber debris where rounds die (walls, floor,
         // blob splashes) — the target-side tell of every shot
         register_sphere_pool(&mut scene, "spark_slot", 24, 4, 6, [0.06, 0.04, 0.02, 1.0], [16.0, 10.0, 3.5, 1.0], 0.5);
+        // ---- per-class tracer pools (D1 identity): every weapon's rounds
+        // draw from a pool with its OWN emissive material — read-at-a-glance
+        // tint the single shared pool can't give. Sized to each weapon's
+        // worst realistic in-flight count (overflow just doesn't draw).
+        // Same local radius 0.4 as proj_slot, so visual size = scale × 0.4.
+        register_sphere_pool(&mut scene, "trc_slug", 4, PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, [0.06, 0.04, 0.01, 1.0], [14.0, 7.0, 1.8, 1.0], 0.4); // fat amber bolt
+        register_sphere_pool(&mut scene, "trc_uzi", 14, PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, [0.05, 0.05, 0.05, 1.0], [10.0, 10.0, 10.5, 1.0], 0.4); // thin white needle
+        register_sphere_pool(&mut scene, "trc_shot", 16, PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, [0.06, 0.03, 0.01, 1.0], [12.0, 4.8, 1.2, 1.0], 0.4); // short orange sparks
+        register_sphere_pool(&mut scene, "trc_gren", 4, PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, [0.10, 0.10, 0.08, 1.0], [0.35, 0.40, 0.30, 1.0], 0.4); // matte shell
+        register_sphere_pool(&mut scene, "trc_fuse", 4, 4, 6, [0.05, 0.02, 0.01, 1.0], [16.0, 3.0, 1.0, 1.0], 0.4); // its blinking red fuse glow
+        register_sphere_pool(&mut scene, "trc_harp", 6, PROJ_SPHERE_RINGS, PROJ_SPHERE_SECTORS, [0.02, 0.05, 0.06, 1.0], [3.0, 10.0, 12.5, 1.0], 0.4); // cyan dart line + wire glint
+        // harpoon muzzle rail streak: a line of cyan motes burned down the
+        // first 1.5 wu of the shot (W4) — brighter than the dart, gone fast
+        register_sphere_pool(&mut scene, "rail_slot", 12, 4, 6, [0.02, 0.05, 0.06, 1.0], [8.0, 20.0, 24.0, 1.0], 0.5);
+        // grenade smoke puffs: the launcher's whole muzzle signature (no
+        // flash) — faint warm-grey motes, barely emissive so they read in
+        // the dim pit without glowing
+        register_sphere_pool(&mut scene, "puff_slot", 6, 5, 7, [0.30, 0.29, 0.27, 1.0], [0.55, 0.52, 0.48, 1.0], 0.5);
     }
 
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat

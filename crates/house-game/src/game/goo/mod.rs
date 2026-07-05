@@ -1290,8 +1290,11 @@ impl<S: AudioSink> HouseGame<S> {
             (g.id, g.tier, g.kind, g.cure, g.centroid())
         };
         // species resistance: exact integer scaling, floored at 1 so every hit
-        // at least chips (a Tank under uzi fire dies slowly, not never)
+        // at least chips (a Tank under uzi fire dies slowly, not never).
+        // `resisted` rides the MobHit event so the shell can teach the lesson
+        // (grey flash + dull thunk instead of the hot white pop).
         let (mn, md) = goo_kind_damage_mult(kind, class);
+        let resisted = mn < md;
         let damage = ((damage as u32 * mn as u32 / md as u32) as u16).max(1);
         let kdir = Vec2::new(dir.x, dir.z).normalize_or_zero();
         let hit_xz = Vec2::new(hit.x, hit.z);
@@ -1344,7 +1347,7 @@ impl<S: AudioSink> HouseGame<S> {
         let punch = if dead { knockback * 1.6 } else { knockback };
         self.res.events.emit(GameEvent::GooSplashed(id, hit, dir, punch));
         if !dead {
-            self.res.events.emit(GameEvent::MobHit(id, hit_evt));
+            self.res.events.emit(GameEvent::MobHit(id, hit_evt, resisted));
             return;
         }
         // death — remove the parent at the flush

@@ -5,9 +5,10 @@
 //! pure read; nothing here feeds back into the sim. `goo_balls` float order
 //! feeds frame bytes (the SDF composite), so bodies here move verbatim.
 
-use super::fx::{SPARK_LIFE, SPLAT_LIFE};
+use super::fx::{PUFF_LIFE, RAIL_LIFE, SPARK_LIFE, SPLAT_LIFE};
 use super::GameLoop;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
+use house_game::game::{ProjectileRender, Tactic, WeaponClass};
 use house_game::DoorId;
 use rt_probe::{GooBall, GooFrame, InstanceKey, SceneHandles};
 
@@ -51,6 +52,40 @@ pub struct DoorRender {
     pub axis_y: f32,
 }
 
+/// The per-class tracer pools + muzzle-FX pools (D1/W4): each arena weapon's
+/// rounds draw from a pool with its own emissive material — tint identity the
+/// single shared pool can't give. All empty off arena scenes, which routes
+/// every round down the legacy shared-pool path byte-identically.
+#[derive(Default)]
+pub struct TracerPools {
+    pub slug: Vec<InstanceKey>,
+    pub uzi: Vec<InstanceKey>,
+    pub shot: Vec<InstanceKey>,
+    pub gren: Vec<InstanceKey>,
+    /// The grenade's blinking fuse glow (a second tiny hot prim per shell).
+    pub fuse: Vec<InstanceKey>,
+    pub harp: Vec<InstanceKey>,
+    /// Harpoon muzzle rail-streak motes (cyan, static, fading).
+    pub rail: Vec<InstanceKey>,
+    /// Grenade smoke puffs (faint grey, drifting).
+    pub puff: Vec<InstanceKey>,
+}
+
+impl TracerPools {
+    pub(super) fn discover(handles: &SceneHandles) -> TracerPools {
+        TracerPools {
+            slug: discover_pool(handles, "trc_slug"),
+            uzi: discover_pool(handles, "trc_uzi"),
+            shot: discover_pool(handles, "trc_shot"),
+            gren: discover_pool(handles, "trc_gren"),
+            fuse: discover_pool(handles, "trc_fuse"),
+            harp: discover_pool(handles, "trc_harp"),
+            rail: discover_pool(handles, "rail_slot"),
+            puff: discover_pool(handles, "puff_slot"),
+        }
+    }
+}
+
 impl GameLoop {
     /// This frame's door leaf instance transforms: for each bound door, the
     /// snapshot's swing angle through `door_instance` (rotate about the hinge).
@@ -75,35 +110,64 @@ impl GameLoop {
     /// snapshot's hashed particle field; nothing here feeds back into the sim.
     pub fn goo_instances(&self) -> Vec<(InstanceKey, Mat4)> {
         let xforms = self.snap.mobs.iter().flat_map(|m| {
-            let ry = m.part_radius * m.vscale;
-            m.parts.iter().map(move |part| Mat4::from_translation(Vec3::new(part.x, ry, part.z)) * Mat4::from_scale(Vec3::new(m.part_radius, ry, m.part_radius)))
+            // G1 stance in the fallback too (Green = exact ×1.0 identity)
+            let (vs_mul, r_mul) = goo_kind_stance(m.kind);
+            let pr = m.part_radius * r_mul;
+            let ry = pr * (m.vscale * vs_mul);
+            m.parts.iter().map(move |part| Mat4::from_translation(Vec3::new(part.x, ry, part.z)) * Mat4::from_scale(Vec3::new(pr, ry, pr)))
         });
         skin_pool(&self.goo_slots, xforms)
     }
 
-    /// Per-frame projectile tracer instances: skin one small emissive sphere onto
-    /// each live projectile (translate · uniform scale), collapsing every unused
-    /// pool slot to zero scale. Pure read of the snapshot's hashed projectile
-    /// state — the same instance-mover path the goo ellipsoids use.
+    /// Per-frame projectile tracer instances. On arena scenes each round is
+    /// routed to its CLASS pool (per-class tint) with a per-class shape (D1):
+    /// slug fat amber bolt, uzi thin white needle, shotgun short orange
+    /// sparks, grenade matte shell + accelerating fuse blink, harpoon long
+    /// cyan line + trailing wire glint. Off arena (no class pools authored)
+    /// every round takes the legacy shared-pool streak, byte-identically.
+    /// Pure read of the snapshot's hashed projectile state.
     pub fn projectile_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.snap.projectiles.iter().map(|p| {
-            let t = Mat4::from_translation(Vec3::new(p.pos.x, p.pos.y, p.pos.z));
-            // tracer streak: thin cross-section (floored so fast small rounds
-            // never dither below a pixel — the pool sphere's LOCAL radius is
-            // 0.4, so visual size = scale × 0.4), length covering ~2 ticks of
-            // flight — rounds draw lines from barrel to target, the slow fat
-            // slug stays a chunky bolt.
-            let speed2 = p.vel.length_squared();
-            match (speed2 > 1e-6).then(|| p.vel.normalize()) {
-                Some(d) => {
-                    let cross = (p.radius * 0.5).max(0.075);
-                    let z_half = (p.radius * 1.2).max(speed2.sqrt() * house_game::TICK_DT * 2.2);
-                    t * Mat4::from_quat(glam::Quat::from_rotation_arc(Vec3::Z, d)) * Mat4::from_scale(Vec3::new(cross, cross, z_half))
+        if self.trc.slug.is_empty() {
+            let xforms = self.snap.projectiles.iter().map(legacy_streak);
+            return skin_pool(&self.proj_slots, xforms);
+        }
+        let dt = house_game::TICK_DT;
+        let (mut slug, mut uzi, mut shot, mut gren, mut fuse, mut harp, mut std_) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for p in &self.snap.projectiles {
+            let t = Mat4::from_translation(p.pos);
+            let speed = p.vel.length();
+            let dir = (speed > 1e-3).then(|| p.vel / speed);
+            let along = |d: Vec3, cross: f32, z_half: f32| t * Mat4::from_quat(glam::Quat::from_rotation_arc(Vec3::Z, d)) * Mat4::from_scale(Vec3::new(cross, cross, z_half));
+            match (p.class, dir) {
+                (WeaponClass::Slug, Some(d)) => slug.push(along(d, p.radius * 0.75, (p.radius * 1.2).max(speed * dt * 1.8))),
+                (WeaponClass::Uzi, Some(d)) => uzi.push(along(d, 0.07, speed * dt * 3.2)),
+                (WeaponClass::Shotgun, Some(d)) => shot.push(along(d, 0.07, (p.radius * 0.8).max(speed * dt * 1.0))),
+                (WeaponClass::Grenade, _) => {
+                    // a lobbed matte shell, not a streak; the fuse glow rides
+                    // on top and blinks FASTER as max_age (detonation) nears —
+                    // bank shots become readable timers
+                    gren.push(t * Mat4::from_scale(Vec3::splat(p.radius * 0.9)));
+                    let phase = p.age as f32 / p.max_age.max(1) as f32;
+                    let period = (12.0 - 10.0 * phase).max(2.0);
+                    let on = ((p.age as f32 / period) as u32).is_multiple_of(2);
+                    fuse.push(if on { Mat4::from_translation(p.pos + Vec3::new(0.0, p.radius * 0.42, 0.0)) * Mat4::from_scale(Vec3::splat(0.055)) } else { Mat4::from_scale(Vec3::ZERO) });
                 }
-                None => t * Mat4::from_scale(Vec3::splat(p.radius)),
+                (WeaponClass::Harpoon, Some(d)) => {
+                    harp.push(along(d, 0.06, speed * dt * 2.8));
+                    // trailing wire glint: one small mote behind the dart
+                    harp.push(Mat4::from_translation(p.pos - d * 0.45) * Mat4::from_scale(Vec3::splat(0.04)));
+                }
+                _ => std_.push(legacy_streak(p)),
             }
-        });
-        skin_pool(&self.proj_slots, xforms)
+        }
+        let mut out = skin_pool(&self.proj_slots, std_.into_iter());
+        out.extend(skin_pool(&self.trc.slug, slug.into_iter()));
+        out.extend(skin_pool(&self.trc.uzi, uzi.into_iter()));
+        out.extend(skin_pool(&self.trc.shot, shot.into_iter()));
+        out.extend(skin_pool(&self.trc.gren, gren.into_iter()));
+        out.extend(skin_pool(&self.trc.fuse, fuse.into_iter()));
+        out.extend(skin_pool(&self.trc.harp, harp.into_iter()));
+        out
     }
 
     /// Per-frame dead-chunk instances: one squashed matte dome per solidified
@@ -144,6 +208,26 @@ impl GameLoop {
             Mat4::from_translation(s.pos) * Mat4::from_scale(Vec3::splat(0.018 + 0.030 * k))
         });
         skin_pool(&self.spark_slots, xforms)
+    }
+
+    /// Per-frame harpoon rail-streak motes: static cyan points along the
+    /// first 1.5 wu of the shot, shrinking out fast (W4).
+    pub fn rail_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let xforms = self.fx.rails.iter().map(|r| {
+            let k = 1.0 - (r.age / RAIL_LIFE).min(1.0);
+            Mat4::from_translation(r.pos) * Mat4::from_scale(Vec3::splat(0.012 + 0.024 * k))
+        });
+        skin_pool(&self.trc.rail, xforms)
+    }
+
+    /// Per-frame grenade smoke puffs: faint grey motes swelling and thinning
+    /// as they drift off the launcher tube (W4 — the grenade's whole flash).
+    pub fn puff_instances(&self) -> Vec<(InstanceKey, Mat4)> {
+        let xforms = self.fx.puffs.iter().map(|p| {
+            let t = (p.age / PUFF_LIFE).min(1.0);
+            Mat4::from_translation(p.pos) * Mat4::from_scale(Vec3::splat((0.035 + 0.085 * t) * (1.0 - t * t).max(0.0)))
+        });
+        skin_pool(&self.trc.puff, xforms)
     }
 
     /// This frame's goo metaballs for the screen-space SDF composite, plus the
@@ -188,11 +272,20 @@ impl GameLoop {
             }
             // hit flash: a shot that connected blinks the body hot white for
             // a beat (shell-side decay off the arena event tap — the comm
-            // pulse pattern, just faster and per-hit)
-            if let Some((_, f)) = self.fx.hit_flash.iter().find(|(id, _)| *id == m.id) {
-                const HOT: [f32; 3] = [3.1, 3.2, 3.5];
-                for (t, h) in tint.iter_mut().zip(HOT) {
-                    *t += (h - *t) * f;
+            // pulse pattern, just faster and per-hit). A RESISTED hit blinks
+            // a dull grey-slate thud instead — the Tank's ×¼ taught in color
+            // (D2), not the wiki.
+            if let Some((_, f, resisted)) = self.fx.hit_flash.iter().find(|(id, ..)| *id == m.id) {
+                if *resisted {
+                    const DULL: [f32; 3] = [0.30, 0.28, 0.40];
+                    for (t, dl) in tint.iter_mut().zip(DULL) {
+                        *t += (dl - *t) * (f * 0.85);
+                    }
+                } else {
+                    const HOT: [f32; 3] = [3.1, 3.2, 3.5];
+                    for (t, h) in tint.iter_mut().zip(HOT) {
+                        *t += (h - *t) * f;
+                    }
                 }
             }
             // netcode-lag glitch: a WEAK blob renders its CACHED body (the true
@@ -208,7 +301,17 @@ impl GameLoop {
                 }
                 _ => (&m.parts, m.vscale),
             };
-            let pr = m.part_radius;
+            // G1 species body language, in the presentation channels only:
+            // the Tank squats wide (low + broad), the Runner stands lean and
+            // tall. Green is the EXACT ×1.0 identity — all-Green scenes (the
+            // goo film stages, every pre-species level) stay byte-stable.
+            let (vs_mul, r_mul) = goo_kind_stance(m.kind);
+            let pr = m.part_radius * r_mul;
+            let vscale = vscale * vs_mul;
+            // G1 sprint tell: a sprinting Runner TILTS into its motion — the
+            // per-ball vscale rises toward the front of the body (shell-side
+            // motion estimate; None while it hasn't moved yet).
+            let tilt = if m.kind == house_game::GooKind::Runner && m.tac == Tactic::Sprint { self.fx.mob_dir(m.id.0) } else { None };
             let y = GOO_FLOOR_Y + pr * GOO_SQUASH * vscale;
             let mut c = Vec3::ZERO;
             for p in parts.iter() {
@@ -217,8 +320,11 @@ impl GameLoop {
             let c = c / parts.len() as f32;
             // enclosing-sphere radius of one squashed ball: the ellipsoid's
             // largest semi-axis (horizontal pr, or vertical pr·squash·vscale —
-            // the jelly wobble can bulge the body above neutral)
-            let ball_r = pr * (GOO_SQUASH * vscale).max(1.0);
+            // the jelly wobble can bulge the body above neutral). The tilt
+            // pad covers the sprint lean's front-ball rise (1.0 elsewhere so
+            // the untilted formula stays bit-exact).
+            let tilt_pad = if tilt.is_some() { 1.25 } else { 1.0 };
+            let ball_r = pr * (GOO_SQUASH * vscale * tilt_pad).max(1.0);
             let mut reach = 0.0f32;
             for p in parts.iter() {
                 let dx = p.x - c.x;
@@ -227,9 +333,17 @@ impl GameLoop {
             }
             bounds.push(rt_probe::GooBall { center: [c.x, y, c.z], radius: reach + ball_r + GOO_BOUND_MARGIN });
             for (p, &gl) in parts.iter().zip(m.glow.iter()) {
-                out.push(rt_probe::GooBall { center: [p.x, y, p.z], radius: pr });
+                let (yb, vs) = match tilt {
+                    Some(d) => {
+                        let fwd = (Vec2::new(p.x - c.x, p.z - c.z).dot(d) / reach.max(0.15)).clamp(-1.0, 1.0);
+                        let vs = vscale * (1.0 + 0.22 * fwd);
+                        (GOO_FLOOR_Y + pr * GOO_SQUASH * vs, vs)
+                    }
+                    None => (y, vscale),
+                };
+                out.push(rt_probe::GooBall { center: [p.x, yb, p.z], radius: pr });
                 glow.push(gl);
-                vscales.push(vscale);
+                vscales.push(vs);
                 tints.push(tint);
             }
         }
@@ -265,7 +379,26 @@ impl GameLoop {
             // the comm blink also drives the floor pool: brighter and pulled
             // toward white while signalling (readable even when the body is
             // partly behind cover — which is exactly when pacts happen)
-            let power = (POWER_BASE + POWER_PER_RADIUS * m.radius) * (1.0 + 1.4 * m.comm);
+            let mut power = (POWER_BASE + POWER_PER_RADIUS * m.radius) * (1.0 + 1.4 * m.comm);
+            // G5 light personality — in the blackout act the species read by
+            // their GLOW: the Runner's light flickers agitated with its
+            // speed, the Tank breathes slow and deep, Green keeps the
+            // historical steady pool (byte-stable on all-Green scenes).
+            match m.kind {
+                house_game::GooKind::Runner => {
+                    let agit = (self.fx.mob_speed(m.id.0) / 2.2).min(1.0);
+                    if agit > 0.0 {
+                        let h = self.fx.fx_frame.wrapping_mul(2654435761) ^ m.id.0.wrapping_mul(0x9E37_79B9);
+                        let nz = ((h >> 8) & 0xff) as f32 / 127.5 - 1.0;
+                        power *= 1.0 + 0.45 * agit * nz;
+                    }
+                }
+                house_game::GooKind::Tank => {
+                    let breath = (self.fx.fx_frame as f32 * 0.045 + m.id.0 as f32 * 1.7).sin();
+                    power *= 1.0 + 0.16 * breath;
+                }
+                house_game::GooKind::Green => {}
+            }
             let mut tint = goo_kind_light_tint(m.kind);
             for t in tint.iter_mut() {
                 *t += (1.0 - *t) * (0.7 * m.comm);
@@ -303,6 +436,37 @@ fn goo_kind_light_tint(kind: house_game::GooKind) -> [f32; 3] {
         house_game::GooKind::Green => [0.32, 1.0, 0.5], // the historical green
         house_game::GooKind::Runner => [1.0, 0.22, 0.28],
         house_game::GooKind::Tank => [0.25, 0.45, 1.0],
+    }
+}
+
+/// Species → (vertical-scale multiplier, radius multiplier) on the render
+/// body (G1): silhouette + posture identity before tint — the Tank squats
+/// wide, the Runner stands lean and tall. GREEN IS THE EXACT ×1.0 IDENTITY:
+/// multiplying by 1.0 is bit-exact, so every all-Green scene (the goo film
+/// stages and their SHOT byte-diffs) renders byte-identically.
+fn goo_kind_stance(kind: house_game::GooKind) -> (f32, f32) {
+    match kind {
+        house_game::GooKind::Green => (1.0, 1.0),
+        house_game::GooKind::Runner => (1.15, 0.96),
+        house_game::GooKind::Tank => (0.80, 1.08),
+    }
+}
+
+/// The historical shared-pool tracer streak (pre-D1), kept float-for-float:
+/// thin cross-section (floored so fast small rounds never dither below a
+/// pixel — the pool sphere's LOCAL radius is 0.4, so visual size = scale ×
+/// 0.4), length covering ~2 ticks of flight. Non-arena scenes (pistol
+/// traces, the goo film stages) route every round here byte-identically.
+fn legacy_streak(p: &ProjectileRender) -> Mat4 {
+    let t = Mat4::from_translation(Vec3::new(p.pos.x, p.pos.y, p.pos.z));
+    let speed2 = p.vel.length_squared();
+    match (speed2 > 1e-6).then(|| p.vel.normalize()) {
+        Some(d) => {
+            let cross = (p.radius * 0.5).max(0.075);
+            let z_half = (p.radius * 1.2).max(speed2.sqrt() * house_game::TICK_DT * 2.2);
+            t * Mat4::from_quat(glam::Quat::from_rotation_arc(Vec3::Z, d)) * Mat4::from_scale(Vec3::new(cross, cross, z_half))
+        }
+        None => t * Mat4::from_scale(Vec3::splat(p.radius)),
     }
 }
 

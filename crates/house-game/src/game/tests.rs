@@ -940,7 +940,7 @@ fn grenade_blast_damages_both_blobs_of_a_pair() {
         g.tick(Tick(t), &[]);
     }
     let tap = g.res.event_tap.take().unwrap();
-    let touched = |id: MobId| tap.iter().any(|ev| matches!(ev, GameEvent::MobHit(i, _) | GameEvent::MobSplit(i, _) | GameEvent::MobKilled(i, _) if *i == id));
+    let touched = |id: MobId| tap.iter().any(|ev| matches!(ev, GameEvent::MobHit(i, ..) | GameEvent::MobSplit(i, _) | GameEvent::MobKilled(i, _) if *i == id));
     assert!(touched(MobId(0)), "the contact blob must take blast damage: {tap:?}");
     assert!(touched(MobId(1)), "the neighbour inside the blast radius must take falloff damage: {tap:?}");
 }
@@ -958,6 +958,15 @@ fn tank_resists_small_arms_but_not_the_slug() {
     assert_eq!(g.world.get::<&Goo>(e).unwrap().hp, 11, "uzi vs tank: 2/4 floored to 1");
     g.damage_goo(e, hit, Vec3::Z, PISTOL.damage, 0.0, WeaponClass::Standard);
     assert_eq!(g.world.get::<&Goo>(e).unwrap().hp, 5, "standard lands in full");
+    // D2: the resist announces itself — the uzi tick rides MobHit with
+    // resisted=true (grey flash + dull thunk shell tell), the full-value
+    // standard hit stays a plain juicy hit.
+    g.res.event_tap = Some(Vec::new());
+    g.tick(Tick(0), &[]);
+    let flags: Vec<bool> = g.res.event_tap.take().unwrap().iter().filter_map(|ev| if let GameEvent::MobHit(_, _, r) = ev { Some(*r) } else { None }).collect();
+    assert_eq!(flags, vec![true, false], "uzi hit resisted, standard hit full: {flags:?}");
+    assert!(g.sink.0.iter().any(|c| c.id.0 == "goo_thunk"), "resisted hit plays the dull thunk cue");
+    assert!(g.sink.0.iter().any(|c| c.id.0 == "goo_hit"), "the full hit keeps the juicy cue");
 }
 
 #[test]

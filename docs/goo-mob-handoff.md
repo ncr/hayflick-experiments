@@ -485,6 +485,48 @@ What a returning session needs to know:
   run-to-run on the M2 Pro (grazing-ray wobble, documented in bin/golden's
   header) — treat `OK~` there as pass, anything in the other four as real.
 
+## 2026-07-05 — P0 feel pass: weapon + species identity (feel-polish plan W1 W4 W5 D1 D2 G1 G5)
+
+All [SHELL]-lane per docs/feel-polish-plan.md — zero sim-hash impact (events
+and snapshot fields aren't hashed; oracles + all five Metal goldens verified
+byte-identical, goonursery 120-tick SHOT byte-diff clean). Demo:
+clips/p0_feel.mp4 (trace exercises all five weapons vs all three species).
+
+- **W1 per-class recoil**: `Fx` grew `recoil_class/peak/age`; per-class decay
+  in tick_fx (slug 0.90 — remembers the shot; uzi 0.45 — instant; harpoon
+  LINEAR over 14 ticks) and per-class application in `player_rig_instances`
+  (slug deep kick+pitch, uzi hash-jitter tremble, shotgun 1-tick whole-gun
+  shove at `recoil_age == 0` — age increments BEFORE the event drain so the
+  shot frame reads 0 — grenade vertical toss bob, harpoon pure rail slide).
+- **W4 muzzle signatures**: frame_spotlights matches on `fx.recoil_class` —
+  slug big warm pop ×1.6 + barrel glow (flare rides the slow recoil tail),
+  uzi small 650-power chatter pop, shotgun 82° fan (flare stretched wide),
+  harpoon cyan pop + "rail_slot" mote line down the first 1.5 wu, grenade NO
+  flash (smoke "puff_slot" mote + thunk). The Standard arm keeps the old
+  expression verbatim — game_replay's golden depends on it.
+- **W5 hit weight**: `GameEvent::Impact` grew the round's knockback,
+  `impact_flash` grew a power weight; spark counts + flash power scale with
+  punch/knockback (uzi 2 sparks, slug 6, flash ~×2.3).
+- **D1 tracer identity**: `ProjectileRender` grew class/age/max_age; six
+  per-class pools ("trc_slug/uzi/shot/gren/fuse/harp") with per-class
+  emissive materials, per-class shapes in `projectile_instances` (fat amber
+  bolt / white needle / short orange sparks / matte shell + ACCELERATING
+  fuse blink / cyan line + trailing glint). Off arena everything routes to
+  the legacy `legacy_streak` + "proj_slot" path float-for-float.
+- **D2 resist teaching**: `MobHit` grew `resisted` (from goo_kind_damage_mult
+  mn<md); resisted hits flash dull grey-slate (not hot white) and play the
+  new "goo_thunk" cue. Pinned by the extended
+  `tank_resists_small_arms_but_not_the_slug` test.
+- **G1 body language**: `goo_kind_stance` in render_adapter — Tank vscale
+  ×0.80 radius ×1.08, Runner ×1.15/×0.96, GREEN EXACT ×1.0 (bit-identical by
+  construction). Sprinting Runners tilt INTO motion via per-ball vscale
+  gradient along the shell-side `Fx.mob_motion` velocity estimate.
+- **G5 light personality**: goo_lights — Runner power flickers ∝ its speed
+  (hash noise per tick), Tank slow ~2.3 s breathing sinus, Green untouched.
+- All CPU-side / both backends automatically (instances + spotlights +
+  FrameState goo slices are shared plumbing) — no shader edits, no lockstep
+  debt. New pools are arena-gated; golden scenes author none of it.
+
 ## 2026-07-05 — Retro post-effects pass (six knob-gated effects, both backends)
 
 Six opt-in retro effects, all OFF by default — every knob at 0 reproduces the

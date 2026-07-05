@@ -18,7 +18,7 @@ mod fx;
 mod render_adapter;
 
 pub use fx::Fx;
-pub use render_adapter::DoorRender;
+pub use render_adapter::{DoorRender, TracerPools};
 pub(crate) use render_adapter::{GOO_FLOOR_Y, GOO_SQUASH};
 
 use glam::{IVec2, Vec2, Vec3};
@@ -84,6 +84,9 @@ pub struct GameLoop {
     pub drop_slots: Vec<InstanceKey>,
     /// Reserved impact-spark slots ("spark_slot_N", arena scenes only).
     pub spark_slots: Vec<InstanceKey>,
+    /// Per-class tracer pools + muzzle-FX pools (arena scenes only; all
+    /// empty elsewhere, which selects the legacy shared-pool tracer path).
+    pub trc: TracerPools,
     /// Last aim direction pushed as Command::Aim — the shell only re-pushes
     /// when the cursor direction actually moved (~0.5°), keeping the journal
     /// lean while the gun tracks the mouse turret-style.
@@ -134,6 +137,7 @@ impl GameLoop {
         let chunk_slots = discover_pool(handles, "chunk_slot");
         let drop_slots = discover_pool(handles, "drop_slot");
         let spark_slots = discover_pool(handles, "spark_slot");
+        let trc = TracerPools::discover(handles);
         let mut sim: HouseGame<VecSink> = HouseGame::new(&spec, VecSink::default());
         if spec.arena.is_some() {
             // arena: tap the event stream for bleed droplets (observation-only;
@@ -182,6 +186,7 @@ impl GameLoop {
             chunk_slots,
             drop_slots,
             spark_slots,
+            trc,
             last_aim: None,
             fx: Fx::new(player0),
         }

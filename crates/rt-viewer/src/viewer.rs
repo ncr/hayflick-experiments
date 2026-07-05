@@ -387,6 +387,8 @@ impl Viewer {
         instances.extend(self.game.chunk_instances());
         instances.extend(self.game.droplet_instances());
         instances.extend(self.game.spark_instances());
+        instances.extend(self.game.rail_instances());
+        instances.extend(self.game.puff_instances());
         let goo = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
@@ -629,34 +631,78 @@ impl Viewer {
         for slot in 1..=5u8 {
             if let Some(&k) = self.backend.handles().instances.get(format!("gun_{slot}").as_str()) {
                 let m = if Some(slot) == sel && !hidden {
+                    // recoil: the kick is the weapon's BODY (W1) — each class
+                    // applies the decaying `recoil` transient its own way
+                    // (deep kick+pitch / lateral jitter / ring shove / toss
+                    // bob / rail slide). Presentation-only, tick-clocked.
+                    use house_game::WeaponClass as W;
                     let f = self.game.snap.facing;
-                    // recoil: kick the gun back along its own -Z and pitch
-                    // the muzzle up, both riding the decaying `recoil`
-                    // transient (presentation-only, tick-clocked)
                     let kick = self.game.fx.recoil;
-                    Mat4::from_translation(self.game.snap.player_pos)
-                        * Mat4::from_rotation_y(f.x.atan2(f.y))
-                        * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.085 * kick))
-                        * Mat4::from_rotation_x(-0.22 * kick)
+                    let base = Mat4::from_translation(self.game.snap.player_pos) * Mat4::from_rotation_y(f.x.atan2(f.y));
+                    match self.game.fx.recoil_class {
+                        // deep kick, slow recover — the gun REMEMBERS the shot
+                        W::Slug => base * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.13 * kick)) * Mat4::from_rotation_x(-0.30 * kick),
+                        // ~2px tremble, instant recover — chatter, not mass
+                        W::Uzi => {
+                            let h = self.game.fx_frame().wrapping_mul(2654435761);
+                            let jx = (((h >> 8) & 0xff) as f32 / 127.5 - 1.0) * 0.020 * kick;
+                            let jy = (((h >> 16) & 0xff) as f32 / 127.5 - 1.0) * 0.012 * kick;
+                            base * Mat4::from_translation(glam::Vec3::new(jx, jy, -0.03 * kick))
+                        }
+                        // biggest kick + a 1-tick whole-gun shove on the shot tick
+                        W::Shotgun => {
+                            let shove = if self.game.fx.recoil_age == 0 { 0.05 } else { 0.0 };
+                            base * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -(0.10 * kick + shove))) * Mat4::from_rotation_x(-0.22 * kick)
+                        }
+                        // vertical toss bob, no back-kick: the tube tips up
+                        W::Grenade => base * Mat4::from_translation(glam::Vec3::new(0.0, 0.06 * kick, 0.0)) * Mat4::from_rotation_x(0.14 * kick),
+                        // sharp slide straight back on the rail, zero pitch
+                        W::Harpoon => base * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.12 * kick)),
+                        W::Standard => base * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.085 * kick)) * Mat4::from_rotation_x(-0.22 * kick),
+                    }
                 } else {
                     Mat4::from_scale(glam::Vec3::ZERO)
                 };
                 instances.push((k, m));
             }
         }
-        // muzzle flare: the VISIBLE flash at the barrel tip for the
-        // muzzle ticks — same tick, same point as the flash spotlight
-        // and the tracer birth, scaled by recoil so heavy guns bloom
-        // bigger. Zero-scale between shots.
+        // muzzle flare: the VISIBLE flash at the barrel tip — per-class
+        // shape (W4): slug big pop + a barrel glow that decays with its
+        // slow recoil recover, uzi small strobing pop, shotgun a wide
+        // short fan, harpoon/grenade NO amber flare (the cyan rail streak
+        // / smoke mote are their signatures). Zero-scale between shots.
         if let Some(&k) = self.backend.handles().instances.get("flare_slot_0") {
-            let m = if self.game.snap.muzzle_flash && !hidden {
+            use house_game::WeaponClass as W;
+            let flash = self.game.snap.muzzle_flash && !hidden;
+            let kick = self.game.fx.recoil;
+            let class = self.game.fx.recoil_class;
+            // the slug's barrel keeps GLOWING after the pop, riding the
+            // long recoil tail down
+            let barrel_glow = class == W::Slug && kick > 0.22 && !hidden;
+            let m = if flash || barrel_glow {
                 let f = self.game.snap.facing;
                 let fd = glam::Vec3::new(f.x, 0.0, f.y);
                 let (mp, _) = house_game::flashlight_pose(self.game.snap.player_pos, f);
-                let s = 0.12 + 0.16 * self.game.fx.recoil;
-                Mat4::from_translation(mp + fd * 0.55)
-                    * Mat4::from_quat(glam::Quat::from_rotation_arc(glam::Vec3::Z, fd))
-                    * Mat4::from_scale(glam::Vec3::new(s, s, s * 1.7))
+                let place = |scale: glam::Vec3| Mat4::from_translation(mp + fd * 0.55) * Mat4::from_quat(glam::Quat::from_rotation_arc(glam::Vec3::Z, fd)) * Mat4::from_scale(scale);
+                match class {
+                    W::Harpoon | W::Grenade => Mat4::from_scale(glam::Vec3::ZERO),
+                    W::Slug => {
+                        let s = if flash { 0.15 + 0.20 * kick } else { 0.055 + 0.09 * kick };
+                        place(glam::Vec3::new(s, s, s * 1.6))
+                    }
+                    W::Uzi => {
+                        let s = 0.075;
+                        place(glam::Vec3::new(s, s, s * 1.5))
+                    }
+                    W::Shotgun => {
+                        let s = 0.13 + 0.16 * kick;
+                        place(glam::Vec3::new(s * 2.2, s * 0.7, s * 0.8))
+                    }
+                    W::Standard => {
+                        let s = 0.12 + 0.16 * kick;
+                        place(glam::Vec3::new(s, s, s * 1.7))
+                    }
+                }
             } else {
                 Mat4::from_scale(glam::Vec3::ZERO)
             };
