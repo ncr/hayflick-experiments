@@ -25,6 +25,8 @@ pub struct Spark {
 }
 /// Seconds a spark lives (shrinking the whole way).
 pub(super) const SPARK_LIFE: f32 = 0.26;
+/// Seconds a biomass mote flies from the death point to the BIO counter (L6).
+pub const BIO_MOTE_LIFE: f32 = 0.55;
 /// Seconds a harpoon rail-streak mote lingers (static, fading fast — the
 /// cyan line the rail "burns" into the air along the first 1.5 wu).
 pub(super) const RAIL_LIFE: f32 = 0.20;
@@ -115,6 +117,13 @@ pub struct Fx {
     /// XZ velocity wu/s): drives the Runner's agitated light flicker (G5)
     /// and its sprint-tilt direction (G1). Tick-clocked, presentation-only.
     pub(super) mob_motion: Vec<(u32, glam::Vec2, glam::Vec2)>,
+    /// L6: biomass motes in flight to the HUD BIO counter — (world death
+    /// point, age s, index-in-burst). The HUD projects each to the screen
+    /// and lerps it into the counter; a landing arms `bio_blip`.
+    pub bio_motes: Vec<(Vec3, f32, u8)>,
+    /// L6: BIO-counter landing blip 1→0 — the bottom bar brightens the BIO
+    /// text by it (the economy becomes something you SEE feed).
+    pub bio_blip: f32,
     /// Hitstop frames left: a terminal kill/solidify freezes the LIVE sim a
     /// few frames for punch. DEMO/SHOT ignore it (tick-deterministic).
     pub freeze: u32,
@@ -151,6 +160,8 @@ impl Fx {
             rails: Vec::new(),
             puffs: Vec::new(),
             mob_motion: Vec::new(),
+            bio_motes: Vec::new(),
+            bio_blip: 0.0,
             freeze: 0,
             fx_frame: 0,
             glitch: Vec::new(),
@@ -305,13 +316,15 @@ impl GameLoop {
                     // hitstop: terminal kills freeze the live sim a beat —
                     // the classic punch frame (the shell skips run_due while
                     // freeze > 0; DEMO/SHOT ignore it)
-                    house_game::GameEvent::MobKilled(..) => {
+                    house_game::GameEvent::MobKilled(_, p) => {
                         self.fx.freeze = self.fx.freeze.max(4);
                         self.fx.trauma = (self.fx.trauma + 0.12).min(1.0);
+                        self.spawn_bio_motes(p, 2);
                     }
-                    house_game::GameEvent::MobSolidified(..) => {
+                    house_game::GameEvent::MobSolidified(_, p) => {
                         self.fx.freeze = self.fx.freeze.max(5);
                         self.fx.trauma = (self.fx.trauma + 0.18).min(1.0);
+                        self.spawn_bio_motes(p, 3);
                     }
                     _ => {}
                 }
@@ -400,6 +413,23 @@ impl GameLoop {
             self.fx.impact_flash = self.fx.impact_flash.and_then(|(at, ttl, w)| (ttl > n).then(|| (at, ttl - n, w)));
             self.fx.wave_warn = self.fx.wave_warn.saturating_sub(n);
         }
+        // L6: fly the biomass motes on the tick clock; a mote crossing its
+        // life LANDS in the counter — arm the blip, which itself decays
+        if n > 0 {
+            let dt = TICK_DT * n as f32;
+            let mut landed = false;
+            for m in self.fx.bio_motes.iter_mut() {
+                m.1 += dt;
+                landed |= m.1 >= BIO_MOTE_LIFE;
+            }
+            self.fx.bio_motes.retain(|m| m.1 < BIO_MOTE_LIFE);
+            if landed {
+                self.fx.bio_blip = 1.0;
+            } else {
+                let k = 0.86f32.powi(n as i32);
+                self.fx.bio_blip = if self.fx.bio_blip * k > 0.03 { self.fx.bio_blip * k } else { 0.0 };
+            }
+        }
         // per-blob motion estimate off centroid deltas (tick-clocked): the
         // Runner's light flickers with agitation and its sprint tilts along
         // this — presentation reads only, dead blobs drop out
@@ -455,6 +485,15 @@ impl GameLoop {
             let r2 = ((h >> 16) & 0xff) as f32 / 255.0;
             let v = (bias * (1.2 + r2 * 1.6) + Vec3::new(r0 * 2.4, 1.2 + r2 * 1.0, r1 * 2.4)) * 1.4;
             self.fx.sparks.push(Spark { pos: at, vel: v, age: 0.0 });
+        }
+    }
+
+    /// L6: launch `count` biomass motes from a death point toward the HUD
+    /// BIO counter (the HUD pass projects and lerps them; index staggers
+    /// the takeoff so a burst reads as a stream, not a stamp).
+    fn spawn_bio_motes(&mut self, at: Vec3, count: u8) {
+        for i in 0..count {
+            self.fx.bio_motes.push((at, -0.06 * i as f32, i));
         }
     }
 

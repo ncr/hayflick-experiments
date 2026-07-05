@@ -25,6 +25,15 @@ fn plate(w: i32, h: i32, bg: u32, border: u32) -> Vec<u32> {
     c
 }
 
+/// Per-channel lerp between two 0xRRGGBB colors by `t` in 0..=1.
+fn lerp_hex(a: u32, b: u32, t: f32) -> u32 {
+    let ch = |sh: u32| {
+        let (ca, cb) = (((a >> sh) & 0xff) as f32, ((b >> sh) & 0xff) as f32);
+        (((ca + (cb - ca) * t) as u32).min(255)) << sh
+    };
+    ch(16) | ch(8) | ch(0)
+}
+
 /// The tactic bubble over one blob: `None` for the silent states. Returns
 /// (canvas, w, h, accent) — the accent color doubles as border + text so a
 /// glance reads the intent even before the word does.
@@ -63,7 +72,7 @@ pub fn bubble(m: &MobRender) -> Option<(Vec<u32>, i32, i32)> {
 /// The bottom weapon bar: an integrity (HULL) plate, five weapon slot plates
 /// (selected = amber border, cooldown fill along its bottom), and a
 /// biomass/wave plate. Logical px.
-pub fn bottom_bar(weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>, breach: Option<(u32, u32)>) -> (Vec<u32>, i32, i32) {
+pub fn bottom_bar(weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Option<u16>, run: Option<RunState>, breach: Option<(u32, u32)>, bio_blip: f32) -> (Vec<u32>, i32, i32) {
     const SLOT_W: i32 = 50;
     const H: i32 = 26;
     const GAP: i32 = 2;
@@ -125,7 +134,10 @@ pub fn bottom_bar(weapon: Option<(WeaponKind, u32, u32)>, score: u32, wave: Opti
         let dst = (y * w + x0) as usize;
         c[dst..dst + INFO_W as usize].copy_from_slice(&p[src..src + INFO_W as usize]);
     }
-    mtext(&mut c, w, x0 + 4, 4, &format!("BIO {score}"), 0x99cc99);
+    // L6: a landing biomass mote blips the counter — the text flashes
+    // toward white and settles back as bio_blip decays
+    let bio_col = lerp_hex(0x99cc99, 0xf0fff0, bio_blip.clamp(0.0, 1.0));
+    mtext(&mut c, w, x0 + 4, 4, &format!("BIO {score}"), bio_col);
     match breach {
         // containment: the LEAK meter owns the second row (reddening as it
         // fills); wave lives inline after it
@@ -211,7 +223,7 @@ fn fit_scale(w: i32, rs: u32, ext_w: i64) -> u32 {
 /// Assemble this frame's stamps: one bubble per thinking blob (anchored just
 /// above the body via the forward iso projection) + the bottom bar, centred.
 /// Everything HUD-shaped reads off the snapshot — one argument, one source.
-pub fn build_stamps(snap: &GameSnapshot, xf: &iso_core::ViewXform, ext: (u32, u32), rs: u32) -> Vec<Stamp> {
+pub fn build_stamps(snap: &GameSnapshot, xf: &iso_core::ViewXform, ext: (u32, u32), rs: u32, bio_motes: &[(glam::Vec3, f32, u8)], bio_blip: f32) -> Vec<Stamp> {
     let (weapon, score, wave, run, draft, breach) = (snap.weapon, snap.score, snap.wave, snap.run, snap.draft, snap.breach);
     let mut out = Vec::new();
     let (ext_w, ext_h) = (ext.0 as i64, ext.1 as i64);
@@ -231,13 +243,29 @@ pub fn build_stamps(snap: &GameSnapshot, xf: &iso_core::ViewXform, ext: (u32, u3
         out.push(Stamp { pix, w, h, x, y, scale: rs });
     }
     if weapon.is_some() {
-        let (pix, w, h) = bottom_bar(weapon, score, wave, run, breach);
+        let (pix, w, h) = bottom_bar(weapon, score, wave, run, breach, bio_blip);
         // a plate wider than the window steps down its scale instead of
         // clipping into oblivion (negative-x stamps never draw)
         let bs = fit_scale(w, rs, ext_w);
         let x = (ext_w - w as i64 * bs as i64) / 2;
         let y = ext_h - h as i64 * bs as i64 - 6;
         out.push(Stamp { pix, w, h, x, y, scale: bs });
+        // L6: biomass motes in flight — each projects its death point and
+        // arcs into the BIO plate (the counter's top-left text corner)
+        let hull_w = if run.is_some() { 64 + 2 } else { 0 } as i64;
+        let tgt = (x + (hull_w + 5 * 52 + 8) * bs as i64, y + 8 * bs as i64);
+        for &(at, age, _) in bio_motes {
+            let t = age / crate::sim::BIO_MOTE_LIFE;
+            if !(0.0..=1.0).contains(&t) {
+                continue; // staggered takeoff / already landed
+            }
+            let e = t * t * (3.0 - 2.0 * t); // smoothstep ease
+            let start = iso_core::world_to_window_px(at + glam::Vec3::new(0.0, 0.3, 0.0), xf);
+            let mx = start.x as i64 + ((tgt.0 - start.x as i64) as f32 * e) as i64;
+            let my = start.y as i64 + ((tgt.1 - start.y as i64) as f32 * e) as i64 - (26.0 * (std::f32::consts::PI * e).sin()) as i64;
+            let mote = vec![0x9fe8a0u32, 0xcfffcf, 0x9fe8a0, 0xcfffcf, 0xf0fff0, 0xcfffcf, 0x9fe8a0, 0xcfffcf, 0x9fe8a0];
+            out.push(Stamp { pix: mote, w: 3, h: 3, x: mx, y: my, scale: rs.max(1) });
+        }
     }
     if let Some(d) = &draft {
         let (pix, w, h) = draft_hand(d);

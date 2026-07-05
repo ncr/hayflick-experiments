@@ -352,6 +352,18 @@ impl Viewer {
                 }
             }
         }
+        // L5 end zoning (containment stages): the drain end sits under a
+        // cold-cyan wash, the player's defense end under a warm one —
+        // which way is OUT reads at a glance through camera rotation and
+        // the blackout act (the washes deliberately survive lights-out).
+        if let Some(z) = self.game.sim.res.arena.drain {
+            let fl = self.game.sim.res.level.floor;
+            let (dc_x, dc_z) = ((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5);
+            let (fc_x, fc_z) = ((fl[0] + fl[2]) * 0.5, (fl[1] + fl[3]) * 0.5);
+            let (pc_x, pc_z) = (2.0 * fc_x - dc_x, 2.0 * fc_z - dc_z); // the mirrored player end
+            v.push(Spotlight { pos: glam::Vec3::new(dc_x, 2.2, dc_z), dir: glam::Vec3::NEG_Y, cone_cos: 75.0f32.to_radians().cos(), power: 650.0, radius: 0.28, tint: [0.35, 0.75, 0.95] });
+            v.push(Spotlight { pos: glam::Vec3::new(pc_x, 2.2, pc_z), dir: glam::Vec3::NEG_Y, cone_cos: 75.0f32.to_radians().cos(), power: 520.0, radius: 0.28, tint: [1.0, 0.82, 0.55] });
+        }
         // L2: past half LEAK the drain zone runs HOT — a low red wash over
         // the mouth (the strips can't recolor; the light can) that deepens
         // with the meter. Drain scenes only (breach is None elsewhere).

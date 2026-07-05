@@ -802,7 +802,7 @@ impl Viewer {
         if self.game.has_player && !crate::scene_registry::is_goo_film_stage(&self.cfg.scene) {
             let xf = self.pick_xform();
             let ext = self.backend.extent();
-            crate::hud::build_stamps(&self.game.snap, &xf, ext, self.rs() as u32)
+            crate::hud::build_stamps(&self.game.snap, &xf, ext, self.rs() as u32, &self.game.fx.bio_motes, self.game.fx.bio_blip)
         } else {
             Vec::new()
         }

@@ -17,7 +17,7 @@
 mod fx;
 mod render_adapter;
 
-pub use fx::Fx;
+pub use fx::{Fx, BIO_MOTE_LIFE};
 pub use render_adapter::{DoorRender, TracerPools};
 pub(crate) use render_adapter::{GOO_FLOOR_Y, GOO_SQUASH};
 

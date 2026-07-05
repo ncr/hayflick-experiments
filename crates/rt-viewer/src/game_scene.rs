@@ -380,6 +380,17 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         register_sphere_pool(&mut scene, "pin_slot", 4, 4, 6, [0.02, 0.05, 0.06, 1.0], [4.0, 11.0, 13.0, 1.0], 0.5);
     }
 
+    // ---- L5 corner service lamps (arena scenes): four glowing fixtures
+    // inset from the pit corners — edge zoning against the dimmer mid-field
+    // and an orientation anchor through camera rotation and the blackout act.
+    // NEE-excluded fixtures (the trap-ring trick), so the light join and the
+    // spotlight budget never see them.
+    if spec.arena.is_some() {
+        for (cx, cz) in [(f[0] + 1.25, f[1] + 1.25), (f[2] - 1.25, f[1] + 1.25), (f[0] + 1.25, f[3] - 1.25), (f[2] - 1.25, f[3] - 1.25)] {
+            place_service_lamp(&mut scene, cx, cz);
+        }
+    }
+
     // ---- goo traps: a glowing hazard ring on the floor at each emitter. A flat
     // emissive annulus (outer square minus inner square as four thin bars) reads
     // as a ring under the iso grid; the magenta glow contrasts the green goo.
@@ -554,6 +565,20 @@ pub fn sieve_slots(spec: &LevelSpec) -> Vec<[f32; 4]> {
         }
     }
     out
+}
+
+/// L5: a corner service lamp — a graphite post wearing a small warm emissive
+/// head. Registered as a never-patched dynamic run (the trap-ring trick) so
+/// the head glows to camera WITHOUT entering the NEE light scan or the probe
+/// bake: an orientation fixture, alive through rotation and the blackout act,
+/// that zones the pit's edges against the dimmer mid-field.
+fn place_service_lamp(scene: &mut Scene, cx: f32, cz: f32) {
+    let first = scene.primitives.len();
+    // post: one iso stair step square, hip height
+    scene.add_box_world(Vec3::new(cx - 0.0625, FLOOR_TOP, cz - 0.0625), Vec3::new(cx + 0.0625, 1.125, cz + 0.0625), [0.16, 0.17, 0.18, 1.0], [0.0; 4], 0.6, 0.0);
+    // warm head, just proud of the post
+    scene.add_box_world(Vec3::new(cx - 0.125, 1.125, cz - 0.125), Vec3::new(cx + 0.125, 1.3125, cz + 0.125), [0.30, 0.24, 0.12, 1.0], [5.5, 4.2, 2.2, 1.0], 0.4, 0.0);
+    scene.register_dynamic(&format!("svc_lamp_{cx}_{cz}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
 }
 
 /// A glowing trap ring on the floor centred at (cx, cz), outer half-extent `r`.
