@@ -8,35 +8,26 @@
 //! drives both the renderer scene (`game_scene::build_game`) and the game's
 //! collision fields, so click-to-walk collides against exactly what the eye
 //! sees — by construction, not by mirroring.
+//!
+//! Split (2026-07-05): this file owns the LOOP — construction, tick driving,
+//! the journal, and the light joins. The presentation FX live in [`fx`]; the
+//! snapshot→renderer instance/metaball/light builders live in
+//! [`render_adapter`].
 
-use crate::viewer::Viewer;
-use glam::{IVec2, Mat4, Vec2, Vec3};
+mod fx;
+mod render_adapter;
+
+pub use fx::Fx;
+pub use render_adapter::DoorRender;
+pub(crate) use render_adapter::{GOO_FLOOR_Y, GOO_SQUASH};
+
+use glam::{IVec2, Vec2, Vec3};
 use house_game::game::{Facing, Flashlight, Player, Pos};
-use house_game::{parse_trace, Command, DoorId, GameSnapshot, HouseGame, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TICK_DT};
+use house_game::{parse_trace, Command, GameSnapshot, HouseGame, LevelSpec, LightId, LightKind, LightSpec, RoomId, RoomSpec, TICK_DT};
 use iso_core::screen_px_to_world;
+use render_adapter::discover_pool;
 use rt_probe::{Config, InstanceKey, LightKey, Scene, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, Simulation, Tick, VecSink};
-
-/// Vertical flatten applied to the goo metaballs so the body lies on the floor
-/// as a spread puddle: the resting-height math `floor + radius·squash` is shared
-/// by the CPU ball placement (`goo_balls`) AND the Metal proxy/shader squash, so
-/// they MUST agree. Single source of truth — `metal_backend` imports these (it
-/// is macOS-gated; `sim` always compiles, so the canonical home is here). A
-/// `goo_render_consts_agree` test pins them.
-pub(crate) const GOO_SQUASH: f32 = 0.74;
-/// Floor plane Y (kit floorThickness 6 cm) — the goo's flat underside.
-pub(crate) const GOO_FLOOR_Y: f32 = 6.0 / 128.0;
-
-/// Per-door render binding: the renderer instance handle for the leaf, plus the
-/// hinge + signed swing axis the per-frame transform needs (the snapshot gives
-/// only the angle). Built from the spec's DoorSpecs joined onto the scene's
-/// named dynamic instances.
-pub struct DoorRender {
-    pub id: DoorId,
-    pub inst: InstanceKey,
-    pub hinge: Vec3,
-    pub axis_y: f32,
-}
 
 /// The viewer's game-loop state: the fixed-timestep accumulator, the
 /// tick-stamped command queue, the running game, and the cached snapshot the
@@ -93,82 +84,13 @@ pub struct GameLoop {
     pub drop_slots: Vec<InstanceKey>,
     /// Reserved impact-spark slots ("spark_slot_N", arena scenes only).
     pub spark_slots: Vec<InstanceKey>,
-    /// Live render droplets (uzi bleed FX). PRESENTATION-ONLY: spawned off the
-    /// event tap, advanced on the tick clock, never touches the sim.
-    pub droplets: Vec<Droplet>,
-    /// Render-side scatter counter for droplet spray directions (not sim RNG).
-    drop_seed: u32,
-    /// Gun-feel FX (PRESENTATION-ONLY, fed by the arena event tap, decayed on
-    /// the tick clock so DEMO replays reproduce them exactly):
-    /// recoil 0..1 — the selected gun's kick-back/pitch-up, armed per shot.
-    pub recoil: f32,
-    /// Screenshake trauma 0..1 — shots and detonations add, offset is
-    /// trauma² (small hits barely tickle, a boom really throws the frame).
-    pub trauma: f32,
-    /// Per-blob hit flash 0..1 — a connecting shot blinks the body hot white.
-    pub hit_flash: Vec<(house_game::MobId, f32)>,
-    /// Walk-feel FX (arena only, tick-clocked like the rest):
-    /// last tick's player position — the shell-side velocity estimate.
-    prev_player: Vec3,
-    /// Smoothed player world-XZ velocity (wu/s) — drives the droid's lean
-    /// into the motion and the hover-bob amplitude.
-    pub lean_vel: glam::Vec2,
-    /// Servo-step cadence accumulator + cues due (drained by the shell).
-    step_accum: f32,
-    steps_due: u32,
     /// Last aim direction pushed as Command::Aim — the shell only re-pushes
     /// when the cursor direction actually moved (~0.5°), keeping the journal
     /// lean while the gun tracks the mouse turret-style.
     pub last_aim: Option<glam::Vec2>,
-    /// Live impact sparks: hot debris motes thrown where a round died
-    /// (wall/floor Impact events AND blob splashes). Tick-clocked twin of
-    /// `droplets`, rendered from the "spark_slot" pool.
-    pub sparks: Vec<Spark>,
-    /// The most recent impact point + ticks left of its light pop — the
-    /// target-side half of the muzzle flash (frame_spotlights reads it).
-    pub impact_flash: Option<(Vec3, u32)>,
-    /// Hitstop frames left: a terminal kill/solidify freezes the LIVE sim a
-    /// few frames for punch. DEMO/SHOT ignore it (tick-deterministic).
-    pub freeze: u32,
-    /// Presentation frame counter (advances with sim ticks) for the glitch FX.
-    fx_frame: u32,
-    /// Netcode-lag glitch cache: WEAK blobs render from a STALE body snapshot
-    /// refreshed every ~8–15 ticks (per-id period), so a nearly-dead blob
-    /// stutter-teleports while its true hitbox crawls on — aim at where it IS,
-    /// not where it draws. Presentation-only (the sim never reads this).
-    glitch: Vec<GlitchEntry>,
-}
-
-/// One weak blob's cached render body (see `GameLoop::glitch`).
-struct GlitchEntry {
-    id: house_game::MobId,
-    parts: [Vec3; house_game::GOO_PARTICLES],
-    vscale: f32,
-    refreshed: u32,
-}
-
-/// One bleed droplet: a tiny glowing ball torn off a blob by uzi fire,
-/// ballistic to the floor, gone in half a second.
-/// Seconds a landed splat spends spreading/fading before it despawns.
-const SPLAT_LIFE: f32 = 0.45;
-
-/// One impact spark: a hot debris mote thrown where a round died. Ballistic,
-/// gone in a quarter second — pure presentation, the droplets' hard twin.
-pub struct Spark {
-    pub pos: Vec3,
-    pub vel: Vec3,
-    pub age: f32,
-}
-/// Seconds a spark lives (shrinking the whole way).
-const SPARK_LIFE: f32 = 0.26;
-
-pub struct Droplet {
-    pub pos: Vec3,
-    pub vel: Vec3,
-    pub age: f32,
-    /// <0 = airborne; >=0 = seconds since it hit the floor and became a
-    /// flattening SPLAT (a widening puddle disc that fades out).
-    pub splat: f32,
+    /// Presentation game-feel state (recoil / shake / droplets / hitstop /
+    /// glitch …): tick-clocked, event-tap-fed, sim-blind. See [`fx::Fx`].
+    pub fx: Fx,
 }
 
 impl GameLoop {
@@ -260,21 +182,8 @@ impl GameLoop {
             chunk_slots,
             drop_slots,
             spark_slots,
-            droplets: Vec::new(),
-            drop_seed: 0,
-            recoil: 0.0,
-            trauma: 0.0,
-            hit_flash: Vec::new(),
-            prev_player: player0,
-            lean_vel: glam::Vec2::ZERO,
-            step_accum: 0.0,
-            steps_due: 0,
             last_aim: None,
-            sparks: Vec::new(),
-            impact_flash: None,
-            freeze: 0,
-            fx_frame: 0,
-            glitch: Vec::new(),
+            fx: Fx::new(player0),
         }
     }
 
@@ -329,11 +238,12 @@ impl GameLoop {
     }
 
     /// DEMO=trace.txt: load the trace and queue every command at its stamp,
-    /// returning the tick count to play (DEMO_TICKS override, else last stamp
-    /// + 1). Unlike `run_cmds` (a startup PREFIX that runs all ticks before
-    ///   frame 0 with no per-frame output), DEMO leaves the queue loaded and the
-    ///   caller advances ONE tick per rendered frame via `demo_advance_tick`, so
-    ///   every tick of real gameplay becomes a captured frame.
+    /// returning the tick count to play (DEMO_TICKS override, else last
+    /// stamp plus one). Unlike `run_cmds` (a startup PREFIX that runs all
+    /// ticks before frame 0 with no per-frame output), DEMO leaves the queue
+    /// loaded and the caller advances ONE tick per rendered frame via
+    /// `demo_advance_tick`, so every tick of real gameplay becomes a
+    /// captured frame.
     pub fn demo_load(&mut self, cfg: &Config) -> u64 {
         let path = cfg.harness.demo.as_ref().expect("demo_load only on DEMO path");
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("DEMO {path}: {e}"));
@@ -401,227 +311,6 @@ impl GameLoop {
         self.queue.push(self.tick, c);
     }
 
-    /// This frame's door leaf instance transforms: for each bound door, the
-    /// snapshot's swing angle through `door_instance` (rotate about the hinge).
-    /// record_frame patches each only on a bit-change, so idle doors never
-    /// rebuild the TLAS.
-    pub fn door_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        self.doors
-            .iter()
-            .map(|dr| {
-                let angle = self.snap.doors.iter().find(|(id, _)| *id == dr.id).map(|(_, a)| *a).unwrap_or(0.0);
-                (dr.inst, crate::game_scene::door_instance(dr.hinge, dr.axis_y, angle))
-            })
-            .collect()
-    }
-
-    /// Per-frame goo blob instances: skin one emissive ellipsoid onto each live
-    /// blob's particle nodes, then collapse every unused pool slot to zero
-    /// scale (invisible). The Y scale (and the matching lift, so the lump
-    /// stays grounded) tracks the blob's `vscale` — the same per-blob height
-    /// breathing the SDF composite draws, so the fallback shows the gait
-    /// flatten / jelly bounce too. Presentation-only — a pure read of the
-    /// snapshot's hashed particle field; nothing here feeds back into the sim.
-    pub fn goo_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.snap.mobs.iter().flat_map(|m| {
-            let ry = m.part_radius * m.vscale;
-            m.parts.iter().map(move |part| Mat4::from_translation(Vec3::new(part.x, ry, part.z)) * Mat4::from_scale(Vec3::new(m.part_radius, ry, m.part_radius)))
-        });
-        skin_pool(&self.goo_slots, xforms)
-    }
-
-    /// Per-frame projectile tracer instances: skin one small emissive sphere onto
-    /// each live projectile (translate · uniform scale), collapsing every unused
-    /// pool slot to zero scale. Pure read of the snapshot's hashed projectile
-    /// state — the same instance-mover path the goo ellipsoids use.
-    pub fn projectile_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.snap.projectiles.iter().map(|p| {
-            let t = Mat4::from_translation(Vec3::new(p.pos.x, p.pos.y, p.pos.z));
-            // tracer streak: thin cross-section (floored so fast small rounds
-            // never dither below a pixel — the pool sphere's LOCAL radius is
-            // 0.4, so visual size = scale × 0.4), length covering ~2 ticks of
-            // flight — rounds draw lines from barrel to target, the slow fat
-            // slug stays a chunky bolt.
-            let speed2 = p.vel.length_squared();
-            match (speed2 > 1e-6).then(|| p.vel.normalize()) {
-                Some(d) => {
-                    let cross = (p.radius * 0.5).max(0.075);
-                    let z_half = (p.radius * 1.2).max(speed2.sqrt() * house_game::TICK_DT * 2.2);
-                    t * Mat4::from_quat(glam::Quat::from_rotation_arc(Vec3::Z, d)) * Mat4::from_scale(Vec3::new(cross, cross, z_half))
-                }
-                None => t * Mat4::from_scale(Vec3::splat(p.radius)),
-            }
-        });
-        skin_pool(&self.proj_slots, xforms)
-    }
-
-    /// Per-frame dead-chunk instances: one squashed matte dome per solidified
-    /// blob (translate to the rect centre, scale to its half-extents; the local
-    /// unit sphere's lower half sinks under the floor). Pure snapshot read.
-    pub fn chunk_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.snap.chunks.iter().map(|c| {
-            let cx = (c[0] + c[2]) * 0.5;
-            let cz = (c[1] + c[3]) * 0.5;
-            let hx = (c[2] - c[0]) * 0.5;
-            let hz = (c[3] - c[1]) * 0.5;
-            Mat4::from_translation(Vec3::new(cx, 0.0, cz)) * Mat4::from_scale(Vec3::new(hx, house_game::GOO_CHUNK_H, hz))
-        });
-        skin_pool(&self.chunk_slots, xforms)
-    }
-
-    /// Advance the presentation FX by `n` sim ticks: drain the arena event
-    /// tap into droplet sprays, gun recoil, screenshake trauma and blob hit
-    /// flashes, integrate droplet ballistics, and decay the transients.
-    /// Tick-clocked (not wall-clocked) so DEMO captures stay reproducible.
-    /// Presentation-only — nothing here feeds back into the sim.
-    pub fn tick_fx(&mut self, n: u32) {
-        self.fx_frame = self.fx_frame.wrapping_add(n);
-        self.update_glitch();
-        // drain the tap into a local list first so the arms below can call
-        // &mut self helpers (spawn_sparks) without fighting the tap borrow
-        let evs: Vec<house_game::GameEvent> = self.sim.res.event_tap.as_mut().map(std::mem::take).unwrap_or_default();
-        {
-            for ev in evs {
-                match ev {
-                    house_game::GameEvent::GooSplashed(_, at, dir, punch) => {
-                        // spray budget: a pinprick sheds a couple of motes, a slug
-                        // or point-blank volley tears off a real spray
-                        let count = (3.0 + punch * 0.9).min(14.0) as u32;
-                        let fwd = glam::Vec2::new(dir.x, dir.z).normalize_or_zero();
-                        let side = glam::Vec2::new(-fwd.y, fwd.x);
-                        for _ in 0..count {
-                            self.drop_seed = self.drop_seed.wrapping_add(1);
-                            let h = self.drop_seed.wrapping_mul(2654435761);
-                            let r0 = (h & 0xff) as f32 / 255.0;
-                            let r1 = ((h >> 8) & 0xff) as f32 / 255.0;
-                            let r2 = ((h >> 16) & 0xff) as f32 / 255.0;
-                            // mostly THROUGH the body along the shot, fanned to the
-                            // sides — an exit spray, not a fountain
-                            let xz = (fwd * (0.5 + r0 * 0.9) + side * (r1 - 0.5) * 1.3).normalize_or_zero() * (1.0 + punch * (0.18 + 0.12 * r2));
-                            let up = 1.3 + r2 * 1.3 + punch * 0.06;
-                            self.droplets.push(Droplet { pos: at + Vec3::new(0.0, 0.1, 0.0), vel: Vec3::new(xz.x, up, xz.y), age: 0.0, splat: -1.0 });
-                        }
-                        // plus the hard-impact tell at the splash point: hot
-                        // sparks + a brief light pop (the goo motes alone
-                        // read as goo, not as YOUR hit landing)
-                        self.spawn_sparks(at + Vec3::new(0.0, 0.10, 0.0), Vec3::new(dir.x, 0.4, dir.z), 3);
-                        self.impact_flash = Some((at, 3));
-                    }
-                    house_game::GameEvent::Impact(at, n) => {
-                        // a round died on a wall / chunk / the floor: debris
-                        // sparks off the surface + the impact light pop
-                        self.spawn_sparks(at, n * 1.1, 6);
-                        self.impact_flash = Some((at, 3));
-                    }
-                    house_game::GameEvent::ShotFired(_, class) => {
-                        // per-weapon hand feel: kick the gun model, bump the shake
-                        use house_game::WeaponClass as W;
-                        let (kick, shake) = match class {
-                            W::Slug => (1.0, 0.30),
-                            W::Uzi => (0.45, 0.09),
-                            W::Shotgun => (1.0, 0.42),
-                            W::Grenade => (0.7, 0.15),
-                            W::Harpoon => (0.9, 0.25),
-                            W::Standard => (0.6, 0.15),
-                        };
-                        self.recoil = self.recoil.max(kick);
-                        self.trauma = (self.trauma + shake).min(1.0);
-                    }
-                    house_game::GameEvent::Detonated(_) => {
-                        self.trauma = (self.trauma + 0.65).min(1.0);
-                        self.freeze = self.freeze.max(3);
-                    }
-                    house_game::GameEvent::WaveLanded(_) => {
-                        self.trauma = (self.trauma + 0.30).min(1.0);
-                    }
-                    house_game::GameEvent::MobHit(id, _) => {
-                        // blink the surviving body hot white (dead ones already
-                        // play the split/die choreography)
-                        match self.hit_flash.iter_mut().find(|(i, _)| *i == id) {
-                            Some((_, f)) => *f = 0.8,
-                            None => self.hit_flash.push((id, 0.8)),
-                        }
-                    }
-                    // hitstop: terminal kills freeze the live sim a beat —
-                    // the classic punch frame (the shell skips run_due while
-                    // freeze > 0; DEMO/SHOT ignore it)
-                    house_game::GameEvent::MobKilled(..) => {
-                        self.freeze = self.freeze.max(4);
-                        self.trauma = (self.trauma + 0.12).min(1.0);
-                    }
-                    house_game::GameEvent::MobSolidified(..) => {
-                        self.freeze = self.freeze.max(5);
-                        self.trauma = (self.trauma + 0.18).min(1.0);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // decay the gun-feel transients on the tick clock (frame-rate free)
-        if n > 0 {
-            let (kr, kt, kf) = (0.80f32.powi(n as i32), 0.88f32.powi(n as i32), 0.76f32.powi(n as i32));
-            self.recoil = if self.recoil * kr > 0.01 { self.recoil * kr } else { 0.0 };
-            self.trauma = if self.trauma * kt > 0.01 { self.trauma * kt } else { 0.0 };
-            for (_, f) in self.hit_flash.iter_mut() {
-                *f *= kf;
-            }
-            self.hit_flash.retain(|(_, f)| *f > 0.03);
-            // walk-feel: estimate the player's world velocity off the snapshot
-            // deltas, smooth it into the lean, and run the servo-step cadence
-            // (arena only — the cave game keeps its stillness)
-            if self.lmb_shoots {
-                let dt = TICK_DT * n as f32;
-                let dp = self.snap.player_pos - self.prev_player;
-                let vel = glam::Vec2::new(dp.x, dp.z) / dt;
-                self.lean_vel += (vel - self.lean_vel) * (1.0 - 0.70f32.powi(n as i32));
-                // step cadence scales with speed; ~4.3 ticks between cues at a
-                // full 2 wu/s sprint, silent below a slow drift
-                let speed = self.lean_vel.length();
-                if speed > 0.25 {
-                    self.step_accum += (speed / 2.0).min(1.25) * n as f32 / 14.0;
-                    while self.step_accum >= 1.0 {
-                        self.step_accum -= 1.0;
-                        self.steps_due += 1;
-                    }
-                } else {
-                    self.step_accum = 0.0;
-                }
-            }
-            self.prev_player = self.snap.player_pos;
-        }
-        // sparks: fast hard ballistics, shrink-and-gone in a quarter second
-        if n > 0 && !self.sparks.is_empty() {
-            let dt = TICK_DT * n as f32;
-            for s in self.sparks.iter_mut() {
-                s.vel.y -= 13.0 * dt;
-                s.pos += s.vel * dt;
-                s.age += dt;
-            }
-            self.sparks.retain(|s| s.age < SPARK_LIFE && s.pos.y > -0.05);
-        }
-        if n > 0 {
-            self.impact_flash = self.impact_flash.and_then(|(at, ttl)| (ttl > n).then(|| (at, ttl - n)));
-        }
-        if n > 0 && !self.droplets.is_empty() {
-            let dt = TICK_DT * n as f32;
-            for d in self.droplets.iter_mut() {
-                if d.splat < 0.0 {
-                    d.vel.y -= 9.0 * dt;
-                    d.pos += d.vel * dt;
-                    d.age += dt;
-                    // touchdown → become a floor splat (skip if it aged out)
-                    if d.pos.y <= 0.03 && d.vel.y < 0.0 {
-                        d.pos.y = 0.02;
-                        d.splat = 0.0;
-                    }
-                } else {
-                    d.splat += dt;
-                }
-            }
-            self.droplets.retain(|d| if d.splat < 0.0 { d.age < 0.9 } else { d.splat < SPLAT_LIFE });
-        }
-    }
-
     /// Re-seed the fresh sim's camera quarter to the viewer's CURRENT one —
     /// a restart (Space) rebuilds the sim from the spec, whose boot yaw is
     /// the cfg default; without this the screen keeps the rotated camera
@@ -636,285 +325,13 @@ impl GameLoop {
         self.sim.reseed();
         self.snap = self.sim.snapshot();
         self.last_player = self.snap.player_pos;
-        self.prev_player = self.snap.player_pos;
-    }
-
-    /// Throw `count` hot debris motes from `at`, biased along `bias` (the
-    /// surface normal, or the splash direction lifted a little) — the
-    /// particle half of the impact tell. Same hash scatter as the droplets.
-    fn spawn_sparks(&mut self, at: Vec3, bias: Vec3, count: u32) {
-        for _ in 0..count {
-            self.drop_seed = self.drop_seed.wrapping_add(1);
-            let h = self.drop_seed.wrapping_mul(2654435761);
-            let r0 = (h & 0xff) as f32 / 255.0 - 0.5;
-            let r1 = ((h >> 8) & 0xff) as f32 / 255.0 - 0.5;
-            let r2 = ((h >> 16) & 0xff) as f32 / 255.0;
-            let v = (bias * (1.2 + r2 * 1.6) + Vec3::new(r0 * 2.4, 1.2 + r2 * 1.0, r1 * 2.4)) * 1.4;
-            self.sparks.push(Spark { pos: at, vel: v, age: 0.0 });
-        }
-    }
-
-    /// Per-frame impact-spark instances: hot motes shrinking over their life.
-    pub fn spark_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.sparks.iter().map(|s| {
-            let k = 1.0 - (s.age / SPARK_LIFE).min(1.0);
-            Mat4::from_translation(s.pos) * Mat4::from_scale(Vec3::splat(0.018 + 0.030 * k))
-        });
-        skin_pool(&self.spark_slots, xforms)
-    }
-
-    /// Drain the servo-step cues accumulated by the walk cadence (the shell
-    /// plays one "step" tick per unit — presentation audio only).
-    pub fn take_steps(&mut self) -> u32 {
-        std::mem::take(&mut self.steps_due)
-    }
-
-    /// The presentation frame counter (advances with sim ticks) — the shell's
-    /// clock for tick-locked FX like the hover bob.
-    pub fn fx_frame(&self) -> u32 {
-        self.fx_frame
-    }
-
-    /// This frame's screenshake offset in low-res px. Trauma² scaling (small
-    /// arms tickle, a detonation throws the frame), direction from an integer
-    /// hash of the tick clock — deterministic, zero when calm, and bounded
-    /// well inside the low-buffer overscan margin.
-    pub fn shake_px(&self) -> glam::Vec2 {
-        if self.trauma <= 0.0 {
-            return glam::Vec2::ZERO;
-        }
-        const MAX_SHAKE_PX: f32 = 4.5;
-        let a = self.trauma * self.trauma;
-        let h = self.fx_frame.wrapping_mul(2654435761);
-        let nx = ((h >> 8) & 0xff) as f32 / 127.5 - 1.0;
-        let ny = ((h >> 16) & 0xff) as f32 / 127.5 - 1.0;
-        glam::Vec2::new(nx, ny) * (MAX_SHAKE_PX * a)
-    }
-
-    /// Maintain the lag-glitch cache: every WEAK blob gets a cached body that
-    /// only refreshes on its own ~8–15-tick period (id-hashed, so a pack of
-    /// weak blobs never snaps in unison); healthy and dead blobs drop out.
-    fn update_glitch(&mut self) {
-        let frame = self.fx_frame;
-        self.glitch.retain(|e| self.snap.mobs.iter().any(|m| m.id == e.id && m.weak));
-        for m in &self.snap.mobs {
-            if !m.weak {
-                continue;
-            }
-            let period = 8 + ((m.id.0.wrapping_mul(2654435761) >> 28) % 8);
-            match self.glitch.iter_mut().find(|e| e.id == m.id) {
-                Some(e) => {
-                    if frame.wrapping_sub(e.refreshed) >= period {
-                        e.parts = m.parts;
-                        e.vscale = m.vscale;
-                        e.refreshed = frame;
-                    }
-                }
-                None => self.glitch.push(GlitchEntry { id: m.id, parts: m.parts, vscale: m.vscale, refreshed: frame }),
-            }
-        }
-    }
-
-    /// Per-frame droplet instances: airborne motes are tiny glowing balls;
-    /// landed ones flatten into widening, thinning puddle discs (the same
-    /// sphere squashed to the floor) that vanish at SPLAT_LIFE.
-    pub fn droplet_instances(&self) -> Vec<(InstanceKey, Mat4)> {
-        let xforms = self.droplets.iter().map(|d| {
-            if d.splat < 0.0 {
-                Mat4::from_translation(d.pos) * Mat4::from_scale(Vec3::splat(0.045))
-            } else {
-                let t = (d.splat / SPLAT_LIFE).min(1.0);
-                let r = 0.05 + t * 0.13; // spreads out...
-                let h = 0.020 * (1.0 - t) + 0.004; // ...as it drains away
-                Mat4::from_translation(d.pos) * Mat4::from_scale(Vec3::new(r, h, r))
-            }
-        });
-        skin_pool(&self.drop_slots, xforms)
-    }
-
-    /// This frame's goo metaballs for the screen-space SDF composite, plus the
-    /// parallel per-ball birth-glow and vertical-scale slices and the per-BLOB
-    /// bounding spheres. One metaball per fluid particle — the solved fluid
-    /// distribution IS the surface. Centres sit at the blob's flattened resting
-    /// height (`floor + radius·squash·vscale`) so the shader's vertical squash
-    /// and floor clamp settle each lump flat on the ground while the body
-    /// breathes in height (gait lunge flattens, jelly wobble bounces, birth
-    /// tension draws up — see `MobRender.vscale`). Each bound encloses its
-    /// blob's whole merged surface — every ball plus its radius at the LARGEST
-    /// axis scale, plus the outward smin bulge — so the shader's two-level
-    /// march can trust it as a conservative distance proxy. Pure read of the
-    /// hashed field.
-    #[allow(clippy::type_complexity)] // five parallel SoA slices; bundling into a GooFrame struct is queued follow-up work
-    pub fn goo_balls(&self) -> (Vec<rt_probe::GooBall>, Vec<f32>, Vec<f32>, Vec<rt_probe::GooBall>, Vec<[f32; 4]>) {
-        // Outward bulge of the smin union past the plain sphere union: at most
-        // k/4 (k = the shader's GOO_SMIN_K 0.14 → 0.035), plus slack. A too-
-        // generous margin only expands a blob's balls a step early — never a
-        // visual change — so this need not track k exactly.
-        const GOO_BOUND_MARGIN: f32 = 0.06;
-        let mut out = Vec::new();
-        let mut glow = Vec::new(); // PARALLEL to `out`: per-ball birth-glow 0..1
-        let mut vscales = Vec::new(); // PARALLEL to `out`: per-ball vertical scale
-        let mut bounds = Vec::new(); // one per BLOB (mob order = ball group order)
-        let mut tints = Vec::new(); // PARALLEL to `out`: per-ball species tint
-        for m in &self.snap.mobs {
-            // species tint, desaturated toward a dull gray-teal as cure stacks
-            // build (the visible "solidifying" read; full gray never quite hits)
-            let kt = goo_kind_body_tint(m.kind);
-            let k = (m.cure as f32 / house_game::GOO_CURE_MAX as f32) * 0.8;
-            const GRAY: [f32; 3] = [0.55, 0.09, 0.26]; // × GOO_EMIS ≈ dull stone-teal
-            let mut tint = [kt[0] + (GRAY[0] - kt[0]) * k, kt[1] + (GRAY[1] - kt[1]) * k, kt[2] + (GRAY[2] - kt[2]) * k, kt[3]];
-            // comm-pact telegraph: flash the whole body toward a hot signal
-            // white (deliberately NOT the amber birth tint) by the pulse —
-            // both pact members share a strike tick, so they blink in sync.
-            if m.comm > 0.0 {
-                const FLASH: [f32; 3] = [2.6, 2.9, 3.4];
-                for (t, f) in tint.iter_mut().zip(FLASH) {
-                    *t += (f - *t) * m.comm;
-                }
-            }
-            // hit flash: a shot that connected blinks the body hot white for
-            // a beat (shell-side decay off the arena event tap — the comm
-            // pulse pattern, just faster and per-hit)
-            if let Some((_, f)) = self.hit_flash.iter().find(|(id, _)| *id == m.id) {
-                const HOT: [f32; 3] = [3.1, 3.2, 3.5];
-                for (t, h) in tint.iter_mut().zip(HOT) {
-                    *t += (h - *t) * f;
-                }
-            }
-            // netcode-lag glitch: a WEAK blob renders its CACHED body (the true
-            // hitbox crawls on — shots resolve against the sim, not the draw),
-            // dimming as the snapshot ages so the pop-forward reads as a stutter
-            // and not a renderer bug.
-            let (parts, vscale) = match self.glitch.iter().find(|e| e.id == m.id) {
-                Some(e) if m.weak => {
-                    let stale = self.fx_frame.wrapping_sub(e.refreshed) as f32;
-                    let dim = (1.0 - 0.04 * stale).max(0.55);
-                    tint = [tint[0] * dim, tint[1] * dim, tint[2] * dim, tint[3]];
-                    (&e.parts, e.vscale)
-                }
-                _ => (&m.parts, m.vscale),
-            };
-            let pr = m.part_radius;
-            let y = GOO_FLOOR_Y + pr * GOO_SQUASH * vscale;
-            let mut c = Vec3::ZERO;
-            for p in parts.iter() {
-                c += *p;
-            }
-            let c = c / parts.len() as f32;
-            // enclosing-sphere radius of one squashed ball: the ellipsoid's
-            // largest semi-axis (horizontal pr, or vertical pr·squash·vscale —
-            // the jelly wobble can bulge the body above neutral)
-            let ball_r = pr * (GOO_SQUASH * vscale).max(1.0);
-            let mut reach = 0.0f32;
-            for p in parts.iter() {
-                let dx = p.x - c.x;
-                let dz = p.z - c.z;
-                reach = reach.max((dx * dx + dz * dz).sqrt());
-            }
-            bounds.push(rt_probe::GooBall { center: [c.x, y, c.z], radius: reach + ball_r + GOO_BOUND_MARGIN });
-            for (p, &gl) in parts.iter().zip(m.glow.iter()) {
-                out.push(rt_probe::GooBall { center: [p.x, y, p.z], radius: pr });
-                glow.push(gl);
-                vscales.push(vscale);
-                tints.push(tint);
-            }
-        }
-        (out, glow, vscales, bounds, tints)
-    }
-
-    /// One real RT light per live blob (streamed into reserved NEE slots), so
-    /// the goo genuinely illuminates the scene and casts ray-traced shadows. A
-    /// wide downward green cone sitting just above each blob's centroid: it
-    /// pools green light on the floor around the body and — via the shade pass's
-    /// per-light shadow rays — the player pillar, walls, and (with the goo proxy
-    /// geometry) the blobs themselves cast real shadows. Presentation-only:
-    /// a pure read of the snapshot, never baked into the static GI probes.
-    pub fn goo_lights(&self) -> Vec<rt_probe::Spotlight> {
-        const LIFT: f32 = 0.40; // light height above the floor (wu)
-        // Wide downward green cone. Power = base + per-radius boost, so bigger
-        // blobs glow a touch brighter; the area-light radius (the shade pass
-        // reads posRad.w) tracks the body size and drives the soft-shadow
-        // penumbra. The tint is FIXED so the pool colour never flickers.
-        const POWER_BASE: f32 = 9.0;
-        const POWER_PER_RADIUS: f32 = 3.0;
-        const CONE_DEG: f32 = 115.0;
-        const SHADOW_RADIUS_FRAC: f32 = 0.8;
-        const SHADOW_RADIUS_MIN: f32 = 0.25;
-        // per-species pool colour (matches the body tint mapping below)
-        let mut out = Vec::with_capacity(self.snap.mobs.len());
-        for m in &self.snap.mobs {
-            if m.parts.is_empty() {
-                continue;
-            }
-            let c = m.centroid();
-            let centroid = Vec3::new(c.x, LIFT, c.z);
-            // the comm blink also drives the floor pool: brighter and pulled
-            // toward white while signalling (readable even when the body is
-            // partly behind cover — which is exactly when pacts happen)
-            let power = (POWER_BASE + POWER_PER_RADIUS * m.radius) * (1.0 + 1.4 * m.comm);
-            let mut tint = goo_kind_light_tint(m.kind);
-            for t in tint.iter_mut() {
-                *t += (1.0 - *t) * (0.7 * m.comm);
-            }
-            out.push(rt_probe::Spotlight {
-                pos: centroid,
-                dir: Vec3::new(0.0, -1.0, 0.0),
-                cone_cos: CONE_DEG.to_radians().cos(),
-                power,
-                radius: (m.radius * SHADOW_RADIUS_FRAC).max(SHADOW_RADIUS_MIN),
-                tint,
-            });
-        }
-        out
+        self.fx.prev_player = self.snap.player_pos;
     }
 
     /// Sim time for `FrameState.time` — ticks, never the wall clock.
     pub fn time(&self) -> f32 {
         self.tick.0 as f32 * TICK_DT
     }
-}
-
-/// Species → body-emissive tint: a channel-wise multiplier on the shader's
-/// green GOO_EMIS, REWEIGHTED so the product is genuinely red/blue (the base
-/// is green-heavy — a naive red multiplier would land on orange). Green is
-/// exactly white = the historical look, bit-identical.
-fn goo_kind_body_tint(kind: house_game::GooKind) -> [f32; 4] {
-    match kind {
-        house_game::GooKind::Green => [1.0, 1.0, 1.0, 1.0],
-        // GOO_EMIS (0.55, 3.3, 1.15) × this ≈ (3.5, 0.6, 0.5) — hot red
-        house_game::GooKind::Runner => [6.4, 0.18, 0.43, 1.0],
-        // × this ≈ (0.45, 1.15, 4.0) — deep blue
-        house_game::GooKind::Tank => [0.8, 0.35, 3.5, 1.0],
-    }
-}
-
-/// Species → floor-pool light colour (the per-blob cone in `goo_lights`).
-fn goo_kind_light_tint(kind: house_game::GooKind) -> [f32; 3] {
-    match kind {
-        house_game::GooKind::Green => [0.32, 1.0, 0.5], // the historical green
-        house_game::GooKind::Runner => [1.0, 0.22, 0.28],
-        house_game::GooKind::Tank => [0.25, 0.45, 1.0],
-    }
-}
-
-/// Discover a reserved named instance pool ("<prefix>_0", "<prefix>_1", …) in
-/// slot order, stopping at the first gap. Empty when the scene authored no pool.
-/// Shared by the goo-ellipsoid and projectile-tracer slot discovery.
-fn discover_pool(handles: &SceneHandles, prefix: &str) -> Vec<InstanceKey> {
-    let mut slots: Vec<InstanceKey> = Vec::new();
-    while let Some(&k) = handles.instances.get(&format!("{prefix}_{}", slots.len())) {
-        slots.push(k);
-    }
-    slots
-}
-
-/// Skin an ordered pool of reserved instance slots onto a stream of per-item
-/// transforms: fill the slots in order from `xforms`, then collapse every
-/// leftover slot to zero scale (invisible). Transforms beyond the pool size are
-/// dropped (the pool caps how many items draw at once). Shared by the
-/// goo-ellipsoid and projectile-tracer movers — a pure read of the snapshot.
-fn skin_pool(slots: &[InstanceKey], mut xforms: impl Iterator<Item = Mat4>) -> Vec<(InstanceKey, Mat4)> {
-    slots.iter().map(|&slot| (slot, xforms.next().unwrap_or_else(|| Mat4::from_scale(Vec3::ZERO)))).collect()
 }
 
 /// Join the scene's named lights (emissive prims + conceptual point lights)
@@ -1018,24 +435,6 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
         arena: None,
         player_start: scene.player_start,
         seed: 42,
-    }
-}
-
-impl Viewer {
-    /// Follow-cam: when the (lattice-snapped) player moved, retarget the
-    /// camera at it. The whole-low-pixel step with carried remainder (#5)
-    /// is inherent in the lattice snap: consecutive snapped positions differ
-    /// by INTEGER screen-pixel steps while the player's continuous position
-    /// carries the sub-pixel remainder — pinned by
-    /// `follow_cam_steps_whole_pixels_and_carries_the_remainder` below.
-    pub fn follow_camera(&mut self) {
-        if !self.game.follow_cam || self.game.snap.player_pos == self.game.last_player {
-            return;
-        }
-        let t = self.game.snap.player_pos;
-        self.game.last_player = t;
-        self.retarget(t);
-        self.recenter_pan();
     }
 }
 

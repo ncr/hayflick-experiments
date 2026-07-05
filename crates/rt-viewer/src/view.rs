@@ -194,6 +194,22 @@ impl Viewer {
         }
     }
 
+    /// Follow-cam: when the (lattice-snapped) player moved, retarget the
+    /// camera at it. The whole-low-pixel step with carried remainder (#5)
+    /// is inherent in the lattice snap: consecutive snapped positions differ
+    /// by INTEGER screen-pixel steps while the player's continuous position
+    /// carries the sub-pixel remainder — pinned by
+    /// `follow_cam_steps_whole_pixels_and_carries_the_remainder` in sim.rs.
+    pub fn follow_camera(&mut self) {
+        if !self.game.follow_cam || self.game.snap.player_pos == self.game.last_player {
+            return;
+        }
+        let t = self.game.snap.player_pos;
+        self.game.last_player = t;
+        self.retarget(t);
+        self.recenter_pan();
+    }
+
     /// Held-key camera pan for scenes WITHOUT a player (lab) — the WASD
     /// branch the sim can't own (there is nothing to walk). Player scenes
     /// synthesize Command::Move per tick instead (`GameLoop::run_due`).
@@ -280,12 +296,12 @@ impl Viewer {
             let fd = glam::Vec3::new(f.x, 0.0, f.y);
             let (mp, _) = flashlight_pose(snap.player_pos, f);
             let pos = mp + fd * 0.55 + glam::Vec3::new(0.0, 0.30, 0.0);
-            v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 62.0f32.to_radians().cos(), power: 1500.0 * (1.0 + 1.2 * self.game.recoil), radius: 0.09, tint: rt_probe::render::SPOT_WARM });
+            v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 62.0f32.to_radians().cos(), power: 1500.0 * (1.0 + 1.2 * self.game.fx.recoil), radius: 0.09, tint: rt_probe::render::SPOT_WARM });
         }
         // impact flash: a brief hot pop where the last round died (wall /
         // floor / blob splash) — the target-side half of the muzzle flash,
         // fading over its 3 ticks
-        if let Some((at, ttl)) = self.game.impact_flash {
+        if let Some((at, ttl)) = self.game.fx.impact_flash {
             let k = ttl as f32 / 3.0;
             v.push(Spotlight { pos: at + glam::Vec3::new(0.0, 0.26, 0.0), dir: glam::Vec3::NEG_Y, cone_cos: 60.0f32.to_radians().cos(), power: 1000.0 * k, radius: 0.07, tint: rt_probe::render::SPOT_WARM });
         }

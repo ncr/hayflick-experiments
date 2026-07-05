@@ -404,90 +404,9 @@ impl Viewer {
         let dt = self.last_frame.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(0.0);
         self.last_frame = Some(now);
         self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
-        // DEMO mode: the sim is driven ONE tick per rendered frame (the trace's
-        // commands drain per tick), NOT by the wall clock — a deterministic,
-        // fixed-tick gameplay capture. Live `run_due` is bypassed entirely.
-        if self.harness.demo.is_some() {
-            self.game.demo_advance_tick();
-            // a DEMO trace may `rotate` the camera (yaw_q is sim state): catch
-            // the viewer up to the sim's settled quarter WITHOUT re-queuing the
-            // command. Hard snap per quarter (no eased tween).
-            self.sync_view_yaw(self.game.snap.yaw_q);
-            self.game.tick_fx(1); // bleed/recoil/shake FX ride the tick clock
-        } else {
-            // game-menu pause (arena, live): the sim clock stops dead while
-            // the TITLE / PAUSE / SETTINGS menu is up — the accumulator isn't
-            // fed, so RESUME continues exactly where it stopped.
-            if self.game.lmb_shoots && self.menu_open() && self.harness.shot.is_none() {
-                // paused — nothing ticks
-            }
-            // hitstop: a terminal kill / detonation freezes the LIVE sim a
-            // few frames for punch — the accumulator isn't fed, so there is
-            // no tick burst afterward. SHOT stays wall-clock-free (its dt is
-            // synthetic and must map 1:1 to ticks).
-            else if self.game.freeze > 0 && self.harness.shot.is_none() {
-                self.game.freeze -= 1;
-            } else {
-                // arena turret: keep the gun trained on the cursor (pushes
-                // Command::Aim only when the direction actually moved)
-                let c = self.view.cursor;
-                self.aim_command(c);
-                // arena autofire: while LMB is held, re-push Shoot at the live
-                // cursor each frame BEFORE the due ticks run — the sim's cooldown
-                // gates the real fire rate (same-tick spam is swallowed), and the
-                // pushes land in the journal so the reel replays the burst.
-                if self.game.lmb_shoots && self.game.lmb_held {
-                    self.shoot_command(c);
-                }
-                // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
-                // keeps the wall clock OUT of the sim entirely.
-                let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
-                let n = self.game.run_due(sim_dt);
-                self.game.tick_fx(n); // bleed/recoil/shake FX ride the tick clock
-            }
-        }
-        // audio: drain this frame's sim cues into the synth (fail-soft None
-        // just clears the queue), and tick the comm-pact blink sound on each
-        // blob whose pulse LIT this frame (rising edge; both pact members
-        // share a phase, so the double-tick reads as one synced beep)
-        {
-            let cues: Vec<sim_core::AudioCue> = self.game.sim.sink.0.drain(..).collect();
-            if let Some(a) = &self.audio {
-                for c in &cues {
-                    a.play(c.id.0, c.gain);
-                }
-                let lit: Vec<u32> = self.game.snap.mobs.iter().filter(|m| m.comm > 0.0).map(|m| m.id.0).collect();
-                for id in &lit {
-                    if !self.comm_lit.contains(id) {
-                        a.play("comm_blink", 1.0);
-                    }
-                }
-                self.comm_lit = lit;
-                // hover-servo steps: the walk cadence accumulated by tick_fx
-                for _ in 0..self.game.take_steps() {
-                    a.play("step", 1.0);
-                }
-            }
-        }
-        // death reel: the tick the run dies, write the journal as a
-        // replayable trace (live windowed play only — DEMO/SHOT replays ARE
-        // traces already). V then renders it to MP4 via record.sh.
-        if self.harness.demo.is_none() && self.harness.shot.is_none() {
-            let dead = self.game.snap.run.is_some_and(|r| r.dead || r.won);
-            if dead && self.reel_saved.is_none() {
-                let ticks = self.game.sim.res.cur_tick + 90; // a beat of aftermath
-                let trace = self.game.journal_trace(&self.cfg.scene, self.game.sim.res.seed, ticks);
-                let dir = std::path::Path::new("clips");
-                let _ = std::fs::create_dir_all(dir);
-                let path = dir.join("last_run.txt");
-                if std::fs::write(&path, trace).is_ok() {
-                    println!("death reel: journal saved to {} — press V to render the MP4", path.display());
-                    self.reel_saved = Some(path);
-                }
-            } else if !dead && self.reel_saved.is_some() {
-                self.reel_saved = None; // fresh run, fresh reel
-            }
-        }
+        self.advance_sim(dt); // DEMO tick / pause / hitstop / live fixed-tick
+        self.drain_audio(); // sim cues + comm-blink edges + servo steps
+        self.save_death_reel(); // journal → clips/last_run.txt on the end tick
         // playerless scenes (lab): WASD pans the camera — presentation only
         if !self.game.has_player && self.game.held != [false; 4] {
             self.pan_camera_held(dt);
@@ -513,84 +432,7 @@ impl Viewer {
         // lights the scene and casts shadows. Capped to the reserved headroom.
         append_goo_lights(&mut spot, self.game.goo_lights());
         let mut instances: Vec<(InstanceKey, Mat4)> = Vec::new();
-        // SCENE=goofloor hides the player marker: the sim still has a player (so
-        // it can lure the goo via seek + drive the directed walk) but the marker
-        // renders invisible — collapsed to a zero-scale point — for a clean bare
-        // floor with no pillar. (Skipping the push entirely would leave the
-        // dynamic prim at its identity transform = a box at the origin.)
-        if self.game.has_player {
-            let hidden = crate::game_scene::is_goo_film_stage(&self.cfg.scene);
-            if let Some(&k) = self.backend.handles().instances.get("player") {
-                let m = if hidden {
-                    Mat4::from_scale(glam::Vec3::ZERO)
-                } else if self.game.lmb_shoots {
-                    // arena walk feel: the droid leans INTO its motion (tilt
-                    // about the ground-level axis perpendicular to the smoothed
-                    // velocity) and hovers on a soft bob — faster and shallower
-                    // while moving. Presentation-only, tick-clocked (lean_vel +
-                    // fx frames advance with sim ticks), arena-gated so the
-                    // cave goldens/replays keep the still, axis-aligned body.
-                    let v = self.game.lean_vel;
-                    let speed = v.length();
-                    let f = self.game.fx_frame() as f32;
-                    let sf = (speed / 2.0).min(1.0);
-                    let bob = 0.010 * (f * 0.11).sin() + 0.008 * sf * (f * 0.42).sin();
-                    let base = Mat4::from_translation(self.game.snap.player_pos + glam::Vec3::new(0.0, bob, 0.0));
-                    if speed > 0.15 {
-                        let d = v / speed;
-                        let angle = (speed * 0.055).min(0.10);
-                        base * Mat4::from_axis_angle(glam::Vec3::new(d.y, 0.0, -d.x), angle)
-                    } else {
-                        base
-                    }
-                } else {
-                    Mat4::from_translation(self.game.snap.player_pos)
-                };
-                instances.push((k, m));
-            }
-            // weapon ring: the SELECTED arsenal gun renders at the player,
-            // rotated to the facing (guns are authored aiming +Z) — the aim
-            // tell the axis-aligned body deliberately doesn't give. Unequipped
-            // slots stay collapsed. `snap.weapon` is None off arena levels, so
-            // non-arena scenes never show a gun (their handles don't exist).
-            let sel = self.game.snap.weapon.map(|(k, _, _)| k.slot());
-            for slot in 1..=5u8 {
-                if let Some(&k) = self.backend.handles().instances.get(format!("gun_{slot}").as_str()) {
-                    let m = if Some(slot) == sel && !hidden {
-                        let f = self.game.snap.facing;
-                        // recoil: kick the gun back along its own -Z and pitch
-                        // the muzzle up, both riding the decaying `recoil`
-                        // transient (presentation-only, tick-clocked)
-                        let kick = self.game.recoil;
-                        Mat4::from_translation(self.game.snap.player_pos)
-                            * Mat4::from_rotation_y(f.x.atan2(f.y))
-                            * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.085 * kick))
-                            * Mat4::from_rotation_x(-0.22 * kick)
-                    } else {
-                        Mat4::from_scale(glam::Vec3::ZERO)
-                    };
-                    instances.push((k, m));
-                }
-            }
-            // muzzle flare: the VISIBLE flash at the barrel tip for the
-            // muzzle ticks — same tick, same point as the flash spotlight
-            // and the tracer birth, scaled by recoil so heavy guns bloom
-            // bigger. Zero-scale between shots.
-            if let Some(&k) = self.backend.handles().instances.get("flare_slot_0") {
-                let m = if self.game.snap.muzzle_flash && !hidden {
-                    let f = self.game.snap.facing;
-                    let fd = glam::Vec3::new(f.x, 0.0, f.y);
-                    let (mp, _) = house_game::flashlight_pose(self.game.snap.player_pos, f);
-                    let s = 0.12 + 0.16 * self.game.recoil;
-                    Mat4::from_translation(mp + fd * 0.55)
-                        * Mat4::from_quat(glam::Quat::from_rotation_arc(glam::Vec3::Z, fd))
-                        * Mat4::from_scale(glam::Vec3::new(s, s, s * 1.7))
-                } else {
-                    Mat4::from_scale(glam::Vec3::ZERO)
-                };
-                instances.push((k, m));
-            }
-        }
+        self.player_rig_instances(&mut instances); // droid + gun ring + flare
         instances.extend(self.game.door_instances());
         instances.extend(self.game.goo_instances());
         instances.extend(self.game.projectile_instances());
@@ -618,14 +460,8 @@ impl Viewer {
         // image only — never `out`, so SHOT/MOVIE/DUMP/DEMO captures stay
         // UI-free (those modes pass no overlay). Game HUD (score, weapon bar)
         // is burned in via stamps instead.
-        let menu_canvas;
-        let overlay = if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
-            menu_canvas = self.menu_canvas();
-            let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause);
-            Some(Overlay { menu: (&menu_canvas.0, menu_canvas.1, menu_canvas.2), menu_center: center })
-        } else {
-            None
-        };
+        let menu_canvas = self.overlay_frame();
+        let overlay = menu_canvas.as_ref().map(|(buf, w, h, center)| Overlay { menu: (buf, *w, *h), menu_center: *center });
 
         // capture target: ensure it's the right size this frame, if capturing
         let capture = match capture_req {
@@ -638,25 +474,13 @@ impl Viewer {
 
         // minimap HUD: stamp the player onto the prebaked schematic this frame.
         // Held in a local so the &[u32] slice in `fp` stays alive through present.
-        let mini_hold;
-        let minimap = match &self.minimap {
-            Some(mm) => {
-                mini_hold = mm.frame(self.game.snap.player_pos, self.game.snap.facing);
-                Some((mini_hold.0.as_slice(), mini_hold.1, mini_hold.2))
-            }
-            None => None,
-        };
+        let mini_hold = self.minimap_frame();
+        let minimap = mini_hold.as_ref().map(|(buf, w, h)| (buf.as_slice(), *w, *h));
 
         // burned-in HUD stamps: tactic bubbles over thinking blobs + the
         // bottom weapon bar. Game picture, not shell UI — they ride into
         // SHOT/DEMO captures. Skipped on playerless film stages.
-        let stamps = if self.game.has_player && !crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
-            let xf = self.pick_xform();
-            let ext = self.backend.extent();
-            crate::hud::build_stamps(&self.game.snap, &xf, ext, self.rs() as u32)
-        } else {
-            Vec::new()
-        };
+        let stamps = self.hud_stamps();
         // arena blackout: on open-studio stages the sky fill follows the sim's
         // room-lights master (floored so the goo glow still silhouettes the
         // walls); every other scene keeps its authored env verbatim.
@@ -685,20 +509,7 @@ impl Viewer {
             stamps: &stamps,
             sky_dim,
             minimap,
-            roi: if self.cfg.game.roi {
-                // Anchor the reveal disc on the player's MID-HEIGHT, not its feet:
-                // the marker pillar is 1.3 wu tall, so projecting the feet (y≈0)
-                // puts the disc centre low on screen. +0.65 wu = the pillar's
-                // visual centre, so the cutout sits over the player, not under it.
-                let center = self.game.snap.player_pos + glam::Vec3::new(0.0, 0.65, 0.0);
-                // ROI_XRAY=contour adds faint wall-silhouette lines ON TOP of the ghost
-                // stipple. Encoded by NEGATING the ghost cap: the shader reads roi2.w<0
-                // as hybrid mode and |roi2.w| as the coverage cap, so the stipple stays.
-                let ghost = if self.cfg.game.roi_contour { -self.cfg.game.roi_ghost } else { self.cfg.game.roi_ghost };
-                Some(crate::backend::RoiInfo { player: center, radius_px: self.cfg.game.roi_radius, falloff_px: self.cfg.game.roi_falloff, ghost })
-            } else {
-                None
-            },
+            roi: self.roi_info(),
             capture,
         };
         let ok = self.backend.render_present(&fp);
@@ -723,6 +534,234 @@ impl Viewer {
         self.harness_post_frame();
 
         ok
+    }
+
+    /// Sim-advance phase of `draw()`: DEMO drives ONE tick per rendered frame
+    /// (deterministic capture); live play routes through pause (menu open) →
+    /// hitstop (freeze frames) → the fixed-tick accumulator. SHOT feeds dt=0
+    /// so the wall clock never reaches the sim.
+    fn advance_sim(&mut self, dt: f32) {
+        // DEMO mode: the sim is driven ONE tick per rendered frame (the trace's
+        // commands drain per tick), NOT by the wall clock — a deterministic,
+        // fixed-tick gameplay capture. Live `run_due` is bypassed entirely.
+        if self.harness.demo.is_some() {
+            self.game.demo_advance_tick();
+            // a DEMO trace may `rotate` the camera (yaw_q is sim state): catch
+            // the viewer up to the sim's settled quarter WITHOUT re-queuing the
+            // command. Hard snap per quarter (no eased tween).
+            self.sync_view_yaw(self.game.snap.yaw_q);
+            self.game.tick_fx(1); // bleed/recoil/shake FX ride the tick clock
+        } else {
+            // game-menu pause (arena, live): the sim clock stops dead while
+            // the TITLE / PAUSE / SETTINGS menu is up — the accumulator isn't
+            // fed, so RESUME continues exactly where it stopped.
+            if self.game.lmb_shoots && self.menu_open() && self.harness.shot.is_none() {
+                // paused — nothing ticks
+            }
+            // hitstop: a terminal kill / detonation freezes the LIVE sim a
+            // few frames for punch — the accumulator isn't fed, so there is
+            // no tick burst afterward. SHOT stays wall-clock-free (its dt is
+            // synthetic and must map 1:1 to ticks).
+            else if self.game.fx.freeze > 0 && self.harness.shot.is_none() {
+                self.game.fx.freeze -= 1;
+            } else {
+                // arena turret: keep the gun trained on the cursor (pushes
+                // Command::Aim only when the direction actually moved)
+                let c = self.view.cursor;
+                self.aim_command(c);
+                // arena autofire: while LMB is held, re-push Shoot at the live
+                // cursor each frame BEFORE the due ticks run — the sim's cooldown
+                // gates the real fire rate (same-tick spam is swallowed), and the
+                // pushes land in the journal so the reel replays the burst.
+                if self.game.lmb_shoots && self.game.lmb_held {
+                    self.shoot_command(c);
+                }
+                // fixed-tick sim: run the due ticks, per-tick command drain. SHOT mode
+                // keeps the wall clock OUT of the sim entirely.
+                let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
+                let n = self.game.run_due(sim_dt);
+                self.game.tick_fx(n); // bleed/recoil/shake FX ride the tick clock
+            }
+        }
+    }
+
+    /// Audio phase of `draw()`: drain this frame's sim cues into the synth
+    /// (fail-soft None just clears the queue), and tick the comm-pact blink
+    /// sound on each blob whose pulse LIT this frame (rising edge; both pact
+    /// members share a phase, so the double-tick reads as one synced beep).
+    fn drain_audio(&mut self) {
+        let cues: Vec<sim_core::AudioCue> = self.game.sim.sink.0.drain(..).collect();
+        if let Some(a) = &self.audio {
+            for c in &cues {
+                a.play(c.id.0, c.gain);
+            }
+            let lit: Vec<u32> = self.game.snap.mobs.iter().filter(|m| m.comm > 0.0).map(|m| m.id.0).collect();
+            for id in &lit {
+                if !self.comm_lit.contains(id) {
+                    a.play("comm_blink", 1.0);
+                }
+            }
+            self.comm_lit = lit;
+            // hover-servo steps: the walk cadence accumulated by tick_fx
+            for _ in 0..self.game.take_steps() {
+                a.play("step", 1.0);
+            }
+        }
+    }
+
+    /// Death-reel phase of `draw()`: the tick the run dies, write the journal
+    /// as a replayable trace (live windowed play only — DEMO/SHOT replays ARE
+    /// traces already). V then renders it to MP4 via record.sh.
+    fn save_death_reel(&mut self) {
+        if self.harness.demo.is_none() && self.harness.shot.is_none() {
+            let dead = self.game.snap.run.is_some_and(|r| r.dead || r.won);
+            if dead && self.reel_saved.is_none() {
+                let ticks = self.game.sim.res.cur_tick + 90; // a beat of aftermath
+                let trace = self.game.journal_trace(&self.cfg.scene, self.game.sim.res.seed, ticks);
+                let dir = std::path::Path::new("clips");
+                let _ = std::fs::create_dir_all(dir);
+                let path = dir.join("last_run.txt");
+                if std::fs::write(&path, trace).is_ok() {
+                    println!("death reel: journal saved to {} — press V to render the MP4", path.display());
+                    self.reel_saved = Some(path);
+                }
+            } else if !dead && self.reel_saved.is_some() {
+                self.reel_saved = None; // fresh run, fresh reel
+            }
+        }
+    }
+
+    /// Player-rig phase of `draw()`: the droid body (with the arena lean +
+    /// hover bob), the selected gun with its recoil kick, and the muzzle
+    /// flare — pushed into `instances`.
+    /// SCENE=goofloor hides the player marker: the sim still has a player (so
+    /// it can lure the goo via seek + drive the directed walk) but the marker
+    /// renders invisible — collapsed to a zero-scale point — for a clean bare
+    /// floor with no pillar. (Skipping the push entirely would leave the
+    /// dynamic prim at its identity transform = a box at the origin.)
+    fn player_rig_instances(&self, instances: &mut Vec<(InstanceKey, Mat4)>) {
+        if !self.game.has_player {
+            return;
+        }
+        let hidden = crate::game_scene::is_goo_film_stage(&self.cfg.scene);
+        if let Some(&k) = self.backend.handles().instances.get("player") {
+            let m = if hidden {
+                Mat4::from_scale(glam::Vec3::ZERO)
+            } else if self.game.lmb_shoots {
+                // arena walk feel: the droid leans INTO its motion (tilt
+                // about the ground-level axis perpendicular to the smoothed
+                // velocity) and hovers on a soft bob — faster and shallower
+                // while moving. Presentation-only, tick-clocked (lean_vel +
+                // fx frames advance with sim ticks), arena-gated so the
+                // cave goldens/replays keep the still, axis-aligned body.
+                let v = self.game.fx.lean_vel;
+                let speed = v.length();
+                let f = self.game.fx_frame() as f32;
+                let sf = (speed / 2.0).min(1.0);
+                let bob = 0.010 * (f * 0.11).sin() + 0.008 * sf * (f * 0.42).sin();
+                let base = Mat4::from_translation(self.game.snap.player_pos + glam::Vec3::new(0.0, bob, 0.0));
+                if speed > 0.15 {
+                    let d = v / speed;
+                    let angle = (speed * 0.055).min(0.10);
+                    base * Mat4::from_axis_angle(glam::Vec3::new(d.y, 0.0, -d.x), angle)
+                } else {
+                    base
+                }
+            } else {
+                Mat4::from_translation(self.game.snap.player_pos)
+            };
+            instances.push((k, m));
+        }
+        // weapon ring: the SELECTED arsenal gun renders at the player,
+        // rotated to the facing (guns are authored aiming +Z) — the aim
+        // tell the axis-aligned body deliberately doesn't give. Unequipped
+        // slots stay collapsed. `snap.weapon` is None off arena levels, so
+        // non-arena scenes never show a gun (their handles don't exist).
+        let sel = self.game.snap.weapon.map(|(k, _, _)| k.slot());
+        for slot in 1..=5u8 {
+            if let Some(&k) = self.backend.handles().instances.get(format!("gun_{slot}").as_str()) {
+                let m = if Some(slot) == sel && !hidden {
+                    let f = self.game.snap.facing;
+                    // recoil: kick the gun back along its own -Z and pitch
+                    // the muzzle up, both riding the decaying `recoil`
+                    // transient (presentation-only, tick-clocked)
+                    let kick = self.game.fx.recoil;
+                    Mat4::from_translation(self.game.snap.player_pos)
+                        * Mat4::from_rotation_y(f.x.atan2(f.y))
+                        * Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.085 * kick))
+                        * Mat4::from_rotation_x(-0.22 * kick)
+                } else {
+                    Mat4::from_scale(glam::Vec3::ZERO)
+                };
+                instances.push((k, m));
+            }
+        }
+        // muzzle flare: the VISIBLE flash at the barrel tip for the
+        // muzzle ticks — same tick, same point as the flash spotlight
+        // and the tracer birth, scaled by recoil so heavy guns bloom
+        // bigger. Zero-scale between shots.
+        if let Some(&k) = self.backend.handles().instances.get("flare_slot_0") {
+            let m = if self.game.snap.muzzle_flash && !hidden {
+                let f = self.game.snap.facing;
+                let fd = glam::Vec3::new(f.x, 0.0, f.y);
+                let (mp, _) = house_game::flashlight_pose(self.game.snap.player_pos, f);
+                let s = 0.12 + 0.16 * self.game.fx.recoil;
+                Mat4::from_translation(mp + fd * 0.55)
+                    * Mat4::from_quat(glam::Quat::from_rotation_arc(glam::Vec3::Z, fd))
+                    * Mat4::from_scale(glam::Vec3::new(s, s, s * 1.7))
+            } else {
+                Mat4::from_scale(glam::Vec3::ZERO)
+            };
+            instances.push((k, m));
+        }
+    }
+
+    /// Overlay phase of `draw()`: the ESC/game-menu canvas + centering flag,
+    /// owned so the borrow in `FramePresent` can outlive the builder. `None`
+    /// in every harness capture mode (SHOT/MOVIE/DUMP/DEMO stay UI-free).
+    fn overlay_frame(&mut self) -> Option<(Vec<u32>, i32, i32, bool)> {
+        if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
+            let (buf, w, h) = self.menu_canvas();
+            let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause);
+            Some((buf, w, h, center))
+        } else {
+            None
+        }
+    }
+
+    /// Minimap phase of `draw()`: stamp the player onto the prebaked schematic.
+    fn minimap_frame(&self) -> Option<(Vec<u32>, i32, i32)> {
+        self.minimap.as_ref().map(|mm| mm.frame(self.game.snap.player_pos, self.game.snap.facing))
+    }
+
+    /// HUD-stamp phase of `draw()`: tactic bubbles over thinking blobs + the
+    /// bottom weapon bar. Game picture, not shell UI — they ride into
+    /// SHOT/DEMO captures. Skipped on playerless film stages.
+    fn hud_stamps(&self) -> Vec<crate::backend::Stamp> {
+        if self.game.has_player && !crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
+            let xf = self.pick_xform();
+            let ext = self.backend.extent();
+            crate::hud::build_stamps(&self.game.snap, &xf, ext, self.rs() as u32)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// ROI phase of `draw()`: the reveal-disc parameters when ROI mode is on.
+    fn roi_info(&self) -> Option<crate::backend::RoiInfo> {
+        if !self.cfg.game.roi {
+            return None;
+        }
+        // Anchor the reveal disc on the player's MID-HEIGHT, not its feet:
+        // the marker pillar is 1.3 wu tall, so projecting the feet (y≈0)
+        // puts the disc centre low on screen. +0.65 wu = the pillar's
+        // visual centre, so the cutout sits over the player, not under it.
+        let center = self.game.snap.player_pos + glam::Vec3::new(0.0, 0.65, 0.0);
+        // ROI_XRAY=contour adds faint wall-silhouette lines ON TOP of the ghost
+        // stipple. Encoded by NEGATING the ghost cap: the shader reads roi2.w<0
+        // as hybrid mode and |roi2.w| as the coverage cap, so the stipple stays.
+        let ghost = if self.cfg.game.roi_contour { -self.cfg.game.roi_ghost } else { self.cfg.game.roi_ghost };
+        Some(crate::backend::RoiInfo { player: center, radius_px: self.cfg.game.roi_radius, falloff_px: self.cfg.game.roi_falloff, ghost })
     }
 }
 
