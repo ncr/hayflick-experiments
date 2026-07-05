@@ -172,7 +172,7 @@ impl GameLoop {
             held: [false; 4],
             lmb_held: false,
             has_player,
-            follow_cam: has_player && cfg.scene != "grid" && !crate::game_scene::is_goo_film_stage(&cfg.scene),
+            follow_cam: has_player && crate::scene_registry::entry(&cfg.scene).follow_cam,
             journal: Vec::new(),
             lmb_shoots,
             light_keys,

@@ -48,6 +48,7 @@ mod audio;
 mod hud;
 mod menu;
 mod minimap;
+mod scene_registry;
 mod sim;
 mod view;
 mod viewer;

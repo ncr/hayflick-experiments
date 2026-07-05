@@ -34,12 +34,77 @@ fn s(k: &str) -> Option<String> {
     std::env::var(k).ok()
 }
 
-/// The flat-coloured "greybox" scene family (procedural floor plans, the cave
-/// dungeon, the village, and the `game` content scene). These get the punchy /
-/// shiny / bumped look defaults; the textured legacy scenes (house/lab/grid) do
-/// not, so their established look + goldens are untouched.
+/// One row per scene: every per-scene RENDER default in one place. Adding a
+/// scene = adding one row here (and one `SceneEntry` row in rt-viewer's
+/// `scene_registry`, which owns the spec/camera/classifier side — rt-probe
+/// cannot hold LevelSpec builders without seeing house-game). Scene names not
+/// in the table fall back to [`LOOK_DEFAULT`] (the textured-legacy look),
+/// exactly as the old scattered `matches!` lists did. Matching is EXACT; the
+/// `grid-walker` alias is normalized to `grid` in `Config::from_env` before
+/// any lookup.
+struct SceneLook {
+    name: &'static str,
+    /// The flat-coloured "greybox" family (procedural floor plans, the cave
+    /// dungeon, the village, the `game` content scene): punchy / shiny /
+    /// bumped look defaults. The textured legacy scenes (house/lab/grid) stay
+    /// out so their established look + goldens are untouched.
+    greybox: bool,
+    /// Luma below which the shadow dither fades in. Bright-pastel scenes sit
+    /// HIGHER (0.75): their surfaces push AO crevices above the 0.35 cutoff,
+    /// so the dither stopped triggering where AO darkens contact shadows.
+    sdither_th: f32,
+    /// Default EXPOSURE: lamp-lit scenes (no sun) need more than daylight
+    /// ones. (Retuned 0.35 -> 0.40 on 2026-06-12 with sRGB albedo sampling.)
+    exposure: f32,
+    /// Default PIXEL (integer upscale). The 20×20 wu arena pits need the wide
+    /// framing: at PIXEL=4 a 1280×800 window sees only ~7 wu across.
+    pixel: u32,
+    /// Default MINIMAP toggle (the schematic overlay).
+    minimap: bool,
+    /// Default CAVE_ROI (dithered player-anchored see-through reveal — the
+    /// sole wall occlusion on player+wall scenes).
+    roi: bool,
+    /// Default player walk speed (px/s; grid mirrors the web knob default).
+    player_speed: f32,
+}
+
+/// The fallback row (textured-legacy look) — also the base most rows override.
+const LOOK_DEFAULT: SceneLook = SceneLook { name: "", greybox: false, sdither_th: 0.35, exposure: 0.22, pixel: 4, minimap: false, roi: false, player_speed: 140.0 };
+
+static SCENE_LOOKS: &[SceneLook] = &[
+    // textured legacy trio (golden-pinned — rows must stay LOOK_DEFAULT-flavoured)
+    SceneLook { name: "house", exposure: 0.40, roi: true, ..LOOK_DEFAULT },
+    SceneLook { name: "lab", ..LOOK_DEFAULT },
+    SceneLook { name: "grid", player_speed: 80.0, ..LOOK_DEFAULT },
+    // authored content scenes (game is golden-pinned)
+    SceneLook { name: "game", greybox: true, sdither_th: 0.75, exposure: 0.40, roi: true, ..LOOK_DEFAULT },
+    SceneLook { name: "goo", roi: true, ..LOOK_DEFAULT },
+    // procedural dungeon / floor plans / village
+    SceneLook { name: "cave", greybox: true, sdither_th: 0.75, exposure: 0.40, roi: true, ..LOOK_DEFAULT },
+    SceneLook { name: "village", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
+    SceneLook { name: "home", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
+    SceneLook { name: "hospital", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
+    SceneLook { name: "office", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
+    SceneLook { name: "factory", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
+    // arena-shooter pits (wide framing)
+    SceneLook { name: "arena", pixel: 2, ..LOOK_DEFAULT },
+    SceneLook { name: "squeeze", pixel: 2, ..LOOK_DEFAULT },
+    SceneLook { name: "drain", pixel: 2, ..LOOK_DEFAULT },
+    // goo film / demo stages (all-default rows, listed so the roster is complete)
+    SceneLook { name: "playground", ..LOOK_DEFAULT },
+    SceneLook { name: "range", ..LOOK_DEFAULT },
+    SceneLook { name: "goofloor", ..LOOK_DEFAULT },
+    SceneLook { name: "goonursery", ..LOOK_DEFAULT },
+    SceneLook { name: "goopair", ..LOOK_DEFAULT },
+];
+
+fn scene_look(scene: &str) -> &'static SceneLook {
+    SCENE_LOOKS.iter().find(|l| l.name == scene).unwrap_or(&LOOK_DEFAULT)
+}
+
+/// The flat-coloured "greybox" scene family — see [`SceneLook::greybox`].
 fn is_clean_greybox(scene: &str) -> bool {
-    matches!(scene, "home" | "hospital" | "office" | "factory" | "cave" | "village" | "game")
+    scene_look(scene).greybox
 }
 
 /// Stylized post-stack knobs (tonemap.comp). `STYLE=<preset>` sets a bundle,
@@ -72,14 +137,9 @@ impl StyleCfg {
         // luma bands) — the subtle retro texture in shadow gradients is part of
         // the base look. SDITHER=0 for fully clean.
         //
-        // sdither_th is the luma below which the dither fades in. The game scene
-        // uses a HIGHER threshold (0.75 vs 0.35): its bright pastel surfaces push
-        // ambient-occlusion crevices above the old 0.35 cutoff, so the dither
-        // stopped triggering where AO darkens contact shadows. The brighter the
-        // base albedo, the higher the threshold must sit for AO regions to read.
-        // (Per-scene — the darker textured scenes keep 0.35 so their goldens and
-        // look are unchanged.)
-        let sdither_th = if scene == "game" || scene == "cave" { 0.75 } else { 0.35 };
+        // sdither_th is the luma below which the dither fades in — per-scene
+        // (bright pastel scenes sit higher; see SceneLook::sdither_th).
+        let sdither_th = scene_look(scene).sdither_th;
         // The "Punchy & Moody" greybox look (chosen 2026-06-21): the flat-coloured
         // floor-plan / dungeon / content scenes get richer colour by default. The
         // textured legacy scenes (house/lab/grid) keep their established neutral grade.
@@ -249,11 +309,9 @@ impl Config {
     pub fn from_env() -> Config {
         let scene = s("SCENE").unwrap_or_else(|| "house".into());
         let scene = if scene == "grid-walker" { "grid".to_string() } else { scene };
-        // house is lamp-lit (no sun) — it needs more exposure than the daylight
-        // scenes. Retuned 0.35 -> 0.40 on 2026-06-12: base-colour textures now
-        // sample as sRGB (hardware-linearized, darker albedo + darker bounce),
-        // and the bump restores the previous overall brightness.
-        let default_exposure = if matches!(scene.as_str(), "house" | "game" | "cave" | "village" | "home" | "hospital" | "office" | "factory") { 0.40 } else { 0.22 };
+        // every per-scene default (exposure, pixel, minimap, roi, greybox
+        // look) reads off the scene's SCENE_LOOKS row — one place per scene.
+        let look = scene_look(&scene);
         let window = s("WINDOW").and_then(|v| {
             let (w, h) = v.split_once('x')?;
             Some((w.parse().ok()?, h.parse().ok()?))
@@ -282,11 +340,8 @@ impl Config {
                 fog: fo("FOG"),
                 fog_h: fo("FOG_H"),
                 pet_dump: b("PET_DUMP", false),
-                // the arena pit (20×20 wu) needs the wide framing: at PIXEL=4
-                // a 1280×800 window sees only ~7 wu across — the shooter reads
-                // as a wall of goo. PIXEL=2 doubles the visible area.
-                pixel: (i("PIXEL", if matches!(scene.as_str(), "arena" | "squeeze" | "drain") { 2 } else { 4 }) as u32).max(1),
-                exposure: f("EXPOSURE", default_exposure),
+                pixel: (i("PIXEL", look.pixel as i32) as u32).max(1),
+                exposure: f("EXPOSURE", look.exposure),
                 probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
                 probe_rays: i("PROBE_RAYS", 2048),
                 ao: f("AO", if clean { 0.55 } else { 1.0 }),
@@ -318,8 +373,8 @@ impl Config {
                 cave_rooms: (i("CAVE_ROOMS", 10) as u32).clamp(1, 80),
                 cave_loops: i("CAVE_LOOPS", 3).max(0) as u32,
                 cave_thick: s("CAVE_WALLS").map(|v| v == "rock" || v == "thick").unwrap_or(false),
-                minimap: b("MINIMAP", matches!(scene.as_str(), "village" | "home" | "hospital" | "office" | "factory")),
-                roi: b("CAVE_ROI", matches!(scene.as_str(), "game" | "goo" | "house" | "cave" | "village" | "home" | "hospital" | "office" | "factory")),
+                minimap: b("MINIMAP", look.minimap),
+                roi: b("CAVE_ROI", look.roi),
                 roi_radius: fo("ROI_R").unwrap_or(79.0),
                 roi_falloff: fo("ROI_FALLOFF").unwrap_or(33.0),
                 roi_ghost: fo("ROI_GHOST").unwrap_or(0.85),
@@ -358,13 +413,62 @@ impl Config {
     /// Default player walk speed — depends on the scene (grid mirrors the web
     /// knob default; the rest walk faster), so it bridges `scene` + `game`.
     pub fn default_player_speed(&self) -> f32 {
-        if self.scene == "grid" { 80.0 } else { 140.0 }
+        scene_look(&self.scene).player_speed
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SCENE_LOOKS must answer exactly what the pre-registry scattered
+    /// `matches!` lists answered (expectations below are transcribed FROM that
+    /// deleted code, not from the table): greybox was home|hospital|office|
+    /// factory|cave|village|game; sdither_th 0.75 for game|cave else 0.35;
+    /// exposure 0.40 for house|game|cave|village|home|hospital|office|factory
+    /// else 0.22; pixel 2 for arena|squeeze|drain else 4; minimap for village|
+    /// home|hospital|office|factory; roi for game|goo|house|cave|village|home|
+    /// hospital|office|factory; player speed 80 for grid else 140. Unknown
+    /// scenes take every fallback.
+    #[test]
+    fn scene_looks_match_legacy_dispatch() {
+        // (name, greybox, sdither_th, exposure, pixel, minimap, roi, speed)
+        type LookRow = (&'static str, bool, f32, f32, u32, bool, bool, f32);
+        let legacy: &[LookRow] = &[
+            ("house", false, 0.35, 0.40, 4, false, true, 140.0),
+            ("lab", false, 0.35, 0.22, 4, false, false, 140.0),
+            ("grid", false, 0.35, 0.22, 4, false, false, 80.0),
+            ("game", true, 0.75, 0.40, 4, false, true, 140.0),
+            ("goo", false, 0.35, 0.22, 4, false, true, 140.0),
+            ("cave", true, 0.75, 0.40, 4, false, true, 140.0),
+            ("village", true, 0.35, 0.40, 4, true, true, 140.0),
+            ("home", true, 0.35, 0.40, 4, true, true, 140.0),
+            ("hospital", true, 0.35, 0.40, 4, true, true, 140.0),
+            ("office", true, 0.35, 0.40, 4, true, true, 140.0),
+            ("factory", true, 0.35, 0.40, 4, true, true, 140.0),
+            ("arena", false, 0.35, 0.22, 2, false, false, 140.0),
+            ("squeeze", false, 0.35, 0.22, 2, false, false, 140.0),
+            ("drain", false, 0.35, 0.22, 2, false, false, 140.0),
+            ("playground", false, 0.35, 0.22, 4, false, false, 140.0),
+            ("range", false, 0.35, 0.22, 4, false, false, 140.0),
+            ("goofloor", false, 0.35, 0.22, 4, false, false, 140.0),
+            ("goonursery", false, 0.35, 0.22, 4, false, false, 140.0),
+            ("goopair", false, 0.35, 0.22, 4, false, false, 140.0),
+            // unknown names (incl. the pre-normalization "grid-walker" alias,
+            // which from_env rewrites to "grid" before any lookup)
+            ("nonesuch", false, 0.35, 0.22, 4, false, false, 140.0),
+        ];
+        for &(name, greybox, sdither_th, exposure, pixel, minimap, roi, speed) in legacy {
+            let l = scene_look(name);
+            assert_eq!(l.greybox, greybox, "{name} greybox");
+            assert_eq!(l.sdither_th, sdither_th, "{name} sdither_th");
+            assert_eq!(l.exposure, exposure, "{name} exposure");
+            assert_eq!(l.pixel, pixel, "{name} pixel");
+            assert_eq!(l.minimap, minimap, "{name} minimap");
+            assert_eq!(l.roi, roi, "{name} roi");
+            assert_eq!(l.player_speed, speed, "{name} player_speed");
+        }
+    }
 
     /// The ESC menu prints an env string of dialed-in looks; re-feeding it must
     /// reproduce the same resolved values. The menu reads Renderer fields (not

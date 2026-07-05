@@ -115,30 +115,8 @@ const CORRIDOR_FLOOR: u32 = 0xd8d4cc;
 const CHUNK_BASE_COLOR: [f32; 4] = [0.30, 0.33, 0.31, 1.0];
 const CHUNK_EMISSIVE: [f32; 4] = [0.04, 0.13, 0.07, 1.0];
 
-/// Scenes that render with GENERATED walls (one slab per region boundary, with
-/// dollhouse cut-aways) rather than the authored rectangular auto-perimeter:
-/// the procedural cave, the hand-authored village, and every floor-plan-derived
-/// level (home / hospital / office / factory, via `floorplan::enclose`). Future
-/// generated scenes join here.
-pub fn is_dollhouse(scene: &str) -> bool {
-    // "playground" joins so the rectangular auto-perimeter is skipped — it
-    // provides its OWN far-edge walls as static_solids (open near the camera).
-    matches!(scene, "cave" | "village" | "home" | "hospital" | "office" | "factory" | "playground" | "range" | "goofloor" | "goonursery" | "goopair")
-}
-
-/// The bare open "studio" stages for filming/inspecting the goo: one big lit
-/// plane, bright even sky fill, no fog. (playground/range keep far backstop
-/// walls; goofloor/goonursery have none; arena keeps its auto-perimeter —
-/// it joins for the even fill, which a skill-shooter's readability wants.)
-pub fn is_open_studio_stage(scene: &str) -> bool {
-    matches!(scene, "playground" | "range" | "goofloor" | "goonursery" | "goopair" | "arena" | "drain")
-}
-
-/// The PLAYER-LESS goo film stages (no player marker, fixed camera): the goo
-/// merges/buds on its own with no player to lure it.
-pub fn is_goo_film_stage(scene: &str) -> bool {
-    matches!(scene, "goofloor" | "goonursery" | "goopair")
-}
+// The wall/camera scene classifiers (is_dollhouse / is_open_studio_stage /
+// is_goo_film_stage) live in `crate::scene_registry` — one row per scene.
 
 /// Build the greybox game scene from the spec. Returns the scene; the caller
 /// (renderer) bakes probes and constructs the GameLoop over the SAME spec.
@@ -152,7 +130,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // keeps its near-white walls + enclosing perimeter. `dollhouse` gates the
     // shared generated-wall path; the village then takes a brighter daylit mood
     // (see `scene.lighting` below) since it is an open street, not a dungeon.
-    let dollhouse = is_dollhouse(&cfg.scene);
+    let dollhouse = crate::scene_registry::is_dollhouse(&cfg.scene);
     let wall_hex = if dollhouse { WALL_STONE } else { WALL_INNER };
 
     // ---- floors: one quad per room in its own pastel tint (cave corridors get
@@ -368,22 +346,9 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     scene.solids = spec.static_solids.clone();
     scene.player_start = Vec3::new(spec.player_start.x, FLOOR_TOP, spec.player_start.z);
 
-    // mood: lamp-lit interiors, no sun. The authored house keeps the bright
-    // LIFTED sky fill (void outside the walls reads bright, not black). The cave
-    // is a DUNGEON — a dimmer sky fill sinks the void into shadow so the lamp-lit
-    // chambers pop, with a touch more mist for depth between the rooms.
-    scene.lighting = if is_open_studio_stage(&cfg.scene) {
-        [0.0, 9.0, 0.0, 0.5] // open studio stage: bright even sky fill, no fog
-    } else if cfg.scene == "cave" {
-        [0.0, 2.2, 0.26, 0.45]
-    } else if dollhouse {
-        // open street / daylit floor plan, not a dungeon: a brighter sky fill
-        // carries the circulation (corridor floor has no lamp), interiors still
-        // pop from their per-room lamp.
-        [0.0, 5.5, 0.30, 0.42]
-    } else {
-        [0.0, 5.0, 0.18, 0.5]
-    };
+    // mood: per-scene lighting env off the registry row (studio fill / dungeon
+    // / daylit dollhouse / lamp-lit house — see SceneEntry::lighting).
+    scene.lighting = crate::scene_registry::entry(&cfg.scene).lighting;
     scene
 }
 

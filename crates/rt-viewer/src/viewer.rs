@@ -32,12 +32,6 @@ pub fn shot_sim_dt(shot: bool, dt: f32) -> f32 {
     }
 }
 
-/// Wall-synthesis options for floor-plan scenes: `DOORS=1` keeps swinging door
-/// leaves; otherwise openings are plain arches (the walkable default).
-fn wall_opts() -> house_game::WallOpts {
-    house_game::WallOpts { keep_door_leaves: std::env::var("DOORS").is_ok(), ..house_game::WallOpts::default() }
-}
-
 pub const ZOOM_MIN: f32 = 1.0;
 pub const ZOOM_MAX: f32 = 4.0; // web game-studio: zoomMin 1, zoomMax 4, zoomStep 1
 
@@ -105,56 +99,10 @@ impl Viewer {
         // start_time.elapsed() to an absolute threshold (ROTATE_AT / DUMP_AT /
         // MOVIE / clip next_due) sees the same nonzero offset on the first frame.
         let start_time = std::time::Instant::now();
-        // SCENE=game → the authored five-room house; SCENE=cave → a procedural
-        // dungeon (seeded by CAVE_SEED). Both build the graybox Scene from a
-        // LevelSpec; the three legacy scenes (grid/lab/house) stay in build_scene.
-        let game_spec: Option<house_game::LevelSpec> = match cfg.scene.as_str() {
-            "game" => Some(house_game::game_level()),
-            // the goo-mob demo: the five-room house populated with crawling,
-            // splittable fluorescent blobs (same geometry as `game`).
-            "goo" => Some(house_game::goo_level()),
-            // a clean open stage for goo authoring (far walls only).
-            "playground" => Some(house_game::playground_level()),
-            // a bare playerless floor — the simplest goo filming stage (no
-            // pillar, no walls, fixed camera).
-            "goofloor" => Some(house_game::goofloor_level()),
-            "goonursery" => Some(house_game::goonursery_level()),
-            // two Larges dropped superimposed — the contact-repulsion showcase.
-            "goopair" => Some(house_game::goopair_level()),
-            // the physical-projectile shooting range (lane + discs + goo targets).
-            "range" => Some(house_game::shooting_range_level()),
-            // the goo ARENA: walled 20×20 pit, arsenal controls (LMB shoots,
-            // keys 1–5 select), mixed-tier squad — the arena-shooter playtest.
-            "arena" => Some({
-                let mut sp = house_game::arena_level();
-                sp.seed = cfg.game.cave_seed; // SEED env: drafts + goo jitter
-                sp
-            }),
-            // the squeeze film stage: one Large + the slotted north wall,
-            // the player standing guard south (the show-your-friend clip).
-            "squeeze" => Some(house_game::squeeze_level()),
-            // HOLD THE DRAIN: the containment variant — plug the sieve.
-            "drain" => Some({
-                let mut sp = house_game::drain_level();
-                sp.seed = cfg.game.cave_seed;
-                sp
-            }),
-            "village" => Some(house_game::village_level(cfg.game.cave_seed)),
-            // Floor-plan-derived levels: a believable PLAN (rooms + doors) run
-            // through `floorplan::enclose` to synthesize walls + collision. Each
-            // is fully playable; future plan generators slot in the same way.
-            // DOORS=1 keeps swinging leaves (closed, interactive); default is
-            // open arches (walkable end-to-end, what the headless capture wants).
-            "home" => Some(house_game::enclose(house_game::house_floor(cfg.game.cave_seed), wall_opts())),
-            "hospital" => Some(house_game::enclose(house_game::building_floor(cfg.game.cave_seed, house_game::BuildingParams::hospital()), wall_opts())),
-            "office" => Some(house_game::enclose(house_game::building_floor(cfg.game.cave_seed, house_game::BuildingParams::office()), wall_opts())),
-            "factory" => Some(house_game::enclose(house_game::factory_floor(cfg.game.cave_seed), wall_opts())),
-            "cave" => Some(house_game::cave_level_with(
-                cfg.game.cave_seed,
-                house_game::CaveParams { thick_walls: cfg.game.cave_thick, ..house_game::CaveParams::for_rooms(cfg.game.cave_rooms, cfg.game.cave_loops) },
-            )),
-            _ => None,
-        };
+        // The scene's LevelSpec builder comes off its scene_registry row (one
+        // row per scene: spec + wall/camera classifiers + collision inflate +
+        // lighting mood). `None` = legacy textured scene → rt_probe::build_scene.
+        let game_spec: Option<house_game::LevelSpec> = crate::scene_registry::entry(&cfg.scene).spec.map(|build| build(&cfg));
         let scene = match &game_spec {
             Some(spec) => crate::game_scene::build_game(spec, &cfg),
             None => build_scene(&cfg)?,
@@ -196,7 +144,7 @@ impl Viewer {
                 // `build_game` (VISUALS use the un-inflated slabs); this only grows the
                 // collision footprints. The authored game/house keep their own tuned
                 // collision (and goldens) untouched.
-                if matches!(cfg.scene.as_str(), "cave" | "village" | "home" | "hospital" | "office" | "factory") {
+                if crate::scene_registry::entry(&cfg.scene).inflate_collision {
                     let r = house_game::game::PLAYER_HALF;
                     for s in &mut spec.static_solids {
                         *s = [s[0] - r, s[1] - r, s[2] + r, s[3] + r];
@@ -480,7 +428,7 @@ impl Viewer {
         // arena blackout: on open-studio stages the sky fill follows the sim's
         // room-lights master (floored so the goo glow still silhouettes the
         // walls); every other scene keeps its authored env verbatim.
-        let sky_dim = if crate::game_scene::is_open_studio_stage(&self.cfg.scene) { 0.06 + 0.94 * fs.room_lights } else { 1.0 };
+        let sky_dim = if crate::scene_registry::is_open_studio_stage(&self.cfg.scene) { 0.06 + 0.94 * fs.room_lights } else { 1.0 };
         let fp = FramePresent {
             fs: &fs,
             // screenshake rides the PRESENTED pan only (never view.pan), so
@@ -639,7 +587,7 @@ impl Viewer {
         if !self.game.has_player {
             return;
         }
-        let hidden = crate::game_scene::is_goo_film_stage(&self.cfg.scene);
+        let hidden = crate::scene_registry::is_goo_film_stage(&self.cfg.scene);
         if let Some(&k) = self.backend.handles().instances.get("player") {
             let m = if hidden {
                 Mat4::from_scale(glam::Vec3::ZERO)
@@ -734,7 +682,7 @@ impl Viewer {
     /// bottom weapon bar. Game picture, not shell UI — they ride into
     /// SHOT/DEMO captures. Skipped on playerless film stages.
     fn hud_stamps(&self) -> Vec<crate::backend::Stamp> {
-        if self.game.has_player && !crate::game_scene::is_goo_film_stage(&self.cfg.scene) {
+        if self.game.has_player && !crate::scene_registry::is_goo_film_stage(&self.cfg.scene) {
             let xf = self.pick_xform();
             let ext = self.backend.extent();
             crate::hud::build_stamps(&self.game.snap, &xf, ext, self.rs() as u32)
