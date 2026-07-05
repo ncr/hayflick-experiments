@@ -25,3 +25,4 @@ dist/
 coverage/
 assets/materials/polyhaven/
 blender/__pycache__/
+/Hayflick.app

@@ -24,6 +24,9 @@ pub enum ItemKind {
     /// start/stop clip recording (also the `r` key) — not a tune value,
     /// excluded from the env string
     Record,
+    /// open the LEVELS picker — dev scenes reach it through here (arena
+    /// reaches it from the game menus); not a tune value
+    Levels,
     Quit,
 }
 pub struct MenuItem {
@@ -47,7 +50,26 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "flash_power", label: "fl power", kind: ItemKind::Slider { min: 0.1, max: 4.0, step: 0.05 } },
     MenuItem { key: "flash_cone", label: "fl cone", kind: ItemKind::Slider { min: 8.0, max: 50.0, step: 1.0 } },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
+    MenuItem { key: "levels", label: "levels", kind: ItemKind::Levels },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
+];
+
+/// The LEVELS picker: (label, scene) rows, curated to the playable stages
+/// (film/golden-only scenes stay CLI-reachable). Picking one relaunches the
+/// viewer with `SCENE=<scene>` — a scene is baked at startup (geometry,
+/// BLAS/TLAS, probe cache), so a fresh process IS the clean level switch.
+/// Keep the list short enough that `gpanel_h(len + 1)` stays under
+/// [`MPANEL_H`] — the game panels share the settings panel's staging buffer.
+pub const LEVELS: &[(&str, &str)] = &[
+    ("hold the drain", "drain"),
+    ("goo pit arena", "arena"),
+    ("squeeze alley", "squeeze"),
+    ("shooting range", "range"),
+    ("goo playground", "playground"),
+    ("haunted house", "goo"),
+    ("cave dungeon", "cave"),
+    ("village", "village"),
+    ("home", "home"),
 ];
 
 // menu layout, in LOGICAL pixels (8x8 font units); physical = logical * menu_scale
@@ -64,17 +86,26 @@ const MICON_H: i32 = 14;
 pub const MENU_MARGIN: i32 = 12; // physical px from the window's top-left
 
 /// Game-menu panel height for `items` rows (title band + rows + footer).
-pub(crate) fn gpanel_h(items: usize) -> i32 {
+pub(crate) const fn gpanel_h(items: usize) -> i32 {
     GPAD * 2 + GROW * (1 + items as i32) + 12
 }
 
+// Every centered game panel shares the settings panel's staging buffer
+// (Vulkan menu_buf is MPANEL_W × MPANEL_H): the tallest — the LEVELS picker
+// — must fit, or the copy overruns. Compile-time, so a grown LEVELS list
+// fails the build, not the GPU.
+const _: () = assert!(gpanel_h(LEVELS.len() + 1) <= MPANEL_H);
+const _: () = assert!(gpanel_h(PAUSE_MENU.len()) <= MPANEL_H);
+
 /// Which menu is on screen. `Title` and `Pause` are the GAME menus (centered
-/// panel, sim paused); `Settings` is the tune panel (top-left).
+/// panel, sim paused); `Levels` is the centered stage picker; `Settings` is
+/// the tune panel (top-left).
 #[derive(Clone, Copy, PartialEq)]
 pub enum MenuMode {
     Closed,
     Title,
     Pause,
+    Levels,
     Settings,
 }
 
@@ -84,11 +115,12 @@ pub enum GameAction {
     Start,
     Resume,
     Restart,
+    Levels,
     Settings,
     Quit,
 }
-pub const TITLE_MENU: &[(&str, GameAction)] = &[("start shift", GameAction::Start), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
-pub const PAUSE_MENU: &[(&str, GameAction)] = &[("resume", GameAction::Resume), ("restart shift", GameAction::Restart), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
+pub const TITLE_MENU: &[(&str, GameAction)] = &[("start shift", GameAction::Start), ("levels", GameAction::Levels), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
+pub const PAUSE_MENU: &[(&str, GameAction)] = &[("resume", GameAction::Resume), ("restart shift", GameAction::Restart), ("levels", GameAction::Levels), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
 
 // game-menu panel layout (logical px; physical = logical * menu_scale)
 const GROW: i32 = 16; // taller rows than the tune panel
@@ -224,7 +256,7 @@ impl Viewer {
     /// The env vars that reproduce the current menu values (printed on close).
     pub fn env_string(&self) -> String {
         MENU.iter()
-            .filter(|i| !matches!(i.kind, ItemKind::Quit | ItemKind::Record))
+            .filter(|i| !matches!(i.kind, ItemKind::Quit | ItemKind::Record | ItemKind::Levels))
             .map(|i| {
                 let v = self.tune_get(i.key);
                 let s = match i.kind {
@@ -247,6 +279,7 @@ impl Viewer {
         match self.menu.mode {
             MenuMode::Title => TITLE_MENU.len(),
             MenuMode::Pause => PAUSE_MENU.len(),
+            MenuMode::Levels => LEVELS.len() + 1, // + the back row
             _ => MENU.len(),
         }
     }
@@ -266,6 +299,10 @@ impl Viewer {
             MenuMode::Closed => self.menu_set(if self.game.lmb_shoots { MenuMode::Pause } else { MenuMode::Settings }),
             MenuMode::Pause => self.menu_set(MenuMode::Closed),
             MenuMode::Title => {}
+            MenuMode::Levels => {
+                let back = self.menu.back;
+                self.menu_set(back);
+            }
             MenuMode::Settings => {
                 println!("tune: {}", self.env_string());
                 let back = self.menu.back;
@@ -288,7 +325,7 @@ impl Viewer {
                 self.tune_set(item.key, v.clamp(min, max));
             }
             ItemKind::Toggle => self.menu_activate(),
-            ItemKind::Record | ItemKind::Quit => {}
+            ItemKind::Record | ItemKind::Levels | ItemKind::Quit => {}
         }
     }
 
@@ -305,12 +342,27 @@ impl Viewer {
                         self.restart_run(true);
                         self.menu_set(MenuMode::Closed);
                     }
+                    GameAction::Levels => {
+                        let from = self.menu.mode;
+                        self.menu_set(MenuMode::Levels);
+                        self.menu.back = from;
+                    }
                     GameAction::Settings => {
                         let from = self.menu.mode;
                         self.menu_set(MenuMode::Settings);
                         self.menu.back = from;
                     }
                     GameAction::Quit => self.exit_requested = true,
+                }
+            }
+            MenuMode::Levels => {
+                self.ui_blip("menu_pick");
+                if self.menu.sel < LEVELS.len() {
+                    let (_, scene) = LEVELS[self.menu.sel];
+                    self.switch_scene(scene); // exec — no return on success
+                } else {
+                    let back = self.menu.back; // the trailing back row
+                    self.menu_set(back);
                 }
             }
             MenuMode::Settings => {
@@ -321,6 +373,11 @@ impl Viewer {
                         self.tune_set(item.key, if v != 0.0 { 0.0 } else { 1.0 });
                     }
                     ItemKind::Record => self.toggle_recording(),
+                    ItemKind::Levels => {
+                        let from = self.menu.mode;
+                        self.menu_set(MenuMode::Levels);
+                        self.menu.back = from;
+                    }
                     ItemKind::Quit => self.exit_requested = true,
                     ItemKind::Slider { .. } => {}
                 }
@@ -338,7 +395,7 @@ impl Viewer {
     /// the settings panel/hamburger sit at the top-left margin.
     fn menu_origin(&self, pw: i32, ph: i32) -> Vec2 {
         match self.menu.mode {
-            MenuMode::Title | MenuMode::Pause => {
+            MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
                 let ms = self.menu_ui_scale();
                 let (ew, eh) = self.backend.extent();
                 Vec2::new((ew as f32 - pw as f32 * ms) * 0.5, (eh as f32 - ph as f32 * ms) * 0.5)
@@ -360,9 +417,9 @@ impl Viewer {
                 }
                 false
             }
-            MenuMode::Title | MenuMode::Pause => {
-                let items = if self.menu.mode == MenuMode::Title { TITLE_MENU } else { PAUSE_MENU };
-                let (pw, ph) = (GPANEL_W, gpanel_h(items.len()));
+            MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
+                let n = self.menu_len();
+                let (pw, ph) = (GPANEL_W, gpanel_h(n));
                 let org = self.menu_origin(pw, ph);
                 let l = (p - org) / ms;
                 if l.x < 0.0 || l.y < 0.0 || l.x >= pw as f32 || l.y >= ph as f32 {
@@ -371,7 +428,7 @@ impl Viewer {
                 // first GROW is the title band (guard BEFORE dividing —
                 // -6/16 truncates to 0 and would select the first row)
                 let dy = l.y as i32 - GPAD - GROW;
-                if dy >= 0 && ((dy / GROW) as usize) < items.len() {
+                if dy >= 0 && ((dy / GROW) as usize) < n {
                     self.menu.sel = (dy / GROW) as usize;
                     self.menu_activate();
                 }
@@ -430,7 +487,7 @@ impl Viewer {
             mrect(&mut c, w, 0, 0, 1, h, BORDER);
             mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
             mrect(&mut c, w, 2, 2, w - 4, 1, 0x8a6a2a);
-            let title = if self.menu.mode == MenuMode::Title { "G O O  W A R D E N" } else { "P A U S E D" };
+            let title = if self.menu.mode == MenuMode::Title { "H A Y F L I C K" } else { "P A U S E D" };
             let tx = (w - title.len() as i32 * 8) / 2;
             mtext(&mut c, w, tx, GPAD + 2, title, 0xe8b84a);
             for (i, (label, action)) in items.iter().enumerate() {
@@ -449,9 +506,40 @@ impl Viewer {
                 mtext(&mut c, w, x, y + 3, &text, color);
             }
             let fy = GPAD + GROW * (1 + items.len() as i32) + 3;
-            let hint = if self.menu.mode == MenuMode::Title { "hold the drain. survive the shift." } else { "esc resumes" };
+            let hint = if self.menu.mode == MenuMode::Title { "beztroska games" } else { "esc resumes" };
             let hx = (w - hint.len() as i32 * 8) / 2;
             mtext(&mut c, w, hx.max(2), fy, hint, 0x707078);
+            return (c, w, h);
+        }
+        // the LEVELS picker: same centered game-panel dress, one row per
+        // playable stage + a back row. Picking a stage relaunches the viewer
+        // with SCENE set (menu_activate), so the list needs no live state.
+        if self.menu.mode == MenuMode::Levels {
+            let n = LEVELS.len() + 1;
+            let (w, h) = (GPANEL_W, gpanel_h(n));
+            let mut c = vec![0x101018u32; (w * h) as usize];
+            mrect(&mut c, w, 0, 0, w, 1, BORDER);
+            mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
+            mrect(&mut c, w, 0, 0, 1, h, BORDER);
+            mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
+            mrect(&mut c, w, 2, 2, w - 4, 1, 0x8a6a2a);
+            let title = "L E V E L S";
+            mtext(&mut c, w, (w - title.len() as i32 * 8) / 2, GPAD + 2, title, 0xe8b84a);
+            for i in 0..n {
+                let y = GPAD + GROW * (1 + i as i32);
+                let sel = i == self.menu.sel;
+                if sel {
+                    mrect(&mut c, w, 6, y, w - 12, GROW - 2, 0x2a2a1e);
+                }
+                let label = LEVELS.get(i).map(|(l, _)| *l).unwrap_or("back");
+                let text = if sel { format!("> {label} <") } else { label.to_string() };
+                let x = (w - text.len() as i32 * 8) / 2;
+                let color = if sel { 0xf0e8c8 } else { TEXT };
+                mtext(&mut c, w, x, y + 3, &text, color);
+            }
+            let fy = GPAD + GROW * (1 + n as i32) + 3;
+            let hint = "pick a stage (relaunches the pit)";
+            mtext(&mut c, w, ((w - hint.len() as i32 * 8) / 2).max(2), fy, hint, 0x707078);
             return (c, w, h);
         }
         if self.menu.mode == MenuMode::Closed {
@@ -514,6 +602,7 @@ impl Viewer {
                     }
                     None => mtext(&mut c, w, MTRACK_X, y + 2, "[r] mp4+gif", 0x808088),
                 },
+                ItemKind::Levels => mtext(&mut c, w, MTRACK_X, y + 2, "[pick stage]", 0x808088),
                 ItemKind::Quit => {}
             }
         }

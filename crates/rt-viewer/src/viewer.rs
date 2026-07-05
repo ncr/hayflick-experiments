@@ -309,6 +309,26 @@ impl Viewer {
         }
     }
 
+    /// LEVELS pick: relaunch this binary with `SCENE=<scene>` (everything
+    /// else — WINDOW, SEED, tune env — inherits). A scene is baked at
+    /// startup (geometry, BLAS/TLAS, probe cache), so a fresh process IS
+    /// the clean level switch; `exec` keeps the pid, so a Dock-launched
+    /// session keeps its bundle identity. Returns only on failure.
+    pub fn switch_scene(&mut self, scene: &str) {
+        use std::os::unix::process::CommandExt;
+        let exe = match std::env::current_exe() {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("levels: current_exe failed: {e}");
+                return;
+            }
+        };
+        println!("levels: relaunching with SCENE={scene}");
+        unsafe { self.backend.wait_idle() };
+        let err = std::process::Command::new(exe).env("SCENE", scene).exec();
+        eprintln!("levels: relaunch failed: {err}");
+    }
+
     /// Whole-low-pixel render scale for the current zoom (#4).
     pub fn rs(&self) -> i32 {
         self.backend.rs(self.view.zoom)

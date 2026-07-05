@@ -91,7 +91,7 @@ impl ApplicationHandler for App {
         // beachball. No drawable is acquired during init (the bake is pure
         // compute), so revealing the window only once it's ready is safe — the
         // user sees a normal cold-start delay, then a window that draws at once.
-        let attrs = Window::default_attributes().with_title("rt-probe — iso viewer").with_visible(false).with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
+        let attrs = Window::default_attributes().with_title("Hayflick").with_visible(false).with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let renderer = unsafe { Viewer::new(Some(&window), cfg).expect("renderer init") };
         if renderer.game.lmb_shoots {
@@ -112,7 +112,7 @@ impl ApplicationHandler for App {
                 // enter; WASD also navigates the GAME menus (regular-game
                 // muscle memory), but still walks under the settings panel
                 if r.menu_open() && event.state.is_pressed() {
-                    let game_menu = matches!(r.menu.mode, MenuMode::Title | MenuMode::Pause);
+                    let game_menu = matches!(r.menu.mode, MenuMode::Title | MenuMode::Pause | MenuMode::Levels);
                     let n = r.menu_len();
                     match event.logical_key.as_ref() {
                         Key::Named(NamedKey::ArrowUp) => {
