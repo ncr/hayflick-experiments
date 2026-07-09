@@ -66,8 +66,35 @@ its eight systems gets its own detail-pass round(s) when promoted — by design 
    punishments, lair + safehouse split).
 2. **Module-10 deep-dives** — one focused round per system (fencing-network → framing → impersonation
    → blackmail → bribery → forgery → smuggling → racket), in roughly that dependency order.
-3. Hand M0/M1 to an implementing session (required reading: this index, all modules, root `CLAUDE.md`,
-   `ARCHITECTURE.md`, `docs/AGENT_LEARNINGS.md`, and `../spec-reset-handoff.md`).
+3. ~~Hand M0/M1 to an implementing session~~ — **DONE 2026-07-09** (Fable; see below). Next
+   implementation milestone: **M2 · Playable slice** (viewer integration of the thief sim, real-time
+   stealth read, confrontation ladder, event log; first is-it-fun checkpoint + the feel-tests).
+
+## Implementation status (2026-07-09 — M0 + M1 COMPLETE, commits f91806a…d203433)
+
+All code in `crates/house-game/src/thief/` (headless) + the FLOORCUT renderer work; 194 tests
+green, 7 Vulkan goldens green.
+
+- **M0 spike A** — module 03 grid: cells-hold-contents / edges-hold-barriers, stacked floors,
+  vertical links; integer-exact LOS (supercover + corner rule), sound & light propagation
+  (integer Dijkstra). PORTABLE determinism (pure ints, stronger than the f32 discipline).
+- **M0 spike B** — towngen + fairness: seeded district (10–20 multi-storey buildings, BSP rooms,
+  windows, stairs, climbs, locked targets, gates), mandatory validation (street/extraction
+  connectivity, thief-level interior reachability, ≥2 approaches per target, hiding density),
+  bounded re-roll. 32-seed oracle; 64 seeds currently pass on attempt 0.
+- **M0 spike C** — 05a/05b engine: Observation atom, fuzzy match (base-rate rule: default
+  agreements are not evidence), correlation into Cases (conflict veto; salience floor to OPEN a
+  case; orphan retry = "the two facts meet"); severity-scaled decay; the scrutiny rule. Pinned
+  portable hash oracles.
+- **M0 spike D** — FLOORCUT multi-floor reveal: world-Y cut plane in the shade push (GLSL misc2.w
+  / Metal misc3.x), all-pixels prefix dissolve loop; SCENE=tower + goldens tower/tower_cut.
+  **Metal side ported but unverified** (debt note in `docs/goo-mob-handoff.md` — Mac must pin
+  golden-metal tower set).
+- **M1 spine** — `ThiefGame` Simulation: cones+LOS+light senses → partial Descriptions, noise,
+  per-NPC memory, walk-to-report latency, case file, alertness ladder, guard scrutiny→Pursue.
+  Deduction-scenario gate test + counterfactual (outfit change → no hunt) + pinned hashes +
+  clips (`clips/thief_m1_spine.mp4`, `…_outfit.mp4` — mapviz projection of the sim; the
+  renderer-integrated clip lands with M2).
 
 ## Decision log
 
