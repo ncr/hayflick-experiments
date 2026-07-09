@@ -16,9 +16,12 @@
 //!   (module 05a): the only currency deduction reasons over.
 //! - [`deduction`] — the correlation engine: reported observations cluster
 //!   into Cases (merged suspect profile, confidence, scrutiny) — module 05b.
+//! - [`sim`] — the M1 spine: the `ThiefGame` Simulation (senses → memory →
+//!   report → case → hunt over the alertness ladder), trace-replayable.
 
 pub mod deduction;
 pub mod fairness;
 pub mod grid;
 pub mod perception;
+pub mod sim;
 pub mod towngen;

@@ -14,7 +14,7 @@
 //! is portable across machines.
 
 use super::grid::CellPos;
-use super::perception::{match_score, ActionKind, Description, Feature, Observation, MATCH_MAX};
+use super::perception::{match_score, Description, Feature, Observation, MATCH_MAX};
 use sim_core::Tick;
 
 pub type CaseId = u16;
@@ -39,6 +39,11 @@ pub const DECAY_INTERVAL: u64 = 3600;
 /// A case below this confidence goes cold: kept (it can be re-warmed by a
 /// fresh matching observation) but exerts no scrutiny.
 pub const COLD_FLOOR: u16 = 5;
+/// Only an observation at least this alarming can OPEN a case — the file is
+/// about crimes, not people-watching. Less alarming observations may still
+/// MERGE into an existing matching case (the dusk casing joining the dawn
+/// discovery), or wait as orphans until a case opens nearby.
+pub const CASE_OPEN_SALIENCE: u8 = 60;
 
 /// A per-field-confidence merged suspect profile. Each field remembers how
 /// clear the read that set it was, so a sharper look overrides a hazier one
@@ -85,6 +90,10 @@ pub struct CaseFile {
     pub cases: Vec<Case>,
     /// Every ingested observation, in ingestion order (ObsId = index).
     pub pool: Vec<Observation>,
+    /// Reported observations not yet linked to any case (too mild to open
+    /// one, no match yet). Retried, in order, whenever a new case opens —
+    /// this is how "the two facts meet" when the mild fact arrived first.
+    pub orphans: Vec<ObsId>,
     last_decay: u64,
 }
 
@@ -93,18 +102,27 @@ impl CaseFile {
         CaseFile::default()
     }
 
-    /// Ingest one reported observation. CALL ORDER IS THE CONTRACT: the sim
-    /// reports observations in tick order (ties: emission order); replaying
-    /// the same report stream reproduces the same cases bit-for-bit.
-    pub fn ingest(&mut self, obs: Observation) -> CaseId {
+    /// Ingest one reported observation; returns the case it landed in, or
+    /// `None` if it orphaned. CALL ORDER IS THE CONTRACT: the sim reports
+    /// observations in tick order (ties: emission order); replaying the same
+    /// report stream reproduces the same cases bit-for-bit.
+    pub fn ingest(&mut self, obs: Observation) -> Option<CaseId> {
         let oid = self.pool.len() as ObsId;
         self.pool.push(obs);
 
         // Score against every live case, id order; best score wins, lowest
-        // id breaks ties (order-stable by construction).
+        // id breaks ties (order-stable by construction). A CONFLICTING
+        // description (negative subject score) never merges, however close —
+        // a visibly different-looking person near the scene must not fold
+        // into the case and rewrite its profile (the innocent brown-coat
+        // stroller stays a stranger; deliberate false descriptions are
+        // module-10 framing, which will write MATCHING features).
         let mut best: Option<(i32, usize)> = None;
         for (i, case) in self.cases.iter().enumerate() {
             let subject = match_score(&case.profile, &obs.subject);
+            if subject < 0 {
+                continue;
+            }
             let dx = (case.last_at.x as i32 - obs.at.x as i32).abs();
             let dz = (case.last_at.z as i32 - obs.at.z as i32).abs();
             let dt = obs.when.0.abs_diff(case.last_when.0);
@@ -118,9 +136,9 @@ impl CaseFile {
         match best {
             Some((_, i)) => {
                 self.merge_into(i, oid);
-                self.cases[i].id
+                Some(self.cases[i].id)
             }
-            None => {
+            None if obs.salience >= CASE_OPEN_SALIENCE => {
                 let id = self.cases.len() as CaseId;
                 self.cases.push(Case {
                     id,
@@ -132,8 +150,31 @@ impl CaseFile {
                     last_at: obs.at,
                     last_when: obs.when,
                 });
-                self.merge_into(self.cases.len() - 1, oid);
-                id
+                let ci = self.cases.len() - 1;
+                self.merge_into(ci, oid);
+                // A case just opened: earlier orphaned facts get their
+                // chance to meet it (canonical order; the case's profile
+                // and anchor evolve as they fold in).
+                let orphans = std::mem::take(&mut self.orphans);
+                for o in orphans {
+                    let cand = self.pool[o as usize];
+                    let subject = match_score(&self.cases[ci].profile, &cand.subject);
+                    let dx = (self.cases[ci].last_at.x as i32 - cand.at.x as i32).abs();
+                    let dz = (self.cases[ci].last_at.z as i32 - cand.at.z as i32).abs();
+                    let dt = cand.when.0.abs_diff(self.cases[ci].last_when.0);
+                    let near = dx.max(dz) <= PROX_CELLS && dt <= PROX_TICKS;
+                    let score = subject + if near { PROX_BONUS } else { 0 };
+                    if subject >= 0 && score >= MERGE_THRESHOLD {
+                        self.merge_into(ci, o);
+                    } else {
+                        self.orphans.push(o);
+                    }
+                }
+                Some(id)
+            }
+            None => {
+                self.orphans.push(oid);
+                None
             }
         }
     }
@@ -165,8 +206,12 @@ impl CaseFile {
         let add = (obs.confidence as u32 * obs.salience as u32 / 100) as u16;
         case.confidence = case.confidence.saturating_add(add);
         case.severity = case.severity.max(obs.salience);
-        case.last_at = obs.at;
-        case.last_when = obs.when;
+        // The anchor only moves FORWARD in time: an old orphaned fact
+        // joining late must not drag the case back to where it happened.
+        if obs.when >= case.last_when {
+            case.last_at = obs.at;
+            case.last_when = obs.when;
+        }
     }
 
     /// Periodic decay (05b: memories and heat fade unless reinforced; high
@@ -250,6 +295,11 @@ impl CaseFile {
                 eat(byte);
             }
         }
+        for &o in &self.orphans {
+            for byte in o.to_le_bytes() {
+                eat(byte);
+            }
+        }
         for byte in self.last_decay.to_le_bytes() {
             eat(byte);
         }
@@ -260,7 +310,7 @@ impl CaseFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thief::perception::{Build, Gait, Headwear, Hue, Mark, NpcId, Source};
+    use crate::thief::perception::{ActionKind, Build, Gait, Headwear, Hue, Mark, NpcId, Source};
 
     fn hooded() -> Description {
         Description {
@@ -350,8 +400,8 @@ mod tests {
     #[test]
     fn unrelated_far_crimes_open_separate_cases() {
         let mut file = CaseFile::new();
-        // A hooded casing on one side of town…
-        file.ingest(obs(1, hooded(), ActionKind::Casing, (5, 5), 1_000, 60));
+        // A hooded theft on one side of town…
+        file.ingest(obs(1, hooded(), ActionKind::Stealing, (5, 5), 1_000, 60));
         // …and a DIFFERENT-looking forcing far away, much later.
         let other = Description {
             build: Feature::Seen(Build::Heavy),
@@ -366,27 +416,33 @@ mod tests {
         assert_eq!(file.cases.len(), 2, "unrelated crimes must not chain: {:#?}", file.cases);
         // A matching-hood crime near the first: merges into case 0, not 1.
         let id = file.ingest(obs(3, hooded(), ActionKind::Stealing, (7, 6), 2_500, 50));
-        assert_eq!(id, 0);
+        assert_eq!(id, Some(0));
         assert_eq!(file.cases[0].observations.len(), 2);
     }
 
     #[test]
     fn forensic_unknown_subject_merges_by_proximity_only() {
         let mut file = CaseFile::new();
-        file.ingest(obs(1, hooded(), ActionKind::Casing, (10, 10), 1_000, 60));
-        // Same corner, hours inside the window, no subject at all.
+        // The casing report is too mild to open a case: it ORPHANS.
+        assert_eq!(file.ingest(obs(1, hooded(), ActionKind::Casing, (10, 10), 1_000, 60)), None);
+        assert_eq!(file.cases.len(), 0);
+        // The dawn discovery (same corner, inside the window) OPENS the case
+        // — and the orphaned casing folds in behind it: the two facts meet.
         let id = file.ingest(obs(2, Description::UNKNOWN, ActionKind::TraceFound, (12, 10), 3_000, 90));
-        assert_eq!(id, 0, "proximity alone must link the dawn discovery to the dusk sighting");
+        assert_eq!(id, Some(0));
+        assert_eq!(file.cases[0].observations.len(), 2, "the orphan must join the fresh case");
+        assert_eq!(file.cases[0].profile.headwear, Feature::Seen(Headwear::Hood));
+        assert!(file.orphans.is_empty());
         // The same discovery far outside the window opens its own case.
         let far = file.ingest(obs(3, Description::UNKNOWN, ActionKind::TraceFound, (45, 45), 3_100, 90));
-        assert_eq!(far, 1);
+        assert_eq!(far, Some(1));
     }
 
     #[test]
     fn decay_cools_cases_and_severity_slows_it() {
         let mut file = CaseFile::new();
-        // Two cases: a petty casing report and a grave one (a body).
-        file.ingest(obs(1, hooded(), ActionKind::Casing, (5, 5), 0, 90));
+        // Two cases: a mid-grade one (a fleeing figure) and a grave one (a body).
+        file.ingest(obs(1, hooded(), ActionKind::Fleeing, (5, 5), 0, 90));
         let grave = Description { build: Feature::Seen(Build::Heavy), ..Description::UNKNOWN };
         file.ingest(obs(2, grave, ActionKind::BearingBody, (40, 40), 0, 80));
         let (petty0, grave0) = (file.cases[0].confidence, file.cases[1].confidence);
@@ -452,6 +508,6 @@ mod tests {
         for t in 0..10_000u64 {
             file.decay_tick(Tick(t));
         }
-        assert_eq!(file.state_hash(), 0x21c6_528f_4e42_0227, "recapture: {:#018x}", file.state_hash());
+        assert_eq!(file.state_hash(), 0x004f_269a_e9ec_1137, "recapture: {:#018x}", file.state_hash());
     }
 }

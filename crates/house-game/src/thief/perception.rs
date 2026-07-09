@@ -191,22 +191,31 @@ pub const MATCH_MAX: i32 = W_BUILD + W_TOP + W_BOTTOM + W_HEADWEAR + W_MASKED + 
 /// Fuzzy feature-vector match: many shared features + few conflicts ⇒ high;
 /// a changed coat or added mask breaks fields into conflicts ⇒ low. Both-
 /// unknown fields contribute nothing (vague descriptions match weakly, not
-/// strongly). Symmetric; pure; integer.
+/// strongly). **Base-rate rule:** agreement on an unremarkable default —
+/// no mask, no mark, a normal gait — is NOT evidence (most of the town
+/// matches it); only the notable value earns the weight. Conflicts always
+/// count in full. Symmetric; pure; integer.
 pub fn match_score(a: &Description, b: &Description) -> i32 {
-    fn field<T: Copy + Eq>(a: Feature<T>, b: Feature<T>, w: i32) -> i32 {
+    fn field<T: Copy + Eq>(a: Feature<T>, b: Feature<T>, w: i32, dull: Option<T>) -> i32 {
         match (a.known(), b.known()) {
-            (Some(x), Some(y)) if x == y => w,
+            (Some(x), Some(y)) if x == y => {
+                if dull == Some(x) {
+                    0
+                } else {
+                    w
+                }
+            }
             (Some(_), Some(_)) => -w,
             _ => 0,
         }
     }
-    field(a.build, b.build, W_BUILD)
-        + field(a.top, b.top, W_TOP)
-        + field(a.bottom, b.bottom, W_BOTTOM)
-        + field(a.headwear, b.headwear, W_HEADWEAR)
-        + field(a.masked, b.masked, W_MASKED)
-        + field(a.gait, b.gait, W_GAIT)
-        + field(a.mark, b.mark, W_MARK)
+    field(a.build, b.build, W_BUILD, None)
+        + field(a.top, b.top, W_TOP, None)
+        + field(a.bottom, b.bottom, W_BOTTOM, None)
+        + field(a.headwear, b.headwear, W_HEADWEAR, None)
+        + field(a.masked, b.masked, W_MASKED, Some(false))
+        + field(a.gait, b.gait, W_GAIT, Some(Gait::Normal))
+        + field(a.mark, b.mark, W_MARK, Some(Mark::None))
 }
 
 // ---------------------------------------------------------------------------
@@ -342,8 +351,9 @@ mod tests {
     #[test]
     fn match_score_rewards_shared_and_punishes_conflicts() {
         let a = hooded_green();
-        // Identical: all known fields agree.
-        assert_eq!(match_score(&a, &a), W_BUILD + W_TOP + W_HEADWEAR + W_MASKED);
+        // Identical: known fields agree — but "unmasked" is a base-rate
+        // default and earns nothing.
+        assert_eq!(match_score(&a, &a), W_BUILD + W_TOP + W_HEADWEAR);
         // Changed coat + shed hood: two conflicts flip the sign hard —
         // the disguise payoff (05b layer 1).
         let changed = Description {
@@ -351,12 +361,18 @@ mod tests {
             headwear: Feature::Seen(Headwear::Bare),
             ..a
         };
-        assert_eq!(match_score(&a, &changed), W_BUILD - W_TOP - W_HEADWEAR + W_MASKED);
+        assert_eq!(match_score(&a, &changed), W_BUILD - W_TOP - W_HEADWEAR);
         assert!(match_score(&a, &changed) < match_score(&a, &a) / 2);
         // A vague description (everything unknown) matches nothing at all.
         assert_eq!(match_score(&a, &Description::UNKNOWN), 0);
         // Symmetry.
         assert_eq!(match_score(&a, &changed), match_score(&changed, &a));
+        // A NOTABLE shared value does score: two masked reads reinforce.
+        let m1 = Description { masked: Feature::Seen(true), ..a };
+        assert_eq!(match_score(&m1, &m1), W_BUILD + W_TOP + W_HEADWEAR + W_MASKED);
+        // Conflicts on defaultable fields still count in full.
+        let unmasked = Description { masked: Feature::Seen(false), ..a };
+        assert_eq!(match_score(&m1, &unmasked), W_BUILD + W_TOP + W_HEADWEAR - W_MASKED);
     }
 
     #[test]
