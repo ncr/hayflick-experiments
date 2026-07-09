@@ -38,7 +38,7 @@ struct Push {
     float4 roi2;      // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
     float4 look;      // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
     float4 look2;     // gi scale, matPoster levels, aoDither, reflStrength
-    int4   misc3;     // floorCutY 16.16 fixed point (INT_MAX = off), _, _, _
+    int4   misc3;     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), _, _
 };
 
 constant float PI    = 3.14159265;
@@ -276,17 +276,36 @@ kernel void shade(
     Hit h;
     bool hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
 
-    // FLOORCUT dollhouse (module 11 multi-floor auto-reveal) — twin of
-    // shade.comp: every primary-ray hit at or above the cut plane dissolves,
-    // for EVERY pixel — storeys above the player's floor and their roofs come
-    // off like lifting a dollhouse cap. misc3.x == INT_MAX disables the block
-    // entirely (bit-identical pre-cut image). The iso camera looks DOWN
-    // (d.y < 0): hit Y decreases monotonically along the ray, so one prefix
-    // loop suffices and the CAVE_ROI block below never sees above-cut hits.
-    if (pc.misc3.x != 2147483647) {
+    // FLOORCUT dollhouse (module 11 auto-reveal), two planes — twin of
+    // shade.comp:
+    // - STOREY cut (misc3.x): EVERY primary-ray hit at or above the plane
+    //   dissolves — storeys above the player's floor and their roofs come off
+    //   like lifting a dollhouse cap.
+    // - WALL cut (misc3.y): only OCCLUDER hits (mats[..].pad == 1 — walls,
+    //   roofs, lintels) at or above the plane dissolve. The game sets it to
+    //   sill height while the player is INDOORS, so buildings open into a
+    //   cutaway while bodies, props and door leaves keep their full height.
+    // INT_MAX disables a plane; both off skips the block entirely
+    // (bit-identical pre-cut image). The iso camera looks DOWN (d.y < 0):
+    // hit Y decreases monotonically along the ray, so one prefix loop
+    // suffices and the CAVE_ROI block below never sees above-cut hits.
+    if (pc.misc3.x != 2147483647 || pc.misc3.y != 2147483647) {
+        bool storey = pc.misc3.x != 2147483647;
+        bool wall = pc.misc3.y != 2147483647;
         float cutY = float(pc.misc3.x) * (1.0 / 65536.0);
+        float wallY = float(pc.misc3.y) * (1.0 / 65536.0);
+        // wallPass: the previous hit was a wall we are cutting — a nearby
+        // occluder hit (h.t <= 0.6, ~one slab thickness) is that slab's FAR
+        // face, which may already sit BELOW the plane (walls straddle it);
+        // pass through it or its inner surface renders as a dark band along
+        // every cut edge (the ROI loop's proven far-face rule).
+        bool wallPass = false;
         for (int it = 0; it < 16 && hitb; it++) {
-            if ((o + d * h.t).y < cutY) break;
+            float hy = (o + d * h.t).y;
+            bool occ = mats[h.mat].pad == 1;
+            bool cut = (storey && hy >= cutY) || (wall && occ && (hy >= wallY || (wallPass && h.t <= 0.6)));
+            if (!cut) break;
+            wallPass = occ;
             o = o + d * (h.t + (1.0 / 256.0));
             hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
         }

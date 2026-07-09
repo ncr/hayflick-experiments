@@ -64,6 +64,12 @@ pub struct ShadePush {
     /// reproduces the pre-look image exactly (× 1.0 and + 0.0 are exact).
     pub look: [f32; 4],
     pub look2: [f32; 4],
+    /// `misc3.x` = WALLCUT plane in 16.16 fixed point (`CUT_OFF` = off): the
+    /// occluder-only twin of `cut16` — only walls/roofs/lintels (materials
+    /// with the occluder flag) at or above the plane dissolve on the primary
+    /// ray, so an indoor player gets a sill-height cutaway while bodies,
+    /// props and door leaves keep their full height. Rest reserved.
+    pub misc3: [i32; 4],
 }
 
 /// Packed CAVE_ROI see-through reveal fields for [`ShadePush`] / the Metal `Push` twin.
@@ -116,6 +122,7 @@ impl ShadePush {
             roi2: ROI_OFF.roi2,
             look: [0.0, 0.0, 0.0, 0.0], // spec, bump, bump_scale, gloss — neutral (off)
             look2: [1.0, 0.0, 0.0, 0.0], // gi scale = 1.0 (neutral), rest reserved
+            misc3: [CUT_OFF, 0, 0, 0],   // wallcut off, rest reserved
         }
     }
 }
@@ -136,6 +143,7 @@ struct ProbePush {
     _r0: i32,
     env0: [f32; 4],
     _roi: [f32; 16], // pad to ShadePush size (shared push-constant range); unused by probes.comp
+    _misc3: [i32; 4], // ShadePush.misc3 pad — unused by probes.comp
 }
 
 pub fn push_bytes<T: Copy>(p: &T) -> &[u8] {
@@ -856,6 +864,7 @@ impl SceneGpu {
                     _r0: 0,
                     env0,
                     _roi: [0.0; 16],
+                    _misc3: [0; 4],
                 };
                 ctx.one_time(|cmd| {
                     let d = &ctx.device;
@@ -911,7 +920,7 @@ mod tests {
     #[test]
     fn push_structs_share_one_layout_size() {
         assert_eq!(std::mem::size_of::<ShadePush>(), std::mem::size_of::<ProbePush>());
-        assert_eq!(std::mem::size_of::<ShadePush>(), 176);
+        assert_eq!(std::mem::size_of::<ShadePush>(), 192);
     }
 
     /// A throwaway CPU scene exercising every scan case: a non-emissive floor,

@@ -111,6 +111,21 @@ green, 7 Vulkan goldens green.
   stop panel). Golden `thief` pinned (Vulkan; Mac must pin golden-metal), clip
   `clips/thief_m2_slice.mp4`. Spine oracle recaptured 0x4418fc21f5bb7d05 (M2 state layout),
   deduction oracle 0x8d78d79655e3a7f6 (`cleared_look`).
+- **M2 feel round 1 (owner playtest verdicts, 2026-07-09)** — three verdicts, all landed:
+  1. *"No dollhouse effect"* → the module-11 reveal is now two planes: roofs render outdoors
+     (buildings read as buildings) and stepping INSIDE drops every occluder wall to sill
+     height — a new occluder-only **WALLCUT** primary-ray plane in shade.comp + shade.metal
+     (GI-neutral by construction; both twins ported in the same effort). Storey FLOORCUT
+     stays for upper floors (M3+). Legacy goldens stayed byte-identical with both planes off.
+  2. *"Walking is awkward — mouse movement"* → **LMB click-to-move**: the shell BFS-plans a
+     route over the sim's own grid and feeds one Move per tick (the sim still owns the
+     cadence; traces stay pure Move/Steal commands). Click the loot to walk-and-lift; a live
+     stop turns the panel's outs into clickable buttons (a queued route can never auto-flee).
+     WASD remapped to SCREEN-true staircase directions (W = visually up).
+  3. *"HUD with a Fallout-1/2 log"* → full-width bottom bar: word-wrapped event log with
+     day-clock prefixes (newest bright, older dimmed) beside the status cluster
+     (clock/phase, coin, load, exposure, HEAT); scene-setting + controls as opening lines.
+  Golden `thief` re-pinned (roofs + bar in frame); sim untouched — oracles unchanged.
 
 ## Decision log
 

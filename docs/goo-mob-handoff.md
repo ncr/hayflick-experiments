@@ -631,3 +631,23 @@ still overrides). No new shader work — the M2 thief scene is all shared
 plumbing (instances, stamps, point lights, sky_dim), so the only NEW Metal
 duty on top of the existing tower debt is pinning
 `golden-metal/thief.png` on the M2 Pro (after the tower set).
+
+**2026-07-09 feel-round update — the cut is now TWO planes and the twins
+both changed.** Owner playtest: "no dollhouse effect". The fix adds an
+occluder-only **WALLCUT** plane to the FLOORCUT block in `shade.comp` AND
+`shade.metal` (ported line-for-line in the same effort, per the lockstep
+rule): only `mats[..].pad == 1` hits (walls/roofs/lintels) at/above the
+plane dissolve, with the ROI loop's far-face pass-through (`h.t <= 0.6`)
+so slabs STRADDLING the plane don't render their inner back face as a dark
+band. Push plumbing: GLSL grew `misc3` (x = wallcut 16.16); Metal reuses
+its existing `misc3` (x = storey cut as before, **y = wallcut**);
+`FramePresent.wall_cut`; `WALLCUT` env override. Game wiring: `SCENE=thief`
+storey cut only for floor > 0 (ground-floor roofs now RENDER outdoors) and
+wallcut = `2.5·floor + 1.0` while the player stands on a Room cell. The
+Vulkan legacy goldens stayed BYTE-IDENTICAL with both planes off; `thief`
+was re-pinned (roofs + the new Fallout HUD bar in frame). **Metal duty is
+unchanged in shape but now includes real shader verification:** the Mac
+session must byte-pass the legacy Metal set, then pin
+`golden-metal/{tower,tower_cut,thief}.png` — and eyeball one indoor thief
+frame (walk through the front door) to confirm the MSL wallcut twin
+behaves before pinning.

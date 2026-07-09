@@ -89,6 +89,10 @@ pub struct FramePresent<'a> {
     /// hit dissolves (storeys above the player's floor). Packed via
     /// `rt_probe::cut16`. `None` → no cut (bit-identical to pre-cut frames).
     pub cut_y: Option<f32>,
+    /// WALLCUT indoor cutaway: world-Y plane above which OCCLUDER hits
+    /// (walls/roofs/lintels) dissolve — the sill-height dollhouse while the
+    /// player is indoors. Bodies/props keep full height. `None` → off.
+    pub wall_cut: Option<f32>,
     /// Record the clip down-blit (`out` → exact game px) into this frame's
     /// command buffer; the backend must hold a capture target this size.
     pub capture: bool,

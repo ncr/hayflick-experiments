@@ -44,7 +44,7 @@ struct Push {
     roi2: [f32; 4],      // projected player px xy + disc falloff px + enabled (>0.5)
     look: [f32; 4],      // spec strength, bump strength, bump scale, gloss (look knobs)
     look2: [f32; 4],     // gi scale, matPoster levels, aoDither, reflStrength
-    misc3: [i32; 4],     // floorCutY 16.16 fixed point (INT_MAX = off), _, _, _
+    misc3: [i32; 4],     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), _, _
 }
 
 // `GooPush` + the shared goo look/limit constants + the `build_goo_push`
@@ -778,7 +778,7 @@ impl RenderBackend for MetalBackend {
             roi2: roi.roi2,
             look: [fp.spec, fp.bump, fp.bump_scale, fp.gloss],
             look2: [fp.gi, fp.matq, fp.ao_dither, fp.refl],
-            misc3: [rt_probe::render::cut16(fp.cut_y), 0, 0, 0],
+            misc3: [rt_probe::render::cut16(fp.cut_y), rt_probe::render::cut16(fp.wall_cut), 0, 0],
         };
         let rs = self.rs(fp.zoom);
         let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);

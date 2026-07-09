@@ -303,7 +303,10 @@ impl ApplicationHandler for App {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
                         if !r.menu_click(c) {
-                            if r.game.lmb_shoots {
+                            if r.thief.is_some() {
+                                // thief: stop-panel buttons, else click-to-move
+                                r.thief_click(c);
+                            } else if r.game.lmb_shoots {
                                 // arena: LMB fires (WASD walks). Fire now for
                                 // click responsiveness AND latch held-state —
                                 // the frame loop keeps re-pushing Shoot at the

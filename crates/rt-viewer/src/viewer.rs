@@ -523,7 +523,10 @@ impl Viewer {
             // SCENE=thief wires the FLOORCUT reveal to the LIVE player storey
             // (M0 spike D's "deterministic function of player floor", landed);
             // an explicit CUT env still wins for framing experiments.
-            cut_y: self.cfg.game.cut.or_else(|| self.thief.as_ref().map(|t| t.cut_y())),
+            cut_y: self.cfg.game.cut.or_else(|| self.thief.as_ref().and_then(|t| t.cut_y())),
+            // ... and the WALLCUT sill-height cutaway to "is the player
+            // indoors" — the module-11 dollhouse: buildings open when entered.
+            wall_cut: self.cfg.game.wall_cut.or_else(|| self.thief.as_ref().and_then(|t| t.wall_cut())),
             capture,
         };
         let ok = self.backend.render_present(&fp);
@@ -866,7 +869,12 @@ impl Viewer {
         // the marker pillar is 1.3 wu tall, so projecting the feet (y≈0)
         // puts the disc centre low on screen. +0.65 wu = the pillar's
         // visual centre, so the cutout sits over the player, not under it.
-        let center = self.game.snap.player_pos + glam::Vec3::new(0.0, 0.65, 0.0);
+        // SCENE=thief: the live body is the THIEF loop's eased player — the
+        // house mirror's player_pos is the static spawn on this scene, and a
+        // spawn-pinned disc means no reveal at all once you walk behind a
+        // building (feel round 1).
+        let anchor = self.thief.as_ref().map(|t| t.cam_target()).unwrap_or(self.game.snap.player_pos);
+        let center = anchor + glam::Vec3::new(0.0, 0.65, 0.0);
         // ROI_XRAY=contour adds faint wall-silhouette lines ON TOP of the ghost
         // stipple. Encoded by NEGATING the ghost cap: the shader reads roi2.w<0
         // as hybrid mode and |roi2.w| as the coverage cap, so the stipple stays.

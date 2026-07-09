@@ -556,6 +556,7 @@ impl RenderBackend for VulkanBackend {
         push.look2 = [fp.gi, fp.matq, fp.ao_dither, fp.refl];
         push.refl_px = fp.refl_px;
         push.cut16 = rt_probe::render::cut16(fp.cut_y);
+        push.misc3[0] = rt_probe::render::cut16(fp.wall_cut);
         if let Some(roi) = &fp.roi {
             let rp = rt_probe::roi_push(&fp.fs.cam, low_w as i32, low_h as i32, roi.player, roi.radius_px, roi.falloff_px, roi.ghost);
             push.roi = rp.roi;

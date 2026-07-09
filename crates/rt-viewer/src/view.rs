@@ -245,6 +245,23 @@ impl Viewer {
         ViewXform { target: self.view.target, yaw_off_deg: 90.0 * q as f32, pan: self.view.pan, render_scale: self.rs(), low, vis }
     }
 
+    /// LMB in SCENE=thief: a live stop's panel buttons answer first; any
+    /// other click unprojects to the ground and becomes a click-to-move
+    /// plan (window px never cross the game boundary — the plan feeds pure
+    /// Move/Steal commands).
+    pub fn thief_click(&mut self, win: Vec2) {
+        let ext = self.backend.extent();
+        let rs = self.rs() as u32;
+        let x = self.pick_xform();
+        let Some(t) = self.thief.as_mut() else { return };
+        if t.stop_click(win, ext, rs) {
+            return;
+        }
+        if let Some(g) = window_px_to_ground(win, &x) {
+            t.click_ground(g);
+        }
+    }
+
     /// LMB in a player scene → Command::Click: the window pixel unprojects
     /// into a world pick ray + optional ground point HERE (window px never
     /// cross the game boundary); door-vs-walk resolution happens in-game.

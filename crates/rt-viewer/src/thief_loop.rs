@@ -1,36 +1,48 @@
-//! The thief sim side of the viewer (M2 playable slice): a fixed-tick
-//! `ThiefGame` loop + the snapshot→renderer adapter for SCENE=thief. The
-//! twin of `sim.rs::GameLoop` for the thief `Simulation` — the house
-//! GameLoop still exists on this scene as an idle light-join mirror; all
-//! play routes here.
+//! The thief sim side of the viewer (M2 playable slice + feel round): a
+//! fixed-tick `ThiefGame` loop + the snapshot→renderer adapter for
+//! SCENE=thief. The twin of `sim.rs::GameLoop` for the thief `Simulation` —
+//! the house GameLoop still exists on this scene as an idle light-join
+//! mirror; all play routes here.
 //!
 //! Presentation choices, all sim-blind:
 //! - the sim steps whole cells at its own cadence; the shell EASES bodies
 //!   between cells over a few ticks (tick-clocked, so DEMO captures ease
 //!   identically),
+//! - MOUSE-first controls (owner feel round): LMB picks a ground cell, the
+//!   shell BFS-plans a route over the sim's own grid and feeds one Move per
+//!   tick — the sim still owns the cadence, and a replay trace stays pure
+//!   Move/Steal commands. Clicking the loot walks there and lifts it; a
+//!   live stop turns the 05c outs into buttons (and CANCELS any plan, so a
+//!   queued route can never auto-flee a stop). WASD stays as SCREEN-relative
+//!   nudging: screen-up walks visually up the iso staircase,
 //! - the stealth read is stamps (docs/spec/11): per-NPC alertness bubbles,
-//!   the status plate (clock/coin/load/exposure), the scrolling event LOG
-//!   (the sim's narrated stream, verbatim), and the stop panel with the
-//!   05c outs. Stamps burn into SHOT/DEMO captures.
+//!   a Fallout-1/2-style full-width bottom bar — the narrated event LOG
+//!   with day-clock prefixes beside the status cluster (clock / coin /
+//!   load / exposure / heat) — and the stop panel. Stamps burn into
+//!   SHOT/DEMO captures: they are the game picture, not shell UI.
 
 use crate::backend::Stamp;
+use crate::game_scene::DOOR_LEAF_H;
 use crate::menu::{mrect, mtext};
-use crate::thief_scene::{cell_world, cut_for_floor, door_leaf_at, door_runs, player_run_for_look, DoorRun};
-use glam::{Mat4, Vec3};
-use house_game::thief::grid::{Dir, DoorState, EdgeKind};
+use crate::thief_scene::{cell_world, cut_for_floor, door_leaf_at, door_runs, player_run_for_look, DoorRun, STOREY_H, WALL_CUT_H};
+use glam::{Mat4, Vec2, Vec3};
+use house_game::thief::grid::{CellKind, CellPos, Dir, DoorState, EdgeKind, Passage};
 use house_game::thief::log::narrate;
 use house_game::thief::sim::{
-    Command, DayPhase, MoveMode, NpcState, ThiefGame, ThiefSnapshot, ThiefSpec, BRIBE_COST,
-    DARK_LIGHT, DIM_LIGHT, STOP_DECIDE_TICKS,
+    day_minute, Command, DayPhase, MoveMode, NpcState, StopChoice, ThiefGame, ThiefSnapshot,
+    ThiefSpec, BRIBE_COST, DARK_LIGHT, DIM_LIGHT, STOP_DECIDE_TICKS,
 };
 use house_game::thief::trace::parse_trace;
 use house_game::TICK_DT;
 use iso_core::{world_to_window_px, ViewXform};
 use rt_probe::{Config, InstanceKey, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, Simulation, Tick};
+use std::collections::VecDeque;
 
 /// Ticks a body glides between cells (presentation-only, tick-clocked).
-const EASE_TICKS: f32 = 7.0;
+/// Slightly LONGER than the walk cadence (8): consecutive eases overlap, so
+/// the 4-dir staircase reads as a rounded glide instead of a hard zigzag.
+const EASE_TICKS: f32 = 9.0;
 
 const BG: u32 = 0x14141a;
 const BORDER: u32 = 0x565664;
@@ -39,6 +51,7 @@ const RED: u32 = 0xe86858;
 const GREEN: u32 = 0x8fd08f;
 const INK: u32 = 0xd0d0c0;
 const DIMTX: u32 = 0x9a9aa2;
+const FAINT: u32 = 0x6e6e78;
 
 /// A body easing from one cell centre to the next.
 #[derive(Clone, Copy)]
@@ -65,6 +78,15 @@ impl Ease {
     }
 }
 
+/// A click-to-move route over the sim grid: the remaining cells in walk
+/// order, plus whether arriving should lift the loot. Pure shell state —
+/// the sim only ever sees the per-tick Move/Steal commands it produces.
+struct Plan {
+    cells: Vec<CellPos>,
+    next: usize,
+    steal: bool,
+}
+
 pub struct ThiefLoop {
     pub fixed: FixedLoop,
     pub queue: InputQueue<Command>,
@@ -82,10 +104,18 @@ pub struct ThiefLoop {
     pub yaw_q: u32,
     /// Live outfit toggle state (O): hooded-green ⇄ bare-brown.
     pub outfit_alt: bool,
-    /// The prose event log (module 11) — narrated sim events, in order.
+    /// The prose event log (module 11) — narrated sim events with a
+    /// day-clock prefix, in order.
     pub log: Vec<String>,
     seen_events: usize,
     doors: Vec<DoorRun>,
+    /// The live click-to-move route (None = keyboard/no movement).
+    plan: Option<Plan>,
+    /// Diagonal staircase phase: flips on every LANDED step, so a held
+    /// screen-diagonal alternates axes by actual progress (tick parity
+    /// fails here — the walk cadence is even, so every accepted move
+    /// would land on the same parity and the diagonal would degenerate).
+    stair: bool,
     /// Eased world positions: [player, npcs in snapshot order...].
     ease: Vec<Ease>,
     /// Presentation facing for the player body (radians about Y).
@@ -102,7 +132,7 @@ impl ThiefLoop {
         let mut ease = vec![Ease::pinned(cell_world(snap.player))];
         ease.extend(snap.npcs.iter().map(|n| Ease::pinned(cell_world(n.pos))));
         let p0 = cell_world(snap.player);
-        ThiefLoop {
+        let mut t = ThiefLoop {
             fixed: FixedLoop::new(TICK_DT),
             queue: InputQueue::new(),
             sim,
@@ -118,10 +148,17 @@ impl ThiefLoop {
             log: Vec::new(),
             seen_events: 0,
             doors,
+            plan: None,
+            stair: false,
             ease,
             face: 0.0,
             last_cam: p0,
-        }
+        };
+        // Scene-setting + controls, as the log's opening lines (11: the log
+        // is the primary screen — no modal tutorial).
+        t.log_line(0, "Dockside, before dawn. The counting-house strongbox is the prize.".into());
+        t.log_line(0, "Click to move. SHIFT run, CTRL sneak. SPACE steal, G drop, O coat.".into());
+        t
     }
 
     pub fn push(&mut self, c: Command) {
@@ -132,28 +169,43 @@ impl ThiefLoop {
         self.tick.0 as f32 * TICK_DT
     }
 
-    /// Held keys → one grid step direction (screen-relative, rotated to the
-    /// camera quarter; both axes held alternates by tick parity — a clean
-    /// staircase diagonal on the cell grid).
+    /// Append a narrated line with its day-clock prefix.
+    fn log_line(&mut self, tick: u64, line: String) {
+        let m = day_minute(tick, self.spec.day_len_ticks);
+        self.log.push(format!("{:02}:{:02}  {line}", m / 60, m % 60));
+    }
+
+    /// Held keys → one grid step direction. SCREEN-relative for real: on the
+    /// 2:1 iso lattice screen-right is world (+X,-Z) and screen-down is
+    /// (+X,+Z), so a single held key wants BOTH axes — walked as a staircase
+    /// that alternates on every landed step (`stair`). Two adjacent keys
+    /// cancel to a pure axis (screen up-right = world -Z). The result is
+    /// rotated to the camera quarter so q/e turns keep W meaning "up".
     fn held_dir(&self) -> (i16, i16) {
         let sx = self.held[3] as i16 - self.held[2] as i16; // screen right
         let sy = self.held[1] as i16 - self.held[0] as i16; // screen down
-        let (mut dx, mut dz) = if sx != 0 && sy != 0 {
-            if self.tick.0.is_multiple_of(2) {
-                (sx, 0)
-            } else {
-                (0, sy)
-            }
-        } else {
-            (sx, sy)
-        };
-        // rotate screen axes onto world grid axes by the camera quarter
-        for _ in 0..(self.yaw_q % 4) {
-            let (nx, nz) = (dz, -dx);
-            dx = nx;
-            dz = nz;
+        if sx == 0 && sy == 0 {
+            return (0, 0);
         }
-        (dx, dz)
+        let (mut wx, mut wz) = (sx + sy, sy - sx);
+        // rotate world axes by the camera quarter
+        for _ in 0..(self.yaw_q % 4) {
+            let (nx, nz) = (wz, -wx);
+            wx = nx;
+            wz = nz;
+        }
+        let (cx, cz) = (wx.signum(), wz.signum());
+        match (cx, cz) {
+            (0, z) => (0, z),
+            (x, 0) => (x, 0),
+            (x, z) => {
+                if self.stair {
+                    (x, 0)
+                } else {
+                    (0, z)
+                }
+            }
+        }
     }
 
     fn mode(&self) -> MoveMode {
@@ -166,15 +218,138 @@ impl ThiefLoop {
         }
     }
 
+    // ---- click-to-move (mouse-first controls) ---------------------------
+
+    /// LMB on the ground: plan a BFS route to the picked cell and follow it.
+    /// Clicking the loot cell walks there and lifts it on arrival; clicking
+    /// the player's own cell lifts loot underfoot or just cancels the plan.
+    pub fn click_ground(&mut self, g: Vec3) {
+        if self.snap.stop.is_some() {
+            return; // a live stop is answered with the panel, never a walk
+        }
+        let (w, h) = (self.sim.grid().w, self.sim.grid().h);
+        let (cx, cz) = (g.x.floor() as i32, g.z.floor() as i32);
+        if cx < 0 || cz < 0 || cx >= w as i32 || cz >= h as i32 {
+            return;
+        }
+        let cell = CellPos::new(cx as i16, cz as i16, self.snap.player.floor);
+        if self.sim.grid().cell(cell).kind == CellKind::Void {
+            return;
+        }
+        let steal = self.snap.loot_pos == Some(cell);
+        if cell == self.snap.player {
+            self.plan = None;
+            if steal {
+                self.push(Command::Steal);
+            }
+            return;
+        }
+        if let Some(cells) = self.bfs(self.snap.player, cell) {
+            self.plan = Some(Plan { cells, next: 0, steal });
+        }
+    }
+
+    /// Shortest 4-dir route over the sim's own grid (deterministic scan
+    /// order). Passable = an open edge or ANY door (the sim auto-opens
+    /// closed doors as you pass — 03's v0 movement rule); shut windows,
+    /// locks and walls block. Returns the cells to visit AFTER `from`.
+    fn bfs(&self, from: CellPos, to: CellPos) -> Option<Vec<CellPos>> {
+        let g = self.sim.grid();
+        let (w, h) = (g.w as i32, g.h as i32);
+        let idx = |p: CellPos| (p.z as i32 * w + p.x as i32) as usize;
+        let mut prev: Vec<Option<CellPos>> = vec![None; (w * h) as usize];
+        let mut seen = vec![false; (w * h) as usize];
+        let mut q = VecDeque::new();
+        seen[idx(from)] = true;
+        q.push_back(from);
+        'search: while let Some(p) = q.pop_front() {
+            for dir in [Dir::Xp, Dir::Xm, Dir::Zp, Dir::Zm] {
+                let passable = match g.passage(p, dir) {
+                    Passage::Free => true,
+                    Passage::OpenFirst => matches!(g.edge(p, dir), EdgeKind::Door(_)),
+                    _ => false,
+                };
+                if !passable {
+                    continue;
+                }
+                let n = p.step(dir);
+                if n.x < 0 || n.z < 0 || n.x as i32 >= w || n.z as i32 >= h || seen[idx(n)] {
+                    continue;
+                }
+                seen[idx(n)] = true;
+                prev[idx(n)] = Some(p);
+                if n == to {
+                    break 'search;
+                }
+                q.push_back(n);
+            }
+        }
+        if !seen[idx(to)] {
+            return None;
+        }
+        let mut cells = vec![to];
+        let mut cur = to;
+        while let Some(p) = prev[idx(cur)] {
+            if p == from {
+                break;
+            }
+            cells.push(p);
+            cur = p;
+        }
+        cells.reverse();
+        Some(cells)
+    }
+
+    /// Feed the live plan one tick: advance past reached cells, push the
+    /// next Move (the sim's cadence drops early ones), fire the arrival
+    /// steal. A live stop cancels the plan outright — bolting out of a stop
+    /// is the FLEE answer (05c) and must never happen by queued autopilot.
+    fn plan_step(&mut self) {
+        if self.plan.is_none() {
+            return;
+        }
+        let s = self.sim.snapshot();
+        if s.stop.is_some() {
+            self.plan = None;
+            return;
+        }
+        let plan = self.plan.as_mut().unwrap();
+        while plan.next < plan.cells.len() && plan.cells[plan.next] == s.player {
+            plan.next += 1;
+        }
+        if plan.next == plan.cells.len() {
+            if plan.steal {
+                self.queue.push(self.tick, Command::Steal);
+            }
+            self.plan = None;
+            return;
+        }
+        let tgt = plan.cells[plan.next];
+        let (dx, dz) = (tgt.x - s.player.x, tgt.z - s.player.z);
+        if dx.abs() + dz.abs() != 1 {
+            // knocked off the route (shouldn't happen in v0) — replan once
+            let goal = *plan.cells.last().unwrap();
+            let steal = plan.steal;
+            self.plan = self.bfs(s.player, goal).map(|cells| Plan { cells, next: 0, steal });
+            return;
+        }
+        let mode = self.mode();
+        self.queue.push(self.tick, Command::Move { dx: dx.signum(), dz: dz.signum(), mode });
+    }
+
     /// Advance the accumulator and run the due ticks; held keys synthesize
-    /// one Move per tick (the SIM owns the step cadence and drops extras).
+    /// one Move per tick (keyboard overrides any mouse plan), else the plan
+    /// feeds (the SIM owns the step cadence and drops extras).
     pub fn run_due(&mut self, real_dt: f32) -> u32 {
         let n = self.fixed.advance(real_dt);
         for _ in 0..n {
             let (dx, dz) = self.held_dir();
             if (dx, dz) != (0, 0) {
+                self.plan = None;
                 let mode = self.mode();
                 self.queue.push(self.tick, Command::Move { dx, dz, mode });
+            } else {
+                self.plan_step();
             }
             let cmds = self.queue.drain_for(self.tick);
             self.sim.tick(self.tick, &cmds);
@@ -226,11 +401,21 @@ impl ThiefLoop {
         }
         self.cmds_prefix = self.tick.0;
         self.refresh();
+        // A replay prefix isn't gameplay to animate: snap every body to its
+        // sim cell (otherwise a SHOT right after the prefix — which never
+        // ticks — captures the eases mid-glide at their pre-replay cells).
+        for e in &mut self.ease {
+            *e = Ease::pinned(e.to);
+        }
         println!("CMDS(thief): {n} commands over {ticks} ticks — state {:016x}", self.sim.state_hash());
     }
 
     fn refresh(&mut self) {
+        let prev_cell = self.snap.player;
         self.snap = self.sim.snapshot();
+        if self.snap.player != prev_cell {
+            self.stair = !self.stair; // staircase axis flips per landed step
+        }
         let now = self.tick.0;
         let p = cell_world(self.snap.player);
         let prev_to = self.ease[0].to;
@@ -245,9 +430,10 @@ impl ThiefLoop {
             self.ease[1 + i].retarget(cell_world(n.pos), now);
         }
         // narrate the new events into the log (the module-11 projection)
-        for s in &self.sim.events[self.seen_events..] {
-            if let Some(line) = narrate(&self.spec, s) {
-                self.log.push(line);
+        for i in self.seen_events..self.sim.events.len() {
+            let s = self.sim.events[i];
+            if let Some(line) = narrate(&self.spec, &s) {
+                self.log_line(s.tick, line);
             }
         }
         self.seen_events = self.sim.events.len();
@@ -258,9 +444,23 @@ impl ThiefLoop {
         self.ease[0].at(self.tick.0)
     }
 
-    /// The live FLOORCUT plane: a pure function of the player's storey.
-    pub fn cut_y(&self) -> f32 {
-        cut_for_floor(self.snap.player.floor)
+    /// Is the player inside a building? Drives the module-11 dollhouse.
+    pub fn indoors(&self) -> bool {
+        matches!(self.sim.grid().cell(self.snap.player).kind, CellKind::Room(_))
+    }
+
+    /// The FLOORCUT storey plane: only above ground level (upper storeys of
+    /// M3+ towns come off as a cap; the ground storey keeps its roofs so
+    /// buildings read as buildings from the street).
+    pub fn cut_y(&self) -> Option<f32> {
+        (self.snap.player.floor > 0).then_some(cut_for_floor(self.snap.player.floor))
+    }
+
+    /// The WALLCUT sill-height cutaway: on while the player is indoors —
+    /// every occluder wall drops to sill height so interiors read like a
+    /// dollhouse. A pure function of the player's cell (11: golden-testable).
+    pub fn wall_cut(&self) -> Option<f32> {
+        self.indoors().then_some(STOREY_H * self.snap.player.floor as f32 + WALL_CUT_H)
     }
 
     /// Sky/sun scale for the sim's day phase — the renderer visualizes the
@@ -310,13 +510,52 @@ impl ThiefLoop {
             };
             out.push((k, m));
         }
+        // Door leaves aren't occluders (the WALLCUT keeps them whole). While
+        // indoors a CLOSED leaf crushes to the cut height — a full-height
+        // slab sticking out of a sill-high wall reads as a glitch, not a
+        // door — but an OPEN leaf stands inside the room like furniture and
+        // keeps its height.
+        let leaf_squash = if self.indoors() {
+            Mat4::from_scale(Vec3::new(1.0, WALL_CUT_H / DOOR_LEAF_H, 1.0))
+        } else {
+            Mat4::IDENTITY
+        };
         for (i, d) in self.doors.iter().enumerate() {
             if let Some(k) = get(&format!("tdoor_{i}")) {
                 let open = matches!(self.sim.grid().edge(d.cell, d.dir), EdgeKind::Door(DoorState::Open));
-                out.push((k, door_leaf_at(d, if open { 1.75 } else { 0.0 })));
+                let m = if open {
+                    door_leaf_at(d, 1.75)
+                } else {
+                    door_leaf_at(d, 0.0) * leaf_squash
+                };
+                out.push((k, m));
             }
         }
         out
+    }
+
+    // ---- the stop panel (05c), shared by draw + click hit-test ----------
+
+    /// LMB while a stop is live: answer with the panel buttons. Swallows the
+    /// click either way (a stray ground click must not read as anything).
+    pub fn stop_click(&mut self, win: Vec2, ext: (u32, u32), rs: u32) -> bool {
+        if self.snap.stop.is_none() {
+            return false;
+        }
+        let (ox, oy, bs) = stop_origin(ext.0 as i64, ext.1 as i64, rs);
+        for (i, (bx, by, bw, bh)) in stop_buttons().into_iter().enumerate() {
+            let (x0, y0) = (ox + bx as i64 * bs as i64, oy + by as i64 * bs as i64);
+            let (x1, y1) = (x0 + bw as i64 * bs as i64, y0 + bh as i64 * bs as i64);
+            if (win.x as i64) >= x0 && (win.x as i64) < x1 && (win.y as i64) >= y0 && (win.y as i64) < y1 {
+                let choice = STOP_CHOICES[i];
+                if choice == StopChoice::Bribe && self.snap.coin < BRIBE_COST {
+                    return true; // greyed: purse too light
+                }
+                self.push(Command::Stop(choice));
+                return true;
+            }
+        }
+        true
     }
 
     // ---- the stealth-read HUD (stamps; ride into SHOT/DEMO captures) ----
@@ -339,80 +578,143 @@ impl ThiefLoop {
             let y = (win.y as i64 - h as i64 * s).clamp(2, ext_h - h as i64 * s - 2);
             out.push(Stamp { pix, w, h, x, y, scale: rs });
         }
-        // status plate: clock/phase/coin, load + exposure flags, scrutiny bar
-        {
-            const W: i32 = 168;
-            const H: i32 = 42;
-            let mut c = plate(W, H, BG, BORDER);
-            let phase = match self.snap.phase {
-                DayPhase::Dawn => "DAWN",
-                DayPhase::Day => "DAY",
-                DayPhase::Dusk => "DUSK",
-                DayPhase::Night => "NIGHT",
-            };
-            let row1 = format!("{:02}:{:02} {}  {}C", self.snap.day_min / 60, self.snap.day_min % 60, phase, self.snap.coin);
-            mtext(&mut c, W, 4, 4, &row1, INK);
-            let cap = self.spec.carry_capacity.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
-            let light = if self.snap.hidden {
-                "HIDDEN"
-            } else if self.snap.light < DARK_LIGHT {
-                "DARK"
-            } else if self.snap.light < DIM_LIGHT {
-                "DIM"
-            } else {
-                "LIT"
-            };
-            let lcol = match light {
-                "HIDDEN" | "DARK" => GREEN,
-                "DIM" => AMBER,
-                _ => RED,
-            };
-            mtext(&mut c, W, 4, 15, &format!("LOAD {}/{cap}", self.snap.load), DIMTX);
-            mtext(&mut c, W, W - 4 - light.len() as i32 * 8, 15, light, lcol);
-            mtext(&mut c, W, 4, 28, "HEAT", DIMTX);
-            let track = W - 44;
-            let frac = (self.snap.scrutiny.clamp(0, 60) as f32 / 60.0 * track as f32) as i32;
-            mrect(&mut c, W, 38, 29, track, 6, 0x30303a);
-            mrect(&mut c, W, 38, 29, frac, 6, if self.snap.scrutiny >= 15 { RED } else { GREEN });
-            out.push(Stamp { pix: c, w: W, h: H, x: 6, y: 6, scale: fit_scale(W, rs, ext_w) });
-        }
-        // the event LOG (module 11): the last five narrated lines
-        if !self.log.is_empty() {
-            const COLS: i32 = 58;
-            const W: i32 = 8 + COLS * 8;
-            let n = self.log.len().min(5);
-            let h = 8 + n as i32 * 10;
-            let mut c = plate(W, h, BG, BORDER);
-            for (row, line) in self.log[self.log.len() - n..].iter().enumerate() {
-                let last = row == n - 1;
-                let txt = sanitize(line, COLS as usize);
-                mtext(&mut c, W, 4, 4 + row as i32 * 10, &txt, if last { INK } else { DIMTX });
+        // the click-to-move destination marker: a pulsing tag over the goal
+        // cell ("$" when the goal is the loot — arriving lifts it)
+        if let Some(plan) = &self.plan {
+            let goal = *plan.cells.last().unwrap();
+            let accent = if (now / 8).is_multiple_of(2) { AMBER } else { INK };
+            let (pix, w, h) = bubble(if plan.steal { "$" } else { ">" }, accent);
+            let win = world_to_window_px(cell_world(goal) + Vec3::new(0.0, 0.55, 0.0), xf);
+            if win.x > -60.0 && win.y > -60.0 && win.x < ext_w as f32 + 60.0 && win.y < ext_h as f32 + 60.0 {
+                let x = (win.x as i64 - (w as i64 * s) / 2).clamp(2, ext_w - w as i64 * s - 2);
+                let y = (win.y as i64 - h as i64 * s).clamp(2, ext_h - h as i64 * s - 2);
+                out.push(Stamp { pix, w, h, x, y, scale: rs });
             }
-            let bs = fit_scale(W, rs, ext_w);
-            out.push(Stamp { pix: c, w: W, h, x: 6, y: ext_h - h as i64 * bs as i64 - 6, scale: bs });
         }
-        // the stop panel (05c): the guard's question and your outs
+        // the Fallout-style bottom bar: event LOG left, status cluster right
+        out.push(self.bottom_bar(ext_w, ext_h, rs));
+        // the stop panel (05c): the guard's question and your outs as buttons
         if let Some(stop) = self.snap.stop {
-            const W: i32 = 288;
-            const H: i32 = 46;
-            let mut c = plate(W, H, 0x1a1016, RED);
-            mrect(&mut c, W, 1, 1, W - 2, 1, RED);
-            mtext(&mut c, W, (W - 10 * 8) / 2, 5, "STAND FAST", RED);
-            let can_pay = self.snap.coin >= BRIBE_COST;
-            mtext(&mut c, W, 8, 18, "1 BLUFF  2 BRIBE  3 SUBMIT  4 RUN", INK);
-            if !can_pay {
-                mtext(&mut c, W, 8 + 9 * 8, 18, "2 BRIBE", 0x565664); // greyed: purse too light
-            }
-            let track = W - 16;
-            let frac = (stop.ticks_left as f32 / STOP_DECIDE_TICKS as f32 * track as f32) as i32;
-            mrect(&mut c, W, 8, 34, track, 5, 0x30303a);
-            mrect(&mut c, W, 8, 34, frac, 5, AMBER);
-            let bs = fit_scale(W, rs, ext_w);
-            let x = (ext_w - W as i64 * bs as i64) / 2;
-            out.push(Stamp { pix: c, w: W, h: H, x, y: ext_h / 4, scale: bs });
+            let (pix, w, h) = self.stop_panel(stop.ticks_left);
+            let (ox, oy, bs) = stop_origin(ext_w, ext_h, rs);
+            out.push(Stamp { pix, w, h, x: ox, y: oy, scale: bs });
         }
         out
     }
+
+    /// The full-width bottom bar (module 11's readable event log, locked as
+    /// Fallout-1/2 style): last log lines word-wrapped with day-clock
+    /// prefixes; the status cluster (clock/phase, coin, load, exposure,
+    /// heat) boxed on the right.
+    fn bottom_bar(&self, ext_w: i64, ext_h: i64, rs: u32) -> Stamp {
+        let mut bs = rs.max(1);
+        while bs > 1 && ext_w / (bs as i64) < 300 {
+            bs -= 1;
+        }
+        let w = (ext_w / bs as i64) as i32;
+        const H: i32 = 58;
+        const SW: i32 = 152; // status cluster width
+        let mut c = plate(w, H, BG, BORDER);
+        let sx = (w - SW).max(0);
+        mrect(&mut c, w, sx - 2, 1, 1, H - 2, BORDER);
+        // -- status cluster
+        let phase = match self.snap.phase {
+            DayPhase::Dawn => "DAWN",
+            DayPhase::Day => "DAY",
+            DayPhase::Dusk => "DUSK",
+            DayPhase::Night => "NIGHT",
+        };
+        let row1 = format!("{:02}:{:02} {}", self.snap.day_min / 60, self.snap.day_min % 60, phase);
+        mtext(&mut c, w, sx + 6, 5, &row1, INK);
+        let coin = format!("{}C", self.snap.coin);
+        mtext(&mut c, w, w - 6 - coin.len() as i32 * 8, 5, &coin, AMBER);
+        let cap = self.spec.carry_capacity.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+        mtext(&mut c, w, sx + 6, 18, &format!("LOAD {}/{cap}", self.snap.load), DIMTX);
+        let light = if self.snap.hidden {
+            "HIDDEN"
+        } else if self.snap.light < DARK_LIGHT {
+            "DARK"
+        } else if self.snap.light < DIM_LIGHT {
+            "DIM"
+        } else {
+            "LIT"
+        };
+        let lcol = match light {
+            "HIDDEN" | "DARK" => GREEN,
+            "DIM" => AMBER,
+            _ => RED,
+        };
+        mtext(&mut c, w, w - 6 - light.len() as i32 * 8, 18, light, lcol);
+        mtext(&mut c, w, sx + 6, 33, "HEAT", DIMTX);
+        let track = SW - 50;
+        let frac = (self.snap.scrutiny.clamp(0, 60) as f32 / 60.0 * track as f32) as i32;
+        mrect(&mut c, w, sx + 42, 34, track, 6, 0x30303a);
+        mrect(&mut c, w, sx + 42, 34, frac, 6, if self.snap.scrutiny >= 15 { RED } else { GREEN });
+        // -- the event log (newest line bright, older lines dimmed)
+        let cols = (((sx - 12) / 8).max(10)) as usize;
+        const ROWS: usize = 5;
+        let mut rows: Vec<(String, bool)> = Vec::new();
+        'gather: for (i, line) in self.log.iter().enumerate().rev() {
+            let newest = i + 1 == self.log.len();
+            for r in wrap(line, cols).into_iter().rev() {
+                rows.push((r, newest));
+                if rows.len() == ROWS {
+                    break 'gather;
+                }
+            }
+        }
+        rows.reverse();
+        for (row, (txt, newest)) in rows.iter().enumerate() {
+            let col = if *newest { INK } else if row + 2 >= rows.len() { DIMTX } else { FAINT };
+            mtext(&mut c, w, 6, 4 + row as i32 * 10, &sanitize(txt, cols), col);
+        }
+        Stamp { pix: c, w, h: H, x: (ext_w - w as i64 * bs as i64) / 2, y: ext_h - (H as i64) * bs as i64, scale: bs }
+    }
+
+    /// The stop panel canvas: STAND FAST, four answer buttons, the patience
+    /// bar. Button rects come from `stop_buttons` — the same table the click
+    /// hit-test reads.
+    fn stop_panel(&self, ticks_left: u64) -> (Vec<u32>, i32, i32) {
+        let mut c = plate(STOP_W, STOP_H, 0x1a1016, RED);
+        mrect(&mut c, STOP_W, 1, 1, STOP_W - 2, 1, RED);
+        mtext(&mut c, STOP_W, (STOP_W - 10 * 8) / 2, 6, "STAND FAST", RED);
+        let can_pay = self.snap.coin >= BRIBE_COST;
+        for (i, (bx, by, bw, bh)) in stop_buttons().into_iter().enumerate() {
+            let enabled = STOP_CHOICES[i] != StopChoice::Bribe || can_pay;
+            let (border, ink) = if enabled { (BORDER, INK) } else { (0x3a3a44, 0x565664) };
+            mrect(&mut c, STOP_W, bx, by, bw, 1, border);
+            mrect(&mut c, STOP_W, bx, by + bh - 1, bw, 1, border);
+            mrect(&mut c, STOP_W, bx, by, 1, bh, border);
+            mrect(&mut c, STOP_W, bx + bw - 1, by, 1, bh, border);
+            let label = STOP_LABELS[i];
+            mtext(&mut c, STOP_W, bx + (bw - label.len() as i32 * 8) / 2, by + 4, label, ink);
+        }
+        let track = STOP_W - 16;
+        let frac = (ticks_left as f32 / STOP_DECIDE_TICKS as f32 * track as f32) as i32;
+        mrect(&mut c, STOP_W, 8, STOP_H - 9, track, 5, 0x30303a);
+        mrect(&mut c, STOP_W, 8, STOP_H - 9, frac, 5, AMBER);
+        (c, STOP_W, STOP_H)
+    }
+}
+
+const STOP_W: i32 = 332;
+const STOP_H: i32 = 60;
+const STOP_CHOICES: [StopChoice; 4] = [StopChoice::Bluff, StopChoice::Bribe, StopChoice::Submit, StopChoice::Flee];
+const STOP_LABELS: [&str; 4] = ["1 BLUFF", "2 BRIBE", "3 YIELD", "4 RUN"];
+
+/// The four stop buttons' local rects (x, y, w, h) inside the panel.
+fn stop_buttons() -> [(i32, i32, i32, i32); 4] {
+    let mut out = [(0, 0, 0, 0); 4];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = (8 + i as i32 * 80, 20, 76, 16);
+    }
+    out
+}
+
+/// Window-space origin + integer scale of the stop panel.
+fn stop_origin(ext_w: i64, ext_h: i64, rs: u32) -> (i64, i64, u32) {
+    let bs = fit_scale(STOP_W, rs, ext_w);
+    ((ext_w - STOP_W as i64 * bs as i64) / 2, ext_h / 4, bs)
 }
 
 fn facing_angle(d: Dir) -> f32 {
@@ -480,6 +782,31 @@ fn sanitize(s: &str, cols: usize) -> String {
         .collect()
 }
 
+/// Word-wrap `s` to `cols` columns; continuation rows are indented under
+/// the day-clock prefix.
+fn wrap(s: &str, cols: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        let sep = if cur.is_empty() || cur.ends_with(' ') { 0 } else { 1 };
+        if !cur.trim().is_empty() && cur.chars().count() + sep + word.chars().count() > cols {
+            rows.push(std::mem::take(&mut cur));
+            cur = "       ".into(); // hang under "HH:MM  "
+        }
+        if sep == 1 {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.trim().is_empty() {
+        rows.push(cur);
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
+}
+
 /// Largest integer stamp scale ≤ rs that fits (hud.rs's rule).
 fn fit_scale(w: i32, rs: u32, ext_w: i64) -> u32 {
     let mut bs = rs.max(1);
@@ -494,19 +821,35 @@ mod tests {
     use super::*;
     use house_game::thief::sim::spine_level;
 
-    /// The loop's held-key synthesis is sim-gated: holding a direction for a
-    /// second walks exactly the sim's cadence, not one cell per tick.
+    /// W means SCREEN up: the iso staircase alternates axes per LANDED step
+    /// at the sim's cadence (never one cell per tick, never a straight
+    /// grid-axis line).
     #[test]
-    fn held_walk_steps_at_the_sims_cadence() {
+    fn held_w_walks_screen_up_the_staircase_at_the_sims_cadence() {
         let mut t = ThiefLoop::new(spine_level());
-        t.held[2] = true; // walk screen-left = west at yaw 0
-        let x0 = t.snap.player.x;
-        for _ in 0..60 {
+        t.held[0] = true;
+        let (x0, z0) = (t.snap.player.x, t.snap.player.z);
+        for _ in 0..64 {
             t.run_due(TICK_DT);
         }
-        let steps = (x0 - t.snap.player.x) as i64;
-        // walk period 8 → 60 ticks fit 8 steps (ticks 0,8,…,56)
-        assert_eq!(steps, 8, "60 ticks of held walk must land 8 grid steps");
+        let (dx, dz) = (x0 - t.snap.player.x, z0 - t.snap.player.z);
+        // walk period 8 → 8 steps in 64 ticks (ticks 0,8,…,56)
+        assert_eq!(dx + dz, 8, "64 ticks of held walk must land 8 grid steps");
+        assert!((dx - dz).abs() <= 1, "screen-up must stair-step both axes: dx={dx} dz={dz}");
+    }
+
+    /// Two adjacent screen keys cancel to a pure world axis (up+right = -Z).
+    #[test]
+    fn screen_diagonal_keys_walk_a_pure_world_axis() {
+        let mut t = ThiefLoop::new(spine_level());
+        t.held[0] = true; // up
+        t.held[3] = true; // right
+        let (x0, z0) = (t.snap.player.x, t.snap.player.z);
+        for _ in 0..64 {
+            t.run_due(TICK_DT);
+        }
+        assert_eq!(t.snap.player.x, x0, "up+right is pure -Z at yaw 0");
+        assert_eq!((z0 - t.snap.player.z) as i64, 8);
     }
 
     /// Bodies ease between cells but always ARRIVE (presentation never
@@ -514,11 +857,11 @@ mod tests {
     #[test]
     fn ease_converges_on_the_sim_cell() {
         let mut t = ThiefLoop::new(spine_level());
-        t.held[2] = true;
+        t.held[0] = true;
         for _ in 0..30 {
             t.run_due(TICK_DT);
         }
-        t.held[2] = false;
+        t.held[0] = false;
         for _ in 0..30 {
             t.run_due(TICK_DT);
         }
@@ -527,9 +870,53 @@ mod tests {
         assert!((eased - truth).length() < 1e-4, "ease must settle on the cell: {eased} vs {truth}");
     }
 
+    /// The mouse loop end-to-end: click the strongbox from the street — the
+    /// plan routes through both doors (the sim opens them in passing),
+    /// arrives, and lifts the loot. Replay stays pure Move/Steal commands.
     #[test]
-    fn log_lines_render_font_safe() {
+    fn click_on_the_loot_plans_a_route_and_steals_on_arrival() {
+        let mut t = ThiefLoop::new(spine_level());
+        let loot = t.snap.loot_pos.expect("the spine starts with loot placed");
+        t.click_ground(cell_world(loot));
+        assert!(t.plan.is_some(), "the loot must be BFS-reachable from the start");
+        for _ in 0..600 {
+            t.run_due(TICK_DT);
+        }
+        assert!(t.snap.carrying, "the plan must reach the strongbox and lift it");
+        assert!(t.plan.is_none(), "a finished plan clears");
+    }
+
+    /// Clicking a wall-locked void cell or clicking during a stop is inert.
+    #[test]
+    fn invalid_clicks_leave_no_plan() {
+        let mut t = ThiefLoop::new(spine_level());
+        t.click_ground(Vec3::new(-3.0, 0.0, 5.0)); // off the map
+        assert!(t.plan.is_none());
+        t.click_ground(cell_world(t.snap.player)); // own cell: cancel, no plan
+        assert!(t.plan.is_none());
+    }
+
+    /// The stop buttons tile inside the panel without overlap — the click
+    /// hit-test and the drawn plate share this table.
+    #[test]
+    fn stop_buttons_tile_inside_the_panel() {
+        let btns = stop_buttons();
+        for (i, (x, y, w, h)) in btns.into_iter().enumerate() {
+            assert!(x >= 0 && y >= 0 && x + w <= STOP_W && y + h <= STOP_H, "button {i} inside panel");
+            if i > 0 {
+                let (px, _, pw, _) = btns[i - 1];
+                assert!(px + pw <= x, "button {i} must not overlap its neighbour");
+            }
+        }
+    }
+
+    #[test]
+    fn log_lines_render_font_safe_and_wrap_with_indent() {
         assert_eq!(sanitize("a — b ’x’", 40), "a - b 'x'");
         assert_eq!(sanitize("abcdef", 3), "abc");
+        let rows = wrap("06:12  the watch now hunts a hooded figure in green", 24);
+        assert!(rows.len() >= 2, "must wrap: {rows:?}");
+        assert!(rows[0].chars().count() <= 24);
+        assert!(rows[1].starts_with("       "), "continuation hangs under the clock prefix");
     }
 }

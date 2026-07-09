@@ -5,8 +5,11 @@
 //!
 //! Greybox discipline (owner directive): colored boxes only, every XZ dim a
 //! multiple of 0.0625 wu. One grid cell = 1 wu. Wall slabs are 0.25 wu thick,
-//! centred on the shared edge; roofs are occluding caps the FLOORCUT reveal
-//! removes (cut at `2.5·floor + 2.25`, the tower spike's proven plane).
+//! centred on the shared edge; roofs are occluding caps. Occlusion is the
+//! module-11 dollhouse: outdoors the buildings stand whole; indoors the
+//! WALLCUT plane (`WALL_CUT_H` over the storey floor) drops every occluder
+//! to sill height, and the storey FLOORCUT (`2.5·floor + 2.25`) lifts the
+//! caps above the player's floor on upper storeys.
 //!
 //! NEE discipline: the ONLY named lights are the spec lamps (conceptual point
 //! lights). Every emissive box (loot chest, lamp fixtures, player bands) is
@@ -28,6 +31,10 @@ pub const STOREY_H: f32 = 2.5;
 pub fn cut_for_floor(floor: i8) -> f32 {
     STOREY_H * floor as f32 + 2.25
 }
+/// The WALLCUT sill-height cutaway plane (relative to the storey's floor):
+/// above the window sills (0.9375), below everything a body owns — walls
+/// drop to sill height while the player is indoors, bodies stay whole.
+pub const WALL_CUT_H: f32 = 1.0;
 
 const FLOOR_TOP: f32 = 6.0 / 128.0;
 const WALL_HT: f32 = 0.125; // wall half-thickness (0.25 wu slab)
@@ -162,9 +169,11 @@ pub fn build_thief(spec: &ThiefSpec) -> Scene {
     }
 
     // ---- roofs: an occluding cap over every Room cell (merged per row).
-    // The slab sits ENTIRELY above the FLOORCUT plane (2.375..2.5, the tower
-    // spike's proven ceiling band vs the 2.25 cut) so the live reveal
-    // removes the whole cap — both faces — and interiors read from above.
+    // Visible from the street (buildings read as buildings); the WALLCUT
+    // indoor cutaway dissolves them (occluder-marked) the moment the player
+    // steps inside. The slab sits ENTIRELY above the storey FLOORCUT plane
+    // (2.375..2.5 vs the 2.25 cut) so the M3 multi-floor cap-lift removes
+    // both faces cleanly too.
     for z in 0..h {
         let mut x = 0i16;
         while x < w {
@@ -366,5 +375,15 @@ mod tests {
         assert_eq!(cut_for_floor(0), 2.25);
         assert!(cut_for_floor(0) > WALL_TOP && cut_for_floor(0) < STOREY_H);
         assert_eq!(cut_for_floor(1), 4.75);
+    }
+
+    /// The indoor cutaway plane clears the window sills (they stay, so the
+    /// cut reads as walls dropping TO sill height) and undercuts every
+    /// lintel and the wall tops (they go).
+    #[test]
+    #[allow(clippy::assertions_on_constants)] // a deliberate constants-relationship pin
+    fn wall_cut_sits_above_sills_below_lintels() {
+        assert!(WALL_CUT_H > SILL_H, "sills must survive the cutaway");
+        assert!(WALL_CUT_H < LINTEL_Y && WALL_CUT_H < WALL_TOP, "lintels and wall tops must dissolve");
     }
 }

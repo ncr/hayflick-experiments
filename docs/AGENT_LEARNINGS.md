@@ -335,3 +335,35 @@ Preventive checklist:
   pinned, and document that in the gate script header (done in `bin/golden`).
 - If you find yourself adding a compositor/WM rule to make a test pass, that is
   the smell: remove the dependency on the WM instead of constraining it.
+
+## 2026-07-09 — A parallel game loop must re-anchor EVERY player-anchored effect
+
+Context: SCENE=thief runs its own `ThiefLoop` beside the house `GameLoop`
+(which idles as a light-join mirror with no "player" run). M2 wired the
+thief loop into the camera, instances, stamps, sky and FLOORCUT — and the
+slice shipped. The owner's first playtest verdict included "it's not really
+clear what's inside": part of that was the CAVE_ROI see-through disc, which
+was still anchored on `self.game.snap.player_pos` — the *mirror's* static
+spawn point. The reveal never followed the thief, so walking behind any
+building simply hid the player, and nobody noticed for a whole milestone
+because the golden frames the spawn cell, where the stale anchor and the
+true player coincide.
+
+Root cause: integrating a parallel loop by grepping for where the old loop
+feeds the renderer finds the *data* joins (instances, lights, time), but
+player-anchored EFFECTS (reveal discs, follow cams, spotlights, audio
+listeners) read the player through scattered `self.game.snap.*` paths that
+don't fail loudly when the mirror has no player — they just produce a
+plausible constant.
+
+Fix + checklist:
+- `roi_info()` now prefers `self.thief.cam_target()`; the golden stayed
+  byte-identical (spawn == anchor there — exactly why the gate missed it).
+- When adding a parallel sim loop, enumerate every read of the old loop's
+  player (`snap.player_pos`, `snap.facing`, `has_player`…) and decide each
+  one explicitly; a golden framed at spawn cannot catch stale anchors —
+  verify with a DEMO frame mid-route, behind an occluder.
+- The CMDS replay prefix has the same class of trap: presentation state
+  (eases) seeded from tick 0 glides after the prefix, so a SHOT right after
+  `run_cmds` captured bodies at their PRE-replay cells. Snap presentation
+  state to sim truth at the end of any replay prefix.
