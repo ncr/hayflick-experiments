@@ -655,7 +655,7 @@ impl TownGrid {
                 continue; // stale entry
             }
             let p = self.pos_of_flat(idx);
-            let mut relax = |q: CellPos, cost: i32, levels: &mut Vec<i32>, heap: &mut BinaryHeap<(i32, Reverse<usize>)>| {
+            let relax = |q: CellPos, cost: i32, levels: &mut Vec<i32>, heap: &mut BinaryHeap<(i32, Reverse<usize>)>| {
                 let nl = lvl - cost;
                 if nl <= 0 {
                     return;

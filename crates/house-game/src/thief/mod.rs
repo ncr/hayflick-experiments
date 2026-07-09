@@ -8,5 +8,11 @@
 //! - [`grid`] — module 03's world model: cells hold contents, EDGES hold
 //!   barriers; stacked z-layer floors; edge-gated LOS, sound and light
 //!   propagation. Integer-first math so the logical layer is portable.
+//! - [`towngen`] — fully algorithmic district generation (streets, 10–20
+//!   multi-floor buildings, targets, gates), seeded + re-roll-until-fair.
+//! - [`fairness`] — the mandatory solvability/fairness invariants; the
+//!   generation oracle family of docs/spec/12.
 
+pub mod fairness;
 pub mod grid;
+pub mod towngen;
