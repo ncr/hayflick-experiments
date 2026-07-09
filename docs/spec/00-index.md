@@ -66,11 +66,13 @@ its eight systems gets its own detail-pass round(s) when promoted — by design 
    punishments, lair + safehouse split).
 2. **Module-10 deep-dives** — one focused round per system (fencing-network → framing → impersonation
    → blackmail → bribery → forgery → smuggling → racket), in roughly that dependency order.
-3. ~~Hand M0/M1 to an implementing session~~ — **DONE 2026-07-09** (Fable; see below). Next
-   implementation milestone: **M2 · Playable slice** (viewer integration of the thief sim, real-time
-   stealth read, confrontation ladder, event log; first is-it-fun checkpoint + the feel-tests).
+3. ~~Hand M0/M1 to an implementing session~~ — **DONE 2026-07-09** (Fable; see below).
+4. ~~M2 · Playable slice~~ — **DONE 2026-07-09** (Fable; see below). Next implementation
+   milestone: **M3 · Widen the town** (towngen district into the viewer, roles, schedules,
+   day/night routines, reactive world — 03/04/08). The M2 is-it-fun checkpoint + feel-tests
+   (day length / carry model) are OPEN for the owner: `SCENE=thief bin/run`.
 
-## Implementation status (2026-07-09 — M0 + M1 COMPLETE, commits f91806a…d203433)
+## Implementation status (2026-07-09 — M0 + M1 + M2 COMPLETE)
 
 All code in `crates/house-game/src/thief/` (headless) + the FLOORCUT renderer work; 194 tests
 green, 7 Vulkan goldens green.
@@ -95,6 +97,20 @@ green, 7 Vulkan goldens green.
   Deduction-scenario gate test + counterfactual (outfit change → no hunt) + pinned hashes +
   clips (`clips/thief_m1_spine.mp4`, `…_outfit.mp4` — mapviz projection of the sim; the
   renderer-integrated clip lands with M2).
+- **M2 playable slice** — the sim grew the whole 05c ladder (hail → approach → graded stop:
+  bluff / bribe / submit / flee; clean search CLEARS the description; catch = fine + seizure +
+  case answered; hiding breaks a chase), sim-owned movement cadence (sneak/walk/run + 07
+  encumbrance), the 04 day clock + ambient light field, coin, tick-stamped events → the
+  module-11 prose log (`thief/log.rs`), and a thief text-trace grammar (`thief/trace.rs`).
+  The two FEEL KNOBS live in `ThiefSpec` (`day_len_ticks`, `carry_capacity: Option` — `None`
+  = free-carry) per the replay-identity rule. Viewer: `SCENE=thief` builds the greybox from
+  the TownGrid (`rt-viewer/src/thief_scene.rs`), `ThiefLoop` drives play
+  (`rt-viewer/src/thief_loop.rs`) — WASD + Shift run / Ctrl sneak / Space steal / G drop /
+  O outfit / 1–4 answer a stop; FLOORCUT is wired LIVE to the player storey; sky follows the
+  sim's day phase; the stealth read is stamp HUD (alert bubbles, exposure plate, event log,
+  stop panel). Golden `thief` pinned (Vulkan; Mac must pin golden-metal), clip
+  `clips/thief_m2_slice.mp4`. Spine oracle recaptured 0x4418fc21f5bb7d05 (M2 state layout),
+  deduction oracle 0x8d78d79655e3a7f6 (`cleared_look`).
 
 ## Decision log
 

@@ -270,6 +270,28 @@ not "gold" — treat ≥0.999 as dielectric (`gltf_scene.rs`). The fix brightene
 the path-traced house ~2× (NEE finally applies); EXPOSURE/EMIT are the mood
 knobs to retune on top.
 
+## 2026-07-09 — FLOORCUT slabs must sit ENTIRELY above the cut plane
+
+Context: wiring the thief M2 scene's roofs to the live FLOORCUT reveal
+(cut plane at `2.5·floor + 2.25`).
+
+Root cause: the roof slab was authored at `WALL_TOP..WALL_TOP+0.125`
+(2.1875..2.3125) — STRADDLING the 2.25 cut. The FLOORCUT loop dissolves a
+hit only when `hit.y >= cutY`; the primary ray dissolved the slab's TOP face
+(2.3125 ≥ 2.25), re-traced, and then hit the slab's INTERIOR BOTTOM face at
+2.1875 < 2.25 — which shaded normally. The "removed" roof rendered as its
+own dark underside, lit by interior lamps (read as broken striping, worsened
+by overlapping per-row slabs).
+
+Fix + rule: geometry the cut must remove has to live ENTIRELY above the cut
+plane — both faces. The tower spike already encoded this (ceiling slab
+2.375..2.5 vs cut 2.25); the thief roofs now use the same band
+(`STOREY_H-0.125..STOREY_H`). If a cap must visually touch the wall top,
+move the CUT, not the slab, and keep `wall_top < cut < slab_bottom`.
+
+Detection signal: a "cut-away" slab that still renders, but dark and lit
+from inside the room — that is its underside, not a reveal failure.
+
 ## 2026-06-13 — bit-exact goldens silently captured at the window manager's size, not the requested one
 
 Context: `rt-probe`'s golden gate (`bin/golden`) byte-compares SHOT PNGs of the

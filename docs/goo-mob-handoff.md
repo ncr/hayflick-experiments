@@ -624,3 +624,10 @@ BEFORE pinning, same as here).
 Wiring the cut to the live player floor (cut_y = f(player storey)) lands
 with the thief-game scene integration (M2/M3) — the render path is the same
 push value, so no further shader work is expected.
+
+**2026-07-09 M2 update:** the live wiring LANDED (`SCENE=thief`:
+`ThiefLoop::cut_y()` = `2.5·floor + 2.25` → `FramePresent.cut_y`; CUT env
+still overrides). No new shader work — the M2 thief scene is all shared
+plumbing (instances, stamps, point lights, sky_dim), so the only NEW Metal
+duty on top of the existing tower debt is pinning
+`golden-metal/thief.png` on the M2 Pro (after the tower set).
