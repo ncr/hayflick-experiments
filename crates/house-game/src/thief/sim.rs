@@ -15,8 +15,12 @@
 //! direction order. `state_hash` is a portable replay oracle.
 
 use super::deduction::CaseFile;
-use super::grid::{CellField, CellPos, Dir, DoorState, EdgeKind, Passage, TownGrid, DIRS, LOUD_WALK};
-use super::perception::{ActionKind, Description, Feature, Headwear, Hue, NpcId, Observation, Source};
+use super::grid::{
+    CellField, CellPos, Dir, DoorState, EdgeKind, Passage, TownGrid, DIRS, LOUD_WALK,
+};
+use super::perception::{
+    ActionKind, Description, Feature, Headwear, Hue, NpcId, Observation, Source,
+};
 use sim_core::{Simulation, Tick};
 
 // ---------------------------------------------------------------------------
@@ -89,21 +93,41 @@ pub struct ThiefSpec {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Command {
     /// Step one cell (dx, dz ∈ {-1,0,1}, one axis only in v0).
-    Move { dx: i16, dz: i16 },
+    Move {
+        dx: i16,
+        dz: i16,
+    },
     /// Take the target if standing on it.
     Steal,
     /// Change worn layers (v0: anywhere; M4 adds witnessed-change).
-    Outfit { top: Hue, headwear: Headwear },
+    Outfit {
+        top: Hue,
+        headwear: Headwear,
+    },
     Wait,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GameEvent {
-    Stole { at: CellPos },
-    Seen { by: NpcId, action: ActionKind, salience: u8 },
-    Reported { by: NpcId, to: NpcId, count: u8 },
-    CaseOpened { id: u16 },
-    HuntStarted { guard: NpcId },
+    Stole {
+        at: CellPos,
+    },
+    Seen {
+        by: NpcId,
+        action: ActionKind,
+        salience: u8,
+    },
+    Reported {
+        by: NpcId,
+        to: NpcId,
+        count: u8,
+    },
+    CaseOpened {
+        id: u16,
+    },
+    HuntStarted {
+        guard: NpcId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +246,20 @@ impl ThiefGame {
         }
     }
 
+    /// Read access for visualization (the mapviz clip bin) — sim-internal
+    /// state stays private otherwise.
+    pub fn grid(&self) -> &TownGrid {
+        &self.grid
+    }
+
+    pub fn look(&self) -> &Description {
+        &self.look
+    }
+
+    pub fn light(&self) -> &CellField {
+        &self.light
+    }
+
     // -- systems, fixed source order --------------------------------------
 
     /// 1 · Player commands → movement, theft, outfit. Emits noise.
@@ -242,7 +280,11 @@ impl ThiefGame {
                         Passage::OpenFirst => {
                             // v0: doors open as you pass (noisier); windows too.
                             if let EdgeKind::Door(_) = self.grid.edge(self.player, dir) {
-                                self.grid.set_edge(self.player, dir, EdgeKind::Door(DoorState::Open));
+                                self.grid.set_edge(
+                                    self.player,
+                                    dir,
+                                    EdgeKind::Door(DoorState::Open),
+                                );
                             } else {
                                 continue; // shut windows stay shut for v0 movement
                             }
@@ -331,7 +373,10 @@ impl ThiefGame {
             // came closer, stepped into the light) re-registers at once —
             // staring is one memory, but a good look is a better memory.
             if let Some((t0, a0, c0)) = npc.last_obs {
-                if a0 == action && self.tick.saturating_sub(t0) < OBS_PERIOD && conf <= c0.saturating_add(4) {
+                if a0 == action
+                    && self.tick.saturating_sub(t0) < OBS_PERIOD
+                    && conf <= c0.saturating_add(4)
+                {
                     continue;
                 }
             }
@@ -345,7 +390,11 @@ impl ThiefGame {
                 salience: action.base_salience(),
                 source: Source::Direct,
             };
-            self.events.push(GameEvent::Seen { by: npc.spec.id, action, salience: obs.salience });
+            self.events.push(GameEvent::Seen {
+                by: npc.spec.id,
+                action,
+                salience: obs.salience,
+            });
             let is_guard = npc.spec.role == Role::Guard;
             let npc = &mut self.npcs[i];
             npc.last_obs = Some((self.tick, action, conf));
@@ -363,7 +412,9 @@ impl ThiefGame {
                 let had = self.cases.cases.len();
                 self.cases.ingest(obs);
                 if self.cases.cases.len() > had {
-                    self.events.push(GameEvent::CaseOpened { id: self.cases.cases[had].id });
+                    self.events.push(GameEvent::CaseOpened {
+                        id: self.cases.cases[had].id,
+                    });
                 }
                 // The 05b scrutiny rule, live: does this person match a
                 // wanted profile enough to stop them?
@@ -373,7 +424,9 @@ impl ThiefGame {
                     npc.state = NpcState::Pursue;
                     npc.alertness = 100;
                     npc.stimulus = Some(obs.at);
-                    self.events.push(GameEvent::HuntStarted { guard: self.npcs[i].spec.id });
+                    self.events.push(GameEvent::HuntStarted {
+                        guard: self.npcs[i].spec.id,
+                    });
                 }
             }
         }
@@ -435,7 +488,9 @@ impl ThiefGame {
                 // A civilian with an unreported alarming memory goes to tell
                 // a guard (05b reporting: latency = the travel).
                 if npc.spec.role == Role::Civilian
-                    && npc.memory[npc.reported..].iter().any(|o| o.salience >= REPORT_SALIENCE)
+                    && npc.memory[npc.reported..]
+                        .iter()
+                        .any(|o| o.salience >= REPORT_SALIENCE)
                 {
                     npc.state = NpcState::Reporting;
                 }
@@ -521,7 +576,11 @@ impl ThiefGame {
                 guard.stimulus = Some(worst.at);
             }
         }
-        self.events.push(GameEvent::Reported { by: from, to: self.npcs[g].spec.id, count: n });
+        self.events.push(GameEvent::Reported {
+            by: from,
+            to: self.npcs[g].spec.id,
+            count: n,
+        });
         for id in opened {
             self.events.push(GameEvent::CaseOpened { id });
         }
@@ -552,11 +611,14 @@ impl ThiefGame {
         if from == to {
             return;
         }
-        let Some(dir) = next_step(&self.grid, from, to) else { return };
+        let Some(dir) = next_step(&self.grid, from, to) else {
+            return;
+        };
         // Doors open as NPCs pass, same as the player.
         if self.grid.edge(from, dir).passage() == Passage::OpenFirst {
             if let EdgeKind::Door(_) = self.grid.edge(from, dir) {
-                self.grid.set_edge(from, dir, EdgeKind::Door(DoorState::Open));
+                self.grid
+                    .set_edge(from, dir, EdgeKind::Door(DoorState::Open));
             } else {
                 return;
             }
@@ -579,7 +641,10 @@ fn in_cone(pos: CellPos, facing: Dir, target: CellPos) -> bool {
     if pos.floor != target.floor {
         return false;
     }
-    let (dx, dz) = (target.x as i32 - pos.x as i32, target.z as i32 - pos.z as i32);
+    let (dx, dz) = (
+        target.x as i32 - pos.x as i32,
+        target.z as i32 - pos.z as i32,
+    );
     let (fx, fz) = {
         let (a, b) = facing.delta();
         (a as i32, b as i32)
@@ -747,7 +812,14 @@ pub fn spine_level() -> ThiefSpec {
     let mut grid = TownGrid::new(24, 12, 0, 0);
     for z in 0..12 {
         for x in 0..24 {
-            grid.set_cell(CellPos::new(x, z, 0), Cell { kind: CellKind::Outdoor, material: Material::Stone, prop: Prop::None });
+            grid.set_cell(
+                CellPos::new(x, z, 0),
+                Cell {
+                    kind: CellKind::Outdoor,
+                    material: Material::Stone,
+                    prop: Prop::None,
+                },
+            );
         }
     }
     // Building [3,11) × [3,9): back room (z 3..6) with the strongbox, shop
@@ -756,7 +828,14 @@ pub fn spine_level() -> ThiefSpec {
     // confrontation.
     for z in 3..9 {
         for x in 3..11 {
-            grid.set_cell(CellPos::new(x, z, 0), Cell { kind: CellKind::Room(if z < 6 { 1 } else { 0 }), material: Material::Wood, prop: Prop::None });
+            grid.set_cell(
+                CellPos::new(x, z, 0),
+                Cell {
+                    kind: CellKind::Room(if z < 6 { 1 } else { 0 }),
+                    material: Material::Wood,
+                    prop: Prop::None,
+                },
+            );
         }
     }
     let p = |x, z| CellPos::new(x, z, 0);
@@ -788,8 +867,20 @@ pub fn spine_level() -> ThiefSpec {
             mark: Feature::Seen(super::perception::Mark::None),
         },
         npcs: vec![
-            NpcSpec { id: 1, role: Role::Guard, start: p(2, 1), facing: Dir::Xp, patrol: vec![p(2, 1), p(8, 1)] },
-            NpcSpec { id: 2, role: Role::Civilian, start: p(4, 4), facing: Dir::Xp, patrol: vec![] },
+            NpcSpec {
+                id: 1,
+                role: Role::Guard,
+                start: p(2, 1),
+                facing: Dir::Xp,
+                patrol: vec![p(2, 1), p(8, 1)],
+            },
+            NpcSpec {
+                id: 2,
+                role: Role::Civilian,
+                start: p(4, 4),
+                facing: Dir::Xp,
+                patrol: vec![],
+            },
         ],
         target: p(9, 4),
         lights,
@@ -797,59 +888,66 @@ pub fn spine_level() -> ThiefSpec {
     }
 }
 
+/// The scripted M1 trace: walk in the front door, through the shop, into the
+/// back room; steal under the shopkeeper's eyes; flee to the far street
+/// corner; then stroll back into the guard's beat — still hooded, or with the
+/// look shed (`change_outfit`). Drives the deduction-scenario gate tests AND
+/// the M1 clip bin.
+pub fn spine_trace(change_outfit: bool) -> Vec<(Tick, Command)> {
+    let mut t = Vec::new();
+    let mut tick = 10u64;
+    let mut mv = |tick: &mut u64, dx: i16, dz: i16, n: usize| {
+        let mut v = Vec::new();
+        for _ in 0..n {
+            v.push((Tick(*tick), Command::Move { dx, dz }));
+            *tick += 8;
+        }
+        v
+    };
+    // Approach along the south street, out of the north-beat guard's
+    // sight: (20,10) → door (5,9) → shop → back room → strongbox (9,4).
+    t.extend(mv(&mut tick, -1, 0, 15)); // x 20 → 5 on z=10
+    t.extend(mv(&mut tick, 0, -1, 1)); // → (5,9) doorstep
+    t.extend(mv(&mut tick, 0, -1, 1)); // through the front door → (5,8)
+    t.extend(mv(&mut tick, 1, 0, 1)); // → (6,8)
+    t.extend(mv(&mut tick, 0, -1, 2)); // → (6,6)
+    t.extend(mv(&mut tick, 0, -1, 1)); // through the interior door → (6,5)
+    t.extend(mv(&mut tick, 1, 0, 3)); // → (9,5)
+    t.extend(mv(&mut tick, 0, -1, 1)); // → (9,4) the strongbox
+    t.push((Tick(tick), Command::Steal));
+    tick += 30;
+    // Flee back out south, then east along z=10 — still unseen.
+    t.extend(mv(&mut tick, 0, 1, 1));
+    t.extend(mv(&mut tick, -1, 0, 3));
+    t.extend(mv(&mut tick, 0, 1, 3)); // through the interior door → (6,8)
+    t.extend(mv(&mut tick, -1, 0, 1)); // → (5,8)
+    t.extend(mv(&mut tick, 0, 1, 2)); // out the front door → (5,10)
+    t.extend(mv(&mut tick, 1, 0, 15)); // east to (20,10)
+                                       // Lie low a moment (the rumor races: shopkeeper → guard).
+    tick += 1200;
+    if change_outfit {
+        t.push((
+            Tick(tick),
+            Command::Outfit {
+                top: Hue::Brown,
+                headwear: Headwear::Bare,
+            },
+        ));
+        tick += 10;
+    }
+    // Stroll back up the east street and west into the guard's beat.
+    t.extend(mv(&mut tick, -1, 0, 8)); // → (12,10)
+    t.extend(mv(&mut tick, 0, -1, 8)); // → (12,2) up the open east street
+    t.extend(mv(&mut tick, -1, 0, 3)); // → (9,2), inside the beat's eye
+                                       // Stand there long enough to be looked at.
+    t.push((Tick(tick + 600), Command::Wait));
+    t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sim_core::Runner;
-
-    /// The scripted M1 trace: enter by night… well, by stage light — walk
-    /// in the front door, through the shop, into the back room; steal under
-    /// the shopkeeper's eyes; flee to the far street corner; then stroll
-    /// back into the guard's beat still wearing the same hood.
-    fn spine_trace(change_outfit: bool) -> Vec<(Tick, Command)> {
-        let mut t = Vec::new();
-        let mut tick = 10u64;
-        let mut mv = |tick: &mut u64, dx: i16, dz: i16, n: usize| {
-            let mut v = Vec::new();
-            for _ in 0..n {
-                v.push((Tick(*tick), Command::Move { dx, dz }));
-                *tick += 8;
-            }
-            v
-        };
-        // Approach along the south street, out of the north-beat guard's
-        // sight: (20,10) → door (5,9) → shop → back room → strongbox (9,4).
-        t.extend(mv(&mut tick, -1, 0, 15)); // x 20 → 5 on z=10
-        t.extend(mv(&mut tick, 0, -1, 1)); // → (5,9) doorstep
-        t.extend(mv(&mut tick, 0, -1, 1)); // through the front door → (5,8)
-        t.extend(mv(&mut tick, 1, 0, 1)); // → (6,8)
-        t.extend(mv(&mut tick, 0, -1, 2)); // → (6,6)
-        t.extend(mv(&mut tick, 0, -1, 1)); // through the interior door → (6,5)
-        t.extend(mv(&mut tick, 1, 0, 3)); // → (9,5)
-        t.extend(mv(&mut tick, 0, -1, 1)); // → (9,4) the strongbox
-        t.push((Tick(tick), Command::Steal));
-        tick += 30;
-        // Flee back out south, then east along z=10 — still unseen.
-        t.extend(mv(&mut tick, 0, 1, 1));
-        t.extend(mv(&mut tick, -1, 0, 3));
-        t.extend(mv(&mut tick, 0, 1, 3)); // through the interior door → (6,8)
-        t.extend(mv(&mut tick, -1, 0, 1)); // → (5,8)
-        t.extend(mv(&mut tick, 0, 1, 2)); // out the front door → (5,10)
-        t.extend(mv(&mut tick, 1, 0, 15)); // east to (20,10)
-        // Lie low a moment (the rumor races: shopkeeper → guard).
-        tick += 1200;
-        if change_outfit {
-            t.push((Tick(tick), Command::Outfit { top: Hue::Brown, headwear: Headwear::Bare }));
-            tick += 10;
-        }
-        // Stroll back up the east street and west into the guard's beat.
-        t.extend(mv(&mut tick, -1, 0, 8)); // → (12,10)
-        t.extend(mv(&mut tick, 0, -1, 8)); // → (12,2) up the open east street
-        t.extend(mv(&mut tick, -1, 0, 3)); // → (9,2), inside the beat's eye
-        // Stand there long enough to be looked at.
-        t.push((Tick(tick + 600), Command::Wait));
-        t
-    }
 
     fn run_spine(change_outfit: bool) -> (ThiefGame, u64) {
         let mut r = Runner::new(ThiefGame::new(spine_level()));
@@ -865,29 +963,50 @@ mod tests {
         let (game, _) = run_spine(false);
         let ev = &game.events;
         // 1 · The theft happened and was SEEN happening.
-        assert!(ev.iter().any(|e| matches!(e, GameEvent::Stole { .. })), "no theft: {ev:?}");
         assert!(
-            ev.iter().any(|e| matches!(e, GameEvent::Seen { by: 2, action: ActionKind::Stealing, .. })),
+            ev.iter().any(|e| matches!(e, GameEvent::Stole { .. })),
+            "no theft: {ev:?}"
+        );
+        assert!(
+            ev.iter().any(|e| matches!(
+                e,
+                GameEvent::Seen {
+                    by: 2,
+                    action: ActionKind::Stealing,
+                    ..
+                }
+            )),
             "the shopkeeper must witness the steal: {ev:?}"
         );
         // 2 · Word spread: the shopkeeper reached the guard and reported.
         assert!(
-            ev.iter().any(|e| matches!(e, GameEvent::Reported { by: 2, to: 1, .. })),
+            ev.iter()
+                .any(|e| matches!(e, GameEvent::Reported { by: 2, to: 1, .. })),
             "the report must reach the guard: {ev:?}"
         );
         // 3 · A description formed: a case whose profile wears the hood.
         assert!(!game.cases.cases.is_empty(), "a case must open");
         let case = &game.cases.cases[0];
-        assert_eq!(case.profile.headwear, Feature::Seen(Headwear::Hood), "profile: {:?}", case.profile);
+        assert_eq!(
+            case.profile.headwear,
+            Feature::Seen(Headwear::Hood),
+            "profile: {:?}",
+            case.profile
+        );
         assert_eq!(case.profile.top, Feature::Seen(Hue::Green));
         assert!(case.confidence > 0 && case.severity >= 80);
         // 4 · The guard hunts the matching profile.
         assert!(
-            ev.iter().any(|e| matches!(e, GameEvent::HuntStarted { guard: 1 })),
+            ev.iter()
+                .any(|e| matches!(e, GameEvent::HuntStarted { guard: 1 })),
             "the guard must start hunting on sight of the matching hood: {ev:?}"
         );
         let snap = game.snapshot();
-        assert!(snap.scrutiny >= STOP_SCRUTINY, "the hooded look must stay hot: {}", snap.scrutiny);
+        assert!(
+            snap.scrutiny >= STOP_SCRUTINY,
+            "the hooded look must stay hot: {}",
+            snap.scrutiny
+        );
     }
 
     /// The counterfactual that proves the loop is systemic, not scripted:
@@ -898,15 +1017,22 @@ mod tests {
         let (game, _) = run_spine(true);
         let ev = &game.events;
         // The crime still happened, was seen, was reported…
-        assert!(ev.iter().any(|e| matches!(e, GameEvent::Reported { by: 2, to: 1, .. })));
+        assert!(ev
+            .iter()
+            .any(|e| matches!(e, GameEvent::Reported { by: 2, to: 1, .. })));
         assert!(!game.cases.cases.is_empty());
         // …but no hunt: the walker no longer matches the wanted profile.
         assert!(
-            !ev.iter().any(|e| matches!(e, GameEvent::HuntStarted { .. })),
+            !ev.iter()
+                .any(|e| matches!(e, GameEvent::HuntStarted { .. })),
             "a changed look must not trigger the hunt: {ev:?}"
         );
         let snap = game.snapshot();
-        assert!(snap.scrutiny < STOP_SCRUTINY, "scrutiny of the new look must collapse: {}", snap.scrutiny);
+        assert!(
+            snap.scrutiny < STOP_SCRUTINY,
+            "scrutiny of the new look must collapse: {}",
+            snap.scrutiny
+        );
     }
 
     /// Latency is real: between the sighting and the delivered report there
@@ -918,7 +1044,11 @@ mod tests {
         r.feed(spine_trace(false));
         // Run to just past the steal (it lands around tick ~250).
         r.run_ticks(300);
-        assert!(r.sim.events.iter().any(|e| matches!(e, GameEvent::Stole { .. })));
+        assert!(r
+            .sim
+            .events
+            .iter()
+            .any(|e| matches!(e, GameEvent::Stole { .. })));
         // Incidental street sightings may already sit in the file, but the
         // CRIME cannot be known yet — the witness is still walking.
         assert!(
