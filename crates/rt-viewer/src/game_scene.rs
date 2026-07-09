@@ -261,7 +261,7 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // states (tower / tower_cut). All Y levels are 0.0625-multiples.
     if cfg.scene == "tower" {
         let r = [4.0f32, 4.0, 8.0, 8.0];
-        let mut occ_box = |scene: &mut Scene, lo: Vec3, hi: Vec3, hex: u32| {
+        let occ_box = |scene: &mut Scene, lo: Vec3, hi: Vec3, hex: u32| {
             let first = scene.primitives.len();
             scene.add_box_world(lo, hi, hex_linear(hex), [0.0; 4], 0.85, 0.0);
             mark_occluder(scene, first);
@@ -466,7 +466,7 @@ fn box_world(scene: &mut Scene, rect: [f32; 4], height: f32, hex: u32) -> usize 
 /// a wall the CAVE_ROI reveal may dither away. `add_box` mints one material per
 /// box, so this targets exactly this wall. Floors/furniture/lights/doors/the
 /// player/cut-away stubs are left at 0 and never dissolve.
-fn mark_occluder(scene: &mut Scene, prim: usize) {
+pub(crate) fn mark_occluder(scene: &mut Scene, prim: usize) {
     let mid = scene.primitives[prim].material_id as usize;
     scene.materials[mid]._pad = 1;
 }

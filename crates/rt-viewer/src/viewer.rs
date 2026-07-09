@@ -58,6 +58,9 @@ pub struct Viewer {
     // ---- grouped state
     pub view: ViewState,
     pub game: GameLoop,
+    /// SCENE=thief: the thief sim loop (M2 playable slice). When set, play
+    /// routes here; the house GameLoop above idles as the light-join mirror.
+    pub thief: Option<crate::thief_loop::ThiefLoop>,
     /// The authored LevelSpec the sim was built from (game scenes) — a death
     /// restart rebuilds a FRESH GameLoop from it (a new run is a new sim,
     /// not a sim command; traces stay per-run).
@@ -107,9 +110,14 @@ impl Viewer {
         // row per scene: spec + wall/camera classifiers + collision inflate +
         // lighting mood). `None` = legacy textured scene → rt_probe::build_scene.
         let game_spec: Option<house_game::LevelSpec> = crate::scene_registry::entry(&cfg.scene).spec.map(|build| build(&cfg));
-        let scene = match &game_spec {
-            Some(spec) => crate::game_scene::build_game(spec, &cfg),
-            None => build_scene(&cfg)?,
+        // SCENE=thief builds from the thief sim's own grid spec (M2 slice);
+        // the house LevelSpec path stays None and the GameLoop below runs as
+        // the interim light-join mirror.
+        let thief_spec = (cfg.scene == "thief").then(house_game::thief::sim::spine_level);
+        let scene = match (&thief_spec, &game_spec) {
+            (Some(ts), _) => crate::thief_scene::build_thief(ts),
+            (None, Some(spec)) => crate::game_scene::build_game(spec, &cfg),
+            (None, None) => build_scene(&cfg)?,
         };
         println!("scene: {} prims, {} tris, {} textures", scene.primitives.len(), scene.indices.len() / 3, scene.images.len());
         let player0 = scene.player_start;
@@ -221,6 +229,7 @@ impl Viewer {
                 std::fs::create_dir_all(&dir).ok();
                 crate::capture::Movie::new(dir, &cfg)
             }),
+            thief: thief_spec.map(crate::thief_loop::ThiefLoop::new),
             minimap,
             frame: 0,
             start_time,
@@ -249,13 +258,20 @@ impl Viewer {
             r.game.offset_player(r.cfg.game.player_off.0, r.cfg.game.player_off.1);
         }
         // CMDS replay prefix (deterministic) — runs LAST so the trace acts on
-        // the fully seeded state.
-        r.game.run_cmds(&r.cfg);
+        // the fully seeded state. Thief scenes parse the thief trace grammar.
+        if let Some(t) = r.thief.as_mut() {
+            t.run_cmds(&r.cfg);
+        } else {
+            r.game.run_cmds(&r.cfg);
+        }
         // DEMO=trace.txt: arm the headless per-tick gameplay dump.
         if r.cfg.harness.demo.is_some() {
             let dir = r.cfg.harness.demo_dir.clone().unwrap_or_else(|| "demo".into());
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("DEMO_DIR {dir}: {e}"));
-            let ticks = r.game.demo_load(&r.cfg);
+            let ticks = match r.thief.as_mut() {
+                Some(t) => t.demo_load(&r.cfg),
+                None => r.game.demo_load(&r.cfg),
+            };
             r.harness.demo = Some(crate::capture::Demo { dir, ticks, done: 0 });
         }
         if r.game.snap.yaw_q != r.view.yaw_q {
@@ -386,6 +402,7 @@ impl Viewer {
             self.pan_camera_held(dt);
         }
         self.follow_camera(); // retarget at the player when the sim moved it
+        self.follow_thief_camera(); // SCENE=thief: follow the eased body
         // smooth quarter-turn in flight: ease the yaw, swap masks at crossings
         self.advance_rotation(dt);
         // clip recording: collect last frame's capture + decide if this frame
@@ -417,13 +434,18 @@ impl Viewer {
         instances.extend(self.game.puff_instances());
         instances.extend(self.game.flow_instances());
         instances.extend(self.game.pin_instances());
+        if let Some(t) = &self.thief {
+            instances.extend(t.instances(self.backend.handles()));
+        }
         let goo = self.game.goo_balls();
         let emission = self.game.light_emission(self.light_anim, self.lights_dim);
         let room_lights = if self.game.light_keys.is_empty() { self.lights_dim } else { self.game.snap.room_lights * self.lights_dim };
         let fs = FrameState {
             cam,
             room_lights,
-            time: self.game.time(), // SIM time — the light-anim clock is replayable now
+            // SIM time — the light-anim clock is replayable now (the thief
+            // loop's clock when it owns the scene; the mirror idles at 0)
+            time: self.thief.as_ref().map(|t| t.time()).unwrap_or_else(|| self.game.time()),
             light_emission: &emission,
             spotlights: spot.as_slice(),
             instances: &instances,
@@ -454,11 +476,21 @@ impl Viewer {
         // burned-in HUD stamps: tactic bubbles over thinking blobs + the
         // bottom weapon bar. Game picture, not shell UI — they ride into
         // SHOT/DEMO captures. Skipped on playerless film stages.
-        let stamps = self.hud_stamps();
+        let stamps = match &self.thief {
+            Some(t) => t.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32),
+            None => self.hud_stamps(),
+        };
         // arena blackout: on open-studio stages the sky fill follows the sim's
         // room-lights master (floored so the goo glow still silhouettes the
-        // walls); every other scene keeps its authored env verbatim.
-        let sky_dim = if crate::scene_registry::is_open_studio_stage(&self.cfg.scene) { 0.06 + 0.94 * fs.room_lights } else { 1.0 };
+        // walls); the thief scene follows its sim's day phase (04's clock,
+        // visualized); every other scene keeps its authored env verbatim.
+        let sky_dim = if let Some(t) = &self.thief {
+            t.sky()
+        } else if crate::scene_registry::is_open_studio_stage(&self.cfg.scene) {
+            0.06 + 0.94 * fs.room_lights
+        } else {
+            1.0
+        };
         let fp = FramePresent {
             fs: &fs,
             // screenshake rides the PRESENTED pan only (never view.pan), so
@@ -488,7 +520,10 @@ impl Viewer {
             sky_dim,
             minimap,
             roi: self.roi_info(),
-            cut_y: self.cfg.game.cut,
+            // SCENE=thief wires the FLOORCUT reveal to the LIVE player storey
+            // (M0 spike D's "deterministic function of player floor", landed);
+            // an explicit CUT env still wins for framing experiments.
+            cut_y: self.cfg.game.cut.or_else(|| self.thief.as_ref().map(|t| t.cut_y())),
             capture,
         };
         let ok = self.backend.render_present(&fp);
@@ -520,6 +555,19 @@ impl Viewer {
     /// hitstop (freeze frames) → the fixed-tick accumulator. SHOT feeds dt=0
     /// so the wall clock never reaches the sim.
     fn advance_sim(&mut self, dt: f32) {
+        // SCENE=thief: the thief loop owns the ticks (the house GameLoop
+        // idles as the light-join mirror — it never runs). Same DEMO/SHOT
+        // discipline: one tick per frame under DEMO, dt=0 under SHOT.
+        if let Some(t) = self.thief.as_mut() {
+            t.yaw_q = self.view.yaw_q;
+            if self.harness.demo.is_some() {
+                t.demo_advance_tick();
+            } else {
+                let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
+                t.run_due(sim_dt);
+            }
+            return;
+        }
         // DEMO mode: the sim is driven ONE tick per rendered frame (the trace's
         // commands drain per tick), NOT by the wall clock — a deterministic,
         // fixed-tick gameplay capture. Live `run_due` is bypassed entirely.

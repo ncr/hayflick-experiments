@@ -60,6 +60,10 @@ static SCENES: &[SceneEntry] = &[
     // tower = game + a greybox second storey on room C (the FLOORCUT
     // multi-floor reveal spike; goldens tower/tower_cut)
     SceneEntry { name: "tower", spec: Some(spec_game), ..ENTRY_DEFAULT },
+    // thief = the M2 playable slice: built from the thief sim's own
+    // TownGrid (thief_scene::build_thief), driven by ThiefLoop — no house
+    // LevelSpec, so `spec` stays None and the GameLoop mirrors lights only.
+    SceneEntry { name: "thief", ..ENTRY_DEFAULT },
     SceneEntry { name: "goo", spec: Some(spec_goo), ..ENTRY_DEFAULT },
     // ---- arena-shooter pits (auto-perimeter walls; arena/drain take the
     // even studio fill, squeeze keeps the house mood — pinned by the test)

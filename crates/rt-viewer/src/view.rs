@@ -210,6 +210,20 @@ impl Viewer {
         self.recenter_pan();
     }
 
+    /// SCENE=thief follow-cam: track the EASED player body (the thief sim
+    /// steps whole cells; the loop glides between them), re-snapped to the
+    /// lattice by `retarget` like every camera move.
+    pub fn follow_thief_camera(&mut self) {
+        let Some(t) = &self.thief else { return };
+        let p = t.cam_target();
+        if p == t.last_cam {
+            return;
+        }
+        self.thief.as_mut().unwrap().last_cam = p;
+        self.retarget(p);
+        self.recenter_pan();
+    }
+
     /// Held-key camera pan for scenes WITHOUT a player (lab) — the WASD
     /// branch the sim can't own (there is nothing to walk). Player scenes
     /// synthesize Command::Move per tick instead (`GameLoop::run_due`).

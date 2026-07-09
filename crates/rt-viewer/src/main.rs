@@ -50,6 +50,8 @@ mod menu;
 mod minimap;
 mod scene_registry;
 mod sim;
+mod thief_loop;
+mod thief_scene;
 mod view;
 mod viewer;
 // Backend selected at compile time by target OS (the plan): Metal on Apple
@@ -164,8 +166,70 @@ impl ApplicationHandler for App {
                     _ => None,
                 };
                 if let Some(i) = held_idx {
-                    r.game.held[i] = event.state.is_pressed();
+                    match r.thief.as_mut() {
+                        Some(t) => t.held[i] = event.state.is_pressed(),
+                        None => r.game.held[i] = event.state.is_pressed(),
+                    }
                     return;
+                }
+                // SCENE=thief verbs (the M2 slice): Shift run / Ctrl sneak
+                // (held), Space steal, G drop, O outfit swap, 1–4 answer a
+                // live stop (05c). Everything else falls through to the
+                // shared camera keys below.
+                if let Some(t) = r.thief.as_mut() {
+                    use house_game::thief::perception::{Headwear, Hue};
+                    use house_game::thief::sim::{Command as TC, StopChoice};
+                    let pressed = event.state.is_pressed();
+                    match event.logical_key.as_ref() {
+                        Key::Named(NamedKey::Shift) => {
+                            t.run_held = pressed;
+                            return;
+                        }
+                        Key::Named(NamedKey::Control) => {
+                            t.sneak_held = pressed;
+                            return;
+                        }
+                        _ => {}
+                    }
+                    if pressed {
+                        match event.logical_key.as_ref() {
+                            Key::Named(NamedKey::Space) => {
+                                t.push(TC::Steal);
+                                return;
+                            }
+                            Key::Character("g") => {
+                                t.push(TC::Drop);
+                                return;
+                            }
+                            Key::Character("o") if !event.repeat => {
+                                t.outfit_alt = !t.outfit_alt;
+                                let (top, headwear) = if t.outfit_alt {
+                                    (Hue::Brown, Headwear::Bare)
+                                } else {
+                                    (Hue::Green, Headwear::Hood)
+                                };
+                                t.push(TC::Outfit { top, headwear });
+                                return;
+                            }
+                            Key::Character("1") => {
+                                t.push(TC::Stop(StopChoice::Bluff));
+                                return;
+                            }
+                            Key::Character("2") => {
+                                t.push(TC::Stop(StopChoice::Bribe));
+                                return;
+                            }
+                            Key::Character("3") => {
+                                t.push(TC::Stop(StopChoice::Submit));
+                                return;
+                            }
+                            Key::Character("4") => {
+                                t.push(TC::Stop(StopChoice::Flee));
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 if !event.state.is_pressed() {
                     return; // discrete actions fire on press only

@@ -78,6 +78,9 @@ static SCENE_LOOKS: &[SceneLook] = &[
     SceneLook { name: "grid", player_speed: 80.0, ..LOOK_DEFAULT },
     // authored content scenes (game is golden-pinned)
     SceneLook { name: "game", greybox: true, sdither_th: 0.75, exposure: 0.40, roi: true, ..LOOK_DEFAULT },
+    // thief M2 slice: wide framing (vision range 8 must fit the read),
+    // greybox look, ROI near-wall reveal (FLOORCUT handles the roofs)
+    SceneLook { name: "thief", greybox: true, sdither_th: 0.75, exposure: 0.40, pixel: 2, roi: true, ..LOOK_DEFAULT },
     SceneLook { name: "goo", roi: true, ..LOOK_DEFAULT },
     // procedural dungeon / floor plans / village
     SceneLook { name: "cave", greybox: true, sdither_th: 0.75, exposure: 0.40, roi: true, ..LOOK_DEFAULT },
