@@ -19,6 +19,8 @@
 //! - [`mapviz`]    — PNG canvas for the roommap/floormap map-tool bins
 //! - [`lab`]       — scenario lab: headless event-timeline harness for emergence
 //!   experiments (Scenario → run_scenario → ScenarioReport + Metrics)
+//! - [`thief`]     — the thief/social-deduction game (docs/spec/): edge-gated
+//!   world grid, town generation, perception/memory/deduction engine
 
 pub mod building;
 pub mod cave;
@@ -28,6 +30,7 @@ pub mod game;
 pub mod lab;
 pub mod mapviz;
 pub mod spec;
+pub mod thief;
 pub mod trace;
 pub mod village;
 
