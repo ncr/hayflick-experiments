@@ -12,7 +12,13 @@
 //!   multi-floor buildings, targets, gates), seeded + re-roll-until-fair.
 //! - [`fairness`] — the mandatory solvability/fairness invariants; the
 //!   generation oracle family of docs/spec/12.
+//! - [`perception`] — the Observation atom + fuzzy appearance matching
+//!   (module 05a): the only currency deduction reasons over.
+//! - [`deduction`] — the correlation engine: reported observations cluster
+//!   into Cases (merged suspect profile, confidence, scrutiny) — module 05b.
 
+pub mod deduction;
 pub mod fairness;
 pub mod grid;
+pub mod perception;
 pub mod towngen;
