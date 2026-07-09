@@ -17,6 +17,7 @@
 //!      street that reach the target cell);
 //!   5. hiding-spot density floor near every target (≥ 2 within the target's
 //!      room's building floor).
+//!
 //! Patrol-gap / forced-sightline invariants land with schedules (module 04)
 //! at M1/M3 — they need patrols to exist first.
 

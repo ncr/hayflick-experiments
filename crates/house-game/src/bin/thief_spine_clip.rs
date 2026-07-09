@@ -1,16 +1,18 @@
-//! thief_spine_clip — render the M1 deduction-scenario trace as a top-down
-//! map animation (the M1 "clip" gate, docs/spec/12, pre-renderer-integration).
+//! thief_spine_clip — render the spine trace as a top-down map animation
+//! (the M1 "clip" gate, docs/spec/12; kept as the headless debug projection
+//! now that M2 integrates the real renderer).
 //!
 //!   cargo run --release -p house-game --bin thief_spine_clip -- <out_dir> [outfit]
 //!
 //! Writes frame_%04d.png at 1 frame / 12 ticks; assemble with ffmpeg (see
 //! bin/ usage in the commit). `outfit` runs the counterfactual trace (the
-//! thief sheds the hood before returning — no hunt).
+//! thief sheds the hood before returning — no stop).
 
 use house_game::mapviz::Canvas;
 use house_game::thief::grid::{CellKind, CellPos, Dir, DoorState, EdgeKind, Prop, WindowState};
+use house_game::thief::log::narrate;
 use house_game::thief::perception::{Feature, Headwear, Hue};
-use house_game::thief::sim::{spine_level, spine_trace, GameEvent, NpcState, Role, ThiefGame};
+use house_game::thief::sim::{spine_level, spine_trace, NpcState, Role, ThiefGame};
 use sim_core::{Runner, Simulation};
 
 const CELL: i32 = 16;
@@ -23,47 +25,35 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
 
     let spec = spine_level();
-    let (roles, target) = (
-        spec.npcs.iter().map(|n| n.role).collect::<Vec<_>>(),
-        spec.target,
-    );
     let mut r = Runner::new(ThiefGame::new(spine_level()));
     r.feed(spine_trace(outfit));
 
     let frames = 350;
-    let mut last_event = String::from("a quiet evening");
+    let mut last_event = String::from("a quiet morning");
     let mut seen_events = 0usize;
     for f in 0..frames {
         r.run_ticks(12);
         let game = &r.sim;
-        // Narrate the newest interesting event.
-        for e in &game.events[seen_events..] {
-            last_event = match e {
-                GameEvent::Stole { .. } => "the strongbox is ROBBED".into(),
-                GameEvent::Seen { by, action, salience } if *salience >= 60 => {
-                    format!("npc {by} witnesses: {action:?}!")
-                }
-                GameEvent::Seen { .. } => last_event.clone(),
-                GameEvent::Reported { count, .. } => {
-                    format!("the witness reports to the guard ({count} memories)")
-                }
-                GameEvent::CaseOpened { id } => format!("case {id} OPENS at the watch"),
-                GameEvent::HuntStarted { .. } => "the guard HUNTS the matching look".into(),
-            };
+        // Ticker = the newest line of the REAL event log (module 11).
+        for s in &game.events[seen_events..] {
+            if let Some(line) = narrate(&spec, s) {
+                last_event = line;
+            }
         }
         seen_events = game.events.len();
-        let canvas = draw(game, &roles, target, (f * 12) as u64, &last_event);
+        let canvas = draw(game, (f * 12) as u64, &last_event);
         canvas.write_png(&format!("{out}/frame_{f:04}.png"));
     }
     println!("wrote {frames} frames to {out}");
 }
 
-fn draw(game: &ThiefGame, roles: &[Role], target: CellPos, tick: u64, event: &str) -> Canvas {
+fn draw(game: &ThiefGame, tick: u64, event: &str) -> Canvas {
     let g = game.grid();
+    let target = game.spec().target;
     let (w, h) = (g.w as i32 * CELL, g.h as i32 * CELL);
     let mut c = Canvas::new(w as usize, (h + HEADER) as usize, [16, 17, 20]);
 
-    // Cells, lit by the sim's own light field.
+    // Cells, lit by the sim's own light field (lamps + day-phase ambient).
     for z in 0..g.h {
         for x in 0..g.w {
             let p = CellPos::new(x, z, 0);
@@ -73,7 +63,7 @@ fn draw(game: &ThiefGame, roles: &[Role], target: CellPos, tick: u64, event: &st
                 CellKind::Outdoor => [46, 50, 56],
                 CellKind::Room(_) => [88, 74, 56],
             };
-            let lvl = game.light().level(g, p).clamp(0, 8);
+            let lvl = game.light_at(p).clamp(0, 8);
             let mut col = [
                 (base[0] + lvl * 14).min(255) as u8,
                 (base[1] + lvl * 12).min(255) as u8,
@@ -110,30 +100,40 @@ fn draw(game: &ThiefGame, roles: &[Role], target: CellPos, tick: u64, event: &st
         }
     }
 
-    // NPCs, colored by role, labeled by ladder state; pursuit gets a red ring.
+    // NPCs, colored by role, labeled by ladder state; hunters get rings.
     let snap = game.snapshot();
-    for (i, (pos, state)) in snap.npcs.iter().enumerate() {
-        let (cx, cy) = (pos.x as i32 * CELL + CELL / 2, HEADER + pos.z as i32 * CELL + CELL / 2);
-        let col = match roles[i] {
+    for n in &snap.npcs {
+        let (cx, cy) = (
+            n.pos.x as i32 * CELL + CELL / 2,
+            HEADER + n.pos.z as i32 * CELL + CELL / 2,
+        );
+        let col = match n.role {
             Role::Guard => [80, 130, 230],
             Role::Civilian => [225, 205, 90],
         };
-        if *state == NpcState::Pursue {
-            c.disc(cx, cy, 7, [235, 60, 50]);
+        match n.state {
+            NpcState::Pursue => c.disc(cx, cy, 7, [235, 60, 50]),
+            NpcState::Approach | NpcState::Confront => c.disc(cx, cy, 7, [235, 160, 50]),
+            _ => {}
         }
         c.disc(cx, cy, 5, col);
-        let label = match state {
+        let label = match n.state {
             NpcState::Routine => "r",
             NpcState::Notice => "n",
             NpcState::Investigate => "i",
             NpcState::Reporting => "t",
+            NpcState::Approach => "A",
+            NpcState::Confront => "S",
             NpcState::Pursue => "P",
         };
         c.text(label, cx - 2, cy - 14, 1, [240, 240, 240]);
     }
 
     // The player: coat color from the live look; hood ring; loot dot.
-    let (cx, cy) = (snap.player.x as i32 * CELL + CELL / 2, HEADER + snap.player.z as i32 * CELL + CELL / 2);
+    let (cx, cy) = (
+        snap.player.x as i32 * CELL + CELL / 2,
+        HEADER + snap.player.z as i32 * CELL + CELL / 2,
+    );
     let coat = match game.look().top {
         Feature::Seen(Hue::Green) => [70, 160, 85],
         Feature::Seen(Hue::Brown) => [150, 100, 60],
@@ -148,9 +148,21 @@ fn draw(game: &ThiefGame, roles: &[Role], target: CellPos, tick: u64, event: &st
     }
 
     // Header: clock, case count, the scrutiny meter, the event ticker.
-    c.text(&format!("M1 SPINE  t={tick:>5}  cases={}", snap.n_cases), 6, 4, 1, [200, 200, 210]);
+    c.text(
+        &format!(
+            "M2 SLICE  t={tick:>5}  {:02}:{:02}  cases={}  coin={}",
+            snap.day_min / 60,
+            snap.day_min % 60,
+            snap.n_cases,
+            snap.coin
+        ),
+        6,
+        4,
+        1,
+        [200, 200, 210],
+    );
     c.text(&format!("scrutiny {:>3}", snap.scrutiny), 6, 16, 1, [200, 200, 210]);
-    let bar = (snap.scrutiny.clamp(0, 100) * 2) as i32;
+    let bar = snap.scrutiny.clamp(0, 100) * 2;
     c.fill(110, 16, 110 + bar, 24, if snap.scrutiny >= 15 { [220, 70, 50] } else { [90, 160, 90] });
     c.rect_outline(110, 16, 310, 24, [120, 120, 130]);
     c.text(event, 6, 30, 1, [235, 220, 160]);

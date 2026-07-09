@@ -16,12 +16,20 @@
 //!   (module 05a): the only currency deduction reasons over.
 //! - [`deduction`] — the correlation engine: reported observations cluster
 //!   into Cases (merged suspect profile, confidence, scrutiny) — module 05b.
-//! - [`sim`] — the M1 spine: the `ThiefGame` Simulation (senses → memory →
-//!   report → case → hunt over the alertness ladder), trace-replayable.
+//! - [`sim`] — the M1 spine + M2 playable slice: the `ThiefGame` Simulation
+//!   (senses → memory → report → case → the 05c confrontation ladder over
+//!   the alertness ladder; movement modes, encumbrance, the day clock),
+//!   trace-replayable.
+//! - [`log`] — module 11's event LOG: the pure prose projection of the
+//!   tick-stamped sim-event stream (nothing invented, only real events).
+//! - [`trace`] — the thief text-trace format (`<tick> <op> <args>`), the
+//!   headless replay/clip input.
 
 pub mod deduction;
 pub mod fairness;
 pub mod grid;
+pub mod log;
 pub mod perception;
 pub mod sim;
 pub mod towngen;
+pub mod trace;

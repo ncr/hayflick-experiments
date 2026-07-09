@@ -76,6 +76,11 @@ pub struct Case {
     /// Where the case's latest linked event happened (search anchor).
     pub last_at: CellPos,
     pub last_when: Tick,
+    /// A look positively cleared by a clean search (05c: "a clean search can
+    /// positively CLEAR you from a description"). Anyone matching this look
+    /// at least as well as the profile draws no scrutiny from this case.
+    /// A fresh crime-grade observation merging in voids the clearance.
+    pub cleared_look: Option<Description>,
 }
 
 impl Case {
@@ -149,6 +154,7 @@ impl CaseFile {
                     severity: 0,
                     last_at: obs.at,
                     last_when: obs.when,
+                    cleared_look: None,
                 });
                 let ci = self.cases.len() - 1;
                 self.merge_into(ci, oid);
@@ -206,6 +212,11 @@ impl CaseFile {
         let add = (obs.confidence as u32 * obs.salience as u32 / 100) as u16;
         case.confidence = case.confidence.saturating_add(add);
         case.severity = case.severity.max(obs.salience);
+        // A fresh crime-grade fact voids any earlier search clearance —
+        // being cleared once is not immunity to being seen offending again.
+        if obs.salience >= CASE_OPEN_SALIENCE {
+            case.cleared_look = None;
+        }
         // The anchor only moves FORWARD in time: an old orphaned fact
         // joining late must not drag the case back to where it happened.
         if obs.when >= case.last_when {
@@ -239,16 +250,38 @@ impl CaseFile {
     /// (05c). Shed the matched features and this collapses: the disguise
     /// loop's payoff, executable.
     pub fn scrutiny(&self, seen: &Description) -> i32 {
-        let mut worst = 0i32;
-        for case in &self.cases {
+        self.scrutiny_case(seen).map(|(_, s)| s).unwrap_or(0)
+    }
+
+    /// The case behind the scrutiny: the live case this look matches worst
+    /// (highest score), with its score — what a stop targets (05c). Lowest
+    /// index breaks ties (order-stable). A case whose `cleared_look` fits
+    /// `seen` at least as well as its profile does exerts nothing: the clean
+    /// search positively cleared that appearance.
+    pub fn scrutiny_case(&self, seen: &Description) -> Option<(usize, i32)> {
+        let mut worst: Option<(usize, i32)> = None;
+        for (i, case) in self.cases.iter().enumerate() {
             if case.cold() {
                 continue;
             }
             let m = match_score(&case.profile, seen).max(0);
+            if let Some(cl) = &case.cleared_look {
+                if match_score(cl, seen) >= m {
+                    continue;
+                }
+            }
             let s = m * case.confidence.min(200) as i32 * case.severity as i32 / (MATCH_MAX * 100);
-            worst = worst.max(s);
+            if s > 0 && worst.map(|(_, w)| s > w).unwrap_or(true) {
+                worst = Some((i, s));
+            }
         }
         worst
+    }
+
+    /// Direct belief reinforcement — a caught lie, an attempted bribe, a
+    /// flight from a stop all CONFIRM the case without a new observation.
+    pub fn bump(&mut self, idx: usize, add: u16) {
+        self.cases[idx].confidence = self.cases[idx].confidence.saturating_add(add);
     }
 
     /// FNV-1a over the full canonical engine state — the replay oracle.
@@ -293,6 +326,10 @@ impl CaseFile {
             eat(case.last_at.floor as u8);
             for byte in case.last_when.0.to_le_bytes() {
                 eat(byte);
+            }
+            match &case.cleared_look {
+                None => eat(0xfd),
+                Some(d) => d.eat_into(&mut eat),
             }
         }
         for &o in &self.orphans {
@@ -508,6 +545,8 @@ mod tests {
         for t in 0..10_000u64 {
             file.decay_tick(Tick(t));
         }
-        assert_eq!(file.state_hash(), 0x004f_269a_e9ec_1137, "recapture: {:#018x}", file.state_hash());
+        // Recaptured 2026-07-09 (M2): Case grew `cleared_look` (05c clean-
+        // search clearance), which folds one byte per case into the hash.
+        assert_eq!(file.state_hash(), 0x8d78_d796_55e3_a7f6, "recapture: {:#018x}", file.state_hash());
     }
 }

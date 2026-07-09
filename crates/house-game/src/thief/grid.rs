@@ -150,12 +150,13 @@ impl EdgeKind {
     /// Does this edge block line-of-sight? (05a: walls / closed doors /
     /// shutters block; open doors, windows, low-walls pass.)
     pub fn blocks_sight(self) -> bool {
-        match self {
-            EdgeKind::Wall => true,
-            EdgeKind::Door(DoorState::Closed) | EdgeKind::Door(DoorState::Locked) => true,
-            EdgeKind::Window(WindowState::Shuttered) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            EdgeKind::Wall
+                | EdgeKind::Door(DoorState::Closed)
+                | EdgeKind::Door(DoorState::Locked)
+                | EdgeKind::Window(WindowState::Shuttered)
+        )
     }
 
     /// Sight passes but degraded (05a "possibly at reduced confidence"):

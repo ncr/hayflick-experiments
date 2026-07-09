@@ -363,7 +363,7 @@ fn build_building(grid: &mut TownGrid, rng: &mut Pcg32, lot: Rect, id: u16, next
     }
 
     // Front door: a street-facing side, position seeded along it.
-    let side = if rng.next_u32() % 2 == 0 { Dir::Zm } else { Dir::Zp };
+    let side = if rng.next_u32().is_multiple_of(2) { Dir::Zm } else { Dir::Zp };
     let fx = range(rng, lot.x0 as i32 + 1, lot.x1 as i32 - 2) as i16;
     let fz = if side == Dir::Zm { lot.z0 } else { lot.z1 - 1 };
     let front = CellPos::new(fx, fz, 0);
@@ -373,7 +373,7 @@ fn build_building(grid: &mut TownGrid, rng: &mut Pcg32, lot: Rect, id: u16, next
     // cell → first-floor cell behind a (shut) window; the window is the gate.
     if n_floors >= 2 && rng.next_u32() % 10 < 6 {
         let cx = range(rng, lot.x0 as i32 + 1, lot.x1 as i32 - 2) as i16;
-        let (up, out_dir, street) = if rng.next_u32() % 2 == 0 {
+        let (up, out_dir, street) = if rng.next_u32().is_multiple_of(2) {
             (CellPos::new(cx, lot.z0, 1), Dir::Zm, CellPos::new(cx, lot.z0 - 1, 0))
         } else {
             (CellPos::new(cx, lot.z1 - 1, 1), Dir::Zp, CellPos::new(cx, lot.z1, 0))
