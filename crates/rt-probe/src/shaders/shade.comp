@@ -42,7 +42,7 @@ layout(set = 0, binding = 10, scalar) readonly buffer Probes { float pd[]; };
 layout(push_constant) uniform Push {
   vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos; // camDir.w = AO radius, camPos.w = AO strength
   ivec4 misc;  // W, H, aoRays, debug (0 off, 1 albedo, 2 probe GI, 3 direct only, 4 AO term)
-  ivec4 misc2; // roomLights dim 16.16 fixed point (probe-bank lerp), lightCount, reflBlockPx, _
+  ivec4 misc2; // roomLights dim 16.16 fixed point (probe-bank lerp), lightCount, reflBlockPx, floorCutY 16.16 (INT_MAX = off)
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
   vec4 roi;    // CAVE_ROI: player world xyz, w = disc radius (low-res px)
   vec4 roi2;   // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
@@ -240,6 +240,24 @@ void main(){
 
   Hit h;
   bool hitb = trace(o, d, 300.0, 0x01u, h); // primary ray; CAVE_ROI sees through walls per-pixel below
+
+  // FLOORCUT dollhouse (module 11 multi-floor auto-reveal): every primary-ray
+  // hit at or above the cut plane dissolves, for EVERY pixel — storeys above
+  // the player's floor and their roofs come off like lifting a dollhouse cap.
+  // The plane is a deterministic function of the player's current floor (the
+  // game picks a Y inside the ceiling gap, so slabs above go and the floor
+  // you stand on stays). misc2.w == INT_MAX disables the block entirely,
+  // reproducing the pre-cut image bit-for-bit. The iso camera looks DOWN
+  // (d.y < 0), so hit Y decreases monotonically along the ray: one prefix
+  // loop suffices, and the CAVE_ROI block below never sees above-cut hits.
+  if (pc.misc2.w != 2147483647) {
+    float cutY = float(pc.misc2.w) * (1.0 / 65536.0);
+    for (int it = 0; it < 16 && hitb; it++) {
+      if ((o + d * h.t).y < cutY) break;
+      o = o + d * (h.t + (1.0 / 256.0));
+      hitb = trace(o, d, 300.0, 0x01u, h);
+    }
+  }
 
   // CAVE_ROI dithered see-through: dissolve occluder-wall hits (mats[h.mat].pad==1)
   // that lie BETWEEN the camera and the player AND inside a soft, player-anchored

@@ -46,13 +46,18 @@ mkdir -p "$OUT" "$GOLD"
 GAME_TRACE=crates/house-game/traces/replay_game.txt
 
 fail=0
-for s in house lab grid game game_replay; do
+for s in house lab grid game game_replay tower tower_cut; do
   # stderr is discarded for a quiet loop, so a crashed render must be made
   # loud by hand: record it, skip the compare, and exit non-zero at the end.
   render_ok=1
   case "$s" in
     game)        SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
     game_replay) SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 CMDS="$GAME_TRACE" SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
+    # the FLOORCUT multi-floor reveal spike: the two-storey tower with the cut
+    # off (upper storey + roof visible) and on (CUT=2.25 slices the ceiling
+    # gap; the ground floor reads from above) — docs/spec/12 M0 spike D
+    tower)       SCENE=tower WINDOW=1024x640 LIGHT_ANIM=0 PIXEL=1 TARGET_X=6 TARGET_Z=6 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
+    tower_cut)   SCENE=tower WINDOW=1024x640 LIGHT_ANIM=0 PIXEL=1 TARGET_X=6 TARGET_Z=6 CUT=2.25 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
     *)           SCENE=$s WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
   esac
   if [ "$render_ok" -eq 0 ]; then

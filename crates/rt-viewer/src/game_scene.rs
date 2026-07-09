@@ -252,6 +252,34 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         mark_occluder(&mut scene, first);
     }
 
+    // ---- SCENE=tower: the multi-floor auto-reveal spike (docs/spec/12, M0
+    // spike D) — a greybox second storey stacked on room C ([4,4]..[8,8]) of
+    // the game house, plus a roof cap. CUT=2.25 slices inside the ceiling
+    // gap, between the ground walls' top (WALL_TOP 2.1875) and the ceiling
+    // slab bottom (2.375): the whole upper storey dissolves on the primary
+    // ray and the ground floor reads from above. Golden-pinned in BOTH
+    // states (tower / tower_cut). All Y levels are 0.0625-multiples.
+    if cfg.scene == "tower" {
+        let r = [4.0f32, 4.0, 8.0, 8.0];
+        let mut occ_box = |scene: &mut Scene, lo: Vec3, hi: Vec3, hex: u32| {
+            let first = scene.primitives.len();
+            scene.add_box_world(lo, hi, hex_linear(hex), [0.0; 4], 0.85, 0.0);
+            mark_occluder(scene, first);
+        };
+        // ceiling slab = the upper storey's floor
+        occ_box(&mut scene, Vec3::new(r[0], 2.375, r[1]), Vec3::new(r[2], 2.5, r[3]), 0xb8a888);
+        // upper walls, 0.25 wu thick, inner face on the room rect
+        occ_box(&mut scene, Vec3::new(r[0] - 0.25, 2.5, r[1] - 0.25), Vec3::new(r[0], 4.5, r[3] + 0.25), WALL_PERIM);
+        occ_box(&mut scene, Vec3::new(r[2], 2.5, r[1] - 0.25), Vec3::new(r[2] + 0.25, 4.5, r[3] + 0.25), WALL_PERIM);
+        occ_box(&mut scene, Vec3::new(r[0], 2.5, r[1] - 0.25), Vec3::new(r[2], 4.5, r[1]), WALL_PERIM);
+        occ_box(&mut scene, Vec3::new(r[0], 2.5, r[3]), Vec3::new(r[2], 4.5, r[3] + 0.25), WALL_PERIM);
+        // an upper-floor furnishing: proves the storey is real when uncut,
+        // and that NON-occluder geometry above the plane vanishes too
+        scene.add_box_world(Vec3::new(5.0, 2.5, 6.5), Vec3::new(6.5, 3.0, 7.5), hex_linear(FURNITURE), [0.0; 4], 0.85, 0.0);
+        // roof cap with a small eave
+        occ_box(&mut scene, Vec3::new(r[0] - 0.375, 4.5, r[1] - 0.375), Vec3::new(r[2] + 0.375, 4.625, r[3] + 0.375), 0x6f5f4a);
+    }
+
     // ---- L4 low cover: authored knee-high masonry (GOO_CHUNK_H, the chunk
     // band) — crisp warm-gray blocks the player shoots OVER and the goo must
     // flow around. Sim collision comes from spec.low_solids seeding

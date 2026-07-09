@@ -85,6 +85,10 @@ pub struct FramePresent<'a> {
     /// falloff in low-res px. The backend projects the disc centre via the shared
     /// `rt_probe::roi_push` and packs it into the shade push. `None` → no reveal.
     pub roi: Option<RoiInfo>,
+    /// FLOORCUT multi-floor reveal: world-Y plane above which every primary
+    /// hit dissolves (storeys above the player's floor). Packed via
+    /// `rt_probe::cut16`. `None` → no cut (bit-identical to pre-cut frames).
+    pub cut_y: Option<f32>,
     /// Record the clip down-blit (`out` → exact game px) into this frame's
     /// command buffer; the backend must hold a capture target this size.
     pub capture: bool,

@@ -57,6 +57,9 @@ static SCENES: &[SceneEntry] = &[
     SceneEntry { name: "grid", follow_cam: false, ..ENTRY_DEFAULT },
     // ---- authored content (game is golden-pinned; goo = game + blobs)
     SceneEntry { name: "game", spec: Some(spec_game), ..ENTRY_DEFAULT },
+    // tower = game + a greybox second storey on room C (the FLOORCUT
+    // multi-floor reveal spike; goldens tower/tower_cut)
+    SceneEntry { name: "tower", spec: Some(spec_game), ..ENTRY_DEFAULT },
     SceneEntry { name: "goo", spec: Some(spec_goo), ..ENTRY_DEFAULT },
     // ---- arena-shooter pits (auto-perimeter walls; arena/drain take the
     // even studio fill, squeeze keeps the house mood — pinned by the test)
@@ -216,6 +219,7 @@ mod tests {
             ("lab",        false, false, false, false, false, true,  [0.0, 5.0, 0.18, 0.5]),
             ("grid",       false, false, false, false, false, false, [0.0, 5.0, 0.18, 0.5]),
             ("game",       true,  false, false, false, false, true,  [0.0, 5.0, 0.18, 0.5]),
+            ("tower",      true,  false, false, false, false, true,  [0.0, 5.0, 0.18, 0.5]),
             ("goo",        true,  false, false, false, false, true,  [0.0, 5.0, 0.18, 0.5]),
             ("arena",      true,  false, true,  false, false, true,  [0.0, 9.0, 0.0, 0.5]),
             ("drain",      true,  false, true,  false, false, true,  [0.0, 9.0, 0.0, 0.5]),

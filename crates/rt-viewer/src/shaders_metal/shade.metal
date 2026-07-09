@@ -38,6 +38,7 @@ struct Push {
     float4 roi2;      // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
     float4 look;      // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
     float4 look2;     // gi scale, matPoster levels, aoDither, reflStrength
+    int4   misc3;     // floorCutY 16.16 fixed point (INT_MAX = off), _, _, _
 };
 
 constant float PI    = 3.14159265;
@@ -274,6 +275,22 @@ kernel void shade(
 
     Hit h;
     bool hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
+
+    // FLOORCUT dollhouse (module 11 multi-floor auto-reveal) — twin of
+    // shade.comp: every primary-ray hit at or above the cut plane dissolves,
+    // for EVERY pixel — storeys above the player's floor and their roofs come
+    // off like lifting a dollhouse cap. misc3.x == INT_MAX disables the block
+    // entirely (bit-identical pre-cut image). The iso camera looks DOWN
+    // (d.y < 0): hit Y decreases monotonically along the ray, so one prefix
+    // loop suffices and the CAVE_ROI block below never sees above-cut hits.
+    if (pc.misc3.x != 2147483647) {
+        float cutY = float(pc.misc3.x) * (1.0 / 65536.0);
+        for (int it = 0; it < 16 && hitb; it++) {
+            if ((o + d * h.t).y < cutY) break;
+            o = o + d * (h.t + (1.0 / 256.0));
+            hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
+        }
+    }
 
     // CAVE_ROI dithered see-through — byte-identical twin of shade.comp: dissolve
     // occluder-wall hits (mats[h.mat].pad==1) between camera and player AND inside

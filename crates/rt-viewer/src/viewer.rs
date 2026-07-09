@@ -488,6 +488,7 @@ impl Viewer {
             sky_dim,
             minimap,
             roi: self.roi_info(),
+            cut_y: self.cfg.game.cut,
             capture,
         };
         let ok = self.backend.render_present(&fp);

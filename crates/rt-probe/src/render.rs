@@ -43,7 +43,13 @@ pub struct ShadePush {
     pub light_count: i32,
     /// REFL_PX: pixelated-reflection block size in low-res px (REFL > 0 only).
     pub refl_px: i32,
-    pub _r1: i32,
+    /// FLOORCUT dollhouse plane in 16.16 fixed point (module 11 multi-floor
+    /// reveal): every primary-ray hit at or above this world-Y dissolves —
+    /// storeys above the player's floor come off like a dollhouse cap. The
+    /// game derives it from the player's current floor (a plane inside the
+    /// ceiling gap). `CUT_OFF` (i32::MAX) disables the block entirely and
+    /// reproduces the pre-cut image bit-for-bit.
+    pub cut16: i32,
     pub env0: [f32; 4], // sun, sky, fog density, fog height
     /// Dollhouse see-through region of interest (CAVE_ROI). `roi` = player world
     /// xyz + disc radius (low-res px); `roi2` = projected player pixel xy +
@@ -70,6 +76,15 @@ pub struct RoiPush {
 /// Disabled ROI: shader sees `roi2.w == 0` and skips the whole reveal block.
 pub const ROI_OFF: RoiPush = RoiPush { roi: [0.0; 4], roi2: [0.0; 4] };
 
+/// Disabled floor cut (`ShadePush.cut16`): the shader skips the FLOORCUT
+/// block entirely.
+pub const CUT_OFF: i32 = i32::MAX;
+
+/// Pack a world-Y floor-cut plane for `ShadePush.cut16` / Metal `misc3.x`.
+pub fn cut16(cut_y: Option<f32>) -> i32 {
+    cut_y.map(|y| (y * 65536.0).round() as i32).unwrap_or(CUT_OFF)
+}
+
 /// Build the ROI push fields for a player at world `p`, projecting the disc
 /// centre with the shared [`iso_core::project_lowres`] so Metal and Vulkan agree.
 /// `ghost` (0..1] is the max reveal coverage at the disc centre: <1 leaves a
@@ -95,7 +110,7 @@ impl ShadePush {
             room_lights16: (room_lights * 65536.0).round() as i32,
             light_count,
             refl_px: 1,
-            _r1: 0,
+            cut16: CUT_OFF,
             env0,
             roi: ROI_OFF.roi,
             roi2: ROI_OFF.roi2,

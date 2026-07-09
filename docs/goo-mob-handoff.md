@@ -595,3 +595,32 @@ Plumbing: `TonePush` grew `style6` (+16 B, both backends' size math follows
 `size_of`); `ShadePush` stays 176 B — MATQ/AO_DITHER/REFL ride the spare
 `look2.yzw`, block size in the former `_r0` (now `refl_px`; Metal misc2.w).
 `StyleCfg` carries the tonemap knobs, `RenderCfg` the shade knobs.
+
+## 2026-07-09 — FLOORCUT multi-floor dollhouse reveal (M0 spike D, thief game)
+
+The docs/spec/12 "multi-floor auto-reveal" spike: a world-Y cut plane above
+which EVERY primary-ray hit dissolves — storeys above the player's floor come
+off like lifting a dollhouse cap. Deterministic function of the plane; the
+iso camera looks down (d.y < 0), so one prefix loop before the CAVE_ROI block
+covers all pixels and the ROI logic never sees above-cut hits.
+
+Plumbing: `ShadePush._r1` → `cut16` (world-Y in 16.16; `i32::MAX` = off, and
+the shader skips the block entirely → pre-cut frames stay bit-identical —
+proven: all five legacy goldens byte-passed before the new goldens were
+pinned). GLSL reads `pc.misc2.w`; Metal grew `int4 misc3` (cut in `.x`) on
+both the MSL `Push` and its Rust twin. Viewer knob: `CUT=<y>` (GameCfg.cut →
+`FramePresent.cut_y` → `rt_probe::render::cut16`). Scene `tower` = the game
+house + a greybox second storey on room C; goldens `tower` / `tower_cut`
+(PIXEL=1, TARGET 6/6, CUT=2.25 slicing the ceiling gap between WALL_TOP
+2.1875 and the slab bottom 2.375).
+
+**Metal debt:** the MSL twin (`shade.metal` + `metal_backend.rs`) is ported
+in the same effort but UNVERIFIED — this box is the Vulkan/RTX machine. On
+the M2 Pro: build, eyeball `SCENE=tower … CUT=2.25 SHOT=`, then
+`GOLDEN_DIR=crates/rt-probe/golden-metal bin/golden --update` to pin the
+Metal tower/tower_cut set (the five legacy Metal goldens must byte-pass
+BEFORE pinning, same as here).
+
+Wiring the cut to the live player floor (cut_y = f(player storey)) lands
+with the thief-game scene integration (M2/M3) — the render path is the same
+push value, so no further shader work is expected.
