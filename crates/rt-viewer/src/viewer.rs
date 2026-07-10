@@ -115,7 +115,8 @@ impl Viewer {
         // the interim light-join mirror.
         let thief_spec = (cfg.scene == "thief").then(house_game::thief::sim::spine_level);
         let scene = match (&thief_spec, &game_spec) {
-            (Some(ts), _) => crate::thief_scene::build_thief(ts),
+            // LOOK env picks the greybox aesthetic (thief_look.rs presets)
+            (Some(ts), _) => crate::thief_scene::build_thief(ts, crate::thief_look::from_env()),
             (None, Some(spec)) => crate::game_scene::build_game(spec, &cfg),
             (None, None) => build_scene(&cfg)?,
         };

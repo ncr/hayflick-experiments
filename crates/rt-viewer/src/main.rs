@@ -50,6 +50,7 @@ mod menu;
 mod minimap;
 mod scene_registry;
 mod sim;
+mod thief_look;
 mod thief_loop;
 mod thief_scene;
 mod view;

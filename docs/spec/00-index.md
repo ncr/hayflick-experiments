@@ -127,6 +127,21 @@ green, 7 Vulkan goldens green.
      (clock/phase, coin, load, exposure, HEAT); scene-setting + controls as opening lines.
   Golden `thief` re-pinned (roofs + bar in frame); sim untouched — oracles unchanged.
 
+- **Greybox look directions (owner request, 2026-07-10)** — the slice's whole aesthetic is
+  now data: `ThiefLook` presets (rt-viewer `thief_look.rs`, `LOOK=` env) carry palette,
+  body colours, lamp mood, lighting env and shape-kit switches (roof style, fascia, timber
+  framing, plinths, cobble checker, body kit). Four presets: `classic` (the pre-look
+  greybox, byte-frozen — the pinned golden renders it and stays the default), `gaslight`
+  (dark port town, warm gas lamps, standing-seam roofs), `timbered` (cream plaster +
+  half-timber, terracotta ridges), `inkwash` (parchment + charcoal ink lines, vermillion
+  accent). The three new looks share one Refined kit: tailored bodies (hood + drape;
+  guard helm/pauldrons/crest/spear; civilian hat), slim lantern posts, plinths, eave
+  fascias. All greybox-lawful (0.0625-lattice boxes, occluder-marked → both dollhouse
+  cuts work), NEE-lawful (lamps stay the only named lights — pinned per-look by test).
+  No shader/sim changes: oracles + all goldens untouched. **OPEN: owner picks a
+  direction** (comparison artifact "Thief — Look Directions"); the winner becomes the
+  default and the thief golden is re-pinned then.
+
 ## Decision log
 
 - **2026-07-09 · R1 opened.** Vision seed = thief / NPC-memory-and-deduction. Cell scale

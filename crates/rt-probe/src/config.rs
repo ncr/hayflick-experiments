@@ -5,7 +5,7 @@
 //! has a single source of truth. One deliberate exception reads `std::env`
 //! directly: `probe_cache::dir` (PROBE_CACHE) — a dev-machine cache location,
 //! not a look/sim knob, and never part of the round-trip. (rt-viewer keeps a
-//! few shell-only reads of its own: DOORS, DUMP_ROOMS, AUDIO.)
+//! few shell-only reads of its own: DOORS, DUMP_ROOMS, AUDIO, LOOK.)
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
 //! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).
