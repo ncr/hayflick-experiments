@@ -651,3 +651,15 @@ session must byte-pass the legacy Metal set, then pin
 `golden-metal/{tower,tower_cut,thief}.png` — and eyeball one indoor thief
 frame (walk through the front door) to confirm the MSL wallcut twin
 behaves before pinning.
+
+**2026-07-10 look-rounds update (Metal duty unchanged in shape, target
+moved):** the thief scene now has NINE `LOOK=` presets (thief_look.rs) and
+the owner picked **scifi** — `SCENE=thief` defaults to it and the VULKAN
+`golden/thief.png` is already re-pinned to the scifi frame (white panels,
+orange livery, articulated five-run bodies, bracket-arm lamps lit from
+BELOW the lantern, orange HUD accent). All of this is pure SCENE DATA —
+zero GLSL/MSL changes since the 07-09 wallcut port, so the Metal shader
+duty is exactly as above; just note the thief Metal golden you pin will be
+the scifi look, and the indoor eyeball frame doubles as the look check.
+The classic pre-look frame remains reachable via `LOOK=classic` if a
+like-for-like wallcut comparison helps.
