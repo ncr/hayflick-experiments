@@ -44,9 +44,11 @@ use std::collections::VecDeque;
 /// the 4-dir staircase reads as a rounded glide instead of a hard zigzag.
 const EASE_TICKS: f32 = 9.0;
 
-const BG: u32 = 0x14141a;
-const BORDER: u32 = 0x565664;
-const AMBER: u32 = 0xe0a84c;
+// HUD palette, tuned to the picked scifi look (2026-07-10): cool near-black
+// console, steel border, the station's safety-orange livery as the accent.
+const BG: u32 = 0x12151a;
+const BORDER: u32 = 0x505a68;
+const AMBER: u32 = 0xe8853c;
 const RED: u32 = 0xe86858;
 const GREEN: u32 = 0x8fd08f;
 const INK: u32 = 0xd0d0c0;

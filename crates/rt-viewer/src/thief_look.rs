@@ -5,9 +5,10 @@
 //! restyle, never new render features.
 //!
 //! `LOOK=<name>` selects a preset (a shell-only env read, like DOORS /
-//! DUMP_ROOMS / AUDIO — see rt-probe config.rs). Default is `classic`, which
-//! reproduces the pre-look-system geometry byte-for-byte, so the pinned
-//! thief golden holds until a direction is chosen.
+//! DUMP_ROOMS / AUDIO — see rt-probe config.rs). Default is **scifi** — the
+//! owner's picked direction (2026-07-10); the thief golden renders it.
+//! `classic` keeps the pre-look-system geometry byte-for-byte as a museum
+//! baseline (Legacy kit, no longer golden-covered).
 //!
 //! Hue discipline: the sim NARRATES the player's coat ("a green-hooded
 //! figure…", perception's `Hue::Green`/`Hue::Brown`), so every preset must
@@ -92,8 +93,8 @@ pub struct ThiefLook {
 }
 
 /// The pre-look-system greybox, verbatim: pale stone streets, near-white
-/// walls, coral doors, flat caps, chunky bodies. Byte-identical geometry —
-/// the pinned thief golden renders THIS.
+/// walls, coral doors, flat caps, chunky bodies. Kept byte-identical as the
+/// museum baseline (Legacy kit; the golden now renders the scifi default).
 pub const CLASSIC: ThiefLook = ThiefLook {
     name: "classic",
     kit: Kit::Legacy,
@@ -442,13 +443,14 @@ pub fn by_name(name: &str) -> Option<&'static ThiefLook> {
     LOOKS.iter().find(|l| l.name == name).copied()
 }
 
-/// Resolve `LOOK` from the environment (default: classic — the golden look).
+/// Resolve `LOOK` from the environment (default: scifi — the picked
+/// direction, and the look the thief golden renders).
 pub fn from_env() -> &'static ThiefLook {
     match std::env::var("LOOK") {
         Ok(name) => by_name(&name).unwrap_or_else(|| {
-            eprintln!("LOOK={name}: unknown preset (classic gaslight timbered inkwash bastion adobe edo scifi neon) — using classic");
-            &CLASSIC
+            eprintln!("LOOK={name}: unknown preset (classic gaslight timbered inkwash bastion adobe edo scifi neon) — using scifi");
+            &SCIFI
         }),
-        Err(_) => &CLASSIC,
+        Err(_) => &SCIFI,
     }
 }

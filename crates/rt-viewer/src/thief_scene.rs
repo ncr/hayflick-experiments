@@ -204,7 +204,17 @@ pub fn build_thief(spec: &ThiefSpec, look: &ThiefLook) -> Scene {
     for (i, (cell, intensity)) in spec.lights.iter().enumerate() {
         let c = cell_world(*cell);
         let s = 620.0 * (*intensity as f32 / 8.0) * look.lamp_scale;
-        scene.point_lights.push([c.x, 2.0, c.z, 0.25, s * look.lamp_tint[0], s * look.lamp_tint[1], s * look.lamp_tint[2], 0.0]);
+        // The conceptual light must have CLEAR AIR toward the ground: NEE
+        // shadow rays see the fixture (a dynamic run), so a light placed
+        // above the opaque lantern cap projects the cap as a huge soft
+        // square onto the street (the owner's "unnatural dark rectangle").
+        // Legacy keeps the old overhead point verbatim; Refined hangs the
+        // light UNDER the bracket-arm lantern, where a real luminaire emits.
+        let lp = match look.kit {
+            Kit::Legacy => [c.x, 2.0, c.z],
+            Kit::Refined => [c.x + 0.3125, 1.40625, c.z],
+        };
+        scene.point_lights.push([lp[0], lp[1], lp[2], 0.25, s * look.lamp_tint[0], s * look.lamp_tint[1], s * look.lamp_tint[2], 0.0]);
         scene.name_point_light(&format!("lamp_{i}"), scene.point_lights.len() - 1);
         let first = scene.primitives.len();
         match look.kit {
@@ -213,11 +223,13 @@ pub fn build_thief(spec: &ThiefSpec, look: &ThiefLook) -> Scene {
                 scene.add_box_world(Vec3::new(c.x - 0.125, 1.6875, c.z - 0.125), Vec3::new(c.x + 0.125, 1.875, c.z + 0.125), look.lamp_head, look.lamp_glow, 0.4, 0.0);
             }
             Kit::Refined => {
-                // pedestal, slim post, glowing lantern head, cap
+                // pedestal + slim post + bracket arm; the glowing lantern
+                // hangs off the arm with the light point just below it
                 scene.add_box_world(Vec3::new(c.x - 0.09375, FLOOR_TOP, c.z - 0.09375), Vec3::new(c.x + 0.09375, 0.25, c.z + 0.09375), look.lamp_post, [0.0; 4], 0.6, 0.0);
-                scene.add_box_world(Vec3::new(c.x - 0.03125, 0.25, c.z - 0.03125), Vec3::new(c.x + 0.03125, 1.6875, c.z + 0.03125), look.lamp_post, [0.0; 4], 0.6, 0.0);
-                scene.add_box_world(Vec3::new(c.x - 0.09375, 1.6875, c.z - 0.09375), Vec3::new(c.x + 0.09375, 1.875, c.z + 0.09375), look.lamp_head, look.lamp_glow, 0.4, 0.0);
-                scene.add_box_world(Vec3::new(c.x - 0.125, 1.875, c.z - 0.125), Vec3::new(c.x + 0.125, 1.9375, c.z + 0.125), look.lamp_post, [0.0; 4], 0.6, 0.0);
+                scene.add_box_world(Vec3::new(c.x - 0.03125, 0.25, c.z - 0.03125), Vec3::new(c.x + 0.03125, 1.75, c.z + 0.03125), look.lamp_post, [0.0; 4], 0.6, 0.0);
+                scene.add_box_world(Vec3::new(c.x, 1.6875, c.z - 0.03125), Vec3::new(c.x + 0.1875, 1.75, c.z + 0.03125), look.lamp_post, [0.0; 4], 0.6, 0.0);
+                scene.add_box_world(Vec3::new(c.x + 0.21875, 1.5, c.z - 0.09375), Vec3::new(c.x + 0.40625, 1.6875, c.z + 0.09375), look.lamp_head, look.lamp_glow, 0.4, 0.0);
+                scene.add_box_world(Vec3::new(c.x + 0.1875, 1.6875, c.z - 0.125), Vec3::new(c.x + 0.4375, 1.75, c.z + 0.125), look.lamp_post, [0.0; 4], 0.6, 0.0);
             }
         }
         scene.register_dynamic(&format!("lamp_fix_{i}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
