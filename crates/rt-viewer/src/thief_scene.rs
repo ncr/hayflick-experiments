@@ -226,20 +226,16 @@ pub fn build_thief(spec: &ThiefSpec, look: &ThiefLook) -> Scene {
     scene.recompute_bounds();
 
     // ---- dynamics (after recompute_bounds, local space): the two player
-    // bodies, one body per NPC, the loot chest, and one leaf per door edge.
-    let first = scene.primitives.len();
-    build_player_body(&mut scene, look, look.coat_green, Some(look.hood_green));
-    scene.register_dynamic("tplayer_a", first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
-    let first = scene.primitives.len();
-    build_player_body(&mut scene, look, look.coat_brown, None);
-    scene.register_dynamic("tplayer_b", first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
+    // bodies, one body per NPC (Refined kit: five runs each — core + four
+    // limbs the loop swings), the loot chest, and one leaf per door edge.
+    build_player_body(&mut scene, look, "tplayer_a", look.coat_green, Some(look.hood_green));
+    build_player_body(&mut scene, look, "tplayer_b", look.coat_brown, None);
     for n in &spec.npcs {
-        let first = scene.primitives.len();
+        let name = format!("npc_{}", n.id);
         match n.role {
-            house_game::thief::sim::Role::Guard => build_guard_body(&mut scene, look),
-            house_game::thief::sim::Role::Civilian => build_civilian_body(&mut scene, look),
+            house_game::thief::sim::Role::Guard => build_guard_body(&mut scene, look, &name),
+            house_game::thief::sim::Role::Civilian => build_civilian_body(&mut scene, look, &name),
         }
-        scene.register_dynamic(&format!("npc_{}", n.id), first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
     }
     let first = scene.primitives.len();
     scene.add_box_world(Vec3::new(-0.25, 0.0, -0.1875), Vec3::new(0.25, 0.3125, 0.1875), CHEST_BASE, [0.0; 4], 0.6, 0.0);
@@ -354,77 +350,128 @@ fn barrier_dress(scene: &mut Scene, e: EdgeKind, rect: [f32; 4], look: &ThiefLoo
 
 // ---- bodies ---------------------------------------------------------------
 //
-// Legacy kit: the chunky pre-look figures (classic — golden-pinned).
-// Refined kit: tailored figures (~1.34 wu): boots / slim legs / flared coat
-// skirt / belt / torso / head, a hood cap + back drape for outfit A, helm +
-// pauldrons + crest + spear for the guard, a brimmed hat for the civilian.
-// All keep the nose wedge so facing reads, and all survive the hidden-crouch
-// y-squash (0.35) the loop applies when the player goes to ground.
+// Legacy kit: the chunky single-run pre-look figures (classic — the golden
+// renders these exact boxes, one dynamic run per body).
+//
+// Refined kit: ARTICULATED figures (~1.4 wu tall) built from five dynamic
+// runs per body — core (pelvis/belt/torso/shoulders/head/dress + nose),
+// `<name>/legL`, `/legR` (thigh-to-boot, authored around the HIP pivot) and
+// `<name>/armL`, `/armR` (sleeve + mitten hand, authored around the SHOULDER
+// pivot) — so the loop can swing limbs per tick (deterministic walk cycle).
+// Limb geometry is authored in PIVOT space: the loop's instance transform is
+// `body * translate(pivot) * swing`, so a zero swing reproduces the rest
+// pose exactly. The guard's spear rides the right-arm run (carry sway).
+// All bodies keep the nose wedge so facing reads, and survive the
+// hidden-crouch y-squash the loop applies when the player goes to ground.
 
-fn build_player_body(scene: &mut Scene, look: &ThiefLook, coat: [f32; 4], hood: Option<[f32; 4]>) {
+/// Hip pivot height + lateral leg offset; shoulder pivot height + lateral
+/// arm offset. The loop's limb transforms must use the SAME numbers.
+pub const HIP: f32 = 0.46875;
+pub const LEG_X: f32 = 0.0625;
+pub const SHOULDER: f32 = 1.0;
+pub const ARM_X: f32 = 0.1875;
+
+/// Headwear for a Refined figure (per body role + look).
+enum Dress {
+    Hood([f32; 4]),
+    Bare,
+    Helm,
+    Hat,
+}
+
+fn build_player_body(scene: &mut Scene, look: &ThiefLook, name: &str, coat: [f32; 4], hood: Option<[f32; 4]>) {
     match look.kit {
-        Kit::Legacy => build_thief_body_legacy(scene, look, coat, hood),
+        Kit::Legacy => {
+            let first = scene.primitives.len();
+            build_thief_body_legacy(scene, look, coat, hood);
+            scene.register_dynamic(name, first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
+        }
         Kit::Refined => {
-            tailored_base(scene, look.boots, look.legs, coat);
-            part(scene, 0.09375, 0.09375, 1.03125, 1.28125, look.skin, [0.0; 4]); // head
-            if let Some(hd) = hood {
-                part(scene, 0.125, 0.125, 1.1875, 1.34375, hd, [0.0; 4]); // hood cap
-                // back drape (nose is +Z, so the drape hangs at -Z)
-                scene.add_box_world(Vec3::new(-0.09375, 0.78125, -0.21875), Vec3::new(0.09375, 1.1875, -0.09375), hd, [0.0; 4], 0.6, 0.0);
-            }
-            nose(scene, look.skin, 1.09375, 0.09375);
+            let dress = match hood {
+                Some(hd) => Dress::Hood(hd),
+                None => Dress::Bare,
+            };
+            build_articulated(scene, look, name, coat, look.legs, dress, false);
         }
     }
 }
 
-fn build_guard_body(scene: &mut Scene, look: &ThiefLook) {
+fn build_guard_body(scene: &mut Scene, look: &ThiefLook, name: &str) {
     match look.kit {
-        Kit::Legacy => build_npc_body_legacy(scene, look, look.guard_coat, Some(look.guard_helm)),
-        Kit::Refined => {
-            part(scene, 0.125, 0.09375, 0.0, 0.1875, look.boots, [0.0; 4]); // boots
-            part(scene, 0.09375, 0.09375, 0.1875, 0.46875, look.npc_legs, [0.0; 4]); // legs
-            part(scene, 0.15625, 0.125, 0.46875, 1.0, look.guard_coat, [0.0; 4]); // tabard
-            part(scene, 0.1875, 0.15625, 0.65625, 0.71875, look.boots, [0.0; 4]); // duty belt
-            // pauldrons
-            scene.add_box_world(Vec3::new(0.15625, 0.9375, -0.09375), Vec3::new(0.28125, 1.0625, 0.09375), look.guard_helm, [0.0; 4], 0.6, 0.0);
-            scene.add_box_world(Vec3::new(-0.28125, 0.9375, -0.09375), Vec3::new(-0.15625, 1.0625, 0.09375), look.guard_helm, [0.0; 4], 0.6, 0.0);
-            part(scene, 0.09375, 0.09375, 1.0, 1.25, look.skin, [0.0; 4]); // head
-            part(scene, 0.125, 0.125, 1.1875, 1.34375, look.guard_helm, [0.0; 4]); // helm
-            part(scene, 0.03125, 0.09375, 1.34375, 1.4375, look.guard_coat, [0.0; 4]); // crest
-            // spear at the right hand: pole + steel tip
-            scene.add_box_world(Vec3::new(0.1875, 0.0, -0.03125), Vec3::new(0.25, 1.625, 0.03125), look.boots, [0.0; 4], 0.6, 0.0);
-            scene.add_box_world(Vec3::new(0.1875, 1.625, -0.03125), Vec3::new(0.25, 1.8125, 0.03125), look.guard_helm, [0.0; 4], 0.4, 0.0);
-            nose(scene, look.skin, 1.0625, 0.09375);
+        Kit::Legacy => {
+            let first = scene.primitives.len();
+            build_npc_body_legacy(scene, look, look.guard_coat, Some(look.guard_helm));
+            scene.register_dynamic(name, first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
         }
+        Kit::Refined => build_articulated(scene, look, name, look.guard_coat, look.npc_legs, Dress::Helm, look.guard_polearm),
     }
 }
 
-fn build_civilian_body(scene: &mut Scene, look: &ThiefLook) {
+fn build_civilian_body(scene: &mut Scene, look: &ThiefLook, name: &str) {
     match look.kit {
-        Kit::Legacy => build_npc_body_legacy(scene, look, look.civ_coat, None),
-        Kit::Refined => {
-            tailored_base(scene, look.boots, look.npc_legs, look.civ_coat);
-            part(scene, 0.09375, 0.09375, 1.03125, 1.28125, look.skin, [0.0; 4]); // head
-            part(scene, 0.1875, 0.1875, 1.21875, 1.28125, look.boots, [0.0; 4]); // hat brim
-            part(scene, 0.09375, 0.09375, 1.28125, 1.40625, look.boots, [0.0; 4]); // hat crown
-            nose(scene, look.skin, 1.09375, 0.09375);
+        Kit::Legacy => {
+            let first = scene.primitives.len();
+            build_npc_body_legacy(scene, look, look.civ_coat, None);
+            scene.register_dynamic(name, first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
         }
+        Kit::Refined => build_articulated(scene, look, name, look.civ_coat, look.npc_legs, Dress::Hat, false),
     }
 }
 
-/// Boots / slim legs / flared coat skirt / leather belt / torso — the shared
-/// lower body of the Refined figures (player + civilian).
-fn tailored_base(scene: &mut Scene, boots: [f32; 4], legs: [f32; 4], coat: [f32; 4]) {
-    part(scene, 0.125, 0.09375, 0.0, 0.1875, boots, [0.0; 4]);
-    part(scene, 0.09375, 0.09375, 0.1875, 0.46875, legs, [0.0; 4]);
-    part(scene, 0.1875, 0.15625, 0.46875, 0.71875, coat, [0.0; 4]); // skirt
-    part(scene, 0.15625, 0.125, 0.71875, 0.78125, boots, [0.0; 4]); // belt
-    part(scene, 0.15625, 0.125, 0.78125, 1.03125, coat, [0.0; 4]); // torso
-}
+/// The five-run articulated figure. Core in body-local space (feet y=0);
+/// limbs in pivot space (origin at the joint, geometry hanging below it).
+fn build_articulated(scene: &mut Scene, look: &ThiefLook, name: &str, coat: [f32; 4], legs: [f32; 4], dress: Dress, polearm: bool) {
+    // ---- core: pelvis, belt, torso, shoulder slab, head, dress, nose
+    let first = scene.primitives.len();
+    part(scene, 0.125, 0.09375, HIP - 0.0625, HIP + 0.0625, legs, [0.0; 4]); // pelvis
+    part(scene, 0.15625, 0.109375, HIP + 0.0625, HIP + 0.125, look.boots, [0.0; 4]); // belt
+    part(scene, 0.15625, 0.125, HIP + 0.125, SHOULDER + 0.03125, coat, [0.0; 4]); // torso
+    part(scene, 0.1875, 0.125, SHOULDER - 0.03125, SHOULDER + 0.0625, coat, [0.0; 4]); // shoulder slab
+    part(scene, 0.09375, 0.09375, 1.0625, 1.3125, look.skin, [0.0; 4]); // head
+    match dress {
+        Dress::Hood(hd) => {
+            part(scene, 0.125, 0.125, 1.25, 1.40625, hd, [0.0; 4]); // hood cap
+            // back drape (nose is +Z, so the drape hangs at -Z)
+            scene.add_box_world(Vec3::new(-0.09375, 0.8125, -0.21875), Vec3::new(0.09375, 1.21875, -0.125), hd, [0.0; 4], 0.6, 0.0);
+        }
+        Dress::Bare => {}
+        Dress::Helm => {
+            part(scene, 0.125, 0.125, 1.25, 1.40625, look.guard_helm, [0.0; 4]); // helm
+            part(scene, 0.03125, 0.09375, 1.40625, 1.5, coat, [0.0; 4]); // crest
+            // pauldrons over the shoulder line
+            scene.add_box_world(Vec3::new(0.15625, 0.96875, -0.09375), Vec3::new(0.28125, 1.09375, 0.09375), look.guard_helm, [0.0; 4], 0.6, 0.0);
+            scene.add_box_world(Vec3::new(-0.28125, 0.96875, -0.09375), Vec3::new(-0.15625, 1.09375, 0.09375), look.guard_helm, [0.0; 4], 0.6, 0.0);
+        }
+        Dress::Hat => {
+            part(scene, 0.1875, 0.1875, 1.28125, 1.34375, look.boots, [0.0; 4]); // brim
+            part(scene, 0.09375, 0.09375, 1.34375, 1.46875, look.boots, [0.0; 4]); // crown
+        }
+    }
+    // nose wedge on +Z at the head's face plane (facing read)
+    scene.add_box_world(Vec3::new(-0.03125, 1.125, 0.09375), Vec3::new(0.03125, 1.21875, 0.15625), look.skin, [0.0; 4], 0.8, 0.0);
+    scene.register_dynamic(name, first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
 
-/// The facing-read wedge on +Z at the given base height / face plane.
-fn nose(scene: &mut Scene, skin: [f32; 4], y0: f32, face_z: f32) {
-    scene.add_box_world(Vec3::new(-0.03125, y0, face_z), Vec3::new(0.03125, y0 + 0.09375, face_z + 0.0625), skin, [0.0; 4], 0.8, 0.0);
+    // ---- legs: thigh-to-shin box + boot with a toe, hanging from the hip
+    // pivot (geometry centred on x — the pivot translation supplies ±LEG_X)
+    for suffix in ["legL", "legR"] {
+        let first = scene.primitives.len();
+        scene.add_box_world(Vec3::new(-0.0625, -HIP + 0.09375, -0.0625), Vec3::new(0.0625, 0.03125, 0.0625), legs, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(-0.0625, -HIP, -0.0625), Vec3::new(0.0625, -HIP + 0.09375, 0.125), look.boots, [0.0; 4], 0.6, 0.0);
+        scene.register_dynamic(&format!("{name}/{suffix}"), first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
+    }
+
+    // ---- arms: sleeve + mitten hand from the shoulder pivot; the guard's
+    // right arm also carries the spear (pole + steel head)
+    for suffix in ["armL", "armR"] {
+        let first = scene.primitives.len();
+        scene.add_box_world(Vec3::new(-0.03125, -0.40625, -0.03125), Vec3::new(0.03125, 0.03125, 0.03125), coat, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(-0.0625, -0.53125, -0.0625), Vec3::new(0.0625, -0.40625, 0.0625), look.skin, [0.0; 4], 0.6, 0.0);
+        if polearm && suffix == "armR" {
+            scene.add_box_world(Vec3::new(-0.03125, -0.5, 0.0625), Vec3::new(0.03125, 0.8125, 0.125), look.boots, [0.0; 4], 0.6, 0.0);
+            scene.add_box_world(Vec3::new(-0.03125, 0.8125, 0.0625), Vec3::new(0.03125, 1.0, 0.125), look.guard_helm, [0.0; 4], 0.4, 0.0);
+        }
+        scene.register_dynamic(&format!("{name}/{suffix}"), first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
+    }
 }
 
 /// A chunky readable figure (~1.31 wu tall ≈ 60 low px): boots, coat, head,
@@ -484,6 +531,16 @@ mod tests {
             let scene = build_thief(&spec, look);
             for name in ["tplayer_a", "tplayer_b", "npc_1", "npc_2", "loot", "tdoor_0", "tdoor_1"] {
                 assert!(scene.dynamics.iter().any(|(n, ..)| n == name), "{}: missing run {name}", look.name);
+            }
+            // Refined bodies are articulated (five runs); Legacy stays one
+            // run per body — the loop keys off limb-run presence, and the
+            // classic golden depends on the Legacy shape.
+            let articulated = matches!(look.kit, crate::thief_look::Kit::Refined);
+            for body in ["tplayer_a", "tplayer_b", "npc_1", "npc_2"] {
+                for limb in ["legL", "legR", "armL", "armR"] {
+                    let name = format!("{body}/{limb}");
+                    assert_eq!(scene.dynamics.iter().any(|(n, ..)| *n == name), articulated, "{}: run {name} presence", look.name);
+                }
             }
             assert_eq!(door_runs(&spec.grid).len(), 2, "the spine has two door edges");
             // the only NEE lights are the named lamps

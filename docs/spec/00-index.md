@@ -142,6 +142,18 @@ green, 7 Vulkan goldens green.
   direction** (comparison artifact "Thief — Look Directions"); the winner becomes the
   default and the thief golden is re-pinned then.
 
+- **Look round 2 (owner request, 2026-07-10)** — five more presets (`bastion` medieval
+  stone, `adobe` desert kasbah, `edo` machiya lane, `scifi` colony station, `neon`
+  cyberpunk backstreet; `guard_polearm` switch keeps spears off sci-fi security) and
+  **articulated figures**: every Refined-kit body is now five dynamic runs — core +
+  `/legL` `/legR` (boots) + `/armL` `/armR` (hands) — swung by a deterministic walk
+  cycle on the fixed sim clock (`Gait` in thief_loop: phase + blend; stride period and
+  amplitude follow the movement mode, hunting guards run, arms counter-swing, guards'
+  spears ride the carry arm). Hidden-crouch squash and the outfit swap zero/squash all
+  five runs. Legacy kit (classic) untouched — the golden still passes byte-exact. The
+  loop self-detects articulation by limb-run presence, so no look plumbing crossed the
+  adapter.
+
 ## Decision log
 
 - **2026-07-09 · R1 opened.** Vision seed = thief / NPC-memory-and-deduction. Cell scale

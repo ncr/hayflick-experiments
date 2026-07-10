@@ -24,13 +24,13 @@
 use crate::backend::Stamp;
 use crate::game_scene::DOOR_LEAF_H;
 use crate::menu::{mrect, mtext};
-use crate::thief_scene::{cell_world, cut_for_floor, door_leaf_at, door_runs, player_run_for_look, DoorRun, STOREY_H, WALL_CUT_H};
+use crate::thief_scene::{cell_world, cut_for_floor, door_leaf_at, door_runs, player_run_for_look, DoorRun, ARM_X, HIP, LEG_X, SHOULDER, STOREY_H, WALL_CUT_H};
 use glam::{Mat4, Vec2, Vec3};
 use house_game::thief::grid::{CellKind, CellPos, Dir, DoorState, EdgeKind, Passage};
 use house_game::thief::log::narrate;
 use house_game::thief::sim::{
-    day_minute, Command, DayPhase, MoveMode, NpcState, StopChoice, ThiefGame, ThiefSnapshot,
-    ThiefSpec, BRIBE_COST, DARK_LIGHT, DIM_LIGHT, STOP_DECIDE_TICKS,
+    day_minute, Command, DayPhase, MoveMode, NpcState, Role, StopChoice, ThiefGame,
+    ThiefSnapshot, ThiefSpec, BRIBE_COST, DARK_LIGHT, DIM_LIGHT, STOP_DECIDE_TICKS,
 };
 use house_game::thief::trace::parse_trace;
 use house_game::TICK_DT;
@@ -78,6 +78,41 @@ impl Ease {
     }
 }
 
+/// Walk-cycle state for one body (player or NPC) — presentation-only, but
+/// ticked on the FIXED clock (run_due's per-tick loop / demo_advance_tick)
+/// so DEMO captures replay bit-identically. `phase` accumulates while the
+/// body's ease is gliding; `blend` fades the pose in/out so stops settle to
+/// the rest pose instead of freezing mid-stride.
+#[derive(Clone, Copy, Default)]
+struct Gait {
+    phase: f32,
+    blend: f32,
+}
+
+/// Stride period (ticks per full two-step cycle) and hip swing amplitude
+/// (radians) per movement mode — the whole feel of the walk in two numbers.
+fn gait_params(mode: MoveMode) -> (f32, f32) {
+    match mode {
+        MoveMode::Sneak => (22.0, 0.34),
+        MoveMode::Walk => (16.0, 0.5),
+        MoveMode::Run => (11.0, 0.72),
+    }
+}
+
+/// The movement mode an NPC's state implies (hunters run).
+fn npc_mode(state: NpcState) -> MoveMode {
+    match state {
+        NpcState::Approach | NpcState::Pursue => MoveMode::Run,
+        _ => MoveMode::Walk,
+    }
+}
+
+/// Sample the cycle: (core bob, leg swing, arm swing) — arms counter-swing.
+fn gait_pose(g: Gait, leg_amp: f32, arm_ratio: f32) -> (f32, f32, f32) {
+    let s = g.phase.sin() * g.blend;
+    ((g.phase * 2.0).sin().abs() * 0.02 * g.blend, s * leg_amp, -s * leg_amp * arm_ratio)
+}
+
 /// A click-to-move route over the sim grid: the remaining cells in walk
 /// order, plus whether arriving should lift the loot. Pure shell state —
 /// the sim only ever sees the per-tick Move/Steal commands it produces.
@@ -118,6 +153,8 @@ pub struct ThiefLoop {
     stair: bool,
     /// Eased world positions: [player, npcs in snapshot order...].
     ease: Vec<Ease>,
+    /// Walk-cycle state, parallel to `ease`.
+    gait: Vec<Gait>,
     /// Presentation facing for the player body (radians about Y).
     face: f32,
     /// Camera target the follow-cam last consumed.
@@ -131,6 +168,7 @@ impl ThiefLoop {
         let snap = sim.snapshot();
         let mut ease = vec![Ease::pinned(cell_world(snap.player))];
         ease.extend(snap.npcs.iter().map(|n| Ease::pinned(cell_world(n.pos))));
+        let gait = vec![Gait::default(); ease.len()];
         let p0 = cell_world(snap.player);
         let mut t = ThiefLoop {
             fixed: FixedLoop::new(TICK_DT),
@@ -151,6 +189,7 @@ impl ThiefLoop {
             plan: None,
             stair: false,
             ease,
+            gait,
             face: 0.0,
             last_cam: p0,
         };
@@ -354,6 +393,7 @@ impl ThiefLoop {
             let cmds = self.queue.drain_for(self.tick);
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
+            self.gait_tick();
         }
         if n > 0 {
             self.refresh();
@@ -366,6 +406,7 @@ impl ThiefLoop {
         let cmds = self.queue.drain_for(self.tick);
         self.sim.tick(self.tick, &cmds);
         self.tick.0 += 1;
+        self.gait_tick();
         self.refresh();
     }
 
@@ -408,6 +449,31 @@ impl ThiefLoop {
             *e = Ease::pinned(e.to);
         }
         println!("CMDS(thief): {n} commands over {ticks} ticks — state {:016x}", self.sim.state_hash());
+    }
+
+    /// Advance every body's walk cycle one fixed tick: phase runs while the
+    /// body's ease is gliding, blend fades the pose in/out around it. Reads
+    /// the last refreshed snapshot (at most one tick stale in live bursts —
+    /// presentation-only; the DEMO path refreshes every tick).
+    fn gait_tick(&mut self) {
+        let now = self.tick.0;
+        for i in 0..self.gait.len() {
+            let e = self.ease[i];
+            let moving = e.from != e.to && now <= e.start + EASE_TICKS as u64;
+            let mode = if i == 0 {
+                self.mode()
+            } else {
+                self.snap.npcs.get(i - 1).map(|n| npc_mode(n.state)).unwrap_or(MoveMode::Walk)
+            };
+            let (period, _) = gait_params(mode);
+            let g = &mut self.gait[i];
+            g.blend = (g.blend + if moving { 0.34 } else { -0.12 }).clamp(0.0, 1.0);
+            if g.blend > 0.0 {
+                g.phase += std::f32::consts::TAU / period;
+            } else {
+                g.phase = 0.0; // idle: next stride starts at heel-strike
+            }
+        }
     }
 
     fn refresh(&mut self) {
@@ -475,6 +541,43 @@ impl ThiefLoop {
 
     // ---- per-frame instance skinning ------------------------------------
 
+    /// Place one body: the Legacy kit is a single run at `base`; the
+    /// articulated Refined kit (detected by its limb runs) composes core +
+    /// four limbs from the gait sample. Limb transforms MUST mirror the
+    /// pivot constants the builder authored the geometry around.
+    #[allow(clippy::too_many_arguments)] // a body placement is genuinely this wide
+    fn push_body(&self, out: &mut Vec<(InstanceKey, Mat4)>, handles: &SceneHandles, name: &str, base: Mat4, g: Gait, leg_amp: f32, arm_ratio: f32) {
+        let get = |n: &str| handles.instances.get(n).copied();
+        let Some(core) = get(name) else { return };
+        if get(&format!("{name}/legL")).is_none() {
+            out.push((core, base)); // Legacy single-run body
+            return;
+        }
+        let (bob, leg, arm) = gait_pose(g, leg_amp, arm_ratio);
+        out.push((core, base * Mat4::from_translation(Vec3::new(0.0, bob, 0.0))));
+        let limb = |px: f32, py: f32, swing: f32| base * Mat4::from_translation(Vec3::new(px, py, 0.0)) * Mat4::from_rotation_x(swing);
+        for (suffix, m) in [
+            ("legL", limb(-LEG_X, HIP, leg)),
+            ("legR", limb(LEG_X, HIP, -leg)),
+            ("armL", limb(-ARM_X, SHOULDER, arm)),
+            ("armR", limb(ARM_X, SHOULDER, -arm)),
+        ] {
+            if let Some(k) = get(&format!("{name}/{suffix}")) {
+                out.push((k, m));
+            }
+        }
+    }
+
+    /// Hide a body entirely (the player's inactive outfit).
+    fn zero_body(&self, out: &mut Vec<(InstanceKey, Mat4)>, handles: &SceneHandles, name: &str) {
+        let zero = Mat4::from_scale(Vec3::ZERO);
+        for n in [name.to_string(), format!("{name}/legL"), format!("{name}/legR"), format!("{name}/armL"), format!("{name}/armR")] {
+            if let Some(k) = handles.instances.get(&n) {
+                out.push((*k, zero));
+            }
+        }
+    }
+
     pub fn instances(&self, handles: &SceneHandles) -> Vec<(InstanceKey, Mat4)> {
         let mut out = Vec::new();
         let get = |n: &str| handles.instances.get(n).copied();
@@ -482,26 +585,28 @@ impl ThiefLoop {
         let ppos = self.ease[0].at(now);
         let active = player_run_for_look(self.sim.look());
         for run in ["tplayer_a", "tplayer_b"] {
-            if let Some(k) = get(run) {
-                let m = if run == active {
-                    let base = Mat4::from_translation(ppos) * Mat4::from_rotation_y(self.face);
-                    if self.snap.hidden {
-                        // sunk into the hay: a low crouch reads as concealed
-                        base * Mat4::from_scale(Vec3::new(1.0, 0.35, 1.0))
-                    } else {
-                        base
-                    }
-                } else {
-                    Mat4::from_scale(Vec3::ZERO)
-                };
-                out.push((k, m));
+            if run == active {
+                let mut base = Mat4::from_translation(ppos) * Mat4::from_rotation_y(self.face);
+                let mut g = self.gait[0];
+                if self.snap.hidden {
+                    // sunk into the hay: a low crouch reads as concealed
+                    base *= Mat4::from_scale(Vec3::new(1.0, 0.35, 1.0));
+                    g.blend = 0.0; // crouched still, not mid-stride
+                }
+                let (_, leg_amp) = gait_params(self.mode());
+                self.push_body(&mut out, handles, run, base, g, leg_amp, 0.65);
+            } else {
+                self.zero_body(&mut out, handles, run);
             }
         }
         for (i, n) in self.snap.npcs.iter().enumerate() {
-            if let Some(k) = get(&format!("npc_{}", n.id)) {
-                let pos = self.ease[1 + i].at(now);
-                out.push((k, Mat4::from_translation(pos) * Mat4::from_rotation_y(facing_angle(n.facing))));
-            }
+            let name = format!("npc_{}", n.id);
+            let pos = self.ease[1 + i].at(now);
+            let base = Mat4::from_translation(pos) * Mat4::from_rotation_y(facing_angle(n.facing));
+            let (_, leg_amp) = gait_params(npc_mode(n.state));
+            // guards swing their arms less: the spear hand stays a carry
+            let arm_ratio = if n.role == Role::Guard { 0.35 } else { 0.65 };
+            self.push_body(&mut out, handles, &name, base, self.gait[1 + i], leg_amp, arm_ratio);
         }
         if let Some(k) = get("loot") {
             let m = match self.snap.loot_pos {
@@ -918,5 +1023,78 @@ mod tests {
         assert!(rows.len() >= 2, "must wrap: {rows:?}");
         assert!(rows[0].chars().count() <= 24);
         assert!(rows[1].starts_with("       "), "continuation hangs under the clock prefix");
+    }
+
+    /// The walk cycle lives on the fixed clock: gait blends in while the
+    /// body walks, swings the legs in antiphase, and settles back to the
+    /// rest pose (blend 0) after the last ease lands.
+    #[test]
+    fn gait_swings_while_walking_and_settles_at_rest() {
+        let mut t = ThiefLoop::new(spine_level());
+        t.held[0] = true;
+        for _ in 0..24 {
+            t.run_due(TICK_DT);
+        }
+        let g = t.gait[0];
+        assert!(g.blend > 0.9, "mid-walk the pose must be fully blended in (blend={})", g.blend);
+        let (_, leg, arm) = gait_pose(g, 0.5, 0.65);
+        assert!(leg.abs() <= 0.5 && arm.abs() <= 0.5 * 0.65);
+        // legs are antiphase by construction (push_body negates the swing);
+        // the pose itself must be non-degenerate somewhere in the cycle
+        let mut peak: f32 = 0.0;
+        for _ in 0..16 {
+            t.run_due(TICK_DT);
+            let (_, l, _) = gait_pose(t.gait[0], 0.5, 0.65);
+            peak = peak.max(l.abs());
+        }
+        assert!(peak > 0.3, "a full cycle must reach a visible swing (peak={peak})");
+        t.held[0] = false;
+        for _ in 0..40 {
+            t.run_due(TICK_DT);
+        }
+        assert_eq!(t.gait[0].blend, 0.0, "idle must settle to the rest pose");
+        assert_eq!(t.gait[0].phase, 0.0, "the next stride restarts at heel-strike");
+    }
+
+    /// Articulated bodies emit five runs with mirrored leg swings; the
+    /// inactive outfit's five runs are all zeroed.
+    #[test]
+    fn articulated_instances_mirror_legs_and_zero_the_spare_outfit() {
+        use std::collections::BTreeMap;
+        let mut t = ThiefLoop::new(spine_level());
+        t.held[0] = true;
+        for _ in 0..20 {
+            t.run_due(TICK_DT);
+        }
+        let mut instances = BTreeMap::new();
+        let mut names = vec!["loot".to_string(), "tdoor_0".to_string(), "tdoor_1".to_string()];
+        for body in ["tplayer_a", "tplayer_b", "npc_1", "npc_2"] {
+            names.push(body.to_string());
+            for limb in ["legL", "legR", "armL", "armR"] {
+                names.push(format!("{body}/{limb}"));
+            }
+        }
+        for (i, n) in names.iter().enumerate() {
+            instances.insert(n.clone(), InstanceKey::from_index(i as u32));
+        }
+        let handles = SceneHandles { lights: BTreeMap::new(), instances };
+        let out = t.instances(&handles);
+        let get = |name: &str| {
+            let k = handles.instances[name];
+            out.iter().find(|(ik, _)| *ik == k).map(|(_, m)| *m).unwrap()
+        };
+        // the active (hooded) body walks: legs swing in antiphase
+        let (ll, lr) = (get("tplayer_a/legL"), get("tplayer_a/legR"));
+        let swing = |m: Mat4| {
+            let z = m.transform_vector3(Vec3::Z);
+            z.y.atan2(z.z)
+        };
+        assert!((swing(ll) + swing(lr)).abs() < 1e-5, "legs must mirror");
+        assert!(swing(ll).abs() > 0.05, "mid-walk legs must be off rest");
+        // the spare outfit is fully hidden — every run zero-scaled
+        for limb in ["", "/legL", "/legR", "/armL", "/armR"] {
+            let m = get(&format!("tplayer_b{limb}"));
+            assert_eq!(m.transform_vector3(Vec3::ONE), Vec3::ZERO, "spare outfit run tplayer_b{limb} must be zeroed");
+        }
     }
 }
