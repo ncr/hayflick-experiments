@@ -29,6 +29,10 @@ struct ProbePush {
     int4   misc;  // probeCount, raysTotal (Fibonacci N), bounces, raysThisBatch
     int4   misc2; // batchStartRay, bank, lightCount, _
     float4 env0;  // sunScale, skyScale, fogDensity, fogHeight
+    float4 env1;  // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), _
+    float4 env2;  // sun tint rgb, _
+    float4 env3;  // sky horizon tint rgb, _
+    float4 env4;  // sky zenith tint rgb, _
 };
 
 constant float PI = 3.14159265;
@@ -38,13 +42,13 @@ constant uint PROBE_MASK = 0x0Au;
 static uint hashp(uint x){ x^=x>>16; x*=0x7feb352du; x^=x>>15; x*=0x846ca68bu; x^=x>>16; return x; }
 static float rnd(thread uint& s){ s=hashp(s); return float(s)*(1.0/4294967296.0); }
 
-static float3 skyCol(float3 d, float skyScale){
+static float3 skyCol(float3 d, constant ProbePush& pc){
     float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
-    float3 horizon = float3(0.80, 0.83, 0.90);
-    float3 zenith  = float3(0.28, 0.45, 0.92);
+    float3 horizon = pc.env3.rgb; // look-authored (sun/sky-as-data, Faza 1b)
+    float3 zenith  = pc.env4.rgb;
     float3 ground  = float3(0.14, 0.13, 0.12);
     float3 c = (d.y > 0.0) ? mix(horizon, zenith, pow(t, 1.4)) : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0));
-    return c * 0.18 * skyScale;
+    return c * 0.18 * pc.env0.y;
 }
 
 struct Hit { float t; float3 n; float2 uv; int mat; };
@@ -87,12 +91,12 @@ static float3 radiance(float3 o, float3 d, uint seed, constant ProbePush& pc,
                        device const uint* indices, device const GeomInfo* geoms,
                        device const Material* mats, device const Light* lights){
     int bounces = pc.misc.z;
-    float3 sunDir = normalize(float3(0.62, 0.55, 0.38));
-    float3 sun = float3(1.0, 0.88, 0.70) * 6.0 * pc.env0.x;
+    float3 sunDir = pc.env1.xyz; // normalized CPU-side (EnvBlock::pack)
+    float3 sun = pc.env2.rgb * 6.0 * pc.env0.x;
     float3 thru = float3(1.0), col = float3(0.0);
     for (int b = 0; b <= bounces; b++){
         Hit h;
-        if (!trace(o, d, 300.0, accel, verts, indices, geoms, h)) { col += thru * skyCol(d, pc.env0.y); break; }
+        if (!trace(o, d, 300.0, accel, verts, indices, geoms, h)) { col += thru * skyCol(d, pc); break; }
         Material m = mats[h.mat];
         float3 albedo = m.baseColor.rgb;  // M3: *= texture
         float3 n = h.n; if (dot(n, d) > 0.0) n = -n;

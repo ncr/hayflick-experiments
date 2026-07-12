@@ -4,7 +4,8 @@
 #   bin/run               # the gym: one hand-authored level (a few walls,
 #                         # one building, the player — docs/VISION.md)
 #   AO_R=1.2 bin/run      # every Config env knob passes through (config.rs)
-#   LOOK=classic bin/run  # pick a greybox look preset (look.rs)
+#   LOOK=tecta bin/run    # seed the boot look (look.rs; the ESC menu
+#                         # switches looks live — Faza 1b)
 #
 # The GI bake is cached on disk, so re-launches are instant
 # (PROBE_CACHE=0 to disable, =<dir> to relocate).

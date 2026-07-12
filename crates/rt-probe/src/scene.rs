@@ -51,6 +51,64 @@ pub struct Primitive {
     pub material_id: i32,
 }
 
+/// The sun + sky dome as DATA (look-as-data, Faza 1b). Historically these
+/// were compile-time constants in all four shade/probe kernels; a look now
+/// authors them and they ride to both backends as push rows env1..env4
+/// (see [`EnvBlock`]). Defaults reproduce the historical built-ins exactly.
+#[derive(Clone, Copy)]
+pub struct SunSky {
+    /// World-space direction TOWARD the sun (normalized in `EnvBlock::pack`).
+    pub sun_dir: [f32; 3],
+    /// Sun tint (linear); the shader key is `tint * 6.0 * env0.sunScale`.
+    pub sun_rgb: [f32; 3],
+    /// Sky-dome gradient tints (linear), scaled by `0.18 * env0.skyScale`.
+    pub horizon_rgb: [f32; 3],
+    pub zenith_rgb: [f32; 3],
+}
+
+impl Default for SunSky {
+    fn default() -> SunSky {
+        // the pre-1b shader constants, bit-exact
+        SunSky { sun_dir: [0.62, 0.55, 0.38], sun_rgb: [1.0, 0.88, 0.70], horizon_rgb: [0.80, 0.83, 0.90], zenith_rgb: [0.28, 0.45, 0.92] }
+    }
+}
+
+/// The five environment push rows both backends feed to the shade AND probe
+/// kernels: the resolved lighting scalars (env0) + the scene's [`SunSky`].
+/// One layout, four shaders — GLSL/MSL twins read identical bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EnvBlock {
+    pub env0: [f32; 4], // sunScale, skyScale, fogDensity, fogHeight
+    pub env1: [f32; 4], // sun dir xyz (normalized), w unused
+    pub env2: [f32; 4], // sun tint rgb, w unused
+    pub env3: [f32; 4], // sky horizon rgb, w unused
+    pub env4: [f32; 4], // sky zenith rgb, w unused
+}
+
+impl EnvBlock {
+    /// Resolve the block from the env0 scalars (scene lighting with the
+    /// SUN/SKY/FOG/FOG_H overrides already applied) and the scene's SunSky.
+    pub fn pack(env0: [f32; 4], s: &SunSky) -> EnvBlock {
+        let d = glam::Vec3::from(s.sun_dir).normalize_or_zero();
+        EnvBlock {
+            env0,
+            env1: [d.x, d.y, d.z, 0.0],
+            env2: [s.sun_rgb[0], s.sun_rgb[1], s.sun_rgb[2], 0.0],
+            env3: [s.horizon_rgb[0], s.horizon_rgb[1], s.horizon_rgb[2], 0.0],
+            env4: [s.zenith_rgb[0], s.zenith_rgb[1], s.zenith_rgb[2], 0.0],
+        }
+    }
+
+    /// This frame's block: the per-frame sky dim rides on the sun/sky scalars
+    /// only (env0.xy) — the authored tints never change frame to frame.
+    pub fn dimmed(mut self, sky_dim: f32) -> EnvBlock {
+        self.env0[0] *= sky_dim;
+        self.env0[1] *= sky_dim;
+        self
+    }
+}
+
 #[derive(Default)]
 pub struct Scene {
     pub vertices: Vec<Vertex>,
@@ -109,6 +167,9 @@ pub struct Scene {
     /// single-scatter sun term, applied on the primary segment only.
     /// Overridable at runtime via SUN / SKY / FOG / FOG_H (see `Config`).
     pub lighting: [f32; 4],
+    /// The sun direction/tint + sky gradient tints — look-authored data
+    /// (Faza 1b); packed with the resolved `lighting` into an [`EnvBlock`].
+    pub sun_sky: SunSky,
 }
 
 /// A single loaded file, geometry already in file-world space (node transforms baked).

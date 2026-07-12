@@ -60,6 +60,10 @@ pub struct Viewer {
     pub backend: Box<dyn RenderBackend>,
     // ---- resolved config + live tunables (the ESC menu writes these)
     pub cfg: Config,
+    /// The active look preset (look-as-data, Faza 1b): the whole aesthetic —
+    /// palette, sun/sky, post stack, exposure. The ESC settings menu switches
+    /// it live (`apply_look`); LOOK env seeds it.
+    pub look: &'static crate::look::Look,
     pub exposure: f32,
     pub style: StyleCfg,
     pub ao: f32,
@@ -126,9 +130,11 @@ impl Viewer {
     pub unsafe fn new(window: Option<&Window>, cfg: Config) -> Result<Viewer, Box<dyn std::error::Error>> {
         let start_time = std::time::Instant::now();
         let spec = house_game::gym::sim::gym_level();
-        // LOOK env picks the greybox aesthetic (look.rs presets)
-        let scene = crate::gym_scene::build_gym(&spec, crate::look::from_env());
-        println!("scene: {} prims, {} tris (the gym)", scene.primitives.len(), scene.indices.len() / 3);
+        // LOOK env picks the boot look (look.rs presets; the ESC menu
+        // switches live from there)
+        let look = crate::look::from_env();
+        let scene = crate::gym_scene::build_gym(&spec, look);
+        println!("scene: {} prims, {} tris (the gym, look {})", scene.primitives.len(), scene.indices.len() / 3, look.name);
         let player0 = scene.player_start;
 
         let backend = new_backend(window, &scene, &cfg);
@@ -149,8 +155,11 @@ impl Viewer {
             light_keys,
             audio,
             proj: proj_from_env(),
-            exposure: cfg.render.exposure,
-            style: cfg.render.style,
+            look,
+            // look-as-data (Faza 1b): the look authors exposure + the post
+            // stack; env vars override on top (the agent/harness interface)
+            exposure: cfg.render.exposure.unwrap_or(look.exposure),
+            style: look.style.env_over(),
             ao: cfg.render.ao,
             ao_r: cfg.render.ao_r,
             ao_n: cfg.render.ao_n,
@@ -205,6 +214,15 @@ impl Viewer {
             let t = Vec3::new(r.cfg.game.target.0.unwrap_or(r.view.target.x), 0.0, r.cfg.game.target.1.unwrap_or(r.view.target.z));
             r.view.target = r.proj.snap_ground_to_lattice(t, r.yaw_deg());
         }
+        // LOOK_SWITCH harness knob: exercise the RUNTIME look-switch path
+        // (backend rebuild_scene) — a SHOT after this must be byte-identical
+        // to booting in the target look directly.
+        if let Some(name) = r.cfg.harness.look_switch.clone() {
+            match crate::look::by_name(&name) {
+                Some(l) => r.apply_look(l),
+                None => eprintln!("LOOK_SWITCH={name}: unknown preset — ignored"),
+            }
+        }
         // CMDS replay prefix (deterministic) — runs LAST so the trace acts on
         // the fully seeded state.
         r.gym.run_cmds(&r.cfg);
@@ -223,6 +241,27 @@ impl Viewer {
     /// follow-cam recentres on the respawned player's first step.
     pub fn restart_gym(&mut self) {
         self.gym = GymLoop::new(self.gym.spec.clone());
+    }
+
+    /// Runtime look switch (Faza 1b, the ESC menu's look row): rebuild the
+    /// greybox in the new look, swap the backend's scene resources (probe
+    /// rebake, disk-cached per look — blocking, a few seconds on the first
+    /// visit), re-join the lamp lights, re-resolve exposure + the post stack
+    /// (look base + env overrides). Sim state is untouched — the player
+    /// stays exactly where they stood.
+    pub fn apply_look(&mut self, look: &'static crate::look::Look) {
+        if std::ptr::eq(self.look, look) {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        let scene = crate::gym_scene::build_gym(&self.gym.spec, look);
+        unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };
+        self.light_keys = join_lamp_lights(&scene, self.backend.handles(), self.backend.light_count());
+        self.scene = scene;
+        self.look = look;
+        self.exposure = self.cfg.render.exposure.unwrap_or(look.exposure);
+        self.style = look.style.env_over();
+        println!("look: {} ({:.0} ms)", look.name, t0.elapsed().as_secs_f32() * 1000.0);
     }
 
     /// Fire-and-forget UI sound (menu nav/pick) — presentation only.

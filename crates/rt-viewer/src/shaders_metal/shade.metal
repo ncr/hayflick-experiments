@@ -39,6 +39,10 @@ struct Push {
     float4 look;      // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
     float4 look2;     // gi scale, matPoster levels, aoDither, reflStrength
     int4   misc3;     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), _, _
+    float4 env1;      // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), _
+    float4 env2;      // sun tint rgb, _
+    float4 env3;      // sky horizon tint rgb, _
+    float4 env4;      // sky zenith tint rgb, _
 };
 
 constant float PI    = 3.14159265;
@@ -60,8 +64,8 @@ struct Hit { float t; float3 n; float2 uv; int mat; };
 
 static float3 skyCol(float3 d, constant Push& pc) {
     float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
-    float3 horizon = float3(0.80, 0.83, 0.90);
-    float3 zenith  = float3(0.28, 0.45, 0.92);
+    float3 horizon = pc.env3.rgb; // look-authored (sun/sky-as-data, Faza 1b)
+    float3 zenith  = pc.env4.rgb;
     float3 ground  = float3(0.14, 0.13, 0.12);
     float3 c = (d.y > 0.0) ? mix(horizon, zenith, pow(t, 1.4))
                            : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0));
@@ -230,8 +234,8 @@ kernel void shade(
     if (int(gid.x) >= W || int(gid.y) >= H) return;
     uint idx = gid.y * uint(W) + gid.x;
 
-    float3 sunDir = normalize(float3(0.62, 0.55, 0.38));
-    float3 sun = float3(1.0, 0.88, 0.70) * 6.0 * pc.env0.x;
+    float3 sunDir = pc.env1.xyz; // normalized CPU-side (EnvBlock::pack)
+    float3 sun = pc.env2.rgb * 6.0 * pc.env0.x;
 
     float u = ((float(gid.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;
     float v = -(((float(gid.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);

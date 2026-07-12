@@ -31,8 +31,12 @@ fn s(k: &str) -> Option<String> {
     std::env::var(k).ok()
 }
 
-/// Stylized post-stack knobs (tonemap.comp). `STYLE=<preset>` sets a bundle,
-/// individual vars override on top.
+/// Stylized post-stack knobs (tonemap.comp). Since Faza 1b the BASE values
+/// are look data (`Look.style` in rt-viewer, starting from
+/// [`StyleCfg::CLEAN`]); the individual env vars override on top
+/// ([`StyleCfg::env_over`]) as the agent/harness interface. The old `STYLE=`
+/// preset bundles (fallout/noir/crt/…) were the pre-reset dirt directions —
+/// deleted with them (docs/VISION.md).
 #[derive(Clone, Copy)]
 pub struct StyleCfg {
     pub grade: f32,        // 0 off, 1 fallout, 2 noir, 3 sepia, 4 neon, 5 bleach, 6 midnight
@@ -61,29 +65,43 @@ pub struct StyleCfg {
 }
 
 impl StyleCfg {
-    fn from_env() -> StyleCfg {
-        // Shadow dither ON by default was the old base look; the joyful reset
-        // (docs/VISION.md) starts from CLEAN — dither/grain/vignette all off,
-        // and the Faza-1 look presets opt into texture deliberately.
-        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 0.0, sdither_n: 16.0, sdither_th: 0.75, sat: 1.4, contrast: 1.12, lumaq: 0.0, analog: 0.0, analog_chroma: -1.0, analog_tear: -1.0, crt_mask: 0.0 };
-        if let Some(name) = s("STYLE") {
-            match name.as_str() {
-                "fallout" => { st.grade = 1.0; st.palette = 1.0; st.grain = 0.04; }
-                "noir" => { st.grade = 2.0; st.grain = 0.07; st.vignette = 0.4; }
-                "sepia" => { st.grade = 3.0; st.grain = 0.05; st.vignette = 0.25; }
-                "neon" => { st.grade = 4.0; st.bloom = 0.7; st.bloom_th = 0.75; st.grain = 0.03; }
-                "bleach" => { st.grade = 5.0; st.grain = 0.05; }
-                "midnight" => { st.grade = 6.0; st.bloom = 0.5; st.bloom_th = 0.8; }
-                "cel" => { st.poster = 4.0; st.outline = 0.85; }
-                "comic" => { st.poster = 3.0; st.outline = 0.9; st.palette = 2.0; st.pal_p = 8.0; }
-                "posterize" => { st.palette = 2.0; st.pal_p = 6.0; }
-                "duotone" => { st.palette = 3.0; st.pal_p = 0.0; }
-                "crt" => { st.palette = 3.0; st.pal_p = 2.0; st.dither = 4.0; st.grain = 0.04; }
-                "gameboy" => { st.palette = 4.0; st.dither_amt = 0.16; }
-                "clean" => {}
-                other => eprintln!("STYLE={other}: unknown preset (fallout noir sepia neon bleach midnight cel comic posterize duotone crt gameboy clean)"),
-            }
-        }
+    /// The joyful-reset clean base (docs/VISION.md): no grade, no grain, no
+    /// vignette, no palette quantization; bayer8 as the ROI/reveal dither;
+    /// a gentle sat/contrast lift. Looks author their post stack from here
+    /// (`StyleCfg { sat: 1.2, ..StyleCfg::CLEAN }`).
+    pub const CLEAN: StyleCfg = StyleCfg {
+        grade: 0.0,
+        poster: 0.0,
+        dither: 1.0,
+        dither_amt: -1.0,
+        palette: 0.0,
+        pal_p: -1.0,
+        vignette: 0.0,
+        outline: 0.0,
+        grain: 0.0,
+        grain_sz: 1.0,
+        grain_static: 0.0,
+        bloom: 0.0,
+        bloom_th: 1.0,
+        sdither: 0.0,
+        sdither_n: 16.0,
+        sdither_th: 0.75,
+        sat: 1.4,
+        contrast: 1.12,
+        lumaq: 0.0,
+        analog: 0.0,
+        analog_chroma: -1.0,
+        analog_tear: -1.0,
+        crt_mask: 0.0,
+    };
+
+    /// Apply the individual env-var overrides on top of `self` (the look's
+    /// authored post stack), then resolve the `<0 = auto` fields. Env stays
+    /// the agent/harness interface; the owner picks looks in the ESC menu.
+    /// Env is constant for the process, so re-running this on a runtime look
+    /// switch is deterministic.
+    pub fn env_over(mut self) -> StyleCfg {
+        let st = &mut self;
         st.grade = f("GRADE", st.grade);
         st.poster = f("POSTER", st.poster);
         st.dither = f("DITHER", st.dither);
@@ -127,7 +145,7 @@ impl StyleCfg {
                 _ => 0.0,
             };
         }
-        st
+        self
     }
 }
 
@@ -140,7 +158,7 @@ pub struct RenderCfg {
     pub fog: Option<f32>,
     pub fog_h: Option<f32>,
     pub pixel: u32,                // PIXEL: integer render scale at zoom=1
-    pub exposure: f32,             // EXPOSURE
+    pub exposure: Option<f32>,     // EXPOSURE: overrides the look's authored exposure (Faza 1b)
     pub probe_spacing: f32,        // PROBE_SPACING: GI probe grid spacing (wu)
     pub probe_rays: i32,           // PROBE_RAYS: bake rays per probe per bank
     pub ao: f32,                   // AO: RT-AO strength
@@ -156,7 +174,8 @@ pub struct RenderCfg {
     pub refl: f32,                 // REFL: pixelated mirror-reflection composite strength (0 = off)
     pub refl_px: i32,              // REFL_PX: reflection block size in low-res px (the pixelation)
     pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4
-    pub style: StyleCfg,
+    // The post stack (StyleCfg) is NOT here since Faza 1b: its base is look
+    // data (rt-viewer look.rs); the Viewer resolves `look.style.env_over()`.
 }
 
 impl RenderCfg {
@@ -199,6 +218,11 @@ pub struct GameCfg {
 pub struct HarnessCfg {
     pub window: Option<(u32, u32)>, // WINDOW=WxH: requested inner size (goldens)
     pub shot: Option<String>,      // SHOT=path.png: capture one frame, exit
+    /// LOOK_SWITCH=<name>: after boot, apply this look through the RUNTIME
+    /// switch path (backend rebuild_scene) before any capture — a SHOT then
+    /// must be byte-identical to booting in that look directly. The harness
+    /// verification for the ESC menu's look row (Faza 1b).
+    pub look_switch: Option<String>,
     pub shot_delay: f32,           // SHOT_DELAY: seconds before the capture
     pub rotate_at: Option<f32>,    // ROTATE_AT=secs: fire one smooth e-turn
     pub dump: Option<String>,      // DUMP=dir: record presented frames as PNGs
@@ -252,7 +276,7 @@ impl Config {
                 fog: fo("FOG"),
                 fog_h: fo("FOG_H"),
                 pixel: (i("PIXEL", 2) as u32).max(1),
-                exposure: f("EXPOSURE", 0.40),
+                exposure: fo("EXPOSURE"),
                 probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
                 probe_rays: i("PROBE_RAYS", 2048),
                 ao: f("AO", 0.55),
@@ -268,7 +292,6 @@ impl Config {
                 refl: f("REFL", 0.0),
                 refl_px: i("REFL_PX", 3).max(1),
                 debug,
-                style: StyleCfg::from_env(),
             },
             game: GameCfg {
                 lights: f("LIGHTS", 1.0).clamp(0.0, 1.0),
@@ -290,6 +313,7 @@ impl Config {
             harness: HarnessCfg {
                 window,
                 shot: s("SHOT"),
+                look_switch: s("LOOK_SWITCH"),
                 shot_delay: f("SHOT_DELAY", 0.0),
                 rotate_at: fo("ROTATE_AT"),
                 dump: s("DUMP"),
@@ -332,10 +356,12 @@ mod tests {
     fn env_string_round_trip() {
         // the joyful reset's clean base: dither texture OFF by default
         let cfg = Config::from_env();
-        assert_eq!(cfg.render.style.sdither, 0.0, "shadow dither starts OFF");
-        assert_eq!(cfg.render.style.grain, 0.0);
-        assert_eq!(cfg.render.style.vignette, 0.0);
+        let st = StyleCfg::CLEAN.env_over();
+        assert_eq!(st.sdither, 0.0, "shadow dither starts OFF");
+        assert_eq!(st.grain, 0.0);
+        assert_eq!(st.vignette, 0.0);
         assert_eq!(cfg.render.pixel, 2);
+        assert_eq!(cfg.render.exposure, None, "EXPOSURE unset = the look's authored value");
         assert!(cfg.game.roi);
         let pairs = [
             ("EXPOSURE", "0.37"),
@@ -353,18 +379,23 @@ mod tests {
             std::env::set_var(k, v);
         }
         let cfg = Config::from_env();
-        assert_eq!(cfg.render.exposure, 0.37);
+        assert_eq!(cfg.render.exposure, Some(0.37));
         assert_eq!(cfg.render.ao, 0.65);
         assert_eq!(cfg.render.ao_r, 1.20);
         assert_eq!(cfg.render.ao_n, 12);
-        assert_eq!(cfg.render.style.sdither, 0.80);
-        assert_eq!(cfg.render.style.sdither_n, 20.0);
-        assert_eq!(cfg.render.style.sdither_th, 0.40);
-        assert_eq!(cfg.render.style.dither, 4.0);
+        // env overrides land ON TOP of a look-authored style (Faza 1b)
+        let st = StyleCfg { sdither_th: 0.6, ..StyleCfg::CLEAN }.env_over();
+        assert_eq!(st.sdither, 0.80);
+        assert_eq!(st.sdither_n, 20.0);
+        assert_eq!(st.sdither_th, 0.40, "env wins over the look's authored value");
+        assert_eq!(st.dither, 4.0);
         assert_eq!(cfg.game.lights, 0.0);
         assert!(!cfg.game.light_anim);
         for (k, _) in pairs {
             std::env::remove_var(k);
         }
+        // ...and with env clear again, the look's authored value survives
+        let st = StyleCfg { sdither_th: 0.6, ..StyleCfg::CLEAN }.env_over();
+        assert_eq!(st.sdither_th, 0.6);
     }
 }

@@ -81,9 +81,10 @@ pub struct VulkanBackend {
     pub cmd: vk::CommandBuffer,
     pub in_flight: vk::Fence,
     pub swap: Option<Swap>,
-    // ---- scene GPU resources + resolved lighting environment
+    // ---- scene GPU resources + resolved lighting environment (env0 scalars
+    // + the sun/sky-as-data rows, Faza 1b)
     pub gpu: SceneGpu,
-    pub env0: [f32; 4],
+    pub env: EnvBlock,
     // ---- tonemap pipeline (window-independent)
     pub tone_set_layout: vk::DescriptorSetLayout,
     pub tone_pipeline_layout: vk::PipelineLayout,
@@ -194,7 +195,7 @@ impl VulkanBackend {
         // environment. The scene itself is owned by the Viewer (orchestration);
         // the backend only consumes it to build geometry/AS/lights.
         let gpu = SceneGpu::build(&ctx, scene, cfg.render.probe_spacing)?;
-        let env0 = cfg.lighting_env(scene.lighting);
+        let env = EnvBlock::pack(cfg.lighting_env(scene.lighting), &scene.sun_sky);
 
         // tonemap pipeline (window-independent)
         let tone_bindings = [
@@ -228,7 +229,7 @@ impl VulkanBackend {
             in_flight,
             swap: None,
             gpu,
-            env0,
+            env,
             tone_set_layout,
             tone_pipeline_layout,
             tone_pipeline,
@@ -246,7 +247,7 @@ impl VulkanBackend {
         b.recreate_gpu(w0.max(1), h0.max(1));
         // bake the GI probe cache (blocking, once — both light banks)
         let set = b.swap.as_ref().unwrap().scene_set;
-        b.gpu.bake_probes(&b.ctx, set, b.env0, cfg.render.probe_rays);
+        b.gpu.bake_probes(&b.ctx, set, &b.env, cfg.render.probe_rays);
         Ok(b)
     }
 
@@ -350,6 +351,9 @@ impl VulkanBackend {
             set
         };
 
+        // one render-finished semaphore per swapchain image (dropped from an
+        // earlier blind edit — restored; empty on the headless path)
+        let render_finished: Vec<vk::Semaphore> = images.iter().map(|_| self.ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).unwrap()).collect();
         self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, stamp_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, render_finished });
         println!("{} {}x{}  low-res {}x{} @ baseScale x{}", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale);
     }
@@ -416,6 +420,22 @@ impl RenderBackend for VulkanBackend {
         self.recreate_gpu(w, h);
     }
 
+    /// Runtime look switch (Faza 1b): swap the SceneGpu whole, rebind the
+    /// window-size descriptor sets onto the new buffers (recreate_gpu), then
+    /// rebake the probe banks against the new scene + env. Every prior frame
+    /// is fenced idle first. (Blind-edited on macOS — verify on the spawner.)
+    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config) {
+        self.ctx.device.device_wait_idle().ok();
+        let fresh = SceneGpu::build(&self.ctx, scene, cfg.render.probe_spacing).expect("look-switch scene rebuild");
+        let old = std::mem::replace(&mut self.gpu, fresh);
+        old.destroy(&self.ctx);
+        self.env = EnvBlock::pack(cfg.lighting_env(scene.lighting), &scene.sun_sky);
+        let extent = self.swap.as_ref().unwrap().extent;
+        self.recreate_gpu(extent.width, extent.height);
+        let set = self.swap.as_ref().unwrap().scene_set;
+        self.gpu.bake_probes(&self.ctx, set, &self.env, cfg.render.probe_rays);
+    }
+
     unsafe fn wait_idle(&self) {
         self.ctx.device.device_wait_idle().unwrap();
     }
@@ -451,8 +471,8 @@ impl RenderBackend for VulkanBackend {
         // refit iff dirty), then the deterministic shade dispatch.
         self.gpu.record_frame(&self.ctx, cmd, fp.fs);
         let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
-        let env0 = [self.env0[0] * fp.sky_dim, self.env0[1] * fp.sky_dim, self.env0[2], self.env0[3]];
-        let mut push = ShadePush::new(&fp.fs.cam, low_w, low_h, env0, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);
+        let env = self.env.dimmed(fp.sky_dim);
+        let mut push = ShadePush::new(&fp.fs.cam, low_w, low_h, &env, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);
         push.look = [fp.spec, fp.bump, fp.bump_scale, fp.gloss];
         push.look2 = [fp.gi, fp.matq, fp.ao_dither, fp.refl];
         push.refl_px = fp.refl_px;
@@ -473,7 +493,7 @@ impl RenderBackend for VulkanBackend {
         // #5: the GPU crop origin is round(pan); the fractional remainder stays
         // on the CPU side so the upscale lattice is always integer-aligned.
         let rs = self.rs(fp.zoom);
-        let tp = build_tone_push(low_w, low_h, extent.width, extent.height, rs, fp.pan, fp.target, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
+        let tp = build_tone_push(low_w, low_h, extent.width, extent.height, rs, fp.pan, fp.target, &fp.proj, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline_layout, 0, &[swap.tone_set], &[]);
         d.cmd_push_constants(cmd, self.tone_pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&tp));

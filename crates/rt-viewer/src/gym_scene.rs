@@ -156,6 +156,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
     scene.solids = Vec::new(); // collision is the sim's grid, not AABBs
     scene.player_start = cell_world(spec.player_start);
     scene.lighting = look.lighting;
+    scene.sun_sky = look.sun; // sun/sky-as-data (Faza 1b)
     scene
 }
 

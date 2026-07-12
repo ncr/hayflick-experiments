@@ -164,6 +164,13 @@ pub trait RenderBackend {
     /// GPU work — the Viewer re-centres pan afterwards.
     unsafe fn recreate(&mut self, w: u32, h: u32);
 
+    /// Runtime LOOK switch (Faza 1b): rebuild every scene-dependent GPU
+    /// resource (geometry/material/light buffers, AS, env block, probe banks)
+    /// from a freshly built `Scene`, keeping device/pipelines/window target.
+    /// Blocking (probe rebake or disk-cache load). The Viewer must re-join
+    /// its light keys against the new `handles()` afterwards.
+    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config);
+
     /// Render + (windowed) present one frame. Returns false if the swapchain
     /// needs rebuild. Records the deterministic per-frame state (lights →
     /// instances → TLAS refit if dirty), shade dispatch, tonemap, blit,

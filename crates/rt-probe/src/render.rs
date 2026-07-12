@@ -66,6 +66,13 @@ pub struct ShadePush {
     /// ray, so an indoor player gets a sill-height cutaway while bodies,
     /// props and door leaves keep their full height. Rest reserved.
     pub misc3: [i32; 4],
+    /// Sun/sky-as-data (Faza 1b, see [`crate::scene::EnvBlock`]): sun dir,
+    /// sun tint, sky horizon tint, sky zenith tint — appended so the pre-1b
+    /// prefix layout (and the GLSL block) is unchanged.
+    pub env1: [f32; 4],
+    pub env2: [f32; 4],
+    pub env3: [f32; 4],
+    pub env4: [f32; 4],
 }
 
 /// Packed CAVE_ROI see-through reveal fields for [`ShadePush`] / the Metal `Push` twin.
@@ -99,7 +106,7 @@ pub fn roi_push(cam: &CamFrame, w: i32, h: i32, p: Vec3, radius_px: f32, falloff
 
 impl ShadePush {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(cam: &CamFrame, w: u32, h: u32, env0: [f32; 4], room_lights: f32, light_count: i32, ao: f32, ao_r: f32, ao_rays: i32, debug: i32) -> ShadePush {
+    pub fn new(cam: &CamFrame, w: u32, h: u32, env: &crate::scene::EnvBlock, room_lights: f32, light_count: i32, ao: f32, ao_r: f32, ao_rays: i32, debug: i32) -> ShadePush {
         ShadePush {
             cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
             cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
@@ -113,12 +120,16 @@ impl ShadePush {
             light_count,
             refl_px: 1,
             cut16: CUT_OFF,
-            env0,
+            env0: env.env0,
             roi: ROI_OFF.roi,
             roi2: ROI_OFF.roi2,
             look: [0.0, 0.0, 0.0, 0.0], // spec, bump, bump_scale, gloss — neutral (off)
             look2: [1.0, 0.0, 0.0, 0.0], // gi scale = 1.0 (neutral), rest reserved
             misc3: [CUT_OFF, 0, 0, 0],   // wallcut off, rest reserved
+            env1: env.env1,
+            env2: env.env2,
+            env3: env.env3,
+            env4: env.env4,
         }
     }
 }
@@ -140,6 +151,12 @@ struct ProbePush {
     env0: [f32; 4],
     _roi: [f32; 16], // pad to ShadePush size (shared push-constant range); unused by probes.comp
     _misc3: [i32; 4], // ShadePush.misc3 pad — unused by probes.comp
+    // sun/sky-as-data (same rows as ShadePush — the bake must light with the
+    // exact sun/sky the shade pass shows)
+    env1: [f32; 4],
+    env2: [f32; 4],
+    env3: [f32; 4],
+    env4: [f32; 4],
 }
 
 pub fn push_bytes<T: Copy>(p: &T) -> &[u8] {
@@ -781,7 +798,7 @@ impl SceneGpu {
     /// every run. Camera motion never invalidates it (world space), so the
     /// per-frame shade pass stays a pure function of (scene, camera).
     /// No-op after the first call.
-    pub unsafe fn bake_probes(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env0: [f32; 4], rays_total: i32) {
+    pub unsafe fn bake_probes(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env: &crate::scene::EnvBlock, rays_total: i32) {
         if self.probes_baked {
             return;
         }
@@ -807,9 +824,13 @@ impl SceneGpu {
                     bank,
                     light_count: self.light_count as i32,
                     _r0: 0,
-                    env0,
+                    env0: env.env0,
                     _roi: [0.0; 16],
                     _misc3: [0; 4],
+                    env1: env.env1,
+                    env2: env.env2,
+                    env3: env.env3,
+                    env4: env.env4,
                 };
                 ctx.one_time(|cmd| {
                     let d = &ctx.device;
@@ -865,7 +886,10 @@ mod tests {
     #[test]
     fn push_structs_share_one_layout_size() {
         assert_eq!(std::mem::size_of::<ShadePush>(), std::mem::size_of::<ProbePush>());
-        assert_eq!(std::mem::size_of::<ShadePush>(), 192);
+        // 256 B = exactly the guaranteed NVIDIA maxPushConstantsSize — the
+        // env1..4 sun/sky rows (Faza 1b) spent the last free push space.
+        // Anything further must move to a uniform buffer, not grow this.
+        assert_eq!(std::mem::size_of::<ShadePush>(), 256);
     }
 
     /// A throwaway CPU scene exercising every scan case: a non-emissive floor,

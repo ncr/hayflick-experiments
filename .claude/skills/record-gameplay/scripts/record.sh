@@ -12,7 +12,7 @@
 #   WINDOW=1280x800   capture resolution
 #   FPS=60            playback frame rate (sim runs at 60 ticks/s -> 60 = real speed)
 #   TICKS=<n>         frame/tick count (default: last trace stamp + 1)
-#   LOOK, LIGHTS, LIGHT_ANIM, STYLE, ...  forwarded as-is
+#   LOOK, LIGHTS, LIGHT_ANIM, GRADE/SAT/..., ...  forwarded as-is
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && git rev-parse --show-toplevel 2>/dev/null)" || ROOT=""
