@@ -468,16 +468,19 @@ kernel void shade(
     col = m.emissive.rgb; // camera sees emitters
 
     // specular params (SPEC>0): GLOSS remaps roughness toward polished; F0 dielectric
-    // lerped to albedo by metallic; v toward camera.
+    // lerped to albedo by metallic; v toward camera. MATTE materials (pad bit 4 —
+    // grass floor/tufts) opt out of the whole ceramic response: no gloss remap,
+    // no specular anywhere — the authored roughness stands (grass never shines).
     float3 vdir = -d;
-    float reff = clamp(mix(m.roughness, 0.12, pc.look.w), 0.10, 1.0);
+    bool matte = (m.pad & 4) != 0;
+    float reff = matte ? 1.0 : clamp(mix(m.roughness, 0.12, pc.look.w), 0.10, 1.0);
     if (pc.look2.y >= 2.0) reff = clamp(floor(reff * 3.0 + 0.5) / 3.0, 0.10, 1.0); // MATQ: roughness in coarse steps too
     float3 F0 = mix(float3(0.04), albedo, m.metallic);
 
     float ndl = max(dot(n, sunDir), 0.0);
     if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0, accel)) {
         col += albedo * sun * ndl;
-        if (pc.look.x > 0.0) col += sun * pc.look.x * specBRDF(n, vdir, sunDir, reff, F0) * ndl;
+        if (pc.look.x > 0.0 && !matte) col += sun * pc.look.x * specBRDF(n, vdir, sunDir, reff, F0) * ndl;
     }
 
     int lc = pc.misc2.x;
@@ -503,7 +506,7 @@ kernel void shade(
         if (max(c.r, max(c.g, c.b)) < 0.0015) continue;
         if (!occluded(p, ldir, dist - lt.posRad.w, accel)) {
             col += c;
-            if (pc.look.x > 0.0) col += lt.color.rgb * emit * pc.look.x * specBRDF(n, vdir, ldir, reff, F0) * ndl2;
+            if (pc.look.x > 0.0 && !matte) col += lt.color.rgb * emit * pc.look.x * specBRDF(n, vdir, ldir, reff, F0) * ndl2;
         }
     }
 
@@ -519,7 +522,8 @@ kernel void shade(
     // without a second pass. Floors and metals reflect; the bounce is shaded
     // cheaply (emissive + sun NEE + probe GI, no per-light loop) and added at
     // knob strength — a stylized wet-floor sheen, not PBR. REFL=0 → no rays.
-    if (pc.look2.w > 0.0 && (m.metallic > 0.5 || n.y > 0.8)) {
+    // MATTE floors (grass) never turn into wet mirrors either.
+    if (pc.look2.w > 0.0 && !matte && (m.metallic > 0.5 || n.y > 0.8)) {
         int B = max(pc.misc2.w, 1);
         int2 bp = (int2(gid) / B) * B;
         float ub = ((float(bp.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;

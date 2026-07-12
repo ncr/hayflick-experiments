@@ -45,10 +45,19 @@ world-coordinate cells; REAL wall openings + transmissive panes — the
 shade pass carries primary rays through with the pane's tint, shadow
 rays/probe bake keep glass opaque, and in the WALLCUT cutaway glass stubs
 deliberately stand 0.3125 proud of wall stubs to cover the bay jambs);
-lush saturated greens + grass-tuft dress; amber accent. The other
+lush saturated greens + grass-tuft dress; amber lamp mood. The other
 candidates are deleted (git history) and the ESC menu has NO look row
 (one preset = dead UI; a menu.rs test pin demands the row back the moment
 a second look lands). Lock + goldens await the owner playtest.
+Same-day BLOCKY mesh rebuild (owner: prostsze kształty, blokowość jak
+tecta): every gym mesh is the fewest boxes that read — walls are clean
+slabs (no plinth), the roof is ONE inset parapet cap (no fascia — the
+amber accent moved to the lamps — no ridge; `RoofStyle` deleted), lamps
+are post + lantern block, grass tufts single blocks, the player a 10-box
+figure. Greens are MATTE by construction (`Material._pad` bit 4, set by
+`gym_scene::mark_matte` on the grass floor + tufts): the shade pass skips
+spec + the gloss remap there — "trawa nie może się błyszczeć"; porcelain
+and glass keep the sheen.
 `LOOK_SWITCH=polana` force-rebuilds INTO the booted look via
 `RenderBackend::rebuild_scene` + probe rebake (disk-cached per look) — the
 headless identity check for the whole runtime-switch machinery (a SHOT
@@ -106,7 +115,10 @@ Faza 1b edited it blind AGAIN (env0 → `EnvBlock` field; `ShadePush::new` +
 (same day) changed `shade.comp` only (shader-side: `Material.pad` is now a
 bitfield — 1 occluder, 2 glass — glass transmission loop + wallcut
 straddle/proud-stub rules; NO host/push changes, so `vulkan_backend.rs`
-was untouched this time). The GLSL twins (`shade.comp`/`probes.comp`) DO
+was untouched this time). The blocky mesh rebuild (same day again) edited
+`shade.comp` once more, still host-neutral: `Material.pad` bit 4 = MATTE
+(grass floor/tufts) skips the specular terms, the gloss roughness-remap
+and the REFL wet-floor bounce. The GLSL twins (`shade.comp`/`probes.comp`) DO
 compile here via glslangValidator but never ran on hardware. First Vulkan
 session: `cargo check`, gym SHOTs for polana at trimetric AND iso21
 (outdoor facade + a CMDS indoor cutaway — the glass transmission, the

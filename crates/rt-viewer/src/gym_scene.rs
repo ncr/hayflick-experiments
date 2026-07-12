@@ -15,19 +15,24 @@
 //!
 //! The AESTHETIC is data: a [`Look`] preset (look.rs; Faza 1b) supplies
 //! every colour, the lamp mood, the lighting env, the sun/sky and the
-//! dress switches. The 2026-07-12 mesh rebuild (owner directive, refined
-//! the same day): building facades are clean porcelain panels with a
-//! FULL-HEIGHT tinted-glass window only every so often (even-coordinate
-//! cells) — REAL openings in the wall holding transmissive panes ("black
-//! tinted but transparent", see `wall_slab`/`mark_glass`) — and Outdoor
-//! cells grow a grass-tuft dress on the looks that ask for it.
+//! dress switches. The 2026-07-12 BLOCKY rebuild (owner directive:
+//! prostsze kształty, blokowość jak tecta — the concept monolith) keeps
+//! every mesh the fewest axis-aligned boxes that read: walls are clean
+//! full-height slabs (no plinth) with a FULL-HEIGHT tinted-glass window
+//! only every so often (even-coordinate cells) — REAL openings holding
+//! transmissive panes ("black tinted but transparent", see
+//! `wall_slab`/`mark_glass`); the roof is ONE inset cap per run (a stepped
+//! parapet, no fascia/ridge); lamps are a post + one hanging lantern
+//! block; grass tufts are single blocks. Green/organic surfaces are MATTE
+//! ([`mark_matte`]): the shade pass skips specular there, so the ceramic
+//! sheen stays on porcelain and glass only — grass never shines.
 //!
 //! NEE discipline: the ONLY named lights are the spec lamps (conceptual point
 //! lights). Every emissive box (lamp fixtures) is part of a dynamic run,
 //! which the light scan and probe bake exclude — so the light-join stays
 //! complete without naming dressing.
 
-use crate::look::{Look, RoofStyle};
+use crate::look::Look;
 use glam::{Mat4, Vec3};
 use house_game::gym::grid::{CellKind, CellPos, Dir, EdgeKind, Grid};
 use house_game::gym::sim::GymLevel;
@@ -41,7 +46,9 @@ pub const WALL_CUT_H: f32 = 1.0;
 
 const FLOOR_TOP: f32 = 6.0 / 128.0;
 const WALL_HT: f32 = 0.1; // wall half-thickness (0.2 wu slab, on the 0.1 grid)
-const ROOF_BASE: f32 = 2.375;
+// The cap is SUNK into the wall band (base below WALL_TOP): its side faces
+// hide inside the slabs below the wall top and step back cleanly above it.
+const ROOF_BASE: f32 = 2.0;
 const ROOF_TOP: f32 = 2.5;
 
 /// Flag a primitive's material as a see-through OCCLUDER (Material._pad
@@ -66,6 +73,16 @@ fn mark_glass(scene: &mut Scene, prim: usize) {
     scene.materials[mid]._pad |= 2;
 }
 
+/// Flag a primitive's material MATTE (Material._pad bit 4): the shade pass
+/// skips the specular terms and the gloss roughness-remap, so the material's
+/// authored roughness stands. Green/organic surfaces wear it (grass floor,
+/// tufts) — the look's ceramic sheen stays on porcelain and glass only
+/// (owner directive 2026-07-12: grass must not shine).
+fn mark_matte(scene: &mut Scene, prim: usize) {
+    let mid = scene.primitives[prim].material_id as usize;
+    scene.materials[mid]._pad |= 4;
+}
+
 /// World centre of a grid cell (on the ground plane).
 pub fn cell_world(p: CellPos) -> Vec3 {
     Vec3::new(p.x as f32 + 0.5, FLOOR_TOP, p.z as f32 + 0.5)
@@ -77,17 +94,22 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
     let g = &spec.grid;
     let (w, h) = (g.w, g.h);
 
-    // ---- floors: one quad per row-run of same tint (cheap prim merge; a
-    // checker look breaks field rows into per-cell quads — fine at gym scale).
+    // ---- floors: one quad per row-run of same (tint, matte) key (cheap prim
+    // merge; a checker look breaks field rows into per-cell quads — fine at
+    // gym scale). Outdoor grass is MATTE; the Room floor keeps the sheen.
     for z in 0..h {
         let mut x = 0i16;
         while x < w {
-            let tint = floor_tint(g, CellPos::new(x, z), look);
+            let key = floor_key(g, CellPos::new(x, z), look);
             let x0 = x;
-            while x < w && floor_tint(g, CellPos::new(x, z), look) == tint {
+            while x < w && floor_key(g, CellPos::new(x, z), look) == key {
                 x += 1;
             }
-            scene.add_floor(x0 as f32, x as f32, z as f32, z as f32 + 1.0, FLOOR_TOP, hex_linear(tint));
+            let prim = scene.primitives.len();
+            scene.add_floor(x0 as f32, x as f32, z as f32, z as f32 + 1.0, FLOOR_TOP, hex_linear(key.0));
+            if key.1 {
+                mark_matte(&mut scene, prim);
+            }
         }
     }
 
@@ -160,13 +182,13 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
         scene.point_lights.push([c.x + 0.3, 1.40625, c.z, 0.25, s * look.lamp_tint[0], s * look.lamp_tint[1], s * look.lamp_tint[2], 0.0]);
         scene.name_point_light(&format!("lamp_{i}"), scene.point_lights.len() - 1);
         let first = scene.primitives.len();
-        // pedestal + slim post + bracket arm; the glowing lantern hangs off
-        // the arm with the light point just below it (XZ on the 0.1 grid)
-        scene.add_box_world(Vec3::new(c.x - 0.1, FLOOR_TOP, c.z - 0.1), Vec3::new(c.x + 0.1, 0.25, c.z + 0.1), look.lamp_post, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(c.x - 0.05, 0.25, c.z - 0.05), Vec3::new(c.x + 0.05, 1.75, c.z + 0.05), look.lamp_post, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(c.x, 1.6875, c.z - 0.05), Vec3::new(c.x + 0.2, 1.75, c.z + 0.05), look.lamp_post, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(c.x + 0.2, 1.5, c.z - 0.1), Vec3::new(c.x + 0.4, 1.6875, c.z + 0.1), look.lamp_head, look.lamp_glow, 0.4, 0.0);
-        scene.add_box_world(Vec3::new(c.x + 0.15, 1.6875, c.z - 0.15), Vec3::new(c.x + 0.45, 1.75, c.z + 0.15), look.lamp_post, [0.0; 4], 0.6, 0.0);
+        // blocky fixture (2026-07-12 rebuild): a slim post and ONE chunky
+        // lantern block straddling its top — the block swallows the post
+        // top (no coplanar faces) and overhangs +x, with the conceptual
+        // light in the clear air under the overhang (position unchanged
+        // from the old bracket-arm rig, so the lighting stands still).
+        scene.add_box_world(Vec3::new(c.x - 0.05, 0.0, c.z - 0.05), Vec3::new(c.x + 0.05, 1.6875, c.z + 0.05), look.lamp_post, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(c.x - 0.1, 1.5, c.z - 0.15), Vec3::new(c.x + 0.4, 1.75, c.z + 0.15), look.lamp_head, look.lamp_glow, 0.4, 0.0);
         scene.register_dynamic(&format!("lamp_fix_{i}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
     }
 
@@ -188,31 +210,31 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
     scene
 }
 
-fn floor_tint(g: &Grid, p: CellPos, look: &Look) -> u32 {
+/// Floor-run merge key: (tint, matte). Outdoor cells are the meadow — matte
+/// by construction; the Room floor is porcelain and keeps the look's sheen.
+fn floor_key(g: &Grid, p: CellPos, look: &Look) -> (u32, bool) {
     match g.cell(p) {
         CellKind::Outdoor => match look.street_alt {
             // cobble checker: per-cell parity split (breaks the row merge)
-            Some(alt) if (p.x + p.z) & 1 == 1 => alt,
-            _ => look.street,
+            Some(alt) if (p.x + p.z) & 1 == 1 => (alt, true),
+            _ => (look.street, true),
         },
-        CellKind::Room => look.room_floor,
+        CellKind::Room => (look.room_floor, false),
     }
 }
 
-/// One wall run + the look's dress. A windowless run (freestanding garden
-/// walls, and every run when the look has no windows) is a single merged
-/// porcelain slab. On BUILDING walls (`windows`) the look's window turns
-/// SOME cells into REAL full-height openings (owner refinement 2026-07-12:
-/// porcelain panels with a window only every so often, "black tinted but
-/// transparent"): the slab becomes piers between openings, and each opening
-/// holds a tinted-GLASS pane the shade pass transmits through. The rhythm
-/// is anchored to EVEN world coordinates — not run-relative — so the
-/// doorway split doesn't shift it; on the gym building (cells 3..=7) that
-/// gives two symmetric windows per facade and one flanking each side of
-/// the doorway. An optional skirting plinth (below the WALLCUT — survives
-/// the cutaway, grounds the stubs) follows the piers and BREAKS at the
-/// openings: the glass runs floor-to-top. `along_x` says which axis the
-/// run spans.
+/// One wall run. A windowless run (freestanding garden walls, and every run
+/// when the look has no windows) is a single merged porcelain slab — since
+/// the blocky rebuild there is NO plinth: the slab runs clean floor-to-top.
+/// On BUILDING walls (`windows`) the look's window turns SOME cells into
+/// REAL full-height openings (owner refinement 2026-07-12: porcelain panels
+/// with a window only every so often, "black tinted but transparent"): the
+/// slab becomes piers between openings, and each opening holds a
+/// tinted-GLASS pane the shade pass transmits through. The rhythm is
+/// anchored to EVEN world coordinates — not run-relative — so the doorway
+/// split doesn't shift it; on the gym building (cells 3..=7) that gives two
+/// symmetric windows per facade and one flanking each side of the doorway.
+/// `along_x` says which axis the run spans.
 fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, windows: bool, look: &Look) {
     let wc = hex_linear(look.wall);
     let (a0, a1) = if along_x { (rect[0], rect[2]) } else { (rect[1], rect[3]) };
@@ -248,17 +270,6 @@ fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, windows: bool, lo
         };
         scene.add_box_world(lo, hi, wc, [0.0; 4], 0.85, 0.0);
         mark_occluder(scene, first);
-        if let Some(hexp) = look.plinth {
-            // strictly the proudest thing at the base (±0.1 across, one
-            // step past the glass panes' ±0.05; ±0.05 along the run — the
-            // little returns wrap the pier corners into the window bays)
-            let (lo, hi) = if along_x {
-                (Vec3::new(s - 0.05, 0.0, rect[1] - 0.1), Vec3::new(e + 0.05, 0.1875, rect[3] + 0.1))
-            } else {
-                (Vec3::new(rect[0] - 0.1, 0.0, s - 0.05), Vec3::new(rect[2] + 0.1, 0.1875, e + 0.05))
-            };
-            scene.add_box_world(lo, hi, hex_linear(hexp), [0.0; 4], 0.85, 0.0);
-        }
         s = stop.map_or(a1, |m| m + 0.2);
     }
     // glass panes: one per opening, floor to 0.0625 above the wall top and
@@ -292,12 +303,13 @@ fn cell_hash(x: i16, z: i16) -> u32 {
     h ^ (h >> 16)
 }
 
-/// Lush-nature dress (owner directive 2026-07-12): low grass-tuft boxes on
-/// ~1/4 of the Outdoor cells, hash-placed on the clean stair lattice
-/// (X: 0.1, Z: 0.05 steps), three green tints. Tufts are walk-through
-/// visuals (grass), low enough that the player wading through them reads
-/// as walking in grass; bases sink to y=0 so no face lies ON the floor
-/// plane (coplanarity rule). Lamp cells and the spawn cell stay clear.
+/// Lush-nature dress (owner directive 2026-07-12; blocky rebuild same day):
+/// ONE low grass-tuft block on ~1/4 of the Outdoor cells, hash-placed on
+/// the clean stair lattice (X: 0.1, Z: 0.05 steps), three green tints,
+/// MATTE (grass never shines). Tufts are walk-through visuals (grass), low
+/// enough that the player wading through them reads as walking in grass;
+/// bases sink to y=0 so no face lies ON the floor plane (coplanarity
+/// rule). Lamp cells and the spawn cell stay clear.
 fn grass_dress(scene: &mut Scene, spec: &GymLevel, greens: [u32; 3]) {
     let g = &spec.grid;
     for z in 0..g.h {
@@ -315,43 +327,33 @@ fn grass_dress(scene: &mut Scene, spec: &GymLevel, greens: [u32; 3]) {
             let ht = 0.09375 + 0.03125 * ((h >> 4) % 3) as f32;
             let tint = hex_linear(greens[((h >> 24) % 3) as usize]);
             let (cx, cz) = (x as f32 + ox, z as f32 + oz);
+            let prim = scene.primitives.len();
             scene.add_box_world(Vec3::new(cx, 0.0, cz), Vec3::new(cx + 0.2, ht, cz + 0.15), tint, [0.0; 4], 0.9, 0.0);
-            if h & 1 == 0 {
-                // a second, smaller blade for busier clumps
-                let tint2 = hex_linear(greens[((h >> 26) % 3) as usize]);
-                scene.add_box_world(Vec3::new(cx + 0.3, 0.0, cz + 0.1), Vec3::new(cx + 0.4, ht * 0.75, cz + 0.2), tint2, [0.0; 4], 0.9, 0.0);
-            }
+            mark_matte(scene, prim);
         }
     }
 }
 
-/// One merged roof run in the look's silhouette. Every box is an occluder
-/// (the WALLCUT must take it) with its base above the wall tops.
+/// One merged roof run: a SINGLE flat cap per row (blocky rebuild — no
+/// fascia, no ridge). The cap spans the cell lines exactly, one lattice
+/// step (0.1) inside the wall outer faces, and its base sits BELOW the wall
+/// top: the side faces hide inside the wall slabs up to WALL_TOP and step
+/// back cleanly above it — the building reads as a monolith with a stepped
+/// parapet cap, and no face is coplanar with a wall plane. Occluder-marked
+/// (the WALLCUT must take it) with the whole visible band above the cutaway.
 fn roof_run(scene: &mut Scene, x0: f32, x1: f32, z: f32, look: &Look) {
-    let rc = hex_linear(look.roof);
     let first = scene.primitives.len();
-    scene.add_box_world(Vec3::new(x0 - 0.3, ROOF_BASE, z), Vec3::new(x1 + 0.3, ROOF_TOP, z + 1.0), rc, [0.0; 4], 0.85, 0.0);
+    scene.add_box_world(Vec3::new(x0, ROOF_BASE, z), Vec3::new(x1, ROOF_TOP, z + 1.0), hex_linear(look.roof), [0.0; 4], 0.85, 0.0);
     mark_occluder(scene, first);
-    if let Some(hexf) = look.fascia {
-        // a slightly wider eave lip under the cap
-        let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(x0 - 0.4, ROOF_BASE - 0.0625, z), Vec3::new(x1 + 0.4, ROOF_BASE, z + 1.0), hex_linear(hexf), [0.0; 4], 0.85, 0.0);
-        mark_occluder(scene, first);
-    }
-    if look.roof_style == RoofStyle::Ridged {
-        // a raised ridge strip per row — standing seams / tiled ridges
-        let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(x0 - 0.1, ROOF_TOP, z + 0.25), Vec3::new(x1 + 0.1, ROOF_TOP + 0.09375, z + 0.75), hex_linear(look.roof_trim), [0.0; 4], 0.85, 0.0);
-        mark_occluder(scene, first);
-    }
 }
 
 // ---- the player body --------------------------------------------------------
 //
-// One ARTICULATED figure (~1.4 wu tall) built from five dynamic runs — core
-// (pelvis/belt/torso/shoulders/head/hood + nose), `player/legL`, `/legR`
-// (thigh-to-boot, authored around the HIP pivot) and `player/armL`, `/armR`
-// (sleeve + mitten hand, authored around the SHOULDER pivot) — so the loop
+// One ARTICULATED blocky figure (~1.4 wu tall; 2026-07-12 rebuild — the
+// fewest boxes that read) built from five dynamic runs — core (one torso
+// block + head + hood cap + nose), `player/legL`, `/legR` (leg block +
+// boot band, authored around the HIP pivot) and `player/armL`, `/armR`
+// (one sleeve block, authored around the SHOULDER pivot) — so the loop
 // can swing limbs per tick (deterministic walk cycle). Limb geometry is
 // authored in PIVOT space: the loop's instance transform is
 // `body * translate(pivot) * swing`, so a zero swing reproduces the rest
@@ -365,35 +367,33 @@ pub const SHOULDER: f32 = 1.0;
 pub const ARM_X: f32 = 0.1875;
 
 fn build_player_body(scene: &mut Scene, look: &Look) {
-    let (coat, hood, legs) = (look.coat, look.hood, look.legs);
-    // ---- core: pelvis, belt, torso, shoulder slab, head, hood, nose
+    let coat = look.coat;
+    // ---- core: one torso block, head, hood cap, nose. The torso base dips
+    // 0.03125 below HIP so the leg tops (world HIP + 0.03125) stay buried
+    // inside it through the swing — no coplanar interfaces.
     let first = scene.primitives.len();
-    part(scene, 0.125, 0.09375, HIP - 0.0625, HIP + 0.0625, legs); // pelvis
-    part(scene, 0.15625, 0.109375, HIP + 0.0625, HIP + 0.125, look.boots); // belt
-    part(scene, 0.15625, 0.125, HIP + 0.125, SHOULDER + 0.03125, coat); // torso
-    part(scene, 0.1875, 0.125, SHOULDER - 0.03125, SHOULDER + 0.0625, coat); // shoulder slab
-    part(scene, 0.09375, 0.09375, 1.0625, 1.3125, look.skin); // head
-    part(scene, 0.125, 0.125, 1.25, 1.40625, hood); // hood cap
-    // back drape (nose is +Z, so the drape hangs at -Z)
-    scene.add_box_world(Vec3::new(-0.09375, 0.8125, -0.21875), Vec3::new(0.09375, 1.21875, -0.125), hood, [0.0; 4], 0.6, 0.0);
+    part(scene, 0.15625, 0.125, HIP - 0.03125, SHOULDER + 0.0625, coat); // torso
+    part(scene, 0.09375, 0.09375, 1.0625, 1.28125, look.skin); // head
+    part(scene, 0.125, 0.125, 1.25, 1.40625, look.hood); // hood cap
     // nose wedge on +Z at the head's face plane (facing read)
     scene.add_box_world(Vec3::new(-0.03125, 1.125, 0.09375), Vec3::new(0.03125, 1.21875, 0.15625), look.skin, [0.0; 4], 0.8, 0.0);
     scene.register_dynamic("player", first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
 
-    // ---- legs: thigh-to-shin box + boot with a toe, hanging from the hip
-    // pivot (geometry centred on x — the pivot translation supplies ±LEG_X)
+    // ---- legs: one leg block + a boot band, hanging from the hip pivot
+    // (geometry centred on x — the pivot translation supplies ±LEG_X)
     for suffix in ["legL", "legR"] {
         let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(-0.0625, -HIP + 0.09375, -0.0625), Vec3::new(0.0625, 0.03125, 0.0625), legs, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(-0.0625, -HIP, -0.0625), Vec3::new(0.0625, -HIP + 0.09375, 0.125), look.boots, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(-0.0625, -HIP + 0.09375, -0.0625), Vec3::new(0.0625, 0.03125, 0.0625), look.legs, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(-0.0625, -HIP, -0.0625), Vec3::new(0.0625, -HIP + 0.09375, 0.0625), look.boots, [0.0; 4], 0.6, 0.0);
         scene.register_dynamic(&format!("player/{suffix}"), first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
     }
 
-    // ---- arms: sleeve + mitten hand from the shoulder pivot
+    // ---- arms: ONE sleeve block from the shoulder pivot, long enough to
+    // read as arm + hand; its inner face sinks 0.03125 into the torso side
+    // (overlap, never coplanar) so the silhouette stays joined mid-swing.
     for suffix in ["armL", "armR"] {
         let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(-0.03125, -0.40625, -0.03125), Vec3::new(0.03125, 0.03125, 0.03125), coat, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(-0.0625, -0.53125, -0.0625), Vec3::new(0.0625, -0.40625, 0.0625), look.skin, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(-0.0625, -0.53125, -0.0625), Vec3::new(0.0625, 0.03125, 0.0625), coat, [0.0; 4], 0.6, 0.0);
         scene.register_dynamic(&format!("player/{suffix}"), first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
     }
 }

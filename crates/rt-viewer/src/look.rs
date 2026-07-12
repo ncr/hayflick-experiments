@@ -8,9 +8,10 @@
 //!
 //! Since the owner's polana pick (2026-07-12) there is ONE look: [`POLANA`]
 //! — porcelain × meadow. Super-clean porcelain volumes (minimal bump,
-//! slight sheen), lush saturated greens and sky, the facade rhythm as clean
-//! panels with occasional FULL-HEIGHT black tinted-glass windows (real
-//! transmission — see gym_scene/shade), one amber accent, red-coat walker.
+//! slight sheen — greens stay MATTE via the material bit), lush saturated
+//! greens and sky, the facade rhythm as clean panels with occasional
+//! FULL-HEIGHT black tinted-glass windows (real transmission — see
+//! gym_scene/shade), amber lamp mood, red-coat walker.
 //! The A/B parents (`porcelain`, `meadow`) and every earlier candidate live
 //! in git history only; the ESC-menu look row went with them (nothing left
 //! to compare — docs/VISION.md keeps the menu-first rule for real choices).
@@ -26,24 +27,14 @@
 
 use rt_probe::{StyleCfg, SunSky};
 
-/// Roof silhouette for the building's cap (all variants stay occluder-marked
-/// above the WALLCUT, so the indoor cutaway removes them). An eave fascia is
-/// a separate switch ([`Look::fascia`]) — it combines with either style.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RoofStyle {
-    /// A plain flat cap.
-    FlatCap,
-    /// Flat cap + a raised `roof_trim` strip per row — reads as standing
-    /// seams / tiled ridges and breaks up big roof expanses.
-    Ridged,
-}
-
 /// One visual direction, fully data. Architecture colours are sRGB hex
 /// (through `hex_linear`); body and lamp colours are linear f32 (authored
-/// linear historically).
+/// linear historically). Since the 2026-07-12 blocky mesh rebuild (owner:
+/// prostsze kształty, blokowość jak tecta) a look carries NO trim switches
+/// — no fascia, plinth or ridge — the meshes are the fewest boxes that
+/// read, and the look is colours + light + response.
 pub struct Look {
     pub name: &'static str,
-    pub roof_style: RoofStyle,
     // ---- architecture
     pub street: u32,
     /// `Some` = per-cell checker on Outdoor cells (breaks the floor
@@ -52,10 +43,6 @@ pub struct Look {
     pub room_floor: u32,
     pub wall: u32,
     pub roof: u32,
-    /// Ridge strip colour (RoofStyle::Ridged).
-    pub roof_trim: u32,
-    /// `Some` = an eave fascia lip under the cap, slightly wider than it.
-    pub fascia: Option<u32>,
     /// `Some` = FULL-HEIGHT tinted-glass windows on building walls (owner
     /// directive 2026-07-12, refined same day: porcelain panels with a
     /// window only every so often — even world-coordinate cells). The hex
@@ -64,10 +51,6 @@ pub struct Look {
     /// transparent). Occluder-marked so the WALLCUT takes them with the
     /// wall.
     pub window: Option<u32>,
-    /// `Some` = skirting plinth along wall bases (below the WALLCUT — it
-    /// stays in the cutaway and grounds the wall stubs). Breaks at window
-    /// openings: the glass runs floor-to-top.
-    pub plinth: Option<u32>,
     /// `Some` = lush-nature dress: low grass-tuft boxes scattered over
     /// Outdoor cells in a deterministic hash pattern (three green tints).
     /// Pure visuals — the sim grid never sees them.
@@ -102,22 +85,19 @@ pub struct Look {
 }
 
 /// THE look (owner pick 2026-07-12): porcelain × meadow. Super-clean
-/// near-white ceramic volumes with a slight sheen, occasional full-height
-/// black tinted-glass windows as the only facade rhythm, one amber accent,
-/// lush saturated meadow greens with grass-tuft dress, big błękit sky,
-/// red-coat walker.
+/// near-white ceramic monoliths with a slight sheen, occasional full-height
+/// black tinted-glass windows as the only facade rhythm, lush saturated
+/// meadow greens (MATTE by construction — grass never shines) with
+/// grass-tuft dress, big błękit sky, red-coat walker. The amber accent
+/// lives in the lamp mood since the blocky rebuild dropped the fascia.
 pub const POLANA: Look = Look {
     name: "polana",
-    roof_style: RoofStyle::FlatCap,
     street: 0x74b048,
     street_alt: Some(0x6ca343),
     room_floor: 0xf0ede5,
     wall: 0xf8f6f2,
     roof: 0xe9e6df,
-    roof_trim: 0xe9e6df,
-    fascia: Some(0xd8871e), // THE accent (kept from porcelain)
     window: Some(0x60666c), // smoked-glass TRANSMISSION tint (~13% linear)
-    plinth: Some(0xd8d5cd),
     grass: Some([0x5f9c3a, 0x82c455, 0x4c8a30]),
     lamp_post: [0.32, 0.32, 0.31, 1.0],
     lamp_head: [0.60, 0.45, 0.22, 1.0],
