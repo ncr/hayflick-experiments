@@ -14,11 +14,10 @@
 //! buffers are indexed by `intersection.instance_id`. Scalar byte-match is
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
-use crate::backend::{build_goo_push, build_tone_push, clamp_goo, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, GooPush, RenderBackend, GOO_BOUNDS_MAX, GOO_MAX};
+use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, RenderBackend};
 use crate::capture::subsample_rgba;
-use crate::sim::GOO_SQUASH;
 use core_graphics_types::geometry::CGSize;
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 use iso_core::ISO_R;
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, scan_lights, LightScan};
@@ -47,58 +46,6 @@ struct Push {
     misc3: [i32; 4],     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), _, _
 }
 
-// `GooPush` + the shared goo look/limit constants + the `build_goo_push`
-// constructor live in `crate::backend` (one source for the Metal and Vulkan
-// composite passes). The resting-height constant `GOO_SQUASH` (used by the
-// shadow proxies below) is owned by `crate::sim`, the single source of truth
-// shared with the CPU ball placement.
-/// Phase C: shadow-proxy instance slots (one squashed sphere per metaball) and
-/// the radius scale that grows each proxy to roughly the `smin`-merged surface
-/// so the cast shadow matches the visible silhouette.
-const GOO_PROXY_CAP: usize = 480;
-const GOO_PROXY_SCALE: f32 = 1.35;
-/// Parking Y for an INACTIVE shadow proxy (rationale on `goo_proxy_parked`).
-const GOO_PROXY_PARK_Y: f32 = -1000.0;
-/// Coarse tessellation of the unit shadow-proxy sphere — it only casts
-/// shadows/AO (never seen by the primary ray), so a low-poly ball is plenty.
-const GOO_PROXY_SPHERE_RINGS: usize = 8;
-const GOO_PROXY_SPHERE_SECTORS: usize = 12;
-
-/// Where an INACTIVE proxy parks: far below the scene, clustered into one
-/// distant BVH node that no scene/bake ray traverses — so the reserved slots
-/// never perturb traversal numerics on mob-free scenes (mask 0x00 also culls
-/// them; this keeps the spatial structure clean too). Tiny, not zero, scale.
-fn goo_proxy_parked() -> [[f32; 3]; 4] {
-    to_packed(Mat4::from_translation(Vec3::new(0.0, GOO_PROXY_PARK_Y, 0.0)) * Mat4::from_scale(Vec3::splat(1e-3)))
-}
-
-/// A unit UV sphere (radius 1, origin-centred) as `(Vertex, u32)` — the source
-/// geometry for the goo shadow-proxy BLAS. Only `pos` matters (the BLAS reads
-/// position; shadow/AO rays never fetch normals/uv), but we fill a valid Vertex.
-fn unit_sphere_mesh(rings: usize, sectors: usize) -> (Vec<Vertex>, Vec<u32>) {
-    let mut verts = Vec::with_capacity((rings + 1) * (sectors + 1));
-    for r in 0..=rings {
-        let phi = std::f32::consts::PI * r as f32 / rings as f32; // 0..π
-        let (sp, cp) = phi.sin_cos();
-        for s in 0..=sectors {
-            let theta = std::f32::consts::TAU * s as f32 / sectors as f32;
-            let (st, ct) = theta.sin_cos();
-            let p = [sp * ct, cp, sp * st];
-            verts.push(Vertex { pos: p, nrm: p, uv: [s as f32 / sectors as f32, r as f32 / rings as f32] });
-        }
-    }
-    let mut idx = Vec::with_capacity(rings * sectors * 6);
-    let row = sectors + 1;
-    for r in 0..rings {
-        for s in 0..sectors {
-            let a = (r * row + s) as u32;
-            let b = a + row as u32;
-            idx.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
-        }
-    }
-    (verts, idx)
-}
-
 /// Probe-bake push constants — byte-identical to probes.metal's `ProbePush`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -119,7 +66,6 @@ struct MetalTarget {
     radiance: Buffer, // low_w*low_h float4 (shade radiance out)
     albedo: Buffer,   // low_w*low_h float4 (primary-hit albedo G-buffer)
     pos: Buffer,      // low_w*low_h float4 (primary-hit world position)
-    goo_bg: Buffer,   // low_w*low_h float4: pre-goo radiance snapshot (blit target) — the goo pass's race-free background/refraction taps
     out_tex: Texture, // ext_w*ext_h RGBA8Unorm (tonemap out; present + readback source)
     /// Clip capture: the Viewer-requested game-pixel size, and the previous
     /// frame's subsampled readback awaiting collection (deferred one frame).
@@ -149,24 +95,6 @@ pub struct MetalBackend {
     shade_pso: ComputePipelineState,
     probe_pso: ComputePipelineState,
     tonemap_pso: ComputePipelineState,
-    // goo SDF composite pass (screen-space translucent metaballs)
-    goo_pso: ComputePipelineState,
-    goo_buf: Buffer,
-    goo_glow_buf: Buffer,   // per-ball birth-glow 0..1, parallel to goo_buf
-    goo_vscale_buf: Buffer, // per-ball vertical scale (1 = neutral), parallel to goo_buf
-    goo_bounds_buf: Buffer, // per-BLOB bounding spheres for the two-level SDF cull
-    goo_tint_buf: Buffer,   // per-ball species tint (vec4 rgb multiplier on emis)
-    goo_sdf: bool,
-    // goo body proxies in the accel structure: one squashed unit sphere per
-    // metaball, mask 0x02 (shadow/AO rays only — invisible to the primary ray,
-    // so the translucent SDF still draws the body). They let the goo cast real
-    // ray-traced shadows + self-shadow. Kept alive: the sphere BLAS source
-    // buffers. `goo_inst_first` = where the proxy instances start.
-    goo_inst_first: usize,
-    goo_proxy_n: usize,
-    goo_was_live: bool,
-    _goo_sphere_vbuf: Buffer,
-    _goo_sphere_ibuf: Buffer,
     // resolved env + render scale
     env0: [f32; 4],
     base_scale: u32,
@@ -247,10 +175,6 @@ impl MetalBackend {
     pub unsafe fn new(window: Option<&Window>, scene: &Scene, cfg: &Config) -> Result<MetalBackend, Box<dyn std::error::Error>> {
         assert_eq!(size_of::<Vertex>(), 32, "Vertex must be 32 B (packed_float3 layout)");
         assert_eq!(size_of::<Material>(), 48, "Material must be 48 B");
-        // GooPush is uploaded raw to goo.metal's matching `GooPush` (set_bytes):
-        // 10 float4/int4 rows = 160 B. If a field is added on one side only this
-        // fires before the shader silently reads garbage. Keep both in lockstep.
-        assert_eq!(size_of::<GooPush>(), 160, "GooPush must be 160 B (matches goo.metal GooPush)");
 
         let device = Device::system_default().ok_or("no Metal device")?;
         println!("device: {} (raytracing: {})", device.name(), device.supports_raytracing());
@@ -318,38 +242,6 @@ impl MetalBackend {
             assert_eq!(cb.status(), MTLCommandBufferStatus::Completed, "BLAS build failed");
         }
 
-        // ---- goo shadow-proxy BLAS (Phase C): one unit sphere, instanced once
-        // per metaball each frame. Index == nprim (appended past the per-prim
-        // BLASes), referenced by the reserved goo instances below.
-        let (goo_sv, goo_si) = unit_sphere_mesh(GOO_PROXY_SPHERE_RINGS, GOO_PROXY_SPHERE_SECTORS);
-        let goo_sphere_vbuf = make_buf(&device, &goo_sv);
-        let goo_sphere_ibuf = make_buf(&device, &goo_si);
-        let goo_blas_index = blas_list.len() as u32;
-        {
-            let cb = queue.new_command_buffer();
-            let enc = cb.new_acceleration_structure_command_encoder();
-            let tri = AccelerationStructureTriangleGeometryDescriptor::descriptor();
-            tri.set_vertex_buffer(Some(&goo_sphere_vbuf));
-            tri.set_vertex_stride(size_of::<Vertex>() as u64);
-            tri.set_vertex_format(MTLAttributeFormat::Float3);
-            tri.set_index_buffer(Some(&goo_sphere_ibuf));
-            tri.set_index_type(MTLIndexType::UInt32);
-            tri.set_triangle_count((goo_si.len() / 3) as u64);
-            let geom_ref: &AccelerationStructureGeometryDescriptorRef = &tri;
-            let geoms = Array::from_slice(&[geom_ref]);
-            let desc = PrimitiveAccelerationStructureDescriptor::descriptor();
-            desc.set_geometry_descriptors(geoms);
-            let desc_ref: &AccelerationStructureDescriptorRef = &desc;
-            let sizes = device.acceleration_structure_sizes_with_descriptor(desc_ref);
-            let blas = device.new_acceleration_structure_with_size(sizes.acceleration_structure_size);
-            let scratch = device.new_buffer(sizes.build_scratch_buffer_size.max(1), MTLResourceOptions::StorageModePrivate);
-            enc.build_acceleration_structure(&blas, desc_ref, &scratch, 0);
-            blas_list.push(blas);
-            enc.end_encoding();
-            cb.commit();
-            cb.wait_until_completed();
-            assert_eq!(cb.status(), MTLCommandBufferStatus::Completed, "goo BLAS build failed");
-        }
         // ---- TLAS: one instance per primitive, instance_id == i == offset row.
         // The build-time masks (0x05 dynamic / 0xff static), the dynamic-run
         // join, and the per-run patch ranges/shadow come from the shared
@@ -357,7 +249,7 @@ impl MetalBackend {
         // through per-pixel on the primary ray (CAVE_ROI) — no per-yaw hiding.
         let table = InstanceTable::build(scene)?;
         let nprim = scene.primitives.len();
-        let mut instances: Vec<MTLAccelerationStructureInstanceDescriptor> = (0..nprim)
+        let instances: Vec<MTLAccelerationStructureInstanceDescriptor> = (0..nprim)
             .map(|i| MTLAccelerationStructureInstanceDescriptor {
                 transformation_matrix: to_packed(table.transforms[i]),
                 options: MTLAccelerationStructureInstanceOptions::Opaque,
@@ -366,21 +258,6 @@ impl MetalBackend {
                 acceleration_structure_index: i as u32,
             })
             .collect();
-        // reserved goo proxy instances: all start MASK 0x00 (culled by every
-        // ray — primary 0x01 AND shadow/AO 0xFF — so a mob-free scene's TLAS is
-        // byte-identical to having none). Patched per frame: an active proxy
-        // gets mask 0x02 (out of the primary ray, IN the shadow/AO rays → casts
-        // shadows, invisible to the eye); inactive slots stay 0x00.
-        let goo_inst_first = instances.len();
-        for _ in 0..GOO_PROXY_CAP {
-            instances.push(MTLAccelerationStructureInstanceDescriptor {
-                transformation_matrix: goo_proxy_parked(),
-                options: MTLAccelerationStructureInstanceOptions::Opaque,
-                mask: 0x00,
-                intersection_function_table_offset: 0,
-                acceleration_structure_index: goo_blas_index,
-            });
-        }
         let handles = SceneHandles { lights: light_names, instances: table.instances };
         let dyn_insts = table.dyn_insts;
         let dyn_shadow = table.dyn_shadow;
@@ -412,14 +289,6 @@ impl MetalBackend {
         let probe_pso = device.new_compute_pipeline_state_with_function(&probe_lib.get_function("bake_probes", None).unwrap()).map_err(|e| format!("probe pso: {e}"))?;
         let tone_lib = device.new_library_with_source(include_str!("shaders_metal/tonemap.metal"), &opts).map_err(|e| format!("tonemap.metal: {e}"))?;
         let tonemap_pso = device.new_compute_pipeline_state_with_function(&tone_lib.get_function("tonemap", None).unwrap()).map_err(|e| format!("tonemap pso: {e}"))?;
-        let goo_lib = device.new_library_with_source(include_str!("shaders_metal/goo.metal"), &opts).map_err(|e| format!("goo.metal: {e}"))?;
-        let goo_pso = device.new_compute_pipeline_state_with_function(&goo_lib.get_function("goo_composite", None).unwrap()).map_err(|e| format!("goo pso: {e}"))?;
-        let goo_buf = device.new_buffer((GOO_MAX * 16) as u64, MTLResourceOptions::StorageModeShared);
-        let goo_glow_buf = device.new_buffer((GOO_MAX * 4) as u64, MTLResourceOptions::StorageModeShared);
-        let goo_vscale_buf = device.new_buffer((GOO_MAX * 4) as u64, MTLResourceOptions::StorageModeShared);
-        let goo_bounds_buf = device.new_buffer((GOO_BOUNDS_MAX * 16) as u64, MTLResourceOptions::StorageModeShared);
-        let goo_tint_buf = device.new_buffer((GOO_MAX * 16) as u64, MTLResourceOptions::StorageModeShared);
-        let goo_sdf = crate::game_scene::goo_sdf_enabled();
 
         let env0 = cfg.lighting_env(scene.lighting);
 
@@ -453,18 +322,6 @@ impl MetalBackend {
             inst_buf,
             instances,
             shade_pso,
-            goo_pso,
-            goo_buf,
-            goo_glow_buf,
-            goo_vscale_buf,
-            goo_bounds_buf,
-            goo_tint_buf,
-            goo_sdf,
-            goo_inst_first,
-            goo_proxy_n: GOO_PROXY_CAP,
-            goo_was_live: false,
-            _goo_sphere_vbuf: goo_sphere_vbuf,
-            _goo_sphere_ibuf: goo_sphere_ibuf,
             probe_pso,
             tonemap_pso,
             env0,
@@ -521,8 +378,14 @@ impl MetalBackend {
                 return;
             }
         }
-        const BATCH: i32 = 32; // small per-cb batch keeps each dispatch under the GPU watchdog
         const BOUNCES: i32 = 4;
+        // Small per-cb batches keep each dispatch under the GPU watchdog. The
+        // cost of one batch scales with probe count AND the NEE light count
+        // (every bounce samples every light), so the batch shrinks as either
+        // grows — the 32-ray batch that fit a 13k-probe/3-lamp scene blew the
+        // watchdog at 40k probes × ~30 lamps (town, 2026-07-12).
+        let batch: i32 = (2_000_000_000 / (self.probe_count as i64 * (self.light_count as i64 + 8) * 1000)).clamp(2, 32) as i32;
+        println!("probes: batch {batch} rays/cb ({} lights)", self.light_count);
         let t0 = std::time::Instant::now();
         for bank in 0..2i32 {
             // clone the lit state, apply the shared 2-bank emission, upload;
@@ -534,7 +397,7 @@ impl MetalBackend {
             write_buf(&self.mbuf, &mats);
             let mut baked = 0;
             while baked < rays_total {
-                let push = ProbePush { misc: [self.probe_count as i32, rays_total, BOUNCES, BATCH], misc2: [baked, bank, self.light_count as i32, 0], env0: self.env0 };
+                let push = ProbePush { misc: [self.probe_count as i32, rays_total, BOUNCES, batch], misc2: [baked, bank, self.light_count as i32, 0], env0: self.env0 };
                 let cb = self.queue.new_command_buffer();
                 let enc = cb.new_compute_command_encoder();
                 enc.set_compute_pipeline_state(&self.probe_pso);
@@ -555,7 +418,7 @@ impl MetalBackend {
                 cb.commit();
                 cb.wait_until_completed();
                 assert_eq!(cb.status(), MTLCommandBufferStatus::Completed, "probe bake batch failed (bank {bank}, ray {baked})");
-                baked += BATCH;
+                baked += batch;
             }
         }
         // restore the full (lit) light/material state for the shade pass
@@ -651,7 +514,6 @@ impl RenderBackend for MetalBackend {
         let radiance = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
         let albedo = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
         let pos = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
-        let goo_bg = self.device.new_buffer((n_low * 16) as u64, MTLResourceOptions::StorageModeShared);
         let desc = TextureDescriptor::new();
         desc.set_texture_type(MTLTextureType::D2);
         desc.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
@@ -672,7 +534,7 @@ impl RenderBackend for MetalBackend {
         if let Some(layer) = &self.layer {
             layer.set_drawable_size(CGSize { width: ext_w as f64, height: ext_h as f64 });
         }
-        self.target = Some(MetalTarget { low_w, low_h, ext_w, ext_h, menu_scale, radiance, albedo, pos, goo_bg, out_tex, cap_size: None, pending_capture: None });
+        self.target = Some(MetalTarget { low_w, low_h, ext_w, ext_h, menu_scale, radiance, albedo, pos, out_tex, cap_size: None, pending_capture: None });
         println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2}) (metal)", if self.layer.is_some() { "layer" } else { "offscreen" }, ext_w, ext_h, low_w, low_h, self.base_scale, ISO_R);
     }
 
@@ -685,27 +547,6 @@ impl RenderBackend for MetalBackend {
         self.n_spot_active = frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, self.reserved_slot_start, fp.fs);
         write_buf(&self.lbuf, &self.lights_cpu);
         write_buf(&self.mbuf, &self.mats_cpu);
-        // upload this frame's goo metaballs for the SDF composite pass
-        // (slices pre-clamped to the shared pool caps — one rule, both backends)
-        let goo = clamp_goo(fp.fs);
-        let (goo_n, goo_nb) = (goo.balls.len(), goo.bounds.len());
-        if self.goo_sdf && goo_n > 0 {
-            write_buf(&self.goo_buf, goo.balls);
-            // parallel slices (same length as balls); guard in case one's empty
-            if !goo.glow.is_empty() {
-                write_buf(&self.goo_glow_buf, goo.glow);
-            }
-            if !goo.vscale.is_empty() {
-                write_buf(&self.goo_vscale_buf, goo.vscale);
-            }
-            // per-blob bounding spheres (two-level SDF culling)
-            if goo_nb > 0 {
-                write_buf(&self.goo_bounds_buf, goo.bounds);
-            }
-            if !goo.tint.is_empty() {
-                write_buf(&self.goo_tint_buf, goo.tint);
-            }
-        }
         // patch mover instance transforms (player + door leaves) on change
         let mut moved = false;
         for &(key, m) in fp.fs.instances {
@@ -719,31 +560,6 @@ impl RenderBackend for MetalBackend {
                 self.instances[(first + k) as usize].transformation_matrix = tm;
             }
             self.dyn_shadow[di] = m;
-            moved = true;
-        }
-        // patch the goo shadow-proxy instances (one squashed sphere per metaball,
-        // scaled to the merged surface). Rebuilds the TLAS while any blob is live
-        // (the fluid moves every tick) plus one trailing frame to collapse the
-        // slots after the last blob dies.
-        if goo_n > 0 || self.goo_was_live {
-            let cap = goo_n.min(self.goo_proxy_n);
-            for i in 0..self.goo_proxy_n {
-                let inst = &mut self.instances[self.goo_inst_first + i];
-                if i < cap {
-                    let b = goo.balls[i];
-                    let r = b.radius * GOO_PROXY_SCALE;
-                    // vertical scale tracks the SDF's per-ball breathing (the
-                    // ball centre height already includes it), so the cast
-                    // shadow follows the body as it flattens/bulges.
-                    let vs = goo.vscale.get(i).copied().unwrap_or(1.0);
-                    inst.transformation_matrix = to_packed(Mat4::from_translation(Vec3::new(b.center[0], b.center[1], b.center[2])) * Mat4::from_scale(Vec3::new(r, r * GOO_SQUASH * vs, r)));
-                    inst.mask = 0x02; // shadow/AO rays only
-                } else {
-                    inst.transformation_matrix = goo_proxy_parked();
-                    inst.mask = 0x00; // culled
-                }
-            }
-            self.goo_was_live = goo_n > 0;
             moved = true;
         }
         if moved {
@@ -810,32 +626,6 @@ impl RenderBackend for MetalBackend {
             }
             enc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
             enc.end_encoding();
-            // goo: screen-space translucent metaball composite over the scene
-            // radiance (in-place, per-pixel), before tonemap reads it. First a
-            // blit snapshots the shaded radiance into goo_bg: the composite's
-            // refraction taps NEIGHBOUR pixels' background, which would race
-            // the other threads' in-place writes if it read radiance directly.
-            // (Encoders in one command buffer are ordered by Metal's hazard
-            // tracking on these Shared buffers, so shade → blit → goo is safe.)
-            if self.goo_sdf && goo_n > 0 && goo_nb > 0 {
-                let blit = cb.new_blit_command_encoder();
-                blit.copy_from_buffer(&t.radiance, 0, &t.goo_bg, 0, (low_w as u64) * (low_h as u64) * 16);
-                blit.end_encoding();
-                let gp = build_goo_push(cam, low_w, low_h, goo_n, goo_nb);
-                let genc = cb.new_compute_command_encoder();
-                genc.set_compute_pipeline_state(&self.goo_pso);
-                genc.set_buffer(0, Some(&t.radiance), 0);
-                genc.set_buffer(1, Some(&t.pos), 0);
-                genc.set_buffer(2, Some(&self.goo_buf), 0);
-                genc.set_bytes(3, size_of::<GooPush>() as u64, &gp as *const _ as *const c_void);
-                genc.set_buffer(4, Some(&self.goo_glow_buf), 0);
-                genc.set_buffer(5, Some(&self.goo_vscale_buf), 0);
-                genc.set_buffer(6, Some(&t.goo_bg), 0);
-                genc.set_buffer(7, Some(&self.goo_bounds_buf), 0);
-                genc.set_buffer(8, Some(&self.goo_tint_buf), 0);
-                genc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
-                genc.end_encoding();
-            }
             // tonemap: ext_w×ext_h, reads the G-buffers, writes out_tex
             let tenc = cb.new_compute_command_encoder();
             tenc.set_compute_pipeline_state(&self.tonemap_pso);
@@ -868,25 +658,6 @@ impl RenderBackend for MetalBackend {
             blit.end_encoding();
             cbs.commit();
             cbs.wait_until_completed();
-        }
-
-        // ---- minimap HUD: burn into out_tex (the present + readback source) so
-        // it lands in the live view AND in SHOT/DUMP/DEMO captures, unlike the
-        // menu/score overlay (drawable only). Bottom-left corner.
-        if let Some((mc, mw, mh)) = fp.minimap {
-            let (ext_w, ext_h, scale) = { let t = self.target.as_ref().unwrap(); (t.ext_w, t.ext_h, t.menu_scale) };
-            let m: i64 = 12;
-            let dy = ext_h as i64 - m - mh as i64 * scale as i64;
-            let cbm = self.queue.new_command_buffer();
-            let blit = cbm.new_blit_command_encoder();
-            let mut staging: Vec<Texture> = Vec::new();
-            {
-                let t = self.target.as_ref().unwrap();
-                self.blit_overlay(blit, &t.out_tex, mc, mw, mh, scale, m, dy, ext_w, ext_h, &mut staging);
-            }
-            blit.end_encoding();
-            cbm.commit();
-            cbm.wait_until_completed();
         }
 
         // ---- deferred clip capture: subsample the just-rendered out texture

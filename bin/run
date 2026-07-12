@@ -1,33 +1,21 @@
 #!/usr/bin/env bash
-# Build and run the rt-probe viewer (deterministic hardware-RT renderer).
+# Build and run the viewer (deterministic hardware-RT renderer).
 #
-#   bin/run            # procedural graybox cave (default; CAVE_SEED=N to reroll)
-#   bin/run arena      # the goo ARENA shooter (LMB shoots, keys 1-5 pick a weapon)
-#   bin/run house      # any SCENE value as the first arg:
-#                      #   cave | arena | game | goo | village | home | hospital |
-#                      #   office | factory | playground | range | goofloor |
-#                      #   goonursery | goopair | house | lab | grid
+#   bin/run            # the generated town testbed (SEED=N rerolls it)
+#   bin/run 7          # a number as the first arg = SEED
 #   AO_R=1.2 bin/run   # every Config env knob passes through (see config.rs)
+#   LOOK=classic bin/run  # pick a greybox look preset (look.rs)
 #
-# Cave knobs: CAVE_SEED=N (reroll), CAVE_ROOMS=18 (count, grid scales to fit),
-# CAVE_LOOPS=5 (extra routes), CAVE_WALLS=rock (thick wall-tops vs thin+void).
-# The GI bake is cached per-scene on disk, so re-launches are instant
+# The GI bake is cached per-seed on disk, so re-launches are instant
 # (PROBE_CACHE=0 to disable, =<dir> to relocate).
 #
-# The live-tune UI is IN the viewer: press ESC (or click the hamburger icon
-# top-left) for sliders + toggles + quit. Closing the menu prints the env
-# string that reproduces the dialed-in values.
+# The owner plays from the IN-GAME menus (docs/VISION.md): ESC opens the
+# game menu (resume / restart town / seeds / settings / quit); SETTINGS has
+# the live sliders and prints the reproducing env string on close.
 #
 # 'r' records a clip (game-pixel capture): stop writes clips/clip_NNNN.mp4
 # AND .gif. Knobs: CLIP_FPS=50 CLIP_MP4_SCALE=4 CLIP_GIF_SCALE=1 CLIP_MAX_S=60.
-#
-# 'f' toggles the player flashlight (aims where the player last walked).
-# Knobs: FLASH=1 FLASH_POWER=1.0 FLASH_CONE=22 — also live in the ESC menu.
-# 'l' toggles the room lights (LIGHTS=0..1 dims all practicals; indirect
-# follows instantly via the pre-baked probe banks). LIGHTS=0 FLASH=1 =
-# darkness + torch.
-#
-# bin/golden runs the golden-frame regression check (bit-exact SHOT compare).
+# 'l' toggles the lamps. q/e rotate, scroll/+- zoom, 0 resets the camera.
 #
 # The viewer must run from the repo root (asset paths) — this script cd's
 # there itself, so it works from anywhere.
@@ -35,8 +23,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SCENE="${1:-${SCENE:-cave}}"
+SEED="${1:-${SEED:-1}}"
 
 cargo build --release --manifest-path Cargo.toml
 
-SCENE="$SCENE" exec ./target/release/viewer
+SEED="$SEED" exec ./target/release/viewer

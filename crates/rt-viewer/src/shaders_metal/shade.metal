@@ -44,10 +44,6 @@ struct Push {
 constant float PI    = 3.14159265;
 constant float TWOPI = 6.2831853;
 constant float TIE   = 1.0 / 64.0;
-// Goo emitters (dir.w == 2) wider than this disc radius get the soft 12-tap area
-// shadow; smaller/non-goo lights keep the original single-tap hard test.
-constant float GOO_SHADOW_MIN_RADIUS = 0.15;
-
 // 4x4 ordered-Bayer threshold in [0,1) — byte-identical twin of shade.comp's
 // bayer4 (same matrix, same shift) so the dithered reveal matches Vulkan.
 static float bayer4(int2 lp){
@@ -114,35 +110,6 @@ static bool occluded(float3 o, float3 dir, float tmax, instance_acceleration_str
     return isect.intersect(r, accel, 0xFFu).type != intersection_type::none;
 }
 
-// Soft AREA-light visibility for the big goo emitters: sample the light's disc
-// (radius `rad`, facing the shaded point) at a FIXED deterministic ring of
-// points and average the hard-shadow tests → a real penumbra. 12 taps; only goo
-// lights take this path (scene lamps/the flashlight stay single-tap), so it
-// never perturbs the golden scenes. Returns fractional visibility 0..1.
-static float softVis(float3 p, float3 lpos, float rad, instance_acceleration_structure accel) {
-    float3 toL = lpos - p;
-    float dist = max(length(toL), 1e-4);
-    float3 w = toL / dist;
-    float3 up = abs(w.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
-    float3 u = normalize(cross(up, w));
-    float3 v = cross(w, u);
-    const int K = 12;
-    const float2 disc[12] = {
-        float2( 0.00,  0.00),
-        float2( 1.00,  0.00), float2( 0.50,  0.87), float2(-0.50,  0.87),
-        float2(-1.00,  0.00), float2(-0.50, -0.87), float2( 0.50, -0.87),
-        float2( 0.45,  0.26), float2(-0.45,  0.26), float2( 0.00, -0.52),
-        float2( 0.00,  0.52), float2(-0.45, -0.26)
-    };
-    float vis = 0.0;
-    for (int i = 0; i < K; ++i) {
-        float3 tgt = lpos + (u * disc[i].x + v * disc[i].y) * rad;
-        float3 sd = tgt - p;
-        float td = length(sd);
-        vis += occluded(p, sd / td, td - 0.02, accel) ? 0.0 : 1.0;
-    }
-    return vis / float(K);
-}
 
 
 // AO visibility: 1 on miss, t/R on a first hit within range R.
@@ -483,20 +450,7 @@ kernel void shade(
         float omega = TWOPI * (1.0 - sqrt(1.0 - sinT * sinT));
         float3 c = albedo * (1.0/PI) * lt.color.rgb * ndl2 * omega * emit;
         if (max(c.r, max(c.g, c.b)) < 0.0015) continue;
-        // goo emitters (spotlight path, big disc) get soft area shadows; every
-        // OTHER light keeps the original single-tap hard test VERBATIM, so the
-        // codegen for golden scenes is byte-identical.
-        if (lt.dir.w == 2.0 && lt.posRad.w > GOO_SHADOW_MIN_RADIUS) {
-            float vis = softVis(p, lt.posRad.xyz, lt.posRad.w, accel);
-            // AO_DITHER also stipples the goo-light penumbra (this soft path is
-            // Metal-only — the GLSL twin keeps hard single-tap goo shadows, so
-            // there is nothing to mirror; divergence documented in the handoff).
-            if (pc.look2.z > 0.0) vis = vis >= bayer4(int2(gid)) ? 1.0 : 0.0;
-            if (vis > 0.0) {
-                col += c * vis;
-                if (pc.look.x > 0.0) col += lt.color.rgb * emit * pc.look.x * specBRDF(n, vdir, ldir, reff, F0) * ndl2 * vis;
-            }
-        } else if (!occluded(p, ldir, dist - lt.posRad.w, accel)) {
+        if (!occluded(p, ldir, dist - lt.posRad.w, accel)) {
             col += c;
             if (pc.look.x > 0.0) col += lt.color.rgb * emit * pc.look.x * specBRDF(n, vdir, ldir, reff, F0) * ndl2;
         }
@@ -528,10 +482,7 @@ kernel void shade(
             float3 bpos = ob + d * bh.t + bn * 0.003;
             float3 rdir = reflect(d, bn);
             Hit rh;
-            // mask 0x05 (primary | dynamic): the player shows in the floor, but
-            // the goo SHADOW PROXIES (mask 0x02) stay out — they are black dummy
-            // geometry, and a floor that reflects them paints black blotches
-            // through every translucent blob standing on it.
+            // mask 0x05 (primary | dynamic): the player shows in the floor.
             if (trace(bpos, rdir, 60.0, 0x05u, accel, verts, indices, geoms, rh)) {
                 Material rm = mats[rh.mat];
                 float3 ralb = rm.baseColor.rgb;

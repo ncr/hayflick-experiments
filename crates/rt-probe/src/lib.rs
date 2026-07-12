@@ -8,7 +8,6 @@
 //!   lines (the shared `scene` identity stays on `Config`)
 //! - [`gpu`]    — generic Vulkan plumbing (context, buffers, images)
 //! - [`scene`]  — scene model + GLTF loader (world-space baked geometry)
-//! - [`scenes`] — content: the house / lab / grid-walker scene builders
 //! - [`render`] — `SceneGpu`: AS build, shade + probe pipelines, NEE lights,
 //!   the typed FrameState/SceneHandles/Spotlight frame surface, the two-bank
 //!   GI probe cache. Practical flicker is NOT here — `frame_lights_cpu` only
@@ -45,17 +44,15 @@ pub mod gpu_scene;
 pub mod probe_cache;
 pub mod render;
 pub mod scene;
-pub mod scenes;
 
 // Re-export surface = exactly what crosses the rt-probe boundary (rt-viewer +
 // its `use rt_probe::*`). Items NOT re-exported here stay `pub` in their
 // modules: some are internal-only (GpuTex), others rt-viewer names by module
 // path (rt_probe::render::{frame_lights_cpu, LightScan, mat_to_transform} —
-// the Metal backend + the shared goo push builder). Iso math is imported from
+// the Metal backend). Iso math is imported from
 // `iso_core` directly, never through this crate.
 pub use config::{Config, StyleCfg};
 pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx};
 pub use gpu_scene::{bake_bank_emission, InstanceTable, ProbeGrid};
-pub use render::{make_pool, make_set, push_bytes, roi_push, scan_lights, FrameState, GooBall, GooFrame, InstanceKey, LightKey, SceneGpu, SceneHandles, ShadePush, Spotlight, GOO_SPV, N_RESERVED, ROI_OFF, SPOT_WARM, TONE_SPV};
+pub use render::{make_pool, make_set, push_bytes, roi_push, scan_lights, FrameState, InstanceKey, LightKey, SceneGpu, SceneHandles, ShadePush, Spotlight, N_RESERVED, ROI_OFF, SPOT_WARM, TONE_SPV};
 pub use scene::{hex_linear, Scene};
-pub use scenes::build_scene;

@@ -1,52 +1,17 @@
 //! house-game — the game's headless core (ARCHITECTURE.md area C).
 //!
-//! Collision + iso input moved verbatim from rt-probe's `game.rs` (the native
-//! mirror of @common/gameplay), plus the viewer's per-frame movement and
-//! flashlight math extracted as PURE functions so the ECS systems and the
-//! interactive viewer share one implementation. No GPU, no window: everything
-//! here runs under plain `cargo test -p house-game`.
-//!
-//! Module map:
-//! - [`spec`]      — LevelSpec (ordered Vecs, the level's source of truth) + fixture
-//! - [`cave`]      — procedural cave/dungeon generator → LevelSpec (deterministic in seed)
-//! - [`building`]  — rectangular building floors (house/hospital/office/factory) → LevelSpec
-//! - [`floorplan`] — wall/door enclosure helpers shared by the floor generators
-//! - [`village`]   — multi-building outdoor village stage → LevelSpec
-//! - [`game`]      — Command, components, the fixed-order systems, GameSnapshot,
-//!   state_hash (the `sim_core::Simulation` impl)
-//! - [`flicker`]   — stateless practical-light curves (verbatim render.rs port)
-//! - [`trace`]     — plain-text command traces (headless bin + replay goldens)
-//! - [`mapviz`]    — PNG canvas for the roommap/floormap map-tool bins
-//! - [`lab`]       — scenario lab: headless event-timeline harness for emergence
-//!   experiments (Scenario → run_scenario → ScenarioReport + Metrics)
-//! - [`thief`]     — the thief/social-deduction game (docs/spec/): edge-gated
-//!   world grid, town generation, perception/memory/deduction engine
+//! Post-reset (docs/VISION.md): the only game content is the [`town`] testbed.
+//! This root keeps the continuous-movement primitives the Faza-2 miodny
+//! player stack builds on (collision, iso input shaping, the speed floor) —
+//! all pure functions, no GPU, no window: everything here runs under plain
+//! `cargo test -p house-game`.
 
-pub mod building;
-pub mod cave;
-pub mod flicker;
-pub mod floorplan;
-pub mod game;
-pub mod lab;
-pub mod mapviz;
-pub mod spec;
-pub mod thief;
-pub mod trace;
-pub mod village;
+pub mod town;
 
-// Root re-exports: ONLY what external users (rt-viewer, the src/bin tools)
-// actually import — the minimal-public-surface rule (ARCHITECTURE.md). Every
-// other item stays reachable through its module path.
-pub use building::{building_floor, factory_floor, house_floor, BuildingParams};
-pub use cave::{cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE};
-pub use floorplan::{enclose, WallOpts};
-pub use game::{Command, GameEvent, GameSnapshot, HouseGame, MobRender, PickRay, WeaponClass, WeaponKind, GOO_CHUNK_CAP, GOO_CHUNK_H, GOO_CURE_MAX, GOO_LIVE_CAP, GOO_PARTICLES, TICK_DT, WEAPON_RAISE_TICKS};
-pub use lab::{run_scenario, Scenario};
-pub use spec::{arena_level, drain_level, fixture, game_level, goo_level, goofloor_level, goonursery_level, goopair_level, playground_level, shooting_range_level, squeeze_level, survival_level, DoorId, DoorSpec, GooKind, ItemKind, LevelSpec, LightId, LightKind, LightSpec, MobId, RoomId, RoomSpec, TargetSpec};
-pub use trace::parse_trace;
-pub use village::village_level;
+use glam::Vec2;
 
-use glam::{Vec2, Vec3};
+/// Fixed sim timestep: 60 Hz, the determinism contract's clock.
+pub const TICK_DT: f32 = 1.0 / 60.0;
 
 /// The walkable level: a floor rect plus solid prop footprints, all in world
 /// XZ. `is_blocked` mirrors `@common/gameplay`'s `LevelResource.isBlocked` —
@@ -93,9 +58,9 @@ pub fn recommended_min_px_per_sec(fps: f32) -> f32 {
 /// Per-axis collide-and-slide — the viewer's `update_motion` collision loop,
 /// moved verbatim: try the full (dx, dz) step; when blocked, keep whichever
 /// axis is clear (nicer than a hard wall stop). `blocked` abstracts the
-/// solidity test so the same loop runs against `Level::is_blocked` (viewer)
-/// or level + dynamic door solids (the game's walk system). Returns the new
-/// (x, z) — equal to (ox, oz) when fully blocked.
+/// solidity test so the same loop runs against `Level::is_blocked` or any
+/// richer solidity source. Returns the new (x, z) — equal to (ox, oz) when
+/// fully blocked.
 pub fn collide_and_slide(blocked: impl Fn(f32, f32) -> bool, ox: f32, oz: f32, dx: f32, dz: f32) -> (f32, f32) {
     let (nx, nz) = (ox + dx, oz + dz);
     let (mut px, mut pz) = (ox, oz);
@@ -112,17 +77,6 @@ pub fn collide_and_slide(blocked: impl Fn(f32, f32) -> bool, ox: f32, oz: f32, d
         }
     }
     (px, pz)
-}
-
-/// Flashlight pose from the (lattice-snapped) player position + facing — the
-/// viewer's `update_flashlight` hand math, moved verbatim: held at hand
-/// height, far enough in front of the pillar (half extent 0.1875) that the
-/// body never occludes its own beam; aimed ahead and pitched down so the cone
-/// pools a couple of tiles out. Returns (position, unit direction).
-pub fn flashlight_pose(p: Vec3, facing: Vec2) -> (Vec3, Vec3) {
-    let pos = Vec3::new(p.x + facing.x * 0.32, p.y + 0.95, p.z + facing.y * 0.32);
-    let dir = Vec3::new(facing.x, -0.55, facing.y).normalize();
-    (pos, dir)
 }
 
 #[cfg(test)]
@@ -186,8 +140,6 @@ mod tests {
         let (px, pz) = collide_and_slide(blocked, 1.5, -1.2, 0.2, 0.3);
         assert_eq!((px, pz), (1.7, -1.2));
         // sequential slide test: the z axis check uses the POST-x position
-        // (view.rs checked `is_blocked(px, nz)`, not `(ox, nz)`) — from a spot
-        // where x is clear and z is only blocked at the NEW x
         let lvl2 = Level { floor: [-5.0, -5.0, 5.0, 5.0], solids: vec![[1.0, 1.0, 2.0, 2.0]] };
         let b2 = |x: f32, z: f32| lvl2.is_blocked(x, z);
         let (px, pz) = collide_and_slide(b2, 0.9, 0.9, 0.3, 0.3); // (1.2,1.2) inside
@@ -195,21 +147,5 @@ mod tests {
         assert_eq!(pz, 0.9); // z at the slid x (1.2, 1.2) is blocked
         // fully cornered: no movement
         assert_eq!(collide_and_slide(|_, _| true, 0.5, 0.5, 0.1, 0.1), (0.5, 0.5));
-    }
-
-    #[test]
-    fn flashlight_pose_pins_the_viewer_math() {
-        // facing +x from (2, 0, -1): hand 0.32 ahead, 0.95 up, pitched -0.55
-        let (pos, dir) = flashlight_pose(Vec3::new(2.0, 0.0, -1.0), Vec2::new(1.0, 0.0));
-        assert!((pos - Vec3::new(2.32, 0.95, -1.0)).length() < 1e-6);
-        let want = Vec3::new(1.0, -0.55, 0.0).normalize();
-        assert!((dir - want).length() < 1e-6);
-        assert!((dir.length() - 1.0).abs() < 1e-6);
-        // a diagonal facing keeps the same pitch ratio and hand offset length
-        let f = Vec2::new(1.0, 1.0).normalize();
-        let (pos2, dir2) = flashlight_pose(Vec3::new(0.0, 0.25, 0.0), f);
-        assert!((Vec2::new(pos2.x, pos2.z).length() - 0.32).abs() < 1e-6);
-        assert!((pos2.y - 1.2).abs() < 1e-6);
-        assert!((Vec2::new(dir2.x, dir2.z).length() / -dir2.y - 1.0 / 0.55).abs() < 1e-4);
     }
 }

@@ -387,7 +387,7 @@ impl Viewer {
             let demo = self.harness.demo.as_mut().unwrap();
             demo.done += 1;
             if demo.done >= ticks {
-                println!("DEMO: wrote {} frames to {dir}/ — score {}", demo.done, self.game.snap.score);
+                println!("DEMO: wrote {} frames to {dir}/", demo.done);
                 self.exit_requested = true;
             }
         }
@@ -404,7 +404,7 @@ impl Viewer {
                 // the capture is sim-independent BY CONSTRUCTION: draw() feeds
                 // the fixed loop dt = 0 in SHOT mode, so the wall clock never
                 // ran a tick — only the deterministic CMDS prefix did. Pin it.
-                assert_eq!(self.game.tick.0, self.game.cmds_prefix, "SHOT capture ran wall-clock sim ticks — goldens would depend on timing");
+                assert_eq!(self.town.tick.0, self.town.cmds_prefix, "SHOT capture ran wall-clock sim ticks — captures would depend on timing");
                 self.backend.capture_png(&path);
                 self.exit_requested = true;
             }

@@ -1,7 +1,7 @@
-//! SCENE=thief — the M2 playable-slice greybox, built straight from the
-//! thief sim's `TownGrid` (docs/spec/03: cells hold contents, EDGES hold
-//! barriers). The same grid drives sim LOS/sound/light and these visuals, so
-//! what blocks the eye blocks the cone — by construction.
+//! SCENE=town — the testbed greybox, built straight from the town sim's
+//! `TownGrid` (cells hold contents, EDGES hold barriers). The same grid
+//! drives sim light/collision and these visuals, so what blocks the walk
+//! blocks the eye — by construction.
 //!
 //! Greybox discipline (owner directive): colored boxes only, every XZ dim a
 //! multiple of 0.0625 wu. One grid cell = 1 wu. Wall slabs are 0.25 wu thick,
@@ -11,24 +11,36 @@
 //! to sill height, and the storey FLOORCUT (`2.5·floor + 2.25`) lifts the
 //! caps above the player's floor on upper storeys.
 //!
-//! The AESTHETIC is data: a [`ThiefLook`] preset (LOOK env, thief_look.rs)
-//! supplies every colour, the lamp mood, the lighting env, and the shape-kit
-//! switches (roof style, timber framing, plinths, body kit). `classic` takes
-//! the Legacy code paths and reproduces the pre-look geometry byte-for-byte
-//! — the pinned thief golden renders it.
+//! The AESTHETIC is data: a [`Look`] preset (LOOK env, look.rs) supplies
+//! every colour, the lamp mood, the lighting env, and the shape-kit switches
+//! (roof style, timber framing, plinths, body kit). The Faza-1 joyful looks
+//! replace these presets; the machinery stays.
 //!
 //! NEE discipline: the ONLY named lights are the spec lamps (conceptual point
-//! lights). Every emissive box (loot chest, lamp fixtures, player bands) is
-//! part of a dynamic run, which the light scan and probe bake exclude — so
-//! the mirror light-join stays complete without naming dressing.
+//! lights). Every emissive box (lamp fixtures) is part of a dynamic run,
+//! which the light scan and probe bake exclude — so the light-join stays
+//! complete without naming dressing.
 
-use crate::game_scene::{mark_occluder, DOOR_LEAF_H, WALL_TOP};
-use crate::thief_look::{Kit, RoofStyle, ThiefLook};
+use crate::look::{Kit, Look, RoofStyle};
 use glam::{Mat4, Vec3};
-use house_game::thief::grid::{CellKind, CellPos, Dir, EdgeKind, Prop, TownGrid};
-use house_game::thief::perception::{Feature, Headwear};
-use house_game::thief::sim::ThiefSpec;
+use house_game::town::grid::{CellKind, CellPos, Dir, EdgeKind, Prop, TownGrid};
+use house_game::town::sim::{Role, TownLevel};
 use rt_probe::{hex_linear, Scene};
+
+/// Wall height (the storey's occluding shell).
+pub const WALL_TOP: f32 = 2.1875;
+/// Door leaf height (under the lintel).
+pub const DOOR_LEAF_H: f32 = 1.71875;
+
+/// Flag a wall primitive's material as a see-through OCCLUDER (Material._pad
+/// = 1), the bit the shade pass reads (`mats[h.mat].pad`) to know a
+/// primary-ray hit is a wall the ROI reveal / WALLCUT may dissolve.
+/// `add_box_world` mints one material per box, so this targets exactly this
+/// box. Floors/props/doors/bodies stay 0 and never dissolve.
+fn mark_occluder(scene: &mut Scene, prim: usize) {
+    let mid = scene.primitives[prim].material_id as usize;
+    scene.materials[mid]._pad = 1;
+}
 
 /// Storey pitch: floor f's walkable plane sits at `2.5·f` (the tower spike's
 /// ceiling-slab top). The FLOORCUT plane for floor f is `2.5·f + 2.25` —
@@ -47,11 +59,6 @@ const FLOOR_TOP: f32 = 6.0 / 128.0;
 const WALL_HT: f32 = 0.125; // wall half-thickness (0.25 wu slab)
 const SILL_H: f32 = 0.9375; // window sill top
 const LINTEL_Y: f32 = 1.8125; // window/door lintel bottom
-
-// Loot: a strongbox with a warm gleam (dynamic run — NEE never sees it).
-// Shared across looks: gold gleams in every palette.
-const CHEST_BASE: [f32; 4] = [0.30, 0.20, 0.10, 1.0];
-const CHEST_GLOW: [f32; 4] = [3.2, 2.0, 0.6, 1.0];
 
 /// A door edge discovered in the grid, in deterministic scan order — the
 /// loop swings leaf `tdoor_<i>` by the live door state each frame.
@@ -94,10 +101,10 @@ pub fn cell_world(p: CellPos) -> Vec3 {
     Vec3::new(p.x as f32 + 0.5, STOREY_H * p.floor as f32 + FLOOR_TOP, p.z as f32 + 0.5)
 }
 
-/// Build the renderable greybox for a thief level in the given look. Ground
-/// floor only for the M2 spine (the grid supports stacked floors; M3's
-/// towngen scenes extend the loops over `floor`).
-pub fn build_thief(spec: &ThiefSpec, look: &ThiefLook) -> Scene {
+/// Build the renderable greybox for a town level in the given look. Ground
+/// floor only (the grid supports stacked floors; extend the loops over
+/// `floor` when upper storeys become walkable).
+pub fn build_town(spec: &TownLevel, look: &Look) -> Scene {
     let mut scene = Scene::new();
     let g = &spec.grid;
     let (w, h) = (g.w, g.h);
@@ -237,22 +244,17 @@ pub fn build_thief(spec: &ThiefSpec, look: &ThiefLook) -> Scene {
 
     scene.recompute_bounds();
 
-    // ---- dynamics (after recompute_bounds, local space): the two player
-    // bodies, one body per NPC (Refined kit: five runs each — core + four
-    // limbs the loop swings), the loot chest, and one leaf per door edge.
-    build_player_body(&mut scene, look, "tplayer_a", look.coat_green, Some(look.hood_green));
-    build_player_body(&mut scene, look, "tplayer_b", look.coat_brown, None);
+    // ---- dynamics (after recompute_bounds, local space): the player body,
+    // one body per NPC (Refined kit: five runs each — core + four limbs the
+    // loop swings), and one leaf per door edge.
+    build_player_body(&mut scene, look, "player", look.coat_green, Some(look.hood_green));
     for n in &spec.npcs {
         let name = format!("npc_{}", n.id);
         match n.role {
-            house_game::thief::sim::Role::Guard => build_guard_body(&mut scene, look, &name),
-            house_game::thief::sim::Role::Civilian => build_civilian_body(&mut scene, look, &name),
+            Role::Guard => build_guard_body(&mut scene, look, &name),
+            Role::Civilian => build_civilian_body(&mut scene, look, &name),
         }
     }
-    let first = scene.primitives.len();
-    scene.add_box_world(Vec3::new(-0.25, 0.0, -0.1875), Vec3::new(0.25, 0.3125, 0.1875), CHEST_BASE, [0.0; 4], 0.6, 0.0);
-    scene.add_box_world(Vec3::new(-0.1875, 0.3125, -0.125), Vec3::new(0.1875, 0.4375, 0.125), CHEST_BASE, CHEST_GLOW, 0.5, 0.0);
-    scene.register_dynamic("loot", first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
     for (i, d) in door_runs(g).iter().enumerate() {
         let first = scene.primitives.len();
         // leaf local box: hinge at origin, spanning the edge's 1-wu run
@@ -265,7 +267,7 @@ pub fn build_thief(spec: &ThiefSpec, look: &ThiefLook) -> Scene {
     }
 
     scene.floor_rect = [0.0, 0.0, w as f32, h as f32];
-    scene.solids = Vec::new(); // collision is the thief sim's grid, not AABBs
+    scene.solids = Vec::new(); // collision is the town sim's grid, not AABBs
     let ps = cell_world(spec.player_start);
     scene.player_start = ps;
     // the look's mood; the shell scales sky by the sim's day phase
@@ -273,7 +275,7 @@ pub fn build_thief(spec: &ThiefSpec, look: &ThiefLook) -> Scene {
     scene
 }
 
-fn floor_tint(g: &TownGrid, p: CellPos, look: &ThiefLook) -> Option<u32> {
+fn floor_tint(g: &TownGrid, p: CellPos, look: &Look) -> Option<u32> {
     match g.cell(p).kind {
         CellKind::Void => None,
         CellKind::Outdoor => Some(match look.street_alt {
@@ -290,7 +292,7 @@ fn floor_tint(g: &TownGrid, p: CellPos, look: &ThiefLook) -> Option<u32> {
 /// and optional half-timber framing (posts on every cell boundary + a
 /// lintel-height rail, occluder-marked so the cutaway takes them with the
 /// wall). `along_x` says which axis the run spans.
-fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, look: &ThiefLook) {
+fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, look: &Look) {
     let first = scene.primitives.len();
     scene.add_box_world(Vec3::new(rect[0], 0.0, rect[1]), Vec3::new(rect[2], WALL_TOP, rect[3]), hex_linear(look.wall), [0.0; 4], 0.85, 0.0);
     mark_occluder(scene, first);
@@ -322,7 +324,7 @@ fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, look: &ThiefLook)
 
 /// One merged roof run in the look's silhouette. Every box is an occluder
 /// (both dollhouse cuts must take it) with its base above the 2.25 FLOORCUT.
-fn roof_run(scene: &mut Scene, x0: f32, x1: f32, z: f32, look: &ThiefLook) {
+fn roof_run(scene: &mut Scene, x0: f32, x1: f32, z: f32, look: &Look) {
     let rc = hex_linear(look.roof);
     let first = scene.primitives.len();
     scene.add_box_world(Vec3::new(x0 - 0.25, STOREY_H - 0.125, z), Vec3::new(x1 + 0.25, STOREY_H, z + 1.0), rc, [0.0; 4], 0.85, 0.0);
@@ -343,7 +345,7 @@ fn roof_run(scene: &mut Scene, x0: f32, x1: f32, z: f32, look: &ThiefLook) {
 
 /// Non-wall barriers get partial dress: a window is a sill + lintel gap, a
 /// door edge gets a lintel over the (dynamic) leaf. Open edges get nothing.
-fn barrier_dress(scene: &mut Scene, e: EdgeKind, rect: [f32; 4], look: &ThiefLook) {
+fn barrier_dress(scene: &mut Scene, e: EdgeKind, rect: [f32; 4], look: &Look) {
     match e {
         EdgeKind::Window(_) => {
             let first = scene.primitives.len();
@@ -391,11 +393,11 @@ enum Dress {
     Hat,
 }
 
-fn build_player_body(scene: &mut Scene, look: &ThiefLook, name: &str, coat: [f32; 4], hood: Option<[f32; 4]>) {
+fn build_player_body(scene: &mut Scene, look: &Look, name: &str, coat: [f32; 4], hood: Option<[f32; 4]>) {
     match look.kit {
         Kit::Legacy => {
             let first = scene.primitives.len();
-            build_thief_body_legacy(scene, look, coat, hood);
+            build_body_legacy(scene, look, coat, hood);
             scene.register_dynamic(name, first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
         }
         Kit::Refined => {
@@ -408,7 +410,7 @@ fn build_player_body(scene: &mut Scene, look: &ThiefLook, name: &str, coat: [f32
     }
 }
 
-fn build_guard_body(scene: &mut Scene, look: &ThiefLook, name: &str) {
+fn build_guard_body(scene: &mut Scene, look: &Look, name: &str) {
     match look.kit {
         Kit::Legacy => {
             let first = scene.primitives.len();
@@ -419,7 +421,7 @@ fn build_guard_body(scene: &mut Scene, look: &ThiefLook, name: &str) {
     }
 }
 
-fn build_civilian_body(scene: &mut Scene, look: &ThiefLook, name: &str) {
+fn build_civilian_body(scene: &mut Scene, look: &Look, name: &str) {
     match look.kit {
         Kit::Legacy => {
             let first = scene.primitives.len();
@@ -432,7 +434,7 @@ fn build_civilian_body(scene: &mut Scene, look: &ThiefLook, name: &str) {
 
 /// The five-run articulated figure. Core in body-local space (feet y=0);
 /// limbs in pivot space (origin at the joint, geometry hanging below it).
-fn build_articulated(scene: &mut Scene, look: &ThiefLook, name: &str, coat: [f32; 4], legs: [f32; 4], dress: Dress, polearm: bool) {
+fn build_articulated(scene: &mut Scene, look: &Look, name: &str, coat: [f32; 4], legs: [f32; 4], dress: Dress, polearm: bool) {
     // ---- core: pelvis, belt, torso, shoulder slab, head, dress, nose
     let first = scene.primitives.len();
     part(scene, 0.125, 0.09375, HIP - 0.0625, HIP + 0.0625, legs, [0.0; 4]); // pelvis
@@ -491,7 +493,7 @@ fn build_articulated(scene: &mut Scene, look: &ThiefLook, name: &str, coat: [f32
 /// axis-aligned (NPC bodies rotate whole; the nose gives the player's four
 /// facings a read too). Local space, feet at y=0. (The Legacy kit — the
 /// classic golden renders these exact boxes.)
-fn build_thief_body_legacy(scene: &mut Scene, look: &ThiefLook, coat: [f32; 4], hood: Option<[f32; 4]>) {
+fn build_body_legacy(scene: &mut Scene, look: &Look, coat: [f32; 4], hood: Option<[f32; 4]>) {
     part(scene, 0.125, 0.125, 0.0, 0.375, look.legs, [0.0; 4]); // legs
     part(scene, 0.1875, 0.15625, 0.375, 0.9375, coat, [0.0; 4]); // coat
     part(scene, 0.125, 0.125, 0.9375, 1.25, look.skin, [0.0; 4]); // head
@@ -502,7 +504,7 @@ fn build_thief_body_legacy(scene: &mut Scene, look: &ThiefLook, coat: [f32; 4], 
     scene.add_box_world(Vec3::new(-0.0625, 1.0, 0.125), Vec3::new(0.0625, 1.125, 0.21875), look.skin, [0.0; 4], 0.8, 0.0);
 }
 
-fn build_npc_body_legacy(scene: &mut Scene, look: &ThiefLook, coat: [f32; 4], helm: Option<[f32; 4]>) {
+fn build_npc_body_legacy(scene: &mut Scene, look: &Look, coat: [f32; 4], helm: Option<[f32; 4]>) {
     part(scene, 0.125, 0.125, 0.0, 0.375, look.npc_legs, [0.0; 4]);
     part(scene, 0.1875, 0.15625, 0.375, 0.9375, coat, [0.0; 4]);
     part(scene, 0.125, 0.125, 0.9375, 1.25, look.skin, [0.0; 4]);
@@ -516,45 +518,39 @@ fn part(scene: &mut Scene, hx: f32, hz: f32, y0: f32, y1: f32, color: [f32; 4], 
     scene.add_box_world(Vec3::new(-hx, y0, -hz), Vec3::new(hx, y1, hz), color, emissive, 0.6, 0.0);
 }
 
-/// Which player body run is visible for a live look (hooded ⇒ the green
-/// working look; anything else ⇒ the shed brown look).
-pub fn player_run_for_look(look: &house_game::thief::perception::Description) -> &'static str {
-    if look.headwear == Feature::Seen(Headwear::Hood) {
-        "tplayer_a"
-    } else {
-        "tplayer_b"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thief_look::{CLASSIC, LOOKS};
-    use house_game::thief::sim::spine_level;
+    use crate::look::LOOKS;
+    use house_game::town::sim::town_level;
 
-    /// EVERY look preset produces the runs the loop patches: two player
-    /// bodies, one per NPC, the loot chest, one leaf per door edge — and
-    /// keeps the NEE discipline (the only named lights are the spec lamps;
-    /// dressing stays in dynamic runs / non-emissive statics).
+    /// EVERY look preset produces the runs the loop patches: the player
+    /// body, one per NPC, one leaf per door edge — and keeps the NEE
+    /// discipline (the only named lights are the spec lamps; dressing stays
+    /// in dynamic runs / non-emissive statics).
     #[test]
     fn every_look_registers_the_expected_runs() {
         for look in LOOKS {
-            let spec = spine_level();
-            let scene = build_thief(&spec, look);
-            for name in ["tplayer_a", "tplayer_b", "npc_1", "npc_2", "loot", "tdoor_0", "tdoor_1"] {
-                assert!(scene.dynamics.iter().any(|(n, ..)| n == name), "{}: missing run {name}", look.name);
+            let spec = town_level(1);
+            let scene = build_town(&spec, look);
+            assert!(scene.dynamics.iter().any(|(n, ..)| n == "player"), "{}: missing run player", look.name);
+            for n in &spec.npcs {
+                let name = format!("npc_{}", n.id);
+                assert!(scene.dynamics.iter().any(|(dn, ..)| *dn == name), "{}: missing run {name}", look.name);
+            }
+            let doors = door_runs(&spec.grid).len();
+            assert!(doors > 0, "a generated town has doors");
+            for i in 0..doors {
+                let name = format!("tdoor_{i}");
+                assert!(scene.dynamics.iter().any(|(dn, ..)| *dn == name), "{}: missing run {name}", look.name);
             }
             // Refined bodies are articulated (five runs); Legacy stays one
-            // run per body — the loop keys off limb-run presence, and the
-            // classic golden depends on the Legacy shape.
-            let articulated = matches!(look.kit, crate::thief_look::Kit::Refined);
-            for body in ["tplayer_a", "tplayer_b", "npc_1", "npc_2"] {
-                for limb in ["legL", "legR", "armL", "armR"] {
-                    let name = format!("{body}/{limb}");
-                    assert_eq!(scene.dynamics.iter().any(|(n, ..)| *n == name), articulated, "{}: run {name} presence", look.name);
-                }
+            // run per body — the loop keys off limb-run presence.
+            let articulated = matches!(look.kit, Kit::Refined);
+            for limb in ["legL", "legR", "armL", "armR"] {
+                let name = format!("player/{limb}");
+                assert_eq!(scene.dynamics.iter().any(|(n, ..)| *n == name), articulated, "{}: run {name} presence", look.name);
             }
-            assert_eq!(door_runs(&spec.grid).len(), 2, "the spine has two door edges");
             // the only NEE lights are the named lamps
             let scan = rt_probe::scan_lights(&scene).unwrap();
             assert_eq!(scan.light_count as usize, spec.lights.len(), "{}: lamps only — dressing must stay in dynamic runs", look.name);
@@ -563,7 +559,7 @@ mod tests {
     }
 
     /// Roof dressing (every look) sits entirely above the FLOORCUT plane —
-    /// the M3 multi-floor cap-lift must remove roofs in one clean cut.
+    /// the multi-floor cap-lift must remove roofs in one clean cut.
     #[test]
     fn roof_boxes_clear_the_floorcut_plane() {
         for look in LOOKS {
@@ -593,17 +589,5 @@ mod tests {
     fn wall_cut_sits_above_sills_below_lintels() {
         assert!(WALL_CUT_H > SILL_H, "sills must survive the cutaway");
         assert!(WALL_CUT_H < LINTEL_Y && WALL_CUT_H < WALL_TOP, "lintels and wall tops must dissolve");
-    }
-
-    /// The classic preset is the golden look: spot-pin the values that place
-    /// its geometry so a preset edit can't silently move the pinned frame.
-    #[test]
-    fn classic_is_the_frozen_legacy_kit() {
-        assert!(matches!(CLASSIC.kit, crate::thief_look::Kit::Legacy));
-        assert!(matches!(CLASSIC.roof_style, crate::thief_look::RoofStyle::FlatCap));
-        assert!(CLASSIC.street_alt.is_none() && CLASSIC.timber.is_none() && CLASSIC.plinth.is_none());
-        assert_eq!(CLASSIC.lighting, [0.0, 5.5, 0.22, 0.42]);
-        assert_eq!(CLASSIC.lamp_scale, 1.0);
-        assert_eq!(CLASSIC.lamp_tint, [1.0, 0.82, 0.58]);
     }
 }

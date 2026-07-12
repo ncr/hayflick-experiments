@@ -1,108 +1,22 @@
 #!/usr/bin/env bash
-# Golden-frame regression check for the rt-probe deterministic renderer.
+# Golden-frame gate — SUSPENDED during the joyful-visual reset (Faza 0/1).
 #
-#   bin/golden            # render house/lab/grid, compare against checked-in goldens
-#   bin/golden --update   # regenerate the goldens (after an INTENTIONAL look change)
+# The old golden sets (house/lab/grid/game/... on Vulkan AND Metal) were
+# deleted with their scenes in the 2026-07-12 purge (git tag
+# archive/pre-joyful-reset). During Faza 1 every change is EXPECTED to move
+# pixels (projection generalization + the joyful look search), so a byte gate
+# would only generate noise.
 #
-# The renderer is deterministic in principle (shade.comp is a pure function of
-# scene + camera; LIGHT_ANIM=0 freezes the practicals), so the primary check is a
-# byte-compare of the PNGs. Some GPUs, though, resolve grazing rays
-# non-deterministically (the rtAO hemisphere rays flip hit/miss at geometry
-# edges; ground fog then lifts that across a quantize threshold and flips a
-# handful of pixels by ~1%). So when the bytes differ, fall back to a TOLERANT
-# image compare (needs `magick`): pass if diffs stay under GOLDEN_FUZZ (default
-# 2% per channel) for at most GOLDEN_TOL pixels (default 256), else fail — real
-# look regressions move far more than that. Goldens live in
-# crates/rt-probe/golden/ and are MACHINE-SPECIFIC (GPU + driver shade exact
-# float behaviour): regenerate after a driver update if all fail identically.
+# The gate comes back the moment the owner locks the Faza-1 look: pin a town
+# frame per machine/backend (SHOT= + WINDOW=, LIGHT_ANIM=0) and restore the
+# byte-compare loop from git history (bin/golden @ archive/pre-joyful-reset).
 #
-# Five goldens: house / lab / grid (the legacy scenes), plus the SCENE=game
-# greybox content scene at its spawn state (game) and at the end of the
-# checked-in CMDS replay trace (game_replay — door open, score 2, lights off;
-# the SHOT-mode wall clock never ticks the sim, so this is a pure function of
-# the scene + the trace). CMDS replay is byte-reproducible and matches the
-# house-game replay_game_golden state_hash.
-#
-# SHOT runs FULLY headless (no window, no surface, no swapchain) — WINDOW
-# pins the offscreen capture extent exactly, so golden dimensions are
-# reproducible with no window manager in the loop.
-set -euo pipefail
-cd "$(dirname "$0")/.."
-
-# Goldens are MACHINE-SPECIFIC (GPU + driver exact float behaviour) AND
-# BACKEND-specific: the Vulkan (NVIDIA) and Metal (Apple Silicon) paths produce
-# different floats, so each keeps its own set. GOLDEN_DIR selects which — the
-# default is the Vulkan set; the M2 Pro uses
-# `GOLDEN_DIR=crates/rt-probe/golden-metal bin/golden`.
-# Auto-pick by platform: Apple Silicon runs the Metal backend.
-if [ -z "${GOLDEN_DIR:-}" ] && [ "$(uname)" = "Darwin" ]; then GOLDEN_DIR=crates/rt-probe/golden-metal; fi
-GOLD="${GOLDEN_DIR:-crates/rt-probe/golden}"
-OUT="${TMPDIR:-/tmp}/rt-golden"
-UPDATE="${1:-}"
-
-cargo build --release --manifest-path Cargo.toml
-mkdir -p "$OUT" "$GOLD"
-
-GAME_TRACE=crates/house-game/traces/replay_game.txt
-
-fail=0
-for s in house lab grid game game_replay tower tower_cut thief; do
-  # stderr is discarded for a quiet loop, so a crashed render must be made
-  # loud by hand: record it, skip the compare, and exit non-zero at the end.
-  render_ok=1
-  case "$s" in
-    game)        SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
-    game_replay) SCENE=game WINDOW=1024x640 LIGHT_ANIM=0 CMDS="$GAME_TRACE" SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
-    # the FLOORCUT multi-floor reveal spike: the two-storey tower with the cut
-    # off (upper storey + roof visible) and on (CUT=2.25 slices the ceiling
-    # gap; the ground floor reads from above) — docs/spec/12 M0 spike D
-    tower)       SCENE=tower WINDOW=1024x640 LIGHT_ANIM=0 PIXEL=1 TARGET_X=6 TARGET_Z=6 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
-    tower_cut)   SCENE=tower WINDOW=1024x640 LIGHT_ANIM=0 PIXEL=1 TARGET_X=6 TARGET_Z=6 CUT=2.25 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
-    # the thief M2 slice (SCENE=thief, docs/spec/12): the spine stage framed on
-    # the shop — the live FLOORCUT (player storey) + the stamp HUD burn in;
-    # deterministic at tick 0 (the SHOT wall clock never ticks the sim)
-    thief)       SCENE=thief WINDOW=1024x640 LIGHT_ANIM=0 TARGET_X=7 TARGET_Z=6 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
-    *)           SCENE=$s WINDOW=1024x640 LIGHT_ANIM=0 SHOT="$OUT/$s.png" ./target/release/viewer >/dev/null 2>&1 || render_ok=0 ;;
-  esac
-  if [ "$render_ok" -eq 0 ]; then
-    echo "RENDER FAILED for scene $s (rerun without 2>/dev/null to see why)"
-    fail=1
-    continue
-  fi
-  if [ "$UPDATE" = "--update" ]; then
-    cp "$OUT/$s.png" "$GOLD/$s.png"
-    # portable byte count (GNU stat -c%s vs BSD/macOS stat -f%z differ)
-    echo "golden updated: $s ($(wc -c < "$GOLD/$s.png" | tr -d ' ') bytes)"
-  elif [ ! -f "$GOLD/$s.png" ]; then
-    echo "MISS $s — no golden yet (run bin/golden --update)"
-    fail=1
-  elif cmp -s "$OUT/$s.png" "$GOLD/$s.png"; then
-    echo "OK   $s"
-  elif command -v magick >/dev/null 2>&1; then
-    # Not byte-identical. The renderer is deterministic in PRINCIPLE (pure
-    # function of scene+camera), but some GPUs resolve grazing rays
-    # non-deterministically — notably the rtAO hemisphere rays at geometry edges,
-    # whose hit/miss flips run-to-run; with ground fog those sub-perceptual
-    # changes get lifted across a quantize threshold and flip a handful of
-    # pixels by ~1%. So tolerate diffs UNDER `fuzz` (per-channel %) up to a small
-    # pixel budget, but still fail on real look regressions (which move many
-    # pixels well past the fuzz). Knobs: GOLDEN_FUZZ (default 2%), GOLDEN_TOL
-    # (default 256 px ≈ 0.04% of a 1024×640 frame).
-    # magick compare exits non-zero when the images differ beyond the fuzz — that
-    # is the NORMAL "candidate moved" path, not a script error, so `|| true` keeps
-    # `set -e` from killing the loop before we can report FAIL (and reach later scenes).
-    ae=$(magick compare -metric AE -fuzz "${GOLDEN_FUZZ:-2%}" "$OUT/$s.png" "$GOLD/$s.png" null: 2>&1) || true
-    n=$(printf '%s' "$ae" | awk '{print $1}')
-    n=${n%%.*}
-    if [ "${n:-999999}" -le "${GOLDEN_TOL:-256}" ] 2>/dev/null; then
-      echo "OK~  $s ($n px > ${GOLDEN_FUZZ:-2%}, within GOLDEN_TOL=${GOLDEN_TOL:-256})"
-    else
-      echo "FAIL $s — $n px differ > ${GOLDEN_FUZZ:-2%} (candidate kept at $OUT/$s.png)"
-      fail=1
-    fi
-  else
-    echo "FAIL $s — differs from $GOLD/$s.png, no 'magick' for tolerant compare (candidate kept at $OUT/$s.png)"
-    fail=1
-  fi
-done
-exit $fail
+# Until then the render check for a change is:
+#   cargo test                    # the headless suite (always binding)
+#   WINDOW=1024x640 SHOT=/tmp/a.png ./target/release/viewer   # before
+#   ...change...
+#   WINDOW=1024x640 SHOT=/tmp/b.png ./target/release/viewer   # after
+#   compare -metric AE /tmp/a.png /tmp/b.png null:            # intentional?
+echo "bin/golden: SUSPENDED — goldens return after the Faza-1 look lock (see docs/VISION.md)."
+echo "Use 'cargo test' + before/after SHOT diffs to verify render changes."
+exit 0

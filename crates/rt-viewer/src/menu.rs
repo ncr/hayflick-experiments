@@ -3,12 +3,13 @@
 //! the blit (never onto swap.out — SHOT / MOVIE / DUMP captures stay clean).
 //!
 //! Two families share the machinery:
-//! - GAME menus (arena, windowed): a centered TITLE screen at boot (START
-//!   SHIFT / SETTINGS / QUIT) and an ESC PAUSE menu (RESUME / RESTART /
-//!   SETTINGS / QUIT). While either is open the sim clock is stopped dead.
-//! - SETTINGS: the render-tune panel (sliders + toggles + record), top-left.
-//!   Dev scenes open it directly on ESC (the old behaviour); on arena it is
-//!   a submenu that returns to the game menu it came from. Values land in
+//! - GAME menus (windowed): a centered TITLE screen at boot (START /
+//!   SEEDS / SETTINGS / QUIT) and an ESC PAUSE menu (RESUME / RESTART /
+//!   SEEDS / SETTINGS / QUIT). While either is open the sim clock is
+//!   stopped dead. This is the owner's playtest hub (docs/VISION.md): every
+//!   variant he compares must be reachable from here, never via CLI.
+//! - SETTINGS: the render-tune panel (sliders + toggles + record), a
+//!   submenu that returns to the game menu it came from. Values land in
 //!   the SAME fields the env vars seed; leaving settings prints the env
 //!   string to stdout to lock a look in.
 
@@ -37,7 +38,7 @@ pub struct MenuItem {
 
 pub const MENU: &[MenuItem] = &[
     MenuItem { key: "exposure", label: "exposure", kind: ItemKind::Slider { min: 0.01, max: 4.0, step: 0.01 } },
-    MenuItem { key: "lights", label: "room lights", kind: ItemKind::Toggle },
+    MenuItem { key: "lights", label: "lamps", kind: ItemKind::Toggle },
     MenuItem { key: "ao", label: "ao strength", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     MenuItem { key: "ao_r", label: "ao radius", kind: ItemKind::Slider { min: 0.1, max: 3.0, step: 0.05 } },
     MenuItem { key: "ao_n", label: "ao rays", kind: ItemKind::Slider { min: 1.0, max: 32.0, step: 1.0 } },
@@ -46,30 +47,26 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "sdither_th", label: "sd threshold", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.01 } },
     MenuItem { key: "dither", label: "sd pattern", kind: ItemKind::Slider { min: 1.0, max: 5.0, step: 1.0 } },
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
-    MenuItem { key: "flash", label: "flashlight", kind: ItemKind::Toggle },
-    MenuItem { key: "flash_power", label: "fl power", kind: ItemKind::Slider { min: 0.1, max: 4.0, step: 0.05 } },
-    MenuItem { key: "flash_cone", label: "fl cone", kind: ItemKind::Slider { min: 8.0, max: 50.0, step: 1.0 } },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
-    MenuItem { key: "levels", label: "levels", kind: ItemKind::Levels },
+    MenuItem { key: "levels", label: "seeds", kind: ItemKind::Levels },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
 ];
 
-/// The LEVELS picker: (label, scene) rows, curated to the playable stages
-/// (film/golden-only scenes stay CLI-reachable). Picking one relaunches the
-/// viewer with `SCENE=<scene>` — a scene is baked at startup (geometry,
-/// BLAS/TLAS, probe cache), so a fresh process IS the clean level switch.
-/// Keep the list short enough that `gpanel_h(len + 1)` stays under
-/// [`MPANEL_H`] — the game panels share the settings panel's staging buffer.
+/// The SEEDS picker: (label, seed) rows — a fresh generated town each.
+/// Picking one relaunches the viewer with `SEED=<n>` — a town is baked at
+/// startup (geometry, BLAS/TLAS, probe cache), so a fresh process IS the
+/// clean switch. Keep the list short enough that `gpanel_h(len + 1)` stays
+/// under [`MPANEL_H`] — the game panels share the settings panel's staging
+/// buffer.
 pub const LEVELS: &[(&str, &str)] = &[
-    ("hold the drain", "drain"),
-    ("goo pit arena", "arena"),
-    ("squeeze alley", "squeeze"),
-    ("shooting range", "range"),
-    ("goo playground", "playground"),
-    ("haunted house", "goo"),
-    ("cave dungeon", "cave"),
-    ("village", "village"),
-    ("home", "home"),
+    ("town one", "1"),
+    ("town two", "2"),
+    ("town three", "3"),
+    ("town four", "4"),
+    ("town five", "5"),
+    ("town six", "6"),
+    ("town seven", "7"),
+    ("town eight", "8"),
 ];
 
 // menu layout, in LOGICAL pixels (8x8 font units); physical = logical * menu_scale
@@ -98,7 +95,7 @@ const _: () = assert!(gpanel_h(LEVELS.len() + 1) <= MPANEL_H);
 const _: () = assert!(gpanel_h(PAUSE_MENU.len()) <= MPANEL_H);
 
 /// Which menu is on screen. `Title` and `Pause` are the GAME menus (centered
-/// panel, sim paused); `Levels` is the centered stage picker; `Settings` is
+/// panel, sim paused); `Levels` is the centered SEEDS picker; `Settings` is
 /// the tune panel (top-left).
 #[derive(Clone, Copy, PartialEq)]
 pub enum MenuMode {
@@ -119,8 +116,8 @@ pub enum GameAction {
     Settings,
     Quit,
 }
-pub const TITLE_MENU: &[(&str, GameAction)] = &[("start shift", GameAction::Start), ("levels", GameAction::Levels), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
-pub const PAUSE_MENU: &[(&str, GameAction)] = &[("resume", GameAction::Resume), ("restart shift", GameAction::Restart), ("levels", GameAction::Levels), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
+pub const TITLE_MENU: &[(&str, GameAction)] = &[("start", GameAction::Start), ("seeds", GameAction::Levels), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
+pub const PAUSE_MENU: &[(&str, GameAction)] = &[("resume", GameAction::Resume), ("restart town", GameAction::Restart), ("seeds", GameAction::Levels), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
 
 // game-menu panel layout (logical px; physical = logical * menu_scale)
 const GROW: i32 = 16; // taller rows than the tune panel
@@ -214,11 +211,8 @@ impl Viewer {
             "sdither_th" => self.style.sdither_th,
             "dither" => self.style.dither,
             "exposure" => self.exposure,
-            "lights" => self.game.sim.res.master_lights as i32 as f32, // sim state
+            "lights" => (self.lights_dim > 0.0) as i32 as f32,
             "light_anim" => self.light_anim as i32 as f32,
-            "flash" => self.game.snap.flashlight as i32 as f32, // sim state
-            "flash_power" => self.flash_power,
-            "flash_cone" => self.flash_cone,
             _ => 0.0,
         }
     }
@@ -233,22 +227,10 @@ impl Viewer {
             "sdither_th" => self.style.sdither_th = v,
             "dither" => self.style.dither = v,
             "exposure" => self.exposure = v,
-            // the room-lights MASTER is sim state: route as a Command (direct
-            // light follows via the emission build, indirect via the probe-
-            // bank lerp — same frame, no rebake)
-            "lights" if (v != 0.0) != self.game.sim.res.master_lights => {
-                self.game.push(house_game::Command::ToggleRoomLights);
-            }
-            "lights" => {}
+            // the lamp master is a presentation dim (direct via the emission
+            // build, indirect via the probe-bank lerp — same frame, no rebake)
+            "lights" => self.lights_dim = if v != 0.0 { 1.0 } else { 0.0 },
             "light_anim" => self.light_anim = v != 0.0,
-            // flashlight is sim state: route the change as a Command (applied
-            // next tick; the row reads the snapshot, so it follows)
-            "flash" if (v != 0.0) != self.game.snap.flashlight => {
-                self.game.push(house_game::Command::ToggleFlashlight);
-            }
-            "flash" => {}
-            "flash_power" => self.flash_power = v,
-            "flash_cone" => self.flash_cone = v,
             _ => {}
         }
     }
@@ -290,13 +272,12 @@ impl Viewer {
         self.menu.drag = false;
     }
 
-    /// ESC. Closed → the scene's menu (arena: PAUSE; dev scenes: settings
-    /// directly). Settings → back where it came from (printing the env
-    /// string that reproduces the dialed-in look). Title stays — the game
-    /// hasn't started, there is nothing to close onto.
+    /// ESC. Closed → PAUSE. Settings → back where it came from (printing the
+    /// env string that reproduces the dialed-in look). Title stays — the
+    /// game hasn't started, there is nothing to close onto.
     pub fn menu_toggle(&mut self) {
         match self.menu.mode {
-            MenuMode::Closed => self.menu_set(if self.game.lmb_shoots { MenuMode::Pause } else { MenuMode::Settings }),
+            MenuMode::Closed => self.menu_set(MenuMode::Pause),
             MenuMode::Pause => self.menu_set(MenuMode::Closed),
             MenuMode::Title => {}
             MenuMode::Levels => {
@@ -339,7 +320,7 @@ impl Viewer {
                 match action {
                     GameAction::Start | GameAction::Resume => self.menu_set(MenuMode::Closed),
                     GameAction::Restart => {
-                        self.restart_run(true);
+                        self.restart_town();
                         self.menu_set(MenuMode::Closed);
                     }
                     GameAction::Levels => {
@@ -358,8 +339,8 @@ impl Viewer {
             MenuMode::Levels => {
                 self.ui_blip("menu_pick");
                 if self.menu.sel < LEVELS.len() {
-                    let (_, scene) = LEVELS[self.menu.sel];
-                    self.switch_scene(scene); // exec — no return on success
+                    let (_, seed) = LEVELS[self.menu.sel];
+                    self.switch_seed(seed); // exec — no return on success
                 } else {
                     let back = self.menu.back; // the trailing back row
                     self.menu_set(back);
@@ -523,7 +504,7 @@ impl Viewer {
             mrect(&mut c, w, 0, 0, 1, h, BORDER);
             mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
             mrect(&mut c, w, 2, 2, w - 4, 1, 0x8a6a2a);
-            let title = "L E V E L S";
+            let title = "S E E D S";
             mtext(&mut c, w, (w - title.len() as i32 * 8) / 2, GPAD + 2, title, 0xe8b84a);
             for i in 0..n {
                 let y = GPAD + GROW * (1 + i as i32);
@@ -538,7 +519,7 @@ impl Viewer {
                 mtext(&mut c, w, x, y + 3, &text, color);
             }
             let fy = GPAD + GROW * (1 + n as i32) + 3;
-            let hint = "pick a stage (relaunches the pit)";
+            let hint = "pick a town (relaunches fresh)";
             mtext(&mut c, w, ((w - hint.len() as i32 * 8) / 2).max(2), fy, hint, 0x707078);
             return (c, w, h);
         }

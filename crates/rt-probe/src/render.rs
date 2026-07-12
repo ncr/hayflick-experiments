@@ -22,10 +22,6 @@ use std::ffi::CString;
 /// build.rs (rt-viewer has no build script), so the viewer's swapchain
 /// tonemap pipeline pulls its bytes from here.
 pub const TONE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tonemap.comp.spv"));
-/// Compiled goo SDF-composite shader (the Vulkan port of the Metal goo pass);
-/// rt-viewer's Vulkan backend builds its goo pipeline from these bytes.
-pub const GOO_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/goo.comp.spv"));
-
 /// Push constants for shade.comp. Field names match the shader's `pc` block.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -215,60 +211,11 @@ pub const SPOT_WARM: [f32; 3] = [1.0, 0.97, 0.88];
 impl Spotlight {
     /// Pack into the NEE light record shade.comp expects. `dir.w = 2.0` marks
     /// the spotlight cone path (color.w = cos outer half-angle, soft edge over
-    /// the outer 40%); the rgb is `power × tint` (warm white for the flashlight,
-    /// fluorescent green for goo emitters).
+    /// the outer 40%); the rgb is `power × tint` (e.g. warm white).
     pub fn pack(&self) -> [f32; 12] {
         let c = self.power;
         [self.pos.x, self.pos.y, self.pos.z, self.radius, c * self.tint[0], c * self.tint[1], c * self.tint[2], self.cone_cos, self.dir.x, self.dir.y, self.dir.z, 2.0]
     }
-}
-
-/// One goo metaball: world-space centre + radius (16 B, `packed` as `[f32; 4]`
-/// so it uploads byte-for-byte to a Metal `float4` — xyz = centre, w = radius).
-/// The screen-space goo composite pass raymarches the smooth `smin` union of
-/// these into a translucent fluorescent isosurface. Presentation-only.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GooBall {
-    pub center: [f32; 3],
-    pub radius: f32,
-}
-
-/// One frame's goo-composite input: the metaball set plus its parallel
-/// per-ball / per-blob slices, bundled so the five slices travel (and stay
-/// length-consistent) as one unit. Each slice still uploads to its own GPU
-/// buffer — the grouping is CPU-side only.
-#[derive(Clone, Copy)]
-pub struct GooFrame<'a> {
-    /// Goo metaballs for the screen-space SDF composite pass (goo.metal on
-    /// macOS, goo.comp on Vulkan). Empty when no goo is visible or when
-    /// `GOO_SDF=0` routes the goo through the opaque triangle-pool fallback.
-    pub balls: &'a [GooBall],
-    /// Per-metaball birth-glow 0..1, PARALLEL to `balls` (same length/order).
-    /// Kept a separate slice so `GooBall` stays a tidy 16 B `float4`. The
-    /// shader tints the goo toward a hot birth colour by the glow sampled at
-    /// the surface. Empty ⇒ no glow (shader reads 0).
-    pub glow: &'a [f32],
-    /// Per-metaball VERTICAL scale on the resting squash (1 = neutral),
-    /// PARALLEL to `balls` like `glow`. Drives the per-blob height breathing:
-    /// gait lunge flattens, jelly wobble bounces, birth tension draws the
-    /// body up. The shadow proxies scale with it too.
-    pub vscale: &'a [f32],
-    /// Per-BLOB bounding spheres (one per GOO_PARTICLES-ball group in
-    /// `balls`, same order), each enclosing its blob's merged surface with
-    /// margin. The composite's SDF march tests these first and only expands a
-    /// blob's individual balls when the query point is near its bound —
-    /// two-level culling that keeps the march cost per blob, not per ball.
-    pub bounds: &'a [GooBall],
-    /// PARALLEL to `balls`: per-ball species tint (vec4 rgb multiplier on the
-    /// body emissive; w unused). Empty = all-white (the shader falls back).
-    pub tint: &'a [[f32; 4]],
-}
-
-impl GooFrame<'_> {
-    /// The mob-free frame: every slice empty (how "no goo" has always been
-    /// expressed — the backends skip the whole composite pass on it).
-    pub const EMPTY: GooFrame<'static> = GooFrame { balls: &[], glow: &[], vscale: &[], bounds: &[], tint: &[] };
 }
 
 /// Everything the game/viewer hands the renderer for one frame. Consumed by
@@ -288,8 +235,6 @@ pub struct FrameState<'a> {
     pub spotlights: &'a [Spotlight],
     /// Mover transforms — patched into inst_buf; any change rebuilds the TLAS.
     pub instances: &'a [(InstanceKey, Mat4)],
-    /// This frame's goo composite input (metaballs + parallel slices).
-    pub goo: GooFrame<'a>,
 }
 
 /// CPU half of the NEE light-list build, factored out of `SceneGpu::build` so
@@ -374,7 +319,7 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
             (Vec3::ZERO, 0.0) // closed/mixed shape (boxes): isotropic
         };
         // one-time scene-load diagnostic → stderr, consistent with the other
-        // rt-probe load diagnostics (this is the NEE-slot scan goo lights share).
+        // rt-probe load diagnostics (the NEE-slot scan).
         eprintln!("  NEE light: pos ({:.1},{:.1},{:.1}) r {:.2} rgb ({:.1},{:.1},{:.1}) focus {:.2} -> {}", c.x, c.y, c.z, r, e[0], e[1], e[2], focus, if df > 0.0 { "directional" } else { "isotropic" });
         slot_of_prim.push((i, lights.len() as u32));
         lights.push([c.x, c.y, c.z, r, e[0], e[1], e[2], 0.0, nd.x, nd.y, nd.z, df]);
@@ -781,8 +726,8 @@ impl SceneGpu {
 /// DETERMINISM: both passes write FIXED indexed slots — each `(LightKey, rgb)`
 /// updates `lights_cpu[key]` and each spotlight `s` writes
 /// `lights_cpu[reserved_slot_start + s]` — so the result is independent of the
-/// emission order and of how many goo lights packed into the reserved region.
-/// The goo lights share these reserved slots (flashlight + up to GOO_LIVE_CAP),
+/// emission order and of how many spotlights packed into the reserved region.
+/// Spotlights share these reserved slots,
 /// capped to `N_RESERVED` by the assert below.
 pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], bool)], reserved_slot_start: usize, fs: &FrameState<'_>) -> u32 {
     for &(key, rgb) in fs.light_emission {
@@ -1013,7 +958,7 @@ mod tests {
         let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06, tint: SPOT_WARM };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[], goo: GooFrame::EMPTY };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[] };
         let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs);
         assert_eq!(n, 1);
         // an unaddressed slot keeps its previous values (light 0 holds base);

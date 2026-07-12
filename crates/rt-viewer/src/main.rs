@@ -2,73 +2,54 @@
 //! deterministic hardware-RT renderer (`rt_probe::render`). Every frame is a
 //! pure function of (scene, camera): no accumulation, no denoiser, no
 //! temporal state. Monte Carlo runs once at startup into the world-space GI
-//! probe cache (two light banks: room lights off / full, lerped in-shader).
+//! probe cache.
 //!
-//! Controls (player input becomes tick-stamped `house_game::Command`s — the
-//! sim runs on a fixed 60 Hz loop; the viewer only presents):
-//! - LMB — click-to-walk (unprojected to a world pick ray + ground point;
-//!   the game resolves door-vs-walk); in scenes without a player, drag pans
-//! - RMB — shoot (fires a projectile along the pick ray)
-//! - WASD / arrows — walk the player (held = one Move command per tick,
-//!   camera follows) or pan the camera in scenes without a player
-//! - q / e — smooth eased quarter turn (presentation; the quarter itself is
-//!   SIM state via Command::RotateCamera, so walks/replays are deterministic)
+//! Controls (player input becomes tick-stamped town `Command`s — the sim runs
+//! on a fixed 60 Hz loop; the viewer only presents):
+//! - LMB / trackpad tap — click-to-move (unprojected to a ground cell; the
+//!   shell BFS-plans the route, the sim owns the step cadence)
+//! - WASD / arrows — screen-relative walk (staircase on the iso lattice)
+//! - Shift — run, Ctrl — sneak
+//! - q / e — smooth eased quarter turn (presentation-only)
 //! - scroll / +- — integer zoom steps 1-4, cursor-anchored; 0 = camera reset
-//! - f — player flashlight (Command::ToggleFlashlight; power/cone in the
-//!   menu; FLASH / FLASH_POWER / FLASH_CONE seed it)
-//! - l — room lights on/off (LIGHTS dims; indirect follows in the same frame
-//!   via the pre-baked probe banks)
+//! - l — lamp master on/off
 //! - r — record a clip at exact game resolution: stop writes BOTH
 //!   clips/clip_NNNN.mp4 (x264, NEAREST 4x) and .gif (palette, 1x, half rate)
-//! - Arena levels (SCENE=arena / drain): mouse aims the turret
-//!   (Command::Aim), LMB fires + holds for autofire, 1–5 select weapons,
-//!   Z/X/C pick draft cards, Space restarts after a run ends, V saves the
-//!   death-reel clip
-//! - Esc — dev scenes: tune menu (sliders + toggles + quit; also the
-//!   hamburger icon top-left; closing prints the env string that reproduces
-//!   the dialed-in values). Arena: the PAUSE menu (settings is a submenu)
+//! - Esc — the game menu (Title at boot; Pause in play; Settings is a
+//!   submenu with live sliders; Seeds picks a fresh town)
 //!
-//! Scenes (SCENE=): cave (default, procedural dungeon), arena (the goo
-//! shooter) + drain/squeeze variants, the goo film stages (goo, goofloor,
-//! goonursery, goopair, playground, range), house/lab/grid (golden-pinned
-//! render scenes), village + the building floors (home/hospital/office/
-//! factory). The full dispatch is `Viewer::new`.
+//! The scene is the generated town testbed (SEED env varies it; the menu's
+//! SEEDS picker relaunches with a new one — docs/VISION.md Faza 0).
 //!
 //! Headless harness (see config.rs): SHOT / SHOT_DELAY one-frame capture
 //! (truly window-less — no surface/swapchain, extent taken from WINDOW;
 //! the wall clock NEVER ticks the sim in SHOT mode), CMDS / CMDS_TICKS
-//! deterministic command-trace replay prefix (house-game trace format),
-//! ROTATE_AT synthetic input, DUMP / DUMP_AT / DUMP_N frame dumps,
-//! MOVIE scripted tour, FRAMES / TIMING perf, WINDOW=WxH exact size.
+//! deterministic command-trace replay prefix (town trace format),
+//! DEMO / DEMO_DIR / DEMO_TICKS per-tick gameplay dump, ROTATE_AT synthetic
+//! input, DUMP / DUMP_AT / DUMP_N frame dumps, MOVIE scripted tour,
+//! FRAMES / TIMING perf, WINDOW=WxH exact size.
 
+mod audio;
 mod backend;
 mod capture;
-mod game_scene;
-mod audio;
-mod hud;
+mod look;
 mod menu;
-mod minimap;
-mod scene_registry;
-mod sim;
-mod thief_look;
-mod thief_loop;
-mod thief_scene;
+mod town_loop;
+mod town_scene;
 mod view;
 mod viewer;
-// Backend selected at compile time by target OS (the plan): Metal on Apple
-// Silicon, Vulkan everywhere else. The Vulkan path is verified byte-for-byte on
-// the RTX box; the Metal path runs + is golden-checked on the M2 Pro.
+// Backend selected at compile time by target OS: Metal on Apple Silicon,
+// Vulkan everywhere else. The Vulkan path runs on the RTX box; the Metal path
+// runs on the M2 Pro.
 #[cfg(target_os = "macos")]
 mod metal_backend;
 #[cfg(not(target_os = "macos"))]
 mod vulkan_backend;
 
 use glam::Vec2;
-use house_game::Command;
-use menu::MenuMode;
 use rt_probe::Config;
-use viewer::Viewer;
 use std::sync::Arc;
+use viewer::Viewer;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -89,18 +70,13 @@ impl ApplicationHandler for App {
         let cfg = self.cfg.take().expect("config consumed once");
         let (w, h) = cfg.harness.window.unwrap_or((1280, 800));
         // Create the window HIDDEN: `Viewer::new` blocks the main thread for the
-        // one-time GI probe bake (~1.6 s on the M2's software RT), and a visible
-        // window with a stalled run loop is exactly what makes macOS draw the
-        // beachball. No drawable is acquired during init (the bake is pure
-        // compute), so revealing the window only once it's ready is safe — the
-        // user sees a normal cold-start delay, then a window that draws at once.
+        // one-time GI probe bake, and a visible window with a stalled run loop
+        // is exactly what makes macOS draw the beachball. No drawable is
+        // acquired during init (the bake is pure compute), so revealing the
+        // window only once it's ready is safe.
         let attrs = Window::default_attributes().with_title("Hayflick").with_visible(false).with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let renderer = unsafe { Viewer::new(Some(&window), cfg).expect("renderer init") };
-        if renderer.game.lmb_shoots {
-            // arena control scheme: the pointer is a weapon, not a walk tool
-            window.set_cursor(winit::window::CursorIcon::Crosshair);
-        }
         window.set_visible(true);
         self.window = Some(window);
         self.renderer = Some(renderer);
@@ -111,29 +87,17 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
                 let Some(r) = self.renderer.as_mut() else { return };
-                // an open menu (game menu or settings) captures the arrows +
-                // enter; WASD also navigates the GAME menus (regular-game
-                // muscle memory), but still walks under the settings panel
+                // an open menu captures the arrows + enter; WASD also
+                // navigates (regular-game muscle memory)
                 if r.menu_open() && event.state.is_pressed() {
-                    let game_menu = matches!(r.menu.mode, MenuMode::Title | MenuMode::Pause | MenuMode::Levels);
                     let n = r.menu_len();
                     match event.logical_key.as_ref() {
-                        Key::Named(NamedKey::ArrowUp) => {
+                        Key::Named(NamedKey::ArrowUp) | Key::Character("w") => {
                             r.menu.sel = (r.menu.sel + n - 1) % n;
                             r.ui_blip("menu_move");
                             return;
                         }
-                        Key::Named(NamedKey::ArrowDown) => {
-                            r.menu.sel = (r.menu.sel + 1) % n;
-                            r.ui_blip("menu_move");
-                            return;
-                        }
-                        Key::Character("w") if game_menu => {
-                            r.menu.sel = (r.menu.sel + n - 1) % n;
-                            r.ui_blip("menu_move");
-                            return;
-                        }
-                        Key::Character("s") if game_menu => {
+                        Key::Named(NamedKey::ArrowDown) | Key::Character("s") => {
                             r.menu.sel = (r.menu.sel + 1) % n;
                             r.ui_blip("menu_move");
                             return;
@@ -154,8 +118,7 @@ impl ApplicationHandler for App {
                             r.menu_toggle();
                             return;
                         }
-                        _ if game_menu => return, // game menus are modal: swallow the rest
-                        _ => {}
+                        _ => return, // menus are modal: swallow the rest
                     }
                 }
                 // movement keys are held-state (continuous walk); index = [up,down,left,right]
@@ -167,80 +130,26 @@ impl ApplicationHandler for App {
                     _ => None,
                 };
                 if let Some(i) = held_idx {
-                    match r.thief.as_mut() {
-                        Some(t) => t.held[i] = event.state.is_pressed(),
-                        None => r.game.held[i] = event.state.is_pressed(),
-                    }
+                    r.town.held[i] = event.state.is_pressed();
                     return;
                 }
-                // SCENE=thief verbs (the M2 slice): Shift run / Ctrl sneak
-                // (held), Space steal, G drop, O outfit swap, 1–4 answer a
-                // live stop (05c). Everything else falls through to the
-                // shared camera keys below.
-                if let Some(t) = r.thief.as_mut() {
-                    use house_game::thief::perception::{Headwear, Hue};
-                    use house_game::thief::sim::{Command as TC, StopChoice};
-                    let pressed = event.state.is_pressed();
-                    match event.logical_key.as_ref() {
-                        Key::Named(NamedKey::Shift) => {
-                            t.run_held = pressed;
-                            return;
-                        }
-                        Key::Named(NamedKey::Control) => {
-                            t.sneak_held = pressed;
-                            return;
-                        }
-                        _ => {}
+                // movement modes (held)
+                match event.logical_key.as_ref() {
+                    Key::Named(NamedKey::Shift) => {
+                        r.town.run_held = event.state.is_pressed();
+                        return;
                     }
-                    if pressed {
-                        match event.logical_key.as_ref() {
-                            Key::Named(NamedKey::Space) => {
-                                t.push(TC::Steal);
-                                return;
-                            }
-                            Key::Character("g") => {
-                                t.push(TC::Drop);
-                                return;
-                            }
-                            Key::Character("o") if !event.repeat => {
-                                t.outfit_alt = !t.outfit_alt;
-                                let (top, headwear) = if t.outfit_alt {
-                                    (Hue::Brown, Headwear::Bare)
-                                } else {
-                                    (Hue::Green, Headwear::Hood)
-                                };
-                                t.push(TC::Outfit { top, headwear });
-                                return;
-                            }
-                            Key::Character("1") => {
-                                t.push(TC::Stop(StopChoice::Bluff));
-                                return;
-                            }
-                            Key::Character("2") => {
-                                t.push(TC::Stop(StopChoice::Bribe));
-                                return;
-                            }
-                            Key::Character("3") => {
-                                t.push(TC::Stop(StopChoice::Submit));
-                                return;
-                            }
-                            Key::Character("4") => {
-                                t.push(TC::Stop(StopChoice::Flee));
-                                return;
-                            }
-                            _ => {}
-                        }
+                    Key::Named(NamedKey::Control) => {
+                        r.town.sneak_held = event.state.is_pressed();
+                        return;
                     }
+                    _ => {}
                 }
                 if !event.state.is_pressed() {
                     return; // discrete actions fire on press only
                 }
                 match event.logical_key.as_ref() {
                     Key::Named(NamedKey::Escape) => r.menu_toggle(),
-                    // dead run -> Space starts a new one (menu-open Space is
-                    // consumed by menu_activate above and never lands here)
-                    Key::Named(NamedKey::Space) => r.restart_run(false),
-                    Key::Character("v") if !event.repeat => r.render_reel(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.view.cursor;
                         r.zoom_step(1, c);
@@ -252,35 +161,19 @@ impl ApplicationHandler for App {
                     Key::Character("q") => r.start_rotate(-1),
                     Key::Character("e") => r.start_rotate(1),
                     Key::Character("0") => {
-                        // camera reset only — the player's position is SIM
-                        // state now (no teleport command exists; recentre on
-                        // the player instead of moving them home)
+                        // camera reset: recentre on the player, canonical yaw
                         r.view.zoom = 1.0;
-                        r.view.target = r.game.snap.player_pos;
+                        r.view.target = r.town.cam_target();
                         r.view.move_accum = Vec2::ZERO;
                         r.recenter_pan();
-                        // back to canonical: cancels any in-flight sweep,
-                        // restores masks, snaps the target
                         r.rotate(-(r.view.yaw_q as i32));
                     }
                     // toggles ignore key repeat: holding the key must not strobe
                     Key::Character("r") if !event.repeat => r.toggle_recording(),
-                    Key::Character("f") if !event.repeat => {
-                        r.game.push(Command::ToggleFlashlight);
-                        println!("flashlight: {}", if r.game.snap.flashlight { "off" } else { "on" });
-                    }
                     Key::Character("l") if !event.repeat => {
-                        r.game.push(Command::ToggleRoomLights);
-                        println!("room lights: {}", if r.game.sim.res.master_lights { "off" } else { "on" });
+                        r.lights_dim = if r.lights_dim > 0.0 { 0.0 } else { 1.0 };
+                        println!("lamps: {}", if r.lights_dim > 0.0 { "on" } else { "off" });
                     }
-                    // arsenal slots (arena levels; a no-op elsewhere by design)
-                    Key::Character(c @ ("1" | "2" | "3" | "4" | "5")) => {
-                        r.game.push(Command::SelectWeapon { slot: c.as_bytes()[0] - b'0' });
-                    }
-                    // wave-lull draft picks (a no-op when no hand is open)
-                    Key::Character("z") => r.game.push(Command::PickCard { slot: 1 }),
-                    Key::Character("x") => r.game.push(Command::PickCard { slot: 2 }),
-                    Key::Character("c") => r.game.push(Command::PickCard { slot: 3 }),
                     _ => {}
                 }
             }
@@ -289,12 +182,6 @@ impl ApplicationHandler for App {
                     let np = Vec2::new(position.x as f32, position.y as f32);
                     if r.menu.drag {
                         r.menu_drag_to(np); // slider drag
-                    } else if r.view.dragging {
-                        // playerless scenes only: the world follows the
-                        // cursor, so the target moves opposite the drag
-                        let rs = r.rs() as f32;
-                        let d = np - r.view.cursor;
-                        r.pan_camera_px(-(d / rs));
                     }
                     r.view.cursor = np;
                 }
@@ -304,34 +191,11 @@ impl ApplicationHandler for App {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
                         if !r.menu_click(c) {
-                            if r.thief.is_some() {
-                                // thief: stop-panel buttons, else click-to-move
-                                r.thief_click(c);
-                            } else if r.game.lmb_shoots {
-                                // arena: LMB fires (WASD walks). Fire now for
-                                // click responsiveness AND latch held-state —
-                                // the frame loop keeps re-pushing Shoot at the
-                                // live cursor until release (autofire; the
-                                // sim cooldown owns the rate).
-                                r.shoot_command(c);
-                                r.game.lmb_held = true;
-                            } else if r.game.has_player {
-                                r.click_command(c); // click-to-walk / use door
-                            } else {
-                                r.view.dragging = true; // lab: drag pans
-                            }
+                            r.town_click(c); // click-to-move
                         }
                     } else {
-                        r.view.dragging = false;
                         r.menu.drag = false;
-                        r.game.lmb_held = false;
                     }
-                }
-            }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
-                if let Some(r) = self.renderer.as_mut() {
-                    let c = r.view.cursor;
-                    r.shoot_command(c);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -392,11 +256,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config::from_env();
     // SHOT and DEMO run FULLY headless: no winit loop, no window, no surface/
     // swapchain device extensions. The offscreen extent comes verbatim from
-    // WINDOW (default 1280x800), so golden captures are byte-reproducible —
-    // the WM never gets a say in the size. SHOT keeps the windowed frame
-    // sequence: draw() until harness_post_frame fires the SHOT and exits.
-    // DEMO plays a gameplay trace one tick per draw(), dumping a PNG per tick
-    // (the wall clock never ticks the sim; the per-tick command drain does).
+    // WINDOW (default 1280x800), so captures are byte-reproducible — the WM
+    // never gets a say in the size. SHOT keeps the windowed frame sequence:
+    // draw() until harness_post_frame fires the SHOT and exits. DEMO plays a
+    // gameplay trace one tick per draw(), dumping a PNG per tick.
     if cfg.harness.shot.is_some() || cfg.harness.demo.is_some() {
         let mut r = unsafe { Viewer::new(None, cfg)? };
         while !r.exit_requested {

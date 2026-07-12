@@ -10,8 +10,8 @@
 //! below. No Vulkan/Metal type ever appears in `Viewer`.
 
 use glam::{Vec2, Vec3};
-use iso_core::{iso_basis, render_scale, CamFrame, ISO_R};
-use rt_probe::{Config, FrameState, GooFrame, Scene, SceneHandles, StyleCfg};
+use iso_core::{iso_basis, render_scale, ISO_R};
+use rt_probe::{Config, FrameState, Scene, SceneHandles, StyleCfg};
 use winit::window::Window;
 
 /// Push constants for tonemap.comp / tonemap.metal. Field names match the
@@ -73,14 +73,8 @@ pub struct FramePresent<'a> {
     /// scale for game-pixel-consistent chunk).
     pub stamps: &'a [Stamp],
     /// Per-frame multiplier on the env sun/sky fill (1.0 = authored). The
-    /// arena blackout drives it from sim room_lights so the open-studio sky
-    /// fill dies WITH the lamps — gated by the viewer to open-studio scenes,
-    /// so the textured goldens (game_replay ends lights-off!) never move.
+    /// town drives it from the sim's day phase (the clock, visualized).
     pub sky_dim: f32,
-    /// Minimap HUD canvas (RGBA logical px, w, h). Unlike `overlay`, the backend
-    /// burns this into `out_tex` (the present + readback source), so it lands in
-    /// SHOT/DUMP/DEMO captures too. `None` when the minimap is off.
-    pub minimap: Option<(&'a [u32], i32, i32)>,
     /// Dollhouse see-through reveal (CAVE_ROI): player world pos + disc radius /
     /// falloff in low-res px. The backend projects the disc centre via the shared
     /// `rt_probe::roi_push` and packs it into the shade push. `None` → no reveal.
@@ -255,84 +249,6 @@ pub fn overlay_origin(center: bool, ext_w: u32, ext_h: u32, pw: u64, ph: u64, ma
 /// draw — both backends must agree or HUD bytes diverge between golden sets).
 pub fn stamp_in_bounds(dx: i64, dy: i64, pw: u64, ph: u64, ext_w: u32, ext_h: u32) -> bool {
     dx >= 0 && dy >= 0 && dx as u64 + pw <= ext_w as u64 && dy as u64 + ph <= ext_h as u64
-}
-
-// ---- goo SDF composite: shared push layout, look, and limits ----------------
-// One source for BOTH backends (goo.metal on macOS, goo.comp via Vulkan
-// everywhere else) so the two passes cannot drift apart. The resting-height
-// constants (`GOO_SQUASH`, `GOO_FLOOR_Y`) stay owned by `crate::sim` (shared
-// with the CPU ball placement).
-
-/// Goo composite push constants — byte-identical to `GooPush` in goo.metal AND
-/// the `PC` push_constant block in goo.comp (160 B; asserted at pipeline build).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct GooPush {
-    pub cam_right: [f32; 4], // xyz, w = ortho half-width
-    pub cam_up: [f32; 4],    // xyz, w = ortho half-height
-    pub cam_dir: [f32; 4],   // xyz forward, w = vertical squash (<1 = flatter puddle)
-    pub cam_pos: [f32; 4],   // xyz eye, w = floor plane Y
-    pub dims: [i32; 4],      // W, H, ballCount, blobCount (bounding spheres)
-    pub emis: [f32; 4],      // emissive rgb, w = glow intensity
-    pub absorb: [f32; 4],    // Beer-Lambert absorption rgb/wu, w = surface alpha
-    pub params: [f32; 4],    // x = smin merge radius k, yzw spare
-    pub birth_emis: [f32; 4],   // emissive rgb the goo lerps TO at a gestating bud
-    pub birth_absorb: [f32; 4], // absorption rgb the goo lerps TO at a gestating bud
-}
-
-/// `smin` merge radius: the smoothness of the dumbbell waist + lump fusing.
-pub const GOO_SMIN_K: f32 = 0.14;
-/// Max goo metaballs the composite buffer holds (GOO_LIVE_CAP × GOO_PARTICLES,
-/// with headroom). Excess balls in a frame are clamped (never reallocates).
-pub const GOO_MAX: usize = 512;
-/// Max per-blob bounding spheres (GOO_MAX / 40 balls per blob, with headroom)
-/// for the composite's two-level culling.
-pub const GOO_BOUNDS_MAX: usize = 16;
-/// Goo body look (Beer–Lambert translucent composite): `GOO_EMIS` is emissive
-/// rgb + w glow intensity; `GOO_ABSORB` is absorption rgb per wu + w alpha.
-pub const GOO_EMIS: [f32; 4] = [0.55, 3.3, 1.15, 2.8];
-pub const GOO_ABSORB: [f32; 4] = [3.4, 0.42, 2.9, 0.9];
-/// A gestating bud lerps the look toward a vivid, molten AMBER-GOLD: a saturated
-/// warm emissive cranked bright so the birth site glows hot, plus heavy green +
-/// blue absorption (low R) so the body reads a radiant orange where it buds — an
-/// unmistakable warm contrast against the fluorescent-green goo (never pink).
-pub const GOO_BIRTH_EMIS: [f32; 4] = [9.5, 2.0, 0.08, 4.4];
-pub const GOO_BIRTH_ABSORB: [f32; 4] = [0.10, 4.4, 6.0, 0.97];
-
-/// Build this frame's goo-composite push constants. ONE site for both backends
-/// so the camera packing and the look wiring (squash, floor plane, smin k,
-/// emission/absorption) produce identical bytes regardless of GPU.
-pub fn build_goo_push(cam: &CamFrame, low_w: u32, low_h: u32, goo_n: usize, goo_nb: usize) -> GooPush {
-    use crate::sim::{GOO_FLOOR_Y, GOO_SQUASH};
-    GooPush {
-        cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
-        cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
-        cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, GOO_SQUASH],
-        cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, GOO_FLOOR_Y],
-        dims: [low_w as i32, low_h as i32, goo_n as i32, goo_nb as i32],
-        emis: GOO_EMIS,
-        absorb: GOO_ABSORB,
-        params: [GOO_SMIN_K, 0.0, 0.0, 0.0], // x = smin k; rest unused
-        birth_emis: GOO_BIRTH_EMIS,
-        birth_absorb: GOO_BIRTH_ABSORB,
-    }
-}
-
-/// Clamp one frame's goo slices to the shared GPU pool capacities: at most
-/// [`GOO_MAX`] balls (glow/vscale/tint clamped to the ball count — a parallel
-/// slice can only ever be read up to it) and [`GOO_BOUNDS_MAX`] blob bounds.
-/// One site for both backends so an over-cap frame truncates identically.
-pub fn clamp_goo<'a>(fs: &FrameState<'a>) -> GooFrame<'a> {
-    let g = &fs.goo;
-    let n = g.balls.len().min(GOO_MAX);
-    let nb = g.bounds.len().min(GOO_BOUNDS_MAX);
-    GooFrame {
-        balls: &g.balls[..n],
-        glow: &g.glow[..g.glow.len().min(n)],
-        vscale: &g.vscale[..g.vscale.len().min(n)],
-        bounds: &g.bounds[..nb],
-        tint: &g.tint[..g.tint.len().min(n)],
-    }
 }
 
 /// Construct the GPU backend for this platform. Selected at compile time by

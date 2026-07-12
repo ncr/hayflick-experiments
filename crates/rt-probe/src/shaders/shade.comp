@@ -523,10 +523,7 @@ void main(){
       vec3 bpos = ob + d * bh.t + bn * 0.003;
       vec3 rdir = reflect(d, bn);
       Hit rh;
-      // mask 0x05 (primary | dynamic): the player shows in the floor, but the
-      // goo SHADOW PROXIES (mask 0x02, Metal) stay out — they are black dummy
-      // geometry, and a floor that reflects them paints black blotches through
-      // every translucent blob standing on it.
+      // mask 0x05 (primary | dynamic): the player shows in the floor.
       if (trace(bpos, rdir, 60.0, 0x05u, rh)) {
         Material rm = mats[rh.mat];
         vec3 ralb = rm.baseColor.rgb;

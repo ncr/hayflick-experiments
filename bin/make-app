@@ -2,8 +2,8 @@
 # make-app — build Hayflick.app, a macOS Dock launcher for the viewer.
 #
 # The bundle wraps target/release/viewer: its executable is a tiny script
-# that cds to this repo and execs the built binary with SCENE=drain (the
-# flagship shift). The pixel-goo icon is generated here (64x64 art,
+# that cds to this repo and execs the built binary (the generated town;
+# SEED env rerolls it). The pixel icon is generated here (64x64 art,
 # nearest-upscaled to 1024 — the game's own aesthetic) and packed to .icns
 # with sips/iconutil. Re-run after moving the repo; the app is a generated
 # artifact (gitignored), the recipe is this script.
@@ -29,7 +29,6 @@ if [ ! -x "$BIN" ]; then
   osascript -e 'display alert "Hayflick" message "No built viewer found. Run: cargo build --release" as critical' >/dev/null 2>&1
   exit 1
 fi
-export SCENE="${SCENE:-drain}"
 exec "$BIN"
 LAUNCH
 chmod +x "$APP/Contents/MacOS/Hayflick"

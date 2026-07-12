@@ -108,162 +108,20 @@ impl AudioOut {
         q.push(Voice { wave, f0, f1, dur, gain: gain * self.master, t: 0.0, phase: 0.0, rng: 0x9e3779b9 });
     }
 
-    /// D5: the grenade fuse hiss — retriggered on the tick clock while a
-    /// shell is in flight, pitch climbing with the fuse phase (0..1): bank
-    /// shots become audible timers, not just visual ones.
-    pub fn fuse_hiss(&self, phase: f32, gain: f32) {
-        let f = 650.0 + 1100.0 * phase;
-        self.voice(Wave::Noise, f, f * 1.2, 0.10, (0.08 + 0.10 * phase) * gain);
-    }
-
     /// One sim cue → one or two synth voices. Unknown ids stay silent (a
     /// new cue is a design decision, not a crash).
     pub fn play(&self, id: &str, gain: f32) {
         let g = gain;
-        // W7: ONE shared sub-thud bed mixed under every fire cue, gain
-        // following the round's weight — the slug and the grenade boom the
-        // chest, the uzi barely tickles it. The chest hears the damage
-        // numbers before the eyes do.
-        if let Some(sub) = match id {
-            "fire_slug" => Some(0.55),
-            "fire_shotgun" => Some(0.48),
-            "fire_grenade" => Some(0.58),
-            "fire_uzi" => Some(0.10),
-            "fire_harpoon" => Some(0.15),
-            "pistol_fire" => Some(0.28),
-            _ => None,
-        } {
-            self.voice(Wave::Sine, 46.0, 29.0, 0.17, sub * g);
-        }
         match id {
-            "pistol_fire" => {
-                self.voice(Wave::Noise, 3400.0, 900.0, 0.09, 0.50 * g);
-                self.voice(Wave::Square, 220.0, 70.0, 0.06, 0.25 * g);
-            }
-            // ---- per-weapon fire voices (arena arsenal): each gun gets its
-            // own report so the hand FEELS different per slot
-            "fire_slug" => {
-                // heavy single crack: broadband snap + a deep body thump
-                self.voice(Wave::Noise, 2600.0, 350.0, 0.16, 0.60 * g);
-                self.voice(Wave::Square, 130.0, 42.0, 0.18, 0.50 * g);
-            }
-            "fire_uzi" => {
-                // short snappy chatter tick — quiet enough to stack at 12/s
-                self.voice(Wave::Noise, 3200.0, 1300.0, 0.045, 0.38 * g);
-                self.voice(Wave::Square, 340.0, 170.0, 0.035, 0.22 * g);
-            }
-            "fire_shotgun" => {
-                // broad boom: long noise wash over a low pressure wave
-                self.voice(Wave::Noise, 1700.0, 220.0, 0.22, 0.62 * g);
-                self.voice(Wave::Square, 92.0, 48.0, 0.15, 0.45 * g);
-            }
-            "fire_grenade" => {
-                // hollow launcher thoonk (the BOOM comes later, on Detonated)
-                self.voice(Wave::Sine, 175.0, 62.0, 0.18, 0.55 * g);
-                self.voice(Wave::Noise, 850.0, 320.0, 0.06, 0.20 * g);
-            }
-            "fire_harpoon" => {
-                // rail whip: fast metallic downsweep + air crack
-                self.voice(Wave::Square, 1500.0, 190.0, 0.12, 0.32 * g);
-                self.voice(Wave::Noise, 2800.0, 700.0, 0.08, 0.35 * g);
-            }
-            "gren_bounce" => {
-                // D5: the bank shot's hollow tok — every rebound is audible,
-                // the geometry weapon becomes an instrument
-                self.voice(Wave::Square, 265.0, 140.0, 0.055, 0.30 * g);
-                self.voice(Wave::Noise, 950.0, 420.0, 0.03, 0.14 * g);
-            }
-            "boom" => {
-                // grenade detonation: long low rumble + sub thud + debris hiss
-                self.voice(Wave::Noise, 950.0, 55.0, 0.50, 0.70 * g);
-                self.voice(Wave::Sine, 72.0, 26.0, 0.45, 0.60 * g);
-                self.voice(Wave::Square, 52.0, 30.0, 0.20, 0.30 * g);
-            }
-            "wave_warn" => {
-                // L1: incoming-squad klaxon — a slow two-tone PA swell, a
-                // full second of "get ready" before the door slams
-                self.voice(Wave::Square, 208.0, 312.0, 0.55, 0.26 * g);
-                self.voice(Wave::Square, 156.0, 234.0, 0.55, 0.20 * g);
-                self.voice(Wave::Sine, 52.0, 44.0, 0.5, 0.30 * g);
-            }
-            "wave_land" => {
-                // squad drop: deep door-slam + a rising two-note warning
-                self.voice(Wave::Sine, 58.0, 36.0, 0.45, 0.55 * g);
-                self.voice(Wave::Noise, 420.0, 95.0, 0.30, 0.30 * g);
-                self.voice(Wave::Square, 494.0, 494.0, 0.09, 0.22 * g);
-                self.voice(Wave::Square, 660.0, 660.0, 0.14, 0.22 * g);
-            }
-            "goo_hit" => self.voice(Wave::Sine, 190.0, 115.0, 0.08, 0.55 * g),
-            "goo_thunk" => {
-                // resisted hit (Tank vs small arms): a dull ARMORED thud with
-                // none of the juicy splash — the ×¼ lesson by ear (D2)
-                self.voice(Wave::Sine, 130.0, 85.0, 0.07, 0.42 * g);
-                self.voice(Wave::Noise, 420.0, 180.0, 0.03, 0.12 * g);
-            }
-            "goo_windup" => {
-                // the Runner's pre-pounce crouch (G3): a quick rising
-                // two-note — short low blip under a longer climbing sweep
-                // (the wave_land warning pattern, smaller and hungrier)
-                self.voice(Wave::Sine, 340.0, 340.0, 0.05, 0.26 * g);
-                self.voice(Wave::Sine, 430.0, 620.0, 0.11, 0.30 * g);
-            }
-            "goo_split" => {
-                self.voice(Wave::Sine, 420.0, 180.0, 0.12, 0.45 * g);
-                self.voice(Wave::Noise, 1800.0, 500.0, 0.10, 0.30 * g);
-            }
-            "goo_die" => self.voice(Wave::Sine, 150.0, 55.0, 0.20, 0.55 * g),
-            "goo_merge" => self.voice(Wave::Sine, 180.0, 400.0, 0.22, 0.40 * g),
-            "goo_solidify" => {
-                self.voice(Wave::Noise, 900.0, 250.0, 0.05, 0.55 * g);
-                self.voice(Wave::Square, 95.0, 70.0, 0.10, 0.35 * g);
-            }
             "door_open" => self.voice(Wave::Square, 105.0, 140.0, 0.16, 0.30 * g),
             "door_close" => self.voice(Wave::Square, 140.0, 95.0, 0.16, 0.30 * g),
-            "switch" => self.voice(Wave::Square, 780.0, 780.0, 0.03, 0.35 * g),
-            "pickup" => self.voice(Wave::Square, 660.0, 990.0, 0.08, 0.35 * g),
-            "eat" => self.voice(Wave::Sine, 330.0, 210.0, 0.12, 0.35 * g),
-            "target_hit" => self.voice(Wave::Square, 880.0, 880.0, 0.06, 0.35 * g),
-            "card_pick" => {
-                self.voice(Wave::Square, 520.0, 780.0, 0.08, 0.35 * g);
-                self.voice(Wave::Square, 780.0, 1180.0, 0.10, 0.30 * g);
-            }
-            "player_down" => {
-                self.voice(Wave::Square, 320.0, 34.0, 0.75, 0.55 * g);
-                self.voice(Wave::Noise, 2400.0, 200.0, 0.45, 0.35 * g);
-            }
-            "lights_out" => {
-                self.voice(Wave::Square, 160.0, 30.0, 1.1, 0.45 * g);
-                self.voice(Wave::Sine, 90.0, 28.0, 1.3, 0.40 * g);
-            }
-            "breach" => {
-                self.voice(Wave::Square, 240.0, 120.0, 0.18, 0.45 * g);
-                self.voice(Wave::Noise, 700.0, 250.0, 0.14, 0.30 * g);
-            }
-            "shift_done" => {
-                self.voice(Wave::Square, 392.0, 392.0, 0.14, 0.30 * g);
-                self.voice(Wave::Square, 494.0, 494.0, 0.22, 0.30 * g);
-                self.voice(Wave::Square, 587.0, 784.0, 0.5, 0.35 * g);
-            }
-            // presentation-side: the comm-pact blink tick (per rising edge)
-            "comm_blink" => self.voice(Wave::Sine, 1250.0, 1250.0, 0.035, 0.30 * g),
-            // presentation-side: the drain's wet pull (L2), retriggered on the
-            // tick clock — a descending burble, "the goo wants OUT"
-            "drain_gurgle" => {
-                self.voice(Wave::Noise, 320.0, 85.0, 0.38, 0.16 * g);
-                self.voice(Wave::Sine, 115.0, 58.0, 0.32, 0.22 * g);
-            }
-            "impact" => {
-                // round dies on a hard surface: tiny debris thip
-                self.voice(Wave::Noise, 2100.0, 550.0, 0.035, 0.24 * g);
-                self.voice(Wave::Square, 160.0, 110.0, 0.02, 0.10 * g);
-            }
             // presentation-side: menu navigation blips
             "menu_move" => self.voice(Wave::Square, 520.0, 520.0, 0.025, 0.18 * g),
             "menu_pick" => {
                 self.voice(Wave::Square, 520.0, 700.0, 0.05, 0.22 * g);
-                self.voice(Wave::Square, 700.0, 940.0, 0.07, 0.18 * g);
+                self.voice(Wave::Sine, 700.0, 940.0, 0.07, 0.18 * g);
             }
-            // presentation-side: hover-servo step tick (walk cadence)
+            // presentation-side: footstep tick (walk cadence)
             "step" => {
                 self.voice(Wave::Square, 210.0, 150.0, 0.022, 0.14 * g);
                 self.voice(Wave::Noise, 1200.0, 800.0, 0.015, 0.06 * g);

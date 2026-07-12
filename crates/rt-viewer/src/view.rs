@@ -1,14 +1,11 @@
 //! View state + camera presentation: yaw / quarter-turn animation, zoom, pan,
-//! lattice snapping, playerless camera panning, the click unprojection into
-//! game commands, and the per-frame spotlight build from the game snapshot.
-//! Player MOTION lives in house-game now (walk_system) — the viewer only
+//! lattice snapping, and the click unprojection into the town's click-to-move.
+//! Player MOTION lives in house-game (the town sim) — the viewer only
 //! presents and translates input.
 
 use crate::viewer::{Viewer, ZOOM_MAX, ZOOM_MIN};
 use glam::{Vec2, Vec3};
-use house_game::{flashlight_pose, iso_input_dir, recommended_min_px_per_sec, Command, PickRay};
-use iso_core::{iso_basis, screen_px_to_world, whole_pixel_step, window_px_to_ground, window_px_to_ray, zoom_anchor_pan, ViewXform, ISO_R};
-use rt_probe::*;
+use iso_core::{iso_basis, window_px_to_ground, zoom_anchor_pan, ViewXform, ISO_R};
 
 /// Interactive quarter-turn animation — the native mirror of the web
 /// `RotationAnimation` (`viewport-animation.ts`, framing preset): exponential
@@ -28,8 +25,8 @@ const ROT_SETTLE: f32 = 0.08; // web RotationAnimation.SNAP_SETTLE_SECONDS
 pub struct ViewState {
     pub zoom: f32,
     /// camera yaw in quarter-turns from canonical (web rotateQuarterTurns):
-    /// Q = -1, E = +1. Mirrors the SIM's yaw_q (every change also queues
-    /// RotateCamera).
+    /// Q = -1, E = +1. Presentation-only — the town shell mirrors it for
+    /// screen-relative WASD.
     pub yaw_q: u32,
     /// in-flight smooth quarter-turn (q/e); None when settled at yaw_q
     pub rot: Option<RotAnim>,
@@ -43,7 +40,6 @@ pub struct ViewState {
     pub move_accum: Vec2,
     pub cursor: Vec2, // window-space cursor (physical px)
     pub wheel_accum: f32, // accumulates scroll into discrete zoom steps
-    pub dragging: bool,
 }
 
 impl Viewer {
@@ -59,11 +55,8 @@ impl Viewer {
     }
 
     /// q/e: start (or extend) the smooth quarter-turn — web semantics: the
-    /// integer target moves immediately, the camera eases after it. The turn
-    /// is SIM state too: every press queues a matching RotateCamera command
-    /// (the game applies it next tick; the ease is presentation-only).
+    /// integer target moves immediately, the camera eases after it.
     pub fn start_rotate(&mut self, delta: i32) {
-        self.game.push(Command::RotateCamera { dq: delta as i8 });
         let target = match &mut self.view.rot {
             Some(r) => {
                 r.target += delta;
@@ -127,29 +120,11 @@ impl Viewer {
     }
 
     /// Rotate the view by quarter turns instantly (the movie's landing path
-    /// and the '0' reset; interactive q/e goes through `start_rotate`). Also
-    /// queues the matching RotateCamera so the sim's yaw_q follows. The camera
-    /// orbits its target.
+    /// and the '0' reset; interactive q/e goes through `start_rotate`). The
+    /// camera orbits its target.
     pub fn rotate(&mut self, delta: i32) {
-        self.game.push(Command::RotateCamera { dq: delta as i8 });
         self.view.yaw_q = (self.view.yaw_q as i32 + delta).rem_euclid(4) as u32;
         self.view.rot = None; // instant turn supersedes any in-flight sweep
-        self.view.move_accum = Vec2::ZERO;
-        self.snap_target_to_lattice();
-    }
-
-    /// Snap the viewer's quarter to `target_q` WITHOUT queuing a RotateCamera
-    /// command. `rotate` is for viewer-INITIATED turns (it tells the sim to
-    /// follow); this is the inverse — the SIM already turned (a DEMO trace's
-    /// `rotate` command, or any replay that rotated) and the viewer must catch
-    /// up: re-snap the target onto the new yaw's lattice.
-    /// No-op when already aligned.
-    pub fn sync_view_yaw(&mut self, target_q: u32) {
-        if self.view.yaw_q == target_q && self.view.rot.is_none() {
-            return;
-        }
-        self.view.yaw_q = target_q;
-        self.view.rot = None;
         self.view.move_accum = Vec2::ZERO;
         self.snap_target_to_lattice();
     }
@@ -180,241 +155,36 @@ impl Viewer {
         self.retarget(self.view.target + world);
     }
 
-    /// Pan the camera by a screen-space delta in low pixels, quantised to
-    /// whole low pixels with the remainder carried (#5 applied to the
-    /// camera). Playerless scenes only — with a player the camera follows
-    /// the sim instead (`follow_camera`).
-    pub fn pan_camera_px(&mut self, d_low: Vec2) {
-        self.view.move_accum += d_low;
-        let (whole, rem) = whole_pixel_step(self.view.move_accum);
-        self.view.move_accum = rem;
-        if whole != Vec2::ZERO {
-            let world = screen_px_to_world(whole, self.yaw_deg());
-            self.pan_target(world);
-        }
-    }
-
-    /// Follow-cam: when the (lattice-snapped) player moved, retarget the
-    /// camera at it. The whole-low-pixel step with carried remainder (#5)
-    /// is inherent in the lattice snap: consecutive snapped positions differ
-    /// by INTEGER screen-pixel steps while the player's continuous position
-    /// carries the sub-pixel remainder — pinned by
-    /// `follow_cam_steps_whole_pixels_and_carries_the_remainder` in sim.rs.
-    pub fn follow_camera(&mut self) {
-        if !self.game.follow_cam || self.game.snap.player_pos == self.game.last_player {
+    /// Follow-cam: track the EASED player body (the town sim steps whole
+    /// cells; the loop glides between them), re-snapped to the lattice by
+    /// `retarget` like every camera move.
+    pub fn follow_town_camera(&mut self) {
+        let p = self.town.cam_target();
+        if p == self.town.last_cam {
             return;
         }
-        let t = self.game.snap.player_pos;
-        self.game.last_player = t;
-        self.retarget(t);
-        self.recenter_pan();
-    }
-
-    /// SCENE=thief follow-cam: track the EASED player body (the thief sim
-    /// steps whole cells; the loop glides between them), re-snapped to the
-    /// lattice by `retarget` like every camera move.
-    pub fn follow_thief_camera(&mut self) {
-        let Some(t) = &self.thief else { return };
-        let p = t.cam_target();
-        if p == t.last_cam {
-            return;
-        }
-        self.thief.as_mut().unwrap().last_cam = p;
+        self.town.last_cam = p;
         self.retarget(p);
         self.recenter_pan();
     }
 
-    /// Held-key camera pan for scenes WITHOUT a player (lab) — the WASD
-    /// branch the sim can't own (there is nothing to walk). Player scenes
-    /// synthesize Command::Move per tick instead (`GameLoop::run_due`).
-    pub fn pan_camera_held(&mut self, dt: f32) {
-        let input_x = (self.game.held[3] as i32 - self.game.held[2] as i32) as f32; // right - left
-        let input_y = (self.game.held[0] as i32 - self.game.held[1] as i32) as f32; // up - down
-        let Some(dir) = iso_input_dir(input_x, input_y) else { return };
-        let speed = self.pan_speed.max(recommended_min_px_per_sec(60.0));
-        self.pan_camera_px(dir * speed * dt);
-    }
-
     /// The ViewXform this frame's picks unproject through. During a rotation
-    /// tween picks resolve at the SETTLED (target) quarter — sim determinism
-    /// (ARCHITECTURE.md); `start_rotate` already snapped the camera target
-    /// onto that yaw's lattice, so target and yaw are mutually consistent.
+    /// tween picks resolve at the SETTLED (target) quarter; `start_rotate`
+    /// already snapped the camera target onto that yaw's lattice, so target
+    /// and yaw are mutually consistent.
     pub fn pick_xform(&self) -> ViewXform {
         let q = self.view.rot.as_ref().map(|r| r.target).unwrap_or(self.view.yaw_q as i32);
         let (low, vis) = self.low_and_vis();
         ViewXform { target: self.view.target, yaw_off_deg: 90.0 * q as f32, pan: self.view.pan, render_scale: self.rs(), low, vis }
     }
 
-    /// LMB in SCENE=thief: a live stop's panel buttons answer first; any
-    /// other click unprojects to the ground and becomes a click-to-move
-    /// plan (window px never cross the game boundary — the plan feeds pure
-    /// Move/Steal commands).
-    pub fn thief_click(&mut self, win: Vec2) {
-        let ext = self.backend.extent();
-        let rs = self.rs() as u32;
+    /// LMB: unproject to the ground and hand the click to the town loop's
+    /// click-to-move planner (window px never cross the game boundary — the
+    /// plan feeds pure Move commands).
+    pub fn town_click(&mut self, win: Vec2) {
         let x = self.pick_xform();
-        let Some(t) = self.thief.as_mut() else { return };
-        if t.stop_click(win, ext, rs) {
-            return;
-        }
         if let Some(g) = window_px_to_ground(win, &x) {
-            t.click_ground(g);
+            self.town.click_ground(g);
         }
-    }
-
-    /// LMB in a player scene → Command::Click: the window pixel unprojects
-    /// into a world pick ray + optional ground point HERE (window px never
-    /// cross the game boundary); door-vs-walk resolution happens in-game.
-    pub fn click_command(&mut self, win: Vec2) {
-        let x = self.pick_xform();
-        let (origin, dir) = window_px_to_ray(win, &x);
-        let ground = window_px_to_ground(win, &x).map(|g| Vec2::new(g.x, g.z));
-        self.game.push(Command::Click { ray: PickRay { origin, dir }, ground });
-    }
-
-    /// RMB → Command::Shoot (fires a projectile along the pick ray).
-    pub fn shoot_command(&mut self, win: Vec2) {
-        if !self.game.has_player {
-            return;
-        }
-        let x = self.pick_xform();
-        let (origin, dir) = window_px_to_ray(win, &x);
-        self.game.push(Command::Shoot { ray: PickRay { origin, dir } });
-    }
-
-    /// Arena turret: keep the gun trained on the cursor. Unprojects the
-    /// cursor to its ground point and pushes `Command::Aim` with the
-    /// player→cursor world direction — but only when it moved ≥ ~0.5°, so a
-    /// parked mouse adds nothing to the journal. Called every frame before
-    /// the due ticks run.
-    pub fn aim_command(&mut self, win: Vec2) {
-        if !self.game.lmb_shoots {
-            return;
-        }
-        let x = self.pick_xform();
-        let Some(g) = window_px_to_ground(win, &x) else { return };
-        let p = self.game.snap.player_pos;
-        let Some(d) = (Vec2::new(g.x, g.z) - Vec2::new(p.x, p.z)).try_normalize() else { return };
-        if self.game.last_aim.is_none_or(|la| la.dot(d) < 0.99996) {
-            self.game.push(Command::Aim { dir: d });
-            self.game.last_aim = Some(d);
-        }
-    }
-
-    /// This frame's transient spotlights, read off the snapshot: the player
-    /// flashlight (pose from the same pure fn the game's flashlight_system
-    /// uses, at the lattice-SNAPPED snapshot position) and the 2-tick muzzle
-    /// flash — at most N_RESERVED, packed into the reserved trailing NEE
-    /// slots by record_frame.
-    pub fn frame_spotlights(&self) -> Vec<Spotlight> {
-        let mut v = Vec::new();
-        if !self.game.has_player {
-            return v;
-        }
-        let snap = &self.game.snap;
-        if snap.flashlight {
-            let (pos, dir) = flashlight_pose(snap.player_pos, snap.facing);
-            // the NEE solid angle of an r=0.06 emitter is tiny (~3e-3 sr at
-            // 2 wu) — slot radiance must be huge for a visible pool
-            v.push(Spotlight { pos, dir, cone_cos: self.flash_cone.to_radians().cos(), power: self.flash_power * 1500.0, radius: 0.06, tint: rt_probe::render::SPOT_WARM });
-        }
-        if snap.muzzle_flash {
-            // a muzzle flash is a POP, not a beam: a wide cone pointed
-            // straight DOWN from just above the barrel tip pools hot light
-            // AROUND the gun (the goo-light pattern). Per-class signature
-            // (W4): slug big warm pop, uzi small chattering pop, shotgun
-            // wide short fan, harpoon cyan rail burst, grenade NO flash
-            // (its thunk + smoke mote carry the shot). Recoil scales the
-            // burst. Standard (non-arena pistol) keeps the historical pop
-            // expression-identical — the game_replay golden depends on it.
-            use house_game::WeaponClass as W;
-            let f = snap.facing;
-            let fd = glam::Vec3::new(f.x, 0.0, f.y);
-            let (mp, _) = flashlight_pose(snap.player_pos, f);
-            let pos = mp + fd * 0.55 + glam::Vec3::new(0.0, 0.30, 0.0);
-            let k = self.game.fx.recoil;
-            match self.game.fx.recoil_class {
-                W::Grenade => {}
-                W::Slug => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 62.0f32.to_radians().cos(), power: 2400.0 * (1.0 + 1.2 * k), radius: 0.10, tint: rt_probe::render::SPOT_WARM }),
-                W::Uzi => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 55.0f32.to_radians().cos(), power: 650.0, radius: 0.07, tint: rt_probe::render::SPOT_WARM }),
-                W::Shotgun => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 82.0f32.to_radians().cos(), power: 2000.0 * (1.0 + 1.2 * k), radius: 0.13, tint: rt_probe::render::SPOT_WARM }),
-                W::Harpoon => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 58.0f32.to_radians().cos(), power: 900.0, radius: 0.07, tint: [0.40, 0.85, 1.0] }),
-                W::Standard => v.push(Spotlight { pos, dir: glam::Vec3::NEG_Y, cone_cos: 62.0f32.to_radians().cos(), power: 1500.0 * (1.0 + 1.2 * self.game.fx.recoil), radius: 0.09, tint: rt_probe::render::SPOT_WARM }),
-            }
-        }
-        // impact flash: a brief hot pop where the last round died (wall /
-        // floor / blob splash) — the target-side half of the muzzle flash,
-        // fading over its 3 ticks; the stored weight scales the power so a
-        // slug crater visibly outranks an uzi tick (W5)
-        if let Some((at, ttl, w)) = self.game.fx.impact_flash {
-            let k = ttl as f32 / 3.0;
-            v.push(Spotlight { pos: at + glam::Vec3::new(0.0, 0.26, 0.0), dir: glam::Vec3::NEG_Y, cone_cos: 60.0f32.to_radians().cos(), power: 1000.0 * k * w, radius: 0.07, tint: rt_probe::render::SPOT_WARM });
-        }
-        if let Some((at, k)) = snap.boom {
-            // grenade detonation: a hot wide downward cone hovering over the
-            // blast point, fading out over the flash ticks. Same tiny emitter
-            // radius as the muzzle — packed slot radiance scales inversely
-            // with emitter area, so a big radius quietly kills the flash.
-            v.push(Spotlight {
-                pos: at + glam::Vec3::new(0.0, 0.9, 0.0),
-                dir: glam::Vec3::NEG_Y,
-                cone_cos: 70.0f32.to_radians().cos(),
-                power: 26000.0 * k,
-                radius: 0.05,
-                tint: [1.0, 0.72, 0.4],
-            });
-        }
-        // L1: the incoming-wave telegraph — the three north entrance pads
-        // pulse, amber cooling to red with the blink accelerating as the
-        // drop nears (the countdown the body can feel). A spotlight overlay
-        // on the authored pad decals; wave_warn only ever arms on arena
-        // levels, so no other scene sees it.
-        let warn = self.game.fx.wave_warn;
-        if warn > 0 {
-            let t = 1.0 - warn as f32 / house_game::game::WAVE_TELEGRAPH_TICKS as f32;
-            let period = (12.0 - 8.0 * t).max(3.0);
-            if ((self.game.fx_frame() as f32 / period) as u32).is_multiple_of(2) {
-                let tint = [1.0, 0.55 - 0.40 * t, 0.12 * (1.0 - t)]; // amber → red
-                for k in 0..3 {
-                    let a = std::f32::consts::PI * (1.25 + 0.25 * k as f32);
-                    let q = |x: f32| (x * 4.0).round() * 0.25; // the pads' stair-grid snap
-                    let (cx, cz) = (q(a.cos() * 7.0), q(a.sin() * 7.0));
-                    v.push(Spotlight { pos: glam::Vec3::new(cx, 0.55, cz), dir: glam::Vec3::NEG_Y, cone_cos: 55.0f32.to_radians().cos(), power: 300.0 + 500.0 * t, radius: 0.10, tint });
-                }
-            }
-        }
-        // L5 end zoning (containment stages): the drain end sits under a
-        // cold-cyan wash, the player's defense end under a warm one —
-        // which way is OUT reads at a glance through camera rotation and
-        // the blackout act (the washes deliberately survive lights-out).
-        if let Some(z) = self.game.sim.res.arena.drain {
-            let fl = self.game.sim.res.level.floor;
-            let (dc_x, dc_z) = ((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5);
-            let (fc_x, fc_z) = ((fl[0] + fl[2]) * 0.5, (fl[1] + fl[3]) * 0.5);
-            let (pc_x, pc_z) = (2.0 * fc_x - dc_x, 2.0 * fc_z - dc_z); // the mirrored player end
-            v.push(Spotlight { pos: glam::Vec3::new(dc_x, 2.2, dc_z), dir: glam::Vec3::NEG_Y, cone_cos: 75.0f32.to_radians().cos(), power: 650.0, radius: 0.28, tint: [0.35, 0.75, 0.95] });
-            v.push(Spotlight { pos: glam::Vec3::new(pc_x, 2.2, pc_z), dir: glam::Vec3::NEG_Y, cone_cos: 75.0f32.to_radians().cos(), power: 520.0, radius: 0.28, tint: [1.0, 0.82, 0.55] });
-        }
-        // L2: past half LEAK the drain zone runs HOT — a low red wash over
-        // the mouth (the strips can't recolor; the light can) that deepens
-        // with the meter. Drain scenes only (breach is None elsewhere).
-        if let Some((leak, cap)) = snap.breach {
-            let ratio = leak as f32 / cap as f32;
-            if ratio >= 0.5 {
-                if let Some(z) = self.game.sim.res.arena.drain {
-                    let heat = (ratio - 0.5) * 2.0; // 0 at half, 1 at cap
-                    let (cx, cz) = ((z[0] + z[2]) * 0.5, (z[1] + z[3]) * 0.5);
-                    v.push(Spotlight {
-                        pos: glam::Vec3::new(cx, 1.4, cz),
-                        dir: glam::Vec3::NEG_Y,
-                        cone_cos: 80.0f32.to_radians().cos(),
-                        power: 900.0 + 1400.0 * heat,
-                        radius: 0.30,
-                        tint: [1.0, 0.22, 0.10],
-                    });
-                }
-            }
-        }
-        v
     }
 }

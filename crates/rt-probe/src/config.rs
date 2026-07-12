@@ -5,7 +5,7 @@
 //! has a single source of truth. One deliberate exception reads `std::env`
 //! directly: `probe_cache::dir` (PROBE_CACHE) — a dev-machine cache location,
 //! not a look/sim knob, and never part of the round-trip. (rt-viewer keeps a
-//! few shell-only reads of its own: DOORS, DUMP_ROOMS, AUDIO, LOOK.)
+//! few shell-only reads of its own: AUDIO, LOOK.)
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
 //! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).
@@ -14,9 +14,7 @@
 //!
 //! `Config::from_env` resolves all three; `scene` is the shared identity field
 //! both the renderer's scene builders and the game adapter read, so it lives on
-//! the top-level `Config` rather than in any one group. Env var names and the
-//! ESC menu env-string round-trip are UNCHANGED by the split — saved tunings
-//! keep working (pinned by `config::tests::env_string_round_trip`).
+//! the top-level `Config` rather than in any one group.
 
 fn f(k: &str, d: f32) -> f32 {
     std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
@@ -32,82 +30,6 @@ fn b(k: &str, d: bool) -> bool {
 }
 fn s(k: &str) -> Option<String> {
     std::env::var(k).ok()
-}
-
-/// One row per scene: every per-scene RENDER default in one place. Adding a
-/// scene = adding one row here (and one `SceneEntry` row in rt-viewer's
-/// `scene_registry`, which owns the spec/camera/classifier side — rt-probe
-/// cannot hold LevelSpec builders without seeing house-game). Scene names not
-/// in the table fall back to [`LOOK_DEFAULT`] (the textured-legacy look),
-/// exactly as the old scattered `matches!` lists did. Matching is EXACT; the
-/// `grid-walker` alias is normalized to `grid` in `Config::from_env` before
-/// any lookup.
-struct SceneLook {
-    name: &'static str,
-    /// The flat-coloured "greybox" family (procedural floor plans, the cave
-    /// dungeon, the village, the `game` content scene): punchy / shiny /
-    /// bumped look defaults. The textured legacy scenes (house/lab/grid) stay
-    /// out so their established look + goldens are untouched.
-    greybox: bool,
-    /// Luma below which the shadow dither fades in. Bright-pastel scenes sit
-    /// HIGHER (0.75): their surfaces push AO crevices above the 0.35 cutoff,
-    /// so the dither stopped triggering where AO darkens contact shadows.
-    sdither_th: f32,
-    /// Default EXPOSURE: lamp-lit scenes (no sun) need more than daylight
-    /// ones. (Retuned 0.35 -> 0.40 on 2026-06-12 with sRGB albedo sampling.)
-    exposure: f32,
-    /// Default PIXEL (integer upscale). The 20×20 wu arena pits need the wide
-    /// framing: at PIXEL=4 a 1280×800 window sees only ~7 wu across.
-    pixel: u32,
-    /// Default MINIMAP toggle (the schematic overlay).
-    minimap: bool,
-    /// Default CAVE_ROI (dithered player-anchored see-through reveal — the
-    /// sole wall occlusion on player+wall scenes).
-    roi: bool,
-    /// Default player walk speed (px/s; grid mirrors the web knob default).
-    player_speed: f32,
-}
-
-/// The fallback row (textured-legacy look) — also the base most rows override.
-const LOOK_DEFAULT: SceneLook = SceneLook { name: "", greybox: false, sdither_th: 0.35, exposure: 0.22, pixel: 4, minimap: false, roi: false, player_speed: 140.0 };
-
-static SCENE_LOOKS: &[SceneLook] = &[
-    // textured legacy trio (golden-pinned — rows must stay LOOK_DEFAULT-flavoured)
-    SceneLook { name: "house", exposure: 0.40, roi: true, ..LOOK_DEFAULT },
-    SceneLook { name: "lab", ..LOOK_DEFAULT },
-    SceneLook { name: "grid", player_speed: 80.0, ..LOOK_DEFAULT },
-    // authored content scenes (game is golden-pinned)
-    SceneLook { name: "game", greybox: true, sdither_th: 0.75, exposure: 0.40, roi: true, ..LOOK_DEFAULT },
-    // thief M2 slice: wide framing (vision range 8 must fit the read),
-    // greybox look, ROI near-wall reveal (FLOORCUT handles the roofs)
-    SceneLook { name: "thief", greybox: true, sdither_th: 0.75, exposure: 0.40, pixel: 2, roi: true, ..LOOK_DEFAULT },
-    SceneLook { name: "goo", roi: true, ..LOOK_DEFAULT },
-    // procedural dungeon / floor plans / village
-    SceneLook { name: "cave", greybox: true, sdither_th: 0.75, exposure: 0.40, roi: true, ..LOOK_DEFAULT },
-    SceneLook { name: "village", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
-    SceneLook { name: "home", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
-    SceneLook { name: "hospital", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
-    SceneLook { name: "office", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
-    SceneLook { name: "factory", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
-    // arena-shooter pits (wide framing)
-    SceneLook { name: "arena", pixel: 2, ..LOOK_DEFAULT },
-    SceneLook { name: "squeeze", pixel: 2, ..LOOK_DEFAULT },
-    SceneLook { name: "drain", pixel: 2, ..LOOK_DEFAULT },
-    // goo film / demo stages (all-default rows, listed so the roster is complete)
-    SceneLook { name: "playground", ..LOOK_DEFAULT },
-    SceneLook { name: "range", ..LOOK_DEFAULT },
-    SceneLook { name: "goofloor", ..LOOK_DEFAULT },
-    SceneLook { name: "goonursery", ..LOOK_DEFAULT },
-    SceneLook { name: "goopair", ..LOOK_DEFAULT },
-];
-
-fn scene_look(scene: &str) -> &'static SceneLook {
-    SCENE_LOOKS.iter().find(|l| l.name == scene).unwrap_or(&LOOK_DEFAULT)
-}
-
-/// The flat-coloured "greybox" scene family — see [`SceneLook::greybox`].
-fn is_clean_greybox(scene: &str) -> bool {
-    scene_look(scene).greybox
 }
 
 /// Stylized post-stack knobs (tonemap.comp). `STYLE=<preset>` sets a bundle,
@@ -140,19 +62,11 @@ pub struct StyleCfg {
 }
 
 impl StyleCfg {
-    fn from_env(scene: &str) -> StyleCfg {
-        // shadow dither ON by default (user-tuned 2026-06-10: strength 1, 16
-        // luma bands) — the subtle retro texture in shadow gradients is part of
-        // the base look. SDITHER=0 for fully clean.
-        //
-        // sdither_th is the luma below which the dither fades in — per-scene
-        // (bright pastel scenes sit higher; see SceneLook::sdither_th).
-        let sdither_th = scene_look(scene).sdither_th;
-        // The "Punchy & Moody" greybox look (chosen 2026-06-21): the flat-coloured
-        // floor-plan / dungeon / content scenes get richer colour by default. The
-        // textured legacy scenes (house/lab/grid) keep their established neutral grade.
-        let clean = is_clean_greybox(scene);
-        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 1.0, sdither_n: 16.0, sdither_th, sat: if clean { 1.4 } else { 1.0 }, contrast: if clean { 1.12 } else { 1.0 }, lumaq: 0.0, analog: 0.0, analog_chroma: -1.0, analog_tear: -1.0, crt_mask: 0.0 };
+    fn from_env() -> StyleCfg {
+        // Shadow dither ON by default was the old base look; the joyful reset
+        // (docs/VISION.md) starts from CLEAN — dither/grain/vignette all off,
+        // and the Faza-1 look presets opt into texture deliberately.
+        let mut st = StyleCfg { grade: 0.0, poster: 0.0, dither: 1.0, dither_amt: -1.0, palette: 0.0, pal_p: -1.0, vignette: 0.0, outline: 0.0, grain: 0.0, grain_sz: 1.0, grain_static: 0.0, bloom: 0.0, bloom_th: 1.0, sdither: 0.0, sdither_n: 16.0, sdither_th: 0.75, sat: 1.4, contrast: 1.12, lumaq: 0.0, analog: 0.0, analog_chroma: -1.0, analog_tear: -1.0, crt_mask: 0.0 };
         if let Some(name) = s("STYLE") {
             match name.as_str() {
                 "fallout" => { st.grade = 1.0; st.palette = 1.0; st.grain = 0.04; }
@@ -219,18 +133,15 @@ impl StyleCfg {
 }
 
 /// Renderer look + GI/probe bake knobs. No game, no window — everything here
-/// feeds the shade/probe pipelines and the post stack. `default_exposure`
-/// depends on the scene, so EXPOSURE is resolved against the scene name at
-/// `from_env` time.
+/// feeds the shade/probe pipelines and the post stack.
 pub struct RenderCfg {
     pub emit: f32,                 // EMIT: master scale on authored practical emission
     pub sun: Option<f32>,          // SUN/SKY/FOG/FOG_H override the scene's lighting env
     pub sky: Option<f32>,
     pub fog: Option<f32>,
     pub fog_h: Option<f32>,
-    pub pet_dump: bool,            // PET_DUMP: dump the PET prop's triangles as CSV
     pub pixel: u32,                // PIXEL: integer render scale at zoom=1
-    pub exposure: f32,             // EXPOSURE (default depends on scene)
+    pub exposure: f32,             // EXPOSURE
     pub probe_spacing: f32,        // PROBE_SPACING: GI probe grid spacing (wu)
     pub probe_rays: i32,           // PROBE_RAYS: bake rays per probe per bank
     pub ao: f32,                   // AO: RT-AO strength
@@ -262,35 +173,26 @@ impl RenderCfg {
     }
 }
 
-/// Game / input / camera-seeding knobs. These write SIM STATE at boot (flash,
-/// room-lights master, player speed/offset, settled yaw quarter) plus the
-/// camera presentation seeds (zoom, pan, look-at target) and the deterministic
-/// command-replay prefix.
+/// Game / input / camera-seeding knobs. These seed SIM/camera state at boot
+/// (zoom, pan, look-at target, settled yaw quarter) plus the deterministic
+/// command-replay prefix and the reveal knobs.
 pub struct GameCfg {
-    pub lights: f32,               // LIGHTS: room-lights master dim 0..1
-    pub light_anim: bool,          // LIGHT_ANIM=0 freezes practical flicker
-    pub flash: bool,               // FLASH: flashlight on at boot
-    pub flash_power: f32,          // FLASH_POWER
-    pub flash_cone: f32,           // FLASH_CONE: outer half-angle, degrees
+    pub lights: f32,               // LIGHTS: lamp master dim 0..1
+    pub light_anim: bool,          // LIGHT_ANIM=0 freezes light animation
     pub zoom: f32,                 // ZOOM (whole steps 1-4)
     pub yaw_q: u32,                // YAW_Q: start quarter-turn
     pub pan: (f32, f32),           // PAN_X/PAN_Y: initial crop offset (low px)
     pub target: (Option<f32>, Option<f32>), // TARGET_X/TARGET_Z: camera look-at override
-    pub player_off: (f32, f32),    // PLAYER_X/PLAYER_Z: player offset from spawn
-    pub player_speed: Option<f32>, // PLAYER_SPEED (px/s; default depends on scene)
+    pub player_speed: Option<f32>, // PLAYER_SPEED (px/s)
     pub cmds: Option<String>,      // CMDS=trace.txt: deterministic command-replay prefix
     pub cmds_ticks: Option<u64>,   // CMDS_TICKS: prefix length (default: last stamp + 1)
-    pub cave_seed: u64,            // SEED / CAVE_SEED: the run/level seed (cave layout, arena drafts)
-    pub cave_rooms: u32,           // CAVE_ROOMS: target room count (grid scales to fit)
-    pub cave_loops: u32,           // CAVE_LOOPS: extra corridors beyond the spanning tree
-    pub cave_thick: bool,          // CAVE_WALLS=rock: thick 1×1 rock blocks vs thin walls + void
-    pub minimap: bool,             // MINIMAP: draw the top-down minimap HUD (default on for SCENE=village)
-    pub roi: bool,                 // CAVE_ROI: dithered player-anchored see-through reveal — the sole wall occlusion (default on for all player+wall scenes)
+    pub seed: u64,                 // SEED: the run/level seed (town layout, population)
+    pub roi: bool,                 // ROI: dithered player-anchored see-through reveal — the sole wall occlusion on player+wall scenes
     pub roi_radius: f32,           // ROI_R: reveal-disc radius in low-res px
     pub roi_falloff: f32,          // ROI_FALLOFF: soft dither edge width in low-res px
     pub roi_ghost: f32,            // ROI_GHOST: max reveal coverage at disc centre (<1 leaves a faint stipple ghost of the wall)
     pub roi_contour: bool,         // ROI_XRAY: default on — adds faint wall-silhouette line-art over the ghost stipple; ROI_XRAY=ghost turns it off (plain stipple)
-    pub cut: Option<f32>,          // CUT: FLOORCUT plane world-Y — everything at/above it dissolves on the primary ray (multi-floor dollhouse reveal); unset = off
+    pub cut: Option<f32>,          // CUT: FLOORCUT plane world-Y — everything at/above it dissolves on the primary ray (multi-floor dollhouse reveal); unset = game-driven
     pub wall_cut: Option<f32>,     // WALLCUT: occluder-only cut plane world-Y — walls/roofs/lintels at/above it dissolve (indoor sill-height cutaway); unset = game-driven
 }
 
@@ -323,8 +225,9 @@ pub struct HarnessCfg {
 }
 
 pub struct Config {
-    // SCENE: cave (bin/run default) | arena | game | goo | village | home | hospital |
-    // office | factory | playground | range | goofloor | goonursery | goopair | house | lab | grid
+    /// SCENE: `town` is the only scene (the movement/look testbed —
+    /// docs/VISION.md Faza 0). The field stays so future scenes (the Faza-2
+    /// movement gym) slot back in without plumbing changes.
     pub scene: String,
     pub render: RenderCfg,
     pub game: GameCfg,
@@ -333,11 +236,7 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Config {
-        let scene = s("SCENE").unwrap_or_else(|| "house".into());
-        let scene = if scene == "grid-walker" { "grid".to_string() } else { scene };
-        // every per-scene default (exposure, pixel, minimap, roi, greybox
-        // look) reads off the scene's SCENE_LOOKS row — one place per scene.
-        let look = scene_look(&scene);
+        let scene = s("SCENE").unwrap_or_else(|| "town".into());
         let window = s("WINDOW").and_then(|v| {
             let (w, h) = v.split_once('x')?;
             Some((w.parse().ok()?, h.parse().ok()?))
@@ -353,58 +252,44 @@ impl Config {
         } else {
             0
         };
-        // greybox scenes default to the "Punchy & Moody" look (chosen 2026-06-21):
-        // ambient turned down + lamps up so light is directional (shadows read),
-        // multi-scale procedural wear (grime patches + relief), and softer AO.
-        // (Specular sheen was trialled then turned off — matte reads cleaner.)
-        let clean = is_clean_greybox(&scene);
         Config {
             render: RenderCfg {
-                emit: f("EMIT", if clean { 1.7 } else { 1.0 }),
+                emit: f("EMIT", 1.7),
                 sun: fo("SUN"),
                 sky: fo("SKY"),
                 fog: fo("FOG"),
                 fog_h: fo("FOG_H"),
-                pet_dump: b("PET_DUMP", false),
-                pixel: (i("PIXEL", look.pixel as i32) as u32).max(1),
-                exposure: f("EXPOSURE", look.exposure),
+                pixel: (i("PIXEL", 2) as u32).max(1),
+                exposure: f("EXPOSURE", 0.40),
                 probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
                 probe_rays: i("PROBE_RAYS", 2048),
-                ao: f("AO", if clean { 0.55 } else { 1.0 }),
+                ao: f("AO", 0.55),
                 ao_r: f("AO_R", 0.8),
                 ao_n: i("AO_N", 8),
                 spec: f("SPEC", 0.0), // matte floors/walls — specular sheen turned off (2026-06-21)
-                gloss: f("GLOSS", if clean { 0.85 } else { 0.0 }).clamp(0.0, 1.0),
-                bump: f("BUMP", if clean { 0.8 } else { 0.0 }),
-                bump_scale: f("BUMP_SCALE", if clean { 7.0 } else { 6.0 }).max(0.01),
-                gi: f("GI", if clean { 0.42 } else { 1.0 }),
+                gloss: f("GLOSS", 0.85).clamp(0.0, 1.0),
+                bump: f("BUMP", 0.8),
+                bump_scale: f("BUMP_SCALE", 7.0).max(0.01),
+                gi: f("GI", 0.42),
                 matq: f("MATQ", 0.0),
                 ao_dither: f("AO_DITHER", 0.0),
                 refl: f("REFL", 0.0),
                 refl_px: i("REFL_PX", 3).max(1),
                 debug,
-                style: StyleCfg::from_env(&scene),
+                style: StyleCfg::from_env(),
             },
             game: GameCfg {
                 lights: f("LIGHTS", 1.0).clamp(0.0, 1.0),
                 light_anim: b("LIGHT_ANIM", true),
-                flash: b("FLASH", false),
-                flash_power: f("FLASH_POWER", 1.0),
-                flash_cone: f("FLASH_CONE", 22.0),
                 zoom: f("ZOOM", 1.0),
                 yaw_q: (i("YAW_Q", 0) as u32) & 3,
                 pan: (f("PAN_X", 0.0), f("PAN_Y", 0.0)),
                 target: (fo("TARGET_X"), fo("TARGET_Z")),
-                player_off: (f("PLAYER_X", 0.0), f("PLAYER_Z", 0.0)),
                 player_speed: fo("PLAYER_SPEED"),
                 cmds: s("CMDS"),
                 cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
-                cave_seed: s("SEED").or_else(|| s("CAVE_SEED")).and_then(|v| v.parse().ok()).unwrap_or(1),
-                cave_rooms: (i("CAVE_ROOMS", 10) as u32).clamp(1, 80),
-                cave_loops: i("CAVE_LOOPS", 3).max(0) as u32,
-                cave_thick: s("CAVE_WALLS").map(|v| v == "rock" || v == "thick").unwrap_or(false),
-                minimap: b("MINIMAP", look.minimap),
-                roi: b("CAVE_ROI", look.roi),
+                seed: s("SEED").and_then(|v| v.parse().ok()).unwrap_or(1),
+                roi: b("ROI", true),
                 roi_radius: fo("ROI_R").unwrap_or(79.0),
                 roi_falloff: fo("ROI_FALLOFF").unwrap_or(33.0),
                 roi_ghost: fo("ROI_GHOST").unwrap_or(0.85),
@@ -442,10 +327,9 @@ impl Config {
         self.render.lighting_env(scene_lighting)
     }
 
-    /// Default player walk speed — depends on the scene (grid mirrors the web
-    /// knob default; the rest walk faster), so it bridges `scene` + `game`.
+    /// Default player walk speed in px/s.
     pub fn default_player_speed(&self) -> f32 {
-        scene_look(&self.scene).player_speed
+        140.0
     }
 }
 
@@ -453,65 +337,25 @@ impl Config {
 mod tests {
     use super::*;
 
-    /// SCENE_LOOKS must answer exactly what the pre-registry scattered
-    /// `matches!` lists answered (expectations below are transcribed FROM that
-    /// deleted code, not from the table): greybox was home|hospital|office|
-    /// factory|cave|village|game; sdither_th 0.75 for game|cave else 0.35;
-    /// exposure 0.40 for house|game|cave|village|home|hospital|office|factory
-    /// else 0.22; pixel 2 for arena|squeeze|drain else 4; minimap for village|
-    /// home|hospital|office|factory; roi for game|goo|house|cave|village|home|
-    /// hospital|office|factory; player speed 80 for grid else 140. Unknown
-    /// scenes take every fallback.
-    #[test]
-    fn scene_looks_match_legacy_dispatch() {
-        // (name, greybox, sdither_th, exposure, pixel, minimap, roi, speed)
-        type LookRow = (&'static str, bool, f32, f32, u32, bool, bool, f32);
-        let legacy: &[LookRow] = &[
-            ("house", false, 0.35, 0.40, 4, false, true, 140.0),
-            ("lab", false, 0.35, 0.22, 4, false, false, 140.0),
-            ("grid", false, 0.35, 0.22, 4, false, false, 80.0),
-            ("game", true, 0.75, 0.40, 4, false, true, 140.0),
-            ("goo", false, 0.35, 0.22, 4, false, true, 140.0),
-            ("cave", true, 0.75, 0.40, 4, false, true, 140.0),
-            ("village", true, 0.35, 0.40, 4, true, true, 140.0),
-            ("home", true, 0.35, 0.40, 4, true, true, 140.0),
-            ("hospital", true, 0.35, 0.40, 4, true, true, 140.0),
-            ("office", true, 0.35, 0.40, 4, true, true, 140.0),
-            ("factory", true, 0.35, 0.40, 4, true, true, 140.0),
-            ("arena", false, 0.35, 0.22, 2, false, false, 140.0),
-            ("squeeze", false, 0.35, 0.22, 2, false, false, 140.0),
-            ("drain", false, 0.35, 0.22, 2, false, false, 140.0),
-            ("playground", false, 0.35, 0.22, 4, false, false, 140.0),
-            ("range", false, 0.35, 0.22, 4, false, false, 140.0),
-            ("goofloor", false, 0.35, 0.22, 4, false, false, 140.0),
-            ("goonursery", false, 0.35, 0.22, 4, false, false, 140.0),
-            ("goopair", false, 0.35, 0.22, 4, false, false, 140.0),
-            // unknown names (incl. the pre-normalization "grid-walker" alias,
-            // which from_env rewrites to "grid" before any lookup)
-            ("nonesuch", false, 0.35, 0.22, 4, false, false, 140.0),
-        ];
-        for &(name, greybox, sdither_th, exposure, pixel, minimap, roi, speed) in legacy {
-            let l = scene_look(name);
-            assert_eq!(l.greybox, greybox, "{name} greybox");
-            assert_eq!(l.sdither_th, sdither_th, "{name} sdither_th");
-            assert_eq!(l.exposure, exposure, "{name} exposure");
-            assert_eq!(l.pixel, pixel, "{name} pixel");
-            assert_eq!(l.minimap, minimap, "{name} minimap");
-            assert_eq!(l.roi, roi, "{name} roi");
-            assert_eq!(l.player_speed, speed, "{name} player_speed");
-        }
-    }
-
     /// The ESC menu prints an env string of dialed-in looks; re-feeding it must
     /// reproduce the same resolved values. The menu reads Renderer fields (not
     /// Config), but every menu key is seeded by a Config field, so this pins
-    /// that the env names the split exposes still parse 1:1 to the same slots.
-    /// Env access is process-global, so this runs serially within one test.
+    /// that the env names still parse 1:1 to the same slots.
+    /// Env access is process-global, so ALL env-reading assertions run
+    /// serially within this ONE test (a second #[test] would race the
+    /// set_var/remove_var below under the parallel test runner).
     #[test]
     fn env_string_round_trip() {
-        // A representative dialed-in look spanning all three groups.
+        // the joyful reset's clean base: dither texture OFF by default
+        let cfg = Config::from_env();
+        assert_eq!(cfg.scene, "town");
+        assert_eq!(cfg.render.style.sdither, 0.0, "shadow dither starts OFF");
+        assert_eq!(cfg.render.style.grain, 0.0);
+        assert_eq!(cfg.render.style.vignette, 0.0);
+        assert_eq!(cfg.render.pixel, 2);
+        assert!(cfg.game.roi);
         let pairs = [
-            ("SCENE", "house"),
+            ("SCENE", "town"),
             ("EXPOSURE", "0.37"),
             ("AO", "0.65"),
             ("AO_R", "1.20"),
@@ -522,15 +366,12 @@ mod tests {
             ("DITHER", "4"),
             ("LIGHTS", "0"),
             ("LIGHT_ANIM", "0"),
-            ("FLASH", "1"),
-            ("FLASH_POWER", "1.50"),
-            ("FLASH_CONE", "18"),
         ];
         for (k, v) in pairs {
             std::env::set_var(k, v);
         }
         let cfg = Config::from_env();
-        assert_eq!(cfg.scene, "house");
+        assert_eq!(cfg.scene, "town");
         assert_eq!(cfg.render.exposure, 0.37);
         assert_eq!(cfg.render.ao, 0.65);
         assert_eq!(cfg.render.ao_r, 1.20);
@@ -541,9 +382,6 @@ mod tests {
         assert_eq!(cfg.render.style.dither, 4.0);
         assert_eq!(cfg.game.lights, 0.0);
         assert!(!cfg.game.light_anim);
-        assert!(cfg.game.flash);
-        assert_eq!(cfg.game.flash_power, 1.50);
-        assert_eq!(cfg.game.flash_cone, 18.0);
         for (k, _) in pairs {
             std::env::remove_var(k);
         }

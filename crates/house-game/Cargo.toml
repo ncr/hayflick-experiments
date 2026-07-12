@@ -2,38 +2,9 @@
 name = "house-game"
 version = "0.1.0"
 edition = "2021"
-description = "The house game (ARCHITECTURE.md area C): level collision, commands, ECS systems, snapshot/state-hash — runs and tests fully headless (no GPU, no window)."
+description = "The game's headless core (ARCHITECTURE.md area C): the town testbed world + the continuous-movement primitives — runs and tests fully headless (no GPU, no window)."
 
 [dependencies]
 sim-core = { path = "../sim-core" }
 iso-core = { path = "../iso-core" }
 glam = "0.30"
-# Used by src/mapviz.rs (the library's top-down PNG map renderer) and thereby
-# the map dev-tool bins (roommap, floormap). Pure CPU encoder, no GPU.
-png = "0.17"
-
-# All five bins declared explicitly (none ride auto-discovery). No GPU anywhere.
-
-# Headless trace player: fixture level + trace.txt -> state digest.
-[[bin]]
-name = "headless"
-path = "src/bin/headless.rs"
-
-# Scenario lab: trace.txt -> event TIMELINE + metrics (emergence experiments).
-[[bin]]
-name = "lab"
-path = "src/bin/lab.rs"
-
-# Map dev tools: top-down PNG renders of generated levels (mapviz consumers).
-[[bin]]
-name = "roommap"
-path = "src/bin/roommap.rs"
-
-[[bin]]
-name = "floormap"
-path = "src/bin/floormap.rs"
-
-# Cave tour planner: BFS a route through a generated cave -> DEMO trace.
-[[bin]]
-name = "cave_tour"
-path = "src/bin/cave_tour.rs"

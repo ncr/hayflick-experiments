@@ -1,12 +1,13 @@
-//! Greybox LOOK presets for the thief scene — the whole aesthetic of the
+//! Greybox LOOK presets for the town scene — the whole aesthetic of the
 //! slice as data: palette, body colours, lamp mood, lighting env, and the
-//! shape-kit switches `thief_scene::build_thief` keys off. Same greybox
+//! shape-kit switches `town_scene::build_town` keys off. Same greybox
 //! discipline as ever (coloured boxes, 0.0625-wu XZ lattice); a look is a
 //! restyle, never new render features.
 //!
 //! `LOOK=<name>` selects a preset (a shell-only env read, like DOORS /
 //! DUMP_ROOMS / AUDIO — see rt-probe config.rs). Default is **scifi** — the
-//! owner's picked direction (2026-07-10); the thief golden renders it.
+//! owner's picked direction (2026-07-10). The Faza-1 joyful presets replace
+//! these (docs/VISION.md); the machinery — look-as-data — stays.
 //! `classic` keeps the pre-look-system geometry byte-for-byte as a museum
 //! baseline (Legacy kit, no longer golden-covered).
 //!
@@ -27,7 +28,7 @@ pub enum Kit {
 
 /// Roof silhouette for Room-cell caps (all variants stay above the 2.25
 /// FLOORCUT plane and occluder-marked, so both dollhouse cuts remove them).
-/// An eave fascia is a separate switch ([`ThiefLook::fascia`]) — it combines
+/// An eave fascia is a separate switch ([`Look::fascia`]) — it combines
 /// with either style.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RoofStyle {
@@ -41,7 +42,7 @@ pub enum RoofStyle {
 /// One visual direction, fully data. Architecture colours are sRGB hex
 /// (through `hex_linear`, like the level palettes everywhere else); body and
 /// lamp colours are linear f32 (the classic constants were authored linear).
-pub struct ThiefLook {
+pub struct Look {
     pub name: &'static str,
     pub kit: Kit,
     pub roof_style: RoofStyle,
@@ -82,7 +83,6 @@ pub struct ThiefLook {
     // ---- bodies (linear)
     pub coat_green: [f32; 4],
     pub hood_green: [f32; 4],
-    pub coat_brown: [f32; 4],
     pub skin: [f32; 4],
     pub legs: [f32; 4],
     pub boots: [f32; 4],
@@ -95,7 +95,7 @@ pub struct ThiefLook {
 /// The pre-look-system greybox, verbatim: pale stone streets, near-white
 /// walls, coral doors, flat caps, chunky bodies. Kept byte-identical as the
 /// museum baseline (Legacy kit; the golden now renders the scifi default).
-pub const CLASSIC: ThiefLook = ThiefLook {
+pub const CLASSIC: Look = Look {
     name: "classic",
     kit: Kit::Legacy,
     roof_style: RoofStyle::FlatCap,
@@ -121,7 +121,6 @@ pub const CLASSIC: ThiefLook = ThiefLook {
     lighting: [0.0, 5.5, 0.22, 0.42],
     coat_green: [0.16, 0.42, 0.20, 1.0],
     hood_green: [0.09, 0.24, 0.12, 1.0],
-    coat_brown: [0.45, 0.30, 0.18, 1.0],
     skin: [0.75, 0.60, 0.48, 1.0],
     legs: [0.32, 0.30, 0.26, 1.0],
     boots: [0.14, 0.12, 0.10, 1.0], // unused by the Legacy kit
@@ -134,7 +133,7 @@ pub const CLASSIC: ThiefLook = ThiefLook {
 /// Wet cobbles & gas lamps: a dark-stone port town, desaturated cool darks
 /// so the warm gas flames (and the verdigris doors) carry the frame. The
 /// nocturne stealth mood — night phases go properly theatrical.
-pub const GASLIGHT: ThiefLook = ThiefLook {
+pub const GASLIGHT: Look = Look {
     name: "gaslight",
     kit: Kit::Refined,
     roof_style: RoofStyle::Ridged,
@@ -160,7 +159,6 @@ pub const GASLIGHT: ThiefLook = ThiefLook {
     lighting: [0.0, 5.0, 0.32, 0.5],
     coat_green: [0.05, 0.16, 0.09, 1.0],
     hood_green: [0.03, 0.09, 0.05, 1.0],
-    coat_brown: [0.16, 0.10, 0.06, 1.0],
     skin: [0.55, 0.42, 0.32, 1.0],
     legs: [0.10, 0.10, 0.11, 1.0],
     boots: [0.05, 0.045, 0.04, 1.0],
@@ -172,7 +170,7 @@ pub const GASLIGHT: ThiefLook = ThiefLook {
 
 /// Market town: cream plaster + dark half-timber, terracotta ridged roofs,
 /// sandy cobbles, cobalt doors. Warm, cozy, painterly daylight.
-pub const TIMBERED: ThiefLook = ThiefLook {
+pub const TIMBERED: Look = Look {
     name: "timbered",
     kit: Kit::Refined,
     roof_style: RoofStyle::Ridged,
@@ -198,7 +196,6 @@ pub const TIMBERED: ThiefLook = ThiefLook {
     lighting: [0.0, 6.2, 0.20, 0.42],
     coat_green: [0.14, 0.38, 0.14, 1.0],
     hood_green: [0.08, 0.20, 0.08, 1.0],
-    coat_brown: [0.38, 0.22, 0.11, 1.0],
     skin: [0.78, 0.60, 0.45, 1.0],
     legs: [0.28, 0.24, 0.20, 1.0],
     boots: [0.12, 0.08, 0.05, 1.0],
@@ -211,7 +208,7 @@ pub const TIMBERED: ThiefLook = ThiefLook {
 /// Printmaker's town: warm parchment + bone walls, every trim in charcoal
 /// ink (the cutaway reads as a drawn floorplan), vermillion doors as the
 /// single accent, figures near-ink. Built for the dither.
-pub const INKWASH: ThiefLook = ThiefLook {
+pub const INKWASH: Look = Look {
     name: "inkwash",
     kit: Kit::Refined,
     roof_style: RoofStyle::FlatCap,
@@ -237,7 +234,6 @@ pub const INKWASH: ThiefLook = ThiefLook {
     lighting: [0.0, 5.8, 0.30, 0.55],
     coat_green: [0.10, 0.20, 0.11, 1.0],
     hood_green: [0.06, 0.11, 0.07, 1.0],
-    coat_brown: [0.24, 0.15, 0.08, 1.0],
     skin: [0.70, 0.58, 0.42, 1.0],
     legs: [0.15, 0.14, 0.13, 1.0],
     boots: [0.08, 0.08, 0.08, 1.0],
@@ -249,7 +245,7 @@ pub const INKWASH: ThiefLook = ThiefLook {
 
 /// Medieval stone keep-town: grey fieldstone, weathered oak-shingle roofs,
 /// granite setts, oxblood doors, torch-warm lamps. The period direction.
-pub const BASTION: ThiefLook = ThiefLook {
+pub const BASTION: Look = Look {
     name: "bastion",
     kit: Kit::Refined,
     roof_style: RoofStyle::Ridged,
@@ -275,7 +271,6 @@ pub const BASTION: ThiefLook = ThiefLook {
     lighting: [0.0, 5.2, 0.26, 0.45],
     coat_green: [0.12, 0.30, 0.14, 1.0],
     hood_green: [0.07, 0.17, 0.08, 1.0],
-    coat_brown: [0.32, 0.20, 0.10, 1.0],
     skin: [0.72, 0.56, 0.42, 1.0],
     legs: [0.24, 0.22, 0.19, 1.0],
     boots: [0.10, 0.08, 0.06, 1.0],
@@ -287,7 +282,7 @@ pub const BASTION: ThiefLook = ThiefLook {
 
 /// Desert kasbah: sun-baked adobe, flat earthen roofs, sandy lanes, saffron
 /// doors, linen-clad figures. Bright, dry, high-key daylight.
-pub const ADOBE: ThiefLook = ThiefLook {
+pub const ADOBE: Look = Look {
     name: "adobe",
     kit: Kit::Refined,
     roof_style: RoofStyle::FlatCap,
@@ -313,7 +308,6 @@ pub const ADOBE: ThiefLook = ThiefLook {
     lighting: [0.0, 6.5, 0.16, 0.4],
     coat_green: [0.13, 0.34, 0.16, 1.0],
     hood_green: [0.07, 0.19, 0.09, 1.0],
-    coat_brown: [0.40, 0.24, 0.12, 1.0],
     skin: [0.62, 0.45, 0.32, 1.0],
     legs: [0.75, 0.68, 0.55, 1.0],
     boots: [0.28, 0.18, 0.10, 1.0],
@@ -325,7 +319,7 @@ pub const ADOBE: ThiefLook = ThiefLook {
 
 /// Edo machiya lane: shoji-paper walls ruled by dark cedar posts, charcoal
 /// tile roofs, raked gravel, indigo noren doors, paper lanterns.
-pub const EDO: ThiefLook = ThiefLook {
+pub const EDO: Look = Look {
     name: "edo",
     kit: Kit::Refined,
     roof_style: RoofStyle::Ridged,
@@ -351,7 +345,6 @@ pub const EDO: ThiefLook = ThiefLook {
     lighting: [0.0, 5.6, 0.24, 0.45],
     coat_green: [0.10, 0.26, 0.13, 1.0],
     hood_green: [0.06, 0.14, 0.07, 1.0],
-    coat_brown: [0.30, 0.19, 0.10, 1.0],
     skin: [0.76, 0.60, 0.46, 1.0],
     legs: [0.16, 0.16, 0.18, 1.0],
     boots: [0.08, 0.08, 0.09, 1.0],
@@ -363,7 +356,7 @@ pub const EDO: ThiefLook = ThiefLook {
 
 /// Colony station: white resin panels with structural ribs, gunmetal seam
 /// roofs, deck-plate streets, safety-orange livery, cool white light.
-pub const SCIFI: ThiefLook = ThiefLook {
+pub const SCIFI: Look = Look {
     name: "scifi",
     kit: Kit::Refined,
     roof_style: RoofStyle::Ridged,
@@ -389,7 +382,6 @@ pub const SCIFI: ThiefLook = ThiefLook {
     lighting: [0.0, 6.0, 0.14, 0.5],
     coat_green: [0.10, 0.36, 0.18, 1.0],
     hood_green: [0.06, 0.20, 0.10, 1.0],
-    coat_brown: [0.34, 0.22, 0.12, 1.0],
     skin: [0.72, 0.56, 0.44, 1.0],
     legs: [0.55, 0.58, 0.62, 1.0],
     boots: [0.20, 0.22, 0.25, 1.0],
@@ -401,7 +393,7 @@ pub const SCIFI: ThiefLook = ThiefLook {
 
 /// Cyberpunk backstreet: wet asphalt, raw concrete, cold cyan tube-light,
 /// magenta livery stripes, cyan doors, techwear figures.
-pub const NEON: ThiefLook = ThiefLook {
+pub const NEON: Look = Look {
     name: "neon",
     kit: Kit::Refined,
     roof_style: RoofStyle::FlatCap,
@@ -427,7 +419,6 @@ pub const NEON: ThiefLook = ThiefLook {
     lighting: [0.0, 3.8, 0.36, 0.55],
     coat_green: [0.07, 0.24, 0.12, 1.0],
     hood_green: [0.04, 0.13, 0.06, 1.0],
-    coat_brown: [0.22, 0.13, 0.07, 1.0],
     skin: [0.60, 0.46, 0.36, 1.0],
     legs: [0.12, 0.12, 0.14, 1.0],
     boots: [0.06, 0.06, 0.07, 1.0],
@@ -437,15 +428,15 @@ pub const NEON: ThiefLook = ThiefLook {
     civ_coat: [0.28, 0.22, 0.26, 1.0],
 };
 
-pub static LOOKS: &[&ThiefLook] = &[&CLASSIC, &GASLIGHT, &TIMBERED, &INKWASH, &BASTION, &ADOBE, &EDO, &SCIFI, &NEON];
+pub static LOOKS: &[&Look] = &[&CLASSIC, &GASLIGHT, &TIMBERED, &INKWASH, &BASTION, &ADOBE, &EDO, &SCIFI, &NEON];
 
-pub fn by_name(name: &str) -> Option<&'static ThiefLook> {
+pub fn by_name(name: &str) -> Option<&'static Look> {
     LOOKS.iter().find(|l| l.name == name).copied()
 }
 
 /// Resolve `LOOK` from the environment (default: scifi — the picked
-/// direction, and the look the thief golden renders).
-pub fn from_env() -> &'static ThiefLook {
+/// direction).
+pub fn from_env() -> &'static Look {
     match std::env::var("LOOK") {
         Ok(name) => by_name(&name).unwrap_or_else(|| {
             eprintln!("LOOK={name}: unknown preset (classic gaslight timbered inkwash bastion adobe edo scifi neon) — using scifi");
