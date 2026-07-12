@@ -95,8 +95,8 @@ pub const POLANA: Look = Look {
     street: 0x74b048,
     street_alt: Some(0x6ca343),
     room_floor: 0xf0ede5,
-    wall: 0xf8f6f2,
-    roof: 0xe9e6df,
+    wall: 0xfbf9f5,
+    roof: 0xf1efe9,
     window: Some(0x60666c), // smoked-glass TRANSMISSION tint (~13% linear)
     grass: Some([0x5f9c3a, 0x82c455, 0x4c8a30]),
     lamp_post: [0.32, 0.32, 0.31, 1.0],
@@ -104,15 +104,22 @@ pub const POLANA: Look = Look {
     lamp_glow: [5.5, 3.8, 1.6, 1.0],
     lamp_tint: [1.0, 0.72, 0.35], // amber
     lamp_scale: 0.9,
-    lighting: [0.72, 4.6, 0.03, 0.5],
+    lighting: [0.80, 4.6, 0.03, 0.5],
     sun: SunSky {
-        sun_dir: [0.55, 0.66, 0.35],        // late morning, soft mid shadows
+        // late morning, soft mid shadows. Azimuth balanced toward the SOUTH
+        // (the long facades the trimetric camera actually sees) so the clean
+        // warm-white key — not the green bounce — paints the porcelain, and
+        // shadows pool toward the camera (owner 2026-07-12: walls must read
+        // white, not gray-green).
+        sun_dir: [0.45, 0.62, 0.55],
         sun_rgb: [1.0, 0.96, 0.87],         // clean warm-white key
-        horizon_rgb: [0.86, 0.92, 1.0],
+        horizon_rgb: [1.04, 1.0, 0.94],     // warm-white haze: the camera-side
+        // facades are SHADE-side — horizon light is what paints them, so it
+        // must read porcelain, not blue-gray (owner 2026-07-12)
         zenith_rgb: [0.28, 0.55, 1.0],      // the big błękit
         ground_rgb: [0.8, 1.25, 0.42],      // the lush field keeps rolling
     },
-    style: StyleCfg { sat: 1.5, contrast: 1.1, ..StyleCfg::CLEAN },
+    style: StyleCfg { sat: 1.42, contrast: 1.1, ..StyleCfg::CLEAN },
     exposure: 0.43,
     spec: 0.12, // the ceramic sheen…
     gloss: 0.9,
