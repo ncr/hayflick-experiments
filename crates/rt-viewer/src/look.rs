@@ -278,6 +278,35 @@ pub const SCIFI: Look = Look {
     boots: [0.20, 0.22, 0.25, 1.0],
 };
 
+/// The concept paintings (docs/concepts/, owner directive 2026-07-12): one
+/// white concrete monolith in a golden field, warm low sun, long soft
+/// shadows, dark window slots as the only facade rhythm. The first joyful
+/// Faza-1 candidate — sun ON (every older look is lamp/sky only).
+pub const TECTA: Look = Look {
+    name: "tecta",
+    roof_style: RoofStyle::FlatCap,
+    street: 0xc9a95e,
+    street_alt: Some(0xbf9f55),
+    room_floor: 0xe8dcbe,
+    wall: 0xf2efe6,
+    roof: 0xcfc8b8,
+    roof_trim: 0xcfc8b8,
+    fascia: None,
+    timber: Some(0x35322c), // the tecta window-slot rhythm, as dark posts
+    plinth: Some(0xa89f8e),
+    lamp_post: [0.22, 0.21, 0.19, 1.0],
+    lamp_head: [0.55, 0.50, 0.40, 1.0],
+    lamp_glow: [5.0, 4.2, 2.8, 1.0],
+    lamp_tint: [1.0, 0.85, 0.62],
+    lamp_scale: 0.9,
+    lighting: [0.6, 4.2, 0.08, 0.45], // SUN on — the golden-hour key light
+    coat: [0.10, 0.34, 0.16, 1.0],
+    hood: [0.06, 0.19, 0.09, 1.0],
+    skin: [0.74, 0.58, 0.45, 1.0],
+    legs: [0.30, 0.27, 0.22, 1.0],
+    boots: [0.13, 0.11, 0.08, 1.0],
+};
+
 /// Cyberpunk backstreet: wet asphalt, raw concrete, cold cyan tube-light,
 /// magenta livery stripes, techwear figure.
 pub const NEON: Look = Look {
@@ -305,7 +334,7 @@ pub const NEON: Look = Look {
     boots: [0.06, 0.06, 0.07, 1.0],
 };
 
-pub static LOOKS: &[&Look] = &[&CLASSIC, &GASLIGHT, &TIMBERED, &INKWASH, &BASTION, &ADOBE, &EDO, &SCIFI, &NEON];
+pub static LOOKS: &[&Look] = &[&CLASSIC, &GASLIGHT, &TIMBERED, &INKWASH, &BASTION, &ADOBE, &EDO, &SCIFI, &TECTA, &NEON];
 
 pub fn by_name(name: &str) -> Option<&'static Look> {
     LOOKS.iter().find(|l| l.name == name).copied()
@@ -316,7 +345,7 @@ pub fn by_name(name: &str) -> Option<&'static Look> {
 pub fn from_env() -> &'static Look {
     match std::env::var("LOOK") {
         Ok(name) => by_name(&name).unwrap_or_else(|| {
-            eprintln!("LOOK={name}: unknown preset (classic gaslight timbered inkwash bastion adobe edo scifi neon) — using scifi");
+            eprintln!("LOOK={name}: unknown preset (classic gaslight timbered inkwash bastion adobe edo scifi tecta neon) — using scifi");
             &SCIFI
         }),
         Err(_) => &SCIFI,
