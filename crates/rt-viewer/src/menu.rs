@@ -34,6 +34,9 @@ pub struct MenuItem {
 }
 
 pub const MENU: &[MenuItem] = &[
+    // projection-as-data (Faza 1a): the preset index in iso_core::presets();
+    // `max` must stay presets().len() - 1 (pinned by the test below)
+    MenuItem { key: "proj", label: "projection", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },
     MenuItem { key: "exposure", label: "exposure", kind: ItemKind::Slider { min: 0.01, max: 4.0, step: 0.01 } },
     MenuItem { key: "lights", label: "lamps", kind: ItemKind::Toggle },
     MenuItem { key: "ao", label: "ao strength", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
@@ -135,10 +138,13 @@ pub(crate) fn mtext(canvas: &mut [u32], cw: i32, x: i32, y: i32, s: &str, color:
     }
 }
 
-/// Slider value as shown in the menu (pattern slider shows names).
+/// Slider value as shown in the menu (pattern/preset sliders show names).
 fn fmt_val(key: &str, v: f32, step: f32) -> String {
     if key == "dither" {
         return ["off", "bay8", "bay4", "bay2", "ign", "white"].get(v as usize).copied().unwrap_or("?").to_string();
+    }
+    if key == "proj" {
+        return iso_core::presets().get(v as usize).map(|p| p.name).unwrap_or("?").to_string();
     }
     if step >= 1.0 {
         format!("{v:.0}")
@@ -177,6 +183,7 @@ impl Viewer {
 
     pub fn tune_get(&self, key: &str) -> f32 {
         match key {
+            "proj" => iso_core::presets().iter().position(|p| p.name == self.proj.name).unwrap_or(0) as f32,
             "ao" => self.ao,
             "ao_r" => self.ao_r,
             "ao_n" => self.ao_n as f32,
@@ -193,6 +200,18 @@ impl Viewer {
 
     pub fn tune_set(&mut self, key: &str, v: f32) {
         match key {
+            // switching the projection re-derives the whole camera from the
+            // preset's data; the look-at target must land on the NEW preset's
+            // pixel lattice or the first frame renders off-grid
+            "proj" => {
+                if let Some(p) = iso_core::presets().get(v as usize) {
+                    if self.proj != *p {
+                        self.proj = *p;
+                        self.view.move_accum = glam::Vec2::ZERO;
+                        self.snap_target_to_lattice();
+                    }
+                }
+            }
             "ao" => self.ao = v,
             "ao_r" => self.ao_r = v,
             "ao_n" => self.ao_n = v as i32,
@@ -507,5 +526,25 @@ impl Viewer {
         let fy = MPAD + MROW * (1 + MENU.len() as i32) + 2;
         mtext(&mut c, w, MLABEL_X, fy, "esc close+log  arrows/drag", 0x707078);
         (c, w, h)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The projection slider's range is authored as a literal (MENU is const);
+    /// it must track iso_core::presets() or the menu can't reach a preset.
+    #[test]
+    fn proj_slider_covers_every_preset() {
+        let item = MENU.iter().find(|i| i.key == "proj").expect("projection row");
+        let ItemKind::Slider { min, max, step } = item.kind else { panic!("proj must be a slider") };
+        assert_eq!(min, 0.0);
+        assert_eq!(step, 1.0);
+        assert_eq!(max as usize + 1, iso_core::presets().len(), "MENU proj max must be presets().len() - 1");
+        // every index formats to its preset name (the owner-facing labels)
+        for (i, p) in iso_core::presets().iter().enumerate() {
+            assert_eq!(fmt_val("proj", i as f32, 1.0), p.name);
+        }
     }
 }

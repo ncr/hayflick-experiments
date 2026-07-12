@@ -82,7 +82,6 @@ pub fn collide_and_slide(blocked: impl Fn(f32, f32) -> bool, ox: f32, oz: f32, d
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iso_core::{iso_basis, screen_px_to_world, ISO_R};
 
     #[test]
     fn level_blocks_outside_floor_and_inside_solids() {
@@ -115,13 +114,14 @@ mod tests {
 
     #[test]
     fn diagonal_input_traces_2to1_screen_stair_through_the_basis() {
-        // iso_input_dir + the pixel basis must reproduce the engine's screen
-        // rates: up+right = (2/sqrt5 right, 1/sqrt5 up) px per unit time.
+        // iso_input_dir + the iso21 pixel basis must reproduce the engine's
+        // screen rates: up+right = (2/sqrt5 right, 1/sqrt5 up) px per unit time.
+        let proj = iso_core::iso21();
         let dir = iso_input_dir(1.0, 1.0).unwrap();
-        let w = screen_px_to_world(dir, 0.0);
-        let (_d, right, up) = iso_basis(0.0);
-        let sx = w.dot(right) * ISO_R;
-        let sy = -w.dot(up) * ISO_R; // screen down
+        let w = proj.screen_px_to_world(dir, 0.0);
+        let (_d, right, up) = proj.basis(0.0);
+        let sx = w.dot(right) * proj.s;
+        let sy = -w.dot(up) * proj.s; // screen down
         assert!((sx - 2.0 / 5.0_f32.sqrt()).abs() < 1e-4, "a-rate {sx}");
         assert!((sy + 1.0 / 5.0_f32.sqrt()).abs() < 1e-4, "b-rate {sy}");
         assert!((sx / -sy - 2.0).abs() < 1e-3); // the 2:1 stair

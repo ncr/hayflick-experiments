@@ -15,7 +15,7 @@ use crate::gym_loop::GymLoop;
 use crate::menu::MenuState;
 use crate::view::ViewState;
 use glam::{Mat4, Vec2, Vec3};
-use iso_core::{clamp_pan, iso_camera_at, snap_ground_to_lattice};
+use iso_core::{clamp_pan, Projection};
 use rt_probe::*;
 use winit::window::Window;
 
@@ -33,6 +33,27 @@ pub fn shot_sim_dt(shot: bool, dt: f32) -> f32 {
 pub const ZOOM_MIN: f32 = 1.0;
 pub const ZOOM_MAX: f32 = 4.0; // web game-studio: zoomMin 1, zoomMax 4, zoomStep 1
 
+/// Resolve `PROJ` from the environment (shell-only read, like LOOK/AUDIO):
+/// a preset name (`iso21`, `trimetric`) or its menu index — the ESC menu's
+/// env string prints the index. Default: trimetric — THE game projection
+/// (owner pick, 2026-07-12); iso21 stays in the menu as the A/B reference.
+pub fn proj_from_env() -> Projection {
+    let default = iso_core::by_name("trimetric").expect("trimetric preset");
+    match std::env::var("PROJ") {
+        Ok(v) => v
+            .parse::<usize>()
+            .ok()
+            .and_then(|i| iso_core::presets().get(i).copied())
+            .or_else(|| iso_core::by_name(&v))
+            .unwrap_or_else(|| {
+                let names: Vec<&str> = iso_core::presets().iter().map(|p| p.name).collect();
+                eprintln!("PROJ={v}: unknown preset ({}) — using {}", names.join(" "), default.name);
+                default
+            }),
+        Err(_) => default,
+    }
+}
+
 pub struct Viewer {
     // ---- scene + GPU backend
     pub scene: Scene,
@@ -49,6 +70,10 @@ pub struct Viewer {
     /// emission build, indirect via the probe-bank lerp).
     pub lights_dim: f32,
     pub debug: i32,
+    /// The active projection preset (projection-as-data, Faza 1a): seeds the
+    /// camera, the lattice snapping, picks and the tonemap projection rows.
+    /// The ESC settings menu switches it live; PROJ env seeds it.
+    pub proj: Projection,
     // ---- grouped state
     pub view: ViewState,
     /// The gym sim loop — THE game loop (docs/VISION.md Faza 0).
@@ -123,6 +148,7 @@ impl Viewer {
             backend,
             light_keys,
             audio,
+            proj: proj_from_env(),
             exposure: cfg.render.exposure,
             style: cfg.render.style,
             ao: cfg.render.ao,
@@ -177,7 +203,7 @@ impl Viewer {
         // optional camera look-at override (world units), for framing captures
         if r.cfg.game.target.0.is_some() || r.cfg.game.target.1.is_some() {
             let t = Vec3::new(r.cfg.game.target.0.unwrap_or(r.view.target.x), 0.0, r.cfg.game.target.1.unwrap_or(r.view.target.z));
-            r.view.target = snap_ground_to_lattice(t, r.yaw_deg());
+            r.view.target = r.proj.snap_ground_to_lattice(t, r.yaw_deg());
         }
         // CMDS replay prefix (deterministic) — runs LAST so the trace acts on
         // the fully seeded state.
@@ -256,9 +282,9 @@ impl Viewer {
         // captures (returns the down-blit target size when it should)
         let capture_req = self.prepare_capture();
 
-        // camera: ISO_VIEW_CONTRACT at the movable look-at target
+        // camera: the active projection preset at the movable look-at target
         let (low_w, low_h) = self.backend.low_dims();
-        let cam = iso_camera_at(self.scene.min, self.scene.max, low_w, low_h, self.yaw_deg(), self.view.target);
+        let cam = self.proj.camera_at(self.scene.min, self.scene.max, low_w, low_h, self.yaw_deg(), self.view.target);
 
         // This frame's scene state, typed — built from the gym SNAPSHOT:
         // nothing below reads sim internals, only what the snapshot publishes.
@@ -297,6 +323,7 @@ impl Viewer {
             pan: self.view.pan,
             target: self.view.target,
             yaw_deg: self.yaw_deg(),
+            proj: self.proj,
             zoom: self.view.zoom,
             ao: self.ao,
             ao_r: self.ao_r,

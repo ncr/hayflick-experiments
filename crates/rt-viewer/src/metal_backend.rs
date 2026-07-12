@@ -18,7 +18,6 @@ use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_orig
 use crate::capture::subsample_rgba;
 use core_graphics_types::geometry::CGSize;
 use glam::Mat4;
-use iso_core::ISO_R;
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, scan_lights, LightScan};
 use rt_probe::scene::{LoadedImage, Material, Vertex};
@@ -535,7 +534,7 @@ impl RenderBackend for MetalBackend {
             layer.set_drawable_size(CGSize { width: ext_w as f64, height: ext_h as f64 });
         }
         self.target = Some(MetalTarget { low_w, low_h, ext_w, ext_h, menu_scale, radiance, albedo, pos, out_tex, cap_size: None, pending_capture: None });
-        println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2}) (metal)", if self.layer.is_some() { "layer" } else { "offscreen" }, ext_w, ext_h, low_w, low_h, self.base_scale, ISO_R);
+        println!("{} {}x{}  low-res {}x{} @ baseScale x{} (metal)", if self.layer.is_some() { "layer" } else { "offscreen" }, ext_w, ext_h, low_w, low_h, self.base_scale);
     }
 
     unsafe fn wait_idle(&self) {
@@ -597,7 +596,7 @@ impl RenderBackend for MetalBackend {
             misc3: [rt_probe::render::cut16(fp.cut_y), rt_probe::render::cut16(fp.wall_cut), 0, 0],
         };
         let rs = self.rs(fp.zoom);
-        let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
+        let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, &fp.proj, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
 
         // ---- shade + tonemap in one command buffer (waited inline)
         {

@@ -10,7 +10,7 @@
 //! below. No Vulkan/Metal type ever appears in `Viewer`.
 
 use glam::{Vec2, Vec3};
-use iso_core::{iso_basis, render_scale, ISO_R};
+use iso_core::{render_scale, Projection};
 use rt_probe::{Config, FrameState, Scene, SceneHandles, StyleCfg};
 use winit::window::Window;
 
@@ -43,6 +43,10 @@ pub struct FramePresent<'a> {
     pub pan: Vec2,
     pub target: Vec3,
     pub yaw_deg: f32,
+    /// The frame's projection preset (projection-as-data, Faza 1a) — the
+    /// backend feeds it to `build_tone_push` so the tonemap's outline
+    /// projection rows match the camera in `fs.cam`.
+    pub proj: Projection,
     pub zoom: f32,
     // shade tunables (ShadePush) — built post-record_frame so light_count is final
     pub ao: f32,
@@ -187,18 +191,18 @@ pub trait RenderBackend {
 /// projection-row / dither-world-phase math (and thus the pixel-perfect blit)
 /// is identical regardless of GPU. Mirrors the old `Renderer::draw` block.
 #[allow(clippy::too_many_arguments)]
-pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, pan: Vec2, target: Vec3, yaw_deg: f32, exposure: f32, style: &StyleCfg, frame: u32) -> TonePush {
+pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, pan: Vec2, target: Vec3, proj: &Projection, yaw_deg: f32, exposure: f32, style: &StyleCfg, frame: u32) -> TonePush {
     let pan = pan.round();
-    let (_cd, cright, cup) = iso_basis(yaw_deg);
-    let pa = cright * ISO_R;
-    let pb = -cup * ISO_R;
-    let off_x = -target.dot(cright) * ISO_R + low_w as f32 * 0.5 - 0.5;
-    let off_y = target.dot(cup) * ISO_R + low_h as f32 * 0.5 - 0.5;
+    let (_cd, cright, cup) = proj.basis(yaw_deg);
+    let pa = cright * proj.s;
+    let pb = -cup * proj.s;
+    let off_x = -target.dot(cright) * proj.s + low_w as f32 * 0.5 - 0.5;
+    let off_y = target.dot(cup) * proj.s + low_h as f32 * 0.5 - 0.5;
     // world-anchored dither/grain phase, quantised with round(x - 0.25): keeps
     // the pattern from slipping 1 px on odd/even window parities (see the long
     // comment in the old draw()).
-    let dphase_x = (-target.dot(cright) * ISO_R + low_w as f32 * 0.5 - 0.75).round();
-    let dphase_y = (target.dot(cup) * ISO_R + low_h as f32 * 0.5 - 0.75).round();
+    let dphase_x = (-target.dot(cright) * proj.s + low_w as f32 * 0.5 - 0.75).round();
+    let dphase_y = (target.dot(cup) * proj.s + low_h as f32 * 0.5 - 0.75).round();
     TonePush {
         dims: [low_w as i32, low_h as i32, ext_w as i32, ext_h as i32],
         cfg: [rs, pan.x as i32, pan.y as i32, 0],

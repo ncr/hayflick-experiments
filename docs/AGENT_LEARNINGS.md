@@ -390,3 +390,93 @@ indices on a bigger-than-usual scene = wall-clock watchdog, not a logic bug.
 Preventive checklist: any fixed GPU batch size is an implicit assumption
 about scene size — derive it from the actual per-item cost factors, and say
 which factors in a comment.
+
+## 2026-07-12 — replacing a trig-chain camera with an exact derivation flips FP-fragile seam pixels
+
+Context: Faza 1a replaced `iso_basis` (f32 sin/cos of yaw/pitch + cross +
+normalize) with `Projection::derive` (closed-form f64 solve from the two
+integer ground-axis pixel images, cast to f32 at the end). The iso21 preset
+is algebraically the SAME camera.
+
+Observation: the before/after gym SHOT still differed in 2544 px of 1.024M
+(0.25%). Diagnosis order that worked: (1) diff-mask image — scattered
+1–4 px speckles, all at geometry seam junctions, none in open gradients →
+not a framing/offset bug; (2) compare both bases at f32: `right`
+bit-identical, `dir`/`up` off by exactly 1 ulp on two components. A 1-ulp
+basis change moves every primary ray by ~1e-7 wu, which only matters for
+rays grazing world-lattice seam planes — the same FP-fragile population
+PIXEL_CENTER_TIE exists for. The f64-derived value is the MORE exact one.
+
+Rules:
+- An ulp-level camera change is indistinguishable from "no change" except
+  at seam-grazing pixels; expect ~0.1–0.3% speckle diff on greybox scenes
+  and read a diff MASK (structure vs speckle) before hunting bugs.
+- "All diffs are isolated speckles at silhouette/seam junctions" = FP
+  reclassification; "any diff forms lines/regions" = a real offset bug.
+- Byte goldens must be re-pinned after ANY basis-derivation change, even a
+  provably-more-exact one (they pin bit behaviour, not correctness).
+
+## 2026-07-12 — a rolled axonometric camera breaks wall verticals into stairs
+
+Context: the first `trimetric` preset copied the authentic Fallout floor
+lattice ((4,1)/(-4,3) primitive steps). Geometrically valid, derived
+cleanly — and the owner's first look at it: "pionowe ściany nie są pionowe,
+schodki na pionowych elementach".
+
+Root cause: that lattice implies ~3.7° camera ROLL (its ground images have
+`C = a1·b1 + a2·b2 ≠ 0`). Under roll the world Y axis projects to a
+slightly tilted screen line (x-extent `S·r̂y` px/wu ≈ -2.8), so every wall
+edge rasterizes as a ragged ~1:14 stair instead of one pixel column.
+Ground-axis stairs were fine — the failure lives ONLY on verticals, which
+is exactly where pixel-art eyes are least forgiving. (Fallout itself gets
+away with it because its art is pre-rendered sprites, not runtime rays.)
+
+Fix (by construction, not tuning): `Projection::derive` now REJECTS data
+with `C ≠ 0` — the wall contract "world-vertical projects screen-vertical"
+is a representability constraint, not a preset convention. The Fallout-
+spirit preset became (32,8)/(-16,16): X keeps the authentic 4:1 Fallout
+stair (14°), Z is a clean 1:1 diagonal, pitch exactly 30°, and BOTH ground
+axes get uniform stair runs (primitives (4,1)/(-1,1)).
+
+Rules:
+- For any axonometric preset, check `a1·b1 + a2·b2 = 0` FIRST. Nonzero =
+  roll = leaning verticals, regardless of how authentic the source lattice.
+- "Authentic reference projection" ≠ "valid pixel-art projection" — sprite
+  games can paint verticals vertical under a rolled camera; a renderer
+  cannot.
+- Prefer primitive stair vectors of the (n,1) form on ground axes: uniform
+  runs. Mixed-run primitives like (-4,3) read as "broken staircase" (see
+  the 2026-05-16 learning).
+
+## 2026-07-12 — coplanar faces of DIFFERENT colours strobe under camera motion
+
+Context: right after the 0.1-wu re-grid of the gym architecture, the owner
+reported white points flickering on the walls' narrow end faces during
+movement.
+
+Root cause: the re-grid made the timber-post half-width (0.1) equal to
+WALL_HT (0.1), so an end post's outer face became EXACTLY coplanar with
+the wall slab's end cap (before: 0.09375 vs 0.125 — 1/32 wu apart, no
+overlap). Two triangles in one plane give the ray query two hits at
+identical t; the winner is deterministic per exact ray but flips on
+sub-pixel camera motion — with a DARK post over a NEAR-WHITE wall
+(scifi), the losing colour strobes through as white pixels. The same
+mechanism (post top coplanar with wall top) had been producing the older
+"dark ragged junction" speckle all along.
+
+Diagnosis pattern that worked: deterministic DEMO dump → motion-
+compensated frame diff (align by integer camera shift, then threshold) →
+crop the hotspots and LOOK. First suspect (ROI stipple) was cleared in
+one experiment: identical flicker metric with ROI=0.
+
+Fix + the rule (gym_scene "COPLANARITY RULE" comment): dress geometry of
+a DIFFERENT colour must never share a face plane with its host — offset
+it by a whole lattice step, inward or outward (end posts now extend 0.1
+past the slab and swallow the end cap; post tops sit 0.0625 above the
+wall top; the plinth is strictly the proudest at the base). Same-colour
+coplanarity (rail vs posts) is benign — the winner is invisible.
+
+Checklist for any lattice/dimension change: after re-gridding, AUDIT for
+newly-equal offsets between touching boxes of different colours — every
+pair that lands on the same plane is a strobe. Equality that "looks
+tidy" in data (half-widths matching) is exactly the hazard.

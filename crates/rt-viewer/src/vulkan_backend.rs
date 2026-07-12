@@ -13,7 +13,6 @@ use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_orig
 use crate::capture::subsample_rgba;
 use crate::menu::{MENU_MARGIN, MPANEL_H, MPANEL_W};
 use ash::vk;
-use iso_core::ISO_R;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
@@ -352,7 +351,7 @@ impl VulkanBackend {
         };
 
         self.swap = Some(Swap { swapchain, extent, images, low_w, low_h, color, albedo, posg, out, menu_buf, stamp_buf, menu_scale, scene_pool, scene_set, tone_pool, tone_set, render_finished });
-        println!("{} {}x{}  low-res {}x{} @ baseScale x{} (R={:.2})", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale, ISO_R);
+        println!("{} {}x{}  low-res {}x{} @ baseScale x{}", if self.present.is_some() { "swapchain" } else { "offscreen" }, extent.width, extent.height, low_w, low_h, self.base_scale);
     }
 
     pub unsafe fn destroy_swap(&self, s: Swap) {

@@ -31,11 +31,13 @@ testable without a GPU. The game must run without the renderer.
                         #   gains: typed FrameState/SceneHandles/Spotlight surface (below)
                         #   sheds deps: winit, ash-window, raw-window-handle, font8x8 (move to rt-viewer)
   crates/
-    iso-core/           # pure-math leaf. deps: glam only. iso.rs verbatim + ViewXform,
-                        #   window_px_to_ground, window_px_to_ray unprojection. Plus two
-                        #   consts the inverse needs: PIXEL_CENTER_TIE (shade.comp's 1/64 px
-                        #   tie bias) and RAY_BACKOFF (fixed 64 wu pick-ray origin backoff —
-                        #   ViewXform carries no scene bounds; ground hits are independent).
+    iso-core/           # pure-math leaf. deps: glam only. Faza 1a: projection-as-data —
+                        #   `Projection` (two integer ground-axis pixel images -> derived
+                        #   camera basis/scale/pixel_basis/validator; presets iso21,
+                        #   trimetric) + ViewXform unprojection (window_px_to_ground/_ray).
+                        #   Plus two consts the inverse needs: PIXEL_CENTER_TIE (shade.comp's
+                        #   1/64 px tie bias) and RAY_BACKOFF (fixed 64 wu pick-ray origin
+                        #   backoff — ViewXform carries no scene bounds).
     sim-core/           # (B). deps: hecs, glam. Tick, FixedLoop (+ MAX_FRAME_DT = 0.1 s
                         #   clamp const), InputQueue<C>, Events<E>,
                         #   Pcg32, Simulation trait, Runner, AudioCue/AudioSink/VecSink/NullSink.

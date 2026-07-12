@@ -5,7 +5,7 @@
 
 use crate::viewer::{Viewer, ZOOM_MAX, ZOOM_MIN};
 use glam::{Vec2, Vec3};
-use iso_core::{iso_basis, window_px_to_ground, zoom_anchor_pan, ViewXform, ISO_R};
+use iso_core::{window_px_to_ground, zoom_anchor_pan, ViewXform};
 
 /// Interactive quarter-turn animation — the native mirror of the web
 /// `RotationAnimation` (`viewport-animation.ts`, framing preset): exponential
@@ -137,10 +137,10 @@ impl Viewer {
     }
 
     pub fn snap_target_for_yaw(&mut self, yaw_deg: f32) {
-        let (_d, right, up) = iso_basis(yaw_deg);
-        let px = self.view.target.dot(right) * ISO_R;
-        let py = self.view.target.dot(up) * ISO_R;
-        self.view.target += right * ((px.round() - px) / ISO_R) + up * ((py.round() - py) / ISO_R);
+        let (_d, right, up) = self.proj.basis(yaw_deg);
+        let px = self.view.target.dot(right) * self.proj.s;
+        let py = self.view.target.dot(up) * self.proj.s;
+        self.view.target += right * ((px.round() - px) / self.proj.s) + up * ((py.round() - py) / self.proj.s);
     }
 
     /// Re-aim the camera at `new_target`, snapped to the lattice.
@@ -175,7 +175,7 @@ impl Viewer {
     pub fn pick_xform(&self) -> ViewXform {
         let q = self.view.rot.as_ref().map(|r| r.target).unwrap_or(self.view.yaw_q as i32);
         let (low, vis) = self.low_and_vis();
-        ViewXform { target: self.view.target, yaw_off_deg: 90.0 * q as f32, pan: self.view.pan, render_scale: self.rs(), low, vis }
+        ViewXform { proj: self.proj, target: self.view.target, yaw_off_deg: 90.0 * q as f32, pan: self.view.pan, render_scale: self.rs(), low, vis }
     }
 
     /// LMB: unproject to the ground and hand the click to the gym loop's

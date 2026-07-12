@@ -18,6 +18,9 @@ zanim powstanie następna.
    - **słoneczny dzień** — ciepłe słońce, błękit nieba, długie miękkie cienie;
    - **biel + akcent** — czyste jasne powierzchnie, jeden ciepły akcent;
    - **cukierkowe pastele** — nasycona, wysokokluczowa, wielobarwna paleta.
+   Źródłem estetyki są pierwotne koncepty (dyrektywa ownera 2026-07-12):
+   **`docs/concepts/`** — biały monolit w złotym polu, golden hour, wielkie
+   niebo (patrz tamtejszy README). Decyzje wizualne rozstrzygamy ku nim.
    Kontur brył (outline w tonemap) to **składnik-knob** każdego looku, nie
    dominanta stylu. Pixel contract + RT/GI zostają — to jest tożsamość renderu.
 2. **Miodny player klasy AAA.** Masa, bezwładność, antycypacja — w animacji
@@ -75,11 +78,22 @@ tagi `archive/pre-joyful-reset` i `archive/town-testbed`. Nowe goldeny
 dopiero po fazie looku (na czas eksploracji gate golden zawieszony, testy
 headless obowiązują).
 
-**Faza 1 — projekcje + radosny look.** (a) projekcja-jako-dane + preset
-trimetryczny, przełączane z menu; (b) domknięcie wyglądu-jako-danych
+**Faza 1 — projekcje + radosny look.** (a) **DONE 2026-07-12; owner
+wybrał `trimetric` jako projekcję gry (domyślna).** Projekcja-jako-dane
+w `iso-core` (`Projection`: dwa całkowitoliczbowe wektory pikselowe →
+kamera/foreshortening/mapowanie inputu/walidator wyprowadzone, inwarianty
+z konstrukcji). `trimetric` = (40,10)/(-20,20): falloutowski schodek 4:1
+na osi X, czysta przekątna 1:1 na Z, pitch 30°, zero rolla (**kontrakt
+ścian**: pion świata rzutuje się na pion ekranu, wymuszone w derive) i
+S = 20√5 px/wu — w 1.2% od iso21, więc przełączanie porównuje kąt, nie
+zoom (skala = j=10 rodziny (4j,j)/(-2j,2j); j=8 było optycznie ~21%
+mniejsze). Architektura autorowana na siatce 0.1 wu (czysta krata
+trimetryka). `iso21` zostaje w menu jako referencja A/B; env `PROJ` dla
+harnessu. (b) domknięcie wyglądu-jako-danych
 (Look + StyleCfg — po czystce zostały już tylko te dwa — w jeden
 runtime'owo przełączany Look); (c) 3–5 kandydatów radosnego looku wg
-kotwic; playtest ownera; wybór; nowe goldeny.
+kotwic i `docs/concepts/` (pierwszy kandydat: `LOOK=tecta`); playtest
+ownera; wybór; nowe goldeny.
 
 **Faza 2 — miodny player.** Jeden continuous stack ruchu (koniec z
 grid-locked easingiem): collide-and-slide + pathfinding (A*/funnel +

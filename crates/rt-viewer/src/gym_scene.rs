@@ -2,11 +2,16 @@
 //! EDGES hold walls). The same grid drives sim collision and these visuals,
 //! so what blocks the walk blocks the eye — by construction.
 //!
-//! Greybox discipline (owner directive): colored boxes only, every XZ dim a
-//! multiple of 0.0625 wu. One grid cell = 1 wu. Wall slabs are 0.25 wu thick,
-//! centred on the shared edge; the building's roof is an occluding cap.
-//! Occlusion is the dollhouse WALLCUT: outdoors the building stands whole;
-//! indoors every occluder drops to sill height (`WALL_CUT_H`).
+//! Greybox discipline (owner directive): colored boxes only, one grid cell =
+//! 1 wu, ARCHITECTURE XZ dims on the 0.1-wu grid — the trimetric preset's
+//! clean-stair lattice (1/10 wu along X, 1/20 along Z; see
+//! `Projection::clean_xz`). No grid is clean under BOTH presets: tenths show
+//! mixed treads under the iso21 A/B reference — the game projection wins.
+//! The PLAYER body still sits on the legacy 1/16 lattice: it is animated
+//! (treads invisible in motion) and Faza 2 rebuilds it anyway. Wall slabs
+//! are 0.2 wu thick, centred on the shared edge; the building's roof is an
+//! occluding cap. Occlusion is the dollhouse WALLCUT: outdoors the building
+//! stands whole; indoors every occluder drops to sill height (`WALL_CUT_H`).
 //!
 //! The AESTHETIC is data: a [`Look`] preset (LOOK env, look.rs) supplies
 //! every colour, the lamp mood, the lighting env and the dress switches.
@@ -30,7 +35,7 @@ pub const WALL_TOP: f32 = 2.1875;
 pub const WALL_CUT_H: f32 = 1.0;
 
 const FLOOR_TOP: f32 = 6.0 / 128.0;
-const WALL_HT: f32 = 0.125; // wall half-thickness (0.25 wu slab)
+const WALL_HT: f32 = 0.1; // wall half-thickness (0.2 wu slab, on the 0.1 grid)
 const RAIL_Y: f32 = 1.8125; // half-timber rail height
 const ROOF_BASE: f32 = 2.375;
 const ROOF_TOP: f32 = 2.5;
@@ -129,16 +134,16 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
         // The conceptual light must have CLEAR AIR toward the ground: NEE
         // shadow rays see the fixture (a dynamic run), so the light hangs
         // UNDER the bracket-arm lantern, where a real luminaire emits.
-        scene.point_lights.push([c.x + 0.3125, 1.40625, c.z, 0.25, s * look.lamp_tint[0], s * look.lamp_tint[1], s * look.lamp_tint[2], 0.0]);
+        scene.point_lights.push([c.x + 0.3, 1.40625, c.z, 0.25, s * look.lamp_tint[0], s * look.lamp_tint[1], s * look.lamp_tint[2], 0.0]);
         scene.name_point_light(&format!("lamp_{i}"), scene.point_lights.len() - 1);
         let first = scene.primitives.len();
         // pedestal + slim post + bracket arm; the glowing lantern hangs off
-        // the arm with the light point just below it
-        scene.add_box_world(Vec3::new(c.x - 0.09375, FLOOR_TOP, c.z - 0.09375), Vec3::new(c.x + 0.09375, 0.25, c.z + 0.09375), look.lamp_post, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(c.x - 0.03125, 0.25, c.z - 0.03125), Vec3::new(c.x + 0.03125, 1.75, c.z + 0.03125), look.lamp_post, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(c.x, 1.6875, c.z - 0.03125), Vec3::new(c.x + 0.1875, 1.75, c.z + 0.03125), look.lamp_post, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(c.x + 0.21875, 1.5, c.z - 0.09375), Vec3::new(c.x + 0.40625, 1.6875, c.z + 0.09375), look.lamp_head, look.lamp_glow, 0.4, 0.0);
-        scene.add_box_world(Vec3::new(c.x + 0.1875, 1.6875, c.z - 0.125), Vec3::new(c.x + 0.4375, 1.75, c.z + 0.125), look.lamp_post, [0.0; 4], 0.6, 0.0);
+        // the arm with the light point just below it (XZ on the 0.1 grid)
+        scene.add_box_world(Vec3::new(c.x - 0.1, FLOOR_TOP, c.z - 0.1), Vec3::new(c.x + 0.1, 0.25, c.z + 0.1), look.lamp_post, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(c.x - 0.05, 0.25, c.z - 0.05), Vec3::new(c.x + 0.05, 1.75, c.z + 0.05), look.lamp_post, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(c.x, 1.6875, c.z - 0.05), Vec3::new(c.x + 0.2, 1.75, c.z + 0.05), look.lamp_post, [0.0; 4], 0.6, 0.0);
+        scene.add_box_world(Vec3::new(c.x + 0.2, 1.5, c.z - 0.1), Vec3::new(c.x + 0.4, 1.6875, c.z + 0.1), look.lamp_head, look.lamp_glow, 0.4, 0.0);
+        scene.add_box_world(Vec3::new(c.x + 0.15, 1.6875, c.z - 0.15), Vec3::new(c.x + 0.45, 1.75, c.z + 0.15), look.lamp_post, [0.0; 4], 0.6, 0.0);
         scene.register_dynamic(&format!("lamp_fix_{i}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
     }
 
@@ -174,28 +179,47 @@ fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, look: &Look) {
     let first = scene.primitives.len();
     scene.add_box_world(Vec3::new(rect[0], 0.0, rect[1]), Vec3::new(rect[2], WALL_TOP, rect[3]), hex_linear(look.wall), [0.0; 4], 0.85, 0.0);
     mark_occluder(scene, first);
+    // COPLANARITY RULE (2026-07-12 white-flicker post-mortem): dress with a
+    // DIFFERENT colour must never share a face plane with its host — offset
+    // by a whole lattice step, inward or outward. Two coplanar faces of
+    // different colours ray-z-fight: the per-pixel winner flips on sub-pixel
+    // camera motion and the losing colour strobes through. Same-colour
+    // coplanarity (rail vs post) is benign — the winner is invisible.
     if let Some(hexp) = look.plinth {
-        scene.add_box_world(Vec3::new(rect[0] - 0.0625, 0.0, rect[1] - 0.0625), Vec3::new(rect[2] + 0.0625, 0.1875, rect[3] + 0.0625), hex_linear(hexp), [0.0; 4], 0.85, 0.0);
+        // strictly the proudest thing at the base (±0.1 past the slab, one
+        // step past the posts' ±0.05); run ends stay at ±0.05 so the end
+        // caps tuck INSIDE the extended door posts, never flush with them
+        let (lo, hi) = if along_x {
+            (Vec3::new(rect[0] - 0.05, 0.0, rect[1] - 0.1), Vec3::new(rect[2] + 0.05, 0.1875, rect[3] + 0.1))
+        } else {
+            (Vec3::new(rect[0] - 0.1, 0.0, rect[1] - 0.05), Vec3::new(rect[2] + 0.1, 0.1875, rect[3] + 0.05))
+        };
+        scene.add_box_world(lo, hi, hex_linear(hexp), [0.0; 4], 0.85, 0.0);
     }
     if let Some(hext) = look.timber {
         let tc = hex_linear(hext);
-        // posts at every integer boundary along the run (both ends included)
+        // posts at every integer boundary along the run (both ends included);
+        // 0.0625 taller than the wall so the post top never fights the wall
+        // top; END posts extend one lattice step outward and swallow the
+        // slab's end cap whole (a doorframe / end frame read)
         let (a0, a1) = if along_x { (rect[0] + WALL_HT, rect[2] - WALL_HT) } else { (rect[1] + WALL_HT, rect[3] - WALL_HT) };
         let mut k = a0;
         while k <= a1 + 0.001 {
             let first = scene.primitives.len();
+            let ext0 = if k - 0.5 < a0 { 0.1 } else { 0.0 }; // first post of the run
+            let ext1 = if k + 0.5 > a1 { 0.1 } else { 0.0 }; // last post of the run
             let (lo, hi) = if along_x {
-                (Vec3::new(k - 0.09375, 0.0, rect[1] - 0.0625), Vec3::new(k + 0.09375, WALL_TOP, rect[3] + 0.0625))
+                (Vec3::new(k - 0.1 - ext0, 0.0, rect[1] - 0.05), Vec3::new(k + 0.1 + ext1, WALL_TOP + 0.0625, rect[3] + 0.05))
             } else {
-                (Vec3::new(rect[0] - 0.0625, 0.0, k - 0.09375), Vec3::new(rect[2] + 0.0625, WALL_TOP, k + 0.09375))
+                (Vec3::new(rect[0] - 0.05, 0.0, k - 0.1 - ext0), Vec3::new(rect[2] + 0.05, WALL_TOP + 0.0625, k + 0.1 + ext1))
             };
             scene.add_box_world(lo, hi, tc, [0.0; 4], 0.8, 0.0);
             mark_occluder(scene, first);
             k += 1.0;
         }
-        // rail spanning the whole run
+        // rail spanning the whole run (same colour as the posts it crosses)
         let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(rect[0] - 0.0625, RAIL_Y, rect[1] - 0.0625), Vec3::new(rect[2] + 0.0625, RAIL_Y + 0.09375, rect[3] + 0.0625), tc, [0.0; 4], 0.8, 0.0);
+        scene.add_box_world(Vec3::new(rect[0] - 0.05, RAIL_Y, rect[1] - 0.05), Vec3::new(rect[2] + 0.05, RAIL_Y + 0.09375, rect[3] + 0.05), tc, [0.0; 4], 0.8, 0.0);
         mark_occluder(scene, first);
     }
 }
@@ -205,18 +229,18 @@ fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, look: &Look) {
 fn roof_run(scene: &mut Scene, x0: f32, x1: f32, z: f32, look: &Look) {
     let rc = hex_linear(look.roof);
     let first = scene.primitives.len();
-    scene.add_box_world(Vec3::new(x0 - 0.25, ROOF_BASE, z), Vec3::new(x1 + 0.25, ROOF_TOP, z + 1.0), rc, [0.0; 4], 0.85, 0.0);
+    scene.add_box_world(Vec3::new(x0 - 0.3, ROOF_BASE, z), Vec3::new(x1 + 0.3, ROOF_TOP, z + 1.0), rc, [0.0; 4], 0.85, 0.0);
     mark_occluder(scene, first);
     if let Some(hexf) = look.fascia {
         // a slightly wider eave lip under the cap
         let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(x0 - 0.3125, ROOF_BASE - 0.0625, z), Vec3::new(x1 + 0.3125, ROOF_BASE, z + 1.0), hex_linear(hexf), [0.0; 4], 0.85, 0.0);
+        scene.add_box_world(Vec3::new(x0 - 0.4, ROOF_BASE - 0.0625, z), Vec3::new(x1 + 0.4, ROOF_BASE, z + 1.0), hex_linear(hexf), [0.0; 4], 0.85, 0.0);
         mark_occluder(scene, first);
     }
     if look.roof_style == RoofStyle::Ridged {
         // a raised ridge strip per row — standing seams / tiled ridges
         let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(x0 - 0.125, ROOF_TOP, z + 0.25), Vec3::new(x1 + 0.125, ROOF_TOP + 0.09375, z + 0.75), hex_linear(look.roof_trim), [0.0; 4], 0.85, 0.0);
+        scene.add_box_world(Vec3::new(x0 - 0.1, ROOF_TOP, z + 0.25), Vec3::new(x1 + 0.1, ROOF_TOP + 0.09375, z + 0.75), hex_linear(look.roof_trim), [0.0; 4], 0.85, 0.0);
         mark_occluder(scene, first);
     }
 }
