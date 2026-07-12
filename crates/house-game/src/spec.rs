@@ -269,6 +269,12 @@ pub struct LevelSpec {
     /// no trailing newborns). Default false; no shipped gameplay level sets
     /// it, so ordinary levels (and every hash oracle) are untouched.
     pub sterile: bool,
+    /// The tiny-world tile BOARD (the Larceny pivot — see `crate::board`).
+    /// `None` on every pre-board level: nothing new spawns, hashes, or
+    /// renders (the `survival` opt-in discipline). `Some` levels derive
+    /// their collision solids FROM the board and the renderer draws the
+    /// per-tile diorama instead of the room/wall greybox.
+    pub board: Option<crate::board::BoardSpec>,
     pub player_start: Vec3,
     pub seed: u64,
 }
@@ -332,6 +338,7 @@ pub fn fixture() -> LevelSpec {
         drain: None,
         low_solids: Vec::new(),
         sterile: false,
+        board: None,
         player_start: Vec3::new(-3.5, 0.0, 0.0),
         seed: 42,
     }
@@ -426,6 +433,7 @@ pub fn game_level() -> LevelSpec {
         drain: None,
         low_solids: Vec::new(),
         sterile: false,
+        board: None,
         player_start: Vec3::new(9.5, 0.0, 6.5), // room E (SE corner, faces the camera), aligned with door_ce's gap row
         seed: 7,
     }

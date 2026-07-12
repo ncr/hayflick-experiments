@@ -19,6 +19,7 @@
 //! never reshuffles into the point-light tail.
 
 use glam::{Mat4, Vec3};
+use house_game::board::{BoardSpec, TileKind, D_POOR, D_RICH};
 use house_game::{DoorSpec, LevelSpec, LightKind, LightSpec, TargetSpec};
 use rt_probe::{hex_linear, Config, Scene};
 
@@ -132,6 +133,15 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // (see `scene.lighting` below) since it is an open street, not a dungeon.
     let dollhouse = crate::scene_registry::is_dollhouse(&cfg.scene);
     let wall_hex = if dollhouse { WALL_STONE } else { WALL_INNER };
+
+    // ---- tiny-world BOARD scenes (the Larceny pivot): per-tile floors +
+    // box-built miniatures replace the room/wall greybox entirely. No
+    // perimeter walls — the diorama just ends at the board edge — and the
+    // spec's board-derived solids already carry collision, so the generic
+    // floor/perimeter/solid passes below are skipped wholesale.
+    if let Some(board) = &spec.board {
+        build_board(&mut scene, board);
+    } else {
 
     // ---- floors: one quad per room in its own pastel tint (cave corridors get
     // the neutral stone tint); the room order is the spec order so the palette
@@ -252,6 +262,8 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
         mark_occluder(&mut scene, first);
     }
 
+    } // end !board (the generic room/wall greybox path)
+
     // ---- L4 low cover: authored knee-high masonry (GOO_CHUNK_H, the chunk
     // band) — crisp warm-gray blocks the player shoots OVER and the goo must
     // flow around. Sim collision comes from spec.low_solids seeding
@@ -293,7 +305,11 @@ pub fn build_game(spec: &LevelSpec, cfg: &Config) -> Scene {
     // One named dynamic run ("player"), translated per frame exactly like the
     // old single-box marker.
     let pfirst = scene.primitives.len();
-    build_player_body(&mut scene);
+    if spec.board.is_some() {
+        build_human_body(&mut scene); // the Larceny thief — humans on the board
+    } else {
+        build_player_body(&mut scene);
+    }
     scene.register_dynamic("player", pfirst, scene.primitives.len() - pfirst, Mat4::from_translation(Vec3::new(spec.player_start.x, FLOOR_TOP, spec.player_start.z)));
 
     // ---- weapon ring (arena only): one gun model per arsenal slot, all
@@ -604,6 +620,209 @@ fn place_trap_ring(scene: &mut Scene, cx: f32, cz: f32, r: f32) {
     scene.register_dynamic(&format!("trap_ring_{cx}_{cz}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
 }
 
+// ---- tiny-world board (the Larceny hamlet) ---------------------------------
+// One tile = 1 wu² = one whole building — an Into-the-Breach diorama. Every
+// prop is an axis-aligned coloured box whose XZ offsets/dims are multiples of
+// 0.0625 wu (invariant #8; pinned by `board_props_are_iso_stair_aligned`).
+// Heights are exempt (Y always projects fractional). District keys the house
+// palette so poor/market/rich quarters read at a glance.
+
+// ground tints (sRGB hex), two per kind for the subtle (x+z) checker that
+// makes the tile grid read like a board.
+const B_GRASS: [u32; 2] = [0x9ccb72, 0x94c36b];
+const B_FOREST_FLOOR: [u32; 2] = [0x83b061, 0x7ba95a];
+const B_ROAD: [u32; 2] = [0xd0b98d, 0xc7b085];
+const B_PLAZA: [u32; 2] = [0xd8d2c2, 0xd0cab9];
+const B_FIELD: [u32; 2] = [0xe3c977, 0xdbc06d];
+const B_WATER: [u32; 2] = [0x7fb7d9, 0x79b1d3];
+const B_YARD: [u32; 2] = [0xb9a67e, 0xb29f78]; // dirt apron under buildings
+const B_CROP: u32 = 0xc9a94f;
+const B_HEDGE: u32 = 0x5f9350;
+const B_TRUNK: u32 = 0x8a6a4a;
+const B_CANOPY: [u32; 2] = [0x639e52, 0x578f49];
+const B_STONE: u32 = 0xb8b5ad;
+const B_STONE_DARK: u32 = 0x6e6a61;
+const B_AWNING: u32 = 0xd9583b; // the shop's coral accent (door-colour family)
+const B_CRATE: u32 = 0xa08c6a;
+// (body, roof) per district family
+const B_HOUSE_POOR: (u32, u32) = (0xcfc0a5, 0x8d7b66);
+const B_HOUSE_MARKET: (u32, u32) = (0xe8dfc8, 0xc26d4f);
+const B_HOUSE_RICH: (u32, u32) = (0xf1ecdd, 0x4f7d86);
+const B_SHACK: (u32, u32) = (0x7a6a52, 0x55604a);
+
+/// A matte coloured box from explicit XZ + Y spans (the board prop primitive).
+#[allow(clippy::too_many_arguments)] // private helper; the args ARE the box
+fn bbox(scene: &mut Scene, x0: f32, z0: f32, x1: f32, z1: f32, y0: f32, y1: f32, hex: u32) {
+    scene.add_box_world(Vec3::new(x0, y0, z0), Vec3::new(x1, y1, z1), hex_linear(hex), [0.0; 4], 0.85, 0.0);
+}
+
+/// Deterministic per-tile scramble for cosmetic variation (chimneys, tree
+/// layouts) — stateless, so the board renders identically every build.
+fn tile_hash(x: i32, z: i32) -> u32 {
+    let mut h = (x as u32).wrapping_mul(0x9E37_79B9) ^ (z as u32).wrapping_mul(0x85EB_CA6B) ^ 0x5EED;
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xC2B2_AE35);
+    h ^ (h >> 16)
+}
+
+/// Build the whole board: one floor quad per tile (checker-tinted by kind)
+/// plus the miniature prop for solid tiles. Collision is NOT built here — the
+/// spec's board-derived `static_solids` carry it (one source of truth).
+fn build_board(scene: &mut Scene, board: &BoardSpec) {
+    for z in 0..board.h {
+        for x in 0..board.w {
+            let k = board.kind(x, z).unwrap();
+            let d = board.district_at(x, z);
+            let (tx, tz) = (x as f32, z as f32);
+            let ck = ((x + z) & 1) as usize;
+            let th = tile_hash(x, z);
+            let ground = match k {
+                TileKind::Grass | TileKind::Hedge => B_GRASS[ck],
+                TileKind::Road | TileKind::Gate => B_ROAD[ck],
+                TileKind::Plaza => B_PLAZA[ck],
+                TileKind::Field => B_FIELD[ck],
+                TileKind::Forest => B_FOREST_FLOOR[ck],
+                TileKind::Water => B_WATER[ck],
+                TileKind::Well => B_PLAZA[ck], // the square's paving runs under it
+                _ => B_YARD[ck], // buildings sit on a dirt apron
+            };
+            scene.add_floor(tx, tx + 1.0, tz, tz + 1.0, FLOOR_TOP, hex_linear(ground));
+            match k {
+                TileKind::House => prop_house(scene, tx, tz, d, th),
+                TileKind::Manor => prop_manor(scene, tx, tz),
+                TileKind::Shop => prop_shop(scene, tx, tz),
+                TileKind::Guardhouse => prop_guardhouse(scene, tx, tz),
+                TileKind::FenceShack => prop_fence_shack(scene, tx, tz),
+                TileKind::Well => prop_well(scene, tx, tz),
+                TileKind::Hedge => bbox(scene, tx + 0.0625, tz + 0.0625, tx + 0.9375, tz + 0.9375, 0.0, 0.5, B_HEDGE),
+                TileKind::Gate => prop_gate(scene, board, x, z),
+                TileKind::Forest => prop_trees(scene, tx, tz, th),
+                TileKind::Field => prop_crops(scene, tx, tz),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A one-tile house. District picks the family: POOR = squat tan hovel with a
+/// flat roof; RICH = taller cream walls under a slate-teal roof; everything
+/// else = the market family (plaster + terracotta). A third of the market and
+/// rich houses grow a chimney off the tile hash.
+fn prop_house(scene: &mut Scene, tx: f32, tz: f32, district: u8, th: u32) {
+    let (body, roof) = match district {
+        D_POOR => B_HOUSE_POOR,
+        D_RICH => B_HOUSE_RICH,
+        _ => B_HOUSE_MARKET,
+    };
+    if district == D_POOR {
+        bbox(scene, tx + 0.1875, tz + 0.1875, tx + 0.8125, tz + 0.8125, 0.0, 0.4375, body);
+        bbox(scene, tx + 0.125, tz + 0.125, tx + 0.875, tz + 0.875, 0.4375, 0.53125, roof);
+        return;
+    }
+    let h = if district == D_RICH { 0.6875 } else { 0.5625 };
+    bbox(scene, tx + 0.125, tz + 0.125, tx + 0.875, tz + 0.875, 0.0, h, body);
+    bbox(scene, tx + 0.0625, tz + 0.0625, tx + 0.9375, tz + 0.9375, h, h + 0.15625, roof);
+    if th % 3 == 0 {
+        bbox(scene, tx + 0.625, tz + 0.1875, tx + 0.75, tz + 0.3125, h + 0.15625, h + 0.375, B_STONE_DARK);
+    }
+}
+
+/// The manor: near-full-tile body, a two-tier roof, a chimney — the tallest
+/// house silhouette on the board (the rich quarter's prize).
+fn prop_manor(scene: &mut Scene, tx: f32, tz: f32) {
+    let (body, roof) = B_HOUSE_RICH;
+    bbox(scene, tx + 0.0625, tz + 0.0625, tx + 0.9375, tz + 0.9375, 0.0, 0.8125, body);
+    bbox(scene, tx, tz, tx + 1.0, tz + 1.0, 0.8125, 0.90625, roof);
+    bbox(scene, tx + 0.25, tz + 0.25, tx + 0.75, tz + 0.75, 0.90625, 1.0, roof);
+    bbox(scene, tx + 0.25, tz + 0.25, tx + 0.375, tz + 0.375, 1.0, 1.1875, B_STONE_DARK);
+}
+
+/// The shop: a market house wearing a coral awning over its street face.
+fn prop_shop(scene: &mut Scene, tx: f32, tz: f32) {
+    let (body, roof) = B_HOUSE_MARKET;
+    bbox(scene, tx + 0.125, tz + 0.125, tx + 0.875, tz + 0.875, 0.0, 0.5625, body);
+    bbox(scene, tx + 0.0625, tz + 0.0625, tx + 0.9375, tz + 0.9375, 0.5625, 0.71875, roof);
+    // awning: a thin slab sloping off the south (camera-facing) wall
+    bbox(scene, tx + 0.125, tz + 0.75, tx + 0.875, tz + 1.0, 0.46875, 0.53125, B_AWNING);
+}
+
+/// The guardhouse: a stone watchtower with a dark cap — the tallest structure
+/// on the board, and later the patrol's anchor.
+fn prop_guardhouse(scene: &mut Scene, tx: f32, tz: f32) {
+    bbox(scene, tx + 0.25, tz + 0.25, tx + 0.75, tz + 0.75, 0.0, 1.1875, B_STONE);
+    bbox(scene, tx + 0.1875, tz + 0.1875, tx + 0.8125, tz + 0.8125, 1.1875, 1.3125, B_STONE_DARK);
+}
+
+/// The fence's shack: a low mossy hut with a stray crate — deliberately the
+/// shabbiest building silhouette, hidden in the forest clearing.
+fn prop_fence_shack(scene: &mut Scene, tx: f32, tz: f32) {
+    let (body, roof) = B_SHACK;
+    bbox(scene, tx + 0.1875, tz + 0.1875, tx + 0.8125, tz + 0.8125, 0.0, 0.375, body);
+    bbox(scene, tx + 0.125, tz + 0.125, tx + 0.875, tz + 0.875, 0.375, 0.46875, roof);
+    bbox(scene, tx + 0.6875, tz + 0.75, tx + 0.9375, tz + 1.0, 0.0, 0.1875, B_CRATE);
+}
+
+/// The well: a stone ring, two posts, a little roof — the market square's
+/// centrepiece.
+fn prop_well(scene: &mut Scene, tx: f32, tz: f32) {
+    let (r0, r1, t) = (0.25, 0.75, 0.125);
+    bbox(scene, tx + r0, tz + r0, tx + r1, tz + r0 + t, 0.0, 0.25, B_STONE); // north ring bar
+    bbox(scene, tx + r0, tz + r1 - t, tx + r1, tz + r1, 0.0, 0.25, B_STONE); // south
+    bbox(scene, tx + r0, tz + r0 + t, tx + r0 + t, tz + r1 - t, 0.0, 0.25, B_STONE); // west
+    bbox(scene, tx + r1 - t, tz + r0 + t, tx + r1, tz + r1 - t, 0.0, 0.25, B_STONE); // east
+    bbox(scene, tx + 0.4375, tz + 0.25, tx + 0.5625, tz + 0.375, 0.0, 0.5625, B_TRUNK); // posts
+    bbox(scene, tx + 0.4375, tz + 0.625, tx + 0.5625, tz + 0.75, 0.0, 0.5625, B_TRUNK);
+    bbox(scene, tx + 0.3125, tz + 0.3125, tx + 0.6875, tz + 0.6875, 0.5625, 0.65625, B_HOUSE_MARKET.1);
+}
+
+/// A gate: two stone posts flanking the walkable gap, oriented along the
+/// hedge line they interrupt.
+fn prop_gate(scene: &mut Scene, board: &BoardSpec, x: i32, z: i32) {
+    let (tx, tz) = (x as f32, z as f32);
+    let horizontal = board.kind(x - 1, z) == Some(TileKind::Hedge) || board.kind(x + 1, z) == Some(TileKind::Hedge);
+    let post = |scene: &mut Scene, x0: f32, z0: f32| {
+        bbox(scene, x0, z0, x0 + 0.125, z0 + 0.25, 0.0, 0.6875, B_STONE);
+        bbox(scene, x0 - 0.0625, z0 - 0.0625, x0 + 0.1875, z0 + 0.3125, 0.6875, 0.78125, B_STONE_DARK);
+    };
+    if horizontal {
+        post(scene, tx, tz + 0.375);
+        post(scene, tx + 0.875, tz + 0.375);
+    } else {
+        let post_v = |scene: &mut Scene, z0: f32| {
+            bbox(scene, tx + 0.375, z0, tx + 0.625, z0 + 0.125, 0.0, 0.6875, B_STONE);
+            bbox(scene, tx + 0.3125, z0 - 0.0625, tx + 0.6875, z0 + 0.1875, 0.6875, 0.78125, B_STONE_DARK);
+        };
+        post_v(scene, tz);
+        post_v(scene, tz + 0.875);
+    }
+}
+
+/// A forest tile: one big + one small chunky tree, in one of three layouts
+/// picked by the tile hash so the woods never tile visibly.
+fn prop_trees(scene: &mut Scene, tx: f32, tz: f32, th: u32) {
+    let (big, small) = match th % 3 {
+        0 => ((0.1875, 0.1875), (0.5625, 0.5625)),
+        1 => ((0.4375, 0.125), (0.125, 0.5625)),
+        _ => ((0.3125, 0.375), (0.625, 0.0625)),
+    };
+    let tree = |scene: &mut Scene, ox: f32, oz: f32, canopy: f32, trunk_h: f32, canopy_h: f32, hex: u32| {
+        let cx = tx + ox + canopy * 0.5;
+        let cz = tz + oz + canopy * 0.5;
+        bbox(scene, cx - 0.0625, cz - 0.0625, cx + 0.0625, cz + 0.0625, 0.0, trunk_h, B_TRUNK);
+        bbox(scene, tx + ox, tz + oz, tx + ox + canopy, tz + oz + canopy, trunk_h - 0.0625, trunk_h - 0.0625 + canopy_h, hex);
+    };
+    tree(scene, big.0, big.1, 0.375, 0.375, 0.4375, B_CANOPY[(th & 1) as usize]);
+    tree(scene, small.0, small.1, 0.25, 0.25, 0.3125, B_CANOPY[((th >> 1) & 1) as usize]);
+}
+
+/// A field tile: three low crop rows over the golden ground.
+fn prop_crops(scene: &mut Scene, tx: f32, tz: f32) {
+    for i in 0..3 {
+        let z0 = tz + 0.125 + i as f32 * 0.3125;
+        bbox(scene, tx + 0.125, z0, tx + 0.875, z0 + 0.125, FLOOR_TOP, FLOOR_TOP + 0.09375, B_CROP);
+    }
+}
+
 // ---- player droid + weapon-ring geometry -----------------------------------
 // All parts are LOCAL-space boxes around the origin (feet at y=0), placed by
 // the per-frame "player"/"gun_N" instance transforms. XZ dims stay multiples
@@ -630,6 +849,26 @@ fn part(scene: &mut Scene, hx: f32, hz: f32, y0: f32, y1: f32, color: [f32; 4], 
 #[allow(clippy::too_many_arguments)] // private box helper; the args ARE the box
 fn gpart(scene: &mut Scene, hx: f32, y0: f32, y1: f32, z0: f32, z1: f32, color: [f32; 4], emissive: [f32; 4]) {
     scene.add_box_world(Vec3::new(-hx, y0, z0), Vec3::new(hx, y1, z1), color, emissive, 0.5, 0.0);
+}
+
+/// The BOARD protagonist — a human, not a droid (owner directive on the
+/// Larceny pivot): a hooded thief in rust leathers with the project-amber
+/// belt, ~1.0 wu tall so he reads person-sized against the one-tile houses.
+/// Axis-aligned like the droid (crisp iso silhouette); every XZ dim a
+/// 0.0625-wu multiple. Board scenes build HIM; every other scene keeps the
+/// warden droid below, so the golden-pinned game/replay frames never move.
+const H_SKIN: [f32; 4] = [0.82, 0.62, 0.47, 1.0];
+const H_TUNIC: [f32; 4] = [0.48, 0.23, 0.15, 1.0]; // rust leather
+const H_DARK: [f32; 4] = [0.26, 0.20, 0.13, 1.0]; // hood / boots
+const H_BELT: [f32; 4] = [0.72, 0.51, 0.16, 1.0]; // amber (matte, no glow)
+
+fn build_human_body(scene: &mut Scene) {
+    part(scene, 0.09375, 0.09375, 0.00, 0.375, H_DARK, [0.0; 4]); // boots + legs
+    part(scene, 0.15625, 0.125, 0.375, 0.6875, H_TUNIC, [0.0; 4]); // tunic torso
+    part(scene, 0.1875, 0.125, 0.375, 0.4375, H_BELT, [0.0; 4]); // belt, proud of the hips
+    part(scene, 0.09375, 0.09375, 0.6875, 0.9375, H_SKIN, [0.0; 4]); // head
+    part(scene, 0.125, 0.125, 0.875, 1.0, H_DARK, [0.0; 4]); // hood
+    part(scene, 0.0625, 0.0625, 1.0, 1.0625, H_DARK, [0.0; 4]); // hood point
 }
 
 /// The warden droid body (feet at local y=0): base 0.28 tall, torso to 0.92,
@@ -778,6 +1017,35 @@ mod tests {
                 for (axis, d) in [("x", xmax - xmin), ("z", zmax - zmin)] {
                     assert!(on_lattice(d), "target {:?} box {pi}: {axis} dim {d} not a 0.0625 multiple", tg.id);
                 }
+            }
+        }
+    }
+
+    /// Every board prop box (houses, trees, hedges, the well, gate posts…)
+    /// keeps its XZ corners AND dimensions on the iso 2:1 stair lattice
+    /// (invariant #8) — the board equivalent of the target-box test above.
+    /// Floors span whole tiles (integer edges), so they pass trivially; a
+    /// prop authored at a sloppy 0.03-ish inset fails here before it ever
+    /// smears a silhouette.
+    #[test]
+    fn board_props_are_iso_stair_aligned() {
+        const STEP: f32 = 0.0625;
+        let on_lattice = |v: f32| (v / STEP - (v / STEP).round()).abs() < 1e-4;
+        let spec = house_game::hamlet_level(1);
+        let mut scene = Scene::new();
+        build_board(&mut scene, spec.board.as_ref().unwrap());
+        assert!(scene.primitives.len() > 200, "the hamlet is a real diorama");
+        for (pi, p) in scene.primitives.iter().enumerate() {
+            let verts = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
+            let (mut xmin, mut xmax, mut zmin, mut zmax) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+            for v in verts {
+                xmin = xmin.min(v.pos[0]);
+                xmax = xmax.max(v.pos[0]);
+                zmin = zmin.min(v.pos[2]);
+                zmax = zmax.max(v.pos[2]);
+            }
+            for (axis, v) in [("xmin", xmin), ("xmax", xmax), ("zmin", zmin), ("zmax", zmax)] {
+                assert!(on_lattice(v), "board prim {pi}: {axis}={v} off the 0.0625 lattice");
             }
         }
     }

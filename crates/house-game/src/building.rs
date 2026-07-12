@@ -172,6 +172,7 @@ pub fn building_floor(seed: u64, p: BuildingParams) -> LevelSpec {
         drain: None,
         low_solids: Vec::new(),
         sterile: false,
+        board: None,
         mobs: Vec::new(),
         traps: Vec::new(),
         arena: None,
@@ -325,7 +326,7 @@ pub fn house_floor(seed: u64) -> LevelSpec {
 
     LevelSpec { rooms, static_solids: Vec::new(), doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, drain: None,
         low_solids: Vec::new(),
-        sterile: false, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start: Vec3::new(exc + 0.5, 0.0, h as f32 - 1.5), seed }
+        sterile: false, board: None, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start: Vec3::new(exc + 0.5, 0.0, h as f32 - 1.5), seed }
 }
 
 /// FACTORY floor: one big open production HALL plus a strip of offices down one
@@ -366,7 +367,7 @@ pub fn factory_floor(seed: u64) -> LevelSpec {
 
     LevelSpec { rooms, static_solids: Vec::new(), doors, lights, targets: Vec::new(), items: Vec::new(), survival: None, drain: None,
         low_solids: Vec::new(),
-        sterile: false, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start: Vec3::new(((ow + w) / 2) as f32, 0.0, hz), seed }
+        sterile: false, board: None, mobs: Vec::new(), traps: Vec::new(), arena: None, player_start: Vec3::new(((ow + w) / 2) as f32, 0.0, hz), seed }
 }
 
 #[cfg(test)]

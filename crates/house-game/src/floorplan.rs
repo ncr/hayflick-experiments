@@ -206,6 +206,7 @@ mod tests {
             items: vec![],
             low_solids: vec![],
             survival: None,
+            board: None,
             drain: None,
         sterile: false,
             mobs: vec![],

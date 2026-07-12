@@ -46,6 +46,10 @@ const LIGHT_STUDIO: [f32; 4] = [0.0, 9.0, 0.0, 0.5];
 const LIGHT_CAVE: [f32; 4] = [0.0, 2.2, 0.26, 0.45];
 const LIGHT_DAYLIT: [f32; 4] = [0.0, 5.5, 0.30, 0.42];
 const LIGHT_HOUSE: [f32; 4] = [0.0, 5.0, 0.18, 0.5];
+/// Open-air noon over the tiny-world board: the first scene to switch the SUN
+/// on (directional shadows sell the diorama), bright sky, near-zero fog — a
+/// hand-sized model world shouldn't haze out.
+const LIGHT_NOON: [f32; 4] = [0.7, 6.0, 0.05, 0.5];
 
 /// The fallback row — also the base every table row overrides from.
 const ENTRY_DEFAULT: SceneEntry = SceneEntry { name: "", spec: None, dollhouse: false, open_studio: false, film_stage: false, inflate_collision: false, follow_cam: true, lighting: LIGHT_HOUSE };
@@ -70,6 +74,9 @@ static SCENES: &[SceneEntry] = &[
     SceneEntry { name: "goofloor", spec: Some(spec_goofloor), dollhouse: true, open_studio: true, film_stage: true, follow_cam: false, lighting: LIGHT_STUDIO, ..ENTRY_DEFAULT },
     SceneEntry { name: "goonursery", spec: Some(spec_goonursery), dollhouse: true, open_studio: true, film_stage: true, follow_cam: false, lighting: LIGHT_STUDIO, ..ENTRY_DEFAULT },
     SceneEntry { name: "goopair", spec: Some(spec_goopair), dollhouse: true, open_studio: true, film_stage: true, follow_cam: false, lighting: LIGHT_STUDIO, ..ENTRY_DEFAULT },
+    // ---- the tiny-world board (the Larceny pivot): fixed camera framing the
+    // whole diorama, board-derived collision inflated for the droid's girth
+    SceneEntry { name: "hamlet", spec: Some(spec_hamlet), inflate_collision: true, follow_cam: false, lighting: LIGHT_NOON, ..ENTRY_DEFAULT },
     // ---- generated walk-around levels (dollhouse walls, inflated collision)
     SceneEntry { name: "cave", spec: Some(spec_cave), dollhouse: true, inflate_collision: true, lighting: LIGHT_CAVE, ..ENTRY_DEFAULT },
     SceneEntry { name: "village", spec: Some(spec_village), dollhouse: true, inflate_collision: true, lighting: LIGHT_DAYLIT, ..ENTRY_DEFAULT },
@@ -161,6 +168,12 @@ fn spec_goonursery(_: &Config) -> LevelSpec {
 /// Two Larges dropped superimposed — the contact-repulsion showcase.
 fn spec_goopair(_: &Config) -> LevelSpec {
     house_game::goopair_level()
+}
+
+/// The Larceny hamlet: a 16×12 tile board where 1 wu² = one whole building
+/// (see house-game's `board` module + docs/larceny-mvp-brainstorm.md).
+fn spec_hamlet(cfg: &Config) -> LevelSpec {
+    house_game::hamlet_level(cfg.game.cave_seed)
 }
 
 fn spec_cave(cfg: &Config) -> LevelSpec {

@@ -79,6 +79,11 @@ static SCENE_LOOKS: &[SceneLook] = &[
     // authored content scenes (game is golden-pinned)
     SceneLook { name: "game", greybox: true, sdither_th: 0.75, exposure: 0.40, roi: true, ..LOOK_DEFAULT },
     SceneLook { name: "goo", roi: true, ..LOOK_DEFAULT },
+    // the tiny-world board (Larceny): whole-diorama framing at PIXEL=2 —
+    // 1 wu tile ≈ 32 low-res px, the Into-the-Breach read. No ROI reveal
+    // (nothing tall enough to hide the player), no minimap (the board IS
+    // the map).
+    SceneLook { name: "hamlet", greybox: true, exposure: 0.40, pixel: 2, ..LOOK_DEFAULT },
     // procedural dungeon / floor plans / village
     SceneLook { name: "cave", greybox: true, sdither_th: 0.75, exposure: 0.40, roi: true, ..LOOK_DEFAULT },
     SceneLook { name: "village", greybox: true, exposure: 0.40, minimap: true, roi: true, ..LOOK_DEFAULT },
@@ -318,7 +323,7 @@ pub struct HarnessCfg {
 }
 
 pub struct Config {
-    // SCENE: cave (bin/run default) | arena | game | goo | village | home | hospital |
+    // SCENE: cave (bin/run default) | hamlet | arena | game | goo | village | home | hospital |
     // office | factory | playground | range | goofloor | goonursery | goopair | house | lab | grid
     pub scene: String,
     pub render: RenderCfg,

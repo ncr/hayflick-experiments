@@ -20,6 +20,7 @@
 //! - [`lab`]       — scenario lab: headless event-timeline harness for emergence
 //!   experiments (Scenario → run_scenario → ScenarioReport + Metrics)
 
+pub mod board;
 pub mod building;
 pub mod cave;
 pub mod flicker;
@@ -34,6 +35,7 @@ pub mod village;
 // Root re-exports: ONLY what external users (rt-viewer, the src/bin tools)
 // actually import — the minimal-public-surface rule (ARCHITECTURE.md). Every
 // other item stays reachable through its module path.
+pub use board::{hamlet_level, BoardSpec, TileKind};
 pub use building::{building_floor, factory_floor, house_floor, BuildingParams};
 pub use cave::{cave_level_with, CaveParams, CORRIDOR_ROOM_ID_BASE};
 pub use floorplan::{enclose, WallOpts};

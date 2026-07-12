@@ -471,6 +471,7 @@ pub fn mirror_spec(scene: &Scene, lights: &[(String, LightKind, [f32; 3], LightK
         survival: None,
         drain: None,
         sterile: false,
+        board: None, // the tile board is per-level opt-in (the hamlet)
         low_solids: Vec::new(), // authored cover is per-level opt-in, like mobs
         mobs: Vec::new(), // mobs are authored per-level; the mirror scenes have none
         traps: Vec::new(),
