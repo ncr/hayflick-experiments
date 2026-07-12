@@ -62,18 +62,24 @@ w docelowej projekcji.
 
 ## Fazy
 
-**Faza 0 — czystka (w toku).** Wylatują: goo/arena (sim+bronie+taktyki+karty+
-pass shaderowy+oracle), sim dedukcji thief, stare teksturowane sceny
-house/lab/grid z goldenami, generatory cave/village/building/floorplan,
-docs/spec. Zostaje: renderer (rt-probe/rt-viewer), iso-core, sim-core oraz
-**miasto** (dawna scena thief: geometria, LOOKi, artykułowane figurki) jako
-jedyny testbed. Nowe goldeny dopiero po fazie looku (na czas eksploracji
-gate golden zawieszony, testy headless obowiązują).
+**Faza 0 — czystka (DONE 2026-07-12, w dwóch cięciach).** Wylatują:
+goo/arena (sim+bronie+taktyki+karty+pass shaderowy+oracle), sim dedukcji
+thief, stare teksturowane sceny house/lab/grid z goldenami, generatory
+cave/village/building/floorplan, docs/spec — a w drugim cięciu (dyrektywa
+ownera tego samego dnia) także generator miasta, NPC-e, drzwi/okna, zegar
+dnia i seedy. Zostaje: renderer (rt-probe/rt-viewer), iso-core, sim-core
+oraz **gym** — JEDEN ręcznie zbudowany poziom (kilka wolnostojących murków,
+jeden budynek z przejściem, dwie lampy, gracz; `house_game::gym`) jako
+jedyny testbed. LOOKi i artykułowana figurka gracza przeżyły. Archiwa:
+tagi `archive/pre-joyful-reset` i `archive/town-testbed`. Nowe goldeny
+dopiero po fazie looku (na czas eksploracji gate golden zawieszony, testy
+headless obowiązują).
 
 **Faza 1 — projekcje + radosny look.** (a) projekcja-jako-dane + preset
-trimetryczny, przełączane z menu; (b) zjednoczenie trzech systemów wyglądu
-(ThiefLook/SceneLook/StyleCfg) w jeden Look; (c) 3–5 kandydatów radosnego
-looku wg kotwic; playtest ownera; wybór; nowe goldeny.
+trimetryczny, przełączane z menu; (b) domknięcie wyglądu-jako-danych
+(Look + StyleCfg — po czystce zostały już tylko te dwa — w jeden
+runtime'owo przełączany Look); (c) 3–5 kandydatów radosnego looku wg
+kotwic; playtest ownera; wybór; nowe goldeny.
 
 **Faza 2 — miodny player.** Jeden continuous stack ruchu (koniec z
 grid-locked easingiem): collide-and-slide + pathfinding (A*/funnel +

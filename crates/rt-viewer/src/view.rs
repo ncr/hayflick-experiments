@@ -1,6 +1,6 @@
 //! View state + camera presentation: yaw / quarter-turn animation, zoom, pan,
-//! lattice snapping, and the click unprojection into the town's click-to-move.
-//! Player MOTION lives in house-game (the town sim) — the viewer only
+//! lattice snapping, and the click unprojection into the gym's click-to-move.
+//! Player MOTION lives in house-game (the gym sim) — the viewer only
 //! presents and translates input.
 
 use crate::viewer::{Viewer, ZOOM_MAX, ZOOM_MIN};
@@ -25,7 +25,7 @@ const ROT_SETTLE: f32 = 0.08; // web RotationAnimation.SNAP_SETTLE_SECONDS
 pub struct ViewState {
     pub zoom: f32,
     /// camera yaw in quarter-turns from canonical (web rotateQuarterTurns):
-    /// Q = -1, E = +1. Presentation-only — the town shell mirrors it for
+    /// Q = -1, E = +1. Presentation-only — the gym shell mirrors it for
     /// screen-relative WASD.
     pub yaw_q: u32,
     /// in-flight smooth quarter-turn (q/e); None when settled at yaw_q
@@ -155,15 +155,15 @@ impl Viewer {
         self.retarget(self.view.target + world);
     }
 
-    /// Follow-cam: track the EASED player body (the town sim steps whole
+    /// Follow-cam: track the EASED player body (the gym sim steps whole
     /// cells; the loop glides between them), re-snapped to the lattice by
     /// `retarget` like every camera move.
-    pub fn follow_town_camera(&mut self) {
-        let p = self.town.cam_target();
-        if p == self.town.last_cam {
+    pub fn follow_player_camera(&mut self) {
+        let p = self.gym.cam_target();
+        if p == self.gym.last_cam {
             return;
         }
-        self.town.last_cam = p;
+        self.gym.last_cam = p;
         self.retarget(p);
         self.recenter_pan();
     }
@@ -178,13 +178,13 @@ impl Viewer {
         ViewXform { target: self.view.target, yaw_off_deg: 90.0 * q as f32, pan: self.view.pan, render_scale: self.rs(), low, vis }
     }
 
-    /// LMB: unproject to the ground and hand the click to the town loop's
+    /// LMB: unproject to the ground and hand the click to the gym loop's
     /// click-to-move planner (window px never cross the game boundary — the
     /// plan feeds pure Move commands).
-    pub fn town_click(&mut self, win: Vec2) {
+    pub fn click_move(&mut self, win: Vec2) {
         let x = self.pick_xform();
         if let Some(g) = window_px_to_ground(win, &x) {
-            self.town.click_ground(g);
+            self.gym.click_ground(g);
         }
     }
 }

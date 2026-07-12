@@ -2,8 +2,8 @@
 # make-app — build Hayflick.app, a macOS Dock launcher for the viewer.
 #
 # The bundle wraps target/release/viewer: its executable is a tiny script
-# that cds to this repo and execs the built binary (the generated town;
-# SEED env rerolls it). The pixel icon is generated here (64x64 art,
+# that cds to this repo and execs the built binary (the gym level).
+# The pixel icon is generated here (64x64 art,
 # nearest-upscaled to 1024 — the game's own aesthetic) and packed to .icns
 # with sips/iconutil. Re-run after moving the repo; the app is a generated
 # artifact (gitignored), the recipe is this script.

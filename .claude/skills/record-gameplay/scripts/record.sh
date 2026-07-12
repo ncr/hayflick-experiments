@@ -4,12 +4,11 @@
 #
 #   record.sh <trace.txt> [out.mp4]   # render + encode the trace
 #
-# DEMO plays the town-format <trace.txt> ONE sim tick per frame (the wall
+# DEMO plays the gym-format <trace.txt> ONE sim tick per frame (the wall
 # clock never ticks the sim, so it is byte-reproducible), dumping a PNG per
 # tick; then ffmpeg encodes the PNGs to an iPhone-friendly H.264 mp4.
 #
 # Env overrides (also: any viewer env passes straight through):
-#   SEED=<n>          which generated town (default 1)
 #   WINDOW=1280x800   capture resolution
 #   FPS=60            playback frame rate (sim runs at 60 ticks/s -> 60 = real speed)
 #   TICKS=<n>         frame/tick count (default: last trace stamp + 1)
@@ -23,7 +22,7 @@ VIEWER=./target/release/viewer
 MANIFEST=Cargo.toml
 
 trace="${1:?usage: record.sh <trace.txt> [out.mp4]}"
-out="${2:-${TMPDIR:-/tmp}/town-gameplay.mp4}"
+out="${2:-${TMPDIR:-/tmp}/gym-gameplay.mp4}"
 window="${WINDOW:-1280x800}"
 fps="${FPS:-60}"
 [ -f "$trace" ] || { echo "trace not found: $trace" >&2; exit 1; }

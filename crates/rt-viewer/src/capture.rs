@@ -404,7 +404,7 @@ impl Viewer {
                 // the capture is sim-independent BY CONSTRUCTION: draw() feeds
                 // the fixed loop dt = 0 in SHOT mode, so the wall clock never
                 // ran a tick — only the deterministic CMDS prefix did. Pin it.
-                assert_eq!(self.town.tick.0, self.town.cmds_prefix, "SHOT capture ran wall-clock sim ticks — captures would depend on timing");
+                assert_eq!(self.gym.tick.0, self.gym.cmds_prefix, "SHOT capture ran wall-clock sim ticks — captures would depend on timing");
                 self.backend.capture_png(&path);
                 self.exit_requested = true;
             }

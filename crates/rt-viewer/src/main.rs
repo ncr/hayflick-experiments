@@ -4,27 +4,27 @@
 //! temporal state. Monte Carlo runs once at startup into the world-space GI
 //! probe cache.
 //!
-//! Controls (player input becomes tick-stamped town `Command`s — the sim runs
+//! Controls (player input becomes tick-stamped gym `Command`s — the sim runs
 //! on a fixed 60 Hz loop; the viewer only presents):
 //! - LMB / trackpad tap — click-to-move (unprojected to a ground cell; the
 //!   shell BFS-plans the route, the sim owns the step cadence)
 //! - WASD / arrows — screen-relative walk (staircase on the iso lattice)
-//! - Shift — run, Ctrl — sneak
+//! - Shift — run
 //! - q / e — smooth eased quarter turn (presentation-only)
 //! - scroll / +- — integer zoom steps 1-4, cursor-anchored; 0 = camera reset
 //! - l — lamp master on/off
 //! - r — record a clip at exact game resolution: stop writes BOTH
 //!   clips/clip_NNNN.mp4 (x264, NEAREST 4x) and .gif (palette, 1x, half rate)
 //! - Esc — the game menu (Title at boot; Pause in play; Settings is a
-//!   submenu with live sliders; Seeds picks a fresh town)
+//!   submenu with live sliders)
 //!
-//! The scene is the generated town testbed (SEED env varies it; the menu's
-//! SEEDS picker relaunches with a new one — docs/VISION.md Faza 0).
+//! The scene is the gym: one hand-authored level — a few walls, one
+//! building, the player (docs/VISION.md, cut 2026-07-12).
 //!
 //! Headless harness (see config.rs): SHOT / SHOT_DELAY one-frame capture
 //! (truly window-less — no surface/swapchain, extent taken from WINDOW;
 //! the wall clock NEVER ticks the sim in SHOT mode), CMDS / CMDS_TICKS
-//! deterministic command-trace replay prefix (town trace format),
+//! deterministic command-trace replay prefix (gym trace format),
 //! DEMO / DEMO_DIR / DEMO_TICKS per-tick gameplay dump, ROTATE_AT synthetic
 //! input, DUMP / DUMP_AT / DUMP_N frame dumps, MOVIE scripted tour,
 //! FRAMES / TIMING perf, WINDOW=WxH exact size.
@@ -32,10 +32,10 @@
 mod audio;
 mod backend;
 mod capture;
+mod gym_loop;
+mod gym_scene;
 mod look;
 mod menu;
-mod town_loop;
-mod town_scene;
 mod view;
 mod viewer;
 // Backend selected at compile time by target OS: Metal on Apple Silicon,
@@ -130,20 +130,13 @@ impl ApplicationHandler for App {
                     _ => None,
                 };
                 if let Some(i) = held_idx {
-                    r.town.held[i] = event.state.is_pressed();
+                    r.gym.held[i] = event.state.is_pressed();
                     return;
                 }
-                // movement modes (held)
-                match event.logical_key.as_ref() {
-                    Key::Named(NamedKey::Shift) => {
-                        r.town.run_held = event.state.is_pressed();
-                        return;
-                    }
-                    Key::Named(NamedKey::Control) => {
-                        r.town.sneak_held = event.state.is_pressed();
-                        return;
-                    }
-                    _ => {}
+                // movement mode (held)
+                if let Key::Named(NamedKey::Shift) = event.logical_key.as_ref() {
+                    r.gym.run_held = event.state.is_pressed();
+                    return;
                 }
                 if !event.state.is_pressed() {
                     return; // discrete actions fire on press only
@@ -163,7 +156,7 @@ impl ApplicationHandler for App {
                     Key::Character("0") => {
                         // camera reset: recentre on the player, canonical yaw
                         r.view.zoom = 1.0;
-                        r.view.target = r.town.cam_target();
+                        r.view.target = r.gym.cam_target();
                         r.view.move_accum = Vec2::ZERO;
                         r.recenter_pan();
                         r.rotate(-(r.view.yaw_q as i32));
@@ -191,7 +184,7 @@ impl ApplicationHandler for App {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
                         if !r.menu_click(c) {
-                            r.town_click(c); // click-to-move
+                            r.click_move(c); // click-to-move
                         }
                     } else {
                         r.menu.drag = false;

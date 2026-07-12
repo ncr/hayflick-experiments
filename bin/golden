@@ -7,7 +7,7 @@
 # pixels (projection generalization + the joyful look search), so a byte gate
 # would only generate noise.
 #
-# The gate comes back the moment the owner locks the Faza-1 look: pin a town
+# The gate comes back the moment the owner locks the Faza-1 look: pin a gym
 # frame per machine/backend (SHOT= + WINDOW=, LIGHT_ANIM=0) and restore the
 # byte-compare loop from git history (bin/golden @ archive/pre-joyful-reset).
 #

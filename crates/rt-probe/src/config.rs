@@ -12,9 +12,8 @@
 //! - [`GameCfg`]   — game / input / camera-seeding knobs (sim state at boot).
 //! - [`HarnessCfg`] — window size + capture/movie/clip harness knobs.
 //!
-//! `Config::from_env` resolves all three; `scene` is the shared identity field
-//! both the renderer's scene builders and the game adapter read, so it lives on
-//! the top-level `Config` rather than in any one group.
+//! `Config::from_env` resolves all three. There is ONE scene (the gym) and
+//! no level seed — the level is hand-authored (docs/VISION.md, 2026-07-12).
 
 fn f(k: &str, d: f32) -> f32 {
     std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
@@ -183,10 +182,8 @@ pub struct GameCfg {
     pub yaw_q: u32,                // YAW_Q: start quarter-turn
     pub pan: (f32, f32),           // PAN_X/PAN_Y: initial crop offset (low px)
     pub target: (Option<f32>, Option<f32>), // TARGET_X/TARGET_Z: camera look-at override
-    pub player_speed: Option<f32>, // PLAYER_SPEED (px/s)
     pub cmds: Option<String>,      // CMDS=trace.txt: deterministic command-replay prefix
     pub cmds_ticks: Option<u64>,   // CMDS_TICKS: prefix length (default: last stamp + 1)
-    pub seed: u64,                 // SEED: the run/level seed (town layout, population)
     pub roi: bool,                 // ROI: dithered player-anchored see-through reveal — the sole wall occlusion on player+wall scenes
     pub roi_radius: f32,           // ROI_R: reveal-disc radius in low-res px
     pub roi_falloff: f32,          // ROI_FALLOFF: soft dither edge width in low-res px
@@ -225,10 +222,6 @@ pub struct HarnessCfg {
 }
 
 pub struct Config {
-    /// SCENE: `town` is the only scene (the movement/look testbed —
-    /// docs/VISION.md Faza 0). The field stays so future scenes (the Faza-2
-    /// movement gym) slot back in without plumbing changes.
-    pub scene: String,
     pub render: RenderCfg,
     pub game: GameCfg,
     pub harness: HarnessCfg,
@@ -236,7 +229,6 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Config {
-        let scene = s("SCENE").unwrap_or_else(|| "town".into());
         let window = s("WINDOW").and_then(|v| {
             let (w, h) = v.split_once('x')?;
             Some((w.parse().ok()?, h.parse().ok()?))
@@ -285,10 +277,8 @@ impl Config {
                 yaw_q: (i("YAW_Q", 0) as u32) & 3,
                 pan: (f("PAN_X", 0.0), f("PAN_Y", 0.0)),
                 target: (fo("TARGET_X"), fo("TARGET_Z")),
-                player_speed: fo("PLAYER_SPEED"),
                 cmds: s("CMDS"),
                 cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
-                seed: s("SEED").and_then(|v| v.parse().ok()).unwrap_or(1),
                 roi: b("ROI", true),
                 roi_radius: fo("ROI_R").unwrap_or(79.0),
                 roi_falloff: fo("ROI_FALLOFF").unwrap_or(33.0),
@@ -317,7 +307,6 @@ impl Config {
                 clip_mp4_scale: (i("CLIP_MP4_SCALE", 4) as u32).clamp(1, 8),
                 clip_gif_scale: (i("CLIP_GIF_SCALE", 1) as u32).clamp(1, 8),
             },
-            scene,
         }
     }
 
@@ -325,11 +314,6 @@ impl Config {
     /// (Forwards to [`RenderCfg::lighting_env`].)
     pub fn lighting_env(&self, scene_lighting: [f32; 4]) -> [f32; 4] {
         self.render.lighting_env(scene_lighting)
-    }
-
-    /// Default player walk speed in px/s.
-    pub fn default_player_speed(&self) -> f32 {
-        140.0
     }
 }
 
@@ -348,14 +332,12 @@ mod tests {
     fn env_string_round_trip() {
         // the joyful reset's clean base: dither texture OFF by default
         let cfg = Config::from_env();
-        assert_eq!(cfg.scene, "town");
         assert_eq!(cfg.render.style.sdither, 0.0, "shadow dither starts OFF");
         assert_eq!(cfg.render.style.grain, 0.0);
         assert_eq!(cfg.render.style.vignette, 0.0);
         assert_eq!(cfg.render.pixel, 2);
         assert!(cfg.game.roi);
         let pairs = [
-            ("SCENE", "town"),
             ("EXPOSURE", "0.37"),
             ("AO", "0.65"),
             ("AO_R", "1.20"),
@@ -371,7 +353,6 @@ mod tests {
             std::env::set_var(k, v);
         }
         let cfg = Config::from_env();
-        assert_eq!(cfg.scene, "town");
         assert_eq!(cfg.render.exposure, 0.37);
         assert_eq!(cfg.render.ao, 0.65);
         assert_eq!(cfg.render.ao_r, 1.20);

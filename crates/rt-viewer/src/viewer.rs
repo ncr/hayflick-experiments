@@ -1,4 +1,4 @@
-//! `Viewer` — the backend-agnostic orchestrator: the fixed-tick town sim, the
+//! `Viewer` — the backend-agnostic orchestrator: the fixed-tick gym sim, the
 //! camera/pan/zoom presentation, the headless harness, and the per-frame
 //! `FrameState` builder. It owns the `Scene` (greybox source of truth) and
 //! drives the GPU exclusively through `backend: dyn RenderBackend`
@@ -11,8 +11,8 @@
 
 use crate::backend::{new_backend, FramePresent, Overlay, RenderBackend};
 use crate::capture::Harness;
+use crate::gym_loop::GymLoop;
 use crate::menu::MenuState;
-use crate::town_loop::TownLoop;
 use crate::view::ViewState;
 use glam::{Mat4, Vec2, Vec3};
 use iso_core::{clamp_pan, iso_camera_at, snap_ground_to_lattice};
@@ -51,8 +51,8 @@ pub struct Viewer {
     pub debug: i32,
     // ---- grouped state
     pub view: ViewState,
-    /// The town sim loop — THE game loop (docs/VISION.md Faza 0).
-    pub town: TownLoop,
+    /// The gym sim loop — THE game loop (docs/VISION.md Faza 0).
+    pub gym: GymLoop,
     /// Lamp NEE slots in slot order, with their authored base rgb — the
     /// scene's named point lights joined onto the backend's handles.
     pub light_keys: Vec<(LightKey, [f32; 3])>,
@@ -95,20 +95,19 @@ fn join_lamp_lights(scene: &Scene, handles: &SceneHandles, light_count: u32) -> 
 
 impl Viewer {
     /// `window: None` runs fully headless (SHOT/DEMO captures). Builds the
-    /// town scene (single source of truth: the generated level drives sim
+    /// gym scene (single source of truth: the hand-authored level drives sim
     /// collision + greybox visuals), the GPU backend, the light join, then
     /// applies the seeded camera/pan/trace.
     pub unsafe fn new(window: Option<&Window>, cfg: Config) -> Result<Viewer, Box<dyn std::error::Error>> {
         let start_time = std::time::Instant::now();
-        let spec = house_game::town::sim::town_level(cfg.game.seed);
+        let spec = house_game::gym::sim::gym_level();
         // LOOK env picks the greybox aesthetic (look.rs presets)
-        let scene = crate::town_scene::build_town(&spec, crate::look::from_env());
-        println!("scene: {} prims, {} tris (town seed {})", scene.primitives.len(), scene.indices.len() / 3, cfg.game.seed);
+        let scene = crate::gym_scene::build_gym(&spec, crate::look::from_env());
+        println!("scene: {} prims, {} tris (the gym)", scene.primitives.len(), scene.indices.len() / 3);
         let player0 = scene.player_start;
 
         let backend = new_backend(window, &scene, &cfg);
         let light_keys = join_lamp_lights(&scene, backend.handles(), backend.light_count());
-        println!("level: {} lamps, {} npcs", light_keys.len(), spec.npcs.len());
 
         // audio: windowed sessions only (SHOT/DEMO stay silent + headless);
         // AUDIO=<master> tunes volume, AUDIO=0 disables entirely
@@ -151,7 +150,7 @@ impl Viewer {
                 sel: 0,
                 drag: false,
             },
-            town: TownLoop::new(spec),
+            gym: GymLoop::new(spec),
             harness: Harness::from_cfg(&cfg),
             rec: None,
             rec_jobs: Vec::new(),
@@ -182,22 +181,22 @@ impl Viewer {
         }
         // CMDS replay prefix (deterministic) — runs LAST so the trace acts on
         // the fully seeded state.
-        r.town.run_cmds(&r.cfg);
+        r.gym.run_cmds(&r.cfg);
         // DEMO=trace.txt: arm the headless per-tick gameplay dump.
         if r.cfg.harness.demo.is_some() {
             let dir = r.cfg.harness.demo_dir.clone().unwrap_or_else(|| "demo".into());
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("DEMO_DIR {dir}: {e}"));
-            let ticks = r.town.demo_load(&r.cfg);
+            let ticks = r.gym.demo_load(&r.cfg);
             r.harness.demo = Some(crate::capture::Demo { dir, ticks, done: 0 });
         }
         Ok(r)
     }
 
-    /// PAUSE-menu RESTART: rebuild a fresh TownLoop from the stored spec
-    /// (same town, zeroed sim). View state (camera/zoom) survives; the
+    /// PAUSE-menu RESTART: rebuild a fresh GymLoop from the stored spec
+    /// (same level, zeroed sim). View state (camera/zoom) survives; the
     /// follow-cam recentres on the respawned player's first step.
-    pub fn restart_town(&mut self) {
-        self.town = TownLoop::new(self.town.spec.clone());
+    pub fn restart_gym(&mut self) {
+        self.gym = GymLoop::new(self.gym.spec.clone());
     }
 
     /// Fire-and-forget UI sound (menu nav/pick) — presentation only.
@@ -205,26 +204,6 @@ impl Viewer {
         if let Some(a) = &self.audio {
             a.play(id, 1.0);
         }
-    }
-
-    /// SEEDS pick: relaunch this binary with `SEED=<n>` (everything else —
-    /// WINDOW, LOOK, tune env — inherits). A town is baked at startup
-    /// (geometry, BLAS/TLAS, probe cache), so a fresh process IS the clean
-    /// switch; `exec` keeps the pid, so a Dock-launched session keeps its
-    /// bundle identity. Returns only on failure.
-    pub fn switch_seed(&mut self, seed: &str) {
-        use std::os::unix::process::CommandExt;
-        let exe = match std::env::current_exe() {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("seeds: current_exe failed: {e}");
-                return;
-            }
-        };
-        println!("seeds: relaunching with SEED={seed}");
-        unsafe { self.backend.wait_idle() };
-        let err = std::process::Command::new(exe).env("SEED", seed).exec();
-        eprintln!("seeds: relaunch failed: {err}");
     }
 
     /// Whole-low-pixel render scale for the current zoom (#4).
@@ -270,7 +249,7 @@ impl Viewer {
         self.last_frame = Some(now);
         self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
         self.advance_sim(dt); // DEMO tick / pause / live fixed-tick
-        self.follow_town_camera(); // follow the eased player body
+        self.follow_player_camera(); // follow the eased player body
         // smooth quarter-turn in flight: ease the yaw
         self.advance_rotation(dt);
         // clip recording: collect last frame's capture + decide if this frame
@@ -281,15 +260,15 @@ impl Viewer {
         let (low_w, low_h) = self.backend.low_dims();
         let cam = iso_camera_at(self.scene.min, self.scene.max, low_w, low_h, self.yaw_deg(), self.view.target);
 
-        // This frame's scene state, typed — built from the town SNAPSHOT:
+        // This frame's scene state, typed — built from the gym SNAPSHOT:
         // nothing below reads sim internals, only what the snapshot publishes.
-        let instances: Vec<(InstanceKey, Mat4)> = self.town.instances(self.backend.handles());
+        let instances: Vec<(InstanceKey, Mat4)> = self.gym.instances(self.backend.handles());
         let dim = self.lights_dim;
         let emission: Vec<(LightKey, [f32; 3])> = self.light_keys.iter().map(|&(k, base)| (k, [base[0] * dim, base[1] * dim, base[2] * dim])).collect();
         let fs = FrameState {
             cam,
             room_lights: dim,
-            time: self.town.time(), // SIM time — replayable, no wall clock
+            time: self.gym.time(), // SIM time — replayable, no wall clock
             light_emission: &emission,
             spotlights: &[],
             instances: &instances,
@@ -312,7 +291,7 @@ impl Viewer {
 
         // burned-in stamps: the click-to-move destination marker. Game
         // picture, not shell UI — they ride into SHOT/DEMO captures.
-        let stamps = self.town.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
+        let stamps = self.gym.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
         let fp = FramePresent {
             fs: &fs,
             pan: self.view.pan,
@@ -337,15 +316,15 @@ impl Viewer {
             frame: self.frame,
             overlay,
             stamps: &stamps,
-            // the sky follows the sim's day phase (the clock, visualized)
-            sky_dim: self.town.sky(),
+            // permanent sunny day (the joyful default); SKY env still scales
+            // the authored env via lighting_env
+            sky_dim: 1.0,
             roi: self.roi_info(),
-            // the FLOORCUT reveal follows the LIVE player storey; an explicit
-            // CUT env still wins for framing experiments.
-            cut_y: self.cfg.game.cut.or_else(|| self.town.cut_y()),
+            // FLOORCUT: env-only framing knob now (the gym is single-storey)
+            cut_y: self.cfg.game.cut,
             // ... and the WALLCUT sill-height cutaway follows "is the player
-            // indoors" — the dollhouse: buildings open when entered.
-            wall_cut: self.cfg.game.wall_cut.or_else(|| self.town.wall_cut()),
+            // indoors" — the dollhouse: the building opens when entered.
+            wall_cut: self.cfg.game.wall_cut.or_else(|| self.gym.wall_cut()),
             capture,
         };
         let ok = self.backend.render_present(&fp);
@@ -377,9 +356,9 @@ impl Viewer {
     /// the fixed-tick accumulator. SHOT feeds dt=0 so the wall clock never
     /// reaches the sim.
     fn advance_sim(&mut self, dt: f32) {
-        self.town.yaw_q = self.view.yaw_q;
+        self.gym.yaw_q = self.view.yaw_q;
         if self.harness.demo.is_some() {
-            self.town.demo_advance_tick();
+            self.gym.demo_advance_tick();
             return;
         }
         // menu pause (live): the sim clock stops dead while any menu is up —
@@ -389,7 +368,7 @@ impl Viewer {
             return;
         }
         let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
-        self.town.run_due(sim_dt);
+        self.gym.run_due(sim_dt);
     }
 
     /// Overlay phase of `draw()`: the ESC/game-menu canvas + centering flag,
@@ -398,7 +377,7 @@ impl Viewer {
     fn overlay_frame(&mut self) -> Option<(Vec<u32>, i32, i32, bool)> {
         if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
             let (buf, w, h) = self.menu_canvas();
-            let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause | crate::menu::MenuMode::Levels);
+            let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause);
             Some((buf, w, h, center))
         } else {
             None
@@ -413,8 +392,8 @@ impl Viewer {
         // Anchor the reveal disc on the player's MID-HEIGHT, not its feet:
         // the body is ~1.4 wu tall, so projecting the feet (y≈0) puts the
         // disc centre low on screen. The anchor is the EASED body — a
-        // spawn-pinned disc means no reveal once you walk behind a building.
-        let center = self.town.cam_target() + glam::Vec3::new(0.0, 0.65, 0.0);
+        // spawn-pinned disc means no reveal once you walk behind the building.
+        let center = self.gym.cam_target() + glam::Vec3::new(0.0, 0.65, 0.0);
         // ROI_XRAY=contour adds faint wall-silhouette lines ON TOP of the ghost
         // stipple. Encoded by NEGATING the ghost cap: the shader reads roi2.w<0
         // as hybrid mode and |roi2.w| as the coverage cap, so the stipple stays.

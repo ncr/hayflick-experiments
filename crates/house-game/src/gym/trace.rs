@@ -1,10 +1,10 @@
-//! The town text-trace format: `<tick> <op> <args>`, one command per line.
+//! The gym text-trace format: `<tick> <op> <args>`, one command per line.
 //!
 //! The headless replay input (viewer DEMO/CMDS path, tests) and the
 //! journaling output — `parse_trace ∘ format_command` round-trips.
 //!
 //! ```text
-//! 10 move 1 0 walk      # dx dz [sneak|walk|run] (default walk)
+//! 10 move 1 0 walk      # dx dz [walk|run] (default walk)
 //! 400 wait
 //! ```
 
@@ -28,7 +28,6 @@ pub fn parse_trace(src: &str) -> Result<Vec<(Tick, Command)>, String> {
                 let dz: i16 = w.next().ok_or_else(|| err("move: missing dz"))?.parse().map_err(|_| err("move: bad dz"))?;
                 let mode = match w.next() {
                     None | Some("walk") => MoveMode::Walk,
-                    Some("sneak") => MoveMode::Sneak,
                     Some("run") => MoveMode::Run,
                     Some(m) => return Err(err(&format!("move: unknown mode {m:?}"))),
                 };
@@ -48,7 +47,6 @@ pub fn format_command(tick: Tick, c: &Command) -> String {
     match c {
         Command::Move { dx, dz, mode } => {
             let m = match mode {
-                MoveMode::Sneak => "sneak",
                 MoveMode::Walk => "walk",
                 MoveMode::Run => "run",
             };
@@ -64,9 +62,9 @@ mod tests {
 
     #[test]
     fn parse_and_format_round_trip() {
-        let src = "10 move 1 0 walk\n18 move 0 -1 sneak\n30 move -1 0 run\n40 move 0 1\n99 wait\n";
+        let src = "10 move 1 0 walk\n30 move -1 0 run\n40 move 0 1\n99 wait\n";
         let trace = parse_trace(src).unwrap();
-        assert_eq!(trace.len(), 5);
+        assert_eq!(trace.len(), 4);
         let back: Vec<String> = trace.iter().map(|(t, c)| format_command(*t, c)).collect();
         let reparsed = parse_trace(&back.join("\n")).unwrap();
         assert_eq!(trace, reparsed);
@@ -78,5 +76,6 @@ mod tests {
         assert_eq!(trace.len(), 1);
         assert!(parse_trace("5 fly").unwrap_err().contains("line 1"));
         assert!(parse_trace("5 move 1").unwrap_err().contains("missing dz"));
+        assert!(parse_trace("5 move 1 0 sneak").unwrap_err().contains("unknown mode"));
     }
 }

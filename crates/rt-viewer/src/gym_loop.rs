@@ -1,33 +1,33 @@
-//! The town sim side of the viewer: a fixed-tick `TownGame` loop + the
-//! snapshot→renderer adapter for SCENE=town (docs/VISION.md Faza 0).
+//! The gym sim side of the viewer: a fixed-tick `GymGame` loop + the
+//! snapshot→renderer adapter (docs/VISION.md Faza 0).
 //!
 //! Presentation choices, all sim-blind:
-//! - the sim steps whole cells at its own cadence; the shell EASES bodies
+//! - the sim steps whole cells at its own cadence; the shell EASES the body
 //!   between cells over a few ticks (tick-clocked, so DEMO captures ease
 //!   identically),
 //! - MOUSE-first controls: LMB picks a ground cell, the shell BFS-plans a
 //!   route over the sim's own grid and feeds one Move per tick — the sim
 //!   still owns the cadence, and a replay trace stays pure Move commands.
 //!   WASD is SCREEN-relative nudging: screen-up walks visually up the iso
-//!   staircase. Shift = run, Ctrl = sneak.
+//!   staircase. Shift = run.
 //!
 //! NOTE (Faza 2): this whole cell-stepper is the INTERIM mover — the miodny
 //! continuous movement stack replaces it. Keep it simple, don't grow it.
 
 use crate::backend::Stamp;
+use crate::gym_scene::{cell_world, ARM_X, HIP, LEG_X, SHOULDER, WALL_CUT_H};
 use crate::menu::{mrect, mtext};
-use crate::town_scene::{cell_world, cut_for_floor, door_leaf_at, door_runs, DoorRun, ARM_X, HIP, LEG_X, SHOULDER, STOREY_H, WALL_CUT_H};
 use glam::{Mat4, Vec3};
-use house_game::town::grid::{CellKind, CellPos, Dir, DoorState, EdgeKind, Passage};
-use house_game::town::sim::{Command, DayPhase, MoveMode, Role, TownGame, TownLevel, TownSnapshot};
-use house_game::town::trace::parse_trace;
+use house_game::gym::grid::{CellKind, CellPos, Dir};
+use house_game::gym::sim::{Command, GymGame, GymLevel, GymSnapshot, MoveMode};
+use house_game::gym::trace::parse_trace;
 use house_game::TICK_DT;
 use iso_core::{world_to_window_px, ViewXform};
 use rt_probe::{Config, InstanceKey, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, Simulation, Tick};
 use std::collections::VecDeque;
 
-/// Ticks a body glides between cells (presentation-only, tick-clocked).
+/// Ticks the body glides between cells (presentation-only, tick-clocked).
 /// Slightly LONGER than the walk cadence (8): consecutive eases overlap, so
 /// the 4-dir staircase reads as a rounded glide instead of a hard zigzag.
 const EASE_TICKS: f32 = 9.0;
@@ -62,11 +62,11 @@ impl Ease {
     }
 }
 
-/// Walk-cycle state for one body (player or NPC) — presentation-only, but
-/// ticked on the FIXED clock (run_due's per-tick loop / demo_advance_tick)
-/// so DEMO captures replay bit-identically. `phase` accumulates while the
-/// body's ease is gliding; `blend` fades the pose in/out so stops settle to
-/// the rest pose instead of freezing mid-stride.
+/// Walk-cycle state — presentation-only, but ticked on the FIXED clock
+/// (run_due's per-tick loop / demo_advance_tick) so DEMO captures replay
+/// bit-identically. `phase` accumulates while the ease is gliding; `blend`
+/// fades the pose in/out so stops settle to the rest pose instead of
+/// freezing mid-stride.
 #[derive(Clone, Copy, Default)]
 struct Gait {
     phase: f32,
@@ -77,7 +77,6 @@ struct Gait {
 /// (radians) per movement mode — the whole feel of the walk in two numbers.
 fn gait_params(mode: MoveMode) -> (f32, f32) {
     match mode {
-        MoveMode::Sneak => (22.0, 0.34),
         MoveMode::Walk => (16.0, 0.5),
         MoveMode::Run => (11.0, 0.72),
     }
@@ -97,22 +96,20 @@ struct Plan {
     next: usize,
 }
 
-pub struct TownLoop {
+pub struct GymLoop {
     pub fixed: FixedLoop,
     pub queue: InputQueue<Command>,
-    pub sim: TownGame,
+    pub sim: GymGame,
     pub tick: Tick,
     pub cmds_prefix: u64,
-    pub snap: TownSnapshot,
-    pub spec: TownLevel,
+    pub snap: GymSnapshot,
+    pub spec: GymLevel,
     /// Held movement keys [up, down, left, right] (screen-relative).
     pub held: [bool; 4],
     pub run_held: bool,
-    pub sneak_held: bool,
     /// Camera quarter, mirrored from the view each frame so WASD stays
     /// screen-relative through q/e turns.
     pub yaw_q: u32,
-    doors: Vec<DoorRun>,
     /// The live click-to-move route (None = keyboard/no movement).
     plan: Option<Plan>,
     /// Diagonal staircase phase: flips on every LANDED step, so a held
@@ -120,26 +117,22 @@ pub struct TownLoop {
     /// fails here — the walk cadence is even, so every accepted move
     /// would land on the same parity and the diagonal would degenerate).
     stair: bool,
-    /// Eased world positions: [player, npcs in snapshot order...].
-    ease: Vec<Ease>,
-    /// Walk-cycle state, parallel to `ease`.
-    gait: Vec<Gait>,
+    /// Eased world position of the player body.
+    ease: Ease,
+    /// Walk-cycle state.
+    gait: Gait,
     /// Presentation facing for the player body (radians about Y).
     face: f32,
     /// Camera target the follow-cam last consumed.
     pub last_cam: Vec3,
 }
 
-impl TownLoop {
-    pub fn new(spec: TownLevel) -> TownLoop {
-        let doors = door_runs(&spec.grid);
-        let sim = TownGame::new(spec.clone());
+impl GymLoop {
+    pub fn new(spec: GymLevel) -> GymLoop {
+        let sim = GymGame::new(spec.clone());
         let snap = sim.snapshot();
-        let mut ease = vec![Ease::pinned(cell_world(snap.player))];
-        ease.extend(snap.npcs.iter().map(|n| Ease::pinned(cell_world(n.pos))));
-        let gait = vec![Gait::default(); ease.len()];
         let p0 = cell_world(snap.player);
-        TownLoop {
+        GymLoop {
             fixed: FixedLoop::new(TICK_DT),
             queue: InputQueue::new(),
             sim,
@@ -149,13 +142,11 @@ impl TownLoop {
             spec,
             held: [false; 4],
             run_held: false,
-            sneak_held: false,
             yaw_q: 0,
-            doors,
             plan: None,
             stair: false,
-            ease,
-            gait,
+            ease: Ease::pinned(p0),
+            gait: Gait::default(),
             face: 0.0,
             last_cam: p0,
         }
@@ -199,9 +190,7 @@ impl TownLoop {
     }
 
     fn mode(&self) -> MoveMode {
-        if self.sneak_held {
-            MoveMode::Sneak
-        } else if self.run_held {
+        if self.run_held {
             MoveMode::Run
         } else {
             MoveMode::Walk
@@ -218,10 +207,7 @@ impl TownLoop {
         if cx < 0 || cz < 0 || cx >= w as i32 || cz >= h as i32 {
             return;
         }
-        let cell = CellPos::new(cx as i16, cz as i16, self.snap.player.floor);
-        if self.sim.grid().cell(cell).kind == CellKind::Void {
-            return;
-        }
+        let cell = CellPos::new(cx as i16, cz as i16);
         if cell == self.snap.player {
             self.plan = None;
             return;
@@ -232,9 +218,8 @@ impl TownLoop {
     }
 
     /// Shortest 4-dir route over the sim's own grid (deterministic scan
-    /// order). Passable = an open edge or ANY door (the sim auto-opens
-    /// closed doors as you pass); shut windows, locks and walls block.
-    /// Returns the cells to visit AFTER `from`.
+    /// order); wall edges and the grid boundary block. Returns the cells to
+    /// visit AFTER `from`.
     fn bfs(&self, from: CellPos, to: CellPos) -> Option<Vec<CellPos>> {
         let g = self.sim.grid();
         let (w, h) = (g.w as i32, g.h as i32);
@@ -246,16 +231,11 @@ impl TownLoop {
         q.push_back(from);
         'search: while let Some(p) = q.pop_front() {
             for dir in [Dir::Xp, Dir::Xm, Dir::Zp, Dir::Zm] {
-                let passable = match g.passage(p, dir) {
-                    Passage::Free => true,
-                    Passage::OpenFirst => matches!(g.edge(p, dir), EdgeKind::Door(_)),
-                    _ => false,
-                };
-                if !passable {
+                if !g.open(p, dir) {
                     continue;
                 }
                 let n = p.step(dir);
-                if n.x < 0 || n.z < 0 || n.x as i32 >= w || n.z as i32 >= h || seen[idx(n)] {
+                if seen[idx(n)] {
                     continue;
                 }
                 seen[idx(n)] = true;
@@ -343,7 +323,7 @@ impl TownLoop {
         self.refresh();
     }
 
-    /// DEMO=trace.txt (town trace grammar): queue every command, return the
+    /// DEMO=trace.txt (gym trace grammar): queue every command, return the
     /// tick count to play.
     pub fn demo_load(&mut self, cfg: &Config) -> u64 {
         let path = cfg.harness.demo.as_ref().expect("demo_load only on DEMO path");
@@ -354,7 +334,7 @@ impl TownLoop {
         for (t, c) in trace {
             self.queue.push(t, c);
         }
-        println!("DEMO(town): {n} commands, playing {ticks} ticks from {path}");
+        println!("DEMO(gym): {n} commands, playing {ticks} ticks from {path}");
         ticks
     }
 
@@ -375,31 +355,26 @@ impl TownLoop {
         }
         self.cmds_prefix = self.tick.0;
         self.refresh();
-        // A replay prefix isn't gameplay to animate: snap every body to its
+        // A replay prefix isn't gameplay to animate: snap the body to its
         // sim cell (otherwise a SHOT right after the prefix — which never
-        // ticks — captures the eases mid-glide at their pre-replay cells).
-        for e in &mut self.ease {
-            *e = Ease::pinned(e.to);
-        }
-        println!("CMDS(town): {n} commands over {ticks} ticks — state {:016x}", self.sim.state_hash());
+        // ticks — captures the ease mid-glide at its pre-replay cell).
+        self.ease = Ease::pinned(self.ease.to);
+        println!("CMDS(gym): {n} commands over {ticks} ticks — state {:016x}", self.sim.state_hash());
     }
 
-    /// Advance every body's walk cycle one fixed tick: phase runs while the
-    /// body's ease is gliding, blend fades the pose in/out around it.
+    /// Advance the walk cycle one fixed tick: phase runs while the ease is
+    /// gliding, blend fades the pose in/out around it.
     fn gait_tick(&mut self) {
         let now = self.tick.0;
-        for i in 0..self.gait.len() {
-            let e = self.ease[i];
-            let moving = e.from != e.to && now <= e.start + EASE_TICKS as u64;
-            let mode = if i == 0 { self.mode() } else { MoveMode::Walk };
-            let (period, _) = gait_params(mode);
-            let g = &mut self.gait[i];
-            g.blend = (g.blend + if moving { 0.34 } else { -0.12 }).clamp(0.0, 1.0);
-            if g.blend > 0.0 {
-                g.phase += std::f32::consts::TAU / period;
-            } else {
-                g.phase = 0.0; // idle: next stride starts at heel-strike
-            }
+        let e = self.ease;
+        let moving = e.from != e.to && now <= e.start + EASE_TICKS as u64;
+        let (period, _) = gait_params(self.mode());
+        let g = &mut self.gait;
+        g.blend = (g.blend + if moving { 0.34 } else { -0.12 }).clamp(0.0, 1.0);
+        if g.blend > 0.0 {
+            g.phase += std::f32::consts::TAU / period;
+        } else {
+            g.phase = 0.0; // idle: next stride starts at heel-strike
         }
     }
 
@@ -411,68 +386,46 @@ impl TownLoop {
         }
         let now = self.tick.0;
         let p = cell_world(self.snap.player);
-        let prev_to = self.ease[0].to;
-        self.ease[0].retarget(p, now);
+        let prev_to = self.ease.to;
+        self.ease.retarget(p, now);
         if p != prev_to {
             let d = p - prev_to;
             if d.length_squared() > 1e-6 {
                 self.face = d.x.atan2(d.z);
             }
         }
-        for (i, n) in self.snap.npcs.iter().enumerate() {
-            self.ease[1 + i].retarget(cell_world(n.pos), now);
-        }
     }
 
     /// The camera's follow anchor: the eased player body.
     pub fn cam_target(&self) -> Vec3 {
-        self.ease[0].at(self.tick.0)
+        self.ease.at(self.tick.0)
     }
 
-    /// Is the player inside a building? Drives the dollhouse cutaway.
+    /// Is the player inside the building? Drives the dollhouse cutaway.
     pub fn indoors(&self) -> bool {
-        matches!(self.sim.grid().cell(self.snap.player).kind, CellKind::Room(_))
-    }
-
-    /// The FLOORCUT storey plane: only above ground level (upper storeys
-    /// come off as a cap; the ground storey keeps its roofs so buildings
-    /// read as buildings from the street).
-    pub fn cut_y(&self) -> Option<f32> {
-        (self.snap.player.floor > 0).then_some(cut_for_floor(self.snap.player.floor))
+        self.sim.grid().cell(self.snap.player) == CellKind::Room
     }
 
     /// The WALLCUT sill-height cutaway: on while the player is indoors —
-    /// every occluder wall drops to sill height so interiors read like a
+    /// every occluder wall drops to sill height so the interior reads like a
     /// dollhouse. A pure function of the player's cell.
     pub fn wall_cut(&self) -> Option<f32> {
-        self.indoors().then_some(STOREY_H * self.snap.player.floor as f32 + WALL_CUT_H)
-    }
-
-    /// Sky/sun scale for the sim's day phase — the renderer visualizes the
-    /// same clock the sim keeps.
-    pub fn sky(&self) -> f32 {
-        match self.snap.phase {
-            DayPhase::Day => 1.0,
-            DayPhase::Dawn | DayPhase::Dusk => 0.55,
-            DayPhase::Night => 0.16,
-        }
+        self.indoors().then_some(WALL_CUT_H)
     }
 
     // ---- per-frame instance skinning ------------------------------------
 
-    /// Place one body: a single-run body is one instance at `base`; the
-    /// articulated kit (detected by its limb runs) composes core + four
-    /// limbs from the gait sample. Limb transforms MUST mirror the pivot
-    /// constants the builder authored the geometry around.
-    #[allow(clippy::too_many_arguments)] // a body placement is genuinely this wide
-    fn push_body(&self, out: &mut Vec<(InstanceKey, Mat4)>, handles: &SceneHandles, name: &str, base: Mat4, g: Gait, leg_amp: f32, arm_ratio: f32) {
+    /// Place the player body: core + four limbs composed from the gait
+    /// sample. Limb transforms MUST mirror the pivot constants the builder
+    /// authored the geometry around.
+    pub fn instances(&self, handles: &SceneHandles) -> Vec<(InstanceKey, Mat4)> {
+        let mut out = Vec::new();
         let get = |n: &str| handles.instances.get(n).copied();
-        let Some(core) = get(name) else { return };
-        if get(&format!("{name}/legL")).is_none() {
-            out.push((core, base)); // single-run body
-            return;
-        }
-        let (bob, leg, arm) = gait_pose(g, leg_amp, arm_ratio);
+        let now = self.tick.0;
+        let base = Mat4::from_translation(self.ease.at(now)) * Mat4::from_rotation_y(self.face);
+        let Some(core) = get("player") else { return out };
+        let (_, leg_amp) = gait_params(self.mode());
+        let (bob, leg, arm) = gait_pose(self.gait, leg_amp, 0.65);
         out.push((core, base * Mat4::from_translation(Vec3::new(0.0, bob, 0.0))));
         let limb = |px: f32, py: f32, swing: f32| base * Mat4::from_translation(Vec3::new(px, py, 0.0)) * Mat4::from_rotation_x(swing);
         for (suffix, m) in [
@@ -481,47 +434,7 @@ impl TownLoop {
             ("armL", limb(-ARM_X, SHOULDER, arm)),
             ("armR", limb(ARM_X, SHOULDER, -arm)),
         ] {
-            if let Some(k) = get(&format!("{name}/{suffix}")) {
-                out.push((k, m));
-            }
-        }
-    }
-
-    pub fn instances(&self, handles: &SceneHandles) -> Vec<(InstanceKey, Mat4)> {
-        let mut out = Vec::new();
-        let get = |n: &str| handles.instances.get(n).copied();
-        let now = self.tick.0;
-        let ppos = self.ease[0].at(now);
-        let base = Mat4::from_translation(ppos) * Mat4::from_rotation_y(self.face);
-        let (_, leg_amp) = gait_params(self.mode());
-        self.push_body(&mut out, handles, "player", base, self.gait[0], leg_amp, 0.65);
-        for (i, n) in self.snap.npcs.iter().enumerate() {
-            let name = format!("npc_{}", n.id);
-            let pos = self.ease[1 + i].at(now);
-            let nbase = Mat4::from_translation(pos) * Mat4::from_rotation_y(facing_angle(n.facing));
-            let (_, nleg) = gait_params(MoveMode::Walk);
-            // guards swing their arms less: the spear hand stays a carry
-            let arm_ratio = if n.role == Role::Guard { 0.35 } else { 0.65 };
-            self.push_body(&mut out, handles, &name, nbase, self.gait[1 + i], nleg, arm_ratio);
-        }
-        // Door leaves aren't occluders (the WALLCUT keeps them whole). While
-        // indoors a CLOSED leaf crushes to the cut height — a full-height
-        // slab sticking out of a sill-high wall reads as a glitch, not a
-        // door — but an OPEN leaf stands inside the room like furniture and
-        // keeps its height.
-        let leaf_squash = if self.indoors() {
-            Mat4::from_scale(Vec3::new(1.0, WALL_CUT_H / crate::town_scene::DOOR_LEAF_H, 1.0))
-        } else {
-            Mat4::IDENTITY
-        };
-        for (i, d) in self.doors.iter().enumerate() {
-            if let Some(k) = get(&format!("tdoor_{i}")) {
-                let open = matches!(self.sim.grid().edge(d.cell, d.dir), EdgeKind::Door(DoorState::Open));
-                let m = if open {
-                    door_leaf_at(d, 1.75)
-                } else {
-                    door_leaf_at(d, 0.0) * leaf_squash
-                };
+            if let Some(k) = get(&format!("player/{suffix}")) {
                 out.push((k, m));
             }
         }
@@ -549,15 +462,6 @@ impl TownLoop {
             }
         }
         out
-    }
-}
-
-fn facing_angle(d: Dir) -> f32 {
-    match d {
-        Dir::Zp => 0.0,
-        Dir::Xp => std::f32::consts::FRAC_PI_2,
-        Dir::Zm => std::f32::consts::PI,
-        Dir::Xm => -std::f32::consts::FRAC_PI_2,
     }
 }
 
@@ -592,14 +496,14 @@ fn bubble(label: &str, accent: u32) -> (Vec<u32>, i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use house_game::town::sim::town_level;
+    use house_game::gym::sim::gym_level;
 
     /// W means SCREEN up: the iso staircase alternates axes per LANDED step
     /// at the sim's cadence (never one cell per tick, never a straight
     /// grid-axis line) — as long as the walk stays unobstructed.
     #[test]
     fn held_w_walks_screen_up_the_staircase_at_the_sims_cadence() {
-        let mut t = TownLoop::new(town_level(3));
+        let mut t = GymLoop::new(gym_level());
         t.held[0] = true;
         let (x0, z0) = (t.snap.player.x, t.snap.player.z);
         for _ in 0..64 {
@@ -614,11 +518,11 @@ mod tests {
         }
     }
 
-    /// Bodies ease between cells but always ARRIVE (presentation never
+    /// The body eases between cells but always ARRIVES (presentation never
     /// desyncs from sim truth).
     #[test]
     fn ease_converges_on_the_sim_cell() {
-        let mut t = TownLoop::new(town_level(3));
+        let mut t = GymLoop::new(gym_level());
         t.held[0] = true;
         for _ in 0..30 {
             t.run_due(TICK_DT);
@@ -632,32 +536,28 @@ mod tests {
         assert!((eased - truth).length() < 1e-4, "ease must settle on the cell: {eased} vs {truth}");
     }
 
-    /// The mouse loop end-to-end: click a street cell a few cells away — the
-    /// plan routes there and clears on arrival. Replay stays pure Move
-    /// commands.
+    /// The mouse loop end-to-end: click INSIDE the building — the plan
+    /// routes around the walls, through the doorway, and clears on arrival.
+    /// Replay stays pure Move commands.
     #[test]
-    fn click_plans_a_route_and_arrives() {
-        let mut t = TownLoop::new(town_level(3));
-        // find a reachable outdoor goal exactly 6 steps (manhattan) away
-        let start = t.snap.player;
-        let g = t.sim.grid();
-        let goal = (0..g.h)
-            .flat_map(|z| (0..g.w).map(move |x| CellPos::new(x, z, 0)))
-            .find(|&p| g.cell(p).kind == CellKind::Outdoor && (p.x - start.x).abs() + (p.z - start.z).abs() == 6 && t.bfs(start, p).is_some())
-            .expect("some outdoor cell 6 steps away is reachable");
+    fn click_routes_through_the_doorway_and_arrives() {
+        let mut t = GymLoop::new(gym_level());
+        let goal = CellPos::new(5, 5); // inside the one building
         t.click_ground(cell_world(goal));
-        assert!(t.plan.is_some(), "the goal must be BFS-reachable from the start");
-        for _ in 0..600 {
+        assert!(t.plan.is_some(), "the interior must be BFS-reachable via the doorway");
+        for _ in 0..900 {
             t.run_due(TICK_DT);
         }
         assert_eq!(t.snap.player, goal, "the plan must arrive");
         assert!(t.plan.is_none(), "a finished plan clears");
+        assert!(t.indoors(), "the goal is indoors");
+        assert_eq!(t.wall_cut(), Some(WALL_CUT_H), "indoors turns the dollhouse cutaway on");
     }
 
     /// Clicking off the map or the player's own cell leaves no plan.
     #[test]
     fn invalid_clicks_leave_no_plan() {
-        let mut t = TownLoop::new(town_level(3));
+        let mut t = GymLoop::new(gym_level());
         t.click_ground(Vec3::new(-3.0, 0.0, 5000.0)); // off the map
         assert!(t.plan.is_none());
         t.click_ground(cell_world(t.snap.player)); // own cell: cancel, no plan
@@ -669,19 +569,19 @@ mod tests {
     /// rest pose (blend 0) after the last ease lands.
     #[test]
     fn gait_swings_while_walking_and_settles_at_rest() {
-        let mut t = TownLoop::new(town_level(3));
+        let mut t = GymLoop::new(gym_level());
         t.held[0] = true;
         for _ in 0..24 {
             t.run_due(TICK_DT);
         }
-        let g = t.gait[0];
+        let g = t.gait;
         assert!(g.blend > 0.9, "mid-walk the pose must be fully blended in (blend={})", g.blend);
         let (_, leg, arm) = gait_pose(g, 0.5, 0.65);
         assert!(leg.abs() <= 0.5 && arm.abs() <= 0.5 * 0.65);
         let mut peak: f32 = 0.0;
         for _ in 0..16 {
             t.run_due(TICK_DT);
-            let (_, l, _) = gait_pose(t.gait[0], 0.5, 0.65);
+            let (_, l, _) = gait_pose(t.gait, 0.5, 0.65);
             peak = peak.max(l.abs());
         }
         assert!(peak > 0.3, "a full cycle must reach a visible swing (peak={peak})");
@@ -689,35 +589,27 @@ mod tests {
         for _ in 0..40 {
             t.run_due(TICK_DT);
         }
-        assert_eq!(t.gait[0].blend, 0.0, "idle must settle to the rest pose");
-        assert_eq!(t.gait[0].phase, 0.0, "the next stride restarts at heel-strike");
+        assert_eq!(t.gait.blend, 0.0, "idle must settle to the rest pose");
+        assert_eq!(t.gait.phase, 0.0, "the next stride restarts at heel-strike");
     }
 
-    /// Articulated bodies emit five runs with mirrored leg swings.
+    /// The articulated body emits five runs with mirrored leg swings.
     #[test]
     fn articulated_instances_mirror_legs() {
         use std::collections::BTreeMap;
-        let mut t = TownLoop::new(town_level(3));
+        let mut t = GymLoop::new(gym_level());
         t.held[0] = true;
         for _ in 0..20 {
             t.run_due(TICK_DT);
         }
         let mut instances = BTreeMap::new();
-        let mut names: Vec<String> = vec!["player".into()];
-        for limb in ["legL", "legR", "armL", "armR"] {
-            names.push(format!("player/{limb}"));
-        }
-        for n in &t.snap.npcs {
-            names.push(format!("npc_{}", n.id));
-            for limb in ["legL", "legR", "armL", "armR"] {
-                names.push(format!("npc_{}/{limb}", n.id));
-            }
-        }
+        let names = ["player", "player/legL", "player/legR", "player/armL", "player/armR"];
         for (i, n) in names.iter().enumerate() {
-            instances.insert(n.clone(), InstanceKey::from_index(i as u32));
+            instances.insert(n.to_string(), InstanceKey::from_index(i as u32));
         }
         let handles = SceneHandles { lights: BTreeMap::new(), instances };
         let out = t.instances(&handles);
+        assert_eq!(out.len(), 5, "core + four limbs");
         let get = |name: &str| {
             let k = handles.instances[name];
             out.iter().find(|(ik, _)| *ik == k).map(|(_, m)| *m).unwrap()

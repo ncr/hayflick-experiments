@@ -1,8 +1,8 @@
-//! Synth-blip audio backend: the sim's `AudioCue`s (and a couple of
-//! presentation-side tells) rendered as code-generated 8-bit-style
-//! waveforms through cpal. NO asset files — every sound is a short
-//! square/sine/noise voice with a pitch sweep and a quadratic decay, which
-//! lands squarely in the pixel-iso aesthetic and keeps the repo lean.
+//! Synth-blip audio backend: presentation-side UI tells rendered as
+//! code-generated 8-bit-style waveforms through cpal. NO asset files —
+//! every sound is a short square/sine voice with a pitch sweep and a
+//! quadratic decay, which lands squarely in the pixel-iso aesthetic and
+//! keeps the repo lean.
 //!
 //! Deliberately presentation-only and fail-soft: `AudioOut::new` returns
 //! `None` on any device trouble (headless boxes, CI), the sim never knows,
@@ -16,7 +16,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 enum Wave {
     Square,
     Sine,
-    Noise,
 }
 
 #[derive(Clone, Copy)]
@@ -28,7 +27,6 @@ struct Voice {
     gain: f32, // 0..1 pre-master
     t: f32,
     phase: f32,
-    rng: u32, // per-voice noise state
 }
 
 pub struct AudioOut {
@@ -68,17 +66,6 @@ impl AudioOut {
                                     v.phase = (v.phase + f / rate).fract();
                                     (v.phase * std::f32::consts::TAU).sin()
                                 }
-                                Wave::Noise => {
-                                    // xorshift32, resampled down to ~f Hz steps
-                                    v.phase += f / rate;
-                                    if v.phase >= 1.0 {
-                                        v.phase = v.phase.fract();
-                                        v.rng ^= v.rng << 13;
-                                        v.rng ^= v.rng >> 17;
-                                        v.rng ^= v.rng << 5;
-                                    }
-                                    (v.rng as f32 / u32::MAX as f32) * 2.0 - 1.0
-                                }
                             };
                             s += x * env * v.gain;
                             v.t += 1.0 / rate;
@@ -105,26 +92,19 @@ impl AudioOut {
         if q.len() > 24 {
             q.remove(0);
         }
-        q.push(Voice { wave, f0, f1, dur, gain: gain * self.master, t: 0.0, phase: 0.0, rng: 0x9e3779b9 });
+        q.push(Voice { wave, f0, f1, dur, gain: gain * self.master, t: 0.0, phase: 0.0 });
     }
 
-    /// One sim cue → one or two synth voices. Unknown ids stay silent (a
+    /// One UI cue → one or two synth voices. Unknown ids stay silent (a
     /// new cue is a design decision, not a crash).
     pub fn play(&self, id: &str, gain: f32) {
         let g = gain;
         match id {
-            "door_open" => self.voice(Wave::Square, 105.0, 140.0, 0.16, 0.30 * g),
-            "door_close" => self.voice(Wave::Square, 140.0, 95.0, 0.16, 0.30 * g),
-            // presentation-side: menu navigation blips
+            // menu navigation blips
             "menu_move" => self.voice(Wave::Square, 520.0, 520.0, 0.025, 0.18 * g),
             "menu_pick" => {
                 self.voice(Wave::Square, 520.0, 700.0, 0.05, 0.22 * g);
                 self.voice(Wave::Sine, 700.0, 940.0, 0.07, 0.18 * g);
-            }
-            // presentation-side: footstep tick (walk cadence)
-            "step" => {
-                self.voice(Wave::Square, 210.0, 150.0, 0.022, 0.14 * g);
-                self.voice(Wave::Noise, 1200.0, 800.0, 0.015, 0.06 * g);
             }
             _ => {}
         }

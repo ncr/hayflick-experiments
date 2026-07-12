@@ -72,8 +72,8 @@ pub struct FramePresent<'a> {
     /// each logical canvas pixel is scaled by `scale` (pass the render
     /// scale for game-pixel-consistent chunk).
     pub stamps: &'a [Stamp],
-    /// Per-frame multiplier on the env sun/sky fill (1.0 = authored). The
-    /// town drives it from the sim's day phase (the clock, visualized).
+    /// Per-frame multiplier on the env sun/sky fill (1.0 = authored — the
+    /// permanent sunny day; a future day cycle would drive this).
     pub sky_dim: f32,
     /// Dollhouse see-through reveal (CAVE_ROI): player world pos + disc radius /
     /// falloff in low-res px. The backend projects the disc centre via the shared

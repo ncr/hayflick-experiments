@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Build and run the viewer (deterministic hardware-RT renderer).
 #
-#   bin/run            # the generated town testbed (SEED=N rerolls it)
-#   bin/run 7          # a number as the first arg = SEED
-#   AO_R=1.2 bin/run   # every Config env knob passes through (see config.rs)
+#   bin/run               # the gym: one hand-authored level (a few walls,
+#                         # one building, the player — docs/VISION.md)
+#   AO_R=1.2 bin/run      # every Config env knob passes through (config.rs)
 #   LOOK=classic bin/run  # pick a greybox look preset (look.rs)
 #
-# The GI bake is cached per-seed on disk, so re-launches are instant
+# The GI bake is cached on disk, so re-launches are instant
 # (PROBE_CACHE=0 to disable, =<dir> to relocate).
 #
 # The owner plays from the IN-GAME menus (docs/VISION.md): ESC opens the
-# game menu (resume / restart town / seeds / settings / quit); SETTINGS has
-# the live sliders and prints the reproducing env string on close.
+# game menu (resume / restart / settings / quit); SETTINGS has the live
+# sliders and prints the reproducing env string on close.
 #
 # 'r' records a clip (game-pixel capture): stop writes clips/clip_NNNN.mp4
 # AND .gif. Knobs: CLIP_FPS=50 CLIP_MP4_SCALE=4 CLIP_GIF_SCALE=1 CLIP_MAX_S=60.
@@ -23,8 +23,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SEED="${1:-${SEED:-1}}"
-
 cargo build --release --manifest-path Cargo.toml
 
-SEED="$SEED" exec ./target/release/viewer
+exec ./target/release/viewer

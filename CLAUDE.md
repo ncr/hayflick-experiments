@@ -1,8 +1,9 @@
 # CLAUDE.md — Project Conventions (rust branch)
 
 Native Rust only. The TypeScript web stack lives on `main`; every dropped
-direction (goo arena, thief deduction, cave/village generator scenes) lives
-under the git tag `archive/pre-joyful-reset` (2026-07-12 purge).
+direction (goo arena, thief deduction, cave/village generator scenes, the
+generated town with its NPCs) lives under the git tags
+`archive/pre-joyful-reset` and `archive/town-testbed` (2026-07-12 purges).
 
 ## Required Reading
 
@@ -21,44 +22,46 @@ Cargo workspace at the repo root, members `crates/*`:
 |---|---|---|
 | `iso-core` | pure iso 2:1 camera/lattice math (Faza 1 generalizes to projection-as-data) | glam only |
 | `sim-core` | generic sim runtime (fixed tick, InputQueue, Pcg32, traces) | hecs, glam |
-| `house-game` | ALL game logic, fully headless: the `town` testbed + movement primitives | sim-core, iso-core |
+| `house-game` | ALL game logic, fully headless: the `gym` testbed + movement primitives | sim-core, iso-core |
 | `rt-probe` | deterministic renderer lib (Vulkan ray_query) + GLSL | iso-core |
-| `rt-viewer` | `viewer` binary: winit shell, Metal backend, town loop, capture | everything |
+| `rt-viewer` | `viewer` binary: winit shell, Metal backend, gym loop, capture | everything |
 
 **rt-probe and house-game never see each other** — only rt-viewer's adapter
 knows both. The game must build and test without a GPU.
 
-## The one scene: the town
+## The one scene: the gym
 
-`viewer` boots the generated town testbed (`house_game::town`): a seeded
-district (streets, multi-floor buildings, gates) with a walkable player,
-wandering/patrolling NPCs and a day clock. `SEED=<n>` rerolls it; `LOOK=<name>`
-picks a greybox aesthetic preset (`rt-viewer/src/look.rs`). The dollhouse
-cutaways (FLOORCUT/WALLCUT) and the ROI reveal follow the live player.
+`viewer` boots the gym (`house_game::gym::sim::gym_level`): ONE hand-authored
+18×14 level — a few freestanding walls, one building with a doorway, two
+lamps, the player. No NPCs, no generators, no seed (owner directive
+2026-07-12: everything the look/movement work needs, nothing else).
+`LOOK=<name>` picks a greybox aesthetic preset (`rt-viewer/src/look.rs`).
+The WALLCUT dollhouse cutaway and the ROI reveal follow the live player.
 
-The town's cell-stepping mover is INTERIM — Faza 2 replaces it with the
+The gym's cell-stepping mover is INTERIM — Faza 2 replaces it with the
 continuous miodny movement stack. Don't grow it.
 
 ## Key Commands
 
 | Command | Description |
 |---|---|
-| `bin/run [seed]` | Build + launch the viewer (generated town; ESC = game menu) |
+| `bin/run` | Build + launch the viewer (the gym; ESC = game menu) |
 | `cargo test` | Headless workspace tests (the CI-able layer) |
 | `bin/golden` | SUSPENDED until the Faza-1 look lock (prints the interim procedure) |
-| `.claude/skills/record-gameplay` | Headless town trace → MP4 clip |
+| `.claude/skills/record-gameplay` | Headless gym trace → MP4 clip |
 
 Env knobs pass through `bin/run` (see `crates/rt-probe/src/config.rs`):
 `WINDOW=WxH SHOT=out.png` renders one headless frame; `DEMO=<trace>
-DEMO_TICKS=N DEMO_DIR=<dir>` renders frame sequences; `SEED=…`, `LOOK=…`.
+DEMO_TICKS=N DEMO_DIR=<dir>` renders frame sequences; `LOOK=…`.
 
 ## Determinism — the load-bearing discipline
 
 1. **Fixed tick (60 Hz), replayable command streams.** Sim time = `tick / 60`;
-   town traces (`<tick> move dx dz [mode]`) drive headless runs bit-identically.
+   gym traces (`<tick> move dx dz [walk|run]`) drive headless runs
+   bit-identically.
 2. **`state_hash` + replay tests** pin sim behaviour (`cargo test`).
-3. **No wall-clock, no unseeded RNG in the sim.** All randomness via `Pcg32`
-   seeded from the level seed.
+3. **No wall-clock, no unseeded RNG in the sim.** (The current gym sim uses
+   no RNG at all; anything seeded goes through `Pcg32`.)
 4. **Byte goldens are suspended** during the visual reset (Faza 0/1). Verify
    render changes with before/after `SHOT=` diffs; re-pin goldens per
    machine/backend once the owner locks the look (see `bin/golden`).
@@ -74,7 +77,7 @@ documented as debt. Shared push-constant structs live once in
 This dev machine (M2 Pro) runs the **Metal** backend; the Hetzner "spawner"
 box (RTX 5080) runs Vulkan. **Open spawner duty (2026-07-12):** the purge
 edited `vulkan_backend.rs`/`shade.comp` blind (they don't compile on macOS) —
-first Vulkan session must `cargo check` + eyeball one town SHOT.
+first Vulkan session must `cargo check` + eyeball one gym SHOT.
 
 ## Pixel-perfect iso contract (binding; generalizes, never weakens)
 

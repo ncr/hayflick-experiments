@@ -1,12 +1,12 @@
 //! house-game — the game's headless core (ARCHITECTURE.md area C).
 //!
-//! Post-reset (docs/VISION.md): the only game content is the [`town`] testbed.
-//! This root keeps the continuous-movement primitives the Faza-2 miodny
-//! player stack builds on (collision, iso input shaping, the speed floor) —
-//! all pure functions, no GPU, no window: everything here runs under plain
-//! `cargo test -p house-game`.
+//! Post-reset (docs/VISION.md): the only game content is the [`gym`] testbed
+//! (one hand-authored level, player only). This root keeps the continuous-
+//! movement primitives the Faza-2 miodny player stack builds on (collision,
+//! iso input shaping, the speed floor) — all pure functions, no GPU, no
+//! window: everything here runs under plain `cargo test -p house-game`.
 
-pub mod town;
+pub mod gym;
 
 use glam::Vec2;
 
