@@ -40,8 +40,11 @@ DONE: a Look is the WHOLE aesthetic as one datum — palette, sun/sky
 (`SunSky`), post stack (`StyleCfg`), exposure, surface response — and the
 ESC settings menu's "look" row switches it LIVE via
 `RenderBackend::rebuild_scene` + probe rebake, disk-cached per look).
-Faza-1c candidates awaiting the owner playtest: `tecta` (default,
-concepts-derived — see `docs/concepts/`), `meadow`, `porcelain`, `sorbet`.
+THE look direction (owner pick, 2026-07-12): `polana` (default) —
+porcelain × meadow: clean ceramic volumes, full-height black window slots
+on building walls only, lush saturated greens + grass-tuft dress, amber
+accent. `porcelain`/`meadow` stay as A/B parents; lock + goldens await
+the owner playtest.
 `LOOK_SWITCH=<name>` exercises the runtime-switch path headlessly (a SHOT
 after it must match a direct boot in that look up to the Metal cross-run
 noise floor — see the 2026-07-12 learning).

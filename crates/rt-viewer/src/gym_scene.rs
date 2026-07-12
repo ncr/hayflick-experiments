@@ -13,9 +13,13 @@
 //! occluding cap. Occlusion is the dollhouse WALLCUT: outdoors the building
 //! stands whole; indoors every occluder drops to sill height (`WALL_CUT_H`).
 //!
-//! The AESTHETIC is data: a [`Look`] preset (LOOK env, look.rs) supplies
-//! every colour, the lamp mood, the lighting env and the dress switches.
-//! The Faza-1 joyful looks replace the presets; the machinery stays.
+//! The AESTHETIC is data: a [`Look`] preset (look.rs; runtime-switchable
+//! from the ESC menu since Faza 1b) supplies every colour, the lamp mood,
+//! the lighting env, the sun/sky and the dress switches. The 2026-07-12
+//! mesh rebuild (owner directive): facades are clean panels with
+//! FULL-HEIGHT tinted-glass window slots (one per wall cell) instead of
+//! the old half-timber posts + rail, and Outdoor cells grow a grass-tuft
+//! dress on the looks that ask for it.
 //!
 //! NEE discipline: the ONLY named lights are the spec lamps (conceptual point
 //! lights). Every emissive box (lamp fixtures) is part of a dynamic run,
@@ -36,7 +40,6 @@ pub const WALL_CUT_H: f32 = 1.0;
 
 const FLOOR_TOP: f32 = 6.0 / 128.0;
 const WALL_HT: f32 = 0.1; // wall half-thickness (0.2 wu slab, on the 0.1 grid)
-const RAIL_Y: f32 = 1.8125; // half-timber rail height
 const ROOF_BASE: f32 = 2.375;
 const ROOF_TOP: f32 = 2.5;
 
@@ -75,16 +78,21 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
     }
 
     // ---- walls: merge consecutive wall edges along each boundary line.
+    // Runs also split where BUILDING-ness changes: window slots go only on
+    // walls bounding a Room (the building facade); freestanding garden
+    // walls stay clean porcelain panels (owner directive 2026-07-12).
+    let roomy = |p: Option<CellPos>| p.is_some_and(|p| g.in_bounds(p) && g.cell(p) == CellKind::Room);
     // Z-boundaries (edges between (x,z-1) and (x,z), drawn per cell's Zm):
     for z in 0..h {
+        let zroomy = |x: i16| roomy(Some(CellPos::new(x, z))) || (z > 0 && roomy(Some(CellPos::new(x, z - 1))));
         let mut x = 0i16;
         while x < w {
             if g.edge(CellPos::new(x, z), Dir::Zm) == EdgeKind::Wall {
-                let x0 = x;
-                while x < w && g.edge(CellPos::new(x, z), Dir::Zm) == EdgeKind::Wall {
+                let (x0, rm) = (x, zroomy(x));
+                while x < w && g.edge(CellPos::new(x, z), Dir::Zm) == EdgeKind::Wall && zroomy(x) == rm {
                     x += 1;
                 }
-                wall_slab(&mut scene, [x0 as f32 - WALL_HT, z as f32 - WALL_HT, x as f32 + WALL_HT, z as f32 + WALL_HT], true, look);
+                wall_slab(&mut scene, [x0 as f32 - WALL_HT, z as f32 - WALL_HT, x as f32 + WALL_HT, z as f32 + WALL_HT], true, rm, look);
             } else {
                 x += 1;
             }
@@ -92,14 +100,15 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
     }
     // X-boundaries (per cell's Xm):
     for x in 0..w {
+        let xroomy = |z: i16| roomy(Some(CellPos::new(x, z))) || (x > 0 && roomy(Some(CellPos::new(x - 1, z))));
         let mut z = 0i16;
         while z < h {
             if g.edge(CellPos::new(x, z), Dir::Xm) == EdgeKind::Wall {
-                let z0 = z;
-                while z < h && g.edge(CellPos::new(x, z), Dir::Xm) == EdgeKind::Wall {
+                let (z0, rm) = (z, xroomy(z));
+                while z < h && g.edge(CellPos::new(x, z), Dir::Xm) == EdgeKind::Wall && xroomy(z) == rm {
                     z += 1;
                 }
-                wall_slab(&mut scene, [x as f32 - WALL_HT, z0 as f32 - WALL_HT, x as f32 + WALL_HT, z as f32 + WALL_HT], false, look);
+                wall_slab(&mut scene, [x as f32 - WALL_HT, z0 as f32 - WALL_HT, x as f32 + WALL_HT, z as f32 + WALL_HT], false, rm, look);
             } else {
                 z += 1;
             }
@@ -147,6 +156,11 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
         scene.register_dynamic(&format!("lamp_fix_{i}"), first, scene.primitives.len() - first, Mat4::IDENTITY);
     }
 
+    // ---- lush-nature dress: grass tufts over the Outdoor cells
+    if let Some(greens) = look.grass {
+        grass_dress(&mut scene, spec, greens);
+    }
+
     scene.recompute_bounds();
 
     // ---- dynamics (after recompute_bounds, local space): the player body.
@@ -173,10 +187,13 @@ fn floor_tint(g: &Grid, p: CellPos, look: &Look) -> u32 {
 
 /// One merged wall slab + the look's dress: an optional skirting plinth
 /// (below the WALLCUT — it survives the cutaway and grounds the wall stubs)
-/// and optional half-timber framing (posts on every cell boundary + a
-/// rail, occluder-marked so the cutaway takes them with the wall).
-/// `along_x` says which axis the run spans.
-fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, look: &Look) {
+/// and, on BUILDING walls only (`windows`), optional FULL-HEIGHT
+/// tinted-glass window slots (owner directive 2026-07-12: the tecta window
+/// rhythm in porcelain-clean form — one slot per wall cell, centred, floor
+/// to just above the wall top, smooth/glossy; occluder-marked so the
+/// cutaway takes them with the wall). `along_x` says which axis the run
+/// spans.
+fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, windows: bool, look: &Look) {
     let first = scene.primitives.len();
     scene.add_box_world(Vec3::new(rect[0], 0.0, rect[1]), Vec3::new(rect[2], WALL_TOP, rect[3]), hex_linear(look.wall), [0.0; 4], 0.85, 0.0);
     mark_occluder(scene, first);
@@ -184,12 +201,10 @@ fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, look: &Look) {
     // DIFFERENT colour must never share a face plane with its host — offset
     // by a whole lattice step, inward or outward. Two coplanar faces of
     // different colours ray-z-fight: the per-pixel winner flips on sub-pixel
-    // camera motion and the losing colour strobes through. Same-colour
-    // coplanarity (rail vs post) is benign — the winner is invisible.
+    // camera motion and the losing colour strobes through.
     if let Some(hexp) = look.plinth {
         // strictly the proudest thing at the base (±0.1 past the slab, one
-        // step past the posts' ±0.05); run ends stay at ±0.05 so the end
-        // caps tuck INSIDE the extended door posts, never flush with them
+        // step past the window slots' ±0.05)
         let (lo, hi) = if along_x {
             (Vec3::new(rect[0] - 0.05, 0.0, rect[1] - 0.1), Vec3::new(rect[2] + 0.05, 0.1875, rect[3] + 0.1))
         } else {
@@ -197,31 +212,69 @@ fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, look: &Look) {
         };
         scene.add_box_world(lo, hi, hex_linear(hexp), [0.0; 4], 0.85, 0.0);
     }
-    if let Some(hext) = look.timber {
-        let tc = hex_linear(hext);
-        // posts at every integer boundary along the run (both ends included);
-        // 0.0625 taller than the wall so the post top never fights the wall
-        // top; END posts extend one lattice step outward and swallow the
-        // slab's end cap whole (a doorframe / end frame read)
+    if let (true, Some(hexw)) = (windows, look.window) {
+        let wc = hex_linear(hexw);
+        // one slot per wall cell, centred (0.4 wide — clean on both stair
+        // axes), proud of the slab by 0.05 each side and 0.0625 above the
+        // wall top, so no face is ever coplanar with the host; the base
+        // sinks to y=0 (through the floor plane, never ON it). Glass-smooth
+        // (low roughness) — the look's spec/gloss give it the sheen.
         let (a0, a1) = if along_x { (rect[0] + WALL_HT, rect[2] - WALL_HT) } else { (rect[1] + WALL_HT, rect[3] - WALL_HT) };
-        let mut k = a0;
-        while k <= a1 + 0.001 {
+        let mut c = a0;
+        while c + 1.0 <= a1 + 0.001 {
+            let mid = c + 0.5;
             let first = scene.primitives.len();
-            let ext0 = if k - 0.5 < a0 { 0.1 } else { 0.0 }; // first post of the run
-            let ext1 = if k + 0.5 > a1 { 0.1 } else { 0.0 }; // last post of the run
             let (lo, hi) = if along_x {
-                (Vec3::new(k - 0.1 - ext0, 0.0, rect[1] - 0.05), Vec3::new(k + 0.1 + ext1, WALL_TOP + 0.0625, rect[3] + 0.05))
+                (Vec3::new(mid - 0.2, 0.0, rect[1] - 0.05), Vec3::new(mid + 0.2, WALL_TOP + 0.0625, rect[3] + 0.05))
             } else {
-                (Vec3::new(rect[0] - 0.05, 0.0, k - 0.1 - ext0), Vec3::new(rect[2] + 0.05, WALL_TOP + 0.0625, k + 0.1 + ext1))
+                (Vec3::new(rect[0] - 0.05, 0.0, mid - 0.2), Vec3::new(rect[2] + 0.05, WALL_TOP + 0.0625, mid + 0.2))
             };
-            scene.add_box_world(lo, hi, tc, [0.0; 4], 0.8, 0.0);
+            scene.add_box_world(lo, hi, wc, [0.0; 4], 0.15, 0.0);
             mark_occluder(scene, first);
-            k += 1.0;
+            c += 1.0;
         }
-        // rail spanning the whole run (same colour as the posts it crosses)
-        let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(rect[0] - 0.05, RAIL_Y, rect[1] - 0.05), Vec3::new(rect[2] + 0.05, RAIL_Y + 0.09375, rect[3] + 0.05), tc, [0.0; 4], 0.8, 0.0);
-        mark_occluder(scene, first);
+    }
+}
+
+/// Deterministic per-cell hash for the grass dress — a pure function of the
+/// cell coords (no RNG state anywhere; the sim never sees these boxes).
+fn cell_hash(x: i16, z: i16) -> u32 {
+    let mut h = (x as u32).wrapping_mul(0x9E37_79B9) ^ (z as u32).wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xC2B2_AE35);
+    h ^ (h >> 16)
+}
+
+/// Lush-nature dress (owner directive 2026-07-12): low grass-tuft boxes on
+/// ~1/4 of the Outdoor cells, hash-placed on the clean stair lattice
+/// (X: 0.1, Z: 0.05 steps), three green tints. Tufts are walk-through
+/// visuals (grass), low enough that the player wading through them reads
+/// as walking in grass; bases sink to y=0 so no face lies ON the floor
+/// plane (coplanarity rule). Lamp cells and the spawn cell stay clear.
+fn grass_dress(scene: &mut Scene, spec: &GymLevel, greens: [u32; 3]) {
+    let g = &spec.grid;
+    for z in 0..g.h {
+        for x in 0..g.w {
+            let p = CellPos::new(x, z);
+            if g.cell(p) != CellKind::Outdoor || p == spec.player_start || spec.lights.iter().any(|(c, _)| *c == p) {
+                continue;
+            }
+            let h = cell_hash(x, z);
+            if !h.is_multiple_of(4) {
+                continue;
+            }
+            let ox = 0.1 + 0.1 * ((h >> 8) % 6) as f32; //  0.1..0.6
+            let oz = 0.1 + 0.05 * ((h >> 16) % 12) as f32; // 0.1..0.65
+            let ht = 0.09375 + 0.03125 * ((h >> 4) % 3) as f32;
+            let tint = hex_linear(greens[((h >> 24) % 3) as usize]);
+            let (cx, cz) = (x as f32 + ox, z as f32 + oz);
+            scene.add_box_world(Vec3::new(cx, 0.0, cz), Vec3::new(cx + 0.2, ht, cz + 0.15), tint, [0.0; 4], 0.9, 0.0);
+            if h & 1 == 0 {
+                // a second, smaller blade for busier clumps
+                let tint2 = hex_linear(greens[((h >> 26) % 3) as usize]);
+                scene.add_box_world(Vec3::new(cx + 0.3, 0.0, cz + 0.1), Vec3::new(cx + 0.4, ht * 0.75, cz + 0.2), tint2, [0.0; 4], 0.9, 0.0);
+            }
+        }
     }
 }
 

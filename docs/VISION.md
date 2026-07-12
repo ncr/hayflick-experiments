@@ -99,11 +99,17 @@ cache dyskowy per look, ~2.5 s pierwszy raz na M2); env-knoby (`LOOK`,
 `GRADE`, `SAT`, `EXPOSURE`, `BUMP`, …) zostają nadpisaniami dla
 agenta/harnessu, a `LOOK_SWITCH=<name>` weryfikuje ścieżkę runtime
 bezgłowo. Stare bundle `STYLE=` i looki ery brudu skasowane (archiwum w
-git). (c) **kandydaci autorowani (2026-07-12), playtest ownera CZEKA**:
-`tecta` (golden hour wg konceptów), `meadow` (słoneczny dzień / obrazy
-trip), `porcelain` (biel + bursztynowy akcent), `sorbet` (cukierkowe
-pastele) — wszystkie w menu ESC. Wybór looku + nowe goldeny dopiero po
-playteście i dyskusji z ownerem.
+git). (c) **kierunek WYBRANY (owner, 2026-07-12, po przeglądzie 4 kandydatów
+tecta/meadow/porcelain/sorbet): porcelain × meadow**, zmergowane jako
+preset **`polana`** (domyślny): super-czyste porcelanowe bryły (minimalne
+bumps, lekki sheen), bujna nasycona zieleń i niebo („lush greens and
+sky"), rytm elewacji = czyste panele + CAŁOŚCIENNE czarne okna (tint jak
+w tecta, porcelanowy feeling), bursztynowy akcent z porcelain, wędrowiec
+w czerwieni z meadow. Meshe gymu przebudowane pod ten kierunek: sloty
+okienne (tylko ściany budynku; murki wolnostojące czyste) zamiast słupów
+half-timber, trawa-dress na Outdoor (deterministyczny hash, bez RNG).
+`porcelain`/`meadow` zostają w menu jako referencje A/B; `tecta`/`sorbet`
+skasowane (git). CZEKA: playtest ownera z menu ESC + lock + nowe goldeny.
 
 **Faza 2 — miodny player.** Jeden continuous stack ruchu (koniec z
 grid-locked easingiem): collide-and-slide + pathfinding (A*/funnel +
