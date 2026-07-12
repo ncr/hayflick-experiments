@@ -367,3 +367,26 @@ Fix + checklist:
   (eases) seeded from tick 0 glides after the prefix, so a SHOT right after
   `run_cmds` captured bodies at their PRE-replay cells. Snap presentation
   state to sim truth at the end of any replay prefix.
+
+## 2026-07-12 — fixed-size GPU bake batches silently outgrow the watchdog
+
+Context: the Faza-0 town testbed (40k GI probes, 48 NEE lamps) intermittently
+failed the Metal probe bake with command-buffer status `Error` at a random
+batch (`probe bake batch failed (bank N, ray M)`), on a path that had been
+rock-solid for months.
+
+Root cause: the bake used a FIXED 32-rays-per-command-buffer batch, tuned on
+a 13k-probe / 3-lamp scene. Batch cost scales with probes × lights (every
+bounce NEE-samples every light), so the town's batches ran ~40× longer and
+intermittently crossed the macOS GPU watchdog. Nothing was wrong with the
+shader — the schedule was stale.
+
+Fix: `metal_backend.rs` derives the batch from `probe_count × (light_count+8)`
+(clamped 2..32), so per-cb work stays roughly constant as scenes grow.
+
+Detection signal: NON-deterministic command-buffer `Error` at varying batch
+indices on a bigger-than-usual scene = wall-clock watchdog, not a logic bug.
+
+Preventive checklist: any fixed GPU batch size is an implicit assumption
+about scene size — derive it from the actual per-item cost factors, and say
+which factors in a comment.
