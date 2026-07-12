@@ -37,17 +37,23 @@ lamps, the player. No NPCs, no generators, no seed (owner directive
 2026-07-12: everything the look/movement work needs, nothing else).
 `LOOK=<name|index>` seeds the greybox look (`rt-viewer/src/look.rs`; Faza 1b
 DONE: a Look is the WHOLE aesthetic as one datum — palette, sun/sky
-(`SunSky`), post stack (`StyleCfg`), exposure, surface response — and the
-ESC settings menu's "look" row switches it LIVE via
-`RenderBackend::rebuild_scene` + probe rebake, disk-cached per look).
-THE look direction (owner pick, 2026-07-12): `polana` (default) —
-porcelain × meadow: clean ceramic volumes, full-height black window slots
-on building walls only, lush saturated greens + grass-tuft dress, amber
-accent. `porcelain`/`meadow` stay as A/B parents; lock + goldens await
-the owner playtest.
-`LOOK_SWITCH=<name>` exercises the runtime-switch path headlessly (a SHOT
-after it must match a direct boot in that look up to the Metal cross-run
-noise floor — see the 2026-07-12 learning).
+(`SunSky`), post stack (`StyleCfg`), exposure, surface response).
+THE look (owner pick + same-day "delete rest", 2026-07-12): **`polana` is
+the ONLY look** — porcelain × meadow: clean ceramic volumes; occasional
+FULL-HEIGHT black tinted-glass windows on building walls only (even
+world-coordinate cells; REAL wall openings + transmissive panes — the
+shade pass carries primary rays through with the pane's tint, shadow
+rays/probe bake keep glass opaque, and in the WALLCUT cutaway glass stubs
+deliberately stand 0.3125 proud of wall stubs to cover the bay jambs);
+lush saturated greens + grass-tuft dress; amber accent. The other
+candidates are deleted (git history) and the ESC menu has NO look row
+(one preset = dead UI; a menu.rs test pin demands the row back the moment
+a second look lands). Lock + goldens await the owner playtest.
+`LOOK_SWITCH=polana` force-rebuilds INTO the booted look via
+`RenderBackend::rebuild_scene` + probe rebake (disk-cached per look) — the
+headless identity check for the whole runtime-switch machinery (a SHOT
+after it must match a direct boot up to the Metal cross-run noise floor —
+see the 2026-07-12 learning).
 `PROJ=<name|index>` seeds the projection preset; the DEFAULT is
 `trimetric` — THE game projection (owner pick, 2026-07-12) — with `iso21`
 kept as the A/B reference the owner can switch to in the ESC settings menu.
@@ -96,12 +102,17 @@ Faza 1a touched `vulkan_backend.rs` blind (ISO_R import/print dropped), and
 Faza 1b edited it blind AGAIN (env0 → `EnvBlock` field; `ShadePush::new` +
 `bake_probes` take `&EnvBlock`; new `rebuild_scene`; restored the dropped
 `render_finished` semaphore creation in `recreate_gpu`; fixed the
-`build_tone_push` call to pass `&fp.proj`). The GLSL twins
-(`shade.comp`/`probes.comp`) DO compile here via glslangValidator but never
-ran on hardware. First Vulkan session: `cargo check`, gym SHOTs per look
-(all four) at trimetric AND iso21, one `LOOK_SWITCH` identity check — and
-note ShadePush is now EXACTLY 256 B (the common NVIDIA
-maxPushConstantsSize); if the device rejects it, the env rows move to a UBO.
+`build_tone_push` call to pass `&fp.proj`). The polana window rework
+(same day) changed `shade.comp` only (shader-side: `Material.pad` is now a
+bitfield — 1 occluder, 2 glass — glass transmission loop + wallcut
+straddle/proud-stub rules; NO host/push changes, so `vulkan_backend.rs`
+was untouched this time). The GLSL twins (`shade.comp`/`probes.comp`) DO
+compile here via glslangValidator but never ran on hardware. First Vulkan
+session: `cargo check`, gym SHOTs for polana at trimetric AND iso21
+(outdoor facade + a CMDS indoor cutaway — the glass transmission, the
+taller glass stubs), one `LOOK_SWITCH=polana` identity check — and note
+ShadePush is EXACTLY 256 B (the common NVIDIA maxPushConstantsSize); if
+the device rejects it, the env rows move to a UBO.
 
 ## Pixel-perfect iso contract (binding; generalizes, never weakens)
 

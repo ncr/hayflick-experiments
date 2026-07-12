@@ -252,8 +252,8 @@ kernel void shade(
     // - STOREY cut (misc3.x): EVERY primary-ray hit at or above the plane
     //   dissolves — storeys above the player's floor and their roofs come off
     //   like lifting a dollhouse cap.
-    // - WALL cut (misc3.y): only OCCLUDER hits (mats[..].pad == 1 — walls,
-    //   roofs, lintels) at or above the plane dissolve. The game sets it to
+    // - WALL cut (misc3.y): only OCCLUDER hits (mats[..].pad bit 1 — walls,
+    //   roofs, glass panes) at or above the plane dissolve. The game sets it to
     //   sill height while the player is INDOORS, so buildings open into a
     //   cutaway while bodies, props and door leaves keep their full height.
     // INT_MAX disables a plane; both off skips the block entirely
@@ -269,12 +269,26 @@ kernel void shade(
         // occluder hit (h.t <= 0.6, ~one slab thickness) is that slab's FAR
         // face, which may already sit BELOW the plane (walls straddle it);
         // pass through it or its inner surface renders as a dark band along
-        // every cut edge (the ROI loop's proven far-face rule).
+        // every cut edge (the ROI loop's proven far-face rule). GLASS panes
+        // (pad bit 2) get a wider far-face bound — 0.3 thick, crossed
+        // obliquely up to ~0.78 wu at the trimetric d, so the 0.6 bound
+        // left the pane's below-plane far face as a floating glass plate
+        // over every cut window; gated to glass so real second walls stay
+        // solid (a parallel occluder is beyond a loop-breaking floor hit).
+        // Glass stubs stand 0.3125 taller than wall stubs: the pane is the
+        // proudest thing in its bay, so its cut silhouette must COVER the
+        // opening's porcelain jamb behind it — same world height but deeper
+        // in view, the jamb's cut edge projects higher on screen and would
+        // poke out as a thin dark sliver (it sits in the still-solid pane's
+        // sun shadow). The taller glass stub also echoes the crown lip.
         bool wallPass = false;
         for (int it = 0; it < 16 && hitb; it++) {
             float hy = (o + d * h.t).y;
-            bool occ = mats[h.mat].pad == 1;
-            bool cut = (storey && hy >= cutY) || (wall && occ && (hy >= wallY || (wallPass && h.t <= 0.6)));
+            bool glass = (mats[h.mat].pad & 2) != 0;
+            bool occ = (mats[h.mat].pad & 1) == 1;
+            float ffar = glass ? 1.0 : 0.6;
+            float wy = glass ? wallY + 0.3125 : wallY;
+            bool cut = (storey && hy >= cutY) || (wall && occ && (hy >= wy || (wallPass && h.t <= ffar)));
             if (!cut) break;
             wallPass = occ;
             o = o + d * (h.t + (1.0 / 256.0));
@@ -283,7 +297,7 @@ kernel void shade(
     }
 
     // CAVE_ROI dithered see-through — byte-identical twin of shade.comp: dissolve
-    // occluder-wall hits (mats[h.mat].pad==1) between camera and player AND inside
+    // occluder-wall hits (mats[h.mat].pad bit 1) between camera and player AND inside
     // the player-anchored screen disc, marching the same primary ray past them.
     // roi2.w carries the ghost cap in its MAGNITUDE and the contour flag in its SIGN:
     // <0 = GHOST+CONTOUR hybrid (faint stipple AND faint silhouette line-art, the
@@ -299,7 +313,7 @@ kernel void shade(
         float2 fwd = normalize(d.xz); // camera ground-forward (horizontal view dir)
         // Contour region: nearest hit is a FRONT occluder wall inside the disc (same
         // front-of-player gate as the dissolve loop), marked dissolved OR stipple-kept.
-        if (roiContour && hitb && wv > 0.0 && mats[h.mat].pad == 1
+        if (roiContour && hitb && wv > 0.0 && (mats[h.mat].pad & 1) == 1
             && !(h.t > 0.6 && dot((o + d * h.t).xz - pc.roi.xyz.xz, fwd) >= 0.0)) {
             inContour = true;
             wallPos = o + d * h.t;
@@ -311,7 +325,7 @@ kernel void shade(
         int2 wpx = int2((dot(orel, float3(pc.camRight.xyz)) / pc.camRight.w * 0.5 + 0.5) * float(W),
                         (0.5 - dot(orel, float3(pc.camUp.xyz)) / pc.camUp.w * 0.5) * float(H));
         if (wv > bayer4(int2(gid) - wpx)) {
-            for (int it = 0; it < 10 && hitb && mats[h.mat].pad == 1; it++) {
+            for (int it = 0; it < 10 && hitb && (mats[h.mat].pad & 1) == 1; it++) {
                 // Gate on FLOOR position, not 3D view-depth: a plane perpendicular
                 // to the tilted view dir slices tall walls diagonally by height,
                 // revealing the tops of walls BEHIND the player. XZ-footprint along
@@ -324,6 +338,39 @@ kernel void shade(
                 hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
             }
         }
+    }
+    // GLASS transmission (mats[..].pad bit 2 — the polana window panes), byte-
+    // identical twin of shade.comp: the primary ray passes THROUGH tinted
+    // glass, multiplying the pane's base colour into everything behind it —
+    // "black tinted but transparent" (owner, 2026-07-12). One tint per pane:
+    // only ENTERING faces count, the exit face passes free. Each entered pane
+    // adds the porcelain sheen (sun key + fresnel sky reflection), attenuated
+    // by the panes already crossed. Shadow rays and the probe bake keep glass
+    // OPAQUE — a camera-only effect, the GI/NEE double-count contract holds.
+    float3 gtint = float3(1.0);
+    float3 gsheen = float3(0.0);
+    for (int it = 0; it < 6 && hitb && (mats[h.mat].pad & 2) != 0; it++) {
+        if (dot(h.n, d) < 0.0) { // entering face
+            Material gm = mats[h.mat];
+            if (pc.look.x > 0.0) {
+                float3 gp = o + d * h.t + h.n * 0.003;
+                float greff = clamp(mix(gm.roughness, 0.12, pc.look.w), 0.10, 1.0);
+                float3 sheen = float3(0.0);
+                float gndl = max(dot(h.n, sunDir), 0.0);
+                if (pc.env0.x > 0.0 && gndl > 0.0 && !occluded(gp, sunDir, 200.0, accel))
+                    sheen += sun * pc.look.x * specBRDF(h.n, -d, sunDir, greff, float3(0.04)) * gndl;
+                float F = 0.04 + 0.96 * pow(1.0 - max(dot(h.n, -d), 0.0), 5.0);
+                // fresnel SKY reflection: mirror the dome (|y|) — glass
+                // reflects the sky, never the below-horizon void tint
+                float3 rd = reflect(d, h.n);
+                rd.y = abs(rd.y);
+                sheen += skyCol(rd, pc) * F * min(pc.look.x * 8.0, 1.0);
+                gsheen += gtint * sheen;
+            }
+            gtint *= gm.baseColor.rgb;
+        }
+        o = o + d * (h.t + (1.0 / 256.0));
+        hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
     }
     float tcam = hitb ? (h.t + dot(o - o0, d)) : 0.0; // camera→final-hit distance
 
@@ -346,9 +393,9 @@ kernel void shade(
 
     float3 col;
     if (!hitb) {
-        outAlbedo[idx] = float4(1.0);
+        outAlbedo[idx] = float4(gtint, 1.0); // sky through glass demodulates tinted
         outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(0.0); // w=0 → sky, w=2 → x-ray wall
-        col = skyCol(d, pc) * fogT + fogAdd;
+        col = (skyCol(d, pc) * gtint + gsheen) * fogT + fogAdd;
         outRadiance[idx] = float4(col, 1.0);
         return;
     }
@@ -411,7 +458,7 @@ kernel void shade(
         float aot = (ao - (1.0 - pc.camPos.w)) / max(pc.camPos.w, 1e-4);
         ao = aot >= bayer4(int2(gid)) ? 1.0 : 1.0 - pc.camPos.w;
     }
-    outAlbedo[idx] = float4(albedo, 1.0);
+    outAlbedo[idx] = float4(albedo * gtint, 1.0); // tint in the G-buffer keeps demodulation consistent
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
     outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, 1.0); // w=1 matches shade.comp
@@ -504,6 +551,6 @@ kernel void shade(
         col += rc * pc.look2.w;
     }
 
-    col = col * fogT + fogAdd;
+    col = (col * gtint + gsheen) * fogT + fogAdd;
     outRadiance[idx] = float4(col, 1.0);
 }

@@ -61,8 +61,9 @@ pub struct Viewer {
     // ---- resolved config + live tunables (the ESC menu writes these)
     pub cfg: Config,
     /// The active look preset (look-as-data, Faza 1b): the whole aesthetic —
-    /// palette, sun/sky, post stack, exposure. The ESC settings menu switches
-    /// it live (`apply_look`); LOOK env seeds it.
+    /// palette, sun/sky, post stack, exposure. Since the polana lock there
+    /// is one look; `apply_look` (LOOK_SWITCH) keeps the runtime-switch
+    /// machinery alive and LOOK env still seeds/validates the boot look.
     pub look: &'static crate::look::Look,
     pub exposure: f32,
     pub style: StyleCfg,
@@ -228,8 +229,11 @@ impl Viewer {
             r.view.target = r.proj.snap_ground_to_lattice(t, r.yaw_deg());
         }
         // LOOK_SWITCH harness knob: exercise the RUNTIME look-switch path
-        // (backend rebuild_scene) — a SHOT after this must be byte-identical
-        // to booting in the target look directly.
+        // (backend rebuild_scene). With polana as the only look this is a
+        // FORCE-REBUILD identity check — apply_look never early-outs, so
+        // LOOK_SWITCH=polana rebuilds into the booted look and a SHOT after
+        // it must match a direct boot at the Metal cross-run noise floor
+        // (pins scene swap, probe rebake and light re-join for stale state).
         if let Some(name) = r.cfg.harness.look_switch.clone() {
             match crate::look::by_name(&name) {
                 Some(l) => r.apply_look(l),
@@ -256,16 +260,16 @@ impl Viewer {
         self.gym = GymLoop::new(self.gym.spec.clone());
     }
 
-    /// Runtime look switch (Faza 1b, the ESC menu's look row): rebuild the
-    /// greybox in the new look, swap the backend's scene resources (probe
-    /// rebake, disk-cached per look — blocking, a few seconds on the first
-    /// visit), re-join the lamp lights, re-resolve exposure + the post stack
-    /// (look base + env overrides). Sim state is untouched — the player
-    /// stays exactly where they stood.
+    /// Runtime look switch (Faza 1b machinery): rebuild the greybox in the
+    /// given look, swap the backend's scene resources (probe rebake,
+    /// disk-cached per look — blocking, a few seconds on a cold cache),
+    /// re-join the lamp lights, re-resolve exposure + the post stack (look
+    /// base + env overrides). Sim state is untouched — the player stays
+    /// exactly where they stood. Deliberately NO same-look early-out: since
+    /// the polana lock the only caller is the LOOK_SWITCH harness knob,
+    /// whose value IS the forced same-look rebuild (identity check); a
+    /// future menu look row should guard on ptr::eq at its call site.
     pub fn apply_look(&mut self, look: &'static crate::look::Look) {
-        if std::ptr::eq(self.look, look) {
-            return;
-        }
         let t0 = std::time::Instant::now();
         let scene = crate::gym_scene::build_gym(&self.gym.spec, look);
         unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };

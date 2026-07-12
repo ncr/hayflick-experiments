@@ -34,10 +34,10 @@ pub struct MenuItem {
 }
 
 pub const MENU: &[MenuItem] = &[
-    // look-as-data (Faza 1b): the preset index in look::LOOKS; `max` must
-    // stay LOOKS.len() - 1 (pinned by the test below). Switching rebuilds
-    // the scene + probe banks (disk-cached per look).
-    MenuItem { key: "look", label: "look", kind: ItemKind::Slider { min: 0.0, max: 2.0, step: 1.0 } },
+    // NOTE: no look row since the polana lock (owner, 2026-07-12) — LOOKS
+    // has one entry, nothing to compare. When a look variant appears, the
+    // row comes back (menu-first rule, docs/VISION.md); the runtime-switch
+    // machinery it drove (Viewer::apply_look) is alive under LOOK_SWITCH.
     // projection-as-data (Faza 1a): the preset index in iso_core::presets();
     // `max` must stay presets().len() - 1 (pinned by the test below)
     MenuItem { key: "proj", label: "projection", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },
@@ -150,9 +150,6 @@ fn fmt_val(key: &str, v: f32, step: f32) -> String {
     if key == "proj" {
         return iso_core::presets().get(v as usize).map(|p| p.name).unwrap_or("?").to_string();
     }
-    if key == "look" {
-        return crate::look::LOOKS.get(v as usize).map(|l| l.name).unwrap_or("?").to_string();
-    }
     if step >= 1.0 {
         format!("{v:.0}")
     } else {
@@ -190,7 +187,6 @@ impl Viewer {
 
     pub fn tune_get(&self, key: &str) -> f32 {
         match key {
-            "look" => crate::look::LOOKS.iter().position(|l| std::ptr::eq(*l, self.look)).unwrap_or(0) as f32,
             "proj" => iso_core::presets().iter().position(|p| p.name == self.proj.name).unwrap_or(0) as f32,
             "ao" => self.ao,
             "ao_r" => self.ao_r,
@@ -208,13 +204,6 @@ impl Viewer {
 
     pub fn tune_set(&mut self, key: &str, v: f32) {
         match key {
-            // switching the look rebuilds the scene + probe banks (blocking;
-            // disk-cached per look) — the sim keeps running where it stood
-            "look" => {
-                if let Some(l) = crate::look::LOOKS.get(v as usize) {
-                    self.apply_look(l);
-                }
-            }
             // switching the projection re-derives the whole camera from the
             // preset's data; the look-at target must land on the NEW preset's
             // pixel lattice or the first frame renders off-grid
@@ -563,17 +552,12 @@ mod tests {
         }
     }
 
-    /// Same pin for the look row (Faza 1b): its literal `max` must track
-    /// look::LOOKS or the owner can't reach a candidate from the menu.
+    /// The menu-first rule (docs/VISION.md): a look CHOICE needs a menu row.
+    /// One look = no row; the moment a second preset lands in look::LOOKS
+    /// this pin fails and the look slider must come back.
     #[test]
-    fn look_slider_covers_every_preset() {
-        let item = MENU.iter().find(|i| i.key == "look").expect("look row");
-        let ItemKind::Slider { min, max, step } = item.kind else { panic!("look must be a slider") };
-        assert_eq!(min, 0.0);
-        assert_eq!(step, 1.0);
-        assert_eq!(max as usize + 1, crate::look::LOOKS.len(), "MENU look max must be LOOKS.len() - 1");
-        for (i, l) in crate::look::LOOKS.iter().enumerate() {
-            assert_eq!(fmt_val("look", i as f32, 1.0), l.name);
-        }
+    fn one_look_means_no_look_row() {
+        assert_eq!(crate::look::LOOKS.len(), 1, "a second look exists — restore the ESC-menu look row");
+        assert!(MENU.iter().all(|i| i.key != "look"), "a look row with one preset is dead UI");
     }
 }

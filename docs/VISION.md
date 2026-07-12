@@ -101,15 +101,24 @@ agenta/harnessu, a `LOOK_SWITCH=<name>` weryfikuje ścieżkę runtime
 bezgłowo. Stare bundle `STYLE=` i looki ery brudu skasowane (archiwum w
 git). (c) **kierunek WYBRANY (owner, 2026-07-12, po przeglądzie 4 kandydatów
 tecta/meadow/porcelain/sorbet): porcelain × meadow**, zmergowane jako
-preset **`polana`** (domyślny): super-czyste porcelanowe bryły (minimalne
-bumps, lekki sheen), bujna nasycona zieleń i niebo („lush greens and
-sky"), rytm elewacji = czyste panele + CAŁOŚCIENNE czarne okna (tint jak
-w tecta, porcelanowy feeling), bursztynowy akcent z porcelain, wędrowiec
-w czerwieni z meadow. Meshe gymu przebudowane pod ten kierunek: sloty
-okienne (tylko ściany budynku; murki wolnostojące czyste) zamiast słupów
-half-timber, trawa-dress na Outdoor (deterministyczny hash, bez RNG).
-`porcelain`/`meadow` zostają w menu jako referencje A/B; `tecta`/`sorbet`
-skasowane (git). CZEKA: playtest ownera z menu ESC + lock + nowe goldeny.
+preset **`polana`** — po drugim przeglądzie tego samego dnia JEDYNY look
+(dyrektywa: „let's have the polana view, delete rest"): `porcelain`/
+`meadow`/`tecta`/`sorbet` skasowane (git), wiersz „look" zniknął z menu
+ESC (jeden preset = martwe UI; pin testowy przywróci go przy drugim
+looku), a `LOOK_SWITCH=polana` został harness-owym testem tożsamości
+force-rebuildu (maszyneria runtime-switch z 1b żyje). Treść looku:
+super-czyste porcelanowe bryły (minimalne bumps, lekki sheen), bujna
+nasycona zieleń i niebo („lush greens and sky"), rytm elewacji = czyste
+panele + co jakiś czas (parzyste komórki świata; elewacje 5-komórkowe
+mają 2 symetryczne okna, drzwi flankowane) CAŁOŚCIENNE czarne okno —
+po refinemencie ownera PRAWDZIWE otwory w murze z taflą przydymionego
+szkła, przez którą primary ray przechodzi z tintem transmisji („black
+tinted, ale przezroczyste"; shadow raye i bake sond widzą szkło jako
+nieprzezroczyste, więc kontrakt GI/NEE stoi; w cutawayu WALLCUT szklane
+stuby są celowo 0.3125 wyższe od murów — kryją ościeże i powtarzają
+motyw listwy nad koroną). Bursztynowy akcent z porcelain, wędrowiec w
+czerwieni z meadow, trawa-dress na Outdoor (deterministyczny hash, bez
+RNG). CZEKA: playtest ownera z menu ESC + lock + nowe goldeny.
 
 **Faza 2 — miodny player.** Jeden continuous stack ruchu (koniec z
 grid-locked easingiem): collide-and-slide + pathfinding (A*/funnel +

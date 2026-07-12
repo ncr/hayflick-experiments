@@ -508,3 +508,46 @@ Rules:
 - Re-pinning byte goldens on Metal must account for this floor: pin from
   one run and compare with a ≤1-LSB/≤20-px tolerance, or the gate will
   flake. Vulkan/RTX may have a different floor — measure before assuming.
+
+## 2026-07-12 — cutaway × thick see-through geometry: two failure modes
+
+Adding real tinted-glass window panes (0.3 wu thick, proud of the wall,
+side-buried 0.1 into the piers) to the WALLCUT dollhouse cutaway produced
+two distinct artifacts. Diagnosed by rendering the same CMDS frame under
+`WALLCUT=<y>` / `ROI=0` / `DEBUG_ALBEDO=1` sweeps and, decisively, by a
+TEMPORARY paint-debug in the Metal shader (tint-path → magenta,
+backface-final → green): pixel colors tell you which code path a stray
+column actually took — minutes, vs. hours of hit-sequence theorycrafting.
+
+### Failure #1 — floating glass plates over cut windows
+
+The wallcut prefix loop's far-face rule (`wallPass && h.t <= 0.6`) is
+tuned to one 0.2-wu wall slab. A pane is 0.3 thick and crossed OBLIQUELY:
+through a Z-boundary pane the trimetric ray travels `0.3/|d.z| ≈ 0.78` wu
+face-to-face. When the front face sits just above the cut plane and the
+far face lands below it, the far face fails both the height test and the
+0.6 bound → the loop breaks ON the pane's far face → a glass plate floats
+over every cut window (band height = crossing · |d.y| ≈ 0.39 wu).
+
+Fix: widen the far-face bound for GLASS hits only (`pad & 2 → 1.0`; the
+in-glass path is bounded by thickness/|d.axis| ≤ 0.78). Keep 0.6 for
+walls — an unbounded or generous global bound would punch through real
+second walls, and an unconditional glass pass would dissolve legit stub
+slots reached over the roof (wallPass persists across the room's air gap).
+
+### Failure #2 — dark 1-2 px "antennas" on window stubs
+
+Not a code bug: the opening's porcelain JAMB stands to the same 1.0 stub
+height as everything else, but sits 0.25-0.45 wu deeper along the view
+than the pane's proud front — same world height projects HIGHER on screen
+at depth, so the jamb's cut edge pokes above the pane-stub silhouette as
+a thin column, and it renders near-black because the pane (still solid in
+the TLAS) blocks its sun. Any deeper-but-equal-height geometry behind a
+dissolve-boundary silhouette can do this.
+
+Fix: cut glass 0.3125 HIGHER than walls (`wy = wallY + 0.3125` for glass
+hits) — the taller dark stub covers the jamb sliver and doubles as a
+design echo of the pane's proud crown lip. Geometry-side alternatives all
+lose: exact-width panes z-fight the jamb planes (coplanarity rule),
+recessed panes keep the shadowed sliver, air gaps read as see-through
+slits.

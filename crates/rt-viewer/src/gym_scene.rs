@@ -13,13 +13,14 @@
 //! occluding cap. Occlusion is the dollhouse WALLCUT: outdoors the building
 //! stands whole; indoors every occluder drops to sill height (`WALL_CUT_H`).
 //!
-//! The AESTHETIC is data: a [`Look`] preset (look.rs; runtime-switchable
-//! from the ESC menu since Faza 1b) supplies every colour, the lamp mood,
-//! the lighting env, the sun/sky and the dress switches. The 2026-07-12
-//! mesh rebuild (owner directive): facades are clean panels with
-//! FULL-HEIGHT tinted-glass window slots (one per wall cell) instead of
-//! the old half-timber posts + rail, and Outdoor cells grow a grass-tuft
-//! dress on the looks that ask for it.
+//! The AESTHETIC is data: a [`Look`] preset (look.rs; Faza 1b) supplies
+//! every colour, the lamp mood, the lighting env, the sun/sky and the
+//! dress switches. The 2026-07-12 mesh rebuild (owner directive, refined
+//! the same day): building facades are clean porcelain panels with a
+//! FULL-HEIGHT tinted-glass window only every so often (even-coordinate
+//! cells) — REAL openings in the wall holding transmissive panes ("black
+//! tinted but transparent", see `wall_slab`/`mark_glass`) — and Outdoor
+//! cells grow a grass-tuft dress on the looks that ask for it.
 //!
 //! NEE discipline: the ONLY named lights are the spec lamps (conceptual point
 //! lights). Every emissive box (lamp fixtures) is part of a dynamic run,
@@ -43,13 +44,26 @@ const WALL_HT: f32 = 0.1; // wall half-thickness (0.2 wu slab, on the 0.1 grid)
 const ROOF_BASE: f32 = 2.375;
 const ROOF_TOP: f32 = 2.5;
 
-/// Flag a primitive's material as a see-through OCCLUDER (Material._pad = 1),
-/// the bit the shade pass reads to know a primary-ray hit is a wall the ROI
-/// reveal / WALLCUT may dissolve. `add_box_world` mints one material per box,
-/// so this targets exactly this box. Floors and bodies stay 0.
+/// Flag a primitive's material as a see-through OCCLUDER (Material._pad
+/// bit 1), the bit the shade pass reads to know a primary-ray hit is a wall
+/// the ROI reveal / WALLCUT may dissolve. `add_box_world` mints one material
+/// per box, so this targets exactly this box. Floors and bodies stay 0.
 fn mark_occluder(scene: &mut Scene, prim: usize) {
     let mid = scene.primitives[prim].material_id as usize;
-    scene.materials[mid]._pad = 1;
+    scene.materials[mid]._pad |= 1;
+}
+
+/// Additionally flag a primitive's material as tinted GLASS (Material._pad
+/// bit 2): the shade pass carries the primary ray THROUGH the pane,
+/// multiplying its base colour in as a transmission tint and adding the
+/// porcelain sheen (sun key + fresnel sky) — black tinted but transparent
+/// (owner directive 2026-07-12). Shadow rays and the probe bake keep glass
+/// opaque, so the panes block light like the walls they sit in. Combine
+/// with [`mark_occluder`] on window panes: the WALLCUT/ROI must take the
+/// glass together with its wall.
+fn mark_glass(scene: &mut Scene, prim: usize) {
+    let mid = scene.primitives[prim].material_id as usize;
+    scene.materials[mid]._pad |= 2;
 }
 
 /// World centre of a grid cell (on the ground plane).
@@ -185,53 +199,86 @@ fn floor_tint(g: &Grid, p: CellPos, look: &Look) -> u32 {
     }
 }
 
-/// One merged wall slab + the look's dress: an optional skirting plinth
-/// (below the WALLCUT — it survives the cutaway and grounds the wall stubs)
-/// and, on BUILDING walls only (`windows`), optional FULL-HEIGHT
-/// tinted-glass window slots (owner directive 2026-07-12: the tecta window
-/// rhythm in porcelain-clean form — one slot per wall cell, centred, floor
-/// to just above the wall top, smooth/glossy; occluder-marked so the
-/// cutaway takes them with the wall). `along_x` says which axis the run
-/// spans.
+/// One wall run + the look's dress. A windowless run (freestanding garden
+/// walls, and every run when the look has no windows) is a single merged
+/// porcelain slab. On BUILDING walls (`windows`) the look's window turns
+/// SOME cells into REAL full-height openings (owner refinement 2026-07-12:
+/// porcelain panels with a window only every so often, "black tinted but
+/// transparent"): the slab becomes piers between openings, and each opening
+/// holds a tinted-GLASS pane the shade pass transmits through. The rhythm
+/// is anchored to EVEN world coordinates — not run-relative — so the
+/// doorway split doesn't shift it; on the gym building (cells 3..=7) that
+/// gives two symmetric windows per facade and one flanking each side of
+/// the doorway. An optional skirting plinth (below the WALLCUT — survives
+/// the cutaway, grounds the stubs) follows the piers and BREAKS at the
+/// openings: the glass runs floor-to-top. `along_x` says which axis the
+/// run spans.
 fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, windows: bool, look: &Look) {
-    let first = scene.primitives.len();
-    scene.add_box_world(Vec3::new(rect[0], 0.0, rect[1]), Vec3::new(rect[2], WALL_TOP, rect[3]), hex_linear(look.wall), [0.0; 4], 0.85, 0.0);
-    mark_occluder(scene, first);
+    let wc = hex_linear(look.wall);
+    let (a0, a1) = if along_x { (rect[0], rect[2]) } else { (rect[1], rect[3]) };
+    // window centres: even-coordinate cells (the run bounds are cell
+    // coordinates ± WALL_HT, so round() recovers the integers exactly)
+    let mut mids: Vec<f32> = Vec::new();
+    if windows && look.window.is_some() {
+        let mut c = (a0 + WALL_HT).round();
+        while c + 1.0 <= a1 - WALL_HT + 0.001 {
+            if (c as i32) % 2 == 0 {
+                mids.push(c + 0.5);
+            }
+            c += 1.0;
+        }
+    }
     // COPLANARITY RULE (2026-07-12 white-flicker post-mortem): dress with a
     // DIFFERENT colour must never share a face plane with its host — offset
     // by a whole lattice step, inward or outward. Two coplanar faces of
     // different colours ray-z-fight: the per-pixel winner flips on sub-pixel
     // camera motion and the losing colour strobes through.
-    if let Some(hexp) = look.plinth {
-        // strictly the proudest thing at the base (±0.1 past the slab, one
-        // step past the window slots' ±0.05)
+    //
+    // piers: full-height slabs between the openings (openings are mid±0.2 —
+    // 0.4 wide, clean on both stair axes; every pier length stays a 0.1
+    // multiple: cell pitch 2.0 − opening 0.4 = 1.6, run ends add ±(0.3+0.1)).
+    let mut s = a0;
+    for stop in mids.iter().map(|m| Some(*m)).chain([None]) {
+        let e = stop.map_or(a1, |m| m - 0.2);
+        let first = scene.primitives.len();
         let (lo, hi) = if along_x {
-            (Vec3::new(rect[0] - 0.05, 0.0, rect[1] - 0.1), Vec3::new(rect[2] + 0.05, 0.1875, rect[3] + 0.1))
+            (Vec3::new(s, 0.0, rect[1]), Vec3::new(e, WALL_TOP, rect[3]))
         } else {
-            (Vec3::new(rect[0] - 0.1, 0.0, rect[1] - 0.05), Vec3::new(rect[2] + 0.1, 0.1875, rect[3] + 0.05))
+            (Vec3::new(rect[0], 0.0, s), Vec3::new(rect[2], WALL_TOP, e))
         };
-        scene.add_box_world(lo, hi, hex_linear(hexp), [0.0; 4], 0.85, 0.0);
+        scene.add_box_world(lo, hi, wc, [0.0; 4], 0.85, 0.0);
+        mark_occluder(scene, first);
+        if let Some(hexp) = look.plinth {
+            // strictly the proudest thing at the base (±0.1 across, one
+            // step past the glass panes' ±0.05; ±0.05 along the run — the
+            // little returns wrap the pier corners into the window bays)
+            let (lo, hi) = if along_x {
+                (Vec3::new(s - 0.05, 0.0, rect[1] - 0.1), Vec3::new(e + 0.05, 0.1875, rect[3] + 0.1))
+            } else {
+                (Vec3::new(rect[0] - 0.1, 0.0, s - 0.05), Vec3::new(rect[2] + 0.1, 0.1875, e + 0.05))
+            };
+            scene.add_box_world(lo, hi, hex_linear(hexp), [0.0; 4], 0.85, 0.0);
+        }
+        s = stop.map_or(a1, |m| m + 0.2);
     }
-    if let (true, Some(hexw)) = (windows, look.window) {
-        let wc = hex_linear(hexw);
-        // one slot per wall cell, centred (0.4 wide — clean on both stair
-        // axes), proud of the slab by 0.05 each side and 0.0625 above the
-        // wall top, so no face is ever coplanar with the host; the base
-        // sinks to y=0 (through the floor plane, never ON it). Glass-smooth
-        // (low roughness) — the look's spec/gloss give it the sheen.
-        let (a0, a1) = if along_x { (rect[0] + WALL_HT, rect[2] - WALL_HT) } else { (rect[1] + WALL_HT, rect[3] - WALL_HT) };
-        let mut c = a0;
-        while c + 1.0 <= a1 + 0.001 {
-            let mid = c + 0.5;
+    // glass panes: one per opening, floor to 0.0625 above the wall top and
+    // proud of the slab by 0.05 each side (no coplanar faces); the pane is
+    // 0.6 wide — buried a full 0.1 lattice step into each pier — so its
+    // side faces never share the opening's jamb planes. The base colour is
+    // the TRANSMISSION tint (mark_glass); glass-smooth roughness keeps the
+    // look's spec/gloss sheen on the front face.
+    if let Some(hexw) = look.window {
+        let gc = hex_linear(hexw);
+        for &mid in &mids {
             let first = scene.primitives.len();
             let (lo, hi) = if along_x {
-                (Vec3::new(mid - 0.2, 0.0, rect[1] - 0.05), Vec3::new(mid + 0.2, WALL_TOP + 0.0625, rect[3] + 0.05))
+                (Vec3::new(mid - 0.3, 0.0, rect[1] - 0.05), Vec3::new(mid + 0.3, WALL_TOP + 0.0625, rect[3] + 0.05))
             } else {
-                (Vec3::new(rect[0] - 0.05, 0.0, mid - 0.2), Vec3::new(rect[2] + 0.05, WALL_TOP + 0.0625, mid + 0.2))
+                (Vec3::new(rect[0] - 0.05, 0.0, mid - 0.3), Vec3::new(rect[2] + 0.05, WALL_TOP + 0.0625, mid + 0.3))
             };
-            scene.add_box_world(lo, hi, wc, [0.0; 4], 0.15, 0.0);
+            scene.add_box_world(lo, hi, gc, [0.0; 4], 0.15, 0.0);
             mark_occluder(scene, first);
-            c += 1.0;
+            mark_glass(scene, first);
         }
     }
 }
