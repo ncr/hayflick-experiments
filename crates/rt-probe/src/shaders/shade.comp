@@ -49,9 +49,9 @@ layout(push_constant) uniform Push {
   vec4 look;   // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
   vec4 look2;  // gi scale, matPoster levels, aoDither, reflStrength
   ivec4 misc3; // wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), _, _, _
-  vec4 env1;   // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), _
-  vec4 env2;   // sun tint rgb, _
-  vec4 env3;   // sky horizon tint rgb, _
+  vec4 env1;   // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), w = ground tint r
+  vec4 env2;   // sun tint rgb, w = ground tint g
+  vec4 env3;   // sky horizon tint rgb, w = ground tint b
   vec4 env4;   // sky zenith tint rgb, _
 } pc;
 
@@ -67,7 +67,7 @@ vec3 sky(vec3 d){
   float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
   vec3 horizon = pc.env3.rgb; // look-authored (sun/sky-as-data, Faza 1b)
   vec3 zenith  = pc.env4.rgb;
-  vec3 ground  = vec3(0.14, 0.13, 0.12);
+  vec3 ground  = vec3(pc.env1.w, pc.env2.w, pc.env3.w); // look-authored void tint
   return (d.y > 0.0 ? mix(horizon, zenith, pow(t, 1.4)) : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0))) * 0.18 * pc.env0.y;
 }
 

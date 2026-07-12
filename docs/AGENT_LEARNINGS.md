@@ -480,3 +480,31 @@ Checklist for any lattice/dimension change: after re-gridding, AUDIT for
 newly-equal offsets between touching boxes of different colours — every
 pair that lands on the same plane is a strobe. Equality that "looks
 tidy" in data (half-widths matching) is exactly the hazard.
+
+## 2026-07-12 — Metal frames are bit-stable within a run, NOT across process runs
+
+Context: verifying the Faza-1b runtime look switch. `LOOK=tecta
+LOOK_SWITCH=sorbet SHOT=…` was expected to be byte-identical to a direct
+`LOOK=sorbet` boot. It differed by 12 px × 1 LSB — but so did two direct
+runs of the SAME config: the diff was the process, not the code path.
+
+Observation: across process runs the Metal gym frame has an intermittent
+noise floor of up to ~a dozen pixels × 1 LSB (sometimes exactly 0 — the
+Faza-1b neutrality check got byte-identical at iso21 and 4 px at
+trimetric). Most likely source: the GPU acceleration-structure build is
+not bit-deterministic across runs (BVH layout varies), so seam-grazing /
+equal-t rays reclassify by 1 ulp. WITHIN one process, a fixed camera still
+produces bit-identical frames (the 2026-06-10 determinism contract is
+per-run).
+
+Rules:
+- Never verify a Metal render change by byte-comparing PNGs from two
+  separate process runs and expecting 0. Establish the same-config
+  cross-run noise floor first (run the baseline twice); a change is
+  "neutral" when its diff matches that floor in count AND magnitude
+  (isolated speckles, ≤1 LSB).
+- For equivalence checks between two code paths, capture both inside ONE
+  process where possible (`LOOK_SWITCH` exists exactly for this).
+- Re-pinning byte goldens on Metal must account for this floor: pin from
+  one run and compare with a ≤1-LSB/≤20-px tolerance, or the gate will
+  flake. Vulkan/RTX may have a different floor — measure before assuming.

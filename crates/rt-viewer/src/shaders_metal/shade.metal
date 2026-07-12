@@ -39,9 +39,9 @@ struct Push {
     float4 look;      // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
     float4 look2;     // gi scale, matPoster levels, aoDither, reflStrength
     int4   misc3;     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), _, _
-    float4 env1;      // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), _
-    float4 env2;      // sun tint rgb, _
-    float4 env3;      // sky horizon tint rgb, _
+    float4 env1;      // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), w = ground tint r
+    float4 env2;      // sun tint rgb, w = ground tint g
+    float4 env3;      // sky horizon tint rgb, w = ground tint b
     float4 env4;      // sky zenith tint rgb, _
 };
 
@@ -66,7 +66,7 @@ static float3 skyCol(float3 d, constant Push& pc) {
     float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
     float3 horizon = pc.env3.rgb; // look-authored (sun/sky-as-data, Faza 1b)
     float3 zenith  = pc.env4.rgb;
-    float3 ground  = float3(0.14, 0.13, 0.12);
+    float3 ground  = float3(pc.env1.w, pc.env2.w, pc.env3.w); // look-authored void tint
     float3 c = (d.y > 0.0) ? mix(horizon, zenith, pow(t, 1.4))
                            : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0));
     return c * 0.18 * pc.env0.y;

@@ -89,11 +89,21 @@ S = 20√5 px/wu — w 1.2% od iso21, więc przełączanie porównuje kąt, nie
 zoom (skala = j=10 rodziny (4j,j)/(-2j,2j); j=8 było optycznie ~21%
 mniejsze). Architektura autorowana na siatce 0.1 wu (czysta krata
 trimetryka). `iso21` zostaje w menu jako referencja A/B; env `PROJ` dla
-harnessu. (b) domknięcie wyglądu-jako-danych
-(Look + StyleCfg — po czystce zostały już tylko te dwa — w jeden
-runtime'owo przełączany Look); (c) 3–5 kandydatów radosnego looku wg
-kotwic i `docs/concepts/` (pierwszy kandydat: `LOOK=tecta`); playtest
-ownera; wybór; nowe goldeny.
+harnessu. (b) **DONE 2026-07-12.** Wygląd-jako-dane domknięty: `Look` =
+paleta + lampy + env + **słońce/niebo jako dane** (`SunSky`: kierunek i
+barwa słońca, gradient nieba, tint pustki — dawne stałe czterech shaderów,
+teraz wiersze push env1..4 na obu backendach) + post-stack (`StyleCfg`) +
+ekspozycja + odpowiedź powierzchni (spec/gloss/bump/gi). Wiersz "look" w
+menu ESC przełącza looki RUNTIME'owo (rebuild sceny + rebake sond GI,
+cache dyskowy per look, ~2.5 s pierwszy raz na M2); env-knoby (`LOOK`,
+`GRADE`, `SAT`, `EXPOSURE`, `BUMP`, …) zostają nadpisaniami dla
+agenta/harnessu, a `LOOK_SWITCH=<name>` weryfikuje ścieżkę runtime
+bezgłowo. Stare bundle `STYLE=` i looki ery brudu skasowane (archiwum w
+git). (c) **kandydaci autorowani (2026-07-12), playtest ownera CZEKA**:
+`tecta` (golden hour wg konceptów), `meadow` (słoneczny dzień / obrazy
+trip), `porcelain` (biel + bursztynowy akcent), `sorbet` (cukierkowe
+pastele) — wszystkie w menu ESC. Wybór looku + nowe goldeny dopiero po
+playteście i dyskusji z ownerem.
 
 **Faza 2 — miodny player.** Jeden continuous stack ruchu (koniec z
 grid-locked easingiem): collide-and-slide + pathfinding (A*/funnel +

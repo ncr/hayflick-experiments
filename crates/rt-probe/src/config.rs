@@ -164,11 +164,13 @@ pub struct RenderCfg {
     pub ao: f32,                   // AO: RT-AO strength
     pub ao_r: f32,                 // AO_R: RT-AO radius (wu)
     pub ao_n: i32,                 // AO_N: RT-AO ray count
-    pub spec: f32,                 // SPEC: specular highlight strength (0 = off, matte)
-    pub gloss: f32,                // GLOSS: 0..1 remap of effective roughness toward polished
-    pub bump: f32,                 // BUMP: procedural surface-detail normal strength (0 = off)
-    pub bump_scale: f32,           // BUMP_SCALE: surface-detail noise frequency (wu^-1)
-    pub gi: f32,                   // GI: ambient probe-irradiance scale (1 = neutral, <1 = moodier)
+    // surface-response knobs: look data since Faza 1b (Look.spec/…); the env
+    // vars are Option overrides on top, like EXPOSURE
+    pub spec: Option<f32>,         // SPEC: specular highlight strength (0 = off, matte)
+    pub gloss: Option<f32>,        // GLOSS: 0..1 remap of effective roughness toward polished
+    pub bump: Option<f32>,         // BUMP: procedural surface-detail normal strength (0 = off)
+    pub bump_scale: Option<f32>,   // BUMP_SCALE: surface-detail noise frequency (wu^-1)
+    pub gi: Option<f32>,           // GI: ambient probe-irradiance scale (1 = neutral, <1 = moodier)
     pub matq: f32,                 // MATQ: posterize materials — albedo/roughness snapped to N levels (0 = off)
     pub ao_dither: f32,            // AO_DITHER: RT-AO gradient → binary Bayer stipple (0 = off)
     pub refl: f32,                 // REFL: pixelated mirror-reflection composite strength (0 = off)
@@ -282,11 +284,11 @@ impl Config {
                 ao: f("AO", 0.55),
                 ao_r: f("AO_R", 0.8),
                 ao_n: i("AO_N", 8),
-                spec: f("SPEC", 0.0), // matte floors/walls — specular sheen turned off (2026-06-21)
-                gloss: f("GLOSS", 0.85).clamp(0.0, 1.0),
-                bump: f("BUMP", 0.8),
-                bump_scale: f("BUMP_SCALE", 7.0).max(0.01),
-                gi: f("GI", 0.42),
+                spec: fo("SPEC"),
+                gloss: fo("GLOSS").map(|v| v.clamp(0.0, 1.0)),
+                bump: fo("BUMP"),
+                bump_scale: fo("BUMP_SCALE").map(|v| v.max(0.01)),
+                gi: fo("GI"),
                 matq: f("MATQ", 0.0),
                 ao_dither: f("AO_DITHER", 0.0),
                 refl: f("REFL", 0.0),

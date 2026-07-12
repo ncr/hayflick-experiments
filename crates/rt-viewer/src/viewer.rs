@@ -66,6 +66,13 @@ pub struct Viewer {
     pub look: &'static crate::look::Look,
     pub exposure: f32,
     pub style: StyleCfg,
+    /// Surface response (look data + env overrides, Faza 1b): specular
+    /// strength, gloss remap, bump strength/frequency, ambient GI scale.
+    pub spec: f32,
+    pub gloss: f32,
+    pub bump: f32,
+    pub bump_scale: f32,
+    pub gi: f32,
     pub ao: f32,
     pub ao_r: f32,
     pub ao_n: i32,
@@ -156,10 +163,16 @@ impl Viewer {
             audio,
             proj: proj_from_env(),
             look,
-            // look-as-data (Faza 1b): the look authors exposure + the post
-            // stack; env vars override on top (the agent/harness interface)
+            // look-as-data (Faza 1b): the look authors exposure, the post
+            // stack and the surface response; env vars override on top (the
+            // agent/harness interface)
             exposure: cfg.render.exposure.unwrap_or(look.exposure),
             style: look.style.env_over(),
+            spec: cfg.render.spec.unwrap_or(look.spec),
+            gloss: cfg.render.gloss.unwrap_or(look.gloss),
+            bump: cfg.render.bump.unwrap_or(look.bump),
+            bump_scale: cfg.render.bump_scale.unwrap_or(look.bump_scale),
+            gi: cfg.render.gi.unwrap_or(look.gi),
             ao: cfg.render.ao,
             ao_r: cfg.render.ao_r,
             ao_n: cfg.render.ao_n,
@@ -261,6 +274,11 @@ impl Viewer {
         self.look = look;
         self.exposure = self.cfg.render.exposure.unwrap_or(look.exposure);
         self.style = look.style.env_over();
+        self.spec = self.cfg.render.spec.unwrap_or(look.spec);
+        self.gloss = self.cfg.render.gloss.unwrap_or(look.gloss);
+        self.bump = self.cfg.render.bump.unwrap_or(look.bump);
+        self.bump_scale = self.cfg.render.bump_scale.unwrap_or(look.bump_scale);
+        self.gi = self.cfg.render.gi.unwrap_or(look.gi);
         println!("look: {} ({:.0} ms)", look.name, t0.elapsed().as_secs_f32() * 1000.0);
     }
 
@@ -367,11 +385,11 @@ impl Viewer {
             ao: self.ao,
             ao_r: self.ao_r,
             ao_n: self.ao_n,
-            spec: self.cfg.render.spec,
-            gloss: self.cfg.render.gloss,
-            bump: self.cfg.render.bump,
-            bump_scale: self.cfg.render.bump_scale,
-            gi: self.cfg.render.gi,
+            spec: self.spec,
+            gloss: self.gloss,
+            bump: self.bump,
+            bump_scale: self.bump_scale,
+            gi: self.gi,
             matq: self.cfg.render.matq,
             ao_dither: self.cfg.render.ao_dither,
             refl: self.cfg.render.refl,

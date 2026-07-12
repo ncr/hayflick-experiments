@@ -37,7 +37,7 @@ pub const MENU: &[MenuItem] = &[
     // look-as-data (Faza 1b): the preset index in look::LOOKS; `max` must
     // stay LOOKS.len() - 1 (pinned by the test below). Switching rebuilds
     // the scene + probe banks (disk-cached per look).
-    MenuItem { key: "look", label: "look", kind: ItemKind::Slider { min: 0.0, max: 0.0, step: 1.0 } },
+    MenuItem { key: "look", label: "look", kind: ItemKind::Slider { min: 0.0, max: 3.0, step: 1.0 } },
     // projection-as-data (Faza 1a): the preset index in iso_core::presets();
     // `max` must stay presets().len() - 1 (pinned by the test below)
     MenuItem { key: "proj", label: "projection", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },

@@ -35,8 +35,16 @@ knows both. The game must build and test without a GPU.
 18×14 level — a few freestanding walls, one building with a doorway, two
 lamps, the player. No NPCs, no generators, no seed (owner directive
 2026-07-12: everything the look/movement work needs, nothing else).
-`LOOK=<name>` picks a greybox aesthetic preset (`rt-viewer/src/look.rs`;
-`tecta` is the concepts-derived candidate — see `docs/concepts/`).
+`LOOK=<name|index>` seeds the greybox look (`rt-viewer/src/look.rs`; Faza 1b
+DONE: a Look is the WHOLE aesthetic as one datum — palette, sun/sky
+(`SunSky`), post stack (`StyleCfg`), exposure, surface response — and the
+ESC settings menu's "look" row switches it LIVE via
+`RenderBackend::rebuild_scene` + probe rebake, disk-cached per look).
+Faza-1c candidates awaiting the owner playtest: `tecta` (default,
+concepts-derived — see `docs/concepts/`), `meadow`, `porcelain`, `sorbet`.
+`LOOK_SWITCH=<name>` exercises the runtime-switch path headlessly (a SHOT
+after it must match a direct boot in that look up to the Metal cross-run
+noise floor — see the 2026-07-12 learning).
 `PROJ=<name|index>` seeds the projection preset; the DEFAULT is
 `trimetric` — THE game projection (owner pick, 2026-07-12) — with `iso21`
 kept as the A/B reference the owner can switch to in the ESC settings menu.
@@ -81,9 +89,16 @@ documented as debt. Shared push-constant structs live once in
 This dev machine (M2 Pro) runs the **Metal** backend; the Hetzner "spawner"
 box (RTX 5080) runs Vulkan. **Open spawner duty (2026-07-12):** the purge
 edited `vulkan_backend.rs`/`shade.comp` blind (they don't compile on macOS),
-and Faza 1a touched `vulkan_backend.rs` blind again (ISO_R import/print
-dropped; `build_tone_push` now takes `&fp.proj`) — first Vulkan session must
-`cargo check` + eyeball gym SHOTs at iso21 AND `PROJ=trimetric`.
+Faza 1a touched `vulkan_backend.rs` blind (ISO_R import/print dropped), and
+Faza 1b edited it blind AGAIN (env0 → `EnvBlock` field; `ShadePush::new` +
+`bake_probes` take `&EnvBlock`; new `rebuild_scene`; restored the dropped
+`render_finished` semaphore creation in `recreate_gpu`; fixed the
+`build_tone_push` call to pass `&fp.proj`). The GLSL twins
+(`shade.comp`/`probes.comp`) DO compile here via glslangValidator but never
+ran on hardware. First Vulkan session: `cargo check`, gym SHOTs per look
+(all four) at trimetric AND iso21, one `LOOK_SWITCH` identity check — and
+note ShadePush is now EXACTLY 256 B (the common NVIDIA
+maxPushConstantsSize); if the device rejects it, the env rows move to a UBO.
 
 ## Pixel-perfect iso contract (binding; generalizes, never weakens)
 

@@ -64,12 +64,16 @@ pub struct SunSky {
     /// Sky-dome gradient tints (linear), scaled by `0.18 * env0.skyScale`.
     pub horizon_rgb: [f32; 3],
     pub zenith_rgb: [f32; 3],
+    /// Below-horizon miss tint (the void outside the level), same scale as
+    /// the sky rows — rides in the env1..env3 w channels (push space is at
+    /// the 256 B cap, so no new row).
+    pub ground_rgb: [f32; 3],
 }
 
 impl Default for SunSky {
     fn default() -> SunSky {
         // the pre-1b shader constants, bit-exact
-        SunSky { sun_dir: [0.62, 0.55, 0.38], sun_rgb: [1.0, 0.88, 0.70], horizon_rgb: [0.80, 0.83, 0.90], zenith_rgb: [0.28, 0.45, 0.92] }
+        SunSky { sun_dir: [0.62, 0.55, 0.38], sun_rgb: [1.0, 0.88, 0.70], horizon_rgb: [0.80, 0.83, 0.90], zenith_rgb: [0.28, 0.45, 0.92], ground_rgb: [0.14, 0.13, 0.12] }
     }
 }
 
@@ -80,9 +84,9 @@ impl Default for SunSky {
 #[derive(Clone, Copy)]
 pub struct EnvBlock {
     pub env0: [f32; 4], // sunScale, skyScale, fogDensity, fogHeight
-    pub env1: [f32; 4], // sun dir xyz (normalized), w unused
-    pub env2: [f32; 4], // sun tint rgb, w unused
-    pub env3: [f32; 4], // sky horizon rgb, w unused
+    pub env1: [f32; 4], // sun dir xyz (normalized), w = ground tint r
+    pub env2: [f32; 4], // sun tint rgb, w = ground tint g
+    pub env3: [f32; 4], // sky horizon rgb, w = ground tint b
     pub env4: [f32; 4], // sky zenith rgb, w unused
 }
 
@@ -93,9 +97,9 @@ impl EnvBlock {
         let d = glam::Vec3::from(s.sun_dir).normalize_or_zero();
         EnvBlock {
             env0,
-            env1: [d.x, d.y, d.z, 0.0],
-            env2: [s.sun_rgb[0], s.sun_rgb[1], s.sun_rgb[2], 0.0],
-            env3: [s.horizon_rgb[0], s.horizon_rgb[1], s.horizon_rgb[2], 0.0],
+            env1: [d.x, d.y, d.z, s.ground_rgb[0]],
+            env2: [s.sun_rgb[0], s.sun_rgb[1], s.sun_rgb[2], s.ground_rgb[1]],
+            env3: [s.horizon_rgb[0], s.horizon_rgb[1], s.horizon_rgb[2], s.ground_rgb[2]],
             env4: [s.zenith_rgb[0], s.zenith_rgb[1], s.zenith_rgb[2], 0.0],
         }
     }
