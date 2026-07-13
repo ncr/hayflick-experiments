@@ -27,7 +27,8 @@ struct Light    { float4 posRad; float4 color; float4 dir; };
 
 struct ProbePush {
     int4   misc;  // probeCount, raysTotal (Fibonacci N), bounces, raysThisBatch
-    int4   misc2; // batchStartRay, bank, lightCount, _
+    int4   misc2; // batchStartRay, bank, lightCount, firstProbe (Stage-2 sub-range base)
+    int4   misc3; // Stage-2 refresh box: (boxLoX, boxLoY, boxLoZ, boxWidthX); w>0 = box mode
     float4 env0;  // sunScale, skyScale, fogDensity, fogHeight
     float4 env1;  // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), w = ground tint r
     float4 env2;  // sun tint rgb, w = ground tint g
@@ -150,15 +151,28 @@ kernel void bake_probes(
     device const Light*    lights  [[buffer(5)]],
     device float*          pd      [[buffer(6)]],
     constant ProbePush&    pc      [[buffer(7)]],
-    uint gid [[thread_position_in_grid]])
+    uint3 gid [[thread_position_in_grid]])
 {
-    if (gid >= uint(pc.misc.x)) return;
     float3 origin = float3(pd[0], pd[1], pd[2]);
     float spacing = pd[3];
     int nx = int(pd[4]), ny = int(pd[5]);
-    int3 g = int3(int(gid) % nx, (int(gid) / nx) % ny, int(gid) / (nx * ny));
+    // Two dispatch modes (twin of probes.comp). BAKE (misc3.w == 0): pi = gid.x +
+    // firstProbe (misc2.w), a full bake passing 0. Stage-2 REFRESH (misc3.w > 0):
+    // the dirty region is a lattice box dispatched as a 3D grid, thread (a,b,c) →
+    // the box-local probe. pi drives the decode, payload offset AND ray seed, so
+    // either path reproduces the full bake for probe pi exactly.
+    uint pi;
+    if (pc.misc3.w > 0) {
+        if (int(gid.x) >= pc.misc3.w) return; // x padded; y,z exact
+        int3 lo = pc.misc3.xyz;
+        pi = uint((lo.x + int(gid.x)) + (lo.y + int(gid.y)) * nx + (lo.z + int(gid.z)) * nx * ny);
+    } else {
+        pi = gid.x + uint(pc.misc2.w);
+        if (pi >= uint(pc.misc.x)) return;
+    }
+    int3 g = int3(int(pi) % nx, (int(pi) / nx) % ny, int(pi) / (nx * ny));
     float3 P = origin + float3(g) * spacing;
-    uint base = 16u + (uint(pc.misc2.y) * uint(pc.misc.x) + gid) * 20u;
+    uint base = 16u + (uint(pc.misc2.y) * uint(pc.misc.x) + pi) * 20u;
 
     float3 sums[6];
     for (int f = 0; f < 6; f++) sums[f] = float3(pd[base + f*3u], pd[base + f*3u + 1u], pd[base + f*3u + 2u]);
@@ -172,7 +186,7 @@ kernel void bake_probes(
         float phi = TWOPI * fract(float(ri) * 0.6180339887);
         float rr = sqrt(max(0.0, 1.0 - zc * zc));
         float3 d = float3(rr * cos(phi), zc, rr * sin(phi));
-        float3 L = radiance(P, d, hashp(gid * 9781u + uint(ri) * 6271u + 1u), pc, accel, verts, indices, geoms, mats, lights);
+        float3 L = radiance(P, d, hashp(pi * 9781u + uint(ri) * 6271u + 1u), pc, accel, verts, indices, geoms, mats, lights);
         sums[0] += L * max( d.x, 0.0); sums[1] += L * max(-d.x, 0.0);
         sums[2] += L * max( d.y, 0.0); sums[3] += L * max(-d.y, 0.0);
         sums[4] += L * max( d.z, 0.0); sums[5] += L * max(-d.z, 0.0);

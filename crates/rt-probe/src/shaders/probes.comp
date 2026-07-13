@@ -44,9 +44,10 @@ layout(set = 0, binding = 10, scalar) buffer Probes { float pd[]; };
 layout(push_constant) uniform Push {
   vec4 camRight; vec4 camUp; vec4 camDir; vec4 camPos; // unused (bake has no camera)
   ivec4 misc;  // probeCount, raysTotal (Fibonacci N), bounces, raysThisBatch
-  ivec4 misc2; // batchStartRay, bank (0 = practicals off, 1 = full), lightCount, _
+  ivec4 misc2; // batchStartRay, bank (0 = practicals off, 1 = full), lightCount, firstProbe (Stage-2 sub-range base)
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
-  vec4 roiPad; vec4 roi2Pad; vec4 lookPad; vec4 look2Pad; ivec4 misc3Pad; // ShadePush pads (shared push range)
+  vec4 roiPad; vec4 roi2Pad; vec4 lookPad; vec4 look2Pad;
+  ivec4 misc3; // Stage-2 refresh box: (boxLoX, boxLoY, boxLoZ, boxWidthX); w>0 = box mode
   vec4 env1;   // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), w = ground tint r
   vec4 env2;   // sun tint rgb, w = ground tint g
   vec4 env3;   // sky horizon tint rgb, w = ground tint b
@@ -158,11 +159,26 @@ vec3 radiance(vec3 o, vec3 d, uint seed){
 }
 
 void main(){
-  uint pi = gl_GlobalInvocationID.x;
-  if (pi >= uint(pc.misc.x)) return;
   vec3 origin = vec3(pd[0], pd[1], pd[2]);
   float spacing = pd[3];
   int nx = int(pd[4]), ny = int(pd[5]);
+  // Two dispatch modes, both selecting a probe index pi. Full/sub-range BAKE
+  // (misc3.w == 0): pi = GlobalInvocationID.x + firstProbe (misc2.w) — a full
+  // bake passes firstProbe 0, bit-identical to a bare gid.x. Stage-2 tear-off
+  // REFRESH (misc3.w > 0): the dirty region is a lattice box, dispatched as a 3D
+  // grid, thread (a,b,c) → the box-local probe. pi drives the grid decode, the
+  // payload offset AND the per-ray seed, so either path reproduces exactly what
+  // a full bake computes for probe pi.
+  ivec3 gid = ivec3(gl_GlobalInvocationID.xyz);
+  uint pi;
+  if (pc.misc3.w > 0) {
+    if (gid.x >= pc.misc3.w) return; // x padded to local_size_x; y,z are exact
+    ivec3 lo = pc.misc3.xyz;
+    pi = uint((lo.x + gid.x) + (lo.y + gid.y) * nx + (lo.z + gid.z) * nx * ny);
+  } else {
+    pi = uint(gid.x) + uint(pc.misc2.w);
+    if (pi >= uint(pc.misc.x)) return;
+  }
   ivec3 g = ivec3(int(pi) % nx, (int(pi) / nx) % ny, int(pi) / (nx * ny));
   vec3 P = origin + vec3(g) * spacing;
   // misc2.y selects the bank: 0 = practicals off (sun/sky only), 1 = full.

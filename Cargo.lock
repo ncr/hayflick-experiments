@@ -195,6 +195,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "box3d-rust"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b598fd17f97bfd1bc9d52c27b31edc9cc8ab1499d8bbe09e8a228669bb885c08"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1376,6 +1382,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "phys-spike"
+version = "0.1.0"
+dependencies = [
+ "box3d-rust",
+ "glam",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1590,6 +1604,7 @@ dependencies = [
  "iso-core",
  "metal",
  "objc",
+ "phys-spike",
  "png 0.17.16",
  "raw-window-handle",
  "rt-probe",

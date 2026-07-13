@@ -23,6 +23,7 @@ use house_game::gym::sim::{Command, GymGame, GymLevel, GymSnapshot, MoveMode};
 use house_game::gym::trace::parse_trace;
 use house_game::TICK_DT;
 use iso_core::{world_to_window_px, ViewXform};
+use phys_spike::PhysWorld;
 use rt_probe::{Config, InstanceKey, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, Simulation, Tick};
 use std::collections::VecDeque;
@@ -125,6 +126,10 @@ pub struct GymLoop {
     face: f32,
     /// Camera target the follow-cam last consumed.
     pub last_cam: Vec3,
+    /// Destructibility spike (PHYS=1): a Rapier rigid-body world stepped once
+    /// per fixed tick, rendered as extra `phys/{i}` dynamic runs. `None` in
+    /// the normal gym. NOT part of `state_hash` — presentation-layer physics.
+    pub phys: Option<PhysWorld>,
 }
 
 impl GymLoop {
@@ -149,6 +154,16 @@ impl GymLoop {
             gait: Gait::default(),
             face: 0.0,
             last_cam: p0,
+            phys: None,
+        }
+    }
+
+    /// Step the physics spike one fixed tick (no-op unless PHYS=1 attached a
+    /// world). Called from every tick-advancing path so physics stays locked
+    /// to the sim clock — DEMO captures reproduce.
+    fn phys_step(&mut self) {
+        if let Some(p) = &mut self.phys {
+            p.step();
         }
     }
 
@@ -307,6 +322,7 @@ impl GymLoop {
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
             self.gait_tick();
+            self.phys_step();
         }
         if n > 0 {
             self.refresh();
@@ -320,6 +336,7 @@ impl GymLoop {
         self.sim.tick(self.tick, &cmds);
         self.tick.0 += 1;
         self.gait_tick();
+        self.phys_step();
         self.refresh();
     }
 
@@ -352,6 +369,7 @@ impl GymLoop {
             let cmds = self.queue.drain_for(self.tick);
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
+            self.phys_step();
         }
         self.cmds_prefix = self.tick.0;
         self.refresh();
@@ -436,6 +454,21 @@ impl GymLoop {
         ] {
             if let Some(k) = get(&format!("player/{suffix}")) {
                 out.push((k, m));
+            }
+        }
+        out
+    }
+
+    /// Physics-spike movers (PHYS=1): each Rapier box's world transform, joined
+    /// onto its `phys/{i}` run. Appended to `instances` — same TLAS-refit path
+    /// as the player limbs. Empty in the normal gym.
+    pub fn phys_instances(&self, handles: &SceneHandles) -> Vec<(InstanceKey, Mat4)> {
+        let mut out = Vec::new();
+        if let Some(p) = &self.phys {
+            for (i, m) in p.box_transforms().into_iter().enumerate() {
+                if let Some(k) = handles.instances.get(&format!("phys/{i}")).copied() {
+                    out.push((k, m));
+                }
             }
         }
         out

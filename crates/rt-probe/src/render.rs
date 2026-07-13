@@ -147,10 +147,14 @@ struct ProbePush {
     batch_start: i32,
     bank: i32, // 0 = practicals off (sun/sky only), 1 = full
     light_count: i32,
-    _r0: i32,
+    /// Stage-2 sub-range base: the probe this dispatch's invocation 0 bakes
+    /// (`pi = GlobalInvocationID.x + first_probe`). 0 for a full-grid bake.
+    first_probe: i32,
     env0: [f32; 4],
     _roi: [f32; 16], // pad to ShadePush size (shared push-constant range); unused by probes.comp
-    _misc3: [i32; 4], // ShadePush.misc3 pad — unused by probes.comp
+    /// Stage-2 refresh box: (boxLoX, boxLoY, boxLoZ, boxWidthX); w>0 selects the
+    /// 3D box-refresh path in probes.comp, 0 = the full/sub-range bake.
+    misc3: [i32; 4],
     // sun/sky-as-data (same rows as ShadePush — the bake must light with the
     // exact sun/sky the shade pass shows)
     env1: [f32; 4],
@@ -514,6 +518,19 @@ pub struct SceneGpu {
     pub probe_shader: vk::ShaderModule,
     pub probe_buf: Buffer,
     pub probe_count: u32,
+    /// Probe-grid geometry (Stage-2 tear-off: world AABB → probe box via
+    /// [`crate::probe_box`]). The grid header lives in `probe_buf`; these are the
+    /// cheap scalars the refresh needs.
+    probe_origin: Vec3,
+    probe_spacing: f32,
+    probe_dims: [u32; 3],
+    /// Bake ray budget, captured at `bake_probes`, so a tear-off refresh re-bakes
+    /// each touched probe to the SAME convergence as the startup bake (bit-exact).
+    probe_rays: i32,
+    /// Pending Stage-2 refresh lattice boxes (`lo` inclusive, `hi` exclusive) — a
+    /// torn-off roof's dirty set split into z-slabs, drained a budget/frame by
+    /// [`SceneGpu::drain_refresh`].
+    refresh_queue: Vec<([u32; 3], [u32; 3])>,
     probes_baked: bool,
 }
 
@@ -669,7 +686,7 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probes_baked: false })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), probes_baked: false })
     }
 
     /// Patch a named dynamic run's instance transform in the host-visible
@@ -802,6 +819,7 @@ impl SceneGpu {
         if self.probes_baked {
             return;
         }
+        self.probe_rays = rays_total; // captured for the Stage-2 tear-off refresh
         const PROBE_BOUNCES: i32 = 4;
         const BATCH: i32 = 256;
         let t = std::time::Instant::now();
@@ -823,10 +841,10 @@ impl SceneGpu {
                     batch_start: baked,
                     bank,
                     light_count: self.light_count as i32,
-                    _r0: 0,
+                    first_probe: 0, // full-grid bake
                     env0: env.env0,
                     _roi: [0.0; 16],
-                    _misc3: [0; 4],
+                    misc3: [0; 4], // box mode off (bake)
                     env1: env.env1,
                     env2: env.env2,
                     env3: env.env3,
@@ -844,6 +862,161 @@ impl SceneGpu {
         }
         self.probes_baked = true;
         println!("probes: baked {} rays x {} probes x 2 light banks in {:.0} ms", rays_total, self.probe_count, t.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// Stage-2 tear-off (Vulkan twin of the Metal `MetalBackend::tear_off`): hide
+    /// the static primitive instances `prims` from the TLAS (mask 0 → culled by
+    /// primary AND probe rays: gone from the image and the GI transport) + rebuild
+    /// the TLAS, then refresh the probes overlapping the world AABB `[min, max]`
+    /// (padded one spacing). `amortize` queues the region as z-slabs for
+    /// [`SceneGpu::drain_refresh`]; `false` rebakes it fully now (blocking).
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn tear_off(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env: &crate::scene::EnvBlock, prims: &[usize], min: Vec3, max: Vec3, amortize: bool) {
+        for &p in prims {
+            self.set_instance_mask(ctx, p, 0);
+        }
+        if self.tlas_dirty {
+            ctx.one_time(|cmd| self.record_tlas_rebuild(ctx, cmd));
+            self.tlas_dirty = false;
+        }
+        let Some((lo, hi)) = crate::probe_box(self.probe_origin, self.probe_spacing, self.probe_dims, min, max, self.probe_spacing) else {
+            return;
+        };
+        if amortize {
+            for z in lo[2]..hi[2] {
+                self.refresh_queue.push(([lo[0], lo[1], z], [hi[0], hi[1], z + 1]));
+            }
+        } else {
+            self.refresh_boxes(ctx, set, env, &[(lo, hi)]);
+        }
+    }
+
+    /// Drain up to `budget` probes' worth of queued refresh boxes (one bounded
+    /// chunk per frame — the amortized no-hitch path). Returns true while more
+    /// remain. Call once per frame after `record_frame`, before the shade
+    /// dispatch, so the just-refreshed probes light this frame.
+    pub unsafe fn drain_refresh(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env: &crate::scene::EnvBlock, budget: u32) -> bool {
+        if self.refresh_queue.is_empty() {
+            return false;
+        }
+        let probes = |(lo, hi): ([u32; 3], [u32; 3])| (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
+        let mut acc = 0u32;
+        let mut k = 0;
+        while k < self.refresh_queue.len() {
+            let p = probes(self.refresh_queue[k]);
+            if k > 0 && acc + p > budget {
+                break;
+            }
+            acc += p;
+            k += 1;
+            if acc >= budget {
+                break;
+            }
+        }
+        let boxes: Vec<([u32; 3], [u32; 3])> = self.refresh_queue.drain(..k).collect();
+        self.refresh_boxes(ctx, set, env, &boxes);
+        !self.refresh_queue.is_empty()
+    }
+
+    /// Patch instance `i`'s visibility mask in the host-visible instance buffer
+    /// and mark the TLAS dirty (mirrors [`SceneGpu::set_instance_transform`]).
+    /// `instance_custom_index_and_mask` is a `u32` at offset 48 (after the 48-byte
+    /// 3×4 transform): low 24 bits = custom index (kept `== i`), high 8 = mask.
+    unsafe fn set_instance_mask(&mut self, ctx: &Ctx, i: usize, mask: u8) {
+        let stride = std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
+        let packed: u32 = (i as u32 & 0x00FF_FFFF) | ((mask as u32) << 24);
+        let ptr = ctx.device.map_memory(self.inst_buf.memory, i as u64 * stride + 48, 4, vk::MemoryMapFlags::empty()).unwrap() as *mut u32;
+        *ptr = packed;
+        ctx.device.unmap_memory(self.inst_buf.memory);
+        self.tlas_dirty = true;
+    }
+
+    /// Reset + re-bake the probes in the dirty lattice `boxes` (both banks, full
+    /// `probe_rays`) — the Vulkan twin of `MetalBackend::refresh_boxes`. Reset is
+    /// a device-side `cmd_fill_buffer(0)` per box row per bank (probe_buf is
+    /// device-local, so no CPU memset). Each box is ONE 3D dispatch per ray-batch
+    /// (`pi` from the box + invocation), so the dispatch count is bake-like, not
+    /// one-per-row. Blocking (`one_time` cbs, like the bake). Bank emission uses
+    /// CLONES of the light/material shadows (NOT the in-place bake path), and the
+    /// full frame state is re-uploaded on exit — so a mid-frame drain never
+    /// clobbers `record_frame`'s per-frame light emission.
+    unsafe fn refresh_boxes(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env: &crate::scene::EnvBlock, boxes: &[([u32; 3], [u32; 3])]) {
+        if boxes.is_empty() {
+            return;
+        }
+        const PROBE_BOUNCES: i32 = 4;
+        const BATCH: i32 = 256;
+        let (nx, ny) = (self.probe_dims[0], self.probe_dims[1]);
+        let count = self.probe_count;
+        // reset: zero each box row's 20-float×width block in BOTH banks
+        ctx.one_time(|cmd| {
+            for &(lo, hi) in boxes {
+                let wx = hi[0] - lo[0];
+                for iz in lo[2]..hi[2] {
+                    for iy in lo[1]..hi[1] {
+                        let row0 = lo[0] + iy * nx + iz * nx * ny;
+                        for bank in 0..2u32 {
+                            let base_f = 16 + (bank * count + row0) * 20; // floats
+                            ctx.device.cmd_fill_buffer(cmd, self.probe_buf.buffer, base_f as u64 * 4, wx as u64 * 20 * 4, 0);
+                        }
+                    }
+                }
+            }
+        });
+        for bank in 0..2i32 {
+            // clone the frame's light/material state, apply the bank emission,
+            // upload; the frame state itself is untouched and restored below.
+            let mut lights = self.lights_cpu.clone();
+            let mut mats = self.mats_cpu.clone();
+            crate::gpu_scene::bake_bank_emission(bank, &self.light_link, &mut lights, &mut mats);
+            ctx.one_time(|cmd| {
+                ctx.upload(&self.light_stage, &lights);
+                ctx.upload(&self.mat_stage, &mats);
+                let lc = vk::BufferCopy::default().size(std::mem::size_of_val(&lights[..]) as u64);
+                ctx.device.cmd_copy_buffer(cmd, self.light_stage.buffer, self.lbuf.buffer, &[lc]);
+                let mc = vk::BufferCopy::default().size(std::mem::size_of_val(&mats[..]) as u64);
+                ctx.device.cmd_copy_buffer(cmd, self.mat_stage.buffer, self.mbuf.buffer, &[mc]);
+                let mb = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
+                ctx.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[mb], &[], &[]);
+            });
+            for &(lo, hi) in boxes {
+                let (wx, wy, wz) = (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+                if wx == 0 || wy == 0 || wz == 0 {
+                    continue;
+                }
+                let mut baked = 0;
+                while baked < self.probe_rays {
+                    let push = ProbePush {
+                        _cam: [0.0; 16],
+                        probe_count: self.probe_count as i32,
+                        rays_total: self.probe_rays,
+                        bounces: PROBE_BOUNCES,
+                        batch_rays: BATCH,
+                        batch_start: baked,
+                        bank,
+                        light_count: self.light_count as i32,
+                        first_probe: 0,
+                        env0: env.env0,
+                        _roi: [0.0; 16],
+                        misc3: [lo[0] as i32, lo[1] as i32, lo[2] as i32, wx as i32],
+                        env1: env.env1,
+                        env2: env.env2,
+                        env3: env.env3,
+                        env4: env.env4,
+                    };
+                    ctx.one_time(|cmd| {
+                        let d = &ctx.device;
+                        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.probe_pipeline);
+                        d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline_layout, 0, &[set], &[]);
+                        d.cmd_push_constants(cmd, self.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
+                        d.cmd_dispatch(cmd, wx.div_ceil(64), wy, wz);
+                    });
+                    baked += BATCH;
+                }
+            }
+        }
+        // restore the full frame light/material state for the shade pass.
+        ctx.one_time(|cmd| self.record_practicals_upload(ctx, cmd));
     }
 
     pub unsafe fn destroy(self, ctx: &Ctx) {

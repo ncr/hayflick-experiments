@@ -88,11 +88,37 @@ pub fn cell_world(p: CellPos) -> Vec3 {
     Vec3::new(p.x as f32 + 0.5, FLOOR_TOP, p.z as f32 + 0.5)
 }
 
-/// Build the renderable greybox for the gym in the given look.
-pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
+/// Build the renderable greybox for the gym in the given look. `roof` gates the
+/// building's roof caps — the dynamic-GI spike tears the roof off at runtime
+/// (rebuild with `roof=false` + re-bake) to flood the interior with light.
+/// Stage-2 tear-off targets, returned alongside the built gym: the roof
+/// primitive indices (to hide from the TLAS at runtime) and the interior world
+/// AABB whose probes a tear-off refreshes (the Room footprint × floor→roof).
+/// `roof_prims` is empty when `roof == false` (nothing to tear) or the level
+/// has no Room cells.
+pub struct GymMeta {
+    pub roof_prims: std::ops::Range<usize>,
+    pub room_min: Vec3,
+    pub room_max: Vec3,
+}
+
+pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
     let mut scene = Scene::new();
     let g = &spec.grid;
     let (w, h) = (g.w, g.h);
+    // Room world AABB (footprint × floor→roof) — the tear-off refresh region.
+    let (mut room_min, mut room_max) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    for z in 0..h {
+        for x in 0..w {
+            if g.cell(CellPos::new(x, z)) == CellKind::Room {
+                room_min = room_min.min(Vec3::new(x as f32, FLOOR_TOP, z as f32));
+                room_max = room_max.max(Vec3::new(x as f32 + 1.0, ROOF_TOP, z as f32 + 1.0));
+            }
+        }
+    }
+    if !room_min.x.is_finite() {
+        (room_min, room_max) = (Vec3::ZERO, Vec3::ZERO); // no Room cells
+    }
 
     // ---- floors: one quad per row-run of same (tint, matte) key (cheap prim
     // merge; a checker look breaks field rows into per-cell quads — fine at
@@ -153,21 +179,26 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
 
     // ---- roof: an occluding cap over every Room cell (merged per row).
     // Visible from outside (the building reads as a building); the WALLCUT
-    // indoor cutaway dissolves it the moment the player steps inside.
-    for z in 0..h {
-        let mut x = 0i16;
-        while x < w {
-            if g.cell(CellPos::new(x, z)) == CellKind::Room {
-                let x0 = x;
-                while x < w && g.cell(CellPos::new(x, z)) == CellKind::Room {
+    // indoor cutaway dissolves it the moment the player steps inside. Gated by
+    // `roof` so the dynamic-GI spike can tear it off and re-bake.
+    let roof_first = scene.primitives.len();
+    if roof {
+        for z in 0..h {
+            let mut x = 0i16;
+            while x < w {
+                if g.cell(CellPos::new(x, z)) == CellKind::Room {
+                    let x0 = x;
+                    while x < w && g.cell(CellPos::new(x, z)) == CellKind::Room {
+                        x += 1;
+                    }
+                    roof_run(&mut scene, x0 as f32, x as f32, z as f32, look);
+                } else {
                     x += 1;
                 }
-                roof_run(&mut scene, x0 as f32, x as f32, z as f32, look);
-            } else {
-                x += 1;
             }
         }
     }
+    let roof_prims = roof_first..scene.primitives.len();
 
     // ---- lamps: the spec's lamp cells, as NAMED conceptual point lights
     // (the ONLY named lights — the mirror join sees exactly these) + an
@@ -207,7 +238,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> Scene {
     scene.player_start = cell_world(spec.player_start);
     scene.lighting = look.lighting;
     scene.sun_sky = look.sun; // sun/sky-as-data (Faza 1b)
-    scene
+    (scene, GymMeta { roof_prims, room_min, room_max })
 }
 
 /// Floor-run merge key: (tint, matte). Outdoor cells are the meadow — matte
@@ -415,7 +446,7 @@ mod tests {
     fn every_look_registers_the_player_runs_and_lamps_only() {
         for look in LOOKS {
             let spec = gym_level();
-            let scene = build_gym(&spec, look);
+            let (scene, _) = build_gym(&spec, look, true);
             for name in ["player", "player/legL", "player/legR", "player/armL", "player/armR"] {
                 assert!(scene.dynamics.iter().any(|(n, ..)| n == name), "{}: missing run {name}", look.name);
             }

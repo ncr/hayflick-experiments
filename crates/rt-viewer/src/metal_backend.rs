@@ -17,7 +17,7 @@
 use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, RenderBackend};
 use crate::capture::subsample_rgba;
 use core_graphics_types::geometry::CGSize;
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, scan_lights, LightScan};
 use rt_probe::scene::{LoadedImage, Material, Vertex};
@@ -54,7 +54,8 @@ struct Push {
 #[derive(Clone, Copy)]
 struct ProbePush {
     misc: [i32; 4],  // probeCount, raysTotal, bounces, raysThisBatch
-    misc2: [i32; 4], // batchStartRay, bank, lightCount, _
+    misc2: [i32; 4], // batchStartRay, bank, lightCount, firstProbe (Stage-2 sub-range base)
+    misc3: [i32; 4], // Stage-2 refresh box: (boxLoX, boxLoY, boxLoZ, boxWidthX); w>0 = box mode
     env0: [f32; 4],
     env1: [f32; 4], // sun/sky-as-data (Faza 1b) — the bake lights with the
     env2: [f32; 4], // exact sun/sky the shade pass shows
@@ -95,6 +96,11 @@ struct MetalScene {
     lbuf: Buffer,
     probe_buf: Buffer,
     probe_count: u32,
+    // probe-grid geometry (Stage-2 tear-off refresh: a world AABB → probe index
+    // runs; the grid header lives in probe_buf, these are the cheap scalars).
+    probe_origin: Vec3,
+    probe_spacing: f32,
+    probe_dims: [u32; 3],
     texes: Vec<Texture>,
     blas_list: Vec<AccelerationStructure>,
     tlas: AccelerationStructure,
@@ -131,6 +137,16 @@ pub struct MetalBackend {
     base_scale: u32,
     n_spot_active: u32,
     tlas_dirty: bool,
+    /// Stage-2 dynamic GI: the bake ray budget (per probe per bank), kept so a
+    /// tear-off refresh re-bakes each touched probe to the SAME convergence as
+    /// the startup bake (bit-exact), and the per-frame probe budget the refresh
+    /// queue drains at so a big region spreads over frames with no bake stall.
+    probe_rays: i32,
+    refresh_budget: u32,
+    /// Pending targeted-refresh lattice boxes (`lo` inclusive, `hi` exclusive) —
+    /// a torn-off roof's dirty set, split into z-slabs and drained in
+    /// `render_present` before the shade pass.
+    refresh_queue: Vec<([u32; 3], [u32; 3])>,
     // window-size resources + present surface
     target: Option<MetalTarget>,
     layer: Option<MetalLayer>,
@@ -317,6 +333,9 @@ impl MetalScene {
             lbuf,
             probe_buf,
             probe_count,
+            probe_origin: grid.origin,
+            probe_spacing: grid.spacing,
+            probe_dims: grid.dims,
             texes,
             blas_list,
             tlas,
@@ -373,6 +392,12 @@ impl MetalBackend {
             base_scale: cfg.render.pixel,
             n_spot_active: 0,
             tlas_dirty: false,
+            probe_rays: cfg.render.probe_rays,
+            // REFRESH_BUDGET probes/frame (env-tunable): keeps each frame's
+            // tear-off refresh a few ms so a big dirty region settles over
+            // ~dozens of frames instead of one multi-second bake stall.
+            refresh_budget: std::env::var("REFRESH_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(64),
+            refresh_queue: Vec::new(),
             target: None,
             layer: None,
             probe_cache: window.is_some(), // interactive only — capture bakes fresh
@@ -428,13 +453,7 @@ impl MetalBackend {
                 return;
             }
         }
-        const BOUNCES: i32 = 4;
-        // Small per-cb batches keep each dispatch under the GPU watchdog. The
-        // cost of one batch scales with probe count AND the NEE light count
-        // (every bounce samples every light), so the batch shrinks as either
-        // grows — the 32-ray batch that fit a 13k-probe/3-lamp scene blew the
-        // watchdog at 40k probes × ~30 lamps (town, 2026-07-12).
-        let batch: i32 = (2_000_000_000 / (self.sc.probe_count as i64 * (self.sc.light_count as i64 + 8) * 1000)).clamp(2, 32) as i32;
+        let batch = self.probe_batch_for(self.sc.probe_count);
         println!("probes: batch {batch} rays/cb ({} lights)", self.sc.light_count);
         let t0 = std::time::Instant::now();
         for bank in 0..2i32 {
@@ -447,36 +466,7 @@ impl MetalBackend {
             write_buf(&self.sc.mbuf, &mats);
             let mut baked = 0;
             while baked < rays_total {
-                let env = self.sc.env;
-                let push = ProbePush {
-                    misc: [self.sc.probe_count as i32, rays_total, BOUNCES, batch],
-                    misc2: [baked, bank, self.sc.light_count as i32, 0],
-                    env0: env.env0,
-                    env1: env.env1,
-                    env2: env.env2,
-                    env3: env.env3,
-                    env4: env.env4,
-                };
-                let cb = self.queue.new_command_buffer();
-                let enc = cb.new_compute_command_encoder();
-                enc.set_compute_pipeline_state(&self.probe_pso);
-                enc.set_acceleration_structure(0, Some(&self.sc.tlas));
-                enc.set_buffer(1, Some(&self.sc.vbuf), 0);
-                enc.set_buffer(2, Some(&self.sc.ibuf), 0);
-                enc.set_buffer(3, Some(&self.sc.gbuf), 0);
-                enc.set_buffer(4, Some(&self.sc.mbuf), 0);
-                enc.set_buffer(5, Some(&self.sc.lbuf), 0);
-                enc.set_buffer(6, Some(&self.sc.probe_buf), 0);
-                enc.set_bytes(7, size_of::<ProbePush>() as u64, &push as *const _ as *const c_void);
-                enc.use_resource(&self.sc.tlas, MTLResourceUsage::Read);
-                for bl in &self.sc.blas_list {
-                    enc.use_resource(bl, MTLResourceUsage::Read);
-                }
-                enc.dispatch_threads(MTLSize { width: self.sc.probe_count as u64, height: 1, depth: 1 }, MTLSize { width: 64, height: 1, depth: 1 });
-                enc.end_encoding();
-                cb.commit();
-                cb.wait_until_completed();
-                assert_eq!(cb.status(), MTLCommandBufferStatus::Completed, "probe bake batch failed (bank {bank}, ray {baked})");
+                self.probe_dispatch(0, self.sc.probe_count, bank, baked, batch, rays_total);
                 baked += batch;
             }
         }
@@ -490,6 +480,135 @@ impl MetalBackend {
             let bytes = std::slice::from_raw_parts(self.sc.probe_buf.contents() as *const u8, probe_bytes);
             rt_probe::probe_cache::store(self.sc.probe_key, bytes);
         }
+    }
+
+    /// Rays-per-command-buffer for a dispatch over `m` probes. Keeps each
+    /// dispatch under the GPU watchdog; the cost scales with the probe COUNT AND
+    /// the NEE light count (every bounce samples every light), so the batch
+    /// shrinks as either grows (the 32-ray batch that fit 13k probes/3 lamps blew
+    /// the watchdog at 40k probes × ~30 lamps — town, 2026-07-12). Sized by `m`
+    /// (not the whole grid) so a Stage-2 refresh of a ~dozen-probe run bakes its
+    /// full ray budget in one command buffer instead of hundreds of tiny ones.
+    fn probe_batch_for(&self, m: u32) -> i32 {
+        (2_000_000_000 / (m.max(1) as i64 * (self.sc.light_count as i64 + 8) * 1000)).clamp(2, self.probe_rays.max(2) as i64) as i32
+    }
+
+    /// Bind the probe pipeline + every scene buffer + the residency for the
+    /// acceleration structures onto `enc`. Shared setup for one or many
+    /// back-to-back probe dispatches in the same encoder.
+    unsafe fn bind_probe(&self, enc: &ComputeCommandEncoderRef) {
+        enc.set_compute_pipeline_state(&self.probe_pso);
+        enc.set_acceleration_structure(0, Some(&self.sc.tlas));
+        enc.set_buffer(1, Some(&self.sc.vbuf), 0);
+        enc.set_buffer(2, Some(&self.sc.ibuf), 0);
+        enc.set_buffer(3, Some(&self.sc.gbuf), 0);
+        enc.set_buffer(4, Some(&self.sc.mbuf), 0);
+        enc.set_buffer(5, Some(&self.sc.lbuf), 0);
+        enc.set_buffer(6, Some(&self.sc.probe_buf), 0);
+        enc.use_resource(&self.sc.tlas, MTLResourceUsage::Read);
+        for bl in &self.sc.blas_list {
+            enc.use_resource(bl, MTLResourceUsage::Read);
+        }
+    }
+
+    fn probe_push(&self, first: u32, bank: i32, batch_start: i32, batch_rays: i32, rays_total: i32, misc3: [i32; 4]) -> ProbePush {
+        const BOUNCES: i32 = 4;
+        let env = self.sc.env;
+        ProbePush {
+            misc: [self.sc.probe_count as i32, rays_total, BOUNCES, batch_rays],
+            misc2: [batch_start, bank, self.sc.light_count as i32, first as i32],
+            misc3,
+            env0: env.env0,
+            env1: env.env1,
+            env2: env.env2,
+            env3: env.env3,
+            env4: env.env4,
+        }
+    }
+
+    /// Encode + dispatch (waited) ONE probe-bake batch: `m` probes starting at
+    /// `first` (the `firstProbe` sub-range base), rays `[batch_start,
+    /// batch_start+batch_rays)` of `rays_total`, into `bank`. Caller has already
+    /// put `bank`'s emission state in lbuf/mbuf. Used by the startup bake
+    /// (`first=0, m=probe_count`, one big dispatch per ray-batch).
+    unsafe fn probe_dispatch(&self, first: u32, m: u32, bank: i32, batch_start: i32, batch_rays: i32, rays_total: i32) {
+        let push = self.probe_push(first, bank, batch_start, batch_rays, rays_total, [0; 4]); // box mode off
+        let cb = self.queue.new_command_buffer();
+        let enc = cb.new_compute_command_encoder();
+        self.bind_probe(enc);
+        enc.set_bytes(7, size_of::<ProbePush>() as u64, &push as *const _ as *const c_void);
+        enc.dispatch_threads(MTLSize { width: m as u64, height: 1, depth: 1 }, MTLSize { width: 64, height: 1, depth: 1 });
+        enc.end_encoding();
+        cb.commit();
+        cb.wait_until_completed();
+        assert_eq!(cb.status(), MTLCommandBufferStatus::Completed, "probe dispatch failed (first {first} m {m} bank {bank} ray {batch_start})");
+    }
+
+    /// Stage-2 targeted refresh: reset then re-bake exactly the probes in the
+    /// dirty lattice `boxes` (`lo` inclusive, `hi` exclusive), both banks, full
+    /// `probe_rays`. RESET-before-rebake because the payload accumulates in place
+    /// (ray sums + count, divided at read), so re-baking without zeroing would
+    /// double-count; the zero is a direct memset of the Shared probe buffer (each
+    /// box row is a contiguous 20-float×width block), safe because every command
+    /// buffer here is waited (no in-flight GPU read).
+    ///
+    /// Each box is a SINGLE 3D dispatch per ray-batch (thread `(a,b,c)` → the
+    /// box-local probe), so the dispatch count is `boxes × ray-batches × 2` — not
+    /// one-per-row. That is the whole point: a naive per-row refresh paid ~20 ms
+    /// of per-dispatch launch latency ×hundreds of rows (seconds); the box path
+    /// pays it a handful of times, like the startup bake. Both banks finish
+    /// before this returns (no half-updated probe reaches the shade pass) and the
+    /// full lit light/material state is restored on exit.
+    unsafe fn refresh_boxes(&self, boxes: &[([u32; 3], [u32; 3])]) {
+        if boxes.is_empty() {
+            return;
+        }
+        let (nx, ny) = (self.sc.probe_dims[0], self.sc.probe_dims[1]);
+        let count = self.sc.probe_count;
+        let pd = self.sc.probe_buf.contents() as *mut f32;
+        for &(lo, hi) in boxes {
+            let wx = hi[0] - lo[0];
+            for iz in lo[2]..hi[2] {
+                for iy in lo[1]..hi[1] {
+                    let row0 = lo[0] + iy * nx + iz * nx * ny;
+                    for bank in 0..2u32 {
+                        let base = 16 + (bank * count + row0) as usize * 20;
+                        std::ptr::write_bytes(pd.add(base), 0, wx as usize * 20); // 20 f32/probe → 0.0
+                    }
+                }
+            }
+        }
+        for bank in 0..2i32 {
+            let mut lights = self.sc.lights_cpu.clone();
+            let mut mats = self.sc.mats_cpu.clone();
+            bake_bank_emission(bank, &self.sc.light_link, &mut lights, &mut mats);
+            write_buf(&self.sc.lbuf, &lights);
+            write_buf(&self.sc.mbuf, &mats);
+            for &(lo, hi) in boxes {
+                let (wx, wy, wz) = (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+                if wx == 0 || wy == 0 || wz == 0 {
+                    continue;
+                }
+                let box3 = [lo[0] as i32, lo[1] as i32, lo[2] as i32, wx as i32];
+                let batch = self.probe_batch_for(wx * wy * wz);
+                let mut baked = 0;
+                while baked < self.probe_rays {
+                    let push = self.probe_push(0, bank, baked, batch, self.probe_rays, box3);
+                    let cb = self.queue.new_command_buffer();
+                    let enc = cb.new_compute_command_encoder();
+                    self.bind_probe(enc);
+                    enc.set_bytes(7, size_of::<ProbePush>() as u64, &push as *const _ as *const c_void);
+                    enc.dispatch_threads(MTLSize { width: wx as u64, height: wy as u64, depth: wz as u64 }, MTLSize { width: 4, height: 4, depth: 4 });
+                    enc.end_encoding();
+                    cb.commit();
+                    cb.wait_until_completed();
+                    assert_eq!(cb.status(), MTLCommandBufferStatus::Completed, "probe refresh dispatch failed (bank {bank})");
+                    baked += batch;
+                }
+            }
+        }
+        write_buf(&self.sc.lbuf, &self.sc.lights_cpu);
+        write_buf(&self.sc.mbuf, &self.sc.mats_cpu);
     }
 
     /// Rebuild the TLAS from the (patched) instance buffer — cheap full build
@@ -550,6 +669,36 @@ impl RenderBackend for MetalBackend {
     }
     unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config) {
         self.rebuild_scene_impl(scene, cfg);
+    }
+    unsafe fn tear_off(&mut self, prims: &[usize], min: Vec3, max: Vec3, amortize: bool) {
+        // hide the static instances (mask 0 → culled by primary AND probe rays)
+        // then rebuild the TLAS so the refresh below traces the roofless world.
+        for &p in prims {
+            if let Some(inst) = self.sc.instances.get_mut(p) {
+                inst.mask = 0;
+            }
+        }
+        write_buf(&self.sc.inst_buf, &self.sc.instances);
+        self.rebuild_tlas();
+        // probes whose cells overlap the torn region as a lattice box, padded one
+        // spacing so probes that newly see sky/lamps refresh too.
+        let Some((lo, hi)) = rt_probe::probe_box(self.sc.probe_origin, self.sc.probe_spacing, self.sc.probe_dims, min, max, self.sc.probe_spacing) else {
+            println!("tear_off: region misses the probe grid — roof hidden, no refresh (metal)");
+            return;
+        };
+        let n = (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
+        if amortize {
+            // split into z-slabs so the per-frame drain stays a few dispatches
+            // (a clean z-wavefront of light as the region re-bakes).
+            for z in lo[2]..hi[2] {
+                self.refresh_queue.push(([lo[0], lo[1], z], [hi[0], hi[1], z + 1]));
+            }
+            println!("tear_off: queued {n} probes as {} z-slabs, {}/frame (metal)", hi[2] - lo[2], self.refresh_budget);
+        } else {
+            let t0 = std::time::Instant::now();
+            self.refresh_boxes(&[(lo, hi)]);
+            println!("tear_off: refreshed {n} probes in {:.0} ms (metal)", t0.elapsed().as_secs_f32() * 1000.0);
+        }
     }
     fn base_scale(&self) -> u32 {
         self.base_scale
@@ -631,6 +780,28 @@ impl RenderBackend for MetalBackend {
         if self.tlas_dirty {
             self.rebuild_tlas();
             self.tlas_dirty = false;
+        }
+        // Stage-2 amortized probe refresh: drain up to refresh_budget probes'
+        // worth of dirty runs this frame (each fully re-baked, both banks), so a
+        // torn-off region lights up over ~dozens of frames with no whole-grid
+        // bake stall. Runs before shade so the updated probes light this frame.
+        if !self.refresh_queue.is_empty() {
+            let probes = |(lo, hi): ([u32; 3], [u32; 3])| (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
+            let mut acc = 0u32;
+            let mut k = 0;
+            while k < self.refresh_queue.len() {
+                let p = probes(self.refresh_queue[k]);
+                if k > 0 && acc + p > self.refresh_budget {
+                    break;
+                }
+                acc += p;
+                k += 1;
+                if acc >= self.refresh_budget {
+                    break;
+                }
+            }
+            let boxes: Vec<([u32; 3], [u32; 3])> = self.refresh_queue.drain(..k).collect();
+            self.refresh_boxes(&boxes);
         }
 
         let (low_w, low_h, ext_w, ext_h) = {

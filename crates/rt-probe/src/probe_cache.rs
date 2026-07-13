@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 /// Bump on ANY change to the bake algorithm, bounce count, probe layout, or the
 /// probe/shade shaders — old cache files then key differently and re-bake.
-const VERSION: u64 = 1;
+const VERSION: u64 = 2; // 2: probes.comp/.metal gained the firstProbe sub-range base (Stage-2)
 
 /// Reinterpret a POD slice (`Vertex` / `Material` / `f32` / `u32` / `[f32;N]`)
 /// as raw bytes, for feeding [`content_key`].

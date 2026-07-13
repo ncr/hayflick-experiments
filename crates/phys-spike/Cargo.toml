@@ -1,0 +1,9 @@
+[package]
+name = "phys-spike"
+version = "0.1.0"
+edition = "2021"
+description = "Throwaway box3d-rust (pure-Rust Box3D port) rigid-body world for the destructibility exploration (voxel-physics-spike branch). Presentation-layer physics, stepped once per fixed tick so DEMO captures reproduce."
+
+[dependencies]
+box3d-rust = "0.1.1"
+glam = "0.30"

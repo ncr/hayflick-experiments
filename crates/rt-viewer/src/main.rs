@@ -34,8 +34,10 @@ mod backend;
 mod capture;
 mod gym_loop;
 mod gym_scene;
+mod gi_demo;
 mod look;
 mod menu;
+mod phys_scene;
 mod view;
 mod viewer;
 // Backend selected at compile time by target OS: Metal on Apple Silicon,

@@ -436,6 +436,18 @@ impl RenderBackend for VulkanBackend {
         self.gpu.bake_probes(&self.ctx, set, &self.env, cfg.render.probe_rays);
     }
 
+    /// Stage-2 dynamic-GI tear-off (blind-edited on macOS — verify on the
+    /// spawner): hide the roof instances + rebuild the TLAS, then refresh the
+    /// interior probes (targeted box re-bake). SHOT drains fully (`amortize
+    /// == false`); live/DEMO queues z-slabs drained in `render_present`. All the
+    /// GPU work lives in the compile-checked `SceneGpu::tear_off`.
+    unsafe fn tear_off(&mut self, prims: &[usize], min: Vec3, max: Vec3, amortize: bool) {
+        self.ctx.device.device_wait_idle().ok(); // no frame in flight during the rebake
+        let set = self.swap.as_ref().unwrap().scene_set;
+        let env = self.env;
+        self.gpu.tear_off(&self.ctx, set, &env, prims, min, max, amortize);
+    }
+
     unsafe fn wait_idle(&self) {
         self.ctx.device.device_wait_idle().unwrap();
     }
@@ -470,6 +482,16 @@ impl RenderBackend for VulkanBackend {
         // This frame's scene-state update (lights → mover instances → TLAS
         // refit iff dirty), then the deterministic shade dispatch.
         self.gpu.record_frame(&self.ctx, cmd, fp.fs);
+        // Stage-2 amortized probe refresh (blind — verify on the spawner): drain
+        // a budget of queued tear-off boxes before shade so the just-refreshed
+        // probes light this frame. `scene_set` is Copy; extracting it drops the
+        // `swap` borrow so `self.gpu` can be borrowed mutably here.
+        {
+            let set = swap.scene_set;
+            let env = self.env;
+            let budget: u32 = std::env::var("REFRESH_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
+            self.gpu.drain_refresh(&self.ctx, set, &env, budget);
+        }
         let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
         let env = self.env.dimmed(fp.sky_dim);
         let mut push = ShadePush::new(&fp.fs.cam, low_w, low_h, &env, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);

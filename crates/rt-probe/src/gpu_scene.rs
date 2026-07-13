@@ -64,6 +64,66 @@ impl ProbeGrid {
         header[6] = dims[2] as f32;
         ProbeGrid { origin: pmin, spacing, dims, count, header }
     }
+
+    /// Dynamic-GI (Stage 2): the probe index runs whose lattice cells overlap the
+    /// world AABB `[min, max]` grown by `pad` wu — the set a targeted refresh
+    /// re-bakes when geometry near the box changes (a torn-off roof), instead of
+    /// the whole grid.
+    ///
+    /// A probe index is `pi = x + y·nx + z·nx·ny` (X is the fastest axis — see
+    /// the `probes.comp`/`probes.metal` `g = (pi%nx, …)` decode), so a box maps to
+    /// ONE contiguous `[lo, hi)` run per (y, z) lattice row. Runs are returned in
+    /// ascending index order; the result is empty when the padded box misses the
+    /// grid entirely. Every returned index is in-bounds (`< count`), so a caller
+    /// can dispatch `first_probe = lo` over `hi − lo` probes with no extra clamp.
+    pub fn dirty_probe_runs(&self, min: Vec3, max: Vec3, pad: f32) -> Vec<(u32, u32)> {
+        probe_runs(self.origin, self.spacing, self.dims, min, max, pad)
+    }
+}
+
+/// The lattice bounding box (`lo` inclusive, `hi` exclusive, per axis) of the
+/// probes whose cells overlap the world AABB `[min, max]` grown by `pad` — the
+/// Stage-2 refresh region as a box, which the probe bake can cover in ONE 3D
+/// dispatch (thread `(a,b,c)` → probe `(lo.x+a) + (lo.y+b)·nx + (lo.z+c)·nx·ny`)
+/// instead of one dispatch per row. `None` when the padded box misses the grid.
+/// Every index it spans is in-bounds.
+pub fn probe_box(origin: Vec3, spacing: f32, dims: [u32; 3], min: Vec3, max: Vec3, pad: f32) -> Option<([u32; 3], [u32; 3])> {
+    let (o, sp, d) = (origin, spacing, dims);
+    // inclusive probe-index span overlapping [lo−pad, hi+pad] on one axis, or
+    // None when that slab misses the grid (last probe coord = o + (n−1)·sp).
+    let axis = |lo: f32, hi: f32, oc: f32, n: u32| -> Option<(u32, u32)> {
+        let (lo, hi) = (lo - pad, hi + pad);
+        let gmax = oc + (n as f32 - 1.0) * sp;
+        if hi < oc || lo > gmax {
+            return None;
+        }
+        let a = (((lo - oc) / sp).floor().max(0.0) as u32).min(n - 1);
+        let b = (((hi - oc) / sp).ceil() as i64).clamp(0, n as i64 - 1) as u32;
+        Some((a, b))
+    };
+    let (Some((ix0, ix1)), Some((iy0, iy1)), Some((iz0, iz1))) = (axis(min.x, max.x, o.x, d[0]), axis(min.y, max.y, o.y, d[1]), axis(min.z, max.z, o.z, d[2])) else {
+        return None;
+    };
+    Some(([ix0, iy0, iz0], [ix1 + 1, iy1 + 1, iz1 + 1]))
+}
+
+/// Free-function core of [`ProbeGrid::dirty_probe_runs`] (see it for the
+/// contract) — the memory-layout view of [`probe_box`]: one contiguous `[lo,
+/// hi)` probe-index run per (y, z) row of the box (X is the fastest axis). The
+/// backends use the box for the DISPATCH and these runs for the reset memset.
+pub fn probe_runs(origin: Vec3, spacing: f32, dims: [u32; 3], min: Vec3, max: Vec3, pad: f32) -> Vec<(u32, u32)> {
+    let Some((lo, hi)) = probe_box(origin, spacing, dims, min, max, pad) else {
+        return Vec::new();
+    };
+    let (nx, ny) = (dims[0], dims[1]);
+    let mut runs = Vec::with_capacity(((hi[1] - lo[1]) * (hi[2] - lo[2])) as usize);
+    for iz in lo[2]..hi[2] {
+        for iy in lo[1]..hi[1] {
+            let base = iy * nx + iz * nx * ny;
+            runs.push((base + lo[0], base + hi[0])); // [lo, hi)
+        }
+    }
+    runs
 }
 
 /// Per-instance TLAS data derived from a `Scene` — one entry per primitive,
@@ -191,6 +251,74 @@ mod tests {
         assert_eq!(g.dims, [3, 3, 3]);
         assert_eq!(g.count, 27);
         assert!(ProbeGrid::build(p, p, 0.01).dims.iter().all(|&d| d >= 2)); // tiny spacing: floor holds
+    }
+
+    // ---- dirty_probe_runs (Stage-2 targeted refresh) -------------------------
+
+    /// A grid with probe coords {−1,0,1,2,3} on each axis (5³ = 125), so index
+    /// arithmetic is easy to check by hand: pi = x + 5y + 25z, x fastest.
+    fn runs_grid() -> ProbeGrid {
+        let g = ProbeGrid::build(Vec3::ZERO, Vec3::splat(2.0), 1.0);
+        assert_eq!(g.dims, [5, 5, 5]);
+        assert_eq!(g.origin, Vec3::splat(-1.0));
+        g
+    }
+
+    #[test]
+    fn dirty_runs_single_probe_is_one_run() {
+        // a point box at world origin (probe coord 0 = lattice index 1 on each
+        // axis) with no pad → exactly probe 1 + 5 + 25 = 31.
+        let g = runs_grid();
+        let runs = g.dirty_probe_runs(Vec3::ZERO, Vec3::ZERO, 0.0);
+        assert_eq!(runs, vec![(31, 32)]);
+    }
+
+    #[test]
+    fn dirty_runs_are_contiguous_x_runs_one_per_yz_row() {
+        // span x∈[0,2] (lattice x 1..=3), y = z = 0 (lattice 1): one run of 3.
+        let g = runs_grid();
+        let runs = g.dirty_probe_runs(Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0), 0.0);
+        let base = 5 + 25; // y=1 (·5) + z=1 (·25)
+        assert_eq!(runs, vec![(base + 1, base + 4)]); // x 1..=3 → [31,34)
+        // widen to a 3×2 (y,z) block → 6 runs, still 3-wide in x, ascending.
+        let runs = g.dirty_probe_runs(Vec3::new(0.0, 0.0, 0.0), Vec3::new(2.0, 2.0, 1.0), 0.0);
+        assert_eq!(runs.len(), 3 * 2); // y 1..=3, z 1..=2
+        assert!(runs.windows(2).all(|w| w[0].0 < w[1].0), "runs ascending");
+        assert!(runs.iter().all(|&(lo, hi)| hi - lo == 3));
+        assert!(runs.iter().all(|&(_, hi)| hi <= g.count), "in bounds");
+    }
+
+    #[test]
+    fn dirty_runs_pad_grows_the_span_and_clamps_to_grid() {
+        let g = runs_grid();
+        // point at origin, pad 1.0 → lattice x 0..=2 (coords −1,0,1) each axis.
+        let runs = g.dirty_probe_runs(Vec3::ZERO, Vec3::ZERO, 1.0);
+        assert_eq!(runs.len(), 3 * 3); // 3 in y × 3 in z
+        assert_eq!(runs[0], (0, 3)); // z0,y0 row: x 0..=2 → [0,3)
+        // a box past the +edge clamps, never exceeds count.
+        let runs = g.dirty_probe_runs(Vec3::splat(3.0), Vec3::splat(9.0), 0.0);
+        assert!(runs.iter().all(|&(lo, hi)| lo < g.count && hi <= g.count));
+    }
+
+    #[test]
+    fn dirty_runs_empty_when_box_misses_the_grid() {
+        let g = runs_grid();
+        // entirely below the grid on X (grid X ∈ [−1,3]); even with pad it misses.
+        assert!(g.dirty_probe_runs(Vec3::new(-10.0, 0.0, 0.0), Vec3::new(-5.0, 0.0, 0.0), 0.5).is_empty());
+    }
+
+    #[test]
+    fn probe_box_matches_the_runs_it_expands_to() {
+        let g = runs_grid();
+        // point at origin, pad 1.0 → lattice 0..=2 on each axis → box [0,0,0]..[3,3,3]
+        let (lo, hi) = probe_box(g.origin, g.spacing, g.dims, Vec3::ZERO, Vec3::ZERO, 1.0).unwrap();
+        assert_eq!((lo, hi), ([0, 0, 0], [3, 3, 3]));
+        // the box's dispatch footprint (Π widths) equals the probes the runs cover
+        let box_probes: u32 = (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
+        let run_probes: u32 = g.dirty_probe_runs(Vec3::ZERO, Vec3::ZERO, 1.0).iter().map(|&(a, b)| b - a).sum();
+        assert_eq!(box_probes, run_probes);
+        // a miss returns None (the runs version returns empty)
+        assert!(probe_box(g.origin, g.spacing, g.dims, Vec3::splat(-10.0), Vec3::splat(-9.0), 0.0).is_none());
     }
 
     // ---- InstanceTable -------------------------------------------------------

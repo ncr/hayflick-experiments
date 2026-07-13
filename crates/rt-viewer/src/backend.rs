@@ -171,6 +171,18 @@ pub trait RenderBackend {
     /// its light keys against the new `handles()` afterwards.
     unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config);
 
+    /// Dynamic-GI tear-off (Stage 2): hide the static primitive instances `prims`
+    /// from the TLAS (mask 0 — culled by primary AND probe rays, so gone from the
+    /// image and from the frozen GI transport) and refresh the probes whose cells
+    /// overlap the world AABB `[min, max]` (padded ~1 spacing). Each refreshed
+    /// probe re-bakes its full ray budget via a `first_probe` sub-range dispatch,
+    /// bit-identical to a full rebake of that probe — so no whole-grid stall.
+    /// `amortize` spreads the refresh over subsequent `render_present` calls at a
+    /// fixed per-frame probe budget (the no-hitch live path); `false` drains it
+    /// fully now (headless SHOT / A-B captures want the settled result in one
+    /// frame). A default no-op keeps this an opt-in spike hook.
+    unsafe fn tear_off(&mut self, _prims: &[usize], _min: Vec3, _max: Vec3, _amortize: bool) {}
+
     /// Render + (windowed) present one frame. Returns false if the swapchain
     /// needs rebuild. Records the deterministic per-frame state (lights →
     /// instances → TLAS refit if dirty), shade dispatch, tonemap, blit,

@@ -13,6 +13,9 @@ rt-probe = { path = "../rt-probe" }
 house-game = { path = "../house-game" }
 sim-core = { path = "../sim-core" }
 iso-core = { path = "../iso-core" }
+# destructibility exploration (voxel-physics-spike branch): PHYS=1 drops a
+# Rapier brick wall + projectile into the gym as extra dynamic runs.
+phys-spike = { path = "../phys-spike" }
 ash = "0.38"
 glam = "0.30"
 png = "0.17"
