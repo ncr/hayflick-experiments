@@ -151,7 +151,9 @@ struct ProbePush {
     /// (`pi = GlobalInvocationID.x + first_probe`). 0 for a full-grid bake.
     first_probe: i32,
     env0: [f32; 4],
-    _roi: [f32; 16], // pad to ShadePush size (shared push-constant range); unused by probes.comp
+    /// DDGI rolling refresh: (decay, wrapRays, primeCount, _); decay>0 = rolling.
+    roll: [f32; 4],
+    _roi: [f32; 12], // pad to ShadePush size (shared push-constant range); unused by probes.comp
     /// Stage-2 refresh box: (boxLoX, boxLoY, boxLoZ, boxWidthX); w>0 selects the
     /// 3D box-refresh path in probes.comp, 0 = the full/sub-range bake.
     misc3: [i32; 4],
@@ -531,6 +533,18 @@ pub struct SceneGpu {
     /// torn-off roof's dirty set split into z-slabs, drained a budget/frame by
     /// [`SceneGpu::drain_refresh`].
     refresh_queue: Vec<([u32; 3], [u32; 3])>,
+    /// DDGI rolling refresh (Stage-3): the hot probe box being settled, the frames
+    /// remaining, the current ray-cycle offset, and a one-shot prime flag. Set by
+    /// `tear_off(amortize)`, stepped each frame by [`SceneGpu::roll_step`]. `roll_n`
+    /// is the rolling Fibonacci set size / decay window (its own, smaller than the
+    /// startup bake's `probe_rays`); `roll_k` rays are cast per probe per frame, so
+    /// a torn region reconverges in ~roll_n/roll_k frames.
+    roll_box: Option<([u32; 3], [u32; 3])>,
+    roll_frames: u32,
+    roll_ray: i32,
+    roll_prime: bool,
+    roll_n: i32,
+    roll_k: i32,
     probes_baked: bool,
 }
 
@@ -686,7 +700,7 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), probes_baked: false })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), roll_box: None, roll_frames: 0, roll_ray: 0, roll_prime: false, roll_n: 256, roll_k: 8, probes_baked: false })
     }
 
     /// Patch a named dynamic run's instance transform in the host-visible
@@ -843,7 +857,8 @@ impl SceneGpu {
                     light_count: self.light_count as i32,
                     first_probe: 0, // full-grid bake
                     env0: env.env0,
-                    _roi: [0.0; 16],
+                    roll: [0.0; 4],
+                    _roi: [0.0; 12],
                     misc3: [0; 4], // box mode off (bake)
                     env1: env.env1,
                     env2: env.env2,
@@ -883,9 +898,15 @@ impl SceneGpu {
             return;
         };
         if amortize {
-            for z in lo[2]..hi[2] {
-                self.refresh_queue.push(([lo[0], lo[1], z], [hi[0], hi[1], z + 1]));
-            }
+            // DDGI rolling refresh: settle the whole hot box over the next frames
+            // (bounded roll_k rays/probe/frame, decay-blended), no whole-region
+            // stall. The first frame primes it (rescales the dense bake's count
+            // down to roll_n so the blend responds at once).
+            const ROLL_FRAMES: u32 = 64;
+            self.roll_box = Some((lo, hi));
+            self.roll_frames = ROLL_FRAMES;
+            self.roll_ray = 0;
+            self.roll_prime = true;
         } else {
             self.refresh_boxes(ctx, set, env, &[(lo, hi)]);
         }
@@ -916,6 +937,73 @@ impl SceneGpu {
         let boxes: Vec<([u32; 3], [u32; 3])> = self.refresh_queue.drain(..k).collect();
         self.refresh_boxes(ctx, set, env, &boxes);
         !self.refresh_queue.is_empty()
+    }
+
+    /// DDGI rolling refresh step (Vulkan twin of `MetalBackend::roll_step`): for
+    /// the hot `roll_box`, cast `roll_k` rays/probe into BOTH banks with a decay
+    /// blend (a one-shot prime first rescales the dense bake's count down to
+    /// `roll_n` so the blend responds immediately, without a brightness pop). ONE
+    /// 3D dispatch per bank per frame — bounded, no stall — so a torn region
+    /// settles over ~roll_n/roll_k frames. Bank emission uses CLONES of the
+    /// light/material shadows and the full frame state is restored on exit, so a
+    /// mid-frame step never clobbers `record_frame`'s emission. Call once per frame
+    /// before shade; returns true while still settling.
+    pub unsafe fn roll_step(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env: &crate::scene::EnvBlock) -> bool {
+        let Some((lo, hi)) = self.roll_box else { return false };
+        let (wx, wy, wz) = (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+        if self.roll_frames == 0 || wx == 0 || wy == 0 || wz == 0 {
+            self.roll_box = None;
+            return false;
+        }
+        const PROBE_BOUNCES: i32 = 4;
+        let decay = 1.0 - self.roll_k as f32 / self.roll_n as f32;
+        let prime = if self.roll_prime { self.roll_n as f32 } else { 0.0 };
+        for bank in 0..2i32 {
+            let mut lights = self.lights_cpu.clone();
+            let mut mats = self.mats_cpu.clone();
+            crate::gpu_scene::bake_bank_emission(bank, &self.light_link, &mut lights, &mut mats);
+            ctx.one_time(|cmd| {
+                ctx.upload(&self.light_stage, &lights);
+                ctx.upload(&self.mat_stage, &mats);
+                let lc = vk::BufferCopy::default().size(std::mem::size_of_val(&lights[..]) as u64);
+                ctx.device.cmd_copy_buffer(cmd, self.light_stage.buffer, self.lbuf.buffer, &[lc]);
+                let mc = vk::BufferCopy::default().size(std::mem::size_of_val(&mats[..]) as u64);
+                ctx.device.cmd_copy_buffer(cmd, self.mat_stage.buffer, self.mbuf.buffer, &[mc]);
+                let mb = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ);
+                ctx.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[mb], &[], &[]);
+            });
+            let push = ProbePush {
+                _cam: [0.0; 16],
+                probe_count: self.probe_count as i32,
+                rays_total: self.roll_n,
+                bounces: PROBE_BOUNCES,
+                batch_rays: self.roll_k,
+                batch_start: self.roll_ray,
+                bank,
+                light_count: self.light_count as i32,
+                first_probe: 0,
+                env0: env.env0,
+                roll: [decay, 1.0, prime, 0.0],
+                _roi: [0.0; 12],
+                misc3: [lo[0] as i32, lo[1] as i32, lo[2] as i32, wx as i32],
+                env1: env.env1,
+                env2: env.env2,
+                env3: env.env3,
+                env4: env.env4,
+            };
+            ctx.one_time(|cmd| {
+                let d = &ctx.device;
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.probe_pipeline);
+                d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline_layout, 0, &[set], &[]);
+                d.cmd_push_constants(cmd, self.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
+                d.cmd_dispatch(cmd, wx.div_ceil(64), wy, wz);
+            });
+        }
+        ctx.one_time(|cmd| self.record_practicals_upload(ctx, cmd));
+        self.roll_ray = (self.roll_ray + self.roll_k) % self.roll_n;
+        self.roll_frames -= 1;
+        self.roll_prime = false;
+        self.roll_frames > 0
     }
 
     /// Patch instance `i`'s visibility mask in the host-visible instance buffer
@@ -997,7 +1085,8 @@ impl SceneGpu {
                         light_count: self.light_count as i32,
                         first_probe: 0,
                         env0: env.env0,
-                        _roi: [0.0; 16],
+                        roll: [0.0; 4],
+                    _roi: [0.0; 12],
                         misc3: [lo[0] as i32, lo[1] as i32, lo[2] as i32, wx as i32],
                         env1: env.env1,
                         env2: env.env2,

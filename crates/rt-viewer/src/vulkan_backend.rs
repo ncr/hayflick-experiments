@@ -436,11 +436,12 @@ impl RenderBackend for VulkanBackend {
         self.gpu.bake_probes(&self.ctx, set, &self.env, cfg.render.probe_rays);
     }
 
-    /// Stage-2 dynamic-GI tear-off (blind-edited on macOS — verify on the
-    /// spawner): hide the roof instances + rebuild the TLAS, then refresh the
-    /// interior probes (targeted box re-bake). SHOT drains fully (`amortize
-    /// == false`); live/DEMO queues z-slabs drained in `render_present`. All the
-    /// GPU work lives in the compile-checked `SceneGpu::tear_off`.
+    /// Dynamic-GI tear-off (blind-edited on macOS — verify on the spawner): hide
+    /// the roof instances + rebuild the TLAS, then refresh the interior probes.
+    /// SHOT rebakes the box fully (`amortize == false`, the ground truth);
+    /// live/DEMO arms the Stage-3 DDGI rolling refresh (`roll_step` per frame in
+    /// `render_present`). All the GPU work lives in the compile-checked
+    /// `SceneGpu::tear_off` / `SceneGpu::roll_step`.
     unsafe fn tear_off(&mut self, prims: &[usize], min: Vec3, max: Vec3, amortize: bool) {
         self.ctx.device.device_wait_idle().ok(); // no frame in flight during the rebake
         let set = self.swap.as_ref().unwrap().scene_set;
@@ -482,15 +483,15 @@ impl RenderBackend for VulkanBackend {
         // This frame's scene-state update (lights → mover instances → TLAS
         // refit iff dirty), then the deterministic shade dispatch.
         self.gpu.record_frame(&self.ctx, cmd, fp.fs);
-        // Stage-2 amortized probe refresh (blind — verify on the spawner): drain
-        // a budget of queued tear-off boxes before shade so the just-refreshed
-        // probes light this frame. `scene_set` is Copy; extracting it drops the
-        // `swap` borrow so `self.gpu` can be borrowed mutably here.
+        // Stage-3 DDGI rolling refresh (blind — verify on the spawner): while a
+        // torn region settles, cast roll_k rays/probe into both banks and
+        // decay-blend them before shade, so the interior GI reconverges over
+        // ~roll_n/roll_k frames with no whole-region stall. `scene_set` is Copy;
+        // extracting it drops the `swap` borrow so `self.gpu` can be borrowed here.
         {
             let set = swap.scene_set;
             let env = self.env;
-            let budget: u32 = std::env::var("REFRESH_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(64);
-            self.gpu.drain_refresh(&self.ctx, set, &env, budget);
+            self.gpu.roll_step(&self.ctx, set, &env);
         }
         let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
         let env = self.env.dimmed(fp.sky_dim);

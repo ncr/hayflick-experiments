@@ -61,6 +61,7 @@ struct ProbePush {
     env2: [f32; 4], // exact sun/sky the shade pass shows
     env3: [f32; 4],
     env4: [f32; 4],
+    roll: [f32; 4], // DDGI rolling refresh: (decay, wrapRays, primeCount, _); decay>0 = rolling
 }
 
 /// Window-size-dependent GPU resources (the Metal `Swap`): the low-res G-buffer
@@ -137,16 +138,22 @@ pub struct MetalBackend {
     base_scale: u32,
     n_spot_active: u32,
     tlas_dirty: bool,
-    /// Stage-2 dynamic GI: the bake ray budget (per probe per bank), kept so a
-    /// tear-off refresh re-bakes each touched probe to the SAME convergence as
-    /// the startup bake (bit-exact), and the per-frame probe budget the refresh
-    /// queue drains at so a big region spreads over frames with no bake stall.
+    /// Stage-2 dynamic GI: the bake ray budget (per probe per bank), kept so the
+    /// amortize=false ground-truth refresh re-bakes each touched probe to the
+    /// SAME convergence as the startup bake (bit-exact).
     probe_rays: i32,
-    refresh_budget: u32,
-    /// Pending targeted-refresh lattice boxes (`lo` inclusive, `hi` exclusive) —
-    /// a torn-off roof's dirty set, split into z-slabs and drained in
-    /// `render_present` before the shade pass.
-    refresh_queue: Vec<([u32; 3], [u32; 3])>,
+    /// DDGI rolling refresh (Stage-3): the hot probe box being settled, frames
+    /// remaining, ray-cycle offset, and a one-shot prime flag. `roll_n` is the
+    /// rolling Fibonacci set size / decay window (its OWN, smaller than the dense
+    /// startup bake's `probe_rays`); `roll_k` rays/probe/frame — so a torn region
+    /// reconverges in ~roll_n/roll_k frames, bounded to one dispatch/bank/frame.
+    roll_box: Option<([u32; 3], [u32; 3])>,
+    roll_frames: u32,
+    roll_ray: i32,
+    roll_prime: bool,
+    roll_n: i32,
+    roll_k: i32,
+    roll_total: u32,
     // window-size resources + present surface
     target: Option<MetalTarget>,
     layer: Option<MetalLayer>,
@@ -393,11 +400,16 @@ impl MetalBackend {
             n_spot_active: 0,
             tlas_dirty: false,
             probe_rays: cfg.render.probe_rays,
-            // REFRESH_BUDGET probes/frame (env-tunable): keeps each frame's
-            // tear-off refresh a few ms so a big dirty region settles over
-            // ~dozens of frames instead of one multi-second bake stall.
-            refresh_budget: std::env::var("REFRESH_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(64),
-            refresh_queue: Vec::new(),
+            // DDGI rolling refresh knobs (env-tunable): its own small full-sphere
+            // set (ROLL_N) cycled ROLL_K rays/probe/frame, decay-blended, over
+            // ROLL_FRAMES frames after a tear — a bounded settle, no bake stall.
+            roll_box: None,
+            roll_frames: 0,
+            roll_ray: 0,
+            roll_prime: false,
+            roll_n: std::env::var("ROLL_N").ok().and_then(|v| v.parse().ok()).unwrap_or(256),
+            roll_k: std::env::var("ROLL_K").ok().and_then(|v| v.parse().ok()).unwrap_or(8),
+            roll_total: std::env::var("ROLL_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(64),
             target: None,
             layer: None,
             probe_cache: window.is_some(), // interactive only — capture bakes fresh
@@ -523,6 +535,7 @@ impl MetalBackend {
             env2: env.env2,
             env3: env.env3,
             env4: env.env4,
+            roll: [0.0; 4], // classic bake; roll_step overrides for the rolling refresh
         }
     }
 
@@ -611,6 +624,50 @@ impl MetalBackend {
         write_buf(&self.sc.mbuf, &self.sc.mats_cpu);
     }
 
+    /// DDGI rolling refresh step (Stage-3): for the hot `roll_box`, cast `roll_k`
+    /// rays/probe into BOTH banks with a decay blend (a one-shot prime first
+    /// rescales the dense bake's count down to `roll_n` so the blend responds
+    /// immediately, without a brightness pop). ONE 3D dispatch per bank per frame
+    /// — bounded, no stall — so a torn region settles over ~roll_n/roll_k frames.
+    /// Bank emission uses CLONES of the light/material shadows and the full lit
+    /// state is restored on exit, so the shade pass reads the right lights. Call
+    /// once per frame before shade while `roll_box` is set.
+    unsafe fn roll_step(&mut self) {
+        let Some((lo, hi)) = self.roll_box else { return };
+        let (wx, wy, wz) = (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+        if self.roll_frames == 0 || wx == 0 || wy == 0 || wz == 0 {
+            self.roll_box = None;
+            return;
+        }
+        let box3 = [lo[0] as i32, lo[1] as i32, lo[2] as i32, wx as i32];
+        let decay = 1.0 - self.roll_k as f32 / self.roll_n as f32;
+        let prime = if self.roll_prime { self.roll_n as f32 } else { 0.0 };
+        for bank in 0..2i32 {
+            let mut lights = self.sc.lights_cpu.clone();
+            let mut mats = self.sc.mats_cpu.clone();
+            bake_bank_emission(bank, &self.sc.light_link, &mut lights, &mut mats);
+            write_buf(&self.sc.lbuf, &lights);
+            write_buf(&self.sc.mbuf, &mats);
+            let mut push = self.probe_push(0, bank, self.roll_ray, self.roll_k, self.roll_n, box3);
+            push.roll = [decay, 1.0, prime, 0.0];
+            let cb = self.queue.new_command_buffer();
+            let enc = cb.new_compute_command_encoder();
+            self.bind_probe(enc);
+            enc.set_bytes(7, size_of::<ProbePush>() as u64, &push as *const _ as *const c_void);
+            enc.dispatch_threads(MTLSize { width: wx as u64, height: wy as u64, depth: wz as u64 }, MTLSize { width: 4, height: 4, depth: 4 });
+            enc.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+            assert_eq!(cb.status(), MTLCommandBufferStatus::Completed, "probe roll dispatch failed (bank {bank})");
+        }
+        // restore the lit light/material state so the shade pass NEE is correct
+        write_buf(&self.sc.lbuf, &self.sc.lights_cpu);
+        write_buf(&self.sc.mbuf, &self.sc.mats_cpu);
+        self.roll_ray = (self.roll_ray + self.roll_k) % self.roll_n;
+        self.roll_frames -= 1;
+        self.roll_prime = false;
+    }
+
     /// Rebuild the TLAS from the (patched) instance buffer — cheap full build
     /// on dirty (mirrors the Vulkan record_tlas_rebuild BUILD-on-change).
     unsafe fn rebuild_tlas(&self) {
@@ -688,12 +745,15 @@ impl RenderBackend for MetalBackend {
         };
         let n = (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
         if amortize {
-            // split into z-slabs so the per-frame drain stays a few dispatches
-            // (a clean z-wavefront of light as the region re-bakes).
-            for z in lo[2]..hi[2] {
-                self.refresh_queue.push(([lo[0], lo[1], z], [hi[0], hi[1], z + 1]));
-            }
-            println!("tear_off: queued {n} probes as {} z-slabs, {}/frame (metal)", hi[2] - lo[2], self.refresh_budget);
+            // DDGI rolling refresh: settle the whole hot box over the next frames
+            // (bounded roll_k rays/probe/frame, decay-blended), no whole-region
+            // stall. The first frame primes it (rescales the dense bake's count
+            // down to roll_n so the blend responds at once, without a brightness pop).
+            self.roll_box = Some((lo, hi));
+            self.roll_frames = self.roll_total;
+            self.roll_ray = 0;
+            self.roll_prime = true;
+            println!("tear_off: rolling DDGI refresh of {n} probes over {} frames (metal)", self.roll_total);
         } else {
             let t0 = std::time::Instant::now();
             self.refresh_boxes(&[(lo, hi)]);
@@ -781,27 +841,12 @@ impl RenderBackend for MetalBackend {
             self.rebuild_tlas();
             self.tlas_dirty = false;
         }
-        // Stage-2 amortized probe refresh: drain up to refresh_budget probes'
-        // worth of dirty runs this frame (each fully re-baked, both banks), so a
-        // torn-off region lights up over ~dozens of frames with no whole-grid
-        // bake stall. Runs before shade so the updated probes light this frame.
-        if !self.refresh_queue.is_empty() {
-            let probes = |(lo, hi): ([u32; 3], [u32; 3])| (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
-            let mut acc = 0u32;
-            let mut k = 0;
-            while k < self.refresh_queue.len() {
-                let p = probes(self.refresh_queue[k]);
-                if k > 0 && acc + p > self.refresh_budget {
-                    break;
-                }
-                acc += p;
-                k += 1;
-                if acc >= self.refresh_budget {
-                    break;
-                }
-            }
-            let boxes: Vec<([u32; 3], [u32; 3])> = self.refresh_queue.drain(..k).collect();
-            self.refresh_boxes(&boxes);
+        // Stage-3 DDGI rolling refresh: while a torn region is settling, cast a
+        // bounded roll_k rays/probe into both banks and decay-blend them in (one
+        // dispatch/bank), so the interior GI reconverges over ~roll_n/roll_k frames
+        // with no whole-region stall. Runs before shade so it lights this frame.
+        if self.roll_box.is_some() {
+            self.roll_step();
         }
 
         let (low_w, low_h, ext_w, ext_h) = {

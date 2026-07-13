@@ -46,7 +46,8 @@ layout(push_constant) uniform Push {
   ivec4 misc;  // probeCount, raysTotal (Fibonacci N), bounces, raysThisBatch
   ivec4 misc2; // batchStartRay, bank (0 = practicals off, 1 = full), lightCount, firstProbe (Stage-2 sub-range base)
   vec4 env0;   // sunScale, skyScale, fogDensity, fogHeight
-  vec4 roiPad; vec4 roi2Pad; vec4 lookPad; vec4 look2Pad;
+  vec4 roll;   // DDGI rolling refresh: (decay, wrapRays, _, _); decay>0 = rolling
+  vec4 roi2Pad; vec4 lookPad; vec4 look2Pad; // reserved (kept for layout parity)
   ivec4 misc3; // Stage-2 refresh box: (boxLoX, boxLoY, boxLoZ, boxWidthX); w>0 = box mode
   vec4 env1;   // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), w = ground tint r
   vec4 env2;   // sun tint rgb, w = ground tint g
@@ -190,10 +191,26 @@ void main(){
   for (int f = 0; f < 6; f++) sums[f] = vec3(pd[base + f * 3u], pd[base + f * 3u + 1u], pd[base + f * 3u + 2u]);
   float count = pd[base + 18u];
 
+  // DDGI rolling refresh. roll = (decay, wrapRays, primeCount, _).
+  // prime (roll.z>0, one-shot as a region enters rolling): rescale sums+count so
+  // count==primeCount, preserving the estimate sum/count — otherwise the dense
+  // startup bake's huge count makes the blend crawl. decay (roll.x>0): age old
+  // samples out (scale both) so a geometry change is tracked over ~N/K frames.
+  if (pc.roll.z > 0.0) {
+    float fac = count > 0.0 ? pc.roll.z / count : 1.0;
+    for (int i = 0; i < 6; i++) sums[i] *= fac;
+    count = pc.roll.z;
+  } else if (pc.roll.x > 0.0) {
+    for (int i = 0; i < 6; i++) sums[i] *= pc.roll.x;
+    count *= pc.roll.x;
+  }
+
   int N = pc.misc.y;
   for (int k = 0; k < pc.misc.w; k++) {
     int ri = pc.misc2.x + k;
-    if (ri >= N) break;
+    // rolling wraps the ray index (cycles the whole N-set across frames); a
+    // one-shot bake instead stops at the end of its batch.
+    if (pc.roll.y > 0.0) ri = ri % N; else if (ri >= N) break;
     // spherical Fibonacci direction ri of N — a fixed, deterministic set:
     // re-running the bake reproduces the cache bit-for-bit
     float zc = 1.0 - (2.0 * float(ri) + 1.0) / float(N);

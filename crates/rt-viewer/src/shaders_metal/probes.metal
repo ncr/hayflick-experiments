@@ -34,6 +34,7 @@ struct ProbePush {
     float4 env2;  // sun tint rgb, w = ground tint g
     float4 env3;  // sky horizon tint rgb, w = ground tint b
     float4 env4;  // sky zenith tint rgb, _
+    float4 roll;  // DDGI rolling refresh: (decay, wrapRays, _, _); decay>0 = rolling
 };
 
 constant float PI = 3.14159265;
@@ -178,10 +179,26 @@ kernel void bake_probes(
     for (int f = 0; f < 6; f++) sums[f] = float3(pd[base + f*3u], pd[base + f*3u + 1u], pd[base + f*3u + 2u]);
     float count = pd[base + 18u];
 
+    // DDGI rolling refresh. roll = (decay, wrapRays, primeCount, _).
+    // prime (roll.z>0, one-shot as a region enters rolling): rescale sums+count so
+    // count==primeCount, preserving the estimate sum/count — otherwise the dense
+    // startup bake's huge count makes the blend crawl. decay (roll.x>0): age old
+    // samples out (scale both) so a geometry change is tracked over ~N/K frames.
+    if (pc.roll.z > 0.0) {
+        float fac = count > 0.0 ? pc.roll.z / count : 1.0;
+        for (int i = 0; i < 6; i++) sums[i] *= fac;
+        count = pc.roll.z;
+    } else if (pc.roll.x > 0.0) {
+        for (int i = 0; i < 6; i++) sums[i] *= pc.roll.x;
+        count *= pc.roll.x;
+    }
+
     int N = pc.misc.y;
     for (int k = 0; k < pc.misc.w; k++){
         int ri = pc.misc2.x + k;
-        if (ri >= N) break;
+        // rolling wraps the ray index (cycles the whole N-set across frames); a
+        // one-shot bake instead stops at the end of its batch.
+        if (pc.roll.y > 0.0) ri = ri % N; else if (ri >= N) break;
         float zc = 1.0 - (2.0 * float(ri) + 1.0) / float(N);
         float phi = TWOPI * fract(float(ri) * 0.6180339887);
         float rr = sqrt(max(0.0, 1.0 - zc * zc));

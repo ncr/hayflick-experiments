@@ -508,6 +508,27 @@ impl Viewer {
         self.torn = true;
     }
 
+    /// Stage-2 spike, LIVE trigger (a key press): tear the roof off now — hide
+    /// it + queue the amortized interior probe refresh, so the dynamic GI floods
+    /// in over the next frames while the player watches (WALLCUT already shows
+    /// the interior when they're inside). One-shot; relaunch to re-arm.
+    pub fn tear_roof(&mut self) {
+        if self.roof_prims.is_empty() {
+            println!("roof: nothing to tear (roofless build)");
+            return;
+        }
+        if self.torn {
+            println!("roof: already torn — relaunch to re-arm");
+            return;
+        }
+        let prims: Vec<usize> = self.roof_prims.clone().collect();
+        let (min, max) = (self.room_min, self.room_max);
+        unsafe { self.backend.tear_off(&prims, min, max, true) }; // amortized live settle
+        self.torn = true;
+        self.ui_blip("menu_move");
+        println!("roof torn off — dynamic GI settling (step inside to watch)");
+    }
+
     /// Sim-advance phase of `draw()`: DEMO drives ONE tick per rendered frame
     /// (deterministic capture); live play routes through pause (menu open) →
     /// the fixed-tick accumulator. SHOT feeds dt=0 so the wall clock never

@@ -169,6 +169,9 @@ impl ApplicationHandler for App {
                         r.lights_dim = if r.lights_dim > 0.0 { 0.0 } else { 1.0 };
                         println!("lamps: {}", if r.lights_dim > 0.0 { "on" } else { "off" });
                     }
+                    // Stage-2 spike: 'x' tears the roof off live (dynamic GI
+                    // floods the interior; step inside to watch it settle).
+                    Key::Character("x") if !event.repeat => r.tear_roof(),
                     _ => {}
                 }
             }
