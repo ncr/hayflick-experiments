@@ -34,10 +34,12 @@ pub struct MenuItem {
 }
 
 pub const MENU: &[MenuItem] = &[
-    // NOTE: no look row since the polana lock (owner, 2026-07-12) — LOOKS
-    // has one entry, nothing to compare. When a look variant appears, the
-    // row comes back (menu-first rule, docs/VISION.md); the runtime-switch
-    // machinery it drove (Viewer::apply_look) is alive under LOOK_SWITCH.
+    // look row (menu-first rule, docs/VISION.md): the voxel-physics-spike
+    // DUSK sibling brought LOOKS back to >1, so the owner-facing choice
+    // returns. Index into look::LOOKS; `max` must stay LOOKS.len() - 1
+    // (pinned by the test below). Switching rebuilds the scene + probe banks
+    // (blocking, disk-cached per look) via Viewer::apply_look.
+    MenuItem { key: "look", label: "look", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },
     // projection-as-data (Faza 1a): the preset index in iso_core::presets();
     // `max` must stay presets().len() - 1 (pinned by the test below)
     MenuItem { key: "proj", label: "projection", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },
@@ -73,6 +75,16 @@ pub(crate) const fn gpanel_h(items: usize) -> i32 {
     GPAD * 2 + GROW * (1 + items as i32) + 12
 }
 
+/// LEVELS panel height: a game menu plus a 2-line blurb band for the selected
+/// demo. Shared by the draw and the click hit-test so rows line up.
+pub(crate) const fn lpanel_h(items: usize) -> i32 {
+    gpanel_h(items) + LBLURB_H
+}
+const LBLURB_H: i32 = 22; // two 8px blurb lines + a little air
+// The centered panels share the settings staging buffer (MPANEL_W × MPANEL_H);
+// keep the LEVELS list short enough to fit (compile guard, generous bound).
+const _: () = assert!(lpanel_h(6) <= MPANEL_H);
+
 // Every centered game panel shares the settings panel's staging buffer
 // (Vulkan menu_buf is MPANEL_W × MPANEL_H): the tallest must fit, or the
 // copy overruns. Compile-time, so a grown menu fails the build, not the GPU.
@@ -86,6 +98,9 @@ pub enum MenuMode {
     Title,
     Pause,
     Settings,
+    /// The LEVELS list: named demos (`demos::DEMOS`) the owner picks to boot
+    /// (owner directive 2026-07-16). Centered panel like the game menus.
+    Levels,
 }
 
 /// One row of a game menu.
@@ -94,11 +109,12 @@ pub enum GameAction {
     Start,
     Resume,
     Restart,
+    Levels,
     Settings,
     Quit,
 }
-pub const TITLE_MENU: &[(&str, GameAction)] = &[("start", GameAction::Start), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
-pub const PAUSE_MENU: &[(&str, GameAction)] = &[("resume", GameAction::Resume), ("restart", GameAction::Restart), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
+pub const TITLE_MENU: &[(&str, GameAction)] = &[("start", GameAction::Start), ("levels", GameAction::Levels), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
+pub const PAUSE_MENU: &[(&str, GameAction)] = &[("resume", GameAction::Resume), ("restart", GameAction::Restart), ("levels", GameAction::Levels), ("settings", GameAction::Settings), ("quit", GameAction::Quit)];
 
 // game-menu panel layout (logical px; physical = logical * menu_scale)
 const GROW: i32 = 16; // taller rows than the tune panel
@@ -142,8 +158,71 @@ pub(crate) fn mtext(canvas: &mut [u32], cw: i32, x: i32, y: i32, s: &str, color:
     }
 }
 
+/// Render the LEVELS picker panel: title band, one row per demo (selected
+/// highlighted, outdated greyed + tagged), and a wrapped blurb band for the
+/// selected demo. Pure fn of the selection + `demos::DEMOS`, so it draws
+/// headless (the test dumps it; the live overlay calls it from `menu_canvas`).
+pub(crate) fn levels_canvas(sel: usize) -> (Vec<u32>, i32, i32) {
+    const BORDER: u32 = 0x6a6a78;
+    const TEXT: u32 = 0xc8c8d0;
+    let demos = crate::demos::DEMOS;
+    let (w, h) = (GPANEL_W, lpanel_h(demos.len()));
+    let mut c = vec![0x101018u32; (w * h) as usize];
+    mrect(&mut c, w, 0, 0, w, 1, BORDER);
+    mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
+    mrect(&mut c, w, 0, 0, 1, h, BORDER);
+    mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
+    mrect(&mut c, w, 2, 2, w - 4, 1, 0x8a6a2a);
+    let title = "L E V E L S";
+    mtext(&mut c, w, (w - title.len() as i32 * 8) / 2, GPAD + 2, title, 0xe8b84a);
+    for (i, demo) in demos.iter().enumerate() {
+        let y = GPAD + GROW * (1 + i as i32);
+        let is_sel = i == sel;
+        if is_sel {
+            mrect(&mut c, w, 6, y, w - 12, GROW - 2, 0x2a2a1e);
+        }
+        let name = if demo.outdated { format!("{} (outdated)", demo.name) } else { demo.name.to_string() };
+        let text = if is_sel { format!("> {name} <") } else { name };
+        let color = if demo.outdated { 0x707078 } else if is_sel { 0xf0e8c8 } else { TEXT };
+        mtext(&mut c, w, (w - text.len() as i32 * 8) / 2, y + 3, &text, color);
+    }
+    // blurb band: the selected demo's description, wrapped to the panel width
+    let by = GPAD + GROW * (1 + demos.len() as i32) + 2;
+    let blurb = demos.get(sel).map(|d| d.blurb).unwrap_or("");
+    for (li, line) in wrap_text(blurb, 28).into_iter().take(2).enumerate() {
+        let lx = (w - line.len() as i32 * 8) / 2;
+        mtext(&mut c, w, lx.max(2), by + li as i32 * 9, &line, 0x9a9aa8);
+    }
+    (c, w, h)
+}
+
+/// Greedy word-wrap to `cols` characters per line (the menu font is fixed
+/// 8px/char, so columns == pixels/8). Used for the LEVELS blurb band.
+fn wrap_text(s: &str, cols: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        if line.is_empty() {
+            line = word.to_string();
+        } else if line.len() + 1 + word.len() <= cols {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// Slider value as shown in the menu (pattern/preset sliders show names).
 fn fmt_val(key: &str, v: f32, step: f32) -> String {
+    if key == "look" {
+        return crate::look::LOOKS.get(v as usize).map(|l| l.name).unwrap_or("?").to_string();
+    }
     if key == "dither" {
         return ["off", "bay8", "bay4", "bay2", "ign", "white"].get(v as usize).copied().unwrap_or("?").to_string();
     }
@@ -187,6 +266,7 @@ impl Viewer {
 
     pub fn tune_get(&self, key: &str) -> f32 {
         match key {
+            "look" => crate::look::LOOKS.iter().position(|l| std::ptr::eq(*l, self.look)).unwrap_or(0) as f32,
             "proj" => iso_core::presets().iter().position(|p| p.name == self.proj.name).unwrap_or(0) as f32,
             "ao" => self.ao,
             "ao_r" => self.ao_r,
@@ -204,6 +284,17 @@ impl Viewer {
 
     pub fn tune_set(&mut self, key: &str, v: f32) {
         match key {
+            // switching the look rebuilds the scene + probe banks (blocking;
+            // disk-cached per look) — the sim keeps running where it stood.
+            // apply_look guards on ptr::eq so re-selecting the current look
+            // is a no-op (unlike the LOOK_SWITCH harness knob's forced rebuild)
+            "look" => {
+                if let Some(l) = crate::look::LOOKS.get(v as usize) {
+                    if !std::ptr::eq(*l, self.look) {
+                        self.apply_look(l);
+                    }
+                }
+            }
             // switching the projection re-derives the whole camera from the
             // preset's data; the look-at target must land on the NEW preset's
             // pixel lattice or the first frame renders off-grid
@@ -258,6 +349,7 @@ impl Viewer {
         match self.menu.mode {
             MenuMode::Title => TITLE_MENU.len(),
             MenuMode::Pause => PAUSE_MENU.len(),
+            MenuMode::Levels => crate::demos::DEMOS.len(),
             _ => MENU.len(),
         }
     }
@@ -276,6 +368,12 @@ impl Viewer {
             MenuMode::Closed => self.menu_set(MenuMode::Pause),
             MenuMode::Pause => self.menu_set(MenuMode::Closed),
             MenuMode::Title => {}
+            // Levels/Settings are submenus: ESC returns to the game menu they
+            // were opened from (Settings also logs the dialed-in env string).
+            MenuMode::Levels => {
+                let back = self.menu.back;
+                self.menu_set(back);
+            }
             MenuMode::Settings => {
                 println!("tune: {}", self.env_string());
                 let back = self.menu.back;
@@ -315,6 +413,11 @@ impl Viewer {
                         self.restart_gym();
                         self.menu_set(MenuMode::Closed);
                     }
+                    GameAction::Levels => {
+                        let from = self.menu.mode;
+                        self.menu_set(MenuMode::Levels);
+                        self.menu.back = from;
+                    }
                     GameAction::Settings => {
                         let from = self.menu.mode;
                         self.menu_set(MenuMode::Settings);
@@ -322,6 +425,13 @@ impl Viewer {
                     }
                     GameAction::Quit => self.exit_requested = true,
                 }
+            }
+            MenuMode::Levels => {
+                let demos = crate::demos::DEMOS;
+                let demo = &demos[self.menu.sel.min(demos.len() - 1)];
+                self.ui_blip("menu_pick");
+                self.boot_demo(demo); // blocking scene + probe rebuild
+                self.menu_set(MenuMode::Closed);
             }
             MenuMode::Settings => {
                 let item = &MENU[self.menu.sel];
@@ -348,7 +458,7 @@ impl Viewer {
     /// the settings panel/hamburger sit at the top-left margin.
     fn menu_origin(&self, pw: i32, ph: i32) -> Vec2 {
         match self.menu.mode {
-            MenuMode::Title | MenuMode::Pause => {
+            MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
                 let ms = self.menu_ui_scale();
                 let (ew, eh) = self.backend.extent();
                 Vec2::new((ew as f32 - pw as f32 * ms) * 0.5, (eh as f32 - ph as f32 * ms) * 0.5)
@@ -370,9 +480,10 @@ impl Viewer {
                 }
                 false
             }
-            MenuMode::Title | MenuMode::Pause => {
+            MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
                 let n = self.menu_len();
-                let (pw, ph) = (GPANEL_W, gpanel_h(n));
+                let ph = if self.menu.mode == MenuMode::Levels { lpanel_h(n) } else { gpanel_h(n) };
+                let (pw, ph) = (GPANEL_W, ph);
                 let org = self.menu_origin(pw, ph);
                 let l = (p - org) / ms;
                 if l.x < 0.0 || l.y < 0.0 || l.x >= pw as f32 || l.y >= ph as f32 {
@@ -464,6 +575,12 @@ impl Viewer {
             mtext(&mut c, w, hx.max(2), fy, hint, 0x707078);
             return (c, w, h);
         }
+        // LEVELS: the named-demo picker (owner directive 2026-07-16 — the demo
+        // IS the deliverable, self-described). Pure fn of the selection so it
+        // renders headless for verification (`levels_canvas_dumps` test).
+        if self.menu.mode == MenuMode::Levels {
+            return levels_canvas(self.menu.sel);
+        }
         if self.menu.mode == MenuMode::Closed {
             // hamburger icon; while recording, a REC badge rides next to it
             // (the badge is overlay-only — clips capture swap.out, never UI)
@@ -552,12 +669,41 @@ mod tests {
         }
     }
 
-    /// The menu-first rule (docs/VISION.md): a look CHOICE needs a menu row.
-    /// One look = no row; the moment a second preset lands in look::LOOKS
-    /// this pin fails and the look slider must come back.
+    /// The LEVELS panel must fit the shared staging buffer for every demo and
+    /// every selection, and each demo's blurb must survive the wrap into the
+    /// 2-line band. Dumps PPMs to `$LEVELS_DUMP` for a visual check when set.
     #[test]
-    fn one_look_means_no_look_row() {
-        assert_eq!(crate::look::LOOKS.len(), 1, "a second look exists — restore the ESC-menu look row");
-        assert!(MENU.iter().all(|i| i.key != "look"), "a look row with one preset is dead UI");
+    fn levels_canvas_dumps() {
+        let dump = std::env::var("LEVELS_DUMP").ok();
+        for sel in 0..crate::demos::DEMOS.len() {
+            let (buf, w, h) = levels_canvas(sel);
+            assert_eq!(buf.len(), (w * h) as usize);
+            assert!(w <= MPANEL_W && h <= MPANEL_H, "levels panel overruns the staging buffer");
+            if let Some(dir) = &dump {
+                let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+                for px in &buf {
+                    ppm.extend_from_slice(&[(px >> 16) as u8, (px >> 8) as u8, *px as u8]);
+                }
+                std::fs::write(format!("{dir}/levels_{sel}.ppm"), ppm).unwrap();
+            }
+        }
+    }
+
+    /// The menu-first rule (docs/VISION.md): a look CHOICE needs a menu row.
+    /// With the DUSK sibling LOOKS is >1, so the row is mandatory and its
+    /// literal `max` must track look::LOOKS or the owner can't reach a
+    /// candidate from the menu. (If LOOKS ever collapses back to one, this
+    /// fails and the dead one-preset row must be pulled again.)
+    #[test]
+    fn look_slider_covers_every_preset() {
+        assert!(crate::look::LOOKS.len() > 1, "one look = dead UI: pull the look row");
+        let item = MENU.iter().find(|i| i.key == "look").expect("look row");
+        let ItemKind::Slider { min, max, step } = item.kind else { panic!("look must be a slider") };
+        assert_eq!(min, 0.0);
+        assert_eq!(step, 1.0);
+        assert_eq!(max as usize + 1, crate::look::LOOKS.len(), "MENU look max must be LOOKS.len() - 1");
+        for (i, l) in crate::look::LOOKS.iter().enumerate() {
+            assert_eq!(fmt_val("look", i as f32, 1.0), l.name);
+        }
     }
 }

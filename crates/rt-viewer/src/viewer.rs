@@ -109,6 +109,13 @@ pub struct Viewer {
     room_min: Vec3,
     room_max: Vec3,
     torn: bool,
+    // ---- named-demo timeline (owner directive 2026-07-16). ALL demo logic
+    // (tick-scheduled beats, the look cross-fade) is encapsulated in the
+    // runner; the loop just applies its per-frame effects to generic knobs.
+    demo: crate::demos::DemoRunner,
+    // per-frame sun/sky override (generic — a demo morph or a future day cycle
+    // drives it). `None` = the scene's baked env (bit-identical to before).
+    env_override: Option<rt_probe::EnvBlock>,
     // ---- frame clock / lifecycle
     pub frame: u32,
     pub start_time: std::time::Instant,
@@ -147,16 +154,26 @@ impl Viewer {
     pub unsafe fn new(window: Option<&Window>, cfg: Config) -> Result<Viewer, Box<dyn std::error::Error>> {
         let start_time = std::time::Instant::now();
         let mut spec = house_game::gym::sim::gym_level();
-        // Dynamic-GI spike: GI_INDOORS spawns the player inside the building so
-        // the WALLCUT dollhouse reveals the interior; NO_ROOF builds the gym
-        // roofless (the "torn off" state) for the static A/B.
-        if std::env::var("GI_INDOORS").is_ok() {
+        // LEVEL=<name|index> boots a named demo headlessly (its tick-driven
+        // script runs during DEMO playback — how the agent renders the exact
+        // thing the owner picks from the menu). It sets the boot look + spawn;
+        // its script is stored below and fired per tick.
+        let demo = crate::demos::from_env();
+        if let Some(d) = demo {
+            spec.player_start = house_game::gym::grid::CellPos::new(d.spawn.0, d.spawn.1);
+        } else if std::env::var("GI_INDOORS").is_ok() {
+            // Dynamic-GI spike: GI_INDOORS spawns the player inside the building
+            // so the WALLCUT dollhouse reveals the interior; NO_ROOF builds the
+            // gym roofless (the "torn off" state) for the static A/B.
             spec.player_start = house_game::gym::grid::CellPos::new(5, 5);
         }
         let roof = std::env::var("NO_ROOF").is_err();
-        // LOOK env picks the boot look (look.rs presets; the ESC menu
-        // switches live from there)
-        let look = crate::look::from_env();
+        // Boot look: the LEVEL demo's, else LOOK env (the ESC menu switches
+        // live from there).
+        let look = match demo {
+            Some(d) => crate::look::by_name(d.look).unwrap_or_else(crate::look::from_env),
+            None => crate::look::from_env(),
+        };
         let (mut scene, gym_meta) = crate::gym_scene::build_gym(&spec, look, roof);
         // Destructibility spike (voxel-physics-spike branch): PHYS=1 builds a
         // Rapier brick wall + projectile and authors matching `phys/{i}`
@@ -243,6 +260,8 @@ impl Viewer {
             room_min: gym_meta.room_min,
             room_max: gym_meta.room_max,
             torn: false,
+            demo: crate::demos::DemoRunner::new(demo.map(|d| d.script).unwrap_or(&[])),
+            env_override: None,
             frame: 0,
             start_time,
             last_frame: None,
@@ -310,7 +329,7 @@ impl Viewer {
     /// future menu look row should guard on ptr::eq at its call site.
     pub fn apply_look(&mut self, look: &'static crate::look::Look) {
         let t0 = std::time::Instant::now();
-        let (mut scene, _) = crate::gym_scene::build_gym(&self.gym.spec, look, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&self.gym.spec, look, true);
         // spike: keep the physics runs present across a look switch
         if let Some(p) = &self.gym.phys {
             crate::phys_scene::author(&mut scene, p);
@@ -318,6 +337,15 @@ impl Viewer {
         unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };
         self.light_keys = join_lamp_lights(&scene, self.backend.handles(), self.backend.light_count());
         self.scene = scene;
+        // a look switch supersedes any in-flight demo morph + its per-frame env
+        self.demo.cancel_morph();
+        self.env_override = None;
+        // the roof/room meta is look-independent BUT a look that drops the
+        // grass/window prims would shift the indices — refresh so the tear
+        // stays correct after any look switch (and after boot_demo's respawn)
+        self.roof_prims = meta.roof_prims;
+        self.room_min = meta.room_min;
+        self.room_max = meta.room_max;
         self.look = look;
         self.exposure = self.cfg.render.exposure.unwrap_or(look.exposure);
         self.style = look.style.env_over();
@@ -327,6 +355,49 @@ impl Viewer {
         self.bump_scale = self.cfg.render.bump_scale.unwrap_or(look.bump_scale);
         self.gi = self.cfg.render.gi.unwrap_or(look.gi);
         println!("look: {} ({:.0} ms)", look.name, t0.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// Boot a named demo from the LEVELS menu (owner directive 2026-07-16 —
+    /// see `demos.rs`): respawn the player at the demo's cell, reset the sim,
+    /// arm (or disarm) the roof tear, and rebuild the scene in the demo's look
+    /// (`apply_look` also re-joins lights + refreshes the roof/room meta). The
+    /// follow-cam is re-aimed at the new spawn for a clean first frame.
+    pub fn boot_demo(&mut self, demo: &'static crate::demos::Demo) {
+        self.gym.spec.player_start = house_game::gym::grid::CellPos::new(demo.spawn.0, demo.spawn.1);
+        self.restart_gym();
+        self.torn = false;
+        self.gi_tear = None; // demos drive the tear via their script, not GI_TEAR
+        self.demo = crate::demos::DemoRunner::new(demo.script);
+        self.env_override = None;
+        let look = crate::look::by_name(demo.look).unwrap_or(&crate::look::POLANA);
+        self.apply_look(look); // blocking scene + probe rebuild (disk-cached per look)
+        self.retarget(self.gym.cam_target());
+        self.recenter_pan();
+        println!("demo: {} (look {}, spawn {:?}, {} beats)", demo.name, demo.look, demo.spawn, demo.script.len());
+    }
+
+    /// Advance the named-demo timeline one sim step and apply its per-frame
+    /// effects to generic knobs — the timeline logic itself lives in
+    /// `demos::DemoRunner`; the loop only routes its outputs. Deterministic
+    /// (tick-driven), so it replays bit-identically in DEMO and settles live.
+    fn drive_demo(&mut self) {
+        let step = self.demo.step(self.gym.tick.0, self.look);
+        if step.tear {
+            self.tear_roof();
+        }
+        if let Some(lit) = step.lit {
+            // apply the cross-fade's lightable half; the sun/sky go through the
+            // per-frame env override (no rebake — palette + probe indirect stay)
+            self.exposure = lit.exposure;
+            self.style.sat = lit.sat;
+            self.style.contrast = lit.contrast;
+            self.spec = lit.spec;
+            self.gloss = lit.gloss;
+            self.bump = lit.bump;
+            self.bump_scale = lit.bump_scale;
+            self.gi = lit.gi;
+            self.env_override = Some(rt_probe::EnvBlock::pack(self.cfg.lighting_env(lit.lighting), &lit.sun));
+        }
     }
 
     /// Fire-and-forget UI sound (menu nav/pick) — presentation only.
@@ -380,6 +451,7 @@ impl Viewer {
         self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
         self.advance_sim(dt); // DEMO tick / pause / live fixed-tick
         self.maybe_tear(); // Stage-2 dynamic-GI spike: roof tear-off at GI_TEAR
+        self.drive_demo(); // named-demo timeline: tick-scheduled beats + look morph
         self.follow_player_camera(); // follow the eased player body
         // smooth quarter-turn in flight: ease the yaw
         self.advance_rotation(dt);
@@ -452,6 +524,7 @@ impl Viewer {
             // permanent sunny day (the joyful default); SKY env still scales
             // the authored env via lighting_env
             sky_dim: 1.0,
+            env: self.env_override, // demo look-morph per-frame sun/sky (else None)
             roi: self.roi_info(),
             // FLOORCUT: env-only framing knob now (the gym is single-storey)
             cut_y: self.cfg.game.cut,
@@ -555,7 +628,7 @@ impl Viewer {
     fn overlay_frame(&mut self) -> Option<(Vec<u32>, i32, i32, bool)> {
         if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
             let (buf, w, h) = self.menu_canvas();
-            let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause);
+            let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause | crate::menu::MenuMode::Levels);
             Some((buf, w, h, center))
         } else {
             None

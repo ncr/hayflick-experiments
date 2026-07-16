@@ -32,6 +32,7 @@
 mod audio;
 mod backend;
 mod capture;
+mod demos;
 mod gym_loop;
 mod gym_scene;
 mod gi_demo;

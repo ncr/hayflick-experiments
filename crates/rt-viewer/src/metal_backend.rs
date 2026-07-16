@@ -860,7 +860,8 @@ impl RenderBackend for MetalBackend {
             Some(r) => rt_probe::roi_push(cam, low_w as i32, low_h as i32, r.player, r.radius_px, r.falloff_px, r.ghost),
             None => rt_probe::ROI_OFF,
         };
-        let env = self.sc.env.dimmed(fp.sky_dim);
+        // fp.env = the demo morph's per-frame sun/sky (else the baked scene env)
+        let env = fp.env.unwrap_or(self.sc.env).dimmed(fp.sky_dim);
         let push = Push {
             cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
             cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],

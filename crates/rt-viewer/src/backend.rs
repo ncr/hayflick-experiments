@@ -79,6 +79,12 @@ pub struct FramePresent<'a> {
     /// Per-frame multiplier on the env sun/sky fill (1.0 = authored — the
     /// permanent sunny day; a future day cycle would drive this).
     pub sky_dim: f32,
+    /// Per-frame sun/sky override — the demo look-morph ([`crate::demos`])
+    /// cross-fades this each frame so the DIRECT lighting (sun angle/tint, sky
+    /// dome, fog) morphs smoothly with no rebake. `None` = use the scene's
+    /// baked env (bit-identical to pre-morph frames). The frozen probe
+    /// indirect stays at the boot bake — subtle, and the direct pass dominates.
+    pub env: Option<rt_probe::EnvBlock>,
     /// Dollhouse see-through reveal (CAVE_ROI): player world pos + disc radius /
     /// falloff in low-res px. The backend projects the disc centre via the shared
     /// `rt_probe::roi_push` and packs it into the shade push. `None` → no reveal.

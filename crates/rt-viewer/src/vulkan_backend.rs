@@ -494,7 +494,8 @@ impl RenderBackend for VulkanBackend {
             self.gpu.roll_step(&self.ctx, set, &env);
         }
         let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
-        let env = self.env.dimmed(fp.sky_dim);
+        // fp.env = the demo morph's per-frame sun/sky (else the baked scene env)
+        let env = fp.env.unwrap_or(self.env).dimmed(fp.sky_dim);
         let mut push = ShadePush::new(&fp.fs.cam, low_w, low_h, &env, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);
         push.look = [fp.spec, fp.bump, fp.bump_scale, fp.gloss];
         push.look2 = [fp.gi, fp.matq, fp.ao_dither, fp.refl];
