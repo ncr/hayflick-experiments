@@ -104,27 +104,21 @@ A feature added to one must be ported to the other in the same effort, or
 documented as debt. Shared push-constant structs live once in
 `crates/rt-viewer/src/backend.rs`.
 
-This dev machine (M2 Pro) runs the **Metal** backend; the Hetzner "spawner"
-box (RTX 5080) runs Vulkan. **Open spawner duty (2026-07-12):** the purge
-edited `vulkan_backend.rs`/`shade.comp` blind (they don't compile on macOS),
-Faza 1a touched `vulkan_backend.rs` blind (ISO_R import/print dropped), and
-Faza 1b edited it blind AGAIN (env0 → `EnvBlock` field; `ShadePush::new` +
-`bake_probes` take `&EnvBlock`; new `rebuild_scene`; restored the dropped
-`render_finished` semaphore creation in `recreate_gpu`; fixed the
-`build_tone_push` call to pass `&fp.proj`). The polana window rework
-(same day) changed `shade.comp` only (shader-side: `Material.pad` is now a
-bitfield — 1 occluder, 2 glass — glass transmission loop + wallcut
-straddle/proud-stub rules; NO host/push changes, so `vulkan_backend.rs`
-was untouched this time). The blocky mesh rebuild (same day again) edited
-`shade.comp` once more, still host-neutral: `Material.pad` bit 4 = MATTE
-(grass floor/tufts) skips the specular terms, the gloss roughness-remap
-and the REFL wet-floor bounce. The GLSL twins (`shade.comp`/`probes.comp`) DO
-compile here via glslangValidator but never ran on hardware. First Vulkan
-session: `cargo check`, gym SHOTs for polana at trimetric AND iso21
-(outdoor facade + a CMDS indoor cutaway — the glass transmission, the
-taller glass stubs), one `LOOK_SWITCH=polana` identity check — and note
-ShadePush is EXACTLY 256 B (the common NVIDIA maxPushConstantsSize); if
-the device rejects it, the env rows move to a UBO.
+The Mac dev machine (M2 Pro) runs the **Metal** backend; the Arch "spawner"
+box (RTX 5080) runs Vulkan. **Spawner duty DISCHARGED (2026-07-17,
+first hardware session):** the whole blind-edit backlog (Faza 0–1b hosts,
+`Material.pad` bitfield shaders, Stage-2/3 GI, `fp.env`) ran on the RTX
+5080. One real break found: Faza-1b's blind edit dropped `use glam::Vec3`
+from `vulkan_backend.rs` (never compiled on macOS — cfg-gated). Facts
+worth keeping: ShadePush 256 B IS accepted by the device; the full 2048-ray
+bake takes ~115 ms (vs seconds on the M2); `LOOK_SWITCH=polana` is
+BYTE-IDENTICAL to a direct boot; and the Vulkan/RTX cross-run noise floor
+is ZERO (unlike Metal's ~1-LSB floor — byte-diffing across process runs is
+valid here). **Open Metal duty (2026-07-17):** the phase-3 wall-smash demo
+(`LEVEL="wall smash"`, demos/viewer/phys-spike/gym_scene edits) is
+host-side only — no shader or backend code touched — but was built and
+verified on Vulkan only; first Mac session should boot it and eyeball the
+collapse + GI settle.
 
 ## Pixel-perfect iso contract (binding; generalizes, never weakens)
 

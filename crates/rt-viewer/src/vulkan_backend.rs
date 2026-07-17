@@ -13,6 +13,7 @@ use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_orig
 use crate::capture::subsample_rgba;
 use crate::menu::{MENU_MARGIN, MPANEL_H, MPANEL_W};
 use ash::vk;
+use glam::Vec3;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use rt_probe::*;
 use std::ffi::{c_char, CStr, CString};
