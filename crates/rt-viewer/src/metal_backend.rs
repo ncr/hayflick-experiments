@@ -727,6 +727,12 @@ impl RenderBackend for MetalBackend {
     unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config) {
         self.rebuild_scene_impl(scene, cfg);
     }
+    /// Crack-lab live material update — Vulkan twin: `render_present` writes
+    /// `mats_cpu` to `mbuf` whole every frame, so the shadow write is the
+    /// entire job. (Blind-edited on the spawner — verify on the Mac.)
+    fn set_material_pad(&mut self, material_id: usize, pad: i32) {
+        self.sc.mats_cpu[material_id]._pad = pad;
+    }
     unsafe fn tear_off(&mut self, prims: &[usize], min: Vec3, max: Vec3, amortize: bool) {
         // hide the static instances (mask 0 → culled by primary AND probe rays)
         // then rebuild the TLAS so the refresh below traces the roofless world.

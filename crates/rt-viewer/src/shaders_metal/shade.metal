@@ -202,6 +202,30 @@ static float vnoise(float3 x){
 }
 static float fbm(float3 p){ return 0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + 11.1); }
 
+// ---- crack-lab helpers (per-segment aging) — byte-identical twin of
+// shade.comp's crackSite/crackEdge: 2D cellular (Worley) edge distance on a
+// wall face. Returns F2-F1 (0 on a boundary); `site` the vector to the
+// nearest cell site (edge bevel), `cellH` the nearest cell's hash (coverage).
+static float2 crackSite(float2 c, float seed){
+    return float2(hash13(float3(c, seed)), hash13(float3(c, seed + 47.0)));
+}
+static float crackEdge(float2 p, float seed, thread float2& site, thread float& cellH){
+    float2 i = floor(p), f = fract(p);
+    float f1 = 8.0, f2 = 8.0;
+    float2 r1 = float2(0.0), c1 = float2(0.0);
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++) {
+            float2 g = float2(float(x), float(y));
+            float2 r = g + crackSite(i + g, seed) - f;
+            float dd = dot(r, r);
+            if (dd < f1) { f2 = f1; f1 = dd; r1 = r; c1 = i + g; }
+            else if (dd < f2) { f2 = dd; }
+        }
+    site = r1;
+    cellH = hash13(float3(c1, seed + 91.0));
+    return sqrt(f2) - sqrt(f1);
+}
+
 // stylized point-light specular: GGX D × Schlick F, no solid-angle/geometry term
 // (SPEC is the master gain); D clamped so a near-mirror lobe stays a soft plateau.
 static float3 specBRDF(float3 n, float3 v, float3 l, float reff, float3 F0){
@@ -433,6 +457,63 @@ kernel void shade(
         albedo *= 1.0 - dirt;
         albedo = mix(albedo, float3(dot(albedo, float3(0.299, 0.587, 0.114))), dirt * 0.5);
     }
+    // ---- CRACK LAB — byte-identical twin of shade.comp: per-SEGMENT aging.
+    // Material.pad bits 8..31 carry four 6-bit unorm knobs — age / crack
+    // density / crack depth / chip (rt-viewer crack::pad_bits; bits 0..2 stay
+    // the occluder/glass/matte flags, bit 3 the selection highlight below).
+    // 2D cellular crack network on the face plane; DEPTH = darker groove
+    // floors + a fixed-view parallax shift + an edge bevel; AGE = tea-stain
+    // blotches + a stain halo + coverage; CHIP = chalky spall patches whose
+    // rims crack and whose sheen dies (chipM feeds reff/spec below).
+    // All-zero knobs skip the block — untouched scenes render bit-identically.
+    float chipM = 0.0;
+    {
+        uint kb = uint(m.pad);
+        if ((kb >> 8) != 0u && m.texIndex < 0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0) {
+            float cAge = float((kb >> 8) & 63u) * (1.0 / 63.0);
+            float cDen = float((kb >> 14) & 63u) * (1.0 / 63.0);
+            float cDep = float((kb >> 20) & 63u) * (1.0 / 63.0);
+            float cChp = float((kb >> 26) & 63u) * (1.0 / 63.0);
+            float3 an = abs(n);
+            float2 cuv = an.x > 0.5 ? wpos.zy : (an.y > 0.5 ? wpos.xz : wpos.xy);
+            // fixed-view parallax: sample the network where the view ray
+            // meets the groove floor (offset along the in-face view dir)
+            float3 vt = d - n * dot(d, n);
+            float2 vuv = an.x > 0.5 ? vt.zy : (an.y > 0.5 ? vt.xz : vt.xy);
+            float2 cuvP = cuv + vuv * (0.08 * cDep / max(abs(dot(d, n)), 0.35));
+            float freqC = mix(1.1, 3.4, cDen);         // cells per wu
+            float cover = mix(0.55, 1.02, 0.65 * cAge + 0.35 * cDen);
+            float wdt = mix(0.02, 0.05, cDep) * freqC; // line half-width (cell units)
+            float2 site; float cellH;
+            float edP = crackEdge(cuvP * freqC, 5.0, site, cellH);
+            float show = step(cellH, cover);
+            float lineP = (1.0 - smoothstep(0.0, wdt, edP)) * show;
+            // secondary finer web fades in with age (crazing subdividing)
+            float2 siteF; float cellF;
+            float edF = crackEdge(cuvP * freqC * 2.7 + 31.0, 9.0, siteF, cellF);
+            float fineW = (1.0 - smoothstep(0.0, wdt * 0.7, edF)) * step(cellF, cAge * 0.9);
+            float crack = max(lineP, fineW * 0.6 * smoothstep(0.15, 0.7, cAge));
+            albedo *= 1.0 - crack * (0.30 + 0.55 * cDep); // groove floor darkens
+            // edge bevel: tilt the normal back toward this pixel's own cell
+            // site (away from the boundary) — the surface slopes into the groove
+            float lip = (1.0 - smoothstep(wdt, wdt * 3.0, edP)) * show;
+            float2 s2 = normalize(site + float2(1e-5)) * (lip * cDep * 0.55);
+            float3 s3 = an.x > 0.5 ? float3(0.0, s2.y, s2.x) : (an.y > 0.5 ? float3(s2.x, 0.0, s2.y) : float3(s2.x, s2.y, 0.0));
+            s3 -= n * dot(s3, n);
+            n = normalize(n + s3);
+            // age: tea-stain blotches + a stain halo bleeding out of the cracks
+            float stain = fbm(wpos * 0.9 + 31.0);
+            float halo = (1.0 - smoothstep(0.0, wdt * 5.0, edP)) * show;
+            float sAmt = cAge * clamp(0.55 * smoothstep(0.45, 0.85, stain) + 0.35 * halo, 0.0, 1.0);
+            albedo = mix(albedo, albedo * float3(0.78, 0.70, 0.58), sAmt);
+            // chip: chalky spall patches — glaze gone, matte body; rims crack
+            float chpN = vnoise(wpos * 2.3 + 57.0);
+            chipM = smoothstep(mix(1.02, 0.50, cChp), mix(1.10, 0.60, cChp), chpN);
+            float rim = smoothstep(0.02, 0.10, chipM) * (1.0 - smoothstep(0.55, 0.9, chipM));
+            albedo = mix(albedo, albedo * 0.92 + float3(0.05, 0.045, 0.035), chipM * 0.75);
+            albedo *= 1.0 - rim * 0.35 * (0.4 + 0.6 * cDep);
+        }
+    }
     float3 p = o + h.t * d + n * 0.003;
     // AO computed ONCE (reused for contact grime + the indirect term below).
     float ao = 1.0;
@@ -458,6 +539,9 @@ kernel void shade(
         float aot = (ao - (1.0 - pc.camPos.w)) / max(pc.camPos.w, 1e-4);
         ao = aot >= bayer4(int2(gid)) ? 1.0 : 1.0 - pc.camPos.w;
     }
+    // crack-lab SELECTION highlight (pad bit 3) — twin of shade.comp: a steady
+    // amber lift on the picked segment (no pulse; captures stay deterministic).
+    if ((uint(m.pad) & 8u) != 0u) albedo = mix(albedo, float3(1.0, 0.82, 0.40), 0.22);
     outAlbedo[idx] = float4(albedo * gtint, 1.0); // tint in the G-buffer keeps demodulation consistent
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
@@ -474,13 +558,17 @@ kernel void shade(
     float3 vdir = -d;
     bool matte = (m.pad & 4) != 0;
     float reff = matte ? 1.0 : clamp(mix(m.roughness, 0.12, pc.look.w), 0.10, 1.0);
+    // crack-lab CHIP — twin of shade.comp: spalled patches lose the glaze —
+    // roughness climbs toward matte, spec gain dies (chipM = 0 is bit-exact).
+    reff = clamp(reff + chipM * (1.0 - reff), 0.10, 1.0);
+    float specX = pc.look.x * (1.0 - 0.85 * chipM);
     if (pc.look2.y >= 2.0) reff = clamp(floor(reff * 3.0 + 0.5) / 3.0, 0.10, 1.0); // MATQ: roughness in coarse steps too
     float3 F0 = mix(float3(0.04), albedo, m.metallic);
 
     float ndl = max(dot(n, sunDir), 0.0);
     if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0, accel)) {
         col += albedo * sun * ndl;
-        if (pc.look.x > 0.0 && !matte) col += sun * pc.look.x * specBRDF(n, vdir, sunDir, reff, F0) * ndl;
+        if (pc.look.x > 0.0 && !matte) col += sun * specX * specBRDF(n, vdir, sunDir, reff, F0) * ndl;
     }
 
     int lc = pc.misc2.x;
@@ -506,7 +594,7 @@ kernel void shade(
         if (max(c.r, max(c.g, c.b)) < 0.0015) continue;
         if (!occluded(p, ldir, dist - lt.posRad.w, accel)) {
             col += c;
-            if (pc.look.x > 0.0 && !matte) col += lt.color.rgb * emit * pc.look.x * specBRDF(n, vdir, ldir, reff, F0) * ndl2;
+            if (pc.look.x > 0.0 && !matte) col += lt.color.rgb * emit * specX * specBRDF(n, vdir, ldir, reff, F0) * ndl2;
         }
     }
 

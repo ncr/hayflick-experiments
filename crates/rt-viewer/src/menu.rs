@@ -218,6 +218,46 @@ fn wrap_text(s: &str, cols: usize) -> Vec<String> {
     lines
 }
 
+/// Crack-lab knob panel height (title + one row per knob + footer). Shares
+/// the settings staging buffer — compile-guarded like the game panels.
+pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (crate::crack::LABELS.len() as i32 + 2);
+const _: () = assert!(CRACK_PANEL_H <= MPANEL_H);
+
+/// Crack-lab knob panel (replaces the hamburger while a wall segment is
+/// selected, menu closed): one slider row per aging knob of the picked pier.
+/// Reuses the settings sheet's row geometry so `crack_panel_click` /
+/// `crack_drag_to` share the same track math. Pure fn of its inputs, so it
+/// draws headless (the test below pins the staging-buffer fit).
+pub(crate) fn crack_canvas(sel: usize, knobs: [f32; 4], row: usize) -> (Vec<u32>, i32, i32) {
+    const BG: u32 = 0x16161c;
+    const BORDER: u32 = 0x6a6a78;
+    const TEXT: u32 = 0xc8c8d0;
+    let (w, h) = (MPANEL_W, CRACK_PANEL_H);
+    let mut c = vec![BG; (w * h) as usize];
+    mrect(&mut c, w, 0, 0, w, 1, BORDER);
+    mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
+    mrect(&mut c, w, 0, 0, 1, h, BORDER);
+    mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
+    mrect(&mut c, w, 2, 2, w - 4, 1, 0x8a6a2a);
+    mtext(&mut c, w, MLABEL_X, MPAD + 2, &format!("crack lab - segment {sel}"), 0xe8b84a);
+    for (i, label) in crate::crack::LABELS.iter().enumerate() {
+        let y = MPAD + MROW * (1 + i as i32);
+        if i == row {
+            mrect(&mut c, w, 2, y, w - 4, MROW, 0x24242e);
+        }
+        let v = knobs[i].clamp(0.0, 1.0);
+        mtext(&mut c, w, MLABEL_X, y + 2, label, if i == row { 0xe8e8f0 } else { TEXT });
+        mrect(&mut c, w, MTRACK_X, y + MROW / 2, MTRACK_W, 2, 0x34343c);
+        mrect(&mut c, w, MTRACK_X, y + MROW / 2, (MTRACK_W as f32 * v) as i32, 2, 0x7aa86a);
+        let kx = MTRACK_X + (v * (MTRACK_W - 2) as f32) as i32;
+        mrect(&mut c, w, kx, y + 2, 2, MROW - 4, 0xd8e8c8);
+        mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}"), 0x99cc99);
+    }
+    let fy = MPAD + MROW * (1 + crate::crack::LABELS.len() as i32) + 2;
+    mtext(&mut c, w, MLABEL_X, fy, "drag - click away closes", 0x707078);
+    (c, w, h)
+}
+
 /// Slider value as shown in the menu (pattern/preset sliders show names).
 fn fmt_val(key: &str, v: f32, step: f32) -> String {
     if key == "look" {
@@ -472,6 +512,10 @@ impl Viewer {
         let ms = self.menu_ui_scale();
         match self.menu.mode {
             MenuMode::Closed => {
+                // crack-lab knob panel replaces the hamburger while editing
+                if self.crack_panel_visible() {
+                    return self.crack_panel_click(p);
+                }
                 // hamburger icon → PAUSE
                 let org = Vec2::splat(MENU_MARGIN as f32);
                 if p.x >= org.x && p.y >= org.y && p.x < org.x + MICON_W as f32 * ms && p.y < org.y + MICON_H as f32 * ms {
@@ -520,8 +564,12 @@ impl Viewer {
     }
 
     /// Slider drag: set the selected value from the cursor's track position.
+    /// Outside Settings the drag belongs to the crack-lab panel (if showing).
     pub fn menu_drag_to(&mut self, p: Vec2) {
         if self.menu.mode != MenuMode::Settings {
+            if self.crack_panel_visible() {
+                self.crack_drag_to(p);
+            }
             return;
         }
         let ms = self.menu_ui_scale();
@@ -531,6 +579,37 @@ impl Viewer {
             let v = min + ((t * (max - min)) / step).round() * step;
             self.tune_set(MENU[self.menu.sel].key, v.clamp(min, max));
         }
+    }
+
+    /// Crack-panel left-press: row select + slider drag start (same track
+    /// math as the settings sheet). True when the panel consumed the click;
+    /// clicks outside fall through to the world pick (select/deselect/move).
+    pub fn crack_panel_click(&mut self, p: Vec2) -> bool {
+        let ms = self.menu_ui_scale();
+        let org = Vec2::splat(MENU_MARGIN as f32);
+        let l = (p - org) / ms;
+        if l.x < 0.0 || l.y < 0.0 || l.x >= MPANEL_W as f32 || l.y >= CRACK_PANEL_H as f32 {
+            return false;
+        }
+        let row = (l.y as i32 - MPAD) / MROW - 1; // row 0 is the title band
+        if row >= 0 && (row as usize) < crate::crack::LABELS.len() {
+            self.crack.row = row as usize;
+            self.menu.drag = true;
+            self.crack_drag_to(p);
+        }
+        true
+    }
+
+    /// Crack-panel slider drag: dial the picked pier's active knob from the
+    /// cursor's track position (0.02 grid — finer than the shader's 6-bit
+    /// quantization, so every step lands on a distinct packed value or none).
+    pub fn crack_drag_to(&mut self, p: Vec2) {
+        let Some(sel) = self.crack.sel else { return };
+        let ms = self.menu_ui_scale();
+        let lx = (p.x - MENU_MARGIN as f32) / ms;
+        let t = ((lx - MTRACK_X as f32) / MTRACK_W as f32).clamp(0.0, 1.0);
+        self.crack.knobs[sel][self.crack.row] = (t / 0.02).round() * 0.02;
+        self.crack_apply(sel);
     }
 
     /// Draw the overlay at logical resolution: the open panel (game menu /
@@ -582,6 +661,12 @@ impl Viewer {
             return levels_canvas(self.menu.sel);
         }
         if self.menu.mode == MenuMode::Closed {
+            // crack lab: while a wall segment is selected the knob panel takes
+            // the hamburger's spot (ESC still opens the pause menu over it)
+            if self.crack_panel_visible() {
+                let sel = self.crack.sel.unwrap();
+                return crack_canvas(sel, self.crack.knobs[sel], self.crack.row);
+            }
             // hamburger icon; while recording, a REC badge rides next to it
             // (the badge is overlay-only — clips capture swap.out, never UI)
             let w = if self.rec.is_some() { MICON_W + 78 } else { MICON_W };
@@ -686,6 +771,17 @@ mod tests {
                 }
                 std::fs::write(format!("{dir}/levels_{sel}.ppm"), ppm).unwrap();
             }
+        }
+    }
+
+    /// The crack-lab knob panel fits the shared staging buffer at every knob
+    /// value and row highlight, and has a row per knob label.
+    #[test]
+    fn crack_canvas_fits_the_staging_buffer() {
+        for row in 0..crate::crack::LABELS.len() {
+            let (buf, w, h) = crack_canvas(7, [0.0, 0.33, 0.66, 1.0], row);
+            assert_eq!(buf.len(), (w * h) as usize);
+            assert!(w <= MPANEL_W && h <= MPANEL_H, "crack panel overruns the staging buffer");
         }
     }
 

@@ -189,6 +189,14 @@ pub trait RenderBackend {
     /// frame). A default no-op keeps this an opt-in spike hook.
     unsafe fn tear_off(&mut self, _prims: &[usize], _min: Vec3, _max: Vec3, _amortize: bool) {}
 
+    /// Live per-material `_pad` update (crack-lab knobs + selection bit):
+    /// writes the CPU material shadow the per-frame practicals stream already
+    /// re-uploads, so the change shows next frame — no scene rebuild, no
+    /// probe rebake (the bake reads base colour only, and the disk cache is
+    /// keyed at build time). Lost on `rebuild_scene` — the Viewer re-stamps
+    /// the fresh `Scene` before rebuilding instead.
+    fn set_material_pad(&mut self, _material_id: usize, _pad: i32) {}
+
     /// Render + (windowed) present one frame. Returns false if the swapchain
     /// needs rebuild. Records the deterministic per-frame state (lights →
     /// instances → TLAS refit if dirty), shade dispatch, tonemap, blit,

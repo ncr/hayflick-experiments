@@ -450,6 +450,13 @@ impl RenderBackend for VulkanBackend {
         self.gpu.tear_off(&self.ctx, set, &env, prims, min, max, amortize);
     }
 
+    /// Crack-lab live material update: the per-frame practicals upload
+    /// streams `mats_cpu` whole every frame, so writing the shadow is the
+    /// entire job — visible next frame, nothing rebuilds.
+    fn set_material_pad(&mut self, material_id: usize, pad: i32) {
+        self.gpu.mats_cpu[material_id]._pad = pad;
+    }
+
     unsafe fn wait_idle(&self) {
         self.ctx.device.device_wait_idle().unwrap();
     }

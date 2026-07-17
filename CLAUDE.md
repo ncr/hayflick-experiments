@@ -118,7 +118,11 @@ valid here). **Open Metal duty (2026-07-17):** the phase-3 wall-smash demo
 (`LEVEL="wall smash"`, demos/viewer/phys-spike/gym_scene edits) is
 host-side only — no shader or backend code touched — but was built and
 verified on Vulkan only; first Mac session should boot it and eyeball the
-collapse + GI settle.
+collapse + GI settle. ALSO 2026-07-17: the crack-lab CRACK LAB block in
+shade.metal + `MetalBackend::set_material_pad` are blind line-for-line
+twins of the Vulkan-verified GLSL/host code — boot `LEVEL="crack lab"`,
+check the aged walls match the Vulkan SHOTs in character, and click/drag
+the knob panel once.
 
 ## Pixel-perfect iso contract (binding; generalizes, never weakens)
 

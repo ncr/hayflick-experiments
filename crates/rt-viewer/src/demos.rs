@@ -56,6 +56,10 @@ pub struct Demo {
     pub spawn: (i16, i16),
     /// Timeline of scheduled beats (sorted by `at`; ticks from boot).
     pub script: &'static [Beat],
+    /// Crack-lab weathering: `Some` pre-ages every wall pier from this seed at
+    /// boot AND enables the lab interaction (click a segment, drag the knob
+    /// panel). `None` = untouched porcelain + no lab UI (every other demo).
+    pub cracks: Option<crate::crack::CrackSeed>,
     /// Kept for reference after a pivot: disposable, not maintained.
     pub outdated: bool,
 }
@@ -67,6 +71,7 @@ pub static DEMOS: &[Demo] = &[
         look: "polana",
         spawn: (10, 11),
         script: &[],
+        cracks: None,
         outdated: false,
     },
     Demo {
@@ -75,6 +80,7 @@ pub static DEMOS: &[Demo] = &[
         look: "dusk",
         spawn: (5, 5),
         script: &[Beat { at: 45, action: Action::TearRoof }],
+        cracks: None,
         outdated: false,
     },
     Demo {
@@ -83,6 +89,7 @@ pub static DEMOS: &[Demo] = &[
         look: "polana",
         spawn: (10, 11),
         script: &[Beat { at: 20, action: Action::MorphTo { look: "dusk", over: 180 } }],
+        cracks: None,
         outdated: false,
     },
     Demo {
@@ -98,6 +105,21 @@ pub static DEMOS: &[Demo] = &[
         // facade still reads large. The slug whooshes right past the player.
         spawn: (12, 5),
         script: &[Beat { at: 40, action: Action::SmashWall { x: 8.0, z: 5.5 } }],
+        cracks: None,
+        outdated: false,
+    },
+    Demo {
+        name: "crack lab",
+        blurb: "click a wall - knobs age it: cracks, depth, chips",
+        look: "polana",
+        // among the freestanding garden walls (the z=10 run + the x=12 spur),
+        // a couple of cells off so the ROI reveal disc around the centred
+        // player leaves the wall under study un-stippled
+        spawn: (13, 12),
+        script: &[],
+        // boot pre-age with real variance: the level reads weathered the
+        // moment it opens, and every segment starts somewhere different
+        cracks: Some(crate::crack::CrackSeed { age: 0.55, cracks: 0.5, depth: 0.55, chip: 0.2, vary: 0.4 }),
         outdated: false,
     },
 ];

@@ -32,6 +32,7 @@
 mod audio;
 mod backend;
 mod capture;
+mod crack;
 mod demos;
 mod gym_loop;
 mod gym_scene;
@@ -189,7 +190,7 @@ impl ApplicationHandler for App {
                 if let Some(r) = self.renderer.as_mut() {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
-                        if !r.menu_click(c) {
+                        if !r.menu_click(c) && !r.crack_click(c) {
                             r.click_move(c); // click-to-move
                         }
                     } else {

@@ -90,6 +90,11 @@ pub struct Viewer {
     pub view: ViewState,
     /// The gym sim loop — THE game loop (docs/VISION.md Faza 0).
     pub gym: GymLoop,
+    /// Every wall segment of the current build (GymMeta.piers) — the crack
+    /// lab's pick targets; refreshed on every scene rebuild.
+    pub piers: Vec<crate::gym_scene::Pier>,
+    /// Crack-lab state (per-pier aging knobs + selection) — see crack.rs.
+    pub crack: crate::crack::CrackLab,
     /// Lamp NEE slots in slot order, with their authored base rgb — the
     /// scene's named point lights joined onto the backend's handles.
     pub light_keys: Vec<(LightKey, [f32; 3])>,
@@ -243,6 +248,13 @@ impl Viewer {
         if let Some(mode) = gi_demo {
             crate::gi_demo::author(&mut scene, look, mode == 1);
         }
+        // Crack lab: stamp per-pier aging knobs into the materials BEFORE the
+        // backend consumes the scene. CRACKS env (harness, uniform) overrides
+        // the demo's authored seed; neither → pristine (bit-identical image).
+        let mut crack = crate::crack::CrackLab::default();
+        let crack_seed = crate::crack::seed_from_env().or(demo.and_then(|d| d.cracks));
+        crate::crack::resolve(crack_seed, &mut crack, &gym_meta.piers, &mut scene);
+        crack.active = demo.and_then(|d| d.cracks).is_some();
         println!("scene: {} prims, {} tris (the gym, look {})", scene.primitives.len(), scene.indices.len() / 3, look.name);
         let player0 = scene.player_start;
 
@@ -301,6 +313,8 @@ impl Viewer {
                 drag: false,
             },
             gym: GymLoop::new(spec),
+            piers: gym_meta.piers,
+            crack,
             harness: Harness::from_cfg(&cfg),
             rec: None,
             rec_jobs: Vec::new(),
@@ -396,6 +410,14 @@ impl Viewer {
             // spike: keep the PHYS=1 physics runs present across a look switch
             crate::phys_scene::author(&mut scene, p);
         }
+        // crack lab: refresh the pick targets and re-stamp the aging knobs
+        // into the fresh materials (a rebuild mints them clean). Live-dialed
+        // values survive a look switch (the pier count is look-stable);
+        // entering/leaving the demo re-seeds or clears.
+        self.piers = meta.piers;
+        let crack_seed = crate::crack::seed_from_env().or(self.cur_demo.and_then(|d| d.cracks));
+        crate::crack::resolve(crack_seed, &mut self.crack, &self.piers, &mut scene);
+        self.crack.active = self.cur_demo.and_then(|d| d.cracks).is_some();
         unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };
         self.light_keys = join_lamp_lights(&scene, self.backend.handles(), self.backend.light_count());
         self.scene = scene;
