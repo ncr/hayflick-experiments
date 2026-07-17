@@ -109,10 +109,18 @@ pub struct Viewer {
     room_min: Vec3,
     room_max: Vec3,
     torn: bool,
+    // ---- wall-smash rig (phase 3, physics × dynamic GI): armed at boot when
+    // the active demo's script smashes a wall — the target pier resolved from
+    // GymMeta, the brick layout the render runs were authored from. The beat
+    // fires `smash_wall`. `None` when no demo smashes.
+    smash: Option<SmashRig>,
     // ---- named-demo timeline (owner directive 2026-07-16). ALL demo logic
     // (tick-scheduled beats, the look cross-fade) is encapsulated in the
     // runner; the loop just applies its per-frame effects to generic knobs.
     demo: crate::demos::DemoRunner,
+    /// The demo the runner is playing (LEVEL env or the LEVELS menu) — kept so
+    /// `apply_look`'s scene rebuild can re-arm the smash rig + brick runs.
+    cur_demo: Option<&'static crate::demos::Demo>,
     // per-frame sun/sky override (generic — a demo morph or a future day cycle
     // drives it). `None` = the scene's baked env (bit-identical to before).
     env_override: Option<rt_probe::EnvBlock>,
@@ -146,6 +154,44 @@ fn join_lamp_lights(scene: &Scene, handles: &SceneHandles, light_count: u32) -> 
         .collect()
 }
 
+/// The armed wall smash (phase 3): the target pier (prim to mask + AABBs)
+/// and the brick layout shared by the render runs and the physics world.
+struct SmashRig {
+    prim: usize,
+    lo: Vec3,
+    hi: Vec3,
+    run_lo: Vec3,
+    run_hi: Vec3,
+    bricks: Vec<phys_spike::BrickSpec>,
+    fired: bool,
+}
+
+/// Resolve a demo's breach point against the freshly built gym meta. `None`
+/// when the demo doesn't smash (or the point misses every pier — warned, so
+/// a level edit that moves the wall shows up in the log, not as a dud beat).
+fn arm_smash(demo: Option<&'static crate::demos::Demo>, meta: &crate::gym_scene::GymMeta) -> Option<SmashRig> {
+    let (x, z) = demo?.smash_point()?;
+    let Some(pier) = meta.pier_at(Vec3::new(x, 1.0, z)) else {
+        println!("smash: breach point ({x}, {z}) misses every wall pier — beat disarmed");
+        return None;
+    };
+    let bricks = phys_spike::wall_bricks(pier.lo, pier.hi);
+    Some(SmashRig { prim: pier.prim, lo: pier.lo, hi: pier.hi, run_lo: pier.run_lo, run_hi: pier.run_hi, bricks, fired: false })
+}
+
+/// The wall run's surviving segment flanking the torn pier along the course
+/// axis (`hi_side` picks the end), as a world AABB physics collider. A pier
+/// at a run end yields a degenerate box `wall_break` skips.
+fn rig_flank(rig: &SmashRig, normal_x: bool, hi_side: bool) -> (Vec3, Vec3) {
+    match (normal_x, hi_side) {
+        // wall normal on x → the run spans z, flanks split on z
+        (true, false) => (rig.run_lo, Vec3::new(rig.run_hi.x, rig.run_hi.y, rig.lo.z)),
+        (true, true) => (Vec3::new(rig.run_lo.x, rig.run_lo.y, rig.hi.z), rig.run_hi),
+        (false, false) => (rig.run_lo, Vec3::new(rig.lo.x, rig.run_hi.y, rig.run_hi.z)),
+        (false, true) => (Vec3::new(rig.hi.x, rig.run_lo.y, rig.run_lo.z), rig.run_hi),
+    }
+}
+
 impl Viewer {
     /// `window: None` runs fully headless (SHOT/DEMO captures). Builds the
     /// gym scene (single source of truth: the hand-authored level drives sim
@@ -175,11 +221,18 @@ impl Viewer {
             None => crate::look::from_env(),
         };
         let (mut scene, gym_meta) = crate::gym_scene::build_gym(&spec, look, roof);
+        // Wall-smash demo (phase 3): arm the rig + author the brick runs into
+        // the scene BEFORE the backend consumes it. The rig owns the phys/{i}
+        // namespace, so the PHYS=1 free-standing demo stands down.
+        let smash = arm_smash(demo, &gym_meta);
+        if let Some(rig) = &smash {
+            crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
+        }
         // Destructibility spike (voxel-physics-spike branch): PHYS=1 builds a
-        // Rapier brick wall + projectile and authors matching `phys/{i}`
+        // box3d brick wall + projectile and authors matching `phys/{i}`
         // dynamic runs into the scene BEFORE the backend consumes it. `None`
         // (and zero extra geometry) in the normal gym.
-        let phys = std::env::var("PHYS").is_ok().then(phys_spike::PhysWorld::demo);
+        let phys = (smash.is_none() && std::env::var("PHYS").is_ok()).then(phys_spike::PhysWorld::demo);
         if let Some(p) = &phys {
             crate::phys_scene::author(&mut scene, p);
         }
@@ -260,7 +313,9 @@ impl Viewer {
             room_min: gym_meta.room_min,
             room_max: gym_meta.room_max,
             torn: false,
+            smash,
             demo: crate::demos::DemoRunner::new(demo.map(|d| d.script).unwrap_or(&[])),
+            cur_demo: demo,
             env_override: None,
             frame: 0,
             start_time,
@@ -330,8 +385,15 @@ impl Viewer {
     pub fn apply_look(&mut self, look: &'static crate::look::Look) {
         let t0 = std::time::Instant::now();
         let (mut scene, meta) = crate::gym_scene::build_gym(&self.gym.spec, look, true);
-        // spike: keep the physics runs present across a look switch
-        if let Some(p) = &self.gym.phys {
+        // re-arm the wall-smash rig against the FRESH meta (prim indices may
+        // shift with the look) + re-author its brick runs; a fired smash
+        // resets to the standing wall — same one-shot rule as the roof tear
+        self.smash = arm_smash(self.cur_demo, &meta);
+        if let Some(rig) = &self.smash {
+            crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
+            self.gym.phys = None; // bricks wait zero-scaled for the beat
+        } else if let Some(p) = &self.gym.phys {
+            // spike: keep the PHYS=1 physics runs present across a look switch
             crate::phys_scene::author(&mut scene, p);
         }
         unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };
@@ -367,6 +429,7 @@ impl Viewer {
         self.restart_gym();
         self.torn = false;
         self.gi_tear = None; // demos drive the tear via their script, not GI_TEAR
+        self.cur_demo = Some(demo); // apply_look below re-arms the smash rig
         self.demo = crate::demos::DemoRunner::new(demo.script);
         self.env_override = None;
         let look = crate::look::by_name(demo.look).unwrap_or(&crate::look::POLANA);
@@ -384,6 +447,9 @@ impl Viewer {
         let step = self.demo.step(self.gym.tick.0, self.look);
         if step.tear {
             self.tear_roof();
+        }
+        if step.smash {
+            self.smash_wall();
         }
         if let Some(lit) = step.lit {
             // apply the cross-fade's lightable half; the sun/sky go through the
@@ -600,6 +666,53 @@ impl Viewer {
         self.torn = true;
         self.ui_blip("menu_move");
         println!("roof torn off — dynamic GI settling (step inside to watch)");
+    }
+
+    /// Phase 3 — the wall smash (physics × dynamic GI). One `tear_off` masks
+    /// the pier and starts the rolling probe refresh over the room + a breach
+    /// apron; the box3d world takes over the SAME volume the same frame —
+    /// bricks in the pier's exact pose (the swap is silhouette-, shadow- and
+    /// GI-continuous, since probe rays traverse the live TLAS and see the
+    /// bricks standing) with a heavy slug inbound. Direct light reacts
+    /// per-frame as the breach opens; the roll reconverges the bounce.
+    pub fn smash_wall(&mut self) {
+        let Some(rig) = &mut self.smash else {
+            println!("smash: no armed wall rig (not a smash demo)");
+            return;
+        };
+        if rig.fired {
+            return;
+        }
+        rig.fired = true;
+        let n_bricks = rig.bricks.len();
+        // breach apron: extend the room's refresh region OUTWARD through the
+        // wall, so the light spilling outside settles too. The pier's thin
+        // axis is the wall normal; outward = away from the room centre.
+        let (size, c) = (rig.hi - rig.lo, (rig.lo + rig.hi) * 0.5);
+        let room_c = (self.room_min + self.room_max) * 0.5;
+        let out_x = size.x < size.z; // thin axis = the wall normal
+        let sign = if (if out_x { c.x - room_c.x } else { c.z - room_c.z }) >= 0.0 { 1.0 } else { -1.0 };
+        let apron = if out_x { Vec3::new(2.5 * sign, 0.0, 0.0) } else { Vec3::new(0.0, 0.0, 2.5 * sign) };
+        let (min, max) = (self.room_min.min(rig.lo + apron.min(Vec3::ZERO)), self.room_max.max(rig.hi + apron.max(Vec3::ZERO)));
+        unsafe { self.backend.tear_off(&[rig.prim], min, max, true) }; // amortized rolling settle
+        // physics: the surviving flanks of the run + the room's far wall stay
+        // solid as invisible colliders; the slug flies in flat-ish from 4.5 wu
+        // out and arcs into the pier's upper-middle so the top courses fly.
+        let mut statics = vec![rig_flank(rig, out_x, false), rig_flank(rig, out_x, true)];
+        let far = if out_x {
+            // the wall opposite the breach, a 0.2-wu band on the room shell
+            if sign > 0.0 { (Vec3::new(self.room_min.x - 0.1, 0.0, self.room_min.z), Vec3::new(self.room_min.x + 0.1, crate::gym_scene::WALL_TOP, self.room_max.z)) } else { (Vec3::new(self.room_max.x - 0.1, 0.0, self.room_min.z), Vec3::new(self.room_max.x + 0.1, crate::gym_scene::WALL_TOP, self.room_max.z)) }
+        } else if sign > 0.0 {
+            (Vec3::new(self.room_min.x, 0.0, self.room_min.z - 0.1), Vec3::new(self.room_max.x, crate::gym_scene::WALL_TOP, self.room_min.z + 0.1))
+        } else {
+            (Vec3::new(self.room_min.x, 0.0, self.room_max.z - 0.1), Vec3::new(self.room_max.x, crate::gym_scene::WALL_TOP, self.room_max.z + 0.1))
+        };
+        statics.push(far);
+        let outward = apron.normalize_or_zero();
+        let from = Vec3::new(c.x, 2.0, c.z) + outward * 5.5;
+        self.gym.phys = Some(phys_spike::PhysWorld::wall_break(&rig.bricks, &statics, from, outward * -14.0, 0));
+        self.ui_blip("menu_move");
+        println!("wall smashed — {n_bricks} bricks live, dynamic GI settling through the breach");
     }
 
     /// Sim-advance phase of `draw()`: DEMO drives ONE tick per rendered frame

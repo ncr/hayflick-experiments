@@ -29,6 +29,10 @@ use box3d_rust::world::World;
 use box3d_rust::BodyId;
 use glam::{Mat4, Quat, Vec3};
 
+fn bv(v: Vec3) -> BVec3 {
+    BVec3 { x: v.x, y: v.y, z: v.z }
+}
+
 /// Ground-plane top — matches the gym floor (`gym_scene::FLOOR_TOP` = 6/128).
 const FLOOR_Y: f32 = 6.0 / 128.0;
 /// Fixed timestep — the sim clock (`house_game::TICK_DT`, 60 Hz).
@@ -44,6 +48,19 @@ pub struct PhysBox {
     pub half: Vec3,
 }
 
+/// One brick of a wall-break layout: half-extents + world-space rest centre
+/// (axis-aligned). A pure layout datum — the viewer authors the render run
+/// from it at boot, and [`PhysWorld::wall_break`] builds the matching body at
+/// smash time, so the two can never drift apart.
+#[derive(Clone, Copy)]
+pub struct BrickSpec {
+    pub half: Vec3,
+    pub pos: Vec3,
+}
+
+/// The wall-break slug's half-extent (a 0.44-wu charcoal cube).
+pub const SLUG_HALF: f32 = 0.22;
+
 /// A minimal Box3D world: a fixed ground, a brick wall, and one projectile.
 pub struct PhysWorld {
     world: World,
@@ -51,6 +68,8 @@ pub struct PhysWorld {
     handles: Vec<BodyId>,
     boxes: Vec<PhysBox>,
     projectile: BodyId,
+    /// The projectile's launch: velocity applied when `tick` reaches `.1`.
+    launch: (BVec3, u64),
     tick: u64,
 }
 
@@ -123,7 +142,78 @@ impl PhysWorld {
         handles.push(projectile);
         boxes.push(PhysBox { half: Vec3::splat(ph) });
 
-        PhysWorld { world, handles, boxes, projectile, tick: 0 }
+        PhysWorld { world, handles, boxes, projectile, launch: (BVec3 { x: -6.0, y: 0.0, z: 0.0 }, LAUNCH_TICK), tick: 0 }
+    }
+
+    /// The wall-smash world (phase 3 — physics × dynamic GI): the bricks of a
+    /// REAL torn-off wall segment, standing in its exact pose, plus a heavy
+    /// slug already in flight. `bricks` is the layout the render runs were
+    /// authored from ([`wall_bricks`]); `statics` are invisible collision
+    /// boxes for the surviving neighbour geometry (flanking wall segments,
+    /// the room's far wall) so debris ricochets instead of ghosting through.
+    /// The slug launches from `from` with velocity `vel` at `launch_tick`
+    /// (bullet CCD on, gravity ON — it arcs and then rests in the rubble).
+    pub fn wall_break(bricks: &[BrickSpec], statics: &[(Vec3, Vec3)], from: Vec3, vel: Vec3, launch_tick: u64) -> PhysWorld {
+        let mut world_def = default_world_def();
+        world_def.gravity = BVec3 { x: 0.0, y: -9.81, z: 0.0 };
+        let mut world = World::new(&world_def);
+
+        // Ground: a large static box whose TOP face sits at the gym floor,
+        // centred under the wall so debris always lands on it.
+        let gh = 5.0;
+        let centre = bricks.iter().fold(Vec3::ZERO, |a, b| a + b.pos) / bricks.len().max(1) as f32;
+        let mut ground_def = default_body_def();
+        ground_def.type_ = BodyType::Static;
+        ground_def.position = BVec3 { x: centre.x, y: FLOOR_Y - gh, z: centre.z };
+        let ground = create_body(&mut world, &ground_def);
+        let ground_hull = make_box_hull(40.0, gh, 40.0);
+        create_hull_shape(&mut world, ground, &default_shape_def(), &ground_hull.base);
+
+        // Neighbour geometry as static colliders (world AABBs).
+        for (lo, hi) in statics {
+            let half = (*hi - *lo) * 0.5;
+            if half.min_element() <= 0.0 {
+                continue;
+            }
+            let mut def = default_body_def();
+            def.type_ = BodyType::Static;
+            def.position = bv((*lo + *hi) * 0.5);
+            let body = create_body(&mut world, &def);
+            let hull = make_box_hull(half.x, half.y, half.z);
+            create_hull_shape(&mut world, body, &default_shape_def(), &hull.base);
+        }
+
+        let mut handles = Vec::new();
+        let mut boxes = Vec::new();
+        for b in bricks {
+            let mut def = default_body_def();
+            def.type_ = BodyType::Dynamic;
+            def.enable_sleep = false; // stay responsive to the slug's contact
+            def.position = bv(b.pos);
+            let body = create_body(&mut world, &def);
+            let hull = make_box_hull(b.half.x, b.half.y, b.half.z);
+            create_hull_shape(&mut world, body, &default_shape_def(), &hull.base);
+            handles.push(body);
+            boxes.push(PhysBox { half: b.half });
+        }
+
+        // The slug: heavy (2.5× water — plows through a ~17 kg brick), bullet
+        // CCD (fast + thin targets), gravity ON so the flight is a shallow arc
+        // and it comes to rest in the debris field instead of hovering.
+        let mut proj_def = default_body_def();
+        proj_def.type_ = BodyType::Dynamic;
+        proj_def.position = bv(from);
+        proj_def.enable_sleep = false;
+        proj_def.is_bullet = true;
+        let projectile = create_body(&mut world, &proj_def);
+        let proj_hull = make_box_hull(SLUG_HALF, SLUG_HALF, SLUG_HALF);
+        let mut proj_shape = default_shape_def();
+        proj_shape.density = 2500.0;
+        create_hull_shape(&mut world, projectile, &proj_shape, &proj_hull.base);
+        handles.push(projectile);
+        boxes.push(PhysBox { half: Vec3::splat(SLUG_HALF) });
+
+        PhysWorld { world, handles, boxes, projectile, launch: (bv(vel), launch_tick), tick: 0 }
     }
 
     /// Box specs (half-extents) in mesh order.
@@ -131,13 +221,18 @@ impl PhysWorld {
         &self.boxes
     }
 
-    /// Advance one fixed tick. The projectile launches at `LAUNCH_TICK`.
+    /// Advance one fixed tick. The projectile launches at its launch tick.
     pub fn step(&mut self) {
-        if self.tick == LAUNCH_TICK {
-            body_set_linear_velocity(&mut self.world, self.projectile, BVec3 { x: -6.0, y: 0.0, z: 0.0 });
+        if self.tick == self.launch.1 {
+            body_set_linear_velocity(&mut self.world, self.projectile, self.launch.0);
         }
         self.world.step(DT, SUB_STEPS);
         self.tick += 1;
+    }
+
+    /// Sim ticks stepped so far.
+    pub fn tick(&self) -> u64 {
+        self.tick
     }
 
     /// Per-box world transform (`translate · rotate`), mesh authored at origin.
@@ -151,6 +246,47 @@ impl PhysWorld {
             })
             .collect()
     }
+}
+
+/// Decompose a wall-slab AABB into a running-bond brick layout that tiles it
+/// EXACTLY (the render swap static-slab → bricks must be silhouette- and
+/// shadow-invisible; only a hairline `GAP` is shaved off each brick face for
+/// solver clearance). The slab's longer horizontal axis is the course
+/// direction, the shorter one the wall thickness; courses are ~0.22 wu tall
+/// and bricks ~0.4 wu long, odd courses starting on a half brick.
+pub fn wall_bricks(lo: Vec3, hi: Vec3) -> Vec<BrickSpec> {
+    /// Clearance shaved off each half-extent so no brick starts interpenetrating.
+    const GAP: f32 = 0.002;
+    let size = hi - lo;
+    let along_x = size.x >= size.z;
+    let len = if along_x { size.x } else { size.z };
+    let rows = (size.y / 0.22).round().max(1.0) as u32;
+    let rh = size.y / rows as f32;
+    let n = (len / 0.4).round().max(1.0) as u32;
+    let bl = len / n as f32;
+    let mut out = Vec::new();
+    for r in 0..rows {
+        let y = lo.y + (r as f32 + 0.5) * rh;
+        // course cuts along the run: odd courses lead with a half brick
+        let mut cuts = vec![0.0f32];
+        let mut c = if r % 2 == 1 { bl * 0.5 } else { bl };
+        while c < len - bl * 0.25 {
+            cuts.push(c);
+            c += bl;
+        }
+        cuts.push(len);
+        for w in cuts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (mid, hl) = ((a + b) * 0.5, (b - a) * 0.5);
+            let (pos, half) = if along_x {
+                (Vec3::new(lo.x + mid, y, (lo.z + hi.z) * 0.5), Vec3::new(hl, rh * 0.5, size.z * 0.5))
+            } else {
+                (Vec3::new((lo.x + hi.x) * 0.5, y, lo.z + mid), Vec3::new(size.x * 0.5, rh * 0.5, hl))
+            };
+            out.push(BrickSpec { half: half - Vec3::splat(GAP), pos });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -198,5 +334,64 @@ mod tests {
         }
         let y1 = mean_y(&w);
         assert!(y1 < y0 - 0.05, "the wall must come down (mean brick height {y0} -> {y1})");
+    }
+
+    /// The gym's east-facade middle pier, as the wall-smash demo tears it.
+    const PIER_LO: Vec3 = Vec3::new(7.9, 0.0, 4.7);
+    const PIER_HI: Vec3 = Vec3::new(8.1, 2.1875, 6.3);
+
+    /// The running-bond layout tiles the slab exactly: every course spans the
+    /// full run with no holes (extents sum to the slab, bricks stay inside),
+    /// and odd courses bond (their cuts sit mid-brick over the course below).
+    #[test]
+    fn wall_bricks_tile_the_slab() {
+        let bricks = wall_bricks(PIER_LO, PIER_HI);
+        let size = PIER_HI - PIER_LO;
+        let rows = (size.y / 0.22).round() as usize; // 10 courses
+        let per_even = (size.z / 0.4).round() as usize; // 4 full bricks
+        assert_eq!(bricks.len(), rows / 2 * (2 * per_even + 1), "10 courses alternating 4/5 bricks");
+        let gap_area: f32 = bricks.iter().map(|b| (b.half.z + 0.002) * 2.0 * ((b.half.y + 0.002) * 2.0)).sum();
+        assert!((gap_area - size.z * size.y).abs() < 1e-3, "brick faces tile the slab face");
+        for b in &bricks {
+            assert!(b.pos.y - b.half.y >= PIER_LO.y - 1e-4 && b.pos.y + b.half.y <= PIER_HI.y + 1e-4);
+            assert!(b.pos.z - b.half.z >= PIER_LO.z - 1e-4 && b.pos.z + b.half.z <= PIER_HI.z + 1e-4);
+            assert!((b.pos.x - (PIER_LO.x + PIER_HI.x) * 0.5).abs() < 1e-4, "one brick through the thickness");
+        }
+    }
+
+    fn smash_world() -> PhysWorld {
+        let bricks = wall_bricks(PIER_LO, PIER_HI);
+        let statics = [(Vec3::new(7.9, 0.0, 2.9), Vec3::new(8.1, 2.1875, 4.7)), (Vec3::new(7.9, 0.0, 6.3), Vec3::new(8.1, 2.1875, 8.1))];
+        PhysWorld::wall_break(&bricks, &statics, Vec3::new(12.6, 2.0, 5.5), Vec3::new(-14.0, 0.0, 0.0), 0)
+    }
+
+    /// Same-machine wall-break replay is bit-identical (the DEMO guarantee).
+    #[test]
+    fn wall_break_is_deterministic_across_builds() {
+        let (mut a, mut b) = (smash_world(), smash_world());
+        for _ in 0..240 {
+            a.step();
+            b.step();
+        }
+        assert_eq!(digest(&a), digest(&b), "same-machine wall-break replay must be bit-identical");
+    }
+
+    /// The slug actually breaches the pier: bricks scatter off the wall plane
+    /// and the courses come down, while everything stays above the floor.
+    #[test]
+    fn slug_breaches_the_pier() {
+        let mut w = smash_world();
+        let n = w.boxes().len() - 1;
+        for _ in 0..240 {
+            w.step();
+        }
+        let ms = w.box_transforms();
+        let mean_y = ms[..n].iter().map(|m| m.w_axis.y).sum::<f32>() / n as f32;
+        assert!(mean_y < 2.1875 * 0.5 - 0.2, "courses must come down (mean brick height {mean_y})");
+        let scatter = ms[..n].iter().map(|m| (m.w_axis.x - 8.0).abs()).fold(0.0f32, f32::max);
+        assert!(scatter > 0.5, "debris must leave the wall plane (max |dx| {scatter})");
+        for m in &ms[..n] {
+            assert!(m.w_axis.y > -0.5, "no brick may fall through the ground");
+        }
     }
 }

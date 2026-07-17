@@ -100,6 +100,28 @@ pub struct GymMeta {
     pub roof_prims: std::ops::Range<usize>,
     pub room_min: Vec3,
     pub room_max: Vec3,
+    /// Every solid wall segment (a windowed run's piers, a plain run's whole
+    /// slab), one box prim each — the wall-smash tear-off targets (phase 3).
+    pub piers: Vec<Pier>,
+}
+
+/// One tearable wall segment: its prim (to TLAS-mask), its world AABB (the
+/// brick layout + probe-refresh region) and the parent run's slab AABB (the
+/// surviving flanks become invisible physics colliders).
+pub struct Pier {
+    pub prim: usize,
+    pub lo: Vec3,
+    pub hi: Vec3,
+    pub run_lo: Vec3,
+    pub run_hi: Vec3,
+}
+
+impl GymMeta {
+    /// The pier containing a world point (the demo names a breach point, the
+    /// meta resolves which wall segment that is after any rebuild).
+    pub fn pier_at(&self, p: Vec3) -> Option<&Pier> {
+        self.piers.iter().find(|q| q.lo.cmple(p).all() && q.hi.cmpge(p).all())
+    }
 }
 
 pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
@@ -119,6 +141,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
     if !room_min.x.is_finite() {
         (room_min, room_max) = (Vec3::ZERO, Vec3::ZERO); // no Room cells
     }
+    let mut piers: Vec<Pier> = Vec::new();
 
     // ---- floors: one quad per row-run of same (tint, matte) key (cheap prim
     // merge; a checker look breaks field rows into per-cell quads — fine at
@@ -154,7 +177,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
                 while x < w && g.edge(CellPos::new(x, z), Dir::Zm) == EdgeKind::Wall && zroomy(x) == rm {
                     x += 1;
                 }
-                wall_slab(&mut scene, [x0 as f32 - WALL_HT, z as f32 - WALL_HT, x as f32 + WALL_HT, z as f32 + WALL_HT], true, rm, look);
+                wall_slab(&mut scene, &mut piers, [x0 as f32 - WALL_HT, z as f32 - WALL_HT, x as f32 + WALL_HT, z as f32 + WALL_HT], true, rm, look);
             } else {
                 x += 1;
             }
@@ -170,7 +193,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
                 while z < h && g.edge(CellPos::new(x, z), Dir::Xm) == EdgeKind::Wall && xroomy(z) == rm {
                     z += 1;
                 }
-                wall_slab(&mut scene, [x as f32 - WALL_HT, z0 as f32 - WALL_HT, x as f32 + WALL_HT, z as f32 + WALL_HT], false, rm, look);
+                wall_slab(&mut scene, &mut piers, [x as f32 - WALL_HT, z0 as f32 - WALL_HT, x as f32 + WALL_HT, z as f32 + WALL_HT], false, rm, look);
             } else {
                 z += 1;
             }
@@ -238,7 +261,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
     scene.player_start = cell_world(spec.player_start);
     scene.lighting = look.lighting;
     scene.sun_sky = look.sun; // sun/sky-as-data (Faza 1b)
-    (scene, GymMeta { roof_prims, room_min, room_max })
+    (scene, GymMeta { roof_prims, room_min, room_max, piers })
 }
 
 /// Floor-run merge key: (tint, matte). Outdoor cells are the meadow — matte
@@ -266,9 +289,10 @@ fn floor_key(g: &Grid, p: CellPos, look: &Look) -> (u32, bool) {
 /// split doesn't shift it; on the gym building (cells 3..=7) that gives two
 /// symmetric windows per facade and one flanking each side of the doorway.
 /// `along_x` says which axis the run spans.
-fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, windows: bool, look: &Look) {
+fn wall_slab(scene: &mut Scene, piers: &mut Vec<Pier>, rect: [f32; 4], along_x: bool, windows: bool, look: &Look) {
     let wc = hex_linear(look.wall);
     let (a0, a1) = if along_x { (rect[0], rect[2]) } else { (rect[1], rect[3]) };
+    let (run_lo, run_hi) = (Vec3::new(rect[0], 0.0, rect[1]), Vec3::new(rect[2], WALL_TOP, rect[3]));
     // window centres: even-coordinate cells (the run bounds are cell
     // coordinates ± WALL_HT, so round() recovers the integers exactly)
     let mut mids: Vec<f32> = Vec::new();
@@ -301,6 +325,7 @@ fn wall_slab(scene: &mut Scene, rect: [f32; 4], along_x: bool, windows: bool, lo
         };
         scene.add_box_world(lo, hi, wc, [0.0; 4], 0.85, 0.0);
         mark_occluder(scene, first);
+        piers.push(Pier { prim: first, lo, hi, run_lo, run_hi });
         s = stop.map_or(a1, |m| m + 0.2);
     }
     // glass panes: one per opening, floor to 0.0625 above the wall top and
@@ -471,6 +496,22 @@ mod tests {
                 assert_eq!(scene.materials[prim.material_id as usize]._pad, 1, "{}: roof box not occluder-marked", look.name);
             }
         }
+    }
+
+    /// The wall-smash demo's breach point resolves to the east facade's
+    /// middle pier: a full-height 0.2-thick slab between the two windows,
+    /// occluder-marked (the tear masks a wall, not dressing), inside its
+    /// parent run — the layout `phys_spike::wall_bricks` decomposes.
+    #[test]
+    fn east_facade_middle_pier_is_the_smash_target() {
+        let spec = gym_level();
+        let (scene, meta) = build_gym(&spec, &crate::look::DUSK, true);
+        let pier = meta.pier_at(Vec3::new(8.0, 1.0, 5.5)).expect("breach point must land in a pier");
+        assert_eq!((pier.lo.x, pier.hi.x), (7.9, 8.1), "0.2-wu slab on the x=8 boundary");
+        assert_eq!((pier.lo.y, pier.hi.y), (0.0, WALL_TOP), "full height");
+        assert!((pier.lo.z - 4.7).abs() < 1e-4 && (pier.hi.z - 6.3).abs() < 1e-4, "between the two windows: {:?}..{:?}", pier.lo, pier.hi);
+        assert_eq!(scene.materials[scene.primitives[pier.prim].material_id as usize]._pad, 1, "the pier is a plain occluder wall box");
+        assert!(pier.run_lo.z < pier.lo.z && pier.run_hi.z > pier.hi.z, "flanks survive on both sides");
     }
 
     /// The indoor cutaway plane sits below the wall tops (they dissolve to

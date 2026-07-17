@@ -551,3 +551,28 @@ design echo of the pane's proud crown lip. Geometry-side alternatives all
 lose: exact-width panes z-fight the jamb planes (coplanarity rule),
 recessed panes keep the shadowed sliver, air gaps read as see-through
 slits.
+
+## 2026-07-17 — demo composition must respect the ROI screen disc (and the follow-cam)
+
+Context: staging the phase-3 wall-smash demo (a real gym wall bursts into
+physics bricks). Four spawn attempts failed before one worked, all for
+COMPOSITION reasons the code couldn't see:
+
+- The ROI reveal is a SCREEN-SPACE disc (~180 px at the default zoom)
+  around the player, and it stipple-dissolves EVERY occluder-marked wall
+  it touches — not just walls between camera and player. Since the
+  follow-cam centres the player, anything within ~180 px of frame centre
+  gets eaten. A demo's action (here: the breach) must sit OUTSIDE that
+  disc or it plays under a dither cloud.
+- World-space clearance is meaningless on its own: walls south of the
+  player stay screen-close (depth compresses along the view axis). Think
+  in the projection's pixel images: at trimetric, world-X maps ~82
+  screen px/wu (the longest direction), world-Z only ~28. Offsetting the
+  spawn ALONG X buys the most screen separation per wu — (12,5) put the
+  breach 4.5 wu ≈ 360 px out: clear of the disc, still large.
+- Standing dead-on the action line is self-defeating: the follow-cam puts
+  the player sprite exactly over it.
+- Diagnosis pattern that worked: render the SAME boot state at all four
+  YAW_Q quarters + frame-diff key ticks to localize what actually changed
+  (the beat-swap diff also verified the slab→bricks swap is silhouette-
+  and shadow-invisible except the slug's one-frame pop-in).

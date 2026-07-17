@@ -126,8 +126,9 @@ pub struct GymLoop {
     face: f32,
     /// Camera target the follow-cam last consumed.
     pub last_cam: Vec3,
-    /// Destructibility spike (PHYS=1): a Rapier rigid-body world stepped once
-    /// per fixed tick, rendered as extra `phys/{i}` dynamic runs. `None` in
+    /// Destructibility spike: a box3d rigid-body world stepped once per fixed
+    /// tick, rendered as extra `phys/{i}` dynamic runs — the PHYS=1 brick
+    /// wall, or the wall-smash demo's debris (armed at its beat). `None` in
     /// the normal gym. NOT part of `state_hash` — presentation-layer physics.
     pub phys: Option<PhysWorld>,
 }
@@ -459,8 +460,8 @@ impl GymLoop {
         out
     }
 
-    /// Physics-spike movers (PHYS=1): each Rapier box's world transform, joined
-    /// onto its `phys/{i}` run. Appended to `instances` — same TLAS-refit path
+    /// Physics-spike movers: each box3d box's world transform, joined onto
+    /// its `phys/{i}` run. Appended to `instances` — same TLAS-refit path
     /// as the player limbs. Empty in the normal gym.
     pub fn phys_instances(&self, handles: &SceneHandles) -> Vec<(InstanceKey, Mat4)> {
         let mut out = Vec::new();

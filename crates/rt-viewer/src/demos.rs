@@ -36,6 +36,13 @@ pub enum Action {
     /// [`crate::look::Lit`]). Smooth, no rebake; the palette stays at the boot
     /// look. `look` is `crate::look::by_name`.
     MorphTo { look: &'static str, over: u64 },
+    /// Smash the wall pier containing world point (x, z) — phase 3, physics ×
+    /// dynamic GI: the pier is TLAS-masked and its bricks (pre-authored at
+    /// boot from the SAME layout) go live as a box3d world, a slug already
+    /// inbound; the rolling probe refresh tracks the breach as it opens. The
+    /// viewer resolves the pier + arms the brick runs at boot
+    /// ([`Demo::smash_point`]), the beat only pulls the trigger.
+    SmashWall { x: f32, z: f32 },
 }
 
 pub struct Demo {
@@ -78,7 +85,34 @@ pub static DEMOS: &[Demo] = &[
         script: &[Beat { at: 20, action: Action::MorphTo { look: "dusk", over: 180 } }],
         outdated: false,
     },
+    Demo {
+        name: "wall smash",
+        // dusk sun sits to the SOUTH-EAST (look.rs) — it pours straight
+        // through the east-facade breach the moment the bricks clear it
+        blurb: "a slug smashes the east wall to bricks - dusk light breaches",
+        look: "dusk",
+        // due east of the breach, 4.5 wu out along world-X: the ROI reveal
+        // disc is a SCREEN disc (~180 px) around the centred player that
+        // stipples every occluder it touches, and world-X maps longest on
+        // screen (~82 px/wu) — so a big X offset clears the disc while the
+        // facade still reads large. The slug whooshes right past the player.
+        spawn: (12, 5),
+        script: &[Beat { at: 40, action: Action::SmashWall { x: 8.0, z: 5.5 } }],
+        outdated: false,
+    },
 ];
+
+impl Demo {
+    /// The demo's wall-breach point, if its script smashes one — the viewer
+    /// arms the brick runs + the pier rig at boot from this (the layout must
+    /// exist in the scene before the backend builds it).
+    pub fn smash_point(&self) -> Option<(f32, f32)> {
+        self.script.iter().find_map(|b| match b.action {
+            Action::SmashWall { x, z } => Some((x, z)),
+            _ => None,
+        })
+    }
+}
 
 pub fn by_name(name: &str) -> Option<&'static Demo> {
     DEMOS.iter().find(|d| d.name == name)
@@ -98,6 +132,8 @@ struct LookMorph {
 pub struct DemoStep {
     /// Tear the roof off this frame (the DDGI flood).
     pub tear: bool,
+    /// Fire the wall smash this frame (the armed rig knows the pier).
+    pub smash: bool,
     /// The cross-fade lighting to apply this frame (`None` = no active morph;
     /// the loop leaves its lighting untouched).
     pub lit: Option<crate::look::Lit>,
@@ -129,9 +165,11 @@ impl DemoRunner {
     /// morph. Idempotent within a tick — beats fire once via the cursor.
     pub fn step(&mut self, tick: u64, look: &'static crate::look::Look) -> DemoStep {
         let mut tear = false;
+        let mut smash = false;
         while self.cursor < self.script.len() && self.script[self.cursor].at <= tick {
             match &self.script[self.cursor].action {
                 Action::TearRoof => tear = true,
+                Action::SmashWall { .. } => smash = true,
                 Action::MorphTo { look: to, over } => {
                     if let Some(to) = crate::look::by_name(to) {
                         self.morph = Some(LookMorph { from: look, to, start: tick, over: (*over).max(1) });
@@ -151,7 +189,7 @@ impl DemoRunner {
                 self.morph = None;
             }
         }
-        DemoStep { tear, lit }
+        DemoStep { tear, smash, lit }
     }
 }
 
@@ -160,4 +198,31 @@ impl DemoRunner {
 pub fn from_env() -> Option<&'static Demo> {
     let v = std::env::var("LEVEL").ok()?;
     v.parse::<usize>().ok().and_then(|i| DEMOS.get(i)).or_else(|| by_name(&v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wall-smash demo names the east facade's middle-pier breach point,
+    /// and its runner fires the smash exactly once (the one-shot cursor).
+    #[test]
+    fn wall_smash_demo_fires_its_beat_once() {
+        let demo = by_name("wall smash").expect("the phase-3 demo exists");
+        assert_eq!(demo.smash_point(), Some((8.0, 5.5)), "breach point pins the east middle pier");
+        assert_eq!(demo.look, "dusk", "the dusk sun is SE — it pours through an east breach");
+        let look = crate::look::by_name(demo.look).unwrap();
+        let mut runner = DemoRunner::new(demo.script);
+        let fired: Vec<u64> = (0..120).filter(|&t| runner.step(t, look).smash).collect();
+        assert_eq!(fired, vec![40], "one smash, at the scripted beat");
+    }
+
+    /// Demos without a smash beat report no breach point — the viewer must
+    /// not author brick runs (or stand down PHYS=1) for them.
+    #[test]
+    fn non_smash_demos_have_no_breach_point() {
+        for d in DEMOS.iter().filter(|d| d.name != "wall smash") {
+            assert_eq!(d.smash_point(), None, "{}", d.name);
+        }
+    }
 }
