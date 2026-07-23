@@ -33,6 +33,7 @@ mod audio;
 mod backend;
 mod capture;
 mod crack;
+mod crack_geom;
 mod demos;
 mod gym_loop;
 mod gym_scene;
@@ -195,6 +196,7 @@ impl ApplicationHandler for App {
                         }
                     } else {
                         r.menu.drag = false;
+                        r.crack_release(); // knob drag ended: faults may need real geometry
                     }
                 }
             }

@@ -225,6 +225,27 @@ static float crackEdge(float2 p, float seed, thread float2& site, thread float& 
     cellH = hash13(float3(c1, seed + 91.0));
     return sqrt(f2) - sqrt(f1);
 }
+// One STRUCTURAL fault lattice on a face plane — twin of shade.comp's
+// faultAt: ≤1 full-height crack per 6-wu strip, jagged wander + settlement
+// slant, pinch/gape width; same (u, v) keys on wall face and top cap make
+// the crack cross the cap (through the wall, not painted on).
+static float faultAt(float2 uv, float seed, float cAge, float cDen, float cDep,
+                     thread float& halo, thread float& side){
+    halo = 0.0; side = 0.0;
+    float si = floor(uv.x / 6.0);
+    float pMaj = 0.95 * smoothstep(0.12, 0.42, cAge) * smoothstep(0.04, 0.45, cDen);
+    if (hash13(float3(si, seed, 71.0)) >= pMaj) return 0.0;
+    float ax = (si + mix(0.22, 0.78, hash13(float3(si, seed, 83.0)))) * 6.0;
+    float tilt = (hash13(float3(si, seed, 97.0)) - 0.5) * 0.8; // settlement slant
+    float wob = (vnoise(float3(uv.y * 0.8, si * 7.3, seed + 17.0)) - 0.5) * 1.3
+              + (vnoise(float3(uv.y * 4.1, si * 7.3, seed + 29.0)) - 0.5) * 0.22;
+    float dx = uv.x - (ax + tilt * uv.y + wob);
+    float wvar = 0.35 + 1.3 * vnoise(float3(uv.y * 1.7, si * 3.1, seed + 41.0));
+    float mw = mix(0.022, 0.055, cDep) * wvar * (0.55 + 0.45 * cAge);
+    halo = 1.0 - smoothstep(mw, mw * 7.0, abs(dx));
+    side = sign(dx);
+    return 1.0 - smoothstep(mw * 0.35, mw, abs(dx));
+}
 
 // stylized point-light specular: GGX D × Schlick F, no solid-angle/geometry term
 // (SPEC is the master gain); D clamped so a near-mirror lobe stays a soft plateau.
@@ -461,10 +482,10 @@ kernel void shade(
     // Material.pad bits 8..31 carry four 6-bit unorm knobs — age / crack
     // density / crack depth / chip (rt-viewer crack::pad_bits; bits 0..2 stay
     // the occluder/glass/matte flags, bit 3 the selection highlight below).
-    // 2D cellular crack network on the face plane; DEPTH = darker groove
-    // floors + a fixed-view parallax shift + an edge bevel; AGE = tea-stain
-    // blotches + a stain halo + coverage; CHIP = chalky spall patches whose
-    // rims crack and whose sheen dies (chipM feeds reff/spec below).
+    // Aging is HETEROGENEOUS (owner, 2026-07-23): a macro damage field
+    // (seeded per segment via h.mat) gates crazing/chips/stains into
+    // patches, and at most one full-height STRUCTURAL crack per ~6 wu wall
+    // strip divides the wall in two — see shade.comp for the full story.
     // All-zero knobs skip the block — untouched scenes render bit-identically.
     float chipM = 0.0;
     {
@@ -474,41 +495,113 @@ kernel void shade(
             float cDen = float((kb >> 14) & 63u) * (1.0 / 63.0);
             float cDep = float((kb >> 20) & 63u) * (1.0 / 63.0);
             float cChp = float((kb >> 26) & 63u) * (1.0 / 63.0);
+            float seg = float(h.mat & 255) * 0.618; // per-segment seed
             float3 an = abs(n);
+            bool wallF = an.y <= 0.5;
             float2 cuv = an.x > 0.5 ? wpos.zy : (an.y > 0.5 ? wpos.xz : wpos.xy);
             // fixed-view parallax: sample the network where the view ray
             // meets the groove floor (offset along the in-face view dir)
             float3 vt = d - n * dot(d, n);
             float2 vuv = an.x > 0.5 ? vt.zy : (an.y > 0.5 ? vt.xz : vt.xy);
             float2 cuvP = cuv + vuv * (0.08 * cDep / max(abs(dot(d, n)), 0.35));
+            // macro damage field: where THIS segment is failing (rising damp
+            // lifts wall bases); AGE slides the threshold, gates are STEEP
+            // slices around it (fbm crowds its midrange — a soft window
+            // converges to uniform), so even age=1 keeps clean zones
+            float rise = wallF ? 1.0 - smoothstep(0.10, 1.0, cuv.y) : 0.0;
+            float dmgN = fbm(float3(cuv * float2(0.45, 0.7), seg * 7.0 + 3.0)) + 0.16 * rise;
+            float dT = mix(0.74, 0.55, cAge);
+            float stainW = smoothstep(dT - 0.14, dT + 0.02, dmgN); // stains + chips
+            float fineG = smoothstep(dT + 0.08, dT + 0.14, dmgN);  // fine web
+            // STRUCTURAL cracks first — the cracks knob's PRIMARY meaning
+            // (owner 2026-07-23): wall faces carry their lattice + a second
+            // offset one fading in at high density; top caps evaluate BOTH
+            // orientation lattices so the crack crosses the cap.
+            float mCore = 0.0, mHalo = 0.0;
+            float2 mBev = float2(0.0);
+            {
+                float g2 = smoothstep(0.65, 0.95, cDen);
+                float hl, sd, c;
+                if (wallF) {
+                    c = faultAt(cuvP, seg, cAge, cDen, cDep, hl, sd);
+                    mCore = c; mHalo = hl; mBev.x = sd * hl * (1.0 - c);
+                    if (g2 > 0.0) {
+                        c = faultAt(cuvP + float2(2.7, 0.0), seg + 130.0, cAge, cDen, cDep, hl, sd);
+                        c *= g2; hl *= g2;
+                        mCore = max(mCore, c); mHalo = max(mHalo, hl);
+                        mBev.x += sd * hl * (1.0 - c);
+                    }
+                } else {
+                    c = faultAt(float2(cuvP.x, wpos.y), seg, cAge, cDen, cDep, hl, sd);
+                    mCore = c; mHalo = hl; mBev.x = sd * hl * (1.0 - c);
+                    c = faultAt(float2(cuvP.y, wpos.y), seg, cAge, cDen, cDep, hl, sd);
+                    mCore = max(mCore, c); mHalo = max(mHalo, hl);
+                    mBev.y = sd * hl * (1.0 - c);
+                    if (g2 > 0.0) {
+                        c = faultAt(float2(cuvP.x + 2.7, wpos.y), seg + 130.0, cAge, cDen, cDep, hl, sd);
+                        c *= g2; hl *= g2;
+                        mCore = max(mCore, c); mHalo = max(mHalo, hl);
+                        mBev.x += sd * hl * (1.0 - c);
+                        c = faultAt(float2(cuvP.y + 2.7, wpos.y), seg + 130.0, cAge, cDen, cDep, hl, sd);
+                        c *= g2; hl *= g2;
+                        mCore = max(mCore, c); mHalo = max(mHalo, hl);
+                        mBev.y += sd * hl * (1.0 - c);
+                    }
+                }
+            }
+            // GEOMETRIC fault (pad bit 5, crack_geom.rs) — twin of
+            // shade.comp: the crack is a REAL split — suppress the painted
+            // core + bevel, keep the halo (fracture crazing, stain track,
+            // spall chips hug the real seam).
+            if ((kb & 32u) != 0u) { mCore = 0.0; mBev = float2(0.0); }
+            // CRAZE mode (pad bit 6, crack_geom.rs) — twin of shade.comp:
+            // the small-crack network is real policy-generated geometry
+            // (>= 1 px grooves, depth knob = groove depth); ALL painted
+            // cell work goes (`show` zeroed), fine web + stains stay paint.
+            bool crazeG = (kb & 64u) != 0u;
             float freqC = mix(1.1, 3.4, cDen);         // cells per wu
-            float cover = mix(0.55, 1.02, 0.65 * cAge + 0.35 * cDen);
             float wdt = mix(0.02, 0.05, cDep) * freqC; // line half-width (cell units)
             float2 site; float cellH;
-            float edP = crackEdge(cuvP * freqC, 5.0, site, cellH);
-            float show = step(cellH, cover);
+            float edP = crackEdge(cuvP * freqC, seg + 5.0, site, cellH);
+            // cells craze only where SOLIDLY damaged, or in the fault's
+            // fracture zone (secondary cracks branching off the big one)
+            float cover = mix(0.45, 0.9, cAge);
+            float zone = max(smoothstep(dT + 0.02, dT + 0.08, dmgN), 0.5 * smoothstep(0.25, 0.90, mHalo));
+            float show = step(cellH, cover) * zone;
+            // geometry owns crack lines — twin of shade.comp: craze piers
+            // replace the cell network with policy fragments, FAULT piers
+            // drop the painted web too (seam + stains + chips remain).
+            if ((kb & (32u | 64u)) != 0u) show = 0.0;
             float lineP = (1.0 - smoothstep(0.0, wdt, edP)) * show;
-            // secondary finer web fades in with age (crazing subdividing)
+            // finer subdividing web only in the WORST patches
             float2 siteF; float cellF;
-            float edF = crackEdge(cuvP * freqC * 2.7 + 31.0, 9.0, siteF, cellF);
-            float fineW = (1.0 - smoothstep(0.0, wdt * 0.7, edF)) * step(cellF, cAge * 0.9);
-            float crack = max(lineP, fineW * 0.6 * smoothstep(0.15, 0.7, cAge));
+            float edF = crackEdge(cuvP * freqC * 2.7 + 31.0, seg + 9.0, siteF, cellF);
+            float fineW = (1.0 - smoothstep(0.0, wdt * 0.7, edF)) * step(cellF, cAge * 0.9) * fineG;
+            float crack = max(max(lineP, fineW * 0.6 * smoothstep(0.15, 0.7, cAge)), mCore);
             albedo *= 1.0 - crack * (0.30 + 0.55 * cDep); // groove floor darkens
+            albedo *= 1.0 - mCore * 0.55;                 // the fault core reads DEEP
             // edge bevel: tilt the normal back toward this pixel's own cell
-            // site (away from the boundary) — the surface slopes into the groove
+            // site (away from the boundary) — the surface slopes into the
+            // groove; the fault adds its own lips (both sides tip away)
             float lip = (1.0 - smoothstep(wdt, wdt * 3.0, edP)) * show;
             float2 s2 = normalize(site + float2(1e-5)) * (lip * cDep * 0.55);
+            s2 += mBev * (0.20 + 0.45 * cDep);
             float3 s3 = an.x > 0.5 ? float3(0.0, s2.y, s2.x) : (an.y > 0.5 ? float3(s2.x, 0.0, s2.y) : float3(s2.x, s2.y, 0.0));
             s3 -= n * dot(s3, n);
             n = normalize(n + s3);
-            // age: tea-stain blotches + a stain halo bleeding out of the cracks
+            // age: tea-stain blotches inside damaged patches + a stain halo
+            // bleeding out of the cracks (the fault's track stains hardest)
             float stain = fbm(wpos * 0.9 + 31.0);
-            float halo = (1.0 - smoothstep(0.0, wdt * 5.0, edP)) * show;
-            float sAmt = cAge * clamp(0.55 * smoothstep(0.45, 0.85, stain) + 0.35 * halo, 0.0, 1.0);
+            float halo = max((1.0 - smoothstep(0.0, wdt * 5.0, edP)) * show, mHalo * 0.85);
+            float sAmt = cAge * clamp(0.55 * smoothstep(0.45, 0.85, stain) * (0.20 + 0.80 * stainW) + 0.35 * halo, 0.0, 1.0);
             albedo = mix(albedo, albedo * float3(0.78, 0.70, 0.58), sAmt);
-            // chip: chalky spall patches — glaze gone, matte body; rims crack
+            // chip: chalky spall patches — glaze gone, matte body; clustered
+            // in the damage patches and biting the fault's lips, never uniform
             float chpN = vnoise(wpos * 2.3 + 57.0);
-            chipM = smoothstep(mix(1.02, 0.50, cChp), mix(1.10, 0.60, cChp), chpN);
+            float chpEff = cChp * clamp(smoothstep(0.45, 0.85, stainW) + 0.9 * mHalo, 0.0, 1.0);
+            chipM = smoothstep(mix(1.02, 0.50, chpEff), mix(1.10, 0.60, chpEff), chpN);
+            chipM = max(chipM, (mHalo - mCore) * smoothstep(0.40, 0.75, chpN) * cChp);
+            if (crazeG) chipM = 0.0; // chips are MISSING fragments, not paint
             float rim = smoothstep(0.02, 0.10, chipM) * (1.0 - smoothstep(0.55, 0.9, chipM));
             albedo = mix(albedo, albedo * 0.92 + float3(0.05, 0.045, 0.035), chipM * 0.75);
             albedo *= 1.0 - rim * 0.35 * (0.4 + 0.6 * cDep);

@@ -218,21 +218,34 @@ fn wrap_text(s: &str, cols: usize) -> Vec<String> {
     lines
 }
 
-/// Crack-lab knob panel height (title + one row per knob + footer). Shares
-/// the settings staging buffer — compile-guarded like the game panels.
-pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (crate::crack::LABELS.len() as i32 + 2);
+/// Crack-lab knob panel height for a policy showing `nparams` native param
+/// rows (title + knobs + pattern row + params + footer).
+pub(crate) fn crack_panel_h(nparams: usize) -> i32 {
+    MPAD * 2 + MROW * (crate::crack::LABELS.len() as i32 + 3 + nparams as i32)
+}
+
+/// The tallest crack panel (every param slot used). Shares the settings
+/// staging buffer — compile-guarded like the game panels.
+pub(crate) const CRACK_PANEL_H: i32 =
+    MPAD * 2 + MROW * (crate::crack::LABELS.len() as i32 + 3 + crate::crack_geom::PARAMS_MAX as i32);
 const _: () = assert!(CRACK_PANEL_H <= MPANEL_H);
 
 /// Crack-lab knob panel (replaces the hamburger while a wall segment is
-/// selected, menu closed): one slider row per aging knob of the picked pier.
-/// Reuses the settings sheet's row geometry so `crack_panel_click` /
-/// `crack_drag_to` share the same track math. Pure fn of its inputs, so it
-/// draws headless (the test below pins the staging-buffer fit).
-pub(crate) fn crack_canvas(sel: usize, knobs: [f32; 4], row: usize) -> (Vec<u32>, i32, i32) {
+/// selected, menu closed): one slider row per aging knob of the picked pier,
+/// the small-crack PATTERN row (click cycles `crack_geom::POLICIES`), and
+/// below it the picked policy's NATIVE param sliders (`POLICY_PARAMS` —
+/// owner round 7: each algorithm surfaces its unique properties; the panel
+/// grows and shrinks with the policy). The owner compares crack policies
+/// here, per the menu rule. Reuses the settings sheet's row geometry so
+/// `crack_panel_click` / `crack_drag_to` share the same track math. Pure fn
+/// of its inputs, so it draws headless (the test below pins the
+/// staging-buffer fit).
+pub(crate) fn crack_canvas(sel: usize, knobs: [f32; 4], row: usize, policy: u8, par: [f32; crate::crack_geom::PARAMS_MAX]) -> (Vec<u32>, i32, i32) {
     const BG: u32 = 0x16161c;
     const BORDER: u32 = 0x6a6a78;
     const TEXT: u32 = 0xc8c8d0;
-    let (w, h) = (MPANEL_W, CRACK_PANEL_H);
+    let pdefs = crate::crack_geom::POLICY_PARAMS[policy as usize % crate::crack_geom::NPOL];
+    let (w, h) = (MPANEL_W, crack_panel_h(pdefs.len()));
     let mut c = vec![BG; (w * h) as usize];
     mrect(&mut c, w, 0, 0, w, 1, BORDER);
     mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
@@ -253,7 +266,31 @@ pub(crate) fn crack_canvas(sel: usize, knobs: [f32; 4], row: usize) -> (Vec<u32>
         mrect(&mut c, w, kx, y + 2, 2, MROW - 4, 0xd8e8c8);
         mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}"), 0x99cc99);
     }
-    let fy = MPAD + MROW * (1 + crate::crack::LABELS.len() as i32) + 2;
+    // pattern row: a discrete cycler, not a slider (click steps the policy)
+    let pi = crate::crack::LABELS.len();
+    let py = MPAD + MROW * (1 + pi as i32);
+    if pi == row {
+        mrect(&mut c, w, 2, py, w - 4, MROW, 0x24242e);
+    }
+    mtext(&mut c, w, MLABEL_X, py + 2, "pattern", if pi == row { 0xe8e8f0 } else { TEXT });
+    let pname = crate::crack_geom::POLICIES.get(policy as usize).copied().unwrap_or("?");
+    mtext(&mut c, w, MTRACK_X, py + 2, &format!("< {pname} >"), 0x99cc99);
+    // the policy's native param sliders (indented — they belong to the pattern)
+    for (j, (name, _)) in pdefs.iter().enumerate() {
+        let ri = pi + 1 + j;
+        let y = MPAD + MROW * (1 + ri as i32);
+        if ri == row {
+            mrect(&mut c, w, 2, y, w - 4, MROW, 0x24242e);
+        }
+        let v = par[j].clamp(0.0, 1.0);
+        mtext(&mut c, w, MLABEL_X + 8, y + 2, name, if ri == row { 0xe8e8f0 } else { TEXT });
+        mrect(&mut c, w, MTRACK_X, y + MROW / 2, MTRACK_W, 2, 0x34343c);
+        mrect(&mut c, w, MTRACK_X, y + MROW / 2, (MTRACK_W as f32 * v) as i32, 2, 0x7aa86a);
+        let kx = MTRACK_X + (v * (MTRACK_W - 2) as f32) as i32;
+        mrect(&mut c, w, kx, y + 2, 2, MROW - 4, 0xd8e8c8);
+        mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}"), 0x99cc99);
+    }
+    let fy = MPAD + MROW * (2 + (pi + pdefs.len()) as i32) + 2;
     mtext(&mut c, w, MLABEL_X, fy, "drag - click away closes", 0x707078);
     (c, w, h)
 }
@@ -585,31 +622,54 @@ impl Viewer {
     /// math as the settings sheet). True when the panel consumed the click;
     /// clicks outside fall through to the world pick (select/deselect/move).
     pub fn crack_panel_click(&mut self, p: Vec2) -> bool {
+        let Some(sel) = self.crack.sel else { return false };
+        let nparams = crate::crack_geom::POLICY_PARAMS[self.crack.policy[sel] as usize % crate::crack_geom::NPOL].len();
         let ms = self.menu_ui_scale();
         let org = Vec2::splat(MENU_MARGIN as f32);
         let l = (p - org) / ms;
-        if l.x < 0.0 || l.y < 0.0 || l.x >= MPANEL_W as f32 || l.y >= CRACK_PANEL_H as f32 {
+        if l.x < 0.0 || l.y < 0.0 || l.x >= MPANEL_W as f32 || l.y >= crack_panel_h(nparams) as f32 {
             return false;
         }
+        let nk = crate::crack::LABELS.len();
         let row = (l.y as i32 - MPAD) / MROW - 1; // row 0 is the title band
-        if row >= 0 && (row as usize) < crate::crack::LABELS.len() {
+        if row >= 0 && ((row as usize) < nk || ((row as usize) > nk && (row as usize) <= nk + nparams)) {
+            // knob rows and param rows are sliders; drag starts immediately
             self.crack.row = row as usize;
             self.menu.drag = true;
             self.crack_drag_to(p);
+        } else if row >= 0 && row as usize == nk {
+            // the pattern row: cycle the policy; the mouse-release that
+            // follows runs crack_release, sees the new signature, rebuilds
+            self.crack.row = row as usize;
+            self.crack_cycle_policy();
+            self.ui_blip("menu_pick");
         }
         true
     }
 
-    /// Crack-panel slider drag: dial the picked pier's active knob from the
-    /// cursor's track position (0.02 grid — finer than the shader's 6-bit
-    /// quantization, so every step lands on a distinct packed value or none).
+    /// Crack-panel slider drag: dial the picked pier's active knob — or the
+    /// active policy's native param — from the cursor's track position
+    /// (0.02 grid — finer than the shader's 6-bit quantization, so every
+    /// step lands on a distinct packed value or none; params are
+    /// geometry-only, so their drags show on the release rebuild).
     pub fn crack_drag_to(&mut self, p: Vec2) {
         let Some(sel) = self.crack.sel else { return };
         let ms = self.menu_ui_scale();
         let lx = (p.x - MENU_MARGIN as f32) / ms;
         let t = ((lx - MTRACK_X as f32) / MTRACK_W as f32).clamp(0.0, 1.0);
-        self.crack.knobs[sel][self.crack.row] = (t / 0.02).round() * 0.02;
-        self.crack_apply(sel);
+        let v = (t / 0.02).round() * 0.02;
+        let nk = crate::crack::LABELS.len();
+        if self.crack.row < nk {
+            self.crack.knobs[sel][self.crack.row] = v;
+            self.crack_apply(sel);
+        } else if self.crack.row > nk {
+            let policy = self.crack.policy[sel] as usize % crate::crack_geom::NPOL;
+            let j = self.crack.row - nk - 1;
+            if j < crate::crack_geom::POLICY_PARAMS[policy].len() {
+                self.crack.params[sel][policy][j] = v;
+            }
+        }
+        // row == nk is the pattern row: no track
     }
 
     /// Draw the overlay at logical resolution: the open panel (game menu /
@@ -665,7 +725,9 @@ impl Viewer {
             // the hamburger's spot (ESC still opens the pause menu over it)
             if self.crack_panel_visible() {
                 let sel = self.crack.sel.unwrap();
-                return crack_canvas(sel, self.crack.knobs[sel], self.crack.row);
+                let policy = self.crack.policy[sel];
+                let par = self.crack.params[sel][policy as usize % crate::crack_geom::NPOL];
+                return crack_canvas(sel, self.crack.knobs[sel], self.crack.row, policy, par);
             }
             // hamburger icon; while recording, a REC badge rides next to it
             // (the badge is overlay-only — clips capture swap.out, never UI)
@@ -775,13 +837,17 @@ mod tests {
     }
 
     /// The crack-lab knob panel fits the shared staging buffer at every knob
-    /// value and row highlight, and has a row per knob label.
+    /// value, row highlight (incl. the pattern row) and policy.
     #[test]
     fn crack_canvas_fits_the_staging_buffer() {
-        for row in 0..crate::crack::LABELS.len() {
-            let (buf, w, h) = crack_canvas(7, [0.0, 0.33, 0.66, 1.0], row);
-            assert_eq!(buf.len(), (w * h) as usize);
-            assert!(w <= MPANEL_W && h <= MPANEL_H, "crack panel overruns the staging buffer");
+        for row in 0..=crate::crack::LABELS.len() + 1 + crate::crack_geom::PARAMS_MAX {
+            for policy in 0..crate::crack_geom::POLICIES.len() as u8 {
+                let par = crate::crack_geom::param_defaults(policy);
+                let (buf, w, h) = crack_canvas(7, [0.0, 0.33, 0.66, 1.0], row, policy, par);
+                assert_eq!(buf.len(), (w * h) as usize);
+                assert!(w <= MPANEL_W && h <= MPANEL_H, "crack panel overruns the staging buffer");
+                assert_eq!(h, crack_panel_h(crate::crack_geom::POLICY_PARAMS[policy as usize].len()), "panel height tracks the policy's param count");
+            }
         }
     }
 

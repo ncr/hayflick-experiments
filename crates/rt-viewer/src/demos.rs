@@ -119,7 +119,7 @@ pub static DEMOS: &[Demo] = &[
         script: &[],
         // boot pre-age with real variance: the level reads weathered the
         // moment it opens, and every segment starts somewhere different
-        cracks: Some(crate::crack::CrackSeed { age: 0.55, cracks: 0.5, depth: 0.55, chip: 0.2, vary: 0.4 }),
+        cracks: Some(crate::crack::CrackSeed { age: 0.55, cracks: 0.5, depth: 0.55, chip: 0.2, vary: 0.4, policy: 0, params: crate::crack_geom::param_defaults(0) }),
         outdated: false,
     },
 ];

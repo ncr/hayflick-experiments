@@ -710,6 +710,26 @@ impl Scene {
         self.primitives.push(Primitive { vertex_offset: vbase, index_offset: ibase, vertex_count: 24, index_count: 36, material_id });
     }
 
+    /// Append a raw world-space triangle mesh as ONE primitive that SHARES an
+    /// existing material (crack-lab geometric faults: a split pier's halves
+    /// keep the pier's material, so knobs / flags / selection stay
+    /// per-segment). `indices` are local to `verts`, like `add_box`'s.
+    pub fn add_mesh_world(&mut self, verts: &[([f32; 3], [f32; 3])], indices: &[u32], material_id: i32) {
+        let vbase = self.vertices.len() as u32;
+        let ibase = self.indices.len() as u32;
+        for (pos, nrm) in verts {
+            self.vertices.push(Vertex { pos: *pos, nrm: *nrm, uv: [0.0, 0.0] });
+        }
+        self.indices.extend_from_slice(indices);
+        self.primitives.push(Primitive {
+            vertex_offset: vbase,
+            index_offset: ibase,
+            vertex_count: verts.len() as u32,
+            index_count: indices.len() as u32,
+            material_id,
+        });
+    }
+
     /// Recompute the AABB from only the vertices actually referenced by kept triangles.
     pub fn recompute_bounds(&mut self) {
         self.min = Vec3::splat(f32::INFINITY);

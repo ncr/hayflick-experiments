@@ -122,7 +122,32 @@ collapse + GI settle. ALSO 2026-07-17: the crack-lab CRACK LAB block in
 shade.metal + `MetalBackend::set_material_pad` are blind line-for-line
 twins of the Vulkan-verified GLSL/host code — boot `LEVEL="crack lab"`,
 check the aged walls match the Vulkan SHOTs in character, and click/drag
-the knob panel once.
+the knob panel once. 2026-07-23: the heterogeneous-aging rework of that
+same block (per-segment damage field + sparse structural fault cracks,
+Vulkan-verified) is again a blind MSL twin — the same crack-lab boot
+check covers it. Structural faults and the WHOLE small-crack network
+are REAL geometry now (crack_geom.rs — host-side, shared by both
+backends), and the two layers COMPOSE: every knobbed pier gets a
+matte-chalk core + a veneer of plates laid out by a selectable pattern
+POLICY — lightning/craquelure/mosaic since 2026-07-23 round 7 (the
+recursive `fracture` splitter is DELETED; lightning is propagation:
+top-rooted or parent-forked bolts that wander, kink, taper and dead-end)
+— panel "pattern" row, and BELOW it each policy's NATIVE param sliders
+(`crack_geom::POLICY_PARAMS`: lightning branch/straight/spread,
+craquelure scale/wave, mosaic scale/jitter; stored per pier per policy);
+`CRACKS=a,c,d,p[,policy[,p1,p2,p3]]` — split by 1-px-or-wider drooped
+grooves (depth knob = groove depth, adaptive 0.02..0.45 × wall thickness
+so the whole slider is live) with CHAMFERED edges (~1-px miter-inset
+bevel on open-groove edges only — the plate cedes the strip, the gap
+keeps its width), recessed chips and sinks; faulted piers additionally
+split into jagged pieces with a gap + settlement drop, the veneer
+clipped against the fault paths (fault lips chamfer too) and the network
+clustering along the seam (halo). Round 7 is host-side only — no new
+shader debt; the only blind MSL edit left in that block is the
+pad-bit-5/-6 `show`-suppression branch (+ the crazeG chip line). The
+Mac check should also time a knob-release rebuild
+(`Viewer::crack_release` → apply_look): rebake is ~115 ms on RTX but
+SECONDS on the M2.
 
 ## Pixel-perfect iso contract (binding; generalizes, never weakens)
 

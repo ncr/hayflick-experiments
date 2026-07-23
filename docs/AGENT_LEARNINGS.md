@@ -576,3 +576,115 @@ COMPOSITION reasons the code couldn't see:
   YAW_Q quarters + frame-diff key ticks to localize what actually changed
   (the beat-swap diff also verified the slab→bricks swap is silhouette-
   and shadow-invisible except the slug's one-frame pop-in).
+
+## 2026-07-23 — thin geometry cannot draw lines under the pixel contract
+
+Context: promoting the crack lab's painted cracks to real geometry. The
+STRUCTURAL fault (a 0.02-0.09 wu gap splitting a pier) worked first try —
+silhouette notch, settlement step, see-through gap. Extending the same
+idea to the crazing NETWORK (carving 0.02-0.08 wu grooves between veneer
+fragments) failed three ways before the design settled:
+
+- Carved grooves render as DOT-DASH noise, not lines: with primary rays
+  through pixel centres and no AA (the binding contract), a 1-3 px world
+  feature is hit-or-miss per pixel, and its darkness flips with edge
+  orientation vs the sun. Painted lines are per-pixel COVERAGE — always
+  coherent; geometric lines are per-pixel LOTTERY.
+- Painting the groove floor doesn't rescue it: at the iso view angle a
+  0.03-deep groove SELF-OCCLUDES (the near lip hides the floor), so the
+  paint is invisible exactly where the line should read. Related trap:
+  the veneer inset had carved away exactly the strip the painted line
+  occupied, so "keep the paint" changed nothing until the paint moved to
+  the core material under the groove.
+- Half-measures (thinner veneer, partial inset, half-strength paint)
+  just rebalance the same speckle.
+
+Rule: under a no-AA pixel-centre contract, geometry is for AREA and
+SILHOUETTE features (gaps wide enough to see through, recesses, steps,
+cap notches — roughly >= 2 px in every visible dimension); LINES stay
+painted. When both express the same underlying feature, they must share
+one lattice (host mirrors the shader hashes float-for-float) so the
+paint sits exactly on the geometry.
+
+## 2026-07-23 (later) — line geometry works with three guarantees; per-sample gates chatter
+
+Context: the owner overrode the "lines stay painted" rule the same day
+("do the physical small cracks too, min width of 1px is good") and it
+WORKS — the crack lab's whole small-crack network is now real grooves
+(crack_geom.rs policies). The previous entry's failure analysis was
+right about the mechanism but wrong about the conclusion: the dot-dash
+lottery is a property of SUB-PIXEL line geometry, not of line geometry.
+Three guarantees turn geometric lines coherent:
+
+- A HARD >= 1-px width floor derived from the projection's axis images
+  (`px_floor`: trimetric world-Z spans only ~28 px/wu vs ~41 for X and
+  ~39 for Y, so the floor is per-face-direction, 0.027-0.037 wu). A
+  groove at >= 1 px always owns a contiguous pixel run — no lottery.
+- The cavity must read DARK at every orientation. A groove's up-facing
+  ledge catches full sky and washes out near-horizontal runs (they
+  dashed while vertical runs read solid). Fix: DROOP the groove walls —
+  extrude them slanted down into the wall so every opening shows a
+  down-facing overhang + shadowed floor, never a lit ledge. Same trap
+  in another suit: sub-pixel SINK STEPS between flush plates dot out —
+  a plate may only sink when its whole perimeter is grooved.
+- Continuity is per-CRACK, not per-sample: gating groove width on the
+  damage field at each sample makes the fbm threshold chatter and the
+  crack dashes mid-run. Resolve each cut's open interval ONCE (first
+  zone crossing to last = one continuous crack with crisp tips).
+
+Bonus of geometry ownership: pattern POLICIES (hierarchical fracture
+with T-junctions, craquelure ladder, mosaic) live host-side only — no
+per-pixel closed form needed, no shader twin to port. The shader's cell
+paint is dead code behind the suppression bits on aged piers; only the
+sub-pixel fine web + stains remain paint (below the 1-px floor, where
+the previous entry's rule still binds).
+
+Two round-6 addenda (same day): (1) a knob whose mapped range hits a
+CLAMP mid-slider leaves a dead top — the craze depth mapped 0.025..0.10
+but clamped at 0.35 × wall thickness = 0.0875 on the gym's 0.25 walls,
+so the slider's top third did nothing ("depth ending at 1 is too
+small"). Map knob ranges FROM the constraint (0.02..0.45 × thickness),
+never toward a constant that a clamp then eats. (2) A feature that only
+applies in one MODE of a system is invisible if the owner's dial sits
+in the other mode: pattern policies applied only to fault-free piers,
+but at the owner's knobs (pMaj ≈ 0.95) every wall was faulted — "cycled
+all patterns, no visual change". Compose orthogonal layers (the veneer
+now rides the fault pieces, clipped against the fault paths) instead of
+making them exclusive modes.
+
+## 2026-07-23 (round 7) — expose the algorithm's OWN dials; a chamfer needs to know which edges are real
+
+Owner round on the crack policies: "fracture produces unbelievable
+shapes... let's use some kind of lightning-bolt propagation style algo —
+and expose its settings: branching strength, straightness, whatever is
+steerable. Do that generally: if I switch algo, I want its unique native
+properties in the options." Plus: chamfered crack edges read natural and
+play well with the low-res target.
+
+- A procedural generator's KNOBS are part of its identity. One shared
+  parameter set (age/cracks/depth/chip) flattens every algorithm to the
+  same few degrees of freedom — the owner could not steer what makes
+  each pattern distinct, so they all read as variations of the same
+  fake. Now each policy declares its native params
+  (`crack_geom::POLICY_PARAMS`) and the panel grows rows per policy
+  (lightning: branch/straight/spread; craquelure: scale/wave; mosaic:
+  scale/jitter), stored per pier PER POLICY so A/B-ing keeps tunings.
+  Params are geometry-only: they sign raw into the release signature —
+  no material bits, no shader involvement.
+- "Lightning" did not need a walker/DBM engine: the existing recursive
+  cut machinery IS a propagation structure if you shape the cuts —
+  root each cut's open span at one end (the top for primaries, the end
+  nearest the parent's crack for forks), budget its length so it
+  dead-ends in a taper instead of always crossing the region, fork the
+  direction off the parent's by a spread angle, and add a kink octave
+  to the wander. Reuse beat reinvention: spans, cut_clip, the pixel
+  floor and the droop all carried over untouched.
+- A chamfer is edge-selective geometry: beveling EVERY plate edge
+  carves visible V-grooves into closed seams (coincident walls that
+  must stay one flush slab). The bevel needs per-edge knowledge of
+  "does this edge border an OPEN groove", which the generators know
+  but the emitter did not — so fragments now carry per-edge open
+  flags (probed against the ancestor cuts / bisectors / fault paths;
+  field ~ 0 AND gate > 0). The bevel then eats into the PLATE (miter
+  inset ring, taper to zero at open/closed junctions — no gussets),
+  never into the gap: the >= 1-px groove width guarantee survives.

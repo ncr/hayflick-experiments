@@ -12,9 +12,17 @@
 //!
 //! Owner surface: the LEVELS menu's "crack lab" demo — click a wall segment
 //! (ray-picked against `GymMeta.piers`), drag the slider panel that replaces
-//! the hamburger. Agent surface: `CRACKS=age,cracks,depth,chip` stamps every
-//! pier uniformly at boot for headless SHOT verification (a shell-only env
-//! read, like LOOK/PROJ/LEVEL — see the config.rs exception list).
+//! the hamburger; below the knobs a pattern row cycles the small-crack
+//! POLICY (`crack_geom::POLICIES` — owner round 5, 2026-07-23: Voronoi
+//! reads fake, give me patterns to choose from) and under IT sit that
+//! policy's NATIVE param sliders (`crack_geom::POLICY_PARAMS` — owner
+//! round 7: switching algo must surface its unique properties; params are
+//! stored per pier per policy, so A/B-ing policies keeps each one's
+//! tuning). Agent surface:
+//! `CRACKS=age,cracks,depth,chip[,policy[,p1,p2,p3]]` stamps every pier
+//! uniformly at boot for headless SHOT verification (a shell-only env
+//! read, like LOOK/PROJ/LEVEL — see the config.rs exception list); policy
+//! by name or index, params defaulting per policy.
 
 use crate::gym_scene::Pier;
 use crate::viewer::Viewer;
@@ -37,6 +45,10 @@ pub struct CrackSeed {
     pub chip: f32,
     /// ± half-range of the deterministic per-pier variation on every knob.
     pub vary: f32,
+    /// Small-crack pattern policy for every pier (`crack_geom::POLICIES`).
+    pub policy: u8,
+    /// The seeded policy's native params (`crack_geom::POLICY_PARAMS`).
+    pub params: [f32; crate::crack_geom::PARAMS_MAX],
 }
 
 /// Live crack-lab state on the [`Viewer`]: one knob quad per pier (parallel
@@ -46,8 +58,23 @@ pub struct CrackLab {
     /// Selection + knob panel enabled (the demo says `cracks: Some(..)`).
     pub active: bool,
     pub knobs: Vec<[f32; 4]>,
+    /// Per-pier small-crack pattern policy (parallel to `knobs`).
+    pub policy: Vec<u8>,
+    /// Per-pier, PER-POLICY native params (parallel to `knobs`): cycling
+    /// the pattern keeps each policy's dialing for the A/B.
+    pub params: Vec<[[f32; crate::crack_geom::PARAMS_MAX]; crate::crack_geom::NPOL]>,
     pub sel: Option<usize>,
     pub row: usize,
+    /// [`crate::crack_geom::signature`] of the geometry currently BUILT into
+    /// the scene — `Viewer::crack_release` rebuilds when the knobs disagree.
+    pub geo_sig: u64,
+}
+
+impl CrackLab {
+    /// Each pier's ACTIVE-policy params — the shape `crack_geom` takes.
+    pub fn active_params(&self) -> Vec<[f32; crate::crack_geom::PARAMS_MAX]> {
+        self.policy.iter().zip(&self.params).map(|(p, per)| per[*p as usize]).collect()
+    }
 }
 
 /// Pack four 0..1 knobs into `Material._pad` bits 8..31 (6-bit unorm each):
@@ -66,13 +93,26 @@ pub fn unpack(pad: i32) -> [f32; 4] {
     [u(8), u(14), u(20), u(26)]
 }
 
-/// `CRACKS=age,cracks,depth,chip` — the harness override: stamp every pier
-/// uniformly at boot (missing components read 0, no variance).
+/// `CRACKS=age,cracks,depth,chip[,policy[,p1,p2,p3]]` — the harness
+/// override: stamp every pier uniformly at boot (missing components read 0,
+/// no variance; policy by `crack_geom::POLICIES` name or index, default
+/// `lightning`; trailing floats override that policy's native params).
 pub fn seed_from_env() -> Option<CrackSeed> {
-    let v = std::env::var("CRACKS").ok()?;
-    let mut it = v.split(',').map(|s| s.trim().parse::<f32>().unwrap_or(0.0));
-    let mut n = || it.next().unwrap_or(0.0);
-    Some(CrackSeed { age: n(), cracks: n(), depth: n(), chip: n(), vary: 0.0 })
+    std::env::var("CRACKS").ok().map(|v| parse_seed(&v))
+}
+
+/// The pure half of [`seed_from_env`].
+fn parse_seed(v: &str) -> CrackSeed {
+    let parts: Vec<&str> = v.split(',').map(str::trim).collect();
+    let n = |i: usize| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+    let policy = parts.get(4).map(|s| crate::crack_geom::policy_index(s)).unwrap_or(0);
+    let mut params = crate::crack_geom::param_defaults(policy);
+    for (j, slot) in params.iter_mut().enumerate() {
+        if let Some(p) = parts.get(5 + j).and_then(|s| s.parse::<f32>().ok()) {
+            *slot = p;
+        }
+    }
+    CrackSeed { age: n(0), cracks: n(1), depth: n(2), chip: n(3), vary: 0.0, policy, params }
 }
 
 /// Deterministic per-pier knob quads from a seed: base ± vary, hashed on the
@@ -110,16 +150,32 @@ pub fn stamp_all(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], sel: Opt
 pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scene: &mut Scene) {
     match seed {
         Some(s) => {
-            if lab.knobs.len() != piers.len() {
+            if lab.knobs.len() != piers.len() || lab.policy.len() != piers.len() || lab.params.len() != piers.len() {
                 lab.knobs = seed_knobs(piers.len(), &s);
+                lab.policy = vec![s.policy; piers.len()];
+                let mut per = [
+                    crate::crack_geom::param_defaults(0),
+                    crate::crack_geom::param_defaults(1),
+                    crate::crack_geom::param_defaults(2),
+                ];
+                per[s.policy as usize] = s.params;
+                lab.params = vec![per; piers.len()];
                 lab.sel = None;
                 lab.row = 0;
             }
             stamp_all(scene, piers, &lab.knobs, lab.sel);
+            // structural faults + crazing become REAL geometry (crack_geom);
+            // the built signature lets live knob drags rebuild only on change
+            let par = lab.active_params();
+            crate::crack_geom::apply_geometry(scene, piers, &lab.knobs, &lab.policy, &par);
+            lab.geo_sig = crate::crack_geom::signature(scene, piers, &lab.knobs, &lab.policy, &par);
         }
         None => {
             lab.knobs.clear();
+            lab.policy.clear();
+            lab.params.clear();
             lab.sel = None;
+            lab.geo_sig = 0;
         }
     }
 }
@@ -146,12 +202,39 @@ impl Viewer {
     /// Recompute + push pier `i`'s material `_pad` (knob bits + selection),
     /// mirrored into the CPU scene (so rebuilds re-stamp the truth) and the
     /// backend's live material stream (visible next frame, nothing rebuilds).
+    /// GEO_BIT/CRAZE_BIT are preserved as-is: they describe the geometry
+    /// currently BUILT, which only `crack_release`'s rebuild may change.
     pub fn crack_apply(&mut self, i: usize) {
         let mid = self.scene.primitives[self.piers[i].prim].material_id as usize;
-        let flags = self.scene.materials[mid]._pad & 7;
+        let flags = self.scene.materials[mid]._pad & (7 | crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT);
         let pad = flags | pad_bits(self.crack.knobs[i]) | if self.crack.sel == Some(i) { SEL_BIT } else { 0 };
         self.scene.materials[mid]._pad = pad;
         self.backend.set_material_pad(mid, pad);
+    }
+
+    /// Slider released (or the pattern row clicked): if the drag changed the
+    /// built geometry — which faults exist, the craze bucket, the policy,
+    /// its native params — rebuild the scene so the aging opens in place.
+    /// Dial-within-a-bucket knob drags stay live-material cheap.
+    pub fn crack_release(&mut self) {
+        if !self.crack.active {
+            return;
+        }
+        let par = self.crack.active_params();
+        let sig = crate::crack_geom::signature(&self.scene, &self.piers, &self.crack.knobs, &self.crack.policy, &par);
+        if sig != self.crack.geo_sig {
+            let look = self.look;
+            self.apply_look(look);
+        }
+    }
+
+    /// The panel's pattern row: cycle the picked pier's policy — the release
+    /// event that follows the click sees the changed signature and rebuilds.
+    pub fn crack_cycle_policy(&mut self) {
+        if let Some(sel) = self.crack.sel {
+            let n = crate::crack_geom::POLICIES.len() as u8;
+            self.crack.policy[sel] = (self.crack.policy[sel] + 1) % n;
+        }
     }
 
     /// Change the picked segment (both the old and new highlight bits).
@@ -225,10 +308,24 @@ mod tests {
         assert_eq!(pad_bits([1.0; 4]) & 0xFF, 0);
     }
 
+    /// `CRACKS=` parsing: policy by name, trailing floats override that
+    /// policy's native params, missing tails keep the defaults.
+    #[test]
+    fn parse_seed_reads_policy_and_params() {
+        let d = crate::crack_geom::param_defaults(0);
+        let s = parse_seed("0.5,0.4,0.3,0.2");
+        assert_eq!((s.policy, s.params), (0, d), "bare quad: default policy + params");
+        let s = parse_seed("1,1,0.5,0,craquelure");
+        assert_eq!(s.policy, 1);
+        assert_eq!(s.params, crate::crack_geom::param_defaults(1));
+        let s = parse_seed("1,1,0.5,0,lightning,0.9,0.1");
+        assert_eq!(s.params, [0.9, 0.1, d[2]], "trailing floats override in order");
+    }
+
     /// Seeding is deterministic and clamped; vary=0 is exactly uniform.
     #[test]
     fn seed_knobs_deterministic_and_clamped() {
-        let s = CrackSeed { age: 0.6, cracks: 0.5, depth: 0.6, chip: 0.2, vary: 0.5 };
+        let s = CrackSeed { age: 0.6, cracks: 0.5, depth: 0.6, chip: 0.2, vary: 0.5, policy: 0, params: crate::crack_geom::param_defaults(0) };
         let a = seed_knobs(9, &s);
         assert_eq!(a, seed_knobs(9, &s), "same seed, same weathering");
         assert!(a.iter().flatten().all(|v| (0.0..=1.0).contains(v)));
