@@ -107,6 +107,124 @@ pub fn probe_box(origin: Vec3, spacing: f32, dims: [u32; 3], min: Vec3, max: Vec
     Some(([ix0, iy0, iz0], [ix1 + 1, iy1 + 1, iz1 + 1]))
 }
 
+/// How far, in probe SPACINGS, a LOCAL refresh grows each dirty world AABB
+/// before mapping it onto the lattice. Shared by both backends so the twins
+/// cannot drift.
+///
+/// The FIRST spacing is structural: the shade pass's `probeE` (shade.comp:132 /
+/// shade.metal:164) trilerps the 8 probes around the shading point pushed
+/// 0.3·spacing along its normal, so every probe that LIGHTS a surface inside the
+/// dirty box lies within one spacing of it — refresh less and the new geometry is
+/// lit by probes that never saw it. The rest is the BOUNCE halo: probes further
+/// out still SEE the changed surface, and carrying their old value leaves a
+/// residue that decays with distance. AO plays no part — the RT-AO radius is a
+/// shade-pass ray budget, not a probe footprint.
+///
+/// Three because the halo is nearly FREE. Measured on the M2 Pro (crack lab,
+/// pier 7 re-knobbed, diffed against a full rebake of the identical scene —
+/// docs/CRACKS_PLAN_2026-07-25.md task 3 step 2):
+///
+/// | pad | probes | refresh | pixels differing from a full rebake |
+/// |-----|--------|---------|------------------------------------|
+/// | 1   | 680 (7 %)   | 3091 ms | 2.58 %, max delta 1/255 |
+/// | 2   | 1064 (11 %) | 3452 ms | 1.68 %, max delta 1/255 |
+/// | 3   | 1512 (16 %) | 3334 ms | 0.96 %, max delta 1/255 |
+///
+/// The cost barely moves because a refresh is LATENCY-bound (see
+/// [`LOCAL_REFRESH_MAX_FRACTION`]) — each thread serially casts 2048 rays × 2
+/// banks whatever the box size — while the residue keeps falling, so buy the
+/// halo. The residue never reaches zero (a probe at any distance sees the wall)
+/// and at every pad it is 1 LSB, on GRASS texels where the dither flips, never on
+/// the rebuilt wall itself.
+///
+/// Do NOT raise this without re-checking [`LOCAL_REFRESH_MAX_FRACTION`]: one
+/// 6-wu pier already covers 16 % of the gym grid at pad 3, and a pad that pushes
+/// a single pier past the fraction cap silently disables the whole fast path.
+pub const REFRESH_PAD_SPACINGS: f32 = 3.0;
+
+// MEASURED RESIDUE (M2, review pass 2026-07-25 — the earlier "1 LSB, on grass
+// texels only" claim was wrong and is corrected here): a locally refreshed frame
+// differs from a fully re-baked one by 0.4-1.0% of pixels at 1 LSB, with a tail
+// up to ~23/255 on CONTOUR texels, where the posterize/AA quantizers amplify a
+// sub-LSB irradiance difference into a visible step. It varies run to run. So the
+// local path is right for INTERACTIVE dialing, and any capture that has to be
+// comparable — a golden, a clip, a before/after pair — must be taken from a boot
+// or a full rebuild (PROBE_LOCAL=0), never across a knob release.
+
+/// Lattice boxes for a LOCAL probe refresh over the dirty world AABBs `dirty`
+/// (the geometry a rebuild actually changed), each grown by
+/// [`REFRESH_PAD_SPACINGS`] spacings.
+///
+/// `None` = do a FULL bake instead, for either of the two reasons a local refresh
+/// must not be attempted: a dirty region misses the grid (nothing would be
+/// refreshed and the change would sit there stale), or the dirty set is too large
+/// to be worth it ([`LOCAL_REFRESH_MAX_FRACTION`] — the bake is both faster and
+/// exact everywhere past that point).
+///
+/// Overlapping boxes are merged into their bounding union, but ONLY when the
+/// union costs no more probes than the pair did (two L-arranged piers overlap in
+/// all three axes while their union covers the whole corner, so a blind merge
+/// can cost far more than the double-bake it saves). A probe baked twice is
+/// harmless — the refresh re-runs the SAME ray sequence, so sums and count both
+/// double and the estimate `sums·4π/count` is unchanged — it is only paid twice.
+pub fn refresh_boxes_for(origin: Vec3, spacing: f32, dims: [u32; 3], dirty: &[(Vec3, Vec3)]) -> Option<Vec<([u32; 3], [u32; 3])>> {
+    // An EMPTY dirty set is NOT "nothing to refresh" — it is "we do not know
+    // what moved", and carrying the old bank on that would adopt the previous
+    // scene's whole frozen GI with zero probes rebuilt. Decline it here, once,
+    // so neither backend has to remember (review finding, 2026-07-25).
+    if dirty.is_empty() {
+        return None;
+    }
+    let pad = spacing * REFRESH_PAD_SPACINGS;
+    let mut out: Vec<([u32; 3], [u32; 3])> = Vec::with_capacity(dirty.len());
+    for &(min, max) in dirty {
+        out.push(probe_box(origin, spacing, dims, min, max, pad)?);
+    }
+    let n = |b: &([u32; 3], [u32; 3])| (b.1[0] - b.0[0]) * (b.1[1] - b.0[1]) * (b.1[2] - b.0[2]);
+    // merge while a pair overlaps AND the union is not more expensive; each merge
+    // drops one box, so this terminates.
+    'merge: loop {
+        for i in 0..out.len() {
+            for j in i + 1..out.len() {
+                let (a, b) = (out[i], out[j]);
+                let overlap = (0..3).all(|k| a.0[k] < b.1[k] && b.0[k] < a.1[k]);
+                let u = ([0, 1, 2].map(|k| a.0[k].min(b.0[k])), [0, 1, 2].map(|k| a.1[k].max(b.1[k])));
+                if overlap && n(&u) <= n(&a) + n(&b) {
+                    out[i] = u;
+                    out.remove(j);
+                    continue 'merge;
+                }
+            }
+        }
+        break;
+    }
+    (probes_in(&out) as f32 <= (dims[0] * dims[1] * dims[2]) as f32 * LOCAL_REFRESH_MAX_FRACTION).then_some(out)
+}
+
+/// Probes covered by a set of lattice boxes (the local refresh's cost, for the
+/// backends' timing print). Overlaps count twice — that IS what gets baked.
+pub fn probes_in(boxes: &[([u32; 3], [u32; 3])]) -> u32 {
+    boxes.iter().map(|b| (b.1[0] - b.0[0]) * (b.1[1] - b.0[1]) * (b.1[2] - b.0[2])).sum()
+}
+
+/// Above this fraction of the grid, a local refresh costs MORE than a full bake,
+/// so the backends decline it (and the bake is exact everywhere — strictly
+/// better).
+///
+/// A refresh is not linear work: one thread per probe means a small dispatch
+/// cannot fill the GPU, so its rays cost far more each. Measured on the M2 Pro
+/// (9672 probes, 2048 rays × 2 banks, 2026-07-25), rays/s by dispatch width:
+/// 281 threads 1.4 M, 680 → 0.9 M, 1064 → 1.3 M, 1512 → 1.9 M, 9672 → 6.7 M —
+/// i.e. the whole grid as ONE box runs at 0.62 ms/probe, the same as the startup
+/// bake's 0.66, while a one-pier box runs at ~3 ms/probe. Forcing the bake's
+/// 20-rays-per-dispatch batch onto the small box changed nothing (3534 vs
+/// 3451 ms), which is how the cause was pinned on occupancy rather than dispatch
+/// count. So: below saturation a refreshed probe costs ~5× a baked one, and
+/// 9672 × 0.66 ms of bake buys about 2000 refreshed probes ≈ 1/5 of the grid.
+/// One re-knobbed crack-lab pier is 16 % (see [`REFRESH_PAD_SPACINGS`]); two
+/// dirty piers already pay more than the bake.
+pub const LOCAL_REFRESH_MAX_FRACTION: f32 = 0.2;
+
 /// Free-function core of [`ProbeGrid::dirty_probe_runs`] (see it for the
 /// contract) — the memory-layout view of [`probe_box`]: one contiguous `[lo,
 /// hi)` probe-index run per (y, z) row of the box (X is the fastest axis). The
@@ -319,6 +437,42 @@ mod tests {
         assert_eq!(box_probes, run_probes);
         // a miss returns None (the runs version returns empty)
         assert!(probe_box(g.origin, g.spacing, g.dims, Vec3::splat(-10.0), Vec3::splat(-9.0), 0.0).is_none());
+    }
+
+    /// The LOCAL-refresh box set: every dirty AABB grown by the shared pad,
+    /// overlaps merged only when the union is not more expensive, and both
+    /// veto paths (a region off the grid, a dirty set too big to pay for)
+    /// returning `None` so the caller rebakes instead of leaving probes stale.
+    #[test]
+    fn refresh_boxes_merge_only_when_the_union_is_cheaper() {
+        // gym-sized grid (33³ = 35937 probes) so the padded boxes below stay a
+        // small fraction of it — the fraction veto has its own case at the end.
+        let g = ProbeGrid::build(Vec3::ZERO, Vec3::splat(30.0), 1.0);
+        let pad = g.spacing * REFRESH_PAD_SPACINGS;
+        let one_box = |min, max| probe_box(g.origin, g.spacing, g.dims, min, max, pad).unwrap();
+        let boxes = |dirty: &[(Vec3, Vec3)]| refresh_boxes_for(g.origin, g.spacing, g.dims, dirty);
+        // one region → exactly probe_box with the shared pad
+        let one = boxes(&[(Vec3::ZERO, Vec3::ZERO)]).unwrap();
+        assert_eq!(one, vec![one_box(Vec3::ZERO, Vec3::ZERO)]);
+        // two coincident regions collapse to one box (the union IS either box)
+        let two = boxes(&[(Vec3::ZERO, Vec3::ZERO), (Vec3::ZERO, Vec3::ZERO)]).unwrap();
+        assert_eq!(two, one, "coincident dirty regions merge");
+        // a contained region merges into its container
+        let inner = boxes(&[(Vec3::ZERO, Vec3::splat(4.0)), (Vec3::ONE, Vec3::splat(2.0))]).unwrap();
+        assert_eq!(inner, vec![one_box(Vec3::ZERO, Vec3::splat(4.0))]);
+        // an L — two thin walls meeting at a corner. Their padded boxes overlap in
+        // all three axes, but the union is the whole corner block, so they stay
+        // apart: a double-baked probe is cheaper than filling the L's empty arm.
+        let arm_x = (Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0));
+        let arm_y = (Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 0.0));
+        let l = boxes(&[arm_x, arm_y]).unwrap();
+        assert_eq!(l.len(), 2, "an L must not merge into its bounding block");
+        assert!(probes_in(&l) < probes_in(&[one_box(Vec3::ZERO, Vec3::new(10.0, 10.0, 0.0))]), "…because the union costs more");
+        // a region off the grid vetoes the local path entirely
+        assert!(boxes(&[(Vec3::ZERO, Vec3::ZERO), (Vec3::splat(-50.0), Vec3::splat(-49.0))]).is_none());
+        // so does a dirty set past LOCAL_REFRESH_MAX_FRACTION (here: the whole grid)
+        assert!(boxes(&[(Vec3::ZERO, Vec3::splat(30.0))]).is_none(), "a level-sized dirty set must rebake, not refresh");
+        assert!(boxes(&[]).is_none(), "an empty dirty set means UNKNOWN, so it must decline to a full bake");
     }
 
     // ---- InstanceTable -------------------------------------------------------

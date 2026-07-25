@@ -9,7 +9,7 @@
 //! wall clock never advances the sim, and the rendered frame is a pure
 //! function of (scene, config, CMDS prefix).
 
-use crate::backend::{new_backend, FramePresent, Overlay, RenderBackend};
+use crate::backend::{new_backend, FramePresent, Overlay, ProbeRefresh, RenderBackend};
 use crate::capture::Harness;
 use crate::gym_loop::GymLoop;
 use crate::menu::MenuState;
@@ -113,6 +113,11 @@ pub struct Viewer {
     pub piers: Vec<crate::gym_scene::Pier>,
     /// Crack-lab state (per-pier aging knobs + selection) — see crack.rs.
     pub crack: crate::crack::CrackLab,
+    /// The wear family's per-surface EFFECT WORD, uniform for now (`WEAR=` env,
+    /// see crate::wear): the appearance dials that ride `Material.emissive[3]`.
+    /// Streamed post-build by `wear_stamp`; empty = every pier's word is 0.0,
+    /// i.e. the pre-wear image, bit for bit.
+    pub wear: crate::wear::Effect,
     /// Lamp NEE slots in slot order, with their authored base rgb — the
     /// scene's named point lights joined onto the backend's handles.
     pub light_keys: Vec<(LightKey, [f32; 3])>,
@@ -338,6 +343,7 @@ impl Viewer {
             gym: GymLoop::new(spec),
             piers: gym_meta.piers,
             crack,
+            wear: crate::wear::seed_from_env().unwrap_or_default(),
             harness: Harness::from_cfg(&cfg),
             rec: None,
             rec_jobs: Vec::new(),
@@ -375,6 +381,10 @@ impl Viewer {
         // crack path stamps piers inside `resolve` — so one pass here settles
         // every AA opt-in bit against the freshly built scene.
         r.aa_stamp();
+        // the wear family's per-surface effect word rides the same post-build
+        // live stream (never the pre-build scene: the probe-cache key hashes the
+        // material bytes — see crate::wear).
+        r.wear_stamp();
         // optional camera look-at override (world units), for framing captures
         if r.cfg.game.target.0.is_some() || r.cfg.game.target.1.is_some() {
             let t = Vec3::new(r.cfg.game.target.0.unwrap_or(r.view.target.x), 0.0, r.cfg.game.target.1.unwrap_or(r.view.target.z));
@@ -392,6 +402,10 @@ impl Viewer {
                 None => eprintln!("LOOK_SWITCH={name}: unknown preset — ignored"),
             }
         }
+        // CRACK_EDIT harness knob: replay a knob drag + release, so the headless
+        // path can measure and diff the crack-lab REBUILD (the owner's expensive
+        // interaction) instead of only a boot.
+        r.crack_edit_from_env();
         // CMDS replay prefix (deterministic) — runs LAST so the trace acts on
         // the fully seeded state.
         r.gym.run_cmds(&r.cfg);
@@ -424,6 +438,15 @@ impl Viewer {
     /// whose value IS the forced same-look rebuild (identity check); a
     /// future menu look row should guard on ptr::eq at its call site.
     pub fn apply_look(&mut self, look: &'static crate::look::Look) {
+        self.rebuild_in_look(look, ProbeRefresh::Full);
+    }
+
+    /// The rebuild body behind [`Self::apply_look`], with the GI half as a
+    /// parameter. A look switch / demo boot must rebake everything ([`ProbeRefresh::Full`]);
+    /// the crack-lab knob release passes the dirty pier AABBs
+    /// ([`ProbeRefresh::Local`]) because it changed nothing else in the level —
+    /// identical host work, half the wall clock (see `Viewer::crack_release`).
+    pub(crate) fn rebuild_in_look(&mut self, look: &'static crate::look::Look, refresh: ProbeRefresh) {
         let t0 = std::time::Instant::now();
         let (mut scene, meta) = crate::gym_scene::build_gym(&self.gym.spec, look, true);
         // re-arm the wall-smash rig against the FRESH meta (prim indices may
@@ -446,10 +469,11 @@ impl Viewer {
         let crack_seed = crate::crack::seed_from_env().or(self.cur_demo.and_then(|d| d.cracks));
         crate::crack::resolve(crack_seed, &mut self.crack, &self.piers, &mut scene, self.aa_scope.round() as i32);
         self.crack.active = self.cur_demo.and_then(|d| d.cracks).is_some();
-        unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };
+        unsafe { self.backend.rebuild_scene(&scene, &self.cfg, refresh) };
         self.light_keys = join_lamp_lights(&scene, self.backend.handles(), self.backend.light_count());
         self.scene = scene;
         self.aa_stamp(); // the rebuild minted clean materials: re-derive the AA scope
+        self.wear_stamp(); // …and re-stream the effect word onto them (crate::wear)
         // a look switch supersedes any in-flight demo morph + its per-frame env
         self.demo.cancel_morph();
         self.env_override = None;

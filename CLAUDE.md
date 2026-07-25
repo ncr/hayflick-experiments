@@ -126,6 +126,22 @@ dispatches on the radiance image is runtime semantics only the RTX box can
 confirm. First Vulkan session: `AA=0` must be byte-identical (its cross-run
 floor is zero) and `AA=0.8` must agree with Metal in character.
 
+**BLIND VULKAN (2026-07-25, the wear round):** three more items, all unrun on
+hardware. (1) `VulkanBackend::set_material_effect` — the effect-word streamer,
+written blind (it type-checks on macOS only by temporarily dropping main.rs's
+cfg gate). (2) The WHOLE Vulkan local-probe-refresh carry path
+(`SceneGpu::carry_probes` + `refresh_boxes_for`'s callers): its accept/decline
+thresholds are derived from M2 occupancy, and on the RTX a full bake is ~115 ms,
+so a 16%-of-grid local refresh may well be SLOWER there — first session must
+time `CRACK_EDIT="0.5,0.5,0.4,0.6,7"` with and without `PROBE_LOCAL=0` and
+record both numbers next to the M2 table. (3) `shade.comp`'s fresh-break and
+story-key reads (the MSL twins are the VERIFIED side this round — the blind side
+is INVERTED versus 2026-07-17/23, so do not assume the old direction). The
+discriminating check for the story key: `LEVEL="crack lab"
+CRACKS="0.9,0.7,0.6,0.4" WINDOW=1280x800 ZOOM=1.6 TARGET_X=7.3 TARGET_Z=3.8` —
+the three panels of the east facade must share ONE damage pattern that continues
+across the window jambs; per-panel islands mean the story key never arrived.
+
 **Open Metal duty (2026-07-17):** the phase-3 wall-smash demo
 (`LEVEL="wall smash"`, demos/viewer/phys-spike/gym_scene edits) is
 host-side only — no shader or backend code touched — but was built and
@@ -156,10 +172,44 @@ clustering along the seam (halo). Rounds 7-8 are host-side only — no new
 shader debt; the only blind MSL edit left in that block is the
 pad-bit-5/-6 `show`-suppression branch (+ the crazeG chip line), and a
 2026-07-25 headless Mac boot of `LEVEL="crack lab"` renders it right
-(the knob panel's click/drag still wants a windowed pass). A
-knob-release rebuild (`Viewer::crack_release` → apply_look) measures
-~6.5 s on the M2 vs ~115 ms on the RTX — the crack lab's edit loop is
-probe-bake bound on the Mac.
+(the knob panel's click/drag still wants a windowed pass).
+The chalk core is the FRESH BREAK since 2026-07-25 (task-3 step 3): what
+the damage exposed is not the weathered skin, so the shade pass gates the
+stains and the fine glaze web off it (`float skin`, keyed on MATTE bit 4
++ nonzero knob bits — no new flag bit; pinned by
+`crack_geom::matte_plus_knobs_is_only_the_chalk_core`) and
+`crack_geom::fresh_body` mints it as pale NEUTRAL unglazed body instead
+of a 4 %-darker tint. **The blind side is INVERTED for this one:** the
+MSL twin was verified here on Metal, the GLSL twin compiles (build.rs
+runs glslangValidator) but has never RUN — a first Vulkan session should
+boot `LEVEL="crack lab" CRACKS="1.0,0.8,0.7,1.0"` and confirm the crater
+interiors read pale-neutral while the stain streaks stop at the lip. A
+knob-release rebuild (`Viewer::crack_release`) measured ~6.5 s on the M2
+vs ~115 ms on the RTX; since 2026-07-25 it takes the LOCAL probe path
+(`backend::ProbeRefresh::Local` — carry the baked banks across the scene
+swap, re-bake only the probes around the piers whose per-pier
+`crack_geom::signatures` moved) and costs ~3.3 s on the M2. Only 2×
+because the refresh is latency-bound (one thread per probe × 4096 serial
+rays), not because of the probe count — the numbers and the two constants
+they set (`REFRESH_PAD_SPACINGS`, `LOCAL_REFRESH_MAX_FRACTION`) are in
+`rt_probe::gpu_scene` and docs/CRACKS_PLAN_2026-07-25.md. Harness:
+`CRACK_EDIT=age,cracks,depth,chip[,pier]` replays a panel drag + release
+after boot; `PROBE_LOCAL=0` forces the old full rebake for the A/B.
+ONE WALL, ONE STORY since 2026-07-25 (task-3 step 4): aging is seeded per
+WALL RUN, not per panel. `wear::story_key` hashes the pier's authored run
+(`Pier::run_lo/run_hi`) into `Material.base_color[3]`, `crack::resolve`
+stamps it before the geometry pass, and BOTH the host damage field
+(`crack_geom::CrazeCfg`) and the shade pass (`float story =
+m.baseColor.a`) seed off that one f32 — so a damage patch crosses a
+window opening instead of restarting at the jamb (pinned as an equality
+by `crack_geom::piers_of_one_run_share_a_damage_field_but_not_a_fault_lattice`),
+and chalk cores inherit it for free. The structural FAULT lattice stays
+per panel (`seg`) — a shared fault seed would crack a facade at one
+repeated position — as do the depth/chip knobs; `crack::run_ramp` puts
+only age/cracks on a per-run gradient, so a facade has a bad end and a
+clean end. The two `_pad`/alpha budgets are documented in one place:
+`crates/rt-viewer/src/wear.rs`. The GLSL twin's one-line `story` read is
+blind (same inverted side as step 3, same crack-lab boot check).
 
 ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
 branching, irregular — not straight lines; two kinds: the coarse one and

@@ -156,7 +156,9 @@ fn hash13(p: Vec3) -> f32 {
     p += Vec3::splat(p.dot(Vec3::new(p.y, p.z, p.x) + Vec3::splat(33.33)));
     fr((p.x + p.y) * p.z)
 }
-fn vnoise(x: Vec3) -> f32 {
+/// Shared with `crack::run_ramp` — the age ramp along a facade must be the same
+/// smooth field the damage patches are made of, not a second kind of noise.
+pub(crate) fn vnoise(x: Vec3) -> f32 {
     let i = x.floor();
     let f = x - i;
     let f = f * f * (Vec3::splat(3.0) - 2.0 * f);
@@ -291,8 +293,8 @@ struct Frag {
 /// painted stains sit in.
 struct CrazeCfg {
     freq: f32,
-    seed: f32,     // cell lattice seed (shader: seg + 5)
-    dmg_seed: f32, // damage field seed (shader: seg * 7 + 3 — NOT the cell seed)
+    seed: f32,     // cell lattice seed (shader: story + 5)
+    dmg_seed: f32, // damage field seed (shader: story * 7 + 3 — NOT the cell seed)
     cover: f32,
     d_t: f32,
     chip: f32,
@@ -320,11 +322,16 @@ struct CrazeCfg {
 
 impl CrazeCfg {
     /// Build a pier's craze config from bucketed knobs + policy params.
-    fn new(seg: f32, k: [f32; 4], run_x: bool, thick: f32, faults: &[Fault], par: [f32; PARAMS_MAX]) -> CrazeCfg {
+    ///
+    /// `story` is the RUN's key ([`story_of`]), not the panel's: the damage field
+    /// and the craze lattices are functions of world position plus this seed, so
+    /// sharing it is exactly what makes a patch cross a panel joint instead of
+    /// restarting at it (owner catalogue 2026-07-25, "one wall, one story").
+    fn new(story: f32, k: [f32; 4], run_x: bool, thick: f32, faults: &[Fault], par: [f32; PARAMS_MAX]) -> CrazeCfg {
         CrazeCfg {
             freq: mixf(1.1, 3.4, k[1]),
-            seed: seg + 5.0,
-            dmg_seed: seg * 7.0 + 3.0,
+            seed: story + 5.0,
+            dmg_seed: story * 7.0 + 3.0,
             cover: mixf(0.45, 0.9, k[0]),
             d_t: mixf(0.74, 0.55, k[0]),
             chip: k[3],
@@ -1455,16 +1462,48 @@ fn emit_frags(
     }
 }
 
-/// Mint the pier's matte chalk core material (near-porcelain: groove
-/// floors and recesses read as the wall's body, a whisper off the glaze —
-/// never a dark painted band). Carries the pier's knob bits + GEO/CRAZE (stains and
-/// the fine web keep painting inside grooves and recesses) but never SEL.
+/// How much brighter the unglazed body is than the glaze's brightest channel.
+/// 3 % is the most that still leaves headroom under 1.0 on polana's near-white
+/// wall (peak 0.965 linear → 0.994): a crater floor at albedo 1.0 is literally
+/// white paint, which is this effect's named failure mode.
+const FRESH_LIFT: f32 = 1.03;
+
+/// The freshly EXPOSED body colour, derived from the pier's own glaze — what
+/// damage UNCOVERS, as against the weathered skin it took away (owner
+/// catalogue 2026-07-25, "fresh break vs weathered skin").
+///
+/// Derived, not tuned: what a break exposes is unglazed porcelain, so it is the
+/// glaze DESATURATED to its own brightest channel — polana's wall is a warm
+/// off-white (0.965 / 0.947 / 0.913 linear), so dropping the warm cast IS most
+/// of the paleness — then lifted by [`FRESH_LIFT`] and clamped at 1.
+///
+/// It replaces a 0.97/0.96/0.94 tint that left the core 3.9 % DARKER than the
+/// wall in luma: invisible at 704x464 and the wrong SIGN — a crater floor read
+/// as a faint dark decal instead of lost material. This is +9.0 % in luma
+/// against that old core and +4.8 % against the glaze, and neutral against a
+/// warm wall, which is the second (hue) cue. Host-side rather than shader-side
+/// on purpose: the probe bake reads `baseColor` too, so a paler crater floor
+/// bounces correctly instead of only looking paler.
+///
+/// Alpha rides through verbatim — `base_color[3]` is the facade story key
+/// ([`crate::wear`]), which a core must inherit from its pier.
+fn fresh_body(body: [f32; 4]) -> [f32; 4] {
+    let pale = (body[0].max(body[1]).max(body[2]) * FRESH_LIFT).min(1.0);
+    [pale, pale, pale, body[3]]
+}
+
+/// Mint the pier's matte chalk core material: the surface the damage EXPOSED —
+/// groove floors, crater floors, the inset faces behind the veneer. Pale
+/// unglazed body ([`fresh_body`]), dead matte (bit 4 kills the sheen), and
+/// carrying the pier's knob bits + GEO/CRAZE — the shade pass needs the knobs
+/// to know how aged the WALL is, and reads bit 4 + nonzero knobs as "this is
+/// the fresh break": the skin's stains and fine web stop at the lip. Never SEL.
 /// Live knob drags leave this snapshot stale until the release rebuild —
 /// sub-bucket drift, imperceptible.
 fn chalk_material(scene: &mut Scene, mid: i32) -> i32 {
     let body = scene.materials[mid as usize];
     let mut core = body;
-    core.base_color = [body.base_color[0] * 0.97, body.base_color[1] * 0.96, body.base_color[2] * 0.94, body.base_color[3]];
+    core.base_color = fresh_body(body.base_color);
     core.roughness = 1.0;
     core._pad = (body._pad & !SEL_BIT_I) | 4 | GEO_BIT | CRAZE_BIT;
     scene.materials.push(core);
@@ -1729,9 +1768,9 @@ fn emit_prism(
 /// Returns false (scene untouched) when nothing opened — no groove, no live
 /// or spalled plate: the pier keeps its box and its paint.
 fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> i32 {
-    let (mid, seg) = seg_of(scene, pier);
+    let (mid, _) = seg_of(scene, pier);
     let fr = Frame::of(pier);
-    let cfg = CrazeCfg::new(seg, k, fr.run_x, fr.t1 - fr.t0, &[], par);
+    let cfg = CrazeCfg::new(story_of(scene, pier), k, fr.run_x, fr.t1 - fr.t0, &[], par);
     let opened = StdCell::new(false);
     let frags = policy_frags(&cfg, policy, fr.u0, fr.u1, fr.y0, fr.y1, &opened);
     if !opened.get() {
@@ -1745,8 +1784,7 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32
     };
     // add_box_world mints the core its own material; restamp it as the chalk
     let body = scene.materials[mid as usize];
-    let core_color = [body.base_color[0] * 0.97, body.base_color[1] * 0.96, body.base_color[2] * 0.94, body.base_color[3]];
-    scene.add_box_world(blo, bhi, core_color, [0.0; 4], 1.0, 0.0);
+    scene.add_box_world(blo, bhi, fresh_body(body.base_color), [0.0; 4], 1.0, 0.0);
     let core_mid = scene.primitives.last().unwrap().material_id as usize;
     scene.materials[core_mid]._pad = (body._pad & !SEL_BIT_I) | 4 | GEO_BIT | CRAZE_BIT;
     // veneer fragments, both big faces — ONE prim sharing the pier material
@@ -1768,13 +1806,15 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32
 /// policy veneer clipped against the fault paths — so the small-crack
 /// pattern rides the broken wall and clusters along the seam (halo).
 fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> i32 {
-    let (mid, seg) = seg_of(scene, pier);
+    let (mid, _) = seg_of(scene, pier);
     let fr = Frame::of(pier);
     let (u0, u1, t0, t1, y0, y1) = (fr.u0, fr.u1, fr.t0, fr.t1, fr.y0, fr.y1);
     let w = fr.w();
     let wn = fr.wn();
 
-    let cfg = CrazeCfg::new(seg, bucket(k), fr.run_x, t1 - t0, faults, par);
+    // the veneer/damage layer takes the RUN's story; the faults handed in came
+    // from the PANEL's own seed (`faults_for`) — see `seg_of`
+    let cfg = CrazeCfg::new(story_of(scene, pier), bucket(k), fr.run_x, t1 - t0, faults, par);
     // the break, grown: jagged trunks (THROUGH — they separate the wall) plus
     // their forks (surface cracks that groove the veneer only)
     let all_bolts = fault_bolts(faults, &fr, bucket(k), cfg.px1);
@@ -1881,9 +1921,27 @@ fn bucket(k: [f32; 4]) -> [f32; 4] {
 
 // ---- the public surface ----------------------------------------------------
 
+/// The pier's material + its PER-PANEL seed — the structural FAULT lattice's,
+/// and only that. Mirrors the shade pass's `float(h.mat & 255) * 0.618`.
+///
+/// Per panel and not per run on purpose (owner risk on record, 2026-07-25):
+/// sharing the fault seed across a facade would roll the 6-wu settlement
+/// lattice once for the whole wall, and three panels cracking off the same roll
+/// reads as a repeated stamp. Depth and chip stay per panel for the same
+/// reason. Everything that is true of the whole FACADE — the damage field, the
+/// craze lattices, the age ramp — takes [`story_of`] instead.
 fn seg_of(scene: &Scene, pier: &Pier) -> (i32, f32) {
     let mid = scene.primitives[pier.prim].material_id;
     (mid, (mid & 255) as f32 * 0.618)
+}
+
+/// The pier's facade STORY KEY, read back from where `wear::stamp_story` put it
+/// (`base_color[3]`) rather than recomputed — the host and the shade pass must
+/// seed the damage field off the exact same f32 bits, and the way to guarantee
+/// that is to have ONE writer and two readers.
+fn story_of(scene: &Scene, pier: &Pier) -> f32 {
+    let mid = scene.primitives[pier.prim].material_id as usize;
+    scene.materials[mid].base_color[3]
 }
 
 fn faults_for(scene: &Scene, pier: &Pier, k: [f32; 4]) -> Vec<Fault> {
@@ -1920,20 +1978,26 @@ pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], pol
     cores
 }
 
-/// Geometry signature of a knob state: which faults exist (and their
+/// PER-PIER geometry signature of a knob state: which faults exist (and their
 /// quantized widths/steps) plus the craze bucket + policy + the active
 /// policy's native params — the veneer rides FAULTED piers too, so all of
 /// it signs for every knobbed pier. `Viewer::crack_release` rebuilds only
 /// when a slider drag (or a policy click) actually changed this —
 /// dial-within-a-bucket stays live-material cheap. (Params sign RAW: they
 /// are geometry-only, so any param change means a rebuild.)
-pub fn signature(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut mixh = |x: u64| {
-        h ^= x;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    };
+///
+/// Per pier and not one whole-state hash because the rebuild needs to know
+/// WHICH piers moved: a knob drag changes exactly one, and the frozen GI can
+/// then be refreshed around that pier instead of rebaked whole (~6.5 s on the
+/// M2 — see `ProbeRefresh::Local`).
+pub fn signatures(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]]) -> Vec<u64> {
+    let mut out = Vec::with_capacity(piers.len());
     for (i, (pier, k)) in piers.iter().zip(knobs).enumerate() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mixh = |x: u64| {
+            h ^= x;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        };
         let faults = faults_for(scene, pier, *k);
         for f in &faults {
             mixh(i as u64);
@@ -1947,6 +2011,10 @@ pub fn signature(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[
             let policy = policies.get(i).copied().unwrap_or(0);
             mixh(i as u64 | 0x8000_0000);
             mixh(policy as u64 + 0x9e37);
+            // the facade STORY seeds the whole veneer + damage field, so it signs
+            // like a knob: if it ever becomes something the owner can change, the
+            // release gate already rebuilds the piers it moved
+            mixh(story_of(scene, pier).to_bits() as u64);
             for v in bucket(*k) {
                 mixh(v.to_bits() as u64);
             }
@@ -1954,8 +2022,9 @@ pub fn signature(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[
                 mixh(v.to_bits() as u64);
             }
         }
+        out.push(h);
     }
-    h
+    out
 }
 
 #[cfg(test)]
@@ -2031,10 +2100,31 @@ mod tests {
         apply_geometry(&mut scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp);
         assert_eq!(scene.primitives.len(), before, "pristine pier untouched");
         assert_eq!(scene.materials[scene.primitives[pier.prim].material_id as usize]._pad & GEO_BIT, 0);
-        let s0 = signature(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp);
-        let s1 = signature(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp);
-        assert_eq!(s0, signature(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp), "deterministic");
+        let s0 = signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp);
+        let s1 = signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp);
+        assert_eq!(s0, signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp), "deterministic");
         assert_ne!(s0, s1, "fault appearance changes the signature");
+    }
+
+    /// THE DIRTY-SET PIN (2026-07-25, task 3 step 2): a knob drag on one pier
+    /// must move ONLY that pier's signature. `Viewer::crack_release` diffs this
+    /// vector to decide which probe boxes to re-bake, so a signature that
+    /// leaked across piers would either rebake the whole grid (slow) or — worse
+    /// — leave a changed wall lit by probes that never saw it.
+    #[test]
+    fn a_knob_drag_dirties_exactly_one_pier() {
+        let mut scene = Scene::default();
+        let piers = [pier_at(&mut scene, 1.0), pier_at(&mut scene, 9.0)];
+        let pol = [0, 0];
+        let par = [param_defaults(0); 2];
+        let before = signatures(&scene, &piers, &[CRAZY, CRAZY], &pol, &par);
+        let after = signatures(&scene, &piers, &[CRAZY, HOT], &pol, &par);
+        assert_eq!(before[0], after[0], "the untouched pier keeps its signature");
+        assert_ne!(before[1], after[1], "the dragged pier's signature moves");
+        // and a policy click is the same story (the panel's pattern row)
+        let after = signatures(&scene, &piers, &[CRAZY, CRAZY], &[0, 1], &par);
+        assert_eq!(before[0], after[0], "…for a pattern click too");
+        assert_ne!(before[1], after[1]);
     }
 
     /// The round-6 bug: cycling the pattern on a FAULTED pier must change
@@ -2046,7 +2136,7 @@ mod tests {
         let mut scene = Scene::default();
         let pier = faulting_pier(&mut scene);
         let par = [[0.5; PARAMS_MAX]];
-        let sigs: Vec<u64> = (0..POLICIES.len() as u8).map(|p| signature(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par)).collect();
+        let sigs: Vec<Vec<u64>> = (0..POLICIES.len() as u8).map(|p| signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par)).collect();
         let mut uniq = sigs.clone();
         uniq.dedup();
         assert_eq!(uniq.len(), sigs.len(), "each policy signs distinctly on a faulted pier");
@@ -2062,7 +2152,7 @@ mod tests {
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
             apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par]);
-            let sig = signature(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par]);
+            let sig = signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par]);
             (scene.primitives[before + 1].vertex_count, sig)
         };
         let (v_few, s_few) = mk([0.05, 0.9, 0.3]);
@@ -2117,10 +2207,116 @@ mod tests {
             let veneer = scene.primitives[before + 1];
             assert!(veneer.vertex_count > 12, "{p}: veneer actually fragmented");
             assert_in_box(&scene, before, &pier, p);
-            sigs.push(signature(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]]));
+            sigs.push(signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]]));
         }
         sigs.dedup();
         assert_eq!(sigs.len(), POLICIES.len(), "policies must sign distinctly");
+    }
+
+    /// THE FRESH-BREAK DISCRIMINATOR (owner catalogue 2026-07-25), pinned over
+    /// the WHOLE gym: the shade pass decides "this surface is a fresh break,
+    /// suppress the skin's stains and fine web" from MATTE (`_pad` bit 4) plus
+    /// nonzero knob bits, because the last free flag bit is worth more
+    /// elsewhere. That is only sound if nothing ELSE in a real scene carries
+    /// both — `mark_matte` also marks the grass floor and every tuft, and the
+    /// crack lab stamps knobs on every pier. A future generator that mints a
+    /// matte material for a knobbed pier (rust-stained basin chalk, say) breaks
+    /// the read for stains and the fine web, and it will trip here first.
+    #[test]
+    fn matte_plus_knobs_is_only_the_chalk_core() {
+        let spec = house_game::gym::sim::gym_level();
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        // the crack lab's own boot state: every pier knobbed (demos.rs), the
+        // knob bits stamped, then the geometry pass mints the chalk cores
+        let knobs = vec![[0.8, 0.8, 0.7, 0.9]; meta.piers.len()];
+        let policy = vec![0u8; meta.piers.len()];
+        let par = vec![param_defaults(0); meta.piers.len()];
+        crate::wear::stamp_story(&mut scene, &meta.piers); // boot order: the story seeds the field
+        crate::crack::stamp_all(&mut scene, &meta.piers, &knobs, Some(0));
+        let cores = apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par);
+        // the CORE inherits its facade's story for free (chalk_material copies
+        // base_color, fresh_body passes alpha through) — the surface a crack
+        // exposed belongs to the same wall as the skin that was over it
+        for (pier, core) in meta.piers.iter().zip(&cores).filter(|(_, c)| **c >= 0) {
+            let story = story_of(&scene, pier);
+            assert_eq!(scene.materials[*core as usize].base_color[3], story, "the chalk core must inherit the pier's story key");
+            assert_eq!(story, crate::wear::story_key(pier.run_lo, pier.run_hi));
+        }
+        let mut expect: Vec<usize> = cores.iter().filter(|c| **c >= 0).map(|c| *c as usize).collect();
+        expect.sort_unstable();
+        assert!(expect.len() > 8, "the crack lab must actually have cores to pin ({})", expect.len());
+        let got: Vec<usize> = (0..scene.materials.len()).filter(|m| scene.materials[*m]._pad & 4 != 0 && scene.materials[*m]._pad >> 8 != 0).collect();
+        assert_eq!(got, expect, "matte + knobbed must be exactly the chalk cores");
+        // and the grass IS matte (so the test is not passing because nothing is)
+        assert!(
+            scene.materials.iter().any(|m| m._pad & 4 != 0 && m._pad >> 8 == 0),
+            "the gym's matte greens must still be present, unknobbed"
+        );
+    }
+
+    /// ONE WALL, ONE STORY (owner catalogue 2026-07-25) as an EQUALITY: two
+    /// piers of one authored run share ONE damage field — not a similar one, the
+    /// SAME function of world position — which is what makes a patch cross a
+    /// window opening instead of restarting at the jamb. Sampled right across a
+    /// real joint of the gym's own facade, because the whole defect was that the
+    /// pattern reset exactly there.
+    ///
+    /// The other half of the split is pinned here too: the PANEL seeds (the
+    /// structural fault lattice) must stay different, or a facade cracks at one
+    /// repeated position — the owner risk on record for this effect.
+    #[test]
+    fn piers_of_one_run_share_a_damage_field_but_not_a_fault_lattice() {
+        let spec = house_game::gym::sim::gym_level();
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        crate::wear::stamp_story(&mut scene, &meta.piers);
+        let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
+        // two piers of one run (a facade with a window between them), plus one
+        // from a different run as the negative control
+        let (a, b) = meta
+            .piers
+            .iter()
+            .enumerate()
+            .find_map(|(i, p)| meta.piers[i + 1..].iter().find(|q| rect(q) == rect(p)).map(|q| (p, q)))
+            .expect("the gym's facades are cut into several piers");
+        let c = meta.piers.iter().find(|p| rect(p) != rect(a)).expect("the gym has more than one run");
+        let k = [0.6, 0.5, 0.55, 0.2];
+        let cfg = |p: &Pier| {
+            let fr = Frame::of(p);
+            CrazeCfg::new(story_of(&scene, p), k, fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0))
+        };
+        let (ca, cb, cc) = (cfg(a), cfg(b), cfg(c));
+        // sample ACROSS the joint: from inside pier a, through the opening, into b
+        let fr = Frame::of(a);
+        let (u0, u1) = (fr.u0 - 0.5, Frame::of(b).u1 + 0.5);
+        let mut differs_from_other_run = false;
+        for i in 0..=40 {
+            let u = mixf(u0, u1, i as f32 / 40.0);
+            for j in 0..=8 {
+                let y = mixf(fr.y0, fr.y1, j as f32 / 8.0);
+                assert_eq!(ca.dmg(u, y), cb.dmg(u, y), "one run, ONE damage field (u={u}, y={y})");
+                assert_eq!(ca.zone(u, y), cb.zone(u, y), "…so the craze zone crosses the joint too");
+                differs_from_other_run |= cc.dmg(u, y) != ca.dmg(u, y);
+            }
+        }
+        assert!(differs_from_other_run, "a different run must tell a different story");
+        assert_ne!(seg_of(&scene, a).1, seg_of(&scene, b).1, "the FAULT seed stays per panel");
+    }
+
+    /// The exposed body is PALER than the glaze and neutral — the old core was
+    /// 3.9 % darker, which read as a dark decal instead of lost material. Pins
+    /// the sign and the clamp (albedo 1.0 would be white paint), not the exact
+    /// value.
+    #[test]
+    fn fresh_body_is_paler_and_neutral_than_the_glaze() {
+        let glaze = [0.9647, 0.9473, 0.9131, 0.5];
+        let f = fresh_body(glaze);
+        let luma = |c: [f32; 4]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        assert!(luma(f) > luma(glaze) * 1.03, "the break must read PALER than the skin: {} vs {}", luma(f), luma(glaze));
+        assert!(f[0] < 1.0 && f[0] == f[1] && f[1] == f[2], "neutral, and a shade under white: {f:?}");
+        assert_eq!(f[3], glaze[3], "the story key (base_color.w) rides through");
+        // a dark wall stays dark — the lift is relative, so no look can blow out
+        let dark = fresh_body([0.2, 0.18, 0.15, 1.0]);
+        assert!(dark[0] < 0.25, "a dark body must not jump to white: {dark:?}");
     }
 
     /// The depth knob spans the whole slider: bucketed depth steps keep

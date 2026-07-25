@@ -616,9 +616,9 @@ void main(){
   // knobs skip the whole block, so untouched scenes render bit-identically.
   //
   // Aging is HETEROGENEOUS (owner, 2026-07-23: uniform crazing reads fake).
-  // Three layers, all pure functions of world position + the segment id
-  // (h.mat — materials are per-pier 1:1, so it doubles as the seed that
-  // keeps parallel walls from sharing one pattern):
+  // Three layers, all pure functions of world position + a seed — the RUN's
+  // story key for everything true of the whole facade, the panel's material id
+  // for the structural fault (see the two-seed note below):
   //  - a macro DAMAGE FIELD (low-freq fbm patches, damp rising at wall
   //    bases) gates cracks, crazing, chips and stains alike; AGE widens the
   //    patch threshold, so damage GROWS from the worst spots outward and a
@@ -645,7 +645,44 @@ void main(){
       float cDen = float((kb >> 14) & 63u) * (1.0 / 63.0);
       float cDep = float((kb >> 20) & 63u) * (1.0 / 63.0);
       float cChp = float((kb >> 26) & 63u) * (1.0 / 63.0);
-      float seg = float(h.mat & 255) * 0.618; // per-segment seed
+      // ONE WALL, ONE STORY (owner catalogue 2026-07-25) — TWO seeds, not one:
+      //  - `seg` is the PANEL's (its own material id) and now seeds ONLY the
+      //    structural fault lattice. Per panel on purpose: a facade whose
+      //    panels all rolled the same 6-wu settlement lattice would crack at
+      //    one repeated position, which is the owner risk on record.
+      //  - `story` is the RUN's — the authored wall slab this pier was cut out
+      //    of — hashed HOST-side (crack_geom's writer is wear::story_key) into
+      //    baseColor.a and read RAW here: no unpack, and no host/shader float
+      //    mirror for this term at all, which is one fewer than the seg it
+      //    replaces. Everything that is a function of WORLD position plus a
+      //    seed takes it — the macro damage field and both craze lattices — so
+      //    a damage patch crosses a panel joint instead of restarting at it,
+      //    and 12 piers of one building stop reading as 12 aged-alone slabs.
+      //    A chalk core inherits the key for free (chalk_material copies
+      //    base_color), so a groove floor belongs to its facade too.
+      float seg = float(h.mat & 255) * 0.618;
+      float story = m.baseColor.a;
+      // FRESH BREAK vs WEATHERED SKIN (owner catalogue 2026-07-25): the matte
+      // chalk CORE is the surface the damage EXPOSED — groove floors, the
+      // floors of spalled craters, the inset faces behind the veneer. The
+      // skin's own history (tea stains, the fine glaze web) belongs to the
+      // material that WAS there, so it must stop dead at the lip instead of
+      // running through the hole — that is what made a crater read as a decal.
+      // Identified with NO new flag bit: MATTE (bit 4) together with nonzero
+      // knob bits is unique to the core — gym_scene::mark_matte only ever
+      // marks grass, which is never knobbed, and a pier is glazed porcelain,
+      // never matte (pinned over the whole gym by crack_geom's
+      // matte_plus_knobs_is_only_the_chalk_core). `skin` is the WEATHERED
+      // fraction: 1 = the original surface, 0 = freshly broken body; the EPOCH
+      // dial (wear.rs lane 0) is what turns it into a continuum later, so old
+      // craters can stain again. The exposed body's paler, neutral albedo is
+      // minted host-side (crack_geom::fresh_body — the probe bake must see it
+      // too) and bit 4 already kills its sheen. Painted chip patches need no
+      // gate here: crazeG below zeroes chipM on every core. The CONTACT GRIME
+      // term further down stays LIVE on the core deliberately — a perfectly
+      // clean crater reads as spilled white paint, and AO is what lets a deep
+      // one darken with its depth.
+      float skin = (kb & 4u) != 0u ? 0.0 : 1.0;
       vec3 an = abs(n);
       bool wallF = an.y <= 0.5;
       vec2 cuv = an.x > 0.5 ? wpos.zy : (an.y > 0.5 ? wpos.xz : wpos.xy);
@@ -661,7 +698,7 @@ void main(){
       // even age=1 keeps most of the face clean: stains reach widest,
       // crazing needs solid damage, the fine web only the worst cores.
       float rise = wallF ? 1.0 - smoothstep(0.10, 1.0, cuv.y) : 0.0;
-      float dmgN = fbm(vec3(cuv * vec2(0.45, 0.7), seg * 7.0 + 3.0)) + 0.16 * rise;
+      float dmgN = fbm(vec3(cuv * vec2(0.45, 0.7), story * 7.0 + 3.0)) + 0.16 * rise;
       float dT = mix(0.74, 0.55, cAge);
       float stainW = smoothstep(dT - 0.14, dT + 0.02, dmgN); // stains + chips
       float fineG = smoothstep(dT + 0.08, dT + 0.14, dmgN);  // fine web
@@ -719,7 +756,7 @@ void main(){
       float freqC = mix(1.1, 3.4, cDen);         // cells per wu
       float wdt = mix(0.02, 0.05, cDep) * freqC; // line half-width (cell units)
       vec2 site; float cellH;
-      float edP = crackEdge(cuvP * freqC, seg + 5.0, site, cellH);
+      float edP = crackEdge(cuvP * freqC, story + 5.0, site, cellH);
       // cells craze only where SOLIDLY damaged, or in the fault's fracture
       // zone (secondary cracks branching off the big one); age+density set
       // how many cells inside a zone actually let go
@@ -732,10 +769,11 @@ void main(){
       // + stains + fine web + spall chips hugging the lips.
       if ((kb & (32u | 64u)) != 0u) show = 0.0;
       float lineP = (1.0 - smoothstep(0.0, wdt, edP)) * show;
-      // finer subdividing web only in the WORST patches
+      // finer subdividing web only in the WORST patches — and only on SKIN:
+      // the fine web is glaze crazing, so it cannot exist on a fresh break
       vec2 siteF; float cellF;
-      float edF = crackEdge(cuvP * freqC * 2.7 + 31.0, seg + 9.0, siteF, cellF);
-      float fineW = (1.0 - smoothstep(0.0, wdt * 0.7, edF)) * step(cellF, cAge * 0.9) * fineG;
+      float edF = crackEdge(cuvP * freqC * 2.7 + 31.0, story + 9.0, siteF, cellF);
+      float fineW = (1.0 - smoothstep(0.0, wdt * 0.7, edF)) * step(cellF, cAge * 0.9) * fineG * skin;
       float crack = max(max(lineP, fineW * 0.6 * smoothstep(0.15, 0.7, cAge)), mCore);
       albedo *= 1.0 - crack * (0.30 + 0.55 * cDep); // groove floor darkens
       albedo *= 1.0 - mCore * 0.55;                 // the fault core reads DEEP
@@ -749,10 +787,12 @@ void main(){
       s3 -= n * dot(s3, n);
       n = normalize(n + s3);
       // age: tea-stain blotches inside damaged patches + a stain halo
-      // bleeding out of the cracks (the fault's water track stains hardest)
+      // bleeding out of the cracks (the fault's water track stains hardest).
+      // `skin` gates the whole term: years of runoff stained the surface that
+      // spalled AWAY, so the streaks terminate at the crater lip.
       float stain = fbm(wpos * 0.9 + 31.0);
       float halo = max((1.0 - smoothstep(0.0, wdt * 5.0, edP)) * show, mHalo * 0.85);
-      float sAmt = cAge * clamp(0.55 * smoothstep(0.45, 0.85, stain) * (0.20 + 0.80 * stainW) + 0.35 * halo, 0.0, 1.0);
+      float sAmt = skin * cAge * clamp(0.55 * smoothstep(0.45, 0.85, stain) * (0.20 + 0.80 * stainW) + 0.35 * halo, 0.0, 1.0);
       albedo = mix(albedo, albedo * vec3(0.78, 0.70, 0.58), sAmt);
       // chip: chalky spall patches — glaze gone, matte body shows; clustered
       // in the damage patches and biting the fault's lips, never uniform

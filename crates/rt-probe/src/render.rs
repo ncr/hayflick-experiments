@@ -699,7 +699,9 @@ impl SceneGpu {
         // bank 1 full — hang off, zeroed until bake_probes fills them).
         let grid = crate::gpu_scene::ProbeGrid::build(scene.min, scene.max, probe_spacing);
         let probe_count = grid.count;
-        let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        // TRANSFER_SRC as well: a LOCAL-refresh rebuild copies the previous
+        // scene's baked banks into the fresh buffer (see `carry_probes`).
+        let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
         Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), roll_box: None, roll_frames: 0, roll_ray: 0, roll_prime: false, roll_n: 256, roll_k: 8, probes_baked: false })
@@ -879,6 +881,48 @@ impl SceneGpu {
         }
         self.probes_baked = true;
         println!("probes: baked {} rays x {} probes x 2 light banks in {:.0} ms", rays_total, self.probe_count, t.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// LOCAL-refresh probe carry (Vulkan twin of the `ProbeRefresh::Local` arm of
+    /// `MetalBackend::rebuild_scene_impl`): copy `old`'s baked banks into this
+    /// freshly built scene's probe buffer and re-bake only the probes around the
+    /// dirty world AABBs, instead of baking the whole grid. Used by a rebuild that
+    /// changed geometry only inside those AABBs (the crack-lab knob release).
+    ///
+    /// False = nothing was carried and the caller must bake: no bake to carry, the
+    /// grids differ (the grid is DERIVED from the scene bounds, so moved bounds
+    /// move every probe), a dirty region misses the grid, or the dirty set is big
+    /// enough that refreshing costs more than baking
+    /// ([`crate::gpu_scene::LOCAL_REFRESH_MAX_FRACTION`]). A stale probe must
+    /// never survive a rebuild, so every uncertain case pays the bake.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn carry_probes(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env: &crate::scene::EnvBlock, old: &SceneGpu, dirty: &[(Vec3, Vec3)], rays_total: i32) -> bool {
+        if !old.probes_baked {
+            return false; // nothing to carry yet (boot): silent, like the Metal twin
+        }
+        if old.probe_origin != self.probe_origin || old.probe_spacing != self.probe_spacing || old.probe_dims != self.probe_dims || old.probe_count != self.probe_count {
+            println!("probes: local refresh declined (the probe grid moved) — full bake");
+            return false;
+        }
+        let Some(boxes) = crate::refresh_boxes_for(self.probe_origin, self.probe_spacing, self.probe_dims, dirty) else {
+            println!("probes: local refresh declined (a dirty region is off-grid, or the dirty set costs more than a bake) — full bake");
+            return false;
+        };
+        // the whole buffer, header included — the fresh header is identical by the
+        // grid check above, so this stays a plain device-to-device copy
+        let bytes = (16 + self.probe_count as u64 * 40) * 4;
+        ctx.one_time(|cmd| {
+            ctx.device.cmd_copy_buffer(cmd, old.probe_buf.buffer, self.probe_buf.buffer, &[vk::BufferCopy::default().size(bytes)]);
+            let mb = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
+            ctx.device.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[mb], &[], &[]);
+        });
+        self.probes_baked = true; // …so `bake_probes` stays a no-op for this scene
+        self.probe_rays = rays_total; // the refresh bakes each touched probe to the startup convergence
+        let t = std::time::Instant::now();
+        self.refresh_boxes(ctx, set, env, &boxes);
+        let n = crate::gpu_scene::probes_in(&boxes);
+        println!("probes: carried {} banks + refreshed {n} probes ({:.0}%) in {:.0} ms", self.probe_count, 100.0 * n as f32 / self.probe_count as f32, t.elapsed().as_secs_f32() * 1000.0);
+        true
     }
 
     /// Stage-2 tear-off (Vulkan twin of the Metal `MetalBackend::tear_off`): hide

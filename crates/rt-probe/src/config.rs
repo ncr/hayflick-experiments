@@ -5,8 +5,10 @@
 //! has a single source of truth. One deliberate exception reads `std::env`
 //! directly: `probe_cache::dir` (PROBE_CACHE) — a dev-machine cache location,
 //! not a look/sim knob, and never part of the round-trip. (rt-viewer keeps a
-//! few shell-only reads of its own: AUDIO, LOOK, and the crack-lab harness
-//! seed CRACKS=age,cracks,depth,chip.)
+//! few shell-only reads of its own: AUDIO, LOOK, the crack-lab harness seed
+//! CRACKS=age,cracks,depth,chip with its CRACK_SEL= pick and CRACK_EDIT=
+//! knob-drag replay, and the wear family's WEAR=d0[,d1,d2,d3] effect word —
+//! see `crate::crack` / `crate::wear` on the viewer side.)
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
 //! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).
@@ -170,6 +172,12 @@ pub struct RenderCfg {
     pub exposure: Option<f32>,     // EXPOSURE: overrides the look's authored exposure (Faza 1b)
     pub probe_spacing: f32,        // PROBE_SPACING: GI probe grid spacing (wu)
     pub probe_rays: i32,           // PROBE_RAYS: bake rays per probe per bank
+    /// `PROBE_LOCAL` — may a scene rebuild that changed only a few AABBs carry
+    /// the baked probe banks over and refresh just their neighbourhoods
+    /// (`ProbeRefresh::Local`, the crack-lab knob release)? On by default;
+    /// `PROBE_LOCAL=0` forces the full rebake, which is the A/B that proves the
+    /// local refresh leaves no stale probe behind.
+    pub probe_local: bool,
     pub ao: f32,                   // AO: RT-AO strength
     pub ao_r: f32,                 // AO_R: RT-AO radius (wu)
     pub ao_n: i32,                 // AO_N: RT-AO ray count
@@ -306,6 +314,7 @@ impl Config {
                 exposure: fo("EXPOSURE"),
                 probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
                 probe_rays: i("PROBE_RAYS", 2048),
+                probe_local: b("PROBE_LOCAL", true),
                 ao: f("AO", 0.55),
                 ao_r: f("AO_R", 0.8),
                 ao_n: i("AO_N", 8),

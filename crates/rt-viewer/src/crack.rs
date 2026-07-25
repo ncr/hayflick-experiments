@@ -3,8 +3,9 @@
 //! Every wall pier owns its material 1:1 (`add_box_world` mints one per box),
 //! so a segment's ENTIRE aged appearance is four knobs — age / cracks /
 //! depth / chip — quantized to 6-bit unorm each and packed into the material's
-//! `_pad` bits 8..31 ([`pad_bits`]; bits 0..2 stay the occluder/glass/matte
-//! flags, bit 3 is the selection highlight). The shade pass (shade.comp /
+//! `_pad` bits 8..31 ([`pad_bits`]; the whole FLAG byte 0..7 below them belongs
+//! to other owners — see [`KEEP_FLAGS`] — and a stamp only ever recomputes the
+//! knob bits and the selection bit). The shade pass (shade.comp /
 //! shade.metal CRACK LAB block) unpacks them per pixel; the materials buffer
 //! already re-uploads every frame (the practicals stream), so a live knob edit
 //! costs nothing — no scene rebuild, no probe rebake (the bake reads base
@@ -27,6 +28,7 @@
 //! owner drives by clicking (the knob panel, the highlight, and since
 //! 2026-07-25 the contour-AA scope's "picked wall only" mode).
 
+use crate::backend::ProbeRefresh;
 use crate::gym_scene::Pier;
 use crate::viewer::Viewer;
 use glam::{Vec2, Vec3};
@@ -37,6 +39,16 @@ pub const LABELS: [&str; 4] = ["age", "cracks", "depth", "chip"];
 
 /// Selection-highlight flag: `Material._pad` bit 3.
 pub const SEL_BIT: i32 = 8;
+
+/// The `_pad` flag bits a knob stamp must PRESERVE: the whole flag byte
+/// (bits 0..7) minus the selection bit, which the stamp itself recomputes.
+/// Bits 0..2 are the gym's occluder/glass/matte marks, bit 4 (value 16) is the
+/// last FREE flag, 5/6 are the geometry pass's GEO/CRAZE marks and 7 is the AA
+/// opt-in. This constant exists because the two stamps used to spell the mask
+/// out by hand and drifted apart (`& 7` at boot vs `& 231` on a live edit), so
+/// any new flag bit was silently cleared at boot and every knob touch —
+/// exactly the class of bug the 2026-07-25 catalogue's next flag would have hit.
+pub const KEEP_FLAGS: i32 = 0xFF & !SEL_BIT;
 
 /// The greybox-detail AA opt-in ([`crate::gym_scene::AA_BIT`]) — the crack lab
 /// is its first client: every pier the geometry pass actually rebuilt carries
@@ -73,9 +85,11 @@ pub struct CrackLab {
     pub params: Vec<[[f32; crate::crack_geom::PARAMS_MAX]; crate::crack_geom::NPOL]>,
     pub sel: Option<usize>,
     pub row: usize,
-    /// [`crate::crack_geom::signature`] of the geometry currently BUILT into
-    /// the scene — `Viewer::crack_release` rebuilds when the knobs disagree.
-    pub geo_sig: u64,
+    /// [`crate::crack_geom::signatures`] of the geometry currently BUILT into
+    /// the scene, PER PIER — `Viewer::crack_release` rebuilds when the knobs
+    /// disagree, and the disagreeing entries are exactly the piers whose GI has
+    /// to settle again (everything else keeps its baked probes).
+    pub geo_sigs: Vec<u64>,
     /// Each pier's CHALK CORE material (-1 = none): the groove floors live
     /// there, so the per-pier AA scope has to stamp it too.
     pub cores: Vec<i32>,
@@ -94,6 +108,14 @@ impl CrackLab {
 pub fn pad_bits(k: [f32; 4]) -> i32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 63.0).round() as u32;
     ((q(k[0]) << 8) | (q(k[1]) << 14) | (q(k[2]) << 20) | (q(k[3]) << 26)) as i32
+}
+
+/// A pier's stamped `_pad`: the surviving flags ([`KEEP_FLAGS`]) + this pier's
+/// knob bits + the recomputed selection bit. ONE expression, shared by the
+/// boot/rebuild stamp ([`stamp_all`]) and the live edit ([`Viewer::crack_apply`])
+/// — they are the same operation and drifted when spelled out twice.
+pub fn stamped_pad(pad: i32, k: [f32; 4], selected: bool) -> i32 {
+    (pad & KEEP_FLAGS) | pad_bits(k) | if selected { SEL_BIT } else { 0 }
 }
 
 /// Shader-side unpack, host-mirrored (the layout-pin test's other half).
@@ -123,22 +145,90 @@ fn parse_seed(v: &str) -> CrackSeed {
             *slot = p;
         }
     }
-    CrackSeed { age: n(0), cracks: n(1), depth: n(2), chip: n(3), vary: 0.0, policy, params }
+    // CRACK_VARY: the per-pier spread AND the run ramp's amplitude (see
+    // seed_knobs). It is the whole visible half of "one wall, one story", and a
+    // bare CRACKS= would otherwise pin it to 0 — every verification shot of the
+    // ramp would then show only the story-key half (review finding, 2026-07-25).
+    let vary = std::env::var("CRACK_VARY").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    CrackSeed { age: n(0), cracks: n(1), depth: n(2), chip: n(3), vary, policy, params }
 }
 
-/// Deterministic per-pier knob quads from a seed: base ± vary, hashed on the
-/// pier index (no RNG state — same level, same weathering, every boot).
-pub fn seed_knobs(count: usize, s: &CrackSeed) -> Vec<[f32; 4]> {
+/// `CRACK_EDIT=age,cracks,depth,chip[,pier]` — the harness's stand-in for the
+/// owner dragging the panel and letting go: after boot, write these knobs (onto
+/// every pier, or only `pier`) and take the RELEASE path a mouse-up takes.
+/// A shell-only read like `CRACKS=`/`CRACK_SEL=` (see the config.rs exception
+/// list). It exists because the release path is the expensive one — an agent
+/// cannot click, and "boot straight into the final knobs" measures the BOOT
+/// bake, not the rebuild.
+fn edit_from_env() -> Option<([f32; 4], Option<usize>)> {
+    std::env::var("CRACK_EDIT").ok().map(|v| {
+        let parts: Vec<&str> = v.split(',').map(str::trim).collect();
+        let n = |i: usize| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+        ([n(0), n(1), n(2), n(3)], parts.get(4).and_then(|s| s.parse::<usize>().ok()))
+    })
+}
+
+/// Where a pier sits along its parent RUN (0..1) and the run's story key — the
+/// two things the age ramp is a function of.
+fn run_pos(pier: &Pier) -> (f32, f32) {
+    let run_x = (pier.run_hi.x - pier.run_lo.x) >= (pier.run_hi.z - pier.run_lo.z);
+    let (c, a0, a1) = if run_x {
+        ((pier.lo.x + pier.hi.x) * 0.5, pier.run_lo.x, pier.run_hi.x)
+    } else {
+        ((pier.lo.z + pier.hi.z) * 0.5, pier.run_lo.z, pier.run_hi.z)
+    };
+    (((c - a0) / (a1 - a0).max(1e-4)).clamp(0.0, 1.0), crate::wear::story_key(pier.run_lo, pier.run_hi))
+}
+
+/// The facade's AGE RAMP at a pier: −0.5..0.5, a smooth MONOTONE gradient along
+/// the parent run. It replaces a per-pier index hash, which is what made one
+/// building read as a row of separately aged panels (owner catalogue 2026-07-25,
+/// "one wall, one story"): a real facade gets worse toward one corner because
+/// whatever is eating it — driving rain, splash, a downpipe — comes from one
+/// side, so `vary` has to be a GRADIENT along the wall, not noise per panel.
+///
+/// It is a smoothstep ease with a per-run DIRECTION — and the shape of that
+/// answer is a measurement, not a preference. The design started as the
+/// catalogue's "one low-frequency vnoise cell spans the whole run", which is a
+/// gradient by construction at any run length; but a single-cell sample
+/// normalized to its own two ends (normalized because a raw sample's amplitude
+/// is a lottery — two nearby end hashes would age a whole facade UNIFORMLY,
+/// the very failure this replaces) is ALGEBRAICALLY just a rescaled smoothstep
+/// whose one free parameter is the SIGN of that cell's gradient. And drawing the
+/// sign off the noise's x axis gave all twelve trial runs the same direction —
+/// `hash13`'s x axis carries a bias at these small offsets. So the direction is
+/// drawn on the STORY axis, where runs actually differ, and pinned by a test.
+///
+/// A one-pier run (the garden walls) sits mid-ramp and keeps the base knobs:
+/// its damage still varies across the wall, but through the field, not the knobs.
+fn run_ramp(pier: &Pier) -> f32 {
+    let (s, story) = run_pos(pier);
+    let s = if crate::crack_geom::vnoise(Vec3::new(story * 1.7, 11.0, 3.0)) < 0.5 { 1.0 - s } else { s };
+    s * s * (3.0 - 2.0 * s) - 0.5 // the same ease the damage field is built out of
+}
+
+/// Deterministic per-pier knob quads from a seed (no RNG state — same level,
+/// same weathering, every boot). TWO kinds of variance, and the split is the
+/// point: `age`/`cracks` follow the facade's [`run_ramp`], so one wall tells one
+/// story with a bad end and a clean end, while `depth`/`chip` keep the per-pier
+/// index hash — they are texture-scale dials, and putting them on the run too
+/// would leave a facade with one uniform crack width (the owner risk on record
+/// for this effect: shared seeds reading as a repeated stamp).
+pub fn seed_knobs(piers: &[Pier], s: &CrackSeed) -> Vec<[f32; 4]> {
     let h = |i: u32, k: u32| {
         let mut x = i.wrapping_mul(0x9E37_79B9) ^ k.wrapping_mul(0x85EB_CA6B);
         x ^= x >> 13;
         x = x.wrapping_mul(0xC2B2_AE35);
         (x ^ (x >> 16)) as f32 / u32::MAX as f32 - 0.5
     };
-    (0..count as u32)
-        .map(|i| {
-            let v = |base: f32, k: u32| (base + s.vary * h(i, k)).clamp(0.0, 1.0);
-            [v(s.age, 1), v(s.cracks, 2), v(s.depth, 3), v(s.chip, 4)]
+    piers
+        .iter()
+        .enumerate()
+        .map(|(i, pier)| {
+            let g = run_ramp(pier);
+            let v = |base: f32, k: u32| (base + s.vary * h(i as u32, k)).clamp(0.0, 1.0);
+            let r = |base: f32| (base + s.vary * g).clamp(0.0, 1.0);
+            [r(s.age), r(s.cracks), v(s.depth, 3), v(s.chip, 4)]
         })
         .collect()
 }
@@ -149,8 +239,7 @@ pub fn seed_knobs(count: usize, s: &CrackSeed) -> Vec<[f32; 4]> {
 pub fn stamp_all(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], sel: Option<usize>) {
     for (i, (pier, k)) in piers.iter().zip(knobs).enumerate() {
         let mid = scene.primitives[pier.prim].material_id as usize;
-        let flags = scene.materials[mid]._pad & 7;
-        scene.materials[mid]._pad = flags | pad_bits(*k) | if sel == Some(i) { SEL_BIT } else { 0 };
+        scene.materials[mid]._pad = stamped_pad(scene.materials[mid]._pad, *k, sel == Some(i));
     }
 }
 
@@ -200,8 +289,13 @@ pub fn stamp_aa(scene: &mut Scene, piers: &[Pier], lab: &CrackLab, scope: i32) -
 pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scene: &mut Scene, aa_scope: i32) {
     match seed {
         Some(s) => {
+            // FIRST, before either the seeding or the geometry pass reads it: the
+            // per-RUN story key (`base_color[3]`). Both the host damage field
+            // (crack_geom) and the shade pass seed off this one f32, so it has to
+            // be in the scene before anything derives anything from it.
+            crate::wear::stamp_story(scene, piers);
             if lab.knobs.len() != piers.len() || lab.policy.len() != piers.len() || lab.params.len() != piers.len() {
-                lab.knobs = seed_knobs(piers.len(), &s);
+                lab.knobs = seed_knobs(piers, &s);
                 lab.policy = vec![s.policy; piers.len()];
                 let mut per = [
                     crate::crack_geom::param_defaults(0),
@@ -221,7 +315,7 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
             // the built signature lets live knob drags rebuild only on change
             let par = lab.active_params();
             lab.cores = crate::crack_geom::apply_geometry(scene, piers, &lab.knobs, &lab.policy, &par);
-            lab.geo_sig = crate::crack_geom::signature(scene, piers, &lab.knobs, &lab.policy, &par);
+            lab.geo_sigs = crate::crack_geom::signatures(scene, piers, &lab.knobs, &lab.policy, &par);
             stamp_aa(scene, piers, lab, aa_scope); // the AA scope's opt-in bits
         }
         None => {
@@ -230,7 +324,7 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
             lab.params.clear();
             lab.cores.clear();
             lab.sel = None;
-            lab.geo_sig = 0;
+            lab.geo_sigs.clear();
         }
     }
 }
@@ -257,12 +351,12 @@ impl Viewer {
     /// Recompute + push pier `i`'s material `_pad` (knob bits + selection),
     /// mirrored into the CPU scene (so rebuilds re-stamp the truth) and the
     /// backend's live material stream (visible next frame, nothing rebuilds).
-    /// GEO_BIT/CRAZE_BIT are preserved as-is: they describe the geometry
-    /// currently BUILT, which only `crack_release`'s rebuild may change.
+    /// Every other flag is preserved ([`KEEP_FLAGS`]): GEO/CRAZE describe the
+    /// geometry currently BUILT (only `crack_release`'s rebuild may change
+    /// those), AA the scope, and the rest are the gym's own surface marks.
     pub fn crack_apply(&mut self, i: usize) {
         let mid = self.scene.primitives[self.piers[i].prim].material_id as usize;
-        let flags = self.scene.materials[mid]._pad & (7 | AA_BIT | crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT);
-        let pad = flags | pad_bits(self.crack.knobs[i]) | if self.crack.sel == Some(i) { SEL_BIT } else { 0 };
+        let pad = stamped_pad(self.scene.materials[mid]._pad, self.crack.knobs[i], self.crack.sel == Some(i));
         self.scene.materials[mid]._pad = pad;
         self.backend.set_material_pad(mid, pad);
     }
@@ -294,16 +388,63 @@ impl Viewer {
     /// built geometry — which faults exist, the craze bucket, the policy,
     /// its native params — rebuild the scene so the aging opens in place.
     /// Dial-within-a-bucket knob drags stay live-material cheap.
+    ///
+    /// The rebuild takes the LOCAL probe path: a drag re-generates ONE pier's
+    /// boxes inside that pier's own AABB (`crack_geom` pins that containment),
+    /// so every other probe in the level is still exactly right and only the
+    /// dirty piers' neighbourhoods need re-baking — 6.6 s → 3.3 s on this M2
+    /// (16 % of the probes; the refresh is latency-bound, not probe-bound, see
+    /// `rt_probe::gpu_scene::LOCAL_REFRESH_MAX_FRACTION`). `PROBE_LOCAL=0`
+    /// forces the full rebake — the A/B that shows the local refresh leaves no
+    /// stale probe.
     pub fn crack_release(&mut self) {
         if !self.crack.active {
             return;
         }
         let par = self.crack.active_params();
-        let sig = crate::crack_geom::signature(&self.scene, &self.piers, &self.crack.knobs, &self.crack.policy, &par);
-        if sig != self.crack.geo_sig {
-            let look = self.look;
-            self.apply_look(look);
+        let sigs = crate::crack_geom::signatures(&self.scene, &self.piers, &self.crack.knobs, &self.crack.policy, &par);
+        if sigs == self.crack.geo_sigs {
+            return;
         }
+        // The piers whose geometry actually moved. A count change means the level
+        // itself changed under us (never today — the pier count is look-stable),
+        // so fall back to the full bake rather than guess.
+        let dirty: Vec<(Vec3, Vec3)> = if sigs.len() == self.crack.geo_sigs.len() {
+            self.piers
+                .iter()
+                .zip(sigs.iter().zip(&self.crack.geo_sigs))
+                .filter(|(_, (a, b))| a != b)
+                .map(|(p, _)| (p.lo, p.hi))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let look = self.look;
+        if dirty.is_empty() || !self.cfg.render.probe_local {
+            self.apply_look(look);
+        } else {
+            self.rebuild_in_look(look, ProbeRefresh::Local(&dirty));
+        }
+    }
+
+    /// Replay a panel drag from the environment (`CRACK_EDIT=`, see
+    /// [`edit_from_env`]): stamp the knobs live like a drag, then release. Runs
+    /// at the very end of boot, so it exercises exactly the owner's path —
+    /// including the rebuild and its probe refresh.
+    pub fn crack_edit_from_env(&mut self) {
+        let Some((k, which)) = edit_from_env() else { return };
+        if !self.crack.active {
+            eprintln!("CRACK_EDIT: this level has no crack lab — ignored");
+            return;
+        }
+        for i in 0..self.crack.knobs.len() {
+            if which.is_none_or(|w| w == i) {
+                self.crack.knobs[i] = k;
+                self.crack_apply(i);
+            }
+        }
+        println!("crack: CRACK_EDIT {k:?} on {} — releasing", which.map(|i| format!("pier {i}")).unwrap_or_else(|| "every pier".into()));
+        self.crack_release();
     }
 
     /// The panel's pattern row: cycle the picked pier's policy — the release
@@ -387,6 +528,39 @@ mod tests {
         assert_eq!(pad_bits([1.0; 4]) & 0xFF, 0);
     }
 
+    /// THE MASK PIN (2026-07-25): a knob stamp recomputes the knob bits and the
+    /// selection bit and PRESERVES every other flag. Both stamps used to spell
+    /// the mask out by hand — `& 7` at boot, `& 231` on a live edit — so a new
+    /// flag bit (the wear family's value 16, next in line) died at boot and on
+    /// every knob touch, silently. Pinned through the boot path AND the live
+    /// expression, since a painted effect landing on a cleared flag looks like
+    /// "the shader is wrong" and costs a session to find.
+    #[test]
+    fn a_marked_flag_survives_the_boot_stamp_and_a_live_edit() {
+        use crate::gym_scene::Pier;
+        use rt_probe::Scene;
+        const FREE_BIT: i32 = 16; // the wear family's claim (crate::wear)
+        let mut scene = Scene::default();
+        let (lo, hi) = (Vec3::new(1.0, 0.0, 9.9), Vec3::new(7.0, 2.2, 10.15));
+        scene.add_box_world(lo, hi, [0.9, 0.9, 0.9, 1.0], [0.0; 4], 0.85, 0.0);
+        let piers = vec![Pier { prim: scene.primitives.len() - 1, lo, hi, run_lo: lo, run_hi: hi }];
+        let mid = scene.primitives[piers[0].prim].material_id as usize;
+        // every flag a pier can carry: occluder + matte + the free bit + the
+        // geometry pass's marks + the AA opt-in, plus a STALE selection
+        let marks = 1 | 4 | FREE_BIT | crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT | AA_BIT;
+        scene.materials[mid]._pad = marks | SEL_BIT;
+
+        stamp_all(&mut scene, &piers, &[[0.5, 0.4, 0.3, 0.2]], None); // boot/rebuild path
+        assert_eq!(scene.materials[mid]._pad & 0xFF, marks, "flags survive the boot stamp; a stale selection does not");
+        assert_eq!(unpack(scene.materials[mid]._pad), [0.5, 0.4, 0.3, 0.2].map(|v: f32| (v * 63.0).round() / 63.0));
+
+        // the live edit (`Viewer::crack_apply` is exactly this expression)
+        let pad = stamped_pad(scene.materials[mid]._pad, [1.0, 0.0, 0.0, 0.0], true);
+        assert_eq!(pad & 0xFF, marks | SEL_BIT, "flags survive a live knob edit, selection follows the pick");
+        assert_eq!(pad >> 8, 63, "…and the knob bits are the new ones");
+        assert_eq!(stamped_pad(pad, [1.0, 0.0, 0.0, 0.0], false) & SEL_BIT, 0, "deselect clears only the selection bit");
+    }
+
     /// `CRACKS=` parsing: policy by name, trailing floats override that
     /// policy's native params, missing tails keep the defaults.
     #[test]
@@ -443,15 +617,74 @@ mod tests {
         assert_ne!(pad(&scene, &piers[0]) & AA_BIT, 0, "scope 2 follows the pick");
     }
 
-    /// Seeding is deterministic and clamped; vary=0 is exactly uniform.
+    /// One facade's piers, left to right, as `wall_slab` cuts them (piers share
+    /// the parent run's rect; `z` picks a different run).
+    fn facade(z: f32) -> Vec<crate::gym_scene::Pier> {
+        let (run_lo, run_hi) = (Vec3::new(3.0, 0.0, z), Vec3::new(8.0, 2.1875, z + 0.25));
+        [(3.0, 4.3), (4.7, 6.3), (6.7, 8.0)]
+            .iter()
+            .map(|(a, b)| crate::gym_scene::Pier {
+                prim: 0,
+                lo: Vec3::new(*a, 0.0, z),
+                hi: Vec3::new(*b, 2.1875, z + 0.25),
+                run_lo,
+                run_hi,
+            })
+            .collect()
+    }
+
+    /// THE 2026-07-25 SPLIT, pinned: `vary` puts age/cracks on a GRADIENT along
+    /// the facade (one bad end, one clean end — a real wall is eaten from one
+    /// side) and leaves depth/chip on the per-pier hash (texture-scale dials; a
+    /// facade with one uniform crack width would read as a repeated stamp).
+    /// Before this, every knob was per-pier noise, which is precisely why one
+    /// building read as a row of separately aged panels.
     #[test]
-    fn seed_knobs_deterministic_and_clamped() {
+    fn seed_knobs_ramps_age_along_the_run_and_keeps_depth_per_pier() {
         let s = CrackSeed { age: 0.6, cracks: 0.5, depth: 0.6, chip: 0.2, vary: 0.5, policy: 0, params: crate::crack_geom::param_defaults(0) };
-        let a = seed_knobs(9, &s);
-        assert_eq!(a, seed_knobs(9, &s), "same seed, same weathering");
-        assert!(a.iter().flatten().all(|v| (0.0..=1.0).contains(v)));
-        assert!(a.windows(2).any(|w| w[0] != w[1]), "vary>0 must actually vary");
-        let u = seed_knobs(4, &CrackSeed { vary: 0.0, ..s });
-        assert!(u.windows(2).all(|w| w[0] == w[1]), "vary=0 is uniform");
+        let piers = facade(3.0);
+        let a = seed_knobs(&piers, &s);
+        assert_eq!(a, seed_knobs(&piers, &s), "same level, same weathering");
+        assert!(a.iter().flatten().all(|v| (0.0..=1.0).contains(v)), "clamped");
+        // age + cracks: MONOTONE across the three panels, and the swing has to be
+        // most of `vary` or the gradient is not visible (the raw noise amplitude
+        // was a lottery, hence run_ramp's normalization)
+        for lane in [0, 1] {
+            let (l, m, r) = (a[0][lane], a[1][lane], a[2][lane]);
+            assert!((l < m && m < r) || (l > m && m > r), "lane {lane} must ramp monotonically across the facade: {l} {m} {r}");
+            assert!((r - l).abs() > 0.6 * s.vary, "lane {lane} swing {} must be most of vary {}", (r - l).abs(), s.vary);
+        }
+        assert!(a[0][2] != a[1][2] && a[1][2] != a[2][2], "depth stays per-pier (neighbours differ)");
+        // which END is the bad one is per RUN: over a sweep of run rects both
+        // directions must occur, or every facade in the game ages the same way
+        let dirs: Vec<bool> = (0..12).map(|i| run_ramp(&facade(i as f32)[2]) > 0.0).collect();
+        assert!(dirs.contains(&true) && dirs.contains(&false), "the ramp direction must vary per run: {dirs:?}");
+        // THE SPLIT, stated as independence: two facades that age in OPPOSITE
+        // directions must give the same pier index the same depth/chip (those are
+        // per-pier and run-blind) and a different age/cracks (those are the run's)
+        let (i, j) = (
+            dirs.iter().position(|d| *d).unwrap() as f32,
+            dirs.iter().position(|d| !*d).unwrap() as f32,
+        );
+        let (p, q) = (seed_knobs(&facade(i), &s), seed_knobs(&facade(j), &s));
+        for k in 0..3 {
+            assert_eq!((p[k][2], p[k][3]), (q[k][2], q[k][3]), "pier {k}: depth/chip must not depend on the run");
+        }
+        for k in [0, 2] {
+            assert_ne!(p[k][0], q[k][0], "end pier {k}: age must follow ITS run's ramp (the middle pier sits at the pivot either way)");
+        }
+        assert!((p[0][0] - q[2][0]).abs() < 1e-6, "opposite ramps mirror each other end for end");
+        // a one-pier run (the garden walls) has no gradient — base knobs, no NaN
+        let solo = crate::gym_scene::Pier {
+            prim: 0,
+            lo: Vec3::new(10.0, 0.0, 9.9),
+            hi: Vec3::new(16.0, 2.1875, 10.15),
+            run_lo: Vec3::new(10.0, 0.0, 9.9),
+            run_hi: Vec3::new(16.0, 2.1875, 10.15),
+        };
+        let one = seed_knobs(std::slice::from_ref(&solo), &s);
+        assert!(one[0][0].is_finite() && (one[0][0] - s.age).abs() < 0.11, "a whole-run pier sits mid-ramp: {}", one[0][0]);
+        let u = seed_knobs(&piers, &CrackSeed { vary: 0.0, ..s });
+        assert!(u.windows(2).all(|w| w[0] == w[1]), "vary=0 is exactly uniform");
     }
 }

@@ -9,7 +9,7 @@
 //! integer-NEAREST upscale, blit, present. No accumulation, no denoiser, no
 //! temporal state — a fixed camera produces bit-identical frames.
 
-use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, RenderBackend};
+use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, ProbeRefresh, RenderBackend};
 use crate::capture::subsample_rgba;
 use crate::menu::{MENU_MARGIN, MPANEL_H, MPANEL_W};
 use ash::vk;
@@ -425,16 +425,28 @@ impl RenderBackend for VulkanBackend {
     /// window-size descriptor sets onto the new buffers (recreate_gpu), then
     /// rebake the probe banks against the new scene + env. Every prior frame
     /// is fenced idle first. (Blind-edited on macOS — verify on the spawner.)
-    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config) {
+    ///
+    /// `ProbeRefresh::Local` instead CARRIES the old scene's baked banks into the
+    /// fresh one and re-bakes only the probes around the dirty AABBs (the
+    /// crack-lab knob release) — hence the old scene is destroyed AFTER the carry,
+    /// not before the rebind. `SceneGpu::carry_probes` owns the decision and falls
+    /// back by returning false, so the bake below is the same code path as before.
+    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh) {
         self.ctx.device.device_wait_idle().ok();
         let fresh = SceneGpu::build(&self.ctx, scene, cfg.render.probe_spacing).expect("look-switch scene rebuild");
         let old = std::mem::replace(&mut self.gpu, fresh);
-        old.destroy(&self.ctx);
         self.env = EnvBlock::pack(cfg.lighting_env(scene.lighting), &scene.sun_sky);
         let extent = self.swap.as_ref().unwrap().extent;
         self.recreate_gpu(extent.width, extent.height);
         let set = self.swap.as_ref().unwrap().scene_set;
-        self.gpu.bake_probes(&self.ctx, set, &self.env, cfg.render.probe_rays);
+        let carried = match refresh {
+            ProbeRefresh::Local(dirty) => self.gpu.carry_probes(&self.ctx, set, &self.env, &old, dirty, cfg.render.probe_rays),
+            ProbeRefresh::Full => false,
+        };
+        old.destroy(&self.ctx);
+        if !carried {
+            self.gpu.bake_probes(&self.ctx, set, &self.env, cfg.render.probe_rays);
+        }
     }
 
     /// Dynamic-GI tear-off (blind-edited on macOS — verify on the spawner): hide
@@ -455,6 +467,14 @@ impl RenderBackend for VulkanBackend {
     /// entire job — visible next frame, nothing rebuilds.
     fn set_material_pad(&mut self, material_id: usize, pad: i32) {
         self.gpu.mats_cpu[material_id]._pad = pad;
+    }
+
+    /// Wear-family live material update (`crate::wear`'s effect word in
+    /// `emissive[3]`) — the same one-line mechanism as the pad above.
+    /// BLIND EDIT (2026-07-25, the spawner box is offline): line-for-line twin
+    /// of the Metal impl, not compiled on macOS.
+    fn set_material_effect(&mut self, material_id: usize, word: f32) {
+        self.gpu.mats_cpu[material_id].emissive[3] = word;
     }
 
     unsafe fn wait_idle(&self) {

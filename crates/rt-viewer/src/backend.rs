@@ -138,6 +138,34 @@ pub struct Overlay<'a> {
     pub menu_center: bool,
 }
 
+/// What a scene swap ([`RenderBackend::rebuild_scene`]) must do about the frozen
+/// GI probe banks.
+///
+/// `Full` is the honest default: a look switch repaints every surface the bake
+/// reads, a boot has nothing to carry, and a scene whose BOUNDS moved lands its
+/// probes somewhere else entirely (the grid is derived from `scene.min/max`).
+///
+/// `Local` is the crack-lab knob release: one pier's boxes were regenerated
+/// inside their own AABB and every other probe in the level is still exactly
+/// right, so the banks are carried across the swap and only the probes near the
+/// listed WORLD AABBs are re-baked (padded by
+/// `rt_probe::gpu_scene::REFRESH_PAD_SPACINGS` — the backend owns the padding
+/// because only it knows the resolved spacing). On the M2: the full grid is
+/// ~6.6 s, one pier ~3.3 s (16 % of the probes — the refresh is latency-bound,
+/// see `LOCAL_REFRESH_MAX_FRACTION`); on the RTX the whole bake is ~115 ms and
+/// nobody notices either way.
+///
+/// The backend falls back to `Full` if the new scene's grid does not match the
+/// carried one, if nothing has been baked yet, if a dirty region misses the
+/// grid, or if the dirty set is large enough that refreshing costs more than
+/// baking — a stale probe must never survive a rebuild, so every uncertain case
+/// pays the bake.
+#[derive(Clone, Copy)]
+pub enum ProbeRefresh<'a> {
+    Full,
+    Local(&'a [(Vec3, Vec3)]),
+}
+
 /// The GPU half of the renderer. Owns the device, scene GPU resources, the
 /// shade/tonemap pipelines, the present surface, and the capture target.
 /// `Viewer` never names a Vulkan/Metal type — only this trait.
@@ -181,7 +209,11 @@ pub trait RenderBackend {
     /// from a freshly built `Scene`, keeping device/pipelines/window target.
     /// Blocking (probe rebake or disk-cache load). The Viewer must re-join
     /// its light keys against the new `handles()` afterwards.
-    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config);
+    ///
+    /// `refresh` decides what happens to the frozen GI — see [`ProbeRefresh`].
+    /// A backend that cannot honour `Local` must fall back to the full bake:
+    /// the result is identical, only slower.
+    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh);
 
     /// Dynamic-GI tear-off (Stage 2): hide the static primitive instances `prims`
     /// from the TLAS (mask 0 — culled by primary AND probe rays, so gone from the
@@ -202,6 +234,17 @@ pub trait RenderBackend {
     /// keyed at build time). Lost on `rebuild_scene` — the Viewer re-stamps
     /// the fresh `Scene` before rebuilding instead.
     fn set_material_pad(&mut self, _material_id: usize, _pad: i32) {}
+
+    /// Live per-material EFFECT WORD update — [`set_material_pad`]'s sibling for
+    /// the wear family's appearance dials, which ride `Material.emissive[3]`
+    /// (see `crate::wear` for the codec and the 24-bit budget). Same mechanism:
+    /// the per-frame practicals stream re-uploads the whole material array, so
+    /// writing the CPU shadow is the entire job. Deliberately the ONLY write path
+    /// for the word — the probe-cache content key hashes the material bytes, so a
+    /// pre-build stamp would re-key the cache and rebake (~6.5 s on the M2) for a
+    /// datum the bake cannot see. Lost on `rebuild_scene`; `Viewer::wear_stamp`
+    /// re-stamps after every rebuild.
+    fn set_material_effect(&mut self, _material_id: usize, _word: f32) {}
 
     /// Render + (windowed) present one frame. Returns false if the swapchain
     /// needs rebuild. Records the deterministic per-frame state (lights →

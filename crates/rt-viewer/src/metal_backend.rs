@@ -14,7 +14,7 @@
 //! buffers are indexed by `intersection.instance_id`. Scalar byte-match is
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
-use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, RenderBackend};
+use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, ProbeRefresh, RenderBackend};
 use crate::capture::subsample_rgba;
 use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec3};
@@ -437,13 +437,77 @@ impl MetalBackend {
     /// command buffer is waited, so nothing is in flight during the swap.
     /// The shade kernel is compiled for a fixed NTEX_COUNT — greybox looks
     /// never add textures, and the assert keeps that assumption loud.
-    unsafe fn rebuild_scene_impl(&mut self, scene: &Scene, cfg: &Config) {
+    ///
+    /// `refresh` decides the GI half: `Full` rebakes (or disk-loads) the whole
+    /// grid; `Local` carries the baked banks across the swap and re-bakes only
+    /// the probes near the dirty AABBs — the crack-lab knob release, which
+    /// otherwise pays a 6.6 s whole-grid bake for one pier's boxes. Both paths
+    /// leave `probes_baked` true and the lit light/material state loaded, so the
+    /// next frame is identical except for the probes meant to change.
+    unsafe fn rebuild_scene_impl(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh) {
         let ntex = self.sc.texes.len();
+        // Snapshot the banks BEFORE the swap (probe_buf dies with the old scene)
+        // and only when they can legally be carried: the grid is DERIVED from the
+        // scene bounds, so anything that moves them (bounds, spacing, the probe
+        // cap's widening) invalidates every probe position. Crack geometry stays
+        // inside its pier's AABB by construction, which is exactly why the check
+        // passes for a knob rebuild and would fail for a real level edit.
+        let carried = match refresh {
+            ProbeRefresh::Local(dirty) if self.sc.probes_baked => {
+                let g = ProbeGrid::build(scene.min, scene.max, cfg.render.probe_spacing);
+                let same = g.origin == self.sc.probe_origin && g.spacing == self.sc.probe_spacing && g.dims == self.sc.probe_dims;
+                let boxes = same.then(|| rt_probe::refresh_boxes_for(g.origin, g.spacing, g.dims, dirty)).flatten();
+                if boxes.is_none() {
+                    println!("probes: local refresh declined ({}) — full bake (metal)", if same { "a dirty region is off-grid, or the dirty set costs more than a bake" } else { "the probe grid moved" });
+                }
+                boxes.map(|b| (b, self.probe_bank_bytes()))
+            }
+            _ => None,
+        };
         self.sc = MetalScene::build(&self.device, &self.queue, scene, cfg).expect("look-switch scene rebuild");
         assert_eq!(self.sc.texes.len(), ntex, "texture count changed across a look switch — shade PSO needs a recompile");
         self.tlas_dirty = false;
         self.n_spot_active = 0;
-        self.bake_probes(cfg.render.probe_rays);
+        let Some((boxes, banks)) = carried else {
+            self.bake_probes(cfg.render.probe_rays);
+            return;
+        };
+        // A cache HIT is a genuine full bake of exactly this scene — strictly
+        // better than the carry (exact everywhere, ~ms), so try it first.
+        if self.load_probe_cache() {
+            return;
+        }
+        std::ptr::copy_nonoverlapping(banks.as_ptr(), self.sc.probe_buf.contents() as *mut u8, banks.len());
+        self.sc.probes_baked = true; // …and so NEVER stored: a carried buffer is not a bake of this scene
+        let t0 = std::time::Instant::now();
+        self.refresh_boxes(&boxes);
+        let n = rt_probe::probes_in(&boxes);
+        println!("probes: carried {} banks + refreshed {n} probes ({:.0}%) in {:.0} ms (metal)", self.sc.probe_count, 100.0 * n as f32 / self.sc.probe_count as f32, t0.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// The baked probe banks as raw bytes (the whole `probe_buf`, header
+    /// included — the header is rebuilt identically by the next `MetalScene`, so
+    /// carrying it costs nothing and keeps this a plain buffer copy).
+    unsafe fn probe_bank_bytes(&self) -> Vec<u8> {
+        let n = self.sc.probe_buf.length() as usize;
+        std::slice::from_raw_parts(self.sc.probe_buf.contents() as *const u8, n).to_vec()
+    }
+
+    /// Load the current scene's probe banks from the disk cache (interactive
+    /// sessions only — capture paths bake fresh). True = loaded, `probes_baked`
+    /// set. Shared by the startup bake and the local-refresh rebuild.
+    unsafe fn load_probe_cache(&mut self) -> bool {
+        if !self.probe_cache {
+            return false;
+        }
+        let probe_bytes = self.sc.probe_buf.length() as usize;
+        let Some(bytes) = rt_probe::probe_cache::load(self.sc.probe_key, probe_bytes) else {
+            return false;
+        };
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.sc.probe_buf.contents() as *mut u8, probe_bytes);
+        self.sc.probes_baked = true;
+        println!("probes: loaded {} probes from cache ({:016x}) (metal)", self.sc.probe_count, self.sc.probe_key);
+        true
     }
 
     /// Bake the two-bank GI probe cache (probes.metal). Bank 0 = practicals off
@@ -453,17 +517,12 @@ impl MetalBackend {
             return;
         }
         // interactive path: reload the baked banks from disk if the scene inputs
-        // are unchanged (skips ~4.5 s of software-RT baking on the M2). The lit
+        // are unchanged (skips ~6.5 s of software-RT baking on the M2). The lit
         // light/material buffers are already in their post-bake state (built lit
         // in new()), so a cache hit needs nothing but the probe bytes.
         let probe_bytes = self.sc.probe_buf.length() as usize;
-        if self.probe_cache {
-            if let Some(bytes) = rt_probe::probe_cache::load(self.sc.probe_key, probe_bytes) {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.sc.probe_buf.contents() as *mut u8, probe_bytes);
-                self.sc.probes_baked = true;
-                println!("probes: loaded {} probes from cache ({:016x}) (metal)", self.sc.probe_count, self.sc.probe_key);
-                return;
-            }
+        if self.load_probe_cache() {
+            return;
         }
         let batch = self.probe_batch_for(self.sc.probe_count);
         println!("probes: batch {batch} rays/cb ({} lights)", self.sc.light_count);
@@ -724,14 +783,19 @@ impl RenderBackend for MetalBackend {
     fn light_count(&self) -> u32 {
         self.sc.light_count
     }
-    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config) {
-        self.rebuild_scene_impl(scene, cfg);
+    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh) {
+        self.rebuild_scene_impl(scene, cfg, refresh);
     }
     /// Crack-lab live material update — Vulkan twin: `render_present` writes
     /// `mats_cpu` to `mbuf` whole every frame, so the shadow write is the
     /// entire job. (Blind-edited on the spawner — verify on the Mac.)
     fn set_material_pad(&mut self, material_id: usize, pad: i32) {
         self.sc.mats_cpu[material_id]._pad = pad;
+    }
+    /// Wear-family live material update (`crate::wear`'s effect word in
+    /// `emissive[3]`) — same one-line mechanism as the pad above.
+    fn set_material_effect(&mut self, material_id: usize, word: f32) {
+        self.sc.mats_cpu[material_id].emissive[3] = word;
     }
     unsafe fn tear_off(&mut self, prims: &[usize], min: Vec3, max: Vec3, amortize: bool) {
         // hide the static instances (mask 0 → culled by primary AND probe rays)
