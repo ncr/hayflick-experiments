@@ -817,3 +817,11 @@ broken pixels") turned out to answer the cost problem above:
   they fail differently and cost two orders of magnitude apart.
 - `CRACK_SEL=<pier>` joined the harness knobs: the selection drives the panel,
   the highlight and now the AA scope, and an agent cannot click.
+- The owner then GENERALIZED the shape into a project rule (CLAUDE.md,
+  "Greybox detail = AA-scoped"): every generator that modifies greybox
+  geometry marks its output, and the AA scopes itself to those marks. The bit
+  and its helper moved out of the crack lab into `gym_scene` beside
+  `mark_occluder`/`mark_glass`, the wall-smash rubble became its second
+  client, and the scope-1 test now reads the geometry pass's own GEO/CRAZE
+  marks instead of "the knobs are non-zero" — a knobbed pier whose damage
+  field left it pristine builds nothing and must stay hard-edged.

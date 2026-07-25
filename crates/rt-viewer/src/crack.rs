@@ -38,13 +38,10 @@ pub const LABELS: [&str; 4] = ["age", "cracks", "depth", "chip"];
 /// Selection-highlight flag: `Material._pad` bit 3.
 pub const SEL_BIT: i32 = 8;
 
-/// `Material._pad` bit 7: this material's geometry OPTS INTO the contour AA
-/// (owner 2026-07-25: "I'd like the anti-aliasing applied selectively — only on
-/// the geometry of the chosen wall"). The shade pass suppresses the AA gate
-/// wherever the bit is clear, so the coverage taps and the softening both stay
-/// inside the scope; [`Viewer::aa_stamp`] owns the bit and re-derives it from
-/// the scope on every selection / knob / scope change.
-pub const AA_BIT: i32 = 128;
+/// The greybox-detail AA opt-in ([`crate::gym_scene::AA_BIT`]) — the crack lab
+/// is its first client: every pier the geometry pass actually rebuilt carries
+/// it, and the `aa scope` row can narrow it to the picked wall.
+pub use crate::gym_scene::AA_BIT;
 
 /// A demo's boot weathering: uniform base knobs + a per-pier hash variance so
 /// the level reads varied the moment it opens. Plain data (demos.rs literals).
@@ -160,9 +157,16 @@ pub fn stamp_all(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], sel: Opt
 /// Which piers opt into the contour AA at this scope: 1 = every CRACKED pier,
 /// 2 = the PICKED one only (the owner's per-wall A/B), 0 = the shader ignores
 /// the bit and AAs everything, anything else = nothing.
-fn aa_wants(lab: &CrackLab, i: usize, scope: i32) -> bool {
+fn aa_wants(scene: &Scene, pier: &Pier, lab: &CrackLab, i: usize, scope: i32) -> bool {
     match scope {
-        1 => lab.knobs.get(i).is_some_and(|k| *k != [0.0; 4]),
+        // MODIFIED geometry: the pier's material carries the geometry pass's own
+        // marks, so this is "the generator actually rebuilt this wall" rather
+        // than "its knobs are non-zero" (a knobbed pier whose damage field left
+        // it pristine builds nothing and must stay hard-edged)
+        1 => {
+            let mid = scene.primitives[pier.prim].material_id as usize;
+            scene.materials[mid]._pad & (crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT) != 0
+        }
         2 => lab.sel == Some(i),
         _ => false,
     }
@@ -175,7 +179,7 @@ fn aa_wants(lab: &CrackLab, i: usize, scope: i32) -> bool {
 pub fn stamp_aa(scene: &mut Scene, piers: &[Pier], lab: &CrackLab, scope: i32) -> Vec<(usize, i32)> {
     let mut out = Vec::new();
     for (i, pier) in piers.iter().enumerate() {
-        let on = aa_wants(lab, i, scope);
+        let on = aa_wants(scene, pier, lab, i, scope);
         let core = lab.cores.get(i).copied().filter(|c| *c >= 0);
         for mid in [Some(scene.primitives[pier.prim].material_id), core].into_iter().flatten() {
             let m = mid as usize;
@@ -384,6 +388,48 @@ mod tests {
         assert_eq!(s.params, crate::crack_geom::param_defaults(1));
         let s = parse_seed("1,1,0.5,0,lightning,0.9,0.1");
         assert_eq!(s.params, [0.9, 0.1, d[2]], "trailing floats override in order");
+    }
+
+    /// THE 2026-07-25 POLICY, pinned: geometry a generator REBUILT is
+    /// AA-scoped by construction. A pier the crack pass rebuilt (its material
+    /// carries the GEO/CRAZE marks) must carry [`AA_BIT`] at the default scope,
+    /// its chalk core with it (the groove floors are the crack's darkest
+    /// pixels); a pristine pier must stay hard-edged. Scope 2 narrows to the
+    /// pick, scope 0 needs no bit at all.
+    #[test]
+    fn rebuilt_geometry_opts_into_the_aa_scope() {
+        use crate::gym_scene::Pier;
+        use rt_probe::Scene;
+        let mut scene = Scene::default();
+        let mk = |scene: &mut Scene, x0: f32| {
+            let (lo, hi) = (Vec3::new(x0, 0.0, 9.9), Vec3::new(x0 + 6.0, 2.2, 10.15));
+            scene.add_box_world(lo, hi, [0.9, 0.9, 0.9, 1.0], [0.0; 4], 0.85, 0.0);
+            Pier { prim: scene.primitives.len() - 1, lo, hi, run_lo: lo, run_hi: hi }
+        };
+        let piers = vec![mk(&mut scene, 1.0), mk(&mut scene, 9.0)];
+        // pier 0 aged, pier 1 pristine
+        let mut lab = CrackLab {
+            knobs: vec![[0.9, 0.8, 0.6, 0.2], [0.0; 4]],
+            policy: vec![0; 2],
+            params: vec![[crate::crack_geom::param_defaults(0); crate::crack_geom::NPOL]; 2],
+            ..Default::default()
+        };
+        let par = lab.active_params();
+        lab.cores = crate::crack_geom::apply_geometry(&mut scene, &piers, &lab.knobs, &lab.policy, &par);
+        let pad = |scene: &Scene, p: &Pier| scene.materials[scene.primitives[p.prim].material_id as usize]._pad;
+        assert_ne!(pad(&scene, &piers[0]) & (crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT), 0, "the aged pier was rebuilt");
+        stamp_aa(&mut scene, &piers, &lab, 1);
+        assert_ne!(pad(&scene, &piers[0]) & AA_BIT, 0, "rebuilt geometry is AA-scoped");
+        assert_eq!(pad(&scene, &piers[1]) & AA_BIT, 0, "a pristine greybox pier stays hard-edged");
+        let core = lab.cores[0];
+        assert!(core >= 0, "the aged pier has a chalk core");
+        assert_ne!(scene.materials[core as usize]._pad & AA_BIT, 0, "the core (groove floors) is scoped too");
+        // scope 2 narrows to the pick: nothing picked -> nobody opts in
+        stamp_aa(&mut scene, &piers, &lab, 2);
+        assert_eq!(pad(&scene, &piers[0]) & AA_BIT, 0, "scope 2 with no pick leaves the wall alone");
+        lab.sel = Some(0);
+        stamp_aa(&mut scene, &piers, &lab, 2);
+        assert_ne!(pad(&scene, &piers[0]) & AA_BIT, 0, "scope 2 follows the pick");
     }
 
     /// Seeding is deterministic and clamped; vary=0 is exactly uniform.

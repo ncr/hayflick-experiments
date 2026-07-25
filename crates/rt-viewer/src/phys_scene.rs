@@ -45,6 +45,10 @@ pub fn author_wall_bricks(scene: &mut Scene, bricks: &[phys_spike::BrickSpec], l
         let color = [(wall[0] * v).min(1.0), (wall[1] * v).min(1.0), (wall[2] * v).min(1.0), wall[3]];
         let first = scene.primitives.len();
         scene.add_box_world(-b.half, b.half, color, [0.0; 4], 0.85, 0.0);
+        // rubble is greybox DETAIL geometry (a wall taken apart), so it opts into
+        // the contour AA per the 2026-07-25 policy — see gym_scene::AA_BIT. Brick
+        // silhouettes are small and tumbling; hard 1-px steps read as flicker.
+        crate::gym_scene::mark_aa(scene, first);
         scene.register_dynamic(&format!("phys/{i}"), first, 1, Mat4::from_scale(Vec3::ZERO));
     }
     let first = scene.primitives.len();

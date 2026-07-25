@@ -229,6 +229,24 @@ pending.
   (2,1) stair — see the 2026-05-16 learning); Faza 2 generalizes input
   shaping per projection via `Projection::pixel_basis`.
 
+## Greybox detail = AA-scoped (owner policy, 2026-07-25; binding)
+
+The contour AA is OFF on plain greybox — flat slabs and their clean pixel
+stairs ARE the look — and ON exactly where a generator has added procedural
+detail geometry, because that detail lives at the pixel scale where a thin
+dark feature turns into isolated black dots. The owner approved this shape and
+generalized it: **"the selective-AA approach, only on the areas that MODIFY the
+greyboxes — let's use it for all modifications of this kind."**
+
+So every generator that deforms or replaces greybox geometry — the crack lab's
+faults / veneer / craters, the wall-smash rubble, and whatever spalling,
+patching or growth comes next — MARKS what it built
+(`gym_scene::mark_aa` / `AA_BIT`, `Material._pad` bit 7). Marking is static
+scene data; the ESC `aa scope` row only NARROWS it (to the picked wall) or
+ignores it (scope 0 = every surface). A generator that forgets to mark ships
+detail that dot-dashes; the crack lab pins the rule with
+`rebuilt_geometry_opts_into_the_aa_scope`.
+
 ## Process (docs/VISION.md, binding)
 
 - The owner playtests ONLY via the in-game menus (ESC) — never CLI params.

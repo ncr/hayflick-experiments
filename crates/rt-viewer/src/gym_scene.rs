@@ -51,6 +51,32 @@ const WALL_HT: f32 = 0.1; // wall half-thickness (0.2 wu slab, on the 0.1 grid)
 const ROOF_BASE: f32 = 2.0;
 const ROOF_TOP: f32 = 2.5;
 
+/// `Material._pad` bit 7 — **THE GREYBOX-DETAIL AA OPT-IN (owner policy,
+/// 2026-07-25: "the selective-AA approach, only on the areas that MODIFY the
+/// greyboxes — let's use it for all modifications of this kind")**.
+///
+/// The contour AA (see the pixel-perfect contract in CLAUDE.md) is off by
+/// default on plain greybox: flat slabs and their clean pixel stairs ARE the
+/// look. It switches on exactly where a generator has added procedural detail
+/// geometry — crack grooves, veneer plates, spall craters, rubble — because
+/// that detail lives at the pixel scale, where the sampling lottery turns a
+/// thin dark feature into isolated black dots.
+///
+/// So the rule for every generator that deforms or replaces greybox geometry:
+/// **mark what you built** ([`mark_aa`]), and the AA (plus the softening) will
+/// scope itself to it. Marking is static scene data; the ESC `aa scope` row
+/// only ever NARROWS it (to the picked wall) or ignores it (scope 0 = every
+/// surface).
+pub const AA_BIT: i32 = 128;
+
+/// Opt a primitive's material into the contour AA — see [`AA_BIT`] for the
+/// policy. `add_box_world`/`add_mesh_world` mint one material per box/mesh, so
+/// this targets exactly what the generator just appended.
+pub fn mark_aa(scene: &mut Scene, prim: usize) {
+    let mid = scene.primitives[prim].material_id as usize;
+    scene.materials[mid]._pad |= AA_BIT;
+}
+
 /// Flag a primitive's material as a see-through OCCLUDER (Material._pad
 /// bit 1), the bit the shade pass reads to know a primary-ray hit is a wall
 /// the ROI reveal / WALLCUT may dissolve. `add_box_world` mints one material
