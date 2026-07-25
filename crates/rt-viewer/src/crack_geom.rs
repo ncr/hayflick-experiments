@@ -3,15 +3,30 @@
 //! Every knobbed pier gets BOTH layers (owner round 6, 2026-07-23: patterns
 //! must read on faulted walls too — fault and craze COMPOSE now):
 //!
+//! Both scales are PROPAGATED now (owner round 8, 2026-07-25: "cracks should
+//! be more like lightning — branching, a bit irregular — not straight
+//! lines"): [`Walk`] grows a path, [`Bolt`] wraps it as something any polygon
+//! can be clipped against, [`carve`] turns a face plus a bolt list into
+//! pieces or plates. The one invariant that makes it exact: the walker keeps
+//! every step inside a corridor around its launch axis, so a bolt is a
+//! FUNCTION in its own frame — jagged, forked, but never folded back.
+//!
 //! STRUCTURAL FAULTS (owner, 2026-07-23: painted faults read flat): a pier
-//! whose knobs produce a structural fault (same lattice the shaders paint —
-//! `faultAt` in shade.comp/shade.metal, mirrored here float-for-float) is
-//! SPLIT: its box prim collapses to a point and jagged pieces are appended
-//! along the crack path, separated by a real gap (wider at the top —
-//! settlement taper) with one side DROPPED a few cm (the shear step). The
-//! pieces share the pier's material, so knobs / selection / occluder flags
-//! keep working per-segment; `Material._pad` bit 5 ([`GEO_BIT`]) tells the
-//! shade pass to suppress the painted fault core + bevel.
+//! whose knobs produce a structural fault (presence + the smooth SPINE are
+//! the lattice the shaders paint — `faultAt` in shade.comp/shade.metal,
+//! mirrored here float-for-float, which is what lets [`GEO_BIT`] suppress the
+//! paint and keeps the painted stain track on the seam) is SPLIT: its box
+//! prim collapses to a point and the pieces the break carves are appended as
+//! prisms, separated by a real gap (wider at the top — settlement taper) with
+//! one side DROPPED a few cm (the shear step). The break's path is a jagged
+//! spine-anchored trunk (round 8, was one smooth vnoise wander), and it FRAYS
+//! into forks — short, wide, near-vertical surface cracks that groove the
+//! veneer WITHOUT separating the wall (a non-through cut must never carve
+//! pieces: a piece boundary is as long as whatever it splits, so the cut's
+//! invisible extension would draw a line clean across the wall). The pieces
+//! share the pier's material, so knobs / selection / occluder flags keep
+//! working per-segment; `Material._pad` bit 5 ([`GEO_BIT`]) tells the shade
+//! pass to suppress the painted fault core + bevel.
 //!
 //! CRAZE (owner rounds 4-7: small cracks geometric, min width 1 px, depth
 //! knob = groove depth sets the lighting/vibe, selectable pattern POLICIES,
@@ -33,6 +48,12 @@
 //! the network clusters along the big seam, and the piece front/back planes
 //! become the chalk core.
 //!
+//! Two rules the round-8 geometry leans on, both learned the hard way (see
+//! docs/AGENT_LEARNINGS.md): a CLOSED seam must carry a wall (or rays slip
+//! into the hollow piece) but only across the CORE (or the sheet stands proud
+//! of the inset face), and nothing keyed to "is this edge cracked" may fire
+//! on a closed seam — chamfers and sink steps included.
+//!
 //! Sim untouched: gaps are centimetres, nobody walks through a cracked wall.
 //! Render-side only, deterministic — a pure function of pier + knobs + policy.
 
@@ -52,10 +73,13 @@ pub const GEO_BIT: i32 = 32;
 pub const CRAZE_BIT: i32 = 64;
 
 /// Craze pattern policies, panel row + `CRACKS=..,policy` order. `lightning`
-/// is propagation: bolts root at the top or fork off their parent crack,
-/// wander with kinks and taper to a dead-end tip (it replaced the recursive
-/// `fracture` splitter — owner round 7: "unbelievable shapes");
-/// `craquelure` a fine axis-biased ladder (glaze crack webs — owner: the
+/// is a real propagation NETWORK since round 8 ([`bolt_network`]): roots land
+/// where the wall is failing, each grows a kinked, forking tree whose paths
+/// die on the damage zone's edge or on an older crack (T-junction), and the
+/// plates are whatever the network leaves. (Rounds 4-7 emulated this by
+/// shaping BSP cuts; a BSP cut always crosses its region, so the cracks came
+/// out as long smooth curves — the owner's round-8 complaint.) `craquelure`
+/// is the fine axis-biased [`Ladder`] (glaze crack webs — owner: the
 /// near-rectangular plates could seed a unique look); `mosaic` the Worley
 /// cell A/B baseline (owner: reads fake — kept to compare against).
 pub const POLICIES: [&str; 3] = ["lightning", "craquelure", "mosaic"];
@@ -69,6 +93,8 @@ pub const NPOL: usize = POLICIES.len();
 /// the pattern row. Geometry-only inputs: a drag rebuilds on release, no
 /// material bits involved.
 pub const PARAMS_MAX: usize = 3;
+/// (lightning: `branch` = how hard the walk forks, `straight` = wander/kink
+/// amplitude and heading persistence, `spread` = fork angle.)
 pub const POLICY_PARAMS: [&[(&str, f32)]; 3] = [
     &[("branch", 0.5), ("straight", 0.55), ("spread", 0.45)],
     &[("scale", 0.5), ("wave", 0.35)],
@@ -339,6 +365,15 @@ impl CrazeCfg {
         let z = smoothstep(self.d_t + 0.02, self.d_t + 0.08, self.dmg(su, sy));
         z.max(0.5 * self.halo(su, sy))
     }
+    /// Where CRACKS may run — a wider, EARLIER slice of the damage field than
+    /// the crazing/stain zone. A crack propagates out of the worst patch into
+    /// merely tired material (that is why real cracks are long while the
+    /// staining stays patchy); gating cracks on the stain zone left a
+    /// mid-aged wall visibly pristine, which is not what "aged" looks like.
+    fn crack_zone(&self, su: f32, sy: f32) -> f32 {
+        let z = smoothstep(self.d_t - 0.10, self.d_t - 0.02, self.dmg(su, sy));
+        z.max(0.7 * self.halo(su, sy))
+    }
     fn stain_w(&self, su: f32, sy: f32) -> f32 {
         smoothstep(self.d_t - 0.14, self.d_t + 0.02, self.dmg(su, sy))
     }
@@ -359,7 +394,12 @@ impl CrazeCfg {
         let c = poly_centroid(&poly);
         let mut live = self.zone(c.x, c.y) > 0.35 && h(91.0) < self.cover;
         if live && self.sink_perimeter {
-            live = poly.iter().all(|p| self.zone(p.x, p.y) > 0.35);
+            // cracked free ALL ROUND or it must not sink: a step along a
+            // CLOSED seam is a sub-pixel edge that dot-dashes at best, and at
+            // worst draws the bolt's invisible extension as a straight line
+            // across the wall (round 8 — the round-4 rule, now read off the
+            // real per-edge open flags instead of the damage field)
+            live = open.iter().all(|o| *o);
         }
         // chips cluster in the stain patches AND bite the fault's flanks
         let chp_eff = self.chip * (smoothstep(0.45, 0.85, self.stain_w(c.x, c.y)) + 0.9 * self.halo(c.x, c.y)).clamp(0.0, 1.0);
@@ -424,7 +464,7 @@ fn curved_clip(poly: &[Vec2], f: &dyn Fn(Vec2) -> f32) -> Vec<Vec2> {
             (pp, pf) = (p, fv);
         }
     }
-    simplify(&mut out);
+    simplify(&mut out, 0.004);
     out
 }
 
@@ -432,15 +472,14 @@ fn curved_clip(poly: &[Vec2], f: &dyn Fn(Vec2) -> f32) -> Vec<Vec2> {
 /// clip's subdivision points on straight runs collapse back, groove edges
 /// keep their wander. Purely per-polygon — grooved sides never touch, and
 /// closed seams deviate under the tolerance (coincident to a quarter px).
-fn simplify(poly: &mut Vec<Vec2>) {
-    const TOL: f32 = 0.004;
+fn simplify(poly: &mut Vec<Vec2>, tol: f32) {
     let mut i = 0;
     while poly.len() > 3 && i < poly.len() {
         let n = poly.len();
         let (a, b, c) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
         let ac = c - a;
         let d = if ac.length_squared() < 1e-12 { 0.0 } else { (b - a).perp_dot(ac).abs() / ac.length() };
-        if d < TOL || (b - a).length_squared() < 1e-10 {
+        if d < tol || (b - a).length_squared() < 1e-10 {
             poly.remove(i);
         } else {
             i += 1;
@@ -484,45 +523,48 @@ fn triangulate(poly: &[Vec2]) -> Vec<[u32; 3]> {
 // ---- wandering cuts --------------------------------------------------------
 
 /// Anything a polygon can be clipped against along a wandering path: the
-/// splitter's cuts AND the structural faults (a fault IS a cut — that's how
-/// veneer fragments ride the fault pieces).
+/// craquelure ladder's analytic [`Cut`]s AND the propagated [`Bolt`]s (both
+/// crack scales — a structural break IS a bolt, which is how veneer
+/// fragments ride the fault pieces).
 trait CutLike {
-    /// Tangent direction (the path parameter axis).
-    fn tangent(&self) -> Vec2;
+    /// The path's own parameter at `p` (the analytic cuts project onto their
+    /// tangent; a bolt reports its launch-frame height).
+    fn t_of(&self, p: Vec2) -> f32;
     /// Clip field for one side (`side` +1 keeps below/left of the path,
     /// -1 the other side): negative = kept, zero = this side's groove wall.
     fn field(&self, p: Vec2, side: f32) -> f32;
-    /// A point ON this side's groove wall at tangent coord `t`.
+    /// A point ON this side's groove wall at path coord `t`.
     fn wall(&self, t: f32, side: f32) -> Vec2;
+    /// This side's groove wall from `t0` to `t1` (ends excluded), appended in
+    /// order. The default samples uniformly — smooth paths lose nothing;
+    /// [`Bolt`] overrides it to walk its OWN vertices so kinks survive the
+    /// clip instead of being averaged into a soft curve.
+    fn wall_path(&self, t0: f32, t1: f32, side: f32, out: &mut Vec<Vec2>) {
+        let steps = ((t1 - t0).abs() / 0.06).ceil() as usize;
+        for s in 1..steps {
+            out.push(self.wall(mixf(t0, t1, s as f32 / steps as f32), side));
+        }
+    }
 }
 
-/// One wandering cut through a region: signed field `s` (negative side A),
-/// groove half-width opening only inside the damage zone — the crack
-/// network's topology is global (hierarchy + T-junctions) but the cracks
-/// themselves live in the damaged patches, hairline tips ending crisply.
+/// One analytic wandering cut through a region (the craquelure ladder):
+/// signed field `s` (negative side A), groove half-width opening only inside
+/// the damage zone — the ladder's topology is global but the cracks
+/// themselves live in the damaged patches, tips ending crisply.
 #[derive(Clone)]
 struct Cut {
     n: Vec2,
     d: Vec2,
     c0: f32,
     amp: f32,
-    /// Extra high-frequency wander octave — the lightning policy's jag
-    /// (straightness turns it down); zero for the ladder.
-    kink: f32,
     idf: f32,
     seed: f32,
     half_g: f32,
-    /// Width floor (half): the >= 1 px guarantee survives the taper.
-    wfloor: f32,
     /// Tangent range where the groove is OPEN — resolved ONCE per cut from
     /// the damage field: first zone crossing to last, one continuous crack.
     /// (Per-sample gating chatters across the fbm threshold and the crack
     /// dashes out mid-run; real cracks connect their damaged ends.)
     span: Option<(f32, f32)>,
-    /// Lightning propagation: (root t, tip t) — full width at the root
-    /// (where the bolt entered or forked), tapering toward the dead-end
-    /// tip. None = uniform width (the ladder).
-    taper: Option<(f32, f32)>,
 }
 
 impl Cut {
@@ -530,7 +572,6 @@ impl Cut {
         ((vnoise(Vec3::new(t * 1.3, self.idf * 5.7, self.seed + 71.0)) - 0.5) * 1.6
             + (vnoise(Vec3::new(t * 5.3, self.idf * 5.7, self.seed + 87.0)) - 0.5) * 0.35)
             * self.amp
-            + (vnoise(Vec3::new(t * 3.7, self.idf * 5.7, self.seed + 53.0)) - 0.5) * self.kink
     }
     /// Resolve the open span over the region's tangent range: the damage
     /// zone sampled along the CENTERLINE (both sides agree exactly).
@@ -550,25 +591,18 @@ impl Cut {
             (lo - 0.05, hi + 0.05)
         });
     }
-    /// Groove half-width at tangent coord `t` — tapered root→tip for
-    /// lightning bolts, never below the pixel floor while open.
+    /// Groove half-width at tangent coord `t` (0 = closed seam).
     fn gate(&self, t: f32) -> f32 {
         match self.span {
-            Some((a, b)) if t >= a && t <= b => match self.taper {
-                Some((root, tip)) if (tip - root).abs() > 1e-4 => {
-                    let u = ((t - root) / (tip - root)).clamp(0.0, 1.0);
-                    (self.half_g * mixf(1.0, 0.30, u * u)).max(self.wfloor)
-                }
-                _ => self.half_g,
-            },
+            Some((a, b)) if t >= a && t <= b => self.half_g,
             _ => 0.0,
         }
     }
 }
 
 impl CutLike for Cut {
-    fn tangent(&self) -> Vec2 {
-        self.d
+    fn t_of(&self, p: Vec2) -> f32 {
+        p.dot(self.d)
     }
     fn field(&self, p: Vec2, side: f32) -> f32 {
         let t = p.dot(self.d);
@@ -579,25 +613,271 @@ impl CutLike for Cut {
     }
 }
 
-/// A structural fault seen as a cut in face coords: path `u = f.u(y)`,
-/// always open at the full (tapered) gap width. Side +1 keeps the lower-u
-/// piece.
-struct FaultCut<'a> {
-    f: &'a Fault,
-    y0: f32,
-    y1: f32,
+// ---- propagation: the crack walker + the Bolt primitive (round 8) ----------
+//
+// Owner round 8 (2026-07-25): "the cracks should be more like LIGHTNING —
+// branching, a bit irregular — not straight lines. Two kinds: the coarse one
+// (a wall cracked in half) and the age crazing." Analytic lines cannot kink
+// or branch, so both scales are grown by the same walker now.
+
+fn rot(v: Vec2, a: f32) -> Vec2 {
+    let (s, c) = a.sin_cos();
+    Vec2::new(c * v.x - s * v.y, s * v.x + c * v.y)
 }
 
-impl CutLike for FaultCut<'_> {
-    fn tangent(&self) -> Vec2 {
-        Vec2::Y
+/// The walker's dials. Steps are >= ~3 screen px so a kink actually RESOLVES
+/// at the low-res target (the 2026-07-23 lesson in another suit: sub-pixel
+/// detail is a per-pixel lottery, so irregularity has to be coarse).
+struct Walk {
+    seed: f32,
+    /// mean segment length in wu
+    step: f32,
+    /// per-step wander (radians)
+    turn: f32,
+    /// chance a step KINKS, and by how much — the masonry stair-step that
+    /// makes a crack read as brittle failure instead of a drawn curve
+    kink_p: f32,
+    kink_a: f32,
+    /// how strongly the heading HOLDS an excursion (0 = snaps straight back
+    /// to the launch axis and draws a line, ~0.95 = meanders like a crack)
+    persist: f32,
+    /// HARD corridor around the launch axis: the walk may zig-zag violently
+    /// but never fold back, so the path stays a function in its launch frame
+    /// (see [`Bolt`] — that invariant is what keeps the clip exact).
+    corridor: f32,
+}
+
+impl Walk {
+    fn h(&self, id: u32, i: usize, k: f32) -> f32 {
+        hash13(Vec3::new(id as f32 * 0.618 + i as f32 * 1.37, self.seed + k, 13.0))
+    }
+    /// Propagate from `start` along `dir` for `budget` wu, stopping early
+    /// wherever `stop` says the crack dies (out of the damage zone, off the
+    /// face, or ON an older crack — the T-junction). The angle off the launch
+    /// axis decays each step, so a bolt wanders and kinks but keeps heading.
+    fn grow(&self, start: Vec2, dir: Vec2, budget: f32, id: u32, stop: &dyn Fn(Vec2) -> bool) -> Vec<Vec2> {
+        let a0 = dir.y.atan2(dir.x);
+        let mut a = 0.0f32;
+        let mut pts = vec![start];
+        let mut len = 0.0;
+        let mut i = 0usize;
+        while len < budget && i < 48 {
+            let mut da = (self.h(id, i, 3.0) - 0.5) * 2.0 * self.turn;
+            if self.h(id, i, 17.0) < self.kink_p {
+                let s = if self.h(id, i, 23.0) < 0.5 { 1.0 } else { -1.0 };
+                da += s * self.kink_a * (0.55 + 0.9 * self.h(id, i, 29.0));
+            }
+            a = (a * self.persist + da).clamp(-self.corridor, self.corridor);
+            let sl = self.step * (0.55 + 0.9 * self.h(id, i, 37.0));
+            let p = *pts.last().unwrap() + Vec2::from_angle(a0 + a) * sl;
+            if stop(p) {
+                break;
+            }
+            pts.push(p);
+            len += sl;
+            i += 1;
+        }
+        pts
+    }
+}
+
+/// A propagated crack — the round-8 primitive BOTH crack scales share.
+///
+/// Because the walker keeps every step inside a corridor around the launch
+/// axis, the path is a FUNCTION `u = f(v)` in its own (normal, axis) frame:
+/// it can zig-zag, kink and fork, but never fold back over itself. That
+/// invariant keeps the clip EXACT — side-of-crack is just the sign of
+/// `u - f(v)`, the same structure the analytic cuts always had, now with a
+/// jagged f (no distance field, no parity walk, no ambiguous kink wedges).
+struct Bolt {
+    axis: Vec2,
+    /// path vertices in the launch frame; `vs` strictly increasing
+    vs: Vec<f32>,
+    us: Vec<f32>,
+    /// per-segment 1/cos of the tilt off the axis: the groove is measured
+    /// along the frame's u, so a steep segment must open WIDER in u to keep
+    /// its >= 1 px width ACROSS the crack (capped — 3x is plenty)
+    sec: Vec<f32>,
+    /// the OPEN span in v; outside it the seam is CLOSED (plates touch, so
+    /// the straight extensions that make the bolt cross its region — and
+    /// therefore split it — stay invisible)
+    open: (f32, f32),
+    /// width anchors: `half` at `root`, `half * tip_ratio` at `tip`
+    root: f32,
+    tip: f32,
+    half: f32,
+    tip_ratio: f32,
+    taper_pow: f32,
+    /// pinch/gape along the run (0 = even width)
+    wobw: f32,
+    wfloor: f32,
+    seedf: f32,
+    /// a STRUCTURAL break: separates the pier full depth and drops one side
+    through: bool,
+    /// which `side` label sinks (only meaningful when `through`)
+    sink_side: f32,
+    /// bbox of the OPEN span, half-width padded — the carve's reject test
+    lo: Vec2,
+    hi: Vec2,
+}
+
+impl Bolt {
+    /// Wrap a grown path (face coords, root→tip) into a bolt. `None` when the
+    /// path never advances along its axis (a stillborn crack).
+    fn new(path: &[Vec2], axis: Vec2, half: f32, wfloor: f32, seedf: f32) -> Option<Bolt> {
+        let axis = axis.normalize_or(Vec2::Y);
+        let nrm = Vec2::new(axis.y, -axis.x);
+        let (mut vs, mut us) = (Vec::with_capacity(path.len()), Vec::with_capacity(path.len()));
+        for p in path {
+            let v = p.dot(axis);
+            if vs.last().is_some_and(|last: &f32| v <= *last + 1e-4) {
+                continue;
+            }
+            vs.push(v);
+            us.push(p.dot(nrm));
+        }
+        if vs.len() < 2 {
+            return None;
+        }
+        let sec: Vec<f32> = (0..vs.len() - 1)
+            .map(|i| {
+                let (dv, du) = (vs[i + 1] - vs[i], us[i + 1] - us[i]);
+                (dv.hypot(du) / dv.max(1e-4)).min(3.0)
+            })
+            .collect();
+        let open = (vs[0], vs[vs.len() - 1]);
+        let mut b = Bolt {
+            axis,
+            vs,
+            us,
+            sec,
+            open,
+            root: open.0,
+            tip: open.1,
+            half,
+            tip_ratio: 0.35,
+            taper_pow: 2.0,
+            wobw: 0.45,
+            wfloor,
+            seedf,
+            through: false,
+            sink_side: 1.0,
+            lo: Vec2::ZERO,
+            hi: Vec2::ZERO,
+        };
+        let (mut lo, mut hi) = (path[0], path[0]);
+        for p in path {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        let pad = Vec2::splat(b.half * 3.0 + 0.02);
+        (b.lo, b.hi) = (lo - pad, hi + pad);
+        Some(b)
+    }
+    /// Root the width at the FAR end instead (settlement gaps are widest at
+    /// the top, where the wall has pulled apart most).
+    fn rooted_at_tip_end(mut self, ratio: f32, pow: f32) -> Bolt {
+        (self.root, self.tip) = (self.open.1, self.open.0);
+        (self.tip_ratio, self.taper_pow) = (ratio, pow);
+        self
+    }
+    fn tapered(mut self, ratio: f32, pow: f32) -> Bolt {
+        (self.tip_ratio, self.taper_pow) = (ratio, pow);
+        self
+    }
+    /// Mark this bolt a structural break: `sink` is the `side` that settles.
+    fn structural(mut self, sink: f32, wob: f32) -> Bolt {
+        (self.through, self.sink_side, self.wobw) = (true, sink, wob);
+        self
+    }
+    fn nrm(&self) -> Vec2 {
+        Vec2::new(self.axis.y, -self.axis.x)
+    }
+    fn loc(&self, p: Vec2) -> Vec2 {
+        Vec2::new(p.dot(self.nrm()), p.dot(self.axis))
+    }
+    fn world(&self, l: Vec2) -> Vec2 {
+        self.nrm() * l.x + self.axis * l.y
+    }
+    /// Segment index containing frame height `v` (clamped to the ends).
+    fn seg(&self, v: f32) -> usize {
+        let n = self.vs.len();
+        let (mut a, mut b) = (0usize, n - 1);
+        while b - a > 1 {
+            let m = (a + b) / 2;
+            if self.vs[m] <= v {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        a
+    }
+    /// The path's u at frame height `v`. Outside the grown span the path
+    /// extends STRAIGHT ALONG THE AXIS (a closed seam, so its shape is
+    /// invisible) — that keeps f total and the clip well-defined everywhere.
+    fn f(&self, v: f32) -> f32 {
+        let n = self.vs.len();
+        if v <= self.vs[0] {
+            return self.us[0];
+        }
+        if v >= self.vs[n - 1] {
+            return self.us[n - 1];
+        }
+        let i = self.seg(v);
+        mixf(self.us[i], self.us[i + 1], (v - self.vs[i]) / (self.vs[i + 1] - self.vs[i]).max(1e-6))
+    }
+    /// Groove half-width at frame height `v`, measured along the frame's u
+    /// (0 = closed). Taper root→tip, a width wobble that pinches and gapes
+    /// along the run, the >= 1 px floor, then the steep-segment correction.
+    fn halfw(&self, v: f32) -> f32 {
+        if v <= self.open.0 || v >= self.open.1 {
+            return 0.0;
+        }
+        let t = ((v - self.root) / (self.tip - self.root)).clamp(0.0, 1.0);
+        let taper = mixf(1.0, self.tip_ratio, t.powf(self.taper_pow));
+        let wob = (1.0 + self.wobw * (vnoise(Vec3::new(v * 2.3, self.seedf, 41.0)) - 0.5) * 2.0).max(0.3);
+        (self.half * taper * wob).max(self.wfloor) * self.sec[self.seg(v)]
+    }
+    /// Is `p` within `r` of this bolt's OPEN run? (The T-junction test: a
+    /// crack that reaches another crack stops there — real networks are
+    /// T-junctions, and the old BSP model could not express one.)
+    fn hits(&self, p: Vec2, r: f32) -> bool {
+        let l = self.loc(p);
+        l.y > self.open.0 && l.y < self.open.1 && (l.x - self.f(l.y)).abs() / self.sec[self.seg(l.y)] < r
+    }
+}
+
+impl CutLike for Bolt {
+    fn t_of(&self, p: Vec2) -> f32 {
+        self.loc(p).y
     }
     fn field(&self, p: Vec2, side: f32) -> f32 {
-        side * (p.x - self.f.u(p.y)) + self.f.gap(p.y, self.y0, self.y1) * 0.5
+        let l = self.loc(p);
+        side * (l.x - self.f(l.y)) + self.halfw(l.y)
     }
     fn wall(&self, t: f32, side: f32) -> Vec2 {
-        Vec2::new(self.f.u(t) - side * self.f.gap(t, self.y0, self.y1) * 0.5, t)
+        self.world(Vec2::new(self.f(t) - side * self.halfw(t), t))
     }
+    /// Walk the bolt's OWN vertices (plus intermediate samples for the width
+    /// wobble): a kink must land on the polygon boundary as a kink.
+    fn wall_path(&self, t0: f32, t1: f32, side: f32, out: &mut Vec<Vec2>) {
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        let steps = ((hi - lo) / 0.06).ceil().max(1.0) as usize;
+        let mut ts: Vec<f32> = (1..steps).map(|s| lo + (hi - lo) * s as f32 / steps as f32).collect();
+        ts.extend(self.vs.iter().copied().filter(|v| *v > lo + 1e-4 && *v < hi - 1e-4));
+        ts.sort_by(f32::total_cmp);
+        if t1 < t0 {
+            ts.reverse();
+        }
+        out.extend(ts.into_iter().map(|t| self.wall(t, side)));
+    }
+}
+
+/// Does any bolt (bar `skip`) already own the ground at `p`? Cracks stop on
+/// each other — that is what turns a bundle of paths into a NETWORK.
+fn any_hit(bolts: &[Bolt], p: Vec2, skip: usize, r: f32) -> bool {
+    bolts.iter().enumerate().any(|(i, b)| i != skip && b.hits(p, r))
 }
 
 /// Clip a region polygon to one side of a wandering cut. A plain polygon
@@ -629,7 +909,6 @@ fn cut_clip(poly: &[Vec2], cut: &dyn CutLike, side: f32) -> Vec<Vec2> {
             (pp, pf) = (p, fv);
         }
     }
-    let d = cut.tangent();
     let m = walk.len();
     let mut out = Vec::with_capacity(m * 2);
     for i in 0..m {
@@ -638,37 +917,28 @@ fn cut_clip(poly: &[Vec2], cut: &dyn CutLike, side: f32) -> Vec<Vec2> {
         let (q, qx) = walk[(i + 1) % m];
         if px && qx {
             // exit → entry: the dropped span runs along the cut — trace the wall
-            let (t0, t1) = (p.dot(d), q.dot(d));
-            let steps = ((t1 - t0).abs() / 0.06).ceil() as usize;
-            for s in 1..steps {
-                out.push(cut.wall(mixf(t0, t1, s as f32 / steps as f32), side));
-            }
+            cut.wall_path(cut.t_of(p), cut.t_of(q), side, &mut out);
         }
     }
-    simplify(&mut out);
+    // NEAR-exact only: both sides of a CLOSED seam are walked independently,
+    // so any tolerance they do not agree on becomes a real gap between two
+    // coplanar plates — a ray slips through it and draws the cut's invisible
+    // extension as a dark dashed line across the wall (round 8's last
+    // artifact: 0.004 wu is 1/6 px, which is 15% of a pixel's worth of slip).
+    simplify(&mut out, 2e-4);
     out
 }
 
 // ---- fragment generators (the pattern policies) ----------------------------
 
-/// The recursive split policies (lightning / craquelure): carve the face
-/// rect into fragments by wandering cuts. LIGHTNING is propagation dressed
-/// as recursion: a near-vertical primary bolt roots at the top of the
-/// damage span and runs a budgeted length (tapering to a dead-end tip);
-/// each sub-region may then fork ONE child off the parent bolt — rooted at
-/// the end nearest the parent's path, angled by `spread`, gated by
-/// `branch`, jag set by `straight`. CRAQUELURE stays near-axis, finer and
-/// uniform — the glaze-web ladder (`scale` sizes the plates, `wave` bends
-/// the lines). Regions with no damage (and no fault halo) anywhere stop
-/// splitting early (one flush plate, no wasted tris).
-enum SplitMode {
-    Bolt,
-    Ladder,
-}
-
-struct Splitter<'a> {
+/// The CRAQUELURE policy: a near-axis LADDER splitter — the glaze-web look
+/// (fine, near-rectangular plates; `scale` sizes them, `wave` bends the
+/// lines). Regions with no damage (and no fault halo) anywhere stop
+/// splitting early (one flush plate, no wasted tris). Lightning left this
+/// machinery in round 8 — a BSP cut always crosses its region, which is
+/// exactly what a propagating crack must NOT do.
+struct Ladder<'a> {
     cfg: &'a CrazeCfg,
-    mode: SplitMode,
     opened: &'a StdCell<bool>,
     /// Ancestor cuts + which side kept this branch — the leaf polygons'
     /// edges are probed against these to learn which edges border an OPEN
@@ -677,7 +947,7 @@ struct Splitter<'a> {
     out: Vec<Frag>,
 }
 
-impl Splitter<'_> {
+impl Ladder<'_> {
     fn h(&self, id: u32, k: f32) -> f32 {
         hash13(Vec3::new(id as f32 * 0.618, self.cfg.seed + k, 9.1))
     }
@@ -689,9 +959,7 @@ impl Splitter<'_> {
         (0..poly.len())
             .map(|i| {
                 let m = (poly[i] + poly[(i + 1) % poly.len()]) * 0.5;
-                self.stack.iter().any(|(cut, side)| {
-                    cut.field(m, *side).abs() < 0.008 && cut.gate(m.dot(cut.d)) > 0.0
-                })
+                self.stack.iter().any(|(cut, side)| cut.field(m, *side).abs() < 0.008 && cut.gate(m.dot(cut.d)) > 0.0)
             })
             .collect()
     }
@@ -704,12 +972,10 @@ impl Splitter<'_> {
         }
     }
 
-    fn rec(&mut self, poly: Vec<Vec2>, id: u32, depth: u32, pdir: Vec2) {
+    fn rec(&mut self, poly: Vec<Vec2>, id: u32, depth: u32) {
         if poly.len() < 3 {
             return;
         }
-        let (branch, straight, spread) = (self.cfg.par[0], self.cfg.par[1], self.cfg.par[2]);
-        let ladder = matches!(self.mode, SplitMode::Ladder);
         let (mut lo, mut hi) = (poly[0], poly[0]);
         for p in &poly {
             lo = lo.min(*p);
@@ -728,33 +994,13 @@ impl Splitter<'_> {
             self.emit(poly, id);
             return;
         }
-        // lightning: branching is the owner's dial — a pruned region stays whole
-        if !ladder && depth >= 1 && self.h(id, 31.0) >= mixf(0.30, 0.97, branch) {
-            self.emit(poly, id);
-            return;
-        }
-        let min_ext = if ladder {
-            ((1.3 / self.cfg.freq) * mixf(0.55, 2.2, self.cfg.par[0])).max(0.14)
-        } else {
-            (1.5 / self.cfg.freq).max(0.18)
-        };
-        // cut orientation: bolts run near-vertical (settlement) at the root
-        // and FORK off their parent's direction by the spread angle;
-        // craquelure hugs the axes and splits its longer side
-        let d = if ladder {
+        let min_ext = ((1.3 / self.cfg.freq) * mixf(0.55, 2.2, self.cfg.par[0])).max(0.14);
+        // the ladder hugs the axes and splits its longer side
+        let d = {
             let vert = hi.x - lo.x >= hi.y - lo.y;
             let base = if vert { Vec2::X } else { Vec2::Y };
             let ang = (self.h(id, 3.0) - 0.5) * mixf(0.02, 0.45, self.cfg.par[1]);
-            let (sa, ca) = ang.sin_cos();
-            Vec2::new(ca * base.x - sa * base.y, sa * base.x + ca * base.y).perp()
-        } else if depth == 0 {
-            let tilt = (self.h(id, 3.0) - 0.5) * 0.6;
-            Vec2::new(tilt.sin(), -tilt.cos())
-        } else {
-            let fork = mixf(0.25, 1.15, spread) * (0.7 + 0.6 * self.h(id, 37.0));
-            let sgn = if self.h(id, 41.0) < 0.5 { 1.0 } else { -1.0 };
-            let (sa, ca) = (sgn * fork).sin_cos();
-            Vec2::new(ca * pdir.x - sa * pdir.y, sa * pdir.x + ca * pdir.y)
+            rot(base, ang).perp()
         };
         let n = d.perp();
         let (mut s0, mut s1) = (f32::MAX, f32::MIN);
@@ -768,30 +1014,17 @@ impl Splitter<'_> {
             self.emit(poly, id);
             return;
         }
-        let span = if ladder { (0.42, 0.58) } else { (0.32, 0.68) };
-        let c0 = mixf(s0 + ext * span.0, s0 + ext * span.1, self.h(id, 11.0));
-        // straightness turns the bolt's wander AND its jag down together
-        let (amp, kink) = if ladder {
-            (mixf(0.003, 0.045, self.cfg.par[1]), 0.0)
-        } else {
-            ((mixf(0.30, 0.05, straight) * ext).min(0.12), (mixf(0.14, 0.015, straight) * ext).min(0.05))
-        };
-        // width hierarchy: the primary bolt is the trunk, forks thin out;
-        // craquelure is uniformly hairline; everything widens with depth
-        let hier = if ladder { 1.0 } else { (2.6 * 0.62f32.powi(depth as i32)).max(1.0) };
-        let g = self.cfg.groove_w(hier * (1.0 + 0.4 * (self.h(id, 19.0) - 0.5)));
+        let c0 = mixf(s0 + ext * 0.42, s0 + ext * 0.58, self.h(id, 11.0));
+        let g = self.cfg.groove_w(1.0 + 0.4 * (self.h(id, 19.0) - 0.5));
         let mut cut = Cut {
             n,
             d,
             c0,
-            amp,
-            kink,
+            amp: mixf(0.003, 0.045, self.cfg.par[1]),
             idf: id as f32,
             seed: self.cfg.seed,
             half_g: g * 0.5,
-            wfloor: self.cfg.px1 * 0.5,
             span: None,
-            taper: None,
         };
         let (mut td0, mut td1) = (f32::MAX, f32::MIN);
         for p in &poly {
@@ -800,28 +1033,6 @@ impl Splitter<'_> {
             td1 = td1.max(t);
         }
         cut.resolve_span(self.cfg, td0, td1, self.opened);
-        // propagation: the bolt ROOTS at one end of its damage span — the
-        // top for primaries (settlement enters from above), the end nearest
-        // the parent's crack for forks — runs a budgeted length and dies in
-        // a tapered dead-end tip instead of always crossing the region
-        if !ladder {
-            if let Some((zlo, zhi)) = cut.span {
-                let cpt = |t: f32| cut.d * t + cut.n * (cut.c0 + cut.wander(t));
-                let (plo, phi) = (cpt(zlo), cpt(zhi));
-                let root_hi = if depth == 0 {
-                    let bias = if phi.y > plo.y { 0.8 } else { 0.2 };
-                    self.h(id, 29.0) < bias
-                } else if let Some((pc, ps)) = self.stack.last() {
-                    pc.field(phi, *ps).abs() < pc.field(plo, *ps).abs()
-                } else {
-                    self.h(id, 29.0) < 0.5
-                };
-                let len = mixf(0.45, 1.05, self.h(id, 23.0)) * (td1 - td0);
-                let (a, b) = if root_hi { ((zhi - len).max(zlo), zhi) } else { (zlo, (zlo + len).min(zhi)) };
-                cut.span = Some((a, b));
-                cut.taper = Some(if root_hi { (b, a) } else { (a, b) });
-            }
-        }
         let a = cut_clip(&poly, &cut, 1.0);
         let b = cut_clip(&poly, &cut, -1.0);
         // a cut that missed (degenerate side) ends the recursion cleanly
@@ -830,11 +1041,202 @@ impl Splitter<'_> {
             return;
         }
         self.stack.push((cut, 1.0));
-        self.rec(a, id * 2 + 1, depth + 1, d);
+        self.rec(a, id * 2 + 1, depth + 1);
         self.stack.last_mut().unwrap().1 = -1.0;
-        self.rec(b, id * 2 + 2, depth + 1, d);
+        self.rec(b, id * 2 + 2, depth + 1);
         self.stack.pop();
     }
+}
+
+// ---- carving a face with bolts ---------------------------------------------
+
+/// One carved region: the polygon plus the (bolt index, kept side) pairs that
+/// shaped it — the caller needs those for the per-edge OPEN flags (chamfer)
+/// and, on a faulted pier, to re-clip the veneer onto the piece.
+type Region = (Vec<Vec2>, Vec<(usize, f32)>);
+
+/// Split a region into polygons with a bolt list — the ONE carver behind both
+/// scales: the pier's structural pieces and the craze veneer's plates.
+///
+/// Sequential clipping, not a planar-subdivision build: each bolt splits the
+/// polygons it reaches into its two sides. A bolt that DEAD-ENDS inside a
+/// polygon still splits it — past the tip its seam is closed, so the two
+/// halves touch along coincident walls no ray reaches (the trick the veneer
+/// has relied on since round 4) and what you see is a crack that stops.
+/// Polygons the bolt's open run cannot reach are passed through untouched
+/// (fewer plates, and the clip cost stays near-linear).
+fn carve(root: Vec<Vec2>, bolts: &[Bolt], cap: usize) -> Vec<Region> {
+    let mut out: Vec<Region> = vec![(root, Vec::new())];
+    for (i, b) in bolts.iter().enumerate() {
+        let mut next: Vec<Region> = Vec::with_capacity(out.len() + 1);
+        for (poly, cuts) in out.into_iter() {
+            let (mut lo, mut hi) = (poly[0], poly[0]);
+            for p in &poly {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+            let miss = hi.x < b.lo.x || lo.x > b.hi.x || hi.y < b.lo.y || lo.y > b.hi.y;
+            if miss || next.len() >= cap {
+                next.push((poly, cuts));
+                continue;
+            }
+            let a = cut_clip(&poly, b, 1.0);
+            let c = cut_clip(&poly, b, -1.0);
+            if a.len() < 3 || c.len() < 3 || poly_area(&a) < 1e-4 || poly_area(&c) < 1e-4 {
+                next.push((poly, cuts));
+                continue;
+            }
+            let mut ca = cuts.clone();
+            ca.push((i, 1.0));
+            let mut cc = cuts;
+            cc.push((i, -1.0));
+            next.push((a, ca));
+            next.push((c, cc));
+        }
+        out = next;
+    }
+    out
+}
+
+/// Which polygon edges sit on an OPEN groove wall of the bolts that carved
+/// it — the chamfer's per-edge knowledge (round 7). Closed seams stay flush.
+fn open_flags(poly: &[Vec2], cuts: &[(usize, f32)], bolts: &[Bolt]) -> Vec<bool> {
+    (0..poly.len())
+        .map(|i| {
+            let m = (poly[i] + poly[(i + 1) % poly.len()]) * 0.5;
+            cuts.iter().any(|(bi, side)| {
+                let b = &bolts[*bi];
+                b.field(m, *side).abs() < 0.008 && b.halfw(b.t_of(m)) > 0.0
+            })
+        })
+        .collect()
+}
+
+/// The LIGHTNING policy: a NETWORK of propagated cracks. Roots land on a
+/// jittered lattice wherever the wall is failing, each grows a tree — the
+/// trunk mostly vertical (shrinkage/settlement in a standing wall), forks
+/// angled off it by `spread`, gated by `branch`, jag and wander set by
+/// `straight` — and every path dies on the damage zone's edge, off the face,
+/// or ON an older crack (T-junction). The plates are simply what the network
+/// leaves over; nothing forces a crack to cross a region.
+fn bolt_network(cfg: &CrazeCfg, u0: f32, u1: f32, y0: f32, y1: f32) -> Vec<Bolt> {
+    let (branch, straight, spread) = (cfg.par[0], cfg.par[1], cfg.par[2]);
+    let span = Vec2::new(u1 - u0, y1 - y0);
+    let pitch = (1.5 / cfg.freq).clamp(0.30, 0.75);
+    // (root, launch dir, depth, budget, half width, parent bolt index)
+    let mut queue: Vec<(Vec2, Vec2, u32, f32, f32, usize)> = Vec::new();
+    let (nx, ny) = ((span.x / pitch).ceil().max(1.0) as i32, (span.y / pitch).ceil().max(1.0) as i32);
+    for j in 0..ny {
+        for i in 0..nx {
+            let h = |k: f32| hash13(Vec3::new(i as f32 * 1.7 + 3.0, j as f32 * 2.3 + 7.0, cfg.seed + k));
+            if h(3.0) > 0.18 + 0.55 * cfg.age {
+                continue;
+            }
+            // three tries per lattice cell: damage patches are about a cell
+            // wide, so one jittered probe misses them half the time and the
+            // network thins out exactly where the wall is worst
+            let root = (0..3).map(|t| Vec2::new(u0 + pitch * (i as f32 + h(1.0 + t as f32)), y0 + pitch * (j as f32 + h(2.0 + t as f32)))).find(|p| {
+                p.x < u1 && p.y < y1 && cfg.crack_zone(p.x, p.y) > 0.40
+            });
+            let Some(p) = root else { continue };
+            // a standing wall cracks mostly vertically; a few runs rake off,
+            // and those stay SHORT (a wall-long horizontal crack reads as a
+            // scratch, not as failure)
+            let rake = h(5.0) >= 0.78;
+            let tilt = if rake { 0.95 + (h(7.0) - 0.5) * 0.7 } else { (h(7.0) - 0.5) * 0.9 };
+            let dir = rot(if h(9.0) < 0.5 { Vec2::Y } else { Vec2::NEG_Y }, tilt);
+            // skewed: mostly short cracks, the occasional long one
+            let hb = h(11.0);
+            let budget = mixf(0.22, 1.10, hb * hb) * span.y.max(0.6) * if rake { 0.45 } else { 1.0 };
+            queue.push((p, dir, 0, budget, cfg.groove_w(2.6) * 0.5, usize::MAX));
+        }
+    }
+    let mut out: Vec<Bolt> = Vec::new();
+    let mut qi = 0;
+    while qi < queue.len() && out.len() < 48 {
+        let (p0, d0, depth, budget, nominal, parent) = queue[qi];
+        qi += 1;
+        let w = Walk {
+            seed: cfg.seed + 17.0 * (depth as f32 + 1.0),
+            // ~3 px per segment: a kink shorter than that cannot resolve
+            step: (3.2 * cfg.px1).max(0.085) * mixf(1.35, 0.85, straight),
+            turn: mixf(0.50, 0.10, straight),
+            kink_p: mixf(0.50, 0.14, straight),
+            kink_a: mixf(1.15, 0.40, straight),
+            // hold an excursion enough to JOG off the axis, not enough to
+            // curl: high persistence draws commas, none draws scratches
+            persist: mixf(0.80, 0.62, straight),
+            corridor: 1.15,
+        };
+        let id = qi as u32 * 31 + depth;
+        let path = {
+            let stop = |p: Vec2| {
+                p.x < u0 + 0.01
+                    || p.x > u1 - 0.01
+                    || p.y < y0 + 0.01
+                    || p.y > y1 - 0.01
+                    || cfg.crack_zone(p.x, p.y) < 0.25
+                    || any_hit(&out, p, parent, 2.2 * nominal)
+            };
+            w.grow(p0, d0, budget, id, &stop)
+        };
+        // WIDTH FOLLOWS LENGTH: a crack that ran far released more energy, so
+        // it is a bigger crack. (Uniform widths were what made a long run
+        // read as a scratch rather than a fracture.)
+        let len: f32 = path.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+        let rel = (len / span.y.max(0.3)).clamp(0.0, 1.0);
+        let half = (cfg.groove_w((1.4 + 1.8 * rel) * 0.72f32.powi(depth as i32)) * 0.5).max(cfg.px1 * 1.1);
+        let Some(bolt) = Bolt::new(&path, d0, half, cfg.px1 * 1.1, cfg.seed + id as f32) else {
+            continue;
+        };
+        let bi = out.len();
+        // forks: `branch` is the owner's dial on how much the crack frays, and
+        // a long crack frays more than a short one
+        if depth < 2 && path.len() > 2 {
+            let kids = if depth > 0 {
+                1
+            } else if rel > 0.5 {
+                3
+            } else {
+                2
+            };
+            for c in 0..kids {
+                let hf = |k: f32| hash13(Vec3::new(id as f32 * 0.618 + c as f32 * 5.1, cfg.seed + k, 3.7));
+                if hf(3.0) > mixf(0.12, 0.85, branch) * (0.55 + 0.75 * rel) {
+                    continue;
+                }
+                let vi = (1.0 + hf(5.0) * (path.len() as f32 - 2.0)).floor() as usize;
+                let vi = vi.min(path.len() - 2).max(1);
+                let td = (path[vi + 1] - path[vi - 1]).normalize_or(d0);
+                let sgn = if hf(7.0) < 0.5 { 1.0 } else { -1.0 };
+                let fd = rot(td, sgn * mixf(0.30, 1.25, spread) * (0.7 + 0.6 * hf(11.0)));
+                let fn_ = cfg.groove_w(2.2 * 0.72f32.powi(depth as i32 + 1)) * 0.5;
+                queue.push((path[vi] + fd * (half * 2.2), fd, depth + 1, budget * mixf(0.3, 0.6, hf(13.0)), fn_, bi));
+            }
+        }
+        out.push(bolt.tapered(0.30, 1.6));
+    }
+    out
+}
+
+/// The lightning policy's fragments: carve the face with the network, then
+/// gate each plate (sink / spall / flush) like any other policy's.
+fn bolt_frags(cfg: &CrazeCfg, u0: f32, u1: f32, y0: f32, y1: f32, opened: &StdCell<bool>) -> Vec<Frag> {
+    let bolts = bolt_network(cfg, u0, u1, y0, y1);
+    if bolts.is_empty() {
+        return Vec::new();
+    }
+    opened.set(true);
+    let rect = vec![Vec2::new(u0, y0), Vec2::new(u1, y0), Vec2::new(u1, y1), Vec2::new(u0, y1)];
+    carve(rect, &bolts, 400)
+        .into_iter()
+        .filter_map(|(poly, cuts)| {
+            let open = open_flags(&poly, &cuts, &bolts);
+            let c = poly_centroid(&poly);
+            let h = |k: f32| hash13(Vec3::new(c.x * 3.1, c.y * 3.1, cfg.seed + k));
+            cfg.frag(poly, open, h, opened)
+        })
+        .collect()
 }
 
 /// Shader `crackSite` mirror (the mosaic policy's cell lattice).
@@ -929,13 +1331,13 @@ fn mosaic_frags(cfg: &CrazeCfg, u0: f32, u1: f32, y0: f32, y1: f32, opened: &Std
 fn policy_frags(cfg: &CrazeCfg, policy: u8, u0: f32, u1: f32, y0: f32, y1: f32, opened: &StdCell<bool>) -> Vec<Frag> {
     match policy {
         2 => mosaic_frags(cfg, u0, u1, y0, y1, opened),
-        p => {
+        1 => {
             let root = vec![Vec2::new(u0, y0), Vec2::new(u1, y0), Vec2::new(u1, y1), Vec2::new(u0, y1)];
-            let mode = if p == 1 { SplitMode::Ladder } else { SplitMode::Bolt };
-            let mut sp = Splitter { cfg, mode, opened, stack: Vec::new(), out: Vec::new() };
-            sp.rec(root, 0, 0, Vec2::NEG_Y);
+            let mut sp = Ladder { cfg, opened, stack: Vec::new(), out: Vec::new() };
+            sp.rec(root, 0, 0);
             sp.out
         }
+        _ => bolt_frags(cfg, u0, u1, y0, y1, opened),
     }
 }
 
@@ -962,8 +1364,15 @@ fn emit_frags(
     cfg: &CrazeCfg,
     w: &dyn Fn(f32, f32, f32) -> [f32; 3],
     wn: &dyn Fn(f32, f32, f32) -> [f32; 3],
-    y_floor: f32,
+    rect: (Vec2, Vec2),
 ) {
+    // every emitted (u, y) is clamped into the pier's face rect: a groove wall
+    // re-sampled between two crossings can bulge a hair past a jagged bolt's
+    // corner, and NOTHING may leave the pier box (scene bounds and the probe
+    // grid must not move — the invariant holds by construction, not by luck)
+    let (rlo, rhi) = rect;
+    let cl = |p: Vec2| p.clamp(rlo, rhi);
+    let y_floor = rlo.y;
     let droop = 0.8 * cfg.t;
     let cw = cfg.cham_w();
     let cd = cfg.cham_d();
@@ -1012,6 +1421,7 @@ fn emit_frags(
         }
         let base = verts.len() as u32;
         for p in &inset {
+            let p = cl(*p);
             verts.push((w(p.x, p.y, front), wn(0.0, 0.0, nz)));
         }
         for tri in triangulate(&inset) {
@@ -1019,7 +1429,7 @@ fn emit_frags(
         }
         for a in 0..np {
             let b = (a + 1) % np;
-            let (pa, pb) = (frag.poly[a], frag.poly[b]);
+            let (pa, pb) = (cl(frag.poly[a]), cl(frag.poly[b]));
             let e = (pb - pa).normalize_or_zero();
             // outward in-face normal of edge a->b for a CCW polygon
             let quad_n = wn(e.y, -e.x, 0.0);
@@ -1033,11 +1443,12 @@ fn emit_frags(
             idx.extend_from_slice(&[vi, vi + 1, vi + 2, vi, vi + 2, vi + 3]);
             if frag.open[a] && tv[a] + tv[b] > 0.0 {
                 let cn = wn(e.y * 0.707, -e.x * 0.707, nz * 0.707);
+                let (ia, ib) = (cl(inset[a]), cl(inset[b]));
                 let vi = verts.len() as u32;
                 verts.push((w(pa.x, pa.y, fa), cn));
                 verts.push((w(pb.x, pb.y, fb), cn));
-                verts.push((w(inset[b].x, inset[b].y, front), cn));
-                verts.push((w(inset[a].x, inset[a].y, front), cn));
+                verts.push((w(ib.x, ib.y, front), cn));
+                verts.push((w(ia.x, ia.y, front), cn));
                 idx.extend_from_slice(&[vi, vi + 1, vi + 2, vi, vi + 2, vi + 3]);
             }
         }
@@ -1107,17 +1518,23 @@ fn seg_dist(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     (p - (a + ab * t)).length()
 }
 
-/// Edge-open flags for a veneer fragment RE-CLIPPED against the fault paths:
+/// Edge-open flags for a veneer fragment RE-CLIPPED onto a structural piece:
 /// edges on a fault wall are open (the gap is real), surviving stretches of
 /// the original perimeter inherit their old flag (their midpoints still lie
 /// on the original edges).
-fn fault_clip_flags(new_poly: &[Vec2], old: &Frag, fcs: &[(&FaultCut, f32)]) -> Vec<bool> {
+fn piece_clip_flags(new_poly: &[Vec2], old: &Frag, cuts: &[(usize, f32)], bolts: &[Bolt]) -> Vec<bool> {
     let np = new_poly.len();
     let no = old.poly.len();
     (0..np)
         .map(|i| {
             let m = (new_poly[i] + new_poly[(i + 1) % np]) * 0.5;
-            if fcs.iter().any(|(fc, side)| fc.field(m, *side).abs() < 0.008) {
+            // on a cut wall AND that stretch is open — a chamfer along a
+            // CLOSED seam carves a visible V into what must stay one flush
+            // slab, and it draws the bolt's invisible extension as a line
+            if cuts.iter().any(|(bi, side)| {
+                let b = &bolts[*bi];
+                b.field(m, *side).abs() < 0.008 && b.halfw(b.t_of(m)) > 0.0
+            }) {
                 return true;
             }
             (0..no)
@@ -1127,6 +1544,185 @@ fn fault_clip_flags(new_poly: &[Vec2], old: &Frag, fcs: &[(&FaultCut, f32)]) -> 
                 .unwrap_or(false)
         })
         .collect()
+}
+
+/// Groove existing fragments with extra cuts — the fault's FORKS. A fork is a
+/// crack in the surface, not a separation of the wall: it must not carve the
+/// pier into pieces (a piece boundary runs the whole width of whatever it
+/// splits, so a fork's invisible extension would draw a line clean across the
+/// wall — round 8 chased that artifact through three layers before moving the
+/// forks down here, where a cut's reach is one PLATE wide).
+fn split_frags(frags: Vec<Frag>, bolts: &[Bolt], cap: usize) -> Vec<Frag> {
+    let mut out = frags;
+    for b in bolts {
+        let mut next: Vec<Frag> = Vec::with_capacity(out.len() + 2);
+        for f in out.into_iter() {
+            let (mut lo, mut hi) = (f.poly[0], f.poly[0]);
+            for p in &f.poly {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+            let miss = hi.x < b.lo.x || lo.x > b.hi.x || hi.y < b.lo.y || lo.y > b.hi.y;
+            if miss || next.len() >= cap {
+                next.push(f);
+                continue;
+            }
+            let a = cut_clip(&f.poly, b, 1.0);
+            let c = cut_clip(&f.poly, b, -1.0);
+            if a.len() < 3 || c.len() < 3 || poly_area(&a) < 1e-5 || poly_area(&c) < 1e-5 {
+                next.push(f);
+                continue;
+            }
+            for (poly, side) in [(a, 1.0), (c, -1.0)] {
+                let open = piece_clip_flags(&poly, &f, &[(0, side)], std::slice::from_ref(b));
+                // a plate the fork left with a closed seam may not sink
+                let sink = if open.iter().all(|o| *o) { f.sink } else { 0.0 };
+                next.push(Frag { poly, open, spalled: f.spalled, sink });
+            }
+        }
+        out = next;
+    }
+    out
+}
+
+/// The structural TRUNK in face coords: the shader's smooth SPINE walked as a
+/// jagged stair. Every step advances in height (a settlement crack never
+/// folds back), the lateral moves are big kinks that mean-revert to the
+/// spine — so the crack reads like a break while the painted stain halo,
+/// which still follows the spine, keeps hugging the real seam.
+fn trunk_path(f: &Fault, y0: f32, y1: f32, jag: f32) -> Vec<Vec2> {
+    let mut pts = Vec::new();
+    let mut y = y0;
+    let mut off = 0.0f32;
+    let mut i = 0usize;
+    while y < y1 - 1e-4 {
+        pts.push(Vec2::new(f.u(y) + off, y));
+        let h = |k: f32| hash13(Vec3::new(i as f32 * 1.37, f.seed + k, f.si * 3.7 + 5.0));
+        let dy = (0.10 + 0.13 * h(3.0)).min(y1 - y);
+        // a stair KINK on some steps, small drift on the rest
+        let d = if h(11.0) < 0.42 { (h(17.0) - 0.5) * 1.7 * jag } else { (h(23.0) - 0.5) * 0.6 * jag };
+        off = (0.7 * off + d).clamp(-jag, jag);
+        y += dy;
+        i += 1;
+    }
+    pts.push(Vec2::new(f.u(y1) + off, y1));
+    pts
+}
+
+/// Every bolt of a pier's structural break: per fault a full-height jagged
+/// TRUNK (real gap, settlement drop, widest at the top) plus a few FORKS
+/// fraying off it — thinner, dead-ending, no drop of their own. Forks cut the
+/// pier full depth like the trunk does: a break that frays is still a break.
+fn fault_bolts(faults: &[Fault], fr: &Frame, k: [f32; 4], px1: f32) -> Vec<Bolt> {
+    let mut out: Vec<Bolt> = Vec::new();
+    let jag = mixf(0.06, 0.17, k[0]);
+    let (y0, y1) = (fr.y0, fr.y1);
+    for f in faults {
+        let path = trunk_path(f, y0, y1, jag);
+        let (g_top, g_bot) = (f.gap(y1, y0, y1), f.gap(y0, y0, y1));
+        // side +1 keeps the lower-u piece, so the sinking side is the one the
+        // shader lattice's `sign` points AWAY from (old cumulative drop rule)
+        let sink = if f.sign > 0.0 { -1.0 } else { 1.0 };
+        let Some(trunk) = Bolt::new(&path, Vec2::Y, g_top * 0.5, px1 * 0.5, f.seed + 3.0) else {
+            continue;
+        };
+        let ti = out.len();
+        out.push(trunk.rooted_at_tip_end((g_bot / g_top.max(1e-4)).clamp(0.35, 1.0), 1.0).structural(sink, 0.5));
+        // forks: one or two, SHORT and WIDE, rooted in the trunk's upper
+        // half where the break has pulled furthest apart. (Long thin forks
+        // read as scratches — and a full-depth cut cannot hide a hairline:
+        // round 8 measured both, see docs/AGENT_LEARNINGS.md.)
+        let nf = (0.4 + 1.9 * k[1] * (0.35 + 0.65 * k[0])).round() as usize;
+        for j in 0..nf {
+            let h = |kk: f32| hash13(Vec3::new(j as f32 * 2.7 + 1.0, f.seed + kk, f.si * 5.3 + 11.0));
+            let n = path.len();
+            let vi = (n as f32 * mixf(0.35, 0.90, h(3.0))).floor() as usize;
+            let vi = vi.clamp(1, n.saturating_sub(2).max(1));
+            let td = (path[vi + 1] - path[vi - 1]).normalize_or(Vec2::Y);
+            let sgn = if h(7.0) < 0.5 { 1.0 } else { -1.0 };
+            let dir = rot(td, sgn * mixf(0.40, 0.90, h(11.0)));
+            let w = Walk {
+                seed: f.seed + 7.0 + j as f32,
+                step: 0.12,
+                turn: 0.40,
+                kink_p: 0.36,
+                kink_a: 0.85,
+                persist: 0.90,
+                corridor: 0.70,
+            };
+            let half = (px1 * 1.3).max(g_top * 0.45);
+            let start = path[vi] + dir * (g_top * 0.6 + half);
+            let fp = {
+                let stop = |p: Vec2| {
+                    p.x < fr.u0 + 0.01
+                        || p.x > fr.u1 - 0.01
+                        || p.y < y0 + 0.01
+                        || p.y > y1 - 0.01
+                        || any_hit(&out, p, ti, half * 2.5)
+                };
+                w.grow(start, dir, mixf(0.12, 0.35, h(17.0)) * (y1 - y0), 900 + j as u32, &stop)
+            };
+            if let Some(b) = Bolt::new(&fp, dir, half, px1 * 1.1, f.seed + 31.0 + j as f32) {
+                out.push(b.tapered(0.40, 1.5));
+            }
+        }
+    }
+    out
+}
+
+/// Extrude one structural piece: front/back planes into `pv` (the chalk core
+/// when the veneer is on, else the pier's own face) and the perimeter walls —
+/// fault flanks, ends, top cap and base — into `sv`, full thickness. The
+/// polygon boundary IS the crack path, so a kink shows in the silhouette.
+#[allow(clippy::too_many_arguments)]
+fn emit_prism(
+    sv: &mut Vec<([f32; 3], [f32; 3])>,
+    si: &mut Vec<u32>,
+    pv: &mut Vec<([f32; 3], [f32; 3])>,
+    pi: &mut Vec<u32>,
+    poly: &[Vec2],
+    closed: &[bool],
+    t0: f32,
+    t1: f32,
+    ff: f32,
+    fb: f32,
+    w: &dyn Fn(f32, f32, f32) -> [f32; 3],
+    wn: &dyn Fn(f32, f32, f32) -> [f32; 3],
+) {
+    let base = pv.len() as u32;
+    for p in poly {
+        pv.push((w(p.x, p.y, ff), wn(0.0, 0.0, 1.0)));
+    }
+    for p in poly {
+        pv.push((w(p.x, p.y, fb), wn(0.0, 0.0, -1.0)));
+    }
+    let n = poly.len() as u32;
+    for tri in triangulate(poly) {
+        pi.extend_from_slice(&[base + tri[0], base + tri[1], base + tri[2]]);
+        pi.extend_from_slice(&[base + n + tri[0], base + n + tri[2], base + n + tri[1]]);
+    }
+    for a in 0..poly.len() {
+        // A CLOSED seam's wall spans only the CORE (plane to plane): the two
+        // pieces are one solid there, so the sheet must (a) exist — dropping
+        // it opens the prism and rays that slip in hit the far side from
+        // inside, drawing the cut's invisible extension as a dark line — and
+        // (b) never stand PROUD of the inset front plane, or it draws the same
+        // line from the outside. Open grooves and the pier's own border keep
+        // the full thickness. (Round 8 hit both artifacts in turn.)
+        let (za, zb) = if closed[a] { (fb, ff) } else { (t0, t1) };
+        let (pa, pb) = (poly[a], poly[(a + 1) % poly.len()]);
+        let e = (pb - pa).normalize_or_zero();
+        // A full-depth cut cannot overhang its lower lip (the round-4 droop
+        // trick needs a solid behind it), so a near-horizontal lip would
+        // present a SKY-LIT ledge and the crack would dash out. Tilt such a
+        // lip's normal DOWN instead: the cavity reads dark at every
+        // orientation, which is the invariant that matters.
+        let mut nn = Vec2::new(e.y, -e.x);
+        if nn.y > 0.0 && e.x.abs() > 0.55 {
+            nn.y *= -0.5;
+        }
+        quad(sv, si, [w(pa.x, pa.y, za), w(pa.x, pa.y, zb), w(pb.x, pb.y, zb), w(pb.x, pb.y, za)], wn(nn.x, nn.y, 0.0));
+    }
 }
 
 /// Fragment an UNFAULTED pier into core box + veneer per the policy.
@@ -1156,8 +1752,9 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32
     // veneer fragments, both big faces — ONE prim sharing the pier material
     let mut verts = Vec::new();
     let mut idx = Vec::new();
+    let rect = (Vec2::new(fr.u0, fr.y0), Vec2::new(fr.u1, fr.y1));
     for (t_face, nz) in [(fr.t1, 1.0f32), (fr.t0, -1.0f32)] {
-        emit_frags(&mut verts, &mut idx, &frags, t_face, nz, &cfg, &fr.w(), &fr.wn(), fr.y0);
+        emit_frags(&mut verts, &mut idx, &frags, t_face, nz, &cfg, &fr.w(), &fr.wn(), rect);
     }
     scene.add_mesh_world(&verts, &idx, mid);
     collapse_box(scene, pier);
@@ -1178,28 +1775,34 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], pol
     let wn = fr.wn();
 
     let cfg = CrazeCfg::new(seg, bucket(k), fr.run_x, t1 - t0, faults, par);
+    // the break, grown: jagged trunks (THROUGH — they separate the wall) plus
+    // their forks (surface cracks that groove the veneer only)
+    let all_bolts = fault_bolts(faults, &fr, bucket(k), cfg.px1);
+    let (bolts, forks): (Vec<Bolt>, Vec<Bolt>) = all_bolts.into_iter().partition(|b| b.through);
     let opened = StdCell::new(false);
-    let all_frags = policy_frags(&cfg, policy, u0, u1, y0, y1, &opened);
+    let all_frags = split_frags(policy_frags(&cfg, policy, u0, u1, y0, y1, &opened), &forks, 400);
     // the veneer inset only happens when the craze layer has anything to
     // show — a pristine-but-faulted wall stays full-thickness slabs
-    let crazing = opened.get();
+    let crazing = opened.get() || !forks.is_empty();
     let inset = if crazing { cfg.t } else { 0.0 };
     let core_mid = if crazing { chalk_material(scene, mid) } else { mid };
+    let (ff, fb) = (t1 - inset, t0 + inset); // front/back planes (inset when crazing)
 
-    // shear steps: each fault drops one side a few cm; cumulative left→right,
-    // then shifted so nothing rises above the authored top
+    let rect = vec![Vec2::new(u0, y0), Vec2::new(u1, y0), Vec2::new(u1, y1), Vec2::new(u0, y1)];
+    let pieces = carve(rect, &bolts, 64);
+    // shear steps: every THROUGH bolt drops the pieces on its sinking side a
+    // few cm (cumulative when breaks stack), then everything is shifted so
+    // nothing rises above the authored top
     let step = 0.015 + 0.035 * k[0];
-    let n = faults.len();
-    let mut drop = vec![0.0f32; n + 1];
-    for j in 0..n {
-        drop[j + 1] = drop[j] + step * faults[j].sign;
-    }
-    let top = drop.iter().fold(f32::MIN, |a, &b| a.max(b));
-    for d in &mut drop {
+    let mut drops: Vec<f32> = pieces
+        .iter()
+        .map(|(_, cuts)| step * cuts.iter().filter(|(i, s)| bolts[*i].through && *s == bolts[*i].sink_side).count() as f32)
+        .collect();
+    let top = drops.iter().fold(f32::MIN, |a, &b| a.max(b));
+    for d in &mut drops {
         *d -= top;
     }
 
-    let bands = (((y1 - y0) / 0.12).ceil() as usize).clamp(3, 12);
     // three meshes for the whole pier: the structural shells (pier mat), the
     // inset front/back planes (chalk), the veneer fragments (pier mat)
     let mut sv = Vec::new();
@@ -1208,81 +1811,57 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], pol
     let mut ci = Vec::new();
     let mut vv = Vec::new();
     let mut vi = Vec::new();
-    for j in 0..=n {
-        // sampled edges: left/right u per band level, y dropped (bottom level
-        // pinned at y0 — the buried part is invisible and keeps scene bounds,
-        // and thus the probe grid, exactly where they were)
-        let mut ls = Vec::with_capacity(bands + 1);
-        let mut rs = Vec::with_capacity(bands + 1);
-        let mut ys = Vec::with_capacity(bands + 1);
-        for b in 0..=bands {
-            let y = y0 + (y1 - y0) * b as f32 / bands as f32;
-            let l = if j == 0 { u0 } else { faults[j - 1].u(y) + faults[j - 1].gap(y, y0, y1) * 0.5 };
-            let r = if j == n { u1 } else { faults[j].u(y) - faults[j].gap(y, y0, y1) * 0.5 };
-            let l = l.clamp(u0, u1 - 0.06);
-            ls.push(l);
-            rs.push(r.clamp(l + 0.06, u1));
-            ys.push(if b == 0 { y0 } else { y + drop[j] });
-        }
-        let (ff, fb) = (t1 - inset, t0 + inset); // front/back planes (inset when crazing)
-        for b in 0..bands {
-            let (la, lb, ra, rb, ya, yb) = (ls[b], ls[b + 1], rs[b], rs[b + 1], ys[b], ys[b + 1]);
-            {
-                let (pv, pi) = if crazing { (&mut cv, &mut ci) } else { (&mut sv, &mut si) };
-                quad(pv, pi, [w(la, ya, ff), w(ra, ya, ff), w(rb, yb, ff), w(lb, yb, ff)], wn(0.0, 0.0, 1.0));
-                quad(pv, pi, [w(ra, ya, fb), w(la, ya, fb), w(lb, yb, fb), w(rb, yb, fb)], wn(0.0, 0.0, -1.0));
-            }
-            // side faces: flat per band, normal perpendicular to the band edge
-            let el = glam::Vec2::new(lb - la, yb - ya).normalize_or_zero();
-            quad(&mut sv, &mut si, [w(la, ya, t0), w(la, ya, t1), w(lb, yb, t1), w(lb, yb, t0)], wn(-el.y, el.x, 0.0));
-            let er = glam::Vec2::new(rb - ra, yb - ya).normalize_or_zero();
-            quad(&mut sv, &mut si, [w(ra, ya, t1), w(ra, ya, t0), w(rb, yb, t0), w(rb, yb, t1)], wn(er.y, -er.x, 0.0));
-        }
-        let (lt, rt, yt) = (ls[bands], rs[bands], ys[bands]);
-        quad(&mut sv, &mut si, [w(lt, yt, t0), w(rt, yt, t0), w(rt, yt, t1), w(lt, yt, t1)], wn(0.0, 1.0, 0.0));
-        quad(&mut sv, &mut si, [w(ls[0], y0, t1), w(rs[0], y0, t1), w(rs[0], y0, t0), w(ls[0], y0, t0)], wn(0.0, -1.0, 0.0));
-
+    for ((poly, cuts), dj) in pieces.iter().zip(&drops) {
+        // dropped copy (bottoms pinned at y0 — the buried part is invisible
+        // and keeps scene bounds, and thus the probe grid, where they were)
+        let dropped: Vec<Vec2> = poly.iter().map(|p| Vec2::new(p.x.clamp(u0, u1), (p.y + dj).clamp(y0, y1))).collect();
+        // which edges are CLOSED seams (probed BEFORE the drop — the cut
+        // fields live in undropped coords)
+        let np = poly.len();
+        let closed: Vec<bool> = (0..np)
+            .map(|i| {
+                let m = (poly[i] + poly[(i + 1) % np]) * 0.5;
+                cuts.iter().any(|(bi, side)| {
+                    let b = &bolts[*bi];
+                    b.field(m, *side).abs() < 0.008 && b.halfw(b.t_of(m)) <= 0.0
+                })
+            })
+            .collect();
+        emit_prism(&mut sv, &mut si, &mut cv, &mut ci, &dropped, &closed, t0, t1, ff, fb, &w, &wn);
         if !crazing {
             continue;
         }
-        // this piece's veneer: fragments clipped against the bounding fault
-        // paths (in UNDROPPED coords — the pattern lives in the material),
+        // this piece's veneer: fragments clipped against the bolts that carved
+        // the piece (in UNDROPPED coords — the pattern lives in the material),
         // then shear-dropped with the piece
-        let dj = drop[j];
         let mut piece_frags = Vec::new();
         for f in &all_frags {
-            let mut poly = f.poly.clone();
-            let (fcl, fcr);
-            let mut fcs: Vec<(&FaultCut, f32)> = Vec::new();
-            if j > 0 {
-                fcl = FaultCut { f: &faults[j - 1], y0, y1 };
-                poly = cut_clip(&poly, &fcl, -1.0);
-                fcs.push((&fcl, -1.0));
+            let mut fpoly = f.poly.clone();
+            for (bi, side) in cuts {
+                fpoly = cut_clip(&fpoly, &bolts[*bi], *side);
+                if fpoly.len() < 3 {
+                    break;
+                }
             }
-            if j < n && poly.len() >= 3 {
-                fcr = FaultCut { f: &faults[j], y0, y1 };
-                poly = cut_clip(&poly, &fcr, 1.0);
-                fcs.push((&fcr, 1.0));
-            }
-            if poly.len() < 3 || poly_area(&poly) < 1e-4 {
+            if fpoly.len() < 3 || poly_area(&fpoly) < 1e-4 {
                 continue;
             }
             // flags BEFORE the drop (the probe geometry lives in undropped
             // coords); fault-wall edges chamfer like any open groove — the
             // big seam gets beveled lips too
-            let open = fault_clip_flags(&poly, f, &fcs);
-            for p in &mut poly {
-                p.y = (p.y + dj).max(y0);
+            let open = piece_clip_flags(&fpoly, f, cuts, &bolts);
+            for p in &mut fpoly {
+                *p = Vec2::new(p.x.clamp(u0, u1), (p.y + dj).clamp(y0, y1));
             }
-            piece_frags.push(Frag { poly, open, spalled: f.spalled, sink: f.sink });
+            piece_frags.push(Frag { poly: fpoly, open, spalled: f.spalled, sink: f.sink });
         }
         for (t_face, nz) in [(t1, 1.0f32), (t0, -1.0f32)] {
-            emit_frags(&mut vv, &mut vi, &piece_frags, t_face, nz, &cfg, &w, &wn, y0);
+            emit_frags(&mut vv, &mut vi, &piece_frags, t_face, nz, &cfg, &w, &wn, (Vec2::new(u0, y0), Vec2::new(u1, y1)));
         }
     }
     scene.add_mesh_world(&sv, &si, mid);
+    scene.add_mesh_world(&cv, &ci, if crazing { core_mid } else { mid });
     if crazing {
-        scene.add_mesh_world(&cv, &ci, core_mid);
         scene.add_mesh_world(&vv, &vi, mid);
     }
     collapse_box(scene, pier);
@@ -1490,12 +2069,12 @@ mod tests {
         let mut v = Vec::new();
         let mut ix = Vec::new();
         let closed = Frag { poly: sq.clone(), open: vec![false; 4], spalled: false, sink: 0.0 };
-        emit_frags(&mut v, &mut ix, &[closed], 0.25, 1.0, &cfg, &fr.w(), &fr.wn(), 0.0);
+        emit_frags(&mut v, &mut ix, &[closed], 0.25, 1.0, &cfg, &fr.w(), &fr.wn(), (Vec2::ZERO, Vec2::ONE));
         assert_eq!(v.len(), 20, "sharp plate: front + 4 walls, no bevel");
         v.clear();
         ix.clear();
         let open = Frag { poly: sq, open: vec![true; 4], spalled: false, sink: 0.0 };
-        emit_frags(&mut v, &mut ix, &[open], 0.25, 1.0, &cfg, &fr.w(), &fr.wn(), 0.0);
+        emit_frags(&mut v, &mut ix, &[open], 0.25, 1.0, &cfg, &fr.w(), &fr.wn(), (Vec2::ZERO, Vec2::ONE));
         assert_eq!(v.len(), 36, "chamfered plate adds 4 bevel bands");
         for (p, _) in &v[0..4] {
             assert!(p[0] > 1e-4 && p[0] < 1.0 - 1e-4 && p[1] > 1e-4 && p[1] < 1.0 - 1e-4, "front ring inset by the bevel: {p:?}");
@@ -1545,6 +2124,128 @@ mod tests {
             prev = t;
         }
         assert!(prev <= 0.5 * thick, "two-sided veneer must leave a core sliver");
+    }
+
+    // ---- round 8: the propagation core --------------------------------------
+
+    /// THE load-bearing invariant: a grown path is a FUNCTION of its launch
+    /// frame (the corridor clamp keeps every step advancing along the axis).
+    /// The whole clip is exact because of this — side-of-crack is the sign of
+    /// `u - f(v)`, with no ambiguous wedges at a kink.
+    #[test]
+    fn grown_paths_stay_monotone_in_their_launch_axis() {
+        let w = Walk { seed: 3.0, step: 0.12, turn: 0.6, kink_p: 0.5, kink_a: 1.2, persist: 0.95, corridor: 1.15 };
+        for (i, dir) in [Vec2::Y, Vec2::NEG_Y, Vec2::X, Vec2::new(0.7, -0.7)].iter().enumerate() {
+            let path = w.grow(Vec2::new(1.0, 0.5), *dir, 2.0, i as u32, &|_| false);
+            assert!(path.len() > 4, "the walk must actually propagate");
+            let b = Bolt::new(&path, *dir, 0.03, 0.02, 5.0).expect("a monotone path is a bolt");
+            assert_eq!(b.vs.len(), path.len(), "no step may fail to advance along the axis");
+            assert!(b.vs.windows(2).all(|w| w[1] > w[0]), "strictly increasing in the launch frame");
+            // f interpolates its own vertices
+            for (v, u) in b.vs.iter().zip(&b.us) {
+                assert!((b.f(*v) - u).abs() < 1e-4);
+            }
+            // both sides of the path are labelled consistently by the field
+            let mid = b.world(Vec2::new(b.f((b.open.0 + b.open.1) * 0.5) + 0.5, (b.open.0 + b.open.1) * 0.5));
+            assert!(b.field(mid, 1.0) > 0.0 && b.field(mid, -1.0) < 0.0, "sides disagree exactly");
+        }
+    }
+
+    /// A bolt KINKS (that is the round-8 ask: not smooth curves) and the
+    /// network FORKS with T-junctions instead of BSP-splitting the face.
+    #[test]
+    fn the_network_kinks_and_forks() {
+        // several segment seeds: the damage field decides where cracks may
+        // grow at all, so one wall can legitimately come out nearly clean
+        let bolts: Vec<Bolt> = (1..8)
+            .flat_map(|seg| {
+                let cfg = CrazeCfg::new(seg as f32 * 3.7, bucket(CRAZY), true, 0.25, &[], param_defaults(0));
+                bolt_network(&cfg, 0.0, 6.0, 0.0, 2.2)
+            })
+            .collect();
+        assert!(bolts.len() > 8, "hot walls grow networks, got {}", bolts.len());
+        // at least one bolt turns hard somewhere along its run
+        let kinked = bolts.iter().any(|b| {
+            (1..b.vs.len().saturating_sub(1)).any(|i| {
+                let (a, c) = (Vec2::new(b.us[i] - b.us[i - 1], b.vs[i] - b.vs[i - 1]), Vec2::new(b.us[i + 1] - b.us[i], b.vs[i + 1] - b.vs[i]));
+                a.normalize_or_zero().dot(c.normalize_or_zero()) < 0.86 // > ~30 degrees
+            })
+        });
+        assert!(kinked, "no bolt kinks — the paths are smooth again");
+        // forks: some bolt starts ON another bolt's open run (a T-junction)
+        let forked = bolts.iter().enumerate().any(|(i, b)| {
+            let root = b.world(Vec2::new(b.us[0], b.vs[0]));
+            bolts.iter().enumerate().any(|(j, o)| j != i && o.hits(root, 4.0 * o.half))
+        });
+        assert!(forked, "no T-junction — the network is a bundle of unrelated cracks");
+    }
+
+    /// Every open groove keeps its >= 1 px width ACROSS the crack, whatever
+    /// the segment's tilt off the bolt frame (the `sec` correction) — the
+    /// round-4 floor survives propagation.
+    #[test]
+    fn grooves_never_go_sub_pixel_across() {
+        let cfg = CrazeCfg::new(7.4, bucket(CRAZY), true, 0.25, &[], param_defaults(0));
+        let bolts = bolt_network(&cfg, 0.0, 6.0, 0.0, 2.2);
+        assert!(!bolts.is_empty(), "nothing to measure");
+        for b in &bolts {
+            for s in 1..40 {
+                let v = mixf(b.open.0, b.open.1, s as f32 / 40.0);
+                let across = b.halfw(v) / b.sec[b.seg(v)] * 2.0;
+                assert!(across >= cfg.px1 - 1e-5, "{across} wu across is under one pixel ({})", cfg.px1);
+            }
+        }
+    }
+
+    /// A fault grows ONE through trunk (the break that separates the wall)
+    /// plus surface forks that must NOT separate it: a fork carving pieces
+    /// would run its invisible extension clean across the wall.
+    #[test]
+    fn a_fault_separates_once_and_frays_on_the_surface() {
+        let mut scene = Scene::default();
+        let pier = faulting_pier(&mut scene);
+        let faults = faults_for(&scene, &pier, HOT);
+        let fr = Frame::of(&pier);
+        let bolts = fault_bolts(&faults, &fr, bucket(HOT), px_floor(fr.run_x));
+        let through = bolts.iter().filter(|b| b.through).count();
+        assert_eq!(through, faults.len(), "one through break per fault");
+        assert!(bolts.len() > through, "the break must fray into forks");
+        // the trunk jags: many vertices, real lateral deviation from a line
+        let trunk = bolts.iter().find(|b| b.through).unwrap();
+        assert!(trunk.vs.len() >= 8, "the trunk is walked, not drawn");
+        let (a, b) = (Vec2::new(trunk.us[0], trunk.vs[0]), Vec2::new(*trunk.us.last().unwrap(), *trunk.vs.last().unwrap()));
+        let sag = (0..trunk.vs.len())
+            .map(|i| {
+                let p = Vec2::new(trunk.us[i], trunk.vs[i]);
+                let t = ((p - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+                (p - (a + (b - a) * t)).length()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(sag > 0.02, "the trunk must wander off the straight line (sag {sag})");
+    }
+
+    /// `carve` TILES its region: the pieces cover the face exactly (minus the
+    /// gaps the open grooves take), so no hole and no double-covered sliver
+    /// can hide in a break.
+    #[test]
+    fn carve_tiles_the_face() {
+        let mut scene = Scene::default();
+        let pier = faulting_pier(&mut scene);
+        let faults = faults_for(&scene, &pier, HOT);
+        let fr = Frame::of(&pier);
+        let bolts: Vec<Bolt> = fault_bolts(&faults, &fr, bucket(HOT), px_floor(fr.run_x)).into_iter().filter(|b| b.through).collect();
+        let rect = vec![Vec2::new(fr.u0, fr.y0), Vec2::new(fr.u1, fr.y0), Vec2::new(fr.u1, fr.y1), Vec2::new(fr.u0, fr.y1)];
+        let area = poly_area(&rect);
+        let pieces = carve(rect, &bolts, 64);
+        assert!(pieces.len() > bolts.len(), "each through break adds a piece");
+        let sum: f32 = pieces.iter().map(|(p, _)| poly_area(p)).sum();
+        // the missing area is exactly the gaps: at most (gap 0.09) x height x cuts
+        let gaps = 0.09 * (fr.y1 - fr.y0) * bolts.len() as f32;
+        assert!(sum <= area + 1e-3 && sum >= area - gaps, "pieces tile the face: {sum} vs {area} (gaps <= {gaps})");
+        for (p, cuts) in &pieces {
+            assert!(poly_area(p) > 1e-4 && p.len() >= 3, "no degenerate piece");
+            assert!(cuts.iter().all(|(i, s)| *i < bolts.len() && s.abs() == 1.0));
+        }
     }
 
     /// The ear clipper handles the non-convex polygons the splitter produces.

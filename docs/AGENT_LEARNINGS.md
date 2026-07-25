@@ -688,3 +688,59 @@ play well with the low-res target.
   field ~ 0 AND gate > 0). The bevel then eats into the PLATE (miter
   inset ring, taper to zero at open/closed junctions — no gussets),
   never into the gap: the >= 1-px groove width guarantee survives.
+
+## 2026-07-25 (round 8) — propagation needs ONE invariant; a non-through cut must not carve pieces
+
+Owner round: "work on the algorithm that draws the cracks / deforms the
+meshes — they should be more like LIGHTNING, branching, a bit irregular,
+not straight lines. There are two kinds: the coarse one (a wall cracked
+in half) and the age crazing." Both scales were analytic lines: the
+fault was `u(y) = ax + tilt·y + wob(y)` (one smooth vnoise wander) and
+"lightning" was round 7's BSP splitter with propagation-shaped spans. A
+BSP cut always crosses its region, and a smooth wander cannot kink — so
+the wall rendered as two or three long soft arcs, exactly what the owner
+saw. Round 8 replaced both with a walker (`Walk`) + a cut primitive
+(`Bolt`) + one carver (`carve`).
+
+- The enabling invariant is a CORRIDOR, not a clever field. Clamp every
+  step's heading to ±66° of the bolt's launch axis and the path stays a
+  FUNCTION `u = f(v)` in its own frame: side-of-crack is the sign of
+  `u - f(v)`, exactly as for the old analytic cuts, so `cut_clip`, the
+  >= 1-px floor, the droop and the chamfer all carried over unchanged.
+  Without it you need signed distance + a parity/winding side test,
+  which is ambiguous inside a sharp kink's wedge — the alternative was
+  a much worse machine. Corridor-clamped zig-zag is still plenty jagged.
+- A CUT THAT DOES NOT SEPARATE THE WALL MUST NOT CARVE PIECES. Fault
+  forks were first modelled as full-depth piece cuts. A piece boundary
+  runs the whole width of whatever it splits, and a dead-ending cut is
+  represented as a split whose seam CLOSES past the tip — so every fork
+  drew a hard straight line clean across the wall along its invisible
+  extension. Three separate leaks made that extension visible, each a
+  variant of "something keyed to *cracked* fired on a closed seam":
+  the chamfer flags (fixed: `field ≈ 0` AND `halfw > 0`), the sink step
+  (fixed: a plate may sink only if EVERY edge is open — the round-4 rule
+  now read off the real flags, not the damage field), and the piece wall
+  (a closed seam DOES need its sheet, or rays slip into the hollow
+  prism and hit it from inside — but only across the CORE, or the sheet
+  stands proud of the inset front plane and shows from outside). Even
+  with all three fixed the class stayed fragile, so forks moved down a
+  layer: they groove the VENEER, where a cut's reach is one plate wide.
+  Bisecting this cost most of the round — the shortcut that worked was
+  disabling one layer at a time (forks off, veneer off) rather than
+  reasoning about which coincident face wins.
+- WIDTH FOLLOWS LENGTH. Uniform-width bolts read as scratches however
+  well they kinked; scaling each bolt's width by how far it actually
+  propagated (`groove_w(1.4 + 1.8·rel)`) is one line and it is what
+  makes a long crack read as a fracture and a short one as a hairline.
+  Same shape for forking: a long bolt frays more than a short one.
+- Cracks need their OWN zone. Gating growth on the crazing/stain damage
+  zone left a mid-aged wall visibly pristine (the demo's own seed showed
+  one crack) — the stain zone is a steep slice around the age threshold.
+  A crack propagates out of the worst patch into merely tired material,
+  so `crack_zone` is a wider, EARLIER slice of the same field. Layers
+  that share a field still need their own thresholds.
+- Numbers worth keeping: nothing under ~2 px of groove width survives as
+  a line at this render scale (1 px dot-dashes even with the droop), a
+  step of ~3 px per walk segment is the smallest kink that resolves, and
+  a knob-release rebuild on the M2 is ~6.5 s (probe rebake, vs ~115 ms
+  on the RTX) — the crack lab's edit loop is bake-bound on the Mac.

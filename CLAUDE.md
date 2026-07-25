@@ -129,9 +129,7 @@ check covers it. Structural faults and the WHOLE small-crack network
 are REAL geometry now (crack_geom.rs — host-side, shared by both
 backends), and the two layers COMPOSE: every knobbed pier gets a
 matte-chalk core + a veneer of plates laid out by a selectable pattern
-POLICY — lightning/craquelure/mosaic since 2026-07-23 round 7 (the
-recursive `fracture` splitter is DELETED; lightning is propagation:
-top-rooted or parent-forked bolts that wander, kink, taper and dead-end)
+POLICY — lightning/craquelure/mosaic since 2026-07-23 round 7
 — panel "pattern" row, and BELOW it each policy's NATIVE param sliders
 (`crack_geom::POLICY_PARAMS`: lightning branch/straight/spread,
 craquelure scale/wave, mosaic scale/jitter; stored per pier per policy);
@@ -142,12 +140,30 @@ bevel on open-groove edges only — the plate cedes the strip, the gap
 keeps its width), recessed chips and sinks; faulted piers additionally
 split into jagged pieces with a gap + settlement drop, the veneer
 clipped against the fault paths (fault lips chamfer too) and the network
-clustering along the seam (halo). Round 7 is host-side only — no new
+clustering along the seam (halo). Rounds 7-8 are host-side only — no new
 shader debt; the only blind MSL edit left in that block is the
-pad-bit-5/-6 `show`-suppression branch (+ the crazeG chip line). The
-Mac check should also time a knob-release rebuild
-(`Viewer::crack_release` → apply_look): rebake is ~115 ms on RTX but
-SECONDS on the M2.
+pad-bit-5/-6 `show`-suppression branch (+ the crazeG chip line), and a
+2026-07-25 headless Mac boot of `LEVEL="crack lab"` renders it right
+(the knob panel's click/drag still wants a windowed pass). A
+knob-release rebuild (`Viewer::crack_release` → apply_look) measures
+~6.5 s on the M2 vs ~115 ms on the RTX — the crack lab's edit loop is
+probe-bake bound on the Mac.
+
+ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
+branching, irregular — not straight lines; two kinds: the coarse one and
+the age crazing"): BOTH scales are PROPAGATED now — a walker grows a
+kinked path inside a corridor around its launch axis (which keeps it a
+function in its own frame, so the whole clip machinery stays exact), and
+one carver turns a face + a bolt list into pieces or plates. The
+structural break is a jagged spine-anchored trunk (the smooth analytic
+wander is gone) that FRAYS into short wide forks; a fork grooves the
+VENEER and never carves pieces (a piece boundary is as long as whatever
+it splits, so an invisible extension would draw a line across the wall —
+see the round-8 learning). `lightning` is a real network: roots where
+the wall is failing, forks down a width hierarchy, paths dying on the
+damage zone's edge or on an older crack (T-junction), and width scaling
+with how far the crack actually ran. Owner playtest + look lock still
+pending.
 
 ## Pixel-perfect iso contract (binding; generalizes, never weakens)
 
