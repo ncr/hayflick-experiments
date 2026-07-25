@@ -155,6 +155,19 @@ pub struct Overlay<'a> {
 /// see `LOCAL_REFRESH_MAX_FRACTION`); on the RTX the whole bake is ~115 ms and
 /// nobody notices either way.
 ///
+/// `Roll` is the same carry with the re-bake DEFERRED: the dirty probes are not
+/// touched here, the amortized DDGI roll (`roll_step`, the machinery the
+/// wall-smash tear-off already runs) settles them over the next frames instead.
+/// It exists for the age-ramp demo beat ([`crate::demos::Action::AgeWall`]),
+/// which steps geometry ~8 times inside three seconds: a synchronous refresh is
+/// LATENCY-bound at 3-5 s whatever its size (one thread per probe, 2048 rays
+/// serial — see `rt_probe::gpu_scene::LOCAL_REFRESH_MAX_FRACTION`), so `Local`
+/// would stall the beat for a minute, while the scene swap alone measures ~30 ms
+/// on the M2. The price is honest and bounded: for ~64 frames the probes around
+/// ONE wall carry the previous step's bounce, and they settle to a 256-ray
+/// rolling estimate rather than the 2048-ray bake — so a capture that must be
+/// comparable still comes from a boot, exactly as for `Local`.
+///
 /// The backend falls back to `Full` if the new scene's grid does not match the
 /// carried one, if nothing has been baked yet, if a dirty region misses the
 /// grid, or if the dirty set is large enough that refreshing costs more than
@@ -164,6 +177,7 @@ pub struct Overlay<'a> {
 pub enum ProbeRefresh<'a> {
     Full,
     Local(&'a [(Vec3, Vec3)]),
+    Roll(&'a [(Vec3, Vec3)]),
 }
 
 /// The GPU half of the renderer. Owns the device, scene GPU resources, the

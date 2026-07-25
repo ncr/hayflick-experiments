@@ -7,8 +7,10 @@
 //! not a look/sim knob, and never part of the round-trip. (rt-viewer keeps a
 //! few shell-only reads of its own: AUDIO, LOOK, the crack-lab harness seed
 //! CRACKS=age,cracks,depth,chip with its CRACK_SEL= pick and CRACK_EDIT=
-//! knob-drag replay, and the wear family's WEAR=d0[,d1,d2,d3] effect word —
-//! see `crate::crack` / `crate::wear` on the viewer side.)
+//! knob-drag replay, the wear family's WEAR=d0[,d1,d2,d3] effect word and its
+//! WEAR_LEVEL=0 field-level A/B, and the cover-spall dial SPALL=<0..1> with its
+//! SPALL_LAYER=1|2|3 bisect (1 = crater only, 2 = steel only, 3 = both) — see
+//! `crate::crack` / `crate::crack_geom` / `crate::wear` on the viewer side.)
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
 //! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).
@@ -202,6 +204,13 @@ pub struct RenderCfg {
     /// surface, 1 = CRACKED piers only (the default — the greybox keeps its
     /// hard pixel edges), 2 = the PICKED pier only (the owner's per-wall A/B).
     pub aa_scope: i32,
+    /// `ARRIS` — the GLAZE EASE master scale (owner catalogue 2026-07-25):
+    /// how big a chamfer every exposed arris of a static greybox box carries,
+    /// 1 = the authored 3-px facet (`rt_viewer::wear_geom`), 0 = sharp boxes,
+    /// byte-identical to the pre-pass image. `None` = take the look's authored
+    /// value. It is GEOMETRY, so a change rebuilds the scene and rebakes the
+    /// probes — the ESC row steps it, it is not a live slider.
+    pub arris: Option<f32>,
     /// `AA_CHUNKY` — does CHUNKY generator detail (whole blocks: the wall-smash
     /// rubble) take the contour AA as well? Off by default; thin detail (crack
     /// grooves, plates) is unaffected. See the AA policy in CLAUDE.md.
@@ -329,6 +338,7 @@ impl Config {
                 aa: fo("AA"),
                 aa_scope: i("AA_SCOPE", 1),
                 aa_chunky: b("AA_CHUNKY", false),
+                arris: fo("ARRIS"),
                 refl_px: i("REFL_PX", 3).max(1),
                 debug,
             },

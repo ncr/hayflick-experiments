@@ -685,9 +685,20 @@ impl Scene {
         self.add_box(min, max, color, emissive, roughness, metallic);
     }
 
-    fn add_box(&mut self, min: Vec3, max: Vec3, color: [f32; 4], emissive: [f32; 4], roughness: f32, metallic: f32) {
-        let material_id = self.materials.len() as i32;
+    /// Mint one material and return its id — what `add_box` does before it
+    /// emits its six faces, exposed so a caller can build a NON-box prim on the
+    /// same terms. The box→mesh promoter (`rt_viewer::wear_geom`, the eased
+    /// arris) needs exactly this: an eased box has to stay ONE primitive with
+    /// ONE material, or every per-box mark keyed by prim index (the occluder /
+    /// glass / matte bits, the crack-lab knobs, the smash and roof-tear TLAS
+    /// hides) would address the wrong thing.
+    pub fn new_material(&mut self, color: [f32; 4], emissive: [f32; 4], roughness: f32, metallic: f32) -> i32 {
         self.materials.push(Material { base_color: color, emissive, metallic, roughness, tex_index: -1, _pad: 0 });
+        self.materials.len() as i32 - 1
+    }
+
+    fn add_box(&mut self, min: Vec3, max: Vec3, color: [f32; 4], emissive: [f32; 4], roughness: f32, metallic: f32) {
+        let material_id = self.new_material(color, emissive, roughness, metallic);
         let vbase = self.vertices.len() as u32;
         let ibase = self.indices.len() as u32;
         let (x0, y0, z0, x1, y1, z1) = (min.x, min.y, min.z, max.x, max.y, max.z);

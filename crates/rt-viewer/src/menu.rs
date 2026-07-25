@@ -63,6 +63,11 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "aa_soft", label: "aa soften", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     // whole-block detail (smash rubble) in or out of the AA — a visual call
     MenuItem { key: "aa_chunky", label: "aa rubble", kind: ItemKind::Toggle },
+    // GLAZE EASE (owner catalogue 2026-07-25): the chamfer on every exposed
+    // arris of the greybox, 1 = the authored 3-px facet. It is GEOMETRY, so a
+    // step rebuilds the scene and rebakes the probes (seconds on the M2) —
+    // hence a 4-step scale rather than a smooth slider.
+    MenuItem { key: "arris", label: "glaze ease", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.25 } },
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
@@ -86,12 +91,19 @@ pub(crate) const fn gpanel_h(items: usize) -> i32 {
     GPAD * 2 + GROW * (1 + items as i32) + 12
 }
 
-/// LEVELS panel height: a game menu plus a 2-line blurb band for the selected
-/// demo. Shared by the draw and the click hit-test so rows line up.
+/// LEVELS panel height: a game menu plus the blurb band for the selected demo.
+/// Shared by the draw and the click hit-test so rows line up.
 pub(crate) const fn lpanel_h(items: usize) -> i32 {
     gpanel_h(items) + LBLURB_H
 }
-const LBLURB_H: i32 = 22; // two 8px blurb lines + a little air
+/// Blurb lines the band shows. THREE since 2026-07-25: the blurb is the owner's
+/// only description of a demo, and the crack lab now has three things to say
+/// (what he is looking at, that one wall is the untouched control, and that
+/// clicking a wall opens the knobs). `levels_blurb_fits_the_band` fails if any
+/// demo's blurb wraps past this — the band used to truncate in silence.
+pub(crate) const LBLURB_LINES: usize = 3;
+pub(crate) const LBLURB_COLS: usize = 28; // 8 px/char against GPANEL_W
+const LBLURB_H: i32 = 4 + 9 * LBLURB_LINES as i32; // 8px lines on a 9px pitch + air
 // The centered panels share the settings staging buffer (MPANEL_W × MPANEL_H);
 // keep the LEVELS list short enough to fit (compile guard, generous bound).
 const _: () = assert!(lpanel_h(6) <= MPANEL_H);
@@ -200,7 +212,7 @@ pub(crate) fn levels_canvas(sel: usize) -> (Vec<u32>, i32, i32) {
     // blurb band: the selected demo's description, wrapped to the panel width
     let by = GPAD + GROW * (1 + demos.len() as i32) + 2;
     let blurb = demos.get(sel).map(|d| d.blurb).unwrap_or("");
-    for (li, line) in wrap_text(blurb, 28).into_iter().take(2).enumerate() {
+    for (li, line) in wrap_text(blurb, LBLURB_COLS).into_iter().take(LBLURB_LINES).enumerate() {
         let lx = (w - line.len() as i32 * 8) / 2;
         mtext(&mut c, w, lx.max(2), by + li as i32 * 9, &line, 0x9a9aa8);
     }
@@ -229,16 +241,23 @@ fn wrap_text(s: &str, cols: usize) -> Vec<String> {
     lines
 }
 
+/// The crack panel's row layout, in ONE place so the draw, the hit-test and the
+/// drag cannot disagree: the four packed knobs, then the COVER SPALL dial, then
+/// the pattern cycler, then the active policy's native params. Spall is not one
+/// of `crack::LABELS` because those four ARE the `Material._pad` knob bits (six
+/// bits each, bits 8..31, full); spall is geometry, consumed at rebuild time.
+const SPALL_ROW: usize = crate::crack::LABELS.len();
+const PATTERN_ROW: usize = SPALL_ROW + 1;
+
 /// Crack-lab knob panel height for a policy showing `nparams` native param
-/// rows (title + knobs + pattern row + params + footer).
+/// rows (title + knobs + spall + pattern row + params + footer).
 pub(crate) fn crack_panel_h(nparams: usize) -> i32 {
-    MPAD * 2 + MROW * (crate::crack::LABELS.len() as i32 + 3 + nparams as i32)
+    MPAD * 2 + MROW * (PATTERN_ROW as i32 + 3 + nparams as i32)
 }
 
 /// The tallest crack panel (every param slot used). Shares the settings
 /// staging buffer — compile-guarded like the game panels.
-pub(crate) const CRACK_PANEL_H: i32 =
-    MPAD * 2 + MROW * (crate::crack::LABELS.len() as i32 + 3 + crate::crack_geom::PARAMS_MAX as i32);
+pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (PATTERN_ROW as i32 + 3 + crate::crack_geom::PARAMS_MAX as i32);
 const _: () = assert!(CRACK_PANEL_H <= MPANEL_H);
 
 /// Crack-lab knob panel (replaces the hamburger while a wall segment is
@@ -251,7 +270,7 @@ const _: () = assert!(CRACK_PANEL_H <= MPANEL_H);
 /// `crack_panel_click` / `crack_drag_to` share the same track math. Pure fn
 /// of its inputs, so it draws headless (the test below pins the
 /// staging-buffer fit).
-pub(crate) fn crack_canvas(sel: usize, knobs: [f32; 4], row: usize, policy: u8, par: [f32; crate::crack_geom::PARAMS_MAX]) -> (Vec<u32>, i32, i32) {
+pub(crate) fn crack_canvas(sel: usize, knobs: [f32; 4], spall: f32, row: usize, policy: u8, par: [f32; crate::crack_geom::PARAMS_MAX]) -> (Vec<u32>, i32, i32) {
     const BG: u32 = 0x16161c;
     const BORDER: u32 = 0x6a6a78;
     const TEXT: u32 = 0xc8c8d0;
@@ -264,44 +283,42 @@ pub(crate) fn crack_canvas(sel: usize, knobs: [f32; 4], row: usize, policy: u8, 
     mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
     mrect(&mut c, w, 2, 2, w - 4, 1, 0x8a6a2a);
     mtext(&mut c, w, MLABEL_X, MPAD + 2, &format!("crack lab - segment {sel}"), 0xe8b84a);
-    for (i, label) in crate::crack::LABELS.iter().enumerate() {
-        let y = MPAD + MROW * (1 + i as i32);
-        if i == row {
-            mrect(&mut c, w, 2, y, w - 4, MROW, 0x24242e);
+    // one slider row — three callers (knobs, the spall dial, the policy params),
+    // which is exactly one more than the count that made the old duplicate pair
+    // worth keeping
+    let srow = |c: &mut Vec<u32>, ri: usize, label: &str, indent: i32, v: f32| {
+        let y = MPAD + MROW * (1 + ri as i32);
+        if ri == row {
+            mrect(c, w, 2, y, w - 4, MROW, 0x24242e);
         }
-        let v = knobs[i].clamp(0.0, 1.0);
-        mtext(&mut c, w, MLABEL_X, y + 2, label, if i == row { 0xe8e8f0 } else { TEXT });
-        mrect(&mut c, w, MTRACK_X, y + MROW / 2, MTRACK_W, 2, 0x34343c);
-        mrect(&mut c, w, MTRACK_X, y + MROW / 2, (MTRACK_W as f32 * v) as i32, 2, 0x7aa86a);
+        let v = v.clamp(0.0, 1.0);
+        mtext(c, w, MLABEL_X + indent, y + 2, label, if ri == row { 0xe8e8f0 } else { TEXT });
+        mrect(c, w, MTRACK_X, y + MROW / 2, MTRACK_W, 2, 0x34343c);
+        mrect(c, w, MTRACK_X, y + MROW / 2, (MTRACK_W as f32 * v) as i32, 2, 0x7aa86a);
         let kx = MTRACK_X + (v * (MTRACK_W - 2) as f32) as i32;
-        mrect(&mut c, w, kx, y + 2, 2, MROW - 4, 0xd8e8c8);
-        mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}"), 0x99cc99);
+        mrect(c, w, kx, y + 2, 2, MROW - 4, 0xd8e8c8);
+        mtext(c, w, MVAL_X, y + 2, &format!("{v:.2}"), 0x99cc99);
+    };
+    for (i, label) in crate::crack::LABELS.iter().enumerate() {
+        srow(&mut c, i, label, 0, knobs[i]);
     }
+    // COVER SPALL (owner headline 2026-07-25): cracked → lifted cover → blown
+    // spall with the rebar showing. A rebuild dial like the params, so it shows
+    // on release, not mid-drag.
+    srow(&mut c, SPALL_ROW, "spall", 0, spall);
     // pattern row: a discrete cycler, not a slider (click steps the policy)
-    let pi = crate::crack::LABELS.len();
-    let py = MPAD + MROW * (1 + pi as i32);
-    if pi == row {
+    let py = MPAD + MROW * (1 + PATTERN_ROW as i32);
+    if PATTERN_ROW == row {
         mrect(&mut c, w, 2, py, w - 4, MROW, 0x24242e);
     }
-    mtext(&mut c, w, MLABEL_X, py + 2, "pattern", if pi == row { 0xe8e8f0 } else { TEXT });
+    mtext(&mut c, w, MLABEL_X, py + 2, "pattern", if PATTERN_ROW == row { 0xe8e8f0 } else { TEXT });
     let pname = crate::crack_geom::POLICIES.get(policy as usize).copied().unwrap_or("?");
     mtext(&mut c, w, MTRACK_X, py + 2, &format!("< {pname} >"), 0x99cc99);
     // the policy's native param sliders (indented — they belong to the pattern)
     for (j, (name, _)) in pdefs.iter().enumerate() {
-        let ri = pi + 1 + j;
-        let y = MPAD + MROW * (1 + ri as i32);
-        if ri == row {
-            mrect(&mut c, w, 2, y, w - 4, MROW, 0x24242e);
-        }
-        let v = par[j].clamp(0.0, 1.0);
-        mtext(&mut c, w, MLABEL_X + 8, y + 2, name, if ri == row { 0xe8e8f0 } else { TEXT });
-        mrect(&mut c, w, MTRACK_X, y + MROW / 2, MTRACK_W, 2, 0x34343c);
-        mrect(&mut c, w, MTRACK_X, y + MROW / 2, (MTRACK_W as f32 * v) as i32, 2, 0x7aa86a);
-        let kx = MTRACK_X + (v * (MTRACK_W - 2) as f32) as i32;
-        mrect(&mut c, w, kx, y + 2, 2, MROW - 4, 0xd8e8c8);
-        mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}"), 0x99cc99);
+        srow(&mut c, PATTERN_ROW + 1 + j, name, 8, par[j]);
     }
-    let fy = MPAD + MROW * (2 + (pi + pdefs.len()) as i32) + 2;
+    let fy = MPAD + MROW * (2 + (PATTERN_ROW + pdefs.len()) as i32) + 2;
     mtext(&mut c, w, MLABEL_X, fy, "drag - click away closes", 0x707078);
     (c, w, h)
 }
@@ -367,6 +384,7 @@ impl Viewer {
             "aa_scope" => self.aa_scope,
             "aa_soft" => self.style.aa_soft,
             "aa_chunky" => self.aa_chunky,
+            "arris" => self.arris,
             "exposure" => self.exposure,
             "lights" => (self.lights_dim > 0.0) as i32 as f32,
             "light_anim" => self.light_anim as i32 as f32,
@@ -418,6 +436,14 @@ impl Viewer {
                 self.aa_chunky = v;
                 self.aa_stamp();
             }
+            // The glaze ease is real geometry over the WHOLE level (every box
+            // moved a little, so there is no local-refresh set to hand it) —
+            // 3-5 s of full rebake per step. `menu_drag_to` fires on every
+            // CursorMoved, so rebuilding here froze the window for 8-20 s on a
+            // single drag: the dial takes the value now and the rebuild waits
+            // for the mouse RELEASE, exactly like the crack knobs
+            // (`crack_release`). Keyboard steps release immediately.
+            "arris" => self.arris = v,
             "exposure" => self.exposure = v,
             // the lamp master is a presentation dim (direct via the emission
             // build, indirect via the probe-bank lerp — same frame, no rebake)
@@ -657,19 +683,23 @@ impl Viewer {
         if l.x < 0.0 || l.y < 0.0 || l.x >= MPANEL_W as f32 || l.y >= crack_panel_h(nparams) as f32 {
             return false;
         }
-        let nk = crate::crack::LABELS.len();
         let row = (l.y as i32 - MPAD) / MROW - 1; // row 0 is the title band
-        if row >= 0 && ((row as usize) < nk || ((row as usize) > nk && (row as usize) <= nk + nparams)) {
-            // knob rows and param rows are sliders; drag starts immediately
-            self.crack.row = row as usize;
-            self.menu.drag = true;
-            self.crack_drag_to(p);
-        } else if row >= 0 && row as usize == nk {
+        if row < 0 {
+            return true;
+        }
+        let row = row as usize;
+        if row == PATTERN_ROW {
             // the pattern row: cycle the policy; the mouse-release that
             // follows runs crack_release, sees the new signature, rebuilds
-            self.crack.row = row as usize;
+            self.crack.row = row;
             self.crack_cycle_policy();
             self.ui_blip("menu_pick");
+        } else if row <= SPALL_ROW || row <= PATTERN_ROW + nparams {
+            // every other row is a slider (knobs, spall, params); drag starts
+            // immediately
+            self.crack.row = row;
+            self.menu.drag = true;
+            self.crack_drag_to(p);
         }
         true
     }
@@ -685,18 +715,19 @@ impl Viewer {
         let lx = (p.x - MENU_MARGIN as f32) / ms;
         let t = ((lx - MTRACK_X as f32) / MTRACK_W as f32).clamp(0.0, 1.0);
         let v = (t / 0.02).round() * 0.02;
-        let nk = crate::crack::LABELS.len();
-        if self.crack.row < nk {
+        if self.crack.row < SPALL_ROW {
             self.crack.knobs[sel][self.crack.row] = v;
             self.crack_apply(sel);
-        } else if self.crack.row > nk {
+        } else if self.crack.row == SPALL_ROW {
+            self.crack.spall[sel] = v; // geometry: shows on the release rebuild
+        } else if self.crack.row > PATTERN_ROW {
             let policy = self.crack.policy[sel] as usize % crate::crack_geom::NPOL;
-            let j = self.crack.row - nk - 1;
+            let j = self.crack.row - PATTERN_ROW - 1;
             if j < crate::crack_geom::POLICY_PARAMS[policy].len() {
                 self.crack.params[sel][policy][j] = v;
             }
         }
-        // row == nk is the pattern row: no track
+        // row == PATTERN_ROW is the cycler: no track
     }
 
     /// Draw the overlay at logical resolution: the open panel (game menu /
@@ -754,7 +785,7 @@ impl Viewer {
                 let sel = self.crack.sel.unwrap();
                 let policy = self.crack.policy[sel];
                 let par = self.crack.params[sel][policy as usize % crate::crack_geom::NPOL];
-                return crack_canvas(sel, self.crack.knobs[sel], self.crack.row, policy, par);
+                return crack_canvas(sel, self.crack.knobs[sel], self.crack.spall[sel], self.crack.row, policy, par);
             }
             // hamburger icon; while recording, a REC badge rides next to it
             // (the badge is overlay-only — clips capture swap.out, never UI)
@@ -843,9 +874,23 @@ mod tests {
         }
     }
 
+    /// The blurb band draws `take(LBLURB_LINES)` and drops the rest ON THE
+    /// FLOOR, so a blurb that wraps one line too far loses its tail in silence —
+    /// and the blurb is the ONLY description of a demo the owner ever sees. The
+    /// sibling test below only checked the PANEL fits; this checks the text does.
+    #[test]
+    fn every_demo_blurb_fits_the_band() {
+        for d in crate::demos::DEMOS {
+            let lines = wrap_text(d.blurb, LBLURB_COLS);
+            assert!(lines.len() <= LBLURB_LINES, "demo {:?}: blurb wraps to {} lines, band shows {LBLURB_LINES} — {lines:?}", d.name, lines.len());
+            assert!(!lines.is_empty(), "demo {:?} has no blurb", d.name);
+            // a word longer than the band cannot wrap at all — it would overhang
+            assert!(lines.iter().all(|l| l.len() <= LBLURB_COLS), "demo {:?}: an unbreakable word overflows the band — {lines:?}", d.name);
+        }
+    }
+
     /// The LEVELS panel must fit the shared staging buffer for every demo and
-    /// every selection, and each demo's blurb must survive the wrap into the
-    /// 2-line band. Dumps PPMs to `$LEVELS_DUMP` for a visual check when set.
+    /// every selection. Dumps PPMs to `$LEVELS_DUMP` for a visual check when set.
     #[test]
     fn levels_canvas_dumps() {
         let dump = std::env::var("LEVELS_DUMP").ok();
@@ -864,17 +909,57 @@ mod tests {
     }
 
     /// The crack-lab knob panel fits the shared staging buffer at every knob
-    /// value, row highlight (incl. the pattern row) and policy.
+    /// value, row highlight (incl. the spall dial and the pattern row) and
+    /// policy — the compile-time guard covers the tallest panel, this covers
+    /// every panel it can actually draw.
     #[test]
     fn crack_canvas_fits_the_staging_buffer() {
-        for row in 0..=crate::crack::LABELS.len() + 1 + crate::crack_geom::PARAMS_MAX {
+        for row in 0..=PATTERN_ROW + crate::crack_geom::PARAMS_MAX {
             for policy in 0..crate::crack_geom::POLICIES.len() as u8 {
                 let par = crate::crack_geom::param_defaults(policy);
-                let (buf, w, h) = crack_canvas(7, [0.0, 0.33, 0.66, 1.0], row, policy, par);
+                let (buf, w, h) = crack_canvas(7, [0.0, 0.33, 0.66, 1.0], 0.75, row, policy, par);
                 assert_eq!(buf.len(), (w * h) as usize);
                 assert!(w <= MPANEL_W && h <= MPANEL_H, "crack panel overruns the staging buffer");
                 assert_eq!(h, crack_panel_h(crate::crack_geom::POLICY_PARAMS[policy as usize].len()), "panel height tracks the policy's param count");
             }
+        }
+    }
+
+    /// THE ROW LAYOUT, pinned as a round trip through the hit-test's own
+    /// arithmetic: the panel gained a row in the middle (spall, between the
+    /// packed knobs and the pattern cycler), and a draw/hit-test disagreement
+    /// there means the owner drags `chip` when he clicks `spall`.
+    #[test]
+    fn every_panel_row_is_hit_by_its_own_band() {
+        for nparams in 0..=crate::crack_geom::PARAMS_MAX {
+            let rows = PATTERN_ROW + 1 + nparams;
+            for ri in 0..rows {
+                // the y the draw puts row `ri` at, probed at its middle
+                let y = MPAD + MROW * (1 + ri as i32) + MROW / 2;
+                let hit = (y - MPAD) / MROW - 1;
+                assert_eq!(hit as usize, ri, "row {ri} of {rows} does not hit itself");
+            }
+            // …and the footer band is past the last row, so a click there is inert
+            let fy = MPAD + MROW * (2 + (PATTERN_ROW + nparams) as i32) + 2;
+            assert!(((fy - MPAD) / MROW - 1) as usize >= rows, "the footer overlaps a row");
+        }
+        assert_eq!(SPALL_ROW, crate::crack::LABELS.len(), "spall sits directly under the packed knobs");
+    }
+
+    /// The GLAZE EASE is a visual decision the owner makes by eye, so it needs a
+    /// row (menu-first rule) — and the row has to REACH both ends: 0 is the A/B
+    /// "sharp boxes" state and 1 the look's authored 3-px facet. It steps in
+    /// quarters rather than sliding because each step rebuilds the scene and
+    /// rebakes the probes (~3 s on the M2), which a smooth drag would do per
+    /// pixel of travel.
+    #[test]
+    fn the_glaze_ease_row_reaches_both_ends_in_whole_steps() {
+        let row = MENU.iter().find(|i| i.key == "arris").expect("the glaze ease needs a menu row");
+        let ItemKind::Slider { min, max, step } = row.kind else { panic!("a scale, not a toggle") };
+        assert_eq!((min, max), (0.0, 1.0), "the row must reach the sharp end and the authored end");
+        assert!(step >= 0.25 && ((max - min) / step).fract() == 0.0, "whole steps landing on both ends: {step}");
+        for look in crate::look::LOOKS {
+            assert!((min..=max).contains(&look.arris), "{}: authored arris {} is off the row", look.name, look.arris);
         }
     }
 

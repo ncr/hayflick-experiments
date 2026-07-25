@@ -566,6 +566,11 @@ COMPOSITION reasons the code couldn't see:
   follow-cam centres the player, anything within ~180 px of frame centre
   gets eaten. A demo's action (here: the breach) must sit OUTSIDE that
   disc or it plays under a dither cloud.
+  **CORRECTED 2026-07-25** (see the "owner's surface" entry at the end):
+  the dissolve IS one-sided — the walk breaks on
+  `dot(hit.xz − player.xz, fwd) >= 0`, so a wall behind the player's
+  plane keeps its pixels however close it is on screen. The usable rule
+  is `wall.x + 2·wall.z <= player.x + 2·player.z` under trimetric.
 - World-space clearance is meaningless on its own: walls south of the
   player stay screen-close (depth compresses along the view axis). Think
   in the projection's pixel images: at trimetric, world-X maps ~82
@@ -825,3 +830,68 @@ broken pixels") turned out to answer the cost problem above:
   client, and the scope-1 test now reads the geometry pass's own GEO/CRAZE
   marks instead of "the knobs are non-zero" — a knobbed pier whose damage
   field left it pristine builds nothing and must stay hard-edged.
+
+## 2026-07-25 (the owner's surface) — a demo is STAGED, and a deferred GI update beats a smaller one
+
+Context: five effects had landed in the crack lab and none of them was
+visible from where the demo spawned the owner. Four lessons, none of them
+about the effects.
+
+- **The ROI dissolve is ONE-SIDED, so demo staging is an inequality you
+  can solve — this corrects the 2026-07-17 entry.** That entry says the
+  reveal disc "stipple-dissolves EVERY occluder-marked wall it touches —
+  not just walls between camera and player". It does not: both shade
+  twins break the dissolve walk on `dot(hit.xz − player.xz, fwd) >= 0`,
+  i.e. a wall BEHIND the player's plane keeps its pixels however close it
+  is on screen. Under trimetric `fwd` is `−(1, 2)/√5` in xz, so "safe"
+  is exactly `wall.x + 2·wall.z <= player.x + 2·player.z`. That turns
+  staging from four failed spawn attempts into arithmetic: list the
+  walls' `x + 2z`, put the player above the max. For a wall parallel to a
+  ground axis the crossover point (where it leaves the safe half-plane)
+  even has a closed form in screen px that is INDEPENDENT of the player's
+  other coordinate — for the gym's z=10 run it is `(100·(p.z − 10), +25)`
+  px from the disc centre, so `|p.z − 10| > 1.11` clears the 79+33 px
+  disc whatever `p.x` is. Solve it before rendering candidates; the
+  renders then only settle taste.
+- **Ship the negative control IN THE LEVEL, and make it the greybox, not
+  "less aged".** Every wall weathered means weathered IS the base tone
+  and the owner has nothing to read damage against — the same trap the
+  spall dial's variance hit two steps earlier. The fix is one field of
+  level data (`CrackSeed::pristine`, world points so re-cutting the level
+  cannot move it silently), and the test must assert the control equals
+  the UN-AGED BUILD, not some hand-written invariant: the first version
+  asserted "still a 24-vertex box" and failed, because the eased-arris
+  pass had already promoted every static box to a mesh. Compare against
+  the other build, not against your memory of it.
+- **When a synchronous GPU update is LATENCY-bound, defer it — do not
+  shrink it.** An animated geometry effect (a wall aging over 3 s) needs
+  ~16 scene rebuilds. The scene swap costs 30 ms; the local probe refresh
+  costs 5.1 s, and it costs that at ANY size (one thread per probe × 2048
+  serial rays: 680 probes 3.1 s, 1512 probes 3.3 s). So the interesting
+  axis was never "how few probes" but "who re-bakes, and when": a third
+  refresh mode that carries the banks and hands the dirty box to the
+  amortized roll that already existed for the tear-off made a geometry
+  step cost the swap alone. It converges to within max 4/255 of a full
+  re-bake over its 64 frames — verified against a `PROBE_LOCAL=0` run of
+  the same demo, which forces a real bake per commit and is the only
+  ground truth that means anything here. Keep the exact path for the
+  non-animating caller (a mouse-up): the two callers want different
+  answers, not different tunings of one. Measure the DEFERRED path's own
+  per-frame price too, and say it out loud: this roll costs 9.2 → 33.4 ms
+  a frame while armed (≈7 ms fixed for two waited command buffers and
+  four whole-material uploads, plus 2.1 ms per ray), so the beat runs at
+  30-40 fps. Deferring converts a stall into a slowdown; it does not make
+  the work free, and a report that only quotes the 30 ms swap is lying by
+  omission.
+- **Let the change's own SIGNATURE decide when to commit.** The beat
+  attempts a rebuild on a fixed tick grid and the rebuild returns
+  immediately unless the pier's geometry signature moved. That is why the
+  cadence needed no tuning against the knob curve — and measuring it
+  afterwards (all 16 attempts moved geometry, 18 k → 34 k tris) is what
+  turns "should be cheap" into a number in the comment.
+- Small one, general: **a UI band that renders `take(n)` of its content
+  truncates in silence.** The LEVELS blurb band drew two lines and the
+  test that claimed to check the wrap only checked the PANEL fit. A demo
+  blurb is the owner's only description of a demo; the assertion now
+  exists, and the band is three lines because the crack lab has three
+  things to say.

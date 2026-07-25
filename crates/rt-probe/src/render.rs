@@ -217,6 +217,12 @@ pub struct SceneHandles {
 /// TOGETHER — an off-by-one leaks a moving spotlight into the frozen GI.
 pub const N_RESERVED: usize = 16;
 
+/// Frames the amortized DDGI roll runs for once armed (`tear_off(amortize)` and
+/// the `ProbeRefresh::Roll` carry). Vulkan twin of `MetalBackend::roll_total`
+/// (`ROLL_FRAMES` env there); at `roll_n`/`roll_k` = 256/8 the ray set wraps
+/// twice inside it, so a re-armed roll always finishes a full cycle.
+pub const ROLL_FRAMES: u32 = 64;
+
 /// A transient/held spotlight (player flashlight, muzzle flash) — replaces
 /// the raw `[f32; 12]` slot writes the viewer used to hand-build.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -895,8 +901,13 @@ impl SceneGpu {
     /// enough that refreshing costs more than baking
     /// ([`crate::gpu_scene::LOCAL_REFRESH_MAX_FRACTION`]). A stale probe must
     /// never survive a rebuild, so every uncertain case pays the bake.
+    ///
+    /// `roll` DEFERS the re-bake to the amortized DDGI roll ([`Self::roll_step`],
+    /// the `ProbeRefresh::Roll` arm) instead of blocking on it — the age-ramp
+    /// demo beat, which steps geometry several times per second and cannot pay
+    /// the refresh's latency-bound seconds. Everything else is identical.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn carry_probes(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env: &crate::scene::EnvBlock, old: &SceneGpu, dirty: &[(Vec3, Vec3)], rays_total: i32) -> bool {
+    pub unsafe fn carry_probes(&mut self, ctx: &Ctx, set: vk::DescriptorSet, env: &crate::scene::EnvBlock, old: &SceneGpu, dirty: &[(Vec3, Vec3)], rays_total: i32, roll: bool) -> bool {
         if !old.probes_baked {
             return false; // nothing to carry yet (boot): silent, like the Metal twin
         }
@@ -918,9 +929,20 @@ impl SceneGpu {
         });
         self.probes_baked = true; // …so `bake_probes` stays a no-op for this scene
         self.probe_rays = rays_total; // the refresh bakes each touched probe to the startup convergence
+        let n = crate::gpu_scene::probes_in(&boxes);
+        if roll {
+            // DEFERRED (Metal twin: `MetalBackend::rebuild_scene_impl`'s rolling
+            // arm) — same arming as `tear_off(amortize)`, no blocking rebake.
+            let Some(b) = crate::gpu_scene::union_box(&boxes) else { return true };
+            self.roll_box = Some(b);
+            self.roll_frames = ROLL_FRAMES;
+            self.roll_ray = 0;
+            self.roll_prime = true;
+            println!("probes: carried {} banks + ROLLING {n} probes over {ROLL_FRAMES} frames", self.probe_count);
+            return true;
+        }
         let t = std::time::Instant::now();
         self.refresh_boxes(ctx, set, env, &boxes);
-        let n = crate::gpu_scene::probes_in(&boxes);
         println!("probes: carried {} banks + refreshed {n} probes ({:.0}%) in {:.0} ms", self.probe_count, 100.0 * n as f32 / self.probe_count as f32, t.elapsed().as_secs_f32() * 1000.0);
         true
     }
@@ -948,7 +970,6 @@ impl SceneGpu {
             // (bounded roll_k rays/probe/frame, decay-blended), no whole-region
             // stall. The first frame primes it (rescales the dense bake's count
             // down to roll_n so the blend responds at once).
-            const ROLL_FRAMES: u32 = 64;
             self.roll_box = Some((lo, hi));
             self.roll_frames = ROLL_FRAMES;
             self.roll_ray = 0;

@@ -452,8 +452,16 @@ impl MetalBackend {
         // cap's widening) invalidates every probe position. Crack geometry stays
         // inside its pier's AABB by construction, which is exactly why the check
         // passes for a knob rebuild and would fail for a real level edit.
-        let carried = match refresh {
-            ProbeRefresh::Local(dirty) if self.sc.probes_baked => {
+        // `Local` and `Roll` carry the same banks over the same dirty boxes and
+        // differ only in WHO re-bakes them: `Local` here and now (3-5 s, exact),
+        // `Roll` the per-frame DDGI roll over the following frames (~30 ms here).
+        let (dirty, rolling) = match refresh {
+            ProbeRefresh::Local(d) => (Some(d), false),
+            ProbeRefresh::Roll(d) => (Some(d), true),
+            ProbeRefresh::Full => (None, false),
+        };
+        let carried = match dirty {
+            Some(dirty) if self.sc.probes_baked => {
                 let g = ProbeGrid::build(scene.min, scene.max, cfg.render.probe_spacing);
                 let same = g.origin == self.sc.probe_origin && g.spacing == self.sc.probe_spacing && g.dims == self.sc.probe_dims;
                 let boxes = same.then(|| rt_probe::refresh_boxes_for(g.origin, g.spacing, g.dims, dirty)).flatten();
@@ -479,9 +487,21 @@ impl MetalBackend {
         }
         std::ptr::copy_nonoverlapping(banks.as_ptr(), self.sc.probe_buf.contents() as *mut u8, banks.len());
         self.sc.probes_baked = true; // …and so NEVER stored: a carried buffer is not a bake of this scene
+        let n = rt_probe::probes_in(&boxes);
+        if rolling {
+            // DEFERRED: hand the dirty box to the per-frame roll and return — the
+            // caller is animating (the age-ramp beat), and a synchronous refresh
+            // costs 3-5 s whatever its size. Same arming as `tear_off(amortize)`.
+            let Some(b) = rt_probe::union_box(&boxes) else { return };
+            self.roll_box = Some(b);
+            self.roll_frames = self.roll_total;
+            self.roll_ray = 0;
+            self.roll_prime = true;
+            println!("probes: carried {} banks + ROLLING {n} probes over {} frames (metal)", self.sc.probe_count, self.roll_total);
+            return;
+        }
         let t0 = std::time::Instant::now();
         self.refresh_boxes(&boxes);
-        let n = rt_probe::probes_in(&boxes);
         println!("probes: carried {} banks + refreshed {n} probes ({:.0}%) in {:.0} ms (metal)", self.sc.probe_count, 100.0 * n as f32 / self.sc.probe_count as f32, t0.elapsed().as_secs_f32() * 1000.0);
     }
 

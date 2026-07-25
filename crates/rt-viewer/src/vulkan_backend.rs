@@ -440,7 +440,10 @@ impl RenderBackend for VulkanBackend {
         self.recreate_gpu(extent.width, extent.height);
         let set = self.swap.as_ref().unwrap().scene_set;
         let carried = match refresh {
-            ProbeRefresh::Local(dirty) => self.gpu.carry_probes(&self.ctx, set, &self.env, &old, dirty, cfg.render.probe_rays),
+            ProbeRefresh::Local(dirty) => self.gpu.carry_probes(&self.ctx, set, &self.env, &old, dirty, cfg.render.probe_rays, false),
+            // the age-ramp beat: carry, then let `roll_step` settle the dirty box
+            // over the next frames instead of blocking on the refresh
+            ProbeRefresh::Roll(dirty) => self.gpu.carry_probes(&self.ctx, set, &self.env, &old, dirty, cfg.render.probe_rays, true),
             ProbeRefresh::Full => false,
         };
         old.destroy(&self.ctx);

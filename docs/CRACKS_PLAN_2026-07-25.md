@@ -183,9 +183,10 @@ Both, on one gate:
   close-up 5.91 -> 6.13 -> 14.91 ms. The 4-tap coverage is only expensive
   where the cracks actually fill the screen.
 
-## Task 2 (after 1.5) — spalling with exposed rebar
+## Task 2 (after 1.5) — spalling with exposed rebar — SKETCH, built below
 
-Sketch, not committed: spall craters are currently plates that go
+Sketch as first written (kept for the reasoning; the built version, its
+measurements and the five defects the first cut had are further down): spall craters are currently plates that go
 MISSING (chip gate) plus painted chalk. Owner wants the concrete loss to
 expose REBAR. Direction: a procedural bar CAGE per wall (vertical bars on
 a ~0.2-0.3 wu pitch + horizontal ties), living just under the veneer;
@@ -486,6 +487,439 @@ opening. Nothing visible at any knob setting tried (there is no damage
 adjacent to the doorway in those draws), and the one-line alternative —
 hash the run's LINE (axis + coordinate + roomy flag) instead of its
 extent — would merge them at the price of merging any two collinear runs.
+
+## Task 3, step 5 — the FIELD LEVEL lane (the un-ageable facade) — DONE 2026-07-25
+
+Step 4's defect, fixed: `dmgN` is a raw fbm and every feature gate is an
+ABSOLUTE threshold on it (`dT = mix(0.74, 0.55, age)`, zone at `dT + 0.02`,
+cracks at `dT - 0.10`). One facade is only ~2 cells of the field's dominant
+octave wide, so the LEVEL of its single draw is a lottery — and step 4 made it
+ONE draw per RUN instead of one per panel. Measured over the crack-lab gym's
+seven runs, the field's 98th percentile spread **0.491 .. 0.915**: the z=8 run
+behind the doorway never cleared the zone gate at ANY age while the x=8 facade
+was already wrecked at age 0.3.
+
+**The fix, and why it is a fraction and not a percentile.** `crack_geom::run_level`
+samples the field over the RUN's whole authored face on the 0.1-wu authoring
+lattice (the same `dmg_field` the shader computes and `CrazeCfg::dmg` cuts
+plates with — one definition, three callers), then returns the offset that puts
+the `1 − f` percentile onto a canonical gate level, where
+
+- the gate is `dT(age_ref) + 0.05` — the level at which the craze zone is HALF
+  open, at `wear::LEVEL_AGE_REF = 0.6` (mid-slider, just above the demo's own
+  base age 0.55);
+- `f = wear::level_fraction(run)` is drawn PER RUN in `LEVEL_FRACTION =
+  0.06..0.24` off a second salt of the story hash.
+
+So a run's damaged AREA at the reference age IS the drawn fraction, by
+construction. Normalizing to a drawn TARGET rather than to one constant is what
+keeps the story: one wall is a bad wall and the next merely tired (4× between
+the band's ends), and inside each, `crack::run_ramp` still gives a bad end and a
+clean end. What the normalization deletes is only the part nobody authored — the
+amplitude of one fbm draw.
+
+The band is calibrated, not chosen: it leaves the level's MEAN damaged area
+where the owner last saw it (0.152 → 0.180 of a face at the reference age) while
+deleting both tails.
+
+| run (authored rect ×10) | f drawn | offset | zone @ age 0.3 | @ 0.6 | @ 0.9 |
+|---|---|---|---|---|---|
+| south z=3 `[29,29,81,31]` | 0.174 | +0.072 | 0.001 → 0.018 | 0.013 → 0.184 | 0.129 → 0.487 |
+| doorway W `[29,79,51,81]` | 0.130 | +0.120 | 0.000 → 0.085 | 0.017 → 0.137 | 0.079 → 0.189 |
+| doorway E `[59,79,81,81]` | 0.178 | +0.240 | **0.000 → 0.035** | **0.000 → 0.247** | **0.000 → 0.490** |
+| garden z=10 `[99,99,161,101]` | 0.216 | +0.048 | 0.001 → 0.082 | 0.102 → 0.223 | 0.257 → 0.511 |
+| west x=3 `[29,29,31,81]` | 0.129 | −0.036 | 0.116 → 0.066 | 0.184 → 0.139 | 0.271 → 0.209 |
+| east x=8 `[79,29,81,81]` | 0.112 | −0.132 | **0.234 → 0.076** | **0.423 → 0.118** | **0.645 → 0.176** |
+| spur x=12 `[119,19,121,61]` | 0.204 | −0.072 | 0.221 → 0.135 | 0.329 → 0.210 | 0.498 → 0.273 |
+| **range** | | −0.132..+0.240 | 0.000-0.234 → 0.018-0.135 | 0.000-0.423 → 0.118-0.247 | 0.000-0.645 → 0.176-0.511 |
+
+(`zone` = the fraction of the run's face where `CrazeCfg::zone > 0.35`, the same
+gate that opens a plate. Pinned by
+`crack_geom::every_gym_run_ages_and_none_is_wrecked_young`, whose vacuity guard
+recomputes the table at offset 0 and requires it to FAIL the bound.)
+
+**The transport, and the one thing that made it signed.** The offset rides
+`wear`'s lane 1. It is NOT a unorm dial: it is a 6-bit two's-complement code in
+units of `LEVEL_STEP = 0.012`, because the empty word — every material nobody
+stamped, including any core a future generator mints — has to decode to
+*exactly no normalization*. A unorm lane would hand it the range's low end and
+silently un-age it, which is this step's own defect applied to itself. Range
+−0.384..+0.372 against a measured need of −0.132..+0.240 (≈50 % headroom;
+past the end it clamps to a partly normalized run, never a wrapped sign). Grain
+0.012 is 20 % of the zone gate's 0.06 window, i.e. ≤3 % of a face's damaged
+area.
+
+**Mirror discipline.** The value is measured on the host and applied on BOTH
+sides, so the classic drift (geometry vs paint) is one `LEVEL_STEP` away.
+`wear::level_quantize` is the only thing the host may add, and
+`wear::both_shader_twins_decode_the_level_lane_exactly_as_the_host_packs_it`
+`include_str!`s both `shade.comp` and `shade.metal` and fails the build if
+either stops spelling the shift, the signed decode, the step, or the `+ dOff`
+into `dmgN` — which also catches "ported one twin only".
+
+The offset is a pure function of the RUN (rect + story key), independent of the
+knobs, so a knob drag never moves it and the release gate still dirties exactly
+the pier that moved (verified: `CRACK_EDIT` → 1512 probes, 3610 ms local
+refresh). `WEAR_LEVEL=0` zeroes it at the ONE place both readers get it from —
+the harness A/B, and the proof that "before" means before.
+
+Measured (M2, Metal, 1280×800; every framing's own two-run floor first):
+
+| framing | floor (two identical runs) | new vs HEAD |
+|---|---|---|
+| `CRACKS=0` pristine | 16 px @ 1 LSB | **16 px @ 1 LSB** (bit-identical) |
+| plain gym boot (no lab) | — | **24 px @ 1 LSB**, 3.75 → 3.76 ms |
+| hot `0.9,0.8,0.6,0.3`, SE corner | 0.119 % @ 4 | 20.94 % @ 180 |
+| hot, north facade `ZOOM 2.0 X 6.8 Z 8.0` | 0.058 % @ 3 | 22.23 % @ 180 |
+| demo boot seed, wide level view | max 10 (bake-to-bake) | 6.21 % @ 185 |
+| `WEAR_LEVEL=0` vs HEAD (all framings) | — | at the floor (max 2-10) |
+
+Frame cost: nil per texel (two ALU ops). The crack-lab close-up went 5.83 →
+6.07 ms at `AA=0` and 14.3 → 15.0-16.9 ms with the contour AA on — that is the
+extra crack GEOMETRY this seed now grows (prims 365 → 369, tris 32984 → 35584)
+filling more contour area, the same accounting as step 4.
+
+Known consequence, stated plainly: the east facade — the showcase wall of step
+4's shots — is now the level's CLEAN one (0.645 → 0.176 damaged at age 0.9), and
+the previously dead doorway-east panel is one of the worst. The roles swapped
+because the normalization is two-sided; a one-sided variant (raise the dead,
+never lower the wrecked) would preserve step 4's shots but leave the level's
+mean damage 1.7× higher and keep half the "pristine facade beside a wrecked
+wall" contrast that started this.
+
+## Task 2 (the sketch above, built) — COVER SPALL WITH EXPOSED REBAR — DONE 2026-07-25
+
+Delivers task 2's sketch, and the owner's own headline for the round
+("large concrete spalls with the REBAR showing underneath"). Scope note for the
+playtest: what landed this round is cover-spall-with-rebar plus step 5's field
+level — nothing from the arris or glaze-chip families, so "does the eased arris
+read as thicker ceramic" cannot be answered yet.
+
+**The cage first, the damage second.** `rebar.rs` builds a WORLD-anchored
+reinforcement mat (verticals at `u = 0.4·i`, ties at `y = 0.25 + 0.5·j`), so it
+lines up across pier joints and around the building corner; then a corrosion
+potential decides where the cover fails. Only the segments a crater actually
+exposes ever become triangles. `crack_geom::emit_crater` is the mesh:
+
+| ring | depth | what it is |
+|---|---|---|
+| `ins` → `ring` | 0 | the surviving cover's front face (the COLLAR) |
+| `ins` → `rim` | 0 → `cham_d` | the chamfered lip |
+| `rim` → `hole` | `cham_d` → `t` | the UNDERCUT — the cover overhangs the void by 0.04 wu |
+| `hole` → `ring` | `t` | the SHELF the lost cover sat on |
+| `ring` | 0 → `t` | the patch rect's wall |
+| `hole` → `hole` | `t` → `floor` | the basin wall |
+| `hole` | `floor` | the basin floor |
+
+Every ring is sampled on the SAME rays out of the crater's centre, so each band
+is a valid quad by construction — the same discipline as `Walk`'s corridor
+clamp, and the reason this is not a polygon boolean.
+
+**ONE owner dial**, the panel's `spall` row under the four knobs, staged so it
+does something over its whole travel:
+
+| dial | what he sees |
+|---|---|
+| ≤ 0.12 | nothing — the wall is cracked, where round 8 left it |
+| 0.12 … 0.43 | LIFTED COVER: a shallow lens, pale fresh-break floor, cover overhanging its top edge, no steel |
+| 0.43 … 1 | BLOWN SPALL: the floor cuts past the mat, 1-3 bars stand proud with their own shadows, up to three craters |
+
+Harness: `SPALL=<0..1>` and `SPALL_LAYER=1|2|3` (both on config.rs's shell-only
+exception list). The dial is a CEILING — `crack::seed_spall` multiplies by a
+skewed per-pier draw, so `SPALL=0` is genuinely off and the demo's own boot seed
+(0.65) leaves 4 of 15 walls clean, which is the control the damage is read
+against.
+
+### Five things that were wrong in the first cut, and what replaced them
+
+1. **Rebar in FACE coordinates.** `Mesh::boxx` pushed its corners straight into
+   `quad` without `Frame::w`, so all 7 Z-run piers put their cage at the
+   transposed world position — a rust cross floating in the gym's doorway in the
+   DEFAULT boot state. It now takes the world AABB (`Mesh::world_box`), which
+   also sidesteps the winding flip the depth axis introduces.
+2. **The mat in front of the cover.** `cover` was CLAMPED to fit a depth budget
+   and came out smaller than the veneer, so the steel sat in the veneer's hollow
+   and showed through grooves on walls with no crater. Cover is now DERIVED
+   (`veneer + BAR_SET`) and everything else gives way: the basin depth and the
+   bar's section are what get clamped.
+3. **The perforation clamp measured against the SLAB.** The solid behind a
+   crater is the CORE (inset by the veneer on both faces), so at depth knob ≥ 0.6
+   the floor went coplanar with the core's rear plane and past it. `budget()`
+   now derives everything from the core.
+4. **A hole into the core's hollow.** The core's front plane was cut back to the
+   patch RECT while the basin opened at the RIM — the annulus between them was a
+   window into the box's interior. The SHELF row above closes it.
+5. **A moss-green crater floor** (#717e64, G+13 on a wall that is neutral to
+   −0.3): `FLOOR_TILT` aimed the floor's normal 45° down, i.e. at the lawn, under
+   polana's `sat = 1.42`. Deleted. The cavity's darkness is now AUTHORED into the
+   basin's albedo (`BASIN_AO`), which costs no hue, and every cavity normal
+   points mostly OUT so nothing in the crater stares at the grass.
+
+### The honest exaggerations, stated
+
+- A crater on a 0.2-wu wall is ~15 px wide and ~2 px deep, so its REAL sky
+  visibility is ~0.95 — traced faithfully it darkens by 5 %, which the tonemap
+  eats whole (measured: the interior came out at 94 % of the wall's tone). The
+  0.66 → 0.34 albedo is a baked AO, the same class of lie as round 4's drooped
+  lip normal, and it buys 75 %.
+- 1 wu ≈ 1.2 m, so a 0.075-wu bar is a ~9 cm rebar under ~7 cm of cover: 4-5×
+  real. That is the price of ≥ 2 px, the same stylization the blocky greybox
+  runs on.
+- The depth knob's veneer eats the core from both sides (`t = 0.02 … 0.45 ·
+  thick`), so above depth ≈ 0.72 on a 0.2-wu wall there is no core left to hold
+  a mat and the dial stops at LIFTED COVER. The alternative was the bar in front
+  of the core's front plane, i.e. defect 2 again.
+
+### Both faces spall
+
+The camera is orthographic but the owner turns it in quarter steps (q/e), so a
+wall shows either of its big faces over a session. A one-sided crater is damage
+that vanishes when he presses `e` while the cracks and paint around it stay, so
+each face gets its own crater set (same damage field, salted seed). The two sets
+are vetoed DISJOINT in (u, y) — each basin may cut past the slab's
+half-thickness, so two craters facing each other would perforate the wall.
+Pinned by `a_walls_two_faces_never_spall_through_each_other`, with a vacuity
+guard that the facing basins really are deep enough to meet.
+
+### Measured (M2, Metal, 1280×800, ZOOM 2.6 on the z=10 garden wall)
+
+| pair | result |
+|---|---|
+| two identical runs (the floor) | 648 px differ, **max delta 3** |
+| `SPALL_LAYER=2` (steel only) vs `SPALL=0` | **0 px above 3 %**, max delta 4 — the mat is buried by construction |
+| `SPALL_LAYER=1` (crater only) vs `SPALL=0` | 167 856 px, max 197 |
+| `SPALL=1` vs `SPALL=0` | 170 304 px, max 191 |
+| crater interior vs wall (crater only) | 148 vs 199 = **74 %**, G−max(R,B) = **+1** (was +13 and green) |
+| basin floor beside the bar, with vs without the bar | 147 → 137: the bar's **cast shadow**, ~7 % over 2-3 texels |
+
+Feature sizes at the game projection: crater 0.3 × 0.7 wu = **12.4 × 27 px** on
+an X-run face, **8.5 × 27 px** on a Z-run one; bar section 0.063-0.075 wu =
+**2.6-3.1 px** across plus 2.1-3.1 px of depth parallax (a ~5 px silhouette);
+undercut lip 0.04 wu = **1.6 / 1.1 px** — the one sub-2-px feature, which is why
+the pier, its core, its basin and its steel all take the contour AA's opt-in bit.
+
+## Task 3, step 5 — EFFECT "eased arris" (glaze ease) — DONE 2026-07-25
+
+The look is porcelain and a perfectly sharp arris is the tell of cardboard.
+Every EXPOSED vertical corner and top edge of a static greybox box now carries a
+chamfer with its own bisector normal, so the boxes read as thick glazed ceramic
+volumes. It lifts every wall and roof in the level at once and it is the first
+client of the box→MESH PROMOTER (`wear_geom::ease_box`) that the knocked-arris
+and worn-doorway passes ride later.
+
+### The three decisions worth keeping
+
+**Authored in SCREEN pixels, not world units.** `wear_geom::sizes` derives the
+chamfer from the game projection's own authored axis images: a vertical facet
+spans +c on one ground axis and −c on the other, so the corner FACING the camera
+projects to `c·|px_x − px_z|` = 60.8 px/wu — and that factor holds at all four
+camera quarters, because the projection rotates with the camera. 3 px → c =
+0.0493 wu. The 0.2-wu wall slab caps it at 0.05 (two facets may never eat half a
+face), so the readability floor and the geometric ceiling agree within 1.5 % —
+which is also why there is no bigger "jamb" class: a reveal's flat end face is
+only 5.7 px wide to begin with.
+
+**The promoter keeps the box's IDENTITY.** One prim, one material, at the index a
+plain box would have taken. The `crack_geom` idiom (append a mesh, collapse the
+box) would have silently broken the two things that hide a box BY PRIM INDEX —
+the wall-smash rig and the roof tear-off.
+
+**One run owns each junction.** The building's corners are two overlapping slabs
+sharing a 0.2 × 0.2 column. Chamfer both and the two 45° facets are the SAME
+plane (the 2026-07-12 strobe class); chamfer neither and the building's most
+visible arris stays sharp. So `gym_scene::end_kind` classifies every run end from
+the run rects alone — Open / Buried (a T-junction) / Yield — and the yielding
+slab pulls out of the shared column by the overlap minus one authoring lattice
+step, which leaves its end plane strictly INSIDE the owner rather than coplanar
+with the owner's inner face. The yield is gated on the dial, so `ARRIS=0` is the
+old level byte for byte.
+
+### Measured (M2, Metal, 1280×800, plain gym boot — this framing's cross-run floor is 4-20 px at 1 LSB)
+
+| feature | wu | game px |
+|---|---|---|
+| vertical facet, camera-facing corner | 0.0493 | **3.0** (measured 6 window px = 3 low-res texels) |
+| vertical facet, silhouette corner | 0.0493 | back-facing — the outline just steps in 1.4 px and stays hard |
+| top-arris facet | 0.0387 | **2.4** (measured 2 texels), and the wall top drops from 5.7 to 3.5 px of flat |
+
+| tone (row 400 / 150, boot view) | before | after |
+|---|---|---|
+| garden wall: long face / END face | 201 / 191 | 201 / **211 facet** / 191 |
+| building corner: facade A / facade B | 201 / 215 | 201 / **217,214,202 facet** / 215,208,188 |
+| shaded corner where the sun grazes (yaw 1) | 192 / 137 | 192 / **68,91,65 facet** / 137 |
+
+The last row is the honest one: a facet is a true third tone whose SIGN follows
+the sun. Decomposed with `DEBUG_DIRECT`/`DEBUG_GI`, that dark band is not AO and
+not acne — the lit face is grazed by the sun and the shaded face is lamp-lit, so
+the 45° bisector falls past both terminators and is ambient-only. Real eased
+arrises do exactly that; it is what makes a corner read as a corner.
+
+| cost | before | after |
+|---|---|---|
+| gym frame | 3.71-3.74 ms | 4.13-4.20 ms (+13 %) |
+| gym triangles | 1688 | 2184 (+29 %) |
+| probe bake (boot / look switch / a dial step) | 2386 ms | 3275 ms (+37 %) |
+
+So "zero per-frame cost" (the catalogue's claim) is wrong by 0.45 ms: the bill is
+BLAS traversal on 29 % more triangles, and the bake pays it 2048 times per probe.
+It takes no contour AA (`AA_BIT` untouched): a facet is an AREA of constant
+screen width under a camera that cannot foreshorten it, so there is no sampling
+lottery to fix — CLAUDE.md's rule is feature SIZE, and 3 px is not thin detail.
+
+Known limit, stated rather than hidden: a crazed crack-lab pier LOSES its ease —
+`apply_geometry` collapses the pier's prim and re-emits the whole face, so at the
+demo's boot seed all 15 lab piers are sharp again while the roof and any unaged
+wall are eased. The plain gym (the owner's default boot) is where this effect is
+judged; handing `Frame::of` the inset rect is the follow-up the catalogue itself
+sketched.
+
+## Task 3, step 6 — THE OWNER'S SURFACE: facade spawn, a control wall, an age beat — DONE 2026-07-25
+
+Everything above is invisible unless the level he opens shows it. Three
+changes to `demos.rs` (plus the one backend addition the third needed), and a
+recorded clip so the whole round arrives as motion instead of thirty SHOT pairs.
+
+### 1. The lab faces the building now
+
+Spawn `(13, 12)` → `(9, 11)`. The old spot stood between the two freestanding
+garden walls — both SINGLE-PIER runs, so "one wall, one story" has no joint to
+cross and no ramp, and they carry no cap, no windows, no corner and no jambs:
+most of this round's causal gates were off screen, and the building was a
+clipped sliver in the top-left with the lower third of the frame empty lawn.
+From `(9, 11)` the building's SOUTH-EAST corner fills the upper half — two
+facades, four window reveals, the doorway jambs, the parapet cap — with the
+z=10 garden wall as foreground and the x=12 spur top-right.
+
+**The staging constraint is an inequality, not taste.** The ROI reveal
+dissolves an occluder only when the hit is IN FRONT of the player
+(`dot(hit.xz − player.xz, fwd) >= 0` breaks the walk in both shade twins), and
+the trimetric camera looks down `(1, 2)` in xz — so a wall is safe exactly
+when its `x + 2z` is below the player's. The building maxes at 24.2 and the
+player sits at 32.5. For a wall PARALLEL to the ground axis the crossover
+point has a closed form: for the z=10 run it lands at screen
+`(100·(p.z − 10), +25)` px from the disc centre — independent of `p.x` — so
+any spawn with `p.z ≥ 11.11` puts it past the 79 + 33 px disc. `p.z = 11.5`
+does; standing NORTH of that wall instead ghosts it from end to end, which is
+what ruled out every framing that had the building bigger.
+
+### 2. A pristine control wall (two of them)
+
+`CrackSeed::pristine` is a list of world (x, z) points whose piers boot with
+zero knobs and zero spall — named by point, not index, so re-cutting the level
+cannot silently move the control (the `SmashWall` idiom). The demo names two,
+and they do different jobs:
+
+- **(12, 4), the x=12 spur** — the permanent NEGATIVE CONTROL. Without one in
+  frame, "aged" quietly becomes the level's base tone and there is nothing to
+  read the damage against.
+- **(13, 10), the z=10 garden wall** — the biggest, nearest, least obstructed
+  wall in the frame, and therefore what the age beat ramps. A ramp has to start
+  from pristine or it only shows its own top half.
+
+`a_wall_the_demo_names_pristine_is_exactly_the_plain_greybox` pins that a
+control is the GREYBOX, not "less aged": zero knob BITS (so the shade pass's
+CRACK LAB block never fires and never even reads the story key), no GEO/CRAZE
+marks, no AA opt-in, no chalk core, no steel — and its vertices equal the same
+gym built with no crack lab at all. That last comparison is the right one and a
+24-vertex box is not: the eased-arris pass already promoted every static box to
+a mesh.
+
+### 3. The age beat — `Action::AgeWall { x, z, over }`
+
+From tick 60, one wall weathers from the greybox to worse-than-the-level over
+180 ticks (3 s). `crack::ramp_knobs` STAGES the layers instead of cross-fading
+them, because that is the causal order the catalogue is built on and it is what
+makes the beat read as a story: the glaze stains and crazes (0 → 0.55 of the
+ramp), the crack network opens through it (0.25 → 0.85), chips come off
+(0.45 → 1.0), and only at the end does the cover let go and show the rebar
+(0.60 → 1.0). Each stage gets ~0.8 s to itself.
+
+**Why (a) "ramp the paint, step the geometry" and not (b) "pre-build the
+stages".** The painted layers ride the per-frame material stream, so they are
+free at 60 fps. Geometry only exists after a scene rebuild, and the measurement
+that decides everything is this: the scene swap costs **~30 ms**, while the
+probe half of `ProbeRefresh::Local` costs **5.1 s**. Pre-building the stages
+would need one baked probe set per stage and a way to show exactly one — a lot
+of machinery to avoid a 30 ms step. So the beat commits geometry every 12 ticks
+and the GI goes to a new third mode:
+
+`backend::ProbeRefresh::Roll(&dirty)` — carry the baked banks exactly as
+`Local` does, then hand the dirty box to the amortized DDGI roll (`roll_step`,
+already there for the wall-smash tear-off) instead of blocking on the refresh.
+This is not "a smaller refresh": a synchronous refresh is LATENCY-bound (one
+thread per probe, 2048 rays serial), so 680 probes cost 3.1 s and 1512 cost
+3.3 s — shrinking the box buys nothing, only deferring does.
+
+| | Local (a mouse-up) | Roll (the beat) |
+|---|---|---|
+| scene swap | ~30 ms | ~30 ms |
+| probe work in the call | 5.1 s (792 probes) | 0 — 64 amortized frames |
+| exactness | a 2048-ray bake of the dirty probes | a 256-ray rolling estimate |
+
+A mouse-up keeps `Local`: interactive dialing is not animating, and the owner
+gets the exact answer for the state he stopped on.
+
+**The roll is not free per frame, and that is the honest cost of this design.**
+`roll_step` runs two WAITED command buffers per frame and rewrites the whole
+light/material arrays four times around them, so on the M2 the crack lab's
+frame goes 9.2 ms → 33.4 ms while a roll is armed (measured; ~30 fps). It is
+ray-linear on top of a fixed floor — `ROLL_K` 2 / 8 / 16 → 20.7 / 33.4 /
+50.3 ms, i.e. ≈ 7 ms fixed + 2.1 ms per ray per frame — and every commit
+re-arms it, so the beat and its 64-frame tail run at 30-40 fps rather than 60.
+
+Shipped anyway, with the reasoning on the record: it is a **bounded 4-second
+window in a scripted beat**, not a stall; the path it replaces costs 16 × 5.1 s
+of hard freezes; the same per-frame price is already paid by the approved
+wall-smash demo; and `ROLL_K`/`ROLL_FRAMES` are backend-global, so tuning them
+for this beat would silently retune that demo's settle. On the RTX the whole
+grid bakes in ~115 ms, so `Roll` may be unnecessary there entirely. The two
+levers, if the owner minds: arm the roll only on the ramp's FINAL commit (the
+intermediate estimates never converge anyway, since each commit re-primes), or
+drop `ROLL_K` and lengthen `ROLL_FRAMES` to match.
+
+### Measured (M2, Metal, 1280×800, `LEVEL="crack lab"`)
+
+| | |
+|---|---|
+| commits over the 180-tick ramp | 16, ALL of which moved the geometry |
+| per commit | 21-32 ms — under two frames at 60 fps |
+| triangles across the ramp | 18 091 → 33 517 |
+| roll convergence (max Δ vs a full-bake run of the same tick) | 46 → 28 → 22 → **6** over its 64 frames |
+| converged roll vs full bake | mean **0.023/255**, max **3.9/255** — and the difference map sits on the ramped wall, its shadow and the player, nowhere else |
+| consecutive frames during the ramp | mean 0.007-0.028, max 1 — except max 23 at tick 180, which is a new spall crater appearing, not a GI pop |
+| frame while a roll is armed | 9.2 → 33.4 ms (`ROLL_K` 2/8/16 → 20.7/33.4/50.3 — ≈7 ms fixed + 2.1 ms/ray) |
+| plain gym boot vs the pre-change build | 12 px at 1 LSB (this framing's two-run floor: 4 px at 1 LSB) — untouched |
+| `LOOK_SWITCH=polana` vs a direct boot | 237 px (0.023 %) at max 2 |
+| `CRACK_EDIT` (a mouse-up) | still the EXACT local refresh: 792 probes, 5.1 s |
+
+The clip: `.claude/skills/record-gameplay/scripts/record.sh` over a 470-tick
+trace — stand and watch the wall age, walk east past it, back west, north to
+the facade and in through the doorway (WALLCUT). 7.8 s at 60 fps.
+
+### Playtest recipe, per effect (LEVELS → "crack lab")
+
+| effect | where to look | what says it works |
+|---|---|---|
+| **the beat itself** | stand still for the first 5 s | the near garden wall goes from clean porcelain to a cracked, chipped wall with three rust bars showing, in one continuous read |
+| **cover spall + rebar** (task 2) | the same wall at the end of the beat; or click any building pier and drag `spall` | a lens-shaped hole with a bar crossing it and the bar's own shadow on the floor of the crater; the surviving cover overhangs the top edge |
+| **fresh break** (step 3) | inside any crater at high `chip` | the interior is PALER and neutral, and the tea-stain streaks stop dead at the lip instead of running through |
+| **one wall, one story** (step 4) | the building's two visible facades | a damage patch crosses a window jamb instead of restarting at it, and each facade is worse at one end |
+| **field level** (step 5) | the panel between the doorway and the corner | it ages at all — that panel was the un-ageable one |
+| **glaze ease** (step 5b) | the pristine control walls and the parapet cap | a crisp 3-px band of a third grey down every corner and along every top edge; it is the CONTROL walls that show it, since a crazed pier still loses its ease |
+| **the control** | the x=12 spur, top-right | it never changes, all session — that is the "before" |
+| **the knobs** | click any wall | the panel replaces the hamburger: four knobs, the spall dial, the pattern row and that policy's own params |
+
+### Known, and worth the owner's opinion
+
+- The beat leaves the ramped wall's probes at the roll's 256-ray estimate
+  rather than the bake's 2048. Invisible (max 3.9/255), and any later knob drag
+  on that wall re-bakes them exactly.
+- Two of the level's fifteen walls now boot clean, so the FIRST frame reads
+  less weathered than it used to. That is the point of a control, but it is a
+  taste call: `CrackSeed::pristine` is the one line that moves it.
+- The lower-left of the boot frame is empty lawn. It is structural: the ROI
+  inequality forces the player to the maximum `x + 2z` of everything he is
+  meant to see un-ghosted, so the content is always up-left of him.
 
 ## Task 3 (later) — new wear kinds
 

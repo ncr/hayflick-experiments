@@ -86,6 +86,21 @@ pub struct Look {
     /// detail stay one sample per texel and bit-identical. 0 = fully aliased
     /// (the pre-2026-07-25 image), 1 = the unbiased 5-sample box.
     pub aa: f32,
+    /// GLAZE EASE (owner catalogue 2026-07-25, "eased arris"): the master
+    /// scale on the chamfer every exposed arris of a static greybox box
+    /// carries (`wear_geom`; 1 = the authored 3-px facet). Look data because
+    /// it IS the look — porcelain pools at its arrises and a perfectly sharp
+    /// one reads as cardboard — and because it is GEOMETRY: the ESC row
+    /// rebuilds the scene and rebakes, so it belongs with the things a look
+    /// switch already pays for, not with the frame-rate dials.
+    /// SHIPPED OFF (2026-07-26): at the camera quarters where a vertical facet
+    /// faces the lawn it reads olive-green on white porcelain — the facet is
+    /// thin enough that its irradiance lookup lands in the meadow's bounce, so
+    /// the mechanism is right and the GI sampling is not. Off until that is
+    /// fixed; the ESC row still turns it on for an A/B, and the box→mesh
+    /// promoter it built (wear_geom) stands on its own for the contact-wear
+    /// passes.
+    pub arris: f32,
     // ---- the player body (linear)
     pub coat: [f32; 4],
     pub hood: [f32; 4],
@@ -137,6 +152,7 @@ pub const POLANA: Look = Look {
     bump_scale: 7.0,
     gi: 0.5,
     aa: 0.8,
+    arris: 0.0,
     coat: [0.42, 0.10, 0.08, 1.0], // the red-coat walker (from meadow)
     hood: [0.26, 0.05, 0.04, 1.0],
     skin: [0.74, 0.58, 0.45, 1.0],
@@ -197,6 +213,7 @@ pub const DUSK: Look = Look {
     bump_scale: 7.0,
     gi: 0.5,
     aa: 0.8,
+    arris: 0.0,
     coat: [0.42, 0.10, 0.08, 1.0],
     hood: [0.26, 0.05, 0.04, 1.0],
     skin: [0.74, 0.58, 0.45, 1.0],

@@ -609,8 +609,22 @@ kernel void shade(
             // lifts wall bases); AGE slides the threshold, gates are STEEP
             // slices around it (fbm crowds its midrange — a soft window
             // converges to uniform), so even age=1 keeps clean zones
+            // …and its LEVEL is normalized per RUN — twin of shade.comp
+            // (rt-viewer wear.rs lane 1). The gates are ABSOLUTE thresholds on
+            // an fbm and one facade is only ~2 cells of its dominant octave
+            // wide, so the draw's level was a lottery: over the gym's seven
+            // runs the field's 98th percentile spread 0.49..0.92 and the run
+            // behind the doorway never cleared the zone gate AT ANY AGE. The
+            // host samples the field over the whole run face
+            // (crack_geom::run_level) and parks the offset that puts a per-run
+            // drawn FRACTION of it over the gate. Lane 1 is a 6-bit TWO'S-
+            // COMPLEMENT code in units of 0.012 (wear::LEVEL_STEP), NOT a unorm
+            // dial: the empty word must mean "not normalized", or any material
+            // nobody stamped would decode the low end and silently un-age.
+            int lvlC = int((uint(m.emissive.a) >> 6) & 63u);
+            float dOff = float(lvlC >= 32 ? lvlC - 64 : lvlC) * 0.012;
             float rise = wallF ? 1.0 - smoothstep(0.10, 1.0, cuv.y) : 0.0;
-            float dmgN = fbm(float3(cuv * float2(0.45, 0.7), story * 7.0 + 3.0)) + 0.16 * rise;
+            float dmgN = fbm(float3(cuv * float2(0.45, 0.7), story * 7.0 + 3.0)) + 0.16 * rise + dOff;
             float dT = mix(0.74, 0.55, cAge);
             float stainW = smoothstep(dT - 0.14, dT + 0.02, dmgN); // stains + chips
             float fineG = smoothstep(dT + 0.08, dT + 0.14, dmgN);  // fine web

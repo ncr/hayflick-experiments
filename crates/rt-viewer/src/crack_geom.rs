@@ -58,6 +58,7 @@
 //! Render-side only, deterministic — a pure function of pier + knobs + policy.
 
 use crate::gym_scene::Pier;
+use crate::rebar;
 use glam::{Vec2, Vec3};
 use rt_probe::Scene;
 use std::cell::Cell as StdCell;
@@ -144,14 +145,16 @@ const SEL_BIT_I: i32 = crate::crack::SEL_BIT;
 fn fr(x: f32) -> f32 {
     x - x.floor()
 }
-fn mixf(a: f32, b: f32, t: f32) -> f32 {
+pub(crate) fn mixf(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+pub(crate) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
-fn hash13(p: Vec3) -> f32 {
+/// Shared with [`crate::rebar`] — the corrosion mat's draws must be the same
+/// arithmetic as the damage field's, not a second kind of noise.
+pub(crate) fn hash13(p: Vec3) -> f32 {
     let mut p = Vec3::new(fr(p.x * 0.1031), fr(p.y * 0.1031), fr(p.z * 0.1031));
     p += Vec3::splat(p.dot(Vec3::new(p.y, p.z, p.x) + Vec3::splat(33.33)));
     fr((p.x + p.y) * p.z)
@@ -255,7 +258,7 @@ fn pier_faults(u0: f32, u1: f32, y0: f32, y1: f32, seg: f32, k: [f32; 4]) -> Vec
 
 /// Push one flat quad (two tris, `add_box` index pattern) with an explicit
 /// flat normal (hit normals interpolate vertex attributes, winding is free).
-fn quad(verts: &mut Vec<([f32; 3], [f32; 3])>, idx: &mut Vec<u32>, q: [[f32; 3]; 4], n: [f32; 3]) {
+pub(crate) fn quad(verts: &mut Vec<([f32; 3], [f32; 3])>, idx: &mut Vec<u32>, q: [[f32; 3]; 4], n: [f32; 3]) {
     let vi = verts.len() as u32;
     for p in q {
         verts.push((p, n));
@@ -278,6 +281,7 @@ fn quad(verts: &mut Vec<([f32; 3], [f32; 3])>, idx: &mut Vec<u32>, q: [[f32; 3];
 
 /// One veneer fragment: a simple CCW polygon in face coords (u, y) + its
 /// aging gates (sampled at the fragment, not per pixel — whole plates let go).
+#[derive(Clone)]
 struct Frag {
     poly: Vec<Vec2>,
     /// Per-edge (poly[i] -> poly[i+1]): does this edge border an OPEN groove?
@@ -295,6 +299,9 @@ struct CrazeCfg {
     freq: f32,
     seed: f32,     // cell lattice seed (shader: story + 5)
     dmg_seed: f32, // damage field seed (shader: story * 7 + 3 — NOT the cell seed)
+    /// The RUN's damage-field LEVEL offset ([`run_level`]), quantized exactly
+    /// as the shade pass will decode it from `wear`'s lane 1.
+    d_off: f32,
     cover: f32,
     d_t: f32,
     chip: f32,
@@ -327,11 +334,12 @@ impl CrazeCfg {
     /// and the craze lattices are functions of world position plus this seed, so
     /// sharing it is exactly what makes a patch cross a panel joint instead of
     /// restarting at it (owner catalogue 2026-07-25, "one wall, one story").
-    fn new(story: f32, k: [f32; 4], run_x: bool, thick: f32, faults: &[Fault], par: [f32; PARAMS_MAX]) -> CrazeCfg {
+    fn new(story: f32, d_off: f32, k: [f32; 4], run_x: bool, thick: f32, faults: &[Fault], par: [f32; PARAMS_MAX]) -> CrazeCfg {
         CrazeCfg {
             freq: mixf(1.1, 3.4, k[1]),
             seed: story + 5.0,
             dmg_seed: story * 7.0 + 3.0,
+            d_off,
             cover: mixf(0.45, 0.9, k[0]),
             d_t: mixf(0.74, 0.55, k[0]),
             chip: k[3],
@@ -354,11 +362,10 @@ impl CrazeCfg {
     fn cham_d(&self) -> f32 {
         self.cham_w().min(0.55 * self.t)
     }
-    /// The macro damage field at face coords (u, y) — exact fbm mirror.
+    /// The macro damage field at face coords (u, y) — exact fbm mirror,
+    /// including the run's LEVEL offset (the shade pass adds it to `dmgN`).
     fn dmg(&self, su: f32, sy: f32) -> f32 {
-        let rise = 1.0 - smoothstep(0.10, 1.0, sy);
-        let p = Vec3::new(su * 0.45, sy * 0.7, self.dmg_seed);
-        0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + Vec3::splat(11.1)) + 0.16 * rise
+        dmg_field(self.dmg_seed, su, sy) + self.d_off
     }
     /// Fault-proximity halo (0..1) — mirrors the paint's fracture zone.
     fn halo(&self, su: f32, sy: f32) -> f32 {
@@ -420,6 +427,88 @@ impl CrazeCfg {
         }
         Some(Frag { poly, open, spalled, sink })
     }
+}
+
+// ---- the macro damage field and its per-RUN LEVEL ---------------------------
+
+/// The macro damage field, LEVEL-FREE: the exact fbm the shade pass computes
+/// for `dmgN` (`fbm(vec3(cuv * vec2(0.45, 0.7), story*7+3)) + 0.16 * rise`).
+/// One definition, two users — [`CrazeCfg::dmg`] adds the run's level offset on
+/// top, [`run_level`] samples it to DERIVE that offset.
+fn dmg_field(dmg_seed: f32, su: f32, sy: f32) -> f32 {
+    let rise = 1.0 - smoothstep(0.10, 1.0, sy);
+    let p = Vec3::new(su * 0.45, sy * 0.7, dmg_seed);
+    0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + Vec3::splat(11.1)) + 0.16 * rise
+}
+
+/// The level the craze ZONE is half open at, at `wear::LEVEL_AGE_REF` — the
+/// canonical level [`run_level`] normalizes a run's field to. `dT + 0.05` is
+/// the middle of the zone gate's `dT + 0.02 .. dT + 0.08` window, i.e. exactly
+/// "this much of the face is failing", which is the thing that has to be true
+/// of every facade.
+fn level_gate() -> f32 {
+    mixf(0.74, 0.55, crate::wear::LEVEL_AGE_REF) + 0.05
+}
+
+/// Sampling lattice of [`run_level`]: the 0.1-wu authoring grid the whole game
+/// projection is built on. The field's FINEST octave is 1.09 × 0.70 wu, so 0.1
+/// wu is ~7× finer than anything it can express — the percentile is a property
+/// of the field, not of the lattice.
+const LEVEL_LATTICE: f32 = 0.1;
+
+/// The damage-field LEVEL offset for a pier's parent RUN — the fix for the
+/// un-ageable facade (`wear::LEVEL_LANE` carries it to the shade pass; the
+/// argument and the measurements live in wear.rs).
+///
+/// Sample the field over the RUN's whole authored face, take the percentile
+/// that a per-run drawn FRACTION of the face lies above
+/// (`wear::level_fraction`), and return the offset that moves it onto
+/// [`level_gate`]. So the run's damaged AREA at the reference age is the drawn
+/// fraction by construction — normalizing the field's amplitude lottery away
+/// while leaving the authored variety (a bad facade vs a tired one, and the age
+/// ramp's bad end vs clean end) untouched.
+///
+/// A pure function of the RUN (its rect + its story key), so it is independent
+/// of the knobs: a knob drag never moves it, and it costs one probe-cache miss
+/// the first time a level is built, never a recurring one.
+pub fn run_level(scene: &Scene, pier: &Pier) -> f32 {
+    if !crate::wear::level_enabled() {
+        return 0.0;
+    }
+    let seed = story_of(scene, pier) * 7.0 + 3.0;
+    // the RUN's own axis and extent (not the pier's — this is a per-run datum,
+    // and every pier wall_slab cuts keeps the run's orientation)
+    let run_x = (pier.run_hi.x - pier.run_lo.x) >= (pier.run_hi.z - pier.run_lo.z);
+    let (a0, a1) = if run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
+    let (y0, y1) = (pier.run_lo.y, pier.run_hi.y);
+    let n = |a: f32, b: f32| ((((b - a) / LEVEL_LATTICE).round()) as usize).max(2);
+    let (nu, ny) = (n(a0, a1), n(y0, y1));
+    let mut v = Vec::with_capacity(nu * ny);
+    for i in 0..nu {
+        let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
+        for j in 0..ny {
+            let y = mixf(y0, y1, (j as f32 + 0.5) / ny as f32);
+            v.push(dmg_field(seed, u, y));
+        }
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).expect("the damage field is finite"));
+    let f = crate::wear::level_fraction(pier.run_lo, pier.run_hi);
+    let hit = v[(((1.0 - f) * (v.len() - 1) as f32).round() as usize).min(v.len() - 1)];
+    crate::wear::level_quantize(level_gate() - hit)
+}
+
+/// Every pier's [`run_level`], 0.0 where the pier carries no knobs — an
+/// unaged pier reads no lane, so leaving its word empty keeps a plain gym boot
+/// bit-identical (and stamps nothing at all).
+pub fn run_levels(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]]) -> Vec<f32> {
+    piers
+        .iter()
+        .enumerate()
+        .map(|(i, pier)| match knobs.get(i) {
+            Some(k) if *k != [0.0; 4] => run_level(scene, pier),
+            _ => 0.0,
+        })
+        .collect()
 }
 
 fn poly_area(p: &[Vec2]) -> f32 {
@@ -497,7 +586,7 @@ fn simplify(poly: &mut Vec<Vec2>, tol: f32) {
 /// Ear-clip a simple CCW polygon into triangles (local indices). Falls back
 /// to a fan if the numerics dead-end (degenerate slivers) — worst case a few
 /// flipped hidden tris, never a hole.
-fn triangulate(poly: &[Vec2]) -> Vec<[u32; 3]> {
+pub(crate) fn triangulate(poly: &[Vec2]) -> Vec<[u32; 3]> {
     let n = poly.len();
     let mut v: Vec<u32> = (0..n as u32).collect();
     let mut out = Vec::with_capacity(n.saturating_sub(2));
@@ -1462,6 +1551,495 @@ fn emit_frags(
     }
 }
 
+// ---- cover spall: the crater mesh and the veneer subtraction ---------------
+//
+// The crater is a lens-shaped loss through the VENEER and into the CORE, with
+// the bar it exposed still crossing it. Two rules keep the mesh out of round
+// 8's coincident-seam class (docs/AGENT_LEARNINGS.md), and both are structural
+// rather than tolerance-based:
+//
+// 1. The veneer is cut back to the crater's PATCH RECT, never to the lens. A
+//    rect is four half-planes, so "plate minus rect" is four exact convex
+//    clips ([`frag_minus_rect`]); subtracting the concave lens would be a real
+//    polygon boolean, and a near-miss boolean is precisely what drew round 8's
+//    invisible extensions. The cover between the rect and the lens survives as
+//    the crater's COLLAR, so the only boundary you ever SEE is the lens.
+// 2. Every seam the subtraction creates is CLOSED (flush cover joints), so
+//    nothing keyed to "this edge is cracked" — the chamfer, the sink step —
+//    fires on it, and the pieces' drooped walls stay coincident with the
+//    collar's outer wall.
+
+/// A cavity must read DARK at every orientation, and the one surface that fights
+/// that is a near-horizontal lip facing UP: it takes full sky exactly where the
+/// hole should be deepest, and the feature dashes out. So tilt such a lip's
+/// normal DOWN. That lie is round 4's droop rule in normal form; it lived inline
+/// in [`emit_prism`] until the spall basin needed the identical treatment on its
+/// own rim, and one definition is the point (the two drifting apart would give a
+/// crater a bright bottom arc and a fault a dark one).
+///
+/// `nn` is the lip's true in-face outward normal, `e` its edge direction.
+fn lip_tilt(nn: Vec2, e: Vec2) -> Vec2 {
+    let mut nn = nn;
+    if nn.y > 0.0 && e.x.abs() > 0.55 {
+        nn.y *= -0.5;
+    }
+    nn
+}
+
+/// A mesh under construction: `crack_geom` emits three per pier (cover, core,
+/// bars), and passing two vectors per mesh through the crater emitter is how
+/// the argument list gets out of hand.
+#[derive(Default)]
+struct Mesh {
+    v: Vec<([f32; 3], [f32; 3])>,
+    i: Vec<u32>,
+}
+
+impl Mesh {
+    fn quad(&mut self, q: [[f32; 3]; 4], n: [f32; 3]) {
+        quad(&mut self.v, &mut self.i, q, n);
+    }
+    fn is_empty(&self) -> bool {
+        self.i.is_empty()
+    }
+    /// One axis-aligned box in WORLD coordinates, all six faces. A closed prism
+    /// on purpose: an open one lets rays in and shows its own far side from
+    /// inside (round 8).
+    ///
+    /// World, not face, coordinates — the caller maps its two corners through
+    /// `Frame::w` and hands over the world AABB. The first cut took FACE corners
+    /// and pushed them straight into `quad`, so every Z-run pier (`w(u,y,t) =
+    /// [t,y,u]`, 7 of the gym's 15) got its rebar transposed across the diagonal:
+    /// a rust cross floating in the doorway and a bar lying in the lawn, in the
+    /// crack lab's DEFAULT boot state. The AABB form also sidesteps the winding
+    /// flip the depth axis introduces (`d()` inverts it when `nz = +1`).
+    fn world_box(&mut self, lo: [f32; 3], hi: [f32; 3]) {
+        let (a, b) = (lo, hi);
+        self.quad([[a[0], a[1], b[2]], [b[0], a[1], b[2]], [b[0], b[1], b[2]], [a[0], b[1], b[2]]], [0.0, 0.0, 1.0]);
+        self.quad([[a[0], a[1], a[2]], [a[0], b[1], a[2]], [b[0], b[1], a[2]], [b[0], a[1], a[2]]], [0.0, 0.0, -1.0]);
+        self.quad([[a[0], b[1], a[2]], [a[0], b[1], b[2]], [b[0], b[1], b[2]], [b[0], b[1], a[2]]], [0.0, 1.0, 0.0]);
+        self.quad([[a[0], a[1], a[2]], [b[0], a[1], a[2]], [b[0], a[1], b[2]], [a[0], a[1], b[2]]], [0.0, -1.0, 0.0]);
+        self.quad([[b[0], a[1], a[2]], [b[0], b[1], a[2]], [b[0], b[1], b[2]], [b[0], a[1], b[2]]], [1.0, 0.0, 0.0]);
+        self.quad([[a[0], a[1], a[2]], [a[0], a[1], b[2]], [a[0], b[1], b[2]], [a[0], b[1], a[2]]], [-1.0, 0.0, 0.0]);
+    }
+}
+
+/// Clip a flagged polygon to the half-plane `n·p >= c`. Edges the clip creates
+/// are CLOSED seams — see rule 2 above.
+fn clip_half(poly: &[Vec2], open: &[bool], n: Vec2, c: f32) -> (Vec<Vec2>, Vec<bool>) {
+    let np = poly.len();
+    let (mut vs, mut fs) = (Vec::with_capacity(np + 2), Vec::with_capacity(np + 2));
+    for i in 0..np {
+        let (a, b) = (poly[i], poly[(i + 1) % np]);
+        let (da, db) = (n.dot(a) - c, n.dot(b) - c);
+        if da >= 0.0 {
+            vs.push(a);
+            fs.push(open[i]);
+        }
+        if (da >= 0.0) != (db >= 0.0) {
+            vs.push(a + (b - a) * (da / (da - db)));
+            // leaving the half-plane, the new edge runs ALONG the clip line
+            fs.push(if da >= 0.0 { false } else { open[i] });
+        }
+    }
+    (vs, fs)
+}
+
+/// One veneer plate minus a crater's patch RECT, as up to four pieces: below,
+/// above, and the two flanks of the rect's own y-band. Each piece is the plate
+/// intersected with a CONVEX region, so it is a simple polygon by construction,
+/// and the four regions tile the rect's complement exactly.
+fn frag_minus_rect(f: &Frag, lo: Vec2, hi: Vec2) -> Vec<Frag> {
+    let band = [(Vec2::Y, lo.y), (Vec2::NEG_Y, -hi.y)];
+    let regions: [&[(Vec2, f32)]; 4] = [
+        &[(Vec2::NEG_Y, -lo.y)],
+        &[(Vec2::Y, hi.y)],
+        &[(Vec2::NEG_X, -lo.x), band[0], band[1]],
+        &[(Vec2::X, hi.x), band[0], band[1]],
+    ];
+    let mut out = Vec::with_capacity(4);
+    for region in regions {
+        let (mut poly, mut open) = (f.poly.clone(), f.open.clone());
+        for (n, c) in region {
+            (poly, open) = clip_half(&poly, &open, *n, *c);
+            if poly.len() < 3 {
+                break;
+            }
+        }
+        if poly.len() < 3 || poly_area(&poly) < 1e-5 {
+            continue;
+        }
+        // a piece the crater left with a closed seam may not sink (round 8: a
+        // step along a closed seam is a sub-pixel edge that dot-dashes at best)
+        let sink = if open.iter().all(|o| *o) { f.sink } else { 0.0 };
+        out.push(Frag { poly, open, spalled: f.spalled, sink });
+    }
+    out
+}
+
+/// Every plate minus every crater's patch rect. The rects are pairwise disjoint
+/// (`rebar` gives each crater its own y band), so this is a sequence of
+/// independent exact operations.
+fn frags_minus_rects(frags: Vec<Frag>, rects: &[(Vec2, Vec2)]) -> Vec<Frag> {
+    let mut out = frags;
+    for (lo, hi) in rects {
+        out = out.into_iter().flat_map(|f| frag_minus_rect(&f, *lo, *hi)).collect();
+    }
+    out
+}
+
+/// The same subtraction for an unflagged polygon — the CORE's front plane,
+/// which is the plane the crater actually pierces.
+fn poly_minus_rects(poly: &[Vec2], rects: &[(Vec2, Vec2)]) -> Vec<Vec<Vec2>> {
+    let f = Frag { poly: poly.to_vec(), open: vec![false; poly.len()], spalled: false, sink: 0.0 };
+    frags_minus_rects(vec![f], rects).into_iter().map(|g| g.poly).collect()
+}
+
+/// Collapse ONE face of a freshly added box prim (degenerate tris are never
+/// hit), so a mesh with a hole in it can take that face's place. Found by
+/// NORMAL rather than by index: `add_box`'s face order is an implementation
+/// detail of `rt_probe::Scene` and this pass should not depend on it.
+fn collapse_face(scene: &mut Scene, prim: usize, nrm: [f32; 3]) {
+    let pr = scene.primitives[prim];
+    for f in 0..(pr.vertex_count as usize / 4) {
+        let o = pr.vertex_offset as usize + f * 4;
+        if scene.vertices[o].nrm == nrm {
+            let c = scene.vertices[o].pos;
+            for v in &mut scene.vertices[o..o + 4] {
+                v.pos = c;
+            }
+            return;
+        }
+    }
+    unreachable!("a box prim has a face for every axis direction");
+}
+
+/// The ONE warm tint this look allows (owner catalogue 2026-07-25): exposed,
+/// corroded steel. Ochre on white porcelain is the family's known failure mode,
+/// so the tint is confined to the bar — the basin floor stays the pale
+/// fresh-break body ([`fresh_body`]) and the collar stays glaze.
+///
+/// MEASURED, not chosen. The first value shipped here was a mid ochre
+/// (0xa5623a, linear luma 0.16) and it failed exactly as the catalogue's cut
+/// list predicted: polana's post stack runs `sat = 1.42`, so at 3 px wide
+/// against a 0.94-luma wall the bar read as a stripe of orange PAINT and
+/// dominated the frame. This is the same hue two stops down — linear luma 0.05,
+/// i.e. 5 % of the wall — so the bar reads as a dark solid whose HUE is warm,
+/// which is what steel in a shaded cavity looks like. The saturation stays
+/// (rust IS chromatic and it is the only chromatic thing on the wall); only the
+/// value came down.
+const RUST_HEX: u32 = 0x54321f;
+
+/// Mint the pier's exposed-steel material. Deliberately NOT a clone of the
+/// chalk core: the knob bits must be ZERO so the shade pass's CRACK LAB paint
+/// block (`(pad >> 8) != 0`) never fires on steel, and MATTE + zero knobs keeps
+/// `matte_plus_knobs_is_only_the_chalk_core` — the fresh-break discriminator —
+/// true. Emissive stays 0 (any emission would mint an NEE light and kill the
+/// greybox wear gate); the occluder bit is inherited, or the bars would hang in
+/// mid-air the moment the WALLCUT dissolves their wall.
+fn rust_material(scene: &mut Scene, mid: i32) -> i32 {
+    let body = scene.materials[mid as usize];
+    let mut steel = body;
+    let c = rt_probe::hex_linear(RUST_HEX);
+    steel.base_color = [c[0], c[1], c[2], body.base_color[3]]; // alpha = the facade story key
+    steel.roughness = 0.95;
+    steel.metallic = 0.0; // ≥ 0.2 and the shade pass's REFL block starts mirroring on it
+    steel.emissive = [0.0; 4];
+    steel._pad = (body._pad & 1) | 4;
+    scene.materials.push(steel);
+    scene.materials.len() as i32 - 1
+}
+
+/// How much of the sky a spall's interior actually keeps — the cavity's baked
+/// ambient occlusion, and the one number in this effect that is a deliberate
+/// exaggeration rather than a measurement.
+///
+/// State the honest version first: a crater on a 0.2-wu wall is ~15 px wide and
+/// ~2 px deep, so its real sky visibility is about 0.95. Traced faithfully it
+/// darkens by 5 %, which the tonemap's luma quantize eats whole, and MEASURED
+/// that way the crater came out at 94 % of the wall's tone — a pale scuff, not a
+/// hole. The two mechanisms that would darken it honestly both miss at this
+/// scale: the probe grid is 0.5 wu, so the baked GI cannot see the pocket at all
+/// and hands its floor the open wall's sky, and the cavity is far too shallow for
+/// the shade pass's contact-grime radius to bite.
+///
+/// So the occlusion is AUTHORED into the basin's albedo — the same class of lie
+/// as round 4's drooped lip normal, and deliberately chosen over that lie's
+/// hue-free cousin: the first cut bought its darkness by tilting the floor's
+/// NORMAL 45° down, which aimed it at the lawn and produced a moss-green crater
+/// floor (#717e64, G+13 where the wall is −0.3) under polana's sat = 1.42.
+/// Albedo costs no hue, and it is the only lever with any authority here: the
+/// tonemap compresses hard, so a 0.45 albedo ratio only moved the interior to
+/// 82 % of the wall's tone. 0.34 measures at ~76 % —
+/// dark enough to read as a cavity at 15 px, light enough that it still reads as
+/// the pale, unstained fresh break the 2026-07-25 step established.
+const BASIN_AO: f32 = 0.34;
+
+/// Mint the crater's INTERIOR body — the shelf the lost cover sat on, the basin
+/// walls and its floor. A fresh break like the chalk core, and dimmed by
+/// [`BASIN_AO`] because it is a fresh break inside a hole.
+///
+/// Knob bits ZERO, deliberately: the shade pass's CRACK LAB paint block gates on
+/// `(pad >> 8) != 0`, so a crater interior takes no stains, no fine web and no
+/// crack paint — which IS the fresh-break suppression, bought here for free
+/// instead of through the matte discriminator. It also keeps
+/// `matte_plus_knobs_is_only_the_chalk_core` true, whose own doc names
+/// "rust-stained basin chalk" as the generator that would break it.
+fn basin_material(scene: &mut Scene, core_mid: i32) -> i32 {
+    let core = scene.materials[core_mid as usize];
+    let mut b = core;
+    for c in b.base_color.iter_mut().take(3) {
+        *c *= BASIN_AO;
+    }
+    b.roughness = 1.0;
+    b.metallic = 0.0;
+    b.emissive = [0.0; 4];
+    b._pad = (core._pad & 1) | 4; // occluder inherited, MATTE, no knobs
+    scene.materials.push(b);
+    scene.materials.len() as i32 - 1
+}
+
+/// How far the CORE's opening stands outside the cover's, measured radially in
+/// the face plane. This is the UNDERCUT: the surviving cover overhangs the void
+/// by this much all round, so the crater's top arc is a lip with a real shadow
+/// under it and the cavity cannot read as a sky-lit dish. 0.04 wu is 1.6 px on
+/// an X-run face and 1.1 px on a Z-run one — the one sub-2-px feature in this
+/// effect, which is why the pier (and its core) declare THIN to the contour AA.
+/// Clamped per ray to half the rim→rect gap so the core's opening always stays
+/// strictly inside the patch rect, whatever the rim's radial noise did.
+const UNDERCUT: f32 = 0.04;
+
+/// Emit one cover spall: the surviving COLLAR of cover (pier material, into
+/// `cov`), the BASIN it opens into (chalk core, into `bas`) and the bar segments
+/// the loss exposed (steel, into `bar`).
+///
+/// Depths are measured inward from the face plane, exactly as `emit_frags`
+/// measures them, and the surface is CLOSED — which is the whole reason this is
+/// written as one ring of quads per crater rather than as a boolean. Every ring
+/// is sampled on the SAME rays out of `cr.c` (`rebar::outline` guarantees that
+/// and guarantees the ordering `rim ≤ hole ≤ ring`), so each band between two
+/// rings is a valid quad by construction:
+///
+/// | ring | depth | what it is |
+/// |---|---|---|
+/// | `ins` → `ring` | 0 | the surviving cover's front face (the COLLAR) |
+/// | `ins` → `rim` | 0 → `cham_d` | the chamfered lip (owner round 7) |
+/// | `rim` → `hole` | `cham_d` → `t` | the UNDERCUT: the cover overhanging the void |
+/// | `hole` → `ring` | `t` | the SHELF the lost cover sat on |
+/// | `ring` | 0 → `t` | the patch rect's wall |
+/// | `hole` → `hole` | `t` → `floor` | the basin wall (chalk) |
+/// | `hole` | `floor` | the basin floor (chalk) |
+///
+/// The shelf is the row the first cut was missing, and it was a real hole: with
+/// the core's front plane cut back to the RECT but the basin opening at the RIM,
+/// the annulus between them was open into the core box's hollow interior.
+#[allow(clippy::too_many_arguments)]
+fn emit_crater(
+    cr: &rebar::Crater,
+    cfg: &CrazeCfg,
+    t_face: f32,
+    nz: f32,
+    w: &dyn Fn(f32, f32, f32) -> [f32; 3],
+    wn: &dyn Fn(f32, f32, f32) -> [f32; 3],
+    rect: (Vec2, Vec2),
+    cov: &mut Mesh,
+    bas: &mut Mesh,
+    bar: &mut Mesh,
+) {
+    let n = cr.rim.len();
+    let d = |depth: f32| t_face - nz * depth;
+    let droop = 0.8 * cfg.t;
+    let (cw, cd) = (cfg.cham_w(), cfg.cham_d());
+    // Same discipline as `emit_frags`: every emitted (u, y) is clamped into the
+    // pier's face rect, because NOTHING may leave the pier box (scene bounds and
+    // the probe grid must not move, and `ProbeRefresh::Local` re-bakes only this
+    // pier's AABB). A crater riding a settlement-dropped structural piece is the
+    // case that needs it — `Crater::clone_dropped` shifts it down with the piece,
+    // and the piece's own polygon is clamped the same way in `split_pier`.
+    let cl = |p: Vec2| p.clamp(rect.0, rect.1);
+    let y_floor = rect.0.y;
+    // Two rings pushed OUT of the rim along its own rays, each clamped to a
+    // fraction of the rim→rect gap so both stay strictly inside the patch rect
+    // however the rim's radial noise fell: the chamfer's inset (the plate cedes
+    // the strip, the opening keeps its width — owner round 7) and the core's
+    // opening (the undercut).
+    let (rim, ring): (Vec<Vec2>, Vec<Vec2>) = (cr.rim.iter().map(|p| cl(*p)).collect(), cr.ring.iter().map(|p| cl(*p)).collect());
+    let out_ring = |dist: f32, cap: f32| -> Vec<Vec2> {
+        (0..n)
+            .map(|k| {
+                let m = ring[k] - rim[k];
+                cl(rim[k] + m * (dist / m.length().max(1e-6)).min(cap))
+            })
+            .collect()
+    };
+    let ins = out_ring(cw, 0.45);
+    let hole = out_ring(UNDERCUT, 0.5);
+    // the collar's rect wall drops as it goes back, exactly like the walls
+    // `emit_frags` grows on the plate pieces the rect was cut out of
+    let sag = |p: Vec2| Vec2::new(p.x, (p.y - droop).max(y_floor));
+    if spall_layers() & 1 != 0 {
+        for k in 0..n {
+            let j = (k + 1) % n;
+            let (a, b) = (rim[k], rim[j]);
+            // outward radial at this edge (the collar's "away from the crater")
+            let r = ((a + b) * 0.5 - cr.c).normalize_or(Vec2::Y);
+            // A cavity must read dark at EVERY orientation (the round-4 rule).
+            // The crater's walls face INWARD, so its BOTTOM arc faces UP and
+            // would take full sky — the cavity's brightest pixels exactly where
+            // it should be deepest. `emit_prism` already answers this for a
+            // full-depth cut: tilt a near-horizontal upward lip's normal DOWN.
+            let rw = lip_tilt(-r, (b - a).normalize_or_zero());
+            let e = (0.0, ring[k], ring[j], hole[k], hole[j]);
+            // 1. the surviving cover's front face, chamfer ring → patch rect
+            cov.quad(
+                [w(ins[k].x, ins[k].y, d(e.0)), w(ins[j].x, ins[j].y, d(e.0)), w(e.2.x, e.2.y, d(e.0)), w(e.1.x, e.1.y, d(e.0))],
+                wn(0.0, 0.0, nz),
+            );
+            // 2. the chamfered lip: down into the wall at ~45°
+            cov.quad(
+                [w(ins[k].x, ins[k].y, d(e.0)), w(ins[j].x, ins[j].y, d(e.0)), w(b.x, b.y, d(cd)), w(a.x, a.y, d(cd))],
+                wn(-r.x * 0.707, -r.y * 0.707, nz * 0.707),
+            );
+            // 3. the UNDERCUT: the surviving cover's inner wall, leaning OUT as
+            //    it goes back, so the cover overhangs the void by `UNDERCUT`.
+            //    It is BASIN body, not glaze: what you see under a spalled lip is
+            //    the broken face of the cover, never its glazed outside — which
+            //    also means its darkness comes from `BASIN_AO` instead of from a
+            //    normal aimed at the lawn (the top arc's true normal faces DOWN,
+            //    and a down-facing normal is a green one in this look).
+            bas.quad(
+                [w(a.x, a.y, d(cd)), w(b.x, b.y, d(cd)), w(e.4.x, e.4.y, d(cfg.t)), w(e.3.x, e.3.y, d(cfg.t))],
+                wn(rw.x * 0.55, rw.y * 0.55, nz * 0.84),
+            );
+            // 4. the SHELF: what the lost cover sat on, core opening → patch
+            //    rect. This is what closes the cover layer's underside; without
+            //    it the ring between them is a window into the core's hollow.
+            bas.quad(
+                [w(e.3.x, e.3.y, d(cfg.t)), w(e.4.x, e.4.y, d(cfg.t)), w(e.2.x, e.2.y, d(cfg.t)), w(e.1.x, e.1.y, d(cfg.t))],
+                wn(0.0, 0.0, nz),
+            );
+            // 5. the patch rect's own wall — a CLOSED seam, coincident with the
+            //    walls of the plate pieces the rect was subtracted from
+            let (qa, qb) = (sag(e.1), sag(e.2));
+            cov.quad(
+                [w(e.1.x, e.1.y, d(e.0)), w(e.2.x, e.2.y, d(e.0)), w(qb.x, qb.y, d(cfg.t)), w(qa.x, qa.y, d(cfg.t))],
+                wn(r.x, r.y, 0.0),
+            );
+            // 6. the basin wall: a straight prism down to the floor. Its true
+            //    normal lies IN the wall's plane, which points it at the
+            //    HORIZON — and half the horizon is lawn, so the shipped rim came
+            //    out with a dark green band down one side under polana's
+            //    sat = 1.42. Tilt it mostly OUT instead: a cavity's wall then
+            //    samples the same neutral sky the wall face does, and all of its
+            //    darkness comes from `BASIN_AO`, which costs no hue.
+            bas.quad(
+                [w(e.3.x, e.3.y, d(cfg.t)), w(e.4.x, e.4.y, d(cfg.t)), w(e.4.x, e.4.y, d(cr.floor)), w(e.3.x, e.3.y, d(cr.floor))],
+                wn(rw.x * 0.5, rw.y * 0.5, nz * 0.87),
+            );
+        }
+        // the basin floor — a plain outward normal, like every other exposed
+        // face of the core. It reads as a hole because it is one: the collar
+        // overhangs it, the bar stands in front of it and both cast into it.
+        // (The first cut tilted this normal 0.45 DOWN to buy darkness and bought
+        // the LAWN instead — measured #717e64, G+13 on a wall that is neutral to
+        // −0.3. Never aim a normal at the grass under polana's sat = 1.42.)
+        let base = bas.v.len() as u32;
+        for p in &hole {
+            bas.v.push((w(p.x, p.y, d(cr.floor)), wn(0.0, 0.0, nz)));
+        }
+        for tri in triangulate(&hole) {
+            bas.i.extend_from_slice(&[base + tri[0], base + tri[1], base + tri[2]]);
+        }
+    }
+    // the bars: blocky per the tecta directive — a bar at this resolution is a
+    // box, not a cylinder. They INTERPENETRATE the wall solid; no boolean is
+    // needed because the buried part is behind the core's own front plane
+    // (`rebar::BAR_SET`) and runs past the patch rect (`rebar::BURY`).
+    for b in cr.bars.iter().take_while(|_| spall_layers() & 2 != 0) {
+        let h = 0.5 * cr.bar_s;
+        let (lo, hi) = if b.along_y {
+            (cl(Vec2::new(b.at - h, b.v0)), cl(Vec2::new(b.at + h, b.v1)))
+        } else {
+            (cl(Vec2::new(b.v0, b.at - h)), cl(Vec2::new(b.v1, b.at + h)))
+        };
+        let (lo, hi) = ([lo.x, lo.y, cr.cover], [hi.x, hi.y, cr.cover + cr.bar_s]);
+        // face coords → WORLD (`Frame::w`, the step the first cut skipped), then
+        // the world AABB: the map permutes the axes and `d()` flips the depth one
+        let (a, c) = (w(lo[0], lo[1], d(lo[2])), w(hi[0], hi[1], d(hi[2])));
+        let (mut wlo, mut whi) = (a, c);
+        for i in 0..3 {
+            wlo[i] = a[i].min(c[i]);
+            whi[i] = a[i].max(c[i]);
+        }
+        bar.world_box(wlo, whi);
+    }
+}
+
+/// The pier's cover spalls, in face coords. The corrosion mat is seeded on the
+/// RUN's damage seed, so the two piers of one facade grow the same character of
+/// crater — one wall, one story (2026-07-25).
+fn pier_craters(cfg: &CrazeCfg, fr: &Frame, pier: &Pier, dial: f32, salt: f32, fits: &dyn Fn(Vec2, Vec2) -> bool) -> Vec<rebar::Crater> {
+    let (run_u0, run_u1) = if fr.run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
+    let face = rebar::Face {
+        u0: fr.u0,
+        u1: fr.u1,
+        y0: fr.y0,
+        y1: fr.y1,
+        run_u0,
+        run_u1,
+        veneer: cfg.t,
+        thick: fr.t1 - fr.t0,
+        gate: cfg.d_t,
+        seed: cfg.dmg_seed + salt,
+    };
+    if spall_layers() == 0 {
+        return Vec::new(); // the whole effect off — see `spall_layers`
+    }
+    rebar::craters(&face, &|u, y| cfg.dmg(u, y), dial, fits)
+}
+
+/// The seed salt for the wall's BACK face. Both faces read the same damage
+/// field — one wall, one story — so the back set starts from the same ranked
+/// candidate list and takes the best sites the front did not; the salt is what
+/// gives its lenses their own orientation, offset and rim noise.
+const BACK_SALT: f32 = 37.13;
+
+/// Does this patch rect overlap any of `rects` (plus the standing-cover gap)?
+/// Cover spall is emitted on BOTH faces of a wall, and the two sets must be
+/// disjoint in (u, y): each side's basin may cut past the wall's half-thickness,
+/// so two craters facing each other at the same spot would PERFORATE the slab —
+/// exactly the leak `rebar::REAR` exists to prevent, arriving from the other
+/// side. Disjointness is the whole guard, which is why it is a veto handed to
+/// the site chooser rather than a filter applied afterwards.
+fn rect_hits(rects: &[(Vec2, Vec2)], lo: Vec2, hi: Vec2) -> bool {
+    let g = rebar::PATCH_GAP;
+    rects.iter().any(|(a, b)| lo.x < b.x + g && a.x < hi.x + g && lo.y < b.y + g && a.y < hi.y + g)
+}
+
+/// Geometry inputs are BUCKETED so a drag inside a bucket rebuilds nothing; the
+/// spall dial gets a finer grain than the knobs (0.05 vs 0.1) because its three
+/// stages sit inside one slider.
+fn spall_bucket(v: f32) -> f32 {
+    (v.clamp(0.0, 1.0) * 20.0).round() / 20.0
+}
+
+/// `SPALL_LAYER=0|1|2|3` — the BISECT knob (default 3 = both layers). 0 takes
+/// the whole effect out of the geometry pass, so `SPALL_LAYER=0` vs `SPALL=0`
+/// is the A/B that proves the DIAL's zero is the same thing as the effect not
+/// existing. Bit 1 is the crater (the veneer cut, the collar, the pierced core
+/// plane and the basin), bit 2 is the exposed steel. Round 8's lesson, and the task's instruction:
+/// a coincident-face question is settled by disabling one layer at a time, never
+/// by reasoning about which face wins. Both halves are diagnostic:
+/// `SPALL_LAYER=1` shows the cavity with no bar in it, and `SPALL_LAYER=2` must
+/// render a wall INDISTINGUISHABLE from `SPALL=0` — the bars are inside the
+/// solid, and if any of them shows through, the interpenetration this design
+/// relies on (no boolean, the buried part hidden by the core's own faces) is
+/// wrong. A shell-only read, like `CRACKS=`/`SPALL=`.
+fn spall_layers() -> i32 {
+    static L: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *L.get_or_init(|| std::env::var("SPALL_LAYER").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(3))
+}
+
 /// How much brighter the unglazed body is than the glaze's brightest channel.
 /// 3 % is the most that still leaves headroom under 1.0 on polana's near-white
 /// wall (peak 0.965 linear → 0.994): a crater floor at albedo 1.0 is literally
@@ -1713,6 +2291,11 @@ fn fault_bolts(faults: &[Fault], fr: &Frame, k: [f32; 4], px1: f32) -> Vec<Bolt>
 /// when the veneer is on, else the pier's own face) and the perimeter walls —
 /// fault flanks, ends, top cap and base — into `sv`, full thickness. The
 /// polygon boundary IS the crack path, so a kink shows in the silhouette.
+///
+/// `holes` are the spall craters' patch rects PER FACE (`[front, back]`): a
+/// crater cuts through the plane of the face it opened on, and cover spalls on
+/// both faces of a wall (the owner turns the camera in quarter steps), so both
+/// planes take their own holes. The perimeter walls take none.
 #[allow(clippy::too_many_arguments)]
 fn emit_prism(
     sv: &mut Vec<([f32; 3], [f32; 3])>,
@@ -1721,6 +2304,7 @@ fn emit_prism(
     pi: &mut Vec<u32>,
     poly: &[Vec2],
     closed: &[bool],
+    holes: [&[(Vec2, Vec2)]; 2],
     t0: f32,
     t1: f32,
     ff: f32,
@@ -1728,17 +2312,23 @@ fn emit_prism(
     w: &dyn Fn(f32, f32, f32) -> [f32; 3],
     wn: &dyn Fn(f32, f32, f32) -> [f32; 3],
 ) {
-    let base = pv.len() as u32;
-    for p in poly {
-        pv.push((w(p.x, p.y, ff), wn(0.0, 0.0, 1.0)));
+    for face in poly_minus_rects(poly, holes[0]) {
+        let base = pv.len() as u32;
+        for p in &face {
+            pv.push((w(p.x, p.y, ff), wn(0.0, 0.0, 1.0)));
+        }
+        for tri in triangulate(&face) {
+            pi.extend_from_slice(&[base + tri[0], base + tri[1], base + tri[2]]);
+        }
     }
-    for p in poly {
-        pv.push((w(p.x, p.y, fb), wn(0.0, 0.0, -1.0)));
-    }
-    let n = poly.len() as u32;
-    for tri in triangulate(poly) {
-        pi.extend_from_slice(&[base + tri[0], base + tri[1], base + tri[2]]);
-        pi.extend_from_slice(&[base + n + tri[0], base + n + tri[2], base + n + tri[1]]);
+    for face in poly_minus_rects(poly, holes[1]) {
+        let base = pv.len() as u32;
+        for p in &face {
+            pv.push((w(p.x, p.y, fb), wn(0.0, 0.0, -1.0)));
+        }
+        for tri in triangulate(&face) {
+            pi.extend_from_slice(&[base + tri[0], base + tri[2], base + tri[1]]);
+        }
     }
     for a in 0..poly.len() {
         // A CLOSED seam's wall spans only the CORE (plane to plane): the two
@@ -1753,28 +2343,41 @@ fn emit_prism(
         let e = (pb - pa).normalize_or_zero();
         // A full-depth cut cannot overhang its lower lip (the round-4 droop
         // trick needs a solid behind it), so a near-horizontal lip would
-        // present a SKY-LIT ledge and the crack would dash out. Tilt such a
-        // lip's normal DOWN instead: the cavity reads dark at every
-        // orientation, which is the invariant that matters.
-        let mut nn = Vec2::new(e.y, -e.x);
-        if nn.y > 0.0 && e.x.abs() > 0.55 {
-            nn.y *= -0.5;
-        }
+        // present a SKY-LIT ledge and the crack would dash out — see [`lip_tilt`].
+        let nn = lip_tilt(Vec2::new(e.y, -e.x), e);
         quad(sv, si, [w(pa.x, pa.y, za), w(pa.x, pa.y, zb), w(pb.x, pb.y, zb), w(pb.x, pb.y, za)], wn(nn.x, nn.y, 0.0));
     }
 }
 
-/// Fragment an UNFAULTED pier into core box + veneer per the policy.
-/// Returns false (scene untouched) when nothing opened — no groove, no live
-/// or spalled plate: the pier keeps its box and its paint.
-fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> i32 {
+/// Fragment an UNFAULTED pier into core box + veneer per the policy, and blow
+/// the spall dial's cover craters through both layers. Returns the pier's chalk
+/// core and steel materials (`-1` = none): the scene is untouched when nothing
+/// opened — no groove, no live or spalled plate, no crater — and the pier keeps
+/// its box and its paint.
+fn craze_pier(scene: &mut Scene, pier: &Pier, d_off: f32, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
     let (mid, _) = seg_of(scene, pier);
     let fr = Frame::of(pier);
-    let cfg = CrazeCfg::new(story_of(scene, pier), k, fr.run_x, fr.t1 - fr.t0, &[], par);
+    let cfg = CrazeCfg::new(story_of(scene, pier), d_off, k, fr.run_x, fr.t1 - fr.t0, &[], par);
     let opened = StdCell::new(false);
-    let frags = policy_frags(&cfg, policy, fr.u0, fr.u1, fr.y0, fr.y1, &opened);
-    if !opened.get() {
-        return -1;
+    let mut frags = policy_frags(&cfg, policy, fr.u0, fr.u1, fr.y0, fr.y1, &opened);
+    // BOTH faces spall. The camera is orthographic but the owner turns it in
+    // quarter steps (q/e), so a wall shows either of its big faces over a play
+    // session, and a one-sided crater is damage that disappears when he presses
+    // e — while the cracks, plates and paint around it stay. The back set is
+    // vetoed against the front set's rects so the two can never meet in depth.
+    let front = pier_craters(&cfg, &fr, pier, dial, 0.0, &|_, _| true);
+    let fr_rects = patch_rects(&front);
+    let back = pier_craters(&cfg, &fr, pier, dial, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
+    if !opened.get() && front.is_empty() && back.is_empty() {
+        return (-1, [-1, -1]);
+    }
+    let rect = (Vec2::new(fr.u0, fr.y0), Vec2::new(fr.u1, fr.y1));
+    // A spall on an otherwise SOUND wall still needs its cover: with no plates
+    // at all the inset core box would stand exposed and the wall would read 2t
+    // thinner and chalk-pale. One flush plate over the whole face IS unaged
+    // cover — every seam closed, so it renders as the slab it replaces.
+    if frags.is_empty() {
+        frags.push(flush_plate(rect.0, rect.1));
     }
     // the matte body: big faces pulled in by the veneer, ends/top/bottom flush
     let (blo, bhi) = if fr.run_x {
@@ -1785,19 +2388,78 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32
     // add_box_world mints the core its own material; restamp it as the chalk
     let body = scene.materials[mid as usize];
     scene.add_box_world(blo, bhi, fresh_body(body.base_color), [0.0; 4], 1.0, 0.0);
-    let core_mid = scene.primitives.last().unwrap().material_id as usize;
+    let core_prim = scene.primitives.len() - 1;
+    let core_mid = scene.primitives[core_prim].material_id as usize;
     scene.materials[core_mid]._pad = (body._pad & !SEL_BIT_I) | 4 | GEO_BIT | CRAZE_BIT;
-    // veneer fragments, both big faces — ONE prim sharing the pier material
-    let mut verts = Vec::new();
-    let mut idx = Vec::new();
-    let rect = (Vec2::new(fr.u0, fr.y0), Vec2::new(fr.u1, fr.y1));
-    for (t_face, nz) in [(fr.t1, 1.0f32), (fr.t0, -1.0f32)] {
-        emit_frags(&mut verts, &mut idx, &frags, t_face, nz, &cfg, &fr.w(), &fr.wn(), rect);
+    // veneer fragments, both big faces — ONE prim sharing the pier material.
+    // Only the +t face can ever be seen (the camera is a fixed ortho rig that
+    // only ever shows +X/+Z/+Y), so the craters live there and there only.
+    let (w, wn) = (fr.w(), fr.wn());
+    let (mut cov, mut plane_mesh) = (Mesh::default(), Mesh::default());
+    let (mut bas, mut bar) = (Mesh::default(), Mesh::default());
+    let plane = vec![Vec2::new(fr.u0, fr.y0), Vec2::new(fr.u1, fr.y0), Vec2::new(fr.u1, fr.y1), Vec2::new(fr.u0, fr.y1)];
+    for (t_face, nz, crs) in [(fr.t1, 1.0f32, &front), (fr.t0, -1.0f32, &back)] {
+        let rects = patch_rects(crs);
+        emit_frags(&mut cov.v, &mut cov.i, &frags_minus_rects(frags.clone(), &rects), t_face, nz, &cfg, &w, &wn, rect);
+        if !rects.is_empty() {
+            // this face's core plane gets the holes; the box face steps aside
+            collapse_face(scene, core_prim, wn(0.0, 0.0, nz));
+            for poly in poly_minus_rects(&plane, &rects) {
+                let base = plane_mesh.v.len() as u32;
+                for p in &poly {
+                    plane_mesh.v.push((w(p.x, p.y, t_face - nz * cfg.t), wn(0.0, 0.0, nz)));
+                }
+                for tri in triangulate(&poly) {
+                    plane_mesh.i.extend_from_slice(&[base + tri[0], base + tri[1], base + tri[2]]);
+                }
+            }
+        }
+        for cr in crs {
+            emit_crater(cr, &cfg, t_face, nz, &w, &wn, rect, &mut cov, &mut bas, &mut bar);
+        }
     }
-    scene.add_mesh_world(&verts, &idx, mid);
+    if !plane_mesh.is_empty() {
+        scene.add_mesh_world(&plane_mesh.v, &plane_mesh.i, core_mid as i32);
+    }
+    scene.add_mesh_world(&cov.v, &cov.i, mid);
+    let spall_mats = spend_spall(scene, mid, core_mid as i32, &bas, &bar);
     collapse_box(scene, pier);
     scene.materials[mid as usize]._pad |= CRAZE_BIT;
-    core_mid as i32
+    (core_mid as i32, spall_mats)
+}
+
+/// The patch rects the cover is cut back to — empty when the bisect knob has the
+/// crater layer off, which is what makes `SPALL_LAYER=2` an intact wall with the
+/// steel buried inside it.
+fn patch_rects(craters: &[rebar::Crater]) -> Vec<(Vec2, Vec2)> {
+    if spall_layers() & 1 == 0 {
+        return Vec::new();
+    }
+    craters.iter().map(|c| c.rect()).collect()
+}
+
+/// One flush, un-cracked cover plate over a whole face rect — every seam
+/// closed, so it renders as the slab it stands in for.
+fn flush_plate(lo: Vec2, hi: Vec2) -> Frag {
+    let poly = vec![lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)];
+    Frag { poly, open: vec![false; 4], spalled: false, sink: 0.0 }
+}
+
+/// Add the crater's two own prims — the BASIN's interior and the exposed STEEL —
+/// minting each material only if there is something to hang on it (an empty mesh
+/// must not leave a material behind: the probe cache keys on the material bytes).
+/// Returns `[steel, basin]`, `-1` for either that did not happen.
+fn spend_spall(scene: &mut Scene, mid: i32, core_mid: i32, bas: &Mesh, bar: &Mesh) -> [i32; 2] {
+    let mut out = [-1, -1];
+    if !bas.is_empty() {
+        out[1] = basin_material(scene, core_mid);
+        scene.add_mesh_world(&bas.v, &bas.i, out[1]);
+    }
+    if !bar.is_empty() {
+        out[0] = rust_material(scene, mid);
+        scene.add_mesh_world(&bar.v, &bar.i, out[0]);
+    }
+    out
 }
 
 /// Split a FAULTED pier along its faults AND craze the pieces: per piece a
@@ -1805,7 +2467,8 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32
 /// back planes (the chalk core showing in grooves and recesses), and the
 /// policy veneer clipped against the fault paths — so the small-crack
 /// pattern rides the broken wall and clusters along the seam (halo).
-fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> i32 {
+#[allow(clippy::too_many_arguments)]
+fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], d_off: f32, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
     let (mid, _) = seg_of(scene, pier);
     let fr = Frame::of(pier);
     let (u0, u1, t0, t1, y0, y1) = (fr.u0, fr.u1, fr.t0, fr.t1, fr.y0, fr.y1);
@@ -1814,22 +2477,41 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], pol
 
     // the veneer/damage layer takes the RUN's story; the faults handed in came
     // from the PANEL's own seed (`faults_for`) — see `seg_of`
-    let cfg = CrazeCfg::new(story_of(scene, pier), bucket(k), fr.run_x, t1 - t0, faults, par);
+    let cfg = CrazeCfg::new(story_of(scene, pier), d_off, bucket(k), fr.run_x, t1 - t0, faults, par);
     // the break, grown: jagged trunks (THROUGH — they separate the wall) plus
     // their forks (surface cracks that groove the veneer only)
     let all_bolts = fault_bolts(faults, &fr, bucket(k), cfg.px1);
     let (bolts, forks): (Vec<Bolt>, Vec<Bolt>) = all_bolts.into_iter().partition(|b| b.through);
     let opened = StdCell::new(false);
-    let all_frags = split_frags(policy_frags(&cfg, policy, u0, u1, y0, y1, &opened), &forks, 400);
+    let mut all_frags = split_frags(policy_frags(&cfg, policy, u0, u1, y0, y1, &opened), &forks, 400);
+
+    let rect = vec![Vec2::new(u0, y0), Vec2::new(u1, y0), Vec2::new(u1, y1), Vec2::new(u0, y1)];
+    let pieces = carve(rect, &bolts, 64);
+    // Craters come AFTER the carve, and the site chooser is told which rects can
+    // land: a crater straddling a break would be cut in half by the fault gap and
+    // dropped by two different amounts, so its patch must sit wholly inside ONE
+    // piece. Filtering afterwards instead would make the dial NON-MONOTONE (the
+    // budget gets spent on sites that are then discarded — measured: the garden
+    // wall lost its crater between dial 0.25 and 0.55), which is the one thing a
+    // staged owner dial may not do.
+    let piece_of = |lo: Vec2, hi: Vec2| pieces.iter().position(|(_, cuts)| rect_inside(lo, hi, cuts, &bolts));
+    // one set per FACE, the back vetoed against the front's rects — see
+    // `rect_hits` (two craters facing each other would perforate the slab)
+    let craters = pier_craters(&cfg, &fr, pier, dial, 0.0, &|lo, hi| piece_of(lo, hi).is_some());
+    let fr_rects = patch_rects(&craters);
+    let craters_b = pier_craters(&cfg, &fr, pier, dial, BACK_SALT, &|lo, hi| piece_of(lo, hi).is_some() && !rect_hits(&fr_rects, lo, hi));
     // the veneer inset only happens when the craze layer has anything to
     // show — a pristine-but-faulted wall stays full-thickness slabs
-    let crazing = opened.get() || !forks.is_empty();
+    let crazing = opened.get() || !forks.is_empty() || !craters.is_empty() || !craters_b.is_empty();
+    if crazing && all_frags.is_empty() {
+        // same reason as in `craze_pier`: the inset planes are the CORE, so a
+        // pier that insets without emitting cover reads thin and chalk-pale
+        all_frags.push(flush_plate(Vec2::new(u0, y0), Vec2::new(u1, y1)));
+    }
     let inset = if crazing { cfg.t } else { 0.0 };
     let core_mid = if crazing { chalk_material(scene, mid) } else { mid };
     let (ff, fb) = (t1 - inset, t0 + inset); // front/back planes (inset when crazing)
 
-    let rect = vec![Vec2::new(u0, y0), Vec2::new(u1, y0), Vec2::new(u1, y1), Vec2::new(u0, y1)];
-    let pieces = carve(rect, &bolts, 64);
     // shear steps: every THROUGH bolt drops the pieces on its sinking side a
     // few cm (cumulative when breaks stack), then everything is shifted so
     // nothing rises above the authored top
@@ -1851,7 +2533,14 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], pol
     let mut ci = Vec::new();
     let mut vv = Vec::new();
     let mut vi = Vec::new();
-    for ((poly, cuts), dj) in pieces.iter().zip(&drops) {
+    let (mut bar, mut bas) = (Mesh::default(), Mesh::default());
+    for (pi, ((poly, cuts), dj)) in pieces.iter().zip(&drops).enumerate() {
+        // the craters this PIECE carries, per face, riding its settlement drop
+        let of_piece = |set: &[rebar::Crater]| -> Vec<rebar::Crater> {
+            set.iter().filter(|cr| piece_of(cr.lo, cr.hi) == Some(pi)).map(|cr| cr.clone_dropped(*dj)).collect()
+        };
+        let (mine, mine_b) = (of_piece(&craters), of_piece(&craters_b));
+        let (holes, holes_b) = (patch_rects(&mine), patch_rects(&mine_b));
         // dropped copy (bottoms pinned at y0 — the buried part is invisible
         // and keeps scene bounds, and thus the probe grid, where they were)
         let dropped: Vec<Vec2> = poly.iter().map(|p| Vec2::new(p.x.clamp(u0, u1), (p.y + dj).clamp(y0, y1))).collect();
@@ -1867,7 +2556,7 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], pol
                 })
             })
             .collect();
-        emit_prism(&mut sv, &mut si, &mut cv, &mut ci, &dropped, &closed, t0, t1, ff, fb, &w, &wn);
+        emit_prism(&mut sv, &mut si, &mut cv, &mut ci, &dropped, &closed, [&holes, &holes_b], t0, t1, ff, fb, &w, &wn);
         if !crazing {
             continue;
         }
@@ -1895,22 +2584,41 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], pol
             }
             piece_frags.push(Frag { poly: fpoly, open, spalled: f.spalled, sink: f.sink });
         }
-        for (t_face, nz) in [(t1, 1.0f32), (t0, -1.0f32)] {
-            emit_frags(&mut vv, &mut vi, &piece_frags, t_face, nz, &cfg, &w, &wn, (Vec2::new(u0, y0), Vec2::new(u1, y1)));
+        let rect = (Vec2::new(u0, y0), Vec2::new(u1, y1));
+        let mut cov = Mesh { v: vv, i: vi };
+        for (t_face, nz, hs, crs) in [(t1, 1.0f32, &holes, &mine), (t0, -1.0f32, &holes_b, &mine_b)] {
+            let fs = frags_minus_rects(piece_frags.clone(), hs);
+            emit_frags(&mut cov.v, &mut cov.i, &fs, t_face, nz, &cfg, &w, &wn, rect);
+            for cr in crs {
+                emit_crater(cr, &cfg, t_face, nz, &w, &wn, rect, &mut cov, &mut bas, &mut bar);
+            }
         }
+        (vv, vi) = (cov.v, cov.i);
     }
     scene.add_mesh_world(&sv, &si, mid);
     scene.add_mesh_world(&cv, &ci, if crazing { core_mid } else { mid });
     if crazing {
         scene.add_mesh_world(&vv, &vi, mid);
     }
+    let spall_mats = spend_spall(scene, mid, core_mid, &bas, &bar);
     collapse_box(scene, pier);
     scene.materials[mid as usize]._pad |= GEO_BIT | if crazing { CRAZE_BIT } else { 0 };
-    if crazing {
-        core_mid
-    } else {
-        -1
+    (if crazing { core_mid } else { -1 }, spall_mats)
+}
+
+/// Does a rect sit wholly inside this carved piece? Clipping it against the
+/// piece's own cuts must give it back untouched — the same `cut_clip` the veneer
+/// uses, so "inside" means exactly what it means to every other layer.
+fn rect_inside(lo: Vec2, hi: Vec2, cuts: &[(usize, f32)], bolts: &[Bolt]) -> bool {
+    let mut poly = vec![lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)];
+    let want = (hi.x - lo.x) * (hi.y - lo.y);
+    for (bi, side) in cuts {
+        poly = cut_clip(&poly, &bolts[*bi], *side);
+        if poly.len() < 3 {
+            return false;
+        }
     }
+    poly_area(&poly) > want - 1e-5
 }
 
 /// Geometry inputs come from BUCKETED knobs (0.1 grid), so the release-time
@@ -1950,32 +2658,54 @@ fn faults_for(scene: &Scene, pier: &Pier, k: [f32; 4]) -> Vec<Fault> {
     pier_faults(fr.u0, fr.u1, fr.y0, fr.y1, seg, k)
 }
 
+/// The materials the geometry pass MINTED per pier, and that therefore have to
+/// be re-stamped by everything scoped per pier (the contour AA's opt-in bit, the
+/// wear effect word). `-1` = this pier grew none.
+#[derive(Default)]
+pub struct Aged {
+    /// The chalk CORE: groove floors and recesses — the surface the damage
+    /// EXPOSED. Also the reason the AA scope has to stamp more than the pier
+    /// itself: the crack's darkest pixels live here.
+    pub cores: Vec<i32>,
+    /// What a cover SPALL minted, `[steel, basin]`: the exposed, corroded rebar
+    /// and the crater's own interior body. Both are thin/small detail — a bar is
+    /// 2-3 px across and a crater rim is a 1-2 px lip — so both declare
+    /// themselves to the contour AA along with the pier.
+    pub spall_mats: Vec<[i32; 2]>,
+}
+
 /// Give every knobbed pier its geometric aging: structural faults split the
 /// pier (and the craze veneer rides the pieces); fault-free piers fragment
-/// into core + veneer per their pattern policy. Returns each pier's CHALK CORE
-/// material id (-1 = the pier stayed a plain box): the core carries the groove
-/// floors, so anything scoped per-pier — the contour AA's opt-in bit — has to
-/// stamp it alongside the pier's own material or the crack's darkest pixels
-/// fall outside the scope. `params` = each pier's
-/// ACTIVE-policy native params (the caller resolves the per-policy store).
+/// into core + veneer per their pattern policy; the spall dial blows cover
+/// craters through both layers and exposes the reinforcement mat under them.
+/// `params` = each pier's ACTIVE-policy native params (the caller resolves the
+/// per-policy store), `spall` its cover-spall dial.
 /// Runs post-build on the CPU scene (boot and every `apply_look` rebuild),
 /// before the backend sees it — `crack::resolve` calls this right after
 /// stamping the knobs.
-pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]]) -> Vec<i32> {
-    let mut cores = vec![-1; piers.len()];
+pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]], spall: &[f32]) -> Aged {
+    let mut out = Aged { cores: vec![-1; piers.len()], spall_mats: vec![[-1, -1]; piers.len()] };
+    // the per-RUN field LEVEL, read here and stamped into `wear`'s lane 1 by
+    // `Viewer::wear_stamp` from the same function: the plates and the paint have
+    // to sit in the same patches
+    let levels = run_levels(scene, piers, knobs);
     for (i, (pier, k)) in piers.iter().zip(knobs).enumerate() {
         let policy = policies.get(i).copied().unwrap_or(0);
         let par = params.get(i).copied().unwrap_or(param_defaults(policy));
+        let dial = spall_bucket(spall.get(i).copied().unwrap_or(0.0));
         let faults = faults_for(scene, pier, *k);
-        cores[i] = if !faults.is_empty() {
-            split_pier(scene, pier, &faults, *k, policy, par)
-        } else if *k != [0.0; 4] {
-            craze_pier(scene, pier, bucket(*k), policy, par)
+        // a pier with no knobs but a live spall dial still ages: cover loss is
+        // its own mechanism (the base of a sound wall spalls first), and a dial
+        // that does nothing on the wall the owner picked is a broken dial
+        (out.cores[i], out.spall_mats[i]) = if !faults.is_empty() {
+            split_pier(scene, pier, &faults, levels[i], *k, policy, par, dial)
+        } else if *k != [0.0; 4] || dial > rebar::DIAL_ON {
+            craze_pier(scene, pier, levels[i], bucket(*k), policy, par, dial)
         } else {
-            -1
+            (-1, [-1, -1])
         };
     }
-    cores
+    out
 }
 
 /// PER-PIER geometry signature of a knob state: which faults exist (and their
@@ -1990,7 +2720,7 @@ pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], pol
 /// WHICH piers moved: a knob drag changes exactly one, and the frozen GI can
 /// then be refreshed around that pier instead of rebaked whole (~6.5 s on the
 /// M2 — see `ProbeRefresh::Local`).
-pub fn signatures(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]]) -> Vec<u64> {
+pub fn signatures(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]], spall: &[f32]) -> Vec<u64> {
     let mut out = Vec::with_capacity(piers.len());
     for (i, (pier, k)) in piers.iter().zip(knobs).enumerate() {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1998,6 +2728,14 @@ pub fn signatures(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &
             h ^= x;
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         };
+        // the SPALL dial is geometry-only, exactly like the policy params, so it
+        // signs for every pier (including an unknobbed one — cover spall does
+        // not need the craze layer to exist)
+        let dial = spall_bucket(spall.get(i).copied().unwrap_or(0.0));
+        if dial > rebar::DIAL_ON {
+            mixh(i as u64 | 0x4000_0000);
+            mixh(dial.to_bits() as u64);
+        }
         let faults = faults_for(scene, pier, *k);
         for f in &faults {
             mixh(i as u64);
@@ -2013,8 +2751,11 @@ pub fn signatures(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &
             mixh(policy as u64 + 0x9e37);
             // the facade STORY seeds the whole veneer + damage field, so it signs
             // like a knob: if it ever becomes something the owner can change, the
-            // release gate already rebuilds the piers it moved
+            // release gate already rebuilds the piers it moved. The run's field
+            // LEVEL rides along for the same reason (it is knob-independent
+            // today, so in practice it never moves a signature).
             mixh(story_of(scene, pier).to_bits() as u64);
+            mixh(run_level(scene, pier).to_bits() as u64);
             for v in bucket(*k) {
                 mixh(v.to_bits() as u64);
             }
@@ -2040,8 +2781,13 @@ mod tests {
     }
 
     const HOT: [f32; 4] = [1.0, 1.0, 0.5, 0.0];
-    /// Crazes but never faults (cracks = 0 keeps pMaj at zero).
-    const CRAZY: [f32; 4] = [0.9, 0.0, 0.6, 0.8];
+    /// Crazes but never faults (cracks = 0 keeps pMaj at zero) — at the TOP of
+    /// the age slider, because since the field's level is normalized per run
+    /// (`run_level`) "age 0.9" is no longer a guaranteed-wrecked face: this
+    /// fixture's 6-wu run draws the low end of `wear::LEVEL_FRACTION`, and with
+    /// cracks = 0 the craquelure ladder is at its coarsest (freq 1.1, ~0.9-wu
+    /// cells), so its centrelines could miss the damage patches entirely.
+    const CRAZY: [f32; 4] = [1.0, 0.0, 0.6, 0.8];
 
     /// Find a pier position whose lattice actually faults at max knobs —
     /// presence is hash-gated per strip (p ≈ 0.95), so probe a few offsets
@@ -2054,6 +2800,135 @@ mod tests {
             }
         }
         panic!("no fault in 8 strips at pMaj 0.95 — the lattice mirror is broken");
+    }
+
+    /// THE CONTAINMENT INVARIANT over the REAL level, per pier: every triangle
+    /// the aging pass grows must stay inside the pier it belongs to.
+    ///
+    /// This is the test that caught the spall's one real leak (2026-07-25): the
+    /// bisect SHOT showed a rust cage floating in the gym's doorway, and eyeballing
+    /// cannot say which of fifteen piers grew it. Containment is also what the
+    /// probe machinery leans on — `Viewer::crack_release` re-bakes only the dirty
+    /// piers' own AABBs (`ProbeRefresh::Local`), so geometry outside its pier is
+    /// lit by probes that never saw it, and `recompute_bounds` ran long before
+    /// this pass, so a stray vertex silently moves nothing and lights wrong.
+    ///
+    /// Aged ONE PIER AT A TIME rather than the whole level at once: the gym's
+    /// building corners are two slabs sharing a 0.2 × 0.2 column, so attributing
+    /// a prim to "the pier containing its first vertex" sent the first report of
+    /// this failure to the wrong pier (it named the z=3 south run for a leak the
+    /// x=3 west facade grew). One pier per pass makes the owner exact.
+    #[test]
+    fn every_pier_of_the_real_gym_keeps_its_geometry_inside_its_own_box() {
+        let spec = house_game::gym::sim::gym_level();
+        // the crack lab's own boot state, plus the spall dial at every stage —
+        // the wide lens at dial 1 is the case that reaches furthest. The gym is
+        // REBUILT per pier rather than cloned: Scene is not Clone (it owns the
+        // GPU-facing buffers), and building it is cheap next to what this pass
+        // then does to it.
+        for dial in [0.2f32, 0.5, 1.0] {
+            let (probe, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+            drop(probe);
+            for (pi, pier) in meta.piers.iter().enumerate() {
+                let (mut sc, _) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+                crate::wear::stamp_story(&mut sc, &meta.piers);
+                let knobs = [[0.8, 0.6, 0.5, 0.2]];
+                crate::crack::stamp_all(&mut sc, std::slice::from_ref(pier), &knobs, None);
+                let first = sc.primitives.len();
+                apply_geometry(&mut sc, std::slice::from_ref(pier), &knobs, &[0], &[param_defaults(0)], &[dial]);
+                assert!(sc.primitives.len() > first, "dial {dial}: pier {pi} grew nothing at all");
+                for p in &sc.primitives[first..] {
+                    for v in &sc.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize] {
+                        let v = Vec3::from(v.pos);
+                        let pad = 1e-3;
+                        assert!(
+                            v.cmpge(pier.lo - pad).all() && v.cmple(pier.hi + pad).all(),
+                            "dial {dial}: pier {pi} ({:?}..{:?}) grew a vertex at {v:?}",
+                            pier.lo,
+                            pier.hi
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// THE TWO-SIDED SPALL'S ONE STRUCTURAL GUARD, over the real gym at every
+    /// stage of the dial: the front and back crater sets must be DISJOINT in
+    /// (u, y). Each side's basin is allowed to cut past the slab's half-thickness
+    /// (that is what makes the "blown" stage reach the mat at all), so two
+    /// craters facing each other at the same spot PERFORATE the wall — light
+    /// straight through it, and the occluder / WALLCUT / ROI logic all read a
+    /// solid. The veto lives in the site chooser (`rect_hits`), so this test
+    /// asks the question the renderer would: does any front rect meet any back
+    /// rect, in depth AND in plan?
+    #[test]
+    fn a_walls_two_faces_never_spall_through_each_other() {
+        let spec = house_game::gym::sim::gym_level();
+        let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+        let (mut checked, mut deep) = (0, false);
+        for dial in [0.3f32, 0.6, 1.0] {
+            for pier in &meta.piers {
+                let fr = Frame::of(pier);
+                let cfg = CrazeCfg::new(story_of(&scene, pier), 0.0, [0.8, 0.6, 0.5, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
+                let front = pier_craters(&cfg, &fr, pier, dial, 0.0, &|_, _| true);
+                let fr_rects = patch_rects(&front);
+                let back = pier_craters(&cfg, &fr, pier, dial, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
+                for a in &front {
+                    for b in &back {
+                        assert!(!rect_hits(&[a.rect()], b.lo, b.hi), "dial {dial}: a front and a back crater overlap at {:?} / {:?}", a.rect(), b.rect());
+                        // …and the premise: at the top of the dial two facing
+                        // basins really would meet, so disjointness is what stops
+                        // the perforation rather than the depth clamp
+                        deep |= a.floor + b.floor > fr.t1 - fr.t0;
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 30, "the gym must actually grow craters on both faces to pin this ({checked} pairs)");
+        assert!(deep, "VACUOUS: no two facing basins are deep enough to meet, so disjointness pins nothing");
+    }
+
+    /// The ONE deliberate coincident pair in the crater mesh, pinned flush.
+    ///
+    /// The collar's patch-rect wall (`emit_crater` quad 5) and the walls
+    /// `emit_frags` grows on the plate pieces the rect was cut out of are the
+    /// same surface with opposite normals — the shared boundary between two
+    /// closed shells. Emitting one of them would be cleaner, but neither side can
+    /// guarantee coverage alone (a missing plate leaves no plate wall; a groove
+    /// along the rect leaves no collar). They are invisible ONLY while they stay
+    /// exactly flush: give either a sink, a chamfer or a different droop and the
+    /// pair becomes a per-ray coin flip along the whole rect — round 8's strobe
+    /// class. So pin the two things that make them flush: a piece the rect clip
+    /// touched may not sink, and its rect edge may not chamfer.
+    #[test]
+    fn a_plate_the_crater_clipped_stays_flush_with_the_collars_wall() {
+        let cfg = CrazeCfg::new(3.0, 0.0, [0.8, 0.5, 0.5, 0.0], true, 0.2, &[], param_defaults(0));
+        let plate = Frag {
+            poly: vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(0.0, 1.0)],
+            open: vec![true; 4], // every edge cracked open: the case that WOULD sink and chamfer
+            spalled: false,
+            sink: cfg.sink_max(),
+        };
+        assert!(plate.sink > 0.0, "VACUOUS: the fixture must be a plate that does sink");
+        let pieces = frag_minus_rect(&plate, Vec2::new(0.3, 0.3), Vec2::new(0.7, 0.7));
+        assert!(pieces.len() >= 3, "the rect cuts the plate into pieces, got {}", pieces.len());
+        for g in &pieces {
+            assert_eq!(g.sink, 0.0, "a piece the crater clipped must lie flush with the collar's front ring");
+            let touches = g.poly.iter().any(|p| (p.x - 0.3).abs() < 1e-5 || (p.x - 0.7).abs() < 1e-5 || (p.y - 0.3).abs() < 1e-5 || (p.y - 0.7).abs() < 1e-5);
+            assert!(touches, "every piece borders the rect it was cut by");
+            for (i, o) in g.open.iter().enumerate() {
+                let (a, b) = (g.poly[i], g.poly[(i + 1) % g.poly.len()]);
+                let on_rect = |v: Vec2| {
+                    ((v.x - 0.3).abs() < 1e-5 || (v.x - 0.7).abs() < 1e-5) && (0.3 - 1e-5..=0.7 + 1e-5).contains(&v.y)
+                        || ((v.y - 0.3).abs() < 1e-5 || (v.y - 0.7).abs() < 1e-5) && (0.3 - 1e-5..=0.7 + 1e-5).contains(&v.x)
+                };
+                if on_rect(a) && on_rect(b) {
+                    assert!(!*o, "the rect edge must stay a CLOSED seam (an open one takes a chamfer and breaks the flush pair)");
+                }
+            }
+        }
     }
 
     fn assert_in_box(scene: &Scene, from: usize, pier: &Pier, tag: &str) {
@@ -2075,7 +2950,7 @@ mod tests {
         let pier = faulting_pier(&mut scene);
         let before = scene.primitives.len();
         let mid = scene.primitives[pier.prim].material_id;
-        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[HOT], &[0], &[param_defaults(0)]);
+        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[HOT], &[0], &[param_defaults(0)], &[]);
         let added = scene.primitives.len() - before;
         assert_eq!(added, 3, "shell + chalk planes + veneer");
         assert_eq!(scene.primitives[before].material_id, mid, "shell shares the pier material");
@@ -2097,12 +2972,12 @@ mod tests {
         let pier = faulting_pier(&mut scene);
         let before = scene.primitives.len();
         let dp = [param_defaults(0)];
-        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp);
+        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[]);
         assert_eq!(scene.primitives.len(), before, "pristine pier untouched");
         assert_eq!(scene.materials[scene.primitives[pier.prim].material_id as usize]._pad & GEO_BIT, 0);
-        let s0 = signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp);
-        let s1 = signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp);
-        assert_eq!(s0, signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp), "deterministic");
+        let s0 = signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[]);
+        let s1 = signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp, &[]);
+        assert_eq!(s0, signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[]), "deterministic");
         assert_ne!(s0, s1, "fault appearance changes the signature");
     }
 
@@ -2117,12 +2992,12 @@ mod tests {
         let piers = [pier_at(&mut scene, 1.0), pier_at(&mut scene, 9.0)];
         let pol = [0, 0];
         let par = [param_defaults(0); 2];
-        let before = signatures(&scene, &piers, &[CRAZY, CRAZY], &pol, &par);
-        let after = signatures(&scene, &piers, &[CRAZY, HOT], &pol, &par);
+        let before = signatures(&scene, &piers, &[CRAZY, CRAZY], &pol, &par, &[]);
+        let after = signatures(&scene, &piers, &[CRAZY, HOT], &pol, &par, &[]);
         assert_eq!(before[0], after[0], "the untouched pier keeps its signature");
         assert_ne!(before[1], after[1], "the dragged pier's signature moves");
         // and a policy click is the same story (the panel's pattern row)
-        let after = signatures(&scene, &piers, &[CRAZY, CRAZY], &[0, 1], &par);
+        let after = signatures(&scene, &piers, &[CRAZY, CRAZY], &[0, 1], &par, &[]);
         assert_eq!(before[0], after[0], "…for a pattern click too");
         assert_ne!(before[1], after[1]);
     }
@@ -2136,7 +3011,7 @@ mod tests {
         let mut scene = Scene::default();
         let pier = faulting_pier(&mut scene);
         let par = [[0.5; PARAMS_MAX]];
-        let sigs: Vec<Vec<u64>> = (0..POLICIES.len() as u8).map(|p| signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par)).collect();
+        let sigs: Vec<Vec<u64>> = (0..POLICIES.len() as u8).map(|p| signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par, &[])).collect();
         let mut uniq = sigs.clone();
         uniq.dedup();
         assert_eq!(uniq.len(), sigs.len(), "each policy signs distinctly on a faulted pier");
@@ -2151,8 +3026,8 @@ mod tests {
             let mut scene = Scene::default();
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
-            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par]);
-            let sig = signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par]);
+            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[]);
+            let sig = signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[]);
             (scene.primitives[before + 1].vertex_count, sig)
         };
         let (v_few, s_few) = mk([0.05, 0.9, 0.3]);
@@ -2166,7 +3041,7 @@ mod tests {
     /// inset the plate front (the groove keeps its width).
     #[test]
     fn chamfer_bands_only_on_open_grooves() {
-        let cfg = CrazeCfg::new(3.0, [0.5, 0.5, 0.5, 0.0], true, 0.25, &[], param_defaults(0));
+        let cfg = CrazeCfg::new(3.0, 0.0, [0.5, 0.5, 0.5, 0.0], true, 0.25, &[], param_defaults(0));
         let sq = vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(0.0, 1.0)];
         let fr = Frame { run_x: true, u0: 0.0, u1: 1.0, t0: 0.0, t1: 0.25, y0: 0.0, y1: 1.0 };
         let mut v = Vec::new();
@@ -2196,7 +3071,7 @@ mod tests {
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
             let mid = scene.primitives[pier.prim].material_id as usize;
-            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[param_defaults(policy)]);
+            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[param_defaults(policy)], &[]);
             let p = POLICIES[policy as usize];
             assert_eq!(scene.primitives.len() - before, 2, "{p}: core box + one veneer mesh");
             assert_ne!(scene.materials[mid]._pad & CRAZE_BIT, 0, "{p}: CRAZE_BIT on the pier");
@@ -2207,7 +3082,7 @@ mod tests {
             let veneer = scene.primitives[before + 1];
             assert!(veneer.vertex_count > 12, "{p}: veneer actually fragmented");
             assert_in_box(&scene, before, &pier, p);
-            sigs.push(signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]]));
+            sigs.push(signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]], &[]));
         }
         sigs.dedup();
         assert_eq!(sigs.len(), POLICIES.len(), "policies must sign distinctly");
@@ -2225,7 +3100,7 @@ mod tests {
     #[test]
     fn matte_plus_knobs_is_only_the_chalk_core() {
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
         // the crack lab's own boot state: every pier knobbed (demos.rs), the
         // knob bits stamped, then the geometry pass mints the chalk cores
         let knobs = vec![[0.8, 0.8, 0.7, 0.9]; meta.piers.len()];
@@ -2233,7 +3108,7 @@ mod tests {
         let par = vec![param_defaults(0); meta.piers.len()];
         crate::wear::stamp_story(&mut scene, &meta.piers); // boot order: the story seeds the field
         crate::crack::stamp_all(&mut scene, &meta.piers, &knobs, Some(0));
-        let cores = apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par);
+        let cores = apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par, &[]).cores;
         // the CORE inherits its facade's story for free (chalk_material copies
         // base_color, fresh_body passes alpha through) — the surface a crack
         // exposed belongs to the same wall as the skin that was over it
@@ -2264,10 +3139,15 @@ mod tests {
     /// The other half of the split is pinned here too: the PANEL seeds (the
     /// structural fault lattice) must stay different, or a facade cracks at one
     /// repeated position — the owner risk on record for this effect.
+    ///
+    /// Since the field's LEVEL is normalized per run, the equality also pins
+    /// that [`run_level`] is a per-RUN datum: it is computed independently for
+    /// each of the two piers here, and if it came out per PANEL the two fields
+    /// would differ by a constant and the patch would step at the joint.
     #[test]
     fn piers_of_one_run_share_a_damage_field_but_not_a_fault_lattice() {
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
         crate::wear::stamp_story(&mut scene, &meta.piers);
         let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
         // two piers of one run (a facade with a window between them), plus one
@@ -2282,7 +3162,7 @@ mod tests {
         let k = [0.6, 0.5, 0.55, 0.2];
         let cfg = |p: &Pier| {
             let fr = Frame::of(p);
-            CrazeCfg::new(story_of(&scene, p), k, fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0))
+            CrazeCfg::new(story_of(&scene, p), run_level(&scene, p), k, fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0))
         };
         let (ca, cb, cc) = (cfg(a), cfg(b), cfg(c));
         // sample ACROSS the joint: from inside pier a, through the opening, into b
@@ -2300,6 +3180,71 @@ mod tests {
         }
         assert!(differs_from_other_run, "a different run must tell a different story");
         assert_ne!(seg_of(&scene, a).1, seg_of(&scene, b).1, "the FAULT seed stays per panel");
+    }
+
+    /// THE FIX, as the number the owner would judge: the fraction of each wall
+    /// RUN's own face inside the craze zone, over the gym's seven authored runs.
+    ///
+    /// Before the level lane the gates were absolute thresholds on an
+    /// unnormalized fbm, so this fraction was whatever one draw per facade
+    /// happened to give: measured 0.000 .. 0.645 at age 0.9 — the z=8 run
+    /// behind the doorway never cleared the gate AT ANY AGE (an un-ageable
+    /// facade) while the x=8 facade was already 0.234 at age 0.3. Both tails
+    /// have to go, and the middle has to STAY spread or every facade would read
+    /// equally damaged.
+    ///
+    /// The bounds are deliberately loose around the measurement (age 0.9:
+    /// 0.176 .. 0.511, age 0.3: 0.018 .. 0.135) — they pin the SHAPE of the
+    /// answer, not the tuning. The vacuity guard is the same table computed with
+    /// the offset forced to 0: it must fail the very bound the fix satisfies.
+    #[test]
+    fn every_gym_run_ages_and_none_is_wrecked_young() {
+        let spec = house_game::gym::sim::gym_level();
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+        crate::wear::stamp_story(&mut scene, &meta.piers);
+        let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
+        let mut runs: Vec<&Pier> = Vec::new();
+        for p in &meta.piers {
+            if !runs.iter().any(|q| rect(q) == rect(p)) {
+                runs.push(p);
+            }
+        }
+        assert!(runs.len() >= 6, "the gym has 5 building runs + 2 garden walls");
+        // fraction of a run's face inside the craze zone (the same >0.35 gate
+        // `CrazeCfg::frag` opens a plate on), on the level's own sampling lattice
+        let zone_cov = |p: &Pier, age: f32, off: f32| {
+            let fr = Frame::of(p);
+            let (a0, a1) = if fr.run_x { (p.run_lo.x, p.run_hi.x) } else { (p.run_lo.z, p.run_hi.z) };
+            let cfg = CrazeCfg::new(story_of(&scene, p), off, [age, 0.5, 0.55, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
+            let (nu, ny) = (64, 24);
+            let mut hit = 0;
+            for i in 0..nu {
+                let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
+                for j in 0..ny {
+                    let y = mixf(p.run_lo.y, p.run_hi.y, (j as f32 + 0.5) / ny as f32);
+                    hit += (cfg.zone(u, y) > 0.35) as usize;
+                }
+            }
+            hit as f32 / (nu * ny) as f32
+        };
+        let (mut old_min, mut new_min, mut new_max_young) = (f32::MAX, f32::MAX, 0.0f32);
+        let mut spread: Vec<f32> = Vec::new();
+        for p in &runs {
+            let off = run_level(&scene, p);
+            let (hot, young) = (zone_cov(p, 0.9, off), zone_cov(p, 0.3, off));
+            assert!(hot > 0.12, "run {:?} still barely ages at age 0.9: {hot:.3}", rect(p));
+            assert!(young < 0.20, "run {:?} is already wrecked at age 0.3: {young:.3}", rect(p));
+            old_min = old_min.min(zone_cov(p, 0.9, 0.0));
+            new_min = new_min.min(hot);
+            new_max_young = new_max_young.max(young);
+            spread.push(hot);
+        }
+        assert!(old_min < 0.12, "VACUOUS: without the level offset some run must still fail the age-0.9 bound (min was {old_min:.3})");
+        // …and the runs must still differ: the worst facade at least twice the
+        // damaged area of the cleanest, or the fix flattened the variety it was
+        // supposed to preserve
+        let mx = spread.iter().cloned().fold(0.0f32, f32::max);
+        assert!(mx > 2.0 * new_min, "the runs read equally damaged now: {new_min:.3} .. {mx:.3}");
     }
 
     /// The exposed body is PALER than the glaze and neutral — the old core was
@@ -2325,7 +3270,7 @@ mod tests {
     #[test]
     fn depth_range_has_no_deadzone() {
         let thick = 0.25;
-        let t_of = |dep: f32| CrazeCfg::new(3.0, [0.5, 0.5, dep, 0.5], true, thick, &[], param_defaults(0)).t;
+        let t_of = |dep: f32| CrazeCfg::new(3.0, 0.0, [0.5, 0.5, dep, 0.5], true, thick, &[], param_defaults(0)).t;
         let mut prev = t_of(0.0);
         for i in 1..=10 {
             let t = t_of(i as f32 / 10.0);
@@ -2368,7 +3313,7 @@ mod tests {
         // grow at all, so one wall can legitimately come out nearly clean
         let bolts: Vec<Bolt> = (1..8)
             .flat_map(|seg| {
-                let cfg = CrazeCfg::new(seg as f32 * 3.7, bucket(CRAZY), true, 0.25, &[], param_defaults(0));
+                let cfg = CrazeCfg::new(seg as f32 * 3.7, 0.0, bucket(CRAZY), true, 0.25, &[], param_defaults(0));
                 bolt_network(&cfg, 0.0, 6.0, 0.0, 2.2)
             })
             .collect();
@@ -2394,7 +3339,7 @@ mod tests {
     /// round-4 floor survives propagation.
     #[test]
     fn grooves_never_go_sub_pixel_across() {
-        let cfg = CrazeCfg::new(7.4, bucket(CRAZY), true, 0.25, &[], param_defaults(0));
+        let cfg = CrazeCfg::new(7.4, 0.0, bucket(CRAZY), true, 0.25, &[], param_defaults(0));
         let bolts = bolt_network(&cfg, 0.0, 6.0, 0.0, 2.2);
         assert!(!bolts.is_empty(), "nothing to measure");
         for b in &bolts {

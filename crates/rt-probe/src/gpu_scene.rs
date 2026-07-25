@@ -201,6 +201,18 @@ pub fn refresh_boxes_for(origin: Vec3, spacing: f32, dims: [u32; 3], dirty: &[(V
     (probes_in(&out) as f32 <= (dims[0] * dims[1] * dims[2]) as f32 * LOCAL_REFRESH_MAX_FRACTION).then_some(out)
 }
 
+/// The bounding lattice box of a refresh set, or `None` for an empty one.
+///
+/// The amortized DDGI roll settles ONE box per frame (`roll_step` in both
+/// backends), so a rebuild that defers its refresh to the roll
+/// (`ProbeRefresh::Roll` — the age-ramp demo beat) rolls the UNION of its dirty
+/// boxes. Over-rolling a probe is harmless: the roll is an estimator over a
+/// wrapping ray set, so a probe nobody dirtied re-estimates to the same value —
+/// it is only paid for, and the roll's per-frame cost is bounded by design.
+pub fn union_box(boxes: &[([u32; 3], [u32; 3])]) -> Option<([u32; 3], [u32; 3])> {
+    boxes.iter().copied().reduce(|a, b| ([0, 1, 2].map(|k| a.0[k].min(b.0[k])), [0, 1, 2].map(|k| a.1[k].max(b.1[k]))))
+}
+
 /// Probes covered by a set of lattice boxes (the local refresh's cost, for the
 /// backends' timing print). Overlaps count twice — that IS what gets baked.
 pub fn probes_in(boxes: &[([u32; 3], [u32; 3])]) -> u32 {
