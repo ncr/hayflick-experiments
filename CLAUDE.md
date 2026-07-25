@@ -238,13 +238,23 @@ dark feature turns into isolated black dots. The owner approved this shape and
 generalized it: **"the selective-AA approach, only on the areas that MODIFY the
 greyboxes — let's use it for all modifications of this kind."**
 
-So every generator that deforms or replaces greybox geometry — the crack lab's
-faults / veneer / craters, the wall-smash rubble, and whatever spalling,
-patching or growth comes next — MARKS what it built
-(`gym_scene::mark_aa` / `AA_BIT`, `Material._pad` bit 7). Marking is static
-scene data; the ESC `aa scope` row only NARROWS it (to the picked wall) or
-ignores it (scope 0 = every surface). A generator that forgets to mark ships
-detail that dot-dashes; the crack lab pins the rule with
+The deciding criterion is FEATURE SIZE, not novelty (measured with A/B clips
+the same day, owner: "leave it configurable, it IS a visual decision"):
+
+- THIN detail — crack grooves, veneer plates, spall craters, the rebar to come:
+  features 1-3 px across, where the sampling lottery breaks a dark line into
+  isolated black dots. AA ON by default.
+- CHUNKY detail — whole blocks, e.g. the wall-smash rubble: 10-30 px across, so
+  no continuity is at risk; AA only softens the blocky read the look is built
+  on and adds a per-frame shimmer to tumbling silhouettes. Declared but OFF by
+  default, owner-toggleable (`aa rubble` row / `AA_CHUNKY`).
+
+So a generator DECLARES its detail and its class; it does not decide. Crack
+geometry declares itself through the geometry pass's GEO/CRAZE marks; the rubble
+returns its material ids. The host owns `Material._pad` bit 7
+(`gym_scene::AA_BIT`, stamped by `crack::stamp_aa` + `Viewer::aa_stamp`) and
+re-derives it from the ESC rows. A generator of THIN detail that forgets to
+declare ships detail that dot-dashes; the crack lab pins the rule with
 `rebuilt_geometry_opts_into_the_aa_scope`.
 
 ## Process (docs/VISION.md, binding)

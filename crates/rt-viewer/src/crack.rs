@@ -277,6 +277,17 @@ impl Viewer {
         for (m, pad) in stamp_aa(&mut self.scene, &self.piers, &self.crack, scope) {
             self.backend.set_material_pad(m, pad);
         }
+        // CHUNKY detail (rubble) is the owner's visual call, and it never takes
+        // the "picked wall" scope — there is nothing to pick.
+        let on = self.aa_chunky > 0.5 && scope == 1;
+        for mid in self.aa_chunky_mats.clone() {
+            let m = mid as usize;
+            let pad = if on { self.scene.materials[m]._pad | AA_BIT } else { self.scene.materials[m]._pad & !AA_BIT };
+            if pad != self.scene.materials[m]._pad {
+                self.scene.materials[m]._pad = pad;
+                self.backend.set_material_pad(m, pad);
+            }
+        }
     }
 
     /// Slider released (or the pattern row clicked): if the drag changed the

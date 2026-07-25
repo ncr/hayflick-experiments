@@ -53,29 +53,31 @@ const ROOF_TOP: f32 = 2.5;
 
 /// `Material._pad` bit 7 — **THE GREYBOX-DETAIL AA OPT-IN (owner policy,
 /// 2026-07-25: "the selective-AA approach, only on the areas that MODIFY the
-/// greyboxes — let's use it for all modifications of this kind")**.
+/// greyboxes — let's use it for all modifications of this kind", refined the
+/// same day to "leave it configurable, it IS a visual decision")**.
 ///
-/// The contour AA (see the pixel-perfect contract in CLAUDE.md) is off by
-/// default on plain greybox: flat slabs and their clean pixel stairs ARE the
-/// look. It switches on exactly where a generator has added procedural detail
-/// geometry — crack grooves, veneer plates, spall craters, rubble — because
-/// that detail lives at the pixel scale, where the sampling lottery turns a
-/// thin dark feature into isolated black dots.
+/// The contour AA (see the pixel-perfect contract in CLAUDE.md) is off on plain
+/// greybox: flat slabs and their clean pixel stairs ARE the look. It switches on
+/// where a generator has added procedural detail — but the DECIDING criterion is
+/// FEATURE SIZE, not novelty:
 ///
-/// So the rule for every generator that deforms or replaces greybox geometry:
-/// **mark what you built** ([`mark_aa`]), and the AA (plus the softening) will
-/// scope itself to it. Marking is static scene data; the ESC `aa scope` row
-/// only ever NARROWS it (to the picked wall) or ignores it (scope 0 = every
-/// surface).
+/// - THIN detail (crack grooves, veneer plates, spall craters, rebar — features
+///   1-3 px across) NEEDS it: at that size the per-pixel sampling lottery breaks
+///   a dark line into isolated black dots, which is the artefact the owner
+///   asked to fix.
+/// - CHUNKY detail (whole blocks — the wall-smash rubble) does NOT: a brick is
+///   10-30 px across, so nothing about its continuity is at risk; the AA only
+///   softens the blocky read the look is built on, and tumbling silhouettes
+///   pick up a per-frame shimmer. Measured with A/B clips and switched OFF by
+///   default, owner-toggleable (`aa rubble` / `AA_CHUNKY`).
+///
+/// So a generator DECLARES its detail and its class — it does not decide.
+/// Crack geometry declares itself through the geometry pass's own GEO/CRAZE
+/// marks; the rubble returns its material ids from
+/// `phys_scene::author_wall_bricks`. The host owns this bit
+/// (`crack::stamp_aa` + `Viewer::aa_stamp`) and re-derives it from the ESC rows
+/// (`aa scope`: every surface / detail / the picked wall — plus `aa rubble`).
 pub const AA_BIT: i32 = 128;
-
-/// Opt a primitive's material into the contour AA — see [`AA_BIT`] for the
-/// policy. `add_box_world`/`add_mesh_world` mint one material per box/mesh, so
-/// this targets exactly what the generator just appended.
-pub fn mark_aa(scene: &mut Scene, prim: usize) {
-    let mid = scene.primitives[prim].material_id as usize;
-    scene.materials[mid]._pad |= AA_BIT;
-}
 
 /// Flag a primitive's material as a see-through OCCLUDER (Material._pad
 /// bit 1), the bit the shade pass reads to know a primary-ray hit is a wall

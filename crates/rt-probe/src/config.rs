@@ -193,7 +193,11 @@ pub struct RenderCfg {
     /// `AA_SCOPE` — where the contour AA and the softening apply: 0 = every
     /// surface, 1 = CRACKED piers only (the default — the greybox keeps its
     /// hard pixel edges), 2 = the PICKED pier only (the owner's per-wall A/B).
-    pub aa_scope: i32,              // REFL_PX: reflection block size in low-res px (the pixelation)
+    pub aa_scope: i32,
+    /// `AA_CHUNKY` — does CHUNKY generator detail (whole blocks: the wall-smash
+    /// rubble) take the contour AA as well? Off by default; thin detail (crack
+    /// grooves, plates) is unaffected. See the AA policy in CLAUDE.md.
+    pub aa_chunky: bool,              // REFL_PX: reflection block size in low-res px (the pixelation)
     pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4 | DEBUG_AA=5
     // The post stack (StyleCfg) is NOT here since Faza 1b: its base is look
     // data (rt-viewer look.rs); the Viewer resolves `look.style.env_over()`.
@@ -315,6 +319,7 @@ impl Config {
                 refl: f("REFL", 0.0),
                 aa: fo("AA"),
                 aa_scope: i("AA_SCOPE", 1),
+                aa_chunky: b("AA_CHUNKY", false),
                 refl_px: i("REFL_PX", 3).max(1),
                 debug,
             },

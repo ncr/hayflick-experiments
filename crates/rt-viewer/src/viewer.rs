@@ -77,10 +77,21 @@ pub struct Viewer {
     /// CONTOUR COVERAGE AA weight (look-authored, `AA` env overrides, live from
     /// the ESC settings row — a push-constant change, no rebuild, no rebake).
     pub aa: f32,
-    /// AA SCOPE: 0 = every surface, 1 = cracked piers, 2 = the picked pier only
-    /// (owner 2026-07-25 — the per-wall A/B). Drives [`crate::crack::AA_BIT`]
-    /// via `aa_stamp`; the shader ignores the bit at scope 0.
+    /// AA SCOPE: 0 = every surface, 1 = generator detail, 2 = the picked pier
+    /// only (owner 2026-07-25 — the per-wall A/B). Drives
+    /// [`crate::crack::AA_BIT`] via `aa_stamp`; the shader ignores the bit at
+    /// scope 0.
     pub aa_scope: f32,
+    /// Does CHUNKY generator detail (whole blocks — the wall-smash rubble) take
+    /// the contour AA too? Off by default: a brick is 10-30 px across, so there
+    /// is no sampling gap to fix and the AA only softens the block read, plus
+    /// tumbling silhouettes pick up a per-frame shimmer (owner call after the
+    /// A/B clips, 2026-07-25 — "leave it configurable, it IS a visual
+    /// decision"). Thin detail (crack grooves, plates) is unaffected.
+    pub aa_chunky: f32,
+    /// Materials of the CHUNKY detail in the current build (rubble), refreshed
+    /// with the scene — `aa_stamp` scopes them by [`Self::aa_chunky`].
+    pub aa_chunky_mats: Vec<i32>,
     pub ao: f32,
     pub ao_r: f32,
     pub ao_n: i32,
@@ -237,8 +248,9 @@ impl Viewer {
         // the scene BEFORE the backend consumes it. The rig owns the phys/{i}
         // namespace, so the PHYS=1 free-standing demo stands down.
         let smash = arm_smash(demo, &gym_meta);
+        let mut chunky_mats = Vec::new();
         if let Some(rig) = &smash {
-            crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
+            chunky_mats = crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
         }
         // Destructibility spike (voxel-physics-spike branch): PHYS=1 builds a
         // box3d brick wall + projectile and authors matching `phys/{i}`
@@ -296,6 +308,8 @@ impl Viewer {
             gi: cfg.render.gi.unwrap_or(look.gi),
             aa: cfg.render.aa.unwrap_or(look.aa),
             aa_scope: cfg.render.aa_scope as f32,
+            aa_chunky: if cfg.render.aa_chunky { 1.0 } else { 0.0 },
+            aa_chunky_mats: chunky_mats,
             ao: cfg.render.ao,
             ao_r: cfg.render.ao_r,
             ao_n: cfg.render.ao_n,
@@ -357,6 +371,10 @@ impl Viewer {
             r.view.pan += d;
             r.clamp_pan_to_buffer();
         }
+        // CHUNKY detail (rubble) takes the AA only if the owner says so, and the
+        // crack path stamps piers inside `resolve` — so one pass here settles
+        // every AA opt-in bit against the freshly built scene.
+        r.aa_stamp();
         // optional camera look-at override (world units), for framing captures
         if r.cfg.game.target.0.is_some() || r.cfg.game.target.1.is_some() {
             let t = Vec3::new(r.cfg.game.target.0.unwrap_or(r.view.target.x), 0.0, r.cfg.game.target.1.unwrap_or(r.view.target.z));
@@ -412,8 +430,9 @@ impl Viewer {
         // shift with the look) + re-author its brick runs; a fired smash
         // resets to the standing wall — same one-shot rule as the roof tear
         self.smash = arm_smash(self.cur_demo, &meta);
+        self.aa_chunky_mats.clear();
         if let Some(rig) = &self.smash {
-            crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
+            self.aa_chunky_mats = crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
             self.gym.phys = None; // bricks wait zero-scaled for the beat
         } else if let Some(p) = &self.gym.phys {
             // spike: keep the PHYS=1 physics runs present across a look switch
@@ -430,6 +449,7 @@ impl Viewer {
         unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };
         self.light_keys = join_lamp_lights(&scene, self.backend.handles(), self.backend.light_count());
         self.scene = scene;
+        self.aa_stamp(); // the rebuild minted clean materials: re-derive the AA scope
         // a look switch supersedes any in-flight demo morph + its per-frame env
         self.demo.cancel_morph();
         self.env_override = None;

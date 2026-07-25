@@ -61,6 +61,8 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "aa_scope", label: "aa scope", kind: ItemKind::Slider { min: 0.0, max: 2.0, step: 1.0 } },
     // takes the contrast off narrow cracks without extra rays (contour-gated)
     MenuItem { key: "aa_soft", label: "aa soften", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
+    // whole-block detail (smash rubble) in or out of the AA — a visual call
+    MenuItem { key: "aa_chunky", label: "aa rubble", kind: ItemKind::Toggle },
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
@@ -364,6 +366,7 @@ impl Viewer {
             "aa" => self.aa,
             "aa_scope" => self.aa_scope,
             "aa_soft" => self.style.aa_soft,
+            "aa_chunky" => self.aa_chunky,
             "exposure" => self.exposure,
             "lights" => (self.lights_dim > 0.0) as i32 as f32,
             "light_anim" => self.light_anim as i32 as f32,
@@ -411,6 +414,10 @@ impl Viewer {
                 self.aa_stamp();
             }
             "aa_soft" => self.style.aa_soft = v,
+            "aa_chunky" => {
+                self.aa_chunky = v;
+                self.aa_stamp();
+            }
             "exposure" => self.exposure = v,
             // the lamp master is a presentation dim (direct via the emission
             // build, indirect via the probe-bank lerp — same frame, no rebake)
