@@ -52,6 +52,10 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "sdither_n", label: "sd levels", kind: ItemKind::Slider { min: 2.0, max: 48.0, step: 1.0 } },
     MenuItem { key: "sdither_th", label: "sd threshold", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.01 } },
     MenuItem { key: "dither", label: "sd pattern", kind: ItemKind::Slider { min: 1.0, max: 5.0, step: 1.0 } },
+    // CONTOUR AA (owner 2026-07-25): the weight the four fixed sub-pixel
+    // coverage rays carry on CONTOUR texels. Live — a push-constant change, so
+    // it responds at frame rate with no rebuild and no probe rebake.
+    MenuItem { key: "aa", label: "contour aa", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
@@ -352,6 +356,7 @@ impl Viewer {
             "sdither_n" => self.style.sdither_n,
             "sdither_th" => self.style.sdither_th,
             "dither" => self.style.dither,
+            "aa" => self.aa,
             "exposure" => self.exposure,
             "lights" => (self.lights_dim > 0.0) as i32 as f32,
             "light_anim" => self.light_anim as i32 as f32,
@@ -391,6 +396,7 @@ impl Viewer {
             "sdither_n" => self.style.sdither_n = v,
             "sdither_th" => self.style.sdither_th = v,
             "dither" => self.style.dither = v,
+            "aa" => self.aa = v,
             "exposure" => self.exposure = v,
             // the lamp master is a presentation dim (direct via the emission
             // build, indirect via the probe-bank lerp — same frame, no rebake)

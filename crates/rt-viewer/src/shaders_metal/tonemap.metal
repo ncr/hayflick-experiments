@@ -166,7 +166,10 @@ kernel void tonemap(
         col = float3(0.05, 0.05, 0.06); // guard band
     } else {
         uint li = uint(lp.y * lowW + lp.x);
-        float3 radiance = colorBuf[li].rgb;
+        // CONTOUR AA: colorBuf carries rgb = sum(w*L), a = sum(w) — divide when
+        // a > 1 (this reader and the bloom tap below). See tonemap.comp.
+        float4 rad4 = colorBuf[li];
+        float3 radiance = rad4.a > 1.0 ? rad4.rgb / rad4.a : rad4.rgb;
 
         // world-anchored lattice for dither + grain
         int2 dlp = lp - int2(int(pc.fcfg.w), int(pc.style4.w));
@@ -198,7 +201,8 @@ kernel void tonemap(
                 float w = 1.0 / float(1 << r);
                 for (int k = 0; k < 8; k++) {
                     int2 q = clamp(lp + OCT[k] * rad, int2(0), int2(lowW - 1, lowH - 1));
-                    float3 s = colorBuf[uint(q.y * lowW + q.x)].rgb * pc.fcfg.x;
+                    float4 s4 = colorBuf[uint(q.y * lowW + q.x)];
+                    float3 s = (s4.a > 1.0 ? s4.rgb / s4.a : s4.rgb) * pc.fcfg.x;
                     float l = luma(s);
                     bacc += s * (max(l - pc.style3.w, 0.0) / max(l, 1e-4)) * w;
                     bw += w;

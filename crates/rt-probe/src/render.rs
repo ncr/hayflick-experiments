@@ -64,7 +64,9 @@ pub struct ShadePush {
     /// occluder-only twin of `cut16` — only walls/roofs/lintels (materials
     /// with the occluder flag) at or above the plane dissolve on the primary
     /// ray, so an indoor player gets a sill-height cutaway while bodies,
-    /// props and door leaves keep their full height. Rest reserved.
+    /// props and door leaves keep their full height. `misc3.z` = CONTOUR AA tap
+    /// weight in 16.16 fixed point (0 = off), `misc3.w` = the AA sample index
+    /// (0 = centre pass, 1..4 = coverage tap) — see shade.comp's aaGate.
     pub misc3: [i32; 4],
     /// Sun/sky-as-data (Faza 1b, see [`crate::scene::EnvBlock`]): sun dir,
     /// sun tint, sky horizon tint, sky zenith tint — appended so the pre-1b

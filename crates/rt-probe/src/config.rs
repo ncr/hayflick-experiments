@@ -175,8 +175,14 @@ pub struct RenderCfg {
     pub matq: f32,                 // MATQ: posterize materials — albedo/roughness snapped to N levels (0 = off)
     pub ao_dither: f32,            // AO_DITHER: RT-AO gradient → binary Bayer stipple (0 = off)
     pub refl: f32,                 // REFL: pixelated mirror-reflection composite strength (0 = off)
-    pub refl_px: i32,              // REFL_PX: reflection block size in low-res px (the pixelation)
-    pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4
+    pub refl_px: i32,
+    /// `AA` — CONTOUR COVERAGE strength (owner 2026-07-25): the weight each of
+    /// the four fixed sub-pixel coverage rays carries against the centre
+    /// sample, on CONTOUR texels only (see shade.comp's aaGate). `None` = take
+    /// the look's authored value; 0 = one sample per texel, byte-identical to
+    /// the pre-AA image; 1 = the unbiased 5-sample box.
+    pub aa: Option<f32>,              // REFL_PX: reflection block size in low-res px (the pixelation)
+    pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4 | DEBUG_AA=5
     // The post stack (StyleCfg) is NOT here since Faza 1b: its base is look
     // data (rt-viewer look.rs); the Viewer resolves `look.style.env_over()`.
 }
@@ -268,6 +274,8 @@ impl Config {
             3
         } else if b("DEBUG_AO", false) {
             4
+        } else if b("DEBUG_AA", false) {
+            5
         } else {
             0
         };
@@ -293,6 +301,7 @@ impl Config {
                 matq: f("MATQ", 0.0),
                 ao_dither: f("AO_DITHER", 0.0),
                 refl: f("REFL", 0.0),
+                aa: fo("AA"),
                 refl_px: i("REFL_PX", 3).max(1),
                 debug,
             },

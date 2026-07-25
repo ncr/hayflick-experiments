@@ -113,14 +113,32 @@ Vulkan/Metal twin debt.**
   still dot-dashes even with the droop. Task 1.5 (contour AA) is the
   lever that could lower that floor again.
 
-## Task 1.5 (NEXT) — delicate contour anti-aliasing
+## Task 1.5 — delicate contour anti-aliasing — DONE 2026-07-25 (awaiting owner playtest)
 
 Owner, 2026-07-25: a gentle AA that only anti-aliases the CONTOURS of
 solids, so deep thin crevices read as lines instead of single black
 pixels. This one touches the renderer, so it is a shader-twin round
 (GLSL + MSL) — the first since the spawner box went idle.
 
-Approach to weigh at the start of that round (not committed yet):
+BUILT: option 2 (true coverage), chosen by a 9-agent explore/judge workflow
+over three rivals. Mechanism: `trace()` now returns the world distance to the
+nearest gating triangle edge (the triangle's LONGEST edge is excluded, which is
+every quad's diagonal); the shade pass converts it to screen px through the
+exact minimum foreshortening `|n·d|` and parks it in the albedo G-buffer's
+unused alpha; a GATE dispatch marks every texel that is NOT a contour (edge
+farther than 0.42 px after a 4-neighbour dilation, or a locally PLANAR
+neighbourhood — coplanar tilings like the grass grid are not contours); four tap
+dispatches then re-run the SAME shade kernel with fixed sub-pixel offsets on the
+survivors, accumulating `rgb = sum(w*L), a = sum(w)`; the tonemap divides. One
+dial `contour aa` (ESC row, live at frame rate) + `AA=` env, `Look.aa = 0.8` on
+both looks, `AA=0` bit-identical. Measured: gym 3.5 -> 6.8 ms, crack-lab
+close-up 6.1 -> 16.4 ms (SIMD divergence, not the gated fraction — see the
+learnings entry; compaction is the known lever). At the current 2.2-px crack
+floor it visibly smooths every crack and silhouette; at a 1.1-px floor
+(experiment, NOT shipped) hairlines go from dot-dash to continuous-but-faint,
+which is the owner's payoff to approve.
+
+Original options, kept for the record:
 
 1. **G-buffer edge blend in the tonemap pass** (cheapest): the pass
    already has position/normal/flags per low-res texel, so detect

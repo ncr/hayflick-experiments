@@ -21,7 +21,7 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(set = 0, binding = 0, rgba32f) uniform readonly image2D colorImg;  // shade.comp radiance
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D colorImg;  // shade.comp radiance: rgb = sum(w*L), a = sum(w) — divide when a > 1 (contour AA)
 layout(set = 0, binding = 1, rgba8)   uniform writeonly image2D outImg;
 layout(set = 0, binding = 2, rgba32f) uniform readonly image2D albedoImg; // primary-hit albedo (poster demodulation)
 layout(set = 0, binding = 3, rgba32f) uniform readonly image2D posImg;    // primary-hit world position (outline; w=0: sky)
@@ -174,7 +174,13 @@ void main(){
   if (lp.x < 0 || lp.y < 0 || lp.x >= pc.dims.x || lp.y >= pc.dims.y) {
     col = vec3(0.05, 0.05, 0.06); // guard band
   } else {
-    vec3 radiance = imageLoad(colorImg, lp).rgb;
+    // CONTOUR AA (owner 2026-07-25): colorImg carries rgb = sum(w*L), a = sum(w)
+    // — the centre sample stores a = 1, and a contour texel's coverage taps add
+    // theirs. EVERY reader must divide by .a when .a > 1 (this one and the bloom
+    // tap below). With AA off no tap dispatch runs, every a == 1.0, and the
+    // else-branch keeps the image byte-identical.
+    vec4 rad4 = imageLoad(colorImg, lp);
+    vec3 radiance = rad4.a > 1.0 ? rad4.rgb / rad4.a : rad4.rgb;
 
     // world-anchored lattice for dither + grain: subtract the screen position
     // of the world origin (pushed by the CPU per frame), so the patterns are
@@ -211,7 +217,8 @@ void main(){
         float w = 1.0 / float(1 << r);
         for (int k = 0; k < 8; k++) {
           ivec2 q = clamp(lp + OCT[k] * rad, ivec2(0), ivec2(pc.dims.x - 1, pc.dims.y - 1));
-          vec3 s = imageLoad(colorImg, q).rgb * pc.fcfg.x;
+          vec4 s4 = imageLoad(colorImg, q);
+          vec3 s = (s4.a > 1.0 ? s4.rgb / s4.a : s4.rgb) * pc.fcfg.x;
           float l = luma(s);
           bacc += s * (max(l - pc.style3.w, 0.0) / max(l, 1e-4)) * w;
           bw += w;

@@ -184,7 +184,9 @@ Preventive checklist:
 - In any stochastic renderer feeding the pixel-perfect pipeline, the primary
   ray must go through the **pixel centre deterministically**; keep randomness
   only in bounce/light sampling (lighting converges, geometry stays binary).
-  Crisp is the default; `AA=1` env opts into jitter for photoreal stills.
+  Crisp is the default; jitter stays forbidden outright. (`AA` means
+  something else since 2026-07-25: the contour-coverage strength — fixed
+  offsets, contour-gated, never a jittered centre ray.)
 - "Integer NEAREST upscale" alone does not guarantee the pixel look — the
   low-res buffer contents must also be aliased (one binary visibility sample
   per pixel). Check both ends when a port looks soft.
@@ -744,3 +746,50 @@ saw. Round 8 replaced both with a walker (`Walk`) + a cut primitive
   step of ~3 px per walk segment is the smallest kink that resolves, and
   a knob-release rebuild on the M2 is ~6.5 s (probe rebake, vs ~115 ms
   on the RTX) — the crack lab's edit loop is bake-bound on the Mac.
+
+## 2026-07-25 (contour AA) — the cost of a sparse GPU pass is DIVERGENCE, not the sparse fraction
+
+Owner ask, same day as the crack round: "a delicate anti-aliasing that
+anti-aliases only the CONTOURS of solids, so deep thin crevices stop
+looking like single black pixels." Explored with a 9-agent workflow (four
+designs, three judge lenses, one synthesis); the winner was true coverage
+— a fixed 4-ray sub-pixel pattern fired ONLY on contour texels, resolved
+in the tonemap. It works, the wall now reads as continuous lines, and the
+implementation notes are in CLAUDE.md. Three things worth keeping:
+
+- **A tap that re-dispatches the SAME kernel reuses the whole state
+  machine by identity.** The shade pass carries 150 lines of
+  FLOORCUT/WALLCUT/ROI/glass logic plus a Bayer stipple keyed to the
+  texel. A coverage sample that changes only the sub-pixel ray offset —
+  same `px`, same push constants — cannot diverge from the centre's cut,
+  stipple or dissolve decisions. No refactor, no duplicated predicate,
+  nothing to keep in sync. That property is what made the design cheap
+  enough to land in a day, and it is worth reaching for whenever a
+  renderer needs "the same shading, sampled differently".
+- **Sparse work costs what its WARPS cost, not what its pixels cost.**
+  The gate fires on 3.7% of the gym's texels and 25% of a crack-lab
+  close-up, so the predicted price was 4 × 3.7% × frame ≈ 0.5 ms. Measured:
+  +3.3 ms (3.5 → 6.8 ms). Bisected by dispatching taps that return
+  immediately (+0.1 ms — so neither launch overhead nor the gate loads)
+  and taps that shade (+0.8 ms each). The cost is SIMD divergence:
+  contours are LINES, so nearly every 8×8 tile contains one, and a tile
+  with a single live thread pays a full shading. The honest fix is
+  compaction (append contour texels to a list, dispatch over the list) —
+  not fewer taps, not a cheaper gate. Recorded as the optimization if the
+  owner finds the price too high; 4 taps shipped because quality first
+  and 6.8 ms is 147 fps.
+- **A gate cannot be cached in the buffer it reads.** First attempt
+  cached the dilated gate result into `albedoImg.a`, the same channel the
+  dilation reads from its neighbours — a read/write race inside one
+  dispatch, i.e. nondeterminism, in the one codebase where determinism is
+  load-bearing. Fix: a separate GATE dispatch that reads the edge channel
+  and writes a different one (a negative weight in the radiance alpha,
+  which every consumer already reads as "one sample"). Same trick as the
+  round-8 closed-seam probes: when a pass needs its neighbours' values,
+  its own output must live somewhere else.
+- Bonus measurement, correcting a stale note: the M2 Pro's Metal
+  cross-run noise floor on this scene is NOT ~1 LSB — it is 5.6% of
+  pixels differing with a max delta of 6/255 (identical binary, identical
+  args, two runs). So byte-diffing SHOTs across process runs is invalid
+  here in both directions; neutrality must be checked as "no STRUCTURED
+  difference", e.g. against the two-run floor measured the same session.

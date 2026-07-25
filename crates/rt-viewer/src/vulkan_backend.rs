@@ -510,6 +510,7 @@ impl RenderBackend for VulkanBackend {
         push.refl_px = fp.refl_px;
         push.cut16 = rt_probe::render::cut16(fp.cut_y);
         push.misc3[0] = rt_probe::render::cut16(fp.wall_cut);
+        push.misc3[2] = (fp.aa.clamp(0.0, 1.0) * 65536.0).round() as i32; // CONTOUR AA tap weight (16.16)
         if let Some(roi) = &fp.roi {
             let rp = rt_probe::roi_push(&fp.fs.cam, low_w as i32, low_h as i32, roi.player, roi.radius_px, roi.falloff_px, roi.ghost);
             push.roi = rp.roi;
@@ -520,7 +521,25 @@ impl RenderBackend for VulkanBackend {
         d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
         d.cmd_dispatch(cmd, low_w.div_ceil(8), low_h.div_ceil(8), 1);
         // radiance write -> tonemap read (same GENERAL layout)
-        d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ)], &[], &[]);
+        let rw_barrier = |cmd| {
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ)], &[], &[]);
+        };
+        rw_barrier(cmd);
+        // CONTOUR AA (owner 2026-07-25): four extra dispatches of the SAME shade
+        // kernel, each tracing one fixed sub-pixel offset and folding its result
+        // into the texel's running mean. Every tap early-outs on non-contour
+        // texels (shade.comp's aaGate), so the cost is ~4 x (contour fraction).
+        // Each tap reads the centre pass's G-buffer and read-modify-writes the
+        // radiance image, so a full barrier separates every dispatch.
+        if fp.aa > 0.0 && fp.debug == 0 {
+            // 5 = the gate pass (marks non-contour texels), then the four taps
+            for s in [5, 1, 2, 3, 4] {
+                push.misc3[3] = s;
+                d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
+                d.cmd_dispatch(cmd, low_w.div_ceil(8), low_h.div_ceil(8), 1);
+                rw_barrier(cmd);
+            }
+        }
 
         // #5: the GPU crop origin is round(pan); the fractional remainder stays
         // on the CPU side so the upscale lattice is always integer-aligned.

@@ -880,7 +880,12 @@ impl RenderBackend for MetalBackend {
             roi2: roi.roi2,
             look: [fp.spec, fp.bump, fp.bump_scale, fp.gloss],
             look2: [fp.gi, fp.matq, fp.ao_dither, fp.refl],
-            misc3: [rt_probe::render::cut16(fp.cut_y), rt_probe::render::cut16(fp.wall_cut), 0, 0],
+            misc3: [
+                rt_probe::render::cut16(fp.cut_y),
+                rt_probe::render::cut16(fp.wall_cut),
+                (fp.aa.clamp(0.0, 1.0) * 65536.0).round() as i32, // CONTOUR AA tap weight (16.16)
+                0,                                                 // AA sample index (0 = centre pass)
+            ],
             env1: env.env1,
             env2: env.env2,
             env3: env.env3,
@@ -916,6 +921,42 @@ impl RenderBackend for MetalBackend {
             }
             enc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
             enc.end_encoding();
+            // CONTOUR AA (owner 2026-07-25): four extra dispatches of the SAME
+            // shade kernel, each tracing one fixed sub-pixel offset and folding
+            // its radiance into the texel's running mean. Every tap early-outs
+            // on non-contour texels (shade.metal's aaGate), so the cost is
+            // ~4 x (contour fraction). A fresh encoder per tap gives the
+            // read-modify-write on `radiance` unambiguous ordering (the same
+            // reason the shade -> tonemap split uses one).
+            if fp.aa > 0.0 && fp.debug == 0 {
+                let mut tap = push;
+                // 5 = the gate pass (marks non-contour texels), then the four taps
+                for s in [5, 1, 2, 3, 4] {
+                    tap.misc3[3] = s;
+                    let aenc = cb.new_compute_command_encoder();
+                    aenc.set_compute_pipeline_state(&self.shade_pso);
+                    aenc.set_acceleration_structure(0, Some(&self.sc.tlas));
+                    aenc.set_buffer(1, Some(&self.sc.vbuf), 0);
+                    aenc.set_buffer(2, Some(&self.sc.ibuf), 0);
+                    aenc.set_buffer(3, Some(&self.sc.gbuf), 0);
+                    aenc.set_buffer(4, Some(&self.sc.mbuf), 0);
+                    aenc.set_buffer(5, Some(&self.sc.lbuf), 0);
+                    aenc.set_buffer(6, Some(&self.sc.probe_buf), 0);
+                    aenc.set_bytes(7, size_of::<Push>() as u64, &tap as *const _ as *const c_void);
+                    aenc.set_buffer(8, Some(&t.radiance), 0);
+                    aenc.set_buffer(9, Some(&t.albedo), 0);
+                    aenc.set_buffer(10, Some(&t.pos), 0);
+                    for (i, tex) in self.sc.texes.iter().enumerate() {
+                        aenc.set_texture(i as u64, Some(tex));
+                    }
+                    aenc.use_resource(&self.sc.tlas, MTLResourceUsage::Read);
+                    for bl in &self.sc.blas_list {
+                        aenc.use_resource(bl, MTLResourceUsage::Read);
+                    }
+                    aenc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
+                    aenc.end_encoding();
+                }
+            }
             // tonemap: ext_w×ext_h, reads the G-buffers, writes out_tex
             let tenc = cb.new_compute_command_encoder();
             tenc.set_compute_pipeline_state(&self.tonemap_pso);

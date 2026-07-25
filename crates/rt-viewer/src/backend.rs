@@ -61,6 +61,9 @@ pub struct FramePresent<'a> {
     pub ao_dither: f32,
     pub refl: f32,
     pub refl_px: i32,
+    /// CONTOUR COVERAGE AA weight (0 = off — no tap dispatch is issued and the
+    /// image is byte-identical to the pre-AA renderer).
+    pub aa: f32,
     pub debug: i32,
     // tonemap tunables (TonePush)
     pub exposure: f32,

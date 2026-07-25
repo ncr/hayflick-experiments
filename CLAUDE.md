@@ -102,7 +102,10 @@ DEMO_TICKS=N DEMO_DIR=<dir>` renders frame sequences; `LOOK=…`.
 `crates/rt-viewer/src/shaders_metal/*.metal` (MSL) are line-for-line twins.
 A feature added to one must be ported to the other in the same effort, or
 documented as debt. Shared push-constant structs live once in
-`crates/rt-viewer/src/backend.rs`.
+`crates/rt-viewer/src/backend.rs`. Since the contour AA (2026-07-25) the
+radiance image carries `rgb = sum(w*L), a = sum(w)`: **every reader must divide
+by `.a` when `.a > 1`** (two per twin today — the tonemap's radiance load and
+its bloom tap; a negative `.a` marks a non-contour texel the gate pass skipped).
 
 The Mac dev machine (M2 Pro) runs the **Metal** backend; the Arch "spawner"
 box (RTX 5080) runs Vulkan. **Spawner duty DISCHARGED (2026-07-17,
@@ -114,7 +117,16 @@ worth keeping: ShadePush 256 B IS accepted by the device; the full 2048-ray
 bake takes ~115 ms (vs seconds on the M2); `LOOK_SWITCH=polana` is
 BYTE-IDENTICAL to a direct boot; and the Vulkan/RTX cross-run noise floor
 is ZERO (unlike Metal's ~1-LSB floor — byte-diffing across process runs is
-valid here). **Open Metal duty (2026-07-17):** the phase-3 wall-smash demo
+valid here). **BLIND VULKAN (2026-07-25):** the contour-AA work — `shade.comp`'s edge
+distance / gate / tap offsets, `tonemap.comp`'s two divides, and
+`vulkan_backend.rs`'s five extra dispatches with a memory barrier between each
+— is unverified on hardware. The GLSL type-checks here (rt-probe's build.rs
+runs glslangValidator), but the read-modify-write ordering of the tap
+dispatches on the radiance image is runtime semantics only the RTX box can
+confirm. First Vulkan session: `AA=0` must be byte-identical (its cross-run
+floor is zero) and `AA=0.8` must agree with Metal in character.
+
+**Open Metal duty (2026-07-17):** the phase-3 wall-smash demo
 (`LEVEL="wall smash"`, demos/viewer/phys-spike/gym_scene edits) is
 host-side only — no shader or backend code touched — but was built and
 verified on Vulkan only; first Mac session should boot it and eyeball the
@@ -167,8 +179,25 @@ pending.
 
 ## Pixel-perfect iso contract (binding; generalizes, never weakens)
 
-- Primary rays go through pixel centres deterministically — no jitter (the
-  low-res buffer must stay aliased; `AA=1` opts into jitter for stills).
+- Primary rays go through pixel centres deterministically — no jitter, ever, on
+  any ray. The ONE exception is CONTOUR COVERAGE (`AA`, owner ask 2026-07-25:
+  "a delicate anti-aliasing, only on the contours of solids, so deep thin
+  crevices stop reading as single black pixels"): a low-res texel whose primary
+  hit — or a 4-neighbour's — lies within 0.42 px of a solid's silhouette /
+  crease / crevice edge AND whose neighbourhood is NOT locally planar also
+  fires 4 rays at FIXED sub-pixel offsets (constant for all time: no frame
+  index, no hash, no history, no accumulation), and resolves to their weighted
+  mean. The offsets are EVEN multiples of 1/64 px on top of the +1/64 tie bias,
+  so every ray still lands off the BLAS seam planes. Everywhere else the
+  low-res buffer stays exactly ONE sample per texel and hard-edged — flat
+  interiors, clean pixel stairs, quad diagonals (the triangle's longest edge
+  never gates), coplanar tilings (the grass grid, panel seams, closed crack
+  seams — their position field is exactly affine under the ortho camera) and
+  ALL painted detail (wear, stains, painted cracks, AO dither, MATQ) are
+  bit-identical. `AA=0` reproduces the pre-amendment image exactly. (The
+  pre-reset "`AA=1` opts into jitter" note is retired — that path lived only in
+  the deleted TypeScript tracer.) **Owner sign-off on this wording still
+  pending; `Look.aa = 0` reverts the feature and the amendment together.**
 - All post (grade → grain → dither) runs per low-res texel before the integer
   NEAREST upscale.
 - Projection-as-data (Faza 1a, DONE 2026-07-12): a projection IS its two

@@ -74,6 +74,9 @@ pub struct Viewer {
     pub bump: f32,
     pub bump_scale: f32,
     pub gi: f32,
+    /// CONTOUR COVERAGE AA weight (look-authored, `AA` env overrides, live from
+    /// the ESC settings row — a push-constant change, no rebuild, no rebake).
+    pub aa: f32,
     pub ao: f32,
     pub ao_r: f32,
     pub ao_n: i32,
@@ -287,6 +290,7 @@ impl Viewer {
             bump: cfg.render.bump.unwrap_or(look.bump),
             bump_scale: cfg.render.bump_scale.unwrap_or(look.bump_scale),
             gi: cfg.render.gi.unwrap_or(look.gi),
+            aa: cfg.render.aa.unwrap_or(look.aa),
             ao: cfg.render.ao,
             ao_r: cfg.render.ao_r,
             ao_n: cfg.render.ao_n,
@@ -438,6 +442,7 @@ impl Viewer {
         self.bump = self.cfg.render.bump.unwrap_or(look.bump);
         self.bump_scale = self.cfg.render.bump_scale.unwrap_or(look.bump_scale);
         self.gi = self.cfg.render.gi.unwrap_or(look.gi);
+        self.aa = self.cfg.render.aa.unwrap_or(look.aa);
         println!("look: {} ({:.0} ms)", look.name, t0.elapsed().as_secs_f32() * 1000.0);
     }
 
@@ -603,6 +608,7 @@ impl Viewer {
             ao_dither: self.cfg.render.ao_dither,
             refl: self.cfg.render.refl,
             refl_px: self.cfg.render.refl_px,
+            aa: self.aa,
             debug: self.debug,
             exposure: self.exposure,
             style: self.style,

@@ -60,7 +60,8 @@ static float bayer4(int2 lp){
 // from sRGB-format MTLTextures, so the GPU returns linear, matching hex_linear.
 constexpr sampler texSamp(filter::nearest, mip_filter::none, address::repeat);
 
-struct Hit { float t; float3 n; float2 uv; int mat; };
+// `edge` = world distance to the nearest GATING triangle edge (contour AA).
+struct Hit { float t; float3 n; float2 uv; int mat; float edge; };
 
 static float3 skyCol(float3 d, constant Push& pc) {
     float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
@@ -102,6 +103,18 @@ static bool trace(float3 o, float3 dir, float tmax, uint mask,
     h.n  = normalize(b0 * float3(v0.nrm) + b1 * float3(v1.nrm) + b2 * float3(v2.nrm));
     h.uv = b0 * v0.uv + b1 * v1.uv + b2 * v2.uv;
     h.mat = g.materialId;
+    // CONTOUR AA: distance to the nearest triangle edge in world units, the
+    // triangle's LONGEST edge excluded (that is the quad diagonal every box
+    // face is split by — gating it would band flat faces). See shade.comp.
+    float3 E0 = float3(v2.pos) - float3(v1.pos);
+    float3 E1 = float3(v0.pos) - float3(v2.pos);
+    float3 E2 = float3(v1.pos) - float3(v0.pos);
+    float L0 = length(E0), L1 = length(E1), L2 = length(E2);
+    float A2 = length(cross(E2, -E1));
+    float Lm = max(L0, max(L1, L2));
+    h.edge = min(L0 >= Lm ? 1e9 : A2 * b0 / max(L0, 1e-6),
+             min(L1 >= Lm ? 1e9 : A2 * b1 / max(L1, 1e-6),
+                 L2 >= Lm ? 1e9 : A2 * b2 / max(L2, 1e-6)));
     return true;
 }
 
@@ -260,6 +273,42 @@ static float3 specBRDF(float3 n, float3 v, float3 l, float reff, float3 F0){
     return D * F;
 }
 
+// ---- CONTOUR COVERAGE AA (owner 2026-07-25) --------------------------------
+// Line-for-line twin of the shade.comp block: a coverage tap is the SAME kernel
+// re-dispatched with a fixed sub-pixel ray offset, so every cutaway / ROI /
+// glass / material path is reused by identity. See shade.comp for the reasoning.
+constant float AA_R = 0.42; // px — clears the max tap reach |(24,8)|/64 = 0.3953
+constant int2 AAOFF[5] = { int2(0, 0), int2(24, 8), int2(-8, 24), int2(-24, -8), int2(8, -24) };
+
+static bool aaGate(int2 px, int W, int H, constant Push& pc,
+                   device const float4* outAlbedo, device const float4* outPos) {
+    const int2 N4[4] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1) };
+    int2 hi = int2(W - 1, H - 1);
+    float e = outAlbedo[px.y * W + px.x].w;
+    for (int k = 0; k < 4; k++) {
+        int2 q = clamp(px + N4[k], int2(0), hi);
+        e = min(e, outAlbedo[q.y * W + q.x].w);
+    }
+    if (e >= AA_R) return false;
+    float4 P0 = outPos[px.y * W + px.x];
+    if (P0.w == 0.0) return true; // sky texel: the far side of a silhouette
+    float tol = 0.6 * (2.0 * pc.camRight.w / float(W)); // 0.6 px, in wu
+    for (int k = 0; k < 2; k++) {
+        int2 o = k == 0 ? int2(1, 0) : int2(0, 1);
+        int2 qa = clamp(px + o, int2(0), hi), qb = clamp(px - o, int2(0), hi);
+        float4 Pa = outPos[qa.y * W + qa.x], Pb = outPos[qb.y * W + qb.x];
+        if (Pa.w == 0.0 || Pb.w == 0.0) return true;
+        if (length(Pa.xyz + Pb.xyz - 2.0 * P0.xyz) > tol) return true;
+    }
+    return false;
+}
+
+// rgb = sum(w*L), a = sum(w). Every reader must divide by .a when .a > 1.
+static void aaAccum(device float4* outRadiance, uint idx, float w, float3 c) {
+    float4 a = outRadiance[idx];
+    outRadiance[idx] = float4(a.rgb + w * c, a.a + w);
+}
+
 kernel void shade(
     instance_acceleration_structure accel [[buffer(0)]],
     device const Vertex*   verts   [[buffer(1)]],
@@ -279,11 +328,31 @@ kernel void shade(
     if (int(gid.x) >= W || int(gid.y) >= H) return;
     uint idx = gid.y * uint(W) + gid.x;
 
+    // CONTOUR AA: misc3.z = tap weight (16.16), misc3.w = sample index (0 = the
+    // centre pass, 1..4 = a coverage tap that exists only on contour texels).
+    float aaW = float(pc.misc3.z) * (1.0 / 65536.0);
+    int S = pc.misc3.w;
+    // S == 5 = the GATE pass: run the contour test once, mark non-contour
+    // texels with a negative weight, and every tap then skips with ONE load.
+    // See shade.comp for why it cannot be cached in place.
+    if (S == 5) {
+        float4 c = outRadiance[idx];
+        if (!aaGate(int2(gid), W, H, pc, outAlbedo, outPos)) outRadiance[idx] = float4(c.rgb, -1.0);
+        return;
+    }
+    if (S > 0) {
+        if (pc.misc.w != 0) return;                      // debug views stay centre-only
+        if (outRadiance[idx].a < 0.0) return;            // interiors: not one extra ray
+    }
+
     float3 sunDir = pc.env1.xyz; // normalized CPU-side (EnvBlock::pack)
     float3 sun = pc.env2.rgb * 6.0 * pc.env0.x;
 
-    float u = ((float(gid.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;
-    float v = -(((float(gid.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);
+    // an EVEN multiple of 1/64, so a tap ray still lands on an ODD multiple —
+    // off every dyadic seam plane, exactly like the TIE bias itself
+    float2 aaOff = float2(AAOFF[S]) * (1.0 / 64.0);
+    float u = ((float(gid.x) + 0.5 + TIE + aaOff.x) / float(W)) * 2.0 - 1.0;
+    float v = -(((float(gid.y) + 0.5 + TIE + aaOff.y) / float(H)) * 2.0 - 1.0);
     float3 o = float3(pc.camPos.xyz) + u * pc.camRight.w * float3(pc.camRight.xyz)
                                      + v * pc.camUp.w    * float3(pc.camUp.xyz);
     float3 d = normalize(float3(pc.camDir.xyz));
@@ -438,9 +507,10 @@ kernel void shade(
 
     float3 col;
     if (!hitb) {
-        outAlbedo[idx] = float4(gtint, 1.0); // sky through glass demodulates tinted
-        outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(0.0); // w=0 → sky, w=2 → x-ray wall
         col = (skyCol(d, pc) * gtint + gsheen) * fogT + fogAdd;
+        if (S > 0) { aaAccum(outRadiance, idx, aaW, col); return; } // a tap that escapes IS coverage
+        outAlbedo[idx] = float4(gtint, 8.0); // sky through glass demodulates tinted (w = the AA gate's "no edge")
+        outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(0.0); // w=0 → sky, w=2 → x-ray wall
         outRadiance[idx] = float4(col, 1.0);
         return;
     }
@@ -449,6 +519,8 @@ kernel void shade(
     float3 albedo = m.baseColor.rgb;
     if (m.texIndex >= 0) albedo *= texs[m.texIndex].sample(texSamp, h.uv).rgb;
     float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
+    // the FLAT face normal, kept before wear/bump rewrite it (contour AA gate)
+    float3 aaGn = n;
     // procedural WEAR & TEAR on greybox walls/floors — twin of shade.comp: (1) relief
     // normal bump; (2) broad worn zones + fine scuff + sparse scratches in the albedo;
     // (3) contact grime in occluded crevices (below, once AO is known). BUMP=0 → unchanged.
@@ -635,10 +707,20 @@ kernel void shade(
     // crack-lab SELECTION highlight (pad bit 3) — twin of shade.comp: a steady
     // amber lift on the picked segment (no pulse; captures stay deterministic).
     if ((uint(m.pad) & 8u) != 0u) albedo = mix(albedo, float3(1.0, 0.82, 0.40), 0.22);
-    outAlbedo[idx] = float4(albedo * gtint, 1.0); // tint in the G-buffer keeps demodulation consistent
+    // .w = screen-px distance to the nearest gating triangle edge — the CONTOUR
+    // AA gate (was a constant 1.0, read by nobody). |n·d| is the exact minimum
+    // foreshortening of an in-plane distance, so this is a conservative LOWER
+    // bound: the gate may over-report, never miss. See shade.comp.
+    float edgePx = min(h.edge * (0.5 * float(W) / pc.camRight.w) * max(abs(dot(aaGn, d)), 0.08), 8.0);
+    if (S == 0) outAlbedo[idx] = float4(albedo * gtint, edgePx); // tint in the G-buffer keeps demodulation consistent
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
-    outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, 1.0); // w=1 matches shade.comp
+    if (S == 0) outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, 1.0); // w=1 matches shade.comp
+    // DEBUG_AA (misc.w == 5): red = fires coverage taps, green ramp = edgePx.
+    if (pc.misc.w == 5) {
+        outRadiance[idx] = float4(edgePx < 0.42 ? 1.0 : 0.0, min(edgePx, 4.0) * 0.25, 0.0, 1.0);
+        return;
+    }
     if (pc.misc.w == 1) { outRadiance[idx] = float4(albedo, 1.0); return; }
     if (pc.misc.w == 2) { outRadiance[idx] = float4(albedo * (1.0/PI) * probeE(p, n, pd, pc), 1.0); return; }
 
@@ -737,5 +819,5 @@ kernel void shade(
     }
 
     col = (col * gtint + gsheen) * fogT + fogAdd;
-    outRadiance[idx] = float4(col, 1.0);
+    if (S > 0) aaAccum(outRadiance, idx, aaW, col); else outRadiance[idx] = float4(col, 1.0);
 }
