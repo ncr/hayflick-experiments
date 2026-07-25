@@ -77,6 +77,10 @@ pub struct Viewer {
     /// CONTOUR COVERAGE AA weight (look-authored, `AA` env overrides, live from
     /// the ESC settings row — a push-constant change, no rebuild, no rebake).
     pub aa: f32,
+    /// AA SCOPE: 0 = every surface, 1 = cracked piers, 2 = the picked pier only
+    /// (owner 2026-07-25 — the per-wall A/B). Drives [`crate::crack::AA_BIT`]
+    /// via `aa_stamp`; the shader ignores the bit at scope 0.
+    pub aa_scope: f32,
     pub ao: f32,
     pub ao_r: f32,
     pub ao_n: i32,
@@ -256,7 +260,7 @@ impl Viewer {
         // the demo's authored seed; neither → pristine (bit-identical image).
         let mut crack = crate::crack::CrackLab::default();
         let crack_seed = crate::crack::seed_from_env().or(demo.and_then(|d| d.cracks));
-        crate::crack::resolve(crack_seed, &mut crack, &gym_meta.piers, &mut scene);
+        crate::crack::resolve(crack_seed, &mut crack, &gym_meta.piers, &mut scene, cfg.render.aa_scope);
         crack.active = demo.and_then(|d| d.cracks).is_some();
         println!("scene: {} prims, {} tris (the gym, look {})", scene.primitives.len(), scene.indices.len() / 3, look.name);
         let player0 = scene.player_start;
@@ -291,6 +295,7 @@ impl Viewer {
             bump_scale: cfg.render.bump_scale.unwrap_or(look.bump_scale),
             gi: cfg.render.gi.unwrap_or(look.gi),
             aa: cfg.render.aa.unwrap_or(look.aa),
+            aa_scope: cfg.render.aa_scope as f32,
             ao: cfg.render.ao,
             ao_r: cfg.render.ao_r,
             ao_n: cfg.render.ao_n,
@@ -420,7 +425,7 @@ impl Viewer {
         // entering/leaving the demo re-seeds or clears.
         self.piers = meta.piers;
         let crack_seed = crate::crack::seed_from_env().or(self.cur_demo.and_then(|d| d.cracks));
-        crate::crack::resolve(crack_seed, &mut self.crack, &self.piers, &mut scene);
+        crate::crack::resolve(crack_seed, &mut self.crack, &self.piers, &mut scene, self.aa_scope.round() as i32);
         self.crack.active = self.cur_demo.and_then(|d| d.cracks).is_some();
         unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };
         self.light_keys = join_lamp_lights(&scene, self.backend.handles(), self.backend.light_count());
@@ -609,6 +614,7 @@ impl Viewer {
             refl: self.cfg.render.refl,
             refl_px: self.cfg.render.refl_px,
             aa: self.aa,
+            aa_scope: self.aa_scope.round() as i32,
             debug: self.debug,
             exposure: self.exposure,
             style: self.style,

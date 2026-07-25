@@ -884,7 +884,7 @@ impl RenderBackend for MetalBackend {
                 rt_probe::render::cut16(fp.cut_y),
                 rt_probe::render::cut16(fp.wall_cut),
                 (fp.aa.clamp(0.0, 1.0) * 65536.0).round() as i32, // CONTOUR AA tap weight (16.16)
-                0,                                                 // AA sample index (0 = centre pass)
+                fp.aa_scope << 8,                                  // AA sample index (low byte) | scope << 8
             ],
             env1: env.env1,
             env2: env.env2,
@@ -928,11 +928,14 @@ impl RenderBackend for MetalBackend {
             // ~4 x (contour fraction). A fresh encoder per tap gives the
             // read-modify-write on `radiance` unambiguous ordering (the same
             // reason the shade -> tonemap split uses one).
-            if fp.aa > 0.0 && fp.debug == 0 {
+            // the GATE pass runs for the softening too (it is what marks the
+            // contour texels); only the taps need the coverage weight
+            let aa_live = fp.aa > 0.0 || fp.style.aa_soft > 0.0;
+            if aa_live && fp.debug == 0 {
                 let mut tap = push;
-                // 5 = the gate pass (marks non-contour texels), then the four taps
-                for s in [5, 1, 2, 3, 4] {
-                    tap.misc3[3] = s;
+                let taps: &[i32] = if fp.aa > 0.0 { &[5, 1, 2, 3, 4] } else { &[5] };
+                for &s in taps {
+                    tap.misc3[3] = s | (fp.aa_scope << 8);
                     let aenc = cb.new_compute_command_encoder();
                     aenc.set_compute_pipeline_state(&self.shade_pso);
                     aenc.set_acceleration_structure(0, Some(&self.sc.tlas));

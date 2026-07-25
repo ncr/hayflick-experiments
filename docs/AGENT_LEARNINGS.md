@@ -793,3 +793,27 @@ implementation notes are in CLAUDE.md. Three things worth keeping:
   args, two runs). So byte-diffing SHOTs across process runs is invalid
   here in both directions; neutrality must be checked as "no STRUCTURED
   difference", e.g. against the two-run floor measured the same session.
+
+### Addendum, same day — the SCOPE fixed the cost too, and a 0.2 ms cousin
+
+The owner's next round ("apply the AA selectively, only on the chosen wall's
+geometry; or else soften those narrow cracks so they stop being harsh black
+broken pixels") turned out to answer the cost problem above:
+
+- Scoping the gate to opted-in materials (`Material._pad` bit 7, stamped per
+  pier AND its chalk core — the core carries the groove floors, so a scope
+  that missed it would AA the lips and leave the crack's darkest pixels
+  hard) drops the game view's price from +3.3 ms to **+0.23 ms**, because in
+  the gym nothing opts in. Divergence is only expensive where the contours
+  actually are. A feature the owner wanted narrower for LOOK reasons was
+  also the performance fix — worth checking for that alignment before
+  optimizing.
+- The cheap cousin ships alongside: on the same gate, pull a contour texel's
+  radiance a fraction toward its 4-neighbour mean in the tonemap. No rays,
+  **+0.2 ms even on a wall filling the screen**, and it directly attacks the
+  owner's words (contrast, not continuity). Coverage AA and softening are
+  now two knobs on one gate: `contour aa` makes a thin line CONTINUOUS,
+  `aa soften` takes the CONTRAST off it. Keeping them separate matters —
+  they fail differently and cost two orders of magnitude apart.
+- `CRACK_SEL=<pier>` joined the harness knobs: the selection drives the panel,
+  the highlight and now the AA scope, and an agent cannot click.

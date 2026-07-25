@@ -63,6 +63,12 @@ pub struct StyleCfg {
     pub analog_chroma: f32, // ANALOG_CHROMA: chroma noise strength (defaults to ANALOG)
     pub analog_tear: f32,  // ANALOG_TEAR: horizontal scanline-tear strength (defaults to ANALOG)
     pub crt_mask: f32,     // CRT_MASK: RGB phosphor triad + scanline on the FINAL image (0 = off)
+    /// AA_SOFT: CONTOUR SOFTEN — how far a CONTOUR texel's radiance is pulled
+    /// toward its 4-neighbour mean (0 = off). Contour-gated by the same pass
+    /// the coverage AA uses, so it takes the contrast off narrow cracks and
+    /// silhouettes without touching a flat interior. Needs `aa`'s gate pass:
+    /// the backends dispatch it when either knob is live.
+    pub aa_soft: f32,
 }
 
 impl StyleCfg {
@@ -94,6 +100,7 @@ impl StyleCfg {
         analog_chroma: -1.0,
         analog_tear: -1.0,
         crt_mask: 0.0,
+        aa_soft: 0.35,
     };
 
     /// Apply the individual env-var overrides on top of `self` (the look's
@@ -133,6 +140,7 @@ impl StyleCfg {
             st.analog_tear = st.analog;
         }
         st.crt_mask = f("CRT_MASK", st.crt_mask);
+        st.aa_soft = f("AA_SOFT", st.aa_soft);
         if st.pal_p < 0.0 {
             st.pal_p = if st.palette as i32 == 2 { 6.0 } else { 0.0 };
         }
@@ -181,7 +189,11 @@ pub struct RenderCfg {
     /// sample, on CONTOUR texels only (see shade.comp's aaGate). `None` = take
     /// the look's authored value; 0 = one sample per texel, byte-identical to
     /// the pre-AA image; 1 = the unbiased 5-sample box.
-    pub aa: Option<f32>,              // REFL_PX: reflection block size in low-res px (the pixelation)
+    pub aa: Option<f32>,
+    /// `AA_SCOPE` — where the contour AA and the softening apply: 0 = every
+    /// surface, 1 = CRACKED piers only (the default — the greybox keeps its
+    /// hard pixel edges), 2 = the PICKED pier only (the owner's per-wall A/B).
+    pub aa_scope: i32,              // REFL_PX: reflection block size in low-res px (the pixelation)
     pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4 | DEBUG_AA=5
     // The post stack (StyleCfg) is NOT here since Faza 1b: its base is look
     // data (rt-viewer look.rs); the Viewer resolves `look.style.env_over()`.
@@ -302,6 +314,7 @@ impl Config {
                 ao_dither: f("AO_DITHER", 0.0),
                 refl: f("REFL", 0.0),
                 aa: fo("AA"),
+                aa_scope: i("AA_SCOPE", 1),
                 refl_px: i("REFL_PX", 3).max(1),
                 debug,
             },

@@ -346,7 +346,8 @@ void main(){
   // centre pass (one ray through the pixel centre — the pixel contract's
   // default); 1..4 = a coverage tap, which exists only on contour texels.
   float aaW = float(pc.misc3.z) * (1.0 / 65536.0);
-  int S = pc.misc3.w;
+  int S = pc.misc3.w & 255;              // AA sample index
+  int aaScope = (pc.misc3.w >> 8) & 3;   // 0 = every surface, else per-material opt-in (crack::AA_BIT)
   // S == 5 is the GATE pass: it runs the contour test ONCE and marks every
   // non-contour texel with a negative weight, so each of the four tap passes
   // skips it after a SINGLE load. (Running the test per tap cost 40 buffer
@@ -803,7 +804,12 @@ void main(){
   // |n·d| (the exact minimum over in-plane directions), so this is a
   // conservative LOWER bound: the gate may over-report a contour, never miss
   // one. 0.08 caps the correction at 12.5x on near-edge-on faces.
-  float edgePx = min(h.edge * (0.5 * float(W) / pc.camRight.w) * max(abs(dot(aaGn, d)), 0.08), 8.0);
+  // SCOPE (owner 2026-07-25: "apply the AA selectively — only on the geometry
+  // of the chosen wall"): outside the scope the texel reports "no edge", so the
+  // gate never fires and neither the coverage taps nor the softening touch it.
+  float edgePx = 8.0;
+  if (aaScope == 0 || (m.pad & 128) != 0)
+    edgePx = min(h.edge * (0.5 * float(W) / pc.camRight.w) * max(abs(dot(aaGn, d)), 0.08), 8.0);
   if (S == 0) imageStore(albedoImg, px, vec4(albedo * gtint, edgePx)); // tint in the G-buffer keeps demodulation consistent
   // CONTOUR: re-project the dissolved wall's front face (w=2) so the tonemap outline
   // pass traces its silhouette as x-ray line-art; the radiance/albedo we store is

@@ -511,6 +511,7 @@ impl RenderBackend for VulkanBackend {
         push.cut16 = rt_probe::render::cut16(fp.cut_y);
         push.misc3[0] = rt_probe::render::cut16(fp.wall_cut);
         push.misc3[2] = (fp.aa.clamp(0.0, 1.0) * 65536.0).round() as i32; // CONTOUR AA tap weight (16.16)
+        push.misc3[3] = fp.aa_scope << 8; // sample index (low byte) | scope << 8
         if let Some(roi) = &fp.roi {
             let rp = rt_probe::roi_push(&fp.fs.cam, low_w as i32, low_h as i32, roi.player, roi.radius_px, roi.falloff_px, roi.ghost);
             push.roi = rp.roi;
@@ -531,10 +532,12 @@ impl RenderBackend for VulkanBackend {
         // texels (shade.comp's aaGate), so the cost is ~4 x (contour fraction).
         // Each tap reads the centre pass's G-buffer and read-modify-writes the
         // radiance image, so a full barrier separates every dispatch.
-        if fp.aa > 0.0 && fp.debug == 0 {
-            // 5 = the gate pass (marks non-contour texels), then the four taps
-            for s in [5, 1, 2, 3, 4] {
-                push.misc3[3] = s;
+        // the GATE pass runs for the softening too (it is what marks the contour
+        // texels); only the taps need the coverage weight
+        if (fp.aa > 0.0 || fp.style.aa_soft > 0.0) && fp.debug == 0 {
+            let taps: &[i32] = if fp.aa > 0.0 { &[5, 1, 2, 3, 4] } else { &[5] };
+            for &s in taps {
+                push.misc3[3] = s | (fp.aa_scope << 8);
                 d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
                 d.cmd_dispatch(cmd, low_w.div_ceil(8), low_h.div_ceil(8), 1);
                 rw_barrier(cmd);

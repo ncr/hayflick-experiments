@@ -181,6 +181,22 @@ void main(){
     // else-branch keeps the image byte-identical.
     vec4 rad4 = imageLoad(colorImg, lp);
     vec3 radiance = rad4.a > 1.0 ? rad4.rgb / rad4.a : rad4.rgb;
+    // CONTOUR SOFTEN (style5.w — owner 2026-07-25: "soften the rendering of
+    // those narrow cracks so there are no mega-contrast pixels, harsh black and
+    // broken lines"): on CONTOUR texels only (the gate pass marks everything
+    // else with a negative weight), pull the radiance a fraction toward its
+    // 4-neighbour mean. Cheap — no extra rays — and it works with the coverage
+    // AA or instead of it: coverage makes the line continuous, this takes the
+    // contrast off the isolated near-black texels the sampling leaves behind.
+    if (pc.style5.w > 0.0 && rad4.a >= 0.0) {
+      const ivec2 N4[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+      vec3 acc = vec3(0.0);
+      for (int k = 0; k < 4; k++) {
+        vec4 q = imageLoad(colorImg, clamp(lp + N4[k], ivec2(0), ivec2(pc.dims.x - 1, pc.dims.y - 1)));
+        acc += q.a > 1.0 ? q.rgb / q.a : q.rgb;
+      }
+      radiance = mix(radiance, acc * 0.25, pc.style5.w);
+    }
 
     // world-anchored lattice for dither + grain: subtract the screen position
     // of the world origin (pushed by the CPU per frame), so the patterns are

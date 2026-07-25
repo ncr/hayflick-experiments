@@ -170,6 +170,19 @@ kernel void tonemap(
         // a > 1 (this reader and the bloom tap below). See tonemap.comp.
         float4 rad4 = colorBuf[li];
         float3 radiance = rad4.a > 1.0 ? rad4.rgb / rad4.a : rad4.rgb;
+        // CONTOUR SOFTEN (style5.w): on contour texels only, pull the radiance
+        // toward its 4-neighbour mean — takes the contrast off isolated
+        // near-black crack texels. See tonemap.comp.
+        if (pc.style5.w > 0.0 && rad4.a >= 0.0) {
+            const int2 N4[4] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1) };
+            float3 acc = float3(0.0);
+            for (int k = 0; k < 4; k++) {
+                int2 q = clamp(int2(lp) + N4[k], int2(0), int2(lowW - 1, lowH - 1));
+                float4 s4 = colorBuf[uint(q.y * lowW + q.x)];
+                acc += s4.a > 1.0 ? s4.rgb / s4.a : s4.rgb;
+            }
+            radiance = mix(radiance, acc * 0.25, pc.style5.w);
+        }
 
         // world-anchored lattice for dither + grain
         int2 dlp = lp - int2(int(pc.fcfg.w), int(pc.style4.w));

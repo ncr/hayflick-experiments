@@ -1728,14 +1728,14 @@ fn emit_prism(
 /// Fragment an UNFAULTED pier into core box + veneer per the policy.
 /// Returns false (scene untouched) when nothing opened — no groove, no live
 /// or spalled plate: the pier keeps its box and its paint.
-fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> bool {
+fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> i32 {
     let (mid, seg) = seg_of(scene, pier);
     let fr = Frame::of(pier);
     let cfg = CrazeCfg::new(seg, k, fr.run_x, fr.t1 - fr.t0, &[], par);
     let opened = StdCell::new(false);
     let frags = policy_frags(&cfg, policy, fr.u0, fr.u1, fr.y0, fr.y1, &opened);
     if !opened.get() {
-        return false;
+        return -1;
     }
     // the matte body: big faces pulled in by the veneer, ends/top/bottom flush
     let (blo, bhi) = if fr.run_x {
@@ -1759,7 +1759,7 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32
     scene.add_mesh_world(&verts, &idx, mid);
     collapse_box(scene, pier);
     scene.materials[mid as usize]._pad |= CRAZE_BIT;
-    true
+    core_mid as i32
 }
 
 /// Split a FAULTED pier along its faults AND craze the pieces: per piece a
@@ -1767,7 +1767,7 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32
 /// back planes (the chalk core showing in grooves and recesses), and the
 /// policy veneer clipped against the fault paths — so the small-crack
 /// pattern rides the broken wall and clusters along the seam (halo).
-fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) {
+fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> i32 {
     let (mid, seg) = seg_of(scene, pier);
     let fr = Frame::of(pier);
     let (u0, u1, t0, t1, y0, y1) = (fr.u0, fr.u1, fr.t0, fr.t1, fr.y0, fr.y1);
@@ -1866,6 +1866,11 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], k: [f32; 4], pol
     }
     collapse_box(scene, pier);
     scene.materials[mid as usize]._pad |= GEO_BIT | if crazing { CRAZE_BIT } else { 0 };
+    if crazing {
+        core_mid
+    } else {
+        -1
+    }
 }
 
 /// Geometry inputs come from BUCKETED knobs (0.1 grid), so the release-time
@@ -1889,22 +1894,30 @@ fn faults_for(scene: &Scene, pier: &Pier, k: [f32; 4]) -> Vec<Fault> {
 
 /// Give every knobbed pier its geometric aging: structural faults split the
 /// pier (and the craze veneer rides the pieces); fault-free piers fragment
-/// into core + veneer per their pattern policy. `params` = each pier's
+/// into core + veneer per their pattern policy. Returns each pier's CHALK CORE
+/// material id (-1 = the pier stayed a plain box): the core carries the groove
+/// floors, so anything scoped per-pier — the contour AA's opt-in bit — has to
+/// stamp it alongside the pier's own material or the crack's darkest pixels
+/// fall outside the scope. `params` = each pier's
 /// ACTIVE-policy native params (the caller resolves the per-policy store).
 /// Runs post-build on the CPU scene (boot and every `apply_look` rebuild),
 /// before the backend sees it — `crack::resolve` calls this right after
 /// stamping the knobs.
-pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]]) {
+pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]]) -> Vec<i32> {
+    let mut cores = vec![-1; piers.len()];
     for (i, (pier, k)) in piers.iter().zip(knobs).enumerate() {
         let policy = policies.get(i).copied().unwrap_or(0);
         let par = params.get(i).copied().unwrap_or(param_defaults(policy));
         let faults = faults_for(scene, pier, *k);
-        if !faults.is_empty() {
-            split_pier(scene, pier, &faults, *k, policy, par);
+        cores[i] = if !faults.is_empty() {
+            split_pier(scene, pier, &faults, *k, policy, par)
         } else if *k != [0.0; 4] {
-            craze_pier(scene, pier, bucket(*k), policy, par);
-        }
+            craze_pier(scene, pier, bucket(*k), policy, par)
+        } else {
+            -1
+        };
     }
+    cores
 }
 
 /// Geometry signature of a knob state: which faults exist (and their

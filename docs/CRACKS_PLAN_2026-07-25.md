@@ -164,6 +164,25 @@ deliberately, with the owner's sign-off, not silently.
 
 ---
 
+## Task 1.5b — scoped AA + crack softening — DONE 2026-07-25
+
+Owner follow-up: "I'd like the anti-aliasing applied selectively — only on the
+geometry of the chosen wall. Or else soften the rendering of those narrow cracks
+so there are no mega-contrast pixels, harsh black and broken lines."
+
+Both, on one gate:
+- `aa scope` (ESC row, 0/1/2 = all surfaces / cracked piers / the PICKED pier),
+  carried by `crack::AA_BIT` (`_pad` bit 7) stamped on each pier and its chalk
+  core. Default 1, so the plain greybox keeps hard edges. Verified by a
+  containment map: at scope 2 the changed pixels sit ENTIRELY on the picked
+  wall. `CRACK_SEL=<index>` preselects for the harness.
+- `aa soften` (ESC row, `AA_SOFT` env, look-authored default 0.35): the same
+  contour gate, but the tonemap pulls the texel's radiance toward its
+  4-neighbour mean. No rays: +0.2 ms on a full-screen wall.
+- Cost after scoping: gym 3.49 -> 3.61 (soften) -> 3.72 ms (both); crack-lab
+  close-up 5.91 -> 6.13 -> 14.91 ms. The 4-tap coverage is only expensive
+  where the cracks actually fill the screen.
+
 ## Task 2 (after 1.5) — spalling with exposed rebar
 
 Sketch, not committed: spall craters are currently plates that go

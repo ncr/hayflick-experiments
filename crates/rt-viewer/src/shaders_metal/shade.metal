@@ -331,7 +331,8 @@ kernel void shade(
     // CONTOUR AA: misc3.z = tap weight (16.16), misc3.w = sample index (0 = the
     // centre pass, 1..4 = a coverage tap that exists only on contour texels).
     float aaW = float(pc.misc3.z) * (1.0 / 65536.0);
-    int S = pc.misc3.w;
+    int S = pc.misc3.w & 255;              // AA sample index
+    int aaScope = (pc.misc3.w >> 8) & 3;   // 0 = every surface, else per-material opt-in (crack::AA_BIT)
     // S == 5 = the GATE pass: run the contour test once, mark non-contour
     // texels with a negative weight, and every tap then skips with ONE load.
     // See shade.comp for why it cannot be cached in place.
@@ -711,7 +712,11 @@ kernel void shade(
     // AA gate (was a constant 1.0, read by nobody). |n·d| is the exact minimum
     // foreshortening of an in-plane distance, so this is a conservative LOWER
     // bound: the gate may over-report, never miss. See shade.comp.
-    float edgePx = min(h.edge * (0.5 * float(W) / pc.camRight.w) * max(abs(dot(aaGn, d)), 0.08), 8.0);
+    // SCOPE: outside it the texel reports "no edge", so neither the coverage
+    // taps nor the softening touch it. See shade.comp.
+    float edgePx = 8.0;
+    if (aaScope == 0 || (m.pad & 128) != 0)
+        edgePx = min(h.edge * (0.5 * float(W) / pc.camRight.w) * max(abs(dot(aaGn, d)), 0.08), 8.0);
     if (S == 0) outAlbedo[idx] = float4(albedo * gtint, edgePx); // tint in the G-buffer keeps demodulation consistent
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.

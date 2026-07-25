@@ -194,7 +194,14 @@ pending.
   never gates), coplanar tilings (the grass grid, panel seams, closed crack
   seams — their position field is exactly affine under the ortho camera) and
   ALL painted detail (wear, stains, painted cracks, AO dither, MATQ) are
-  bit-identical. `AA=0` reproduces the pre-amendment image exactly. (The
+  bit-identical. It is also SCOPED (owner, same day: "apply it selectively —
+  only on the chosen wall's geometry"): `aa scope` = every surface / CRACKED
+  piers (the default, so the plain greybox keeps its hard edges) / the PICKED
+  pier only, carried by `Material._pad` bit 7 on the pier AND its chalk core.
+  A companion stage, `aa soften`, pulls a CONTOUR texel's radiance a fraction
+  toward its 4-neighbour mean — same gate, same scope, no extra rays: that is
+  the cheap answer to "narrow cracks read as harsh black broken pixels".
+  `AA=0 AA_SOFT=0` reproduces the pre-amendment image exactly. (The
   pre-reset "`AA=1` opts into jitter" note is retired — that path lived only in
   the deleted TypeScript tracer.) **Owner sign-off on this wording still
   pending; `Look.aa = 0` reverts the feature and the amendment together.**

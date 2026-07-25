@@ -56,6 +56,11 @@ pub const MENU: &[MenuItem] = &[
     // coverage rays carry on CONTOUR texels. Live — a push-constant change, so
     // it responds at frame rate with no rebuild and no probe rebake.
     MenuItem { key: "aa", label: "contour aa", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
+    // 0 = every surface, 1 = cracked walls, 2 = the PICKED wall only (owner
+    // 2026-07-25: "apply it selectively, only on the chosen wall's geometry")
+    MenuItem { key: "aa_scope", label: "aa scope", kind: ItemKind::Slider { min: 0.0, max: 2.0, step: 1.0 } },
+    // takes the contrast off narrow cracks without extra rays (contour-gated)
+    MenuItem { key: "aa_soft", label: "aa soften", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
@@ -357,6 +362,8 @@ impl Viewer {
             "sdither_th" => self.style.sdither_th,
             "dither" => self.style.dither,
             "aa" => self.aa,
+            "aa_scope" => self.aa_scope,
+            "aa_soft" => self.style.aa_soft,
             "exposure" => self.exposure,
             "lights" => (self.lights_dim > 0.0) as i32 as f32,
             "light_anim" => self.light_anim as i32 as f32,
@@ -397,6 +404,13 @@ impl Viewer {
             "sdither_th" => self.style.sdither_th = v,
             "dither" => self.style.dither = v,
             "aa" => self.aa = v,
+            // the scope drives per-material opt-in bits: re-stamp them now, so
+            // the change lands next frame without a rebuild
+            "aa_scope" => {
+                self.aa_scope = v;
+                self.aa_stamp();
+            }
+            "aa_soft" => self.style.aa_soft = v,
             "exposure" => self.exposure = v,
             // the lamp master is a presentation dim (direct via the emission
             // build, indirect via the probe-bank lerp — same frame, no rebake)

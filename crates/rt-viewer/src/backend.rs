@@ -30,7 +30,7 @@ pub struct TonePush {
     pub style2: [f32; 4], // palette mode, palette param, vignette, outline strength
     pub style3: [f32; 4], // grain size px, grain static flag, bloom strength, bloom threshold
     pub style4: [f32; 4], // shadow dither: strength, levels, luma threshold, dither world-phase y
-    pub style5: [f32; 4], // saturation, contrast, luma quantize levels, _
+    pub style5: [f32; 4], // saturation, contrast, luma quantize levels, contour soften
     pub style6: [f32; 4], // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
 }
 
@@ -64,6 +64,9 @@ pub struct FramePresent<'a> {
     /// CONTOUR COVERAGE AA weight (0 = off — no tap dispatch is issued and the
     /// image is byte-identical to the pre-AA renderer).
     pub aa: f32,
+    /// Contour-AA scope: 0 = every surface, 1/2 = the per-material opt-in bit
+    /// ([`crate::crack::AA_BIT`]) decides (cracked piers / the picked pier).
+    pub aa_scope: i32,
     pub debug: i32,
     // tonemap tunables (TonePush)
     pub exposure: f32,
@@ -249,7 +252,7 @@ pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, 
         style2: [style.palette, style.pal_p, style.vignette, style.outline],
         style3: [style.grain_sz, style.grain_static, style.bloom, style.bloom_th],
         style4: [style.sdither, style.sdither_n, style.sdither_th, dphase_y],
-        style5: [style.sat, style.contrast, style.lumaq, 0.0],
+        style5: [style.sat, style.contrast, style.lumaq, style.aa_soft],
         style6: [style.analog, style.analog_chroma, style.analog_tear, style.crt_mask],
     }
 }

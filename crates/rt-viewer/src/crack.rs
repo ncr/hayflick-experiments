@@ -22,7 +22,10 @@
 //! `CRACKS=age,cracks,depth,chip[,policy[,p1,p2,p3]]` stamps every pier
 //! uniformly at boot for headless SHOT verification (a shell-only env
 //! read, like LOOK/PROJ/LEVEL — see the config.rs exception list); policy
-//! by name or index, params defaulting per policy.
+//! by name or index, params defaulting per policy. `CRACK_SEL=<index>`
+//! preselects a segment, which is how the harness reaches anything the
+//! owner drives by clicking (the knob panel, the highlight, and since
+//! 2026-07-25 the contour-AA scope's "picked wall only" mode).
 
 use crate::gym_scene::Pier;
 use crate::viewer::Viewer;
@@ -34,6 +37,14 @@ pub const LABELS: [&str; 4] = ["age", "cracks", "depth", "chip"];
 
 /// Selection-highlight flag: `Material._pad` bit 3.
 pub const SEL_BIT: i32 = 8;
+
+/// `Material._pad` bit 7: this material's geometry OPTS INTO the contour AA
+/// (owner 2026-07-25: "I'd like the anti-aliasing applied selectively — only on
+/// the geometry of the chosen wall"). The shade pass suppresses the AA gate
+/// wherever the bit is clear, so the coverage taps and the softening both stay
+/// inside the scope; [`Viewer::aa_stamp`] owns the bit and re-derives it from
+/// the scope on every selection / knob / scope change.
+pub const AA_BIT: i32 = 128;
 
 /// A demo's boot weathering: uniform base knobs + a per-pier hash variance so
 /// the level reads varied the moment it opens. Plain data (demos.rs literals).
@@ -68,6 +79,9 @@ pub struct CrackLab {
     /// [`crate::crack_geom::signature`] of the geometry currently BUILT into
     /// the scene — `Viewer::crack_release` rebuilds when the knobs disagree.
     pub geo_sig: u64,
+    /// Each pier's CHALK CORE material (-1 = none): the groove floors live
+    /// there, so the per-pier AA scope has to stamp it too.
+    pub cores: Vec<i32>,
 }
 
 impl CrackLab {
@@ -143,11 +157,43 @@ pub fn stamp_all(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], sel: Opt
     }
 }
 
+/// Which piers opt into the contour AA at this scope: 1 = every CRACKED pier,
+/// 2 = the PICKED one only (the owner's per-wall A/B), 0 = the shader ignores
+/// the bit and AAs everything, anything else = nothing.
+fn aa_wants(lab: &CrackLab, i: usize, scope: i32) -> bool {
+    match scope {
+        1 => lab.knobs.get(i).is_some_and(|k| *k != [0.0; 4]),
+        2 => lab.sel == Some(i),
+        _ => false,
+    }
+}
+
+/// Stamp [`AA_BIT`] into the CPU scene for every pier (and its chalk core — the
+/// groove floors are the crack's darkest pixels, so a scope that missed them
+/// would AA the lips and leave the core hard). Returns the materials that
+/// actually changed, so a live caller can stream just those.
+pub fn stamp_aa(scene: &mut Scene, piers: &[Pier], lab: &CrackLab, scope: i32) -> Vec<(usize, i32)> {
+    let mut out = Vec::new();
+    for (i, pier) in piers.iter().enumerate() {
+        let on = aa_wants(lab, i, scope);
+        let core = lab.cores.get(i).copied().filter(|c| *c >= 0);
+        for mid in [Some(scene.primitives[pier.prim].material_id), core].into_iter().flatten() {
+            let m = mid as usize;
+            let pad = if on { scene.materials[m]._pad | AA_BIT } else { scene.materials[m]._pad & !AA_BIT };
+            if pad != scene.materials[m]._pad {
+                scene.materials[m]._pad = pad;
+                out.push((m, pad));
+            }
+        }
+    }
+    out
+}
+
 /// Resolve the crack state against a freshly built scene (boot and every
 /// `apply_look` rebuild): a seed keeps live-edited knobs when the pier count
 /// matches (look switches preserve the owner's dialing), else re-seeds; no
 /// seed clears the lab. Stamps the result into the scene pre-upload.
-pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scene: &mut Scene) {
+pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scene: &mut Scene, aa_scope: i32) {
     match seed {
         Some(s) => {
             if lab.knobs.len() != piers.len() || lab.policy.len() != piers.len() || lab.params.len() != piers.len() {
@@ -160,20 +206,25 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
                 ];
                 per[s.policy as usize] = s.params;
                 lab.params = vec![per; piers.len()];
-                lab.sel = None;
+                // CRACK_SEL=<pier index> preselects a segment for the headless
+                // harness (the owner picks by clicking; an agent cannot, and the
+                // selection now drives the AA scope as well as the panel).
+                lab.sel = std::env::var("CRACK_SEL").ok().and_then(|v| v.parse::<usize>().ok()).filter(|i| *i < piers.len());
                 lab.row = 0;
             }
             stamp_all(scene, piers, &lab.knobs, lab.sel);
             // structural faults + crazing become REAL geometry (crack_geom);
             // the built signature lets live knob drags rebuild only on change
             let par = lab.active_params();
-            crate::crack_geom::apply_geometry(scene, piers, &lab.knobs, &lab.policy, &par);
+            lab.cores = crate::crack_geom::apply_geometry(scene, piers, &lab.knobs, &lab.policy, &par);
             lab.geo_sig = crate::crack_geom::signature(scene, piers, &lab.knobs, &lab.policy, &par);
+            stamp_aa(scene, piers, lab, aa_scope); // the AA scope's opt-in bits
         }
         None => {
             lab.knobs.clear();
             lab.policy.clear();
             lab.params.clear();
+            lab.cores.clear();
             lab.sel = None;
             lab.geo_sig = 0;
         }
@@ -206,10 +257,22 @@ impl Viewer {
     /// currently BUILT, which only `crack_release`'s rebuild may change.
     pub fn crack_apply(&mut self, i: usize) {
         let mid = self.scene.primitives[self.piers[i].prim].material_id as usize;
-        let flags = self.scene.materials[mid]._pad & (7 | crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT);
+        let flags = self.scene.materials[mid]._pad & (7 | AA_BIT | crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT);
         let pad = flags | pad_bits(self.crack.knobs[i]) | if self.crack.sel == Some(i) { SEL_BIT } else { 0 };
         self.scene.materials[mid]._pad = pad;
         self.backend.set_material_pad(mid, pad);
+    }
+
+    /// Re-derive the contour-AA opt-in bit for every pier from the current
+    /// scope and push the changes to the backend's live material stream (no
+    /// rebuild, no rebake — visible next frame). Called on every pick, knob
+    /// edit and scope change; the boot/rebuild path stamps the same bits
+    /// through [`stamp_aa`].
+    pub fn aa_stamp(&mut self) {
+        let scope = self.aa_scope.round() as i32;
+        for (m, pad) in stamp_aa(&mut self.scene, &self.piers, &self.crack, scope) {
+            self.backend.set_material_pad(m, pad);
+        }
     }
 
     /// Slider released (or the pattern row clicked): if the drag changed the
@@ -250,6 +313,7 @@ impl Viewer {
         if let Some(n) = sel {
             self.crack_apply(n);
         }
+        self.aa_stamp(); // scope 2 follows the pick
     }
 
     /// Crack-lab world click: ray-pick the nearest wall pier under the
