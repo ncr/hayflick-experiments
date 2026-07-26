@@ -45,6 +45,7 @@ mod phys_scene;
 mod rebar;
 mod view;
 mod viewer;
+mod wall;
 mod wear;
 // Backend selected at compile time by target OS: Metal on Apple Silicon,
 // Vulkan everywhere else. The Vulkan path runs on the RTX box; the Metal path
