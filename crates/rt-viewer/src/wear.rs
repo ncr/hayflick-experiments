@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn the_gyms_runs_each_get_their_own_story() {
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         assert_eq!(stamp_story(&mut scene, &meta.piers), meta.piers.len());
         // group the piers by their authored run rect, then by the stamped key
         let mut runs: Vec<([i32; 4], f32)> = Vec::new();

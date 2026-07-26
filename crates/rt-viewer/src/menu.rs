@@ -64,10 +64,6 @@ pub const MENU: &[MenuItem] = &[
     // whole-block detail (smash rubble) in or out of the AA — a visual call
     MenuItem { key: "aa_chunky", label: "aa rubble", kind: ItemKind::Toggle },
     // GLAZE EASE (owner catalogue 2026-07-25): the chamfer on every exposed
-    // arris of the greybox, 1 = the authored 3-px facet. It is GEOMETRY, so a
-    // step rebuilds the scene and rebakes the probes (seconds on the M2) —
-    // hence a 4-step scale rather than a smooth slider.
-    MenuItem { key: "arris", label: "glaze ease", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.25 } },
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
@@ -384,7 +380,6 @@ impl Viewer {
             "aa_scope" => self.aa_scope,
             "aa_soft" => self.style.aa_soft,
             "aa_chunky" => self.aa_chunky,
-            "arris" => self.arris,
             "exposure" => self.exposure,
             "lights" => (self.lights_dim > 0.0) as i32 as f32,
             "light_anim" => self.light_anim as i32 as f32,
@@ -443,7 +438,6 @@ impl Viewer {
             // single drag: the dial takes the value now and the rebuild waits
             // for the mouse RELEASE, exactly like the crack knobs
             // (`crack_release`). Keyboard steps release immediately.
-            "arris" => self.arris = v,
             "exposure" => self.exposure = v,
             // the lamp master is a presentation dim (direct via the emission
             // build, indirect via the probe-bank lerp — same frame, no rebake)
@@ -946,22 +940,6 @@ mod tests {
         assert_eq!(SPALL_ROW, crate::crack::LABELS.len(), "spall sits directly under the packed knobs");
     }
 
-    /// The GLAZE EASE is a visual decision the owner makes by eye, so it needs a
-    /// row (menu-first rule) — and the row has to REACH both ends: 0 is the A/B
-    /// "sharp boxes" state and 1 the look's authored 3-px facet. It steps in
-    /// quarters rather than sliding because each step rebuilds the scene and
-    /// rebakes the probes (~3 s on the M2), which a smooth drag would do per
-    /// pixel of travel.
-    #[test]
-    fn the_glaze_ease_row_reaches_both_ends_in_whole_steps() {
-        let row = MENU.iter().find(|i| i.key == "arris").expect("the glaze ease needs a menu row");
-        let ItemKind::Slider { min, max, step } = row.kind else { panic!("a scale, not a toggle") };
-        assert_eq!((min, max), (0.0, 1.0), "the row must reach the sharp end and the authored end");
-        assert!(step >= 0.25 && ((max - min) / step).fract() == 0.0, "whole steps landing on both ends: {step}");
-        for look in crate::look::LOOKS {
-            assert!((min..=max).contains(&look.arris), "{}: authored arris {} is off the row", look.name, look.arris);
-        }
-    }
 
     /// The menu-first rule (docs/VISION.md): a look CHOICE needs a menu row.
     /// With the DUSK sibling LOOKS is >1, so the row is mandatory and its

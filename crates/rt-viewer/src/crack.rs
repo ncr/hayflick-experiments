@@ -614,26 +614,6 @@ impl Viewer {
     /// built geometry — which faults exist, the craze bucket, the policy,
     /// its native params — rebuild the scene so the aging opens in place.
     /// Dial-within-a-bucket knob drags stay live-material cheap.
-    ///
-    /// The rebuild takes the LOCAL probe path: a drag re-generates ONE pier's
-    /// boxes inside that pier's own AABB (`crack_geom` pins that containment),
-    /// so every other probe in the level is still exactly right and only the
-    /// dirty piers' neighbourhoods need re-baking — 6.6 s → 3.3 s on this M2
-    /// (16 % of the probes; the refresh is latency-bound, not probe-bound, see
-    /// `rt_probe::gpu_scene::LOCAL_REFRESH_MAX_FRACTION`). `PROBE_LOCAL=0`
-    /// forces the full rebake — the A/B that shows the local refresh leaves no
-    /// stale probe.
-    /// Mouse released: settle whatever a drag left pending. The GLAZE EASE is
-    /// level-wide geometry (3-5 s of full rebake), so its row only takes the
-    /// value while dragging — the rebuild happens here, once, like the crack
-    /// knobs' own signature check below.
-    pub fn ease_release(&mut self) {
-        if (self.arris - self.arris_built).abs() > 1e-4 {
-            self.arris_built = self.arris;
-            self.apply_look(self.look);
-        }
-    }
-
     pub fn crack_release(&mut self) {
         self.crack_rebuild(false);
     }
@@ -970,7 +950,7 @@ mod tests {
     #[test]
     fn the_spall_dial_is_a_ceiling_so_zero_is_off_and_the_demo_boots_with_clean_walls() {
         let spec = house_game::gym::sim::gym_level();
-        let (_scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+        let (_scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         let boot = demo_seed();
         let dials = seed_spall(&meta.piers, &boot);
         assert_eq!(dials.len(), 15, "the crack lab's gym is 15 piers");
@@ -1003,11 +983,11 @@ mod tests {
         assert!(!boot.pristine.is_empty(), "the crack lab must ship a control wall");
         // (built inside the closure: `apply_geometry` mutates the scene)
         let build = |seed: Option<CrackSeed>| {
-            let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+            let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
             let mut lab = CrackLab::default();
             resolve(seed, &mut lab, &meta.piers, &mut scene, 1);
             let marks: Vec<i32> = meta.piers.iter().map(|p| scene.materials[scene.primitives[p.prim].material_id as usize]._pad).collect();
-            // the pier's own geometry, verbatim — the eased-arris pass already
+            // the pier's own geometry, verbatim — the geometry pass already
             // turned every static box into a mesh, so "unchanged" is measured
             // against the UN-AGED build, not against a 24-vertex box
             let geom: Vec<Vec<[f32; 3]>> = meta
@@ -1096,7 +1076,7 @@ mod tests {
         let steps: Vec<(u64, usize)> = (0..=15)
             .map(|k| {
                 let t = k as f32 / 15.0;
-                let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+                let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
                 let i = pier_index_at(&meta.piers, x, z).expect("the ramp point names a wall");
                 let n = meta.piers.len();
                 let (kn, sp) = ramp_knobs(t);
@@ -1146,7 +1126,7 @@ mod catalogue_tests {
     #[test]
     fn every_specimen_names_its_own_wall_and_its_own_run() {
         let spec = house_game::gym::sim::catalogue_level();
-        let (_scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 0.0);
+        let (_scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         let s = cat_seed();
         assert_eq!(s.specimens.len(), 15, "three rows of five");
         let mut seen: Vec<usize> = Vec::new();
@@ -1174,7 +1154,7 @@ mod catalogue_tests {
     #[test]
     fn paint_only_leaves_no_geometry_and_the_veto_leaves_no_fault() {
         let spec = house_game::gym::sim::catalogue_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 0.0);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         let mut lab = CrackLab::default();
         let prims = scene.primitives.len();
         resolve(Some(cat_seed()), &mut lab, &meta.piers, &mut scene, 1);

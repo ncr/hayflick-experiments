@@ -209,8 +209,11 @@ from `vulkan_backend.rs` (never compiled on macOS — cfg-gated). Facts
 worth keeping: ShadePush 256 B IS accepted by the device; the full 2048-ray
 bake takes ~115 ms (vs seconds on the M2); `LOOK_SWITCH=polana` is
 BYTE-IDENTICAL to a direct boot; and the Vulkan/RTX cross-run noise floor
-is ZERO (unlike Metal's ~1-LSB floor — byte-diffing across process runs is
-valid here). **BLIND VULKAN (2026-07-25):** the contour-AA work — `shade.comp`'s edge
+was measured ZERO over the runs taken that session (Metal's is NOT ~1 LSB end
+to end — see the 2026-07-26 learning: the M2 bake is BIMODAL, two stable
+outcomes 72/255 apart at a hard shadow edge, so a byte-diff claim on either
+backend needs >= 4 runs of each side, all-pairs diffed, before it means
+anything). **BLIND VULKAN (2026-07-25):** the contour-AA work — `shade.comp`'s edge
 distance / gate / tap offsets, `tonemap.comp`'s two divides, and
 `vulkan_backend.rs`'s five extra dispatches with a memory barrier between each
 — is unverified on hardware. The GLSL type-checks here (rt-probe's build.rs

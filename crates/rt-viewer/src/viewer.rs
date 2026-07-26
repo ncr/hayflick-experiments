@@ -92,18 +92,6 @@ pub struct Viewer {
     /// Materials of the CHUNKY detail in the current build (rubble), refreshed
     /// with the scene — `aa_stamp` scopes them by [`Self::aa_chunky`].
     pub aa_chunky_mats: Vec<i32>,
-    /// GLAZE EASE scale (look-authored, `ARRIS` env overrides): how big a
-    /// chamfer every exposed arris of a static greybox box carries
-    /// (`crate::wear_geom`). Unlike every other row here it is GEOMETRY — the
-    /// ESC row rebuilds the scene and rebakes the probes, so it steps in
-    /// quarters rather than sliding. Deliberately NOT re-resolved from the look
-    /// on a rebuild (unlike `aa`/`exposure`/…): the rebuild is what the row
-    /// itself triggers, so re-reading the look there would throw the owner's
-    /// choice away between the click and the frame.
-    pub arris: f32,
-    /// The glaze-ease value the CURRENT geometry was built with — a drag
-    /// moves `arris` live and the mouse release rebuilds only if they differ.
-    pub arris_built: f32,
     pub ao: f32,
     pub ao_r: f32,
     pub ao_n: i32,
@@ -260,8 +248,7 @@ impl Viewer {
             Some(d) => crate::look::by_name(d.look).unwrap_or_else(crate::look::from_env),
             None => crate::look::from_env(),
         };
-        let arris = cfg.render.arris.unwrap_or(look.arris);
-        let (mut scene, gym_meta) = crate::gym_scene::build_gym(&spec, look, roof, arris);
+        let (mut scene, gym_meta) = crate::gym_scene::build_gym(&spec, look, roof);
         // Wall-smash demo (phase 3): arm the rig + author the brick runs into
         // the scene BEFORE the backend consumes it. The rig owns the phys/{i}
         // namespace, so the PHYS=1 free-standing demo stands down.
@@ -335,8 +322,6 @@ impl Viewer {
             aa_scope: cfg.render.aa_scope as f32,
             aa_chunky: if cfg.render.aa_chunky { 1.0 } else { 0.0 },
             aa_chunky_mats: chunky_mats,
-            arris,
-            arris_built: arris,
             ao: cfg.render.ao,
             ao_r: cfg.render.ao_r,
             ao_n: cfg.render.ao_n,
@@ -470,8 +455,7 @@ impl Viewer {
     /// identical host work, half the wall clock (see `Viewer::crack_release`).
     pub(crate) fn rebuild_in_look(&mut self, look: &'static crate::look::Look, refresh: ProbeRefresh) {
         let t0 = std::time::Instant::now();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&self.gym.spec, look, true, self.arris);
-        self.arris_built = self.arris; // this build IS the glaze ease now on screen
+        let (mut scene, meta) = crate::gym_scene::build_gym(&self.gym.spec, look, true);
         // re-arm the wall-smash rig against the FRESH meta (prim indices may
         // shift with the look) + re-author its brick runs; a fired smash
         // resets to the standing wall — same one-shot rule as the roof tear

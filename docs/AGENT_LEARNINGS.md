@@ -953,3 +953,48 @@ taught.
   survives there only on rust-against-chalk contrast. 0.036 was picked as
   the thinnest section that clears a texel on the WORST axis; when a
   candidate is judged by eye, shoot the axis the projection foreshortens.
+
+## 2026-07-26 — the Metal probe bake is BIMODAL, and two samples cannot see it
+
+Verifying a deletion that should have been byte-neutral, a 1500×950 catalogue
+frame came out 12 px different at max delta 72 — three low-res texels, two of
+them swapping a lit grass texel for a shadowed one. Bisected by stash to a
+commit that contained nothing but renames (`_pad |= 1` → `_pad |= flags::OCCLUDER`
+and friends, every substitution value-identical). A commit that cannot change a
+material byte had apparently moved pixels.
+
+It had not. Six FRESH bakes of the identical scene from the identical binary
+split into two groups — 1-4 agree, 5-6 agree, and the two groups differ by
+exactly those 12 px at exactly max 72. The bake has (at least) two stable
+outcomes on the M2, and which one you get is decided by something outside the
+scene: **the same binary rendering the same frame is bit-stable within a mode
+and 72/255 apart between modes.**
+
+Why it is 72 and not 1: the differing texels sit on a HARD SHADOW BOUNDARY. A
+sub-LSB difference in one probe's irradiance moves the boundary by one texel, and
+one texel of boundary is the full contrast between lit meadow and its shadow.
+The amplification is the shadow, not the noise.
+
+What this breaks, and it is the important part: **the verification method used
+throughout this session.** "Render before, render after, diff, 0 px above the
+floor" is only sound if the floor was measured with enough samples to contain the
+mode split — and the floor measurements taken here (two runs, cached; two runs,
+fresh) both landed inside ONE mode and reported a floor of 0 px / max 3. Two
+consecutive runs agreeing proves nothing about a bimodal source. The first
+attribution off that evidence was wrong, and it was wrong in the most expensive
+direction: it accused a correct commit.
+
+Rules that follow:
+
+- **A Metal "byte-identical" claim needs ≥ 4 runs of EACH side**, all-pairs
+  diffed, and the floor is the max over all pairs — not the delta between one
+  pair. Anything under that cannot distinguish "my change" from "the other mode".
+- **Suspect the amplifier, not the size.** A max delta of 70+ on a handful of
+  texels beside a shadow edge is the signature of a tiny difference upstream, not
+  of a large one. A large real change moves regions, not three texels.
+- CLAUDE.md's "Metal's ~1-LSB cross-run noise floor" is true of the RADIANCE
+  pass and false of the pipeline end to end once a hard shadow is in frame. The
+  Vulkan/RTX floor is recorded as ZERO; that claim now also needs ≥ 4 samples
+  before it can be relied on for a byte diff.
+- The probe CACHE is not the culprit and was cleared of it explicitly: cached
+  and fresh bakes of the same scene agree exactly, within a mode.

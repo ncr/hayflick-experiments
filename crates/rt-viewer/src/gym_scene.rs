@@ -28,11 +28,6 @@
 //! sheen stays on porcelain and glass only — grass never shines.
 //!
 //! Since 2026-07-25 every wall pier and roof cap is emitted through the
-//! box→mesh promoter [`crate::wear_geom::ease_box`]: its EXPOSED arrises
-//! carry a ~3-px chamfer, so the boxes read as thick glazed ceramic instead
-//! of paper cutouts (`arris` / the ESC "glaze ease" row; 0 rebuilds the
-//! plain boxes byte for byte). Which arrises are exposed is a fact about
-//! the LEVEL, so it is derived here and nowhere else — see [`end_kind`].
 //!
 //! NEE discipline: the ONLY named lights are the spec lamps (conceptual point
 //! lights). Every emissive box (lamp fixtures) is part of a dynamic run,
@@ -123,9 +118,7 @@ pub fn cell_world(p: CellPos) -> Vec3 {
     Vec3::new(p.x as f32 + 0.5, FLOOR_TOP, p.z as f32 + 0.5)
 }
 
-/// Build the renderable greybox for the gym in the given look. `arris` scales
-/// the glaze ease on every exposed arris (`crate::wear_geom`; 0 = the plain
-/// boxes, 1 = the look's authored 3-px facet). `roof` gates the
+/// Build the renderable greybox for the gym in the given look. `roof` gates the
 /// building's roof caps — the dynamic-GI spike tears the roof off at runtime
 /// (rebuild with `roof=false` + re-bake) to flood the interior with light.
 /// Stage-2 tear-off targets, returned alongside the built gym: the roof
@@ -163,36 +156,12 @@ impl GymMeta {
 
 /// One merged wall RUN before it is cut into piers: its world rect, which axis
 /// it spans, and whether it is a building facade (windows). Collected up front
-/// because the eased-arris pass has to know WHICH RUNS MEET — a run end that
-/// another run's slab occupies is not an exposed arris (see [`end_kind`]).
+/// collected up front because a slab needs to know which other slabs it meets.
 struct WallRun {
     rect: [f32; 4],
     along_x: bool,
     windows: bool,
 }
-
-/// What the level put at one end of a wall run — the causal classification the
-/// glaze ease keys off (`wear_geom`), derived from the run rects alone.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum RunEnd {
-    /// A free end, a doorway jamb, or a junction corner this run OWNS: a real
-    /// exposed arris, and it gets the chamfer.
-    Open,
-    /// Buried inside another run's slab (a T-junction): there is no arris here.
-    Buried,
-    /// The other run at this junction owns the corner. Pull this slab this far
-    /// out of the shared column, or it fills the owner's chamfer back in and
-    /// the building's outside corner stays sharp. What is given up is entirely
-    /// inside the owner's slab, so the rendered union does not change.
-    Yield(f32),
-}
-
-/// Author-lattice step along each ground axis (`Projection::clean_xz` for the
-/// game projection: 1/10 wu on X, 1/20 on Z). A yielded run end stops ONE step
-/// short of the owner's far face, so its end plane lands strictly inside the
-/// owner instead of coplanar with the owner's own inner face — the 2026-07-12
-/// coplanar-strobe rule, applied to a face nobody can see either way.
-const LATTICE: [f32; 2] = [0.1, 0.05];
 
 /// Collect the merged wall runs. Runs split where BUILDING-ness changes: window
 /// slots go only on walls bounding a Room (the building facade); freestanding
@@ -238,50 +207,7 @@ fn wall_runs(g: &Grid) -> Vec<WallRun> {
 
 /// Classify one end of run `i` against every other run's slab.
 ///
-/// The gym's building corners are TWO OVERLAPPING slabs sharing a 0.2 × 0.2
-/// column (the south run spans x 2.9..8.1 while the west run spans z 2.9..8.1),
-/// which is the 2026-07-12 coplanar class waiting to happen: chamfer both and
-/// the two 45° facets are the SAME plane and ray-z-fight; chamfer neither and
-/// the building's most visible corner stays sharp. So one run OWNS each shared
-/// corner (X-runs win — an arbitrary but deterministic tie-break) and the other
-/// yields the column.
-fn end_kind(runs: &[WallRun], i: usize, hi: bool) -> RunEnd {
-    const EPS: f32 = 1e-4;
-    let r = &runs[i];
-    let ax = r.along_x;
-    let a = r.rect[if ax { 0 } else { 1 } + if hi { 2 } else { 0 }];
-    let mut out = RunEnd::Open;
-    for (j, o) in runs.iter().enumerate() {
-        if j == i {
-            continue;
-        }
-        let lo = [r.rect[0].max(o.rect[0]), r.rect[1].max(o.rect[1])];
-        let up = [r.rect[2].min(o.rect[2]), r.rect[3].min(o.rect[3])];
-        if lo[0] > up[0] - EPS || lo[1] > up[1] - EPS {
-            continue; // the slabs do not share volume at all
-        }
-        let (olo, ohi) = if ax { (lo[0], up[0]) } else { (lo[1], up[1]) };
-        if (a - olo).abs() > EPS && (a - ohi).abs() > EPS {
-            continue; // they overlap, but not at THIS end (a window reveal never gets here)
-        }
-        // the end FACE strictly inside the other run's span = a T-junction
-        let (slo, shi) = if ax { (o.rect[0], o.rect[2]) } else { (o.rect[1], o.rect[3]) };
-        if a > slo + EPS && a < shi - EPS {
-            return RunEnd::Buried;
-        }
-        let mine = (r.along_x, r.rect[0], r.rect[1]);
-        let theirs = (o.along_x, o.rect[0], o.rect[1]);
-        if mine < theirs {
-            // deterministic owner: X-runs first, then the lower rect
-            let step = LATTICE[if ax { 0 } else { 1 }];
-            let give = (ohi - olo - step).max(0.0);
-            out = RunEnd::Yield(give);
-        }
-    }
-    out
-}
-
-pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool, arris: f32) -> (Scene, GymMeta) {
+pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
     let mut scene = Scene::new();
     let g = &spec.grid;
     let (w, h) = (g.w, g.h);
@@ -321,13 +247,10 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool, arris: f32) -> (Scene
 
     // ---- walls: merge consecutive wall edges along each boundary line, then
     // cut each run into piers. The runs are collected FIRST so every slab
-    // knows which other slabs it meets (the eased arris needs it, and it is
+    // knows which other slabs it meets (it is
     // the only geometric fact the level's two loops otherwise throw away).
-    let runs = wall_runs(g);
-    let (ec, et) = crate::wear_geom::sizes(arris);
-    for (i, r) in runs.iter().enumerate() {
-        let ends = (end_kind(&runs, i, false), end_kind(&runs, i, true));
-        wall_slab(&mut scene, &mut piers, r, ends, look, ec, et);
+    for r in &wall_runs(g) {
+        wall_slab(&mut scene, &mut piers, r, look);
     }
 
     // ---- roof: an occluding cap over every Room cell (merged per row).
@@ -355,7 +278,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool, arris: f32) -> (Scene
             }
         }
         for (i, c) in caps.iter().enumerate() {
-            roof_run(&mut scene, c, &caps, i, look, ec, et);
+            roof_run(&mut scene, c, &caps, i, look);
         }
     }
     let roof_prims = roof_first..scene.primitives.len();
@@ -426,7 +349,7 @@ fn floor_key(g: &Grid, p: CellPos, look: &Look) -> (u32, bool) {
 /// split doesn't shift it; on the gym building (cells 3..=7) that gives two
 /// symmetric windows per facade and one flanking each side of the doorway.
 /// `along_x` says which axis the run spans.
-fn wall_slab(scene: &mut Scene, piers: &mut Vec<Pier>, run: &WallRun, ends: (RunEnd, RunEnd), look: &Look, ec: f32, et: f32) {
+fn wall_slab(scene: &mut Scene, piers: &mut Vec<Pier>, run: &WallRun, look: &Look) {
     let (rect, along_x, windows) = (run.rect, run.along_x, run.windows);
     let wc = hex_linear(look.wall);
     let (a0, a1) = if along_x { (rect[0], rect[2]) } else { (rect[1], rect[3]) };
@@ -461,37 +384,7 @@ fn wall_slab(scene: &mut Scene, piers: &mut Vec<Pier>, run: &WallRun, ends: (Run
         } else {
             (Vec3::new(rect[0], 0.0, s), Vec3::new(rect[2], WALL_TOP, e))
         };
-        // GLAZE EASE (wear_geom): a pier end is an exposed arris when it is a
-        // window reveal or a doorway jamb (mid ± 0.2 — always real) and, at the
-        // run's own ends, only when no other slab owns that column. A YIELDED
-        // end pulls the emitted box out of the shared column; the Pier record
-        // keeps the authored rect, because the sim, the pick ray, the smash rig
-        // and the crack lab all address the wall the LEVEL authored. The yield
-        // is gated on the ease itself: with the dial at zero there is no
-        // chamfer to keep open and the gym stays exactly the geometry it was
-        // before this pass existed (an A/B that moves those corner columns
-        // moves the GI by 1 LSB, which is not a byte-identical baseline).
-        let end = |kind: RunEnd, at_run_end: bool| match (at_run_end, kind) {
-            (false, _) => (true, 0.0),
-            (true, RunEnd::Open) => (true, 0.0),
-            (true, RunEnd::Buried) => (false, 0.0),
-            (true, RunEnd::Yield(d)) => (false, if ec > 1e-5 { d } else { 0.0 }),
-        };
-        let (lo_open, lo_give) = end(ends.0, s == a0);
-        let (hi_open, hi_give) = end(ends.1, e == a1);
-        let give = 0.4 * if along_x { hi.x - lo.x } else { hi.z - lo.z }; // never eat a whole pier
-        let (mut bl, mut bh) = (lo, hi);
-        if along_x {
-            bl.x += lo_give.min(give);
-            bh.x -= hi_give.min(give);
-        } else {
-            bl.z += lo_give.min(give);
-            bh.z -= hi_give.min(give);
-        }
-        let mut side = [true; 4];
-        side[if along_x { 3 } else { 0 }] = lo_open;
-        side[if along_x { 1 } else { 2 }] = hi_open;
-        crate::wear_geom::ease_box(scene, bl, bh, wc, 0.85, crate::wear_geom::Ease { side, c: ec, t: et });
+        scene.add_box_world(lo, hi, wc, [0.0; 4], 0.85, 0.0);
         mark_occluder(scene, first);
         piers.push(Pier { prim: first, lo, hi, run_lo, run_hi });
         s = stop.map_or(a1, |m| m + 0.2);
@@ -567,7 +460,7 @@ fn grass_dress(scene: &mut Scene, spec: &GymLevel, greens: [u32; 3]) {
 /// (the WALLCUT must take it) with the whole visible band above the cutaway.
 /// `caps`/`i` are the whole cap set and this cap's place in it: the parapet's
 /// glaze ease has to stop at a row seam (see below).
-fn roof_run(scene: &mut Scene, c: &[f32; 4], caps: &[[f32; 4]], i: usize, look: &Look, ec: f32, et: f32) {
+fn roof_run(scene: &mut Scene, c: &[f32; 4], caps: &[[f32; 4]], i: usize, look: &Look) {
     let first = scene.primitives.len();
     // The parapet is an ARRIS only where the roof stops. A cap is one Room ROW,
     // so its side toward a neighbouring row is an interior seam: easing it would
@@ -577,7 +470,7 @@ fn roof_run(scene: &mut Scene, c: &[f32; 4], caps: &[[f32; 4]], i: usize, look: 
     for (s, m) in [(0usize, [(c[0] + c[2]) * 0.5, c[1] - 0.01]), (1, [c[2] + 0.01, (c[1] + c[3]) * 0.5]), (2, [(c[0] + c[2]) * 0.5, c[3] + 0.01]), (3, [c[0] - 0.01, (c[1] + c[3]) * 0.5])] {
         side[s] = !caps.iter().enumerate().any(|(j, o)| j != i && m[0] > o[0] && m[0] < o[2] && m[1] > o[1] && m[1] < o[3]);
     }
-    crate::wear_geom::ease_box(scene, Vec3::new(c[0], ROOF_BASE, c[1]), Vec3::new(c[2], ROOF_TOP, c[3]), hex_linear(look.roof), 0.85, crate::wear_geom::Ease { side, c: ec, t: et });
+    scene.add_box_world(Vec3::new(c[0], ROOF_BASE, c[1]), Vec3::new(c[2], ROOF_TOP, c[3]), hex_linear(look.roof), [0.0; 4], 0.85, 0.0);
     mark_occluder(scene, first);
 }
 
@@ -642,72 +535,19 @@ mod tests {
     use crate::look::LOOKS;
     use house_game::gym::sim::gym_level;
 
-    /// THE COPLANAR TRAP, pinned on the real level. The building's corners are
-    /// two overlapping slabs sharing a 0.2 × 0.2 column: chamfer both and the
-    /// two 45° facets are the SAME plane (the 2026-07-12 strobe class), chamfer
-    /// neither and the building's most visible arris stays sharp. So at every
-    /// junction exactly ONE run must come out Open — and the other must yield
-    /// MORE than the chamfer is deep, or its slab fills the owner's facet back
-    /// in and the whole exercise renders nothing.
-    #[test]
-    fn every_wall_junction_is_owned_by_exactly_one_run() {
-        let runs = wall_runs(&gym_level().grid);
-        let (ec, _) = crate::wear_geom::sizes(1.0);
-        let kinds: Vec<(RunEnd, RunEnd)> = (0..runs.len()).map(|i| (end_kind(&runs, i, false), end_kind(&runs, i, true))).collect();
-        let mut junctions = 0;
-        for (i, r) in runs.iter().enumerate() {
-            for (j, o) in runs.iter().enumerate().skip(i + 1) {
-                let lo = [r.rect[0].max(o.rect[0]), r.rect[1].max(o.rect[1])];
-                let up = [r.rect[2].min(o.rect[2]), r.rect[3].min(o.rect[3])];
-                if lo[0] >= up[0] || lo[1] >= up[1] {
-                    continue;
-                }
-                junctions += 1;
-                // which end of each run is in the shared column
-                let at = |k: usize, r: &WallRun| {
-                    let a = if r.along_x { r.rect[0] } else { r.rect[1] };
-                    let (c0, c1) = if r.along_x { (lo[0], up[0]) } else { (lo[1], up[1]) };
-                    if (a - c0).abs() < 1e-4 || (a - c1).abs() < 1e-4 { kinds[k].0 } else { kinds[k].1 }
-                };
-                let (ka, kb) = (at(i, r), at(j, o));
-                let owned = [ka, kb].iter().filter(|k| **k == RunEnd::Open).count();
-                assert_eq!(owned, 1, "junction {i}/{j}: {ka:?} vs {kb:?} — exactly one run may own a shared corner");
-                for k in [ka, kb] {
-                    if let RunEnd::Yield(d) = k {
-                        assert!(d > ec, "a yielded end must clear the owner's {ec}-wu facet, not fill it: {d}");
-                        assert!(d < 0.2, "…and must not retreat out of the junction: {d}");
-                    }
-                }
-            }
-        }
-        assert_eq!(junctions, 4, "the gym building has four corners — if this changes, re-read the classification");
-    }
 
-    /// A run that DIES INTO the middle of another (a T-junction) has no arris
-    /// there at all — it must come out `Buried`, not owned and not yielding.
-    /// The gym has none, so the arm is exercised on a synthetic pair; without
-    /// it the classifier's burial branch would be dead code.
+    /// THE GREYBOX IS BOXES. Every wall, roof cap and lamp is a 24-vertex box
+    /// and every floor a quad, and a pier's mesh is EXACTLY the box the level
+    /// authored — the crack lab, the pick ray, the smash rig and the local
+    /// probe refresh all address `Pier.lo/hi`, so a pass that grew geometry
+    /// past it (the eased-arris promoter did, by design, at its junctions)
+    /// would quietly break the refresh's containment argument. Kept as a
+    /// standing invariant after that promoter was deleted, because the next
+    /// box→mesh pass will want exactly this assertion pointed at it.
     #[test]
-    fn a_run_ending_inside_another_slab_has_no_arris() {
-        let runs = vec![
-            WallRun { rect: [0.0, -0.1, 6.0, 0.1], along_x: true, windows: false },
-            WallRun { rect: [2.9, 0.0, 3.1, 5.0], along_x: false, windows: false },
-        ];
-        assert_eq!(end_kind(&runs, 1, false), RunEnd::Buried, "the stem's foot is inside the crossbar");
-        assert_eq!(end_kind(&runs, 1, true), RunEnd::Open, "…its free end is not");
-        assert_eq!(end_kind(&runs, 0, false), RunEnd::Open, "the crossbar's own ends are untouched");
-        assert_eq!(end_kind(&runs, 0, true), RunEnd::Open);
-    }
-
-    /// The dial's zero is the LEVEL AS IT WAS: every greybox box is a box again
-    /// (24 vertices), and no slab is trimmed at a junction. This is what makes
-    /// the before/after A/B a byte comparison rather than an approximation —
-    /// and it is worth a test because the yield is decided by the level's
-    /// geometry, which does not know about the dial.
-    #[test]
-    fn the_dial_at_zero_leaves_the_greybox_exactly_as_it_was() {
+    fn the_greybox_is_boxes_and_every_pier_mesh_is_its_authored_box() {
         let spec = gym_level();
-        let (scene, meta) = build_gym(&spec, &crate::look::POLANA, true, 0.0);
+        let (scene, meta) = build_gym(&spec, &crate::look::POLANA, true);
         for p in &scene.primitives {
             assert!(p.vertex_count == 24 || p.vertex_count == 4, "a sharp gym is boxes and floor quads only, not a {}-vertex mesh", p.vertex_count);
         }
@@ -722,36 +562,6 @@ mod tests {
         }
     }
 
-    /// At the shipped dial every wall pier is a facetted mesh that stays INSIDE
-    /// the box the level authored — the crack lab, the pick ray, the smash rig
-    /// and the local probe refresh all address `Pier.lo/hi`, so geometry that
-    /// grew past it would quietly break the refresh's containment argument. The
-    /// junction slabs additionally have to have MOVED (the yield), or the
-    /// coplanar guard above is passing on geometry nobody built.
-    #[test]
-    fn the_eased_gym_stays_inside_the_boxes_the_level_authored() {
-        let spec = gym_level();
-        let (scene, meta) = build_gym(&spec, &crate::look::POLANA, true, 1.0);
-        let mut trimmed = 0;
-        let mut eased = 0;
-        for pier in &meta.piers {
-            let pr = scene.primitives[pier.prim];
-            let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
-            for i in 0..pr.vertex_count {
-                let v = Vec3::from(scene.vertices[(pr.vertex_offset + i) as usize].pos);
-                assert!(v.cmpge(pier.lo - 1e-4).all() && v.cmple(pier.hi + 1e-4).all(), "vertex {v:?} outside pier {:?}..{:?}", pier.lo, pier.hi);
-                (lo, hi) = (lo.min(v), hi.max(v));
-            }
-            if pr.vertex_count > 24 {
-                eased += 1;
-            }
-            if (lo - pier.lo).length() > 1e-4 || (hi - pier.hi).length() > 1e-4 {
-                trimmed += 1;
-            }
-        }
-        assert_eq!(eased, meta.piers.len(), "every pier of the gym is eased");
-        assert_eq!(trimmed, 4, "the four yielding junction slabs — one per building corner");
-    }
 
     /// EVERY look preset produces the five player runs the loop patches —
     /// and keeps the NEE discipline (the only named lights are the spec
@@ -760,7 +570,7 @@ mod tests {
     fn every_look_registers_the_player_runs_and_lamps_only() {
         for look in LOOKS {
             let spec = gym_level();
-            let (scene, _) = build_gym(&spec, look, true, 1.0);
+            let (scene, _) = build_gym(&spec, look, true);
             for name in ["player", "player/legL", "player/legR", "player/armL", "player/armR"] {
                 assert!(scene.dynamics.iter().any(|(n, ..)| n == name), "{}: missing run {name}", look.name);
             }
@@ -778,8 +588,7 @@ mod tests {
         for look in LOOKS {
             let mut scene = Scene::new();
             let cap = [0.0, 0.0, 4.0, 1.0];
-            let (ec, et) = crate::wear_geom::sizes(1.0);
-            roof_run(&mut scene, &cap, std::slice::from_ref(&cap), 0, look, ec, et);
+            roof_run(&mut scene, &cap, std::slice::from_ref(&cap), 0, look);
             for p in 0..scene.primitives.len() {
                 let prim = scene.primitives[p];
                 let base = (0..prim.vertex_count).map(|i| scene.vertices[(prim.vertex_offset + i) as usize].pos[1]).fold(f32::INFINITY, f32::min);
@@ -796,7 +605,7 @@ mod tests {
     #[test]
     fn east_facade_middle_pier_is_the_smash_target() {
         let spec = gym_level();
-        let (scene, meta) = build_gym(&spec, &crate::look::DUSK, true, 1.0);
+        let (scene, meta) = build_gym(&spec, &crate::look::DUSK, true);
         let pier = meta.pier_at(Vec3::new(8.0, 1.0, 5.5)).expect("breach point must land in a pier");
         assert_eq!((pier.lo.x, pier.hi.x), (7.9, 8.1), "0.2-wu slab on the x=8 boundary");
         assert_eq!((pier.lo.y, pier.hi.y), (0.0, WALL_TOP), "full height");

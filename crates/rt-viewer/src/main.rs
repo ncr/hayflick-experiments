@@ -46,7 +46,6 @@ mod rebar;
 mod view;
 mod viewer;
 mod wear;
-mod wear_geom;
 // Backend selected at compile time by target OS: Metal on Apple Silicon,
 // Vulkan everywhere else. The Vulkan path runs on the RTX box; the Metal path
 // runs on the M2 Pro.
@@ -201,7 +200,6 @@ impl ApplicationHandler for App {
                     } else {
                         r.menu.drag = false;
                         r.crack_release(); // knob drag ended: faults may need real geometry
-                        r.ease_release(); // glaze-ease drag ended: level-wide geometry
                     }
                 }
             }

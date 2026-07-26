@@ -2857,10 +2857,10 @@ mod tests {
         // GPU-facing buffers), and building it is cheap next to what this pass
         // then does to it.
         for dial in [0.2f32, 0.5, 1.0] {
-            let (probe, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+            let (probe, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
             drop(probe);
             for (pi, pier) in meta.piers.iter().enumerate() {
-                let (mut sc, _) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+                let (mut sc, _) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
                 crate::wear::stamp_story(&mut sc, &meta.piers);
                 let knobs = [[0.8, 0.6, 0.5, 0.2]];
                 crate::crack::stamp_all(&mut sc, std::slice::from_ref(pier), &knobs, None);
@@ -2895,7 +2895,7 @@ mod tests {
     #[test]
     fn a_walls_two_faces_never_spall_through_each_other() {
         let spec = house_game::gym::sim::gym_level();
-        let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+        let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         let (mut checked, mut deep) = (0, false);
         for dial in [0.3f32, 0.6, 1.0] {
             for pier in &meta.piers {
@@ -3130,7 +3130,7 @@ mod tests {
     #[test]
     fn matte_plus_knobs_is_only_the_chalk_core() {
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         // the crack lab's own boot state: every pier knobbed (demos.rs), the
         // knob bits stamped, then the geometry pass mints the chalk cores
         let knobs = vec![[0.8, 0.8, 0.7, 0.9]; meta.piers.len()];
@@ -3177,7 +3177,7 @@ mod tests {
     #[test]
     fn piers_of_one_run_share_a_damage_field_but_not_a_fault_lattice() {
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         crate::wear::stamp_story(&mut scene, &meta.piers);
         let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
         // two piers of one run (a facade with a window between them), plus one
@@ -3230,7 +3230,7 @@ mod tests {
     #[test]
     fn every_gym_run_ages_and_none_is_wrecked_young() {
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 1.0);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         crate::wear::stamp_story(&mut scene, &meta.piers);
         let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
         let mut runs: Vec<&Pier> = Vec::new();

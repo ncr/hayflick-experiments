@@ -204,13 +204,6 @@ pub struct RenderCfg {
     /// surface, 1 = CRACKED piers only (the default — the greybox keeps its
     /// hard pixel edges), 2 = the PICKED pier only (the owner's per-wall A/B).
     pub aa_scope: i32,
-    /// `ARRIS` — the GLAZE EASE master scale (owner catalogue 2026-07-25):
-    /// how big a chamfer every exposed arris of a static greybox box carries,
-    /// 1 = the authored 3-px facet (`rt_viewer::wear_geom`), 0 = sharp boxes,
-    /// byte-identical to the pre-pass image. `None` = take the look's authored
-    /// value. It is GEOMETRY, so a change rebuilds the scene and rebakes the
-    /// probes — the ESC row steps it, it is not a live slider.
-    pub arris: Option<f32>,
     /// `AA_CHUNKY` — does CHUNKY generator detail (whole blocks: the wall-smash
     /// rubble) take the contour AA as well? Off by default; thin detail (crack
     /// grooves, plates) is unaffected. See the AA policy in CLAUDE.md.
@@ -338,7 +331,6 @@ impl Config {
                 aa: fo("AA"),
                 aa_scope: i("AA_SCOPE", 1),
                 aa_chunky: b("AA_CHUNKY", false),
-                arris: fo("ARRIS"),
                 refl_px: i("REFL_PX", 3).max(1),
                 debug,
             },
