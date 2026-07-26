@@ -452,6 +452,20 @@ pub fn story_of_knobs(k: [f32; 4], dial: f32) -> crate::wall::Story {
     }
 }
 
+/// The panel's `cracks` knob as a PLATE SIZE in world units
+/// (`wall::Shape::grain`) — the other half of the shim, and the half that is
+/// pure renaming rather than remapping.
+///
+/// `cracks` never was an amount: it was the veneer lattice's FREQUENCY, cells
+/// per wu, `mixf(1.1, 3.4, cracks)`. This is that same number inverted, so the
+/// knob keeps its exact travel (0.91 wu of plate at 0 down to 0.29 at 1) while
+/// the value the generators read is a LENGTH they can all spell the same way.
+/// The reciprocal is deliberate: it makes the lightning policy byte-identical
+/// across this change, so the A/B shows the two patterns that really moved.
+pub fn grain_of(k: [f32; 4]) -> f32 {
+    1.0 / crate::crack_geom::mixf(1.1, 3.4, k[1].clamp(0.0, 1.0))
+}
+
 pub fn amounts_of(k: [f32; 4], dial: f32) -> [f32; crate::wall::Layer::N] {
     use crate::wall::Layer;
     let (mut a, _) = crate::wall::derive(story_of_knobs(k, dial));

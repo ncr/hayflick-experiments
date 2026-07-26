@@ -1125,3 +1125,39 @@ Step 7 of the effects refactor deleted the cover-spall dial's three stages
   list whose order does not depend on the budget makes a larger amount take
   a superset of the sites a smaller one took, and the test is then an
   assertion about the mechanism rather than a search for a counterexample.
+
+## 2026-07-26 (plate size) — a property every variant has does not belong to any of them
+
+Step 8 replaced a cells-per-wu FREQUENCY plus two per-policy `scale` params
+with one world-unit `grain`.
+
+- **"Native parameters" is a claim to check, not a category to fill.** The
+  policies were given native sliders on the owner's ask ("if i switch algo, i
+  want unique native properties"), and two of the three filled a slot with
+  `scale` — which is not native to anything: every pattern has a plate size.
+  The test is whether the OTHER variants would want the same dial. If they
+  would, it is a shared property wearing a local name, and it will drift:
+  these two were on different curves, so one slider position meant 0.79-wu
+  plates under craquelure and 0.40 under mosaic, and the catalogue shipped a
+  bench row whose middle slab was three plates tall.
+
+- **A shared property needs a shared UNIT, and a length is usually it.** The
+  frequency could not be compared against anything the author can see: not the
+  wall's own size, and not the pixel floor. As a length, both questions are
+  arithmetic — `GRAIN_OFF = 0.09 wu` is 3.7 screen px, so it is where the
+  lattice starts to dot-dash, and that makes it a real OFF-STOP rather than
+  the bottom of a slider.
+
+- **Agreement between variants is measured, then corrected once.** Pointing
+  all three at the same number was not enough: Worley cells tile their lattice
+  exactly, but a plate's readable size is `sqrt(area)`, `sqrt` is concave and
+  a jittered cell set has spread, so mosaic came out a third small. One
+  measured constant (`MOSAIC_FILL`) fixes it, and the test that measured it is
+  the test that fails if it drifts. A per-variant correction derived from a
+  measurement is not the same thing as a per-variant dial: nobody can set it
+  wrong.
+
+- **Make the shim exact where the mechanism is not changing.** `grain_of` is
+  the reciprocal of the frequency it replaces, so the lightning policy is
+  byte-identical across the change. The A/B then shows exactly the two
+  patterns that moved, instead of a diff nobody can attribute.

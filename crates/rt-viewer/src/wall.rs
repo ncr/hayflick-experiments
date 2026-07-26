@@ -259,15 +259,23 @@ impl Pins {
     }
 }
 
-/// The small-crack pattern and its native parameters. `scale` is deliberately
-/// absent from all three: plate size lives in exactly one place
-/// ([`Shape::grain`]) in world units, because three per-policy scale params
-/// meant the same visual property had three different spellings and one of
-/// them (craquelure's) put its plates at 0.72 wu against a 2.2-wu face, which
-/// is why that pattern rendered essentially one line at its own defaults.
+/// The small-crack pattern and its NATIVE parameters — native being the test
+/// each of these has to pass. `scale` is absent from all three: plate size is
+/// not native to any pattern, it is the one property they all have, and it
+/// lives in exactly one place ([`Shape::grain`]) in world units. Two of the
+/// three used to carry their own, on their own curve, so one slider position
+/// meant 0.79-wu plates under craquelure and 0.40 under mosaic — which is why
+/// craquelure rendered essentially one line against a 2.2-wu face at its own
+/// defaults.
+///
+/// Lightning keeps THREE. `straight` (wander/kink amplitude and heading
+/// persistence) is the dial on how jagged a crack is, which is the property the
+/// owner asked this policy for in the first place ("more like LIGHTNING —
+/// branching, irregular — not straight lines"); it is native in a way `scale`
+/// never was, so it stays and [`Geom::par`] carries three.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Pattern {
-    Lightning { branch: f32, spread: f32 },
+    Lightning { branch: f32, straight: f32, spread: f32 },
     Craquelure { wave: f32 },
     Mosaic { jitter: f32 },
 }
@@ -288,13 +296,19 @@ impl Pattern {
             Pattern::Mosaic { .. } => 2,
         }
     }
-    pub const DEFAULTS: [Pattern; 3] = [Pattern::Lightning { branch: 0.5, spread: 0.45 }, Pattern::Craquelure { wave: 0.5 }, Pattern::Mosaic { jitter: 0.5 }];
+    pub const DEFAULTS: [Pattern; 3] = [Pattern::Lightning { branch: 0.5, straight: 0.55, spread: 0.45 }, Pattern::Craquelure { wave: 0.35 }, Pattern::Mosaic { jitter: 0.8 }];
 }
 
 /// Plate size below which NO veneer is emitted at all — the face stays one
-/// flush plate. A true off-stop matters because without one "no plates" is not
-/// a reachable state, only "very fine plates", and the difference is visible:
-/// a sub-pixel lattice dot-dashes instead of disappearing.
+/// flush plate ([`crate::crack_geom`] applies it, for every pattern, in one
+/// place).
+///
+/// A true off-stop matters because without one "no plates" is not a reachable
+/// state, only "very fine plates", and the difference is visible: 0.09 wu is
+/// 3.7 screen px on an X-run face and 2.5 on the worst Z one, so a lattice
+/// below it dot-dashes into isolated dark texels instead of disappearing. It is
+/// stated as a LENGTH because that is the only unit the pixel floor can be
+/// compared in — the frequency this replaced could not express the question.
 pub const GRAIN_OFF: f32 = 0.09;
 
 /// SHAPE is not amount. Nothing in here changes how MUCH damage there is —
@@ -303,7 +317,10 @@ pub const GRAIN_OFF: f32 = 0.09;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Shape {
     /// Plate / cell size in WORLD UNITS, shared identically by all three
-    /// patterns. Below [`GRAIN_OFF`] the veneer is off.
+    /// patterns: mosaic's cell IS this, craquelure stops splitting so its leaves
+    /// average it, and lightning's root lattice is pitched on it so the plates
+    /// its network leaves over come out this size. Below [`GRAIN_OFF`] the
+    /// veneer is off entirely.
     pub grain: f32,
     /// Groove depth as a fraction of the slab's half-thickness.
     pub relief: f32,
@@ -311,7 +328,10 @@ pub struct Shape {
 }
 
 impl Shape {
-    pub const DEFAULT: Shape = Shape { grain: 0.30, relief: 0.45, pattern: Pattern::DEFAULTS[0] };
+    /// 0.44 wu of plate — 18 screen px on an X-run face — is the middle of the
+    /// `cracks` knob's old travel (`crack::grain_of` at 0.5), so a level that
+    /// says nothing about shape gets what the crack lab has always booted with.
+    pub const DEFAULT: Shape = Shape { grain: 0.44, relief: 0.45, pattern: Pattern::DEFAULTS[0] };
 }
 
 /// What [`Shape::relief`] MEANS in world units: the veneer's thickness, which is
@@ -636,8 +656,10 @@ pub struct Geom {
     pub grain: u8,
     pub relief: u8,
     pub pattern: u8,
-    /// Pattern-native params, quantized in pattern order.
-    pub par: [u8; 2],
+    /// Pattern-native params, quantized in pattern order. Three, because
+    /// lightning has three things to say about a crack's shape and none of them
+    /// is its size (see [`Pattern`]).
+    pub par: [u8; 3],
     pub breaks: u8,
     /// Break placement in run-thousandths; `u16::MAX` = story-seeded.
     pub break_at: u16,
@@ -800,9 +822,9 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
         }
         let q = |v: f32| (v.clamp(0.0, 1.0) * 63.0).round() as u8;
         let par = match spec.shape.pattern {
-            Pattern::Lightning { branch, spread } => [q(branch), q(spread)],
-            Pattern::Craquelure { wave } => [q(wave), 0],
-            Pattern::Mosaic { jitter } => [q(jitter), 0],
+            Pattern::Lightning { branch, straight, spread } => [q(branch), q(straight), q(spread)],
+            Pattern::Craquelure { wave } => [q(wave), 0, 0],
+            Pattern::Mosaic { jitter } => [q(jitter), 0, 0],
         };
         sheets.push(Sheet {
             label,

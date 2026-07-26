@@ -285,7 +285,8 @@ matte-chalk core + a veneer of plates laid out by a selectable pattern
 POLICY — lightning/craquelure/mosaic since 2026-07-23 round 7
 — panel "pattern" row, and BELOW it each policy's NATIVE param sliders
 (`crack_geom::POLICY_PARAMS`: lightning branch/straight/spread,
-craquelure scale/wave, mosaic scale/jitter; stored per pier per policy);
+craquelure wave, mosaic jitter; stored per pier per policy — NATIVE steering
+only, see PLATE SIZE IS ONE NUMBER below);
 `CRACKS=a,c,d,p[,policy[,p1,p2,p3]]` — split by 1-px-or-wider drooped
 grooves (depth knob = groove depth, adaptive 0.02..0.45 × wall thickness
 so the whole slider is live) with CHAMFERED edges (~1-px miter-inset
@@ -468,6 +469,32 @@ BYTE-IDENTICAL, `crack lab` 0.52 % at max 186 (after-side cross-run floor
 128 px / max 75). Visible change the owner should rule on: at the TOP of the
 dial small piers now lose less than they used to, because the old count was
 3 per face whatever the wall's size.
+
+PLATE SIZE IS ONE NUMBER since 2026-07-26 (task-3 step 8). Every pattern has
+a plate size and it used to be spelled three ways on three curves: a
+cells-per-wu FREQUENCY from the `cracks` knob, times craquelure's `scale`,
+or times mosaic's `scale`. So one slider position meant 0.79-wu plates under
+craquelure and 0.40 under mosaic — a 2.2-wu bench slab three plates tall,
+which is why that catalogue row shipped with a pattern nobody could see.
+`wall::Shape::grain` is that property once, in WORLD UNITS
+(`CrazeCfg::grain`): mosaic's cell IS it (times the measured `MOSAIC_FILL`
+0.66, since a jittered Worley cell's mean SIDE is short of its lattice
+spacing), craquelure stops splitting at 0.72 of it so its leaves average it,
+and lightning pitches its root lattice on it. Measured by
+`every_pattern_reads_at_its_own_defaults` over three grains: all three land
+0.82-1.08 x the authored size and within 1.3x of each other. A LENGTH is
+also the only unit the pixel floor can be stated in, which is what makes
+`wall::GRAIN_OFF = 0.09` (3.7 px on an X face) a real OFF-STOP — below it
+`policy_frags` returns ONE FLUSH PLATE for every pattern, so "no veneer" is
+a reachable state and not just "a lattice too fine to render". `scale` is
+deleted from both policies that had it; lightning KEEPS its three
+(branch/straight/spread — `straight` is how jagged a crack is, which is the
+property the owner asked this policy for), so `PARAMS_MAX` stays 3 and
+`wall::Geom::par` carries three. The shim `crack::grain_of` is the reciprocal
+of the old frequency, so the LIGHTNING policy is byte-identical across the
+change and the A/B shows only the two patterns that really moved. Verified 4
+runs per side: `gym` and `crack lab` BYTE-IDENTICAL (the lab boots
+lightning); the catalogue's pattern row is where it shows.
 
 ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
 branching, irregular — not straight lines; two kinds: the coarse one and

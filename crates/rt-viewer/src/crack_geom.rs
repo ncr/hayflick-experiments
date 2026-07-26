@@ -93,13 +93,19 @@ pub const NPOL: usize = POLICIES.len();
 /// up to [`PARAMS_MAX`] (name, default) sliders on the crack panel below
 /// the pattern row. Geometry-only inputs: a drag rebuilds on release, no
 /// material bits involved.
+///
+/// NATIVE is the whole test, and two of these failed it until 2026-07-26:
+/// craquelure and mosaic each carried a `scale`, which is not native to
+/// either — it is PLATE SIZE, the one property every pattern has, spelled
+/// three different ways with three different curves. It now lives once, in
+/// world units, as `wall::Shape::grain` (see [`CrazeCfg::grain`]).
 pub const PARAMS_MAX: usize = 3;
 /// (lightning: `branch` = how hard the walk forks, `straight` = wander/kink
 /// amplitude and heading persistence, `spread` = fork angle.)
 pub const POLICY_PARAMS: [&[(&str, f32)]; 3] = [
     &[("branch", 0.5), ("straight", 0.55), ("spread", 0.45)],
-    &[("scale", 0.5), ("wave", 0.35)],
-    &[("scale", 0.5), ("jitter", 0.8)],
+    &[("wave", 0.35)],
+    &[("jitter", 0.8)],
 ];
 
 /// A policy's default param values (unused slots 0).
@@ -318,7 +324,19 @@ struct Frag {
 /// fields (same fbm/seeds) so fragments craze in the SAME patches the
 /// painted stains sit in.
 struct CrazeCfg {
-    freq: f32,
+    /// PLATE SIZE, in WORLD UNITS — `wall::Shape::grain`, and the only place
+    /// a pattern's scale lives.
+    ///
+    /// It replaces `freq`, a cells-per-wu frequency derived from the CRACKS
+    /// knob, plus a `scale` multiplier on two of the three policies. Three
+    /// spellings of one property, on three curves, none of them a length: the
+    /// same slider position meant 0.79-wu plates under craquelure and 0.40 under
+    /// mosaic, which is why craquelure rendered essentially one line on a 2.2-wu
+    /// bench slab at its own defaults. A LENGTH is the honest unit here — it is
+    /// what the author sees on the wall, it is comparable against the wall's own
+    /// size, and it is the number the pixel floor ([`wall::GRAIN_OFF`]) is
+    /// stated in.
+    grain: f32,
     seed: f32,     // cell lattice seed (shader: story + 5)
     dmg_seed: f32, // damage field seed (shader: story * 7 + 3 — NOT the cell seed)
     /// ABSOLUTE damage-field thresholds, one per layer, SOLVED for this run by
@@ -376,7 +394,7 @@ impl CrazeCfg {
         use crate::wall::Layer;
         let (amt, gate) = wear;
         CrazeCfg {
-            freq: mixf(1.1, 3.4, k[1]),
+            grain: crate::crack::grain_of(k),
             seed: story + 5.0,
             dmg_seed: story * 7.0 + 3.0,
             t_zone: gate[Layer::Web.index()],
@@ -1078,12 +1096,15 @@ impl Ladder<'_> {
             self.emit(poly, id);
             return;
         }
-        let min_ext = ((1.3 / self.cfg.freq) * mixf(0.55, 2.2, self.cfg.par[0])).max(0.14);
+        // Below `grain` a region is not split again, so the leaves land between
+        // one and two grains — 0.72 puts their MEAN on the authored size. The
+        // 0.14 floor is the sub-pixel guard the ladder has always had.
+        let min_ext = (0.72 * self.cfg.grain).max(0.14);
         // the ladder hugs the axes and splits its longer side
         let d = {
             let vert = hi.x - lo.x >= hi.y - lo.y;
             let base = if vert { Vec2::X } else { Vec2::Y };
-            let ang = (self.h(id, 3.0) - 0.5) * mixf(0.02, 0.45, self.cfg.par[1]);
+            let ang = (self.h(id, 3.0) - 0.5) * mixf(0.02, 0.45, self.cfg.par[0]);
             rot(base, ang).perp()
         };
         let n = d.perp();
@@ -1206,7 +1227,11 @@ fn open_flags(poly: &[Vec2], cuts: &[(usize, f32)], bolts: &[Bolt]) -> Vec<bool>
 fn bolt_network(cfg: &CrazeCfg, u0: f32, u1: f32, y0: f32, y1: f32) -> Vec<Bolt> {
     let (branch, straight, spread) = (cfg.par[0], cfg.par[1], cfg.par[2]);
     let span = Vec2::new(u1 - u0, y1 - y0);
-    let pitch = (1.5 / cfg.freq).clamp(0.30, 0.75);
+    // The plates are what the network LEAVES OVER, so the root lattice's pitch
+    // is the plate size. The clamp is a cost bound and nothing else: below 0.30
+    // the root count grows as 1/pitch² over the whole face, and `wall::GRAIN_OFF`
+    // is the stop that means "no veneer" rather than "a very fine one".
+    let pitch = (1.5 * cfg.grain).clamp(0.30, 0.75);
     // (root, launch dir, depth, budget, half width, parent bolt index)
     let mut queue: Vec<(Vec2, Vec2, u32, f32, f32, usize)> = Vec::new();
     let (nx, ny) = ((span.x / pitch).ceil().max(1.0) as i32, (span.y / pitch).ceil().max(1.0) as i32);
@@ -1328,13 +1353,27 @@ fn crack_site(c: Vec2, seed: f32) -> Vec2 {
     Vec2::new(hash13(Vec3::new(c.x, c.y, seed)), hash13(Vec3::new(c.x, c.y, seed + 47.0)))
 }
 
-/// Mosaic native params: `scale` sizes the cells (a frequency multiplier),
-/// `jitter` scatters the sites — low jitter tends toward a grid.
+/// The mosaic lattice, in cells per wu — one cell IS one grain, exactly. Mosaic
+/// is the policy whose plate size the author can read off the wall directly.
+/// `jitter`, its one native param, scatters the sites — low jitter tends toward
+/// a grid.
 fn mosaic_freq(cfg: &CrazeCfg) -> f32 {
-    cfg.freq * mixf(1.7, 0.55, cfg.par[0])
+    MOSAIC_FILL / cfg.grain.max(1e-3)
 }
+
+/// Mean plate SIDE as a fraction of the mosaic's lattice spacing. Worley cells
+/// tile the lattice exactly, so their mean AREA is the cell's — but a plate's
+/// readable size is its side, `sqrt(area)` is concave, and a jittered cell set
+/// has real spread, so the mean side comes out short. Measured 0.66 by
+/// `every_pattern_reads_at_its_own_defaults`, which fails if it drifts.
+///
+/// Without it the three patterns still disagreed by a third at the same
+/// authored grain — the same defect as three `scale` params, just smaller. One
+/// number per pattern, measured once, is what makes the authored size mean the
+/// same thing whichever pattern the wall wears.
+const MOSAIC_FILL: f32 = 0.66;
 fn mosaic_site(cfg: &CrazeCfg, ij: Vec2) -> Vec2 {
-    ij + Vec2::splat(0.5) + (crack_site(ij, cfg.seed) - Vec2::splat(0.5)) * mixf(0.25, 1.0, cfg.par[1])
+    ij + Vec2::splat(0.5) + (crack_site(ij, cfg.seed) - Vec2::splat(0.5)) * mixf(0.25, 1.0, cfg.par[0])
 }
 
 /// Is the mosaic cell at lattice coords `ij` in the damage zone (its plate
@@ -1412,6 +1451,15 @@ fn mosaic_frags(cfg: &CrazeCfg, u0: f32, u1: f32, y0: f32, y1: f32, opened: &Std
 
 /// The policy dispatch: the pier face's fragment layout in face coords.
 fn policy_frags(cfg: &CrazeCfg, policy: u8, u0: f32, u1: f32, y0: f32, y1: f32, opened: &StdCell<bool>) -> Vec<Frag> {
+    // THE OFF-STOP. Below `GRAIN_OFF` a plate is under a screen pixel across, so
+    // the lattice does not render as fine plates — it dot-dashes, which is the
+    // one thing this look cannot carry. So the bottom of the grain dial is not
+    // "very fine plates" but NO VENEER: the face stays one flush plate, with no
+    // groove, no chamfer and no `opened` mark, exactly as a pristine wall does.
+    // A dial whose off state is unreachable is a dial with a lie at one end.
+    if cfg.grain < crate::wall::GRAIN_OFF {
+        return vec![Frag { poly: vec![Vec2::new(u0, y0), Vec2::new(u1, y0), Vec2::new(u1, y1), Vec2::new(u0, y1)], open: vec![false; 4], spalled: false, sink: 0.0 }];
+    }
     match policy {
         2 => mosaic_frags(cfg, u0, u1, y0, y1, opened),
         1 => {
@@ -2961,6 +3009,73 @@ mod tests {
         }
         assert!(checked > 30, "the gym must actually grow craters on both faces to pin this ({checked} pairs)");
         assert!(deep, "VACUOUS: no two facing basins are deep enough to meet, so disjointness pins nothing");
+    }
+
+    /// **EVERY PATTERN READS AT ITS OWN DEFAULTS**, and it reads at the SAME
+    /// size — which is the whole claim of moving plate size out of the policies
+    /// and into one world-unit number.
+    ///
+    /// Measured on a 2.2 × 2.19 bench slab with the damage zone fully open, so
+    /// the question is about the LATTICE and not about where the wall is
+    /// failing. Before this, `scale` at its own default meant 0.79-wu plates
+    /// under craquelure against 0.40 under mosaic — a slab three plates tall,
+    /// i.e. essentially one line, which is what sent the owner's catalogue row
+    /// out with a pattern nobody could see.
+    #[test]
+    fn every_pattern_reads_at_its_own_defaults() {
+        let (u0, u1, y0, y1) = (6.0f32, 8.2, 0.0, 2.1875);
+        for grain in [crate::wall::Shape::DEFAULT.grain, 0.25, 0.70] {
+            let mut sizes = Vec::new();
+            for policy in 0..POLICIES.len() as u8 {
+                let mut cfg = CrazeCfg::new(3.0, gates(0.0), [0.9, 0.5, 0.5, 0.0], true, 0.2, &[], param_defaults(policy));
+                cfg.grain = grain;
+                let opened = StdCell::new(false);
+                let frags = policy_frags(&cfg, policy, u0, u1, y0, y1, &opened);
+                // a plate's SIZE is the side of the square with its area — the
+                // only measure that compares a mosaic cell, a ladder leaf and
+                // whatever a bolt network happened to leave over
+                let n = frags.len();
+                let mean = frags.iter().map(|f| poly_area(&f.poly).abs().sqrt()).sum::<f32>() / n.max(1) as f32;
+                println!("grain {grain:.2} {}: {n} plates, mean side {mean:.3} wu ({:.2} × grain)", POLICIES[policy as usize], mean / grain);
+                assert!(n >= 6, "{} at grain {grain}: {n} plates on a 2.2-wu slab is not a pattern", POLICIES[policy as usize]);
+                assert!(
+                    (0.78..1.28).contains(&(mean / grain)),
+                    "{} at grain {grain}: plates average {mean:.3} wu — the authored size is not what the wall shows",
+                    POLICIES[policy as usize]
+                );
+                sizes.push(mean);
+            }
+            // …and the three agree with EACH OTHER, which is the property three
+            // separate `scale` params could not have
+            let (lo, hi) = (sizes.iter().cloned().fold(f32::MAX, f32::min), sizes.iter().cloned().fold(0.0f32, f32::max));
+            assert!(hi <= 1.35 * lo, "at grain {grain} the patterns disagree about plate size: {sizes:?}");
+        }
+    }
+
+    /// **THE OFF-STOP IS OFF**, for every pattern: below `wall::GRAIN_OFF` the
+    /// face is ONE flush plate — no groove, no chamfer, nothing marked open —
+    /// and not a lattice too fine to render, which is what dot-dashes.
+    #[test]
+    fn below_grain_off_the_face_is_one_flush_plate() {
+        let (u0, u1, y0, y1) = (6.0f32, 8.2, 0.0, 2.1875);
+        for policy in 0..POLICIES.len() as u8 {
+            let mut cfg = CrazeCfg::new(3.0, gates(0.0), [0.9, 0.5, 0.5, 0.0], true, 0.2, &[], param_defaults(policy));
+            // …and the vacuity guard: a hair ABOVE the stop, the same wall is a
+            // pattern. Without it this test passes on any generator that emits
+            // nothing at all.
+            cfg.grain = crate::wall::GRAIN_OFF * 1.02;
+            let opened = StdCell::new(false);
+            let live = policy_frags(&cfg, policy, u0, u1, y0, y1, &opened);
+            assert!(live.len() > 20, "{} just above the stop: {} plates", POLICIES[policy as usize], live.len());
+
+            cfg.grain = crate::wall::GRAIN_OFF * 0.98;
+            let opened = StdCell::new(false);
+            let off = policy_frags(&cfg, policy, u0, u1, y0, y1, &opened);
+            assert_eq!(off.len(), 1, "{} below the stop must be one plate", POLICIES[policy as usize]);
+            assert!(off[0].open.iter().all(|o| !o), "{} below the stop grooved an edge", POLICIES[policy as usize]);
+            assert!(!opened.get(), "{} below the stop marked the face opened", POLICIES[policy as usize]);
+            assert!((poly_area(&off[0].poly).abs() - (u1 - u0) * (y1 - y0)).abs() < 1e-3, "{}: the flush plate is not the whole face", POLICIES[policy as usize]);
+        }
     }
 
     /// …and the price of that disjointness is a SHARED packing budget, so the
