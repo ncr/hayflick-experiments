@@ -488,7 +488,19 @@ adjacent to the doorway in those draws), and the one-line alternative —
 hash the run's LINE (axis + coordinate + roomy flag) instead of its
 extent — would merge them at the price of merging any two collinear runs.
 
-## Task 3, step 5 — the FIELD LEVEL lane (the un-ageable facade) — DONE 2026-07-25
+## Task 3, step 5 — the FIELD LEVEL lane (the un-ageable facade) — DONE 2026-07-25, **RETIRED 2026-07-26**
+
+> **Retired by the effects refactor** (`wall.rs`'s solved thresholds). The lane
+> existed to nudge each run's field toward a canonical level — that is, to
+> correct the SYMPTOM of a lottery. Solving each layer's threshold from the
+> run's own sorted samples removes the lottery at the source, so `run_level`,
+> `level_quantize`, `LEVEL_STEP`, `level_fraction` and `WEAR_LEVEL` are all
+> deleted and lanes 0/1 of the effect word now carry two ABSOLUTE gate codes
+> instead. The section below is kept as the record of the measurement that
+> justified the lane, because the numbers in it (the gym's seven runs spreading
+> 0.000 .. 0.645 of damaged area at age 0.9) are what the replacement had to
+> beat, and it did: `an_amount_is_an_area` measures a worst error of 0.103.
+
 
 Step 4's defect, fixed: `dmgN` is a raw fbm and every feature gate is an
 ABSOLUTE threshold on it (`dT = mix(0.74, 0.55, age)`, zone at `dT + 0.02`,

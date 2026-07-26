@@ -174,18 +174,19 @@ pub(crate) fn vnoise(x: Vec3) -> f32 {
     lerp(lerp(n00, n10, f.y), lerp(n01, n11, f.y), f.z)
 }
 
-// ---- the fault lattice (host side) -----------------------------------------
+// ---- the breaks of a run (host side) ---------------------------------------
 
-/// One structural crack crossing a pier: the shader lattice's strip, resolved
-/// to a world-space path `u(y)` on the pier's run axis.
+/// One structural break crossing a pier: an authored place on the RUN, resolved
+/// to a world-space path `u(y)` on the run axis.
 #[derive(Clone)]
 struct Fault {
-    si: f32,
+    /// Which break of the run this is — the second noise coordinate, so two
+    /// breaks of one wall wander differently.
+    j: f32,
     seed: f32,
-    shift: f32, // lattice-2 evaluates in u+2.7 space (shader: cuvP + vec2(2.7, 0))
     ax: f32,
     tilt: f32,
-    /// Gap half-width base (the shader's `mw` sans its per-y `wvar`).
+    /// Gap half-width base (sans the per-y `wvar`).
     mw: f32,
     /// Which side drops: +1 = the right (higher-u) piece sinks.
     sign: f32,
@@ -193,12 +194,12 @@ struct Fault {
 
 impl Fault {
     fn u(&self, y: f32) -> f32 {
-        let wob = (vnoise(Vec3::new(y * 0.8, self.si * 7.3, self.seed + 17.0)) - 0.5) * 1.3
-            + (vnoise(Vec3::new(y * 4.1, self.si * 7.3, self.seed + 29.0)) - 0.5) * 0.22;
-        self.ax + self.tilt * y + wob - self.shift
+        let wob = (vnoise(Vec3::new(y * 0.8, self.j * 7.3, self.seed + 17.0)) - 0.5) * 1.3
+            + (vnoise(Vec3::new(y * 4.1, self.j * 7.3, self.seed + 29.0)) - 0.5) * 0.22;
+        self.ax + self.tilt * y + wob
     }
     fn wvar(&self, y: f32) -> f32 {
-        0.35 + 1.3 * vnoise(Vec3::new(y * 1.7, self.si * 3.1, self.seed + 41.0))
+        0.35 + 1.3 * vnoise(Vec3::new(y * 1.7, self.j * 3.1, self.seed + 41.0))
     }
     /// Full gap width at height `y`, tapered wider toward the top (settlement)
     /// and clamped to stay visible without gaping past believability.
@@ -208,50 +209,65 @@ impl Fault {
     }
 }
 
-/// The faults crossing a pier's run range, sorted by position. Mirrors the
-/// shader's presence rule exactly; lattice 2 goes geometric once its fade
-/// (`g2`) reaches half.
-fn pier_faults(u0: f32, u1: f32, y0: f32, y1: f32, seg: f32, k: [f32; 4]) -> Vec<Fault> {
-    let (age, den, dep) = (k[0], k[1], k[2]);
-    let p_maj = 0.95 * smoothstep(0.12, 0.42, age) * smoothstep(0.04, 0.45, den);
-    let g2 = smoothstep(0.65, 0.95, den);
-    let mut out = Vec::new();
-    let lattices: &[(f32, f32, bool)] = &[(0.0, seg, true), (2.7, seg + 130.0, g2 >= 0.5)];
-    for &(shift, seed, on) in lattices {
-        if !on {
-            continue;
-        }
-        let (s0, s1) = (((u0 + shift) / 6.0).floor() as i32, ((u1 + shift) / 6.0).floor() as i32);
-        for si in s0..=s1 {
-            let si = si as f32;
-            if hash13(Vec3::new(si, seed, 71.0)) >= p_maj {
-                continue;
+/// How close to a run's end a break may land, in world units. A break is a
+/// through-cut, so the piece it leaves has to read as a piece: below ~0.35 wu
+/// (14 px on an X face) it is a sliver hanging off the end, which reads as a
+/// modelling error rather than as damage. Also the run's own margin — a run
+/// shorter than `2 · MARGIN` gets the proportional version instead, so a short
+/// wall asked for a break still gets one.
+const BREAK_MARGIN: f32 = 0.35;
+
+/// THE BREAKS OF ONE WALL RUN — an authored COUNT at authored PLACES.
+///
+/// # What this replaced, and why it had to go
+///
+/// Until 2026-07-26 a break was a coin flip on a 6-wu STRIP lattice: presence
+/// fired at `0.95 · smoothstep(0.12, 0.42, age) · smoothstep(0.04, 0.45,
+/// cracks)` per strip, with a second lattice fading in on top of the first. It
+/// was wrong in three separate ways, and a level author had no way around any of
+/// them:
+///
+/// - **You could not ask for one.** The knobs bought a PROBABILITY. A 2.2-wu
+///   slab holds a strip's axis about a third of the time, so the effect
+///   catalogue's break specimen came up EMPTY on its first build — the fix at
+///   the time was to widen the slab to four cells until the hash cooperated.
+/// - **You could not ask for none.** Presence and the small-crack network share
+///   `age`, and the damage field only opens a readable patch above age ≈ 0.5, so
+///   at every age where a veneer pattern was visible the odds of also breaking
+///   the wall in half were ≥ 0.9. "Cracked but not broken through" needed a veto
+///   flag (`Specimen::faults`) to be expressible at all.
+/// - **It disagreed across a joint.** The strips are anchored in RUN space but
+///   the roll was seeded PER PANEL, so a strip straddling a window jamb was
+///   rolled twice with different seeds: the same break existed on one panel and
+///   not on its neighbour, and the crack stopped dead at the opening.
+///
+/// A count and a place fix all three by construction, and the owner risk that
+/// kept the seed per panel ("a shared fault seed would crack a facade at one
+/// repeated position") goes with the lattice that caused it: there is no period
+/// left to repeat.
+///
+/// `u0`/`u1` are the RUN's extent on its own axis — not the pier's. Every panel
+/// of a run therefore computes the identical break set, and the caller keeps the
+/// ones that actually cross it.
+fn run_breaks(u0: f32, u1: f32, story: f32, b: crate::wall::Breaks, k: [f32; 4]) -> Vec<Fault> {
+    let m = BREAK_MARGIN.min(0.4 * (u1 - u0));
+    b.places(story)
+        .into_iter()
+        .enumerate()
+        .map(|(j, frac)| {
+            let h = |s: f32| hash13(Vec3::new(j as f32, story * 13.0 + s, 71.0));
+            Fault {
+                j: j as f32,
+                // the wander/width noise wants a coordinate that differs
+                // between RUNS, and the story key is the only thing that does
+                seed: story * 6.0,
+                ax: mixf(u0 + m, u1 - m, frac),
+                tilt: (h(97.0) - 0.5) * 0.8,
+                mw: mixf(0.022, 0.055, k[2]) * (0.55 + 0.45 * k[0]),
+                sign: if h(113.0) < 0.5 { 1.0 } else { -1.0 },
             }
-            let ax = (si + mixf(0.22, 0.78, hash13(Vec3::new(si, seed, 83.0)))) * 6.0;
-            let tilt = (hash13(Vec3::new(si, seed, 97.0)) - 0.5) * 0.8;
-            let mw = mixf(0.022, 0.055, dep) * (0.55 + 0.45 * age);
-            let sign = if hash13(Vec3::new(si, seed, 113.0)) < 0.5 { 1.0 } else { -1.0 };
-            let f = Fault { si, seed, shift, ax, tilt, mw, sign };
-            // keep ANY fault whose path ENTERS the face somewhere over the
-            // pier's height (a strip anchored past the end can wander in and
-            // clip a corner — the shader paints exactly that): GEO_BIT
-            // suppresses the whole pier's fault paint, so every painted
-            // crack must turn geometric. Corner-clippers become cracked-off
-            // edges (the mesh's edge clamps keep pieces >= 0.06 wu wide).
-            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-            for s in 0..=6 {
-                let u = f.u(y0 + (y1 - y0) * s as f32 / 6.0);
-                lo = lo.min(u);
-                hi = hi.max(u);
-            }
-            if hi > u0 + 0.02 && lo < u1 - 0.02 {
-                out.push(f);
-            }
-        }
-    }
-    let ymid = (y0 + y1) * 0.5;
-    out.sort_by(|a, b| a.u(ymid).total_cmp(&b.u(ymid)));
-    out
+        })
+        .collect()
 }
 
 // ---- mesh building ---------------------------------------------------------
@@ -2168,7 +2184,7 @@ fn trunk_path(f: &Fault, y0: f32, y1: f32, jag: f32) -> Vec<Vec2> {
     let mut i = 0usize;
     while y < y1 - 1e-4 {
         pts.push(Vec2::new(f.u(y) + off, y));
-        let h = |k: f32| hash13(Vec3::new(i as f32 * 1.37, f.seed + k, f.si * 3.7 + 5.0));
+        let h = |k: f32| hash13(Vec3::new(i as f32 * 1.37, f.seed + k, f.j * 3.7 + 5.0));
         let dy = (0.10 + 0.13 * h(3.0)).min(y1 - y);
         // a stair KINK on some steps, small drift on the rest
         let d = if h(11.0) < 0.42 { (h(17.0) - 0.5) * 1.7 * jag } else { (h(23.0) - 0.5) * 0.6 * jag };
@@ -2205,7 +2221,7 @@ fn fault_bolts(faults: &[Fault], fr: &Frame, k: [f32; 4], px1: f32) -> Vec<Bolt>
         // round 8 measured both, see docs/AGENT_LEARNINGS.md.)
         let nf = (0.4 + 1.9 * k[1] * (0.35 + 0.65 * k[0])).round() as usize;
         for j in 0..nf {
-            let h = |kk: f32| hash13(Vec3::new(j as f32 * 2.7 + 1.0, f.seed + kk, f.si * 5.3 + 11.0));
+            let h = |kk: f32| hash13(Vec3::new(j as f32 * 2.7 + 1.0, f.seed + kk, f.j * 5.3 + 11.0));
             let n = path.len();
             let vi = (n as f32 * mixf(0.35, 0.90, h(3.0))).floor() as usize;
             let vi = vi.clamp(1, n.saturating_sub(2).max(1));
@@ -2309,7 +2325,7 @@ fn emit_prism(
 /// opened — no groove, no live or spalled plate, no crater — and the pier keeps
 /// its box and its paint.
 fn craze_pier(scene: &mut Scene, pier: &Pier, wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
-    let (mid, _) = seg_of(scene, pier);
+    let mid = mat_of(scene, pier);
     let fr = Frame::of(pier);
     let cfg = CrazeCfg::new(story_of(scene, pier), wear, k, fr.run_x, fr.t1 - fr.t0, &[], par);
     let opened = StdCell::new(false);
@@ -2423,14 +2439,14 @@ fn spend_spall(scene: &mut Scene, mid: i32, core_mid: i32, bas: &Mesh, bar: &Mes
 /// pattern rides the broken wall and clusters along the seam (halo).
 #[allow(clippy::too_many_arguments)]
 fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
-    let (mid, _) = seg_of(scene, pier);
+    let mid = mat_of(scene, pier);
     let fr = Frame::of(pier);
     let (u0, u1, t0, t1, y0, y1) = (fr.u0, fr.u1, fr.t0, fr.t1, fr.y0, fr.y1);
     let w = fr.w();
     let wn = fr.wn();
 
-    // the veneer/damage layer takes the RUN's story; the faults handed in came
-    // from the PANEL's own seed (`faults_for`) — see `seg_of`
+    // the veneer, the damage field AND the breaks all take the RUN's story now
+    // (`faults_for`), so a facade tells one story down to where it is broken
     let cfg = CrazeCfg::new(story_of(scene, pier), wear, k, fr.run_x, t1 - t0, faults, par);
     // the break, grown: jagged trunks (THROUGH — they separate the wall) plus
     // their forks (surface cracks that groove the veneer only)
@@ -2580,18 +2596,19 @@ fn rect_inside(lo: Vec2, hi: Vec2, cuts: &[(usize, f32)], bolts: &[Bolt]) -> boo
 // Every geometry input arrives through `GeoKey`, which is integer — so no
 // generator below this line ever sees a knob the rebuild gate could not see.
 
-/// The pier's material + its PER-PANEL seed — the structural FAULT lattice's,
-/// and only that. Mirrors the shade pass's `float(h.mat & 255) * 0.618`.
+/// The pier's own material id — the thing a generator has to read before it can
+/// mint a variant of it.
 ///
-/// Per panel and not per run on purpose (owner risk on record, 2026-07-25):
-/// sharing the fault seed across a facade would roll the 6-wu settlement
-/// lattice once for the whole wall, and three panels cracking off the same roll
-/// reads as a repeated stamp. Depth and chip stay per panel for the same
-/// reason. Everything that is true of the whole FACADE — the damage field, the
-/// craze lattices, the age ramp — takes [`story_of`] instead.
-fn seg_of(scene: &Scene, pier: &Pier) -> (i32, f32) {
-    let mid = scene.primitives[pier.prim].material_id;
-    (mid, (mid & 255) as f32 * 0.618)
+/// It used to carry a second return, a PER-PANEL seed, and that seed's only
+/// consumer was the break lattice this round deleted. The owner risk it existed
+/// to hedge ("sharing the fault seed across a facade would crack three panels at
+/// one repeated position") was a property of the 6-wu period, not of the
+/// sharing: an authored count at authored places has no period to repeat, so the
+/// breaks moved to the RUN with everything else that is true of a whole facade
+/// (the damage field, the craze lattices, the run ramp — all [`story_of`]).
+/// Depth and chip stay per panel, and those never used this seed.
+fn mat_of(scene: &Scene, pier: &Pier) -> i32 {
+    scene.primitives[pier.prim].material_id
 }
 
 /// The pier's facade STORY KEY, read back from where `wear::stamp_story` put it
@@ -2603,24 +2620,36 @@ fn story_of(scene: &Scene, pier: &Pier) -> f32 {
     scene.materials[mid].base_color[3]
 }
 
-/// A pier's structural faults, or NONE when the caller vetoed them.
+/// THE BREAKS THAT CROSS THIS PANEL — its share of its RUN's authored set.
 ///
-/// The veto exists because fault presence and the small-crack network are
-/// coupled through AGE and cannot otherwise be separated: a fault fires at
-/// `0.95 · smoothstep(0.12, 0.42, age) · smoothstep(0.04, 0.45, cracks)`, and
-/// the damage FIELD only opens a readable patch above age ≈ 0.5 — so at every
-/// age where a veneer pattern is visible at all, the odds of also breaking the
-/// wall in half are ≥ 0.9. That is fine on a facade and wrong on a bench, where
-/// the whole point is one effect per wall (`crack::Specimen`, the 2026-07-26
-/// effect catalogue). It is a real dial, not a test hook: "cracked but not
-/// broken through" is a state a level author can legitimately want.
-fn faults_for(scene: &Scene, pier: &Pier, k: [f32; 4], veto: bool) -> Vec<Fault> {
-    if veto {
-        return Vec::new();
-    }
-    let (_, seg) = seg_of(scene, pier);
+/// The whole run's breaks are computed first ([`run_breaks`]) and then filtered,
+/// which is the only way a panel and its neighbour can agree about a break that
+/// lands on the joint between them. There is no veto argument any more:
+/// `Breaks { count: 0 }` IS the veto, and it is a thing a level author can type.
+fn faults_for(scene: &Scene, pier: &Pier, k: [f32; 4], b: crate::wall::Breaks) -> Vec<Fault> {
     let fr = Frame::of(pier);
-    pier_faults(fr.u0, fr.u1, fr.y0, fr.y1, seg, k)
+    let (r0, r1) = if fr.run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
+    let mut out: Vec<Fault> = run_breaks(r0, r1, story_of(scene, pier), b, k)
+        .into_iter()
+        .filter(|f| {
+            // keep ANY break whose path ENTERS this face somewhere over the
+            // pier's height: the path wanders (±0.76 wu at the extremes), so a
+            // break anchored just past a panel's end can still cut its corner,
+            // and dropping it would leave the neighbouring panel's cut running
+            // into a wall that is whole. Corner-clippers become cracked-off
+            // edges (the mesh's edge clamps keep pieces >= 0.06 wu wide).
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for s in 0..=6 {
+                let u = f.u(fr.y0 + (fr.y1 - fr.y0) * s as f32 / 6.0);
+                lo = lo.min(u);
+                hi = hi.max(u);
+            }
+            hi > fr.u0 + 0.02 && lo < fr.u1 - 0.02
+        })
+        .collect();
+    let ymid = (fr.y0 + fr.y1) * 0.5;
+    out.sort_by(|a, b| a.u(ymid).total_cmp(&b.u(ymid)));
+    out
 }
 
 /// The materials the geometry pass MINTED per pier, and that therefore have to
@@ -2655,10 +2684,10 @@ pub fn apply_geometry(
     policies: &[u8],
     params: &[[f32; PARAMS_MAX]],
     spall: &[f32],
-    no_fault: &[bool],
+    breaks: &[crate::wall::Breaks],
 ) -> Aged {
     let mut out = Aged { cores: vec![-1; piers.len()], spall_mats: vec![[-1, -1]; piers.len()] };
-    let gk = keys(scene, piers, knobs, policies, params, spall, no_fault);
+    let gk = keys(scene, piers, knobs, policies, params, spall, breaks);
     for (i, pier) in piers.iter().enumerate() {
         let key = gk[i];
         // The SOLVED thresholds for this pier's run, from the key alone — so the
@@ -2667,7 +2696,7 @@ pub fn apply_geometry(
         // EVERY generator reads the key, never the caller's floats — that is
         // what makes `GeoKey` equality mean "the built mesh is still right".
         let (k, dial) = (key.knobs(), key.dial());
-        let faults = faults_for(scene, pier, k, key.no_fault);
+        let faults = faults_for(scene, pier, k, key.breaks());
         // a pier with no knobs but a live spall dial still ages: cover loss is
         // its own mechanism (the base of a sound wall spalls first), and a dial
         // that does nothing on the wall the owner picked is a broken dial
@@ -2712,8 +2741,12 @@ pub struct GeoKey {
     /// change in it really is stale geometry. Not owner-editable today; it signs
     /// so the day it becomes editable the gate already covers it.
     pub story: u32,
-    /// Is this pier's structural fault vetoed?
-    pub no_fault: bool,
+    /// The RUN's authored break COUNT (0..=[`crate::wall::Breaks::MAX`]).
+    pub brk: u8,
+    /// The authored PLACE at a 0.01 grain, or 255 for "story-seeded". A break's
+    /// position is geometry, so the gate has to see it move — and `Option<f32>`
+    /// is not `Eq`, which is the honest reason it is a byte here.
+    pub brk_at: u8,
 }
 
 impl GeoKey {
@@ -2731,7 +2764,12 @@ impl GeoKey {
     pub fn params(&self) -> [f32; PARAMS_MAX] {
         self.par.map(|v| v as f32 / 100.0)
     }
-    fn of(scene: &Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], spall: f32, no_fault: bool) -> GeoKey {
+    /// The run's breaks, dequantized. Same contract as [`Self::knobs`]: the
+    /// generator never sees the authored float, only what the gate signed.
+    pub fn breaks(&self) -> crate::wall::Breaks {
+        crate::wall::Breaks { count: self.brk, at: (self.brk_at != 255).then(|| self.brk_at as f32 / 100.0) }
+    }
+    fn of(scene: &Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], spall: f32, b: crate::wall::Breaks) -> GeoKey {
         let q = |v: f32, n: f32| (v.clamp(0.0, 1.0) * n).round() as u8;
         GeoKey {
             k: k.map(|v| q(v, 10.0)),
@@ -2739,7 +2777,8 @@ impl GeoKey {
             policy,
             par: par.map(|v| q(v, 100.0)),
             story: story_of(scene, pier).to_bits(),
-            no_fault,
+            brk: b.count.min(crate::wall::Breaks::MAX),
+            brk_at: b.at.map_or(255, |a| q(a, 100.0)),
         }
     }
 }
@@ -2753,7 +2792,7 @@ pub fn keys(
     policies: &[u8],
     params: &[[f32; PARAMS_MAX]],
     spall: &[f32],
-    no_fault: &[bool],
+    breaks: &[crate::wall::Breaks],
 ) -> Vec<GeoKey> {
     piers
         .iter()
@@ -2767,7 +2806,7 @@ pub fn keys(
                 policy,
                 params.get(i).copied().unwrap_or(param_defaults(policy)),
                 spall.get(i).copied().unwrap_or(0.0),
-                no_fault.get(i).copied().unwrap_or(false),
+                breaks.get(i).copied().unwrap_or(crate::wall::Breaks::NONE),
             )
         })
         .collect()
@@ -2803,26 +2842,20 @@ mod tests {
     }
 
     const HOT: [f32; 4] = [1.0, 1.0, 0.5, 0.0];
-    /// Crazes but never faults (cracks = 0 keeps pMaj at zero) — at the TOP of
-    /// the age slider, because since the field's level is normalized per run
-    /// (`run_level`) "age 0.9" is no longer a guaranteed-wrecked face: this
-    /// fixture's 6-wu run draws the low end of `wear::LEVEL_FRACTION`, and with
-    /// cracks = 0 the craquelure ladder is at its coarsest (freq 1.1, ~0.9-wu
-    /// cells), so its centrelines could miss the damage patches entirely.
+    /// Crazes at the TOP of the age slider, because the damaged AREA is what
+    /// makes a pattern visible at all — and with cracks = 0 the plate ladder is
+    /// at its coarsest (~0.9-wu cells), so its centrelines could otherwise miss
+    /// the damage patches entirely. It never breaks through either, but that is
+    /// no longer a property of these numbers: [`ONE_BREAK`] is.
     const CRAZY: [f32; 4] = [1.0, 0.0, 0.6, 0.8];
 
-    /// Find a pier position whose lattice actually faults at max knobs —
-    /// presence is hash-gated per strip (p ≈ 0.95), so probe a few offsets
-    /// instead of betting the test on one hash value.
-    fn faulting_pier(scene: &mut Scene) -> Pier {
-        for i in 0..8 {
-            let pier = pier_at(scene, 1.0 + 7.0 * i as f32);
-            if !faults_for(scene, &pier, HOT, false).is_empty() {
-                return pier;
-            }
-        }
-        panic!("no fault in 8 strips at pMaj 0.95 — the lattice mirror is broken");
-    }
+    /// One break, story-placed. It used to take `faulting_pier`, a loop over
+    /// eight wall positions looking for a strip whose hash happened to fire —
+    /// the clearest possible statement of what was wrong with the old
+    /// mechanism, and the exact reason the effect catalogue's break specimen
+    /// once shipped four cells wide.
+    const ONE_BREAK: crate::wall::Breaks = crate::wall::Breaks { count: 1, at: None };
+    const NO_BREAK: crate::wall::Breaks = crate::wall::Breaks::NONE;
 
     /// THE CONTAINMENT INVARIANT over the REAL level, per pier: every triangle
     /// the aging pass grows must stay inside the pier it belongs to.
@@ -2969,10 +3002,10 @@ mod tests {
     #[test]
     fn split_composes_shell_chalk_and_veneer() {
         let mut scene = Scene::default();
-        let pier = faulting_pier(&mut scene);
+        let pier = pier_at(&mut scene, 1.0);
         let before = scene.primitives.len();
         let mid = scene.primitives[pier.prim].material_id;
-        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[HOT], &[0], &[param_defaults(0)], &[], &[]);
+        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[HOT], &[0], &[param_defaults(0)], &[], &[ONE_BREAK]);
         let added = scene.primitives.len() - before;
         assert_eq!(added, 3, "shell + chalk planes + veneer");
         assert_eq!(scene.primitives[before].material_id, mid, "shell shares the pier material");
@@ -2991,7 +3024,7 @@ mod tests {
     #[test]
     fn zero_knobs_split_nothing_and_signature_tracks_faults() {
         let mut scene = Scene::default();
-        let pier = faulting_pier(&mut scene);
+        let pier = pier_at(&mut scene, 1.0);
         let before = scene.primitives.len();
         let dp = [param_defaults(0)];
         apply_geometry(&mut scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]);
@@ -3015,7 +3048,7 @@ mod tests {
     #[test]
     fn a_drag_that_did_not_change_geom_rebuilds_nothing() {
         let mut scene = Scene::default();
-        let pier = faulting_pier(&mut scene);
+        let pier = pier_at(&mut scene, 1.0);
         let dp = [param_defaults(0)];
         for lane in 0..4 {
             let mut prev: Option<GeoKey> = None;
@@ -3047,39 +3080,143 @@ mod tests {
     /// longer existed.
     ///
     /// Pinned as the invariant rather than as one repro: within ONE bucket the
-    /// fault set must be identical, and — the vacuity guard — some bucket
+    /// break's geometry must be identical, and — the vacuity guard — some bucket
     /// boundary in the sweep must actually change it, or the test is asserting
     /// nothing.
+    ///
+    /// It sweeps DEPTH now, not cracks. Presence stopped being a function of the
+    /// knobs when the count became authored (2026-07-26), so the thing left to
+    /// quantize is the break's own geometry — its gap width `mw`, which scales
+    /// with depth and age. That was always the sharper half of the claim anyway:
+    /// measured on the shipped crack lab when this test was written, 0 of 15
+    /// piers changed PRESENCE across the integer-key fix and every broken one
+    /// changed WIDTH.
     #[test]
     fn the_fault_is_quantized_like_everything_else() {
         let mut scene = Scene::default();
-        let pier = faulting_pier(&mut scene);
+        let pier = pier_at(&mut scene, 1.0);
         let dp = [param_defaults(0)];
-        // presence AND the fault's own geometry: `mw` (its gap width) scales
-        // with depth and age, so a raw-float read moved the mesh even where the
-        // fault existed either way. Measured on the shipped crack lab: 0 of 15
-        // piers changed PRESENCE across this fix and every faulted one changed
-        // WIDTH, which is exactly why presence alone is not the thing to pin.
-        let present = |k: [f32; 4]| {
-            let key = keys(&scene, std::slice::from_ref(&pier), &[k], &[0], &dp, &[], &[])[0];
-            let f = faults_for(&scene, &pier, key.knobs(), false);
-            (!f.is_empty(), f.iter().map(|x| (x.mw / 1e-6) as i64).collect::<Vec<_>>())
+        let shape = |k: [f32; 4]| {
+            let key = keys(&scene, std::slice::from_ref(&pier), &[k], &[0], &dp, &[], &[ONE_BREAK])[0];
+            let f = faults_for(&scene, &pier, key.knobs(), key.breaks());
+            (f.len(), f.iter().map(|x| ((x.mw / 1e-6) as i64, (x.ax / 1e-6) as i64)).collect::<Vec<_>>())
         };
-        let mut boundary_flips = 0;
-        let mut last_bucket: Option<(bool, Vec<i64>)> = None;
+        let mut boundary_moves = 0;
+        let mut last_bucket: Option<(usize, Vec<(i64, i64)>)> = None;
         for b in 0..=10 {
             let centre = b as f32 / 10.0;
-            let inside: Vec<(bool, Vec<i64>)> = [-0.04f32, -0.02, 0.0, 0.02, 0.04].iter().map(|d| present([0.8, (centre + d).clamp(0.0, 1.0), 0.5, 0.0])).collect();
+            let inside: Vec<_> = [-0.04f32, -0.02, 0.0, 0.02, 0.04].iter().map(|d| shape([0.8, 0.6, (centre + d).clamp(0.0, 1.0), 0.0])).collect();
             assert!(
                 inside.iter().all(|v| *v == inside[0]),
-                "bucket {centre}: the fault differs INSIDE one quantization step ({inside:?}) — it is reading a raw float"
+                "bucket {centre}: the break differs INSIDE one quantization step ({inside:?}) — it is reading a raw float"
             );
-            if last_bucket.as_ref().is_some_and(|p| p.0 != inside[0].0) {
-                boundary_flips += 1;
+            assert_eq!(inside[0].0, 1, "bucket {centre}: one break was asked for and {} arrived", inside[0].0);
+            if last_bucket.as_ref().is_some_and(|p| *p != inside[0]) {
+                boundary_moves += 1;
             }
             last_bucket = Some(inside[0].clone());
         }
-        assert!(boundary_flips > 0, "VACUOUS: no bucket boundary changed the fault, so nothing was tested");
+        assert!(boundary_moves > 0, "VACUOUS: no bucket boundary moved the break, so nothing was tested");
+    }
+
+    /// A SHORT WALL ASKED FOR A BREAK GETS ONE — over every pier of both shipped
+    /// levels, at every count the model allows.
+    ///
+    /// This is the test the old system provably could not pass, and the reason
+    /// the round happened. A break used to be a coin flip per 6-wu strip with its
+    /// axis uniform inside, so a 2.2-wu catalogue slab held that axis about a
+    /// third of the time: the bench's break specimen came up EMPTY on its first
+    /// build and had to be widened to four cells until the hash cooperated. Now
+    /// the count is the answer.
+    ///
+    /// Both directions are pinned, because a level author needs both: `count: n`
+    /// puts n breaks through the run, and `count: 0` puts none through a wall
+    /// that is otherwise as damaged as its neighbours.
+    #[test]
+    fn a_short_wall_asked_for_a_break_gets_one() {
+        let mut one_panel_runs = 0;
+        for level in [crate::demos::Level::Gym, crate::demos::Level::Catalogue] {
+            let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA, true);
+            crate::wear::stamp_story(&mut scene, &meta.piers);
+            for (i, pier) in meta.piers.iter().enumerate() {
+                let fr = Frame::of(pier);
+                let (r0, r1) = if fr.run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
+                assert!(
+                    faults_for(&scene, pier, HOT, NO_BREAK).is_empty(),
+                    "{level:?} pier {i}: count 0 still broke the wall — the veto is not a veto"
+                );
+                for n in 1..=crate::wall::Breaks::MAX {
+                    let b = crate::wall::Breaks { count: n, at: None };
+                    // the RUN gets exactly what it asked for…
+                    assert_eq!(
+                        run_breaks(r0, r1, story_of(&scene, pier), b, HOT).len(),
+                        n as usize,
+                        "{level:?} pier {i}: run [{r0}, {r1}] asked for {n} breaks"
+                    );
+                    // …and no panel of it is left whole while its neighbour is
+                    // cut, which is what the per-panel roll used to do
+                    let mine = faults_for(&scene, pier, HOT, b).len();
+                    assert!(mine <= n as usize, "{level:?} pier {i}: {mine} breaks from a run of {n}");
+                }
+                // the run's own share, summed over its panels, must cover it: a
+                // single-pier run IS its run, so it can never come up empty
+                if (r1 - r0 - (fr.u1 - fr.u0)).abs() < 1e-4 {
+                    one_panel_runs += 1;
+                    assert_eq!(faults_for(&scene, pier, HOT, ONE_BREAK).len(), 1, "{level:?} pier {i}: a one-panel run asked for a break and got none");
+                }
+            }
+        }
+        // the catalogue is fifteen one-panel runs and the gym has the two garden
+        // walls, so a zero here means the strongest arm of the test was skipped
+        assert!(one_panel_runs > 15, "VACUOUS: only {one_panel_runs} one-panel runs were checked");
+    }
+
+    /// TWO RUNS MUST NOT BREAK ALIKE — the hash-bias guard.
+    ///
+    /// A break's lean, its drop direction and its story-seeded place all come off
+    /// `hash13` at coordinates derived from the run's story key, and this codebase
+    /// has already been burnt once by exactly that: `crack::run_ramp` drew its
+    /// gradient sign off the noise's x axis and all twelve trial runs came out
+    /// leaning the same way, because `hash13` carries a bias at small offsets. So
+    /// the variety is a measured claim, not an assumption.
+    #[test]
+    fn breaks_of_different_runs_do_not_all_lean_the_same_way() {
+        let mut leans = (0, 0);
+        let mut drops = (0, 0);
+        let mut places: Vec<i64> = Vec::new();
+        for level in [crate::demos::Level::Gym, crate::demos::Level::Catalogue] {
+            let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA, true);
+            crate::wear::stamp_story(&mut scene, &meta.piers);
+            for pier in &meta.piers {
+                for f in run_breaks(0.0, 6.0, story_of(&scene, pier), ONE_BREAK, HOT) {
+                    *(if f.tilt > 0.0 { &mut leans.0 } else { &mut leans.1 }) += 1;
+                    *(if f.sign > 0.0 { &mut drops.0 } else { &mut drops.1 }) += 1;
+                    places.push((f.ax * 100.0) as i64);
+                }
+            }
+        }
+        places.sort_unstable();
+        places.dedup();
+        assert!(leans.0 > 3 && leans.1 > 3, "every run leans the same way ({leans:?}) — the tilt hash is biased");
+        assert!(drops.0 > 3 && drops.1 > 3, "every run drops the same side ({drops:?}) — the sign hash is biased");
+        assert!(places.len() > 8, "only {} distinct places over both levels — the place hash is degenerate", places.len());
+    }
+
+    /// BREAK `at` LANDS WHERE IT WAS ASKED, within the wander the effect is made
+    /// of. An authored place is the half of the model a bench needs and a
+    /// probability could not offer at all; the tolerance is the path's own
+    /// amplitude (±0.76 wu at the extremes of two noise octaves), so this pins
+    /// the ANCHOR, which is the thing the author typed.
+    #[test]
+    fn break_at_lands_where_it_was_asked() {
+        for at in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            let (u0, u1) = (3.0f32, 9.0f32);
+            let b = crate::wall::Breaks { count: 1, at: Some(at) };
+            let f = &run_breaks(u0, u1, 0.37, b, HOT)[0];
+            let want = mixf(u0 + BREAK_MARGIN, u1 - BREAK_MARGIN, at);
+            assert!((f.ax - want).abs() < 1e-4, "at {at}: anchored at {} not {want}", f.ax);
+            assert!(f.ax > u0 + 0.3 && f.ax < u1 - 0.3, "at {at}: {} is a sliver off the end, not a break", f.ax);
+        }
     }
 
     /// THE DIRTY-SET PIN (2026-07-25, task 3 step 2): a knob drag on one pier
@@ -3110,7 +3247,7 @@ mod tests {
     #[test]
     fn policy_signs_on_faulted_piers_too() {
         let mut scene = Scene::default();
-        let pier = faulting_pier(&mut scene);
+        let pier = pier_at(&mut scene, 1.0);
         let par = [[0.5; PARAMS_MAX]];
         let sigs: Vec<Vec<GeoKey>> = (0..POLICIES.len() as u8).map(|p| keys(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par, &[], &[])).collect();
         let mut uniq = sigs.clone();
@@ -3245,16 +3382,20 @@ mod tests {
     /// real joint of the gym's own facade, because the whole defect was that the
     /// pattern reset exactly there.
     ///
-    /// The other half of the split is pinned here too: the PANEL seeds (the
-    /// structural fault lattice) must stay different, or a facade cracks at one
-    /// repeated position — the owner risk on record for this effect.
+    /// THE BREAKS ARE THE SAME EQUALITY as of 2026-07-26, and the test now says
+    /// so — it used to assert the opposite.
     ///
-    /// Since the field's LEVEL is normalized per run, the equality also pins
-    /// that [`run_level`] is a per-RUN datum: it is computed independently for
-    /// each of the two piers here, and if it came out per PANEL the two fields
-    /// would differ by a constant and the patch would step at the joint.
+    /// The old claim was that the two panels' fault SEEDS must differ, hedging an
+    /// owner risk on record: "a shared fault seed would crack a facade at one
+    /// repeated position". That risk was real while a break was a coin flip on a
+    /// 6-wu LATTICE — sharing the seed across a facade would have rolled the
+    /// period once and cracked every panel at the same offset. An authored count
+    /// at authored places has no period, so the risk dies with the lattice and
+    /// the correct claim inverts: both panels of a run must compute the IDENTICAL
+    /// break set, or a cut stops dead at a window jamb. Which is exactly what
+    /// the per-panel roll did to a break landing on a joint.
     #[test]
-    fn piers_of_one_run_share_a_damage_field_but_not_a_fault_lattice() {
+    fn piers_of_one_run_share_a_damage_field_and_their_breaks() {
         let spec = house_game::gym::sim::gym_level();
         let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         crate::wear::stamp_story(&mut scene, &meta.piers);
@@ -3288,7 +3429,18 @@ mod tests {
             }
         }
         assert!(differs_from_other_run, "a different run must tell a different story");
-        assert_ne!(seg_of(&scene, a).1, seg_of(&scene, b).1, "the FAULT seed stays per panel");
+        // the run's breaks, computed from each panel in turn: same anchors, same
+        // widths, same drop directions — a break on the joint belongs to both
+        let brk = |p: &Pier| {
+            let f = Frame::of(p);
+            let (r0, r1) = if f.run_x { (p.run_lo.x, p.run_hi.x) } else { (p.run_lo.z, p.run_hi.z) };
+            run_breaks(r0, r1, story_of(&scene, p), crate::wall::Breaks { count: 2, at: None }, k)
+                .iter()
+                .map(|x| ((x.ax / 1e-6) as i64, (x.mw / 1e-6) as i64, (x.tilt / 1e-6) as i64, x.sign as i64))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(brk(a), brk(b), "one run, ONE set of breaks — a cut must not stop at the jamb");
+        assert_ne!(brk(a), brk(c), "a different run must break in different places");
     }
 
     /// THE FIX, as the number the owner would judge: the fraction of each wall
@@ -3483,8 +3635,8 @@ mod tests {
     #[test]
     fn a_fault_separates_once_and_frays_on_the_surface() {
         let mut scene = Scene::default();
-        let pier = faulting_pier(&mut scene);
-        let faults = faults_for(&scene, &pier, HOT, false);
+        let pier = pier_at(&mut scene, 1.0);
+        let faults = faults_for(&scene, &pier, HOT, ONE_BREAK);
         let fr = Frame::of(&pier);
         let bolts = fault_bolts(&faults, &fr, bucket(HOT), px_floor(fr.run_x));
         let through = bolts.iter().filter(|b| b.through).count();
@@ -3510,8 +3662,8 @@ mod tests {
     #[test]
     fn carve_tiles_the_face() {
         let mut scene = Scene::default();
-        let pier = faulting_pier(&mut scene);
-        let faults = faults_for(&scene, &pier, HOT, false);
+        let pier = pier_at(&mut scene, 1.0);
+        let faults = faults_for(&scene, &pier, HOT, ONE_BREAK);
         let fr = Frame::of(&pier);
         let bolts: Vec<Bolt> = fault_bolts(&faults, &fr, bucket(HOT), px_floor(fr.run_x)).into_iter().filter(|b| b.through).collect();
         let rect = vec![Vec2::new(fr.u0, fr.y0), Vec2::new(fr.u1, fr.y0), Vec2::new(fr.u1, fr.y1), Vec2::new(fr.u0, fr.y1)];

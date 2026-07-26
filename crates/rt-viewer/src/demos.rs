@@ -65,7 +65,7 @@ pub enum Action {
 /// Which hand-authored level a demo boots. The gym is THE scene (CLAUDE.md);
 /// the catalogue is the owner's 2026-07-26 exception — a bench whose only job
 /// is to hold one effect per wall under identical light.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Level {
     Gym,
     Catalogue,
@@ -237,34 +237,32 @@ pub static DEMOS: &[Demo] = &[
 /// row opens on a PRISTINE control except the middle one, which is flanked by
 /// the two controls in the rows above and below it.
 ///
-/// Two couplings decided most of these numbers, and both are properties of the
-/// system rather than of the bench:
+/// One coupling still decides most of these numbers, and it is a property of the
+/// system rather than of the bench: **age drives the damaged AREA**, not just
+/// the tone, so below ~0.3 a wall has almost no damaged patch to put an effect
+/// in and "show me the plates" means a high age whether or not the effect is
+/// about staining.
 ///
-/// - **A structural fault is a function of age × cracks**
-///   (`crack_geom::pier_faults`: `0.95 · smoothstep(0.12, 0.42, age) ·
-///   smoothstep(0.04, 0.45, cracks)`), so at the ages that make damage visible
-///   almost every wall faults. The specimens that are NOT about the fault
-///   therefore run a LOW cracks knob (0.12-0.25, ≈6-25 % fault odds) — which
-///   costs nothing, because that knob is also the plate lattice's frequency and
-///   a coarse lattice is the readable one at 90 px per wall.
-/// - **Age drives the damaged AREA**, not just the tone: the gate is
-///   `mix(0.74, 0.55, age)` against a field `run_level` normalizes at age 0.6.
-///   Below ~0.3 a wall has almost no damaged patch to put an effect in, so
-///   "show me the plates" means a high age whether or not the effect is about
-///   staining. That is why the pattern row runs at 0.75.
+/// The other one is GONE as of 2026-07-26. A break used to be a coin flip on
+/// age × cracks, so at every age that made damage visible almost every wall also
+/// broke in half, and every specimen that was about something else had to run a
+/// LOW cracks knob to keep the odds down. Now the count is authored
+/// (`crack::Specimen::breaks`), so the knobs are free to be whatever reads best
+/// and exactly one slab breaks.
 pub static SPECIMENS: &[crate::crack::Specimen] = {
     use crate::crack::Specimen;
-    /// A geometry specimen with the structural fault VETOED — the default,
-    /// because a wall broken in half is a different effect and would be the
-    /// only thing anyone saw on that slab (`crack_geom::faults_for`).
+    /// A geometry specimen that does NOT break through — the default, because a
+    /// wall broken in half is a different effect and would be the only thing
+    /// anyone saw on that slab. An ordinary authored zero since 2026-07-26; it
+    /// used to be a veto flag against a probability.
     const fn s(at: (f32, f32), label: &'static str, knobs: [f32; 4], policy: u8, spall: f32) -> Specimen {
-        Specimen { at, label, knobs, policy, spall, paint_only: false, faults: false }
+        Specimen { at, label, knobs, policy, spall, paint_only: false, breaks: 0 }
     }
     /// Knobs stamped, geometry pass skipped — the only way to see the shade
     /// pass's painted crack network and painted chips, which `CRAZE_BIT`
     /// suppresses on every pier `crack_geom` touches.
     const fn p(at: (f32, f32), label: &'static str, knobs: [f32; 4]) -> Specimen {
-        Specimen { at, label, knobs, policy: 0, spall: 0.0, paint_only: true, faults: false }
+        Specimen { at, label, knobs, policy: 0, spall: 0.0, paint_only: true, breaks: 0 }
     }
     &[
         // ---- row 0 (z=7): the PATTERN policies, at one shared knob set so the
@@ -273,9 +271,11 @@ pub static SPECIMENS: &[crate::crack::Specimen] = {
         s((5.0, 7.0), "lightning network", [1.0, 0.60, 0.50, 0.0], 0, 0.0),
         s((8.0, 7.0), "craquelure", [1.0, 0.60, 0.50, 0.0], 1, 0.0),
         s((11.0, 7.0), "mosaic", [1.0, 0.60, 0.50, 0.0], 2, 0.0),
-        // the one specimen that WANTS the fault: cracks at 0.8 puts the odds at
-        // ~95 %, and the pieces + settlement step are the effect
-        Specimen { at: (15.0, 7.0), label: "structural fault", knobs: [0.90, 0.85, 0.50, 0.10], policy: 0, spall: 0.0, paint_only: false, faults: true },
+        // the one specimen that ASKS to break: one break, mid-slab, and the two
+        // pieces + the settlement step are the effect. Two cells like every
+        // other slab in the row — it needed four while presence was a coin flip
+        // on a 6-wu strip (`sim::SPEC_CELLS`).
+        Specimen { at: (14.0, 7.0), label: "structural break", knobs: [0.90, 0.60, 0.50, 0.10], policy: 0, spall: 0.0, paint_only: false, breaks: 1 },
         // ---- row 1 (z=11): LOSS — material that is no longer there
         s((4.0, 11.0), "chips (fragments gone)", [1.0, 0.50, 0.40, 0.95], 0, 0.0),
         // mosaic grooves every cell edge by construction, so its plates are the

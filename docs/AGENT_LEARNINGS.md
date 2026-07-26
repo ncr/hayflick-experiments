@@ -998,3 +998,81 @@ Rules that follow:
   before it can be relied on for a byte diff.
 - The probe CACHE is not the culprit and was cleared of it explicitly: cached
   and fresh bakes of the same scene agree exactly, within a mode.
+
+## 2026-07-26 (breaks become a count) — a probability cannot be authored, and a shim can smuggle the old defect back in
+
+Replacing the structural break's 6-wu-strip coin flip with an authored count was
+the cleanest of the refactor's steps and still produced two lessons, one about
+the thing being replaced and one about the replacement.
+
+### A probability has no "none" and no "one", and both absences cost real work
+
+The old rule fired at `0.95 · smoothstep(0.12, 0.42, age) · smoothstep(0.04,
+0.45, cracks)` per strip. Everything downstream had to be built around the fact
+that a level author could not name an outcome:
+
+- **No "one".** A 2.2-wu bench slab contained a strip's axis about a third of the
+  time, so the effect catalogue's break specimen came up EMPTY on its first
+  build. The fix at the time was to widen that slab to four cells — a real
+  measurement, an honest response, and a permanent asymmetry in a bench whose
+  entire premise is that the slabs are identical. It reverted to two cells in one
+  line the moment the count existed.
+- **No "none".** Presence and the crack network share `age`, so at every age
+  where a veneer pattern was visible the odds of also breaking the wall in half
+  were ≥ 0.9. "Cracked but not broken through" therefore needed a VETO FLAG
+  (`Specimen::faults`, `CrackLab::no_fault`, a `no_fault` argument threaded
+  through `apply_geometry` and `keys`) to be expressible at all. Six code sites
+  existed to say a thing the model should have been able to say with a zero.
+
+The generalizable shape: **when a system's output is a probability, every state
+an author wants becomes a flag, and every flag has to be plumbed.** Count the
+flags around a mechanism — that count is the measure of how badly the mechanism
+is parameterized. Here it was four (`faults`, `no_fault`, `SPEC_WIDE`, and the
+low-`cracks` convention every unrelated specimen had to follow to keep its odds
+down), and all four were deleted by one struct with two fields.
+
+A third defect only became visible once the mechanism was written down: the
+strips are anchored in RUN space but the roll was seeded PER PANEL, so a strip
+straddling a window jamb was rolled twice with different seeds. The same break
+existed on one panel and not its neighbour, and the crack stopped dead at the
+opening. Nobody had reported it, and no test could have caught it, because the
+system had no notion of "the same break" to compare.
+
+### The owner risk that justified a decision can expire with the decision
+
+Step 4 deliberately kept the fault seed per PANEL against a recorded owner risk:
+"a shared fault seed would crack a facade at one repeated position". That was
+correct — while a break was a coin flip on a 6-wu LATTICE, sharing the seed would
+have rolled the period once and cracked every panel at the same offset. An
+authored count at authored places has no period, so the risk died with the
+lattice, and a test that had been asserting `assert_ne!` on the two panels' seeds
+had to be inverted to `assert_eq!` on their break sets.
+
+**Re-read the reason, not the conclusion.** A hedge recorded against a mechanism
+is not a standing preference; when the mechanism goes, check whether the hedge
+still describes anything. Both the old and the new claim are pinned in the same
+test with the argument written next to them, so the next person can audit the
+inversion instead of trusting it.
+
+### The shim reintroduced the defect the round exists to remove
+
+The four legacy knobs still drive the panel, so a shim maps them onto the new
+`Story`. `settlement` came from age × cracks, and the naive spelling asked each
+PIER for its own count. But `seed_knobs` deliberately RAMPS age/cracks along a
+run (a facade with a bad end and a clean end), so the gym's east facade derived
+counts of **2, 2 and 1** for ONE authored slab — and its three panels then
+computed three different break sets and cut three different walls. Exactly the
+per-panel disagreement the round exists to delete, walked straight back in
+through the compatibility layer.
+
+Caught only by MEASURING: a throwaway test that printed every pier's run, count
+and resulting break list. The unit tests were green — they pinned that a run's
+breaks are a function of `(run, story, count)`, which was true; the bug was in
+what `count` was handed. The fix is the run's MEAN knobs (the ramp is symmetric
+about the base the author typed), and it is now pinned over both shipped levels
+with a vacuity guard that the knobs really do differ across a run.
+
+**A shim is where a refactor's invariant goes to die.** The new code is written
+with the invariant in mind; the shim is written to preserve old behaviour, and
+"old behaviour" includes the defect. Any per-RUN quantity derived from per-PANEL
+legacy state needs its own equality test, not just the new engine's.

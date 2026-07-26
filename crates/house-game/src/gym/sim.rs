@@ -202,31 +202,23 @@ pub const SPEC_ROW_DX: i16 = 2;
 pub const SPEC_HOUSE: (i16, i16, i16, i16) = (2, 1, 6, 3);
 pub const SPEC_DOOR: CellPos = CellPos { x: 4, z: 3 };
 
-/// The ONE specimen that cannot be 2 cells wide, and why.
+/// Every specimen is the SAME 2 cells wide — identical is the whole point of the
+/// bench, and until 2026-07-26 one slab could not be.
 ///
-/// A structural fault is drawn once per 6-wu STRIP of wall
-/// (`rt_viewer::crack_geom::pier_faults`), and its axis lands anywhere inside
-/// that strip — so a 2.2-wu slab contains the axis barely a third of the time,
-/// and the bench's fault specimen came up empty on the first build. Widening it
-/// is the honest answer rather than hunting for an x where the hash happens to
-/// cooperate: the effect's own scale is 6 wu, and a bench that hides that is
-/// lying about the effect. It is the last slab of row 0, so the extra width
-/// grows into the gap at the end of the row and nothing else moves.
-pub const SPEC_WIDE: (usize, i16, i16) = (0, 4, 4); // (row, index, cells)
-
-/// How many cells wide specimen `i` of row `row` is.
-pub fn spec_cells(row: usize, i: i16) -> i16 {
-    if (row, i) == (SPEC_WIDE.0, SPEC_WIDE.1) {
-        SPEC_WIDE.2
-    } else {
-        2
-    }
-}
+/// The break specimen used to need four cells: a break was drawn once per 6-wu
+/// STRIP with its axis anywhere inside, so a 2.2-wu slab contained that axis
+/// barely a third of the time and the bench's break came up EMPTY on its first
+/// build. Widening it was the honest answer to a probability — the effect's own
+/// scale really was 6 wu, and a bench that hid that would have been lying about
+/// the effect. Now a break is an authored COUNT placed on the run
+/// (`rt_viewer::crack_geom::run_breaks`), so a 2.2-wu wall asked for one gets
+/// one, and the row is uniform again.
+pub const SPEC_CELLS: i16 = 2;
 
 /// World (x, z) of specimen `i` in row `r` — the point a caller names it by.
 /// The wall line is the cell's -z edge, so its world z IS the row index.
 pub fn spec_point(row: usize, i: i16) -> (f32, f32) {
-    (spec_x0(row, i) as f32 + spec_cells(row, i) as f32 * 0.5, SPEC_Z[row] as f32)
+    (spec_x0(row, i) as f32 + SPEC_CELLS as f32 * 0.5, SPEC_Z[row] as f32)
 }
 
 /// The x cell specimen `i` of row `row` starts on.
@@ -254,7 +246,7 @@ pub fn catalogue_level() -> GymLevel {
     for (row, &z) in SPEC_Z.iter().enumerate() {
         for i in 0..SPEC_N {
             let x0 = spec_x0(row, i);
-            for x in x0..x0 + spec_cells(row, i) {
+            for x in x0..x0 + SPEC_CELLS {
                 grid.set_edge(CellPos::new(x, z), Dir::Zm, EdgeKind::Wall);
             }
         }

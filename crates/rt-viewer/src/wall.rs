@@ -60,7 +60,7 @@
 // `Sheet::paint`), and this allow comes off with them.
 #![allow(dead_code)]
 
-use crate::crack_geom::{mixf, smoothstep, vnoise};
+use crate::crack_geom::{hash13, mixf, smoothstep, vnoise};
 use glam::Vec3;
 
 // ---------------------------------------------------------------------------
@@ -191,9 +191,41 @@ impl Layer {
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Breaks {
     pub count: u8,
-    /// Fraction along the run, 0..1. Only meaningful at `count == 1`; with more
-    /// breaks the count spreads them and this is the first one's anchor.
+    /// Fraction along the run, 0..1. At `count == 1` it IS the place; with more
+    /// breaks it shifts the whole spread, so it stays the answer to "where".
     pub at: Option<f32>,
+}
+
+impl Breaks {
+    /// Three, because a fourth piece of a wall is rubble and the game has a
+    /// separate mechanism for that (the wall-smash demo).
+    pub const MAX: u8 = 3;
+    pub const NONE: Breaks = Breaks { count: 0, at: None };
+
+    /// Break `j` lands here, as a fraction of the run's length.
+    ///
+    /// Evenly spread, then jittered by at most ±0.17 of ONE SPACING off its own
+    /// slot — so the order and the minimum gap (0.66/count of the run) hold by
+    /// construction, and no two breaks can ever land on top of each other. That
+    /// is the whole reason this is a spread-plus-jitter and not `count`
+    /// independent draws: independent draws collide, and two breaks 0.05 wu
+    /// apart are one break with a sliver between them.
+    ///
+    /// The jitter is seeded on the RUN's story, so it is the same on every panel
+    /// the run was cut into — the point of the round. An authored `at` turns it
+    /// off entirely: a place the author typed is not a place to be surprised by.
+    pub fn places(&self, story: f32) -> Vec<f32> {
+        let n = self.count.min(Self::MAX) as usize;
+        (0..n)
+            .map(|j| {
+                let slot = |off: f32| (j as f32 + 0.5 + off) / n as f32;
+                match self.at {
+                    Some(a) => (a.clamp(0.0, 1.0) + slot(0.0) - 0.5).clamp(0.0, 1.0),
+                    None => slot(0.34 * (hash13(Vec3::new(j as f32, story * 13.0 + 7.0, 71.0)) - 0.5)),
+                }
+            })
+            .collect()
+    }
 }
 
 /// Amounts the author (or a panel drag) has taken over. `None` = use the value
@@ -369,7 +401,7 @@ pub fn derive(s: Story) -> ([f32; Layer::N], Breaks) {
             0.50 * from(w, 0.75),    // Chips
             s.cover_loss,            // Spall
         ],
-        Breaks { count: (3.0 * from(s.settlement, 0.40)).round() as u8, at: None },
+        Breaks { count: (Breaks::MAX as f32 * from(s.settlement, 0.40)).round() as u8, at: None },
     )
 }
 
@@ -829,6 +861,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// BREAKS NEVER COLLIDE AND NEVER SWAP, at any count and any story.
+    ///
+    /// The reason [`Breaks::places`] is a spread with a bounded jitter and not
+    /// `count` independent draws: independent draws collide, and two breaks 0.05
+    /// wu apart are one break with a sliver between them — the exact thing
+    /// `BREAK_MARGIN` keeps off the ENDS of a run, so letting it happen in the
+    /// middle would be pointless. Also pinned: the jitter is real, or the model
+    /// would place every run's breaks at the same fractions.
+    #[test]
+    fn breaks_spread_out_and_stay_in_order() {
+        let mut moved = false;
+        for n in 1..=Breaks::MAX {
+            let b = Breaks { count: n, at: None };
+            for s in 0..64 {
+                let story = s as f32 * 0.618;
+                let p = b.places(story);
+                assert_eq!(p.len(), n as usize, "count {n} produced {} places", p.len());
+                for (j, v) in p.iter().enumerate() {
+                    assert!((0.0..=1.0).contains(v), "count {n} story {story}: place {j} at {v}");
+                    // its own slot, jittered by at most 0.17 of one spacing
+                    let slot = (j as f32 + 0.5) / n as f32;
+                    assert!((v - slot).abs() <= 0.17 / n as f32 + 1e-6, "count {n} story {story}: place {j} left its slot ({v} vs {slot})");
+                    moved |= (v - slot).abs() > 1e-4;
+                }
+                for w in p.windows(2) {
+                    assert!(w[1] - w[0] >= 0.66 / n as f32 - 1e-6, "count {n} story {story}: {:?} are one break with a sliver between them", w);
+                }
+            }
+        }
+        assert!(moved, "VACUOUS: the jitter never moved a break off its slot");
+        // an authored place is a place, not a suggestion
+        assert!((Breaks { count: 1, at: Some(0.2) }.places(7.4)[0] - 0.2).abs() < 1e-6);
+        assert_eq!(Breaks { count: 0, at: Some(0.2) }.places(7.4), Vec::<f32>::new());
     }
 
     /// `derive` IS THE ONLY WRITER: an all-zero story with one pin yields

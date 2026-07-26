@@ -57,20 +57,25 @@ test hook:
   sets `CRAZE_BIT`, which is exactly what the shader gates those two layers off.
   The whole paint row is paint-only, including the two slabs with no crack knob
   at all — a nonzero AGE alone is enough to trigger the geometry pass.
-- **`Specimen::faults` / `crack_geom::faults_for`'s veto** — fault presence and
-  the small-crack network are coupled through AGE (`0.95 · smoothstep(0.12,
-  0.42, age) · smoothstep(0.04, 0.45, cracks)`, and the damage field only opens
-  a readable patch above age ≈ 0.5), so at every age where a veneer pattern is
-  visible the odds of also breaking the wall in half are ≥ 0.9. `apply_geometry`
-  and `signatures` take a per-pier `no_fault` mask.
+- **`Specimen::breaks`** — WAS `Specimen::faults`, a veto flag against a
+  probability, and is now an ordinary authored count (see BREAKS ARE A COUNT
+  below). Break presence and the small-crack network used to be coupled through
+  AGE (`0.95 · smoothstep(0.12, 0.42, age) · smoothstep(0.04, 0.45, cracks)`,
+  and the damage field only opens a readable patch above age ≈ 0.5), so at every
+  age where a veneer pattern was visible the odds of also breaking the wall in
+  half were ≥ 0.9, and "cracked but not broken" needed a flag to be expressible
+  at all. `breaks: 0` is that state now, and `breaks: 1` is the one slab whose
+  subject IS the break.
 
-ONE specimen is not 2 cells wide, and the reason is the effect's own scale: a
-fault is drawn once per 6-wu STRIP with its axis anywhere inside it, so a 2.2-wu
-slab contains that axis about a third of the time — the fault specimen came up
-EMPTY on the first build (caught by `catalogue_tests`). It is 4 cells
-(`sim::SPEC_WIDE`). Pinned: every specimen names a real pier, no two share one,
-each is its own run, paint-only piers carry knobs but no `GEO/CRAZE` bit, and
-the vetoed piers keep their veneer while the fault specimen really faults.
+Every specimen is the SAME 2 cells wide (`sim::SPEC_CELLS`) — identical is the
+point of a bench. One of them could not be, until 2026-07-26: a break was drawn
+once per 6-wu STRIP with its axis anywhere inside it, so a 2.2-wu slab contained
+that axis about a third of the time and the break specimen came up EMPTY on the
+first build (caught by `catalogue_tests`). Widening it to 4 cells was the honest
+answer to a probability; an authored count removes the probability, so the row is
+uniform again. Pinned: every specimen names a real pier, no two share one, each
+is its own run, paint-only piers carry knobs but no `GEO/CRAZE` bit, and the
+`breaks: 0` piers keep their veneer while the break specimen really breaks.
 
 ## The one scene: the gym
 
@@ -322,40 +327,76 @@ stamps it before the geometry pass, and BOTH the host damage field
 (`crack_geom::CrazeCfg`) and the shade pass (`float story =
 m.baseColor.a`) seed off that one f32 — so a damage patch crosses a
 window opening instead of restarting at the jamb (pinned as an equality
-by `crack_geom::piers_of_one_run_share_a_damage_field_but_not_a_fault_lattice`),
-and chalk cores inherit it for free. The structural FAULT lattice stays
-per panel (`seg`) — a shared fault seed would crack a facade at one
-repeated position — as do the depth/chip knobs; `crack::run_ramp` puts
-only age/cracks on a per-run gradient, so a facade has a bad end and a
-clean end. The two `_pad`/alpha budgets are documented in one place:
+by `crack_geom::piers_of_one_run_share_a_damage_field_and_their_breaks`),
+and chalk cores inherit it for free. The BREAKS joined the run on
+2026-07-26 — the per-panel `seg` seed and the risk it hedged ("a shared
+fault seed would crack a facade at one repeated position") both belonged
+to the 6-wu lattice that is now gone. Depth and chip stay per panel;
+`crack::run_ramp` puts only age/cracks on a per-run gradient, so a facade
+has a bad end and a clean end. The two `_pad`/alpha budgets are documented in one place:
 `crates/rt-viewer/src/wear.rs`. The GLSL twin's one-line `story` read is
 blind (same inverted side as step 3, same crack-lab boot check).
-FIELD LEVEL since 2026-07-25 (task-3 step 5), the effect word's first real
-consumer: the damage field's gates are ABSOLUTE thresholds on an fbm, and
-one facade is only ~2 cells of its dominant octave wide, so once the field
-went per-RUN a whole facade could be UN-AGEABLE (measured: the gym's seven
-runs spread their damaged area from 0.000 to 0.645 at age 0.9).
-`crack_geom::run_level` samples the field over the RUN's own face on the
-0.1-wu lattice and returns the offset that puts a per-run drawn FRACTION of
-it (`wear::level_fraction`, 0.06..0.24 of the face at age 0.6) over the
-gate; `wear`'s lane 1 carries it to the shade pass as a 6-bit TWO'S-
-COMPLEMENT code in units of `LEVEL_STEP = 0.012` (signed precisely so the
-EMPTY word means "not normalized" — a unorm lane would un-age every
-unstamped surface). Host and shader both apply `level_quantize`'s value, and
+SOLVED THRESHOLDS since 2026-07-25 (task-3 step 5), the effect word's
+first real consumer, and the round's central change. The gates USED to be
+one age-derived value `d_t` sliding five FIXED windows (stains at
+`d_t − 0.14`, cracks at `−0.10`, the veneer zone at `+0.02`, the web at
+`+0.08`), so how much of a face was damaged was whatever that run's fbm
+draw happened to give it: the gym's seven runs spread their damaged area
+from 0.000 to 0.645 at age 0.9, and the run behind the doorway was
+UN-AGEABLE at any age. Now each layer has its own ABSOLUTE threshold
+SOLVED from the run's own sorted samples (`wall::RunField::threshold`,
+`crack::gates_of`), so an AMOUNT IS AN AREA and the layers are
+independent — "stains spread wider than the cracking" is a sentence the
+model can express. `wear`'s lanes 0 and 1 carry the two PAINTED layers'
+thresholds to the shade pass as 6-bit codes counting DOWN from
+`wall::GATE_HI` in `GATE_STEP = 0.020`, and
 `wear::both_shader_twins_decode_the_level_lane_exactly_as_the_host_packs_it`
-reads both `.comp` and `.metal` at compile time and fails the build if
-either drifts. `WEAR_LEVEL=0` is the harness A/B (bit-identical to before
-the lane). Same inverted blind side: the GLSL twin's two lines compile
-(build.rs runs glslangValidator) but have never RUN. The failure signature
-is NOT a blank wall — the HOST always applies its own copy of the offset, so
-a dead GLSL read shows as PAINT THAT DISAGREES WITH THE PLATES (stains and
-the fine web sitting off the grooved region), a tonal shift only, ~15 % of
-the frame at Δ31 (simulated on Metal, 2026-07-25). A first Vulkan session
-should boot `LEVEL="crack lab" CRACKS="0.9,0.8,0.6,0.3" WINDOW=1280x800
-ZOOM=2.0 TARGET_X=6.8 TARGET_Z=8.0` and compare the panel between the
-doorway and the corner against the Metal reference; the RTX cross-run noise
-floor is zero, so any byte difference from a `WEAR_LEVEL=0` build is real
-signal either way.
+reads both `.comp` and `.metal` at compile time so neither can drift. ONE
+function, TWO callers: the geometry pass uses exactly the quantized value
+the shader will decode, because splitting them leaves paint and plates in
+different patches. This DELETED the whole FIELD LEVEL machinery
+(`run_level`, `level_quantize`, `WEAR_LEVEL`) — it existed to nudge each run's
+field toward a canonical level, i.e. to correct a lottery's symptom —
+plus four of `age`'s silent extra jobs (plate dropout, the settlement
+factor, the chip gate's dependence on the stain window, the root density's
+age term). Verified 4 runs per side: `gym` BYTE-IDENTICAL, `crack lab`
+1.9 % at max 183. Same inverted blind side: the GLSL twin's gate reads
+compile (build.rs runs glslangValidator) but have never RUN. The failure
+signature is NOT a blank wall — the HOST applies its own copy — but PAINT
+THAT DISAGREES WITH THE PLATES (stains and the fine web sitting off the
+grooved region). A first Vulkan session should boot `LEVEL="crack lab"
+CRACKS="0.9,0.8,0.6,0.3" WINDOW=1280x800 ZOOM=2.0 TARGET_X=6.8
+TARGET_Z=8.0` and compare against the Metal reference; the RTX cross-run
+noise floor is zero, so any byte difference is real signal either way.
+
+BREAKS ARE A COUNT AND A PLACE since 2026-07-26 (task-3 step 6). A
+structural break used to be a coin flip on a 6-wu STRIP lattice —
+`0.95 · smoothstep(0.12, 0.42, age) · smoothstep(0.04, 0.45, cracks)` per
+strip, with a second lattice fading in above cracks ≈ 0.8 — and it was
+wrong three ways at once, none of which a level author could work around:
+you could not ask for ONE (a 2.2-wu slab held a strip's axis a third of
+the time, so the catalogue's break specimen shipped 4 cells wide until the
+hash cooperated); you could not ask for NONE (presence and the crack
+network share `age`, so at every visible age the odds were ≥ 0.9, and
+"cracked but not broken" needed a veto flag); and the roll was seeded PER
+PANEL while the strips are anchored in RUN space, so a break landing on a
+window jamb existed on one panel and not its neighbour. `wall::Breaks`
+{count ≤ 3, at} + `crack_geom::run_breaks` replace all of it: breaks are
+placed on the RUN, evenly spread and jittered at most ±0.17 of one spacing
+(so order and a 0.66/count minimum gap hold by construction), kept
+`BREAK_MARGIN = 0.35` wu off the ends, and each panel keeps the ones that
+cross it. `Specimen::faults`/`CrackLab::no_fault`/`sim::SPEC_WIDE` are
+gone; `GeoKey` signs the count and the place. Host-side only — since the
+painted-layer cull no shader reads a fault. The shim
+(`crack::story_of_knobs`) still derives settlement from age × cracks,
+calibrated ×0.8 to reproduce the ~1.9 breaks per 6-wu run the old lattice
+averaged, and it derives it PER RUN from the run's mean knobs: the naive
+per-panel reading gave one facade counts of 2, 2 and 1 and three panels
+cut three different break sets (pinned by
+`crack::one_run_gets_one_break_count_even_though_the_knobs_ramp`).
+Verified 4 runs per side: `gym` BYTE-IDENTICAL, `crack lab` 1.8 % at max
+189 — the difference being facades that lost their coin flip and now break
+because their story says so.
 
 COVER SPALL WITH REBAR since 2026-07-25 (task-3 step 2, owner headline
 "large concrete spalls with the REBAR showing underneath"): one staged

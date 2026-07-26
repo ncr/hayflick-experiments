@@ -132,12 +132,13 @@ pub fn story_key(run_lo: Vec3, run_hi: Vec3) -> f32 {
     (run_hash(run_lo, run_hi, 0) & 255) as f32 * 0.618
 }
 
-/// FNV-1a over a RUN's quantized authoring rect. `salt` separates the
-/// independent per-run draws — the story key (salt 0) and the field level's
-/// damaged FRACTION ([`LEVEL_SALT`]) — so two draws off one run can never
-/// alias into the same value. Salt 0 reproduces the story key's original hash
-/// byte for byte (`0 ^ basis == basis`), which is load-bearing: the key seeds
-/// every damage pattern in the level and the probe cache hashes it.
+/// FNV-1a over a RUN's quantized authoring rect. `salt` is here to separate
+/// INDEPENDENT per-run draws so two of them can never alias into the same value;
+/// only salt 0 (the story key) has a caller today — the field level's damaged
+/// fraction was the second one, and solved thresholds retired it. Salt 0
+/// reproduces the story key's original hash byte for byte
+/// (`0 ^ basis == basis`), which is load-bearing: the key seeds every damage
+/// pattern in the level, every break in it, and the probe cache hashes it.
 fn run_hash(run_lo: Vec3, run_hi: Vec3, salt: u32) -> u32 {
     let mut h: u32 = 0x811c_9dc5 ^ salt;
     for v in [run_lo.x, run_lo.z, run_hi.x, run_hi.z] {
@@ -329,8 +330,8 @@ impl Viewer {
         // in different patches. Deriving them twice is the drift this codec's
         // whole discipline exists to prevent.
         let par = self.crack.active_params();
-        let (gk, gs) = self.crack.geom_input();
-        let keys = crate::crack_geom::keys(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &self.crack.no_fault);
+        let (gk, gs, gb) = self.crack.geom_input(&self.piers);
+        let keys = crate::crack_geom::keys(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &gb);
         let gates: Vec<[u32; 2]> = self
             .piers
             .iter()

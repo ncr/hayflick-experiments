@@ -29,6 +29,7 @@
 //! 2026-07-25 the contour-AA scope's "picked wall only" mode).
 
 use crate::backend::ProbeRefresh;
+use crate::crack_geom::smoothstep;
 use crate::gym_scene::Pier;
 use crate::viewer::Viewer;
 use glam::{Vec2, Vec3};
@@ -113,11 +114,11 @@ pub struct Specimen {
     /// Stamp the knobs but keep the GEOMETRY pass off this pier — the only way
     /// to see the painted crack network and the painted chips (see above).
     pub paint_only: bool,
-    /// Let this wall break in half. OFF for every specimen that is about
-    /// something else, because fault presence and the small-crack network are
-    /// coupled through AGE and cannot otherwise be separated — see
-    /// `crack_geom::faults_for`.
-    pub faults: bool,
+    /// How many times this wall breaks through. An ORDINARY authored value now
+    /// (`crate::wall::Breaks`), where it used to be a veto flag against a
+    /// probability: a bench wall showing the veneer pattern needs `0`, and until
+    /// 2026-07-26 `0` was not a thing the system could be asked for.
+    pub breaks: u8,
 }
 
 /// Live crack-lab state on the [`Viewer`]: one knob quad per pier (parallel
@@ -156,9 +157,11 @@ pub struct CrackLab {
     /// Piers the GEOMETRY pass must skip (parallel to `knobs`) — the effect
     /// catalogue's paint-only specimens; see [`CrackSeed::specimens`].
     pub paint_only: Vec<bool>,
-    /// Piers whose STRUCTURAL FAULT is vetoed (parallel to `knobs`) — the
-    /// catalogue again; `crack_geom::faults_for` says why it has to exist.
-    pub no_fault: Vec<bool>,
+    /// Per-pier authored BREAKS (parallel to `knobs`), `None` = derive from the
+    /// knobs. Exactly `wall::Pins`' rule: a level that says nothing keeps the
+    /// breakage it was authored with, a level that says `count: 0` gets a wall
+    /// that crazes without coming apart.
+    pub breaks: Vec<Option<crate::wall::Breaks>>,
 }
 
 impl CrackLab {
@@ -174,15 +177,46 @@ impl CrackLab {
     /// fallback visible. Every caller of `apply_geometry`/`signatures` goes
     /// through this pair: a signature taken on the unmasked knobs would report
     /// a paint-only pier dirty on every drag and rebuild the scene for nothing.
-    pub fn geom_input(&self) -> (Vec<[f32; 4]>, Vec<f32>) {
-        if self.paint_only.iter().all(|p| !p) {
-            return (self.knobs.clone(), self.spall.clone());
-        }
+    ///
+    /// The breaks come out RESOLVED (pin or derivation, [`breaks_of`]) rather
+    /// than as pins, so nothing below this line has to know that a break can be
+    /// derived at all — `crack_geom` sees a count and a place, full stop.
+    ///
+    /// And resolved PER RUN, which needs `piers` and is the reason this takes an
+    /// argument. A break count is a property of the whole authored slab, but the
+    /// knobs it is derived from are per PANEL and deliberately RAMPED along the
+    /// run (`seed_knobs`, so a facade has a bad end and a clean end) — so asking
+    /// each panel separately gave the gym's east facade counts of 2, 2 and 1 for
+    /// ONE run, and its three panels then cut three different break sets. That is
+    /// precisely the defect this round exists to remove, walked back in through
+    /// the shim. The run's MEAN recovers the un-ramped base the author typed
+    /// (the ramp is symmetric about it), so the answer is one number per run and
+    /// it still tracks a live drag of any panel — which the age-ramp beat needs.
+    pub fn geom_input(&self, piers: &[Pier]) -> (Vec<[f32; 4]>, Vec<f32>, Vec<crate::wall::Breaks>) {
         let mask = |i: usize| !self.paint_only.get(i).copied().unwrap_or(false);
-        (
-            self.knobs.iter().enumerate().map(|(i, k)| if mask(i) { *k } else { [0.0; 4] }).collect(),
-            self.spall.iter().enumerate().map(|(i, s)| if mask(i) { *s } else { 0.0 }).collect(),
-        )
+        let k: Vec<[f32; 4]> = self.knobs.iter().enumerate().map(|(i, k)| if mask(i) { *k } else { [0.0; 4] }).collect();
+        let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
+        let b = (0..k.len())
+            .map(|i| {
+                if !mask(i) {
+                    return crate::wall::Breaks::NONE;
+                }
+                if let Some(pin) = self.breaks.get(i).copied().flatten() {
+                    return pin;
+                }
+                let mine = piers.get(i).map(rect);
+                let peers: Vec<[f32; 4]> = (0..k.len()).filter(|j| mask(*j) && piers.get(*j).map(rect) == mine).map(|j| k[j]).collect();
+                let n = peers.len().max(1) as f32;
+                let mut avg = [0.0; 4];
+                for p in &peers {
+                    for (a, v) in avg.iter_mut().zip(p) {
+                        *a += v / n;
+                    }
+                }
+                breaks_of(avg, None)
+            })
+            .collect();
+        (k, self.spall.iter().enumerate().map(|(i, s)| if mask(i) { *s } else { 0.0 }).collect(), b)
     }
 }
 
@@ -362,7 +396,7 @@ pub fn seed_spall(piers: &[Pier], s: &CrackSeed) -> Vec<f32> {
         .collect()
 }
 
-/// THE SHIM: legacy knobs -> the authoring model's layer AMOUNTS.
+/// THE SHIM: legacy knobs -> the authoring model's STORY.
 ///
 /// The crack lab's panel still drives four knobs; the engine underneath is now
 /// `wall`'s. This is the one place the two meet, and it exists so the mapping is
@@ -377,11 +411,39 @@ pub fn seed_spall(piers: &[Pier], s: &CrackSeed) -> Vec<f32> {
 /// - `cracks` is NOT an amount: it is the plate lattice's size, and it stays
 ///   where it always was, in `CrazeCfg::freq`. Naming that honestly (a grain in
 ///   world units) is a later step.
+/// - `age` and `cracks` together stand in for SETTLEMENT until a run carries its
+///   own story ([`breaks_of`]).
+pub fn story_of_knobs(k: [f32; 4], dial: f32) -> crate::wall::Story {
+    crate::wall::Story {
+        weather: k[0],
+        // The old break lattice fired per 6-wu strip at
+        // `0.95 · smoothstep(0.12, 0.42, age) · smoothstep(0.04, 0.45, cracks)`,
+        // with a second lattice joining above cracks ≈ 0.8 — so a 6-wu run
+        // averaged ~1.9 breaks at the knobs the crack lab boots hot. `derive`
+        // turns settlement into a COUNT via `3 · from(s, 0.40)`, so the
+        // calibration that reproduces that number at the top of both sliders is
+        // 0.8, and it is a calibration and not taste: the point of the shim is
+        // that the shipped levels keep the amount of breakage they were authored
+        // with while the MECHANISM stops being a coin flip.
+        settlement: 0.8 * smoothstep(0.12, 0.42, k[0]) * smoothstep(0.04, 0.45, k[1]),
+        cover_loss: dial,
+    }
+}
+
 pub fn amounts_of(k: [f32; 4], dial: f32) -> [f32; crate::wall::Layer::N] {
     use crate::wall::Layer;
-    let (mut a, _) = crate::wall::derive(crate::wall::Story { weather: k[0], settlement: 0.0, cover_loss: dial });
+    let (mut a, _) = crate::wall::derive(story_of_knobs(k, dial));
     a[Layer::Chips.index()] = k[3];
     a
+}
+
+/// This pier's run's BREAKS: the author's if he pinned one, else the shim's
+/// derivation from the knobs. Exactly [`crate::wall::Pins`]' rule, because it is
+/// the same question ("did anyone take this over?") one step early — the panel's
+/// four knobs are still the only UI, so a level that says nothing about breaking
+/// must keep breaking the way it always did.
+pub fn breaks_of(k: [f32; 4], pin: Option<crate::wall::Breaks>) -> crate::wall::Breaks {
+    pin.unwrap_or_else(|| crate::wall::derive(story_of_knobs(k, 0.0)).1)
 }
 
 /// One pier's layer AMOUNTS and the SOLVED, quantized damage-field THRESHOLD
@@ -459,8 +521,14 @@ fn clear_pristine(piers: &[Pier], s: &CrackSeed, knobs: &mut [[f32; 4]], spall: 
 /// list. A point that hits no pier is a level/authoring mistake that would
 /// otherwise show up as "the effect I asked for isn't in the shot", so it is
 /// loud here and fatal in the catalogue's own test.
-fn apply_specimens(piers: &[Pier], s: &CrackSeed, knobs: &mut [[f32; 4]], spall: &mut [f32], policy: &mut [u8]) -> (Vec<bool>, Vec<bool>) {
-    let (mut paint_only, mut no_fault) = (vec![false; piers.len()], vec![false; piers.len()]);
+fn apply_specimens(
+    piers: &[Pier],
+    s: &CrackSeed,
+    knobs: &mut [[f32; 4]],
+    spall: &mut [f32],
+    policy: &mut [u8],
+) -> (Vec<bool>, Vec<Option<crate::wall::Breaks>>) {
+    let (mut paint_only, mut breaks) = (vec![false; piers.len()], vec![None; piers.len()]);
     for sp in s.specimens {
         match pier_index_at(piers, sp.at.0, sp.at.1) {
             Some(i) => {
@@ -468,12 +536,15 @@ fn apply_specimens(piers: &[Pier], s: &CrackSeed, knobs: &mut [[f32; 4]], spall:
                 spall[i] = sp.spall;
                 policy[i] = sp.policy;
                 paint_only[i] = sp.paint_only;
-                no_fault[i] = !sp.faults;
+                // a specimen says what it is for, so it PINS its break count —
+                // including the zero that is the whole reason most of the bench
+                // reads as one effect per wall
+                breaks[i] = Some(crate::wall::Breaks { count: sp.breaks, at: None });
             }
             None => eprintln!("crack: specimen \"{}\" at ({}, {}) misses every wall pier — ignored", sp.label, sp.at.0, sp.at.1),
         }
     }
-    (paint_only, no_fault)
+    (paint_only, breaks)
 }
 
 /// The AGE RAMP curve: one 0..1 dial → the five aging knobs, for the demo beat
@@ -587,7 +658,7 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
                 lab.params = vec![per; piers.len()];
                 // …and LAST, so a catalogue specimen outranks the base knobs,
                 // the variance and the pristine list alike
-                (lab.paint_only, lab.no_fault) = apply_specimens(piers, &s, &mut lab.knobs, &mut lab.spall, &mut lab.policy);
+                (lab.paint_only, lab.breaks) = apply_specimens(piers, &s, &mut lab.knobs, &mut lab.spall, &mut lab.policy);
                 // CRACK_SEL=<pier index> preselects a segment for the headless
                 // harness (the owner picks by clicking; an agent cannot, and the
                 // selection now drives the AA scope as well as the panel).
@@ -599,10 +670,10 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
             // (crack_geom); the built signature lets live knob drags rebuild
             // only on change
             let par = lab.active_params();
-            let (gk, gs) = lab.geom_input();
-            let aged = crate::crack_geom::apply_geometry(scene, piers, &gk, &lab.policy, &par, &gs, &lab.no_fault);
+            let (gk, gs, gb) = lab.geom_input(piers);
+            let aged = crate::crack_geom::apply_geometry(scene, piers, &gk, &lab.policy, &par, &gs, &gb);
             (lab.cores, lab.spall_mats) = (aged.cores, aged.spall_mats);
-            lab.geo_sigs = crate::crack_geom::keys(scene, piers, &gk, &lab.policy, &par, &gs, &lab.no_fault);
+            lab.geo_sigs = crate::crack_geom::keys(scene, piers, &gk, &lab.policy, &par, &gs, &gb);
             stamp_aa(scene, piers, lab, aa_scope); // the AA scope's opt-in bits
         }
         None => {
@@ -615,7 +686,7 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
             lab.sel = None;
             lab.geo_sigs.clear();
             lab.paint_only.clear();
-            lab.no_fault.clear();
+            lab.breaks.clear();
         }
     }
 }
@@ -695,8 +766,8 @@ impl Viewer {
             return;
         }
         let par = self.crack.active_params();
-        let (gk, gs) = self.crack.geom_input();
-        let sigs = crate::crack_geom::keys(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &self.crack.no_fault);
+        let (gk, gs, gb) = self.crack.geom_input(&self.piers);
+        let sigs = crate::crack_geom::keys(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &gb);
         if sigs == self.crack.geo_sigs {
             return;
         }
@@ -949,6 +1020,51 @@ mod tests {
                 run_hi,
             })
             .collect()
+    }
+
+    /// ONE RUN, ONE BREAK COUNT — through the SHIM, over every shipped level.
+    ///
+    /// The shim derives a run's settlement from knobs that are per PANEL and
+    /// deliberately ramped along the run, so the naive per-pier reading gave the
+    /// gym's east facade counts of 2, 2 and 1 for one authored slab — three
+    /// panels cutting three different break sets, which is the defect the whole
+    /// round exists to remove. Caught by measurement while verifying step 6, and
+    /// pinned here because the mechanism that reintroduced it (a per-panel value
+    /// standing in for a per-run cause) is one the next step could repeat.
+    #[test]
+    fn one_run_gets_one_break_count_even_though_the_knobs_ramp() {
+        for level in [crate::demos::Level::Gym, crate::demos::Level::Catalogue] {
+            let (_, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA, true);
+            let seed = CrackSeed {
+                age: 0.62,
+                cracks: 0.58,
+                depth: 0.5,
+                chip: 0.2,
+                spall: 0.0,
+                vary: 0.4,
+                pristine: &[],
+                policy: 0,
+                params: crate::crack_geom::param_defaults(0),
+                specimens: &[],
+            };
+            let mut lab = CrackLab { knobs: seed_knobs(&meta.piers, &seed), ..CrackLab::default() };
+            lab.spall = vec![0.0; meta.piers.len()];
+            let (_, _, breaks) = lab.geom_input(&meta.piers);
+            let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
+            let mut ramped = false;
+            for (i, p) in meta.piers.iter().enumerate() {
+                for (j, q) in meta.piers.iter().enumerate() {
+                    if rect(p) != rect(q) {
+                        continue;
+                    }
+                    assert_eq!(breaks[i], breaks[j], "{level:?}: piers {i} and {j} share a run and disagree about its breaks");
+                    ramped |= (lab.knobs[i][0] - lab.knobs[j][0]).abs() > 0.05;
+                }
+            }
+            // …and the vacuity guard: the knobs really do differ across a run,
+            // so the equality above is doing work
+            assert!(ramped, "{level:?}: VACUOUS — no run's panels had different knobs");
+        }
     }
 
     /// THE 2026-07-25 SPLIT, pinned: `vary` puts age/cracks on a GRADIENT along
@@ -1218,11 +1334,16 @@ mod catalogue_tests {
         }
     }
 
-    /// The two isolations the bench needs, and neither is reachable any other
-    /// way — both are pinned as the geometry pass's OBSERVABLE effect on the
-    /// scene rather than as a flag round-trip.
+    /// The two isolations the bench needs, pinned as the geometry pass's
+    /// OBSERVABLE effect on the scene rather than as a flag round-trip.
+    ///
+    /// One of them stopped being an "isolation" on 2026-07-26 and became an
+    /// ordinary authored zero: `breaks: 0` on a slab that shows the veneer
+    /// pattern, against `breaks: 1` on the slab whose subject IS the break. The
+    /// other, `paint_only`, is still a real mechanism and still unreachable any
+    /// other way.
     #[test]
-    fn paint_only_leaves_no_geometry_and_the_veto_leaves_no_fault() {
+    fn paint_only_leaves_no_geometry_and_a_zero_break_count_leaves_a_whole_wall() {
         let spec = house_game::gym::sim::catalogue_level();
         let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         let mut lab = CrackLab::default();
@@ -1246,15 +1367,15 @@ mod catalogue_tests {
             assert_eq!(pad(i) & (GEO_BIT | CRAZE_BIT), 0, "{label}: geometry ran on a paint-only specimen");
             assert_eq!(lab.cores[i], -1, "{label}: a paint-only specimen must have no chalk core");
         }
-        // the fault veto: same knob class, opposite outcome. `split_pier` is the
+        // the break count: same knob class, opposite outcome. `split_pier` is the
         // only path that mints a core with GEO_BIT set, so that bit IS "this
         // wall broke in half".
-        let broken = idx("structural fault");
-        assert_ne!(pad(broken) & GEO_BIT, 0, "VACUOUS: the fault specimen did not fault");
+        let broken = idx("structural break");
+        assert_ne!(pad(broken) & GEO_BIT, 0, "VACUOUS: the wall that asked for a break did not break");
         for label in ["lightning network", "craquelure", "mosaic"] {
             let i = idx(label);
             assert_ne!(pad(i) & CRAZE_BIT, 0, "{label}: the veneer must still be built");
-            assert_eq!(pad(i) & GEO_BIT, 0, "{label}: the fault veto failed — this wall broke in half");
+            assert_eq!(pad(i) & GEO_BIT, 0, "{label}: breaks: 0 was ignored — this wall broke in half");
         }
     }
 }
