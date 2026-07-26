@@ -19,8 +19,7 @@
 //!   same mat on both sides of the doorway, which is what a real wall's
 //!   reinforcement is.
 //! - **Only the exposed segments exist as geometry.** A bar is emitted only
-//!   where a crater actually cuts past its cover ([`Crater::bars`] is empty
-//!   until the dial's floor reaches the steel). The rest of the mat is a
+//!   where a crater actually cuts past its cover. The rest of the mat is a
 //!   coordinate rule, not triangles.
 //! - **Causal siting.** The crater lands at the arg-max of a corrosion
 //!   potential ([`corr`]) built out of what the level already knows: the
@@ -66,14 +65,22 @@ pub const BAR_S: f32 = 0.036;
 /// Thinnest bar still worth emitting — two thirds of the section, the same ratio
 /// the 0.075 era used. Under it the depth budget has eaten so much of the core
 /// that the "bar" would be a sub-texel scratch the contour AA has to carry
-/// alone; the dial then stops at LIFTED COVER and shows no steel at all (see
-/// [`craters`]).
+/// alone. It is [`t_cap`]'s binding constraint: rather than let the relief knob
+/// walk the section down to nothing and quietly stop showing steel, the wall's
+/// own cover is capped so this floor is never reached.
 const BAR_S_MIN: f32 = 0.024;
 
-/// How much of the bar's section must stand proud of the basin floor before the
-/// dial is allowed to expose it. Below half, a bar reads as a bump in the basin,
-/// which is worse than no bar; [`craters`]' staging knee IS this number.
+/// How much of the bar's section must stand proud of the basin floor. Below
+/// half, a bar reads as a bump in the basin, which is worse than no bar — so
+/// this is the depth a spall MUST reach, and [`t_cap`] is the statement that it
+/// always can.
 const BAR_PROUD: f32 = 0.5;
+
+/// How far the basin floor sits behind the mat's front face, in bar sections.
+/// 1.5 stands the whole section clear and leaves half a section of basin under
+/// it — the gap the bar's own cast shadow needs to read, and a cast shadow is
+/// the one cue paint cannot fake. Clamped by the depth budget, never by a stage.
+const BAR_CLEAR: f32 = 1.5;
 
 /// How far the mat's front face sits BEHIND the core's front plane (i.e. behind
 /// the cover the crater has to break through).
@@ -121,10 +128,49 @@ const BURY: f32 = 0.06;
 /// occluder / WALLCUT / ROI logic and leak light straight through the wall.
 const BASIN_MAX_FRAC: f32 = 0.7;
 
-/// Below this the dial does nothing at all (stage 1 of three: the wall is
-/// merely CRACKED). The knob then walks lifted cover → blown spall; see
-/// [`craters`].
-pub const DIAL_ON: f32 = 0.12;
+/// THE CANONICAL SPALL, as half-extents along and across the bar it grew on.
+///
+/// Its SIZE is a property of the wall, not of the amount: corrosion follows one
+/// bar and lifts the plate of cover between it and its neighbours, so a spall is
+/// about one bay of the mat across ([`PITCH_U`] = 0.4) and rather more than one
+/// along. 0.32 × 0.13 wu = 26 × 11 px on an X-run face, 18 × 7 on the worst Z
+/// one. That is the whole reason an AMOUNT can be a count: the size answers to
+/// the cage, the count answers to the author.
+///
+/// [`LENS_ALONG`] is not free: at its SMALLEST draw it still has to reach half a
+/// tie pitch plus half a section (0.25 + 0.018 = 0.268 wu), because that is what
+/// makes "a bar AND a crossing" a fact about the geometry rather than a lucky
+/// hash — the mat's nearest crossing bar is at most half a pitch away, so a
+/// shorter lens leaves some craters showing one lonely bar. `√(1−LENS_VAR) ·
+/// 0.32 = 0.277`, pinned by `the_cage_is_world_anchored_…`.
+///
+/// It replaces a pair that RAMPED with the dial (0.175→0.35 along, 0.075→0.15
+/// across), which made one dial mean two things at once — how much cover is
+/// gone, and how big the pieces are — and left the bottom of its travel with
+/// craters too small to show a crossing.
+const LENS_ALONG: f32 = 0.32;
+const LENS_ACROSS: f32 = 0.13;
+/// ± of the lens's AREA, drawn per crater — two identical holes in one wall read
+/// as a stencil. Deliberately expressed in area and not in the half-extents it
+/// is applied to (the draw goes through a square root): a ±25 % linear jitter is
+/// a ±56 % area jitter, and a spread that wide against a quantum this size is
+/// the difference between an amount you can author and an amount you can only
+/// observe.
+const LENS_VAR: f32 = 0.25;
+/// Mean RIM area as a fraction of the ellipse it was drawn from. A drawn rim is
+/// a chain of CHORDS between 6-10 corners, so it is inscribed in that ellipse
+/// (a hexagon keeps 0.83 of its circle, a decagon 0.94) and [`RIM_JAG`] frays a
+/// little more off; the radial noise gives some back. Measured over 800+ craters
+/// by `spall_area_is_monotone_and_conserved`, which fails if it drifts.
+///
+/// It is a CALIBRATION, and the honest kind: the count is solved from a nominal
+/// area, so if that nominal were the ellipse's the amount would land ~11 % low
+/// on every wall in the game. Measuring it once beats correcting each crater.
+const RIM_FILL: f32 = 0.919;
+
+/// The area ONE crater costs — the quantum an amount is spent in. 0.120 wu²,
+/// i.e. 2.5 % of the bench's 2.2 × 2.19 slab and 0.9 % of the gym's east facade.
+const LENS_AREA: f32 = std::f32::consts::PI * LENS_ALONG * LENS_ACROSS * RIM_FILL;
 
 /// How many FRACTURE CORNERS the rim is built from, drawn per crater so no two
 /// spalls share a silhouette. A lens is 14-27 px along its long axis, so its
@@ -197,13 +243,12 @@ pub struct Face {
     /// piers at `mid ± 0.2`), which is where the runoff and the thin cover are.
     pub run_u0: f32,
     pub run_u1: f32,
-    /// Veneer thickness — the cover the crater has to break through.
+    /// Veneer thickness — the cover the crater has to break through. Never
+    /// deeper than [`t_cap`]: a wall that spalls cannot have grooves deep enough
+    /// to leave its own reinforcement nowhere to sit.
     pub veneer: f32,
     /// Slab thickness (the basin depth clamp's denominator).
     pub thick: f32,
-    /// The damage gate at this pier's age (`CrazeCfg::d_t`): the corrosion
-    /// threshold rides it, so an old wall spalls from a wider set of sites.
-    pub gate: f32,
     /// The facade STORY key — every draw in here is a function of it plus world
     /// position, so the mat and its damage are the same on every boot.
     pub seed: f32,
@@ -244,11 +289,12 @@ pub struct Crater {
     /// Depth of the basin floor below the wall face.
     pub floor: f32,
     /// Section of the bars this crater exposes — [`BAR_S`] where the core can
-    /// hold it, thinned toward [`BAR_S_MIN`] where the depth knob has eaten the
-    /// core, 0 where no readable bar fits.
+    /// hold it, thinned toward [`BAR_S_MIN`] where the relief knob has eaten the
+    /// core.
     pub bar_s: f32,
-    /// The bar segments this crater actually exposes (empty until the floor
-    /// reaches the steel — the dial's "lifted cover" stage).
+    /// The bar segments this crater exposes. A spall shows steel BY DEFINITION
+    /// — cover that has merely lifted is the `Chips` layer's job — and [`t_cap`]
+    /// is what makes that definition survive the relief knob.
     pub bars: Vec<Bar>,
 }
 
@@ -256,6 +302,19 @@ impl Crater {
     /// The patch rect, for the caller's containment tests.
     pub fn rect(&self) -> (Vec2, Vec2) {
         (self.lo, self.hi)
+    }
+    /// The face this crater actually costs — the RIM's own area, measured on
+    /// the polygon rather than on the lens it was drawn from, because that is
+    /// the hole a viewer sees.
+    ///
+    /// Unconsumed outside the tests today, and that is the point: it is how
+    /// `spall_area_is_monotone_and_conserved` checks the unit against the mesh
+    /// instead of against the arithmetic that produced it, and it is what the
+    /// panel's achieved-vs-asked row will read when the panel lands.
+    #[allow(dead_code)]
+    pub fn area(&self) -> f32 {
+        let n = self.rim.len();
+        0.5 * (0..n).map(|i| self.rim[i].perp_dot(self.rim[(i + 1) % n])).sum::<f32>()
     }
     /// A copy shifted down with a settlement-dropped structural piece: the
     /// crater and the steel it exposes belong to the piece of wall they are in,
@@ -330,24 +389,38 @@ fn reveal(f: &Face, u: f32) -> f32 {
     W_REVEAL * w
 }
 
-/// The dial's three stages, as one number in 0..1 (0 = the wall is merely
-/// cracked, 1 = blown spall). Extent, depth and count all ride it.
-fn stage(dial: f32) -> f32 {
-    ((dial - DIAL_ON) / (1.0 - DIAL_ON)).clamp(0.0, 1.0)
+/// THE DEEPEST VENEER A SPALLING WALL MAY HAVE — the relief knob's real top on
+/// a slab this thick, and the reason [`Crater::bars`] is never empty.
+///
+/// Cover, basin and section all come out of the same solid: the veneer eats the
+/// core from BOTH faces, so a deep relief leaves the mat nowhere to sit. That
+/// used to be a documented limit — "above relief ≈ 0.72 on the gym's 0.2-wu
+/// walls the dial stops at LIFTED COVER" — which is a polite way of saying that
+/// one dial silently deleted another dial's effect, with nothing on screen to
+/// say why. The three bounds below are exactly the three the [`budget`]
+/// arithmetic imposes, solved for the veneer instead of tested against it:
+///
+/// 1. the basin must reach `BAR_PROUD` of a minimum section past the cover;
+/// 2. …without passing [`BASIN_MAX_FRAC`] of the slab;
+/// 3. the WHOLE section must fit between the core's two planes, since the far
+///    face carries the same mat mirrored.
+///
+/// On the gym's 0.2-wu walls this caps the veneer at 0.082 against a knob top
+/// of 0.090 — the last 9 % of the relief slider, which is what that "honest
+/// limit" was actually costing. The caller applies it (`CrazeCfg::new`) and the
+/// level says so out loud (`wall::Miss::Clamped`); [`budget`] only checks that
+/// somebody did.
+pub fn t_cap(thick: f32) -> f32 {
+    let knee = BAR_PROUD * BAR_S_MIN;
+    let a = 0.5 * (thick - REAR - BAR_SET - knee);
+    let b = BASIN_MAX_FRAC * thick - BAR_SET - knee;
+    let c = 0.5 * (thick - 2.0 * BAR_SET - BAR_S_MIN);
+    // …minus a thousandth of a wu (a twentieth of a screen pixel). Solving the
+    // bound exactly lands the section ON [`BAR_S_MIN`], where f32 rounding
+    // decides whether a bar is emitted at all — measured: a 0.3-wu slab at
+    // relief 1 came out at 0.023999996 and dropped its steel.
+    (a.min(b).min(c) - 0.001).max(0.0)
 }
-
-/// Where in the dial's travel the steel appears — the knee of the depth ramp.
-/// The basin walks `floor0 → knee` over the first third (LIFTED COVER, a shallow
-/// dish with no steel in it) and `knee → basin_max` over the rest (BLOWN SPALL).
-/// Putting the knee at a fixed fraction of the DIAL rather than letting it fall
-/// out of the depth arithmetic is what keeps the three stages readable on every
-/// wall, however thick its cover happens to be.
-const ST_STEEL: f32 = 0.35;
-
-/// How deep the LIFTED COVER stage starts, past the veneer. One screen pixel
-/// (0.0271 wu on an X-run face) is the least that reads as "the cover has come
-/// away" rather than as a missing plate.
-const FLOOR0: f32 = 0.03;
 
 /// The crater's depth budget on one face: where the mat sits, how deep the basin
 /// may cut and how fat a bar the remaining core can hold.
@@ -358,6 +431,7 @@ const FLOOR0: f32 = 0.03;
 /// clamp against the slab is what let the floor reach the core's rear plane at
 /// depth knob 0.6 and pass through it above that.
 fn budget(f: &Face) -> (f32, f32, f32) {
+    debug_assert!(f.veneer <= t_cap(f.thick) + 1e-6, "a Face was built with a veneer past t_cap ({} > {})", f.veneer, t_cap(f.thick));
     let cover = f.veneer + BAR_SET;
     let basin_max = (BASIN_MAX_FRAC * f.thick).min(f.thick - f.veneer - REAR).max(f.veneer);
     // Two bounds on the section, and the fattest bar the core can carry is the
@@ -372,67 +446,51 @@ fn budget(f: &Face) -> (f32, f32, f32) {
     (cover, basin_max, if bar_s >= BAR_S_MIN { bar_s } else { 0.0 })
 }
 
-/// Every crater the dial opens on this face, worst site first.
+/// The craters that lose `area` of this face, worst site first.
 ///
-/// ONE owner dial, staged (owner playtests via menus, so a dial that only does
-/// something at its top end is a dial he cannot read):
+/// `area` is the layer unit the whole authoring model runs on: **the fraction of
+/// this face whose cover is gone**. It is spent, not staged. Each site takes one
+/// canonical lens ([`LENS_ALONG`] × [`LENS_ACROSS`], ±[`LENS_VAR`]) out of the
+/// budget, and the loop stops when what is left is worth less than half a
+/// crater — so a count falls out of an area instead of the author having to
+/// think in counts, and the same 0.10 means the same loss on the bench's 2.2-wu
+/// slab and on the gym's 6.2-wu facade.
 ///
-/// | dial | what he sees |
-/// |---|---|
-/// | ≤ 0.12 | nothing — the wall is cracked, which is where round 8 left it |
-/// | 0.12 … 0.43 | LIFTED COVER: one shallow lens, pale fresh-break floor, the surviving cover overhanging its top edge. No steel yet — the basin floor is still in front of the mat |
-/// | 0.43 … 1 | BLOWN SPALL: the floor cuts past the mat, so 2-3 bars stand proud of it with their own shadows; the lens grows to 0.7 × 0.3 wu and up to three craters open |
+/// **What this replaced, and why none of it survived.** There was ONE staged
+/// dial: a 0.12 deadband, then LIFTED COVER (a lens with no steel), then BLOWN
+/// SPALL, with extent, depth and count all riding the same number. Three
+/// separate faults, and they are the same three the break lattice had:
 ///
-/// The crossover ([`ST_STEEL`]) is a fraction of the DIAL, and the basin's depth
-/// ramp is bent to meet it: at the knee the floor is exactly `cover +
-/// BAR_PROUD · bar_s`, i.e. half the bar's section stands proud. Below that a
-/// bar reads as a bump in the basin, which is worse than no bar at all.
+/// - the stages were three different LAYERS on one slider. "Cover lifted but no
+///   steel" is a chip — `Layer::Chips` builds exactly that — so a spall that
+///   does not show steel is a spall that is not there yet. The dial had to
+///   carry that state because chips and spall were not separable amounts.
+/// - the amount was not an area, so it could not mean the same thing twice: at
+///   dial 0.5 a 2.2-wu slab lost 7 % of its face and a 6.2-wu facade 2.5 %.
+/// - the depth ramp's knee was a fraction of the DIAL and the extent ramp was
+///   another, so a wall whose cover was too deep for the mat quietly stopped at
+///   stage two. That limit is now [`t_cap`]'s job, and it reports.
 ///
-/// ONE HONEST LIMIT, from the depth arithmetic ([`budget`]): the depth knob's
-/// veneer eats the core from both sides (`t = 0.02 … 0.45 · thick`), so on the
-/// gym's 0.2-wu walls there is no core left to expose steel in above depth ≈
-/// 0.72 — that wall stays at LIFTED COVER however far the spall dial goes. The
-/// alternative was a bar in front of the core's front plane, which is the bug
-/// this replaced.
+/// The basin depth is no longer a ramp at all: a spall cuts to `BAR_CLEAR`
+/// sections behind the mat, or as deep as [`budget`] allows, whichever is
+/// shallower. Depth is a fact about the wall, not about how much of it is gone.
 ///
-/// `fits` lets the caller veto a patch rect it cannot build — on a FAULTED pier
-/// a crater has to sit wholly inside one structural piece. It is a parameter
-/// rather than a post-filter because a vetoed site must not spend the dial's
-/// budget: filtering afterwards made the dial non-monotone (measured — the
-/// garden wall lost its crater between 0.25 and 0.55).
-pub fn craters(f: &Face, dmg: &dyn Fn(f32, f32) -> f32, dial: f32, fits: &dyn Fn(Vec2, Vec2) -> bool) -> Vec<Crater> {
-    if dial <= DIAL_ON {
+/// `fits` lets the caller veto a patch rect it cannot build — on a broken pier a
+/// crater has to sit wholly inside one structural piece. It is a parameter
+/// rather than a post-filter because a vetoed site must not spend the budget:
+/// filtering afterwards made the amount non-monotone (measured — the garden wall
+/// lost its crater between 0.25 and 0.55).
+pub fn craters(f: &Face, dmg: &dyn Fn(f32, f32) -> f32, area: f32, fits: &dyn Fn(Vec2, Vec2) -> bool) -> Vec<Crater> {
+    let target = area.clamp(0.0, 1.0) * (f.u1 - f.u0) * (f.y1 - f.y0);
+    if target <= 0.0 {
         return Vec::new();
     }
-    let st = stage(dial);
-    let want = 1 + (st * 2.999) as usize;
-    // The lens: 0.35-0.7 wu ALONG the bar × 0.15-0.30 across (14-27 × 6-12 px
-    // on an X face, 10-20 × 4-8 on Z). Real spalls are lens-shaped because the
-    // corrosion crack follows the bar, and a whole pier face is only 66 × 85 px
-    // — so one crater is a quarter of the wall's width, LARGE by construction.
-    let (ha, hb) = (mixf(0.175, 0.35, st), mixf(0.075, 0.15, st));
-    // depth: the mat sits just behind the cover (never in it), and the floor
-    // walks from "the cover has lifted" to "the steel stands clear of the floor"
+    // Depth: the mat sits just behind the cover (never in it), and the floor
+    // cuts past it far enough for the bar to cast into the basin. `t_cap`
+    // guarantees `cover + BAR_PROUD·bar_s <= basin_max`, so the clamp below can
+    // never land in front of the knee and the steel always shows.
     let (cover, basin_max, bar_s) = budget(f);
-    let floor0 = (f.veneer + FLOOR0).min(basin_max);
-    // The knee is where the steel is ALLOWED to show: deep enough that
-    // `BAR_PROUD` of the section stands clear of the floor, but never shallower
-    // than the lifted-cover stage already starts. That `max` is what the thinner
-    // section (2026-07-25, 0.075 → 0.036) made load-bearing: at half a pixel of
-    // proudness the knee fell 0.006 wu IN FRONT of `floor0`, so the ramp ran
-    // BACKWARDS — the basin got shallower as the owner opened the dial — and the
-    // steel was already showing at the bottom of the travel.
-    let knee = (cover + BAR_PROUD * bar_s).max(floor0).min(basin_max);
-    let floor = if st < ST_STEEL {
-        mixf(floor0, knee, st / ST_STEEL)
-    } else {
-        mixf(knee, basin_max, (st - ST_STEEL) / (1.0 - ST_STEEL))
-    };
-    // …and the three stages are a fact about the DIAL, not a by-product of the
-    // depth arithmetic. Geometry alone decided this until the section thinned,
-    // and then agreed with the staging table only by coincidence: emit no steel
-    // at all below the knee, whatever the depth budget happens to allow.
-    let bar_s = if st >= ST_STEEL { bar_s } else { 0.0 };
+    let floor = (cover + BAR_CLEAR * bar_s).clamp(cover + BAR_PROUD * bar_s, basin_max);
 
     // candidate sites: the corrosion potential over the face, worst first
     let n = |a: f32, b: f32| (((b - a) / LATTICE).round() as usize).max(2);
@@ -446,19 +504,32 @@ pub fn craters(f: &Face, dmg: &dyn Fn(f32, f32) -> f32, dial: f32, fits: &dyn Fn
         }
     }
     cand.sort_by(|a, b| b.0.total_cmp(&a.0));
-    // The threshold rides the pier's own damage gate, so "where this wall is
-    // failing" means the same thing here as it does to the plates: a face's own
-    // worst patches (the field's top few per cent, which `run_level` normalizes
-    // onto `dT + 0.05`) clear it on the field alone.
-    let floor_corr = W_FIELD * (f.gate - 0.05) + 0.04;
+    // There is no corrosion FLOOR any more. The amount says how much cover is
+    // gone and the potential says where it goes first; a threshold on top of
+    // both would silently overrule the author on exactly the walls he dialled.
+
+    // HOW MANY craters that is — the amount, quantized in whole craters, with a
+    // floor of one so a nonzero ask always renders something (a dial that does
+    // nothing on the wall the owner picked is the deadband this round deleted).
+    //
+    // Deciding the count UP FRONT is what makes the amount monotone BY
+    // CONSTRUCTION rather than by tuning: the candidate order does not depend on
+    // the budget, so a larger amount takes a superset of the sites a smaller one
+    // took. Spending a running total instead — take a crater while it fits the
+    // remaining budget — reads more natural and is not monotone: a bigger ask
+    // can accept an early large crater that then blocks two later ones.
+    let want = (target / LENS_AREA).round().max(1.0) as usize;
 
     let mut out: Vec<Crater> = Vec::new();
-    for (v, p) in cand {
-        if v < floor_corr || out.len() >= want {
+    for (_, p) in cand {
+        if out.len() >= want {
             break;
         }
-        let Some(cr) = place(f, p, ha, hb, cover, floor, bar_s) else { continue };
-        if !fits(cr.lo, cr.hi) {
+        // one lens per site, its size drawn ± LENS_VAR so two holes in one wall
+        // are not the same hole twice
+        let s = (1.0 + LENS_VAR * (2.0 * hash13(Vec3::new(p.x * 2.9 + 5.0, p.y * 4.1 + 3.0, f.seed + 17.0)) - 1.0)).sqrt();
+        let Some(site) = site(f, p, LENS_ALONG * s, LENS_ACROSS * s, bar_s) else { continue };
+        if !fits(site.lo, site.hi) {
             continue;
         }
         // THE ONE CONSTRAINT the whole mesh construction rests on: patch rects
@@ -469,19 +540,41 @@ pub fn craters(f: &Face, dmg: &dyn Fn(f32, f32) -> f32, dial: f32, fits: &dyn Fn
         // crater's hole. `PATCH_GAP` leaves real cover standing between two
         // spalls instead of a zero-width fin.
         if out.iter().any(|o| {
-            cr.lo.x < o.hi.x + PATCH_GAP && o.lo.x < cr.hi.x + PATCH_GAP && cr.lo.y < o.hi.y + PATCH_GAP && o.lo.y < cr.hi.y + PATCH_GAP
+            site.lo.x < o.hi.x + PATCH_GAP && o.lo.x < site.hi.x + PATCH_GAP && site.lo.y < o.hi.y + PATCH_GAP && o.lo.y < site.hi.y + PATCH_GAP
         }) {
             continue;
         }
-        out.push(cr);
+        out.push(site.build(f.seed, cover, floor, bar_s));
     }
     out
 }
 
-/// Snap a candidate site onto the mat and build its crater, or `None` when the
-/// pier is too narrow to carry a readable one (two building piers are only
-/// 0.4 wu = 16 px wide).
-fn place(f: &Face, p: Vec2, ha: f32, hb: f32, cover: f32, floor: f32, bar_s: f32) -> Option<Crater> {
+/// A crater's PLACE, before its outline is drawn. The split is a cost one and
+/// it earns its keep the moment a face carries more than a handful of craters:
+/// the caller vetoes a site on its rect alone (the `fits` test, the pairwise
+/// disjointness), and tracing 20-odd rays for a site about to be thrown away is
+/// the one avoidable cost in this pass.
+struct Site {
+    c: Vec2,
+    hu: f32,
+    hy: f32,
+    lo: Vec2,
+    hi: Vec2,
+    bars: Vec<Bar>,
+}
+
+impl Site {
+    /// Draw the rim and make the crater. Split out of [`site`] on cost, not on
+    /// meaning: everything here is a pure function of the place.
+    fn build(self, seed: f32, cover: f32, floor: f32, bar_s: f32) -> Crater {
+        let (rim, ring) = outline(self.c, self.hu, self.hy, seed, self.lo, self.hi, &self.bars);
+        Crater { c: self.c, rim, ring, lo: self.lo, hi: self.hi, cover, floor, bar_s, bars: self.bars }
+    }
+}
+
+/// Snap a candidate site onto the mat, or `None` when the pier is too narrow to
+/// carry a readable crater (two building piers are only 0.4 wu = 16 px wide).
+fn site(f: &Face, p: Vec2, ha: f32, hb: f32, bar_s: f32) -> Option<Site> {
     let h = |k: f32| hash13(Vec3::new(p.x * 3.7 + 1.0, p.y * 5.3 + 2.0, f.seed + k));
     let ub = (p.x / PITCH_U).round() * PITCH_U;
     let yb = BAR_Y0 + ((p.y - BAR_Y0) / PITCH_Y).round() * PITCH_Y;
@@ -501,18 +594,6 @@ fn place(f: &Face, p: Vec2, ha: f32, hb: f32, cover: f32, floor: f32, bar_s: f32
     if hu < MIN_H || hy < MIN_H {
         return None;
     }
-    // A bar dead-centre in every crater looks PLACED. So: across the bar the
-    // crater is centred on it but offset a fraction of its own half-extent;
-    // along the bar it keeps the corrosion max, EXCEPT at a crossing, where it
-    // snaps to the intersection — two bars' cover overlapping is exactly where
-    // real spalls open, and a crossing is what makes the cage read as a cage.
-    let cross = h(3.0) < 0.45;
-    let (off, along_off) = ((h(7.0) - 0.5) * 0.7, (h(11.0) - 0.5) * 0.5);
-    let mut c = if along_y {
-        Vec2::new(ub + off * hu, if cross { yb + along_off * hy } else { p.y })
-    } else {
-        Vec2::new(if cross { ub + along_off * hu } else { p.x }, yb + off * hy)
-    };
     // the patch rect bounds the rim by construction (RIM_VAR is the rim's own
     // radial bound), so keeping the RECT inside the face keeps the rim inside
     let (pu, py) = (hu * (1.0 + RIM_VAR) + RIM_PAD, hy * (1.0 + RIM_VAR) + RIM_PAD);
@@ -529,19 +610,54 @@ fn place(f: &Face, p: Vec2, ha: f32, hb: f32, cover: f32, floor: f32, bar_s: f32
     // longer the site the potential picked, and clamping them all landed every
     // gym wall's crater at the same height. Past a third of its own half-extent
     // the site is REJECTED and the loop takes the next candidate instead.
-    let cy = c.y.clamp(lo_c.y, hi_c.y);
-    if (cy - c.y).abs() > 0.34 * py {
+    let cy = p.y.clamp(lo_c.y, hi_c.y);
+    if (cy - p.y).abs() > 0.34 * py {
         return None;
     }
-    c = Vec2::new(c.x.clamp(lo_c.x, hi_c.x), cy);
+    let p = Vec2::new(p.x.clamp(lo_c.x, hi_c.x), cy);
+
+    // THEN snap onto the mat — after the clamp and inside the legal box, not
+    // before it. A bar dead-centre in every crater looks PLACED, so: across the
+    // bar the crater is centred on it but offset a fraction of its own
+    // half-extent; along the bar it keeps the corrosion max, EXCEPT at a
+    // crossing, where it snaps to the intersection — two bars' cover overlapping
+    // is exactly where real spalls open, and a crossing is what makes the cage
+    // read as a cage.
+    //
+    // Order matters and used to be the other way round: the site snapped onto a
+    // bar and the CLAMP then dragged it off again, by up to a third of the patch
+    // rect. Near a face's edge that was more than the lens's own half-extent
+    // across the bar, so the bar it had been snapped to fell outside the rim and
+    // the crater came out with one lonely bar in it (measured on the gym's east
+    // facade). Snapping inside the box makes "a bar and a crossing" hold by
+    // construction wherever the box is at least one pitch wide.
+    let snap = |v: f32, pitch: f32, base: f32, lo: f32, hi: f32| {
+        let k = ((v - base) / pitch).round();
+        let (i0, i1) = (((lo - base) / pitch).ceil(), ((hi - base) / pitch).floor());
+        // no bar of this family lies inside the legal box (the 0.4-wu piers
+        // flanking the doorway are narrower than one pitch): keep the nearest
+        // one anyway and let the graze test decide whether it shows
+        base + if i1 < i0 { k } else { k.clamp(i0, i1) } * pitch
+    };
+    let ub = snap(p.x, PITCH_U, 0.0, lo_c.x, hi_c.x);
+    let yb = snap(p.y, PITCH_Y, BAR_Y0, lo_c.y, hi_c.y);
+    let cross = h(3.0) < 0.45;
+    let (off, along_off) = ((h(7.0) - 0.5) * 0.7, (h(11.0) - 0.5) * 0.5);
+    let c = if along_y {
+        Vec2::new(ub + off * hu, if cross { yb + along_off * hy } else { p.y })
+    } else {
+        Vec2::new(if cross { ub + along_off * hu } else { p.x }, yb + off * hy)
+    };
+    let c = c.clamp(lo_c, hi_c);
     let (lo, hi) = (c - Vec2::new(pu, py), c + Vec2::new(pu, py));
 
-    // The bars this crater exposes — geometry, not intent: the floor has to
-    // reach past `BAR_PROUD` of the section or the "bar" is a bump in the basin.
-    // A segment spans the whole PATCH RECT plus `BURY` at each end, so both end
-    // caps sit in core solid rather than in the cavity (see `BURY`).
+    // The bars this crater exposes. A segment spans the whole PATCH RECT plus
+    // `BURY` at each end, so both end caps sit in core solid rather than in the
+    // cavity (see `BURY`). There is no "deep enough yet" test any more: the
+    // floor clears `BAR_PROUD` of the section by construction ([`t_cap`]), so a
+    // spall shows steel or the caller broke the cap.
     let mut bars = Vec::new();
-    if bar_s > 0.0 && floor >= cover + BAR_PROUD * bar_s - 1e-6 {
+    if bar_s > 0.0 {
         for (vertical, pitch, base, cross_h) in [(true, PITCH_U, 0.0, hu), (false, PITCH_Y, BAR_Y0, hy)] {
             let ctr = if vertical { c.x } else { c.y };
             let (i0, i1) = (((ctr - cross_h - base) / pitch).ceil() as i32, ((ctr + cross_h - base) / pitch).floor() as i32);
@@ -555,8 +671,7 @@ fn place(f: &Face, p: Vec2, ha: f32, hb: f32, cover: f32, floor: f32, bar_s: f32
             }
         }
     }
-    let (rim, ring) = outline(c, hu, hy, f.seed, lo, hi, &bars);
-    Some(Crater { c, rim, ring, lo, hi, cover, floor, bar_s, bars })
+    Some(Site { c, hu, hy, lo, hi, bars })
 }
 
 /// The rim polygon and the patch rect traced on the same rays.
@@ -671,7 +786,16 @@ mod tests {
     use super::*;
 
     fn face() -> Face {
-        Face { u0: 9.9, u1: 16.1, y0: 0.0, y1: 2.1875, run_u0: 9.9, run_u1: 16.1, veneer: 0.05, thick: 0.2, gate: 0.62, seed: 41.2 }
+        Face { u0: 9.9, u1: 16.1, y0: 0.0, y1: 2.1875, run_u0: 9.9, run_u1: 16.1, veneer: 0.05, thick: 0.2, seed: 41.2 }
+    }
+    /// The face area an amount is a fraction OF.
+    fn face_area(f: &Face) -> f32 {
+        (f.u1 - f.u0) * (f.y1 - f.y0)
+    }
+    /// What a face actually lost, as a fraction of itself — the answer to the
+    /// only question the unit poses.
+    fn lost(f: &Face, cs: &[Crater]) -> f32 {
+        cs.iter().map(|c| c.area()).sum::<f32>() / face_area(f)
     }
     /// No caller veto (the unfaulted-pier case; `split_pier` is the one that
     /// vetoes, and its own test covers that).
@@ -684,83 +808,146 @@ mod tests {
         0.45 + 0.5 * (-((u - 13.0).powi(2) + (y - 1.4).powi(2)) / 0.5).exp()
     }
 
-    /// THE DIAL, as the owner walks it: nothing, then a crater with no steel
-    /// showing, then bars standing clear of the floor with room for a shadow.
-    /// Pinned because a menu dial that only does something at its top end is a
-    /// dial he cannot read.
+    /// **AN AMOUNT IS AN AREA** — the one claim the layer model makes about this
+    /// effect, measured on the rim polygons the mesh pass actually emits.
+    ///
+    /// Three properties, and each of them replaces a defect the staged dial had:
+    ///
+    /// - MONOTONE, and by construction rather than by tuning: the candidate
+    ///   order does not depend on the budget, so more area takes a SUPERSET of
+    ///   the same sites. (The old dial was non-monotone the moment a caller
+    ///   vetoed a site, which is why `fits` is a parameter and not a filter.)
+    /// - CONSERVED: what a face loses is what was asked for, within the quantum
+    ///   — one crater, [`LENS_AREA`], 2.3 % of the bench slab.
+    /// - SIZE-INDEPENDENT: 0.10 means the same loss on a 2.2-wu slab as on a
+    ///   6.2-wu facade. The dial it replaced meant 7 % on one and 2.5 % on the
+    ///   other, which is precisely why an "amount" that is not an area cannot be
+    ///   authored against.
+    ///
+    /// It also PRINTS the two numbers the design rests on: the mean rim fill
+    /// ([`RIM_FILL`]'s calibration) and the largest area a face can actually be
+    /// packed with, which is the ceiling `wall::derive` maps the cover-loss cause
+    /// onto.
     #[test]
-    fn the_dial_walks_cracked_then_lifted_cover_then_blown_spall() {
-        let f = face();
-        assert!(craters(&f, &patchy, 0.0, &anywhere).is_empty(), "a closed dial builds nothing");
-        assert!(craters(&f, &patchy, DIAL_ON, &anywhere).is_empty(), "…including exactly at the threshold");
-        let lifted = craters(&f, &patchy, 0.25, &anywhere);
-        assert_eq!(lifted.len(), 1, "the first stage is ONE crater");
-        assert!(lifted[0].bars.is_empty(), "lifted cover shows no steel yet");
-        assert!(lifted[0].floor > f.veneer, "…but it is deeper than the veneer's own recess");
-        let blown = craters(&f, &patchy, 1.0, &anywhere);
-        // `want` is 3 at the top of the dial, and how many of those actually FIT
-        // is geometry: at max extent a lens is 0.7 × 0.3 wu and the rects have to
-        // stay disjoint inside one 6.2 × 2.19 face
-        assert!(blown.len() >= 2, "the top of the dial opens more than one, got {}", blown.len());
-        assert!(blown.len() > lifted.len(), "…and more than the first stage");
-        for cr in &blown {
-            assert!(!cr.bars.is_empty(), "a blown spall must expose steel");
-            assert!(cr.floor >= cr.cover + BAR_PROUD * cr.bar_s - 1e-6, "the bar must stand proud of the floor: {} vs {}", cr.floor, cr.cover);
+    fn spall_area_is_monotone_and_conserved() {
+        let bench = || Face { u0: 6.0, u1: 8.2, run_u0: 6.0, run_u1: 8.2, ..face() };
+        let (mut fill_sum, mut fill_n, mut ceiling) = (0.0f32, 0usize, 1.0f32);
+        for f in [face(), bench()] {
+            let mut prev: Vec<(Vec2, Vec2)> = Vec::new();
+            let mut worst = 0.0f32;
+            for k in 0..=20 {
+                let asked = k as f32 / 20.0 * 0.30;
+                let cs = craters(&f, &patchy, asked, &anywhere);
+                // monotone: every rect of the smaller ask is still here
+                for r in &prev {
+                    assert!(cs.iter().any(|c| c.rect() == *r), "asked {asked:.3}: a crater the smaller amount had is gone");
+                }
+                prev = cs.iter().map(|c| c.rect()).collect();
+                for c in &cs {
+                    let (hu, hy) = ((c.hi.x - c.lo.x) * 0.5 - RIM_PAD, (c.hi.y - c.lo.y) * 0.5 - RIM_PAD);
+                    fill_sum += c.area() / (std::f32::consts::PI * hu * hy / (1.0 + RIM_VAR).powi(2));
+                    fill_n += 1;
+                }
+                let got = lost(&f, &cs);
+                // Conserved — within the QUANTUM (half a crater, the rounding)
+                // plus what the ±LENS_VAR draw is worth over the craters that
+                // were actually built. Independent draws, so √n and not n: the
+                // worst case is real but it is not what a wall looks like, and a
+                // tolerance nobody could ever hit pins nothing.
+                let want = (asked * face_area(&f) / LENS_AREA).round().max(1.0);
+                let quantum = LENS_AREA * (0.5 + LENS_VAR * want.sqrt()) / face_area(&f);
+                if asked > 0.0 && got + 1e-6 < asked - quantum {
+                    // an ask the packing cannot deliver: record the ceiling
+                    // rather than fail — it is a real property of the face
+                    ceiling = ceiling.min(got);
+                } else {
+                    assert!(got <= asked + quantum, "asked {asked:.3} of a {:.1}-wu face, lost {got:.3} (quantum {quantum:.3})", f.u1 - f.u0);
+                }
+                worst = worst.max(got);
+            }
+            println!("face {:.1} wu: densest packing {worst:.3} of the face", f.u1 - f.u0);
         }
-        // and the extent grows with the dial (14-27 px on an X face)
-        let w = |c: &Crater| c.hi.x - c.lo.x;
-        assert!(w(&blown[0]) > 1.4 * w(&lifted[0]), "the lens grows with the dial: {} vs {}", w(&blown[0]), w(&lifted[0]));
+        assert!(fill_n >= 200, "VACUOUS: only {fill_n} craters measured");
+        let fill = fill_sum / fill_n as f32;
+        println!("mean rim fill {fill:.3} (RIM_FILL = {RIM_FILL}), packing ceiling {ceiling:.3}");
+        assert!((fill - RIM_FILL).abs() < 0.03, "RIM_FILL is miscalibrated: measured {fill:.3}");
+        // …and the same amount is the same LOSS on both faces, which is the
+        // whole point of the unit
+        let (a, b) = (lost(&face(), &craters(&face(), &patchy, 0.10, &anywhere)), lost(&bench(), &craters(&bench(), &patchy, 0.10, &anywhere)));
+        assert!((a - b).abs() < 0.04, "0.10 means {a:.3} on a 6.2-wu face and {b:.3} on a 2.2-wu one");
     }
 
-    /// THE DEPTH BUDGET, over the whole (depth knob × dial) grid the owner can
+    /// THE DEPTH BUDGET, over the whole (relief × amount) grid the owner can
     /// reach: the mat never sits in the veneer's hollow, and the basin never
     /// reaches the CORE's rear plane. Both bounds were wrong in the first cut and
     /// both were invisible in a shot — the bar showed through grooves on walls
     /// with no crater, and the floor went coplanar with the core's back face at
-    /// depth knob 0.6 — so they are pinned as arithmetic, per wall thickness.
+    /// relief 0.6 — so they are pinned as arithmetic, per wall thickness.
     ///
-    /// The gym's own walls are the 0.2 row; 0.3 stands in for a thicker slab, and
-    /// the vacuity guard is that the 0.2 row must actually RUN OUT of steel at
-    /// the top of the depth knob (that limit is real, and the staging table says
-    /// so — a test that passed on both rows for the same reason would be pinning
-    /// nothing).
+    /// The gym's own walls are the 0.2 row; 0.3 stands in for a thicker slab.
     #[test]
     fn the_mat_is_always_buried_and_the_basin_never_reaches_the_cores_rear_plane() {
-        let mut thin_ran_out = false;
         for thick in [0.2f32, 0.3] {
             for di in 0..=10 {
-                // `CrazeCfg::t` — the veneer the depth knob sets, mirrored here
-                let veneer = mixf(0.02, 0.45 * thick, di as f32 / 10.0);
+                let veneer = crate::wall::veneer(di as f32 / 10.0, thick).min(t_cap(thick));
                 let f = Face { veneer, thick, ..face() };
-                let mut steel = false;
-                for dial in [0.2f32, 0.4, 0.6, 0.8, 1.0] {
-                    for cr in craters(&f, &patchy, dial, &anywhere) {
-                        assert!(cr.cover >= veneer, "thick {thick} depth {di}: the mat is in the veneer's hollow ({} < {veneer})", cr.cover);
+                for area in [0.02f32, 0.05, 0.10, 0.20, 0.30] {
+                    for cr in craters(&f, &patchy, area, &anywhere) {
+                        assert!(cr.cover >= veneer, "thick {thick} relief {di}: the mat is in the veneer's hollow ({} < {veneer})", cr.cover);
                         assert!(
                             cr.floor <= thick - veneer - REAR + 1e-6,
-                            "thick {thick} depth {di} dial {dial}: the basin reaches the core's rear plane ({} > {})",
+                            "thick {thick} relief {di} area {area}: the basin reaches the core's rear plane ({} > {})",
                             cr.floor,
                             thick - veneer - REAR
                         );
-                        assert!(cr.floor >= veneer, "thick {thick} depth {di}: a crater shallower than the cover it lost");
-                        steel |= !cr.bars.is_empty();
-                        if !cr.bars.is_empty() {
-                            assert!(cr.bar_s >= BAR_S_MIN, "a sub-readable bar was emitted: {}", cr.bar_s);
-                            // the WHOLE section inside the core, because the far
-                            // face carries the same mat mirrored (see `budget`)
-                            assert!(
-                                cr.cover + cr.bar_s <= thick - veneer + 1e-6,
-                                "thick {thick} depth {di}: the bar pokes through the far core plane ({} > {})",
-                                cr.cover + cr.bar_s,
-                                thick - veneer
-                            );
-                        }
+                        assert!(cr.floor >= veneer, "thick {thick} relief {di}: a crater shallower than the cover it lost");
+                        assert!(cr.bar_s >= BAR_S_MIN, "a sub-readable bar was emitted: {}", cr.bar_s);
+                        // the WHOLE section inside the core, because the far
+                        // face carries the same mat mirrored (see `budget`)
+                        assert!(
+                            cr.cover + cr.bar_s <= thick - veneer + 1e-6,
+                            "thick {thick} relief {di}: the bar pokes through the far core plane ({} > {})",
+                            cr.cover + cr.bar_s,
+                            thick - veneer
+                        );
                     }
                 }
-                thin_ran_out |= thick == 0.2 && di == 10 && !steel;
             }
         }
-        assert!(thin_ran_out, "VACUOUS: on a 0.2-wu wall at depth 1 the veneer eats the core, so the steel stage MUST be unreachable");
+    }
+
+    /// **THE RELIEF KNOB CANNOT DELETE THE MAT.** A spall shows steel — that is
+    /// what makes it a spall and not a chip — so at EVERY relief setting on
+    /// every wall thickness the game has, every crater carries bars.
+    ///
+    /// What this replaces was a documented limit: "above relief ≈ 0.72 on the
+    /// gym's 0.2-wu walls there is no core left, so that wall stays at LIFTED
+    /// COVER however far the spall dial goes". One dial silently deleting
+    /// another's effect, with nothing on screen to say why — and the honest cost
+    /// of removing it is the top 9 % of the relief slider, which the vacuity
+    /// guard below measures rather than assumes.
+    #[test]
+    fn relief_cannot_delete_the_mat() {
+        let mut bit = 0;
+        for thick in [0.2f32, 0.25, 0.3] {
+            for di in 0..=10 {
+                let relief = di as f32 / 10.0;
+                let asked = crate::wall::veneer(relief, thick);
+                let veneer = asked.min(t_cap(thick));
+                bit += (veneer < asked - 1e-6) as usize;
+                let f = Face { veneer, thick, ..face() };
+                let cs = craters(&f, &patchy, 0.10, &anywhere);
+                assert!(!cs.is_empty(), "thick {thick} relief {relief}: a 10 % ask built nothing");
+                for cr in &cs {
+                    assert!(!cr.bars.is_empty(), "thick {thick} relief {relief}: a spall with no steel in it");
+                    assert!(cr.floor >= cr.cover + BAR_PROUD * cr.bar_s - 1e-6, "the bar does not stand proud: floor {} cover {}", cr.floor, cr.cover);
+                }
+            }
+        }
+        assert!(bit > 0, "VACUOUS: t_cap never bit, so this test proves nothing about the relief knob");
+        // …and it costs the TOP of the slider only: on the gym's own walls the
+        // cap is 0.082 against a knob top of 0.090
+        assert!(t_cap(0.2) > crate::wall::veneer(0.85, 0.2), "the cap eats more than the last sixth of the relief knob on a 0.2-wu wall");
     }
 
     /// CAUSALITY, not noise: the FIELD is the primary driver, so with one strong
@@ -773,10 +960,10 @@ mod tests {
     #[test]
     fn craters_land_where_the_wall_is_failing() {
         let f = face();
-        let cr = &craters(&f, &patchy, 0.6, &anywhere)[0];
+        let cr = &craters(&f, &patchy, 0.02, &anywhere)[0];
         assert!((cr.c - Vec2::new(13.0, 1.4)).length() < 0.6, "the arg-max site is the damage patch: {:?}", cr.c);
         let flat = |_: f32, _: f32| 0.55;
-        let base = &craters(&f, &flat, 0.6, &anywhere)[0];
+        let base = &craters(&f, &flat, 0.02, &anywhere)[0];
         assert!(base.c.y < 0.8, "on a uniformly tired wall the splash zone wins: {:?}", base.c);
         // …and a window REVEAL outranks the middle of a sound wall, read
         // straight off the run rect (this is the gym's 0.4-wu pier between the
@@ -793,8 +980,8 @@ mod tests {
     #[test]
     fn the_rim_is_inside_the_patch_rect_and_the_ring_traces_it() {
         let f = face();
-        for dial in [0.2, 0.5, 0.8, 1.0] {
-            for cr in craters(&f, &patchy, dial, &anywhere) {
+        for area in [0.02, 0.08, 0.16, 0.30] {
+            for cr in craters(&f, &patchy, area, &anywhere) {
                 assert_eq!(cr.rim.len(), cr.ring.len(), "one ray per vertex");
                 assert!(cr.rim.len() >= 2 * RIM_C_MIN, "at least a corner and a ragged point per facet");
                 assert!(cr.lo.x >= f.u0 + EDGE_MARGIN - 1e-4 && cr.hi.x <= f.u1 - EDGE_MARGIN + 1e-4, "cover survives at the pier's ends");
@@ -823,7 +1010,7 @@ mod tests {
     #[test]
     fn the_cage_is_world_anchored_and_every_exposed_bar_crosses_its_crater() {
         let f = face();
-        for cr in craters(&f, &patchy, 0.9, &anywhere) {
+        for cr in craters(&f, &patchy, 0.20, &anywhere) {
             assert!(!cr.bars.is_empty());
             for b in &cr.bars {
                 let (at, ctr, half) = if b.along_y {
@@ -839,7 +1026,7 @@ mod tests {
                 assert!(b.v0 > f.y0 - 1e-3 || !b.along_y, "…inside the pier box");
             }
             // 2-3 bars: a cage, never one lonely bar (bar pitch 0.4/0.5 wu
-            // against a 0.35-0.7 × 0.15-0.30 lens)
+            // against a 0.30 × 0.13 lens, ±25 %)
             assert!(cr.bars.len() >= 2, "a crater must show a bar AND a crossing, got {}", cr.bars.len());
         }
     }
@@ -850,7 +1037,7 @@ mod tests {
     #[test]
     fn a_sixteen_pixel_pier_clamps_its_crater_or_skips_it() {
         let narrow = Face { u0: 4.7, u1: 5.1, run_u0: 2.9, run_u1: 5.1, ..face() };
-        let cs = craters(&narrow, &|_, _| 0.7, 1.0, &anywhere);
+        let cs = craters(&narrow, &|_, _| 0.7, 0.30, &anywhere);
         for cr in &cs {
             assert!(cr.lo.x >= narrow.u0 + EDGE_MARGIN - 1e-4, "cover survives the jamb: {:?}", cr.lo);
             assert!(cr.hi.x <= narrow.u1 - EDGE_MARGIN + 1e-4, "…on both sides: {:?}", cr.hi);
@@ -866,12 +1053,12 @@ mod tests {
     }
 
     /// Determinism, and independence from the knobs that do not belong to this
-    /// effect: same face, same dial, same craters, every call.
+    /// effect: same face, same amount, same craters, every call.
     #[test]
-    fn craters_are_a_pure_function_of_the_face_and_the_dial() {
+    fn craters_are_a_pure_function_of_the_face_and_the_amount() {
         let f = face();
-        let a = craters(&f, &patchy, 0.7, &anywhere);
-        let b = craters(&f, &patchy, 0.7, &anywhere);
+        let a = craters(&f, &patchy, 0.12, &anywhere);
+        let b = craters(&f, &patchy, 0.12, &anywhere);
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(&b) {
             assert_eq!(x.c, y.c);
@@ -880,7 +1067,7 @@ mod tests {
         }
         // a different facade tells a different story
         let other = Face { seed: 96.4, ..face() };
-        assert_ne!(craters(&other, &patchy, 0.7, &anywhere)[0].rim, a[0].rim);
+        assert_ne!(craters(&other, &patchy, 0.12, &anywhere)[0].rim, a[0].rim);
     }
 
     /// THE SHAPE, pinned as a measurement rather than as a screenshot (owner,
@@ -904,10 +1091,10 @@ mod tests {
     #[test]
     fn the_rim_is_a_broken_plate_and_not_a_perturbed_oval() {
         let f = face();
-        let mut seen = 0;
+        let (mut seen, mut flattest) = (0, f32::MAX);
         for seed in [41.2f32, 96.4, 12.0, 77.7] {
             let f = Face { seed, ..f };
-            for cr in craters(&f, &patchy, 0.8, &anywhere) {
+            for cr in craters(&f, &patchy, 0.20, &anywhere) {
                 let n = cr.rim.len();
                 let turn = |i: usize| {
                     let (a, b, c) = (cr.rim[(i + n - 1) % n], cr.rim[i], cr.rim[(i + 1) % n]);
@@ -918,7 +1105,12 @@ mod tests {
                 let hard = turns.iter().cloned().fold(f32::MIN, f32::max);
                 let flat = turns.iter().map(|t| t.abs()).fold(f32::MAX, f32::min);
                 assert!(hard > 1.2, "seed {seed}: no fracture corner — this is a curve ({hard:.3} rad)");
-                assert!(flat < 0.06, "seed {seed}: no straight facet — this is a curve ({flat:.4} rad)");
+                // A straight FACET is a property of the population, not of every
+                // rim: each facet carries one ragged midpoint, so whether a given
+                // crater has a sample that lands on the straight part is a draw.
+                // What no curve can do is produce one at all.
+                assert!(flat < 0.20, "seed {seed}: every vertex turns like a sampled curve ({flat:.4} rad)");
+                flattest = flattest.min(flat);
                 // star-shaped about `c`: polar angle strictly increasing, which
                 // is what makes every rim→ring band a valid quad
                 let ang = |p: Vec2| (p - cr.c).to_angle();
@@ -930,6 +1122,8 @@ mod tests {
             }
         }
         assert!(seen >= 8, "VACUOUS: only {seen} craters measured");
+        println!("flattest vertex over {seen} craters: {flattest:.4} rad");
+        assert!(flattest < 0.06, "no rim anywhere has a straight run in it ({flattest:.4} rad over {seen} craters)");
     }
 }
 

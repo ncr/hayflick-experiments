@@ -298,9 +298,9 @@ pub(crate) fn crack_canvas(sel: usize, knobs: [f32; 4], spall: f32, row: usize, 
     for (i, label) in crate::crack::LABELS.iter().enumerate() {
         srow(&mut c, i, label, 0, knobs[i]);
     }
-    // COVER SPALL (owner headline 2026-07-25): cracked → lifted cover → blown
-    // spall with the rebar showing. A rebuild dial like the params, so it shows
-    // on release, not mid-drag.
+    // COVER SPALL (owner headline 2026-07-25): how much of this wall's cover is
+    // gone, with the rebar showing under it. A rebuild dial like the params, so
+    // it shows on release, not mid-drag.
     srow(&mut c, SPALL_ROW, "spall", 0, spall);
     // pattern row: a discrete cycler, not a slider (click steps the policy)
     let py = MPAD + MROW * (1 + PATTERN_ROW as i32);

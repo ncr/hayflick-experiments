@@ -314,6 +314,31 @@ impl Shape {
     pub const DEFAULT: Shape = Shape { grain: 0.30, relief: 0.45, pattern: Pattern::DEFAULTS[0] };
 }
 
+/// What [`Shape::relief`] MEANS in world units: the veneer's thickness, which is
+/// the same number as a groove's depth (a groove cuts the veneer away down to
+/// the core). 0.02 wu at the bottom — just under one screen pixel, so the
+/// shallowest setting still reads — up to 0.45 of the slab, which leaves a
+/// tenth of it as core.
+///
+/// ONE definition, exported, because three readers have to agree on it: the
+/// generator that cuts the grooves, the spall's depth budget
+/// (`rebar::t_cap`, which is the deepest veneer that still leaves the
+/// reinforcement somewhere to sit), and the panel row that reports the cap.
+pub fn veneer(relief: f32, thick: f32) -> f32 {
+    mixf(0.02, 0.45 * thick, relief.clamp(0.0, 1.0))
+}
+
+/// [`veneer`] inverted: the relief setting that produces thickness `t`. What the
+/// panel needs to SHOW a cap as a slider position rather than as a wu number the
+/// author has no way to compare his dial against.
+fn relief_of(t: f32, thick: f32) -> f32 {
+    let span = 0.45 * thick - 0.02;
+    if span <= 0.0 {
+        return 0.0; // a slab thinner than the shallowest groove: no travel at all
+    }
+    ((t - 0.02) / span).clamp(0.0, 1.0)
+}
+
 /// Everything a level says about ONE wall.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct WallSpec {
@@ -377,6 +402,42 @@ impl WallAt {
 // 4. The derivation — the whole rule, on one screen
 // ---------------------------------------------------------------------------
 
+/// The face a TOTAL cover loss takes, and so the ceiling the cover-loss cause
+/// maps onto.
+///
+/// Defined by what the geometry can honour on the SMALLEST wall in the game, not
+/// by taste. Craters are discrete objects with cover standing between them
+/// (`rebar::PATCH_GAP`, `EDGE_MARGIN`), and a wall's TWO faces share one packing
+/// because two craters facing each other would perforate the slab — the front
+/// takes the worst sites and the back is vetoed off every rect it took. So the
+/// binding case is a small pier's BACK face, and the number is measured, by
+/// `both_faces_get_the_spall_they_asked_for_at_the_top_of_the_dial` over every
+/// pier of the gym:
+///
+/// | asked | worst face's shortfall |
+/// |---|---|
+/// | 0.020 | 5 % of the ask |
+/// | 0.025 | 8 % — under the rounding quantum |
+/// | 0.030 | 23 % |
+/// | 0.060 | 48 % — the gym's 1.6-wu pier gets one crater instead of two |
+///
+/// So the top of the cover-loss slider is the most cover loss every wall in the
+/// game can actually carry on BOTH of its faces — the property a staged dial
+/// cannot have, since its top end was a stage rather than an amount. At 0.025 a
+/// 6.2-wu facade loses 3 patches and the bench's 2.2-wu slab 1, which is what
+/// the staged dial's top end produced too: this round changes the MECHANISM, not
+/// how damaged the level looks.
+///
+/// The lever, if a wall ever needs to lose more: allocate the two faces'
+/// craters by INTERLEAVING one candidate list instead of running the back
+/// through the front's leftovers. That splits the packing evenly and would
+/// roughly double this number.
+///
+/// It lives on the CAUSE→AMOUNT table and not inside the generator so that the
+/// AMOUNT stays a literal area: 0.025 IS two and a half per cent of the face, on
+/// the bench slab and on the facade alike.
+pub const SPALL_MAX: f32 = 0.025;
+
 /// `x` remapped so that `a` is the point it starts mattering. Linear, not a
 /// smoothstep: the author has to be able to do this in his head.
 fn from(x: f32, a: f32) -> f32 {
@@ -399,7 +460,7 @@ pub fn derive(s: Story) -> ([f32; Layer::N], Breaks) {
             from(w, 0.30),           // Web
             from(w, 0.55),           // Cracks
             0.50 * from(w, 0.75),    // Chips
-            s.cover_loss,            // Spall
+            SPALL_MAX * s.cover_loss, // Spall
         ],
         Breaks { count: (Breaks::MAX as f32 * from(s.settlement, 0.40)).round() as u8, at: None },
     )
@@ -567,7 +628,10 @@ pub struct Geom {
     /// Threshold codes ([`gate_code`] units).
     pub t_cracks: u8,
     pub t_chips: u8,
-    pub t_spall: u8,
+    /// Spall is the odd one: an AMOUNT, not a threshold, because its layer is
+    /// realized as a count of craters rather than by gating the field
+    /// (`rebar::craters`). Quantized on the same 1/63 grid as the shape dials.
+    pub spall: u8,
     /// Plate size and groove depth, quantized.
     pub grain: u8,
     pub relief: u8,
@@ -592,17 +656,35 @@ pub struct Sheet {
     pub gate: [f32; Layer::N],
     pub paint: Paint,
     pub geom: Geom,
+    /// What this wall got that is not quite what it asked for. Empty on almost
+    /// every wall; the panel prints them in that wall's rows.
+    pub notes: Vec<Miss>,
 }
 
-/// An authoring mistake, or a request the geometry could not honour. These are
-/// errors and not warnings on purpose: "the effect I authored is not in the
-/// shot" used to be an `eprintln!` nobody read.
+/// An authoring mistake, or a request the geometry could not honour exactly.
+/// Never silence: "the effect I authored is not in the shot" used to be an
+/// `eprintln!` nobody read.
+///
+/// Two kinds, and they are reported differently because they are different
+/// questions. [`Self::NoWall`] and [`Self::Duplicate`] are TYPOS — the author
+/// addressed a wall that is not there, or two names claim one run — and nothing
+/// downstream can be right, so [`compile`] fails on them. The other two are
+/// honoured WITH A DIFFERENCE: the wall renders, and the difference is attached
+/// to that wall's [`Sheet::notes`] for the panel to print in its row. Failing
+/// the level for those would mean a builder could not ask for the top of a
+/// slider without the compiler refusing to build anything at all.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Miss {
     NoWall { at: (f32, f32), label: &'static str },
     Duplicate { at: (f32, f32), label: &'static str },
     /// The run is too short for its field to deliver the asked area.
     Coarse { label: &'static str, layer: Layer, asked: f32, got: f32 },
+    /// A dial whose top the geometry cannot reach on THIS wall — today only
+    /// [`Shape::relief`], capped so a spalling wall keeps enough core to hold
+    /// its reinforcement mat (`rebar::t_cap`). Reported per wall because the cap
+    /// is a function of the slab's own thickness: the same relief is free on a
+    /// thick wall and clipped on a thin one.
+    Clamped { label: &'static str, dial: &'static str, asked: f32, used: f32 },
 }
 
 /// A run rectangle, as the level builder's `at` point resolves against it. The
@@ -626,6 +708,11 @@ impl RunRect {
     }
     fn length(&self) -> f32 {
         (self.hi.x - self.lo.x).max(self.hi.z - self.lo.z)
+    }
+    /// Slab thickness — the short side. Every depth budget in the renderer is
+    /// measured against it, so the authoring model has to know it too.
+    fn thick(&self) -> f32 {
+        (self.hi.x - self.lo.x).min(self.hi.z - self.lo.z)
     }
 }
 
@@ -667,7 +754,8 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
     }
 
     for (i, r) in runs.iter().enumerate() {
-        let (label, spec) = match named.iter().find(|(j, _)| *j == i) {
+        let mut notes: Vec<Miss> = Vec::new();
+        let (label, mut spec) = match named.iter().find(|(j, _)| *j == i) {
             Some((_, w)) => (w.label, w.spec),
             None => {
                 let d = spread_of(r, lw.spread);
@@ -680,6 +768,20 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
             }
         };
         let (area, breaks) = resolve(&spec);
+        // THE RELIEF CAP. A wall that spalls must keep enough core to hold its
+        // reinforcement mat, and how deep that lets the grooves cut is a fact
+        // about the slab's thickness, not about the author's taste — so the cap
+        // is applied here, once, and SAID. Spall-free walls are untouched: the
+        // constraint belongs to the effect that needs the core, not to the
+        // relief dial in general.
+        if area[Layer::Spall.index()] > 0.0 {
+            let cap = crate::rebar::t_cap(r.thick());
+            if veneer(spec.shape.relief, r.thick()) > cap + 1e-6 {
+                let used = relief_of(cap, r.thick());
+                notes.push(Miss::Clamped { label, dial: "relief", asked: spec.shape.relief, used });
+                spec.shape.relief = used;
+            }
+        }
         let field = RunField::of(r.lo, r.hi, r.story(), spec.origin);
         let mut gate = [GATE_EMPTY; Layer::N];
         for l in Layer::ALL {
@@ -687,9 +789,13 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
             // A run whose field is coarser than the area it was asked for
             // cannot deliver it. Report rather than silently approximate — the
             // panel prints achieved-vs-asked in that row.
+            //
+            // Spall is exempt: it is the one layer whose amount is NOT realized
+            // by thresholding the field (discrete craters are counted out of it
+            // — `rebar::craters`), so its gate is not what it draws through.
             let got = field.coverage(gate[l.index()]);
-            if area[l.index()] > 0.0 && (got - area[l.index()]).abs() > 0.08 {
-                misses.push(Miss::Coarse { label, layer: l, asked: area[l.index()], got });
+            if l != Layer::Spall && area[l.index()] > 0.0 && (got - area[l.index()]).abs() > 0.08 {
+                notes.push(Miss::Coarse { label, layer: l, asked: area[l.index()], got });
             }
         }
         let q = |v: f32| (v.clamp(0.0, 1.0) * 63.0).round() as u8;
@@ -709,11 +815,12 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
                 web: gate_code(gate[Layer::Web.index()]),
                 origin: spec.origin,
             },
+            notes,
             geom: Geom {
                 origin: spec.origin,
                 t_cracks: gate_code(gate[Layer::Cracks.index()]) as u8,
                 t_chips: gate_code(gate[Layer::Chips.index()]) as u8,
-                t_spall: gate_code(gate[Layer::Spall.index()]) as u8,
+                spall: q(area[Layer::Spall.index()]),
                 grain: q(spec.shape.grain),
                 relief: q(spec.shape.relief),
                 pattern: spec.shape.pattern.code(),
@@ -723,11 +830,7 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
             },
         });
     }
-    if misses.is_empty() {
-        Ok(sheets)
-    } else {
-        Err(misses)
-    }
+    Ok(sheets)
 }
 
 #[cfg(test)]
@@ -918,7 +1021,7 @@ mod tests {
         assert_eq!(area, [0.0; Layer::N], "settlement wrote a skin layer");
         assert_eq!(breaks.count, 3);
         let (area, breaks) = derive(Story { cover_loss: 0.4, ..Story::ZERO });
-        assert_eq!(area[Layer::Spall.index()], 0.4);
+        assert_eq!(area[Layer::Spall.index()], SPALL_MAX * 0.4, "cover loss maps onto the reachable area, not onto 1.0");
         assert_eq!(area[Layer::Cracks.index()], 0.0, "cover loss wrote the cracks row");
         assert_eq!(breaks.count, 0);
     }
@@ -979,6 +1082,48 @@ mod tests {
         let sheets = compile(&runs, &lw(&OK)).expect("a clean level compiles");
         assert_eq!(sheets.len(), runs.len(), "one sheet per run");
         assert_eq!(sheets.iter().filter(|s| s.label == "control").count(), 1);
+    }
+
+    /// A DIAL THE GEOMETRY CANNOT HONOUR IS CLAMPED AND SAID SO — never
+    /// silently obeyed-ish. The relief knob's top would leave a spalling wall no
+    /// core to hold its reinforcement mat, and what used to happen is that the
+    /// steel simply stopped appearing, with nothing anywhere saying why (it was
+    /// written up as an "honest limit" in the module docs, which is not the same
+    /// as telling the person holding the slider).
+    ///
+    /// Both halves are pinned, because a cap that fires when it should not is
+    /// the same defect the other way round: a wall with no spall keeps the whole
+    /// travel, since the constraint belongs to the effect that needs the core.
+    #[test]
+    fn a_relief_past_the_cap_is_clamped_and_said() {
+        let runs = runs_of(&house_game::gym::sim::gym_level());
+        const DEEP: Shape = Shape { relief: 1.0, ..Shape::DEFAULT };
+        const WALLS: [WallAt; 2] = [
+            WallAt { at: (13.0, 10.0), label: "deep and spalling", spec: WallSpec { story: Story { weather: 0.0, settlement: 0.0, cover_loss: 1.0 }, origin: Origin::Ground, pin: Pins::NONE, shape: DEEP } },
+            WallAt { at: (12.0, 4.0), label: "deep and sound", spec: WallSpec { story: Story { weather: 0.9, settlement: 0.0, cover_loss: 0.0 }, origin: Origin::Ground, pin: Pins::NONE, shape: DEEP } },
+        ];
+        let lw = LevelWear { base: Story::ZERO, origin: Origin::Ground, spread: 0.0, walls: &WALLS };
+        let sheets = compile(&runs, &lw).expect("a clamp is not a compile error — the wall renders");
+        let of = |label: &str| sheets.iter().find(|s| s.label == label).expect("both named walls compiled").clone();
+
+        // the spalling wall is capped, and the note carries both numbers
+        let spalling = of("deep and spalling");
+        let thick = runs[sheets.iter().position(|s| s.label == "deep and spalling").unwrap()].thick();
+        assert!(crate::rebar::t_cap(thick) < veneer(1.0, thick), "VACUOUS: relief 1.0 already fits the mat on a {thick}-wu wall");
+        let note = spalling.notes.iter().find(|m| matches!(m, Miss::Clamped { .. })).unwrap_or_else(|| panic!("relief 1.0 on a spalling wall was obeyed silently: {:?}", spalling.notes));
+        let Miss::Clamped { dial, asked, used, .. } = note else { unreachable!() };
+        assert_eq!(*dial, "relief");
+        assert_eq!(*asked, 1.0);
+        assert!(*used < 1.0 && *used > 0.8, "the cap should cost the top of the slider, not most of it: {used:.3}");
+        assert!(veneer(*used, thick) <= crate::rebar::t_cap(thick) + 1e-6, "the clamped relief still leaves the mat nowhere to sit");
+        assert_eq!(spalling.geom.relief, (used * 63.0).round() as u8, "the note says one thing and the geometry gets another");
+
+        // …and the identical relief on a wall with no cover loss is untouched:
+        // the constraint belongs to the effect that needs the core, not to the
+        // relief dial in general
+        let sound = of("deep and sound");
+        assert!(sound.notes.iter().all(|m| !matches!(m, Miss::Clamped { .. })), "a wall with no cover loss was capped: {:?}", sound.notes);
+        assert_eq!(sound.geom.relief, 63, "…and it keeps the whole travel");
     }
 
     /// `Geom` IS THE REBUILD GATE: all-integer, so equality means "the built

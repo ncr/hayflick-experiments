@@ -399,11 +399,10 @@ Verified 4 runs per side: `gym` BYTE-IDENTICAL, `crack lab` 1.8 % at max
 because their story says so.
 
 COVER SPALL WITH REBAR since 2026-07-25 (task-3 step 2, owner headline
-"large concrete spalls with the REBAR showing underneath"): one staged
-panel dial — `spall`, under the four knobs — walks cracked (<= 0.12) ->
-LIFTED COVER (a shallow lens, no steel) -> BLOWN SPALL (the floor cuts past
-a world-anchored reinforcement mat, so 1-3 bars stand proud of the basin and
-cast into it). `rebar.rs` is the mat, the corrosion potential (the
+"large concrete spalls with the REBAR showing underneath"): the panel's
+`spall` dial, under the four knobs, is the COVER-LOSS cause; the crater cuts
+past a world-anchored reinforcement mat, so bars stand proud of the basin and
+cast into it. `rebar.rs` is the mat, the corrosion potential (the
 normalized damage field + a splash BAND + window reveals + the parapet) and
 the crater outline; `crack_geom::emit_crater` is the mesh — collar, chamfer,
 undercut, shelf, basin, bars. Host-side only: no shader edit, no material
@@ -414,10 +413,7 @@ walls down, so `SPALL=0` really is off) and `SPALL_LAYER=1|2|3` to bisect
 `SPALL=0` — the bars are buried by construction; measured 0 px above 3 % at
 max delta 4 against a floor of 3). Both faces of a wall spall (the owner
 turns the camera with q/e) with the two sets vetoed disjoint, because each
-basin may cut past the slab's half-thickness. ONE HONEST LIMIT: the depth
-knob's veneer eats the core from both sides, so above depth ~0.72 on the
-gym's 0.2-wu walls there is no core left to hold a mat and the dial stops at
-LIFTED COVER.
+basin may cut past the slab's half-thickness.
 2026-07-26, both halves reworked on the owner's first look ("jest za gruby",
 "owalne dziury nie są realistyczne"). (1) The section went 0.075 -> 0.036 wu
 (3.1 -> 1.5 px on an X face): a bar is a LINE of steel with one lit edge, not
@@ -431,9 +427,47 @@ the rim inside the patch rect). Pinned by
 `rebar::the_rim_is_a_broken_plate_and_not_a_perturbed_oval`, which measures
 the turning: some vertex must turn > 1.2 rad (a corner no smoothly sampled
 curve can reach) and some must turn < 0.06 (a straight run no curve has).
-The thin section then broke the DIAL's staging — see the 2026-07-26 learning;
-the fix is that the three stages are now a fact about the dial
-(`st >= ST_STEEL`), never a by-product of the depth arithmetic.
+The thin section then broke the DIAL's staging — see the 2026-07-26 learning
+— and the staging itself is gone since the same day (below).
+
+SPALL IS AN AREA since 2026-07-26 (task-3 step 7). The dial USED to be
+staged — a 0.12 deadband, then LIFTED COVER (a lens with no steel in it),
+then BLOWN SPALL — with extent, depth and count all riding the one number.
+Three faults in one: the stages were three different LAYERS on one slider
+(cover lifted but no steel is a CHIP, and `Layer::Chips` builds exactly
+that); the amount was not an area, so dial 0.5 lost 7 % of a 2.2-wu slab and
+2.5 % of a 6.2-wu facade; and the depth ramp's knee was a fraction of the
+DIAL, so a wall whose cover was too deep for the mat quietly stopped at
+stage two. Now `Layer::Spall`'s amount is the fraction of the face whose
+cover is gone, spent in whole craters of ONE canonical size (`rebar`'s
+0.32 × 0.13 wu lens = one bay of the mat, ±25 % of its AREA), and the count
+falls out of the area. A spall shows steel BY DEFINITION; the basin cuts
+`BAR_CLEAR` sections behind the mat, never a ramp. Deciding the count up
+front is what makes the amount monotone BY CONSTRUCTION — the candidate
+order does not depend on the budget, so more area takes a superset of the
+same sites. `rebar::stage`, `ST_STEEL`, `FLOOR0`, `DIAL_ON` and
+`Face::gate` are deleted.
+THE HONEST LIMIT MOVED FROM A SILENT ONE TO A REPORTED ONE. `rebar::t_cap`
+is the deepest veneer that still leaves the core somewhere to hold a mat
+(0.082 of a 0.2-wu wall against a knob top of 0.090), `CrazeCfg::new`
+applies it to walls that spall, and `wall::Miss::Clamped` says so per wall —
+where the old code just stopped emitting steel and the module doc called it
+an honest limit. `Miss` split in two at the same time: NoWall/Duplicate are
+TYPOS and still fail `compile`, while Coarse/Clamped are honoured WITH A
+DIFFERENCE and ride `Sheet::notes` for the panel to print in that wall's row.
+`wall::SPALL_MAX = 0.025` is the cause→amount ceiling and it is MEASURED,
+not taste: a wall's two faces share one packing (two facing craters would
+perforate the slab), so the binding case is a small pier's BACK face —
+0.025 costs the worst gym face 8 % of its ask, 0.03 costs it 23 %, 0.06
+costs it 48 %. At that ceiling a 6.2-wu facade loses 3 patches and the
+bench's 2.2-wu slab 1, which is what the staged dial's top produced too. The
+LEVER if a wall ever needs to lose more: interleave the two faces' craters
+from ONE candidate list instead of running the back through the front's
+leftovers, which would roughly double it. Verified 4 runs per side: `gym`
+BYTE-IDENTICAL, `crack lab` 0.52 % at max 186 (after-side cross-run floor
+128 px / max 75). Visible change the owner should rule on: at the TOP of the
+dial small piers now lose less than they used to, because the old count was
+3 per face whatever the wall's size.
 
 ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
 branching, irregular — not straight lines; two kinds: the coarse one and

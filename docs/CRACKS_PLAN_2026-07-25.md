@@ -636,6 +636,14 @@ does something over its whole travel:
 | 0.12 … 0.43 | LIFTED COVER: a shallow lens, pale fresh-break floor, cover overhanging its top edge, no steel |
 | 0.43 … 1 | BLOWN SPALL: the floor cuts past the mat, 1-3 bars stand proud with their own shadows, up to three craters |
 
+> **RETIRED 2026-07-26 (task-3 step 7).** The table above is history. The three
+> stages were three different LAYERS on one slider — "cover lifted, no steel"
+> is a chip, and `Layer::Chips` builds it — and a stage is not an amount, so
+> dial 0.5 lost 7 % of a 2.2-wu slab and 2.5 % of a 6.2-wu facade. `spall` is
+> now the COVER-LOSS cause behind `Layer::Spall`'s AREA: the fraction of the
+> face whose cover is gone, spent in whole craters of one canonical size. A
+> spall shows steel by definition. See CLAUDE.md, "SPALL IS AN AREA".
+
 Harness: `SPALL=<0..1>` and `SPALL_LAYER=1|2|3` (both on config.rs's shell-only
 exception list). The dial is a CEILING — `crack::seed_spall` multiplies by a
 skewed per-pier draw, so `SPALL=0` is genuinely off and the demo's own boot seed
@@ -689,7 +697,10 @@ against.
 - The depth knob's veneer eats the core from both sides (`t = 0.02 … 0.45 ·
   thick`), so above depth ≈ 0.72 on a 0.2-wu wall there is no core left to hold
   a mat and the dial stops at LIFTED COVER. The alternative was the bar in front
-  of the core's front plane, i.e. defect 2 again.
+  of the core's front plane, i.e. defect 2 again. **Fixed 2026-07-26 (step 7):**
+  `rebar::t_cap` caps the veneer of a spalling wall at the deepest cover that
+  still leaves the mat somewhere to sit, and `wall::Miss::Clamped` says so — a
+  limit stated to the person holding the slider instead of to the module doc.
 
 ### Both faces spall
 
@@ -754,8 +765,11 @@ none turns ≈ 0. Measured on the facet rim over four facades: hardest corner
 One consequence, and it is the round's real lesson: halving the section moved
 the staging knee in front of the lifted-cover stage's own starting depth, so the
 steel showed at the bottom of the dial and the floor ramp ran backwards. The
-three stages are now a fact about the DIAL (`st >= ST_STEEL`), with
-`knee.max(floor0)` to keep the ramp monotone — see the 2026-07-26 learning.
+three stages were made a fact about the DIAL (`st >= ST_STEEL`), with
+`knee.max(floor0)` to keep the ramp monotone — see the 2026-07-26 learning. The
+staging is DELETED as of step 7 later that day, and the deeper reading of the
+same lesson is that a staged dial is what you build when the layers underneath
+it are not separable amounts.
 
 ## Task 3, step 5 — EFFECT "eased arris" (glaze ease) — DONE 2026-07-25
 

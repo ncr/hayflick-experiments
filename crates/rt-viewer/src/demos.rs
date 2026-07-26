@@ -180,8 +180,8 @@ pub static DEMOS: &[Demo] = &[
         // moment it opens, and every segment starts somewhere different.
         // `spall` is the owner's 2026-07-25 headline, so it boots ON — and the
         // dial is a CEILING (`crack::seed_spall`), so 0.65 means the worst two
-        // walls have the cover blown off the rebar, a few carry lifted cover,
-        // and six of the fifteen stay clean: the clean ones are the point, since
+        // walls lose several patches of cover, most of the rest one or two, and
+        // six of the fifteen stay clean: the clean ones are the point, since
         // damage with no control beside it reads as a texture.
         cracks: Some(crate::crack::CrackSeed {
             age: 0.55,
@@ -282,8 +282,12 @@ pub static SPECIMENS: &[crate::crack::Specimen] = {
         // ones that can settle (`CrazeCfg::sink_perimeter`)
         s((7.0, 11.0), "settled plates", [1.0, 0.55, 0.70, 0.10], 2, 0.0),
         s((10.0, 11.0), "fresh break (chalk core)", [1.0, 0.50, 0.80, 0.95], 0, 0.0),
-        s((13.0, 11.0), "lifted cover", [0.50, 0.10, 0.30, 0.0], 0, 0.30),
-        s((16.0, 11.0), "blown spall + rebar", [0.65, 0.15, 0.35, 0.05], 0, 1.0),
+        // ONE effect at two AMOUNTS since 2026-07-26. These used to be two
+        // STAGES of one dial ("lifted cover" — a lens with no steel in it — and
+        // "blown spall"), which is a chip and a spall wearing the same slider;
+        // the shallow stage is `Layer::Chips`' job and the slab above shows it.
+        s((13.0, 11.0), "cover spall (one patch)", [0.50, 0.10, 0.30, 0.0], 0, 0.30),
+        s((16.0, 11.0), "cover spall + rebar (heavy)", [0.65, 0.15, 0.35, 0.05], 0, 1.0),
         // ---- row 2 (z=15): PAINT — the shade pass ALONE. Every wall here is
         // `paint_only`, including the two that carry no crack knob at all: a
         // nonzero AGE is enough to send a pier through `craze_pier`, which

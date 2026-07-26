@@ -64,10 +64,14 @@ pub struct CrackSeed {
     pub cracks: f32,
     pub depth: f32,
     pub chip: f32,
-    /// COVER SPALL (owner headline 2026-07-25): one staged dial — cracked →
-    /// lifted cover → blown spall with the rebar showing. Geometry-only, so it
-    /// lives host-side and never touches `Material._pad` (whose knob bits are
-    /// full: four 6-bit dials fill bits 8..31 exactly).
+    /// COVER SPALL (owner headline 2026-07-25): how much of a wall's cover is
+    /// gone, with the rebar showing under it. Since 2026-07-26 it is a plain
+    /// CAUSE — `wall::Story::cover_loss` — that `wall::derive` turns into the
+    /// Spall layer's AREA; it used to be one staged dial walking cracked →
+    /// lifted cover → blown spall, which is three different layers on one
+    /// slider. Geometry-only, so it lives host-side and never touches
+    /// `Material._pad` (whose knob bits are full: four 6-bit dials fill bits
+    /// 8..31 exactly).
     pub spall: f32,
     /// ± half-range of the deterministic per-pier variation on every knob.
     pub vary: f32,
@@ -363,6 +367,13 @@ pub fn seed_knobs(piers: &[Pier], s: &CrackSeed) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// Below this the SEED calls a wall sound and gives it no cover loss at all.
+/// 0.12 is exactly the old `rebar::DIAL_ON` threshold, kept to the number so
+/// that deleting the dial's deadband does not also quietly re-dress the demo's
+/// boot state — the before/after for this round is about the mechanism.
+/// Part of the `CrackSeed` variance machinery that `wall::LevelWear` replaces.
+const SOUND: f32 = 0.12;
+
 /// Per-pier COVER SPALL dials from a seed.
 ///
 /// Deliberately NOT the same variance shape as the knobs, for two reasons the
@@ -391,7 +402,18 @@ pub fn seed_spall(piers: &[Pier], s: &CrackSeed) -> Vec<f32> {
             // `vary` is a SKEW here, not a ± half-range: 0 is exactly the dial on
             // every wall (what a harness shot wants), and it bends the draw toward
             // zero as it opens, so most walls come out clean and a few come out bad
-            s.spall.clamp(0.0, 1.0) * h.powf(4.0 * s.vary)
+            let d = s.spall.clamp(0.0, 1.0) * h.powf(4.0 * s.vary);
+            // …and under `SOUND` the wall is simply not one of the failing ones.
+            // This is a LEVEL statement ("some walls are failing"), not a dial
+            // deadband: the panel's own dial is live from zero, and it has to be
+            // — a slider whose first eighth does nothing is unreadable. It used
+            // to be `rebar::DIAL_ON` doing both jobs at once, which is why an
+            // authored spall of 0.1 rendered nothing on any wall in the game.
+            if d < SOUND {
+                0.0
+            } else {
+                d
+            }
         })
         .collect()
 }
@@ -1135,7 +1157,7 @@ mod tests {
         let boot = demo_seed();
         let dials = seed_spall(&meta.piers, &boot);
         assert_eq!(dials.len(), 15, "the crack lab's gym is 15 piers");
-        let clean = dials.iter().filter(|d| **d <= crate::rebar::DIAL_ON).count();
+        let clean = dials.iter().filter(|d| **d == 0.0).count();
         assert!((4..=9).contains(&clean), "the boot state needs a pristine control beside the damage: {clean} of 15 clean — {dials:?}");
         assert!(dials.iter().any(|d| *d > 0.55), "…and at least one wall blown far enough to show steel: {dials:?}");
         assert!(dials.iter().all(|d| *d <= boot.spall + 1e-6), "the dial is a CEILING, never a centre");
@@ -1254,7 +1276,7 @@ mod tests {
     fn the_age_ramp_grows_geometry_the_whole_way_not_only_paint() {
         let spec = house_game::gym::sim::gym_level();
         let (x, z) = crate::demos::DemoRunner::age_point(crate::demos::by_name("crack lab").expect("the demo").script).expect("the crack lab ramps a wall");
-        let steps: Vec<(crate::crack_geom::GeoKey, usize)> = (0..=15)
+        let steps: Vec<(crate::crack_geom::GeoKey, usize, u64)> = (0..=15)
             .map(|k| {
                 let t = k as f32 / 15.0;
                 let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
@@ -1266,7 +1288,13 @@ mod tests {
                 let (policy, par) = (vec![0u8; n], vec![crate::crack_geom::param_defaults(0); n]);
                 crate::crack_geom::apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par, &spall, &[]);
                 let sig = crate::crack_geom::keys(&scene, &meta.piers, &knobs, &policy, &par, &spall, &[])[i];
-                (sig, scene.indices.len() / 3)
+                // the MESH itself, not its triangle count: two different walls
+                // can carry the same number of triangles, and asking whether the
+                // geometry moved is exactly the question a proxy gets wrong
+                let mesh = scene.vertices.iter().fold(1469598103934665603u64, |h, v| {
+                    v.pos.iter().fold(h, |h, c| (h ^ c.to_bits() as u64).wrapping_mul(1099511628211))
+                });
+                (sig, scene.indices.len() / 3, mesh)
             })
             .collect();
         let distinct: std::collections::HashSet<crate::crack_geom::GeoKey> = steps.iter().map(|s| s.0).collect();
@@ -1279,8 +1307,22 @@ mod tests {
         // inside the zone, that phase legitimately takes material AWAY. Asserting
         // monotone growth measured 7 of 15 here and would have been a claim about
         // the old chip semantics, not about the beat reading as continuous.
-        let moved = steps.windows(2).filter(|w| w[1].1 != w[0].1).count();
-        assert!(moved >= 10, "geometry must keep moving through the beat, not in one jump: {moved} of 15 steps changed");
+        //
+        // Measured on the MESH. It used to compare triangle counts, which said
+        // 9 of 15 the day the spall stopped ramping its lens size — but the
+        // craters had moved, resized and re-sited on every one of those steps;
+        // only the count happened to repeat. A proxy that answers the wrong
+        // question is worse than no test, because it fails for reasons that are
+        // not the claim.
+        // The beat's first third is PAINT by design (`ramp_knobs` opens the
+        // stains and the fine web before the crack network), and it measures as
+        // paint: the mesh is untouched for the first five commits. So the claim
+        // is about the GEOMETRY phase — once the first groove opens, every
+        // commit but one moves the wall.
+        let geo = steps.windows(2).skip(5);
+        let (n, moved) = (geo.clone().count(), geo.filter(|w| w[1].2 != w[0].2).count());
+        assert!(moved + 1 >= n, "geometry must keep moving through the beat, not in one jump: {moved} of {n} commits changed the mesh");
+        assert!(steps.windows(2).take(5).all(|w| w[1].2 == w[0].2), "the beat's opening is supposed to be paint only — a commit there is wasted work");
     }
 
     /// The crack lab demo's authored boot seed — the state the owner's playtest

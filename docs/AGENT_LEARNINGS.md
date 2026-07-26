@@ -1076,3 +1076,52 @@ with a vacuity guard that the knobs really do differ across a run.
 with the invariant in mind; the shim is written to preserve old behaviour, and
 "old behaviour" includes the defect. Any per-RUN quantity derived from per-PANEL
 legacy state needs its own equality test, not just the new engine's.
+
+## 2026-07-26 (spall becomes an area) — a staged dial is a symptom, and a proxy metric fails for the wrong reason
+
+Step 7 of the effects refactor deleted the cover-spall dial's three stages
+(a 0.12 deadband → LIFTED COVER → BLOWN SPALL) and replaced them with
+`Layer::Spall`'s AREA. Three things worth keeping.
+
+- **A staged dial is what you build when the layers underneath it are not
+  separable amounts.** The previous day's learning here says "if a stage
+  boundary is a product decision, write it as one". The deeper reading is
+  that this boundary should never have existed: stage two was *cover lifted
+  but no steel showing*, which is a CHIP, and `Layer::Chips` builds exactly
+  that. The dial was carrying a state only because chips and spall were not
+  two amounts you could ask for independently. When you find yourself
+  staging a slider, check whether the stages are separate layers wearing one
+  control — and if they are, the staging table, its knee constant, its
+  deadband and the depth ramp bent to meet it all delete together.
+
+- **A limit you DOCUMENT is not a limit you REPORT.** The module doc carried
+  a paragraph headed ONE HONEST LIMIT: past relief ≈ 0.72 on a 0.2-wu wall
+  there is no core left to hold the reinforcement mat, so the spall silently
+  stopped showing steel. Honest to a reader of the source; invisible to the
+  person holding the slider, who sees an effect that stops working and no
+  reason why. The bound is arithmetic, so it can be SOLVED for the dial
+  instead of tested against it (`rebar::t_cap`), applied once where the value
+  is born, and said out loud per wall (`wall::Miss::Clamped`). It cost the
+  top 9 % of the relief slider on the gym's own walls, which is what that
+  paragraph was actually worth.
+
+- **A proxy metric fails for reasons that are not the claim.** A test asked
+  "does the age beat keep moving the geometry, or does it arrive in one
+  cliff?" and answered it by comparing TRIANGLE COUNTS between commits. It
+  went red at 9 of 15 the moment the spall's lens stopped growing with the
+  dial — while the craters had in fact moved, resized and re-sited on every
+  one of those steps; only the count repeated. Two lessons in one failure:
+  measure the thing (an FNV over the vertex positions is four lines), and
+  when a long-passing test breaks, check whether it was ever measuring its
+  own claim. Restating it also surfaced that the beat's first third is PAINT
+  by design, so the honest claim is about the geometry phase — which the
+  test now asserts from both ends.
+
+- Small one, and the same shape as the round-6 break: **monotonicity is
+  cheaper to get by construction than to test for.** Spending a running
+  budget ("take this crater while it fits what's left") reads natural and is
+  not monotone — a bigger ask can accept an early large crater that then
+  blocks two later ones. Deciding the COUNT up front and walking a candidate
+  list whose order does not depend on the budget makes a larger amount take
+  a superset of the sites a smaller one took, and the test is then an
+  assertion about the mechanism rather than a search for a counterexample.

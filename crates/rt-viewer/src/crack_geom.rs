@@ -384,7 +384,20 @@ impl CrazeCfg {
             chip: k[3],
             a_cracks: amt[Layer::Cracks.index()],
             dep: k[2],
-            t: mixf(0.02, 0.45 * thick, k[2]),
+            // THE RELIEF CAP (`rebar::t_cap`), applied at the ONE place the
+            // veneer's thickness is born. A wall that spalls has to keep enough
+            // core to hold its reinforcement mat; without the cap the relief
+            // knob's top end silently deleted the steel and the spall stopped
+            // at a shallow dish. Spall-free walls keep the whole travel — the
+            // constraint belongs to the effect that needs the core.
+            t: {
+                let t = crate::wall::veneer(k[2], thick);
+                if amt[Layer::Spall.index()] > 0.0 {
+                    t.min(crate::rebar::t_cap(thick))
+                } else {
+                    t
+                }
+            },
             px1: px_floor(run_x),
             sink_perimeter: true,
             par,
@@ -1952,7 +1965,12 @@ fn emit_crater(
 /// The pier's cover spalls, in face coords. The corrosion mat is seeded on the
 /// RUN's damage seed, so the two piers of one facade grow the same character of
 /// crater — one wall, one story (2026-07-25).
-fn pier_craters(cfg: &CrazeCfg, fr: &Frame, pier: &Pier, dial: f32, salt: f32, fits: &dyn Fn(Vec2, Vec2) -> bool) -> Vec<rebar::Crater> {
+///
+/// `area` is the SPALL layer's amount: the fraction of this face whose cover is
+/// gone. Taken from `Wear`'s amounts like every other layer, never from the
+/// panel's dial — the generator reads what the model resolved, so the dial can
+/// be re-scaled or replaced without touching the geometry.
+fn pier_craters(cfg: &CrazeCfg, fr: &Frame, pier: &Pier, area: f32, salt: f32, fits: &dyn Fn(Vec2, Vec2) -> bool) -> Vec<rebar::Crater> {
     let (run_u0, run_u1) = if fr.run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
     let face = rebar::Face {
         u0: fr.u0,
@@ -1963,13 +1981,12 @@ fn pier_craters(cfg: &CrazeCfg, fr: &Frame, pier: &Pier, dial: f32, salt: f32, f
         run_u1,
         veneer: cfg.t,
         thick: fr.t1 - fr.t0,
-        gate: cfg.t_zone,
         seed: cfg.dmg_seed + salt,
     };
     if spall_layers() == 0 {
         return Vec::new(); // the whole effect off — see `spall_layers`
     }
-    rebar::craters(&face, &|u, y| cfg.dmg(u, y), dial, fits)
+    rebar::craters(&face, &|u, y| cfg.dmg(u, y), area, fits)
 }
 
 /// The seed salt for the wall's BACK face. Both faces read the same damage
@@ -2320,11 +2337,12 @@ fn emit_prism(
 }
 
 /// Fragment an UNFAULTED pier into core box + veneer per the policy, and blow
-/// the spall dial's cover craters through both layers. Returns the pier's chalk
+/// the SPALL layer's cover craters through both layers. Returns the pier's chalk
 /// core and steel materials (`-1` = none): the scene is untouched when nothing
 /// opened — no groove, no live or spalled plate, no crater — and the pier keeps
 /// its box and its paint.
-fn craze_pier(scene: &mut Scene, pier: &Pier, wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
+fn craze_pier(scene: &mut Scene, pier: &Pier, wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> (i32, [i32; 2]) {
+    let spall = wear.0[crate::wall::Layer::Spall.index()];
     let mid = mat_of(scene, pier);
     let fr = Frame::of(pier);
     let cfg = CrazeCfg::new(story_of(scene, pier), wear, k, fr.run_x, fr.t1 - fr.t0, &[], par);
@@ -2335,9 +2353,9 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, wear: Wear, k: [f32; 4], policy: u
     // session, and a one-sided crater is damage that disappears when he presses
     // e — while the cracks, plates and paint around it stay. The back set is
     // vetoed against the front set's rects so the two can never meet in depth.
-    let front = pier_craters(&cfg, &fr, pier, dial, 0.0, &|_, _| true);
+    let front = pier_craters(&cfg, &fr, pier, spall, 0.0, &|_, _| true);
     let fr_rects = patch_rects(&front);
-    let back = pier_craters(&cfg, &fr, pier, dial, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
+    let back = pier_craters(&cfg, &fr, pier, spall, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
     if !opened.get() && front.is_empty() && back.is_empty() {
         return (-1, [-1, -1]);
     }
@@ -2438,7 +2456,8 @@ fn spend_spall(scene: &mut Scene, mid: i32, core_mid: i32, bas: &Mesh, bar: &Mes
 /// policy veneer clipped against the fault paths — so the small-crack
 /// pattern rides the broken wall and clusters along the seam (halo).
 #[allow(clippy::too_many_arguments)]
-fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
+fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> (i32, [i32; 2]) {
+    let spall = wear.0[crate::wall::Layer::Spall.index()];
     let mid = mat_of(scene, pier);
     let fr = Frame::of(pier);
     let (u0, u1, t0, t1, y0, y1) = (fr.u0, fr.u1, fr.t0, fr.t1, fr.y0, fr.y1);
@@ -2460,16 +2479,15 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], wear: Wear, k: [
     // Craters come AFTER the carve, and the site chooser is told which rects can
     // land: a crater straddling a break would be cut in half by the fault gap and
     // dropped by two different amounts, so its patch must sit wholly inside ONE
-    // piece. Filtering afterwards instead would make the dial NON-MONOTONE (the
-    // budget gets spent on sites that are then discarded — measured: the garden
-    // wall lost its crater between dial 0.25 and 0.55), which is the one thing a
-    // staged owner dial may not do.
+    // piece. Filtering afterwards instead would make the AMOUNT non-monotone
+    // (measured: the garden wall lost its crater between 0.25 and 0.55), which
+    // is the one thing an authored area may not do.
     let piece_of = |lo: Vec2, hi: Vec2| pieces.iter().position(|(_, cuts)| rect_inside(lo, hi, cuts, &bolts));
     // one set per FACE, the back vetoed against the front's rects — see
     // `rect_hits` (two craters facing each other would perforate the slab)
-    let craters = pier_craters(&cfg, &fr, pier, dial, 0.0, &|lo, hi| piece_of(lo, hi).is_some());
+    let craters = pier_craters(&cfg, &fr, pier, spall, 0.0, &|lo, hi| piece_of(lo, hi).is_some());
     let fr_rects = patch_rects(&craters);
-    let craters_b = pier_craters(&cfg, &fr, pier, dial, BACK_SALT, &|lo, hi| piece_of(lo, hi).is_some() && !rect_hits(&fr_rects, lo, hi));
+    let craters_b = pier_craters(&cfg, &fr, pier, spall, BACK_SALT, &|lo, hi| piece_of(lo, hi).is_some() && !rect_hits(&fr_rects, lo, hi));
     // the veneer inset only happens when the craze layer has anything to
     // show — a pristine-but-faulted wall stays full-thickness slabs
     let crazing = opened.get() || !forks.is_empty() || !craters.is_empty() || !craters_b.is_empty();
@@ -2695,15 +2713,15 @@ pub fn apply_geometry(
         let (amt, gate) = crate::crack::gates_of(pier, &key);
         // EVERY generator reads the key, never the caller's floats — that is
         // what makes `GeoKey` equality mean "the built mesh is still right".
-        let (k, dial) = (key.knobs(), key.dial());
+        let k = key.knobs();
         let faults = faults_for(scene, pier, k, key.breaks());
-        // a pier with no knobs but a live spall dial still ages: cover loss is
+        // a pier with no knobs but a live SPALL amount still ages: cover loss is
         // its own mechanism (the base of a sound wall spalls first), and a dial
         // that does nothing on the wall the owner picked is a broken dial
         (out.cores[i], out.spall_mats[i]) = if !faults.is_empty() {
-            split_pier(scene, pier, &faults, (amt, gate), k, key.policy, key.params(), dial)
-        } else if k != [0.0; 4] || dial > rebar::DIAL_ON {
-            craze_pier(scene, pier, (amt, gate), k, key.policy, key.params(), dial)
+            split_pier(scene, pier, &faults, (amt, gate), k, key.policy, key.params())
+        } else if k != [0.0; 4] || amt[crate::wall::Layer::Spall.index()] > 0.0 {
+            craze_pier(scene, pier, (amt, gate), k, key.policy, key.params())
         } else {
             (-1, [-1, -1])
         };
@@ -2876,11 +2894,11 @@ mod tests {
     #[test]
     fn every_pier_of_the_real_gym_keeps_its_geometry_inside_its_own_box() {
         let spec = house_game::gym::sim::gym_level();
-        // the crack lab's own boot state, plus the spall dial at every stage —
-        // the wide lens at dial 1 is the case that reaches furthest. The gym is
-        // REBUILT per pier rather than cloned: Scene is not Clone (it owns the
-        // GPU-facing buffers), and building it is cheap next to what this pass
-        // then does to it.
+        // the crack lab's own boot state, plus the spall dial across its travel —
+        // the top of the dial is the case that reaches furthest, since the count
+        // of craters rides it. The gym is REBUILT per pier rather than cloned:
+        // Scene is not Clone (it owns the GPU-facing buffers), and building it is
+        // cheap next to what this pass then does to it.
         for dial in [0.2f32, 0.5, 1.0] {
             let (probe, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
             drop(probe);
@@ -2922,16 +2940,16 @@ mod tests {
         let spec = house_game::gym::sim::gym_level();
         let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         let (mut checked, mut deep) = (0, false);
-        for dial in [0.3f32, 0.6, 1.0] {
+        for area in [0.02f32, 0.04, crate::wall::SPALL_MAX] {
             for pier in &meta.piers {
                 let fr = Frame::of(pier);
                 let cfg = CrazeCfg::new(story_of(&scene, pier), gates(0.45), [0.8, 0.6, 0.5, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
-                let front = pier_craters(&cfg, &fr, pier, dial, 0.0, &|_, _| true);
+                let front = pier_craters(&cfg, &fr, pier, area, 0.0, &|_, _| true);
                 let fr_rects = patch_rects(&front);
-                let back = pier_craters(&cfg, &fr, pier, dial, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
+                let back = pier_craters(&cfg, &fr, pier, area, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
                 for a in &front {
                     for b in &back {
-                        assert!(!rect_hits(&[a.rect()], b.lo, b.hi), "dial {dial}: a front and a back crater overlap at {:?} / {:?}", a.rect(), b.rect());
+                        assert!(!rect_hits(&[a.rect()], b.lo, b.hi), "area {area}: a front and a back crater overlap at {:?} / {:?}", a.rect(), b.rect());
                         // …and the premise: at the top of the dial two facing
                         // basins really would meet, so disjointness is what stops
                         // the perforation rather than the depth clamp
@@ -2943,6 +2961,48 @@ mod tests {
         }
         assert!(checked > 30, "the gym must actually grow craters on both faces to pin this ({checked} pairs)");
         assert!(deep, "VACUOUS: no two facing basins are deep enough to meet, so disjointness pins nothing");
+    }
+
+    /// …and the price of that disjointness is a SHARED packing budget, so the
+    /// top of the cover-loss dial has to be an amount BOTH faces can still have.
+    ///
+    /// This is what fixes `wall::SPALL_MAX` at a number rather than at a taste:
+    /// the front face takes the worst sites and the back is vetoed off every
+    /// rect it took, so an amount near a face's packing limit leaves the back
+    /// with nothing — the owner presses `e`, the camera turns, and the wall he
+    /// just destroyed is intact on the other side. Measured over every pier of
+    /// the gym, at the amount the dial's top actually asks for.
+    #[test]
+    fn both_faces_get_the_spall_they_asked_for_at_the_top_of_the_dial() {
+        let spec = house_game::gym::sim::gym_level();
+        let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        let asked = crate::wall::SPALL_MAX;
+        let (mut checked, mut worst) = (0, 0.0f32);
+        for pier in &meta.piers {
+            let fr = Frame::of(pier);
+            let cfg = CrazeCfg::new(story_of(&scene, pier), gates(0.45), [0.8, 0.6, 0.5, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
+            let face = (fr.u1 - fr.u0) * (fr.y1 - fr.y0);
+            let front = pier_craters(&cfg, &fr, pier, asked, 0.0, &|_, _| true);
+            let fr_rects = patch_rects(&front);
+            let back = pier_craters(&cfg, &fr, pier, asked, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
+            for (side, cs) in [("front", &front), ("back", &back)] {
+                let got = cs.iter().map(|c| c.area()).sum::<f32>() / face;
+                // half a crater of rounding either way, and the ±LENS_VAR draw
+                // over however many craters the ask came to
+                let tol = 0.12 * (0.5 + 0.25 * (asked * face / 0.12).sqrt().max(1.0)) / face;
+                assert!(
+                    got >= asked - tol,
+                    "{side} of the {:.1}-wu pier at ({:.1}, {:.1}) asked {asked:.3} and lost {got:.3} — the two faces cannot both have it",
+                    fr.u1 - fr.u0,
+                    pier.lo.x,
+                    pier.lo.z
+                );
+                worst = worst.max(asked - got);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 30, "VACUOUS: only {checked} faces measured");
+        println!("worst shortfall over {checked} faces: {worst:.4} of the face ({:.0}% of the ask)", 100.0 * worst / asked);
     }
 
     /// The ONE deliberate coincident pair in the crater mesh, pinned flush.
