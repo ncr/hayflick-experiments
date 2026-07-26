@@ -38,7 +38,7 @@ use rt_probe::Scene;
 pub const LABELS: [&str; 4] = ["age", "cracks", "depth", "chip"];
 
 /// Selection-highlight flag: `Material._pad` bit 3.
-pub const SEL_BIT: i32 = 8;
+pub use crate::flags::SEL as SEL_BIT;
 
 /// The `_pad` flag bits a knob stamp must PRESERVE: the whole flag byte
 /// (bits 0..7) minus the selection bit, which the stamp itself recomputes.
@@ -48,7 +48,7 @@ pub const SEL_BIT: i32 = 8;
 /// out by hand and drifted apart (`& 7` at boot vs `& 231` on a live edit), so
 /// any new flag bit was silently cleared at boot and every knob touch —
 /// exactly the class of bug the 2026-07-25 catalogue's next flag would have hit.
-pub const KEEP_FLAGS: i32 = 0xFF & !SEL_BIT;
+pub const KEEP_FLAGS: i32 = crate::flags::BYTE & !SEL_BIT;
 
 /// The greybox-detail AA opt-in ([`crate::gym_scene::AA_BIT`]) — the crack lab
 /// is its first client: every pier the geometry pass actually rebuilt carries
@@ -812,7 +812,7 @@ mod tests {
     fn a_marked_flag_survives_the_boot_stamp_and_a_live_edit() {
         use crate::gym_scene::Pier;
         use rt_probe::Scene;
-        const FREE_BIT: i32 = 16; // the wear family's claim (crate::wear)
+        const FREE_BIT: i32 = crate::flags::FREE16;
         let mut scene = Scene::default();
         let (lo, hi) = (Vec3::new(1.0, 0.0, 9.9), Vec3::new(7.0, 2.2, 10.15));
         scene.add_box_world(lo, hi, [0.9, 0.9, 0.9, 1.0], [0.0; 4], 0.85, 0.0);
@@ -820,7 +820,7 @@ mod tests {
         let mid = scene.primitives[piers[0].prim].material_id as usize;
         // every flag a pier can carry: occluder + matte + the free bit + the
         // geometry pass's marks + the AA opt-in, plus a STALE selection
-        let marks = 1 | 4 | FREE_BIT | crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT | AA_BIT;
+        let marks = crate::flags::OCCLUDER | crate::flags::MATTE | FREE_BIT | crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT | AA_BIT;
         scene.materials[mid]._pad = marks | SEL_BIT;
 
         stamp_all(&mut scene, &piers, &[[0.5, 0.4, 0.3, 0.2]], None); // boot/rebuild path

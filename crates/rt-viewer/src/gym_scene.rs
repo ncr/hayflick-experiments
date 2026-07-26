@@ -84,7 +84,7 @@ const ROOF_TOP: f32 = 2.5;
 /// `phys_scene::author_wall_bricks`. The host owns this bit
 /// (`crack::stamp_aa` + `Viewer::aa_stamp`) and re-derives it from the ESC rows
 /// (`aa scope`: every surface / detail / the picked wall — plus `aa rubble`).
-pub const AA_BIT: i32 = 128;
+pub use crate::flags::AA as AA_BIT;
 
 /// Flag a primitive's material as a see-through OCCLUDER (Material._pad
 /// bit 1), the bit the shade pass reads to know a primary-ray hit is a wall
@@ -92,7 +92,7 @@ pub const AA_BIT: i32 = 128;
 /// per box, so this targets exactly this box. Floors and bodies stay 0.
 fn mark_occluder(scene: &mut Scene, prim: usize) {
     let mid = scene.primitives[prim].material_id as usize;
-    scene.materials[mid]._pad |= 1;
+    scene.materials[mid]._pad |= crate::flags::OCCLUDER;
 }
 
 /// Additionally flag a primitive's material as tinted GLASS (Material._pad
@@ -105,7 +105,7 @@ fn mark_occluder(scene: &mut Scene, prim: usize) {
 /// glass together with its wall.
 fn mark_glass(scene: &mut Scene, prim: usize) {
     let mid = scene.primitives[prim].material_id as usize;
-    scene.materials[mid]._pad |= 2;
+    scene.materials[mid]._pad |= crate::flags::GLASS;
 }
 
 /// Flag a primitive's material MATTE (Material._pad bit 4): the shade pass
@@ -115,7 +115,7 @@ fn mark_glass(scene: &mut Scene, prim: usize) {
 /// (owner directive 2026-07-12: grass must not shine).
 fn mark_matte(scene: &mut Scene, prim: usize) {
     let mid = scene.primitives[prim].material_id as usize;
-    scene.materials[mid]._pad |= 4;
+    scene.materials[mid]._pad |= crate::flags::MATTE;
 }
 
 /// World centre of a grid cell (on the ground plane).

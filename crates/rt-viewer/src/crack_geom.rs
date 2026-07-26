@@ -66,12 +66,12 @@ use std::cell::Cell as StdCell;
 /// `Material._pad` bit 5: this pier's fault is geometric — the shade pass
 /// (CRACK LAB block, both twins) zeroes the painted core + bevel (and the
 /// cell-network paint, shared with bit 6).
-pub const GEO_BIT: i32 = 32;
+pub use crate::flags::GEO as GEO_BIT;
 
 /// `Material._pad` bit 6: this pier's small-crack network is geometric
 /// (craze veneer) — the shade pass zeroes ALL the painted cell work (lines,
 /// lips, line halos, chips); only the sub-pixel fine web + stains stay paint.
-pub const CRAZE_BIT: i32 = 64;
+pub use crate::flags::CRAZE as CRAZE_BIT;
 
 /// Craze pattern policies, panel row + `CRACKS=..,policy` order. `lightning`
 /// is a real propagation NETWORK since round 8 ([`bolt_network`]): roots land
@@ -1745,7 +1745,7 @@ fn rust_material(scene: &mut Scene, mid: i32) -> i32 {
     steel.roughness = 0.95;
     steel.metallic = 0.0; // ≥ 0.2 and the shade pass's REFL block starts mirroring on it
     steel.emissive = [0.0; 4];
-    steel._pad = (body._pad & 1) | 4;
+    steel._pad = (body._pad & crate::flags::OCCLUDER) | crate::flags::MATTE;
     scene.materials.push(steel);
     scene.materials.len() as i32 - 1
 }
@@ -1794,7 +1794,7 @@ fn basin_material(scene: &mut Scene, core_mid: i32) -> i32 {
     b.roughness = 1.0;
     b.metallic = 0.0;
     b.emissive = [0.0; 4];
-    b._pad = (core._pad & 1) | 4; // occluder inherited, MATTE, no knobs
+    b._pad = (core._pad & crate::flags::OCCLUDER) | crate::flags::MATTE; // occluder inherited, MATTE, no knobs
     scene.materials.push(b);
     scene.materials.len() as i32 - 1
 }
@@ -2083,7 +2083,7 @@ fn chalk_material(scene: &mut Scene, mid: i32) -> i32 {
     let mut core = body;
     core.base_color = fresh_body(body.base_color);
     core.roughness = 1.0;
-    core._pad = (body._pad & !SEL_BIT_I) | 4 | GEO_BIT | CRAZE_BIT;
+    core._pad = (body._pad & !SEL_BIT_I) | crate::flags::MATTE | GEO_BIT | CRAZE_BIT;
     scene.materials.push(core);
     scene.materials.len() as i32 - 1
 }
@@ -2390,7 +2390,7 @@ fn craze_pier(scene: &mut Scene, pier: &Pier, d_off: f32, k: [f32; 4], policy: u
     scene.add_box_world(blo, bhi, fresh_body(body.base_color), [0.0; 4], 1.0, 0.0);
     let core_prim = scene.primitives.len() - 1;
     let core_mid = scene.primitives[core_prim].material_id as usize;
-    scene.materials[core_mid]._pad = (body._pad & !SEL_BIT_I) | 4 | GEO_BIT | CRAZE_BIT;
+    scene.materials[core_mid]._pad = (body._pad & !SEL_BIT_I) | crate::flags::MATTE | GEO_BIT | CRAZE_BIT;
     // veneer fragments, both big faces — ONE prim sharing the pier material.
     // Only the +t face can ever be seen (the camera is a fixed ortho rig that
     // only ever shows +X/+Z/+Y), so the craters live there and there only.

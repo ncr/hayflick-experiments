@@ -399,6 +399,23 @@ impl Viewer {
     }
 }
 
+/// The two shader twins' SOURCES, read at compile time. Shared by every
+/// source-level guard (this module's lane check and `crate::flags`' value
+/// check) so a new guard cannot quietly check only one backend.
+#[cfg(test)]
+pub fn twin_sources() -> [(&'static str, &'static str); 2] {
+    [("shade.comp", include_str!("../../rt-probe/src/shaders/shade.comp")), ("shade.metal", include_str!("shaders_metal/shade.metal"))]
+}
+
+/// A shader source's lines with COMMENTS DROPPED. "comment the blind twin out
+/// while bisecting on the spawner, forget to restore" is the single likeliest
+/// way one of these gates dies on Vulkan, and it was the one mutation the first
+/// guard missed (review 2026-07-25 proved it by mutation).
+#[cfg(test)]
+pub fn code_lines(src: &str) -> Vec<&str> {
+    src.lines().filter(|l| !l.trim_start().starts_with("//")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,15 +562,10 @@ mod tests {
     /// so this also catches the classic "ported one twin only".
     #[test]
     fn both_shader_twins_decode_the_level_lane_exactly_as_the_host_packs_it() {
-        let glsl = include_str!("../../rt-probe/src/shaders/shade.comp");
-        let msl = include_str!("shaders_metal/shade.metal");
-        for (name, src) in [("shade.comp", glsl), ("shade.metal", msl)] {
-            // COMMENTED-OUT lines do not count. "comment the blind twin out while
-            // bisecting on the spawner, forget to restore" is the single likeliest
-            // way this lane dies on Vulkan, and it was the one mutation the guard
-            // missed (review 2026-07-25 proved it by mutation).
-            let lines: Vec<&str> = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect();
+        for (name, src) in twin_sources() {
+            let lines = code_lines(src);
             let has = |pat: &str| lines.iter().any(|l| l.contains(pat));
+            // REQUIRED — the lane must still be decoded exactly as packed
             // the SHIFT (lane 1 = bits 6..11) and the 6-bit mask
             assert!(has("emissive.a) >> 6) & 63u"), "{name}: lane 1's bit position moved");
             // the SIGNED decode — a unorm read would un-age every unstamped surface
@@ -562,8 +574,22 @@ mod tests {
             assert!(has(&format!("lvlC) * {LEVEL_STEP};")), "{name}: LEVEL_STEP drifted from the host's {LEVEL_STEP}");
             // …and it actually reaches the field
             assert!(lines.iter().any(|l| l.contains("float dmgN") && l.contains("+ dOff")), "{name}: dmgN does not take the offset");
+            // FORBIDDEN — nothing yet. This half of the guard is what catches a
+            // HALF-DONE deletion: the Mac can only run the MSL twin, so a cull
+            // applied to one source and forgotten in the other compiles, passes
+            // every test, and ships a different image on the other backend. A
+            // required-only guard is blind to that by construction; it can prove
+            // a line is present, never that a line is gone.
+            for gone in FORBIDDEN {
+                assert!(!has(gone), "{name}: {gone:?} was supposed to be deleted from BOTH twins");
+            }
         }
     }
+
+    /// Source fragments that must NOT appear in either twin. Empty until a cull
+    /// lands; see the note in the guard above for why the empty list still has
+    /// to exist rather than being added when it is first needed.
+    const FORBIDDEN: &[&str] = &[];
 
     /// `WEAR=` parsing: leading components in lane order, missing tails read 0.
     #[test]

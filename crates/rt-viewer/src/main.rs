@@ -35,6 +35,7 @@ mod capture;
 mod crack;
 mod crack_geom;
 mod demos;
+mod flags;
 mod gym_loop;
 mod gym_scene;
 mod gi_demo;
