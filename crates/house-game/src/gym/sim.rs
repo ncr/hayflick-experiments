@@ -172,6 +172,114 @@ pub fn gym_level() -> GymLevel {
     GymLevel { grid, player_start: CellPos::new(10, 11), lights }
 }
 
+// ---------------------------------------------------------------------------
+// The effect catalogue — the SECOND level (owner ask, 2026-07-26)
+// ---------------------------------------------------------------------------
+
+/// Cell pitch between two specimen walls: 2 cells of wall, 1 cell of grass.
+/// The gap has to survive the projection — 1 wu is ~41 px on world-X, so two
+/// neighbours never share a silhouette even at the widest framing.
+pub const SPEC_PITCH: i16 = 3;
+/// The x cell each specimen row starts on, and how many stand in a row.
+pub const SPEC_X0: i16 = 1;
+pub const SPEC_N: i16 = 5;
+/// The three specimen rows, as the z of the wall line they sit on. 4 wu apart:
+/// the trimetric camera looks down (1, 2) in xz, so a nearer row rides UP the
+/// screen — at 4 wu the row in front clears the 2.1875-wu wall behind it.
+pub const SPEC_Z: [i16; 3] = [7, 11, 15];
+/// Cells each row is shifted along +x relative to the one behind it, so the
+/// three rows stack in one SCREEN COLUMN instead of staggering across the
+/// frame. It is arithmetic, not taste: the game projection's axis images are
+/// +x → (40, 10) px and +z → (−20, 20) px, so a row 4 wu further out lands
+/// (−80, +80) px away, and +2 wu of x puts (+80, +20) back — net (0, +100).
+/// Authored here because the LEVEL is what has to know it; `spec_point` is the
+/// one place that resolves a (row, index) to a world point.
+pub const SPEC_ROW_DX: i16 = 2;
+/// The catalogue's own little building — Room cells, so its facades are the
+/// only walls in the level that carry the look's windows (a freestanding run
+/// is never glazed; see `gym_scene::wall_runs`). Its south wall keeps a
+/// doorway, so the level also shows a jamb and a parapet cap.
+pub const SPEC_HOUSE: (i16, i16, i16, i16) = (2, 1, 6, 3);
+pub const SPEC_DOOR: CellPos = CellPos { x: 4, z: 3 };
+
+/// The ONE specimen that cannot be 2 cells wide, and why.
+///
+/// A structural fault is drawn once per 6-wu STRIP of wall
+/// (`rt_viewer::crack_geom::pier_faults`), and its axis lands anywhere inside
+/// that strip — so a 2.2-wu slab contains the axis barely a third of the time,
+/// and the bench's fault specimen came up empty on the first build. Widening it
+/// is the honest answer rather than hunting for an x where the hash happens to
+/// cooperate: the effect's own scale is 6 wu, and a bench that hides that is
+/// lying about the effect. It is the last slab of row 0, so the extra width
+/// grows into the gap at the end of the row and nothing else moves.
+pub const SPEC_WIDE: (usize, i16, i16) = (0, 4, 4); // (row, index, cells)
+
+/// How many cells wide specimen `i` of row `row` is.
+pub fn spec_cells(row: usize, i: i16) -> i16 {
+    if (row, i) == (SPEC_WIDE.0, SPEC_WIDE.1) {
+        SPEC_WIDE.2
+    } else {
+        2
+    }
+}
+
+/// World (x, z) of specimen `i` in row `r` — the point a caller names it by.
+/// The wall line is the cell's -z edge, so its world z IS the row index.
+pub fn spec_point(row: usize, i: i16) -> (f32, f32) {
+    (spec_x0(row, i) as f32 + spec_cells(row, i) as f32 * 0.5, SPEC_Z[row] as f32)
+}
+
+/// The x cell specimen `i` of row `row` starts on.
+fn spec_x0(row: usize, i: i16) -> i16 {
+    SPEC_X0 + row as i16 * SPEC_ROW_DX + i * SPEC_PITCH
+}
+
+/// THE EFFECT CATALOGUE (owner, 2026-07-26: "create a special level that shows
+/// each of them separately"). Fifteen identical freestanding wall specimens in
+/// three rows, each its own RUN — so each carries its own story key, its own
+/// damage field and its own knob set, and nothing composes with its neighbour.
+/// One small building at the back for the level dress that needs a Room to
+/// exist (windows, glass, a doorway jamb, a parapet cap).
+///
+/// Identical is the point: every specimen is the same 2.2 × 2.1875 wu slab on
+/// the same grass under the same sun, so a difference between two of them is
+/// the EFFECT and nothing else. The gym cannot do that job — its fifteen piers
+/// differ in length, orientation, neighbours and glazing.
+///
+/// The player spawns in the far corner on purpose. The ROI reveal dissolves
+/// occluders in FRONT of him (`x + 2z` above his own), and every specimen sits
+/// well below (18, 16)'s 50 — so no specimen can ghost, at any camera framing.
+pub fn catalogue_level() -> GymLevel {
+    let mut grid = Grid::new(22, 18);
+    for (row, &z) in SPEC_Z.iter().enumerate() {
+        for i in 0..SPEC_N {
+            let x0 = spec_x0(row, i);
+            for x in x0..x0 + spec_cells(row, i) {
+                grid.set_edge(CellPos::new(x, z), Dir::Zm, EdgeKind::Wall);
+            }
+        }
+    }
+    let (x0, z0, x1, z1) = SPEC_HOUSE;
+    for z in z0..=z1 {
+        for x in x0..=x1 {
+            grid.set_cell(CellPos::new(x, z), CellKind::Room);
+        }
+        grid.set_edge(CellPos::new(x0, z), Dir::Xm, EdgeKind::Wall);
+        grid.set_edge(CellPos::new(x1, z), Dir::Xp, EdgeKind::Wall);
+    }
+    for x in x0..=x1 {
+        grid.set_edge(CellPos::new(x, z0), Dir::Zm, EdgeKind::Wall);
+        if CellPos::new(x, z1) != SPEC_DOOR {
+            grid.set_edge(CellPos::new(x, z1), Dir::Zp, EdgeKind::Wall);
+        }
+    }
+    // One lamp, in the corner opposite everything: the level needs a practical
+    // (the probe bake and the look's amber accent both assume one), but an
+    // amber pool ON a specimen would be a second variable in every read.
+    let lights = vec![(CellPos::new(18, 2), 6)];
+    GymLevel { grid, player_start: CellPos::new(20, 16), lights }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

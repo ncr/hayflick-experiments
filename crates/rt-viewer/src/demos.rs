@@ -62,9 +62,29 @@ pub enum Action {
     SmashWall { x: f32, z: f32 },
 }
 
+/// Which hand-authored level a demo boots. The gym is THE scene (CLAUDE.md);
+/// the catalogue is the owner's 2026-07-26 exception — a bench whose only job
+/// is to hold one effect per wall under identical light.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Gym,
+    Catalogue,
+}
+
+impl Level {
+    pub fn spec(self) -> house_game::gym::sim::GymLevel {
+        match self {
+            Level::Gym => house_game::gym::sim::gym_level(),
+            Level::Catalogue => house_game::gym::sim::catalogue_level(),
+        }
+    }
+}
+
 pub struct Demo {
     /// Menu label.
     pub name: &'static str,
+    /// Which level layout to build (almost always [`Level::Gym`]).
+    pub level: Level,
     /// One-line, owner-facing description of what the demo shows (menu footer).
     pub blurb: &'static str,
     /// Boot look preset (`crate::look::by_name`) — the palette + starting light.
@@ -84,6 +104,7 @@ pub struct Demo {
 pub static DEMOS: &[Demo] = &[
     Demo {
         name: "gym",
+        level: Level::Gym,
         blurb: "the plain greybox gym in polana daylight",
         look: "polana",
         spawn: (10, 11),
@@ -93,6 +114,7 @@ pub static DEMOS: &[Demo] = &[
     },
     Demo {
         name: "dusk flood",
+        level: Level::Gym,
         blurb: "roof tears at dusk - warm light floods, GI settles",
         look: "dusk",
         spawn: (5, 5),
@@ -102,6 +124,7 @@ pub static DEMOS: &[Demo] = &[
     },
     Demo {
         name: "day to dusk",
+        level: Level::Gym,
         blurb: "the gym morphs from noon to golden dusk over ~3s",
         look: "polana",
         spawn: (10, 11),
@@ -111,6 +134,7 @@ pub static DEMOS: &[Demo] = &[
     },
     Demo {
         name: "wall smash",
+        level: Level::Gym,
         // dusk sun sits to the SOUTH-EAST (look.rs) — it pours straight
         // through the east-facade breach the moment the bricks clear it
         blurb: "a slug smashes the east wall to bricks - dusk light breaches",
@@ -127,6 +151,7 @@ pub static DEMOS: &[Demo] = &[
     },
     Demo {
         name: "crack lab",
+        level: Level::Gym,
         blurb: "aged facades, one clean wall = the before; a wall ages live; click for knobs",
         look: "polana",
         // FACING THE BUILDING (2026-07-25): the lab used to open at (13, 12),
@@ -174,10 +199,103 @@ pub static DEMOS: &[Demo] = &[
             // stays clean for the whole session — the negative control the
             // aged facades are read against once the beat has run.
             pristine: &[(13.0, 10.0), (12.0, 4.0)],
+            specimens: &[],
+        }),
+        outdated: false,
+    },
+    Demo {
+        name: "effect catalogue",
+        level: Level::Catalogue,
+        blurb: "one effect per wall, 15 identical slabs - the bench for picking what to work on",
+        look: "polana",
+        // the far corner: every specimen's `x + 2z` is below this cell's, so
+        // the ROI reveal can never ghost one (see `catalogue_level`)
+        spawn: (20, 16),
+        script: &[],
+        cracks: Some(crate::crack::CrackSeed {
+            // The BASE is nothing at all — the catalogue's whole point is that
+            // a wall shows what its own specimen line says and not one thing
+            // more, and it leaves the little building as plain porcelain.
+            age: 0.0,
+            cracks: 0.0,
+            depth: 0.0,
+            chip: 0.0,
+            spall: 0.0,
+            vary: 0.0,
+            policy: 0,
+            params: crate::crack_geom::param_defaults(0),
+            pristine: &[],
+            specimens: SPECIMENS,
         }),
         outdated: false,
     },
 ];
+
+/// THE CATALOGUE, wall by wall (owner 2026-07-26). Fifteen slabs, three rows of
+/// five, addressed by the world points `house_game::gym::sim::spec_point`
+/// derives — row 0 = pattern and scale, row 1 = loss, row 2 = paint. Every
+/// row opens on a PRISTINE control except the middle one, which is flanked by
+/// the two controls in the rows above and below it.
+///
+/// Two couplings decided most of these numbers, and both are properties of the
+/// system rather than of the bench:
+///
+/// - **A structural fault is a function of age × cracks**
+///   (`crack_geom::pier_faults`: `0.95 · smoothstep(0.12, 0.42, age) ·
+///   smoothstep(0.04, 0.45, cracks)`), so at the ages that make damage visible
+///   almost every wall faults. The specimens that are NOT about the fault
+///   therefore run a LOW cracks knob (0.12-0.25, ≈6-25 % fault odds) — which
+///   costs nothing, because that knob is also the plate lattice's frequency and
+///   a coarse lattice is the readable one at 90 px per wall.
+/// - **Age drives the damaged AREA**, not just the tone: the gate is
+///   `mix(0.74, 0.55, age)` against a field `run_level` normalizes at age 0.6.
+///   Below ~0.3 a wall has almost no damaged patch to put an effect in, so
+///   "show me the plates" means a high age whether or not the effect is about
+///   staining. That is why the pattern row runs at 0.75.
+pub static SPECIMENS: &[crate::crack::Specimen] = {
+    use crate::crack::Specimen;
+    /// A geometry specimen with the structural fault VETOED — the default,
+    /// because a wall broken in half is a different effect and would be the
+    /// only thing anyone saw on that slab (`crack_geom::faults_for`).
+    const fn s(at: (f32, f32), label: &'static str, knobs: [f32; 4], policy: u8, spall: f32) -> Specimen {
+        Specimen { at, label, knobs, policy, spall, paint_only: false, faults: false }
+    }
+    /// Knobs stamped, geometry pass skipped — the only way to see the shade
+    /// pass's painted crack network and painted chips, which `CRAZE_BIT`
+    /// suppresses on every pier `crack_geom` touches.
+    const fn p(at: (f32, f32), label: &'static str, knobs: [f32; 4]) -> Specimen {
+        Specimen { at, label, knobs, policy: 0, spall: 0.0, paint_only: true, faults: false }
+    }
+    &[
+        // ---- row 0 (z=7): the PATTERN policies, at one shared knob set so the
+        // only difference down the row is the lattice
+        s((2.0, 7.0), "pristine control", [0.0; 4], 0, 0.0),
+        s((5.0, 7.0), "lightning network", [1.0, 0.60, 0.50, 0.0], 0, 0.0),
+        s((8.0, 7.0), "craquelure", [1.0, 0.60, 0.50, 0.0], 1, 0.0),
+        s((11.0, 7.0), "mosaic", [1.0, 0.60, 0.50, 0.0], 2, 0.0),
+        // the one specimen that WANTS the fault: cracks at 0.8 puts the odds at
+        // ~95 %, and the pieces + settlement step are the effect
+        Specimen { at: (15.0, 7.0), label: "structural fault", knobs: [0.90, 0.85, 0.50, 0.10], policy: 0, spall: 0.0, paint_only: false, faults: true },
+        // ---- row 1 (z=11): LOSS — material that is no longer there
+        s((4.0, 11.0), "chips (fragments gone)", [1.0, 0.50, 0.40, 0.95], 0, 0.0),
+        // mosaic grooves every cell edge by construction, so its plates are the
+        // ones that can settle (`CrazeCfg::sink_perimeter`)
+        s((7.0, 11.0), "settled plates", [1.0, 0.55, 0.70, 0.10], 2, 0.0),
+        s((10.0, 11.0), "fresh break (chalk core)", [1.0, 0.50, 0.80, 0.95], 0, 0.0),
+        s((13.0, 11.0), "lifted cover", [0.50, 0.10, 0.30, 0.0], 0, 0.30),
+        s((16.0, 11.0), "blown spall + rebar", [0.65, 0.15, 0.35, 0.05], 0, 1.0),
+        // ---- row 2 (z=15): PAINT — the shade pass ALONE. Every wall here is
+        // `paint_only`, including the two that carry no crack knob at all: a
+        // nonzero AGE is enough to send a pier through `craze_pier`, which
+        // emits a veneer and sets CRAZE_BIT, so "stains, and nothing else"
+        // is not otherwise a state this system can be in.
+        s((6.0, 15.0), "pristine control", [0.0; 4], 0, 0.0),
+        p((9.0, 15.0), "stains", [0.55, 0.0, 0.0, 0.0]),
+        p((12.0, 15.0), "stains + fine glaze web", [1.00, 0.0, 0.0, 0.0]),
+        p((15.0, 15.0), "painted crack network", [0.90, 0.70, 0.60, 0.0]),
+        p((18.0, 15.0), "painted chips", [0.90, 0.25, 0.30, 0.95]),
+    ]
+};
 
 impl Demo {
     /// The demo's wall-breach point, if its script smashes one — the viewer

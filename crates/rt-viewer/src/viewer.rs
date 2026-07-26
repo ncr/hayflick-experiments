@@ -239,12 +239,12 @@ impl Viewer {
     /// applies the seeded camera/pan/trace.
     pub unsafe fn new(window: Option<&Window>, cfg: Config) -> Result<Viewer, Box<dyn std::error::Error>> {
         let start_time = std::time::Instant::now();
-        let mut spec = house_game::gym::sim::gym_level();
         // LEVEL=<name|index> boots a named demo headlessly (its tick-driven
         // script runs during DEMO playback — how the agent renders the exact
-        // thing the owner picks from the menu). It sets the boot look + spawn;
-        // its script is stored below and fired per tick.
+        // thing the owner picks from the menu). It sets the boot LAYOUT, look
+        // and spawn; its script is stored below and fired per tick.
         let demo = crate::demos::from_env();
+        let mut spec = demo.map_or(crate::demos::Level::Gym, |d| d.level).spec();
         if let Some(d) = demo {
             spec.player_start = house_game::gym::grid::CellPos::new(d.spawn.0, d.spawn.1);
         } else if std::env::var("GI_INDOORS").is_ok() {

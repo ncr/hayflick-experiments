@@ -2652,7 +2652,21 @@ fn story_of(scene: &Scene, pier: &Pier) -> f32 {
     scene.materials[mid].base_color[3]
 }
 
-fn faults_for(scene: &Scene, pier: &Pier, k: [f32; 4]) -> Vec<Fault> {
+/// A pier's structural faults, or NONE when the caller vetoed them.
+///
+/// The veto exists because fault presence and the small-crack network are
+/// coupled through AGE and cannot otherwise be separated: a fault fires at
+/// `0.95 · smoothstep(0.12, 0.42, age) · smoothstep(0.04, 0.45, cracks)`, and
+/// the damage FIELD only opens a readable patch above age ≈ 0.5 — so at every
+/// age where a veneer pattern is visible at all, the odds of also breaking the
+/// wall in half are ≥ 0.9. That is fine on a facade and wrong on a bench, where
+/// the whole point is one effect per wall (`crack::Specimen`, the 2026-07-26
+/// effect catalogue). It is a real dial, not a test hook: "cracked but not
+/// broken through" is a state a level author can legitimately want.
+fn faults_for(scene: &Scene, pier: &Pier, k: [f32; 4], veto: bool) -> Vec<Fault> {
+    if veto {
+        return Vec::new();
+    }
     let (_, seg) = seg_of(scene, pier);
     let fr = Frame::of(pier);
     pier_faults(fr.u0, fr.u1, fr.y0, fr.y1, seg, k)
@@ -2683,7 +2697,15 @@ pub struct Aged {
 /// Runs post-build on the CPU scene (boot and every `apply_look` rebuild),
 /// before the backend sees it — `crack::resolve` calls this right after
 /// stamping the knobs.
-pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]], spall: &[f32]) -> Aged {
+pub fn apply_geometry(
+    scene: &mut Scene,
+    piers: &[Pier],
+    knobs: &[[f32; 4]],
+    policies: &[u8],
+    params: &[[f32; PARAMS_MAX]],
+    spall: &[f32],
+    no_fault: &[bool],
+) -> Aged {
     let mut out = Aged { cores: vec![-1; piers.len()], spall_mats: vec![[-1, -1]; piers.len()] };
     // the per-RUN field LEVEL, read here and stamped into `wear`'s lane 1 by
     // `Viewer::wear_stamp` from the same function: the plates and the paint have
@@ -2693,7 +2715,7 @@ pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], pol
         let policy = policies.get(i).copied().unwrap_or(0);
         let par = params.get(i).copied().unwrap_or(param_defaults(policy));
         let dial = spall_bucket(spall.get(i).copied().unwrap_or(0.0));
-        let faults = faults_for(scene, pier, *k);
+        let faults = faults_for(scene, pier, *k, no_fault.get(i).copied().unwrap_or(false));
         // a pier with no knobs but a live spall dial still ages: cover loss is
         // its own mechanism (the base of a sound wall spalls first), and a dial
         // that does nothing on the wall the owner picked is a broken dial
@@ -2720,7 +2742,15 @@ pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], knobs: &[[f32; 4]], pol
 /// WHICH piers moved: a knob drag changes exactly one, and the frozen GI can
 /// then be refreshed around that pier instead of rebaked whole (~6.5 s on the
 /// M2 — see `ProbeRefresh::Local`).
-pub fn signatures(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &[u8], params: &[[f32; PARAMS_MAX]], spall: &[f32]) -> Vec<u64> {
+pub fn signatures(
+    scene: &Scene,
+    piers: &[Pier],
+    knobs: &[[f32; 4]],
+    policies: &[u8],
+    params: &[[f32; PARAMS_MAX]],
+    spall: &[f32],
+    no_fault: &[bool],
+) -> Vec<u64> {
     let mut out = Vec::with_capacity(piers.len());
     for (i, (pier, k)) in piers.iter().zip(knobs).enumerate() {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -2736,7 +2766,7 @@ pub fn signatures(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]], policies: &
             mixh(i as u64 | 0x4000_0000);
             mixh(dial.to_bits() as u64);
         }
-        let faults = faults_for(scene, pier, *k);
+        let faults = faults_for(scene, pier, *k, no_fault.get(i).copied().unwrap_or(false));
         for f in &faults {
             mixh(i as u64);
             mixh(f.si.to_bits() as u64);
@@ -2795,7 +2825,7 @@ mod tests {
     fn faulting_pier(scene: &mut Scene) -> Pier {
         for i in 0..8 {
             let pier = pier_at(scene, 1.0 + 7.0 * i as f32);
-            if !faults_for(scene, &pier, HOT).is_empty() {
+            if !faults_for(scene, &pier, HOT, false).is_empty() {
                 return pier;
             }
         }
@@ -2835,7 +2865,7 @@ mod tests {
                 let knobs = [[0.8, 0.6, 0.5, 0.2]];
                 crate::crack::stamp_all(&mut sc, std::slice::from_ref(pier), &knobs, None);
                 let first = sc.primitives.len();
-                apply_geometry(&mut sc, std::slice::from_ref(pier), &knobs, &[0], &[param_defaults(0)], &[dial]);
+                apply_geometry(&mut sc, std::slice::from_ref(pier), &knobs, &[0], &[param_defaults(0)], &[dial], &[]);
                 assert!(sc.primitives.len() > first, "dial {dial}: pier {pi} grew nothing at all");
                 for p in &sc.primitives[first..] {
                     for v in &sc.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize] {
@@ -2950,7 +2980,7 @@ mod tests {
         let pier = faulting_pier(&mut scene);
         let before = scene.primitives.len();
         let mid = scene.primitives[pier.prim].material_id;
-        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[HOT], &[0], &[param_defaults(0)], &[]);
+        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[HOT], &[0], &[param_defaults(0)], &[], &[]);
         let added = scene.primitives.len() - before;
         assert_eq!(added, 3, "shell + chalk planes + veneer");
         assert_eq!(scene.primitives[before].material_id, mid, "shell shares the pier material");
@@ -2972,12 +3002,12 @@ mod tests {
         let pier = faulting_pier(&mut scene);
         let before = scene.primitives.len();
         let dp = [param_defaults(0)];
-        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[]);
+        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]);
         assert_eq!(scene.primitives.len(), before, "pristine pier untouched");
         assert_eq!(scene.materials[scene.primitives[pier.prim].material_id as usize]._pad & GEO_BIT, 0);
-        let s0 = signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[]);
-        let s1 = signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp, &[]);
-        assert_eq!(s0, signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[]), "deterministic");
+        let s0 = signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]);
+        let s1 = signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp, &[], &[]);
+        assert_eq!(s0, signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]), "deterministic");
         assert_ne!(s0, s1, "fault appearance changes the signature");
     }
 
@@ -2992,12 +3022,12 @@ mod tests {
         let piers = [pier_at(&mut scene, 1.0), pier_at(&mut scene, 9.0)];
         let pol = [0, 0];
         let par = [param_defaults(0); 2];
-        let before = signatures(&scene, &piers, &[CRAZY, CRAZY], &pol, &par, &[]);
-        let after = signatures(&scene, &piers, &[CRAZY, HOT], &pol, &par, &[]);
+        let before = signatures(&scene, &piers, &[CRAZY, CRAZY], &pol, &par, &[], &[]);
+        let after = signatures(&scene, &piers, &[CRAZY, HOT], &pol, &par, &[], &[]);
         assert_eq!(before[0], after[0], "the untouched pier keeps its signature");
         assert_ne!(before[1], after[1], "the dragged pier's signature moves");
         // and a policy click is the same story (the panel's pattern row)
-        let after = signatures(&scene, &piers, &[CRAZY, CRAZY], &[0, 1], &par, &[]);
+        let after = signatures(&scene, &piers, &[CRAZY, CRAZY], &[0, 1], &par, &[], &[]);
         assert_eq!(before[0], after[0], "…for a pattern click too");
         assert_ne!(before[1], after[1]);
     }
@@ -3011,7 +3041,7 @@ mod tests {
         let mut scene = Scene::default();
         let pier = faulting_pier(&mut scene);
         let par = [[0.5; PARAMS_MAX]];
-        let sigs: Vec<Vec<u64>> = (0..POLICIES.len() as u8).map(|p| signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par, &[])).collect();
+        let sigs: Vec<Vec<u64>> = (0..POLICIES.len() as u8).map(|p| signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par, &[], &[])).collect();
         let mut uniq = sigs.clone();
         uniq.dedup();
         assert_eq!(uniq.len(), sigs.len(), "each policy signs distinctly on a faulted pier");
@@ -3026,8 +3056,8 @@ mod tests {
             let mut scene = Scene::default();
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
-            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[]);
-            let sig = signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[]);
+            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[], &[]);
+            let sig = signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[], &[]);
             (scene.primitives[before + 1].vertex_count, sig)
         };
         let (v_few, s_few) = mk([0.05, 0.9, 0.3]);
@@ -3071,7 +3101,7 @@ mod tests {
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
             let mid = scene.primitives[pier.prim].material_id as usize;
-            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[param_defaults(policy)], &[]);
+            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[param_defaults(policy)], &[], &[]);
             let p = POLICIES[policy as usize];
             assert_eq!(scene.primitives.len() - before, 2, "{p}: core box + one veneer mesh");
             assert_ne!(scene.materials[mid]._pad & CRAZE_BIT, 0, "{p}: CRAZE_BIT on the pier");
@@ -3082,7 +3112,7 @@ mod tests {
             let veneer = scene.primitives[before + 1];
             assert!(veneer.vertex_count > 12, "{p}: veneer actually fragmented");
             assert_in_box(&scene, before, &pier, p);
-            sigs.push(signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]], &[]));
+            sigs.push(signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]], &[], &[]));
         }
         sigs.dedup();
         assert_eq!(sigs.len(), POLICIES.len(), "policies must sign distinctly");
@@ -3108,7 +3138,7 @@ mod tests {
         let par = vec![param_defaults(0); meta.piers.len()];
         crate::wear::stamp_story(&mut scene, &meta.piers); // boot order: the story seeds the field
         crate::crack::stamp_all(&mut scene, &meta.piers, &knobs, Some(0));
-        let cores = apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par, &[]).cores;
+        let cores = apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par, &[], &[]).cores;
         // the CORE inherits its facade's story for free (chalk_material copies
         // base_color, fresh_body passes alpha through) — the surface a crack
         // exposed belongs to the same wall as the skin that was over it
@@ -3358,7 +3388,7 @@ mod tests {
     fn a_fault_separates_once_and_frays_on_the_surface() {
         let mut scene = Scene::default();
         let pier = faulting_pier(&mut scene);
-        let faults = faults_for(&scene, &pier, HOT);
+        let faults = faults_for(&scene, &pier, HOT, false);
         let fr = Frame::of(&pier);
         let bolts = fault_bolts(&faults, &fr, bucket(HOT), px_floor(fr.run_x));
         let through = bolts.iter().filter(|b| b.through).count();
@@ -3385,7 +3415,7 @@ mod tests {
     fn carve_tiles_the_face() {
         let mut scene = Scene::default();
         let pier = faulting_pier(&mut scene);
-        let faults = faults_for(&scene, &pier, HOT);
+        let faults = faults_for(&scene, &pier, HOT, false);
         let fr = Frame::of(&pier);
         let bolts: Vec<Bolt> = fault_bolts(&faults, &fr, bucket(HOT), px_floor(fr.run_x)).into_iter().filter(|b| b.through).collect();
         let rect = vec![Vec2::new(fr.u0, fr.y0), Vec2::new(fr.u1, fr.y0), Vec2::new(fr.u1, fr.y1), Vec2::new(fr.u0, fr.y1)];

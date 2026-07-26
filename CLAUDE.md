@@ -29,6 +29,49 @@ Cargo workspace at the repo root, members `crates/*`:
 **rt-probe and house-game never see each other** — only rt-viewer's adapter
 knows both. The game must build and test without a GPU.
 
+## The second level: the effect catalogue (owner 2026-07-26)
+
+The gym is still THE scene. The catalogue (`house_game::gym::sim::catalogue_level`,
+menu entry "effect catalogue", `LEVEL="effect catalogue"`) is a BENCH, added on
+the owner's ask "create a special level that shows each of them separately":
+fifteen identical 2.2 × 2.1875 wu slabs in three rows of five on open grass,
+each its own wall RUN, plus one small building at the back for the dress that
+needs a Room (windows, glass, a doorway jamb, a parapet cap). Row 0 = pattern
+and scale, row 1 = loss, row 2 = paint, and rows 0 and 2 each open on a
+PRISTINE control. Identical is the point — a difference between two slabs is the
+EFFECT, which the gym's fifteen piers (different lengths, orientations,
+neighbours and glazing) can never show. The rows are offset +2 cells in x per
++4 wu of z so they stack in one SCREEN column: the projection's axis images are
++x → (40, 10) px and +z → (−20, 20) px, so the two shifts cancel to (0, +100).
+
+`crack::CrackSeed::specimens` is the mechanism: a per-wall override named by
+world point (like `pristine`), applied LAST so it outranks the base knobs, the
+variance and the pristine list. Building it surfaced two effects that the
+system could not otherwise isolate, and both got a real dial rather than a
+test hook:
+
+- **`Specimen::paint_only`** — stamp the knobs, skip the geometry pass
+  (`CrackLab::geom_input` masks that pier for BOTH `apply_geometry` and
+  `signatures`). Without it the shade pass's painted crack network and painted
+  chips are DEAD CODE: `craze_pier` runs on any pier with a nonzero knob and
+  sets `CRAZE_BIT`, which is exactly what the shader gates those two layers off.
+  The whole paint row is paint-only, including the two slabs with no crack knob
+  at all — a nonzero AGE alone is enough to trigger the geometry pass.
+- **`Specimen::faults` / `crack_geom::faults_for`'s veto** — fault presence and
+  the small-crack network are coupled through AGE (`0.95 · smoothstep(0.12,
+  0.42, age) · smoothstep(0.04, 0.45, cracks)`, and the damage field only opens
+  a readable patch above age ≈ 0.5), so at every age where a veneer pattern is
+  visible the odds of also breaking the wall in half are ≥ 0.9. `apply_geometry`
+  and `signatures` take a per-pier `no_fault` mask.
+
+ONE specimen is not 2 cells wide, and the reason is the effect's own scale: a
+fault is drawn once per 6-wu STRIP with its axis anywhere inside it, so a 2.2-wu
+slab contains that axis about a third of the time — the fault specimen came up
+EMPTY on the first build (caught by `catalogue_tests`). It is 4 cells
+(`sim::SPEC_WIDE`). Pinned: every specimen names a real pier, no two share one,
+each is its own run, paint-only piers carry knobs but no `GEO/CRAZE` bit, and
+the vetoed piers keep their veneer while the fault specimen really faults.
+
 ## The one scene: the gym
 
 `viewer` boots the gym (`house_game::gym::sim::gym_level`): ONE hand-authored

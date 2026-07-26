@@ -82,6 +82,42 @@ pub struct CrackSeed {
     pub policy: u8,
     /// The seeded policy's native params (`crack_geom::POLICY_PARAMS`).
     pub params: [f32; crate::crack_geom::PARAMS_MAX],
+    /// Walls dialled INDIVIDUALLY, by world point — the effect catalogue's
+    /// whole mechanism (owner 2026-07-26, "a special level that shows each of
+    /// them separately"). Applied last, so a specimen overrides the base knobs,
+    /// the variance and the pristine list alike.
+    pub specimens: &'static [Specimen],
+}
+
+/// One catalogue wall: exactly one effect, dialled on its own.
+///
+/// [`Specimen::paint_only`] is the one field that is not just a knob value, and
+/// it exists because two of the shipped effects are otherwise UNREACHABLE. The
+/// shade pass carries a painted crack network and painted chip patches, but
+/// `crack_geom` sets `CRAZE_BIT` on every pier it touches and the shader gates
+/// both layers off it — and `apply_geometry` runs on ANY pier with a nonzero
+/// knob. So on a normal level the painted pair is dead code: it can only be
+/// seen on a pier whose knobs are stamped into the material while the geometry
+/// pass skips it. That is exactly what this flag does, and the catalogue is the
+/// place to put the question to the owner ("is the painted fallback still worth
+/// carrying?") rather than to answer it in a comment.
+#[derive(Clone, Copy)]
+pub struct Specimen {
+    /// World (x, z) naming the wall — same idiom as [`CrackSeed::pristine`].
+    pub at: (f32, f32),
+    /// Owner-facing name of the effect this wall is here to show.
+    pub label: &'static str,
+    pub knobs: [f32; 4],
+    pub policy: u8,
+    pub spall: f32,
+    /// Stamp the knobs but keep the GEOMETRY pass off this pier — the only way
+    /// to see the painted crack network and the painted chips (see above).
+    pub paint_only: bool,
+    /// Let this wall break in half. OFF for every specimen that is about
+    /// something else, because fault presence and the small-crack network are
+    /// coupled through AGE and cannot otherwise be separated — see
+    /// `crack_geom::faults_for`.
+    pub faults: bool,
 }
 
 /// Live crack-lab state on the [`Viewer`]: one knob quad per pier (parallel
@@ -116,12 +152,36 @@ pub struct CrackLab {
     /// so both declare themselves to the contour AA alongside the pier and its
     /// core (CLAUDE.md, greybox detail = AA-scoped).
     pub spall_mats: Vec<[i32; 2]>,
+    /// Piers the GEOMETRY pass must skip (parallel to `knobs`) — the effect
+    /// catalogue's paint-only specimens; see [`CrackSeed::specimens`].
+    pub paint_only: Vec<bool>,
+    /// Piers whose STRUCTURAL FAULT is vetoed (parallel to `knobs`) — the
+    /// catalogue again; `crack_geom::faults_for` says why it has to exist.
+    pub no_fault: Vec<bool>,
 }
 
 impl CrackLab {
     /// Each pier's ACTIVE-policy params — the shape `crack_geom` takes.
     pub fn active_params(&self) -> Vec<[f32; crate::crack_geom::PARAMS_MAX]> {
         self.policy.iter().zip(&self.params).map(|(p, per)| per[*p as usize]).collect()
+    }
+
+    /// The knobs and the spall dial AS THE GEOMETRY PASS SEES THEM: a
+    /// [`Specimen::paint_only`] pier reads all-zero, so `apply_geometry` builds
+    /// nothing on it and never sets its `CRAZE_BIT` — while the MATERIAL still
+    /// carries the real knobs, which is what makes the shader's painted
+    /// fallback visible. Every caller of `apply_geometry`/`signatures` goes
+    /// through this pair: a signature taken on the unmasked knobs would report
+    /// a paint-only pier dirty on every drag and rebuild the scene for nothing.
+    pub fn geom_input(&self) -> (Vec<[f32; 4]>, Vec<f32>) {
+        if self.paint_only.iter().all(|p| !p) {
+            return (self.knobs.clone(), self.spall.clone());
+        }
+        let mask = |i: usize| !self.paint_only.get(i).copied().unwrap_or(false);
+        (
+            self.knobs.iter().enumerate().map(|(i, k)| if mask(i) { *k } else { [0.0; 4] }).collect(),
+            self.spall.iter().enumerate().map(|(i, s)| if mask(i) { *s } else { 0.0 }).collect(),
+        )
     }
 }
 
@@ -177,7 +237,7 @@ fn parse_seed(v: &str) -> CrackSeed {
     // reaches the DEMO's authored seed as well as this one. `pristine` is empty
     // for the same reason `vary` defaults to 0: a harness shot wants EVERY pier
     // stamped with the value it asked for, controls included.
-    CrackSeed { age: n(0), cracks: n(1), depth: n(2), chip: n(3), spall: 0.0, vary, policy, params, pristine: &[] }
+    CrackSeed { age: n(0), cracks: n(1), depth: n(2), chip: n(3), spall: 0.0, vary, policy, params, pristine: &[], specimens: &[] }
 }
 
 /// `SPALL=<0..1>` — the cover-spall dial for headless shots, a shell-only read
@@ -326,6 +386,31 @@ fn clear_pristine(piers: &[Pier], s: &CrackSeed, knobs: &mut [[f32; 4]], spall: 
     }
 }
 
+/// Apply the seed's per-wall [`Specimen`] overrides, and return the piers whose
+/// GEOMETRY pass must be skipped ([`Specimen::paint_only`]).
+///
+/// Last writer wins on purpose: a specimen names ONE wall and says exactly what
+/// it is for, so it outranks the base knobs, the hash variance and the pristine
+/// list. A point that hits no pier is a level/authoring mistake that would
+/// otherwise show up as "the effect I asked for isn't in the shot", so it is
+/// loud here and fatal in the catalogue's own test.
+fn apply_specimens(piers: &[Pier], s: &CrackSeed, knobs: &mut [[f32; 4]], spall: &mut [f32], policy: &mut [u8]) -> (Vec<bool>, Vec<bool>) {
+    let (mut paint_only, mut no_fault) = (vec![false; piers.len()], vec![false; piers.len()]);
+    for sp in s.specimens {
+        match pier_index_at(piers, sp.at.0, sp.at.1) {
+            Some(i) => {
+                knobs[i] = sp.knobs;
+                spall[i] = sp.spall;
+                policy[i] = sp.policy;
+                paint_only[i] = sp.paint_only;
+                no_fault[i] = !sp.faults;
+            }
+            None => eprintln!("crack: specimen \"{}\" at ({}, {}) misses every wall pier — ignored", sp.label, sp.at.0, sp.at.1),
+        }
+    }
+    (paint_only, no_fault)
+}
+
 /// The AGE RAMP curve: one 0..1 dial → the five aging knobs, for the demo beat
 /// that weathers a wall while the owner watches
 /// ([`crate::demos::Action::AgeWall`]).
@@ -435,6 +520,9 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
                 ];
                 per[s.policy as usize] = s.params;
                 lab.params = vec![per; piers.len()];
+                // …and LAST, so a catalogue specimen outranks the base knobs,
+                // the variance and the pristine list alike
+                (lab.paint_only, lab.no_fault) = apply_specimens(piers, &s, &mut lab.knobs, &mut lab.spall, &mut lab.policy);
                 // CRACK_SEL=<pier index> preselects a segment for the headless
                 // harness (the owner picks by clicking; an agent cannot, and the
                 // selection now drives the AA scope as well as the panel).
@@ -446,9 +534,10 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
             // (crack_geom); the built signature lets live knob drags rebuild
             // only on change
             let par = lab.active_params();
-            let aged = crate::crack_geom::apply_geometry(scene, piers, &lab.knobs, &lab.policy, &par, &lab.spall);
+            let (gk, gs) = lab.geom_input();
+            let aged = crate::crack_geom::apply_geometry(scene, piers, &gk, &lab.policy, &par, &gs, &lab.no_fault);
             (lab.cores, lab.spall_mats) = (aged.cores, aged.spall_mats);
-            lab.geo_sigs = crate::crack_geom::signatures(scene, piers, &lab.knobs, &lab.policy, &par, &lab.spall);
+            lab.geo_sigs = crate::crack_geom::signatures(scene, piers, &gk, &lab.policy, &par, &gs, &lab.no_fault);
             stamp_aa(scene, piers, lab, aa_scope); // the AA scope's opt-in bits
         }
         None => {
@@ -460,6 +549,8 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
             lab.spall_mats.clear();
             lab.sel = None;
             lab.geo_sigs.clear();
+            lab.paint_only.clear();
+            lab.no_fault.clear();
         }
     }
 }
@@ -559,7 +650,8 @@ impl Viewer {
             return;
         }
         let par = self.crack.active_params();
-        let sigs = crate::crack_geom::signatures(&self.scene, &self.piers, &self.crack.knobs, &self.crack.policy, &par, &self.crack.spall);
+        let (gk, gs) = self.crack.geom_input();
+        let sigs = crate::crack_geom::signatures(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &self.crack.no_fault);
         if sigs == self.crack.geo_sigs {
             return;
         }
@@ -781,7 +873,7 @@ mod tests {
             ..Default::default()
         };
         let par = lab.active_params();
-        lab.cores = crate::crack_geom::apply_geometry(&mut scene, &piers, &lab.knobs, &lab.policy, &par, &[]).cores;
+        lab.cores = crate::crack_geom::apply_geometry(&mut scene, &piers, &lab.knobs, &lab.policy, &par, &[], &[]).cores;
         let pad = |scene: &Scene, p: &Pier| scene.materials[scene.primitives[p.prim].material_id as usize]._pad;
         assert_ne!(pad(&scene, &piers[0]) & (crate::crack_geom::GEO_BIT | crate::crack_geom::CRAZE_BIT), 0, "the aged pier was rebuilt");
         stamp_aa(&mut scene, &piers, &lab, 1);
@@ -822,7 +914,7 @@ mod tests {
     /// building read as a row of separately aged panels.
     #[test]
     fn seed_knobs_ramps_age_along_the_run_and_keeps_depth_per_pier() {
-        let s = CrackSeed { age: 0.6, cracks: 0.5, depth: 0.6, chip: 0.2, spall: 0.0, vary: 0.5, policy: 0, params: crate::crack_geom::param_defaults(0), pristine: &[] };
+        let s = CrackSeed { age: 0.6, cracks: 0.5, depth: 0.6, chip: 0.2, spall: 0.0, vary: 0.5, policy: 0, params: crate::crack_geom::param_defaults(0), pristine: &[], specimens: &[] };
         let piers = facade(3.0);
         let a = seed_knobs(&piers, &s);
         assert_eq!(a, seed_knobs(&piers, &s), "same level, same weathering");
@@ -1011,8 +1103,8 @@ mod tests {
                 let (mut knobs, mut spall) = (vec![[0.0; 4]; n], vec![0.0; n]);
                 (knobs[i], spall[i]) = (kn, sp);
                 let (policy, par) = (vec![0u8; n], vec![crate::crack_geom::param_defaults(0); n]);
-                crate::crack_geom::apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par, &spall);
-                let sig = crate::crack_geom::signatures(&scene, &meta.piers, &knobs, &policy, &par, &spall)[i];
+                crate::crack_geom::apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par, &spall, &[]);
+                let sig = crate::crack_geom::signatures(&scene, &meta.piers, &knobs, &policy, &par, &spall, &[])[i];
                 (sig, scene.indices.len() / 3)
             })
             .collect();
@@ -1029,5 +1121,90 @@ mod tests {
     /// actually opens in, read from `demos.rs` rather than copied.
     fn demo_seed() -> CrackSeed {
         crate::demos::DEMOS.iter().find(|d| d.name == "crack lab").and_then(|d| d.cracks).expect("the crack lab demo boots pre-aged")
+    }
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+    use crate::crack_geom::{CRAZE_BIT, GEO_BIT};
+
+    fn cat_seed() -> CrackSeed {
+        crate::demos::by_name("effect catalogue").and_then(|d| d.cracks).expect("the catalogue demo carries a seed")
+    }
+
+    /// THE BENCH's contract (owner 2026-07-26, "a special level that shows each
+    /// of them separately"): every specimen names a REAL wall, no two share one,
+    /// and each wall is its own RUN.
+    ///
+    /// The last part is the one that is easy to lose and expensive to notice: a
+    /// run is what carries the story key, the damage field and the field level,
+    /// so two specimens cut out of ONE run would share their damage pattern and
+    /// the bench would be comparing two views of the same wall. A miss is worse
+    /// still — `apply_specimens` only warns, so the effect would simply be
+    /// absent from the shot with nothing to say why.
+    #[test]
+    fn every_specimen_names_its_own_wall_and_its_own_run() {
+        let spec = house_game::gym::sim::catalogue_level();
+        let (_scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 0.0);
+        let s = cat_seed();
+        assert_eq!(s.specimens.len(), 15, "three rows of five");
+        let mut seen: Vec<usize> = Vec::new();
+        for sp in s.specimens {
+            let i = pier_index_at(&meta.piers, sp.at.0, sp.at.1)
+                .unwrap_or_else(|| panic!("specimen \"{}\" at {:?} misses every wall pier", sp.label, sp.at));
+            assert!(!seen.contains(&i), "specimen \"{}\" shares pier {i} with another", sp.label);
+            seen.push(i);
+            let p = &meta.piers[i];
+            // its own run: `wall_slab` gives a pier the parent RUN's rect, so a
+            // one-pier run is exactly a pier whose span IS the run's span
+            let (rl, rh) = (p.run_hi.x - p.run_lo.x, p.run_hi.z - p.run_lo.z);
+            let (pl, ph) = (p.hi.x - p.lo.x, p.hi.z - p.lo.z);
+            assert!(
+                (rl - pl).abs() < 1e-3 && (rh - ph).abs() < 1e-3,
+                "specimen \"{}\" shares its run with another pier ({rl}×{rh} run vs {pl}×{ph} pier)",
+                sp.label
+            );
+        }
+    }
+
+    /// The two isolations the bench needs, and neither is reachable any other
+    /// way — both are pinned as the geometry pass's OBSERVABLE effect on the
+    /// scene rather than as a flag round-trip.
+    #[test]
+    fn paint_only_leaves_no_geometry_and_the_veto_leaves_no_fault() {
+        let spec = house_game::gym::sim::catalogue_level();
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true, 0.0);
+        let mut lab = CrackLab::default();
+        let prims = scene.primitives.len();
+        resolve(Some(cat_seed()), &mut lab, &meta.piers, &mut scene, 1);
+        assert!(scene.primitives.len() > prims, "VACUOUS: the geometry pass built nothing at all");
+
+        let s = cat_seed();
+        let idx = |label: &str| {
+            let sp = s.specimens.iter().find(|p| p.label == label).expect(label);
+            pier_index_at(&meta.piers, sp.at.0, sp.at.1).expect(label)
+        };
+        let pad = |i: usize| scene.materials[scene.primitives[meta.piers[i].prim].material_id as usize]._pad;
+
+        // paint-only: the material carries real knobs, the geometry pass never
+        // touched it — which is the whole condition the shader's painted crack
+        // network and painted chips are gated on
+        for label in ["painted crack network", "painted chips", "stains"] {
+            let i = idx(label);
+            assert_ne!(pad(i) >> 8, 0, "{label}: the knobs must reach the shader");
+            assert_eq!(pad(i) & (GEO_BIT | CRAZE_BIT), 0, "{label}: geometry ran on a paint-only specimen");
+            assert_eq!(lab.cores[i], -1, "{label}: a paint-only specimen must have no chalk core");
+        }
+        // the fault veto: same knob class, opposite outcome. `split_pier` is the
+        // only path that mints a core with GEO_BIT set, so that bit IS "this
+        // wall broke in half".
+        let broken = idx("structural fault");
+        assert_ne!(pad(broken) & GEO_BIT, 0, "VACUOUS: the fault specimen did not fault");
+        for label in ["lightning network", "craquelure", "mosaic"] {
+            let i = idx(label);
+            assert_ne!(pad(i) & CRAZE_BIT, 0, "{label}: the veneer must still be built");
+            assert_eq!(pad(i) & GEO_BIT, 0, "{label}: the fault veto failed — this wall broke in half");
+        }
     }
 }
