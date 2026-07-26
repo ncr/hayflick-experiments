@@ -25,8 +25,8 @@
 //! | 4 | 2 | [`MATTE`] | `gym_scene::mark_matte`, the chalk cores | shade (kills spec + the gloss remap) |
 //! | 8 | 3 | [`SEL`] | `crack::stamped_pad` | shade (the amber pick highlight) |
 //! | 16 | 4 | [`FREE16`] | nobody | nobody |
-//! | 32 | 5 | [`GEO`] | `crack_geom::split_pier` | shade (suppress the painted fault) |
-//! | 64 | 6 | [`CRAZE`] | `crack_geom::craze_pier` | shade (suppress the painted network + chips) |
+//! | 32 | 5 | [`GEO`] | `crack_geom::split_pier` | HOST only (the AA scope) |
+//! | 64 | 6 | [`CRAZE`] | `crack_geom::craze_pier` | HOST only (the AA scope) |
 //! | 128 | 7 | [`AA`] | `crack::stamp_aa` | shade (the contour-AA scope) |
 //! | 8..31 | | the four 6-bit knobs | `crack::pad_bits` | shade (the CRACK LAB block) |
 //!
@@ -52,11 +52,14 @@ pub const SEL: i32 = 8;
 /// because nothing reads it is how a budget stops being a budget.
 #[allow(dead_code)]
 pub const FREE16: i32 = 16;
-/// This pier's structural fault is REAL GEOMETRY — the shade pass must not
-/// paint one on top of it.
+/// This pier's structural fault is REAL GEOMETRY. It existed to stop the shade
+/// pass painting a second, disagreeing fault on top of it; since the painted
+/// layers were culled (2026-07-26) no shader reads it, and its only remaining
+/// job is host-side — the `aa scope = 1` predicate, "did a generator add detail
+/// to this wall".
 pub const GEO: i32 = 32;
-/// This pier's craze network is REAL GEOMETRY — the shade pass must not paint
-/// the cell network or the chip patches on top of it.
+/// This pier's craze network is REAL GEOMETRY. Host-only for the same reason as
+/// [`GEO`], and a candidate for merging with it.
 pub const CRAZE: i32 = 64;
 /// The greybox-detail AA opt-in (CLAUDE.md, "greybox detail = AA-scoped").
 pub const AA: i32 = 128;
@@ -113,8 +116,11 @@ mod tests {
     /// the GLSL side is the BLIND one this session (no Vulkan hardware), which
     /// is exactly when a compile-time source guard earns its keep.
     ///
-    /// Only the flags a shader actually reads are checked; `FREE16` has no
-    /// reader by definition and `SEL`/`AA`/`GEO`/`CRAZE`/`MATTE`/`OCCLUDER` do.
+    /// Only the flags a shader actually reads are checked. `FREE16` has none by
+    /// definition, and since the painted-layer cull (2026-07-26) neither do
+    /// `GEO` and `CRAZE` — they survive as the host's "a generator touched this
+    /// wall" mark for the AA scope. If a shader ever reads one again, add it
+    /// here in the same commit.
     #[test]
     fn both_twins_spell_every_flag_value_as_the_host_does() {
         for (name, src) in crate::wear::twin_sources() {
@@ -126,8 +132,6 @@ mod tests {
                     "{name}: no read of {flag} at the host's value {v}"
                 );
             }
-            // GEO|CRAZE are read together as the painted-layer suppressor
-            assert!(has(&format!("{}u", GEO | CRAZE)) || (has(&format!("{GEO}u")) && has(&format!("{CRAZE}u"))), "{name}: no read of GEO/CRAZE at the host's values");
         }
     }
 }

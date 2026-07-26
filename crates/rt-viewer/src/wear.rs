@@ -586,10 +586,27 @@ mod tests {
         }
     }
 
-    /// Source fragments that must NOT appear in either twin. Empty until a cull
-    /// lands; see the note in the guard above for why the empty list still has
-    /// to exist rather than being added when it is first needed.
-    const FORBIDDEN: &[&str] = &[];
+    /// Source fragments that must NOT appear in either twin.
+    ///
+    /// Every entry here is a painted layer deleted on 2026-07-26 because it
+    /// could not draw where it mattered (see the WEATHERED SKIN block's own
+    /// comment). The list exists because the Mac can only RUN the MSL twin: a
+    /// deletion applied to one source and forgotten in the other compiles,
+    /// passes every test, and ships a different image on the other backend.
+    /// The three knob unpacks are here too — `cracks`/`depth`/`chip` are
+    /// GEOMETRY dials now, and a shader reading one again is the drift this
+    /// round exists to prevent. `>> 8` (age) is deliberately NOT forbidden.
+    const FORBIDDEN: &[&str] = &[
+        "faultAt",  // the painted structural fault
+        "crazeG",   // the CRAZE-bit escape hatch it needed
+        "chipM",    // the painted chip patches
+        "lineP",    // the painted craze cell network
+        "cuvP",     // its view-parallax sample offset
+        "mHalo",    // the fault's stain track
+        ">> 14",    // the `cracks` knob lane
+        ">> 20",    // the `depth` knob lane
+        ">> 26",    // the `chip` knob lane
+    ];
 
     /// `WEAR=` parsing: leading components in lane order, missing tails read 0.
     #[test]
