@@ -97,27 +97,22 @@ tecta): every gym mesh is the fewest boxes that read — walls are clean
 slabs (no plinth), the roof is ONE inset parapet cap (no fascia — the
 amber accent moved to the lamps — no ridge; `RoofStyle` deleted), lamps
 are post + lantern block, grass tufts single blocks, the player a 10-box
-figure. Greens are MATTE by construction (`Material._pad` bit 4, set by
+figure. Greens are MATTE by construction (`flags::MATTE`, set by
 `gym_scene::mark_matte` on the grass floor + tufts): the shade pass skips
 spec + the gloss remap there — "trawa nie może się błyszczeć"; porcelain
 and glass keep the sheen.
-GLAZE EASE (2026-07-25, the approved effects catalogue): the blocky boxes
-are no longer paper cutouts — every EXPOSED arris of a wall pier or roof
-cap carries a chamfer authored in SCREEN pixels (3 px on the vertical
-corner facing the camera, 2.4 px on a top edge, derived from the
-projection's axis images in `wear_geom::sizes`, clamped so two facets never
-eat half a face). `wear_geom::ease_box` is the box→mesh PROMOTER: one prim,
-one material, at the index a plain box would have taken — everything that
-marks or hides a box by prim index keeps working. WHICH arrises are exposed
-is a fact about the level, so `gym_scene` decides it (`end_kind`): the
-building's corners are two overlapping slabs sharing a 0.2 × 0.2 column, so
-one run OWNS each corner and the other YIELDS the column (chamfering both
-would emit two coincident 45° facets — the 2026-07-12 strobe class). Dial:
-ESC row "glaze ease" / `ARRIS=` (look-authored 1.0), and it is GEOMETRY —
-a step rebuilds + rebakes (~3 s on the M2), and `ARRIS=0` rebuilds the
-plain boxes byte for byte. A crazed crack-lab pier loses its ease (the
-geometry pass collapses the box and re-emits the whole face) — known, and
-the hook to hand it the inset rect is in `wear_geom`'s doc.
+GLAZE EASE — DELETED 2026-07-26 (owner call). The eased-arris pass gave every
+exposed arris a screen-pixel chamfer through a box→mesh promoter
+(`wear_geom`), and it shipped OFF: a thin vertical facet's GI lookup lands in
+the meadow bounce and reads olive-green on white porcelain, and an aged pier
+loses its bevel because the crack pass re-emits the face. Carrying a disabled
+feature costs more than removing it, so `wear_geom`, `RunEnd`/`end_kind`, the
+junction yield, `Look.arris`, `ARRIS` and the ESC row are all gone. What
+survives is the INVARIANT the promoter threatened, now a standing test:
+`gym_scene::the_greybox_is_boxes_and_every_pier_mesh_is_its_authored_box` —
+the crack lab, the pick ray, the smash rig and the local probe refresh all
+address `Pier.lo/hi`, so the next box→mesh pass gets that assertion aimed at
+it on day one.
 THE CRACK-LAB DEMO IS THE OWNER'S SURFACE for all of the above, and since
 2026-07-25 it is STAGED rather than just enabled. It spawns at (9, 11)
 FACING the building's south-east corner — two facades, their window
@@ -188,6 +183,26 @@ DEMO_TICKS=N DEMO_DIR=<dir>` renders frame sequences; `LOOK=…`.
 4. **Byte goldens are suspended** during the visual reset (Faza 0/1). Verify
    render changes with before/after `SHOT=` diffs; re-pin goldens per
    machine/backend once the owner locks the look (see `bin/golden`).
+
+## Material._pad flags: one home (2026-07-26)
+
+`rt-viewer/src/flags.rs` owns all eight, NAMED BY VALUE, with the allocation
+table in one place; the old names (`crack::SEL_BIT`, `crack_geom::GEO_BIT` /
+`CRAZE_BIT`, `gym_scene::AA_BIT`) are re-exports and the bare literals are gone.
+It exists because the prose had drifted into two incompatible readings of the
+word "bit" — `gym_scene`/`crack_geom`/both shaders say "bit 4" meaning VALUE 4
+(matte), `crack`/`wear` say "bit 4 (value 16)" meaning INDEX 4 — so "the last
+free flag is bit 4" pointed at two different bits depending on the file.
+`the_flag_byte_is_a_partition` walks the exhaustive list; a second claimant on
+any bit fails the tree. `both_twins_spell_every_flag_value_as_the_host_does`
+reads BOTH shader sources at compile time, because a flag whose value moves on
+the host and not in a shader is a silent, backend-specific wrong image.
+
+The twin guard in `wear.rs` is TWO-SIDED: a REQUIRED table (fragments each twin
+must contain) and a FORBIDDEN table (fragments each must NOT). A required-only
+guard can prove a line is present and never that a line is gone, so it is blind
+to a deletion applied to one twin and forgotten in the other — which compiles,
+passes every test, and ships a different image on the other backend.
 
 ## Two render backends — keep them in lockstep
 
