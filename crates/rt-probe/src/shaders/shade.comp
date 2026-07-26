@@ -599,13 +599,20 @@ void main(){
   // version is the one the owner has been looking at since round 8. What
   // survives here is the paint that belongs BESIDE it, not a second copy of it.
   //
-  // So this block reads ONE knob — age — plus the field level lane and the story
-  // key. `cracks` / `depth` / `chip` still exist and still matter; they are
-  // GEOMETRY dials, and the shade pass has no business reading them.
+  // So this block reads exactly what it draws: the two painted layers'
+  // STRENGTHS from `_pad` lanes 0/1, their solved THRESHOLDS from the effect
+  // word's lanes 0/1, and the run's story key. Everything else the level
+  // says about a wall is geometry, and the shade pass has no business with it.
   {
       uint kb = uint(m.pad);
       if ((kb >> 8) != 0u && m.texIndex < 0 && dot(m.emissive.rgb, vec3(1.0)) <= 0.0) {
-          float cAge = float((kb >> 8) & 63u) * (1.0 / 63.0);
+          // The two painted layers' STRENGTHS, one lane each (host:
+          // `crack::pad_bits`). Both used to read ONE lane — the `age` knob —
+          // so their AREAS were independent (step 5's solved thresholds) while
+          // their intensities were not, and "stains darker than the crazing"
+          // was not a sentence the level could say. Lanes 2/3 are unused.
+          float aStain = float((kb >> 8) & 63u) * (1.0 / 63.0);
+          float aWeb   = float((kb >> 14) & 63u) * (1.0 / 63.0);
           float story = m.baseColor.a;
           // FRESH BREAK: what the damage EXPOSED is unglazed body, so neither
           // layer here belongs on it (crack_geom::fresh_body mints the pale
@@ -645,13 +652,13 @@ void main(){
           // CONSTRUCTION and independent of every geometry dial.
           vec2 siteF; float cellF;
           float edF = crackEdge(cuv * 6.0 + 31.0, story + 9.0, siteF, cellF);
-          float web = (1.0 - smoothstep(0.0, 0.07, edF)) * step(cellF, cAge * 0.9) * fineG * skin;
-          albedo *= 1.0 - web * 0.35 * smoothstep(0.15, 0.7, cAge);
+          float web = (1.0 - smoothstep(0.0, 0.07, edF)) * step(cellF, aWeb * 0.9) * fineG * skin;
+          albedo *= 1.0 - web * 0.35 * smoothstep(0.10, 0.6, aWeb);
           // TEA STAINS in the damage patches. `skin` gates the whole term: the
           // runoff stained the surface that spalled AWAY, so a streak stops at a
           // crater lip instead of running down through the hole.
           float stain = fbm(wpos * 0.9 + 31.0);
-          float sAmt = skin * cAge * clamp(0.55 * smoothstep(0.45, 0.85, stain) * (0.20 + 0.80 * stainW), 0.0, 1.0);
+          float sAmt = skin * aStain * clamp(0.55 * smoothstep(0.45, 0.85, stain) * (0.20 + 0.80 * stainW), 0.0, 1.0);
           albedo = mix(albedo, albedo * vec3(0.78, 0.70, 0.58), sAmt);
       }
   }

@@ -5,11 +5,14 @@
 //! has a single source of truth. One deliberate exception reads `std::env`
 //! directly: `probe_cache::dir` (PROBE_CACHE) — a dev-machine cache location,
 //! not a look/sim knob, and never part of the round-trip. (rt-viewer keeps a
-//! few shell-only reads of its own: AUDIO, LOOK, the crack-lab harness seed
-//! CRACKS=age,cracks,depth,chip with its CRACK_SEL= pick and CRACK_EDIT=
-//! knob-drag replay, the wear family's WEAR=d0[,d1,d2,d3] effect word and its
-//! WEAR_LEVEL=0 field-level A/B, and the cover-spall dial SPALL=<0..1> with its
-//! SPALL_LAYER=1|2|3 bisect (1 = crater only, 2 = steel only, 3 = both) — see
+//! few shell-only reads of its own: AUDIO, LOOK, and the WEAR family's harness
+//! surface — STORY=weather,settlement,cover_loss (the three causes),
+//! SHAPE=grain,relief[,pattern[,p1,p2,p3]], SPREAD=<0..1> (the per-run story
+//! spread), SPALL=<0..1> (the cover-loss cause on its own, kept because every
+//! A/B recipe on record uses it) with its SPALL_LAYER=1|2|3 bisect (1 = crater
+//! only, 2 = steel only, 3 = both), CRACK_SEL= to preselect a wall,
+//! WEAR_EDIT=weather,settlement,cover_loss[,run] to replay a panel drag +
+//! release, and WEAR=d0[,d1,d2,d3] for the effect word's own lanes — see
 //! `crate::crack` / `crate::crack_geom` / `crate::wear` on the viewer side.)
 //!
 //! `Config` is split along the three natural axes the knobs fall into:

@@ -38,11 +38,11 @@ pub enum Action {
     MorphTo { look: &'static str, over: u64 },
     /// Weather the wall pier containing world point (x, z) from PRISTINE to
     /// fully aged over `over` ticks — the whole greybox-wear catalogue as one
-    /// continuous read instead of a before/after pair (`crack::ramp_knobs` owns
-    /// the curve and the order the layers arrive in).
+    /// continuous read instead of a before/after pair (`crack::ramp_story` owns
+    /// the curve and the order the causes arrive in).
     ///
-    /// The wall must boot pristine ([`crate::crack::CrackSeed::pristine`]) —
-    /// a ramp that starts on an already-weathered wall shows only its top half.
+    /// The wall must boot pristine (`wall::WallAt::pristine`) — a ramp that
+    /// starts on an already-weathered wall shows only its top half.
     ///
     /// Painted layers (stains, the fine glaze web, chip patches) ride the
     /// per-frame material stream, so they move every frame for free; the
@@ -93,10 +93,14 @@ pub struct Demo {
     pub spawn: (i16, i16),
     /// Timeline of scheduled beats (sorted by `at`; ticks from boot).
     pub script: &'static [Beat],
-    /// Crack-lab weathering: `Some` pre-ages every wall pier from this seed at
-    /// boot AND enables the lab interaction (click a segment, drag the knob
-    /// panel). `None` = untouched porcelain + no lab UI (every other demo).
-    pub cracks: Option<crate::crack::CrackSeed>,
+    /// The level's WEAR: `Some` compiles this authoring onto the level's wall
+    /// RUNS at boot AND enables the lab interaction (click a wall, drag the
+    /// panel). `None` = untouched porcelain + no panel (every other demo).
+    ///
+    /// A `&'static LevelWear` and not an owned struct because `WallAt` lists are
+    /// `&'static [..]` all the way down — the whole authoring is const data, so
+    /// a level is readable as a literal.
+    pub wear: Option<&'static crate::wall::LevelWear>,
     /// Kept for reference after a pivot: disposable, not maintained.
     pub outdated: bool,
 }
@@ -109,7 +113,7 @@ pub static DEMOS: &[Demo] = &[
         look: "polana",
         spawn: (10, 11),
         script: &[],
-        cracks: None,
+        wear: None,
         outdated: false,
     },
     Demo {
@@ -119,7 +123,7 @@ pub static DEMOS: &[Demo] = &[
         look: "dusk",
         spawn: (5, 5),
         script: &[Beat { at: 45, action: Action::TearRoof }],
-        cracks: None,
+        wear: None,
         outdated: false,
     },
     Demo {
@@ -129,7 +133,7 @@ pub static DEMOS: &[Demo] = &[
         look: "polana",
         spawn: (10, 11),
         script: &[Beat { at: 20, action: Action::MorphTo { look: "dusk", over: 180 } }],
-        cracks: None,
+        wear: None,
         outdated: false,
     },
     Demo {
@@ -146,7 +150,7 @@ pub static DEMOS: &[Demo] = &[
         // facade still reads large. The slug whooshes right past the player.
         spawn: (12, 5),
         script: &[Beat { at: 40, action: Action::SmashWall { x: 8.0, z: 5.5 } }],
-        cracks: None,
+        wear: None,
         outdated: false,
     },
     Demo {
@@ -176,31 +180,7 @@ pub static DEMOS: &[Demo] = &[
         // arrives as one continuous read (see `Action::AgeWall`). It starts a
         // second in, so the boot frame is the honest "before".
         script: &[Beat { at: 60, action: Action::AgeWall { x: 13.0, z: 10.0, over: 180 } }],
-        // boot pre-age with real variance: the level reads weathered the
-        // moment it opens, and every segment starts somewhere different.
-        // `spall` is the owner's 2026-07-25 headline, so it boots ON — and the
-        // dial is a CEILING (`crack::seed_spall`), so 0.65 means the worst two
-        // walls lose several patches of cover, most of the rest one or two, and
-        // six of the fifteen stay clean: the clean ones are the point, since
-        // damage with no control beside it reads as a texture.
-        cracks: Some(crate::crack::CrackSeed {
-            age: 0.55,
-            cracks: 0.5,
-            depth: 0.55,
-            chip: 0.2,
-            spall: 0.65,
-            vary: 0.4,
-            policy: 0,
-            params: crate::crack_geom::param_defaults(0),
-            // TWO named controls, and they do different jobs: the z=10 garden
-            // wall is the biggest, nearest, least obstructed wall in frame, so
-            // it is what the AgeWall beat ramps (and it has to boot pristine to
-            // ramp FROM pristine); the x=12 spur, top-right, is the one that
-            // stays clean for the whole session — the negative control the
-            // aged facades are read against once the beat has run.
-            pristine: &[(13.0, 10.0), (12.0, 4.0)],
-            specimens: &[],
-        }),
+        wear: Some(&LAB_WEAR),
         outdated: false,
     },
     Demo {
@@ -212,92 +192,123 @@ pub static DEMOS: &[Demo] = &[
         // the ROI reveal can never ghost one (see `catalogue_level`)
         spawn: (20, 16),
         script: &[],
-        cracks: Some(crate::crack::CrackSeed {
-            // The BASE is nothing at all — the catalogue's whole point is that
-            // a wall shows what its own specimen line says and not one thing
-            // more, and it leaves the little building as plain porcelain.
-            age: 0.0,
-            cracks: 0.0,
-            depth: 0.0,
-            chip: 0.0,
-            spall: 0.0,
-            vary: 0.0,
-            policy: 0,
-            params: crate::crack_geom::param_defaults(0),
-            pristine: &[],
-            specimens: SPECIMENS,
-        }),
+        wear: Some(&CATALOGUE_WEAR),
         outdated: false,
     },
 ];
 
-/// THE CATALOGUE, wall by wall (owner 2026-07-26). Fifteen slabs, three rows of
-/// five, addressed by the world points `house_game::gym::sim::spec_point`
-/// derives — row 0 = pattern and scale, row 1 = loss, row 2 = paint. Every
-/// row opens on a PRISTINE control except the middle one, which is flanked by
-/// the two controls in the rows above and below it.
+/// THE CRACK LAB's level wear (owner surface for the whole greybox-wear
+/// family). One BASE story every wall starts from, a per-RUN spread so the level
+/// reads varied the moment it opens, and two named controls.
 ///
-/// One coupling still decides most of these numbers, and it is a property of the
-/// system rather than of the bench: **age drives the damaged AREA**, not just
-/// the tone, so below ~0.3 a wall has almost no damaged patch to put an effect
-/// in and "show me the plates" means a high age whether or not the effect is
-/// about staining.
+/// `cover_loss` is the owner's 2026-07-25 headline, so it boots ON. The spread
+/// takes walls DOWN from the base (never up), which is what keeps some of them
+/// visibly sound: damage with no control beside it reads as a texture rather
+/// than as damage.
+pub static LAB_WEAR: crate::wall::LevelWear = crate::wall::LevelWear {
+    base: crate::wall::Story { weather: 0.55, settlement: 0.35, cover_loss: 0.65 },
+    origin: crate::wall::Origin::Ground,
+    spread: 0.4,
+    // TWO named controls, and they do different jobs: the z=10 garden wall is
+    // the biggest, nearest, least obstructed wall in frame, so it is what the
+    // AgeWall beat ramps (and it has to boot pristine to ramp FROM pristine);
+    // the x=12 spur, top-right, is the one that stays clean for the whole
+    // session — the negative control the aged facades are read against once the
+    // beat has run.
+    walls: &[crate::wall::WallAt::pristine((13.0, 10.0), "ramped control"), crate::wall::WallAt::pristine((12.0, 4.0), "negative control")],
+};
+
+/// THE CATALOGUE's level wear. The BASE is nothing at all — the bench's whole
+/// point is that a wall shows what its own line says and not one thing more, and
+/// it leaves the little building as plain porcelain.
+pub static CATALOGUE_WEAR: crate::wall::LevelWear =
+    crate::wall::LevelWear { base: crate::wall::Story::ZERO, origin: crate::wall::Origin::Ground, spread: 0.0, walls: SPECIMENS };
+
+/// THE CATALOGUE, wall by wall. Fifteen slabs, three rows of five, addressed by
+/// the world points `house_game::gym::sim::spec_point` derives — row 0 = pattern
+/// and scale, row 1 = loss, row 2 = paint. Rows 0 and 2 each open on a PRISTINE
+/// control; the middle one is flanked by those two.
 ///
-/// The other one is GONE as of 2026-07-26. A break used to be a coin flip on
-/// age × cracks, so at every age that made damage visible almost every wall also
-/// broke in half, and every specimen that was about something else had to run a
-/// LOW cracks knob to keep the odds down. Now the count is authored
-/// (`crack::Specimen::breaks`), so the knobs are free to be whatever reads best
-/// and exactly one slab breaks.
-pub static SPECIMENS: &[crate::crack::Specimen] = {
-    use crate::crack::Specimen;
-    /// A geometry specimen that does NOT break through — the default, because a
-    /// wall broken in half is a different effect and would be the only thing
-    /// anyone saw on that slab. An ordinary authored zero since 2026-07-26; it
-    /// used to be a veto flag against a probability.
-    const fn s(at: (f32, f32), label: &'static str, knobs: [f32; 4], policy: u8, spall: f32) -> Specimen {
-        Specimen { at, label, knobs, policy, spall, paint_only: false, breaks: 0 }
+/// Since 2026-07-26 every slab is ONE LINE in the authoring vocabulary, and the
+/// two couplings that used to decide these numbers are gone with the knobs that
+/// carried them:
+///
+/// - **age drove the damaged AREA**, so below ~0.3 a wall had almost no patch to
+///   put an effect in and "show me the plates" meant a high age whether or not
+///   the effect was about staining. An amount is an area now, so a slab that
+///   wants 40 % of its face cracked says `Layer::Cracks, 0.40`.
+/// - **a break was a coin flip on age × cracks**, so every specimen about
+///   something else had to run a low `cracks` knob to keep the odds down. The
+///   count is authored, so exactly one slab breaks and it is the one whose
+///   subject is breaking.
+///
+/// `WallAt::only` pins every OTHER layer to zero, which is what makes "one
+/// effect per wall" a fact about the data rather than a hope about the numbers.
+pub static SPECIMENS: &[crate::wall::WallAt] = {
+    use crate::wall::{Breaks, Layer, Pattern, Pins, Shape, Story, WallAt, WallSpec};
+    /// A wall showing one LAYER and nothing else, at the amount named.
+    const fn one(at: (f32, f32), label: &'static str, l: Layer, v: f32) -> WallAt {
+        WallAt::only(at, label, l, v)
     }
-    /// Knobs stamped, geometry pass skipped — the only way to see the shade
-    /// pass's painted crack network and painted chips, which `CRAZE_BIT`
-    /// suppresses on every pier `crack_geom` touches.
-    const fn p(at: (f32, f32), label: &'static str, knobs: [f32; 4]) -> Specimen {
-        Specimen { at, label, knobs, policy: 0, spall: 0.0, paint_only: true, breaks: 0 }
+    /// …the same, with a pattern chosen: the row-0 slabs differ ONLY in their
+    /// lattice, which is what makes them comparable.
+    const fn pat(at: (f32, f32), label: &'static str, p: Pattern) -> WallAt {
+        let mut w = WallAt::only(at, label, Layer::Cracks, 0.55);
+        w.spec.shape = Shape { pattern: p, ..Shape::DEFAULT };
+        w
+    }
+    /// A PAINT specimen: knobs stamped, geometry pass skipped. The only way to
+    /// see the shade pass's painted layers, since the generator marks every wall
+    /// it touches and the shader gates them off that mark.
+    const fn paint(at: (f32, f32), label: &'static str, stain: f32, web: f32) -> WallAt {
+        let mut pin = Pins::NONE;
+        pin = pin.area(Layer::Stain, stain);
+        pin = pin.area(Layer::Web, web);
+        pin = pin.area(Layer::Cracks, 0.0);
+        pin = pin.area(Layer::Chips, 0.0);
+        pin = pin.area(Layer::Spall, 0.0);
+        pin = pin.breaks(Breaks::NONE);
+        WallAt { at, label, spec: WallSpec { story: Story::ZERO, pin, paint_only: true, ..WallSpec::PRISTINE } }
     }
     &[
-        // ---- row 0 (z=7): the PATTERN policies, at one shared knob set so the
-        // only difference down the row is the lattice
-        s((2.0, 7.0), "pristine control", [0.0; 4], 0, 0.0),
-        s((5.0, 7.0), "lightning network", [1.0, 0.60, 0.50, 0.0], 0, 0.0),
-        s((8.0, 7.0), "craquelure", [1.0, 0.60, 0.50, 0.0], 1, 0.0),
-        s((11.0, 7.0), "mosaic", [1.0, 0.60, 0.50, 0.0], 2, 0.0),
+        // ---- row 0 (z=7): the PATTERNS, at one shared amount so the only
+        // difference down the row is the lattice
+        WallAt::pristine((2.0, 7.0), "pristine control"),
+        pat((5.0, 7.0), "lightning network", Pattern::DEFAULTS[0]),
+        pat((8.0, 7.0), "craquelure", Pattern::DEFAULTS[1]),
+        pat((11.0, 7.0), "mosaic", Pattern::DEFAULTS[2]),
         // the one specimen that ASKS to break: one break, mid-slab, and the two
-        // pieces + the settlement step are the effect. Two cells like every
-        // other slab in the row — it needed four while presence was a coin flip
-        // on a 6-wu strip (`sim::SPEC_CELLS`).
-        Specimen { at: (14.0, 7.0), label: "structural break", knobs: [0.90, 0.60, 0.50, 0.10], policy: 0, spall: 0.0, paint_only: false, breaks: 1 },
+        // pieces + the settlement step are the effect
+        WallAt::only_breaks((14.0, 7.0), "structural break", Breaks { count: 1, at: Some(0.5) }),
         // ---- row 1 (z=11): LOSS — material that is no longer there
-        s((4.0, 11.0), "chips (fragments gone)", [1.0, 0.50, 0.40, 0.95], 0, 0.0),
+        one((4.0, 11.0), "chips (fragments gone)", Layer::Chips, 0.45),
         // mosaic grooves every cell edge by construction, so its plates are the
         // ones that can settle (`CrazeCfg::sink_perimeter`)
-        s((7.0, 11.0), "settled plates", [1.0, 0.55, 0.70, 0.10], 2, 0.0),
-        s((10.0, 11.0), "fresh break (chalk core)", [1.0, 0.50, 0.80, 0.95], 0, 0.0),
-        // ONE effect at two AMOUNTS since 2026-07-26. These used to be two
-        // STAGES of one dial ("lifted cover" — a lens with no steel in it — and
-        // "blown spall"), which is a chip and a spall wearing the same slider;
-        // the shallow stage is `Layer::Chips`' job and the slab above shows it.
-        s((13.0, 11.0), "cover spall (one patch)", [0.50, 0.10, 0.30, 0.0], 0, 0.30),
-        s((16.0, 11.0), "cover spall + rebar (heavy)", [0.65, 0.15, 0.35, 0.05], 0, 1.0),
-        // ---- row 2 (z=15): PAINT — the shade pass ALONE. Every wall here is
-        // `paint_only`, including the two that carry no crack knob at all: a
-        // nonzero AGE is enough to send a pier through `craze_pier`, which
-        // emits a veneer and sets CRAZE_BIT, so "stains, and nothing else"
-        // is not otherwise a state this system can be in.
-        s((6.0, 15.0), "pristine control", [0.0; 4], 0, 0.0),
-        p((9.0, 15.0), "stains", [0.55, 0.0, 0.0, 0.0]),
-        p((12.0, 15.0), "stains + fine glaze web", [1.00, 0.0, 0.0, 0.0]),
-        p((15.0, 15.0), "painted crack network", [0.90, 0.70, 0.60, 0.0]),
-        p((18.0, 15.0), "painted chips", [0.90, 0.25, 0.30, 0.95]),
+        {
+            let mut w = one((7.0, 11.0), "settled plates", Layer::Cracks, 0.60);
+            w.spec.shape = Shape { pattern: Pattern::DEFAULTS[2], relief: 0.70, ..Shape::DEFAULT };
+            w
+        },
+        {
+            // a FRESH BREAK is chalk core under a lost fragment, so it needs
+            // both cracking to free the plates and chips to take them away
+            let mut w = one((10.0, 11.0), "fresh break (chalk core)", Layer::Chips, 0.45);
+            w.spec.pin = w.spec.pin.area(Layer::Cracks, 0.60);
+            w.spec.shape = Shape { relief: 0.80, ..Shape::DEFAULT };
+            w
+        },
+        // ONE effect at two AMOUNTS. These used to be two STAGES of one dial
+        // ("lifted cover" — a lens with no steel in it — and "blown spall"),
+        // which is a chip and a spall wearing the same slider; the shallow stage
+        // is `Layer::Chips`' job and the slab above shows it.
+        one((13.0, 11.0), "cover spall (one patch)", Layer::Spall, 0.012),
+        one((16.0, 11.0), "cover spall + rebar (heavy)", Layer::Spall, crate::wall::SPALL_MAX),
+        // ---- row 2 (z=15): PAINT — the shade pass ALONE
+        WallAt::pristine((6.0, 15.0), "pristine control"),
+        paint((9.0, 15.0), "stains", 0.55, 0.0),
+        paint((12.0, 15.0), "stains + fine glaze web", 0.85, 0.45),
+        paint((15.0, 15.0), "wide stain patch", 0.95, 0.0),
+        paint((18.0, 15.0), "glaze web alone", 0.0, 0.70),
     ]
 };
 

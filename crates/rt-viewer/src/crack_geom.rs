@@ -108,6 +108,10 @@ pub const POLICY_PARAMS: [&[(&str, f32)]; 3] = [
     &[("jitter", 0.8)],
 ];
 
+/// The LIGHTNING policy's `straight` default — the jaggedness a propagated crack
+/// has when the wall's own pattern does not declare one (see `CrazeCfg::jag`).
+pub const LIGHTNING_STRAIGHT: f32 = POLICY_PARAMS[0][1].1;
+
 /// A policy's default param values (unused slots 0).
 pub const fn param_defaults(policy: u8) -> [f32; PARAMS_MAX] {
     let p = POLICY_PARAMS[policy as usize];
@@ -255,7 +259,7 @@ const BREAK_MARGIN: f32 = 0.35;
 /// `u0`/`u1` are the RUN's extent on its own axis — not the pier's. Every panel
 /// of a run therefore computes the identical break set, and the caller keeps the
 /// ones that actually cross it.
-fn run_breaks(u0: f32, u1: f32, story: f32, b: crate::wall::Breaks, k: [f32; 4]) -> Vec<Fault> {
+fn run_breaks(u0: f32, u1: f32, story: f32, b: crate::wall::Breaks, relief: f32, cracked: f32) -> Vec<Fault> {
     let m = BREAK_MARGIN.min(0.4 * (u1 - u0));
     b.places(story)
         .into_iter()
@@ -269,7 +273,11 @@ fn run_breaks(u0: f32, u1: f32, story: f32, b: crate::wall::Breaks, k: [f32; 4])
                 seed: story * 6.0,
                 ax: mixf(u0 + m, u1 - m, frac),
                 tilt: (h(97.0) - 0.5) * 0.8,
-                mw: mixf(0.022, 0.055, k[2]) * (0.55 + 0.45 * k[0]),
+                // The GAP a break opens: as deep as the wall's relief allows,
+                // widened by how tired the material is. It read `depth × age`
+                // before, and age was the wrong half — a wall that is barely
+                // cracked does not come apart with a 9 cm gap.
+                mw: mixf(0.022, 0.055, relief) * (0.55 + 0.45 * cracked),
                 sign: if h(113.0) < 0.5 { 1.0 } else { -1.0 },
             }
         })
@@ -292,7 +300,37 @@ pub(crate) fn quad(verts: &mut Vec<([f32; 3], [f32; 3])>, idx: &mut Vec<u32>, q:
 /// resolve to on this pier's run (`crack::gates_of`). A pair rather than two
 /// loose arrays because they are the same length and the same type, and the
 /// compiler cannot catch them being passed the wrong way round.
-type Wear = ([f32; crate::wall::Layer::N], [f32; crate::wall::Layer::N]);
+/// THE LEVEL'S COMPILED WEAR, as the geometry pass reads it: one
+/// `wall::Sheet` per RUN plus the pier→run map.
+///
+/// One datum, passed whole, so no caller can hand the geometry pass and the
+/// material streamer different sheets — the drift docs/AGENT_LEARNINGS.md
+/// records twice. It also carries every input the generators need: the amounts,
+/// the solved thresholds, the shape, the pattern's own params and the breaks are
+/// all fields of the sheet, and the sheet is a function of `(run, WallSpec)`
+/// alone.
+#[derive(Clone, Copy)]
+pub struct Wear<'a> {
+    pub sheets: &'a [crate::wall::Sheet],
+    /// Which RUN each pier belongs to (parallel to `piers`).
+    pub pier_run: &'a [usize],
+    /// Per RUN: the geometry pass skips these walls entirely — the effect
+    /// catalogue's paint-only specimens, the only way to see the shade pass's
+    /// painted layers on a wall the generator would otherwise have marked.
+    pub paint_only: &'a [bool],
+}
+
+impl<'a> Wear<'a> {
+    /// Pier `i`'s sheet, or `None` when its run is paint-only (or the level says
+    /// nothing about it).
+    pub fn of(&self, i: usize) -> Option<&'a crate::wall::Sheet> {
+        let r = *self.pier_run.get(i)?;
+        if self.paint_only.get(r).copied().unwrap_or(false) {
+            return None;
+        }
+        self.sheets.get(r)
+    }
+}
 
 // ---- craze configuration ---------------------------------------------------
 //
@@ -351,7 +389,13 @@ struct CrazeCfg {
     /// a sentence the system could express. A threshold solved from the run's
     /// own sorted samples makes the amount an AREA, and one per layer makes the
     /// layers independent.
-    t_zone: f32,
+    /// The CRACKS layer's solved threshold — where this wall's plates are
+    /// cracked free, and where a crack path may run. ONE threshold, because it
+    /// is one layer: the veneer's zone used to read the WEB layer's gate, which
+    /// is a PAINTED layer, so a wall authored as "cracked" built no plates at
+    /// all unless it also happened to be asked for crazing. The two BANDS around
+    /// it still differ (`zone` ±0.03, `crack_zone` ±0.04), which is what lets a
+    /// path reach a little past the plates it freed.
     t_crack: f32,
     /// The CHIPS amount — the fraction of plates inside the zone that go
     /// missing. A literal fraction, not a noise gate multiplied by the stain
@@ -377,6 +421,9 @@ struct CrazeCfg {
     sink_perimeter: bool,
     /// The active policy's native params ([`POLICY_PARAMS`] order).
     par: [f32; PARAMS_MAX],
+    /// Jaggedness of a PROPAGATED crack at the coarse (structural) scale — see
+    /// [`CrazeCfg::new`].
+    jag: f32,
     /// The pier's structural faults — their HALO boosts the damage zone so
     /// the small-crack network clusters along the big seam (the shader's
     /// old mHalo term, now geometric).
@@ -384,24 +431,29 @@ struct CrazeCfg {
 }
 
 impl CrazeCfg {
-    /// Build a pier's craze config from bucketed knobs + policy params.
+    /// Build a pier's craze config from its run's compiled SHEET.
     ///
-    /// `story` is the RUN's key ([`story_of`]), not the panel's: the damage field
-    /// and the craze lattices are functions of world position plus this seed, so
-    /// sharing it is exactly what makes a patch cross a panel joint instead of
-    /// restarting at it (owner catalogue 2026-07-25, "one wall, one story").
-    fn new(story: f32, wear: Wear, k: [f32; 4], run_x: bool, thick: f32, faults: &[Fault], par: [f32; PARAMS_MAX]) -> CrazeCfg {
+    /// Every input is a field of the sheet, dequantized through
+    /// `wall::Geom` — so the generator sees exactly the integers the rebuild
+    /// gate signed, and nothing reaches it as a raw authored float. `story` is
+    /// the RUN's key ([`story_of`]), not the panel's: the damage field and the
+    /// craze lattices are functions of world position plus this seed, so sharing
+    /// it is what makes a patch cross a panel joint instead of restarting at it
+    /// (owner catalogue 2026-07-25, "one wall, one story").
+    fn new(story: f32, sheet: &crate::wall::Sheet, run_x: bool, thick: f32, faults: &[Fault]) -> CrazeCfg {
         use crate::wall::Layer;
-        let (amt, gate) = wear;
+        let (amt, gate, g) = (&sheet.area, &sheet.gate, &sheet.geom);
+        let dq = |v: u8| v as f32 / 63.0;
+        let relief = dq(g.relief);
+        let par = g.par.map(dq);
         CrazeCfg {
-            grain: crate::crack::grain_of(k),
+            grain: dq(g.grain),
             seed: story + 5.0,
             dmg_seed: story * 7.0 + 3.0,
-            t_zone: gate[Layer::Web.index()],
             t_crack: gate[Layer::Cracks.index()],
-            chip: k[3],
+            chip: amt[Layer::Chips.index()],
             a_cracks: amt[Layer::Cracks.index()],
-            dep: k[2],
+            dep: relief,
             // THE RELIEF CAP (`rebar::t_cap`), applied at the ONE place the
             // veneer's thickness is born. A wall that spalls has to keep enough
             // core to hold its reinforcement mat; without the cap the relief
@@ -409,13 +461,20 @@ impl CrazeCfg {
             // at a shallow dish. Spall-free walls keep the whole travel — the
             // constraint belongs to the effect that needs the core.
             t: {
-                let t = crate::wall::veneer(k[2], thick);
+                let t = crate::wall::veneer(relief, thick);
                 if amt[Layer::Spall.index()] > 0.0 {
                     t.min(crate::rebar::t_cap(thick))
                 } else {
                     t
                 }
             },
+            // HOW JAGGED a crack in this material is — read at the COARSE scale
+            // too, because round 8's thesis is that both scales are the same
+            // walker. Only the lightning pattern declares it (`straight` is its
+            // native dial); the other two get lightning's default, since a
+            // structural break is a propagated crack whatever the veneer's
+            // lattice happens to be.
+            jag: if g.pattern == 0 { par[1] } else { LIGHTNING_STRAIGHT },
             px1: px_floor(run_x),
             sink_perimeter: true,
             par,
@@ -449,7 +508,7 @@ impl CrazeCfg {
     /// threshold is the 50 % point — which is what makes the measured coverage
     /// equal the amount that was asked for.
     fn zone(&self, su: f32, sy: f32) -> f32 {
-        let z = smoothstep(self.t_zone - 0.03, self.t_zone + 0.03, self.dmg(su, sy));
+        let z = smoothstep(self.t_crack - 0.03, self.t_crack + 0.03, self.dmg(su, sy));
         z.max(0.5 * self.halo(su, sy))
     }
     /// Where CRACKS may run — a wider, EARLIER slice of the damage field than
@@ -1092,7 +1151,7 @@ impl Ladder<'_> {
                 hmax = hmax.max(self.cfg.halo(q.x, q.y));
             }
         }
-        if (dmax < self.cfg.t_zone && hmax < 0.2) || depth >= 14 {
+        if (dmax < self.cfg.t_crack && hmax < 0.2) || depth >= 14 {
             self.emit(poly, id);
             return;
         }
@@ -2265,9 +2324,16 @@ fn trunk_path(f: &Fault, y0: f32, y1: f32, jag: f32) -> Vec<Vec2> {
 /// TRUNK (real gap, settlement drop, widest at the top) plus a few FORKS
 /// fraying off it — thinner, dead-ending, no drop of their own. Forks cut the
 /// pier full depth like the trunk does: a break that frays is still a break.
-fn fault_bolts(faults: &[Fault], fr: &Frame, k: [f32; 4], px1: f32) -> Vec<Bolt> {
+fn fault_bolts(faults: &[Fault], fr: &Frame, cfg: &CrazeCfg) -> Vec<Bolt> {
+    let (px1, jag_amt, cracked) = (cfg.px1, cfg.jag, cfg.a_cracks);
     let mut out: Vec<Bolt> = Vec::new();
-    let jag = mixf(0.06, 0.17, k[0]);
+    // How jagged the trunk runs is the material's own `straight`, at the coarse
+    // scale (`CrazeCfg::jag`); how much it FRAYS is how cracked the wall is. Both
+    // used to read the `age` knob, which is the job age should never have had:
+    // a wall's crack SHAPE and its crack AMOUNT are different questions, and the
+    // fork count in particular was `1.9 · cracks · (0.35 + 0.65 · age)` — two
+    // dials multiplied to answer one.
+    let jag = mixf(0.06, 0.17, jag_amt);
     let (y0, y1) = (fr.y0, fr.y1);
     for f in faults {
         let path = trunk_path(f, y0, y1, jag);
@@ -2284,7 +2350,7 @@ fn fault_bolts(faults: &[Fault], fr: &Frame, k: [f32; 4], px1: f32) -> Vec<Bolt>
         // half where the break has pulled furthest apart. (Long thin forks
         // read as scratches — and a full-depth cut cannot hide a hairline:
         // round 8 measured both, see docs/AGENT_LEARNINGS.md.)
-        let nf = (0.4 + 1.9 * k[1] * (0.35 + 0.65 * k[0])).round() as usize;
+        let nf = (0.4 + 1.9 * cracked).round() as usize;
         for j in 0..nf {
             let h = |kk: f32| hash13(Vec3::new(j as f32 * 2.7 + 1.0, f.seed + kk, f.j * 5.3 + 11.0));
             let n = path.len();
@@ -2389,11 +2455,12 @@ fn emit_prism(
 /// core and steel materials (`-1` = none): the scene is untouched when nothing
 /// opened — no groove, no live or spalled plate, no crater — and the pier keeps
 /// its box and its paint.
-fn craze_pier(scene: &mut Scene, pier: &Pier, wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> (i32, [i32; 2]) {
-    let spall = wear.0[crate::wall::Layer::Spall.index()];
+fn craze_pier(scene: &mut Scene, pier: &Pier, sheet: &crate::wall::Sheet) -> (i32, [i32; 2]) {
+    let spall = sheet.area[crate::wall::Layer::Spall.index()];
+    let policy = sheet.geom.pattern;
     let mid = mat_of(scene, pier);
     let fr = Frame::of(pier);
-    let cfg = CrazeCfg::new(story_of(scene, pier), wear, k, fr.run_x, fr.t1 - fr.t0, &[], par);
+    let cfg = CrazeCfg::new(story_of(scene, pier), sheet, fr.run_x, fr.t1 - fr.t0, &[]);
     let opened = StdCell::new(false);
     let mut frags = policy_frags(&cfg, policy, fr.u0, fr.u1, fr.y0, fr.y1, &opened);
     // BOTH faces spall. The camera is orthographic but the owner turns it in
@@ -2504,8 +2571,9 @@ fn spend_spall(scene: &mut Scene, mid: i32, core_mid: i32, bas: &Mesh, bar: &Mes
 /// policy veneer clipped against the fault paths — so the small-crack
 /// pattern rides the broken wall and clusters along the seam (halo).
 #[allow(clippy::too_many_arguments)]
-fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX]) -> (i32, [i32; 2]) {
-    let spall = wear.0[crate::wall::Layer::Spall.index()];
+fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], sheet: &crate::wall::Sheet) -> (i32, [i32; 2]) {
+    let spall = sheet.area[crate::wall::Layer::Spall.index()];
+    let policy = sheet.geom.pattern;
     let mid = mat_of(scene, pier);
     let fr = Frame::of(pier);
     let (u0, u1, t0, t1, y0, y1) = (fr.u0, fr.u1, fr.t0, fr.t1, fr.y0, fr.y1);
@@ -2514,10 +2582,10 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], wear: Wear, k: [
 
     // the veneer, the damage field AND the breaks all take the RUN's story now
     // (`faults_for`), so a facade tells one story down to where it is broken
-    let cfg = CrazeCfg::new(story_of(scene, pier), wear, k, fr.run_x, t1 - t0, faults, par);
+    let cfg = CrazeCfg::new(story_of(scene, pier), sheet, fr.run_x, t1 - t0, faults);
     // the break, grown: jagged trunks (THROUGH — they separate the wall) plus
     // their forks (surface cracks that groove the veneer only)
-    let all_bolts = fault_bolts(faults, &fr, k, cfg.px1);
+    let all_bolts = fault_bolts(faults, &fr, &cfg);
     let (bolts, forks): (Vec<Bolt>, Vec<Bolt>) = all_bolts.into_iter().partition(|b| b.through);
     let opened = StdCell::new(false);
     let mut all_frags = split_frags(policy_frags(&cfg, policy, u0, u1, y0, y1, &opened), &forks, 400);
@@ -2551,7 +2619,13 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], wear: Wear, k: [
     // shear steps: every THROUGH bolt drops the pieces on its sinking side a
     // few cm (cumulative when breaks stack), then everything is shifted so
     // nothing rises above the authored top
-    let step = 0.015 + 0.035 * k[0];
+    // SHEAR STEP: how far a broken piece settles. It rides the break COUNT,
+    // because both are the same authored cause — `wall::derive` turns
+    // `Story::settlement` into a count, so a wall that settled more has more
+    // breaks AND drops further, from one number. It read the `age` knob before,
+    // which meant a weathered-but-stable wall dropped its pieces as far as a
+    // subsiding one.
+    let step = 0.015 + 0.035 * (sheet.breaks.count as f32 / crate::wall::Breaks::MAX as f32);
     let mut drops: Vec<f32> = pieces
         .iter()
         .map(|(_, cuts)| step * cuts.iter().filter(|(i, s)| bolts[*i].through && *s == bolts[*i].sink_side).count() as f32)
@@ -2692,10 +2766,12 @@ fn story_of(scene: &Scene, pier: &Pier) -> f32 {
 /// which is the only way a panel and its neighbour can agree about a break that
 /// lands on the joint between them. There is no veto argument any more:
 /// `Breaks { count: 0 }` IS the veto, and it is a thing a level author can type.
-fn faults_for(scene: &Scene, pier: &Pier, k: [f32; 4], b: crate::wall::Breaks) -> Vec<Fault> {
+fn faults_for(scene: &Scene, pier: &Pier, sheet: &crate::wall::Sheet) -> Vec<Fault> {
     let fr = Frame::of(pier);
     let (r0, r1) = if fr.run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
-    let mut out: Vec<Fault> = run_breaks(r0, r1, story_of(scene, pier), b, k)
+    let relief = sheet.geom.relief as f32 / 63.0;
+    let cracked = sheet.area[crate::wall::Layer::Cracks.index()];
+    let mut out: Vec<Fault> = run_breaks(r0, r1, story_of(scene, pier), sheet.breaks, relief, cracked)
         .into_iter()
         .filter(|f| {
             // keep ANY break whose path ENTERS this face somewhere over the
@@ -2734,42 +2810,28 @@ pub struct Aged {
     pub spall_mats: Vec<[i32; 2]>,
 }
 
-/// Give every knobbed pier its geometric aging: structural faults split the
-/// pier (and the craze veneer rides the pieces); fault-free piers fragment
-/// into core + veneer per their pattern policy; the spall dial blows cover
-/// craters through both layers and exposes the reinforcement mat under them.
-/// `params` = each pier's ACTIVE-policy native params (the caller resolves the
-/// per-policy store), `spall` its cover-spall dial.
+/// Give every wall its geometric aging: structural BREAKS split the pier (and
+/// the craze veneer rides the pieces); unbroken piers fragment into core +
+/// veneer per their pattern; the SPALL layer blows cover craters through both
+/// and exposes the reinforcement mat under them.
+///
+/// Everything it reads is the run's compiled [`Wear`] sheet — one datum,
+/// per RUN, so two piers of one facade cannot be handed different answers.
 /// Runs post-build on the CPU scene (boot and every `apply_look` rebuild),
-/// before the backend sees it — `crack::resolve` calls this right after
-/// stamping the knobs.
-pub fn apply_geometry(
-    scene: &mut Scene,
-    piers: &[Pier],
-    knobs: &[[f32; 4]],
-    policies: &[u8],
-    params: &[[f32; PARAMS_MAX]],
-    spall: &[f32],
-    breaks: &[crate::wall::Breaks],
-) -> Aged {
+/// before the backend sees it.
+pub fn apply_geometry(scene: &mut Scene, piers: &[Pier], wear: Wear) -> Aged {
     let mut out = Aged { cores: vec![-1; piers.len()], spall_mats: vec![[-1, -1]; piers.len()] };
-    let gk = keys(scene, piers, knobs, policies, params, spall, breaks);
     for (i, pier) in piers.iter().enumerate() {
-        let key = gk[i];
-        // The SOLVED thresholds for this pier's run, from the key alone — so the
-        // geometry pass and the rebuild gate cannot see different gates.
-        let (amt, gate) = crate::crack::gates_of(pier, &key);
-        // EVERY generator reads the key, never the caller's floats — that is
-        // what makes `GeoKey` equality mean "the built mesh is still right".
-        let k = key.knobs();
-        let faults = faults_for(scene, pier, k, key.breaks());
-        // a pier with no knobs but a live SPALL amount still ages: cover loss is
-        // its own mechanism (the base of a sound wall spalls first), and a dial
-        // that does nothing on the wall the owner picked is a broken dial
+        let Some(sheet) = wear.of(i) else { continue };
+        let faults = faults_for(scene, pier, sheet);
+        // a wall with no cracking but a live SPALL amount still ages: cover loss
+        // is its own mechanism (the base of a sound wall spalls first), and a
+        // dial that does nothing on the wall the owner picked is a broken dial
+        let anything = sheet.area.iter().any(|a| *a > 0.0) || sheet.breaks.count > 0;
         (out.cores[i], out.spall_mats[i]) = if !faults.is_empty() {
-            split_pier(scene, pier, &faults, (amt, gate), k, key.policy, key.params())
-        } else if k != [0.0; 4] || amt[crate::wall::Layer::Spall.index()] > 0.0 {
-            craze_pier(scene, pier, (amt, gate), k, key.policy, key.params())
+            split_pier(scene, pier, &faults, sheet)
+        } else if anything {
+            craze_pier(scene, pier, sheet)
         } else {
             (-1, [-1, -1])
         };
@@ -2784,121 +2846,95 @@ pub fn apply_geometry(
 /// from what is in here. So `==` is exactly "the mesh in the scene is still
 /// right", with no hash, no collisions and no grain to get wrong.
 ///
-/// It replaces an FNV over five different grains (knobs at 0.1, the spall dial
-/// at 0.05, fault width at 0.004, its settlement step at 0.005, and the policy
-/// params RAW), and it closes the hole that made the old gate wrong rather than
-/// merely awkward: `faults_for` was handed the caller's RAW knobs while
-/// `craze_pier` got bucketed ones, so a 0.02 slider step — invisible to the
-/// gate, invisible to the veneer — could flip a wall from whole to broken in
-/// half. The fault now reads the SAME quantized knobs as everything else, which
-/// is why [`Self::knobs`] exists: the dequantized value is the only one any
-/// generator ever sees.
+/// Since the authoring model landed it is just `wall::Geom` — which is where
+/// the all-integer discipline belongs, because `Geom` is what the level
+/// COMPILES to — plus the run's story key. It replaces a hand-rolled parallel
+/// copy of the same idea (four knob bytes, a spall byte, a policy, three param
+/// bytes, a break count and place), and before THAT an FNV over five different
+/// grains with raw floats reaching the break decision, which is how one 0.02
+/// slider step could flip a wall from whole to broken in half.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct GeoKey {
-    /// The four knobs at the authored 0.1 grain (0..=10).
-    pub k: [u8; 4],
-    /// The cover-spall dial at its 0.05 grain (0..=20).
-    pub spall: u8,
-    pub policy: u8,
-    /// The active policy's native params at a 0.01 grain (0..=100).
-    pub par: [u8; PARAMS_MAX],
+    /// Everything the level said about this wall, quantized.
+    pub geom: crate::wall::Geom,
     /// The facade STORY key as raw bits: it seeds the veneer, the damage field
     /// AND (through the run's sorted samples) every solved threshold, so a
     /// change in it really is stale geometry. Not owner-editable today; it signs
     /// so the day it becomes editable the gate already covers it.
     pub story: u32,
-    /// The RUN's authored break COUNT (0..=[`crate::wall::Breaks::MAX`]).
-    pub brk: u8,
-    /// The authored PLACE at a 0.01 grain, or 255 for "story-seeded". A break's
-    /// position is geometry, so the gate has to see it move — and `Option<f32>`
-    /// is not `Eq`, which is the honest reason it is a byte here.
-    pub brk_at: u8,
 }
 
-impl GeoKey {
-    /// The knobs AS EVERY GENERATOR MUST SEE THEM — dequantized from the key.
-    /// One function, so the quantization can never be applied on one path and
-    /// skipped on another (which is exactly what went wrong before).
-    pub fn knobs(&self) -> [f32; 4] {
-        self.k.map(|v| v as f32 / 10.0)
-    }
-    /// The spall dial, dequantized.
-    pub fn dial(&self) -> f32 {
-        self.spall as f32 / 20.0
-    }
-    /// The params, dequantized.
-    pub fn params(&self) -> [f32; PARAMS_MAX] {
-        self.par.map(|v| v as f32 / 100.0)
-    }
-    /// The run's breaks, dequantized. Same contract as [`Self::knobs`]: the
-    /// generator never sees the authored float, only what the gate signed.
-    pub fn breaks(&self) -> crate::wall::Breaks {
-        crate::wall::Breaks { count: self.brk, at: (self.brk_at != 255).then(|| self.brk_at as f32 / 100.0) }
-    }
-    fn of(scene: &Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], spall: f32, b: crate::wall::Breaks) -> GeoKey {
-        let q = |v: f32, n: f32| (v.clamp(0.0, 1.0) * n).round() as u8;
-        GeoKey {
-            k: k.map(|v| q(v, 10.0)),
-            spall: q(spall, 20.0),
-            policy,
-            par: par.map(|v| q(v, 100.0)),
-            story: story_of(scene, pier).to_bits(),
-            brk: b.count.min(crate::wall::Breaks::MAX),
-            brk_at: b.at.map_or(255, |a| q(a, 100.0)),
-        }
-    }
-}
-
-/// Every pier's [`GeoKey`]. Replaces `signatures`: the release gate rebuilds
-/// exactly the piers whose key moved.
-pub fn keys(
-    scene: &Scene,
-    piers: &[Pier],
-    knobs: &[[f32; 4]],
-    policies: &[u8],
-    params: &[[f32; PARAMS_MAX]],
-    spall: &[f32],
-    breaks: &[crate::wall::Breaks],
-) -> Vec<GeoKey> {
+/// Every pier's [`GeoKey`]. The release gate rebuilds exactly the piers whose
+/// key moved — and since a key is `(the run's Geom, the run's story)`, the piers
+/// of one run always move together, which is what "one wall, one story" means
+/// for a rebuild.
+pub fn keys(scene: &Scene, piers: &[Pier], wear: Wear) -> Vec<GeoKey> {
     piers
         .iter()
         .enumerate()
-        .map(|(i, pier)| {
-            let policy = policies.get(i).copied().unwrap_or(0);
-            GeoKey::of(
-                scene,
-                pier,
-                knobs.get(i).copied().unwrap_or([0.0; 4]),
-                policy,
-                params.get(i).copied().unwrap_or(param_defaults(policy)),
-                spall.get(i).copied().unwrap_or(0.0),
-                breaks.get(i).copied().unwrap_or(crate::wall::Breaks::NONE),
-            )
+        .map(|(i, pier)| match wear.of(i) {
+            Some(sheet) => GeoKey { geom: sheet.geom, story: story_of(scene, pier).to_bits() },
+            // a paint-only wall builds nothing, and its key must say so — else
+            // every drag on it would report the scene dirty and rebuild for
+            // geometry that is never emitted
+            None => GeoKey::default(),
         })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    /// A mid-field gate set for the tests that used to pass a level offset: the
-    /// stain window widest, the crack zone next, the veneer's zone tightest —
-    /// the same causal order `wall::derive` produces, at one fixed level so a
-    /// test is not also testing the solver.
-    fn gates(t: f32) -> super::Wear {
-        let mut g = [t; crate::wall::Layer::N];
-        g[crate::wall::Layer::Stain.index()] = t - 0.06;
-        g[crate::wall::Layer::Cracks.index()] = t - 0.03;
-        ([0.7; crate::wall::Layer::N], g)
-    }
-
-    /// The knob grain `GeoKey` applies, spelled out for the tests that used to
-    /// call the deleted `bucket()` helper.
-    fn bucket(k: [f32; 4]) -> [f32; 4] {
-        k.map(|v| (v * 10.0).round() / 10.0)
-    }
-
     use super::*;
     use glam::Vec3;
+
+    /// ONE TEST SHEET, hand-built. It stands in for `wall::compile_specs` so a
+    /// generator test is not also testing the solver: the gates are a mid-field
+    /// set in the causal order `wall::derive` produces (stains widest, the crack
+    /// zone next, the veneer's tightest), and every amount is stated outright.
+    fn sheet(area: [f32; crate::wall::Layer::N], t: f32, shape: crate::wall::Shape, breaks: crate::wall::Breaks) -> crate::wall::Sheet {
+        let mut gate = [t; crate::wall::Layer::N];
+        gate[crate::wall::Layer::Stain.index()] = t - 0.06;
+        gate[crate::wall::Layer::Cracks.index()] = t - 0.03;
+        let q = |v: f32| (v.clamp(0.0, 1.0) * 63.0).round() as u8;
+        crate::wall::Sheet {
+            label: "test",
+            run: 0,
+            area,
+            breaks,
+            gate,
+            paint: crate::wall::Paint::default(),
+            geom: crate::wall::Geom {
+                t_cracks: crate::wall::gate_code(gate[crate::wall::Layer::Cracks.index()]) as u8,
+                t_chips: crate::wall::gate_code(gate[crate::wall::Layer::Chips.index()]) as u8,
+                spall: q(area[crate::wall::Layer::Spall.index()]),
+                grain: q(shape.grain),
+                relief: q(shape.relief),
+                pattern: shape.pattern.code(),
+                par: shape.pattern.par().map(q),
+                breaks: breaks.count,
+                ..Default::default()
+            },
+            notes: Vec::new(),
+        }
+    }
+    /// The default shape at one policy — the shape half of [`sheet`].
+    fn shape(policy: u8) -> crate::wall::Shape {
+        crate::wall::Shape { pattern: crate::wall::Pattern::DEFAULTS[policy as usize % NPOL], ..crate::wall::Shape::DEFAULT }
+    }
+    /// A one-run [`Wear`] over `n` piers, all reading `sheets[0]`.
+    fn wear1(sheets: &[crate::wall::Sheet], n: usize) -> Wear<'_> {
+        static ZERO: [usize; 64] = [0; 64];
+        static NO: [bool; 64] = [false; 64];
+        Wear { sheets, pier_run: &ZERO[..n], paint_only: &NO[..n] }
+    }
+    /// A HOT wall: heavily cracked, chipped, mid relief. The successor to the
+    /// four-knob `HOT` quad, in the model's own units.
+    fn hot(policy: u8) -> crate::wall::Sheet {
+        use crate::wall::Layer::*;
+        let mut a = [0.0; crate::wall::Layer::N];
+        (a[Stain.index()], a[Web.index()], a[Cracks.index()], a[Chips.index()]) = (0.9, 0.7, 0.65, 0.35);
+        sheet(a, 0.45, shape(policy), NO_BREAK)
+    }
 
     fn pier_at(scene: &mut Scene, x0: f32) -> Pier {
         let lo = Vec3::new(x0, 0.0, 9.9);
@@ -2907,13 +2943,41 @@ mod tests {
         Pier { prim: scene.primitives.len() - 1, lo, hi, run_lo: lo, run_hi: hi }
     }
 
-    const HOT: [f32; 4] = [1.0, 1.0, 0.5, 0.0];
-    /// Crazes at the TOP of the age slider, because the damaged AREA is what
-    /// makes a pattern visible at all — and with cracks = 0 the plate ladder is
-    /// at its coarsest (~0.9-wu cells), so its centrelines could otherwise miss
-    /// the damage patches entirely. It never breaks through either, but that is
-    /// no longer a property of these numbers: [`ONE_BREAK`] is.
-    const CRAZY: [f32; 4] = [1.0, 0.0, 0.6, 0.8];
+    /// The plain greybox: no story, nothing to build.
+    fn pristine() -> crate::wall::Sheet {
+        sheet([0.0; crate::wall::Layer::N], 1.2, shape(0), NO_BREAK)
+    }
+    /// A wall that CRAZES hard — a wide damaged area and most of its plates
+    /// missing, which is what makes a veneer pattern visible at all.
+    fn crazy(policy: u8) -> crate::wall::Sheet {
+        use crate::wall::Layer::*;
+        let mut a = [0.0; crate::wall::Layer::N];
+        (a[Stain.index()], a[Web.index()], a[Cracks.index()], a[Chips.index()]) = (1.0, 0.9, 0.85, 0.80);
+        sheet(a, 0.45, crate::wall::Shape { relief: 0.6, ..shape(policy) }, NO_BREAK)
+    }
+    /// …and the same wall, broken once.
+    fn broken(policy: u8) -> crate::wall::Sheet {
+        crate::wall::Sheet { breaks: ONE_BREAK, geom: crate::wall::Geom { breaks: 1, ..hot(policy).geom }, ..hot(policy) }
+    }
+    /// The relief and cracking a break's own geometry reads (`run_breaks`).
+    const REL: f32 = 0.45;
+    const CRK: f32 = 0.65;
+    /// A HOT wall with an authored break count.
+    fn with_breaks(b: crate::wall::Breaks) -> crate::wall::Sheet {
+        crate::wall::Sheet { breaks: b, geom: crate::wall::Geom { breaks: b.count, ..hot(0).geom }, ..hot(0) }
+    }
+    /// A wall at one RELIEF setting — for the veneer-thickness sweep.
+    fn relief_sheet(relief: f32) -> crate::wall::Sheet {
+        let mut sh = hot(0);
+        sh.geom.relief = (relief.clamp(0.0, 1.0) * 63.0).round() as u8;
+        sh
+    }
+    /// A wall with SPALL, at the amount named.
+    fn spalling(area: f32) -> crate::wall::Sheet {
+        let mut sh = hot(0);
+        sh.area[crate::wall::Layer::Spall.index()] = area;
+        sh
+    }
 
     /// One break, story-placed. It used to take `faulting_pier`, a loop over
     /// eight wall positions looking for a strip whose hash happened to fire —
@@ -2947,24 +3011,24 @@ mod tests {
         // of craters rides it. The gym is REBUILT per pier rather than cloned:
         // Scene is not Clone (it owns the GPU-facing buffers), and building it is
         // cheap next to what this pass then does to it.
-        for dial in [0.2f32, 0.5, 1.0] {
+        for area in [0.005f32, 0.012, crate::wall::SPALL_MAX] {
+            let sh = [spalling(area)];
             let (probe, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
             drop(probe);
             for (pi, pier) in meta.piers.iter().enumerate() {
                 let (mut sc, _) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
                 crate::wear::stamp_story(&mut sc, &meta.piers);
-                let knobs = [[0.8, 0.6, 0.5, 0.2]];
-                crate::crack::stamp_all(&mut sc, std::slice::from_ref(pier), &knobs, None);
+                
                 let first = sc.primitives.len();
-                apply_geometry(&mut sc, std::slice::from_ref(pier), &knobs, &[0], &[param_defaults(0)], &[dial], &[]);
-                assert!(sc.primitives.len() > first, "dial {dial}: pier {pi} grew nothing at all");
+                apply_geometry(&mut sc, std::slice::from_ref(pier), wear1(&sh, 1));
+                assert!(sc.primitives.len() > first, "spall {area}: pier {pi} grew nothing at all");
                 for p in &sc.primitives[first..] {
                     for v in &sc.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize] {
                         let v = Vec3::from(v.pos);
                         let pad = 1e-3;
                         assert!(
                             v.cmpge(pier.lo - pad).all() && v.cmple(pier.hi + pad).all(),
-                            "dial {dial}: pier {pi} ({:?}..{:?}) grew a vertex at {v:?}",
+                            "spall {area}: pier {pi} ({:?}..{:?}) grew a vertex at {v:?}",
                             pier.lo,
                             pier.hi
                         );
@@ -2991,7 +3055,7 @@ mod tests {
         for area in [0.02f32, 0.04, crate::wall::SPALL_MAX] {
             for pier in &meta.piers {
                 let fr = Frame::of(pier);
-                let cfg = CrazeCfg::new(story_of(&scene, pier), gates(0.45), [0.8, 0.6, 0.5, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
+                let cfg = CrazeCfg::new(story_of(&scene, pier), &hot(0), fr.run_x, fr.t1 - fr.t0, &[]);
                 let front = pier_craters(&cfg, &fr, pier, area, 0.0, &|_, _| true);
                 let fr_rects = patch_rects(&front);
                 let back = pier_craters(&cfg, &fr, pier, area, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
@@ -3027,7 +3091,7 @@ mod tests {
         for grain in [crate::wall::Shape::DEFAULT.grain, 0.25, 0.70] {
             let mut sizes = Vec::new();
             for policy in 0..POLICIES.len() as u8 {
-                let mut cfg = CrazeCfg::new(3.0, gates(0.0), [0.9, 0.5, 0.5, 0.0], true, 0.2, &[], param_defaults(policy));
+                let mut cfg = CrazeCfg::new(3.0, &sheet([0.9, 0.9, 0.9, 0.0, 0.0], 0.0, shape(policy), NO_BREAK), true, 0.2, &[]);
                 cfg.grain = grain;
                 let opened = StdCell::new(false);
                 let frags = policy_frags(&cfg, policy, u0, u1, y0, y1, &opened);
@@ -3059,7 +3123,7 @@ mod tests {
     fn below_grain_off_the_face_is_one_flush_plate() {
         let (u0, u1, y0, y1) = (6.0f32, 8.2, 0.0, 2.1875);
         for policy in 0..POLICIES.len() as u8 {
-            let mut cfg = CrazeCfg::new(3.0, gates(0.0), [0.9, 0.5, 0.5, 0.0], true, 0.2, &[], param_defaults(policy));
+            let mut cfg = CrazeCfg::new(3.0, &sheet([0.9, 0.9, 0.9, 0.0, 0.0], 0.0, shape(policy), NO_BREAK), true, 0.2, &[]);
             // …and the vacuity guard: a hair ABOVE the stop, the same wall is a
             // pattern. Without it this test passes on any generator that emits
             // nothing at all.
@@ -3095,7 +3159,7 @@ mod tests {
         let (mut checked, mut worst) = (0, 0.0f32);
         for pier in &meta.piers {
             let fr = Frame::of(pier);
-            let cfg = CrazeCfg::new(story_of(&scene, pier), gates(0.45), [0.8, 0.6, 0.5, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
+            let cfg = CrazeCfg::new(story_of(&scene, pier), &hot(0), fr.run_x, fr.t1 - fr.t0, &[]);
             let face = (fr.u1 - fr.u0) * (fr.y1 - fr.y0);
             let front = pier_craters(&cfg, &fr, pier, asked, 0.0, &|_, _| true);
             let fr_rects = patch_rects(&front);
@@ -3134,7 +3198,7 @@ mod tests {
     /// touched may not sink, and its rect edge may not chamfer.
     #[test]
     fn a_plate_the_crater_clipped_stays_flush_with_the_collars_wall() {
-        let cfg = CrazeCfg::new(3.0, gates(0.45), [0.8, 0.5, 0.5, 0.0], true, 0.2, &[], param_defaults(0));
+        let cfg = CrazeCfg::new(3.0, &hot(0), true, 0.2, &[]);
         let plate = Frag {
             poly: vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(0.0, 1.0)],
             open: vec![true; 4], // every edge cracked open: the case that WOULD sink and chamfer
@@ -3180,7 +3244,7 @@ mod tests {
         let pier = pier_at(&mut scene, 1.0);
         let before = scene.primitives.len();
         let mid = scene.primitives[pier.prim].material_id;
-        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[HOT], &[0], &[param_defaults(0)], &[], &[ONE_BREAK]);
+        apply_geometry(&mut scene, std::slice::from_ref(&pier), wear1(&[broken(0)], 1));
         let added = scene.primitives.len() - before;
         assert_eq!(added, 3, "shell + chalk planes + veneer");
         assert_eq!(scene.primitives[before].material_id, mid, "shell shares the pier material");
@@ -3201,99 +3265,20 @@ mod tests {
         let mut scene = Scene::default();
         let pier = pier_at(&mut scene, 1.0);
         let before = scene.primitives.len();
-        let dp = [param_defaults(0)];
-        apply_geometry(&mut scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]);
+        apply_geometry(&mut scene, std::slice::from_ref(&pier), wear1(&[pristine()], 1));
         assert_eq!(scene.primitives.len(), before, "pristine pier untouched");
         assert_eq!(scene.materials[scene.primitives[pier.prim].material_id as usize]._pad & GEO_BIT, 0);
-        let s0 = keys(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]);
-        let s1 = keys(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp, &[], &[]);
-        assert_eq!(s0, keys(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]), "deterministic");
+        let s0 = keys(&scene, std::slice::from_ref(&pier), wear1(&[pristine()], 1));
+        let s1 = keys(&scene, std::slice::from_ref(&pier), wear1(&[hot(0)], 1));
+        assert_eq!(s0, keys(&scene, std::slice::from_ref(&pier), wear1(&[pristine()], 1)), "deterministic");
         assert_ne!(s0, s1, "fault appearance changes the signature");
     }
 
-    /// A DRAG THAT CHANGED NOTHING REBUILDS NOTHING — and a drag that changed
-    /// something rebuilds exactly once.
-    ///
-    /// The knobs are authored on a 0.1 grain, so a slider dragged 0.005 at a
-    /// time crosses a real boundary every twentieth step and must leave the key
-    /// alone in between. Without this the release gate either rebuilds on every
-    /// mouse-move (a 3.3 s probe refresh per pixel of drag) or misses a real
-    /// change; with an integer key both halves are structural rather than
-    /// tuned.
-    #[test]
-    fn a_drag_that_did_not_change_geom_rebuilds_nothing() {
-        let mut scene = Scene::default();
-        let pier = pier_at(&mut scene, 1.0);
-        let dp = [param_defaults(0)];
-        for lane in 0..4 {
-            let mut prev: Option<GeoKey> = None;
-            let mut flips = 0;
-            for step in 0..=200 {
-                let mut k = [0.5f32; 4];
-                k[lane] = step as f32 * 0.005; // 0.000 .. 1.000
-                let key = keys(&scene, std::slice::from_ref(&pier), &[k], &[0], &dp, &[], &[])[0];
-                if prev.is_some_and(|p| p != key) {
-                    flips += 1;
-                }
-                prev = Some(key);
-            }
-            // 0.005 steps across a 0.1 grain: ten interior boundaries, and the
-            // count is exact because the key is integer — a float gate would
-            // flip on rounding noise instead.
-            assert_eq!(flips, 10, "knob {lane}: the key moved {flips} times over one full sweep, not once per 0.1 grain");
-        }
-    }
-
-    /// THE FAULT IS QUANTIZED LIKE EVERYTHING ELSE.
-    ///
-    /// This is the bug the integer key exists to close, not a nice-to-have.
-    /// `faults_for` used to be handed the caller's RAW knobs while `craze_pier`
-    /// got bucketed ones, so fault PRESENCE was a function of a value the
-    /// rebuild gate could not see: a 0.02 slider step could take a wall from
-    /// whole to broken in half with the gate reporting no change, which means
-    /// the scene kept the old mesh and the GI kept probes for a wall that no
-    /// longer existed.
-    ///
-    /// Pinned as the invariant rather than as one repro: within ONE bucket the
-    /// break's geometry must be identical, and — the vacuity guard — some bucket
-    /// boundary in the sweep must actually change it, or the test is asserting
-    /// nothing.
-    ///
-    /// It sweeps DEPTH now, not cracks. Presence stopped being a function of the
-    /// knobs when the count became authored (2026-07-26), so the thing left to
-    /// quantize is the break's own geometry — its gap width `mw`, which scales
-    /// with depth and age. That was always the sharper half of the claim anyway:
-    /// measured on the shipped crack lab when this test was written, 0 of 15
-    /// piers changed PRESENCE across the integer-key fix and every broken one
-    /// changed WIDTH.
-    #[test]
-    fn the_fault_is_quantized_like_everything_else() {
-        let mut scene = Scene::default();
-        let pier = pier_at(&mut scene, 1.0);
-        let dp = [param_defaults(0)];
-        let shape = |k: [f32; 4]| {
-            let key = keys(&scene, std::slice::from_ref(&pier), &[k], &[0], &dp, &[], &[ONE_BREAK])[0];
-            let f = faults_for(&scene, &pier, key.knobs(), key.breaks());
-            (f.len(), f.iter().map(|x| ((x.mw / 1e-6) as i64, (x.ax / 1e-6) as i64)).collect::<Vec<_>>())
-        };
-        let mut boundary_moves = 0;
-        let mut last_bucket: Option<(usize, Vec<(i64, i64)>)> = None;
-        for b in 0..=10 {
-            let centre = b as f32 / 10.0;
-            let inside: Vec<_> = [-0.04f32, -0.02, 0.0, 0.02, 0.04].iter().map(|d| shape([0.8, 0.6, (centre + d).clamp(0.0, 1.0), 0.0])).collect();
-            assert!(
-                inside.iter().all(|v| *v == inside[0]),
-                "bucket {centre}: the break differs INSIDE one quantization step ({inside:?}) — it is reading a raw float"
-            );
-            assert_eq!(inside[0].0, 1, "bucket {centre}: one break was asked for and {} arrived", inside[0].0);
-            if last_bucket.as_ref().is_some_and(|p| *p != inside[0]) {
-                boundary_moves += 1;
-            }
-            last_bucket = Some(inside[0].clone());
-        }
-        assert!(boundary_moves > 0, "VACUOUS: no bucket boundary moved the break, so nothing was tested");
-    }
-
+    /// (The knob-grain pair that used to sit here — "a drag inside one bucket
+    /// rebuilds nothing" and "the fault is quantized like everything else" —
+    /// moved to `wall::geom_is_integer_and_moves_only_when_the_mesh_would`. The
+    /// quantizer is `wall::compile_specs` now, so that is where the claim
+    /// belongs; keeping a copy here would test a `GeoKey` built by hand.)
     /// A SHORT WALL ASKED FOR A BREAK GETS ONE — over every pier of both shipped
     /// levels, at every count the model allows.
     ///
@@ -3317,27 +3302,27 @@ mod tests {
                 let fr = Frame::of(pier);
                 let (r0, r1) = if fr.run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
                 assert!(
-                    faults_for(&scene, pier, HOT, NO_BREAK).is_empty(),
+                    faults_for(&scene, pier, &hot(0)).is_empty(),
                     "{level:?} pier {i}: count 0 still broke the wall — the veto is not a veto"
                 );
                 for n in 1..=crate::wall::Breaks::MAX {
                     let b = crate::wall::Breaks { count: n, at: None };
                     // the RUN gets exactly what it asked for…
                     assert_eq!(
-                        run_breaks(r0, r1, story_of(&scene, pier), b, HOT).len(),
+                        run_breaks(r0, r1, story_of(&scene, pier), b, REL, CRK).len(),
                         n as usize,
                         "{level:?} pier {i}: run [{r0}, {r1}] asked for {n} breaks"
                     );
                     // …and no panel of it is left whole while its neighbour is
                     // cut, which is what the per-panel roll used to do
-                    let mine = faults_for(&scene, pier, HOT, b).len();
+                    let mine = faults_for(&scene, pier, &with_breaks(b)).len();
                     assert!(mine <= n as usize, "{level:?} pier {i}: {mine} breaks from a run of {n}");
                 }
                 // the run's own share, summed over its panels, must cover it: a
                 // single-pier run IS its run, so it can never come up empty
                 if (r1 - r0 - (fr.u1 - fr.u0)).abs() < 1e-4 {
                     one_panel_runs += 1;
-                    assert_eq!(faults_for(&scene, pier, HOT, ONE_BREAK).len(), 1, "{level:?} pier {i}: a one-panel run asked for a break and got none");
+                    assert_eq!(faults_for(&scene, pier, &broken(0)).len(), 1, "{level:?} pier {i}: a one-panel run asked for a break and got none");
                 }
             }
         }
@@ -3363,7 +3348,7 @@ mod tests {
             let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA, true);
             crate::wear::stamp_story(&mut scene, &meta.piers);
             for pier in &meta.piers {
-                for f in run_breaks(0.0, 6.0, story_of(&scene, pier), ONE_BREAK, HOT) {
+                for f in run_breaks(0.0, 6.0, story_of(&scene, pier), ONE_BREAK, REL, CRK) {
                     *(if f.tilt > 0.0 { &mut leans.0 } else { &mut leans.1 }) += 1;
                     *(if f.sign > 0.0 { &mut drops.0 } else { &mut drops.1 }) += 1;
                     places.push((f.ax * 100.0) as i64);
@@ -3387,7 +3372,7 @@ mod tests {
         for at in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
             let (u0, u1) = (3.0f32, 9.0f32);
             let b = crate::wall::Breaks { count: 1, at: Some(at) };
-            let f = &run_breaks(u0, u1, 0.37, b, HOT)[0];
+            let f = &run_breaks(u0, u1, 0.37, b, REL, CRK)[0];
             let want = mixf(u0 + BREAK_MARGIN, u1 - BREAK_MARGIN, at);
             assert!((f.ax - want).abs() < 1e-4, "at {at}: anchored at {} not {want}", f.ax);
             assert!(f.ax > u0 + 0.3 && f.ax < u1 - 0.3, "at {at}: {} is a sliver off the end, not a break", f.ax);
@@ -3403,14 +3388,12 @@ mod tests {
     fn a_knob_drag_dirties_exactly_one_pier() {
         let mut scene = Scene::default();
         let piers = [pier_at(&mut scene, 1.0), pier_at(&mut scene, 9.0)];
-        let pol = [0, 0];
-        let par = [param_defaults(0); 2];
-        let before = keys(&scene, &piers, &[CRAZY, CRAZY], &pol, &par, &[], &[]);
-        let after = keys(&scene, &piers, &[CRAZY, HOT], &pol, &par, &[], &[]);
+        let before = keys(&scene, &piers, Wear { sheets: &[crazy(0), crazy(0)], pier_run: &[0, 1], paint_only: &[false, false] });
+        let after = keys(&scene, &piers, Wear { sheets: &[crazy(0), hot(0)], pier_run: &[0, 1], paint_only: &[false, false] });
         assert_eq!(before[0], after[0], "the untouched pier keeps its signature");
         assert_ne!(before[1], after[1], "the dragged pier's signature moves");
         // and a policy click is the same story (the panel's pattern row)
-        let after = keys(&scene, &piers, &[CRAZY, CRAZY], &[0, 1], &par, &[], &[]);
+        let after = keys(&scene, &piers, Wear { sheets: &[crazy(0), crazy(1)], pier_run: &[0, 1], paint_only: &[false, false] });
         assert_eq!(before[0], after[0], "…for a pattern click too");
         assert_ne!(before[1], after[1]);
     }
@@ -3423,8 +3406,7 @@ mod tests {
     fn policy_signs_on_faulted_piers_too() {
         let mut scene = Scene::default();
         let pier = pier_at(&mut scene, 1.0);
-        let par = [[0.5; PARAMS_MAX]];
-        let sigs: Vec<Vec<GeoKey>> = (0..POLICIES.len() as u8).map(|p| keys(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par, &[], &[])).collect();
+        let sigs: Vec<Vec<GeoKey>> = (0..POLICIES.len() as u8).map(|p| keys(&scene, std::slice::from_ref(&pier), wear1(&[hot(p)], 1))).collect();
         let mut uniq = sigs.clone();
         uniq.dedup();
         assert_eq!(uniq.len(), sigs.len(), "each policy signs distinctly on a faulted pier");
@@ -3446,9 +3428,12 @@ mod tests {
             let mut scene = Scene::default();
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
-            let k = [CRAZY[0], CRAZY[1], CRAZY[2], 0.0];
-            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[k], &[0], &[par], &[], &[]);
-            let sig = keys(&scene, std::slice::from_ref(&pier), &[k], &[0], &[par], &[], &[]);
+            let mut sh = crazy(0);
+            sh.area[crate::wall::Layer::Chips.index()] = 0.0; // isolate the param
+            sh.geom.par = par.map(|v: f32| (v.clamp(0.0, 1.0) * 63.0).round() as u8);
+            let sh = [sh];
+            apply_geometry(&mut scene, std::slice::from_ref(&pier), wear1(&sh, 1));
+            let sig = keys(&scene, std::slice::from_ref(&pier), wear1(&sh, 1));
             (scene.primitives[before + 1].vertex_count, sig)
         };
         let (v_few, s_few) = mk([0.05, 0.9, 0.3]);
@@ -3462,7 +3447,7 @@ mod tests {
     /// inset the plate front (the groove keeps its width).
     #[test]
     fn chamfer_bands_only_on_open_grooves() {
-        let cfg = CrazeCfg::new(3.0, gates(0.45), [0.5, 0.5, 0.5, 0.0], true, 0.25, &[], param_defaults(0));
+        let cfg = CrazeCfg::new(3.0, &hot(0), true, 0.25, &[]);
         let sq = vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(0.0, 1.0)];
         let fr = Frame { run_x: true, u0: 0.0, u1: 1.0, t0: 0.0, t1: 0.25, y0: 0.0, y1: 1.0 };
         let mut v = Vec::new();
@@ -3492,7 +3477,7 @@ mod tests {
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
             let mid = scene.primitives[pier.prim].material_id as usize;
-            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[param_defaults(policy)], &[], &[]);
+            apply_geometry(&mut scene, std::slice::from_ref(&pier), wear1(&[crazy(policy)], 1));
             let p = POLICIES[policy as usize];
             assert_eq!(scene.primitives.len() - before, 2, "{p}: core box + one veneer mesh");
             assert_ne!(scene.materials[mid]._pad & CRAZE_BIT, 0, "{p}: CRAZE_BIT on the pier");
@@ -3503,7 +3488,7 @@ mod tests {
             let veneer = scene.primitives[before + 1];
             assert!(veneer.vertex_count > 12, "{p}: veneer actually fragmented");
             assert_in_box(&scene, before, &pier, p);
-            sigs.push(keys(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]], &[], &[]));
+            sigs.push(keys(&scene, std::slice::from_ref(&pier), wear1(&[crazy(policy)], 1)));
         }
         sigs.dedup();
         assert_eq!(sigs.len(), POLICIES.len(), "policies must sign distinctly");
@@ -3524,12 +3509,10 @@ mod tests {
         let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         // the crack lab's own boot state: every pier knobbed (demos.rs), the
         // knob bits stamped, then the geometry pass mints the chalk cores
-        let knobs = vec![[0.8, 0.8, 0.7, 0.9]; meta.piers.len()];
-        let policy = vec![0u8; meta.piers.len()];
-        let par = vec![param_defaults(0); meta.piers.len()];
         crate::wear::stamp_story(&mut scene, &meta.piers); // boot order: the story seeds the field
-        crate::crack::stamp_all(&mut scene, &meta.piers, &knobs, Some(0));
-        let cores = apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par, &[], &[]).cores;
+        let mut lab = crate::crack::CrackLab::default();
+        crate::crack::resolve(Some(&crate::demos::LAB_WEAR), &mut lab, &meta.piers, &mut scene, 1);
+        let cores = lab.cores.clone();
         // the CORE inherits its facade's story for free (chalk_material copies
         // base_color, fresh_body passes alpha through) — the surface a crack
         // exposed belongs to the same wall as the skin that was over it
@@ -3584,10 +3567,9 @@ mod tests {
             .find_map(|(i, p)| meta.piers[i + 1..].iter().find(|q| rect(q) == rect(p)).map(|q| (p, q)))
             .expect("the gym's facades are cut into several piers");
         let c = meta.piers.iter().find(|p| rect(p) != rect(a)).expect("the gym has more than one run");
-        let k = [0.6, 0.5, 0.55, 0.2];
         let cfg = |p: &Pier| {
             let fr = Frame::of(p);
-            CrazeCfg::new(story_of(&scene, p), gates(0.45), k, fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0))
+            CrazeCfg::new(story_of(&scene, p), &hot(0), fr.run_x, fr.t1 - fr.t0, &[])
         };
         let (ca, cb, cc) = (cfg(a), cfg(b), cfg(c));
         // sample ACROSS the joint: from inside pier a, through the opening, into b
@@ -3609,7 +3591,7 @@ mod tests {
         let brk = |p: &Pier| {
             let f = Frame::of(p);
             let (r0, r1) = if f.run_x { (p.run_lo.x, p.run_hi.x) } else { (p.run_lo.z, p.run_hi.z) };
-            run_breaks(r0, r1, story_of(&scene, p), crate::wall::Breaks { count: 2, at: None }, k)
+            run_breaks(r0, r1, story_of(&scene, p), crate::wall::Breaks { count: 2, at: None }, REL, CRK)
                 .iter()
                 .map(|x| ((x.ax / 1e-6) as i64, (x.mw / 1e-6) as i64, (x.tilt / 1e-6) as i64, x.sign as i64))
                 .collect::<Vec<_>>()
@@ -3666,10 +3648,14 @@ mod tests {
         let cov = |p: &Pier, age: f32| -> (f32, f32) {
             let fr = Frame::of(p);
             let (a0, a1) = if fr.run_x { (p.run_lo.x, p.run_hi.x) } else { (p.run_lo.z, p.run_hi.z) };
-            let k = [age, 0.5, 0.55, 0.2];
-            let asked = crate::crack::amounts_of(k, 0.0)[Layer::Web.index()];
-            let key = keys(&scene, std::slice::from_ref(p), &[k], &[0], &[param_defaults(0)], &[], &[])[0];
-            let cfg = CrazeCfg::new(story_of(&scene, p), crate::crack::gates_of(p, &key), key.knobs(), fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
+            // ONE COMPILED SHEET, through the real solver — the whole point of
+            // the measurement is that the AREA the author asked for is the area
+            // the veneer covers, so nothing here may quantize by hand.
+            let spec = crate::wall::WallSpec { story: crate::wall::Story { weather: age, ..crate::wall::Story::ZERO }, ..crate::wall::WallSpec::PRISTINE };
+            let rect = crate::wall::RunRect { lo: p.run_lo, hi: p.run_hi };
+            let sh = crate::wall::compile_specs(std::slice::from_ref(&rect), &[("", spec)]).remove(0);
+            let asked = sh.area[Layer::Cracks.index()];
+            let cfg = CrazeCfg::new(story_of(&scene, p), &sh, fr.run_x, fr.t1 - fr.t0, &[]);
             let (nu, ny) = (96, 40);
             let mut hit = 0;
             for i in 0..nu {
@@ -3723,7 +3709,7 @@ mod tests {
     #[test]
     fn depth_range_has_no_deadzone() {
         let thick = 0.25;
-        let t_of = |dep: f32| CrazeCfg::new(3.0, gates(0.45), [0.5, 0.5, dep, 0.5], true, thick, &[], param_defaults(0)).t;
+        let t_of = |dep: f32| CrazeCfg::new(3.0, &relief_sheet(dep), true, thick, &[]).t;
         let mut prev = t_of(0.0);
         for i in 1..=10 {
             let t = t_of(i as f32 / 10.0);
@@ -3766,7 +3752,7 @@ mod tests {
         // grow at all, so one wall can legitimately come out nearly clean
         let bolts: Vec<Bolt> = (1..8)
             .flat_map(|seg| {
-                let cfg = CrazeCfg::new(seg as f32 * 3.7, gates(0.45), bucket(CRAZY), true, 0.25, &[], param_defaults(0));
+                let cfg = CrazeCfg::new(seg as f32 * 3.7, &crazy(0), true, 0.25, &[]);
                 bolt_network(&cfg, 0.0, 6.0, 0.0, 2.2)
             })
             .collect();
@@ -3792,7 +3778,7 @@ mod tests {
     /// round-4 floor survives propagation.
     #[test]
     fn grooves_never_go_sub_pixel_across() {
-        let cfg = CrazeCfg::new(7.4, gates(0.45), bucket(CRAZY), true, 0.25, &[], param_defaults(0));
+        let cfg = CrazeCfg::new(7.4, &crazy(0), true, 0.25, &[]);
         let bolts = bolt_network(&cfg, 0.0, 6.0, 0.0, 2.2);
         assert!(!bolts.is_empty(), "nothing to measure");
         for b in &bolts {
@@ -3811,9 +3797,9 @@ mod tests {
     fn a_fault_separates_once_and_frays_on_the_surface() {
         let mut scene = Scene::default();
         let pier = pier_at(&mut scene, 1.0);
-        let faults = faults_for(&scene, &pier, HOT, ONE_BREAK);
+        let faults = faults_for(&scene, &pier, &broken(0));
         let fr = Frame::of(&pier);
-        let bolts = fault_bolts(&faults, &fr, bucket(HOT), px_floor(fr.run_x));
+        let bolts = fault_bolts(&faults, &fr, &CrazeCfg::new(story_of(&scene, &pier), &broken(0), fr.run_x, fr.t1 - fr.t0, &faults));
         let through = bolts.iter().filter(|b| b.through).count();
         assert_eq!(through, faults.len(), "one through break per fault");
         assert!(bolts.len() > through, "the break must fray into forks");
@@ -3838,9 +3824,9 @@ mod tests {
     fn carve_tiles_the_face() {
         let mut scene = Scene::default();
         let pier = pier_at(&mut scene, 1.0);
-        let faults = faults_for(&scene, &pier, HOT, ONE_BREAK);
+        let faults = faults_for(&scene, &pier, &broken(0));
         let fr = Frame::of(&pier);
-        let bolts: Vec<Bolt> = fault_bolts(&faults, &fr, bucket(HOT), px_floor(fr.run_x)).into_iter().filter(|b| b.through).collect();
+        let bolts: Vec<Bolt> = fault_bolts(&faults, &fr, &CrazeCfg::new(story_of(&scene, &pier), &broken(0), fr.run_x, fr.t1 - fr.t0, &faults)).into_iter().filter(|b| b.through).collect();
         let rect = vec![Vec2::new(fr.u0, fr.y0), Vec2::new(fr.u1, fr.y0), Vec2::new(fr.u1, fr.y1), Vec2::new(fr.u0, fr.y1)];
         let area = poly_area(&rect);
         let pieces = carve(rect, &bolts, 64);

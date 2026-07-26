@@ -73,7 +73,7 @@
 //! `crack_geom::story_of` and the shade pass read the same f32 bits, so there is
 //! no mirror at all. A lane the HOST also consumes cannot do that — the word
 //! streams after the build, the geometry pass runs before it — so the gate lanes
-//! are ONE FUNCTION, TWO CALLERS instead: `crack::gates_of` returns thresholds
+//! are ONE DATUM, TWO CALLERS instead: `wall::Sheet` carries thresholds
 //! already passed through `wall::gate_quantize`, the geometry pass uses exactly
 //! those, and the shader decodes exactly those from the lanes. The only mirrored
 //! things left are the two codec constants and the shape of the decode, and
@@ -326,22 +326,17 @@ impl Viewer {
     /// has to be re-stamped exactly like the AA scope bits are.
     pub fn wear_stamp(&mut self) {
         // The SAME solved thresholds the geometry pass used — read off the same
-        // `GeoKey`, through the same function, so paint and plates cannot end up
-        // in different patches. Deriving them twice is the drift this codec's
+        // per-RUN `wall::Sheet`, not re-derived, so paint and plates cannot end
+        // up in different patches. Deriving them twice is the drift this codec's
         // whole discipline exists to prevent.
-        let par = self.crack.active_params();
-        let (gk, gs, gb) = self.crack.geom_input(&self.piers);
-        let keys = crate::crack_geom::keys(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &gb);
-        let gates: Vec<[u32; 2]> = self
-            .piers
-            .iter()
-            .zip(&keys)
-            .map(|(p, k)| {
-                if k.k == [0; 4] && k.spall == 0 {
-                    return [0, 0]; // unaged: an empty word, bit-identical to the plain greybox
-                }
-                let (_, g) = crate::crack::gates_of(p, k);
-                [crate::wall::gate_code(g[crate::wall::Layer::Stain.index()]), crate::wall::gate_code(g[crate::wall::Layer::Web.index()])]
+        let wear = self.crack.wear();
+        let gates: Vec<[u32; 2]> = (0..self.piers.len())
+            .map(|i| match wear.of(i).or_else(|| self.crack.pier_run.get(i).and_then(|r| self.crack.sheets.get(*r))) {
+                // A PAINT-ONLY wall is exactly the case that must still get its
+                // word: the geometry pass skips it, and the painted layers it
+                // exists to show are the ones this word gates.
+                Some(sh) => [sh.paint.stain, sh.paint.web],
+                None => [0, 0], // unaged: an empty word, bit-identical to the plain greybox
             })
             .collect();
         let changed = stamp_all(&mut self.scene, &self.piers, &self.crack.cores, &gates, self.wear);
@@ -538,6 +533,14 @@ mod tests {
             // …and both thresholds actually gate something
             assert!(has("smoothstep(tStain"), "{name}: the stain gate does not use its threshold");
             assert!(has("smoothstep(tWeb"), "{name}: the web gate does not use its threshold");
+            // …and each painted layer reads its OWN `_pad` strength lane. Both
+            // used to read lane 0, so their areas were independent and their
+            // intensities were not — a half-finished separation is exactly the
+            // kind of thing a source guard is for.
+            assert!(has("(kb >> 8) & 63u"), "{name}: the STAIN strength lane (bit 8) moved");
+            assert!(has("(kb >> 14) & 63u"), "{name}: the WEB strength lane (bit 14) moved");
+            assert!(has("aStain *") || has("skin * aStain"), "{name}: the stains do not read their own strength");
+            assert!(has("aWeb *"), "{name}: the web does not read its own strength");
             // FORBIDDEN — nothing yet. This half of the guard is what catches a
             // HALF-DONE deletion: the Mac can only run the MSL twin, so a cull
             // applied to one source and forgotten in the other compiles, passes
@@ -557,9 +560,11 @@ mod tests {
     /// comment). The list exists because the Mac can only RUN the MSL twin: a
     /// deletion applied to one source and forgotten in the other compiles,
     /// passes every test, and ships a different image on the other backend.
-    /// The three knob unpacks are here too — `cracks`/`depth`/`chip` are
-    /// GEOMETRY dials now, and a shader reading one again is the drift this
-    /// round exists to prevent. `>> 8` (age) is deliberately NOT forbidden.
+    /// The two DEAD knob lanes are here too. `_pad` carries the two painted
+    /// layers' strengths at bits 8 and 14 (`crack::pad_bits`) and nothing above
+    /// them: lanes 2/3 are unclaimed, so a shader reading one is reading zero and
+    /// meaning something by it. It is the same argument as the deletions above,
+    /// one step earlier.
     const FORBIDDEN: &[&str] = &[
         "faultAt",  // the painted structural fault
         "crazeG",   // the CRAZE-bit escape hatch it needed
@@ -569,9 +574,8 @@ mod tests {
         "lvlC",     // the signed per-run LEVEL offset the solved thresholds replace
         "float dT", // the age-derived gate that slid five fixed windows together
         "mHalo",    // the fault's stain track
-        ">> 14",    // the `cracks` knob lane
-        ">> 20",    // the `depth` knob lane
-        ">> 26",    // the `chip` knob lane
+        ">> 20",    // `_pad` knob lane 2 — unclaimed
+        ">> 26",    // `_pad` knob lane 3 — unclaimed
     ];
 
     /// `WEAR=` parsing: leading components in lane order, missing tails read 0.

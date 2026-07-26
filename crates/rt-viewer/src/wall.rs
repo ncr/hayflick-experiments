@@ -297,6 +297,16 @@ impl Pattern {
         }
     }
     pub const DEFAULTS: [Pattern; 3] = [Pattern::Lightning { branch: 0.5, straight: 0.55, spread: 0.45 }, Pattern::Craquelure { wave: 0.35 }, Pattern::Mosaic { jitter: 0.8 }];
+
+    /// This pattern's params as the flat array the panel stores and the
+    /// `crack_geom::POLICY_PARAMS` rows are drawn from.
+    pub fn par(self) -> [f32; 3] {
+        match self {
+            Pattern::Lightning { branch, straight, spread } => [branch, straight, spread],
+            Pattern::Craquelure { wave } => [wave, 0.0, 0.0],
+            Pattern::Mosaic { jitter } => [jitter, 0.0, 0.0],
+        }
+    }
 }
 
 /// Plate size below which NO veneer is emitted at all — the face stays one
@@ -310,6 +320,22 @@ impl Pattern {
 /// stated as a LENGTH because that is the only unit the pixel floor can be
 /// compared in — the frequency this replaced could not express the question.
 pub const GRAIN_OFF: f32 = 0.09;
+
+/// A pattern from its CODE plus a flat param array — the inverse of
+/// [`Pattern::par`], and the one place the panel's `(which policy, its dialing)`
+/// pair becomes a `Pattern`.
+pub fn pattern_of(code: u8, par: [f32; 3]) -> Pattern {
+    match code % 3 {
+        1 => Pattern::Craquelure { wave: par[0] },
+        2 => Pattern::Mosaic { jitter: par[0] },
+        _ => Pattern::Lightning { branch: par[0], straight: par[1], spread: par[2] },
+    }
+}
+
+/// [`Pattern::par`] as a free function, for symmetry with [`pattern_of`].
+pub fn par_of(p: Pattern) -> [f32; 3] {
+    p.par()
+}
 
 /// SHAPE is not amount. Nothing in here changes how MUCH damage there is —
 /// that separation is the whole reason `cracks` had to stop being the lattice
@@ -366,10 +392,21 @@ pub struct WallSpec {
     pub origin: Origin,
     pub pin: Pins,
     pub shape: Shape,
+    /// Stamp the PAINT but keep the GEOMETRY pass off this wall.
+    ///
+    /// A bench flag, and it exists because two shipped effects are otherwise
+    /// UNREACHABLE: the shade pass carries a painted crack network and painted
+    /// chip patches, but `crack_geom` marks every wall it touches and the shader
+    /// gates both layers off that mark — and the geometry pass runs on any wall
+    /// with a nonzero amount. So on a normal level the painted pair is dead code.
+    /// The catalogue is where that question gets put to the owner ("is the
+    /// painted fallback still worth carrying?") rather than answered in a
+    /// comment.
+    pub paint_only: bool,
 }
 
 impl WallSpec {
-    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, origin: Origin::Ground, pin: Pins::NONE, shape: Shape::DEFAULT };
+    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, origin: Origin::Ground, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -409,12 +446,12 @@ impl WallAt {
     pub const fn only(at: (f32, f32), label: &'static str, l: Layer, v: f32) -> WallAt {
         let mut pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(Breaks { count: 0, at: None }) };
         pin.area[l.index()] = Some(v);
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, origin: Origin::Ground, pin, shape: Shape::DEFAULT } }
+        WallAt { at, label, spec: WallSpec { story: Story::ZERO, origin: Origin::Ground, pin, shape: Shape::DEFAULT, paint_only: false } }
     }
     /// ONE break, nothing else.
     pub const fn only_breaks(at: (f32, f32), label: &'static str, b: Breaks) -> WallAt {
         let pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(b) };
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, origin: Origin::Ground, pin, shape: Shape::DEFAULT } }
+        WallAt { at, label, spec: WallSpec { story: Story::ZERO, origin: Origin::Ground, pin, shape: Shape::DEFAULT, paint_only: false } }
     }
 }
 
@@ -628,12 +665,23 @@ pub fn gate_quantize(t: f32) -> f32 {
 // 6. What the consumers get
 // ---------------------------------------------------------------------------
 
-/// Everything the SHADE PASS needs for one wall.
+/// Everything the SHADE PASS needs for one wall — the two painted layers, each
+/// with a WHERE and a HOW MUCH.
+///
+/// The pair is the point. Step 5 gave the layers independent AREAS (their own
+/// solved threshold, carried in the effect word) but left both STRENGTHS on the
+/// single `age` knob, so "stains spread wider than the crazing" was expressible
+/// and "stains darker than the crazing" was not. Both halves now come off the
+/// layer's own amount, and the strengths ride `Material._pad`'s first two knob
+/// lanes (`crate::crack::pad_bits`) where four knobs used to.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Paint {
-    /// Threshold codes for the two painted layers.
+    /// WHERE: threshold codes ([`gate_code`] units), the effect word's lanes 0/1.
     pub stain: u32,
     pub web: u32,
+    /// HOW MUCH: the layers' own amounts, `_pad` knob lanes 0/1.
+    pub stain_amt: f32,
+    pub web_amt: f32,
     pub origin: Origin,
 }
 
@@ -749,17 +797,17 @@ fn spread_of(r: &RunRect, spread: f32) -> f32 {
     (r.story() * std::f32::consts::FRAC_1_PI).fract().mul_add(2.0, -1.0) * spread
 }
 
-/// Compile a level's authored wear against its runs.
+/// RESOLVE a level's authored wear onto its runs: one `(label, spec)` per run,
+/// in run order. The half of compilation that can FAIL, and the half the panel
+/// does not repeat — a live edit changes a spec and recompiles
+/// ([`compile_specs`]); it never re-reads the level.
 ///
 /// Every named wall must resolve to exactly one run, and no two names may share
 /// one — a level whose author cannot see which wall he addressed is the failure
 /// this whole module exists to remove.
-pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>> {
+pub fn specs_of(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<(&'static str, WallSpec)>, Vec<Miss>> {
     let mut misses = Vec::new();
-    let mut sheets: Vec<Sheet> = Vec::new();
     let mut claimed: Vec<usize> = Vec::new();
-
-    // named walls first, so a name always beats the base story
     let mut named: Vec<(usize, &WallAt)> = Vec::new();
     for w in lw.walls {
         match runs.iter().position(|r| r.holds(w.at.0, w.at.1)) {
@@ -774,10 +822,10 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
     if !misses.is_empty() {
         return Err(misses);
     }
-
-    for (i, r) in runs.iter().enumerate() {
-        let mut notes: Vec<Miss> = Vec::new();
-        let (label, mut spec) = match named.iter().find(|(j, _)| *j == i) {
+    Ok(runs
+        .iter()
+        .enumerate()
+        .map(|(i, r)| match named.iter().find(|(j, _)| *j == i) {
             Some((_, w)) => (w.label, w.spec),
             None => {
                 let d = spread_of(r, lw.spread);
@@ -786,9 +834,25 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
                     settlement: (lw.base.settlement + d).clamp(0.0, 1.0),
                     cover_loss: (lw.base.cover_loss + d).clamp(0.0, 1.0),
                 };
-                ("", WallSpec { story: base, origin: lw.origin, pin: Pins::NONE, shape: Shape::DEFAULT })
+                ("", WallSpec { story: base, origin: lw.origin, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false })
             }
-        };
+        })
+        .collect())
+}
+
+/// Compile a level's authored wear against its runs.
+pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>> {
+    Ok(compile_specs(runs, &specs_of(runs, lw)?))
+}
+
+/// Compile RESOLVED specs — one per run, in run order. This is the function a
+/// panel edit re-runs: it cannot fail, because addressing already happened, and
+/// everything it produces is a function of `(run, spec)` alone.
+pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Vec<Sheet> {
+    let mut sheets: Vec<Sheet> = Vec::new();
+    for (i, r) in runs.iter().enumerate() {
+        let mut notes: Vec<Miss> = Vec::new();
+        let (label, mut spec) = specs.get(i).copied().unwrap_or(("", WallSpec::PRISTINE));
         let (area, breaks) = resolve(&spec);
         // THE RELIEF CAP. A wall that spalls must keep enough core to hold its
         // reinforcement mat, and how deep that lets the grooves cut is a fact
@@ -835,6 +899,8 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
             paint: Paint {
                 stain: gate_code(gate[Layer::Stain.index()]),
                 web: gate_code(gate[Layer::Web.index()]),
+                stain_amt: area[Layer::Stain.index()],
+                web_amt: area[Layer::Web.index()],
                 origin: spec.origin,
             },
             notes,
@@ -852,7 +918,7 @@ pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>
             },
         });
     }
-    Ok(sheets)
+    sheets
 }
 
 #[cfg(test)]
@@ -1121,8 +1187,8 @@ mod tests {
         let runs = runs_of(&house_game::gym::sim::gym_level());
         const DEEP: Shape = Shape { relief: 1.0, ..Shape::DEFAULT };
         const WALLS: [WallAt; 2] = [
-            WallAt { at: (13.0, 10.0), label: "deep and spalling", spec: WallSpec { story: Story { weather: 0.0, settlement: 0.0, cover_loss: 1.0 }, origin: Origin::Ground, pin: Pins::NONE, shape: DEEP } },
-            WallAt { at: (12.0, 4.0), label: "deep and sound", spec: WallSpec { story: Story { weather: 0.9, settlement: 0.0, cover_loss: 0.0 }, origin: Origin::Ground, pin: Pins::NONE, shape: DEEP } },
+            WallAt { at: (13.0, 10.0), label: "deep and spalling", spec: WallSpec { story: Story { weather: 0.0, settlement: 0.0, cover_loss: 1.0 }, shape: DEEP, ..WallSpec::PRISTINE } },
+            WallAt { at: (12.0, 4.0), label: "deep and sound", spec: WallSpec { story: Story { weather: 0.9, settlement: 0.0, cover_loss: 0.0 }, shape: DEEP, ..WallSpec::PRISTINE } },
         ];
         let lw = LevelWear { base: Story::ZERO, origin: Origin::Ground, spread: 0.0, walls: &WALLS };
         let sheets = compile(&runs, &lw).expect("a clamp is not a compile error — the wall renders");

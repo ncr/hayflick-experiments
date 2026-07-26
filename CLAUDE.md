@@ -249,7 +249,7 @@ cfg gate). (2) The WHOLE Vulkan local-probe-refresh carry path
 (`SceneGpu::carry_probes` + `refresh_boxes_for`'s callers): its accept/decline
 thresholds are derived from M2 occupancy, and on the RTX a full bake is ~115 ms,
 so a 16%-of-grid local refresh may well be SLOWER there — first session must
-time `CRACK_EDIT="0.5,0.5,0.4,0.6,7"` with and without `PROBE_LOCAL=0` and
+time `WEAR_EDIT="0.6,0.4,0.5,3"` with and without `PROBE_LOCAL=0` and
 record both numbers next to the M2 table. (2b) The `roll` arm of that same
 `SceneGpu::carry_probes` (the age-ramp beat's `ProbeRefresh::Roll`) — it
 compiles on macOS (rt-probe's `render` module is not cfg-gated) but has never
@@ -263,7 +263,7 @@ than keeping a path nobody needs. (3) `shade.comp`'s fresh-break and
 story-key reads (the MSL twins are the VERIFIED side this round — the blind side
 is INVERTED versus 2026-07-17/23, so do not assume the old direction). The
 discriminating check for the story key: `LEVEL="crack lab"
-CRACKS="0.9,0.7,0.6,0.4" WINDOW=1280x800 ZOOM=1.6 TARGET_X=7.3 TARGET_Z=3.8` —
+STORY="0.9,0.5,0.4" WINDOW=1280x800 ZOOM=1.6 TARGET_X=7.3 TARGET_Z=3.8` —
 the three panels of the east facade must share ONE damage pattern that continues
 across the window jambs; per-panel islands mean the story key never arrived.
 
@@ -287,7 +287,7 @@ POLICY — lightning/craquelure/mosaic since 2026-07-23 round 7
 (`crack_geom::POLICY_PARAMS`: lightning branch/straight/spread,
 craquelure wave, mosaic jitter; stored per pier per policy — NATIVE steering
 only, see PLATE SIZE IS ONE NUMBER below);
-`CRACKS=a,c,d,p[,policy[,p1,p2,p3]]` — split by 1-px-or-wider drooped
+`SHAPE=grain,relief[,pattern[,p1,p2,p3]]` — split by 1-px-or-wider drooped
 grooves (depth knob = groove depth, adaptive 0.02..0.45 × wall thickness
 so the whole slider is live) with CHAMFERED edges (~1-px miter-inset
 bevel on open-groove edges only — the plate cedes the strip, the gap
@@ -308,7 +308,7 @@ stains and the fine glaze web off it (`float skin`, keyed on MATTE bit 4
 of a 4 %-darker tint. **The blind side is INVERTED for this one:** the
 MSL twin was verified here on Metal, the GLSL twin compiles (build.rs
 runs glslangValidator) but has never RUN — a first Vulkan session should
-boot `LEVEL="crack lab" CRACKS="1.0,0.8,0.7,1.0"` and confirm the crater
+boot `LEVEL="crack lab" STORY="1.0,0.6,0.5"` and confirm the crater
 interiors read pale-neutral while the stain streaks stop at the lip. A
 knob-release rebuild (`Viewer::crack_release`) measured ~6.5 s on the M2
 vs ~115 ms on the RTX; since 2026-07-25 it takes the LOCAL probe path
@@ -319,7 +319,7 @@ because the refresh is latency-bound (one thread per probe × 4096 serial
 rays), not because of the probe count — the numbers and the two constants
 they set (`REFRESH_PAD_SPACINGS`, `LOCAL_REFRESH_MAX_FRACTION`) are in
 `rt_probe::gpu_scene` and docs/CRACKS_PLAN_2026-07-25.md. Harness:
-`CRACK_EDIT=age,cracks,depth,chip[,pier]` replays a panel drag + release
+`WEAR_EDIT=weather,settlement,cover_loss[,run]` replays a panel drag + release
 after boot; `PROBE_LOCAL=0` forces the old full rebake for the A/B.
 ONE WALL, ONE STORY since 2026-07-25 (task-3 step 4): aging is seeded per
 WALL RUN, not per panel. `wear::story_key` hashes the pier's authored run
@@ -366,7 +366,7 @@ compile (build.rs runs glslangValidator) but have never RUN. The failure
 signature is NOT a blank wall — the HOST applies its own copy — but PAINT
 THAT DISAGREES WITH THE PLATES (stains and the fine web sitting off the
 grooved region). A first Vulkan session should boot `LEVEL="crack lab"
-CRACKS="0.9,0.8,0.6,0.3" WINDOW=1280x800 ZOOM=2.0 TARGET_X=6.8
+STORY="0.9,0.5,0.4" WINDOW=1280x800 ZOOM=2.0 TARGET_X=6.8
 TARGET_Z=8.0` and compare against the Metal reference; the RTX cross-run
 noise floor is zero, so any byte difference is real signal either way.
 
@@ -495,6 +495,81 @@ of the old frequency, so the LIGHTNING policy is byte-identical across the
 change and the A/B shows only the two patterns that really moved. Verified 4
 runs per side: `gym` and `crack lab` BYTE-IDENTICAL (the lab boots
 lightning); the catalogue's pattern row is where it shows.
+
+THE RUN IS THE AUTHORING UNIT since 2026-07-26 (task-3 steps 9-11, the round's
+last change and the one the other eight were for). `crack::CrackSeed`,
+`Specimen`, `seed_knobs`, `seed_spall`, `clear_pristine`, `apply_specimens`,
+`run_ramp`/`run_pos` and the four-knob panel are DELETED. A level is now a
+`wall::LevelWear` — a base `Story`, an `Origin`, a per-RUN `spread`, and the
+walls that say something different as `WallAt` entries named by world point —
+and `wall::specs_of` + `compile_specs` turn it into one `Sheet` per run.
+
+WHY: the state was per PIER, and a pier is a rendering artifact. `wall_slab`
+cuts an authored slab wherever a window or a doorway interrupts it, so the gym's
+east facade was THREE independently editable copies of one wall: the owner
+dragged a slider and one third of a building changed. Three rounds running had
+to chase the same symptom under different names — the fault seed, the break
+count, the field level were each a per-panel value standing in for a per-run
+cause — and `crack::CrackLab::geom_input` ended with a hand-rolled "average the
+run's masked knobs" just to recover the number the author had typed. Now the
+model has no place to put a per-panel opinion: `spec` is per run, `sheets` is
+per run, and the piers index into them. `one_run_one_sheet` pins the equality
+over both shipped levels with a vacuity guard.
+
+- `crack_geom::apply_geometry`/`keys` take ONE datum — `crack_geom::Wear`
+  (sheets + pier→run + the paint-only mask) — so the geometry pass and the
+  material streamer cannot be handed different sheets. `CrazeCfg::new` reads the
+  sheet and nothing else; `GeoKey` is now just `wall::Geom` + the story key,
+  where the all-integer discipline belongs (`Geom` is what a level COMPILES to).
+- The VENEER's zone reads `Layer::Cracks`, not `Layer::Web`. It read the Web
+  gate through step 5, and Web is a PAINTED layer — so a wall authored as
+  "cracked" built no plates at all unless it happened to be asked for crazing
+  too, which is exactly how the catalogue's pattern row went out empty on the
+  first build of step 9. One layer, one threshold; the two BANDS still differ
+  (`zone` ±0.03, `crack_zone` ±0.04) so a path reaches past the plates it freed.
+- `Material._pad`'s knob lanes carry the two PAINTED LAYERS' STRENGTHS (stain
+  at bit 8, web at 14; lanes 2/3 unclaimed and now FORBIDDEN in both twins).
+  Four knobs lived there and the shade pass read exactly ONE of them (`age`) for
+  both layers, so three lanes paid rent for nothing while the two layers it does
+  draw shared a strength: their AREAS were independent since step 5 and their
+  intensities were not. Both twins edited in the same commit; the `wear.rs`
+  source guard now requires each layer to read its own lane.
+- `wear_edit` re-streams BOTH halves of the paint on every edit — the `_pad`
+  strengths and the effect word's thresholds — because a story move changes them
+  together. Streaming one and not the other draws stains at the new intensity
+  inside the old patch.
+- THE PANEL is 17-19 rows and DATA: `menu::rows_of(spec)` returns a `Vec<Row>`
+  that the draw, the hit-test and the drag all walk (`Row::Cause` /
+  `Layer` / `Breaks` / `Origin` / `Grain` / `Relief` / `Pattern` / `Param`).
+  Three CAUSES, then the five LAYER amounts they derive — indented, with a `*`
+  when pinned, and a drag on one PINS it, which is the whole authoring gesture
+  behind "old, but no chips at all" — then breaks, origin, grain, relief,
+  pattern and the pattern's own params. The FOOTER prints a `wall::Miss` when
+  the wall has one, else the COST CLASS of the row under the cursor ("paint -
+  live" / "geometry - on release"), which is the honest answer to "why did that
+  one lag".
+- THREE NEW ESC ROWS, all level-wide and all non-destructive (they are applied
+  on the way from the authored spec to a sheet, in `CrackLab::level_dials`, so
+  every one is reversible and they compose with each other and with a panel
+  edit): `wear` (a master on the level's story — 1 = as authored, 0 = the plain
+  greybox, so "show me this level clean" is one row and not fifteen), `solo
+  layer` (pin the other four to zero on every wall — the catalogue's question,
+  asked on the level the owner is standing in), `surface grain` (plate size in
+  world units on every wall; below `GRAIN_OFF` there is no veneer anywhere).
+  Pinned by `the_level_rows_compose_and_never_destroy_the_authoring`.
+- THE CATALOGUE is one line per slab (`WallAt::only(at, label, layer, amount)`,
+  which pins every OTHER layer to zero, so "one effect per wall" is a fact about
+  the data). Two specimens changed subject: the painted crack network and painted
+  chips are gone from the shader, so those two slabs now show a wide stain patch
+  and the glaze web alone.
+- THE HARNESS: `STORY=weather,settlement,cover_loss`,
+  `SHAPE=grain,relief[,pattern[,p1,p2,p3]]`, `SPREAD=`, `SPALL=` (kept — the
+  owner headline, and every A/B recipe on record uses it), `CRACK_SEL=`,
+  `WEAR_EDIT=weather,settlement,cover_loss[,run]`. `CRACKS=`, `CRACK_VARY=` and
+  `CRACK_EDIT=` are gone: their four components no longer exist as a set.
+- Verified 4 runs per side, all pairs: `gym` BYTE-IDENTICAL, `crack lab` 3.18 %
+  at max 187, catalogue 1.65 % at max 168 — the aging is authored differently, so
+  the walls differ; the plain greybox does not move at all.
 
 ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
 branching, irregular — not straight lines; two kinds: the coarse one and

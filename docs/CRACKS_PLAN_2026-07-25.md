@@ -1008,3 +1008,29 @@ that follows the GI (grime where the probes say it is dark), and a
 "history" pass where one event (the settlement fault) CAUSES the
 secondary features around it instead of every layer being independent
 noise.
+
+
+## Task 3 — THE REFACTOR (steps 1-11) — DONE 2026-07-26
+
+Owner ask: *"czas na świeże spojrzenie i refactoring tej funkcjonalności
+efektów… żeby były zrozumiałe z punktu widzenia osoby budującej levele"* — make
+the procedural-effects system comprehensible to a LEVEL BUILDER.
+
+What the eleven steps did, in one line each:
+
+| step | change |
+|---|---|
+| 1-2 | `wall.rs`: the authoring vocabulary — `Story` (3 causes) → `derive` → 5 `Layer` amounts + `Breaks`, `Pins`, `Shape`, compiled to a `Sheet` per run. Phase-gated on `an_amount_is_an_area`. |
+| 3 | `GeoKey` becomes an all-integer struct: `==` means "the built mesh is still right". |
+| 4 | the eased-arris promoter deleted (it shipped OFF); the invariant it threatened became a standing test |
+| 5 | ABSOLUTE thresholds SOLVED per run replace one age-derived gate sliding five fixed windows — an amount becomes an AREA |
+| 6 | a BREAK is a COUNT and a PLACE, not a per-6-wu-strip coin flip |
+| 7 | SPALL is an AREA; the staged dial (deadband → lifted cover → blown spall) was three layers on one slider |
+| 8 | PLATE SIZE is one number in world units; two policies' `scale` deleted |
+| 9-11 | the RUN is the authoring unit; `LevelWear`/`WallAt` replace `CrackSeed`/`Specimen`; the 19-row data-driven panel + three level-wide ESC rows; the catalogue is one line per slab |
+
+The measured before/after for each step is in its commit message; the standing
+description is in CLAUDE.md. The five learnings the round produced are in
+docs/AGENT_LEARNINGS.md under 2026-07-26.
+
+**Owner playtest still pending** — that is the phase gate, not the green tree.

@@ -276,9 +276,9 @@ impl Viewer {
         // backend consumes the scene. CRACKS env (harness, uniform) overrides
         // the demo's authored seed; neither → pristine (bit-identical image).
         let mut crack = crate::crack::CrackLab::default();
-        let crack_seed = crate::crack::seed_from_env().or(demo.and_then(|d| d.cracks));
-        crate::crack::resolve(crack_seed, &mut crack, &gym_meta.piers, &mut scene, cfg.render.aa_scope);
-        crack.active = demo.and_then(|d| d.cracks).is_some();
+        let level_wear = demo.and_then(|d| d.wear);
+        crate::crack::resolve(level_wear, &mut crack, &gym_meta.piers, &mut scene, cfg.render.aa_scope);
+        crack.active = level_wear.is_some();
         // A demo that ages a wall has to NAME one: report a miss once here
         // rather than let the beat silently no-op for its whole run.
         if let Some((x, z)) = demo.map(|d| d.script).and_then(crate::demos::DemoRunner::age_point) {
@@ -473,9 +473,9 @@ impl Viewer {
         // values survive a look switch (the pier count is look-stable);
         // entering/leaving the demo re-seeds or clears.
         self.piers = meta.piers;
-        let crack_seed = crate::crack::seed_from_env().or(self.cur_demo.and_then(|d| d.cracks));
-        crate::crack::resolve(crack_seed, &mut self.crack, &self.piers, &mut scene, self.aa_scope.round() as i32);
-        self.crack.active = self.cur_demo.and_then(|d| d.cracks).is_some();
+        let level_wear = self.cur_demo.and_then(|d| d.wear);
+        crate::crack::resolve(level_wear, &mut self.crack, &self.piers, &mut scene, self.aa_scope.round() as i32);
+        self.crack.active = level_wear.is_some();
         unsafe { self.backend.rebuild_scene(&scene, &self.cfg, refresh) };
         self.light_keys = join_lamp_lights(&scene, self.backend.handles(), self.backend.light_count());
         self.scene = scene;

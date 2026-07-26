@@ -1161,3 +1161,50 @@ with one world-unit `grain`.
   the reciprocal of the frequency it replaces, so the lightning policy is
   byte-identical across the change. The A/B then shows exactly the two
   patterns that moved, instead of a diff nobody can attribute.
+
+## 2026-07-26 (the run becomes the authoring unit) — state shaped like the renderer cannot be authored
+
+Steps 9-11 finished the effects refactor: the per-PIER knob state is gone and a
+level is a `wall::LevelWear` compiled to one `Sheet` per RUN.
+
+- **If three rounds in a row fix the same symptom, the SHAPE of the state is
+  the bug.** The fault seed, the break count and the field level were each
+  "a per-panel value standing in for a per-run cause", and each got its own
+  targeted fix: seed off the run, average the run's knobs, normalize the run's
+  field. All three were right, and none of them could be the last one, because
+  the state was still indexed by pier — a rendering artifact the level builder
+  never typed and cannot see. Re-shaping the state deleted all three fixes
+  along with the defect, and the last of them (`geom_input`'s hand-rolled
+  "average the run's masked knobs") is the clearest possible sign that the
+  refactor was overdue: a compatibility layer reconstructing a number the
+  author had literally typed.
+
+- **A budget nobody reads is not a budget, it is four lanes of rent.**
+  `Material._pad` carried four 6-bit knobs and the shade pass read ONE of them,
+  for both painted layers at once — so their AREAS were independent (an earlier
+  step solved that) while their INTENSITIES shared a slider, and three lanes
+  were paying for nothing. Worth grepping the shader for what it actually reads
+  before defending a packing layout: the honest answer here freed two lanes AND
+  made a sentence expressible ("stains darker than the crazing") that the
+  budget had been hiding.
+
+- **A cross-layer coupling hides in a threshold's NAME.** The veneer's zone read
+  the WEB layer's solved threshold, and Web is a *painted* layer — so a wall
+  authored as "cracked" built no plates unless it also happened to be asked for
+  crazing. The catalogue's pattern row shipped empty on the first build of this
+  step and that is how it surfaced. When one layer's geometry gates on another
+  layer's number, the name is doing the arguing; make it read its own.
+
+- **A panel with 19 rows cannot be positional.** Four constants and three copies
+  of "row index minus the number of knobs" survived a 7-row panel. The layout is
+  a `Vec<Row>` now and the draw, the hit-test and the drag all walk it — and the
+  row TYPE is what lets the panel say what it is for: a CAUSE, a derived AMOUNT
+  (with a pin marker, and a drag that pins it) and a SHAPE dial are three
+  different things, and a bare row number cannot carry the difference.
+
+- **A master dial should not be destructive.** The three new level-wide rows are
+  applied on the way from the authored spec to a sheet, never written back into
+  it. That is the only version worth having: the usual in-place rewrite loses the
+  level's own authoring on the first drag, so the owner cannot return to the
+  state he is comparing against. It also makes them compose for free — with each
+  other and with a per-wall edit.
