@@ -26,22 +26,10 @@
 //!
 //! Layout (the same discipline as [`crate::crack::pad_bits`] for `_pad`): dial
 //! `i` is a 6-bit unorm at bit `6·i`.
-//! - lane 0 — **EPOCH**: how long ago this surface was exposed (0 = fresh
-//!   break … 1 = as weathered as the skin around it). Claimed by the
-//!   catalogue's "fresh break vs weathered skin", whose first half landed
-//!   2026-07-25 with the epoch still hard-wired: the shade pass's CRACK LAB
-//!   block computes `float skin` (0 on a chalk core, 1 on the glaze) and gates
-//!   the stains + the fine web with it. Wiring this lane in means replacing
-//!   that select with the decoded epoch — one expression per twin, and the
-//!   float shape is already there so old craters can stain again.
-//! - lane 1 — **FIELD LEVEL**: the per-RUN offset that normalizes the macro
-//!   damage field's LEVEL, read by the shade pass's `dmgN` and mirrored by
-//!   `crack_geom::CrazeCfg::dmg`. Claimed 2026-07-25 to fix the un-ageable
-//!   facade (see [`level_quantize`] for the whole argument). This lane is the
-//!   one exception to "6-bit unorm": it carries a 6-bit **two's-complement**
-//!   code in units of [`LEVEL_STEP`], because the empty word has to mean
-//!   *no normalization* — a unorm lane would decode an unstamped material to
-//!   the range's low end and silently un-age it.
+//! - lane 0 — **STAIN GATE**, lane 1 — **WEB GATE**: the two painted layers'
+//!   ABSOLUTE damage-field thresholds, solved per RUN by
+//!   `wall::RunField::threshold` and carried as 6-bit codes counting DOWN from
+//!   `wall::GATE_HI`. See [`STAIN_LANE`] for why absolute and why downward.
 //! - lanes 2..3 — **UNCLAIMED**. The effect that takes one names it HERE, in
 //!   this comment, so two effects can never quietly land on the same bits.
 //!
@@ -51,12 +39,11 @@
 //! spells it `.w` fails the build with a message about the SHIFT:
 //!
 //! ```glsl
-//! uint  ew    = uint(m.emissive.a);            // the effect word
-//! float epoch = float( ew        & 63u) * (1.0/63.0);
-//! int   lvlC  = int((ew >>  6) & 63u);         // lane 1 is SIGNED (see above)
-//! float dOff  = float(lvlC >= 32 ? lvlC - 64 : lvlC) * 0.012; // LEVEL_STEP
-//! float lane2 = float((ew >> 12) & 63u) * (1.0/63.0);
-//! float lane3 = float((ew >> 18) & 63u) * (1.0/63.0);
+//! uint  ew     = uint(m.emissive.a);            // the effect word
+//! float tStain = 1.20 - float( ew        & 63u) * 0.020;  // GATE_HI, GATE_STEP
+//! float tWeb   = 1.20 - float((ew >> 6) & 63u) * 0.020;
+//! float lane2  = float((ew >> 12) & 63u) * (1.0/63.0);
+//! float lane3  = float((ew >> 18) & 63u) * (1.0/63.0);
 //! ```
 //!
 //! Two invariants the codec is built around:
@@ -84,12 +71,12 @@
 //!
 //! The story key is ONE WRITER, TWO READERS: it lands in the `Scene` and both
 //! `crack_geom::story_of` and the shade pass read the same f32 bits, so there is
-//! no mirror at all. A lane that the HOST also consumes cannot do that — the
-//! word streams after the build, and the geometry pass runs before it — so lane
-//! 1 is ONE FUNCTION, TWO CALLERS instead: `crack_geom::run_level` returns the
-//! offset already passed through [`level_quantize`], the geometry pass adds
-//! exactly that, and the shader decodes exactly that from the lane. The only
-//! mirrored thing left is [`LEVEL_STEP`] and the shape of the decode, and
+//! no mirror at all. A lane the HOST also consumes cannot do that — the word
+//! streams after the build, the geometry pass runs before it — so the gate lanes
+//! are ONE FUNCTION, TWO CALLERS instead: `crack::gates_of` returns thresholds
+//! already passed through `wall::gate_quantize`, the geometry pass uses exactly
+//! those, and the shader decodes exactly those from the lanes. The only mirrored
+//! things left are the two codec constants and the shape of the decode, and
 //! `both_shader_twins_decode_the_level_lane_exactly_as_the_host_packs_it` reads
 //! both shader sources at compile time so neither can drift silently. Any future
 //! lane the host reads too must follow the same discipline: quantize on the host,
@@ -190,71 +177,32 @@ pub fn stamp_story(scene: &mut Scene, piers: &[Pier]) -> usize {
 // The fix is a per-run LEVEL offset, generated host-side where the whole face
 // can be sampled and carried here so the shade pass adds the same number.
 
-/// Lane index of the field level in the effect word (see the module doc).
-pub const LEVEL_LANE: usize = 1;
-
-/// Quantization step of the level offset, in damage-field units. Six bits
-/// signed span −0.384..+0.372, and the gym's seven runs need −0.132..+0.240, so
-/// the range carries ~50 % headroom for other levels and looks (a needed offset
-/// past the end clamps, which merely leaves that run partly normalized). The
-/// step is 20 % of the craze zone's 0.06-wide gate window: the residual level
-/// error is ≤0.006, i.e. ≤3 % of a face's damaged area — nothing next to the
-/// 0.43 of field level it removes.
-pub const LEVEL_STEP: f32 = 0.012;
-
-/// The reference AGE the level is normalized at (see [`level_fraction`]). 0.6
-/// is mid-slider and just above the crack-lab demo's own base age (0.55), so
-/// the boot view reads as drawn and the knob still has somewhere to go in both
-/// directions.
-pub const LEVEL_AGE_REF: f32 = 0.6;
-
-/// The damaged-area band a run's level is normalized INTO, at
-/// [`LEVEL_AGE_REF`]. Calibrated, not chosen: over the crack-lab gym's seven
-/// runs this band leaves the level's MEAN damaged area where the owner last saw
-/// it (0.152 → 0.180 of a face at the reference age) while deleting both tails —
-/// the min goes 0.000 → 0.118 (no un-ageable facade) and the max 0.423 → 0.247
-/// (no facade wrecked at age 0.3). The 4× spread between the ends is what keeps
-/// the runs from reading equally damaged: normalizing the LEVEL must flatten the
-/// lottery, never the variety.
-pub const LEVEL_FRACTION: (f32, f32) = (0.06, 0.24);
-
-/// Salt of the fraction draw ([`run_hash`]) — any value the story key does not
-/// use; this one is arbitrary and only has to stay put.
-const LEVEL_SALT: u32 = 0x5bf0_3635;
-
-/// How much of THIS run's face should be inside the craze zone at
-/// [`LEVEL_AGE_REF`] — drawn per run inside [`LEVEL_FRACTION`].
+/// Lane indices of the two PAINTED layers' absolute gate codes.
 ///
-/// Drawing the TARGET (rather than normalizing every run to one constant) is
-/// what keeps a facade's story: one wall is a bad wall and the next is a tired
-/// one, and inside each the age ramp (`crack::run_ramp`) still gives it a bad
-/// end and a clean end. What the normalization deletes is only the part that
-/// was never authored — the amplitude of one fbm draw.
-pub fn level_fraction(run_lo: Vec3, run_hi: Vec3) -> f32 {
-    let u = (run_hash(run_lo, run_hi, LEVEL_SALT) & 1023) as f32 / 1023.0;
-    LEVEL_FRACTION.0 + (LEVEL_FRACTION.1 - LEVEL_FRACTION.0) * u
-}
-
-/// The 6-bit two's-complement code that carries `off`.
-fn level_code(off: f32) -> i32 {
-    (off / LEVEL_STEP).round().clamp(-32.0, 31.0) as i32
-}
-
-/// The offset the shader will actually add for `off` — the host MUST add this
-/// and never `off` itself. The two are one datum measured on one side of the
-/// bus and applied on both, and this is the function that makes them equal:
-/// the geometry pass and the paint pass drifting apart is the exact failure
-/// docs/AGENT_LEARNINGS.md records twice (the fault spine, the craze lattice).
-pub fn level_quantize(off: f32) -> f32 {
-    level_code(off) as f32 * LEVEL_STEP
-}
-
-/// The dial value that parks `off` in [`LEVEL_LANE`] of an [`Effect`].
-/// Signed-code, not unorm: code 0 (the empty word, hence any material nobody
-/// stamped) means *no normalization*, which is the only safe default.
-pub fn level_dial(off: f32) -> f32 {
-    (level_code(off) & 63) as f32 / DIAL_MAX
-}
+/// # Why absolute, and why counting down
+///
+/// This replaces a SIGNED per-run level OFFSET. That lane existed because the
+/// gates were absolute thresholds on an fbm while the *amount* of damage was
+/// whatever a run's fbm draw happened to give it: over the gym's seven runs the
+/// field's 98th percentile spread 0.49..0.92 and the run behind the doorway
+/// never cleared the zone gate AT ANY AGE — an un-ageable facade, and the owner
+/// dials to max first. The offset patched that by nudging every run's field
+/// toward a canonical level.
+///
+/// Solving the threshold itself per run (`wall::RunField::threshold`) does the
+/// same job at the root, so the offset has nothing left to do — and the lane now
+/// carries the THRESHOLD, which is strictly better in one measurable way: the
+/// signed offset was calibrated for run-to-run variation at one reference age
+/// (±0.384 in units of 0.012), not for a dial's whole travel, so asking for a
+/// large coverage on a low-level run needed an offset past its clamp. A dead
+/// region at the top of the central dial is exactly what this round exists to
+/// delete.
+///
+/// The code counts DOWN from `wall::GATE_HI`, which sits above the field's
+/// maximum. So code 0 — the empty word, hence every material nobody stamped —
+/// means provably NOTHING, by construction rather than by a signed trick.
+pub const STAIN_LANE: usize = 0;
+pub const WEB_LANE: usize = 1;
 
 /// Dials in one effect word: 4 × 6 bits = the whole 24-bit budget.
 pub const DIALS: usize = 4;
@@ -328,16 +276,18 @@ pub fn stamp(scene: &mut Scene, material_id: usize, e: Effect) -> Option<f32> {
 /// list (`-1` = the pier was left pristine), passed as plain ids so this module
 /// does not depend on the lab.
 ///
-/// `levels[i]` is pier `i`'s FIELD LEVEL offset (`crack_geom::run_levels`), a
-/// per-RUN datum: it lands in [`LEVEL_LANE`] on the pier and its core, so the
-/// crack floors normalize with the wall around them. A missing or 0.0 entry
-/// stamps no level, which is why an unknobbed level (the plain gym) writes
-/// nothing at all.
-pub fn stamp_all(scene: &mut Scene, piers: &[Pier], cores: &[i32], levels: &[f32], base: Effect) -> Vec<(usize, f32)> {
+/// `gates[i]` is pier `i`'s pair of SOLVED, quantized painted-layer thresholds
+/// as gate CODES (`wall::gate_code`) — a per-RUN datum, landing on the pier and
+/// on its chalk core so a crack floor stains with the wall around it. An
+/// all-zero pair stamps an empty word, which is why an unaged level writes
+/// nothing at all and stays bit-identical to the plain greybox.
+pub fn stamp_all(scene: &mut Scene, piers: &[Pier], cores: &[i32], gates: &[[u32; 2]], base: Effect) -> Vec<(usize, f32)> {
     let mut out = Vec::new();
     for (i, pier) in piers.iter().enumerate() {
         let mut e = base;
-        e.dials[LEVEL_LANE] = level_dial(levels.get(i).copied().unwrap_or(0.0));
+        let g = gates.get(i).copied().unwrap_or([0, 0]);
+        e.dials[STAIN_LANE] = g[0] as f32 / DIAL_MAX;
+        e.dials[WEB_LANE] = g[1] as f32 / DIAL_MAX;
         let core = cores.get(i).copied().filter(|c| *c >= 0);
         for mid in [Some(scene.primitives[pier.prim].material_id), core].into_iter().flatten() {
             if let Some(w) = stamp(scene, mid as usize, e) {
@@ -352,19 +302,9 @@ pub fn stamp_all(scene: &mut Scene, piers: &[Pier], cores: &[i32], levels: &[f32
 /// read, like LOOK/PROJ/CRACKS; see the config.rs exception list): stamp every
 /// pier uniformly at boot, so a headless SHOT can drive a lane the moment a
 /// shader twin reads one. Missing components read 0; unset = no word at all.
-/// [`LEVEL_LANE`] is DERIVED per run, so its component here is ignored.
+/// The two gate lanes are DERIVED per run, so their components here are ignored.
 pub fn seed_from_env() -> Option<Effect> {
     std::env::var("WEAR").ok().map(|v| parse_seed(&v))
-}
-
-/// `WEAR_LEVEL=0` turns the per-run field-level normalization OFF (default on)
-/// — the harness A/B for lane 1. It zeroes the offset at the ONE place both
-/// readers get it from, so "off" is bit-identical to the code before the lane
-/// existed; that is what makes the before/after SHOT pair meaningful instead of
-/// a comparison against a stale build.
-pub fn level_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("WEAR_LEVEL").map(|v| v.trim() != "0").unwrap_or(true))
 }
 
 /// The pure half of [`seed_from_env`].
@@ -384,14 +324,29 @@ impl Viewer {
     /// `apply_look` rebuild — the rebuild mints fresh materials, so the word
     /// has to be re-stamped exactly like the AA scope bits are.
     pub fn wear_stamp(&mut self) {
-        let levels = crate::crack_geom::run_levels(&self.scene, &self.piers, &self.crack.knobs);
-        let changed = stamp_all(&mut self.scene, &self.piers, &self.crack.cores, &levels, self.wear);
-        // silent when nothing changed (the plain gym boot: no knobs, so no field
-        // level and an empty word); otherwise say it, because a harness knob you
-        // cannot see fire is a harness knob you cannot trust
+        // The SAME solved thresholds the geometry pass used — read off the same
+        // `GeoKey`, through the same function, so paint and plates cannot end up
+        // in different patches. Deriving them twice is the drift this codec's
+        // whole discipline exists to prevent.
+        let par = self.crack.active_params();
+        let (gk, gs) = self.crack.geom_input();
+        let keys = crate::crack_geom::keys(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &self.crack.no_fault);
+        let gates: Vec<[u32; 2]> = self
+            .piers
+            .iter()
+            .zip(&keys)
+            .map(|(p, k)| {
+                if k.k == [0; 4] && k.spall == 0 {
+                    return [0, 0]; // unaged: an empty word, bit-identical to the plain greybox
+                }
+                let (_, g) = crate::crack::gates_of(p, k);
+                [crate::wall::gate_code(g[crate::wall::Layer::Stain.index()]), crate::wall::gate_code(g[crate::wall::Layer::Web.index()])]
+            })
+            .collect();
+        let changed = stamp_all(&mut self.scene, &self.piers, &self.crack.cores, &gates, self.wear);
         if !changed.is_empty() {
-            let n = levels.iter().filter(|l| **l != 0.0).count();
-            println!("wear: effect word streamed to {} materials (base dials {:?}, field level on {n} piers)", changed.len(), self.wear.dials);
+            let n = gates.iter().filter(|g| **g != [0, 0]).count();
+            println!("wear: effect word streamed to {} materials (base dials {:?}, solved gates on {n} piers)", changed.len(), self.wear.dials);
         }
         for (mid, w) in changed {
             self.backend.set_material_effect(mid, w);
@@ -470,14 +425,18 @@ mod tests {
         let body = scene.materials[scene.primitives[piers[0].prim].material_id as usize];
         scene.materials.push(body);
         let cores = vec![scene.materials.len() as i32 - 1, -1];
-        let flat = [0.0; 2]; // no field-level normalization on these piers
+        let flat = [[0u32; 2]; 2]; // no solved gates on these piers
         assert!(stamp_all(&mut scene, &piers, &cores, &flat, Effect::default()).is_empty(), "the empty word is already there — nothing to stream");
         let e = Effect { dials: [0.5, 0.0, 0.0, 0.25] };
         let changed = stamp_all(&mut scene, &piers, &cores, &flat, e);
         assert_eq!(changed.len(), 3, "two piers + one core");
+        // lanes 0 and 1 are DERIVED per run, so the base effect's components
+        // there are overwritten — the streamed word carries the gates, not
+        // whatever the harness put in those slots
+        let want = Effect { dials: [0.0, 0.0, 0.0, 0.25] }.word();
         for (mid, w) in &changed {
             assert_eq!(scene.materials[*mid].emissive[3], *w, "the CPU shadow and the streamed value agree");
-            assert_eq!(*w, e.word());
+            assert_eq!(*w, want, "the gate lanes must come from `gates`, not from the base effect");
         }
         assert!(stamp_all(&mut scene, &piers, &cores, &flat, e).is_empty(), "re-stamping the same word streams nothing");
     }
@@ -487,26 +446,27 @@ mod tests {
     /// to NO normalization. A unorm lane would hand it the range's low end and
     /// silently un-age it, which is the failure this lane exists to fix, applied
     /// to itself. Also pins the two-sided range and the host/shader mirror
-    /// (`level_quantize` IS what the decode of `level_dial` yields).
+    /// AN UNSTAMPED MATERIAL MUST DECODE TO NOTHING — the property the signed
+    /// level lane existed to guarantee, now a property of the CODEC instead.
+    ///
+    /// Code 0 is what `add_box_world` leaves in a pier's emissive alpha, so it
+    /// is what every surface nobody stamped reads. With the old unorm-style
+    /// lanes that meant "the low end of the range", which would silently age
+    /// the whole level; the signed two's-complement trick was the workaround.
+    /// Counting the threshold DOWN from above the field's maximum makes it
+    /// structural: code 0 is a gate no sample can clear. `wall`'s
+    /// `zero_is_provably_empty` checks that against every run of both shipped
+    /// levels; this checks the codec end of it.
     #[test]
-    fn the_level_lane_is_signed_so_an_unstamped_material_is_not_normalized() {
-        let decode = |dial: f32| {
-            let code = (Effect { dials: [0.0, dial, 0.0, 0.0] }.word() as u32 >> 6) & 63;
-            (if code >= 32 { code as i32 - 64 } else { code as i32 }) as f32 * LEVEL_STEP
-        };
-        assert_eq!(decode(0.0), 0.0, "the empty word means NOT normalized");
-        assert_eq!(level_dial(0.0), 0.0, "…and a zero offset stamps the empty lane");
-        for off in [-0.5, -0.37, -0.24, -0.132, -0.012, 0.0, 0.012, 0.1, 0.24, 0.37, 0.9] {
-            let q = level_quantize(off);
-            assert_eq!(decode(level_dial(off)), q, "host and shader must decode ONE value for {off}");
-            assert!((q - off).abs() <= 0.5 * LEVEL_STEP || off.abs() > 32.0 * LEVEL_STEP, "{off} quantized to {q}");
-        }
-        // the gym's measured need is −0.132..+0.240; both ends fit with margin
-        assert!(level_quantize(-0.132) < -0.12 && level_quantize(0.240) > 0.23);
-        // …and past the ends it CLAMPS (a partly normalized run, never a wrapped
-        // sign — a wrap would age the dead facade backwards)
-        assert_eq!(level_quantize(9.0), 31.0 * LEVEL_STEP);
-        assert_eq!(level_quantize(-9.0), -32.0 * LEVEL_STEP);
+    fn code_zero_is_a_gate_nothing_can_clear() {
+        assert_eq!(crate::wall::gate_code(crate::wall::GATE_EMPTY), 0);
+        let e = Effect::default();
+        assert_eq!(e.word(), 0.0, "the empty word must be exactly 0.0");
+        assert_eq!(e.dials[STAIN_LANE], 0.0);
+        assert_eq!(e.dials[WEB_LANE], 0.0);
+        // …and the top of the range is reachable, which the signed lane's clamp
+        // could not promise on a low-level run
+        assert_eq!(crate::wall::gate_code(crate::wall::GATE_FULL), 63);
     }
 
     /// The lamp trap, pinned: `frame_lights_cpu` owns an emitting material's
@@ -566,14 +526,17 @@ mod tests {
             let lines = code_lines(src);
             let has = |pat: &str| lines.iter().any(|l| l.contains(pat));
             // REQUIRED — the lane must still be decoded exactly as packed
-            // the SHIFT (lane 1 = bits 6..11) and the 6-bit mask
-            assert!(has("emissive.a) >> 6) & 63u"), "{name}: lane 1's bit position moved");
-            // the SIGNED decode — a unorm read would un-age every unstamped surface
-            assert!(has("lvlC >= 32 ? lvlC - 64 : lvlC"), "{name}: the two's-complement decode is gone");
-            // the STEP, spelled as the host spells it
-            assert!(has(&format!("lvlC) * {LEVEL_STEP};")), "{name}: LEVEL_STEP drifted from the host's {LEVEL_STEP}");
-            // …and it actually reaches the field
-            assert!(lines.iter().any(|l| l.contains("float dmgN") && l.contains("+ dOff")), "{name}: dmgN does not take the offset");
+            // both lanes, at their bit positions
+            assert!(has("ew        & 63u"), "{name}: the STAIN lane (bits 0..5) moved");
+            assert!(has("(ew >> 6) & 63u"), "{name}: the WEB lane (bits 6..11) moved");
+            // the codec's two constants, spelled as the HOST spells them — a
+            // shader counting from a different top or by a different step reads
+            // every threshold wrong, and does it silently
+            assert!(has(&format!("{:.2} - float", crate::wall::GATE_HI)), "{name}: GATE_HI drifted from the host's {}", crate::wall::GATE_HI);
+            assert!(has(&format!("* {:.3};", crate::wall::GATE_STEP)) || has(&format!("* {:.3};  //", crate::wall::GATE_STEP)), "{name}: GATE_STEP drifted from the host's {}", crate::wall::GATE_STEP);
+            // …and both thresholds actually gate something
+            assert!(has("smoothstep(tStain"), "{name}: the stain gate does not use its threshold");
+            assert!(has("smoothstep(tWeb"), "{name}: the web gate does not use its threshold");
             // FORBIDDEN — nothing yet. This half of the guard is what catches a
             // HALF-DONE deletion: the Mac can only run the MSL twin, so a cull
             // applied to one source and forgotten in the other compiles, passes
@@ -602,6 +565,8 @@ mod tests {
         "chipM",    // the painted chip patches
         "lineP",    // the painted craze cell network
         "cuvP",     // its view-parallax sample offset
+        "lvlC",     // the signed per-run LEVEL offset the solved thresholds replace
+        "float dT", // the age-derived gate that slid five fixed windows together
         "mHalo",    // the fault's stain track
         ">> 14",    // the `cracks` knob lane
         ">> 20",    // the `depth` knob lane

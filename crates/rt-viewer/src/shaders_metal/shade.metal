@@ -564,19 +564,30 @@ kernel void shade(
             float3 an = abs(n);
             bool wallF = an.y <= 0.5;
             float2 cuv = an.x > 0.5 ? wpos.zy : (an.y > 0.5 ? wpos.xz : wpos.xy);
-            // MACRO DAMAGE FIELD — where THIS run is failing, with its LEVEL
-            // normalized per run (wear.rs lane 1: a 6-bit TWO'S-COMPLEMENT code in
-            // units of 0.012, NOT a unorm dial — the empty word has to mean "not
-            // normalized", or any material nobody stamped would decode the low end
-            // and silently un-age). Mirrored host-side by CrazeCfg::dmg.
-            int lvlC = int((uint(m.emissive.a) >> 6) & 63u);
-            float dOff = float(lvlC >= 32 ? lvlC - 64 : lvlC) * 0.012;
-            float rise = wallF ? 1.0 - smoothstep(0.10, 1.0, cuv.y) : 0.0;
-            float dmgN = fbm(float3(cuv * float2(0.45, 0.7), story * 7.0 + 3.0)) + 0.16 * rise + dOff;
-            float dT = mix(0.74, 0.55, cAge);
-            float stainW = smoothstep(dT - 0.14, dT + 0.02, dmgN);
-            float fineG = smoothstep(dT + 0.08, dT + 0.14, dmgN);
-            // FINE GLAZE WEB. Its lattice is a CONSTANT 6 cells/wu — it used to be
+            // MACRO DAMAGE FIELD — where THIS run is failing. The two painted layers'
+        // gates are ABSOLUTE thresholds SOLVED for this run host-side
+        // (`wall::RunField::threshold`) and carried here as 6-bit codes counting DOWN
+        // from `wall::GATE_HI`, so an amount is a FRACTION OF THIS FACE rather than
+        // whatever this run's fbm draw happened to give it.
+        //
+        // Code 0 — the empty word, hence every material nobody stamped — sits above
+        // the field's maximum, so it means provably nothing. That property is why the
+        // codec counts down: the SIGNED per-run level offset this replaces was
+        // calibrated for run-to-run variation at one reference age, not for a dial's
+        // whole travel, so a large coverage on a low-level run needed an offset past
+        // its clamp — a dead region at the top of the central dial.
+        //
+        // The band is centred on the threshold, so the threshold is the 50 % point,
+        // which is what makes the coverage the shader draws equal the amount the host
+        // solved for. Host mirror: `CrazeCfg::zone` / `stain_w`.
+        uint ew = uint(m.emissive.a);
+        float tStain = 1.20 - float( ew        & 63u) * 0.020;  // wall::GATE_HI, GATE_STEP
+        float tWeb   = 1.20 - float((ew >> 6) & 63u) * 0.020;
+        float rise = wallF ? 1.0 - smoothstep(0.10, 1.0, cuv.y) : 0.0;
+        float dmgN = fbm(float3(cuv * float2(0.45, 0.7), story * 7.0 + 3.0)) + 0.16 * rise;
+        float stainW = smoothstep(tStain - 0.05, tStain + 0.05, dmgN);
+        float fineG  = smoothstep(tWeb   - 0.03, tWeb   + 0.03, dmgN);
+        // FINE GLAZE WEB. Its lattice is a CONSTANT 6 cells/wu — it used to be
             // mix(1.1, 3.4, cracks), which drew a COARSE cell network at cracks = 0,
             // so the name lied about what you were looking at. 6/wu is 0.167 wu per
             // cell = ~6.8 px on an X-run face, i.e. a ~1 px line: fine BY

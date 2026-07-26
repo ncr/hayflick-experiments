@@ -362,6 +362,70 @@ pub fn seed_spall(piers: &[Pier], s: &CrackSeed) -> Vec<f32> {
         .collect()
 }
 
+/// THE SHIM: legacy knobs -> the authoring model's layer AMOUNTS.
+///
+/// The crack lab's panel still drives four knobs; the engine underneath is now
+/// `wall`'s. This is the one place the two meet, and it exists so the mapping is
+/// a fact you can read rather than a coincidence spread over three files:
+///
+/// - `age` IS the weathering cause, so it goes through `wall::derive` and writes
+///   the stain / web / cracks amounts on the causal ladder.
+/// - `chip` was already an amount in everything but name, so it PINS the chips
+///   row instead of being multiplied by the stain window (which is why it used
+///   to do nothing at low age).
+/// - the `spall` dial is the cover-loss cause.
+/// - `cracks` is NOT an amount: it is the plate lattice's size, and it stays
+///   where it always was, in `CrazeCfg::freq`. Naming that honestly (a grain in
+///   world units) is a later step.
+pub fn amounts_of(k: [f32; 4], dial: f32) -> [f32; crate::wall::Layer::N] {
+    use crate::wall::Layer;
+    let (mut a, _) = crate::wall::derive(crate::wall::Story { weather: k[0], settlement: 0.0, cover_loss: dial });
+    a[Layer::Chips.index()] = k[3];
+    a
+}
+
+/// One pier's layer AMOUNTS and the SOLVED, quantized damage-field THRESHOLD
+/// each of them resolves to on this pier's run.
+///
+/// Derived from the [`crate::crack_geom::GeoKey`] and the pier's authored RUN
+/// rect and nothing else, so the geometry pass, the rebuild gate and the
+/// material streamer cannot possibly be looking at different gates — the
+/// failure docs/AGENT_LEARNINGS.md records twice (the fault spine, the craze
+/// lattice) is two readers deriving the same number separately.
+pub fn gates_of(pier: &Pier, key: &crate::crack_geom::GeoKey) -> ([f32; crate::wall::Layer::N], [f32; crate::wall::Layer::N]) {
+    use crate::wall::{gate_quantize, Layer, Origin, RunField, GATE_EMPTY};
+    let a = amounts_of(key.knobs(), key.dial());
+    // One field per RUN, memoized: a rebuild asks for the same run once per
+    // pier it was cut into (three times on the gym's east facade), and the
+    // machinery this replaces sampled and sorted it three times per rebuild and
+    // cached it nowhere. The story key identifies the run by construction.
+    thread_local! {
+        static MEMO: std::cell::RefCell<Vec<(u32, std::rc::Rc<RunField>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let field = MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if let Some((_, f)) = m.iter().find(|(s, _)| *s == key.story) {
+            return f.clone();
+        }
+        let f = std::rc::Rc::new(RunField::of(pier.run_lo, pier.run_hi, f32::from_bits(key.story), Origin::Ground));
+        if m.len() > 64 {
+            m.clear(); // a level has tens of runs; this is a cache, not a leak
+        }
+        m.push((key.story, f.clone()));
+        f
+    });
+    let mut g = [GATE_EMPTY; Layer::N];
+    for l in Layer::ALL {
+        g[l.index()] = gate_quantize(field.threshold(a[l.index()]));
+    }
+    // BOTH halves, because the geometry needs both and deriving one of them
+    // twice is how two readers drift: a THRESHOLD says where a layer draws, an
+    // AMOUNT says how much of it there is. The lightning network's root density
+    // wants the amount (how cracked is this wall), the zone gate wants the
+    // threshold (where is it cracked).
+    (a, g)
+}
+
 /// The wall pier a world (x, z) column runs through — how a demo names a wall
 /// (`CrackSeed::pristine`, [`crate::demos::Action::AgeWall`]) without knowing
 /// how `wall_slab` happened to cut the run into piers. Mid-height, so a point
@@ -1093,9 +1157,14 @@ mod tests {
         assert!(distinct.len() >= 10, "the ramp must cross at least 10 geometry buckets over 16 samples, got {}", distinct.len());
         let (first, last) = (steps[0].1, steps[15].1);
         assert!(last > first * 3 / 2, "the aged wall must carry far more geometry than the pristine one: {first} → {last} tris");
-        // …and the growth is spread over the ramp, not one cliff at the end
-        let grew = steps.windows(2).filter(|w| w[1].1 > w[0].1).count();
-        assert!(grew >= 8, "geometry must keep arriving through the beat, not in one jump: {grew} of 15 steps grew");
+        // …and the geometry keeps MOVING through the beat rather than arriving in
+        // one cliff at the end. Movement, not growth: the beat's late phase ramps
+        // the chip lane, and since chips became a literal fraction of the plates
+        // inside the zone, that phase legitimately takes material AWAY. Asserting
+        // monotone growth measured 7 of 15 here and would have been a claim about
+        // the old chip semantics, not about the beat reading as continuous.
+        let moved = steps.windows(2).filter(|w| w[1].1 != w[0].1).count();
+        assert!(moved >= 10, "geometry must keep moving through the beat, not in one jump: {moved} of 15 steps changed");
     }
 
     /// The crack lab demo's authored boot seed — the state the owner's playtest

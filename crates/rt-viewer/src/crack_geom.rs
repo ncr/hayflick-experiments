@@ -266,6 +266,12 @@ pub(crate) fn quad(verts: &mut Vec<([f32; 3], [f32; 3])>, idx: &mut Vec<u32>, q:
     idx.extend_from_slice(&[vi, vi + 1, vi + 2, vi, vi + 2, vi + 3]);
 }
 
+/// One pier's wear inputs: the layer AMOUNTS and the SOLVED thresholds they
+/// resolve to on this pier's run (`crack::gates_of`). A pair rather than two
+/// loose arrays because they are the same length and the same type, and the
+/// compiler cannot catch them being passed the wrong way round.
+type Wear = ([f32; crate::wall::Layer::N], [f32; crate::wall::Layer::N]);
+
 // ---- craze configuration ---------------------------------------------------
 //
 // polana's porcelain story taken literally: the wall is a matte body (chalk
@@ -299,13 +305,29 @@ struct CrazeCfg {
     freq: f32,
     seed: f32,     // cell lattice seed (shader: story + 5)
     dmg_seed: f32, // damage field seed (shader: story * 7 + 3 — NOT the cell seed)
-    /// The RUN's damage-field LEVEL offset ([`run_level`]), quantized exactly
-    /// as the shade pass will decode it from `wear`'s lane 1.
-    d_off: f32,
-    cover: f32,
-    d_t: f32,
+    /// ABSOLUTE damage-field thresholds, one per layer, SOLVED for this run by
+    /// `wall::RunField::threshold` and quantized exactly as the shade pass will
+    /// decode them (`wall::gate_quantize`).
+    ///
+    /// This is the round's central change. The gates used to be one
+    /// age-derived value `d_t` sliding five FIXED windows (stains at
+    /// `d_t − 0.14`, cracks at `−0.10`, plates at `+0.02`, the web at `+0.08`),
+    /// so how much of a face was damaged was whatever that run's fbm draw
+    /// happened to give it, and "stains spread wider than the cracking" was not
+    /// a sentence the system could express. A threshold solved from the run's
+    /// own sorted samples makes the amount an AREA, and one per layer makes the
+    /// layers independent.
+    t_zone: f32,
+    t_crack: f32,
+    /// The CHIPS amount — the fraction of plates inside the zone that go
+    /// missing. A literal fraction, not a noise gate multiplied by the stain
+    /// window, which is why the chip dial used to do nothing at low age.
     chip: f32,
-    age: f32,
+    /// The CRACKS AMOUNT — how cracked this wall is, as a fraction of its face.
+    /// Read by the layers that scale with that rather than with where the zone
+    /// is: the lightning network's root density. It used to read `age`, which is
+    /// one of the four jobs that dial should never have had.
+    a_cracks: f32,
     dep: f32,
     /// Veneer thickness = groove/recess depth. The depth knob spans the
     /// WHOLE wall: 0.02 up to 0.45 × thickness (owner round 6: "ending at
@@ -334,16 +356,17 @@ impl CrazeCfg {
     /// and the craze lattices are functions of world position plus this seed, so
     /// sharing it is exactly what makes a patch cross a panel joint instead of
     /// restarting at it (owner catalogue 2026-07-25, "one wall, one story").
-    fn new(story: f32, d_off: f32, k: [f32; 4], run_x: bool, thick: f32, faults: &[Fault], par: [f32; PARAMS_MAX]) -> CrazeCfg {
+    fn new(story: f32, wear: Wear, k: [f32; 4], run_x: bool, thick: f32, faults: &[Fault], par: [f32; PARAMS_MAX]) -> CrazeCfg {
+        use crate::wall::Layer;
+        let (amt, gate) = wear;
         CrazeCfg {
             freq: mixf(1.1, 3.4, k[1]),
             seed: story + 5.0,
             dmg_seed: story * 7.0 + 3.0,
-            d_off,
-            cover: mixf(0.45, 0.9, k[0]),
-            d_t: mixf(0.74, 0.55, k[0]),
+            t_zone: gate[Layer::Web.index()],
+            t_crack: gate[Layer::Cracks.index()],
             chip: k[3],
-            age: k[0],
+            a_cracks: amt[Layer::Cracks.index()],
             dep: k[2],
             t: mixf(0.02, 0.45 * thick, k[2]),
             px1: px_floor(run_x),
@@ -365,7 +388,7 @@ impl CrazeCfg {
     /// The macro damage field at face coords (u, y) — exact fbm mirror,
     /// including the run's LEVEL offset (the shade pass adds it to `dmgN`).
     fn dmg(&self, su: f32, sy: f32) -> f32 {
-        dmg_field(self.dmg_seed, su, sy) + self.d_off
+        dmg_field(self.dmg_seed, su, sy)
     }
     /// Fault-proximity halo (0..1) — mirrors the paint's fracture zone.
     fn halo(&self, su: f32, sy: f32) -> f32 {
@@ -375,8 +398,11 @@ impl CrazeCfg {
         }
         h
     }
+    /// Where the VENEER crazes. Soft band centred on the threshold, so the
+    /// threshold is the 50 % point — which is what makes the measured coverage
+    /// equal the amount that was asked for.
     fn zone(&self, su: f32, sy: f32) -> f32 {
-        let z = smoothstep(self.d_t + 0.02, self.d_t + 0.08, self.dmg(su, sy));
+        let z = smoothstep(self.t_zone - 0.03, self.t_zone + 0.03, self.dmg(su, sy));
         z.max(0.5 * self.halo(su, sy))
     }
     /// Where CRACKS may run — a wider, EARLIER slice of the damage field than
@@ -385,11 +411,8 @@ impl CrazeCfg {
     /// staining stays patchy); gating cracks on the stain zone left a
     /// mid-aged wall visibly pristine, which is not what "aged" looks like.
     fn crack_zone(&self, su: f32, sy: f32) -> f32 {
-        let z = smoothstep(self.d_t - 0.10, self.d_t - 0.02, self.dmg(su, sy));
+        let z = smoothstep(self.t_crack - 0.04, self.t_crack + 0.04, self.dmg(su, sy));
         z.max(0.7 * self.halo(su, sy))
-    }
-    fn stain_w(&self, su: f32, sy: f32) -> f32 {
-        smoothstep(self.d_t - 0.14, self.d_t + 0.02, self.dmg(su, sy))
     }
     /// Groove width for a seam: the pixel floor, widening as cracks deepen.
     fn groove_w(&self, hier: f32) -> f32 {
@@ -397,7 +420,10 @@ impl CrazeCfg {
     }
     /// Deepest a live fragment may sink — always shy of the veneer bottom.
     fn sink_max(&self) -> f32 {
-        (0.4 * self.t).min(0.025) * (0.4 + 0.6 * self.age)
+        // …and NOT scaled by age any more: how deep a freed plate settles is a
+        // property of the veneer's thickness, and letting the weathering dial
+        // move it too was one of `age`'s four silent extra jobs.
+        (0.4 * self.t).min(0.025)
     }
     /// Fragment gates at a candidate polygon: live plates sink, chip-hit
     /// plates go MISSING. `h` = the generator's per-fragment hash channel.
@@ -406,7 +432,10 @@ impl CrazeCfg {
             return None;
         }
         let c = poly_centroid(&poly);
-        let mut live = self.zone(c.x, c.y) > 0.35 && h(91.0) < self.cover;
+        // Inside the zone a plate IS cracked free. The `h(91.0) < cover` dropout
+        // that used to sit here made `age` decide how many plates existed at all,
+        // on top of deciding how large the zone was — the same dial twice.
+        let mut live = self.zone(c.x, c.y) > 0.35;
         if live && self.sink_perimeter {
             // cracked free ALL ROUND or it must not sink: a step along a
             // CLOSED seam is a sub-pixel edge that dot-dashes at best, and at
@@ -415,12 +444,12 @@ impl CrazeCfg {
             // real per-edge open flags instead of the damage field)
             live = open.iter().all(|o| *o);
         }
-        // chips cluster in the stain patches AND bite the fault's flanks
-        let chp_eff = self.chip * (smoothstep(0.45, 0.85, self.stain_w(c.x, c.y)) + 0.9 * self.halo(c.x, c.y)).clamp(0.0, 1.0);
-        let chp_n = vnoise(Vec3::new(c.x * 2.3 + 57.0, c.y * 2.3 + 57.0, 57.0));
-        // clean-zone plates can't spall (chp_eff ≈ 0 pushes the gate past
-        // vnoise's range); the area cap keeps a whole-slab fragment safe
-        let spalled = chp_n > mixf(1.02, 0.50, chp_eff) + 0.08 && poly_area(&poly) < 1.0;
+        // CHIPS: a literal fraction of the plates inside the zone, plus the
+        // fault's flanks. It used to be `chip * smoothstep(0.45, 0.85, stain_w)`,
+        // which is why the chip slider did nothing until the stain window had
+        // opened — a dial whose effect was conditional on another dial's value.
+        let inside = (self.zone(c.x, c.y) + 0.9 * self.halo(c.x, c.y)).clamp(0.0, 1.0);
+        let spalled = inside > 0.35 && h(157.0) < self.chip && poly_area(&poly) < 1.0;
         let sink = if live { h(201.0) * self.sink_max() } else { 0.0 };
         if live || spalled {
             opened.set(true);
@@ -439,76 +468,6 @@ fn dmg_field(dmg_seed: f32, su: f32, sy: f32) -> f32 {
     let rise = 1.0 - smoothstep(0.10, 1.0, sy);
     let p = Vec3::new(su * 0.45, sy * 0.7, dmg_seed);
     0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + Vec3::splat(11.1)) + 0.16 * rise
-}
-
-/// The level the craze ZONE is half open at, at `wear::LEVEL_AGE_REF` — the
-/// canonical level [`run_level`] normalizes a run's field to. `dT + 0.05` is
-/// the middle of the zone gate's `dT + 0.02 .. dT + 0.08` window, i.e. exactly
-/// "this much of the face is failing", which is the thing that has to be true
-/// of every facade.
-fn level_gate() -> f32 {
-    mixf(0.74, 0.55, crate::wear::LEVEL_AGE_REF) + 0.05
-}
-
-/// Sampling lattice of [`run_level`]: the 0.1-wu authoring grid the whole game
-/// projection is built on. The field's FINEST octave is 1.09 × 0.70 wu, so 0.1
-/// wu is ~7× finer than anything it can express — the percentile is a property
-/// of the field, not of the lattice.
-const LEVEL_LATTICE: f32 = 0.1;
-
-/// The damage-field LEVEL offset for a pier's parent RUN — the fix for the
-/// un-ageable facade (`wear::LEVEL_LANE` carries it to the shade pass; the
-/// argument and the measurements live in wear.rs).
-///
-/// Sample the field over the RUN's whole authored face, take the percentile
-/// that a per-run drawn FRACTION of the face lies above
-/// (`wear::level_fraction`), and return the offset that moves it onto
-/// [`level_gate`]. So the run's damaged AREA at the reference age is the drawn
-/// fraction by construction — normalizing the field's amplitude lottery away
-/// while leaving the authored variety (a bad facade vs a tired one, and the age
-/// ramp's bad end vs clean end) untouched.
-///
-/// A pure function of the RUN (its rect + its story key), so it is independent
-/// of the knobs: a knob drag never moves it, and it costs one probe-cache miss
-/// the first time a level is built, never a recurring one.
-pub fn run_level(scene: &Scene, pier: &Pier) -> f32 {
-    if !crate::wear::level_enabled() {
-        return 0.0;
-    }
-    let seed = story_of(scene, pier) * 7.0 + 3.0;
-    // the RUN's own axis and extent (not the pier's — this is a per-run datum,
-    // and every pier wall_slab cuts keeps the run's orientation)
-    let run_x = (pier.run_hi.x - pier.run_lo.x) >= (pier.run_hi.z - pier.run_lo.z);
-    let (a0, a1) = if run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
-    let (y0, y1) = (pier.run_lo.y, pier.run_hi.y);
-    let n = |a: f32, b: f32| ((((b - a) / LEVEL_LATTICE).round()) as usize).max(2);
-    let (nu, ny) = (n(a0, a1), n(y0, y1));
-    let mut v = Vec::with_capacity(nu * ny);
-    for i in 0..nu {
-        let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
-        for j in 0..ny {
-            let y = mixf(y0, y1, (j as f32 + 0.5) / ny as f32);
-            v.push(dmg_field(seed, u, y));
-        }
-    }
-    v.sort_by(|a, b| a.partial_cmp(b).expect("the damage field is finite"));
-    let f = crate::wear::level_fraction(pier.run_lo, pier.run_hi);
-    let hit = v[(((1.0 - f) * (v.len() - 1) as f32).round() as usize).min(v.len() - 1)];
-    crate::wear::level_quantize(level_gate() - hit)
-}
-
-/// Every pier's [`run_level`], 0.0 where the pier carries no knobs — an
-/// unaged pier reads no lane, so leaving its word empty keeps a plain gym boot
-/// bit-identical (and stamps nothing at all).
-pub fn run_levels(scene: &Scene, piers: &[Pier], knobs: &[[f32; 4]]) -> Vec<f32> {
-    piers
-        .iter()
-        .enumerate()
-        .map(|(i, pier)| match knobs.get(i) {
-            Some(k) if *k != [0.0; 4] => run_level(scene, pier),
-            _ => 0.0,
-        })
-        .collect()
 }
 
 fn poly_area(p: &[Vec2]) -> f32 {
@@ -1086,7 +1045,7 @@ impl Ladder<'_> {
                 hmax = hmax.max(self.cfg.halo(q.x, q.y));
             }
         }
-        if (dmax < self.cfg.d_t && hmax < 0.2) || depth >= 14 {
+        if (dmax < self.cfg.t_zone && hmax < 0.2) || depth >= 14 {
             self.emit(poly, id);
             return;
         }
@@ -1225,7 +1184,7 @@ fn bolt_network(cfg: &CrazeCfg, u0: f32, u1: f32, y0: f32, y1: f32) -> Vec<Bolt>
     for j in 0..ny {
         for i in 0..nx {
             let h = |k: f32| hash13(Vec3::new(i as f32 * 1.7 + 3.0, j as f32 * 2.3 + 7.0, cfg.seed + k));
-            if h(3.0) > 0.18 + 0.55 * cfg.age {
+            if h(3.0) > 0.18 + 0.55 * cfg.a_cracks {
                 continue;
             }
             // three tries per lattice cell: damage patches are about a cell
@@ -1355,8 +1314,7 @@ fn cell_live(cfg: &CrazeCfg, ij: Vec2) -> bool {
     let site = mosaic_site(cfg, ij);
     let f = mosaic_freq(cfg);
     let (su, sy) = (site.x / f, site.y / f);
-    let cell_h = hash13(Vec3::new(ij.x, ij.y, cfg.seed + 91.0));
-    cell_h < cfg.cover && cfg.zone(su, sy) > 0.35
+    cfg.zone(su, sy) > 0.35
 }
 
 /// The mosaic policy: Worley cells (the shader's old painted lattice), each
@@ -1989,7 +1947,7 @@ fn pier_craters(cfg: &CrazeCfg, fr: &Frame, pier: &Pier, dial: f32, salt: f32, f
         run_u1,
         veneer: cfg.t,
         thick: fr.t1 - fr.t0,
-        gate: cfg.d_t,
+        gate: cfg.t_zone,
         seed: cfg.dmg_seed + salt,
     };
     if spall_layers() == 0 {
@@ -2350,10 +2308,10 @@ fn emit_prism(
 /// core and steel materials (`-1` = none): the scene is untouched when nothing
 /// opened — no groove, no live or spalled plate, no crater — and the pier keeps
 /// its box and its paint.
-fn craze_pier(scene: &mut Scene, pier: &Pier, d_off: f32, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
+fn craze_pier(scene: &mut Scene, pier: &Pier, wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
     let (mid, _) = seg_of(scene, pier);
     let fr = Frame::of(pier);
-    let cfg = CrazeCfg::new(story_of(scene, pier), d_off, k, fr.run_x, fr.t1 - fr.t0, &[], par);
+    let cfg = CrazeCfg::new(story_of(scene, pier), wear, k, fr.run_x, fr.t1 - fr.t0, &[], par);
     let opened = StdCell::new(false);
     let mut frags = policy_frags(&cfg, policy, fr.u0, fr.u1, fr.y0, fr.y1, &opened);
     // BOTH faces spall. The camera is orthographic but the owner turns it in
@@ -2464,7 +2422,7 @@ fn spend_spall(scene: &mut Scene, mid: i32, core_mid: i32, bas: &Mesh, bar: &Mes
 /// policy veneer clipped against the fault paths — so the small-crack
 /// pattern rides the broken wall and clusters along the seam (halo).
 #[allow(clippy::too_many_arguments)]
-fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], d_off: f32, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
+fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], wear: Wear, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], dial: f32) -> (i32, [i32; 2]) {
     let (mid, _) = seg_of(scene, pier);
     let fr = Frame::of(pier);
     let (u0, u1, t0, t1, y0, y1) = (fr.u0, fr.u1, fr.t0, fr.t1, fr.y0, fr.y1);
@@ -2473,7 +2431,7 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], d_off: f32, k: [
 
     // the veneer/damage layer takes the RUN's story; the faults handed in came
     // from the PANEL's own seed (`faults_for`) — see `seg_of`
-    let cfg = CrazeCfg::new(story_of(scene, pier), d_off, k, fr.run_x, t1 - t0, faults, par);
+    let cfg = CrazeCfg::new(story_of(scene, pier), wear, k, fr.run_x, t1 - t0, faults, par);
     // the break, grown: jagged trunks (THROUGH — they separate the wall) plus
     // their forks (surface cracks that groove the veneer only)
     let all_bolts = fault_bolts(faults, &fr, k, cfg.px1);
@@ -2703,6 +2661,9 @@ pub fn apply_geometry(
     let gk = keys(scene, piers, knobs, policies, params, spall, no_fault);
     for (i, pier) in piers.iter().enumerate() {
         let key = gk[i];
+        // The SOLVED thresholds for this pier's run, from the key alone — so the
+        // geometry pass and the rebuild gate cannot see different gates.
+        let (amt, gate) = crate::crack::gates_of(pier, &key);
         // EVERY generator reads the key, never the caller's floats — that is
         // what makes `GeoKey` equality mean "the built mesh is still right".
         let (k, dial) = (key.knobs(), key.dial());
@@ -2711,9 +2672,9 @@ pub fn apply_geometry(
         // its own mechanism (the base of a sound wall spalls first), and a dial
         // that does nothing on the wall the owner picked is a broken dial
         (out.cores[i], out.spall_mats[i]) = if !faults.is_empty() {
-            split_pier(scene, pier, &faults, f32::from_bits(key.level), k, key.policy, key.params(), dial)
+            split_pier(scene, pier, &faults, (amt, gate), k, key.policy, key.params(), dial)
         } else if k != [0.0; 4] || dial > rebar::DIAL_ON {
-            craze_pier(scene, pier, f32::from_bits(key.level), k, key.policy, key.params(), dial)
+            craze_pier(scene, pier, (amt, gate), k, key.policy, key.params(), dial)
         } else {
             (-1, [-1, -1])
         };
@@ -2746,12 +2707,11 @@ pub struct GeoKey {
     pub policy: u8,
     /// The active policy's native params at a 0.01 grain (0..=100).
     pub par: [u8; PARAMS_MAX],
-    /// The facade STORY key and the run's field LEVEL, as raw bits: both seed
-    /// the veneer and the damage field, so a change in either really is stale
-    /// geometry. Neither is owner-editable today; they sign so that the day one
-    /// becomes editable the gate already covers it.
+    /// The facade STORY key as raw bits: it seeds the veneer, the damage field
+    /// AND (through the run's sorted samples) every solved threshold, so a
+    /// change in it really is stale geometry. Not owner-editable today; it signs
+    /// so the day it becomes editable the gate already covers it.
     pub story: u32,
-    pub level: u32,
     /// Is this pier's structural fault vetoed?
     pub no_fault: bool,
 }
@@ -2779,7 +2739,6 @@ impl GeoKey {
             policy,
             par: par.map(|v| q(v, 100.0)),
             story: story_of(scene, pier).to_bits(),
-            level: run_level(scene, pier).to_bits(),
             no_fault,
         }
     }
@@ -2816,6 +2775,17 @@ pub fn keys(
 
 #[cfg(test)]
 mod tests {
+    /// A mid-field gate set for the tests that used to pass a level offset: the
+    /// stain window widest, the crack zone next, the veneer's zone tightest —
+    /// the same causal order `wall::derive` produces, at one fixed level so a
+    /// test is not also testing the solver.
+    fn gates(t: f32) -> super::Wear {
+        let mut g = [t; crate::wall::Layer::N];
+        g[crate::wall::Layer::Stain.index()] = t - 0.06;
+        g[crate::wall::Layer::Cracks.index()] = t - 0.03;
+        ([0.7; crate::wall::Layer::N], g)
+    }
+
     /// The knob grain `GeoKey` applies, spelled out for the tests that used to
     /// call the deleted `bucket()` helper.
     fn bucket(k: [f32; 4]) -> [f32; 4] {
@@ -2922,7 +2892,7 @@ mod tests {
         for dial in [0.3f32, 0.6, 1.0] {
             for pier in &meta.piers {
                 let fr = Frame::of(pier);
-                let cfg = CrazeCfg::new(story_of(&scene, pier), 0.0, [0.8, 0.6, 0.5, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
+                let cfg = CrazeCfg::new(story_of(&scene, pier), gates(0.45), [0.8, 0.6, 0.5, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
                 let front = pier_craters(&cfg, &fr, pier, dial, 0.0, &|_, _| true);
                 let fr_rects = patch_rects(&front);
                 let back = pier_craters(&cfg, &fr, pier, dial, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
@@ -2956,7 +2926,7 @@ mod tests {
     /// touched may not sink, and its rect edge may not chamfer.
     #[test]
     fn a_plate_the_crater_clipped_stays_flush_with_the_collars_wall() {
-        let cfg = CrazeCfg::new(3.0, 0.0, [0.8, 0.5, 0.5, 0.0], true, 0.2, &[], param_defaults(0));
+        let cfg = CrazeCfg::new(3.0, gates(0.45), [0.8, 0.5, 0.5, 0.0], true, 0.2, &[], param_defaults(0));
         let plate = Frag {
             poly: vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(0.0, 1.0)],
             open: vec![true; 4], // every edge cracked open: the case that WOULD sink and chamfer
@@ -3153,12 +3123,20 @@ mod tests {
     /// release rebuild fires on a param drag).
     #[test]
     fn lightning_params_steer_the_network() {
+        // CHIPS OFF for this measurement. Since chips became a literal fraction
+        // of the plates inside the zone (they used to be gated by the stain
+        // window on top), `CRAZY`'s 0.8 takes four plates in five away — and a
+        // missing-plate lottery interacting with plate SIZE swamps the param
+        // being measured, to the point that the relationship inverted (720 vs
+        // 1330 verts). Isolating the variable is the fix; softening the fixture
+        // would have hidden that the semantics moved.
         let mk = |par: [f32; PARAMS_MAX]| {
             let mut scene = Scene::default();
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
-            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[], &[]);
-            let sig = keys(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[], &[]);
+            let k = [CRAZY[0], CRAZY[1], CRAZY[2], 0.0];
+            apply_geometry(&mut scene, std::slice::from_ref(&pier), &[k], &[0], &[par], &[], &[]);
+            let sig = keys(&scene, std::slice::from_ref(&pier), &[k], &[0], &[par], &[], &[]);
             (scene.primitives[before + 1].vertex_count, sig)
         };
         let (v_few, s_few) = mk([0.05, 0.9, 0.3]);
@@ -3172,7 +3150,7 @@ mod tests {
     /// inset the plate front (the groove keeps its width).
     #[test]
     fn chamfer_bands_only_on_open_grooves() {
-        let cfg = CrazeCfg::new(3.0, 0.0, [0.5, 0.5, 0.5, 0.0], true, 0.25, &[], param_defaults(0));
+        let cfg = CrazeCfg::new(3.0, gates(0.45), [0.5, 0.5, 0.5, 0.0], true, 0.25, &[], param_defaults(0));
         let sq = vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(0.0, 1.0)];
         let fr = Frame { run_x: true, u0: 0.0, u1: 1.0, t0: 0.0, t1: 0.25, y0: 0.0, y1: 1.0 };
         let mut v = Vec::new();
@@ -3293,7 +3271,7 @@ mod tests {
         let k = [0.6, 0.5, 0.55, 0.2];
         let cfg = |p: &Pier| {
             let fr = Frame::of(p);
-            CrazeCfg::new(story_of(&scene, p), run_level(&scene, p), k, fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0))
+            CrazeCfg::new(story_of(&scene, p), gates(0.45), k, fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0))
         };
         let (ca, cb, cc) = (cfg(a), cfg(b), cfg(c));
         // sample ACROSS the joint: from inside pier a, through the opening, into b
@@ -3327,9 +3305,26 @@ mod tests {
     /// The bounds are deliberately loose around the measurement (age 0.9:
     /// 0.176 .. 0.511, age 0.3: 0.018 .. 0.135) — they pin the SHAPE of the
     /// answer, not the tuning. The vacuity guard is the same table computed with
-    /// the offset forced to 0: it must fail the very bound the fix satisfies.
+    /// AN AMOUNT IS AN AREA — measured on the BUILT VENEER, not on the model.
+    ///
+    /// `wall::an_amount_is_an_area` pins the solver; this pins the thing that
+    /// consumes it. For every RUN of the gym, at the amounts the crack lab's own
+    /// knobs produce, the fraction of the face whose plates actually open
+    /// (`CrazeCfg::frag`'s `zone > 0.35` gate — the real gate, not a proxy) must
+    /// match the asked Web amount.
+    ///
+    /// This is the successor to the FIELD LEVEL test, and the reason that
+    /// machinery is gone. The old gates were absolute thresholds against a field
+    /// whose LEVEL was a per-run lottery: measured over these same runs, the
+    /// damaged area at age 0.9 ran 0.000 (the run behind the doorway — an
+    /// un-ageable facade) to 0.645, so a signed per-run offset was added to nudge
+    /// each field toward a canonical level. Solving the threshold itself deletes
+    /// the lottery at its root instead of correcting for it, and the two tails
+    /// the offset was calibrated to remove cannot exist: an un-ageable run would
+    /// have to fail this equality.
     #[test]
-    fn every_gym_run_ages_and_none_is_wrecked_young() {
+    fn the_built_veneer_covers_the_area_that_was_asked_for() {
+        use crate::wall::Layer;
         let spec = house_game::gym::sim::gym_level();
         let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
         crate::wear::stamp_story(&mut scene, &meta.piers);
@@ -3341,13 +3336,14 @@ mod tests {
             }
         }
         assert!(runs.len() >= 6, "the gym has 5 building runs + 2 garden walls");
-        // fraction of a run's face inside the craze zone (the same >0.35 gate
-        // `CrazeCfg::frag` opens a plate on), on the level's own sampling lattice
-        let zone_cov = |p: &Pier, age: f32, off: f32| {
+        let cov = |p: &Pier, age: f32| -> (f32, f32) {
             let fr = Frame::of(p);
             let (a0, a1) = if fr.run_x { (p.run_lo.x, p.run_hi.x) } else { (p.run_lo.z, p.run_hi.z) };
-            let cfg = CrazeCfg::new(story_of(&scene, p), off, [age, 0.5, 0.55, 0.2], fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
-            let (nu, ny) = (64, 24);
+            let k = [age, 0.5, 0.55, 0.2];
+            let asked = crate::crack::amounts_of(k, 0.0)[Layer::Web.index()];
+            let key = keys(&scene, std::slice::from_ref(p), &[k], &[0], &[param_defaults(0)], &[], &[])[0];
+            let cfg = CrazeCfg::new(story_of(&scene, p), crate::crack::gates_of(p, &key), key.knobs(), fr.run_x, fr.t1 - fr.t0, &[], param_defaults(0));
+            let (nu, ny) = (96, 40);
             let mut hit = 0;
             for i in 0..nu {
                 let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
@@ -3356,26 +3352,25 @@ mod tests {
                     hit += (cfg.zone(u, y) > 0.35) as usize;
                 }
             }
-            hit as f32 / (nu * ny) as f32
+            (asked, hit as f32 / (nu * ny) as f32)
         };
-        let (mut old_min, mut new_min, mut new_max_young) = (f32::MAX, f32::MAX, 0.0f32);
-        let mut spread: Vec<f32> = Vec::new();
+        let mut worst = 0.0f32;
         for p in &runs {
-            let off = run_level(&scene, p);
-            let (hot, young) = (zone_cov(p, 0.9, off), zone_cov(p, 0.3, off));
-            assert!(hot > 0.12, "run {:?} still barely ages at age 0.9: {hot:.3}", rect(p));
-            assert!(young < 0.20, "run {:?} is already wrecked at age 0.3: {young:.3}", rect(p));
-            old_min = old_min.min(zone_cov(p, 0.9, 0.0));
-            new_min = new_min.min(hot);
-            new_max_young = new_max_young.max(young);
-            spread.push(hot);
+            for age in [0.3f32, 0.6, 0.9] {
+                let (asked, got) = cov(p, age);
+                // the >0.35 gate sits ~0.007 of field below the threshold, so the
+                // built area reads a shade high; that plus one quantization step
+                // is what the tolerance covers
+                let e = (got - asked).abs();
+                assert!(e < 0.14, "run {:?} at age {age}: asked {asked:.3} of the face, built {got:.3}", rect(p));
+                worst = worst.max(e);
+            }
+            // and no run may be un-ageable or wrecked young — the two tails the
+            // deleted level offset was calibrated to remove
+            assert!(cov(p, 0.9).1 > 0.12, "run {:?} still barely ages at age 0.9", rect(p));
+            assert!(cov(p, 0.3).1 < 0.20, "run {:?} is already wrecked at age 0.3", rect(p));
         }
-        assert!(old_min < 0.12, "VACUOUS: without the level offset some run must still fail the age-0.9 bound (min was {old_min:.3})");
-        // …and the runs must still differ: the worst facade at least twice the
-        // damaged area of the cleanest, or the fix flattened the variety it was
-        // supposed to preserve
-        let mx = spread.iter().cloned().fold(0.0f32, f32::max);
-        assert!(mx > 2.0 * new_min, "the runs read equally damaged now: {new_min:.3} .. {mx:.3}");
+        println!("worst built-vs-asked area error over {} runs x 3 ages: {worst:.3}", runs.len());
     }
 
     /// The exposed body is PALER than the glaze and neutral — the old core was
@@ -3401,7 +3396,7 @@ mod tests {
     #[test]
     fn depth_range_has_no_deadzone() {
         let thick = 0.25;
-        let t_of = |dep: f32| CrazeCfg::new(3.0, 0.0, [0.5, 0.5, dep, 0.5], true, thick, &[], param_defaults(0)).t;
+        let t_of = |dep: f32| CrazeCfg::new(3.0, gates(0.45), [0.5, 0.5, dep, 0.5], true, thick, &[], param_defaults(0)).t;
         let mut prev = t_of(0.0);
         for i in 1..=10 {
             let t = t_of(i as f32 / 10.0);
@@ -3444,7 +3439,7 @@ mod tests {
         // grow at all, so one wall can legitimately come out nearly clean
         let bolts: Vec<Bolt> = (1..8)
             .flat_map(|seg| {
-                let cfg = CrazeCfg::new(seg as f32 * 3.7, 0.0, bucket(CRAZY), true, 0.25, &[], param_defaults(0));
+                let cfg = CrazeCfg::new(seg as f32 * 3.7, gates(0.45), bucket(CRAZY), true, 0.25, &[], param_defaults(0));
                 bolt_network(&cfg, 0.0, 6.0, 0.0, 2.2)
             })
             .collect();
@@ -3470,7 +3465,7 @@ mod tests {
     /// round-4 floor survives propagation.
     #[test]
     fn grooves_never_go_sub_pixel_across() {
-        let cfg = CrazeCfg::new(7.4, 0.0, bucket(CRAZY), true, 0.25, &[], param_defaults(0));
+        let cfg = CrazeCfg::new(7.4, gates(0.45), bucket(CRAZY), true, 0.25, &[], param_defaults(0));
         let bolts = bolt_network(&cfg, 0.0, 6.0, 0.0, 2.2);
         assert!(!bolts.is_empty(), "nothing to measure");
         for b in &bolts {
