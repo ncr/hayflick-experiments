@@ -38,23 +38,37 @@
 //! emission (it is the module that knows about `Frag`, the droop rule and the
 //! chamfer). The split is deliberate: this file is testable arithmetic.
 
-use crate::crack_geom::{hash13, mixf, smoothstep, vnoise};
+use crate::crack_geom::{hash13, mixf, smoothstep};
 use glam::{Vec2, Vec3};
 
-/// Square bar section, in wu. 0.075 wu is 3.1 px across on an X-run face and
-/// 2.1 px on the worst Z-run face, so a bar always shows a lit top facet AND a
-/// shaded side facet, each at least a pixel: it reads as a BAR, not as a line.
-/// Honest scale note — 1 wu ≈ 1.2 m (WALL_TOP 2.1875 wu ≈ 2.6 m), so this is a
-/// ~9 cm bar under ~4 cm of cover, i.e. 4-5× real rebar. The exaggeration is
-/// the price of ≥ 2 px and it is the same stylization the blocky greybox runs on.
-pub const BAR_S: f32 = 0.075;
+/// Square bar section, in wu. 1.5 px across on an X-run face and 1.0 px on the
+/// worst Z-run one, so a bar is a LINE of steel with one lit edge — which is
+/// what rebar in a spall actually looks like, and what the contour AA is on this
+/// geometry for.
+///
+/// It was 0.075 (3.1 / 2.1 px) through 2026-07-25, sized so the section could
+/// carry a lit top facet AND a shaded side facet at a pixel each. The owner
+/// rejected that on sight ("jest za gruby") and he is right on the arithmetic
+/// too: 1 wu ≈ 1.2 m, so 0.075 wu is a ~9 cm bar — 6-7× real, and against a
+/// 0.15-0.30 wu lens it filled the crater it was supposed to sit in (measured on
+/// the gym's south facade at ZOOM=6: the basin was a solid brown mass, no chalk
+/// floor visible between the tie and the rim). At 0.036 the same crater shows a
+/// tie, a vertical crossing it and dark basin around both. Still ~3× real — that
+/// residue is the price of a pixel, and it is the same stylization the blocky
+/// greybox runs on.
+///
+/// The sweep that picked it is in the round's notes: 0.050 still read as a log,
+/// 0.026 read fine at ZOOM ≥ 1 but is 0.73 px on a Z-run face, i.e. under one
+/// texel — it survives today only on the rust-against-chalk contrast, and would
+/// dot-dash the moment a look put the two closer together.
+pub const BAR_S: f32 = 0.036;
 
-/// Thinnest bar still worth emitting: 0.05 wu is 2.1 px across on an X-run face
-/// and 1.4 px on a Z-run one — under this the "bar" is a line the contour AA
-/// would have to carry alone, which is the read the catalogue rejected. When the
-/// depth budget cannot hold even this, the dial stops at LIFTED COVER and shows
-/// no steel at all (see [`craters`]).
-const BAR_S_MIN: f32 = 0.05;
+/// Thinnest bar still worth emitting — two thirds of the section, the same ratio
+/// the 0.075 era used. Under it the depth budget has eaten so much of the core
+/// that the "bar" would be a sub-texel scratch the contour AA has to carry
+/// alone; the dial then stops at LIFTED COVER and shows no steel at all (see
+/// [`craters`]).
+const BAR_S_MIN: f32 = 0.024;
 
 /// How much of the bar's section must stand proud of the basin floor before the
 /// dial is allowed to expose it. Below half, a bar reads as a bump in the basin,
@@ -112,11 +126,20 @@ const BASIN_MAX_FRAC: f32 = 0.7;
 /// [`craters`].
 pub const DIAL_ON: f32 = 0.12;
 
-/// Rim samples before the four patch-rect corner rays are added.
-const RIM_N: usize = 16;
+/// How many FRACTURE CORNERS the rim is built from, drawn per crater so no two
+/// spalls share a silhouette. A lens is 14-27 px along its long axis, so its
+/// perimeter is 45-90 px: 6-10 corners put a facet every 7-9 px, which is the
+/// coarsest angular detail this target can carry and still read as broken
+/// material rather than as noise on an oval.
+const RIM_C_MIN: usize = 6;
+const RIM_C_MAX: usize = 10;
+/// One sample per facet is ragged INWARD by up to this fraction of its radius —
+/// half a pixel of tooth on an otherwise straight break. Inward-only, so the
+/// [`RIM_VAR`] containment bound survives it untouched.
+const RIM_JAG: f32 = 0.07;
 /// Radial variation of the rim, as a fraction of the lens's half-extents. The
 /// patch rect is sized off this bound, so the rim is inside it BY CONSTRUCTION.
-const RIM_VAR: f32 = 0.30;
+const RIM_VAR: f32 = 0.34;
 /// Minimum width of the COLLAR — the strip of surviving cover between the rim
 /// and the patch rect the veneer is cut back to. Keeps the rect off the rim
 /// even where the radial variation peaks.
@@ -392,12 +415,24 @@ pub fn craters(f: &Face, dmg: &dyn Fn(f32, f32) -> f32, dial: f32, fits: &dyn Fn
     // walks from "the cover has lifted" to "the steel stands clear of the floor"
     let (cover, basin_max, bar_s) = budget(f);
     let floor0 = (f.veneer + FLOOR0).min(basin_max);
-    let knee = (cover + BAR_PROUD * bar_s).min(basin_max);
+    // The knee is where the steel is ALLOWED to show: deep enough that
+    // `BAR_PROUD` of the section stands clear of the floor, but never shallower
+    // than the lifted-cover stage already starts. That `max` is what the thinner
+    // section (2026-07-25, 0.075 → 0.036) made load-bearing: at half a pixel of
+    // proudness the knee fell 0.006 wu IN FRONT of `floor0`, so the ramp ran
+    // BACKWARDS — the basin got shallower as the owner opened the dial — and the
+    // steel was already showing at the bottom of the travel.
+    let knee = (cover + BAR_PROUD * bar_s).max(floor0).min(basin_max);
     let floor = if st < ST_STEEL {
         mixf(floor0, knee, st / ST_STEEL)
     } else {
         mixf(knee, basin_max, (st - ST_STEEL) / (1.0 - ST_STEEL))
     };
+    // …and the three stages are a fact about the DIAL, not a by-product of the
+    // depth arithmetic. Geometry alone decided this until the section thinned,
+    // and then agreed with the staging table only by coincidence: emit no steel
+    // at all below the knee, whatever the depth budget happens to allow.
+    let bar_s = if st >= ST_STEEL { bar_s } else { 0.0 };
 
     // candidate sites: the corrosion potential over the face, worst first
     let n = |a: f32, b: f32| (((b - a) / LATTICE).round() as usize).max(2);
@@ -526,40 +561,89 @@ fn place(f: &Face, p: Vec2, ha: f32, hb: f32, cover: f32, floor: f32, bar_s: f32
 
 /// The rim polygon and the patch rect traced on the same rays.
 ///
-/// `r(θ)` is a bounded radial perturbation of the lens, so every rim vertex is
-/// inside the rect BY CONSTRUCTION — which is what makes the quad ring between
-/// them trivially valid (the same discipline as `Walk`'s corridor clamp: build
-/// the invariant into the generator, do not test for it afterwards).
+/// Concrete does not spall in OVALS (owner, 2026-07-25: "owalne dziury nie są
+/// realistyczne"). The cover fails as a brittle plate: the crack runs a
+/// straightish way, turns at a flaw, runs again — so the loss is bounded by a
+/// short chain of near-STRAIGHT facets meeting at hard corners, some of them
+/// re-entrant. The first cut asked a smooth `r(θ)` (two octaves of value noise)
+/// for that shape and could not give it: perturbing a radius keeps every
+/// tangent continuous, so it produced a lumpy egg — an EYE, and 15 of them in
+/// one frame read as a punched pattern rather than as damage.
+///
+/// So the rim is now a POLYGON of drawn corners, and the samples in between lie
+/// on its straight chords instead of on a curve. Everything the mesh pass leans
+/// on survives that change for free:
+///
+/// - **Star-shaped about `c`** — the corners are drawn at strictly increasing
+///   angles (the jitter is a quarter of one gap, so it cannot reorder them), and
+///   a polygon whose vertices ascend in angle is hit exactly once by every ray
+///   out of `c`. That is what keeps `rim[i]`/`ring[i]` a valid quad ring.
+/// - **Inside the patch rect** — every corner radius is within `1 ± RIM_VAR`, and
+///   a chord between two points of a convex region stays inside it, so no chord
+///   can bulge past the bound the rect was sized for. The ragging is inward-only
+///   for the same reason. Containment stays a property of the generator, never a
+///   test downstream (the same discipline as `Walk`'s corridor clamp).
 fn outline(c: Vec2, hu: f32, hy: f32, seed: f32, lo: Vec2, hi: Vec2, bars: &[Bar]) -> (Vec<Vec2>, Vec<Vec2>) {
-    // base samples + the four corner rays, so the ring traces the rect exactly
-    // instead of chording its corners off
-    let mut ang: Vec<f32> = (0..RIM_N).map(|i| std::f32::consts::TAU * i as f32 / RIM_N as f32).collect();
+    let tau = std::f32::consts::TAU;
+    // Everything until the last two lines happens in the lens's NORMALIZED frame
+    // (where the lens is the unit circle) — including the rect-corner rays, which
+    // is the frame they were already measured in.
+    let h = |k: f32| hash13(Vec3::new(c.x * 3.1 + k, c.y * 4.7 + 1.0, seed + 0.5));
+    let nc = RIM_C_MIN + (h(0.0) * (RIM_C_MAX - RIM_C_MIN + 1) as f32) as usize;
+    let nc = nc.min(RIM_C_MAX);
+    // Corrosion runs ALONG a bar, so the rim reaches out toward each crossing.
+    // A BROAD reach (^4, not the ^8 the smooth rim used): on a curve a narrow
+    // one was a gentle bulge, but between straight facets it converges to a
+    // needle, and thirty needle-ended lenses in one frame read as a stencilled
+    // leaf motif rather than as damage.
+    let lobe = |a: f32| {
+        let (s, cs) = a.sin_cos();
+        bars.iter().fold(0.0f32, |l, b| l.max(if b.along_y { s.abs() } else { cs.abs() }.powi(4)))
+    };
+    // A corner sits in its own angular slot (base + a quarter-gap of jitter, so
+    // the sequence stays ascending and inside 0..τ) at a drawn radius. The two
+    // weights sum to exactly 1: the bound is `RIM_VAR` and nothing can exceed it.
+    let corners: Vec<(f32, Vec2)> = (0..nc)
+        .map(|i| {
+            let k = i as f32;
+            let a = tau * (k + 0.5 + 0.5 * (h(k + 1.0) - 0.5)) / nc as f32;
+            let r = 1.0 + RIM_VAR * (0.78 * (2.0 * h(k + 31.0) - 1.0) + 0.22 * lobe(a));
+            (a, r * Vec2::from_angle(a))
+        })
+        .collect();
+
+    // The sample rays: every corner, one ragged point per facet, and the four
+    // rect corners (so `ring` traces the rect exactly instead of chording it off).
+    let mut ang: Vec<f32> = Vec::with_capacity(2 * nc + 4);
+    for i in 0..nc {
+        let (a0, a1) = (corners[i].0, corners[(i + 1) % nc].0 + if i + 1 == nc { tau } else { 0.0 });
+        ang.push(a0);
+        ang.push(mixf(a0, a1, 0.3 + 0.4 * h(i as f32 + 61.0)).rem_euclid(tau));
+    }
     for corner in [Vec2::new(hi.x, hi.y), Vec2::new(lo.x, hi.y), Vec2::new(lo.x, lo.y), Vec2::new(hi.x, lo.y)] {
         let d = corner - c;
-        ang.push((d.y / hy).atan2(d.x / hu).rem_euclid(std::f32::consts::TAU));
+        ang.push((d.y / hy).atan2(d.x / hu).rem_euclid(tau));
     }
     ang.sort_by(f32::total_cmp);
+    // Two rays a thousandth of a radian apart are the same ray at 27 px across;
+    // keeping both would only emit a degenerate quad with an undefined normal.
+    ang.dedup_by(|a, b| *a - *b < 2e-3);
+
     let (mut rim, mut ring) = (Vec::with_capacity(ang.len()), Vec::with_capacity(ang.len()));
-    for a in ang {
-        let (s, cs) = a.sin_cos();
-        // Periodic in θ by construction (sampled on the unit circle), so the rim
-        // closes. TWO octaves: the first shipped with one slow one and the lens
-        // came out a smooth egg — an EYE, not broken material. The second is
-        // deliberately above what 16 samples can resolve, so it lands as ±1-2 px
-        // of per-vertex jitter, which is what a fracture edge looks like at this
-        // target. The weights sum to exactly 1, so the perturbation stays inside
-        // the ±RIM_VAR the patch rect was sized for — the containment is still by
-        // construction, not by luck.
-        let nz = 2.0 * (vnoise(Vec3::new(2.5 * cs + 5.0, 2.5 * s + 5.0, seed + 0.5)) - 0.5);
-        let nz2 = 2.0 * (vnoise(Vec3::new(4.0 * cs + 11.0, 4.0 * s + 11.0, seed + 2.5)) - 0.5);
-        // corrosion runs ALONG a bar, so the rim lobes out toward each crossing
-        let mut lobe = 0.0f32;
-        for b in bars {
-            let d = if b.along_y { s.abs() } else { cs.abs() };
-            lobe = lobe.max(d.powi(8));
+    for (n, a) in ang.iter().enumerate() {
+        let dir = Vec2::from_angle(*a);
+        // the facet this ray crosses: the last corner at or before it, wrapping
+        let i = corners.iter().rposition(|&(ca, _)| ca <= *a).unwrap_or(nc - 1);
+        let (p0, p1) = (corners[i].1, corners[(i + 1) % nc].1);
+        let e = p1 - p0;
+        let den = dir.perp_dot(e);
+        let mut s = if den.abs() > 1e-6 { p0.perp_dot(e) / den } else { p0.length() };
+        // a facet's own midpoint frays inward — a straight break with a tooth in
+        // it, never a bulge (see RIM_JAG)
+        if !corners.iter().any(|&(ca, _)| (ca - *a).abs() < 1e-6) {
+            s *= 1.0 - RIM_JAG * h(n as f32 + 97.0);
         }
-        let r = 1.0 + RIM_VAR * (0.45 * nz + 0.25 * nz2 + 0.3 * lobe);
-        let p = Vec2::new(c.x + hu * r * cs, c.y + hy * r * s);
+        let p = c + Vec2::new(hu * s * dir.x, hy * s * dir.y);
         rim.push(p);
         ring.push(ray_rect(c, p - c, lo, hi));
     }
@@ -712,7 +796,7 @@ mod tests {
         for dial in [0.2, 0.5, 0.8, 1.0] {
             for cr in craters(&f, &patchy, dial, &anywhere) {
                 assert_eq!(cr.rim.len(), cr.ring.len(), "one ray per vertex");
-                assert!(cr.rim.len() >= RIM_N, "at least the base samples plus the corners");
+                assert!(cr.rim.len() >= 2 * RIM_C_MIN, "at least a corner and a ragged point per facet");
                 assert!(cr.lo.x >= f.u0 + EDGE_MARGIN - 1e-4 && cr.hi.x <= f.u1 - EDGE_MARGIN + 1e-4, "cover survives at the pier's ends");
                 assert!(cr.lo.y >= f.y0 + EDGE_MARGIN - 1e-4 && cr.hi.y <= f.y1 - EDGE_MARGIN + 1e-4, "…and at its base and top");
                 let mut area = 0.0;
@@ -798,5 +882,55 @@ mod tests {
         let other = Face { seed: 96.4, ..face() };
         assert_ne!(craters(&other, &patchy, 0.7, &anywhere)[0].rim, a[0].rim);
     }
+
+    /// THE SHAPE, pinned as a measurement rather than as a screenshot (owner,
+    /// 2026-07-25: "owalne dziury nie są realistyczne").
+    ///
+    /// Two statistics separate a broken plate from a perturbed oval, and both
+    /// are structural rather than tuned:
+    ///
+    /// - some vertex turns HARD — a fracture corner. A smooth `r(θ)` sampled at
+    ///   N rays spreads its 2π of turning evenly, so no vertex can exceed
+    ///   ≈ 2·2π/N ≈ 0.6 rad however violent the noise is.
+    /// - some vertex barely turns at all — the interior of a straight facet.
+    ///   On a curve every sample turns by ≈ 2π/N ≈ 0.3 rad; there is no
+    ///   straight run to find.
+    ///
+    /// Measured over four facades: max turn 1.90..2.43 rad, min turn
+    /// 0.001..0.031, so the gates below sit an order of magnitude clear of the
+    /// old generator's ceiling and floor. The third assert is the invariant the
+    /// MESH rests on — the ring of quads between `rim` and `ring` is only valid
+    /// while the rim is star-shaped about `c`.
+    #[test]
+    fn the_rim_is_a_broken_plate_and_not_a_perturbed_oval() {
+        let f = face();
+        let mut seen = 0;
+        for seed in [41.2f32, 96.4, 12.0, 77.7] {
+            let f = Face { seed, ..f };
+            for cr in craters(&f, &patchy, 0.8, &anywhere) {
+                let n = cr.rim.len();
+                let turn = |i: usize| {
+                    let (a, b, c) = (cr.rim[(i + n - 1) % n], cr.rim[i], cr.rim[(i + 1) % n]);
+                    let (e0, e1) = ((b - a).normalize_or_zero(), (c - b).normalize_or_zero());
+                    e0.perp_dot(e1).atan2(e0.dot(e1))
+                };
+                let turns: Vec<f32> = (0..n).map(turn).collect();
+                let hard = turns.iter().cloned().fold(f32::MIN, f32::max);
+                let flat = turns.iter().map(|t| t.abs()).fold(f32::MAX, f32::min);
+                assert!(hard > 1.2, "seed {seed}: no fracture corner — this is a curve ({hard:.3} rad)");
+                assert!(flat < 0.06, "seed {seed}: no straight facet — this is a curve ({flat:.4} rad)");
+                // star-shaped about `c`: polar angle strictly increasing, which
+                // is what makes every rim→ring band a valid quad
+                let ang = |p: Vec2| (p - cr.c).to_angle();
+                for i in 0..n {
+                    let d = (ang(cr.rim[(i + 1) % n]) - ang(cr.rim[i])).rem_euclid(std::f32::consts::TAU);
+                    assert!(d > 1e-4 && d < std::f32::consts::PI, "seed {seed}: rays out of order at {i} ({d:.5} rad)");
+                }
+                seen += 1;
+            }
+        }
+        assert!(seen >= 8, "VACUOUS: only {seen} craters measured");
+    }
 }
+
 

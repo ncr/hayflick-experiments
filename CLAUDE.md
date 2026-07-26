@@ -316,6 +316,22 @@ basin may cut past the slab's half-thickness. ONE HONEST LIMIT: the depth
 knob's veneer eats the core from both sides, so above depth ~0.72 on the
 gym's 0.2-wu walls there is no core left to hold a mat and the dial stops at
 LIFTED COVER.
+2026-07-26, both halves reworked on the owner's first look ("jest za gruby",
+"owalne dziury nie są realistyczne"). (1) The section went 0.075 -> 0.036 wu
+(3.1 -> 1.5 px on an X face): a bar is a LINE of steel with one lit edge, not
+a log — at 0.075 it filled the 0.15-0.30 lens it was supposed to sit in.
+(2) The rim is no longer a perturbed ellipse but a POLYGON of 6-10 drawn
+fracture corners joined by straight facets, each frayed inward at one
+midpoint; the two invariants the mesh rests on survive by construction
+(corners are drawn at ascending angles, so the rim stays star-shaped about
+`c`; a chord of a convex region stays inside it, so `RIM_VAR` still bounds
+the rim inside the patch rect). Pinned by
+`rebar::the_rim_is_a_broken_plate_and_not_a_perturbed_oval`, which measures
+the turning: some vertex must turn > 1.2 rad (a corner no smoothly sampled
+curve can reach) and some must turn < 0.06 (a straight run no curve has).
+The thin section then broke the DIAL's staging — see the 2026-07-26 learning;
+the fix is that the three stages are now a fact about the dial
+(`st >= ST_STEEL`), never a by-product of the depth arithmetic.
 
 ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
 branching, irregular — not straight lines; two kinds: the coarse one and

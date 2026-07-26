@@ -895,3 +895,61 @@ about the effects.
   blurb is the owner's only description of a demo; the assertion now
   exists, and the band is three lines because the crack lab has three
   things to say.
+
+## 2026-07-26 (the rebar round) — a stage boundary must be DECLARED, and a facet is not a rougher curve
+
+The owner's first look at the cover spall named two things: "jest za gruby"
+(the bar) and "owalne dziury nie są realistyczne" (the crater). Both fixes
+were three-line changes; the interesting part is what each one broke or
+taught.
+
+- **A staging knee that only COINCIDES with the geometry is not a knee.**
+  The spall dial's three stages (cracked → lifted cover → blown spall) were
+  documented as a fraction of the DIAL, and the depth ramp was bent to meet
+  that fraction — but the code that decided whether to emit steel asked a
+  purely geometric question ("does `BAR_PROUD` of the section stand clear of
+  the floor?"). With the old 0.075 section the two agreed, so the design
+  looked right for as long as nobody moved the constant. Halving the section
+  halved the knee's depth, it fell 0.006 wu IN FRONT of where the lifted
+  stage even starts, and two things broke at once: the steel showed at the
+  very bottom of the dial's travel, and the floor ramp `mix(floor0, knee)`
+  ran BACKWARDS — the crater got shallower as the owner opened the dial.
+  The fix is to say it: `bar_s = if st >= ST_STEEL { bar_s } else { 0.0 }`,
+  plus `knee.max(floor0)` so the ramp cannot invert. **If a stage boundary
+  is a product decision, write it as one; deriving it from geometry that
+  happens to land in the right place makes every future constant change a
+  silent regression.** The existing dial test caught this on the first run,
+  which is the argument for pinning a staging TABLE rather than a threshold.
+
+- **Faceting is a different generator, not a louder noise.** The first
+  crater rim was an ellipse with two octaves of value noise on its radius,
+  and the second octave was deliberately above what the sample count could
+  resolve — the reasoning being that unresolvable noise lands as per-vertex
+  jitter, i.e. as a ragged edge. It does not. Perturbing a radius keeps
+  every tangent continuous, so more amplitude buys a lumpier EGG and never a
+  corner; fifteen of them in one frame read as a punched pattern. Broken
+  concrete is a chain of near-straight facets meeting at hard corners, so
+  the generator has to be a POLYGON: draw the corners, join them with
+  chords, sample the chords. Both invariants the mesh pass rests on came
+  along free — corners drawn at ascending angles keep the rim star-shaped
+  about its centre, and a chord between two points of a convex region stays
+  inside it, so the containment bound the patch rect was sized for is
+  untouched. Same discipline as `Walk`'s corridor clamp: pick the
+  parameterisation that makes the invariant true, don't test for it after.
+
+- **Pin a SHAPE with a statistic that the rejected version could not
+  produce.** "Not an oval" sounds untestable, so the temptation is to ship a
+  screenshot and move on. Two numbers separate the two generators by an
+  order of magnitude and neither is tuned: on a smoothly sampled curve the
+  2π of turning is spread evenly, so no vertex can turn much past 2·2π/N
+  (≈0.6 rad) and none can turn ≈0 (there is no straight run to find). The
+  facet rim measures 1.90-2.43 rad at its hardest corner and 0.001-0.031 at
+  its flattest sample. Gates at 1.2 and 0.06 sit clear of both, and would
+  fail loudly if someone smoothed the generator back out.
+
+- Small one: **the sub-pixel floor is per AXIS, not per feature.** 0.026 wu
+  looked fine in every shot — because every shot framed an X-run face at
+  1.07 px. The same bar on a Z-run face is 0.73 px, under one texel, and it
+  survives there only on rust-against-chalk contrast. 0.036 was picked as
+  the thinnest section that clears a texel on the WORST axis; when a
+  candidate is judged by eye, shoot the axis the projection foreshortens.

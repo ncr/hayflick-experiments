@@ -664,7 +664,16 @@ against.
   lip normal, and it buys 75 %.
 - 1 wu ≈ 1.2 m, so a 0.075-wu bar is a ~9 cm rebar under ~7 cm of cover: 4-5×
   real. That is the price of ≥ 2 px, the same stylization the blocky greybox
-  runs on.
+  runs on. **Rejected on sight, 2026-07-26** ("jest za gruby") and the owner is
+  right twice over: it is nearer 6-7× real, and against a 0.15-0.30 wu lens it
+  filled the crater it was meant to sit in — at ZOOM 6 the basin was a solid
+  brown mass with no chalk floor showing. The section is now **0.036 wu**
+  (1.5 px on an X face, 1.0 on the worst Z one): a LINE of steel with one lit
+  edge, which is both what rebar in a spall looks like and what the contour AA
+  is on this geometry for. Sweep: 0.050 still read as a log; 0.026 read fine at
+  every zoom but is 0.73 px on a Z-run face — under one texel, surviving only on
+  the rust-against-chalk contrast. ~3× real is the residue, and it is the price
+  of a pixel on the axis the projection foreshortens.
 - The depth knob's veneer eats the core from both sides (`t = 0.02 … 0.45 ·
   thick`), so above depth ≈ 0.72 on a 0.2-wu wall there is no core left to hold
   a mat and the dial stops at LIFTED COVER. The alternative was the bar in front
@@ -693,10 +702,48 @@ guard that the facing basins really are deep enough to meet.
 | basin floor beside the bar, with vs without the bar | 147 → 137: the bar's **cast shadow**, ~7 % over 2-3 texels |
 
 Feature sizes at the game projection: crater 0.3 × 0.7 wu = **12.4 × 27 px** on
-an X-run face, **8.5 × 27 px** on a Z-run one; bar section 0.063-0.075 wu =
-**2.6-3.1 px** across plus 2.1-3.1 px of depth parallax (a ~5 px silhouette);
-undercut lip 0.04 wu = **1.6 / 1.1 px** — the one sub-2-px feature, which is why
-the pier, its core, its basin and its steel all take the contour AA's opt-in bit.
+an X-run face, **8.5 × 27 px** on a Z-run one; bar section 0.036 wu = **1.5 /
+1.0 px** across plus as much again of depth parallax (2026-07-26; it was
+0.063-0.075 wu = 2.6-3.1 px, see the exaggerations above); undercut lip 0.04 wu
+= **1.6 / 1.1 px**. Three sub-2-px features now, which is why the pier, its
+core, its basin and its steel all take the contour AA's opt-in bit.
+
+### The rim is a broken plate, not a perturbed oval (2026-07-26)
+
+Owner, same look: "owalne dziury nie są realistyczne". The rim was `r(θ)` — the
+lens ellipse with two octaves of value noise on its radius, the second octave
+deliberately pitched above what 16 samples resolve so it would land as ragged
+per-vertex jitter. It does not land that way: perturbing a radius keeps every
+tangent continuous, so amplitude buys a lumpier egg and never a corner, and
+fifteen of them in one frame read as a punched pattern.
+
+The rim is now a POLYGON: 6-10 fracture corners drawn per crater, joined by
+straight chords, with one inward-frayed sample per facet. Both invariants the
+mesh pass rests on survive by construction rather than by test —
+
+- **star-shaped about `c`**: corners are drawn at ascending angles (the jitter is
+  a quarter of one gap, so it cannot reorder them), and a polygon whose vertices
+  ascend in angle is hit exactly once by every ray out of `c`. That is what
+  keeps `rim[i]`/`ring[i]` a valid quad ring in `emit_crater`.
+- **inside the patch rect**: every corner radius is within `1 ± RIM_VAR` and a
+  chord of a convex region stays inside it, so no chord can bulge past the bound
+  the rect was sized for. The fraying is inward-only for the same reason.
+
+The bar LOBE (the rim reaching out along a crossing) dropped from `^8` to `^4`:
+on a curve a narrow reach was a gentle bulge, but between straight facets it
+converges to a needle, and needle-ended lenses read as a stencilled leaf motif.
+
+Pinned by `the_rim_is_a_broken_plate_and_not_a_perturbed_oval` with two
+statistics the old generator could not produce: on a smoothly sampled curve the
+2π of turning spreads evenly, so no vertex turns much past 2·2π/N ≈ 0.6 rad and
+none turns ≈ 0. Measured on the facet rim over four facades: hardest corner
+**1.90-2.43 rad**, flattest sample **0.001-0.031**. The gates are 1.2 and 0.06.
+
+One consequence, and it is the round's real lesson: halving the section moved
+the staging knee in front of the lifted-cover stage's own starting depth, so the
+steel showed at the bottom of the dial and the floor ramp ran backwards. The
+three stages are now a fact about the DIAL (`st >= ST_STEEL`), with
+`knee.max(floor0)` to keep the ramp monotone — see the 2026-07-26 learning.
 
 ## Task 3, step 5 — EFFECT "eased arris" (glaze ease) — DONE 2026-07-25
 
