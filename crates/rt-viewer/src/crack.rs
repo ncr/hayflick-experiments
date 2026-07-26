@@ -139,11 +139,12 @@ pub struct CrackLab {
     pub spall: Vec<f32>,
     pub sel: Option<usize>,
     pub row: usize,
-    /// [`crate::crack_geom::signatures`] of the geometry currently BUILT into
-    /// the scene, PER PIER — `Viewer::crack_release` rebuilds when the knobs
-    /// disagree, and the disagreeing entries are exactly the piers whose GI has
-    /// to settle again (everything else keeps its baked probes).
-    pub geo_sigs: Vec<u64>,
+    /// [`crate::crack_geom::GeoKey`] of the geometry currently BUILT into the
+    /// scene, PER PIER — `Viewer::crack_release` rebuilds when a key disagrees,
+    /// and the disagreeing entries are exactly the piers whose GI has to settle
+    /// again (everything else keeps its baked probes). An integer struct, not a
+    /// hash: `==` means "the built mesh is still right", by construction.
+    pub geo_sigs: Vec<crate::crack_geom::GeoKey>,
     /// Each pier's CHALK CORE material (-1 = none): the groove floors live
     /// there, so the per-pier AA scope has to stamp it too.
     pub cores: Vec<i32>,
@@ -537,7 +538,7 @@ pub fn resolve(seed: Option<CrackSeed>, lab: &mut CrackLab, piers: &[Pier], scen
             let (gk, gs) = lab.geom_input();
             let aged = crate::crack_geom::apply_geometry(scene, piers, &gk, &lab.policy, &par, &gs, &lab.no_fault);
             (lab.cores, lab.spall_mats) = (aged.cores, aged.spall_mats);
-            lab.geo_sigs = crate::crack_geom::signatures(scene, piers, &gk, &lab.policy, &par, &gs, &lab.no_fault);
+            lab.geo_sigs = crate::crack_geom::keys(scene, piers, &gk, &lab.policy, &par, &gs, &lab.no_fault);
             stamp_aa(scene, piers, lab, aa_scope); // the AA scope's opt-in bits
         }
         None => {
@@ -631,7 +632,7 @@ impl Viewer {
         }
         let par = self.crack.active_params();
         let (gk, gs) = self.crack.geom_input();
-        let sigs = crate::crack_geom::signatures(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &self.crack.no_fault);
+        let sigs = crate::crack_geom::keys(&self.scene, &self.piers, &gk, &self.crack.policy, &par, &gs, &self.crack.no_fault);
         if sigs == self.crack.geo_sigs {
             return;
         }
@@ -1073,7 +1074,7 @@ mod tests {
     fn the_age_ramp_grows_geometry_the_whole_way_not_only_paint() {
         let spec = house_game::gym::sim::gym_level();
         let (x, z) = crate::demos::DemoRunner::age_point(crate::demos::by_name("crack lab").expect("the demo").script).expect("the crack lab ramps a wall");
-        let steps: Vec<(u64, usize)> = (0..=15)
+        let steps: Vec<(crate::crack_geom::GeoKey, usize)> = (0..=15)
             .map(|k| {
                 let t = k as f32 / 15.0;
                 let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
@@ -1084,11 +1085,11 @@ mod tests {
                 (knobs[i], spall[i]) = (kn, sp);
                 let (policy, par) = (vec![0u8; n], vec![crate::crack_geom::param_defaults(0); n]);
                 crate::crack_geom::apply_geometry(&mut scene, &meta.piers, &knobs, &policy, &par, &spall, &[]);
-                let sig = crate::crack_geom::signatures(&scene, &meta.piers, &knobs, &policy, &par, &spall, &[])[i];
+                let sig = crate::crack_geom::keys(&scene, &meta.piers, &knobs, &policy, &par, &spall, &[])[i];
                 (sig, scene.indices.len() / 3)
             })
             .collect();
-        let distinct: std::collections::BTreeSet<u64> = steps.iter().map(|s| s.0).collect();
+        let distinct: std::collections::HashSet<crate::crack_geom::GeoKey> = steps.iter().map(|s| s.0).collect();
         assert!(distinct.len() >= 10, "the ramp must cross at least 10 geometry buckets over 16 samples, got {}", distinct.len());
         let (first, last) = (steps[0].1, steps[15].1);
         assert!(last > first * 3 / 2, "the aged wall must carry far more geometry than the pristine one: {first} → {last} tris");
@@ -1188,3 +1189,4 @@ mod catalogue_tests {
         }
     }
 }
+

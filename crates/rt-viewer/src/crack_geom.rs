@@ -2019,10 +2019,6 @@ fn rect_hits(rects: &[(Vec2, Vec2)], lo: Vec2, hi: Vec2) -> bool {
 /// Geometry inputs are BUCKETED so a drag inside a bucket rebuilds nothing; the
 /// spall dial gets a finer grain than the knobs (0.05 vs 0.1) because its three
 /// stages sit inside one slider.
-fn spall_bucket(v: f32) -> f32 {
-    (v.clamp(0.0, 1.0) * 20.0).round() / 20.0
-}
-
 /// `SPALL_LAYER=0|1|2|3` — the BISECT knob (default 3 = both layers). 0 takes
 /// the whole effect out of the geometry pass, so `SPALL_LAYER=0` vs `SPALL=0`
 /// is the A/B that proves the DIAL's zero is the same thing as the effect not
@@ -2477,10 +2473,10 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], d_off: f32, k: [
 
     // the veneer/damage layer takes the RUN's story; the faults handed in came
     // from the PANEL's own seed (`faults_for`) — see `seg_of`
-    let cfg = CrazeCfg::new(story_of(scene, pier), d_off, bucket(k), fr.run_x, t1 - t0, faults, par);
+    let cfg = CrazeCfg::new(story_of(scene, pier), d_off, k, fr.run_x, t1 - t0, faults, par);
     // the break, grown: jagged trunks (THROUGH — they separate the wall) plus
     // their forks (surface cracks that groove the veneer only)
-    let all_bolts = fault_bolts(faults, &fr, bucket(k), cfg.px1);
+    let all_bolts = fault_bolts(faults, &fr, k, cfg.px1);
     let (bolts, forks): (Vec<Bolt>, Vec<Bolt>) = all_bolts.into_iter().partition(|b| b.through);
     let opened = StdCell::new(false);
     let mut all_frags = split_frags(policy_frags(&cfg, policy, u0, u1, y0, y1, &opened), &forks, 400);
@@ -2621,13 +2617,10 @@ fn rect_inside(lo: Vec2, hi: Vec2, cuts: &[(usize, f32)], bolts: &[Bolt]) -> boo
     poly_area(&poly) > want - 1e-5
 }
 
-/// Geometry inputs come from BUCKETED knobs (0.1 grid), so the release-time
-/// signature check is exact: a drag inside a bucket changes no geometry.
-fn bucket(k: [f32; 4]) -> [f32; 4] {
-    k.map(|v| (v * 10.0).round() / 10.0)
-}
-
 // ---- the public surface ----------------------------------------------------
+//
+// Every geometry input arrives through `GeoKey`, which is integer — so no
+// generator below this line ever sees a knob the rebuild gate could not see.
 
 /// The pier's material + its PER-PANEL seed — the structural FAULT lattice's,
 /// and only that. Mirrors the shade pass's `float(h.mat & 255) * 0.618`.
@@ -2707,22 +2700,20 @@ pub fn apply_geometry(
     no_fault: &[bool],
 ) -> Aged {
     let mut out = Aged { cores: vec![-1; piers.len()], spall_mats: vec![[-1, -1]; piers.len()] };
-    // the per-RUN field LEVEL, read here and stamped into `wear`'s lane 1 by
-    // `Viewer::wear_stamp` from the same function: the plates and the paint have
-    // to sit in the same patches
-    let levels = run_levels(scene, piers, knobs);
-    for (i, (pier, k)) in piers.iter().zip(knobs).enumerate() {
-        let policy = policies.get(i).copied().unwrap_or(0);
-        let par = params.get(i).copied().unwrap_or(param_defaults(policy));
-        let dial = spall_bucket(spall.get(i).copied().unwrap_or(0.0));
-        let faults = faults_for(scene, pier, *k, no_fault.get(i).copied().unwrap_or(false));
+    let gk = keys(scene, piers, knobs, policies, params, spall, no_fault);
+    for (i, pier) in piers.iter().enumerate() {
+        let key = gk[i];
+        // EVERY generator reads the key, never the caller's floats — that is
+        // what makes `GeoKey` equality mean "the built mesh is still right".
+        let (k, dial) = (key.knobs(), key.dial());
+        let faults = faults_for(scene, pier, k, key.no_fault);
         // a pier with no knobs but a live spall dial still ages: cover loss is
         // its own mechanism (the base of a sound wall spalls first), and a dial
         // that does nothing on the wall the owner picked is a broken dial
         (out.cores[i], out.spall_mats[i]) = if !faults.is_empty() {
-            split_pier(scene, pier, &faults, levels[i], *k, policy, par, dial)
-        } else if *k != [0.0; 4] || dial > rebar::DIAL_ON {
-            craze_pier(scene, pier, levels[i], bucket(*k), policy, par, dial)
+            split_pier(scene, pier, &faults, f32::from_bits(key.level), k, key.policy, key.params(), dial)
+        } else if k != [0.0; 4] || dial > rebar::DIAL_ON {
+            craze_pier(scene, pier, f32::from_bits(key.level), k, key.policy, key.params(), dial)
         } else {
             (-1, [-1, -1])
         };
@@ -2730,19 +2721,73 @@ pub fn apply_geometry(
     out
 }
 
-/// PER-PIER geometry signature of a knob state: which faults exist (and their
-/// quantized widths/steps) plus the craze bucket + policy + the active
-/// policy's native params — the veneer rides FAULTED piers too, so all of
-/// it signs for every knobbed pier. `Viewer::crack_release` rebuilds only
-/// when a slider drag (or a policy click) actually changed this —
-/// dial-within-a-bucket stays live-material cheap. (Params sign RAW: they
-/// are geometry-only, so any param change means a rebuild.)
+/// PER-PIER GEOMETRY KEY — the rebuild gate, and an all-integer one.
 ///
-/// Per pier and not one whole-state hash because the rebuild needs to know
-/// WHICH piers moved: a knob drag changes exactly one, and the frozen GI can
-/// then be refreshed around that pier instead of rebaked whole (~6.5 s on the
-/// M2 — see `ProbeRefresh::Local`).
-pub fn signatures(
+/// Two piers with equal keys have identical built geometry, and the converse
+/// holds too: everything the geometry pass reads is either IN here or derived
+/// from what is in here. So `==` is exactly "the mesh in the scene is still
+/// right", with no hash, no collisions and no grain to get wrong.
+///
+/// It replaces an FNV over five different grains (knobs at 0.1, the spall dial
+/// at 0.05, fault width at 0.004, its settlement step at 0.005, and the policy
+/// params RAW), and it closes the hole that made the old gate wrong rather than
+/// merely awkward: `faults_for` was handed the caller's RAW knobs while
+/// `craze_pier` got bucketed ones, so a 0.02 slider step — invisible to the
+/// gate, invisible to the veneer — could flip a wall from whole to broken in
+/// half. The fault now reads the SAME quantized knobs as everything else, which
+/// is why [`Self::knobs`] exists: the dequantized value is the only one any
+/// generator ever sees.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
+pub struct GeoKey {
+    /// The four knobs at the authored 0.1 grain (0..=10).
+    pub k: [u8; 4],
+    /// The cover-spall dial at its 0.05 grain (0..=20).
+    pub spall: u8,
+    pub policy: u8,
+    /// The active policy's native params at a 0.01 grain (0..=100).
+    pub par: [u8; PARAMS_MAX],
+    /// The facade STORY key and the run's field LEVEL, as raw bits: both seed
+    /// the veneer and the damage field, so a change in either really is stale
+    /// geometry. Neither is owner-editable today; they sign so that the day one
+    /// becomes editable the gate already covers it.
+    pub story: u32,
+    pub level: u32,
+    /// Is this pier's structural fault vetoed?
+    pub no_fault: bool,
+}
+
+impl GeoKey {
+    /// The knobs AS EVERY GENERATOR MUST SEE THEM — dequantized from the key.
+    /// One function, so the quantization can never be applied on one path and
+    /// skipped on another (which is exactly what went wrong before).
+    pub fn knobs(&self) -> [f32; 4] {
+        self.k.map(|v| v as f32 / 10.0)
+    }
+    /// The spall dial, dequantized.
+    pub fn dial(&self) -> f32 {
+        self.spall as f32 / 20.0
+    }
+    /// The params, dequantized.
+    pub fn params(&self) -> [f32; PARAMS_MAX] {
+        self.par.map(|v| v as f32 / 100.0)
+    }
+    fn of(scene: &Scene, pier: &Pier, k: [f32; 4], policy: u8, par: [f32; PARAMS_MAX], spall: f32, no_fault: bool) -> GeoKey {
+        let q = |v: f32, n: f32| (v.clamp(0.0, 1.0) * n).round() as u8;
+        GeoKey {
+            k: k.map(|v| q(v, 10.0)),
+            spall: q(spall, 20.0),
+            policy,
+            par: par.map(|v| q(v, 100.0)),
+            story: story_of(scene, pier).to_bits(),
+            level: run_level(scene, pier).to_bits(),
+            no_fault,
+        }
+    }
+}
+
+/// Every pier's [`GeoKey`]. Replaces `signatures`: the release gate rebuilds
+/// exactly the piers whose key moved.
+pub fn keys(
     scene: &Scene,
     piers: &[Pier],
     knobs: &[[f32; 4]],
@@ -2750,56 +2795,33 @@ pub fn signatures(
     params: &[[f32; PARAMS_MAX]],
     spall: &[f32],
     no_fault: &[bool],
-) -> Vec<u64> {
-    let mut out = Vec::with_capacity(piers.len());
-    for (i, (pier, k)) in piers.iter().zip(knobs).enumerate() {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut mixh = |x: u64| {
-            h ^= x;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        };
-        // the SPALL dial is geometry-only, exactly like the policy params, so it
-        // signs for every pier (including an unknobbed one — cover spall does
-        // not need the craze layer to exist)
-        let dial = spall_bucket(spall.get(i).copied().unwrap_or(0.0));
-        if dial > rebar::DIAL_ON {
-            mixh(i as u64 | 0x4000_0000);
-            mixh(dial.to_bits() as u64);
-        }
-        let faults = faults_for(scene, pier, *k, no_fault.get(i).copied().unwrap_or(false));
-        for f in &faults {
-            mixh(i as u64);
-            mixh(f.si.to_bits() as u64);
-            mixh(f.seed.to_bits() as u64);
-            mixh((f.mw / 0.004).round() as u64);
-            mixh(((0.015 + 0.035 * k[0]) / 0.005).round() as u64);
-            mixh(if f.sign > 0.0 { 1 } else { 2 });
-        }
-        if *k != [0.0; 4] {
+) -> Vec<GeoKey> {
+    piers
+        .iter()
+        .enumerate()
+        .map(|(i, pier)| {
             let policy = policies.get(i).copied().unwrap_or(0);
-            mixh(i as u64 | 0x8000_0000);
-            mixh(policy as u64 + 0x9e37);
-            // the facade STORY seeds the whole veneer + damage field, so it signs
-            // like a knob: if it ever becomes something the owner can change, the
-            // release gate already rebuilds the piers it moved. The run's field
-            // LEVEL rides along for the same reason (it is knob-independent
-            // today, so in practice it never moves a signature).
-            mixh(story_of(scene, pier).to_bits() as u64);
-            mixh(run_level(scene, pier).to_bits() as u64);
-            for v in bucket(*k) {
-                mixh(v.to_bits() as u64);
-            }
-            for v in params.get(i).copied().unwrap_or(param_defaults(policy)) {
-                mixh(v.to_bits() as u64);
-            }
-        }
-        out.push(h);
-    }
-    out
+            GeoKey::of(
+                scene,
+                pier,
+                knobs.get(i).copied().unwrap_or([0.0; 4]),
+                policy,
+                params.get(i).copied().unwrap_or(param_defaults(policy)),
+                spall.get(i).copied().unwrap_or(0.0),
+                no_fault.get(i).copied().unwrap_or(false),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    /// The knob grain `GeoKey` applies, spelled out for the tests that used to
+    /// call the deleted `bucket()` helper.
+    fn bucket(k: [f32; 4]) -> [f32; 4] {
+        k.map(|v| (v * 10.0).round() / 10.0)
+    }
+
     use super::*;
     use glam::Vec3;
 
@@ -3005,10 +3027,89 @@ mod tests {
         apply_geometry(&mut scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]);
         assert_eq!(scene.primitives.len(), before, "pristine pier untouched");
         assert_eq!(scene.materials[scene.primitives[pier.prim].material_id as usize]._pad & GEO_BIT, 0);
-        let s0 = signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]);
-        let s1 = signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp, &[], &[]);
-        assert_eq!(s0, signatures(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]), "deterministic");
+        let s0 = keys(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]);
+        let s1 = keys(&scene, std::slice::from_ref(&pier), &[HOT], &[0], &dp, &[], &[]);
+        assert_eq!(s0, keys(&scene, std::slice::from_ref(&pier), &[[0.0; 4]], &[0], &dp, &[], &[]), "deterministic");
         assert_ne!(s0, s1, "fault appearance changes the signature");
+    }
+
+    /// A DRAG THAT CHANGED NOTHING REBUILDS NOTHING — and a drag that changed
+    /// something rebuilds exactly once.
+    ///
+    /// The knobs are authored on a 0.1 grain, so a slider dragged 0.005 at a
+    /// time crosses a real boundary every twentieth step and must leave the key
+    /// alone in between. Without this the release gate either rebuilds on every
+    /// mouse-move (a 3.3 s probe refresh per pixel of drag) or misses a real
+    /// change; with an integer key both halves are structural rather than
+    /// tuned.
+    #[test]
+    fn a_drag_that_did_not_change_geom_rebuilds_nothing() {
+        let mut scene = Scene::default();
+        let pier = faulting_pier(&mut scene);
+        let dp = [param_defaults(0)];
+        for lane in 0..4 {
+            let mut prev: Option<GeoKey> = None;
+            let mut flips = 0;
+            for step in 0..=200 {
+                let mut k = [0.5f32; 4];
+                k[lane] = step as f32 * 0.005; // 0.000 .. 1.000
+                let key = keys(&scene, std::slice::from_ref(&pier), &[k], &[0], &dp, &[], &[])[0];
+                if prev.is_some_and(|p| p != key) {
+                    flips += 1;
+                }
+                prev = Some(key);
+            }
+            // 0.005 steps across a 0.1 grain: ten interior boundaries, and the
+            // count is exact because the key is integer — a float gate would
+            // flip on rounding noise instead.
+            assert_eq!(flips, 10, "knob {lane}: the key moved {flips} times over one full sweep, not once per 0.1 grain");
+        }
+    }
+
+    /// THE FAULT IS QUANTIZED LIKE EVERYTHING ELSE.
+    ///
+    /// This is the bug the integer key exists to close, not a nice-to-have.
+    /// `faults_for` used to be handed the caller's RAW knobs while `craze_pier`
+    /// got bucketed ones, so fault PRESENCE was a function of a value the
+    /// rebuild gate could not see: a 0.02 slider step could take a wall from
+    /// whole to broken in half with the gate reporting no change, which means
+    /// the scene kept the old mesh and the GI kept probes for a wall that no
+    /// longer existed.
+    ///
+    /// Pinned as the invariant rather than as one repro: within ONE bucket the
+    /// fault set must be identical, and — the vacuity guard — some bucket
+    /// boundary in the sweep must actually change it, or the test is asserting
+    /// nothing.
+    #[test]
+    fn the_fault_is_quantized_like_everything_else() {
+        let mut scene = Scene::default();
+        let pier = faulting_pier(&mut scene);
+        let dp = [param_defaults(0)];
+        // presence AND the fault's own geometry: `mw` (its gap width) scales
+        // with depth and age, so a raw-float read moved the mesh even where the
+        // fault existed either way. Measured on the shipped crack lab: 0 of 15
+        // piers changed PRESENCE across this fix and every faulted one changed
+        // WIDTH, which is exactly why presence alone is not the thing to pin.
+        let present = |k: [f32; 4]| {
+            let key = keys(&scene, std::slice::from_ref(&pier), &[k], &[0], &dp, &[], &[])[0];
+            let f = faults_for(&scene, &pier, key.knobs(), false);
+            (!f.is_empty(), f.iter().map(|x| (x.mw / 1e-6) as i64).collect::<Vec<_>>())
+        };
+        let mut boundary_flips = 0;
+        let mut last_bucket: Option<(bool, Vec<i64>)> = None;
+        for b in 0..=10 {
+            let centre = b as f32 / 10.0;
+            let inside: Vec<(bool, Vec<i64>)> = [-0.04f32, -0.02, 0.0, 0.02, 0.04].iter().map(|d| present([0.8, (centre + d).clamp(0.0, 1.0), 0.5, 0.0])).collect();
+            assert!(
+                inside.iter().all(|v| *v == inside[0]),
+                "bucket {centre}: the fault differs INSIDE one quantization step ({inside:?}) — it is reading a raw float"
+            );
+            if last_bucket.as_ref().is_some_and(|p| p.0 != inside[0].0) {
+                boundary_flips += 1;
+            }
+            last_bucket = Some(inside[0].clone());
+        }
+        assert!(boundary_flips > 0, "VACUOUS: no bucket boundary changed the fault, so nothing was tested");
     }
 
     /// THE DIRTY-SET PIN (2026-07-25, task 3 step 2): a knob drag on one pier
@@ -3022,12 +3123,12 @@ mod tests {
         let piers = [pier_at(&mut scene, 1.0), pier_at(&mut scene, 9.0)];
         let pol = [0, 0];
         let par = [param_defaults(0); 2];
-        let before = signatures(&scene, &piers, &[CRAZY, CRAZY], &pol, &par, &[], &[]);
-        let after = signatures(&scene, &piers, &[CRAZY, HOT], &pol, &par, &[], &[]);
+        let before = keys(&scene, &piers, &[CRAZY, CRAZY], &pol, &par, &[], &[]);
+        let after = keys(&scene, &piers, &[CRAZY, HOT], &pol, &par, &[], &[]);
         assert_eq!(before[0], after[0], "the untouched pier keeps its signature");
         assert_ne!(before[1], after[1], "the dragged pier's signature moves");
         // and a policy click is the same story (the panel's pattern row)
-        let after = signatures(&scene, &piers, &[CRAZY, CRAZY], &[0, 1], &par, &[], &[]);
+        let after = keys(&scene, &piers, &[CRAZY, CRAZY], &[0, 1], &par, &[], &[]);
         assert_eq!(before[0], after[0], "…for a pattern click too");
         assert_ne!(before[1], after[1]);
     }
@@ -3041,7 +3142,7 @@ mod tests {
         let mut scene = Scene::default();
         let pier = faulting_pier(&mut scene);
         let par = [[0.5; PARAMS_MAX]];
-        let sigs: Vec<Vec<u64>> = (0..POLICIES.len() as u8).map(|p| signatures(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par, &[], &[])).collect();
+        let sigs: Vec<Vec<GeoKey>> = (0..POLICIES.len() as u8).map(|p| keys(&scene, std::slice::from_ref(&pier), &[HOT], &[p], &par, &[], &[])).collect();
         let mut uniq = sigs.clone();
         uniq.dedup();
         assert_eq!(uniq.len(), sigs.len(), "each policy signs distinctly on a faulted pier");
@@ -3057,7 +3158,7 @@ mod tests {
             let pier = pier_at(&mut scene, 1.0);
             let before = scene.primitives.len();
             apply_geometry(&mut scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[], &[]);
-            let sig = signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[], &[]);
+            let sig = keys(&scene, std::slice::from_ref(&pier), &[CRAZY], &[0], &[par], &[], &[]);
             (scene.primitives[before + 1].vertex_count, sig)
         };
         let (v_few, s_few) = mk([0.05, 0.9, 0.3]);
@@ -3112,7 +3213,7 @@ mod tests {
             let veneer = scene.primitives[before + 1];
             assert!(veneer.vertex_count > 12, "{p}: veneer actually fragmented");
             assert_in_box(&scene, before, &pier, p);
-            sigs.push(signatures(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]], &[], &[]));
+            sigs.push(keys(&scene, std::slice::from_ref(&pier), &[CRAZY], &[policy], &[[0.5; PARAMS_MAX]], &[], &[]));
         }
         sigs.dedup();
         assert_eq!(sigs.len(), POLICIES.len(), "policies must sign distinctly");
