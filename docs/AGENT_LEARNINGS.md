@@ -1208,3 +1208,48 @@ level is a `wall::LevelWear` compiled to one `Sheet` per RUN.
   level's own authoring on the first drag, so the owner cannot return to the
   state he is comparing against. It also makes them compose for free — with each
   other and with a per-wall edit.
+
+## 2026-07-27 — the effect-system foundation (wear files, scrub, band, mud)
+
+Owner concept: a PBR-like modular effect system (independent + composable,
+paintable regions, per-instance transforms, renderer-honest). Landed as a
+CONTRACT in the data model, not a plugin system, in four rounds: wear-as-file,
+the variant dial + Origin's deletion, the band mask, and mud — the first new
+effect through the whole pipeline.
+
+- **A global calibration curve on a small field is the lottery solved
+  thresholds exist to remove — applied to a NEW layer, not just old ones.**
+  Mud's first cut mapped amount→threshold with two constants fitted to pooled
+  noise quantiles; a splash band holds ~a dozen independent noise cells, so
+  per-story coverage measured 1.8× the ask. The system already knew the fix —
+  solve the quantile of the run's OWN samples — and the lesson is that a new
+  layer must EARN skipping the solver, not default to it because it is
+  "paint-only". The pooled-quantile dump was still worth one throwaway test:
+  it produced the shape (near-linear) that said solving would be cheap.
+
+- **A half-wired knob reads as a feature until you trace both consumers.**
+  `Origin` (ground/even/coping/both) biased the SOLVED threshold but never
+  reached the field on host or shader — it changed HOW MUCH while claiming
+  WHERE, on every wall, since the day it shipped. Found only because the plan
+  round audited every channel end to end. The band mask is the honest version,
+  and the deletion collapsed `RunField::at` into literally the generator's
+  `dmg_field` — the solver, the geometry and both twins now read one function.
+
+- **A mask must enter the FIELD, and by SUBTRACTION.** Masking layer visibility
+  per consumer re-creates the paint-vs-plates drift; masking the field steers
+  every consumer at once. And a multiplicative mask leaks at the top of every
+  dial (zero is still above the full-coverage gate) where subtraction keeps
+  in-band values bit-exact and drops out-of-band below every gate — the
+  byte-stable default and the provable exclusion come from the same operator.
+
+- **An unauthored slab is not a specimen.** Catalogue row 3 first built five
+  slabs for two subjects, and the two empty ones nearest the spawn sat inside
+  the ROI reveal disc and dissolved on boot — a bench artifact indistinguishable
+  from a render bug in the SHOT. Build what has a subject; grow the row with
+  the round that brings one.
+
+- **Persistence changes what a panel IS.** Until the wear file, every drag died
+  on exit, so the panel was a demo dial; the same panel with a save path is an
+  AUTHORING tool, and the save's edge cases (env overrides must not freeze
+  themselves into the file, demo beats must not write, derived runs must stay
+  derived so the spread keeps breathing) are where that difference lives.
