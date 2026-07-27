@@ -280,6 +280,11 @@ pub(crate) enum Row {
     /// (`wall::scrub_key`), re-rolling paint, plates and breaks together —
     /// the author's "move the damage until it sits right".
     Scrub,
+    /// The BAND's two edges — "the damage shows HERE": one authored region
+    /// that the painted gates, the plates and the crater sites all obey
+    /// (`wall::banded` enters the field itself).
+    BandLo,
+    BandHi,
     Grain,
     Relief,
     /// The small-crack pattern: a cycler.
@@ -317,6 +322,8 @@ impl Row {
             Row::Layer(l) => l.name(),
             Row::Breaks => "breaks",
             Row::Scrub => "variant",
+            Row::BandLo => "band low",
+            Row::BandHi => "band high",
             Row::Grain => "grain",
             Row::Relief => "relief",
             Row::Pattern => "pattern",
@@ -343,6 +350,8 @@ pub(crate) fn rows_of(spec: &crate::wall::WallSpec) -> Vec<Row> {
     v.extend(crate::wall::Layer::ALL.into_iter().map(Row::Layer));
     v.push(Row::Breaks);
     v.push(Row::Scrub);
+    v.push(Row::BandLo);
+    v.push(Row::BandHi);
     v.push(Row::Grain);
     v.push(Row::Relief);
     v.push(Row::Pattern);
@@ -358,7 +367,8 @@ pub(crate) fn crack_panel_h(nrows: usize) -> i32 {
 
 /// The tallest panel — lightning, which has the most native params. Shares the
 /// settings staging buffer, so the fit is compile-guarded like the game panels'.
-pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (3 + crate::wall::Layer::N as i32 + 5 + crate::crack_geom::PARAMS_MAX as i32 + 2);
+/// The 7 is breaks + variant + the band's two edges + grain + relief + pattern.
+pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (3 + crate::wall::Layer::N as i32 + 7 + crate::crack_geom::PARAMS_MAX as i32 + 2);
 const _: () = assert!(CRACK_PANEL_H <= MPANEL_H);
 
 /// The picked WALL's panel — it replaces the hamburger while a wall is selected
@@ -420,6 +430,16 @@ pub(crate) fn crack_canvas(label: &str, run: usize, spec: &crate::wall::WallSpec
             Row::Scrub => {
                 track(&mut c, y, spec.scrub, hot);
                 mtext(&mut c, w, MVAL_X, y + 2, &format!("{:.2}", spec.scrub), 0x99cc99);
+            }
+            Row::BandLo => {
+                track(&mut c, y, spec.band.0, hot);
+                let off = spec.band.0 == 0.0;
+                mtext(&mut c, w, MVAL_X, y + 2, &(if off { "off".to_string() } else { format!("{:.2}", spec.band.0) }), if off { 0x707078 } else { 0x99cc99 });
+            }
+            Row::BandHi => {
+                track(&mut c, y, spec.band.1, hot);
+                let off = spec.band.1 == 1.0;
+                mtext(&mut c, w, MVAL_X, y + 2, &(if off { "off".to_string() } else { format!("{:.2}", spec.band.1) }), if off { 0x707078 } else { 0x99cc99 });
             }
             Row::Pattern => mtext(&mut c, w, MTRACK_X, y + 2, &format!("< {} >", spec.shape.pattern.name()), 0x99cc99),
             Row::Grain => {
@@ -896,6 +916,8 @@ impl Viewer {
             // stopped listening to its causes on that layer.
             Row::Layer(l) => self.crack.spec[r].pin = self.crack.spec[r].pin.area(l, v),
             Row::Scrub => self.crack.spec[r].scrub = v,
+            Row::BandLo => self.crack.spec[r].band.0 = v,
+            Row::BandHi => self.crack.spec[r].band.1 = v,
             Row::Grain => self.crack.spec[r].shape.grain = v,
             Row::Relief => self.crack.spec[r].shape.relief = v,
             Row::Param(j) => {

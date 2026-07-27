@@ -26,6 +26,7 @@
 //! wall <x> <z> [label…]   opens a wall block at a world point
 //!   story <w> <s> <c>     the wall's own causes             (default 0 0 0)
 //!   scrub <v>             the VARIANT dial, 0..1 (default 0 = the run's hash)
+//!   band <lo> <hi>        the damage band's edges, 0..1     (default 0 1)
 //!   pin <layer> <v>       stain|web|cracks|chips|spall — an authored amount
 //!   breaks <n> [<at>]     a COUNT and optionally a PLACE (0..1 along the run)
 //!   grain <v>             plate size, world units
@@ -150,6 +151,13 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
                 }
                 w.spec.scrub = v;
             }
+            ("band", Some(w)) => {
+                let (lo, hi) = (f(0)?, f(1)?);
+                if !(0.0..=1.0).contains(&lo) || !(0.0..=1.0).contains(&hi) || lo > hi {
+                    return Err(format!("line {n}: a band is 0 <= lo <= hi <= 1 of the wall's height"));
+                }
+                w.spec.band = (lo, hi);
+            }
             ("pin", Some(w)) => {
                 let l = layer_of(rest.first().copied().unwrap_or("")).ok_or(format!("line {n}: unknown layer"))?;
                 w.spec.pin = w.spec.pin.area(l, f(1)?);
@@ -235,6 +243,9 @@ pub fn serialize_parts(base: Story, spread: f32, walls: &[WallAt]) -> String {
         if s.scrub != 0.0 {
             b.push(format!("  scrub {}", num(s.scrub)));
         }
+        if s.band != (0.0, 1.0) {
+            b.push(format!("  band {} {}", num(s.band.0), num(s.band.1)));
+        }
         for l in Layer::ALL {
             if let Some(v) = s.pin.get(l) {
                 b.push(format!("  pin {} {}", l.name(), num(v)));
@@ -309,7 +320,7 @@ pub fn lab_walls(lw: &LevelWear, runs: &[crate::wall::RunRect], lab: &crate::cra
 /// harness's asked-for state, not the owner's authoring, and freezing that
 /// into the file would make one SHOT recipe permanent.
 fn env_overridden() -> bool {
-    ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "WEAR_EDIT"].iter().any(|k| std::env::var(k).is_ok())
+    ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "BAND", "WEAR_EDIT"].iter().any(|k| std::env::var(k).is_ok())
 }
 
 impl crate::viewer::Viewer {
@@ -361,6 +372,7 @@ mod tests {
                     spec: WallSpec {
                         story: Story { weather: 0.9, settlement: 0.1, cover_loss: 0.0 },
                         scrub: 0.3,
+                        band: (0.1, 0.55),
                         pin,
                         shape: Shape { grain: 0.2, relief: 0.7, pattern: Pattern::Craquelure { wave: 0.5 } },
                         paint_only: true,
@@ -398,6 +410,7 @@ mod tests {
             ("wall 1 2 w\n  breaks 7\n", "whole 0..=3"),
             ("wall 1 2 w\n  breaks 1 1.5\n", "fraction of the run"),
             ("wall 1 2 w\n  scrub 2\n", "dial, 0..1"),
+            ("wall 1 2 w\n  band 0.8 0.2\n", "lo <= hi"),
             ("wall 1 2 w\n  pattern voronoi\n", "unknown pattern"),
             ("wall 1 2 w\n  pattern craquelure 0.5 0.5\n", "native params"),
             ("wall 1 2 w\nbase 0 0 0\n", "level statement"),

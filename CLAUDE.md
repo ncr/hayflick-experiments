@@ -605,6 +605,33 @@ the honest version. With it gone `wall::RunField::at` DELEGATES to
 both shader twins now read literally one definition. Zero shader edits this
 round; gym, crack lab AND catalogue BYTE-IDENTICAL at defaults, `SCRUB=0.6`
 A/B confirms the dial moves the image.
+
+THE BAND MASK since 2026-07-27 (round C) — "rysowanie obszaru" v1, and the
+EFFECT WORD IS NOW FULL. `WallSpec.band` = normalized (lower, upper) edges
+of the wall's height (panel rows "band low"/"band high", file line
+`band lo hi`, env `BAND=lo,hi`); the mask enters the DAMAGE FIELD ITSELF
+(`wall::banded` — SUBTRACTION, not multiplication: in-band values pass
+bit-exactly, so the default is byte-stable, and out-of-band drops 2.0 below
+`GATE_FULL` so even "all of it" excludes it — a multiplicative mask leaks at
+the top of every dial). ONE region steers everything: `RunField` samples the
+banded field (solved areas live inside the band; an ask the band cannot hold
+reports `Miss::Coarse`), `CrazeCfg::dmg` bands identically (plates, chips,
+sinks, roots, walk-stop follow via zone/crack_zone), crater sites get a
+band VETO composed into `fits` (a veto must not spend budget), and the twins
+subtract the same mask from `dmgN`. Breaks are deliberately NOT band-gated
+(a break spans the height; a horizontal band would be a hidden off-switch).
+Codes ride effect-word lanes 2/3 (`wall::band_codes`: 0 = edge off, upper
+edge counts DOWN so the default packs to the empty word); `Geom.band` signs
+the rebuild; `wear.rs` REQUIRED table pins all four lane decodes + the mask's
+three constants (`/ 2.1875` = `wall::BAND_TOP` — pinned equal to
+`gym_scene::WALL_TOP` — feather 0.06, the `2.0 * (1.0 - band)` drop) in BOTH
+twins. `WEAR=` is deleted: all four lanes are derived, each driven by its own
+dial. The GLSL twin is the VERIFIED side (this round ran on the RTX box);
+the MSL twin is a blind line-for-line port — first Mac session: boot
+`LEVEL="crack lab" BAND=0,0.45 WINDOW=1280x800` and compare against the
+Vulkan reference (damage confined to the lower band, upper walls clean).
+Verified here: gym / crack lab / catalogue BYTE-IDENTICAL at defaults;
+`BAND=0,0.45` A/B shows the intended confinement and nothing else.
 - Verified 4 runs per side, all pairs: `gym` BYTE-IDENTICAL, `crack lab` 3.18 %
   at max 187, catalogue 1.65 % at max 168 — the aging is authored differently, so
   the walls differ; the plain greybox does not move at all.

@@ -30,8 +30,14 @@
 //!   ABSOLUTE damage-field thresholds, solved per RUN by
 //!   `wall::RunField::threshold` and carried as 6-bit codes counting DOWN from
 //!   `wall::GATE_HI`. See [`STAIN_LANE`] for why absolute and why downward.
-//! - lanes 2..3 — **UNCLAIMED**. The effect that takes one names it HERE, in
-//!   this comment, so two effects can never quietly land on the same bits.
+//! - lane 2 — **BAND LO**, lane 3 — **BAND HI** (claimed 2026-07-27, the
+//!   effect-system round C): the wall's band-mask edge codes
+//!   (`wall::band_codes` — 0 = that edge off, upper edge counts DOWN from the
+//!   top so the default authoring packs to zero). The twins subtract the mask
+//!   from `dmgN` (`wall::banded`), which is what makes ONE authored region
+//!   steer the painted gates and the host geometry together. The word is
+//!   FULL: the next paint dial goes to `_pad` lanes 2/3, and after those to
+//!   the per-material aux buffer this codec's budget notes keep promising.
 //!
 //! The unpack both shader twins must copy verbatim — one spelling, both
 //! dialects: MSL takes `.a` exactly as GLSL does (rgba swizzles are legal on an
@@ -204,6 +210,9 @@ pub fn stamp_story(scene: &mut Scene, piers: &[Pier]) -> usize {
 /// means provably NOTHING, by construction rather than by a signed trick.
 pub const STAIN_LANE: usize = 0;
 pub const WEB_LANE: usize = 1;
+/// The band mask's two edge lanes (`wall::band_codes` order: lower, upper).
+pub const BAND_LO_LANE: usize = 2;
+pub const BAND_HI_LANE: usize = 3;
 
 /// Dials in one effect word: 4 × 6 bits = the whole 24-bit budget.
 pub const DIALS: usize = 4;
@@ -277,18 +286,25 @@ pub fn stamp(scene: &mut Scene, material_id: usize, e: Effect) -> Option<f32> {
 /// list (`-1` = the pier was left pristine), passed as plain ids so this module
 /// does not depend on the lab.
 ///
-/// `gates[i]` is pier `i`'s pair of SOLVED, quantized painted-layer thresholds
-/// as gate CODES (`wall::gate_code`) — a per-RUN datum, landing on the pier and
-/// on its chalk core so a crack floor stains with the wall around it. An
-/// all-zero pair stamps an empty word, which is why an unaged level writes
-/// nothing at all and stays bit-identical to the plain greybox.
-pub fn stamp_all(scene: &mut Scene, piers: &[Pier], cores: &[i32], gates: &[[u32; 2]], base: Effect) -> Vec<(usize, f32)> {
+/// `gates[i]` is pier `i`'s four lane CODES — the two solved painted-layer
+/// thresholds (`wall::gate_code`) and the two band edges (`wall::band_codes`)
+/// — a per-RUN datum, landing on the pier and on its chalk core so a crack
+/// floor stains (and is banded) with the wall around it. An all-zero set
+/// stamps an empty word, which is why an unaged level writes nothing at all
+/// and stays bit-identical to the plain greybox.
+///
+/// All four lanes are DERIVED now, so the `WEAR=` harness seed and the `base`
+/// parameter it fed are gone (2026-07-27): a lane with a real owner is driven
+/// through that owner's own dial (`STORY=`/`BAND=`), not around it.
+pub fn stamp_all(scene: &mut Scene, piers: &[Pier], cores: &[i32], gates: &[[u32; 4]]) -> Vec<(usize, f32)> {
     let mut out = Vec::new();
     for (i, pier) in piers.iter().enumerate() {
-        let mut e = base;
-        let g = gates.get(i).copied().unwrap_or([0, 0]);
+        let mut e = Effect::default();
+        let g = gates.get(i).copied().unwrap_or([0; 4]);
         e.dials[STAIN_LANE] = g[0] as f32 / DIAL_MAX;
         e.dials[WEB_LANE] = g[1] as f32 / DIAL_MAX;
+        e.dials[BAND_LO_LANE] = g[2] as f32 / DIAL_MAX;
+        e.dials[BAND_HI_LANE] = g[3] as f32 / DIAL_MAX;
         let core = cores.get(i).copied().filter(|c| *c >= 0);
         for mid in [Some(scene.primitives[pier.prim].material_id), core].into_iter().flatten() {
             if let Some(w) = stamp(scene, mid as usize, e) {
@@ -297,25 +313,6 @@ pub fn stamp_all(scene: &mut Scene, piers: &[Pier], cores: &[i32], gates: &[[u32
         }
     }
     out
-}
-
-/// `WEAR=d0[,d1,d2,d3]` — the wear family's harness seed (a shell-only env
-/// read, like LOOK/PROJ/CRACKS; see the config.rs exception list): stamp every
-/// pier uniformly at boot, so a headless SHOT can drive a lane the moment a
-/// shader twin reads one. Missing components read 0; unset = no word at all.
-/// The two gate lanes are DERIVED per run, so their components here are ignored.
-pub fn seed_from_env() -> Option<Effect> {
-    std::env::var("WEAR").ok().map(|v| parse_seed(&v))
-}
-
-/// The pure half of [`seed_from_env`].
-fn parse_seed(v: &str) -> Effect {
-    let parts: Vec<&str> = v.split(',').map(str::trim).collect();
-    let mut dials = [0.0; DIALS];
-    for (i, d) in dials.iter_mut().enumerate() {
-        *d = parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-    }
-    Effect { dials }
 }
 
 impl Viewer {
@@ -330,19 +327,19 @@ impl Viewer {
         // up in different patches. Deriving them twice is the drift this codec's
         // whole discipline exists to prevent.
         let wear = self.crack.wear();
-        let gates: Vec<[u32; 2]> = (0..self.piers.len())
+        let gates: Vec<[u32; 4]> = (0..self.piers.len())
             .map(|i| match wear.of(i).or_else(|| self.crack.pier_run.get(i).and_then(|r| self.crack.sheets.get(*r))) {
                 // A PAINT-ONLY wall is exactly the case that must still get its
                 // word: the geometry pass skips it, and the painted layers it
                 // exists to show are the ones this word gates.
-                Some(sh) => [sh.paint.stain, sh.paint.web],
-                None => [0, 0], // unaged: an empty word, bit-identical to the plain greybox
+                Some(sh) => [sh.paint.stain, sh.paint.web, sh.paint.band[0], sh.paint.band[1]],
+                None => [0; 4], // unaged: an empty word, bit-identical to the plain greybox
             })
             .collect();
-        let changed = stamp_all(&mut self.scene, &self.piers, &self.crack.cores, &gates, self.wear);
+        let changed = stamp_all(&mut self.scene, &self.piers, &self.crack.cores, &gates);
         if !changed.is_empty() {
-            let n = gates.iter().filter(|g| **g != [0, 0]).count();
-            println!("wear: effect word streamed to {} materials (base dials {:?}, solved gates on {n} piers)", changed.len(), self.wear.dials);
+            let n = gates.iter().filter(|g| **g != [0; 4]).count();
+            println!("wear: effect word streamed to {} materials (solved gates on {n} piers)", changed.len());
         }
         for (mid, w) in changed {
             self.backend.set_material_effect(mid, w);
@@ -421,20 +418,18 @@ mod tests {
         let body = scene.materials[scene.primitives[piers[0].prim].material_id as usize];
         scene.materials.push(body);
         let cores = vec![scene.materials.len() as i32 - 1, -1];
-        let flat = [[0u32; 2]; 2]; // no solved gates on these piers
-        assert!(stamp_all(&mut scene, &piers, &cores, &flat, Effect::default()).is_empty(), "the empty word is already there — nothing to stream");
-        let e = Effect { dials: [0.5, 0.0, 0.0, 0.25] };
-        let changed = stamp_all(&mut scene, &piers, &cores, &flat, e);
-        assert_eq!(changed.len(), 3, "two piers + one core");
-        // lanes 0 and 1 are DERIVED per run, so the base effect's components
-        // there are overwritten — the streamed word carries the gates, not
-        // whatever the harness put in those slots
-        let want = Effect { dials: [0.0, 0.0, 0.0, 0.25] }.word();
+        let flat = [[0u32; 4]; 2]; // no solved gates, no band on these piers
+        assert!(stamp_all(&mut scene, &piers, &cores, &flat).is_empty(), "the empty word is already there — nothing to stream");
+        // solved codes on pier 0 only: stain gate 12, band-hi edge 9
+        let gates = [[12u32, 0, 0, 9], [0; 4]];
+        let changed = stamp_all(&mut scene, &piers, &cores, &gates);
+        assert_eq!(changed.len(), 2, "the gated pier + its core; the flat pier stays empty");
+        let want = Effect { dials: [12.0 / 63.0, 0.0, 0.0, 9.0 / 63.0] }.word();
         for (mid, w) in &changed {
             assert_eq!(scene.materials[*mid].emissive[3], *w, "the CPU shadow and the streamed value agree");
-            assert_eq!(*w, want, "the gate lanes must come from `gates`, not from the base effect");
+            assert_eq!(*w, want, "every lane must come from `gates` — all four are derived now");
         }
-        assert!(stamp_all(&mut scene, &piers, &cores, &flat, e).is_empty(), "re-stamping the same word streams nothing");
+        assert!(stamp_all(&mut scene, &piers, &cores, &gates).is_empty(), "re-stamping the same word streams nothing");
     }
 
     /// LANE 1's whole reason to be signed: the empty word — every material
@@ -522,9 +517,17 @@ mod tests {
             let lines = code_lines(src);
             let has = |pat: &str| lines.iter().any(|l| l.contains(pat));
             // REQUIRED — the lane must still be decoded exactly as packed
-            // both lanes, at their bit positions
+            // all four lanes, at their bit positions
             assert!(has("ew        & 63u"), "{name}: the STAIN lane (bits 0..5) moved");
             assert!(has("(ew >> 6) & 63u"), "{name}: the WEB lane (bits 6..11) moved");
+            assert!(has("(ew >> 12) & 63u"), "{name}: the BAND-LO lane (bits 12..17) moved");
+            assert!(has("(ew >> 18) & 63u"), "{name}: the BAND-HI lane (bits 18..23) moved");
+            // the band mask's three constants, as the host spells them: the
+            // normalization height (wall::BAND_TOP), the feather, and the
+            // subtraction that drops out-of-band below every gate
+            assert!(has("/ 2.1875"), "{name}: the band height drifted from wall::BAND_TOP");
+            assert!(has("0.06"), "{name}: the band feather drifted from wall::BAND_FEATHER");
+            assert!(has("2.0 * (1.0 - band)"), "{name}: the band no longer drops the field below the gates");
             // the codec's two constants, spelled as the HOST spells them — a
             // shader counting from a different top or by a different step reads
             // every threshold wrong, and does it silently
@@ -578,11 +581,4 @@ mod tests {
         ">> 26",    // `_pad` knob lane 3 — unclaimed
     ];
 
-    /// `WEAR=` parsing: leading components in lane order, missing tails read 0.
-    #[test]
-    fn parse_seed_reads_lanes_in_order() {
-        assert_eq!(parse_seed("0.5"), Effect { dials: [0.5, 0.0, 0.0, 0.0] });
-        assert_eq!(parse_seed("0.1, 0.2 ,0.3,0.4"), Effect { dials: [0.1, 0.2, 0.3, 0.4] });
-        assert_eq!(parse_seed(""), Effect::default(), "a junk value is the empty word, never a panic");
-    }
 }

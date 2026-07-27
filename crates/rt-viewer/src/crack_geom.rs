@@ -377,6 +377,10 @@ struct CrazeCfg {
     grain: f32,
     seed: f32,     // cell lattice seed (shader: story + 5)
     dmg_seed: f32, // damage field seed (shader: story * 7 + 3 — NOT the cell seed)
+    /// The wall's BAND edge codes (`wall::band_codes`, from `Geom.band`) —
+    /// applied inside [`Self::dmg`], so every consumer of the field obeys the
+    /// authored region without knowing it exists.
+    band: [u32; 2],
     /// ABSOLUTE damage-field thresholds, one per layer, SOLVED for this run by
     /// `wall::RunField::threshold` and quantized exactly as the shade pass will
     /// decode them (`wall::gate_quantize`).
@@ -448,6 +452,7 @@ impl CrazeCfg {
         let par = g.par.map(dq);
         CrazeCfg {
             grain: dq(g.grain),
+            band: g.band.map(u32::from),
             seed: story + 5.0,
             dmg_seed: story * 7.0 + 3.0,
             t_crack: gate[Layer::Cracks.index()],
@@ -491,10 +496,14 @@ impl CrazeCfg {
     fn cham_d(&self) -> f32 {
         self.cham_w().min(0.55 * self.t)
     }
-    /// The macro damage field at face coords (u, y) — exact fbm mirror,
-    /// including the run's LEVEL offset (the shade pass adds it to `dmgN`).
+    /// The macro damage field at face coords (u, y) — exact fbm mirror, with
+    /// the wall's BAND applied the same way both shader twins apply it
+    /// (`wall::banded`: in-band exact, out-of-band dropped below every gate).
+    /// Banding HERE is what makes one authored region steer everything at
+    /// once: `zone`, `crack_zone`, chip recesses, crack roots, the walk's
+    /// stop condition and the crater potential all read this one function.
     fn dmg(&self, su: f32, sy: f32) -> f32 {
-        dmg_field(self.dmg_seed, su, sy)
+        crate::wall::banded(dmg_field(self.dmg_seed, su, sy), self.band, sy / crate::wall::BAND_TOP)
     }
     /// Fault-proximity halo (0..1) — mirrors the paint's fracture zone.
     fn halo(&self, su: f32, sy: f32) -> f32 {
@@ -2098,7 +2107,12 @@ fn pier_craters(cfg: &CrazeCfg, fr: &Frame, pier: &Pier, area: f32, salt: f32, f
     if spall_layers() == 0 {
         return Vec::new(); // the whole effect off — see `spall_layers`
     }
-    rebar::craters(&face, &|u, y| cfg.dmg(u, y), area, fits)
+    // The BAND veto, composed into `fits` like the back face's disjointness
+    // veto: a vetoed site must never spend the budget (rebar's monotonicity
+    // rule), and the banded `dmg` alone only SORTS out-of-band sites last —
+    // a count larger than the band can hold would still spill past its edge.
+    let in_band = |lo: Vec2, hi: Vec2| crate::wall::band_mask(cfg.band, (lo.y + hi.y) * 0.5 / crate::wall::BAND_TOP) > 0.5;
+    rebar::craters(&face, &|u, y| cfg.dmg(u, y), area, &|lo, hi| in_band(lo, hi) && fits(lo, hi))
 }
 
 /// The seed salt for the wall's BACK face. Both faces read the same damage

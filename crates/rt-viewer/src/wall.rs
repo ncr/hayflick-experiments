@@ -60,7 +60,7 @@
 // `Sheet::paint`), and this allow comes off with them.
 #![allow(dead_code)]
 
-use crate::crack_geom::{hash13, mixf};
+use crate::crack_geom::{hash13, mixf, smoothstep};
 use glam::Vec3;
 
 // ---------------------------------------------------------------------------
@@ -110,6 +110,58 @@ pub const SCRUB_SPAN: f32 = 2.0;
 /// inside one bucket rebuilds nothing.
 pub fn scrub_key(base: f32, scrub: f32) -> f32 {
     base + (scrub.clamp(0.0, 1.0) * 63.0).round() * (SCRUB_SPAN / 63.0)
+}
+
+// ---------------------------------------------------------------------------
+// 1b. The band mask — "the effect shows HERE"
+// ---------------------------------------------------------------------------
+
+/// The height every wall band is normalized against, in world units — the
+/// authored wall top (`gym_scene::WALL_TOP`, pinned equal by test). A CONSTANT
+/// rather than the run's own extent because both shader twins evaluate the
+/// mask from a world-space hit position and know nothing about runs; every
+/// authored run spans 0..WALL_TOP today, so the two spellings agree.
+pub const BAND_TOP: f32 = 2.1875;
+
+/// Feather half-width of a band edge, as a fraction of [`BAND_TOP`] — ~0.13 wu,
+/// 5 px on an X face: soft enough that an edge never reads as a painted line,
+/// tight enough that "lower half" means the lower half.
+pub const BAND_FEATHER: f32 = 0.06;
+
+/// The band's two 6-bit lane codes (effect word lanes 2/3). CODE 0 = that edge
+/// is OFF — which makes the default `(0, 1)` authoring pack to `[0, 0]`, so
+/// the empty word stays exactly +0.0 and an unbanded wall is provably
+/// untouched. The upper edge counts DOWN from the top for the same reason.
+pub fn band_codes(lo: f32, hi: f32) -> [u32; 2] {
+    [(lo.clamp(0.0, 1.0) * 63.0).round() as u32, ((1.0 - hi.clamp(0.0, 1.0)) * 63.0).round() as u32]
+}
+
+/// The mask at normalized height `y01`, from the QUANTIZED codes — never from
+/// the raw authored floats, so the solver, the geometry pass and the shader
+/// twins (which mirror this exact shape) all evaluate one function.
+pub fn band_mask(codes: [u32; 2], y01: f32) -> f32 {
+    let y = y01.clamp(0.0, 1.0);
+    let mut m = 1.0;
+    if codes[0] > 0 {
+        let e = codes[0] as f32 / 63.0;
+        m *= smoothstep(e - BAND_FEATHER, e + BAND_FEATHER, y);
+    }
+    if codes[1] > 0 {
+        let e = 1.0 - codes[1] as f32 / 63.0;
+        m *= 1.0 - smoothstep(e - BAND_FEATHER, e + BAND_FEATHER, y);
+    }
+    m
+}
+
+/// The damage field with a wall's band applied: SUBTRACTION, not
+/// multiplication, and the constant matters twice. In-band values pass through
+/// EXACTLY (band off = a bit-identical wall, which is what keeps the shipped
+/// levels byte-stable), and out-of-band values drop 2.0 — below
+/// [`GATE_FULL`]'s −0.06 — so every gate excludes them, including "all of it"
+/// (a multiplicative mask leaves 0.0, which the full-coverage gate CATCHES,
+/// and the band would leak at the top of every dial).
+pub fn banded(field: f32, codes: [u32; 2], y01: f32) -> f32 {
+    field - 2.0 * (1.0 - band_mask(codes, y01))
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +424,14 @@ pub struct WallSpec {
     /// until it sits right". 0 = the run's own hash, i.e. exactly the wall
     /// that shipped before the dial existed.
     pub scrub: f32,
+    /// The BAND the damage field lives in, as normalized (lower, upper) edges
+    /// of the wall's height — the author's "the effect shows HERE". The
+    /// default `(0, 1)` is the whole face; the mask enters the FIELD itself
+    /// ([`banded`]), so solved areas, painted gates, plates, chips and crater
+    /// placement all obey one region. Breaks are deliberately NOT band-gated:
+    /// a structural break spans the wall's height by nature, and gating it on
+    /// a horizontal band would just be a hidden off-switch.
+    pub band: (f32, f32),
     pub pin: Pins,
     pub shape: Shape,
     /// Stamp the PAINT but keep the GEOMETRY pass off this wall.
@@ -388,7 +448,7 @@ pub struct WallSpec {
 }
 
 impl WallSpec {
-    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, scrub: 0.0, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
+    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -433,12 +493,12 @@ impl WallAt {
     pub const fn only(at: (f32, f32), label: &'static str, l: Layer, v: f32) -> WallAt {
         let mut pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(Breaks { count: 0, at: None }) };
         pin.area[l.index()] = Some(v);
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, scrub: 0.0, pin, shape: Shape::DEFAULT, paint_only: false } }
+        WallAt { at, label, spec: WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), pin, shape: Shape::DEFAULT, paint_only: false } }
     }
     /// ONE break, nothing else.
     pub const fn only_breaks(at: (f32, f32), label: &'static str, b: Breaks) -> WallAt {
         let pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(b) };
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, scrub: 0.0, pin, shape: Shape::DEFAULT, paint_only: false } }
+        WallAt { at, label, spec: WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), pin, shape: Shape::DEFAULT, paint_only: false } }
     }
 }
 
@@ -560,8 +620,11 @@ impl RunField {
         crate::crack_geom::dmg_field(story * 7.0 + 3.0, u, y)
     }
 
-    /// Sample a run's whole face on [`LATTICE`] and sort.
-    pub fn of(run_lo: Vec3, run_hi: Vec3, story: f32) -> RunField {
+    /// Sample a run's whole face on [`LATTICE`] and sort — the BANDED field
+    /// ([`banded`]), so a solved threshold only ever spends its area inside
+    /// the wall's band and [`Miss::Coarse`] reports an ask the band cannot
+    /// hold. `[0, 0]` (band off) samples the raw field bit for bit.
+    pub fn of(run_lo: Vec3, run_hi: Vec3, story: f32, band: [u32; 2]) -> RunField {
         let run_x = (run_hi.x - run_lo.x) >= (run_hi.z - run_lo.z);
         let (a0, a1) = if run_x { (run_lo.x, run_hi.x) } else { (run_lo.z, run_hi.z) };
         let (y0, y1) = (run_lo.y, run_hi.y);
@@ -572,7 +635,7 @@ impl RunField {
             let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
             for j in 0..ny {
                 let y = mixf(y0, y1, (j as f32 + 0.5) / ny as f32);
-                sorted.push(Self::at(story, u, y));
+                sorted.push(banded(Self::at(story, u, y), band, y / BAND_TOP));
             }
         }
         sorted.sort_by(|a, b| a.partial_cmp(b).expect("the damage field is finite"));
@@ -673,6 +736,10 @@ pub struct Paint {
     /// HOW MUCH: the layers' own amounts, `_pad` knob lanes 0/1.
     pub stain_amt: f32,
     pub web_amt: f32,
+    /// WHERE ON THE FACE: the band's edge codes ([`band_codes`]), the effect
+    /// word's lanes 2/3 — `[0, 0]` = the whole face, and the empty word stays
+    /// exactly +0.0.
+    pub band: [u32; 2],
 }
 
 /// Everything the GEOMETRY PASS needs for one wall, ALL INTEGER — no float
@@ -700,6 +767,9 @@ pub struct Geom {
     pub breaks: u8,
     /// Break placement in run-thousandths; `u16::MAX` = story-seeded.
     pub break_at: u16,
+    /// The band's edge codes ([`band_codes`]) — the geometry pass masks its
+    /// zones and vetoes its crater sites on them, so they sign the rebuild.
+    pub band: [u8; 2],
 }
 
 /// One wall, compiled: what the author asked for, and what both consumers get.
@@ -860,7 +930,8 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
                 spec.shape.relief = used;
             }
         }
-        let field = RunField::of(r.lo, r.hi, scrub_key(r.story(), spec.scrub));
+        let band = band_codes(spec.band.0, spec.band.1);
+        let field = RunField::of(r.lo, r.hi, scrub_key(r.story(), spec.scrub), band);
         let mut gate = [GATE_EMPTY; Layer::N];
         for l in Layer::ALL {
             gate[l.index()] = gate_quantize(field.threshold(area[l.index()]));
@@ -893,9 +964,11 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
                 web: gate_code(gate[Layer::Web.index()]),
                 stain_amt: area[Layer::Stain.index()],
                 web_amt: area[Layer::Web.index()],
+                band,
             },
             notes,
             geom: Geom {
+                band: [band[0] as u8, band[1] as u8],
                 t_cracks: gate_code(gate[Layer::Cracks.index()]) as u8,
                 t_chips: gate_code(gate[Layer::Chips.index()]) as u8,
                 spall: q(area[Layer::Spall.index()]),
@@ -974,7 +1047,7 @@ mod tests {
             for (i, r) in runs.iter().enumerate() {
                 for scrub in [0.0f32, 0.3, 0.8] {
                     let story = scrub_key(r.story(), scrub);
-                    let f = RunField::of(r.lo, r.hi, story);
+                    let f = RunField::of(r.lo, r.hi, story, [0, 0]);
                     for asked in [0.1f32, 0.3, 0.6, 0.9] {
                         let got = true_coverage(r, story, gate_quantize(f.threshold(asked)));
                         worst.push((format!("{level} run {i} ({:.1} wu) scrub {scrub}", r.length()), asked, got, (got - asked).abs()));
@@ -1003,7 +1076,7 @@ mod tests {
         for (level, runs) in both_levels() {
             for (i, r) in runs.iter().enumerate() {
                 for scrub in [0.0f32, 0.5, 1.0] {
-                    let f = RunField::of(r.lo, r.hi, scrub_key(r.story(), scrub));
+                    let f = RunField::of(r.lo, r.hi, scrub_key(r.story(), scrub), [0, 0]);
                     assert!(f.hi < GATE_EMPTY, "{level} run {i} scrub {scrub}: field max {} reaches the empty gate", f.hi);
                     assert_eq!(gate_code(f.threshold(0.0)), 0, "{level} run {i}: 'none of it' is not code 0");
                     assert_eq!(f.coverage(gate_quantize(f.threshold(0.0))), 0.0);
@@ -1021,7 +1094,7 @@ mod tests {
         for (level, runs) in both_levels() {
             for (i, r) in runs.iter().enumerate() {
                 for scrub in [0.0f32, 0.5, 1.0] {
-                    let f = RunField::of(r.lo, r.hi, scrub_key(r.story(), scrub));
+                    let f = RunField::of(r.lo, r.hi, scrub_key(r.story(), scrub), [0, 0]);
                     assert!(f.lo > low, "{level} run {i} scrub {scrub}: field min {} is below the lowest code {low}", f.lo);
                     assert_eq!(gate_code(f.threshold(1.0)), 63, "{level} run {i}: 'all of it' is not the bottom code");
                     assert_eq!(f.coverage(gate_quantize(f.threshold(1.0))), 1.0, "{level} run {i}: full coverage unreachable");
@@ -1036,7 +1109,7 @@ mod tests {
     fn more_is_more() {
         for (level, runs) in both_levels() {
             for (i, r) in runs.iter().enumerate() {
-                let f = RunField::of(r.lo, r.hi, r.story());
+                let f = RunField::of(r.lo, r.hi, r.story(), [0, 0]);
                 let mut prev = -1.0;
                 for k in 0..=20 {
                     let got = f.coverage(gate_quantize(f.threshold(k as f32 / 20.0)));
@@ -1119,7 +1192,7 @@ mod tests {
         for r in &runs {
             let (a, b) = (scrub_key(r.story(), 0.0), scrub_key(r.story(), 0.6));
             assert_eq!(a, r.story(), "scrub 0 must be the run's own hash — the wall that shipped");
-            let (fa, fb) = (RunField::of(r.lo, r.hi, a), RunField::of(r.lo, r.hi, b));
+            let (fa, fb) = (RunField::of(r.lo, r.hi, a, [0, 0]), RunField::of(r.lo, r.hi, b, [0, 0]));
             let (ta, tb) = (gate_quantize(fa.threshold(0.30)), gate_quantize(fb.threshold(0.30)));
             assert!((fa.coverage(ta) - 0.30).abs() < 0.10);
             assert!((fb.coverage(tb) - 0.30).abs() < 0.10, "a scrubbed wall must keep its amount");
@@ -1146,6 +1219,70 @@ mod tests {
         // the 6-bit grid: a sub-step drag is the SAME key, a real step is not
         assert_eq!(scrub_key(7.4, 0.500), scrub_key(7.4, 0.505), "a sub-quantum scrub moved the key");
         assert_ne!(scrub_key(7.4, 0.500), scrub_key(7.4, 0.530), "a real scrub step did not move the key");
+    }
+
+    /// THE BAND HOLDS THE DAMAGE — and says so when an ask does not fit.
+    ///
+    /// Three claims: the default band is a bit-exact no-op (that is what keeps
+    /// every shipped level byte-stable); a banded wall's solved threshold puts
+    /// its WHOLE area inside the band (the feather is the only spill); and an
+    /// ask larger than the band's own area is honoured with a difference that
+    /// lands in [`Miss::Coarse`] — the honest-limit discipline, not a silent
+    /// clamp.
+    #[test]
+    fn the_band_holds_the_damage_and_says_when_an_ask_does_not_fit() {
+        // the no-op: subtraction leaves in-band values EXACT
+        assert_eq!(band_codes(0.0, 1.0), [0, 0], "the default authoring packs to the empty lanes");
+        for v in [0.0f32, 0.37, 1.16, -0.2] {
+            assert_eq!(banded(v, [0, 0], 0.5), v, "band off must be the raw field, bit for bit");
+        }
+        let runs = runs_of(&house_game::gym::sim::gym_level());
+        // the longest run, so the Coarse tolerance is about the BAND, not the
+        // run being short
+        let r = runs.iter().max_by(|a, b| a.length().total_cmp(&b.length())).expect("the gym has runs");
+        let spec = WallSpec { band: (0.0, 0.45), pin: Pins::NONE.area(Layer::Cracks, 0.20), ..WallSpec::PRISTINE };
+        let sheets = compile_specs(std::slice::from_ref(r), &[("banded", spec)]);
+        let (gate, band) = (sheets[0].gate[Layer::Cracks.index()], band_codes(0.0, 0.45));
+        let story = scrub_key(r.story(), 0.0);
+        // every damaged sample sits inside the band (+ the feather)
+        let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
+        let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
+        let (mut hit, mut n) = (0usize, 0usize);
+        for i in 0..(((a1 - a0) / LATTICE) as usize) {
+            let u = mixf(a0, a1, (i as f32 + 0.5) / ((a1 - a0) / LATTICE));
+            for j in 0..(((r.hi.y - r.lo.y) / LATTICE) as usize) {
+                let y = mixf(r.lo.y, r.hi.y, (j as f32 + 0.5) / ((r.hi.y - r.lo.y) / LATTICE));
+                if banded(RunField::at(story, u, y), band, y / BAND_TOP) >= gate {
+                    hit += 1;
+                    assert!(y / BAND_TOP <= 0.45 + BAND_FEATHER + 1e-3, "damage at {:.2} of the wall height escaped a (0, 0.45) band", y / BAND_TOP);
+                }
+                n += 1;
+            }
+        }
+        let got = hit as f32 / n as f32;
+        assert!((got - 0.20).abs() < 0.08, "a 0.20 ask inside a 0.45 band must still be a 0.20 area, got {got:.3}");
+        assert!(sheets[0].notes.is_empty(), "an ask the band can hold must not be reported: {:?}", sheets[0].notes);
+
+        // an ask the band CANNOT hold: honoured with a difference, and said
+        let over = WallSpec { band: (0.0, 0.45), pin: Pins::NONE.area(Layer::Cracks, 0.90), ..WallSpec::PRISTINE };
+        let sheets = compile_specs(std::slice::from_ref(r), &[("over", over)]);
+        let Some(Miss::Coarse { layer, asked, got, .. }) = sheets[0].notes.iter().find(|m| matches!(m, Miss::Coarse { .. })) else {
+            panic!("a 0.90 ask inside a 0.45 band was obeyed silently: {:?}", sheets[0].notes);
+        };
+        assert_eq!(*layer, Layer::Cracks);
+        assert_eq!(*asked, 0.90);
+        assert!(*got < 0.55, "the band held {got:.2} of the face — it should top out near its own area");
+    }
+
+    /// [`BAND_TOP`] IS the authored wall top. The shader twins hardcode the
+    /// same constant (their mask runs in world space), so if `wall_slab` ever
+    /// grows taller walls this is the assertion that says three places now
+    /// disagree about what "the top of the band" means.
+    #[test]
+    fn band_top_is_the_authored_wall_top() {
+        assert_eq!(BAND_TOP, crate::gym_scene::WALL_TOP);
+        let runs = runs_of(&house_game::gym::sim::gym_level());
+        assert!(runs.iter().all(|r| r.hi.y == BAND_TOP && r.lo.y == 0.0), "a run does not span 0..BAND_TOP");
     }
 
     /// A LEVEL COMPILES OR SAYS WHY. A world point that hits no run, or two

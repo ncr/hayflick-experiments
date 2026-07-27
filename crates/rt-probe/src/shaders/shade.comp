@@ -641,8 +641,21 @@ void main(){
       uint ew = uint(m.emissive.a);
       float tStain = 1.20 - float( ew        & 63u) * 0.020;  // wall::GATE_HI, GATE_STEP
       float tWeb   = 1.20 - float((ew >> 6) & 63u) * 0.020;
+      // THE BAND MASK (wall::band_codes / band_mask / banded): lanes 2/3 carry
+      // the wall's authored band edges — code 0 = that edge OFF, the upper
+      // edge counts down from the top, so an unbanded wall keeps the empty
+      // word. The mask SUBTRACTS from the field: in-band values pass EXACTLY
+      // (byte-stable default) and out-of-band drops below every gate — a
+      // multiplicative mask leaves 0.0, which the full-coverage gate catches.
+      // The host runs the same arithmetic in the solver and the geometry pass.
+      float bLo = float((ew >> 12) & 63u) * (1.0 / 63.0);
+      float bHi = 1.0 - float((ew >> 18) & 63u) * (1.0 / 63.0);
+      float y01 = clamp(cuv.y / 2.1875, 0.0, 1.0);            // wall::BAND_TOP
+      float band = 1.0;                                        // wall::BAND_FEATHER = 0.06
+      band *= (bLo > 0.0 && wallF) ? smoothstep(bLo - 0.06, bLo + 0.06, y01) : 1.0;
+      band *= (bHi < 1.0 && wallF) ? 1.0 - smoothstep(bHi - 0.06, bHi + 0.06, y01) : 1.0;
       float rise = wallF ? 1.0 - smoothstep(0.10, 1.0, cuv.y) : 0.0;
-      float dmgN = fbm(vec3(cuv * vec2(0.45, 0.7), story * 7.0 + 3.0)) + 0.16 * rise;
+      float dmgN = fbm(vec3(cuv * vec2(0.45, 0.7), story * 7.0 + 3.0)) + 0.16 * rise - 2.0 * (1.0 - band);
       float stainW = smoothstep(tStain - 0.05, tStain + 0.05, dmgN);
       float fineG  = smoothstep(tWeb   - 0.03, tWeb   + 0.03, dmgN);
       // FINE GLAZE WEB. Its lattice is a CONSTANT 6 cells/wu — it used to be

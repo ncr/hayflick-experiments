@@ -113,11 +113,6 @@ pub struct Viewer {
     pub piers: Vec<crate::gym_scene::Pier>,
     /// Crack-lab state (per-pier aging knobs + selection) — see crack.rs.
     pub crack: crate::crack::CrackLab,
-    /// The wear family's per-surface EFFECT WORD, uniform for now (`WEAR=` env,
-    /// see crate::wear): the appearance dials that ride `Material.emissive[3]`.
-    /// Streamed post-build by `wear_stamp`; empty = every pier's word is 0.0,
-    /// i.e. the pre-wear image, bit for bit.
-    pub wear: crate::wear::Effect,
     /// Lamp NEE slots in slot order, with their authored base rgb — the
     /// scene's named point lights joined onto the backend's handles.
     pub light_keys: Vec<(LightKey, [f32; 3])>,
@@ -351,7 +346,6 @@ impl Viewer {
             gym: GymLoop::new(spec),
             piers: gym_meta.piers,
             crack,
-            wear: crate::wear::seed_from_env().unwrap_or_default(),
             harness: Harness::from_cfg(&cfg),
             rec: None,
             rec_jobs: Vec::new(),

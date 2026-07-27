@@ -11,12 +11,13 @@
 //! spread), SPALL=<0..1> (the cover-loss cause on its own, kept because every
 //! A/B recipe on record uses it) with its SPALL_LAYER=1|2|3 bisect (1 = crater
 //! only, 2 = steel only, 3 = both), SCRUB=<0..1> (the variant dial on every
-//! run), CRACK_SEL= to preselect a wall,
+//! run), BAND=lo,hi (the damage band's normalized edges on every run),
+//! CRACK_SEL= to preselect a wall,
 //! WEAR_EDIT=weather,settlement,cover_loss[,run] to replay a panel drag +
-//! release, WEAR=d0[,d1,d2,d3] for the effect word's own lanes, and
-//! WEAR_FILE=<path> to override a level's wear file for load AND save — see
-//! `crate::crack` / `crate::crack_geom` / `crate::wear` / `crate::wear_file`
-//! on the viewer side.)
+//! release, and WEAR_FILE=<path> to override a level's wear file for load AND
+//! save — see `crate::crack` / `crate::crack_geom` / `crate::wear` /
+//! `crate::wear_file` on the viewer side. WEAR= is gone: all four effect-word
+//! lanes are derived now, each driven through its own dial.)
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
 //! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).

@@ -319,6 +319,16 @@ fn scrub_from_env() -> Option<f32> {
     std::env::var("SCRUB").ok().and_then(|v| v.trim().parse::<f32>().ok())
 }
 
+/// `BAND=lo,hi` — the band mask on every run (normalized wall-height edges):
+/// the headless stand-in for the panel's two band rows, and the discriminating
+/// A/B for the whole round ("the damage shows HERE").
+fn band_from_env() -> Option<(f32, f32)> {
+    let v = std::env::var("BAND").ok()?;
+    let parts: Vec<&str> = v.split(',').map(str::trim).collect();
+    let f = |i: usize, d: f32| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(d);
+    Some((f(0, 0.0), f(1, 1.0)))
+}
+
 /// `WEAR_EDIT=weather,settlement,cover_loss[,run]` — the harness's stand-in for
 /// the owner dragging the panel and letting go: after boot, write this story
 /// (onto every run, or only `run`) and take the RELEASE path a mouse-up takes.
@@ -336,8 +346,8 @@ fn edit_from_env() -> Option<(crate::wall::Story, Option<usize>)> {
 /// Apply every environment override to a resolved spec list. One place, so a
 /// harness shot and the owner's own level cannot diverge in how they are read.
 fn apply_env(specs: &mut [(&'static str, crate::wall::WallSpec)]) {
-    let (story, shape, spall, scrub) = (story_from_env(), shape_from_env(), spall_from_env(), scrub_from_env());
-    if story.is_none() && shape.is_none() && spall.is_none() && scrub.is_none() {
+    let (story, shape, spall, scrub, band) = (story_from_env(), shape_from_env(), spall_from_env(), scrub_from_env(), band_from_env());
+    if story.is_none() && shape.is_none() && spall.is_none() && scrub.is_none() && band.is_none() {
         return;
     }
     for (_, spec) in specs.iter_mut() {
@@ -353,6 +363,9 @@ fn apply_env(specs: &mut [(&'static str, crate::wall::WallSpec)]) {
         }
         if let Some(sc) = scrub {
             spec.scrub = sc;
+        }
+        if let Some(b) = band {
+            spec.band = b;
         }
     }
 }
