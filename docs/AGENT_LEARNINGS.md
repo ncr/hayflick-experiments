@@ -1326,3 +1326,47 @@ the placing gesture WORKED — the craters render on a boot from his session.
   sessions out of files, but an edited session saved the beat's story into
   the ramped control. A beat must apply on the way to a sheet (the
   level_dials discipline), never into the authoring. Parked, owner call.
+
+## 2026-07-27 — the FIFO fix froze the event loop (never block on the compositor)
+
+The morning's FIFO present (the fix for MAILBOX starving the compositor's
+software cursor) shipped a worse bug by evening: on Hyprland + NVIDIA
+(explicit sync), a FIFO present WAITS on a DRM syncobj that only a
+compositor render signals, and a fullscreen window under VFR can go
+unrendered indefinitely. The main thread parks in
+`drm_syncobj_array_wait_timeout`, the winit event loop dies with it, and the
+owner reads it as "the whole keyboard stops working in fullscreen" — the gym
+is mostly static, so a frozen frame looks alive, and the mouse cursor keeps
+moving because the compositor draws it.
+
+- **The evidence chain that settled it** (each step keyboard-free): thread
+  wchan named the kernel block point; `grim -o <output>` — which forces one
+  compositor render of that output — un-froze the loop mid-probe, proving
+  render starvation rather than key delivery; a `VSYNC=0` MAILBOX control
+  sailed through the same transition. One mechanism, three independent
+  confirmations.
+- **"Not reproducible" was a RACE verdict, not an absence.** The first
+  keyboard report got probed on a real monitor where any damage (a moving
+  cursor, an injected key that repaints) rescues the block — so the probe
+  measured a healthy loop and shipped defensive guards. On a headless output
+  with zero extraneous damage the same freeze is DETERMINISTIC. When a
+  symptom is intermittent, first ask what background activity your probe
+  adds that the owner's idle session lacks.
+- **Never let the frame loop block on the compositor.** The fix is not a
+  better present mode: present is MAILBOX (never blocks) and the GPU cap
+  the FIFO was bought for lives in the loop itself — `ControlFlow::WaitUntil`
+  paced to the monitor's refresh period, re-read on every Resized. Liveness
+  and pacing are now separate concerns; the compositor controls neither.
+- **`FS_AT=<secs>` exists because the owner was at the keyboard.** The
+  trigger was fullscreen, not keys — so the viewer learned to request
+  compositor fullscreen itself, and the repro ran on a `hyprctl output
+  create headless` monitor with zero focus theft. When a symptom needs a
+  window-manager transition, give the app a harness knob for the transition
+  instead of injecting input into a session the owner is actively using.
+- **Hyprland 0.56: `hyprctl keyword windowrulev2 …` answers "ok" and does
+  NOTHING** (deprecated). Two probe windows landed tiled — and once
+  fullscreen-frozen — on the owner's live monitor before a version check
+  exposed it. The 0.56 dynamic form is
+  `hyprctl keyword windowrule "<field> <value>, match:title <re>"`
+  (`no_initial_focus on`, `monitor <name>`); after adding rules, VERIFY the
+  window's monitor id before letting anything fullscreen.

@@ -261,13 +261,21 @@ pub struct GameCfg {
 /// tour, the DUMP/FRAMES diagnostics, and clip encoding.
 pub struct HarnessCfg {
     pub window: Option<(u32, u32)>, // WINDOW=WxH: requested inner size (goldens)
-    /// VSYNC (default ON): present with FIFO, pacing the loop to the monitor.
-    /// `VSYNC=0` restores MAILBOX (render-and-discard) for latency experiments.
-    /// FIFO is the default because uncapped MAILBOX rendered ~600 fps of
-    /// invisible frames — free in a small window, but a 5120x2160 fullscreen
-    /// surface saturated the GPU and STARVED the compositor, whose SOFTWARE
-    /// cursor (Hyprland + NVIDIA) then lagged system-wide (owner, 2026-07-27).
+    /// VSYNC (default ON): the frame loop paces ITSELF to the monitor refresh
+    /// (`VSYNC=0` uncaps it for latency experiments). Present is ALWAYS
+    /// MAILBOX: uncapped MAILBOX at 5120x2160 saturated the GPU and starved
+    /// the compositor's software cursor (owner, 2026-07-27 morning), but the
+    /// FIFO answer to that deadlocked the event loop the same day — on
+    /// Hyprland + NVIDIA a FIFO present waits for a compositor render that a
+    /// fullscreen window under VFR may never get, and a blocked loop reads as
+    /// "the whole keyboard is dead". Self-pacing gives the cap without
+    /// trusting the compositor with our liveness (see main.rs).
     pub vsync: bool,
+    /// FS_AT=secs: after this many seconds, request compositor fullscreen
+    /// (winit Borderless) — the SUPER+F transition without a keyboard, so a
+    /// harness run can reproduce fullscreen-only input/present symptoms
+    /// without grabbing the owner's real input devices.
+    pub fs_at: Option<f32>,
     pub shot: Option<String>,      // SHOT=path.png: capture one frame, exit
     /// LOOK_SWITCH=<name>: after boot, apply this look through the RUNTIME
     /// switch path (backend rebuild_scene) before any capture — a SHOT then
@@ -370,6 +378,7 @@ impl Config {
             harness: HarnessCfg {
                 window,
                 vsync: b("VSYNC", true),
+                fs_at: fo("FS_AT"),
                 shot: s("SHOT"),
                 look_switch: s("LOOK_SWITCH"),
                 shot_delay: f("SHOT_DELAY", 0.0),

@@ -70,6 +70,25 @@ struct App {
     cfg: Option<Config>,
     window: Option<Arc<Window>>,
     renderer: Option<Viewer>,
+    // FS_AT harness: (fire time, boot instant) — self-fullscreen without a
+    // keyboard, so fullscreen-only symptoms are reproducible headlessly.
+    fs_at: Option<(f32, std::time::Instant)>,
+    // Self-paced frame clock (VSYNC=1, the default): present is MAILBOX —
+    // it must never block, because on Hyprland + NVIDIA a blocking FIFO
+    // present parks the whole event loop in a DRM syncobj wait whenever the
+    // compositor stops rendering (fullscreen + VFR), and a dead event loop
+    // reads as "the keyboard stopped working". So the GPU cap lives HERE:
+    // redraws are requested at the monitor's refresh period. None = VSYNC=0,
+    // uncapped for latency experiments.
+    pace: Option<std::time::Duration>,
+    next_frame: std::time::Instant,
+}
+
+/// One frame at the refresh rate of whatever monitor the window sits on.
+/// 60 Hz fallback if the compositor won't say (Wayland always does).
+fn refresh_period(w: &Window) -> std::time::Duration {
+    let mhz = w.current_monitor().and_then(|m| m.refresh_rate_millihertz()).unwrap_or(60_000);
+    std::time::Duration::from_secs_f64(1000.0 / mhz.max(1_000) as f64)
 }
 
 impl ApplicationHandler for App {
@@ -78,6 +97,8 @@ impl ApplicationHandler for App {
             return;
         }
         let cfg = self.cfg.take().expect("config consumed once");
+        self.fs_at = cfg.harness.fs_at.map(|t| (t, std::time::Instant::now()));
+        let vsync = cfg.harness.vsync;
         let (w, h) = cfg.harness.window.unwrap_or((1280, 800));
         // Create the window HIDDEN: `Viewer::new` blocks the main thread for the
         // one-time GI probe bake, and a visible window with a stalled run loop
@@ -88,6 +109,8 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let renderer = unsafe { Viewer::new(Some(&window), cfg).expect("renderer init") };
         window.set_visible(true);
+        self.pace = vsync.then(|| refresh_period(&window));
+        self.next_frame = std::time::Instant::now();
         self.window = Some(window);
         self.renderer = Some(renderer);
     }
@@ -264,8 +287,25 @@ impl ApplicationHandler for App {
                         unsafe { r.recreate(size.width, size.height) };
                     }
                 }
+                // a resize is also how the window changes monitors
+                // (fullscreen, drags): re-read the refresh period
+                if let (Some(p), Some(w)) = (&mut self.pace, &self.window) {
+                    *p = refresh_period(w);
+                }
             }
             WindowEvent::RedrawRequested => {
+                if let (Some((t, t0)), Some(w)) = (self.fs_at, &self.window) {
+                    if t0.elapsed().as_secs_f32() >= t {
+                        self.fs_at = None;
+                        eprintln!("FS_AT: requesting compositor fullscreen");
+                        w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                    }
+                }
+                if let Some(p) = self.pace {
+                    // advance the frame clock; if we fell behind, snap to now
+                    // (drop the debt) instead of spiralling
+                    self.next_frame = std::cmp::max(self.next_frame + p, std::time::Instant::now());
+                }
                 if let (Some(r), Some(w)) = (&mut self.renderer, &self.window) {
                     // apply the frame's ONE coalesced drag step before drawing
                     if r.menu.drag && r.menu.drag_pending {
@@ -290,9 +330,20 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(w) = &self.window {
-            w.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(w) = &self.window else { return };
+        match self.pace {
+            // uncapped (VSYNC=0): poll-and-redraw as before
+            None => w.request_redraw(),
+            // paced: draw when the frame clock says so, otherwise sleep until
+            // it does — input events still wake the loop instantly
+            Some(_) => {
+                if std::time::Instant::now() >= self.next_frame {
+                    w.request_redraw();
+                } else {
+                    event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(self.next_frame));
+                }
+            }
         }
     }
 }
@@ -314,7 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
-    let mut app = App { cfg: Some(cfg), window: None, renderer: None };
+    let mut app = App { cfg: Some(cfg), window: None, renderer: None, fs_at: None, pace: None, next_frame: std::time::Instant::now() };
     event_loop.run_app(&mut app)?;
     // quitting mid-recording still delivers the clip: flush the buffered
     // frames into an encode, then wait for every encode worker to finish

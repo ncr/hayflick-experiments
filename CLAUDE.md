@@ -733,32 +733,44 @@ surface saturated the GPU and starved the COMPOSITOR, whose software cursor
 auto) then lagged SYSTEM-WIDE and click feedback arrived seconds late —
 "nothing happens" was feedback starvation, not a broken gesture (the owner's
 session file proves the shells were placed and saved; booting it renders
-both craters). Present is FIFO now (`VSYNC=0` restores MAILBOX for latency
-experiments; verified 240 frames = 2.3 s ≈ 165 Hz, gym SHOT byte-identical —
-capture paths are offscreen and never see a present mode). (2) slider drags
+both craters). The FIFO answer this bought lasted half a day — see THE FIFO
+DEADLOCK below; the cap is a self-paced loop over MAILBOX now. (2) slider drags
 applied per MOTION EVENT, and a wall-panel drag recompiles the level — at
 1000 Hz mouse polling that is a backlog the frame loop can never drain;
 drags are COALESCED now to one `menu_drag_to` per frame from the latest
 cursor, with the tail flushed on mouse-up so the release lands on the value
 under the cursor (`MenuState::drag_pending`).
-FOLLOW-UP (same day, owner: "keyboard unresponsive in fullscreen, ESC opens
-the menu but cannot close it"): NOT REPRODUCIBLE on this box with the fixed
-binary — probed fullscreen (state 2, same monitor) through BOTH injection
-paths (`hyprctl sendshortcut` = direct-to-window, and `wtype` = the real
-compositor-focus path): keys arrive, ESC opens AND closes, frame p50 6 ms,
-the only stalls are the ~410 ms swapchain recreates at the fullscreen
-transitions. Two defenses shipped anyway, both correct on their own: (1)
-ESC/Enter/Space now carry the `!event.repeat` guard the other toggles always
-had — Wayland key repeat is CLIENT-SIDE (winit timer), so when event
-processing is delayed past the repeat delay (the transition recreate alone
-blocks ~400 ms) repeats inject between a press and its release, and an
-unguarded ESC then toggles TWICE per physical press: open-close, "the menu
-won't close". (2) `Focused(false)` clears the held movement keys and the
-panel drag — a release delivered to another surface used to leave the player
-walking forever. Field diagnostic if it recurs: `TIMING=1 bin/run`,
+THE FIFO DEADLOCK (same day, owner: "keyboard unresponsive in fullscreen" /
+"cała klawiatura nie działa jeśli zrobię super+f"): the FIFO present that
+fixed the cursor starvation can FREEZE THE WHOLE EVENT LOOP on this stack.
+Mechanism, measured on a frozen probe: Hyprland + NVIDIA use explicit sync,
+a FIFO present waits on a DRM syncobj that only a COMPOSITOR RENDER signals,
+and a fullscreen window under VFR can go unrendered indefinitely — the main
+thread parks in `drm_syncobj_array_wait_timeout` (thread wchan), no event is
+ever processed again, and since the gym is mostly static a frozen frame
+LOOKS live: the only visible symptom is "keyboard dead, mouse cursor still
+moves" (the compositor draws the cursor). Forcing one compositor render
+(`grim -o <output>`) un-froze the loop mid-probe — that is the proof it was
+render starvation, not key delivery; a MAILBOX control run sailed through
+the same transition. Intermittent on a real monitor (needs a VFR idle beat
+at the transition — the first keyboard report and the earlier "not
+reproducible" probe verdict were BOTH this race), deterministic on a
+headless output. FIX: present is ALWAYS MAILBOX (never blocks) and the GPU
+cap moved into the frame loop — `main.rs` paces redraws to the monitor's
+refresh period via `ControlFlow::WaitUntil` (re-read on every Resized, so
+monitor hops track; `VSYNC=0` uncaps). Two earlier same-day defenses stay,
+correct on their own: ESC/Enter/Space carry `!event.repeat` guards (Wayland
+key repeat is CLIENT-SIDE — a delayed loop injects repeats and an unguarded
+ESC toggles twice per press), and `Focused(false)` clears held movement keys
++ the panel drag. HARNESS: `FS_AT=<secs>` makes the viewer request
+compositor fullscreen itself — fullscreen-only symptoms reproduce with no
+keyboard and no focus theft (pair with a headless `hyprctl output create
+headless` + a `windowrule monitor …, match:title ^(Hayflick)$` — NOTE
+Hyprland 0.56 deprecated `windowrulev2`, and its `hyprctl keyword` form
+returns "ok" while doing NOTHING, which put two earlier probe windows on the
+owner's live monitor). Field diagnostic unchanged: `TIMING=1 bin/run`,
 fullscreen, press `l` — "lamps:" prints prove keys arrive; TIME lines prove
-the loop is alive; which half is silent names the culprit (app vs
-compositor).
+the loop is alive; which half is silent names the culprit.
 KNOWN WRINKLE surfaced by the same session (parked, owner call): the AgeWall
 beat writes `spec[r].story` while it ramps, and a save triggered by ANY
 interactive edit then freezes the beat's current story into the wear file

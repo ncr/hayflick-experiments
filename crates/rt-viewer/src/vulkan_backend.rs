@@ -184,19 +184,27 @@ impl VulkanBackend {
                     .find(|f| f.format == vk::Format::B8G8R8A8_UNORM && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
                     .unwrap_or(formats[0]);
                 let modes = surface_loader.get_physical_device_surface_present_modes(pdev, surface)?;
-                // FIFO (vsync) unless VSYNC=0 asks for MAILBOX back. MAILBOX
-                // rendered as fast as the GPU allowed and discarded the
-                // frames — invisible waste in a 1280x800 window, but a
-                // 5120x2160 fullscreen surface saturated the GPU and starved
-                // the COMPOSITOR, whose software cursor (Hyprland renders one
-                // on this NVIDIA setup) then lagged system-wide. The sim is
-                // fixed-tick and every capture path is offscreen, so nothing
-                // above the refresh rate exists to see.
-                let present_mode = if !cfg.harness.vsync && modes.contains(&vk::PresentModeKHR::MAILBOX) {
+                // MAILBOX, never FIFO. FIFO was the 2026-07-27 answer to
+                // MAILBOX's uncapped ~600 fps saturating the GPU at 5120x2160
+                // and starving the compositor's software cursor — but on this
+                // stack (Hyprland + NVIDIA explicit sync) FIFO's present WAITS
+                // for a compositor render to release a buffer, and a fullscreen
+                // window under VFR can go unrendered indefinitely: the main
+                // thread parks in drm_syncobj_array_wait_timeout, the event
+                // loop dies with it, and "the whole keyboard is dead until I
+                // leave fullscreen" (owner repro; a forced screencopy render
+                // un-froze it, which is the proof it was compositor starvation).
+                // Measured on the frozen probe, 2026-07-27. The GPU cap that
+                // FIFO was bought for lives in main.rs now: the frame loop
+                // paces ITSELF to the monitor refresh (VSYNC=0 uncaps), so the
+                // compositor is never trusted with our liveness in either
+                // direction.
+                let present_mode = if modes.contains(&vk::PresentModeKHR::MAILBOX) {
                     vk::PresentModeKHR::MAILBOX
                 } else {
-                    vk::PresentModeKHR::FIFO
+                    vk::PresentModeKHR::IMMEDIATE
                 };
+                let present_mode = if modes.contains(&present_mode) { present_mode } else { vk::PresentModeKHR::FIFO };
                 let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &ctx.device);
                 let image_available = ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
                 Some(Present { surface_loader, surface, swapchain_loader, surface_format, present_mode, image_available })
