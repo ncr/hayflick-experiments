@@ -480,6 +480,12 @@ impl RenderBackend for VulkanBackend {
         self.gpu.mats_cpu[material_id].emissive[3] = word;
     }
 
+    /// Story-key live update (the scrub dial's drag path) — same one-line
+    /// mechanism as its two siblings above.
+    fn set_material_story(&mut self, material_id: usize, story: f32) {
+        self.gpu.mats_cpu[material_id].base_color[3] = story;
+    }
+
     unsafe fn wait_idle(&self) {
         self.ctx.device.device_wait_idle().unwrap();
     }

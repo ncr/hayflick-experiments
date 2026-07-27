@@ -817,6 +817,12 @@ impl RenderBackend for MetalBackend {
     fn set_material_effect(&mut self, material_id: usize, word: f32) {
         self.sc.mats_cpu[material_id].emissive[3] = word;
     }
+    /// Story-key live update (the scrub dial's drag path) — same one-line
+    /// mechanism as its two siblings above. BLIND EDIT (2026-07-27, written on
+    /// the RTX box): line-for-line twin of the Vulkan impl.
+    fn set_material_story(&mut self, material_id: usize, story: f32) {
+        self.sc.mats_cpu[material_id].base_color[3] = story;
+    }
     unsafe fn tear_off(&mut self, prims: &[usize], min: Vec3, max: Vec3, amortize: bool) {
         // hide the static instances (mask 0 → culled by primary AND probe rays)
         // then rebuild the TLAS so the refresh below traces the roofless world.

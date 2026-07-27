@@ -260,6 +260,16 @@ pub trait RenderBackend {
     /// re-stamps after every rebuild.
     fn set_material_effect(&mut self, _material_id: usize, _word: f32) {}
 
+    /// Live per-material STORY KEY update — the third sibling: the VARIANT
+    /// (scrub) dial slides the key every damage field seeds off, and the key
+    /// rides `Material.base_color[3]` (`crate::wear::story_key` /
+    /// `wall::scrub_key`). Unlike the effect word this datum IS visible to the
+    /// probe bake — the key stamps PRE-build and the cache re-keys per scrub
+    /// bucket; this live path exists so a scrub DRAG morphs the painted field
+    /// per frame, with the geometry and its bake catching up on release like
+    /// every other geometry dial.
+    fn set_material_story(&mut self, _material_id: usize, _story: f32) {}
+
     /// Render + (windowed) present one frame. Returns false if the swapchain
     /// needs rebuild. Records the deterministic per-frame state (lights →
     /// instances → TLAS refit if dirty), shade dispatch, tonemap, blit,

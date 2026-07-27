@@ -570,7 +570,12 @@ impl CrazeCfg {
 /// for `dmgN` (`fbm(vec3(cuv * vec2(0.45, 0.7), story*7+3)) + 0.16 * rise`).
 /// One definition, two users — [`CrazeCfg::dmg`] adds the run's level offset on
 /// top, [`run_level`] samples it to DERIVE that offset.
-fn dmg_field(dmg_seed: f32, su: f32, sy: f32) -> f32 {
+/// THE damage field — pub(crate) because `wall::RunField::at` delegates here:
+/// the threshold solver, this generator and both shader twins are readers of
+/// ONE definition, so the solved gates, the built plates and the painted
+/// layers can never sample different fields (the drift AGENT_LEARNINGS
+/// records twice).
+pub(crate) fn dmg_field(dmg_seed: f32, su: f32, sy: f32) -> f32 {
     let rise = 1.0 - smoothstep(0.10, 1.0, sy);
     let p = Vec3::new(su * 0.45, sy * 0.7, dmg_seed);
     0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + Vec3::splat(11.1)) + 0.16 * rise

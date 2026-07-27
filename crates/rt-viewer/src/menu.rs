@@ -276,9 +276,10 @@ pub(crate) enum Row {
     Layer(crate::wall::Layer),
     /// The break COUNT — a count, drawn as a count and stepped by clicking.
     Breaks,
-    /// Where damage collects: a CYCLER, because it enters the damage field and a
-    /// cycler reads as geometry while a slider reads as tone.
-    Origin,
+    /// The VARIANT dial: slides the story key through noise space
+    /// (`wall::scrub_key`), re-rolling paint, plates and breaks together —
+    /// the author's "move the damage until it sits right".
+    Scrub,
     Grain,
     Relief,
     /// The small-crack pattern: a cycler.
@@ -305,7 +306,7 @@ impl Row {
 
     /// Is this row a SLIDER (as against a cycler, which a click steps)?
     fn slider(self) -> bool {
-        !matches!(self, Row::Breaks | Row::Origin | Row::Pattern)
+        !matches!(self, Row::Breaks | Row::Pattern)
     }
 
     fn label(self) -> &'static str {
@@ -315,7 +316,7 @@ impl Row {
             Row::Cause(_) => "cover loss",
             Row::Layer(l) => l.name(),
             Row::Breaks => "breaks",
-            Row::Origin => "origin",
+            Row::Scrub => "variant",
             Row::Grain => "grain",
             Row::Relief => "relief",
             Row::Pattern => "pattern",
@@ -341,7 +342,7 @@ pub(crate) fn rows_of(spec: &crate::wall::WallSpec) -> Vec<Row> {
     let mut v: Vec<Row> = (0..3).map(Row::Cause).collect();
     v.extend(crate::wall::Layer::ALL.into_iter().map(Row::Layer));
     v.push(Row::Breaks);
-    v.push(Row::Origin);
+    v.push(Row::Scrub);
     v.push(Row::Grain);
     v.push(Row::Relief);
     v.push(Row::Pattern);
@@ -364,7 +365,7 @@ const _: () = assert!(CRACK_PANEL_H <= MPANEL_H);
 /// and the menu is closed (owner surface: click a wall, drag a row).
 ///
 /// It is the authoring model on screen, in the model's own order: three CAUSES,
-/// the five LAYER amounts they derive, the break count, then the shape (origin,
+/// the five LAYER amounts they derive, the break count, then the shape (variant,
 /// grain, relief, pattern and the pattern's own params). Pure fn of its inputs,
 /// so it draws headless — the tests below pin the staging-buffer fit and the
 /// row table.
@@ -416,7 +417,10 @@ pub(crate) fn crack_canvas(label: &str, run: usize, spec: &crate::wall::WallSpec
                 mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}{}", if pinned { "*" } else { "" }), if pinned { 0xe8b84a } else { 0x99cc99 });
             }
             Row::Breaks => mtext(&mut c, w, MTRACK_X, y + 2, &format!("< {} >", sheet.breaks.count), 0x99cc99),
-            Row::Origin => mtext(&mut c, w, MTRACK_X, y + 2, &format!("< {} >", spec.origin.name()), 0x99cc99),
+            Row::Scrub => {
+                track(&mut c, y, spec.scrub, hot);
+                mtext(&mut c, w, MVAL_X, y + 2, &format!("{:.2}", spec.scrub), 0x99cc99);
+            }
             Row::Pattern => mtext(&mut c, w, MTRACK_X, y + 2, &format!("< {} >", spec.shape.pattern.name()), 0x99cc99),
             Row::Grain => {
                 track(&mut c, y, spec.shape.grain, hot);
@@ -858,10 +862,6 @@ impl Viewer {
         self.crack.dirty = true;
         match kind {
             Row::Pattern => self.crack_cycle_policy(),
-            Row::Origin => {
-                let next = (self.crack.spec[r].origin as usize + 1) % crate::wall::Origin::ALL.len();
-                self.crack.spec[r].origin = crate::wall::Origin::ALL[next];
-            }
             Row::Breaks => {
                 // …and the count PINS itself, because clicking it is an author
                 // saying how many he wants — the derivation from `settlement`
@@ -895,6 +895,7 @@ impl Viewer {
             // shows a `*` afterwards: the panel has to say that this wall has
             // stopped listening to its causes on that layer.
             Row::Layer(l) => self.crack.spec[r].pin = self.crack.spec[r].pin.area(l, v),
+            Row::Scrub => self.crack.spec[r].scrub = v,
             Row::Grain => self.crack.spec[r].shape.grain = v,
             Row::Relief => self.crack.spec[r].shape.relief = v,
             Row::Param(j) => {
@@ -1149,7 +1150,7 @@ mod tests {
             assert_eq!(rows.iter().filter(|r| matches!(r, Row::Layer(_))).count(), crate::wall::Layer::N, "every layer gets a row");
             assert_eq!(rows.iter().filter(|r| matches!(r, Row::Param(_))).count(), crate::crack_geom::POLICY_PARAMS[policy as usize].len());
             // …and every SLIDER row is drag-reachable while the three cyclers are not
-            assert_eq!(rows.iter().filter(|r| !r.slider()).count(), 3, "breaks, origin and pattern are cyclers");
+            assert_eq!(rows.iter().filter(|r| !r.slider()).count(), 2, "breaks and pattern are cyclers");
         }
     }
 

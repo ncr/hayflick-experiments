@@ -10,10 +10,13 @@
 //! SHAPE=grain,relief[,pattern[,p1,p2,p3]], SPREAD=<0..1> (the per-run story
 //! spread), SPALL=<0..1> (the cover-loss cause on its own, kept because every
 //! A/B recipe on record uses it) with its SPALL_LAYER=1|2|3 bisect (1 = crater
-//! only, 2 = steel only, 3 = both), CRACK_SEL= to preselect a wall,
+//! only, 2 = steel only, 3 = both), SCRUB=<0..1> (the variant dial on every
+//! run), CRACK_SEL= to preselect a wall,
 //! WEAR_EDIT=weather,settlement,cover_loss[,run] to replay a panel drag +
-//! release, and WEAR=d0[,d1,d2,d3] for the effect word's own lanes — see
-//! `crate::crack` / `crate::crack_geom` / `crate::wear` on the viewer side.)
+//! release, WEAR=d0[,d1,d2,d3] for the effect word's own lanes, and
+//! WEAR_FILE=<path> to override a level's wear file for load AND save — see
+//! `crate::crack` / `crate::crack_geom` / `crate::wear` / `crate::wear_file`
+//! on the viewer side.)
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
 //! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).

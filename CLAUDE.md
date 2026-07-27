@@ -500,7 +500,7 @@ THE RUN IS THE AUTHORING UNIT since 2026-07-26 (task-3 steps 9-11, the round's
 last change and the one the other eight were for). `crack::CrackSeed`,
 `Specimen`, `seed_knobs`, `seed_spall`, `clear_pristine`, `apply_specimens`,
 `run_ramp`/`run_pos` and the four-knob panel are DELETED. A level is now a
-`wall::LevelWear` — a base `Story`, an `Origin`, a per-RUN `spread`, and the
+`wall::LevelWear` — a base `Story`, a per-RUN `spread`, and the
 walls that say something different as `WallAt` entries named by world point —
 and `wall::specs_of` + `compile_specs` turn it into one `Sheet` per run.
 
@@ -540,10 +540,10 @@ over both shipped levels with a vacuity guard.
   inside the old patch.
 - THE PANEL is 17-19 rows and DATA: `menu::rows_of(spec)` returns a `Vec<Row>`
   that the draw, the hit-test and the drag all walk (`Row::Cause` /
-  `Layer` / `Breaks` / `Origin` / `Grain` / `Relief` / `Pattern` / `Param`).
+  `Layer` / `Breaks` / `Scrub` / `Grain` / `Relief` / `Pattern` / `Param`).
   Three CAUSES, then the five LAYER amounts they derive — indented, with a `*`
   when pinned, and a drag on one PINS it, which is the whole authoring gesture
-  behind "old, but no chips at all" — then breaks, origin, grain, relief,
+  behind "old, but no chips at all" — then breaks, variant, grain, relief,
   pattern and the pattern's own params. The FOOTER prints a `wall::Miss` when
   the wall has one, else the COST CLASS of the row under the cursor ("paint -
   live" / "geometry - on release"), which is the honest answer to "why did that
@@ -585,6 +585,26 @@ into the authoring. `WEAR_FILE=<path>` overrides load AND save (a missing
 path boots the baked default and saves to the new file). Verified: gym,
 crack lab, catalogue all BYTE-IDENTICAL to the statics era (Vulkan/RTX,
 floor zero).
+
+SCRUB REPLACES TRANSLATE and ORIGIN IS DELETED since 2026-07-27 (round B).
+The panel's "variant" row (`WallSpec.scrub`, file line `scrub v`, env
+`SCRUB=`) slides the run's story key through noise space
+(`wall::scrub_key`, 6-bit quantized, `SCRUB_SPAN = 2.0`), so ONE dial
+re-rolls paint, plates and breaks coherently — the honest form of
+"przesuwam" under a 24-free-bit material budget (a spatial offset applied
+host-only would re-create the step-5 paint-vs-plates drift). A scrub drag
+morphs the painted field LIVE (`backend.set_material_story`, the third
+live-material sibling; the MSL impl is a BLIND one-line twin — next Mac
+session: drag the variant row once); release rebuilds via the normal
+GeoKey/story path, and a sub-bucket drag rebuilds nothing by construction.
+`Origin` (ground/even/coping/both) is GONE: it biased the SOLVED THRESHOLD
+but never reached the field on host or shader (hardcoded 0.16*rise both
+sides), i.e. it changed HOW MUCH, never WHERE — the round-C band mask is
+the honest version. With it gone `wall::RunField::at` DELEGATES to
+`crack_geom::dmg_field`: the threshold solver, the geometry generator and
+both shader twins now read literally one definition. Zero shader edits this
+round; gym, crack lab AND catalogue BYTE-IDENTICAL at defaults, `SCRUB=0.6`
+A/B confirms the dial moves the image.
 - Verified 4 runs per side, all pairs: `gym` BYTE-IDENTICAL, `crack lab` 3.18 %
   at max 187, catalogue 1.65 % at max 168 — the aging is authored differently, so
   the walls differ; the plain greybox does not move at all.

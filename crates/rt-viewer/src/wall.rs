@@ -60,7 +60,7 @@
 // `Sheet::paint`), and this allow comes off with them.
 #![allow(dead_code)]
 
-use crate::crack_geom::{hash13, mixf, smoothstep, vnoise};
+use crate::crack_geom::{hash13, mixf};
 use glam::Vec3;
 
 // ---------------------------------------------------------------------------
@@ -82,56 +82,34 @@ impl Story {
     pub const ZERO: Story = Story { weather: 0.0, settlement: 0.0, cover_loss: 0.0 };
 }
 
-/// WHERE damage collects on the face — a wall TYPE, not an intensity.
+/// The VARIANT dial's reach through noise space, in story-key units.
 ///
-/// It replaces a hard-coded constant: the field carried `0.16 * rise` with
-/// `rise` a fixed ramp off the ground, so the top two thirds of every wall in
-/// the game were permanently clean and no dial could change it. `Coping` is the
-/// state the level could not previously express at all (a wall eaten from the
-/// parapet down, which is what a failed coping does).
+/// `scrub` slides the run's story key — the z coordinate every damage field
+/// seeds off (`story*7+3` for the fbm, `story+5`/`story+9` for the craze
+/// lattices, `story*13` for the break jitter) — so ONE dial re-rolls paint,
+/// plates and breaks together and they can never disagree about which variant
+/// the wall is on. It exists because "move the damage" cannot be a spatial
+/// offset without a new per-material channel for the shader's copy of the
+/// field (24 free bits total; owner decision 2026-07-27: scrub, not
+/// translate) — sliding the seed is the transform the one channel we already
+/// have (`base_color[3]`) can express.
 ///
-/// An enum and not a slider on purpose: it enters the damage field, so it is
-/// GEOMETRY, and a cycler reads as geometry while a slider reads as tone.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-#[repr(u8)]
-pub enum Origin {
-    #[default]
-    Ground = 0,
-    Even = 1,
-    Coping = 2,
-    Both = 3,
-}
+/// 2.0 story units = 14 z-units of the field's dominant octave across the
+/// whole travel: one 6-bit step moves the field ~0.22 cells — a visible morph,
+/// not a jump — while the two ends of the dial are fully decorrelated.
+pub const SCRUB_SPAN: f32 = 2.0;
 
-/// Weight of [`Origin`]'s vertical bias in the field.
+/// The story key a wall actually seeds with: the run's hash plus its scrub,
+/// QUANTIZED to the same 6-bit grid every other dial rides.
 ///
-/// 0.16 is EXACTLY the weight the hard-coded `rise` term carried, so
-/// `Origin::Ground` reproduces today's field bit for bit and every diff in this
-/// round stays explainable. `Coping`/`Both` may want more; that is a look
-/// decision with a rendered A/B attached, not an arithmetic one.
-pub const W_ORIGIN: f32 = 0.16;
-
-impl Origin {
-    /// The vertical bias, against WORLD Y. Mirrored by both shader twins — the
-    /// same discipline the `rise` term it replaces already ran on.
-    pub fn bias(self, y: f32) -> f32 {
-        let ground = 1.0 - smoothstep(0.10, 1.00, y);
-        let coping = smoothstep(1.30, 2.15, y);
-        match self {
-            Origin::Ground => ground,
-            Origin::Even => 0.0,
-            Origin::Coping => coping,
-            Origin::Both => ground.max(coping),
-        }
-    }
-    pub const ALL: [Origin; 4] = [Origin::Ground, Origin::Even, Origin::Coping, Origin::Both];
-    pub const fn name(self) -> &'static str {
-        match self {
-            Origin::Ground => "ground",
-            Origin::Even => "even",
-            Origin::Coping => "coping",
-            Origin::Both => "both",
-        }
-    }
+/// ONE function, two callers — the threshold solver ([`compile_specs`]) and
+/// the material stamp (`crack::resolve` / `Viewer::crack_apply`) — because the
+/// host solving on one key while the shader shades on another is exactly the
+/// paint-vs-plates drift this module exists to prevent. Quantizing HERE also
+/// keeps the rebuild gate honest: `GeoKey.story` carries these bits, so a drag
+/// inside one bucket rebuilds nothing.
+pub fn scrub_key(base: f32, scrub: f32) -> f32 {
+    base + (scrub.clamp(0.0, 1.0) * 63.0).round() * (SCRUB_SPAN / 63.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +367,11 @@ fn relief_of(t: f32, thick: f32) -> f32 {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct WallSpec {
     pub story: Story,
-    pub origin: Origin,
+    /// VARIANT: slides the story key through noise space ([`scrub_key`]) so
+    /// the whole damage pattern re-rolls coherently — the author's "move it
+    /// until it sits right". 0 = the run's own hash, i.e. exactly the wall
+    /// that shipped before the dial existed.
+    pub scrub: f32,
     pub pin: Pins,
     pub shape: Shape,
     /// Stamp the PAINT but keep the GEOMETRY pass off this wall.
@@ -406,7 +388,7 @@ pub struct WallSpec {
 }
 
 impl WallSpec {
-    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, origin: Origin::Ground, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
+    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, scrub: 0.0, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -422,7 +404,6 @@ impl WallSpec {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct LevelWear {
     pub base: Story,
-    pub origin: Origin,
     /// ± spread of the STORY between RUNS. Never between panels: a facade is
     /// ONE wall, and per-panel variation is what made one building read as a
     /// stack of independently aged slabs.
@@ -452,12 +433,12 @@ impl WallAt {
     pub const fn only(at: (f32, f32), label: &'static str, l: Layer, v: f32) -> WallAt {
         let mut pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(Breaks { count: 0, at: None }) };
         pin.area[l.index()] = Some(v);
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, origin: Origin::Ground, pin, shape: Shape::DEFAULT, paint_only: false } }
+        WallAt { at, label, spec: WallSpec { story: Story::ZERO, scrub: 0.0, pin, shape: Shape::DEFAULT, paint_only: false } }
     }
     /// ONE break, nothing else.
     pub const fn only_breaks(at: (f32, f32), label: &'static str, b: Breaks) -> WallAt {
         let pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(b) };
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, origin: Origin::Ground, pin, shape: Shape::DEFAULT, paint_only: false } }
+        WallAt { at, label, spec: WallSpec { story: Story::ZERO, scrub: 0.0, pin, shape: Shape::DEFAULT, paint_only: false } }
     }
 }
 
@@ -566,17 +547,21 @@ pub struct RunField {
 }
 
 impl RunField {
-    /// THE FIELD. One definition; both shader twins mirror it, pinned by the
-    /// source-reading twin guard in `crate::wear`. `Origin::Ground` at
-    /// [`W_ORIGIN`] is EXACTLY the term this replaces, so the default is
-    /// bit-identical to the field that shipped.
-    pub fn at(story: f32, origin: Origin, u: f32, y: f32) -> f32 {
-        let p = Vec3::new(u * 0.45, y * 0.7, story * 7.0 + 3.0);
-        0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + Vec3::splat(11.1)) + W_ORIGIN * origin.bias(y)
+    /// THE FIELD — [`crate::crack_geom::dmg_field`] itself: one function shared
+    /// with the geometry generator (and mirrored by both shader twins, pinned
+    /// by the source-reading guard in `crate::wear`), so the solver's
+    /// thresholds, the built plates and the painted gates are three readers of
+    /// ONE definition by construction. The per-wall `Origin` bias that used to
+    /// sit on top is gone (2026-07-27): it moved the SOLVED THRESHOLD but never
+    /// reached the field on either host or shader — a knob that changed how
+    /// much instead of where. The band mask (effect-system round C) is the
+    /// honest version of "damage collects HERE".
+    pub fn at(story: f32, u: f32, y: f32) -> f32 {
+        crate::crack_geom::dmg_field(story * 7.0 + 3.0, u, y)
     }
 
     /// Sample a run's whole face on [`LATTICE`] and sort.
-    pub fn of(run_lo: Vec3, run_hi: Vec3, story: f32, origin: Origin) -> RunField {
+    pub fn of(run_lo: Vec3, run_hi: Vec3, story: f32) -> RunField {
         let run_x = (run_hi.x - run_lo.x) >= (run_hi.z - run_lo.z);
         let (a0, a1) = if run_x { (run_lo.x, run_hi.x) } else { (run_lo.z, run_hi.z) };
         let (y0, y1) = (run_lo.y, run_hi.y);
@@ -587,7 +572,7 @@ impl RunField {
             let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
             for j in 0..ny {
                 let y = mixf(y0, y1, (j as f32 + 0.5) / ny as f32);
-                sorted.push(Self::at(story, origin, u, y));
+                sorted.push(Self::at(story, u, y));
             }
         }
         sorted.sort_by(|a, b| a.partial_cmp(b).expect("the damage field is finite"));
@@ -625,8 +610,8 @@ impl RunField {
 
 // ---- the painted gate codec: an ABSOLUTE threshold, counting DOWN -----------
 //
-// The field's range is [0, 1 + W_ORIGIN]: two vnoise octaves weighted 0.65/0.35
-// (each in 0..1) plus the origin bias. `GATE_HI` sits above that maximum, so
+// The field's range is [0, 1.16]: two vnoise octaves weighted 0.65/0.35
+// (each in 0..1) plus the 0.16 ground rise. `GATE_HI` sits above that maximum, so
 // CODE 0 — the empty word, hence every material nobody stamped — means provably
 // NOTHING. 63 steps of `GATE_STEP` reach below the minimum, so full coverage is
 // reachable on every run.
@@ -688,7 +673,6 @@ pub struct Paint {
     /// HOW MUCH: the layers' own amounts, `_pad` knob lanes 0/1.
     pub stain_amt: f32,
     pub web_amt: f32,
-    pub origin: Origin,
 }
 
 /// Everything the GEOMETRY PASS needs for one wall, ALL INTEGER — no float
@@ -698,7 +682,6 @@ pub struct Paint {
 /// could split a wall in half.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct Geom {
-    pub origin: Origin,
     /// Threshold codes ([`gate_code`] units).
     pub t_cracks: u8,
     pub t_chips: u8,
@@ -843,7 +826,7 @@ pub fn specs_of(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<(&'static str, W
                     settlement: (lw.base.settlement + d).clamp(0.0, 1.0),
                     cover_loss: (lw.base.cover_loss + d).clamp(0.0, 1.0),
                 };
-                ("", WallSpec { story: base, origin: lw.origin, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false })
+                ("", WallSpec { story: base, ..WallSpec::PRISTINE })
             }
         })
         .collect())
@@ -877,7 +860,7 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
                 spec.shape.relief = used;
             }
         }
-        let field = RunField::of(r.lo, r.hi, r.story(), spec.origin);
+        let field = RunField::of(r.lo, r.hi, scrub_key(r.story(), spec.scrub));
         let mut gate = [GATE_EMPTY; Layer::N];
         for l in Layer::ALL {
             gate[l.index()] = gate_quantize(field.threshold(area[l.index()]));
@@ -910,11 +893,9 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
                 web: gate_code(gate[Layer::Web.index()]),
                 stain_amt: area[Layer::Stain.index()],
                 web_amt: area[Layer::Web.index()],
-                origin: spec.origin,
             },
             notes,
             geom: Geom {
-                origin: spec.origin,
                 t_cracks: gate_code(gate[Layer::Cracks.index()]) as u8,
                 t_chips: gate_code(gate[Layer::Chips.index()]) as u8,
                 spall: q(area[Layer::Spall.index()]),
@@ -955,7 +936,7 @@ mod tests {
     /// Continuous coverage, measured on a lattice 4× finer than the one the
     /// threshold was solved on — the honest question, since the promise is
     /// about the FACE and not about the sample set.
-    fn true_coverage(r: &RunRect, story: f32, origin: Origin, t: f32) -> f32 {
+    fn true_coverage(r: &RunRect, story: f32, t: f32) -> f32 {
         let fine = LATTICE * 0.25;
         let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
         let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
@@ -966,7 +947,7 @@ mod tests {
             let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
             for j in 0..ny {
                 let y = mixf(r.lo.y, r.hi.y, (j as f32 + 0.5) / ny as f32);
-                if RunField::at(story, origin, u, y) >= t {
+                if RunField::at(story, u, y) >= t {
                     above += 1;
                 }
             }
@@ -978,22 +959,25 @@ mod tests {
     ///
     /// Asked for 0.30, a wall gets 30 % of its face — measured on a lattice 4×
     /// finer than the one the threshold was solved on, over every run of both
-    /// shipped levels, at every origin. The test also MEASURES the run-length
-    /// floor below which the promise stops holding and prints it, because that
-    /// floor is a real property of the field (its finest octave is 1.09 × 0.70
-    /// wu, so a short run simply has fewer independent features than a fine
-    /// fraction needs) and the bench's slabs are 2.2 wu.
+    /// shipped levels, at several scrub positions (every variant of the field
+    /// must keep the promise, or the scrub dial would be a second intensity
+    /// knob). The test also MEASURES the run-length floor below which the
+    /// promise stops holding and prints it, because that floor is a real
+    /// property of the field (its finest octave is 1.09 × 0.70 wu, so a short
+    /// run simply has fewer independent features than a fine fraction needs)
+    /// and the bench's slabs are 2.2 wu.
     #[test]
     fn an_amount_is_an_area() {
         let mut worst: Vec<(String, f32, f32, f32)> = Vec::new();
         let mut n = 0;
         for (level, runs) in both_levels() {
             for (i, r) in runs.iter().enumerate() {
-                for origin in Origin::ALL {
-                    let f = RunField::of(r.lo, r.hi, r.story(), origin);
+                for scrub in [0.0f32, 0.3, 0.8] {
+                    let story = scrub_key(r.story(), scrub);
+                    let f = RunField::of(r.lo, r.hi, story);
                     for asked in [0.1f32, 0.3, 0.6, 0.9] {
-                        let got = true_coverage(r, r.story(), origin, gate_quantize(f.threshold(asked)));
-                        worst.push((format!("{level} run {i} ({:.1} wu) {}", r.length(), origin.name()), asked, got, (got - asked).abs()));
+                        let got = true_coverage(r, story, gate_quantize(f.threshold(asked)));
+                        worst.push((format!("{level} run {i} ({:.1} wu) scrub {scrub}", r.length()), asked, got, (got - asked).abs()));
                         n += 1;
                     }
                 }
@@ -1003,7 +987,7 @@ mod tests {
         for (who, asked, got, e) in worst.iter().take(5) {
             println!("worst: {who} asked {asked:.2} got {got:.2} (err {e:.3})");
         }
-        assert!(n >= 200, "VACUOUS: only {n} cases");
+        assert!(n >= 150, "VACUOUS: only {n} cases");
         // The quantization alone costs up to GATE_STEP/2 of threshold, which on
         // a steep part of the field is a few per cent of area; the floor below
         // is what the measurement above actually produced.
@@ -1018,9 +1002,9 @@ mod tests {
     fn zero_is_provably_empty() {
         for (level, runs) in both_levels() {
             for (i, r) in runs.iter().enumerate() {
-                for origin in Origin::ALL {
-                    let f = RunField::of(r.lo, r.hi, r.story(), origin);
-                    assert!(f.hi < GATE_EMPTY, "{level} run {i} {}: field max {} reaches the empty gate", origin.name(), f.hi);
+                for scrub in [0.0f32, 0.5, 1.0] {
+                    let f = RunField::of(r.lo, r.hi, scrub_key(r.story(), scrub));
+                    assert!(f.hi < GATE_EMPTY, "{level} run {i} scrub {scrub}: field max {} reaches the empty gate", f.hi);
                     assert_eq!(gate_code(f.threshold(0.0)), 0, "{level} run {i}: 'none of it' is not code 0");
                     assert_eq!(f.coverage(gate_quantize(f.threshold(0.0))), 0.0);
                 }
@@ -1036,9 +1020,9 @@ mod tests {
         let low = GATE_HI - 63.0 * GATE_STEP;
         for (level, runs) in both_levels() {
             for (i, r) in runs.iter().enumerate() {
-                for origin in Origin::ALL {
-                    let f = RunField::of(r.lo, r.hi, r.story(), origin);
-                    assert!(f.lo > low, "{level} run {i} {}: field min {} is below the lowest code {low}", origin.name(), f.lo);
+                for scrub in [0.0f32, 0.5, 1.0] {
+                    let f = RunField::of(r.lo, r.hi, scrub_key(r.story(), scrub));
+                    assert!(f.lo > low, "{level} run {i} scrub {scrub}: field min {} is below the lowest code {low}", f.lo);
                     assert_eq!(gate_code(f.threshold(1.0)), 63, "{level} run {i}: 'all of it' is not the bottom code");
                     assert_eq!(f.coverage(gate_quantize(f.threshold(1.0))), 1.0, "{level} run {i}: full coverage unreachable");
                 }
@@ -1052,7 +1036,7 @@ mod tests {
     fn more_is_more() {
         for (level, runs) in both_levels() {
             for (i, r) in runs.iter().enumerate() {
-                let f = RunField::of(r.lo, r.hi, r.story(), Origin::Ground);
+                let f = RunField::of(r.lo, r.hi, r.story());
                 let mut prev = -1.0;
                 for k in 0..=20 {
                     let got = f.coverage(gate_quantize(f.threshold(k as f32 / 20.0)));
@@ -1123,43 +1107,45 @@ mod tests {
         assert_eq!(breaks.count, 0);
     }
 
-    /// ORIGIN MOVES DAMAGE WITHOUT ADDING ANY: at a fixed amount the coverage is
-    /// invariant (that is what solving a threshold per run buys) but the damage
-    /// CENTROID moves up the wall. Both halves matter — an origin that changed
-    /// the amount would be a second, hidden intensity dial.
+    /// SCRUB RE-ROLLS THE FIELD WITHOUT ADDING DAMAGE: at a fixed amount the
+    /// coverage is invariant (solving a threshold per run buys that for EVERY
+    /// seed) while the damaged patch actually MOVES — the whole point of the
+    /// dial. And it is quantized on the 6-bit grid, so a drag inside one step
+    /// changes nothing: the rebuild gate stays quiet by construction.
     #[test]
-    fn origin_moves_damage_without_adding_any() {
+    fn scrub_rerolls_the_field_without_adding_damage() {
         let runs = runs_of(&house_game::gym::sim::gym_level());
         let mut moved = 0;
         for r in &runs {
-            let mut cy = Vec::new();
-            for origin in [Origin::Ground, Origin::Coping] {
-                let f = RunField::of(r.lo, r.hi, r.story(), origin);
-                let t = gate_quantize(f.threshold(0.30));
-                assert!((f.coverage(t) - 0.30).abs() < 0.10, "origin {} changed the AMOUNT: {}", origin.name(), f.coverage(t));
-                // centroid height of the damaged samples
-                let (mut sum, mut cnt) = (0.0f32, 0usize);
-                let ny = (((r.hi.y - r.lo.y) / LATTICE).round() as usize).max(2);
-                let nu = 24;
-                let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
-                let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
-                for i in 0..nu {
-                    let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
-                    for j in 0..ny {
-                        let y = mixf(r.lo.y, r.hi.y, (j as f32 + 0.5) / ny as f32);
-                        if RunField::at(r.story(), origin, u, y) >= t {
-                            sum += y;
-                            cnt += 1;
-                        }
-                    }
+            let (a, b) = (scrub_key(r.story(), 0.0), scrub_key(r.story(), 0.6));
+            assert_eq!(a, r.story(), "scrub 0 must be the run's own hash — the wall that shipped");
+            let (fa, fb) = (RunField::of(r.lo, r.hi, a), RunField::of(r.lo, r.hi, b));
+            let (ta, tb) = (gate_quantize(fa.threshold(0.30)), gate_quantize(fb.threshold(0.30)));
+            assert!((fa.coverage(ta) - 0.30).abs() < 0.10);
+            assert!((fb.coverage(tb) - 0.30).abs() < 0.10, "a scrubbed wall must keep its amount");
+            // …and the damaged SET moved: count lattice points whose in/out
+            // state changed between the two variants
+            let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
+            let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
+            let (mut diff, mut n) = (0usize, 0usize);
+            let nu = (((a1 - a0) / LATTICE).round() as usize).max(2);
+            let ny = (((r.hi.y - r.lo.y) / LATTICE).round() as usize).max(2);
+            for i in 0..nu {
+                let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
+                for j in 0..ny {
+                    let y = mixf(r.lo.y, r.hi.y, (j as f32 + 0.5) / ny as f32);
+                    diff += ((RunField::at(a, u, y) >= ta) != (RunField::at(b, u, y) >= tb)) as usize;
+                    n += 1;
                 }
-                cy.push(sum / cnt.max(1) as f32);
             }
-            if cy[1] > cy[0] + 0.15 {
+            if diff as f32 / n as f32 > 0.15 {
                 moved += 1;
             }
         }
-        assert!(moved * 2 >= runs.len(), "Coping raised the damage on only {moved} of {} runs", runs.len());
+        assert!(moved * 2 >= runs.len(), "scrub moved the damage on only {moved} of {} runs", runs.len());
+        // the 6-bit grid: a sub-step drag is the SAME key, a real step is not
+        assert_eq!(scrub_key(7.4, 0.500), scrub_key(7.4, 0.505), "a sub-quantum scrub moved the key");
+        assert_ne!(scrub_key(7.4, 0.500), scrub_key(7.4, 0.530), "a real scrub step did not move the key");
     }
 
     /// A LEVEL COMPILES OR SAYS WHY. A world point that hits no run, or two
@@ -1171,7 +1157,7 @@ mod tests {
         let runs = runs_of(&house_game::gym::sim::gym_level());
         static MISS: [WallAt; 1] = [WallAt::pristine((99.0, 99.0), "nowhere")];
         static DUP: [WallAt; 2] = [WallAt::pristine((13.0, 10.0), "a"), WallAt::pristine((14.0, 10.0), "b")];
-        let lw = |w: &'static [WallAt]| LevelWear { base: Story::ZERO, origin: Origin::Ground, spread: 0.0, walls: w };
+        let lw = |w: &'static [WallAt]| LevelWear { base: Story::ZERO, spread: 0.0, walls: w };
         assert!(matches!(compile(&runs, &lw(&MISS)), Err(ref m) if matches!(m[0], Miss::NoWall { .. })));
         assert!(matches!(compile(&runs, &lw(&DUP)), Err(ref m) if matches!(m[0], Miss::Duplicate { .. })), "two names on the z=10 garden wall must collide");
         // …and a clean level compiles, one sheet per run
@@ -1199,7 +1185,7 @@ mod tests {
             WallAt { at: (13.0, 10.0), label: "deep and spalling", spec: WallSpec { story: Story { weather: 0.0, settlement: 0.0, cover_loss: 1.0 }, shape: DEEP, ..WallSpec::PRISTINE } },
             WallAt { at: (12.0, 4.0), label: "deep and sound", spec: WallSpec { story: Story { weather: 0.9, settlement: 0.0, cover_loss: 0.0 }, shape: DEEP, ..WallSpec::PRISTINE } },
         ];
-        let lw = LevelWear { base: Story::ZERO, origin: Origin::Ground, spread: 0.0, walls: &WALLS };
+        let lw = LevelWear { base: Story::ZERO, spread: 0.0, walls: &WALLS };
         let sheets = compile(&runs, &lw).expect("a clamp is not a compile error — the wall renders");
         let of = |label: &str| sheets.iter().find(|s| s.label == label).expect("both named walls compiled").clone();
 
@@ -1231,7 +1217,7 @@ mod tests {
         let runs = runs_of(&house_game::gym::sim::gym_level());
         let g = |grain: f32| {
             static W: [WallAt; 0] = [];
-            let lw = LevelWear { base: Story { weather: 0.8, ..Story::ZERO }, origin: Origin::Ground, spread: 0.0, walls: &W };
+            let lw = LevelWear { base: Story { weather: 0.8, ..Story::ZERO }, spread: 0.0, walls: &W };
             let mut s = compile(&runs, &lw).expect("compiles");
             s[0].geom.grain = (grain.clamp(0.0, 1.0) * 63.0).round() as u8;
             s[0].geom

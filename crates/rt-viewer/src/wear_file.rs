@@ -23,10 +23,9 @@
 //! ```text
 //! base <w> <s> <c>        level base story                  (default 0 0 0)
 //! spread <v>              ± story spread between runs       (default 0)
-//! origin <name>           ground|even|coping|both           (default ground)
 //! wall <x> <z> [label…]   opens a wall block at a world point
 //!   story <w> <s> <c>     the wall's own causes             (default 0 0 0)
-//!   origin <name>
+//!   scrub <v>             the VARIANT dial, 0..1 (default 0 = the run's hash)
 //!   pin <layer> <v>       stain|web|cracks|chips|spall — an authored amount
 //!   breaks <n> [<at>]     a COUNT and optionally a PLACE (0..1 along the run)
 //!   grain <v>             plate size, world units
@@ -40,7 +39,7 @@
 //! grammar's order, blocks are separated by one blank line. Hand-written
 //! comments survive a parse but not a save.
 
-use crate::wall::{Breaks, Layer, LevelWear, Origin, Shape, Story, WallAt, WallSpec};
+use crate::wall::{Breaks, Layer, LevelWear, Shape, Story, WallAt, WallSpec};
 use std::sync::OnceLock;
 
 /// One checked-in wear file: the baked source (`include_str!`, so cargo
@@ -99,10 +98,6 @@ fn save_path(file: &WearFile) -> String {
 // parse
 // ---------------------------------------------------------------------------
 
-fn origin_of(s: &str) -> Option<Origin> {
-    Origin::ALL.into_iter().find(|o| o.name() == s)
-}
-
 fn layer_of(s: &str) -> Option<Layer> {
     Layer::ALL.into_iter().find(|l| l.name() == s)
 }
@@ -116,7 +111,6 @@ fn pattern_code_of(s: &str) -> Option<u8> {
 pub fn parse(src: &str) -> Result<LevelWear, String> {
     let mut base = Story::ZERO;
     let mut spread = 0.0f32;
-    let mut origin = Origin::Ground;
     let mut walls: Vec<WallAt> = Vec::new();
     let mut cur: Option<WallAt> = None;
     for (i, raw) in src.lines().enumerate() {
@@ -147,10 +141,15 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
             // ---- level statements (only before the first wall block)
             ("base", None) => base = Story { weather: f(0)?, settlement: f(1)?, cover_loss: f(2)? },
             ("spread", None) => spread = f(0)?,
-            ("origin", None) => origin = origin_of(rest.first().copied().unwrap_or("")).ok_or(format!("line {n}: unknown origin"))?,
             // ---- wall statements
             ("story", Some(w)) => w.spec.story = Story { weather: f(0)?, settlement: f(1)?, cover_loss: f(2)? },
-            ("origin", Some(w)) => w.spec.origin = origin_of(rest.first().copied().unwrap_or("")).ok_or(format!("line {n}: unknown origin"))?,
+            ("scrub", Some(w)) => {
+                let v = f(0)?;
+                if !(0.0..=1.0).contains(&v) {
+                    return Err(format!("line {n}: scrub is a dial, 0..1"));
+                }
+                w.spec.scrub = v;
+            }
             ("pin", Some(w)) => {
                 let l = layer_of(rest.first().copied().unwrap_or("")).ok_or(format!("line {n}: unknown layer"))?;
                 w.spec.pin = w.spec.pin.area(l, f(1)?);
@@ -188,7 +187,7 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
     if let Some(w) = cur.take() {
         walls.push(w);
     }
-    Ok(LevelWear { base, origin, spread, walls: Box::leak(walls.into_boxed_slice()) })
+    Ok(LevelWear { base, spread, walls: Box::leak(walls.into_boxed_slice()) })
 }
 
 // ---------------------------------------------------------------------------
@@ -205,13 +204,13 @@ fn num(v: f32) -> String {
 /// the live save assembles its wall list fresh and calls the parts form.
 #[cfg(test)]
 pub fn serialize(lw: &LevelWear) -> String {
-    serialize_parts(lw.base, lw.spread, lw.origin, lw.walls)
+    serialize_parts(lw.base, lw.spread, lw.walls)
 }
 
 /// The canonical writer. Takes parts rather than a `LevelWear` because the
 /// SAVE path assembles its wall list fresh from the live lab (`lab_walls`)
 /// and must not have to leak one to write it.
-pub fn serialize_parts(base: Story, spread: f32, origin: Origin, walls: &[WallAt]) -> String {
+pub fn serialize_parts(base: Story, spread: f32, walls: &[WallAt]) -> String {
     let mut blocks: Vec<String> = Vec::new();
     let mut head: Vec<String> = Vec::new();
     if base != Story::ZERO {
@@ -219,9 +218,6 @@ pub fn serialize_parts(base: Story, spread: f32, origin: Origin, walls: &[WallAt
     }
     if spread != 0.0 {
         head.push(format!("spread {}", num(spread)));
-    }
-    if origin != Origin::Ground {
-        head.push(format!("origin {}", origin.name()));
     }
     if !head.is_empty() {
         blocks.push(head.join("\n"));
@@ -236,8 +232,8 @@ pub fn serialize_parts(base: Story, spread: f32, origin: Origin, walls: &[WallAt
         if s.story != Story::ZERO {
             b.push(format!("  story {} {} {}", num(s.story.weather), num(s.story.settlement), num(s.story.cover_loss)));
         }
-        if s.origin != Origin::Ground {
-            b.push(format!("  origin {}", s.origin.name()));
+        if s.scrub != 0.0 {
+            b.push(format!("  scrub {}", num(s.scrub)));
         }
         for l in Layer::ALL {
             if let Some(v) = s.pin.get(l) {
@@ -313,7 +309,7 @@ pub fn lab_walls(lw: &LevelWear, runs: &[crate::wall::RunRect], lab: &crate::cra
 /// harness's asked-for state, not the owner's authoring, and freezing that
 /// into the file would make one SHOT recipe permanent.
 fn env_overridden() -> bool {
-    ["STORY", "SHAPE", "SPALL", "SPREAD", "WEAR_EDIT"].iter().any(|k| std::env::var(k).is_ok())
+    ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "WEAR_EDIT"].iter().any(|k| std::env::var(k).is_ok())
 }
 
 impl crate::viewer::Viewer {
@@ -334,7 +330,7 @@ impl crate::viewer::Viewer {
         let Some(file) = self.cur_demo.and_then(|d| d.wear) else { return };
         let lw = file.level_wear();
         let walls = lab_walls(lw, &self.crack.runs, &self.crack);
-        let text = serialize_parts(lw.base, lw.spread, lw.origin, &walls);
+        let text = serialize_parts(lw.base, lw.spread, &walls);
         let path = save_path(file);
         match std::fs::write(&path, &text) {
             Ok(()) => println!("wear: saved {} walls to {path}", walls.len()),
@@ -356,7 +352,6 @@ mod tests {
         pin = pin.breaks(Breaks { count: 2, at: Some(0.25) });
         static_assertless_walls_round_trip(LevelWear {
             base: Story { weather: 0.55, settlement: 0.35, cover_loss: 0.65 },
-            origin: Origin::Coping,
             spread: 0.4,
             walls: Box::leak(Box::new([
                 WallAt::pristine((12.0, 4.0), "negative control"),
@@ -365,7 +360,7 @@ mod tests {
                     label: "the works",
                     spec: WallSpec {
                         story: Story { weather: 0.9, settlement: 0.1, cover_loss: 0.0 },
-                        origin: Origin::Both,
+                        scrub: 0.3,
                         pin,
                         shape: Shape { grain: 0.2, relief: 0.7, pattern: Pattern::Craquelure { wave: 0.5 } },
                         paint_only: true,
@@ -385,7 +380,7 @@ mod tests {
     /// must not acquire statements on a save.
     #[test]
     fn nothing_serializes_to_nothing() {
-        let lw = LevelWear { base: Story::ZERO, origin: Origin::Ground, spread: 0.0, walls: &[] };
+        let lw = LevelWear { base: Story::ZERO, spread: 0.0, walls: &[] };
         assert_eq!(serialize(&lw), "\n");
         assert_eq!(parse("").expect("an empty file parses"), lw);
         assert_eq!(parse("# only a comment\n").expect("a comment-only file parses"), lw);
@@ -402,6 +397,7 @@ mod tests {
             ("wall 1 2 w\n  pin gloss 0.5\n", "unknown layer"),
             ("wall 1 2 w\n  breaks 7\n", "whole 0..=3"),
             ("wall 1 2 w\n  breaks 1 1.5\n", "fraction of the run"),
+            ("wall 1 2 w\n  scrub 2\n", "dial, 0..1"),
             ("wall 1 2 w\n  pattern voronoi\n", "unknown pattern"),
             ("wall 1 2 w\n  pattern craquelure 0.5 0.5\n", "native params"),
             ("wall 1 2 w\nbase 0 0 0\n", "level statement"),
@@ -447,7 +443,7 @@ mod tests {
 
         let walls = lab_walls(lw, &lab.runs, &lab);
         assert_eq!(walls.len(), 3, "two named + one hand-edited");
-        let text = serialize_parts(lw.base, lw.spread, lw.origin, &walls);
+        let text = serialize_parts(lw.base, lw.spread, &walls);
         let back = parse(&text).expect("a save parses");
 
         // a fresh boot from the saved text lands on the edited specs

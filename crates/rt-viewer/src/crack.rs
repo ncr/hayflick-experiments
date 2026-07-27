@@ -312,6 +312,13 @@ fn spread_from_env() -> Option<f32> {
     std::env::var("SPREAD").ok().and_then(|v| v.trim().parse::<f32>().ok())
 }
 
+/// `SCRUB=<0..1>` — the VARIANT dial on every run: slides the story key
+/// through noise space (`wall::scrub_key`), re-rolling paint, plates and
+/// breaks coherently. The headless stand-in for the panel's variant row.
+fn scrub_from_env() -> Option<f32> {
+    std::env::var("SCRUB").ok().and_then(|v| v.trim().parse::<f32>().ok())
+}
+
 /// `WEAR_EDIT=weather,settlement,cover_loss[,run]` — the harness's stand-in for
 /// the owner dragging the panel and letting go: after boot, write this story
 /// (onto every run, or only `run`) and take the RELEASE path a mouse-up takes.
@@ -329,8 +336,8 @@ fn edit_from_env() -> Option<(crate::wall::Story, Option<usize>)> {
 /// Apply every environment override to a resolved spec list. One place, so a
 /// harness shot and the owner's own level cannot diverge in how they are read.
 fn apply_env(specs: &mut [(&'static str, crate::wall::WallSpec)]) {
-    let (story, shape, spall) = (story_from_env(), shape_from_env(), spall_from_env());
-    if story.is_none() && shape.is_none() && spall.is_none() {
+    let (story, shape, spall, scrub) = (story_from_env(), shape_from_env(), spall_from_env(), scrub_from_env());
+    if story.is_none() && shape.is_none() && spall.is_none() && scrub.is_none() {
         return;
     }
     for (_, spec) in specs.iter_mut() {
@@ -343,6 +350,9 @@ fn apply_env(specs: &mut [(&'static str, crate::wall::WallSpec)]) {
         }
         if let Some(v) = spall {
             spec.story.cover_loss = v;
+        }
+        if let Some(sc) = scrub {
+            spec.scrub = sc;
         }
     }
 }
@@ -459,7 +469,7 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
                 eprintln!("wear: {m:?} — that wall keeps the level's base story");
             }
             runs.iter()
-                .map(|_| ("", crate::wall::WallSpec { story: lw.base, origin: lw.origin, ..crate::wall::WallSpec::PRISTINE }))
+                .map(|_| ("", crate::wall::WallSpec { story: lw.base, ..crate::wall::WallSpec::PRISTINE }))
                 .collect()
         });
         apply_env(&mut specs);
@@ -501,6 +511,18 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
     }
     lab.runs = runs;
     lab.pier_run = pier_run;
+    // The SCRUBBED story key: the boot stamp above wrote every run's base
+    // hash; a wall with a non-zero VARIANT dial slides it here — before the
+    // geometry pass and the effect-word solve, so the host field, the painted
+    // gates and the shader all seed off ONE value (`wall::scrub_key` is the
+    // single spelling, quantized; scrub 0 leaves the boot stamp untouched).
+    for (i, pier) in piers.iter().enumerate() {
+        let s = lab.spec[lab.pier_run[i]].scrub;
+        if s > 0.0 {
+            let mid = scene.primitives[pier.prim].material_id as usize;
+            scene.materials[mid].base_color[3] = crate::wall::scrub_key(crate::wear::story_key(pier.run_lo, pier.run_hi), s);
+        }
+    }
     lab.recompile();
     stamp_all(scene, piers, lab);
     // structural breaks + crazing + cover spall become REAL geometry
@@ -536,11 +558,23 @@ impl Viewer {
     /// geometry currently BUILT (only `crack_release`'s rebuild may change
     /// those), AA the scope, and the rest are the gym's own surface marks.
     pub fn crack_apply(&mut self, i: usize) {
-        let paint = self.crack.pier_run.get(i).and_then(|r| self.crack.sheets.get(*r)).map(|s| s.paint).unwrap_or_default();
+        let run = self.crack.pier_run.get(i).copied();
+        let paint = run.and_then(|r| self.crack.sheets.get(r)).map(|s| s.paint).unwrap_or_default();
         let mid = self.scene.primitives[self.piers[i].prim].material_id as usize;
         let pad = stamped_pad(self.scene.materials[mid]._pad, paint, self.crack.sel == Some(i));
         self.scene.materials[mid]._pad = pad;
         self.backend.set_material_pad(mid, pad);
+        // The VARIANT dial rides the story key (`base_color[3]`): stream it
+        // with the paint so a scrub drag morphs the painted field live. The
+        // geometry (and its probe bake) catches up on release, like every
+        // geometry dial; the chalk core keeps the built variant's key until
+        // then, which only ever shows for the length of the drag.
+        let scrub = run.and_then(|r| self.crack.spec.get(r)).map_or(0.0, |s| s.scrub);
+        let story = crate::wall::scrub_key(crate::wear::story_key(self.piers[i].run_lo, self.piers[i].run_hi), scrub);
+        if self.scene.materials[mid].base_color[3] != story {
+            self.scene.materials[mid].base_color[3] = story;
+            self.backend.set_material_story(mid, story);
+        }
     }
 
     /// A live EDIT of run `r`'s spec, as the panel makes it: recompile the run,
