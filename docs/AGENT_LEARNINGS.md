@@ -1370,3 +1370,30 @@ moving because the compositor draws it.
   `hyprctl keyword windowrule "<field> <value>, match:title <re>"`
   (`no_initial_focus on`, `monitor <name>`); after adding rules, VERIFY the
   window's monitor id before letting anything fullscreen.
+
+## 2026-07-27 (round F, the IDE) — a sibling tool's cache is not scene truth
+
+**Context.** The personal IDE's hierarchy and world-pick needed the wall
+RUNS. The crack lab already holds exactly that — `CrackLab.runs`,
+`pier_run`, `label` — so the first cut read them.
+
+**What went wrong.** Those fields are RESOLVE products: they are populated
+when a level's wear authoring is compiled, which happens on levels that HAVE
+authored wear. On the plain gym they are empty — so the first `IDE=1` SHOT
+shipped a hierarchy with no walls at all, and (after a partial fix) a
+selection lift on a single window-jamb sliver instead of the wall, because
+`crack_select` selects a PIER while the IDE selects the authoring unit.
+
+**The fix.** Derive from the artifact's own facts: `crack::runs_of(&piers)`
+recomputes runs + the pier→run map from `Pier.run_lo/run_hi` — data every
+build carries — and the lab's copies are used only for what they uniquely
+own (the authored labels, guarded with a fallback name). Selection stamps
+the SEL bit on EVERY pier of the run (clearing stale bits by re-deriving all
+pier pads first — `KEEP_FLAGS` strips SEL, so the re-derive is the eraser).
+
+**The lesson.** A cache that exists to serve tool A is empty exactly when
+tool B assumes it. Before reading another module's state, ask what populates
+it and WHEN — and if the underlying facts are cheap to re-derive (15 piers),
+re-derive them. Corollary of the round-9 lesson at the selection layer: the
+pier is a rendering artifact; anything user-facing (a pick, a highlight, a
+list row) must speak in runs.

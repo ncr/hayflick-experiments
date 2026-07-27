@@ -661,7 +661,7 @@ impl RenderBackend for VulkanBackend {
                 .dst_subresource(layers)
                 .dst_offsets([vk::Offset3D { x: 0, y: 0, z: 0 }, vk::Offset3D { x: extent.width as i32, y: extent.height as i32, z: 1 }]);
             d.cmd_blit_image(cmd, swap.out.0, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, sc_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::NEAREST);
-            // ESC tune-menu overlay (panel, or the hamburger icon when closed):
+            // ESC tune-menu overlay (panel / wall panel / REC badge):
             // CPU-drawn, copied onto the PRESENTED image only — swap.out stays
             // clean, so SHOT/MOVIE/DUMP captures never contain UI. Headless modes
             // pass no overlay.

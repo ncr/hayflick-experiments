@@ -12,6 +12,9 @@
 //! - Shift — run
 //! - q / e — smooth eased quarter turn (presentation-only)
 //! - scroll / +- — integer zoom steps 1-4, cursor-anchored; 0 = camera reset
+//! - Tab — the personal IDE (pracownia): hierarchy + inspector at 2x the
+//!   game's pixel density; click selects, sliders edit on release; the world
+//!   pauses while it is open (ESC closes it too)
 //! - l — lamp master on/off
 //! - r — record a clip at exact game resolution: stop writes BOTH
 //!   clips/clip_NNNN.mp4 (x264, NEAREST 4x) and .gif (palette, 1x, half rate)
@@ -39,6 +42,7 @@ mod flags;
 mod gym_loop;
 mod gym_scene;
 mod gi_demo;
+mod ide_host;
 mod look;
 mod menu;
 mod phys_scene;
@@ -170,7 +174,10 @@ impl ApplicationHandler for App {
                     _ => None,
                 };
                 if let Some(i) = held_idx {
-                    r.gym.held[i] = event.state.is_pressed();
+                    // an open IDE freezes the world — walking starts on close
+                    if !r.ide.ui.open {
+                        r.gym.held[i] = event.state.is_pressed();
+                    }
                     return;
                 }
                 // movement mode (held)
@@ -183,8 +190,17 @@ impl ApplicationHandler for App {
                 }
                 match event.logical_key.as_ref() {
                     // same repeat guard as the modal branch: one physical
-                    // press, one toggle
-                    Key::Named(NamedKey::Escape) if !event.repeat => r.menu_toggle(),
+                    // press, one toggle. ESC closes the IDE first — the game
+                    // menu stays one more ESC away.
+                    Key::Named(NamedKey::Escape) if !event.repeat => {
+                        if r.ide.ui.open {
+                            r.ide_toggle();
+                        } else {
+                            r.menu_toggle();
+                        }
+                    }
+                    // the personal IDE (pause = edit): Tab toggles it
+                    Key::Named(NamedKey::Tab) if !event.repeat => r.ide_toggle(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.view.cursor;
                         r.zoom_step(1, c);
@@ -225,6 +241,8 @@ impl ApplicationHandler for App {
                     r.gym.run_held = false;
                     r.menu.drag = false;
                     r.menu.drag_pending = false;
+                    r.ide.ui.cancel_drag();
+                    r.ide.drag_pending = false;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -238,13 +256,16 @@ impl ApplicationHandler for App {
                     if r.menu.drag {
                         r.menu.drag_pending = true;
                     }
+                    if r.ide.ui.dragging() {
+                        r.ide.drag_pending = true;
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if let Some(r) = self.renderer.as_mut() {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
-                        if !r.menu_click(c) && !r.crack_click(c) {
+                        if !r.menu_click(c) && !r.ide_click(c) && !r.crack_click(c) {
                             r.click_move(c); // click-to-move
                         }
                     } else {
@@ -256,6 +277,13 @@ impl ApplicationHandler for App {
                             r.menu_drag_to(c);
                         }
                         r.menu.drag = false;
+                        if r.ide.ui.dragging() {
+                            if r.ide.drag_pending {
+                                r.ide.drag_pending = false;
+                                r.ide_drag_step();
+                            }
+                            r.ide_release(); // slider released: the edit lands here
+                        }
                         r.crack_release(); // knob drag ended: faults may need real geometry
                     }
                 }
@@ -266,6 +294,11 @@ impl ApplicationHandler for App {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(p) => p.y as f32 / 50.0,
                     };
+                    // an open IDE takes the wheel over its hierarchy (scroll);
+                    // anywhere else it stays the zoom
+                    if r.ide_wheel(r.view.cursor, dy) {
+                        return;
+                    }
                     // accumulate (trackpads send fractional deltas) and zoom in
                     // whole steps, cursor-anchored — web zoomStepAtClient.
                     r.view.wheel_accum += dy;
@@ -312,6 +345,10 @@ impl ApplicationHandler for App {
                         r.menu.drag_pending = false;
                         let c = r.view.cursor;
                         r.menu_drag_to(c);
+                    }
+                    if r.ide.ui.dragging() && r.ide.drag_pending {
+                        r.ide.drag_pending = false;
+                        r.ide_drag_step();
                     }
                     let ok = unsafe { r.draw() };
                     if r.exit_requested {

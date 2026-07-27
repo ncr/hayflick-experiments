@@ -11,6 +11,9 @@ path = "src/main.rs"
 [dependencies]
 rt-probe = { path = "../rt-probe" }
 house-game = { path = "../house-game" }
+# the personal game IDE (owner 2026-07-27) — headless UI model + rasterizer;
+# this crate's ide_host.rs is the only adapter that knows both sides
+ide = { path = "../ide" }
 sim-core = { path = "../sim-core" }
 iso-core = { path = "../iso-core" }
 # destructibility exploration (voxel-physics-spike branch): PHYS=1 drops a

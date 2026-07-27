@@ -1,0 +1,8 @@
+[package]
+name = "ide"
+version = "0.1.0"
+edition = "2021"
+description = "The personal game IDE (pracownia) — headless UI model + CPU rasterizer for the 2x-resolution editor overlay. Knows neither the game nor the GPU: rt-viewer's adapter feeds it a SceneModel and applies the Edits it returns."
+
+[dependencies]
+font8x8 = { version = "0.3", default-features = false }

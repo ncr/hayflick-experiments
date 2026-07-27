@@ -344,7 +344,7 @@ pub fn menu_scale_for(ext_h: u32) -> u32 {
 }
 
 /// Window-px origin for the CPU menu overlay: game menus (TITLE/PAUSE) centre
-/// on the window; the tune panel / hamburger pin at the top-left margin.
+/// on the window; the tune/wall panels pin at the top-left margin.
 /// `pw`/`ph` are the expanded (logical × scale) canvas size.
 pub fn overlay_origin(center: bool, ext_w: u32, ext_h: u32, pw: u64, ph: u64, margin: i64) -> (i64, i64) {
     if center {

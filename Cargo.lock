@@ -731,6 +731,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide"
+version = "0.1.0"
+dependencies = [
+ "font8x8",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1601,6 +1608,7 @@ dependencies = [
  "font8x8",
  "glam",
  "house-game",
+ "ide",
  "iso-core",
  "metal",
  "objc",

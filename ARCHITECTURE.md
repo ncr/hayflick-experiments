@@ -49,6 +49,12 @@ testable without a GPU. The game must run without the renderer.
                         #   (moved from rt-probe/src/game.rs), iso_input_dir, speed floor.
                         #   Plus a `headless` [[bin]]: plays a trace file N ticks → state digest
                         #   (plain-text format, trace.rs — no RON dep; one command per line).
+    ide/                # the personal IDE ("pracownia", owner 2026-07-27): headless UI
+                        #   model + CPU rasterizer for the 2x-density editor overlay.
+                        #   deps: font8x8 only — knows neither the game nor the GPU;
+                        #   boundary is plain data (SceneModel in, Edit out), and
+                        #   rt-viewer/src/ide_host.rs is the ONLY adapter. Panels ride
+                        #   the existing Stamp path (no GPU code of its own).
     rt-viewer/          # shell. [[bin]] name = "viewer" (binary path: target/release/viewer).
                         #   deps: rt-probe, house-game, sim-core, iso-core, winit, ash-window,
                         #   raw-window-handle, font8x8 + ash/glam/png (viewer code uses them
@@ -62,8 +68,9 @@ testable without a GPU. The game must run without the renderer.
                         #   LevelSpec (new scene only), ESC menu, capture/golden harness, NullSink.
 ```
 
-Dependency arrows: `rt-viewer → {rt-probe, house-game, sim-core, iso-core}`;
-`house-game → {sim-core, iso-core}`; `rt-probe → {iso-core}`; `sim-core → hecs`.
+Dependency arrows: `rt-viewer → {rt-probe, house-game, sim-core, iso-core, ide}`;
+`house-game → {sim-core, iso-core}`; `rt-probe → {iso-core}`; `sim-core → hecs`;
+`ide → {font8x8}` (leaf — sees neither the game nor the GPU).
 **rt-probe and house-game never see each other** — only rt-viewer's adapter knows both.
 `cargo test -p house-game` runs the whole game headless in milliseconds.
 

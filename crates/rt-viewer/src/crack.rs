@@ -12,8 +12,8 @@
 //! colour only).
 //!
 //! Owner surface: the LEVELS menu's "crack lab" demo — click a wall segment
-//! (ray-picked against `GymMeta.piers`), drag the slider panel that replaces
-//! the hamburger; below the knobs a pattern row cycles the small-crack
+//! (ray-picked against `GymMeta.piers`), drag the slider panel that appears
+//! top-left; below the knobs a pattern row cycles the small-crack
 //! POLICY (`crack_geom::POLICIES` — owner round 5, 2026-07-23: Voronoi
 //! reads fake, give me patterns to choose from) and under IT sit that
 //! policy's NATIVE param sliders (`crack_geom::POLICY_PARAMS` — owner
@@ -579,7 +579,7 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
 /// Ray/AABB slab test → entry distance (`None` on miss). The pick ray comes
 /// from `iso_core::window_px_to_ray`, whose origin is backed off behind the
 /// scene, so `tmin ≥ 0` always holds for visible piers.
-fn ray_aabb(o: Vec3, d: Vec3, lo: Vec3, hi: Vec3) -> Option<f32> {
+pub(crate) fn ray_aabb(o: Vec3, d: Vec3, lo: Vec3, hi: Vec3) -> Option<f32> {
     let inv = d.recip();
     let a = (lo - o) * inv;
     let b = (hi - o) * inv;
@@ -590,9 +590,11 @@ fn ray_aabb(o: Vec3, d: Vec3, lo: Vec3, hi: Vec3) -> Option<f32> {
 
 impl Viewer {
     /// The crack knob panel is on screen: lab active, a segment picked, no
-    /// menu over it (the panel replaces the hamburger while editing).
+    /// menu over it (the panel is the closed-menu surface while editing).
     pub fn crack_panel_visible(&self) -> bool {
-        self.crack.active && self.crack.sel.is_some() && !self.menu_open()
+        // while the IDE is open its inspector is the property surface —
+        // closing the IDE with a wall picked hands over to this panel
+        self.crack.active && self.crack.sel.is_some() && !self.menu_open() && !self.ide.ui.open
     }
 
     /// Recompute + push pier `i`'s material `_pad` (paint lanes + selection),

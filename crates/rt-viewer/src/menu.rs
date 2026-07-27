@@ -96,8 +96,6 @@ const MTRACK_W: i32 = 70;
 const MVAL_X: i32 = 186;
 pub const MPANEL_W: i32 = 242;
 pub const MPANEL_H: i32 = MPAD * 2 + MROW * (MENU.len() as i32 + 2); // title + items + footer
-const MICON_W: i32 = 18; // hamburger icon shown when the menu is closed
-const MICON_H: i32 = 14;
 pub const MENU_MARGIN: i32 = 12; // physical px from the window's top-left
 
 /// Game-menu panel height for `items` rows (title band + rows + footer).
@@ -404,7 +402,7 @@ pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (3 + crate::wall::Layer:
 pub const PANEL_MAX_H: i32 = if CRACK_PANEL_H > MPANEL_H { CRACK_PANEL_H } else { MPANEL_H };
 const _: () = assert!(CRACK_PANEL_H <= PANEL_MAX_H);
 
-/// The picked WALL's panel — it replaces the hamburger while a wall is selected
+/// The picked WALL's panel — the closed-menu surface while a wall is selected
 /// and the menu is closed (owner surface: click a wall, drag a row).
 ///
 /// It is the authoring model on screen, in the model's own order: three CAUSES,
@@ -806,7 +804,7 @@ impl Viewer {
     }
 
     /// Top-left window px of the on-screen panel: game menus are centered,
-    /// the settings panel/hamburger sit at the top-left margin.
+    /// the settings/wall panels sit at the top-left margin.
     fn menu_origin(&self, pw: i32, ph: i32) -> Vec2 {
         match self.menu.mode {
             MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
@@ -823,15 +821,11 @@ impl Viewer {
         let ms = self.menu_ui_scale();
         match self.menu.mode {
             MenuMode::Closed => {
-                // crack-lab knob panel replaces the hamburger while editing
+                // the wall panel is the only closed-menu click surface (the
+                // hamburger is gone — ESC is the menu, owner 2026-07-27; and
+                // crack_panel_visible is false while the IDE owns the pointer)
                 if self.crack_panel_visible() {
                     return self.crack_panel_click(p);
-                }
-                // hamburger icon → PAUSE
-                let org = Vec2::splat(MENU_MARGIN as f32);
-                if p.x >= org.x && p.y >= org.y && p.x < org.x + MICON_W as f32 * ms && p.y < org.y + MICON_H as f32 * ms {
-                    self.menu_toggle();
-                    return true;
                 }
                 false
             }
@@ -1012,8 +1006,10 @@ impl Viewer {
     }
 
     /// Draw the overlay at logical resolution: the open panel (game menu /
-    /// settings), or the hamburger icon when closed.
-    pub fn menu_canvas(&self) -> (Vec<u32>, i32, i32) {
+    /// settings), the wall panel or the REC badge when closed — `None` when
+    /// there is nothing to show (ESC is the only way into the menu; the
+    /// hamburger icon is gone, owner 2026-07-27).
+    pub fn menu_canvas(&self) -> Option<(Vec<u32>, i32, i32)> {
         const BG: u32 = 0x16161c;
         const BORDER: u32 = 0x6a6a78;
         const TEXT: u32 = 0xc8c8d0;
@@ -1051,42 +1047,40 @@ impl Viewer {
             let hint = if self.menu.mode == MenuMode::Title { "beztroska games" } else { "esc resumes" };
             let hx = (w - hint.len() as i32 * 8) / 2;
             mtext(&mut c, w, hx.max(2), fy, hint, 0x707078);
-            return (c, w, h);
+            return Some((c, w, h));
         }
         // LEVELS: the named-demo picker (owner directive 2026-07-16 — the demo
         // IS the deliverable, self-described). Pure fn of the selection so it
         // renders headless for verification (`levels_canvas_dumps` test).
         if self.menu.mode == MenuMode::Levels {
-            return levels_canvas(self.menu.sel);
+            return Some(levels_canvas(self.menu.sel));
         }
         if self.menu.mode == MenuMode::Closed {
-            // crack lab: while a wall segment is selected the knob panel takes
-            // the hamburger's spot (ESC still opens the pause menu over it)
+            // crack lab: while a wall segment is selected the knob panel is
+            // the closed-menu surface (ESC still opens the pause menu over it)
             if self.crack_panel_visible() {
                 let sel = self.crack.sel.unwrap();
                 let r = self.crack.pier_run.get(sel).copied().unwrap_or(0);
                 if let (Some(spec), Some(sheet)) = (self.crack.spec.get(r), self.crack.sheets.get(r)) {
-                    return crack_canvas(self.crack.label.get(r).copied().unwrap_or(""), r, spec, sheet, self.crack.row, self.crack.placing);
+                    return Some(crack_canvas(self.crack.label.get(r).copied().unwrap_or(""), r, spec, sheet, self.crack.row, self.crack.placing));
                 }
             }
-            // hamburger icon; while recording, a REC badge rides next to it
-            // (the badge is overlay-only — clips capture swap.out, never UI)
-            let w = if self.rec.is_some() { MICON_W + 78 } else { MICON_W };
-            let h = MICON_H;
-            let mut c = vec![BG; (w * h) as usize];
-            mrect(&mut c, w, 0, 0, w, 1, BORDER);
-            mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
-            mrect(&mut c, w, 0, 0, 1, h, BORDER);
-            mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
-            for k in 0..3 {
-                mrect(&mut c, w, 4, 3 + k * 3, MICON_W - 8, 1, TEXT);
-            }
+            // while recording, a standalone REC badge (overlay-only — clips
+            // capture swap.out, never UI); otherwise the closed menu shows
+            // NOTHING — ESC is the menu
             if let Some(rec) = &self.rec {
-                mrect(&mut c, w, MICON_W + 3, 4, 6, 6, 0xdd4444);
+                let (w, h) = (72, 14);
+                let mut c = vec![BG; (w * h) as usize];
+                mrect(&mut c, w, 0, 0, w, 1, BORDER);
+                mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
+                mrect(&mut c, w, 0, 0, 1, h, BORDER);
+                mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
+                mrect(&mut c, w, 4, 4, 6, 6, 0xdd4444);
                 let secs = rec.frames.len() as f32 / rec.fps as f32;
-                mtext(&mut c, w, MICON_W + 12, 3, &format!("{secs:5.1}s"), 0xdd8888);
+                mtext(&mut c, w, 14, 3, &format!("{secs:5.1}s"), 0xdd8888);
+                return Some((c, w, h));
             }
-            return (c, w, h);
+            return None;
         }
         let (w, h) = (MPANEL_W, MPANEL_H);
         let mut c = vec![BG; (w * h) as usize];
@@ -1133,7 +1127,7 @@ impl Viewer {
         }
         let fy = MPAD + MROW * (1 + MENU.len() as i32) + 2;
         mtext(&mut c, w, MLABEL_X, fy, "esc close+log  arrows/drag", 0x707078);
-        (c, w, h)
+        Some((c, w, h))
     }
 }
 

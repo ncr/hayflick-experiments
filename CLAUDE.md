@@ -24,6 +24,7 @@ Cargo workspace at the repo root, members `crates/*`:
 | `sim-core` | generic sim runtime (fixed tick, InputQueue, Pcg32, traces) | hecs, glam |
 | `house-game` | ALL game logic, fully headless: the `gym` testbed + movement primitives | sim-core, iso-core |
 | `rt-probe` | deterministic renderer lib (Vulkan ray_query) + GLSL | iso-core |
+| `ide` | the personal IDE (pracownia): headless UI model + CPU rasterizer for the 2x-density editor overlay; knows neither the game nor the GPU | font8x8 only |
 | `rt-viewer` | `viewer` binary: winit shell, Metal backend, gym loop, capture | everything |
 
 **rt-probe and house-game never see each other** — only rt-viewer's adapter
@@ -780,6 +781,52 @@ sessions out of files, but not beat states riding an edited session. The
 honest fix is the level_dials discipline (the beat applies on the way to a
 sheet, never into the authored spec); do it when the crack-lab demo next
 gets attention.
+
+THE PERSONAL IDE — PRACOWNIA since 2026-07-27 (owner: "the ESC menu has
+worked hard enough; as the game grows we'll have ever more sliders — make a
+personal IDE tailored to this game, Unity-editor-shaped, minimal to start,
+cleanly separated from the game, its UI at ~2x the game pixel's resolution").
+v1 is select-and-inspect: Tab toggles it (ESC closes; `IDE=1` boots it open),
+an open IDE PAUSES the sim — the 2026-07-23 pause=edit anchor
+(docs/EDITOR_HANDOFF_2026-07-23.md) — clears held keys, and owns every
+pointer event: chrome first, then a world ray-pick over walls, lamps, the
+player and the spawn cell. Top bar + hierarchy (grouped, wheel-scrolled,
+labels from the wear file's authored run names) + inspector (transform,
+declared props). THE SEPARATION IS A CRATE: `crates/ide` holds the whole UI —
+layout, widgets, rasterization, interaction — and knows neither house-game
+nor the GPU; the boundary is plain data (`SceneModel` in, `Edit` out) and
+`rt-viewer/src/ide_host.rs` is the ONLY adapter, in the rt-probe/house-game
+tradition. THE OVERLAY IS STAMPS: panels are CPU canvases on the existing
+per-stamp-scale Stamp path (burned into `out` on both backends), so the whole
+IDE shipped with ZERO new GPU code, no new blind-Metal debt, and the panels
+land in SHOT captures BY DESIGN — a SHOT with `IDE=1` is the headless
+verification of the overlay. `ide_scale = max(1, menu_scale/2)` (half the
+menu's UI pixel = half the game texel at the default window) — tied to the
+menu scale, NOT the zoom: tooling chrome must not grow when the world zooms.
+SELECTION IS THE RUN: a wall pick lifts the WHOLE run with the SEL amber
+(every pier, not the pier the ray struck), and the crack lab's own selection
+follows it, so closing the IDE with a wall picked hands straight over to the
+wear panel; lamps/player/spawn get an amber bubble marker instead (no
+material to lift). EDITS ARE RELEASE-ONLY (the input-pacing discipline —
+drags are coalesced to one step per frame and only move display state; the
+release mutates the SPEC and rebuilds via `apply_look`, probe cache
+content-keyed): v1 edits are lamp glow (1..8), lamp cell x/z and the spawn
+cell. Slider snapping is `k/50` (the wear-file lesson). HARNESS: `IDE=1`,
+`IDE_SEL=<object name>` (boot selection), `IDE_EDIT="<obj> <key> <v>[;…]"`
+(replay edits through the real apply path — the `WEAR_EDIT` discipline).
+Verified on Vulkan/RTX: gym SHOT with the IDE closed is BYTE-IDENTICAL to
+pre-IDE HEAD (cross-run floor zero); `IDE_EDIT="lamp 0 glow 1"` A/B moves the
+whole lighting; the catalogue's hierarchy lists all 23 runs by their wear
+names. NEXT (not this round): save — the level-as-data migration waits in
+`archive/editor-v0` (level_file.rs + gym.level, the handoff's load-bearing
+decision); wall/grid ops (editor-v0's `apply_op` vocabulary); wear knobs
+inside the inspector. First Mac session: boot `IDE=1` once — the stamp path
+is shared code, but the per-stamp staging-texture allocation in
+`blit_overlay` has never carried four window-tall panels.
+GOTCHA pinned in docs/AGENT_LEARNINGS.md (2026-07-27F): `crack.runs`/
+`pier_run`/`label` are RESOLVE products — populated only when the level has
+authored wear — so the IDE derives runs from the piers themselves
+(`crack::runs_of`) and treats the lab's copies as optional labels.
 
 ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
 branching, irregular — not straight lines; two kinds: the coarse one and

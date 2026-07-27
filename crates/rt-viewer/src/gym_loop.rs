@@ -510,7 +510,7 @@ fn plate(w: i32, h: i32, bg: u32, border: u32) -> Vec<u32> {
 }
 
 /// A speech bubble with a tail.
-fn bubble(label: &str, accent: u32) -> (Vec<u32>, i32, i32) {
+pub(crate) fn bubble(label: &str, accent: u32) -> (Vec<u32>, i32, i32) {
     let w = 8 + label.len() as i32 * 8;
     let h = 14 + 3;
     let c = {

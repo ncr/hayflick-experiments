@@ -119,6 +119,8 @@ pub struct Viewer {
     /// Synth-blip output (None = headless/no device/AUDIO=0 — fail-soft).
     pub audio: Option<crate::audio::AudioOut>,
     pub menu: MenuState,
+    /// The personal IDE (Tab; `IDE=1` boots it open) — see ide_host.rs.
+    pub ide: crate::ide_host::IdeState,
     pub harness: Harness,
     pub rec: Option<crate::capture::Rec>,
     pub rec_jobs: Vec<std::thread::JoinHandle<()>>,
@@ -347,6 +349,7 @@ impl Viewer {
             gym: GymLoop::new(spec),
             piers: gym_meta.piers,
             crack,
+            ide: crate::ide_host::IdeState::from_env(),
             harness: Harness::from_cfg(&cfg),
             rec: None,
             rec_jobs: Vec::new(),
@@ -409,6 +412,9 @@ impl Viewer {
         // path can measure and diff the crack-lab REBUILD (the owner's expensive
         // interaction) instead of only a boot.
         r.crack_edit_from_env();
+        // IDE_EDIT harness knob: replay IDE inspector edits through the real
+        // apply path (spec mutation + rebuild), same discipline.
+        r.ide_env_edits();
         // CMDS replay prefix (deterministic) — runs LAST so the trace acts on
         // the fully seeded state.
         r.gym.run_cmds(&r.cfg);
@@ -626,7 +632,7 @@ impl Viewer {
             instances: &instances,
         };
 
-        // ESC menu overlay (panel/hamburger), copied onto the PRESENTED
+        // ESC menu overlay (panel / wall panel / REC badge), copied onto the PRESENTED
         // image only — never `out`, so SHOT/MOVIE/DUMP/DEMO captures stay
         // UI-free (those modes pass no overlay).
         let menu_canvas = self.overlay_frame();
@@ -642,8 +648,11 @@ impl Viewer {
         };
 
         // burned-in stamps: the click-to-move destination marker. Game
-        // picture, not shell UI — they ride into SHOT/DEMO captures.
-        let stamps = self.gym.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
+        // picture, not shell UI — they ride into SHOT/DEMO captures. The IDE
+        // panels ride the same path ON PURPOSE: a SHOT with IDE=1 is the
+        // headless verification of the whole overlay.
+        let mut stamps = self.gym.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
+        stamps.extend(self.ide_stamps());
         let fp = FramePresent {
             fs: &fs,
             pan: self.view.pan,
@@ -811,8 +820,10 @@ impl Viewer {
         }
         // menu pause (live): the sim clock stops dead while any menu is up —
         // the accumulator isn't fed, so RESUME continues exactly where it
-        // stopped. Harness modes never pause.
-        if self.menu_open() && self.harness.shot.is_none() {
+        // stopped. The IDE pauses the same way (pause = edit, the 2026-07-23
+        // anchor: authoring happens in a frozen world). Harness modes never
+        // pause.
+        if (self.menu_open() || self.ide.ui.open) && self.harness.shot.is_none() {
             return;
         }
         let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
@@ -823,8 +834,13 @@ impl Viewer {
     /// owned so the borrow in `FramePresent` can outlive the builder. `None`
     /// in every harness capture mode (SHOT/MOVIE/DUMP/DEMO stay UI-free).
     fn overlay_frame(&mut self) -> Option<(Vec<u32>, i32, i32, bool)> {
+        // the IDE's stamps ARE the shell while it is open — no wall panel on
+        // top (a modal menu can't be open then: ESC closes the IDE first)
+        if self.ide.ui.open && !self.menu_open() {
+            return None;
+        }
         if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
-            let (buf, w, h) = self.menu_canvas();
+            let (buf, w, h) = self.menu_canvas()?;
             let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause | crate::menu::MenuMode::Levels);
             Some((buf, w, h, center))
         } else {
