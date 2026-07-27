@@ -24,10 +24,39 @@ pub struct Obj {
 
 /// One declared property row in the inspector.
 pub struct Prop {
-    /// Adapter-side key, returned verbatim in [`Edit`].
+    /// Adapter-side key, returned verbatim in [`Edit`]. ONE token — the
+    /// harness statement grammar splits on spaces.
     pub key: &'static str,
-    pub label: &'static str,
+    pub label: String,
     pub kind: PropKind,
+    /// Adapter-formatted value text ("off", "0.30wu", a pin mark) drawn when
+    /// the row is NOT mid-drag; `None` draws the plain number. Formatting is
+    /// a game opinion, so it stays on the adapter's side of the boundary.
+    pub show: Option<String>,
+    /// Label indent in IDE px — the wear panel's belonging language (a layer
+    /// belongs to its causes, a native param to its pattern).
+    pub indent: i32,
+    /// Section caption drawn above this row; the adapter groups its props.
+    /// The first prop without one still gets the default "properties" head.
+    pub head: Option<&'static str>,
+}
+
+impl Prop {
+    pub fn new(key: &'static str, label: impl Into<String>, kind: PropKind) -> Prop {
+        Prop { key, label: label.into(), kind, show: None, indent: 0, head: None }
+    }
+    pub fn show(mut self, s: String) -> Prop {
+        self.show = Some(s);
+        self
+    }
+    pub fn indent(mut self, px: i32) -> Prop {
+        self.indent = px;
+        self
+    }
+    pub fn head(mut self, h: &'static str) -> Prop {
+        self.head = Some(h);
+        self
+    }
 }
 
 pub enum PropKind {
@@ -39,6 +68,11 @@ pub enum PropKind {
     /// the wear panel's `k / 50` lesson: `k * 0.02` accumulates and the
     /// ugliness lands verbatim in saved files).
     SliderF { v: f32, min: f32, max: f32 },
+    /// A cycler over `n` states: one click, one step (the wall panel's
+    /// pattern row). The display text comes from [`Prop::show`]; the emitted
+    /// edit carries the ABSOLUTE next value, so a harness replay can also
+    /// set a state directly.
+    Cycle { v: i32, n: i32 },
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -70,7 +104,8 @@ impl SceneModel {
 }
 
 /// Snap a 0..1 track fraction onto a slider value. Integer sliders take
-/// whole steps; f32 sliders snap to `k / 50` of the range.
+/// whole steps; f32 sliders snap to `k / 50` of the range. A cycler has no
+/// track — its value only moves by the press's own step.
 pub fn slider_value(kind: &PropKind, frac: f32) -> PropVal {
     let f = frac.clamp(0.0, 1.0);
     match *kind {
@@ -79,6 +114,7 @@ pub fn slider_value(kind: &PropKind, frac: f32) -> PropVal {
             let k = (f * 50.0).round();
             PropVal::F(min + (max - min) * (k / 50.0))
         }
+        PropKind::Cycle { v, .. } => PropVal::I(v),
         PropKind::Read(_) => PropVal::F(0.0),
     }
 }
@@ -90,7 +126,7 @@ pub fn slider_frac(kind: &PropKind, pending: Option<PropVal>) -> f32 {
         (PropKind::SliderI { v, min, max }, _) => (v - min) as f32 / (max - min).max(1) as f32,
         (PropKind::SliderF { min, max, .. }, Some(PropVal::F(p))) => (p - min) / (max - min).max(f32::MIN_POSITIVE),
         (PropKind::SliderF { v, min, max }, _) => (v - min) / (max - min).max(f32::MIN_POSITIVE),
-        (PropKind::Read(_), _) => 0.0,
+        (PropKind::Cycle { .. } | PropKind::Read(_), _) => 0.0,
     }
 }
 

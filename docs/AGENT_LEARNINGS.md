@@ -1397,3 +1397,37 @@ it and WHEN — and if the underlying facts are cheap to re-derive (15 piers),
 re-derive them. Corollary of the round-9 lesson at the selection layer: the
 pier is a rendering artifact; anything user-facing (a pick, a highlight, a
 list row) must speak in runs.
+
+## 2026-07-27 (round H, the wall panel retires) — a failing test can be data, not code
+
+**What happened.** Mid-round, four crack/crack_geom tests went red at once
+("the level ships a control", "a control wall has no story — left: weather
+0.68"). Every failure smelled like a regression from the deletions in
+flight, and the natural move was to diff the round's own edits hunting the
+break.
+
+**What it actually was.** `crates/rt-viewer/wear/crack_lab.wear` had changed
+on disk at 18:34 — between the previous round's verification battery and the
+owner's next message. The owner had PLAYTESTED the new wear-in-IDE build:
+his interactive slider exploration persisted (by design — edits save on
+release) onto both of the lab's CONTROL walls, and the ramped control's
+story carried the AgeWall beat's mid-flight state (the parked wrinkle,
+fired in the wild the same day it was documented). The tests pin the
+checked-in authoring, so they were correctly reporting that the LEVEL
+changed — the code was innocent.
+
+**The fix.** `git status` on data files FIRST when tests fail after a gap in
+which the owner may have run the build — a wear file, a level file, a golden
+is exactly as load-bearing as source. The session file was copied aside and
+restored from git (controls must stay controls — the level's own design),
+and the wrinkle got its prescribed fix in the same round: the beat is now a
+`CrackLab::beat` override applied in `recompile` on the way to the sheet,
+never written into the authored spec, so a mid-beat save can no longer
+freeze ramp state into a file.
+
+**The lesson.** On a project where playtests WRITE files into the working
+tree, "tests passed an hour ago" is not evidence the tree is the same tree.
+Check the data layer before suspecting the diff — and when a by-design
+persistence surface meets a demo that mutates authored state, the demo must
+ride an override lane (the level_dials discipline), or every playtest
+quietly becomes an author.

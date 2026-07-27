@@ -665,8 +665,6 @@ kernel void shade(
         ao = aot >= bayer4(int2(gid)) ? 1.0 : 1.0 - pc.camPos.w;
     }
     // crack-lab SELECTION highlight (pad bit 3) — twin of shade.comp: a steady
-    // amber lift on the picked segment (no pulse; captures stay deterministic).
-    if ((uint(m.pad) & 8u) != 0u) albedo = mix(albedo, float3(1.0, 0.82, 0.40), 0.22);
     // .w = screen-px distance to the nearest gating triangle edge — the CONTOUR
     // AA gate (was a constant 1.0, read by nobody). |n·d| is the exact minimum
     // foreshortening of an in-plane distance, so this is a conservative LOWER
@@ -679,7 +677,10 @@ kernel void shade(
     if (S == 0) outAlbedo[idx] = float4(albedo * gtint, edgePx); // tint in the G-buffer keeps demodulation consistent
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
-    if (S == 0) outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, 1.0); // w=1 matches shade.comp
+    // SELECTION (pad bit 3) tags its hits w=3 for the tonemap outline; contour
+    // outranks the tag (twin of shade.comp's posImg write).
+    float selTag = (uint(m.pad) & 8u) != 0u ? 3.0 : 1.0;
+    if (S == 0) outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, selTag);
     // DEBUG_AA (misc.w == 5): red = fires coverage taps, green ramp = edgePx.
     if (pc.misc.w == 5) {
         outRadiance[idx] = float4(edgePx < 0.42 ? 1.0 : 0.0, min(edgePx, 4.0) * 0.25, 0.0, 1.0);

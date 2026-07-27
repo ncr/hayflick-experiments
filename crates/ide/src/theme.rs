@@ -25,4 +25,7 @@ pub const ROW_H: i32 = 13;
 pub const PAD: i32 = 5;
 pub const TOPBAR_H: i32 = 16;
 pub const HIER_W: i32 = 128;
-pub const INSP_W: i32 = 168;
+// wide enough for the wear rows' labels ("settlement", indented layer names)
+// plus a value column that holds "0.30wu" — sized when the wall panel's
+// knobs moved into the inspector (2026-07-27)
+pub const INSP_W: i32 = 224;

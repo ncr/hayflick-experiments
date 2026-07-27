@@ -23,7 +23,7 @@
 //! | 1 | 0 | [`OCCLUDER`] | `gym_scene::mark_occluder` | shade (WALLCUT / ROI) |
 //! | 2 | 1 | [`GLASS`] | `gym_scene::mark_glass` | shade (transmission) |
 //! | 4 | 2 | [`MATTE`] | `gym_scene::mark_matte`, the chalk cores | shade (kills spec + the gloss remap) |
-//! | 8 | 3 | [`SEL`] | `crack::stamped_pad` | shade (the amber pick highlight) |
+//! | 8 | 3 | [`SEL`] | `crack::stamped_pad` | shade (posImg tag w=3) → tonemap (the amber outline) |
 //! | 16 | 4 | [`FREE16`] | nobody | nobody |
 //! | 32 | 5 | [`GEO`] | `crack_geom::split_pier` | HOST only (the AA scope) |
 //! | 64 | 6 | [`CRAZE`] | `crack_geom::craze_pier` | HOST only (the AA scope) |
@@ -41,8 +41,11 @@ pub const GLASS: i32 = 2;
 /// "trawa nie może się błyszczeć" (owner, 2026-07-12); the chalk cores inherit
 /// it because a fresh break is unglazed body.
 pub const MATTE: i32 = 4;
-/// The crack lab's selection highlight (a steady amber lift, no pulse — a pulse
-/// would make captures non-deterministic).
+/// The pick's selection tag. The shade pass writes it into `posImg.w` (3.0)
+/// and the TONEMAP pass draws a steady amber OUTLINE on the tag-region
+/// boundary — shading itself is untouched, because the old albedo lift tinted
+/// the very surface being authored. No pulse: a pulse would make captures
+/// non-deterministic.
 pub const SEL: i32 = 8;
 /// The last unclaimed flag. Reserved by `crate::wear`'s doc for a future shader
 /// gate: a gate MUST key off a flag bit and never off `emissive.a != 0`, since

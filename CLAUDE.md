@@ -545,10 +545,10 @@ over both shipped levels with a vacuity guard.
   Three CAUSES, then the five LAYER amounts they derive — indented, with a `*`
   when pinned, and a drag on one PINS it, which is the whole authoring gesture
   behind "old, but no chips at all" — then breaks, variant, grain, relief,
-  pattern and the pattern's own params. The FOOTER prints a `wall::Miss` when
-  the wall has one, else the COST CLASS of the row under the cursor ("paint -
-  live" / "geometry - on release"), which is the honest answer to "why did that
-  one lag".
+  pattern and the pattern's own params. (THE PANEL ITSELF IS DELETED since
+  2026-07-27 round H — the IDE inspector draws these same rows now; see THE
+  PERSONAL IDE below. `rows_of` and the row model survive as the shared
+  spelling of "what a wall exposes".)
 - THREE NEW ESC ROWS, all level-wide and all non-destructive (they are applied
   on the way from the authored spec to a sheet, in `CrackLab::level_dials`, so
   every one is reversible and they compose with each other and with a panel
@@ -676,12 +676,13 @@ the owner's original workflow, and the first PLACED effect). `wall::Shells` on
 step further: no derivation, no jitter, no probability — artillery is an EVENT,
 so no cause writes it and the placing gesture IS the authoring (mud's pure-pin
 argument), which also means the level dials and the band deliberately do NOT
-touch it. AUTHORED BY CLICK: the panel's `shell` row arms place-mode (a MODE,
-not an edit — arming never dirties the save), the next click on the selected
-wall places the hit at the pick ray's own point (`crack_click` finally binds
-the `t` it always threw away; the face is the one the camera sees, from the
-ray's sign on the thin axis), clicking an existing hit REMOVES it; `caliber`
-is a slider under it. GEOMETRY: `rebar::shell_crater` — same depth budget,
+touch it. AUTHORED BY CLICK: the `shells` row arms place-mode (a MODE, not
+an edit — arming never dirties the save), the next click on the selected
+wall places the hit at the pick ray's own point (the face is the one the
+camera sees, from the ray's sign on the thin axis), clicking an existing hit
+REMOVES it; `caliber` is a slider under it. (Since 2026-07-27 round H the
+arming row and the world click live in the IDE — `ide_click` → `shell_place`
+— because the wall panel that first carried the gesture is deleted.) GEOMETRY: `rebar::shell_crater` — same depth budget,
 same polygon rim, same world-anchored mat as the spall, so `emit_crater`
 cannot tell the two apart. The three differences: ROUND (`hu = hy = r`, no bar
 snap — BOTH families cross wherever the world mat crosses, which is what makes
@@ -708,11 +709,12 @@ fault's invisible extension through the basin, or move the click). File:
 because `SHELL` is the login shell in EVERY Unix environment: that spelling
 put a crater on every wall of every test and its `env_overridden` entry
 blocked every save (docs/AGENT_LEARNINGS.md 2026-07-27E). The catalogue's row
-3 grew the `shell hole` slab (n = 3, 18 walls). The wall panel is 22-24 rows
-now and OUTGREW the settings menu: both staging-buffer users size off
-`menu::PANEL_MAX_H`. Zero shader edits, zero new materials (basin + rust
-reused) — nothing enters the blind-Metal register beyond the next windowed
-Mac pass touching the two new panel rows and one place-click. ALSO this
+3 grew the `shell hole` slab (n = 3, 18 walls). (The wall panel that carried
+these rows is DELETED since 2026-07-27 round H — the arming row and the
+place-click live in the IDE now, and `menu::PANEL_MAX_H` is back to the
+settings sheet's height.) Zero shader edits, zero new materials (basin +
+rust reused) — nothing enters the blind-Metal register beyond the next
+windowed Mac pass touching the shell rows and one place-click (in the IDE). ALSO this
 round: panel drags snap as `k / 50`, not `k * 0.02` — 0.02 has no exact f32,
 and the owner's first saved wear file printed the accumulated error verbatim
 (`scrub 0.39999998`; the file's `num` is shortest-ROUND-TRIPPING text, so the
@@ -772,15 +774,20 @@ returns "ok" while doing NOTHING, which put two earlier probe windows on the
 owner's live monitor). Field diagnostic unchanged: `TIMING=1 bin/run`,
 fullscreen, press `l` — "lamps:" prints prove keys arrive; TIME lines prove
 the loop is alive; which half is silent names the culprit.
-KNOWN WRINKLE surfaced by the same session (parked, owner call): the AgeWall
-beat writes `spec[r].story` while it ramps, and a save triggered by ANY
-interactive edit then freezes the beat's current story into the wear file
-for the level-named ramped control — the owner's 2026-07-27 save carries
-`story 0.95 0.55 0.85` he never dialed. The dirty flag keeps beat-only
-sessions out of files, but not beat states riding an edited session. The
-honest fix is the level_dials discipline (the beat applies on the way to a
-sheet, never into the authored spec); do it when the crack-lab demo next
-gets attention.
+KNOWN WRINKLE — RESOLVED 2026-07-27 (round H), after the owner's first
+wear-in-IDE playtest hit it the same day it was parked: the AgeWall beat
+used to write `spec[r].story` while it ramped, and a save triggered by ANY
+interactive edit then froze the beat's current story into the wear file for
+the level-named ramped control (the owner's saved file carried
+`story 0.56 0.48 0.85` he never dialed — restored from git, session copy in
+that round's scratchpad). The fix is the level_dials discipline as
+prescribed: `CrackLab::beat` is an `(run, story)` OVERRIDE applied inside
+`recompile` on the way to the sheet, the authored spec never carries it, a
+level switch clears it, and an owner CAUSE edit on the ramped run clears it
+too (a masked slider would read dead). Pinned by
+`the_age_beat_rides_the_sheet_and_never_the_authored_spec`; the image path
+is bit-identical by construction (nothing but the serializer and the
+inspector display read `spec.story` outside `recompile`).
 
 THE PERSONAL IDE — PRACOWNIA since 2026-07-27 (owner: "the ESC menu has
 worked hard enough; as the game grows we'll have ever more sliders — make a
@@ -807,7 +814,8 @@ SELECTION IS THE RUN: a wall pick lifts the WHOLE run with the SEL amber
 (every pier, not the pier the ray struck), and the crack lab's own selection
 follows it, so closing the IDE with a wall picked hands straight over to the
 wear panel; lamps/player/spawn get an amber bubble marker instead (no
-material to lift). EDITS ARE RELEASE-ONLY (the input-pacing discipline —
+material to lift). (The amber FILL and the lamp/player bubbles are GONE
+since round I — SELECTION IS AN OUTLINE below; the run-not-pier rule stands.) EDITS ARE RELEASE-ONLY (the input-pacing discipline —
 drags are coalesced to one step per frame and only move display state; the
 release mutates the SPEC and rebuilds via `apply_look`, probe cache
 content-keyed): v1 edits are lamp glow (1..8), lamp cell x/z and the spawn
@@ -819,10 +827,106 @@ pre-IDE HEAD (cross-run floor zero); `IDE_EDIT="lamp 0 glow 1"` A/B moves the
 whole lighting; the catalogue's hierarchy lists all 23 runs by their wear
 names. NEXT (not this round): save — the level-as-data migration waits in
 `archive/editor-v0` (level_file.rs + gym.level, the handoff's load-bearing
-decision); wall/grid ops (editor-v0's `apply_op` vocabulary); wear knobs
-inside the inspector. First Mac session: boot `IDE=1` once — the stamp path
-is shared code, but the per-stamp staging-texture allocation in
-`blit_overlay` has never carried four window-tall panels.
+decision); wall/grid ops (editor-v0's `apply_op` vocabulary). First Mac
+session: boot `IDE=1` once — the stamp path is shared code, but the
+per-stamp staging-texture allocation in `blit_overlay` has never carried
+four window-tall panels.
+WEAR IN THE INSPECTOR since 2026-07-27 (round G, owner: "ustawianie
+parametrów efektów w crack labie też sensownie w IDE"): a picked wall's
+inspector shows the WHOLE wear sheet — the same `menu::rows_of(spec)` walk
+the wall panel draws, mapped row→prop by the adapter (`wear_props`), so the
+two surfaces cannot disagree about what a wall exposes. Writes have ONE
+spelling: `wear_set_row` (extracted from `crack_drag_to`; the panel
+delegates) plus `wear_set_breaks`/`wear_set_pattern` (the panel's cyclers
+delegate too; `crack_cycle_policy` deleted). The IDE's release-only rule
+BENDS for wear, deliberately: a wall slider drag is LIVE like the panel's —
+`ide::Ide::drag_state` exposes the in-flight (obj, key, pending) and the
+host applies spec + `wear_edit` one coalesced step per frame — while the
+release pays the geometry via `crack_release`, so paint morphs under the
+drag and a sub-bucket drag rebuilds nothing (the panel's exact economics;
+which rows are cheap is a game opinion, so the IDE only EXPOSES the drag
+and the adapter decides). Layer drags PIN (the `*` rides the value text),
+breaks is an absolute count slider, pattern the new `ide::PropKind::Cycle`
+(one click one step, emitting the ABSOLUTE code so a replay can name a
+policy), a `wall::Miss` lands as the trailing read row, and SHELL PLACEMENT
+deliberately stays the wall panel's click gesture (the IDE owns every world
+click) — its row shows the count. Prop keys are ONE TOKEN ("cover_loss",
+"band_lo", "mud_top", native param names) because `IDE_EDIT=` splits
+statements on spaces — pinned by `wear_keys_are_single_tokens_and_unique`;
+`IDE_EDIT` takes floats now (the prop declares its value type), joined
+`env_overridden`, and the replay restores the dirty flag (a harness run
+never writes wear files). The inspector grew the panel's value language:
+per-prop `show` text ("off", "0.30wu", the pin mark), indents, section
+heads, `INSP_W` 168→224 for the labels. Verified on Vulkan/RTX: gym, crack
+lab AND catalogue BYTE-IDENTICAL to 2a124e9 with the IDE closed (HEAD
+worktree A/B); `IDE_EDIT="ramped control weather 0.9"` ages the pristine
+control through the real release path, twice → byte-identical, save
+correctly blocked; `…pattern 2;…breaks 2` flips the veneer to mosaic and
+breaks the wall; `…spall 0.8` pins with the `*` and opens craters + rebar.
+The windowed click/drag of the new rows rides the owner playtest (the
+shell's press/drag/release logic is unit-tested; `drag_state` live-apply is
+the only new runtime frame).
+THE WALL PANEL IS DELETED since 2026-07-27 (round H, owner: "zostało jeszcze
+takie menu w rogu na crack labie — uprzątnąć"): with the inspector carrying
+the whole wear sheet, the corner panel was a second copy of the same rows,
+so `crack_canvas`, `crack_panel_click`, `crack_drag_to`, `crack_cycle`,
+`crack_panel_visible`, `crack_click` and `CrackLab.row` are GONE and
+`menu::PANEL_MAX_H` is the settings sheet's height again (IDE panels ride
+the Stamp path, not the menu staging buffer). What moved rather than died:
+SHELL PLACEMENT is the IDE's now — the inspector's `shells` row is the
+arming MODE toggle (`PropKind::Cycle` over armed/disarmed, value text
+"n [place]" / "n [click wall]"; arming never dirties) and `ide_click` routes
+an armed click on the selected wall to `crack::shell_place` + an immediate
+`crack_release` (a click is its own release). A closed menu owns NOTHING
+(REC badge aside), and outside the IDE a world click is purely the game's —
+SELECTION IS IDE CHROME: closing the IDE clears the pick and its amber lift
+(there is no surface left to hand it to), `CRACK_SEL=` still preselects for
+headless AA-scope work. `IDE_SEL=` now applies BEFORE an `IDE_EDIT=` replay,
+so the two compose in the interactive order (an edit-then-select would
+disarm the mode the replay just armed). SAME ROUND, the parked AgeWall
+wrinkle got its fix (see KNOWN WRINKLE — RESOLVED above) after the owner's
+first wear-in-IDE playtest froze ramp state into his wear file; that session
+file was restored from git (copy kept in the round's scratchpad). Verified
+on Vulkan/RTX: gym, crack lab AND catalogue BYTE-IDENTICAL at defaults
+across the deletion; `CRACK_SEL=5` shows the lift with NO corner panel;
+`IDE_SEL="ramped control" IDE_EDIT="ramped control shells 1"` renders the
+armed row. The windowed place-click through the IDE rides the owner
+playtest.
+SELECTION IS AN OUTLINE since 2026-07-27 (round I, owner: "mamy gdzieś chyba
+taki efekt outline na siatkach — zastosujmy go do pokazywania wybranego game
+objectu w naszym IDE"). The SEL bit no longer tints albedo: the shade pass
+writes a posImg TAG (w=3, beside the ROI contour's w=2 — contour OUTRANKS it
+on a dissolved wall) and the TONEMAP pass draws a steady 1-game-px amber line
+(mix toward the SEL accent (1.0, 0.82, 0.40) at 0.85) on the tag-region
+boundary — sel side, sky included, depth ignored — so the visible silhouette
+outlines, interiors don't, and two piers of one lifted run draw no seam
+(openings DO outline: a doorway or a glass pane is not the run's material,
+and the ring reads as the selection's true extent). Like the x-ray contour it
+fires with the global outline knob off: editor chrome, not a look knob. WHY:
+the old fill tinted the very surface being authored — an outline shows the
+wall's true paint while marked, which is the point of a wear IDE. The tag
+must cover the whole SURFACE: `crack::pier_surface_mats` (main + chalk core +
+spall basin/steel — the same set the AA scope walks, now extracted and
+shared) feeds `stamp_all`, `crack_apply` and `ide_lift_run`, or the outline
+rings every groove and crater from the inside. NEW REACH: lamps and the
+player take the outline too — `ide_lift_dyn` tags their dynamic runs'
+materials by name (every box mints its own material, so nothing else lifts),
+`IdeState.lifted` records them for the explicit clear on the next select
+(walls clear through the crack re-derive; stale ids after a rebuild are
+no-ops) — and the bubble marker survives ONLY for the spawn cell (a place,
+not a mesh). GUARDS: the deleted albedo lift joined wear.rs FORBIDDEN (both
+shade twins), `both_tonemap_twins_draw_the_selection_outline` pins the
+tonemap decode + amber in both twins, flags.rs re-documents SEL. BLIND MSL
+(this round ran on the RTX): shade.metal's tag write + lift deletion and
+tonemap.metal's whole sel branch — first Mac session boots `LEVEL="crack
+lab" CRACK_SEL=5` and `IDE=1 IDE_SEL="lamp 0"` and compares character
+against the Vulkan refs. Verified here: gym, crack lab AND catalogue
+BYTE-IDENTICAL at defaults (no selection → the tag path is inert);
+`CRACK_SEL=5` draws the outline with no fill and no interior rings on an
+aged pier; IDE_SEL wall/lamp/player SHOTs trace run/fixture/figure; two runs
+of the aged-facade selection are byte-identical. (The gold squiggles beside
+the craters are the walls' own rust paint — present without any selection;
+checked before believing them.)
 GOTCHA pinned in docs/AGENT_LEARNINGS.md (2026-07-27F): `crack.runs`/
 `pier_run`/`label` are RESOLVE products — populated only when the level has
 authored wear — so the IDE derives runs from the piers themselves

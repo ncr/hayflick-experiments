@@ -261,17 +261,16 @@ fn wrap_text(s: &str, cols: usize) -> Vec<String> {
     lines
 }
 
-/// ONE PANEL ROW. The whole layout is a `Vec<Row>` derived from the wall's own
-/// spec, and the draw, the hit-test and the drag all walk that same list — so
-/// they cannot disagree about which row is which, and the list changes shape
+/// ONE AUTHORING ROW of a wall. The layout is a `Vec<Row>` derived from the
+/// wall's own spec ([`rows_of`]), and every consumer walks that same list, so
+/// they cannot disagree about which row is which — and the list changes shape
 /// with the pattern (each one has a different number of native params) without
-/// three separate places needing to agree on the arithmetic.
+/// separate places needing to agree on the arithmetic.
 ///
-/// It replaces two positional constants and three copies of "row index minus the
-/// number of knobs". The panel is 17-19 rows now instead of 7, and the old shape
-/// was not going to survive that: the difference between a CAUSE, a derived
-/// AMOUNT and a SHAPE dial is what the panel is FOR, and a bare row number cannot
-/// carry it.
+/// Born as the wall panel's layout; the panel is DELETED (2026-07-27 — the
+/// IDE inspector is the walls' property surface) and this survives as the ONE
+/// spelling of "what a wall exposes": `ide_host::wear_props` maps it to
+/// inspector rows and [`Viewer::wear_set_row`] writes by it.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Row {
     /// One of the three CAUSES — what happened to this wall.
@@ -310,62 +309,9 @@ pub(crate) enum Row {
     Param(usize),
 }
 
-impl Row {
-    /// Which GPU cost this row's edit carries. The footer prints it, and it is
-    /// the honest answer to "why did that one lag": a PAINT row rides the
-    /// per-frame material stream and is free, a GEOMETRY row needs a scene
-    /// rebuild and a probe refresh, so it lands on RELEASE.
-    ///
-    /// A CAUSE is geometry because it writes every layer, including the three
-    /// that are — the class of a row is the worst class it can reach.
-    fn class(self) -> crate::wall::Class {
-        use crate::wall::Class;
-        match self {
-            Row::Layer(l) => l.class(),
-            Row::MudTop => Class::Paint, // mud is paint-only, so its param is too
-            _ => Class::Geometry,
-        }
-    }
-
-    /// Is this row a SLIDER (as against a cycler, which a click steps)?
-    fn slider(self) -> bool {
-        !matches!(self, Row::Breaks | Row::Shell | Row::Pattern)
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Row::Cause(0) => "weather",
-            Row::Cause(1) => "settlement",
-            Row::Cause(_) => "cover loss",
-            Row::Layer(l) => l.name(),
-            Row::MudTop => "mud top",
-            Row::Breaks => "breaks",
-            Row::Shell => "shell",
-            Row::Caliber => "caliber",
-            Row::Scrub => "variant",
-            Row::BandLo => "band low",
-            Row::BandHi => "band high",
-            Row::Grain => "grain",
-            Row::Relief => "relief",
-            Row::Pattern => "pattern",
-            Row::Param(_) => "param",
-        }
-    }
-
-    /// Indented rows belong to the row above them: the five layer amounts belong
-    /// to the causes, the native params to the pattern.
-    fn indent(self) -> i32 {
-        match self {
-            Row::Layer(_) | Row::Param(_) | Row::Caliber => 8,
-            Row::MudTop => 16, // under the mud LAYER row, which is itself indented
-            _ => 0,
-        }
-    }
-}
-
 /// The rows for one wall, in order: what HAPPENED to it, what that came to, then
 /// what SHAPE it takes. Causes first because that is the order an author thinks
-/// in, and the layer rows under them are the DERIVED column — so the panel is a
+/// in, and the layer rows under them are the DERIVED column — so the sheet is a
 /// complete explanation of the wall rather than a pile of dials.
 pub(crate) fn rows_of(spec: &crate::wall::WallSpec) -> Vec<Row> {
     let mut v: Vec<Row> = (0..3).map(Row::Cause).collect();
@@ -385,146 +331,12 @@ pub(crate) fn rows_of(spec: &crate::wall::WallSpec) -> Vec<Row> {
     v
 }
 
-/// Panel height for `nrows` rows (title band + rows + footer).
-pub(crate) fn crack_panel_h(nrows: usize) -> i32 {
-    MPAD * 2 + MROW * (nrows as i32 + 2)
-}
-
-/// The tallest panel — lightning, which has the most native params. The 10 is
-/// mud top + breaks + shell + caliber + variant + the band's two edges +
-/// grain + relief + pattern.
-pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (3 + crate::wall::Layer::N as i32 + 10 + crate::crack_geom::PARAMS_MAX as i32 + 2);
-
-/// The tallest overlay canvas ANY panel can produce — since the shell round
-/// the wall panel outgrew the settings menu, so the shared staging buffer
-/// (Vulkan `menu_buf`; Metal sizes its blit per canvas) is allocated off this
-/// instead of `MPANEL_H`, and every panel's fit is compile-guarded against it.
-pub const PANEL_MAX_H: i32 = if CRACK_PANEL_H > MPANEL_H { CRACK_PANEL_H } else { MPANEL_H };
-const _: () = assert!(CRACK_PANEL_H <= PANEL_MAX_H);
-
-/// The picked WALL's panel — the closed-menu surface while a wall is selected
-/// and the menu is closed (owner surface: click a wall, drag a row).
-///
-/// It is the authoring model on screen, in the model's own order: three CAUSES,
-/// the five LAYER amounts they derive, the break count, then the shape (variant,
-/// grain, relief, pattern and the pattern's own params). Pure fn of its inputs,
-/// so it draws headless — the tests below pin the staging-buffer fit and the
-/// row table.
-pub(crate) fn crack_canvas(label: &str, run: usize, spec: &crate::wall::WallSpec, sheet: &crate::wall::Sheet, row: usize, placing: bool) -> (Vec<u32>, i32, i32) {
-    use crate::wall::Class;
-    const BG: u32 = 0x16161c;
-    const BORDER: u32 = 0x6a6a78;
-    const TEXT: u32 = 0xc8c8d0;
-    let rows = rows_of(spec);
-    let pdefs = crate::crack_geom::POLICY_PARAMS[spec.shape.pattern.code() as usize % crate::crack_geom::NPOL];
-    let (w, h) = (MPANEL_W, crack_panel_h(rows.len()));
-    let mut c = vec![BG; (w * h) as usize];
-    mrect(&mut c, w, 0, 0, w, 1, BORDER);
-    mrect(&mut c, w, 0, h - 1, w, 1, BORDER);
-    mrect(&mut c, w, 0, 0, 1, h, BORDER);
-    mrect(&mut c, w, w - 1, 0, 1, h, BORDER);
-    mrect(&mut c, w, 2, 2, w - 4, 1, 0x8a6a2a);
-    let title = if label.is_empty() { format!("wall {run}") } else { format!("wall {run} - {label}") };
-    mtext(&mut c, w, MLABEL_X, MPAD + 2, &title, 0xe8b84a);
-
-    let track = |c: &mut Vec<u32>, y: i32, v: f32, hot: bool| {
-        let v = v.clamp(0.0, 1.0);
-        mrect(c, w, MTRACK_X, y + MROW / 2, MTRACK_W, 2, 0x34343c);
-        mrect(c, w, MTRACK_X, y + MROW / 2, (MTRACK_W as f32 * v) as i32, 2, if hot { 0x7aa86a } else { 0x5a7a52 });
-        let kx = MTRACK_X + (v * (MTRACK_W - 2) as f32) as i32;
-        mrect(c, w, kx, y + 2, 2, MROW - 4, 0xd8e8c8);
-    };
-    for (ri, r) in rows.iter().enumerate() {
-        let y = MPAD + MROW * (1 + ri as i32);
-        let hot = ri == row;
-        if hot {
-            mrect(&mut c, w, 2, y, w - 4, MROW, 0x24242e);
-        }
-        let name = match r {
-            Row::Param(j) => pdefs.get(*j).map(|(n, _)| *n).unwrap_or("param"),
-            other => other.label(),
-        };
-        mtext(&mut c, w, MLABEL_X + r.indent(), y + 2, name, if hot { 0xe8e8f0 } else { TEXT });
-        match *r {
-            Row::Cause(i) => {
-                let v = [spec.story.weather, spec.story.settlement, spec.story.cover_loss][i];
-                track(&mut c, y, v, hot);
-                mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}"), 0x99cc99);
-            }
-            Row::Layer(l) => {
-                let v = sheet.area[l.index()];
-                track(&mut c, y, v, hot);
-                let pinned = spec.pin.get(l).is_some();
-                mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}{}", if pinned { "*" } else { "" }), if pinned { 0xe8b84a } else { 0x99cc99 });
-            }
-            Row::MudTop => {
-                track(&mut c, y, spec.mud_top, hot);
-                mtext(&mut c, w, MVAL_X, y + 2, &format!("{:.2}", spec.mud_top), 0x99cc99);
-            }
-            Row::Breaks => mtext(&mut c, w, MTRACK_X, y + 2, &format!("< {} >", sheet.breaks.count), 0x99cc99),
-            Row::Shell => {
-                let n = spec.shells.count();
-                let txt = if placing { format!("{n} [click wall]") } else { format!("{n} [place]") };
-                mtext(&mut c, w, MTRACK_X, y + 2, &txt, if placing { 0xe8b84a } else { 0x99cc99 });
-            }
-            Row::Caliber => {
-                track(&mut c, y, spec.shells.caliber, hot);
-                mtext(&mut c, w, MVAL_X, y + 2, &format!("{:.2}wu", spec.shells.caliber), 0x99cc99);
-            }
-            Row::Scrub => {
-                track(&mut c, y, spec.scrub, hot);
-                mtext(&mut c, w, MVAL_X, y + 2, &format!("{:.2}", spec.scrub), 0x99cc99);
-            }
-            Row::BandLo => {
-                track(&mut c, y, spec.band.0, hot);
-                let off = spec.band.0 == 0.0;
-                mtext(&mut c, w, MVAL_X, y + 2, &(if off { "off".to_string() } else { format!("{:.2}", spec.band.0) }), if off { 0x707078 } else { 0x99cc99 });
-            }
-            Row::BandHi => {
-                track(&mut c, y, spec.band.1, hot);
-                let off = spec.band.1 == 1.0;
-                mtext(&mut c, w, MVAL_X, y + 2, &(if off { "off".to_string() } else { format!("{:.2}", spec.band.1) }), if off { 0x707078 } else { 0x99cc99 });
-            }
-            Row::Pattern => mtext(&mut c, w, MTRACK_X, y + 2, &format!("< {} >", spec.shape.pattern.name()), 0x99cc99),
-            Row::Grain => {
-                track(&mut c, y, spec.shape.grain, hot);
-                let off = spec.shape.grain < crate::wall::GRAIN_OFF;
-                let txt = if off { "off".to_string() } else { format!("{:.2}wu", spec.shape.grain) };
-                mtext(&mut c, w, MVAL_X, y + 2, &txt, if off { 0x707078 } else { 0x99cc99 });
-            }
-            Row::Relief => {
-                track(&mut c, y, spec.shape.relief, hot);
-                mtext(&mut c, w, MVAL_X, y + 2, &format!("{:.2}", spec.shape.relief), 0x99cc99);
-            }
-            Row::Param(j) => {
-                let v = spec.shape.pattern.par()[j];
-                track(&mut c, y, v, hot);
-                mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}"), 0x99cc99);
-            }
-        }
-    }
-    // FOOTER — two jobs, and a NOTE outranks the cost class because it is the
-    // rarer thing and the one an author cannot otherwise learn: what this wall
-    // asked for and did not get (`wall::Miss`). Otherwise the cost class of the
-    // row under the cursor, so "why did that one lag" has an answer on screen.
-    let fy = MPAD + MROW * (1 + rows.len() as i32) + 2;
-    let foot = if placing {
-        // an armed MODE outranks even a note: the owner is mid-gesture and
-        // the panel has to say what the next click will do
-        "click wall: place hit / remove hit".into()
-    } else {
-        match sheet.notes.first() {
-            Some(crate::wall::Miss::Clamped { dial, asked, used, .. }) => format!("{dial} {asked:.2} -> {used:.2} (limit)"),
-            Some(crate::wall::Miss::Coarse { layer, asked, got, .. }) => format!("{} asked {asked:.2} got {got:.2}", layer.name()),
-            _ => match rows.get(row).map(|r| r.class()) {
-                Some(Class::Paint) => "paint - live".into(),
-                _ => "geometry - on release".into(),
-            },
-        }
-    };
-    mtext(&mut c, w, MLABEL_X, fy, &foot, 0x707078);
-    (c, w, h)
-}
+/// The tallest overlay canvas any panel can produce, sizing the shared
+/// staging buffer (Vulkan `menu_buf`; Metal sizes its blit per canvas). The
+/// wall panel that once outgrew the settings menu is DELETED (2026-07-27 —
+/// the IDE inspector is the walls' property surface, and IDE panels ride the
+/// Stamp path, not this buffer), so the settings sheet is the ceiling again.
+pub const PANEL_MAX_H: i32 = MPANEL_H;
 
 /// Slider value as shown in the menu (pattern/preset sliders show names).
 fn fmt_val(key: &str, v: f32, step: f32) -> String {
@@ -820,15 +632,10 @@ impl Viewer {
     pub fn menu_click(&mut self, p: Vec2) -> bool {
         let ms = self.menu_ui_scale();
         match self.menu.mode {
-            MenuMode::Closed => {
-                // the wall panel is the only closed-menu click surface (the
-                // hamburger is gone — ESC is the menu, owner 2026-07-27; and
-                // crack_panel_visible is false while the IDE owns the pointer)
-                if self.crack_panel_visible() {
-                    return self.crack_panel_click(p);
-                }
-                false
-            }
+            // a closed menu owns nothing: the hamburger is gone (owner
+            // 2026-07-27) and so is the wall panel (same day — the IDE
+            // inspector is the walls' property surface)
+            MenuMode::Closed => false,
             MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
                 let n = self.menu_len();
                 let ph = if self.menu.mode == MenuMode::Levels { lpanel_h(n) } else { gpanel_h(n) };
@@ -868,13 +675,11 @@ impl Viewer {
         }
     }
 
-    /// Slider drag: set the selected value from the cursor's track position.
-    /// Outside Settings the drag belongs to the crack-lab panel (if showing).
+    /// Slider drag: set the selected value from the cursor's track position
+    /// (Settings only — the wall panel that once took the closed-menu drag is
+    /// gone; wall drags live in the IDE inspector).
     pub fn menu_drag_to(&mut self, p: Vec2) {
         if self.menu.mode != MenuMode::Settings {
-            if self.crack_panel_visible() {
-                self.crack_drag_to(p);
-            }
             return;
         }
         let ms = self.menu_ui_scale();
@@ -886,86 +691,18 @@ impl Viewer {
         }
     }
 
-    /// Crack-panel left-press: row select + slider drag start (same track
-    /// math as the settings sheet). True when the panel consumed the click;
-    /// clicks outside fall through to the world pick (select/deselect/move).
-    pub fn crack_panel_click(&mut self, p: Vec2) -> bool {
-        let Some(r) = self.crack.sel_run() else { return false };
-        let rows = rows_of(&self.crack.spec[r]);
-        let ms = self.menu_ui_scale();
-        let org = Vec2::splat(MENU_MARGIN as f32);
-        let l = (p - org) / ms;
-        if l.x < 0.0 || l.y < 0.0 || l.x >= MPANEL_W as f32 || l.y >= crack_panel_h(rows.len()) as f32 {
-            return false;
+    /// Write ONE wear row's value on run `r` — the rows discipline extended to
+    /// the value write: this match is the only spelling of "which spec field a
+    /// row means", written for the wall panel's drag and surviving it (the
+    /// panel is gone; the IDE inspector's sliders are the caller now, via
+    /// `Viewer::ide_wear_apply`). Values arrive on the `k / 50` grid — the
+    /// snap lives in `ide::slider_value`, which owns the wear-file lesson.
+    pub fn wear_set_row(&mut self, r: usize, kind: Row, v: f32) {
+        // a CAUSE edit on the beat's ramped run takes the wall over: the
+        // override would mask the slider and the drag would read dead
+        if matches!(kind, Row::Cause(_)) && self.crack.beat.is_some_and(|(br, _)| br == r) {
+            self.crack.beat = None;
         }
-        let row = (l.y as i32 - MPAD) / MROW - 1; // row 0 is the title band
-        if row < 0 {
-            return true;
-        }
-        let row = row as usize;
-        let Some(kind) = rows.get(row).copied() else { return true };
-        self.crack.row = row;
-        if kind.slider() {
-            self.menu.drag = true;
-            self.crack_drag_to(p);
-        } else {
-            // a CYCLER: one click, one step. The mouse-release that follows runs
-            // `crack_release`, sees the changed key and rebuilds.
-            self.crack_cycle(r, kind);
-            self.ui_blip("menu_pick");
-        }
-        true
-    }
-
-    /// Step one of the panel's cyclers on run `r`. Separate from the slider path
-    /// because a cycler has no track: the value is not where the cursor is.
-    /// A cycler click is an INTERACTIVE edit: the run turns authored and the
-    /// release that follows persists it (`Viewer::wear_save`).
-    fn crack_cycle(&mut self, r: usize, kind: Row) {
-        // The SHELL row is a MODE toggle, not an edit: arming place-mode
-        // authors nothing (the click on the wall will), so it must not dirty
-        // the save or claim the run.
-        if kind == Row::Shell {
-            self.crack.placing = !self.crack.placing;
-            return;
-        }
-        if let Some(a) = self.crack.authored.get_mut(r) {
-            *a = true;
-        }
-        self.crack.dirty = true;
-        match kind {
-            Row::Pattern => self.crack_cycle_policy(),
-            Row::Breaks => {
-                // …and the count PINS itself, because clicking it is an author
-                // saying how many he wants — the derivation from `settlement`
-                // was a default, not a decision.
-                let n = (self.crack.sheets[r].breaks.count + 1) % (crate::wall::Breaks::MAX + 1);
-                self.crack.spec[r].pin = self.crack.spec[r].pin.breaks(crate::wall::Breaks { count: n, at: None });
-            }
-            _ => {}
-        }
-        self.crack.recompile();
-    }
-
-    /// Crack-panel slider drag: dial the picked pier's active knob — or the
-    /// active policy's native param — from the cursor's track position
-    /// (a 1/50 grid — finer than the shader's 6-bit quantization, so every
-    /// step lands on a distinct packed value or none; params are
-    /// geometry-only, so their drags show on the release rebuild).
-    ///
-    /// The grid is computed as `k / 50`, never `k * 0.02`: 0.02 has no exact
-    /// f32, so multiplying accumulated the error into values like
-    /// `0.39999998` — which the wear file then printed verbatim (its `num` is
-    /// the shortest text that ROUND-TRIPS, and that ugliness genuinely was
-    /// the value). Division by 50 rounds to the nearest f32 of `k/50`, whose
-    /// shortest text is `0.4` — found in the owner's first saved file.
-    pub fn crack_drag_to(&mut self, p: Vec2) {
-        let Some(r) = self.crack.sel_run() else { return };
-        let ms = self.menu_ui_scale();
-        let lx = (p.x - MENU_MARGIN as f32) / ms;
-        let t = ((lx - MTRACK_X as f32) / MTRACK_W as f32).clamp(0.0, 1.0);
-        let v = (t * 50.0).round() / 50.0;
-        let Some(kind) = rows_of(&self.crack.spec[r]).get(self.crack.row).copied() else { return };
         match kind {
             Row::Cause(0) => self.crack.spec[r].story.weather = v,
             Row::Cause(1) => self.crack.spec[r].story.settlement = v,
@@ -1002,6 +739,39 @@ impl Viewer {
         // says which is which). `wear_edit` re-streams both halves of the paint —
         // the `_pad` strengths and the effect word's thresholds — because a
         // story move changes them together.
+        self.wear_edit(r);
+    }
+
+    /// Set the break COUNT on run `r` — a pin: an author saying how many he
+    /// wants outranks the derivation from `settlement`. A no-op when the
+    /// sheet already shows `n`, so an IDE slider parked on the current count
+    /// does not silently pin the wall.
+    pub fn wear_set_breaks(&mut self, r: usize, n: u8) {
+        let n = n.min(crate::wall::Breaks::MAX);
+        if self.crack.sheets.get(r).map(|s| s.breaks.count) == Some(n) {
+            return;
+        }
+        self.crack.spec[r].pin = self.crack.spec[r].pin.breaks(crate::wall::Breaks { count: n, at: None });
+        if let Some(a) = self.crack.authored.get_mut(r) {
+            *a = true;
+        }
+        self.crack.dirty = true;
+        self.wear_edit(r);
+    }
+
+    /// Point run `r` at pattern `code`, absolute — the IDE's cycler emits the
+    /// next code, a harness replay may name any policy. The release that
+    /// follows sees the changed key and rebuilds.
+    pub fn wear_set_pattern(&mut self, r: usize, code: u8) {
+        let code = code % crate::crack_geom::POLICIES.len() as u8;
+        if self.crack.spec[r].shape.pattern.code() == code {
+            return;
+        }
+        self.crack.set_pattern(r, code);
+        if let Some(a) = self.crack.authored.get_mut(r) {
+            *a = true;
+        }
+        self.crack.dirty = true;
         self.wear_edit(r);
     }
 
@@ -1056,18 +826,10 @@ impl Viewer {
             return Some(levels_canvas(self.menu.sel));
         }
         if self.menu.mode == MenuMode::Closed {
-            // crack lab: while a wall segment is selected the knob panel is
-            // the closed-menu surface (ESC still opens the pause menu over it)
-            if self.crack_panel_visible() {
-                let sel = self.crack.sel.unwrap();
-                let r = self.crack.pier_run.get(sel).copied().unwrap_or(0);
-                if let (Some(spec), Some(sheet)) = (self.crack.spec.get(r), self.crack.sheets.get(r)) {
-                    return Some(crack_canvas(self.crack.label.get(r).copied().unwrap_or(""), r, spec, sheet, self.crack.row, self.crack.placing));
-                }
-            }
             // while recording, a standalone REC badge (overlay-only — clips
             // capture swap.out, never UI); otherwise the closed menu shows
-            // NOTHING — ESC is the menu
+            // NOTHING — ESC is the menu, and the walls' property surface is
+            // the IDE inspector (the wall panel is gone, owner 2026-07-27)
             if let Some(rec) = &self.rec {
                 let (w, h) = (72, 14);
                 let mut c = vec![BG; (w * h) as usize];
@@ -1184,60 +946,27 @@ mod tests {
         }
     }
 
-    /// The wall panel fits the shared staging buffer at every row highlight and
-    /// every pattern — the compile-time guard covers the tallest panel, this
-    /// covers every panel it can actually draw.
+    /// THE ROW TABLE, pinned. The wall panel that drew it is gone (2026-07-27
+    /// — the IDE inspector is the walls' property surface), but `rows_of`
+    /// survives as the ONE spelling of "what a wall exposes": the inspector's
+    /// wear props walk it and `wear_set_row` writes by it. This pins the
+    /// model's own order — causes, then the amounts they derive, then the
+    /// shape — and the counts that order rests on.
     #[test]
-    fn crack_canvas_fits_the_staging_buffer() {
-        let rect = crate::wall::RunRect { lo: glam::Vec3::new(1.0, 0.0, 9.9), hi: glam::Vec3::new(7.0, 2.1875, 10.15) };
-        for policy in 0..crate::crack_geom::NPOL as u8 {
-            let spec = crate::wall::WallSpec {
-                story: crate::wall::Story { weather: 0.7, settlement: 0.5, cover_loss: 0.4 },
-                shape: crate::wall::Shape { pattern: crate::wall::Pattern::DEFAULTS[policy as usize], ..crate::wall::Shape::DEFAULT },
-                ..crate::wall::WallSpec::PRISTINE
-            };
-            let sheet = crate::wall::compile_specs(std::slice::from_ref(&rect), &[("garden wall", spec)]).remove(0);
-            let rows = rows_of(&spec);
-            for row in 0..rows.len() + 2 {
-                for placing in [false, true] {
-                    let (buf, w, h) = crack_canvas("garden wall", 0, &spec, &sheet, row, placing);
-                    assert_eq!(buf.len(), (w * h) as usize);
-                    assert!(w <= MPANEL_W && h <= PANEL_MAX_H, "the wall panel overruns the staging buffer");
-                    assert_eq!(h, crack_panel_h(rows.len()), "panel height tracks the pattern's param count");
-                }
-            }
-        }
-    }
-
-    /// THE ROW LAYOUT, pinned as a round trip through the hit-test's own
-    /// arithmetic. The panel is a `Vec<Row>` now and both the draw and the
-    /// hit-test walk it, so this pins the ONE thing they still compute
-    /// separately: the y band. A disagreement there means the owner drags
-    /// `chips` when he clicks `spall`.
-    #[test]
-    fn every_panel_row_is_hit_by_its_own_band() {
+    fn the_row_table_is_the_wall_authoring_model() {
         for policy in 0..crate::crack_geom::NPOL as u8 {
             let spec = crate::wall::WallSpec {
                 shape: crate::wall::Shape { pattern: crate::wall::Pattern::DEFAULTS[policy as usize], ..crate::wall::Shape::DEFAULT },
                 ..crate::wall::WallSpec::PRISTINE
             };
             let rows = rows_of(&spec);
-            for ri in 0..rows.len() {
-                let y = MPAD + MROW * (1 + ri as i32) + MROW / 2;
-                assert_eq!(((y - MPAD) / MROW - 1) as usize, ri, "row {ri} of {} does not hit itself", rows.len());
-            }
-            // …and the footer band is past the last row, so a click there is inert
-            let fy = MPAD + MROW * (1 + rows.len() as i32) + 2;
-            assert!(((fy - MPAD) / MROW - 1) as usize >= rows.len(), "the footer overlaps a row");
-            // the model's own order, which is what makes the panel readable:
-            // causes, then the amounts they derive, then the shape
             assert!(matches!(rows[0], Row::Cause(0)), "the first row must be the first CAUSE");
             assert!(matches!(rows[3], Row::Layer(crate::wall::Layer::Stain)), "the derived column starts after the three causes");
             assert_eq!(rows.iter().filter(|r| matches!(r, Row::Layer(_))).count(), crate::wall::Layer::N, "every layer gets a row");
             assert_eq!(rows.iter().filter(|r| matches!(r, Row::Param(_))).count(), crate::crack_geom::POLICY_PARAMS[policy as usize].len());
-            // …and every SLIDER row is drag-reachable while the non-sliders
-            // (two cyclers + the shell mode toggle) are not
-            assert_eq!(rows.iter().filter(|r| !r.slider()).count(), 3, "breaks, shell and pattern have no track");
+            // the three rows that are not 0..1 sliders: the break count, the
+            // shell place-mode toggle and the pattern cycler
+            assert_eq!(rows.iter().filter(|r| matches!(r, Row::Breaks | Row::Shell | Row::Pattern)).count(), 3);
         }
     }
 

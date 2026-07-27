@@ -41,9 +41,10 @@ impl Rect {
 
 /// Panel header strip height (the "hierarchy" / "inspector" caption).
 const HEAD_H: i32 = 12;
-/// Slider track x-range inside an inspector row.
-const TRACK_X0: i32 = 60;
-const TRACK_X1: i32 = INSP_W - 36;
+/// Slider track x-range inside an inspector row (label column left of it,
+/// value column right — the value column holds "0.30wu" plus a pin mark).
+const TRACK_X0: i32 = 92;
+const TRACK_X1: i32 = INSP_W - 56;
 
 /// An active slider drag.
 struct Drag {
@@ -58,7 +59,8 @@ enum HRow {
     Obj(ObjId),
 }
 
-/// One inspector row; `Slider(i)` / `Read(i)` index into the object's props.
+/// One inspector row; `Slider(i)` / `Cycle(i)` / `Read(i)` index into the
+/// object's props.
 enum IRow {
     Sub,
     Section(&'static str),
@@ -66,6 +68,7 @@ enum IRow {
     Size,
     Read(usize),
     Slider(usize),
+    Cycle(usize),
 }
 
 pub struct Ide {
@@ -109,14 +112,19 @@ fn hier_rows(scene: &SceneModel) -> Vec<HRow> {
 fn insp_rows(scene: &SceneModel, sel: ObjId) -> Vec<IRow> {
     let Some(o) = scene.obj(sel) else { return Vec::new() };
     let mut rows = vec![IRow::Sub, IRow::Section("transform"), IRow::Pos, IRow::Size];
-    if !o.props.is_empty() {
-        rows.push(IRow::Section("properties"));
-        for (i, p) in o.props.iter().enumerate() {
-            rows.push(match p.kind {
-                PropKind::Read(_) => IRow::Read(i),
-                _ => IRow::Slider(i),
-            });
+    for (i, p) in o.props.iter().enumerate() {
+        // adapter-declared section heads; the first headless prop still opens
+        // under a generic "properties" caption
+        match (i, p.head) {
+            (_, Some(h)) => rows.push(IRow::Section(h)),
+            (0, None) => rows.push(IRow::Section("properties")),
+            _ => {}
         }
+        rows.push(match p.kind {
+            PropKind::Read(_) => IRow::Read(i),
+            PropKind::Cycle { .. } => IRow::Cycle(i),
+            _ => IRow::Slider(i),
+        });
     }
     rows
 }
@@ -159,15 +167,27 @@ impl Ide {
                 let i = p.1 - (insp.y + HEAD_H + 1 + ROW_H); // first row is the name header
                 let i = if i >= 0 { i / ROW_H } else { -1 };
                 if i >= 0 {
-                    if let Some(IRow::Slider(pi)) = rows.get(i as usize) {
-                        let x0 = insp.x + TRACK_X0;
-                        let x1 = insp.x + TRACK_X1;
-                        if p.0 >= x0 - 2 && p.0 <= x1 + 2 {
-                            let o = scene.obj(sel).expect("sel resolved above");
-                            let frac = (p.0 - x0) as f32 / (x1 - x0) as f32;
-                            let pending = slider_value(&o.props[*pi].kind, frac);
-                            self.drag = Some(Drag { obj: sel, prop: *pi, pending });
+                    match rows.get(i as usize) {
+                        Some(IRow::Slider(pi)) => {
+                            let x0 = insp.x + TRACK_X0;
+                            let x1 = insp.x + TRACK_X1;
+                            if p.0 >= x0 - 2 && p.0 <= x1 + 2 {
+                                let o = scene.obj(sel).expect("sel resolved above");
+                                let frac = (p.0 - x0) as f32 / (x1 - x0) as f32;
+                                let pending = slider_value(&o.props[*pi].kind, frac);
+                                self.drag = Some(Drag { obj: sel, prop: *pi, pending });
+                            }
                         }
+                        // a CYCLER: one click, one step, anywhere on the row
+                        // (the wall panel's gesture). The release emits the
+                        // ABSOLUTE next value.
+                        Some(IRow::Cycle(pi)) => {
+                            let o = scene.obj(sel).expect("sel resolved above");
+                            if let PropKind::Cycle { v, n } = o.props[*pi].kind {
+                                self.drag = Some(Drag { obj: sel, prop: *pi, pending: PropVal::I((v + 1) % n.max(1)) });
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -181,10 +201,23 @@ impl Ide {
         self.cursor = p;
         let Some(d) = &mut self.drag else { return };
         let Some(o) = scene.obj(d.obj) else { return };
+        if matches!(o.props[d.prop].kind, PropKind::Cycle { .. }) {
+            return; // a cycler's pending is the press's step, not a track position
+        }
         let insp_x = vw - INSP_W;
         let (x0, x1) = (insp_x + TRACK_X0, insp_x + TRACK_X1);
         let frac = (p.0 - x0) as f32 / (x1 - x0) as f32;
         d.pending = slider_value(&o.props[d.prop].kind, frac);
+    }
+
+    /// The in-flight drag as (object, prop key, pending value) — the host
+    /// reads it to LIVE-apply drags it knows are cheap on its side of the
+    /// boundary (the wall panel's paint-class wear rows re-stream per frame;
+    /// which rows those are is a game opinion, so the IDE only exposes).
+    pub fn drag_state(&self, scene: &SceneModel) -> Option<(ObjId, &'static str, PropVal)> {
+        let d = self.drag.as_ref()?;
+        let o = scene.obj(d.obj)?;
+        Some((d.obj, o.props.get(d.prop)?.key, d.pending))
     }
 
     /// Pointer release: ends a drag; the edit lands here (release-only cost).
@@ -192,7 +225,7 @@ impl Ide {
         let d = self.drag.take()?;
         let o = scene.obj(d.obj)?;
         let unchanged = match (&o.props[d.prop].kind, d.pending) {
-            (PropKind::SliderI { v, .. }, PropVal::I(p)) => *v == p,
+            (PropKind::SliderI { v, .. } | PropKind::Cycle { v, .. }, PropVal::I(p)) => *v == p,
             (PropKind::SliderF { v, .. }, PropVal::F(p)) => *v == p,
             _ => true,
         };
@@ -301,10 +334,20 @@ impl Ide {
                 IRow::Size => Self::kv(&mut c, y, "size", &format!("{:.1} {:.1} {:.1}", o.size[0], o.size[1], o.size[2])),
                 IRow::Read(i) => {
                     if let PropKind::Read(v) = &o.props[i].kind {
-                        Self::kv(&mut c, y, o.props[i].label, v);
+                        Self::kv(&mut c, y, &o.props[i].label, v);
                     }
                 }
                 IRow::Slider(i) => self.slider_row(&mut c, y, o, i),
+                IRow::Cycle(i) => {
+                    let p = &o.props[i];
+                    c.text(PAD + p.indent, y + 3, &p.label, TEXT_DIM, TRACK_X0 - PAD - p.indent);
+                    let txt = match (&p.show, &p.kind) {
+                        (Some(s), _) => s.clone(),
+                        (None, PropKind::Cycle { v, .. }) => format!("< {v} >"),
+                        _ => String::new(),
+                    };
+                    c.text(TRACK_X0, y + 3, &txt, TEXT, INSP_W - TRACK_X0 - PAD);
+                }
             }
             y += ROW_H;
         }
@@ -320,21 +363,24 @@ impl Ide {
         let p = &o.props[i];
         let pending = self.drag.as_ref().filter(|d| d.obj == o.id && d.prop == i).map(|d| d.pending);
         let frac = slider_frac(&p.kind, pending).clamp(0.0, 1.0);
-        c.text(PAD, y + 3, p.label, TEXT_DIM, TRACK_X0 - PAD);
+        c.text(PAD + p.indent, y + 3, &p.label, TEXT_DIM, TRACK_X0 - PAD - p.indent);
         let (x0, x1) = (TRACK_X0, TRACK_X1);
         let ty = y + ROW_H / 2 - 2;
         c.fill(x0, ty, x1 - x0, 4, BG_WELL);
         let fx = x0 + ((x1 - x0 - 3) as f32 * frac).round() as i32;
         c.fill(x0, ty, fx - x0, 4, if pending.is_some() { ACCENT } else { EDGE_HI });
         c.fill(fx, ty - 1, 3, 6, if pending.is_some() { ACCENT } else { TEXT });
-        let shown = pending.unwrap_or(match p.kind {
-            PropKind::SliderI { v, .. } => PropVal::I(v),
-            PropKind::SliderF { v, .. } => PropVal::F(v),
-            PropKind::Read(_) => PropVal::F(0.0),
-        });
-        let txt = match shown {
-            PropVal::I(v) => format!("{v}"),
-            PropVal::F(v) => format!("{v:.2}"),
+        // mid-drag the pending number wins; at rest the adapter's own value
+        // text does ("off", "0.30wu", the pin mark)
+        let txt = match (pending, &p.show) {
+            (Some(PropVal::I(v)), _) => format!("{v}"),
+            (Some(PropVal::F(v)), _) => format!("{v:.2}"),
+            (None, Some(s)) => s.clone(),
+            (None, None) => match p.kind {
+                PropKind::SliderI { v, .. } => format!("{v}"),
+                PropKind::SliderF { v, .. } => format!("{v:.2}"),
+                _ => String::new(),
+            },
         };
         c.text(TRACK_X1 + 4, y + 3, &txt, TEXT, INSP_W - TRACK_X1 - 4 - 2);
     }
@@ -353,8 +399,8 @@ mod tests {
             pos: [2.5, 0.0, 12.5],
             size: [0.4, 2.2, 0.4],
             props: vec![
-                Prop { key: "glow", label: "glow", kind: PropKind::SliderI { v: 6, min: 1, max: 8 } },
-                Prop { key: "cx", label: "cell x", kind: PropKind::SliderI { v: 2, min: 0, max: 17 } },
+                Prop::new("glow", "glow", PropKind::SliderI { v: 6, min: 1, max: 8 }),
+                Prop::new("cx", "cell x", PropKind::SliderI { v: 2, min: 0, max: 17 }),
             ],
         };
         SceneModel {
@@ -415,6 +461,23 @@ mod tests {
         let x6 = x0 + ((x1 - x0) as f32 * frac6).round() as i32;
         assert!(ide.press(&scene, (x6, row_y), VW, VH));
         assert_eq!(ide.release(&scene), None, "unchanged value is a no-op");
+    }
+
+    #[test]
+    fn a_cycler_steps_once_per_click_and_emits_the_absolute_value() {
+        let mut scene = fixture();
+        scene.objects[1].props.push(Prop::new("pattern", "pattern", PropKind::Cycle { v: 2, n: 3 }).show("< mosaic >".into()));
+        let mut ide = Ide::default();
+        ide.select(Some(ObjId(1)));
+        // rows after the name header: Sub, transform, pos, size, properties,
+        // glow, cx, pattern
+        let row_y = TOPBAR_H + HEAD_H + 1 + ROW_H + 7 * ROW_H + ROW_H / 2;
+        assert!(ide.press(&scene, (VW - INSP_W + 10, row_y), VW, VH), "any x on the row steps");
+        assert_eq!(ide.drag_state(&scene).map(|(_, k, v)| (k, v)), Some(("pattern", PropVal::I(0))), "2 + 1 wraps to 0");
+        // a drag across the row must NOT turn the step into a track value
+        ide.drag_to(&scene, (VW - 1, row_y), VW, VH);
+        let e = ide.release(&scene).expect("the state moved");
+        assert_eq!((e.key, e.v), ("pattern", PropVal::I(0)));
     }
 
     #[test]

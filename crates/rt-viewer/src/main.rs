@@ -265,7 +265,9 @@ impl ApplicationHandler for App {
                 if let Some(r) = self.renderer.as_mut() {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
-                        if !r.menu_click(c) && !r.ide_click(c) && !r.crack_click(c) {
+                        // the wall panel is gone (2026-07-27): outside the
+                        // IDE a world click is the game's (click-to-move)
+                        if !r.menu_click(c) && !r.ide_click(c) {
                             r.click_move(c); // click-to-move
                         }
                     } else {

@@ -31,7 +31,7 @@
 use crate::backend::ProbeRefresh;
 use crate::gym_scene::Pier;
 use crate::viewer::Viewer;
-use glam::{Vec2, Vec3};
+use glam::Vec3;
 use rt_probe::Scene;
 
 /// Selection-highlight flag: `Material._pad` bit 3.
@@ -119,19 +119,30 @@ pub struct CrackLab {
     /// The save (`Viewer::wear_save`) writes exactly these runs back to the
     /// wear file; a derived run stays derived so the spread keeps breathing.
     pub authored: Vec<bool>,
-    /// An INTERACTIVE edit happened since the last save. Only the panel's own
-    /// gestures set it (drag, cycler click) — the age-ramp beat and the
-    /// `WEAR_EDIT` replay do not, so demos and harness runs never write files.
+    /// An INTERACTIVE edit happened since the last save. Only the inspector's
+    /// own gestures set it (drag, cycler click, shell place) — the age-ramp
+    /// beat and the `WEAR_EDIT`/`IDE_EDIT` replays do not, so demos and
+    /// harness runs never write files.
     pub dirty: bool,
+    /// The AGE-RAMP beat's live override: `(run, story)`, applied on the way
+    /// to that run's sheet ([`Self::recompile`]) and NEVER into the authored
+    /// spec — so a save mid-beat cannot freeze the ramp into the wear file.
+    /// That leak was the parked 2026-07-27 wrinkle, and the owner's first
+    /// wear-in-IDE playtest hit it the same day: his saved file carried
+    /// `story 0.56 0.48 0.85` on the ramped control — beat state he never
+    /// dialed. An owner CAUSE edit on the ramped run clears the override
+    /// (the author takes over the wall; a masked slider would read dead).
+    pub beat: Option<(usize, crate::wall::Story)>,
     /// Per RUN: compiled. `wall::compile_specs` is the ONLY writer.
     pub sheets: Vec<crate::wall::Sheet>,
-    /// The picked PIER. The ray hits a pier; the panel edits its RUN.
+    /// The picked PIER. The ray hits a pier; the editing surface (the IDE
+    /// inspector) edits its RUN.
     pub sel: Option<usize>,
-    pub row: usize,
-    /// SHELL place-mode is armed (the panel's `shell` row): the next click on
-    /// the selected wall places a hit at the ray's own point — or removes the
-    /// hit it landed on. Any other click disarms and does what it always did.
-    /// Never persisted, never set by env: a MODE, not an authoring datum.
+    /// SHELL place-mode is armed (the IDE inspector's `shells` row): the next
+    /// click on the selected wall places a hit at the ray's own point — or
+    /// removes the hit it landed on. Any other click disarms and does what it
+    /// always did. Never persisted, never set by env: a MODE, not an
+    /// authoring datum.
     pub placing: bool,
     /// [`crate::crack_geom::GeoKey`] of the geometry currently BUILT into the
     /// scene, PER PIER — `Viewer::crack_release` rebuilds when a key disagrees,
@@ -166,9 +177,9 @@ impl Default for CrackLab {
             paint_only: Vec::new(),
             authored: Vec::new(),
             dirty: false,
+            beat: None,
             sheets: Vec::new(),
             sel: None,
-            row: 0,
             placing: false,
             geo_sigs: Vec::new(),
             cores: Vec::new(),
@@ -192,9 +203,24 @@ impl CrackLab {
     /// Recompile every run's sheet from its spec. Cheap (a sorted field sample
     /// per run) and it cannot fail — addressing already happened in
     /// [`crate::wall::specs_of`], which is what makes a live edit a
-    /// pure-arithmetic step.
+    /// pure-arithmetic step. The age-ramp beat's story rides in HERE — on the
+    /// way to the sheet, like the level dials — so the authored spec (and any
+    /// save serialized from it) never carries beat state.
     pub fn recompile(&mut self) {
-        let specs: Vec<(&'static str, crate::wall::WallSpec)> = self.label.iter().copied().zip(self.spec.iter().map(|s| self.level_dials(*s))).collect();
+        let specs: Vec<(&'static str, crate::wall::WallSpec)> = self
+            .label
+            .iter()
+            .copied()
+            .zip(self.spec.iter().enumerate().map(|(r, s)| {
+                let mut s = *s;
+                if let Some((br, story)) = self.beat {
+                    if br == r {
+                        s.story = story;
+                    }
+                }
+                self.level_dials(s)
+            }))
+            .collect();
         self.sheets = crate::wall::compile_specs(&self.runs, &specs);
     }
 
@@ -433,14 +459,35 @@ pub fn ramp_story(t: f32) -> crate::wall::Story {
     crate::wall::Story { weather: 0.95 * seg(0.00, 0.85), settlement: 0.55 * seg(0.35, 0.90), cover_loss: 0.85 * seg(0.60, 1.00) }
 }
 
+/// Every material a pier's SURFACE can show: the authored box's own, the
+/// chalk core's, and the spall basin/steel pair. A per-pier visual mark must
+/// cover THIS whole set — the selection tag and the AA scope both walk it,
+/// because the core and the spall mats show through every groove and crater,
+/// and a mark stamped on the main material alone draws its boundary along
+/// the crack network from the inside (the tonemap outline fires on the
+/// tag-region edge, which a bare core would put around every crevice).
+pub(crate) fn pier_surface_mats(scene: &Scene, pier: &Pier, lab: &CrackLab, i: usize) -> Vec<usize> {
+    let core = lab.cores.get(i).copied().filter(|c| *c >= 0);
+    let spall = lab.spall_mats.get(i).copied().unwrap_or([-1, -1]);
+    let extra = spall.map(|c| (c >= 0).then_some(c));
+    [Some(scene.primitives[pier.prim].material_id), core].into_iter().chain(extra).flatten().map(|m| m as usize).collect()
+}
+
 /// Write the paint lanes (and the selection bit) into the scene's materials —
 /// the boot/rebuild path; live edits go through `Viewer::crack_apply` and the
-/// backend's per-frame material stream instead.
+/// backend's per-frame material stream instead. The selection bit also rides
+/// the pier's core/spall materials (see [`pier_surface_mats`]) so a
+/// `CRACK_SEL=` boot tags the whole surface, not just the veneer.
 pub fn stamp_all(scene: &mut Scene, piers: &[Pier], lab: &CrackLab) {
     for (i, pier) in piers.iter().enumerate() {
         let paint = lab.pier_run.get(i).and_then(|r| lab.sheets.get(*r)).map(|s| s.paint).unwrap_or_default();
+        let sel = lab.sel == Some(i);
         let mid = scene.primitives[pier.prim].material_id as usize;
-        scene.materials[mid]._pad = stamped_pad(scene.materials[mid]._pad, paint, lab.sel == Some(i));
+        scene.materials[mid]._pad = stamped_pad(scene.materials[mid]._pad, paint, sel);
+        for m in pier_surface_mats(scene, pier, lab, i).into_iter().skip(1) {
+            let pad = scene.materials[m]._pad;
+            scene.materials[m]._pad = if sel { pad | SEL_BIT } else { pad & !SEL_BIT };
+        }
     }
 }
 
@@ -473,11 +520,7 @@ pub fn stamp_aa(scene: &mut Scene, piers: &[Pier], lab: &CrackLab, scope: i32) -
     let mut out = Vec::new();
     for (i, pier) in piers.iter().enumerate() {
         let on = aa_wants(scene, pier, lab, i, scope);
-        let core = lab.cores.get(i).copied().filter(|c| *c >= 0);
-        let spall = lab.spall_mats.get(i).copied().unwrap_or([-1, -1]);
-        let extra = spall.map(|c| if c >= 0 { Some(c) } else { None });
-        for mid in [Some(scene.primitives[pier.prim].material_id), core].into_iter().chain(extra).flatten() {
-            let m = mid as usize;
+        for m in pier_surface_mats(scene, pier, lab, i) {
             let pad = if on { scene.materials[m]._pad | AA_BIT } else { scene.materials[m]._pad & !AA_BIT };
             if pad != scene.materials[m]._pad {
                 scene.materials[m]._pad = pad;
@@ -551,7 +594,7 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
         // (the owner picks by clicking; an agent cannot, and the selection drives
         // the AA scope as well as the panel).
         lab.sel = std::env::var("CRACK_SEL").ok().and_then(|v| v.parse::<usize>().ok()).filter(|i| *i < piers.len());
-        lab.row = 0;
+        lab.beat = None; // a level switch must not carry another level's ramp
     }
     lab.runs = runs;
     lab.pier_run = pier_run;
@@ -589,14 +632,6 @@ pub(crate) fn ray_aabb(o: Vec3, d: Vec3, lo: Vec3, hi: Vec3) -> Option<f32> {
 }
 
 impl Viewer {
-    /// The crack knob panel is on screen: lab active, a segment picked, no
-    /// menu over it (the panel is the closed-menu surface while editing).
-    pub fn crack_panel_visible(&self) -> bool {
-        // while the IDE is open its inspector is the property surface —
-        // closing the IDE with a wall picked hands over to this panel
-        self.crack.active && self.crack.sel.is_some() && !self.menu_open() && !self.ide.ui.open
-    }
-
     /// Recompute + push pier `i`'s material `_pad` (paint lanes + selection),
     /// mirrored into the CPU scene (so rebuilds re-stamp the truth) and the
     /// backend's live material stream (visible next frame, nothing rebuilds).
@@ -606,10 +641,21 @@ impl Viewer {
     pub fn crack_apply(&mut self, i: usize) {
         let run = self.crack.pier_run.get(i).copied();
         let paint = run.and_then(|r| self.crack.sheets.get(r)).map(|s| s.paint).unwrap_or_default();
+        let sel = self.crack.sel == Some(i);
         let mid = self.scene.primitives[self.piers[i].prim].material_id as usize;
-        let pad = stamped_pad(self.scene.materials[mid]._pad, paint, self.crack.sel == Some(i));
+        let pad = stamped_pad(self.scene.materials[mid]._pad, paint, sel);
         self.scene.materials[mid]._pad = pad;
         self.backend.set_material_pad(mid, pad);
+        // the selection tag covers the whole SURFACE ([`pier_surface_mats`]):
+        // an untagged chalk core would ring every groove and crater from the
+        // inside, because the tonemap outline fires on the tag-region boundary
+        for m in pier_surface_mats(&self.scene, &self.piers[i], &self.crack, i).into_iter().skip(1) {
+            let p = if sel { self.scene.materials[m]._pad | SEL_BIT } else { self.scene.materials[m]._pad & !SEL_BIT };
+            if p != self.scene.materials[m]._pad {
+                self.scene.materials[m]._pad = p;
+                self.backend.set_material_pad(m, p);
+            }
+        }
         // The VARIANT dial rides the story key (`base_color[3]`): stream it
         // with the paint so a scrub drag morphs the painted field live. The
         // geometry (and its probe bake) catches up on release, like every
@@ -743,7 +789,9 @@ impl Viewer {
         let Some(r) = crate::crack::pier_index_at(&self.piers, x, z).and_then(|i| self.crack.pier_run.get(i).copied()) else {
             return; // a point that misses every wall is reported once, at boot
         };
-        self.crack.spec[r].story = crate::crack::ramp_story(t);
+        // an OVERRIDE, never a spec write: the ramp reaches the sheet through
+        // `recompile` and a save mid-beat stays the author's (`CrackLab::beat`)
+        self.crack.beat = Some((r, crate::crack::ramp_story(t)));
         self.wear_edit(r);
         if commit {
             self.crack_rebuild(true);
@@ -770,16 +818,6 @@ impl Viewer {
         self.crack_release();
     }
 
-    /// The panel's pattern row: cycle the picked WALL's pattern — the release
-    /// event that follows the click sees the changed key and rebuilds.
-    pub fn crack_cycle_policy(&mut self) {
-        if let Some(r) = self.crack.sel_run() {
-            let n = crate::crack_geom::POLICIES.len() as u8;
-            let next = (self.crack.spec[r].shape.pattern.code() + 1) % n;
-            self.crack.set_pattern(r, next);
-        }
-    }
-
     /// Change the picked segment (both the old and new highlight bits).
     pub fn crack_select(&mut self, sel: Option<usize>) {
         let old = self.crack.sel;
@@ -797,53 +835,14 @@ impl Viewer {
         self.aa_stamp(); // scope 2 follows the pick
     }
 
-    /// Crack-lab world click: ray-pick the nearest wall pier under the
-    /// cursor. Hit → select it (true); miss with a live selection → dismiss
-    /// (true, the click is spent putting the knobs away); else false and the
-    /// click falls through to click-to-move.
-    pub fn crack_click(&mut self, win: Vec2) -> bool {
-        if !self.crack.active || self.menu_open() {
-            return false;
-        }
-        let x = self.pick_xform();
-        let (o, d) = iso_core::window_px_to_ray(win, &x);
-        let mut best: Option<(f32, usize)> = None;
-        for (i, pier) in self.piers.iter().enumerate() {
-            if let Some(t) = ray_aabb(o, d, pier.lo, pier.hi) {
-                if best.is_none_or(|(bt, _)| t < bt) {
-                    best = Some((t, i));
-                }
-            }
-        }
-        match best {
-            // place-mode: a click on the SELECTED wall spends itself on the
-            // shell — at the ray's own hit point, on the face the camera sees
-            Some((t, i)) if self.crack.placing && self.crack.sel_run() == Some(self.crack.pier_run[i]) => {
-                self.shell_place(i, o + d * t, d);
-                true
-            }
-            Some((_, i)) => {
-                self.crack.placing = false;
-                self.crack_select(Some(i));
-                self.ui_blip("menu_pick");
-                true
-            }
-            None if self.crack.sel.is_some() => {
-                self.crack.placing = false;
-                self.crack_select(None);
-                self.ui_blip("menu_move");
-                true
-            }
-            None => false,
-        }
-    }
-
     /// Place a shell hit where the pick ray struck pier `i` — or remove the
     /// hit it landed on (one gesture, toggle semantics: clicking a crater you
     /// placed is the only "no, not there" a mouse needs). The place is stored
     /// in RUN space, snapped to the file's own grid (1/1000 along, 1/100 up)
-    /// so a saved wear file reads as numbers a human can edit.
-    fn shell_place(&mut self, i: usize, p: Vec3, d: Vec3) {
+    /// so a saved wear file reads as numbers a human can edit. The caller is
+    /// the IDE's world click with place-mode armed (`Viewer::ide_click` —
+    /// the wall panel that used to own the gesture is gone, 2026-07-27).
+    pub(crate) fn shell_place(&mut self, i: usize, p: Vec3, d: Vec3) {
         let Some(r) = self.crack.sel_run() else { return };
         let pier = &self.piers[i];
         let run_x = (pier.hi.x - pier.lo.x) >= (pier.hi.z - pier.lo.z);
@@ -865,7 +864,7 @@ impl Viewer {
             }
             None => {
                 if !self.crack.spec[r].shells.add(crate::wall::Shell { u, y, back }) {
-                    return; // the wall is full — the panel row says 3, the click says nothing new
+                    return; // the wall is full — the shells row says 3, the click says nothing new
                 }
                 self.ui_blip("menu_pick");
             }
@@ -1281,6 +1280,24 @@ mod tests {
         lab.sel = Some(aged);
         stamp_aa(&mut scene, &meta.piers, &lab, 2);
         assert_ne!(pad_of(&scene, &meta, aged) & AA_BIT, 0, "scope 2 follows the pick");
+    }
+
+    /// THE BEAT NEVER ENTERS THE AUTHORED SPEC (2026-07-27 — the owner's first
+    /// wear-in-IDE playtest saved a wear file carrying the age ramp's
+    /// mid-flight story on the ramped control, the wrinkle CLAUDE.md had
+    /// parked). The override reaches the SHEET through `recompile`, like the
+    /// level dials; the spec — which is what a save serializes — keeps the
+    /// author's numbers.
+    #[test]
+    fn the_age_beat_rides_the_sheet_and_never_the_authored_spec() {
+        let (_scene, _meta, mut lab) = build(crate::demos::Level::Gym, Some(crate::demos::lab_wear()));
+        let r = lab.label.iter().position(|l| *l == "ramped control").expect("the lab names its ramped control");
+        let authored = lab.spec[r].story;
+        let before = lab.sheets[r].area;
+        lab.beat = Some((r, ramp_story(1.0)));
+        lab.recompile();
+        assert_ne!(lab.sheets[r].area, before, "the ramp must reach the sheet");
+        assert_eq!(lab.spec[r].story, authored, "the ramp must never enter the authored spec");
     }
 }
 

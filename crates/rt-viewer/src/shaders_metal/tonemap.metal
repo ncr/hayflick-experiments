@@ -270,10 +270,14 @@ kernel void tonemap(
 
         // outline (style2.w): darken silhouette / sky-adjacent pixels. A dissolved
         // wall (ROI contour) is tagged P0.w==2 and MUST outline even when the global
-        // outline knob is off — the contour IS the x-ray feature.
+        // outline knob is off — the contour IS the x-ray feature. The IDE SELECTION
+        // is tagged w==3 and fires the same way: editor chrome, not a look knob —
+        // a steady 1-game-px amber line on the tag-region boundary (drawn on the
+        // sel side, so it never bleeds onto the neighbours), no pulse.
         float4 P0 = posBuf[li];
-        bool isContour = P0.w > 1.5;
-        if (P0.w > 0.0 && (pc.style2.w > 0.0 || isContour)) {
+        bool isContour = P0.w > 1.5 && P0.w < 2.5;
+        bool isSel = P0.w > 2.5;
+        if (P0.w > 0.0 && (pc.style2.w > 0.0 || isContour || isSel)) {
             float3 f = normalize(cross(pc.projA.xyz, pc.projB.xyz));
             float d0 = dot(P0.xyz, f);
             float edge = 0.0;
@@ -284,8 +288,10 @@ kernel void tonemap(
                 float dn = dot(Pn.xyz, f) - d0;
                 // contour traces the FULL wall silhouette → fire on a depth jump in
                 // EITHER direction (top + side silhouettes). Normal outline keeps the
-                // directional test so goldens stay byte-identical.
-                if (Pn.w == 0.0 || (isContour ? abs(dn) > 0.20 : dn > 0.28)) { edge = 1.0; break; }
+                // directional test so goldens stay byte-identical. SELECTION ignores
+                // depth entirely: its edge is "my neighbour is not selected" (sky
+                // included) — the visible region's silhouette, nothing interior.
+                if (isSel ? Pn.w < 2.5 : (Pn.w == 0.0 || (isContour ? abs(dn) > 0.20 : dn > 0.28))) { edge = 1.0; break; }
             }
             // contour CREASE: the wall BASE meets the floor with a normal flip but
             // almost no depth jump (same signature as the disc edge, which must stay
@@ -299,7 +305,12 @@ kernel void tonemap(
                 if (PL.w > 0.0 && PR.w > 0.0 && length(PL.xyz + PR.xyz - 2.0 * P0.xyz) > 0.02) edge = 1.0;
                 if (PU.w > 0.0 && PD.w > 0.0 && length(PU.xyz + PD.xyz - 2.0 * P0.xyz) > 0.02) edge = 1.0;
             }
-            if (isContour) {
+            if (isSel) {
+                // SELECTION: the SEL amber, near-solid — chrome must read over both
+                // the porcelain white and the meadow greens, and it replaced the old
+                // albedo lift that tinted the very surface being authored.
+                col = mix(col, float3(1.0, 0.82, 0.40), edge * 0.85);
+            } else if (isContour) {
                 // x-ray CONTOUR: dissolved-wall silhouette as a FAINT cool line over
                 // the ghost stipple + room behind — subtle additive cyan, half blend.
                 col = mix(col, clamp(col * 1.10 + float3(0.05, 0.12, 0.18), 0.0, 1.0), edge * 0.5);

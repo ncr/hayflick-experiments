@@ -564,6 +564,28 @@ mod tests {
         }
     }
 
+    /// The IDE selection outline lives in the TONEMAP twins: the shade pass
+    /// tags SEL hits `posImg.w == 3` and tonemap draws the amber line on the
+    /// tag-region boundary. Same rationale as the shade guards — one backend
+    /// is blind every session, so a fragment present in one twin and not the
+    /// other compiles, passes every test, and ships a different image there.
+    /// The shade side's tag write is covered by `flags::both_twins_spell_…`
+    /// (it reads `pad & 8u`); this pins the tonemap side's decode and draw.
+    #[test]
+    fn both_tonemap_twins_draw_the_selection_outline() {
+        for (name, src) in [
+            ("tonemap.comp", include_str!("../../rt-probe/src/shaders/tonemap.comp")),
+            ("tonemap.metal", include_str!("shaders_metal/tonemap.metal")),
+        ] {
+            let lines = code_lines(src);
+            let has = |pat: &str| lines.iter().any(|l| l.contains(pat));
+            assert!(has("P0.w > 1.5 && P0.w < 2.5"), "{name}: the contour decode no longer excludes the selection tag");
+            assert!(has("P0.w > 2.5"), "{name}: the selection-tag decode is gone");
+            assert!(has("Pn.w < 2.5"), "{name}: the selection boundary test is gone");
+            assert!(has("1.0, 0.82, 0.40"), "{name}: the SEL amber drifted from the accent the host documents");
+        }
+    }
+
     /// Source fragments that must NOT appear in either twin.
     ///
     /// Every entry here is a painted layer deleted on 2026-07-26 because it
@@ -577,14 +599,15 @@ mod tests {
     /// meaning something by it. It is the same argument as the deletions above,
     /// one step earlier.
     const FORBIDDEN: &[&str] = &[
-        "faultAt",  // the painted structural fault
-        "crazeG",   // the CRAZE-bit escape hatch it needed
-        "chipM",    // the painted chip patches
-        "lineP",    // the painted craze cell network
-        "cuvP",     // its view-parallax sample offset
-        "lvlC",     // the signed per-run LEVEL offset the solved thresholds replace
-        "float dT", // the age-derived gate that slid five fixed windows together
-        "mHalo",    // the fault's stain track
+        "faultAt",           // the painted structural fault
+        "crazeG",            // the CRAZE-bit escape hatch it needed
+        "chipM",             // the painted chip patches
+        "lineP",             // the painted craze cell network
+        "cuvP",              // its view-parallax sample offset
+        "lvlC",              // the signed per-run LEVEL offset the solved thresholds replace
+        "float dT",          // the age-derived gate that slid five fixed windows together
+        "mHalo",             // the fault's stain track
+        "0.82, 0.40), 0.22", // the SEL albedo lift — selection is a tonemap outline now
     ];
     // `_pad` lanes 2/3 (`>> 20` / `>> 26`) left this table on 2026-07-27:
     // MUD claimed them (crack::pad_bits), and their decodes are REQUIRED now.

@@ -354,7 +354,9 @@ pub fn lab_walls(lw: &LevelWear, runs: &[crate::wall::RunRect], lab: &crate::cra
 /// harness's asked-for state, not the owner's authoring, and freezing that
 /// into the file would make one SHOT recipe permanent.
 fn env_overridden() -> bool {
-    ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "BAND", "HOLE", "WEAR_EDIT"].iter().any(|k| std::env::var(k).is_ok())
+    // IDE_EDIT is here too: its wall statements ride the same spec, so a
+    // replayed SHOT recipe must not freeze itself into the authoring either
+    ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "BAND", "HOLE", "WEAR_EDIT", "IDE_EDIT"].iter().any(|k| std::env::var(k).is_ok())
 }
 
 impl crate::viewer::Viewer {

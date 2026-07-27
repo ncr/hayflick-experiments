@@ -719,9 +719,6 @@ void main(){
     float aot = (ao - (1.0 - pc.camPos.w)) / max(pc.camPos.w, 1e-4);
     ao = aot >= bayer4(px) ? 1.0 : 1.0 - pc.camPos.w;
   }
-  // crack-lab SELECTION highlight (pad bit 3): a steady amber lift on the
-  // picked segment — constant (no pulse), so captures stay deterministic.
-  if ((uint(m.pad) & 8u) != 0u) albedo = mix(albedo, vec3(1.0, 0.82, 0.40), 0.22);
   // .a = screen-px distance to the nearest gating triangle edge — the CONTOUR AA
   // gate (owner 2026-07-25); it was a constant 1.0 read by nobody (tonemap uses
   // .rgb only). An in-plane world distance foreshortens on screen by AT LEAST
@@ -738,7 +735,12 @@ void main(){
   // CONTOUR: re-project the dissolved wall's front face (w=2) so the tonemap outline
   // pass traces its silhouette as x-ray line-art; the radiance/albedo we store is
   // still the room BEHIND, so colour shows through while only the wall edges draw.
-  if (S == 0) imageStore(posImg, px, inContour ? vec4(wallPos, 2.0) : vec4(o + h.t * d, 1.0));
+  // SELECTION (pad bit 3) tags its hits w=3: the IDE pick's amber outline is drawn
+  // by the tonemap pass on the tag-region boundary. Shading is untouched — the old
+  // albedo lift tinted the very surface being authored. Contour outranks the tag:
+  // a dissolved wall's x-ray edge stays the ROI's cyan even while selected.
+  float selTag = (uint(m.pad) & 8u) != 0u ? 3.0 : 1.0;
+  if (S == 0) imageStore(posImg, px, inContour ? vec4(wallPos, 2.0) : vec4(o + h.t * d, selTag));
   // DEBUG_AA (misc.w == 5): red = this texel would fire coverage taps, green
   // ramp = edgePx. The delicacy proof AND the cost measurement in one image.
   if (pc.misc.w == 5) {
