@@ -120,15 +120,22 @@ impl ApplicationHandler for App {
                             r.menu_adjust(1.0);
                             return;
                         }
-                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                        // TOGGLES AND ACTIVATIONS IGNORE KEY REPEAT. Wayland
+                        // key repeat is client-side (winit timer): when event
+                        // processing is delayed past the repeat delay — the
+                        // fullscreen swapchain recreate alone blocks ~400 ms —
+                        // repeats inject between a press and its release, and
+                        // an unguarded ESC then toggles the menu TWICE per
+                        // physical press: open-close, "the menu won't close".
+                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) if !event.repeat => {
                             r.menu_activate();
                             return;
                         }
-                        Key::Named(NamedKey::Escape) => {
+                        Key::Named(NamedKey::Escape) if !event.repeat => {
                             r.menu_toggle();
                             return;
                         }
-                        _ => return, // menus are modal: swallow the rest
+                        _ => return, // menus are modal: swallow the rest (repeats included)
                     }
                 }
                 // movement keys are held-state (continuous walk); index = [up,down,left,right]
@@ -152,7 +159,9 @@ impl ApplicationHandler for App {
                     return; // discrete actions fire on press only
                 }
                 match event.logical_key.as_ref() {
-                    Key::Named(NamedKey::Escape) => r.menu_toggle(),
+                    // same repeat guard as the modal branch: one physical
+                    // press, one toggle
+                    Key::Named(NamedKey::Escape) if !event.repeat => r.menu_toggle(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.view.cursor;
                         r.zoom_step(1, c);
@@ -181,6 +190,18 @@ impl ApplicationHandler for App {
                     // floods the interior; step inside to watch it settle).
                     Key::Character("x") if !event.repeat => r.tear_roof(),
                     _ => {}
+                }
+            }
+            WindowEvent::Focused(false) => {
+                // focus can leave mid-hold (fullscreen toggles, alt-tab) and
+                // the release then goes to another surface: clear every
+                // held-state or the player walks into a wall forever and a
+                // stale drag keeps editing the panel
+                if let Some(r) = self.renderer.as_mut() {
+                    r.gym.held = [false; 4];
+                    r.gym.run_held = false;
+                    r.menu.drag = false;
+                    r.menu.drag_pending = false;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

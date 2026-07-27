@@ -741,6 +741,24 @@ applied per MOTION EVENT, and a wall-panel drag recompiles the level — at
 drags are COALESCED now to one `menu_drag_to` per frame from the latest
 cursor, with the tail flushed on mouse-up so the release lands on the value
 under the cursor (`MenuState::drag_pending`).
+FOLLOW-UP (same day, owner: "keyboard unresponsive in fullscreen, ESC opens
+the menu but cannot close it"): NOT REPRODUCIBLE on this box with the fixed
+binary — probed fullscreen (state 2, same monitor) through BOTH injection
+paths (`hyprctl sendshortcut` = direct-to-window, and `wtype` = the real
+compositor-focus path): keys arrive, ESC opens AND closes, frame p50 6 ms,
+the only stalls are the ~410 ms swapchain recreates at the fullscreen
+transitions. Two defenses shipped anyway, both correct on their own: (1)
+ESC/Enter/Space now carry the `!event.repeat` guard the other toggles always
+had — Wayland key repeat is CLIENT-SIDE (winit timer), so when event
+processing is delayed past the repeat delay (the transition recreate alone
+blocks ~400 ms) repeats inject between a press and its release, and an
+unguarded ESC then toggles TWICE per physical press: open-close, "the menu
+won't close". (2) `Focused(false)` clears the held movement keys and the
+panel drag — a release delivered to another surface used to leave the player
+walking forever. Field diagnostic if it recurs: `TIMING=1 bin/run`,
+fullscreen, press `l` — "lamps:" prints prove keys arrive; TIME lines prove
+the loop is alive; which half is silent names the culprit (app vs
+compositor).
 KNOWN WRINKLE surfaced by the same session (parked, owner call): the AgeWall
 beat writes `spec[r].story` while it ramps, and a save triggered by ANY
 interactive edit then freezes the beat's current story into the wear file
