@@ -632,6 +632,38 @@ the MSL twin is a blind line-for-line port — first Mac session: boot
 Vulkan reference (damage confined to the lower band, upper walls clean).
 Verified here: gym / crack lab / catalogue BYTE-IDENTICAL at defaults;
 `BAND=0,0.45` A/B shows the intended confinement and nothing else.
+
+MUD SPLASH since 2026-07-27 (round D — the first NEW effect through the whole
+contract, and the `_pad` KNOB BUDGET IS NOW FULL: the next paint dial pays for
+the per-material aux buffer). `Layer::Mud` is the SIXTH layer, class Paint,
+PURE-PIN (`derive` never writes it — splash-back is environmental, so the pin
+gesture IS the authoring; the master/solo level rows compose with it for
+free). Its amount is the fraction of its OWN SPLASH BAND covered (bottom =
+floor, top = `WallSpec.mud_top`, panel row "mud top" indented under the mud
+row, file line `mudtop v`, default 0.35 — where `rebar::corr`'s measured
+splash term peaks), drawn through story-seeded breakup noise with no damage
+gate and gated off fresh-break cores by `skin`. THE AMOUNT IS SOLVED, NOT
+CALIBRATED: the first cut mapped amount→threshold with two global constants
+and a splash band holds so few noise cells that per-story coverage measured a
+1.8× lottery — so `wall::mud_code` solves the quantile of the run's own noise
+inside its own band (`RunField::threshold`'s discipline on a second field),
+`_pad` lane 2 carries the solved 6-bit threshold code (0 = no mud = every
+unstamped material), lane 3 the band-top code (forced 0 while the amount is
+0, so a mud-free level leaves the lanes and the probe-cache key untouched).
+`wall::mud_noise` + `crack_geom::fbm` are the one host mirror; the twin guard
+pins both lane decodes, the threshold decode and the breakup seed. Lane 3
+spans bit 31 — `_pad` reads must go through `uint(pad)`, never `pad > 0`
+(pinned in `pad_bits_layout...`). THE CATALOGUE grew row 3 (z=19, 22×22 grid,
+spawn deepened to (20,20)): a pristine control + the mud specimen — row 3
+builds ONLY the slabs it has subjects for, because an unauthored slab next to
+the spawn sat inside the ROI disc and dissolved on boot; the hole round grows
+the count. Mud has NO env knob of its own — it is pin-authored; a harness
+recipe reaches it through `WEAR_FILE=`. Same blind side as round C: MSL is
+the untested twin — the Mac boot recipe is `LEVEL="effect catalogue"
+ZOOM=2.5 TARGET_X=10 TARGET_Z=19` against the Vulkan reference (brown
+blotches in the lower band of the right slab, control clean, hard stop at
+the band top). Verified here: gym AND crack lab BYTE-IDENTICAL; the
+catalogue differs exactly by row 3.
 - Verified 4 runs per side, all pairs: `gym` BYTE-IDENTICAL, `crack lab` 3.18 %
   at max 187, catalogue 1.65 % at max 168 — the aging is authored differently, so
   the walls differ; the plain greybox does not move at all.

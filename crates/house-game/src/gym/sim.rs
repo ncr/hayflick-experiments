@@ -183,10 +183,12 @@ pub const SPEC_PITCH: i16 = 3;
 /// The x cell each specimen row starts on, and how many stand in a row.
 pub const SPEC_X0: i16 = 1;
 pub const SPEC_N: i16 = 5;
-/// The three specimen rows, as the z of the wall line they sit on. 4 wu apart:
+/// The specimen rows, as the z of the wall line they sit on. 4 wu apart:
 /// the trimetric camera looks down (1, 2) in xz, so a nearer row rides UP the
 /// screen — at 4 wu the row in front clears the 2.1875-wu wall behind it.
-pub const SPEC_Z: [i16; 3] = [7, 11, 15];
+/// Row 3 (z=19) arrived with the mud effect (2026-07-27, effect-system round
+/// D); its spare slots are reserved for the artillery-hole round.
+pub const SPEC_Z: [i16; 4] = [7, 11, 15, 19];
 /// Cells each row is shifted along +x relative to the one behind it, so the
 /// three rows stack in one SCREEN COLUMN instead of staggering across the
 /// frame. It is arithmetic, not taste: the game projection's axis images are
@@ -240,11 +242,17 @@ fn spec_x0(row: usize, i: i16) -> i16 {
 ///
 /// The player spawns in the far corner on purpose. The ROI reveal dissolves
 /// occluders in FRONT of him (`x + 2z` above his own), and every specimen sits
-/// well below (18, 16)'s 50 — so no specimen can ghost, at any camera framing.
+/// well below (20, 20)'s 60 — so no specimen can ghost, at any camera framing.
+/// (The spawn moved 4 cells deeper with row 3, staying behind the new line.)
 pub fn catalogue_level() -> GymLevel {
-    let mut grid = Grid::new(22, 18);
+    let mut grid = Grid::new(22, 22);
     for (row, &z) in SPEC_Z.iter().enumerate() {
-        for i in 0..SPEC_N {
+        // Row 3 builds only the slabs it has SUBJECTS for (a control + mud);
+        // an unauthored slab is not a specimen, and the two empty ones nearest
+        // the spawn sat inside the ROI reveal disc and dissolved on boot. The
+        // hole round grows this count with its subjects.
+        let n = if row == 3 { 2 } else { SPEC_N };
+        for i in 0..n {
             let x0 = spec_x0(row, i);
             for x in x0..x0 + SPEC_CELLS {
                 grid.set_edge(CellPos::new(x, z), Dir::Zm, EdgeKind::Wall);
@@ -269,7 +277,7 @@ pub fn catalogue_level() -> GymLevel {
     // (the probe bake and the look's amber accent both assume one), but an
     // amber pool ON a specimen would be a second variable in every read.
     let lights = vec![(CellPos::new(18, 2), 6)];
-    GymLevel { grid, player_start: CellPos::new(20, 16), lights }
+    GymLevel { grid, player_start: CellPos::new(20, 20), lights }
 }
 
 #[cfg(test)]

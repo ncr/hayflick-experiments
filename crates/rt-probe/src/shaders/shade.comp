@@ -610,7 +610,7 @@ void main(){
           // `crack::pad_bits`). Both used to read ONE lane — the `age` knob —
           // so their AREAS were independent (step 5's solved thresholds) while
           // their intensities were not, and "stains darker than the crazing"
-          // was not a sentence the level could say. Lanes 2/3 are unused.
+          // was not a sentence the level could say. Lanes 2/3 carry MUD (below).
           float aStain = float((kb >> 8) & 63u) * (1.0 / 63.0);
           float aWeb   = float((kb >> 14) & 63u) * (1.0 / 63.0);
           float story = m.baseColor.a;
@@ -673,6 +673,21 @@ void main(){
           float stain = fbm(wpos * 0.9 + 31.0);
           float sAmt = skin * aStain * clamp(0.55 * smoothstep(0.45, 0.85, stain) * (0.20 + 0.80 * stainW), 0.0, 1.0);
           albedo = mix(albedo, albedo * vec3(0.78, 0.70, 0.58), sAmt);
+          // MUD SPLASH (`_pad` lanes 2/3 — the knob budget's LAST two; host:
+          // `crack::pad_bits`). Environmental splash-back: its OWN band off
+          // the floor (lane 3 = the top edge, wall::WallSpec::mud_top), a
+          // story-seeded fbm breakup, and NO damage gate — a young wall can
+          // be muddy. Lane 2 is a SOLVED threshold (wall::mud_code — the
+          // quantile of this run's own noise inside its own band that puts
+          // the asked fraction above it), so mud's amount is an AREA like
+          // every other layer's; code 0 = no mud = every unstamped material.
+          uint mc = (kb >> 20) & 63u;
+          float mTop = float((kb >> 26) & 63u) * (1.0 / 63.0);
+          float mudBand = (wallF && mc > 0u) ? 1.0 - smoothstep(mTop - 0.06, mTop + 0.06, y01) : 0.0;
+          float mudN = fbm(vec3(cuv * 2.0, story * 3.0 + 17.0));
+          float mudT = float(mc) * (1.0 / 63.0);
+          float mud = smoothstep(mudT - 0.05, mudT + 0.05, mudN) * mudBand * skin;
+          albedo = mix(albedo, albedo * vec3(0.52, 0.42, 0.33), mud * 0.85);
       }
   }
   vec3 p = o + h.t * d + n * 0.003;

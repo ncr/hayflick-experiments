@@ -183,7 +183,7 @@ pub static DEMOS: &[Demo] = &[
     Demo {
         name: "effect catalogue",
         level: Level::Catalogue,
-        blurb: "one effect per wall, 15 identical slabs - the bench for picking what to work on",
+        blurb: "one effect per wall, 17 identical slabs - the bench for picking what to work on",
         look: "polana",
         // the far corner: every specimen's `x + 2z` is below this cell's, so
         // the ROI reveal can never ghost one (see `catalogue_level`)

@@ -236,19 +236,23 @@ impl CrackLab {
     }
 }
 
-/// Pack the two painted layers' STRENGTHS into `Material._pad` bits 8..31
-/// (6-bit unorm each): stain at 8, web at 14, lanes 2/3 (bits 20, 26) unused.
-/// The shader unpack (`shade.comp` / `shade.metal`, CRACK LAB block) mirrors
-/// this exactly — pinned by the test.
+/// Pack the three painted layers into `Material._pad` bits 8..31 (6-bit unorm
+/// each): stain strength at 8, web strength at 14, and since 2026-07-27 (the
+/// effect-system round D) MUD's amount at 20 and its splash-band top edge at
+/// 26 — the knob budget is FULL, and the next paint dial pays for the
+/// per-material aux buffer. The shader unpack (`shade.comp` / `shade.metal`,
+/// CRACK LAB block) mirrors this exactly — pinned by the test. Lane 3 spans
+/// bit 31, the i32's sign bit: the shaders read `uint(m.pad)` so it is
+/// harmless, but a host-side `pad > 0` test would lie on a full mud lane.
 ///
 /// Four knobs used to live here — age, cracks, depth, chip — and the shade pass
 /// read exactly ONE of them (`age`) for both painted layers, because the other
 /// three are geometry dials it has no business reading. So three of the four
 /// lanes were paying rent for nothing while the two layers it does draw shared a
-/// single strength. Now each layer carries its own.
+/// single strength. Now each painted layer carries its own.
 pub fn pad_bits(p: crate::wall::Paint) -> i32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 63.0).round() as u32;
-    ((q(p.stain_amt) << 8) | (q(p.web_amt) << 14)) as i32
+    ((q(p.stain_amt) << 8) | (q(p.web_amt) << 14) | (p.mud.min(63) << 20) | (p.mud_top.min(63) << 26)) as i32
 }
 
 /// A pier's stamped `_pad`: the surviving flags ([`KEEP_FLAGS`]) + this wall's
@@ -261,10 +265,10 @@ pub fn stamped_pad(pad: i32, p: crate::wall::Paint, selected: bool) -> i32 {
 
 /// Shader-side unpack, host-mirrored (the layout-pin test's other half).
 #[cfg(test)]
-pub fn unpack(pad: i32) -> [f32; 2] {
+pub fn unpack(pad: i32) -> [f32; 4] {
     let kb = pad as u32;
     let u = |sh: u32| ((kb >> sh) & 63) as f32 / 63.0;
-    [u(8), u(14)]
+    [u(8), u(14), u(20), u(26)]
 }
 
 /// `STORY=weather,settlement,cover_loss` — the three CAUSES, applied to every
@@ -820,21 +824,23 @@ mod tests {
     }
 
     /// The bit layout the shaders unpack (shade.comp / shade.metal CRACK LAB
-    /// block): the two painted layers' STRENGTHS as 6-bit unorms at bits 8 and
-    /// 14, flags 0..7 untouched, lanes 2/3 unused.
+    /// block): three painted layers' 6-bit unorms — stain at 8, web at 14, mud
+    /// amount at 20, mud's band-top code at 26 — flags 0..7 untouched. The
+    /// knob budget is FULL.
     #[test]
     fn pad_bits_layout_matches_the_shader_unpack() {
         let p = |stain: f32, web: f32| crate::wall::Paint { stain_amt: stain, web_amt: web, ..Default::default() };
         assert_eq!(pad_bits(p(0.0, 0.0)), 0, "no paint = zero bits (bit-identical image)");
         assert_eq!(pad_bits(p(1.0, 0.0)), 63 << 8);
         assert_eq!(pad_bits(p(0.0, 1.0)), 63 << 14);
-        // …and nothing above lane 1: three of the four lanes used to be paid for
-        // and never read
-        assert_eq!(pad_bits(p(1.0, 1.0)) >> 20, 0, "lanes 2/3 must stay empty until something reads them");
-        for (a, b) in unpack(pad_bits(p(0.55, 0.30))).iter().zip([0.55, 0.30]) {
+        let mud = crate::wall::Paint { mud: 63, mud_top: 22, ..Default::default() };
+        assert_eq!(pad_bits(mud) as u32, (63 << 20) | (22 << 26), "mud rides lanes 2/3");
+        assert!(pad_bits(crate::wall::Paint { mud: 30, mud_top: 63, ..Default::default() }) < 0, "a full top code reaches the sign bit — reads must go through uint(pad), never pad > 0");
+        for (a, b) in unpack(pad_bits(p(0.55, 0.30))).iter().zip([0.55, 0.30, 0.0, 0.0]) {
             assert!((a - b).abs() <= 0.5 / 63.0, "{a} vs {b}");
         }
         assert_eq!(pad_bits(p(1.0, 1.0)) & 0xFF, 0, "paint bits never touch the flag byte");
+        assert_eq!(pad_bits(mud) & 0xFF, 0, "mud bits never touch the flag byte");
     }
 
     /// THE MASK PIN (2026-07-25): a paint stamp recomputes the paint lanes and
@@ -1200,7 +1206,7 @@ mod catalogue_tests {
     fn every_specimen_names_its_own_wall_and_its_own_run() {
         let (_scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Catalogue.spec(), &crate::look::POLANA, true);
         let specs = crate::demos::catalogue_wear().walls;
-        assert_eq!(specs.len(), 15, "three rows of five");
+        assert_eq!(specs.len(), 17, "three rows of five + row 3's control and mud (its spare slots wait for the hole round)");
         let (runs, pier_run) = crate::crack::runs_of(&meta.piers);
         let mut seen: Vec<usize> = Vec::new();
         for sp in specs {

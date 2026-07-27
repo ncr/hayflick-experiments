@@ -274,6 +274,9 @@ pub(crate) enum Row {
     /// it is PINNED; dragging it pins it, which is how a bench wall asks for one
     /// effect and nothing else.
     Layer(crate::wall::Layer),
+    /// MUD's native param: its splash band's top edge. Indented under the mud
+    /// layer row like a pattern param under its pattern.
+    MudTop,
     /// The break COUNT — a count, drawn as a count and stepped by clicking.
     Breaks,
     /// The VARIANT dial: slides the story key through noise space
@@ -305,6 +308,7 @@ impl Row {
         use crate::wall::Class;
         match self {
             Row::Layer(l) => l.class(),
+            Row::MudTop => Class::Paint, // mud is paint-only, so its param is too
             _ => Class::Geometry,
         }
     }
@@ -320,6 +324,7 @@ impl Row {
             Row::Cause(1) => "settlement",
             Row::Cause(_) => "cover loss",
             Row::Layer(l) => l.name(),
+            Row::MudTop => "mud top",
             Row::Breaks => "breaks",
             Row::Scrub => "variant",
             Row::BandLo => "band low",
@@ -336,6 +341,7 @@ impl Row {
     fn indent(self) -> i32 {
         match self {
             Row::Layer(_) | Row::Param(_) => 8,
+            Row::MudTop => 16, // under the mud LAYER row, which is itself indented
             _ => 0,
         }
     }
@@ -348,6 +354,7 @@ impl Row {
 pub(crate) fn rows_of(spec: &crate::wall::WallSpec) -> Vec<Row> {
     let mut v: Vec<Row> = (0..3).map(Row::Cause).collect();
     v.extend(crate::wall::Layer::ALL.into_iter().map(Row::Layer));
+    v.push(Row::MudTop); // right under the mud layer row it belongs to
     v.push(Row::Breaks);
     v.push(Row::Scrub);
     v.push(Row::BandLo);
@@ -367,8 +374,9 @@ pub(crate) fn crack_panel_h(nrows: usize) -> i32 {
 
 /// The tallest panel — lightning, which has the most native params. Shares the
 /// settings staging buffer, so the fit is compile-guarded like the game panels'.
-/// The 7 is breaks + variant + the band's two edges + grain + relief + pattern.
-pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (3 + crate::wall::Layer::N as i32 + 7 + crate::crack_geom::PARAMS_MAX as i32 + 2);
+/// The 8 is mud top + breaks + variant + the band's two edges + grain +
+/// relief + pattern.
+pub(crate) const CRACK_PANEL_H: i32 = MPAD * 2 + MROW * (3 + crate::wall::Layer::N as i32 + 8 + crate::crack_geom::PARAMS_MAX as i32 + 2);
 const _: () = assert!(CRACK_PANEL_H <= MPANEL_H);
 
 /// The picked WALL's panel — it replaces the hamburger while a wall is selected
@@ -425,6 +433,10 @@ pub(crate) fn crack_canvas(label: &str, run: usize, spec: &crate::wall::WallSpec
                 track(&mut c, y, v, hot);
                 let pinned = spec.pin.get(l).is_some();
                 mtext(&mut c, w, MVAL_X, y + 2, &format!("{v:.2}{}", if pinned { "*" } else { "" }), if pinned { 0xe8b84a } else { 0x99cc99 });
+            }
+            Row::MudTop => {
+                track(&mut c, y, spec.mud_top, hot);
+                mtext(&mut c, w, MVAL_X, y + 2, &format!("{:.2}", spec.mud_top), 0x99cc99);
             }
             Row::Breaks => mtext(&mut c, w, MTRACK_X, y + 2, &format!("< {} >", sheet.breaks.count), 0x99cc99),
             Row::Scrub => {
@@ -915,6 +927,7 @@ impl Viewer {
             // shows a `*` afterwards: the panel has to say that this wall has
             // stopped listening to its causes on that layer.
             Row::Layer(l) => self.crack.spec[r].pin = self.crack.spec[r].pin.area(l, v),
+            Row::MudTop => self.crack.spec[r].mud_top = v,
             Row::Scrub => self.crack.spec[r].scrub = v,
             Row::BandLo => self.crack.spec[r].band.0 = v,
             Row::BandHi => self.crack.spec[r].band.1 = v,

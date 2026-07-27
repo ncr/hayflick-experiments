@@ -179,10 +179,22 @@ pub enum Class {
     Geometry,
 }
 
-/// FIVE layers, ONE unit: the fraction of this wall's face the layer covers.
+/// SIX layers, ONE unit: the fraction of this wall's face the layer covers.
 /// Homogeneous on purpose — a COUNT does not live in here (see [`Breaks`]),
 /// because a heterogeneous array is exactly how the old dial set acquired names
 /// that lied about their units.
+///
+/// MUD (2026-07-27, the effect-system round D — the first NEW effect through
+/// the whole contract) is the odd citizen in two declared ways: it is
+/// PURE-PIN — [`derive`] never writes it, because splash-back mud is
+/// environmental, not a product of the three causes, so the PIN gesture *is*
+/// its authoring — and it is not DAMAGE-gated: it draws in its own splash
+/// band ([`WallSpec::mud_top`]) through its own story-seeded breakup noise.
+/// Its amount is the fraction OF THAT BAND covered, and it is SOLVED like
+/// every other layer's — a quantile of the run's own noise samples
+/// ([`mud_code`]) — because the first cut tried a global calibration curve
+/// and a small band holds so few noise cells that per-story coverage was a
+/// 1.8× lottery: the exact defect solved thresholds exist to remove.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Layer {
     Stain,
@@ -190,11 +202,12 @@ pub enum Layer {
     Cracks,
     Chips,
     Spall,
+    Mud,
 }
 
 impl Layer {
-    pub const N: usize = 5;
-    pub const ALL: [Layer; Layer::N] = [Layer::Stain, Layer::Web, Layer::Cracks, Layer::Chips, Layer::Spall];
+    pub const N: usize = 6;
+    pub const ALL: [Layer; Layer::N] = [Layer::Stain, Layer::Web, Layer::Cracks, Layer::Chips, Layer::Spall, Layer::Mud];
     pub const fn name(self) -> &'static str {
         match self {
             Layer::Stain => "stain",
@@ -202,6 +215,7 @@ impl Layer {
             Layer::Cracks => "cracks",
             Layer::Chips => "chips",
             Layer::Spall => "spall",
+            Layer::Mud => "mud",
         }
     }
     pub const fn index(self) -> usize {
@@ -209,7 +223,7 @@ impl Layer {
     }
     pub const fn class(self) -> Class {
         match self {
-            Layer::Stain | Layer::Web => Class::Paint,
+            Layer::Stain | Layer::Web | Layer::Mud => Class::Paint,
             _ => Class::Geometry,
         }
     }
@@ -432,6 +446,11 @@ pub struct WallSpec {
     /// a structural break spans the wall's height by nature, and gating it on
     /// a horizontal band would just be a hidden off-switch.
     pub band: (f32, f32),
+    /// MUD's native param: the top edge of its splash band, as a fraction of
+    /// the wall's height (the bottom is the floor — splash-back has nowhere
+    /// else to come from; `rebar::corr`'s measured splash term peaks at the
+    /// same height). Meaningless until `Layer::Mud` is pinned above zero.
+    pub mud_top: f32,
     pub pin: Pins,
     pub shape: Shape,
     /// Stamp the PAINT but keep the GEOMETRY pass off this wall.
@@ -448,7 +467,10 @@ pub struct WallSpec {
 }
 
 impl WallSpec {
-    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
+    /// Mud's default splash-band top: 0.35 of the wall — the height
+    /// `rebar::corr`'s Gaussian splash term was measured to peak around.
+    pub const MUD_TOP: f32 = 0.35;
+    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), mud_top: WallSpec::MUD_TOP, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -493,12 +515,12 @@ impl WallAt {
     pub const fn only(at: (f32, f32), label: &'static str, l: Layer, v: f32) -> WallAt {
         let mut pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(Breaks { count: 0, at: None }) };
         pin.area[l.index()] = Some(v);
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), pin, shape: Shape::DEFAULT, paint_only: false } }
+        WallAt { at, label, spec: WallSpec { pin, ..WallSpec::PRISTINE } }
     }
     /// ONE break, nothing else.
     pub const fn only_breaks(at: (f32, f32), label: &'static str, b: Breaks) -> WallAt {
         let pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(b) };
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), pin, shape: Shape::DEFAULT, paint_only: false } }
+        WallAt { at, label, spec: WallSpec { pin, ..WallSpec::PRISTINE } }
     }
 }
 
@@ -565,6 +587,7 @@ pub fn derive(s: Story) -> ([f32; Layer::N], Breaks) {
             from(w, 0.55),           // Cracks
             0.50 * from(w, 0.75),    // Chips
             SPALL_MAX * s.cover_loss, // Spall
+            0.0,                     // Mud — PURE-PIN: environmental, no cause writes it
         ],
         Breaks { count: (Breaks::MAX as f32 * from(s.settlement, 0.40)).round() as u8, at: None },
     )
@@ -740,6 +763,50 @@ pub struct Paint {
     /// word's lanes 2/3 — `[0, 0]` = the whole face, and the empty word stays
     /// exactly +0.0.
     pub band: [u32; 2],
+    /// MUD: its SOLVED breakup-noise threshold as a 6-bit code (`_pad` knob
+    /// lane 2 — 0 = no mud at all, which is what every unstamped material
+    /// decodes to) and its splash-band top edge (`_pad` knob lane 3, forced
+    /// to 0 while the amount is 0 so a mud-free level leaves the lanes — and
+    /// the probe-cache key that hashes them — untouched).
+    pub mud: u32,
+    pub mud_top: u32,
+}
+
+/// Mud's breakup noise — the shader twins' `mudN`, one definition
+/// ([`crate::crack_geom::fbm`] over the face coords), sampled by the solver
+/// below and drawn by both twins.
+pub fn mud_noise(story: f32, u: f32, y: f32) -> f32 {
+    crate::crack_geom::fbm(Vec3::new(u * 2.0, y * 2.0, story * 3.0 + 17.0))
+}
+
+/// SOLVE mud's threshold code for one run: the quantile of the run's OWN
+/// noise samples inside its OWN splash band that puts `amount` of the band
+/// above it — [`RunField::threshold`]'s discipline applied to the mud noise.
+/// A global amount→threshold curve was tried first and failed honestly: a
+/// splash band a fraction of a wall high holds ~a dozen independent noise
+/// cells, so fixed constants made per-story coverage a 1.8× lottery.
+///
+/// Code 0 = no mud (the unstamped-material value); a live amount clamps to
+/// 1..=63, so "asked for mud" can never round to "none".
+pub fn mud_code(story: f32, run_lo: Vec3, run_hi: Vec3, amount: f32, mud_top: f32) -> u32 {
+    if amount <= 0.0 {
+        return 0;
+    }
+    let run_x = (run_hi.x - run_lo.x) >= (run_hi.z - run_lo.z);
+    let (a0, a1) = if run_x { (run_lo.x, run_hi.x) } else { (run_lo.z, run_hi.z) };
+    let y1 = (mud_top.clamp(0.0, 1.0) * BAND_TOP).max(LATTICE);
+    let n = |a: f32, b: f32| ((((b - a) / LATTICE).round()) as usize).max(2);
+    let (nu, ny) = (n(a0, a1), n(0.0, y1));
+    let mut vals = Vec::with_capacity(nu * ny);
+    for i in 0..nu {
+        let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
+        for j in 0..ny {
+            vals.push(mud_noise(story, u, mixf(0.0, y1, (j as f32 + 0.5) / ny as f32)));
+        }
+    }
+    vals.sort_by(|a, b| a.partial_cmp(b).expect("mud noise is finite"));
+    let t = vals[(((1.0 - amount.clamp(0.0, 1.0)) * (vals.len() - 1) as f32).round() as usize).min(vals.len() - 1)];
+    ((t * 63.0).round() as u32).clamp(1, 63)
 }
 
 /// Everything the GEOMETRY PASS needs for one wall, ALL INTEGER — no float
@@ -931,7 +998,8 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
             }
         }
         let band = band_codes(spec.band.0, spec.band.1);
-        let field = RunField::of(r.lo, r.hi, scrub_key(r.story(), spec.scrub), band);
+        let story = scrub_key(r.story(), spec.scrub);
+        let field = RunField::of(r.lo, r.hi, story, band);
         let mut gate = [GATE_EMPTY; Layer::N];
         for l in Layer::ALL {
             gate[l.index()] = gate_quantize(field.threshold(area[l.index()]));
@@ -942,8 +1010,13 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
             // Spall is exempt: it is the one layer whose amount is NOT realized
             // by thresholding the field (discrete craters are counted out of it
             // — `rebar::craters`), so its gate is not what it draws through.
+            // Mud is exempt with Spall: neither is realized by thresholding
+            // the field (craters are counted out of it, mud draws through its
+            // own splash band + breakup), so their gates are not what they
+            // draw through. Mud's own promise is pinned by measurement
+            // (`mud_coverage_is_calibrated`).
             let got = field.coverage(gate[l.index()]);
-            if l != Layer::Spall && area[l.index()] > 0.0 && (got - area[l.index()]).abs() > 0.08 {
+            if !matches!(l, Layer::Spall | Layer::Mud) && area[l.index()] > 0.0 && (got - area[l.index()]).abs() > 0.08 {
                 notes.push(Miss::Coarse { label, layer: l, asked: area[l.index()], got });
             }
         }
@@ -965,6 +1038,8 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
                 stain_amt: area[Layer::Stain.index()],
                 web_amt: area[Layer::Web.index()],
                 band,
+                mud: mud_code(story, r.lo, r.hi, area[Layer::Mud.index()], spec.mud_top),
+                mud_top: if area[Layer::Mud.index()] > 0.0 { (spec.mud_top.clamp(0.0, 1.0) * 63.0).round() as u32 } else { 0 },
             },
             notes,
             geom: Geom {
@@ -1272,6 +1347,46 @@ mod tests {
         assert_eq!(*layer, Layer::Cracks);
         assert_eq!(*asked, 0.90);
         assert!(*got < 0.55, "the band held {got:.2} of the face — it should top out near its own area");
+    }
+
+    /// MUD'S AMOUNT IS AN AREA OF ITS BAND — solved, not calibrated. For every
+    /// gym run and several amounts, the coverage the SHADER will draw (its own
+    /// noise against the decoded 6-bit threshold, measured on a 4× finer
+    /// lattice than the solve) lands on the ask. A global amount→threshold
+    /// curve was the first cut and failed at 1.8×: a splash band holds ~a
+    /// dozen independent noise cells, so per-story coverage was a lottery —
+    /// the exact defect solved thresholds exist to remove.
+    #[test]
+    fn mud_amount_is_an_area_of_its_band() {
+        let runs = runs_of(&house_game::gym::sim::gym_level());
+        let mut worst = (0.0f32, 0.0f32, 0.0f32); // (asked, got, err)
+        for r in &runs {
+            let story = r.story();
+            for asked in [0.2f32, 0.5, 0.8] {
+                let code = mud_code(story, r.lo, r.hi, asked, WallSpec::MUD_TOP);
+                assert!((1..=63).contains(&code), "a live mud ask must never code to 'none'");
+                let t = code as f32 / 63.0; // the shader's decode
+                let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
+                let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
+                let y1 = WallSpec::MUD_TOP * BAND_TOP;
+                let fine = LATTICE * 0.25;
+                let (nu, ny) = (((a1 - a0) / fine) as usize, (y1 / fine) as usize);
+                let mut hit = 0usize;
+                for i in 0..nu {
+                    let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
+                    for j in 0..ny {
+                        hit += (mud_noise(story, u, mixf(0.0, y1, (j as f32 + 0.5) / ny as f32)) > t) as usize;
+                    }
+                }
+                let got = hit as f32 / (nu * ny) as f32;
+                if (got - asked).abs() > worst.2 {
+                    worst = (asked, got, (got - asked).abs());
+                }
+            }
+        }
+        println!("mud worst: asked {:.2} got {:.2}", worst.0, worst.1);
+        assert!(worst.2 < 0.12, "mud asked {:.2} drew {:.2} of its band", worst.0, worst.1);
+        assert_eq!(mud_code(7.4, Vec3::ZERO, Vec3::new(6.0, 2.1875, 0.25), 0.0, 0.35), 0, "no mud = code 0 = the unstamped-material value");
     }
 
     /// [`BAND_TOP`] IS the authored wall top. The shader twins hardcode the

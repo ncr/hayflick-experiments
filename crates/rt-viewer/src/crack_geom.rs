@@ -579,6 +579,12 @@ impl CrazeCfg {
 /// for `dmgN` (`fbm(vec3(cuv * vec2(0.45, 0.7), story*7+3)) + 0.16 * rise`).
 /// One definition, two users — [`CrazeCfg::dmg`] adds the run's level offset on
 /// top, [`run_level`] samples it to DERIVE that offset.
+/// The shader twins' `fbm` — the exact host mirror, pub(crate) because two
+/// solvers sample it: the damage field below and `wall`'s mud-noise quantile.
+pub(crate) fn fbm(p: Vec3) -> f32 {
+    0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + Vec3::splat(11.1))
+}
+
 /// THE damage field — pub(crate) because `wall::RunField::at` delegates here:
 /// the threshold solver, this generator and both shader twins are readers of
 /// ONE definition, so the solved gates, the built plates and the painted
@@ -586,8 +592,7 @@ impl CrazeCfg {
 /// records twice).
 pub(crate) fn dmg_field(dmg_seed: f32, su: f32, sy: f32) -> f32 {
     let rise = 1.0 - smoothstep(0.10, 1.0, sy);
-    let p = Vec3::new(su * 0.45, sy * 0.7, dmg_seed);
-    0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + Vec3::splat(11.1)) + 0.16 * rise
+    fbm(Vec3::new(su * 0.45, sy * 0.7, dmg_seed)) + 0.16 * rise
 }
 
 fn poly_area(p: &[Vec2]) -> f32 {
@@ -3110,7 +3115,7 @@ mod tests {
         for grain in [crate::wall::Shape::DEFAULT.grain, 0.25, 0.70] {
             let mut sizes = Vec::new();
             for policy in 0..POLICIES.len() as u8 {
-                let mut cfg = CrazeCfg::new(3.0, &sheet([0.9, 0.9, 0.9, 0.0, 0.0], 0.0, shape(policy), NO_BREAK), true, 0.2, &[]);
+                let mut cfg = CrazeCfg::new(3.0, &sheet([0.9, 0.9, 0.9, 0.0, 0.0, 0.0], 0.0, shape(policy), NO_BREAK), true, 0.2, &[]);
                 cfg.grain = grain;
                 let opened = StdCell::new(false);
                 let frags = policy_frags(&cfg, policy, u0, u1, y0, y1, &opened);
@@ -3142,7 +3147,7 @@ mod tests {
     fn below_grain_off_the_face_is_one_flush_plate() {
         let (u0, u1, y0, y1) = (6.0f32, 8.2, 0.0, 2.1875);
         for policy in 0..POLICIES.len() as u8 {
-            let mut cfg = CrazeCfg::new(3.0, &sheet([0.9, 0.9, 0.9, 0.0, 0.0], 0.0, shape(policy), NO_BREAK), true, 0.2, &[]);
+            let mut cfg = CrazeCfg::new(3.0, &sheet([0.9, 0.9, 0.9, 0.0, 0.0, 0.0], 0.0, shape(policy), NO_BREAK), true, 0.2, &[]);
             // …and the vacuity guard: a hair ABOVE the stop, the same wall is a
             // pattern. Without it this test passes on any generator that emits
             // nothing at all.

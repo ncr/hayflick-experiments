@@ -114,3 +114,15 @@ wall 18 15 glaze web alone
   pin spall 0
   breaks 0
   paint_only
+
+wall 8 19 pristine control
+
+wall 11 19 mud splash
+  pin stain 0
+  pin web 0
+  pin cracks 0
+  pin chips 0
+  pin spall 0
+  pin mud 0.5
+  breaks 0
+  paint_only

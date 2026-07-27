@@ -544,6 +544,14 @@ mod tests {
             assert!(has("(kb >> 14) & 63u"), "{name}: the WEB strength lane (bit 14) moved");
             assert!(has("aStain *") || has("skin * aStain"), "{name}: the stains do not read their own strength");
             assert!(has("aWeb *"), "{name}: the web does not read its own strength");
+            // MUD (`_pad` lanes 2/3, claimed 2026-07-27): its two decodes, the
+            // solved-threshold read (wall::mud_code's exact decode) and the
+            // breakup seed the host solver samples (`wall::mud_noise`) — one
+            // drifting apart from the other un-solves the amount silently
+            assert!(has("(kb >> 20) & 63u"), "{name}: the MUD threshold lane (bit 20) moved");
+            assert!(has("(kb >> 26) & 63u"), "{name}: the MUD band-top lane (bit 26) moved");
+            assert!(has("float(mc) * (1.0 / 63.0)"), "{name}: mud's threshold decode drifted from wall::mud_code");
+            assert!(has("story * 3.0 + 17.0"), "{name}: mud's breakup seed drifted from wall::mud_noise");
             // FORBIDDEN — nothing yet. This half of the guard is what catches a
             // HALF-DONE deletion: the Mac can only run the MSL twin, so a cull
             // applied to one source and forgotten in the other compiles, passes
@@ -577,8 +585,8 @@ mod tests {
         "lvlC",     // the signed per-run LEVEL offset the solved thresholds replace
         "float dT", // the age-derived gate that slid five fixed windows together
         "mHalo",    // the fault's stain track
-        ">> 20",    // `_pad` knob lane 2 — unclaimed
-        ">> 26",    // `_pad` knob lane 3 — unclaimed
     ];
+    // `_pad` lanes 2/3 (`>> 20` / `>> 26`) left this table on 2026-07-27:
+    // MUD claimed them (crack::pad_bits), and their decodes are REQUIRED now.
 
 }

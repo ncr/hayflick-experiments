@@ -27,7 +27,8 @@
 //!   story <w> <s> <c>     the wall's own causes             (default 0 0 0)
 //!   scrub <v>             the VARIANT dial, 0..1 (default 0 = the run's hash)
 //!   band <lo> <hi>        the damage band's edges, 0..1     (default 0 1)
-//!   pin <layer> <v>       stain|web|cracks|chips|spall — an authored amount
+//!   pin <layer> <v>       stain|web|cracks|chips|spall|mud — an authored amount
+//!   mudtop <v>            mud's splash-band top edge, 0..1  (default 0.35)
 //!   breaks <n> [<at>]     a COUNT and optionally a PLACE (0..1 along the run)
 //!   grain <v>             plate size, world units
 //!   relief <v>            groove depth, 0..1
@@ -158,6 +159,13 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
                 }
                 w.spec.band = (lo, hi);
             }
+            ("mudtop", Some(w)) => {
+                let v = f(0)?;
+                if !(0.0..=1.0).contains(&v) {
+                    return Err(format!("line {n}: mudtop is a fraction of the wall's height, 0..1"));
+                }
+                w.spec.mud_top = v;
+            }
             ("pin", Some(w)) => {
                 let l = layer_of(rest.first().copied().unwrap_or("")).ok_or(format!("line {n}: unknown layer"))?;
                 w.spec.pin = w.spec.pin.area(l, f(1)?);
@@ -245,6 +253,9 @@ pub fn serialize_parts(base: Story, spread: f32, walls: &[WallAt]) -> String {
         }
         if s.band != (0.0, 1.0) {
             b.push(format!("  band {} {}", num(s.band.0), num(s.band.1)));
+        }
+        if s.mud_top != WallSpec::MUD_TOP {
+            b.push(format!("  mudtop {}", num(s.mud_top)));
         }
         for l in Layer::ALL {
             if let Some(v) = s.pin.get(l) {
@@ -373,6 +384,7 @@ mod tests {
                         story: Story { weather: 0.9, settlement: 0.1, cover_loss: 0.0 },
                         scrub: 0.3,
                         band: (0.1, 0.55),
+                        mud_top: 0.5,
                         pin,
                         shape: Shape { grain: 0.2, relief: 0.7, pattern: Pattern::Craquelure { wave: 0.5 } },
                         paint_only: true,
