@@ -342,6 +342,7 @@ impl Viewer {
                 back: crate::menu::MenuMode::Closed,
                 sel: 0,
                 drag: false,
+                drag_pending: false,
             },
             gym: GymLoop::new(spec),
             piers: gym_meta.piers,

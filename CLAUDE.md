@@ -246,11 +246,11 @@ floor is zero) and `AA=0.8` must agree with Metal in character.
 hardware. (1) `VulkanBackend::set_material_effect` — the effect-word streamer,
 written blind (it type-checks on macOS only by temporarily dropping main.rs's
 cfg gate). (2) The WHOLE Vulkan local-probe-refresh carry path
-(`SceneGpu::carry_probes` + `refresh_boxes_for`'s callers): its accept/decline
-thresholds are derived from M2 occupancy, and on the RTX a full bake is ~115 ms,
-so a 16%-of-grid local refresh may well be SLOWER there — first session must
-time `WEAR_EDIT="0.6,0.4,0.5,3"` with and without `PROBE_LOCAL=0` and
-record both numbers next to the M2 table. (2b) The `roll` arm of that same
+(`SceneGpu::carry_probes` + `refresh_boxes_for`'s callers) — **MEASURED
+2026-07-27 (RTX)**: `WEAR_EDIT="0.6,0.4,0.5,3"` refreshes 1512 probes (16%)
+in **96 ms** vs a full re-bake of 147 ms (bake alone; the whole
+`apply_look` full path is ~520 ms with the AS rebuild) — so `Local` WINS on
+the RTX too and the accept/decline thresholds stay. (2b) The `roll` arm of that same
 `SceneGpu::carry_probes` (the age-ramp beat's `ProbeRefresh::Roll`) — it
 compiles on macOS (rt-probe's `render` module is not cfg-gated) but has never
 run; boot `LEVEL="crack lab"` on the RTX and watch the z=10 garden wall
@@ -721,6 +721,35 @@ delta > 30 confined to the new slab's screen box (the ≤ 30 remainder is the
 probe field re-baking around a new occluder); `HOLE=0.35,0.6,0.4` on the lab
 composes with the aged facades and the close-up shows the two-family cross
 standing proud of a pale basin.
+
+INPUT PACING since 2026-07-27 (owner repro: "in full screen the mouse gets
+almost unresponsive, and placing seems to do nothing"). TWO causes, neither
+of them the renderer (measured: 240 frames in ~0.4 s at BOTH 1280x800 and
+near-fullscreen — the RTX is never the bottleneck): (1) the swapchain was
+MAILBOX with `ControlFlow::Poll` + unconditional redraw, i.e. ~600 fps of
+DISCARDED frames — free in a small window, but a 5120x2160 fullscreen
+surface saturated the GPU and starved the COMPOSITOR, whose software cursor
+(Hyprland renders one on this NVIDIA setup, `cursor:no_hardware_cursors` =
+auto) then lagged SYSTEM-WIDE and click feedback arrived seconds late —
+"nothing happens" was feedback starvation, not a broken gesture (the owner's
+session file proves the shells were placed and saved; booting it renders
+both craters). Present is FIFO now (`VSYNC=0` restores MAILBOX for latency
+experiments; verified 240 frames = 2.3 s ≈ 165 Hz, gym SHOT byte-identical —
+capture paths are offscreen and never see a present mode). (2) slider drags
+applied per MOTION EVENT, and a wall-panel drag recompiles the level — at
+1000 Hz mouse polling that is a backlog the frame loop can never drain;
+drags are COALESCED now to one `menu_drag_to` per frame from the latest
+cursor, with the tail flushed on mouse-up so the release lands on the value
+under the cursor (`MenuState::drag_pending`).
+KNOWN WRINKLE surfaced by the same session (parked, owner call): the AgeWall
+beat writes `spec[r].story` while it ramps, and a save triggered by ANY
+interactive edit then freezes the beat's current story into the wear file
+for the level-named ramped control — the owner's 2026-07-27 save carries
+`story 0.95 0.55 0.85` he never dialed. The dirty flag keeps beat-only
+sessions out of files, but not beat states riding an edited session. The
+honest fix is the level_dials discipline (the beat applies on the way to a
+sheet, never into the authored spec); do it when the crack-lab demo next
+gets attention.
 
 ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
 branching, irregular — not straight lines; two kinds: the coarse one and

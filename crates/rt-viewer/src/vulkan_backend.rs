@@ -184,7 +184,19 @@ impl VulkanBackend {
                     .find(|f| f.format == vk::Format::B8G8R8A8_UNORM && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR)
                     .unwrap_or(formats[0]);
                 let modes = surface_loader.get_physical_device_surface_present_modes(pdev, surface)?;
-                let present_mode = if modes.contains(&vk::PresentModeKHR::MAILBOX) { vk::PresentModeKHR::MAILBOX } else { vk::PresentModeKHR::FIFO };
+                // FIFO (vsync) unless VSYNC=0 asks for MAILBOX back. MAILBOX
+                // rendered as fast as the GPU allowed and discarded the
+                // frames — invisible waste in a 1280x800 window, but a
+                // 5120x2160 fullscreen surface saturated the GPU and starved
+                // the COMPOSITOR, whose software cursor (Hyprland renders one
+                // on this NVIDIA setup) then lagged system-wide. The sim is
+                // fixed-tick and every capture path is offscreen, so nothing
+                // above the refresh rate exists to see.
+                let present_mode = if !cfg.harness.vsync && modes.contains(&vk::PresentModeKHR::MAILBOX) {
+                    vk::PresentModeKHR::MAILBOX
+                } else {
+                    vk::PresentModeKHR::FIFO
+                };
                 let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &ctx.device);
                 let image_available = ctx.device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?;
                 Some(Present { surface_loader, surface, swapchain_loader, surface_format, present_mode, image_available })

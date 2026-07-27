@@ -186,10 +186,14 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(r) = self.renderer.as_mut() {
                     let np = Vec2::new(position.x as f32, position.y as f32);
-                    if r.menu.drag {
-                        r.menu_drag_to(np); // slider drag
-                    }
                     r.view.cursor = np;
+                    // COALESCED: the drag applies once per frame (RedrawRequested),
+                    // from the latest cursor — a wall-panel drag recompiles the
+                    // level, and a 1000 Hz mouse applying that per EVENT builds a
+                    // backlog the frame loop can never drain (see MenuState::drag_pending).
+                    if r.menu.drag {
+                        r.menu.drag_pending = true;
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
@@ -200,6 +204,13 @@ impl ApplicationHandler for App {
                             r.click_move(c); // click-to-move
                         }
                     } else {
+                        // flush the coalesced tail first: the release must
+                        // land on the value under the cursor, not one frame back
+                        if r.menu.drag && r.menu.drag_pending {
+                            r.menu.drag_pending = false;
+                            let c = r.view.cursor;
+                            r.menu_drag_to(c);
+                        }
                         r.menu.drag = false;
                         r.crack_release(); // knob drag ended: faults may need real geometry
                     }
@@ -235,6 +246,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(r), Some(w)) = (&mut self.renderer, &self.window) {
+                    // apply the frame's ONE coalesced drag step before drawing
+                    if r.menu.drag && r.menu.drag_pending {
+                        r.menu.drag_pending = false;
+                        let c = r.view.cursor;
+                        r.menu_drag_to(c);
+                    }
                     let ok = unsafe { r.draw() };
                     if r.exit_requested {
                         event_loop.exit();

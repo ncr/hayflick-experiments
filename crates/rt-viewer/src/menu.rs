@@ -166,6 +166,14 @@ pub struct MenuState {
     pub back: MenuMode,
     pub sel: usize,
     pub drag: bool,
+    /// Cursor moved since the drag was last APPLIED. Motion events are
+    /// coalesced to one `menu_drag_to` per FRAME (main.rs): a wall-panel drag
+    /// recompiles the level and re-streams materials, and a gaming mouse
+    /// delivers ~1000 motion events a second — applying per EVENT built a
+    /// backlog the frame loop could never drain, which read as "the mouse is
+    /// almost unresponsive" (owner, 2026-07-27). Only the cursor's LATEST
+    /// position matters to a slider; the ones in between were pure waste.
+    pub drag_pending: bool,
 }
 
 pub(crate) fn mrect(canvas: &mut [u32], cw: i32, x: i32, y: i32, w: i32, h: i32, color: u32) {

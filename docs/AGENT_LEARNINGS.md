@@ -1295,3 +1295,34 @@ limit, both mat families). Zero shader edits, zero new materials.
   (the file's `num` prints shortest-round-tripping text, so the ugliness WAS
   the value). `(t * 50).round() / 50` lands on the nearest f32 of k/50, which
   prints clean.
+
+## 2026-07-27 — the fullscreen "mouse lag" was the compositor starving
+
+Owner repro after the artillery round: "in full screen the mouse gets almost
+unresponsive, and placing does nothing". The renderer was measured innocent
+(240 frames in ~0.4 s at near-fullscreen), and his own saved wear file proved
+the placing gesture WORKED — the craters render on a boot from his session.
+
+- **An uncapped render loop is a system-wide bug, not a local waste.**
+  MAILBOX + Poll + unconditional redraw = ~600 fps of discarded frames. In a
+  1280x800 window nobody notices; a 5120x2160 fullscreen surface saturates
+  the GPU and starves the COMPOSITOR — and on Hyprland+NVIDIA the cursor is
+  software-rendered, so the MOUSE ITSELF lags. The symptom appears two
+  layers above the cause, in a different process. Default to vsync (FIFO)
+  when the sim is fixed-tick; keep the uncapped mode behind a knob.
+
+- **"Nothing happens" can be pure feedback starvation.** The click landed,
+  the data saved, the geometry built — the frames showing it were seconds
+  behind. Before debugging a gesture, check whether its RESULT is on disk
+  (the wear file was; that one look replaced a day of pick-ray suspicion).
+
+- **Per-event work must be paced by frames, not by the device.** A slider
+  drag recompiled the level per motion event; gaming mice deliver ~1000/s.
+  Coalesce to the latest position once per frame and flush the tail on
+  release — nothing an author can perceive lives between two frames.
+
+- **A demo beat that mutates authored state will eventually get saved.**
+  The AgeWall ramp writes spec[r].story; the dirty flag kept beat-only
+  sessions out of files, but an edited session saved the beat's story into
+  the ramped control. A beat must apply on the way to a sheet (the
+  level_dials discipline), never into the authoring. Parked, owner call.
