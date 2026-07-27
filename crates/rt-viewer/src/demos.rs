@@ -93,14 +93,11 @@ pub struct Demo {
     pub spawn: (i16, i16),
     /// Timeline of scheduled beats (sorted by `at`; ticks from boot).
     pub script: &'static [Beat],
-    /// The level's WEAR: `Some` compiles this authoring onto the level's wall
-    /// RUNS at boot AND enables the lab interaction (click a wall, drag the
-    /// panel). `None` = untouched porcelain + no panel (every other demo).
-    ///
-    /// A `&'static LevelWear` and not an owned struct because `WallAt` lists are
-    /// `&'static [..]` all the way down — the whole authoring is const data, so
-    /// a level is readable as a literal.
-    pub wear: Option<&'static crate::wall::LevelWear>,
+    /// The level's WEAR: `Some` loads this wear FILE, compiles its authoring
+    /// onto the level's wall RUNS at boot AND enables the lab interaction
+    /// (click a wall, drag the panel; interactive edits save back to the
+    /// file). `None` = untouched porcelain + no panel (every other demo).
+    pub wear: Option<&'static crate::wear_file::WearFile>,
     /// Kept for reference after a pivot: disposable, not maintained.
     pub outdated: bool,
 }
@@ -180,7 +177,7 @@ pub static DEMOS: &[Demo] = &[
         // arrives as one continuous read (see `Action::AgeWall`). It starts a
         // second in, so the boot frame is the honest "before".
         script: &[Beat { at: 60, action: Action::AgeWall { x: 13.0, z: 10.0, over: 180 } }],
-        wear: Some(&LAB_WEAR),
+        wear: Some(&LAB_WEAR_FILE),
         outdated: false,
     },
     Demo {
@@ -192,125 +189,43 @@ pub static DEMOS: &[Demo] = &[
         // the ROI reveal can never ghost one (see `catalogue_level`)
         spawn: (20, 16),
         script: &[],
-        wear: Some(&CATALOGUE_WEAR),
+        wear: Some(&CATALOGUE_WEAR_FILE),
         outdated: false,
     },
 ];
 
-/// THE CRACK LAB's level wear (owner surface for the whole greybox-wear
-/// family). One BASE story every wall starts from, a per-RUN spread so the level
-/// reads varied the moment it opens, and two named controls.
-///
-/// `cover_loss` is the owner's 2026-07-25 headline, so it boots ON. The spread
-/// takes walls DOWN from the base (never up), which is what keeps some of them
-/// visibly sound: damage with no control beside it reads as a texture rather
-/// than as damage.
-pub static LAB_WEAR: crate::wall::LevelWear = crate::wall::LevelWear {
-    base: crate::wall::Story { weather: 0.55, settlement: 0.35, cover_loss: 0.65 },
-    origin: crate::wall::Origin::Ground,
-    spread: 0.4,
-    // TWO named controls, and they do different jobs: the z=10 garden wall is
-    // the biggest, nearest, least obstructed wall in frame, so it is what the
-    // AgeWall beat ramps (and it has to boot pristine to ramp FROM pristine);
-    // the x=12 spur, top-right, is the one that stays clean for the whole
-    // session — the negative control the aged facades are read against once the
-    // beat has run.
-    walls: &[crate::wall::WallAt::pristine((13.0, 10.0), "ramped control"), crate::wall::WallAt::pristine((12.0, 4.0), "negative control")],
-};
+/// THE CRACK LAB's wear file (owner surface for the whole greybox-wear
+/// family): one BASE story every wall starts from, a per-RUN spread so the
+/// level reads varied the moment it opens, and two named controls — the z=10
+/// garden wall the AgeWall beat ramps (it must boot pristine to ramp FROM
+/// pristine) and the x=12 spur that stays clean all session, the negative
+/// control the aged facades are read against. `cover_loss` boots ON (the
+/// owner's 2026-07-25 headline); the spread takes walls DOWN from the base,
+/// which keeps some of them visibly sound.
+pub static LAB_WEAR_FILE: crate::wear_file::WearFile =
+    crate::wear_file::WearFile::new("crack lab", include_str!("../wear/crack_lab.wear"), "crates/rt-viewer/wear/crack_lab.wear");
 
-/// THE CATALOGUE's level wear. The BASE is nothing at all — the bench's whole
-/// point is that a wall shows what its own line says and not one thing more, and
-/// it leaves the little building as plain porcelain.
-pub static CATALOGUE_WEAR: crate::wall::LevelWear =
-    crate::wall::LevelWear { base: crate::wall::Story::ZERO, origin: crate::wall::Origin::Ground, spread: 0.0, walls: SPECIMENS };
+/// THE CATALOGUE's wear file: no base at all (the bench's whole point is that
+/// a wall shows what its own lines say and not one thing more), fifteen slabs
+/// in three rows — row 0 = pattern and scale, row 1 = loss, row 2 = paint,
+/// rows 0 and 2 each opening on a PRISTINE control. Every slab pins every
+/// OTHER layer to zero, which is what makes "one effect per wall" a fact
+/// about the data rather than a hope about the numbers.
+pub static CATALOGUE_WEAR_FILE: crate::wear_file::WearFile =
+    crate::wear_file::WearFile::new("effect catalogue", include_str!("../wear/catalogue.wear"), "crates/rt-viewer/wear/catalogue.wear");
 
-/// THE CATALOGUE, wall by wall. Fifteen slabs, three rows of five, addressed by
-/// the world points `house_game::gym::sim::spec_point` derives — row 0 = pattern
-/// and scale, row 1 = loss, row 2 = paint. Rows 0 and 2 each open on a PRISTINE
-/// control; the middle one is flanked by those two.
-///
-/// Since 2026-07-26 every slab is ONE LINE in the authoring vocabulary, and the
-/// two couplings that used to decide these numbers are gone with the knobs that
-/// carried them:
-///
-/// - **age drove the damaged AREA**, so below ~0.3 a wall had almost no patch to
-///   put an effect in and "show me the plates" meant a high age whether or not
-///   the effect was about staining. An amount is an area now, so a slab that
-///   wants 40 % of its face cracked says `Layer::Cracks, 0.40`.
-/// - **a break was a coin flip on age × cracks**, so every specimen about
-///   something else had to run a low `cracks` knob to keep the odds down. The
-///   count is authored, so exactly one slab breaks and it is the one whose
-///   subject is breaking.
-///
-/// `WallAt::only` pins every OTHER layer to zero, which is what makes "one
-/// effect per wall" a fact about the data rather than a hope about the numbers.
-pub static SPECIMENS: &[crate::wall::WallAt] = {
-    use crate::wall::{Breaks, Layer, Pattern, Pins, Shape, Story, WallAt, WallSpec};
-    /// A wall showing one LAYER and nothing else, at the amount named.
-    const fn one(at: (f32, f32), label: &'static str, l: Layer, v: f32) -> WallAt {
-        WallAt::only(at, label, l, v)
-    }
-    /// …the same, with a pattern chosen: the row-0 slabs differ ONLY in their
-    /// lattice, which is what makes them comparable.
-    const fn pat(at: (f32, f32), label: &'static str, p: Pattern) -> WallAt {
-        let mut w = WallAt::only(at, label, Layer::Cracks, 0.55);
-        w.spec.shape = Shape { pattern: p, ..Shape::DEFAULT };
-        w
-    }
-    /// A PAINT specimen: knobs stamped, geometry pass skipped. The only way to
-    /// see the shade pass's painted layers, since the generator marks every wall
-    /// it touches and the shader gates them off that mark.
-    const fn paint(at: (f32, f32), label: &'static str, stain: f32, web: f32) -> WallAt {
-        let mut pin = Pins::NONE;
-        pin = pin.area(Layer::Stain, stain);
-        pin = pin.area(Layer::Web, web);
-        pin = pin.area(Layer::Cracks, 0.0);
-        pin = pin.area(Layer::Chips, 0.0);
-        pin = pin.area(Layer::Spall, 0.0);
-        pin = pin.breaks(Breaks::NONE);
-        WallAt { at, label, spec: WallSpec { story: Story::ZERO, pin, paint_only: true, ..WallSpec::PRISTINE } }
-    }
-    &[
-        // ---- row 0 (z=7): the PATTERNS, at one shared amount so the only
-        // difference down the row is the lattice
-        WallAt::pristine((2.0, 7.0), "pristine control"),
-        pat((5.0, 7.0), "lightning network", Pattern::DEFAULTS[0]),
-        pat((8.0, 7.0), "craquelure", Pattern::DEFAULTS[1]),
-        pat((11.0, 7.0), "mosaic", Pattern::DEFAULTS[2]),
-        // the one specimen that ASKS to break: one break, mid-slab, and the two
-        // pieces + the settlement step are the effect
-        WallAt::only_breaks((14.0, 7.0), "structural break", Breaks { count: 1, at: Some(0.5) }),
-        // ---- row 1 (z=11): LOSS — material that is no longer there
-        one((4.0, 11.0), "chips (fragments gone)", Layer::Chips, 0.45),
-        // mosaic grooves every cell edge by construction, so its plates are the
-        // ones that can settle (`CrazeCfg::sink_perimeter`)
-        {
-            let mut w = one((7.0, 11.0), "settled plates", Layer::Cracks, 0.60);
-            w.spec.shape = Shape { pattern: Pattern::DEFAULTS[2], relief: 0.70, ..Shape::DEFAULT };
-            w
-        },
-        {
-            // a FRESH BREAK is chalk core under a lost fragment, so it needs
-            // both cracking to free the plates and chips to take them away
-            let mut w = one((10.0, 11.0), "fresh break (chalk core)", Layer::Chips, 0.45);
-            w.spec.pin = w.spec.pin.area(Layer::Cracks, 0.60);
-            w.spec.shape = Shape { relief: 0.80, ..Shape::DEFAULT };
-            w
-        },
-        // ONE effect at two AMOUNTS. These used to be two STAGES of one dial
-        // ("lifted cover" — a lens with no steel in it — and "blown spall"),
-        // which is a chip and a spall wearing the same slider; the shallow stage
-        // is `Layer::Chips`' job and the slab above shows it.
-        one((13.0, 11.0), "cover spall (one patch)", Layer::Spall, 0.012),
-        one((16.0, 11.0), "cover spall + rebar (heavy)", Layer::Spall, crate::wall::SPALL_MAX),
-        // ---- row 2 (z=15): PAINT — the shade pass ALONE
-        WallAt::pristine((6.0, 15.0), "pristine control"),
-        paint((9.0, 15.0), "stains", 0.55, 0.0),
-        paint((12.0, 15.0), "stains + fine glaze web", 0.85, 0.45),
-        paint((15.0, 15.0), "wide stain patch", 0.95, 0.0),
-        paint((18.0, 15.0), "glaze web alone", 0.0, 0.70),
-    ]
-};
+/// The lab's loaded authoring — the tests' shorthand; the viewer itself goes
+/// through `Demo::wear` so a menu switch and a `LEVEL=` boot read one path.
+#[cfg(test)]
+pub fn lab_wear() -> &'static crate::wall::LevelWear {
+    LAB_WEAR_FILE.level_wear()
+}
+
+/// The catalogue's loaded authoring (the specimen tests walk its walls).
+#[cfg(test)]
+pub fn catalogue_wear() -> &'static crate::wall::LevelWear {
+    CATALOGUE_WEAR_FILE.level_wear()
+}
 
 impl Demo {
     /// The demo's wall-breach point, if its script smashes one — the viewer
@@ -523,5 +438,96 @@ mod tests {
         for d in DEMOS.iter().filter(|d| d.name != "wall smash") {
             assert_eq!(d.smash_point(), None, "{}", d.name);
         }
+    }
+}
+
+/// MIGRATION PROOF — DELETE THIS MODULE WITH THE NEXT COMMIT. The wear
+/// authoring moved from these consts into the checked-in `.wear` files
+/// (2026-07-27); the equality below is the whole reason the move can be
+/// verified byte-for-byte, and it has no job once it has passed on CI + a
+/// SHOT A/B. The literals are verbatim copies of the deleted statics.
+#[cfg(test)]
+mod wear_migration {
+    use crate::wall::{Breaks, Layer, LevelWear, Origin, Pattern, Pins, Shape, Story, WallAt, WallSpec};
+
+    static OLD_LAB_WEAR: LevelWear = LevelWear {
+        base: Story { weather: 0.55, settlement: 0.35, cover_loss: 0.65 },
+        origin: Origin::Ground,
+        spread: 0.4,
+        walls: &[WallAt::pristine((13.0, 10.0), "ramped control"), WallAt::pristine((12.0, 4.0), "negative control")],
+    };
+
+    static OLD_CATALOGUE_WEAR: LevelWear = LevelWear { base: Story::ZERO, origin: Origin::Ground, spread: 0.0, walls: OLD_SPECIMENS };
+
+    static OLD_SPECIMENS: &[WallAt] = {
+        const fn one(at: (f32, f32), label: &'static str, l: Layer, v: f32) -> WallAt {
+            WallAt::only(at, label, l, v)
+        }
+        const fn pat(at: (f32, f32), label: &'static str, p: Pattern) -> WallAt {
+            let mut w = WallAt::only(at, label, Layer::Cracks, 0.55);
+            w.spec.shape = Shape { pattern: p, ..Shape::DEFAULT };
+            w
+        }
+        const fn paint(at: (f32, f32), label: &'static str, stain: f32, web: f32) -> WallAt {
+            let mut pin = Pins::NONE;
+            pin = pin.area(Layer::Stain, stain);
+            pin = pin.area(Layer::Web, web);
+            pin = pin.area(Layer::Cracks, 0.0);
+            pin = pin.area(Layer::Chips, 0.0);
+            pin = pin.area(Layer::Spall, 0.0);
+            pin = pin.breaks(Breaks::NONE);
+            WallAt { at, label, spec: WallSpec { story: Story::ZERO, pin, paint_only: true, ..WallSpec::PRISTINE } }
+        }
+        &[
+            WallAt::pristine((2.0, 7.0), "pristine control"),
+            pat((5.0, 7.0), "lightning network", Pattern::DEFAULTS[0]),
+            pat((8.0, 7.0), "craquelure", Pattern::DEFAULTS[1]),
+            pat((11.0, 7.0), "mosaic", Pattern::DEFAULTS[2]),
+            WallAt::only_breaks((14.0, 7.0), "structural break", Breaks { count: 1, at: Some(0.5) }),
+            one((4.0, 11.0), "chips (fragments gone)", Layer::Chips, 0.45),
+            {
+                let mut w = one((7.0, 11.0), "settled plates", Layer::Cracks, 0.60);
+                w.spec.shape = Shape { pattern: Pattern::DEFAULTS[2], relief: 0.70, ..Shape::DEFAULT };
+                w
+            },
+            {
+                let mut w = one((10.0, 11.0), "fresh break (chalk core)", Layer::Chips, 0.45);
+                w.spec.pin = w.spec.pin.area(Layer::Cracks, 0.60);
+                w.spec.shape = Shape { relief: 0.80, ..Shape::DEFAULT };
+                w
+            },
+            one((13.0, 11.0), "cover spall (one patch)", Layer::Spall, 0.012),
+            one((16.0, 11.0), "cover spall + rebar (heavy)", Layer::Spall, crate::wall::SPALL_MAX),
+            WallAt::pristine((6.0, 15.0), "pristine control"),
+            paint((9.0, 15.0), "stains", 0.55, 0.0),
+            paint((12.0, 15.0), "stains + fine glaze web", 0.85, 0.45),
+            paint((15.0, 15.0), "wide stain patch", 0.95, 0.0),
+            paint((18.0, 15.0), "glaze web alone", 0.0, 0.70),
+        ]
+    };
+
+    /// The `.wear` files carry EXACTLY the authoring the deleted statics did —
+    /// modulo wall ORDER, which the canonical form sorts by (z, x) and the
+    /// semantics never depended on (addressing is by point).
+    #[test]
+    fn the_wear_files_carry_exactly_the_old_statics() {
+        for (file, old) in [(super::lab_wear(), &OLD_LAB_WEAR), (super::catalogue_wear(), &OLD_CATALOGUE_WEAR)] {
+            assert_eq!((file.base, file.origin, file.spread), (old.base, old.origin, old.spread));
+            assert_eq!(file.walls.len(), old.walls.len());
+            for w in old.walls {
+                let got = file.walls.iter().find(|f| f.at == w.at).unwrap_or_else(|| panic!("wall at {:?} (\"{}\") missing from the file", w.at, w.label));
+                assert_eq!(got, w, "wall at {:?} (\"{}\") differs", w.at, w.label);
+            }
+        }
+    }
+
+    /// Bootstrap helper: prints the canonical text of the old statics — the
+    /// exact bytes the checked-in files must hold. Run with
+    /// `cargo test -p rt-viewer dump_canonical -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "bootstrap dump, not a check"]
+    fn dump_canonical_wear_files() {
+        println!("==== crack_lab.wear ====\n{}", crate::wear_file::serialize(&OLD_LAB_WEAR));
+        println!("==== catalogue.wear ====\n{}", crate::wear_file::serialize(&OLD_CATALOGUE_WEAR));
     }
 }

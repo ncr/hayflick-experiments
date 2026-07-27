@@ -415,6 +415,11 @@ impl WallSpec {
 
 /// A level's whole wear authoring: a base story every wall starts from, a
 /// spread between runs, and the walls that say something different.
+///
+/// Since 2026-07-27 this is FILE data (`crate::wear_file`), not const data:
+/// the `&'static` slices stay because a wear file is parsed once per process
+/// and leaked — every consumer keeps reading plain shared references.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct LevelWear {
     pub base: Story,
     pub origin: Origin,
@@ -428,6 +433,7 @@ pub struct LevelWear {
 /// One named wall, addressed by a world point the way every other level datum
 /// is (`Action::SmashWall`, the old pristine list) — so the level can be re-cut
 /// without silently moving what the author named.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct WallAt {
     pub at: (f32, f32),
     pub label: &'static str,
@@ -767,7 +773,10 @@ pub struct RunRect {
 }
 
 impl RunRect {
-    fn holds(&self, x: f32, z: f32) -> bool {
+    /// Does the authoring point (x, z) address this run? Public because the
+    /// wear file's SAVE has to answer the reverse question — which named wall
+    /// is this run — with exactly the arithmetic [`specs_of`] used forward.
+    pub fn holds(&self, x: f32, z: f32) -> bool {
         x >= self.lo.x && x <= self.hi.x && z >= self.lo.z && z <= self.hi.z
     }
     /// Story key — the seed of everything that must be true of the WHOLE

@@ -849,7 +849,13 @@ impl Viewer {
 
     /// Step one of the panel's cyclers on run `r`. Separate from the slider path
     /// because a cycler has no track: the value is not where the cursor is.
+    /// A cycler click is an INTERACTIVE edit: the run turns authored and the
+    /// release that follows persists it (`Viewer::wear_save`).
     fn crack_cycle(&mut self, r: usize, kind: Row) {
+        if let Some(a) = self.crack.authored.get_mut(r) {
+            *a = true;
+        }
+        self.crack.dirty = true;
         match kind {
             Row::Pattern => self.crack_cycle_policy(),
             Row::Origin => {
@@ -901,6 +907,12 @@ impl Viewer {
             }
             _ => return, // a cycler has no track
         }
+        // an INTERACTIVE edit: the run turns authored, and the release that
+        // ends this drag persists it (`Viewer::wear_save`)
+        if let Some(a) = self.crack.authored.get_mut(r) {
+            *a = true;
+        }
+        self.crack.dirty = true;
         // PAINT rows show live; GEOMETRY rows wait for the release (the footer
         // says which is which). `wear_edit` re-streams both halves of the paint —
         // the `_pad` strengths and the effect word's thresholds — because a

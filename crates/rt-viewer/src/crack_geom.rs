@@ -3511,7 +3511,7 @@ mod tests {
         // knob bits stamped, then the geometry pass mints the chalk cores
         crate::wear::stamp_story(&mut scene, &meta.piers); // boot order: the story seeds the field
         let mut lab = crate::crack::CrackLab::default();
-        crate::crack::resolve(Some(&crate::demos::LAB_WEAR), &mut lab, &meta.piers, &mut scene, 1);
+        crate::crack::resolve(Some(crate::demos::lab_wear()), &mut lab, &meta.piers, &mut scene, 1);
         let cores = lab.cores.clone();
         // the CORE inherits its facade's story for free (chalk_material copies
         // base_color, fresh_body passes alpha through) — the surface a crack

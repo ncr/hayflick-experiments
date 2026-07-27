@@ -114,6 +114,15 @@ pub struct CrackLab {
     /// Per RUN: the geometry pass skips this wall — the catalogue's paint-only
     /// specimens, the only way to see the shade pass's painted layers.
     pub paint_only: Vec<bool>,
+    /// Per RUN: this wall's spec is AUTHORED — the level names it, or the
+    /// owner edited it by hand — rather than derived from `base ± spread`.
+    /// The save (`Viewer::wear_save`) writes exactly these runs back to the
+    /// wear file; a derived run stays derived so the spread keeps breathing.
+    pub authored: Vec<bool>,
+    /// An INTERACTIVE edit happened since the last save. Only the panel's own
+    /// gestures set it (drag, cycler click) — the age-ramp beat and the
+    /// `WEAR_EDIT` replay do not, so demos and harness runs never write files.
+    pub dirty: bool,
     /// Per RUN: compiled. `wall::compile_specs` is the ONLY writer.
     pub sheets: Vec<crate::wall::Sheet>,
     /// The picked PIER. The ray hits a pier; the panel edits its RUN.
@@ -150,6 +159,8 @@ impl Default for CrackLab {
             label: Vec::new(),
             par: Vec::new(),
             paint_only: Vec::new(),
+            authored: Vec::new(),
+            dirty: false,
             sheets: Vec::new(),
             sel: None,
             row: 0,
@@ -432,7 +443,7 @@ pub fn stamp_aa(scene: &mut Scene, piers: &[Pier], lab: &CrackLab, scope: i32) -
 /// wall on the level's base story, because a black window is worse than a wall
 /// that is less weathered than intended. It is FATAL where it can be —
 /// `demos::every_demo_compiles_against_its_own_level`.
-pub fn resolve(wear: Option<&'static crate::wall::LevelWear>, lab: &mut CrackLab, piers: &[Pier], scene: &mut Scene, aa_scope: i32) {
+pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers: &[Pier], scene: &mut Scene, aa_scope: i32) {
     let Some(lw) = wear else {
         *lab = CrackLab::default();
         return;
@@ -470,6 +481,18 @@ pub fn resolve(wear: Option<&'static crate::wall::LevelWear>, lab: &mut CrackLab
         lab.paint_only = specs.iter().map(|(_, sp)| sp.paint_only).collect();
         lab.label = specs.iter().map(|(l, _)| *l).collect();
         lab.spec = specs.iter().map(|(_, sp)| *sp).collect();
+        // Which runs the LEVEL names (first-claim, the `specs_of` rule): those
+        // are authored from boot; the rest join when the owner edits them.
+        lab.authored = {
+            let mut named = vec![false; runs.len()];
+            for w in lw.walls {
+                if let Some(i) = runs.iter().position(|r| r.holds(w.at.0, w.at.1)) {
+                    named[i] = true;
+                }
+            }
+            named
+        };
+        lab.dirty = false;
         // CRACK_SEL=<pier index> preselects a segment for the headless harness
         // (the owner picks by clicking; an agent cannot, and the selection drives
         // the AA scope as well as the panel).
@@ -581,9 +604,12 @@ impl Viewer {
     /// Slider released (or the pattern row clicked): if the drag changed the
     /// built geometry — which faults exist, the craze bucket, the policy,
     /// its native params — rebuild the scene so the aging opens in place.
-    /// Dial-within-a-bucket knob drags stay live-material cheap.
+    /// Dial-within-a-bucket knob drags stay live-material cheap. Interactive
+    /// edits then PERSIST (`Self::wear_save` — a no-op unless the panel's own
+    /// gestures touched something since the last save).
     pub fn crack_release(&mut self) {
         self.crack_rebuild(false);
+        self.wear_save();
     }
 
     /// The rebuild body behind [`Self::crack_release`], with the GI half as a
@@ -730,7 +756,7 @@ mod tests {
     use crate::wall::{LevelWear, Story, WallSpec};
 
     /// Build a level and resolve the given wear onto it.
-    fn build(level: crate::demos::Level, wear: Option<&'static LevelWear>) -> (rt_probe::Scene, crate::gym_scene::GymMeta, CrackLab) {
+    fn build(level: crate::demos::Level, wear: Option<&LevelWear>) -> (rt_probe::Scene, crate::gym_scene::GymMeta, CrackLab) {
         let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA, true);
         let mut lab = CrackLab::default();
         resolve(wear, &mut lab, &meta.piers, &mut scene, 1);
@@ -818,7 +844,7 @@ mod tests {
     #[test]
     fn one_run_one_sheet() {
         for level in [crate::demos::Level::Gym, crate::demos::Level::Catalogue] {
-            let wear = if level == crate::demos::Level::Gym { &crate::demos::LAB_WEAR } else { &crate::demos::CATALOGUE_WEAR };
+            let wear = if level == crate::demos::Level::Gym { crate::demos::lab_wear() } else { crate::demos::catalogue_wear() };
             let (scene, meta, lab) = build(level, Some(wear));
             let keys = crate::crack_geom::keys(&scene, &meta.piers, lab.wear());
             let mut shared = 0;
@@ -850,7 +876,7 @@ mod tests {
     /// three rounds running.
     #[test]
     fn the_spread_varies_walls_and_never_panels() {
-        let (_, _, lab) = build(crate::demos::Level::Gym, Some(&crate::demos::LAB_WEAR));
+        let (_, _, lab) = build(crate::demos::Level::Gym, Some(crate::demos::lab_wear()));
         let w: Vec<f32> = lab.spec.iter().map(|s| s.story.weather).collect();
         let (lo, hi) = (w.iter().cloned().fold(f32::MAX, f32::min), w.iter().cloned().fold(0.0f32, f32::max));
         assert!(hi - lo > 0.2, "the level must read varied wall to wall: {w:?}");
@@ -872,12 +898,12 @@ mod tests {
     /// those walls, or the assertions below pin nothing.
     #[test]
     fn a_wall_the_level_names_pristine_is_exactly_the_plain_greybox() {
-        static NO_CONTROLS: LevelWear = LevelWear { walls: &[], ..crate::demos::LAB_WEAR };
-        let (scene, meta, lab) = build(crate::demos::Level::Gym, Some(&crate::demos::LAB_WEAR));
+        let no_controls = LevelWear { walls: &[], ..*crate::demos::lab_wear() };
+        let (scene, meta, lab) = build(crate::demos::Level::Gym, Some(crate::demos::lab_wear()));
         let (plain_scene, plain_meta, _) = build(crate::demos::Level::Gym, None);
-        let (bare_scene, bare_meta, bare) = build(crate::demos::Level::Gym, Some(&NO_CONTROLS));
+        let (bare_scene, bare_meta, bare) = build(crate::demos::Level::Gym, Some(&no_controls));
 
-        let control: Vec<usize> = crate::demos::LAB_WEAR
+        let control: Vec<usize> = crate::demos::lab_wear()
             .walls
             .iter()
             .map(|w| pier_index_at(&meta.piers, w.at.0, w.at.1).unwrap_or_else(|| panic!("control \"{}\" must name a wall of the real gym", w.label)))
@@ -913,7 +939,7 @@ mod tests {
     #[test]
     fn the_age_ramp_starts_at_the_greybox_and_ends_past_the_levels_own_aging() {
         assert_eq!(ramp_story(0.0), Story::ZERO, "t=0 must be the greybox, bit for bit");
-        let base = crate::demos::LAB_WEAR.base;
+        let base = crate::demos::lab_wear().base;
         let end = ramp_story(1.0);
         let lanes = |s: Story| [s.weather, s.settlement, s.cover_loss];
         for (i, (v, b)) in lanes(end).iter().zip(lanes(base)).enumerate() {
@@ -953,7 +979,7 @@ mod tests {
             .map(|k| {
                 let (mut scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Gym.spec(), &crate::look::POLANA, true);
                 let mut lab = CrackLab::default();
-                resolve(Some(&crate::demos::LAB_WEAR), &mut lab, &meta.piers, &mut scene, 1);
+                resolve(Some(crate::demos::lab_wear()), &mut lab, &meta.piers, &mut scene, 1);
                 let i = pier_index_at(&meta.piers, x, z).expect("the ramp point names a wall");
                 let r = lab.pier_run[i];
                 // ONE wall ramps and every other one stays pristine, so the
@@ -1007,7 +1033,7 @@ mod tests {
     /// against.
     #[test]
     fn the_level_rows_compose_and_never_destroy_the_authoring() {
-        let (_, _, mut lab) = build(crate::demos::Level::Gym, Some(&crate::demos::LAB_WEAR));
+        let (_, _, mut lab) = build(crate::demos::Level::Gym, Some(crate::demos::lab_wear()));
         let authored: Vec<crate::wall::WallSpec> = lab.spec.clone();
         let areas = |l: &CrackLab| l.sheets.iter().map(|s| s.area).collect::<Vec<_>>();
         let full = areas(&lab);
@@ -1071,7 +1097,7 @@ mod tests {
     /// needs no bit at all.
     #[test]
     fn rebuilt_geometry_opts_into_the_aa_scope() {
-        let (mut scene, meta, mut lab) = build(crate::demos::Level::Gym, Some(&crate::demos::LAB_WEAR));
+        let (mut scene, meta, mut lab) = build(crate::demos::Level::Gym, Some(crate::demos::lab_wear()));
         let aged = (0..meta.piers.len()).find(|i| lab.cores[*i] >= 0).expect("some wall must have been rebuilt");
         let clean = (0..meta.piers.len()).find(|i| lab.spec[lab.pier_run[*i]].story == Story::ZERO).expect("the level ships a control");
         assert_ne!(pad_of(&scene, &meta, aged) & AA_BIT, 0, "rebuilt geometry is AA-scoped");
@@ -1102,7 +1128,7 @@ mod catalogue_tests {
     fn every_demo_compiles_against_its_own_level() {
         let mut checked = 0;
         for d in crate::demos::DEMOS {
-            let Some(lw) = d.wear else { continue };
+            let Some(lw) = d.wear.map(|f| f.level_wear()) else { continue };
             let (_scene, meta) = crate::gym_scene::build_gym(&d.level.spec(), &crate::look::POLANA, true);
             let (runs, _) = crate::crack::runs_of(&meta.piers);
             let sheets = crate::wall::compile(&runs, lw).unwrap_or_else(|m| panic!("demo \"{}\" does not compile against its own level: {m:?}", d.name));
@@ -1126,7 +1152,7 @@ mod catalogue_tests {
     #[test]
     fn every_specimen_names_its_own_wall_and_its_own_run() {
         let (_scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Catalogue.spec(), &crate::look::POLANA, true);
-        let specs = crate::demos::CATALOGUE_WEAR.walls;
+        let specs = crate::demos::catalogue_wear().walls;
         assert_eq!(specs.len(), 15, "three rows of five");
         let (runs, pier_run) = crate::crack::runs_of(&meta.piers);
         let mut seen: Vec<usize> = Vec::new();
@@ -1156,11 +1182,11 @@ mod catalogue_tests {
         let (mut scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Catalogue.spec(), &crate::look::POLANA, true);
         let mut lab = CrackLab::default();
         let prims = scene.primitives.len();
-        resolve(Some(&crate::demos::CATALOGUE_WEAR), &mut lab, &meta.piers, &mut scene, 1);
+        resolve(Some(crate::demos::catalogue_wear()), &mut lab, &meta.piers, &mut scene, 1);
         assert!(scene.primitives.len() > prims, "VACUOUS: the geometry pass built nothing at all");
 
         let idx = |label: &str| {
-            let sp = crate::demos::CATALOGUE_WEAR.walls.iter().find(|p| p.label == label).expect(label);
+            let sp = crate::demos::catalogue_wear().walls.iter().find(|p| p.label == label).expect(label);
             pier_index_at(&meta.piers, sp.at.0, sp.at.1).expect(label)
         };
         let pad = |i: usize| scene.materials[scene.primitives[meta.piers[i].prim].material_id as usize]._pad;
@@ -1189,7 +1215,7 @@ mod catalogue_tests {
         // …and ONE EFFECT PER WALL is a fact about the data: `WallAt::only` pins
         // every other layer to zero, so no slab can be contaminated by the base
         // story the way the old specimens could.
-        for w in crate::demos::CATALOGUE_WEAR.walls {
+        for w in crate::demos::catalogue_wear().walls {
             let r = lab.pier_run[idx(w.label)];
             let nonzero = Layer::ALL.into_iter().filter(|l| lab.sheets[r].area[l.index()] > 0.0).count();
             assert!(nonzero <= 2, "specimen \"{}\" shows {nonzero} layers at once — a bench slab is one effect", w.label);

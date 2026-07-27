@@ -567,6 +567,24 @@ over both shipped levels with a vacuity guard.
   owner headline, and every A/B recipe on record uses it), `CRACK_SEL=`,
   `WEAR_EDIT=weather,settlement,cover_loss[,run]`. `CRACKS=`, `CRACK_VARY=` and
   `CRACK_EDIT=` are gone: their four components no longer exist as a set.
+
+WEAR IS FILE DATA since 2026-07-27 (effect-system round A, the enabling layer
+for the owner's modular-effects concept — plan in the session log, decisions:
+foundation+mud first, scrub not translate, Origin dies for the band).
+`crates/rt-viewer/wear/{crack_lab,catalogue}.wear` replace the demos.rs
+statics: hand-parsed one-statement-per-line text (grammar in `wear_file.rs`),
+canonical form pinned by `checked_in_wear_files_are_canonical`, parsed once
+per process and leaked, `Demo.wear` now names a `WearFile`. INTERACTIVE panel
+edits persist on release (`Viewer::wear_save`): a run the level names — or the
+owner touches — serializes back with its live spec (hand-edited unnamed runs
+get a synthesized point at the run centre); derived runs stay out of the file
+so `spread` keeps breathing; the age-ramp beat and `WEAR_EDIT=` replays never
+set the dirty flag, and any wear env override (`STORY=`/`SHAPE=`/`SPALL=`/
+`SPREAD=`/`WEAR_EDIT=`) blocks the save so a SHOT recipe cannot freeze itself
+into the authoring. `WEAR_FILE=<path>` overrides load AND save (a missing
+path boots the baked default and saves to the new file). Verified: gym,
+crack lab, catalogue all BYTE-IDENTICAL to the statics era (Vulkan/RTX,
+floor zero).
 - Verified 4 runs per side, all pairs: `gym` BYTE-IDENTICAL, `crack lab` 3.18 %
   at max 187, catalogue 1.65 % at max 168 — the aging is authored differently, so
   the walls differ; the plain greybox does not move at all.

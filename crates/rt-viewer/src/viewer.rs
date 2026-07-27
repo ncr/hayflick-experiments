@@ -147,8 +147,9 @@ pub struct Viewer {
     // runner; the loop just applies its per-frame effects to generic knobs.
     demo: crate::demos::DemoRunner,
     /// The demo the runner is playing (LEVEL env or the LEVELS menu) — kept so
-    /// `apply_look`'s scene rebuild can re-arm the smash rig + brick runs.
-    cur_demo: Option<&'static crate::demos::Demo>,
+    /// `apply_look`'s scene rebuild can re-arm the smash rig + brick runs, and
+    /// so a wear save (`wear_file`) knows which file the authoring came from.
+    pub(crate) cur_demo: Option<&'static crate::demos::Demo>,
     // per-frame sun/sky override (generic — a demo morph or a future day cycle
     // drives it). `None` = the scene's baked env (bit-identical to before).
     env_override: Option<rt_probe::EnvBlock>,
@@ -276,7 +277,7 @@ impl Viewer {
         // backend consumes the scene. CRACKS env (harness, uniform) overrides
         // the demo's authored seed; neither → pristine (bit-identical image).
         let mut crack = crate::crack::CrackLab::default();
-        let level_wear = demo.and_then(|d| d.wear);
+        let level_wear = demo.and_then(|d| d.wear).map(|f| f.level_wear());
         crate::crack::resolve(level_wear, &mut crack, &gym_meta.piers, &mut scene, cfg.render.aa_scope);
         crack.active = level_wear.is_some();
         // A demo that ages a wall has to NAME one: report a miss once here
@@ -473,7 +474,7 @@ impl Viewer {
         // values survive a look switch (the pier count is look-stable);
         // entering/leaving the demo re-seeds or clears.
         self.piers = meta.piers;
-        let level_wear = self.cur_demo.and_then(|d| d.wear);
+        let level_wear = self.cur_demo.and_then(|d| d.wear).map(|f| f.level_wear());
         crate::crack::resolve(level_wear, &mut self.crack, &self.piers, &mut scene, self.aa_scope.round() as i32);
         self.crack.active = level_wear.is_some();
         unsafe { self.backend.rebuild_scene(&scene, &self.cfg, refresh) };

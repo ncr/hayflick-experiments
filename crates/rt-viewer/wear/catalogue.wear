@@ -1,0 +1,116 @@
+wall 2 7 pristine control
+
+wall 5 7 lightning network
+  pin stain 0
+  pin web 0
+  pin cracks 0.55
+  pin chips 0
+  pin spall 0
+  breaks 0
+
+wall 8 7 craquelure
+  pin stain 0
+  pin web 0
+  pin cracks 0.55
+  pin chips 0
+  pin spall 0
+  breaks 0
+  pattern craquelure 0.35
+
+wall 11 7 mosaic
+  pin stain 0
+  pin web 0
+  pin cracks 0.55
+  pin chips 0
+  pin spall 0
+  breaks 0
+  pattern mosaic 0.8
+
+wall 14 7 structural break
+  pin stain 0
+  pin web 0
+  pin cracks 0
+  pin chips 0
+  pin spall 0
+  breaks 1 0.5
+
+wall 4 11 chips (fragments gone)
+  pin stain 0
+  pin web 0
+  pin cracks 0
+  pin chips 0.45
+  pin spall 0
+  breaks 0
+
+wall 7 11 settled plates
+  pin stain 0
+  pin web 0
+  pin cracks 0.6
+  pin chips 0
+  pin spall 0
+  breaks 0
+  relief 0.7
+  pattern mosaic 0.8
+
+wall 10 11 fresh break (chalk core)
+  pin stain 0
+  pin web 0
+  pin cracks 0.6
+  pin chips 0.45
+  pin spall 0
+  breaks 0
+  relief 0.8
+
+wall 13 11 cover spall (one patch)
+  pin stain 0
+  pin web 0
+  pin cracks 0
+  pin chips 0
+  pin spall 0.012
+  breaks 0
+
+wall 16 11 cover spall + rebar (heavy)
+  pin stain 0
+  pin web 0
+  pin cracks 0
+  pin chips 0
+  pin spall 0.025
+  breaks 0
+
+wall 6 15 pristine control
+
+wall 9 15 stains
+  pin stain 0.55
+  pin web 0
+  pin cracks 0
+  pin chips 0
+  pin spall 0
+  breaks 0
+  paint_only
+
+wall 12 15 stains + fine glaze web
+  pin stain 0.85
+  pin web 0.45
+  pin cracks 0
+  pin chips 0
+  pin spall 0
+  breaks 0
+  paint_only
+
+wall 15 15 wide stain patch
+  pin stain 0.95
+  pin web 0
+  pin cracks 0
+  pin chips 0
+  pin spall 0
+  breaks 0
+  paint_only
+
+wall 18 15 glaze web alone
+  pin stain 0
+  pin web 0.7
+  pin cracks 0
+  pin chips 0
+  pin spall 0
+  breaks 0
+  paint_only
