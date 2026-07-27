@@ -668,6 +668,60 @@ catalogue differs exactly by row 3.
   at max 187, catalogue 1.65 % at max 168 — the aging is authored differently, so
   the walls differ; the plain greybox does not move at all.
 
+THE ARTILLERY HOLE since 2026-07-27 (effect-system round E — the last verb of
+the owner's original workflow, and the first PLACED effect). `wall::Shells` on
+`WallSpec.shells`: up to 3 `Shell { u, y, back }` hits in RUN space sharing one
+`caliber` (crater radius, WORLD UNITS — the grain precedent). Breaks taken one
+step further: no derivation, no jitter, no probability — artillery is an EVENT,
+so no cause writes it and the placing gesture IS the authoring (mud's pure-pin
+argument), which also means the level dials and the band deliberately do NOT
+touch it. AUTHORED BY CLICK: the panel's `shell` row arms place-mode (a MODE,
+not an edit — arming never dirties the save), the next click on the selected
+wall places the hit at the pick ray's own point (`crack_click` finally binds
+the `t` it always threw away; the face is the one the camera sees, from the
+ray's sign on the thin axis), clicking an existing hit REMOVES it; `caliber`
+is a slider under it. GEOMETRY: `rebar::shell_crater` — same depth budget,
+same polygon rim, same world-anchored mat as the spall, so `emit_crater`
+cannot tell the two apart. The three differences: ROUND (`hu = hy = r`, no bar
+snap — BOTH families cross wherever the world mat crosses, which is what makes
+the cage read as a cage), rim corner count ∝ perimeter (the spall's 6-10 would
+stretch into an obvious polygon at 2-4× the size), and the floor digs to the
+honest depth limit (`basin_max`) instead of stopping `BAR_CLEAR` sections past
+the mat — an excavation, never a perforation (a through hole is a
+renderer-contract change: occluders, WALLCUT, light leaks — deliberately NOT
+this round). COMPILE-TIME DISCIPLINE (`wall::compile_shells`): the caliber is
+quantized FIRST, rounding down onto `rebar::shell_r_cap`, so legality is
+computed on bit-exactly what the generator dequantizes and the grid can never
+disagree with the cap; the cap reports `Miss::Clamped { dial: "caliber" }`; an
+overlapping pair — same face or facing, a facing pair perforates — DROPS the
+later hit and reports (`dial: "shells"`; slot order = authoring order, and a
+nudge would move the author's click); a wall below `SHELL_R_MIN = 0.10`
+reports `used: 0`. `Geom` grew shell_r/shell_u/shell_y/shell_back with **0 =
+empty slot** (`Geom::default()` is the paint-only key and must mean "no
+shells", not "three at the run's start"); the relief cap / `t_cap` fire on
+shell walls too; SPALL PACKS AROUND SHELLS (their rects, both faces, join both
+spall `fits` vetoes — authored outranks derived); on a FAULTED wall a hit
+straddling the break is DROPPED, pinned by test (the alternatives draw the
+fault's invisible extension through the basin, or move the click). File:
+`shell <u> <y> [back]` ×3 + `caliber <v>`; env `HOLE=u,y[,r]` — named HOLE
+because `SHELL` is the login shell in EVERY Unix environment: that spelling
+put a crater on every wall of every test and its `env_overridden` entry
+blocked every save (docs/AGENT_LEARNINGS.md 2026-07-27E). The catalogue's row
+3 grew the `shell hole` slab (n = 3, 18 walls). The wall panel is 22-24 rows
+now and OUTGREW the settings menu: both staging-buffer users size off
+`menu::PANEL_MAX_H`. Zero shader edits, zero new materials (basin + rust
+reused) — nothing enters the blind-Metal register beyond the next windowed
+Mac pass touching the two new panel rows and one place-click. ALSO this
+round: panel drags snap as `k / 50`, not `k * 0.02` — 0.02 has no exact f32,
+and the owner's first saved wear file printed the accumulated error verbatim
+(`scrub 0.39999998`; the file's `num` is shortest-ROUND-TRIPPING text, so the
+ugliness genuinely was the value). Verified 2 runs per side, cross-run floor
+zero: `gym` and `crack lab` BYTE-IDENTICAL, catalogue differs with every
+delta > 30 confined to the new slab's screen box (the ≤ 30 remainder is the
+probe field re-baking around a new occluder); `HOLE=0.35,0.6,0.4` on the lab
+composes with the aged facades and the close-up shows the two-family cross
+standing proud of a pale basin.
+
 ROUND 8 (owner 2026-07-25: "cracks should be more like LIGHTNING —
 branching, irregular — not straight lines; two kinds: the coarse one and
 the age crazing"): BOTH scales are PROPAGATED now — a walker grows a

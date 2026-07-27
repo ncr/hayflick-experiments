@@ -128,6 +128,11 @@ pub struct CrackLab {
     /// The picked PIER. The ray hits a pier; the panel edits its RUN.
     pub sel: Option<usize>,
     pub row: usize,
+    /// SHELL place-mode is armed (the panel's `shell` row): the next click on
+    /// the selected wall places a hit at the ray's own point — or removes the
+    /// hit it landed on. Any other click disarms and does what it always did.
+    /// Never persisted, never set by env: a MODE, not an authoring datum.
+    pub placing: bool,
     /// [`crate::crack_geom::GeoKey`] of the geometry currently BUILT into the
     /// scene, PER PIER — `Viewer::crack_release` rebuilds when a key disagrees,
     /// and the disagreeing entries are exactly the piers whose GI has to settle
@@ -164,6 +169,7 @@ impl Default for CrackLab {
             sheets: Vec::new(),
             sel: None,
             row: 0,
+            placing: false,
             geo_sigs: Vec::new(),
             cores: Vec::new(),
             spall_mats: Vec::new(),
@@ -333,6 +339,24 @@ fn band_from_env() -> Option<(f32, f32)> {
     Some((f(0, 0.0), f(1, 1.0)))
 }
 
+/// `HOLE=u,y[,caliber]` — ONE placed shell hit on every run (front face,
+/// normalized run-space place, radius in wu): the headless stand-in for the
+/// panel's place-mode click. One, not three, because a recipe needs a
+/// deterministic subject, not a barrage; a real barrage is authored in a wear
+/// file. Named `HOLE`, not `SHELL`: `SHELL` is the login shell in every Unix
+/// environment, so that spelling would fire on every run of every level (and
+/// its presence in `env_overridden` would block every save — found the hard
+/// way, by 6 failing tests).
+fn shell_from_env() -> Option<crate::wall::Shells> {
+    let v = std::env::var("HOLE").ok()?;
+    let parts: Vec<&str> = v.split(',').map(str::trim).collect();
+    let f = |i: usize, d: f32| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(d);
+    let mut sh = crate::wall::Shells::NONE;
+    sh.caliber = f(2, crate::wall::Shells::CALIBER);
+    sh.add(crate::wall::Shell { u: f(0, 0.5), y: f(1, 0.55), back: false });
+    Some(sh)
+}
+
 /// `WEAR_EDIT=weather,settlement,cover_loss[,run]` — the harness's stand-in for
 /// the owner dragging the panel and letting go: after boot, write this story
 /// (onto every run, or only `run`) and take the RELEASE path a mouse-up takes.
@@ -350,8 +374,8 @@ fn edit_from_env() -> Option<(crate::wall::Story, Option<usize>)> {
 /// Apply every environment override to a resolved spec list. One place, so a
 /// harness shot and the owner's own level cannot diverge in how they are read.
 fn apply_env(specs: &mut [(&'static str, crate::wall::WallSpec)]) {
-    let (story, shape, spall, scrub, band) = (story_from_env(), shape_from_env(), spall_from_env(), scrub_from_env(), band_from_env());
-    if story.is_none() && shape.is_none() && spall.is_none() && scrub.is_none() && band.is_none() {
+    let (story, shape, spall, scrub, band, shell) = (story_from_env(), shape_from_env(), spall_from_env(), scrub_from_env(), band_from_env(), shell_from_env());
+    if story.is_none() && shape.is_none() && spall.is_none() && scrub.is_none() && band.is_none() && shell.is_none() {
         return;
     }
     for (_, spec) in specs.iter_mut() {
@@ -370,6 +394,9 @@ fn apply_env(specs: &mut [(&'static str, crate::wall::WallSpec)]) {
         }
         if let Some(b) = band {
             spec.band = b;
+        }
+        if let Some(sh) = shell {
+            spec.shells = sh;
         }
     }
 }
@@ -757,6 +784,7 @@ impl Viewer {
         if old == sel {
             return;
         }
+        self.crack.placing = false; // place-mode is a conversation with ONE wall
         self.crack.sel = sel;
         if let Some(o) = old {
             self.crack_apply(o);
@@ -786,18 +814,65 @@ impl Viewer {
             }
         }
         match best {
+            // place-mode: a click on the SELECTED wall spends itself on the
+            // shell — at the ray's own hit point, on the face the camera sees
+            Some((t, i)) if self.crack.placing && self.crack.sel_run() == Some(self.crack.pier_run[i]) => {
+                self.shell_place(i, o + d * t, d);
+                true
+            }
             Some((_, i)) => {
+                self.crack.placing = false;
                 self.crack_select(Some(i));
                 self.ui_blip("menu_pick");
                 true
             }
             None if self.crack.sel.is_some() => {
+                self.crack.placing = false;
                 self.crack_select(None);
                 self.ui_blip("menu_move");
                 true
             }
             None => false,
         }
+    }
+
+    /// Place a shell hit where the pick ray struck pier `i` — or remove the
+    /// hit it landed on (one gesture, toggle semantics: clicking a crater you
+    /// placed is the only "no, not there" a mouse needs). The place is stored
+    /// in RUN space, snapped to the file's own grid (1/1000 along, 1/100 up)
+    /// so a saved wear file reads as numbers a human can edit.
+    fn shell_place(&mut self, i: usize, p: Vec3, d: Vec3) {
+        let Some(r) = self.crack.sel_run() else { return };
+        let pier = &self.piers[i];
+        let run_x = (pier.hi.x - pier.lo.x) >= (pier.hi.z - pier.lo.z);
+        let (ru0, ru1) = if run_x { (pier.run_lo.x, pier.run_hi.x) } else { (pier.run_lo.z, pier.run_hi.z) };
+        let u = ((if run_x { p.x } else { p.z } - ru0) / (ru1 - ru0).max(1e-6)).clamp(0.0, 1.0);
+        let y = ((p.y - pier.lo.y) / (pier.hi.y - pier.lo.y).max(1e-6)).clamp(0.0, 1.0);
+        let (u, y) = ((u * 1000.0).round() / 1000.0, (y * 100.0).round() / 100.0);
+        // the face is the one the camera sees: the ray runs INTO it, so its
+        // sign on the thin axis says which of the two planes was struck
+        // (front = the +thin face, `crack_geom`'s `nz = +1`)
+        let back = if run_x { d.z > 0.0 } else { d.x > 0.0 };
+        let (len, height) = ((ru1 - ru0).abs(), pier.hi.y - pier.lo.y);
+        let reach = self.crack.spec[r].shells.caliber.max(0.15);
+        let near = self.crack.spec[r].shells.iter().position(|s| ((s.u - u) * len).abs() < reach && ((s.y - y) * height).abs() < reach);
+        match near {
+            Some(j) => {
+                self.crack.spec[r].shells.remove(j);
+                self.ui_blip("menu_move");
+            }
+            None => {
+                if !self.crack.spec[r].shells.add(crate::wall::Shell { u, y, back }) {
+                    return; // the wall is full — the panel row says 3, the click says nothing new
+                }
+                self.ui_blip("menu_pick");
+            }
+        }
+        if let Some(a) = self.crack.authored.get_mut(r) {
+            *a = true;
+        }
+        self.crack.dirty = true;
+        self.wear_edit(r); // geometry class: the release that follows rebuilds
     }
 }
 
@@ -983,6 +1058,47 @@ mod tests {
         // …and the rest of the level IS aged, or "pristine" means nothing
         let aged = (0..meta.piers.len()).filter(|i| !control.contains(i)).filter(|&i| pad_of(&scene, &meta, i) >> 8 != 0).count();
         assert!(aged >= 10, "the other walls must still be weathered: {aged} of {}", meta.piers.len() - 2);
+    }
+
+    /// A PLACED SHELL alone opens a wall — no knob, no spall amount, no story
+    /// — the hit is claimed by exactly ONE pier of its run, and on a FAULTED
+    /// wall a hit on the break line is DROPPED rather than nudged or carved
+    /// across the gap (the compile-time Miss channel cannot see that per-pier
+    /// geometric fact, so it is pinned here instead).
+    #[test]
+    fn a_shell_alone_opens_exactly_one_pier_of_its_run() {
+        let (_s0, meta0, _) = build(crate::demos::Level::Gym, None);
+        let (runs, pier_run) = runs_of(&meta0.piers);
+        let ri = (0..runs.len()).find(|r| pier_run.iter().filter(|q| **q == *r).count() >= 2).expect("the gym has a multi-pier run");
+        let of_run: Vec<usize> = (0..meta0.piers.len()).filter(|i| pier_run[*i] == ri).collect();
+        // aim mid-pier of the run's first pier — the run's own midpoint can
+        // sit inside a window opening, where no pier claims a hit
+        let p = &meta0.piers[of_run[0]];
+        let run_x = (p.hi.x - p.lo.x) >= (p.hi.z - p.lo.z);
+        let (ru0, ru1) = if run_x { (p.run_lo.x, p.run_hi.x) } else { (p.run_lo.z, p.run_hi.z) };
+        let mid = if run_x { (p.lo.x + p.hi.x) * 0.5 } else { (p.lo.z + p.hi.z) * 0.5 };
+        let u = (mid - ru0) / (ru1 - ru0);
+        let at = ((runs[ri].lo.x + runs[ri].hi.x) * 0.5, (runs[ri].lo.z + runs[ri].hi.z) * 0.5);
+        let mut sh = crate::wall::Shells::NONE;
+        sh.add(crate::wall::Shell { u, y: 0.55, back: false });
+        let spec = WallSpec { shells: sh, ..WallSpec::PRISTINE };
+
+        let mk = |spec: WallSpec, label: &'static str| -> &'static LevelWear {
+            let walls: &'static [crate::wall::WallAt] = Box::leak(Box::new([crate::wall::WallAt { at, label, spec }]));
+            Box::leak(Box::new(LevelWear { base: Story::ZERO, spread: 0.0, walls }))
+        };
+        let (_scene, meta, lab) = build(crate::demos::Level::Gym, Some(mk(spec, "hit")));
+        let opened: Vec<usize> = (0..meta.piers.len()).filter(|&i| lab.spall_mats[i] != [-1, -1]).collect();
+        assert_eq!(opened, vec![of_run[0]], "exactly the aimed-at pier claims the hit");
+        assert!(lab.spall_mats[of_run[0]][0] >= 0 && lab.spall_mats[of_run[0]][1] >= 0, "a shell shows steel and a basin BY DEFINITION");
+
+        // the same hit with a break authored ON its line: dropped, wall-wide
+        let mut broken = spec;
+        broken.pin = broken.pin.breaks(crate::wall::Breaks { count: 1, at: Some(u) });
+        let (_s2, m2, lab2) = build(crate::demos::Level::Gym, Some(mk(broken, "hit on the line")));
+        for i in 0..m2.piers.len() {
+            assert_eq!(lab2.spall_mats[i], [-1, -1], "a hit straddling the break must be DROPPED (pier {i})");
+        }
     }
 
     /// THE AGE RAMP IS A STORY, not a cross-fade: zero is exactly the pristine
@@ -1206,7 +1322,7 @@ mod catalogue_tests {
     fn every_specimen_names_its_own_wall_and_its_own_run() {
         let (_scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Catalogue.spec(), &crate::look::POLANA, true);
         let specs = crate::demos::catalogue_wear().walls;
-        assert_eq!(specs.len(), 17, "three rows of five + row 3's control and mud (its spare slots wait for the hole round)");
+        assert_eq!(specs.len(), 18, "three rows of five + row 3's control, mud and shell hole (its spare slots wait for the next placed effect)");
         let (runs, pier_run) = crate::crack::runs_of(&meta.piers);
         let mut seen: Vec<usize> = Vec::new();
         for sp in specs {

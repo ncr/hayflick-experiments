@@ -30,6 +30,8 @@
 //!   pin <layer> <v>       stain|web|cracks|chips|spall|mud — an authored amount
 //!   mudtop <v>            mud's splash-band top edge, 0..1  (default 0.35)
 //!   breaks <n> [<at>]     a COUNT and optionally a PLACE (0..1 along the run)
+//!   shell <u> <y> [back]  ONE artillery hit: run-space place, up to 3 lines
+//!   caliber <v>           the hits' shared crater radius, wu (default 0.3)
 //!   grain <v>             plate size, world units
 //!   relief <v>            groove depth, 0..1
 //!   pattern <name> [p…]   lightning|craquelure|mosaic + its native params
@@ -181,6 +183,21 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
                 }
                 w.spec.pin = w.spec.pin.breaks(Breaks { count: count as u8, at });
             }
+            ("shell", Some(w)) => {
+                let (u, y) = (f(0)?, f(1)?);
+                if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&y) {
+                    return Err(format!("line {n}: a shell place is run-space, 0..1 both ways"));
+                }
+                let back = match rest.get(2) {
+                    None => false,
+                    Some(&"back") => true,
+                    Some(t) => return Err(format!("line {n}: `{t}` — a shell's third word can only be `back`")),
+                };
+                if !w.spec.shells.add(crate::wall::Shell { u, y, back }) {
+                    return Err(format!("line {n}: a wall holds at most {} shells", crate::wall::Shells::MAX));
+                }
+            }
+            ("caliber", Some(w)) => w.spec.shells.caliber = f(0)?,
             ("grain", Some(w)) => w.spec.shape.grain = f(0)?,
             ("relief", Some(w)) => w.spec.shape.relief = f(0)?,
             ("pattern", Some(w)) => {
@@ -268,6 +285,12 @@ pub fn serialize_parts(base: Story, spread: f32, walls: &[WallAt]) -> String {
                 None => b.push(format!("  breaks {}", brk.count)),
             }
         }
+        for sh in s.shells.iter() {
+            b.push(if sh.back { format!("  shell {} {} back", num(sh.u), num(sh.y)) } else { format!("  shell {} {}", num(sh.u), num(sh.y)) });
+        }
+        if s.shells.caliber != crate::wall::Shells::CALIBER {
+            b.push(format!("  caliber {}", num(s.shells.caliber)));
+        }
         if s.shape.grain != Shape::DEFAULT.grain {
             b.push(format!("  grain {}", num(s.shape.grain)));
         }
@@ -331,7 +354,7 @@ pub fn lab_walls(lw: &LevelWear, runs: &[crate::wall::RunRect], lab: &crate::cra
 /// harness's asked-for state, not the owner's authoring, and freezing that
 /// into the file would make one SHOT recipe permanent.
 fn env_overridden() -> bool {
-    ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "BAND", "WEAR_EDIT"].iter().any(|k| std::env::var(k).is_ok())
+    ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "BAND", "HOLE", "WEAR_EDIT"].iter().any(|k| std::env::var(k).is_ok())
 }
 
 impl crate::viewer::Viewer {
@@ -372,6 +395,10 @@ mod tests {
     fn a_wear_file_round_trips_and_serialize_is_a_fixpoint() {
         let mut pin = Pins::NONE.area(Layer::Cracks, 0.6).area(Layer::Spall, 0.012);
         pin = pin.breaks(Breaks { count: 2, at: Some(0.25) });
+        let mut shells = crate::wall::Shells::NONE;
+        shells.caliber = 0.42;
+        shells.add(crate::wall::Shell { u: 0.3, y: 0.6, back: false });
+        shells.add(crate::wall::Shell { u: 0.75, y: 0.4, back: true });
         static_assertless_walls_round_trip(LevelWear {
             base: Story { weather: 0.55, settlement: 0.35, cover_loss: 0.65 },
             spread: 0.4,
@@ -385,6 +412,7 @@ mod tests {
                         scrub: 0.3,
                         band: (0.1, 0.55),
                         mud_top: 0.5,
+                        shells,
                         pin,
                         shape: Shape { grain: 0.2, relief: 0.7, pattern: Pattern::Craquelure { wave: 0.5 } },
                         paint_only: true,
@@ -425,6 +453,9 @@ mod tests {
             ("wall 1 2 w\n  band 0.8 0.2\n", "lo <= hi"),
             ("wall 1 2 w\n  pattern voronoi\n", "unknown pattern"),
             ("wall 1 2 w\n  pattern craquelure 0.5 0.5\n", "native params"),
+            ("wall 1 2 w\n  shell 1.5 0.5\n", "run-space, 0..1"),
+            ("wall 1 2 w\n  shell 0.5 0.5 front\n", "can only be `back`"),
+            ("wall 1 2 w\n  shell 0.1 0.5\n  shell 0.4 0.5\n  shell 0.7 0.5\n  shell 0.9 0.5\n", "at most 3 shells"),
             ("wall 1 2 w\nbase 0 0 0\n", "level statement"),
             ("nonsense\n", "unknown statement"),
         ] {

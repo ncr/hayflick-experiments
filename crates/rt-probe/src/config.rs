@@ -12,6 +12,8 @@
 //! A/B recipe on record uses it) with its SPALL_LAYER=1|2|3 bisect (1 = crater
 //! only, 2 = steel only, 3 = both), SCRUB=<0..1> (the variant dial on every
 //! run), BAND=lo,hi (the damage band's normalized edges on every run),
+//! HOLE=u,y[,caliber] (ONE placed shell hit on every run — named HOLE because
+//! SHELL is the login shell in every Unix environment),
 //! CRACK_SEL= to preselect a wall,
 //! WEAR_EDIT=weather,settlement,cover_loss[,run] to replay a panel drag +
 //! release, and WEAR_FILE=<path> to override a level's wear file for load AND

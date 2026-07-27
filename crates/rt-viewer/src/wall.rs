@@ -272,6 +272,74 @@ impl Breaks {
     }
 }
 
+/// One artillery hit: a PLACED crater. The place is 2-D run space — `u` along
+/// the run, `y` up the wall, both 0..1 — plus WHICH FACE the shell struck
+/// (the click's pick ray answers that for free; a file says `back`).
+///
+/// This is [`Breaks`] taken one step further: a break is a count with an
+/// optional place, a shell is nothing BUT places. There is no derivation, no
+/// jitter and no probability anywhere — artillery is an event, not a process,
+/// so no cause writes it and the placing gesture IS the authoring (the same
+/// argument that made mud pure-pin).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Shell {
+    pub u: f32,
+    pub y: f32,
+    pub back: bool,
+}
+
+/// A wall's shell hits: up to [`Shells::MAX`] placed craters sharing ONE
+/// caliber — the crater radius in WORLD UNITS, on the [`Shape::grain`]
+/// precedent (a shared property of the instances lives on the envelope, in a
+/// unit the author can compare against the wall).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Shells {
+    /// Dense by construction: [`Self::add`] fills the first hole,
+    /// [`Self::remove`] compacts — so slot order is authoring order and the
+    /// serialized file has no gaps to invent a meaning for.
+    hits: [Option<Shell>; Shells::MAX],
+    pub caliber: f32,
+}
+
+impl Shells {
+    /// Three, for the same reason breaks stop at three: a wall with a fourth
+    /// shell hole in it is rubble, and rubble is the smash demo's job.
+    pub const MAX: usize = 3;
+    /// Default radius, wu: ~2.5× the spall lens's mean half-extent — clearly
+    /// a hit, clearly not corrosion, and it fits the bench's 2.2-wu slab with
+    /// room to place it off-centre.
+    pub const CALIBER: f32 = 0.30;
+    pub const NONE: Shells = Shells { hits: [None; Shells::MAX], caliber: Shells::CALIBER };
+
+    pub fn count(&self) -> usize {
+        self.hits.iter().flatten().count()
+    }
+    pub fn iter(&self) -> impl Iterator<Item = Shell> + '_ {
+        self.hits.iter().flatten().copied()
+    }
+    /// Add into the first free slot; `false` when the wall is full.
+    pub fn add(&mut self, s: Shell) -> bool {
+        match self.hits.iter_mut().find(|h| h.is_none()) {
+            Some(slot) => {
+                *slot = Some(s);
+                true
+            }
+            None => false,
+        }
+    }
+    /// Remove hit `i` (slot order) and compact.
+    pub fn remove(&mut self, i: usize) {
+        if i < Self::MAX {
+            self.hits[i] = None;
+            let kept: Vec<Shell> = self.hits.iter().flatten().copied().collect();
+            self.hits = [None; Self::MAX];
+            for (slot, s) in self.hits.iter_mut().zip(kept) {
+                *slot = Some(s);
+            }
+        }
+    }
+}
+
 /// Amounts the author (or a panel drag) has taken over. `None` = use the value
 /// [`derive`] produced. This is how a bench wall gets ONE effect and nothing
 /// else, and how a real wall gets "old, but no chips at all".
@@ -451,6 +519,13 @@ pub struct WallSpec {
     /// else to come from; `rebar::corr`'s measured splash term peaks at the
     /// same height). Meaningless until `Layer::Mud` is pinned above zero.
     pub mud_top: f32,
+    /// The wall's shell hits — PLACED craters, authored by the panel's
+    /// place-mode click (or a file's `shell` lines). Deliberately NOT
+    /// band-gated and untouched by every level dial, like a pinned break: an
+    /// authored place outranks a region mask, and "show me this level clean"
+    /// still shows where the shells landed because the hit is an event in the
+    /// wall's history, not a stage of its aging.
+    pub shells: Shells,
     pub pin: Pins,
     pub shape: Shape,
     /// Stamp the PAINT but keep the GEOMETRY pass off this wall.
@@ -470,7 +545,7 @@ impl WallSpec {
     /// Mud's default splash-band top: 0.35 of the wall — the height
     /// `rebar::corr`'s Gaussian splash term was measured to peak around.
     pub const MUD_TOP: f32 = 0.35;
-    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), mud_top: WallSpec::MUD_TOP, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
+    pub const PRISTINE: WallSpec = WallSpec { story: Story::ZERO, scrub: 0.0, band: (0.0, 1.0), mud_top: WallSpec::MUD_TOP, shells: Shells::NONE, pin: Pins::NONE, shape: Shape::DEFAULT, paint_only: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -837,6 +912,32 @@ pub struct Geom {
     /// The band's edge codes ([`band_codes`]) — the geometry pass masks its
     /// zones and vetoes its crater sites on them, so they sign the rebuild.
     pub band: [u8; 2],
+    /// Shell caliber, quantized like the shape dials; 0 when the wall has no
+    /// hits, so a caliber drag on a hole-free wall never reports the scene
+    /// dirty.
+    pub shell_r: u8,
+    /// Shell places along the run, `1 + run-thousandths`; **0 = empty slot**,
+    /// so `Geom::default()` — the paint-only key — means "no shells" instead
+    /// of "three shells at the run's start".
+    pub shell_u: [u16; 3],
+    /// Shell heights in percent of the wall (fine enough: 1 % = 0.9 px).
+    pub shell_y: [u8; 3],
+    /// Which face each hit opens on, as a bitmask over the slots.
+    pub shell_back: u8,
+}
+
+impl Geom {
+    /// Decode the shell slots back to `(u, y, back)`, both 0..1 — the ONE
+    /// reader (`crack_geom`), fed exactly the integers the rebuild gate
+    /// signed, like every other field here.
+    pub fn shells(&self) -> impl Iterator<Item = (f32, f32, bool)> + '_ {
+        self.shell_u.iter().enumerate().filter(|(_, u)| **u > 0).map(|(i, u)| {
+            ((*u - 1) as f32 / 1000.0, self.shell_y[i] as f32 / 100.0, self.shell_back & (1 << i) != 0)
+        })
+    }
+    pub fn shell_count(&self) -> usize {
+        self.shell_u.iter().filter(|u| **u > 0).count()
+    }
 }
 
 /// One wall, compiled: what the author asked for, and what both consumers get.
@@ -986,10 +1087,11 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
         // THE RELIEF CAP. A wall that spalls must keep enough core to hold its
         // reinforcement mat, and how deep that lets the grooves cut is a fact
         // about the slab's thickness, not about the author's taste — so the cap
-        // is applied here, once, and SAID. Spall-free walls are untouched: the
-        // constraint belongs to the effect that needs the core, not to the
-        // relief dial in general.
-        if area[Layer::Spall.index()] > 0.0 {
+        // is applied here, once, and SAID. A wall with SHELL hits pays it too
+        // (a hit's basin cuts past the same mat); walls that need no core are
+        // untouched — the constraint belongs to the effects that need it, not
+        // to the relief dial in general.
+        if area[Layer::Spall.index()] > 0.0 || spec.shells.count() > 0 {
             let cap = crate::rebar::t_cap(r.thick());
             if veneer(spec.shape.relief, r.thick()) > cap + 1e-6 {
                 let used = relief_of(cap, r.thick());
@@ -997,6 +1099,7 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
                 spec.shape.relief = used;
             }
         }
+        let (shell_r, shell_u, shell_y, shell_back) = compile_shells(&spec.shells, r, label, &mut notes);
         let band = band_codes(spec.band.0, spec.band.1);
         let story = scrub_key(r.story(), spec.scrub);
         let field = RunField::of(r.lo, r.hi, story, band);
@@ -1053,10 +1156,75 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
                 par,
                 breaks: breaks.count,
                 break_at: breaks.at.map_or(u16::MAX, |a| (a.clamp(0.0, 1.0) * 1000.0).round() as u16),
+                shell_r,
+                shell_u,
+                shell_y,
+                shell_back,
             },
         });
     }
     sheets
+}
+
+/// Compile a wall's SHELLS against its run: the caliber cap, the legal-centre
+/// clamp and the overlap discipline, all decided HERE on the authored data —
+/// so the geometry pass can never be handed an impossible pair, and every
+/// limit is a [`Miss`] in the wall's own row instead of a crater that quietly
+/// fails to appear.
+///
+/// Overlap is a DROP, not a nudge: two patches on one face would carve
+/// intersecting basins, and two facing each other would perforate the slab
+/// (each digs past half the thickness) — and moving a hit to make room would
+/// mean the place the author clicked is not the place the shell landed. Slot
+/// order wins, because slot order is authoring order.
+fn compile_shells(shells: &Shells, r: &RunRect, label: &'static str, notes: &mut Vec<Miss>) -> (u8, [u16; 3], [u8; 3], u8) {
+    const NONE: (u8, [u16; 3], [u8; 3], u8) = (0, [0; 3], [0; 3], 0);
+    if shells.count() == 0 {
+        return NONE;
+    }
+    let (len, height) = (r.length(), r.hi.y - r.lo.y);
+    let cap = crate::rebar::shell_r_cap(len, height);
+    let asked = shells.caliber.max(crate::rebar::SHELL_R_MIN);
+    if cap < crate::rebar::SHELL_R_MIN {
+        // this wall cannot hold even the smallest readable shell
+        notes.push(Miss::Clamped { label, dial: "caliber", asked, used: 0.0 });
+        return NONE;
+    }
+    // Quantize FIRST, rounding down onto the cap when the grid would poke past
+    // it — the legality below is computed on `used`, and `used` is bit-exactly
+    // what the generator will dequantize (`Geom.shell_r`), so the two can
+    // never disagree about whether a patch fits. The Miss is keyed on the CAP,
+    // not on the grid: the grid is not a limit, it is the dial's resolution.
+    let mut code = ((asked.min(cap)).clamp(0.0, 1.0) * 63.0).round() as u8;
+    if code as f32 / 63.0 > cap {
+        code -= 1;
+    }
+    let used = code as f32 / 63.0;
+    if asked > cap + 1e-6 {
+        notes.push(Miss::Clamped { label, dial: "caliber", asked, used });
+    }
+    let Some((lo_c, hi_c)) = crate::rebar::shell_center_box(len, height, used) else { return NONE };
+    let pu = crate::rebar::shell_patch_half(used);
+    let (mut u_out, mut y_out, mut back_out) = ([0u16; 3], [0u8; 3], 0u8);
+    let mut kept: Vec<glam::Vec2> = Vec::new();
+    for s in shells.iter() {
+        let c = glam::Vec2::new(s.u.clamp(0.0, 1.0) * len, s.y.clamp(0.0, 1.0) * height).clamp(lo_c, hi_c);
+        if kept.iter().any(|o| (c.x - o.x).abs() < 2.0 * pu + crate::rebar::PATCH_GAP && (c.y - o.y).abs() < 2.0 * pu + crate::rebar::PATCH_GAP) {
+            continue;
+        }
+        let i = kept.len();
+        u_out[i] = 1 + (c.x / len * 1000.0).round() as u16;
+        y_out[i] = (c.y / height * 100.0).round() as u8;
+        back_out |= (s.back as u8) << i;
+        kept.push(c);
+    }
+    if kept.len() < shells.count() {
+        notes.push(Miss::Clamped { label, dial: "shells", asked: shells.count() as f32, used: kept.len() as f32 });
+    }
+    if kept.is_empty() {
+        return NONE;
+    }
+    (code, u_out, y_out, back_out)
 }
 
 #[cfg(test)]
@@ -1476,5 +1644,58 @@ mod tests {
         };
         assert_eq!(g(0.500), g(0.505), "a sub-quantum move dirtied the geometry");
         assert_ne!(g(0.500), g(0.530), "a real move did not dirty the geometry");
+    }
+
+    /// A SHELL IS A PLACE, and every limit it can hit is a reported one: the
+    /// caliber cap says so, an overlapping pair drops the LATER hit and says
+    /// so, and a wall too small for the smallest readable shell says so —
+    /// nothing in this feature can quietly fail to appear.
+    #[test]
+    fn a_shell_is_a_place_and_its_limits_report() {
+        let r = RunRect { lo: glam::Vec3::new(1.0, 0.0, 9.9), hi: glam::Vec3::new(7.0, 2.1875, 10.1) };
+        let hit = |u: f32, y: f32, back: bool| Shell { u, y, back };
+        let mut sh = Shells::NONE;
+        sh.add(hit(0.3, 0.6, false));
+        sh.add(hit(0.8, 0.4, true));
+        let sheet = compile_specs(std::slice::from_ref(&r), &[("hit twice", WallSpec { shells: sh, ..WallSpec::PRISTINE })]).remove(0);
+        let g = sheet.geom;
+        assert_eq!(g.shell_count(), 2);
+        assert!(g.shell_r > 0, "the caliber rides the key — a caliber drag must rebuild");
+        let hits: Vec<(f32, f32, bool)> = g.shells().collect();
+        assert!((hits[0].0 - 0.3).abs() < 0.01 && (hits[0].1 - 0.6).abs() < 0.02 && !hits[0].2, "{hits:?}");
+        assert!((hits[1].0 - 0.8).abs() < 0.01 && hits[1].2, "the second hit keeps its face: {hits:?}");
+        assert!(sheet.notes.is_empty(), "legal shells carry no note: {:?}", sheet.notes);
+        // `Geom::default()` is the paint-only key, and it must mean NO shells —
+        // the empty-slot encoding (0, not a place) exists for exactly this
+        assert_eq!(Geom::default().shell_count(), 0);
+
+        // the caliber cap reports, and the used radius is bit-exactly what the
+        // generator dequantizes — grid and cap can never disagree about a fit
+        let mut big = sh;
+        big.caliber = 0.9;
+        let sheet = compile_specs(std::slice::from_ref(&r), &[("too big", WallSpec { shells: big, ..WallSpec::PRISTINE })]).remove(0);
+        assert!(sheet.notes.iter().any(|n| matches!(n, Miss::Clamped { dial: "caliber", .. })), "{:?}", sheet.notes);
+        assert!(sheet.geom.shell_count() > 0, "clamped, not dropped");
+        assert!(sheet.geom.shell_r as f32 / 63.0 <= crate::rebar::shell_r_cap(6.0, 2.1875) + 1e-6);
+
+        // overlap drops the LATER hit — same face or facing, either way (a
+        // facing pair perforates the slab) — and never nudges: the place the
+        // author clicked is the place the shell landed
+        let mut twin = Shells::NONE;
+        twin.add(hit(0.5, 0.5, false));
+        twin.add(hit(0.52, 0.5, true));
+        let sheet = compile_specs(std::slice::from_ref(&r), &[("stacked", WallSpec { shells: twin, ..WallSpec::PRISTINE })]).remove(0);
+        assert_eq!(sheet.geom.shell_count(), 1, "the later hit is dropped");
+        assert!((sheet.geom.shells().next().unwrap().0 - 0.5).abs() < 0.01, "…and the FIRST keeps its place");
+        assert!(sheet.notes.iter().any(|n| matches!(n, Miss::Clamped { dial: "shells", .. })), "{:?}", sheet.notes);
+
+        // a wall too small for even the smallest readable shell: nothing built,
+        // and the note's `used: 0` says why
+        let tiny = RunRect { lo: glam::Vec3::new(1.0, 0.0, 9.9), hi: glam::Vec3::new(1.4, 2.1875, 10.1) };
+        let mut one = Shells::NONE;
+        one.add(hit(0.5, 0.5, false));
+        let sheet = compile_specs(std::slice::from_ref(&tiny), &[("doorway pier", WallSpec { shells: one, ..WallSpec::PRISTINE })]).remove(0);
+        assert_eq!(sheet.geom.shell_count(), 0);
+        assert!(sheet.notes.iter().any(|n| matches!(n, Miss::Clamped { dial: "caliber", used, .. } if *used == 0.0)), "{:?}", sheet.notes);
     }
 }

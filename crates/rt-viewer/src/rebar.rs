@@ -544,9 +544,112 @@ pub fn craters(f: &Face, dmg: &dyn Fn(f32, f32) -> f32, area: f32, fits: &dyn Fn
         }) {
             continue;
         }
-        out.push(site.build(f.seed, cover, floor, bar_s));
+        out.push(site.build(f.seed, cover, floor, bar_s, (RIM_C_MIN, RIM_C_MAX)));
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// The PLACED crater — the artillery hit
+// ---------------------------------------------------------------------------
+
+/// The smallest shell radius worth building. Below it the hit is a chip —
+/// `Layer::Chips` builds exactly that — so the caliber dial's bottom stops
+/// here instead of shading into a second effect.
+pub const SHELL_R_MIN: f32 = 0.10;
+
+/// The patch half-extent a shell of radius `r` needs (a shell is round, so one
+/// number serves both axes). ONE definition, because two callers must agree on
+/// it: the authoring model's legality clamp (`wall::compile_specs` keeps every
+/// authored centre where this patch fits the RUN) and [`shell_crater`] here.
+pub fn shell_patch_half(r: f32) -> f32 {
+    r * (1.0 + RIM_VAR) + RIM_PAD
+}
+
+/// The largest shell radius whose patch still has a legal centre on a face of
+/// these extents — [`shell_patch_half`] inverted against the face's own room.
+/// The authoring model clamps the caliber dial to this and REPORTS the clamp
+/// (`wall::Miss::Clamped`), so "the hole I authored is not in the shot" can
+/// never be a silent state.
+pub fn shell_r_cap(len: f32, height: f32) -> f32 {
+    let room = 0.5 * len.min(height) - EDGE_MARGIN;
+    ((room - RIM_PAD) / (1.0 + RIM_VAR)).max(0.0)
+}
+
+/// The legal-centre box for a shell of radius `r`, in face-local coordinates
+/// (0..len, 0..height) — `None` when the patch does not fit. The COMPILER
+/// clamps every authored centre into this box (`wall::compile_shells`), so
+/// [`shell_crater`]'s own clamp is a no-op on compiled data and a place the
+/// author clicked is the place the crater opens.
+pub fn shell_center_box(len: f32, height: f32, r: f32) -> Option<(Vec2, Vec2)> {
+    let pu = shell_patch_half(r);
+    let (lo, hi) = (Vec2::splat(EDGE_MARGIN + pu), Vec2::new(len - EDGE_MARGIN - pu, height - EDGE_MARGIN - pu));
+    (lo.x <= hi.x && lo.y <= hi.y).then_some((lo, hi))
+}
+
+/// A PLACED shell crater: authored centre (face coords) and radius, both the
+/// author's — nothing here is drawn from the corrosion potential, because an
+/// artillery hit is not corrosion. What it shares with the spall is everything
+/// downstream of the place: the same depth budget, the same polygon rim, the
+/// same mat — `emit_crater` cannot tell the two apart, which is the point.
+///
+/// Three deliberate differences from [`site`]:
+/// - ROUND (`hu = hy = r`) and NOT snapped onto a bar: a shell lands where it
+///   lands, and the world-anchored mat crosses it wherever it crosses — both
+///   families over the whole patch, which is what makes the cage read as a
+///   CAGE in a hole this size.
+/// - The rim's corner count scales with the perimeter. The spall's 6-10
+///   corners put a facet every 7-9 px; a shell 2-4× the lens would stretch the
+///   same corners into an obvious polygon.
+/// - The floor digs to the honest depth limit (`budget`'s `basin_max`) instead
+///   of stopping [`BAR_CLEAR`] sections past the mat: a hit excavates, cover
+///   corrosion only lifts. Still a crater, never a perforation — the through
+///   hole is a renderer-contract change (occluders, WALLCUT, light) and it is
+///   deliberately NOT this round.
+///
+/// Returns `None` when THIS face cannot hold the patch — the run-level fit is
+/// the compiler's promise, but a run's narrow pier (the 0.4-wu doorway
+/// flanks) can still be asked for a hole it has no room for, and a shell that
+/// cannot fit is skipped rather than shrunk: a smaller hole is a different
+/// authored statement.
+pub fn shell_crater(f: &Face, at: Vec2, r: f32) -> Option<Crater> {
+    let (cover, basin_max, bar_s) = budget(f);
+    // deepest honest floor, with the spall's own clamp so the steel always
+    // stands proud of the basin ([`BAR_PROUD`])
+    let floor = basin_max.max(cover + BAR_PROUD * bar_s);
+    let pu = shell_patch_half(r);
+    let (lo_c, hi_c) = (
+        Vec2::new(f.u0 + EDGE_MARGIN + pu, f.y0 + EDGE_MARGIN + pu),
+        Vec2::new(f.u1 - EDGE_MARGIN - pu, f.y1 - EDGE_MARGIN - pu),
+    );
+    if lo_c.cmpgt(hi_c).any() {
+        return None;
+    }
+    let c = at.clamp(lo_c, hi_c);
+    let (lo, hi) = (c - Vec2::splat(pu), c + Vec2::splat(pu));
+    // Both families of the world mat, wherever they cross the hole — same
+    // graze veto as the spall (a bar clipping the rim reads as a nick).
+    let mut bars = Vec::new();
+    if bar_s > 0.0 {
+        for (vertical, pitch, base) in [(true, PITCH_U, 0.0), (false, PITCH_Y, BAR_Y0)] {
+            let ctr = if vertical { c.x } else { c.y };
+            let (i0, i1) = (((ctr - r - base) / pitch).ceil() as i32, ((ctr + r - base) / pitch).floor() as i32);
+            for i in i0..=i1 {
+                let bat = base + i as f32 * pitch;
+                if (bat - ctr).abs() > r - 0.5 * bar_s {
+                    continue;
+                }
+                let (v0, v1) = if vertical { (lo.y, hi.y) } else { (lo.x, hi.x) };
+                bars.push(Bar { along_y: vertical, at: bat, v0: v0 - BURY, v1: v1 + BURY });
+            }
+        }
+    }
+    // corner count ∝ perimeter, so the facet length stays in the spall's
+    // measured 7-9 px window whatever the caliber
+    let scale = r / (0.5 * (LENS_ALONG + LENS_ACROSS));
+    let nc_min = ((RIM_C_MIN as f32 * scale).round() as usize).clamp(RIM_C_MIN, 20);
+    let nc_max = ((RIM_C_MAX as f32 * scale).round() as usize).clamp(nc_min + 2, 28);
+    Some(Site { c, hu: r, hy: r, lo, hi, bars }.build(f.seed, cover, floor, bar_s, (nc_min, nc_max)))
 }
 
 /// A crater's PLACE, before its outline is drawn. The split is a cost one and
@@ -565,9 +668,11 @@ struct Site {
 
 impl Site {
     /// Draw the rim and make the crater. Split out of [`site`] on cost, not on
-    /// meaning: everything here is a pure function of the place.
-    fn build(self, seed: f32, cover: f32, floor: f32, bar_s: f32) -> Crater {
-        let (rim, ring) = outline(self.c, self.hu, self.hy, seed, self.lo, self.hi, &self.bars);
+    /// meaning: everything here is a pure function of the place. `nc` is the
+    /// rim's corner-count range — the spall lens always passes
+    /// ([`RIM_C_MIN`], [`RIM_C_MAX`]); a shell scales it with its perimeter.
+    fn build(self, seed: f32, cover: f32, floor: f32, bar_s: f32, nc: (usize, usize)) -> Crater {
+        let (rim, ring) = outline(self.c, self.hu, self.hy, seed, self.lo, self.hi, &self.bars, nc);
         Crater { c: self.c, rim, ring, lo: self.lo, hi: self.hi, cover, floor, bar_s, bars: self.bars }
     }
 }
@@ -698,14 +803,16 @@ fn site(f: &Face, p: Vec2, ha: f32, hb: f32, bar_s: f32) -> Option<Site> {
 ///   can bulge past the bound the rect was sized for. The ragging is inward-only
 ///   for the same reason. Containment stays a property of the generator, never a
 ///   test downstream (the same discipline as `Walk`'s corridor clamp).
-fn outline(c: Vec2, hu: f32, hy: f32, seed: f32, lo: Vec2, hi: Vec2, bars: &[Bar]) -> (Vec<Vec2>, Vec<Vec2>) {
+#[allow(clippy::too_many_arguments)]
+fn outline(c: Vec2, hu: f32, hy: f32, seed: f32, lo: Vec2, hi: Vec2, bars: &[Bar], nc: (usize, usize)) -> (Vec<Vec2>, Vec<Vec2>) {
     let tau = std::f32::consts::TAU;
     // Everything until the last two lines happens in the lens's NORMALIZED frame
     // (where the lens is the unit circle) — including the rect-corner rays, which
     // is the frame they were already measured in.
     let h = |k: f32| hash13(Vec3::new(c.x * 3.1 + k, c.y * 4.7 + 1.0, seed + 0.5));
-    let nc = RIM_C_MIN + (h(0.0) * (RIM_C_MAX - RIM_C_MIN + 1) as f32) as usize;
-    let nc = nc.min(RIM_C_MAX);
+    let (nc_min, nc_max) = nc;
+    let nc = nc_min + (h(0.0) * (nc_max - nc_min + 1) as f32) as usize;
+    let nc = nc.min(nc_max);
     // Corrosion runs ALONG a bar, so the rim reaches out toward each crossing.
     // A BROAD reach (^4, not the ^8 the smooth rim used): on a curve a narrow
     // one was a gentle bulge, but between straight facets it converges to a
@@ -1124,6 +1231,34 @@ mod tests {
         assert!(seen >= 8, "VACUOUS: only {seen} craters measured");
         println!("flattest vertex over {seen} craters: {flattest:.4} rad");
         assert!(flattest < 0.06, "no rim anywhere has a straight run in it ({flattest:.4} rad over {seen} craters)");
+    }
+
+    /// THE PLACED CRATER: it opens exactly where it was asked, digs past the
+    /// spall's just-behind-the-mat shelf to the honest depth limit, is crossed
+    /// by BOTH mat families, and draws a rim with more corners than any spall
+    /// — the 6-10 the lens uses would stretch into an obvious polygon over a
+    /// shell's perimeter. Everything else (containment, star shape) it
+    /// inherits from the same `outline`, covered by the tests above.
+    #[test]
+    fn a_shell_crater_is_round_deep_and_carries_both_families() {
+        let f = face();
+        let at = Vec2::new(12.9, 1.1);
+        let cr = shell_crater(&f, at, 0.45).expect("a 6.2-wu face holds a 0.45-wu shell");
+        assert!((cr.c - at).length() < 1e-6, "a legal centre is not moved");
+        let (cover, basin_max, bar_s) = budget(&f);
+        let spall_floor = (cover + BAR_CLEAR * bar_s).clamp(cover + BAR_PROUD * bar_s, basin_max);
+        assert!(cr.floor > spall_floor + 0.01, "a hit digs past the spall's shelf: {} vs {spall_floor}", cr.floor);
+        assert!(cr.floor <= basin_max + 1e-6, "…but never past the honest limit");
+        assert!(cr.bars.iter().any(|b| b.along_y) && cr.bars.iter().any(|b| !b.along_y), "both families cross a hole this size: {:?}", cr.bars.len());
+        assert_eq!(cr.rim.len(), cr.ring.len());
+        for p in &cr.rim {
+            assert!(p.x >= cr.lo.x - 1e-5 && p.x <= cr.hi.x + 1e-5 && p.y >= cr.lo.y - 1e-5 && p.y <= cr.hi.y + 1e-5, "rim point outside the patch rect");
+        }
+        // corner count ∝ perimeter: at r = 0.45 the range is 12..=20 corners,
+        // so even the smallest draw beats the spall's densest rim (2·10+4 rays)
+        assert!(cr.rim.len() > 24, "a shell rim must out-sample the spall's densest ({} rays)", cr.rim.len());
+        // …and a face that cannot hold the patch says None, never a shrunk hole
+        assert!(shell_crater(&Face { u1: f.u0 + 0.4, ..f }, at, 0.45).is_none(), "a 0.4-wu pier cannot hold a 0.45-wu shell");
     }
 }
 

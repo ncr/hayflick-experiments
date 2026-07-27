@@ -11,7 +11,7 @@
 
 use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, ProbeRefresh, RenderBackend};
 use crate::capture::subsample_rgba;
-use crate::menu::{MENU_MARGIN, MPANEL_H, MPANEL_W};
+use crate::menu::{MENU_MARGIN, MPANEL_W, PANEL_MAX_H};
 use ash::vk;
 use glam::Vec3;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -313,7 +313,7 @@ impl VulkanBackend {
         // ESC tune-menu overlay staging (sized for the full panel at this scale)
         let menu_scale = menu_scale_for(extent.height);
         let menu_buf = self.ctx.create_buffer(
-            (MPANEL_W * MPANEL_H) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
+            (MPANEL_W * PANEL_MAX_H) as u64 * (menu_scale as u64 * menu_scale as u64) * 4,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );

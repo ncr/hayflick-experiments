@@ -187,7 +187,8 @@ pub const SPEC_N: i16 = 5;
 /// the trimetric camera looks down (1, 2) in xz, so a nearer row rides UP the
 /// screen — at 4 wu the row in front clears the 2.1875-wu wall behind it.
 /// Row 3 (z=19) arrived with the mud effect (2026-07-27, effect-system round
-/// D); its spare slots are reserved for the artillery-hole round.
+/// D) and grew the shell-hole slab with the artillery round; its remaining
+/// slots wait for the next placed effect.
 pub const SPEC_Z: [i16; 4] = [7, 11, 15, 19];
 /// Cells each row is shifted along +x relative to the one behind it, so the
 /// three rows stack in one SCREEN COLUMN instead of staggering across the
@@ -247,11 +248,12 @@ fn spec_x0(row: usize, i: i16) -> i16 {
 pub fn catalogue_level() -> GymLevel {
     let mut grid = Grid::new(22, 22);
     for (row, &z) in SPEC_Z.iter().enumerate() {
-        // Row 3 builds only the slabs it has SUBJECTS for (a control + mud);
-        // an unauthored slab is not a specimen, and the two empty ones nearest
-        // the spawn sat inside the ROI reveal disc and dissolved on boot. The
-        // hole round grows this count with its subjects.
-        let n = if row == 3 { 2 } else { SPEC_N };
+        // Row 3 builds only the slabs it has SUBJECTS for (a control, mud,
+        // and the shell hole since the artillery round); an unauthored slab
+        // is not a specimen, and the empty ones nearest the spawn sat inside
+        // the ROI reveal disc and dissolved on boot. Further placed effects
+        // grow this count with their subjects.
+        let n = if row == 3 { 3 } else { SPEC_N };
         for i in 0..n {
             let x0 = spec_x0(row, i);
             for x in x0..x0 + SPEC_CELLS {

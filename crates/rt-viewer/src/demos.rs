@@ -183,7 +183,7 @@ pub static DEMOS: &[Demo] = &[
     Demo {
         name: "effect catalogue",
         level: Level::Catalogue,
-        blurb: "one effect per wall, 17 identical slabs - the bench for picking what to work on",
+        blurb: "one effect per wall, 18 identical slabs - the bench for picking what to work on",
         look: "polana",
         // the far corner: every specimen's `x + 2z` is below this cell's, so
         // the ROI reveal can never ghost one (see `catalogue_level`)
@@ -208,9 +208,10 @@ pub static LAB_WEAR_FILE: crate::wear_file::WearFile =
 /// THE CATALOGUE's wear file: no base at all (the bench's whole point is that
 /// a wall shows what its own lines say and not one thing more), fifteen slabs
 /// in three rows — row 0 = pattern and scale, row 1 = loss, row 2 = paint,
-/// rows 0 and 2 each opening on a PRISTINE control. Every slab pins every
-/// OTHER layer to zero, which is what makes "one effect per wall" a fact
-/// about the data rather than a hope about the numbers.
+/// rows 0 and 2 each opening on a PRISTINE control — plus row 3 for the
+/// placed effects (a control, the mud splash, the shell hole). Every slab
+/// pins every OTHER layer to zero, which is what makes "one effect per wall"
+/// a fact about the data rather than a hope about the numbers.
 pub static CATALOGUE_WEAR_FILE: crate::wear_file::WearFile =
     crate::wear_file::WearFile::new("effect catalogue", include_str!("../wear/catalogue.wear"), "crates/rt-viewer/wear/catalogue.wear");
 
