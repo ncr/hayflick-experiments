@@ -1253,3 +1253,45 @@ effect through the whole pipeline.
   AUTHORING tool, and the save's edge cases (env overrides must not freeze
   themselves into the file, demo beats must not write, derived runs must stay
   derived so the spread keeps breathing) are where that difference lives.
+
+## 2026-07-27 — round E: the artillery hole (the first PLACED effect)
+
+The owner workflow's last verb — "dodaję efekt dziury po pocisku" — as a
+placed crater: `wall::Shells` (≤3 hits in run space + one caliber in wu),
+click-to-place through the pick ray, `rebar::shell_crater` generalizing the
+spall crater (round, perimeter-scaled rim corners, floor at the honest depth
+limit, both mat families). Zero shader edits, zero new materials.
+
+- **A harness knob is a name in an INHERITED namespace.** The env knob was
+  born `SHELL=` — and `SHELL` is the login shell in every Unix process, so
+  every wall of every level grew a crater and the `env_overridden` guard
+  blocked every save. Six tests failed and none of them named the cause; the
+  failures looked exactly like a geometry bug. Check `env` before claiming a
+  knob name, and prefer a name no shell exports (`HOLE=`).
+
+- **A placed feature is compiled like DATA, not like geometry.** Legality
+  (does the patch fit), the caliber cap, and the overlap discipline (drop the
+  later hit — same face is two intersecting basins, facing is a perforation)
+  all live in `compile_specs`, on authored numbers — so every limit is a
+  `Miss` in the wall's own row and a headless arithmetic test, where the
+  geometry pass could only have silently not-emitted. The one veto the
+  compiler cannot see (a hit straddling a fault, a per-pier geometric fact)
+  is pinned by test instead.
+
+- **`Default` for a rebuild key must mean "nothing".** The paint-only GeoKey
+  is `Geom::default()`, so a naive `shell_u: [u16; 3]` of places would have
+  read as "three shells at the run's start" on every paint-only wall. The
+  slot encoding (0 = empty, 1 + thousandths = place) exists for that one
+  consumer.
+
+- **Quantize BEFORE legality, rounding onto the cap.** The compiler clamps
+  places against the radius the GENERATOR will dequantize (`Geom.shell_r`),
+  not against the raw dial — round-to-nearest could poke half a grid step
+  past the cap, and the generator's own clamp would then quietly move a
+  place the author clicked. Same lesson as paint-vs-plates, geometry edition.
+
+- **Snap UI dials as `k / N`, never `k * step`.** 0.02 has no exact f32;
+  multiplying wrote `scrub 0.39999998` into the owner's first saved wear file
+  (the file's `num` prints shortest-round-tripping text, so the ugliness WAS
+  the value). `(t * 50).round() / 50` lands on the nearest f32 of k/50, which
+  prints clean.
