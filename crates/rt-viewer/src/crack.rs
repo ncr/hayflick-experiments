@@ -1,32 +1,51 @@
-//! Crack lab — per-wall-segment procedural aging (the "crack lab" demo).
+//! The WEAR RUNTIME: the level's authored aging, resolved and streamed.
 //!
-//! Every wall pier owns its material 1:1 (`add_box_world` mints one per box),
-//! so a segment's ENTIRE aged appearance is four knobs — age / cracks /
-//! depth / chip — quantized to 6-bit unorm each and packed into the material's
-//! `_pad` bits 8..31 ([`pad_bits`]; the whole FLAG byte 0..7 below them belongs
-//! to other owners — see [`KEEP_FLAGS`] — and a stamp only ever recomputes the
-//! knob bits and the selection bit). The shade pass (shade.comp /
-//! shade.metal CRACK LAB block) unpacks them per pixel; the materials buffer
-//! already re-uploads every frame (the practicals stream), so a live knob edit
-//! costs nothing — no scene rebuild, no probe rebake (the bake reads base
-//! colour only).
+//! THE RUN IS THE AUTHORING UNIT (2026-07-26). `gym_scene::wall_slab` cuts an
+//! authored slab into PIERS wherever a window or a doorway interrupts it — a
+//! rendering fact the level builder never typed and cannot see — so nothing
+//! here is per pier. The pipeline is one direction, and each stage has exactly
+//! one owner:
 //!
-//! Owner surface: the LEVELS menu's "crack lab" demo — click a wall segment
-//! (ray-picked against `GymMeta.piers`), drag the slider panel that appears
-//! top-left; below the knobs a pattern row cycles the small-crack
-//! POLICY (`crack_geom::POLICIES` — owner round 5, 2026-07-23: Voronoi
-//! reads fake, give me patterns to choose from) and under IT sit that
-//! policy's NATIVE param sliders (`crack_geom::POLICY_PARAMS` — owner
-//! round 7: switching algo must surface its unique properties; params are
-//! stored per pier per policy, so A/B-ing policies keeps each one's
-//! tuning). Agent surface:
-//! `CRACKS=age,cracks,depth,chip[,policy[,p1,p2,p3]]` stamps every pier
-//! uniformly at boot for headless SHOT verification (a shell-only env
-//! read, like LOOK/PROJ/LEVEL — see the config.rs exception list); policy
-//! by name or index, params defaulting per policy. `CRACK_SEL=<index>`
-//! preselects a segment, which is how the harness reaches anything the
-//! owner drives by clicking (the knob panel, the highlight, and since
-//! 2026-07-25 the contour-AA scope's "picked wall only" mode).
+//! ```text
+//! wear file ──▶ wall::WallSpec ──▶ wall::Sheet ──▶ Paint  ──▶ _pad + effect word
+//! (per RUN)     (what the author   (compiled,     Geom   ──▶ crack_geom (mesh)
+//!                said)              per RUN)
+//! ```
+//!
+//! - [`CrackLab`] holds the level's per-run `WallSpec`s, loaded from
+//!   `wear/<level>.wear` ([`crate::wear_file`]) and mutated by owner edits.
+//! - `wall::compile_specs` turns each into a [`crate::wall::Sheet`]: the SOLVED
+//!   layer areas, thresholds, breaks and shape a run actually gets.
+//! - The sheet's `Paint` half rides the materials — the three painted layers'
+//!   strengths in four 6-bit unorm lanes at `Material._pad` bits 8..31
+//!   ([`pad_bits`]; the whole FLAG byte 0..7 below them belongs to other
+//!   owners — [`crate::flags`] is their one home, see [`KEEP_FLAGS`]),
+//!   plus the solved gate/band codes in the effect word ([`crate::wear`]). The
+//!   shade pass (shade.comp / shade.metal CRACK LAB block) unpacks them per
+//!   pixel. The materials buffer re-uploads every frame, so a live paint edit
+//!   costs nothing: no scene rebuild, no probe rebake.
+//! - The sheet's `Geom` half is real geometry ([`crate::crack_geom`]) — plates,
+//!   grooves, breaks, spall craters, shell holes — so it costs a rebuild and
+//!   waits for the mouse RELEASE ([`Viewer::crack_release`]).
+//!
+//! OWNER SURFACE: the IDE inspector (Tab; `ide_host::wear_props` walks the same
+//! [`crate::menu::rows_of`] table). Pick a wall, drag its rows — paint morphs
+//! live under the drag, geometry lands on the release, and the edit persists
+//! back to the wear file ([`Viewer::wear_save`]). The corner wall panel that
+//! used to own this is DELETED (2026-07-27 round H). Three LEVEL-wide ESC rows
+//! (`wear` master / `solo layer` / `surface grain`) ride `CrackLab::level_dials`
+//! on the way to the sheet, so they are non-destructive and compose.
+//!
+//! AGENT SURFACE — shell-only env reads, like LOOK/PROJ/LEVEL (see the
+//! config.rs exception list), all applied uniformly to every run by [`apply_env`]:
+//! `STORY=weather,settlement,cover_loss` (the three causes),
+//! `SHAPE=grain,relief[,pattern[,p1,p2,p3]]`, `SPALL=`, `SPREAD=`, `SCRUB=`,
+//! `BAND=lo,hi`, `HOLE=u,y[,caliber]` and `WEAR_EDIT=` (replay a drag + release).
+//! `CRACK_SEL=<index>` preselects a segment, which is how the harness reaches
+//! what the owner reaches by clicking (the selection outline, and since
+//! 2026-07-25 the contour-AA scope's "picked wall only" mode). `CRACKS=`,
+//! `CRACK_VARY=` and `CRACK_EDIT=` are gone — the four knobs they named
+//! (age / cracks / depth / chip) no longer exist as a set.
 
 use crate::backend::ProbeRefresh;
 use crate::gym_scene::Pier;
@@ -37,14 +56,15 @@ use rt_probe::Scene;
 /// Selection-highlight flag: `Material._pad` bit 3.
 pub use crate::flags::SEL as SEL_BIT;
 
-/// The `_pad` flag bits a knob stamp must PRESERVE: the whole flag byte
-/// (bits 0..7) minus the selection bit, which the stamp itself recomputes.
-/// Bits 0..2 are the gym's occluder/glass/matte marks, bit 4 (value 16) is the
-/// last FREE flag, 5/6 are the geometry pass's GEO/CRAZE marks and 7 is the AA
-/// opt-in. This constant exists because the two stamps used to spell the mask
-/// out by hand and drifted apart (`& 7` at boot vs `& 231` on a live edit), so
-/// any new flag bit was silently cleared at boot and every knob touch —
-/// exactly the class of bug the 2026-07-25 catalogue's next flag would have hit.
+/// The `_pad` flag bits a paint stamp must PRESERVE: the whole flag byte minus
+/// the selection bit, which the stamp itself recomputes. The allocation table
+/// (VALUES, not indices — the ambiguity that module exists to end) is in
+/// [`crate::flags`]; every flag but [`SEL_BIT`] survives a stamp untouched.
+///
+/// This constant exists because the two stamps used to spell the mask out by
+/// hand and drifted apart (`& 7` at boot vs `& 231` on a live edit), so any new
+/// flag bit was silently cleared at boot and on every paint touch — exactly the
+/// class of bug the 2026-07-25 catalogue's next flag would have hit.
 pub const KEEP_FLAGS: i32 = crate::flags::BYTE & !SEL_BIT;
 
 /// The greybox-detail AA opt-in ([`crate::gym_scene::AA_BIT`]) — the crack lab
@@ -312,7 +332,7 @@ pub fn unpack(pad: i32) -> [f32; 4] {
 /// groove depth. A harness that asks for a STORY gets the same walls the level
 /// builder would get from typing it.
 fn story_from_env() -> Option<crate::wall::Story> {
-    let v = std::env::var("STORY").ok()?;
+    let v = std::env::var(crate::wear_file::env::STORY).ok()?;
     let parts: Vec<&str> = v.split(',').map(str::trim).collect();
     let n = |i: usize| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
     Some(crate::wall::Story { weather: n(0), settlement: n(1), cover_loss: n(2) })
@@ -322,7 +342,7 @@ fn story_from_env() -> Option<crate::wall::Story> {
 /// every run. `grain` is a plate size in world units, `pattern` a
 /// `crack_geom::POLICIES` name or index. Shell-only, like [`story_from_env`].
 fn shape_from_env() -> Option<crate::wall::Shape> {
-    let v = std::env::var("SHAPE").ok()?;
+    let v = std::env::var(crate::wear_file::env::SHAPE).ok()?;
     let parts: Vec<&str> = v.split(',').map(str::trim).collect();
     let f = |i: usize, d: f32| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(d);
     let code = parts.get(2).map(|s| crate::crack_geom::policy_index(s)).unwrap_or(0);
@@ -338,28 +358,28 @@ fn shape_from_env() -> Option<crate::wall::Shape> {
 /// uses it. Applied after [`story_from_env`], so `SPALL=0` is the "before" side
 /// of every shot of this effect whatever else the level says.
 fn spall_from_env() -> Option<f32> {
-    std::env::var("SPALL").ok().and_then(|v| v.trim().parse::<f32>().ok())
+    std::env::var(crate::wear_file::env::SPALL).ok().and_then(|v| v.trim().parse::<f32>().ok())
 }
 
 /// `SPREAD=<0..1>` — the per-RUN story spread. A bare `STORY=` would otherwise
 /// pin it to 0 and every verification shot would show one uniform level (review
 /// finding, 2026-07-25, when this was `CRACK_VARY`).
 fn spread_from_env() -> Option<f32> {
-    std::env::var("SPREAD").ok().and_then(|v| v.trim().parse::<f32>().ok())
+    std::env::var(crate::wear_file::env::SPREAD).ok().and_then(|v| v.trim().parse::<f32>().ok())
 }
 
 /// `SCRUB=<0..1>` — the VARIANT dial on every run: slides the story key
 /// through noise space (`wall::scrub_key`), re-rolling paint, plates and
 /// breaks coherently. The headless stand-in for the panel's variant row.
 fn scrub_from_env() -> Option<f32> {
-    std::env::var("SCRUB").ok().and_then(|v| v.trim().parse::<f32>().ok())
+    std::env::var(crate::wear_file::env::SCRUB).ok().and_then(|v| v.trim().parse::<f32>().ok())
 }
 
 /// `BAND=lo,hi` — the band mask on every run (normalized wall-height edges):
 /// the headless stand-in for the panel's two band rows, and the discriminating
 /// A/B for the whole round ("the damage shows HERE").
 fn band_from_env() -> Option<(f32, f32)> {
-    let v = std::env::var("BAND").ok()?;
+    let v = std::env::var(crate::wear_file::env::BAND).ok()?;
     let parts: Vec<&str> = v.split(',').map(str::trim).collect();
     let f = |i: usize, d: f32| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(d);
     Some((f(0, 0.0), f(1, 1.0)))
@@ -374,7 +394,7 @@ fn band_from_env() -> Option<(f32, f32)> {
 /// its presence in `env_overridden` would block every save — found the hard
 /// way, by 6 failing tests).
 fn shell_from_env() -> Option<crate::wall::Shells> {
-    let v = std::env::var("HOLE").ok()?;
+    let v = std::env::var(crate::wear_file::env::HOLE).ok()?;
     let parts: Vec<&str> = v.split(',').map(str::trim).collect();
     let f = |i: usize, d: f32| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(d);
     let mut sh = crate::wall::Shells::NONE;
@@ -390,7 +410,7 @@ fn shell_from_env() -> Option<crate::wall::Shells> {
 /// click, and "boot straight into the final story" measures the BOOT bake, not
 /// the rebuild.
 fn edit_from_env() -> Option<(crate::wall::Story, Option<usize>)> {
-    std::env::var("WEAR_EDIT").ok().map(|v| {
+    std::env::var(crate::wear_file::env::WEAR_EDIT).ok().map(|v| {
         let parts: Vec<&str> = v.split(',').map(str::trim).collect();
         let n = |i: usize| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
         (crate::wall::Story { weather: n(0), settlement: n(1), cover_loss: n(2) }, parts.get(3).and_then(|s| s.parse::<usize>().ok()))
@@ -473,17 +493,37 @@ pub(crate) fn pier_surface_mats(scene: &Scene, pier: &Pier, lab: &CrackLab, i: u
     [Some(scene.primitives[pier.prim].material_id), core].into_iter().chain(extra).flatten().map(|m| m as usize).collect()
 }
 
-/// Write the paint lanes (and the selection bit) into the scene's materials —
+/// Write the paint lanes (and the selection bit) into the pier's OWN material —
 /// the boot/rebuild path; live edits go through `Viewer::crack_apply` and the
-/// backend's per-frame material stream instead. The selection bit also rides
-/// the pier's core/spall materials (see [`pier_surface_mats`]) so a
-/// `CRACK_SEL=` boot tags the whole surface, not just the veneer.
+/// backend's per-frame material stream instead. The rest of the pier's surface
+/// (chalk core, spall basin and steel) is minted by the geometry pass that runs
+/// AFTER this one, so its share of the selection is laid down separately by
+/// [`stamp_surface_sel`] — see that function for why it cannot happen here.
 pub fn stamp_all(scene: &mut Scene, piers: &[Pier], lab: &CrackLab) {
     for (i, pier) in piers.iter().enumerate() {
         let paint = lab.pier_run.get(i).and_then(|r| lab.sheets.get(*r)).map(|s| s.paint).unwrap_or_default();
         let sel = lab.sel == Some(i);
         let mid = scene.primitives[pier.prim].material_id as usize;
         scene.materials[mid]._pad = stamped_pad(scene.materials[mid]._pad, paint, sel);
+    }
+}
+
+/// Lay the selection bit over the REST of the selected pier's surface — the
+/// chalk core and the two spall materials — using the ids the geometry pass
+/// just minted. `chalk_material` deliberately mints the core without SEL (it
+/// clones a pier material that may carry it), so without this pass the outline
+/// rings every groove and crater from the inside.
+///
+/// It CANNOT live in [`stamp_all`], which is where it used to live: that runs
+/// BEFORE `apply_geometry`, so `lab.cores`/`lab.spall_mats` still describe the
+/// PREVIOUS scene there. On first boot they are empty, so a `CRACK_SEL=` boot
+/// never tagged the core at all; on a rebuild they are stale, and index into a
+/// materials vec the rebuild has resized — either past its end (the wear-edit
+/// panic: `len 334, index 334`) or, when the new scene has MORE materials, onto
+/// whatever now occupies the old slot, silently tagging an unrelated surface.
+fn stamp_surface_sel(scene: &mut Scene, piers: &[Pier], lab: &CrackLab) {
+    for (i, pier) in piers.iter().enumerate() {
+        let sel = lab.sel == Some(i);
         for m in pier_surface_mats(scene, pier, lab, i).into_iter().skip(1) {
             let pad = scene.materials[m]._pad;
             scene.materials[m]._pad = if sel { pad | SEL_BIT } else { pad & !SEL_BIT };
@@ -593,7 +633,7 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
         // CRACK_SEL=<pier index> preselects a segment for the headless harness
         // (the owner picks by clicking; an agent cannot, and the selection drives
         // the AA scope as well as the panel).
-        lab.sel = std::env::var("CRACK_SEL").ok().and_then(|v| v.parse::<usize>().ok()).filter(|i| *i < piers.len());
+        lab.sel = std::env::var(crate::wear_file::env::CRACK_SEL).ok().and_then(|v| v.parse::<usize>().ok()).filter(|i| *i < piers.len());
         lab.beat = None; // a level switch must not carry another level's ramp
     }
     lab.runs = runs;
@@ -615,6 +655,8 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
     // structural breaks + crazing + cover spall become REAL geometry
     let aged = crate::crack_geom::apply_geometry(scene, piers, lab.wear());
     (lab.cores, lab.spall_mats) = (aged.cores, aged.spall_mats);
+    // Only now do the core/spall ids exist and belong to THIS scene.
+    stamp_surface_sel(scene, piers, lab);
     lab.geo_sigs = crate::crack_geom::keys(scene, piers, lab.wear());
     stamp_aa(scene, piers, lab, aa_scope); // the AA scope's opt-in bits
 }
@@ -884,7 +926,7 @@ mod tests {
 
     /// Build a level and resolve the given wear onto it.
     fn build(level: crate::demos::Level, wear: Option<&LevelWear>) -> (rt_probe::Scene, crate::gym_scene::GymMeta, CrackLab) {
-        let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA);
         let mut lab = CrackLab::default();
         resolve(wear, &mut lab, &meta.piers, &mut scene, 1);
         (scene, meta, lab)
@@ -959,6 +1001,44 @@ mod tests {
         let pad = stamped_pad(scene.materials[mid]._pad, paint, true);
         assert_eq!(pad & 0xFF, marks | SEL_BIT, "flags survive a live edit, selection follows the pick");
         assert_eq!(stamped_pad(pad, paint, false) & SEL_BIT, 0, "deselect clears only the selection bit");
+    }
+
+    /// **A REBUILD MUST NOT READ THE PREVIOUS SCENE'S MATERIAL IDS.**
+    ///
+    /// `resolve` is ordered: the boot stamp, then the geometry pass that MINTS
+    /// the chalk core and the two spall materials, then the selection laid over
+    /// them. The mint is what produces those ids, so anything reading
+    /// `lab.cores`/`lab.spall_mats` before it reads the PREVIOUS scene — empty
+    /// on the first boot (so a `CRACK_SEL=` boot silently tagged nothing and the
+    /// outline ringed every crater from the inside) and, on a rebuild, an index
+    /// into a materials vec that has since been resized. The second `resolve`
+    /// below is the shipped rebuild — `viewer.rs`'s `apply_look` hands the same
+    /// `CrackLab` a brand-new `Scene` — and it used to panic outright with
+    /// `index out of bounds: the len is 334 but the index is 334`.
+    #[test]
+    fn a_rebuild_lays_the_selection_on_this_scenes_materials_and_not_the_last_ones() {
+        let build = || crate::gym_scene::build_gym(&crate::demos::Level::Gym.spec(), &crate::look::POLANA);
+
+        let (mut scene, meta) = build();
+        let mut lab = CrackLab::default();
+        resolve(Some(crate::demos::lab_wear()), &mut lab, &meta.piers, &mut scene, 1);
+
+        // a pier the level actually damaged, so it HAS a minted core to carry the bit
+        let i = lab.cores.iter().position(|c| *c >= 0).expect("VACUOUS: the lab aged no wall, so no pier mints a core");
+        lab.sel = Some(i);
+
+        // the rebuild: the SAME lab, a brand-new scene
+        let (mut scene2, meta2) = build();
+        resolve(Some(crate::demos::lab_wear()), &mut lab, &meta2.piers, &mut scene2, 1);
+
+        let surface = pier_surface_mats(&scene2, &meta2.piers[i], &lab, i);
+        assert!(surface.len() > 1, "VACUOUS: pier {i} has no core or spall material, so nothing here is being tested");
+        for m in &surface {
+            assert!(*m < scene2.materials.len(), "surface material {m} indexes past this scene's {} materials", scene2.materials.len());
+            assert_ne!(scene2.materials[*m]._pad & SEL_BIT, 0, "every material of the selected pier's surface carries SEL, or the outline rings the grooves and craters from the inside");
+        }
+        let tagged = scene2.materials.iter().filter(|m| m._pad & SEL_BIT != 0).count();
+        assert_eq!(tagged, surface.len(), "exactly the selected pier's surface is tagged — no stale id from the previous scene");
     }
 
     /// **ONE RUN, ONE SHEET** — the round's whole thesis, as an equality.
@@ -1147,7 +1227,7 @@ mod tests {
         let (x, z) = crate::demos::DemoRunner::age_point(crate::demos::by_name("crack lab").expect("the demo").script).expect("the crack lab ramps a wall");
         let steps: Vec<(crate::crack_geom::GeoKey, usize, u64)> = (0..=15)
             .map(|k| {
-                let (mut scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Gym.spec(), &crate::look::POLANA, true);
+                let (mut scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Gym.spec(), &crate::look::POLANA);
                 let mut lab = CrackLab::default();
                 resolve(Some(crate::demos::lab_wear()), &mut lab, &meta.piers, &mut scene, 1);
                 let i = pier_index_at(&meta.piers, x, z).expect("the ramp point names a wall");
@@ -1317,7 +1397,7 @@ mod catalogue_tests {
         let mut checked = 0;
         for d in crate::demos::DEMOS {
             let Some(lw) = d.wear.map(|f| f.level_wear()) else { continue };
-            let (_scene, meta) = crate::gym_scene::build_gym(&d.level.spec(), &crate::look::POLANA, true);
+            let (_scene, meta) = crate::gym_scene::build_gym(&d.level.spec(), &crate::look::POLANA);
             let (runs, _) = crate::crack::runs_of(&meta.piers);
             let sheets = crate::wall::compile(&runs, lw).unwrap_or_else(|m| panic!("demo \"{}\" does not compile against its own level: {m:?}", d.name));
             assert_eq!(sheets.len(), runs.len(), "\"{}\": one sheet per run", d.name);
@@ -1339,7 +1419,7 @@ mod catalogue_tests {
     /// comparing two views of the same wall.
     #[test]
     fn every_specimen_names_its_own_wall_and_its_own_run() {
-        let (_scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Catalogue.spec(), &crate::look::POLANA, true);
+        let (_scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Catalogue.spec(), &crate::look::POLANA);
         let specs = crate::demos::catalogue_wear().walls;
         assert_eq!(specs.len(), 18, "three rows of five + row 3's control, mud and shell hole (its spare slots wait for the next placed effect)");
         let (runs, pier_run) = crate::crack::runs_of(&meta.piers);
@@ -1367,7 +1447,7 @@ mod catalogue_tests {
     /// 2026-07-26 and became an ordinary authored zero.
     #[test]
     fn paint_only_leaves_no_geometry_and_a_zero_break_count_leaves_a_whole_wall() {
-        let (mut scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Catalogue.spec(), &crate::look::POLANA, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Catalogue.spec(), &crate::look::POLANA);
         let mut lab = CrackLab::default();
         let prims = scene.primitives.len();
         resolve(Some(crate::demos::catalogue_wear()), &mut lab, &meta.piers, &mut scene, 1);
@@ -1400,8 +1480,9 @@ mod catalogue_tests {
             assert_ne!(pad(i) & CRAZE_BIT, 0, "{label}: the veneer must still be built");
             assert_eq!(pad(i) & GEO_BIT, 0, "{label}: zero breaks was ignored — this wall broke in half");
         }
-        // …and ONE EFFECT PER WALL is a fact about the data: `WallAt::only` pins
-        // every other layer to zero, so no slab can be contaminated by the base
+        // …and ONE EFFECT PER WALL is a fact about the data: every slab in
+        // catalogue.wear spells out `pin <layer> 0` for the five it is NOT
+        // about (plus `breaks 0`), so no slab can be contaminated by the base
         // story the way the old specimens could.
         for w in crate::demos::catalogue_wear().walls {
             let r = lab.pier_run[idx(w.label)];

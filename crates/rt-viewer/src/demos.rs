@@ -41,7 +41,8 @@ pub enum Action {
     /// continuous read instead of a before/after pair (`crack::ramp_story` owns
     /// the curve and the order the causes arrive in).
     ///
-    /// The wall must boot pristine (`wall::WallAt::pristine`) — a ramp that
+    /// The wall must boot pristine — a bare `wall <x> <z> <name>` line in the
+    /// level's wear file, with no statements under it — because a ramp that
     /// starts on an already-weathered wall shows only its top half.
     ///
     /// Painted layers (stains, the fine glaze web, chip patches) ride the
@@ -433,7 +434,7 @@ mod tests {
     }
 
     /// Demos without a smash beat report no breach point — the viewer must
-    /// not author brick runs (or stand down PHYS=1) for them.
+    /// not author brick runs for them.
     #[test]
     fn non_smash_demos_have_no_breach_point() {
         for d in DEMOS.iter().filter(|d| d.name != "wall smash") {

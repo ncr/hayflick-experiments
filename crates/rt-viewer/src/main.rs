@@ -41,7 +41,6 @@ mod demos;
 mod flags;
 mod gym_loop;
 mod gym_scene;
-mod gi_demo;
 mod ide_host;
 mod look;
 mod menu;

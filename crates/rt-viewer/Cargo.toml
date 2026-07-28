@@ -16,8 +16,8 @@ house-game = { path = "../house-game" }
 ide = { path = "../ide" }
 sim-core = { path = "../sim-core" }
 iso-core = { path = "../iso-core" }
-# destructibility exploration (voxel-physics-spike branch): PHYS=1 drops a
-# Rapier brick wall + projectile into the gym as extra dynamic runs.
+# destructibility: the "wall smash" demo's rubble — a Box3D brick wall +
+# projectile authored into the gym as extra dynamic runs (phys_scene.rs).
 phys-spike = { path = "../phys-spike" }
 ash = "0.38"
 glam = "0.30"

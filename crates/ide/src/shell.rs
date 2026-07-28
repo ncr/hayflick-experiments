@@ -85,6 +85,15 @@ impl Default for Ide {
     }
 }
 
+/// How many hierarchy rows a panel of this height DRAWS. One expression, three
+/// callers (draw, press, wheel): a hit-test that thinks one more row is on
+/// screen than the draw does hands a click to an object nobody can see — the
+/// panel's last row leaves up to `ROW_H - 1` px of undrawn strip at the bottom,
+/// and that strip is exactly where the disagreement shows.
+fn hier_visible(h: i32) -> i32 {
+    (h - HEAD_H - 2) / ROW_H
+}
+
 fn rects(vw: i32, vh: i32) -> (Rect, Rect, Rect) {
     let bar = Rect { x: 0, y: 0, w: vw, h: TOPBAR_H };
     let hier = Rect { x: 0, y: TOPBAR_H, w: HIER_W, h: vh - TOPBAR_H };
@@ -154,7 +163,10 @@ impl Ide {
         if hier.contains(p) {
             let rows = hier_rows(scene);
             let i = (p.1 - (hier.y + HEAD_H + 1)) / ROW_H + self.scroll;
-            if p.1 >= hier.y + HEAD_H && i >= 0 {
+            // only the DRAWN rows are clickable — below the last one the panel
+            // is blank chrome, and a click there must not select the row the
+            // draw stopped short of
+            if p.1 >= hier.y + HEAD_H && i >= 0 && i < self.scroll + hier_visible(hier.h) {
                 if let Some(HRow::Obj(id)) = rows.get(i as usize) {
                     self.sel = Some(*id);
                 }
@@ -201,13 +213,18 @@ impl Ide {
         self.cursor = p;
         let Some(d) = &mut self.drag else { return };
         let Some(o) = scene.obj(d.obj) else { return };
-        if matches!(o.props[d.prop].kind, PropKind::Cycle { .. }) {
+        // LOOKED UP, not indexed (like `drag_state`): the model is rebuilt every
+        // frame from the live spec, and a live-applied drag can change what the
+        // adapter declares — a wall's pattern row cycles the policy and the
+        // native-param rows under it come and go with it.
+        let Some(prop) = o.props.get(d.prop) else { return };
+        if matches!(prop.kind, PropKind::Cycle { .. }) {
             return; // a cycler's pending is the press's step, not a track position
         }
         let insp_x = vw - INSP_W;
         let (x0, x1) = (insp_x + TRACK_X0, insp_x + TRACK_X1);
         let frac = (p.0 - x0) as f32 / (x1 - x0) as f32;
-        d.pending = slider_value(&o.props[d.prop].kind, frac);
+        d.pending = slider_value(&prop.kind, frac);
     }
 
     /// The in-flight drag as (object, prop key, pending value) — the host
@@ -224,7 +241,8 @@ impl Ide {
     pub fn release(&mut self, scene: &SceneModel) -> Option<Edit> {
         let d = self.drag.take()?;
         let o = scene.obj(d.obj)?;
-        let unchanged = match (&o.props[d.prop].kind, d.pending) {
+        let prop = o.props.get(d.prop)?; // the row may be gone (see `drag_to`)
+        let unchanged = match (&prop.kind, d.pending) {
             (PropKind::SliderI { v, .. } | PropKind::Cycle { v, .. }, PropVal::I(p)) => *v == p,
             (PropKind::SliderF { v, .. }, PropVal::F(p)) => *v == p,
             _ => true,
@@ -232,7 +250,7 @@ impl Ide {
         if unchanged {
             return None;
         }
-        Some(Edit { obj: d.obj, key: o.props[d.prop].key, v: d.pending })
+        Some(Edit { obj: d.obj, key: prop.key, v: d.pending })
     }
 
     pub fn dragging(&self) -> bool {
@@ -251,8 +269,7 @@ impl Ide {
             return false;
         }
         let rows = hier_rows(scene).len() as i32;
-        let visible = (hier.h - HEAD_H - 2) / ROW_H;
-        self.scroll = (self.scroll - dy).clamp(0, (rows - visible).max(0));
+        self.scroll = (self.scroll - dy).clamp(0, (rows - hier_visible(hier.h)).max(0));
         true
     }
 
@@ -285,8 +302,7 @@ impl Ide {
         let mut c = Self::panel_chrome(r, "hierarchy");
         let rows = hier_rows(scene);
         let y0 = HEAD_H + 1;
-        let visible = (r.h - y0 - 1) / ROW_H;
-        for (vi, row) in rows.iter().skip(self.scroll.max(0) as usize).take(visible as usize).enumerate() {
+        for (vi, row) in rows.iter().skip(self.scroll.max(0) as usize).take(hier_visible(r.h) as usize).enumerate() {
             let y = y0 + vi as i32 * ROW_H;
             match row {
                 HRow::Head(g) => {
@@ -505,6 +521,45 @@ mod tests {
         assert_eq!(ide.scroll, 3);
         ide.wheel(&scene, (10, TOPBAR_H + 10), 99, VW, VH);
         assert_eq!(ide.scroll, 0);
+    }
+
+    /// The hierarchy's clickable rows are exactly its DRAWN rows. The panel's
+    /// last row leaves a few px of blank chrome at the bottom; a click there
+    /// used to land on the row the draw stopped short of, i.e. select an object
+    /// that is not on screen.
+    #[test]
+    fn a_click_below_the_last_drawn_row_selects_nothing() {
+        let scene = fixture(); // 5 rows: actors, player, lamps, lamp a, lamp b
+        let vh = 72; // hierarchy body: 3 rows drawn, 3 px of strip under them
+        let (_, hier, _) = rects(VW, vh);
+        assert_eq!(hier_visible(hier.h), 3, "the fixture's 4th row is off screen");
+        let mut ide = Ide::default();
+        let strip_y = hier.y + HEAD_H + 1 + 3 * ROW_H;
+        assert!(ide.press(&scene, (10, strip_y), VW, vh), "blank chrome still consumes");
+        assert_eq!(ide.sel, None, "the undrawn `lamp a` row is not clickable");
+        // …and the last DRAWN object row still is
+        assert!(ide.press(&scene, (10, hier.y + HEAD_H + 1 + ROW_H + 3), VW, vh));
+        assert_eq!(ide.sel, Some(ObjId(0)), "player is row 1, drawn and clickable");
+    }
+
+    /// A drag holds a prop INDEX, and the model is rebuilt every frame from the
+    /// live spec — a wall's pattern cycle takes its native-param rows with it.
+    /// `drag_to`/`release` must look the row up, not index it.
+    #[test]
+    fn a_drag_outlives_the_row_it_started_on() {
+        let scene = fixture();
+        let mut ide = Ide::default();
+        ide.select(Some(ObjId(1)));
+        // press on the SECOND slider (cell x), then shrink the object's props
+        let row_y = TOPBAR_H + HEAD_H + 1 + ROW_H + 6 * ROW_H + ROW_H / 2;
+        let (x0, x1) = (VW - INSP_W + TRACK_X0, VW - INSP_W + TRACK_X1);
+        assert!(ide.press(&scene, (x1, row_y), VW, VH));
+        assert_eq!(ide.drag_state(&scene).map(|(_, k, _)| k), Some("cx"));
+        let mut shrunk = fixture();
+        shrunk.objects[1].props.truncate(1);
+        ide.drag_to(&shrunk, (x0, row_y), VW, VH); // must not panic
+        assert_eq!(ide.release(&shrunk), None, "a vanished row emits no edit");
+        assert!(!ide.dragging());
     }
 
     #[test]

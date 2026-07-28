@@ -210,8 +210,9 @@ pub const PATCH_GAP: f32 = 0.06;
 /// hole" read collapses into a bump.
 const MIN_H: f32 = 0.06;
 
-/// Site search lattice — the 0.1-wu authoring grid, the same one `run_level`
-/// samples the damage field on. Every term in [`corr`] is smooth over ≥ 0.3 wu,
+/// Site search lattice — the 0.1-wu authoring grid, the same one
+/// `wall::RunField::of` samples the damage field on when it solves a run's
+/// thresholds. Every term in [`corr`] is smooth over ≥ 0.3 wu,
 /// so this resolves all of them, and the site then snaps onto the bar mat
 /// anyway.
 const LATTICE: f32 = 0.1;

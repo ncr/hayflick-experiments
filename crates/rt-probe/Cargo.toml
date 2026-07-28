@@ -8,4 +8,3 @@ description = "The deterministic iso ray-traced renderer library — Vulkan ray_
 iso-core = { path = "../iso-core" }
 ash = "0.38"
 glam = "0.30"
-gltf = { version = "1.4", features = ["import", "utils", "KHR_materials_emissive_strength"] }

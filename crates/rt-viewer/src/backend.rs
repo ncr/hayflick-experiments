@@ -5,8 +5,8 @@
 //! implements the same trait. The backend is selected at compile time by
 //! target OS (`new_backend`).
 //!
-//! Everything crossing the boundary is plain data (`FrameState`, `Spotlight`,
-//! handles — all Vulkan-free, in `rt_probe`) plus the small parameter bundles
+//! Everything crossing the boundary is plain data (`FrameState`, handles —
+//! all Vulkan-free, in `rt_probe`) plus the small parameter bundles
 //! below. No Vulkan/Metal type ever appears in `Viewer`.
 
 use glam::{Vec2, Vec3};
@@ -187,7 +187,7 @@ pub trait RenderBackend {
     /// Game-facing name→handle maps (lights frozen at the emissive-scan order,
     /// instances at the dynamic-run order) — the sim adapter joins onto these.
     fn handles(&self) -> &SceneHandles;
-    /// Real NEE light count (excludes the reserved spotlight slots).
+    /// NEE light count — every record in the light list is a real light now.
     fn light_count(&self) -> u32;
 
     /// The zoom=1 integer upscale factor (BASE_SCALE / the PIXEL env knob).
@@ -249,7 +249,7 @@ pub trait RenderBackend {
     /// the fresh `Scene` before rebuilding instead.
     fn set_material_pad(&mut self, _material_id: usize, _pad: i32) {}
 
-    /// Live per-material EFFECT WORD update — [`set_material_pad`]'s sibling for
+    /// Live per-material EFFECT WORD update — [`Self::set_material_pad`]'s sibling for
     /// the wear family's appearance dials, which ride `Material.emissive[3]`
     /// (see `crate::wear` for the codec and the 24-bit budget). Same mechanism:
     /// the per-frame practicals stream re-uploads the whole material array, so

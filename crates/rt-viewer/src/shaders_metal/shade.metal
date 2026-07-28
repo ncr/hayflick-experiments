@@ -7,22 +7,21 @@
 // Vulkan ray_query shader; structs are byte-for-byte ports (packed_float3 to
 // match GL_EXT_scalar_block_layout vec3 = 12 B).
 //
-// Differences from the GLSL while the headless renderer grows:
-//   * textures ride a fixed-size texture-table array (`texs`, [[texture(0)]])
-//     instead of Vulkan's binding-6 descriptor array; texIndex selects the
-//     slot and albedo multiplies the NEAREST-sampled base colour, same result.
-//   * probe GI gated by pc.hasProbes; M1 binds a dummy header and skips it.
-// Everything else (sun NEE, light NEE incl. spotlight/screen falloff, AO, fog,
-// sky, the +1/64 px tie bias) is a faithful port.
+// The two differ only in HOW the push constants are packed (misc2 below is
+// not the Vulkan ShadePush's misc2); every shading decision — sun NEE, light
+// NEE incl. one-sided screen falloff, AO, fog, sky, the +1/64 px tie bias, the
+// probe GI lookup — is a faithful port. The last logic difference, an M1
+// bring-up gate `hasProbes` wired to a literal 1 on the host, is deleted
+// (2026-07-28) and blocked from returning by wear.rs's FORBIDDEN table.
 
 #include <metal_stdlib>
 #include <metal_raytracing>
 using namespace metal;
 using namespace metal::raytracing;
 
-struct Vertex   { packed_float3 pos; packed_float3 nrm; float2 uv; };                 // 32 B
+struct Vertex   { packed_float3 pos; packed_float3 nrm; };                            // 24 B
 struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };   // 16 B
-struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int texIndex; int pad; }; // 48 B
+struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int rsv; int pad; };      // 48 B
 struct Light    { float4 posRad; float4 color; float4 dir; };                         // 48 B
 
 // Mirrors the Rust Push struct (see main.rs). cam*.w carries half-extents / AO.
@@ -32,7 +31,7 @@ struct Push {
     float4 camDir;    // xyz forward, w = RT-AO radius (wu)
     float4 camPos;    // xyz eye,     w = RT-AO strength
     int4   misc;      // W, H, aoRays, debug
-    int4   misc2;     // lightCount, hasProbes, roomLights16, _
+    int4   misc2;     // lightCount, roomLights16, reflBlockPx, _
     float4 env0;      // sunScale, skyScale, fogDensity, fogHeight
     float4 roi;       // CAVE_ROI: player world xyz, w = disc radius (low-res px)
     float4 roi2;      // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
@@ -55,13 +54,8 @@ static float bayer4(int2 lp){
   return (B[(lp.x & 3) + (lp.y & 3) * 4] + 0.5) / 16.0;
 }
 
-// NEAREST + REPEAT, no mips — one atlas texel = one game pixel (the pixel-perfect
-// invariant; never LinearFilter on this chain). Base-colour textures are sampled
-// from sRGB-format MTLTextures, so the GPU returns linear, matching hex_linear.
-constexpr sampler texSamp(filter::nearest, mip_filter::none, address::repeat);
-
 // `edge` = world distance to the nearest GATING triangle edge (contour AA).
-struct Hit { float t; float3 n; float2 uv; int mat; float edge; };
+struct Hit { float t; float3 n; int mat; float edge; };
 
 static float3 skyCol(float3 d, constant Push& pc) {
     float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
@@ -101,7 +95,6 @@ static bool trace(float3 o, float3 dir, float tmax, uint mask,
     uint i2 = indices[g.indexOffset + prim * 3u + 2u] + g.vertexOffset;
     Vertex v0 = verts[i0], v1 = verts[i1], v2 = verts[i2];
     h.n  = normalize(b0 * float3(v0.nrm) + b1 * float3(v1.nrm) + b2 * float3(v2.nrm));
-    h.uv = b0 * v0.uv + b1 * v1.uv + b2 * v2.uv;
     h.mat = g.materialId;
     // CONTOUR AA: distance to the nearest triangle edge in world units, the
     // triangle's LONGEST edge excluded (that is the quad diagonal every box
@@ -167,7 +160,7 @@ static float3 probeE(float3 p, float3 n, device const float* pd, constant Push& 
     int3 dims = int3(int(pd[4]), int(pd[5]), int(pd[6]));
     if (dims.x < 1 || dims.y < 1 || dims.z < 1) return float3(0.0);
     uint bankStride = uint(dims.x * dims.y * dims.z) * 20u;
-    float lp = float(pc.misc2.z) / 65536.0;
+    float lp = float(pc.misc2.y) / 65536.0;
     float3 f = (p + n * (0.3 * spacing) - origin) / spacing;
     f = clamp(f, float3(0.0), float3(dims) - 1.001);
     int3 i0 = int3(floor(f));
@@ -301,7 +294,6 @@ kernel void shade(
     device float4*         outRadiance [[buffer(8)]],
     device float4*         outAlbedo   [[buffer(9)]],  // primary-hit albedo G-buffer (tonemap poster demodulation)
     device float4*         outPos      [[buffer(10)]], // primary-hit world position (tonemap outline; w=0 sky)
-    array<texture2d<float>, NTEX_COUNT> texs [[texture(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
     int W = pc.misc.x, H = pc.misc.y;
@@ -498,7 +490,6 @@ kernel void shade(
 
     Material m = mats[h.mat];
     float3 albedo = m.baseColor.rgb;
-    if (m.texIndex >= 0) albedo *= texs[m.texIndex].sample(texSamp, h.uv).rgb;
     float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
     // the FLAT face normal, kept before wear/bump rewrite it (contour AA gate)
     float3 aaGn = n;
@@ -506,7 +497,7 @@ kernel void shade(
     // normal bump; (2) broad worn zones + fine scuff + sparse scratches in the albedo;
     // (3) contact grime in occluded crevices (below, once AO is known). BUMP=0 → unchanged.
     float3 wpos = o + h.t * d;
-    bool greybox = pc.look.y > 0.0 && m.texIndex < 0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0;
+    bool greybox = pc.look.y > 0.0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0;
     float wstr = pc.look.y;
     float floorw = 0.55 + 0.45 * clamp(n.y, 0.0, 1.0);
     if (greybox) {
@@ -554,7 +545,7 @@ kernel void shade(
     // says about a wall is geometry, and the shade pass has no business with it.
     {
         uint kb = uint(m.pad);
-        if ((kb >> 8) != 0u && m.texIndex < 0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0) {
+        if ((kb >> 8) != 0u && dot(m.emissive.rgb, float3(1.0)) <= 0.0) {
             // The two painted layers' STRENGTHS, one lane each (host:
             // `crack::pad_bits`). Both used to read ONE lane — the `age` knob —
             // so their AREAS were independent (step 5's solved thresholds) while
@@ -718,11 +709,11 @@ kernel void shade(
         float3 ldir = toL / dist;
         float ndl2 = dot(n, ldir);
         if (ndl2 <= 0.0) continue;
+        // dir.w is the DIRECTIONAL flag and nothing else (scan_lights writes
+        // 0 or 1): the spotlight cone path (dir.w == 2.0) is deleted with
+        // `Spotlight` itself — twin of shade.comp.
         float emit = 1.0;
-        if (lt.dir.w == 2.0) {
-            float co = lt.color.w;
-            emit = smoothstep(co, mix(co, 1.0, 0.6), dot(-ldir, lt.dir.xyz));
-        } else if (lt.dir.w > 0.0) {
+        if (lt.dir.w > 0.0) {
             emit = 2.0 * max(dot(-ldir, lt.dir.xyz), 0.0);
         }
         if (emit <= 0.0) continue;
@@ -737,7 +728,7 @@ kernel void shade(
     }
 
     if (pc.misc.w == 4) { outRadiance[idx] = float4(float3(ao), 1.0); return; }
-    if (pc.misc.w != 3 && pc.misc2.y != 0) col += albedo * (1.0/PI) * probeE(p, n, pd, pc) * ao * pc.look2.x;
+    if (pc.misc.w != 3) col += albedo * (1.0/PI) * probeE(p, n, pd, pc) * ao * pc.look2.x;
 
     // ---- PIXELATED REFLECTIONS (REFL = look2.w > 0) — twin of shade.comp: a
     // mirror bounce rendered at 1/REFL_PX resolution and composited over the
@@ -750,7 +741,7 @@ kernel void shade(
     // knob strength — a stylized wet-floor sheen, not PBR. REFL=0 → no rays.
     // MATTE floors (grass) never turn into wet mirrors either.
     if (pc.look2.w > 0.0 && !matte && (m.metallic > 0.5 || n.y > 0.8)) {
-        int B = max(pc.misc2.w, 1);
+        int B = max(pc.misc2.z, 1);
         int2 bp = (int2(gid) / B) * B;
         float ub = ((float(bp.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;
         float vb = -(((float(bp.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);
@@ -767,13 +758,12 @@ kernel void shade(
             if (trace(bpos, rdir, 60.0, 0x05u, accel, verts, indices, geoms, rh)) {
                 Material rm = mats[rh.mat];
                 float3 ralb = rm.baseColor.rgb;
-                if (rm.texIndex >= 0) ralb *= texs[rm.texIndex].sample(texSamp, rh.uv).rgb;
                 float3 rn = rh.n; if (dot(rn, rdir) > 0.0) rn = -rn;
                 float3 rp = bpos + rdir * rh.t + rn * 0.003;
                 rc = rm.emissive.rgb;
                 float rndl = max(dot(rn, sunDir), 0.0);
                 if (pc.env0.x > 0.0 && rndl > 0.0 && !occluded(rp, sunDir, 200.0, accel)) rc += ralb * sun * rndl;
-                if (pc.misc2.y != 0) rc += ralb * (1.0/PI) * probeE(rp, rn, pd, pc) * pc.look2.x;
+                rc += ralb * (1.0/PI) * probeE(rp, rn, pd, pc) * pc.look2.x;
             } else {
                 rc = skyCol(rdir, pc);
             }

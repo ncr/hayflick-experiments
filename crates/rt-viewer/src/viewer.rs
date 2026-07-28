@@ -125,11 +125,9 @@ pub struct Viewer {
     pub rec: Option<crate::capture::Rec>,
     pub rec_jobs: Vec<std::thread::JoinHandle<()>>,
     pub movie: Option<crate::capture::Movie>,
-    // ---- Stage-2 dynamic-GI tear-off spike (voxel-physics-spike branch):
-    // GI_TEAR=<tick> hides the gym roof and refreshes the interior probes at
-    // that sim tick (SHOT drains fully for a settled single frame; live/DEMO
-    // amortizes over frames). `None` in the normal gym.
-    gi_tear: Option<u64>,
+    // ---- roof tear-off (the DDGI flood): the "dusk flood" demo's beat and the
+    // `x` key hide these prims and refresh the room's probes. One-shot per
+    // build — `torn` re-arms on a scene rebuild.
     roof_prims: std::ops::Range<usize>,
     room_min: Vec3,
     room_max: Vec3,
@@ -233,42 +231,21 @@ impl Viewer {
         let mut spec = demo.map_or(crate::demos::Level::Gym, |d| d.level).spec();
         if let Some(d) = demo {
             spec.player_start = house_game::gym::grid::CellPos::new(d.spawn.0, d.spawn.1);
-        } else if std::env::var("GI_INDOORS").is_ok() {
-            // Dynamic-GI spike: GI_INDOORS spawns the player inside the building
-            // so the WALLCUT dollhouse reveals the interior; NO_ROOF builds the
-            // gym roofless (the "torn off" state) for the static A/B.
-            spec.player_start = house_game::gym::grid::CellPos::new(5, 5);
         }
-        let roof = std::env::var("NO_ROOF").is_err();
         // Boot look: the LEVEL demo's, else LOOK env (the ESC menu switches
         // live from there).
         let look = match demo {
             Some(d) => crate::look::by_name(d.look).unwrap_or_else(crate::look::from_env),
             None => crate::look::from_env(),
         };
-        let (mut scene, gym_meta) = crate::gym_scene::build_gym(&spec, look, roof);
+        let (mut scene, gym_meta) = crate::gym_scene::build_gym(&spec, look);
         // Wall-smash demo (phase 3): arm the rig + author the brick runs into
         // the scene BEFORE the backend consumes it. The rig owns the phys/{i}
-        // namespace, so the PHYS=1 free-standing demo stands down.
+        // namespace.
         let smash = arm_smash(demo, &gym_meta);
         let mut chunky_mats = Vec::new();
         if let Some(rig) = &smash {
             chunky_mats = crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
-        }
-        // Destructibility spike (voxel-physics-spike branch): PHYS=1 builds a
-        // box3d brick wall + projectile and authors matching `phys/{i}`
-        // dynamic runs into the scene BEFORE the backend consumes it. `None`
-        // (and zero extra geometry) in the normal gym.
-        let phys = (smash.is_none() && std::env::var("PHYS").is_ok()).then(phys_spike::PhysWorld::demo);
-        if let Some(p) = &phys {
-            crate::phys_scene::author(&mut scene, p);
-        }
-        // Dynamic-GI spike (Stage 1): GI_DEMO=1 authors a BAKED destructible
-        // wall (in the probe bake); =2 boots already-destroyed for the static
-        // A/B. The runtime destroy+re-bake path is `destroy_gi_wall`.
-        let gi_demo = std::env::var("GI_DEMO").ok().and_then(|v| v.parse::<u32>().ok());
-        if let Some(mode) = gi_demo {
-            crate::gi_demo::author(&mut scene, look, mode == 1);
         }
         // Crack lab: stamp per-pier aging knobs into the materials BEFORE the
         // backend consumes the scene. CRACKS env (harness, uniform) overrides
@@ -357,7 +334,6 @@ impl Viewer {
                 std::fs::create_dir_all(&dir).ok();
                 crate::capture::Movie::new(dir, &cfg)
             }),
-            gi_tear: std::env::var("GI_TEAR").ok().map(|v| v.parse().unwrap_or(0)),
             roof_prims: gym_meta.roof_prims,
             room_min: gym_meta.room_min,
             room_max: gym_meta.room_max,
@@ -373,7 +349,6 @@ impl Viewer {
             exit_requested: false,
             cfg,
         };
-        r.gym.phys = phys; // hand the stepped physics world to the loop
         // backend.new already built the swapchain (and baked probes); centre the
         // visible crop now that the view exists.
         r.recenter_pan();
@@ -433,8 +408,6 @@ impl Viewer {
     /// follow-cam recentres on the respawned player's first step.
     pub fn restart_gym(&mut self) {
         self.gym = GymLoop::new(self.gym.spec.clone());
-        // spike: re-arm the physics wall so RESTART replays the smash
-        self.gym.phys = std::env::var("PHYS").is_ok().then(phys_spike::PhysWorld::demo);
     }
 
     /// Runtime look switch (Faza 1b machinery): rebuild the greybox in the
@@ -457,7 +430,7 @@ impl Viewer {
     /// identical host work, half the wall clock (see `Viewer::crack_release`).
     pub(crate) fn rebuild_in_look(&mut self, look: &'static crate::look::Look, refresh: ProbeRefresh) {
         let t0 = std::time::Instant::now();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&self.gym.spec, look, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&self.gym.spec, look);
         // re-arm the wall-smash rig against the FRESH meta (prim indices may
         // shift with the look) + re-author its brick runs; a fired smash
         // resets to the standing wall — same one-shot rule as the roof tear
@@ -466,9 +439,6 @@ impl Viewer {
         if let Some(rig) = &self.smash {
             self.aa_chunky_mats = crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
             self.gym.phys = None; // bricks wait zero-scaled for the beat
-        } else if let Some(p) = &self.gym.phys {
-            // spike: keep the PHYS=1 physics runs present across a look switch
-            crate::phys_scene::author(&mut scene, p);
         }
         // crack lab: refresh the pick targets and re-stamp the aging knobs
         // into the fresh materials (a rebuild mints them clean). Live-dialed
@@ -513,7 +483,6 @@ impl Viewer {
         self.gym.spec.player_start = house_game::gym::grid::CellPos::new(demo.spawn.0, demo.spawn.1);
         self.restart_gym();
         self.torn = false;
-        self.gi_tear = None; // demos drive the tear via their script, not GI_TEAR
         self.cur_demo = Some(demo); // apply_look below re-arms the smash rig
         self.demo = crate::demos::DemoRunner::new(demo.script);
         self.env_override = None;
@@ -604,7 +573,6 @@ impl Viewer {
         self.last_frame = Some(now);
         self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
         self.advance_sim(dt); // DEMO tick / pause / live fixed-tick
-        self.maybe_tear(); // Stage-2 dynamic-GI spike: roof tear-off at GI_TEAR
         self.drive_demo(); // named-demo timeline: tick-scheduled beats + look morph
         self.follow_player_camera(); // follow the eased player body
         // smooth quarter-turn in flight: ease the yaw
@@ -628,7 +596,6 @@ impl Viewer {
             room_lights: dim,
             time: self.gym.time(), // SIM time — replayable, no wall clock
             light_emission: &emission,
-            spotlights: &[],
             instances: &instances,
         };
 
@@ -716,34 +683,11 @@ impl Viewer {
         ok
     }
 
-    /// Stage-2 dynamic-GI spike trigger: at sim tick ≥ `GI_TEAR`, hide the gym
-    /// roof (mask 0 → gone from the image and the GI transport) and refresh the
-    /// interior probes. Headless SHOT ignores the tick gate and drains the
-    /// refresh fully, so the single captured frame is the settled result (the
-    /// A/B ground truth); live/DEMO waits for the tick and amortizes, so the
-    /// interior brightening plays out over the following frames with no stall.
-    fn maybe_tear(&mut self) {
-        let Some(at) = self.gi_tear else { return };
-        if self.torn || self.roof_prims.is_empty() {
-            return;
-        }
-        let is_shot = self.harness.shot.is_some();
-        if !is_shot && self.gym.tick.0 < at {
-            return;
-        }
-        let prims: Vec<usize> = self.roof_prims.clone().collect();
-        // GI_TEAR_ALL: refresh EVERY probe on the same roof-masked scene (a full
-        // rebake) — the verification ground truth the targeted room-region
-        // refresh must match, bit-for-bit, inside the room.
-        let (min, max) = if std::env::var("GI_TEAR_ALL").is_ok() { (Vec3::splat(-1e6), Vec3::splat(1e6)) } else { (self.room_min, self.room_max) };
-        unsafe { self.backend.tear_off(&prims, min, max, !is_shot) };
-        self.torn = true;
-    }
-
-    /// Stage-2 spike, LIVE trigger (a key press): tear the roof off now — hide
-    /// it + queue the amortized interior probe refresh, so the dynamic GI floods
-    /// in over the next frames while the player watches (WALLCUT already shows
-    /// the interior when they're inside). One-shot; relaunch to re-arm.
+    /// The roof tear-off (the DDGI flood): hide the roof prims + queue the
+    /// amortized interior probe refresh, so the dynamic GI floods in over the
+    /// next frames while the player watches (WALLCUT already shows the interior
+    /// when they're inside). Driven by the "dusk flood" demo's `TearRoof` beat
+    /// and by the `x` key. One-shot; a scene rebuild re-arms it.
     pub fn tear_roof(&mut self) {
         if self.roof_prims.is_empty() {
             println!("roof: nothing to tear (roofless build)");

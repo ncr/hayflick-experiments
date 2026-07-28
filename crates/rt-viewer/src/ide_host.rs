@@ -19,12 +19,24 @@
 //! world click — chrome first, then ray-picking. Slider drags are coalesced
 //! to one step per frame and their edits land on RELEASE (the input-pacing
 //! discipline: an edit rebuilds the scene; a drag may not).
+//!
+//! SHAPE OF THIS FILE: every DECISION is a free function over borrowed data —
+//! [`pick_target`] (which pickable a ray names), [`lift_plan`] (which piers a
+//! selection lifts), [`wear_props`]/[`wear_row_of`] (what a wall exposes, and
+//! the key that reaches each row back), [`split_edit`]/[`edit_val`] (the
+//! `IDE_EDIT` grammar) — and the `impl Viewer` methods only feed them the live
+//! state and write the result back. These decisions are plain state machines
+//! over `Vec<usize>`/`Vec<Material>`, so as `&mut self` code they were
+//! untestable without a GPU: a wrong-run outline, or a lift that misses the
+//! chalk core and rings every groove from the inside, ships with a green tree.
+//! Keep new logic on the free side of that line.
 
 use crate::backend::Stamp;
-use crate::gym_scene::cell_world;
+use crate::gym_scene::{cell_world, Pier};
 use crate::menu::{rows_of, Row};
 use crate::viewer::Viewer;
 use glam::{Vec2, Vec3};
+use house_game::gym::grid::CellPos;
 use ide::{Edit, Obj, ObjId, Prop, PropKind, PropVal, SceneModel};
 
 /// IDE pixel scale for a window height: HALF the menu's UI pixel, floored at
@@ -59,8 +71,8 @@ pub struct IdeState {
 impl IdeState {
     pub fn from_env() -> IdeState {
         let mut ui = ide::Ide::default();
-        ui.open = std::env::var("IDE").is_ok_and(|v| v != "0");
-        IdeState { ui, drag_pending: false, wheel: 0.0, model: SceneModel { level: String::new(), objects: Vec::new() }, boot_sel: std::env::var("IDE_SEL").ok(), lifted: Vec::new() }
+        ui.open = std::env::var(crate::wear_file::env::IDE).is_ok_and(|v| v != "0");
+        IdeState { ui, drag_pending: false, wheel: 0.0, model: SceneModel { level: String::new(), objects: Vec::new() }, boot_sel: std::env::var(crate::wear_file::env::IDE_SEL).ok(), lifted: Vec::new() }
     }
 }
 
@@ -116,6 +128,164 @@ fn wear_key(row: Row, pdefs: &'static [(&'static str, f32)]) -> &'static str {
     }
 }
 
+/// The wear row a prop key names, for the write path — the reverse of
+/// [`wear_key`], over the SAME `rows_of` walk the props were built from, so a
+/// key can only reach the row it was drawn for.
+fn wear_row_of(spec: &crate::wall::WallSpec, key: &str) -> Option<Row> {
+    let pdefs = crate::crack_geom::POLICY_PARAMS[spec.shape.pattern.code() as usize % crate::crack_geom::NPOL];
+    rows_of(spec).iter().copied().find(|w| wear_key(*w, pdefs) == key)
+}
+
+/// A wall's wear sheet as inspector props — a walk of [`crate::menu::rows_of`],
+/// the shared spelling of "what a wall exposes", so the inspector cannot invent
+/// a row the wear model does not have. Values, pin marks and off-stops come
+/// from that same row model. SHELL placement is a MODE, not an edit: its row
+/// shows the count and whether place-mode is armed, and the hit lands on the
+/// next world click. A [`crate::wall::Miss`] lands as the trailing read row:
+/// what this wall asked for and did not get.
+///
+/// PURE over borrowed data (the adapter's decisions are the part worth
+/// pinning; the `impl Viewer` half only feeds it the live spec and sheet).
+fn wear_props(spec: &crate::wall::WallSpec, sheet: &crate::wall::Sheet, placing: bool) -> Vec<Prop> {
+    let pdefs = crate::crack_geom::POLICY_PARAMS[spec.shape.pattern.code() as usize % crate::crack_geom::NPOL];
+    let sf = |v: f32| PropKind::SliderF { v, min: 0.0, max: 1.0 };
+    let mut props = Vec::new();
+    for (i, row) in rows_of(spec).iter().copied().enumerate() {
+        let key = wear_key(row, pdefs);
+        let mut p = match row {
+            Row::Cause(ci) => {
+                let v = [spec.story.weather, spec.story.settlement, spec.story.cover_loss][ci.min(2)];
+                Prop::new(key, key.replace('_', " "), sf(v))
+            }
+            Row::Layer(l) => {
+                let v = sheet.area[l.index()];
+                let pinned = spec.pin.get(l).is_some();
+                Prop::new(key, l.name(), sf(v)).indent(8).show(format!("{v:.2}{}", if pinned { "*" } else { "" }))
+            }
+            Row::MudTop => Prop::new(key, "mud top", sf(spec.mud_top)).indent(16),
+            Row::Breaks => Prop::new(key, "breaks", PropKind::SliderI { v: sheet.breaks.count as i32, min: 0, max: crate::wall::Breaks::MAX as i32 }),
+            // a MODE row, not an edit: clicking it arms place-mode and the
+            // next world click on the selected wall places the hit (or
+            // removes the one it lands on) — the placing gesture IS the
+            // authoring, so no slider can carry it
+            Row::Shell => {
+                let n = spec.shells.count();
+                Prop::new(key, "shells", PropKind::Cycle { v: placing as i32, n: 2 }).show(if placing { format!("{n} [click wall]") } else { format!("{n} [place]") })
+            }
+            Row::Caliber => Prop::new(key, "caliber", sf(spec.shells.caliber)).indent(8).show(format!("{:.2}wu", spec.shells.caliber)),
+            Row::Scrub => Prop::new(key, "variant", sf(spec.scrub)),
+            Row::BandLo => {
+                let off = spec.band.0 == 0.0;
+                Prop::new(key, "band low", sf(spec.band.0)).show(if off { "off".into() } else { format!("{:.2}", spec.band.0) })
+            }
+            Row::BandHi => {
+                let off = spec.band.1 == 1.0;
+                Prop::new(key, "band high", sf(spec.band.1)).show(if off { "off".into() } else { format!("{:.2}", spec.band.1) })
+            }
+            Row::Grain => {
+                let off = spec.shape.grain < crate::wall::GRAIN_OFF;
+                Prop::new(key, "grain", sf(spec.shape.grain)).show(if off { "off".into() } else { format!("{:.2}wu", spec.shape.grain) })
+            }
+            Row::Relief => Prop::new(key, "relief", sf(spec.shape.relief)),
+            Row::Pattern => Prop::new(key, "pattern", PropKind::Cycle { v: spec.shape.pattern.code() as i32, n: crate::crack_geom::NPOL as i32 }).show(format!("< {} >", spec.shape.pattern.name())),
+            Row::Param(j) => Prop::new(key, key, sf(spec.shape.pattern.par().get(j).copied().unwrap_or(0.0))).indent(8),
+        };
+        if i == 0 {
+            p = p.head("wear");
+        }
+        if row == Row::Grain {
+            p = p.head("shape");
+        }
+        props.push(p);
+    }
+    match sheet.notes.first() {
+        Some(crate::wall::Miss::Clamped { dial, asked, used, .. }) => {
+            props.push(Prop::new("note", format!("{dial} limit"), PropKind::Read(format!("{asked:.2} -> {used:.2}"))));
+        }
+        Some(crate::wall::Miss::Coarse { layer, asked, got, .. }) => {
+            props.push(Prop::new("note", format!("{} coarse", layer.name()), PropKind::Read(format!("{asked:.2} -> {got:.2}"))));
+        }
+        _ => {}
+    }
+    props
+}
+
+/// The nearest pier a ray strikes, with its distance — the wall half of a pick,
+/// and place-mode's own hit test (which wants the PIER the ray hit, not its
+/// run). Ties keep the earlier pier, as the inline loops this replaced did.
+fn nearest_pier(o: Vec3, d: Vec3, piers: &[Pier]) -> Option<(f32, usize)> {
+    let mut hit: Option<(f32, usize)> = None;
+    for (i, pier) in piers.iter().enumerate() {
+        if let Some(t) = crate::crack::ray_aabb(o, d, pier.lo, pier.hi) {
+            if hit.is_none_or(|(bt, _)| t < bt) {
+                hit = Some((t, i));
+            }
+        }
+    }
+    hit
+}
+
+/// Which pickable a ray strikes first, as the IDE names it — the pure decision
+/// inside [`Viewer::ide_click`]'s world pick.
+///
+/// SELECTION IS THE RUN: a wall hit resolves through `pier_run` to the struck
+/// pier's RUN, never to the pier. `gym_scene::wall_slab` cuts an authored wall
+/// into piers wherever a window or a doorway interrupts it — a rendering fact
+/// the level builder never typed — so the thing the ray hits is not the thing
+/// the owner authored.
+fn pick_target(o: Vec3, d: Vec3, piers: &[Pier], pier_run: &[usize], lamps: &[(CellPos, i32)], player: Vec3, spawn: Vec3) -> Option<Target> {
+    let mut best: Option<(f32, Target)> = None;
+    let mut consider = |t: Option<f32>, tg: Target| {
+        if let Some(t) = t {
+            if best.is_none_or(|(bt, _)| t < bt) {
+                best = Some((t, tg));
+            }
+        }
+    };
+    if let Some((t, i)) = nearest_pier(o, d, piers) {
+        consider(Some(t), Target::Run(pier_run.get(i).copied().unwrap_or(0)));
+    }
+    for (i, (cell, _)) in lamps.iter().enumerate() {
+        let c = cell_world(*cell);
+        consider(crate::crack::ray_aabb(o, d, Vec3::new(c.x - 0.1, 0.0, c.z - 0.15), Vec3::new(c.x + 0.4, 1.75, c.z + 0.15)), Target::Lamp(i));
+    }
+    consider(crate::crack::ray_aabb(o, d, Vec3::new(player.x - 0.3, 0.0, player.z - 0.3), Vec3::new(player.x + 0.3, 1.9, player.z + 0.3)), Target::Player);
+    consider(crate::crack::ray_aabb(o, d, Vec3::new(spawn.x - 0.5, 0.0, spawn.z - 0.5), Vec3::new(spawn.x + 0.5, 0.06, spawn.z + 0.5)), Target::Spawn);
+    best.map(|(_, tg)| tg)
+}
+
+/// What a selection costs the scene: the pier the crack lab takes as its own
+/// pick (it addresses piers — the AA scope and `sel_run` hang off it), and
+/// EVERY pier the amber outline lifts.
+///
+/// The whole run, or nothing: a facade cut into three panels by its windows
+/// must outline as ONE wall, and a run's piers share one authored spec. Only a
+/// wall lifts piers — a lamp or the player lifts its dynamic run's materials
+/// instead ([`Viewer::ide_lift_dyn`]), and the spawn is a place with no mesh.
+fn lift_plan(pier_run: &[usize], tg: Option<Target>) -> (Option<usize>, Vec<usize>) {
+    let Some(Target::Run(r)) = tg else { return (None, Vec::new()) };
+    let lift: Vec<usize> = pier_run.iter().enumerate().filter(|(_, pr)| **pr == r).map(|(i, _)| i).collect();
+    (lift.first().copied(), lift)
+}
+
+/// One `IDE_EDIT` statement → (object, key, value). Split from the RIGHT: an
+/// object name may hold spaces (it is whatever the wear file called the run —
+/// "ramped control"), a key and a value may not (`wear_keys_are_single_tokens_and_unique`).
+fn split_edit(stmt: &str) -> Option<(&str, &str, &str)> {
+    let mut it = stmt.rsplitn(3, ' ');
+    let (val, key, name) = (it.next()?, it.next()?, it.next()?);
+    Some((name, key, val))
+}
+
+/// A replayed value, typed by the prop that will receive it — wear rows take
+/// floats, everything else whole steps.
+fn edit_val(kind: &PropKind, text: &str) -> Option<PropVal> {
+    match kind {
+        PropKind::SliderF { .. } => text.parse::<f32>().ok().map(PropVal::F),
+        _ => text.parse::<i32>().ok().map(PropVal::I),
+    }
+}
+
 impl Viewer {
     pub fn ide_scale(&self) -> u32 {
         ide_scale_for(self.backend.extent().1)
@@ -167,10 +337,9 @@ impl Viewer {
             let label = self.crack.label.get(r).copied().unwrap_or("");
             let n_piers = pier_run.iter().filter(|&&pr| pr == r).count();
             let mut props = vec![Prop::new("piers", "piers", PropKind::Read(format!("{n_piers}")))];
-            if self.crack.active && r < self.crack.spec.len() {
-                props.extend(self.wear_props(r));
-            } else {
-                props.push(Prop::new("wear", "wear", PropKind::Read("none on this level".into())));
+            match self.crack.active.then(|| self.crack.spec.get(r).zip(self.crack.sheets.get(r))).flatten() {
+                Some((spec, sheet)) => props.extend(wear_props(spec, sheet, self.crack.placing)),
+                None => props.push(Prop::new("wear", "wear", PropKind::Read("none on this level".into()))),
             }
             objects.push(Obj {
                 id: obj_id(Target::Run(r), nl),
@@ -220,80 +389,6 @@ impl Viewer {
         SceneModel { level: self.cur_demo.map_or("gym", |d| d.name).to_string(), objects }
     }
 
-    /// The picked wall's wear rows as inspector props — the SAME `rows_of`
-    /// walk the wall panel draws, so the two surfaces cannot disagree about
-    /// what a wall exposes. Values, pin marks and off-stops mirror the
-    /// panel's own column; SHELL placement stays the panel's click gesture
-    /// (the IDE owns every world click while open), so shells show as a
-    /// count. A `wall::Miss` lands as the trailing read row, like the
-    /// panel's footer: what this wall asked for and did not get.
-    fn wear_props(&self, r: usize) -> Vec<Prop> {
-        let spec = &self.crack.spec[r];
-        let sheet = &self.crack.sheets[r];
-        let pdefs = crate::crack_geom::POLICY_PARAMS[spec.shape.pattern.code() as usize % crate::crack_geom::NPOL];
-        let sf = |v: f32| PropKind::SliderF { v, min: 0.0, max: 1.0 };
-        let mut props = Vec::new();
-        for (i, row) in rows_of(spec).iter().copied().enumerate() {
-            let key = wear_key(row, pdefs);
-            let mut p = match row {
-                Row::Cause(ci) => {
-                    let v = [spec.story.weather, spec.story.settlement, spec.story.cover_loss][ci.min(2)];
-                    Prop::new(key, key.replace('_', " "), sf(v))
-                }
-                Row::Layer(l) => {
-                    let v = sheet.area[l.index()];
-                    let pinned = spec.pin.get(l).is_some();
-                    Prop::new(key, l.name(), sf(v)).indent(8).show(format!("{v:.2}{}", if pinned { "*" } else { "" }))
-                }
-                Row::MudTop => Prop::new(key, "mud top", sf(spec.mud_top)).indent(16),
-                Row::Breaks => Prop::new(key, "breaks", PropKind::SliderI { v: sheet.breaks.count as i32, min: 0, max: crate::wall::Breaks::MAX as i32 }),
-                // a MODE row, not an edit: clicking it arms place-mode and the
-                // next world click on the selected wall places the hit (or
-                // removes the one it lands on) — the placing gesture IS the
-                // authoring, so no slider can carry it
-                Row::Shell => {
-                    let n = spec.shells.count();
-                    Prop::new(key, "shells", PropKind::Cycle { v: self.crack.placing as i32, n: 2 })
-                        .show(if self.crack.placing { format!("{n} [click wall]") } else { format!("{n} [place]") })
-                }
-                Row::Caliber => Prop::new(key, "caliber", sf(spec.shells.caliber)).indent(8).show(format!("{:.2}wu", spec.shells.caliber)),
-                Row::Scrub => Prop::new(key, "variant", sf(spec.scrub)),
-                Row::BandLo => {
-                    let off = spec.band.0 == 0.0;
-                    Prop::new(key, "band low", sf(spec.band.0)).show(if off { "off".into() } else { format!("{:.2}", spec.band.0) })
-                }
-                Row::BandHi => {
-                    let off = spec.band.1 == 1.0;
-                    Prop::new(key, "band high", sf(spec.band.1)).show(if off { "off".into() } else { format!("{:.2}", spec.band.1) })
-                }
-                Row::Grain => {
-                    let off = spec.shape.grain < crate::wall::GRAIN_OFF;
-                    Prop::new(key, "grain", sf(spec.shape.grain)).show(if off { "off".into() } else { format!("{:.2}wu", spec.shape.grain) })
-                }
-                Row::Relief => Prop::new(key, "relief", sf(spec.shape.relief)),
-                Row::Pattern => Prop::new(key, "pattern", PropKind::Cycle { v: spec.shape.pattern.code() as i32, n: crate::crack_geom::NPOL as i32 }).show(format!("< {} >", spec.shape.pattern.name())),
-                Row::Param(j) => Prop::new(key, key, sf(spec.shape.pattern.par().get(j).copied().unwrap_or(0.0))).indent(8),
-            };
-            if i == 0 {
-                p = p.head("wear");
-            }
-            if row == Row::Grain {
-                p = p.head("shape");
-            }
-            props.push(p);
-        }
-        match sheet.notes.first() {
-            Some(crate::wall::Miss::Clamped { dial, asked, used, .. }) => {
-                props.push(Prop::new("note", format!("{dial} limit"), PropKind::Read(format!("{asked:.2} -> {used:.2}"))));
-            }
-            Some(crate::wall::Miss::Coarse { layer, asked, got, .. }) => {
-                props.push(Prop::new("note", format!("{} coarse", layer.name()), PropKind::Read(format!("{asked:.2} -> {got:.2}"))));
-            }
-            _ => {}
-        }
-        props
-    }
-
     /// Apply one wear edit to run `r` through the SAME write path as the
     /// wall panel (`wear_set_row` / the breaks and pattern setters): spec
     /// mutation + live paint re-stream. The GEOMETRY is the caller's release
@@ -302,8 +397,7 @@ impl Viewer {
         if !self.crack.active || r >= self.crack.spec.len() {
             return;
         }
-        let pdefs = crate::crack_geom::POLICY_PARAMS[self.crack.spec[r].shape.pattern.code() as usize % crate::crack_geom::NPOL];
-        let Some(row) = rows_of(&self.crack.spec[r]).iter().copied().find(|w| wear_key(*w, pdefs) == key) else { return };
+        let Some(row) = wear_row_of(&self.crack.spec[r], key) else { return };
         match (row, v) {
             (Row::Breaks, PropVal::I(n)) => self.wear_set_breaks(r, n.clamp(0, crate::wall::Breaks::MAX as i32) as u8),
             (Row::Pattern, PropVal::I(c)) => self.wear_set_pattern(r, c.rem_euclid(crate::crack_geom::NPOL as i32) as u8),
@@ -378,15 +472,7 @@ impl Viewer {
         // (a click is its own release). Any other click falls through to the
         // pick below, whose selection change disarms (`crack_select`).
         if self.crack.placing {
-            let mut hit: Option<(f32, usize)> = None;
-            for (i, pier) in self.piers.iter().enumerate() {
-                if let Some(t) = crate::crack::ray_aabb(o, d, pier.lo, pier.hi) {
-                    if hit.is_none_or(|(bt, _)| t < bt) {
-                        hit = Some((t, i));
-                    }
-                }
-            }
-            if let Some((t, i)) = hit {
+            if let Some((t, i)) = nearest_pier(o, d, &self.piers) {
                 if let (Some(sr), Some(pr)) = (self.crack.sel_run(), self.crack.pier_run.get(i).copied()) {
                     if sr == pr {
                         self.shell_place(i, o + d * t, d);
@@ -398,27 +484,10 @@ impl Viewer {
             }
         }
         let (_, pier_run) = crate::crack::runs_of(&self.piers);
-        let mut best: Option<(f32, Target)> = None;
-        let mut consider = |t: Option<f32>, tg: Target| {
-            if let Some(t) = t {
-                if best.is_none_or(|(bt, _)| t < bt) {
-                    best = Some((t, tg));
-                }
-            }
-        };
-        for (i, pier) in self.piers.iter().enumerate() {
-            consider(crate::crack::ray_aabb(o, d, pier.lo, pier.hi), Target::Run(pier_run.get(i).copied().unwrap_or(0)));
-        }
-        for (i, (cell, _)) in self.gym.spec.lights.iter().enumerate() {
-            let c = cell_world(*cell);
-            consider(crate::crack::ray_aabb(o, d, Vec3::new(c.x - 0.1, 0.0, c.z - 0.15), Vec3::new(c.x + 0.4, 1.75, c.z + 0.15)), Target::Lamp(i));
-        }
         let pl = self.gym.cam_target();
-        consider(crate::crack::ray_aabb(o, d, Vec3::new(pl.x - 0.3, 0.0, pl.z - 0.3), Vec3::new(pl.x + 0.3, 1.9, pl.z + 0.3)), Target::Player);
         let sp = cell_world(self.gym.spec.player_start);
-        consider(crate::crack::ray_aabb(o, d, Vec3::new(sp.x - 0.5, 0.0, sp.z - 0.5), Vec3::new(sp.x + 0.5, 0.06, sp.z + 0.5)), Target::Spawn);
-        match best {
-            Some((_, tg)) => {
+        match pick_target(o, d, &self.piers, &pier_run, &self.gym.spec.lights, pl, sp) {
+            Some(tg) => {
                 self.ide_select(Some(tg), nl);
                 self.ui_blip("menu_pick");
             }
@@ -435,19 +504,16 @@ impl Viewer {
     /// AA scope and the wear machinery's `sel_run`.
     fn ide_select(&mut self, tg: Option<Target>, n_lamps: usize) {
         self.ide_unlift();
-        let run = match tg {
-            Some(Target::Run(r)) => Some(r),
-            _ => None,
-        };
         let (_, pier_run) = crate::crack::runs_of(&self.piers);
-        self.crack_select(run.and_then(|r| pier_run.iter().position(|&pr| pr == r)));
+        let (pick, lift) = lift_plan(&pier_run, tg);
+        self.crack_select(pick);
         // re-derive every pier's paint (clears any stale run lift — KEEP_FLAGS
         // strips SEL), then tag every pier of the selected run
         for i in 0..self.piers.len() {
             self.crack_apply(i);
         }
         match tg {
-            Some(Target::Run(r)) => self.ide_lift_run(r),
+            Some(Target::Run(_)) => self.ide_lift_piers(&lift),
             Some(Target::Lamp(i)) => self.ide_lift_dyn(&format!("lamp_fix_{i}")),
             Some(Target::Player) => self.ide_lift_dyn("player"),
             _ => {}
@@ -455,23 +521,27 @@ impl Viewer {
         self.ide.ui.select(tg.map(|t| obj_id(t, n_lamps)));
     }
 
-    /// OR the SEL tag onto every pier of run `r` — the whole SURFACE of each
+    /// OR the SEL tag onto the whole SURFACE of each given pier
     /// (`crack::pier_surface_mats`: main + chalk core + spall mats, or the
-    /// outline rings every groove from the inside). The run is the selection
-    /// (the authoring unit, not the pier the ray struck) — re-applied after
-    /// every paint re-stream, because `crack_apply` rebuilds pads with the
-    /// tag on the crack lab's ONE picked pier only.
-    fn ide_lift_run(&mut self, r: usize) {
-        let (_, pier_run) = crate::crack::runs_of(&self.piers);
-        for i in 0..self.piers.len() {
-            if pier_run.get(i) == Some(&r) {
-                for mid in crate::crack::pier_surface_mats(&self.scene, &self.piers[i], &self.crack, i) {
-                    let pad = self.scene.materials[mid]._pad | crate::flags::SEL;
-                    self.scene.materials[mid]._pad = pad;
-                    self.backend.set_material_pad(mid, pad);
-                }
+    /// outline rings every groove from the inside). The plan comes from
+    /// [`lift_plan`] — the RUN, never the pier the ray struck.
+    fn ide_lift_piers(&mut self, piers: &[usize]) {
+        for i in piers.iter().copied().filter(|i| *i < self.piers.len()) {
+            for mid in crate::crack::pier_surface_mats(&self.scene, &self.piers[i], &self.crack, i) {
+                let pad = self.scene.materials[mid]._pad | crate::flags::SEL;
+                self.scene.materials[mid]._pad = pad;
+                self.backend.set_material_pad(mid, pad);
             }
         }
+    }
+
+    /// Lift run `r` — re-applied after every paint re-stream, because
+    /// `crack_apply` rebuilds pads with the tag on the crack lab's ONE picked
+    /// pier only.
+    fn ide_lift_run(&mut self, r: usize) {
+        let (_, pier_run) = crate::crack::runs_of(&self.piers);
+        let (_, lift) = lift_plan(&pier_run, Some(Target::Run(r)));
+        self.ide_lift_piers(&lift);
     }
 
     /// OR the SEL tag onto every material of the named dynamic run — plus its
@@ -589,7 +659,7 @@ impl Viewer {
     /// SHOT can verify what a mouse gesture would do. The `WEAR_EDIT`
     /// discipline: harness surface, not an owner surface.
     pub fn ide_env_edits(&mut self) {
-        let Ok(v) = std::env::var("IDE_EDIT") else { return };
+        let Ok(v) = std::env::var(crate::wear_file::env::IDE_EDIT) else { return };
         self.ide.model = self.ide_model();
         // IDE_SEL first, so the two knobs compose in the interactive order
         // (select, then edit) — an edit-then-select would DISARM a mode the
@@ -601,9 +671,7 @@ impl Viewer {
         // the replay is blocked outright
         let dirty = self.crack.dirty;
         for stmt in v.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            let mut it = stmt.rsplitn(3, ' ');
-            let (val, key, name) = (it.next(), it.next(), it.next());
-            let (Some(val), Some(key), Some(name)) = (val, key, name) else {
+            let Some((name, key, val)) = split_edit(stmt) else {
                 eprintln!("IDE_EDIT: {stmt:?}: want \"<object> <key> <value>\"");
                 continue;
             };
@@ -616,11 +684,7 @@ impl Viewer {
                 continue;
             };
             // the prop declares its own value type: wear rows take floats
-            let num = match p.kind {
-                PropKind::SliderF { .. } => val.parse::<f32>().ok().map(PropVal::F),
-                _ => val.parse::<i32>().ok().map(PropVal::I),
-            };
-            let Some(num) = num else {
+            let Some(num) = edit_val(&p.kind, val) else {
                 eprintln!("IDE_EDIT: {stmt:?}: bad value");
                 continue;
             };
@@ -714,5 +778,165 @@ mod tests {
         // tall monitor: menu 5 → ide 2 (readability floor keeps chrome legible)
         assert_eq!(ide_scale_for(2160), 2);
         assert_eq!(ide_scale_for(100), 1, "never zero");
+    }
+
+    /// The crack lab's own level, resolved exactly as a boot resolves it: the
+    /// real piers, the real runs, the real authored wear.
+    fn lab() -> (crate::gym_scene::GymMeta, crate::crack::CrackLab) {
+        let (mut scene, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Gym.spec(), &crate::look::POLANA);
+        let mut lab = crate::crack::CrackLab::default();
+        crate::crack::resolve(Some(crate::demos::lab_wear()), &mut lab, &meta.piers, &mut scene, 1);
+        (meta, lab)
+    }
+
+    /// A ray straight down the middle of a pier — the pure pick's input,
+    /// without a camera. Nothing in the gym stands over a wall, so the pier is
+    /// always the nearest hit.
+    fn ray_onto(p: &Pier) -> (Vec3, Vec3) {
+        let c = 0.5 * (p.lo + p.hi);
+        (Vec3::new(c.x, 10.0, c.z), Vec3::new(0.0, -1.0, 0.0))
+    }
+
+    /// SELECTION IS THE RUN. `wall_slab` cuts an authored wall into piers
+    /// wherever a window or a doorway interrupts it, so a facade the owner
+    /// typed as one line is three boxes to the ray — and a pick on ANY of them
+    /// has to name the same wall. This is the claim the whole IDE selection
+    /// rests on, and it used to live only inside `impl Viewer`.
+    #[test]
+    fn a_pick_on_any_pier_of_a_run_names_the_same_wall() {
+        let (meta, _) = lab();
+        let (runs, pier_run) = crate::crack::runs_of(&meta.piers);
+        let cut = (0..runs.len()).find(|r| pier_run.iter().filter(|pr| *pr == r).count() > 1).expect("some gym wall is cut into piers by an opening");
+        let mine: Vec<usize> = pier_run.iter().enumerate().filter(|(_, pr)| **pr == cut).map(|(i, _)| i).collect();
+        assert!(mine.len() >= 2, "the fixture needs a multi-pier run");
+        let player = Vec3::new(-99.0, 0.0, -99.0); // out of every column below
+        for i in mine.iter().copied() {
+            let (o, d) = ray_onto(&meta.piers[i]);
+            let hit = pick_target(o, d, &meta.piers, &pier_run, &[], player, player);
+            assert_eq!(hit, Some(Target::Run(cut)), "pier {i} must name its RUN, not itself");
+        }
+        // …and a pier of a DIFFERENT run names that one
+        let other = (0..meta.piers.len()).find(|i| pier_run[*i] != cut).expect("the gym has more than one run");
+        let (o, d) = ray_onto(&meta.piers[other]);
+        assert_eq!(pick_target(o, d, &meta.piers, &pier_run, &[], player, player), Some(Target::Run(pier_run[other])));
+    }
+
+    /// The lift is the WHOLE run and NOTHING else — a wrong-run outline and a
+    /// half-lifted facade are the two ways this can ship green.
+    #[test]
+    fn the_lift_is_every_pier_of_the_run_and_no_other() {
+        let (meta, _) = lab();
+        let (runs, pier_run) = crate::crack::runs_of(&meta.piers);
+        for r in 0..runs.len() {
+            let (pick, lift) = lift_plan(&pier_run, Some(Target::Run(r)));
+            let mine: Vec<usize> = pier_run.iter().enumerate().filter(|(_, pr)| **pr == r).map(|(i, _)| i).collect();
+            assert_eq!(lift, mine, "run {r}");
+            assert_eq!(pick, mine.first().copied(), "the crack lab picks one pier OF the run");
+            assert!(lift.iter().all(|i| pier_run[*i] == r), "no foreign pier rides along");
+        }
+        // the non-wall targets lift no pier at all (a lamp/player lifts its
+        // dynamic materials; the spawn is a place with no mesh)
+        for tg in [None, Some(Target::Player), Some(Target::Spawn), Some(Target::Lamp(0))] {
+            assert_eq!(lift_plan(&pier_run, tg), (None, Vec::new()), "{tg:?}");
+        }
+    }
+
+    /// A sheet spelled out by hand (the `crack_geom` test idiom): the inspector
+    /// reads exactly these three fields, so the rows can be pinned as
+    /// arithmetic instead of through a solve.
+    fn sheet(area: [f32; crate::wall::Layer::N], notes: Vec<crate::wall::Miss>) -> crate::wall::Sheet {
+        crate::wall::Sheet {
+            label: "w",
+            area,
+            breaks: crate::wall::Breaks { count: 2, at: None },
+            gate: [0.5; crate::wall::Layer::N],
+            paint: crate::wall::Paint::default(),
+            geom: crate::wall::Geom::default(),
+            notes,
+        }
+    }
+
+    /// The inspector's value LANGUAGE: a pinned layer wears the `*`, the
+    /// belonging rows are indented under what they belong to, the two section
+    /// heads open their groups, and a `wall::Miss` lands as the trailing read
+    /// row — "what this wall asked for and did not get".
+    #[test]
+    fn the_wear_rows_mark_pins_indent_their_children_and_report_a_miss() {
+        use crate::wall::Layer;
+        let mut spec = crate::wall::WallSpec::PRISTINE;
+        spec.pin = spec.pin.area(Layer::Spall, 0.02);
+        let area = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+        let miss = crate::wall::Miss::Coarse { label: "w", layer: Layer::Chips, asked: 0.6, got: 0.2 };
+        let props = wear_props(&spec, &sheet(area, vec![miss]), false);
+        let get = |k: &str| props.iter().find(|p| p.key == k).unwrap_or_else(|| panic!("no {k} row"));
+        // the PIN mark rides the value text, and only the pinned layer's
+        assert_eq!(get("spall").show.as_deref(), Some("0.50*"));
+        assert_eq!(get("stain").show.as_deref(), Some("0.10"));
+        // indents: a layer belongs to its causes, a native param to its layer
+        for l in Layer::ALL {
+            assert_eq!(get(l.name()).indent, 8, "{}", l.name());
+        }
+        assert_eq!(get("mud_top").indent, 16, "mud's own param sits under the mud row");
+        assert_eq!(get("caliber").indent, 8);
+        assert_eq!(get("weather").indent, 0, "a CAUSE is the top level");
+        // section heads
+        assert_eq!(props[0].head, Some("wear"));
+        assert_eq!(get("grain").head, Some("shape"));
+        // the breaks row is the sheet's COUNT, absolute
+        assert!(matches!(get("breaks").kind, PropKind::SliderI { v: 2, min: 0, max: 3 }));
+        // shells is a MODE row, and it says which way it is pointing
+        assert_eq!(get("shells").show.as_deref(), Some("0 [place]"));
+        assert_eq!(wear_props(&spec, &sheet(area, Vec::new()), true).iter().find(|p| p.key == "shells").and_then(|p| p.show.as_deref()), Some("0 [click wall]"));
+        // the MISS is the LAST row, read-only, naming the layer and the numbers
+        let last = props.last().expect("rows");
+        assert_eq!((last.key, last.label.as_str()), ("note", "chips coarse"));
+        assert!(matches!(&last.kind, PropKind::Read(t) if t == "0.60 -> 0.20"), "{:?}", last.label);
+        // …and a clean sheet grows no trailing row at all
+        let clean = wear_props(&spec, &sheet(area, Vec::new()), false);
+        assert_eq!(clean.len(), props.len() - 1);
+        assert!(clean.iter().all(|p| p.key != "note"));
+    }
+
+    /// Every key the inspector draws must reach its row back — the write path
+    /// (`ide_wear_apply`) looks the row up by key, so a key that resolves to
+    /// nothing is a dead slider and a key that resolves to the WRONG row is an
+    /// edit landing on another dial.
+    #[test]
+    fn every_drawn_key_resolves_back_to_its_own_row() {
+        for code in 0..crate::crack_geom::NPOL as u8 {
+            let mut spec = crate::wall::WallSpec::PRISTINE;
+            spec.shape.pattern = crate::wall::pattern_of(code, crate::crack_geom::param_defaults(code));
+            let pdefs = crate::crack_geom::POLICY_PARAMS[code as usize];
+            let rows = rows_of(&spec);
+            let props = wear_props(&spec, &sheet([0.0; crate::wall::Layer::N], Vec::new()), false);
+            assert_eq!(props.len(), rows.len(), "one prop per row under policy {code}");
+            for (p, row) in props.iter().zip(rows.iter().copied()) {
+                assert!(wear_row_of(&spec, p.key) == Some(row), "{} under policy {code} resolves to another row", p.key);
+            }
+            // `note` is not a row: it must resolve to nothing rather than to
+            // whatever row happens to answer first
+            assert!(wear_row_of(&spec, "note").is_none());
+            assert_eq!(wear_key(rows[0], pdefs), "weather", "causes open the sheet");
+        }
+    }
+
+    /// `IDE_EDIT` splits from the RIGHT, because a run's name is whatever the
+    /// wear file called it — spaces and all — while a key and a value are one
+    /// token each.
+    #[test]
+    fn an_ide_edit_statement_splits_from_the_right() {
+        assert_eq!(split_edit("ramped control weather 0.9"), Some(("ramped control", "weather", "0.9")));
+        assert_eq!(split_edit("lamp 0 glow 3"), Some(("lamp 0", "glow", "3")));
+        assert_eq!(split_edit("player cell"), None, "two tokens is not a statement");
+        assert_eq!(split_edit("spawn"), None);
+        // the prop declares the value's TYPE: wear rows take floats, the rest
+        // whole steps (a float on an integer row is a typo, not a rounding)
+        let f = PropKind::SliderF { v: 0.0, min: 0.0, max: 1.0 };
+        let i = PropKind::SliderI { v: 1, min: 1, max: 8 };
+        assert_eq!(edit_val(&f, "0.9"), Some(PropVal::F(0.9)));
+        assert_eq!(edit_val(&i, "3"), Some(PropVal::I(3)));
+        assert_eq!(edit_val(&i, "3.5"), None);
+        assert_eq!(edit_val(&f, "off"), None);
+        assert_eq!(edit_val(&PropKind::Cycle { v: 0, n: 3 }, "2"), Some(PropVal::I(2)), "a cycler takes an ABSOLUTE code");
     }
 }

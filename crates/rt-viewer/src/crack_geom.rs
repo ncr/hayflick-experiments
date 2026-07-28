@@ -245,7 +245,8 @@ const BREAK_MARGIN: f32 = 0.35;
 ///   `age`, and the damage field only opens a readable patch above age ≈ 0.5, so
 ///   at every age where a veneer pattern was visible the odds of also breaking
 ///   the wall in half were ≥ 0.9. "Cracked but not broken through" needed a veto
-///   flag (`Specimen::faults`) to be expressible at all.
+///   flag on the specimen to be expressible at all (`breaks: 0` is that state
+///   now, and the flag is deleted).
 /// - **It disagreed across a joint.** The strips are anchored in RUN space but
 ///   the roll was seeded PER PANEL, so a strip straddling a window jamb was
 ///   rolled twice with different seeds: the same break existed on one panel and
@@ -296,10 +297,6 @@ pub(crate) fn quad(verts: &mut Vec<([f32; 3], [f32; 3])>, idx: &mut Vec<u32>, q:
     idx.extend_from_slice(&[vi, vi + 1, vi + 2, vi, vi + 2, vi + 3]);
 }
 
-/// One pier's wear inputs: the layer AMOUNTS and the SOLVED thresholds they
-/// resolve to on this pier's run (`crack::gates_of`). A pair rather than two
-/// loose arrays because they are the same length and the same type, and the
-/// compiler cannot catch them being passed the wrong way round.
 /// THE LEVEL'S COMPILED WEAR, as the geometry pass reads it: one
 /// `wall::Sheet` per RUN plus the pier→run map.
 ///
@@ -350,7 +347,7 @@ impl<'a> Wear<'a> {
 #[derive(Clone)]
 struct Frag {
     poly: Vec<Vec2>,
-    /// Per-edge (poly[i] -> poly[i+1]): does this edge border an OPEN groove?
+    /// Per-edge (`poly[i]` -> `poly[i+1]`): does this edge border an OPEN groove?
     /// Only those edges get the chamfer — a bevel along a closed seam would
     /// carve a visible V-groove into what must stay one flush slab.
     open: Vec<bool>,
@@ -372,7 +369,7 @@ struct CrazeCfg {
     /// mosaic, which is why craquelure rendered essentially one line on a 2.2-wu
     /// bench slab at its own defaults. A LENGTH is the honest unit here — it is
     /// what the author sees on the wall, it is comparable against the wall's own
-    /// size, and it is the number the pixel floor ([`wall::GRAIN_OFF`]) is
+    /// size, and it is the number the pixel floor ([`crate::wall::GRAIN_OFF`]) is
     /// stated in.
     grain: f32,
     seed: f32,     // cell lattice seed (shader: story + 5)
@@ -573,12 +570,8 @@ impl CrazeCfg {
     }
 }
 
-// ---- the macro damage field and its per-RUN LEVEL ---------------------------
+// ---- the macro damage field -------------------------------------------------
 
-/// The macro damage field, LEVEL-FREE: the exact fbm the shade pass computes
-/// for `dmgN` (`fbm(vec3(cuv * vec2(0.45, 0.7), story*7+3)) + 0.16 * rise`).
-/// One definition, two users — [`CrazeCfg::dmg`] adds the run's level offset on
-/// top, [`run_level`] samples it to DERIVE that offset.
 /// The shader twins' `fbm` — the exact host mirror, pub(crate) because two
 /// solvers sample it: the damage field below and `wall`'s mud-noise quantile.
 pub(crate) fn fbm(p: Vec3) -> f32 {
@@ -2177,6 +2170,58 @@ fn rect_hits(rects: &[(Vec2, Vec2)], lo: Vec2, hi: Vec2) -> bool {
     rects.iter().any(|(a, b)| lo.x < b.x + g && a.x < hi.x + g && lo.y < b.y + g && a.y < hi.y + g)
 }
 
+/// THE WHOLE CRATER ORDERING, once — every crater a pier carries, per face,
+/// returned as `(front, back)` with the PLACED hits first and the derived spall
+/// appended.
+///
+/// The order IS the contract, and it has three rules that only compose in this
+/// sequence:
+///
+/// 1. PLACED shells go on each face's list FIRST — an authored place outranks a
+///    derived one, so the spall pass packs around the shells instead of the
+///    other way round.
+/// 2. The FRONT spall is vetoed against the shell rects of BOTH faces. A spall
+///    meeting a shell on its own face is two intersecting basins; meeting it
+///    across the slab is a PERFORATION — `rect_hits`' own depth argument, and a
+///    shell digs deeper than a spall.
+/// 3. The BACK spall is vetoed against the front spall's rects PLUS the same
+///    shell rects. Both faces spall, because the camera is orthographic but the
+///    owner turns it in quarter steps (q/e): a one-sided crater is damage that
+///    disappears when he presses `e`, while the cracks, plates and paint around
+///    it stay.
+///
+/// Every veto is handed to the site CHOOSER rather than applied afterwards — a
+/// vetoed site must never spend the budget, or the authored amount stops being
+/// monotone (`rebar`'s rule).
+///
+/// `holds` is the caller's own site predicate, composed into every veto: a
+/// faulted pier passes its piece containment (a crater straddling a break would
+/// be cut in half by the fault gap and dropped by two different amounts, so its
+/// patch must sit wholly inside ONE piece), an unfaulted one passes `|_, _|
+/// true`. It also filters the placed hits, which is how a shell straddling the
+/// break gets DROPPED rather than nudged or carved across the gap.
+fn allocate_craters(
+    cfg: &CrazeCfg,
+    fr: &Frame,
+    pier: &Pier,
+    sheet: &crate::wall::Sheet,
+    holds: &dyn Fn(Vec2, Vec2) -> bool,
+) -> (Vec<rebar::Crater>, Vec<rebar::Crater>) {
+    let spall = sheet.area[crate::wall::Layer::Spall.index()];
+    let (mut front, mut back) = pier_shells(cfg, fr, pier, &sheet.geom);
+    front.retain(|cr| holds(cr.lo, cr.hi));
+    back.retain(|cr| holds(cr.lo, cr.hi));
+    let mut shell_rects = patch_rects(&front);
+    shell_rects.extend(patch_rects(&back));
+    let sp_front = pier_craters(cfg, fr, pier, spall, 0.0, &|lo, hi| holds(lo, hi) && !rect_hits(&shell_rects, lo, hi));
+    let mut fr_rects = patch_rects(&sp_front);
+    fr_rects.extend(shell_rects);
+    let sp_back = pier_craters(cfg, fr, pier, spall, BACK_SALT, &|lo, hi| holds(lo, hi) && !rect_hits(&fr_rects, lo, hi));
+    front.extend(sp_front);
+    back.extend(sp_back);
+    (front, back)
+}
+
 /// Geometry inputs are BUCKETED so a drag inside a bucket rebuilds nothing; the
 /// spall dial gets a finer grain than the knobs (0.05 vs 0.1) because its three
 /// stages sit inside one slider.
@@ -2519,33 +2564,17 @@ fn emit_prism(
 /// opened — no groove, no live or spalled plate, no crater — and the pier keeps
 /// its box and its paint.
 fn craze_pier(scene: &mut Scene, pier: &Pier, sheet: &crate::wall::Sheet) -> (i32, [i32; 2]) {
-    let spall = sheet.area[crate::wall::Layer::Spall.index()];
     let policy = sheet.geom.pattern;
     let mid = mat_of(scene, pier);
     let fr = Frame::of(pier);
     let cfg = CrazeCfg::new(story_of(scene, pier), sheet, fr.run_x, fr.t1 - fr.t0, &[]);
     let opened = StdCell::new(false);
     let mut frags = policy_frags(&cfg, policy, fr.u0, fr.u1, fr.y0, fr.y1, &opened);
-    // PLACED shell craters go on each face's list FIRST — an authored place
-    // outranks a derived one, so the spall pass packs around the shells: its
-    // veto list carries the shell rects of BOTH faces (a spall meeting a
-    // shell on its own face is two intersecting basins; meeting it across the
-    // slab is a perforation — `rect_hits`' own depth argument, and a shell
-    // digs even deeper than a spall).
-    let (mut front, mut back) = pier_shells(&cfg, &fr, pier, &sheet.geom);
-    let mut shell_rects = patch_rects(&front);
-    shell_rects.extend(patch_rects(&back));
-    // BOTH faces spall. The camera is orthographic but the owner turns it in
-    // quarter steps (q/e), so a wall shows either of its big faces over a play
-    // session, and a one-sided crater is damage that disappears when he presses
-    // e — while the cracks, plates and paint around it stay. The back set is
-    // vetoed against the front set's rects so the two can never meet in depth.
-    let sp_front = pier_craters(&cfg, &fr, pier, spall, 0.0, &|lo, hi| !rect_hits(&shell_rects, lo, hi));
-    let mut fr_rects = patch_rects(&sp_front);
-    fr_rects.extend(shell_rects);
-    let sp_back = pier_craters(&cfg, &fr, pier, spall, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
-    front.extend(sp_front);
-    back.extend(sp_back);
+    // every crater this pier carries, placed then derived — see
+    // `allocate_craters` for the ordering and why it is one function. An
+    // UNFAULTED pier has no piece containment to impose, so nothing is held
+    // back beyond the craters' own disjointness.
+    let (front, back) = allocate_craters(&cfg, &fr, pier, sheet, &|_, _| true);
     if !opened.get() && front.is_empty() && back.is_empty() {
         return (-1, [-1, -1]);
     }
@@ -2647,7 +2676,6 @@ fn spend_spall(scene: &mut Scene, mid: i32, core_mid: i32, bas: &Mesh, bar: &Mes
 /// pattern rides the broken wall and clusters along the seam (halo).
 #[allow(clippy::too_many_arguments)]
 fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], sheet: &crate::wall::Sheet) -> (i32, [i32; 2]) {
-    let spall = sheet.area[crate::wall::Layer::Spall.index()];
     let policy = sheet.geom.pattern;
     let mid = mat_of(scene, pier);
     let fr = Frame::of(pier);
@@ -2674,24 +2702,13 @@ fn split_pier(scene: &mut Scene, pier: &Pier, faults: &[Fault], sheet: &crate::w
     // (measured: the garden wall lost its crater between 0.25 and 0.55), which
     // is the one thing an authored area may not do.
     let piece_of = |lo: Vec2, hi: Vec2| pieces.iter().position(|(_, cuts)| rect_inside(lo, hi, cuts, &bolts));
-    // Shells on a BROKEN wall: the same authored-first rule as `craze_pier`,
-    // plus the piece containment every crater obeys — a hit straddling the
-    // break is DROPPED (pinned by test; the alternatives are worse: nudging
-    // it moves the author's click, and carving it across the gap would draw
-    // the fault's invisible extension through the basin).
-    let (sh_f, sh_b) = pier_shells(&cfg, &fr, pier, &sheet.geom);
-    let keep = |set: Vec<rebar::Crater>| -> Vec<rebar::Crater> { set.into_iter().filter(|cr| piece_of(cr.lo, cr.hi).is_some()).collect() };
-    let (mut craters, mut craters_b) = (keep(sh_f), keep(sh_b));
-    let mut shell_rects = patch_rects(&craters);
-    shell_rects.extend(patch_rects(&craters_b));
-    // one set per FACE, the back vetoed against the front's rects — see
-    // `rect_hits` (two craters facing each other would perforate the slab)
-    let sp_front = pier_craters(&cfg, &fr, pier, spall, 0.0, &|lo, hi| piece_of(lo, hi).is_some() && !rect_hits(&shell_rects, lo, hi));
-    let mut fr_rects = patch_rects(&sp_front);
-    fr_rects.extend(shell_rects);
-    let sp_back = pier_craters(&cfg, &fr, pier, spall, BACK_SALT, &|lo, hi| piece_of(lo, hi).is_some() && !rect_hits(&fr_rects, lo, hi));
-    craters.extend(sp_front);
-    craters_b.extend(sp_back);
+    // The SAME crater ordering `craze_pier` runs (`allocate_craters`: placed
+    // first, both faces vetoed against each other), with the piece containment
+    // as its site predicate — so on a broken wall a hit straddling the break is
+    // DROPPED (pinned by test; the alternatives are worse: nudging it moves the
+    // author's click, and carving it across the gap would draw the fault's
+    // invisible extension through the basin).
+    let (craters, craters_b) = allocate_craters(&cfg, &fr, pier, sheet, &|lo, hi| piece_of(lo, hi).is_some());
     // the veneer inset only happens when the craze layer has anything to
     // show — a pristine-but-faulted wall stays full-thickness slabs
     let crazing = opened.get() || !forks.is_empty() || !craters.is_empty() || !craters_b.is_empty();
@@ -2987,7 +3004,6 @@ mod tests {
         let q = |v: f32| (v.clamp(0.0, 1.0) * 63.0).round() as u8;
         crate::wall::Sheet {
             label: "test",
-            run: 0,
             area,
             breaks,
             gate,
@@ -3102,10 +3118,10 @@ mod tests {
         // cheap next to what this pass then does to it.
         for area in [0.005f32, 0.012, crate::wall::SPALL_MAX] {
             let sh = [spalling(area)];
-            let (probe, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+            let (probe, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA);
             drop(probe);
             for (pi, pier) in meta.piers.iter().enumerate() {
-                let (mut sc, _) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+                let (mut sc, _) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA);
                 crate::wear::stamp_story(&mut sc, &meta.piers);
                 
                 let first = sc.primitives.len();
@@ -3136,18 +3152,21 @@ mod tests {
     /// solid. The veto lives in the site chooser (`rect_hits`), so this test
     /// asks the question the renderer would: does any front rect meet any back
     /// rect, in depth AND in plan?
+    ///
+    /// It runs the SHIPPED allocator (`allocate_craters`) rather than a copy of
+    /// its ordering — a copy pins the copy, which is exactly how the shell veto
+    /// came to be deletable from both production sites with every test green.
     #[test]
     fn a_walls_two_faces_never_spall_through_each_other() {
         let spec = house_game::gym::sim::gym_level();
-        let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA);
         let (mut checked, mut deep) = (0, false);
         for area in [0.02f32, 0.04, crate::wall::SPALL_MAX] {
+            let sh = spalling(area);
             for pier in &meta.piers {
                 let fr = Frame::of(pier);
-                let cfg = CrazeCfg::new(story_of(&scene, pier), &hot(0), fr.run_x, fr.t1 - fr.t0, &[]);
-                let front = pier_craters(&cfg, &fr, pier, area, 0.0, &|_, _| true);
-                let fr_rects = patch_rects(&front);
-                let back = pier_craters(&cfg, &fr, pier, area, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
+                let cfg = CrazeCfg::new(story_of(&scene, pier), &sh, fr.run_x, fr.t1 - fr.t0, &[]);
+                let (front, back) = allocate_craters(&cfg, &fr, pier, &sh, &|_, _| true);
                 for a in &front {
                     for b in &back {
                         assert!(!rect_hits(&[a.rect()], b.lo, b.hi), "area {area}: a front and a back crater overlap at {:?} / {:?}", a.rect(), b.rect());
@@ -3162,6 +3181,74 @@ mod tests {
         }
         assert!(checked > 30, "the gym must actually grow craters on both faces to pin this ({checked} pairs)");
         assert!(deep, "VACUOUS: no two facing basins are deep enough to meet, so disjointness pins nothing");
+    }
+
+    /// …AND THE SAME GUARD WITH A PLACED HIT IN IT — the composed path no
+    /// shipped level exercises (the catalogue pins spall to 0 on its shell
+    /// slab; the crack lab authors no shells), which is exactly why it went
+    /// unpinned: the shell veto could be deleted from BOTH production sites
+    /// with every test green.
+    ///
+    /// A shell parked in a corner nothing competes for would pin nothing, so
+    /// the hit is placed ON THE SITE THE DAMAGE FIELD ITSELF WANTS: the
+    /// allocation is run shell-free first, then a hit is put on the OTHER
+    /// face's best site. Both faces then genuinely want the same (u, y), and
+    /// only `allocate_craters`' veto keeps the two basins from meeting inside
+    /// the slab — a shell digs to the honest depth limit, so a facing pair is
+    /// a perforation and not a dent.
+    #[test]
+    fn a_placed_shell_and_the_spall_around_it_never_perforate_the_wall() {
+        let (lo, hi) = (Vec3::new(1.0, 0.0, 9.9), Vec3::new(7.0, 2.1875, 10.1));
+        let pier = Pier { prim: 0, lo, hi, run_lo: lo, run_hi: hi };
+        let fr = Frame::of(&pier);
+        let run = crate::wall::RunRect { lo, hi };
+        // the spall amount is PINNED, so this is the top of the dial and not
+        // whatever a story happened to derive
+        let compile = |shells| {
+            let spec = crate::wall::WallSpec {
+                pin: crate::wall::Pins::NONE.area(crate::wall::Layer::Spall, crate::wall::SPALL_MAX),
+                shells,
+                ..crate::wall::WallSpec::PRISTINE
+            };
+            crate::wall::compile_specs(std::slice::from_ref(&run), &[("shelled", spec)]).remove(0)
+        };
+        let story = run.story();
+        let bare = compile(crate::wall::Shells::NONE);
+        let cfg = CrazeCfg::new(story, &bare, fr.run_x, fr.t1 - fr.t0, &[]);
+        let (bare_f, bare_b) = allocate_craters(&cfg, &fr, &pier, &bare, &|_, _| true);
+        assert!(!bare_f.is_empty() && !bare_b.is_empty(), "VACUOUS: the shell-free wall spalls on neither face");
+
+        for back in [false, true] {
+            // the hit goes on the face OPPOSITE the set whose best site it
+            // takes, so each pass leans on a different half of the veto: a
+            // FRONT hit is what the back spall must be kept off, and vice versa
+            let want = if back { &bare_f[0] } else { &bare_b[0] };
+            let mut sh = crate::wall::Shells::NONE;
+            sh.add(crate::wall::Shell { u: (want.c.x - fr.u0) / (fr.u1 - fr.u0), y: (want.c.y - fr.y0) / (fr.y1 - fr.y0), back });
+            let sheet = compile(sh);
+            assert_eq!(sheet.geom.shell_count(), 1, "back {back}: the hit did not survive the compile: {:?}", sheet.notes);
+            let cfg = CrazeCfg::new(story, &sheet, fr.run_x, fr.t1 - fr.t0, &[]);
+            let (front, back_set) = allocate_craters(&cfg, &fr, &pier, &sheet, &|_, _| true);
+            let hit = if back { back_set.len() } else { front.len() };
+            assert!(hit > 1 && !front.is_empty() && !back_set.is_empty(), "VACUOUS: back {back} — the wall must carry the hit AND spall on both faces ({} / {})", front.len(), back_set.len());
+            let mut deep = false;
+            for a in &front {
+                for b in &back_set {
+                    assert!(!rect_hits(&[a.rect()], b.lo, b.hi), "back {back}: a front and a back crater overlap at {:?} / {:?}", a.rect(), b.rect());
+                    deep |= a.floor + b.floor > fr.t1 - fr.t0;
+                }
+            }
+            assert!(deep, "VACUOUS: back {back} — no two facing basins are deep enough to meet");
+            // …and on ONE face two basins may not intersect either: a spall
+            // packed into a shell is one torn hole, not the two effects
+            for set in [&front, &back_set] {
+                for (i, a) in set.iter().enumerate() {
+                    for b in &set[i + 1..] {
+                        assert!(!rect_hits(&[a.rect()], b.lo, b.hi), "back {back}: two craters of ONE face overlap at {:?} / {:?}", a.rect(), b.rect());
+                    }
+                }
+            }
+        }
     }
 
     /// **EVERY PATTERN READS AT ITS OWN DEFAULTS**, and it reads at the SAME
@@ -3243,16 +3330,15 @@ mod tests {
     #[test]
     fn both_faces_get_the_spall_they_asked_for_at_the_top_of_the_dial() {
         let spec = house_game::gym::sim::gym_level();
-        let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        let (scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA);
         let asked = crate::wall::SPALL_MAX;
+        let sh = spalling(asked);
         let (mut checked, mut worst) = (0, 0.0f32);
         for pier in &meta.piers {
             let fr = Frame::of(pier);
-            let cfg = CrazeCfg::new(story_of(&scene, pier), &hot(0), fr.run_x, fr.t1 - fr.t0, &[]);
+            let cfg = CrazeCfg::new(story_of(&scene, pier), &sh, fr.run_x, fr.t1 - fr.t0, &[]);
             let face = (fr.u1 - fr.u0) * (fr.y1 - fr.y0);
-            let front = pier_craters(&cfg, &fr, pier, asked, 0.0, &|_, _| true);
-            let fr_rects = patch_rects(&front);
-            let back = pier_craters(&cfg, &fr, pier, asked, BACK_SALT, &|lo, hi| !rect_hits(&fr_rects, lo, hi));
+            let (front, back) = allocate_craters(&cfg, &fr, pier, &sh, &|_, _| true);
             for (side, cs) in [("front", &front), ("back", &back)] {
                 let got = cs.iter().map(|c| c.area()).sum::<f32>() / face;
                 // half a crater of rounding either way, and the ±LENS_VAR draw
@@ -3385,7 +3471,7 @@ mod tests {
     fn a_short_wall_asked_for_a_break_gets_one() {
         let mut one_panel_runs = 0;
         for level in [crate::demos::Level::Gym, crate::demos::Level::Catalogue] {
-            let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA, true);
+            let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA);
             crate::wear::stamp_story(&mut scene, &meta.piers);
             for (i, pier) in meta.piers.iter().enumerate() {
                 let fr = Frame::of(pier);
@@ -3434,7 +3520,7 @@ mod tests {
         let mut drops = (0, 0);
         let mut places: Vec<i64> = Vec::new();
         for level in [crate::demos::Level::Gym, crate::demos::Level::Catalogue] {
-            let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA, true);
+            let (mut scene, meta) = crate::gym_scene::build_gym(&level.spec(), &crate::look::POLANA);
             crate::wear::stamp_story(&mut scene, &meta.piers);
             for pier in &meta.piers {
                 for f in run_breaks(0.0, 6.0, story_of(&scene, pier), ONE_BREAK, REL, CRK) {
@@ -3595,7 +3681,7 @@ mod tests {
     #[test]
     fn matte_plus_knobs_is_only_the_chalk_core() {
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA);
         // the crack lab's own boot state: every pier knobbed (demos.rs), the
         // knob bits stamped, then the geometry pass mints the chalk cores
         crate::wear::stamp_story(&mut scene, &meta.piers); // boot order: the story seeds the field
@@ -3644,7 +3730,7 @@ mod tests {
     #[test]
     fn piers_of_one_run_share_a_damage_field_and_their_breaks() {
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA);
         crate::wear::stamp_story(&mut scene, &meta.piers);
         let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
         // two piers of one run (a facade with a window between them), plus one
@@ -3724,7 +3810,7 @@ mod tests {
     fn the_built_veneer_covers_the_area_that_was_asked_for() {
         use crate::wall::Layer;
         let spec = house_game::gym::sim::gym_level();
-        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&spec, &crate::look::POLANA);
         crate::wear::stamp_story(&mut scene, &meta.piers);
         let rect = |p: &Pier| [p.run_lo.x, p.run_lo.z, p.run_hi.x, p.run_hi.z].map(|v| (v * 10.0).round() as i32);
         let mut runs: Vec<&Pier> = Vec::new();

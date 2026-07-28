@@ -25,6 +25,7 @@ Cargo workspace at the repo root, members `crates/*`:
 | `house-game` | ALL game logic, fully headless: the `gym` testbed + movement primitives | sim-core, iso-core |
 | `rt-probe` | deterministic renderer lib (Vulkan ray_query) + GLSL | iso-core |
 | `ide` | the personal IDE (pracownia): headless UI model + CPU rasterizer for the 2x-density editor overlay; knows neither the game nor the GPU | font8x8 only |
+| `phys-spike` | throwaway Box3D rigid-body world (leaf: no game, no GPU, no renderer) — the `wall smash` demo's rubble is its one consumer, through `rt-viewer/src/phys_scene.rs` | glam only |
 | `rt-viewer` | `viewer` binary: winit shell, Metal backend, gym loop, capture | everything |
 
 **rt-probe and house-game never see each other** — only rt-viewer's adapter
@@ -88,16 +89,23 @@ lamps, the player. No NPCs, no generators, no seed (owner directive
 DONE: a Look is the WHOLE aesthetic as one datum — palette, sun/sky
 (`SunSky`), post stack (`StyleCfg`), exposure, surface response).
 THE look (owner pick + same-day "delete rest", 2026-07-12): **`polana` is
-the ONLY look** — porcelain × meadow: clean ceramic volumes; occasional
+THE look** — porcelain × meadow: clean ceramic volumes; occasional
 FULL-HEIGHT black tinted-glass windows on building walls only (even
 world-coordinate cells; REAL wall openings + transmissive panes — the
 shade pass carries primary rays through with the pane's tint, shadow
 rays/probe bake keep glass opaque, and in the WALLCUT cutaway glass stubs
 deliberately stand 0.3125 proud of wall stubs to cover the bay jambs);
 lush saturated greens + grass-tuft dress; amber lamp mood. The other
-candidates are deleted (git history) and the ESC menu has NO look row
-(one preset = dead UI; a menu.rs test pin demands the row back the moment
-a second look lands). Lock + goldens await the owner playtest.
+2026-07-12 candidates are deleted (git history), and with one preset left
+the ESC look row was pulled (one preset = dead UI) behind a menu.rs test
+pin that demanded it back the moment a second look landed. IT LANDED and
+THE PIN FIRED: `look::LOOKS` is `&[&POLANA, &DUSK]` — the
+voxel-physics-spike's `dusk` sibling, the same porcelain greybox re-lit for
+golden hour so the dynamic-GI roof-tear has a dark interior to flood — so
+the ESC menu HAS a live look row again (`menu.rs`'s `MENU[0]`, `max` pinned
+to `LOOKS.len() - 1`). Treat that as the worked example of the menu-first
+rule: the mechanism restored the owner's choice without anyone remembering
+to. Lock + goldens await the owner playtest.
 Same-day BLOCKY mesh rebuild (owner: prostsze kształty, blokowość jak
 tecta): every gym mesh is the fewest boxes that read — walls are clean
 slabs (no plinth), the roof is ONE inset parapet cap (no fascia — the
@@ -208,18 +216,52 @@ The twin guard in `wear.rs` is TWO-SIDED: a REQUIRED table (fragments each twin
 must contain) and a FORBIDDEN table (fragments each must NOT). A required-only
 guard can prove a line is present and never that a line is gone, so it is blind
 to a deletion applied to one twin and forgotten in the other — which compiles,
-passes every test, and ships a different image on the other backend.
+passes every test, and ships a different image on the other backend. Since
+2026-07-28 the fragment tables are the HOST↔SHADER half of that job only (see
+THE TWIN DIFF below); `wear::HOST_MIRRORS` is the standing list, each entry
+naming a constant that must be spelled the same in both twins AND in the Rust
+that mirrors it (`story * 7.0 + 3.0`, the damage field's `0.45/0.7/0.16` shape,
+`fbm`'s two octaves, the mud seed and frequency).
 
 ## Two render backends — keep them in lockstep
 
 `crates/rt-probe/src/shaders/*.comp` (GLSL/Vulkan) and
 `crates/rt-viewer/src/shaders_metal/*.metal` (MSL) are line-for-line twins.
 A feature added to one must be ported to the other in the same effort, or
-documented as debt. Shared push-constant structs live once in
-`crates/rt-viewer/src/backend.rs`. Since the contour AA (2026-07-25) the
+documented as debt. ONE push-constant struct is genuinely shared: `TonePush`
+(tonemap), which lives in `crates/rt-viewer/src/backend.rs` and feeds either
+backend's tonemap kernel byte for byte. THE SHADE PUSH IS A KNOWN DIVERGENCE —
+`rt_probe::render::ShadePush` (flat named fields) and `metal_backend::Push`
+(packed `misc`/`misc2`/`misc3` vectors, in a DIFFERENT order and carrying
+different contents) are two independent declarations, each self-consistent with
+its own shader, so no image is wrong today; but NOTHING compares the two Rust
+structs — a field added to one is not a field added to the other, and the twin
+diff below only sees the shader side of that contract. The same is true of the
+two `ProbePush` declarations. Since the contour AA (2026-07-25) the
 radiance image carries `rgb = sum(w*L), a = sum(w)`: **every reader must divide
 by `.a` when `.a > 1`** (two per twin today — the tonemap's radiance load and
 its bloom tap; a negative `.a` marks a non-contour texel the gate pass skipped).
+
+THE TWIN DIFF since 2026-07-28 (`wear::twin::twins_are_structurally_identical`)
+is what makes "line-for-line twins" a FACT instead of a promise. It reads all
+six sources at compile time, splits each into top-level items (functions,
+structs, file-scope constants), normalizes both dialects onto one token stream
+and asserts the two are EQUAL, item for item — so a change to either twin that
+the other did not get fails `cargo test` with the diverging tokens printed.
+It replaced a fragment whitelist that never compared the twins to each other
+and covered 2 of the 6 files: four image-changing edits to `shade.metal` alone
+(stain tint, glaze-web line width, mud strength, the damage field's `rise`)
+each passed all 183 tests before it, and each fails now. The normalization is
+documented rule by rule in `wear.rs`'s `mod twin` doc — types, numbers by
+value, swizzles, single-argument casts, MSL's threaded resource parameters,
+buffer-vs-image storage access, the two hosts' different push-constant packing,
+and the ray-cast setup (the one elided region: `rayQueryEXT` against
+`intersector<>` has no common spelling, so the SETUP goes and the hit
+ACCESSORS are mapped, which keeps everything the trace DOES with a hit under
+the diff). What is left is `twin::ALLOW`: NAMED formatting divergences, each
+stating why it is not drift and each required to fire an exact number of times,
+so the list cannot rot into a whitelist. **Adding to `ALLOW` is the last
+resort** — the first answer to a diff failure is to port the change.
 
 The Mac dev machine (M2 Pro) runs the **Metal** backend; the Arch "spawner"
 box (RTX 5080) runs Vulkan. **Spawner duty DISCHARGED (2026-07-17,
@@ -267,6 +309,25 @@ discriminating check for the story key: `LEVEL="crack lab"
 STORY="0.9,0.5,0.4" WINDOW=1280x800 ZOOM=1.6 TARGET_X=7.3 TARGET_Z=3.8` —
 the three panels of the east facade must share ONE damage pattern that continues
 across the window jambs; per-panel islands mean the story key never arrived.
+
+**BLIND METAL (2026-07-28, the spike-retirement audit):** `hasProbes` is
+DELETED — an M1 bring-up gate that lived ONLY in shade.metal and whose host
+(`metal_backend.rs`) had written the literal `1` ever since the probe bake
+landed, i.e. the last logic divergence between the two shade twins. Its slot
+went with it, so Metal's `misc2` REPACKED: `[lightCount, roomLights16,
+reflBlockPx, _]` (was `[lightCount, hasProbes, roomLights16, reflBlockPx]`) and
+shade.metal's three readers shifted `.z→.y` (the probe-bank lerp) and `.w→.z`
+(the reflection block size). Vulkan's `ShadePush.misc2` is a DIFFERENT layout
+and did not move. Same day, same file: the `dir.w == 2.0` spotlight cone branch
+is gone from both twins with `rt_probe::Spotlight` (no writer since the
+pre-reset flashlight; `scan_lights` only ever writes 0.0 or 1.0 there). Both
+edits are inert on Vulkan — gym, crack lab and catalogue are BYTE-IDENTICAL
+here — but the MSL side is UNRUN. First Mac session: boot `LEVEL="crack lab"`
+and compare against the Vulkan reference. The failure signature of a bad repack
+is loud and specific: probe GI at the wrong dim (a flat-lit or black-ambient
+image) if `.y` is wrong, `REFL` blocks at the wrong size if `.z` is. Both twins
+now carry `hasProbes` and `dir.w == 2.0` in `wear.rs`'s FORBIDDEN table, so
+neither can come back to one source alone.
 
 **Open Metal duty (2026-07-17):** the phase-3 wall-smash demo
 (`LEVEL="wall smash"`, demos/viewer/phys-spike/gym_scene edits) is
@@ -352,7 +413,7 @@ independent — "stains spread wider than the cracking" is a sentence the
 model can express. `wear`'s lanes 0 and 1 carry the two PAINTED layers'
 thresholds to the shade pass as 6-bit codes counting DOWN from
 `wall::GATE_HI` in `GATE_STEP = 0.020`, and
-`wear::both_shader_twins_decode_the_level_lane_exactly_as_the_host_packs_it`
+`wear::both_shader_twins_spell_every_wear_decode_as_the_host_packs_it`
 reads both `.comp` and `.metal` at compile time so neither can drift. ONE
 function, TWO callers: the geometry pass uses exactly the quantized value
 the shader will decode, because splitting them leaves paint and plates in
@@ -558,11 +619,15 @@ over both shipped levels with a vacuity guard.
   asked on the level the owner is standing in), `surface grain` (plate size in
   world units on every wall; below `GRAIN_OFF` there is no veneer anywhere).
   Pinned by `the_level_rows_compose_and_never_destroy_the_authoring`.
-- THE CATALOGUE is one line per slab (`WallAt::only(at, label, layer, amount)`,
-  which pins every OTHER layer to zero, so "one effect per wall" is a fact about
-  the data). Two specimens changed subject: the painted crack network and painted
-  chips are gone from the shader, so those two slabs now show a wide stain patch
-  and the glaze web alone.
+- THE CATALOGUE is one BLOCK per slab in `crates/rt-viewer/wear/catalogue.wear`
+  (a `wall <x> <z> <name>` line, then the one layer's `pin <layer> <amount>`
+  and an explicit `pin <layer> 0` for each of the five it is NOT about, plus
+  `breaks 0`), so "one effect per wall" is a fact about the data and is pinned
+  by `crack::catalogue_tests`. The `WallAt::only` / `only_breaks` constructors
+  that spelled this before the wear files are DELETED (2026-07-28) — the file
+  is the authoring surface. Two specimens changed subject: the painted crack
+  network and painted chips are gone from the shader, so those two slabs now
+  show a wide stain patch and the glaze web alone.
 - THE HARNESS: `STORY=weather,settlement,cover_loss`,
   `SHAPE=grain,relief[,pattern[,p1,p2,p3]]`, `SPREAD=`, `SPALL=` (kept — the
   owner headline, and every A/B recipe on record uses it), `CRACK_SEL=`,
@@ -586,6 +651,19 @@ into the authoring. `WEAR_FILE=<path>` overrides load AND save (a missing
 path boots the baked default and saves to the new file). Verified: gym,
 crack lab, catalogue all BYTE-IDENTICAL to the statics era (Vulkan/RTX,
 floor zero).
+THAT ALLOWLIST IS DERIVED since 2026-07-28: `wear_file::env` is ONE table of
+every env knob the wear path reads, each with a "writes the authored spec"
+column — the parsers take their names from it (`std::env::var(env::STORY)`),
+`env_overridden` walks the `true` half, and the source guard
+`every_wear_env_read_names_a_knob_from_the_table` fails the tree on a bare
+`env::var("…")` anywhere in crack.rs / ide_host.rs / wear_file.rs, so a tenth
+knob cannot join a parser without joining the allowlist. It was a hand-kept
+9-name list guarding the writer that overwrites the OWNER'S files, and this
+project has been bitten from both ends already (`SHELL` colliding with the
+login shell; the AgeWall beat freezing ramp state into his file) — the
+name-hygiene and both-directions checks are tests now. Render-side bisects
+(`SPALL_LAYER`) stay out on purpose: they change the image built FROM a spec,
+never the spec.
 
 SCRUB REPLACES TRANSLATE and ORIGIN IS DELETED since 2026-07-27 (round B).
 The panel's "variant" row (`WallSpec.scrub`, file line `scrub v`, env
@@ -635,8 +713,10 @@ Verified here: gym / crack lab / catalogue BYTE-IDENTICAL at defaults;
 `BAND=0,0.45` A/B shows the intended confinement and nothing else.
 
 MUD SPLASH since 2026-07-27 (round D — the first NEW effect through the whole
-contract, and the `_pad` KNOB BUDGET IS NOW FULL: the next paint dial pays for
-the per-material aux buffer). `Layer::Mud` is the SIXTH layer, class Paint,
+contract, and the `_pad` KNOB BUDGET IS NOW FULL — but see `Material._rsv`
+below: since the glTF deletion freed `tex_index`, the next per-material dial
+gets a whole 32-bit word before anyone pays for an aux buffer).
+`Layer::Mud` is the SIXTH layer, class Paint,
 PURE-PIN (`derive` never writes it — splash-back is environmental, so the pin
 gesture IS the authoring; the master/solo level rows compose with it for
 free). Its amount is the fraction of its OWN SPLASH BAND covered (bottom =
@@ -704,7 +784,19 @@ shells", not "three at the run's start"); the relief cap / `t_cap` fire on
 shell walls too; SPALL PACKS AROUND SHELLS (their rects, both faces, join both
 spall `fits` vetoes — authored outranks derived); on a FAULTED wall a hit
 straddling the break is DROPPED, pinned by test (the alternatives draw the
-fault's invisible extension through the basin, or move the click). File:
+fault's invisible extension through the basin, or move the click). That whole
+ordering — placed hits first, front spall vetoed against both shell sets, back
+spall vetoed against the front's rects PLUS the shells — is ONE function since
+2026-07-28, `crack_geom::allocate_craters`, called by `craze_pier`, by
+`split_pier` (which passes its piece containment as the site predicate) and by
+the invariant tests. It was written out three times before, and the third copy
+— the tests' — had no shell veto in it at all, so the line that stops two
+facing basins perforating a slab could be deleted from BOTH production sites
+with the whole suite green (no shipped level composes the two: the catalogue
+pins spall to 0 on its shell slab, the crack lab authors no shells).
+`a_placed_shell_and_the_spall_around_it_never_perforate_the_wall` is the pin,
+and it places the hit on the site the damage field itself wants — a shell
+parked where nothing competes for it pins nothing. File:
 `shell <u> <y> [back]` ×3 + `caliber <v>`; env `HOLE=u,y[,r]` — named HOLE
 because `SHELL` is the login shell in EVERY Unix environment: that spelling
 put a crater on every wall of every test and its `env_overridden` entry
@@ -825,7 +917,17 @@ cell. Slider snapping is `k/50` (the wear-file lesson). HARNESS: `IDE=1`,
 Verified on Vulkan/RTX: gym SHOT with the IDE closed is BYTE-IDENTICAL to
 pre-IDE HEAD (cross-run floor zero); `IDE_EDIT="lamp 0 glow 1"` A/B moves the
 whole lighting; the catalogue's hierarchy lists all 23 runs by their wear
-names. NEXT (not this round): save — the level-as-data migration waits in
+names. THE ADAPTER'S DECISIONS ARE FREE FUNCTIONS since 2026-07-28 — the
+`impl Viewer` halves only feed them and write the result, because a state
+machine over `Vec<usize>` inside `&mut self` is a wrong-run outline that
+ships green: `pick_target` (which pickable a ray names — a wall as its RUN),
+`lift_plan` (the crack lab's one pier + EVERY pier the outline lifts),
+`wear_props` / `wear_row_of` (the sheet's rows, and the key that reaches each
+one back), `split_edit` / `edit_val` (the `IDE_EDIT` grammar). Pinned on the
+real gym piers: a pick on ANY pier of a cut facade names the same wall, the
+lift is that run and nothing else, the pin `*`, the row indents, the section
+heads and the trailing `wall::Miss` row. NEXT (not this round): save — the
+level-as-data migration waits in
 `archive/editor-v0` (level_file.rs + gym.level, the handoff's load-bearing
 decision); wall/grid ops (editor-v0's `apply_op` vocabulary). First Mac
 session: boot `IDE=1` once — the stamp path is shared code, but the
@@ -927,6 +1029,22 @@ aged pier; IDE_SEL wall/lamp/player SHOTs trace run/fixture/figure; two runs
 of the aged-facade selection are byte-identical. (The gold squiggles beside
 the craters are the walls' own rust paint — present without any selection;
 checked before believing them.)
+THAT "NO INTERIOR RINGS" CLAIM WAS ASPIRATIONAL UNTIL 2026-07-28. The surface
+tag rode `stamp_all`, which runs BEFORE the geometry pass — so it read
+`lab.cores`/`lab.spall_mats` from the PREVIOUS scene: empty on a first boot, so
+`CRACK_SEL=5` tagged only the veneer and the outline DID ring every crater from
+the inside (measured: 740 px, the crater ring, gone after the fix); and stale on
+a rebuild, where the ids index a resized materials vec — either past its end
+(`WEAR_EDIT=` and every `IDE_EDIT=` wear recipe panicked, `len 334 index 334`,
+and the crack lab's own AgeWall beat crashed the level ~1 s into a playtest) or,
+when the new scene has MORE materials, onto whatever now sits in the old slot,
+silently tagging an unrelated surface. The pass is its own function
+(`crack::stamp_surface_sel`) called AFTER `apply_geometry` assigns the fresh ids,
+which is the only point where those ids belong to the scene being stamped.
+Pinned by `crack::a_rebuild_lays_the_selection_on_this_scenes_materials_and_not_the_last_ones`,
+which runs the real two-scene rebuild and reproduces the exact production panic
+when the order is inverted. The three shipped levels are byte-identical across
+the fix (nothing is selected at boot); only `CRACK_SEL=`/`IDE_SEL=` move.
 GOTCHA pinned in docs/AGENT_LEARNINGS.md (2026-07-27F): `crack.runs`/
 `pier_run`/`label` are RESOLVE products — populated only when the level has
 authored wear — so the IDE derives runs from the piers themselves
@@ -1041,7 +1159,21 @@ declare ships detail that dot-dashes; the crack lab pins the rule with
 
 A change is not done until:
 - `cargo test` passes and `cargo clippy --all-targets` is warning-free, and
+- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` is warning-free, and
 - for render-side changes: a before/after `SHOT=` diff shows exactly the
   intended difference, and
 - for anything visible in motion: a recorded clip (record-gameplay skill or
   the DEMO env path) actually shows the intended behaviour.
+
+**Why the doc gate is a gate.** This codebase is ~30 % comment lines and treats
+its prose as the spec — a stale paragraph is a defect, not untidiness, because
+the next agent reads it and acts on it. `cargo doc` is the one mechanical check
+on that prose we have: it catches every intra-doc link that names a symbol which
+no longer exists, which is exactly the trace a deletion leaves behind. It was
+never in the bar, and by 2026-07-28 it had accumulated 23 warnings — including a
+live intra-doc link to `run_level`, a function three rounds dead, sitting in the
+doc of the damage field everything else reads. It does NOT catch a paragraph
+that is merely WRONG (no tool does); it catches the ones that name a corpse, and
+those are the ones a deletion commit creates. So deletions should still end with
+an `rg` for the deleted symbol across `crates/`, `bin/`, `docs/` and the
+shaders — `cargo doc` only sees names spelled as intra-doc links.

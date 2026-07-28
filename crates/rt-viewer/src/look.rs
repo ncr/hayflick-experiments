@@ -17,8 +17,10 @@
 //! FULL-HEIGHT black tinted-glass windows (real transmission — see
 //! gym_scene/shade), amber lamp mood, red-coat walker.
 //! The A/B parents (`porcelain`, `meadow`) and every earlier candidate live
-//! in git history only; the ESC-menu look row went with them (nothing left
-//! to compare — docs/VISION.md keeps the menu-first rule for real choices).
+//! in git history only. The ESC-menu look row went with them when [`POLANA`]
+//! stood alone, and came BACK with [`DUSK`] — the menu-first rule, working as
+//! designed: `menu`'s own test pin fails the build while `LOOKS.len() > 1` and
+//! there is no row (docs/VISION.md).
 //!
 //! The runtime-switch machinery (backend `rebuild_scene`) stays: it is how
 //! any future look variant gets its menu row back, and the harness knob
@@ -236,7 +238,7 @@ fn l3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [lf(a[0], b[0], t), lf(a[1], b[1], t), lf(a[2], b[2], t)]
 }
 
-/// Lerp the lightable half of two looks at `t` in [0,1] (see [`Lit`]). The
+/// Lerp the lightable half of two looks at `t` in `0..=1` (see [`Lit`]). The
 /// demo morph runner drives `t` from the sim tick, so it's deterministic and
 /// renders headlessly frame-for-frame.
 pub fn lerp_lit(a: &Look, b: &Look, t: f32) -> Lit {

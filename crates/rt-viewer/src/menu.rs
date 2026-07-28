@@ -63,10 +63,10 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "aa_soft", label: "aa soften", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     // whole-block detail (smash rubble) in or out of the AA — a visual call
     MenuItem { key: "aa_chunky", label: "aa rubble", kind: ItemKind::Toggle },
-    // ---- THE LEVEL'S WEAR, three rows (2026-07-26). The per-wall panel says
+    // ---- THE LEVEL'S WEAR, three rows (2026-07-26). The IDE inspector says
     // what ONE wall is; these say what the whole level is, which is the question
     // the owner actually asks while walking around it. All three are geometry, so
-    // they land on the mouse RELEASE like the panel's rows do.
+    // they land on the mouse RELEASE like the inspector's wear rows do.
     //
     // A MASTER on the level's authored story. 1 = as authored, 0 = the plain
     // greybox — so "show me this level clean" is one row and not fifteen, and
@@ -81,7 +81,6 @@ pub const MENU: &[MenuItem] = &[
     // shape dial that is a length (`wall::Shape::grain`). Below `GRAIN_OFF` the
     // veneer is off entirely, so the bottom of this row is "no plates anywhere".
     MenuItem { key: "wear_grain", label: "surface grain", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.02 } },
-    // GLAZE EASE (owner catalogue 2026-07-25): the chamfer on every exposed
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
@@ -455,7 +454,7 @@ impl Viewer {
             }
             // The three LEVEL-wide wear rows. Each rewrites every run's spec
             // through `wear_level_apply` and re-streams the paint; the geometry
-            // waits for the release, exactly like the panel's own rows.
+            // waits for the release, exactly like the inspector's wear rows.
             "wear_master" => {
                 self.crack.master = v;
                 self.wear_level_apply();
@@ -468,13 +467,7 @@ impl Viewer {
                 self.crack.grain = v;
                 self.wear_level_apply();
             }
-            // The glaze ease is real geometry over the WHOLE level (every box
-            // moved a little, so there is no local-refresh set to hand it) —
-            // 3-5 s of full rebake per step. `menu_drag_to` fires on every
-            // CursorMoved, so rebuilding here froze the window for 8-20 s on a
-            // single drag: the dial takes the value now and the rebuild waits
-            // for the mouse RELEASE, exactly like the crack knobs
-            // (`crack_release`). Keyboard steps release immediately.
+            // a tonemap push constant — live at frame rate, no rebuild
             "exposure" => self.exposure = v,
             // the lamp master is a presentation dim (direct via the emission
             // build, indirect via the probe-bank lerp — same frame, no rebake)
@@ -615,8 +608,8 @@ impl Viewer {
         self.backend.menu_scale() as f32
     }
 
-    /// Top-left window px of the on-screen panel: game menus are centered,
-    /// the settings/wall panels sit at the top-left margin.
+    /// Top-left window px of the on-screen panel: game menus are centered, the
+    /// settings sheet sits at the top-left margin.
     fn menu_origin(&self, pw: i32, ph: i32) -> Vec2 {
         match self.menu.mode {
             MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
@@ -776,9 +769,9 @@ impl Viewer {
     }
 
     /// Draw the overlay at logical resolution: the open panel (game menu /
-    /// settings), the wall panel or the REC badge when closed — `None` when
-    /// there is nothing to show (ESC is the only way into the menu; the
-    /// hamburger icon is gone, owner 2026-07-27).
+    /// settings), or the REC badge when the menu is closed — `None` when there
+    /// is nothing to show (ESC is the only way into the menu; the hamburger
+    /// icon is gone, owner 2026-07-27, and so is the corner wall panel).
     pub fn menu_canvas(&self) -> Option<(Vec<u32>, i32, i32)> {
         const BG: u32 = 0x16161c;
         const BORDER: u32 = 0x6a6a78;

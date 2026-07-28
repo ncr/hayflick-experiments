@@ -10,7 +10,7 @@
 //!
 //! Safety: the key is a fast non-crypto hash, so a collision only costs a
 //! needless re-bake; and `load` re-checks the file length against the live probe
-//! buffer before use. Bump [`VERSION`] on any change to the bake shaders, bounce
+//! buffer before use. Bump `VERSION` on any change to the bake shaders, bounce
 //! count, or probe layout so stale files miss.
 
 use std::fs;

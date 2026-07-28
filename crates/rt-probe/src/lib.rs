@@ -7,9 +7,9 @@
 //!   into `RenderCfg` / `GameCfg` / `HarnessCfg` along look / game / harness
 //!   lines (the shared `scene` identity stays on `Config`)
 //! - [`gpu`]    — generic Vulkan plumbing (context, buffers, images)
-//! - [`scene`]  — scene model + GLTF loader (world-space baked geometry)
+//! - [`scene`]  — scene model (world-space baked geometry)
 //! - [`render`] — `SceneGpu`: AS build, shade + probe pipelines, NEE lights,
-//!   the typed FrameState/SceneHandles/Spotlight frame surface, the two-bank
+//!   the typed FrameState/SceneHandles frame surface, the two-bank
 //!   GI probe cache. Practical flicker is NOT here — `frame_lights_cpu` only
 //!   applies the game-authored `FrameState.light_emission` (house-game owns
 //!   the flicker curves; see step 10 in `ARCHITECTURE.md`)
@@ -47,12 +47,12 @@ pub mod scene;
 
 // Re-export surface = exactly what crosses the rt-probe boundary (rt-viewer +
 // its `use rt_probe::*`). Items NOT re-exported here stay `pub` in their
-// modules: some are internal-only (GpuTex), others rt-viewer names by module
+// modules: some are internal-only (Primitive), others rt-viewer names by module
 // path (rt_probe::render::{frame_lights_cpu, LightScan, mat_to_transform} —
 // the Metal backend). Iso math is imported from
 // `iso_core` directly, never through this crate.
 pub use config::{Config, StyleCfg};
 pub use gpu::{barrier, dslb, make_storage_image, Buffer, Ctx};
 pub use gpu_scene::{bake_bank_emission, probe_box, probe_runs, probes_in, refresh_boxes_for, union_box, InstanceTable, ProbeGrid};
-pub use render::{make_pool, make_set, push_bytes, roi_push, scan_lights, FrameState, InstanceKey, LightKey, SceneGpu, SceneHandles, ShadePush, Spotlight, N_RESERVED, ROI_OFF, SPOT_WARM, TONE_SPV};
+pub use render::{make_pool, make_set, push_bytes, roi_push, scan_lights, FrameState, InstanceKey, LightKey, SceneGpu, SceneHandles, ShadePush, ROI_OFF, TONE_SPV};
 pub use scene::{hex_linear, EnvBlock, Scene, SunSky};
