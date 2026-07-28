@@ -14,7 +14,7 @@
 //!
 //! - [`CrackLab`] holds the level's per-run `WallSpec`s, loaded from
 //!   `wear/<level>.wear` ([`crate::wear_file`]) and mutated by owner edits.
-//! - `wall::compile_specs` turns each into a [`crate::wall::Sheet`]: the SOLVED
+//! - `wall::compile_specs` turns each into a [`wear_core::wall::Sheet`]: the SOLVED
 //!   layer areas, thresholds, breaks and shape a run actually gets.
 //! - The sheet's `Paint` half rides the materials — the three painted layers'
 //!   strengths in four 6-bit unorm lanes at `Material._pad` bits 8..31
@@ -79,15 +79,15 @@ pub use crate::gym_scene::AA_BIT;
 /// window or a doorway interrupts it — a rendering fact the level builder never
 /// typed and cannot see — so everything he says (the story, the shape, the pins)
 /// is said about the run, and the piers inherit it.
-pub fn runs_of(piers: &[Pier]) -> (Vec<crate::wall::RunRect>, Vec<usize>) {
-    let mut runs: Vec<crate::wall::RunRect> = Vec::new();
+pub fn runs_of(piers: &[Pier]) -> (Vec<wear_core::wall::RunRect>, Vec<usize>) {
+    let mut runs: Vec<wear_core::wall::RunRect> = Vec::new();
     let mut of = Vec::with_capacity(piers.len());
     for p in piers {
-        let same = |r: &&crate::wall::RunRect| (r.lo - p.run_lo).length() < 1e-4 && (r.hi - p.run_hi).length() < 1e-4;
+        let same = |r: &&wear_core::wall::RunRect| (r.lo - p.run_lo).length() < 1e-4 && (r.hi - p.run_hi).length() < 1e-4;
         of.push(match runs.iter().position(|r| same(&r)) {
             Some(i) => i,
             None => {
-                runs.push(crate::wall::RunRect { lo: p.run_lo, hi: p.run_hi });
+                runs.push(wear_core::wall::RunRect { lo: p.run_lo, hi: p.run_hi });
                 runs.len() - 1
             }
         });
@@ -95,7 +95,7 @@ pub fn runs_of(piers: &[Pier]) -> (Vec<crate::wall::RunRect>, Vec<usize>) {
     (runs, of)
 }
 
-/// Live wear state on the [`Viewer`]: one [`crate::wall::WallSpec`] per RUN (the
+/// Live wear state on the [`Viewer`]: one [`wear_core::wall::WallSpec`] per RUN (the
 /// level's, plus every panel edit), the sheets they compile to, and the
 /// per-PIER materials the geometry pass minted from them.
 ///
@@ -109,7 +109,7 @@ pub struct CrackLab {
     /// Selection + panel enabled (the demo says `wear: Some(..)`).
     pub active: bool,
     /// The level's runs — the authoring unit.
-    pub runs: Vec<crate::wall::RunRect>,
+    pub runs: Vec<wear_core::wall::RunRect>,
     /// Which RUN each pier belongs to (parallel to `Viewer::piers`).
     pub pier_run: Vec<usize>,
     /// Per RUN: what this wall says about itself — the level's authoring plus
@@ -117,7 +117,7 @@ pub struct CrackLab {
     /// three ESC rows are applied on the way to a sheet ([`Self::level_dials`]),
     /// so sliding `wear` back to 1 restores exactly what the author wrote and a
     /// panel edit survives all three.
-    pub spec: Vec<crate::wall::WallSpec>,
+    pub spec: Vec<wear_core::wall::WallSpec>,
     /// The `wear` master (ESC): 1 = the level as authored, 0 = the plain greybox.
     pub master: f32,
     /// `solo layer` (ESC): 0 = all of them, else `Layer::ALL[solo - 1]` alone.
@@ -126,7 +126,7 @@ pub struct CrackLab {
     /// leave each wall its own.
     pub grain: f32,
     /// Per RUN: the name the level gave it — the panel's title, and what a
-    /// [`crate::wall::Miss`] is reported against.
+    /// [`wear_core::wall::Miss`] is reported against.
     pub label: Vec<&'static str>,
     /// Per RUN, per PATTERN: native params, so cycling the pattern keeps each
     /// one's tuning for the A/B (owner round 7).
@@ -152,9 +152,9 @@ pub struct CrackLab {
     /// `story 0.56 0.48 0.85` on the ramped control — beat state he never
     /// dialed. An owner CAUSE edit on the ramped run clears the override
     /// (the author takes over the wall; a masked slider would read dead).
-    pub beat: Option<(usize, crate::wall::Story)>,
+    pub beat: Option<(usize, wear_core::wall::Story)>,
     /// Per RUN: compiled. `wall::compile_specs` is the ONLY writer.
-    pub sheets: Vec<crate::wall::Sheet>,
+    pub sheets: Vec<wear_core::wall::Sheet>,
     /// The picked PIER. The ray hits a pier; the editing surface (the IDE
     /// inspector) edits its RUN.
     pub sel: Option<usize>,
@@ -222,12 +222,12 @@ impl CrackLab {
 
     /// Recompile every run's sheet from its spec. Cheap (a sorted field sample
     /// per run) and it cannot fail — addressing already happened in
-    /// [`crate::wall::specs_of`], which is what makes a live edit a
+    /// [`wear_core::wall::specs_of`], which is what makes a live edit a
     /// pure-arithmetic step. The age-ramp beat's story rides in HERE — on the
     /// way to the sheet, like the level dials — so the authored spec (and any
     /// save serialized from it) never carries beat state.
     pub fn recompile(&mut self) {
-        let specs: Vec<(&'static str, crate::wall::WallSpec)> = self
+        let specs: Vec<(&'static str, wear_core::wall::WallSpec)> = self
             .label
             .iter()
             .copied()
@@ -241,21 +241,21 @@ impl CrackLab {
                 self.level_dials(s)
             }))
             .collect();
-        self.sheets = crate::wall::compile_specs(&self.runs, &specs);
+        self.sheets = wear_core::wall::compile_specs(&self.runs, &specs);
     }
 
     /// The three LEVEL-wide ESC rows, applied to one wall's authored spec. ONE
     /// place, on the way to a sheet, which is what makes them non-destructive:
     /// the authored spec is never overwritten, so every row is reversible and
     /// they compose with each other and with a panel edit.
-    fn level_dials(&self, mut s: crate::wall::WallSpec) -> crate::wall::WallSpec {
-        use crate::wall::Layer;
+    fn level_dials(&self, mut s: wear_core::wall::WallSpec) -> wear_core::wall::WallSpec {
+        use wear_core::wall::Layer;
         // MASTER — scales the CAUSES and any PINS alike. Pins too, or a bench
         // wall (which is nothing but pins) would ignore the row entirely and
         // "show me this level clean" would leave the catalogue untouched.
         if self.master < 1.0 {
             let m = self.master.clamp(0.0, 1.0);
-            s.story = crate::wall::Story { weather: s.story.weather * m, settlement: s.story.settlement * m, cover_loss: s.story.cover_loss * m };
+            s.story = wear_core::wall::Story { weather: s.story.weather * m, settlement: s.story.settlement * m, cover_loss: s.story.cover_loss * m };
             for l in Layer::ALL {
                 if let Some(v) = s.pin.get(l) {
                     s.pin = s.pin.area(l, v * m);
@@ -284,7 +284,7 @@ impl CrackLab {
     /// active, and each one's dialing — meet only here.
     pub fn set_pattern(&mut self, r: usize, code: u8) {
         let par = self.par[r][code as usize % crate::crack_geom::NPOL];
-        self.spec[r].shape.pattern = crate::wall::pattern_of(code, par);
+        self.spec[r].shape.pattern = wear_core::wall::pattern_of(code, par);
     }
 }
 
@@ -302,7 +302,7 @@ impl CrackLab {
 /// three are geometry dials it has no business reading. So three of the four
 /// lanes were paying rent for nothing while the two layers it does draw shared a
 /// single strength. Now each painted layer carries its own.
-pub fn pad_bits(p: crate::wall::Paint) -> i32 {
+pub fn pad_bits(p: wear_core::wall::Paint) -> i32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 63.0).round() as u32;
     ((q(p.stain_amt) << 8) | (q(p.web_amt) << 14) | (p.mud.min(63) << 20) | (p.mud_top.min(63) << 26)) as i32
 }
@@ -311,7 +311,7 @@ pub fn pad_bits(p: crate::wall::Paint) -> i32 {
 /// paint lanes + the recomputed selection bit. ONE expression, shared by the
 /// boot/rebuild stamp ([`stamp_all`]) and the live edit ([`Viewer::crack_apply`])
 /// — they are the same operation and drifted when spelled out twice.
-pub fn stamped_pad(pad: i32, p: crate::wall::Paint, selected: bool) -> i32 {
+pub fn stamped_pad(pad: i32, p: wear_core::wall::Paint, selected: bool) -> i32 {
     (pad & KEEP_FLAGS) | pad_bits(p) | if selected { SEL_BIT } else { 0 }
 }
 
@@ -331,17 +331,17 @@ pub fn unpack(pad: i32) -> [f32; 4] {
 /// exist as a set: two of them were amounts, one was a plate size and one was a
 /// groove depth. A harness that asks for a STORY gets the same walls the level
 /// builder would get from typing it.
-fn story_from_env() -> Option<crate::wall::Story> {
+fn story_from_env() -> Option<wear_core::wall::Story> {
     let v = std::env::var(crate::wear_file::env::STORY).ok()?;
     let parts: Vec<&str> = v.split(',').map(str::trim).collect();
     let n = |i: usize| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-    Some(crate::wall::Story { weather: n(0), settlement: n(1), cover_loss: n(2) })
+    Some(wear_core::wall::Story { weather: n(0), settlement: n(1), cover_loss: n(2) })
 }
 
 /// `SHAPE=grain,relief[,pattern[,p1,p2,p3]]` — the wall's SHAPE, applied to
 /// every run. `grain` is a plate size in world units, `pattern` a
 /// `crack_geom::POLICIES` name or index. Shell-only, like [`story_from_env`].
-fn shape_from_env() -> Option<crate::wall::Shape> {
+fn shape_from_env() -> Option<wear_core::wall::Shape> {
     let v = std::env::var(crate::wear_file::env::SHAPE).ok()?;
     let parts: Vec<&str> = v.split(',').map(str::trim).collect();
     let f = |i: usize, d: f32| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(d);
@@ -350,7 +350,7 @@ fn shape_from_env() -> Option<crate::wall::Shape> {
     for (j, slot) in par.iter_mut().enumerate() {
         *slot = f(3 + j, *slot);
     }
-    Some(crate::wall::Shape { grain: f(0, crate::wall::Shape::DEFAULT.grain), relief: f(1, crate::wall::Shape::DEFAULT.relief), pattern: crate::wall::pattern_of(code, par) })
+    Some(wear_core::wall::Shape { grain: f(0, wear_core::wall::Shape::DEFAULT.grain), relief: f(1, wear_core::wall::Shape::DEFAULT.relief), pattern: wear_core::wall::pattern_of(code, par) })
 }
 
 /// `SPALL=<0..1>` — the cover-loss CAUSE on its own, kept as its own knob
@@ -393,13 +393,13 @@ fn band_from_env() -> Option<(f32, f32)> {
 /// environment, so that spelling would fire on every run of every level (and
 /// its presence in `env_overridden` would block every save — found the hard
 /// way, by 6 failing tests).
-fn shell_from_env() -> Option<crate::wall::Shells> {
+fn shell_from_env() -> Option<wear_core::wall::Shells> {
     let v = std::env::var(crate::wear_file::env::HOLE).ok()?;
     let parts: Vec<&str> = v.split(',').map(str::trim).collect();
     let f = |i: usize, d: f32| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(d);
-    let mut sh = crate::wall::Shells::NONE;
-    sh.caliber = f(2, crate::wall::Shells::CALIBER);
-    sh.add(crate::wall::Shell { u: f(0, 0.5), y: f(1, 0.55), back: false });
+    let mut sh = wear_core::wall::Shells::NONE;
+    sh.caliber = f(2, wear_core::wall::Shells::CALIBER);
+    sh.add(wear_core::wall::Shell { u: f(0, 0.5), y: f(1, 0.55), back: false });
     Some(sh)
 }
 
@@ -409,17 +409,17 @@ fn shell_from_env() -> Option<crate::wall::Shells> {
 /// It exists because the release path is the expensive one — an agent cannot
 /// click, and "boot straight into the final story" measures the BOOT bake, not
 /// the rebuild.
-fn edit_from_env() -> Option<(crate::wall::Story, Option<usize>)> {
+fn edit_from_env() -> Option<(wear_core::wall::Story, Option<usize>)> {
     std::env::var(crate::wear_file::env::WEAR_EDIT).ok().map(|v| {
         let parts: Vec<&str> = v.split(',').map(str::trim).collect();
         let n = |i: usize| parts.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-        (crate::wall::Story { weather: n(0), settlement: n(1), cover_loss: n(2) }, parts.get(3).and_then(|s| s.parse::<usize>().ok()))
+        (wear_core::wall::Story { weather: n(0), settlement: n(1), cover_loss: n(2) }, parts.get(3).and_then(|s| s.parse::<usize>().ok()))
     })
 }
 
 /// Apply every environment override to a resolved spec list. One place, so a
 /// harness shot and the owner's own level cannot diverge in how they are read.
-fn apply_env(specs: &mut [(&'static str, crate::wall::WallSpec)]) {
+fn apply_env(specs: &mut [(&'static str, wear_core::wall::WallSpec)]) {
     let (story, shape, spall, scrub, band, shell) = (story_from_env(), shape_from_env(), spall_from_env(), scrub_from_env(), band_from_env(), shell_from_env());
     if story.is_none() && shape.is_none() && spall.is_none() && scrub.is_none() && band.is_none() && shell.is_none() {
         return;
@@ -427,7 +427,7 @@ fn apply_env(specs: &mut [(&'static str, crate::wall::WallSpec)]) {
     for (_, spec) in specs.iter_mut() {
         if let Some(st) = story {
             spec.story = st;
-            spec.pin = crate::wall::Pins::NONE; // an override asks for the CAUSE, not the level's pins
+            spec.pin = wear_core::wall::Pins::NONE; // an override asks for the CAUSE, not the level's pins
         }
         if let Some(sh) = shape {
             spec.shape = sh;
@@ -456,7 +456,7 @@ pub fn pier_index_at(piers: &[Pier], x: f32, z: f32) -> Option<usize> {
     piers.iter().position(|q| q.lo.cmple(p).all() && q.hi.cmpge(p).all())
 }
 
-/// The AGE RAMP curve: one 0..1 dial → a [`crate::wall::Story`], for the demo
+/// The AGE RAMP curve: one 0..1 dial → a [`wear_core::wall::Story`], for the demo
 /// beat that weathers a wall while the owner watches
 /// ([`crate::demos::Action::AgeWall`]).
 ///
@@ -471,12 +471,12 @@ pub fn pier_index_at(piers: &[Pier], x: f32, z: f32) -> Option<usize> {
 /// It used to ramp five KNOBS through five hand-placed windows, four of which
 /// were the same causal ladder `wall::derive` now owns — so the beat and the
 /// authoring model each had their own opinion about what "getting older" means.
-pub fn ramp_story(t: f32) -> crate::wall::Story {
+pub fn ramp_story(t: f32) -> wear_core::wall::Story {
     let seg = |a: f32, b: f32| {
         let u = ((t - a) / (b - a)).clamp(0.0, 1.0);
         u * u * (3.0 - 2.0 * u) // smoothstep: a linear cause crossing a gate pops
     };
-    crate::wall::Story { weather: 0.95 * seg(0.00, 0.85), settlement: 0.55 * seg(0.35, 0.90), cover_loss: 0.85 * seg(0.60, 1.00) }
+    wear_core::wall::Story { weather: 0.95 * seg(0.00, 0.85), settlement: 0.55 * seg(0.35, 0.90), cover_loss: 0.85 * seg(0.60, 1.00) }
 }
 
 /// Every material a pier's SURFACE can show: the authored box's own, the
@@ -572,7 +572,7 @@ pub fn stamp_aa(scene: &mut Scene, piers: &[Pier], lab: &CrackLab, scope: i32) -
 }
 
 /// Resolve the level's wear against a freshly built scene (boot and every
-/// `apply_look` rebuild): the authored [`crate::wall::LevelWear`] seeds every
+/// `apply_look` rebuild): the authored [`wear_core::wall::LevelWear`] seeds every
 /// run's spec ONCE, and a rebuild with the same runs keeps the owner's live
 /// edits (a look switch must not undo his dialing). No wear clears the lab.
 ///
@@ -580,7 +580,7 @@ pub fn stamp_aa(scene: &mut Scene, piers: &[Pier], lab: &CrackLab, scope: i32) -
 /// wall on the level's base story, because a black window is worse than a wall
 /// that is less weathered than intended. It is FATAL where it can be —
 /// `demos::every_demo_compiles_against_its_own_level`.
-pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers: &[Pier], scene: &mut Scene, aa_scope: i32) {
+pub fn resolve(wear: Option<&wear_core::wall::LevelWear>, lab: &mut CrackLab, piers: &[Pier], scene: &mut Scene, aa_scope: i32) {
     let Some(lw) = wear else {
         *lab = CrackLab::default();
         return;
@@ -591,18 +591,18 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
     crate::wear::stamp_story(scene, piers);
     let (runs, pier_run) = runs_of(piers);
     if lab.runs.len() != runs.len() || lab.pier_run != pier_run {
-        let mut specs = crate::wall::specs_of(&runs, lw).unwrap_or_else(|misses| {
+        let mut specs = wear_core::wall::specs_of(&runs, lw).unwrap_or_else(|misses| {
             for m in &misses {
                 eprintln!("wear: {m:?} — that wall keeps the level's base story");
             }
             runs.iter()
-                .map(|_| ("", crate::wall::WallSpec { story: lw.base, ..crate::wall::WallSpec::PRISTINE }))
+                .map(|_| ("", wear_core::wall::WallSpec { story: lw.base, ..wear_core::wall::WallSpec::PRISTINE }))
                 .collect()
         });
         apply_env(&mut specs);
         if let Some(sp) = spread_from_env() {
-            let lw2 = crate::wall::LevelWear { spread: sp, ..*lw };
-            if let Ok(mut s) = crate::wall::specs_of(&runs, &lw2) {
+            let lw2 = wear_core::wall::LevelWear { spread: sp, ..*lw };
+            if let Ok(mut s) = wear_core::wall::specs_of(&runs, &lw2) {
                 apply_env(&mut s);
                 specs = s;
             }
@@ -611,7 +611,7 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
             .iter()
             .map(|(_, sp)| {
                 let mut per = [crate::crack_geom::param_defaults(0), crate::crack_geom::param_defaults(1), crate::crack_geom::param_defaults(2)];
-                per[sp.shape.pattern.code() as usize] = crate::wall::par_of(sp.shape.pattern);
+                per[sp.shape.pattern.code() as usize] = wear_core::wall::par_of(sp.shape.pattern);
                 per
             })
             .collect();
@@ -647,7 +647,7 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
         let s = lab.spec[lab.pier_run[i]].scrub;
         if s > 0.0 {
             let mid = scene.primitives[pier.prim].material_id as usize;
-            scene.materials[mid].base_color[3] = crate::wall::scrub_key(crate::wear::story_key(pier.run_lo, pier.run_hi), s);
+            scene.materials[mid].base_color[3] = wear_core::wall::scrub_key(wear_core::wall::story_key(pier.run_lo, pier.run_hi), s);
         }
     }
     lab.recompile();
@@ -704,7 +704,7 @@ impl Viewer {
         // geometry dial; the chalk core keeps the built variant's key until
         // then, which only ever shows for the length of the drag.
         let scrub = run.and_then(|r| self.crack.spec.get(r)).map_or(0.0, |s| s.scrub);
-        let story = crate::wall::scrub_key(crate::wear::story_key(self.piers[i].run_lo, self.piers[i].run_hi), scrub);
+        let story = wear_core::wall::scrub_key(wear_core::wall::story_key(self.piers[i].run_lo, self.piers[i].run_hi), scrub);
         if self.scene.materials[mid].base_color[3] != story {
             self.scene.materials[mid].base_color[3] = story;
             self.backend.set_material_story(mid, story);
@@ -905,7 +905,7 @@ impl Viewer {
                 self.ui_blip("menu_move");
             }
             None => {
-                if !self.crack.spec[r].shells.add(crate::wall::Shell { u, y, back }) {
+                if !self.crack.spec[r].shells.add(wear_core::wall::Shell { u, y, back }) {
                     return; // the wall is full — the shells row says 3, the click says nothing new
                 }
                 self.ui_blip("menu_pick");
@@ -922,7 +922,7 @@ impl Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wall::{LevelWear, Story, WallSpec};
+    use wear_core::wall::{LevelWear, Story, WallSpec};
 
     /// Build a level and resolve the given wear onto it.
     fn build(level: crate::demos::Level, wear: Option<&LevelWear>) -> (rt_probe::Scene, crate::gym_scene::GymMeta, CrackLab) {
@@ -947,13 +947,13 @@ mod tests {
     /// knob budget is FULL.
     #[test]
     fn pad_bits_layout_matches_the_shader_unpack() {
-        let p = |stain: f32, web: f32| crate::wall::Paint { stain_amt: stain, web_amt: web, ..Default::default() };
+        let p = |stain: f32, web: f32| wear_core::wall::Paint { stain_amt: stain, web_amt: web, ..Default::default() };
         assert_eq!(pad_bits(p(0.0, 0.0)), 0, "no paint = zero bits (bit-identical image)");
         assert_eq!(pad_bits(p(1.0, 0.0)), 63 << 8);
         assert_eq!(pad_bits(p(0.0, 1.0)), 63 << 14);
-        let mud = crate::wall::Paint { mud: 63, mud_top: 22, ..Default::default() };
+        let mud = wear_core::wall::Paint { mud: 63, mud_top: 22, ..Default::default() };
         assert_eq!(pad_bits(mud) as u32, (63 << 20) | (22 << 26), "mud rides lanes 2/3");
-        assert!(pad_bits(crate::wall::Paint { mud: 30, mud_top: 63, ..Default::default() }) < 0, "a full top code reaches the sign bit — reads must go through uint(pad), never pad > 0");
+        assert!(pad_bits(wear_core::wall::Paint { mud: 30, mud_top: 63, ..Default::default() }) < 0, "a full top code reaches the sign bit — reads must go through uint(pad), never pad > 0");
         for (a, b) in unpack(pad_bits(p(0.55, 0.30))).iter().zip([0.55, 0.30, 0.0, 0.0]) {
             assert!((a - b).abs() <= 0.5 / 63.0, "{a} vs {b}");
         }
@@ -1160,12 +1160,12 @@ mod tests {
         let mid = if run_x { (p.lo.x + p.hi.x) * 0.5 } else { (p.lo.z + p.hi.z) * 0.5 };
         let u = (mid - ru0) / (ru1 - ru0);
         let at = ((runs[ri].lo.x + runs[ri].hi.x) * 0.5, (runs[ri].lo.z + runs[ri].hi.z) * 0.5);
-        let mut sh = crate::wall::Shells::NONE;
-        sh.add(crate::wall::Shell { u, y: 0.55, back: false });
+        let mut sh = wear_core::wall::Shells::NONE;
+        sh.add(wear_core::wall::Shell { u, y: 0.55, back: false });
         let spec = WallSpec { shells: sh, ..WallSpec::PRISTINE };
 
         let mk = |spec: WallSpec, label: &'static str| -> &'static LevelWear {
-            let walls: &'static [crate::wall::WallAt] = Box::leak(Box::new([crate::wall::WallAt { at, label, spec }]));
+            let walls: &'static [wear_core::wall::WallAt] = Box::leak(Box::new([wear_core::wall::WallAt { at, label, spec }]));
             Box::leak(Box::new(LevelWear { base: Story::ZERO, spread: 0.0, walls }))
         };
         let (_scene, meta, lab) = build(crate::demos::Level::Gym, Some(mk(spec, "hit")));
@@ -1175,7 +1175,7 @@ mod tests {
 
         // the same hit with a break authored ON its line: dropped, wall-wide
         let mut broken = spec;
-        broken.pin = broken.pin.breaks(crate::wall::Breaks { count: 1, at: Some(u) });
+        broken.pin = broken.pin.breaks(wear_core::wall::Breaks { count: 1, at: Some(u) });
         let (_s2, m2, lab2) = build(crate::demos::Level::Gym, Some(mk(broken, "hit on the line")));
         for i in 0..m2.piers.len() {
             assert_eq!(lab2.spall_mats[i], [-1, -1], "a hit straddling the break must be DROPPED (pier {i})");
@@ -1284,7 +1284,7 @@ mod tests {
     #[test]
     fn the_level_rows_compose_and_never_destroy_the_authoring() {
         let (_, _, mut lab) = build(crate::demos::Level::Gym, Some(crate::demos::lab_wear()));
-        let authored: Vec<crate::wall::WallSpec> = lab.spec.clone();
+        let authored: Vec<wear_core::wall::WallSpec> = lab.spec.clone();
         let areas = |l: &CrackLab| l.sheets.iter().map(|s| s.area).collect::<Vec<_>>();
         let full = areas(&lab);
         assert!(full.iter().flatten().any(|a| *a > 0.0), "VACUOUS: this level is not weathered");
@@ -1300,11 +1300,11 @@ mod tests {
         assert_eq!(lab.spec, authored, "the authored spec was overwritten");
 
         // SOLO: one layer survives, on every wall
-        for (k, keep) in crate::wall::Layer::ALL.into_iter().enumerate() {
+        for (k, keep) in wear_core::wall::Layer::ALL.into_iter().enumerate() {
             lab.solo = k + 1;
             lab.recompile();
             for (r, a) in areas(&lab).iter().enumerate() {
-                for l in crate::wall::Layer::ALL {
+                for l in wear_core::wall::Layer::ALL {
                     if l != keep {
                         assert_eq!(a[l.index()], 0.0, "solo {}: run {r} still shows {}", keep.name(), l.name());
                     }
@@ -1385,7 +1385,7 @@ mod tests {
 mod catalogue_tests {
     use super::*;
     use crate::crack_geom::{CRAZE_BIT, GEO_BIT};
-    use crate::wall::Layer;
+    use wear_core::wall::Layer;
 
     /// **EVERY DEMO COMPILES AGAINST ITS OWN LEVEL.** An addressing miss used to
     /// be an `eprintln!` nobody read, and its symptom was "the effect I authored
@@ -1399,7 +1399,7 @@ mod catalogue_tests {
             let Some(lw) = d.wear.map(|f| f.level_wear()) else { continue };
             let (_scene, meta) = crate::gym_scene::build_gym(&d.level.spec(), &crate::look::POLANA);
             let (runs, _) = crate::crack::runs_of(&meta.piers);
-            let sheets = crate::wall::compile(&runs, lw).unwrap_or_else(|m| panic!("demo \"{}\" does not compile against its own level: {m:?}", d.name));
+            let sheets = wear_core::wall::compile(&runs, lw).unwrap_or_else(|m| panic!("demo \"{}\" does not compile against its own level: {m:?}", d.name));
             assert_eq!(sheets.len(), runs.len(), "\"{}\": one sheet per run", d.name);
             for w in lw.walls {
                 assert!(sheets.iter().any(|s| s.label == w.label), "\"{}\": the wall named \"{}\" produced no sheet", d.name, w.label);

@@ -262,7 +262,7 @@ pub trait RenderBackend {
 
     /// Live per-material STORY KEY update — the third sibling: the VARIANT
     /// (scrub) dial slides the key every damage field seeds off, and the key
-    /// rides `Material.base_color[3]` (`crate::wear::story_key` /
+    /// rides `Material.base_color[3]` (`wear_core::wall::story_key` /
     /// `wall::scrub_key`). Unlike the effect word this datum IS visible to the
     /// probe bake — the key stamps PRE-build and the cache re-keys per scrub
     /// bucket; this live path exists so a scrub DRAG morphs the painted field

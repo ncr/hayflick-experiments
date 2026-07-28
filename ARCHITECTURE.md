@@ -60,6 +60,17 @@ testable without a GPU. The game must run without the renderer.
                         #   consumer is the shipped "wall smash" demo, through
                         #   rt-viewer/src/phys_scene.rs (the adapter, in the same
                         #   tradition as ide_host.rs).
+    wear-core/          # the WEAR MODEL (extracted from rt-viewer 2026-07-28).
+                        #   deps: glam only — no Scene, no Material, no bits, no GPU.
+                        #   wall.rs (what a level AUTHOR says about a wall: Story →
+                        #   Layer amounts → the solved-threshold Sheet), rebar.rs
+                        #   (the reinforcement mat, its corrosion sites and their
+                        #   craters), field.rs (the noise/damage field all of the
+                        #   above and both shader twins mirror). wall.rs had claimed
+                        #   that purity in prose since it was written and nothing
+                        #   enforced it; the dependency line is the enforcement.
+                        #   Boundary: RunRect in, Sheet out — rt-viewer's crack_geom
+                        #   / crack / wear convert.
     rt-viewer/          # shell. [[bin]] name = "viewer" (binary path: target/release/viewer).
                         #   deps: rt-probe, house-game, sim-core, iso-core, winit, ash-window,
                         #   raw-window-handle, font8x8 + ash/glam/png (viewer code uses them
@@ -74,9 +85,9 @@ testable without a GPU. The game must run without the renderer.
 ```
 
 Dependency arrows: `rt-viewer → {rt-probe, house-game, sim-core, iso-core, ide,
-phys-spike}`; `house-game → {sim-core, iso-core}`; `rt-probe → {iso-core}`;
-`sim-core → hecs`; `ide → {font8x8}` and `phys-spike → {glam}` (both leaves —
-neither sees the game or the GPU).
+phys-spike, wear-core}`; `house-game → {sim-core, iso-core}`; `rt-probe → {iso-core}`;
+`sim-core → hecs`; `ide → {font8x8}`, `phys-spike → {glam}` and
+`wear-core → {glam}` (all three leaves — none sees the game or the GPU).
 **rt-probe and house-game never see each other** — only rt-viewer's adapter knows both.
 `cargo test -p house-game` runs the whole game headless in milliseconds.
 

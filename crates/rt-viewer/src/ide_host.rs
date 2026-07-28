@@ -131,7 +131,7 @@ fn wear_key(row: Row, pdefs: &'static [(&'static str, f32)]) -> &'static str {
 /// The wear row a prop key names, for the write path — the reverse of
 /// [`wear_key`], over the SAME `rows_of` walk the props were built from, so a
 /// key can only reach the row it was drawn for.
-fn wear_row_of(spec: &crate::wall::WallSpec, key: &str) -> Option<Row> {
+fn wear_row_of(spec: &wear_core::wall::WallSpec, key: &str) -> Option<Row> {
     let pdefs = crate::crack_geom::POLICY_PARAMS[spec.shape.pattern.code() as usize % crate::crack_geom::NPOL];
     rows_of(spec).iter().copied().find(|w| wear_key(*w, pdefs) == key)
 }
@@ -141,12 +141,12 @@ fn wear_row_of(spec: &crate::wall::WallSpec, key: &str) -> Option<Row> {
 /// a row the wear model does not have. Values, pin marks and off-stops come
 /// from that same row model. SHELL placement is a MODE, not an edit: its row
 /// shows the count and whether place-mode is armed, and the hit lands on the
-/// next world click. A [`crate::wall::Miss`] lands as the trailing read row:
+/// next world click. A [`wear_core::wall::Miss`] lands as the trailing read row:
 /// what this wall asked for and did not get.
 ///
 /// PURE over borrowed data (the adapter's decisions are the part worth
 /// pinning; the `impl Viewer` half only feeds it the live spec and sheet).
-fn wear_props(spec: &crate::wall::WallSpec, sheet: &crate::wall::Sheet, placing: bool) -> Vec<Prop> {
+fn wear_props(spec: &wear_core::wall::WallSpec, sheet: &wear_core::wall::Sheet, placing: bool) -> Vec<Prop> {
     let pdefs = crate::crack_geom::POLICY_PARAMS[spec.shape.pattern.code() as usize % crate::crack_geom::NPOL];
     let sf = |v: f32| PropKind::SliderF { v, min: 0.0, max: 1.0 };
     let mut props = Vec::new();
@@ -163,7 +163,7 @@ fn wear_props(spec: &crate::wall::WallSpec, sheet: &crate::wall::Sheet, placing:
                 Prop::new(key, l.name(), sf(v)).indent(8).show(format!("{v:.2}{}", if pinned { "*" } else { "" }))
             }
             Row::MudTop => Prop::new(key, "mud top", sf(spec.mud_top)).indent(16),
-            Row::Breaks => Prop::new(key, "breaks", PropKind::SliderI { v: sheet.breaks.count as i32, min: 0, max: crate::wall::Breaks::MAX as i32 }),
+            Row::Breaks => Prop::new(key, "breaks", PropKind::SliderI { v: sheet.breaks.count as i32, min: 0, max: wear_core::wall::Breaks::MAX as i32 }),
             // a MODE row, not an edit: clicking it arms place-mode and the
             // next world click on the selected wall places the hit (or
             // removes the one it lands on) — the placing gesture IS the
@@ -183,7 +183,7 @@ fn wear_props(spec: &crate::wall::WallSpec, sheet: &crate::wall::Sheet, placing:
                 Prop::new(key, "band high", sf(spec.band.1)).show(if off { "off".into() } else { format!("{:.2}", spec.band.1) })
             }
             Row::Grain => {
-                let off = spec.shape.grain < crate::wall::GRAIN_OFF;
+                let off = spec.shape.grain < wear_core::wall::GRAIN_OFF;
                 Prop::new(key, "grain", sf(spec.shape.grain)).show(if off { "off".into() } else { format!("{:.2}wu", spec.shape.grain) })
             }
             Row::Relief => Prop::new(key, "relief", sf(spec.shape.relief)),
@@ -199,10 +199,10 @@ fn wear_props(spec: &crate::wall::WallSpec, sheet: &crate::wall::Sheet, placing:
         props.push(p);
     }
     match sheet.notes.first() {
-        Some(crate::wall::Miss::Clamped { dial, asked, used, .. }) => {
+        Some(wear_core::wall::Miss::Clamped { dial, asked, used, .. }) => {
             props.push(Prop::new("note", format!("{dial} limit"), PropKind::Read(format!("{asked:.2} -> {used:.2}"))));
         }
-        Some(crate::wall::Miss::Coarse { layer, asked, got, .. }) => {
+        Some(wear_core::wall::Miss::Coarse { layer, asked, got, .. }) => {
             props.push(Prop::new("note", format!("{} coarse", layer.name()), PropKind::Read(format!("{asked:.2} -> {got:.2}"))));
         }
         _ => {}
@@ -399,7 +399,7 @@ impl Viewer {
         }
         let Some(row) = wear_row_of(&self.crack.spec[r], key) else { return };
         match (row, v) {
-            (Row::Breaks, PropVal::I(n)) => self.wear_set_breaks(r, n.clamp(0, crate::wall::Breaks::MAX as i32) as u8),
+            (Row::Breaks, PropVal::I(n)) => self.wear_set_breaks(r, n.clamp(0, wear_core::wall::Breaks::MAX as i32) as u8),
             (Row::Pattern, PropVal::I(c)) => self.wear_set_pattern(r, c.rem_euclid(crate::crack_geom::NPOL as i32) as u8),
             // arming place-mode authors nothing (the click on the wall will),
             // so it must not dirty the save or claim the run
@@ -757,8 +757,8 @@ mod tests {
     #[test]
     fn wear_keys_are_single_tokens_and_unique() {
         for code in 0..crate::crack_geom::NPOL as u8 {
-            let mut spec = crate::wall::WallSpec::PRISTINE;
-            spec.shape.pattern = crate::wall::pattern_of(code, crate::crack_geom::param_defaults(code));
+            let mut spec = wear_core::wall::WallSpec::PRISTINE;
+            spec.shape.pattern = wear_core::wall::pattern_of(code, crate::crack_geom::param_defaults(code));
             let pdefs = crate::crack_geom::POLICY_PARAMS[code as usize];
             let keys: Vec<&str> = rows_of(&spec).iter().map(|r| wear_key(*r, pdefs)).collect();
             let mut uniq = keys.clone();
@@ -844,14 +844,14 @@ mod tests {
     /// A sheet spelled out by hand (the `crack_geom` test idiom): the inspector
     /// reads exactly these three fields, so the rows can be pinned as
     /// arithmetic instead of through a solve.
-    fn sheet(area: [f32; crate::wall::Layer::N], notes: Vec<crate::wall::Miss>) -> crate::wall::Sheet {
-        crate::wall::Sheet {
+    fn sheet(area: [f32; wear_core::wall::Layer::N], notes: Vec<wear_core::wall::Miss>) -> wear_core::wall::Sheet {
+        wear_core::wall::Sheet {
             label: "w",
             area,
-            breaks: crate::wall::Breaks { count: 2, at: None },
-            gate: [0.5; crate::wall::Layer::N],
-            paint: crate::wall::Paint::default(),
-            geom: crate::wall::Geom::default(),
+            breaks: wear_core::wall::Breaks { count: 2, at: None },
+            gate: [0.5; wear_core::wall::Layer::N],
+            paint: wear_core::wall::Paint::default(),
+            geom: wear_core::wall::Geom::default(),
             notes,
         }
     }
@@ -862,11 +862,11 @@ mod tests {
     /// row — "what this wall asked for and did not get".
     #[test]
     fn the_wear_rows_mark_pins_indent_their_children_and_report_a_miss() {
-        use crate::wall::Layer;
-        let mut spec = crate::wall::WallSpec::PRISTINE;
+        use wear_core::wall::Layer;
+        let mut spec = wear_core::wall::WallSpec::PRISTINE;
         spec.pin = spec.pin.area(Layer::Spall, 0.02);
         let area = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
-        let miss = crate::wall::Miss::Coarse { label: "w", layer: Layer::Chips, asked: 0.6, got: 0.2 };
+        let miss = wear_core::wall::Miss::Coarse { label: "w", layer: Layer::Chips, asked: 0.6, got: 0.2 };
         let props = wear_props(&spec, &sheet(area, vec![miss]), false);
         let get = |k: &str| props.iter().find(|p| p.key == k).unwrap_or_else(|| panic!("no {k} row"));
         // the PIN mark rides the value text, and only the pinned layer's
@@ -904,11 +904,11 @@ mod tests {
     #[test]
     fn every_drawn_key_resolves_back_to_its_own_row() {
         for code in 0..crate::crack_geom::NPOL as u8 {
-            let mut spec = crate::wall::WallSpec::PRISTINE;
-            spec.shape.pattern = crate::wall::pattern_of(code, crate::crack_geom::param_defaults(code));
+            let mut spec = wear_core::wall::WallSpec::PRISTINE;
+            spec.shape.pattern = wear_core::wall::pattern_of(code, crate::crack_geom::param_defaults(code));
             let pdefs = crate::crack_geom::POLICY_PARAMS[code as usize];
             let rows = rows_of(&spec);
-            let props = wear_props(&spec, &sheet([0.0; crate::wall::Layer::N], Vec::new()), false);
+            let props = wear_props(&spec, &sheet([0.0; wear_core::wall::Layer::N], Vec::new()), false);
             assert_eq!(props.len(), rows.len(), "one prop per row under policy {code}");
             for (p, row) in props.iter().zip(rows.iter().copied()) {
                 assert!(wear_row_of(&spec, p.key) == Some(row), "{} under policy {code} resolves to another row", p.key);

@@ -1,4 +1,4 @@
-//! Wear-as-data: a level's authored wear ([`crate::wall::LevelWear`]) as a
+//! Wear-as-data: a level's authored wear ([`wear_core::wall::LevelWear`]) as a
 //! TEXT FILE — hand-parsed, `#` comments, errors carry 1-based line numbers,
 //! and `serialize(parse(f)) == f` on every checked-in file so a panel save
 //! stays diff-stable. The same discipline as the gym traces and the level
@@ -43,7 +43,7 @@
 //! grammar's order, blocks are separated by one blank line. Hand-written
 //! comments survive a parse but not a save.
 
-use crate::wall::{Breaks, Layer, LevelWear, Shape, Story, WallAt, WallSpec};
+use wear_core::wall::{Breaks, Layer, LevelWear, Shape, Story, WallAt, WallSpec};
 use std::sync::OnceLock;
 
 /// One checked-in wear file: the baked source (`include_str!`, so cargo
@@ -193,8 +193,8 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
                     Some(&"back") => true,
                     Some(t) => return Err(format!("line {n}: `{t}` — a shell's third word can only be `back`")),
                 };
-                if !w.spec.shells.add(crate::wall::Shell { u, y, back }) {
-                    return Err(format!("line {n}: a wall holds at most {} shells", crate::wall::Shells::MAX));
+                if !w.spec.shells.add(wear_core::wall::Shell { u, y, back }) {
+                    return Err(format!("line {n}: a wall holds at most {} shells", wear_core::wall::Shells::MAX));
                 }
             }
             ("caliber", Some(w)) => w.spec.shells.caliber = f(0)?,
@@ -210,7 +210,7 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
                 for (j, slot) in par.iter_mut().enumerate().take(rest.len().saturating_sub(1)) {
                     *slot = f(1 + j)?;
                 }
-                w.spec.shape.pattern = crate::wall::pattern_of(code, par);
+                w.spec.shape.pattern = wear_core::wall::pattern_of(code, par);
             }
             ("paint_only", Some(w)) => w.spec.paint_only = true,
             ("base" | "spread", Some(_)) => return Err(format!("line {n}: `{word}` is a level statement — it goes before the first wall")),
@@ -288,7 +288,7 @@ pub fn serialize_parts(base: Story, spread: f32, walls: &[WallAt]) -> String {
         for sh in s.shells.iter() {
             b.push(if sh.back { format!("  shell {} {} back", num(sh.u), num(sh.y)) } else { format!("  shell {} {}", num(sh.u), num(sh.y)) });
         }
-        if s.shells.caliber != crate::wall::Shells::CALIBER {
+        if s.shells.caliber != wear_core::wall::Shells::CALIBER {
             b.push(format!("  caliber {}", num(s.shells.caliber)));
         }
         if s.shape.grain != Shape::DEFAULT.grain {
@@ -324,7 +324,7 @@ pub fn serialize_parts(base: Story, spread: f32, walls: &[WallAt]) -> String {
 /// without the level naming it gets a synthesized point — the run rect's
 /// centre, which `holds` accepts by construction. Un-named, un-edited runs
 /// stay derived from `base ± spread`, exactly as before the save.
-pub fn lab_walls(lw: &LevelWear, runs: &[crate::wall::RunRect], lab: &crate::crack::CrackLab) -> Vec<WallAt> {
+pub fn lab_walls(lw: &LevelWear, runs: &[wear_core::wall::RunRect], lab: &crate::crack::CrackLab) -> Vec<WallAt> {
     // the forward map, exactly as `specs_of` runs it: first run that holds the
     // point, first claim wins
     let mut named: Vec<Option<&WallAt>> = vec![None; runs.len()];
@@ -457,7 +457,7 @@ impl crate::viewer::Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wall::{Pattern, Pins};
+    use wear_core::wall::{Pattern, Pins};
 
     /// A spec with every statement in play — the round-trip has to carry all
     /// of it, and the second serialize has to be the fixpoint.
@@ -465,10 +465,10 @@ mod tests {
     fn a_wear_file_round_trips_and_serialize_is_a_fixpoint() {
         let mut pin = Pins::NONE.area(Layer::Cracks, 0.6).area(Layer::Spall, 0.012);
         pin = pin.breaks(Breaks { count: 2, at: Some(0.25) });
-        let mut shells = crate::wall::Shells::NONE;
+        let mut shells = wear_core::wall::Shells::NONE;
         shells.caliber = 0.42;
-        shells.add(crate::wall::Shell { u: 0.3, y: 0.6, back: false });
-        shells.add(crate::wall::Shell { u: 0.75, y: 0.4, back: true });
+        shells.add(wear_core::wall::Shell { u: 0.3, y: 0.6, back: false });
+        shells.add(wear_core::wall::Shell { u: 0.75, y: 0.4, back: true });
         static_assertless_walls_round_trip(LevelWear {
             base: Story { weather: 0.55, settlement: 0.35, cover_loss: 0.65 },
             spread: 0.4,

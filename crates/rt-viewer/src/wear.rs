@@ -92,9 +92,12 @@
 //!
 //! # The STORY KEY (`base_color[3]`)
 //!
-//! [`story_key`] hashes the pier's parent RUN — the authored wall slab it was
-//! cut out of ([`Pier::run_lo`]/`run_hi`) — into one float, and [`stamp_story`]
-//! writes it onto every pier's material. It is the seed of everything that
+//! [`wear_core::wall::story_key`] hashes the pier's parent RUN — the authored
+//! wall slab it was cut out of ([`Pier::run_lo`]/`run_hi`) — into one float, and
+//! [`stamp_story`] writes it onto every pier's material. (The hash itself lives
+//! in `wear-core` beside the `RunRect` whose rect it takes; this module owns the
+//! STAMP, which is the half that knows what a `Material` is.) It is the seed of
+//! everything that
 //! must be TRUE OF THE WHOLE FACADE rather than of one panel: the macro damage
 //! field, the craze lattices, the age ramp. Before it, `crack_geom::seg_of` and
 //! the shade pass both seeded those off `material_id & 255` — a per-PANEL seed —
@@ -117,44 +120,7 @@
 
 use crate::gym_scene::Pier;
 use crate::viewer::Viewer;
-use glam::Vec3;
 use rt_probe::Scene;
-
-/// The STORY KEY of a wall RUN: one seed shared by every pier the run was cut
-/// into. A pure function of the AUTHORED slab (`Pier::run_lo`/`run_hi`), so the
-/// three panels of one facade agree while the facade round the corner — a
-/// different `wall_slab` call, a different rect — does not.
-///
-/// Quantized to the 0.1-wu authoring grid (the game projection's lattice: see
-/// the pixel-perfect contract) before hashing, so the key can never wobble on a
-/// float-exact rebuild. `y` is not hashed: every authored run spans 0..WALL_TOP,
-/// so it carries no identity.
-///
-/// The value is `(hash & 255) × 0.618` — DELIBERATELY the same distribution and
-/// 0..157.5 range as the `(material_id & 255) × 0.618` per-panel seed it
-/// replaces, so every field seeded off it (`story*7+3` for the damage fbm,
-/// `story+5`/`story+9` for the craze lattices) lands in the numeric regime those
-/// fields were tuned in. A low-byte collision would merely give two facades the
-/// same story, which is harmless; the gym's runs are pinned distinct by a test.
-pub fn story_key(run_lo: Vec3, run_hi: Vec3) -> f32 {
-    (run_hash(run_lo, run_hi, 0) & 255) as f32 * 0.618
-}
-
-/// FNV-1a over a RUN's quantized authoring rect. `salt` is here to separate
-/// INDEPENDENT per-run draws so two of them can never alias into the same value;
-/// only salt 0 (the story key) has a caller today — the field level's damaged
-/// fraction was the second one, and solved thresholds retired it. Salt 0
-/// reproduces the story key's original hash byte for byte
-/// (`0 ^ basis == basis`), which is load-bearing: the key seeds every damage
-/// pattern in the level, every break in it, and the probe cache hashes it.
-fn run_hash(run_lo: Vec3, run_hi: Vec3, salt: u32) -> u32 {
-    let mut h: u32 = 0x811c_9dc5 ^ salt;
-    for v in [run_lo.x, run_lo.z, run_hi.x, run_hi.z] {
-        h ^= (v * 10.0).round() as i32 as u32;
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    h
-}
 
 /// Write every pier's run STORY KEY into its material's `base_color[3]`.
 ///
@@ -165,7 +131,7 @@ fn run_hash(run_lo: Vec3, run_hi: Vec3, salt: u32) -> u32 {
 pub fn stamp_story(scene: &mut Scene, piers: &[Pier]) -> usize {
     for pier in piers {
         let mid = scene.primitives[pier.prim].material_id as usize;
-        scene.materials[mid].base_color[3] = story_key(pier.run_lo, pier.run_hi);
+        scene.materials[mid].base_color[3] = wear_core::wall::story_key(pier.run_lo, pier.run_hi);
     }
     piers.len()
 }
@@ -447,14 +413,14 @@ mod tests {
     /// levels; this checks the codec end of it.
     #[test]
     fn code_zero_is_a_gate_nothing_can_clear() {
-        assert_eq!(crate::wall::gate_code(crate::wall::GATE_EMPTY), 0);
+        assert_eq!(wear_core::wall::gate_code(wear_core::wall::GATE_EMPTY), 0);
         let e = Effect::default();
         assert_eq!(e.word(), 0.0, "the empty word must be exactly 0.0");
         assert_eq!(e.dials[STAIN_LANE], 0.0);
         assert_eq!(e.dials[WEB_LANE], 0.0);
         // …and the top of the range is reachable, which the signed lane's clamp
         // could not promise on a low-level run
-        assert_eq!(crate::wall::gate_code(crate::wall::GATE_FULL), 63);
+        assert_eq!(wear_core::wall::gate_code(wear_core::wall::GATE_FULL), 63);
     }
 
     /// The lamp trap, pinned: `frame_lights_cpu` owns an emitting material's
@@ -486,7 +452,7 @@ mod tests {
             let q = |v: f32| (v * 10.0).round() as i32;
             let rect = [q(pier.run_lo.x), q(pier.run_lo.z), q(pier.run_hi.x), q(pier.run_hi.z)];
             let key = scene.materials[scene.primitives[pier.prim].material_id as usize].base_color[3];
-            assert_eq!(key, story_key(pier.run_lo, pier.run_hi), "the stamp writes the key the readers recompute");
+            assert_eq!(key, wear_core::wall::story_key(pier.run_lo, pier.run_hi), "the stamp writes the key the readers recompute");
             match runs.iter().find(|(r, _)| *r == rect) {
                 Some((_, k)) => assert_eq!(*k, key, "piers of one run share one story"),
                 None => runs.push((rect, key)),
@@ -532,8 +498,8 @@ mod tests {
             // the codec's two constants, spelled as the HOST spells them — a
             // shader counting from a different top or by a different step reads
             // every threshold wrong, and does it silently
-            assert!(has(&format!("{:.2} - float", crate::wall::GATE_HI)), "{name}: GATE_HI drifted from the host's {}", crate::wall::GATE_HI);
-            assert!(has(&format!("* {:.3};", crate::wall::GATE_STEP)) || has(&format!("* {:.3};  //", crate::wall::GATE_STEP)), "{name}: GATE_STEP drifted from the host's {}", crate::wall::GATE_STEP);
+            assert!(has(&format!("{:.2} - float", wear_core::wall::GATE_HI)), "{name}: GATE_HI drifted from the host's {}", wear_core::wall::GATE_HI);
+            assert!(has(&format!("* {:.3};", wear_core::wall::GATE_STEP)) || has(&format!("* {:.3};  //", wear_core::wall::GATE_STEP)), "{name}: GATE_STEP drifted from the host's {}", wear_core::wall::GATE_STEP);
             // …and both thresholds actually gate something
             assert!(has("smoothstep(tStain"), "{name}: the stain gate does not use its threshold");
             assert!(has("smoothstep(tWeb"), "{name}: the web gate does not use its threshold");
@@ -649,31 +615,32 @@ mod tests {
     const HOST_MIRRORS: &[(&str, &[(&str, &str, &str)])] = &[
         // THE DAMAGE FIELD's seed. `wall::RunField::at` solves the thresholds on
         // it, `CrazeCfg::new` cuts the plates with it and the shade pass paints
-        // with it — three spellings of `story * 7.0 + 3.0`, and the two hosts
-        // reach it through DIFFERENT call sites, so neither pins the other.
+        // with it. It used to be spelled three times — once per host call site
+        // plus the shader — and the two host copies pinned nothing about each
+        // other; `wear_core::field::dmg_seed` is that one name now, so the
+        // mirror this table holds is the last one that cannot be a function
+        // call (a shader cannot call Rust).
         (
             "story * 7.0 + 3.0",
-            &[
-                ("wall.rs", include_str!("wall.rs"), "story * 7.0 + 3.0"),
-                ("crack_geom.rs", include_str!("crack_geom.rs"), "story * 7.0 + 3.0"),
-            ],
+            &[("wear-core/src/field.rs", include_str!("../../wear-core/src/field.rs"), "story * 7.0 + 3.0")],
         ),
         // …and the field's SHAPE around that seed: the two ground-plane
-        // frequencies, the rise term and the rise ramp. `crack_geom::dmg_field`
-        // is the host's one definition (`wall::RunField::at` delegates to it).
-        ("cuv * vec2(0.45, 0.7)", &[("crack_geom.rs", include_str!("crack_geom.rs"), "su * 0.45, sy * 0.7")]),
-        ("+ 0.16 * rise", &[("crack_geom.rs", include_str!("crack_geom.rs"), "+ 0.16 * rise")]),
-        ("1.0 - smoothstep(0.10, 1.0,", &[("crack_geom.rs", include_str!("crack_geom.rs"), "1.0 - smoothstep(0.10, 1.0,")]),
+        // frequencies, the rise term and the rise ramp. `field::dmg_field` is
+        // the host's one definition (`wall::RunField::at` and `CrazeCfg::dmg`
+        // both delegate to it).
+        ("cuv * vec2(0.45, 0.7)", &[("wear-core/src/field.rs", include_str!("../../wear-core/src/field.rs"), "su * 0.45, sy * 0.7")]),
+        ("+ 0.16 * rise", &[("wear-core/src/field.rs", include_str!("../../wear-core/src/field.rs"), "+ 0.16 * rise")]),
+        ("1.0 - smoothstep(0.10, 1.0,", &[("wear-core/src/field.rs", include_str!("../../wear-core/src/field.rs"), "1.0 - smoothstep(0.10, 1.0,")]),
         // FBM — the noise both the field and the mud quantile are built on. Two
         // octaves, one gain pair, one lacunarity, one offset.
         (
             "0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 +",
-            &[("crack_geom.rs", include_str!("crack_geom.rs"), "0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 +")],
+            &[("wear-core/src/field.rs", include_str!("../../wear-core/src/field.rs"), "0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 +")],
         ),
         // MUD's breakup noise: seed and frequency. (The threshold DECODE is
         // pinned above; this is the field it decodes against.)
-        ("story * 3.0 + 17.0", &[("wall.rs", include_str!("wall.rs"), "story * 3.0 + 17.0")]),
-        ("fbm(vec3(cuv * 2.0", &[("wall.rs", include_str!("wall.rs"), "u * 2.0, y * 2.0")]),
+        ("story * 3.0 + 17.0", &[("wear-core/src/wall.rs", include_str!("../../wear-core/src/wall.rs"), "story * 3.0 + 17.0")]),
+        ("fbm(vec3(cuv * 2.0", &[("wear-core/src/wall.rs", include_str!("../../wear-core/src/wall.rs"), "u * 2.0, y * 2.0")]),
     ];
 
     /// Every [`HOST_MIRRORS`] entry must be spelled in BOTH twins and in every

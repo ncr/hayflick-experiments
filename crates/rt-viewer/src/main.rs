@@ -45,12 +45,15 @@ mod ide_host;
 mod look;
 mod menu;
 mod phys_scene;
-mod rebar;
 mod view;
 mod viewer;
-mod wall;
 mod wear;
 mod wear_file;
+// `wall` and `rebar` moved to the `wear-core` leaf crate on 2026-07-28 (deps:
+// glam only). What stayed is the half of `wall`'s tests that measures the model
+// over the REAL shipped levels — those build a `Scene`, so they cannot follow.
+#[cfg(test)]
+mod wall_tests;
 // Backend selected at compile time by target OS: Metal on Apple Silicon,
 // Vulkan everywhere else. The Vulkan path runs on the RTX box; the Metal path
 // runs on the M2 Pro.

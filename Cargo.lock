@@ -1497,6 +1497,7 @@ dependencies = [
  "raw-window-handle",
  "rt-probe",
  "sim-core",
+ "wear-core",
  "winit",
 ]
 
@@ -2037,6 +2038,13 @@ dependencies = [
  "log",
  "once_cell",
  "pkg-config",
+]
+
+[[package]]
+name = "wear-core"
+version = "0.1.0"
+dependencies = [
+ "glam",
 ]
 
 [[package]]

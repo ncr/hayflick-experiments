@@ -76,7 +76,7 @@ pub const MENU: &[MenuItem] = &[
     // catalogue answers "what does each of these look like" on fifteen identical
     // slabs; this answers it on the level the owner is standing in, which is
     // where a layer's read against real geometry actually gets decided.
-    MenuItem { key: "wear_solo", label: "solo layer", kind: ItemKind::Slider { min: 0.0, max: crate::wall::Layer::N as f32, step: 1.0 } },
+    MenuItem { key: "wear_solo", label: "solo layer", kind: ItemKind::Slider { min: 0.0, max: wear_core::wall::Layer::N as f32, step: 1.0 } },
     // SURFACE GRAIN on every wall at once — plate size in world units, the one
     // shape dial that is a length (`wall::Shape::grain`). Below `GRAIN_OFF` the
     // veneer is off entirely, so the bottom of this row is "no plates anywhere".
@@ -277,7 +277,7 @@ pub(crate) enum Row {
     /// One LAYER's amount. Shows what `wall::derive` produced, with a `*` when
     /// it is PINNED; dragging it pins it, which is how a bench wall asks for one
     /// effect and nothing else.
-    Layer(crate::wall::Layer),
+    Layer(wear_core::wall::Layer),
     /// MUD's native param: its splash band's top edge. Indented under the mud
     /// layer row like a pattern param under its pattern.
     MudTop,
@@ -312,9 +312,9 @@ pub(crate) enum Row {
 /// what SHAPE it takes. Causes first because that is the order an author thinks
 /// in, and the layer rows under them are the DERIVED column — so the sheet is a
 /// complete explanation of the wall rather than a pile of dials.
-pub(crate) fn rows_of(spec: &crate::wall::WallSpec) -> Vec<Row> {
+pub(crate) fn rows_of(spec: &wear_core::wall::WallSpec) -> Vec<Row> {
     let mut v: Vec<Row> = (0..3).map(Row::Cause).collect();
-    v.extend(crate::wall::Layer::ALL.into_iter().map(Row::Layer));
+    v.extend(wear_core::wall::Layer::ALL.into_iter().map(Row::Layer));
     v.push(Row::MudTop); // right under the mud layer row it belongs to
     v.push(Row::Breaks);
     v.push(Row::Shell);
@@ -740,11 +740,11 @@ impl Viewer {
     /// sheet already shows `n`, so an IDE slider parked on the current count
     /// does not silently pin the wall.
     pub fn wear_set_breaks(&mut self, r: usize, n: u8) {
-        let n = n.min(crate::wall::Breaks::MAX);
+        let n = n.min(wear_core::wall::Breaks::MAX);
         if self.crack.sheets.get(r).map(|s| s.breaks.count) == Some(n) {
             return;
         }
-        self.crack.spec[r].pin = self.crack.spec[r].pin.breaks(crate::wall::Breaks { count: n, at: None });
+        self.crack.spec[r].pin = self.crack.spec[r].pin.breaks(wear_core::wall::Breaks { count: n, at: None });
         if let Some(a) = self.crack.authored.get_mut(r) {
             *a = true;
         }
@@ -948,14 +948,14 @@ mod tests {
     #[test]
     fn the_row_table_is_the_wall_authoring_model() {
         for policy in 0..crate::crack_geom::NPOL as u8 {
-            let spec = crate::wall::WallSpec {
-                shape: crate::wall::Shape { pattern: crate::wall::Pattern::DEFAULTS[policy as usize], ..crate::wall::Shape::DEFAULT },
-                ..crate::wall::WallSpec::PRISTINE
+            let spec = wear_core::wall::WallSpec {
+                shape: wear_core::wall::Shape { pattern: wear_core::wall::Pattern::DEFAULTS[policy as usize], ..wear_core::wall::Shape::DEFAULT },
+                ..wear_core::wall::WallSpec::PRISTINE
             };
             let rows = rows_of(&spec);
             assert!(matches!(rows[0], Row::Cause(0)), "the first row must be the first CAUSE");
-            assert!(matches!(rows[3], Row::Layer(crate::wall::Layer::Stain)), "the derived column starts after the three causes");
-            assert_eq!(rows.iter().filter(|r| matches!(r, Row::Layer(_))).count(), crate::wall::Layer::N, "every layer gets a row");
+            assert!(matches!(rows[3], Row::Layer(wear_core::wall::Layer::Stain)), "the derived column starts after the three causes");
+            assert_eq!(rows.iter().filter(|r| matches!(r, Row::Layer(_))).count(), wear_core::wall::Layer::N, "every layer gets a row");
             assert_eq!(rows.iter().filter(|r| matches!(r, Row::Param(_))).count(), crate::crack_geom::POLICY_PARAMS[policy as usize].len());
             // the three rows that are not 0..1 sliders: the break count, the
             // shell place-mode toggle and the pattern cycler

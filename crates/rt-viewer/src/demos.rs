@@ -219,13 +219,13 @@ pub static CATALOGUE_WEAR_FILE: crate::wear_file::WearFile =
 /// The lab's loaded authoring — the tests' shorthand; the viewer itself goes
 /// through `Demo::wear` so a menu switch and a `LEVEL=` boot read one path.
 #[cfg(test)]
-pub fn lab_wear() -> &'static crate::wall::LevelWear {
+pub fn lab_wear() -> &'static wear_core::wall::LevelWear {
     LAB_WEAR_FILE.level_wear()
 }
 
 /// The catalogue's loaded authoring (the specimen tests walk its walls).
 #[cfg(test)]
-pub fn catalogue_wear() -> &'static crate::wall::LevelWear {
+pub fn catalogue_wear() -> &'static wear_core::wall::LevelWear {
     CATALOGUE_WEAR_FILE.level_wear()
 }
 

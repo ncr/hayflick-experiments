@@ -26,10 +26,44 @@ Cargo workspace at the repo root, members `crates/*`:
 | `rt-probe` | deterministic renderer lib (Vulkan ray_query) + GLSL | iso-core |
 | `ide` | the personal IDE (pracownia): headless UI model + CPU rasterizer for the 2x-density editor overlay; knows neither the game nor the GPU | font8x8 only |
 | `phys-spike` | throwaway Box3D rigid-body world (leaf: no game, no GPU, no renderer) — the `wall smash` demo's rubble is its one consumer, through `rt-viewer/src/phys_scene.rs` | glam only |
+| `wear-core` | THE WEAR MODEL (extracted 2026-07-28): `wall` (what a level AUTHOR says about a wall — `Story` → `Layer` amounts → the solved-threshold `Sheet`), `rebar` (the mat, its corrosion sites, their craters), `field` (the noise + damage field both shader twins mirror). No `Scene`, no `Material`, no bits, no GPU | glam only |
 | `rt-viewer` | `viewer` binary: winit shell, Metal backend, gym loop, capture | everything |
 
 **rt-probe and house-game never see each other** — only rt-viewer's adapter
 knows both. The game must build and test without a GPU.
+**`wear-core`'s "glam only" is the enforcement, not a note.** `wall.rs` has
+declared its own purity in prose since it was written — *"No `Scene`, no
+`Material`, no bits, no GPU"* — and for as long as it sat in `rt-viewer` (a
+BINARY, no lib target) nothing checked it: a `use rt_probe::Scene` added on any
+afternoon would have compiled, and ~3 k lines of arithmetic could only be built
+by a crate that also needs `glslangValidator` and a window. What did NOT follow
+the move: the eleven `wall` tests that measure a property over the two REAL
+SHIPPED LEVELS — they build a level through `gym_scene::build_gym`, hence a
+`Scene` — so they live in `rt-viewer/src/wall_tests.rs` and call in through
+`wear_core::wall::…`. That is the split working, not a casualty of it: they are
+integration tests by nature, and rewriting one onto a synthetic fixture to make
+it move would delete the exact property worth having. `field::dmg_seed` is the
+one name for `story * 7.0 + 3.0`, which used to be spelled independently in
+`wall.rs`, `crack_geom` and BOTH shade twins; the shaders keep their literal
+(they cannot call Rust) and `wear.rs`'s `HOST_MIRRORS` guard pins that last
+mirror against `wear-core/src/field.rs`. `story_key` moved too (it was in
+`wear.rs`, which owns the material STAMP): a value with one meaning gets one
+home, next to the `RunRect` whose rect it hashes.
+
+**`crack_geom` is a DIRECTORY since 2026-07-28**, cut along the seams the audit
+found rather than the ones it guessed: `poly` (the polygon toolkit — areas,
+clips, the ear clipper, the `Frag` and its exact rect subtraction; no wear
+opinion in it), `cut` (the walk / bolt / carve propagator — round 8's thesis
+that BOTH crack scales are the same walker, in one file), `craze` (a pier's
+`CrazeCfg` and the three pattern policies), `breaks` (the run's structural
+breaks — an authored count at authored places, and the trunks they grow) and
+`emit` (the ONLY module that may name a `Scene` or a `Material`: the meshes,
+the materials damage mints, and the two pier treatments). `mod.rs` keeps the
+surface the rest of the crate already used — the pattern vocabulary, `Wear` in,
+`Aged`/`GeoKey` out, `Frame`, `apply_geometry` and `keys` — so not one caller
+moved. A pure MOVE: gym, crack lab and catalogue all BYTE-IDENTICAL, 198 tests
+before and after, tests filed with the code they test and their fixtures shared
+once in `crack_geom/fixtures.rs`.
 
 ## The second level: the effect catalogue (owner 2026-07-26)
 
@@ -341,7 +375,7 @@ the knob panel once. 2026-07-23: the heterogeneous-aging rework of that
 same block (per-segment damage field + sparse structural fault cracks,
 Vulkan-verified) is again a blind MSL twin — the same crack-lab boot
 check covers it. Structural faults and the WHOLE small-crack network
-are REAL geometry now (crack_geom.rs — host-side, shared by both
+are REAL geometry now (`crack_geom/` — host-side, shared by both
 backends), and the two layers COMPOSE: every knobbed pier gets a
 matte-chalk core + a veneer of plates laid out by a selectable pattern
 POLICY — lightning/craquelure/mosaic since 2026-07-23 round 7
@@ -680,7 +714,8 @@ GeoKey/story path, and a sub-bucket drag rebuilds nothing by construction.
 but never reached the field on host or shader (hardcoded 0.16*rise both
 sides), i.e. it changed HOW MUCH, never WHERE — the round-C band mask is
 the honest version. With it gone `wall::RunField::at` DELEGATES to
-`crack_geom::dmg_field`: the threshold solver, the geometry generator and
+`field::dmg_field` (moved to `wear-core` 2026-07-28, with `wall`/`rebar`):
+the threshold solver, the geometry generator and
 both shader twins now read literally one definition. Zero shader edits this
 round; gym, crack lab AND catalogue BYTE-IDENTICAL at defaults, `SCRUB=0.6`
 A/B confirms the dial moves the image.
@@ -731,7 +766,7 @@ inside its own band (`RunField::threshold`'s discipline on a second field),
 `_pad` lane 2 carries the solved 6-bit threshold code (0 = no mud = every
 unstamped material), lane 3 the band-top code (forced 0 while the amount is
 0, so a mud-free level leaves the lanes and the probe-cache key untouched).
-`wall::mud_noise` + `crack_geom::fbm` are the one host mirror; the twin guard
+`wall::mud_noise` + `field::fbm` are the one host mirror; the twin guard
 pins both lane decodes, the threshold decode and the breakup seed. Lane 3
 spans bit 31 — `_pad` reads must go through `uint(pad)`, never `pad > 0`
 (pinned in `pad_bits_layout...`). THE CATALOGUE grew row 3 (z=19, 22×22 grid,
