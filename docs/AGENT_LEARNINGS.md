@@ -1431,3 +1431,129 @@ Check the data layer before suspecting the diff — and when a by-design
 persistence surface meets a demo that mutates authored state, the demo must
 ride an override lane (the level_dials discipline), or every playtest
 quietly becomes an author.
+## 2026-08-02 - Effect catalogue crashes during the Metal acceleration-structure build
+
+Root cause
+
+The crack wear pass hid replacement faces and original pier boxes by collapsing
+all their vertices to one point. Vulkan/RTX accepted the resulting zero-area
+triangles, while Apple's acceleration-structure builder could reject or crash
+on them. The shared scene ingest also lacked a final degenerate-triangle guard.
+
+Detection signal
+
+The catalogue-only scene had hundreds of zero-area triangles after its authored
+wear was applied; the plain gym did not. A GPU-free scene invariant reproduced
+the backend difference before any Metal device was needed.
+
+Preventive checklist
+
+- Keep hidden geometry as tiny valid triangles, never coincident points.
+- Filter degenerate procedural mesh triangles at the shared scene boundary.
+- Validate every primitive's ranges, finite vertices, and triangle area before
+  handing a scene to an acceleration-structure backend.
+
+## 2026-08-02 - Screen-relative walking zigzags on the grid
+
+Root cause
+
+Keyboard input was converted with a hard-coded 2:1 world-axis mapping, then
+deliberately emitted alternating cell steps. That ratio did not match the
+trimetric projection, and the cell cadence made the body visibly change axis.
+
+Detection signal
+
+A held screen-cardinal input produced nonzero sideways screen displacement in
+the projection-basis regression and the player position snapped to cell centres
+instead of advancing between them.
+
+Preventive checklist
+
+- Convert screen input through the active projection's pixel basis.
+- Feed continuous fixed-tick world input into the headless sim; retain old
+  cell-step commands only for replay compatibility.
+- Test screen displacement and wall-edge collide-and-slide on an open grid.
+
+## 2026-08-02 - Player feet slide during continuous walking
+
+Root cause
+
+The viewer advanced the walk phase on a fixed 16/11-tick clock, regardless of
+the distance the continuous mover covered. The gait therefore ran ahead while
+the body accelerated and continued animating when input was held against a
+wall.
+
+Detection signal
+
+A fixed-tick gait regression measured only 0.78 world units of body travel per
+animation cycle, while the intended walk stride was 1.6 units. The animation
+was using the held-key state instead of the fresh post-tick movement distance.
+
+Preventive checklist
+
+- Advance gait phase from actual post-collision distance, not input intent.
+- Use the fresh simulation snapshot when updating presentation animation.
+- Test stride distance during acceleration and idle behavior at blocked walls.
+
+## 2026-08-02 - ROI reveal ghosts a close wall behind the player
+
+Root cause
+
+The reveal loop treated every occluder hit within 0.6 world units as the far
+face of a wall already crossed by the ray. A wall immediately behind a player
+can produce that same short first hit, so it bypassed the front-of-player gate
+and became dithered.
+
+Detection signal
+
+The shader's near-face exception depended only on hit distance and had no state
+showing that the ray had already passed a wall. The same loose condition was
+also used by the optional wall contour path.
+
+Preventive checklist
+
+- Apply the front/behind-player test unconditionally to the first ROI hit.
+- Allow the near-face exception only after the reveal ray crosses a wall.
+- Keep the GLSL and Metal ROI gates covered by one parity regression.
+
+## 2026-08-02 - ROI depth plane ghosts the near half of a long wall
+
+Root cause
+
+The ground-forward depth test classified each wall fragment independently.
+With an isometric camera, a long axis-aligned wall can cross that diagonal
+depth plane even while the player remains on the camera-facing side of the
+wall, so the screen disc dithered a nearby wall segment beside the player.
+
+Detection signal
+
+The remaining artifact appeared as a vertical dither patch beside a player
+standing in front of a wall. The hit was closer along camera-forward depth,
+but the player and hit were on the same side of the wall face.
+
+Preventive checklist
+
+- Orient the hit face normal toward the camera before testing wall side.
+- Reveal only when the player is on the far side of a vertical wall face.
+- Keep a ground-depth fallback for roof/floor faces and test both shader twins.
+
+## 2026-08-02 - ROI reveal snaps at wall crossing
+
+Root cause
+
+The ROI decision was binary: once the wall-side gate changed from front to far,
+the Bayer trace switched from zero coverage to its full configured coverage in
+one fixed tick.
+
+Detection signal
+
+Moving across a wall face changed the aggregate dither density immediately,
+even though the player was moving continuously and the reveal was spatially
+anchored.
+
+Preventive checklist
+
+- Keep a signed wall-side distance in both shader twins.
+- Multiply ROI coverage by an asymmetric world-space `smoothstep` band: keep
+  the player-clearance side solid, then fade across the wall crossing.
+- Preserve the first-hit safety gate so the fade cannot reintroduce near-wall ghosts.

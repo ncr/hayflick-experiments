@@ -217,6 +217,7 @@ impl MetalScene {
     /// `new()`, shared by backend construction and the runtime look switch
     /// (`rebuild_scene`, Faza 1b). The Metal twin of `SceneGpu::build`.
     unsafe fn build(device: &Device, queue: &CommandQueue, scene: &Scene, cfg: &Config) -> Result<MetalScene, Box<dyn std::error::Error>> {
+        scene.validate_acceleration_geometry()?;
         // ---- concatenated geometry/material/light buffers
         let vbuf = make_buf(device, &scene.vertices);
         let ibuf = make_buf(device, &scene.indices);

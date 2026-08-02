@@ -164,14 +164,11 @@ pub static DEMOS: &[Demo] = &[
         // doorway jambs and the parapet cap, with the z=10 garden wall as
         // foreground and the x=12 spur top-right.
         //
-        // The ROI reveal disc only dissolves occluders IN FRONT of the player
-        // (`dot(hit.xz - player.xz, fwd) >= 0` breaks the walk), and the
-        // trimetric camera looks down (1, 2) in xz — so a wall is safe when its
-        // `x + 2z` is below the player's. At (9.5, 11.5) the whole building
-        // (max 24.2) and the garden wall's near half are behind that plane, and
-        // the wall's crossover into the disc sits 152 px out, well past the
-        // 79+33 px disc. Standing NORTH of the garden wall instead would ghost
-        // it from end to end.
+        // The ROI reveal disc only dissolves occluders whose WALL FACE puts the
+        // player on its far side. A long slab may cross the trimetric camera's
+        // diagonal depth plane while the player remains on the camera-facing
+        // side; that same-side wall must stay solid. At (9.5, 11.5) the whole
+        // building and the garden wall read as the staged front/behind pair.
         spawn: (9, 11),
         // …and one wall weathers while he watches, so the whole catalogue
         // arrives as one continuous read (see `Action::AgeWall`). It starts a

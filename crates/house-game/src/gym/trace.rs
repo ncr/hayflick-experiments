@@ -5,6 +5,7 @@
 //!
 //! ```text
 //! 10 move 1 0 walk      # dx dz [walk|run] (default walk)
+//! 11 move_world 1024 0 walk # continuous world input (fixed-point)
 //! 400 wait
 //! ```
 
@@ -33,6 +34,16 @@ pub fn parse_trace(src: &str) -> Result<Vec<(Tick, Command)>, String> {
                 };
                 Command::Move { dx, dz, mode }
             }
+            "move_world" => {
+                let dx: i16 = w.next().ok_or_else(|| err("move_world: missing dx"))?.parse().map_err(|_| err("move_world: bad dx"))?;
+                let dz: i16 = w.next().ok_or_else(|| err("move_world: missing dz"))?.parse().map_err(|_| err("move_world: bad dz"))?;
+                let mode = match w.next() {
+                    None | Some("walk") => MoveMode::Walk,
+                    Some("run") => MoveMode::Run,
+                    Some(m) => return Err(err(&format!("move_world: unknown mode {m:?}"))),
+                };
+                Command::MoveWorld { dx, dz, mode }
+            }
             "wait" => Command::Wait,
             _ => return Err(err(&format!("unknown op {op:?}"))),
         };
@@ -52,6 +63,13 @@ pub fn format_command(tick: Tick, c: &Command) -> String {
             };
             format!("{} move {} {} {}", tick.0, dx, dz, m)
         }
+        Command::MoveWorld { dx, dz, mode } => {
+            let m = match mode {
+                MoveMode::Walk => "walk",
+                MoveMode::Run => "run",
+            };
+            format!("{} move_world {} {} {}", tick.0, dx, dz, m)
+        }
         Command::Wait => format!("{} wait", tick.0),
     }
 }
@@ -62,9 +80,9 @@ mod tests {
 
     #[test]
     fn parse_and_format_round_trip() {
-        let src = "10 move 1 0 walk\n30 move -1 0 run\n40 move 0 1\n99 wait\n";
+        let src = "10 move 1 0 walk\n30 move -1 0 run\n40 move 0 1\n50 move_world 512 -1024 run\n99 wait\n";
         let trace = parse_trace(src).unwrap();
-        assert_eq!(trace.len(), 4);
+        assert_eq!(trace.len(), 5);
         let back: Vec<String> = trace.iter().map(|(t, c)| format_command(*t, c)).collect();
         let reparsed = parse_trace(&back.join("\n")).unwrap();
         assert_eq!(trace, reparsed);

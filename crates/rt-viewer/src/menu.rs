@@ -429,6 +429,7 @@ impl Viewer {
                 if let Some(p) = iso_core::presets().get(v as usize) {
                     if self.proj != *p {
                         self.proj = *p;
+                        self.gym.set_projection(*p);
                         self.view.move_accum = glam::Vec2::ZERO;
                         self.snap_target_to_lattice();
                     }
@@ -988,4 +989,3 @@ mod tests {
         }
     }
 }
-

@@ -2,35 +2,32 @@
 //! snapshot→renderer adapter (docs/VISION.md Faza 0).
 //!
 //! Presentation choices, all sim-blind:
-//! - the sim steps whole cells at its own cadence; the shell EASES the body
-//!   between cells over a few ticks (tick-clocked, so DEMO captures ease
-//!   identically),
+//! - keyboard movement feeds the headless sim's fixed-tick continuous mover;
+//!   click-to-move and old replay traces retain their cell-step commands, with
+//!   the shell easing those legacy steps between centres,
 //! - MOUSE-first controls: LMB picks a ground cell, the shell BFS-plans a
 //!   route over the sim's own grid and feeds one Move per tick — the sim
 //!   still owns the cadence, and a replay trace stays pure Move commands.
-//!   WASD is SCREEN-relative nudging: screen-up walks visually up the iso
-//!   staircase. Shift = run.
-//!
-//! NOTE (Faza 2): this whole cell-stepper is the INTERIM mover — the miodny
-//! continuous movement stack replaces it. Keep it simple, don't grow it.
+//!   WASD is SCREEN-relative continuous input through the active projection.
+//!   Shift = run.
 
 use crate::backend::Stamp;
 use crate::gym_scene::{cell_world, ARM_X, HIP, LEG_X, SHOULDER, WALL_CUT_H};
 use crate::menu::{mrect, mtext};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use house_game::gym::grid::{CellKind, CellPos, Dir};
 use house_game::gym::sim::{Command, GymGame, GymLevel, GymSnapshot, MoveMode};
 use house_game::gym::trace::parse_trace;
 use house_game::TICK_DT;
-use iso_core::{world_to_window_px, ViewXform};
+use iso_core::{world_to_window_px, Projection, ViewXform};
 use phys_spike::PhysWorld;
 use rt_probe::{Config, InstanceKey, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, Simulation, Tick};
 use std::collections::VecDeque;
 
 /// Ticks the body glides between cells (presentation-only, tick-clocked).
-/// Slightly LONGER than the walk cadence (8): consecutive eases overlap, so
-/// the 4-dir staircase reads as a rounded glide instead of a hard zigzag.
+/// Legacy click/replay step easing. Keyboard movement follows the continuous
+/// sim position directly and does not use this interpolator.
 const EASE_TICKS: f32 = 9.0;
 
 // Marker palette (the click-to-move destination tag).
@@ -65,7 +62,7 @@ impl Ease {
 
 /// Walk-cycle state — presentation-only, but ticked on the FIXED clock
 /// (run_due's per-tick loop / demo_advance_tick) so DEMO captures replay
-/// bit-identically. `phase` accumulates while the ease is gliding; `blend`
+/// bit-identically. `phase` accumulates from actual ground distance; `blend`
 /// fades the pose in/out so stops settle to the rest pose instead of
 /// freezing mid-stride.
 #[derive(Clone, Copy, Default)]
@@ -74,12 +71,17 @@ struct Gait {
     blend: f32,
 }
 
-/// Stride period (ticks per full two-step cycle) and hip swing amplitude
-/// (radians) per movement mode — the whole feel of the walk in two numbers.
+/// Ground distance per full two-step cycle and hip swing amplitude (radians)
+/// per movement mode — the whole feel of the walk in two numbers. Driving the
+/// phase from distance keeps the feet tied to the body during acceleration,
+/// braking, and collide-and-slide.
+const WALK_STRIDE_WU: f32 = 1.6;
+const RUN_STRIDE_WU: f32 = 2.0;
+
 fn gait_params(mode: MoveMode) -> (f32, f32) {
     match mode {
-        MoveMode::Walk => (16.0, 0.5),
-        MoveMode::Run => (11.0, 0.72),
+        MoveMode::Walk => (WALK_STRIDE_WU, 0.5),
+        MoveMode::Run => (RUN_STRIDE_WU, 0.72),
     }
 }
 
@@ -113,11 +115,11 @@ pub struct GymLoop {
     pub yaw_q: u32,
     /// The live click-to-move route (None = keyboard/no movement).
     plan: Option<Plan>,
-    /// Diagonal staircase phase: flips on every LANDED step, so a held
-    /// screen-diagonal alternates axes by actual progress (tick parity
-    /// fails here — the walk cadence is even, so every accepted move
-    /// would land on the same parity and the diagonal would degenerate).
-    stair: bool,
+    /// Projection used to interpret screen-relative movement.
+    pub proj: Projection,
+    /// Once keyboard movement has taken over, presentation follows the
+    /// continuous sim position instead of easing between cell centres.
+    continuous_active: bool,
     /// Eased world position of the player body.
     ease: Ease,
     /// Walk-cycle state.
@@ -134,7 +136,13 @@ pub struct GymLoop {
 }
 
 impl GymLoop {
+    #[allow(dead_code)]
     pub fn new(spec: GymLevel) -> GymLoop {
+        let proj = iso_core::by_name("trimetric").expect("trimetric preset");
+        Self::with_projection(spec, proj)
+    }
+
+    pub fn with_projection(spec: GymLevel, proj: Projection) -> GymLoop {
         let sim = GymGame::new(spec.clone());
         let snap = sim.snapshot();
         let p0 = cell_world(snap.player);
@@ -150,13 +158,19 @@ impl GymLoop {
             run_held: false,
             yaw_q: 0,
             plan: None,
-            stair: false,
+            proj,
+            continuous_active: false,
             ease: Ease::pinned(p0),
             gait: Gait::default(),
             face: 0.0,
             last_cam: p0,
             phys: None,
         }
+    }
+
+    /// Update the movement basis when the settings menu changes projection.
+    pub fn set_projection(&mut self, proj: Projection) {
+        self.proj = proj;
     }
 
     /// Step the physics spike one fixed tick (no-op unless PHYS=1 attached a
@@ -172,37 +186,32 @@ impl GymLoop {
         self.tick.0 as f32 * TICK_DT
     }
 
-    /// Held keys → one grid step direction. SCREEN-relative for real: on the
-    /// 2:1 iso lattice screen-right is world (+X,-Z) and screen-down is
-    /// (+X,+Z), so a single held key wants BOTH axes — walked as a staircase
-    /// that alternates on every landed step (`stair`). Two adjacent keys
-    /// cancel to a pure axis (screen up-right = world -Z). The result is
-    /// rotated to the camera quarter so q/e turns keep W meaning "up".
-    fn held_dir(&self) -> (i16, i16) {
-        let sx = self.held[3] as i16 - self.held[2] as i16; // screen right
-        let sy = self.held[1] as i16 - self.held[0] as i16; // screen down
+    fn screen_input(&self) -> (i16, i16) {
+        (
+            self.held[3] as i16 - self.held[2] as i16,
+            self.held[1] as i16 - self.held[0] as i16,
+        )
+    }
+
+    /// Convert the held screen direction through the actual projection. This
+    /// is the same inverse lattice used by clicks and the camera, so W/A/S/D
+    /// keep their screen meaning for both iso21 and trimetric, at every yaw.
+    fn world_input(&self) -> Vec3 {
+        let (sx, sy) = self.screen_input();
+        self.proj.screen_px_to_world(Vec2::new(sx as f32, sy as f32), 90.0 * self.yaw_q as f32)
+    }
+
+    /// Held keys → a normalized, fixed-point world input for the continuous
+    /// headless mover. The projection inversion means a screen-cardinal key
+    /// is a straight line on screen instead of an alternating grid path.
+    fn held_command(&self) -> Option<Command> {
+        let (sx, sy) = self.screen_input();
         if sx == 0 && sy == 0 {
-            return (0, 0);
+            return None;
         }
-        let (mut wx, mut wz) = (sx + sy, sy - sx);
-        // rotate world axes by the camera quarter
-        for _ in 0..(self.yaw_q % 4) {
-            let (nx, nz) = (wz, -wx);
-            wx = nx;
-            wz = nz;
-        }
-        let (cx, cz) = (wx.signum(), wz.signum());
-        match (cx, cz) {
-            (0, z) => (0, z),
-            (x, 0) => (x, 0),
-            (x, z) => {
-                if self.stair {
-                    (x, 0)
-                } else {
-                    (0, z)
-                }
-            }
-        }
+        let w = self.world_input();
+        let v = Vec2::new(w.x, w.z).normalize_or_zero() * house_game::gym::sim::WORLD_INPUT_SCALE;
+        Some(Command::MoveWorld { dx: v.x.round() as i16, dz: v.y.round() as i16, mode: self.mode() })
     }
 
     fn mode(&self) -> MoveMode {
@@ -228,6 +237,7 @@ impl GymLoop {
             self.plan = None;
             return;
         }
+        self.continuous_active = false;
         if let Some(cells) = self.bfs(self.snap.player, cell) {
             self.plan = Some(Plan { cells, next: 0 });
         }
@@ -311,11 +321,10 @@ impl GymLoop {
     pub fn run_due(&mut self, real_dt: f32) -> u32 {
         let n = self.fixed.advance(real_dt);
         for _ in 0..n {
-            let (dx, dz) = self.held_dir();
-            if (dx, dz) != (0, 0) {
+            if let Some(command) = self.held_command() {
                 self.plan = None;
-                let mode = self.mode();
-                self.queue.push(self.tick, Command::Move { dx, dz, mode });
+                self.continuous_active = true;
+                self.queue.push(self.tick, command);
             } else {
                 self.plan_step();
             }
@@ -374,50 +383,85 @@ impl GymLoop {
         }
         self.cmds_prefix = self.tick.0;
         self.refresh();
-        // A replay prefix isn't gameplay to animate: snap the body to its
-        // sim cell (otherwise a SHOT right after the prefix — which never
-        // ticks — captures the ease mid-glide at its pre-replay cell).
+        // A replay prefix isn't gameplay to animate: snap presentation to sim
+        // truth (otherwise a SHOT right after the prefix — which never ticks
+        // — can capture a legacy ease mid-glide).
         self.ease = Ease::pinned(self.ease.to);
         println!("CMDS(gym): {n} commands over {ticks} ticks — state {:016x}", self.sim.state_hash());
     }
 
-    /// Advance the walk cycle one fixed tick: phase runs while the ease is
-    /// gliding, blend fades the pose in/out around it.
+    /// Advance the walk cycle one fixed tick. Continuous movement contributes
+    /// its actual distance this tick; legacy click/replay easing contributes
+    /// its eased distance. The gait therefore cannot run in place against a
+    /// wall or skate ahead of an accelerating body.
     fn gait_tick(&mut self) {
         let now = self.tick.0;
         let e = self.ease;
-        let moving = e.from != e.to && now <= e.start + EASE_TICKS as u64;
-        let (period, _) = gait_params(self.mode());
+        let (stride, _) = gait_params(self.mode());
+        let (moving, distance) = if self.continuous_active {
+            let snap = self.sim.snapshot();
+            let distance = snap.velocity.length() * TICK_DT;
+            (distance > 1.0e-6, distance)
+        } else {
+            let distance = (e.at(now) - e.at(now.saturating_sub(1))).length();
+            (distance > 1.0e-6 && now <= e.start + EASE_TICKS as u64, distance)
+        };
         let g = &mut self.gait;
         g.blend = (g.blend + if moving { 0.34 } else { -0.12 }).clamp(0.0, 1.0);
-        if g.blend > 0.0 {
-            g.phase += std::f32::consts::TAU / period;
-        } else {
+        if moving {
+            g.phase += std::f32::consts::TAU * distance / stride;
+        } else if g.blend == 0.0 {
             g.phase = 0.0; // idle: next stride starts at heel-strike
         }
     }
 
     fn refresh(&mut self) {
-        let prev_cell = self.snap.player;
         self.snap = self.sim.snapshot();
-        if self.snap.player != prev_cell {
-            self.stair = !self.stair; // staircase axis flips per landed step
+        let cell_p = cell_world(self.snap.player);
+        let sim_p = Vec3::new(self.snap.position.x, cell_p.y, self.snap.position.y);
+        if !self.continuous_active && (self.snap.position - Vec2::new(cell_p.x, cell_p.z)).length_squared() > 1.0e-8 {
+            // DEMO/CMDS traces can carry the additive continuous command too;
+            // infer the presentation mode from the snapshot when no live key
+            // set explicitly selected it.
+            self.continuous_active = true;
         }
         let now = self.tick.0;
-        let p = cell_world(self.snap.player);
+        let p = if self.continuous_active { sim_p } else { cell_p };
         let prev_to = self.ease.to;
-        self.ease.retarget(p, now);
+        if self.continuous_active {
+            self.ease = Ease::pinned(p);
+        } else {
+            self.ease.retarget(p, now);
+        }
         if p != prev_to {
-            let d = p - prev_to;
+            let d = if self.continuous_active {
+                Vec3::new(self.snap.velocity.x, 0.0, self.snap.velocity.y)
+            } else {
+                p - prev_to
+            };
             if d.length_squared() > 1e-6 {
                 self.face = d.x.atan2(d.z);
             }
         }
     }
 
-    /// The camera's follow anchor: the eased player body.
+    fn sim_position_world(&self) -> Vec3 {
+        let y = cell_world(self.snap.player).y;
+        Vec3::new(self.snap.position.x, y, self.snap.position.y)
+    }
+
+    fn render_position(&self) -> Vec3 {
+        if self.continuous_active {
+            self.sim_position_world()
+        } else {
+            self.ease.at(self.tick.0)
+        }
+    }
+
+    /// The camera's follow anchor: continuous world position for keyboard
+    /// movement, or the eased cell centre for legacy click/replay steps.
     pub fn cam_target(&self) -> Vec3 {
-        self.ease.at(self.tick.0)
+        self.render_position()
     }
 
     /// Is the player inside the building? Drives the dollhouse cutaway.
@@ -440,8 +484,7 @@ impl GymLoop {
     pub fn instances(&self, handles: &SceneHandles) -> Vec<(InstanceKey, Mat4)> {
         let mut out = Vec::new();
         let get = |n: &str| handles.instances.get(n).copied();
-        let now = self.tick.0;
-        let base = Mat4::from_translation(self.ease.at(now)) * Mat4::from_rotation_y(self.face);
+        let base = Mat4::from_translation(self.render_position()) * Mat4::from_rotation_y(self.face);
         let Some(core) = get("player") else { return out };
         let (_, leg_amp) = gait_params(self.mode());
         let (bob, leg, arm) = gait_pose(self.gait, leg_amp, 0.65);
@@ -532,30 +575,33 @@ mod tests {
     use super::*;
     use house_game::gym::sim::gym_level;
 
-    /// W means SCREEN up: the iso staircase alternates axes per LANDED step
-    /// at the sim's cadence (never one cell per tick, never a straight
-    /// grid-axis line) — as long as the walk stays unobstructed.
+    /// W means SCREEN up: the world-axis stairs must follow the active
+    /// projection's inverse pixel basis. The old fixed alternation produced
+    /// a visible sideways drift under the trimetric game projection.
     #[test]
-    fn held_w_walks_screen_up_the_staircase_at_the_sims_cadence() {
-        let mut t = GymLoop::new(gym_level());
+    fn held_w_follows_the_projection_without_sideways_zigzag() {
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel {
+            grid: house_game::gym::grid::Grid::new(64, 64),
+            player_start: CellPos::new(32, 32),
+            lights: Vec::new(),
+        });
         t.held[0] = true;
-        let (x0, z0) = (t.snap.player.x, t.snap.player.z);
+        let start = t.snap.position;
         for _ in 0..64 {
             t.run_due(TICK_DT);
         }
-        let (dx, dz) = (x0 - t.snap.player.x, z0 - t.snap.player.z);
-        // walk period 8 → up to 8 steps in 64 ticks; walls may block some,
-        // but SOME progress must land and no axis may run away alone
-        assert!(dx + dz >= 1, "held walk must land steps (dx={dx} dz={dz})");
-        if dx + dz >= 4 {
-            assert!((dx - dz).abs() <= 2, "screen-up must stair-step both axes: dx={dx} dz={dz}");
-        }
+        let delta = start - t.snap.position;
+        assert!(delta.x + delta.y > 0.1, "held walk must move: {start:?} -> {:?}", t.snap.position);
+        let screen_x = delta.x * t.proj.px_x[0] as f32 + delta.y * t.proj.px_z[0] as f32;
+        let screen_y = delta.x * t.proj.px_x[1] as f32 + delta.y * t.proj.px_z[1] as f32;
+        assert!(screen_y > 0.0, "screen-up must move upward from the start: ({screen_x}, {screen_y})");
+        assert!(screen_x.abs() < 1.0e-3, "screen-up must be a straight line, not a zigzag: ({screen_x}, {screen_y})");
     }
 
-    /// The body eases between cells but always ARRIVES (presentation never
-    /// desyncs from sim truth).
+    /// Continuous movement comes to rest without snapping the player back to
+    /// the last cell centre or desynchronising presentation from sim truth.
     #[test]
-    fn ease_converges_on_the_sim_cell() {
+    fn continuous_position_settles_without_a_cell_snap() {
         let mut t = GymLoop::new(gym_level());
         t.held[0] = true;
         for _ in 0..30 {
@@ -566,8 +612,12 @@ mod tests {
             t.run_due(TICK_DT);
         }
         let eased = t.cam_target();
-        let truth = cell_world(t.snap.player);
-        assert!((eased - truth).length() < 1e-4, "ease must settle on the cell: {eased} vs {truth}");
+        let truth = Vec3::new(t.snap.position.x, cell_world(t.snap.player).y, t.snap.position.y);
+        assert!((eased - truth).length() < 1e-5, "presentation must follow continuous sim position: {eased} vs {truth}");
+        for _ in 0..30 {
+            t.run_due(TICK_DT);
+        }
+        assert!((t.cam_target() - truth).length() < 1e-5, "a stopped player must remain at the continuous position");
     }
 
     /// The mouse loop end-to-end: click INSIDE the building — the plan
@@ -625,6 +675,29 @@ mod tests {
         }
         assert_eq!(t.gait.blend, 0.0, "idle must settle to the rest pose");
         assert_eq!(t.gait.phase, 0.0, "the next stride restarts at heel-strike");
+    }
+
+    /// A walk cycle must cover a stable piece of ground. A fixed phase clock
+    /// advances too quickly while the mover is accelerating, which makes the
+    /// feet skate relative to the floor; distance-driven phase keeps the
+    /// animation and the continuous body on the same stride.
+    #[test]
+    fn gait_phase_tracks_distance_instead_of_wall_clock() {
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel {
+            grid: house_game::gym::grid::Grid::new(64, 64),
+            player_start: CellPos::new(32, 32),
+            lights: Vec::new(),
+        });
+        t.held[0] = true;
+        let start = t.snap.position;
+        for _ in 0..180 {
+            t.run_due(TICK_DT);
+        }
+        let distance = (t.snap.position - start).length();
+        let cycles = t.gait.phase / std::f32::consts::TAU;
+        assert!(cycles > 1.0, "the gait must advance while walking");
+        let ground_per_cycle = distance / cycles;
+        assert!((ground_per_cycle - WALK_STRIDE_WU).abs() < 0.02, "gait stride drifted from movement: {ground_per_cycle} wu/cycle");
     }
 
     /// The articulated body emits five runs with mirrored leg swings.

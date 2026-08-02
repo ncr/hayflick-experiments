@@ -1221,6 +1221,25 @@ mod tests {
         assert_eq!(std::mem::size_of::<ShadePush>(), 256);
     }
 
+    /// A close wall BEHIND the player is a fresh first hit, not the far face
+    /// of a wall already passed by the ROI ray. Both shader twins must keep
+    /// the near-face exception behind an explicit wall-pass state, otherwise
+    /// standing close to a rear wall makes it dither like a front occluder.
+    #[test]
+    fn roi_near_face_exception_only_applies_after_passing_a_wall() {
+        let sources = [include_str!("shaders/shade.comp"), include_str!("../../rt-viewer/src/shaders_metal/shade.metal")];
+        for source in sources {
+            assert!(source.contains("bool roiWallPassed = false;"), "ROI must track whether it already crossed a wall");
+            assert!(source.contains("(!roiWallPassed || h.t > 0.6)"), "the near-face exception must not apply to the first hit");
+            assert!(source.contains("roiPlayerBehindWall"), "the reveal must use the wall face side, not only diagonal ground depth");
+            assert!(source.contains("ROI_WALL_BLEND"), "the reveal must have a spatial fade band at the wall");
+            assert!(source.contains("ROI_WALL_FRONT_GUARD"), "the fade must keep a front-side guard against close-wall ghosts");
+            assert!(source.contains("ROI_WALL_BLEND = 0.35"), "both shader twins must use the same reveal duration");
+            assert!(source.contains("ROI_WALL_FRONT_GUARD = 0.16"), "both shader twins must use the same front-side guard");
+            assert!(source.contains("smoothstep(-ROI_WALL_FRONT_GUARD, ROI_WALL_BLEND"), "the wall transition must be gradual without fading a close front wall");
+        }
+    }
+
     /// A throwaway CPU scene exercising every scan case: a non-emissive floor,
     /// two emissive boxes (one warm, one marked as a device screen), an
     /// EMISSIVE legacy-dynamic player (must be skipped), and one point light.

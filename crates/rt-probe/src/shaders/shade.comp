@@ -63,6 +63,15 @@ float bayer4(ivec2 lp){
   return (B[(lp.x & 3) + (lp.y & 3) * 4] + 0.5) / 16.0;
 }
 
+// World-space band over which the wall's Bayer coverage fades as the player
+// crosses a wall face. At 60 Hz and walk speed this is several frames, not a
+// one-frame visibility toggle.
+const float ROI_WALL_BLEND = 0.35;
+// The player stops about 0.16 wu in front of the visible wall face. Keep that
+// clearance solid; the fade starts near the side-of-wall crossing instead of
+// turning a wall pressed against the player into a ghost.
+const float ROI_WALL_FRONT_GUARD = 0.16;
+
 // ---- CONTOUR COVERAGE AA (owner 2026-07-25) --------------------------------
 // Everything below the gate is the ORDINARY shade kernel: a coverage tap is the
 // SAME kernel re-dispatched with a fixed sub-pixel ray offset, so the cutaway /
@@ -169,6 +178,28 @@ bool occluded(vec3 o, vec3 dir, float tmax){
   rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, o, 0.001, dir, tmax);
   while (rayQueryProceedEXT(rq)) {}
   return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+// True only when the player is on the FAR side of the wall face hit by the
+// camera ray. Orient the hit normal toward the camera first so front and back
+// faces of the same slab make the same side-of-wall decision.
+float roiPlayerWallFar(vec3 hitPos, vec3 wallNormal, vec3 viewDir, vec3 player){
+  vec3 sideNormal = vec3(wallNormal.x, 0.0, wallNormal.z);
+  float sideLen2 = dot(sideNormal, sideNormal);
+  if (sideLen2 < 1e-6) {
+    // Roof/floor faces have no wall side. Keep their old ground-forward rule;
+    // the face-side rule below is for the vertical slabs that can cross the
+    // diagonal depth plane while remaining behind the player.
+    return dot(hitPos.xz - player.xz, normalize(viewDir.xz));
+  }
+  sideNormal /= sqrt(sideLen2);
+  vec3 toCamera = normalize(vec3(-viewDir.x, 0.0, -viewDir.z));
+  if (dot(sideNormal, toCamera) < 0.0) sideNormal = -sideNormal;
+  return -dot(player.xz - hitPos.xz, sideNormal.xz);
+}
+
+bool roiPlayerBehindWall(vec3 hitPos, vec3 wallNormal, vec3 viewDir, vec3 player){
+  return roiPlayerWallFar(hitPos, wallNormal, viewDir, player) > 0.0;
 }
 
 // AO visibility with linear distance falloff: 1 on miss, t/R on a hit within
@@ -435,11 +466,16 @@ void main(){
   if (pc.roi.w > 0.0) {
     float sd = distance(vec2(px) + vec2(0.5), pc.roi2.xy);
     float wv = (1.0 - smoothstep(pc.roi.w - max(pc.roi2.z, 1.0), pc.roi.w, sd)) * abs(pc.roi2.w);
-    vec2 fwd = normalize(d.xz); // camera ground-forward (horizontal view dir)
-    // Contour region: nearest hit is a FRONT occluder wall inside the disc (same
-    // front-of-player gate as the dissolve loop), marked dissolved OR stipple-kept.
+    // Fade the Bayer coverage through a small world-space band around the
+    // wall face, so crossing it does not switch the reveal on in one frame.
+    if (hitb && (mats[h.mat].pad & 1) == 1) {
+      float wallFar = roiPlayerWallFar(o + d * h.t, h.n, d, pc.roi.xyz);
+      wv *= smoothstep(-ROI_WALL_FRONT_GUARD, ROI_WALL_BLEND, wallFar);
+    }
+    // Contour region: nearest hit is an occluder wall whose face puts the
+    // player behind it inside the disc, marked dissolved OR stipple-kept.
     if (roiContour && hitb && wv > 0.0 && (mats[h.mat].pad & 1) == 1
-        && !(h.t > 0.6 && dot((o + d * h.t).xz - pc.roi.xyz.xz, fwd) >= 0.0)) {
+        && roiPlayerBehindWall(o + d * h.t, h.n, d, pc.roi.xyz)) {
       inContour = true;
       wallPos = o + d * h.t;
     }
@@ -451,18 +487,19 @@ void main(){
     ivec2 wpx = ivec2((dot(orel, pc.camRight.xyz) / pc.camRight.w * 0.5 + 0.5) * float(W),
                       (0.5 - dot(orel, pc.camUp.xyz) / pc.camUp.w * 0.5) * float(H));
     if (wv > bayer4(px - wpx)) {
+      bool roiWallPassed = false;
       for (int it = 0; it < 10 && hitb && (mats[h.mat].pad & 1) == 1; it++) {
-        // Gate on the hit's FLOOR position, not its 3D view-depth: a plane
-        // perpendicular to the tilted iso view dir slices a tall wall diagonally
-        // by HEIGHT (its top sits at a smaller view-depth than its base), which
-        // revealed the upper part of walls BEHIND the player. Comparing the XZ
-        // footprint along the ground-forward axis keeps behind-player walls fully
-        // solid regardless of height — only walls whose footprint is between the
-        // camera and the player dissolve. Gate ONLY a FRESH occluder (a real ray
-        // gap, h.t large): a hit within ~one slab thickness is the FAR FACE of the
-        // wall we are already dissolving — pass it through, else its back face
-        // (which sits right at the player's depth plane) is kept as a sliver.
-        if (h.t > 0.6 && dot((o + d * h.t).xz - pc.roi.xyz.xz, fwd) >= 0.0) break;
+        // Gate by the wall face's side, not a diagonal ground-depth plane:
+        // a long wall can cross that plane while the player remains on its
+        // camera-facing side. The FIRST hit always gets this gate, even when
+        // the player is close to a wall behind them. Only after crossing a
+        // wall may a near hit (the same wall's far face) use the near-face
+        // exception.
+        if ((!roiWallPassed || h.t > 0.6) && !roiPlayerBehindWall(o + d * h.t, h.n, d, pc.roi.xyz)) {
+          float wallFar = roiPlayerWallFar(o + d * h.t, h.n, d, pc.roi.xyz);
+          if (smoothstep(-ROI_WALL_FRONT_GUARD, ROI_WALL_BLEND, wallFar) <= 0.0) break;
+        }
+        roiWallPassed = true;
         o = o + d * (h.t + (1.0 / 256.0));
         hitb = trace(o, d, 300.0, 0x01u, h);
       }

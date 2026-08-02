@@ -1,20 +1,34 @@
-//! The gym sim — the smallest thing that is still a game: one player
-//! cell-stepping around the hand-authored gym level. No NPCs, no doors, no
+//! The gym sim — the smallest thing that is still a game: one player moving
+//! continuously around the hand-authored gym level. Legacy cell-step commands
+//! remain for deterministic click routes and old traces. No NPCs, no doors, no
 //! clock, no RNG (owner directive 2026-07-12: cut to a single level with a
 //! few walls, one building and the player).
-//!
-//! The cell-stepper is INTERIM — the Faza-2 miodny continuous movement stack
-//! replaces it. Don't grow it.
 //!
 //! Fully headless and deterministic: fixed tick, trace replay, `state_hash`
 //! over every observable field.
 
 use super::grid::{CellKind, CellPos, Dir, EdgeKind, Grid};
+use glam::Vec2;
 use sim_core::{Simulation, Tick};
+use crate::{collide_and_slide, TICK_DT};
 
 /// Player step cadence per mode (ticks per landed cell).
 pub const STEP_WALK: u64 = 8;
 pub const STEP_RUN: u64 = 5;
+
+/// Fixed-point scale used by the additive continuous movement command. The
+/// command stays integer-only for deterministic traces; the sim turns it into
+/// a normalized world-space direction at the fixed tick.
+pub const WORLD_INPUT_SCALE: f32 = 1024.0;
+/// Centre-to-edge clearance in world units: the player body is about 0.156 wu
+/// wide at half-width and the rendered wall slab adds 0.1 wu on each side.
+/// Keeping the combined clearance here stops the rendered body at the visible
+/// wall instead of letting it overlap the slab.
+pub const PLAYER_RADIUS: f32 = 0.26;
+pub const SPEED_WALK: f32 = 3.0;
+pub const SPEED_RUN: f32 = 5.0;
+const ACCEL_WU_PER_S2: f32 = 18.0;
+const BRAKE_WU_PER_S2: f32 = 24.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MoveMode {
@@ -27,6 +41,10 @@ pub enum Command {
     /// Step one cell (dx, dz ∈ {-1,0,1}, one axis only). The sim rate-limits
     /// to the mode's cadence; extra commands are dropped, not queued.
     Move { dx: i16, dz: i16, mode: MoveMode },
+    /// Continuous world-space input, quantized at [`WORLD_INPUT_SCALE`].
+    /// Unlike `Move`, this is sampled every fixed tick and does not snap to a
+    /// cell; the grid remains the collision source of truth.
+    MoveWorld { dx: i16, dz: i16, mode: MoveMode },
     Wait,
 }
 
@@ -44,11 +62,16 @@ pub struct GymLevel {
 #[derive(Clone, Copy, Debug)]
 pub struct GymSnapshot {
     pub player: CellPos,
+    /// Continuous player centre in world XZ (cell centres are x/z + 0.5).
+    pub position: Vec2,
+    pub velocity: Vec2,
 }
 
 pub struct GymGame {
     spec: GymLevel,
     player: CellPos,
+    position: Vec2,
+    velocity: Vec2,
     /// Earliest tick the next player step may land (sim-owned cadence).
     next_move_at: u64,
     tick: u64,
@@ -56,7 +79,8 @@ pub struct GymGame {
 
 impl GymGame {
     pub fn new(spec: GymLevel) -> GymGame {
-        GymGame { player: spec.player_start, next_move_at: 0, tick: 0, spec }
+        let position = Vec2::new(spec.player_start.x as f32 + 0.5, spec.player_start.z as f32 + 0.5);
+        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, next_move_at: 0, tick: 0, spec }
     }
 
     pub fn grid(&self) -> &Grid {
@@ -73,6 +97,67 @@ impl GymGame {
             MoveMode::Run => STEP_RUN,
         }
     }
+
+    fn speed(mode: MoveMode) -> f32 {
+        match mode {
+            MoveMode::Walk => SPEED_WALK,
+            MoveMode::Run => SPEED_RUN,
+        }
+    }
+
+    fn cell_for_position(&self) -> CellPos {
+        CellPos::new(
+            self.position.x.floor().clamp(0.0, self.spec.grid.w as f32 - 1.0) as i16,
+            self.position.y.floor().clamp(0.0, self.spec.grid.h as f32 - 1.0) as i16,
+        )
+    }
+
+    fn sync_player_cell(&mut self) {
+        self.player = self.cell_for_position();
+    }
+
+    /// Advance the continuous mover one fixed tick. Input is already in the
+    /// world basis and quantized, so camera/projection policy stays outside
+    /// the headless sim while collision and acceleration stay inside it.
+    fn move_world(&mut self, dx: i16, dz: i16, mode: MoveMode) {
+        let raw = Vec2::new(dx as f32, dz as f32) / WORLD_INPUT_SCALE;
+        let dir = raw.normalize_or_zero();
+        let target = dir * Self::speed(mode);
+        let change = target - self.velocity;
+        let max_change = ACCEL_WU_PER_S2 * TICK_DT;
+        self.velocity = if change.length_squared() <= max_change * max_change {
+            target
+        } else {
+            self.velocity + change.normalize() * max_change
+        };
+        self.integrate_position();
+    }
+
+    fn brake_world(&mut self) {
+        let max_change = BRAKE_WU_PER_S2 * TICK_DT;
+        let speed = self.velocity.length();
+        self.velocity = if speed <= max_change { Vec2::ZERO } else { self.velocity * ((speed - max_change) / speed) };
+        self.integrate_position();
+    }
+
+    fn integrate_position(&mut self) {
+        let grid = &self.spec.grid;
+        let (x, z) = collide_and_slide(
+            |x, z| grid.blocked_point(x, z, PLAYER_RADIUS),
+            self.position.x,
+            self.position.y,
+            self.velocity.x * TICK_DT,
+            self.velocity.y * TICK_DT,
+        );
+        if (x - self.position.x).abs() < f32::EPSILON {
+            self.velocity.x = 0.0;
+        }
+        if (z - self.position.y).abs() < f32::EPSILON {
+            self.velocity.y = 0.0;
+        }
+        self.position = Vec2::new(x, z);
+        self.sync_player_cell();
+    }
 }
 
 impl Simulation for GymGame {
@@ -81,6 +166,7 @@ impl Simulation for GymGame {
 
     fn tick(&mut self, t: Tick, cmds: &[Command]) {
         self.tick = t.0;
+        let mut world_input = None;
         for c in cmds {
             match *c {
                 Command::Move { dx, dz, mode } => {
@@ -96,15 +182,23 @@ impl Simulation for GymGame {
                         continue;
                     }
                     self.player = self.player.step(dir);
+                    self.position = Vec2::new(self.player.x as f32 + 0.5, self.player.z as f32 + 0.5);
+                    self.velocity = Vec2::ZERO;
                     self.next_move_at = self.tick + Self::step_period(mode);
                 }
+                Command::MoveWorld { dx, dz, mode } => world_input = Some((dx, dz, mode)),
                 Command::Wait => {}
             }
+        }
+        if let Some((dx, dz, mode)) = world_input {
+            self.move_world(dx, dz, mode);
+        } else {
+            self.brake_world();
         }
     }
 
     fn snapshot(&self) -> GymSnapshot {
-        GymSnapshot { player: self.player }
+        GymSnapshot { player: self.player, position: self.position, velocity: self.velocity }
     }
 
     fn state_hash(&self) -> u64 {
@@ -118,6 +212,10 @@ impl Simulation for GymGame {
         eat(self.next_move_at);
         eat(self.player.x as u64);
         eat(self.player.z as u64);
+        eat(self.position.x.to_bits() as u64);
+        eat(self.position.y.to_bits() as u64);
+        eat(self.velocity.x.to_bits() as u64);
+        eat(self.velocity.y.to_bits() as u64);
         eat(self.spec.grid.grid_hash());
         h
     }
@@ -241,10 +339,11 @@ fn spec_x0(row: usize, i: i16) -> i16 {
 /// the EFFECT and nothing else. The gym cannot do that job — its fifteen piers
 /// differ in length, orientation, neighbours and glazing.
 ///
-/// The player spawns in the far corner on purpose. The ROI reveal dissolves
-/// occluders in FRONT of him (`x + 2z` above his own), and every specimen sits
-/// well below (20, 20)'s 60 — so no specimen can ghost, at any camera framing.
-/// (The spawn moved 4 cells deeper with row 3, staying behind the new line.)
+/// The player spawns in the far corner on purpose. The ROI reveal dissolves an
+/// occluder only when its wall FACE puts him on the far side (the `x + 2z`
+/// ground-depth gate retired 2026-08-02), and every specimen sits well away
+/// from the spawn — so no specimen can ghost at boot, at any camera framing.
+/// (The spawn moved 4 cells deeper with row 3, staying clear of the slabs.)
 pub fn catalogue_level() -> GymLevel {
     let mut grid = Grid::new(22, 22);
     for (row, &z) in SPEC_Z.iter().enumerate() {
@@ -321,6 +420,32 @@ mod tests {
         assert_eq!((p.x - start.x) + (p.z - start.z), 1, "the walk cadence must swallow the second step");
         // run cadence is shorter than walk — a constants-relationship pin
         const _: () = assert!(STEP_RUN < STEP_WALK);
+    }
+
+    #[test]
+    fn continuous_input_moves_between_cells_without_snapping() {
+        let mut g = GymGame::new(GymLevel { grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
+        let start = g.snapshot().position;
+        for t in 0..30u64 {
+            g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Walk }]);
+        }
+        let s = g.snapshot();
+        assert!(s.position.x > start.x + 0.5, "continuous input must cover part of a cell: {start:?} -> {:?}", s.position);
+        assert!((s.position.y - start.y).abs() < 1e-6, "a world-X input must not zigzag in Z: {start:?} -> {:?}", s.position);
+        assert_ne!(s.position.x, s.player.x as f32 + 0.5, "the continuous position must not be snapped to the cell centre");
+    }
+
+    #[test]
+    fn continuous_input_collides_with_grid_edges_and_keeps_sliding() {
+        let mut grid = Grid::new(8, 8);
+        grid.set_edge(CellPos::new(1, 2), Dir::Xp, EdgeKind::Wall);
+        let mut g = GymGame::new(GymLevel { grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
+        for t in 0..120u64 {
+            g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Run }]);
+        }
+        let s = g.snapshot();
+        assert!(s.position.x <= 2.0 - PLAYER_RADIUS + 1e-4, "the player must stop before the wall: {:?}", s.position);
+        assert!((s.position.y - 2.5).abs() < 1e-6, "an axis-aligned wall must not move the player along Z: {:?}", s.position);
     }
 
     #[test]

@@ -1808,18 +1808,39 @@ fn poly_minus_rects(poly: &[Vec2], rects: &[(Vec2, Vec2)]) -> Vec<Vec<Vec2>> {
     frags_minus_rects(vec![f], rects).into_iter().map(|g| g.poly).collect()
 }
 
-/// Collapse ONE face of a freshly added box prim (degenerate tris are never
-/// hit), so a mesh with a hole in it can take that face's place. Found by
-/// NORMAL rather than by index: `add_box`'s face order is an implementation
-/// detail of `rt_probe::Scene` and this pass should not depend on it.
+/// Keep hidden replacement geometry valid for every acceleration-structure
+/// builder. Metal rejects (and some Apple drivers crash on) zero-area
+/// triangles, so hiding a face means shrinking it to a tiny square rather
+/// than collapsing all four vertices to one point. Found by NORMAL rather
+/// than by index: `add_box`'s face order is an implementation detail of
+/// `rt_probe::Scene` and this pass should not depend on it.
+const HIDDEN_GEOMETRY_HALF: f32 = 1.0e-4;
+
 fn collapse_face(scene: &mut Scene, prim: usize, nrm: [f32; 3]) {
     let pr = scene.primitives[prim];
     for f in 0..(pr.vertex_count as usize / 4) {
         let o = pr.vertex_offset as usize + f * 4;
         if scene.vertices[o].nrm == nrm {
-            let c = scene.vertices[o].pos;
-            for v in &mut scene.vertices[o..o + 4] {
-                v.pos = c;
+            let old = [
+                Vec3::from(scene.vertices[o].pos),
+                Vec3::from(scene.vertices[o + 1].pos),
+                Vec3::from(scene.vertices[o + 2].pos),
+                Vec3::from(scene.vertices[o + 3].pos),
+            ];
+            let c = old.into_iter().fold(Vec3::ZERO, |sum, p| sum + p) / 4.0;
+            let normal_axis = nrm.iter().position(|a| a.abs() > 0.5).expect("box face normal");
+            for (v, p) in scene.vertices[o..o + 4].iter_mut().zip(old) {
+                let mut q = c;
+                if normal_axis != 0 {
+                    q.x += if p.x >= c.x { HIDDEN_GEOMETRY_HALF } else { -HIDDEN_GEOMETRY_HALF };
+                }
+                if normal_axis != 1 {
+                    q.y += if p.y >= c.y { HIDDEN_GEOMETRY_HALF } else { -HIDDEN_GEOMETRY_HALF };
+                }
+                if normal_axis != 2 {
+                    q.z += if p.z >= c.z { HIDDEN_GEOMETRY_HALF } else { -HIDDEN_GEOMETRY_HALF };
+                }
+                v.pos = q.into();
             }
             return;
         }
@@ -2245,12 +2266,19 @@ fn chalk_material(scene: &mut Scene, mid: i32) -> i32 {
     scene.materials.len() as i32 - 1
 }
 
-/// Collapse the pier's original box prim (degenerate tris never hit).
+/// Shrink the pier's original box prim to a tiny valid box. It is hidden by
+/// the replacement shell/core geometry, but it must remain a legal BLAS input
+/// on Metal as well as Vulkan.
 fn collapse_box(scene: &mut Scene, pier: &Pier) {
     let pr = scene.primitives[pier.prim];
     let c = ((pier.lo + pier.hi) * 0.5).to_array();
     for v in &mut scene.vertices[pr.vertex_offset as usize..(pr.vertex_offset + pr.vertex_count) as usize] {
-        v.pos = c;
+        let p = v.pos;
+        v.pos = [
+            c[0] + if p[0] >= c[0] { HIDDEN_GEOMETRY_HALF } else { -HIDDEN_GEOMETRY_HALF },
+            c[1] + if p[1] >= c[1] { HIDDEN_GEOMETRY_HALF } else { -HIDDEN_GEOMETRY_HALF },
+            c[2] + if p[2] >= c[2] { HIDDEN_GEOMETRY_HALF } else { -HIDDEN_GEOMETRY_HALF },
+        ];
     }
 }
 
@@ -3342,10 +3370,21 @@ mod tests {
         let pad = scene.materials[mid as usize]._pad;
         assert_ne!(pad & GEO_BIT, 0, "GEO_BIT set");
         assert_ne!(pad & CRAZE_BIT, 0, "CRAZE_BIT set (veneer rides the pieces)");
-        // original box collapsed to a point
+        // The original box is hidden as a tiny legal mesh, rather than as a
+        // point: Metal acceleration structures must not receive degenerate
+        // triangles.
         let pr = scene.primitives[pier.prim];
-        let c = scene.vertices[pr.vertex_offset as usize].pos;
-        assert!(scene.vertices[pr.vertex_offset as usize..(pr.vertex_offset + pr.vertex_count) as usize].iter().all(|v| v.pos == c));
+        let hidden = &scene.vertices[pr.vertex_offset as usize..(pr.vertex_offset + pr.vertex_count) as usize];
+        let c = hidden.iter().fold(Vec3::ZERO, |sum, v| sum + Vec3::from(v.pos)) / hidden.len() as f32;
+        assert!(hidden.iter().any(|v| Vec3::from(v.pos) != c), "hidden box must retain valid extent");
+        let max_offset = hidden.iter().map(|v| (Vec3::from(v.pos) - c).abs().max_element()).fold(0.0, f32::max);
+        assert!(max_offset <= HIDDEN_GEOMETRY_HALF * 2.0 + 1e-6, "hidden box offset {max_offset} around {c:?}");
+        for tri in scene.indices[pr.index_offset as usize..(pr.index_offset + pr.index_count) as usize].chunks_exact(3) {
+            let a = Vec3::from(scene.vertices[(pr.vertex_offset + tri[0]) as usize].pos);
+            let b = Vec3::from(scene.vertices[(pr.vertex_offset + tri[1]) as usize].pos);
+            let d = Vec3::from(scene.vertices[(pr.vertex_offset + tri[2]) as usize].pos);
+            assert!((b - a).cross(d - a).length_squared() > 1.0e-16, "hidden box must not contain a zero-area triangle");
+        }
         assert_in_box(&scene, before, &pier, "fault");
     }
 

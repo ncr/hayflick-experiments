@@ -155,9 +155,9 @@ impl Viewer {
         self.retarget(self.view.target + world);
     }
 
-    /// Follow-cam: track the EASED player body (the gym sim steps whole
-    /// cells; the loop glides between them), re-snapped to the lattice by
-    /// `retarget` like every camera move.
+    /// Follow-cam: track the gym's continuous player position (or the eased
+    /// legacy click/replay position), re-snapped to the lattice by `retarget`
+    /// like every camera move.
     pub fn follow_player_camera(&mut self) {
         let p = self.gym.cam_target();
         if p == self.gym.last_cam {

@@ -726,19 +726,77 @@ impl Scene {
     /// keep the pier's material, so knobs / flags / selection stay
     /// per-segment). `indices` are local to `verts`, like `add_box`'s.
     pub fn add_mesh_world(&mut self, verts: &[([f32; 3], [f32; 3])], indices: &[u32], material_id: i32) {
+        assert_eq!(indices.len() % 3, 0, "world mesh index data must contain complete triangles");
+        // Metal's acceleration-structure builder rejects (or, on some Apple
+        // drivers, crashes on) zero-area triangles. Procedural clipping can
+        // legitimately collapse a polygon at a seam, so filter those triangles
+        // at the shared scene boundary instead of making each generator carry
+        // the same near-duplicate/collinearity guard. Vulkan accepts them, but
+        // feeding different geometry to the two backends is worse than the
+        // tiny, deterministic cleanup here.
+        let mut kept = Vec::with_capacity(indices.len());
+        for tri in indices.chunks_exact(3) {
+            let [ia, ib, ic] = tri else { unreachable!() };
+            assert!((*ia as usize) < verts.len() && (*ib as usize) < verts.len() && (*ic as usize) < verts.len(), "world mesh index out of bounds");
+            let a = Vec3::from(verts[*ia as usize].0);
+            let b = Vec3::from(verts[*ib as usize].0);
+            let c = Vec3::from(verts[*ic as usize].0);
+            let area2 = (b - a).cross(c - a).length_squared();
+            if area2 > 1.0e-16 {
+                kept.extend_from_slice(tri);
+            }
+        }
+        if kept.is_empty() {
+            return;
+        }
         let vbase = self.vertices.len() as u32;
         let ibase = self.indices.len() as u32;
         for (pos, nrm) in verts {
             self.vertices.push(Vertex { pos: *pos, nrm: *nrm, uv: [0.0, 0.0] });
         }
-        self.indices.extend_from_slice(indices);
+        self.indices.extend_from_slice(&kept);
         self.primitives.push(Primitive {
             vertex_offset: vbase,
             index_offset: ibase,
             vertex_count: verts.len() as u32,
-            index_count: indices.len() as u32,
+            index_count: kept.len() as u32,
             material_id,
         });
+    }
+
+    /// Validate the geometry contract required by Metal acceleration
+    /// structures. Vulkan is permissive about a collapsed triangle, but
+    /// Apple's builder can reject it or terminate the command buffer; keep
+    /// this check beside the shared scene representation so a later geometry
+    /// pass cannot reintroduce a backend-only crash.
+    pub fn validate_acceleration_geometry(&self) -> Result<(), String> {
+        for (pi, p) in self.primitives.iter().enumerate() {
+            if p.vertex_count == 0 || p.index_count < 3 || p.index_count % 3 != 0 {
+                return Err(format!("primitive {pi}: invalid vertex/index count ({}/{})", p.vertex_count, p.index_count));
+            }
+            let v_end = p.vertex_offset.checked_add(p.vertex_count).ok_or_else(|| format!("primitive {pi}: vertex range overflows"))? as usize;
+            let i_end = p.index_offset.checked_add(p.index_count).ok_or_else(|| format!("primitive {pi}: index range overflows"))? as usize;
+            if v_end > self.vertices.len() || i_end > self.indices.len() {
+                return Err(format!("primitive {pi}: vertex/index range is outside the scene buffers"));
+            }
+            for (ti, tri) in self.indices[p.index_offset as usize..i_end].chunks_exact(3).enumerate() {
+                let [ia, ib, ic] = tri else { unreachable!() };
+                let local = [*ia as usize, *ib as usize, *ic as usize];
+                if local.iter().any(|&i| i >= p.vertex_count as usize) {
+                    return Err(format!("primitive {pi} triangle {ti}: index is outside its vertex range"));
+                }
+                let a = Vec3::from(self.vertices[p.vertex_offset as usize + local[0]].pos);
+                let b = Vec3::from(self.vertices[p.vertex_offset as usize + local[1]].pos);
+                let c = Vec3::from(self.vertices[p.vertex_offset as usize + local[2]].pos);
+                if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+                    return Err(format!("primitive {pi} triangle {ti}: non-finite vertex"));
+                }
+                if (b - a).cross(c - a).length_squared() <= 1.0e-16 {
+                    return Err(format!("primitive {pi} triangle {ti}: zero-area geometry"));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Recompute the AABB from only the vertices actually referenced by kept triangles.
@@ -765,5 +823,29 @@ impl Scene {
                 _pad: 0,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mesh_ingest_drops_degenerate_triangles_and_empty_meshes() {
+        let mut scene = Scene::new();
+        let material = scene.new_material([1.0; 4], [0.0; 4], 1.0, 0.0);
+        let verts = [
+            ([0.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+            ([2.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ];
+        scene.add_mesh_world(&verts, &[0, 1, 2, 0, 3, 3], material);
+        assert_eq!(scene.primitives.len(), 1);
+        assert_eq!(scene.primitives[0].index_count, 3);
+
+        scene.add_mesh_world(&verts, &[0, 3, 3], material);
+        assert_eq!(scene.primitives.len(), 1, "a mesh with no usable triangles must not enter the AS");
+        scene.validate_acceleration_geometry().expect("filtered mesh is a valid AS input");
     }
 }

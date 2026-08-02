@@ -240,6 +240,7 @@ impl Viewer {
             spec.player_start = house_game::gym::grid::CellPos::new(5, 5);
         }
         let roof = std::env::var("NO_ROOF").is_err();
+        let proj = proj_from_env();
         // Boot look: the LEVEL demo's, else LOOK env (the ESC menu switches
         // live from there).
         let look = match demo {
@@ -304,7 +305,7 @@ impl Viewer {
             backend,
             light_keys,
             audio,
-            proj: proj_from_env(),
+            proj,
             look,
             // look-as-data (Faza 1b): the look authors exposure, the post
             // stack and the surface response; env vars override on top (the
@@ -346,7 +347,7 @@ impl Viewer {
                 drag: false,
                 drag_pending: false,
             },
-            gym: GymLoop::new(spec),
+            gym: GymLoop::with_projection(spec, proj),
             piers: gym_meta.piers,
             crack,
             ide: crate::ide_host::IdeState::from_env(),
@@ -432,7 +433,7 @@ impl Viewer {
     /// (same level, zeroed sim). View state (camera/zoom) survives; the
     /// follow-cam recentres on the respawned player's first step.
     pub fn restart_gym(&mut self) {
-        self.gym = GymLoop::new(self.gym.spec.clone());
+        self.gym = GymLoop::with_projection(self.gym.spec.clone(), self.proj);
         // spike: re-arm the physics wall so RESTART replays the smash
         self.gym.phys = std::env::var("PHYS").is_ok().then(phys_spike::PhysWorld::demo);
     }
@@ -606,7 +607,7 @@ impl Viewer {
         self.advance_sim(dt); // DEMO tick / pause / live fixed-tick
         self.maybe_tear(); // Stage-2 dynamic-GI spike: roof tear-off at GI_TEAR
         self.drive_demo(); // named-demo timeline: tick-scheduled beats + look morph
-        self.follow_player_camera(); // follow the eased player body
+        self.follow_player_camera(); // follow the continuous/eased player body
         // smooth quarter-turn in flight: ease the yaw
         self.advance_rotation(dt);
         // clip recording: collect last frame's capture + decide if this frame
@@ -855,7 +856,7 @@ impl Viewer {
         }
         // Anchor the reveal disc on the player's MID-HEIGHT, not its feet:
         // the body is ~1.4 wu tall, so projecting the feet (y≈0) puts the
-        // disc centre low on screen. The anchor is the EASED body — a
+        // disc centre low on screen. The anchor is the rendered body — a
         // spawn-pinned disc means no reveal once you walk behind the building.
         let center = self.gym.cam_target() + glam::Vec3::new(0.0, 0.65, 0.0);
         // ROI_XRAY=contour adds faint wall-silhouette lines ON TOP of the ghost

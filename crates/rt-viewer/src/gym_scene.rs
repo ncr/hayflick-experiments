@@ -7,8 +7,8 @@
 //! clean-stair lattice (1/10 wu along X, 1/20 along Z; see
 //! `Projection::clean_xz`). No grid is clean under BOTH presets: tenths show
 //! mixed treads under the iso21 A/B reference — the game projection wins.
-//! The PLAYER body still sits on the legacy 1/16 lattice: it is animated
-//! (treads invisible in motion) and Faza 2 rebuilds it anyway. Wall slabs
+//! The PLAYER body follows the sim's continuous world position and uses a
+//! distance-paced gait (treads invisible in motion). Wall slabs
 //! are 0.2 wu thick, centred on the shared edge; the building's roof is an
 //! occluding cap. Occlusion is the dollhouse WALLCUT: outdoors the building
 //! stands whole; indoors every occluder drops to sill height (`WALL_CUT_H`).
@@ -621,5 +621,27 @@ mod tests {
     fn wall_cut_sits_below_wall_tops() {
         assert!(WALL_CUT_H < WALL_TOP, "walls must drop to stubs indoors");
         assert!(WALL_CUT_H > 0.25, "ground-level dressing survives the cutaway");
+    }
+
+    #[test]
+    fn effect_catalogue_has_only_valid_acceleration_structure_primitives() {
+        let spec = house_game::gym::sim::catalogue_level();
+        let (mut scene, meta) = build_gym(&spec, &crate::look::POLANA, true);
+        let mut lab = crate::crack::CrackLab::default();
+        crate::crack::resolve(Some(crate::demos::catalogue_wear()), &mut lab, &meta.piers, &mut scene, 1);
+        scene.validate_acceleration_geometry().expect("effect catalogue must be legal Metal AS input");
+        for (i, p) in scene.primitives.iter().enumerate() {
+            assert!(p.index_count >= 3, "catalogue primitive {i} has no triangle data");
+            assert_eq!(p.index_count % 3, 0, "catalogue primitive {i} has a partial triangle");
+            assert!(p.vertex_count > 0, "catalogue primitive {i} has no vertices");
+            let verts = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
+            assert!(verts.iter().all(|v| v.pos.iter().all(|x| x.is_finite())), "catalogue primitive {i} has a non-finite vertex");
+            for tri in scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize].chunks_exact(3) {
+                let a = Vec3::from(verts[tri[0] as usize].pos);
+                let b = Vec3::from(verts[tri[1] as usize].pos);
+                let c = Vec3::from(verts[tri[2] as usize].pos);
+                assert!((b - a).cross(c - a).length() > 1.0e-8, "catalogue primitive {i} contains a zero-area triangle");
+            }
+        }
     }
 }

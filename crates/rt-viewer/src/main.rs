@@ -8,7 +8,7 @@
 //! on a fixed 60 Hz loop; the viewer only presents):
 //! - LMB / trackpad tap — click-to-move (unprojected to a ground cell; the
 //!   shell BFS-plans the route, the sim owns the step cadence)
-//! - WASD / arrows — screen-relative walk (staircase on the iso lattice)
+//! - WASD / arrows — screen-relative continuous walk
 //! - Shift — run
 //! - q / e — smooth eased quarter turn (presentation-only)
 //! - scroll / +- — integer zoom steps 1-4, cursor-anchored; 0 = camera reset

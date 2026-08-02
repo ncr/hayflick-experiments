@@ -135,6 +135,27 @@ impl Grid {
         self.in_bounds(p.step(dir)) && self.edge(p, dir) == EdgeKind::Open
     }
 
+    /// Continuous collision query for the player centre. `radius` is the
+    /// required clearance from an edge: boundaries and wall edges become
+    /// solid bands instead of allowing the body to straddle an edge while
+    /// moving.
+    pub fn blocked_point(&self, x: f32, z: f32, radius: f32) -> bool {
+        let r = radius.max(0.0);
+        if x < r || z < r || x > self.w as f32 - r || z > self.h as f32 - r {
+            return true;
+        }
+        let p = CellPos::new(x.floor() as i16, z.floor() as i16);
+        if !self.in_bounds(p) {
+            return true;
+        }
+        let fx = x - x.floor();
+        let fz = z - z.floor();
+        (fx < r && self.edge(p, Dir::Xm) == EdgeKind::Wall)
+            || (1.0 - fx < r && self.edge(p, Dir::Xp) == EdgeKind::Wall)
+            || (fz < r && self.edge(p, Dir::Zm) == EdgeKind::Wall)
+            || (1.0 - fz < r && self.edge(p, Dir::Zp) == EdgeKind::Wall)
+    }
+
     /// FNV-1a over the full canonical grid state — the bit-identity oracle
     /// for "same builder → same level". Pure integers: portable.
     pub fn grid_hash(&self) -> u64 {
@@ -192,6 +213,16 @@ mod tests {
         // stepping off the map is blocked even over an Open boundary edge
         assert!(!g.open(p(0, 0), Dir::Xm));
         assert!(!g.open(p(3, 3), Dir::Zp));
+    }
+
+    #[test]
+    fn continuous_collision_sees_wall_bands_and_slides_in_open_space() {
+        let mut g = Grid::new(4, 4);
+        g.set_edge(p(1, 1), Dir::Xp, EdgeKind::Wall);
+        assert!(!g.blocked_point(1.7, 1.5, 0.2));
+        assert!(g.blocked_point(1.81, 1.5, 0.2), "the wall band must include the player's radius");
+        assert!(!g.blocked_point(1.5, 1.5, 0.2));
+        assert!(g.blocked_point(0.1, 0.1, 0.2), "the map boundary is solid for the player centre");
     }
 
     #[test]
