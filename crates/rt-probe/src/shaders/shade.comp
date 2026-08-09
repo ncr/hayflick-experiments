@@ -1,6 +1,5 @@
 #version 460
 #extension GL_EXT_ray_query : require
-#extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
 
 // DETERMINISTIC per-frame ray-traced shade — the web-renderer stability
@@ -23,15 +22,14 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 1, rgba32f) uniform image2D colorImg; // radiance out (a=1; tonemap reads rgb directly)
 
-struct Vertex { vec3 pos; vec3 nrm; vec2 uv; };
+struct Vertex { vec3 pos; vec3 nrm; };
 struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };
-struct Material { vec4 baseColor; vec4 emissive; float metallic; float roughness; int texIndex; int pad; };
+struct Material { vec4 baseColor; vec4 emissive; float metallic; float roughness; int rsv; int pad; };
 
 layout(set = 0, binding = 2, scalar) readonly buffer Verts { Vertex verts[]; };
 layout(set = 0, binding = 3, scalar) readonly buffer Indices { uint indices[]; };
 layout(set = 0, binding = 4, scalar) readonly buffer Geoms { GeomInfo geoms[]; };
 layout(set = 0, binding = 5, scalar) readonly buffer Mats { Material mats[]; };
-layout(set = 0, binding = 6) uniform sampler2D textures[];
 struct Light { vec4 posRad; vec4 color; vec4 dir; };
 layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
 layout(set = 0, binding = 8, rgba32f) uniform image2D albedoImg; // primary-hit albedo (tonemap demodulation)
@@ -135,7 +133,7 @@ float fogOD(vec3 o, vec3 d, float t){
 
 // `edge` = world distance from the hit point to the nearest GATING triangle
 // edge (see trace) — the contour-AA gate's raw signal.
-struct Hit { float t; vec3 n; vec2 uv; int mat; float edge; };
+struct Hit { float t; vec3 n; int mat; float edge; };
 
 bool trace(vec3 o, vec3 dir, float tmax, uint mask, out Hit h){
   rayQueryEXT rq;
@@ -153,7 +151,6 @@ bool trace(vec3 o, vec3 dir, float tmax, uint mask, out Hit h){
   uint i2 = indices[g.indexOffset + prim * 3u + 2u] + g.vertexOffset;
   Vertex v0 = verts[i0], v1 = verts[i1], v2 = verts[i2];
   h.n = normalize(b0 * v0.nrm + b1 * v1.nrm + b2 * v2.nrm);
-  h.uv = b0 * v0.uv + b1 * v1.uv + b2 * v2.uv;
   h.mat = g.materialId;
   // CONTOUR AA (owner 2026-07-25): distance to the nearest triangle edge, in
   // world units — d_i = b_i * (2A / |e_i|) for the edge opposite vertex i. The
@@ -577,7 +574,6 @@ void main(){
 
   Material m = mats[h.mat];
   vec3 albedo = m.baseColor.rgb;
-  if (m.texIndex >= 0) albedo *= texture(textures[nonuniformEXT(m.texIndex)], h.uv).rgb;
   vec3 n = h.n; if (dot(n, d) > 0.0) n = -n;
   // the FLAT face normal, kept before wear/bump rewrite it: the contour-AA gate
   // converts an in-plane world distance to screen px through |n·d|, which is
@@ -590,7 +586,7 @@ void main(){
   //       is known, below). Deterministic; only when BUMP>0 → goldens unchanged.
   //   Floors (n.y up) take more traffic than walls.
   vec3 wpos = o + h.t * d;
-  bool greybox = pc.look.y > 0.0 && m.texIndex < 0 && dot(m.emissive.rgb, vec3(1.0)) <= 0.0;
+  bool greybox = pc.look.y > 0.0 && dot(m.emissive.rgb, vec3(1.0)) <= 0.0;
   float wstr = pc.look.y;
   float floorw = 0.55 + 0.45 * clamp(n.y, 0.0, 1.0);
   if (greybox) {
@@ -642,7 +638,7 @@ void main(){
   // says about a wall is geometry, and the shade pass has no business with it.
   {
       uint kb = uint(m.pad);
-      if ((kb >> 8) != 0u && m.texIndex < 0 && dot(m.emissive.rgb, vec3(1.0)) <= 0.0) {
+      if ((kb >> 8) != 0u && dot(m.emissive.rgb, vec3(1.0)) <= 0.0) {
           // The two painted layers' STRENGTHS, one lane each (host:
           // `crack::pad_bits`). Both used to read ONE lane — the `age` knob —
           // so their AREAS were independent (step 5's solved thresholds) while
@@ -823,13 +819,11 @@ void main(){
     vec3 ldir = toL / dist;
     float ndl2 = dot(n, ldir);
     if (ndl2 <= 0.0) continue;
+    // dir.w is the DIRECTIONAL flag and nothing else (scan_lights writes 0 or
+    // 1): the spotlight cone path (dir.w == 2.0) is deleted with `Spotlight`
+    // itself — nothing has written a moving light since the flashlight went.
     float emit = 1.0;
-    if (lt.dir.w == 2.0) {
-      // spotlight (the player flashlight): color.w = cos(outer half-angle),
-      // soft edge over the outer 40% of the cone
-      float co = lt.color.w;
-      emit = smoothstep(co, mix(co, 1.0, 0.6), dot(-ldir, lt.dir.xyz));
-    } else if (lt.dir.w > 0.0) {
+    if (lt.dir.w > 0.0) {
       emit = 2.0 * max(dot(-ldir, lt.dir.xyz), 0.0); // one-sided Lambertian (screens)
     }
     if (emit <= 0.0) continue;
@@ -882,7 +876,6 @@ void main(){
       if (trace(bpos, rdir, 60.0, 0x05u, rh)) {
         Material rm = mats[rh.mat];
         vec3 ralb = rm.baseColor.rgb;
-        if (rm.texIndex >= 0) ralb *= texture(textures[nonuniformEXT(rm.texIndex)], rh.uv).rgb;
         vec3 rn = rh.n; if (dot(rn, rdir) > 0.0) rn = -rn;
         vec3 rp = bpos + rdir * rh.t + rn * 0.003;
         rc = rm.emissive.rgb;

@@ -63,10 +63,10 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "aa_soft", label: "aa soften", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     // whole-block detail (smash rubble) in or out of the AA — a visual call
     MenuItem { key: "aa_chunky", label: "aa rubble", kind: ItemKind::Toggle },
-    // ---- THE LEVEL'S WEAR, three rows (2026-07-26). The per-wall panel says
+    // ---- THE LEVEL'S WEAR, three rows (2026-07-26). The IDE inspector says
     // what ONE wall is; these say what the whole level is, which is the question
     // the owner actually asks while walking around it. All three are geometry, so
-    // they land on the mouse RELEASE like the panel's rows do.
+    // they land on the mouse RELEASE like the inspector's wear rows do.
     //
     // A MASTER on the level's authored story. 1 = as authored, 0 = the plain
     // greybox — so "show me this level clean" is one row and not fifteen, and
@@ -76,12 +76,11 @@ pub const MENU: &[MenuItem] = &[
     // catalogue answers "what does each of these look like" on fifteen identical
     // slabs; this answers it on the level the owner is standing in, which is
     // where a layer's read against real geometry actually gets decided.
-    MenuItem { key: "wear_solo", label: "solo layer", kind: ItemKind::Slider { min: 0.0, max: crate::wall::Layer::N as f32, step: 1.0 } },
+    MenuItem { key: "wear_solo", label: "solo layer", kind: ItemKind::Slider { min: 0.0, max: wear_core::wall::Layer::N as f32, step: 1.0 } },
     // SURFACE GRAIN on every wall at once — plate size in world units, the one
     // shape dial that is a length (`wall::Shape::grain`). Below `GRAIN_OFF` the
     // veneer is off entirely, so the bottom of this row is "no plates anywhere".
     MenuItem { key: "wear_grain", label: "surface grain", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.02 } },
-    // GLAZE EASE (owner catalogue 2026-07-25): the chamfer on every exposed
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
@@ -278,7 +277,7 @@ pub(crate) enum Row {
     /// One LAYER's amount. Shows what `wall::derive` produced, with a `*` when
     /// it is PINNED; dragging it pins it, which is how a bench wall asks for one
     /// effect and nothing else.
-    Layer(crate::wall::Layer),
+    Layer(wear_core::wall::Layer),
     /// MUD's native param: its splash band's top edge. Indented under the mud
     /// layer row like a pattern param under its pattern.
     MudTop,
@@ -313,9 +312,9 @@ pub(crate) enum Row {
 /// what SHAPE it takes. Causes first because that is the order an author thinks
 /// in, and the layer rows under them are the DERIVED column — so the sheet is a
 /// complete explanation of the wall rather than a pile of dials.
-pub(crate) fn rows_of(spec: &crate::wall::WallSpec) -> Vec<Row> {
+pub(crate) fn rows_of(spec: &wear_core::wall::WallSpec) -> Vec<Row> {
     let mut v: Vec<Row> = (0..3).map(Row::Cause).collect();
-    v.extend(crate::wall::Layer::ALL.into_iter().map(Row::Layer));
+    v.extend(wear_core::wall::Layer::ALL.into_iter().map(Row::Layer));
     v.push(Row::MudTop); // right under the mud layer row it belongs to
     v.push(Row::Breaks);
     v.push(Row::Shell);
@@ -456,7 +455,7 @@ impl Viewer {
             }
             // The three LEVEL-wide wear rows. Each rewrites every run's spec
             // through `wear_level_apply` and re-streams the paint; the geometry
-            // waits for the release, exactly like the panel's own rows.
+            // waits for the release, exactly like the inspector's wear rows.
             "wear_master" => {
                 self.crack.master = v;
                 self.wear_level_apply();
@@ -469,13 +468,7 @@ impl Viewer {
                 self.crack.grain = v;
                 self.wear_level_apply();
             }
-            // The glaze ease is real geometry over the WHOLE level (every box
-            // moved a little, so there is no local-refresh set to hand it) —
-            // 3-5 s of full rebake per step. `menu_drag_to` fires on every
-            // CursorMoved, so rebuilding here froze the window for 8-20 s on a
-            // single drag: the dial takes the value now and the rebuild waits
-            // for the mouse RELEASE, exactly like the crack knobs
-            // (`crack_release`). Keyboard steps release immediately.
+            // a tonemap push constant — live at frame rate, no rebuild
             "exposure" => self.exposure = v,
             // the lamp master is a presentation dim (direct via the emission
             // build, indirect via the probe-bank lerp — same frame, no rebake)
@@ -616,8 +609,8 @@ impl Viewer {
         self.backend.menu_scale() as f32
     }
 
-    /// Top-left window px of the on-screen panel: game menus are centered,
-    /// the settings/wall panels sit at the top-left margin.
+    /// Top-left window px of the on-screen panel: game menus are centered, the
+    /// settings sheet sits at the top-left margin.
     fn menu_origin(&self, pw: i32, ph: i32) -> Vec2 {
         match self.menu.mode {
             MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
@@ -748,11 +741,11 @@ impl Viewer {
     /// sheet already shows `n`, so an IDE slider parked on the current count
     /// does not silently pin the wall.
     pub fn wear_set_breaks(&mut self, r: usize, n: u8) {
-        let n = n.min(crate::wall::Breaks::MAX);
+        let n = n.min(wear_core::wall::Breaks::MAX);
         if self.crack.sheets.get(r).map(|s| s.breaks.count) == Some(n) {
             return;
         }
-        self.crack.spec[r].pin = self.crack.spec[r].pin.breaks(crate::wall::Breaks { count: n, at: None });
+        self.crack.spec[r].pin = self.crack.spec[r].pin.breaks(wear_core::wall::Breaks { count: n, at: None });
         if let Some(a) = self.crack.authored.get_mut(r) {
             *a = true;
         }
@@ -777,9 +770,9 @@ impl Viewer {
     }
 
     /// Draw the overlay at logical resolution: the open panel (game menu /
-    /// settings), the wall panel or the REC badge when closed — `None` when
-    /// there is nothing to show (ESC is the only way into the menu; the
-    /// hamburger icon is gone, owner 2026-07-27).
+    /// settings), or the REC badge when the menu is closed — `None` when there
+    /// is nothing to show (ESC is the only way into the menu; the hamburger
+    /// icon is gone, owner 2026-07-27, and so is the corner wall panel).
     pub fn menu_canvas(&self) -> Option<(Vec<u32>, i32, i32)> {
         const BG: u32 = 0x16161c;
         const BORDER: u32 = 0x6a6a78;
@@ -956,14 +949,14 @@ mod tests {
     #[test]
     fn the_row_table_is_the_wall_authoring_model() {
         for policy in 0..crate::crack_geom::NPOL as u8 {
-            let spec = crate::wall::WallSpec {
-                shape: crate::wall::Shape { pattern: crate::wall::Pattern::DEFAULTS[policy as usize], ..crate::wall::Shape::DEFAULT },
-                ..crate::wall::WallSpec::PRISTINE
+            let spec = wear_core::wall::WallSpec {
+                shape: wear_core::wall::Shape { pattern: wear_core::wall::Pattern::DEFAULTS[policy as usize], ..wear_core::wall::Shape::DEFAULT },
+                ..wear_core::wall::WallSpec::PRISTINE
             };
             let rows = rows_of(&spec);
             assert!(matches!(rows[0], Row::Cause(0)), "the first row must be the first CAUSE");
-            assert!(matches!(rows[3], Row::Layer(crate::wall::Layer::Stain)), "the derived column starts after the three causes");
-            assert_eq!(rows.iter().filter(|r| matches!(r, Row::Layer(_))).count(), crate::wall::Layer::N, "every layer gets a row");
+            assert!(matches!(rows[3], Row::Layer(wear_core::wall::Layer::Stain)), "the derived column starts after the three causes");
+            assert_eq!(rows.iter().filter(|r| matches!(r, Row::Layer(_))).count(), wear_core::wall::Layer::N, "every layer gets a row");
             assert_eq!(rows.iter().filter(|r| matches!(r, Row::Param(_))).count(), crate::crack_geom::POLICY_PARAMS[policy as usize].len());
             // the three rows that are not 0..1 sliders: the break count, the
             // shell place-mode toggle and the pattern cycler

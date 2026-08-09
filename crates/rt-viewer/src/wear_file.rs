@@ -1,4 +1,4 @@
-//! Wear-as-data: a level's authored wear ([`crate::wall::LevelWear`]) as a
+//! Wear-as-data: a level's authored wear ([`wear_core::wall::LevelWear`]) as a
 //! TEXT FILE — hand-parsed, `#` comments, errors carry 1-based line numbers,
 //! and `serialize(parse(f)) == f` on every checked-in file so a panel save
 //! stays diff-stable. The same discipline as the gym traces and the level
@@ -38,12 +38,12 @@
 //!   paint_only            stamp the paint, skip the geometry pass
 //! ```
 //!
-//! CANONICAL FORM (what [`serialize`] emits and the round-trip tests pin):
+//! CANONICAL FORM (what [`serialize_parts`] emits and the round-trip tests pin):
 //! defaults are omitted, walls sort by (z, x), block statements come in the
 //! grammar's order, blocks are separated by one blank line. Hand-written
 //! comments survive a parse but not a save.
 
-use crate::wall::{Breaks, Layer, LevelWear, Shape, Story, WallAt, WallSpec};
+use wear_core::wall::{Breaks, Layer, LevelWear, Shape, Story, WallAt, WallSpec};
 use std::sync::OnceLock;
 
 /// One checked-in wear file: the baked source (`include_str!`, so cargo
@@ -95,7 +95,7 @@ impl WearFile {
 /// Where this file's SAVE goes (and where the load looked first): the
 /// `WEAR_FILE` override, else the checked-in path.
 fn save_path(file: &WearFile) -> String {
-    std::env::var("WEAR_FILE").unwrap_or_else(|_| file.path.to_string())
+    std::env::var(env::WEAR_FILE).unwrap_or_else(|_| file.path.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +193,8 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
                     Some(&"back") => true,
                     Some(t) => return Err(format!("line {n}: `{t}` — a shell's third word can only be `back`")),
                 };
-                if !w.spec.shells.add(crate::wall::Shell { u, y, back }) {
-                    return Err(format!("line {n}: a wall holds at most {} shells", crate::wall::Shells::MAX));
+                if !w.spec.shells.add(wear_core::wall::Shell { u, y, back }) {
+                    return Err(format!("line {n}: a wall holds at most {} shells", wear_core::wall::Shells::MAX));
                 }
             }
             ("caliber", Some(w)) => w.spec.shells.caliber = f(0)?,
@@ -210,7 +210,7 @@ pub fn parse(src: &str) -> Result<LevelWear, String> {
                 for (j, slot) in par.iter_mut().enumerate().take(rest.len().saturating_sub(1)) {
                     *slot = f(1 + j)?;
                 }
-                w.spec.shape.pattern = crate::wall::pattern_of(code, par);
+                w.spec.shape.pattern = wear_core::wall::pattern_of(code, par);
             }
             ("paint_only", Some(w)) => w.spec.paint_only = true,
             ("base" | "spread", Some(_)) => return Err(format!("line {n}: `{word}` is a level statement — it goes before the first wall")),
@@ -288,7 +288,7 @@ pub fn serialize_parts(base: Story, spread: f32, walls: &[WallAt]) -> String {
         for sh in s.shells.iter() {
             b.push(if sh.back { format!("  shell {} {} back", num(sh.u), num(sh.y)) } else { format!("  shell {} {}", num(sh.u), num(sh.y)) });
         }
-        if s.shells.caliber != crate::wall::Shells::CALIBER {
+        if s.shells.caliber != wear_core::wall::Shells::CALIBER {
             b.push(format!("  caliber {}", num(s.shells.caliber)));
         }
         if s.shape.grain != Shape::DEFAULT.grain {
@@ -324,7 +324,7 @@ pub fn serialize_parts(base: Story, spread: f32, walls: &[WallAt]) -> String {
 /// without the level naming it gets a synthesized point — the run rect's
 /// centre, which `holds` accepts by construction. Un-named, un-edited runs
 /// stay derived from `base ± spread`, exactly as before the save.
-pub fn lab_walls(lw: &LevelWear, runs: &[crate::wall::RunRect], lab: &crate::crack::CrackLab) -> Vec<WallAt> {
+pub fn lab_walls(lw: &LevelWear, runs: &[wear_core::wall::RunRect], lab: &crate::crack::CrackLab) -> Vec<WallAt> {
     // the forward map, exactly as `specs_of` runs it: first run that holds the
     // point, first claim wins
     let mut named: Vec<Option<&WallAt>> = vec![None; runs.len()];
@@ -350,13 +350,81 @@ pub fn lab_walls(lw: &LevelWear, runs: &[crate::wall::RunRect], lab: &crate::cra
     out
 }
 
-/// Any wear env override poisons a save: the live specs then carry the
-/// harness's asked-for state, not the owner's authoring, and freezing that
-/// into the file would make one SHOT recipe permanent.
+/// EVERY environment knob the wear path reads, in ONE table — the name each
+/// parser passes to `std::env::var` and the list [`env_overridden`] walks, so a
+/// tenth knob cannot join one without the other. `WRITES` says whether the knob
+/// reaches the authored SPEC:
+///
+/// - `true` — the knob writes what the owner would have dialed, so a SAVE is
+///   BLOCKED while it is set: the live specs carry the harness's asked-for
+///   state, and freezing that into the file would make one SHOT recipe
+///   permanent.
+/// - `false` — the knob only selects or redirects (`CRACK_SEL` picks a pier,
+///   `IDE`/`IDE_SEL` open and preselect, `WEAR_FILE` moves the load AND the
+///   save target), so the authoring it saves is still the owner's.
+///
+/// Two bugs on record are why this is a table and not two hand-kept lists. The
+/// hit knob was first spelled `SHELL` — the login shell in EVERY Unix
+/// environment — so it fired on every run of every test and, being in the save
+/// allowlist, blocked every save (docs/AGENT_LEARNINGS.md 2026-07-27E). And the
+/// age-ramp beat froze its ramp into the owner's own file, which is the same
+/// class of mistake from the other end: state that is not authoring reaching a
+/// writer that only the authoring may reach.
+///
+/// Render-side bisects stay OUT deliberately (`SPALL_LAYER` in `crack_geom`):
+/// they change the image built FROM a spec, never the spec, so a save under one
+/// still writes what the owner dialed.
+pub mod env {
+    /// `STORY=weather,settlement,cover_loss` (`crate::crack::story_from_env`).
+    pub const STORY: &str = "STORY";
+    /// `SHAPE=grain,relief[,pattern[,p1,p2,p3]]`.
+    pub const SHAPE: &str = "SHAPE";
+    /// `SPALL=<0..1>` — the cover-loss cause on its own.
+    pub const SPALL: &str = "SPALL";
+    /// `SPREAD=<0..1>` — the per-run story spread.
+    pub const SPREAD: &str = "SPREAD";
+    /// `SCRUB=<0..1>` — the variant dial on every run.
+    pub const SCRUB: &str = "SCRUB";
+    /// `BAND=lo,hi` — the damage band's normalized edges.
+    pub const BAND: &str = "BAND";
+    /// `HOLE=u,y[,caliber]` — ONE placed shell hit per run. NOT `SHELL`.
+    pub const HOLE: &str = "HOLE";
+    /// `WEAR_EDIT=weather,settlement,cover_loss[,run]` — a replayed drag+release.
+    pub const WEAR_EDIT: &str = "WEAR_EDIT";
+    /// `IDE_EDIT="<obj> <key> <v>[;…]"` — replayed inspector edits. Its wall
+    /// statements ride the same spec, so a replayed SHOT recipe must not freeze
+    /// itself into the authoring either.
+    pub const IDE_EDIT: &str = "IDE_EDIT";
+    /// `CRACK_SEL=<pier>` — preselect a wall (drives the AA scope; selects).
+    pub const CRACK_SEL: &str = "CRACK_SEL";
+    /// `IDE=1` — boot the overlay open.
+    pub const IDE: &str = "IDE";
+    /// `IDE_SEL=<object name>` — boot selection.
+    pub const IDE_SEL: &str = "IDE_SEL";
+    /// `WEAR_FILE=<path>` — override this level's wear file for load AND save.
+    pub const WEAR_FILE: &str = "WEAR_FILE";
+
+    /// The table: `(name, writes the authored spec)`.
+    pub const ALL: [(&str, bool); 13] = [
+        (STORY, true),
+        (SHAPE, true),
+        (SPALL, true),
+        (SPREAD, true),
+        (SCRUB, true),
+        (BAND, true),
+        (HOLE, true),
+        (WEAR_EDIT, true),
+        (IDE_EDIT, true),
+        (CRACK_SEL, false),
+        (IDE, false),
+        (IDE_SEL, false),
+        (WEAR_FILE, false),
+    ];
+}
+
+/// Any wear env override that WRITES the spec poisons a save (see [`mod@env`]).
 fn env_overridden() -> bool {
-    // IDE_EDIT is here too: its wall statements ride the same spec, so a
-    // replayed SHOT recipe must not freeze itself into the authoring either
-    ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "BAND", "HOLE", "WEAR_EDIT", "IDE_EDIT"].iter().any(|k| std::env::var(k).is_ok())
+    env::ALL.iter().filter(|(_, writes)| *writes).any(|(k, _)| std::env::var(k).is_ok())
 }
 
 impl crate::viewer::Viewer {
@@ -389,7 +457,7 @@ impl crate::viewer::Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wall::{Pattern, Pins};
+    use wear_core::wall::{Pattern, Pins};
 
     /// A spec with every statement in play — the round-trip has to carry all
     /// of it, and the second serialize has to be the fixpoint.
@@ -397,10 +465,10 @@ mod tests {
     fn a_wear_file_round_trips_and_serialize_is_a_fixpoint() {
         let mut pin = Pins::NONE.area(Layer::Cracks, 0.6).area(Layer::Spall, 0.012);
         pin = pin.breaks(Breaks { count: 2, at: Some(0.25) });
-        let mut shells = crate::wall::Shells::NONE;
+        let mut shells = wear_core::wall::Shells::NONE;
         shells.caliber = 0.42;
-        shells.add(crate::wall::Shell { u: 0.3, y: 0.6, back: false });
-        shells.add(crate::wall::Shell { u: 0.75, y: 0.4, back: true });
+        shells.add(wear_core::wall::Shell { u: 0.3, y: 0.6, back: false });
+        shells.add(wear_core::wall::Shell { u: 0.75, y: 0.4, back: true });
         static_assertless_walls_round_trip(LevelWear {
             base: Story { weather: 0.55, settlement: 0.35, cover_loss: 0.65 },
             spread: 0.4,
@@ -485,7 +553,7 @@ mod tests {
     /// spread keeps breathing.
     #[test]
     fn a_saved_lab_boots_back_to_the_edited_state() {
-        let (mut scene, meta) = crate::gym_scene::build_gym(&house_game::gym::sim::gym_level(), &crate::look::POLANA, true);
+        let (mut scene, meta) = crate::gym_scene::build_gym(&house_game::gym::sim::gym_level(), &crate::look::POLANA);
         let mut lab = crate::crack::CrackLab::default();
         let lw = crate::demos::lab_wear();
         crate::crack::resolve(Some(lw), &mut lab, &meta.piers, &mut scene, 1);
@@ -513,6 +581,55 @@ mod tests {
         // …and an untouched derived run still derives (not in the file)
         let untouched = (0..lab.runs.len()).find(|r| !lab.authored[*r]).expect("one run stays derived");
         assert_eq!(lab2.spec[untouched], lab.spec[untouched], "derived runs re-derive identically (same base ± spread)");
+    }
+
+    /// THE INTERLOCK. Every `std::env::var` in the three files that touch a
+    /// wall's authoring takes its name from [`env`] — no bare literal — so
+    /// adding a knob to a parser and adding it to the save allowlist are ONE
+    /// edit. The reverse direction is pinned too: a knob in the table with no
+    /// reader is a save blocked by a name nothing implements.
+    #[test]
+    fn every_wear_env_read_names_a_knob_from_the_table() {
+        // built at runtime so this guard cannot trip over its own source
+        let bare = format!("env::var{}{}", '(', '"');
+        let files = [("crack.rs", include_str!("crack.rs")), ("ide_host.rs", include_str!("ide_host.rs")), ("wear_file.rs", include_str!("wear_file.rs"))];
+        for (name, src) in files {
+            for (i, line) in src.lines().enumerate() {
+                assert!(!line.contains(&bare), "{name}:{}: a bare env name — declare it in `wear_file::env` (saying whether it writes the authoring):\n  {}", i + 1, line.trim());
+            }
+        }
+        let all: String = files.iter().map(|(_, s)| *s).collect();
+        for (k, _) in env::ALL {
+            assert!(all.contains(&format!("env::{k})")), "{k} is in the table but nothing reads it");
+        }
+    }
+
+    /// The allowlist IS the table's `writes` column, and it is the whole
+    /// column: the selectors (`CRACK_SEL`, `IDE`, `IDE_SEL`) and the save
+    /// redirect (`WEAR_FILE`) deliberately leave a save alone — blocking on
+    /// those would mean "the owner cannot save while the IDE is open".
+    #[test]
+    fn the_save_allowlist_is_exactly_the_knobs_that_write_the_authoring() {
+        let writes: Vec<&str> = env::ALL.iter().filter(|(_, w)| *w).map(|(k, _)| *k).collect();
+        assert_eq!(writes, ["STORY", "SHAPE", "SPALL", "SPREAD", "SCRUB", "BAND", "HOLE", "WEAR_EDIT", "IDE_EDIT"]);
+        let selects: Vec<&str> = env::ALL.iter().filter(|(_, w)| !*w).map(|(k, _)| *k).collect();
+        assert_eq!(selects, ["CRACK_SEL", "IDE", "IDE_SEL", "WEAR_FILE"]);
+    }
+
+    /// A knob name is a name in the OWNER'S shell too. `SHELL` was the artillery
+    /// knob's first spelling — the login shell in every Unix environment — so it
+    /// fired on every run of every level and, being in the allowlist, blocked
+    /// every save (docs/AGENT_LEARNINGS.md 2026-07-27E, found by 6 red tests).
+    #[test]
+    fn no_knob_borrows_a_name_the_environment_already_defines() {
+        const TAKEN: [&str; 14] = ["SHELL", "HOME", "PATH", "USER", "LOGNAME", "TERM", "LANG", "PWD", "OLDPWD", "EDITOR", "DISPLAY", "SHLVL", "HOSTNAME", "TMPDIR"];
+        let mut seen: Vec<&str> = Vec::new();
+        for (k, _) in env::ALL {
+            assert!(!TAKEN.contains(&k), "{k} is already in every Unix environment — it would fire on every run");
+            assert!(k.chars().all(|c| c.is_ascii_uppercase() || c == '_'), "{k}: env knobs are SHOUTED");
+            assert!(!seen.contains(&k), "{k} is in the table twice");
+            seen.push(k);
+        }
     }
 
     /// A partial `pattern` line fills the missing native params from that

@@ -1,6 +1,5 @@
 #version 460
 #extension GL_EXT_ray_query : require
-#extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
 
 // World-space irradiance probe BAKE — the only place Monte Carlo lives in the
@@ -25,15 +24,14 @@ layout(local_size_x = 64) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
-struct Vertex { vec3 pos; vec3 nrm; vec2 uv; };
+struct Vertex { vec3 pos; vec3 nrm; };
 struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };
-struct Material { vec4 baseColor; vec4 emissive; float metallic; float roughness; int texIndex; int pad; };
+struct Material { vec4 baseColor; vec4 emissive; float metallic; float roughness; int rsv; int pad; };
 
 layout(set = 0, binding = 2, scalar) readonly buffer Verts { Vertex verts[]; };
 layout(set = 0, binding = 3, scalar) readonly buffer Indices { uint indices[]; };
 layout(set = 0, binding = 4, scalar) readonly buffer Geoms { GeomInfo geoms[]; };
 layout(set = 0, binding = 5, scalar) readonly buffer Mats { Material mats[]; };
-layout(set = 0, binding = 6) uniform sampler2D textures[];
 struct Light { vec4 posRad; vec4 color; vec4 dir; };
 layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
 // Probe field: 16-float header [origin.xyz, spacing, dims.xyz, _] then per
@@ -71,7 +69,7 @@ vec3 sky(vec3 d){
   return (d.y > 0.0 ? mix(horizon, zenith, pow(t, 1.4)) : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0))) * 0.18 * pc.env0.y;
 }
 
-struct Hit { float t; vec3 n; vec2 uv; int mat; };
+struct Hit { float t; vec3 n; int mat; };
 
 bool trace(vec3 o, vec3 dir, float tmax, out Hit h){
   rayQueryEXT rq;
@@ -89,7 +87,6 @@ bool trace(vec3 o, vec3 dir, float tmax, out Hit h){
   uint i2 = indices[g.indexOffset + prim * 3u + 2u] + g.vertexOffset;
   Vertex v0 = verts[i0], v1 = verts[i1], v2 = verts[i2];
   h.n = normalize(b0 * v0.nrm + b1 * v1.nrm + b2 * v2.nrm);
-  h.uv = b0 * v0.uv + b1 * v1.uv + b2 * v2.uv;
   h.mat = g.materialId;
   return true;
 }
@@ -114,7 +111,6 @@ vec3 radiance(vec3 o, vec3 d, uint seed){
     if (!trace(o, d, 300.0, h)) { col += thru * sky(d); break; }
     Material m = mats[h.mat];
     vec3 albedo = m.baseColor.rgb;
-    if (m.texIndex >= 0) albedo *= texture(textures[nonuniformEXT(m.texIndex)], h.uv).rgb;
     vec3 n = h.n; if (dot(n, d) > 0.0) n = -n;
     vec3 p = o + h.t * d + n * 0.003;
 

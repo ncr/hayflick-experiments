@@ -12,17 +12,15 @@
 // Double-count contract with shade.metal: probe rays NEVER count emissive seen
 // directly (the pixel samples lights via NEE); they DO evaluate sun + NEE light
 // at each hit and count sky on miss.
-//
-// Textures deferred (M3): albedo = baseColor, matching shade.metal's M2 state.
 
 #include <metal_stdlib>
 #include <metal_raytracing>
 using namespace metal;
 using namespace metal::raytracing;
 
-struct Vertex   { packed_float3 pos; packed_float3 nrm; float2 uv; };
+struct Vertex   { packed_float3 pos; packed_float3 nrm; };
 struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };
-struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int texIndex; int pad; };
+struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int rsv; int pad; };
 struct Light    { float4 posRad; float4 color; float4 dir; };
 
 struct ProbePush {
@@ -53,7 +51,7 @@ static float3 skyCol(float3 d, constant ProbePush& pc){
     return c * 0.18 * pc.env0.y;
 }
 
-struct Hit { float t; float3 n; float2 uv; int mat; };
+struct Hit { float t; float3 n; int mat; };
 
 static bool trace(float3 o, float3 dir, float tmax, instance_acceleration_structure accel,
                   device const Vertex* verts, device const uint* indices, device const GeomInfo* geoms, thread Hit& h){
@@ -74,7 +72,6 @@ static bool trace(float3 o, float3 dir, float tmax, instance_acceleration_struct
     uint i2 = indices[g.indexOffset + prim*3u + 2u] + g.vertexOffset;
     Vertex v0 = verts[i0], v1 = verts[i1], v2 = verts[i2];
     h.n  = normalize(b0*float3(v0.nrm) + b1*float3(v1.nrm) + b2*float3(v2.nrm));
-    h.uv = b0*v0.uv + b1*v1.uv + b2*v2.uv;
     h.mat = g.materialId;
     return true;
 }
@@ -100,7 +97,7 @@ static float3 radiance(float3 o, float3 d, uint seed, constant ProbePush& pc,
         Hit h;
         if (!trace(o, d, 300.0, accel, verts, indices, geoms, h)) { col += thru * skyCol(d, pc); break; }
         Material m = mats[h.mat];
-        float3 albedo = m.baseColor.rgb;  // M3: *= texture
+        float3 albedo = m.baseColor.rgb;
         float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
         float3 p = o + h.t * d + n * 0.003;
 

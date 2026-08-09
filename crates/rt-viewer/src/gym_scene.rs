@@ -27,7 +27,11 @@
 //! ([`mark_matte`]): the shade pass skips specular there, so the ceramic
 //! sheen stays on porcelain and glass only — grass never shines.
 //!
-//! Since 2026-07-25 every wall pier and roof cap is emitted through the
+//! Every wall pier and roof cap is emitted as a plain `add_box_world` BOX —
+//! the glaze-ease box→mesh promoter that once sat here is deleted (2026-07-26,
+//! owner call), and `the_greybox_is_boxes_and_every_pier_mesh_is_its_authored_box`
+//! keeps that a standing invariant: the crack lab, the pick ray, the smash rig
+//! and the local probe refresh all address `Pier.lo/hi`.
 //!
 //! NEE discipline: the ONLY named lights are the spec lamps (conceptual point
 //! lights). Every emissive box (lamp fixtures) is part of a dynamic run,
@@ -118,14 +122,10 @@ pub fn cell_world(p: CellPos) -> Vec3 {
     Vec3::new(p.x as f32 + 0.5, FLOOR_TOP, p.z as f32 + 0.5)
 }
 
-/// Build the renderable greybox for the gym in the given look. `roof` gates the
-/// building's roof caps — the dynamic-GI spike tears the roof off at runtime
-/// (rebuild with `roof=false` + re-bake) to flood the interior with light.
-/// Stage-2 tear-off targets, returned alongside the built gym: the roof
-/// primitive indices (to hide from the TLAS at runtime) and the interior world
-/// AABB whose probes a tear-off refreshes (the Room footprint × floor→roof).
-/// `roof_prims` is empty when `roof == false` (nothing to tear) or the level
-/// has no Room cells.
+/// Tear-off targets, returned alongside the built gym: the roof primitive
+/// indices (to hide from the TLAS at runtime) and the interior world AABB
+/// whose probes a tear-off refreshes (the Room footprint × floor→roof).
+/// `roof_prims` is empty exactly when the level has no Room cells.
 pub struct GymMeta {
     pub roof_prims: std::ops::Range<usize>,
     pub room_min: Vec3,
@@ -156,7 +156,7 @@ impl GymMeta {
 
 /// One merged wall RUN before it is cut into piers: its world rect, which axis
 /// it spans, and whether it is a building facade (windows). Collected up front
-/// collected up front because a slab needs to know which other slabs it meets.
+/// because a slab needs to know which other slabs it meets.
 struct WallRun {
     rect: [f32; 4],
     along_x: bool,
@@ -205,9 +205,12 @@ fn wall_runs(g: &Grid) -> Vec<WallRun> {
     out
 }
 
-/// Classify one end of run `i` against every other run's slab.
-///
-pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
+/// Build the renderable greybox for the gym in the given look, and its
+/// [`GymMeta`] tear-off targets. The roof is always built: the runtime
+/// tear-off ([`crate::viewer::Viewer::tear_roof`]) hides `roof_prims` from
+/// the TLAS instead of rebuilding without them, so the old `roof: bool` gate
+/// had no caller left once the GI spike went.
+pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     let mut scene = Scene::new();
     let g = &spec.grid;
     let (w, h) = (g.w, g.h);
@@ -255,31 +258,29 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
 
     // ---- roof: an occluding cap over every Room cell (merged per row).
     // Visible from outside (the building reads as a building); the WALLCUT
-    // indoor cutaway dissolves it the moment the player steps inside. Gated by
-    // `roof` so the dynamic-GI spike can tear it off and re-bake.
+    // indoor cutaway dissolves it the moment the player steps inside, and
+    // `tear_roof` drops `roof_prims` from the TLAS for the dusk flood.
     let roof_first = scene.primitives.len();
-    if roof {
-        // collect every cap rect first: a cap's PARAPET is only an arris where
-        // the neighbouring row does not continue the roof, and a groove eased
-        // into a shared row boundary would draw a line across the roof
-        let mut caps: Vec<[f32; 4]> = Vec::new();
-        for z in 0..h {
-            let mut x = 0i16;
-            while x < w {
-                if g.cell(CellPos::new(x, z)) == CellKind::Room {
-                    let x0 = x;
-                    while x < w && g.cell(CellPos::new(x, z)) == CellKind::Room {
-                        x += 1;
-                    }
-                    caps.push([x0 as f32, z as f32, x as f32, z as f32 + 1.0]);
-                } else {
+    // collect every cap rect first: a cap's PARAPET is only an arris where
+    // the neighbouring row does not continue the roof, and a groove eased
+    // into a shared row boundary would draw a line across the roof
+    let mut caps: Vec<[f32; 4]> = Vec::new();
+    for z in 0..h {
+        let mut x = 0i16;
+        while x < w {
+            if g.cell(CellPos::new(x, z)) == CellKind::Room {
+                let x0 = x;
+                while x < w && g.cell(CellPos::new(x, z)) == CellKind::Room {
                     x += 1;
                 }
+                caps.push([x0 as f32, z as f32, x as f32, z as f32 + 1.0]);
+            } else {
+                x += 1;
             }
         }
-        for (i, c) in caps.iter().enumerate() {
-            roof_run(&mut scene, c, &caps, i, look);
-        }
+    }
+    for (i, c) in caps.iter().enumerate() {
+        roof_run(&mut scene, c, &caps, i, look);
     }
     let roof_prims = roof_first..scene.primitives.len();
 
@@ -458,14 +459,18 @@ fn grass_dress(scene: &mut Scene, spec: &GymLevel, greens: [u32; 3]) {
 /// back cleanly above it — the building reads as a monolith with a stepped
 /// parapet cap, and no face is coplanar with a wall plane. Occluder-marked
 /// (the WALLCUT must take it) with the whole visible band above the cutaway.
-/// `caps`/`i` are the whole cap set and this cap's place in it: the parapet's
-/// glaze ease has to stop at a row seam (see below).
+/// `caps`/`i` are the whole cap set and this cap's place in it — see the DEAD
+/// `side` computation below.
 fn roof_run(scene: &mut Scene, c: &[f32; 4], caps: &[[f32; 4]], i: usize, look: &Look) {
     let first = scene.primitives.len();
-    // The parapet is an ARRIS only where the roof stops. A cap is one Room ROW,
-    // so its side toward a neighbouring row is an interior seam: easing it would
-    // cut a 5-px groove clean across the roof, and cutting the vertical arris
-    // there would sink a notch into solid roof.
+    // DEAD since 2026-07-26 (a74095c): `side` is written and never read. It told
+    // the eased-arris promoter which of the cap's four sides is a real exposed
+    // arris — a cap is one Room ROW, so its side toward a neighbouring row is an
+    // interior seam, and chamfering it would have cut a groove clean across the
+    // roof. The promoter is deleted; this survived it, along with the `caps`/`i`
+    // parameters that exist only to feed it. Deleting all three is a code change
+    // and belongs to a code round, not a prose one — but it is a whole-function
+    // no-op, so nothing rests on it.
     let mut side = [true; 4];
     for (s, m) in [(0usize, [(c[0] + c[2]) * 0.5, c[1] - 0.01]), (1, [c[2] + 0.01, (c[1] + c[3]) * 0.5]), (2, [(c[0] + c[2]) * 0.5, c[3] + 0.01]), (3, [c[0] - 0.01, (c[1] + c[3]) * 0.5])] {
         side[s] = !caps.iter().enumerate().any(|(j, o)| j != i && m[0] > o[0] && m[0] < o[2] && m[1] > o[1] && m[1] < o[3]);
@@ -547,7 +552,7 @@ mod tests {
     #[test]
     fn the_greybox_is_boxes_and_every_pier_mesh_is_its_authored_box() {
         let spec = gym_level();
-        let (scene, meta) = build_gym(&spec, &crate::look::POLANA, true);
+        let (scene, meta) = build_gym(&spec, &crate::look::POLANA);
         for p in &scene.primitives {
             assert!(p.vertex_count == 24 || p.vertex_count == 4, "a sharp gym is boxes and floor quads only, not a {}-vertex mesh", p.vertex_count);
         }
@@ -570,7 +575,7 @@ mod tests {
     fn every_look_registers_the_player_runs_and_lamps_only() {
         for look in LOOKS {
             let spec = gym_level();
-            let (scene, _) = build_gym(&spec, look, true);
+            let (scene, _) = build_gym(&spec, look);
             for name in ["player", "player/legL", "player/legR", "player/armL", "player/armR"] {
                 assert!(scene.dynamics.iter().any(|(n, ..)| n == name), "{}: missing run {name}", look.name);
             }
@@ -605,7 +610,7 @@ mod tests {
     #[test]
     fn east_facade_middle_pier_is_the_smash_target() {
         let spec = gym_level();
-        let (scene, meta) = build_gym(&spec, &crate::look::DUSK, true);
+        let (scene, meta) = build_gym(&spec, &crate::look::DUSK);
         let pier = meta.pier_at(Vec3::new(8.0, 1.0, 5.5)).expect("breach point must land in a pier");
         assert_eq!((pier.lo.x, pier.hi.x), (7.9, 8.1), "0.2-wu slab on the x=8 boundary");
         assert_eq!((pier.lo.y, pier.hi.y), (0.0, WALL_TOP), "full height");
@@ -626,7 +631,7 @@ mod tests {
     #[test]
     fn effect_catalogue_has_only_valid_acceleration_structure_primitives() {
         let spec = house_game::gym::sim::catalogue_level();
-        let (mut scene, meta) = build_gym(&spec, &crate::look::POLANA, true);
+        let (mut scene, meta) = build_gym(&spec, &crate::look::POLANA);
         let mut lab = crate::crack::CrackLab::default();
         crate::crack::resolve(Some(crate::demos::catalogue_wear()), &mut lab, &meta.piers, &mut scene, 1);
         scene.validate_acceleration_geometry().expect("effect catalogue must be legal Metal AS input");

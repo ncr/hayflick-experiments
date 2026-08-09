@@ -16,8 +16,13 @@ house-game = { path = "../house-game" }
 ide = { path = "../ide" }
 sim-core = { path = "../sim-core" }
 iso-core = { path = "../iso-core" }
-# destructibility exploration (voxel-physics-spike branch): PHYS=1 drops a
-# Rapier brick wall + projectile into the gym as extra dynamic runs.
+# the wear model (2026-07-28): what a level AUTHOR says about a wall, the
+# reinforcement mat, and the noise field both shader twins mirror. A leaf —
+# glam only — so "no Scene, no Material, no bits, no GPU" is a compile error
+# there instead of a comment here.
+wear-core = { path = "../wear-core" }
+# destructibility: the "wall smash" demo's rubble — a Box3D brick wall +
+# projectile authored into the gym as extra dynamic runs (phys_scene.rs).
 phys-spike = { path = "../phys-spike" }
 ash = "0.38"
 glam = "0.30"
@@ -28,6 +33,13 @@ raw-window-handle = "0.6"
 font8x8 = { version = "0.3", default-features = false }
 # synth-blip audio backend (audio.rs) — no assets, waveforms generated in code
 cpal = "0.15"
+
+[dev-dependencies]
+# The level-measuring wear tests (wall_tests.rs) and the generator tests in
+# crack_geom/crack/ide_host/wear_file spell sheets out by hand, so they need
+# wear-core's authoring helpers — which are `cfg(test)` items over there and
+# therefore invisible to a dependent. Dev-deps only: off in every `cargo build`.
+wear-core = { path = "../wear-core", features = ["testing"] }
 
 # objc 0.2's `msg_send!` expands to a `feature = "cargo-clippy"` cfg check that
 # rustc flags as unexpected. Declare it expected so genuine cfg typos still warn

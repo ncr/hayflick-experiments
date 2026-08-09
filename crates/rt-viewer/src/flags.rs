@@ -28,10 +28,11 @@
 //! | 32 | 5 | [`GEO`] | `crack_geom::split_pier` | HOST only (the AA scope) |
 //! | 64 | 6 | [`CRAZE`] | `crack_geom::craze_pier` | HOST only (the AA scope) |
 //! | 128 | 7 | [`AA`] | `crack::stamp_aa` | shade (the contour-AA scope) |
-//! | 8..31 | | the four 6-bit knobs | `crack::pad_bits` | shade (the CRACK LAB block) |
+//! | 8..31 | | four 6-bit paint lanes | `crack::pad_bits` | shade (the CRACK LAB block) |
 //!
-//! The four knob lanes above bit 7 are documented in `crack::pad_bits`; the
-//! separate per-surface effect word lives in `crate::wear`.
+//! The four lanes above bit 7 carry the painted layers' strengths (stain, web,
+//! mud, mud band top) and are documented in `crack::pad_bits`; the separate
+//! per-surface effect word lives in `crate::wear`.
 
 /// See-through OCCLUDER: the WALLCUT cutaway and the ROI reveal dissolve it.
 pub const OCCLUDER: i32 = 1;

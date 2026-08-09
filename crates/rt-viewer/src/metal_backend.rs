@@ -20,14 +20,18 @@ use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec3};
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, scan_lights, LightScan};
-use rt_probe::scene::{LoadedImage, Material, Vertex};
+use rt_probe::scene::{Material, Vertex};
 use rt_probe::{bake_bank_emission, Config, InstanceTable, ProbeGrid, Scene, SceneHandles};
 use std::ffi::c_void;
 use std::mem::size_of;
 use winit::window::Window;
 
-/// Shade push constants — byte-identical to shade.metal's `Push` (the spike
-/// layout, NOT the Vulkan ShadePush: this carries `hasProbes` in misc2.y).
+/// Shade push constants — byte-identical to shade.metal's `Push` (its own
+/// layout, NOT the Vulkan ShadePush — the two spell misc2 differently).
+/// `hasProbes` used to sit in misc2.y: an M1 bring-up gate that had been
+/// hardwired to its pass-through value (1) since the probe bake landed, and
+/// the ONLY logic divergence between the two shade twins. Deleted 2026-07-28;
+/// `wear.rs`'s FORBIDDEN table keeps it out of both sources.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Push {
@@ -36,7 +40,7 @@ struct Push {
     cam_dir: [f32; 4],   // xyz forward, w = AO radius
     cam_pos: [f32; 4],   // xyz eye, w = AO strength
     misc: [i32; 4],      // W, H, aoRays, debug
-    misc2: [i32; 4],     // lightCount, hasProbes, roomLights16, reflBlockPx
+    misc2: [i32; 4],     // lightCount, roomLights16, reflBlockPx, _
     env0: [f32; 4],      // sun, sky, fogD, fogH
     roi: [f32; 4],       // CAVE_ROI: player world xyz + disc radius (low-res px)
     roi2: [f32; 4],      // projected player px xy + disc falloff px + enabled (>0.5)
@@ -102,7 +106,6 @@ struct MetalScene {
     probe_origin: Vec3,
     probe_spacing: f32,
     probe_dims: [u32; 3],
-    texes: Vec<Texture>,
     blas_list: Vec<AccelerationStructure>,
     tlas: AccelerationStructure,
     tlas_scratch: Buffer,
@@ -115,7 +118,6 @@ struct MetalScene {
     mats_cpu: Vec<Material>,
     light_link: Vec<(i32, [f32; 3], bool)>,
     light_count: u32,
-    reserved_slot_start: usize,
     // movers
     dyn_insts: Vec<(u32, u32)>,
     dyn_shadow: Vec<Mat4>,
@@ -136,7 +138,6 @@ pub struct MetalBackend {
     probe_pso: ComputePipelineState,
     tonemap_pso: ComputePipelineState,
     base_scale: u32,
-    n_spot_active: u32,
     tlas_dirty: bool,
     /// Stage-2 dynamic GI: the bake ray budget (per probe per bank), kept so the
     /// amortize=false ground-truth refresh re-bakes each touched probe to the
@@ -182,22 +183,6 @@ unsafe fn write_buf<T: Copy>(b: &Buffer, data: &[T]) {
     std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, b.contents() as *mut u8, std::mem::size_of_val(data));
 }
 
-/// Upload an RGBA8 image as a NEAREST-sampled sRGB texture (sampling returns
-/// linear, matching the glTF base-colour convention + hex_linear).
-fn upload_tex(device: &Device, img: &LoadedImage) -> Texture {
-    let desc = TextureDescriptor::new();
-    desc.set_texture_type(MTLTextureType::D2);
-    desc.set_pixel_format(MTLPixelFormat::RGBA8Unorm_sRGB);
-    desc.set_width(img.width as u64);
-    desc.set_height(img.height as u64);
-    desc.set_storage_mode(MTLStorageMode::Shared);
-    desc.set_usage(MTLTextureUsage::ShaderRead);
-    let tex = device.new_texture(&desc);
-    let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: img.width as u64, height: img.height as u64, depth: 1 } };
-    tex.replace_region(region, 0, img.pixels.as_ptr() as *const c_void, img.width as u64 * 4);
-    tex
-}
-
 /// Build an instance-AS descriptor over the BLAS list + the (mutable) instance
 /// descriptor buffer. Rebuilt cheaply each TLAS refit (the descriptor is CPU).
 fn tlas_descriptor(blas_list: &[AccelerationStructure], inst_buf: &Buffer, n: u64) -> InstanceAccelerationStructureDescriptor {
@@ -223,19 +208,12 @@ impl MetalScene {
         let ibuf = make_buf(device, &scene.indices);
         let gbuf = make_buf(device, &scene.geom_infos());
         let mbuf = make_buf(device, &scene.materials);
-        let LightScan { lights, light_link, names: light_names, light_count, reserved_slot_start } = scan_lights(scene)?;
+        let LightScan { lights, light_link, names: light_names, light_count } = scan_lights(scene)?;
         let lbuf = make_buf(device, &lights);
         let lights_cpu = lights.clone();
         let mats_cpu = scene.materials.clone();
 
-        // textures: every scene image NEAREST sRGB; a 1×1 white keeps the
-        // bindless array ≥ 1 (never sampled when texIndex == -1)
-        let mut texes: Vec<Texture> = scene.images.iter().map(|im| upload_tex(device, im)).collect();
-        if texes.is_empty() {
-            texes.push(upload_tex(device, &LoadedImage { width: 1, height: 1, pixels: vec![255, 255, 255, 255] }));
-        }
-        let ntex = texes.len();
-        println!("scene: {} prims, {} tris, {ntex} textures (metal)", scene.primitives.len(), scene.indices.len() / 3);
+        println!("scene: {} prims, {} tris (metal)", scene.primitives.len(), scene.indices.len() / 3);
 
         // ---- world-space probe grid (shared with Vulkan via gpu_scene; the
         // frozen-pad form is canonical — the old inline Metal loop re-derived the
@@ -344,7 +322,6 @@ impl MetalScene {
             probe_origin: grid.origin,
             probe_spacing: grid.spacing,
             probe_dims: grid.dims,
-            texes,
             blas_list,
             tlas,
             tlas_scratch,
@@ -355,7 +332,6 @@ impl MetalScene {
             mats_cpu,
             light_link,
             light_count,
-            reserved_slot_start,
             dyn_insts,
             dyn_shadow,
             handles,
@@ -367,7 +343,7 @@ impl MetalScene {
 
 impl MetalBackend {
     pub unsafe fn new(window: Option<&Window>, scene: &Scene, cfg: &Config) -> Result<MetalBackend, Box<dyn std::error::Error>> {
-        assert_eq!(size_of::<Vertex>(), 32, "Vertex must be 32 B (packed_float3 layout)");
+        assert_eq!(size_of::<Vertex>(), 24, "Vertex must be 24 B (packed_float3 layout)");
         assert_eq!(size_of::<Material>(), 48, "Material must be 48 B");
 
         let device = Device::system_default().ok_or("no Metal device")?;
@@ -380,10 +356,8 @@ impl MetalBackend {
         // ---- compile the three kernels at runtime (the driver compiler).
         let opts = CompileOptions::new();
         opts.set_language_version(MTLLanguageVersion::V3_0);
-        // NTEX_COUNT is the bindless array size — injected at compile so it
-        // matches exactly the textures bound in the shade pass.
-        let shade_src = include_str!("shaders_metal/shade.metal").replace("NTEX_COUNT", &sc.texes.len().to_string());
-        let shade_lib = device.new_library_with_source(&shade_src, &opts).map_err(|e| format!("shade.metal: {e}"))?;
+        let shade_src = include_str!("shaders_metal/shade.metal");
+        let shade_lib = device.new_library_with_source(shade_src, &opts).map_err(|e| format!("shade.metal: {e}"))?;
         let shade_pso = device.new_compute_pipeline_state_with_function(&shade_lib.get_function("shade", None).unwrap()).map_err(|e| format!("shade pso: {e}"))?;
         let probe_lib = device.new_library_with_source(include_str!("shaders_metal/probes.metal"), &opts).map_err(|e| format!("probes.metal: {e}"))?;
         let probe_pso = device.new_compute_pipeline_state_with_function(&probe_lib.get_function("bake_probes", None).unwrap()).map_err(|e| format!("probe pso: {e}"))?;
@@ -398,7 +372,6 @@ impl MetalBackend {
             probe_pso,
             tonemap_pso,
             base_scale: cfg.render.pixel,
-            n_spot_active: 0,
             tlas_dirty: false,
             probe_rays: cfg.render.probe_rays,
             // DDGI rolling refresh knobs (env-tunable): its own small full-sphere
@@ -436,8 +409,6 @@ impl MetalBackend {
     /// for a rebuilt one, then rebake (or disk-load) the probe banks. The
     /// device, pipelines, layer and window target survive. Every inline
     /// command buffer is waited, so nothing is in flight during the swap.
-    /// The shade kernel is compiled for a fixed NTEX_COUNT — greybox looks
-    /// never add textures, and the assert keeps that assumption loud.
     ///
     /// `refresh` decides the GI half: `Full` rebakes (or disk-loads) the whole
     /// grid; `Local` carries the baked banks across the swap and re-bakes only
@@ -446,7 +417,6 @@ impl MetalBackend {
     /// leave `probes_baked` true and the lit light/material state loaded, so the
     /// next frame is identical except for the probes meant to change.
     unsafe fn rebuild_scene_impl(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh) {
-        let ntex = self.sc.texes.len();
         // Snapshot the banks BEFORE the swap (probe_buf dies with the old scene)
         // and only when they can legally be carried: the grid is DERIVED from the
         // scene bounds, so anything that moves them (bounds, spacing, the probe
@@ -474,9 +444,7 @@ impl MetalBackend {
             _ => None,
         };
         self.sc = MetalScene::build(&self.device, &self.queue, scene, cfg).expect("look-switch scene rebuild");
-        assert_eq!(self.sc.texes.len(), ntex, "texture count changed across a look switch — shade PSO needs a recompile");
         self.tlas_dirty = false;
-        self.n_spot_active = 0;
         let Some((boxes, banks)) = carried else {
             self.bake_probes(cfg.render.probe_rays);
             return;
@@ -912,7 +880,7 @@ impl RenderBackend for MetalBackend {
 
     unsafe fn render_present(&mut self, fp: &FramePresent) -> bool {
         // ---- per-frame scene-state update (CPU shadows → Shared buffers)
-        self.n_spot_active = frame_lights_cpu(&mut self.sc.lights_cpu, &mut self.sc.mats_cpu, &self.sc.light_link, self.sc.reserved_slot_start, fp.fs);
+        frame_lights_cpu(&mut self.sc.lights_cpu, &mut self.sc.mats_cpu, &self.sc.light_link, fp.fs);
         write_buf(&self.sc.lbuf, &self.sc.lights_cpu);
         write_buf(&self.sc.mbuf, &self.sc.mats_cpu);
         // patch mover instance transforms (player + door leaves) on change
@@ -951,7 +919,7 @@ impl RenderBackend for MetalBackend {
             (t.low_w, t.low_h, t.ext_w, t.ext_h)
         };
         let cam = &fp.fs.cam;
-        let light_count = (self.sc.light_count + self.n_spot_active) as i32;
+        let light_count = self.sc.light_count as i32;
         let room_lights16 = (fp.fs.room_lights * 65536.0).round() as i32;
         let roi = match &fp.roi {
             Some(r) => rt_probe::roi_push(cam, low_w as i32, low_h as i32, r.player, r.radius_px, r.falloff_px, r.ghost),
@@ -965,7 +933,7 @@ impl RenderBackend for MetalBackend {
             cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, fp.ao_r],
             cam_pos: [cam.pos.x, cam.pos.y, cam.pos.z, fp.ao],
             misc: [low_w as i32, low_h as i32, fp.ao_n, fp.debug],
-            misc2: [light_count, 1, room_lights16, fp.refl_px],
+            misc2: [light_count, room_lights16, fp.refl_px, 0],
             env0: env.env0,
             roi: roi.roi,
             roi2: roi.roi2,
@@ -1003,9 +971,6 @@ impl RenderBackend for MetalBackend {
             enc.set_buffer(8, Some(&t.radiance), 0);
             enc.set_buffer(9, Some(&t.albedo), 0);
             enc.set_buffer(10, Some(&t.pos), 0);
-            for (i, tex) in self.sc.texes.iter().enumerate() {
-                enc.set_texture(i as u64, Some(tex));
-            }
             enc.use_resource(&self.sc.tlas, MTLResourceUsage::Read);
             for bl in &self.sc.blas_list {
                 enc.use_resource(bl, MTLResourceUsage::Read);
@@ -1040,9 +1005,6 @@ impl RenderBackend for MetalBackend {
                     aenc.set_buffer(8, Some(&t.radiance), 0);
                     aenc.set_buffer(9, Some(&t.albedo), 0);
                     aenc.set_buffer(10, Some(&t.pos), 0);
-                    for (i, tex) in self.sc.texes.iter().enumerate() {
-                        aenc.set_texture(i as u64, Some(tex));
-                    }
                     aenc.use_resource(&self.sc.tlas, MTLResourceUsage::Read);
                     for bl in &self.sc.blas_list {
                         aenc.use_resource(bl, MTLResourceUsage::Read);

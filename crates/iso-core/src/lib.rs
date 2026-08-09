@@ -12,7 +12,7 @@
 //! 1 wu → 32 px H × 16 px V) is now just the [`iso21`] preset
 //! `px_x = (32, 16)`, `px_z = (-32, 16)`. (VISION's `(2,-1)/(2,1)` notation
 //! is the same pair with screen y up and the 16× lattice scale dropped.)
-//! The Fallout-spirit [`trimetric`] preset — THE game projection since the
+//! The Fallout-spirit `trimetric` preset (see [`presets`]) — THE game projection since the
 //! owner's 2026-07-12 pick — is `px_x = (40, 10)`, `px_z = (-20, 20)`: the
 //! authentic Fallout 4:1 floor stair on X (14°), a clean 1:1 diagonal on Z
 //! (45°), pitch 30°, UNIFORM stair runs on both ground axes, no roll, and

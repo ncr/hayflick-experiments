@@ -26,7 +26,7 @@
 //!   normalized damage field (water gets in where the wall is already failing),
 //!   the splash zone at the base, the window REVEALS (classified straight off
 //!   `Pier::run_lo/run_hi` — a pier end that is not a run end IS a reveal,
-//!   because `wall_slab` cuts piers at `mid ± 0.2`; see [`reveal`] for what that
+//!   because `wall_slab` cuts piers at `mid ± 0.2`; see `reveal` for what that
 //!   rule cannot see), and
 //!   the parapet band under the cap. Then the site SNAPS onto a bar or a bar
 //!   crossing, so the bar the crater exposes is the bar that pushed the cover
@@ -37,7 +37,16 @@
 //! emission (it is the module that knows about `Frag`, the droop rule and the
 //! chamfer). The split is deliberate: this file is testable arithmetic.
 
-use crate::crack_geom::{hash13, mixf, smoothstep};
+// This module's PUBLIC functions are documented in terms of the private
+// constants they are made of — `craters` cannot be explained without naming
+// `LENS_ALONG`, and `t_cap` cannot be explained without naming `budget`. Those
+// names are CODE SPANS, not intra-doc links: a link from a public item to a
+// private one is an error under this workspace's `-D warnings` doc gate, and
+// silencing it with `allow(rustdoc::private_intra_doc_links)` would leave every
+// one of them unchecked — so a later rename of `budget` would rot the prose
+// while the gate stayed green. A code span makes no promise rustdoc has to keep.
+
+use crate::field::{hash13, mixf, smoothstep};
 use glam::{Vec2, Vec3};
 
 /// Square bar section, in wu. 1.5 px across on an X-run face and 1.0 px on the
@@ -137,7 +146,7 @@ const BASIN_MAX_FRAC: f32 = 0.7;
 /// one. That is the whole reason an AMOUNT can be a count: the size answers to
 /// the cage, the count answers to the author.
 ///
-/// [`LENS_ALONG`] is not free: at its SMALLEST draw it still has to reach half a
+/// `LENS_ALONG` is not free: at its SMALLEST draw it still has to reach half a
 /// tie pitch plus half a section (0.25 + 0.018 = 0.268 wu), because that is what
 /// makes "a bar AND a crossing" a fact about the geometry rather than a lucky
 /// hash — the mat's nearest crossing bar is at most half a pitch away, so a
@@ -210,8 +219,9 @@ pub const PATCH_GAP: f32 = 0.06;
 /// hole" read collapses into a bump.
 const MIN_H: f32 = 0.06;
 
-/// Site search lattice — the 0.1-wu authoring grid, the same one `run_level`
-/// samples the damage field on. Every term in [`corr`] is smooth over ≥ 0.3 wu,
+/// Site search lattice — the 0.1-wu authoring grid, the same one
+/// `wall::RunField::of` samples the damage field on when it solves a run's
+/// thresholds. Every term in [`corr`] is smooth over ≥ 0.3 wu,
 /// so this resolves all of them, and the site then snaps onto the bar mat
 /// anyway.
 const LATTICE: f32 = 0.1;
@@ -283,13 +293,13 @@ pub struct Crater {
     pub lo: Vec2,
     pub hi: Vec2,
     /// Depth of the bar mat's front face below the wall face. Always at least
-    /// the veneer (see [`BAR_SET`]) — the mat lives in the CORE, never in the
+    /// the veneer (see `BAR_SET`) — the mat lives in the CORE, never in the
     /// veneer's hollow.
     pub cover: f32,
     /// Depth of the basin floor below the wall face.
     pub floor: f32,
     /// Section of the bars this crater exposes — [`BAR_S`] where the core can
-    /// hold it, thinned toward [`BAR_S_MIN`] where the relief knob has eaten the
+    /// hold it, thinned toward `BAR_S_MIN` where the relief knob has eaten the
     /// core.
     pub bar_s: f32,
     /// The bar segments this crater exposes. A spall shows steel BY DEFINITION
@@ -397,18 +407,18 @@ fn reveal(f: &Face, u: f32) -> f32 {
 /// used to be a documented limit — "above relief ≈ 0.72 on the gym's 0.2-wu
 /// walls the dial stops at LIFTED COVER" — which is a polite way of saying that
 /// one dial silently deleted another dial's effect, with nothing on screen to
-/// say why. The three bounds below are exactly the three the [`budget`]
+/// say why. The three bounds below are exactly the three the `budget`
 /// arithmetic imposes, solved for the veneer instead of tested against it:
 ///
 /// 1. the basin must reach `BAR_PROUD` of a minimum section past the cover;
-/// 2. …without passing [`BASIN_MAX_FRAC`] of the slab;
+/// 2. …without passing `BASIN_MAX_FRAC` of the slab;
 /// 3. the WHOLE section must fit between the core's two planes, since the far
 ///    face carries the same mat mirrored.
 ///
 /// On the gym's 0.2-wu walls this caps the veneer at 0.082 against a knob top
 /// of 0.090 — the last 9 % of the relief slider, which is what that "honest
 /// limit" was actually costing. The caller applies it (`CrazeCfg::new`) and the
-/// level says so out loud (`wall::Miss::Clamped`); [`budget`] only checks that
+/// level says so out loud (`wall::Miss::Clamped`); `budget` only checks that
 /// somebody did.
 pub fn t_cap(thick: f32) -> f32 {
     let knee = BAR_PROUD * BAR_S_MIN;
@@ -416,7 +426,7 @@ pub fn t_cap(thick: f32) -> f32 {
     let b = BASIN_MAX_FRAC * thick - BAR_SET - knee;
     let c = 0.5 * (thick - 2.0 * BAR_SET - BAR_S_MIN);
     // …minus a thousandth of a wu (a twentieth of a screen pixel). Solving the
-    // bound exactly lands the section ON [`BAR_S_MIN`], where f32 rounding
+    // bound exactly lands the section ON `BAR_S_MIN`, where f32 rounding
     // decides whether a bar is emitted at all — measured: a 0.3-wu slab at
     // relief 1 came out at 0.023999996 and dropped its steel.
     (a.min(b).min(c) - 0.001).max(0.0)
@@ -450,7 +460,7 @@ fn budget(f: &Face) -> (f32, f32, f32) {
 ///
 /// `area` is the layer unit the whole authoring model runs on: **the fraction of
 /// this face whose cover is gone**. It is spent, not staged. Each site takes one
-/// canonical lens ([`LENS_ALONG`] × [`LENS_ACROSS`], ±[`LENS_VAR`]) out of the
+/// canonical lens (`LENS_ALONG` × `LENS_ACROSS`, ±`LENS_VAR`) out of the
 /// budget, and the loop stops when what is left is worth less than half a
 /// crater — so a count falls out of an area instead of the author having to
 /// think in counts, and the same 0.10 means the same loss on the bench's 2.2-wu
@@ -472,7 +482,7 @@ fn budget(f: &Face) -> (f32, f32, f32) {
 ///   stage two. That limit is now [`t_cap`]'s job, and it reports.
 ///
 /// The basin depth is no longer a ramp at all: a spall cuts to `BAR_CLEAR`
-/// sections behind the mat, or as deep as [`budget`] allows, whichever is
+/// sections behind the mat, or as deep as `budget` allows, whichever is
 /// shallower. Depth is a fact about the wall, not about how much of it is gone.
 ///
 /// `fits` lets the caller veto a patch rect it cannot build — on a broken pier a
@@ -593,7 +603,7 @@ pub fn shell_center_box(len: f32, height: f32, r: f32) -> Option<(Vec2, Vec2)> {
 /// downstream of the place: the same depth budget, the same polygon rim, the
 /// same mat — `emit_crater` cannot tell the two apart, which is the point.
 ///
-/// Three deliberate differences from [`site`]:
+/// Three deliberate differences from `site`:
 /// - ROUND (`hu = hy = r`) and NOT snapped onto a bar: a shell lands where it
 ///   lands, and the world-anchored mat crosses it wherever it crosses — both
 ///   families over the whole patch, which is what makes the cage read as a
@@ -602,7 +612,7 @@ pub fn shell_center_box(len: f32, height: f32, r: f32) -> Option<(Vec2, Vec2)> {
 ///   corners put a facet every 7-9 px; a shell 2-4× the lens would stretch the
 ///   same corners into an obvious polygon.
 /// - The floor digs to the honest depth limit (`budget`'s `basin_max`) instead
-///   of stopping [`BAR_CLEAR`] sections past the mat: a hit excavates, cover
+///   of stopping `BAR_CLEAR` sections past the mat: a hit excavates, cover
 ///   corrosion only lifts. Still a crater, never a perforation — the through
 ///   hole is a renderer-contract change (occluders, WALLCUT, light) and it is
 ///   deliberately NOT this round.
@@ -667,7 +677,7 @@ struct Site {
 }
 
 impl Site {
-    /// Draw the rim and make the crater. Split out of [`site`] on cost, not on
+    /// Draw the rim and make the crater. Split out of `site` on cost, not on
     /// meaning: everything here is a pure function of the place. `nc` is the
     /// rim's corner-count range — the spall lens always passes
     /// ([`RIM_C_MIN`], [`RIM_C_MAX`]); a shell scales it with its perimeter.

@@ -1,25 +1,44 @@
 //! All runtime configuration, resolved from the environment ONCE at startup.
 //!
-//! Every tuning knob flows through this struct, so the inventory of tuning
-//! surface is visible here and the ESC menu / env-string round-trip (`viewer`)
-//! has a single source of truth. One deliberate exception reads `std::env`
-//! directly: `probe_cache::dir` (PROBE_CACHE) — a dev-machine cache location,
-//! not a look/sim knob, and never part of the round-trip. (rt-viewer keeps a
-//! few shell-only reads of its own: AUDIO, LOOK, and the WEAR family's harness
-//! surface — STORY=weather,settlement,cover_loss (the three causes),
-//! SHAPE=grain,relief[,pattern[,p1,p2,p3]], SPREAD=<0..1> (the per-run story
-//! spread), SPALL=<0..1> (the cover-loss cause on its own, kept because every
-//! A/B recipe on record uses it) with its SPALL_LAYER=1|2|3 bisect (1 = crater
-//! only, 2 = steel only, 3 = both), SCRUB=<0..1> (the variant dial on every
-//! run), BAND=lo,hi (the damage band's normalized edges on every run),
-//! HOLE=u,y[,caliber] (ONE placed shell hit on every run — named HOLE because
-//! SHELL is the login shell in every Unix environment),
-//! CRACK_SEL= to preselect a wall,
-//! WEAR_EDIT=weather,settlement,cover_loss[,run] to replay a panel drag +
-//! release, and WEAR_FILE=<path> to override a level's wear file for load AND
-//! save — see `crate::crack` / `crate::crack_geom` / `crate::wear` /
-//! `crate::wear_file` on the viewer side. WEAR= is gone: all four effect-word
-//! lanes are derived now, each driven through its own dial.)
+//! Every tuning knob that feeds the RENDERER, the SIM or the CAPTURE HARNESS
+//! flows through this struct, so the ESC menu / env-string round-trip
+//! (`viewer`) has a single source of truth for the values it prints.
+//!
+//! It is NOT the only place a knob is read, and this list is the register of
+//! the ones that are not — an env var absent from BOTH is a bug (that is how
+//! `GI_DEMO`/`GI_TEAR`/`PHYS` survived long past the spikes they served, until
+//! the 2026-07-28 audit; a knob nobody declares is a knob nobody can retire).
+//! The direct readers, all outside `Config` on purpose:
+//!
+//! - `probe_cache::dir` — **PROBE_CACHE**: a dev-machine cache location, not a
+//!   look/sim knob, and never part of the round-trip.
+//! - `MetalBackend::new` — **ROLL_N**, **ROLL_K**, **ROLL_FRAMES**: the DDGI
+//!   rolling-refresh budget (rays/probe in the cycle, rays/probe/frame, frames
+//!   per settle). Metal-only; the Vulkan twin holds them as constants
+//!   (`render::ROLL_FRAMES` and `SceneGpu`'s `roll_n`/`roll_k`).
+//! - rt-viewer boot selectors, read where the thing they select is built:
+//!   **LOOK** (`look::from_env`), **PROJ** (`viewer::proj_from_env`),
+//!   **LEVEL** (`demos::from_env`, name or index), **AUDIO** (master volume,
+//!   0 = silent).
+//! - the IDE harness (`ide_host`): **IDE**=1 boots the overlay open,
+//!   `IDE_SEL=<object name>` preselects, `IDE_EDIT="<obj> <key> <v>[;…]"`
+//!   replays edits through the real apply path.
+//! - the WEAR family's harness surface —
+//!   `STORY=weather,settlement,cover_loss` (the three causes),
+//!   `SHAPE=grain,relief[,pattern[,p1,p2,p3]]`, `SPREAD=<0..1>` (the per-run
+//!   story spread), `SPALL=<0..1>` (the cover-loss cause on its own, kept
+//!   because every A/B recipe on record uses it) with its `SPALL_LAYER=1|2|3`
+//!   bisect (1 = crater only, 2 = steel only, 3 = both), `SCRUB=<0..1>` (the
+//!   variant dial on every run), `BAND=lo,hi` (the damage band's normalized
+//!   edges on every run), `HOLE=u,y[,caliber]` (ONE placed shell hit on every
+//!   run — named HOLE because SHELL is the login shell in every Unix
+//!   environment), `CRACK_SEL=` to preselect a wall,
+//!   `WEAR_EDIT=weather,settlement,cover_loss[,run]` to replay a slider drag +
+//!   release, and `WEAR_FILE=<path>` to override a level's wear file for load
+//!   AND save — see `crate::crack` / `crate::crack_geom` / `crate::wear` /
+//!   `crate::wear_file` on the viewer side. `WEAR=` is gone: all four
+//!   effect-word lanes are derived now, each driven through its own dial.
+//! - test-only: LEVELS_DUMP (`menu`'s levels-panel PPM dump).
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
 //! - [`RenderCfg`] — renderer look + GI/probe bake knobs (no game, no window).
@@ -277,7 +296,7 @@ pub struct HarnessCfg {
     /// without grabbing the owner's real input devices.
     pub fs_at: Option<f32>,
     pub shot: Option<String>,      // SHOT=path.png: capture one frame, exit
-    /// LOOK_SWITCH=<name>: after boot, apply this look through the RUNTIME
+    /// `LOOK_SWITCH=<name>`: after boot, apply this look through the RUNTIME
     /// switch path (backend rebuild_scene) before any capture — a SHOT then
     /// must be byte-identical to booting in that look directly. The harness
     /// verification for the ESC menu's look row (Faza 1b).

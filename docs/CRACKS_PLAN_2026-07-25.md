@@ -563,11 +563,17 @@ area.
 
 **Mirror discipline.** The value is measured on the host and applied on BOTH
 sides, so the classic drift (geometry vs paint) is one `LEVEL_STEP` away.
-`wear::level_quantize` is the only thing the host may add, and
-`wear::both_shader_twins_decode_the_level_lane_exactly_as_the_host_packs_it`
-`include_str!`s both `shade.comp` and `shade.metal` and fails the build if
+`wear::level_quantize` is the only thing the host may add, and the twin source
+guard `include_str!`s both `shade.comp` and `shade.metal` and fails the build if
 either stops spelling the shift, the signed decode, the step, or the `+ dOff`
 into `dmgN` — which also catches "ported one twin only".
+
+> SUPERSEDED (step 5, shipped 2026-07-25): the level offset, `LEVEL_STEP`,
+> `wear::level_quantize` and `run_level` are all DELETED — solving each layer's
+> threshold per run (`wall::RunField::threshold`) fixes the same defect at the
+> root, and lane 1 carries the WEB gate now. The mirror discipline itself
+> survives verbatim, in
+> `wear::both_shader_twins_spell_every_wear_decode_as_the_host_packs_it`.
 
 The offset is a pure function of the RUN (rect + story key), independent of the
 knobs, so a knob drag never moves it and the release gate still dirties exactly

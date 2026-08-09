@@ -24,11 +24,11 @@ testable without a GPU. The game must run without the renderer.
 ./                      # repo root IS the workspace root (post-pivot: the `rust` branch)
   Cargo.toml            # [workspace] members = ["crates/*"]
                         # [profile.release] debug = true  ← HOISTED (package-level profile ignored in workspace)
-  crates/rt-probe/      # (A) renderer lib. deps: ash, glam, png, gltf, iso-core.
+  crates/rt-probe/      # (A) renderer lib. deps: ash, glam, iso-core.
                         #   keeps: gpu.rs, render.rs, scene.rs, scenes.rs, shaders/, build.rs
                         #   loses: game.rs → house-game; iso.rs → iso-core (re-export shim
                         #          `pub mod iso { pub use iso_core::*; }`); src/bin/viewer/ → rt-viewer
-                        #   gains: typed FrameState/SceneHandles/Spotlight surface (below)
+                        #   gains: typed FrameState/SceneHandles surface (below)
                         #   sheds deps: winit, ash-window, raw-window-handle, font8x8 (move to rt-viewer)
   crates/
     iso-core/           # pure-math leaf. deps: glam only. Faza 1a: projection-as-data —
@@ -55,6 +55,22 @@ testable without a GPU. The game must run without the renderer.
                         #   boundary is plain data (SceneModel in, Edit out), and
                         #   rt-viewer/src/ide_host.rs is the ONLY adapter. Panels ride
                         #   the existing Stamp path (no GPU code of its own).
+    phys-spike/         # throwaway Box3D rigid-body world (destructibility spike).
+                        #   deps: glam only — no game, no GPU, no renderer. Its one
+                        #   consumer is the shipped "wall smash" demo, through
+                        #   rt-viewer/src/phys_scene.rs (the adapter, in the same
+                        #   tradition as ide_host.rs).
+    wear-core/          # the WEAR MODEL (extracted from rt-viewer 2026-07-28).
+                        #   deps: glam only — no Scene, no Material, no bits, no GPU.
+                        #   wall.rs (what a level AUTHOR says about a wall: Story →
+                        #   Layer amounts → the solved-threshold Sheet), rebar.rs
+                        #   (the reinforcement mat, its corrosion sites and their
+                        #   craters), field.rs (the noise/damage field all of the
+                        #   above and both shader twins mirror). wall.rs had claimed
+                        #   that purity in prose since it was written and nothing
+                        #   enforced it; the dependency line is the enforcement.
+                        #   Boundary: RunRect in, Sheet out — rt-viewer's crack_geom
+                        #   / crack / wear convert.
     rt-viewer/          # shell. [[bin]] name = "viewer" (binary path: target/release/viewer).
                         #   deps: rt-probe, house-game, sim-core, iso-core, winit, ash-window,
                         #   raw-window-handle, font8x8 + ash/glam/png (viewer code uses them
@@ -68,9 +84,10 @@ testable without a GPU. The game must run without the renderer.
                         #   LevelSpec (new scene only), ESC menu, capture/golden harness, NullSink.
 ```
 
-Dependency arrows: `rt-viewer → {rt-probe, house-game, sim-core, iso-core, ide}`;
-`house-game → {sim-core, iso-core}`; `rt-probe → {iso-core}`; `sim-core → hecs`;
-`ide → {font8x8}` (leaf — sees neither the game nor the GPU).
+Dependency arrows: `rt-viewer → {rt-probe, house-game, sim-core, iso-core, ide,
+phys-spike, wear-core}`; `house-game → {sim-core, iso-core}`; `rt-probe → {iso-core}`;
+`sim-core → hecs`; `ide → {font8x8}`, `phys-spike → {glam}` and
+`wear-core → {glam}` (all three leaves — none sees the game or the GPU).
 **rt-probe and house-game never see each other** — only rt-viewer's adapter knows both.
 `cargo test -p house-game` runs the whole game headless in milliseconds.
 
@@ -117,15 +134,12 @@ pub struct LightKey(u32);     // NEE slot, frozen at build — names map onto th
 pub struct InstanceKey(u32);  // emissive-scan order (no-reorder pinned by test)
 pub struct SceneHandles { pub lights: BTreeMap<String, LightKey>,
                           pub instances: BTreeMap<String, InstanceKey> }
-pub struct Spotlight { pub pos: Vec3, pub dir: Vec3, pub cone_cos: f32,
-                       pub power: f32, pub radius: f32 }   // replaces raw [f32;12] writes
 pub struct FrameState<'a> {
     pub cam: iso_core::CamFrame,
     pub yaw_q: u32,                                  // dollhouse mask quarter
     pub room_lights: f32,                            // probe-bank lerp (instant GI switch)
     pub time: f32,                                   // SIM time, not wall clock
     pub light_emission: &'a [(LightKey, [f32; 3])],  // game-authored per-light rgb
-    pub spotlights: &'a [Spotlight],                 // ≤ N_RESERVED trailing NEE slots
     pub instances: &'a [(InstanceKey, Mat4)],        // movers → inst_buf + TLAS rebuild
 }
 impl SceneGpu { pub unsafe fn record_frame(&mut self, ctx:&Ctx, cmd: vk::CommandBuffer,
@@ -139,9 +153,7 @@ The legacy `Scene.dynamic_prim` Option stays as a compat shim and merges into th
 dynamic list as the named run **"player"** (start = `player_start`), so existing scenes
 get an instance handle for free; `place_dynamic` bakes `local` as the pivot frame and
 starts at identity. The NEE scan is factored into CPU-testable `scan_lights` (slot order
-pinned without a GPU). `Spotlight.power` is the PACKED slot radiance (the viewer maps its
-knob via ×1500) and `pack()` carries the flashlight's warm white (1.0/0.97/0.88) +
-`dir.w = 2.0`. `FrameState.yaw_q` is recorded but not yet consumed: dollhouse mask writes
+pinned without a GPU). `FrameState.yaw_q` is recorded but not yet consumed: dollhouse mask writes
 stay event-driven (`set_yaw_masks`, which now marks the TLAS dirty) until the step-9 loop;
 `record_frame` patches mover transforms only on bit-change (CPU shadow), so idle frames
 never rebuild the TLAS.
@@ -152,7 +164,7 @@ The GPU half is swappable behind a `RenderBackend` trait (`rt-viewer/src/backend
 selected at compile time by target OS (`new_backend`). The `Viewer`
 (`rt-viewer/src/viewer.rs`) owns the sim/camera/pan/harness orchestration and the
 `Scene`, and drives the GPU exclusively through the trait — it never names a Vulkan or
-Metal type. Everything crossing the boundary is plain data (`FrameState`, `Spotlight`,
+Metal type. Everything crossing the boundary is plain data (`FrameState`,
 `SceneHandles` — all Vulkan-free, in `rt-probe`) plus the small `FramePresent` /
 `TonePush` bundles in `backend.rs`.
 
@@ -226,10 +238,16 @@ lights; the menu "lights" row is a Toggle routing `Command::ToggleRoomLights`
 (env round-trip prints LIGHTS=0/1 — fractional dims are env-only until the
 step-12 Config split).
 
-**Reserved spotlight slots: N_RESERVED = 2** (flashlight + muzzle flash). The slot count,
-the shade-dispatch arithmetic (`light_count + n_active`), and the probe-bake exclusion
-(bake uses bare `light_count`) generalize TOGETHER — off-by-one leaks a spotlight into
-frozen GI.
+**Reserved spotlight slots — DELETED 2026-07-28.** `Spotlight`, `SPOT_WARM`, the
+`N_RESERVED` trailing slots (grown to 16 along the way), the shade-dispatch
+`light_count + n_active` arithmetic and both twins' `dir.w == 2.0` cone branch are gone.
+The flashlight that wrote them went with `view.rs::update_flashlight` (commit 4f8364c)
+and nothing replaced it: the viewer's only call site passed `&[]`, so the reserved region
+was 16 zeroed light records uploaded every frame and a shader branch no light could take.
+The step-8/9/10 notes above and the muzzle-flash line below are HISTORY — they describe
+the pre-reset thief/arena game. A future held light re-adds the region AND the probe-bake
+exclusion in ONE change: the rule those two rode together (off-by-one leaks a moving
+light into frozen GI) is the reason the arithmetic existed, and it still holds.
 
 **Per-instance flag table** (write before generalizing `dynamic_prim → Vec`; the three
 consumers currently keyed to the single Option):
@@ -305,8 +323,12 @@ GLBs for walls/doors/floors.** Walls, door leaves, floors are nicely colored gre
 tile-kit assets they replace** (read the dims from the kit placement code in scenes.rs /
 the kit manifest — tile module = 1.28 wu; all XZ dims stay multiples of 0.0625 wu per the
 iso stair-step invariant). Use a deliberate, cohesive palette (per-room wall tints, darker
-floor, contrasting door + target colors), not uniform grey. **Forge props are kept as-is**
-(textured GLBs via Scene::preload/place) for furnishing.
+floor, contrasting door + target colors), not uniform grey. The directive won outright: the
+glTF importer (`Scene::preload`/`place`) and the whole base-colour TEXTURE path it fed —
+`LoadedImage`, `Scene.images`, `Material.tex_index`, `Vertex.uv`, both backends' bindless
+image arrays and the four sampling branches in the shader twins — were DELETED 2026-07-28
+after a year with zero callers. **There is no asset importer.** A textured prop is a new
+feature, not a revival: it would have to re-earn its stride cost on both backends.
 
 **Components:** `Pos`, `Facing`, `Player{speed_px}` (floored by
 `recommended_min_px_per_sec(60)`), `WalkTarget`, `Flashlight{on}`,
@@ -438,5 +460,6 @@ is kept as the historical map; ☑ marks completion.
     RenderCfg, `default_player_speed` bridges scene+game. The ESC menu reads Renderer fields
     (not Config), so its env_string round-trip is unchanged by the split; pinned by
     `config::tests::env_string_round_trip`. rt-probe's lib.rs re-export surface trimmed to
-    exactly what crosses the boundary (CamFrame/GpuTex/LightScan/frame_lights_cpu/
-    mat_to_transform/ISO_*_DEG/iso_pixel_basis/iso_target are rt-probe-internal now).*
+    exactly what crosses the boundary (CamFrame/LightScan/frame_lights_cpu/
+    mat_to_transform/ISO_*_DEG/iso_pixel_basis/iso_target are rt-probe-internal now; the
+    `GpuTex` that used to head that list died with the texture path, 2026-07-28).*

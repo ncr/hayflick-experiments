@@ -1,0 +1,21 @@
+[package]
+name = "wear-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure leaf: what a level AUTHOR says about a wall (wall.rs), the reinforcement mat and its craters (rebar.rs), and the noise/damage field all three of them and both shader twins share (field.rs). No Scene, no Material, no bits, no GPU — enforced by the dependency list below."
+
+[dependencies]
+# glam ONLY. That single line is the enforcement: `wall.rs` has claimed its own
+# purity in prose since it was written, and nothing checked it — the day someone
+# reached for `rt_probe::Scene` the comment would have been the only thing in the
+# way. Now it is a compile error.
+glam = "0.30"
+
+[features]
+# The `#[cfg(test)]` authoring helpers (`wall::compile`, `WallAt::pristine`,
+# `Sheet::label`, `Breaks::NONE`) that rt-viewer's OWN tests use. A leaf crate's
+# `cfg(test)` items do not exist for its dependents, so the level-measuring tests
+# that stayed behind in rt-viewer — the ones that need a real `Scene` and
+# therefore cannot live here — reach them through this feature, enabled from
+# rt-viewer's `[dev-dependencies]`. Off in every `cargo build`.
+testing = []

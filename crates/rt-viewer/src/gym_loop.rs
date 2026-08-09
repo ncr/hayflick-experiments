@@ -129,9 +129,9 @@ pub struct GymLoop {
     /// Camera target the follow-cam last consumed.
     pub last_cam: Vec3,
     /// Destructibility spike: a box3d rigid-body world stepped once per fixed
-    /// tick, rendered as extra `phys/{i}` dynamic runs — the PHYS=1 brick
-    /// wall, or the wall-smash demo's debris (armed at its beat). `None` in
-    /// the normal gym. NOT part of `state_hash` — presentation-layer physics.
+    /// tick, rendered as extra `phys/{i}` dynamic runs — the wall-smash demo's
+    /// debris (armed at its beat). `None` in the normal gym. NOT part of
+    /// `state_hash` — presentation-layer physics.
     pub phys: Option<PhysWorld>,
 }
 
@@ -173,9 +173,9 @@ impl GymLoop {
         self.proj = proj;
     }
 
-    /// Step the physics spike one fixed tick (no-op unless PHYS=1 attached a
-    /// world). Called from every tick-advancing path so physics stays locked
-    /// to the sim clock — DEMO captures reproduce.
+    /// Step the physics spike one fixed tick (no-op unless the smash beat
+    /// attached a world). Called from every tick-advancing path so physics
+    /// stays locked to the sim clock — DEMO captures reproduce.
     fn phys_step(&mut self) {
         if let Some(p) = &mut self.phys {
             p.step();

@@ -1,5 +1,5 @@
 //! GPU renderer core: everything derived from a `Scene` — geometry/material
-//! buffers, bindless textures, BLAS-per-primitive + TLAS, the two compute
+//! buffers, BLAS-per-primitive + TLAS, the two compute
 //! pipelines (per-frame deterministic shade + startup probe bake), the NEE
 //! light list with animated practicals, and the world-space GI probe cache.
 //!
@@ -10,7 +10,7 @@
 //! full) that the shader lerps by the room-lights dim — light transport is
 //! linear in emission, so any dim level is exact with no re-bake.
 
-use crate::gpu::{dslb, Buffer, Ctx, GpuTex};
+use crate::gpu::{dslb, Buffer, Ctx};
 use crate::scene::{self, Scene, Vertex};
 use iso_core::CamFrame;
 use ash::vk;
@@ -211,43 +211,24 @@ pub struct SceneHandles {
     pub instances: BTreeMap<String, InstanceKey>,
 }
 
-/// Reserved trailing NEE spotlight slots (flashlight + muzzle flash). The
-/// slot count, the shade-dispatch `light_count + n_active` arithmetic, and
-/// the probe-bake exclusion (the bake uses bare `light_count`) generalize
-/// TOGETHER — an off-by-one leaks a moving spotlight into the frozen GI.
-pub const N_RESERVED: usize = 16;
-
 /// Frames the amortized DDGI roll runs for once armed (`tear_off(amortize)` and
 /// the `ProbeRefresh::Roll` carry). Vulkan twin of `MetalBackend::roll_total`
 /// (`ROLL_FRAMES` env there); at `roll_n`/`roll_k` = 256/8 the ray set wraps
 /// twice inside it, so a re-armed roll always finishes a full cycle.
 pub const ROLL_FRAMES: u32 = 64;
 
-/// A transient/held spotlight (player flashlight, muzzle flash) — replaces
-/// the raw `[f32; 12]` slot writes the viewer used to hand-build.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Spotlight {
-    pub pos: Vec3,
-    pub dir: Vec3,
-    pub cone_cos: f32, // cos of the outer half-angle
-    pub power: f32,    // packed slot radiance (the viewer maps its knob via ×1500)
-    pub radius: f32,   // emitter radius (wu); tiny → huge radiance for a visible pool
-    pub tint: [f32; 3], // rgb multiplier on `power` (flashlight = warm white)
-}
-
-/// The flashlight/muzzle warm white (1.0 / 0.97 / 0.88) — the historical tint,
-/// used as the default so existing call sites are unchanged.
-pub const SPOT_WARM: [f32; 3] = [1.0, 0.97, 0.88];
-
-impl Spotlight {
-    /// Pack into the NEE light record shade.comp expects. `dir.w = 2.0` marks
-    /// the spotlight cone path (color.w = cos outer half-angle, soft edge over
-    /// the outer 40%); the rgb is `power × tint` (e.g. warm white).
-    pub fn pack(&self) -> [f32; 12] {
-        let c = self.power;
-        [self.pos.x, self.pos.y, self.pos.z, self.radius, c * self.tint[0], c * self.tint[1], c * self.tint[2], self.cone_cos, self.dir.x, self.dir.y, self.dir.z, 2.0]
-    }
-}
+// SPOTLIGHTS ARE GONE (2026-07-28). `Spotlight`, `SPOT_WARM` and the
+// `N_RESERVED = 16` trailing NEE slots they packed into were the flashlight +
+// muzzle-flash surface of the pre-reset thief/arena game. The flashlight was
+// deleted with `view.rs::update_flashlight` (commit 4f8364c) and nothing has
+// written a spotlight since: the viewer's only call site passed `&[]`, so every
+// frame uploaded 16 zeroed light records and both shader twins carried a
+// `dir.w == 2.0` cone branch no light could take (`scan_lights` writes 0.0 or
+// 1.0 there, and nothing else touches the list). The shade dispatch's
+// `light_count + n_active` arithmetic went with them. A future held light
+// re-adds the reserved region — and must re-add the probe-bake exclusion in the
+// SAME change, because a moving light in the frozen bake is the bug that
+// arithmetic existed to prevent.
 
 /// Everything the game/viewer hands the renderer for one frame. Consumed by
 /// `SceneGpu::record_frame`; nothing else crosses per frame.
@@ -262,26 +243,23 @@ pub struct FrameState<'a> {
     /// so the visible fixture matches the light it casts; slots not addressed
     /// keep their previous (initial = authored base) values.
     pub light_emission: &'a [(LightKey, [f32; 3])],
-    /// Active spotlights, packed into the ≤ N_RESERVED trailing NEE slots.
-    pub spotlights: &'a [Spotlight],
     /// Mover transforms — patched into inst_buf; any change rebuilds the TLAS.
     pub instances: &'a [(InstanceKey, Mat4)],
 }
 
 /// CPU half of the NEE light-list build, factored out of `SceneGpu::build` so
 /// the slot order is testable without a GPU: scan emissive primitives in
-/// PRIMITIVE ORDER (dynamic runs skipped), append the conceptual point
-/// lights, then the N_RESERVED zeroed spotlight slots; join the scene's named
-/// lights (prims AND point lights) onto the resulting slot order.
+/// PRIMITIVE ORDER (dynamic runs skipped), then append the conceptual point
+/// lights; join the scene's named lights (prims AND point lights) onto the
+/// resulting slot order.
 pub struct LightScan {
-    pub lights: Vec<[f32; 12]>, // light_count real records + N_RESERVED reserved
+    pub lights: Vec<[f32; 12]>, // light_count real records (+ one zeroed pad in a lightless scene)
     /// Per real light: (material id or -1, authored base rgb, screen flag —
     /// device lights bake at base into BOTH probe banks). Flicker curves live
     /// in the game; the renderer keeps no animation knowledge.
     pub light_link: Vec<(i32, [f32; 3], bool)>,
     pub names: BTreeMap<String, LightKey>,
     pub light_count: u32,
-    pub reserved_slot_start: usize, // first reserved slot (== light_count)
 }
 
 pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
@@ -378,17 +356,15 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
             return Err(format!("named point light {name:?}: duplicate name"));
         }
     }
-    // reserved spotlight slots: the viewer/game streams transient spotlights
-    // (dir.w = 2.0 → cone falloff in shade.comp) into these trailing entries.
-    // They sit PAST light_count so the frozen probe bake never sees them — a
-    // light that moves must stay direct-only. The shade dispatch passes
-    // light_count + n_active. (Also keeps the binding valid in scenes with
-    // zero real lights.)
-    let reserved_slot_start = lights.len();
-    for _ in 0..N_RESERVED {
+    // A scene with no lights at all would otherwise hand the backends a
+    // ZERO-SIZED storage buffer, which is invalid on both. One zeroed pad
+    // record keeps the binding legal; `light_count` stays 0, so no pass ever
+    // reads it. (The deleted reserved spotlight slots used to cover this by
+    // accident — see the SPOTLIGHTS ARE GONE note above.)
+    if lights.is_empty() {
         lights.push([0.0; 12]);
     }
-    Ok(LightScan { lights, light_link, names, light_count, reserved_slot_start })
+    Ok(LightScan { lights, light_link, names, light_count })
 }
 
 
@@ -413,19 +389,21 @@ fn tlas_geometry(addr: u64) -> vk::AccelerationStructureGeometryKHR<'static> {
         })
 }
 
-pub unsafe fn make_pool(ctx: &Ctx, ntex: u32) -> vk::DescriptorPool {
+pub unsafe fn make_pool(ctx: &Ctx) -> vk::DescriptorPool {
     let sizes = [
         vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 1 },
         vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 3 },
         vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 6 },
-        vk::DescriptorPoolSize { ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER, descriptor_count: ntex.max(1) },
     ];
     ctx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None).unwrap()
 }
 
 /// Write the scene descriptor set: TLAS + the three per-view storage images
 /// (radiance out, albedo G-buffer, world-position G-buffer) + the scene
-/// buffers + bindless textures + the probe cache.
+/// buffers + the probe cache. Binding 6 is VACANT — it held the bindless
+/// base-colour texture array until the glTF path was deleted (2026-07-28);
+/// the later bindings keep their numbers so both shader twins stay untouched
+/// except for the one removed declaration.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn make_set(
     ctx: &Ctx,
@@ -454,7 +432,6 @@ pub unsafe fn make_set(
     let mb = buf(&gpu.mbuf);
     let lb = buf(&gpu.lbuf);
     let pb = buf(&gpu.probe_buf);
-    let tex_info: Vec<vk::DescriptorImageInfo> = gpu.texes.iter().map(|t| vk::DescriptorImageInfo::default().image_view(t.view).sampler(gpu.sampler).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)).collect();
 
     let writes = [
         w_as,
@@ -463,7 +440,6 @@ pub unsafe fn make_set(
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&ib),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&gb),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mb),
-        vk::WriteDescriptorSet::default().dst_set(set).dst_binding(6).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&tex_info),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&lb),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(8).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&alb_info),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(9).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&pos_info),
@@ -481,9 +457,6 @@ pub struct SceneGpu {
     pub mbuf: Buffer,
     pub lbuf: Buffer, // emissive light list for NEE (see build)
     pub light_count: u32,
-    /// Index of the reserved flashlight slot in `lights_cpu` (== light_count;
-    /// past the probe bake's light range, so the frozen cache never sees it).
-    pub reserved_slot_start: usize,
     // per-frame light streaming (record_frame): CPU shadows of lbuf/mbuf, the
     // per-light link (material id or -1, base rgb, screen flag), and the
     // persistent host-visible staging buffers for the per-frame copies
@@ -492,8 +465,6 @@ pub struct SceneGpu {
     pub light_link: Vec<(i32, [f32; 3], bool)>,
     pub light_stage: Buffer,
     pub mat_stage: Buffer,
-    pub texes: Vec<GpuTex>,
-    pub sampler: vk::Sampler,
     pub blas_list: Vec<(vk::AccelerationStructureKHR, Buffer, Buffer)>,
     pub tlas: vk::AccelerationStructureKHR,
     pub tlas_buf: Buffer,
@@ -509,9 +480,6 @@ pub struct SceneGpu {
     /// CPU shadow of each run's last-patched transform: `record_frame` skips
     /// the patch (and the TLAS rebuild) when a mover didn't actually move.
     dyn_shadow: Vec<Mat4>,
-    /// Spotlights packed into the reserved trailing slots by the last
-    /// `record_frame` — the shade dispatch passes `light_count + n_spot_active`.
-    pub n_spot_active: u32,
     /// An instance transform or visibility mask changed since the last
     /// recorded rebuild; `record_frame` consumes it.
     pub tlas_dirty: bool,
@@ -557,7 +525,7 @@ pub struct SceneGpu {
 }
 
 impl SceneGpu {
-    /// Upload scene buffers + textures, build one BLAS per primitive + a TLAS,
+    /// Upload the scene buffers, build one BLAS per primitive + a TLAS,
     /// and create the shade + probe compute pipelines + descriptor layout.
     pub unsafe fn build(ctx: &Ctx, scene: &Scene, probe_spacing: f32) -> Result<SceneGpu, Box<dyn std::error::Error>> {
         let vbuf = ctx.device_local(&scene.vertices, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
@@ -568,7 +536,7 @@ impl SceneGpu {
 
         // ---- NEE light list (scan factored into `scan_lights` — slot order
         // pinned by CPU tests) + the scene's name → handle joins
-        let LightScan { lights, light_link, names: light_names, light_count, reserved_slot_start } = scan_lights(scene)?;
+        let LightScan { lights, light_link, names: light_names, light_count } = scan_lights(scene)?;
         // TRANSFER_DST so record_frame can stream the per-frame light state in
         let lbuf = ctx.device_local(&lights, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
@@ -576,16 +544,6 @@ impl SceneGpu {
         let mat_stage = ctx.create_buffer(std::mem::size_of_val(&scene.materials[..]) as u64, vk::BufferUsageFlags::TRANSFER_SRC, host);
         let lights_cpu = lights.clone();
         let mats_cpu = scene.materials.clone();
-
-        let mut texes: Vec<GpuTex> = scene.images.iter().map(|im| ctx.upload_texture(im)).collect();
-        if texes.is_empty() {
-            let white = scene::LoadedImage { width: 1, height: 1, pixels: vec![255, 255, 255, 255] };
-            texes.push(ctx.upload_texture(&white));
-        }
-        let sampler = ctx.device.create_sampler(
-            &vk::SamplerCreateInfo::default().mag_filter(vk::Filter::NEAREST).min_filter(vk::Filter::NEAREST).address_mode_u(vk::SamplerAddressMode::REPEAT).address_mode_v(vk::SamplerAddressMode::REPEAT),
-            None,
-        )?;
 
         // ---- BLAS per primitive ----
         let as_storage = vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
@@ -675,7 +633,6 @@ impl SceneGpu {
             dslb(3, vk::DescriptorType::STORAGE_BUFFER, 1), // indices
             dslb(4, vk::DescriptorType::STORAGE_BUFFER, 1), // geom infos
             dslb(5, vk::DescriptorType::STORAGE_BUFFER, 1), // materials
-            dslb(6, vk::DescriptorType::COMBINED_IMAGE_SAMPLER, texes.len() as u32),
             dslb(7, vk::DescriptorType::STORAGE_BUFFER, 1), // NEE lights
             dslb(8, vk::DescriptorType::STORAGE_IMAGE, 1), // albedo G-buffer (tonemap demodulation)
             dslb(9, vk::DescriptorType::STORAGE_IMAGE, 1), // world-position G-buffer (tonemap outline)
@@ -710,7 +667,7 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, reserved_slot_start, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, texes, sampler, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, n_spot_active: 0, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), roll_box: None, roll_frames: 0, roll_ray: 0, roll_prime: false, roll_n: 256, roll_k: 8, probes_baked: false })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), roll_box: None, roll_frames: 0, roll_ray: 0, roll_prime: false, roll_n: 256, roll_k: 8, probes_baked: false })
     }
 
     /// Patch a named dynamic run's instance transform in the host-visible
@@ -736,15 +693,15 @@ impl SceneGpu {
     }
 
     /// Record one frame's scene-state update, composing the existing calls in
-    /// the existing order: lights CPU pass (game-authored emission + reserved
-    /// spotlight slots) → patch mover instance transforms → stream lights/
+    /// the existing order: lights CPU pass (game-authored emission) → patch
+    /// mover instance transforms → stream lights/
     /// materials to the device → TLAS rebuild iff anything moved. Recorded
     /// command order and barriers are identical to the old viewer-driven
     /// sequence (practicals upload → TLAS rebuild → the caller's shade
     /// dispatch). Caller must hold the in-flight fence: this writes
     /// host-visible memory the GPU reads.
     pub unsafe fn record_frame(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, fs: &FrameState<'_>) {
-        self.n_spot_active = frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, self.reserved_slot_start, fs);
+        frame_lights_cpu(&mut self.lights_cpu, &mut self.mats_cpu, &self.light_link, fs);
         for &(key, m) in fs.instances {
             self.set_instance_transform(ctx, key, m);
         }
@@ -757,8 +714,7 @@ impl SceneGpu {
 
     /// GPU half of the per-frame light streaming: stage `lights_cpu` +
     /// `mats_cpu` and record the copies + barrier into `cmd` (BEFORE the
-    /// shade dispatch). The reserved spotlight slots ride along in
-    /// `lights_cpu`.
+    /// shade dispatch).
     unsafe fn record_practicals_upload(&self, ctx: &Ctx, cmd: vk::CommandBuffer) {
         ctx.upload(&self.light_stage, &self.lights_cpu);
         ctx.upload(&self.mat_stage, &self.mats_cpu);
@@ -774,20 +730,14 @@ impl SceneGpu {
 /// CPU half of `record_frame`, free-function form (no Vulkan): apply the
 /// game-authored per-light emission (the flicker curves live in house-game —
 /// the old renderer-side `compute_practicals` and its hue-kind heuristic are
-/// gone), then the reserved trailing spotlight slots (unused slots zeroed).
-/// Slots not addressed by `light_emission` keep their previous values
+/// gone). Slots not addressed by `light_emission` keep their previous values
 /// (initial = authored base, restored by the bank-1 bake fill) — a scene
-/// that names no lights renders constants. Returns the number of active
-/// spotlights — the shade dispatch adds it to `light_count`; the probe bake
-/// never sees these slots.
+/// that names no lights renders constants.
 ///
-/// DETERMINISM: both passes write FIXED indexed slots — each `(LightKey, rgb)`
-/// updates `lights_cpu[key]` and each spotlight `s` writes
-/// `lights_cpu[reserved_slot_start + s]` — so the result is independent of the
-/// emission order and of how many spotlights packed into the reserved region.
-/// Spotlights share these reserved slots,
-/// capped to `N_RESERVED` by the assert below.
-pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], bool)], reserved_slot_start: usize, fs: &FrameState<'_>) -> u32 {
+/// DETERMINISM: the pass writes FIXED indexed slots — each `(LightKey, rgb)`
+/// updates `lights_cpu[key]` — so the result is independent of the emission
+/// order.
+pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Material], light_link: &[(i32, [f32; 3], bool)], fs: &FrameState<'_>) {
     for &(key, rgb) in fs.light_emission {
         let li = key.0 as usize;
         assert!(li < light_link.len(), "light_emission key {li} past light_count {}", light_link.len());
@@ -799,11 +749,6 @@ pub fn frame_lights_cpu(lights_cpu: &mut [[f32; 12]], mats_cpu: &mut [scene::Mat
             mats_cpu[mid as usize].emissive = [rgb[0], rgb[1], rgb[2], 1.0];
         }
     }
-    assert!(fs.spotlights.len() <= N_RESERVED, "{} spotlights > N_RESERVED {N_RESERVED}", fs.spotlights.len());
-    for s in 0..N_RESERVED {
-        lights_cpu[reserved_slot_start + s] = fs.spotlights.get(s).map(|sp| sp.pack()).unwrap_or([0.0; 12]);
-    }
-    fs.spotlights.len() as u32
 }
 
 impl SceneGpu {
@@ -1182,12 +1127,6 @@ impl SceneGpu {
         ctx.device.destroy_shader_module(self.probe_shader, None);
         ctx.device.destroy_pipeline_layout(self.pipeline_layout, None);
         ctx.device.destroy_descriptor_set_layout(self.set_layout, None);
-        ctx.device.destroy_sampler(self.sampler, None);
-        for t in &self.texes {
-            ctx.device.destroy_image_view(t.view, None);
-            ctx.device.destroy_image(t.image, None);
-            ctx.device.free_memory(t.memory, None);
-        }
         ctx.as_dev.destroy_acceleration_structure(self.tlas, None);
         ctx.destroy_buffer(&self.tlas_buf);
         ctx.destroy_buffer(&self.tlas_scratch);
@@ -1265,10 +1204,7 @@ mod tests {
         s.name_point_light("mmm_point", 0);
         let scan = scan_lights(&s).unwrap();
         assert_eq!(scan.light_count, 3); // 2 emissive prims + 1 point light; dynamic skipped
-        assert_eq!(scan.reserved_slot_start, 3);
-        assert_eq!(scan.lights.len(), 3 + N_RESERVED); // reserved slots appended, zeroed
-        assert_eq!(scan.lights[3], [0.0; 12]);
-        assert_eq!(scan.lights[4], [0.0; 12]);
+        assert_eq!(scan.lights.len(), 3, "the list is exactly the real lights (the reserved spotlight slots are gone)");
         assert_eq!(scan.names["zzz_warm_box"], LightKey(0));
         assert_eq!(scan.names["aaa_screen"], LightKey(1));
         assert_eq!(scan.names["mmm_point"], LightKey(2)); // points slot after every emissive prim
@@ -1301,19 +1237,23 @@ mod tests {
         assert!(scan_lights(&s).is_err());
     }
 
+    /// The DIRECTIONAL FLAG is the whole of `dir.w` now (the spotlight cone
+    /// marker `dir.w == 2.0` is deleted, host and shaders): the scan writes
+    /// 1.0 for a one-sided emitter and 0.0 for an isotropic one, and nothing
+    /// else can write that lane. A future value there needs a branch in BOTH
+    /// shader twins, so pin the range the twins may assume.
     #[test]
-    fn spotlight_packs_the_documented_12float_record() {
-        // exactly the record view.rs::update_flashlight hand-built: warm white
-        // (1.0/0.97/0.88), color.w = cos(outer half-angle), dir.w = 2.0 (the
-        // shade.comp spotlight-cone marker)
-        let (pos, dir) = (Vec3::new(4.2, 0.9, 6.1), Vec3::new(0.6, -0.3, 0.74));
-        let (flash_power, flash_cone) = (2.5f32, 32.0f32);
-        let c = flash_power * 1500.0;
-        let cone_cos = flash_cone.to_radians().cos();
-        let rec = [pos.x, pos.y, pos.z, 0.06, c, c * 0.97, c * 0.88, cone_cos, dir.x, dir.y, dir.z, 2.0];
-        let sp = Spotlight { pos, dir, cone_cos, power: c, radius: 0.06, tint: SPOT_WARM };
-        assert_eq!(sp.pack(), rec);
-        assert_eq!(sp.pack()[11], 2.0);
+    fn the_scan_only_ever_writes_a_zero_or_one_directional_flag() {
+        let mut s = scan_fixture();
+        // closed boxes are isotropic (flag 0); an AUTHORED facing is the other
+        // branch (flag 1) — between them they are every value dir.w can take
+        s.prim_light_dir = vec![[0.0; 3]; 4];
+        s.prim_light_dir[3] = [0.0, 0.0, 1.0];
+        let scan = scan_lights(&s).unwrap();
+        let flags: Vec<f32> = scan.lights.iter().map(|l| l[11]).collect();
+        assert!(flags.iter().all(|&w| w == 0.0 || w == 1.0), "dir.w outside {{0, 1}}: {flags:?}");
+        assert!(flags.contains(&1.0), "the authored facing must set the directional flag");
+        assert!(flags.contains(&0.0), "…and a closed box must stay isotropic");
     }
 
     fn dummy_cam() -> CamFrame {
@@ -1322,17 +1262,13 @@ mod tests {
 
     #[test]
     fn record_frame_cpu_half_mutates_lights_without_vulkan() {
-        // two real lights (slot 0 material-linked) + the reserved slots
+        // two real lights (slot 0 material-linked)
         let light_link = vec![(0i32, [8.0f32, 5.0, 2.0], false), (-1, [3.0, 4.0, 5.0], false)];
-        let reserved_slot_start = 2;
-        let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2 + N_RESERVED];
-        let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, tex_index: -1, _pad: 0 }];
-        let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06, tint: SPOT_WARM };
-        let spots = [sp];
+        let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2];
+        let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, _rsv: 0, _pad: 0 }];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[] };
-        let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs);
-        assert_eq!(n, 1);
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, instances: &[] };
+        frame_lights_cpu(&mut lights, &mut mats, &light_link, &fs);
         // an unaddressed slot keeps its previous values (light 0 holds base);
         // the linked material is untouched too — emission is game-authored,
         // not recomputed renderer-side
@@ -1342,17 +1278,10 @@ mod tests {
         assert_eq!(&lights[1][4..7], &[0.5, 0.6, 0.7]);
         // position/radius/dir of real lights untouched by the whole pass
         assert_eq!(&lights[0][0..4], &[1.0, 2.0, 3.0, 0.5]);
-        // spotlight packed into the first reserved slot, the rest zeroed
-        assert_eq!(lights[reserved_slot_start], sp.pack());
-        assert_eq!(lights[reserved_slot_start + 1], [0.0; 12]);
-        // next frame without the spotlight: the slot zeroes again
-        let fs2 = FrameState { spotlights: &[], ..fs };
-        assert_eq!(frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs2), 0);
-        assert_eq!(lights[reserved_slot_start], [0.0; 12]);
         // a material-linked override drives the fixture's emissive with it
         let emis2 = [(LightKey(0), [0.1f32, 0.2, 0.3])];
-        let fs3 = FrameState { light_emission: &emis2, ..fs2 };
-        frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs3);
+        let fs3 = FrameState { light_emission: &emis2, ..fs };
+        frame_lights_cpu(&mut lights, &mut mats, &light_link, &fs3);
         assert_eq!(&lights[0][4..7], &[0.1, 0.2, 0.3]);
         assert_eq!(mats[0].emissive, [0.1, 0.2, 0.3, 1.0]);
         assert_eq!(&lights[1][4..7], &[0.5, 0.6, 0.7], "stays at its last value");

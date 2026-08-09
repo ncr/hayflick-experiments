@@ -16,12 +16,6 @@ pub struct Buffer {
     pub address: u64,
 }
 
-pub struct GpuTex {
-    pub image: vk::Image,
-    pub memory: vk::DeviceMemory,
-    pub view: vk::ImageView,
-}
-
 pub struct Ctx {
     pub device: ash::Device,
     pub as_dev: ash::khr::acceleration_structure::Device,
@@ -97,54 +91,6 @@ impl Ctx {
         self.device.wait_for_fences(&[fence], true, u64::MAX).unwrap();
         self.device.destroy_fence(fence, None);
         self.device.free_command_buffers(self.pool, &[cmd]);
-    }
-
-    /// Upload an RGBA8 image as a sampled texture. Base-colour textures are
-    /// sRGB-encoded (glTF spec), so the image is created with an SRGB format —
-    /// sampling converts to linear in hardware, matching what `hex_linear`
-    /// does for flat colours.
-    pub unsafe fn upload_texture(&self, img: &crate::scene::LoadedImage) -> GpuTex {
-        let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-        let staging = self.create_buffer(img.pixels.len() as u64, vk::BufferUsageFlags::TRANSFER_SRC, host);
-        self.upload(&staging, &img.pixels);
-        let format = vk::Format::R8G8B8A8_SRGB;
-        let image = self
-            .device
-            .create_image(
-                &vk::ImageCreateInfo::default()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(format)
-                    .extent(vk::Extent3D { width: img.width, height: img.height, depth: 1 })
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .tiling(vk::ImageTiling::OPTIMAL)
-                    .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
-                    .initial_layout(vk::ImageLayout::UNDEFINED),
-                None,
-            )
-            .unwrap();
-        let req = self.device.get_image_memory_requirements(image);
-        let memory = self
-            .device
-            .allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(find_memory_type(&self.mem_props, req.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL)), None)
-            .unwrap();
-        self.device.bind_image_memory(image, memory, 0).unwrap();
-        let range = vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 };
-        self.one_time(|cmd| {
-            barrier(&self.device, cmd, image, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER);
-            let region = vk::BufferImageCopy::default()
-                .image_subresource(vk::ImageSubresourceLayers { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, base_array_layer: 0, layer_count: 1 })
-                .image_extent(vk::Extent3D { width: img.width, height: img.height, depth: 1 });
-            self.device.cmd_copy_buffer_to_image(cmd, staging.buffer, image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
-            barrier(&self.device, cmd, image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::SHADER_READ, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COMPUTE_SHADER);
-        });
-        self.destroy_buffer(&staging);
-        let view = self
-            .device
-            .create_image_view(&vk::ImageViewCreateInfo::default().image(image).view_type(vk::ImageViewType::TYPE_2D).format(format).subresource_range(range), None)
-            .unwrap();
-        GpuTex { image, memory, view }
     }
 }
 

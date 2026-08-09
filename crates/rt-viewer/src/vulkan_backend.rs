@@ -349,7 +349,7 @@ impl VulkanBackend {
         });
 
         // descriptor sets
-        let scene_pool = make_pool(&self.ctx, self.gpu.texes.len() as u32);
+        let scene_pool = make_pool(&self.ctx);
         let scene_set = make_set(&self.ctx, &self.gpu, scene_pool, color.2, albedo.2, posg.2);
         let tone_pool = {
             let sizes = [vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 4 }];
@@ -550,7 +550,7 @@ impl RenderBackend for VulkanBackend {
             let env = self.env;
             self.gpu.roll_step(&self.ctx, set, &env);
         }
-        let light_count = self.gpu.light_count as i32 + self.gpu.n_spot_active as i32;
+        let light_count = self.gpu.light_count as i32;
         // fp.env = the demo morph's per-frame sun/sky (else the baked scene env)
         let env = fp.env.unwrap_or(self.env).dimmed(fp.sky_dim);
         let mut push = ShadePush::new(&fp.fs.cam, low_w, low_h, &env, fp.fs.room_lights, light_count, fp.ao, fp.ao_r, fp.ao_n, fp.debug);

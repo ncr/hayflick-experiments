@@ -37,7 +37,7 @@
 //! there one gate slid five fixed windows together.
 //!
 //! **CAUSES, THEN LAYERS, THEN PINS.** [`Story`] says what happened to the wall
-//! in three words; [`derive`] turns that into the five layer amounts through a
+//! in three words; [`derive()`] turns that into the five layer amounts through a
 //! table small enough to hold in your head; and [`Pins`] overrides any of them
 //! outright. The short path stays short ("this street is `weather: 0.55`"), and
 //! the bench's "one effect and nothing else" is one line. Crucially `derive` is
@@ -53,14 +53,7 @@
 //! as arithmetic — which is the only reason a claim like "an amount is an area"
 //! can be pinned at all.
 
-// STEP 2 OF THE ROUND: this module is deliberately unconsumed. It is the phase
-// gate — its `an_amount_is_an_area` measurement decides whether the model's one
-// promise holds before anything is built on top of it. The consumers arrive in
-// the next steps (`crack_geom` takes `Sheet::geom`, the material streamer takes
-// `Sheet::paint`), and this allow comes off with them.
-#![allow(dead_code)]
-
-use crate::crack_geom::{hash13, mixf, smoothstep};
+use crate::field::{hash13, mixf, smoothstep};
 use glam::Vec3;
 
 // ---------------------------------------------------------------------------
@@ -70,7 +63,7 @@ use glam::Vec3;
 /// Three CAUSES, each writing a DISJOINT set of layers: `weather` writes the
 /// four skin layers, `settlement` writes only breaks, `cover_loss` writes only
 /// spall. Nothing writes two causes' layers — that disjointness is what makes
-/// the [`derive`] table legible rather than a second set of hidden couplings.
+/// the [`derive()`] table legible rather than a second set of hidden couplings.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Story {
     pub weather: f32,
@@ -168,17 +161,6 @@ pub fn banded(field: f32, codes: [u32; 2], y01: f32) -> f32 {
 // 2. The layers
 // ---------------------------------------------------------------------------
 
-/// Which GPU cost a layer's dial carries. Reported in the panel FOOTER, never
-/// used to decide where a row lives: a builder should find a dial by what it
-/// does, not by what it costs.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Class {
-    /// Rides the per-frame material stream — live, free.
-    Paint,
-    /// Needs a scene rebuild (and a probe refresh) on release.
-    Geometry,
-}
-
 /// SIX layers, ONE unit: the fraction of this wall's face the layer covers.
 /// Homogeneous on purpose — a COUNT does not live in here (see [`Breaks`]),
 /// because a heterogeneous array is exactly how the old dial set acquired names
@@ -186,7 +168,7 @@ pub enum Class {
 ///
 /// MUD (2026-07-27, the effect-system round D — the first NEW effect through
 /// the whole contract) is the odd citizen in two declared ways: it is
-/// PURE-PIN — [`derive`] never writes it, because splash-back mud is
+/// PURE-PIN — [`derive()`] never writes it, because splash-back mud is
 /// environmental, not a product of the three causes, so the PIN gesture *is*
 /// its authoring — and it is not DAMAGE-gated: it draws in its own splash
 /// band ([`WallSpec::mud_top`]) through its own story-seeded breakup noise.
@@ -221,12 +203,6 @@ impl Layer {
     pub const fn index(self) -> usize {
         self as usize
     }
-    pub const fn class(self) -> Class {
-        match self {
-            Layer::Stain | Layer::Web | Layer::Mud => Class::Paint,
-            _ => Class::Geometry,
-        }
-    }
 }
 
 /// One break through the WHOLE parent run — a COUNT and a PLACE, with no
@@ -244,6 +220,10 @@ impl Breaks {
     /// Three, because a fourth piece of a wall is rubble and the game has a
     /// separate mechanism for that (the wall-smash demo).
     pub const MAX: u8 = 3;
+    /// No break at all — the same value `Breaks::default()` gives, named for
+    /// the generator tests that spell a sheet out by hand. Test-only: a level
+    /// says "no break" by leaving the count at zero.
+    #[cfg(any(test, feature = "testing"))]
     pub const NONE: Breaks = Breaks { count: 0, at: None };
 
     /// Break `j` lands here, as a fraction of the run's length.
@@ -341,7 +321,7 @@ impl Shells {
 }
 
 /// Amounts the author (or a panel drag) has taken over. `None` = use the value
-/// [`derive`] produced. This is how a bench wall gets ONE effect and nothing
+/// [`derive()`] produced. This is how a bench wall gets ONE effect and nothing
 /// else, and how a real wall gets "old, but no chips at all".
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Pins {
@@ -364,10 +344,6 @@ impl Pins {
     }
     pub fn get_breaks(&self) -> Option<Breaks> {
         self.breaks
-    }
-    /// Every layer this wall has taken over, for the panel's PIN markers.
-    pub fn pinned(&self) -> impl Iterator<Item = Layer> + '_ {
-        Layer::ALL.into_iter().filter(|l| self.area[l.index()].is_some())
     }
 }
 
@@ -422,7 +398,7 @@ impl Pattern {
 }
 
 /// Plate size below which NO veneer is emitted at all — the face stays one
-/// flush plate ([`crate::crack_geom`] applies it, for every pattern, in one
+/// flush plate (`rt_viewer::crack_geom` applies it, for every pattern, in one
 /// place).
 ///
 /// A true off-stop matters because without one "no plates" is not a reachable
@@ -555,7 +531,7 @@ impl WallSpec {
 /// A level's whole wear authoring: a base story every wall starts from, a
 /// spread between runs, and the walls that say something different.
 ///
-/// Since 2026-07-27 this is FILE data (`crate::wear_file`), not const data:
+/// Since 2026-07-27 this is FILE data (`rt_viewer::wear_file`), not const data:
 /// the `&'static` slices stay because a wear file is parsed once per process
 /// and leaked — every consumer keeps reading plain shared references.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -581,21 +557,15 @@ pub struct WallAt {
 impl WallAt {
     /// The negative control: no story, no pins, nothing built. Without one in
     /// frame "aged" quietly becomes the level's base tone.
+    ///
+    /// TEST-ONLY since the wear files (2026-07-27): a shipped level spells a
+    /// pristine wall as a bare `wall <x> <z> <name>` line with no statements
+    /// under it, and `wear_file` builds the [`WallSpec::PRISTINE`] default
+    /// directly. The constructor survives because the parser's own round-trip
+    /// test and the addressing tests need a wall with nothing on it.
+    #[cfg(any(test, feature = "testing"))]
     pub const fn pristine(at: (f32, f32), label: &'static str) -> WallAt {
         WallAt { at, label, spec: WallSpec::PRISTINE }
-    }
-    /// ONE effect, nothing else — the whole effect-catalogue vocabulary in one
-    /// line. Every other layer is pinned to zero, so this cannot be
-    /// contaminated by the base story the way the bench's specimens could.
-    pub const fn only(at: (f32, f32), label: &'static str, l: Layer, v: f32) -> WallAt {
-        let mut pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(Breaks { count: 0, at: None }) };
-        pin.area[l.index()] = Some(v);
-        WallAt { at, label, spec: WallSpec { pin, ..WallSpec::PRISTINE } }
-    }
-    /// ONE break, nothing else.
-    pub const fn only_breaks(at: (f32, f32), label: &'static str, b: Breaks) -> WallAt {
-        let pin = Pins { area: [Some(0.0); Layer::N], breaks: Some(b) };
-        WallAt { at, label, spec: WallSpec { pin, ..WallSpec::PRISTINE } }
     }
 }
 
@@ -668,7 +638,7 @@ pub fn derive(s: Story) -> ([f32; Layer::N], Breaks) {
     )
 }
 
-/// The amounts and breaks a wall actually gets: [`derive`] from its story, then
+/// The amounts and breaks a wall actually gets: [`derive()`] from its story, then
 /// every [`Pins`] entry on top. One function, so "what is this wall's cracks
 /// amount" has exactly one answer.
 pub fn resolve(spec: &WallSpec) -> ([f32; Layer::N], Breaks) {
@@ -699,23 +669,24 @@ pub const LATTICE: f32 = 0.1;
 /// origin) — the machinery it replaces sampled and sorted the same field three
 /// times per rebuild and cached it nowhere.
 pub struct RunField {
+    /// The whole face's samples, ascending — so the extremes are `sorted`'s two
+    /// ends and are not stored a second time (the tests that assert the code
+    /// range brackets a run read them from here).
     sorted: Vec<f32>,
-    pub lo: f32,
-    pub hi: f32,
 }
 
 impl RunField {
-    /// THE FIELD — [`crate::crack_geom::dmg_field`] itself: one function shared
-    /// with the geometry generator (and mirrored by both shader twins, pinned
-    /// by the source-reading guard in `crate::wear`), so the solver's
-    /// thresholds, the built plates and the painted gates are three readers of
-    /// ONE definition by construction. The per-wall `Origin` bias that used to
-    /// sit on top is gone (2026-07-27): it moved the SOLVED THRESHOLD but never
-    /// reached the field on either host or shader — a knob that changed how
-    /// much instead of where. The band mask (effect-system round C) is the
-    /// honest version of "damage collects HERE".
+    /// THE FIELD — [`crate::field::dmg_field`] itself: one function shared with
+    /// the geometry generator (`crack_geom`, and mirrored by both shader twins,
+    /// pinned by the source-reading guard in `rt_viewer`'s `wear`), so the
+    /// solver's thresholds, the built plates and the painted gates are three
+    /// readers of ONE definition by construction. The per-wall `Origin` bias
+    /// that used to sit on top is gone (2026-07-27): it moved the SOLVED
+    /// THRESHOLD but never reached the field on either host or shader — a knob
+    /// that changed how much instead of where. The band mask (effect-system
+    /// round C) is the honest version of "damage collects HERE".
     pub fn at(story: f32, u: f32, y: f32) -> f32 {
-        crate::crack_geom::dmg_field(story * 7.0 + 3.0, u, y)
+        crate::field::dmg_field(crate::field::dmg_seed(story), u, y)
     }
 
     /// Sample a run's whole face on [`LATTICE`] and sort — the BANDED field
@@ -737,8 +708,7 @@ impl RunField {
             }
         }
         sorted.sort_by(|a, b| a.partial_cmp(b).expect("the damage field is finite"));
-        let (lo, hi) = (sorted[0], sorted[sorted.len() - 1]);
-        RunField { sorted, lo, hi }
+        RunField { sorted }
     }
 
     /// The threshold that puts `frac` of THIS face above it.
@@ -766,6 +736,16 @@ impl RunField {
     pub fn coverage(&self, t: f32) -> f32 {
         let above = self.sorted.iter().filter(|v| **v >= t).count();
         above as f32 / self.sorted.len() as f32
+    }
+
+    /// The field's `(min, max)`, read off the sorted samples themselves — they
+    /// are not stored a second time. TEST-ONLY, and there are only two questions
+    /// anything asks of them, both about whether the gate CODE RANGE brackets a
+    /// run; the tests that ask them measure over the real shipped levels, so they
+    /// live in `rt-viewer` and reach `sorted` through here.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn extremes(&self) -> (f32, f32) {
+        (self.sorted[0], self.sorted[self.sorted.len() - 1])
     }
 }
 
@@ -825,7 +805,7 @@ pub fn gate_quantize(t: f32) -> f32 {
 /// single `age` knob, so "stains spread wider than the crazing" was expressible
 /// and "stains darker than the crazing" was not. Both halves now come off the
 /// layer's own amount, and the strengths ride `Material._pad`'s first two knob
-/// lanes (`crate::crack::pad_bits`) where four knobs used to.
+/// lanes (`rt_viewer::crack::pad_bits`) where four knobs used to.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Paint {
     /// WHERE: threshold codes ([`gate_code`] units), the effect word's lanes 0/1.
@@ -848,10 +828,10 @@ pub struct Paint {
 }
 
 /// Mud's breakup noise — the shader twins' `mudN`, one definition
-/// ([`crate::crack_geom::fbm`] over the face coords), sampled by the solver
+/// ([`crate::field::fbm`] over the face coords), sampled by the solver
 /// below and drawn by both twins.
 pub fn mud_noise(story: f32, u: f32, y: f32) -> f32 {
-    crate::crack_geom::fbm(Vec3::new(u * 2.0, y * 2.0, story * 3.0 + 17.0))
+    crate::field::fbm(Vec3::new(u * 2.0, y * 2.0, story * 3.0 + 17.0))
 }
 
 /// SOLVE mud's threshold code for one run: the quantile of the run's OWN
@@ -941,11 +921,20 @@ impl Geom {
 }
 
 /// One wall, compiled: what the author asked for, and what both consumers get.
+///
+/// A sheet does NOT carry its run index: [`compile_specs`] returns one sheet per
+/// run IN RUN ORDER, so the position IS the run, and a second copy of it could
+/// only ever disagree. The consumers index the slice (`crack_geom::Wear::of`,
+/// `CrackLab.sheets`) and the runtime's own labels live beside it in
+/// `CrackLab.label`.
 #[derive(Clone, Debug)]
 pub struct Sheet {
+    /// The authored wall's name. TEST-ONLY: at runtime the labels ride
+    /// `CrackLab.label` (which the IDE hierarchy and the wear-file save read),
+    /// and a [`Miss`] carries its own copy — so nothing in the render path asks
+    /// a sheet what it is called. The compile-time authoring checks do.
+    #[cfg(any(test, feature = "testing"))]
     pub label: &'static str,
-    /// Index into the level's run list.
-    pub run: usize,
     /// The resolved amounts, for the panel's derived column and the tests.
     pub area: [f32; Layer::N],
     pub breaks: Breaks,
@@ -965,7 +954,7 @@ pub struct Sheet {
 /// Two kinds, and they are reported differently because they are different
 /// questions. [`Self::NoWall`] and [`Self::Duplicate`] are TYPOS — the author
 /// addressed a wall that is not there, or two names claim one run — and nothing
-/// downstream can be right, so [`compile`] fails on them. The other two are
+/// downstream can be right, so [`specs_of`] fails on them. The other two are
 /// honoured WITH A DIFFERENCE: the wall renders, and the difference is attached
 /// to that wall's [`Sheet::notes`] for the panel to print in its row. Failing
 /// the level for those would mean a builder could not ask for the top of a
@@ -1004,16 +993,67 @@ impl RunRect {
     /// facade. Quantized to the authoring grid so it cannot wobble on a
     /// float-exact rebuild.
     pub fn story(&self) -> f32 {
-        crate::wear::story_key(self.lo, self.hi)
+        story_key(self.lo, self.hi)
     }
-    fn length(&self) -> f32 {
+    /// Run length — the long side, and with [`Self::thick`] the whole of a
+    /// run's extent. Public on its merits, not as a test affordance: a crate
+    /// whose subject IS the wall owes its callers the wall's dimensions, and
+    /// both are read inside this module by the relief cap and the shell grid.
+    /// (Contrast the genuinely authoring-only helpers — `compile`,
+    /// `WallAt::pristine`, `Sheet::label`, `Breaks::NONE` — which are behind
+    /// the `testing` feature because nothing but a test has business calling
+    /// them.)
+    pub fn length(&self) -> f32 {
         (self.hi.x - self.lo.x).max(self.hi.z - self.lo.z)
     }
     /// Slab thickness — the short side. Every depth budget in the renderer is
     /// measured against it, so the authoring model has to know it too.
-    fn thick(&self) -> f32 {
+    pub fn thick(&self) -> f32 {
         (self.hi.x - self.lo.x).min(self.hi.z - self.lo.z)
     }
+}
+
+/// The STORY KEY of a wall RUN: one seed shared by every pier the run was cut
+/// into. A pure function of the AUTHORED slab (`Pier::run_lo`/`run_hi`), so the
+/// three panels of one facade agree while the facade round the corner — a
+/// different `wall_slab` call, a different rect — does not.
+///
+/// Quantized to the 0.1-wu authoring grid (the game projection's lattice: see
+/// the pixel-perfect contract) before hashing, so the key can never wobble on a
+/// float-exact rebuild. `y` is not hashed: every authored run spans 0..WALL_TOP,
+/// so it carries no identity.
+///
+/// The value is `(hash & 255) × 0.618` — DELIBERATELY the same distribution and
+/// 0..157.5 range as the `(material_id & 255) × 0.618` per-panel seed it
+/// replaces, so every field seeded off it ([`crate::field::dmg_seed`] for the
+/// damage fbm, `story+5`/`story+9` for the craze lattices) lands in the numeric
+/// regime those fields were tuned in. A low-byte collision would merely give two
+/// facades the same story, which is harmless; the gym's runs are pinned distinct
+/// by a test.
+///
+/// It lives HERE, next to the [`RunRect`] whose rect it hashes, because a value
+/// with one meaning gets one home: `rt_viewer`'s `wear` — which STAMPS it into
+/// `Material.base_color[3]` for the shade pass — used to own the definition while
+/// this module reached across for it, so the authoring model depended on the
+/// material codec to know what a run is called.
+pub fn story_key(run_lo: Vec3, run_hi: Vec3) -> f32 {
+    (run_hash(run_lo, run_hi, 0) & 255) as f32 * 0.618
+}
+
+/// FNV-1a over a RUN's quantized authoring rect. `salt` is here to separate
+/// INDEPENDENT per-run draws so two of them can never alias into the same value;
+/// only salt 0 (the story key) has a caller today — the field level's damaged
+/// fraction was the second one, and solved thresholds retired it. Salt 0
+/// reproduces the story key's original hash byte for byte
+/// (`0 ^ basis == basis`), which is load-bearing: the key seeds every damage
+/// pattern in the level, every break in it, and the probe cache hashes it.
+fn run_hash(run_lo: Vec3, run_hi: Vec3, salt: u32) -> u32 {
+    let mut h: u32 = 0x811c_9dc5 ^ salt;
+    for v in [run_lo.x, run_lo.z, run_hi.x, run_hi.z] {
+        h ^= (v * 10.0).round() as i32 as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
 }
 
 /// The per-run story spread: a deterministic ± offset so two runs of one level
@@ -1070,7 +1110,14 @@ pub fn specs_of(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<(&'static str, W
         .collect())
 }
 
-/// Compile a level's authored wear against its runs.
+/// Compile a level's authored wear against its runs — [`specs_of`] then
+/// [`compile_specs`], the two halves in one call.
+///
+/// TEST-ONLY: the runtime keeps the halves apart on purpose (`CrackLab::load`
+/// resolves once and recompiles the specs on every edit, so a live drag never
+/// re-reads the level). What needs both at once is the check that every shipped
+/// level ADDRESSES walls that exist, and that check is a test.
+#[cfg(any(test, feature = "testing"))]
 pub fn compile(runs: &[RunRect], lw: &LevelWear) -> Result<Vec<Sheet>, Vec<Miss>> {
     Ok(compile_specs(runs, &specs_of(runs, lw)?))
 }
@@ -1130,8 +1177,8 @@ pub fn compile_specs(runs: &[RunRect], specs: &[(&'static str, WallSpec)]) -> Ve
             Pattern::Mosaic { jitter } => [q(jitter), 0, 0],
         };
         sheets.push(Sheet {
+            #[cfg(any(test, feature = "testing"))]
             label,
-            run: i,
             area,
             breaks,
             gate,
@@ -1227,141 +1274,19 @@ fn compile_shells(shells: &Shells, r: &RunRect, label: &'static str, notes: &mut
     (code, u_out, y_out, back_out)
 }
 
+/// The claims that are ARITHMETIC — provable about the model itself, on data
+/// this module can spell out.
+///
+/// The other eleven measure a property over the REAL SHIPPED LEVELS: they build
+/// the gym (or the catalogue) through `gym_scene::build_gym`, which needs a
+/// `Scene`, which is the GPU crate. Those stayed in `rt-viewer`
+/// (`rt-viewer/src/wall_tests.rs`) and call back in through `wear_core::wall::…`
+/// — they are integration tests by nature, and the crate split is what made that
+/// honest. Rewriting one of them onto a synthetic fixture to bring it along would
+/// have deleted exactly the property that makes it worth having.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every RUN of both shipped levels, as the authoring model sees them.
-    fn runs_of(spec: &house_game::gym::sim::GymLevel) -> Vec<RunRect> {
-        let (_scene, meta) = crate::gym_scene::build_gym(spec, &crate::look::POLANA, true);
-        let mut out: Vec<RunRect> = Vec::new();
-        for p in &meta.piers {
-            if !out.iter().any(|r| (r.lo - p.run_lo).length() < 1e-4 && (r.hi - p.run_hi).length() < 1e-4) {
-                out.push(RunRect { lo: p.run_lo, hi: p.run_hi });
-            }
-        }
-        out
-    }
-    fn both_levels() -> Vec<(&'static str, Vec<RunRect>)> {
-        vec![
-            ("gym", runs_of(&house_game::gym::sim::gym_level())),
-            ("catalogue", runs_of(&house_game::gym::sim::catalogue_level())),
-        ]
-    }
-
-    /// Continuous coverage, measured on a lattice 4× finer than the one the
-    /// threshold was solved on — the honest question, since the promise is
-    /// about the FACE and not about the sample set.
-    fn true_coverage(r: &RunRect, story: f32, t: f32) -> f32 {
-        let fine = LATTICE * 0.25;
-        let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
-        let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
-        let n = |a: f32, b: f32| ((((b - a) / fine).round()) as usize).max(2);
-        let (nu, ny) = (n(a0, a1), n(r.lo.y, r.hi.y));
-        let mut above = 0usize;
-        for i in 0..nu {
-            let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
-            for j in 0..ny {
-                let y = mixf(r.lo.y, r.hi.y, (j as f32 + 0.5) / ny as f32);
-                if RunField::at(story, u, y) >= t {
-                    above += 1;
-                }
-            }
-        }
-        above as f32 / (nu * ny) as f32
-    }
-
-    /// THE CLAIM THE WHOLE MODEL RESTS ON: an amount is an AREA.
-    ///
-    /// Asked for 0.30, a wall gets 30 % of its face — measured on a lattice 4×
-    /// finer than the one the threshold was solved on, over every run of both
-    /// shipped levels, at several scrub positions (every variant of the field
-    /// must keep the promise, or the scrub dial would be a second intensity
-    /// knob). The test also MEASURES the run-length floor below which the
-    /// promise stops holding and prints it, because that floor is a real
-    /// property of the field (its finest octave is 1.09 × 0.70 wu, so a short
-    /// run simply has fewer independent features than a fine fraction needs)
-    /// and the bench's slabs are 2.2 wu.
-    #[test]
-    fn an_amount_is_an_area() {
-        let mut worst: Vec<(String, f32, f32, f32)> = Vec::new();
-        let mut n = 0;
-        for (level, runs) in both_levels() {
-            for (i, r) in runs.iter().enumerate() {
-                for scrub in [0.0f32, 0.3, 0.8] {
-                    let story = scrub_key(r.story(), scrub);
-                    let f = RunField::of(r.lo, r.hi, story, [0, 0]);
-                    for asked in [0.1f32, 0.3, 0.6, 0.9] {
-                        let got = true_coverage(r, story, gate_quantize(f.threshold(asked)));
-                        worst.push((format!("{level} run {i} ({:.1} wu) scrub {scrub}", r.length()), asked, got, (got - asked).abs()));
-                        n += 1;
-                    }
-                }
-            }
-        }
-        worst.sort_by(|a, b| b.3.total_cmp(&a.3));
-        for (who, asked, got, e) in worst.iter().take(5) {
-            println!("worst: {who} asked {asked:.2} got {got:.2} (err {e:.3})");
-        }
-        assert!(n >= 150, "VACUOUS: only {n} cases");
-        // The quantization alone costs up to GATE_STEP/2 of threshold, which on
-        // a steep part of the field is a few per cent of area; the floor below
-        // is what the measurement above actually produced.
-        let e = worst[0].3;
-        assert!(e < 0.12, "an amount is not an area on {}: asked {:.2}, got {:.2}", worst[0].0, worst[0].1, worst[0].2);
-    }
-
-    /// ZERO IS PROVABLY EMPTY — and it has to be provable, not merely small:
-    /// code 0 is what every material nobody stamped decodes to, so if it caught
-    /// even the field's peak, the whole unaged level would age itself.
-    #[test]
-    fn zero_is_provably_empty() {
-        for (level, runs) in both_levels() {
-            for (i, r) in runs.iter().enumerate() {
-                for scrub in [0.0f32, 0.5, 1.0] {
-                    let f = RunField::of(r.lo, r.hi, scrub_key(r.story(), scrub), [0, 0]);
-                    assert!(f.hi < GATE_EMPTY, "{level} run {i} scrub {scrub}: field max {} reaches the empty gate", f.hi);
-                    assert_eq!(gate_code(f.threshold(0.0)), 0, "{level} run {i}: 'none of it' is not code 0");
-                    assert_eq!(f.coverage(gate_quantize(f.threshold(0.0))), 0.0);
-                }
-            }
-        }
-    }
-
-    /// THE CODE BRACKETS EVERY RUN: 63 steps down from an unreachable high must
-    /// still reach below the field's minimum, or full coverage is unreachable on
-    /// some wall — which is the dead-dial-region defect this codec replaced.
-    #[test]
-    fn the_gate_code_brackets_every_run() {
-        let low = GATE_HI - 63.0 * GATE_STEP;
-        for (level, runs) in both_levels() {
-            for (i, r) in runs.iter().enumerate() {
-                for scrub in [0.0f32, 0.5, 1.0] {
-                    let f = RunField::of(r.lo, r.hi, scrub_key(r.story(), scrub), [0, 0]);
-                    assert!(f.lo > low, "{level} run {i} scrub {scrub}: field min {} is below the lowest code {low}", f.lo);
-                    assert_eq!(gate_code(f.threshold(1.0)), 63, "{level} run {i}: 'all of it' is not the bottom code");
-                    assert_eq!(f.coverage(gate_quantize(f.threshold(1.0))), 1.0, "{level} run {i}: full coverage unreachable");
-                }
-            }
-        }
-    }
-
-    /// MORE IS MORE, per layer per run: coverage monotone in the amount. A
-    /// non-monotone dial is unusable however correct its endpoints are.
-    #[test]
-    fn more_is_more() {
-        for (level, runs) in both_levels() {
-            for (i, r) in runs.iter().enumerate() {
-                let f = RunField::of(r.lo, r.hi, r.story(), [0, 0]);
-                let mut prev = -1.0;
-                for k in 0..=20 {
-                    let got = f.coverage(gate_quantize(f.threshold(k as f32 / 20.0)));
-                    assert!(got >= prev - 1e-6, "{level} run {i}: coverage fell from {prev} to {got} at amount {}", k as f32 / 20.0);
-                    prev = got;
-                }
-            }
-        }
-    }
 
     /// BREAKS NEVER COLLIDE AND NEVER SWAP, at any count and any story.
     ///
@@ -1421,229 +1346,6 @@ mod tests {
         assert_eq!(area[Layer::Spall.index()], SPALL_MAX * 0.4, "cover loss maps onto the reachable area, not onto 1.0");
         assert_eq!(area[Layer::Cracks.index()], 0.0, "cover loss wrote the cracks row");
         assert_eq!(breaks.count, 0);
-    }
-
-    /// SCRUB RE-ROLLS THE FIELD WITHOUT ADDING DAMAGE: at a fixed amount the
-    /// coverage is invariant (solving a threshold per run buys that for EVERY
-    /// seed) while the damaged patch actually MOVES — the whole point of the
-    /// dial. And it is quantized on the 6-bit grid, so a drag inside one step
-    /// changes nothing: the rebuild gate stays quiet by construction.
-    #[test]
-    fn scrub_rerolls_the_field_without_adding_damage() {
-        let runs = runs_of(&house_game::gym::sim::gym_level());
-        let mut moved = 0;
-        for r in &runs {
-            let (a, b) = (scrub_key(r.story(), 0.0), scrub_key(r.story(), 0.6));
-            assert_eq!(a, r.story(), "scrub 0 must be the run's own hash — the wall that shipped");
-            let (fa, fb) = (RunField::of(r.lo, r.hi, a, [0, 0]), RunField::of(r.lo, r.hi, b, [0, 0]));
-            let (ta, tb) = (gate_quantize(fa.threshold(0.30)), gate_quantize(fb.threshold(0.30)));
-            assert!((fa.coverage(ta) - 0.30).abs() < 0.10);
-            assert!((fb.coverage(tb) - 0.30).abs() < 0.10, "a scrubbed wall must keep its amount");
-            // …and the damaged SET moved: count lattice points whose in/out
-            // state changed between the two variants
-            let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
-            let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
-            let (mut diff, mut n) = (0usize, 0usize);
-            let nu = (((a1 - a0) / LATTICE).round() as usize).max(2);
-            let ny = (((r.hi.y - r.lo.y) / LATTICE).round() as usize).max(2);
-            for i in 0..nu {
-                let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
-                for j in 0..ny {
-                    let y = mixf(r.lo.y, r.hi.y, (j as f32 + 0.5) / ny as f32);
-                    diff += ((RunField::at(a, u, y) >= ta) != (RunField::at(b, u, y) >= tb)) as usize;
-                    n += 1;
-                }
-            }
-            if diff as f32 / n as f32 > 0.15 {
-                moved += 1;
-            }
-        }
-        assert!(moved * 2 >= runs.len(), "scrub moved the damage on only {moved} of {} runs", runs.len());
-        // the 6-bit grid: a sub-step drag is the SAME key, a real step is not
-        assert_eq!(scrub_key(7.4, 0.500), scrub_key(7.4, 0.505), "a sub-quantum scrub moved the key");
-        assert_ne!(scrub_key(7.4, 0.500), scrub_key(7.4, 0.530), "a real scrub step did not move the key");
-    }
-
-    /// THE BAND HOLDS THE DAMAGE — and says so when an ask does not fit.
-    ///
-    /// Three claims: the default band is a bit-exact no-op (that is what keeps
-    /// every shipped level byte-stable); a banded wall's solved threshold puts
-    /// its WHOLE area inside the band (the feather is the only spill); and an
-    /// ask larger than the band's own area is honoured with a difference that
-    /// lands in [`Miss::Coarse`] — the honest-limit discipline, not a silent
-    /// clamp.
-    #[test]
-    fn the_band_holds_the_damage_and_says_when_an_ask_does_not_fit() {
-        // the no-op: subtraction leaves in-band values EXACT
-        assert_eq!(band_codes(0.0, 1.0), [0, 0], "the default authoring packs to the empty lanes");
-        for v in [0.0f32, 0.37, 1.16, -0.2] {
-            assert_eq!(banded(v, [0, 0], 0.5), v, "band off must be the raw field, bit for bit");
-        }
-        let runs = runs_of(&house_game::gym::sim::gym_level());
-        // the longest run, so the Coarse tolerance is about the BAND, not the
-        // run being short
-        let r = runs.iter().max_by(|a, b| a.length().total_cmp(&b.length())).expect("the gym has runs");
-        let spec = WallSpec { band: (0.0, 0.45), pin: Pins::NONE.area(Layer::Cracks, 0.20), ..WallSpec::PRISTINE };
-        let sheets = compile_specs(std::slice::from_ref(r), &[("banded", spec)]);
-        let (gate, band) = (sheets[0].gate[Layer::Cracks.index()], band_codes(0.0, 0.45));
-        let story = scrub_key(r.story(), 0.0);
-        // every damaged sample sits inside the band (+ the feather)
-        let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
-        let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
-        let (mut hit, mut n) = (0usize, 0usize);
-        for i in 0..(((a1 - a0) / LATTICE) as usize) {
-            let u = mixf(a0, a1, (i as f32 + 0.5) / ((a1 - a0) / LATTICE));
-            for j in 0..(((r.hi.y - r.lo.y) / LATTICE) as usize) {
-                let y = mixf(r.lo.y, r.hi.y, (j as f32 + 0.5) / ((r.hi.y - r.lo.y) / LATTICE));
-                if banded(RunField::at(story, u, y), band, y / BAND_TOP) >= gate {
-                    hit += 1;
-                    assert!(y / BAND_TOP <= 0.45 + BAND_FEATHER + 1e-3, "damage at {:.2} of the wall height escaped a (0, 0.45) band", y / BAND_TOP);
-                }
-                n += 1;
-            }
-        }
-        let got = hit as f32 / n as f32;
-        assert!((got - 0.20).abs() < 0.08, "a 0.20 ask inside a 0.45 band must still be a 0.20 area, got {got:.3}");
-        assert!(sheets[0].notes.is_empty(), "an ask the band can hold must not be reported: {:?}", sheets[0].notes);
-
-        // an ask the band CANNOT hold: honoured with a difference, and said
-        let over = WallSpec { band: (0.0, 0.45), pin: Pins::NONE.area(Layer::Cracks, 0.90), ..WallSpec::PRISTINE };
-        let sheets = compile_specs(std::slice::from_ref(r), &[("over", over)]);
-        let Some(Miss::Coarse { layer, asked, got, .. }) = sheets[0].notes.iter().find(|m| matches!(m, Miss::Coarse { .. })) else {
-            panic!("a 0.90 ask inside a 0.45 band was obeyed silently: {:?}", sheets[0].notes);
-        };
-        assert_eq!(*layer, Layer::Cracks);
-        assert_eq!(*asked, 0.90);
-        assert!(*got < 0.55, "the band held {got:.2} of the face — it should top out near its own area");
-    }
-
-    /// MUD'S AMOUNT IS AN AREA OF ITS BAND — solved, not calibrated. For every
-    /// gym run and several amounts, the coverage the SHADER will draw (its own
-    /// noise against the decoded 6-bit threshold, measured on a 4× finer
-    /// lattice than the solve) lands on the ask. A global amount→threshold
-    /// curve was the first cut and failed at 1.8×: a splash band holds ~a
-    /// dozen independent noise cells, so per-story coverage was a lottery —
-    /// the exact defect solved thresholds exist to remove.
-    #[test]
-    fn mud_amount_is_an_area_of_its_band() {
-        let runs = runs_of(&house_game::gym::sim::gym_level());
-        let mut worst = (0.0f32, 0.0f32, 0.0f32); // (asked, got, err)
-        for r in &runs {
-            let story = r.story();
-            for asked in [0.2f32, 0.5, 0.8] {
-                let code = mud_code(story, r.lo, r.hi, asked, WallSpec::MUD_TOP);
-                assert!((1..=63).contains(&code), "a live mud ask must never code to 'none'");
-                let t = code as f32 / 63.0; // the shader's decode
-                let run_x = (r.hi.x - r.lo.x) >= (r.hi.z - r.lo.z);
-                let (a0, a1) = if run_x { (r.lo.x, r.hi.x) } else { (r.lo.z, r.hi.z) };
-                let y1 = WallSpec::MUD_TOP * BAND_TOP;
-                let fine = LATTICE * 0.25;
-                let (nu, ny) = (((a1 - a0) / fine) as usize, (y1 / fine) as usize);
-                let mut hit = 0usize;
-                for i in 0..nu {
-                    let u = mixf(a0, a1, (i as f32 + 0.5) / nu as f32);
-                    for j in 0..ny {
-                        hit += (mud_noise(story, u, mixf(0.0, y1, (j as f32 + 0.5) / ny as f32)) > t) as usize;
-                    }
-                }
-                let got = hit as f32 / (nu * ny) as f32;
-                if (got - asked).abs() > worst.2 {
-                    worst = (asked, got, (got - asked).abs());
-                }
-            }
-        }
-        println!("mud worst: asked {:.2} got {:.2}", worst.0, worst.1);
-        assert!(worst.2 < 0.12, "mud asked {:.2} drew {:.2} of its band", worst.0, worst.1);
-        assert_eq!(mud_code(7.4, Vec3::ZERO, Vec3::new(6.0, 2.1875, 0.25), 0.0, 0.35), 0, "no mud = code 0 = the unstamped-material value");
-    }
-
-    /// [`BAND_TOP`] IS the authored wall top. The shader twins hardcode the
-    /// same constant (their mask runs in world space), so if `wall_slab` ever
-    /// grows taller walls this is the assertion that says three places now
-    /// disagree about what "the top of the band" means.
-    #[test]
-    fn band_top_is_the_authored_wall_top() {
-        assert_eq!(BAND_TOP, crate::gym_scene::WALL_TOP);
-        let runs = runs_of(&house_game::gym::sim::gym_level());
-        assert!(runs.iter().all(|r| r.hi.y == BAND_TOP && r.lo.y == 0.0), "a run does not span 0..BAND_TOP");
-    }
-
-    /// A LEVEL COMPILES OR SAYS WHY. A world point that hits no run, or two
-    /// names on one run, is an authoring mistake that must fail loudly — the
-    /// version this replaces printed a line to stderr and rendered the wall
-    /// unaged, so "the effect I asked for is not in the shot" had no cause.
-    #[test]
-    fn a_missed_or_duplicated_wall_is_an_error() {
-        let runs = runs_of(&house_game::gym::sim::gym_level());
-        static MISS: [WallAt; 1] = [WallAt::pristine((99.0, 99.0), "nowhere")];
-        static DUP: [WallAt; 2] = [WallAt::pristine((13.0, 10.0), "a"), WallAt::pristine((14.0, 10.0), "b")];
-        let lw = |w: &'static [WallAt]| LevelWear { base: Story::ZERO, spread: 0.0, walls: w };
-        assert!(matches!(compile(&runs, &lw(&MISS)), Err(ref m) if matches!(m[0], Miss::NoWall { .. })));
-        assert!(matches!(compile(&runs, &lw(&DUP)), Err(ref m) if matches!(m[0], Miss::Duplicate { .. })), "two names on the z=10 garden wall must collide");
-        // …and a clean level compiles, one sheet per run
-        static OK: [WallAt; 1] = [WallAt::pristine((13.0, 10.0), "control")];
-        let sheets = compile(&runs, &lw(&OK)).expect("a clean level compiles");
-        assert_eq!(sheets.len(), runs.len(), "one sheet per run");
-        assert_eq!(sheets.iter().filter(|s| s.label == "control").count(), 1);
-    }
-
-    /// A DIAL THE GEOMETRY CANNOT HONOUR IS CLAMPED AND SAID SO — never
-    /// silently obeyed-ish. The relief knob's top would leave a spalling wall no
-    /// core to hold its reinforcement mat, and what used to happen is that the
-    /// steel simply stopped appearing, with nothing anywhere saying why (it was
-    /// written up as an "honest limit" in the module docs, which is not the same
-    /// as telling the person holding the slider).
-    ///
-    /// Both halves are pinned, because a cap that fires when it should not is
-    /// the same defect the other way round: a wall with no spall keeps the whole
-    /// travel, since the constraint belongs to the effect that needs the core.
-    #[test]
-    fn a_relief_past_the_cap_is_clamped_and_said() {
-        let runs = runs_of(&house_game::gym::sim::gym_level());
-        const DEEP: Shape = Shape { relief: 1.0, ..Shape::DEFAULT };
-        const WALLS: [WallAt; 2] = [
-            WallAt { at: (13.0, 10.0), label: "deep and spalling", spec: WallSpec { story: Story { weather: 0.0, settlement: 0.0, cover_loss: 1.0 }, shape: DEEP, ..WallSpec::PRISTINE } },
-            WallAt { at: (12.0, 4.0), label: "deep and sound", spec: WallSpec { story: Story { weather: 0.9, settlement: 0.0, cover_loss: 0.0 }, shape: DEEP, ..WallSpec::PRISTINE } },
-        ];
-        let lw = LevelWear { base: Story::ZERO, spread: 0.0, walls: &WALLS };
-        let sheets = compile(&runs, &lw).expect("a clamp is not a compile error — the wall renders");
-        let of = |label: &str| sheets.iter().find(|s| s.label == label).expect("both named walls compiled").clone();
-
-        // the spalling wall is capped, and the note carries both numbers
-        let spalling = of("deep and spalling");
-        let thick = runs[sheets.iter().position(|s| s.label == "deep and spalling").unwrap()].thick();
-        assert!(crate::rebar::t_cap(thick) < veneer(1.0, thick), "VACUOUS: relief 1.0 already fits the mat on a {thick}-wu wall");
-        let note = spalling.notes.iter().find(|m| matches!(m, Miss::Clamped { .. })).unwrap_or_else(|| panic!("relief 1.0 on a spalling wall was obeyed silently: {:?}", spalling.notes));
-        let Miss::Clamped { dial, asked, used, .. } = note else { unreachable!() };
-        assert_eq!(*dial, "relief");
-        assert_eq!(*asked, 1.0);
-        assert!(*used < 1.0 && *used > 0.8, "the cap should cost the top of the slider, not most of it: {used:.3}");
-        assert!(veneer(*used, thick) <= crate::rebar::t_cap(thick) + 1e-6, "the clamped relief still leaves the mat nowhere to sit");
-        assert_eq!(spalling.geom.relief, (used * 63.0).round() as u8, "the note says one thing and the geometry gets another");
-
-        // …and the identical relief on a wall with no cover loss is untouched:
-        // the constraint belongs to the effect that needs the core, not to the
-        // relief dial in general
-        let sound = of("deep and sound");
-        assert!(sound.notes.iter().all(|m| !matches!(m, Miss::Clamped { .. })), "a wall with no cover loss was capped: {:?}", sound.notes);
-        assert_eq!(sound.geom.relief, 63, "…and it keeps the whole travel");
-    }
-
-    /// `Geom` IS THE REBUILD GATE: all-integer, so equality means "the built
-    /// mesh is still right". Pinned both ways — a dial move inside one
-    /// quantization step must NOT dirty it, and a move across one must.
-    #[test]
-    fn geom_is_integer_and_moves_only_when_the_mesh_would() {
-        let runs = runs_of(&house_game::gym::sim::gym_level());
-        let g = |grain: f32| {
-            static W: [WallAt; 0] = [];
-            let lw = LevelWear { base: Story { weather: 0.8, ..Story::ZERO }, spread: 0.0, walls: &W };
-            let mut s = compile(&runs, &lw).expect("compiles");
-            s[0].geom.grain = (grain.clamp(0.0, 1.0) * 63.0).round() as u8;
-            s[0].geom
-        };
-        assert_eq!(g(0.500), g(0.505), "a sub-quantum move dirtied the geometry");
-        assert_ne!(g(0.500), g(0.530), "a real move did not dirty the geometry");
     }
 
     /// A SHELL IS A PLACE, and every limit it can hit is a reported one: the

@@ -536,7 +536,7 @@ mod tests {
     // ---- bake_bank_emission (pure) -------------------------------------------
 
     fn mat(emis: [f32; 4]) -> Material {
-        Material { base_color: [1.0; 4], emissive: emis, metallic: 0.0, roughness: 0.5, tex_index: -1, _pad: 0 }
+        Material { base_color: [1.0; 4], emissive: emis, metallic: 0.0, roughness: 0.5, _rsv: 0, _pad: 0 }
     }
 
     #[test]
