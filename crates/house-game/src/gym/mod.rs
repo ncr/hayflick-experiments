@@ -8,11 +8,15 @@
 //! Module map:
 //! - [`grid`] — the world model: cells hold ground kind, EDGES hold walls;
 //!   single floor, pure integer math.
-//! - [`sim`] — the player-only sim (walk/run cadence) + the hand-authored
-//!   [`sim::gym_level`]. Trace-replayable, `state_hash`-pinned.
+//! - [`sim`] — the player-only sim (one continuous mover: acceleration,
+//!   braking, collide-and-slide) + the hand-authored [`sim::gym_level`].
+//!   Trace-replayable, `state_hash`-pinned.
+//! - [`route`] — click-to-move: a string-pulled world path over the grid and
+//!   the steering that walks it, feeding the SAME mover the keyboard does.
 //! - [`trace`] — the text-trace format (`<tick> <op> <args>`), the headless
 //!   replay/clip input.
 
 pub mod grid;
+pub mod route;
 pub mod sim;
 pub mod trace;

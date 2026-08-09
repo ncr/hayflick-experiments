@@ -15,7 +15,8 @@ use crate::backend::Stamp;
 use crate::gym_scene::{cell_world, ARM_X, HIP, LEG_X, SHOULDER, WALL_CUT_H};
 use crate::menu::{mrect, mtext};
 use glam::{Mat4, Vec2, Vec3};
-use house_game::gym::grid::{CellKind, CellPos, Dir};
+use house_game::gym::grid::CellKind;
+use house_game::gym::route::Route;
 use house_game::gym::sim::{Command, GymGame, GymLevel, GymSnapshot, MoveMode};
 use house_game::gym::trace::parse_trace;
 use house_game::TICK_DT;
@@ -23,42 +24,11 @@ use iso_core::{world_to_window_px, Projection, ViewXform};
 use phys_spike::PhysWorld;
 use rt_probe::{Config, InstanceKey, SceneHandles};
 use sim_core::{FixedLoop, InputQueue, Simulation, Tick};
-use std::collections::VecDeque;
-
-/// Ticks the body glides between cells (presentation-only, tick-clocked).
-/// Legacy click/replay step easing. Keyboard movement follows the continuous
-/// sim position directly and does not use this interpolator.
-const EASE_TICKS: f32 = 9.0;
 
 // Marker palette (the click-to-move destination tag).
 const BG: u32 = 0x12151a;
 const AMBER: u32 = 0xe8853c;
 const INK: u32 = 0xd0d0c0;
-
-/// A body easing from one cell centre to the next.
-#[derive(Clone, Copy)]
-struct Ease {
-    from: Vec3,
-    to: Vec3,
-    start: u64,
-}
-
-impl Ease {
-    fn pinned(p: Vec3) -> Ease {
-        Ease { from: p, to: p, start: 0 }
-    }
-    fn at(&self, tick: u64) -> Vec3 {
-        let t = ((tick.saturating_sub(self.start)) as f32 / EASE_TICKS).min(1.0);
-        self.from + (self.to - self.from) * t
-    }
-    fn retarget(&mut self, to: Vec3, tick: u64) {
-        if to != self.to {
-            self.from = self.at(tick);
-            self.to = to;
-            self.start = tick;
-        }
-    }
-}
 
 /// Walk-cycle state — presentation-only, but ticked on the FIXED clock
 /// (run_due's per-tick loop / demo_advance_tick) so DEMO captures replay
@@ -91,14 +61,6 @@ fn gait_pose(g: Gait, leg_amp: f32, arm_ratio: f32) -> (f32, f32, f32) {
     ((g.phase * 2.0).sin().abs() * 0.02 * g.blend, s * leg_amp, -s * leg_amp * arm_ratio)
 }
 
-/// A click-to-move route over the sim grid: the remaining cells in walk
-/// order. Pure shell state — the sim only ever sees the per-tick Move
-/// commands it produces.
-struct Plan {
-    cells: Vec<CellPos>,
-    next: usize,
-}
-
 pub struct GymLoop {
     pub fixed: FixedLoop,
     pub queue: InputQueue<Command>,
@@ -113,15 +75,11 @@ pub struct GymLoop {
     /// Camera quarter, mirrored from the view each frame so WASD stays
     /// screen-relative through q/e turns.
     pub yaw_q: u32,
-    /// The live click-to-move route (None = keyboard/no movement).
-    plan: Option<Plan>,
+    /// The live click-to-move route (None = keyboard/standing). Shell state:
+    /// the sim only ever sees the per-tick world-input commands it steers.
+    plan: Option<Route>,
     /// Projection used to interpret screen-relative movement.
     pub proj: Projection,
-    /// Once keyboard movement has taken over, presentation follows the
-    /// continuous sim position instead of easing between cell centres.
-    continuous_active: bool,
-    /// Eased world position of the player body.
-    ease: Ease,
     /// Walk-cycle state.
     gait: Gait,
     /// Presentation facing for the player body (radians about Y).
@@ -159,8 +117,6 @@ impl GymLoop {
             yaw_q: 0,
             plan: None,
             proj,
-            continuous_active: false,
-            ease: Ease::pinned(p0),
             gait: Gait::default(),
             face: 0.0,
             last_cam: p0,
@@ -224,106 +180,49 @@ impl GymLoop {
 
     // ---- click-to-move (mouse-first controls) ---------------------------
 
-    /// LMB on the ground: plan a BFS route to the picked cell and follow it.
-    /// Clicking the player's own cell just cancels the plan.
+    /// LMB on the ground: plan a route to the picked point and walk it.
+    /// Clicking where the player already stands cancels the route.
     pub fn click_ground(&mut self, g: Vec3) {
-        let (w, h) = (self.sim.grid().w, self.sim.grid().h);
-        let (cx, cz) = (g.x.floor() as i32, g.z.floor() as i32);
-        if cx < 0 || cz < 0 || cx >= w as i32 || cz >= h as i32 {
-            return;
-        }
-        let cell = CellPos::new(cx as i16, cz as i16);
-        if cell == self.snap.player {
-            self.plan = None;
-            return;
-        }
-        self.continuous_active = false;
-        if let Some(cells) = self.bfs(self.snap.player, cell) {
-            self.plan = Some(Plan { cells, next: 0 });
-        }
+        self.plan = Route::plan(self.sim.grid(), self.snap.position, Vec2::new(g.x, g.z));
     }
 
-    /// Shortest 4-dir route over the sim's own grid (deterministic scan
-    /// order); wall edges and the grid boundary block. Returns the cells to
-    /// visit AFTER `from`.
-    fn bfs(&self, from: CellPos, to: CellPos) -> Option<Vec<CellPos>> {
-        let g = self.sim.grid();
-        let (w, h) = (g.w as i32, g.h as i32);
-        let idx = |p: CellPos| (p.z as i32 * w + p.x as i32) as usize;
-        let mut prev: Vec<Option<CellPos>> = vec![None; (w * h) as usize];
-        let mut seen = vec![false; (w * h) as usize];
-        let mut q = VecDeque::new();
-        seen[idx(from)] = true;
-        q.push_back(from);
-        'search: while let Some(p) = q.pop_front() {
-            for dir in [Dir::Xp, Dir::Xm, Dir::Zp, Dir::Zm] {
-                if !g.open(p, dir) {
-                    continue;
-                }
-                let n = p.step(dir);
-                if seen[idx(n)] {
-                    continue;
-                }
-                seen[idx(n)] = true;
-                prev[idx(n)] = Some(p);
-                if n == to {
-                    break 'search;
-                }
-                q.push_back(n);
-            }
-        }
-        if !seen[idx(to)] {
-            return None;
-        }
-        let mut cells = vec![to];
-        let mut cur = to;
-        while let Some(p) = prev[idx(cur)] {
-            if p == from {
-                break;
-            }
-            cells.push(p);
-            cur = p;
-        }
-        cells.reverse();
-        Some(cells)
+    /// How far the body would still travel if input stopped THIS tick —
+    /// `v² / 2a` against the sim's braking rate. The route stops steering
+    /// once the goal is inside it, so the body coasts to a halt ON the goal
+    /// instead of arriving at full speed and oscillating around it.
+    fn stop_distance(&self) -> f32 {
+        let v = self.snap.velocity.length();
+        v * v / (2.0 * house_game::gym::sim::BRAKE_WU_PER_S2)
     }
 
-    /// Feed the live plan one tick: advance past reached cells, push the
-    /// next Move (the sim's cadence drops early ones).
+    /// Feed the live route one tick: steer at the next corner and push the
+    /// resulting world input — the SAME command the keyboard produces.
     fn plan_step(&mut self) {
         if self.plan.is_none() {
             return;
         }
-        let s = self.sim.snapshot();
-        let plan = self.plan.as_mut().unwrap();
-        while plan.next < plan.cells.len() && plan.cells[plan.next] == s.player {
-            plan.next += 1;
-        }
-        if plan.next == plan.cells.len() {
+        let pos = self.sim.snapshot().position;
+        let stop = self.stop_distance();
+        let plan = self.plan.as_mut().expect("checked above");
+        let Some(dir) = plan.steer(pos, stop) else {
+            // Arrived: drop the route and feed nothing, so the sim's own
+            // braking settles the body instead of a step landing it.
             self.plan = None;
             return;
-        }
-        let tgt = plan.cells[plan.next];
-        let (dx, dz) = (tgt.x - s.player.x, tgt.z - s.player.z);
-        if dx.abs() + dz.abs() != 1 {
-            // knocked off the route — replan once
-            let goal = *plan.cells.last().unwrap();
-            self.plan = self.bfs(s.player, goal).map(|cells| Plan { cells, next: 0 });
-            return;
-        }
+        };
+        let v = dir * house_game::gym::sim::WORLD_INPUT_SCALE;
         let mode = self.mode();
-        self.queue.push(self.tick, Command::Move { dx: dx.signum(), dz: dz.signum(), mode });
+        self.queue.push(self.tick, Command::MoveWorld { dx: v.x.round() as i16, dz: v.y.round() as i16, mode });
     }
 
-    /// Advance the accumulator and run the due ticks; held keys synthesize
-    /// one Move per tick (keyboard overrides any mouse plan), else the plan
-    /// feeds (the SIM owns the step cadence and drops extras).
+    /// Advance the accumulator and run the due ticks; held keys synthesize the
+    /// world input (keyboard overrides any mouse route), else the route steers
+    /// one. Both paths emit the same command, so there is one mover.
     pub fn run_due(&mut self, real_dt: f32) -> u32 {
         let n = self.fixed.advance(real_dt);
         for _ in 0..n {
             if let Some(command) = self.held_command() {
                 self.plan = None;
-                self.continuous_active = true;
                 self.queue.push(self.tick, command);
             } else {
                 self.plan_step();
@@ -342,6 +241,9 @@ impl GymLoop {
 
     /// DEMO: one tick per rendered frame (deterministic gameplay capture).
     pub fn demo_advance_tick(&mut self) {
+        // A live route steers here too, so a `WALK_TO=` capture records the
+        // mouse path frame by frame exactly as the interactive loop walks it.
+        self.plan_step();
         let cmds = self.queue.drain_for(self.tick);
         self.sim.tick(self.tick, &cmds);
         self.tick.0 += 1;
@@ -365,6 +267,19 @@ impl GymLoop {
         ticks
     }
 
+    /// `WALK_TO=x,z`: replay ONE click-to-move at boot. A trace can express
+    /// held keys because those ARE commands; a click is a shell gesture that
+    /// only produces commands once a route exists, so it needs its own knob —
+    /// the same reason `WEAR_EDIT` and `IDE_EDIT` exist. Without it the mouse
+    /// half of the mover has no headless form at all, which is how it kept a
+    /// separate implementation for as long as it did.
+    pub fn walk_to_from_env(&mut self, cfg: &Config) {
+        if let Some((x, z)) = cfg.game.walk_to {
+            self.click_ground(Vec3::new(x, 0.0, z));
+            println!("WALK_TO: route to ({x}, {z}) — {} legs", self.plan.as_ref().map_or(0, |p| p.points().len()));
+        }
+    }
+
     /// CMDS=trace.txt: a deterministic startup replay prefix.
     pub fn run_cmds(&mut self, cfg: &Config) {
         let Some(path) = &cfg.game.cmds else { return };
@@ -383,29 +298,17 @@ impl GymLoop {
         }
         self.cmds_prefix = self.tick.0;
         self.refresh();
-        // A replay prefix isn't gameplay to animate: snap presentation to sim
-        // truth (otherwise a SHOT right after the prefix — which never ticks
-        // — can capture a legacy ease mid-glide).
-        self.ease = Ease::pinned(self.ease.to);
         println!("CMDS(gym): {n} commands over {ticks} ticks — state {:016x}", self.sim.state_hash());
     }
 
-    /// Advance the walk cycle one fixed tick. Continuous movement contributes
-    /// its actual distance this tick; legacy click/replay easing contributes
-    /// its eased distance. The gait therefore cannot run in place against a
-    /// wall or skate ahead of an accelerating body.
+    /// Advance the walk cycle one fixed tick from the distance the body
+    /// ACTUALLY covered, so the gait cannot run in place against a wall or
+    /// skate ahead of an accelerating body. One mover means one source for
+    /// this: there is no longer a second, eased path to measure instead.
     fn gait_tick(&mut self) {
-        let now = self.tick.0;
-        let e = self.ease;
         let (stride, _) = gait_params(self.mode());
-        let (moving, distance) = if self.continuous_active {
-            let snap = self.sim.snapshot();
-            let distance = snap.velocity.length() * TICK_DT;
-            (distance > 1.0e-6, distance)
-        } else {
-            let distance = (e.at(now) - e.at(now.saturating_sub(1))).length();
-            (distance > 1.0e-6 && now <= e.start + EASE_TICKS as u64, distance)
-        };
+        let distance = self.sim.snapshot().velocity.length() * TICK_DT;
+        let moving = distance > 1.0e-6;
         let g = &mut self.gait;
         g.blend = (g.blend + if moving { 0.34 } else { -0.12 }).clamp(0.0, 1.0);
         if moving {
@@ -417,31 +320,12 @@ impl GymLoop {
 
     fn refresh(&mut self) {
         self.snap = self.sim.snapshot();
-        let cell_p = cell_world(self.snap.player);
-        let sim_p = Vec3::new(self.snap.position.x, cell_p.y, self.snap.position.y);
-        if !self.continuous_active && (self.snap.position - Vec2::new(cell_p.x, cell_p.z)).length_squared() > 1.0e-8 {
-            // DEMO/CMDS traces can carry the additive continuous command too;
-            // infer the presentation mode from the snapshot when no live key
-            // set explicitly selected it.
-            self.continuous_active = true;
-        }
-        let now = self.tick.0;
-        let p = if self.continuous_active { sim_p } else { cell_p };
-        let prev_to = self.ease.to;
-        if self.continuous_active {
-            self.ease = Ease::pinned(p);
-        } else {
-            self.ease.retarget(p, now);
-        }
-        if p != prev_to {
-            let d = if self.continuous_active {
-                Vec3::new(self.snap.velocity.x, 0.0, self.snap.velocity.y)
-            } else {
-                p - prev_to
-            };
-            if d.length_squared() > 1e-6 {
-                self.face = d.x.atan2(d.z);
-            }
+        // Facing follows the velocity, not a position delta: a body sliding
+        // along a wall still travels, and the direction it travels is the one
+        // the figure should face.
+        let d = Vec3::new(self.snap.velocity.x, 0.0, self.snap.velocity.y);
+        if d.length_squared() > 1e-6 {
+            self.face = d.x.atan2(d.z);
         }
     }
 
@@ -451,15 +335,11 @@ impl GymLoop {
     }
 
     fn render_position(&self) -> Vec3 {
-        if self.continuous_active {
-            self.sim_position_world()
-        } else {
-            self.ease.at(self.tick.0)
-        }
+        self.sim_position_world()
     }
 
-    /// The camera's follow anchor: continuous world position for keyboard
-    /// movement, or the eased cell centre for legacy click/replay steps.
+    /// The camera's follow anchor: the sim's own continuous position, for
+    /// every input device.
     pub fn cam_target(&self) -> Vec3 {
         self.render_position()
     }
@@ -528,10 +408,13 @@ impl GymLoop {
         let s = rs.max(1) as i64;
         let now = self.tick.0;
         if let Some(plan) = &self.plan {
-            let goal = *plan.cells.last().unwrap();
+            // The marker sits on the CLICKED point now, not its cell centre —
+            // the route walks to where the click landed.
+            let g = plan.goal();
+            let goal = Vec3::new(g.x, cell_world(self.snap.player).y, g.y);
             let accent = if (now / 8).is_multiple_of(2) { AMBER } else { INK };
             let (pix, w, h) = bubble(">", accent);
-            let win = world_to_window_px(cell_world(goal) + Vec3::new(0.0, 0.55, 0.0), xf);
+            let win = world_to_window_px(goal + Vec3::new(0.0, 0.55, 0.0), xf);
             if win.x > -60.0 && win.y > -60.0 && win.x < ext_w as f32 + 60.0 && win.y < ext_h as f32 + 60.0 {
                 let x = (win.x as i64 - (w as i64 * s) / 2).clamp(2, ext_w - w as i64 * s - 2);
                 let y = (win.y as i64 - h as i64 * s).clamp(2, ext_h - h as i64 * s - 2);
@@ -573,6 +456,7 @@ pub(crate) fn bubble(label: &str, accent: u32) -> (Vec<u32>, i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use house_game::gym::grid::CellPos;
     use house_game::gym::sim::gym_level;
 
     /// W means SCREEN up: the world-axis stairs must follow the active
@@ -620,22 +504,30 @@ mod tests {
         assert!((t.cam_target() - truth).length() < 1e-5, "a stopped player must remain at the continuous position");
     }
 
-    /// The mouse loop end-to-end: click INSIDE the building — the plan
-    /// routes around the walls, through the doorway, and clears on arrival.
-    /// Replay stays pure Move commands.
+    /// The mouse loop end-to-end: click INSIDE the building — the route goes
+    /// around the walls, through the doorway, and clears on arrival. Since
+    /// 2026-08-09 it drives the CONTINUOUS mover, so this also pins that a
+    /// click no longer produces cell snapping: the body arrives with the
+    /// route's own goal underfoot and then brakes to rest ON it.
     #[test]
     fn click_routes_through_the_doorway_and_arrives() {
         let mut t = GymLoop::new(gym_level());
         let goal = CellPos::new(5, 5); // inside the one building
-        t.click_ground(cell_world(goal));
-        assert!(t.plan.is_some(), "the interior must be BFS-reachable via the doorway");
+        let target = cell_world(goal);
+        t.click_ground(target);
+        assert!(t.plan.is_some(), "the interior must be reachable via the doorway");
         for _ in 0..900 {
             t.run_due(TICK_DT);
         }
-        assert_eq!(t.snap.player, goal, "the plan must arrive");
-        assert!(t.plan.is_none(), "a finished plan clears");
+        assert_eq!(t.snap.player, goal, "the route must arrive");
+        assert!(t.plan.is_none(), "a finished route clears");
         assert!(t.indoors(), "the goal is indoors");
         assert_eq!(t.wall_cut(), Some(WALL_CUT_H), "indoors turns the dollhouse cutaway on");
+        // Arrival means STOPPED on the clicked point, not parked a stopping
+        // distance past it.
+        assert_eq!(t.snap.velocity, Vec2::ZERO, "the body brakes to rest");
+        let miss = (t.snap.position - Vec2::new(target.x, target.z)).length();
+        assert!(miss < 0.3, "the body rests on the clicked point, off by {miss}");
     }
 
     /// Clicking off the map or the player's own cell leaves no plan.

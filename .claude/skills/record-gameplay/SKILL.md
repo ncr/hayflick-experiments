@@ -23,19 +23,31 @@ ffmpeg encodes them to an iPhone-friendly H.264 mp4. The bundled
    `# comments` allowed. Format (`crates/house-game/src/gym/trace.rs`):
 
    ```
-   <tick> move <dx> <dz> [walk|run]   # one grid step (one axis only)
-   <tick> wait
+   <tick> move_world <dx> <dz> [walk|run]   # held direction, fixed-point
+   <tick> wait                              # release: the body brakes
    ```
 
+   `dx`/`dz` are a WORLD direction scaled by `sim::WORLD_INPUT_SCALE` (1024),
+   so `1024 0` is "hold east" and `724 724` is "hold south-east". The vector
+   is normalized by the sim, so only its direction matters.
+
    **Routing rules:**
-   - The sim owns the step cadence: walk lands a step every 8 ticks, run
-     every 5. Space `move` commands at least that far apart (earlier ones
-     are silently dropped).
-   - Steps into walls are dropped too — the player just stays put. The only
-     way into the building is the (5, 7) doorway from the south.
+   - A command is a HELD key, not a step: it applies on its tick and every
+     tick after, until another command replaces it. `wait` releases, and the
+     body brakes to a stop over about 12 ticks.
+   - The body accelerates (about 20 ticks to walking speed) and slides along
+     walls rather than stopping dead. The only way into the building is the
+     (5, 7) doorway from the south.
    - Walking indoors triggers the WALLCUT dollhouse cutaway — good clip
      material.
    - ~60 ticks = 1 second of video. 300–900 ticks is a good clip length.
+   - `move <dx> <dz>` (one grid step per command) was the format until
+     2026-08-09 and no longer parses — the error names its replacement.
+
+   **Click-to-move** is not a trace command (it is a shell gesture, not a sim
+   command). To record it, boot with `WALK_TO=x,z` and a trace of just
+   `0 wait`: the route steers itself and the capture records it frame by
+   frame.
 
 3. **Render + encode:**
 

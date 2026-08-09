@@ -12,10 +12,6 @@ use glam::Vec2;
 use sim_core::{Simulation, Tick};
 use crate::{collide_and_slide, TICK_DT};
 
-/// Player step cadence per mode (ticks per landed cell).
-pub const STEP_WALK: u64 = 8;
-pub const STEP_RUN: u64 = 5;
-
 /// Fixed-point scale used by the additive continuous movement command. The
 /// command stays integer-only for deterministic traces; the sim turns it into
 /// a normalized world-space direction at the fixed tick.
@@ -28,7 +24,10 @@ pub const PLAYER_RADIUS: f32 = 0.26;
 pub const SPEED_WALK: f32 = 3.0;
 pub const SPEED_RUN: f32 = 5.0;
 const ACCEL_WU_PER_S2: f32 = 18.0;
-const BRAKE_WU_PER_S2: f32 = 24.0;
+/// Deceleration when no input arrives. Public because click-to-move has to
+/// know it: [`super::route::Route::steer`] stops steering one stopping
+/// distance (`v² / 2a`) short of the goal so the body coasts onto it.
+pub const BRAKE_WU_PER_S2: f32 = 24.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MoveMode {
@@ -38,12 +37,17 @@ pub enum MoveMode {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
-    /// Step one cell (dx, dz ∈ {-1,0,1}, one axis only). The sim rate-limits
-    /// to the mode's cadence; extra commands are dropped, not queued.
-    Move { dx: i16, dz: i16, mode: MoveMode },
-    /// Continuous world-space input, quantized at [`WORLD_INPUT_SCALE`].
-    /// Unlike `Move`, this is sampled every fixed tick and does not snap to a
-    /// cell; the grid remains the collision source of truth.
+    /// Continuous world-space input, quantized at [`WORLD_INPUT_SCALE`],
+    /// sampled every fixed tick. THE movement command since 2026-08-09: the
+    /// keyboard produces one from held keys and the mouse produces one from
+    /// [`super::route::Route::steer`], so both devices drive one mover.
+    ///
+    /// It replaced a `Move { dx, dz }` that stepped ONE cell on a per-mode
+    /// tick cadence, teleporting the body to the cell centre and zeroing its
+    /// velocity. Keeping both meant the player accelerated and slid under
+    /// WASD and snapped under the mouse — and every property the continuous
+    /// mover is pinned on (stride from distance, collide-and-slide, arrival)
+    /// silently did not apply to click-to-move.
     MoveWorld { dx: i16, dz: i16, mode: MoveMode },
     Wait,
 }
@@ -72,15 +76,13 @@ pub struct GymGame {
     player: CellPos,
     position: Vec2,
     velocity: Vec2,
-    /// Earliest tick the next player step may land (sim-owned cadence).
-    next_move_at: u64,
     tick: u64,
 }
 
 impl GymGame {
     pub fn new(spec: GymLevel) -> GymGame {
         let position = Vec2::new(spec.player_start.x as f32 + 0.5, spec.player_start.z as f32 + 0.5);
-        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, next_move_at: 0, tick: 0, spec }
+        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, tick: 0, spec }
     }
 
     pub fn grid(&self) -> &Grid {
@@ -89,13 +91,6 @@ impl GymGame {
 
     pub fn spec(&self) -> &GymLevel {
         &self.spec
-    }
-
-    fn step_period(mode: MoveMode) -> u64 {
-        match mode {
-            MoveMode::Walk => STEP_WALK,
-            MoveMode::Run => STEP_RUN,
-        }
     }
 
     fn speed(mode: MoveMode) -> f32 {
@@ -169,23 +164,6 @@ impl Simulation for GymGame {
         let mut world_input = None;
         for c in cmds {
             match *c {
-                Command::Move { dx, dz, mode } => {
-                    let dir = match (dx, dz) {
-                        (-1, 0) => Dir::Xm,
-                        (1, 0) => Dir::Xp,
-                        (0, -1) => Dir::Zm,
-                        (0, 1) => Dir::Zp,
-                        _ => continue,
-                    };
-                    // The sim owns the cadence: too soon = dropped.
-                    if self.tick < self.next_move_at || !self.spec.grid.open(self.player, dir) {
-                        continue;
-                    }
-                    self.player = self.player.step(dir);
-                    self.position = Vec2::new(self.player.x as f32 + 0.5, self.player.z as f32 + 0.5);
-                    self.velocity = Vec2::ZERO;
-                    self.next_move_at = self.tick + Self::step_period(mode);
-                }
                 Command::MoveWorld { dx, dz, mode } => world_input = Some((dx, dz, mode)),
                 Command::Wait => {}
             }
@@ -209,7 +187,6 @@ impl Simulation for GymGame {
             }
         };
         eat(self.tick);
-        eat(self.next_move_at);
         eat(self.player.x as u64);
         eat(self.player.z as u64);
         eat(self.position.x.to_bits() as u64);
@@ -397,9 +374,15 @@ mod tests {
         assert!(a.grid.open(DOORWAY, Dir::Zp), "the doorway must stay open");
     }
 
+    /// A held world input, as a trace feeds it.
+    fn hold(dx: f32, dz: f32, mode: MoveMode) -> Command {
+        let v = Vec2::new(dx, dz).normalize_or_zero() * WORLD_INPUT_SCALE;
+        Command::MoveWorld { dx: v.x.round() as i16, dz: v.y.round() as i16, mode }
+    }
+
     #[test]
     fn replay_twice_is_bit_identical() {
-        let walk_west: Vec<(Tick, Command)> = (0..8).map(|i| (Tick(i * STEP_WALK), Command::Move { dx: -1, dz: 0, mode: MoveMode::Walk })).collect();
+        let walk_west: Vec<(Tick, Command)> = (0..60).map(|i| (Tick(i), hold(-1.0, 0.0, MoveMode::Walk))).collect();
         let run = || {
             let mut r = Runner::new(GymGame::new(gym_level()));
             r.feed(walk_west.clone());
@@ -409,17 +392,45 @@ mod tests {
         assert_eq!(run(), run());
     }
 
+    /// Speed is REACHED, not assumed. This replaced a cadence test: the old
+    /// mover rate-limited whole cell steps, and the property that survived the
+    /// change is that the body ramps — one tick of input cannot produce full
+    /// speed, and holding it does, within the ramp the constant promises.
     #[test]
-    fn cadence_drops_early_steps() {
-        let mut g = GymGame::new(gym_level());
-        let start = g.snapshot().player;
-        // spam two moves on consecutive ticks: only the first lands
-        g.tick(Tick(0), &[Command::Move { dx: 1, dz: 0, mode: MoveMode::Walk }]);
-        g.tick(Tick(1), &[Command::Move { dx: 1, dz: 0, mode: MoveMode::Walk }]);
-        let p = g.snapshot().player;
-        assert_eq!((p.x - start.x) + (p.z - start.z), 1, "the walk cadence must swallow the second step");
-        // run cadence is shorter than walk — a constants-relationship pin
-        const _: () = assert!(STEP_RUN < STEP_WALK);
+    fn speed_ramps_instead_of_arriving_whole() {
+        let mut g = GymGame::new(GymLevel { grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        g.tick(Tick(0), &[hold(1.0, 0.0, MoveMode::Walk)]);
+        let first = g.snapshot().velocity.length();
+        assert!(first > 0.0 && first < SPEED_WALK, "one tick must not reach walking speed: {first}");
+        assert!((first - ACCEL_WU_PER_S2 * TICK_DT).abs() < 1e-5, "the first tick is exactly one acceleration step: {first}");
+        // ceil(SPEED_WALK / (ACCEL * dt)) ticks to reach the target, plus one.
+        let need = (SPEED_WALK / (ACCEL_WU_PER_S2 * TICK_DT)).ceil() as u64 + 1;
+        for t in 1..=need {
+            g.tick(Tick(t), &[hold(1.0, 0.0, MoveMode::Walk)]);
+        }
+        assert!((g.snapshot().velocity.length() - SPEED_WALK).abs() < 1e-5, "holding input must reach walking speed");
+    }
+
+    /// Releasing input brakes to a STOP — the property click-to-move's arrival
+    /// leans on when it stops steering a stopping distance short of the goal.
+    #[test]
+    fn releasing_input_brakes_to_rest() {
+        let mut g = GymGame::new(GymLevel { grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        for t in 0..30u64 {
+            g.tick(Tick(t), &[hold(1.0, 0.0, MoveMode::Run)]);
+        }
+        let moving = g.snapshot();
+        assert!(moving.velocity.length() > 0.0);
+        let need = (SPEED_RUN / (BRAKE_WU_PER_S2 * TICK_DT)).ceil() as u64 + 1;
+        for t in 30..30 + need {
+            g.tick(Tick(t), &[]);
+        }
+        let rest = g.snapshot();
+        assert_eq!(rest.velocity, Vec2::ZERO, "no input must brake all the way to rest");
+        // The coast is the stopping distance the router predicts: v²/2a.
+        let coast = rest.position.x - moving.position.x;
+        let predicted = moving.velocity.length_squared() / (2.0 * BRAKE_WU_PER_S2);
+        assert!((coast - predicted).abs() < 0.05, "coast {coast} vs predicted {predicted}");
     }
 
     #[test]
@@ -453,34 +464,46 @@ mod tests {
         let mut g = GymGame::new(gym_level());
         // drive the player hard at the map edge for 400 ticks
         for t in 0..400u64 {
-            g.tick(Tick(t), &[Command::Move { dx: 0, dz: 1, mode: MoveMode::Run }]);
+            g.tick(Tick(t), &[hold(0.0, 1.0, MoveMode::Run)]);
         }
-        let p = g.snapshot().player;
-        assert!(g.grid().in_bounds(p), "the player can never leave the grid");
-        assert_eq!(p.z, g.grid().h - 1, "the run must stop AT the boundary, not before");
+        let s = g.snapshot();
+        assert!(g.grid().in_bounds(s.player), "the player can never leave the grid");
+        assert_eq!(s.player.z, g.grid().h - 1, "the run must stop AT the boundary, not before");
+        assert!(
+            s.position.y >= g.grid().h as f32 - 1.0 && s.position.y <= g.grid().h as f32 - PLAYER_RADIUS + 1e-4,
+            "the body rests against the boundary with its own clearance: {:?}",
+            s.position
+        );
     }
 
+    /// Walking a continuous body straight north from the spawn hits the
+    /// building's south wall and STAYS out; the same walk offset onto the
+    /// doorway's column goes in. The old version scripted cell steps through
+    /// the door, which only proved the cadence executed the script.
     #[test]
     fn the_doorway_is_the_only_way_in() {
-        let mut g = GymGame::new(gym_level());
-        // teleport-by-walking: from the spawn, walk to just south of the
-        // doorway, then step north through it
-        let script: Vec<(i16, i16)> = vec![(-1, 0); 5].into_iter().chain(vec![(0, -1); 3]).chain(vec![(0, -1); 1]).collect();
-        let mut t = 0u64;
-        for (dx, dz) in script {
-            g.tick(Tick(t), &[Command::Move { dx, dz, mode: MoveMode::Walk }]);
-            t += STEP_WALK;
+        // The doorway column, approached from the south.
+        let mut open = GymGame::new(GymLevel {
+            grid: gym_level().grid,
+            player_start: CellPos::new(DOORWAY.x, DOORWAY.z + 3),
+            lights: Vec::new(),
+        });
+        for t in 0..180u64 {
+            open.tick(Tick(t), &[hold(0.0, -1.0, MoveMode::Walk)]);
         }
-        assert_eq!(g.snapshot().player, DOORWAY, "the walk-in route ends inside the building");
-        assert_eq!(g.grid().cell(g.snapshot().player), CellKind::Room);
-        // a wall cell next to the doorway does NOT admit
-        let mut g2 = GymGame::new(gym_level());
-        let mut t = 0u64;
-        for (dx, dz) in [(-1, 0), (-1, 0), (-1, 0), (-1, 0), (0, -1), (0, -1), (0, -1), (0, -1)] {
-            g2.tick(Tick(t), &[Command::Move { dx, dz, mode: MoveMode::Walk }]);
-            t += STEP_WALK;
+        assert_eq!(open.grid().cell(open.snapshot().player), CellKind::Room, "the doorway admits");
+
+        // One cell east of it is the building's south wall.
+        let mut shut = GymGame::new(GymLevel {
+            grid: gym_level().grid,
+            player_start: CellPos::new(DOORWAY.x + 1, DOORWAY.z + 3),
+            lights: Vec::new(),
+        });
+        for t in 0..180u64 {
+            shut.tick(Tick(t), &[hold(0.0, -1.0, MoveMode::Walk)]);
         }
-        // (6, 8) pushing north hits the building's south wall
-        assert_eq!(g2.snapshot().player, CellPos::new(6, 8), "the wall must hold");
+        let s = shut.snapshot();
+        assert_ne!(shut.grid().cell(s.player), CellKind::Room, "the wall must hold: {:?}", s.position);
+        assert!(s.position.y > DOORWAY.z as f32 + 1.0, "the body stops south of the wall: {:?}", s.position);
     }
 }

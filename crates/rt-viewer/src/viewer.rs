@@ -394,6 +394,7 @@ impl Viewer {
         // CMDS replay prefix (deterministic) — runs LAST so the trace acts on
         // the fully seeded state.
         r.gym.run_cmds(&r.cfg);
+        r.gym.walk_to_from_env(&r.cfg);
         // DEMO=trace.txt: arm the headless per-tick gameplay dump.
         if r.cfg.harness.demo.is_some() {
             let dir = r.cfg.harness.demo_dir.clone().unwrap_or_else(|| "demo".into());

@@ -4,10 +4,14 @@
 //! journaling output — `parse_trace ∘ format_command` round-trips.
 //!
 //! ```text
-//! 10 move 1 0 walk      # dx dz [walk|run] (default walk)
-//! 11 move_world 1024 0 walk # continuous world input (fixed-point)
+//! 11 move_world 1024 0 walk # dx dz [walk|run] (default walk), fixed-point
 //! 400 wait
 //! ```
+//!
+//! `move <dx> <dz>` — one cell step on a tick cadence — was the other half of
+//! this format until 2026-08-09. It went with the mover that executed it; a
+//! trace holding one now fails to parse rather than replaying as something
+//! else, and the error names its replacement.
 
 use super::sim::{Command, MoveMode};
 use sim_core::Tick;
@@ -25,14 +29,7 @@ pub fn parse_trace(src: &str) -> Result<Vec<(Tick, Command)>, String> {
         let op = w.next().ok_or_else(|| err("missing op"))?;
         let cmd = match op {
             "move" => {
-                let dx: i16 = w.next().ok_or_else(|| err("move: missing dx"))?.parse().map_err(|_| err("move: bad dx"))?;
-                let dz: i16 = w.next().ok_or_else(|| err("move: missing dz"))?.parse().map_err(|_| err("move: bad dz"))?;
-                let mode = match w.next() {
-                    None | Some("walk") => MoveMode::Walk,
-                    Some("run") => MoveMode::Run,
-                    Some(m) => return Err(err(&format!("move: unknown mode {m:?}"))),
-                };
-                Command::Move { dx, dz, mode }
+                return Err(err("move: the cell-step mover is gone — use move_world <dx> <dz> at WORLD_INPUT_SCALE"));
             }
             "move_world" => {
                 let dx: i16 = w.next().ok_or_else(|| err("move_world: missing dx"))?.parse().map_err(|_| err("move_world: bad dx"))?;
@@ -56,13 +53,6 @@ pub fn parse_trace(src: &str) -> Result<Vec<(Tick, Command)>, String> {
 /// losslessly.
 pub fn format_command(tick: Tick, c: &Command) -> String {
     match c {
-        Command::Move { dx, dz, mode } => {
-            let m = match mode {
-                MoveMode::Walk => "walk",
-                MoveMode::Run => "run",
-            };
-            format!("{} move {} {} {}", tick.0, dx, dz, m)
-        }
         Command::MoveWorld { dx, dz, mode } => {
             let m = match mode {
                 MoveMode::Walk => "walk",
@@ -80,7 +70,7 @@ mod tests {
 
     #[test]
     fn parse_and_format_round_trip() {
-        let src = "10 move 1 0 walk\n30 move -1 0 run\n40 move 0 1\n50 move_world 512 -1024 run\n99 wait\n";
+        let src = "10 move_world 1024 0 walk\n30 move_world -1024 0 run\n40 move_world 0 1024\n50 move_world 512 -1024 run\n99 wait\n";
         let trace = parse_trace(src).unwrap();
         assert_eq!(trace.len(), 5);
         let back: Vec<String> = trace.iter().map(|(t, c)| format_command(*t, c)).collect();
@@ -90,10 +80,18 @@ mod tests {
 
     #[test]
     fn comments_and_blanks_are_skipped_and_errors_name_the_line() {
-        let trace = parse_trace("# header\n\n5 move 1 0 # inline\n").unwrap();
+        let trace = parse_trace("# header\n\n5 move_world 1024 0 # inline\n").unwrap();
         assert_eq!(trace.len(), 1);
         assert!(parse_trace("5 fly").unwrap_err().contains("line 1"));
-        assert!(parse_trace("5 move 1").unwrap_err().contains("missing dz"));
-        assert!(parse_trace("5 move 1 0 sneak").unwrap_err().contains("unknown mode"));
+        assert!(parse_trace("5 move_world 1").unwrap_err().contains("missing dz"));
+        assert!(parse_trace("5 move_world 1 0 sneak").unwrap_err().contains("unknown mode"));
+    }
+
+    /// A trace written for the cell-step mover must FAIL rather than replay as
+    /// something else, and say what to write instead.
+    #[test]
+    fn a_cell_step_trace_is_rejected_by_name() {
+        let e = parse_trace("10 move 1 0 walk\n").unwrap_err();
+        assert!(e.contains("move_world"), "the error must name the replacement: {e}");
     }
 }

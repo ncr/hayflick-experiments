@@ -204,8 +204,53 @@ see the 2026-07-12 learning).
 kept as the A/B reference the owner can switch to in the ESC settings menu.
 The WALLCUT dollhouse cutaway and the ROI reveal follow the live player.
 
-The gym's cell-stepping mover is INTERIM — Faza 2 replaces it with the
-continuous miodny movement stack. Don't grow it.
+MOVEMENT IS ONE MOVER (Faza 2, first slice 2026-08-02, finished 2026-08-09).
+The cell-stepping mover is GONE. `Command::MoveWorld` is the only movement
+command: acceleration ramp (`ACCEL_WU_PER_S2` 18), braking
+(`BRAKE_WU_PER_S2` 24), collide-and-slide against the grid at
+`PLAYER_RADIUS`, and a gait whose phase comes from the distance the body
+ACTUALLY covered (`WALK_STRIDE_WU` 1.6) so feet cannot skate or run in place
+against a wall.
+2026-08-02 did the keyboard half: screen input converts through the ACTIVE
+projection's pixel basis (`Projection::screen_px_to_world`), so W is screen-up
+as a straight line under any preset at any yaw — the old hard-coded 2:1 map
+zigzagged under trimetric.
+2026-08-09 did the mouse half, which had stayed on the OTHER mover: a click
+ran a cell BFS and fed `Command::Move`, which TELEPORTED the body to a cell
+centre on a per-mode tick cadence and zeroed its velocity. So the same player
+accelerated and slid under WASD and snapped under the mouse, and every
+property the continuous mover is pinned on silently did not apply to
+click-to-move. `house_game::gym::route::Route` replaces it: the BFS still
+finds the way (the grid is what knows about walls), then the cell-centre
+polyline is STRING-PULLED — a waypoint whose neighbours can see each other in
+a straight line is not a corner — and the survivors are walked as straight
+legs at any angle. Sight lines test the SAME predicate the integrator uses
+(`blocked_point` at `PLAYER_RADIUS`), so a shortcut the route takes is one the
+body can walk; testing cell openness instead yields paths that steer into a
+jamb and stall with both halves behaving correctly. Steering stops one
+STOPPING DISTANCE (`v²/2a`) short of the goal so the body coasts onto it
+instead of arriving at speed and oscillating. Measured on the gym: spawn to
+(5.5, 5.5) inside the building is TWO legs, where the cell path was a ten-cell
+staircase.
+THE PLANNER LIVES IN `house-game`, not the viewer — it is game logic, and in
+`rt-viewer` it could not be tested without a window. The viewer now only hands
+a click's world point in and pushes the steered direction onto the queue.
+DELETED with the second mover: `Command::Move`, `STEP_WALK`/`STEP_RUN` and the
+cadence, `next_move_at` (and its `state_hash` term), `GymLoop::bfs`, the `Ease`
+interpolator, `EASE_TICKS` and the `continuous_active` flag. Presentation
+follows the sim position for every input device; facing follows VELOCITY, so a
+body sliding along a wall faces where it travels. The trace grammar lost
+`move <dx> <dz>` — a trace holding one now FAILS to parse with an error naming
+`move_world`, rather than replaying as something else.
+HARNESS: `WALK_TO=x,z` replays ONE click at boot (a trace can express held keys
+because those ARE commands; a click only produces commands once a route exists
+— the `WEAR_EDIT`/`IDE_EDIT` precedent), and `demo_advance_tick` steers a live
+route so a `WALK_TO=` + `DEMO=` capture records the mouse path frame by frame.
+Without it the mouse half had no headless form at all, which is a large part of
+why it kept its own implementation for as long as it did.
+STILL OPEN in Faza 2 (`docs/VISION.md`): turn-rate limit, foot-planting
+IK-lite, lean into acceleration, settling on footfall, pad support (gilrs),
+both WASD variants as a menu row, and a scene built for feel-testing.
 
 ## Key Commands
 

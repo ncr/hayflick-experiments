@@ -266,6 +266,7 @@ pub struct GameCfg {
     pub target: (Option<f32>, Option<f32>), // TARGET_X/TARGET_Z: camera look-at override
     pub cmds: Option<String>,      // CMDS=trace.txt: deterministic command-replay prefix
     pub cmds_ticks: Option<u64>,   // CMDS_TICKS: prefix length (default: last stamp + 1)
+    pub walk_to: Option<(f32, f32)>, // WALK_TO=x,z: replay ONE click-to-move at boot (the mouse gesture's headless form; the keyboard's is a trace)
     pub roi: bool,                 // ROI: dithered player-anchored see-through reveal — the sole wall occlusion on player+wall scenes
     pub roi_radius: f32,           // ROI_R: reveal-disc radius in low-res px
     pub roi_falloff: f32,          // ROI_FALLOFF: soft dither edge width in low-res px
@@ -386,6 +387,10 @@ impl Config {
                 target: (fo("TARGET_X"), fo("TARGET_Z")),
                 cmds: s("CMDS"),
                 cmds_ticks: s("CMDS_TICKS").and_then(|v| v.parse().ok()),
+                walk_to: s("WALK_TO").and_then(|v| {
+                    let (a, b) = v.split_once(',')?;
+                    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+                }),
                 roi: b("ROI", true),
                 roi_radius: fo("ROI_R").unwrap_or(79.0),
                 roi_falloff: fo("ROI_FALLOFF").unwrap_or(33.0),
