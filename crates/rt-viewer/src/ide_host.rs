@@ -438,12 +438,17 @@ impl Viewer {
                     "sz" => spec.player_start.z = v as i16,
                     _ => return,
                 }
+                // An explicit spawn edit IS authoring — unlike a demo's boot
+                // override, it lands in the saved file.
+                self.level.authored_spawn = spec.player_start;
                 println!("ide: spawn moved — applies on restart");
             }
             _ => return,
         }
+        self.level.dirty = true;
         let look = self.look;
         self.apply_look(look); // prints its own cost line
+        self.level_save(); // persists unless a level env override is active
         self.ide_relift();
         self.ui_blip("menu_pick");
     }
@@ -666,10 +671,11 @@ impl Viewer {
         // replay just armed (`crack_select` clears place-mode on a change)
         self.ide_boot_sel();
         // a replay is not an interactive edit (the `WEAR_EDIT` discipline):
-        // the dirty flag is restored so the session's saves stay the owner's —
-        // and `IDE_EDIT` sits in `env_overridden` besides, so a save inside
-        // the replay is blocked outright
+        // the dirty flags are restored so the session's saves stay the owner's
+        // — and `IDE_EDIT` sits in BOTH env_overridden tables besides (wear
+        // and level), so a save inside the replay is blocked outright
         let dirty = self.crack.dirty;
+        let level_dirty = self.level.dirty;
         for stmt in v.split(';').map(str::trim).filter(|s| !s.is_empty()) {
             let Some((name, key, val)) = split_edit(stmt) else {
                 eprintln!("IDE_EDIT: {stmt:?}: want \"<object> <key> <value>\"");
@@ -692,6 +698,7 @@ impl Viewer {
             self.ide.model = self.ide_model();
         }
         self.crack.dirty = dirty;
+        self.level.dirty = level_dirty;
     }
 
     /// The IDE's stamps for this frame: refresh the model, rasterize the

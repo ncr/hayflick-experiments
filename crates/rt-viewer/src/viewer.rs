@@ -113,6 +113,9 @@ pub struct Viewer {
     pub piers: Vec<crate::gym_scene::Pier>,
     /// Crack-lab state (per-pier aging knobs + selection) — see crack.rs.
     pub crack: crate::crack::CrackLab,
+    /// Level-as-data bookkeeping (authored spawn, file backing, dirty) — see
+    /// level_host.rs.
+    pub level: crate::level_host::LevelState,
     /// Lamp NEE slots in slot order, with their authored base rgb — the
     /// scene's named point lights joined onto the backend's handles.
     pub light_keys: Vec<(LightKey, [f32; 3])>,
@@ -228,7 +231,10 @@ impl Viewer {
         // thing the owner picks from the menu). It sets the boot LAYOUT, look
         // and spawn; its script is stored below and fired per tick.
         let demo = crate::demos::from_env();
-        let mut spec = demo.map_or(crate::demos::Level::Gym, |d| d.level).spec();
+        // The authored level (file-backed for the gym, LEVEL_FILE=/EDIT=
+        // applied), then the demo's spawn as an OVERRIDE on the boot copy —
+        // level_save writes the authored spawn, never a demo's.
+        let (mut spec, level_state) = crate::level_host::load(demo.map_or(crate::demos::Level::Gym, |d| d.level));
         if let Some(d) = demo {
             spec.player_start = house_game::gym::grid::CellPos::new(d.spawn.0, d.spawn.1);
         }
@@ -327,6 +333,7 @@ impl Viewer {
             gym: GymLoop::with_projection(spec, proj),
             piers: gym_meta.piers,
             crack,
+            level: level_state,
             ide: crate::ide_host::IdeState::from_env(),
             harness: Harness::from_cfg(&cfg),
             rec: None,
@@ -482,6 +489,17 @@ impl Viewer {
     /// (`apply_look` also re-joins lights + refreshes the roof/room meta). The
     /// follow-cam is re-aimed at the new spawn for a clean first frame.
     pub fn boot_demo(&mut self, demo: &'static crate::demos::Demo) {
+        // Reload the AUTHORED spec for the demo's level — before 2026-08-09
+        // this reused the current level's grid, so a menu switch onto the
+        // catalogue rebuilt the GYM with a (20, 20) spawn off its 18×14 map.
+        // Unsaved level edits on the outgoing level are dropped with a word;
+        // save runs on every edit, so this only fires when a save was blocked.
+        if self.level.dirty {
+            println!("level: unsaved edits dropped on level switch");
+        }
+        let (spec, state) = crate::level_host::load(demo.level);
+        self.level = state;
+        self.gym.spec = spec;
         self.gym.spec.player_start = house_game::gym::grid::CellPos::new(demo.spawn.0, demo.spawn.1);
         self.restart_gym();
         self.torn = false;

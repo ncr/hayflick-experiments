@@ -1,0 +1,63 @@
+# gym.level - THE hand-authored gym level (docs/VISION.md: one level).
+# Level-as-data: the IDE writes this file back; review edits with git
+# diff. grid_hash is the level identity - editing invalidates recorded
+# gym traces and pinned state hashes.
+# Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z
+size 18 14
+spawn 10 11
+lamp 11 6 6
+lamp 6 4 7
+room 3 3
+room 4 3
+room 5 3
+room 6 3
+room 7 3
+room 3 4
+room 4 4
+room 5 4
+room 6 4
+room 7 4
+room 3 5
+room 4 5
+room 5 5
+room 6 5
+room 7 5
+room 3 6
+room 4 6
+room 5 6
+room 6 6
+room 7 6
+room 3 7
+room 4 7
+room 5 7
+room 6 7
+room 7 7
+wallx 12 2
+wallx 3 3
+wallx 8 3
+wallx 12 3
+wallx 3 4
+wallx 8 4
+wallx 12 4
+wallx 3 5
+wallx 8 5
+wallx 12 5
+wallx 3 6
+wallx 8 6
+wallx 3 7
+wallx 8 7
+wallz 3 3
+wallz 4 3
+wallz 5 3
+wallz 6 3
+wallz 7 3
+wallz 3 8
+wallz 4 8
+wallz 6 8
+wallz 7 8
+wallz 10 10
+wallz 11 10
+wallz 12 10
+wallz 13 10
+wallz 14 10
+wallz 15 10

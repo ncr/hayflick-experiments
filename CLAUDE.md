@@ -1006,13 +1006,49 @@ ships green: `pick_target` (which pickable a ray names — a wall as its RUN),
 one back), `split_edit` / `edit_val` (the `IDE_EDIT` grammar). Pinned on the
 real gym piers: a pick on ANY pier of a cut facade names the same wall, the
 lift is that run and nothing else, the pin `*`, the row indents, the section
-heads and the trailing `wall::Miss` row. NEXT (not this round): save — the
-level-as-data migration waits in
-`archive/editor-v0` (level_file.rs + gym.level, the handoff's load-bearing
-decision); wall/grid ops (editor-v0's `apply_op` vocabulary). First Mac
+heads and the trailing `wall::Miss` row. First Mac
 session: boot `IDE=1` once — the stamp path is shared code, but the
 per-stamp staging-texture allocation in `blit_overlay` has never carried
 four window-tall panels.
+
+THE LEVEL IS FILE DATA since 2026-08-09 (the editor-v0 resume; the archived
+level_file.rs + gym.level came off the tag, drift-adjusted to today's grid
+API). `house_game::gym::level_file` is the format — `size/spawn/lamp/room/
+wallx/wallz`, one statement per line, canonical serialize pinned as a
+fixpoint — and `gym_level()` IS `parse(GYM_LEVEL_SRC)`: the hand-written
+builder is gone, verified grid-hash-identical (a CMDS replay prints the same
+state hash to the bit), all three levels SHOT-byte-identical across the
+swap. THE CATALOGUE STAYS CODE on purpose: it is generated, and its row 3
+grows a slab whenever the effect system grows an effect — a file would
+freeze exactly what is supposed to be derived. `HOUSE`/`DOORWAY` now
+DOCUMENT the file, pinned by
+`the_house_constants_describe_the_checked_in_level`.
+THE AUTHORED SPEC AND THE BOOT SPEC ARE NOT THE SAME THING — that is the
+AgeWall lesson applied to geometry, and it is load-bearing: a demo boots
+with its own spawn (crack lab (9,11), catalogue (20,20)), so
+`level_host::load` remembers the AUTHORED spawn and `Viewer::level_save`
+writes THAT; an owner spawn edit in the IDE updates both. IDE lamp/spawn
+edits save on apply (`ide_apply` → `level_save`), the save is the wear-save
+discipline verbatim: dirty-gated (interactive edits only — `IDE_EDIT=`
+replays restore the flag AND sit in the env table), blocked by any env knob
+whose table row says it writes the authoring (`EDIT=`), redirected — load
+AND save — by `LEVEL_FILE=` (missing path boots the baked default and saves
+to the new file), and refused with one line on the code-generated catalogue.
+`level_host::env` is the table; the source-scan guard
+`every_level_env_read_names_a_knob_from_the_table` fails the tree on a bare
+env read in level_host.rs. HARNESS: `EDIT="wallx 9 9; room 1 1; lamp 2 2 5;
+spawn 4 4"` applies `level_file::EditOp` ops at boot (`apply_op` — every op
+its own undo, out-of-bounds rejected without touching the spec; the ONE
+mutation vocabulary the IDE's future wall gestures must also use), verified:
+one op = one new wall in the SHOT, missing-file boot byte-identical.
+BOOT_DEMO RELOADS THE SPEC for the demo's level through the same `load` —
+before this round it reused the CURRENT level's grid, so an ESC LEVELS
+switch onto the catalogue rebuilt the GYM under the catalogue's wear and
+parked the spawn at (20,20) off the 18×14 map; the catalogue had only ever
+been booted via `LEVEL=` (which takes the correct path), so three weeks of
+verification never saw it. The windowed menu-switch pass rides the owner
+playtest. NEXT: the IDE's wall/room gestures (place-mode precedent), and a
+second file-backed level when one exists.
 WEAR IN THE INSPECTOR since 2026-07-27 (round G, owner: "ustawianie
 parametrów efektów w crack labie też sensownie w IDE"): a picked wall's
 inspector shows the WHOLE wear sheet — the same `menu::rows_of(spec)` walk

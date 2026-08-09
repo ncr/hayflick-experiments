@@ -17,6 +17,7 @@
 //!   replay/clip input.
 
 pub mod grid;
+pub mod level_file;
 pub mod route;
 pub mod sim;
 pub mod trace;

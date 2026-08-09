@@ -42,6 +42,7 @@ mod flags;
 mod gym_loop;
 mod gym_scene;
 mod ide_host;
+mod level_host;
 mod look;
 mod menu;
 mod phys_scene;

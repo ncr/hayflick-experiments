@@ -1,8 +1,9 @@
 //! The gym sim — the smallest thing that is still a game: one player moving
-//! continuously around the hand-authored gym level. Legacy cell-step commands
-//! remain for deterministic click routes and old traces. No NPCs, no doors, no
-//! clock, no RNG (owner directive 2026-07-12: cut to a single level with a
-//! few walls, one building and the player).
+//! continuously around the hand-authored gym level. ONE mover since
+//! 2026-08-09 ([`Command::MoveWorld`] — keyboard and click-to-move both feed
+//! it; the cell-step command is gone). No NPCs, no doors, no clock, no RNG
+//! (owner directive 2026-07-12: cut to a single level with a few walls, one
+//! building and the player).
 //!
 //! Fully headless and deterministic: fixed tick, trace replay, `state_hash`
 //! over every observable field.
@@ -203,6 +204,10 @@ impl Simulation for GymGame {
 // ---------------------------------------------------------------------------
 
 /// Interior span of the one building (inclusive cell range on both axes).
+/// DOCUMENTS the checked-in `gym.level` — the file is the source since
+/// 2026-08-09; a test pins the two against each other so an IDE edit that
+/// moves the building fails loudly here instead of silently orphaning every
+/// test that walks it.
 pub const HOUSE: (i16, i16, i16, i16) = (3, 3, 7, 7); // x0, z0, x1, z1
 /// The doorway cell: its +z edge stays open through the building's south wall.
 pub const DOORWAY: CellPos = CellPos { x: 5, z: 7 };
@@ -210,41 +215,14 @@ pub const DOORWAY: CellPos = CellPos { x: 5, z: 7 };
 /// The gym: an 18×14 field, one 5×5 building with a doorway, two
 /// freestanding walls, two lamps, the player. Everything the Faza-1 look
 /// work and the Faza-2 movement work needs, and nothing else.
+///
+/// LEVEL-AS-DATA since 2026-08-09: this parses the checked-in
+/// [`super::level_file::GYM_LEVEL_SRC`] — the same bytes the IDE's save writes back
+/// — verified grid-hash-identical to the hand-written builder it replaced.
+/// Panics only on a malformed checked-in file, which
+/// `checked_in_level_is_canonical` catches at `cargo test` time first.
 pub fn gym_level() -> GymLevel {
-    let mut grid = Grid::new(18, 14);
-    let (x0, z0, x1, z1) = HOUSE;
-
-    // The building: Room cells walled around, one doorway gap on the south
-    // side (an open edge — no door leaf, nothing to operate).
-    for z in z0..=z1 {
-        for x in x0..=x1 {
-            grid.set_cell(CellPos::new(x, z), CellKind::Room);
-        }
-        grid.set_edge(CellPos::new(x0, z), Dir::Xm, EdgeKind::Wall);
-        grid.set_edge(CellPos::new(x1, z), Dir::Xp, EdgeKind::Wall);
-    }
-    for x in x0..=x1 {
-        grid.set_edge(CellPos::new(x, z0), Dir::Zm, EdgeKind::Wall);
-        if CellPos::new(x, z1) != DOORWAY {
-            grid.set_edge(CellPos::new(x, z1), Dir::Zp, EdgeKind::Wall);
-        }
-    }
-
-    // Freestanding walls in the open — silhouette / shadow / stair-read
-    // material for the look work.
-    for x in 10..=15 {
-        grid.set_edge(CellPos::new(x, 10), Dir::Zm, EdgeKind::Wall);
-    }
-    for z in 2..=5 {
-        grid.set_edge(CellPos::new(12, z), Dir::Xm, EdgeKind::Wall);
-    }
-
-    // One street lamp in the open, one lamp inside the building — off the
-    // room's centre walking line (the sim has no prop collision; a lamp on a
-    // natural destination cell would let the player stand inside the post).
-    let lights = vec![(CellPos::new(11, 6), 6), (CellPos::new(6, 4), 7)];
-
-    GymLevel { grid, player_start: CellPos::new(10, 11), lights }
+    super::level_file::parse(super::level_file::GYM_LEVEL_SRC).expect("checked-in gym.level must parse")
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +350,28 @@ mod tests {
         assert_eq!(a.player_start, b.player_start);
         assert_eq!(a.grid.cell(DOORWAY), CellKind::Room);
         assert!(a.grid.open(DOORWAY, Dir::Zp), "the doorway must stay open");
+    }
+
+    /// [`HOUSE`]/[`DOORWAY`] document the checked-in `gym.level`; this is the
+    /// pin that keeps the constants and the file telling one story after an
+    /// IDE save moves a wall. Every interior cell is Room, the perimeter is
+    /// walled, and the doorway's own edge is the one gap.
+    #[test]
+    fn the_house_constants_describe_the_checked_in_level() {
+        let lvl = gym_level();
+        let (x0, z0, x1, z1) = HOUSE;
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                assert_eq!(lvl.grid.cell(CellPos::new(x, z)), CellKind::Room, "({x}, {z}) inside HOUSE");
+            }
+            assert!(!lvl.grid.open(CellPos::new(x0, z), Dir::Xm), "west wall at z={z}");
+            assert!(!lvl.grid.open(CellPos::new(x1, z), Dir::Xp), "east wall at z={z}");
+        }
+        for x in x0..=x1 {
+            assert!(!lvl.grid.open(CellPos::new(x, z0), Dir::Zm), "north wall at x={x}");
+            let south_open = lvl.grid.open(CellPos::new(x, z1), Dir::Zp);
+            assert_eq!(south_open, CellPos::new(x, z1) == DOORWAY, "south wall at x={x}: the doorway is the one gap");
+        }
     }
 
     /// A held world input, as a trace feeds it.

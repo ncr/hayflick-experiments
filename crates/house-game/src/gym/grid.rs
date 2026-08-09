@@ -129,6 +129,34 @@ impl Grid {
         }
     }
 
+    /// The x-edge at raw address (x, z): the edge separating cells (x-1, z)
+    /// and (x, z). Valid x is 0..=w (the boundary edges are addressable),
+    /// z is 0..h. This is the LEVEL FILE's addressing ([`super::level_file`]
+    /// `wallx X Z`) — cell-relative code uses [`Self::edge`].
+    pub fn edge_x(&self, x: i16, z: i16) -> EdgeKind {
+        assert!(x >= 0 && x <= self.w && z >= 0 && z < self.h, "edge_x out of bounds: ({x}, {z})");
+        self.edges_x[z as usize * (self.w as usize + 1) + x as usize]
+    }
+
+    /// Set the x-edge at raw address (x, z). See [`Self::edge_x`].
+    pub fn set_edge_x(&mut self, x: i16, z: i16, e: EdgeKind) {
+        assert!(x >= 0 && x <= self.w && z >= 0 && z < self.h, "set_edge_x out of bounds: ({x}, {z})");
+        self.edges_x[z as usize * (self.w as usize + 1) + x as usize] = e;
+    }
+
+    /// The z-edge at raw address (x, z): the edge separating cells (x, z-1)
+    /// and (x, z). Valid x is 0..w, z is 0..=h. The level file's `wallz X Z`.
+    pub fn edge_z(&self, x: i16, z: i16) -> EdgeKind {
+        assert!(x >= 0 && x < self.w && z >= 0 && z <= self.h, "edge_z out of bounds: ({x}, {z})");
+        self.edges_z[z as usize * self.w as usize + x as usize]
+    }
+
+    /// Set the z-edge at raw address (x, z). See [`Self::edge_z`].
+    pub fn set_edge_z(&mut self, x: i16, z: i16, e: EdgeKind) {
+        assert!(x >= 0 && x < self.w && z >= 0 && z <= self.h, "set_edge_z out of bounds: ({x}, {z})");
+        self.edges_z[z as usize * self.w as usize + x as usize] = e;
+    }
+
     /// Movement query: can an actor step from `p` in `dir`? Off-grid or a
     /// wall edge = no.
     pub fn open(&self, p: CellPos, dir: Dir) -> bool {
