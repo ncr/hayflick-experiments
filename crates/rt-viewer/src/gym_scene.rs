@@ -46,7 +46,7 @@ pub const WALL_TOP: f32 = 2.1875;
 /// drop to this height, bodies stay whole.
 pub const WALL_CUT_H: f32 = 1.0;
 
-const FLOOR_TOP: f32 = 6.0 / 128.0;
+pub(crate) const FLOOR_TOP: f32 = 6.0 / 128.0;
 const WALL_HT: f32 = 0.1; // wall half-thickness (0.2 wu slab, on the 0.1 grid)
 // The cap is SUNK into the wall band (base below WALL_TOP): its side faces
 // hide inside the slabs below the wall top and step back cleanly above it.
@@ -229,6 +229,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
     // ---- floors: one quad per row-run of same (tint, matte) key (cheap prim
     // merge; a checker look breaks field rows into per-cell quads — fine at
     // gym scale). Outdoor grass is MATTE; the Room floor keeps the sheen.
+    if spec.neighborhood {crate::terrain::ground(&mut scene);} else {
     for z in 0..h {
         let mut x = 0i16;
         while x < w {
@@ -245,20 +246,26 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
         }
     }
 
+    }
     // ---- walls: merge consecutive wall edges along each boundary line, then
     // cut each run into piers. The runs are collected FIRST so every slab
     // knows which other slabs it meets (it is
     // the only geometric fact the level's two loops otherwise throw away).
+    if look.concrete && !spec.neighborhood { crate::concrete::ground(&mut scene); }
     for r in &wall_runs(g) {
-        wall_slab(&mut scene, &mut piers, r, look);
+        if spec.neighborhood {crate::terrain::facade(&mut scene,r.rect,r.along_x);}
+        else if look.concrete { crate::concrete::wall(&mut scene, r.rect, r.along_x); }
+        else { wall_slab(&mut scene, &mut piers, r, look); }
     }
 
     // ---- roof: an occluding cap over every Room cell (merged per row).
     // Visible from outside (the building reads as a building); the WALLCUT
     // indoor cutaway dissolves it the moment the player steps inside. Gated by
     // `roof` so the dynamic-GI spike can tear it off and re-bake.
+    if spec.neighborhood {crate::terrain::details(&mut scene);}
     let roof_first = scene.primitives.len();
-    if roof {
+    if roof && spec.neighborhood {crate::terrain::roofs(&mut scene);}
+    if roof && !spec.neighborhood {
         // collect every cap rect first: a cap's PARAPET is only an arris where
         // the neighbouring row does not continue the roof, and a groove eased
         // into a shared row boundary would draw a line across the roof
@@ -314,7 +321,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look, roof: bool) -> (Scene, GymMeta) {
     scene.recompute_bounds();
 
     // ---- dynamics (after recompute_bounds, local space): the player body.
-    build_player_body(&mut scene, look);
+    if look.concrete {crate::survivor::build(&mut scene);} else {build_player_body(&mut scene, look);}
 
     scene.floor_rect = [0.0, 0.0, w as f32, h as f32];
     scene.solids = Vec::new(); // collision is the sim's grid, not AABBs

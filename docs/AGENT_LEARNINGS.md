@@ -1557,3 +1557,127 @@ Preventive checklist
 - Multiply ROI coverage by an asymmetric world-space `smoothstep` band: keep
   the player-clearance side solid, then fade across the wall crossing.
 - Preserve the first-hit safety gate so the fade cannot reintroduce near-wall ghosts.
+
+## 2026-09-04 - Procedural paint existed in data but barely read as a material
+
+Root cause
+
+The stain shader multiplied the solved region by a second, unrelated cloud
+threshold and retained a `0.20` floor outside the region. This both hid much of
+the requested stain and leaked paint beyond the authored band. Fine glaze lines
+were narrower than a surface texel and gated by a random nearest-cell choice,
+so a connected field rendered as scattered dots. Dry deposits also retained the
+intact ceramic roughness.
+
+Detection signal
+
+The catalogue's stain-only specimens looked almost pristine while the web-only
+specimen looked stippled. A failing shader regression exposed the mask leak.
+Matched Metal captures made the visibility problem clear despite green host
+coverage tests.
+
+Preventive checklist
+
+- Solved area must multiply the final paint term with no additive escape path.
+- Texture may modulate density inside that area; do not threshold it away again.
+- Filter fine painted lines using the projected surface footprint, conserving
+  their coverage rather than merely making lines darker or wider.
+- Use the geometric normal for surface coordinates and the footprint; bump
+  normals must not switch the face mapping.
+- Give deposited material its own roughness response; keep fresh aggregate off
+  intact glaze and grass. Compare executable material expressions across twins.
+- Inspect the isolated catalogue AND an authored playable scene, including an
+  idle/movement capture on Metal. Integer `ZOOM` rounds at boot; fractions below
+  one do not zoom out. Use capture extent and target to frame an overview.
+
+## 2026-09-04 - Starting a worn level from the menu crashes on stale material IDs
+
+Root cause
+
+`CrackLab` intentionally preserves authored wall specs across scene rebuilds,
+but also retained the generated core and spall material IDs. `resolve` called
+`stamp_all` on the fresh bare scene before replacing those IDs, indexing past
+its material array. The menu's `boot_demo` also retained the previous layout
+and reused wear whenever the new demo had the same wall topology.
+
+Detection signal
+
+The owner's windowed session panicked at `crack.rs` in `stamp_all`: material
+126 in an array of length 126. A GPU-free rebuild regression reproduced the
+exact panic. Direct `LEVEL=` captures and walk replays never rebuilt the scene.
+
+Preventive checklist
+
+- Clear scene-owned core/spall addresses before stamping a fresh scene; preserve
+  authored specs independently and stamp selection again after geometry exists.
+- A level-menu transition must replace its layout and reset authoring when the
+  demo identity changes, even when wall counts agree.
+- Verify rebuilds as well as cold boots. `LEVEL_SWITCH` accepts a semicolon list
+  and exercises the actual `boot_demo` path for Metal/Vulkan headless checks.
+- Include same-level restart, layout changes and same-layout wear changes in
+  the transition sequence. A successful walk recording does not cover menus.
+
+## 2026-09-05 - Concrete rubble floats when placed at a guessed ground height
+
+Root cause
+
+The new rubble generator initially used its own positive ground offset while
+the shared gym floor has a specific `FLOOR_TOP`. Hard directional shadows made
+the resulting gap visible. Rubble now uses the shared floor height with a small
+intersection allowance.
+
+Detection signal
+
+Metal close-ups showed disconnected contact shadows under otherwise grounded
+fragments. Mesh finiteness and deterministic-generation tests still passed.
+
+Preventive checklist
+
+- Reuse `gym_scene::FLOOR_TOP` for grounded procedural debris.
+- Check contact shadows in a close-up as well as the full-level view.
+- On Retina, distinguish logical window size from physical capture dimensions
+  when choosing `PIXEL` and comparing material detail or timing.
+
+## 2026-09-05 - A new rig inherits old ground and click-movement assumptions
+
+Root cause
+
+The gym presentation assumed every boot stood at `FLOOR_TOP`, and mouse routes
+still emitted cell-step commands. Lower soil and asphalt exposed floating feet;
+the articulated rig exposed the cell jumps behind the old visual easing.
+
+Detection signal
+
+Red regressions reproduced the wrong standing height on neighborhood soil and
+a one-cell snapshot jump during click movement. Both pass after terrain-aware
+support and continuous `MoveWorld` route following.
+
+Preventive checklist
+
+- Ground support must follow the visible substrate, including missing paving.
+- Treat narrow expansion joints as gaps bridged by a boot, not full-body drops.
+- Check keyboard and click movement with the same rig; legacy cell easing does
+  not establish continuous movement or meaningful stance contacts.
+
+## 2026-09-05 - Articulated meshes were shaded in their bind-pose normal space
+
+Root cause
+
+The closest-hit shaders interpolated local vertex normals and measured local
+triangle edges directly. TLAS instance transforms moved geometry but never
+rotated its lighting or scaled its contour distances. The new knee/elbow rig
+uses rotated, nonuniformly scaled links, making this omission material.
+
+Detection signal
+
+Close-up rig review led to the missing transform in both `trace` functions. A
+red shader contract test found no world/object transform access in either twin.
+
+Preventive checklist
+
+- Transform normals by the inverse-transpose and edge vectors by object-to-world.
+- Metal intersection results require `world_space_data` with `instancing` to
+  expose the transforms; verify the runtime shader compilation on the Mac.
+- Preserve the shared push layout; this information already belongs to the AS.
+- When simplifying straight steel chains, clip window openings geometrically:
+  centroid deletion cannot correctly cut a long bar crossing an opening.

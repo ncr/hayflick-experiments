@@ -35,6 +35,9 @@
 mod audio;
 mod backend;
 mod capture;
+mod concrete;
+mod terrain;
+mod survivor;
 mod crack;
 mod crack_geom;
 mod demos;

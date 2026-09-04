@@ -369,6 +369,43 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
+    #[test]
+    fn painted_stains_cannot_escape_the_authored_region() {
+        for (name, src) in twin_sources() {
+            let code = code_lines(src).join("\n");
+            assert!(!code.contains("0.20 + 0.80 * stainW"),
+                "{name}: a stain still has 20% coverage outside its mask");
+            assert!(code.contains("skin * aStain * stainW *"),
+                "{name}: every stain must be gated by the solved region");
+        }
+    }
+
+    #[test]
+    fn procedural_surface_math_matches_between_backends() {
+        let twins = twin_sources();
+        // Compare executable expressions, not merely the presence of a few
+        // names: changing a frequency, mask or filter in just one twin fails.
+        let normalized = |src: &str, start: &str, end: &str| {
+            let block = src.split_once(start).expect(start).1.split_once(end).expect(end).0;
+            block.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<String>()
+                .replace("float3", "vec3").replace("float2", "vec2")
+                .split_whitespace().collect::<String>()
+        };
+        for (start, end) in [
+            ("// SURFACE MATERIALS:", "bool greybox ="),
+            ("float webHalf =", "// MUD SPLASH"),
+            ("float soil =", "deposit = max(deposit, mudDensity);"),
+        ] {
+            assert_eq!(normalized(twins[0].1, start, end), normalized(twins[1].1, start, end), "surface twins diverged at {start}");
+        }
+        let body_flags = crate::flags::MATTE | crate::flags::CRAZE;
+        for (name, src) in twins {
+            assert!(src.contains(&format!("& {body_flags}u) == {body_flags}u")), "{name}: exposed-body classification drifted");
+            assert!(src.contains("reff = mix(reff, max(reff, 0.82), deposit)"), "{name}: dry paint must affect roughness too");
+            assert!(!src.contains("step(cellF, aWeb"), "{name}: cell lottery breaks fine-line continuity");
+        }
+    }
+
     /// THE layout pin: the bit positions the shader twins unpack, the exact-zero
     /// empty word, and 6-bit round-trip grain.
     #[test]

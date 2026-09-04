@@ -39,7 +39,7 @@ pub const MENU: &[MenuItem] = &[
     // returns. Index into look::LOOKS; `max` must stay LOOKS.len() - 1
     // (pinned by the test below). Switching rebuilds the scene + probe banks
     // (blocking, disk-cached per look) via Viewer::apply_look.
-    MenuItem { key: "look", label: "look", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },
+    MenuItem { key: "look", label: "look", kind: ItemKind::Slider { min: 0.0, max: 2.0, step: 1.0 } },
     // projection-as-data (Faza 1a): the preset index in iso_core::presets();
     // `max` must stay presets().len() - 1 (pinned by the test below)
     MenuItem { key: "proj", label: "projection", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },
@@ -118,7 +118,7 @@ pub(crate) const LBLURB_COLS: usize = 28; // 8 px/char against GPANEL_W
 const LBLURB_H: i32 = 4 + 9 * LBLURB_LINES as i32; // 8px lines on a 9px pitch + air
 // The centered panels share the settings staging buffer (MPANEL_W × MPANEL_H);
 // keep the LEVELS list short enough to fit (compile guard, generous bound).
-const _: () = assert!(lpanel_h(6) <= MPANEL_H);
+const _: () = assert!(lpanel_h(crate::demos::DEMOS.len()) <= MPANEL_H);
 
 // Every centered game panel shares the settings panel's staging buffer
 // (Vulkan menu_buf is MPANEL_W × MPANEL_H): the tallest must fit, or the

@@ -382,7 +382,10 @@ impl MetalBackend {
         opts.set_language_version(MTLLanguageVersion::V3_0);
         // NTEX_COUNT is the bindless array size — injected at compile so it
         // matches exactly the textures bound in the shade pass.
-        let shade_src = include_str!("shaders_metal/shade.metal").replace("NTEX_COUNT", &sc.texes.len().to_string());
+        let shade_src = include_str!("shaders_metal/shade.metal").replace("NTEX_COUNT", &sc.texes.len().to_string())
+            .replace("// CONCRETE_INCLUDE", include_str!("../../rt-probe/src/shaders/concrete.inc"))
+            .replace("// TERRAIN_INCLUDE", include_str!("../../rt-probe/src/shaders/terrain.inc"))
+            .replace("#include \"../../../../assets/procedural/neighborhood.layout\"", include_str!("../../../assets/procedural/neighborhood.layout"));
         let shade_lib = device.new_library_with_source(&shade_src, &opts).map_err(|e| format!("shade.metal: {e}"))?;
         let shade_pso = device.new_compute_pipeline_state_with_function(&shade_lib.get_function("shade", None).unwrap()).map_err(|e| format!("shade pso: {e}"))?;
         let probe_lib = device.new_library_with_source(include_str!("shaders_metal/probes.metal"), &opts).map_err(|e| format!("probes.metal: {e}"))?;
@@ -959,7 +962,7 @@ impl RenderBackend for MetalBackend {
         };
         // fp.env = the demo morph's per-frame sun/sky (else the baked scene env)
         let env = fp.env.unwrap_or(self.sc.env).dimmed(fp.sky_dim);
-        let push = Push {
+        let mut push = Push {
             cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
             cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
             cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, fp.ao_r],
@@ -980,8 +983,9 @@ impl RenderBackend for MetalBackend {
             env1: env.env1,
             env2: env.env2,
             env3: env.env3,
-            env4: env.env4,
+            env4: [env.env4[0],env.env4[1],env.env4[2],if fp.fs.vegetation {fp.fs.time+1.0}else{0.0}],
         };
+        if fp.fs.vegetation {push.roi[..3].copy_from_slice(&fp.fs.actor_position);}
         let rs = self.rs(fp.zoom);
         let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, &fp.proj, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
 

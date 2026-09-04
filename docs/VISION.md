@@ -1,5 +1,26 @@
 # VISION — radosne greyboxy + miodny player (2026-07-12)
 
+## Active material direction — owner override, 2026-09-05
+
+The owner requested a fresh aesthetic and a new effects pipeline for believable,
+low-resolution reinforced concrete: severe corrosion, acid/rain exposure,
+fire and blast damage, built from first principles. The sunny porcelain/meadow
+palette and box-only surface constraints below are historical for this study.
+The `concrete aftermath` level uses its own geometry and shared material shader;
+the earlier scenes remain comparisons. Deterministic rendering, Metal support,
+the headless game boundary and in-game playtesting still apply. See
+`docs/CONCRETE_2026-09-05.md` for the material model and evidence.
+
+The follow-up extends that direction to a coherent neighborhood: damaged
+sidewalk pours and asphalt, patchy soil/grass, shader-driven wind and player
+interaction, ruined dwellings, and a proportioned older survivor with a new
+articulated rig and contact response. `after the rain` is the playable showcase.
+Animated vegetation and breathing are deterministic functions of simulation
+time: a fixed camera alone no longer implies a static image in this level.
+See `docs/NEIGHBORHOOD_2026-09-05.md`.
+
+## Previous direction
+
 Status: **BINDING**. Zastępuje `docs/spec-reset-handoff.md` i cały `docs/spec/`
 (usunięte; historia pod tagiem `archive/pre-joyful-reset`). Właściciel wizji:
 Jacek. Gra: **Hayflick** (Beztroska Games). Rozwój: 100% Claude Code.

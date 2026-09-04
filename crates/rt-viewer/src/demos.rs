@@ -69,6 +69,8 @@ pub enum Action {
 pub enum Level {
     Gym,
     Catalogue,
+    Concrete,
+    Neighborhood,
 }
 
 impl Level {
@@ -76,6 +78,8 @@ impl Level {
         match self {
             Level::Gym => house_game::gym::sim::gym_level(),
             Level::Catalogue => house_game::gym::sim::catalogue_level(),
+            Level::Neighborhood => house_game::gym::neighborhood::level(),
+            Level::Concrete => house_game::gym::sim::concrete_level(),
         }
     }
 }
@@ -103,6 +107,7 @@ pub struct Demo {
 }
 
 pub static DEMOS: &[Demo] = &[
+    Demo { name: "after the rain", level: Level::Neighborhood, blurb: "ruined homes, broken streets, wind and an old survivor", look: "aftermath", spawn: (12,15), script: &[], wear: None, outdated: false },
     Demo {
         name: "gym",
         level: Level::Gym,
@@ -189,7 +194,30 @@ pub static DEMOS: &[Demo] = &[
         wear: Some(&CATALOGUE_WEAR_FILE),
         outdated: false,
     },
+    Demo {
+        name: "weathered courtyard",
+        level: Level::Gym,
+        blurb: "rain tracks, fine glaze and broken concrete; a clean wall beside wear",
+        look: "polana",
+        spawn: (9, 11),
+        script: &[],
+        wear: Some(&COURTYARD_WEAR_FILE),
+        outdated: false,
+    },
+    Demo {
+        name: "concrete aftermath",
+        level: Level::Concrete,
+        blurb: "reinforced concrete: rain, corrosion, fire and blast; a new material study",
+        look: "aftermath",
+        spawn: (8,12),
+        script: &[],
+        wear: None,
+        outdated: false,
+    },
 ];
+
+pub static COURTYARD_WEAR_FILE: crate::wear_file::WearFile =
+    crate::wear_file::WearFile::new("weathered courtyard", include_str!("../wear/courtyard.wear"), "crates/rt-viewer/wear/courtyard.wear");
 
 /// THE CRACK LAB's wear file (owner surface for the whole greybox-wear
 /// family): one BASE story every wall starts from, a per-RUN spread so the

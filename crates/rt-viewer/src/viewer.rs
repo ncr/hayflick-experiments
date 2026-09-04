@@ -409,6 +409,16 @@ impl Viewer {
                 None => eprintln!("LOOK_SWITCH={name}: unknown preset — ignored"),
             }
         }
+        // Exercise the actual level-menu transition, including same-layout wear
+        // changes. Direct LEVEL boots never visit this path. A semicolon list
+        // permits a full round trip in one process on either backend.
+        if let Ok(names) = std::env::var("LEVEL_SWITCH") {
+            for name in names.split(';') {
+                let demo = crate::demos::by_name(name.trim())
+                    .unwrap_or_else(|| panic!("LEVEL_SWITCH: unknown level {name:?}"));
+                r.boot_demo(demo);
+            }
+        }
         // CRACK_EDIT harness knob: replay a knob drag + release, so the headless
         // path can measure and diff the crack-lab REBUILD (the owner's expensive
         // interaction) instead of only a boot.
@@ -511,6 +521,12 @@ impl Viewer {
     /// (`apply_look` also re-joins lights + refreshes the roof/room meta). The
     /// follow-cam is re-aimed at the new spawn for a clean first frame.
     pub fn boot_demo(&mut self, demo: &'static crate::demos::Demo) {
+        // A menu switch owns the layout AND the wear source. Equal wall counts
+        // do not make crack lab and courtyard the same authored level.
+        if self.cur_demo.is_none_or(|old| !std::ptr::eq(old, demo)) {
+            self.crack = crate::crack::CrackLab::default();
+        }
+        self.gym.spec = demo.level.spec();
         self.gym.spec.player_start = house_game::gym::grid::CellPos::new(demo.spawn.0, demo.spawn.1);
         self.restart_gym();
         self.torn = false;
@@ -627,6 +643,8 @@ impl Viewer {
         let fs = FrameState {
             cam,
             room_lights: dim,
+            vegetation: self.gym.spec.neighborhood,
+            actor_position: self.gym.cam_target().to_array(),
             time: self.gym.time(), // SIM time — replayable, no wall clock
             light_emission: &emission,
             spotlights: &[],

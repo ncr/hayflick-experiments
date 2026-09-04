@@ -472,7 +472,7 @@ mod tests {
     /// owner save produces a clean diff and never a whole-file rewrite.
     #[test]
     fn checked_in_wear_files_are_canonical() {
-        for file in [&crate::demos::LAB_WEAR_FILE, &crate::demos::CATALOGUE_WEAR_FILE] {
+        for file in [&crate::demos::LAB_WEAR_FILE, &crate::demos::CATALOGUE_WEAR_FILE, &crate::demos::COURTYARD_WEAR_FILE] {
             let lw = parse(file.src).unwrap_or_else(|e| panic!("{}: {e}", file.path));
             assert_eq!(serialize(&lw), file.src, "{} is not canonical — save it through `serialize`", file.path);
         }

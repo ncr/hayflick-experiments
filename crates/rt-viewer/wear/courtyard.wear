@@ -1,0 +1,47 @@
+wall 5 3 sheltered facade
+  pin stain 0.15
+  pin web 0.08
+
+wall 12 4 clean porcelain
+
+wall 3 5 old glaze
+  pin stain 0.28
+  pin web 0.45
+  pin cracks 0.18
+  grain 0.65
+  relief 0.25
+
+wall 8 5 rain and exposed concrete
+  pin stain 0.6
+  pin web 0.22
+  pin cracks 0.28
+  pin chips 0.08
+  pin spall 0.025
+  grain 0.7
+  relief 0.4
+  pattern lightning 0.65 0.35 0.6
+
+wall 4 8 rain by the doorway
+  mudtop 0.18
+  pin stain 0.65
+  pin web 0.18
+  pin cracks 0.15
+  pin mud 0.12
+  grain 0.8
+  relief 0.3
+
+wall 7 8 porcelain and fine glaze
+  pin stain 0.3
+  pin web 0.4
+  paint_only
+
+wall 13 10 weathered garden wall
+  mudtop 0.2
+  pin stain 0.72
+  pin web 0.25
+  pin cracks 0.4
+  pin chips 0.12
+  pin spall 0.045
+  pin mud 0.25
+  grain 0.65
+  pattern lightning 0.7 0.3 0.65

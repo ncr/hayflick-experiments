@@ -24,9 +24,9 @@
 //! | 2 | 1 | [`GLASS`] | `gym_scene::mark_glass` | shade (transmission) |
 //! | 4 | 2 | [`MATTE`] | `gym_scene::mark_matte`, the chalk cores | shade (kills spec + the gloss remap) |
 //! | 8 | 3 | [`SEL`] | `crack::stamped_pad` | shade (posImg tag w=3) → tonemap (the amber outline) |
-//! | 16 | 4 | [`FREE16`] | nobody | nobody |
+//! | 16 | 4 | [`CONCRETE`] | concrete builder | shared concrete shader |
 //! | 32 | 5 | [`GEO`] | `crack_geom::split_pier` | HOST only (the AA scope) |
-//! | 64 | 6 | [`CRAZE`] | `crack_geom::craze_pier` | HOST only (the AA scope) |
+//! | 64 | 6 | [`CRAZE`] | `crack_geom::craze_pier` | shade (with MATTE: concrete aggregate), host AA scope |
 //! | 128 | 7 | [`AA`] | `crack::stamp_aa` | shade (the contour-AA scope) |
 //! | 8..31 | | the four 6-bit knobs | `crack::pad_bits` | shade (the CRACK LAB block) |
 //!
@@ -47,22 +47,16 @@ pub const MATTE: i32 = 4;
 /// the very surface being authored. No pulse: a pulse would make captures
 /// non-deterministic.
 pub const SEL: i32 = 8;
-/// The last unclaimed flag. Reserved by `crate::wear`'s doc for a future shader
-/// gate: a gate MUST key off a flag bit and never off `emissive.a != 0`, since
-/// the empty effect word is a legitimate state.
-///
-/// Unused BY DEFINITION — it is a record of the allocation, and deleting it
-/// because nothing reads it is how a budget stops being a budget.
-#[allow(dead_code)]
-pub const FREE16: i32 = 16;
+/// Dedicated reinforced-concrete material pipeline (not legacy wear lanes).
+pub const CONCRETE: i32 = 16;
 /// This pier's structural fault is REAL GEOMETRY. It existed to stop the shade
 /// pass painting a second, disagreeing fault on top of it; since the painted
 /// layers were culled (2026-07-26) no shader reads it, and its only remaining
 /// job is host-side — the `aa scope = 1` predicate, "did a generator add detail
 /// to this wall".
 pub const GEO: i32 = 32;
-/// This pier's craze network is REAL GEOMETRY. Host-only for the same reason as
-/// [`GEO`], and a candidate for merging with it.
+/// This pier's craze network is REAL GEOMETRY. Also read by the shade twins together with MATTE to identify exposed
+/// concrete for aggregate shading; intact glaze and meadow are excluded.
 pub const CRAZE: i32 = 64;
 /// The greybox-detail AA opt-in (CLAUDE.md, "greybox detail = AA-scoped").
 pub const AA: i32 = 128;
@@ -72,7 +66,7 @@ pub const AA: i32 = 128;
 /// new flag that forgets to join it fails that test rather than colliding.
 #[allow(dead_code)]
 pub const ALL: [(&str, i32); 8] =
-    [("OCCLUDER", OCCLUDER), ("GLASS", GLASS), ("MATTE", MATTE), ("SEL", SEL), ("FREE16", FREE16), ("GEO", GEO), ("CRAZE", CRAZE), ("AA", AA)];
+    [("OCCLUDER", OCCLUDER), ("GLASS", GLASS), ("MATTE", MATTE), ("SEL", SEL), ("CONCRETE", CONCRETE), ("GEO", GEO), ("CRAZE", CRAZE), ("AA", AA)];
 
 /// The whole flag byte — bits 0..7. Above it live the knob lanes.
 pub const BYTE: i32 = 0xFF;
@@ -119,17 +113,15 @@ mod tests {
     /// the GLSL side is the BLIND one this session (no Vulkan hardware), which
     /// is exactly when a compile-time source guard earns its keep.
     ///
-    /// Only the flags a shader actually reads are checked. `FREE16` has none by
-    /// definition, and since the painted-layer cull (2026-07-26) neither do
-    /// `GEO` and `CRAZE` — they survive as the host's "a generator touched this
-    /// wall" mark for the AA scope. If a shader ever reads one again, add it
-    /// here in the same commit.
+    /// Concrete now owns value 16; its dedicated shader branch must be
+    /// selected identically on both backends. Compound body flags are pinned
+    /// separately by the surface-expression test.
     #[test]
     fn both_twins_spell_every_flag_value_as_the_host_does() {
         for (name, src) in crate::wear::twin_sources() {
             let lines = crate::wear::code_lines(src);
             let has = |pat: &str| lines.iter().any(|l| l.contains(pat));
-            for (flag, v) in [("MATTE", MATTE), ("SEL", SEL), ("AA", AA)] {
+            for (flag, v) in [("MATTE", MATTE), ("SEL", SEL), ("AA", AA), ("CONCRETE", CONCRETE)] {
                 assert!(
                     has(&format!("pad & {v}u")) || has(&format!("pad & {v})")) || has(&format!("pad) & {v}u")),
                     "{name}: no read of {flag} at the host's value {v}"

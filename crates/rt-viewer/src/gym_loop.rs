@@ -124,6 +124,7 @@ pub struct GymLoop {
     ease: Ease,
     /// Walk-cycle state.
     gait: Gait,
+    survivor: crate::survivor::Rig,
     /// Presentation facing for the player body (radians about Y).
     face: f32,
     /// Camera target the follow-cam last consumed.
@@ -145,7 +146,8 @@ impl GymLoop {
     pub fn with_projection(spec: GymLevel, proj: Projection) -> GymLoop {
         let sim = GymGame::new(spec.clone());
         let snap = sim.snapshot();
-        let p0 = cell_world(snap.player);
+        let mut p0 = cell_world(snap.player);
+        if spec.neighborhood {p0.y=crate::terrain::height_at(snap.position);}
         GymLoop {
             fixed: FixedLoop::new(TICK_DT),
             queue: InputQueue::new(),
@@ -162,6 +164,7 @@ impl GymLoop {
             continuous_active: false,
             ease: Ease::pinned(p0),
             gait: Gait::default(),
+            survivor: crate::survivor::Rig::new(p0),
             face: 0.0,
             last_cam: p0,
             phys: None,
@@ -295,6 +298,18 @@ impl GymLoop {
             return;
         }
         let s = self.sim.snapshot();
+        if self.spec.neighborhood {
+            let mode=self.mode();let plan=self.plan.as_mut().unwrap();
+            while plan.next<plan.cells.len() {
+                let c=plan.cells[plan.next];let target=Vec2::new(c.x as f32+0.5,c.z as f32+0.5);
+                let delta=target-s.position;
+                if delta.length()<0.09 {plan.next+=1;continue;}
+                let v=delta.normalize()*house_game::gym::sim::WORLD_INPUT_SCALE;
+                self.queue.push(self.tick,Command::MoveWorld{dx:v.x.round() as i16,dz:v.y.round() as i16,mode});
+                self.continuous_active=true;return;
+            }
+            self.plan=None;return;
+        }
         let plan = self.plan.as_mut().unwrap();
         while plan.next < plan.cells.len() && plan.cells[plan.next] == s.player {
             plan.next += 1;
@@ -395,6 +410,10 @@ impl GymLoop {
     /// its eased distance. The gait therefore cannot run in place against a
     /// wall or skate ahead of an accelerating body.
     fn gait_tick(&mut self) {
+        let snap = self.sim.snapshot();
+        let y=if self.spec.neighborhood {crate::terrain::height_at(snap.position)}else{crate::gym_scene::FLOOR_TOP};
+        let p=Vec3::new(snap.position.x,y,snap.position.y);
+        self.survivor.update(p,snap.velocity,snap.intent,snap.contact);
         let now = self.tick.0;
         let e = self.ease;
         let (stride, _) = gait_params(self.mode());
@@ -446,7 +465,7 @@ impl GymLoop {
     }
 
     fn sim_position_world(&self) -> Vec3 {
-        let y = cell_world(self.snap.player).y;
+        let y = if self.spec.neighborhood {crate::terrain::height_at(self.snap.position)}else{cell_world(self.snap.player).y};
         Vec3::new(self.snap.position.x, y, self.snap.position.y)
     }
 
@@ -454,7 +473,9 @@ impl GymLoop {
         if self.continuous_active {
             self.sim_position_world()
         } else {
-            self.ease.at(self.tick.0)
+            let mut p=self.ease.at(self.tick.0);
+            if self.spec.neighborhood {p.y=crate::terrain::height_at(Vec2::new(p.x,p.z));}
+            p
         }
     }
 
@@ -482,6 +503,7 @@ impl GymLoop {
     /// sample. Limb transforms MUST mirror the pivot constants the builder
     /// authored the geometry around.
     pub fn instances(&self, handles: &SceneHandles) -> Vec<(InstanceKey, Mat4)> {
+        if handles.instances.contains_key("player/head") {return self.survivor.instances(self.render_position(),handles);}
         let mut out = Vec::new();
         let get = |n: &str| handles.instances.get(n).copied();
         let base = Mat4::from_translation(self.render_position()) * Mat4::from_rotation_y(self.face);
@@ -575,12 +597,29 @@ mod tests {
     use super::*;
     use house_game::gym::sim::gym_level;
 
+    #[test]
+    fn neighborhood_actor_stands_on_soil_not_the_old_gym_floor() {
+        let mut spec=house_game::gym::neighborhood::level();spec.player_start=CellPos::new(24,20);
+        let t=GymLoop::new(spec);
+        assert!((t.render_position().y + 0.075).abs()<1e-5);
+    }
+
+    #[test]
+    fn neighborhood_click_walks_continuously_to_the_goal() {
+        let mut spec=house_game::gym::neighborhood::level();spec.player_start=CellPos::new(24,20);
+        let mut t=GymLoop::new(spec);t.click_ground(Vec3::new(24.5,0.0,18.5));
+        let mut last=t.snap.position;
+        for _ in 0..160 {t.run_due(TICK_DT);assert!(t.snap.position.distance(last)<0.04,"click route teleported instead of walking");last=t.snap.position;}
+        assert!(last.distance(Vec2::new(24.5,18.5))<0.16);
+    }
+
     /// W means SCREEN up: the world-axis stairs must follow the active
     /// projection's inverse pixel basis. The old fixed alternation produced
     /// a visible sideways drift under the trimetric game projection.
     #[test]
     fn held_w_follows_the_projection_without_sideways_zigzag() {
         let mut t = GymLoop::new(house_game::gym::sim::GymLevel {
+            neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),
             lights: Vec::new(),
@@ -684,6 +723,7 @@ mod tests {
     #[test]
     fn gait_phase_tracks_distance_instead_of_wall_clock() {
         let mut t = GymLoop::new(house_game::gym::sim::GymLevel {
+            neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),
             lights: Vec::new(),

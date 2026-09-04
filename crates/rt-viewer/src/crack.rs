@@ -611,10 +611,16 @@ pub fn resolve(wear: Option<&crate::wall::LevelWear>, lab: &mut CrackLab, piers:
         }
     }
     lab.recompile();
+    // These addresses belong to the previous Scene, while authored specs above
+    // deliberately survive a rebuild. Clear only the generated material map
+    // before stamping the new bare boxes; it is rebuilt by apply_geometry.
+    lab.cores.clear();
+    lab.spall_mats.clear();
     stamp_all(scene, piers, lab);
     // structural breaks + crazing + cover spall become REAL geometry
     let aged = crate::crack_geom::apply_geometry(scene, piers, lab.wear());
     (lab.cores, lab.spall_mats) = (aged.cores, aged.spall_mats);
+    stamp_all(scene, piers, lab); // the new core/basin/steel inherit selection too
     lab.geo_sigs = crate::crack_geom::keys(scene, piers, lab.wear());
     stamp_aa(scene, piers, lab, aa_scope); // the AA scope's opt-in bits
 }
@@ -889,8 +895,41 @@ mod tests {
         resolve(wear, &mut lab, &meta.piers, &mut scene, 1);
         (scene, meta, lab)
     }
+
+    #[test]
+    fn rebuilding_worn_scene_discards_old_material_addresses_and_preserves_edits() {
+        let wear = crate::demos::COURTYARD_WEAR_FILE.level_wear();
+        let (_, _, mut lab) = build(crate::demos::Level::Gym, Some(wear));
+        lab.spec[0].scrub = 0.4;
+        lab.sel = Some(0);
+        let (mut fresh, meta) = crate::gym_scene::build_gym(&crate::demos::Level::Gym.spec(), &crate::look::POLANA, true);
+        assert!(lab.cores.iter().any(|&m| m >= fresh.materials.len() as i32), "must exercise stale generated material indices");
+        resolve(Some(wear), &mut lab, &meta.piers, &mut fresh, 1);
+        assert_eq!(lab.spec[0].scrub, 0.4, "a rebuild must preserve authored edits");
+        for (i, pier) in meta.piers.iter().enumerate() {
+            for m in pier_surface_mats(&fresh, pier, &lab, i) {
+                assert!(m < fresh.materials.len());
+                assert_eq!(fresh.materials[m]._pad & SEL_BIT != 0, i == 0, "new surface materials inherit selection");
+            }
+        }
+    }
     fn pad_of(scene: &rt_probe::Scene, meta: &crate::gym_scene::GymMeta, i: usize) -> i32 {
         scene.materials[scene.primitives[meta.piers[i].prim].material_id as usize]._pad
+    }
+
+    #[test]
+    fn courtyard_has_real_wear_and_an_unchanged_clean_control() {
+        let demo = crate::demos::by_name("weathered courtyard").unwrap();
+        let wear = demo.wear.unwrap().level_wear();
+        let (plain, plain_meta, _) = build(demo.level, None);
+        let (scene, meta, lab) = build(demo.level, Some(wear));
+        assert!(demo.script.is_empty(), "the showcase must stay authored while playing");
+        assert_eq!(lab.spec.len(), wear.walls.len(), "each facade has one authored subject");
+        let clean = pier_index_at(&meta.piers, 12.0, 4.0).unwrap();
+        assert_eq!(verts(&scene, &meta, clean), verts(&plain, &plain_meta, clean));
+        assert_eq!(pad_of(&scene, &meta, clean) & !SEL_BIT, pad_of(&plain, &plain_meta, clean) & !SEL_BIT);
+        assert!(scene.indices.len() > plain.indices.len(), "wear must produce actual geometry");
+        assert!(lab.sheets.iter().any(|s| s.paint.stain_amt > 0.5), "the rain study must be visible");
     }
     /// A pier's own vertices, verbatim — for "is this wall bit-identical to the
     /// un-aged one" questions.
@@ -929,7 +968,7 @@ mod tests {
     fn a_marked_flag_survives_the_boot_stamp_and_a_live_edit() {
         use crate::gym_scene::Pier;
         use rt_probe::Scene;
-        const FREE_BIT: i32 = crate::flags::FREE16;
+        const FREE_BIT: i32 = crate::flags::CONCRETE;
         let mut scene = Scene::default();
         let (lo, hi) = (Vec3::new(1.0, 0.0, 9.9), Vec3::new(7.0, 2.2, 10.15));
         scene.add_box_world(lo, hi, [0.9, 0.9, 0.9, 1.0], [0.0; 4], 0.85, 0.0);

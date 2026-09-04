@@ -257,6 +257,8 @@ pub struct FrameState<'a> {
     pub room_lights: f32,
     /// SIM time (ticks · TICK_DT) — replayable; no wall clock below the shell.
     pub time: f32,
+    pub vegetation: bool,
+    pub actor_position: [f32;3],
     /// Game-authored per-light rgb — THE light animation (flicker curves live
     /// in house-game now). Applied to the NEE record and the linked material,
     /// so the visible fixture matches the light it casts; slots not addressed
@@ -1330,7 +1332,7 @@ mod tests {
         let sp = Spotlight { pos: Vec3::new(1.0, 0.9, 2.0), dir: Vec3::new(0.0, -0.2, 0.98), cone_cos: 0.86, power: 3000.0, radius: 0.06, tint: SPOT_WARM };
         let spots = [sp];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, spotlights: &spots, instances: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, vegetation: false, actor_position: [0.0;3], light_emission: &emis, spotlights: &spots, instances: &[] };
         let n = frame_lights_cpu(&mut lights, &mut mats, &light_link, reserved_slot_start, &fs);
         assert_eq!(n, 1);
         // an unaddressed slot keeps its previous values (light 0 holds base);

@@ -39,6 +39,8 @@ use rt_probe::{StyleCfg, SunSky};
 /// read, and the look is colours + light + response.
 pub struct Look {
     pub name: &'static str,
+    /// New reinforced-concrete geometry/material family, independent of wear.
+    pub concrete: bool,
     // ---- architecture
     pub street: u32,
     /// `Some` = per-cell checker on Outdoor cells (breaks the floor
@@ -102,8 +104,9 @@ pub struct Look {
 /// lives in the lamp mood since the blocky rebuild dropped the fascia.
 pub const POLANA: Look = Look {
     name: "polana",
+    concrete: false,
     street: 0x74b048,
-    street_alt: Some(0x6ca343),
+    street_alt: None,
     room_floor: 0xf0ede5,
     wall: 0xfbf9f5,
     roof: 0xf1efe9,
@@ -154,11 +157,12 @@ pub const POLANA: Look = Look {
 /// baked into `lighting` here — no SUN/SKY/LIGHTS env knobs needed.
 pub const DUSK: Look = Look {
     name: "dusk",
+    concrete: false,
     // architecture: dusky-green meadow, porcelain volumes read cool in the
     // low light (the sun paints the warm on lit faces). Same greybox as
     // polana — a look is a re-light, never new geometry.
     street: 0x3f5a34,
-    street_alt: Some(0x385230),
+    street_alt: None,
     room_floor: 0xd0cbc0,
     wall: 0xece7de,
     roof: 0xe0dbd3,
@@ -204,7 +208,40 @@ pub const DUSK: Look = Look {
     boots: [0.10, 0.10, 0.11, 1.0],
 };
 
-pub static LOOKS: &[&Look] = &[&POLANA, &DUSK];
+/// Industrial daylight for the owner's realism reset (2026-09-04).
+pub const AFTERMATH: Look = Look {
+    name: "aftermath",
+    concrete: true,
+    street: 0x756e61,
+    street_alt: None,
+    room_floor: 0x827d70,
+    wall: 0x98978c,
+    roof: 0x827d72,
+    window: None,
+    grass: None,
+    lighting: [1.05, 1.65, 0.012, 0.7],
+    sun: SunSky {
+        sun_dir: [0.55, 0.48, 0.68],
+        sun_rgb: [1.0, 0.92, 0.81],
+        horizon_rgb: [0.82, 0.85, 0.88],
+        zenith_rgb: [0.38, 0.49, 0.65],
+        ground_rgb: [0.31, 0.29, 0.25],
+    },
+    style: StyleCfg { sat: 0.9, contrast: 1.08, ..StyleCfg::CLEAN },
+    exposure: 0.58,
+    spec: 0.45,
+    gloss: 0.0,
+    bump: 0.0,
+    gi: 0.85,
+    aa: 0.8,
+    coat: [0.12,0.16,0.14,1.0],
+    hood: [0.09,0.105,0.095,1.0],
+    legs: [0.16,0.145,0.115,1.0],
+    boots: [0.055,0.05,0.045,1.0],
+    ..POLANA
+};
+
+pub static LOOKS: &[&Look] = &[&POLANA, &DUSK, &AFTERMATH];
 
 pub fn by_name(name: &str) -> Option<&'static Look> {
     LOOKS.iter().find(|l| l.name == name).copied()
