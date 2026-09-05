@@ -9,7 +9,7 @@
 //! - LMB / trackpad tap — click-to-move (unprojected to a ground cell; the
 //!   shell BFS-plans the route, the sim owns the step cadence)
 //! - WASD / arrows — screen-relative continuous walk
-//! - Shift — run
+//! - Shift — run; C — toggle crouch; Ctrl — hold crouch
 //! - q / e — smooth eased quarter turn (presentation-only)
 //! - scroll / +- — integer zoom steps 1-4, cursor-anchored; 0 = camera reset
 //! - Tab — the personal IDE (pracownia): hierarchy + inspector at 2x the
@@ -46,6 +46,7 @@ mod gym_loop;
 mod gym_scene;
 mod gi_demo;
 mod ide_host;
+mod input;
 mod look;
 mod menu;
 mod phys_scene;
@@ -70,7 +71,7 @@ use viewer::Viewer;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey, KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 struct App {
@@ -127,6 +128,15 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
                 let Some(r) = self.renderer.as_mut() else { return };
+                // Track physical releases BEFORE menus/IDE can consume the event.
+                let movement = if let PhysicalKey::Code(key) = event.physical_key {
+                    let active = !r.menu_open() && !r.ide.ui.open;
+                    let handled = r.keys.update(key, event.state.is_pressed(), event.repeat, active);
+                    r.gym.held = r.keys.movement();
+                    r.gym.run_held = r.keys.run();
+                    r.gym.crouch_held = r.keys.crouch();
+                    handled
+                } else { false };
                 // an open menu captures the arrows + enter; WASD also
                 // navigates (regular-game muscle memory)
                 if r.menu_open() && event.state.is_pressed() {
@@ -168,28 +178,21 @@ impl ApplicationHandler for App {
                         _ => return, // menus are modal: swallow the rest (repeats included)
                     }
                 }
-                // movement keys are held-state (continuous walk); index = [up,down,left,right]
-                let held_idx = match event.logical_key.as_ref() {
-                    Key::Named(NamedKey::ArrowUp) | Key::Character("w") => Some(0),
-                    Key::Named(NamedKey::ArrowDown) | Key::Character("s") => Some(1),
-                    Key::Named(NamedKey::ArrowLeft) | Key::Character("a") => Some(2),
-                    Key::Named(NamedKey::ArrowRight) | Key::Character("d") => Some(3),
-                    _ => None,
-                };
-                if let Some(i) = held_idx {
-                    // an open IDE freezes the world — walking starts on close
-                    if !r.ide.ui.open {
-                        r.gym.held[i] = event.state.is_pressed();
-                    }
-                    return;
-                }
-                // movement mode (held)
-                if let Key::Named(NamedKey::Shift) = event.logical_key.as_ref() {
-                    r.gym.run_held = event.state.is_pressed();
-                    return;
-                }
+                if movement { return; }
                 if !event.state.is_pressed() {
                     return; // discrete actions fire on press only
+                }
+                if let PhysicalKey::Code(key) = event.physical_key {
+                    if !r.ide.ui.open {
+                        if let Some(delta) = input::camera_turn(key, event.repeat) {
+                            r.start_rotate(delta);
+                            return;
+                        }
+                        if key == KeyCode::KeyC && !event.repeat {
+                            r.gym.crouch_toggle = !r.gym.crouch_toggle;
+                            return;
+                        }
+                    }
                 }
                 match event.logical_key.as_ref() {
                     // same repeat guard as the modal branch: one physical
@@ -212,8 +215,6 @@ impl ApplicationHandler for App {
                         let c = r.view.cursor;
                         r.zoom_step(-1, c);
                     }
-                    Key::Character("q") => r.start_rotate(-1),
-                    Key::Character("e") => r.start_rotate(1),
                     Key::Character("0") => {
                         // camera reset: recentre on the player, canonical yaw
                         r.view.zoom = 1.0;
@@ -240,8 +241,7 @@ impl ApplicationHandler for App {
                 // held-state or the player walks into a wall forever and a
                 // stale drag keeps editing the panel
                 if let Some(r) = self.renderer.as_mut() {
-                    r.gym.held = [false; 4];
-                    r.gym.run_held = false;
+                    r.clear_live_input();
                     r.menu.drag = false;
                     r.menu.drag_pending = false;
                     r.ide.ui.cancel_drag();

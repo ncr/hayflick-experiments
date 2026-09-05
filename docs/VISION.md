@@ -19,6 +19,25 @@ Animated vegetation and breathing are deterministic functions of simulation
 time: a fixed camera alone no longer implies a static image in this level.
 See `docs/NEIGHBORHOOD_2026-09-05.md`.
 
+The owner's next correction disables antialiasing entirely (including contour
+softening) and replaces the rounded procedural character with a Blender-authored
+3D model guided by the Fallout 2 male leather-jacket sprite and locomotion.
+Keep the older-man direction. This supersedes the historical contour-AA rules
+below. The model is an original editable asset with a runtime joint rig;
+`docs/PLAYER_2026-09-05.md` describes the source, animation and validation.
+
+The owner likes the current lighting and requested a refinement with foggy,
+dusty air and grain. Preserve the sunlight direction and material readability;
+use slowly drifting world-space aerosols and restrained grain in the aftermath
+look. This explicitly supersedes the historical ban on grain below. AA remains
+disabled. See `docs/ATMOSPHERE_2026-09-05.md`.
+
+The owner then chose the classic blue/yellow vault suit with **42** on the back,
+requested faster movement, fixes for stuck WASD around Shift/Q/E, and better IK
+with crouching. That outfit supersedes the leather-jacket default while keeping
+the older face and approved atmospheric lighting. See
+`docs/PLAYER_VAULT42_2026-09-05.md`.
+
 ## Previous direction
 
 Status: **BINDING**. Zastępuje `docs/spec-reset-handoff.md` i cały `docs/spec/`

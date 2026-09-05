@@ -44,6 +44,10 @@ pub fn parse_trace(src: &str) -> Result<Vec<(Tick, Command)>, String> {
                 };
                 Command::MoveWorld { dx, dz, mode }
             }
+            "crouch" => Command::Crouch(match w.next() {
+                Some("on") => true, Some("off") => false,
+                _ => return Err(err("crouch: expected on or off")),
+            }),
             "wait" => Command::Wait,
             _ => return Err(err(&format!("unknown op {op:?}"))),
         };
@@ -70,6 +74,7 @@ pub fn format_command(tick: Tick, c: &Command) -> String {
             };
             format!("{} move_world {} {} {}", tick.0, dx, dz, m)
         }
+        Command::Crouch(active) => format!("{} crouch {}", tick.0, if *active {"on"} else {"off"}),
         Command::Wait => format!("{} wait", tick.0),
     }
 }
@@ -95,5 +100,13 @@ mod tests {
         assert!(parse_trace("5 fly").unwrap_err().contains("line 1"));
         assert!(parse_trace("5 move 1").unwrap_err().contains("missing dz"));
         assert!(parse_trace("5 move 1 0 sneak").unwrap_err().contains("unknown mode"));
+    }
+    #[test]
+    fn crouch_commands_round_trip_and_reject_missing_state() {
+        let t=parse_trace("0 crouch on\n100 crouch off\n").unwrap();
+        let text=t.iter().map(|(tick,c)|format_command(*tick,c)).collect::<Vec<_>>().join("\n");
+        assert_eq!(parse_trace(&text).unwrap(),t);
+        assert!(parse_trace("0 crouch").is_err());
+        assert!(parse_trace("0 crouch maybe").is_err());
     }
 }

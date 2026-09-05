@@ -3,7 +3,10 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=src/shaders/concrete.inc");
     println!("cargo:rerun-if-changed=src/shaders/terrain.inc");
+    println!("cargo:rerun-if-changed=src/shaders/survivor.inc");
     println!("cargo:rerun-if-changed=../../assets/procedural/neighborhood.layout");
+    println!("cargo:rerun-if-changed=src/shaders/atmosphere_math.inc");
+    println!("cargo:rerun-if-changed=src/shaders/atmosphere.inc");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     for (src, stage) in [
         ("src/shaders/tonemap.comp", "comp"),

@@ -6,18 +6,16 @@
 #define CFN
 #include "concrete.inc"
 #include "terrain.inc"
+#include "survivor.inc"
+#include "atmosphere_math.inc"
+#include "atmosphere.inc"
 #undef CFN
 
 
-// DETERMINISTIC per-frame ray-traced shade — the web-renderer stability
-// contract, kept under ray tracing. The image is a PURE FUNCTION of
-// (scene, camera): one primary ray through each pixel centre, deterministic
-// shadow rays to the sun and to every significant light, and a lookup into
-// the world-space irradiance probe cache (probes.comp) for GI. No random
-// numbers anywhere in this shader -> a fixed camera gives a bit-identical
-// image every frame, and every frame of a rotation sweep is exactly as
-// "converged" as the settled frame. No accumulation, no denoiser, no
-// temporal anything.
+// Deterministic shade at a fixed scene/camera/simulation tick. One primary
+// ray through each pixel centre, direct shadow rays, frozen probe GI and
+// world-anchored air samples. Vegetation and aerosol density follow sim time;
+// sample placement never re-rolls. No accumulation, denoiser or temporal blur.
 //
 // Double-count contract with probes.comp: this pass owns direct light
 // (emissive seen by camera, sun NEE, light NEE) — the probe cache owns
@@ -133,11 +131,7 @@ vec3 sky(vec3 d){
   return (d.y > 0.0 ? mix(horizon, zenith, pow(t, 1.4)) : mix(horizon, ground, clamp(-d.y * 3.0, 0.0, 1.0))) * 0.18 * pc.env0.y;
 }
 
-float fogOD(vec3 o, vec3 d, float t){
-  float D = pc.env0.z, H = pc.env0.w;
-  if (abs(d.y) < 1e-4) return D * exp(-o.y / H) * t;
-  return D * (H / d.y) * (exp(-o.y / H) - exp(-(o.y + d.y * t) / H));
-}
+
 
 // `edge` = world distance from the hit point to the nearest GATING triangle
 // edge (see trace) — the contour-AA gate's raw signal.
@@ -564,20 +558,26 @@ void main(){
   float fogT = 1.0;
   vec3 fogAdd = vec3(0.0);
   if (pc.env0.z > 0.0) {
-    // exponential ground mist on the primary segment — fully analytic
-    // (transmittance + ambient inscatter) plus ONE fixed-position sun-shaft
-    // sample: deterministic, so it shades identically every frame.
-    float tseg = hitb ? tcam : min(300.0, o0.y / max(-d.y, 1e-4));
-    fogT = exp(-fogOD(o0, d, tseg));
-    vec3 fogCol = vec3(0.55, 0.58, 0.66) * 0.18 * pc.env0.y;
-    fogAdd = fogCol * (1.0 - fogT);
-    if (pc.env0.x > 0.0) {
-      float L = min(tseg, 8.0 * pc.env0.w / max(-d.y, 0.05));
-      float ts = tseg - 0.5 * L;
-      vec3 ps = o0 + d * ts;
-      float ss = pc.env0.z * exp(-max(ps.y, 0.0) / pc.env0.w);
-      if (ss > 1e-5 && !occluded(ps, sunDir, 200.0))
-        fogAdd += sun * ss * exp(-fogOD(o0, d, ts)) * L * 0.08;
+    float tseg = hitb ? tcam : min(300.0, max(o0.y, 0.0) / max(-d.y, 0.0001));
+    vec2 span = airInterval(o0, d, tseg, pc.env0.w);
+    float ds = span.y / 8.0;
+    float offset = airStratum(o0, d);
+    float airTime = max(pc.env4.w - 1.0, 0.0);
+    vec3 ambientAir = mix(pc.env3.rgb, pc.env4.rgb, 0.35) * (0.18 * pc.env0.y);
+    vec3 sunAir = sun * airPhase(dot(d, sunDir));
+    // Front-to-back single scattering. Each segment conserves energy:
+    // surface transmission + scattered weight = 1, even in dense fog.
+    for (int ai = 0; ai < 8; ++ai) {
+      float ta = span.x + float(ai) * ds;
+      vec3 ps = o0 + d * (ta + offset * ds);
+      float od = airColumn(o0.y + d.y * ta, d.y, ds, pc.env0.z, pc.env0.w)
+               * airDensity(ps, airTime);
+      float stepT = exp(-od);
+      vec3 incident = ambientAir;
+      if (od > 0.00001 && pc.env0.x > 0.0 && !occluded(ps, sunDir, 200.0))
+        incident += sunAir;
+      fogAdd += fogT * (1.0 - stepT) * incident * vec3(0.96, 0.93, 0.87);
+      fogT *= stepT;
     }
   }
 
@@ -609,6 +609,7 @@ void main(){
   // SURFACE MATERIALS: world-anchored and filtered at the projected texel
   // footprint. No frame seed, extra rays, or change to primary visibility.
   float surfacePx = (2.0 * pc.camRight.w / float(pc.misc.x)) / max(abs(dot(aaGn, d)), 0.18);
+  if (m.texIndex <= -2 && m.texIndex >= -16) albedo = survivorAlbedo(albedo, h.uv, -m.texIndex-2, surfacePx);
   float deposit = 0.0;
   bool concreteMaterial = (uint(m.pad) & 16u) != 0u;
     bool freshConcrete = !concreteMaterial && (uint(m.pad) & 68u) == 68u; // MATTE + CRAZE: exposed body

@@ -139,7 +139,7 @@ pub const POLANA: Look = Look {
     bump: 0.1, // …on near-smooth porcelain (minimal bumps — owner)
     bump_scale: 7.0,
     gi: 0.5,
-    aa: 0.8,
+    aa: 0.0,
     coat: [0.42, 0.10, 0.08, 1.0], // the red-coat walker (from meadow)
     hood: [0.26, 0.05, 0.04, 1.0],
     skin: [0.74, 0.58, 0.45, 1.0],
@@ -200,7 +200,7 @@ pub const DUSK: Look = Look {
     bump: 0.1,
     bump_scale: 7.0,
     gi: 0.5,
-    aa: 0.8,
+    aa: 0.0,
     coat: [0.42, 0.10, 0.08, 1.0],
     hood: [0.26, 0.05, 0.04, 1.0],
     skin: [0.74, 0.58, 0.45, 1.0],
@@ -219,7 +219,8 @@ pub const AFTERMATH: Look = Look {
     roof: 0x827d72,
     window: None,
     grass: None,
-    lighting: [1.05, 1.65, 0.012, 0.7],
+    // Retain the key direction; open cool shadow detail and lift dust in the air.
+    lighting: [1.02, 1.85, 0.026, 2.6],
     sun: SunSky {
         sun_dir: [0.55, 0.48, 0.68],
         sun_rgb: [1.0, 0.92, 0.81],
@@ -227,13 +228,13 @@ pub const AFTERMATH: Look = Look {
         zenith_rgb: [0.38, 0.49, 0.65],
         ground_rgb: [0.31, 0.29, 0.25],
     },
-    style: StyleCfg { sat: 0.9, contrast: 1.08, ..StyleCfg::CLEAN },
+    style: StyleCfg { sat: 0.92, contrast: 1.06, grain: 0.055, grain_static: 1.0, ..StyleCfg::CLEAN },
     exposure: 0.58,
     spec: 0.45,
     gloss: 0.0,
     bump: 0.0,
     gi: 0.85,
-    aa: 0.8,
+    aa: 0.0,
     coat: [0.12,0.16,0.14,1.0],
     hood: [0.09,0.105,0.095,1.0],
     legs: [0.16,0.145,0.115,1.0],

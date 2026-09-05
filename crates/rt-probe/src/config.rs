@@ -76,7 +76,8 @@ pub struct StyleCfg {
     pub analog_chroma: f32, // ANALOG_CHROMA: chroma noise strength (defaults to ANALOG)
     pub analog_tear: f32,  // ANALOG_TEAR: horizontal scanline-tear strength (defaults to ANALOG)
     pub crt_mask: f32,     // CRT_MASK: RGB phosphor triad + scanline on the FINAL image (0 = off)
-    /// AA_SOFT: CONTOUR SOFTEN — how far a CONTOUR texel's radiance is pulled
+    /// Legacy CONTOUR SOFTEN, locked to zero by the owner 2026-09-05.
+    /// Previously how far a CONTOUR texel's radiance was pulled
     /// toward its 4-neighbour mean (0 = off). Contour-gated by the same pass
     /// the coverage AA uses, so it takes the contrast off narrow cracks and
     /// silhouettes without touching a flat interior. Needs `aa`'s gate pass:
@@ -113,7 +114,7 @@ impl StyleCfg {
         analog_chroma: -1.0,
         analog_tear: -1.0,
         crt_mask: 0.0,
-        aa_soft: 0.35,
+        aa_soft: 0.0,
     };
 
     /// Apply the individual env-var overrides on top of `self` (the look's
@@ -153,7 +154,8 @@ impl StyleCfg {
             st.analog_tear = st.analog;
         }
         st.crt_mask = f("CRT_MASK", st.crt_mask);
-        st.aa_soft = f("AA_SOFT", st.aa_soft);
+        // Owner 2026-09-05: crisp pixels everywhere, including old launch environments.
+        st.aa_soft = 0.0;
         if st.pal_p < 0.0 {
             st.pal_p = if st.palette as i32 == 2 { 6.0 } else { 0.0 };
         }
@@ -352,7 +354,7 @@ impl Config {
                 matq: f("MATQ", 0.0),
                 ao_dither: f("AO_DITHER", 0.0),
                 refl: f("REFL", 0.0),
-                aa: fo("AA"),
+                aa: Some(0.0),
                 aa_scope: i("AA_SCOPE", 1),
                 aa_chunky: b("AA_CHUNKY", false),
                 refl_px: i("REFL_PX", 3).max(1),

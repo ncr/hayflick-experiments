@@ -27,8 +27,11 @@ pub const WORLD_INPUT_SCALE: f32 = 1024.0;
 pub const PLAYER_RADIUS: f32 = 0.26;
 pub const SPEED_WALK: f32 = 3.0;
 pub const SPEED_RUN: f32 = 5.0;
+pub const SURVIVOR_WALK: f32 = 2.2;
+pub const SURVIVOR_RUN: f32 = 4.2;
+pub const SPEED_CROUCH: f32 = 1.1;
 const ACCEL_WU_PER_S2: f32 = 18.0;
-const BRAKE_WU_PER_S2: f32 = 24.0;
+const BRAKE_WU_PER_S2: f32 = 34.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MoveMode {
@@ -45,6 +48,7 @@ pub enum Command {
     /// Unlike `Move`, this is sampled every fixed tick and does not snap to a
     /// cell; the grid remains the collision source of truth.
     MoveWorld { dx: i16, dz: i16, mode: MoveMode },
+    Crouch(bool),
     Wait,
 }
 
@@ -69,6 +73,7 @@ pub struct GymSnapshot {
     /// Direction into the blocking surface, from the attempted displacement.
     pub contact: Vec2,
     pub intent: Vec2,
+    pub crouching: bool,
 }
 
 pub struct GymGame {
@@ -78,6 +83,7 @@ pub struct GymGame {
     velocity: Vec2,
     contact: Vec2,
     intent: Vec2,
+    crouching: bool,
     /// Earliest tick the next player step may land (sim-owned cadence).
     next_move_at: u64,
     tick: u64,
@@ -86,7 +92,7 @@ pub struct GymGame {
 impl GymGame {
     pub fn new(spec: GymLevel) -> GymGame {
         let position = Vec2::new(spec.player_start.x as f32 + 0.5, spec.player_start.z as f32 + 0.5);
-        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, contact: Vec2::ZERO, intent: Vec2::ZERO, next_move_at: 0, tick: 0, spec }
+        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, contact: Vec2::ZERO, intent: Vec2::ZERO, crouching: false, next_move_at: 0, tick: 0, spec }
     }
 
     pub fn grid(&self) -> &Grid {
@@ -105,7 +111,8 @@ impl GymGame {
     }
 
     fn speed(&self, mode: MoveMode) -> f32 {
-        if self.spec.neighborhood {return match mode {MoveMode::Walk=>1.65,MoveMode::Run=>3.2};}
+        if self.crouching { return SPEED_CROUCH; }
+        if self.spec.neighborhood {return match mode {MoveMode::Walk=>SURVIVOR_WALK,MoveMode::Run=>SURVIVOR_RUN};}
         match mode {
             MoveMode::Walk => SPEED_WALK,
             MoveMode::Run => SPEED_RUN,
@@ -200,6 +207,7 @@ impl Simulation for GymGame {
                     self.next_move_at = self.tick + Self::step_period(mode);
                 }
                 Command::MoveWorld { dx, dz, mode } => world_input = Some((dx, dz, mode)),
+                Command::Crouch(active) => self.crouching = active,
                 Command::Wait => {}
             }
         }
@@ -211,7 +219,7 @@ impl Simulation for GymGame {
     }
 
     fn snapshot(&self) -> GymSnapshot {
-        GymSnapshot { player: self.player, position: self.position, velocity: self.velocity, contact: self.contact, intent: self.intent }
+        GymSnapshot { player: self.player, position: self.position, velocity: self.velocity, contact: self.contact, intent: self.intent, crouching: self.crouching }
     }
 
     fn state_hash(&self) -> u64 {
@@ -231,6 +239,7 @@ impl Simulation for GymGame {
         eat(self.velocity.y.to_bits() as u64);
         eat(self.contact.x.to_bits() as u64); eat(self.contact.y.to_bits() as u64);
         eat(self.intent.x.to_bits() as u64); eat(self.intent.y.to_bits() as u64);
+        eat(self.crouching as u64);
         eat(self.spec.grid.grid_hash());
         h
     }
@@ -459,6 +468,36 @@ mod tests {
         assert!(s.position.x > start.x + 0.5, "continuous input must cover part of a cell: {start:?} -> {:?}", s.position);
         assert!((s.position.y - start.y).abs() < 1e-6, "a world-X input must not zigzag in Z: {start:?} -> {:?}", s.position);
         assert_ne!(s.position.x, s.player.x as f32 + 0.5, "the continuous position must not be snapped to the cell centre");
+    }
+
+    #[test]
+    fn crouch_survives_idle_limits_running_and_releases_cleanly() {
+        let mut g = GymGame::new(GymLevel { neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
+        g.tick(Tick(0), &[Command::Crouch(true)]);
+        let crouch_hash = g.state_hash();
+        let mut standing=GymGame::new(g.spec().clone()); standing.tick(Tick(0),&[]);
+        assert_ne!(crouch_hash,standing.state_hash(),"stance must be part of replay state");
+        for t in 1..61 { g.tick(Tick(t), &[]); }
+        assert!(g.snapshot().crouching);
+        let drive=Command::MoveWorld {dx:1024,dz:0,mode:MoveMode::Run};
+        for t in 61..121 {g.tick(Tick(t), &[drive]);}
+        assert!((g.snapshot().velocity.length()-SPEED_CROUCH).abs()<0.001);
+        g.tick(Tick(121), &[Command::Crouch(false)]);
+        for t in 122..182 {g.tick(Tick(t), &[drive]);}
+        assert!((g.snapshot().velocity.length()-SURVIVOR_RUN).abs()<0.001);
+        assert!(!g.snapshot().crouching);
+        for t in 182..200 {g.tick(Tick(t), &[]);}
+        assert_eq!(g.snapshot().velocity,Vec2::ZERO);
+    }
+
+    #[test]
+    fn releasing_sprint_stops_within_eight_ticks_and_a_quarter_metre() {
+        let mut g=GymGame::new(GymLevel {neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
+        for t in 0..60 {g.tick(Tick(t),&[Command::MoveWorld {dx:1024,dz:0,mode:MoveMode::Run}]);}
+        let released=g.snapshot().position;
+        for t in 60..68 {g.tick(Tick(t),&[]);}
+        assert_eq!(g.snapshot().velocity,Vec2::ZERO);
+        assert!(g.snapshot().position.distance(released)<0.25);
     }
 
     #[test]

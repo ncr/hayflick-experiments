@@ -110,9 +110,10 @@ pub struct GymLoop {
     /// Held movement keys [up, down, left, right] (screen-relative).
     pub held: [bool; 4],
     pub run_held: bool,
-    /// Camera quarter, mirrored from the view each frame so WASD stays
-    /// screen-relative through q/e turns.
-    pub yaw_q: u32,
+    pub crouch_held: bool,
+    pub crouch_toggle: bool,
+    /// Actual animated camera yaw, mirrored before each simulation advance.
+    pub yaw_deg: f32,
     /// The live click-to-move route (None = keyboard/no movement).
     plan: Option<Plan>,
     /// Projection used to interpret screen-relative movement.
@@ -158,7 +159,9 @@ impl GymLoop {
             spec,
             held: [false; 4],
             run_held: false,
-            yaw_q: 0,
+            crouch_held: false,
+            crouch_toggle: false,
+            yaw_deg: 0.0,
             plan: None,
             proj,
             continuous_active: false,
@@ -169,6 +172,13 @@ impl GymLoop {
             last_cam: p0,
             phys: None,
         }
+    }
+
+    pub fn cancel_live_input(&mut self) {
+        self.held = [false; 4];
+        self.run_held = false;
+        self.crouch_held = false;
+        self.plan = None;
     }
 
     /// Update the movement basis when the settings menu changes projection.
@@ -201,7 +211,7 @@ impl GymLoop {
     /// keep their screen meaning for both iso21 and trimetric, at every yaw.
     fn world_input(&self) -> Vec3 {
         let (sx, sy) = self.screen_input();
-        self.proj.screen_px_to_world(Vec2::new(sx as f32, sy as f32), 90.0 * self.yaw_q as f32)
+        self.proj.screen_px_to_world(Vec2::new(sx as f32, sy as f32), self.yaw_deg)
     }
 
     /// Held keys → a normalized, fixed-point world input for the continuous
@@ -336,6 +346,10 @@ impl GymLoop {
     pub fn run_due(&mut self, real_dt: f32) -> u32 {
         let n = self.fixed.advance(real_dt);
         for _ in 0..n {
+            let crouching = self.crouch_toggle || self.crouch_held;
+            if self.sim.snapshot().crouching != crouching {
+                self.queue.push(self.tick, Command::Crouch(crouching));
+            }
             if let Some(command) = self.held_command() {
                 self.plan = None;
                 self.continuous_active = true;
@@ -394,6 +408,7 @@ impl GymLoop {
             let cmds = self.queue.drain_for(self.tick);
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
+            self.gait_tick();
             self.phys_step();
         }
         self.cmds_prefix = self.tick.0;
@@ -413,7 +428,9 @@ impl GymLoop {
         let snap = self.sim.snapshot();
         let y=if self.spec.neighborhood {crate::terrain::height_at(snap.position)}else{crate::gym_scene::FLOOR_TOP};
         let p=Vec3::new(snap.position.x,y,snap.position.y);
-        self.survivor.update(p,snap.velocity,snap.intent,snap.contact);
+        let neighborhood=self.spec.neighborhood;
+        self.survivor.update_grounded(p,snap.velocity,snap.intent,snap.contact,snap.crouching,
+            |xz| if neighborhood {crate::terrain::height_at(xz)} else {crate::gym_scene::FLOOR_TOP});
         let now = self.tick.0;
         let e = self.ease;
         let (stride, _) = gait_params(self.mode());
@@ -596,6 +613,45 @@ pub(crate) fn bubble(label: &str, accent: u32) -> (Vec<u32>, i32, i32) {
 mod tests {
     use super::*;
     use house_game::gym::sim::gym_level;
+
+    #[test]
+    fn wasd_uses_the_visible_camera_through_both_quarter_turns() {
+        for proj in iso_core::presets() {
+            let mut t = GymLoop::with_projection(gym_level(), *proj);
+            t.held[0] = true;
+            for degrees in [-179.0, -90.0, -45.0, -12.0, 12.0, 45.0, 90.0, 179.0] {
+                t.yaw_deg = degrees;
+                let world = t.world_input();
+                let (_, right, up) = proj.basis(degrees);
+                assert!(world.dot(right).abs() < 0.00001, "W drifts sideways at {degrees} degrees");
+                assert!(world.dot(up) > 0., "W reverses at {degrees} degrees");
+            }
+        }
+    }
+
+    #[test]
+    fn native_movement_uses_physical_keys_and_always_observes_releases() {
+        let src = include_str!("main.rs");
+        let keyboard = src.find("event.physical_key").expect("movement must use physical keys; shifted logical W must release w");
+        let modal = src.find("if r.menu_open() && event.state.is_pressed()").unwrap();
+        assert!(keyboard < modal, "release tracking must precede modal input routing");
+    }
+
+    #[test]
+    fn replay_prefix_presents_the_same_crouch_as_live_fixed_ticks() {
+        let mut live=GymLoop::new(gym_level()); live.crouch_toggle=true;
+        for _ in 0..60 {live.run_due(TICK_DT);}
+        let path=std::env::temp_dir().join(format!("hayflick-crouch-{}.trace",std::process::id()));
+        std::fs::write(&path,"0 crouch on\n59 wait\n").unwrap();
+        let mut cfg=Config::from_env();cfg.game.cmds=Some(path.to_string_lossy().into_owned());cfg.game.cmds_ticks=Some(60);
+        let mut replay=GymLoop::new(gym_level());replay.run_cmds(&cfg);
+        std::fs::remove_file(path).unwrap();
+        let handles=SceneHandles {lights:Default::default(),instances:
+            [("player/head".to_owned(),InstanceKey::from_index(0))].into_iter().collect()};
+        let live_pose=live.instances(&handles)[0].1;
+        let replay_pose=replay.instances(&handles)[0].1;
+        assert!(live_pose.abs_diff_eq(replay_pose,0.00001),"replay snapshot crouches but its pose did not advance");
+    }
 
     #[test]
     fn neighborhood_actor_stands_on_soil_not_the_old_gym_floor() {

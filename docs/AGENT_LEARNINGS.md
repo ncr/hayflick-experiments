@@ -1681,3 +1681,108 @@ Preventive checklist
 - Preserve the shared push layout; this information already belongs to the AS.
 - When simplifying straight steel chains, clip window openings geometrically:
   centroid deletion cannot correctly cut a long bar crossing an opening.
+
+## 2026-09-05 - Articulated limbs kept a world-forward roll when the body turned
+
+Root cause
+
+The link transform rotated global -Y onto the endpoint vector without composing
+the character heading. Circular placeholder limbs hid the missing roll; authored
+jacket panels, denim seams and asymmetric anatomy revealed it.
+
+Detection signal
+
+A red regression rotated the character 1.3 radians while keeping a link vertical.
+The link's local front remained global Z instead of following the body's front.
+
+Preventive checklist
+
+- Solve the swing in character-local space, then compose the character heading.
+- Check authored asymmetric anatomy through turns, not just sphere placeholders.
+- Validate the actual exported mesh under walk, run, stop and turn transforms.
+- Preserve Blender's split normals and compensate them for normalized link scale.
+
+## 2026-09-05 - Height fog diverges below ground and loses precision near horizontal rays
+
+Root cause
+
+The analytic integral used an unclamped exponential at both ray endpoints,
+although the scattering sample clamped height to zero. Rays below ground grew
+exponentially dense; a zero fog height produced NaNs. Subtracting nearly equal
+exponentials also lost precision on short segments.
+
+Detection signal
+
+`python3 bin/check-atmosphere` executes the shader's actual scalar source as
+C++ and compares it to numerical quadrature. The previous shader failed 148
+of 420 ray/height cases. The shared, clamped, cancellation-safe integral passes.
+
+Preventive checklist
+
+- Integrate the same bounded density law that scattering samples use.
+- Handle zero height, horizontal rays, ground crossings and zero-length rays.
+- Clip marching to the useful height band; the orthographic eye is arbitrary.
+- Check Metal and GLSL transport parity and inspect moving footage on Metal.
+- Match settings precision to the step: a 0.002 density step needs three decimals.
+
+## 2026-09-05 - Shift and camera turns leave WASD latched or pointing sideways
+
+Root cause
+
+Held movement matched logical text ("w"), which can become "W" with Shift or
+Caps Lock on release. Aliases shared one boolean, Q/E accepted repeat, and input
+used the settled camera quarter while rendering a continuously changing angle.
+
+Detection signal
+
+Red regressions found no physical-key routing before modal handling and measured
+sideways screen motion during intermediate camera angles. Separate physical-key
+tests cover releases, simultaneous aliases/modifiers and cleared-state repeats.
+
+Preventive checklist
+
+- Track physical keys independently; derive actions from their held set.
+- Process releases before menus/IDE; clear holds and routes on modal/focus changes.
+- Require a fresh press after a clear; repeat cannot resurrect a held action.
+- Ignore repeat on Q/E and use the same visible yaw for input, picks and rendering.
+- Test stop distance at the actual increased run speed, not just at walking speed.
+
+## 2026-09-05 - An aligned IK pole collapses the joint, and replay skips its pose clock
+
+Root cause
+
+Projecting a pole parallel to the limb produced a zero bend direction. The joint
+then lay on the limb axis and shortened both bones. Independently, CMDS advanced
+simulation snapshots without the survivor pose update, so crouch replay rendered
+a standing body even though the simulation state was crouched.
+
+Detection signal
+
+Red tests reproduced incorrect bone lengths for an aligned pole and different
+head transforms after equal live/replay crouch ticks. Both now pass, alongside
+full-mesh bounds and separate left/right support checks.
+
+Preventive checklist
+
+- Choose a stable perpendicular fallback for degenerate pole projections.
+- Clamp hand reach and use the authored thigh/shin lengths before solving IK.
+- Every fixed-tick advance path must advance presentation from the fresh snapshot.
+- Validate transitions on uneven supports and inspect the exported mesh in Metal.
+
+## 2026-09-05 - Wide suit appliques disappear into a curved torso
+
+Root cause
+
+Only the vertical edges of a cloth patch followed the torso's surface. Across
+its width the patch was one flat chord, passing through the blue cloth between
+its endpoints. Yellow chest trim rendered as disconnected dots.
+
+Detection signal
+
+The first Metal front capture showed broken yellow trim despite valid geometry.
+Tessellating in both axes restored continuous trim in the same camera view.
+
+Preventive checklist
+
+- Curved-surface appliques need subdivision in both dimensions and a small offset.
+- Check high-contrast garment markings in front/back views at game resolution.

@@ -2,8 +2,11 @@
 
 Playable from Esc → levels → **after the rain**. The owner's reinforced-concrete
 direction now extends through the ground, dwellings, vegetation and character.
-All materials and meshes are procedural; there are no bitmap texture assets or
-imported character/animation assets in this scene.
+The environment's materials and meshes are procedural. The player has since
+been replaced with an original Blender-authored leather-jacket model, exported
+into the game, with procedural garment surface detail and runtime animation.
+See `PLAYER_2026-09-05.md` for that follow-up; the character description and
+performance figures below record the first version of this level.
 
 ## Place and materials
 

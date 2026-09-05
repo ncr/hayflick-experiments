@@ -141,8 +141,7 @@ impl Viewer {
     /// comes back clean.
     pub fn ide_toggle(&mut self) {
         self.ide.ui.open = !self.ide.ui.open;
-        self.gym.held = [false; 4];
-        self.gym.run_held = false;
+        self.clear_live_input();
         self.ide.drag_pending = false;
         self.ide.ui.cancel_drag();
         if !self.ide.ui.open {

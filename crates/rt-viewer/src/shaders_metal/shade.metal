@@ -2,8 +2,8 @@
 //
 // Deterministic per-frame ray-traced shade: one primary ray per pixel centre,
 // exact shadow rays to the sun + every NEE light, short-range RT-AO, and an
-// (optional) world-space irradiance-probe GI lookup. No randomness → a fixed
-// camera gives a bit-identical image. This is the Apple-Silicon twin of the
+// world-space irradiance-probe GI lookup. Air and vegetation follow fixed-tick
+// simulation time; sample placement never re-rolls. The Apple-Silicon twin of the
 // Vulkan ray_query shader; structs are byte-for-byte ports (packed_float3 to
 // match GL_EXT_scalar_block_layout vec3 = 12 B).
 //
@@ -24,6 +24,9 @@ using namespace metal::raytracing;
 #define CFN static
 // CONCRETE_INCLUDE
 // TERRAIN_INCLUDE
+// SURVIVOR_INCLUDE
+// ATMOSPHERE_MATH_INCLUDE
+// ATMOSPHERE_INCLUDE
 #undef CFN
 #undef vec2
 #undef vec3
@@ -90,11 +93,7 @@ static float3 skyCol(float3 d, constant Push& pc) {
     return c * 0.18 * pc.env0.y;
 }
 
-static float fogOD(float3 o, float3 d, float t, constant Push& pc) {
-    float D = pc.env0.z, H = pc.env0.w;
-    if (abs(d.y) < 1e-4) return D * exp(-o.y / H) * t;
-    return D * (H / d.y) * (exp(-o.y / H) - exp(-(o.y + d.y * t) / H));
-}
+
 
 // closest-hit trace with the offset-table geometry fetch (shade.comp:65-84)
 static bool trace(float3 o, float3 dir, float tmax, uint mask,
@@ -529,18 +528,27 @@ kernel void shade(
     float fogT = 1.0;
     float3 fogAdd = float3(0.0);
     if (pc.env0.z > 0.0) {
-        float tseg = hitb ? tcam : min(300.0, o0.y / max(-d.y, 1e-4));
-        fogT = exp(-fogOD(o0, d, tseg, pc));
-        float3 fogCol = float3(0.55, 0.58, 0.66) * 0.18 * pc.env0.y;
-        fogAdd = fogCol * (1.0 - fogT);
-        if (pc.env0.x > 0.0) {
-            float L = min(tseg, 8.0 * pc.env0.w / max(-d.y, 0.05));
-            float ts = tseg - 0.5 * L;
-            float3 ps = o0 + d * ts;
-            float ss = pc.env0.z * exp(-max(ps.y, 0.0) / pc.env0.w);
-            if (ss > 1e-5 && !occluded(ps, sunDir, 200.0, accel))
-                fogAdd += sun * ss * exp(-fogOD(o0, d, ts, pc)) * L * 0.08;
-        }
+      float tseg = hitb ? tcam : min(300.0, max(o0.y, 0.0) / max(-d.y, 0.0001));
+      float2 span = airInterval(o0, d, tseg, pc.env0.w);
+      float ds = span.y / 8.0;
+      float offset = airStratum(o0, d);
+      float airTime = max(pc.env4.w - 1.0, 0.0);
+      float3 ambientAir = mix(pc.env3.rgb, pc.env4.rgb, 0.35) * (0.18 * pc.env0.y);
+      float3 sunAir = sun * airPhase(dot(d, sunDir));
+      // Front-to-back single scattering. Each segment conserves energy:
+      // surface transmission + scattered weight = 1, even in dense fog.
+      for (int ai = 0; ai < 8; ++ai) {
+        float ta = span.x + float(ai) * ds;
+        float3 ps = o0 + d * (ta + offset * ds);
+        float od = airColumn(o0.y + d.y * ta, d.y, ds, pc.env0.z, pc.env0.w)
+                 * airDensity(ps, airTime);
+        float stepT = exp(-od);
+        float3 incident = ambientAir;
+        if (od > 0.00001 && pc.env0.x > 0.0 && !occluded(ps, sunDir, 200.0, accel))
+          incident += sunAir;
+        fogAdd += fogT * (1.0 - stepT) * incident * float3(0.96, 0.93, 0.87);
+        fogT *= stepT;
+      }
     }
 
     float3 col;
@@ -567,6 +575,7 @@ kernel void shade(
     // SURFACE MATERIALS: world-anchored and filtered at the projected texel
     // footprint. No frame seed, extra rays, or change to primary visibility.
     float surfacePx = (2.0 * pc.camRight.w / float(pc.misc.x)) / max(abs(dot(aaGn, d)), 0.18);
+    if (m.texIndex <= -2 && m.texIndex >= -16) albedo = survivorAlbedo(albedo, h.uv, -m.texIndex-2, surfacePx);
     float deposit = 0.0;
     bool concreteMaterial = (uint(m.pad) & 16u) != 0u;
     bool freshConcrete = !concreteMaterial && (uint(m.pad) & 68u) == 68u; // MATTE + CRAZE: exposed body

@@ -370,6 +370,19 @@ mod tests {
     use glam::Vec3;
 
     #[test]
+    fn atmosphere_transport_matches_between_backends() {
+        let bodies: Vec<String> = twin_sources().iter().map(|(_, source)| {
+            let start = source.find("if (pc.env0.z > 0.0)").unwrap();
+            let tail = &source[start..];
+            let end = tail.find("\n\n").unwrap();
+            code_lines(&tail[..end]).join("\n")
+                .replace("float3", "vec3").replace("float2", "vec2")
+                .replace(", accel", "").split_whitespace().collect::<String>()
+        }).collect();
+        assert_eq!(bodies[0], bodies[1], "Metal and GLSL must integrate the same air");
+    }
+
+    #[test]
     fn painted_stains_cannot_escape_the_authored_region() {
         for (name, src) in twin_sources() {
             let code = code_lines(src).join("\n");

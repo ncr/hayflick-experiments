@@ -43,6 +43,11 @@ pub struct ViewState {
 }
 
 impl Viewer {
+    pub fn clear_live_input(&mut self) {
+        self.keys.clear();
+        self.gym.cancel_live_input();
+    }
+
     /// Camera yaw offset in degrees: the animated quarter-turn sweep when one
     /// is in flight, else the settled quarter-turn count; plus the transient
     /// movie-orbit sweep (0 outside MOVIE mode).
@@ -168,14 +173,11 @@ impl Viewer {
         self.recenter_pan();
     }
 
-    /// The ViewXform this frame's picks unproject through. During a rotation
-    /// tween picks resolve at the SETTLED (target) quarter; `start_rotate`
-    /// already snapped the camera target onto that yaw's lattice, so target
-    /// and yaw are mutually consistent.
+    /// Picks use the same currently visible camera as WASD and rendering,
+    /// including every intermediate angle during Q/E.
     pub fn pick_xform(&self) -> ViewXform {
-        let q = self.view.rot.as_ref().map(|r| r.target).unwrap_or(self.view.yaw_q as i32);
         let (low, vis) = self.low_and_vis();
-        ViewXform { proj: self.proj, target: self.view.target, yaw_off_deg: 90.0 * q as f32, pan: self.view.pan, render_scale: self.rs(), low, vis }
+        ViewXform { proj: self.proj, target: self.view.target, yaw_off_deg: self.yaw_deg(), pan: self.view.pan, render_scale: self.rs(), low, vis }
     }
 
     /// LMB: unproject to the ground and hand the click to the gym loop's

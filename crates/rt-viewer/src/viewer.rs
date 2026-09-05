@@ -119,6 +119,7 @@ pub struct Viewer {
     /// Synth-blip output (None = headless/no device/AUDIO=0 — fail-soft).
     pub audio: Option<crate::audio::AudioOut>,
     pub menu: MenuState,
+    pub keys: crate::input::Keyboard,
     /// The personal IDE (Tab; `IDE=1` boots it open) — see ide_host.rs.
     pub ide: crate::ide_host::IdeState,
     pub harness: Harness,
@@ -340,6 +341,7 @@ impl Viewer {
             },
             // live windowed sessions boot into the TITLE menu (a regular game
             // start screen); every harness mode must render the game instead.
+            keys: crate::input::Keyboard::default(),
             menu: MenuState {
                 mode: if !headless { crate::menu::MenuMode::Title } else { crate::menu::MenuMode::Closed },
                 back: crate::menu::MenuMode::Closed,
@@ -620,12 +622,11 @@ impl Viewer {
         let dt = self.last_frame.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(0.0);
         self.last_frame = Some(now);
         self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
+        self.advance_rotation(dt); // movement and rendering use the SAME visible yaw
         self.advance_sim(dt); // DEMO tick / pause / live fixed-tick
         self.maybe_tear(); // Stage-2 dynamic-GI spike: roof tear-off at GI_TEAR
         self.drive_demo(); // named-demo timeline: tick-scheduled beats + look morph
         self.follow_player_camera(); // follow the continuous/eased player body
-        // smooth quarter-turn in flight: ease the yaw
-        self.advance_rotation(dt);
         // clip recording: collect last frame's capture + decide if this frame
         // captures (returns the down-blit target size when it should)
         let capture_req = self.prepare_capture();
@@ -672,6 +673,14 @@ impl Viewer {
         // headless verification of the whole overlay.
         let mut stamps = self.gym.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
         stamps.extend(self.ide_stamps());
+        // Fog is a primary-ray effect, independent of the irradiance bake.
+        // Menu adjustments must reach this frame without rebuilding geometry
+        // or losing a demo's current sun/sky morph.
+        let mut environment = self.env_override.unwrap_or_else(|| {
+            rt_probe::EnvBlock::pack(self.cfg.lighting_env(self.scene.lighting), &self.scene.sun_sky)
+        });
+        if let Some(density) = self.cfg.render.fog { environment.env0[2] = density; }
+        if let Some(height) = self.cfg.render.fog_h { environment.env0[3] = height; }
         let fp = FramePresent {
             fs: &fs,
             pan: self.view.pan,
@@ -702,7 +711,7 @@ impl Viewer {
             // permanent sunny day (the joyful default); SKY env still scales
             // the authored env via lighting_env
             sky_dim: 1.0,
-            env: self.env_override, // demo look-morph per-frame sun/sky (else None)
+            env: Some(environment),
             roi: self.roi_info(),
             // FLOORCUT: env-only framing knob now (the gym is single-storey)
             cut_y: self.cfg.game.cut,
@@ -832,7 +841,7 @@ impl Viewer {
     /// the fixed-tick accumulator. SHOT feeds dt=0 so the wall clock never
     /// reaches the sim.
     fn advance_sim(&mut self, dt: f32) {
-        self.gym.yaw_q = self.view.yaw_q;
+        self.gym.yaw_deg = self.yaw_deg();
         if self.harness.demo.is_some() {
             self.gym.demo_advance_tick();
             return;
