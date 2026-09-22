@@ -7,6 +7,18 @@ CFN vec2 terrainParcel(vec2 p) {
 #undef AREA
     return result;
 }
+// The GRASS DENSITY MAP (creative mode, 2026-09-22): baked on the CPU by the
+// `flora` crate from the level's natural growth + the owner's ground brushes,
+// stored in the atlas's reserved corner — 256 x 256 texels at 4 per wu from
+// the world origin, byte 0 green (how much grass stands), byte 1 dry (how
+// much of it is straw). Where blades grow is data now; how they look and move
+// stays here.
+CFN vec2 floraAt(vec2 p ATLAS_PARAM) {
+    vec2 t=floor(p*4.0);
+    if(t.x<0.0||t.y<0.0||t.x>=256.0||t.y>=256.0)return vec2(0.0);
+    uint v=atlas[uint(t.y)*2048u+uint(t.x)];
+    return vec2(float(v&255u),float((v>>8)&255u))/255.0;
+}
 CFN float terrainBurn(vec2 p) {
     float burn=0.0;
 #define AREA(k,x0,z0,x1,z1,e) if(k==3 && e==3) {vec2 q=max(max(vec2(float(x0),float(z0))-p,p-vec2(float(x1),float(z1))),vec2(0.0));burn=max(burn,1.0-smoothstep(0.25,2.0,length(q)));}
@@ -26,7 +38,7 @@ CFN float terrainRoadHeight(vec2 p) {
                    clamp((1.0-length(p-vec2(2.0,10.4))/0.8)*3.0,0.0,1.0)));
     return -0.012-hole*0.052;
 }
-CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footprint) {
+CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footprint ATLAS_PARAM) {
     int kind=int(code)/8;ConcreteSurface s;s.normal=gn;s.roughness=0.96;s.metallic=0.0;
     float macro=cnFbm(p*1.3+17.0);float grit=cnNoise(p*43.0);
     if(kind==4) {
@@ -57,8 +69,9 @@ CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footp
     // Uneven barren soil: fine dusty fines, compact growthes and dark pockets.
     s.albedo=mix(vec3(0.075,0.060,0.037),vec3(0.18,0.146,0.087),macro);
     s.albedo*=0.80+0.35*grit;
-    float cover=smoothstep(0.40,0.65,cnNoise(vec3(p.xz*0.68,8.0)));
-    s.albedo=mix(s.albedo,vec3(0.086,0.096,0.039),cover*0.23);
+    // grass roots green the soil under them (and straw browns it)
+    vec2 flora=floraAt(p.xz ATLAS_ARG);
+    s.albedo=mix(s.albedo,mix(vec3(0.086,0.096,0.039),vec3(0.16,0.13,0.07),flora.y),flora.x*0.28);
     s.albedo=mix(s.albedo,vec3(0.021,0.022,0.018),terrainBurn(p.xz)*(0.65+0.25*macro));
     return s;
 }
@@ -72,7 +85,7 @@ CFN float grassTriangle(vec3 o,vec3 d,vec3 a,vec3 b,vec3 c) {
     vec3 q=cross(s,ab);float v=dot(d,q)*inv;if(v<0.0||u+v>1.0)return 1000.0;
     float t=dot(ac,q)*inv;return t>0.001?t:1000.0;
 }
-CFN GrassHit terrainGrass(vec3 o,vec3 d,float limit,float time,vec3 player) {
+CFN GrassHit terrainGrass(vec3 o,vec3 d,float limit,float time,vec3 player ATLAS_PARAM) {
     GrassHit hit;hit.t=limit;hit.normal=vec3(0,1,0);hit.color=vec3(0.0);
     if(d.y>-0.12)return hit;
     float mid=(0.25-o.y)/d.y;
@@ -80,27 +93,30 @@ CFN GrassHit terrainGrass(vec3 o,vec3 d,float limit,float time,vec3 player) {
     vec2 cell=floor((o+d*mid).xz/0.7);
     for(int j=-1;j<=1;j++)for(int i=-1;i<=1;i++) {
         vec2 c=cell+vec2(float(i),float(j));vec2 center=(c+0.5)*0.7;
-        vec2 parcel=terrainParcel(center);int kind=int(parcel.x);
-        if(kind<0||kind==2||kind==3)continue;
-        float growth=cnNoise(vec3(center*0.68,8.0));
-        if(kind==0&&growth<0.37)continue;
-        if(kind==1&&terrainCrack(center)>0.48)continue;
-        float burn=terrainBurn(center);
+        // a cell whose centre and corners are all bare grows nothing
+        float reach=max(max(floraAt(center ATLAS_ARG).x,floraAt(center+vec2(0.35,0.35) ATLAS_ARG).x),
+                        max(floraAt(center-vec2(0.35,0.35) ATLAS_ARG).x,max(floraAt(center+vec2(0.35,-0.35) ATLAS_ARG).x,floraAt(center+vec2(-0.35,0.35) ATLAS_ARG).x)));
+        if(reach<0.01)continue;
+        int kind=int(terrainParcel(center).x);
         float seed=cnHash(vec3(c,43.0));
-        float tall=smoothstep(0.49,0.67,growth);
         float gust=0.6*sin(time*1.7-center.x*0.52-center.y*0.35)+0.4*sin(time*0.83+center.y*0.4);
         vec2 wind=vec2(0.83,0.55)*(0.10+0.13*gust);
         vec2 delta=center-player.xz;float dist=length(delta);
         float press=1.0-smoothstep(0.18,0.76,dist);
         vec2 bend=delta/max(dist,0.05)*press*0.38;
-        for(int k=0;k<16;k++) {
+        // up to 24 blades a cell: the last third only where the map is dense,
+        // so a painted meadow reads thicker than natural patchy growth
+        for(int k=0;k<24;k++) {
             float r=cnHash(vec3(c,float(k)+31.0));
-            if(r>1.0-burn*0.80)continue;
+            if(k>=16&&reach<0.66)break;
             vec2 root=(c+vec2(0.08)+vec2(r,cnHash(vec3(c,float(k)+71.0)))*0.84)*0.7;
-            vec2 rp=terrainParcel(root);if(int(rp.x)!=kind)continue;
-            if(kind==1&&terrainCrack(root)>0.085)continue;
-            if(kind==0&&r>smoothstep(0.36,0.54,growth))continue;
-            float height=(0.09+0.15*r+tall*(0.20+0.20*seed))*(kind==1?0.85:1.0);
+            // the density map decides: a blade roots where its draw is under
+            // the green fraction at its own root
+            vec2 fl=floraAt(root ATLAS_ARG);
+            if(r>=fl.x||(k>=16&&r>=fl.x-0.66))continue;
+            kind=int(terrainParcel(root).x);
+            float tall=smoothstep(0.5,0.95,fl.x)*(1.0-0.5*fl.y);
+            float height=(0.09+0.15*r+tall*(0.20+0.20*seed))*(kind==1?0.85:1.0)*(1.0-0.25*fl.y);
             height*=1.0-press*0.72;
             float ground=kind==1?terrainRoadHeight(root):-0.068;
             vec2 rayMiddle=(o+d*((ground+height*0.5-o.y)/d.y)).xz;
@@ -126,7 +142,7 @@ CFN GrassHit terrainGrass(vec3 o,vec3 d,float limit,float time,vec3 player) {
                 float y=clamp((o.y+d.y*t-ground)/max(height,0.01),0.0,1.0);
                 vec3 green=mix(vec3(0.022,0.037,0.012),vec3(0.086,0.113,0.034),y);
                 vec3 straw=mix(vec3(0.061,0.048,0.022),vec3(0.18,0.153,0.075),y);
-                hit.color=mix(green,straw,smoothstep(0.56,0.87,r+0.13*seed))*(0.82+0.25*r);
+                hit.color=mix(green,straw,smoothstep(0.3,0.8,fl.y+0.25*(r-0.5)+0.13*seed))*(0.82+0.25*r);
             }
         }
     }

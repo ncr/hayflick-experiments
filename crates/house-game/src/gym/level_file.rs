@@ -14,6 +14,9 @@
 //! - `paint EFFECT X Y Z SIDE R` — a creative-mode brush dab on a wall face:
 //!   effect `rain|soot|spall`, the world point, the face's outward normal
 //!   `+x|-x|+z|-z`, the brush radius (floats; file order = paint order)
+//! - `grow grass|dry|mow X Z R` — a ground brush dab (floats; file order =
+//!   paint order)
+//! - `plant tree|bush X Z SEED` — a procedural plant at world (X, Z)
 //!
 //! [`serialize`] emits the CANONICAL form (fixed statement order, rooms and
 //! walls z-major) — `serialize(parse(f)) == f` for a canonical file, pinned
@@ -35,7 +38,7 @@
 //! creative mode's edits, the `EDIT=` harness knob and the tests all go through it.
 
 use super::grid::{CellKind, CellPos, EdgeKind, Grid};
-use super::sim::{GymLevel, PaintEffect, PaintStroke};
+use super::sim::{GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
 
 /// The checked-in gym level — THE one hand-authored level (owner directive
 /// 2026-07-12), embedded at compile time so headless tests, the viewer and
@@ -48,6 +51,8 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     let mut spawn: Option<CellPos> = None;
     let mut lights: Vec<(CellPos, i32)> = Vec::new();
     let mut paint: Vec<PaintStroke> = Vec::new();
+    let mut ground: Vec<GroundStroke> = Vec::new();
+    let mut plants: Vec<Plant> = Vec::new();
     for (ln, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -75,6 +80,25 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
             };
             let mut f = || -> Result<f32, String> { it.next().and_then(|t| t.parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0).ok_or_else(|| err("bad radius")) };
             paint.push(PaintStroke { effect, pos, axis, sign, r: f()? });
+            continue;
+        }
+        if op == "grow" || op == "plant" {
+            let err = |m: &str| format!("line {}: {op}: {m}", ln + 1);
+            let name = it.next().ok_or_else(|| err("missing kind"))?;
+            let mut f = || -> Result<f32, String> { it.next().and_then(|t| t.parse::<f32>().ok()).filter(|v| v.is_finite()).ok_or_else(|| err("bad number")) };
+            let (x, z) = (f()?, f()?);
+            if op == "grow" {
+                let brush = GrowBrush::by_name(name).ok_or_else(|| err("unknown brush"))?;
+                let r = f()?;
+                if r <= 0.0 {
+                    return Err(err("bad radius"));
+                }
+                ground.push(GroundStroke { brush, x, z, r });
+            } else {
+                let kind = PlantKind::by_name(name).ok_or_else(|| err("unknown plant"))?;
+                let seed = it.next().and_then(|t| t.parse::<u32>().ok()).ok_or_else(|| err("bad seed"))?;
+                plants.push(Plant { kind, x, z, seed });
+            }
             continue;
         }
         if op == "size" {
@@ -127,7 +151,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     }
     let grid = grid.ok_or("no size statement")?;
     let player_start = spawn.ok_or("no spawn statement")?;
-    Ok(GymLevel { paint, neighborhood: false, grid, player_start, lights })
+    Ok(GymLevel { ground, plants, paint, neighborhood: false, grid, player_start, lights })
 }
 
 /// Emit the canonical text form: header, size, spawn, lamps (identity order),
@@ -140,7 +164,8 @@ pub fn serialize(spec: &GymLevel) -> String {
          # diff. grid_hash is the level identity - editing invalidates recorded\n\
          # gym traces and pinned state hashes.\n\
          # Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z\n\
-         #          paint rain|soot|spall X Y Z +x|-x|+z|-z R\n",
+         #          paint rain|soot|spall X Y Z +x|-x|+z|-z R\n\
+         #          grow grass|dry|mow X Z R | plant tree|bush X Z SEED\n",
     );
     out.push_str(&format!("size {} {}\n", g.w, g.h));
     out.push_str(&format!("spawn {} {}\n", spec.player_start.x, spec.player_start.z));
@@ -177,6 +202,12 @@ pub fn serialize(spec: &GymLevel) -> String {
         };
         // `{}` is Rust's shortest round-tripping float text: canonical
         out.push_str(&format!("paint {} {} {} {} {side} {}\n", s.effect.name(), s.pos[0], s.pos[1], s.pos[2], s.r));
+    }
+    for g in &spec.ground {
+        out.push_str(&format!("grow {} {} {} {}\n", g.brush.name(), g.x, g.z, g.r));
+    }
+    for p in &spec.plants {
+        out.push_str(&format!("plant {} {} {} {}\n", p.kind.name(), p.x, p.z, p.seed));
     }
     out
 }
@@ -333,6 +364,20 @@ mod tests {
         assert!(parse("size 4 4\nspawn 1 1\npaint glitter 1 1 1 +x 0.3\n").is_err());
         assert!(parse("size 4 4\nspawn 1 1\npaint rain 1 1 1 up 0.3\n").is_err());
         assert!(parse("size 4 4\nspawn 1 1\npaint rain 1 1 1 +x 0\n").err().is_some_and(|e| e.contains("line 3")));
+    }
+
+    #[test]
+    fn ground_strokes_and_plants_round_trip() {
+        let mut spec = parse(GYM_LEVEL_SRC).unwrap();
+        spec.ground.push(GroundStroke { brush: GrowBrush::Dry, x: 3.25, z: 7.5, r: 1.0 });
+        spec.plants.push(Plant { kind: PlantKind::Tree, x: 12.1, z: 4.0, seed: 4_000_000_001 });
+        let text = serialize(&spec);
+        let back = parse(&text).unwrap();
+        assert_eq!(back.ground, spec.ground);
+        assert_eq!(back.plants, spec.plants);
+        assert_eq!(serialize(&back), text);
+        assert!(parse("size 4 4\nspawn 1 1\ngrow weed 1 1 1\n").is_err());
+        assert!(parse("size 4 4\nspawn 1 1\nplant tree 1 1 -3\n").is_err());
     }
 
     #[test]

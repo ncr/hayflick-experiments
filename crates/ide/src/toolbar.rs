@@ -1,10 +1,15 @@
 //! The creative-mode toolbar: one strip at the bottom of the screen, city-
-//! builder shaped — a button per tool with its hotkey, undo/redo, and the way
-//! back to playing. Above it, one line saying what the active tool's mouse
-//! buttons do. That is the whole chrome: the world stays the screen.
+//! builder shaped — CATEGORY tabs on the left (build, walls, plants: F1..),
+//! the active category's tools with their hotkeys (1..), undo/redo, and the
+//! way back to playing. Above it, one line saying what the active tool's
+//! mouse buttons do. That is the whole chrome: the world stays the screen.
+//!
+//! Categories exist because a flat row stopped fitting: eleven tools do not
+//! go across a 1280-px screen at a readable size, and a city builder groups
+//! them the same way.
 //!
 //! Like the rest of this crate it knows nothing about the game: the adapter
-//! hands in tool LABELS and gets back which button was hit. One layout walk
+//! hands in LABELS and gets back which button was hit. One layout walk
 //! ([`layout`]) is shared by draw and hit-test, so the pixels and the clicks
 //! cannot disagree.
 
@@ -13,23 +18,24 @@ use crate::theme::*;
 
 /// What the adapter tells the bar each frame.
 pub struct BarModel<'a> {
-    /// Tool labels, left to right; hotkeys are 1.. in this order.
+    /// Category names, left to right; hotkeys F1.. in this order.
+    pub groups: &'a [&'a str],
+    pub group: usize,
+    /// The ACTIVE category's tool labels; hotkeys 1.. in this order.
     pub tools: &'a [&'a str],
     pub active: usize,
     /// The active tool's mouse hint ("drag: build wall   right-drag: remove").
     pub hint: &'a str,
     pub can_undo: bool,
     pub can_redo: bool,
-    /// Right-aligned status in the hint line ("saved", "unsaved: …").
+    /// Right-aligned status in the hint line ("wall built", "undone", …).
     pub status: &'a str,
-    /// Tool indices that start a new group (a wider gap before them) — the
-    /// building tools and the paint brushes read as two sets.
-    pub groups: &'a [usize],
 }
 
 /// A button the bar can report.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BarHit {
+    Group(usize),
     Tool(usize),
     Undo,
     Redo,
@@ -56,7 +62,7 @@ const GAP: i32 = 3;
 /// Bar height: the hint line over the button row, with padding.
 pub const BAR_H: i32 = HINT_H + BTN_H + 2 * PAD;
 
-fn btn_w(label: &str) -> i32 {
+fn tool_w(label: &str) -> i32 {
     // icon column (12) + label + hotkey column
     12 + Canvas::text_w(label) + 12
 }
@@ -65,15 +71,16 @@ fn small_w(label: &str) -> i32 {
     Canvas::text_w(label) + 2 * PAD
 }
 
-/// The bar's own rect (bottom-centred) and every button in it, in IDE px.
+/// The bar's own rect (bottom-centred) and every button in it, in bar px.
 pub fn layout(m: &BarModel, vw: i32, vh: i32) -> (Rect, Vec<(Rect, BarHit)>) {
-    let mut items: Vec<(i32, BarHit)> = m.tools.iter().enumerate().map(|(i, t)| (btn_w(t), BarHit::Tool(i))).collect();
+    let mut items: Vec<(i32, BarHit)> = m.groups.iter().enumerate().map(|(i, g)| (small_w(g), BarHit::Group(i))).collect();
+    items.extend(m.tools.iter().enumerate().map(|(i, t)| (tool_w(t), BarHit::Tool(i))));
     items.push((small_w("undo"), BarHit::Undo));
     items.push((small_w("redo"), BarHit::Redo));
     items.push((small_w("play"), BarHit::Play));
-    // a wider gap before each tool group, before undo and before play
-    let split = |h: BarHit| matches!(h, BarHit::Undo | BarHit::Play) || matches!(h, BarHit::Tool(i) if m.groups.contains(&i));
-    let groups = items.iter().filter(|(_, h)| split(*h)).count() as i32 * 2 * GAP;
+    // a wider gap between the three sets: categories | tools | undo redo play
+    let split = |h: BarHit| matches!(h, BarHit::Tool(0) | BarHit::Undo | BarHit::Play);
+    let groups = items.iter().filter(|(_, h)| split(*h)).count() as i32 * 3 * GAP;
     let inner: i32 = items.iter().map(|(w, _)| w + GAP).sum::<i32>() - GAP + groups;
     let min_w = Canvas::text_w(m.hint) + Canvas::text_w(m.status) + 4 * PAD;
     let w = (inner + 2 * PAD).max(min_w).min(vw);
@@ -83,7 +90,7 @@ pub fn layout(m: &BarModel, vw: i32, vh: i32) -> (Rect, Vec<(Rect, BarHit)>) {
     let mut out = Vec::new();
     for (bw, hit) in items {
         if split(hit) {
-            x += 2 * GAP;
+            x += 3 * GAP;
         }
         out.push((Rect { x, y, w: bw, h: BTN_H }, hit));
         x += bw + GAP;
@@ -121,6 +128,14 @@ fn icon(label: &str) -> [u8; 8] {
         "soot" => [0x08, 0x18, 0x1c, 0x3e, 0x7e, 0x7f, 0x7e, 0x3c],
         // spall: a broken chunk with a crack
         "spall" => [0x7e, 0x43, 0x4d, 0x69, 0x51, 0x4b, 0x62, 0x3e],
+        // grass: three blades
+        "grass" => [0x00, 0x22, 0x2a, 0x2a, 0xaa, 0xaa, 0xab, 0xff],
+        // dry grass: bent straw
+        "dry" => [0x00, 0x04, 0x4a, 0x2a, 0x2a, 0xaa, 0xab, 0xff],
+        // a tree: crown on a trunk
+        "tree" => [0x3c, 0x7e, 0xff, 0x7e, 0x3c, 0x18, 0x18, 0x3c],
+        // a bush: a low mound
+        "bush" => [0x00, 0x00, 0x00, 0x6c, 0xfe, 0xff, 0xff, 0x52],
         _ => [0; 8],
     }
 }
@@ -135,7 +150,7 @@ fn draw_icon(c: &mut Canvas, x: i32, y: i32, bits: [u8; 8], col: u32) {
     }
 }
 
-/// Rasterize the bar. `hover` is the cursor in IDE px (for the hover tint).
+/// Rasterize the bar. `hover` is the cursor in bar px (for the hover tint).
 pub fn draw(m: &BarModel, vw: i32, vh: i32, hover: (i32, i32)) -> Panel {
     let (bar, items) = layout(m, vw, vh);
     let mut c = Canvas::new(bar.w as u32, bar.h as u32, BG_BAR);
@@ -146,7 +161,7 @@ pub fn draw(m: &BarModel, vw: i32, vh: i32, hover: (i32, i32)) -> Panel {
     c.text(bar.w - PAD - sw, PAD, m.status, TEXT_DIM, sw);
     for (r, hit) in items {
         let (x, y) = (r.x - bar.x, r.y - bar.y);
-        let active = hit == BarHit::Tool(m.active);
+        let active = hit == BarHit::Tool(m.active) || hit == BarHit::Group(m.group);
         let enabled = match hit {
             BarHit::Undo => m.can_undo,
             BarHit::Redo => m.can_redo,
@@ -170,6 +185,9 @@ pub fn draw(m: &BarModel, vw: i32, vh: i32, hover: (i32, i32)) -> Panel {
                 c.text(x + 13, ty, label, col, r.w);
                 let key = format!("{}", i + 1);
                 c.text(x + r.w - 10, ty, &key, TEXT_DIM, 8);
+            }
+            BarHit::Group(i) => {
+                c.text(x + PAD, ty, m.groups[i], if active { ACCENT } else { TEXT_DIM }, r.w);
             }
             BarHit::Undo | BarHit::Redo | BarHit::Play => {
                 let label = match hit {
@@ -196,14 +214,14 @@ mod tests {
     use super::*;
 
     fn model() -> BarModel<'static> {
-        BarModel { tools: &["wall", "building", "lamp", "spawn"], active: 1, hint: "drag: building", can_undo: true, can_redo: false, status: "saved", groups: &[2] }
+        BarModel { groups: &["build", "walls", "plants"], group: 0, tools: &["wall", "building", "lamp", "spawn"], active: 1, hint: "drag: building", can_undo: true, can_redo: false, status: "saved" }
     }
 
     #[test]
     fn every_button_sits_inside_the_bar_and_none_overlap() {
         let m = model();
         let (bar, items) = layout(&m, 640, 400);
-        assert_eq!(items.len(), m.tools.len() + 3);
+        assert_eq!(items.len(), m.groups.len() + m.tools.len() + 3);
         for (i, (r, _)) in items.iter().enumerate() {
             assert!(r.x >= bar.x && r.x + r.w <= bar.x + bar.w, "button {i} inside horizontally");
             assert!(r.y >= bar.y && r.y + r.h <= bar.y + bar.h, "button {i} inside vertically");
@@ -225,6 +243,13 @@ mod tests {
         }
         assert_eq!(hit(&m, (5, 5), 640, 400), None, "the world is not the bar");
         assert!(!over(&m, (5, 5), 640, 400));
+    }
+
+    #[test]
+    fn the_widest_category_fits_a_1280_screen_at_2x() {
+        let m = BarModel { groups: &["build", "walls", "plants"], group: 0, tools: &["wall", "building", "lamp", "spawn"], active: 0, hint: "drag: building   right-drag: demolish", can_undo: true, can_redo: true, status: "building built" };
+        let (bar, _) = layout(&m, 640, 400);
+        assert!(bar.w < 640, "{} px", bar.w);
     }
 
     #[test]

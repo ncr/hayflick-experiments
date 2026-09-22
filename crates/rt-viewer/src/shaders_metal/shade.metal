@@ -21,6 +21,10 @@ using namespace metal::raytracing;
 #define vec3 float3
 #define vec2 float2
 #define CFN static
+// terrain.inc reads the grass density map out of the atlas; MSL has no
+// global buffers, so the kernel's atlas parameter is threaded through.
+#define ATLAS_PARAM , device const uint* atlas
+#define ATLAS_ARG , atlas
 // CONCRETE_INCLUDE
 // TERRAIN_INCLUDE
 // SURVIVOR_INCLUDE
@@ -417,7 +421,7 @@ kernel void shade(
     GrassHit grass;grass.t=hitb?h.t:300.0;grass.normal=float3(0,1,0);grass.color=float3(0.0);
     bool grassHit=false;
     if(pc.env4.w>0.0 && hitb && (o+d*h.t).y<0.7) {
-        grass=terrainGrass(o,d,h.t,pc.env4.w-1.0,pc.roi.xyz);
+        grass=terrainGrass(o,d,h.t,pc.env4.w-1.0,pc.roi.xyz ATLAS_ARG);
         grassHit=grass.t<h.t;
         if(grassHit){h.t=grass.t;h.n=grass.normal;h.uv=float2(0.0);}
     }
@@ -519,7 +523,7 @@ kernel void shade(
     ConcreteSurface concreteSample;
     if (concreteMaterial) {
         if(grassHit){concreteSample.albedo=grass.color;concreteSample.normal=grass.normal;concreteSample.roughness=0.97;concreteSample.metallic=0.0;}
-        else if(m.baseColor.a>=32.0 && m.baseColor.a<56.0) concreteSample=terrainSurface(wpos,gn,h.uv,m.baseColor.a,surfacePx);
+        else if(m.baseColor.a>=32.0 && m.baseColor.a<56.0) concreteSample=terrainSurface(wpos,gn,h.uv,m.baseColor.a,surfacePx ATLAS_ARG);
         else concreteSample = concreteSurface(wpos, gn, h.uv, m.baseColor.a, m.emissive.a, surfacePx);
         albedo = concreteSample.albedo;
         n = concreteSample.normal;

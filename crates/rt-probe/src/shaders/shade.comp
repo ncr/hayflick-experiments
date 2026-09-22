@@ -3,6 +3,13 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_GOOGLE_include_directive : require
 #define CFN
+// The painted-surface atlas is declared ABOVE the shared includes: terrain.inc
+// reads the grass density map out of its reserved corner. GLSL sees the
+// buffer as a global, so the atlas parameter the MSL twin threads through is
+// empty here.
+layout(set = 0, binding = 6, scalar) readonly buffer Atlas { uint atlas[]; }; // painted-surface atlas (gamma-2 RGBA8, 2048 texels per row) + the grass density map (rows 0..256)
+#define ATLAS_PARAM
+#define ATLAS_ARG
 #include "concrete.inc"
 #include "terrain.inc"
 #include "survivor.inc"
@@ -34,7 +41,6 @@ layout(set = 0, binding = 2, scalar) readonly buffer Verts { Vertex verts[]; };
 layout(set = 0, binding = 3, scalar) readonly buffer Indices { uint indices[]; };
 layout(set = 0, binding = 4, scalar) readonly buffer Geoms { GeomInfo geoms[]; };
 layout(set = 0, binding = 5, scalar) readonly buffer Mats { Material mats[]; };
-layout(set = 0, binding = 6, scalar) readonly buffer Atlas { uint atlas[]; }; // painted-surface atlas (gamma-2 RGBA8, 2048 texels per row)
 struct Light { vec4 posRad; vec4 color; vec4 dir; };
 layout(set = 0, binding = 7, scalar) readonly buffer Lights { Light lights[]; };
 layout(set = 0, binding = 8, rgba32f) uniform image2D albedoImg; // primary-hit albedo (tonemap demodulation)
@@ -428,7 +434,7 @@ void main(){
     GrassHit grass;grass.t=hitb?h.t:300.0;grass.normal=vec3(0,1,0);grass.color=vec3(0.0);
     bool grassHit=false;
     if(pc.env4.w>0.0 && hitb && (o+d*h.t).y<0.7) {
-        grass=terrainGrass(o,d,h.t,pc.env4.w-1.0,pc.roi.xyz);
+        grass=terrainGrass(o,d,h.t,pc.env4.w-1.0,pc.roi.xyz ATLAS_ARG);
         grassHit=grass.t<h.t;
         if(grassHit){h.t=grass.t;h.n=grass.normal;h.uv=vec2(0.0);}
     }
@@ -538,7 +544,7 @@ void main(){
   ConcreteSurface concreteSample;
     if (concreteMaterial) {
         if(grassHit){concreteSample.albedo=grass.color;concreteSample.normal=grass.normal;concreteSample.roughness=0.97;concreteSample.metallic=0.0;}
-        else if(m.baseColor.a>=32.0 && m.baseColor.a<56.0) concreteSample=terrainSurface(wpos,gn,h.uv,m.baseColor.a,surfacePx);
+        else if(m.baseColor.a>=32.0 && m.baseColor.a<56.0) concreteSample=terrainSurface(wpos,gn,h.uv,m.baseColor.a,surfacePx ATLAS_ARG);
         else concreteSample = concreteSurface(wpos, gn, h.uv, m.baseColor.a, m.emissive.a, surfacePx);
         albedo = concreteSample.albedo;
         n = concreteSample.normal;

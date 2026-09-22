@@ -4,6 +4,7 @@
 # gym traces and pinned state hashes.
 # Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z
 #          paint rain|soot|spall X Y Z +x|-x|+z|-z R
+#          grow grass|dry|mow X Z R | plant tree|bush X Z SEED
 size 18 14
 spawn 10 11
 lamp 11 6 6

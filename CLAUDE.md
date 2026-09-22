@@ -26,13 +26,14 @@ Cargo workspace at the repo root, members `crates/*`:
 | `rt-probe` | deterministic renderer lib (Vulkan ray_query) + GLSL | iso-core |
 | `ide` | the game's chrome: creative mode's toolbar + the CPU raster it draws with; knows neither the game nor the GPU | font8x8 only |
 | `surface` | painted wall surfaces (2026-09-22): brush strokes → texel layers → albedo, baked on the CPU at one texel per game pixel | std only |
+| `flora` | vegetation (2026-09-22): the grass density map from ground brush strokes, procedural trees and bushes as triangle soups | std only |
 | `phys-spike` | throwaway Box3D rigid-body world (leaf: no game, no GPU, no renderer) — the `wall smash` demo's rubble is its one consumer, through `rt-viewer/src/phys_scene.rs` | glam only |
 | `rt-viewer` | `viewer` binary: winit shell, Metal backend, gym loop, capture | everything |
 
 **rt-probe and house-game never see each other** — only rt-viewer's adapter
 knows both. The game must build and test without a GPU.
 
-## CREATIVE MODE + PAINTED SURFACES (owner 2026-09-22) — the editor reset
+## CREATIVE MODE + PAINTED SURFACES + FOLIAGE (owner 2026-09-22) — the editor reset
 
 Owner: "I don't want SolidWorks or Unreal. I want a GAME, and the editor is one
 of its modes, cut for it — tools worth a good city builder or level editor.
@@ -41,10 +42,13 @@ not the slider IDE:
 
 - **Tab = play ↔ build.** Building pauses the sim, frees the camera (WASD pans,
   wheel zooms, q/e turn), draws a 1-game-px build grid, and shows ONE toolbar
-  at the bottom (`ide::toolbar`, the only chrome): 1 wall (drag corner to
-  corner), 2 building (drag a rect: floor, walls, a +z doorway), 3 lamp,
-  4 spawn, 5 rain, 6 soot, 7 spall (paint brushes, drag over a wall). Right
-  button removes / scrubs, Esc cancels a gesture, Ctrl+Z / Ctrl+Y undo/redo
+  at the bottom (`ide::toolbar`, the only chrome) with three CATEGORIES
+  (F1..F3 or click; 1.. picks a tool inside the category): **build** — wall
+  (drag corner to corner), building (drag a rect: floor, walls, a +z
+  doorway), lamp, spawn; **walls** — rain, soot, spall (drag over a wall);
+  **plants** — grass, dry (drag over the ground; right-drag mows), tree
+  (click), bush (drag scatters). Right button removes / scrubs / mows /
+  uproots, Esc cancels a gesture, Ctrl+Z / Ctrl+Y undo/redo
   (whole-level snapshots). The ghost of the gesture in flight is drawn by the
   TONEMAP from the primary-hit world position (`TonePush.edit1/edit2`, both
   twins) — stamps are opaque copies and cannot carry a ghost.
@@ -86,6 +90,30 @@ size a bake loses nothing a per-ray evaluation had.
 `tonemap.metal`'s grid/ghost/brush branch and `MetalBackend::update_atlas`
 are unrun. First Mac session: `LEVEL="after the rain"`, Tab, build a wall,
 paint it with 5/6/7 — the paint must show live and survive the release.
+**FOLIAGE** (the plants category) follows the same rule — data in the level,
+baked on the CPU, the shader only reads. The `flora` crate (std only) bakes
+the GRASS DENSITY MAP (`green`, `dry` per texel, 4 texels per wu, a fixed
+256 × 256 square from the world origin) from the level's natural growth
+(`foliage::natural` — open soil in noise patches, the road only in its
+cracks, the burnt lot's surroundings scorched to sparse straw; moved out of
+the shade pass) plus the ground brush strokes (`GymLevel.ground`, file line
+`grow grass|dry|mow X Z R`). The map lives in the atlas's reserved top-left
+corner (painted faces pack below it, `Packer::below`), and `terrain.inc`'s
+`floraAt` decides per blade whether it roots and how much of it is straw —
+the analytic, wind-blown, player-bent blades themselves are unchanged. The
+atlas reaches the shared include through `ATLAS_PARAM`/`ATLAS_ARG` (empty in
+GLSL, whose buffer is a global declared above the includes; the kernel
+parameter in MSL). A ground drag re-bakes the map per dab and re-uploads —
+grass grows under the cursor with no rebuild. TREES and BUSHES
+(`GymLevel.plants`, file line `plant tree|bush X Z SEED`) are grown from
+their seed by `flora::plant` (a wandering trunk, forking branches, faceted
+leaf clumps; one in five trees is dead; the ground's `dry` browns the
+leaves) and merged into three MATTE primitives (bark, leaf, dry leaf) by
+`rt-viewer/src/foliage.rs`. The street starts with a dozen
+(`neighborhood::starting_plants`). The sim walks through foliage.
+**BLIND METAL** adds `terrain.inc`'s atlas read through the threaded
+parameter.
+
 **HARNESS:** `PLAY_SCRIPT=<file>` + `DEMO=` records "let's play" clips: scripted
 keys/mouse (`say`, `key`, `hold`, `to x z`, `at x y z`, `button <name>`,
 `down/up left|right`) through the same viewer methods as the window, with the

@@ -84,6 +84,12 @@ pub struct Packer {
 }
 
 impl Packer {
+    /// A packer whose first shelf starts at atlas row `rows` — the rows above
+    /// belong to someone else (the grass density map's corner, foliage.rs).
+    pub fn below(rows: usize) -> Packer {
+        Packer { x: 0, y: rows as u32, shelf_h: 0 }
+    }
+
     fn alloc(&mut self, atlas: &mut Vec<u32>, w: u32, h: u32) -> (u32, u32) {
         assert!(w <= ATLAS_W, "a face wider than the atlas: {w} texels");
         if self.x + w > ATLAS_W {

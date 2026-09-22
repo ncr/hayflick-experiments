@@ -552,7 +552,7 @@ mod tests {
     /// a visible sideways drift under the trimetric game projection.
     #[test]
     fn held_w_follows_the_projection_without_sideways_zigzag() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { paint: Vec::new(),
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),
@@ -664,7 +664,7 @@ mod tests {
     /// animation and the continuous body on the same stride.
     #[test]
     fn gait_phase_tracks_distance_instead_of_wall_clock() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { paint: Vec::new(),
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),

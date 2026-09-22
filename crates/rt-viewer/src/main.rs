@@ -49,6 +49,7 @@ mod input;
 mod look;
 mod menu;
 mod painted;
+mod foliage;
 mod phys_scene;
 mod view;
 mod viewer;
@@ -209,6 +210,9 @@ impl ApplicationHandler for App {
                             KeyCode::KeyZ if ctrl => return r.creative_undo(),
                             KeyCode::KeyY if ctrl => return r.creative_redo(),
                             KeyCode::Escape => return r.creative_cancel(),
+                            KeyCode::F1 => return r.creative_set_group(0),
+                            KeyCode::F2 => return r.creative_set_group(1),
+                            KeyCode::F3 => return r.creative_set_group(2),
                             KeyCode::Tab => return r.creative_toggle(),
                             _ => {}
                         }

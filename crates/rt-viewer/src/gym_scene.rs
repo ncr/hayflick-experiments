@@ -230,7 +230,13 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     // knows which other slabs it meets (it is
     // the only geometric fact the level's two loops otherwise throw away).
     if look.concrete && !spec.neighborhood { crate::concrete::ground(&mut scene); }
-    let mut packer = crate::painted::Packer::default();
+    // the grass density map owns the atlas's top-left corner; painted faces
+    // pack below it (foliage.rs, painted.rs)
+    let density = spec.neighborhood.then(|| crate::foliage::density(spec, &[]));
+    if let Some(d) = &density {
+        crate::foliage::write_density(&mut scene.atlas, d);
+    }
+    let mut packer = if density.is_some() { crate::painted::Packer::below(crate::foliage::DIM) } else { crate::painted::Packer::default() };
     let mut painted: Vec<crate::painted::FaceSlot> = Vec::new();
     for r in &wall_runs(g) {
         // every neighborhood wall is PAINTED: its surface is baked from the
@@ -254,6 +260,9 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     // indoor cutaway dissolves it the moment the player steps inside, and
     // `tear_roof` drops `roof_prims` from the TLAS for the dusk flood. The
     // neighborhood's dwellings bring their own broken roof strips.
+    if let Some(d) = &density {
+        crate::foliage::plants(&mut scene, spec, d);
+    }
     if spec.neighborhood {crate::terrain::details(&mut scene);}
     let roof_first = scene.primitives.len();
     if spec.neighborhood {crate::terrain::roofs(&mut scene);}

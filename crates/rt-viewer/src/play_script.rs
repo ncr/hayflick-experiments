@@ -12,15 +12,16 @@
 //! Grammar — one statement per line, `#` comments, `<frame>` counted from 0
 //! (a DEMO capture renders 60 frames per second):
 //! - `<f> say <text…>` — caption at the top of the screen (`say -` clears)
-//! - `<f> key <name>` — one press: `tab`, `esc`, `1`..`7`, `ctrl+z`,
+//! - `<f> key <name>` — one press: `tab`, `esc`, `f1`..`f4` (category),
+//!   `1`..`9` (tool in the category), `ctrl+z`,
 //!   `ctrl+y`, `q`, `e`, `+`, `-`
 //! - `<f> hold <key> <frames>` — hold `w`/`a`/`s`/`d`/`shift` for n frames
 //! - `<f> to <x> <z> <frames>` — glide the cursor to a world ground point
 //! - `<f> at <x> <y> <z> <frames>` — glide the cursor to any world point (a
 //!   spot on a wall, for the paint tools)
-//! - `<f> button <name> <frames>` — glide the cursor onto a toolbar button
-//!   (`wall`, `building`, `lamp`, `spawn`, `rain`, `soot`, `spall`, `undo`,
-//!   `redo`, `play`)
+//! - `<f> button <name> <frames>` — glide the cursor onto a toolbar button:
+//!   a category (`build`, `walls`, `plants`), a tool of the ACTIVE category
+//!   (`wall`, `rain`, `tree`, …), `undo`, `redo` or `play`
 //! - `<f> down left|right`, `<f> up left|right` — mouse buttons
 
 use crate::viewer::Viewer;
@@ -106,21 +107,6 @@ fn parse(text: &str) -> Result<Vec<(u32, Op)>, String> {
     Ok(out)
 }
 
-fn bar_hit(name: &str) -> Option<BarHit> {
-    Some(match name {
-        "wall" => BarHit::Tool(0),
-        "building" => BarHit::Tool(1),
-        "lamp" => BarHit::Tool(2),
-        "spawn" => BarHit::Tool(3),
-        "rain" => BarHit::Tool(4),
-        "soot" => BarHit::Tool(5),
-        "spall" => BarHit::Tool(6),
-        "undo" => BarHit::Undo,
-        "redo" => BarHit::Redo,
-        "play" => BarHit::Play,
-        _ => return None,
-    })
-}
 
 fn hold_code(name: &str) -> Option<KeyCode> {
     Some(match name {
@@ -186,8 +172,9 @@ impl Viewer {
             "e" => self.start_rotate(1),
             "+" => self.zoom_step(1, self.view.cursor),
             "-" => self.zoom_step(-1, self.view.cursor),
+            "f1" | "f2" | "f3" | "f4" => self.creative_set_group(name[1..].parse::<usize>().unwrap_or(1) - 1),
             n => match n.parse::<usize>() {
-                Ok(d @ 1..=7) if self.creative.open => self.creative_set_tool(d - 1),
+                Ok(d @ 1..=9) if self.creative.open => self.creative_set_tool(d - 1),
                 _ => eprintln!("PLAY_SCRIPT: key {n:?} does nothing here"),
             },
         }
@@ -249,7 +236,7 @@ impl Viewer {
                 }
                 Op::To(x, z, n) => ps.glide = Some(Glide { from: self.view.cursor, to: Aim::World(Vec3::new(x, 0.0, z)), start: f, frames: n.max(1) }),
                 Op::At(x, y, z, n) => ps.glide = Some(Glide { from: self.view.cursor, to: Aim::World(Vec3::new(x, y, z)), start: f, frames: n.max(1) }),
-                Op::Btn(name, n) => match bar_hit(&name) {
+                Op::Btn(name, n) => match self.creative_bar_target(&name) {
                     Some(h) => ps.glide = Some(Glide { from: self.view.cursor, to: Aim::Bar(h), start: f, frames: n.max(1) }),
                     None => eprintln!("PLAY_SCRIPT: no toolbar button {name:?}"),
                 },
@@ -415,10 +402,4 @@ mod tests {
         assert_eq!(ops[2].1, Op::Key("2".into()));
     }
 
-    #[test]
-    fn every_toolbar_name_maps_to_a_button() {
-        for n in ["wall", "building", "lamp", "spawn", "rain", "soot", "spall", "undo", "redo", "play"] {
-            assert!(bar_hit(n).is_some(), "{n}");
-        }
-    }
 }

@@ -19,6 +19,9 @@ iso-core = { path = "../iso-core" }
 # painted wall surfaces (creative mode, 2026-09-22): brush strokes baked on
 # the CPU at one texel per game pixel; a leaf, std only.
 surface = { path = "../surface" }
+# vegetation for creative mode: the grass density map and procedural trees
+# and bushes, baked on the CPU; a leaf, std only.
+flora = { path = "../flora" }
 # destructibility: the "wall smash" demo's rubble — a Box3D brick wall +
 # projectile authored into the gym as extra dynamic runs (phys_scene.rs).
 phys-spike = { path = "../phys-spike" }

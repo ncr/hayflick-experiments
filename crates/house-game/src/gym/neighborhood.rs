@@ -1,7 +1,7 @@
 //! Shared, authored neighborhood parcels. Data is also included by the GPU
 //! material shader, so growth boundaries and paved geometry cannot drift.
 use super::grid::{CellKind, CellPos, Dir, EdgeKind, Grid};
-use super::sim::{GymLevel, PaintEffect, PaintStroke};
+use super::sim::{GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
 #[derive(Clone, Copy, Debug)]
 pub struct Area {
     pub kind: u32,
@@ -61,13 +61,35 @@ pub fn level() -> GymLevel {
             grid.set_edge(CellPos::new(x, z), Dir::Zm, EdgeKind::Open);
         }
     }
-    GymLevel { paint: areas().iter().filter(|a| a.kind == 3).flat_map(history_strokes).collect(),
+    GymLevel { ground: Vec::new(), plants: starting_plants(), paint: areas().iter().filter(|a| a.kind == 3).flat_map(history_strokes).collect(),
         neighborhood: true,
         grid,
         player_start: CellPos::new(12, 15),
         lights: vec![],
     }
 }
+/// The trees and bushes the street starts with — on open soil, off the
+/// paving and the lots, clear of the spawn. Ordinary level data: creative
+/// mode uproots and plants over them like any other.
+fn starting_plants() -> Vec<Plant> {
+    let tree = |x, z, seed| Plant { kind: PlantKind::Tree, x, z, seed };
+    let bush = |x, z, seed| Plant { kind: PlantKind::Bush, x, z, seed };
+    vec![
+        tree(12.2, 4.0, 11),
+        tree(24.0, 5.5, 23),
+        tree(15.5, 20.0, 37),
+        tree(22.5, 18.5, 41),
+        tree(1.2, 20.5, 53),
+        bush(10.5, 6.6, 61),
+        bush(13.8, 7.2, 67),
+        bush(23.0, 7.6, 71),
+        bush(13.2, 17.6, 73),
+        bush(2.8, 16.3, 79),
+        bush(19.5, 21.8, 83),
+        bush(17.2, 16.2, 89),
+    ]
+}
+
 fn hash01(seed: u32, k: u32) -> f32 {
     let mut a = seed.wrapping_mul(0x9e37_79b9) ^ k.wrapping_mul(0x85eb_ca6b);
     a ^= a >> 16;
@@ -225,6 +247,10 @@ mod tests {
             }
         }
         assert_eq!(level().paint, l.paint, "deterministic");
+        for p in &l.plants {
+            let a = at(p.x, p.z).map(|a| a.kind);
+            assert_eq!(a, Some(0), "plant {p:?} stands on open soil");
+        }
     }
 
     #[test]

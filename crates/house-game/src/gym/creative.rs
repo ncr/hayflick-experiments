@@ -19,7 +19,7 @@
 //! saves as an ordinary canonical `.level` diff.
 
 use super::grid::{CellKind, CellPos, EdgeKind};
-use super::sim::{GymLevel, PaintEffect, PaintStroke};
+use super::sim::{GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
 
 /// The toolbar. Order = hotkey order (1..) and the toolbar's left-to-right.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,10 +36,26 @@ pub enum Tool {
     /// Drag over a wall: paint an effect onto its surface (right-drag scrubs
     /// paint off). The effect is the tool — one toolbar button each.
     Paint(PaintEffect),
+    /// Drag over the ground: grow grass / dry it to straw (right-drag mows).
+    Grow(GrowBrush),
+    /// Click (or drag, for bushes) to plant; right-click uproots.
+    Plant(PlantKind),
 }
 
 impl Tool {
-    pub const ALL: [Tool; 7] = [Tool::Wall, Tool::Room, Tool::Lamp, Tool::Spawn, Tool::Paint(PaintEffect::Rain), Tool::Paint(PaintEffect::Soot), Tool::Paint(PaintEffect::Spall)];
+    pub const ALL: [Tool; 11] = [
+        Tool::Wall,
+        Tool::Room,
+        Tool::Lamp,
+        Tool::Spawn,
+        Tool::Paint(PaintEffect::Rain),
+        Tool::Paint(PaintEffect::Soot),
+        Tool::Paint(PaintEffect::Spall),
+        Tool::Grow(GrowBrush::Grass),
+        Tool::Grow(GrowBrush::Dry),
+        Tool::Plant(PlantKind::Tree),
+        Tool::Plant(PlantKind::Bush),
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -48,6 +64,8 @@ impl Tool {
             Tool::Lamp => "lamp",
             Tool::Spawn => "spawn",
             Tool::Paint(e) => e.name(),
+            Tool::Grow(b) => b.name(),
+            Tool::Plant(k) => k.name(),
         }
     }
 
@@ -61,6 +79,11 @@ impl Tool {
             Tool::Paint(PaintEffect::Rain) => "drag on a wall: rain streaks   right-drag: scrub",
             Tool::Paint(PaintEffect::Soot) => "drag on a wall: fire soot   right-drag: scrub",
             Tool::Paint(PaintEffect::Spall) => "drag on a wall: broken cover   right-drag: scrub",
+            Tool::Grow(GrowBrush::Grass) => "drag: grow grass   right-drag: mow",
+            Tool::Grow(GrowBrush::Dry) => "drag: dry it to straw   right-drag: mow",
+            Tool::Grow(GrowBrush::Mow) => "drag: mow",
+            Tool::Plant(PlantKind::Tree) => "click: plant a tree   right-click: uproot",
+            Tool::Plant(PlantKind::Bush) => "drag: plant bushes   right-drag: uproot",
         }
     }
 }
@@ -185,14 +208,65 @@ pub fn preview(lv: &GymLevel, tool: Tool, button: Button, p0: (f32, f32), p1: (f
                 pv.spawn = Some(snap_cell(lv, p1.0, p1.1));
             }
         }
-        // paint gestures hit walls, not the ground: see `paint`/`scrub`
-        Tool::Paint(_) => {}
+        // these gestures are stroke lists, not a press/release pair: see
+        // `paint`/`scrub`, `grow`, `plant`/`uproot`
+        Tool::Paint(_) | Tool::Grow(_) | Tool::Plant(_) => {}
     }
     pv
 }
 
 /// Brush radius for hand painting, wu.
 pub const BRUSH_R: f32 = 0.45;
+/// Ground brush radius, wu — grass is painted in patches, not strokes.
+pub const GROW_R: f32 = 1.0;
+
+/// Commit a ground drag (grass, dry or mow dabs). One undo step.
+pub fn grow(lv: &mut GymLevel, hist: &mut History, dabs: &[GroundStroke]) -> bool {
+    if dabs.is_empty() {
+        return false;
+    }
+    hist.commit(lv.clone());
+    lv.ground.extend_from_slice(dabs);
+    true
+}
+
+/// Minimum distance between two plants of this kind — the scatter brush's
+/// spacing and the "one per spot" rule for a click.
+pub fn spacing(k: PlantKind) -> f32 {
+    match k {
+        PlantKind::Tree => 1.4,
+        PlantKind::Bush => 0.7,
+    }
+}
+
+/// Where a scatter drag may put a new plant: not closer than `spacing` to any
+/// plant already standing (or already placed in this drag).
+pub fn can_plant(lv: &GymLevel, pending: &[Plant], k: PlantKind, x: f32, z: f32) -> bool {
+    let d = spacing(k);
+    lv.plants.iter().chain(pending).all(|p| (p.x - x).powi(2) + (p.z - z).powi(2) >= (d * 0.5 + spacing(p.kind) * 0.5).powi(2))
+}
+
+/// Commit planted plants. One undo step.
+pub fn plant(lv: &mut GymLevel, hist: &mut History, new: &[Plant]) -> bool {
+    if new.is_empty() {
+        return false;
+    }
+    hist.commit(lv.clone());
+    lv.plants.extend_from_slice(new);
+    true
+}
+
+/// Uproot every plant within `r` of any of `points`. One undo step, none if
+/// nothing grew there.
+pub fn uproot(lv: &mut GymLevel, hist: &mut History, points: &[(f32, f32)], r: f32) -> bool {
+    let hit = |p: &Plant| points.iter().any(|&(x, z)| (p.x - x).powi(2) + (p.z - z).powi(2) < r * r);
+    if !lv.plants.iter().any(hit) {
+        return false;
+    }
+    hist.commit(lv.clone());
+    lv.plants.retain(|p| !hit(p));
+    true
+}
 
 /// Commit a paint drag: every dab lands on the level. One undo step.
 pub fn paint(lv: &mut GymLevel, hist: &mut History, dabs: &[PaintStroke]) -> bool {
@@ -481,6 +555,22 @@ mod tests {
         assert!(!scrub(&mut lv, &mut h, &[dab(8.0, 1)]), "scrubbing bare wall is no edit");
         assert!(h.undo(&mut lv));
         assert_eq!(lv.paint.len(), 3);
+    }
+
+    #[test]
+    fn planting_keeps_its_spacing_and_uprooting_takes_only_what_is_near() {
+        let mut lv = empty();
+        let mut h = History::default();
+        let t = |x: f32, z: f32| Plant { kind: PlantKind::Tree, x, z, seed: 1 };
+        assert!(plant(&mut lv, &mut h, &[t(2.0, 2.0), t(6.0, 2.0)]));
+        assert!(!can_plant(&lv, &[], PlantKind::Tree, 2.5, 2.2), "too close to a tree");
+        assert!(can_plant(&lv, &[], PlantKind::Bush, 4.0, 2.0), "room between them");
+        assert!(uproot(&mut lv, &mut h, &[(2.2, 2.1)], 0.6));
+        assert_eq!(lv.plants, vec![t(6.0, 2.0)]);
+        assert!(!uproot(&mut lv, &mut h, &[(9.0, 9.0)], 0.6), "nothing there, no undo step");
+        let n = h.undo.len();
+        assert!(grow(&mut lv, &mut h, &[GroundStroke { brush: GrowBrush::Grass, x: 3.0, z: 3.0, r: GROW_R }]));
+        assert_eq!(h.undo.len(), n + 1);
     }
 
     #[test]

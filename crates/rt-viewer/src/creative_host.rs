@@ -18,14 +18,17 @@
 use crate::backend::Stamp;
 use crate::viewer::Viewer;
 use glam::{Vec2, Vec3};
-use house_game::gym::creative::{self, Button, History, Preview, Tool, BRUSH_R};
-use house_game::gym::sim::PaintStroke;
+use house_game::gym::creative::{self, Button, History, Preview, Tool, BRUSH_R, GROW_R};
+use house_game::gym::sim::{GroundStroke, GrowBrush, PaintEffect, PaintStroke, Plant, PlantKind};
 use ide::toolbar::{self, BarHit, BarModel};
 
-/// Tool labels for the toolbar, in [`Tool::ALL`] order.
-fn tool_labels() -> [&'static str; 7] {
-    Tool::ALL.map(Tool::name)
-}
+/// The toolbar's CATEGORIES and their tools, in order: F1.. picks a
+/// category, 1.. a tool inside it.
+const GROUPS: &[(&str, &[Tool])] = &[
+    ("build", &[Tool::Wall, Tool::Room, Tool::Lamp, Tool::Spawn]),
+    ("walls", &[Tool::Paint(PaintEffect::Rain), Tool::Paint(PaintEffect::Soot), Tool::Paint(PaintEffect::Spall)]),
+    ("plants", &[Tool::Grow(GrowBrush::Grass), Tool::Grow(GrowBrush::Dry), Tool::Plant(PlantKind::Tree), Tool::Plant(PlantKind::Bush)]),
+];
 
 /// Camera pan speed while building, world units per second at zoom 1.
 const PAN_WU_PER_S: f32 = 9.0;
@@ -44,15 +47,22 @@ pub struct CreativeState {
     pub hist: History,
     /// One line for the toolbar's status slot ("built", "undone", …).
     status: String,
+    /// The active toolbar category (index into [`GROUPS`]).
+    group: usize,
     /// A paint drag's dabs so far (committed on release).
     dabs: Vec<PaintStroke>,
     /// The wall point under the cursor with a paint tool: (point, face slot).
     brush: Option<(Vec3, usize)>,
+    /// A ground drag's dabs so far (grass / dry / mow).
+    grows: Vec<GroundStroke>,
+    /// A plant drag's pending plants (build) or uproot points (remove).
+    sprouts: Vec<Plant>,
+    uproots: Vec<(f32, f32)>,
 }
 
 impl Default for CreativeState {
     fn default() -> CreativeState {
-        CreativeState { open: false, tool: Tool::Wall, press: None, hover: None, hist: History::default(), status: String::new(), dabs: Vec::new(), brush: None }
+        CreativeState { open: false, tool: Tool::Wall, press: None, hover: None, hist: History::default(), status: String::new(), group: 0, dabs: Vec::new(), brush: None, grows: Vec::new(), sprouts: Vec::new(), uproots: Vec::new() }
     }
 }
 
@@ -100,19 +110,52 @@ impl Viewer {
         }
         self.creative.status = if self.creative.open { "creative".into() } else { String::new() };
         self.ui_blip(if self.creative.open { "menu_open" } else { "menu_close" });
-        println!("creative: {}", if self.creative.open { "on (tab: play, 1-7: tools, ctrl+z: undo)" } else { "off" });
+        println!("creative: {}", if self.creative.open { "on (tab: play, F1-F3: category, 1-4: tool, ctrl+z: undo)" } else { "off" });
     }
 
+    /// Pick tool `i` of the ACTIVE category (the 1.. hotkeys).
     pub fn creative_set_tool(&mut self, i: usize) {
-        if let Some(&t) = Tool::ALL.get(i) {
+        if let Some(&t) = GROUPS[self.creative.group].1.get(i) {
             self.creative.tool = t;
             self.creative.press = None;
+            self.creative.dabs.clear();
             self.ui_blip("menu_move");
         }
     }
 
+    /// Switch category (F1..): its first tool becomes active.
+    pub fn creative_set_group(&mut self, g: usize) {
+        if g < GROUPS.len() {
+            self.creative.group = g;
+            self.creative_set_tool(0);
+        }
+    }
+
+    /// Run `f` with the toolbar's current model — one builder for draw,
+    /// hit-test and the harness's button lookup.
+    fn with_bar<R>(&self, f: impl FnOnce(&BarModel) -> R) -> R {
+        let (name_g, tools) = GROUPS[self.creative.group];
+        let _ = name_g;
+        let groups: Vec<&str> = GROUPS.iter().map(|g| g.0).collect();
+        let labels: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        let active = tools.iter().position(|&t| t == self.creative.tool).unwrap_or(usize::MAX);
+        f(&BarModel { groups: &groups, group: self.creative.group, tools: &labels, active, hint: self.creative.tool.hint(), can_undo: self.creative.hist.can_undo(), can_redo: self.creative.hist.can_redo(), status: &self.creative.status })
+    }
+
+    /// The toolbar button a harness name refers to: a category name, or a
+    /// tool of the active category.
+    pub fn creative_bar_target(&self, name: &str) -> Option<BarHit> {
+        let (_, tools) = GROUPS[self.creative.group];
+        GROUPS.iter().position(|g| g.0 == name).map(BarHit::Group).or_else(|| tools.iter().position(|t| t.name() == name).map(BarHit::Tool)).or(match name {
+            "undo" => Some(BarHit::Undo),
+            "redo" => Some(BarHit::Redo),
+            "play" => Some(BarHit::Play),
+            _ => None,
+        })
+    }
+
     /// The toolbar's pixel scale: game chrome, so it is never finer than two
-    /// window px per bar px (half the menu's UI pixel alone would leave it
+    /// window px per bar px (the slider IDE's 2x-density rule would leave it
     /// 8 px tall at 1280x800).
     fn bar_scale(&self) -> u32 {
         (crate::backend::menu_scale_for(self.backend.extent().1) / 2).max(2)
@@ -133,18 +176,10 @@ impl Viewer {
         iso_core::window_px_to_ground(win, &self.pick_xform()).map(|p| (p.x, p.z))
     }
 
-    fn bar_model(&self) -> (usize, &'static str, bool, bool) {
-        let active = Tool::ALL.iter().position(|&t| t == self.creative.tool).unwrap_or(0);
-        (active, self.creative.tool.hint(), self.creative.hist.can_undo(), self.creative.hist.can_redo())
-    }
-
     fn bar_hit(&self, win: Vec2) -> (bool, Option<BarHit>) {
-        let labels = tool_labels();
-        let (active, hint, can_undo, can_redo) = self.bar_model();
-        let m = BarModel { tools: &labels, active, hint, can_undo, can_redo, status: &self.creative.status, groups: &[4] };
         let (vw, vh) = self.bar_viewport();
         let p = self.bar_px(win);
-        (toolbar::over(&m, p, vw, vh), toolbar::hit(&m, p, vw, vh))
+        self.with_bar(|m| (toolbar::over(m, p, vw, vh), toolbar::hit(m, p, vw, vh)))
     }
 
     /// A mouse press while building. The toolbar takes its clicks; anywhere
@@ -154,12 +189,24 @@ impl Viewer {
         if over {
             if button == Button::Build {
                 match hit {
+                    Some(BarHit::Group(g)) => self.creative_set_group(g),
                     Some(BarHit::Tool(i)) => self.creative_set_tool(i),
                     Some(BarHit::Undo) => self.creative_undo(),
                     Some(BarHit::Redo) => self.creative_redo(),
                     Some(BarHit::Play) => self.creative_toggle(),
                     None => {}
                 }
+            }
+            return;
+        }
+        if matches!(self.creative.tool, Tool::Grow(_) | Tool::Plant(_)) {
+            self.creative.hover = self.creative_ground(win);
+            self.creative.grows.clear();
+            self.creative.sprouts.clear();
+            self.creative.uproots.clear();
+            if let Some(p) = self.creative.hover {
+                self.creative.press = Some((button, p));
+                self.plant_step(p);
             }
             return;
         }
@@ -178,11 +225,45 @@ impl Viewer {
 
     pub fn creative_move(&mut self, win: Vec2) {
         self.creative.hover = self.creative_ground(win);
+        if let (Some(p), Some(_), Tool::Grow(_) | Tool::Plant(_)) = (self.creative.hover, self.creative.press, self.creative.tool) {
+            self.plant_step(p);
+        }
         if let Tool::Paint(_) = self.creative.tool {
             self.creative.brush = self.wall_hit(win);
             if self.creative.press.is_some() {
                 self.paint_dab();
             }
+        }
+    }
+
+    /// One step of a plants-category drag at ground point `p`: a ground dab
+    /// (re-baking the grass map live — the blades follow the same frame, no
+    /// rebuild), a plant (spaced from every other), or an uproot point.
+    fn plant_step(&mut self, p: (f32, f32)) {
+        let Some((button, _)) = self.creative.press else { return };
+        match self.creative.tool {
+            Tool::Grow(b) => {
+                let brush = if button == Button::Remove { GrowBrush::Mow } else { b };
+                if self.creative.grows.last().is_some_and(|l| (l.x - p.0).powi(2) + (l.z - p.1).powi(2) < (GROW_R * 0.4).powi(2)) {
+                    return;
+                }
+                self.creative.grows.push(GroundStroke { brush, x: p.0, z: p.1, r: GROW_R });
+                let d = crate::foliage::density(&self.gym.spec, &self.creative.grows);
+                crate::foliage::write_density(&mut self.scene.atlas, &d);
+                unsafe { self.backend.update_atlas(&self.scene.atlas) };
+            }
+            Tool::Plant(k) if button == Button::Build => {
+                // a tree is one click; bushes scatter along the drag
+                if k == PlantKind::Tree && !self.creative.sprouts.is_empty() {
+                    return;
+                }
+                if creative::can_plant(&self.gym.spec, &self.creative.sprouts, k, p.0, p.1) {
+                    let seed = ((p.0 * 997.0) as i32 as u32).wrapping_mul(2_654_435_761) ^ ((p.1 * 1009.0) as i32 as u32).wrapping_mul(40_503);
+                    self.creative.sprouts.push(Plant { kind: k, x: p.0, z: p.1, seed });
+                }
+            }
+            Tool::Plant(_) => self.creative.uproots.push(p),
+            _ => {}
         }
     }
 
@@ -235,6 +316,28 @@ impl Viewer {
         if b != button {
             return;
         }
+        match self.creative.tool {
+            Tool::Grow(b) => {
+                let grows = std::mem::take(&mut self.creative.grows);
+                if creative::grow(&mut self.gym.spec, &mut self.creative.hist, &grows) {
+                    self.creative.status = if button == Button::Build { format!("{} grown", b.name()) } else { "mowed".into() };
+                    // the blades already follow the live map; a rebuild
+                    // re-browns the plants that stand in it and saves
+                    self.creative_rebuild();
+                }
+                return;
+            }
+            Tool::Plant(k) => {
+                let (sprouts, uproots) = (std::mem::take(&mut self.creative.sprouts), std::mem::take(&mut self.creative.uproots));
+                let changed = if button == Button::Build { creative::plant(&mut self.gym.spec, &mut self.creative.hist, &sprouts) } else { creative::uproot(&mut self.gym.spec, &mut self.creative.hist, &uproots, creative::spacing(k) * 0.6) };
+                if changed {
+                    self.creative.status = if button == Button::Build { format!("{} planted", k.name()) } else { "uprooted".into() };
+                    self.creative_rebuild();
+                }
+                return;
+            }
+            _ => {}
+        }
         if let Tool::Paint(e) = self.creative.tool {
             let dabs = std::mem::take(&mut self.creative.dabs);
             let changed = if button == Button::Build { creative::paint(&mut self.gym.spec, &mut self.creative.hist, &dabs) } else { creative::scrub(&mut self.gym.spec, &mut self.creative.hist, &dabs) };
@@ -258,9 +361,10 @@ impl Viewer {
     pub fn creative_cancel(&mut self) {
         if self.creative.press.take().is_none() {
             self.creative_toggle();
-        } else if !self.creative.dabs.is_empty() {
+        } else if !self.creative.dabs.is_empty() || !self.creative.grows.is_empty() {
             // the live preview already changed the atlas: rebuild it clean
             self.creative.dabs.clear();
+            self.creative.grows.clear();
             let look = self.look;
             self.apply_look(look);
         }
@@ -318,6 +422,19 @@ impl Viewer {
         if !c.open {
             return [[0.0; 4]; 2];
         }
+        if let Tool::Grow(_) | Tool::Plant(_) = c.tool {
+            let r = match c.tool {
+                Tool::Plant(k) => creative::spacing(k) * 0.5,
+                _ => GROW_R,
+            };
+            return match c.hover {
+                Some((x, z)) => {
+                    let kind = if c.press.is_some_and(|(b, _)| b == Button::Remove) { 5.0 } else { 4.0 };
+                    [[x, 0.0, z, r], [1.0, kind, 0.0, GRID_MAX_Y]]
+                }
+                None => [[0.0; 4], [1.0, 0.0, 0.0, GRID_MAX_Y]],
+            };
+        }
         if let Tool::Paint(_) = c.tool {
             return match c.brush {
                 Some((p, _)) => {
@@ -357,11 +474,8 @@ impl Viewer {
         if !self.creative.open {
             return Vec::new();
         }
-        let labels = tool_labels();
-        let (active, hint, can_undo, can_redo) = self.bar_model();
-        let m = BarModel { tools: &labels, active, hint, can_undo, can_redo, status: &self.creative.status, groups: &[4] };
         let (vw, vh) = self.bar_viewport();
-        let p = toolbar::draw(&m, vw, vh, self.bar_px(cursor));
+        let p = self.with_bar(|m| toolbar::draw(m, vw, vh, self.bar_px(cursor)));
         let s = self.bar_scale();
         vec![Stamp { pix: p.pix, w: p.w as i32, h: p.h as i32, x: p.x as i64 * s as i64, y: p.y as i64 * s as i64, scale: s }]
     }
@@ -369,12 +483,9 @@ impl Viewer {
     /// Window px of a toolbar button's centre — the play-script harness moves
     /// its cursor onto buttons by name.
     pub fn creative_button_px(&self, hit: BarHit) -> Option<Vec2> {
-        let labels = tool_labels();
-        let (active, hint, can_undo, can_redo) = self.bar_model();
-        let m = BarModel { tools: &labels, active, hint, can_undo, can_redo, status: &self.creative.status, groups: &[4] };
         let (vw, vh) = self.bar_viewport();
         let s = self.bar_scale() as f32;
-        toolbar::layout(&m, vw, vh).1.into_iter().find(|(_, h)| *h == hit).map(|(r, _)| Vec2::new((r.x as f32 + r.w as f32 * 0.5) * s, (r.y as f32 + r.h as f32 * 0.5) * s))
+        self.with_bar(|m| toolbar::layout(m, vw, vh)).1.into_iter().find(|(_, h)| *h == hit).map(|(r, _)| Vec2::new((r.x as f32 + r.w as f32 * 0.5) * s, (r.y as f32 + r.h as f32 * 0.5) * s))
     }
 }
 

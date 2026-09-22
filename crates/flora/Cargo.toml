@@ -1,0 +1,8 @@
+[package]
+name = "flora"
+version = "0.1.0"
+edition = "2021"
+description = "Pure leaf: vegetation for creative mode — the ground's grass density baked on the CPU from brush strokes, and procedural trees and bushes as triangle soups. No Scene, no GPU, no game."
+
+[dependencies]
+# std only, like `surface`: a density map and a plant mesh are arithmetic.
