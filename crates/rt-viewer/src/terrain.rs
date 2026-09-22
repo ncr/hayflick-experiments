@@ -211,20 +211,13 @@ pub fn lot_of(r: [f32; 4]) -> Option<house_game::gym::neighborhood::Area> {
     areas().into_iter().filter(|a| a.kind == 3).find(|a| c.x >= a.rect[0] - 0.2 && c.x <= a.rect[2] + 0.2 && c.y >= a.rect[1] - 0.2 && c.y <= a.rect[3] + 0.2)
 }
 
-pub fn facade(s: &mut Scene, r: [f32; 4], along_x: bool) {
+/// Cut a lot wall's window openings through every primitive built since
+/// `first` (faces, caps and steel alike — a polygon subtraction, so a bar is
+/// clipped at the opening instead of vanishing whole) and set a thick sill in
+/// each. The PAINTED wall (painted.rs) is built first and then cut here: the
+/// uv interpolates across the clip, so the atlas texels stay put.
+pub fn cut_windows(s: &mut Scene, first: usize, r: [f32; 4], along_x: bool) {
     let c = Vec2::new((r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5);
-    let lot = lot_of(r);
-    // A wall outside every authored lot is one built in creative mode: it has
-    // no history yet, so it stands as sound, freshly cast concrete (this was
-    // an `unwrap` — the first wall built on open ground crashed the level).
-    let e = match lot.map(|l| l.exposure) {
-        None => Exposure::Sound,
-        Some(2) => Exposure::Corrosion,
-        Some(3) => Exposure::Fire,
-        Some(_) => Exposure::Blast,
-    };
-    let first = s.primitives.len();
-    concrete::wall_detail(s, r, along_x, e, 0.085);
     let len = if along_x { r[2] - r[0] } else { r[3] - r[1] };
     if len < 3.0 {
         return;
@@ -279,7 +272,7 @@ pub fn facade(s: &mut Scene, r: [f32; 4], along_x: bool) {
         s.indices.extend(0..vertices.len() as u32);
         s.vertices.extend(vertices);
     }
-    let m = concrete::material(s, e, 0, 123);
+    let m = concrete::material(s, Exposure::Sound, 0, 123);
     for u in slots {
         let c = if along_x {
             Vec3::new(start + u, 0.96, c.y)

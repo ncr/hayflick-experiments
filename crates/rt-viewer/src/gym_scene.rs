@@ -261,12 +261,18 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     let mut packer = crate::painted::Packer::default();
     let mut painted: Vec<crate::painted::FaceSlot> = Vec::new();
     for r in &wall_runs(g) {
-        // a wall on no authored lot was built in creative mode: its surface
-        // is BAKED from the level's brush strokes (painted.rs)
-        if spec.neighborhood && crate::terrain::lot_of(r.rect).is_none() {
+        // every neighborhood wall is PAINTED: its surface is baked from the
+        // level's brush strokes (painted.rs) — a lot's history is a stroke
+        // preset in the level data (neighborhood::history_strokes), a wall
+        // built in creative mode starts clean — and a lot wall then gets its
+        // window openings cut through
+        if spec.neighborhood {
+            let first = scene.primitives.len();
             painted.extend(crate::painted::wall(&mut scene, &mut packer, r.rect, r.along_x, &spec.paint));
+            if crate::terrain::lot_of(r.rect).is_some() {
+                crate::terrain::cut_windows(&mut scene, first, r.rect, r.along_x);
+            }
         }
-        else if spec.neighborhood {crate::terrain::facade(&mut scene,r.rect,r.along_x);}
         else if look.concrete { crate::concrete::wall(&mut scene, r.rect, r.along_x); }
         else { wall_slab(&mut scene, &mut piers, r, look); }
     }

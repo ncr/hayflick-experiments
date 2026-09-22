@@ -90,8 +90,19 @@ not the slider IDE:
 - The slider IDE (hierarchy + inspector, wear rows) moved to **F2** until its
   wear rows are retired.
 
-**PAINTED SURFACES** replace per-ray procedural wear for walls built in
-creative mode (a prototype on "after the rain": walls on no authored lot).
+**PAINTED SURFACES** replace per-ray procedural wear for EVERY wall of "after
+the rain" (the gym, crack lab and catalogue keep the wear pipeline). A
+dwelling lot's authored history is no longer a shader branch: its exposure
+code (2 corrosion / 3 fire / 4 blast) selects a STROKE PRESET written into the
+level data (`neighborhood::history_strokes` — rain runs from leaking crowns,
+broad corrosion craters, smoke out of window heads, a blast tearing the crown
+off), so the houses are painted with the owner's own brushes and can be
+scrubbed, repainted and undone like any stroke. `terrain::cut_windows` then
+cuts the lot walls' openings through the painted mesh (uv interpolates, the
+atlas stays put). A spall reaching the top edge BREAKS THE CROWN
+(`Face::crown`, the notch is the crater's outline; both faces share the lower
+crown) and the torn bars stand proud of it; lost cover lies as rubble below
+each crater.
 The `surface` crate (std only) BAKES a face on the CPU at **one texel per game
 pixel** — 40 texels/wu along world x, 20 along z, 38.73 up (the trimetric
 axis images; after a q/e turn the ratio is 2:1, still whole pixels) — from the
@@ -117,9 +128,12 @@ keys/mouse (`say`, `key`, `hold`, `to x z`, `at x y z`, `button <name>`,
 `down/up left|right`) through the same viewer methods as the window, with the
 cursor, key caps and captions composited onto the captured frames on the CPU
 (never game UI). Grammar in `play_script.rs`.
-NEXT: paint on the authored lot walls (translate a lot's exposure into a
-stroke preset), rubble below spalls, then decide whether the wear pipeline
-(`crack*`, `wear*`, `wear-core`, ~12 k lines) is deleted.
+A/B against Codex's per-ray facades (2026-09-22, same four cameras): the
+presets reach comparable damage (full bar grids in the corrosion craters, the
+blast crown torn, rubble); Codex's lenses are still larger and more integrated
+— a preset-tuning job, not a model limit. NEXT: owner playtest; then decide
+whether the wear pipeline (`crack*`, `wear*`, `wear-core`, ~12 k lines) is
+deleted.
 
 ## The second level: the effect catalogue (owner 2026-07-26)
 

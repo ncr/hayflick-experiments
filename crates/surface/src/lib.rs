@@ -112,6 +112,10 @@ pub struct Face {
     pub leach: Vec<f32>,
     pub soot: Vec<f32>,
     pub rust: Vec<f32>,
+    /// Per column: the height the wall still stands to (wu). A spall whose
+    /// crater reaches the top edge BREAKS the crown there — the notch is the
+    /// crater's own outline, so a blast reads as the wall's head torn off.
+    pub crown: Vec<f32>,
 }
 
 // ---- noise --------------------------------------------------------------
@@ -172,7 +176,10 @@ fn crater(s: &Stroke, u: f32, v: f32, seed: u32) -> f32 {
         boundary = boundary.max((qx * a.cos() + qy * a.sin()) / (0.72 + 0.3 * hash(k, 1, ss)));
     }
     let q = 1.0 - boundary + 0.12 * (noise(u * 7.0, v * 7.0, ss) - 0.5) + 0.05 * (noise(u * 17.0, v * 17.0, ss + 5) - 0.5);
-    smooth(-0.02, 0.2, q)
+    // a SHARP shoulder: broken cover fails whole, so the crater is at full
+    // depth right up to its rim (a broad ramp left only the centre past the
+    // mat, and the steel read as a few stubs)
+    smooth(-0.02, 0.06, q)
 }
 
 /// Cracks radiating from a spall: a few kinked rays, one texel wide, fading
@@ -208,12 +215,21 @@ fn on_bar(u: f32, v: f32, width: f32) -> bool {
     du.abs() < width || dv.abs() < width
 }
 
+/// The texel ranges `[i0, i1) × [j0, j1)` a stroke can touch: its reach
+/// `ru` sideways and `down`/`up` vertically, in wu. Every effect loops only
+/// over this box — a face carries dozens of strokes and each used to visit
+/// every texel.
+fn span(spec: &FaceSpec, w: usize, h: usize, s: &Stroke, ru: f32, down: f32, up: f32) -> (usize, usize, usize, usize) {
+    let c = |x: f32, n: usize| (x.max(0.0) as usize).min(n);
+    (c((s.u - ru) * spec.tx_u, w), c((s.u + ru) * spec.tx_u + 1.0, w), c((s.v - down) * spec.tx_v, h), c((s.v + up) * spec.tx_v + 1.0, h))
+}
+
 impl Face {
     /// Bake a face from its strokes. Pure: same spec + strokes, same bytes.
     pub fn bake(spec: FaceSpec, strokes: &[Stroke]) -> Face {
         let (w, h) = spec.dims();
         let n = w * h;
-        let mut f = Face { spec, w, h, loss: vec![0.0; n], crack: vec![0.0; n], wet: vec![0.0; n], leach: vec![0.0; n], soot: vec![0.0; n], rust: vec![0.0; n] };
+        let mut f = Face { spec, w, h, loss: vec![0.0; n], crack: vec![0.0; n], wet: vec![0.0; n], leach: vec![0.0; n], soot: vec![0.0; n], rust: vec![0.0; n], crown: vec![spec.height; w] };
         let seed = spec.seed;
         let texel = 1.0 / spec.tx_u.min(spec.tx_v);
         let at = |i: usize, j: usize| ((i as f32 + 0.5) / spec.tx_u, (j as f32 + 0.5) / spec.tx_v);
@@ -221,8 +237,9 @@ impl Face {
 
         // 1. SPALL — cover loss, cracks
         for s in of(Effect::Spall) {
-            for j in 0..h {
-                for i in 0..w {
+            let (i0, i1, j0, j1) = span(&spec, w, h, s, s.r * 2.9, s.r * 2.9, s.r * 2.9);
+            for j in j0..j1 {
+                for i in i0..i1 {
                     let (u, v) = at(i, j);
                     let k = j * w + i;
                     let c = crater(s, u, v, seed);
@@ -233,12 +250,27 @@ impl Face {
                     f.crack[k] = f.crack[k].max(cracks(s, u, v, seed, texel) * (1.0 - c));
                 }
             }
+            // a crater that reaches the top edge breaks the crown: walk each
+            // column down from the top while the crater is deep there
+            if s.v + s.r * 1.3 > spec.height {
+                for i in i0..i1 {
+                    let u = (i as f32 + 0.5) / spec.tx_u;
+                    let mut top = spec.height;
+                    let mut j = h;
+                    while j > 0 && crater(s, u, (j as f32 - 0.5) / spec.tx_v, seed) > 0.55 {
+                        j -= 1;
+                        top = j as f32 / spec.tx_v;
+                    }
+                    f.crown[i] = f.crown[i].min(top);
+                }
+            }
         }
         // 2. RAIN — sources, then transport down each column
         let mut src = vec![0.0f32; n];
         for s in of(Effect::Rain) {
-            for j in 0..h {
-                for i in 0..w {
+            let (i0, i1, j0, j1) = span(&spec, w, h, s, s.r * 1.5, s.r * 1.5, s.r * 1.5);
+            for j in j0..j1 {
+                for i in i0..i1 {
                     let (u, v) = at(i, j);
                     src[j * w + i] = src[j * w + i].max(dab(s, u, v, seed));
                 }
@@ -289,8 +321,11 @@ impl Face {
         // broken into tongues by stretched noise
         for s in of(Effect::Soot) {
             let ss = stroke_seed(s, seed) ^ 0x50_07;
-            for j in 0..h {
-                for i in 0..w {
+            // the plume reaches the top, widening 0.42 per wu and swaying
+            let rise = (spec.height - s.v).max(0.0);
+            let (i0, i1, j0, j1) = span(&spec, w, h, s, s.r * 1.5 + rise * 1.1, s.r * 1.5, rise + s.r);
+            for j in j0..j1 {
+                for i in i0..i1 {
                     let k = j * w + i;
                     let (u, v) = at(i, j);
                     // the fire's seat: charred, broken — not a flat stamp
@@ -331,6 +366,11 @@ impl Face {
         (l(i0, j0) * (1.0 - fx) + l(i1, j0) * fx) * (1.0 - fy) + (l(i0, j1) * (1.0 - fx) + l(i1, j1) * fx) * fy
     }
 
+    /// The standing height at a face point along the wall (nearest column).
+    pub fn crown_at(&self, u: f32) -> f32 {
+        self.crown[((u * self.spec.tx_u) as usize).min(self.w - 1)]
+    }
+
     /// Compose the layers into LINEAR albedo, one rgb per texel.
     pub fn shade(&self) -> Vec<[f32; 3]> {
         let seed = self.spec.seed;
@@ -343,8 +383,12 @@ impl Face {
                 let (u, v) = ((i as f32 + 0.5) / self.spec.tx_u, (j as f32 + 0.5) / self.spec.tx_v);
                 let macro_ = fbm(u * 0.85, v * 0.85, seed);
                 let mottle = fbm(u * 3.1, v * 3.1, seed + 51);
-                let mut c = mix([0.17, 0.173, 0.16], [0.315, 0.31, 0.283], macro_);
-                c = mul(c, 0.9 + 0.2 * mottle);
+                let mut c = mix([0.16, 0.162, 0.15], [0.3, 0.295, 0.268], macro_);
+                c = mul(c, 0.8 + 0.34 * mottle);
+                // broad weathering stains: large, soft, darker patches
+                c = mul(c, 1.0 - 0.18 * smooth(0.45, 0.75, fbm(u * 0.45 + 3.0, v * 0.6, seed + 61)));
+                // age: splash-back and grime darken the foot of every wall
+                c = mul(c, 0.8 + 0.2 * smooth(0.0, 0.6, v));
                 // per-texel grit: THE pixel-art grain of cast concrete
                 c = mul(c, 0.955 + 0.09 * hash(i as i32, j as i32, seed + 41));
                 let exposed = smooth(0.015, 0.06, self.loss[k]);
@@ -478,6 +522,15 @@ mod tests {
         let runs = (0..f.rust.len()).filter(|&k| below(k)).count();
         assert!(runs > 20, "exposed steel bleeds rust runs below the crater: {runs} texels");
         assert!(f.crack.iter().any(|&c| c > 0.5), "cracks radiate from the crater");
+    }
+
+    #[test]
+    fn a_spall_at_the_top_breaks_the_crown_and_one_below_does_not() {
+        let low = Face::bake(spec(), &[Stroke { effect: Effect::Spall, u: 2.0, v: 1.2, r: 0.6 }]);
+        assert!(low.crown.iter().all(|&c| c == 3.2), "a low crater leaves the crown whole");
+        let top = Face::bake(spec(), &[Stroke { effect: Effect::Spall, u: 2.0, v: 3.1, r: 0.9 }]);
+        assert!(top.crown_at(2.0) < 2.8, "the crown is torn down at the impact: {}", top.crown_at(2.0));
+        assert_eq!(top.crown_at(0.1), 3.2, "and whole away from it");
     }
 
     #[test]

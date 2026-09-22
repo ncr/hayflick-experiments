@@ -175,21 +175,32 @@ pub fn wall(scene: &mut Scene, packer: &mut Packer, rect: [f32; 4], along_x: boo
         FaceSlot { origin, axis, n_axis, n_sign: sign, half, spec, at }
     });
 
-    // steel: one material for the whole wall's exposed cage
+    // bake both faces first: the wall's crown is the lower of the two, and
+    // both meshes and the top section have to agree on it
+    let faces: Vec<(Face, Vec<Stroke>)> = slots
+        .iter()
+        .map(|slot| {
+            let strokes = slot.strokes(paint);
+            (Face::bake(slot.spec, &strokes), strokes)
+        })
+        .collect();
+    let crown = |u: f32| faces[0].0.crown_at(u).min(faces[1].0.crown_at(u));
+
     let steel = concrete::material(scene, Exposure::Corrosion, 1, base_seed);
     let mut cage = Mesh::default();
     let mut caps = Mesh::default();
+    let mut rubble = Mesh::default();
     let mut cap_color = [0.0f32; 4];
-    let mut faces = Vec::new();
 
-    for slot in &slots {
-        let face = Face::bake(slot.spec, &slot.strokes(paint));
-        blit(&mut scene.atlas, slot, &face);
-        let mean = mean_albedo(&face);
+    for (slot, (face, strokes)) in slots.iter().zip(&faces) {
+        blit(&mut scene.atlas, slot, face);
+        let mean = mean_albedo(face);
         for k in 0..3 {
             cap_color[k] += mean[k] * 0.5;
         }
-        // the face mesh: a grid a few texels per cell, displaced by the loss
+        // the face mesh: a grid a few texels per cell, displaced by the loss;
+        // above a broken crown the grid folds onto the break line (the
+        // degenerate triangles that leaves are dropped by the scene)
         let step_u = 3.0 / tx_u;
         let step_v = 3.0 / surface::TX_UP;
         let nx = (len / step_u).ceil() as usize;
@@ -198,7 +209,7 @@ pub fn wall(scene: &mut Scene, packer: &mut Packer, rect: [f32; 4], along_x: boo
         let (w, h) = (face.w as f32, face.h as f32);
         let pt = |i: usize, j: usize| {
             let u = len * i as f32 / nx as f32;
-            let v = HEIGHT * j as f32 / ny as f32;
+            let v = (HEIGHT * j as f32 / ny as f32).min(crown(u));
             let loss = face.loss_at(u, v);
             let p = origin + axis * u + Vec3::Y * v + n * (half - loss);
             // uv: the atlas texel under this face point, kept inside the region
@@ -227,7 +238,7 @@ pub fn wall(scene: &mut Scene, packer: &mut Packer, rect: [f32; 4], along_x: boo
         // steel wherever the crater cut past the mat: vertical bars, then
         // horizontal, each a run of the spans that are exposed (plus a lip)
         let bar_plane = half - surface::COVER - 0.012;
-        let exposed = |u: f32, v: f32| face.loss_at(u, v) > surface::COVER - 0.008;
+        let exposed = |u: f32, v: f32| v < crown(u) && face.loss_at(u, v) > surface::COVER - 0.008;
         let mut u = surface::BAR_U0;
         while u < len - 0.05 {
             let mut run: Vec<Vec3> = Vec::new();
@@ -245,6 +256,21 @@ pub fn wall(scene: &mut Scene, packer: &mut Packer, rect: [f32; 4], along_x: boo
             }
             if run.len() > 1 {
                 concrete::rod(&mut cage, &[run[0], *run.last().unwrap()], 0.015);
+            }
+            // a broken crown leaves this bar standing proud of the break,
+            // bent outward the further it sticks up (the concrete study's
+            // torn-cage read)
+            let top = crown(u);
+            if top < HEIGHT - 0.2 && slot.n_sign > 0 {
+                let rise = (HEIGHT - 0.12 - top) * (0.55 + 0.4 * noise_u(u, base_seed));
+                let pts: Vec<Vec3> = (0..=8)
+                    .map(|k| {
+                        let y = top - 0.08 + rise * k as f32 / 8.0;
+                        let free = (y - top).max(0.0);
+                        origin + axis * (u + 0.1 * free * free) + Vec3::Y * y + n * (bar_plane + free * free * 0.5)
+                    })
+                    .collect();
+                concrete::rod(&mut cage, &pts, 0.015);
             }
             u += surface::BAR_PITCH_U;
         }
@@ -268,27 +294,55 @@ pub fn wall(scene: &mut Scene, packer: &mut Packer, rect: [f32; 4], along_x: boo
             }
             v += surface::BAR_PITCH_V;
         }
-        faces.push(face);
+
+        // rubble: the lost cover lies at the foot of the wall below each
+        // crater, flat faceted fragments of section thickness (the concrete
+        // study's shapes), more for a bigger crater
+        for (si, st) in strokes.iter().enumerate().filter(|(_, s)| s.effect == Effect::Spall) {
+            let count = (st.r * st.r * 34.0) as i32 + 2;
+            let rs = base_seed.wrapping_add(si as u32 * 7919).wrapping_add((slot.n_sign > 0) as u32);
+            for i in 0..count {
+                let hsh = |k: i32| concrete::hash(i, k, rs);
+                let u = (st.u + (hsh(1) - 0.5) * st.r * 2.2).clamp(0.05, len - 0.05);
+                let out = 0.14 + hsh(2) * (0.35 + st.v * 0.3);
+                let c = origin + axis * u + n * (half + out) + Vec3::Y * (crate::gym_scene::FLOOR_TOP - 0.003);
+                let r = 0.04 + 0.11 * hsh(3) * st.r.min(1.0);
+                let hgt = 0.03 + 0.06 * hsh(4);
+                let ang = hsh(5) * std::f32::consts::TAU;
+                let a = Vec3::new(ang.cos(), 0.0, ang.sin()) * r;
+                let b = Vec3::new(-ang.sin(), 0.0, ang.cos()) * r * 0.65;
+                let pts = [c - a - b, c + a - b * 0.7, c + a * 0.65 + b, c - a + b * 0.8];
+                let peak = c + Vec3::Y * hgt;
+                for k in 0..4 {
+                    rubble.tri(pts[k], pts[(k + 1) % 4], peak, [0.12; 3]);
+                }
+                rubble.tri(pts[0], pts[2], pts[1], [0.12; 3]);
+                rubble.tri(pts[0], pts[3], pts[2], [0.12; 3]);
+            }
+        }
     }
 
-    // top and ends: plain cast concrete joining the two displaced faces
-    let (f0, f1) = (&faces[0], &faces[1]);
+    // top and ends: plain cast concrete joining the two displaced faces,
+    // following the broken crown
+    let (f0, f1) = (&faces[0].0, &faces[1].0);
     let edge = |u: f32, v: f32, front: bool| {
         let (face, sign) = if front { (f0, 1.0) } else { (f1, -1.0) };
         let n = if n_axis == 0 { Vec3::X } else { Vec3::Z } * sign;
         origin + axis * u + Vec3::Y * v + n * (half - face.loss_at(u, v))
     };
-    let seg = (len / 0.1).ceil() as usize;
+    let seg = (len / 0.05).ceil() as usize;
     for i in 0..seg {
         let (u0, u1) = (len * i as f32 / seg as f32, len * (i + 1) as f32 / seg as f32);
-        let (a, b, c, d) = (edge(u0, HEIGHT, true), edge(u1, HEIGHT, true), edge(u0, HEIGHT, false), edge(u1, HEIGHT, false));
+        let (t0, t1) = (crown(u0), crown(u1));
+        let (a, b, c, d) = (edge(u0, t0, true), edge(u1, t1, true), edge(u0, t0, false), edge(u1, t1, false));
         caps.tri(a, c, b, [0.0; 3]);
         caps.tri(b, c, d, [0.0; 3]);
     }
     let rows = (HEIGHT / 0.1).ceil() as usize;
     for u in [0.0, len] {
+        let top = crown(u);
         for j in 0..rows {
-            let (v0, v1) = (HEIGHT * j as f32 / rows as f32, HEIGHT * (j + 1) as f32 / rows as f32);
+            let (v0, v1) = ((top * j as f32 / rows as f32), (top * (j + 1) as f32 / rows as f32));
             let (a, b, c, d) = (edge(u, v0, true), edge(u, v1, true), edge(u, v0, false), edge(u, v1, false));
             caps.tri(a, b, c, [0.0; 3]);
             caps.tri(b, d, c, [0.0; 3]);
@@ -298,7 +352,15 @@ pub fn wall(scene: &mut Scene, packer: &mut Packer, rect: [f32; 4], along_x: boo
     scene.materials[cap as usize]._pad = crate::flags::OCCLUDER;
     caps.emit(scene, cap);
     cage.emit(scene, steel);
+    let debris = concrete::material(scene, Exposure::Blast, 2, base_seed + 1);
+    scene.materials[debris as usize]._pad = crate::flags::CONCRETE;
+    rubble.emit(scene, debris);
     slots
+}
+
+/// A 0..1 value per bar position (how far a torn bar sticks up).
+fn noise_u(u: f32, seed: u32) -> f32 {
+    concrete::hash((u * 100.0) as i32, 11, seed)
 }
 
 #[cfg(test)]
