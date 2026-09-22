@@ -24,9 +24,9 @@ layout(local_size_x = 64) in;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
-struct Vertex { vec3 pos; vec3 nrm; };
+struct Vertex { vec3 pos; vec3 nrm; vec2 uv; };
 struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };
-struct Material { vec4 baseColor; vec4 emissive; float metallic; float roughness; int rsv; int pad; };
+struct Material { vec4 baseColor; vec4 emissive; float metallic; float roughness; int surface; int pad; };
 
 layout(set = 0, binding = 2, scalar) readonly buffer Verts { Vertex verts[]; };
 layout(set = 0, binding = 3, scalar) readonly buffer Indices { uint indices[]; };

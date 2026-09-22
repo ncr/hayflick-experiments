@@ -109,7 +109,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     }
     let grid = grid.ok_or("no size statement")?;
     let player_start = spawn.ok_or("no spawn statement")?;
-    Ok(GymLevel { grid, player_start, lights })
+    Ok(GymLevel { neighborhood: false, grid, player_start, lights })
 }
 
 /// Emit the canonical text form: header, size, spawn, lamps (identity order),

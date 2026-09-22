@@ -7,8 +7,12 @@
 //!
 //! There is no asset importer: the glTF loader (`load_model` / `preload` /
 //! `place`) and the whole base-colour TEXTURE path it fed — `LoadedImage`, the
-//! scene image list, `Material.tex_index`, `Vertex.uv` and the four sampling
-//! branches in the shader twins — were deleted 2026-07-28. It had had zero
+//! scene image list, `Material.tex_index` and the four sampling branches in
+//! the shader twins — were deleted 2026-07-28. (`Vertex.uv` went with them and
+//! came BACK 2026-09-22 with the after-the-rain merge: it is no texture
+//! coordinate now but a per-vertex AUTHORED channel — the concrete builder's
+//! cover loss + fissure, the terrain's surface params, the survivor's bind
+//! coordinates — read by the shared `*.inc` material sources.) It had had zero
 //! callers since the greybox directive (ARCHITECTURE.md, 2026-06-13: the game
 //! scene uses no textured GLBs), which meant `tex_index` was `-1` on every
 //! material ever built, `images` was always empty, and both backends pushed a
@@ -23,6 +27,9 @@ use glam::{Mat4, Vec3};
 pub struct Vertex {
     pub pos: [f32; 3],
     pub nrm: [f32; 3],
+    /// Generator-authored per-vertex channel (see the module doc); zero on
+    /// every greybox box. 32 B total, stride derived from `size_of`.
+    pub uv: [f32; 2],
 }
 
 #[repr(C)]
@@ -41,14 +48,14 @@ pub struct Material {
     pub emissive: [f32; 4], // rgb * strength
     pub metallic: f32,
     pub roughness: f32,
-    /// FREE — 4 bytes nobody reads (was the glTF base-colour texture index).
-    /// It stays in the struct because `Material` MUST be 48 B: MSL rounds any
-    /// struct containing a `float4` up to a multiple of 16, so dropping the
-    /// word would leave the host and the GLSL twin at 44 B and the Metal twin
-    /// at 48 — a stride mismatch on the backend this box cannot compile. The
-    /// `_pad` knob budget is documented as FULL (crates/rt-viewer/src/wear.rs);
-    /// this is where the next per-material dial goes.
-    pub _rsv: i32,
+    /// SURFACE ID (was the free `_rsv` word, before that the glTF texture
+    /// index). 0 = an ordinary material; -2..=-16 = the survivor's fifteen
+    /// garment/skin surfaces (`survivor.inc`'s `survivorAlbedo`, written by
+    /// `rt-viewer/src/survivor.rs`). The word must stay because `Material` MUST
+    /// be 48 B: MSL rounds any struct containing a `float4` up to a multiple of
+    /// 16, so dropping it would leave the host and the GLSL twin at 44 B and
+    /// the Metal twin at 48. Other values are free for the next surface family.
+    pub surface: i32,
     pub _pad: i32,
 }
 
@@ -257,12 +264,12 @@ impl Scene {
     /// [zmin,zmax]` at height `y` — the ground plane for procedural scenes.
     pub fn add_floor(&mut self, xmin: f32, xmax: f32, zmin: f32, zmax: f32, y: f32, color: [f32; 4]) {
         let material_id = self.materials.len() as i32;
-        self.materials.push(Material { base_color: color, emissive: [0.0; 4], metallic: 0.0, roughness: 0.92, _rsv: 0, _pad: 0 });
+        self.materials.push(Material { base_color: color, emissive: [0.0; 4], metallic: 0.0, roughness: 0.92, surface: 0, _pad: 0 });
         let vbase = self.vertices.len() as u32;
         let ibase = self.indices.len() as u32;
         let n = [0.0, 1.0, 0.0];
         for &(x, z) in &[(xmin, zmin), (xmax, zmin), (xmax, zmax), (xmin, zmax)] {
-            self.vertices.push(Vertex { pos: [x, y, z], nrm: n });
+            self.vertices.push(Vertex { pos: [x, y, z], nrm: n, uv: [0.0; 2] });
         }
         // two triangles (winding irrelevant — instances disable face culling and
         // the shader flips the normal toward the ray).
@@ -299,7 +306,7 @@ impl Scene {
     /// paint lanes, the smash and roof-tear TLAS hides) addresses the wrong
     /// thing.
     pub fn new_material(&mut self, color: [f32; 4], emissive: [f32; 4], roughness: f32, metallic: f32) -> i32 {
-        self.materials.push(Material { base_color: color, emissive, metallic, roughness, _rsv: 0, _pad: 0 });
+        self.materials.push(Material { base_color: color, emissive, metallic, roughness, surface: 0, _pad: 0 });
         self.materials.len() as i32 - 1
     }
 
@@ -319,7 +326,7 @@ impl Scene {
         let mut vi = 0u32;
         for (n, quad) in faces {
             for p in quad {
-                self.vertices.push(Vertex { pos: p, nrm: n });
+                self.vertices.push(Vertex { pos: p, nrm: n, uv: [0.0; 2] });
             }
             self.indices.extend_from_slice(&[vi, vi + 1, vi + 2, vi, vi + 2, vi + 3]);
             vi += 4;
@@ -341,8 +348,8 @@ impl Scene {
         // feeding different geometry to the two backends is worse than the
         // tiny, deterministic cleanup here.
         let mut kept = Vec::with_capacity(indices.len());
-        for tri in indices.chunks_exact(3) {
-            let [ia, ib, ic] = tri else { unreachable!() };
+        for tri in indices.as_chunks::<3>().0 {
+            let [ia, ib, ic] = tri;
             assert!((*ia as usize) < verts.len() && (*ib as usize) < verts.len() && (*ic as usize) < verts.len(), "world mesh index out of bounds");
             let a = Vec3::from(verts[*ia as usize].0);
             let b = Vec3::from(verts[*ib as usize].0);
@@ -358,7 +365,7 @@ impl Scene {
         let vbase = self.vertices.len() as u32;
         let ibase = self.indices.len() as u32;
         for (pos, nrm) in verts {
-            self.vertices.push(Vertex { pos: *pos, nrm: *nrm });
+            self.vertices.push(Vertex { pos: *pos, nrm: *nrm, uv: [0.0; 2] });
         }
         self.indices.extend_from_slice(&kept);
         self.primitives.push(Primitive {
@@ -385,8 +392,7 @@ impl Scene {
             if v_end > self.vertices.len() || i_end > self.indices.len() {
                 return Err(format!("primitive {pi}: vertex/index range is outside the scene buffers"));
             }
-            for (ti, tri) in self.indices[p.index_offset as usize..i_end].chunks_exact(3).enumerate() {
-                let [ia, ib, ic] = tri else { unreachable!() };
+            for (ti, [ia, ib, ic]) in self.indices[p.index_offset as usize..i_end].as_chunks::<3>().0.iter().enumerate() {
                 let local = [*ia as usize, *ib as usize, *ic as usize];
                 if local.iter().any(|&i| i >= p.vertex_count as usize) {
                     return Err(format!("primitive {pi} triangle {ti}: index is outside its vertex range"));

@@ -24,11 +24,16 @@ pub const WORLD_INPUT_SCALE: f32 = 1024.0;
 pub const PLAYER_RADIUS: f32 = 0.26;
 pub const SPEED_WALK: f32 = 3.0;
 pub const SPEED_RUN: f32 = 5.0;
+pub const SURVIVOR_WALK: f32 = 2.2;
+pub const SURVIVOR_RUN: f32 = 4.2;
+pub const SPEED_CROUCH: f32 = 1.1;
 const ACCEL_WU_PER_S2: f32 = 18.0;
 /// Deceleration when no input arrives. Public because click-to-move has to
 /// know it: [`super::route::Route::steer`] stops steering one stopping
 /// distance (`v² / 2a`) short of the goal so the body coasts onto it.
-pub const BRAKE_WU_PER_S2: f32 = 24.0;
+/// 34 since 2026-09-05 (owner: a released sprint stops within eight ticks
+/// and a quarter metre — was 24).
+pub const BRAKE_WU_PER_S2: f32 = 34.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MoveMode {
@@ -50,6 +55,7 @@ pub enum Command {
     /// mover is pinned on (stride from distance, collide-and-slide, arrival)
     /// silently did not apply to click-to-move.
     MoveWorld { dx: i16, dz: i16, mode: MoveMode },
+    Crouch(bool),
     Wait,
 }
 
@@ -58,6 +64,7 @@ pub enum Command {
 /// light model).
 #[derive(Clone)]
 pub struct GymLevel {
+    pub neighborhood: bool,
     pub grid: Grid,
     pub player_start: CellPos,
     /// Static lamps (cell, intensity 0..8-ish).
@@ -70,6 +77,10 @@ pub struct GymSnapshot {
     /// Continuous player centre in world XZ (cell centres are x/z + 0.5).
     pub position: Vec2,
     pub velocity: Vec2,
+    /// Direction into the blocking surface, from the attempted displacement.
+    pub contact: Vec2,
+    pub intent: Vec2,
+    pub crouching: bool,
 }
 
 pub struct GymGame {
@@ -77,13 +88,16 @@ pub struct GymGame {
     player: CellPos,
     position: Vec2,
     velocity: Vec2,
+    contact: Vec2,
+    intent: Vec2,
+    crouching: bool,
     tick: u64,
 }
 
 impl GymGame {
     pub fn new(spec: GymLevel) -> GymGame {
         let position = Vec2::new(spec.player_start.x as f32 + 0.5, spec.player_start.z as f32 + 0.5);
-        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, tick: 0, spec }
+        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, contact: Vec2::ZERO, intent: Vec2::ZERO, crouching: false, tick: 0, spec }
     }
 
     pub fn grid(&self) -> &Grid {
@@ -94,7 +108,9 @@ impl GymGame {
         &self.spec
     }
 
-    fn speed(mode: MoveMode) -> f32 {
+    fn speed(&self, mode: MoveMode) -> f32 {
+        if self.crouching { return SPEED_CROUCH; }
+        if self.spec.neighborhood {return match mode {MoveMode::Walk=>SURVIVOR_WALK,MoveMode::Run=>SURVIVOR_RUN};}
         match mode {
             MoveMode::Walk => SPEED_WALK,
             MoveMode::Run => SPEED_RUN,
@@ -118,7 +134,8 @@ impl GymGame {
     fn move_world(&mut self, dx: i16, dz: i16, mode: MoveMode) {
         let raw = Vec2::new(dx as f32, dz as f32) / WORLD_INPUT_SCALE;
         let dir = raw.normalize_or_zero();
-        let target = dir * Self::speed(mode);
+        self.intent = dir;
+        let target = dir * self.speed(mode);
         let change = target - self.velocity;
         let max_change = ACCEL_WU_PER_S2 * TICK_DT;
         self.velocity = if change.length_squared() <= max_change * max_change {
@@ -137,6 +154,7 @@ impl GymGame {
     }
 
     fn integrate_position(&mut self) {
+        let requested = self.velocity * TICK_DT;
         let grid = &self.spec.grid;
         let (x, z) = collide_and_slide(
             |x, z| grid.blocked_point(x, z, PLAYER_RADIUS),
@@ -145,6 +163,9 @@ impl GymGame {
             self.velocity.x * TICK_DT,
             self.velocity.y * TICK_DT,
         );
+        let actual = Vec2::new(x,z) - self.position;
+        let blocked = requested - actual;
+        self.contact = if blocked.length_squared()>1e-9 {blocked.normalize()} else {Vec2::ZERO};
         if (x - self.position.x).abs() < f32::EPSILON {
             self.velocity.x = 0.0;
         }
@@ -162,10 +183,12 @@ impl Simulation for GymGame {
 
     fn tick(&mut self, t: Tick, cmds: &[Command]) {
         self.tick = t.0;
+        self.intent = Vec2::ZERO;
         let mut world_input = None;
         for c in cmds {
             match *c {
                 Command::MoveWorld { dx, dz, mode } => world_input = Some((dx, dz, mode)),
+                Command::Crouch(active) => self.crouching = active,
                 Command::Wait => {}
             }
         }
@@ -177,7 +200,7 @@ impl Simulation for GymGame {
     }
 
     fn snapshot(&self) -> GymSnapshot {
-        GymSnapshot { player: self.player, position: self.position, velocity: self.velocity }
+        GymSnapshot { player: self.player, position: self.position, velocity: self.velocity, contact: self.contact, intent: self.intent, crouching: self.crouching }
     }
 
     fn state_hash(&self) -> u64 {
@@ -194,6 +217,9 @@ impl Simulation for GymGame {
         eat(self.position.y.to_bits() as u64);
         eat(self.velocity.x.to_bits() as u64);
         eat(self.velocity.y.to_bits() as u64);
+        eat(self.contact.x.to_bits() as u64); eat(self.contact.y.to_bits() as u64);
+        eat(self.intent.x.to_bits() as u64); eat(self.intent.y.to_bits() as u64);
+        eat(self.crouching as u64);
         eat(self.spec.grid.grid_hash());
         h
     }
@@ -223,6 +249,18 @@ pub const DOORWAY: CellPos = CellPos { x: 5, z: 7 };
 /// `checked_in_level_is_canonical` catches at `cargo test` time first.
 pub fn gym_level() -> GymLevel {
     super::level_file::parse(super::level_file::GYM_LEVEL_SRC).expect("checked-in gym.level must parse")
+}
+
+/// A derelict concrete test yard: clear walking lanes between five histories.
+/// The walls share the collision grid; cover erosion stays inside each slab.
+/// Code-generated like the catalogue (its walls are authored in `concrete.rs`).
+pub fn concrete_level() -> GymLevel {
+    let mut grid = Grid::new(18, 15);
+    for (x0,x1,z) in [(1,4,3),(3,10,6),(1,5,10),(9,14,11)] {
+        for x in x0..x1 { grid.set_edge(CellPos::new(x,z),Dir::Zm,EdgeKind::Wall); }
+    }
+    for z in 3..8 { grid.set_edge(CellPos::new(13,z),Dir::Xm,EdgeKind::Wall); }
+    GymLevel { neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +371,7 @@ pub fn catalogue_level() -> GymLevel {
     // (the probe bake and the look's amber accent both assume one), but an
     // amber pool ON a specimen would be a second variable in every read.
     let lights = vec![(CellPos::new(18, 2), 6)];
-    GymLevel { grid, player_start: CellPos::new(20, 20), lights }
+    GymLevel { neighborhood: false, grid, player_start: CellPos::new(20, 20), lights }
 }
 
 #[cfg(test)]
@@ -398,7 +436,7 @@ mod tests {
     /// speed, and holding it does, within the ramp the constant promises.
     #[test]
     fn speed_ramps_instead_of_arriving_whole() {
-        let mut g = GymGame::new(GymLevel { grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         g.tick(Tick(0), &[hold(1.0, 0.0, MoveMode::Walk)]);
         let first = g.snapshot().velocity.length();
         assert!(first > 0.0 && first < SPEED_WALK, "one tick must not reach walking speed: {first}");
@@ -415,7 +453,7 @@ mod tests {
     /// leans on when it stops steering a stopping distance short of the goal.
     #[test]
     fn releasing_input_brakes_to_rest() {
-        let mut g = GymGame::new(GymLevel { grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         for t in 0..30u64 {
             g.tick(Tick(t), &[hold(1.0, 0.0, MoveMode::Run)]);
         }
@@ -435,7 +473,7 @@ mod tests {
 
     #[test]
     fn continuous_input_moves_between_cells_without_snapping() {
-        let mut g = GymGame::new(GymLevel { grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
         let start = g.snapshot().position;
         for t in 0..30u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Walk }]);
@@ -447,10 +485,40 @@ mod tests {
     }
 
     #[test]
+    fn crouch_survives_idle_limits_running_and_releases_cleanly() {
+        let mut g = GymGame::new(GymLevel { neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
+        g.tick(Tick(0), &[Command::Crouch(true)]);
+        let crouch_hash = g.state_hash();
+        let mut standing=GymGame::new(g.spec().clone()); standing.tick(Tick(0),&[]);
+        assert_ne!(crouch_hash,standing.state_hash(),"stance must be part of replay state");
+        for t in 1..61 { g.tick(Tick(t), &[]); }
+        assert!(g.snapshot().crouching);
+        let drive=Command::MoveWorld {dx:1024,dz:0,mode:MoveMode::Run};
+        for t in 61..121 {g.tick(Tick(t), &[drive]);}
+        assert!((g.snapshot().velocity.length()-SPEED_CROUCH).abs()<0.001);
+        g.tick(Tick(121), &[Command::Crouch(false)]);
+        for t in 122..182 {g.tick(Tick(t), &[drive]);}
+        assert!((g.snapshot().velocity.length()-SURVIVOR_RUN).abs()<0.001);
+        assert!(!g.snapshot().crouching);
+        for t in 182..200 {g.tick(Tick(t), &[]);}
+        assert_eq!(g.snapshot().velocity,Vec2::ZERO);
+    }
+
+    #[test]
+    fn releasing_sprint_stops_within_eight_ticks_and_a_quarter_metre() {
+        let mut g=GymGame::new(GymLevel {neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
+        for t in 0..60 {g.tick(Tick(t),&[Command::MoveWorld {dx:1024,dz:0,mode:MoveMode::Run}]);}
+        let released=g.snapshot().position;
+        for t in 60..68 {g.tick(Tick(t),&[]);}
+        assert_eq!(g.snapshot().velocity,Vec2::ZERO);
+        assert!(g.snapshot().position.distance(released)<0.25);
+    }
+
+    #[test]
     fn continuous_input_collides_with_grid_edges_and_keeps_sliding() {
         let mut grid = Grid::new(8, 8);
         grid.set_edge(CellPos::new(1, 2), Dir::Xp, EdgeKind::Wall);
-        let mut g = GymGame::new(GymLevel { grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
         for t in 0..120u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Run }]);
         }
@@ -484,6 +552,7 @@ mod tests {
     fn the_doorway_is_the_only_way_in() {
         // The doorway column, approached from the south.
         let mut open = GymGame::new(GymLevel {
+            neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x, DOORWAY.z + 3),
             lights: Vec::new(),
@@ -495,6 +564,7 @@ mod tests {
 
         // One cell east of it is the building's south wall.
         let mut shut = GymGame::new(GymLevel {
+            neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x + 1, DOORWAY.z + 3),
             lights: Vec::new(),

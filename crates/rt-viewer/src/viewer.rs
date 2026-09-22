@@ -122,6 +122,7 @@ pub struct Viewer {
     /// Synth-blip output (None = headless/no device/AUDIO=0 — fail-soft).
     pub audio: Option<crate::audio::AudioOut>,
     pub menu: MenuState,
+    pub keys: crate::input::Keyboard,
     /// The personal IDE (Tab; `IDE=1` boots it open) — see ide_host.rs.
     pub ide: crate::ide_host::IdeState,
     pub harness: Harness,
@@ -323,6 +324,7 @@ impl Viewer {
             },
             // live windowed sessions boot into the TITLE menu (a regular game
             // start screen); every harness mode must render the game instead.
+            keys: crate::input::Keyboard::default(),
             menu: MenuState {
                 mode: if !headless { crate::menu::MenuMode::Title } else { crate::menu::MenuMode::Closed },
                 back: crate::menu::MenuMode::Closed,
@@ -389,6 +391,16 @@ impl Viewer {
             match crate::look::by_name(&name) {
                 Some(l) => r.apply_look(l),
                 None => eprintln!("LOOK_SWITCH={name}: unknown preset — ignored"),
+            }
+        }
+        // Exercise the actual level-menu transition, including same-layout wear
+        // changes. Direct LEVEL boots never visit this path. A semicolon list
+        // permits a full round trip in one process on either backend.
+        if let Ok(names) = std::env::var("LEVEL_SWITCH") {
+            for name in names.split(';') {
+                let demo = crate::demos::by_name(name.trim())
+                    .unwrap_or_else(|| panic!("LEVEL_SWITCH: unknown level {name:?}"));
+                r.boot_demo(demo);
             }
         }
         // CRACK_EDIT harness knob: replay a knob drag + release, so the headless
@@ -489,9 +501,17 @@ impl Viewer {
     /// (`apply_look` also re-joins lights + refreshes the roof/room meta). The
     /// follow-cam is re-aimed at the new spawn for a clean first frame.
     pub fn boot_demo(&mut self, demo: &'static crate::demos::Demo) {
+        // A menu switch owns the layout AND the wear source. Equal wall counts
+        // do not make crack lab and courtyard the same authored level, so a
+        // CHANGED demo starts from a fresh CrackLab (codex, 2026-09-05).
+        if self.cur_demo.is_none_or(|old| !std::ptr::eq(old, demo)) {
+            self.crack = crate::crack::CrackLab::default();
+        }
         // Reload the AUTHORED spec for the demo's level — before 2026-08-09
         // this reused the current level's grid, so a menu switch onto the
         // catalogue rebuilt the GYM with a (20, 20) spawn off its 18×14 map.
+        // Code-generated levels (catalogue, concrete aftermath, after the
+        // rain) come back from `Level::spec` through the same `load`.
         // Unsaved level edits on the outgoing level are dropped with a word;
         // save runs on every edit, so this only fires when a save was blocked.
         if self.level.dirty {
@@ -592,11 +612,10 @@ impl Viewer {
         let dt = self.last_frame.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(0.0);
         self.last_frame = Some(now);
         self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
+        self.advance_rotation(dt); // movement and rendering use the SAME visible yaw
         self.advance_sim(dt); // DEMO tick / pause / live fixed-tick
         self.drive_demo(); // named-demo timeline: tick-scheduled beats + look morph
         self.follow_player_camera(); // follow the continuous/eased player body
-        // smooth quarter-turn in flight: ease the yaw
-        self.advance_rotation(dt);
         // clip recording: collect last frame's capture + decide if this frame
         // captures (returns the down-blit target size when it should)
         let capture_req = self.prepare_capture();
@@ -614,6 +633,8 @@ impl Viewer {
         let fs = FrameState {
             cam,
             room_lights: dim,
+            vegetation: self.gym.spec.neighborhood,
+            actor_position: self.gym.cam_target().to_array(),
             time: self.gym.time(), // SIM time — replayable, no wall clock
             light_emission: &emission,
             instances: &instances,
@@ -640,6 +661,14 @@ impl Viewer {
         // headless verification of the whole overlay.
         let mut stamps = self.gym.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
         stamps.extend(self.ide_stamps());
+        // Fog is a primary-ray effect, independent of the irradiance bake.
+        // Menu adjustments must reach this frame without rebuilding geometry
+        // or losing a demo's current sun/sky morph.
+        let mut environment = self.env_override.unwrap_or_else(|| {
+            rt_probe::EnvBlock::pack(self.cfg.lighting_env(self.scene.lighting), &self.scene.sun_sky)
+        });
+        if let Some(density) = self.cfg.render.fog { environment.env0[2] = density; }
+        if let Some(height) = self.cfg.render.fog_h { environment.env0[3] = height; }
         let fp = FramePresent {
             fs: &fs,
             pan: self.view.pan,
@@ -670,7 +699,7 @@ impl Viewer {
             // permanent sunny day (the joyful default); SKY env still scales
             // the authored env via lighting_env
             sky_dim: 1.0,
-            env: self.env_override, // demo look-morph per-frame sun/sky (else None)
+            env: Some(environment),
             roi: self.roi_info(),
             // FLOORCUT: env-only framing knob now (the gym is single-storey)
             cut_y: self.cfg.game.cut,
@@ -777,7 +806,7 @@ impl Viewer {
     /// the fixed-tick accumulator. SHOT feeds dt=0 so the wall clock never
     /// reaches the sim.
     fn advance_sim(&mut self, dt: f32) {
-        self.gym.yaw_q = self.view.yaw_q;
+        self.gym.yaw_deg = self.yaw_deg();
         if self.harness.demo.is_some() {
             self.gym.demo_advance_tick();
             return;

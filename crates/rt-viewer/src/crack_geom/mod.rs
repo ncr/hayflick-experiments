@@ -425,7 +425,7 @@ mod tests {
         assert!(hidden.iter().any(|v| Vec3::from(v.pos) != c), "hidden box must retain valid extent");
         let max_offset = hidden.iter().map(|v| (Vec3::from(v.pos) - c).abs().max_element()).fold(0.0, f32::max);
         assert!(max_offset <= emit::HIDDEN_GEOMETRY_HALF * 2.0 + 1e-6, "hidden box offset {max_offset} around {c:?}");
-        for tri in scene.indices[pr.index_offset as usize..(pr.index_offset + pr.index_count) as usize].chunks_exact(3) {
+        for tri in scene.indices[pr.index_offset as usize..(pr.index_offset + pr.index_count) as usize].as_chunks::<3>().0 {
             let a = Vec3::from(scene.vertices[(pr.vertex_offset + tri[0]) as usize].pos);
             let b = Vec3::from(scene.vertices[(pr.vertex_offset + tri[1]) as usize].pos);
             let d = Vec3::from(scene.vertices[(pr.vertex_offset + tri[2]) as usize].pos);

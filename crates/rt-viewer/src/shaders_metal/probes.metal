@@ -18,9 +18,9 @@
 using namespace metal;
 using namespace metal::raytracing;
 
-struct Vertex   { packed_float3 pos; packed_float3 nrm; };
+struct Vertex   { packed_float3 pos; packed_float3 nrm; float2 uv; };
 struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };
-struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int rsv; int pad; };
+struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int surface; int pad; };
 struct Light    { float4 posRad; float4 color; float4 dir; };
 
 struct ProbePush {

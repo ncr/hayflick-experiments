@@ -39,11 +39,14 @@ pub const MENU: &[MenuItem] = &[
     // returns. Index into look::LOOKS; `max` must stay LOOKS.len() - 1
     // (pinned by the test below). Switching rebuilds the scene + probe banks
     // (blocking, disk-cached per look) via Viewer::apply_look.
-    MenuItem { key: "look", label: "look", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },
+    MenuItem { key: "look", label: "look", kind: ItemKind::Slider { min: 0.0, max: 2.0, step: 1.0 } },
     // projection-as-data (Faza 1a): the preset index in iso_core::presets();
     // `max` must stay presets().len() - 1 (pinned by the test below)
     MenuItem { key: "proj", label: "projection", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 1.0 } },
     MenuItem { key: "exposure", label: "exposure", kind: ItemKind::Slider { min: 0.01, max: 4.0, step: 0.01 } },
+    MenuItem { key: "fog", label: "air density", kind: ItemKind::Slider { min: 0.0, max: 0.08, step: 0.002 } },
+    MenuItem { key: "fog_h", label: "haze height", kind: ItemKind::Slider { min: 0.2, max: 5.0, step: 0.1 } },
+    MenuItem { key: "grain", label: "film grain", kind: ItemKind::Slider { min: 0.0, max: 0.15, step: 0.005 } },
     MenuItem { key: "lights", label: "lamps", kind: ItemKind::Toggle },
     MenuItem { key: "ao", label: "ao strength", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
     MenuItem { key: "ao_r", label: "ao radius", kind: ItemKind::Slider { min: 0.1, max: 3.0, step: 0.05 } },
@@ -52,17 +55,8 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "sdither_n", label: "sd levels", kind: ItemKind::Slider { min: 2.0, max: 48.0, step: 1.0 } },
     MenuItem { key: "sdither_th", label: "sd threshold", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.01 } },
     MenuItem { key: "dither", label: "sd pattern", kind: ItemKind::Slider { min: 1.0, max: 5.0, step: 1.0 } },
-    // CONTOUR AA (owner 2026-07-25): the weight the four fixed sub-pixel
-    // coverage rays carry on CONTOUR texels. Live — a push-constant change, so
-    // it responds at frame rate with no rebuild and no probe rebake.
-    MenuItem { key: "aa", label: "contour aa", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
-    // 0 = every surface, 1 = cracked walls, 2 = the PICKED wall only (owner
-    // 2026-07-25: "apply it selectively, only on the chosen wall's geometry")
-    MenuItem { key: "aa_scope", label: "aa scope", kind: ItemKind::Slider { min: 0.0, max: 2.0, step: 1.0 } },
-    // takes the contrast off narrow cracks without extra rays (contour-gated)
-    MenuItem { key: "aa_soft", label: "aa soften", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
-    // whole-block detail (smash rubble) in or out of the AA — a visual call
-    MenuItem { key: "aa_chunky", label: "aa rubble", kind: ItemKind::Toggle },
+    // Owner 2026-09-05: antialiasing and contour softening are disabled — the
+    // four AA rows (contour aa / aa scope / aa soften / aa rubble) are gone.
     // ---- THE LEVEL'S WEAR, three rows (2026-07-26). The IDE inspector says
     // what ONE wall is; these say what the whole level is, which is the question
     // the owner actually asks while walking around it. All three are geometry, so
@@ -117,7 +111,7 @@ pub(crate) const LBLURB_COLS: usize = 28; // 8 px/char against GPANEL_W
 const LBLURB_H: i32 = 4 + 9 * LBLURB_LINES as i32; // 8px lines on a 9px pitch + air
 // The centered panels share the settings staging buffer (MPANEL_W × MPANEL_H);
 // keep the LEVELS list short enough to fit (compile guard, generous bound).
-const _: () = assert!(lpanel_h(6) <= MPANEL_H);
+const _: () = assert!(lpanel_h(crate::demos::DEMOS.len()) <= MPANEL_H);
 
 // Every centered game panel shares the settings panel's staging buffer
 // (Vulkan menu_buf is MPANEL_W × MPANEL_H): the tallest must fit, or the
@@ -350,6 +344,8 @@ fn fmt_val(key: &str, v: f32, step: f32) -> String {
     }
     if step >= 1.0 {
         format!("{v:.0}")
+    } else if step < 0.01 {
+        format!("{v:.3}")
     } else {
         format!("{v:.2}")
     }
@@ -402,6 +398,9 @@ impl Viewer {
             "wear_solo" => self.crack.solo as f32,
             "wear_grain" => self.crack.grain,
             "exposure" => self.exposure,
+            "fog" => self.cfg.render.fog.unwrap_or(self.look.lighting[2]),
+            "fog_h" => self.cfg.render.fog_h.unwrap_or(self.look.lighting[3]),
+            "grain" => self.style.grain,
             "lights" => (self.lights_dim > 0.0) as i32 as f32,
             "light_anim" => self.light_anim as i32 as f32,
             _ => 0.0,
@@ -470,6 +469,9 @@ impl Viewer {
             }
             // a tonemap push constant — live at frame rate, no rebuild
             "exposure" => self.exposure = v,
+            "fog" => self.cfg.render.fog = Some(v.clamp(0.0, 0.08)),
+            "fog_h" => self.cfg.render.fog_h = Some(v.clamp(0.2, 5.0)),
+            "grain" => self.style.grain = v.clamp(0.0, 0.15),
             // the lamp master is a presentation dim (direct via the emission
             // build, indirect via the probe-bank lerp — same frame, no rebake)
             "lights" => self.lights_dim = if v != 0.0 { 1.0 } else { 0.0 },
@@ -485,6 +487,7 @@ impl Viewer {
             .map(|i| {
                 let v = self.tune_get(i.key);
                 let s = match i.kind {
+                    ItemKind::Slider { step, .. } if step < 0.01 => format!("{v:.3}"),
                     ItemKind::Slider { step, .. } if step < 1.0 => format!("{v:.2}"),
                     _ => format!("{v:.0}"),
                 };
@@ -510,6 +513,7 @@ impl Viewer {
     }
 
     fn menu_set(&mut self, mode: MenuMode) {
+        self.clear_live_input();
         self.menu.mode = mode;
         self.menu.sel = 0;
         self.menu.drag = false;
@@ -890,6 +894,12 @@ impl Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fine_atmosphere_steps_remain_visible_in_the_menu() {
+        assert_eq!(fmt_val("fog", 0.026, 0.002), "0.026");
+        assert_eq!(fmt_val("grain", 0.055, 0.005), "0.055");
+    }
 
     /// The projection slider's range is authored as a literal (MENU is const);
     /// it must track iso_core::presets() or the menu can't reach a preset.

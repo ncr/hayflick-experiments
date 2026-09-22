@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Execute the shaders' scalar fog integral as C++, against numerical quadrature.
+
+No GPU needed. Test the actual shared source, not a separately maintained host
+implementation. Also understands the previous inline fogOD for red/green proof.
+"""
+from pathlib import Path
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parent.parent
+shared = root / 'crates/rt-probe/src/shaders/atmosphere_math.inc'
+if shared.exists():
+    source = shared.read_text()
+    call = 'airColumn(y, dy, distance, density, height)'
+else:
+    shader = (root / 'crates/rt-probe/src/shaders/shade.comp').read_text()
+    source = shader[shader.index('float fogOD('):shader.index('// `edge`')]
+    call = 'fogOD(vec3{0,y,0}, vec3{0,dy,0}, distance)'
+
+harness = r'''
+#include <cmath>
+#include <algorithm>
+#include <cstdio>
+using std::abs; using std::exp;
+float min(float a,float b) {return a<b?a:b;}
+float max(float a,float b) {return a>b?a:b;}
+#define CFN
+struct vec3 { float x,y,z; };
+struct { struct { float x,y,z,w; } env0; } pc;
+SOURCE
+int main() {
+  int failures = 0;
+  for(float y : {-4.f, 0.f, 0.01f, 2.f, 40.f})
+  for(float dy : {-1.f, -.5f, -.00001f, 0.f, .00001f, .5f, 1.f})
+  for(float distance : {0.f, .001f, 3.f, 90.f})
+  for(float height : {0.f, .5f, 2.6f}) {
+    float density = .03f;
+    pc.env0.z = density; pc.env0.w = height;
+    float got = CALL;
+    double want = 0;
+    const int n = 20000;
+    for(int i=0;i<n;i++) {
+      double h = std::max(0.0, double(y) + double(dy)*distance*(i+.5)/n);
+      want += density * std::exp(-h / std::max(double(height),.05)) * distance/n;
+    }
+    if(!std::isfinite(got) || got < 0 || std::abs(got-want) > .00003 + want*.0002) {
+      if(failures++ < 8) printf("y=%g dy=%g L=%g H=%g: got %g expected %g\n", y,dy,distance,height,got,want);
+    }
+  }
+  printf("fog integral: %d failures across 420 ray/height cases\n", failures);
+  return failures ? 1 : 0;
+}
+'''.replace('SOURCE', source).replace('CALL', call)
+with tempfile.TemporaryDirectory(prefix='hayflick-atmosphere-') as tmp:
+    cpp, exe = Path(tmp)/'check.cpp', Path(tmp)/'check'
+    cpp.write_text(harness)
+    subprocess.run(['c++', '-std=c++17', '-O2', str(cpp), '-o', str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)

@@ -1557,3 +1557,232 @@ Preventive checklist
 - Multiply ROI coverage by an asymmetric world-space `smoothstep` band: keep
   the player-clearance side solid, then fade across the wall crossing.
 - Preserve the first-hit safety gate so the fade cannot reintroduce near-wall ghosts.
+
+## 2026-09-04 - Procedural paint existed in data but barely read as a material
+
+Root cause
+
+The stain shader multiplied the solved region by a second, unrelated cloud
+threshold and retained a `0.20` floor outside the region. This both hid much of
+the requested stain and leaked paint beyond the authored band. Fine glaze lines
+were narrower than a surface texel and gated by a random nearest-cell choice,
+so a connected field rendered as scattered dots. Dry deposits also retained the
+intact ceramic roughness.
+
+Detection signal
+
+The catalogue's stain-only specimens looked almost pristine while the web-only
+specimen looked stippled. A failing shader regression exposed the mask leak.
+Matched Metal captures made the visibility problem clear despite green host
+coverage tests.
+
+Preventive checklist
+
+- Solved area must multiply the final paint term with no additive escape path.
+- Texture may modulate density inside that area; do not threshold it away again.
+- Filter fine painted lines using the projected surface footprint, conserving
+  their coverage rather than merely making lines darker or wider.
+- Use the geometric normal for surface coordinates and the footprint; bump
+  normals must not switch the face mapping.
+- Give deposited material its own roughness response; keep fresh aggregate off
+  intact glaze and grass. Compare executable material expressions across twins.
+- Inspect the isolated catalogue AND an authored playable scene, including an
+  idle/movement capture on Metal. Integer `ZOOM` rounds at boot; fractions below
+  one do not zoom out. Use capture extent and target to frame an overview.
+
+## 2026-09-04 - Starting a worn level from the menu crashes on stale material IDs
+
+Root cause
+
+`CrackLab` intentionally preserves authored wall specs across scene rebuilds,
+but also retained the generated core and spall material IDs. `resolve` called
+`stamp_all` on the fresh bare scene before replacing those IDs, indexing past
+its material array. The menu's `boot_demo` also retained the previous layout
+and reused wear whenever the new demo had the same wall topology.
+
+Detection signal
+
+The owner's windowed session panicked at `crack.rs` in `stamp_all`: material
+126 in an array of length 126. A GPU-free rebuild regression reproduced the
+exact panic. Direct `LEVEL=` captures and walk replays never rebuilt the scene.
+
+Preventive checklist
+
+- Clear scene-owned core/spall addresses before stamping a fresh scene; preserve
+  authored specs independently and stamp selection again after geometry exists.
+- A level-menu transition must replace its layout and reset authoring when the
+  demo identity changes, even when wall counts agree.
+- Verify rebuilds as well as cold boots. `LEVEL_SWITCH` accepts a semicolon list
+  and exercises the actual `boot_demo` path for Metal/Vulkan headless checks.
+- Include same-level restart, layout changes and same-layout wear changes in
+  the transition sequence. A successful walk recording does not cover menus.
+
+## 2026-09-05 - Concrete rubble floats when placed at a guessed ground height
+
+Root cause
+
+The new rubble generator initially used its own positive ground offset while
+the shared gym floor has a specific `FLOOR_TOP`. Hard directional shadows made
+the resulting gap visible. Rubble now uses the shared floor height with a small
+intersection allowance.
+
+Detection signal
+
+Metal close-ups showed disconnected contact shadows under otherwise grounded
+fragments. Mesh finiteness and deterministic-generation tests still passed.
+
+Preventive checklist
+
+- Reuse `gym_scene::FLOOR_TOP` for grounded procedural debris.
+- Check contact shadows in a close-up as well as the full-level view.
+- On Retina, distinguish logical window size from physical capture dimensions
+  when choosing `PIXEL` and comparing material detail or timing.
+
+## 2026-09-05 - A new rig inherits old ground and click-movement assumptions
+
+Root cause
+
+The gym presentation assumed every boot stood at `FLOOR_TOP`, and mouse routes
+still emitted cell-step commands. Lower soil and asphalt exposed floating feet;
+the articulated rig exposed the cell jumps behind the old visual easing.
+
+Detection signal
+
+Red regressions reproduced the wrong standing height on neighborhood soil and
+a one-cell snapshot jump during click movement. Both pass after terrain-aware
+support and continuous `MoveWorld` route following.
+
+Preventive checklist
+
+- Ground support must follow the visible substrate, including missing paving.
+- Treat narrow expansion joints as gaps bridged by a boot, not full-body drops.
+- Check keyboard and click movement with the same rig; legacy cell easing does
+  not establish continuous movement or meaningful stance contacts.
+
+## 2026-09-05 - Articulated meshes were shaded in their bind-pose normal space
+
+Root cause
+
+The closest-hit shaders interpolated local vertex normals and measured local
+triangle edges directly. TLAS instance transforms moved geometry but never
+rotated its lighting or scaled its contour distances. The new knee/elbow rig
+uses rotated, nonuniformly scaled links, making this omission material.
+
+Detection signal
+
+Close-up rig review led to the missing transform in both `trace` functions. A
+red shader contract test found no world/object transform access in either twin.
+
+Preventive checklist
+
+- Transform normals by the inverse-transpose and edge vectors by object-to-world.
+- Metal intersection results require `world_space_data` with `instancing` to
+  expose the transforms; verify the runtime shader compilation on the Mac.
+- Preserve the shared push layout; this information already belongs to the AS.
+- When simplifying straight steel chains, clip window openings geometrically:
+  centroid deletion cannot correctly cut a long bar crossing an opening.
+
+## 2026-09-05 - Articulated limbs kept a world-forward roll when the body turned
+
+Root cause
+
+The link transform rotated global -Y onto the endpoint vector without composing
+the character heading. Circular placeholder limbs hid the missing roll; authored
+jacket panels, denim seams and asymmetric anatomy revealed it.
+
+Detection signal
+
+A red regression rotated the character 1.3 radians while keeping a link vertical.
+The link's local front remained global Z instead of following the body's front.
+
+Preventive checklist
+
+- Solve the swing in character-local space, then compose the character heading.
+- Check authored asymmetric anatomy through turns, not just sphere placeholders.
+- Validate the actual exported mesh under walk, run, stop and turn transforms.
+- Preserve Blender's split normals and compensate them for normalized link scale.
+
+## 2026-09-05 - Height fog diverges below ground and loses precision near horizontal rays
+
+Root cause
+
+The analytic integral used an unclamped exponential at both ray endpoints,
+although the scattering sample clamped height to zero. Rays below ground grew
+exponentially dense; a zero fog height produced NaNs. Subtracting nearly equal
+exponentials also lost precision on short segments.
+
+Detection signal
+
+`python3 bin/check-atmosphere` executes the shader's actual scalar source as
+C++ and compares it to numerical quadrature. The previous shader failed 148
+of 420 ray/height cases. The shared, clamped, cancellation-safe integral passes.
+
+Preventive checklist
+
+- Integrate the same bounded density law that scattering samples use.
+- Handle zero height, horizontal rays, ground crossings and zero-length rays.
+- Clip marching to the useful height band; the orthographic eye is arbitrary.
+- Check Metal and GLSL transport parity and inspect moving footage on Metal.
+- Match settings precision to the step: a 0.002 density step needs three decimals.
+
+## 2026-09-05 - Shift and camera turns leave WASD latched or pointing sideways
+
+Root cause
+
+Held movement matched logical text ("w"), which can become "W" with Shift or
+Caps Lock on release. Aliases shared one boolean, Q/E accepted repeat, and input
+used the settled camera quarter while rendering a continuously changing angle.
+
+Detection signal
+
+Red regressions found no physical-key routing before modal handling and measured
+sideways screen motion during intermediate camera angles. Separate physical-key
+tests cover releases, simultaneous aliases/modifiers and cleared-state repeats.
+
+Preventive checklist
+
+- Track physical keys independently; derive actions from their held set.
+- Process releases before menus/IDE; clear holds and routes on modal/focus changes.
+- Require a fresh press after a clear; repeat cannot resurrect a held action.
+- Ignore repeat on Q/E and use the same visible yaw for input, picks and rendering.
+- Test stop distance at the actual increased run speed, not just at walking speed.
+
+## 2026-09-05 - An aligned IK pole collapses the joint, and replay skips its pose clock
+
+Root cause
+
+Projecting a pole parallel to the limb produced a zero bend direction. The joint
+then lay on the limb axis and shortened both bones. Independently, CMDS advanced
+simulation snapshots without the survivor pose update, so crouch replay rendered
+a standing body even though the simulation state was crouched.
+
+Detection signal
+
+Red tests reproduced incorrect bone lengths for an aligned pole and different
+head transforms after equal live/replay crouch ticks. Both now pass, alongside
+full-mesh bounds and separate left/right support checks.
+
+Preventive checklist
+
+- Choose a stable perpendicular fallback for degenerate pole projections.
+- Clamp hand reach and use the authored thigh/shin lengths before solving IK.
+- Every fixed-tick advance path must advance presentation from the fresh snapshot.
+- Validate transitions on uneven supports and inspect the exported mesh in Metal.
+
+## 2026-09-05 - Wide suit appliques disappear into a curved torso
+
+Root cause
+
+Only the vertical edges of a cloth patch followed the torso's surface. Across
+its width the patch was one flat chord, passing through the blue cloth between
+its endpoints. Yellow chest trim rendered as disconnected dots.
+
+Detection signal
+
+The first Metal front capture showed broken yellow trim despite valid geometry.
+Tessellating in both axes restored continuous trim in the same camera view.
+
+Preventive checklist
+
+- Curved-surface appliques need subdivision in both dimensions and a small offset.
+- Check high-contrast garment markings in front/back views at game resolution.

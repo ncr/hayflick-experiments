@@ -343,7 +343,7 @@ impl MetalScene {
 
 impl MetalBackend {
     pub unsafe fn new(window: Option<&Window>, scene: &Scene, cfg: &Config) -> Result<MetalBackend, Box<dyn std::error::Error>> {
-        assert_eq!(size_of::<Vertex>(), 24, "Vertex must be 24 B (packed_float3 layout)");
+        assert_eq!(size_of::<Vertex>(), 32, "Vertex must be 32 B (packed_float3 pos + nrm, float2 uv)");
         assert_eq!(size_of::<Material>(), 48, "Material must be 48 B");
 
         let device = Device::system_default().ok_or("no Metal device")?;
@@ -356,8 +356,18 @@ impl MetalBackend {
         // ---- compile the three kernels at runtime (the driver compiler).
         let opts = CompileOptions::new();
         opts.set_language_version(MTLLanguageVersion::V3_0);
-        let shade_src = include_str!("shaders_metal/shade.metal");
-        let shade_lib = device.new_library_with_source(shade_src, &opts).map_err(|e| format!("shade.metal: {e}"))?;
+        // The shared material/terrain/character/air sources live ONCE, beside
+        // the GLSL twin (rt-probe/src/shaders/*.inc — glslangValidator reads
+        // them through `#include`); MSL has no include path at runtime
+        // compile, so they are spliced in at their marker comments here.
+        let shade_src = include_str!("shaders_metal/shade.metal")
+            .replace("// CONCRETE_INCLUDE", include_str!("../../rt-probe/src/shaders/concrete.inc"))
+            .replace("// TERRAIN_INCLUDE", include_str!("../../rt-probe/src/shaders/terrain.inc"))
+            .replace("// SURVIVOR_INCLUDE", include_str!("../../rt-probe/src/shaders/survivor.inc"))
+            .replace("// ATMOSPHERE_MATH_INCLUDE", include_str!("../../rt-probe/src/shaders/atmosphere_math.inc"))
+            .replace("// ATMOSPHERE_INCLUDE", include_str!("../../rt-probe/src/shaders/atmosphere.inc"))
+            .replace("#include \"../../../../assets/procedural/neighborhood.layout\"", include_str!("../../../assets/procedural/neighborhood.layout"));
+        let shade_lib = device.new_library_with_source(&shade_src, &opts).map_err(|e| format!("shade.metal: {e}"))?;
         let shade_pso = device.new_compute_pipeline_state_with_function(&shade_lib.get_function("shade", None).unwrap()).map_err(|e| format!("shade pso: {e}"))?;
         let probe_lib = device.new_library_with_source(include_str!("shaders_metal/probes.metal"), &opts).map_err(|e| format!("probes.metal: {e}"))?;
         let probe_pso = device.new_compute_pipeline_state_with_function(&probe_lib.get_function("bake_probes", None).unwrap()).map_err(|e| format!("probe pso: {e}"))?;
@@ -927,7 +937,7 @@ impl RenderBackend for MetalBackend {
         };
         // fp.env = the demo morph's per-frame sun/sky (else the baked scene env)
         let env = fp.env.unwrap_or(self.sc.env).dimmed(fp.sky_dim);
-        let push = Push {
+        let mut push = Push {
             cam_right: [cam.right.x, cam.right.y, cam.right.z, cam.half_w],
             cam_up: [cam.up.x, cam.up.y, cam.up.z, cam.half_h],
             cam_dir: [cam.dir.x, cam.dir.y, cam.dir.z, fp.ao_r],
@@ -948,8 +958,9 @@ impl RenderBackend for MetalBackend {
             env1: env.env1,
             env2: env.env2,
             env3: env.env3,
-            env4: env.env4,
+            env4: [env.env4[0],env.env4[1],env.env4[2],if fp.fs.vegetation {fp.fs.time+1.0}else{0.0}],
         };
+        if fp.fs.vegetation {push.roi[..3].copy_from_slice(&fp.fs.actor_position);}
         let rs = self.rs(fp.zoom);
         let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, &fp.proj, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
 

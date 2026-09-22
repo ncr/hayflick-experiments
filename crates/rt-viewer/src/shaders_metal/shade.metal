@@ -2,8 +2,8 @@
 //
 // Deterministic per-frame ray-traced shade: one primary ray per pixel centre,
 // exact shadow rays to the sun + every NEE light, short-range RT-AO, and an
-// (optional) world-space irradiance-probe GI lookup. No randomness → a fixed
-// camera gives a bit-identical image. This is the Apple-Silicon twin of the
+// world-space irradiance-probe GI lookup. Air and vegetation follow fixed-tick
+// simulation time; sample placement never re-rolls. The Apple-Silicon twin of the
 // Vulkan ray_query shader; structs are byte-for-byte ports (packed_float3 to
 // match GL_EXT_scalar_block_layout vec3 = 12 B).
 //
@@ -18,10 +18,22 @@
 #include <metal_raytracing>
 using namespace metal;
 using namespace metal::raytracing;
+#define vec3 float3
+#define vec2 float2
+#define CFN static
+// CONCRETE_INCLUDE
+// TERRAIN_INCLUDE
+// SURVIVOR_INCLUDE
+// ATMOSPHERE_MATH_INCLUDE
+// ATMOSPHERE_INCLUDE
+#undef CFN
+#undef vec2
+#undef vec3
 
-struct Vertex   { packed_float3 pos; packed_float3 nrm; };                            // 24 B
+
+struct Vertex   { packed_float3 pos; packed_float3 nrm; float2 uv; };                 // 32 B
 struct GeomInfo { uint indexOffset; uint vertexOffset; int materialId; uint pad; };   // 16 B
-struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int rsv; int pad; };      // 48 B
+struct Material { float4 baseColor; float4 emissive; float metallic; float roughness; int surface; int pad; };      // 48 B
 struct Light    { float4 posRad; float4 color; float4 dir; };                         // 48 B
 
 // Mirrors the Rust Push struct (see main.rs). cam*.w carries half-extents / AO.
@@ -63,7 +75,7 @@ static float bayer4(int2 lp){
 }
 
 // `edge` = world distance to the nearest GATING triangle edge (contour AA).
-struct Hit { float t; float3 n; int mat; float edge; };
+struct Hit { float t; float3 n; float2 uv; int mat; float edge; };
 
 static float3 skyCol(float3 d, constant Push& pc) {
     float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
@@ -75,11 +87,7 @@ static float3 skyCol(float3 d, constant Push& pc) {
     return c * 0.18 * pc.env0.y;
 }
 
-static float fogOD(float3 o, float3 d, float t, constant Push& pc) {
-    float D = pc.env0.z, H = pc.env0.w;
-    if (abs(d.y) < 1e-4) return D * exp(-o.y / H) * t;
-    return D * (H / d.y) * (exp(-o.y / H) - exp(-(o.y + d.y * t) / H));
-}
+
 
 // closest-hit trace with the offset-table geometry fetch (shade.comp:65-84)
 static bool trace(float3 o, float3 dir, float tmax, uint mask,
@@ -87,10 +95,10 @@ static bool trace(float3 o, float3 dir, float tmax, uint mask,
                   device const Vertex* verts, device const uint* indices,
                   device const GeomInfo* geoms, thread Hit& h) {
     ray r; r.origin = o; r.direction = dir; r.min_distance = 0.001; r.max_distance = tmax;
-    intersector<instancing, triangle_data> isect;
+    intersector<instancing, triangle_data, world_space_data> isect;
     isect.assume_geometry_type(geometry_type::triangle);
     isect.force_opacity(forced_opacity::opaque);
-    intersection_result<instancing, triangle_data> it = isect.intersect(r, accel, mask);
+    intersection_result<instancing, triangle_data, world_space_data> it = isect.intersect(r, accel, mask);
     if (it.type == intersection_type::none) return false;
     h.t = it.distance;
     int gi = int(it.instance_id);            // == instanceCustomIndex == prim row
@@ -102,14 +110,17 @@ static bool trace(float3 o, float3 dir, float tmax, uint mask,
     uint i1 = indices[g.indexOffset + prim * 3u + 1u] + g.vertexOffset;
     uint i2 = indices[g.indexOffset + prim * 3u + 2u] + g.vertexOffset;
     Vertex v0 = verts[i0], v1 = verts[i1], v2 = verts[i2];
-    h.n  = normalize(b0 * float3(v0.nrm) + b1 * float3(v1.nrm) + b2 * float3(v2.nrm));
+    float3x3 normalMatrix=transpose(float3x3(it.world_to_object_transform[0],it.world_to_object_transform[1],it.world_to_object_transform[2]));
+    float3x3 objectMatrix=float3x3(it.object_to_world_transform[0],it.object_to_world_transform[1],it.object_to_world_transform[2]);
+    h.n  = normalize(normalMatrix*(b0 * float3(v0.nrm) + b1 * float3(v1.nrm) + b2 * float3(v2.nrm)));
+    h.uv = b0 * v0.uv + b1 * v1.uv + b2 * v2.uv;
     h.mat = g.materialId;
     // CONTOUR AA: distance to the nearest triangle edge in world units, the
     // triangle's LONGEST edge excluded (that is the quad diagonal every box
     // face is split by — gating it would band flat faces). See shade.comp.
-    float3 E0 = float3(v2.pos) - float3(v1.pos);
-    float3 E1 = float3(v0.pos) - float3(v2.pos);
-    float3 E2 = float3(v1.pos) - float3(v0.pos);
+    float3 E0 = objectMatrix*(float3(v2.pos) - float3(v1.pos));
+    float3 E1 = objectMatrix*(float3(v0.pos) - float3(v2.pos));
+    float3 E2 = objectMatrix*(float3(v1.pos) - float3(v0.pos));
     float L0 = length(E0), L1 = length(E1), L2 = length(E2);
     float A2 = length(cross(E2, -E1));
     float Lm = max(L0, max(L1, L2));
@@ -121,7 +132,7 @@ static bool trace(float3 o, float3 dir, float tmax, uint mask,
 
 static bool occluded(float3 o, float3 dir, float tmax, instance_acceleration_structure accel) {
     ray r; r.origin = o; r.direction = dir; r.min_distance = 0.001; r.max_distance = tmax;
-    intersector<instancing, triangle_data> isect;
+    intersector<instancing, triangle_data, world_space_data> isect;
     isect.assume_geometry_type(geometry_type::triangle);
     isect.force_opacity(forced_opacity::opaque);
     isect.accept_any_intersection(true);  // gl_RayFlagsTerminateOnFirstHitEXT
@@ -155,11 +166,11 @@ static bool roiPlayerBehindWall(float3 hitPos, float3 wallNormal, float3 viewDir
 // AO visibility: 1 on miss, t/R on a first hit within range R.
 static float aoVis(float3 o, float3 dir, float R, instance_acceleration_structure accel) {
     ray r; r.origin = o; r.direction = dir; r.min_distance = 0.001; r.max_distance = R;
-    intersector<instancing, triangle_data> isect;
+    intersector<instancing, triangle_data, world_space_data> isect;
     isect.assume_geometry_type(geometry_type::triangle);
     isect.force_opacity(forced_opacity::opaque);
     isect.accept_any_intersection(true);
-    intersection_result<instancing, triangle_data> it = isect.intersect(r, accel, 0xFFu);
+    intersection_result<instancing, triangle_data, world_space_data> it = isect.intersect(r, accel, 0xFFu);
     if (it.type == intersection_type::none) return 1.0;
     return clamp(it.distance / R, 0.0, 1.0);
 }
@@ -498,23 +509,39 @@ kernel void shade(
         o = o + d * (h.t + (1.0 / 256.0));
         hitb = trace(o, d, 300.0, 0x01u, accel, verts, indices, geoms, h);
     }
+    GrassHit grass;grass.t=hitb?h.t:300.0;grass.normal=float3(0,1,0);grass.color=float3(0.0);
+    bool grassHit=false;
+    if(pc.env4.w>0.0 && hitb && (o+d*h.t).y<0.7) {
+        grass=terrainGrass(o,d,h.t,pc.env4.w-1.0,pc.roi.xyz);
+        grassHit=grass.t<h.t;
+        if(grassHit){h.t=grass.t;h.n=grass.normal;h.uv=float2(0.0);}
+    }
     float tcam = hitb ? (h.t + dot(o - o0, d)) : 0.0; // camera→final-hit distance
 
     float fogT = 1.0;
     float3 fogAdd = float3(0.0);
     if (pc.env0.z > 0.0) {
-        float tseg = hitb ? tcam : min(300.0, o0.y / max(-d.y, 1e-4));
-        fogT = exp(-fogOD(o0, d, tseg, pc));
-        float3 fogCol = float3(0.55, 0.58, 0.66) * 0.18 * pc.env0.y;
-        fogAdd = fogCol * (1.0 - fogT);
-        if (pc.env0.x > 0.0) {
-            float L = min(tseg, 8.0 * pc.env0.w / max(-d.y, 0.05));
-            float ts = tseg - 0.5 * L;
-            float3 ps = o0 + d * ts;
-            float ss = pc.env0.z * exp(-max(ps.y, 0.0) / pc.env0.w);
-            if (ss > 1e-5 && !occluded(ps, sunDir, 200.0, accel))
-                fogAdd += sun * ss * exp(-fogOD(o0, d, ts, pc)) * L * 0.08;
-        }
+      float tseg = hitb ? tcam : min(300.0, max(o0.y, 0.0) / max(-d.y, 0.0001));
+      float2 span = airInterval(o0, d, tseg, pc.env0.w);
+      float ds = span.y / 8.0;
+      float offset = airStratum(o0, d);
+      float airTime = max(pc.env4.w - 1.0, 0.0);
+      float3 ambientAir = mix(pc.env3.rgb, pc.env4.rgb, 0.35) * (0.18 * pc.env0.y);
+      float3 sunAir = sun * airPhase(dot(d, sunDir));
+      // Front-to-back single scattering. Each segment conserves energy:
+      // surface transmission + scattered weight = 1, even in dense fog.
+      for (int ai = 0; ai < 8; ++ai) {
+        float ta = span.x + float(ai) * ds;
+        float3 ps = o0 + d * (ta + offset * ds);
+        float od = airColumn(o0.y + d.y * ta, d.y, ds, pc.env0.z, pc.env0.w)
+                 * airDensity(ps, airTime);
+        float stepT = exp(-od);
+        float3 incident = ambientAir;
+        if (od > 0.00001 && pc.env0.x > 0.0 && !occluded(ps, sunDir, 200.0, accel))
+          incident += sunAir;
+        fogAdd += fogT * (1.0 - stepT) * incident * float3(0.96, 0.93, 0.87);
+        fogT *= stepT;
+      }
     }
 
     float3 col;
@@ -528,6 +555,7 @@ kernel void shade(
     }
 
     Material m = mats[h.mat];
+    if(grassHit){m.pad=16;m.baseColor=float4(0.1,0.15,0.03,56.0);m.surface=0;}
     float3 albedo = m.baseColor.rgb;
     float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
     // the FLAT face normal, kept before wear/bump rewrite it (contour AA gate)
@@ -536,7 +564,33 @@ kernel void shade(
     // normal bump; (2) broad worn zones + fine scuff + sparse scratches in the albedo;
     // (3) contact grime in occluded crevices (below, once AO is known). BUMP=0 → unchanged.
     float3 wpos = o + h.t * d;
-    bool greybox = pc.look.y > 0.0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0;
+    // SURFACE MATERIALS: world-anchored and filtered at the projected texel
+    // footprint. No frame seed, extra rays, or change to primary visibility.
+    float surfacePx = (2.0 * pc.camRight.w / float(pc.misc.x)) / max(abs(dot(aaGn, d)), 0.18);
+    if (m.surface <= -2 && m.surface >= -16) albedo = survivorAlbedo(albedo, h.uv, -m.surface-2, surfacePx);
+    float deposit = 0.0;
+    bool concreteMaterial = (uint(m.pad) & 16u) != 0u;
+    bool freshConcrete = !concreteMaterial && (uint(m.pad) & 68u) == 68u; // MATTE + CRAZE: exposed body
+    if (freshConcrete) {
+        // Broken cement has grains, not the ceramic skin's glaze or tea stains.
+        // Keep the mean pale; sparse darker aggregate gives broad craters scale.
+        float stone = vnoise(wpos * 14.0 + 5.0);
+        float binder = fbm(wpos * 3.2 + 19.0);
+        float grainVis = 1.0 - smoothstep(0.035, 0.12, surfacePx);
+        float aggregate = smoothstep(0.52, 0.76, stone) * grainVis;
+        albedo *= (0.90 + 0.10 * binder) * (1.0 - 0.30 * aggregate);
+    }
+    bool meadow = !concreteMaterial && (uint(m.pad) & 5u) == 4u && aaGn.y > 0.9 && wpos.y < 0.02;
+    if (meadow) {
+        // Soil-scale clumps and low-contrast blades replace the cell checker.
+        // The tufts keep their box silhouettes; the ground stays dead matte.
+        float meadowPatch = fbm(float3(wpos.xz * 0.65, 8.0));
+        float blades = vnoise(wpos * float3(18.0, 1.0, 9.0) + 71.0);
+        float bladeVis = 1.0 - smoothstep(0.035, 0.10, surfacePx);
+        albedo *= mix(float3(0.72, 0.82, 0.64), float3(1.10, 1.06, 0.88), smoothstep(0.22, 0.78, meadowPatch));
+        albedo *= 1.0 + (blades - 0.5) * 0.16 * bladeVis;
+    }
+    bool greybox = !concreteMaterial && pc.look.y > 0.0 && dot(m.emissive.rgb, float3(1.0)) <= 0.0;
     float wstr = pc.look.y;
     float floorw = 0.55 + 0.45 * clamp(n.y, 0.0, 1.0);
     if (greybox) {
@@ -584,7 +638,7 @@ kernel void shade(
     // says about a wall is geometry, and the shade pass has no business with it.
     {
         uint kb = uint(m.pad);
-        if ((kb >> 8) != 0u && dot(m.emissive.rgb, float3(1.0)) <= 0.0) {
+        if (!concreteMaterial && (kb >> 8) != 0u && dot(m.emissive.rgb, float3(1.0)) <= 0.0) {
             // The two painted layers' STRENGTHS, one lane each (host:
             // `crack::pad_bits`). Both used to read ONE lane — the `age` knob —
             // so their AREAS were independent (step 5's solved thresholds) while
@@ -598,7 +652,7 @@ kernel void shade(
             // neutral albedo; MATTE kills the sheen). Contact grime below stays
             // LIVE on it — a perfectly clean crater reads as spilled white paint.
             float skin = (kb & 4u) != 0u ? 0.0 : 1.0;
-            float3 an = abs(n);
+            float3 an = abs(aaGn);
             bool wallF = an.y <= 0.5;
             float2 cuv = an.x > 0.5 ? wpos.zy : (an.y > 0.5 ? wpos.xz : wpos.xy);
             // MACRO DAMAGE FIELD — where THIS run is failing. The two painted layers'
@@ -644,14 +698,32 @@ kernel void shade(
             // CONSTRUCTION and independent of every geometry dial.
             float2 siteF; float cellF;
             float edF = crackEdge(cuv * 6.0 + 31.0, story + 9.0, siteF, cellF);
-            float web = (1.0 - smoothstep(0.0, 0.07, edF)) * step(cellF, aWeb * 0.9) * fineG * skin;
-            albedo *= 1.0 - web * 0.35 * smoothstep(0.10, 0.6, aWeb);
-            // TEA STAINS in the damage patches. `skin` gates the whole term: the
-            // runoff stained the surface that spalled AWAY, so a streak stops at a
-            // crater lip instead of running down through the hole.
-            float stain = fbm(wpos * 0.9 + 31.0);
-            float sAmt = skin * aStain * clamp(0.55 * smoothstep(0.45, 0.85, stain) * (0.20 + 0.80 * stainW), 0.0, 1.0);
-            albedo = mix(albedo, albedo * float3(0.78, 0.70, 0.58), sAmt);
+            // Integrate the thin line over one surface texel. Widening its
+            // support while conserving coverage removes the dark-dot lottery.
+            float webHalf = max(0.025, surfacePx * 6.0 * 0.65);
+            float webCoverage = max(0.0, min(edF + webHalf, 0.05) - max(edF - webHalf, -0.05)) / (2.0 * webHalf);
+            float web = webCoverage * aWeb * fineG * skin;
+            albedo *= 1.0 - web * 0.48;
+            // RUNOFF: long vertical tracks with slow lateral wander, nested
+            // inside the exact authored damage region. The old 20% floor
+            // leaked stains beyond the band; a second threshold hid most of
+            // the remaining paint. Here texture changes density, never area.
+            float flowU = cuv.x * 3.7;
+            float flowCell = floor(flowU);
+            float flowSeed = hash13(float3(flowCell, story + 13.0, 7.0));
+            float flowLength = 0.35 + 2.5 * hash13(float3(flowCell, story + 13.0, 19.0));
+            float travel = max(0.0, 2.1875 - cuv.y);
+            float tail = 1.0 - smoothstep(flowLength * 0.65, flowLength, travel);
+            float wander = 0.07 * (vnoise(float3(cuv * float2(2.0, 3.0), story + 43.0)) - 0.5);
+            float flowX = abs(fract(flowU) - (0.25 + 0.5 * flowSeed) + wander);
+            float flowWidth = (0.06 + 0.24 * flowSeed * flowSeed) * (0.35 + 0.65 * tail);
+            float flowAA = min(0.22, surfacePx * 3.7 * 0.5);
+            float rivulet = (1.0 - smoothstep(max(0.0, flowWidth - flowAA), flowWidth + flowAA, flowX)) * tail;
+            rivulet *= smoothstep(0.18, 0.62, hash13(float3(flowCell, story + 13.0, 31.0)));
+            float wash = vnoise(float3(cuv * float2(1.8, 0.8), story + 61.0));
+            float sAmt = skin * aStain * stainW * (0.12 + 0.28 * wash + 0.60 * rivulet);
+            albedo = mix(albedo, albedo * float3(0.52, 0.43, 0.30), sAmt);
+            deposit = max(deposit, sAmt);
             // MUD SPLASH (`_pad` lanes 2/3 — the knob budget's LAST two; host:
             // `crack::pad_bits`). Environmental splash-back: its OWN band off
             // the floor (lane 3 = the top edge, wall::WallSpec::mud_top), a
@@ -666,8 +738,21 @@ kernel void shade(
             float mudN = fbm(float3(cuv * 2.0, story * 3.0 + 17.0));
             float mudT = float(mc) * (1.0 / 63.0);
             float mud = smoothstep(mudT - 0.05, mudT + 0.05, mudN) * mudBand * skin;
-            albedo = mix(albedo, albedo * float3(0.52, 0.42, 0.33), mud * 0.85);
+            // Dry soil has a broken density inside the solved splash area.
+            float soil = vnoise(float3(cuv * float2(16.0, 11.0), story + 29.0));
+            float soilVis = 1.0 - smoothstep(0.035, 0.10, surfacePx);
+            float mudDensity = mud * (0.72 + 0.28 * mix(0.5, soil, soilVis));
+            albedo = mix(albedo, albedo * float3(0.43, 0.32, 0.21), mudDensity * 0.85);
+            deposit = max(deposit, mudDensity);
         }
+    }
+    ConcreteSurface concreteSample;
+    if (concreteMaterial) {
+        if(grassHit){concreteSample.albedo=grass.color;concreteSample.normal=grass.normal;concreteSample.roughness=0.97;concreteSample.metallic=0.0;}
+        else if(m.baseColor.a>=32.0 && m.baseColor.a<56.0) concreteSample=terrainSurface(wpos,aaGn,h.uv,m.baseColor.a,surfacePx);
+        else concreteSample = concreteSurface(wpos, aaGn, h.uv, m.baseColor.a, m.emissive.a, surfacePx);
+        albedo = concreteSample.albedo;
+        n = concreteSample.normal;
     }
     float3 p = o + h.t * d + n * 0.003;
     // AO computed ONCE (reused for contact grime + the indirect term below).
@@ -728,10 +813,12 @@ kernel void shade(
     float3 vdir = -d;
     bool matte = (m.pad & 4) != 0;
     float reff = matte ? 1.0 : clamp(mix(m.roughness, 0.12, pc.look.w), 0.10, 1.0);
+    reff = mix(reff, max(reff, 0.82), deposit);
+    if (concreteMaterial) reff = concreteSample.roughness; // dry deposits interrupt the glaze
     // crack-lab CHIP — twin of shade.comp: spalled patches lose the glaze —
     float specX = pc.look.x;
     if (pc.look2.y >= 2.0) reff = clamp(floor(reff * 3.0 + 0.5) / 3.0, 0.10, 1.0); // MATQ: roughness in coarse steps too
-    float3 F0 = mix(float3(0.04), albedo, m.metallic);
+    float3 F0 = mix(float3(0.04), albedo, concreteMaterial ? concreteSample.metallic : m.metallic);
 
     float ndl = max(dot(n, sunDir), 0.0);
     if (pc.env0.x > 0.0 && ndl > 0.0 && !occluded(p, sunDir, 200.0, accel)) {

@@ -238,6 +238,13 @@ pub struct FrameState<'a> {
     pub room_lights: f32,
     /// SIM time (ticks · TICK_DT) — replayable; no wall clock below the shell.
     pub time: f32,
+    /// Animated vegetation + drifting air (the neighborhood): both backends
+    /// then push `time + 1` into `env4.w` (0 = static) — the shade twins' grass
+    /// and aerosol clock.
+    pub vegetation: bool,
+    /// The player's world position, pushed in `roi.xyz` when `vegetation` is
+    /// on so the grass bends away from him.
+    pub actor_position: [f32; 3],
     /// Game-authored per-light rgb — THE light animation (flicker curves live
     /// in house-game now). Applied to the NEE record and the linked material,
     /// so the visible fixture matches the light it casts; slots not addressed
@@ -310,7 +317,7 @@ pub fn scan_lights(scene: &Scene) -> Result<LightScan, String> {
         let r = (mx - mn).length() * 0.5;
         let mut nsum = Vec3::ZERO;
         let mut area2 = 0.0f32;
-        for t in idx.chunks_exact(3) {
+        for t in idx.as_chunks::<3>().0 {
             let a = Vec3::from(vs[t[0] as usize].pos);
             let b = Vec3::from(vs[t[1] as usize].pos);
             let c2 = Vec3::from(vs[t[2] as usize].pos);
@@ -1265,9 +1272,9 @@ mod tests {
         // two real lights (slot 0 material-linked)
         let light_link = vec![(0i32, [8.0f32, 5.0, 2.0], false), (-1, [3.0, 4.0, 5.0], false)];
         let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2];
-        let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, _rsv: 0, _pad: 0 }];
+        let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, surface: 0, _pad: 0 }];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, light_emission: &emis, instances: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, vegetation: false, actor_position: [0.0; 3], light_emission: &emis, instances: &[] };
         frame_lights_cpu(&mut lights, &mut mats, &light_link, &fs);
         // an unaddressed slot keeps its previous values (light 0 holds base);
         // the linked material is untouched too — emission is game-authored,

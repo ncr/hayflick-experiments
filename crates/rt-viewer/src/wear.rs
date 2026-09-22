@@ -36,10 +36,12 @@
 //!   top so the default authoring packs to zero). The twins subtract the mask
 //!   from `dmgN` (`wall::banded`), which is what makes ONE authored region
 //!   steer the painted gates and the host geometry together. The word is
-//!   FULL, and so are `_pad`'s lanes 2/3 (mud took them in round D). The next
-//!   per-material dial goes to `Material._rsv` — a whole free 32-bit word since
-//!   the glTF deletion retired `tex_index` — and only after THAT to the
-//!   per-material aux buffer this codec's budget notes keep promising.
+//!   FULL, and so are `_pad`'s lanes 2/3 (mud took them in round D). The free
+//!   32-bit word the glTF deletion left (`_rsv`) is `Material.surface` since
+//!   the after-the-rain merge (the survivor's surface ids use -2..=-16; other
+//!   values remain free), so the next per-material dial either shares that
+//!   word or pays for the per-material aux buffer this codec's budget notes
+//!   keep promising.
 //!
 //! The unpack both shader twins must copy verbatim — one spelling, both
 //! dialects: MSL takes `.a` exactly as GLSL does (rgba swizzles are legal on an
@@ -336,6 +338,56 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
+    #[test]
+    fn atmosphere_transport_matches_between_backends() {
+        let bodies: Vec<String> = twin_sources().iter().map(|(_, source)| {
+            let start = source.find("if (pc.env0.z > 0.0)").unwrap();
+            let tail = &source[start..];
+            let end = tail.find("\n\n").unwrap();
+            code_lines(&tail[..end]).join("\n")
+                .replace("float3", "vec3").replace("float2", "vec2")
+                .replace(", accel", "").split_whitespace().collect::<String>()
+        }).collect();
+        assert_eq!(bodies[0], bodies[1], "Metal and GLSL must integrate the same air");
+    }
+
+    #[test]
+    fn painted_stains_cannot_escape_the_authored_region() {
+        for (name, src) in twin_sources() {
+            let code = code_lines(src).join("\n");
+            assert!(!code.contains("0.20 + 0.80 * stainW"),
+                "{name}: a stain still has 20% coverage outside its mask");
+            assert!(code.contains("skin * aStain * stainW *"),
+                "{name}: every stain must be gated by the solved region");
+        }
+    }
+
+    #[test]
+    fn procedural_surface_math_matches_between_backends() {
+        let twins = twin_sources();
+        // Compare executable expressions, not merely the presence of a few
+        // names: changing a frequency, mask or filter in just one twin fails.
+        let normalized = |src: &str, start: &str, end: &str| {
+            let block = src.split_once(start).expect(start).1.split_once(end).expect(end).0;
+            block.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<String>()
+                .replace("float3", "vec3").replace("float2", "vec2")
+                .split_whitespace().collect::<String>()
+        };
+        for (start, end) in [
+            ("// SURFACE MATERIALS:", "bool greybox ="),
+            ("float webHalf =", "// MUD SPLASH"),
+            ("float soil =", "deposit = max(deposit, mudDensity);"),
+        ] {
+            assert_eq!(normalized(twins[0].1, start, end), normalized(twins[1].1, start, end), "surface twins diverged at {start}");
+        }
+        let body_flags = crate::flags::MATTE | crate::flags::CRAZE;
+        for (name, src) in twins {
+            assert!(src.contains(&format!("& {body_flags}u) == {body_flags}u")), "{name}: exposed-body classification drifted");
+            assert!(src.contains("reff = mix(reff, max(reff, 0.82), deposit)"), "{name}: dry paint must affect roughness too");
+            assert!(!src.contains("step(cellF, aWeb"), "{name}: cell lottery breaks fine-line continuity");
+        }
+    }
+
     /// THE layout pin: the bit positions the shader twins unpack, the exact-zero
     /// empty word, and 6-bit round-trip grain.
     #[test]
@@ -571,7 +623,10 @@ mod tests {
     /// only writer of a non-negative `tex_index`, so the sampling branches were
     /// dead — and `probes.comp` still sampled while `probes.metal` did not, the
     /// project's one real twin divergence, invisible for as long as it took to
-    /// look. `h.uv` covers the interpolation the sampler fed on.
+    /// look. (`h.uv` used to be forbidden too, as the interpolation the
+    /// sampler fed on; it came back 2026-09-22 with the after-the-rain merge as
+    /// a generator-AUTHORED per-vertex channel — concrete cover loss, terrain
+    /// params, the survivor's bind coordinates — so it is live in both twins.)
     ///
     /// `hasProbes` (2026-07-28) is the divergence itself, in its last form: an
     /// M1 bring-up gate that only ever existed in the MSL twin, and whose host
@@ -592,7 +647,6 @@ mod tests {
         "mHalo",             // the fault's stain track
         "0.82, 0.40), 0.22", // the SEL albedo lift — selection is a tonemap outline now
         "texIndex",          // the dead base-colour texture index (glTF path, deleted)
-        "h.uv",              // …and the barycentric UV that only ever fed it
         "hasProbes",         // the M1 probe gate — MSL-only, host-hardwired to 1
         "dir.w == 2.0",      // the spotlight cone — no writer since the flashlight died
     ];
@@ -1073,6 +1127,8 @@ pub mod twin {
         ("uint2", "u2"),
         ("uvec3", "u3"),
         ("uint3", "u3"),
+        ("mat3", "m3"),
+        ("float3x3", "m3"),
     ];
     const NAMES: &[(&str, &str)] =
         &[("skyCol", "sky"), ("hashp", "hash"), ("shade", "main"), ("tonemap", "main"), ("bake_probes", "main"), ("constant", "const"), ("lerp_", "lp")];
@@ -1104,6 +1160,25 @@ pub mod twin {
         (&["it", ".", "primitive_id"], "HIT_PRIM"),
         (&["rayQueryGetIntersectionBarycentricsEXT", "(", "rq", ",", "true", ")"], "HIT_BARY"),
         (&["it", ".", "triangle_barycentric_coord"], "HIT_BARY"),
+        // the hit instance's linear transforms (2026-09-05: articulated
+        // dynamic runs shade with their own rotation). TYPES has already
+        // mapped `mat3`/`float3x3` to `m3` when these run.
+        (&["m3", "(", "rayQueryGetIntersectionWorldToObjectEXT", "(", "rq", ",", "true", ")", ")"], "HIT_W2O"),
+        (
+            &[
+                "m3", "(", "it", ".", "world_to_object_transform", "[", "0", "]", ",", "it", ".", "world_to_object_transform", "[", "1", "]", ",", "it", ".",
+                "world_to_object_transform", "[", "2", "]", ")",
+            ],
+            "HIT_W2O",
+        ),
+        (&["m3", "(", "rayQueryGetIntersectionObjectToWorldEXT", "(", "rq", ",", "true", ")", ")"], "HIT_O2W"),
+        (
+            &[
+                "m3", "(", "it", ".", "object_to_world_transform", "[", "0", "]", ",", "it", ".", "object_to_world_transform", "[", "1", "]", ",", "it", ".",
+                "object_to_world_transform", "[", "2", "]", ")",
+            ],
+            "HIT_O2W",
+        ),
     ];
 
     /// Per-pair resource names: an argument or parameter whose last token is one
@@ -1701,7 +1776,12 @@ pub mod twin {
     }
 
     fn keyed(src: &str) -> BTreeMap<Key, Vec<String>> {
-        items(&tokenize(&strip_comments(src)))
+        // Preprocessor lines are the preamble (module doc). They must go as
+        // whole LINES: since the shared `*.inc` sources (2026-09-22) both twins
+        // carry `#define`/`#include`/`#undef` blocks, and a `#`-line left in the
+        // token stream glues itself onto the next item and hides it.
+        let code: String = strip_comments(src).lines().filter(|l| !l.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n");
+        items(&tokenize(&code))
             .into_iter()
             .map(|(k, v)| ((k.0, lookup(NAMES, &k.1).unwrap_or(k.1.as_str()).to_string()), v))
             .collect()
@@ -1776,11 +1856,11 @@ pub mod twin {
         assert!(misfires.is_empty(), "{misfires:?}");
         assert!(a.len() > 1500, "the shade kernel normalizes to {} tokens — the normalizer is eating the program", a.len());
         let joined = show(&a);
-        for frag in ["story * 7 + 3", "0.78 , 0.7 , 0.58", "0.16 * rise", "0.52 , 0.42 , 0.33", "smoothstep ( 0 , 0.07 , edF )"] {
+        for frag in ["story * 7 + 3", "0.52 , 0.43 , 0.3", "0.16 * rise", "0.43 , 0.32 , 0.21", "min ( edF + webHalf , 0.05 )"] {
             assert!(joined.contains(frag), "{frag:?} did not survive normalization — the guard would be blind to it");
         }
         // …and a single mutated literal in ONE twin must part the streams
-        let mutated = msl_src.replace("float3(0.78, 0.70, 0.58)", "float3(0.70, 0.70, 0.58)");
+        let mutated = msl_src.replace("float3(0.52, 0.43, 0.30)", "float3(0.50, 0.43, 0.30)");
         assert_ne!(mutated, msl_src, "the mutation probe no longer matches shade.metal — update it");
         let b = normalize(&keyed(&mutated)[&key], true, "shade", "main", &mut misfires);
         assert_ne!(a, b, "a changed stain tint in one twin normalized away — the guard is blind");

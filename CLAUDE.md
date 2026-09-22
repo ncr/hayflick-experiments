@@ -389,6 +389,22 @@ STORY="0.9,0.5,0.4" WINDOW=1280x800 ZOOM=1.6 TARGET_X=7.3 TARGET_Z=3.8` —
 the three panels of the east facade must share ONE damage pattern that continues
 across the window jambs; per-panel islands mean the story key never arrived.
 
+**THE AFTER-THE-RAIN MERGE (2026-09-22) — the inversion again.** Codex's
+2026-09-05 round (concrete aftermath, the neighborhood, the Vault 42 survivor,
+dusty air; docs/*_2026-09-05.md) ran on Metal ONLY; the merge ran it on the
+RTX, where all of it renders (Vulkan is now the verified side for the codex
+work). Merge facts the next agent needs: `Vertex.uv` is BACK (24 → 32 B, both
+twins' `Vertex` structs including the probes pair) as a generator-authored
+channel, not a texture coordinate; the free `_rsv` word is `Material.surface`
+(survivor garments -2..=-16; `texIndex` stays FORBIDDEN); the shared material
+sources are `rt-probe/src/shaders/*.inc`, `#include`d by glslangValidator and
+string-spliced by `metal_backend.rs`; the twin diff strips `#`-lines and maps
+the hit instance transforms (`HIT_W2O`/`HIT_O2W`). BLIND ON METAL: the merged
+`shade.metal` (main's `hasProbes` deletion + `misc2` repack together with
+codex's blocks), the restored 32-B `Vertex` in `probes.metal`, and the splice
+without `NTEX_COUNT`. First Mac session: boot `LEVEL="after the rain"` and
+`LEVEL="crack lab"` and compare against the Vulkan SHOTs.
+
 **BLIND METAL (2026-07-28, the spike-retirement audit):** `hasProbes` is
 DELETED — an M1 bring-up gate that lived ONLY in shade.metal and whose host
 (`metal_backend.rs`) had written the literal `1` ever since the probe bake
@@ -793,9 +809,9 @@ Verified here: gym / crack lab / catalogue BYTE-IDENTICAL at defaults;
 `BAND=0,0.45` A/B shows the intended confinement and nothing else.
 
 MUD SPLASH since 2026-07-27 (round D — the first NEW effect through the whole
-contract, and the `_pad` KNOB BUDGET IS NOW FULL — but see `Material._rsv`
-below: since the glTF deletion freed `tex_index`, the next per-material dial
-gets a whole 32-bit word before anyone pays for an aux buffer).
+contract, and the `_pad` KNOB BUDGET IS NOW FULL — the 32-bit word the glTF
+deletion freed (`_rsv`) became `Material.surface` in the after-the-rain merge,
+where the survivor's garment ids use -2..=-16; other values stay free).
 `Layer::Mud` is the SIXTH layer, class Paint,
 PURE-PIN (`derive` never writes it — splash-back is environmental, so the pin
 gesture IS the authoring; the master/solo level rows compose with it for

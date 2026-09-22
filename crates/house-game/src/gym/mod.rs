@@ -21,3 +21,5 @@ pub mod level_file;
 pub mod route;
 pub mod sim;
 pub mod trace;
+
+pub mod neighborhood;

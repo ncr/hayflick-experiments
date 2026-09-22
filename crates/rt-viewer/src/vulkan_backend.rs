@@ -566,6 +566,7 @@ impl RenderBackend for VulkanBackend {
             push.roi = rp.roi;
             push.roi2 = rp.roi2;
         }
+        if fp.fs.vegetation {push.env4[3]=fp.fs.time+1.0;push.roi[..3].copy_from_slice(&fp.fs.actor_position);}
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.shade_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.gpu.pipeline_layout, 0, &[swap.scene_set], &[]);
         d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
