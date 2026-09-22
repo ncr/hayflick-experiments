@@ -45,11 +45,14 @@ mod demos;
 mod flags;
 mod gym_loop;
 mod gym_scene;
+mod creative_host;
 mod ide_host;
+mod play_script;
 mod level_host;
 mod input;
 mod look;
 mod menu;
+mod painted;
 mod phys_scene;
 mod view;
 mod viewer;
@@ -136,9 +139,13 @@ impl ApplicationHandler for App {
                 let movement = if let PhysicalKey::Code(key) = event.physical_key {
                     let active = !r.menu_open() && !r.ide.ui.open;
                     let handled = r.keys.update(key, event.state.is_pressed(), event.repeat, active);
-                    r.gym.held = r.keys.movement();
-                    r.gym.run_held = r.keys.run();
-                    r.gym.crouch_held = r.keys.crouch();
+                    // building: the same held keys pan the camera
+                    // (Viewer::creative_pan) instead of walking the player
+                    if !r.creative.open {
+                        r.gym.held = r.keys.movement();
+                        r.gym.run_held = r.keys.run();
+                        r.gym.crouch_held = r.keys.crouch();
+                    }
                     handled
                 } else { false };
                 // an open menu captures the arrows + enter; WASD also
@@ -186,6 +193,35 @@ impl ApplicationHandler for App {
                 if !event.state.is_pressed() {
                     return; // discrete actions fire on press only
                 }
+                // CREATIVE MODE owns its keys: tools 1-4, undo/redo, Esc
+                // cancels the gesture in flight (or leaves), Tab plays
+                if r.creative.open && !event.repeat {
+                    if let PhysicalKey::Code(key) = event.physical_key {
+                        let ctrl = r.keys.crouch(); // Ctrl is tracked as held
+                        let tool = match key {
+                            KeyCode::Digit1 => Some(0),
+                            KeyCode::Digit2 => Some(1),
+                            KeyCode::Digit3 => Some(2),
+                            KeyCode::Digit4 => Some(3),
+                            KeyCode::Digit5 => Some(4),
+                            KeyCode::Digit6 => Some(5),
+                            KeyCode::Digit7 => Some(6),
+                            _ => None,
+                        };
+                        if let Some(i) = tool {
+                            r.creative_set_tool(i);
+                            return;
+                        }
+                        match key {
+                            KeyCode::KeyZ if ctrl && r.keys.run() => return r.creative_redo(),
+                            KeyCode::KeyZ if ctrl => return r.creative_undo(),
+                            KeyCode::KeyY if ctrl => return r.creative_redo(),
+                            KeyCode::Escape => return r.creative_cancel(),
+                            KeyCode::Tab => return r.creative_toggle(),
+                            _ => {}
+                        }
+                    }
+                }
                 if let PhysicalKey::Code(key) = event.physical_key {
                     if !r.ide.ui.open {
                         if let Some(delta) = input::camera_turn(key, event.repeat) {
@@ -209,8 +245,16 @@ impl ApplicationHandler for App {
                             r.menu_toggle();
                         }
                     }
-                    // the personal IDE (pause = edit): Tab toggles it
-                    Key::Named(NamedKey::Tab) if !event.repeat => r.ide_toggle(),
+                    // Tab: play ↔ build (creative mode, 2026-09-22). The
+                    // slider IDE stays reachable on F2 until its wear rows
+                    // have a creative-mode replacement.
+                    Key::Named(NamedKey::Tab) if !event.repeat => {
+                        if r.ide.ui.open {
+                            r.ide_toggle();
+                        }
+                        r.creative_toggle();
+                    }
+                    Key::Named(NamedKey::F2) if !event.repeat => r.ide_toggle(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.view.cursor;
                         r.zoom_step(1, c);
@@ -256,6 +300,9 @@ impl ApplicationHandler for App {
                 if let Some(r) = self.renderer.as_mut() {
                     let np = Vec2::new(position.x as f32, position.y as f32);
                     r.view.cursor = np;
+                    if r.creative.open {
+                        r.creative_move(np);
+                    }
                     // COALESCED: the drag applies once per frame (RedrawRequested),
                     // from the latest cursor — a wall-panel drag recompiles the
                     // level, and a 1000 Hz mouse applying that per EVENT builds a
@@ -265,6 +312,29 @@ impl ApplicationHandler for App {
                     }
                     if r.ide.ui.dragging() {
                         r.ide.drag_pending = true;
+                    }
+                }
+            }
+            // creative mode: right button removes (walls, buildings, lamps)
+            WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
+                if let Some(r) = self.renderer.as_mut() {
+                    if r.creative.open && !r.menu_open() {
+                        let c = r.view.cursor;
+                        if state == ElementState::Pressed {
+                            r.creative_press(c, house_game::gym::creative::Button::Remove);
+                        } else {
+                            r.creative_release(house_game::gym::creative::Button::Remove);
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.renderer.as_ref().is_some_and(|r| r.creative.open && !r.menu_open()) => {
+                if let Some(r) = self.renderer.as_mut() {
+                    let c = r.view.cursor;
+                    if state == ElementState::Pressed {
+                        r.creative_press(c, house_game::gym::creative::Button::Build);
+                    } else {
+                        r.creative_release(house_game::gym::creative::Button::Build);
                     }
                 }
             }

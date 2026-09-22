@@ -11,6 +11,9 @@
 //! - `room X Z` — cell (X, Z) is Room (default Outdoor)
 //! - `wallx X Z` — Wall on the x-edge at (X, Z): separates (X-1,Z) | (X,Z)
 //! - `wallz X Z` — Wall on the z-edge at (X, Z): separates (X,Z-1) | (X,Z)
+//! - `paint EFFECT X Y Z SIDE R` — a creative-mode brush dab on a wall face:
+//!   effect `rain|soot|spall`, the world point, the face's outward normal
+//!   `+x|-x|+z|-z`, the brush radius (floats; file order = paint order)
 //!
 //! [`serialize`] emits the CANONICAL form (fixed statement order, rooms and
 //! walls z-major) — `serialize(parse(f)) == f` for a canonical file, pinned
@@ -34,7 +37,7 @@
 //! the IDE's edits, the `EDIT=` harness knob and the tests all go through it.
 
 use super::grid::{CellKind, CellPos, EdgeKind, Grid};
-use super::sim::GymLevel;
+use super::sim::{GymLevel, PaintEffect, PaintStroke};
 
 /// The checked-in gym level — THE one hand-authored level (owner directive
 /// 2026-07-12), embedded at compile time so headless tests, the viewer and
@@ -46,6 +49,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     let mut grid: Option<Grid> = None;
     let mut spawn: Option<CellPos> = None;
     let mut lights: Vec<(CellPos, i32)> = Vec::new();
+    let mut paint: Vec<PaintStroke> = Vec::new();
     for (ln, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -59,6 +63,22 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
                 .parse::<i16>()
                 .map_err(|_| format!("line {}: {op}: bad number", ln + 1))
         };
+        if op == "paint" {
+            let err = |m: &str| format!("line {}: paint: {m}", ln + 1);
+            let effect = it.next().and_then(PaintEffect::by_name).ok_or_else(|| err("unknown effect"))?;
+            let mut f = || -> Result<f32, String> { it.next().and_then(|t| t.parse::<f32>().ok()).filter(|v| v.is_finite()).ok_or_else(|| err("bad number")) };
+            let pos = [f()?, f()?, f()?];
+            let (axis, sign) = match it.next() {
+                Some("+x") => (0, 1),
+                Some("-x") => (0, -1),
+                Some("+z") => (2, 1),
+                Some("-z") => (2, -1),
+                _ => return Err(err("side must be +x|-x|+z|-z")),
+            };
+            let mut f = || -> Result<f32, String> { it.next().and_then(|t| t.parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0).ok_or_else(|| err("bad radius")) };
+            paint.push(PaintStroke { effect, pos, axis, sign, r: f()? });
+            continue;
+        }
         if op == "size" {
             let (w, h) = (num()?, num()?);
             if grid.is_some() {
@@ -109,7 +129,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     }
     let grid = grid.ok_or("no size statement")?;
     let player_start = spawn.ok_or("no spawn statement")?;
-    Ok(GymLevel { neighborhood: false, grid, player_start, lights })
+    Ok(GymLevel { paint, neighborhood: false, grid, player_start, lights })
 }
 
 /// Emit the canonical text form: header, size, spawn, lamps (identity order),
@@ -121,7 +141,8 @@ pub fn serialize(spec: &GymLevel) -> String {
          # Level-as-data: the IDE writes this file back; review edits with git\n\
          # diff. grid_hash is the level identity - editing invalidates recorded\n\
          # gym traces and pinned state hashes.\n\
-         # Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z\n",
+         # Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z\n\
+         #          paint rain|soot|spall X Y Z +x|-x|+z|-z R\n",
     );
     out.push_str(&format!("size {} {}\n", g.w, g.h));
     out.push_str(&format!("spawn {} {}\n", spec.player_start.x, spec.player_start.z));
@@ -148,6 +169,16 @@ pub fn serialize(spec: &GymLevel) -> String {
                 out.push_str(&format!("wallz {x} {z}\n"));
             }
         }
+    }
+    for s in &spec.paint {
+        let side = match (s.axis, s.sign > 0) {
+            (0, true) => "+x",
+            (0, false) => "-x",
+            (_, true) => "+z",
+            (_, false) => "-z",
+        };
+        // `{}` is Rust's shortest round-tripping float text: canonical
+        out.push_str(&format!("paint {} {} {} {} {side} {}\n", s.effect.name(), s.pos[0], s.pos[1], s.pos[2], s.r));
     }
     out
 }
@@ -288,6 +319,22 @@ mod tests {
         assert_eq!(back.lights, spec.lights);
         assert_eq!(back.player_start, spec.player_start);
         assert_eq!(serialize(&back), text, "canonical form is a fixed point");
+    }
+
+    /// Paint strokes survive a save/load exactly (shortest round-trip floats)
+    /// and bad ones are rejected with the line number.
+    #[test]
+    fn paint_strokes_round_trip_and_reject_garbage() {
+        let mut spec = parse(GYM_LEVEL_SRC).unwrap();
+        spec.paint.push(PaintStroke { effect: PaintEffect::Spall, pos: [3.1, 1.25, 7.1], axis: 2, sign: 1, r: 0.4 });
+        spec.paint.push(PaintStroke { effect: PaintEffect::Rain, pos: [12.1, 2.9, 4.0], axis: 0, sign: -1, r: 0.35 });
+        let text = serialize(&spec);
+        let back = parse(&text).unwrap();
+        assert_eq!(back.paint, spec.paint);
+        assert_eq!(serialize(&back), text);
+        assert!(parse("size 4 4\nspawn 1 1\npaint glitter 1 1 1 +x 0.3\n").is_err());
+        assert!(parse("size 4 4\nspawn 1 1\npaint rain 1 1 1 up 0.3\n").is_err());
+        assert!(parse("size 4 4\nspawn 1 1\npaint rain 1 1 1 +x 0\n").err().is_some_and(|e| e.contains("line 3")));
     }
 
     #[test]

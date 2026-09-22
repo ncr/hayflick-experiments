@@ -133,6 +133,9 @@ pub struct GymMeta {
     /// Every solid wall segment (a windowed run's piers, a plain run's whole
     /// slab), one box prim each — the wall-smash tear-off targets (phase 3).
     pub piers: Vec<Pier>,
+    /// Every PAINTED wall face (creative mode): where it is in the world and
+    /// in the atlas — the paint tool's pick targets and live-preview slots.
+    pub painted: Vec<crate::painted::FaceSlot>,
 }
 
 /// One tearable wall segment: its prim (to TLAS-mask), its world AABB (the
@@ -255,8 +258,15 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     // knows which other slabs it meets (it is
     // the only geometric fact the level's two loops otherwise throw away).
     if look.concrete && !spec.neighborhood { crate::concrete::ground(&mut scene); }
+    let mut packer = crate::painted::Packer::default();
+    let mut painted: Vec<crate::painted::FaceSlot> = Vec::new();
     for r in &wall_runs(g) {
-        if spec.neighborhood {crate::terrain::facade(&mut scene,r.rect,r.along_x);}
+        // a wall on no authored lot was built in creative mode: its surface
+        // is BAKED from the level's brush strokes (painted.rs)
+        if spec.neighborhood && crate::terrain::lot_of(r.rect).is_none() {
+            painted.extend(crate::painted::wall(&mut scene, &mut packer, r.rect, r.along_x, &spec.paint));
+        }
+        else if spec.neighborhood {crate::terrain::facade(&mut scene,r.rect,r.along_x);}
         else if look.concrete { crate::concrete::wall(&mut scene, r.rect, r.along_x); }
         else { wall_slab(&mut scene, &mut piers, r, look); }
     }
@@ -340,7 +350,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     }
     scene.lighting = look.lighting;
     scene.sun_sky = look.sun; // sun/sky-as-data (Faza 1b)
-    (scene, GymMeta { roof_prims, room_min, room_max, piers })
+    (scene, GymMeta { roof_prims, room_min, room_max, piers, painted })
 }
 
 /// Floor-run merge key: (tint, matte). Outdoor cells are the meadow — matte

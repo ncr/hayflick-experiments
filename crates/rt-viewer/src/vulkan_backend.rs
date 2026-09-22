@@ -488,6 +488,10 @@ impl RenderBackend for VulkanBackend {
     /// Crack-lab live material update: the per-frame practicals upload
     /// streams `mats_cpu` whole every frame, so writing the shadow is the
     /// entire job — visible next frame, nothing rebuilds.
+    unsafe fn update_atlas(&mut self, atlas: &[u32]) {
+        self.gpu.update_atlas(&self.ctx, atlas);
+    }
+
     fn set_material_pad(&mut self, material_id: usize, pad: i32) {
         self.gpu.mats_cpu[material_id]._pad = pad;
     }
@@ -597,7 +601,7 @@ impl RenderBackend for VulkanBackend {
         // #5: the GPU crop origin is round(pan); the fractional remainder stays
         // on the CPU side so the upscale lattice is always integer-aligned.
         let rs = self.rs(fp.zoom);
-        let tp = build_tone_push(low_w, low_h, extent.width, extent.height, rs, fp.pan, fp.target, &fp.proj, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
+        let tp = build_tone_push(low_w, low_h, extent.width, extent.height, rs, fp.pan, fp.target, &fp.proj, fp.yaw_deg, fp.exposure, &fp.style, fp.frame, fp.edit);
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline);
         d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.tone_pipeline_layout, 0, &[swap.tone_set], &[]);
         d.cmd_push_constants(cmd, self.tone_pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&tp));

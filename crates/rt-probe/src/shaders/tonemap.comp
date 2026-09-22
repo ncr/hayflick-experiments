@@ -39,6 +39,8 @@ layout(push_constant) uniform Push {
   vec4  style4; // shadow dither: strength, levels, luma threshold, dither world-phase y
   vec4  style5; // saturation, contrast, luma quantize levels, _
   vec4  style6; // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
+  vec4  edit1;  // creative mode: ghost rect in world xz (x0, z0, x1, z1)
+  vec4  edit2;  // creative mode: on, ghost kind (0 none, 1 build, 2 remove, 3 hover), _, grid max y
 } pc;
 
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -348,6 +350,33 @@ void main(){
         col = mix(col, clamp(col * 1.10 + vec3(0.05, 0.12, 0.18), 0.0, 1.0), edge * 0.5);
       } else {
         col = mix(col, col * 0.30, pc.style2.w * edge);
+      }
+    }
+
+    // CREATIVE MODE (2026-09-22): the build grid and the ghost of the gesture
+    // in flight, read off the primary-hit world position — editor chrome, 1
+    // game px exact, off in play (edit2.x == 0). The grid is a line wherever a
+    // neighbour texel sits in another world cell, on surfaces below edit2.w
+    // (the ground, not the walls); the ghost tints every hit inside its xz
+    // rect at any height, so a wall about to be removed turns red whole.
+    if (pc.edit2.x > 0.5 && P0.w > 0.0) {
+      vec4 PR = imageLoad(posImg, clamp(lp + ivec2( 1, 0), ivec2(0), ivec2(pc.dims.x - 1, pc.dims.y - 1)));
+      vec4 PD = imageLoad(posImg, clamp(lp + ivec2( 0, 1), ivec2(0), ivec2(pc.dims.x - 1, pc.dims.y - 1)));
+      bool cross = (PR.w > 0.0 && (floor(PR.x) != floor(P0.x) || floor(PR.z) != floor(P0.z)))
+                || (PD.w > 0.0 && (floor(PD.x) != floor(P0.x) || floor(PD.z) != floor(P0.z)));
+      if (P0.y < pc.edit2.w && cross) col = mix(col, vec3(1.0), 0.16);
+      vec4 gr = pc.edit1;
+      // kinds 4/5: the paint BRUSH — a ring on the surface around the
+      // cursor's wall point (edit1 = centre xyz + radius), amber to paint and
+      // red to scrub, nearly clear inside so the paint under it stays readable
+      if (pc.edit2.y > 3.5) {
+        float bd = length(P0.xyz - gr.xyz) / gr.w;
+        vec3 ring = pc.edit2.y > 4.5 ? vec3(1.0, 0.25, 0.20) : vec3(1.0, 0.82, 0.40);
+        if (bd < 1.0) col = mix(col, ring, bd > 0.82 ? 0.75 : 0.08);
+      } else if (pc.edit2.y > 0.5 && P0.x >= gr.x && P0.x <= gr.z && P0.z >= gr.y && P0.z <= gr.w) {
+        vec3 tint = pc.edit2.y > 2.5 ? vec3(1.0) : (pc.edit2.y > 1.5 ? vec3(1.0, 0.25, 0.20) : vec3(1.0, 0.82, 0.40));
+        float inset = min(min(P0.x - gr.x, gr.z - P0.x), min(P0.z - gr.y, gr.w - P0.z));
+        col = mix(col, tint, inset < 0.07 ? 0.70 : (pc.edit2.y > 2.5 ? 0.20 : 0.38));
       }
     }
 

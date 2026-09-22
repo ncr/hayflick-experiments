@@ -59,11 +59,54 @@ pub enum Command {
     Wait,
 }
 
+/// A wall-paint brush effect (creative mode's palette). The surface crate
+/// owns what each one looks like; the level only names it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaintEffect {
+    Rain,
+    Soot,
+    Spall,
+}
+
+impl PaintEffect {
+    pub const ALL: [PaintEffect; 3] = [PaintEffect::Rain, PaintEffect::Soot, PaintEffect::Spall];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PaintEffect::Rain => "rain",
+            PaintEffect::Soot => "soot",
+            PaintEffect::Spall => "spall",
+        }
+    }
+
+    pub fn by_name(s: &str) -> Option<PaintEffect> {
+        PaintEffect::ALL.into_iter().find(|e| e.name() == s)
+    }
+}
+
+/// One brush dab on a wall, WORLD-anchored: the point on the wall face, which
+/// face (the outward normal's axis and sign: `+x`, `-x`, `+z`, `-z`), and the
+/// brush radius. World anchoring keeps a stroke on its spot when walls around
+/// it are rebuilt or merged into longer runs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PaintStroke {
+    pub effect: PaintEffect,
+    pub pos: [f32; 3],
+    /// Outward normal: axis 0 = x, 2 = z; `sign` ±1.
+    pub axis: u8,
+    pub sign: i8,
+    pub r: f32,
+}
+
 /// The gym level: the grid, where the player spawns, and the lamp cells the
 /// scene builder turns into named point lights (render data — the sim has no
 /// light model).
 #[derive(Clone)]
 pub struct GymLevel {
+    /// Brush strokes painted onto walls in creative mode — presentation data
+    /// the sim never reads (the renderer bakes them into wall surfaces), kept
+    /// here because it is authored with the level and saved in its file.
+    pub paint: Vec<PaintStroke>,
     pub neighborhood: bool,
     pub grid: Grid,
     pub player_start: CellPos,
@@ -106,6 +149,18 @@ impl GymGame {
 
     pub fn spec(&self) -> &GymLevel {
         &self.spec
+    }
+
+    /// Swap in an edited level (creative mode) WITHOUT respawning: the body
+    /// keeps its position and stops. Before this the sim kept the level it was
+    /// constructed with, so a wall built in an editor rendered and could be
+    /// walked through. A body the new walls now overlap is left where it is;
+    /// collide-and-slide only refuses moves INTO a wall, so it can walk out.
+    pub fn set_level(&mut self, spec: GymLevel) {
+        self.spec = spec;
+        self.velocity = Vec2::ZERO;
+        self.intent = Vec2::ZERO;
+        self.player = self.cell_for_position();
     }
 
     fn speed(&self, mode: MoveMode) -> f32 {
@@ -260,7 +315,7 @@ pub fn concrete_level() -> GymLevel {
         for x in x0..x1 { grid.set_edge(CellPos::new(x,z),Dir::Zm,EdgeKind::Wall); }
     }
     for z in 3..8 { grid.set_edge(CellPos::new(13,z),Dir::Xm,EdgeKind::Wall); }
-    GymLevel { neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
+    GymLevel { paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +426,7 @@ pub fn catalogue_level() -> GymLevel {
     // (the probe bake and the look's amber accent both assume one), but an
     // amber pool ON a specimen would be a second variable in every read.
     let lights = vec![(CellPos::new(18, 2), 6)];
-    GymLevel { neighborhood: false, grid, player_start: CellPos::new(20, 20), lights }
+    GymLevel { paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(20, 20), lights }
 }
 
 #[cfg(test)]
@@ -436,7 +491,7 @@ mod tests {
     /// speed, and holding it does, within the ramp the constant promises.
     #[test]
     fn speed_ramps_instead_of_arriving_whole() {
-        let mut g = GymGame::new(GymLevel { neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         g.tick(Tick(0), &[hold(1.0, 0.0, MoveMode::Walk)]);
         let first = g.snapshot().velocity.length();
         assert!(first > 0.0 && first < SPEED_WALK, "one tick must not reach walking speed: {first}");
@@ -453,7 +508,7 @@ mod tests {
     /// leans on when it stops steering a stopping distance short of the goal.
     #[test]
     fn releasing_input_brakes_to_rest() {
-        let mut g = GymGame::new(GymLevel { neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         for t in 0..30u64 {
             g.tick(Tick(t), &[hold(1.0, 0.0, MoveMode::Run)]);
         }
@@ -473,7 +528,7 @@ mod tests {
 
     #[test]
     fn continuous_input_moves_between_cells_without_snapping() {
-        let mut g = GymGame::new(GymLevel { neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
         let start = g.snapshot().position;
         for t in 0..30u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Walk }]);
@@ -486,7 +541,7 @@ mod tests {
 
     #[test]
     fn crouch_survives_idle_limits_running_and_releases_cleanly() {
-        let mut g = GymGame::new(GymLevel { neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { paint: Vec::new(), neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
         g.tick(Tick(0), &[Command::Crouch(true)]);
         let crouch_hash = g.state_hash();
         let mut standing=GymGame::new(g.spec().clone()); standing.tick(Tick(0),&[]);
@@ -506,7 +561,7 @@ mod tests {
 
     #[test]
     fn releasing_sprint_stops_within_eight_ticks_and_a_quarter_metre() {
-        let mut g=GymGame::new(GymLevel {neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
+        let mut g=GymGame::new(GymLevel { paint: Vec::new(),neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
         for t in 0..60 {g.tick(Tick(t),&[Command::MoveWorld {dx:1024,dz:0,mode:MoveMode::Run}]);}
         let released=g.snapshot().position;
         for t in 60..68 {g.tick(Tick(t),&[]);}
@@ -518,7 +573,7 @@ mod tests {
     fn continuous_input_collides_with_grid_edges_and_keeps_sliding() {
         let mut grid = Grid::new(8, 8);
         grid.set_edge(CellPos::new(1, 2), Dir::Xp, EdgeKind::Wall);
-        let mut g = GymGame::new(GymLevel { neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
         for t in 0..120u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Run }]);
         }
@@ -551,7 +606,7 @@ mod tests {
     #[test]
     fn the_doorway_is_the_only_way_in() {
         // The doorway column, approached from the south.
-        let mut open = GymGame::new(GymLevel {
+        let mut open = GymGame::new(GymLevel { paint: Vec::new(),
             neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x, DOORWAY.z + 3),
@@ -563,7 +618,7 @@ mod tests {
         assert_eq!(open.grid().cell(open.snapshot().player), CellKind::Room, "the doorway admits");
 
         // One cell east of it is the building's south wall.
-        let mut shut = GymGame::new(GymLevel {
+        let mut shut = GymGame::new(GymLevel { paint: Vec::new(),
             neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x + 1, DOORWAY.z + 3),

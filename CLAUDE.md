@@ -24,7 +24,8 @@ Cargo workspace at the repo root, members `crates/*`:
 | `sim-core` | generic sim runtime (fixed tick, InputQueue, Pcg32, traces) | hecs, glam |
 | `house-game` | ALL game logic, fully headless: the `gym` testbed + movement primitives | sim-core, iso-core |
 | `rt-probe` | deterministic renderer lib (Vulkan ray_query) + GLSL | iso-core |
-| `ide` | the personal IDE (pracownia): headless UI model + CPU rasterizer for the 2x-density editor overlay; knows neither the game nor the GPU | font8x8 only |
+| `ide` | the personal IDE (pracownia): headless UI model + CPU rasterizer for the 2x-density editor overlay AND creative mode's toolbar; knows neither the game nor the GPU | font8x8 only |
+| `surface` | painted wall surfaces (2026-09-22): brush strokes → texel layers → albedo, baked on the CPU at one texel per game pixel | std only |
 | `phys-spike` | throwaway Box3D rigid-body world (leaf: no game, no GPU, no renderer) — the `wall smash` demo's rubble is its one consumer, through `rt-viewer/src/phys_scene.rs` | glam only |
 | `wear-core` | THE WEAR MODEL (extracted 2026-07-28): `wall` (what a level AUTHOR says about a wall — `Story` → `Layer` amounts → the solved-threshold `Sheet`), `rebar` (the mat, its corrosion sites, their craters), `field` (the noise + damage field both shader twins mirror). No `Scene`, no `Material`, no bits, no GPU | glam only |
 | `rt-viewer` | `viewer` binary: winit shell, Metal backend, gym loop, capture | everything |
@@ -64,6 +65,61 @@ surface the rest of the crate already used — the pattern vocabulary, `Wear` in
 moved. A pure MOVE: gym, crack lab and catalogue all BYTE-IDENTICAL, 198 tests
 before and after, tests filed with the code they test and their fixtures shared
 once in `crack_geom/fixtures.rs`.
+
+## CREATIVE MODE + PAINTED SURFACES (owner 2026-09-22) — the editor reset
+
+Owner: "I don't want SolidWorks or Unreal. I want a GAME, and the editor is one
+of its modes, cut for it — tools worth a good city builder or level editor.
+Chat/AI is only an add-on." So the authoring surface is now **creative mode**,
+not the slider IDE:
+
+- **Tab = play ↔ build.** Building pauses the sim, frees the camera (WASD pans,
+  wheel zooms, q/e turn), draws a 1-game-px build grid, and shows ONE toolbar
+  at the bottom (`ide::toolbar`, the only chrome): 1 wall (drag corner to
+  corner), 2 building (drag a rect: floor, walls, a +z doorway), 3 lamp,
+  4 spawn, 5 rain, 6 soot, 7 spall (paint brushes, drag over a wall). Right
+  button removes / scrubs, Esc cancels a gesture, Ctrl+Z / Ctrl+Y undo/redo
+  (whole-level snapshots). The ghost of the gesture in flight is drawn by the
+  TONEMAP from the primary-hit world position (`TonePush.edit1/edit2`, both
+  twins) — stamps are opaque copies and cannot carry a ghost.
+- **All gesture decisions are headless** in `house_game::gym::creative`
+  (`preview` builds the ghost AND the commit from one function); the viewer
+  adapter is `rt-viewer/src/creative_host.rs`. A commit hands the new grid to
+  the sim (`GymGame::set_level` — before it, a wall built in an editor could
+  be walked through), rebuilds, and saves file-backed levels.
+- The slider IDE (hierarchy + inspector, wear rows) moved to **F2** until its
+  wear rows are retired.
+
+**PAINTED SURFACES** replace per-ray procedural wear for walls built in
+creative mode (a prototype on "after the rain": walls on no authored lot).
+The `surface` crate (std only) BAKES a face on the CPU at **one texel per game
+pixel** — 40 texels/wu along world x, 20 along z, 38.73 up (the trimetric
+axis images; after a q/e turn the ratio is 2:1, still whole pixels) — from the
+level's brush strokes (`GymLevel.paint`, file line `paint rain|soot|spall X Y
+Z ±x|±z R`, world-anchored). A face is layers — `loss` (cover lost, wu),
+`crack`, `wet`, `leach`, `soot`, `rust` — one function per effect, composed by
+`Face::shade`. `rt-viewer/src/painted.rs` displaces the face mesh by the loss
+(a spall is a real crater), grows the steel where the loss passes `COVER`,
+and packs the albedo into `Scene::atlas` (binding 6 / Metal `buffer(11)`,
+`ATLAS_W` 2048, gamma-2 RGBA8; `Material.surface == SURFACE_ATLAS`, vertex uv
+= atlas texel). A paint drag re-bakes ONE face and re-uploads the atlas per
+dab (`RenderBackend::update_atlas`) — paint shows under the cursor with no
+rebuild; the release rebuilds for the geometry. WHY (the argument the owner
+accepted): an effect is one CPU function — no GLSL/MSL twins, no `_pad` budget,
+PNG-dumpable (`cargo run -p surface --example preview`) — and at this pixel
+size a bake loses nothing a per-ray evaluation had.
+**BLIND METAL:** `shade.metal`'s atlas read + `buffer(11)` binding,
+`tonemap.metal`'s grid/ghost/brush branch and `MetalBackend::update_atlas`
+are unrun. First Mac session: `LEVEL="after the rain"`, Tab, build a wall,
+paint it with 5/6/7 — the paint must show live and survive the release.
+**HARNESS:** `PLAY_SCRIPT=<file>` + `DEMO=` records "let's play" clips: scripted
+keys/mouse (`say`, `key`, `hold`, `to x z`, `at x y z`, `button <name>`,
+`down/up left|right`) through the same viewer methods as the window, with the
+cursor, key caps and captions composited onto the captured frames on the CPU
+(never game UI). Grammar in `play_script.rs`.
+NEXT: paint on the authored lot walls (translate a lot's exposure into a
+stroke preset), rubble below spalls, then decide whether the wear pipeline
+(`crack*`, `wear*`, `wear-core`, ~12 k lines) is deleted.
 
 ## The second level: the effect catalogue (owner 2026-07-26)
 

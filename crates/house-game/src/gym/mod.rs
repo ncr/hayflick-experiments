@@ -13,6 +13,8 @@
 //!   Trace-replayable, `state_hash`-pinned.
 //! - [`route`] — click-to-move: a string-pulled world path over the grid and
 //!   the steering that walks it, feeding the SAME mover the keyboard does.
+//! - [`creative`] — creative mode's tool logic: gestures → level edits, the
+//!   ghost preview, undo/redo snapshots.
 //! - [`trace`] — the text-trace format (`<tick> <op> <args>`), the headless
 //!   replay/clip input.
 
@@ -23,3 +25,4 @@ pub mod sim;
 pub mod trace;
 
 pub mod neighborhood;
+pub mod creative;

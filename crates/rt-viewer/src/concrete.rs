@@ -251,7 +251,7 @@ pub fn ground(scene: &mut Scene) {
     }
 }
 
-fn rod(mesh: &mut Mesh, points: &[Vec3], radius: f32) {
+pub(crate) fn rod(mesh: &mut Mesh, points: &[Vec3], radius: f32) {
     // Straight reinforcement needs one segment, not a tessellated chain.
     // Retain every actual bend while reducing traversal/AS cost on Metal.
     let simplified: Vec<Vec3> = points

@@ -204,22 +204,24 @@ fn panel(s: &mut Scene, r: [f32; 4], mat: i32, interior: bool) {
     }
     mesh.emit(s, mat);
 }
+/// The authored dwelling lot a wall run stands on, if any. A wall outside
+/// every lot was built in creative mode.
+pub fn lot_of(r: [f32; 4]) -> Option<house_game::gym::neighborhood::Area> {
+    let c = Vec2::new((r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5);
+    areas().into_iter().filter(|a| a.kind == 3).find(|a| c.x >= a.rect[0] - 0.2 && c.x <= a.rect[2] + 0.2 && c.y >= a.rect[1] - 0.2 && c.y <= a.rect[3] + 0.2)
+}
+
 pub fn facade(s: &mut Scene, r: [f32; 4], along_x: bool) {
     let c = Vec2::new((r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5);
-    let lot = areas()
-        .into_iter()
-        .filter(|a| a.kind == 3)
-        .find(|a| {
-            c.x >= a.rect[0] - 0.2
-                && c.x <= a.rect[2] + 0.2
-                && c.y >= a.rect[1] - 0.2
-                && c.y <= a.rect[3] + 0.2
-        })
-        .unwrap();
-    let e = match lot.exposure {
-        2 => Exposure::Corrosion,
-        3 => Exposure::Fire,
-        _ => Exposure::Blast,
+    let lot = lot_of(r);
+    // A wall outside every authored lot is one built in creative mode: it has
+    // no history yet, so it stands as sound, freshly cast concrete (this was
+    // an `unwrap` — the first wall built on open ground crashed the level).
+    let e = match lot.map(|l| l.exposure) {
+        None => Exposure::Sound,
+        Some(2) => Exposure::Corrosion,
+        Some(3) => Exposure::Fire,
+        Some(_) => Exposure::Blast,
     };
     let first = s.primitives.len();
     concrete::wall_detail(s, r, along_x, e, 0.085);

@@ -111,6 +111,9 @@ pub struct Viewer {
     /// Every wall segment of the current build (GymMeta.piers) — the crack
     /// lab's pick targets; refreshed on every scene rebuild.
     pub piers: Vec<crate::gym_scene::Pier>,
+    /// Every painted wall face of the current scene (creative mode's paint
+    /// targets and live-preview atlas slots; painted.rs).
+    pub painted: Vec<crate::painted::FaceSlot>,
     /// Crack-lab state (per-pier aging knobs + selection) — see crack.rs.
     pub crack: crate::crack::CrackLab,
     /// Level-as-data bookkeeping (authored spawn, file backing, dirty) — see
@@ -125,6 +128,10 @@ pub struct Viewer {
     pub keys: crate::input::Keyboard,
     /// The personal IDE (Tab; `IDE=1` boots it open) — see ide_host.rs.
     pub ide: crate::ide_host::IdeState,
+    /// Creative mode — build the level in-game (Tab; see creative_host.rs).
+    pub creative: crate::creative_host::CreativeState,
+    /// Scripted input for "let's play" clips (`PLAY_SCRIPT=`; play_script.rs).
+    pub play: Option<crate::play_script::PlayScript>,
     pub harness: Harness,
     pub rec: Option<crate::capture::Rec>,
     pub rec_jobs: Vec<std::thread::JoinHandle<()>>,
@@ -334,9 +341,12 @@ impl Viewer {
             },
             gym: GymLoop::with_projection(spec, proj),
             piers: gym_meta.piers,
+            painted: gym_meta.painted,
             crack,
             level: level_state,
             ide: crate::ide_host::IdeState::from_env(),
+            creative: crate::creative_host::CreativeState::default(),
+            play: crate::play_script::PlayScript::from_env(),
             harness: Harness::from_cfg(&cfg),
             rec: None,
             rec_jobs: Vec::new(),
@@ -466,6 +476,7 @@ impl Viewer {
         // values survive a look switch (the pier count is look-stable);
         // entering/leaving the demo re-seeds or clears.
         self.piers = meta.piers;
+        self.painted = meta.painted;
         let level_wear = self.cur_demo.and_then(|d| d.wear).map(|f| f.level_wear());
         crate::crack::resolve(level_wear, &mut self.crack, &self.piers, &mut scene, self.aa_scope.round() as i32);
         self.crack.active = level_wear.is_some();
@@ -612,10 +623,16 @@ impl Viewer {
         let dt = self.last_frame.map(|t| (now - t).as_secs_f32().min(0.1)).unwrap_or(0.0);
         self.last_frame = Some(now);
         self.harness_pre_frame(); // ROTATE_AT / DUMP_AT synthetic inputs
-        self.advance_rotation(dt); // movement and rendering use the SAME visible yaw
+        self.play_frame(); // PLAY_SCRIPT: this frame's scripted keys + mouse
+        // a DEMO/play capture runs on a fixed 60 Hz clock, never the wall clock
+        let frame_dt = if self.harness.demo.is_some() { 1.0 / 60.0 } else { dt };
+        self.advance_rotation(frame_dt); // movement and rendering use the SAME visible yaw
+        self.creative_pan(frame_dt); // building: WASD pans the free camera
         self.advance_sim(dt); // DEMO tick / pause / live fixed-tick
         self.drive_demo(); // named-demo timeline: tick-scheduled beats + look morph
-        self.follow_player_camera(); // follow the continuous/eased player body
+        if !self.creative.open {
+            self.follow_player_camera(); // follow the continuous/eased player body
+        }
         // clip recording: collect last frame's capture + decide if this frame
         // captures (returns the down-blit target size when it should)
         let capture_req = self.prepare_capture();
@@ -661,6 +678,7 @@ impl Viewer {
         // headless verification of the whole overlay.
         let mut stamps = self.gym.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
         stamps.extend(self.ide_stamps());
+        stamps.extend(self.creative_stamps(self.view.cursor));
         // Fog is a primary-ray effect, independent of the irradiance bake.
         // Menu adjustments must reach this frame without rebuilding geometry
         // or losing a demo's current sun/sky morph.
@@ -694,6 +712,7 @@ impl Viewer {
             exposure: self.exposure,
             style: self.style,
             frame: self.frame,
+            edit: self.creative_edit_push(),
             overlay,
             stamps: &stamps,
             // permanent sunny day (the joyful default); SKY env still scales
@@ -807,6 +826,11 @@ impl Viewer {
     /// reaches the sim.
     fn advance_sim(&mut self, dt: f32) {
         self.gym.yaw_deg = self.yaw_deg();
+        // building freezes the world in every mode, captures included — a
+        // let's-play clip shows the same pause the owner gets
+        if self.creative.open {
+            return;
+        }
         if self.harness.demo.is_some() {
             self.gym.demo_advance_tick();
             return;
@@ -843,7 +867,8 @@ impl Viewer {
 
     /// ROI phase of `draw()`: the reveal-disc parameters when ROI mode is on.
     fn roi_info(&self) -> Option<crate::backend::RoiInfo> {
-        if !self.cfg.game.roi {
+        // building needs every wall visible: no reveal disc around the player
+        if !self.cfg.game.roi || self.creative.open {
             return None;
         }
         // Anchor the reveal disc on the player's MID-HEIGHT, not its feet:

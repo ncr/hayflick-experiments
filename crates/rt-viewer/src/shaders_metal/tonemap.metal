@@ -31,6 +31,8 @@ struct Push {
     float4 style4; // shadow dither: strength, levels, luma threshold, dither world-phase y
     float4 style5; // saturation, contrast, luma quantize levels, _
     float4 style6; // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
+    float4 edit1;  // creative mode: ghost rect in world xz (x0, z0, x1, z1)
+    float4 edit2;  // creative mode: on, ghost kind (0 none, 1 build, 2 remove, 3 hover), _, grid max y
 };
 
 static float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
@@ -316,6 +318,29 @@ kernel void tonemap(
                 col = mix(col, clamp(col * 1.10 + float3(0.05, 0.12, 0.18), 0.0, 1.0), edge * 0.5);
             } else {
                 col = mix(col, col * 0.30, pc.style2.w * edge);
+            }
+        }
+
+        // CREATIVE MODE (2026-09-22) — twin of tonemap.comp: the build grid
+        // and the ghost of the gesture in flight, off in play (edit2.x == 0).
+        if (pc.edit2.x > 0.5 && P0.w > 0.0) {
+            float4 PR = posBuf[uint(clamp(lp.y, 0, lowH - 1) * lowW + clamp(lp.x + 1, 0, lowW - 1))];
+            float4 PD = posBuf[uint(clamp(lp.y + 1, 0, lowH - 1) * lowW + clamp(lp.x, 0, lowW - 1))];
+            bool cross = (PR.w > 0.0 && (floor(PR.x) != floor(P0.x) || floor(PR.z) != floor(P0.z)))
+                      || (PD.w > 0.0 && (floor(PD.x) != floor(P0.x) || floor(PD.z) != floor(P0.z)));
+            if (P0.y < pc.edit2.w && cross) col = mix(col, float3(1.0), 0.16);
+            float4 gr = pc.edit1;
+            // kinds 4/5: the paint BRUSH — a ring on the surface around the
+            // cursor's wall point (edit1 = centre xyz + radius), amber to paint and
+            // red to scrub, nearly clear inside so the paint under it stays readable
+            if (pc.edit2.y > 3.5) {
+              float bd = length(P0.xyz - gr.xyz) / gr.w;
+              float3 ring = pc.edit2.y > 4.5 ? float3(1.0, 0.25, 0.20) : float3(1.0, 0.82, 0.40);
+              if (bd < 1.0) col = mix(col, ring, bd > 0.82 ? 0.75 : 0.08);
+            } else if (pc.edit2.y > 0.5 && P0.x >= gr.x && P0.x <= gr.z && P0.z >= gr.y && P0.z <= gr.w) {
+                float3 tint = pc.edit2.y > 2.5 ? float3(1.0) : (pc.edit2.y > 1.5 ? float3(1.0, 0.25, 0.20) : float3(1.0, 0.82, 0.40));
+                float inset = min(min(P0.x - gr.x, gr.z - P0.x), min(P0.z - gr.y, gr.w - P0.z));
+                col = mix(col, tint, inset < 0.07 ? 0.70 : (pc.edit2.y > 2.5 ? 0.20 : 0.38));
             }
         }
 

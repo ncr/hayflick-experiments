@@ -61,7 +61,7 @@ pub fn level() -> GymLevel {
             grid.set_edge(CellPos::new(x, z), Dir::Zm, EdgeKind::Open);
         }
     }
-    GymLevel {
+    GymLevel { paint: Vec::new(),
         neighborhood: true,
         grid,
         player_start: CellPos::new(12, 15),

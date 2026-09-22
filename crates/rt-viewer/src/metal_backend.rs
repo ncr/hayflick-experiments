@@ -98,6 +98,9 @@ struct MetalScene {
     ibuf: Buffer,
     gbuf: Buffer,
     mbuf: Buffer,
+    /// The painted-surface atlas (`Scene::atlas`; one zero texel when empty) —
+    /// shade.metal's `buffer(11)`.
+    abuf: Buffer,
     lbuf: Buffer,
     probe_buf: Buffer,
     probe_count: u32,
@@ -208,6 +211,7 @@ impl MetalScene {
         let ibuf = make_buf(device, &scene.indices);
         let gbuf = make_buf(device, &scene.geom_infos());
         let mbuf = make_buf(device, &scene.materials);
+        let abuf = make_buf(device, if scene.atlas.is_empty() { &[0u32; 4][..] } else { &scene.atlas[..] });
         let LightScan { lights, light_link, names: light_names, light_count } = scan_lights(scene)?;
         let lbuf = make_buf(device, &lights);
         let lights_cpu = lights.clone();
@@ -316,6 +320,7 @@ impl MetalScene {
             ibuf,
             gbuf,
             mbuf,
+            abuf,
             lbuf,
             probe_buf,
             probe_count,
@@ -788,6 +793,13 @@ impl RenderBackend for MetalBackend {
     /// Crack-lab live material update — Vulkan twin: `render_present` writes
     /// `mats_cpu` to `mbuf` whole every frame, so the shadow write is the
     /// entire job. (Blind-edited on the spawner — verify on the Mac.)
+    /// BLIND EDIT (2026-09-22, written on the RTX box): the atlas is a
+    /// StorageModeShared buffer, so the live paint preview is one memcpy.
+    unsafe fn update_atlas(&mut self, atlas: &[u32]) {
+        if !atlas.is_empty() {
+            write_buf(&self.sc.abuf, atlas);
+        }
+    }
     fn set_material_pad(&mut self, material_id: usize, pad: i32) {
         self.sc.mats_cpu[material_id]._pad = pad;
     }
@@ -962,7 +974,7 @@ impl RenderBackend for MetalBackend {
         };
         if fp.fs.vegetation {push.roi[..3].copy_from_slice(&fp.fs.actor_position);}
         let rs = self.rs(fp.zoom);
-        let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, &fp.proj, fp.yaw_deg, fp.exposure, &fp.style, fp.frame);
+        let tp = build_tone_push(low_w, low_h, ext_w, ext_h, rs, fp.pan, fp.target, &fp.proj, fp.yaw_deg, fp.exposure, &fp.style, fp.frame, fp.edit);
 
         // ---- shade + tonemap in one command buffer (waited inline)
         {
@@ -982,6 +994,7 @@ impl RenderBackend for MetalBackend {
             enc.set_buffer(8, Some(&t.radiance), 0);
             enc.set_buffer(9, Some(&t.albedo), 0);
             enc.set_buffer(10, Some(&t.pos), 0);
+            enc.set_buffer(11, Some(&self.sc.abuf), 0);
             enc.use_resource(&self.sc.tlas, MTLResourceUsage::Read);
             for bl in &self.sc.blas_list {
                 enc.use_resource(bl, MTLResourceUsage::Read);
@@ -1016,6 +1029,7 @@ impl RenderBackend for MetalBackend {
                     aenc.set_buffer(8, Some(&t.radiance), 0);
                     aenc.set_buffer(9, Some(&t.albedo), 0);
                     aenc.set_buffer(10, Some(&t.pos), 0);
+                    aenc.set_buffer(11, Some(&self.sc.abuf), 0);
                     aenc.use_resource(&self.sc.tlas, MTLResourceUsage::Read);
                     for bl in &self.sc.blas_list {
                         aenc.use_resource(bl, MTLResourceUsage::Read);

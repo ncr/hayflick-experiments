@@ -1,0 +1,9 @@
+[package]
+name = "surface"
+version = "0.1.0"
+edition = "2021"
+description = "Pure leaf: painted wall surfaces baked on the CPU at game-pixel density — brush strokes in, texel layers (cover loss, wet, leach, soot, rust, cracks) and packed albedo out. No Scene, no GPU, no game."
+
+[dependencies]
+# std only: an effect is arithmetic over a texel grid, testable and
+# PNG-dumpable without a window.

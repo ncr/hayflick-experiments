@@ -383,7 +383,17 @@ impl Viewer {
         // every tick has rendered.
         if let Some(demo) = self.harness.demo.as_ref() {
             let (dir, ticks, done) = (demo.dir.clone(), demo.ticks, demo.done);
-            self.backend.capture_png(&format!("{dir}/d_{done:05}.png"));
+            let path = format!("{dir}/d_{done:05}.png");
+            if self.play.is_some() {
+                // a let's-play frame: the game picture plus the scripted
+                // cursor, key caps and caption, composited on the CPU so none
+                // of it is game UI (the real window has the OS cursor)
+                let (w, h, mut rgba) = self.backend.readback_out_subsampled(1);
+                self.play_overlay(&mut rgba, w, h);
+                write_png(&path, w, h, &rgba);
+            } else {
+                self.backend.capture_png(&path);
+            }
             let demo = self.harness.demo.as_mut().unwrap();
             demo.done += 1;
             if demo.done >= ticks {

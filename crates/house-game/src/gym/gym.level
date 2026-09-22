@@ -3,6 +3,7 @@
 # diff. grid_hash is the level identity - editing invalidates recorded
 # gym traces and pinned state hashes.
 # Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z
+#          paint rain|soot|spall X Y Z +x|-x|+z|-z R
 size 18 14
 spawn 10 11
 lamp 11 6 6

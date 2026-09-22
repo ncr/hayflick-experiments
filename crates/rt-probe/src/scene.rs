@@ -190,7 +190,19 @@ pub struct Scene {
     /// The sun direction/tint + sky gradient tints — look-authored data
     /// (Faza 1b); packed with the resolved `lighting` into an [`EnvBlock`].
     pub sun_sky: SunSky,
+    /// The painted-surface ATLAS (creative mode's wall paint, 2026-09-22):
+    /// packed gamma-2 RGBA8 texels, [`ATLAS_W`] per row. A material with
+    /// `surface == SURFACE_ATLAS` reads its albedo here at the hit's
+    /// interpolated `uv`, which is an atlas TEXEL coordinate. Baked on the CPU
+    /// by the `surface` crate at one texel per game pixel; empty when nothing
+    /// is painted (the GPU side then binds one zero texel).
+    pub atlas: Vec<u32>,
 }
+
+/// Atlas row width in texels — one literal shared with both shade twins.
+pub const ATLAS_W: u32 = 2048;
+/// `Material.surface` value: albedo comes from the atlas.
+pub const SURFACE_ATLAS: i32 = 1;
 
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }

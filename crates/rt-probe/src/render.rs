@@ -400,17 +400,17 @@ pub unsafe fn make_pool(ctx: &Ctx) -> vk::DescriptorPool {
     let sizes = [
         vk::DescriptorPoolSize { ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR, descriptor_count: 1 },
         vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_IMAGE, descriptor_count: 3 },
-        vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 6 },
+        vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 7 },
     ];
     ctx.device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None).unwrap()
 }
 
 /// Write the scene descriptor set: TLAS + the three per-view storage images
 /// (radiance out, albedo G-buffer, world-position G-buffer) + the scene
-/// buffers + the probe cache. Binding 6 is VACANT — it held the bindless
-/// base-colour texture array until the glTF path was deleted (2026-07-28);
-/// the later bindings keep their numbers so both shader twins stay untouched
-/// except for the one removed declaration.
+/// buffers + the probe cache. Binding 6 is the painted-surface ATLAS
+/// (2026-09-22; `Scene::atlas`) — it held the bindless base-colour texture
+/// array until the glTF path was deleted (2026-07-28) and stood vacant
+/// between the two.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn make_set(
     ctx: &Ctx,
@@ -439,6 +439,7 @@ pub unsafe fn make_set(
     let mb = buf(&gpu.mbuf);
     let lb = buf(&gpu.lbuf);
     let pb = buf(&gpu.probe_buf);
+    let ab = buf(&gpu.abuf);
 
     let writes = [
         w_as,
@@ -447,6 +448,7 @@ pub unsafe fn make_set(
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&ib),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(4).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&gb),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(5).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&mb),
+        vk::WriteDescriptorSet::default().dst_set(set).dst_binding(6).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&ab),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(7).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&lb),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(8).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&alb_info),
         vk::WriteDescriptorSet::default().dst_set(set).dst_binding(9).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&pos_info),
@@ -462,6 +464,8 @@ pub struct SceneGpu {
     pub ibuf: Buffer,
     pub gbuf: Buffer,
     pub mbuf: Buffer,
+    /// The painted-surface atlas (`Scene::atlas`; one zero texel when empty).
+    pub abuf: Buffer,
     pub lbuf: Buffer, // emissive light list for NEE (see build)
     pub light_count: u32,
     // per-frame light streaming (record_frame): CPU shadows of lbuf/mbuf, the
@@ -532,6 +536,22 @@ pub struct SceneGpu {
 }
 
 impl SceneGpu {
+    /// Overwrite the painted-surface atlas (creative mode's live preview).
+    /// Waits the device idle first: the copy must not race a frame still
+    /// shading from the old texels. An edit-time path, never per frame.
+    pub unsafe fn update_atlas(&self, ctx: &Ctx, atlas: &[u32]) {
+        if atlas.is_empty() {
+            return;
+        }
+        ctx.device.device_wait_idle().unwrap();
+        let size = std::mem::size_of_val(atlas) as u64;
+        let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let staging = ctx.create_buffer(size, vk::BufferUsageFlags::TRANSFER_SRC, host);
+        ctx.upload(&staging, atlas);
+        ctx.one_time(|cmd| ctx.device.cmd_copy_buffer(cmd, staging.buffer, self.abuf.buffer, &[vk::BufferCopy::default().size(size)]));
+        ctx.destroy_buffer(&staging);
+    }
+
     /// Upload the scene buffers, build one BLAS per primitive + a TLAS,
     /// and create the shade + probe compute pipelines + descriptor layout.
     pub unsafe fn build(ctx: &Ctx, scene: &Scene, probe_spacing: f32) -> Result<SceneGpu, Box<dyn std::error::Error>> {
@@ -540,6 +560,7 @@ impl SceneGpu {
         let geom_infos = scene.geom_infos();
         let gbuf = ctx.device_local(&geom_infos, vk::BufferUsageFlags::STORAGE_BUFFER);
         let mbuf = ctx.device_local(&scene.materials, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        let abuf = ctx.device_local(if scene.atlas.is_empty() { &[0u32][..] } else { &scene.atlas[..] }, vk::BufferUsageFlags::STORAGE_BUFFER);
 
         // ---- NEE light list (scan factored into `scan_lights` — slot order
         // pinned by CPU tests) + the scene's name → handle joins
@@ -640,6 +661,7 @@ impl SceneGpu {
             dslb(3, vk::DescriptorType::STORAGE_BUFFER, 1), // indices
             dslb(4, vk::DescriptorType::STORAGE_BUFFER, 1), // geom infos
             dslb(5, vk::DescriptorType::STORAGE_BUFFER, 1), // materials
+            dslb(6, vk::DescriptorType::STORAGE_BUFFER, 1), // painted-surface atlas
             dslb(7, vk::DescriptorType::STORAGE_BUFFER, 1), // NEE lights
             dslb(8, vk::DescriptorType::STORAGE_IMAGE, 1), // albedo G-buffer (tonemap demodulation)
             dslb(9, vk::DescriptorType::STORAGE_IMAGE, 1), // world-position G-buffer (tonemap outline)
@@ -674,7 +696,7 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, lbuf, light_count, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), roll_box: None, roll_frames: 0, roll_ray: 0, roll_prime: false, roll_n: 256, roll_k: 8, probes_baked: false })
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, abuf, lbuf, light_count, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), roll_box: None, roll_frames: 0, roll_ray: 0, roll_prime: false, roll_n: 256, roll_k: 8, probes_baked: false })
     }
 
     /// Patch a named dynamic run's instance transform in the host-visible
@@ -1147,6 +1169,7 @@ impl SceneGpu {
         ctx.destroy_buffer(&self.ibuf);
         ctx.destroy_buffer(&self.gbuf);
         ctx.destroy_buffer(&self.mbuf);
+        ctx.destroy_buffer(&self.abuf);
         ctx.destroy_buffer(&self.lbuf);
         ctx.destroy_buffer(&self.light_stage);
         ctx.destroy_buffer(&self.mat_stage);

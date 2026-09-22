@@ -23,6 +23,7 @@ pub mod canvas;
 pub mod scene;
 pub mod shell;
 pub mod theme;
+pub mod toolbar;
 
 pub use canvas::Canvas;
 pub use scene::{Edit, Obj, ObjId, Prop, PropKind, PropVal, SceneModel};

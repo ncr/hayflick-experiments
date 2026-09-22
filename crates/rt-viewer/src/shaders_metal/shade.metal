@@ -335,6 +335,7 @@ kernel void shade(
     device float4*         outRadiance [[buffer(8)]],
     device float4*         outAlbedo   [[buffer(9)]],  // primary-hit albedo G-buffer (tonemap poster demodulation)
     device float4*         outPos      [[buffer(10)]], // primary-hit world position (tonemap outline; w=0 sky)
+    device const uint*     atlas       [[buffer(11)]], // painted-surface atlas (gamma-2 RGBA8, 2048 texels per row)
     uint2 gid [[thread_position_in_grid]])
 {
     int W = pc.misc.x, H = pc.misc.y;
@@ -568,6 +569,13 @@ kernel void shade(
     // footprint. No frame seed, extra rays, or change to primary visibility.
     float surfacePx = (2.0 * pc.camRight.w / float(pc.misc.x)) / max(abs(dot(aaGn, d)), 0.18);
     if (m.surface <= -2 && m.surface >= -16) albedo = survivorAlbedo(albedo, h.uv, -m.surface-2, surfacePx);
+    // PAINTED SURFACE (creative mode, 2026-09-22): the albedo was baked on the
+    // CPU at one texel per game pixel; uv is the atlas texel coordinate.
+    if (m.surface == 1) {
+        uint tx = atlas[uint(h.uv.y) * 2048u + uint(h.uv.x)];
+        albedo = float3(float(tx & 255u), float((tx >> 8) & 255u), float((tx >> 16) & 255u)) / 255.0;
+        albedo *= albedo;
+    }
     float deposit = 0.0;
     bool concreteMaterial = (uint(m.pad) & 16u) != 0u;
     bool freshConcrete = !concreteMaterial && (uint(m.pad) & 68u) == 68u; // MATTE + CRAZE: exposed body

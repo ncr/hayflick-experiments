@@ -315,6 +315,12 @@ fn window_px_to_low(win: Vec2, v: &ViewXform) -> Vec2 {
     (win / rs).floor() + v.pan.round()
 }
 
+/// The primary camera ray under a window pixel — the ray the shade pass
+/// traced for the game pixel the cursor sits on (creative mode's wall pick).
+pub fn window_px_ray(win: Vec2, v: &ViewXform) -> (Vec3, Vec3) {
+    low_px_ray(window_px_to_low(win, v), v)
+}
+
 /// The camera ray that rendered low pixel `lp` — shade.comp's primary ray:
 /// through the pixel centre + TIE bias, along the projection's view direction.
 fn low_px_ray(lp: Vec2, v: &ViewXform) -> (Vec3, Vec3) {

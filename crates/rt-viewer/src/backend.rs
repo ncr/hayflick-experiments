@@ -32,6 +32,11 @@ pub struct TonePush {
     pub style4: [f32; 4], // shadow dither: strength, levels, luma threshold, dither world-phase y
     pub style5: [f32; 4], // saturation, contrast, luma quantize levels, contour soften
     pub style6: [f32; 4], // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
+    /// Creative mode's ghost rect in world xz: (x0, z0, x1, z1).
+    pub edit1: [f32; 4],
+    /// Creative mode: (on, ghost kind 0 none / 1 build / 2 remove / 3 hover,
+    /// _, grid max y). All zero in play — the tonemap branch is skipped.
+    pub edit2: [f32; 4],
 }
 
 /// The view/camera + look knobs the GPU half needs to build this frame's
@@ -72,6 +77,9 @@ pub struct FramePresent<'a> {
     pub exposure: f32,
     pub style: StyleCfg,
     pub frame: u32,
+    /// Creative mode's grid + ghost for the tonemap ([`TonePush::edit1`] /
+    /// [`TonePush::edit2`]); all zero in play.
+    pub edit: [[f32; 4]; 2],
     /// UI overlay copied onto the PRESENTED image only (never `out`, so SHOT/
     /// MOVIE/DUMP captures stay clean). `None` for headless modes.
     pub overlay: Option<Overlay<'a>>,
@@ -260,6 +268,13 @@ pub trait RenderBackend {
     /// re-stamps after every rebuild.
     fn set_material_effect(&mut self, _material_id: usize, _word: f32) {}
 
+    /// Replace the painted-surface atlas in place (creative mode's live paint
+    /// preview: a brush dab re-bakes one wall face on the CPU and re-uploads
+    /// the atlas, so the paint shows under the cursor without a scene
+    /// rebuild). `atlas` must be the SAME length the scene was built with —
+    /// the atlas layout only changes on a rebuild.
+    unsafe fn update_atlas(&mut self, _atlas: &[u32]) {}
+
     /// Live per-material STORY KEY update — the third sibling: the VARIANT
     /// (scrub) dial slides the key every damage field seeds off, and the key
     /// rides `Material.base_color[3]` (`wear_core::wall::story_key` /
@@ -297,7 +312,7 @@ pub trait RenderBackend {
 /// projection-row / dither-world-phase math (and thus the pixel-perfect blit)
 /// is identical regardless of GPU. Mirrors the old `Renderer::draw` block.
 #[allow(clippy::too_many_arguments)]
-pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, pan: Vec2, target: Vec3, proj: &Projection, yaw_deg: f32, exposure: f32, style: &StyleCfg, frame: u32) -> TonePush {
+pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, pan: Vec2, target: Vec3, proj: &Projection, yaw_deg: f32, exposure: f32, style: &StyleCfg, frame: u32, edit: [[f32; 4]; 2]) -> TonePush {
     let pan = pan.round();
     let (_cd, cright, cup) = proj.basis(yaw_deg);
     let pa = cright * proj.s;
@@ -321,6 +336,8 @@ pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, 
         style4: [style.sdither, style.sdither_n, style.sdither_th, dphase_y],
         style5: [style.sat, style.contrast, style.lumaq, style.aa_soft],
         style6: [style.analog, style.analog_chroma, style.analog_tear, style.crt_mask],
+        edit1: edit[0],
+        edit2: edit[1],
     }
 }
 
