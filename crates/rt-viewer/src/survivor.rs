@@ -636,14 +636,12 @@ mod tests {
     }
     #[test]
     fn articulated_shading_uses_instance_space_transforms_on_both_backends() {
-        // A stretched, rotated joint needs inverse-transpose normals and
-        // world-space contour distances, not its bind-pose vertex data.
+        // A stretched, rotated joint needs inverse-transpose normals, not its
+        // bind-pose vertex data.
         let metal = include_str!("shaders_metal/shade.metal");
         let glsl = include_str!("../../rt-probe/src/shaders/shade.comp");
         assert!(metal.contains("it.world_to_object_transform"));
-        assert!(metal.contains("it.object_to_world_transform"));
         assert!(glsl.contains("rayQueryGetIntersectionWorldToObjectEXT"));
-        assert!(glsl.contains("rayQueryGetIntersectionObjectToWorldEXT"));
     }
 
     #[test]

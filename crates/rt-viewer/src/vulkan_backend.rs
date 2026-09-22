@@ -9,7 +9,7 @@
 //! integer-NEAREST upscale, blit, present. No accumulation, no denoiser, no
 //! temporal state — a fixed camera produces bit-identical frames.
 
-use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, ProbeRefresh, RenderBackend};
+use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, RenderBackend};
 use crate::capture::subsample_rgba;
 use crate::menu::{MENU_MARGIN, MPANEL_W, PANEL_MAX_H};
 use ash::vk;
@@ -444,14 +444,8 @@ impl RenderBackend for VulkanBackend {
     /// Runtime look switch (Faza 1b): swap the SceneGpu whole, rebind the
     /// window-size descriptor sets onto the new buffers (recreate_gpu), then
     /// rebake the probe banks against the new scene + env. Every prior frame
-    /// is fenced idle first. (Blind-edited on macOS — verify on the spawner.)
-    ///
-    /// `ProbeRefresh::Local` instead CARRIES the old scene's baked banks into the
-    /// fresh one and re-bakes only the probes around the dirty AABBs (the
-    /// crack-lab knob release) — hence the old scene is destroyed AFTER the carry,
-    /// not before the rebind. `SceneGpu::carry_probes` owns the decision and falls
-    /// back by returning false, so the bake below is the same code path as before.
-    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh) {
+    /// is fenced idle first.
+    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config) {
         self.ctx.device.device_wait_idle().ok();
         let fresh = SceneGpu::build(&self.ctx, scene, cfg.render.probe_spacing).expect("look-switch scene rebuild");
         let old = std::mem::replace(&mut self.gpu, fresh);
@@ -459,17 +453,8 @@ impl RenderBackend for VulkanBackend {
         let extent = self.swap.as_ref().unwrap().extent;
         self.recreate_gpu(extent.width, extent.height);
         let set = self.swap.as_ref().unwrap().scene_set;
-        let carried = match refresh {
-            ProbeRefresh::Local(dirty) => self.gpu.carry_probes(&self.ctx, set, &self.env, &old, dirty, cfg.render.probe_rays, false),
-            // the age-ramp beat: carry, then let `roll_step` settle the dirty box
-            // over the next frames instead of blocking on the refresh
-            ProbeRefresh::Roll(dirty) => self.gpu.carry_probes(&self.ctx, set, &self.env, &old, dirty, cfg.render.probe_rays, true),
-            ProbeRefresh::Full => false,
-        };
         old.destroy(&self.ctx);
-        if !carried {
-            self.gpu.bake_probes(&self.ctx, set, &self.env, cfg.render.probe_rays);
-        }
+        self.gpu.bake_probes(&self.ctx, set, &self.env, cfg.render.probe_rays);
     }
 
     /// Dynamic-GI tear-off (blind-edited on macOS — verify on the spawner): hide
@@ -485,29 +470,8 @@ impl RenderBackend for VulkanBackend {
         self.gpu.tear_off(&self.ctx, set, &env, prims, min, max, amortize);
     }
 
-    /// Crack-lab live material update: the per-frame practicals upload
-    /// streams `mats_cpu` whole every frame, so writing the shadow is the
-    /// entire job — visible next frame, nothing rebuilds.
     unsafe fn update_atlas(&mut self, atlas: &[u32]) {
         self.gpu.update_atlas(&self.ctx, atlas);
-    }
-
-    fn set_material_pad(&mut self, material_id: usize, pad: i32) {
-        self.gpu.mats_cpu[material_id]._pad = pad;
-    }
-
-    /// Wear-family live material update (`crate::wear`'s effect word in
-    /// `emissive[3]`) — the same one-line mechanism as the pad above.
-    /// BLIND EDIT (2026-07-25, the spawner box is offline): line-for-line twin
-    /// of the Metal impl, not compiled on macOS.
-    fn set_material_effect(&mut self, material_id: usize, word: f32) {
-        self.gpu.mats_cpu[material_id].emissive[3] = word;
-    }
-
-    /// Story-key live update (the scrub dial's drag path) — same one-line
-    /// mechanism as its two siblings above.
-    fn set_material_story(&mut self, material_id: usize, story: f32) {
-        self.gpu.mats_cpu[material_id].base_color[3] = story;
     }
 
     unsafe fn wait_idle(&self) {
@@ -563,8 +527,6 @@ impl RenderBackend for VulkanBackend {
         push.refl_px = fp.refl_px;
         push.cut16 = rt_probe::render::cut16(fp.cut_y);
         push.misc3[0] = rt_probe::render::cut16(fp.wall_cut);
-        push.misc3[2] = (fp.aa.clamp(0.0, 1.0) * 65536.0).round() as i32; // CONTOUR AA tap weight (16.16)
-        push.misc3[3] = fp.aa_scope << 8; // sample index (low byte) | scope << 8
         if let Some(roi) = &fp.roi {
             let rp = rt_probe::roi_push(&fp.fs.cam, low_w as i32, low_h as i32, roi.player, roi.radius_px, roi.falloff_px, roi.ghost);
             push.roi = rp.roi;
@@ -576,28 +538,7 @@ impl RenderBackend for VulkanBackend {
         d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
         d.cmd_dispatch(cmd, low_w.div_ceil(8), low_h.div_ceil(8), 1);
         // radiance write -> tonemap read (same GENERAL layout)
-        let rw_barrier = |cmd| {
-            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ)], &[], &[]);
-        };
-        rw_barrier(cmd);
-        // CONTOUR AA (owner 2026-07-25): four extra dispatches of the SAME shade
-        // kernel, each tracing one fixed sub-pixel offset and folding its result
-        // into the texel's running mean. Every tap early-outs on non-contour
-        // texels (shade.comp's aaGate), so the cost is ~4 x (contour fraction).
-        // Each tap reads the centre pass's G-buffer and read-modify-writes the
-        // radiance image, so a full barrier separates every dispatch.
-        // the GATE pass runs for the softening too (it is what marks the contour
-        // texels); only the taps need the coverage weight
-        if (fp.aa > 0.0 || fp.style.aa_soft > 0.0) && fp.debug == 0 {
-            let taps: &[i32] = if fp.aa > 0.0 { &[5, 1, 2, 3, 4] } else { &[5] };
-            for &s in taps {
-                push.misc3[3] = s | (fp.aa_scope << 8);
-                d.cmd_push_constants(cmd, self.gpu.pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, push_bytes(&push));
-                d.cmd_dispatch(cmd, low_w.div_ceil(8), low_h.div_ceil(8), 1);
-                rw_barrier(cmd);
-            }
-        }
-
+        d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::SHADER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ)], &[], &[]);
         // #5: the GPU crop origin is round(pan); the fractional remainder stays
         // on the CPU side so the upscale lattice is always integer-aligned.
         let rs = self.rs(fp.zoom);

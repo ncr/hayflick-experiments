@@ -14,7 +14,7 @@
 //! buffers are indexed by `intersection.instance_id`. Scalar byte-match is
 //! load-bearing: `packed_float3` not `float3`; struct sizes asserted both sides.
 
-use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, ProbeRefresh, RenderBackend};
+use crate::backend::{build_tone_push, low_dims_for, menu_scale_for, overlay_origin, stamp_in_bounds, FramePresent, RenderBackend};
 use crate::capture::subsample_rgba;
 use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec3};
@@ -31,7 +31,7 @@ use winit::window::Window;
 /// `hasProbes` used to sit in misc2.y: an M1 bring-up gate that had been
 /// hardwired to its pass-through value (1) since the probe bake landed, and
 /// the ONLY logic divergence between the two shade twins. Deleted 2026-07-28;
-/// `wear.rs`'s FORBIDDEN table keeps it out of both sources.
+/// `twin::twins_are_structurally_identical` keeps the twins in step.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Push {
@@ -424,82 +424,15 @@ impl MetalBackend {
     /// for a rebuilt one, then rebake (or disk-load) the probe banks. The
     /// device, pipelines, layer and window target survive. Every inline
     /// command buffer is waited, so nothing is in flight during the swap.
-    ///
-    /// `refresh` decides the GI half: `Full` rebakes (or disk-loads) the whole
-    /// grid; `Local` carries the baked banks across the swap and re-bakes only
-    /// the probes near the dirty AABBs — the crack-lab knob release, which
-    /// otherwise pays a 6.6 s whole-grid bake for one pier's boxes. Both paths
-    /// leave `probes_baked` true and the lit light/material state loaded, so the
-    /// next frame is identical except for the probes meant to change.
-    unsafe fn rebuild_scene_impl(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh) {
-        // Snapshot the banks BEFORE the swap (probe_buf dies with the old scene)
-        // and only when they can legally be carried: the grid is DERIVED from the
-        // scene bounds, so anything that moves them (bounds, spacing, the probe
-        // cap's widening) invalidates every probe position. Crack geometry stays
-        // inside its pier's AABB by construction, which is exactly why the check
-        // passes for a knob rebuild and would fail for a real level edit.
-        // `Local` and `Roll` carry the same banks over the same dirty boxes and
-        // differ only in WHO re-bakes them: `Local` here and now (3-5 s, exact),
-        // `Roll` the per-frame DDGI roll over the following frames (~30 ms here).
-        let (dirty, rolling) = match refresh {
-            ProbeRefresh::Local(d) => (Some(d), false),
-            ProbeRefresh::Roll(d) => (Some(d), true),
-            ProbeRefresh::Full => (None, false),
-        };
-        let carried = match dirty {
-            Some(dirty) if self.sc.probes_baked => {
-                let g = ProbeGrid::build(scene.min, scene.max, cfg.render.probe_spacing);
-                let same = g.origin == self.sc.probe_origin && g.spacing == self.sc.probe_spacing && g.dims == self.sc.probe_dims;
-                let boxes = same.then(|| rt_probe::refresh_boxes_for(g.origin, g.spacing, g.dims, dirty)).flatten();
-                if boxes.is_none() {
-                    println!("probes: local refresh declined ({}) — full bake (metal)", if same { "a dirty region is off-grid, or the dirty set costs more than a bake" } else { "the probe grid moved" });
-                }
-                boxes.map(|b| (b, self.probe_bank_bytes()))
-            }
-            _ => None,
-        };
+    unsafe fn rebuild_scene_impl(&mut self, scene: &Scene, cfg: &Config) {
         self.sc = MetalScene::build(&self.device, &self.queue, scene, cfg).expect("look-switch scene rebuild");
         self.tlas_dirty = false;
-        let Some((boxes, banks)) = carried else {
-            self.bake_probes(cfg.render.probe_rays);
-            return;
-        };
-        // A cache HIT is a genuine full bake of exactly this scene — strictly
-        // better than the carry (exact everywhere, ~ms), so try it first.
-        if self.load_probe_cache() {
-            return;
-        }
-        std::ptr::copy_nonoverlapping(banks.as_ptr(), self.sc.probe_buf.contents() as *mut u8, banks.len());
-        self.sc.probes_baked = true; // …and so NEVER stored: a carried buffer is not a bake of this scene
-        let n = rt_probe::probes_in(&boxes);
-        if rolling {
-            // DEFERRED: hand the dirty box to the per-frame roll and return — the
-            // caller is animating (the age-ramp beat), and a synchronous refresh
-            // costs 3-5 s whatever its size. Same arming as `tear_off(amortize)`.
-            let Some(b) = rt_probe::union_box(&boxes) else { return };
-            self.roll_box = Some(b);
-            self.roll_frames = self.roll_total;
-            self.roll_ray = 0;
-            self.roll_prime = true;
-            println!("probes: carried {} banks + ROLLING {n} probes over {} frames (metal)", self.sc.probe_count, self.roll_total);
-            return;
-        }
-        let t0 = std::time::Instant::now();
-        self.refresh_boxes(&boxes);
-        println!("probes: carried {} banks + refreshed {n} probes ({:.0}%) in {:.0} ms (metal)", self.sc.probe_count, 100.0 * n as f32 / self.sc.probe_count as f32, t0.elapsed().as_secs_f32() * 1000.0);
-    }
-
-    /// The baked probe banks as raw bytes (the whole `probe_buf`, header
-    /// included — the header is rebuilt identically by the next `MetalScene`, so
-    /// carrying it costs nothing and keeps this a plain buffer copy).
-    unsafe fn probe_bank_bytes(&self) -> Vec<u8> {
-        let n = self.sc.probe_buf.length() as usize;
-        std::slice::from_raw_parts(self.sc.probe_buf.contents() as *const u8, n).to_vec()
+        self.bake_probes(cfg.render.probe_rays);
     }
 
     /// Load the current scene's probe banks from the disk cache (interactive
     /// sessions only — capture paths bake fresh). True = loaded, `probes_baked`
-    /// set. Shared by the startup bake and the local-refresh rebuild.
+    /// set.
     unsafe fn load_probe_cache(&mut self) -> bool {
         if !self.probe_cache {
             return false;
@@ -787,32 +720,15 @@ impl RenderBackend for MetalBackend {
     fn light_count(&self) -> u32 {
         self.sc.light_count
     }
-    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh) {
-        self.rebuild_scene_impl(scene, cfg, refresh);
+    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config) {
+        self.rebuild_scene_impl(scene, cfg);
     }
-    /// Crack-lab live material update — Vulkan twin: `render_present` writes
-    /// `mats_cpu` to `mbuf` whole every frame, so the shadow write is the
-    /// entire job. (Blind-edited on the spawner — verify on the Mac.)
     /// BLIND EDIT (2026-09-22, written on the RTX box): the atlas is a
     /// StorageModeShared buffer, so the live paint preview is one memcpy.
     unsafe fn update_atlas(&mut self, atlas: &[u32]) {
         if !atlas.is_empty() {
             write_buf(&self.sc.abuf, atlas);
         }
-    }
-    fn set_material_pad(&mut self, material_id: usize, pad: i32) {
-        self.sc.mats_cpu[material_id]._pad = pad;
-    }
-    /// Wear-family live material update (`crate::wear`'s effect word in
-    /// `emissive[3]`) — same one-line mechanism as the pad above.
-    fn set_material_effect(&mut self, material_id: usize, word: f32) {
-        self.sc.mats_cpu[material_id].emissive[3] = word;
-    }
-    /// Story-key live update (the scrub dial's drag path) — same one-line
-    /// mechanism as its two siblings above. BLIND EDIT (2026-07-27, written on
-    /// the RTX box): line-for-line twin of the Vulkan impl.
-    fn set_material_story(&mut self, material_id: usize, story: f32) {
-        self.sc.mats_cpu[material_id].base_color[3] = story;
     }
     unsafe fn tear_off(&mut self, prims: &[usize], min: Vec3, max: Vec3, amortize: bool) {
         // hide the static instances (mask 0 → culled by primary AND probe rays)
@@ -964,8 +880,8 @@ impl RenderBackend for MetalBackend {
             misc3: [
                 rt_probe::render::cut16(fp.cut_y),
                 rt_probe::render::cut16(fp.wall_cut),
-                (fp.aa.clamp(0.0, 1.0) * 65536.0).round() as i32, // CONTOUR AA tap weight (16.16)
-                fp.aa_scope << 8,                                  // AA sample index (low byte) | scope << 8
+                0,
+                0,
             ],
             env1: env.env1,
             env2: env.env2,
@@ -1001,43 +917,6 @@ impl RenderBackend for MetalBackend {
             }
             enc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
             enc.end_encoding();
-            // CONTOUR AA (owner 2026-07-25): four extra dispatches of the SAME
-            // shade kernel, each tracing one fixed sub-pixel offset and folding
-            // its radiance into the texel's running mean. Every tap early-outs
-            // on non-contour texels (shade.metal's aaGate), so the cost is
-            // ~4 x (contour fraction). A fresh encoder per tap gives the
-            // read-modify-write on `radiance` unambiguous ordering (the same
-            // reason the shade -> tonemap split uses one).
-            // the GATE pass runs for the softening too (it is what marks the
-            // contour texels); only the taps need the coverage weight
-            let aa_live = fp.aa > 0.0 || fp.style.aa_soft > 0.0;
-            if aa_live && fp.debug == 0 {
-                let mut tap = push;
-                let taps: &[i32] = if fp.aa > 0.0 { &[5, 1, 2, 3, 4] } else { &[5] };
-                for &s in taps {
-                    tap.misc3[3] = s | (fp.aa_scope << 8);
-                    let aenc = cb.new_compute_command_encoder();
-                    aenc.set_compute_pipeline_state(&self.shade_pso);
-                    aenc.set_acceleration_structure(0, Some(&self.sc.tlas));
-                    aenc.set_buffer(1, Some(&self.sc.vbuf), 0);
-                    aenc.set_buffer(2, Some(&self.sc.ibuf), 0);
-                    aenc.set_buffer(3, Some(&self.sc.gbuf), 0);
-                    aenc.set_buffer(4, Some(&self.sc.mbuf), 0);
-                    aenc.set_buffer(5, Some(&self.sc.lbuf), 0);
-                    aenc.set_buffer(6, Some(&self.sc.probe_buf), 0);
-                    aenc.set_bytes(7, size_of::<Push>() as u64, &tap as *const _ as *const c_void);
-                    aenc.set_buffer(8, Some(&t.radiance), 0);
-                    aenc.set_buffer(9, Some(&t.albedo), 0);
-                    aenc.set_buffer(10, Some(&t.pos), 0);
-                    aenc.set_buffer(11, Some(&self.sc.abuf), 0);
-                    aenc.use_resource(&self.sc.tlas, MTLResourceUsage::Read);
-                    for bl in &self.sc.blas_list {
-                        aenc.use_resource(bl, MTLResourceUsage::Read);
-                    }
-                    aenc.dispatch_threads(MTLSize { width: low_w as u64, height: low_h as u64, depth: 1 }, MTLSize { width: 8, height: 8, depth: 1 });
-                    aenc.end_encoding();
-                }
-            }
             // tonemap: ext_w×ext_h, reads the G-buffers, writes out_tex
             let tenc = cb.new_compute_command_encoder();
             tenc.set_compute_pipeline_state(&self.tonemap_pso);

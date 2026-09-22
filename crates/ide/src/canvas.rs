@@ -1,6 +1,16 @@
-//! A tiny CPU raster target: `0xRRGGBB` pixels, top-left origin, IDE px.
-//! Everything the IDE draws goes through here — rects, 1-px frames and the
+//! A tiny CPU raster target: `0xRRGGBB` pixels, top-left origin, chrome px.
+//! Everything the chrome draws goes through here — rects, 1-px frames and the
 //! same 8x8 glyphs the game menu uses (one product, two pixel densities).
+
+/// One rasterized panel, positioned in chrome px; the viewer stamps it at the
+/// chrome's pixel scale.
+pub struct Panel {
+    pub pix: Vec<u32>,
+    pub w: u32,
+    pub h: u32,
+    pub x: i32,
+    pub y: i32,
+}
 
 /// One panel's pixel buffer.
 pub struct Canvas {

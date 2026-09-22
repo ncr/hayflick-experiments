@@ -168,23 +168,7 @@ kernel void tonemap(
         col = float3(0.05, 0.05, 0.06); // guard band
     } else {
         uint li = uint(lp.y * lowW + lp.x);
-        // CONTOUR AA: colorBuf carries rgb = sum(w*L), a = sum(w) — divide when
-        // a > 1 (this reader and the bloom tap below). See tonemap.comp.
-        float4 rad4 = colorBuf[li];
-        float3 radiance = rad4.a > 1.0 ? rad4.rgb / rad4.a : rad4.rgb;
-        // CONTOUR SOFTEN (style5.w): on contour texels only, pull the radiance
-        // toward its 4-neighbour mean — takes the contrast off isolated
-        // near-black crack texels. See tonemap.comp.
-        if (pc.style5.w > 0.0 && rad4.a >= 0.0) {
-            const int2 N4[4] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1) };
-            float3 acc = float3(0.0);
-            for (int k = 0; k < 4; k++) {
-                int2 q = clamp(int2(lp) + N4[k], int2(0), int2(lowW - 1, lowH - 1));
-                float4 s4 = colorBuf[uint(q.y * lowW + q.x)];
-                acc += s4.a > 1.0 ? s4.rgb / s4.a : s4.rgb;
-            }
-            radiance = mix(radiance, acc * 0.25, pc.style5.w);
-        }
+        float3 radiance = colorBuf[li].rgb;
 
         // world-anchored lattice for dither + grain
         int2 dlp = lp - int2(int(pc.fcfg.w), int(pc.style4.w));
@@ -216,8 +200,7 @@ kernel void tonemap(
                 float w = 1.0 / float(1 << r);
                 for (int k = 0; k < 8; k++) {
                     int2 q = clamp(lp + OCT[k] * rad, int2(0), int2(lowW - 1, lowH - 1));
-                    float4 s4 = colorBuf[uint(q.y * lowW + q.x)];
-                    float3 s = (s4.a > 1.0 ? s4.rgb / s4.a : s4.rgb) * pc.fcfg.x;
+                    float3 s = colorBuf[uint(q.y * lowW + q.x)].rgb * pc.fcfg.x;
                     float l = luma(s);
                     bacc += s * (max(l - pc.style3.w, 0.0) / max(l, 1e-4)) * w;
                     bw += w;
@@ -272,14 +255,10 @@ kernel void tonemap(
 
         // outline (style2.w): darken silhouette / sky-adjacent pixels. A dissolved
         // wall (ROI contour) is tagged P0.w==2 and MUST outline even when the global
-        // outline knob is off — the contour IS the x-ray feature. The IDE SELECTION
-        // is tagged w==3 and fires the same way: editor chrome, not a look knob —
-        // a steady 1-game-px amber line on the tag-region boundary (drawn on the
-        // sel side, so it never bleeds onto the neighbours), no pulse.
+        // outline knob is off — the contour IS the x-ray feature.
         float4 P0 = posBuf[li];
-        bool isContour = P0.w > 1.5 && P0.w < 2.5;
-        bool isSel = P0.w > 2.5;
-        if (P0.w > 0.0 && (pc.style2.w > 0.0 || isContour || isSel)) {
+        bool isContour = P0.w > 1.5;
+        if (P0.w > 0.0 && (pc.style2.w > 0.0 || isContour)) {
             float3 f = normalize(cross(pc.projA.xyz, pc.projB.xyz));
             float d0 = dot(P0.xyz, f);
             float edge = 0.0;
@@ -290,10 +269,8 @@ kernel void tonemap(
                 float dn = dot(Pn.xyz, f) - d0;
                 // contour traces the FULL wall silhouette → fire on a depth jump in
                 // EITHER direction (top + side silhouettes). Normal outline keeps the
-                // directional test so goldens stay byte-identical. SELECTION ignores
-                // depth entirely: its edge is "my neighbour is not selected" (sky
-                // included) — the visible region's silhouette, nothing interior.
-                if (isSel ? Pn.w < 2.5 : (Pn.w == 0.0 || (isContour ? abs(dn) > 0.20 : dn > 0.28))) { edge = 1.0; break; }
+                // directional test so goldens stay byte-identical.
+                if (Pn.w == 0.0 || (isContour ? abs(dn) > 0.20 : dn > 0.28)) { edge = 1.0; break; }
             }
             // contour CREASE: the wall BASE meets the floor with a normal flip but
             // almost no depth jump (same signature as the disc edge, which must stay
@@ -307,12 +284,7 @@ kernel void tonemap(
                 if (PL.w > 0.0 && PR.w > 0.0 && length(PL.xyz + PR.xyz - 2.0 * P0.xyz) > 0.02) edge = 1.0;
                 if (PU.w > 0.0 && PD.w > 0.0 && length(PU.xyz + PD.xyz - 2.0 * P0.xyz) > 0.02) edge = 1.0;
             }
-            if (isSel) {
-                // SELECTION: the SEL amber, near-solid — chrome must read over both
-                // the porcelain white and the meadow greens, and it replaced the old
-                // albedo lift that tinted the very surface being authored.
-                col = mix(col, float3(1.0, 0.82, 0.40), edge * 0.85);
-            } else if (isContour) {
+            if (isContour) {
                 // x-ray CONTOUR: dissolved-wall silhouette as a FAINT cool line over
                 // the ghost stipple + room behind — subtle additive cyan, half blend.
                 col = mix(col, clamp(col * 1.10 + float3(0.05, 0.12, 0.18), 0.0, 1.0), edge * 0.5);

@@ -314,9 +314,8 @@ impl Scene {
     /// (2026-07-26); `add_box` is its only caller today. What outlives that
     /// promoter is the RULE it had to obey and the next box→mesh pass will too:
     /// a promoted box stays ONE primitive with ONE material, or every per-box
-    /// mark keyed by prim index (the occluder / glass / matte bits, the wear
-    /// paint lanes, the smash and roof-tear TLAS hides) addresses the wrong
-    /// thing.
+    /// mark keyed by prim index (the occluder / glass / matte bits, the smash
+    /// and roof-tear TLAS hides) addresses the wrong thing.
     pub fn new_material(&mut self, color: [f32; 4], emissive: [f32; 4], roughness: f32, metallic: f32) -> i32 {
         self.materials.push(Material { base_color: color, emissive, metallic, roughness, surface: 0, _pad: 0 });
         self.materials.len() as i32 - 1
@@ -347,9 +346,8 @@ impl Scene {
     }
 
     /// Append a raw world-space triangle mesh as ONE primitive that SHARES an
-    /// existing material (crack-lab geometric faults: a split pier's halves
-    /// keep the pier's material, so knobs / flags / selection stay
-    /// per-segment). `indices` are local to `verts`, like `add_box`'s.
+    /// existing material (concrete walls, painted faces, the survivor's
+    /// parts). `indices` are local to `verts`, like `add_box`'s.
     pub fn add_mesh_world(&mut self, verts: &[([f32; 3], [f32; 3])], indices: &[u32], material_id: i32) {
         assert_eq!(indices.len() % 3, 0, "world mesh index data must contain complete triangles");
         // Metal's acceleration-structure builder rejects (or, on some Apple

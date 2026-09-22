@@ -1,4 +1,4 @@
-//! Reinforced concrete, independent of the ceramic/wear pipeline.
+//! Reinforced concrete: its own geometry + material family (`concrete.inc`).
 //! Geometry is a cement body with cover loss around an embedded steel cage.
 //! Per-vertex UV.x carries actual removed cover (wu) to the material shader.
 use crate::flags;
@@ -236,7 +236,7 @@ pub(crate) fn material(scene: &mut Scene, e: Exposure, kind: u32, seed: u32) -> 
         | if kind == 3 {
             0
         } else {
-            flags::OCCLUDER | flags::AA
+            flags::OCCLUDER
         };
     m
 }
@@ -306,7 +306,7 @@ pub(crate) fn rod(mesh: &mut Mesh, points: &[Vec3], radius: f32) {
     }
 }
 
-/// Fresh mesh construction. Does not call the old crack, veneer or rebar code.
+/// Fresh mesh construction.
 pub fn wall(scene: &mut Scene, rect: [f32; 4], along_x: bool) {
     wall_history(scene, rect, along_x, history(rect));
 }
@@ -485,7 +485,7 @@ pub fn wall_detail(scene: &mut Scene, rect: [f32; 4], along_x: bool, e: Exposure
             rubble.tri(pts[0], pts[3], pts[2], [0.12; 3]);
         }
         let m = material(scene, e, 2, seed + 1);
-        scene.materials[m as usize]._pad = flags::CONCRETE | flags::AA;
+        scene.materials[m as usize]._pad = flags::CONCRETE;
         rubble.emit(scene, m);
     }
 }
@@ -494,14 +494,14 @@ pub fn wall_detail(scene: &mut Scene, rect: [f32; 4], along_x: bool, e: Exposure
 mod tests {
     use super::*;
     #[test]
-    fn the_yard_builds_every_history_without_the_legacy_wear_pipeline() {
+    fn the_yard_builds_every_history_as_concrete_walls() {
         let (scene, meta) = crate::gym_scene::build_gym(
             &house_game::gym::sim::concrete_level(),
             &crate::look::AFTERMATH,
         );
         assert!(
             meta.piers.is_empty(),
-            "legacy wear must not reprocess concrete"
+            "concrete walls are not greybox piers"
         );
         for (_, e) in HISTORIES {
             assert!(

@@ -30,8 +30,8 @@
 //! Every wall pier and roof cap is emitted as a plain `add_box_world` BOX —
 //! the glaze-ease box→mesh promoter that once sat here is deleted (2026-07-26,
 //! owner call), and `the_greybox_is_boxes_and_every_pier_mesh_is_its_authored_box`
-//! keeps that a standing invariant: the crack lab, the pick ray, the smash rig
-//! and the local probe refresh all address `Pier.lo/hi`.
+//! keeps that a standing invariant: the smash rig and its probe refresh
+//! address `Pier.lo/hi`.
 //!
 //! NEE discipline: the ONLY named lights are the spec lamps (conceptual point
 //! lights). Every emissive box (lamp fixtures) is part of a dynamic run,
@@ -56,34 +56,6 @@ const WALL_HT: f32 = 0.1; // wall half-thickness (0.2 wu slab, on the 0.1 grid)
 // hide inside the slabs below the wall top and step back cleanly above it.
 const ROOF_BASE: f32 = 2.0;
 const ROOF_TOP: f32 = 2.5;
-
-/// `Material._pad` bit 7 — **THE GREYBOX-DETAIL AA OPT-IN (owner policy,
-/// 2026-07-25: "the selective-AA approach, only on the areas that MODIFY the
-/// greyboxes — let's use it for all modifications of this kind", refined the
-/// same day to "leave it configurable, it IS a visual decision")**.
-///
-/// The contour AA (see the pixel-perfect contract in CLAUDE.md) is off on plain
-/// greybox: flat slabs and their clean pixel stairs ARE the look. It switches on
-/// where a generator has added procedural detail — but the DECIDING criterion is
-/// FEATURE SIZE, not novelty:
-///
-/// - THIN detail (crack grooves, veneer plates, spall craters, rebar — features
-///   1-3 px across) NEEDS it: at that size the per-pixel sampling lottery breaks
-///   a dark line into isolated black dots, which is the artefact the owner
-///   asked to fix.
-/// - CHUNKY detail (whole blocks — the wall-smash rubble) does NOT: a brick is
-///   10-30 px across, so nothing about its continuity is at risk; the AA only
-///   softens the blocky read the look is built on, and tumbling silhouettes
-///   pick up a per-frame shimmer. Measured with A/B clips and switched OFF by
-///   default, owner-toggleable (`aa rubble` / `AA_CHUNKY`).
-///
-/// So a generator DECLARES its detail and its class — it does not decide.
-/// Crack geometry declares itself through the geometry pass's own GEO/CRAZE
-/// marks; the rubble returns its material ids from
-/// `phys_scene::author_wall_bricks`. The host owns this bit
-/// (`crack::stamp_aa` + `Viewer::aa_stamp`) and re-derives it from the ESC rows
-/// (`aa scope`: every surface / detail / the picked wall — plus `aa rubble`).
-pub use crate::flags::AA as AA_BIT;
 
 /// Flag a primitive's material as a see-through OCCLUDER (Material._pad
 /// bit 1), the bit the shade pass reads to know a primary-ray hit is a wall
@@ -574,11 +546,10 @@ mod tests {
     use crate::look::LOOKS;
     use house_game::gym::sim::gym_level;
 
-
     /// THE GREYBOX IS BOXES. Every wall, roof cap and lamp is a 24-vertex box
     /// and every floor a quad, and a pier's mesh is EXACTLY the box the level
-    /// authored — the crack lab, the pick ray, the smash rig and the local
-    /// probe refresh all address `Pier.lo/hi`, so a pass that grew geometry
+    /// authored — the smash rig and its probe refresh address `Pier.lo/hi`,
+    /// so a pass that grew geometry
     /// past it (the eased-arris promoter did, by design, at its junctions)
     /// would quietly break the refresh's containment argument. Kept as a
     /// standing invariant after that promoter was deleted, because the next
@@ -660,27 +631,5 @@ mod tests {
     fn wall_cut_sits_below_wall_tops() {
         assert!(WALL_CUT_H < WALL_TOP, "walls must drop to stubs indoors");
         assert!(WALL_CUT_H > 0.25, "ground-level dressing survives the cutaway");
-    }
-
-    #[test]
-    fn effect_catalogue_has_only_valid_acceleration_structure_primitives() {
-        let spec = house_game::gym::sim::catalogue_level();
-        let (mut scene, meta) = build_gym(&spec, &crate::look::POLANA);
-        let mut lab = crate::crack::CrackLab::default();
-        crate::crack::resolve(Some(crate::demos::catalogue_wear()), &mut lab, &meta.piers, &mut scene, 1);
-        scene.validate_acceleration_geometry().expect("effect catalogue must be legal Metal AS input");
-        for (i, p) in scene.primitives.iter().enumerate() {
-            assert!(p.index_count >= 3, "catalogue primitive {i} has no triangle data");
-            assert_eq!(p.index_count % 3, 0, "catalogue primitive {i} has a partial triangle");
-            assert!(p.vertex_count > 0, "catalogue primitive {i} has no vertices");
-            let verts = &scene.vertices[p.vertex_offset as usize..(p.vertex_offset + p.vertex_count) as usize];
-            assert!(verts.iter().all(|v| v.pos.iter().all(|x| x.is_finite())), "catalogue primitive {i} has a non-finite vertex");
-            for tri in scene.indices[p.index_offset as usize..(p.index_offset + p.index_count) as usize].as_chunks::<3>().0 {
-                let a = Vec3::from(verts[tri[0] as usize].pos);
-                let b = Vec3::from(verts[tri[1] as usize].pos);
-                let c = Vec3::from(verts[tri[2] as usize].pos);
-                assert!((b - a).cross(c - a).length() > 1.0e-8, "catalogue primitive {i} contains a zero-area triangle");
-            }
-        }
     }
 }

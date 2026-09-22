@@ -13,9 +13,8 @@
 //! - Shift — run; C — toggle crouch; Ctrl — hold crouch
 //! - q / e — smooth eased quarter turn (presentation-only)
 //! - scroll / +- — integer zoom steps 1-4, cursor-anchored; 0 = camera reset
-//! - Tab — the personal IDE (pracownia): hierarchy + inspector at 2x the
-//!   game's pixel density; click selects, sliders edit on release; the world
-//!   pauses while it is open (ESC closes it too)
+//! - Tab — creative mode (build ↔ play): the toolbar, the free camera and
+//!   the brushes (creative_host.rs); the world pauses while building
 //! - l — lamp master on/off
 //! - r — record a clip at exact game resolution: stop writes BOTH
 //!   clips/clip_NNNN.mp4 (x264, NEAREST 4x) and .gif (palette, 1x, half rate)
@@ -39,14 +38,11 @@ mod capture;
 mod concrete;
 mod terrain;
 mod survivor;
-mod crack;
-mod crack_geom;
 mod demos;
 mod flags;
 mod gym_loop;
 mod gym_scene;
 mod creative_host;
-mod ide_host;
 mod play_script;
 mod level_host;
 mod input;
@@ -56,13 +52,9 @@ mod painted;
 mod phys_scene;
 mod view;
 mod viewer;
-mod wear;
-mod wear_file;
-// `wall` and `rebar` moved to the `wear-core` leaf crate on 2026-07-28 (deps:
-// glam only). What stayed is the half of `wall`'s tests that measures the model
-// over the REAL shipped levels — those build a `Scene`, so they cannot follow.
+// the structural GLSL↔MSL twin diff (tests only)
 #[cfg(test)]
-mod wall_tests;
+mod twin;
 // Backend selected at compile time by target OS: Metal on Apple Silicon,
 // Vulkan everywhere else. The Vulkan path runs on the RTX box; the Metal path
 // runs on the M2 Pro.
@@ -135,9 +127,9 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
                 let Some(r) = self.renderer.as_mut() else { return };
-                // Track physical releases BEFORE menus/IDE can consume the event.
+                // Track physical releases BEFORE a menu can consume the event.
                 let movement = if let PhysicalKey::Code(key) = event.physical_key {
-                    let active = !r.menu_open() && !r.ide.ui.open;
+                    let active = !r.menu_open();
                     let handled = r.keys.update(key, event.state.is_pressed(), event.repeat, active);
                     // building: the same held keys pan the camera
                     // (Viewer::creative_pan) instead of walking the player
@@ -223,38 +215,21 @@ impl ApplicationHandler for App {
                     }
                 }
                 if let PhysicalKey::Code(key) = event.physical_key {
-                    if !r.ide.ui.open {
-                        if let Some(delta) = input::camera_turn(key, event.repeat) {
-                            r.start_rotate(delta);
-                            return;
-                        }
-                        if key == KeyCode::KeyC && !event.repeat {
-                            r.gym.crouch_toggle = !r.gym.crouch_toggle;
-                            return;
-                        }
+                    if let Some(delta) = input::camera_turn(key, event.repeat) {
+                        r.start_rotate(delta);
+                        return;
+                    }
+                    if key == KeyCode::KeyC && !event.repeat {
+                        r.gym.crouch_toggle = !r.gym.crouch_toggle;
+                        return;
                     }
                 }
                 match event.logical_key.as_ref() {
                     // same repeat guard as the modal branch: one physical
-                    // press, one toggle. ESC closes the IDE first — the game
-                    // menu stays one more ESC away.
-                    Key::Named(NamedKey::Escape) if !event.repeat => {
-                        if r.ide.ui.open {
-                            r.ide_toggle();
-                        } else {
-                            r.menu_toggle();
-                        }
-                    }
-                    // Tab: play ↔ build (creative mode, 2026-09-22). The
-                    // slider IDE stays reachable on F2 until its wear rows
-                    // have a creative-mode replacement.
-                    Key::Named(NamedKey::Tab) if !event.repeat => {
-                        if r.ide.ui.open {
-                            r.ide_toggle();
-                        }
-                        r.creative_toggle();
-                    }
-                    Key::Named(NamedKey::F2) if !event.repeat => r.ide_toggle(),
+                    // press, one toggle
+                    Key::Named(NamedKey::Escape) if !event.repeat => r.menu_toggle(),
+                    // Tab: play ↔ build (creative mode, 2026-09-22)
+                    Key::Named(NamedKey::Tab) if !event.repeat => r.creative_toggle(),
                     Key::Character("=") | Key::Character("+") => {
                         let c = r.view.cursor;
                         r.zoom_step(1, c);
@@ -287,13 +262,11 @@ impl ApplicationHandler for App {
                 // focus can leave mid-hold (fullscreen toggles, alt-tab) and
                 // the release then goes to another surface: clear every
                 // held-state or the player walks into a wall forever and a
-                // stale drag keeps editing the panel
+                // stale drag keeps editing the menu
                 if let Some(r) = self.renderer.as_mut() {
                     r.clear_live_input();
                     r.menu.drag = false;
                     r.menu.drag_pending = false;
-                    r.ide.ui.cancel_drag();
-                    r.ide.drag_pending = false;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -304,14 +277,11 @@ impl ApplicationHandler for App {
                         r.creative_move(np);
                     }
                     // COALESCED: the drag applies once per frame (RedrawRequested),
-                    // from the latest cursor — a wall-panel drag recompiles the
-                    // level, and a 1000 Hz mouse applying that per EVENT builds a
-                    // backlog the frame loop can never drain (see MenuState::drag_pending).
+                    // from the latest cursor — a 1000 Hz mouse applying a slider
+                    // per EVENT builds a backlog the frame loop can never drain
+                    // (see MenuState::drag_pending).
                     if r.menu.drag {
                         r.menu.drag_pending = true;
-                    }
-                    if r.ide.ui.dragging() {
-                        r.ide.drag_pending = true;
                     }
                 }
             }
@@ -342,9 +312,8 @@ impl ApplicationHandler for App {
                 if let Some(r) = self.renderer.as_mut() {
                     if state == ElementState::Pressed {
                         let c = r.view.cursor;
-                        // the wall panel is gone (2026-07-27): outside the
-                        // IDE a world click is the game's (click-to-move)
-                        if !r.menu_click(c) && !r.ide_click(c) {
+                        // outside a menu a world click is the game's
+                        if !r.menu_click(c) {
                             r.click_move(c); // click-to-move
                         }
                     } else {
@@ -356,14 +325,6 @@ impl ApplicationHandler for App {
                             r.menu_drag_to(c);
                         }
                         r.menu.drag = false;
-                        if r.ide.ui.dragging() {
-                            if r.ide.drag_pending {
-                                r.ide.drag_pending = false;
-                                r.ide_drag_step();
-                            }
-                            r.ide_release(); // slider released: the edit lands here
-                        }
-                        r.crack_release(); // knob drag ended: faults may need real geometry
                     }
                 }
             }
@@ -373,11 +334,6 @@ impl ApplicationHandler for App {
                         MouseScrollDelta::LineDelta(_, y) => y,
                         MouseScrollDelta::PixelDelta(p) => p.y as f32 / 50.0,
                     };
-                    // an open IDE takes the wheel over its hierarchy (scroll);
-                    // anywhere else it stays the zoom
-                    if r.ide_wheel(r.view.cursor, dy) {
-                        return;
-                    }
                     // accumulate (trackpads send fractional deltas) and zoom in
                     // whole steps, cursor-anchored — web zoomStepAtClient.
                     r.view.wheel_accum += dy;
@@ -424,10 +380,6 @@ impl ApplicationHandler for App {
                         r.menu.drag_pending = false;
                         let c = r.view.cursor;
                         r.menu_drag_to(c);
-                    }
-                    if r.ide.ui.dragging() && r.ide.drag_pending {
-                        r.ide.drag_pending = false;
-                        r.ide_drag_step();
                     }
                     let ok = unsafe { r.draw() };
                     if r.exit_requested {

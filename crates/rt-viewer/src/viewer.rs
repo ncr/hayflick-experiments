@@ -9,7 +9,7 @@
 //! wall clock never advances the sim, and the rendered frame is a pure
 //! function of (scene, config, CMDS prefix).
 
-use crate::backend::{new_backend, FramePresent, Overlay, ProbeRefresh, RenderBackend};
+use crate::backend::{new_backend, FramePresent, Overlay, RenderBackend};
 use crate::capture::Harness;
 use crate::gym_loop::GymLoop;
 use crate::menu::MenuState;
@@ -74,24 +74,6 @@ pub struct Viewer {
     pub bump: f32,
     pub bump_scale: f32,
     pub gi: f32,
-    /// CONTOUR COVERAGE AA weight (look-authored, `AA` env overrides, live from
-    /// the ESC settings row — a push-constant change, no rebuild, no rebake).
-    pub aa: f32,
-    /// AA SCOPE: 0 = every surface, 1 = generator detail, 2 = the picked pier
-    /// only (owner 2026-07-25 — the per-wall A/B). Drives
-    /// [`crate::crack::AA_BIT`] via `aa_stamp`; the shader ignores the bit at
-    /// scope 0.
-    pub aa_scope: f32,
-    /// Does CHUNKY generator detail (whole blocks — the wall-smash rubble) take
-    /// the contour AA too? Off by default: a brick is 10-30 px across, so there
-    /// is no sampling gap to fix and the AA only softens the block read, plus
-    /// tumbling silhouettes pick up a per-frame shimmer (owner call after the
-    /// A/B clips, 2026-07-25 — "leave it configurable, it IS a visual
-    /// decision"). Thin detail (crack grooves, plates) is unaffected.
-    pub aa_chunky: f32,
-    /// Materials of the CHUNKY detail in the current build (rubble), refreshed
-    /// with the scene — `aa_stamp` scopes them by [`Self::aa_chunky`].
-    pub aa_chunky_mats: Vec<i32>,
     pub ao: f32,
     pub ao_r: f32,
     pub ao_n: i32,
@@ -108,14 +90,12 @@ pub struct Viewer {
     pub view: ViewState,
     /// The gym sim loop — THE game loop (docs/VISION.md Faza 0).
     pub gym: GymLoop,
-    /// Every wall segment of the current build (GymMeta.piers) — the crack
-    /// lab's pick targets; refreshed on every scene rebuild.
+    /// Every wall segment of the current build (GymMeta.piers) — the wall
+    /// smash's targets; refreshed on every scene rebuild.
     pub piers: Vec<crate::gym_scene::Pier>,
     /// Every painted wall face of the current scene (creative mode's paint
     /// targets and live-preview atlas slots; painted.rs).
     pub painted: Vec<crate::painted::FaceSlot>,
-    /// Crack-lab state (per-pier aging knobs + selection) — see crack.rs.
-    pub crack: crate::crack::CrackLab,
     /// Level-as-data bookkeeping (authored spawn, file backing, dirty) — see
     /// level_host.rs.
     pub level: crate::level_host::LevelState,
@@ -126,8 +106,6 @@ pub struct Viewer {
     pub audio: Option<crate::audio::AudioOut>,
     pub menu: MenuState,
     pub keys: crate::input::Keyboard,
-    /// The personal IDE (Tab; `IDE=1` boots it open) — see ide_host.rs.
-    pub ide: crate::ide_host::IdeState,
     /// Creative mode — build the level in-game (Tab; see creative_host.rs).
     pub creative: crate::creative_host::CreativeState,
     /// Scripted input for "let's play" clips (`PLAY_SCRIPT=`; play_script.rs).
@@ -153,8 +131,7 @@ pub struct Viewer {
     // runner; the loop just applies its per-frame effects to generic knobs.
     demo: crate::demos::DemoRunner,
     /// The demo the runner is playing (LEVEL env or the LEVELS menu) — kept so
-    /// `apply_look`'s scene rebuild can re-arm the smash rig + brick runs, and
-    /// so a wear save (`wear_file`) knows which file the authoring came from.
+    /// `apply_look`'s scene rebuild can re-arm the smash rig + brick runs.
     pub(crate) cur_demo: Option<&'static crate::demos::Demo>,
     // per-frame sun/sky override (generic — a demo morph or a future day cycle
     // drives it). `None` = the scene's baked env (bit-identical to before).
@@ -258,23 +235,8 @@ impl Viewer {
         // the scene BEFORE the backend consumes it. The rig owns the phys/{i}
         // namespace.
         let smash = arm_smash(demo, &gym_meta);
-        let mut chunky_mats = Vec::new();
         if let Some(rig) = &smash {
-            chunky_mats = crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
-        }
-        // Crack lab: stamp per-pier aging knobs into the materials BEFORE the
-        // backend consumes the scene. CRACKS env (harness, uniform) overrides
-        // the demo's authored seed; neither → pristine (bit-identical image).
-        let mut crack = crate::crack::CrackLab::default();
-        let level_wear = demo.and_then(|d| d.wear).map(|f| f.level_wear());
-        crate::crack::resolve(level_wear, &mut crack, &gym_meta.piers, &mut scene, cfg.render.aa_scope);
-        crack.active = level_wear.is_some();
-        // A demo that ages a wall has to NAME one: report a miss once here
-        // rather than let the beat silently no-op for its whole run.
-        if let Some((x, z)) = demo.map(|d| d.script).and_then(crate::demos::DemoRunner::age_point) {
-            if crate::crack::pier_index_at(&gym_meta.piers, x, z).is_none() {
-                println!("age: ramp point ({x}, {z}) misses every wall pier — beat disarmed");
-            }
+            crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
         }
         println!("scene: {} prims, {} tris (the gym, look {})", scene.primitives.len(), scene.indices.len() / 3, look.name);
         let player0 = scene.player_start;
@@ -308,10 +270,6 @@ impl Viewer {
             bump: cfg.render.bump.unwrap_or(look.bump),
             bump_scale: cfg.render.bump_scale.unwrap_or(look.bump_scale),
             gi: cfg.render.gi.unwrap_or(look.gi),
-            aa: cfg.render.aa.unwrap_or(look.aa),
-            aa_scope: cfg.render.aa_scope as f32,
-            aa_chunky: if cfg.render.aa_chunky { 1.0 } else { 0.0 },
-            aa_chunky_mats: chunky_mats,
             ao: cfg.render.ao,
             ao_r: cfg.render.ao_r,
             ao_n: cfg.render.ao_n,
@@ -342,9 +300,7 @@ impl Viewer {
             gym: GymLoop::with_projection(spec, proj),
             piers: gym_meta.piers,
             painted: gym_meta.painted,
-            crack,
             level: level_state,
-            ide: crate::ide_host::IdeState::from_env(),
             creative: crate::creative_host::CreativeState::default(),
             play: crate::play_script::PlayScript::from_env(),
             harness: Harness::from_cfg(&cfg),
@@ -378,14 +334,6 @@ impl Viewer {
             r.view.pan += d;
             r.clamp_pan_to_buffer();
         }
-        // CHUNKY detail (rubble) takes the AA only if the owner says so, and the
-        // crack path stamps piers inside `resolve` — so one pass here settles
-        // every AA opt-in bit against the freshly built scene.
-        r.aa_stamp();
-        // the wear family's per-surface effect word rides the same post-build
-        // live stream (never the pre-build scene: the probe-cache key hashes the
-        // material bytes — see crate::wear).
-        r.wear_stamp();
         // optional camera look-at override (world units), for framing captures
         if r.cfg.game.target.0.is_some() || r.cfg.game.target.1.is_some() {
             let t = Vec3::new(r.cfg.game.target.0.unwrap_or(r.view.target.x), 0.0, r.cfg.game.target.1.unwrap_or(r.view.target.z));
@@ -403,8 +351,8 @@ impl Viewer {
                 None => eprintln!("LOOK_SWITCH={name}: unknown preset — ignored"),
             }
         }
-        // Exercise the actual level-menu transition, including same-layout wear
-        // changes. Direct LEVEL boots never visit this path. A semicolon list
+        // Exercise the actual level-menu transition. Direct LEVEL boots never
+        // visit this path. A semicolon list
         // permits a full round trip in one process on either backend.
         if let Ok(names) = std::env::var("LEVEL_SWITCH") {
             for name in names.split(';') {
@@ -413,13 +361,6 @@ impl Viewer {
                 r.boot_demo(demo);
             }
         }
-        // CRACK_EDIT harness knob: replay a knob drag + release, so the headless
-        // path can measure and diff the crack-lab REBUILD (the owner's expensive
-        // interaction) instead of only a boot.
-        r.crack_edit_from_env();
-        // IDE_EDIT harness knob: replay IDE inspector edits through the real
-        // apply path (spec mutation + rebuild), same discipline.
-        r.ide_env_edits();
         // CMDS replay prefix (deterministic) — runs LAST so the trace acts on
         // the fully seeded state.
         r.gym.run_cmds(&r.cfg);
@@ -451,40 +392,22 @@ impl Viewer {
     /// whose value IS the forced same-look rebuild (identity check); a
     /// future menu look row should guard on ptr::eq at its call site.
     pub fn apply_look(&mut self, look: &'static crate::look::Look) {
-        self.rebuild_in_look(look, ProbeRefresh::Full);
-    }
-
-    /// The rebuild body behind [`Self::apply_look`], with the GI half as a
-    /// parameter. A look switch / demo boot must rebake everything ([`ProbeRefresh::Full`]);
-    /// the crack-lab knob release passes the dirty pier AABBs
-    /// ([`ProbeRefresh::Local`]) because it changed nothing else in the level —
-    /// identical host work, half the wall clock (see `Viewer::crack_release`).
-    pub(crate) fn rebuild_in_look(&mut self, look: &'static crate::look::Look, refresh: ProbeRefresh) {
         let t0 = std::time::Instant::now();
         let (mut scene, meta) = crate::gym_scene::build_gym(&self.gym.spec, look);
         // re-arm the wall-smash rig against the FRESH meta (prim indices may
         // shift with the look) + re-author its brick runs; a fired smash
         // resets to the standing wall — same one-shot rule as the roof tear
         self.smash = arm_smash(self.cur_demo, &meta);
-        self.aa_chunky_mats.clear();
         if let Some(rig) = &self.smash {
-            self.aa_chunky_mats = crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
+            crate::phys_scene::author_wall_bricks(&mut scene, &rig.bricks, look);
             self.gym.phys = None; // bricks wait zero-scaled for the beat
         }
-        // crack lab: refresh the pick targets and re-stamp the aging knobs
-        // into the fresh materials (a rebuild mints them clean). Live-dialed
-        // values survive a look switch (the pier count is look-stable);
-        // entering/leaving the demo re-seeds or clears.
+        // refresh the smash targets and the paint slots against the fresh build
         self.piers = meta.piers;
         self.painted = meta.painted;
-        let level_wear = self.cur_demo.and_then(|d| d.wear).map(|f| f.level_wear());
-        crate::crack::resolve(level_wear, &mut self.crack, &self.piers, &mut scene, self.aa_scope.round() as i32);
-        self.crack.active = level_wear.is_some();
-        unsafe { self.backend.rebuild_scene(&scene, &self.cfg, refresh) };
+        unsafe { self.backend.rebuild_scene(&scene, &self.cfg) };
         self.light_keys = join_lamp_lights(&scene, self.backend.handles(), self.backend.light_count());
         self.scene = scene;
-        self.aa_stamp(); // the rebuild minted clean materials: re-derive the AA scope
-        self.wear_stamp(); // …and re-stream the effect word onto them (crate::wear)
         // a look switch supersedes any in-flight demo morph + its per-frame env
         self.demo.cancel_morph();
         self.env_override = None;
@@ -502,7 +425,6 @@ impl Viewer {
         self.bump = self.cfg.render.bump.unwrap_or(look.bump);
         self.bump_scale = self.cfg.render.bump_scale.unwrap_or(look.bump_scale);
         self.gi = self.cfg.render.gi.unwrap_or(look.gi);
-        self.aa = self.cfg.render.aa.unwrap_or(look.aa);
         println!("look: {} ({:.0} ms)", look.name, t0.elapsed().as_secs_f32() * 1000.0);
     }
 
@@ -512,17 +434,11 @@ impl Viewer {
     /// (`apply_look` also re-joins lights + refreshes the roof/room meta). The
     /// follow-cam is re-aimed at the new spawn for a clean first frame.
     pub fn boot_demo(&mut self, demo: &'static crate::demos::Demo) {
-        // A menu switch owns the layout AND the wear source. Equal wall counts
-        // do not make crack lab and courtyard the same authored level, so a
-        // CHANGED demo starts from a fresh CrackLab (codex, 2026-09-05).
-        if self.cur_demo.is_none_or(|old| !std::ptr::eq(old, demo)) {
-            self.crack = crate::crack::CrackLab::default();
-        }
         // Reload the AUTHORED spec for the demo's level — before 2026-08-09
-        // this reused the current level's grid, so a menu switch onto the
-        // catalogue rebuilt the GYM with a (20, 20) spawn off its 18×14 map.
-        // Code-generated levels (catalogue, concrete aftermath, after the
-        // rain) come back from `Level::spec` through the same `load`.
+        // this reused the current level's grid, so a menu switch onto another
+        // level rebuilt the GYM with that level's spawn. Code-generated levels
+        // (concrete aftermath, after the rain) come back from `Level::spec`
+        // through the same `load`.
         // Unsaved level edits on the outgoing level are dropped with a word;
         // save runs on every edit, so this only fires when a save was blocked.
         if self.level.dirty {
@@ -555,9 +471,6 @@ impl Viewer {
         }
         if step.smash {
             self.smash_wall();
-        }
-        if let Some(a) = step.age {
-            self.age_wall_step(a.x, a.z, a.t, a.commit);
         }
         if let Some(lit) = step.lit {
             // apply the cross-fade's lightable half; the sun/sky go through the
@@ -657,7 +570,7 @@ impl Viewer {
             instances: &instances,
         };
 
-        // ESC menu overlay (panel / wall panel / REC badge), copied onto the PRESENTED
+        // ESC menu overlay (panel / REC badge), copied onto the PRESENTED
         // image only — never `out`, so SHOT/MOVIE/DUMP/DEMO captures stay
         // UI-free (those modes pass no overlay).
         let menu_canvas = self.overlay_frame();
@@ -673,11 +586,10 @@ impl Viewer {
         };
 
         // burned-in stamps: the click-to-move destination marker. Game
-        // picture, not shell UI — they ride into SHOT/DEMO captures. The IDE
-        // panels ride the same path ON PURPOSE: a SHOT with IDE=1 is the
-        // headless verification of the whole overlay.
+        // picture, not shell UI — they ride into SHOT/DEMO captures. Creative
+        // mode's toolbar rides the same path ON PURPOSE: a DEMO capture of a
+        // PLAY_SCRIPT is the headless verification of the chrome.
         let mut stamps = self.gym.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
-        stamps.extend(self.ide_stamps());
         stamps.extend(self.creative_stamps(self.view.cursor));
         // Fog is a primary-ray effect, independent of the irradiance bake.
         // Menu adjustments must reach this frame without rebuilding geometry
@@ -706,8 +618,6 @@ impl Viewer {
             ao_dither: self.cfg.render.ao_dither,
             refl: self.cfg.render.refl,
             refl_px: self.cfg.render.refl_px,
-            aa: self.aa,
-            aa_scope: self.aa_scope.round() as i32,
             debug: self.debug,
             exposure: self.exposure,
             style: self.style,
@@ -837,10 +747,8 @@ impl Viewer {
         }
         // menu pause (live): the sim clock stops dead while any menu is up —
         // the accumulator isn't fed, so RESUME continues exactly where it
-        // stopped. The IDE pauses the same way (pause = edit, the 2026-07-23
-        // anchor: authoring happens in a frozen world). Harness modes never
-        // pause.
-        if (self.menu_open() || self.ide.ui.open) && self.harness.shot.is_none() {
+        // stopped. Harness modes never pause.
+        if self.menu_open() && self.harness.shot.is_none() {
             return;
         }
         let sim_dt = shot_sim_dt(self.harness.shot.is_some(), dt);
@@ -851,11 +759,6 @@ impl Viewer {
     /// owned so the borrow in `FramePresent` can outlive the builder. `None`
     /// in every harness capture mode (SHOT/MOVIE/DUMP/DEMO stay UI-free).
     fn overlay_frame(&mut self) -> Option<(Vec<u32>, i32, i32, bool)> {
-        // the IDE's stamps ARE the shell while it is open — no wall panel on
-        // top (a modal menu can't be open then: ESC closes the IDE first)
-        if self.ide.ui.open && !self.menu_open() {
-            return None;
-        }
         if self.harness.shot.is_none() && self.movie.is_none() && self.harness.dump_dir.is_none() && self.harness.demo.is_none() {
             let (buf, w, h) = self.menu_canvas()?;
             let center = matches!(self.menu.mode, crate::menu::MenuMode::Title | crate::menu::MenuMode::Pause | crate::menu::MenuMode::Levels);

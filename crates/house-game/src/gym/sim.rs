@@ -8,7 +8,7 @@
 //! Fully headless and deterministic: fixed tick, trace replay, `state_hash`
 //! over every observable field.
 
-use super::grid::{CellKind, CellPos, Dir, EdgeKind, Grid};
+use super::grid::{CellPos, Dir, EdgeKind, Grid};
 use glam::Vec2;
 use sim_core::{Simulation, Tick};
 use crate::{collide_and_slide, TICK_DT};
@@ -286,7 +286,7 @@ impl Simulation for GymGame {
 
 /// Interior span of the one building (inclusive cell range on both axes).
 /// DOCUMENTS the checked-in `gym.level` — the file is the source since
-/// 2026-08-09; a test pins the two against each other so an IDE edit that
+/// 2026-08-09; a test pins the two against each other so an editor edit that
 /// moves the building fails loudly here instead of silently orphaning every
 /// test that walks it.
 pub const HOUSE: (i16, i16, i16, i16) = (3, 3, 7, 7); // x0, z0, x1, z1
@@ -298,7 +298,7 @@ pub const DOORWAY: CellPos = CellPos { x: 5, z: 7 };
 /// work and the Faza-2 movement work needs, and nothing else.
 ///
 /// LEVEL-AS-DATA since 2026-08-09: this parses the checked-in
-/// [`super::level_file::GYM_LEVEL_SRC`] — the same bytes the IDE's save writes back
+/// [`super::level_file::GYM_LEVEL_SRC`] — the same bytes creative mode's save writes back
 /// — verified grid-hash-identical to the hand-written builder it replaced.
 /// Panics only on a malformed checked-in file, which
 /// `checked_in_level_is_canonical` catches at `cargo test` time first.
@@ -308,7 +308,7 @@ pub fn gym_level() -> GymLevel {
 
 /// A derelict concrete test yard: clear walking lanes between five histories.
 /// The walls share the collision grid; cover erosion stays inside each slab.
-/// Code-generated like the catalogue (its walls are authored in `concrete.rs`).
+/// Code-generated (its walls are authored in rt-viewer's `concrete.rs`).
 pub fn concrete_level() -> GymLevel {
     let mut grid = Grid::new(18, 15);
     for (x0,x1,z) in [(1,4,3),(3,10,6),(1,5,10),(9,14,11)] {
@@ -318,120 +318,10 @@ pub fn concrete_level() -> GymLevel {
     GymLevel { paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
 }
 
-// ---------------------------------------------------------------------------
-// The effect catalogue — the SECOND level (owner ask, 2026-07-26)
-// ---------------------------------------------------------------------------
-
-/// Cell pitch between two specimen walls: 2 cells of wall, 1 cell of grass.
-/// The gap has to survive the projection — 1 wu is ~41 px on world-X, so two
-/// neighbours never share a silhouette even at the widest framing.
-pub const SPEC_PITCH: i16 = 3;
-/// The x cell each specimen row starts on, and how many stand in a row.
-pub const SPEC_X0: i16 = 1;
-pub const SPEC_N: i16 = 5;
-/// The specimen rows, as the z of the wall line they sit on. 4 wu apart:
-/// the trimetric camera looks down (1, 2) in xz, so a nearer row rides UP the
-/// screen — at 4 wu the row in front clears the 2.1875-wu wall behind it.
-/// Row 3 (z=19) arrived with the mud effect (2026-07-27, effect-system round
-/// D) and grew the shell-hole slab with the artillery round; its remaining
-/// slots wait for the next placed effect.
-pub const SPEC_Z: [i16; 4] = [7, 11, 15, 19];
-/// Cells each row is shifted along +x relative to the one behind it, so the
-/// three rows stack in one SCREEN COLUMN instead of staggering across the
-/// frame. It is arithmetic, not taste: the game projection's axis images are
-/// +x → (40, 10) px and +z → (−20, 20) px, so a row 4 wu further out lands
-/// (−80, +80) px away, and +2 wu of x puts (+80, +20) back — net (0, +100).
-/// Authored here because the LEVEL is what has to know it; `spec_point` is the
-/// one place that resolves a (row, index) to a world point.
-pub const SPEC_ROW_DX: i16 = 2;
-/// The catalogue's own little building — Room cells, so its facades are the
-/// only walls in the level that carry the look's windows (a freestanding run
-/// is never glazed; see `gym_scene::wall_runs`). Its south wall keeps a
-/// doorway, so the level also shows a jamb and a parapet cap.
-pub const SPEC_HOUSE: (i16, i16, i16, i16) = (2, 1, 6, 3);
-pub const SPEC_DOOR: CellPos = CellPos { x: 4, z: 3 };
-
-/// Every specimen is the SAME 2 cells wide — identical is the whole point of the
-/// bench, and until 2026-07-26 one slab could not be.
-///
-/// The break specimen used to need four cells: a break was drawn once per 6-wu
-/// STRIP with its axis anywhere inside, so a 2.2-wu slab contained that axis
-/// barely a third of the time and the bench's break came up EMPTY on its first
-/// build. Widening it was the honest answer to a probability — the effect's own
-/// scale really was 6 wu, and a bench that hid that would have been lying about
-/// the effect. Now a break is an authored COUNT placed on the run
-/// (`rt_viewer::crack_geom::run_breaks`), so a 2.2-wu wall asked for one gets
-/// one, and the row is uniform again.
-pub const SPEC_CELLS: i16 = 2;
-
-/// World (x, z) of specimen `i` in row `r` — the point a caller names it by.
-/// The wall line is the cell's -z edge, so its world z IS the row index.
-pub fn spec_point(row: usize, i: i16) -> (f32, f32) {
-    (spec_x0(row, i) as f32 + SPEC_CELLS as f32 * 0.5, SPEC_Z[row] as f32)
-}
-
-/// The x cell specimen `i` of row `row` starts on.
-fn spec_x0(row: usize, i: i16) -> i16 {
-    SPEC_X0 + row as i16 * SPEC_ROW_DX + i * SPEC_PITCH
-}
-
-/// THE EFFECT CATALOGUE (owner, 2026-07-26: "create a special level that shows
-/// each of them separately"). Fifteen identical freestanding wall specimens in
-/// three rows, each its own RUN — so each carries its own story key, its own
-/// damage field and its own knob set, and nothing composes with its neighbour.
-/// One small building at the back for the level dress that needs a Room to
-/// exist (windows, glass, a doorway jamb, a parapet cap).
-///
-/// Identical is the point: every specimen is the same 2.2 × 2.1875 wu slab on
-/// the same grass under the same sun, so a difference between two of them is
-/// the EFFECT and nothing else. The gym cannot do that job — its fifteen piers
-/// differ in length, orientation, neighbours and glazing.
-///
-/// The player spawns in the far corner on purpose. The ROI reveal dissolves an
-/// occluder only when its wall FACE puts him on the far side (the `x + 2z`
-/// ground-depth gate retired 2026-08-02), and every specimen sits well away
-/// from the spawn — so no specimen can ghost at boot, at any camera framing.
-/// (The spawn moved 4 cells deeper with row 3, staying clear of the slabs.)
-pub fn catalogue_level() -> GymLevel {
-    let mut grid = Grid::new(22, 22);
-    for (row, &z) in SPEC_Z.iter().enumerate() {
-        // Row 3 builds only the slabs it has SUBJECTS for (a control, mud,
-        // and the shell hole since the artillery round); an unauthored slab
-        // is not a specimen, and the empty ones nearest the spawn sat inside
-        // the ROI reveal disc and dissolved on boot. Further placed effects
-        // grow this count with their subjects.
-        let n = if row == 3 { 3 } else { SPEC_N };
-        for i in 0..n {
-            let x0 = spec_x0(row, i);
-            for x in x0..x0 + SPEC_CELLS {
-                grid.set_edge(CellPos::new(x, z), Dir::Zm, EdgeKind::Wall);
-            }
-        }
-    }
-    let (x0, z0, x1, z1) = SPEC_HOUSE;
-    for z in z0..=z1 {
-        for x in x0..=x1 {
-            grid.set_cell(CellPos::new(x, z), CellKind::Room);
-        }
-        grid.set_edge(CellPos::new(x0, z), Dir::Xm, EdgeKind::Wall);
-        grid.set_edge(CellPos::new(x1, z), Dir::Xp, EdgeKind::Wall);
-    }
-    for x in x0..=x1 {
-        grid.set_edge(CellPos::new(x, z0), Dir::Zm, EdgeKind::Wall);
-        if CellPos::new(x, z1) != SPEC_DOOR {
-            grid.set_edge(CellPos::new(x, z1), Dir::Zp, EdgeKind::Wall);
-        }
-    }
-    // One lamp, in the corner opposite everything: the level needs a practical
-    // (the probe bake and the look's amber accent both assume one), but an
-    // amber pool ON a specimen would be a second variable in every read.
-    let lights = vec![(CellPos::new(18, 2), 6)];
-    GymLevel { paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(20, 20), lights }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gym::grid::CellKind;
     use sim_core::Runner;
 
     #[test]
@@ -447,7 +337,7 @@ mod tests {
 
     /// [`HOUSE`]/[`DOORWAY`] document the checked-in `gym.level`; this is the
     /// pin that keeps the constants and the file telling one story after an
-    /// IDE save moves a wall. Every interior cell is Room, the perimeter is
+    /// editor save moves a wall. Every interior cell is Room, the perimeter is
     /// walled, and the doorway's own edge is the one gap.
     #[test]
     fn the_house_constants_describe_the_checked_in_level() {

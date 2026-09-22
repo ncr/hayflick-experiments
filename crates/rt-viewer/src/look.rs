@@ -41,7 +41,7 @@ use rt_probe::{StyleCfg, SunSky};
 /// read, and the look is colours + light + response.
 pub struct Look {
     pub name: &'static str,
-    /// New reinforced-concrete geometry/material family, independent of wear.
+    /// The reinforced-concrete geometry/material family (`concrete.rs`).
     pub concrete: bool,
     // ---- architecture
     pub street: u32,
@@ -84,12 +84,6 @@ pub struct Look {
     pub bump: f32,
     pub bump_scale: f32,
     pub gi: f32,
-    /// CONTOUR COVERAGE AA (owner 2026-07-25): the weight each of the four
-    /// fixed sub-pixel coverage rays carries against the centre sample, on
-    /// CONTOUR texels only — flat interiors, clean pixel stairs and painted
-    /// detail stay one sample per texel and bit-identical. 0 = fully aliased
-    /// (the pre-2026-07-25 image), 1 = the unbiased 5-sample box.
-    pub aa: f32,
     // ---- the player body (linear)
     pub coat: [f32; 4],
     pub hood: [f32; 4],
@@ -141,7 +135,6 @@ pub const POLANA: Look = Look {
     bump: 0.1, // …on near-smooth porcelain (minimal bumps — owner)
     bump_scale: 7.0,
     gi: 0.5,
-    aa: 0.0,
     coat: [0.42, 0.10, 0.08, 1.0], // the red-coat walker (from meadow)
     hood: [0.26, 0.05, 0.04, 1.0],
     skin: [0.74, 0.58, 0.45, 1.0],
@@ -202,7 +195,6 @@ pub const DUSK: Look = Look {
     bump: 0.1,
     bump_scale: 7.0,
     gi: 0.5,
-    aa: 0.0,
     coat: [0.42, 0.10, 0.08, 1.0],
     hood: [0.26, 0.05, 0.04, 1.0],
     skin: [0.74, 0.58, 0.45, 1.0],
@@ -236,7 +228,6 @@ pub const AFTERMATH: Look = Look {
     gloss: 0.0,
     bump: 0.0,
     gi: 0.85,
-    aa: 0.0,
     coat: [0.12,0.16,0.14,1.0],
     hood: [0.09,0.105,0.095,1.0],
     legs: [0.16,0.145,0.115,1.0],

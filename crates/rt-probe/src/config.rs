@@ -20,24 +20,8 @@
 //!   **LOOK** (`look::from_env`), **PROJ** (`viewer::proj_from_env`),
 //!   **LEVEL** (`demos::from_env`, name or index), **AUDIO** (master volume,
 //!   0 = silent).
-//! - the IDE harness (`ide_host`): **IDE**=1 boots the overlay open,
-//!   `IDE_SEL=<object name>` preselects, `IDE_EDIT="<obj> <key> <v>[;…]"`
-//!   replays edits through the real apply path.
-//! - the WEAR family's harness surface —
-//!   `STORY=weather,settlement,cover_loss` (the three causes),
-//!   `SHAPE=grain,relief[,pattern[,p1,p2,p3]]`, `SPREAD=<0..1>` (the per-run
-//!   story spread), `SPALL=<0..1>` (the cover-loss cause on its own, kept
-//!   because every A/B recipe on record uses it) with its `SPALL_LAYER=1|2|3`
-//!   bisect (1 = crater only, 2 = steel only, 3 = both), `SCRUB=<0..1>` (the
-//!   variant dial on every run), `BAND=lo,hi` (the damage band's normalized
-//!   edges on every run), `HOLE=u,y[,caliber]` (ONE placed shell hit on every
-//!   run — named HOLE because SHELL is the login shell in every Unix
-//!   environment), `CRACK_SEL=` to preselect a wall,
-//!   `WEAR_EDIT=weather,settlement,cover_loss[,run]` to replay a slider drag +
-//!   release, and `WEAR_FILE=<path>` to override a level's wear file for load
-//!   AND save — see `crate::crack` / `crate::crack_geom` / `crate::wear` /
-//!   `crate::wear_file` on the viewer side. `WEAR=` is gone: all four
-//!   effect-word lanes are derived now, each driven through its own dial.
+//! - rt-viewer's level + creative harness: **LEVEL_FILE**/**EDIT**
+//!   (`level_host::env`) and **PLAY_SCRIPT** (`play_script.rs`).
 //! - test-only: LEVELS_DUMP (`menu`'s levels-panel PPM dump).
 //!
 //! `Config` is split along the three natural axes the knobs fall into:
@@ -95,13 +79,6 @@ pub struct StyleCfg {
     pub analog_chroma: f32, // ANALOG_CHROMA: chroma noise strength (defaults to ANALOG)
     pub analog_tear: f32,  // ANALOG_TEAR: horizontal scanline-tear strength (defaults to ANALOG)
     pub crt_mask: f32,     // CRT_MASK: RGB phosphor triad + scanline on the FINAL image (0 = off)
-    /// Legacy CONTOUR SOFTEN, locked to zero by the owner 2026-09-05.
-    /// Previously how far a CONTOUR texel's radiance was pulled
-    /// toward its 4-neighbour mean (0 = off). Contour-gated by the same pass
-    /// the coverage AA uses, so it takes the contrast off narrow cracks and
-    /// silhouettes without touching a flat interior. Needs `aa`'s gate pass:
-    /// the backends dispatch it when either knob is live.
-    pub aa_soft: f32,
 }
 
 impl StyleCfg {
@@ -133,7 +110,6 @@ impl StyleCfg {
         analog_chroma: -1.0,
         analog_tear: -1.0,
         crt_mask: 0.0,
-        aa_soft: 0.0,
     };
 
     /// Apply the individual env-var overrides on top of `self` (the look's
@@ -173,8 +149,6 @@ impl StyleCfg {
             st.analog_tear = st.analog;
         }
         st.crt_mask = f("CRT_MASK", st.crt_mask);
-        // Owner 2026-09-05: crisp pixels everywhere, including old launch environments.
-        st.aa_soft = 0.0;
         if st.pal_p < 0.0 {
             st.pal_p = if st.palette as i32 == 2 { 6.0 } else { 0.0 };
         }
@@ -204,12 +178,6 @@ pub struct RenderCfg {
     pub exposure: Option<f32>,     // EXPOSURE: overrides the look's authored exposure (Faza 1b)
     pub probe_spacing: f32,        // PROBE_SPACING: GI probe grid spacing (wu)
     pub probe_rays: i32,           // PROBE_RAYS: bake rays per probe per bank
-    /// `PROBE_LOCAL` — may a scene rebuild that changed only a few AABBs carry
-    /// the baked probe banks over and refresh just their neighbourhoods
-    /// (`ProbeRefresh::Local`, the crack-lab knob release)? On by default;
-    /// `PROBE_LOCAL=0` forces the full rebake, which is the A/B that proves the
-    /// local refresh leaves no stale probe behind.
-    pub probe_local: bool,
     pub ao: f32,                   // AO: RT-AO strength
     pub ao_r: f32,                 // AO_R: RT-AO radius (wu)
     pub ao_n: i32,                 // AO_N: RT-AO ray count
@@ -223,22 +191,8 @@ pub struct RenderCfg {
     pub matq: f32,                 // MATQ: posterize materials — albedo/roughness snapped to N levels (0 = off)
     pub ao_dither: f32,            // AO_DITHER: RT-AO gradient → binary Bayer stipple (0 = off)
     pub refl: f32,                 // REFL: pixelated mirror-reflection composite strength (0 = off)
-    pub refl_px: i32,
-    /// `AA` — CONTOUR COVERAGE strength (owner 2026-07-25): the weight each of
-    /// the four fixed sub-pixel coverage rays carries against the centre
-    /// sample, on CONTOUR texels only (see shade.comp's aaGate). `None` = take
-    /// the look's authored value; 0 = one sample per texel, byte-identical to
-    /// the pre-AA image; 1 = the unbiased 5-sample box.
-    pub aa: Option<f32>,
-    /// `AA_SCOPE` — where the contour AA and the softening apply: 0 = every
-    /// surface, 1 = CRACKED piers only (the default — the greybox keeps its
-    /// hard pixel edges), 2 = the PICKED pier only (the owner's per-wall A/B).
-    pub aa_scope: i32,
-    /// `AA_CHUNKY` — does CHUNKY generator detail (whole blocks: the wall-smash
-    /// rubble) take the contour AA as well? Off by default; thin detail (crack
-    /// grooves, plates) is unaffected. See the AA policy in CLAUDE.md.
-    pub aa_chunky: bool,              // REFL_PX: reflection block size in low-res px (the pixelation)
-    pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4 | DEBUG_AA=5
+    pub refl_px: i32,              // REFL_PX: reflection block size in low-res px (the pixelation)
+    pub debug: i32,                // DEBUG_ALBEDO=1 | DEBUG_GI=2 | DEBUG_DIRECT=3 | DEBUG_AO=4
     // The post stack (StyleCfg) is NOT here since Faza 1b: its base is look
     // data (rt-viewer look.rs); the Viewer resolves `look.style.env_over()`.
 }
@@ -346,8 +300,6 @@ impl Config {
             3
         } else if b("DEBUG_AO", false) {
             4
-        } else if b("DEBUG_AA", false) {
-            5
         } else {
             0
         };
@@ -362,7 +314,6 @@ impl Config {
                 exposure: fo("EXPOSURE"),
                 probe_spacing: f("PROBE_SPACING", 0.5).max(0.05),
                 probe_rays: i("PROBE_RAYS", 2048),
-                probe_local: b("PROBE_LOCAL", true),
                 ao: f("AO", 0.55),
                 ao_r: f("AO_R", 0.8),
                 ao_n: i("AO_N", 8),
@@ -374,9 +325,6 @@ impl Config {
                 matq: f("MATQ", 0.0),
                 ao_dither: f("AO_DITHER", 0.0),
                 refl: f("REFL", 0.0),
-                aa: Some(0.0),
-                aa_scope: i("AA_SCOPE", 1),
-                aa_chunky: b("AA_CHUNKY", false),
                 refl_px: i("REFL_PX", 3).max(1),
                 debug,
             },

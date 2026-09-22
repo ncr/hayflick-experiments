@@ -1,32 +1,27 @@
 //! Level-as-data, host side: load the authored level, apply the harness's
-//! edit ops, and write the owner's IDE edits back to the file — the
-//! `wear_file` discipline applied to GEOMETRY (grid, lamps, spawn).
+//! edit ops, and write the owner's creative-mode edits back to the file
+//! (grid, lamps, spawn, paint).
 //!
 //! The authored spec and the BOOT spec are not the same thing: a demo boots
-//! with its own spawn (the crack lab at (9, 11), the catalogue at (20, 20)),
-//! and that override is presentation for the demo, never the authoring — the
-//! AgeWall lesson (docs/AGENT_LEARNINGS.md 2026-07-27): the first surface
-//! that saved "whatever is live" froze a demo's ramp state into the owner's
-//! file. So [`load`] remembers the AUTHORED spawn and [`level_save`](crate::viewer::Viewer::level_save)
-//! writes THAT, unless the owner explicitly moved it (an IDE spawn edit
-//! updates both).
+//! with its own spawn, and that override is presentation for the demo, never
+//! the authoring — the AgeWall lesson (docs/AGENT_LEARNINGS.md 2026-07-27):
+//! the first surface that saved "whatever is live" froze a demo's ramp state
+//! into the owner's file. So [`load`] remembers the AUTHORED spawn and
+//! [`level_save`](crate::viewer::Viewer::level_save) writes THAT, unless the
+//! owner explicitly moved it (a creative-mode spawn edit updates both).
 //!
-//! Only the GYM is file-backed. The catalogue is generated code (its slabs
-//! grow with the effect system), so edits there stay session-only and the
-//! save says so once.
+//! Only the GYM is file-backed. The other levels are generated code, so edits
+//! there stay session-only and the save says so once.
 
 use house_game::gym::grid::CellPos;
 use house_game::gym::level_file;
 use house_game::gym::sim::GymLevel;
 
 /// Every env knob the LEVEL path reads, with the "writes the authored spec"
-/// column that drives [`env_overridden`] — the `wear_file::env` discipline:
-/// a knob that writes what the owner would have authored BLOCKS the save, so
-/// a SHOT recipe cannot freeze itself into `gym.level`. `LEVEL_FILE`
-/// redirects load AND save to another path and deliberately does not block —
-/// redirecting is what it is for. `IDE_EDIT` also replays level edits
-/// (lamp/spawn statements ride the same `ide_apply`); it blocks here exactly
-/// as it blocks the wear save.
+/// column that drives [`env_overridden`]: a knob that writes what the owner
+/// would have authored BLOCKS the save, so a SHOT recipe cannot freeze itself
+/// into `gym.level`. `LEVEL_FILE` redirects load AND save to another path and
+/// deliberately does not block — redirecting is what it is for.
 pub mod env {
     /// `LEVEL_FILE=<path>` — boot (and save) an alternate level file. A
     /// missing file boots the baked default and saves to the new path.
@@ -34,12 +29,9 @@ pub mod env {
     /// `EDIT="wallx 9 9; room 1 1; lamp 2 2 5; spawn 4 4"` — apply level ops
     /// at boot ([`house_game::gym::level_file::parse_ops`]).
     pub const EDIT: &str = "EDIT";
-    /// `IDE_EDIT` — declared in `wear_file::env` (one name, one home); listed
-    /// in [`ALL`] because its statements reach the level spec too.
-    pub const IDE_EDIT: &str = crate::wear_file::env::IDE_EDIT;
 
     /// (name, writes-the-authored-spec).
-    pub const ALL: &[(&str, bool)] = &[(LEVEL_FILE, false), (EDIT, true), (IDE_EDIT, true)];
+    pub const ALL: &[(&str, bool)] = &[(LEVEL_FILE, false), (EDIT, true)];
 }
 
 fn env_overridden() -> bool {
@@ -54,12 +46,13 @@ const GYM_LEVEL_PATH: &str = "crates/house-game/src/gym/gym.level";
 /// Level bookkeeping on the [`Viewer`](crate::viewer::Viewer).
 pub struct LevelState {
     /// The AUTHORED spawn — what a save writes. A demo's boot spawn is an
-    /// override on the way in and never lands here; an IDE spawn edit does.
+    /// override on the way in and never lands here; a creative-mode spawn
+    /// edit does.
     pub authored_spawn: CellPos,
-    /// Only the gym has a file behind it; catalogue edits are session-only.
+    /// Only the gym has a file behind it; edits elsewhere are session-only.
     pub file_backed: bool,
-    /// An INTERACTIVE level edit happened since the last save. Harness
-    /// replays (`IDE_EDIT=`) restore it, demos never set it.
+    /// An INTERACTIVE level edit happened since the last save; demos never
+    /// set it.
     pub dirty: bool,
 }
 
@@ -92,11 +85,10 @@ pub fn load(level: crate::demos::Level) -> (GymLevel, LevelState) {
 }
 
 impl crate::viewer::Viewer {
-    /// Persist the owner's level edits — called after every IDE level edit,
-    /// a no-op unless an INTERACTIVE edit happened since the last save.
-    /// Mirrors [`wear_save`](crate::viewer::Viewer::wear_save): the dirty flag
-    /// gates, an env override that writes the authoring blocks, and the
-    /// serialized form is canonical so saves are diff-stable.
+    /// Persist the owner's level edits — called after every creative-mode
+    /// commit, a no-op unless an INTERACTIVE edit happened since the last
+    /// save. The dirty flag gates, an env override that writes the authoring
+    /// blocks, and the serialized form is canonical so saves are diff-stable.
     pub fn level_save(&mut self) {
         if !self.level.dirty {
             return;
@@ -124,9 +116,9 @@ impl crate::viewer::Viewer {
 
 #[cfg(test)]
 mod tests {
-    /// The wear guard's source-scan, on this module: every env read spells a
-    /// name from [`super::env`], so a new knob cannot join the load or save
-    /// path without declaring whether it writes the authoring.
+    /// Every env read in this module spells a name from [`super::env`], so a
+    /// new knob cannot join the load or save path without declaring whether
+    /// it writes the authoring.
     #[test]
     fn every_level_env_read_names_a_knob_from_the_table() {
         let bare = format!("env::var{}{}", '(', '"');

@@ -1,7 +1,7 @@
-//! The gym level as DATA: a plain-text file the game loads and the IDE
+//! The gym level as DATA: a plain-text file the game loads and creative mode
 //! writes back — diffed in git like any other authored asset. Same no-serde
-//! discipline as the trace format ([`super::trace`]) and the wear files: one
-//! statement per line, hand-parsed, `#` comments.
+//! discipline as the trace format ([`super::trace`]): one statement per line,
+//! hand-parsed, `#` comments.
 //!
 //! Grammar (coords are grid integers; `size` must come first):
 //! - `size W H` — grid dimensions (cells)
@@ -17,14 +17,12 @@
 //!
 //! [`serialize`] emits the CANONICAL form (fixed statement order, rooms and
 //! walls z-major) — `serialize(parse(f)) == f` for a canonical file, pinned
-//! by test so the checked-in file stays diff-stable across IDE saves.
+//! by test so the checked-in file stays diff-stable across editor saves.
 //!
 //! [`super::sim::gym_level`] IS `parse(GYM_LEVEL_SRC)` since 2026-08-09 — the
 //! file replaced the hand-written builder, verified grid-hash-identical and
-//! SHOT-byte-identical in the migration round. The catalogue level stays
-//! CODE on purpose: it is generated (three rows of computed slab positions
-//! that grow a slab whenever the effect system grows an effect), so a file
-//! would freeze exactly the thing that is supposed to be derived.
+//! SHOT-byte-identical in the migration round. The other levels (concrete
+//! aftermath, after the rain) stay CODE: they are generated.
 //!
 //! Determinism policy (the 2026-07-23 handoff's watch item): `grid_hash` is
 //! the level identity — recorded gym traces and pinned state hashes are valid
@@ -34,14 +32,14 @@
 //!
 //! [`EditOp`]/[`apply_op`] are the ONE spec-mutation vocabulary (from the
 //! archived editor-v0, moved into the sim crate where it tests headlessly):
-//! the IDE's edits, the `EDIT=` harness knob and the tests all go through it.
+//! creative mode's edits, the `EDIT=` harness knob and the tests all go through it.
 
 use super::grid::{CellKind, CellPos, EdgeKind, Grid};
 use super::sim::{GymLevel, PaintEffect, PaintStroke};
 
 /// The checked-in gym level — THE one hand-authored level (owner directive
 /// 2026-07-12), embedded at compile time so headless tests, the viewer and
-/// the IDE all read the same bytes and cargo rebuilds on change.
+/// the editor all read the same bytes and cargo rebuilds on change.
 pub const GYM_LEVEL_SRC: &str = include_str!("gym.level");
 
 /// Parse a level file. Errors carry the 1-based line number.
@@ -133,12 +131,12 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
 }
 
 /// Emit the canonical text form: header, size, spawn, lamps (identity order),
-/// rooms z-major, wallx z-major, wallz z-major. The IDE's save writes this.
+/// rooms z-major, wallx z-major, wallz z-major. Creative mode's save writes this.
 pub fn serialize(spec: &GymLevel) -> String {
     let g = &spec.grid;
     let mut out = String::from(
         "# gym.level - THE hand-authored gym level (docs/VISION.md: one level).\n\
-         # Level-as-data: the IDE writes this file back; review edits with git\n\
+         # Level-as-data: creative mode writes this file back; review edits with git\n\
          # diff. grid_hash is the level identity - editing invalidates recorded\n\
          # gym traces and pinned state hashes.\n\
          # Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z\n\
@@ -183,7 +181,7 @@ pub fn serialize(spec: &GymLevel) -> String {
     out
 }
 
-/// One level mutation — the SINGLE spec-mutation path, shared by the IDE's
+/// One level mutation — the SINGLE spec-mutation path, shared by the editor's
 /// gestures, the `EDIT=` harness ops and the tests. Toggles rather than
 /// set/clear pairs: the authoring gesture is "click the thing", and a toggle
 /// makes every op its own undo.
@@ -294,7 +292,7 @@ mod tests {
     use crate::gym::grid::Dir;
     use crate::gym::sim::DOORWAY;
 
-    /// The checked-in file parses and stays CANONICAL: an IDE save of the
+    /// The checked-in file parses and stays CANONICAL: an editor save of the
     /// unedited level must be byte-identical to the file (diff-stable saves).
     #[test]
     fn checked_in_level_is_canonical() {
@@ -304,7 +302,7 @@ mod tests {
     }
 
     /// Full round-trip at the spec level: serialize → parse reproduces the
-    /// exact grid (hash), lamps and spawn — the IDE's save/reload identity.
+    /// exact grid (hash), lamps and spawn — the editor's save/reload identity.
     #[test]
     fn serialize_parse_round_trips() {
         let mut spec = parse(GYM_LEVEL_SRC).unwrap();

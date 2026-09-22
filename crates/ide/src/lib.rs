@@ -1,30 +1,18 @@
-//! pracownia — the personal game IDE (owner directive 2026-07-27: "the ESC
-//! menu has worked hard enough; make a personal IDE tailored to this game,
-//! Unity-editor-shaped, minimal to start, cleanly separated from the game").
+//! The game's chrome — creative mode's toolbar and the raster it draws with.
+//! Headless and GPU-free: the adapter (`rt-viewer/src/creative_host.rs`)
+//! hands in plain data (tool labels, the cursor in chrome px) and gets back
+//! CPU-rasterized [`Panel`]s to composite as stamps plus which button was hit.
 //!
-//! This crate is the SEPARATION: it is the whole IDE — layout, widgets,
-//! rasterization, interaction state — and it knows NOTHING about the game or
-//! the GPU. The boundary is plain data, in the workspace's adapter tradition
-//! (rt-probe and house-game never see each other; neither does this crate):
-//!
-//! - in: a [`SceneModel`] — named objects with transforms and declared,
-//!   adapter-editable properties ([`scene`]),
-//! - in: pointer/scroll events in IDE PIXELS (the viewer divides window px
-//!   by the IDE scale — the overlay renders at 2x the game's pixel density,
-//!   i.e. half the game texel, so tooling gets the fine grid while the world
-//!   keeps the coarse one),
-//! - out: CPU-rasterized [`Panel`]s the viewer composites as stamps, and
-//!   [`Edit`]s the adapter applies to the real level.
+//! This crate used to be the whole slider IDE ("pracownia": a hierarchy, an
+//! inspector and the wear rows, 2026-07-27); creative mode superseded it and
+//! it was deleted on 2026-09-22 — what is left is the part creative mode
+//! draws with.
 //!
 //! Everything here is deterministic and headless-testable: same model + same
 //! events = same pixels, no wall-clock, no RNG.
 
 pub mod canvas;
-pub mod scene;
-pub mod shell;
 pub mod theme;
 pub mod toolbar;
 
-pub use canvas::Canvas;
-pub use scene::{Edit, Obj, ObjId, Prop, PropKind, PropVal, SceneModel};
-pub use shell::{Ide, Panel};
+pub use canvas::{Canvas, Panel};

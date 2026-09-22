@@ -287,10 +287,9 @@ impl GymLoop {
 
     /// `WALK_TO=x,z`: replay ONE click-to-move at boot. A trace can express
     /// held keys because those ARE commands; a click is a shell gesture that
-    /// only produces commands once a route exists, so it needs its own knob —
-    /// the same reason `WEAR_EDIT` and `IDE_EDIT` exist. Without it the mouse
-    /// half of the mover has no headless form at all, which is how it kept a
-    /// separate implementation for as long as it did.
+    /// only produces commands once a route exists, so it needs its own knob.
+    /// Without it the mouse half of the mover has no headless form at all,
+    /// which is how it kept a separate implementation for as long as it did.
     pub fn walk_to_from_env(&mut self, cfg: &Config) {
         if let Some((x, z)) = cfg.game.walk_to {
             self.click_ground(Vec3::new(x, 0.0, z));

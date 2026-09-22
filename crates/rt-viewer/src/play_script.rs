@@ -198,7 +198,7 @@ impl Viewer {
         if down {
             if self.creative.open {
                 self.creative_press(c, b);
-            } else if b == Button::Build && !self.menu_click(c) && !self.ide_click(c) {
+            } else if b == Button::Build && !self.menu_click(c) {
                 self.click_move(c);
             }
         } else if self.creative.open {

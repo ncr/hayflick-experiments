@@ -12,7 +12,7 @@
 // NEE incl. one-sided screen falloff, AO, fog, sky, the +1/64 px tie bias, the
 // probe GI lookup — is a faithful port. The last logic difference, an M1
 // bring-up gate `hasProbes` wired to a literal 1 on the host, is deleted
-// (2026-07-28) and blocked from returning by wear.rs's FORBIDDEN table.
+// (2026-07-28); `twin::twins_are_structurally_identical` keeps the two in step.
 
 #include <metal_stdlib>
 #include <metal_raytracing>
@@ -74,8 +74,7 @@ static float bayer4(int2 lp){
   return (B[(lp.x & 3) + (lp.y & 3) * 4] + 0.5) / 16.0;
 }
 
-// `edge` = world distance to the nearest GATING triangle edge (contour AA).
-struct Hit { float t; float3 n; float2 uv; int mat; float edge; };
+struct Hit { float t; float3 n; float2 uv; int mat; };
 
 static float3 skyCol(float3 d, constant Push& pc) {
     float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
@@ -111,22 +110,9 @@ static bool trace(float3 o, float3 dir, float tmax, uint mask,
     uint i2 = indices[g.indexOffset + prim * 3u + 2u] + g.vertexOffset;
     Vertex v0 = verts[i0], v1 = verts[i1], v2 = verts[i2];
     float3x3 normalMatrix=transpose(float3x3(it.world_to_object_transform[0],it.world_to_object_transform[1],it.world_to_object_transform[2]));
-    float3x3 objectMatrix=float3x3(it.object_to_world_transform[0],it.object_to_world_transform[1],it.object_to_world_transform[2]);
     h.n  = normalize(normalMatrix*(b0 * float3(v0.nrm) + b1 * float3(v1.nrm) + b2 * float3(v2.nrm)));
     h.uv = b0 * v0.uv + b1 * v1.uv + b2 * v2.uv;
     h.mat = g.materialId;
-    // CONTOUR AA: distance to the nearest triangle edge in world units, the
-    // triangle's LONGEST edge excluded (that is the quad diagonal every box
-    // face is split by — gating it would band flat faces). See shade.comp.
-    float3 E0 = objectMatrix*(float3(v2.pos) - float3(v1.pos));
-    float3 E1 = objectMatrix*(float3(v0.pos) - float3(v2.pos));
-    float3 E2 = objectMatrix*(float3(v1.pos) - float3(v0.pos));
-    float L0 = length(E0), L1 = length(E1), L2 = length(E2);
-    float A2 = length(cross(E2, -E1));
-    float Lm = max(L0, max(L1, L2));
-    h.edge = min(L0 >= Lm ? 1e9 : A2 * b0 / max(L0, 1e-6),
-             min(L1 >= Lm ? 1e9 : A2 * b1 / max(L1, 1e-6),
-                 L2 >= Lm ? 1e9 : A2 * b2 / max(L2, 1e-6)));
     return true;
 }
 
@@ -249,31 +235,6 @@ static float vnoise(float3 x){
 }
 static float fbm(float3 p){ return 0.65 * vnoise(p) + 0.35 * vnoise(p * 2.03 + 11.1); }
 
-// ---- crack-lab helpers (per-segment aging) — byte-identical twin of
-// shade.comp's crackSite/crackEdge: 2D cellular (Worley) edge distance on a
-// wall face. Returns F2-F1 (0 on a boundary); `site` the vector to the
-// nearest cell site (edge bevel), `cellH` the nearest cell's hash (coverage).
-static float2 crackSite(float2 c, float seed){
-    return float2(hash13(float3(c, seed)), hash13(float3(c, seed + 47.0)));
-}
-static float crackEdge(float2 p, float seed, thread float2& site, thread float& cellH){
-    float2 i = floor(p), f = fract(p);
-    float f1 = 8.0, f2 = 8.0;
-    float2 r1 = float2(0.0), c1 = float2(0.0);
-    for (int y = -1; y <= 1; y++)
-        for (int x = -1; x <= 1; x++) {
-            float2 g = float2(float(x), float(y));
-            float2 r = g + crackSite(i + g, seed) - f;
-            float dd = dot(r, r);
-            if (dd < f1) { f2 = f1; f1 = dd; r1 = r; c1 = i + g; }
-            else if (dd < f2) { f2 = dd; }
-        }
-    site = r1;
-    cellH = hash13(float3(c1, seed + 91.0));
-    return sqrt(f2) - sqrt(f1);
-}
-// One STRUCTURAL fault lattice on a face plane — twin of shade.comp's
-
 // stylized point-light specular: GGX D × Schlick F, no solid-angle/geometry term
 // (SPEC is the master gain); D clamped so a near-mirror lobe stays a soft plateau.
 static float3 specBRDF(float3 n, float3 v, float3 l, float reff, float3 F0){
@@ -285,42 +246,6 @@ static float3 specBRDF(float3 n, float3 v, float3 l, float reff, float3 F0){
     float D = min(a2 / (PI * den * den), 40.0);
     float3 F = F0 + (1.0 - F0) * pow(1.0 - voh, 5.0);
     return D * F;
-}
-
-// ---- CONTOUR COVERAGE AA (owner 2026-07-25) --------------------------------
-// Line-for-line twin of the shade.comp block: a coverage tap is the SAME kernel
-// re-dispatched with a fixed sub-pixel ray offset, so every cutaway / ROI /
-// glass / material path is reused by identity. See shade.comp for the reasoning.
-constant float AA_R = 0.42; // px — clears the max tap reach |(24,8)|/64 = 0.3953
-constant int2 AAOFF[5] = { int2(0, 0), int2(24, 8), int2(-8, 24), int2(-24, -8), int2(8, -24) };
-
-static bool aaGate(int2 px, int W, int H, constant Push& pc,
-                   device const float4* outAlbedo, device const float4* outPos) {
-    const int2 N4[4] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1) };
-    int2 hi = int2(W - 1, H - 1);
-    float e = outAlbedo[px.y * W + px.x].w;
-    for (int k = 0; k < 4; k++) {
-        int2 q = clamp(px + N4[k], int2(0), hi);
-        e = min(e, outAlbedo[q.y * W + q.x].w);
-    }
-    if (e >= AA_R) return false;
-    float4 P0 = outPos[px.y * W + px.x];
-    if (P0.w == 0.0) return true; // sky texel: the far side of a silhouette
-    float tol = 0.6 * (2.0 * pc.camRight.w / float(W)); // 0.6 px, in wu
-    for (int k = 0; k < 2; k++) {
-        int2 o = k == 0 ? int2(1, 0) : int2(0, 1);
-        int2 qa = clamp(px + o, int2(0), hi), qb = clamp(px - o, int2(0), hi);
-        float4 Pa = outPos[qa.y * W + qa.x], Pb = outPos[qb.y * W + qb.x];
-        if (Pa.w == 0.0 || Pb.w == 0.0) return true;
-        if (length(Pa.xyz + Pb.xyz - 2.0 * P0.xyz) > tol) return true;
-    }
-    return false;
-}
-
-// rgb = sum(w*L), a = sum(w). Every reader must divide by .a when .a > 1.
-static void aaAccum(device float4* outRadiance, uint idx, float w, float3 c) {
-    float4 a = outRadiance[idx];
-    outRadiance[idx] = float4(a.rgb + w * c, a.a + w);
 }
 
 kernel void shade(
@@ -342,32 +267,11 @@ kernel void shade(
     if (int(gid.x) >= W || int(gid.y) >= H) return;
     uint idx = gid.y * uint(W) + gid.x;
 
-    // CONTOUR AA: misc3.z = tap weight (16.16), misc3.w = sample index (0 = the
-    // centre pass, 1..4 = a coverage tap that exists only on contour texels).
-    float aaW = float(pc.misc3.z) * (1.0 / 65536.0);
-    int S = pc.misc3.w & 255;              // AA sample index
-    int aaScope = (pc.misc3.w >> 8) & 3;   // 0 = every surface, else per-material opt-in (crack::AA_BIT)
-    // S == 5 = the GATE pass: run the contour test once, mark non-contour
-    // texels with a negative weight, and every tap then skips with ONE load.
-    // See shade.comp for why it cannot be cached in place.
-    if (S == 5) {
-        float4 c = outRadiance[idx];
-        if (!aaGate(int2(gid), W, H, pc, outAlbedo, outPos)) outRadiance[idx] = float4(c.rgb, -1.0);
-        return;
-    }
-    if (S > 0) {
-        if (pc.misc.w != 0) return;                      // debug views stay centre-only
-        if (outRadiance[idx].a < 0.0) return;            // interiors: not one extra ray
-    }
-
     float3 sunDir = pc.env1.xyz; // normalized CPU-side (EnvBlock::pack)
     float3 sun = pc.env2.rgb * 6.0 * pc.env0.x;
 
-    // an EVEN multiple of 1/64, so a tap ray still lands on an ODD multiple —
-    // off every dyadic seam plane, exactly like the TIE bias itself
-    float2 aaOff = float2(AAOFF[S]) * (1.0 / 64.0);
-    float u = ((float(gid.x) + 0.5 + TIE + aaOff.x) / float(W)) * 2.0 - 1.0;
-    float v = -(((float(gid.y) + 0.5 + TIE + aaOff.y) / float(H)) * 2.0 - 1.0);
+    float u = ((float(gid.x) + 0.5 + TIE) / float(W)) * 2.0 - 1.0;
+    float v = -(((float(gid.y) + 0.5 + TIE) / float(H)) * 2.0 - 1.0);
     float3 o = float3(pc.camPos.xyz) + u * pc.camRight.w * float3(pc.camRight.xyz)
                                      + v * pc.camUp.w    * float3(pc.camUp.xyz);
     float3 d = normalize(float3(pc.camDir.xyz));
@@ -548,8 +452,7 @@ kernel void shade(
     float3 col;
     if (!hitb) {
         col = (skyCol(d, pc) * gtint + gsheen) * fogT + fogAdd;
-        if (S > 0) { aaAccum(outRadiance, idx, aaW, col); return; } // a tap that escapes IS coverage
-        outAlbedo[idx] = float4(gtint, 8.0); // sky through glass demodulates tinted (w = the AA gate's "no edge")
+        outAlbedo[idx] = float4(gtint, 1.0); // sky through glass demodulates tinted
         outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(0.0); // w=0 → sky, w=2 → x-ray wall
         outRadiance[idx] = float4(col, 1.0);
         return;
@@ -559,15 +462,16 @@ kernel void shade(
     if(grassHit){m.pad=16;m.baseColor=float4(0.1,0.15,0.03,56.0);m.surface=0;}
     float3 albedo = m.baseColor.rgb;
     float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
-    // the FLAT face normal, kept before wear/bump rewrite it (contour AA gate)
-    float3 aaGn = n;
+    // the FLAT face normal, kept before the bump rewrites it (texel footprint,
+    // concrete/terrain samplers) — twin of shade.comp
+    float3 gn = n;
     // procedural WEAR & TEAR on greybox walls/floors — twin of shade.comp: (1) relief
     // normal bump; (2) broad worn zones + fine scuff + sparse scratches in the albedo;
     // (3) contact grime in occluded crevices (below, once AO is known). BUMP=0 → unchanged.
     float3 wpos = o + h.t * d;
     // SURFACE MATERIALS: world-anchored and filtered at the projected texel
     // footprint. No frame seed, extra rays, or change to primary visibility.
-    float surfacePx = (2.0 * pc.camRight.w / float(pc.misc.x)) / max(abs(dot(aaGn, d)), 0.18);
+    float surfacePx = (2.0 * pc.camRight.w / float(pc.misc.x)) / max(abs(dot(gn, d)), 0.18);
     if (m.surface <= -2 && m.surface >= -16) albedo = survivorAlbedo(albedo, h.uv, -m.surface-2, surfacePx);
     // PAINTED SURFACE (creative mode, 2026-09-22): the albedo was baked on the
     // CPU at one texel per game pixel; uv is the atlas texel coordinate.
@@ -576,19 +480,8 @@ kernel void shade(
         albedo = float3(float(tx & 255u), float((tx >> 8) & 255u), float((tx >> 16) & 255u)) / 255.0;
         albedo *= albedo;
     }
-    float deposit = 0.0;
     bool concreteMaterial = (uint(m.pad) & 16u) != 0u;
-    bool freshConcrete = !concreteMaterial && (uint(m.pad) & 68u) == 68u; // MATTE + CRAZE: exposed body
-    if (freshConcrete) {
-        // Broken cement has grains, not the ceramic skin's glaze or tea stains.
-        // Keep the mean pale; sparse darker aggregate gives broad craters scale.
-        float stone = vnoise(wpos * 14.0 + 5.0);
-        float binder = fbm(wpos * 3.2 + 19.0);
-        float grainVis = 1.0 - smoothstep(0.035, 0.12, surfacePx);
-        float aggregate = smoothstep(0.52, 0.76, stone) * grainVis;
-        albedo *= (0.90 + 0.10 * binder) * (1.0 - 0.30 * aggregate);
-    }
-    bool meadow = !concreteMaterial && (uint(m.pad) & 5u) == 4u && aaGn.y > 0.9 && wpos.y < 0.02;
+    bool meadow = !concreteMaterial && (uint(m.pad) & 5u) == 4u && gn.y > 0.9 && wpos.y < 0.02;
     if (meadow) {
         // Soil-scale clumps and low-contrast blades replace the cell checker.
         // The tufts keep their box silhouettes; the ground stays dead matte.
@@ -623,142 +516,11 @@ kernel void shade(
         albedo *= 1.0 - dirt;
         albedo = mix(albedo, float3(dot(albedo, float3(0.299, 0.587, 0.114))), dirt * 0.5);
     }
-    // ---- WEATHERED SKIN — line-for-line twin of the other dialect.
-    //
-    // What the shade pass paints on an aged wall is now exactly TWO layers: tea
-    // STAINS in the damage patches, and the fine GLAZE WEB inside the worst of
-    // them. Everything else this block used to draw — a painted structural fault,
-    // a painted craze cell network, chalky chip patches, and the normal bevels
-    // that went with them — was DELETED 2026-07-26 (owner call).
-    //
-    // The argument for deleting rather than fixing: none of the three could draw
-    // where it mattered. `crack_geom::craze_pier` runs on ANY pier with a nonzero
-    // knob and sets CRAZE, and this block gated all three off that bit — so they
-    // rendered only on the piers the geometry pass happened to skip (measured: 3
-    // of the gym's 15 walls at one ordinary knob setting), and there they
-    // disagreed with the geometric version on the wall next door. The geometric
-    // version is the one the owner has been looking at since round 8. What
-    // survives here is the paint that belongs BESIDE it, not a second copy of it.
-    //
-    // So this block reads exactly what it draws: the two painted layers'
-    // STRENGTHS from `_pad` lanes 0/1, their solved THRESHOLDS from the effect
-    // word's lanes 0/1, and the run's story key. Everything else the level
-    // says about a wall is geometry, and the shade pass has no business with it.
-    {
-        uint kb = uint(m.pad);
-        if (!concreteMaterial && (kb >> 8) != 0u && dot(m.emissive.rgb, float3(1.0)) <= 0.0) {
-            // The two painted layers' STRENGTHS, one lane each (host:
-            // `crack::pad_bits`). Both used to read ONE lane — the `age` knob —
-            // so their AREAS were independent (step 5's solved thresholds) while
-            // their intensities were not, and "stains darker than the crazing"
-            // was not a sentence the level could say. Lanes 2/3 carry MUD (below).
-            float aStain = float((kb >> 8) & 63u) * (1.0 / 63.0);
-            float aWeb   = float((kb >> 14) & 63u) * (1.0 / 63.0);
-            float story = m.baseColor.a;
-            // FRESH BREAK: what the damage EXPOSED is unglazed body, so neither
-            // layer here belongs on it (crack_geom::fresh_body mints the pale
-            // neutral albedo; MATTE kills the sheen). Contact grime below stays
-            // LIVE on it — a perfectly clean crater reads as spilled white paint.
-            float skin = (kb & 4u) != 0u ? 0.0 : 1.0;
-            float3 an = abs(aaGn);
-            bool wallF = an.y <= 0.5;
-            float2 cuv = an.x > 0.5 ? wpos.zy : (an.y > 0.5 ? wpos.xz : wpos.xy);
-            // MACRO DAMAGE FIELD — where THIS run is failing. The two painted layers'
-        // gates are ABSOLUTE thresholds SOLVED for this run host-side
-        // (`wall::RunField::threshold`) and carried here as 6-bit codes counting DOWN
-        // from `wall::GATE_HI`, so an amount is a FRACTION OF THIS FACE rather than
-        // whatever this run's fbm draw happened to give it.
-        //
-        // Code 0 — the empty word, hence every material nobody stamped — sits above
-        // the field's maximum, so it means provably nothing. That property is why the
-        // codec counts down: the SIGNED per-run level offset this replaces was
-        // calibrated for run-to-run variation at one reference age, not for a dial's
-        // whole travel, so a large coverage on a low-level run needed an offset past
-        // its clamp — a dead region at the top of the central dial.
-        //
-        // The band is centred on the threshold, so the threshold is the 50 % point,
-        // which is what makes the coverage the shader draws equal the amount the host
-        // solved for. Host mirror: `CrazeCfg::zone` / `stain_w`.
-        uint ew = uint(m.emissive.a);
-        float tStain = 1.20 - float( ew        & 63u) * 0.020;  // wall::GATE_HI, GATE_STEP
-        float tWeb   = 1.20 - float((ew >> 6) & 63u) * 0.020;
-        // THE BAND MASK (wall::band_codes / band_mask / banded): lanes 2/3 carry
-        // the wall's authored band edges — code 0 = that edge OFF, the upper
-        // edge counts down from the top, so an unbanded wall keeps the empty
-        // word. The mask SUBTRACTS from the field: in-band values pass EXACTLY
-        // (byte-stable default) and out-of-band drops below every gate — a
-        // multiplicative mask leaves 0.0, which the full-coverage gate catches.
-        // The host runs the same arithmetic in the solver and the geometry pass.
-        float bLo = float((ew >> 12) & 63u) * (1.0 / 63.0);
-        float bHi = 1.0 - float((ew >> 18) & 63u) * (1.0 / 63.0);
-        float y01 = clamp(cuv.y / 2.1875, 0.0, 1.0);            // wall::BAND_TOP
-        float band = 1.0;                                        // wall::BAND_FEATHER = 0.06
-        band *= (bLo > 0.0 && wallF) ? smoothstep(bLo - 0.06, bLo + 0.06, y01) : 1.0;
-        band *= (bHi < 1.0 && wallF) ? 1.0 - smoothstep(bHi - 0.06, bHi + 0.06, y01) : 1.0;
-        float rise = wallF ? 1.0 - smoothstep(0.10, 1.0, cuv.y) : 0.0;
-        float dmgN = fbm(float3(cuv * float2(0.45, 0.7), story * 7.0 + 3.0)) + 0.16 * rise - 2.0 * (1.0 - band);
-        float stainW = smoothstep(tStain - 0.05, tStain + 0.05, dmgN);
-        float fineG  = smoothstep(tWeb   - 0.03, tWeb   + 0.03, dmgN);
-        // FINE GLAZE WEB. Its lattice is a CONSTANT 6 cells/wu — it used to be
-            // mix(1.1, 3.4, cracks), which drew a COARSE cell network at cracks = 0,
-            // so the name lied about what you were looking at. 6/wu is 0.167 wu per
-            // cell = ~6.8 px on an X-run face, i.e. a ~1 px line: fine BY
-            // CONSTRUCTION and independent of every geometry dial.
-            float2 siteF; float cellF;
-            float edF = crackEdge(cuv * 6.0 + 31.0, story + 9.0, siteF, cellF);
-            // Integrate the thin line over one surface texel. Widening its
-            // support while conserving coverage removes the dark-dot lottery.
-            float webHalf = max(0.025, surfacePx * 6.0 * 0.65);
-            float webCoverage = max(0.0, min(edF + webHalf, 0.05) - max(edF - webHalf, -0.05)) / (2.0 * webHalf);
-            float web = webCoverage * aWeb * fineG * skin;
-            albedo *= 1.0 - web * 0.48;
-            // RUNOFF: long vertical tracks with slow lateral wander, nested
-            // inside the exact authored damage region. The old 20% floor
-            // leaked stains beyond the band; a second threshold hid most of
-            // the remaining paint. Here texture changes density, never area.
-            float flowU = cuv.x * 3.7;
-            float flowCell = floor(flowU);
-            float flowSeed = hash13(float3(flowCell, story + 13.0, 7.0));
-            float flowLength = 0.35 + 2.5 * hash13(float3(flowCell, story + 13.0, 19.0));
-            float travel = max(0.0, 2.1875 - cuv.y);
-            float tail = 1.0 - smoothstep(flowLength * 0.65, flowLength, travel);
-            float wander = 0.07 * (vnoise(float3(cuv * float2(2.0, 3.0), story + 43.0)) - 0.5);
-            float flowX = abs(fract(flowU) - (0.25 + 0.5 * flowSeed) + wander);
-            float flowWidth = (0.06 + 0.24 * flowSeed * flowSeed) * (0.35 + 0.65 * tail);
-            float flowAA = min(0.22, surfacePx * 3.7 * 0.5);
-            float rivulet = (1.0 - smoothstep(max(0.0, flowWidth - flowAA), flowWidth + flowAA, flowX)) * tail;
-            rivulet *= smoothstep(0.18, 0.62, hash13(float3(flowCell, story + 13.0, 31.0)));
-            float wash = vnoise(float3(cuv * float2(1.8, 0.8), story + 61.0));
-            float sAmt = skin * aStain * stainW * (0.12 + 0.28 * wash + 0.60 * rivulet);
-            albedo = mix(albedo, albedo * float3(0.52, 0.43, 0.30), sAmt);
-            deposit = max(deposit, sAmt);
-            // MUD SPLASH (`_pad` lanes 2/3 — the knob budget's LAST two; host:
-            // `crack::pad_bits`). Environmental splash-back: its OWN band off
-            // the floor (lane 3 = the top edge, wall::WallSpec::mud_top), a
-            // story-seeded fbm breakup, and NO damage gate — a young wall can
-            // be muddy. Lane 2 is a SOLVED threshold (wall::mud_code — the
-            // quantile of this run's own noise inside its own band that puts
-            // the asked fraction above it), so mud's amount is an AREA like
-            // every other layer's; code 0 = no mud = every unstamped material.
-            uint mc = (kb >> 20) & 63u;
-            float mTop = float((kb >> 26) & 63u) * (1.0 / 63.0);
-            float mudBand = (wallF && mc > 0u) ? 1.0 - smoothstep(mTop - 0.06, mTop + 0.06, y01) : 0.0;
-            float mudN = fbm(float3(cuv * 2.0, story * 3.0 + 17.0));
-            float mudT = float(mc) * (1.0 / 63.0);
-            float mud = smoothstep(mudT - 0.05, mudT + 0.05, mudN) * mudBand * skin;
-            // Dry soil has a broken density inside the solved splash area.
-            float soil = vnoise(float3(cuv * float2(16.0, 11.0), story + 29.0));
-            float soilVis = 1.0 - smoothstep(0.035, 0.10, surfacePx);
-            float mudDensity = mud * (0.72 + 0.28 * mix(0.5, soil, soilVis));
-            albedo = mix(albedo, albedo * float3(0.43, 0.32, 0.21), mudDensity * 0.85);
-            deposit = max(deposit, mudDensity);
-        }
-    }
     ConcreteSurface concreteSample;
     if (concreteMaterial) {
         if(grassHit){concreteSample.albedo=grass.color;concreteSample.normal=grass.normal;concreteSample.roughness=0.97;concreteSample.metallic=0.0;}
-        else if(m.baseColor.a>=32.0 && m.baseColor.a<56.0) concreteSample=terrainSurface(wpos,aaGn,h.uv,m.baseColor.a,surfacePx);
-        else concreteSample = concreteSurface(wpos, aaGn, h.uv, m.baseColor.a, m.emissive.a, surfacePx);
+        else if(m.baseColor.a>=32.0 && m.baseColor.a<56.0) concreteSample=terrainSurface(wpos,gn,h.uv,m.baseColor.a,surfacePx);
+        else concreteSample = concreteSurface(wpos, gn, h.uv, m.baseColor.a, m.emissive.a, surfacePx);
         albedo = concreteSample.albedo;
         n = concreteSample.normal;
     }
@@ -787,28 +549,10 @@ kernel void shade(
         float aot = (ao - (1.0 - pc.camPos.w)) / max(pc.camPos.w, 1e-4);
         ao = aot >= bayer4(int2(gid)) ? 1.0 : 1.0 - pc.camPos.w;
     }
-    // crack-lab SELECTION highlight (pad bit 3) — twin of shade.comp: a steady
-    // .w = screen-px distance to the nearest gating triangle edge — the CONTOUR
-    // AA gate (was a constant 1.0, read by nobody). |n·d| is the exact minimum
-    // foreshortening of an in-plane distance, so this is a conservative LOWER
-    // bound: the gate may over-report, never miss. See shade.comp.
-    // SCOPE: outside it the texel reports "no edge", so neither the coverage
-    // taps nor the softening touch it. See shade.comp.
-    float edgePx = 8.0;
-    if (aaScope == 0 || (m.pad & 128) != 0)
-        edgePx = min(h.edge * (0.5 * float(W) / pc.camRight.w) * max(abs(dot(aaGn, d)), 0.08), 8.0);
-    if (S == 0) outAlbedo[idx] = float4(albedo * gtint, edgePx); // tint in the G-buffer keeps demodulation consistent
+    outAlbedo[idx] = float4(albedo * gtint, 1.0); // tint in the G-buffer keeps demodulation consistent
     // CONTOUR: re-project dissolved wall front face (w=2) so tonemap traces its
     // silhouette as x-ray line-art; radiance/albedo stay the room BEHIND.
-    // SELECTION (pad bit 3) tags its hits w=3 for the tonemap outline; contour
-    // outranks the tag (twin of shade.comp's posImg write).
-    float selTag = (uint(m.pad) & 8u) != 0u ? 3.0 : 1.0;
-    if (S == 0) outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, selTag);
-    // DEBUG_AA (misc.w == 5): red = fires coverage taps, green ramp = edgePx.
-    if (pc.misc.w == 5) {
-        outRadiance[idx] = float4(edgePx < 0.42 ? 1.0 : 0.0, min(edgePx, 4.0) * 0.25, 0.0, 1.0);
-        return;
-    }
+    outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(o + h.t * d, 1.0);
     if (pc.misc.w == 1) { outRadiance[idx] = float4(albedo, 1.0); return; }
     if (pc.misc.w == 2) { outRadiance[idx] = float4(albedo * (1.0/PI) * probeE(p, n, pd, pc), 1.0); return; }
 
@@ -821,9 +565,7 @@ kernel void shade(
     float3 vdir = -d;
     bool matte = (m.pad & 4) != 0;
     float reff = matte ? 1.0 : clamp(mix(m.roughness, 0.12, pc.look.w), 0.10, 1.0);
-    reff = mix(reff, max(reff, 0.82), deposit);
-    if (concreteMaterial) reff = concreteSample.roughness; // dry deposits interrupt the glaze
-    // crack-lab CHIP — twin of shade.comp: spalled patches lose the glaze —
+    if (concreteMaterial) reff = concreteSample.roughness;
     float specX = pc.look.x;
     if (pc.look2.y >= 2.0) reff = clamp(floor(reff * 3.0 + 0.5) / 3.0, 0.10, 1.0); // MATQ: roughness in coarse steps too
     float3 F0 = mix(float3(0.04), albedo, concreteMaterial ? concreteSample.metallic : m.metallic);
@@ -906,5 +648,5 @@ kernel void shade(
     }
 
     col = (col * gtint + gsheen) * fogT + fogAdd;
-    if (S > 0) aaAccum(outRadiance, idx, aaW, col); else outRadiance[idx] = float4(col, 1.0);
+    outRadiance[idx] = float4(col, 1.0);
 }

@@ -30,7 +30,7 @@ pub struct TonePush {
     pub style2: [f32; 4], // palette mode, palette param, vignette, outline strength
     pub style3: [f32; 4], // grain size px, grain static flag, bloom strength, bloom threshold
     pub style4: [f32; 4], // shadow dither: strength, levels, luma threshold, dither world-phase y
-    pub style5: [f32; 4], // saturation, contrast, luma quantize levels, contour soften
+    pub style5: [f32; 4], // saturation, contrast, luma quantize levels, _
     pub style6: [f32; 4], // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
     /// Creative mode's ghost rect in world xz: (x0, z0, x1, z1).
     pub edit1: [f32; 4],
@@ -66,12 +66,6 @@ pub struct FramePresent<'a> {
     pub ao_dither: f32,
     pub refl: f32,
     pub refl_px: i32,
-    /// CONTOUR COVERAGE AA weight (0 = off — no tap dispatch is issued and the
-    /// image is byte-identical to the pre-AA renderer).
-    pub aa: f32,
-    /// Contour-AA scope: 0 = every surface, 1/2 = the per-material opt-in bit
-    /// ([`crate::crack::AA_BIT`]) decides (cracked piers / the picked pier).
-    pub aa_scope: i32,
     pub debug: i32,
     // tonemap tunables (TonePush)
     pub exposure: f32,
@@ -146,48 +140,6 @@ pub struct Overlay<'a> {
     pub menu_center: bool,
 }
 
-/// What a scene swap ([`RenderBackend::rebuild_scene`]) must do about the frozen
-/// GI probe banks.
-///
-/// `Full` is the honest default: a look switch repaints every surface the bake
-/// reads, a boot has nothing to carry, and a scene whose BOUNDS moved lands its
-/// probes somewhere else entirely (the grid is derived from `scene.min/max`).
-///
-/// `Local` is the crack-lab knob release: one pier's boxes were regenerated
-/// inside their own AABB and every other probe in the level is still exactly
-/// right, so the banks are carried across the swap and only the probes near the
-/// listed WORLD AABBs are re-baked (padded by
-/// `rt_probe::gpu_scene::REFRESH_PAD_SPACINGS` — the backend owns the padding
-/// because only it knows the resolved spacing). On the M2: the full grid is
-/// ~6.6 s, one pier ~3.3 s (16 % of the probes — the refresh is latency-bound,
-/// see `LOCAL_REFRESH_MAX_FRACTION`); on the RTX the whole bake is ~115 ms and
-/// nobody notices either way.
-///
-/// `Roll` is the same carry with the re-bake DEFERRED: the dirty probes are not
-/// touched here, the amortized DDGI roll (`roll_step`, the machinery the
-/// wall-smash tear-off already runs) settles them over the next frames instead.
-/// It exists for the age-ramp demo beat ([`crate::demos::Action::AgeWall`]),
-/// which steps geometry ~8 times inside three seconds: a synchronous refresh is
-/// LATENCY-bound at 3-5 s whatever its size (one thread per probe, 2048 rays
-/// serial — see `rt_probe::gpu_scene::LOCAL_REFRESH_MAX_FRACTION`), so `Local`
-/// would stall the beat for a minute, while the scene swap alone measures ~30 ms
-/// on the M2. The price is honest and bounded: for ~64 frames the probes around
-/// ONE wall carry the previous step's bounce, and they settle to a 256-ray
-/// rolling estimate rather than the 2048-ray bake — so a capture that must be
-/// comparable still comes from a boot, exactly as for `Local`.
-///
-/// The backend falls back to `Full` if the new scene's grid does not match the
-/// carried one, if nothing has been baked yet, if a dirty region misses the
-/// grid, or if the dirty set is large enough that refreshing costs more than
-/// baking — a stale probe must never survive a rebuild, so every uncertain case
-/// pays the bake.
-#[derive(Clone, Copy)]
-pub enum ProbeRefresh<'a> {
-    Full,
-    Local(&'a [(Vec3, Vec3)]),
-    Roll(&'a [(Vec3, Vec3)]),
-}
-
 /// The GPU half of the renderer. Owns the device, scene GPU resources, the
 /// shade/tonemap pipelines, the present surface, and the capture target.
 /// `Viewer` never names a Vulkan/Metal type — only this trait.
@@ -231,11 +183,7 @@ pub trait RenderBackend {
     /// from a freshly built `Scene`, keeping device/pipelines/window target.
     /// Blocking (probe rebake or disk-cache load). The Viewer must re-join
     /// its light keys against the new `handles()` afterwards.
-    ///
-    /// `refresh` decides what happens to the frozen GI — see [`ProbeRefresh`].
-    /// A backend that cannot honour `Local` must fall back to the full bake:
-    /// the result is identical, only slower.
-    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config, refresh: ProbeRefresh);
+    unsafe fn rebuild_scene(&mut self, scene: &Scene, cfg: &Config);
 
     /// Dynamic-GI tear-off (Stage 2): hide the static primitive instances `prims`
     /// from the TLAS (mask 0 — culled by primary AND probe rays, so gone from the
@@ -249,41 +197,12 @@ pub trait RenderBackend {
     /// frame). A default no-op keeps this an opt-in spike hook.
     unsafe fn tear_off(&mut self, _prims: &[usize], _min: Vec3, _max: Vec3, _amortize: bool) {}
 
-    /// Live per-material `_pad` update (crack-lab knobs + selection bit):
-    /// writes the CPU material shadow the per-frame practicals stream already
-    /// re-uploads, so the change shows next frame — no scene rebuild, no
-    /// probe rebake (the bake reads base colour only, and the disk cache is
-    /// keyed at build time). Lost on `rebuild_scene` — the Viewer re-stamps
-    /// the fresh `Scene` before rebuilding instead.
-    fn set_material_pad(&mut self, _material_id: usize, _pad: i32) {}
-
-    /// Live per-material EFFECT WORD update — [`Self::set_material_pad`]'s sibling for
-    /// the wear family's appearance dials, which ride `Material.emissive[3]`
-    /// (see `crate::wear` for the codec and the 24-bit budget). Same mechanism:
-    /// the per-frame practicals stream re-uploads the whole material array, so
-    /// writing the CPU shadow is the entire job. Deliberately the ONLY write path
-    /// for the word — the probe-cache content key hashes the material bytes, so a
-    /// pre-build stamp would re-key the cache and rebake (~6.5 s on the M2) for a
-    /// datum the bake cannot see. Lost on `rebuild_scene`; `Viewer::wear_stamp`
-    /// re-stamps after every rebuild.
-    fn set_material_effect(&mut self, _material_id: usize, _word: f32) {}
-
     /// Replace the painted-surface atlas in place (creative mode's live paint
     /// preview: a brush dab re-bakes one wall face on the CPU and re-uploads
     /// the atlas, so the paint shows under the cursor without a scene
     /// rebuild). `atlas` must be the SAME length the scene was built with —
     /// the atlas layout only changes on a rebuild.
     unsafe fn update_atlas(&mut self, _atlas: &[u32]) {}
-
-    /// Live per-material STORY KEY update — the third sibling: the VARIANT
-    /// (scrub) dial slides the key every damage field seeds off, and the key
-    /// rides `Material.base_color[3]` (`wear_core::wall::story_key` /
-    /// `wall::scrub_key`). Unlike the effect word this datum IS visible to the
-    /// probe bake — the key stamps PRE-build and the cache re-keys per scrub
-    /// bucket; this live path exists so a scrub DRAG morphs the painted field
-    /// per frame, with the geometry and its bake catching up on release like
-    /// every other geometry dial.
-    fn set_material_story(&mut self, _material_id: usize, _story: f32) {}
 
     /// Render + (windowed) present one frame. Returns false if the swapchain
     /// needs rebuild. Records the deterministic per-frame state (lights →
@@ -334,7 +253,7 @@ pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, 
         style2: [style.palette, style.pal_p, style.vignette, style.outline],
         style3: [style.grain_sz, style.grain_static, style.bloom, style.bloom_th],
         style4: [style.sdither, style.sdither_n, style.sdither_th, dphase_y],
-        style5: [style.sat, style.contrast, style.lumaq, style.aa_soft],
+        style5: [style.sat, style.contrast, style.lumaq, 0.0],
         style6: [style.analog, style.analog_chroma, style.analog_tear, style.crt_mask],
         edit1: edit[0],
         edit2: edit[1],

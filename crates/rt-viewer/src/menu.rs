@@ -55,26 +55,6 @@ pub const MENU: &[MenuItem] = &[
     MenuItem { key: "sdither_n", label: "sd levels", kind: ItemKind::Slider { min: 2.0, max: 48.0, step: 1.0 } },
     MenuItem { key: "sdither_th", label: "sd threshold", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.01 } },
     MenuItem { key: "dither", label: "sd pattern", kind: ItemKind::Slider { min: 1.0, max: 5.0, step: 1.0 } },
-    // Owner 2026-09-05: antialiasing and contour softening are disabled — the
-    // four AA rows (contour aa / aa scope / aa soften / aa rubble) are gone.
-    // ---- THE LEVEL'S WEAR, three rows (2026-07-26). The IDE inspector says
-    // what ONE wall is; these say what the whole level is, which is the question
-    // the owner actually asks while walking around it. All three are geometry, so
-    // they land on the mouse RELEASE like the inspector's wear rows do.
-    //
-    // A MASTER on the level's authored story. 1 = as authored, 0 = the plain
-    // greybox — so "show me this level clean" is one row and not fifteen, and
-    // every A/B of the whole wear family has a before side reachable from a menu.
-    MenuItem { key: "wear_master", label: "wear", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.05 } },
-    // SOLO one layer: pin the other four to zero on every wall. The effect
-    // catalogue answers "what does each of these look like" on fifteen identical
-    // slabs; this answers it on the level the owner is standing in, which is
-    // where a layer's read against real geometry actually gets decided.
-    MenuItem { key: "wear_solo", label: "solo layer", kind: ItemKind::Slider { min: 0.0, max: wear_core::wall::Layer::N as f32, step: 1.0 } },
-    // SURFACE GRAIN on every wall at once — plate size in world units, the one
-    // shape dial that is a length (`wall::Shape::grain`). Below `GRAIN_OFF` the
-    // veneer is off entirely, so the bottom of this row is "no plates anywhere".
-    MenuItem { key: "wear_grain", label: "surface grain", kind: ItemKind::Slider { min: 0.0, max: 1.0, step: 0.02 } },
     MenuItem { key: "light_anim", label: "light anim", kind: ItemKind::Toggle },
     MenuItem { key: "record", label: "record clip", kind: ItemKind::Record },
     MenuItem { key: "quit", label: "quit viewer", kind: ItemKind::Quit },
@@ -101,11 +81,9 @@ pub(crate) const fn gpanel_h(items: usize) -> i32 {
 pub(crate) const fn lpanel_h(items: usize) -> i32 {
     gpanel_h(items) + LBLURB_H
 }
-/// Blurb lines the band shows. THREE since 2026-07-25: the blurb is the owner's
-/// only description of a demo, and the crack lab now has three things to say
-/// (what he is looking at, that one wall is the untouched control, and that
-/// clicking a wall opens the knobs). `levels_blurb_fits_the_band` fails if any
-/// demo's blurb wraps past this — the band used to truncate in silence.
+/// Blurb lines the band shows. The blurb is the owner's only description of a
+/// demo; `every_demo_blurb_fits_the_band` fails if any demo's blurb wraps past
+/// this — the band used to truncate in silence.
 pub(crate) const LBLURB_LINES: usize = 3;
 pub(crate) const LBLURB_COLS: usize = 28; // 8 px/char against GPANEL_W
 const LBLURB_H: i32 = 4 + 9 * LBLURB_LINES as i32; // 8px lines on a 9px pitch + air
@@ -254,81 +232,9 @@ fn wrap_text(s: &str, cols: usize) -> Vec<String> {
     lines
 }
 
-/// ONE AUTHORING ROW of a wall. The layout is a `Vec<Row>` derived from the
-/// wall's own spec ([`rows_of`]), and every consumer walks that same list, so
-/// they cannot disagree about which row is which — and the list changes shape
-/// with the pattern (each one has a different number of native params) without
-/// separate places needing to agree on the arithmetic.
-///
-/// Born as the wall panel's layout; the panel is DELETED (2026-07-27 — the
-/// IDE inspector is the walls' property surface) and this survives as the ONE
-/// spelling of "what a wall exposes": `ide_host::wear_props` maps it to
-/// inspector rows and [`Viewer::wear_set_row`] writes by it.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum Row {
-    /// One of the three CAUSES — what happened to this wall.
-    Cause(usize),
-    /// One LAYER's amount. Shows what `wall::derive` produced, with a `*` when
-    /// it is PINNED; dragging it pins it, which is how a bench wall asks for one
-    /// effect and nothing else.
-    Layer(wear_core::wall::Layer),
-    /// MUD's native param: its splash band's top edge. Indented under the mud
-    /// layer row like a pattern param under its pattern.
-    MudTop,
-    /// The break COUNT — a count, drawn as a count and stepped by clicking.
-    Breaks,
-    /// SHELL place-mode: clicking this row arms it, and the next click on the
-    /// wall itself places an artillery hit at the ray's own point (or removes
-    /// the hit it landed on). A count is drawn, but the ROW is a mode toggle —
-    /// the places live on the wall, where they belong, not on a slider.
-    Shell,
-    /// The shells' shared crater radius, world units — indented under the
-    /// shell row like mud's top under the mud row.
-    Caliber,
-    /// The VARIANT dial: slides the story key through noise space
-    /// (`wall::scrub_key`), re-rolling paint, plates and breaks together —
-    /// the author's "move the damage until it sits right".
-    Scrub,
-    /// The BAND's two edges — "the damage shows HERE": one authored region
-    /// that the painted gates, the plates and the crater sites all obey
-    /// (`wall::banded` enters the field itself).
-    BandLo,
-    BandHi,
-    Grain,
-    Relief,
-    /// The small-crack pattern: a cycler.
-    Pattern,
-    /// The active pattern's `j`-th native param.
-    Param(usize),
-}
-
-/// The rows for one wall, in order: what HAPPENED to it, what that came to, then
-/// what SHAPE it takes. Causes first because that is the order an author thinks
-/// in, and the layer rows under them are the DERIVED column — so the sheet is a
-/// complete explanation of the wall rather than a pile of dials.
-pub(crate) fn rows_of(spec: &wear_core::wall::WallSpec) -> Vec<Row> {
-    let mut v: Vec<Row> = (0..3).map(Row::Cause).collect();
-    v.extend(wear_core::wall::Layer::ALL.into_iter().map(Row::Layer));
-    v.push(Row::MudTop); // right under the mud layer row it belongs to
-    v.push(Row::Breaks);
-    v.push(Row::Shell);
-    v.push(Row::Caliber);
-    v.push(Row::Scrub);
-    v.push(Row::BandLo);
-    v.push(Row::BandHi);
-    v.push(Row::Grain);
-    v.push(Row::Relief);
-    v.push(Row::Pattern);
-    let np = crate::crack_geom::POLICY_PARAMS[spec.shape.pattern.code() as usize % crate::crack_geom::NPOL].len();
-    v.extend((0..np).map(Row::Param));
-    v
-}
-
 /// The tallest overlay canvas any panel can produce, sizing the shared
-/// staging buffer (Vulkan `menu_buf`; Metal sizes its blit per canvas). The
-/// wall panel that once outgrew the settings menu is DELETED (2026-07-27 —
-/// the IDE inspector is the walls' property surface, and IDE panels ride the
-/// Stamp path, not this buffer), so the settings sheet is the ceiling again.
+/// staging buffer (Vulkan `menu_buf`; Metal sizes its blit per canvas): the
+/// settings sheet.
 pub const PANEL_MAX_H: i32 = MPANEL_H;
 
 /// Slider value as shown in the menu (pattern/preset sliders show names).
@@ -390,13 +296,6 @@ impl Viewer {
             "sdither_n" => self.style.sdither_n,
             "sdither_th" => self.style.sdither_th,
             "dither" => self.style.dither,
-            "aa" => self.aa,
-            "aa_scope" => self.aa_scope,
-            "aa_soft" => self.style.aa_soft,
-            "aa_chunky" => self.aa_chunky,
-            "wear_master" => self.crack.master,
-            "wear_solo" => self.crack.solo as f32,
-            "wear_grain" => self.crack.grain,
             "exposure" => self.exposure,
             "fog" => self.cfg.render.fog.unwrap_or(self.look.lighting[2]),
             "fog_h" => self.cfg.render.fog_h.unwrap_or(self.look.lighting[3]),
@@ -440,33 +339,6 @@ impl Viewer {
             "sdither_n" => self.style.sdither_n = v,
             "sdither_th" => self.style.sdither_th = v,
             "dither" => self.style.dither = v,
-            "aa" => self.aa = v,
-            // the scope drives per-material opt-in bits: re-stamp them now, so
-            // the change lands next frame without a rebuild
-            "aa_scope" => {
-                self.aa_scope = v;
-                self.aa_stamp();
-            }
-            "aa_soft" => self.style.aa_soft = v,
-            "aa_chunky" => {
-                self.aa_chunky = v;
-                self.aa_stamp();
-            }
-            // The three LEVEL-wide wear rows. Each rewrites every run's spec
-            // through `wear_level_apply` and re-streams the paint; the geometry
-            // waits for the release, exactly like the inspector's wear rows.
-            "wear_master" => {
-                self.crack.master = v;
-                self.wear_level_apply();
-            }
-            "wear_solo" => {
-                self.crack.solo = v.round() as usize;
-                self.wear_level_apply();
-            }
-            "wear_grain" => {
-                self.crack.grain = v;
-                self.wear_level_apply();
-            }
             // a tonemap push constant — live at frame rate, no rebuild
             "exposure" => self.exposure = v,
             "fog" => self.cfg.render.fog = Some(v.clamp(0.0, 0.08)),
@@ -631,8 +503,7 @@ impl Viewer {
         let ms = self.menu_ui_scale();
         match self.menu.mode {
             // a closed menu owns nothing: the hamburger is gone (owner
-            // 2026-07-27) and so is the wall panel (same day — the IDE
-            // inspector is the walls' property surface)
+            // 2026-07-27)
             MenuMode::Closed => false,
             MenuMode::Title | MenuMode::Pause | MenuMode::Levels => {
                 let n = self.menu_len();
@@ -674,8 +545,7 @@ impl Viewer {
     }
 
     /// Slider drag: set the selected value from the cursor's track position
-    /// (Settings only — the wall panel that once took the closed-menu drag is
-    /// gone; wall drags live in the IDE inspector).
+    /// (Settings only).
     pub fn menu_drag_to(&mut self, p: Vec2) {
         if self.menu.mode != MenuMode::Settings {
             return;
@@ -689,94 +559,10 @@ impl Viewer {
         }
     }
 
-    /// Write ONE wear row's value on run `r` — the rows discipline extended to
-    /// the value write: this match is the only spelling of "which spec field a
-    /// row means", written for the wall panel's drag and surviving it (the
-    /// panel is gone; the IDE inspector's sliders are the caller now, via
-    /// `Viewer::ide_wear_apply`). Values arrive on the `k / 50` grid — the
-    /// snap lives in `ide::slider_value`, which owns the wear-file lesson.
-    pub fn wear_set_row(&mut self, r: usize, kind: Row, v: f32) {
-        // a CAUSE edit on the beat's ramped run takes the wall over: the
-        // override would mask the slider and the drag would read dead
-        if matches!(kind, Row::Cause(_)) && self.crack.beat.is_some_and(|(br, _)| br == r) {
-            self.crack.beat = None;
-        }
-        match kind {
-            Row::Cause(0) => self.crack.spec[r].story.weather = v,
-            Row::Cause(1) => self.crack.spec[r].story.settlement = v,
-            Row::Cause(_) => self.crack.spec[r].story.cover_loss = v,
-            // Dragging a derived amount PINS it. That is the whole authoring
-            // gesture behind "old, but no chips at all" — and it is why the row
-            // shows a `*` afterwards: the panel has to say that this wall has
-            // stopped listening to its causes on that layer.
-            Row::Layer(l) => self.crack.spec[r].pin = self.crack.spec[r].pin.area(l, v),
-            Row::MudTop => self.crack.spec[r].mud_top = v,
-            Row::Caliber => self.crack.spec[r].shells.caliber = v,
-            Row::Scrub => self.crack.spec[r].scrub = v,
-            Row::BandLo => self.crack.spec[r].band.0 = v,
-            Row::BandHi => self.crack.spec[r].band.1 = v,
-            Row::Grain => self.crack.spec[r].shape.grain = v,
-            Row::Relief => self.crack.spec[r].shape.relief = v,
-            Row::Param(j) => {
-                let code = self.crack.spec[r].shape.pattern.code();
-                let np = crate::crack_geom::POLICY_PARAMS[code as usize % crate::crack_geom::NPOL].len();
-                if j < np {
-                    self.crack.par[r][code as usize][j] = v;
-                    self.crack.set_pattern(r, code);
-                }
-            }
-            _ => return, // a cycler has no track
-        }
-        // an INTERACTIVE edit: the run turns authored, and the release that
-        // ends this drag persists it (`Viewer::wear_save`)
-        if let Some(a) = self.crack.authored.get_mut(r) {
-            *a = true;
-        }
-        self.crack.dirty = true;
-        // PAINT rows show live; GEOMETRY rows wait for the release (the footer
-        // says which is which). `wear_edit` re-streams both halves of the paint —
-        // the `_pad` strengths and the effect word's thresholds — because a
-        // story move changes them together.
-        self.wear_edit(r);
-    }
-
-    /// Set the break COUNT on run `r` — a pin: an author saying how many he
-    /// wants outranks the derivation from `settlement`. A no-op when the
-    /// sheet already shows `n`, so an IDE slider parked on the current count
-    /// does not silently pin the wall.
-    pub fn wear_set_breaks(&mut self, r: usize, n: u8) {
-        let n = n.min(wear_core::wall::Breaks::MAX);
-        if self.crack.sheets.get(r).map(|s| s.breaks.count) == Some(n) {
-            return;
-        }
-        self.crack.spec[r].pin = self.crack.spec[r].pin.breaks(wear_core::wall::Breaks { count: n, at: None });
-        if let Some(a) = self.crack.authored.get_mut(r) {
-            *a = true;
-        }
-        self.crack.dirty = true;
-        self.wear_edit(r);
-    }
-
-    /// Point run `r` at pattern `code`, absolute — the IDE's cycler emits the
-    /// next code, a harness replay may name any policy. The release that
-    /// follows sees the changed key and rebuilds.
-    pub fn wear_set_pattern(&mut self, r: usize, code: u8) {
-        let code = code % crate::crack_geom::POLICIES.len() as u8;
-        if self.crack.spec[r].shape.pattern.code() == code {
-            return;
-        }
-        self.crack.set_pattern(r, code);
-        if let Some(a) = self.crack.authored.get_mut(r) {
-            *a = true;
-        }
-        self.crack.dirty = true;
-        self.wear_edit(r);
-    }
-
     /// Draw the overlay at logical resolution: the open panel (game menu /
     /// settings), or the REC badge when the menu is closed — `None` when there
     /// is nothing to show (ESC is the only way into the menu; the hamburger
-    /// icon is gone, owner 2026-07-27, and so is the corner wall panel).
+    /// icon is gone, owner 2026-07-27).
     pub fn menu_canvas(&self) -> Option<(Vec<u32>, i32, i32)> {
         const BG: u32 = 0x16161c;
         const BORDER: u32 = 0x6a6a78;
@@ -826,8 +612,7 @@ impl Viewer {
         if self.menu.mode == MenuMode::Closed {
             // while recording, a standalone REC badge (overlay-only — clips
             // capture swap.out, never UI); otherwise the closed menu shows
-            // NOTHING — ESC is the menu, and the walls' property surface is
-            // the IDE inspector (the wall panel is gone, owner 2026-07-27)
+            // NOTHING — ESC is the menu
             if let Some(rec) = &self.rec {
                 let (w, h) = (72, 14);
                 let mut c = vec![BG; (w * h) as usize];
@@ -947,30 +732,6 @@ mod tests {
                 }
                 std::fs::write(format!("{dir}/levels_{sel}.ppm"), ppm).unwrap();
             }
-        }
-    }
-
-    /// THE ROW TABLE, pinned. The wall panel that drew it is gone (2026-07-27
-    /// — the IDE inspector is the walls' property surface), but `rows_of`
-    /// survives as the ONE spelling of "what a wall exposes": the inspector's
-    /// wear props walk it and `wear_set_row` writes by it. This pins the
-    /// model's own order — causes, then the amounts they derive, then the
-    /// shape — and the counts that order rests on.
-    #[test]
-    fn the_row_table_is_the_wall_authoring_model() {
-        for policy in 0..crate::crack_geom::NPOL as u8 {
-            let spec = wear_core::wall::WallSpec {
-                shape: wear_core::wall::Shape { pattern: wear_core::wall::Pattern::DEFAULTS[policy as usize], ..wear_core::wall::Shape::DEFAULT },
-                ..wear_core::wall::WallSpec::PRISTINE
-            };
-            let rows = rows_of(&spec);
-            assert!(matches!(rows[0], Row::Cause(0)), "the first row must be the first CAUSE");
-            assert!(matches!(rows[3], Row::Layer(wear_core::wall::Layer::Stain)), "the derived column starts after the three causes");
-            assert_eq!(rows.iter().filter(|r| matches!(r, Row::Layer(_))).count(), wear_core::wall::Layer::N, "every layer gets a row");
-            assert_eq!(rows.iter().filter(|r| matches!(r, Row::Param(_))).count(), crate::crack_geom::POLICY_PARAMS[policy as usize].len());
-            // the three rows that are not 0..1 sliders: the break count, the
-            // shell place-mode toggle and the pattern cycler
-            assert_eq!(rows.iter().filter(|r| matches!(r, Row::Breaks | Row::Shell | Row::Pattern)).count(), 3);
         }
     }
 

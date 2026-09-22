@@ -8,8 +8,7 @@
 //! ([`layout`]) is shared by draw and hit-test, so the pixels and the clicks
 //! cannot disagree.
 
-use crate::canvas::Canvas;
-use crate::shell::Panel;
+use crate::canvas::{Canvas, Panel};
 use crate::theme::*;
 
 /// What the adapter tells the bar each frame.

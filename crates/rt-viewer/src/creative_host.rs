@@ -87,16 +87,12 @@ pub fn ghost_rect(pv: &Preview) -> Option<[f32; 4]> {
 }
 
 impl Viewer {
-    /// Tab: play ↔ build. Opening closes the IDE (one editor at a time),
-    /// drops every held input and parks the camera where it is; closing hands
-    /// the camera back to the follow-cam.
+    /// Tab: play ↔ build. Opening drops every held input and parks the camera
+    /// where it is; closing hands the camera back to the follow-cam.
     pub fn creative_toggle(&mut self) {
         let c = &mut self.creative;
         c.open = !c.open;
         c.press = None;
-        if c.open && self.ide.ui.open {
-            self.ide_toggle();
-        }
         self.clear_live_input();
         if !self.creative.open {
             // force the follow-cam to re-aim at the player on the next frame
@@ -116,10 +112,10 @@ impl Viewer {
     }
 
     /// The toolbar's pixel scale: game chrome, so it is never finer than two
-    /// window px per bar px (the slider IDE's 2x-density rule would leave it
+    /// window px per bar px (half the menu's UI pixel alone would leave it
     /// 8 px tall at 1280x800).
     fn bar_scale(&self) -> u32 {
-        self.ide_scale().max(2)
+        (crate::backend::menu_scale_for(self.backend.extent().1) / 2).max(2)
     }
 
     fn bar_viewport(&self) -> (i32, i32) {
