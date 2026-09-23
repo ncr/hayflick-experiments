@@ -258,6 +258,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     // neighborhood's dwellings bring their own broken roof strips.
     if let Some(d) = &density {
         crate::foliage::plants(&mut scene, spec, d);
+        crate::street_props::build(&mut scene, spec);
     }
     if spec.neighborhood {crate::terrain::details(&mut scene, spec);}
     let roof_first = scene.primitives.len();

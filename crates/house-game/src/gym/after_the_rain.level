@@ -5,7 +5,7 @@
 #          paint rain|soot|spall X Y Z +x|-x|+z|-z R
 #          grow grass|dry|mow|scorch X Z R | plant tree|bush X Z SEED
 #          neighborhood | floor road|walk|soil X0 Z0 X1 Z1 | pothole X Z R
-#          window X Z | roof X0 Z0 X1 Z1
+#          window X Z | roof X0 Z0 X1 Z1 | prop KIND X Z YAW SEED
 size 26 23
 neighborhood
 spawn 12 15

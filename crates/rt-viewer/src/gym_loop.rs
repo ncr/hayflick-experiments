@@ -197,7 +197,7 @@ impl GymLoop {
     /// LMB on the ground: plan a route to the picked point and walk it.
     /// Clicking where the player already stands cancels the route.
     pub fn click_ground(&mut self, g: Vec3) {
-        self.plan = Route::plan(self.sim.grid(), self.snap.position, Vec2::new(g.x, g.z));
+        self.plan = Route::plan_in(self.sim.spec(), self.snap.position, Vec2::new(g.x, g.z));
     }
 
     /// How far the body would still travel if input stopped THIS tick —
@@ -552,7 +552,7 @@ mod tests {
     /// a visible sideways drift under the trimetric game projection.
     #[test]
     fn held_w_follows_the_projection_without_sideways_zigzag() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),
@@ -664,7 +664,7 @@ mod tests {
     /// animation and the continuous body on the same stride.
     #[test]
     fn gait_phase_tracks_distance_instead_of_wall_clock() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),

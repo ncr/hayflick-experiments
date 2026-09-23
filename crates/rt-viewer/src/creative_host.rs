@@ -19,7 +19,7 @@ use crate::backend::Stamp;
 use crate::viewer::Viewer;
 use glam::{Vec2, Vec3};
 use house_game::gym::creative::{self, Button, History, Preview, Tool, BRUSH_R, GROW_R, POTHOLE_R};
-use house_game::gym::sim::{FloorKind, GroundStroke, GrowBrush, PaintEffect, PaintStroke, Plant, PlantKind};
+use house_game::gym::sim::{FloorKind, GroundStroke, GrowBrush, PaintEffect, PaintStroke, Plant, PlantKind, PropKind};
 use ide::toolbar::{self, BarHit, BarModel};
 
 /// The toolbar's CATEGORIES and their tools, in order: F1.. picks a
@@ -29,6 +29,21 @@ const GROUPS: &[(&str, &[Tool])] = &[
     ("ground", &[Tool::Floor(FloorKind::Road), Tool::Floor(FloorKind::Walk), Tool::Floor(FloorKind::Soil), Tool::Pothole, Tool::Grow(GrowBrush::Scorch)]),
     ("walls", &[Tool::Paint(PaintEffect::Rain), Tool::Paint(PaintEffect::Soot), Tool::Paint(PaintEffect::Spall)]),
     ("plants", &[Tool::Grow(GrowBrush::Grass), Tool::Grow(GrowBrush::Dry), Tool::Plant(PlantKind::Tree), Tool::Plant(PlantKind::Bush)]),
+    (
+        "props",
+        &[
+            Tool::Prop(PropKind::Car),
+            Tool::Prop(PropKind::Barrel),
+            Tool::Prop(PropKind::Crate),
+            Tool::Prop(PropKind::Tires),
+            Tool::Prop(PropKind::Barrier),
+            Tool::Prop(PropKind::Pole),
+            Tool::Prop(PropKind::Sign),
+            Tool::Prop(PropKind::Hydrant),
+            Tool::Prop(PropKind::Mailbox),
+            Tool::Prop(PropKind::Bench),
+        ],
+    ),
 ];
 
 /// Camera pan speed while building, world units per second at zoom 1.
@@ -50,6 +65,8 @@ pub struct CreativeState {
     status: String,
     /// The active toolbar category (index into [`GROUPS`]).
     group: usize,
+    /// How the next placed prop is turned (R steps it an eighth).
+    prop_yaw: f32,
     /// A paint drag's dabs so far (committed on release).
     dabs: Vec<PaintStroke>,
     /// The wall point under the cursor with a paint tool: (point, face slot).
@@ -63,7 +80,7 @@ pub struct CreativeState {
 
 impl Default for CreativeState {
     fn default() -> CreativeState {
-        CreativeState { open: false, tool: Tool::Wall, press: None, hover: None, hist: History::default(), status: String::new(), group: 0, dabs: Vec::new(), brush: None, grows: Vec::new(), sprouts: Vec::new(), uproots: Vec::new() }
+        CreativeState { open: false, tool: Tool::Wall, press: None, hover: None, hist: History::default(), status: String::new(), group: 0, prop_yaw: 0.0, dabs: Vec::new(), brush: None, grows: Vec::new(), sprouts: Vec::new(), uproots: Vec::new() }
     }
 }
 
@@ -111,7 +128,7 @@ impl Viewer {
         }
         self.creative.status = if self.creative.open { "creative".into() } else { String::new() };
         self.ui_blip(if self.creative.open { "menu_open" } else { "menu_close" });
-        println!("creative: {}", if self.creative.open { "on (tab: play, F1-F4: category, 1-6: tool, ctrl+z: undo)" } else { "off" });
+        println!("creative: {}", if self.creative.open { "on (tab: play, F1-F5: category, 1-0: tool, R: turn, ctrl+z: undo)" } else { "off" });
     }
 
     /// Pick tool `i` of the ACTIVE category (the 1.. hotkeys).
@@ -122,6 +139,12 @@ impl Viewer {
             self.creative.dabs.clear();
             self.ui_blip("menu_move");
         }
+    }
+
+    /// R: turn the next prop an eighth of a turn.
+    pub fn creative_turn(&mut self) {
+        self.creative.prop_yaw = (self.creative.prop_yaw + std::f32::consts::FRAC_PI_4) % std::f32::consts::TAU;
+        self.ui_blip("menu_move");
     }
 
     /// Switch category (F1..): its first tool becomes active.
@@ -262,7 +285,7 @@ impl Viewer {
                     return;
                 }
                 if creative::can_plant(&self.gym.spec, &self.creative.sprouts, k, p.0, p.1) {
-                    let seed = ((p.0 * 997.0) as i32 as u32).wrapping_mul(2_654_435_761) ^ ((p.1 * 1009.0) as i32 as u32).wrapping_mul(40_503);
+                    let seed = creative::seed_at(p.0, p.1);
                     self.creative.sprouts.push(Plant { kind: k, x: p.0, z: p.1, seed });
                 }
             }
@@ -344,6 +367,18 @@ impl Viewer {
                 let Some(p1) = self.creative.hover else { return };
                 if creative::roof(&mut self.gym.spec, &mut self.creative.hist, button, p0, p1) {
                     self.creative.status = if button == Button::Build { "roofed".into() } else { "roof torn off".into() };
+                    self.creative_rebuild();
+                }
+                return;
+            }
+            Tool::Prop(k) => {
+                let changed = if button == Button::Build { creative::place_prop(&mut self.gym.spec, &mut self.creative.hist, k, p0.0, p0.1, self.creative.prop_yaw) } else { creative::remove_prop(&mut self.gym.spec, &mut self.creative.hist, p0.0, p0.1) };
+                if !changed {
+                    self.creative.status = if button == Button::Build { "blocked: no room".into() } else { "nothing there".into() };
+                    self.ui_blip("menu_move");
+                }
+                if changed {
+                    self.creative.status = if button == Button::Build { format!("{} placed", k.name()) } else { "removed".into() };
                     self.creative_rebuild();
                 }
                 return;
@@ -473,6 +508,16 @@ impl Viewer {
                     Some((x, z)) => [[x, 0.0, z, POTHOLE_R], [1.0, kind_of(c.press), 0.0, GRID_MAX_Y]],
                     None => [[0.0; 4], [1.0, 0.0, 0.0, GRID_MAX_Y]],
                 };
+            }
+            Tool::Prop(k) => {
+                let Some((x, z)) = c.hover else { return [[0.0; 4], [1.0, 0.0, 0.0, GRID_MAX_Y]] };
+                let (hx, hz) = k.half();
+                let (s, co) = c.prop_yaw.sin_cos();
+                let (ex, ez) = (hx * co.abs() + hz * s.abs(), hx * s.abs() + hz * co.abs());
+                // red when removing, or where the prop would not fit
+                let fits = creative::prop_fits(&self.gym.spec, k, x, z, c.prop_yaw);
+                let kind = if c.press.is_some_and(|(b, _)| b == Button::Remove) || !fits { 2.0 } else { 1.0 };
+                return [[x - ex, z - ez, x + ex, z + ez], [1.0, kind, 0.0, GRID_MAX_Y]];
             }
             Tool::Floor(_) | Tool::Roof => {
                 let rect_of = |a: (f32, f32), b: (f32, f32)| if c.tool == Tool::Roof { creative::roof_rect(&self.gym.spec, a, b) } else { creative::floor_rect(&self.gym.spec, a, b) };

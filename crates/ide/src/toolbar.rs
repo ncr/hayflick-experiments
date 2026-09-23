@@ -59,7 +59,9 @@ impl Rect {
 const BTN_H: i32 = 24;
 const HINT_H: i32 = 12;
 const GAP: i32 = 3;
-/// Bar height: the hint line over the two button rows, with padding.
+/// Bar height with one row of tools: the hint line over the two button rows,
+/// with padding. A category with more tools than fit wraps them onto more
+/// rows and the bar grows upward (see [`layout`]).
 pub const BAR_H: i32 = HINT_H + 2 * BTN_H + GAP + 2 * PAD;
 
 fn tool_w(label: &str) -> i32 {
@@ -76,13 +78,23 @@ pub fn layout(m: &BarModel, vw: i32, vh: i32) -> (Rect, Vec<(Rect, BarHit)>) {
     // row 2: categories left, undo / redo / play right
     let tabs: Vec<(i32, BarHit)> = m.groups.iter().enumerate().map(|(i, g)| (small_w(g), BarHit::Group(i))).collect();
     let acts: Vec<(i32, BarHit)> = vec![(small_w("undo"), BarHit::Undo), (small_w("redo"), BarHit::Redo), (small_w("play"), BarHit::Play)];
-    // row 3: the active category's tools
     let tools: Vec<(i32, BarHit)> = m.tools.iter().enumerate().map(|(i, t)| (tool_w(t), BarHit::Tool(i))).collect();
     let span = |row: &[(i32, BarHit)]| row.iter().map(|(w, _)| w + GAP).sum::<i32>() - GAP;
     let row2 = span(&tabs) + 4 * GAP + span(&acts);
     let min_w = Canvas::text_w(m.hint) + Canvas::text_w(m.status) + 4 * PAD;
-    let w = (row2.max(span(&tools)) + 2 * PAD).max(min_w).min(vw);
-    let bar = Rect { x: (vw - w) / 2, y: vh - BAR_H, w, h: BAR_H };
+    // the bar is as wide as its widest fixed row, the tools wrap inside it
+    let w = (row2.max(min_w - 2 * PAD).max(span(&tools).min(vw - 2 * PAD)) + 2 * PAD).min(vw);
+    let inner = w - 2 * PAD;
+    let mut rows: Vec<Vec<(i32, BarHit)>> = vec![Vec::new()];
+    for t in tools {
+        let cur = rows.last_mut().unwrap();
+        if !cur.is_empty() && span(cur) + GAP + t.0 > inner {
+            rows.push(Vec::new());
+        }
+        rows.last_mut().unwrap().push(t);
+    }
+    let h = HINT_H + BTN_H * (1 + rows.len() as i32) + GAP * rows.len() as i32 + 2 * PAD;
+    let bar = Rect { x: (vw - w) / 2, y: vh - h, w, h };
     let mut out = Vec::new();
     let mut place = |row: &[(i32, BarHit)], mut x: i32, y: i32| {
         for &(bw, hit) in row {
@@ -93,7 +105,9 @@ pub fn layout(m: &BarModel, vw: i32, vh: i32) -> (Rect, Vec<(Rect, BarHit)>) {
     let y2 = bar.y + PAD + HINT_H;
     place(&tabs, bar.x + PAD, y2);
     place(&acts, bar.x + w - PAD - span(&acts), y2);
-    place(&tools, bar.x + PAD, y2 + BTN_H + GAP);
+    for (k, row) in rows.iter().enumerate() {
+        place(row, bar.x + PAD, y2 + (BTN_H + GAP) * (k as i32 + 1));
+    }
     (bar, out)
 }
 
@@ -149,6 +163,26 @@ fn icon(label: &str) -> [u8; 8] {
         "hole" => [0x00, 0x3c, 0x42, 0x99, 0x99, 0x42, 0x3c, 0x00],
         // scorch: embers
         "scorch" => [0x10, 0x28, 0x10, 0x44, 0xaa, 0x44, 0xee, 0xff],
+        // a car in profile: cabin, body, two wheels
+        "car" => [0x00, 0x3c, 0x42, 0xff, 0xff, 0xff, 0x66, 0x00],
+        // an oil drum with its ribs
+        "barrel" => [0x3c, 0x7e, 0x42, 0x7e, 0x7e, 0x42, 0x7e, 0x3c],
+        // a slatted crate
+        "crate" => [0xff, 0xc3, 0xa5, 0x99, 0x99, 0xa5, 0xc3, 0xff],
+        // a stack of tyres
+        "tires" => [0x7e, 0xc3, 0x7e, 0x7e, 0xc3, 0x7e, 0x7e, 0xc3],
+        // a jersey barrier's stepped profile
+        "barrier" => [0x00, 0x18, 0x18, 0x18, 0x3c, 0x7e, 0xff, 0xff],
+        // a pole with its crossarm
+        "pole" => [0xff, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18],
+        // a sign plate on a post
+        "sign" => [0x3c, 0x7e, 0x7e, 0x3c, 0x18, 0x18, 0x18, 0x18],
+        // a hydrant with its side nozzles
+        "hydrant" => [0x18, 0x3c, 0x3c, 0xff, 0x3c, 0x3c, 0x3c, 0x7e],
+        // a mailbox on a post
+        "mailbox" => [0x3c, 0x7e, 0x7e, 0x7e, 0x18, 0x18, 0x18, 0x18],
+        // a bench: back, seat, legs
+        "bench" => [0x00, 0xff, 0x00, 0xff, 0xff, 0x42, 0x42, 0x42],
         _ => [0; 8],
     }
 }
@@ -196,7 +230,7 @@ pub fn draw(m: &BarModel, vw: i32, vh: i32, hover: (i32, i32)) -> Panel {
                 let col = if active { TEXT_HEAD } else { TEXT };
                 draw_icon(&mut c, x + 3, ty, icon(label), if active { ACCENT } else { TEXT_DIM });
                 c.text(x + 13, ty, label, col, r.w);
-                let key = format!("{}", i + 1);
+                let key = format!("{}", (i + 1) % 10);
                 c.text(x + r.w - 10, ty, &key, TEXT_DIM, 8);
             }
             BarHit::Group(i) => {
@@ -264,6 +298,18 @@ mod tests {
         let m = BarModel { groups: &["build", "ground", "walls", "plants"], group: 0, tools: &["wall", "building", "window", "roof", "lamp", "spawn"], active: 0, hint: "drag: building   right-drag: demolish", can_undo: true, can_redo: true, status: "building built" };
         let (bar, _) = layout(&m, 640, 400);
         assert!(bar.w < 640, "{} px", bar.w);
+    }
+
+    #[test]
+    fn ten_tools_wrap_onto_a_second_row_inside_the_bar() {
+        let m = BarModel { groups: &["build", "ground", "walls", "plants", "props"], group: 4, tools: &["car", "barrel", "crate", "tires", "barrier", "pole", "sign", "hydrant", "mailbox", "bench"], active: 0, hint: "click: place", can_undo: false, can_redo: false, status: "" };
+        let (bar, items) = layout(&m, 640, 400);
+        assert!(bar.w <= 640 && bar.y + bar.h == 400);
+        let ys: std::collections::BTreeSet<i32> = items.iter().filter(|(_, h)| matches!(h, BarHit::Tool(_))).map(|(r, _)| r.y).collect();
+        assert_eq!(ys.len(), 2, "two tool rows");
+        for (r, _) in &items {
+            assert!(r.x >= bar.x && r.x + r.w <= bar.x + bar.w && r.y >= bar.y && r.y + r.h <= bar.y + bar.h);
+        }
     }
 
     #[test]

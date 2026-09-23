@@ -24,6 +24,8 @@
 //! - `pothole X Z R` — a hole in the road
 //! - `window X Z` — a window opening centred at world (X, Z) on a wall line
 //! - `roof X0 Z0 X1 Z1` — a broken roof slab over a world rect, torn on +z
+//! - `prop KIND X Z YAW SEED` — a street prop (car, barrel, crate, tires,
+//!   barrier, pole, sign, hydrant, mailbox, bench), turned YAW radians
 //!
 //! [`serialize`] emits the CANONICAL form (fixed statement order, rooms and
 //! walls z-major) — `serialize(parse(f)) == f` for a canonical file, pinned
@@ -45,7 +47,7 @@
 //! creative mode's edits, the `EDIT=` harness knob and the tests all go through it.
 
 use super::grid::{CellKind, CellPos, EdgeKind, Grid};
-use super::sim::{Floor, FloorKind, GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
+use super::sim::{Floor, FloorKind, GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind, Prop, PropKind};
 
 /// The checked-in gym level — THE one hand-authored level (owner directive
 /// 2026-07-12), embedded at compile time so headless tests, the viewer and
@@ -73,6 +75,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     let mut windows: Vec<[f32; 2]> = Vec::new();
     let mut roofs: Vec<[f32; 4]> = Vec::new();
     let mut neighborhood = false;
+    let mut props: Vec<Prop> = Vec::new();
     for (ln, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -100,6 +103,15 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
             };
             let mut f = || -> Result<f32, String> { it.next().and_then(|t| t.parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0).ok_or_else(|| err("bad radius")) };
             paint.push(PaintStroke { effect, pos, axis, sign, r: f()? });
+            continue;
+        }
+        if op == "prop" {
+            let err = |m: &str| format!("line {}: prop: {m}", ln + 1);
+            let kind = it.next().and_then(PropKind::by_name).ok_or_else(|| err("unknown prop"))?;
+            let mut f = || -> Result<f32, String> { it.next().and_then(|t| t.parse::<f32>().ok()).filter(|v| v.is_finite()).ok_or_else(|| err("bad number")) };
+            let (x, z, yaw) = (f()?, f()?, f()?);
+            let seed = it.next().and_then(|t| t.parse::<u32>().ok()).ok_or_else(|| err("bad seed"))?;
+            props.push(Prop { kind, x, z, yaw, seed });
             continue;
         }
         if op == "neighborhood" {
@@ -195,7 +207,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     }
     let grid = grid.ok_or("no size statement")?;
     let player_start = spawn.ok_or("no spawn statement")?;
-    Ok(GymLevel { floors, potholes, windows, roofs, ground, plants, paint, neighborhood, grid, player_start, lights })
+    Ok(GymLevel { props, floors, potholes, windows, roofs, ground, plants, paint, neighborhood, grid, player_start, lights })
 }
 
 /// Emit the canonical text form: header, size, spawn, lamps (identity order),
@@ -210,7 +222,7 @@ pub fn serialize(spec: &GymLevel) -> String {
          #          paint rain|soot|spall X Y Z +x|-x|+z|-z R\n\
          #          grow grass|dry|mow|scorch X Z R | plant tree|bush X Z SEED\n\
          #          neighborhood | floor road|walk|soil X0 Z0 X1 Z1 | pothole X Z R\n\
-         #          window X Z | roof X0 Z0 X1 Z1\n",
+         #          window X Z | roof X0 Z0 X1 Z1 | prop KIND X Z YAW SEED\n",
     );
     out.push_str(&format!("size {} {}\n", g.w, g.h));
     if spec.neighborhood {
@@ -268,6 +280,9 @@ pub fn serialize(spec: &GymLevel) -> String {
     }
     for r in &spec.roofs {
         out.push_str(&format!("roof {} {} {} {}\n", r[0], r[1], r[2], r[3]));
+    }
+    for p in &spec.props {
+        out.push_str(&format!("prop {} {} {} {} {}\n", p.kind.name(), p.x, p.z, p.yaw, p.seed));
     }
     out
 }
@@ -434,11 +449,13 @@ mod tests {
         spec.potholes.push([8.3, 11.8, 1.25]);
         spec.windows.push([3.1, 7.0]);
         spec.roofs.push([2.0, 2.0, 9.0, 4.25]);
+        spec.props.push(Prop { kind: PropKind::Car, x: 7.25, z: 11.5, yaw: 0.785, seed: 17 });
         spec.ground.push(GroundStroke { brush: GrowBrush::Scorch, x: 1.0, z: 2.0, r: 1.5 });
         let text = serialize(&spec);
         let back = parse(&text).unwrap();
         assert!(back.neighborhood);
         assert_eq!((back.floors, back.potholes, back.windows, back.roofs, back.ground), (spec.floors.clone(), spec.potholes.clone(), spec.windows.clone(), spec.roofs.clone(), spec.ground.clone()));
+        assert_eq!(back.props, spec.props);
         assert!(parse("size 4 4\nspawn 1 1\nfloor lava 0 0 1 1\n").is_err());
         assert!(parse("size 4 4\nspawn 1 1\nwindow 1\n").is_err());
     }

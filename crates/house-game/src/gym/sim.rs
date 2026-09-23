@@ -152,6 +152,86 @@ impl PlantKind {
     }
 }
 
+/// A street prop (creative mode's props category). The `props` crate grows
+/// its geometry from the seed; the level only names the kind, and the sim
+/// knows its footprint (props are solid).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PropKind {
+    Car,
+    Barrel,
+    Crate,
+    Tires,
+    Barrier,
+    Pole,
+    Sign,
+    Hydrant,
+    Mailbox,
+    Bench,
+}
+
+impl PropKind {
+    pub const ALL: [PropKind; 10] = [PropKind::Car, PropKind::Barrel, PropKind::Crate, PropKind::Tires, PropKind::Barrier, PropKind::Pole, PropKind::Sign, PropKind::Hydrant, PropKind::Mailbox, PropKind::Bench];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PropKind::Car => "car",
+            PropKind::Barrel => "barrel",
+            PropKind::Crate => "crate",
+            PropKind::Tires => "tires",
+            PropKind::Barrier => "barrier",
+            PropKind::Pole => "pole",
+            PropKind::Sign => "sign",
+            PropKind::Hydrant => "hydrant",
+            PropKind::Mailbox => "mailbox",
+            PropKind::Bench => "bench",
+        }
+    }
+
+    pub fn by_name(s: &str) -> Option<PropKind> {
+        PropKind::ALL.into_iter().find(|k| k.name() == s)
+    }
+
+    /// Footprint half extents along the prop's own x and z (the `props`
+    /// crate builds each kind to fit this, pinned by its tests).
+    pub fn half(self) -> (f32, f32) {
+        match self {
+            PropKind::Car => (2.1, 0.9),
+            PropKind::Barrel => (0.32, 0.32),
+            PropKind::Crate => (0.42, 0.42),
+            PropKind::Tires => (0.42, 0.42),
+            PropKind::Barrier => (1.0, 0.32),
+            PropKind::Pole => (0.15, 0.15),
+            PropKind::Sign => (0.07, 0.07),
+            PropKind::Hydrant => (0.2, 0.2),
+            PropKind::Mailbox => (0.12, 0.12),
+            PropKind::Bench => (0.9, 0.3),
+        }
+    }
+}
+
+/// A placed prop: kind, world position, turn about y (radians), seed.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Prop {
+    pub kind: PropKind,
+    pub x: f32,
+    pub z: f32,
+    pub yaw: f32,
+    pub seed: u32,
+}
+
+impl Prop {
+    /// Whether a body of radius `r` centred at (x, z) overlaps this prop's
+    /// footprint (an oriented rectangle grown by `r`).
+    pub fn blocks(&self, x: f32, z: f32, r: f32) -> bool {
+        let (hx, hz) = self.kind.half();
+        let (s, c) = self.yaw.sin_cos();
+        let (dx, dz) = (x - self.x, z - self.z);
+        // into the prop's frame (the renderer turns local +x by `yaw` about y)
+        let (lx, lz) = (dx * c - dz * s, dx * s + dz * c);
+        lx.abs() < hx + r && lz.abs() < hz + r
+    }
+}
+
 /// What covers the ground in a floor rectangle. A building's Room cells are
 /// always slab floor; everything no rectangle covers is open soil.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -216,11 +296,28 @@ pub struct GymLevel {
     /// Broken roof slabs over world rects (x0, z0, x1, z1); the +z edge is the
     /// torn one.
     pub roofs: Vec<[f32; 4]>,
+    /// Street props (solid).
+    pub props: Vec<Prop>,
     pub neighborhood: bool,
     pub grid: Grid,
     pub player_start: CellPos,
     /// Static lamps (cell, intensity 0..8-ish).
     pub lights: Vec<(CellPos, i32)>,
+}
+
+/// A tree trunk's collision radius (bushes are walked through).
+pub const TRUNK_R: f32 = 0.14;
+
+impl GymLevel {
+    /// The body-centre collision query: the grid's walls and boundary, every
+    /// prop's footprint, and tree trunks. The sim's collide-and-slide and the
+    /// click-to-move route's sight lines both ask this, so a shortcut the
+    /// route takes is one the body can walk.
+    pub fn blocked(&self, x: f32, z: f32, r: f32) -> bool {
+        self.grid.blocked_point(x, z, r)
+            || self.props.iter().any(|p| p.blocks(x, z, r))
+            || self.plants.iter().any(|p| p.kind == PlantKind::Tree && (p.x - x).powi(2) + (p.z - z).powi(2) < (TRUNK_R + r).powi(2))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -319,9 +416,9 @@ impl GymGame {
 
     fn integrate_position(&mut self) {
         let requested = self.velocity * TICK_DT;
-        let grid = &self.spec.grid;
+        let spec = &self.spec;
         let (x, z) = collide_and_slide(
-            |x, z| grid.blocked_point(x, z, PLAYER_RADIUS),
+            |x, z| spec.blocked(x, z, PLAYER_RADIUS),
             self.position.x,
             self.position.y,
             self.velocity.x * TICK_DT,
@@ -424,11 +521,22 @@ pub fn concrete_level() -> GymLevel {
         for x in x0..x1 { grid.set_edge(CellPos::new(x,z),Dir::Zm,EdgeKind::Wall); }
     }
     for z in 3..8 { grid.set_edge(CellPos::new(13,z),Dir::Xm,EdgeKind::Wall); }
-    GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
+    GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn props_and_tree_trunks_block_the_body() {
+        let mut lv = super::gym_level();
+        lv.props.push(super::Prop { kind: super::PropKind::Car, x: 8.0, z: 8.0, yaw: std::f32::consts::FRAC_PI_2, seed: 1 });
+        lv.plants.push(super::Plant { kind: super::PlantKind::Tree, x: 3.0, z: 12.0, seed: 1 });
+        // a car turned a quarter runs along z: long in z, narrow in x
+        assert!(lv.blocked(8.0, 9.8, 0.2), "along the car's length");
+        assert!(!lv.blocked(9.4, 8.0, 0.2), "clear of its side");
+        assert!(lv.blocked(3.2, 12.0, 0.2) && !lv.blocked(3.5, 12.0, 0.2), "the trunk, and just past it");
+    }
+
     use super::*;
     use crate::gym::grid::CellKind;
     use sim_core::Runner;
@@ -490,7 +598,7 @@ mod tests {
     /// speed, and holding it does, within the ramp the constant promises.
     #[test]
     fn speed_ramps_instead_of_arriving_whole() {
-        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         g.tick(Tick(0), &[hold(1.0, 0.0, MoveMode::Walk)]);
         let first = g.snapshot().velocity.length();
         assert!(first > 0.0 && first < SPEED_WALK, "one tick must not reach walking speed: {first}");
@@ -507,7 +615,7 @@ mod tests {
     /// leans on when it stops steering a stopping distance short of the goal.
     #[test]
     fn releasing_input_brakes_to_rest() {
-        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         for t in 0..30u64 {
             g.tick(Tick(t), &[hold(1.0, 0.0, MoveMode::Run)]);
         }
@@ -527,7 +635,7 @@ mod tests {
 
     #[test]
     fn continuous_input_moves_between_cells_without_snapping() {
-        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
         let start = g.snapshot().position;
         for t in 0..30u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Walk }]);
@@ -540,7 +648,7 @@ mod tests {
 
     #[test]
     fn crouch_survives_idle_limits_running_and_releases_cleanly() {
-        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
         g.tick(Tick(0), &[Command::Crouch(true)]);
         let crouch_hash = g.state_hash();
         let mut standing=GymGame::new(g.spec().clone()); standing.tick(Tick(0),&[]);
@@ -560,7 +668,7 @@ mod tests {
 
     #[test]
     fn releasing_sprint_stops_within_eight_ticks_and_a_quarter_metre() {
-        let mut g=GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
+        let mut g=GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
         for t in 0..60 {g.tick(Tick(t),&[Command::MoveWorld {dx:1024,dz:0,mode:MoveMode::Run}]);}
         let released=g.snapshot().position;
         for t in 60..68 {g.tick(Tick(t),&[]);}
@@ -572,7 +680,7 @@ mod tests {
     fn continuous_input_collides_with_grid_edges_and_keeps_sliding() {
         let mut grid = Grid::new(8, 8);
         grid.set_edge(CellPos::new(1, 2), Dir::Xp, EdgeKind::Wall);
-        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
         for t in 0..120u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Run }]);
         }
@@ -605,7 +713,7 @@ mod tests {
     #[test]
     fn the_doorway_is_the_only_way_in() {
         // The doorway column, approached from the south.
-        let mut open = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut open = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x, DOORWAY.z + 3),
@@ -617,7 +725,7 @@ mod tests {
         assert_eq!(open.grid().cell(open.snapshot().player), CellKind::Room, "the doorway admits");
 
         // One cell east of it is the building's south wall.
-        let mut shut = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut shut = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x + 1, DOORWAY.z + 3),

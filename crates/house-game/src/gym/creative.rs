@@ -19,7 +19,7 @@
 //! saves as an ordinary canonical `.level` diff.
 
 use super::grid::{CellKind, CellPos, EdgeKind};
-use super::sim::{Floor, FloorKind, GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
+use super::sim::{Floor, FloorKind, GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind, Prop, PropKind};
 
 /// The toolbar. Order = hotkey order (1..) and the toolbar's left-to-right.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,10 +50,12 @@ pub enum Tool {
     Floor(FloorKind),
     /// Click the road: knock a pothole into it (right-click fills it).
     Pothole,
+    /// Click to place a street prop (R turns it first; right-click removes).
+    Prop(PropKind),
 }
 
 impl Tool {
-    pub const ALL: [Tool; 18] = [
+    pub const ALL: [Tool; 28] = [
         Tool::Wall,
         Tool::Room,
         Tool::Lamp,
@@ -72,6 +74,16 @@ impl Tool {
         Tool::Floor(FloorKind::Soil),
         Tool::Pothole,
         Tool::Grow(GrowBrush::Scorch),
+        Tool::Prop(PropKind::Car),
+        Tool::Prop(PropKind::Barrel),
+        Tool::Prop(PropKind::Crate),
+        Tool::Prop(PropKind::Tires),
+        Tool::Prop(PropKind::Barrier),
+        Tool::Prop(PropKind::Pole),
+        Tool::Prop(PropKind::Sign),
+        Tool::Prop(PropKind::Hydrant),
+        Tool::Prop(PropKind::Mailbox),
+        Tool::Prop(PropKind::Bench),
     ];
 
     pub fn name(self) -> &'static str {
@@ -87,6 +99,7 @@ impl Tool {
             Tool::Roof => "roof",
             Tool::Floor(k) => k.name(),
             Tool::Pothole => "hole",
+            Tool::Prop(k) => k.name(),
         }
     }
 
@@ -112,6 +125,7 @@ impl Tool {
             Tool::Floor(FloorKind::Walk) => "drag: lay sidewalk   right-drag: back to soil",
             Tool::Floor(FloorKind::Soil) => "drag: dig back to soil",
             Tool::Pothole => "click the road: pothole   right-click: fill",
+            Tool::Prop(_) => "click: place   R: turn   right-click: remove",
         }
     }
 }
@@ -239,7 +253,7 @@ pub fn preview(lv: &GymLevel, tool: Tool, button: Button, p0: (f32, f32), p1: (f
         // these gestures are stroke lists or their own data, not grid edits:
         // see `paint`/`scrub`, `grow`, `plant`/`uproot`, `window`, `roof`,
         // `floor`, `pothole`
-        Tool::Paint(_) | Tool::Grow(_) | Tool::Plant(_) | Tool::Window | Tool::Roof | Tool::Floor(_) | Tool::Pothole => {}
+        Tool::Paint(_) | Tool::Grow(_) | Tool::Plant(_) | Tool::Window | Tool::Roof | Tool::Floor(_) | Tool::Pothole | Tool::Prop(_) => {}
     }
     pv
 }
@@ -301,6 +315,42 @@ pub fn window(lv: &mut GymLevel, hist: &mut History, x: f32, z: f32) -> bool {
         }
         None => lv.windows.push([x, z]),
     }
+    true
+}
+
+/// A seed from a world point: every placed prop and plant is its own
+/// variant, and the same click in the same place gives the same one.
+pub fn seed_at(x: f32, z: f32) -> u32 {
+    ((x * 997.0) as i32 as u32).wrapping_mul(2_654_435_761) ^ ((z * 1009.0) as i32 as u32).wrapping_mul(40_503)
+}
+
+/// Whether a prop fits at (x, z) turned `yaw`: its footprint (sampled at the
+/// centre, corners and edge midpoints) overlaps no other prop and no wall.
+/// The placement ghost turns red where it does not.
+pub fn prop_fits(lv: &GymLevel, kind: PropKind, x: f32, z: f32, yaw: f32) -> bool {
+    let (hx, hz) = kind.half();
+    let (s, c) = yaw.sin_cos();
+    let pts = [(0.0, 0.0), (hx, hz), (hx, -hz), (-hx, hz), (-hx, -hz), (hx, 0.0), (-hx, 0.0), (0.0, hz), (0.0, -hz)].map(|(lx, lz)| (x + lx * c + lz * s, z - lx * s + lz * c));
+    !pts.iter().any(|&(px, pz)| lv.grid.blocked_point(px, pz, 0.02) || lv.props.iter().any(|p| p.blocks(px, pz, 0.0)))
+}
+
+/// Place a prop at (x, z) turned `yaw`. Refused (no undo step) where it does
+/// not fit ([`prop_fits`]). One undo step.
+pub fn place_prop(lv: &mut GymLevel, hist: &mut History, kind: PropKind, x: f32, z: f32, yaw: f32) -> bool {
+    let new = Prop { kind, x, z, yaw, seed: seed_at(x, z) };
+    if !prop_fits(lv, kind, x, z, yaw) {
+        return false;
+    }
+    hist.commit(lv.clone());
+    lv.props.push(new);
+    true
+}
+
+/// Remove the prop under (x, z). One undo step, none if nothing is there.
+pub fn remove_prop(lv: &mut GymLevel, hist: &mut History, x: f32, z: f32) -> bool {
+    let Some(i) = lv.props.iter().rposition(|p| p.blocks(x, z, 0.15)) else { return false };
+    hist.commit(lv.clone());
+    lv.props.remove(i);
     true
 }
 
@@ -702,6 +752,19 @@ mod tests {
         assert!(!pothole(&mut lv, &mut h, Button::Remove, 9.0, 1.0), "nothing to fill there");
         assert!(pothole(&mut lv, &mut h, Button::Remove, 5.2, 4.1));
         assert!(lv.potholes.is_empty());
+    }
+
+    #[test]
+    fn props_place_turned_refuse_overlaps_and_remove_under_the_cursor() {
+        let mut lv = empty();
+        let mut h = History::default();
+        assert!(place_prop(&mut lv, &mut h, PropKind::Car, 5.0, 4.0, 0.0));
+        assert!(!place_prop(&mut lv, &mut h, PropKind::Barrel, 6.5, 4.2, 0.0), "onto the car");
+        assert!(place_prop(&mut lv, &mut h, PropKind::Barrel, 5.0, 5.5, 0.0), "beside it");
+        assert_ne!(lv.props[0].seed, lv.props[1].seed, "each placement is its own variant");
+        assert!(remove_prop(&mut lv, &mut h, 6.5, 4.1), "a click anywhere on the car");
+        assert_eq!(lv.props.len(), 1);
+        assert!(!remove_prop(&mut lv, &mut h, 1.0, 1.0));
     }
 
     #[test]

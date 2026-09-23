@@ -50,6 +50,7 @@ mod look;
 mod menu;
 mod painted;
 mod foliage;
+mod street_props;
 mod phys_scene;
 mod view;
 mod viewer;
@@ -199,6 +200,9 @@ impl ApplicationHandler for App {
                             KeyCode::Digit5 => Some(4),
                             KeyCode::Digit6 => Some(5),
                             KeyCode::Digit7 => Some(6),
+                            KeyCode::Digit8 => Some(7),
+                            KeyCode::Digit9 => Some(8),
+                            KeyCode::Digit0 => Some(9),
                             _ => None,
                         };
                         if let Some(i) = tool {
@@ -214,6 +218,8 @@ impl ApplicationHandler for App {
                             KeyCode::F2 => return r.creative_set_group(1),
                             KeyCode::F3 => return r.creative_set_group(2),
                             KeyCode::F4 => return r.creative_set_group(3),
+                            KeyCode::F5 => return r.creative_set_group(4),
+                            KeyCode::KeyR => return r.creative_turn(),
                             KeyCode::Tab => return r.creative_toggle(),
                             _ => {}
                         }

@@ -87,13 +87,37 @@ fn quad(m: &mut Mesh, a: Vec3, b: Vec3, c: Vec3, d: Vec3, loss: [f32; 4]) {
     m.tri(a, c, b, [loss[0], loss[2], loss[1]]);
     m.tri(b, c, d, [loss[1], loss[2], loss[3]]);
 }
-/// How deep the road is holed at a point, 0..1 (the level's potholes, with a
-/// broken rim).
+fn pothole_seed(h: &[f32; 3]) -> u32 {
+    ((h[0] * 131.0) as i32 as u32).wrapping_mul(2_654_435_761) ^ ((h[1] * 173.0) as i32 as u32).wrapping_mul(40_503)
+}
+
+/// One pothole's depth fraction at a point, 0..1. Asphalt fails in plates,
+/// so the outline is an irregular POLYGON of broken facets (stretched and
+/// turned per hole), frayed at the pixel scale, with a steep wall — not a
+/// soft disc.
+fn pothole_one(h: &[f32; 3], p: Vec2) -> f32 {
+    let seed = pothole_seed(h);
+    let d = p - Vec2::new(h[0], h[1]);
+    if d.length_squared() > (h[2] * 1.6).powi(2) {
+        return 0.0;
+    }
+    let turn = hash(0, 7, seed) * std::f32::consts::PI;
+    let (c, s) = (turn.cos(), turn.sin());
+    let stretch = 1.0 + 0.7 * hash(1, 7, seed);
+    let q = Vec2::new((d.x * c + d.y * s) / (h[2] * stretch.sqrt()), (-d.x * s + d.y * c) * stretch.sqrt() / h[2]);
+    let mut boundary = -10.0f32;
+    for k in 0..8 {
+        let a = k as f32 * std::f32::consts::TAU / 8.0 + (hash(k, 3, seed) - 0.5) * 0.7;
+        boundary = boundary.max(q.dot(Vec2::new(a.cos(), a.sin())) / (0.55 + 0.45 * hash(k, 4, seed)));
+    }
+    let fray = 0.18 * (noise(p * 4.5, seed) - 0.5) + 0.08 * (noise(p * 13.0, seed + 1) - 0.5);
+    ((1.0 - boundary + fray) * 5.0).clamp(0.0, 1.0)
+}
+
+/// How deep the road is holed at a point, 0..1 (the deepest of the level's
+/// potholes there).
 pub fn pothole(spec: &GymLevel, p: Vec2) -> f32 {
-    spec.potholes
-        .iter()
-        .map(|h| ((1.0 - p.distance(Vec2::new(h[0], h[1])) / h[2]) * 3.0 + 0.2 * (noise(p * 9.0, 33) - 0.5)).clamp(0.0, 1.0))
-        .fold(0.0, f32::max)
+    spec.potholes.iter().map(|h| pothole_one(h, p)).fold(0.0, f32::max)
 }
 
 /// The visible support height, shared by placement and the articulated rig.
@@ -132,6 +156,7 @@ pub fn ground(s: &mut Scene, spec: &GymLevel) {
     let soil = mat(s, 6, 1);
     let road = mat(s, 4, 4);
     let slab = mat(s, 5, 2);
+    potholes(s, spec, road);
     let (w, h) = (spec.grid.w as f32, spec.grid.h as f32);
     // One continuous soil layer remains below missing paving. No coplanar faces.
     let mut earth = Mesh::default();
@@ -140,7 +165,8 @@ pub fn ground(s: &mut Scene, spec: &GymLevel) {
     for (kind, rect) in surface_rects(spec) {
         if kind == ROAD {
             let mut mesh = Mesh::default();
-            let step = 0.2;
+            // fine enough that a pothole's broken rim reads as edges
+            let step = 0.1;
             let nx = ((rect[2] - rect[0]) / step).round() as i32;
             let nz = ((rect[3] - rect[1]) / step).round() as i32;
             let point = |i: i32, j: i32| {
@@ -171,6 +197,60 @@ pub fn ground(s: &mut Scene, spec: &GymLevel) {
         }
     }
 }
+/// What a pothole leaves around it: broken asphalt plates kicked out over the
+/// rim, and — after the rain — standing water in its bottom.
+fn potholes(s: &mut Scene, spec: &GymLevel, road: i32) {
+    let mut chunks = Mesh::default();
+    let mut water: Vec<([f32; 3], [f32; 3])> = Vec::new();
+    for h in &spec.potholes {
+        let seed = pothole_seed(h);
+        let c = Vec2::new(h[0], h[1]);
+        for i in 0..(6.0 + h[2] * 8.0) as i32 {
+            let a = hash(i, 1, seed) * std::f32::consts::TAU;
+            let r = h[2] * (0.75 + 0.6 * hash(i, 2, seed));
+            let p = c + Vec2::new(a.cos(), a.sin()) * r;
+            if pothole(spec, p) > 0.2 || kind_at(spec, p.x, p.y) != ROAD {
+                continue;
+            }
+            let size = 0.05 + 0.09 * hash(i, 3, seed);
+            let ang = hash(i, 4, seed) * std::f32::consts::TAU;
+            let (u, v) = (Vec3::new(ang.cos(), 0.0, ang.sin()) * size, Vec3::new(-ang.sin(), 0.0, ang.cos()) * size * 0.7);
+            let base = Vec3::new(p.x, -0.012, p.y);
+            let top = base + Vec3::Y * 0.022;
+            let pts = [base - u - v, base + u - v * 0.6, base + u * 0.7 + v, base - u * 0.8 + v * 0.9];
+            let tops = pts.map(|q| q + Vec3::Y * 0.022);
+            quad(&mut chunks, tops[0], tops[1], tops[3], tops[2], [0.0; 4]);
+            for k in 0..4 {
+                let (a, b) = (pts[k], pts[(k + 1) % 4]);
+                quad(&mut chunks, a, b, a + (top - base), b + (top - base), [0.05; 4]);
+            }
+        }
+        // standing water: a flat sheet over the deep part of the hole,
+        // following its outline at the pothole mesh's resolution
+        let step = 0.1;
+        let n = (h[2] * 1.6 / step).ceil() as i32;
+        let y = -0.012 - 0.052 * 0.62;
+        for j in -n..n {
+            for i in -n..n {
+                let p = c + Vec2::new(i as f32, j as f32) * step;
+                let corners = [p, p + Vec2::X * step, p + Vec2::Y * step, p + Vec2::ONE * step];
+                if corners.iter().all(|q| pothole(spec, *q) > 0.75) {
+                    let v = corners.map(|q| [q.x, y, q.y]);
+                    for t in [[v[0], v[2], v[1]], [v[1], v[2], v[3]]] {
+                        water.extend(t.map(|q| (q, [0.0, 1.0, 0.0])));
+                    }
+                }
+            }
+        }
+    }
+    chunks.emit(s, road);
+    if !water.is_empty() {
+        let m = s.new_material([0.012, 0.014, 0.016, 0.0], [0.0; 4], 0.04, 0.0);
+        let idx: Vec<u32> = (0..water.len() as u32).collect();
+        s.add_mesh_world(&water, &idx, m);
+    }
+}
+
 fn panel(s: &mut Scene, r: [f32; 4], mat: i32, interior: bool) {
     let seed = (r[0] * 103.0 + r[1] * 317.0) as u32;
     let nx = ((r[2] - r[0]) / 0.12).ceil() as usize;

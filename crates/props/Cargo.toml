@@ -1,0 +1,8 @@
+[package]
+name = "props"
+version = "0.1.0"
+edition = "2021"
+description = "Pure leaf: procedural street props for creative mode — ten kinds, each grown from a seed into triangle soups per material. No Scene, no GPU, no game."
+
+[dependencies]
+# std only, like `flora` and `surface`.

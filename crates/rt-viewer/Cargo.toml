@@ -22,6 +22,8 @@ surface = { path = "../surface" }
 # vegetation for creative mode: the grass density map and procedural trees
 # and bushes, baked on the CPU; a leaf, std only.
 flora = { path = "../flora" }
+# procedural street props (cars, barrels, …) grown from a seed; std only.
+props = { path = "../props" }
 # destructibility: the "wall smash" demo's rubble — a Box3D brick wall +
 # projectile authored into the gym as extra dynamic runs (phys_scene.rs).
 phys-spike = { path = "../phys-spike" }

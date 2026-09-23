@@ -27,6 +27,7 @@ Cargo workspace at the repo root, members `crates/*`:
 | `ide` | the game's chrome: creative mode's toolbar + the CPU raster it draws with; knows neither the game nor the GPU | font8x8 only |
 | `surface` | painted wall surfaces (2026-09-22): brush strokes → texel layers → albedo, baked on the CPU at one texel per game pixel | std only |
 | `flora` | vegetation (2026-09-22): the grass density map from ground brush strokes, procedural trees and bushes as triangle soups | std only |
+| `props` | street props (2026-09-23): ten kinds grown from a seed as triangle soups per material | std only |
 | `phys-spike` | throwaway Box3D rigid-body world (leaf: no game, no GPU, no renderer) — the `wall smash` demo's rubble is its one consumer, through `rt-viewer/src/phys_scene.rs` | glam only |
 | `rt-viewer` | `viewer` binary: winit shell, Metal backend, gym loop, capture | everything |
 
@@ -50,7 +51,9 @@ not the slider IDE:
   walk, soil (drag half-wu rectangles, later over earlier), hole (click a
   pothole), scorch (brush); **walls** — rain, soot, spall (drag over a
   wall); **plants** — grass, dry (drag over the ground; right-drag mows),
-  tree (click), bush (drag scatters). Right button removes / scrubs / mows /
+  tree (click), bush (drag scatters); **props** (F5) — car, barrel, crate,
+  tires, barrier, pole, sign, hydrant, mailbox, bench (click places, R
+  turns the next one an eighth, the tool row wraps onto a second line). Right button removes / scrubs / mows /
   uproots / fills / lays soil, Esc cancels a gesture, Ctrl+Z / Ctrl+Y undo/redo
   (whole-level snapshots). The ghost of the gesture in flight is drawn by the
   TONEMAP from the primary-hit world position (`TonePush.edit1/edit2`, both
@@ -80,6 +83,20 @@ surface kind + pothole depth in byte 2 and the scorch in byte 3 —
 (`terrainCrack`, mirrored bit-for-bit in `foliage::crack_dist` so grass roots
 in the same cracks). Saving works for every file level (`Level::file`;
 `LEVEL_FILE=` redirects).
+
+**PROPS (2026-09-23).** The `props` crate (std only) grows ten street props
+from `(kind, seed)` — the seed picks the variant (a car's paint or bare
+rust, missing wheels sinking a corner, a crumpled bonnet; a drum standing
+or tipped; slats missing from a bench) — as triangles per material;
+`rt-viewer/src/street_props.rs` merges a level's props into one primitive
+per material. Level line `prop KIND X Z YAW SEED`; the seed comes from the
+click point (`creative::seed_at`). Props are SOLID: `GymLevel::blocked`
+(walls + prop footprints + tree trunks, `TRUNK_R`) is the one collision
+query — the sim's collide-and-slide and the click-to-move route
+(`Route::plan_in`) both ask it, so a route goes round a wreck instead of
+stalling on it. POTHOLES are polygons of broken plates (stretched, turned
+and frayed per hole), with asphalt chunks kicked over the rim and standing
+water in the bottom (`terrain::potholes`).
 
 **PAINTED SURFACES** replace per-ray procedural wear for EVERY street wall. A spall reaching the top edge BREAKS THE CROWN
 (`Face::crown`, the notch is the crater's outline; both faces share the lower

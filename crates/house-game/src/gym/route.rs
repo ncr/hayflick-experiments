@@ -28,6 +28,7 @@
 //! point in and push the resulting direction onto the command queue.
 
 use super::grid::{CellPos, Dir, Grid};
+use super::sim::GymLevel;
 use glam::Vec2;
 
 /// How far apart sight-line samples are taken, in world units. The grid's
@@ -57,22 +58,35 @@ impl Route {
     /// goal is off the grid, inside a solid, or unreachable — the caller
     /// leaves the player standing rather than walking at a wall.
     pub fn plan(grid: &Grid, from: Vec2, to: Vec2) -> Option<Route> {
+        Self::plan_with(grid, &|p| blocked(grid, p), from, to)
+    }
+
+    /// [`Route::plan`] on a whole level: the sight lines test the level's own
+    /// collision ([`GymLevel::blocked`] — walls, props, tree trunks), the one
+    /// the body moves by, so a shortcut the route takes around a wrecked car
+    /// is one the body can walk.
+    pub fn plan_in(lv: &GymLevel, from: Vec2, to: Vec2) -> Option<Route> {
+        Self::plan_with(&lv.grid, &|p| lv.blocked(p.x, p.y, super::sim::PLAYER_RADIUS), from, to)
+    }
+
+    fn plan_with(grid: &Grid, blocked: &dyn Fn(Vec2) -> bool, from: Vec2, to: Vec2) -> Option<Route> {
         let goal = cell_of(grid, to)?;
         let start = cell_of(grid, from)?;
         if goal == start {
             return None;
         }
-        let cells = bfs(grid, start, goal)?;
+        let cell_free = |c: CellPos| !blocked(Vec2::new(c.x as f32 + 0.5, c.z as f32 + 0.5));
+        let cells = bfs(grid, &cell_free, start, goal)?;
         // The goal is the CLICKED point, not its cell centre: a click near a
         // wall should walk to where it was aimed. Every other waypoint is a
         // cell centre, because that is all the BFS knows.
         let mut pts: Vec<Vec2> = cells.iter().map(|c| Vec2::new(c.x as f32 + 0.5, c.z as f32 + 0.5)).collect();
         if let Some(last) = pts.last_mut() {
-            if !blocked(grid, to) {
+            if !blocked(to) {
                 *last = to;
             }
         }
-        let points = string_pull(grid, from, pts);
+        let points = string_pull(blocked, from, pts);
         (!points.is_empty()).then_some(Route { points })
     }
 
@@ -122,7 +136,7 @@ fn blocked(grid: &Grid, p: Vec2) -> bool {
 
 /// Shortest 4-direction route over the grid (deterministic scan order); wall
 /// edges and the grid boundary block. Returns the cells to visit AFTER `from`.
-fn bfs(grid: &Grid, from: CellPos, to: CellPos) -> Option<Vec<CellPos>> {
+fn bfs(grid: &Grid, cell_free: &dyn Fn(CellPos) -> bool, from: CellPos, to: CellPos) -> Option<Vec<CellPos>> {
     let (w, h) = (grid.w as i32, grid.h as i32);
     let idx = |p: CellPos| (p.z as i32 * w + p.x as i32) as usize;
     let mut prev: Vec<Option<CellPos>> = vec![None; (w * h) as usize];
@@ -136,7 +150,9 @@ fn bfs(grid: &Grid, from: CellPos, to: CellPos) -> Option<Vec<CellPos>> {
                 continue;
             }
             let n = p.step(dir);
-            if seen[idx(n)] {
+            // a cell a prop or trunk stands in is not a waypoint (the goal
+            // cell is kept: the route ends at the clicked point anyway)
+            if seen[idx(n)] || (n != to && !cell_free(n)) {
                 continue;
             }
             seen[idx(n)] = true;
@@ -166,20 +182,20 @@ fn bfs(grid: &Grid, from: CellPos, to: CellPos) -> Option<Vec<CellPos>> {
 /// Can the body walk the straight segment `a` → `b` without hitting anything?
 /// Sampled at [`SIGHT_STEP`] against the mover's own blocking predicate, ends
 /// included.
-fn clear_line(grid: &Grid, a: Vec2, b: Vec2) -> bool {
+fn clear_line(blocked: &dyn Fn(Vec2) -> bool, a: Vec2, b: Vec2) -> bool {
     let d = b - a;
     let len = d.length();
     if len <= f32::EPSILON {
-        return !blocked(grid, a);
+        return !blocked(a);
     }
     let steps = (len / SIGHT_STEP).ceil() as i32;
-    (0..=steps).all(|i| !blocked(grid, a + d * (i as f32 / steps as f32)))
+    (0..=steps).all(|i| !blocked(a + d * (i as f32 / steps as f32)))
 }
 
 /// Drop every waypoint that is not a corner: walk forward from the body and
 /// keep only the last point still visible from the current anchor. What is
 /// left are the turns.
-fn string_pull(grid: &Grid, from: Vec2, pts: Vec<Vec2>) -> Vec<Vec2> {
+fn string_pull(blocked: &dyn Fn(Vec2) -> bool, from: Vec2, pts: Vec<Vec2>) -> Vec<Vec2> {
     let mut out: Vec<Vec2> = Vec::new();
     let mut anchor = from;
     let mut i = 0;
@@ -187,7 +203,7 @@ fn string_pull(grid: &Grid, from: Vec2, pts: Vec<Vec2>) -> Vec<Vec2> {
         // The farthest point still reachable in a straight line from `anchor`.
         let mut far = i;
         for j in (i..pts.len()).rev() {
-            if clear_line(grid, anchor, pts[j]) {
+            if clear_line(blocked, anchor, pts[j]) {
                 far = j;
                 break;
             }
@@ -232,7 +248,7 @@ mod tests {
         // makes the route followable by a mover that only knows directions.
         let mut a = from;
         for &p in r.points() {
-            assert!(clear_line(&lvl.grid, a, p), "leg {a:?} -> {p:?} crosses a wall");
+            assert!(clear_line(&|q| blocked(&lvl.grid, q), a, p), "leg {a:?} -> {p:?} crosses a wall");
             a = p;
         }
         assert_eq!(a, r.goal(), "the last corner is the goal");
@@ -292,5 +308,23 @@ mod tests {
         let b = slow.steer(from, 0.0).expect("steering");
         assert_eq!(a, b, "a large stop distance must not skip the first corner");
         assert_eq!(fast.points().len(), slow.points().len());
+    }
+
+    /// A wrecked car across the straight line: the route goes round it and
+    /// every leg is walkable against the level's own collision.
+    #[test]
+    fn a_route_goes_round_a_prop_instead_of_through_it() {
+        use crate::gym::sim::{Prop, PropKind};
+        let mut lv = crate::gym::level_file::parse("size 16 12\nspawn 1 1\n").unwrap();
+        lv.props.push(Prop { kind: PropKind::Car, x: 8.0, z: 6.0, yaw: std::f32::consts::FRAC_PI_2, seed: 1 });
+        let (from, to) = (Vec2::new(4.5, 6.5), Vec2::new(12.5, 6.5));
+        let r = Route::plan_in(&lv, from, to).expect("reachable round the car");
+        let blocked = |p: Vec2| lv.blocked(p.x, p.y, super::super::sim::PLAYER_RADIUS);
+        let mut a = from;
+        for &p in r.points() {
+            assert!(clear_line(&blocked, a, p), "leg {a:?} -> {p:?} runs into the car");
+            a = p;
+        }
+        assert_eq!(*r.points().last().unwrap(), to);
     }
 }

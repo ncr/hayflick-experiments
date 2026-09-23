@@ -172,7 +172,9 @@ impl Viewer {
             "e" => self.start_rotate(1),
             "+" => self.zoom_step(1, self.view.cursor),
             "-" => self.zoom_step(-1, self.view.cursor),
-            "f1" | "f2" | "f3" | "f4" => self.creative_set_group(name[1..].parse::<usize>().unwrap_or(1) - 1),
+            "r" if self.creative.open => self.creative_turn(),
+            "0" if self.creative.open => self.creative_set_tool(9),
+            "f1" | "f2" | "f3" | "f4" | "f5" => self.creative_set_group(name[1..].parse::<usize>().unwrap_or(1) - 1),
             n => match n.parse::<usize>() {
                 Ok(d @ 1..=9) if self.creative.open => self.creative_set_tool(d - 1),
                 _ => eprintln!("PLAY_SCRIPT: key {n:?} does nothing here"),
@@ -280,7 +282,7 @@ impl Viewer {
             img.rect(bx, by, tw + 12 * s, 14 * s, [12, 12, 12], 0.78);
             img.text(bx + 6 * s, by + 3 * s, t, s, [240, 236, 224]);
         }
-        // key caps, bottom left: held keys, then the last press for ~1 s
+        // key caps, top left: held keys, then the last press for ~1 s
         let mut caps: Vec<(String, bool)> = ps.held.iter().map(|(_, n, _)| (n.clone(), true)).collect();
         if let Some((k, at)) = &ps.last_key {
             if ps.frame.saturating_sub(*at) < 60 {
@@ -291,8 +293,9 @@ impl Viewer {
             caps.push((if b == Button::Build { "LMB".into() } else { "RMB".into() }, true));
         }
         let mut x = 12 * s;
-        // above the creative toolbar (46 bar px at 2x) when it is up
-        let y = img.h - 30 * s - if self.creative.open { 100 } else { 0 };
+        // top left, clear of the caption (centred) and of the toolbar, whose
+        // height depends on the category
+        let y = 10 * s;
         for (k, held) in caps {
             let tw = k.chars().count() as i32 * 8 * s;
             let bw = tw + 10 * s;
