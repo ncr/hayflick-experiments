@@ -4,6 +4,7 @@ use props::{build, Kind, Mat, Tri};
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "props_preview.ppm".into());
+    let cars = std::env::args().nth(2).is_some_and(|a| a == "cars");
     let (w, h) = (1100usize, 640usize);
     let mut img = vec![[0.55f32, 0.52, 0.45]; w * h];
     let mut depth = vec![f32::MAX; w * h];
@@ -35,23 +36,33 @@ fn main() {
             }
         }
     };
+    let shade = |m: Mat| match m {
+        Mat::Paint(c) => [c[0] * 2.0, c[1] * 2.0, c[2] * 2.0],
+        Mat::Rust => [0.42, 0.18, 0.08],
+        Mat::Steel => [0.35, 0.36, 0.36],
+        Mat::Rubber => [0.06, 0.06, 0.06],
+        Mat::Wood => [0.36, 0.26, 0.16],
+        Mat::Concrete => [0.55, 0.54, 0.5],
+        Mat::Glass => [0.08, 0.1, 0.12],
+    };
+    if cars {
+        // eight wrecks, two rows, every body style
+        for i in 0..8u32 {
+            let (x, z) = ((i % 4) as f32 * 5.2 - 1.0, (i / 4) as f32 * 3.4 - 1.5);
+            for (m, tris) in build(Kind::Car, x, 0.0, z, 0.0, 3 + i * 5) {
+                draw(&tris, shade(m));
+            }
+        }
+    } else {
     for (i, kind) in Kind::ALL.iter().enumerate() {
         for s in 0..3u32 {
             let (x, z) = ((i % 5) as f32 * 5.0 + s as f32 * 0.0, (i / 5) as f32 * 7.0 + s as f32 * 2.2 - 1.0);
             let x = x + if matches!(kind, Kind::Car) { 0.0 } else { s as f32 * 0.4 };
             for (m, tris) in build(*kind, x, 0.0, z, 0.3, 11 + s * 7 + i as u32) {
-                let col = match m {
-                    Mat::Paint(c) => [c[0] * 2.0, c[1] * 2.0, c[2] * 2.0],
-                    Mat::Rust => [0.42, 0.18, 0.08],
-                    Mat::Steel => [0.35, 0.36, 0.36],
-                    Mat::Rubber => [0.06, 0.06, 0.06],
-                    Mat::Wood => [0.36, 0.26, 0.16],
-                    Mat::Concrete => [0.55, 0.54, 0.5],
-                    Mat::Glass => [0.08, 0.1, 0.12],
-                };
-                draw(&tris, col);
+                draw(&tris, shade(m));
             }
         }
+    }
     }
     let mut out = format!("P6 {w} {h} 255\n").into_bytes();
     for c in img {

@@ -195,7 +195,7 @@ impl PropKind {
     /// crate builds each kind to fit this, pinned by its tests).
     pub fn half(self) -> (f32, f32) {
         match self {
-            PropKind::Car => (2.1, 0.9),
+            PropKind::Car => (2.4, 0.95),
             PropKind::Barrel => (0.32, 0.32),
             PropKind::Crate => (0.42, 0.42),
             PropKind::Tires => (0.42, 0.42),
