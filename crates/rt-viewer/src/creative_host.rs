@@ -18,14 +18,15 @@
 use crate::backend::Stamp;
 use crate::viewer::Viewer;
 use glam::{Vec2, Vec3};
-use house_game::gym::creative::{self, Button, History, Preview, Tool, BRUSH_R, GROW_R};
-use house_game::gym::sim::{GroundStroke, GrowBrush, PaintEffect, PaintStroke, Plant, PlantKind};
+use house_game::gym::creative::{self, Button, History, Preview, Tool, BRUSH_R, GROW_R, POTHOLE_R};
+use house_game::gym::sim::{FloorKind, GroundStroke, GrowBrush, PaintEffect, PaintStroke, Plant, PlantKind};
 use ide::toolbar::{self, BarHit, BarModel};
 
 /// The toolbar's CATEGORIES and their tools, in order: F1.. picks a
 /// category, 1.. a tool inside it.
 const GROUPS: &[(&str, &[Tool])] = &[
-    ("build", &[Tool::Wall, Tool::Room, Tool::Lamp, Tool::Spawn]),
+    ("build", &[Tool::Wall, Tool::Room, Tool::Window, Tool::Roof, Tool::Lamp, Tool::Spawn]),
+    ("ground", &[Tool::Floor(FloorKind::Road), Tool::Floor(FloorKind::Walk), Tool::Floor(FloorKind::Soil), Tool::Pothole, Tool::Grow(GrowBrush::Scorch)]),
     ("walls", &[Tool::Paint(PaintEffect::Rain), Tool::Paint(PaintEffect::Soot), Tool::Paint(PaintEffect::Spall)]),
     ("plants", &[Tool::Grow(GrowBrush::Grass), Tool::Grow(GrowBrush::Dry), Tool::Plant(PlantKind::Tree), Tool::Plant(PlantKind::Bush)]),
 ];
@@ -110,7 +111,7 @@ impl Viewer {
         }
         self.creative.status = if self.creative.open { "creative".into() } else { String::new() };
         self.ui_blip(if self.creative.open { "menu_open" } else { "menu_close" });
-        println!("creative: {}", if self.creative.open { "on (tab: play, F1-F3: category, 1-4: tool, ctrl+z: undo)" } else { "off" });
+        println!("creative: {}", if self.creative.open { "on (tab: play, F1-F4: category, 1-6: tool, ctrl+z: undo)" } else { "off" });
     }
 
     /// Pick tool `i` of the ACTIVE category (the 1.. hotkeys).
@@ -210,7 +211,7 @@ impl Viewer {
             }
             return;
         }
-        if let Tool::Paint(_) = self.creative.tool {
+        if let Tool::Paint(_) | Tool::Window = self.creative.tool {
             self.creative.brush = self.wall_hit(win);
             self.creative.dabs.clear();
             if self.creative.brush.is_some() {
@@ -227,6 +228,9 @@ impl Viewer {
         self.creative.hover = self.creative_ground(win);
         if let (Some(p), Some(_), Tool::Grow(_) | Tool::Plant(_)) = (self.creative.hover, self.creative.press, self.creative.tool) {
             self.plant_step(p);
+        }
+        if let Tool::Window = self.creative.tool {
+            self.creative.brush = self.wall_hit(win);
         }
         if let Tool::Paint(_) = self.creative.tool {
             self.creative.brush = self.wall_hit(win);
@@ -249,7 +253,7 @@ impl Viewer {
                 }
                 self.creative.grows.push(GroundStroke { brush, x: p.0, z: p.1, r: GROW_R });
                 let d = crate::foliage::density(&self.gym.spec, &self.creative.grows);
-                crate::foliage::write_density(&mut self.scene.atlas, &d);
+                crate::foliage::write_density(&mut self.scene.atlas, &self.gym.spec, &d);
                 unsafe { self.backend.update_atlas(&self.scene.atlas) };
             }
             Tool::Plant(k) if button == Button::Build => {
@@ -317,6 +321,40 @@ impl Viewer {
             return;
         }
         match self.creative.tool {
+            Tool::Window => {
+                // the window sits on the wall's centre line under the click
+                let Some((p, slot)) = self.creative.brush else { return };
+                let f = self.painted[slot];
+                let c = f.origin + f.axis * (p - f.origin).dot(f.axis);
+                if creative::window(&mut self.gym.spec, &mut self.creative.hist, c.x, c.z) {
+                    self.creative.status = "window".into();
+                    self.creative_rebuild();
+                }
+                return;
+            }
+            Tool::Floor(k) => {
+                let Some(p1) = self.creative.hover else { return };
+                if creative::floor(&mut self.gym.spec, &mut self.creative.hist, button, k, p0, p1) {
+                    self.creative.status = format!("{} laid", if button == Button::Build { k.name() } else { "soil" });
+                    self.creative_rebuild();
+                }
+                return;
+            }
+            Tool::Roof => {
+                let Some(p1) = self.creative.hover else { return };
+                if creative::roof(&mut self.gym.spec, &mut self.creative.hist, button, p0, p1) {
+                    self.creative.status = if button == Button::Build { "roofed".into() } else { "roof torn off".into() };
+                    self.creative_rebuild();
+                }
+                return;
+            }
+            Tool::Pothole => {
+                if creative::pothole(&mut self.gym.spec, &mut self.creative.hist, button, p0.0, p0.1) {
+                    self.creative.status = if button == Button::Build { "pothole".into() } else { "filled".into() };
+                    self.creative_rebuild();
+                }
+                return;
+            }
             Tool::Grow(b) => {
                 let grows = std::mem::take(&mut self.creative.grows);
                 if creative::grow(&mut self.gym.spec, &mut self.creative.hist, &grows) {
@@ -421,6 +459,39 @@ impl Viewer {
         let c = &self.creative;
         if !c.open {
             return [[0.0; 4]; 2];
+        }
+        let kind_of = |b: Option<(Button, (f32, f32))>| if b.is_some_and(|(b, _)| b == Button::Remove) { 5.0 } else { 4.0 };
+        match c.tool {
+            Tool::Window => {
+                return match c.brush {
+                    Some((p, _)) => [[p.x, p.y, p.z, 0.55], [1.0, 4.0, 0.0, GRID_MAX_Y]],
+                    None => [[0.0; 4], [1.0, 0.0, 0.0, GRID_MAX_Y]],
+                };
+            }
+            Tool::Pothole => {
+                return match c.hover {
+                    Some((x, z)) => [[x, 0.0, z, POTHOLE_R], [1.0, kind_of(c.press), 0.0, GRID_MAX_Y]],
+                    None => [[0.0; 4], [1.0, 0.0, 0.0, GRID_MAX_Y]],
+                };
+            }
+            Tool::Floor(_) | Tool::Roof => {
+                let rect_of = |a: (f32, f32), b: (f32, f32)| if c.tool == Tool::Roof { creative::roof_rect(&self.gym.spec, a, b) } else { creative::floor_rect(&self.gym.spec, a, b) };
+                let rect = match (c.press, c.hover) {
+                    (Some((_, p0)), Some(p1)) => Some(rect_of(p0, p1)),
+                    (None, Some(p)) => Some(rect_of(p, p)),
+                    _ => None,
+                };
+                let kind = match c.press {
+                    Some((Button::Build, _)) => 1.0,
+                    Some((Button::Remove, _)) => 2.0,
+                    None => 3.0,
+                };
+                return match rect {
+                    Some(r) => [r, [1.0, kind, 0.0, GRID_MAX_Y]],
+                    None => [[0.0; 4], [1.0, 0.0, 0.0, GRID_MAX_Y]],
+                };
+            }
+            _ => {}
         }
         if let Tool::Grow(_) | Tool::Plant(_) = c.tool {
             let r = match c.tool {

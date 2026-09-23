@@ -213,6 +213,7 @@ impl ApplicationHandler for App {
                             KeyCode::F1 => return r.creative_set_group(0),
                             KeyCode::F2 => return r.creative_set_group(1),
                             KeyCode::F3 => return r.creative_set_group(2),
+                            KeyCode::F4 => return r.creative_set_group(3),
                             KeyCode::Tab => return r.creative_toggle(),
                             _ => {}
                         }

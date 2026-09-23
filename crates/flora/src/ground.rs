@@ -1,7 +1,8 @@
 //! The ground's grass, as a density map baked from natural growth + brush
-//! strokes. Two channels per texel: `green` (how much grass stands here, 0..1
-//! — the shade pass roots that fraction of its candidate blades) and `dry`
-//! (how much of it is straw, 0..1 — blade colour, and a little shorter).
+//! strokes. Three channels per texel: `green` (how much grass stands here,
+//! 0..1 — the shade pass roots that fraction of its candidate blades), `dry`
+//! (how much of it is straw, 0..1 — blade colour, and a little shorter) and
+//! `burn` (how scorched the ground is, 0..1 — the soil and slabs darken).
 
 use crate::{noise, smooth};
 
@@ -23,15 +24,19 @@ pub enum Brush {
     Dry,
     /// Cut it all down (lowers `green`).
     Mow,
+    /// Scorch the ground: raises `burn`, and what grows there goes sparse
+    /// and dry.
+    Scorch,
 }
 
 impl Brush {
-    pub const ALL: [Brush; 3] = [Brush::Grass, Brush::Dry, Brush::Mow];
+    pub const ALL: [Brush; 4] = [Brush::Grass, Brush::Dry, Brush::Mow, Brush::Scorch];
     pub fn name(self) -> &'static str {
         match self {
             Brush::Grass => "grass",
             Brush::Dry => "dry",
             Brush::Mow => "mow",
+            Brush::Scorch => "scorch",
         }
     }
     pub fn by_name(s: &str) -> Option<Brush> {
@@ -51,6 +56,7 @@ pub struct Stroke {
 pub struct Density {
     pub green: Vec<f32>,
     pub dry: Vec<f32>,
+    pub burn: Vec<f32>,
 }
 
 /// A dab's footprint: soft, with a rim broken by noise so a painted patch has
@@ -70,7 +76,7 @@ impl Density {
     /// Pure — same inputs, same map.
     pub fn bake(natural: &dyn Fn(f32, f32) -> (f32, f32), strokes: &[Stroke]) -> Density {
         let n = DIM * DIM;
-        let (mut green, mut dry) = (vec![0.0f32; n], vec![0.0f32; n]);
+        let (mut green, mut dry, mut burn) = (vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n]);
         for j in 0..DIM {
             for i in 0..DIM {
                 let (x, z) = ((i as f32 + 0.5) / TX, (j as f32 + 0.5) / TX);
@@ -103,17 +109,29 @@ impl Density {
                             green[k] = green[k].max(a * 0.55 * clump);
                         }
                         Brush::Mow => green[k] *= 1.0 - a,
+                        Brush::Scorch => {
+                            burn[k] = burn[k].max(a);
+                            green[k] *= 1.0 - 0.8 * a;
+                            dry[k] = dry[k].max(a);
+                        }
                     }
                 }
             }
         }
-        Density { green, dry }
+        Density { green, dry, burn }
     }
 
-    /// Packed for the GPU: byte 0 green, byte 1 dry — `DIM` texels per row.
-    /// The adapter copies these rows into the scene atlas's reserved corner.
+    /// Packed for the GPU: byte 0 green, byte 1 dry, byte 3 burn — `DIM`
+    /// texels per row. Byte 2 is left for the adapter (the ground's surface
+    /// kind). The adapter copies these rows into the atlas's reserved corner.
     pub fn pack(&self) -> Vec<u32> {
-        self.green.iter().zip(&self.dry).map(|(g, d)| (g * 255.0 + 0.5) as u32 | ((d * 255.0 + 0.5) as u32) << 8).collect()
+        let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+        (0..self.green.len()).map(|k| q(self.green[k]) | q(self.dry[k]) << 8 | q(self.burn[k]) << 24).collect()
+    }
+
+    pub fn burn_at(&self, x: f32, z: f32) -> f32 {
+        let (i, j) = (((x * TX) as usize).min(DIM - 1), ((z * TX) as usize).min(DIM - 1));
+        self.burn[j * DIM + i]
     }
 
     pub fn green_at(&self, x: f32, z: f32) -> f32 {

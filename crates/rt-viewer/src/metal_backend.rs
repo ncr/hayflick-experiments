@@ -370,8 +370,7 @@ impl MetalBackend {
             .replace("// TERRAIN_INCLUDE", include_str!("../../rt-probe/src/shaders/terrain.inc"))
             .replace("// SURVIVOR_INCLUDE", include_str!("../../rt-probe/src/shaders/survivor.inc"))
             .replace("// ATMOSPHERE_MATH_INCLUDE", include_str!("../../rt-probe/src/shaders/atmosphere_math.inc"))
-            .replace("// ATMOSPHERE_INCLUDE", include_str!("../../rt-probe/src/shaders/atmosphere.inc"))
-            .replace("#include \"../../../../assets/procedural/neighborhood.layout\"", include_str!("../../../assets/procedural/neighborhood.layout"));
+            .replace("// ATMOSPHERE_INCLUDE", include_str!("../../rt-probe/src/shaders/atmosphere.inc"));
         let shade_lib = device.new_library_with_source(&shade_src, &opts).map_err(|e| format!("shade.metal: {e}"))?;
         let shade_pso = device.new_compute_pipeline_state_with_function(&shade_lib.get_function("shade", None).unwrap()).map_err(|e| format!("shade pso: {e}"))?;
         let probe_lib = device.new_library_with_source(include_str!("shaders_metal/probes.metal"), &opts).map_err(|e| format!("probes.metal: {e}"))?;

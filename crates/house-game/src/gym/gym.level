@@ -1,10 +1,11 @@
-# gym.level - THE hand-authored gym level (docs/VISION.md: one level).
-# Level-as-data: creative mode writes this file back; review edits with git
-# diff. grid_hash is the level identity - editing invalidates recorded
-# gym traces and pinned state hashes.
+# Hayflick level - creative mode writes this file back; review edits with
+# git diff. grid_hash is the level identity: editing the grid invalidates
+# recorded traces and pinned state hashes for this level.
 # Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z
 #          paint rain|soot|spall X Y Z +x|-x|+z|-z R
-#          grow grass|dry|mow X Z R | plant tree|bush X Z SEED
+#          grow grass|dry|mow|scorch X Z R | plant tree|bush X Z SEED
+#          neighborhood | floor road|walk|soil X0 Z0 X1 Z1 | pothole X Z R
+#          window X Z | roof X0 Z0 X1 Z1
 size 18 14
 spawn 10 11
 lamp 11 6 6

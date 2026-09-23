@@ -12,7 +12,6 @@
 //!   leaf, dry leaf). The ground's `dry` under a plant browns its leaves.
 
 use glam::{Vec2, Vec3};
-use house_game::gym::neighborhood::{areas, Area};
 use house_game::gym::sim::{GrowBrush, GymLevel, PlantKind};
 use rt_probe::scene::ATLAS_W;
 use rt_probe::Scene;
@@ -24,39 +23,53 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// The road's crack lines (the same three the shade pass draws on the
-/// asphalt): grass only takes root in them.
-fn crack_dist(p: Vec2) -> f32 {
-    let a = (p.y - (11.05 + 0.36 * (p.x * 0.67).sin() + 0.085 * (p.x * 4.7).sin())).abs();
-    let b = (p.x - (7.4 + 0.62 * (p.y * 1.8).sin() + 0.065 * (p.y * 11.0).sin())).abs();
-    let c = (p.x - (18.2 + 0.55 * (p.y * 1.4).sin() + 0.11 * (p.y * 7.0).sin())).abs();
-    a.min(b).min(c)
+/// `concrete.inc`'s `cnHash` / `cnNoise`, bit for bit in f32: the road's
+/// cracks are drawn by the shade pass and seeded with grass here, and the two
+/// have to agree on where a crack runs.
+fn cn_hash(p: [f32; 3]) -> f32 {
+    let fr = |v: f32| v - v.floor();
+    let mut q = [fr(p[0] * 0.1031), fr(p[1] * 0.1031), fr(p[2] * 0.1031)];
+    let d = q[0] * (q[1] + 33.33) + q[1] * (q[2] + 33.33) + q[2] * (q[0] + 33.33);
+    q = [q[0] + d, q[1] + d, q[2] + d];
+    fr((q[0] + q[1]) * q[2])
+}
+
+fn cn_noise(p: [f32; 3]) -> f32 {
+    let i = p.map(f32::floor);
+    let f = [p[0] - i[0], p[1] - i[1], p[2] - i[2]].map(|f| f * f * (3.0 - 2.0 * f));
+    let h = |dx: f32, dy: f32, dz: f32| cn_hash([i[0] + dx, i[1] + dy, i[2] + dz]);
+    let mix = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    mix(
+        mix(mix(h(0.0, 0.0, 0.0), h(1.0, 0.0, 0.0), f[0]), mix(h(0.0, 1.0, 0.0), h(1.0, 1.0, 0.0), f[0]), f[1]),
+        mix(mix(h(0.0, 0.0, 1.0), h(1.0, 0.0, 1.0), f[0]), mix(h(0.0, 1.0, 1.0), h(1.0, 1.0, 1.0), f[0]), f[1]),
+        f[2],
+    )
+}
+
+/// Distance-like measure to the road's crack network (`terrain.inc`'s
+/// `terrainCrack`): the contour where a slow noise crosses one half, so any
+/// road anywhere gets cracks, not three hand-placed lines.
+pub fn crack_dist(p: Vec2) -> f32 {
+    let field = |p: Vec2| cn_noise([p.x * 0.42, p.y * 0.42, 3.0]) + 0.16 * (cn_noise([p.x * 2.3, p.y * 2.3, 9.0]) - 0.5);
+    let n = field(p);
+    let (gx, gz) = (field(p + Vec2::new(0.02, 0.0)) - n, field(p + Vec2::new(0.0, 0.02)) - n);
+    (n - 0.5).abs() / ((gx * gx + gz * gz).sqrt() / 0.02).max(0.25)
 }
 
 /// The street's natural growth at a point: (green, dry). Open soil grows in
-/// patches, the road only in its cracks, paving and the lots not at all, and
-/// the ground around the burnt-out lot is scorched to sparse straw.
-pub fn natural(parcels: &[Area], x: f32, z: f32) -> (f32, f32) {
+/// patches, the road only in its cracks, paving and building floors not at
+/// all. (Scorched ground is a brush stroke now, not a property of a lot.)
+pub fn natural(spec: &GymLevel, x: f32, z: f32) -> (f32, f32) {
     let p = Vec2::new(x, z);
-    let kind = parcels.iter().rev().find(|a| x >= a.rect[0] && z >= a.rect[1] && x < a.rect[2] && z < a.rect[3]).map_or(0, |a| a.kind);
-    let burn = parcels
-        .iter()
-        .filter(|a| a.kind == 3 && a.exposure == 3)
-        .map(|a| {
-            let q = Vec2::new((a.rect[0] - x).max(x - a.rect[2]).max(0.0), (a.rect[1] - z).max(z - a.rect[3]).max(0.0));
-            1.0 - smooth(0.25, 2.0, q.length())
-        })
-        .fold(0.0f32, f32::max);
-    let (green, dry) = match kind {
-        0 => {
+    match crate::terrain::kind_at(spec, x, z) {
+        crate::terrain::SOIL => {
             let growth = crate::concrete::noise(p * 0.68, 8);
             let straw = crate::concrete::noise(p * 0.9 + Vec2::splat(31.0), 9);
             (smooth(0.36, 0.56, growth) * 0.95, 0.2 + 0.45 * straw)
         }
-        1 => ((1.0 - smooth(0.04, 0.1, crack_dist(p))) * 0.9, 0.35),
+        crate::terrain::ROAD => ((1.0 - smooth(0.04, 0.1, crack_dist(p))) * 0.9, 0.35),
         _ => (0.0, 0.0),
-    };
-    (green * (1.0 - 0.8 * burn), dry.max(burn))
+    }
 }
 
 fn brush(b: GrowBrush) -> flora::ground::Brush {
@@ -64,20 +77,30 @@ fn brush(b: GrowBrush) -> flora::ground::Brush {
         GrowBrush::Grass => flora::ground::Brush::Grass,
         GrowBrush::Dry => flora::ground::Brush::Dry,
         GrowBrush::Mow => flora::ground::Brush::Mow,
+        GrowBrush::Scorch => flora::ground::Brush::Scorch,
     }
 }
 
 /// Bake the level's grass density map (natural growth + ground strokes, plus
 /// any `pending` strokes of a drag in flight).
 pub fn density(spec: &GymLevel, pending: &[house_game::gym::sim::GroundStroke]) -> flora::ground::Density {
-    let parcels = areas();
     let strokes: Vec<flora::ground::Stroke> = spec.ground.iter().chain(pending).map(|g| flora::ground::Stroke { brush: brush(g.brush), x: g.x, z: g.z, r: g.r }).collect();
-    flora::ground::Density::bake(&|x, z| natural(&parcels, x, z), &strokes)
+    flora::ground::Density::bake(&|x, z| natural(spec, x, z), &strokes)
 }
 
-/// Write a density map into the atlas's reserved corner, growing the atlas to
-/// at least `DIM` rows.
-pub fn write_density(atlas: &mut Vec<u32>, d: &flora::ground::Density) {
+/// Byte 2 of a map texel: the ground surface kind (bits 0-1) and how deep a
+/// pothole sits there (bits 2-7, 0..63) — `terrain.inc`'s `terrainParcel` and
+/// `terrainRoadHeight` read them.
+fn ground_byte(spec: &GymLevel, x: f32, z: f32) -> u32 {
+    let kind = crate::terrain::kind_at(spec, x, z) as u32;
+    let hole = if kind == crate::terrain::ROAD as u32 { (crate::terrain::pothole(spec, Vec2::new(x, z)) * 63.0 + 0.5) as u32 } else { 0 };
+    kind | hole << 2
+}
+
+/// Write the level's ground map into the atlas's reserved corner (growing the
+/// atlas to at least `DIM` rows): the density map's green / dry / burn plus
+/// the ground kind and potholes in byte 2.
+pub fn write_density(atlas: &mut Vec<u32>, spec: &GymLevel, d: &flora::ground::Density) {
     let need = DIM * ATLAS_W as usize;
     if atlas.len() < need {
         atlas.resize(need, 0);
@@ -85,7 +108,11 @@ pub fn write_density(atlas: &mut Vec<u32>, d: &flora::ground::Density) {
     let packed = d.pack();
     for j in 0..DIM {
         let row = j * ATLAS_W as usize;
-        atlas[row..row + DIM].copy_from_slice(&packed[j * DIM..(j + 1) * DIM]);
+        for i in 0..DIM {
+            let (x, z) = ((i as f32 + 0.5) / flora::ground::TX, (j as f32 + 0.5) / flora::ground::TX);
+            let ground = if x < spec.grid.w as f32 && z < spec.grid.h as f32 { ground_byte(spec, x, z) } else { 0 };
+            atlas[row + i] = packed[j * DIM + i] | ground << 16;
+        }
     }
 }
 
@@ -107,7 +134,7 @@ pub fn plants(scene: &mut Scene, spec: &GymLevel, d: &flora::ground::Density) {
             PlantKind::Tree => flora::plant::Kind::Tree,
             PlantKind::Bush => flora::plant::Kind::Bush,
         };
-        let y = crate::terrain::height_at(Vec2::new(p.x, p.z));
+        let y = crate::terrain::height_at(spec, Vec2::new(p.x, p.z));
         let soup = flora::plant::build(kind, p.x, y, p.z, p.seed, d.dry_at(p.x, p.z));
         push(&mut bark, &soup.bark);
         push(&mut leaf, &soup.leaf);
@@ -129,29 +156,38 @@ pub fn plants(scene: &mut Scene, spec: &GymLevel, d: &flora::ground::Density) {
 mod tests {
     use super::*;
 
+    fn street() -> GymLevel {
+        crate::demos::Level::Neighborhood.spec()
+    }
+
     #[test]
     fn the_street_grows_on_soil_and_in_road_cracks_but_not_on_paving() {
-        let parcels = areas();
-        let d = density(&house_game::gym::neighborhood::level(), &[]);
-        // a sidewalk strip (kind 2 at z 8.5..10) is bare everywhere
+        let spec = street();
+        let d = density(&spec, &[]);
+        // a sidewalk strip (z 8.5..10) is bare everywhere
         for i in 0..20 {
             assert_eq!(d.green_at(2.0 + i as f32, 9.2), 0.0);
         }
         // somewhere on open soil grass grows
         assert!((0..26).any(|x| d.green_at(x as f32 + 0.5, 20.5) > 0.3));
-        // and the road is bare off its cracks
-        let off = (0..26).map(|x| (x as f32 + 0.5, 13.5)).filter(|&(x, z)| crack_dist(Vec2::new(x, z)) > 0.3);
-        for (x, z) in off {
-            assert_eq!(natural(&parcels, x, z).0, 0.0);
-        }
+        // the road is bare off its cracks and grows in some
+        let road: Vec<(f32, f32)> = (0..104).map(|i| (i as f32 * 0.25, 12.0)).collect();
+        assert!(road.iter().filter(|&&(x, z)| crack_dist(Vec2::new(x, z)) > 0.3).all(|&(x, z)| natural(&spec, x, z).0 == 0.0));
+        assert!(road.iter().any(|&(x, z)| natural(&spec, x, z).0 > 0.5), "cracks cross the road");
     }
 
     #[test]
-    fn the_density_map_lands_in_the_atlas_corner_only() {
+    fn the_ground_map_lands_in_the_atlas_corner_and_carries_the_ground_kind() {
+        let spec = street();
         let mut atlas = vec![7u32; ATLAS_W as usize * 300];
-        let d = density(&house_game::gym::neighborhood::level(), &[]);
-        write_density(&mut atlas, &d);
+        let d = density(&spec, &[]);
+        write_density(&mut atlas, &spec, &d);
         assert_eq!(atlas[DIM], 7, "column DIM of row 0 is not the map's");
         assert_eq!(atlas[DIM * ATLAS_W as usize], 7, "row DIM is not the map's");
+        let at = |x: f32, z: f32| atlas[(z * 4.0) as usize * ATLAS_W as usize + (x * 4.0) as usize];
+        assert_eq!((at(12.0, 12.0) >> 16) & 3, crate::terrain::ROAD as u32);
+        assert_eq!((at(12.0, 9.0) >> 16) & 3, crate::terrain::WALK as u32);
+        assert_eq!((at(5.0, 5.0) >> 16) & 3, crate::terrain::SLAB as u32, "a building's room is slab floor");
+        assert!((at(8.3, 11.8) >> 18) & 63 > 30, "the pothole is deep at its centre");
     }
 }

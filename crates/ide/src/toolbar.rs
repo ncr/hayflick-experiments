@@ -1,8 +1,8 @@
-//! The creative-mode toolbar: one strip at the bottom of the screen, city-
-//! builder shaped — CATEGORY tabs on the left (build, walls, plants: F1..),
-//! the active category's tools with their hotkeys (1..), undo/redo, and the
-//! way back to playing. Above it, one line saying what the active tool's
-//! mouse buttons do. That is the whole chrome: the world stays the screen.
+//! The creative-mode toolbar: one block at the bottom of the screen, city-
+//! builder shaped, three rows — what the active tool's mouse buttons do; the
+//! CATEGORY tabs (F1..) with undo/redo and the way back to playing; the
+//! active category's tools with their hotkeys (1..). That is the whole
+//! chrome: the world stays the screen.
 //!
 //! Categories exist because a flat row stopped fitting: eleven tools do not
 //! go across a 1280-px screen at a readable size, and a city builder groups
@@ -59,8 +59,8 @@ impl Rect {
 const BTN_H: i32 = 24;
 const HINT_H: i32 = 12;
 const GAP: i32 = 3;
-/// Bar height: the hint line over the button row, with padding.
-pub const BAR_H: i32 = HINT_H + BTN_H + 2 * PAD;
+/// Bar height: the hint line over the two button rows, with padding.
+pub const BAR_H: i32 = HINT_H + 2 * BTN_H + GAP + 2 * PAD;
 
 fn tool_w(label: &str) -> i32 {
     // icon column (12) + label + hotkey column
@@ -73,28 +73,27 @@ fn small_w(label: &str) -> i32 {
 
 /// The bar's own rect (bottom-centred) and every button in it, in bar px.
 pub fn layout(m: &BarModel, vw: i32, vh: i32) -> (Rect, Vec<(Rect, BarHit)>) {
-    let mut items: Vec<(i32, BarHit)> = m.groups.iter().enumerate().map(|(i, g)| (small_w(g), BarHit::Group(i))).collect();
-    items.extend(m.tools.iter().enumerate().map(|(i, t)| (tool_w(t), BarHit::Tool(i))));
-    items.push((small_w("undo"), BarHit::Undo));
-    items.push((small_w("redo"), BarHit::Redo));
-    items.push((small_w("play"), BarHit::Play));
-    // a wider gap between the three sets: categories | tools | undo redo play
-    let split = |h: BarHit| matches!(h, BarHit::Tool(0) | BarHit::Undo | BarHit::Play);
-    let groups = items.iter().filter(|(_, h)| split(*h)).count() as i32 * 3 * GAP;
-    let inner: i32 = items.iter().map(|(w, _)| w + GAP).sum::<i32>() - GAP + groups;
+    // row 2: categories left, undo / redo / play right
+    let tabs: Vec<(i32, BarHit)> = m.groups.iter().enumerate().map(|(i, g)| (small_w(g), BarHit::Group(i))).collect();
+    let acts: Vec<(i32, BarHit)> = vec![(small_w("undo"), BarHit::Undo), (small_w("redo"), BarHit::Redo), (small_w("play"), BarHit::Play)];
+    // row 3: the active category's tools
+    let tools: Vec<(i32, BarHit)> = m.tools.iter().enumerate().map(|(i, t)| (tool_w(t), BarHit::Tool(i))).collect();
+    let span = |row: &[(i32, BarHit)]| row.iter().map(|(w, _)| w + GAP).sum::<i32>() - GAP;
+    let row2 = span(&tabs) + 4 * GAP + span(&acts);
     let min_w = Canvas::text_w(m.hint) + Canvas::text_w(m.status) + 4 * PAD;
-    let w = (inner + 2 * PAD).max(min_w).min(vw);
+    let w = (row2.max(span(&tools)) + 2 * PAD).max(min_w).min(vw);
     let bar = Rect { x: (vw - w) / 2, y: vh - BAR_H, w, h: BAR_H };
-    let mut x = bar.x + (w - inner) / 2;
-    let y = bar.y + PAD + HINT_H;
     let mut out = Vec::new();
-    for (bw, hit) in items {
-        if split(hit) {
-            x += 3 * GAP;
+    let mut place = |row: &[(i32, BarHit)], mut x: i32, y: i32| {
+        for &(bw, hit) in row {
+            out.push((Rect { x, y, w: bw, h: BTN_H }, hit));
+            x += bw + GAP;
         }
-        out.push((Rect { x, y, w: bw, h: BTN_H }, hit));
-        x += bw + GAP;
-    }
+    };
+    let y2 = bar.y + PAD + HINT_H;
+    place(&tabs, bar.x + PAD, y2);
+    place(&acts, bar.x + w - PAD - span(&acts), y2);
+    place(&tools, bar.x + PAD, y2 + BTN_H + GAP);
     (bar, out)
 }
 
@@ -136,6 +135,20 @@ fn icon(label: &str) -> [u8; 8] {
         "tree" => [0x3c, 0x7e, 0xff, 0x7e, 0x3c, 0x18, 0x18, 0x3c],
         // a bush: a low mound
         "bush" => [0x00, 0x00, 0x00, 0x6c, 0xfe, 0xff, 0xff, 0x52],
+        // a window: a frame with a sill
+        "window" => [0xff, 0x81, 0x81, 0x81, 0x81, 0x81, 0xff, 0xff],
+        // a roof: a slab broken at one end
+        "roof" => [0x00, 0x00, 0xff, 0xff, 0x3f, 0x0f, 0x00, 0x00],
+        // road: a lane with its centre dashes
+        "road" => [0xff, 0x00, 0x00, 0x66, 0x00, 0x00, 0xff, 0x00],
+        // sidewalk: pour joints
+        "walk" => [0xff, 0x89, 0x89, 0xff, 0x91, 0x91, 0xff, 0x00],
+        // soil: clods
+        "soil" => [0x00, 0x00, 0x24, 0x00, 0x49, 0x00, 0xb6, 0xff],
+        // a pothole: a broken ring
+        "hole" => [0x00, 0x3c, 0x42, 0x99, 0x99, 0x42, 0x3c, 0x00],
+        // scorch: embers
+        "scorch" => [0x10, 0x28, 0x10, 0x44, 0xaa, 0x44, 0xee, 0xff],
         _ => [0; 8],
     }
 }
@@ -226,7 +239,8 @@ mod tests {
             assert!(r.x >= bar.x && r.x + r.w <= bar.x + bar.w, "button {i} inside horizontally");
             assert!(r.y >= bar.y && r.y + r.h <= bar.y + bar.h, "button {i} inside vertically");
             for (s, _) in &items[i + 1..] {
-                assert!(r.x + r.w <= s.x, "buttons do not overlap");
+                let apart = r.x + r.w <= s.x || s.x + s.w <= r.x || r.y + r.h <= s.y || s.y + s.h <= r.y;
+                assert!(apart, "buttons do not overlap: {r:?} {s:?}");
             }
         }
         assert_eq!(bar.y + bar.h, 400, "the bar sits on the bottom edge");
@@ -247,7 +261,7 @@ mod tests {
 
     #[test]
     fn the_widest_category_fits_a_1280_screen_at_2x() {
-        let m = BarModel { groups: &["build", "walls", "plants"], group: 0, tools: &["wall", "building", "lamp", "spawn"], active: 0, hint: "drag: building   right-drag: demolish", can_undo: true, can_redo: true, status: "building built" };
+        let m = BarModel { groups: &["build", "ground", "walls", "plants"], group: 0, tools: &["wall", "building", "window", "roof", "lamp", "spawn"], active: 0, hint: "drag: building   right-drag: demolish", can_undo: true, can_redo: true, status: "building built" };
         let (bar, _) = layout(&m, 640, 400);
         assert!(bar.w < 640, "{} px", bar.w);
     }

@@ -51,14 +51,29 @@ pub enum Level {
     Gym,
     Concrete,
     Neighborhood,
+    /// An empty street to build from nothing (creative mode).
+    Sandbox,
 }
 
 impl Level {
     pub fn spec(self) -> house_game::gym::sim::GymLevel {
         match self {
             Level::Gym => house_game::gym::sim::gym_level(),
-            Level::Neighborhood => house_game::gym::neighborhood::level(),
+            Level::Neighborhood => house_game::gym::level_file::parse(house_game::gym::level_file::AFTER_THE_RAIN_SRC).expect("after_the_rain.level"),
+            Level::Sandbox => house_game::gym::level_file::parse(house_game::gym::level_file::SANDBOX_SRC).expect("sandbox.level"),
             Level::Concrete => house_game::gym::sim::concrete_level(),
+        }
+    }
+
+    /// The repo-relative file a level loads from and saves to — the same
+    /// bytes `include_str!` bakes in, so a saved edit is a `git diff`. `None`
+    /// for a level that is still code.
+    pub fn file(self) -> Option<&'static str> {
+        match self {
+            Level::Gym => Some("crates/house-game/src/gym/gym.level"),
+            Level::Neighborhood => Some("crates/house-game/src/gym/after_the_rain.level"),
+            Level::Sandbox => Some("crates/house-game/src/gym/sandbox.level"),
+            Level::Concrete => None,
         }
     }
 }
@@ -82,6 +97,7 @@ pub struct Demo {
 
 pub static DEMOS: &[Demo] = &[
     Demo { name: "after the rain", level: Level::Neighborhood, blurb: "ruined homes, broken streets, wind and an old survivor", look: "aftermath", spawn: (12,15), script: &[], outdated: false },
+    Demo { name: "sandbox", level: Level::Sandbox, blurb: "an empty street: Tab and build it from nothing", look: "aftermath", spawn: (12,15), script: &[], outdated: false },
     Demo {
         name: "gym",
         level: Level::Gym,

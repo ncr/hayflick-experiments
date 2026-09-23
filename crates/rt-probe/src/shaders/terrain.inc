@@ -1,12 +1,5 @@
 // Ground, growth and moving blade intersections. Shared verbatim by GLSL/MSL.
 // env4.w carries fixed simulation time + 1 while this environment is active.
-CFN vec2 terrainParcel(vec2 p) {
-    vec2 result=vec2(-1.0,0.0);
-#define AREA(k,x0,z0,x1,z1,e) if(p.x>=float(x0)&&p.y>=float(z0)&&p.x<float(x1)&&p.y<float(z1)) result=vec2(float(k),float(e));
-#include "../../../../assets/procedural/neighborhood.layout"
-#undef AREA
-    return result;
-}
 // The GRASS DENSITY MAP (creative mode, 2026-09-22): baked on the CPU by the
 // `flora` crate from the level's natural growth + the owner's ground brushes,
 // stored in the atlas's reserved corner — 256 x 256 texels at 4 per wu from
@@ -19,23 +12,37 @@ CFN vec2 floraAt(vec2 p ATLAS_PARAM) {
     uint v=atlas[uint(t.y)*2048u+uint(t.x)];
     return vec2(float(v&255u),float((v>>8)&255u))/255.0;
 }
-CFN float terrainBurn(vec2 p) {
-    float burn=0.0;
-#define AREA(k,x0,z0,x1,z1,e) if(k==3 && e==3) {vec2 q=max(max(vec2(float(x0),float(z0))-p,p-vec2(float(x1),float(z1))),vec2(0.0));burn=max(burn,1.0-smoothstep(0.25,2.0,length(q)));}
-#include "../../../../assets/procedural/neighborhood.layout"
-#undef AREA
-    return burn;
+// The GROUND MAP's other half (2026-09-23): byte 2 of the same texel holds the
+// surface kind (bits 0-1: 0 soil, 1 road, 2 sidewalk, 3 building slab) and the
+// pothole depth (bits 2-7), byte 3 the scorch. All of it is LEVEL DATA baked on
+// the CPU (rt-viewer foliage.rs) — this used to be a layout file #included
+// here, which is why none of it could be built from an empty level.
+CFN uint terrainTexel(vec2 p ATLAS_PARAM) {
+    vec2 t=floor(p*4.0);
+    if(t.x<0.0||t.y<0.0||t.x>=256.0||t.y>=256.0)return 0u;
+    return atlas[uint(t.y)*2048u+uint(t.x)];
+}
+CFN vec2 terrainParcel(vec2 p ATLAS_PARAM) {
+    return vec2(float((terrainTexel(p ATLAS_ARG)>>16)&3u),0.0);
+}
+CFN float terrainBurn(vec2 p ATLAS_PARAM) {
+    return float((terrainTexel(p ATLAS_ARG)>>24)&255u)/255.0;
+}
+// The road's cracks: where a slow noise crosses one half — a network any road
+// gets, mirrored in foliage.rs (`crack_dist`) so grass roots in the same cracks.
+CFN float terrainCrackField(vec2 p) {
+    // a second, finer octave breaks the contour into a jagged, branching line
+    return cnNoise(vec3(p*0.42,3.0))+0.16*(cnNoise(vec3(p*2.3,9.0))-0.5);
 }
 CFN float terrainCrack(vec2 p) {
-    float a=abs(p.y-(11.05+0.36*sin(p.x*0.67)+0.085*sin(p.x*4.7)));
-    float b=abs(p.x-(7.4+0.62*sin(p.y*1.8)+0.065*sin(p.y*11.0)));
-    float c=abs(p.x-(18.2+0.55*sin(p.y*1.4)+0.11*sin(p.y*7.0)));
-    return min(a,min(b,c));
+    // distance to the half-crossing in WORLD units: the offset divided by the
+    // field's slope, so the line keeps one width where the field runs flat
+    float n=terrainCrackField(p);
+    float gx=terrainCrackField(p+vec2(0.02,0.0))-n, gz=terrainCrackField(p+vec2(0.0,0.02))-n;
+    return abs(n-0.5)/max(length(vec2(gx,gz))/0.02,0.25);
 }
-CFN float terrainRoadHeight(vec2 p) {
-    float hole=max(clamp((1.0-length(p-vec2(8.3,11.8))/1.25)*3.0,0.0,1.0),
-               max(clamp((1.0-length(p-vec2(19.0,13.5)))*3.0,0.0,1.0),
-                   clamp((1.0-length(p-vec2(2.0,10.4))/0.8)*3.0,0.0,1.0)));
+CFN float terrainRoadHeight(vec2 p ATLAS_PARAM) {
+    float hole=float((terrainTexel(p ATLAS_ARG)>>18)&63u)/63.0;
     return -0.012-hole*0.052;
 }
 CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footprint ATLAS_PARAM) {
@@ -63,7 +70,7 @@ CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footp
         s.albedo=mix(s.albedo,mix(vec3(0.085,0.076,0.056),vec3(0.25,0.23,0.18),gravel.shade),loss*gravel.amount);
         float crack=abs(sin(p.x*1.7+p.z*2.1+0.3*sin(p.x*9.0)));
         s.albedo*=1.0-(1.0-smoothstep(0.015,0.035+footprint,crack))*0.3;
-        s.albedo=mix(s.albedo,vec3(0.038,0.036,0.028),terrainBurn(p.xz)*0.65*macro);
+        s.albedo=mix(s.albedo,vec3(0.038,0.036,0.028),terrainBurn(p.xz ATLAS_ARG)*0.65*macro);
         return s;
     }
     // Uneven barren soil: fine dusty fines, compact growthes and dark pockets.
@@ -72,7 +79,7 @@ CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footp
     // grass roots green the soil under them (and straw browns it)
     vec2 flora=floraAt(p.xz ATLAS_ARG);
     s.albedo=mix(s.albedo,mix(vec3(0.086,0.096,0.039),vec3(0.16,0.13,0.07),flora.y),flora.x*0.28);
-    s.albedo=mix(s.albedo,vec3(0.021,0.022,0.018),terrainBurn(p.xz)*(0.65+0.25*macro));
+    s.albedo=mix(s.albedo,vec3(0.021,0.022,0.018),terrainBurn(p.xz ATLAS_ARG)*(0.65+0.25*macro));
     return s;
 }
 struct GrassHit { float t; vec3 normal; vec3 color; };
@@ -97,7 +104,7 @@ CFN GrassHit terrainGrass(vec3 o,vec3 d,float limit,float time,vec3 player ATLAS
         float reach=max(max(floraAt(center ATLAS_ARG).x,floraAt(center+vec2(0.35,0.35) ATLAS_ARG).x),
                         max(floraAt(center-vec2(0.35,0.35) ATLAS_ARG).x,max(floraAt(center+vec2(0.35,-0.35) ATLAS_ARG).x,floraAt(center+vec2(-0.35,0.35) ATLAS_ARG).x)));
         if(reach<0.01)continue;
-        int kind=int(terrainParcel(center).x);
+        int kind=int(terrainParcel(center ATLAS_ARG).x);
         float seed=cnHash(vec3(c,43.0));
         float gust=0.6*sin(time*1.7-center.x*0.52-center.y*0.35)+0.4*sin(time*0.83+center.y*0.4);
         vec2 wind=vec2(0.83,0.55)*(0.10+0.13*gust);
@@ -114,11 +121,11 @@ CFN GrassHit terrainGrass(vec3 o,vec3 d,float limit,float time,vec3 player ATLAS
             // the green fraction at its own root
             vec2 fl=floraAt(root ATLAS_ARG);
             if(r>=fl.x||(k>=16&&r>=fl.x-0.66))continue;
-            kind=int(terrainParcel(root).x);
+            kind=int(terrainParcel(root ATLAS_ARG).x);
             float tall=smoothstep(0.5,0.95,fl.x)*(1.0-0.5*fl.y);
             float height=(0.09+0.15*r+tall*(0.20+0.20*seed))*(kind==1?0.85:1.0)*(1.0-0.25*fl.y);
             height*=1.0-press*0.72;
-            float ground=kind==1?terrainRoadHeight(root):-0.068;
+            float ground=kind==1?terrainRoadHeight(root ATLAS_ARG):-0.068;
             vec2 rayMiddle=(o+d*((ground+height*0.5-o.y)/d.y)).xz;
             vec2 bound=abs(d.xz/d.y)*height*0.5+abs(wind*(0.4+height)+bend)+vec2(0.12);
             vec2 gap=abs(root-rayMiddle);

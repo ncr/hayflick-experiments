@@ -207,7 +207,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     // ---- floors: one quad per row-run of same (tint, matte) key (cheap prim
     // merge; a checker look breaks field rows into per-cell quads — fine at
     // gym scale). Outdoor grass is MATTE; the Room floor keeps the sheen.
-    if spec.neighborhood {crate::terrain::ground(&mut scene);} else {
+    if spec.neighborhood {crate::terrain::ground(&mut scene, spec);} else {
     for z in 0..h {
         let mut x = 0i16;
         while x < w {
@@ -234,22 +234,18 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     // pack below it (foliage.rs, painted.rs)
     let density = spec.neighborhood.then(|| crate::foliage::density(spec, &[]));
     if let Some(d) = &density {
-        crate::foliage::write_density(&mut scene.atlas, d);
+        crate::foliage::write_density(&mut scene.atlas, spec, d);
     }
     let mut packer = if density.is_some() { crate::painted::Packer::below(crate::foliage::DIM) } else { crate::painted::Packer::default() };
     let mut painted: Vec<crate::painted::FaceSlot> = Vec::new();
     for r in &wall_runs(g) {
-        // every neighborhood wall is PAINTED: its surface is baked from the
-        // level's brush strokes (painted.rs) — a lot's history is a stroke
-        // preset in the level data (neighborhood::history_strokes), a wall
-        // built in creative mode starts clean — and a lot wall then gets its
-        // window openings cut through
+        // every street wall is PAINTED: its surface is baked from the
+        // level's brush strokes (painted.rs), then the level's window
+        // openings on it are cut through (terrain::cut_windows)
         if spec.neighborhood {
             let first = scene.primitives.len();
             painted.extend(crate::painted::wall(&mut scene, &mut packer, r.rect, r.along_x, &spec.paint));
-            if crate::terrain::lot_of(r.rect).is_some() {
-                crate::terrain::cut_windows(&mut scene, first, r.rect, r.along_x);
-            }
+            crate::terrain::cut_windows(&mut scene, first, r.rect, r.along_x, &spec.windows);
         }
         else if look.concrete { crate::concrete::wall(&mut scene, r.rect, r.along_x); }
         else { wall_slab(&mut scene, &mut piers, r, look); }
@@ -263,9 +259,9 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     if let Some(d) = &density {
         crate::foliage::plants(&mut scene, spec, d);
     }
-    if spec.neighborhood {crate::terrain::details(&mut scene);}
+    if spec.neighborhood {crate::terrain::details(&mut scene, spec);}
     let roof_first = scene.primitives.len();
-    if spec.neighborhood {crate::terrain::roofs(&mut scene);}
+    if spec.neighborhood {crate::terrain::roofs(&mut scene, spec);}
     // collect every cap rect first: a cap's PARAPET is only an arris where
     // the neighbouring row does not continue the roof, and a groove eased
     // into a shared row boundary would draw a line across the roof
@@ -333,7 +329,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     // jumps on the first step.
     if spec.neighborhood {
         let p = scene.player_start;
-        scene.player_start.y = crate::terrain::height_at(glam::Vec2::new(p.x, p.z));
+        scene.player_start.y = crate::terrain::height_at(spec, glam::Vec2::new(p.x, p.z));
     }
     scene.lighting = look.lighting;
     scene.sun_sky = look.sun; // sun/sky-as-data (Faza 1b)

@@ -19,7 +19,7 @@
 //! saves as an ordinary canonical `.level` diff.
 
 use super::grid::{CellKind, CellPos, EdgeKind};
-use super::sim::{GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
+use super::sim::{Floor, FloorKind, GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
 
 /// The toolbar. Order = hotkey order (1..) and the toolbar's left-to-right.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,10 +40,20 @@ pub enum Tool {
     Grow(GrowBrush),
     /// Click (or drag, for bushes) to plant; right-click uproots.
     Plant(PlantKind),
+    /// Click a wall: open a window there (click one again to close it).
+    Window,
+    /// Drag a rectangle of cells: a broken roof slab over it (right-drag
+    /// removes the roofs it touches).
+    Roof,
+    /// Drag a rectangle: lay road / sidewalk / bare soil (right-drag lays
+    /// soil — the eraser of the ground).
+    Floor(FloorKind),
+    /// Click the road: knock a pothole into it (right-click fills it).
+    Pothole,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 11] = [
+    pub const ALL: [Tool; 18] = [
         Tool::Wall,
         Tool::Room,
         Tool::Lamp,
@@ -55,6 +65,13 @@ impl Tool {
         Tool::Grow(GrowBrush::Dry),
         Tool::Plant(PlantKind::Tree),
         Tool::Plant(PlantKind::Bush),
+        Tool::Window,
+        Tool::Roof,
+        Tool::Floor(FloorKind::Road),
+        Tool::Floor(FloorKind::Walk),
+        Tool::Floor(FloorKind::Soil),
+        Tool::Pothole,
+        Tool::Grow(GrowBrush::Scorch),
     ];
 
     pub fn name(self) -> &'static str {
@@ -66,6 +83,10 @@ impl Tool {
             Tool::Paint(e) => e.name(),
             Tool::Grow(b) => b.name(),
             Tool::Plant(k) => k.name(),
+            Tool::Window => "window",
+            Tool::Roof => "roof",
+            Tool::Floor(k) => k.name(),
+            Tool::Pothole => "hole",
         }
     }
 
@@ -82,8 +103,15 @@ impl Tool {
             Tool::Grow(GrowBrush::Grass) => "drag: grow grass   right-drag: mow",
             Tool::Grow(GrowBrush::Dry) => "drag: dry it to straw   right-drag: mow",
             Tool::Grow(GrowBrush::Mow) => "drag: mow",
+            Tool::Grow(GrowBrush::Scorch) => "drag: scorch the ground   right-drag: mow",
             Tool::Plant(PlantKind::Tree) => "click: plant a tree   right-click: uproot",
             Tool::Plant(PlantKind::Bush) => "drag: plant bushes   right-drag: uproot",
+            Tool::Window => "click a wall: open / close a window",
+            Tool::Roof => "drag: roof over cells   right-drag: tear it off",
+            Tool::Floor(FloorKind::Road) => "drag: lay road   right-drag: back to soil",
+            Tool::Floor(FloorKind::Walk) => "drag: lay sidewalk   right-drag: back to soil",
+            Tool::Floor(FloorKind::Soil) => "drag: dig back to soil",
+            Tool::Pothole => "click the road: pothole   right-click: fill",
         }
     }
 }
@@ -208,11 +236,92 @@ pub fn preview(lv: &GymLevel, tool: Tool, button: Button, p0: (f32, f32), p1: (f
                 pv.spawn = Some(snap_cell(lv, p1.0, p1.1));
             }
         }
-        // these gestures are stroke lists, not a press/release pair: see
-        // `paint`/`scrub`, `grow`, `plant`/`uproot`
-        Tool::Paint(_) | Tool::Grow(_) | Tool::Plant(_) => {}
+        // these gestures are stroke lists or their own data, not grid edits:
+        // see `paint`/`scrub`, `grow`, `plant`/`uproot`, `window`, `roof`,
+        // `floor`, `pothole`
+        Tool::Paint(_) | Tool::Grow(_) | Tool::Plant(_) | Tool::Window | Tool::Roof | Tool::Floor(_) | Tool::Pothole => {}
     }
     pv
+}
+
+/// A floor drag's rectangle: the two points, snapped outward to the half-wu
+/// grid the ground is resolved at, clamped onto the level.
+pub fn floor_rect(lv: &GymLevel, p0: (f32, f32), p1: (f32, f32)) -> [f32; 4] {
+    let (w, h) = (lv.grid.w as f32, lv.grid.h as f32);
+    let lo = |a: f32, b: f32, m: f32| ((a.min(b) * 2.0).floor() / 2.0).clamp(0.0, m);
+    let hi = |a: f32, b: f32, m: f32| ((a.max(b) * 2.0).floor() / 2.0 + 0.5).clamp(0.0, m);
+    [lo(p0.0, p1.0, w), lo(p0.1, p1.1, h), hi(p0.0, p1.0, w), hi(p0.1, p1.1, h)]
+}
+
+/// Lay a floor rectangle (right button lays soil). One undo step.
+pub fn floor(lv: &mut GymLevel, hist: &mut History, button: Button, kind: FloorKind, p0: (f32, f32), p1: (f32, f32)) -> bool {
+    let rect = floor_rect(lv, p0, p1);
+    if rect[2] <= rect[0] || rect[3] <= rect[1] {
+        return false;
+    }
+    hist.commit(lv.clone());
+    lv.floors.push(Floor { kind: if button == Button::Build { kind } else { FloorKind::Soil }, rect });
+    true
+}
+
+/// A roof drag's rectangle: the cells under both points, whole cells.
+pub fn roof_rect(lv: &GymLevel, p0: (f32, f32), p1: (f32, f32)) -> [f32; 4] {
+    let (a, b) = (snap_cell(lv, p0.0, p0.1), snap_cell(lv, p1.0, p1.1));
+    [a.x.min(b.x) as f32, a.z.min(b.z) as f32, (a.x.max(b.x) + 1) as f32, (a.z.max(b.z) + 1) as f32]
+}
+
+/// Put a roof over the drag's cells, or (right button) tear off every roof
+/// it touches. One undo step, none if nothing changed.
+pub fn roof(lv: &mut GymLevel, hist: &mut History, button: Button, p0: (f32, f32), p1: (f32, f32)) -> bool {
+    let r = roof_rect(lv, p0, p1);
+    if button == Button::Build {
+        hist.commit(lv.clone());
+        lv.roofs.push(r);
+        return true;
+    }
+    let hit = |q: &[f32; 4]| q[0] < r[2] && r[0] < q[2] && q[1] < r[3] && r[1] < q[3];
+    if !lv.roofs.iter().any(hit) {
+        return false;
+    }
+    hist.commit(lv.clone());
+    lv.roofs.retain(|q| !hit(q));
+    true
+}
+
+/// Toggle a window at world `(x, z)` — a point on a wall line (the adapter
+/// picks the wall). A window already within 0.7 wu on the same line closes
+/// instead. One undo step.
+pub fn window(lv: &mut GymLevel, hist: &mut History, x: f32, z: f32) -> bool {
+    // snap along the wall to the 0.1 architecture grid
+    let (x, z) = ((x * 10.0).round() / 10.0, (z * 10.0).round() / 10.0);
+    hist.commit(lv.clone());
+    match lv.windows.iter().position(|w| (w[0] - x).abs() + (w[1] - z).abs() < 0.7) {
+        Some(i) => {
+            lv.windows.remove(i);
+        }
+        None => lv.windows.push([x, z]),
+    }
+    true
+}
+
+/// Pothole radius a click knocks in.
+pub const POTHOLE_R: f32 = 1.0;
+
+/// Knock a pothole in at `(x, z)`, or (right button) fill every pothole
+/// within reach. One undo step, none if nothing changed.
+pub fn pothole(lv: &mut GymLevel, hist: &mut History, button: Button, x: f32, z: f32) -> bool {
+    if button == Button::Build {
+        hist.commit(lv.clone());
+        lv.potholes.push([x, z, POTHOLE_R]);
+        return true;
+    }
+    let hit = |h: &[f32; 3]| (h[0] - x).powi(2) + (h[1] - z).powi(2) < (h[2] * 0.8).powi(2);
+    if !lv.potholes.iter().any(hit) {
+        return false;
+    }
+    hist.commit(lv.clone());
+    lv.potholes.retain(|h| !hit(h));
+    true
 }
 
 /// Brush radius for hand painting, wu.
@@ -571,6 +680,28 @@ mod tests {
         let n = h.undo.len();
         assert!(grow(&mut lv, &mut h, &[GroundStroke { brush: GrowBrush::Grass, x: 3.0, z: 3.0, r: GROW_R }]));
         assert_eq!(h.undo.len(), n + 1);
+    }
+
+    #[test]
+    fn the_street_tools_lay_floors_roofs_windows_and_potholes() {
+        let mut lv = empty();
+        let mut h = History::default();
+        assert!(floor(&mut lv, &mut h, Button::Build, FloorKind::Road, (0.2, 3.1), (9.8, 4.9)));
+        assert_eq!(lv.floors[0].rect, [0.0, 3.0, 10.0, 5.0], "snapped outward to half-wu, clamped");
+        assert!(floor(&mut lv, &mut h, Button::Remove, FloorKind::Road, (2.0, 3.0), (3.0, 4.0)));
+        assert_eq!(lv.floors[1].kind, FloorKind::Soil, "right-drag lays soil over it");
+        assert!(roof(&mut lv, &mut h, Button::Build, (2.5, 1.5), (4.5, 2.5)));
+        assert_eq!(lv.roofs, vec![[2.0, 1.0, 5.0, 3.0]]);
+        assert!(roof(&mut lv, &mut h, Button::Remove, (3.2, 1.2), (3.2, 1.2)));
+        assert!(lv.roofs.is_empty());
+        assert!(window(&mut lv, &mut h, 3.04, 5.0));
+        assert_eq!(lv.windows, vec![[3.0, 5.0]]);
+        assert!(window(&mut lv, &mut h, 3.3, 5.0), "a click near it closes it");
+        assert!(lv.windows.is_empty());
+        assert!(pothole(&mut lv, &mut h, Button::Build, 5.0, 4.0));
+        assert!(!pothole(&mut lv, &mut h, Button::Remove, 9.0, 1.0), "nothing to fill there");
+        assert!(pothole(&mut lv, &mut h, Button::Remove, 5.2, 4.1));
+        assert!(lv.potholes.is_empty());
     }
 
     #[test]

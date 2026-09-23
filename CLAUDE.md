@@ -42,13 +42,16 @@ not the slider IDE:
 
 - **Tab = play ↔ build.** Building pauses the sim, frees the camera (WASD pans,
   wheel zooms, q/e turn), draws a 1-game-px build grid, and shows ONE toolbar
-  at the bottom (`ide::toolbar`, the only chrome) with three CATEGORIES
-  (F1..F3 or click; 1.. picks a tool inside the category): **build** — wall
-  (drag corner to corner), building (drag a rect: floor, walls, a +z
-  doorway), lamp, spawn; **walls** — rain, soot, spall (drag over a wall);
-  **plants** — grass, dry (drag over the ground; right-drag mows), tree
-  (click), bush (drag scatters). Right button removes / scrubs / mows /
-  uproots, Esc cancels a gesture, Ctrl+Z / Ctrl+Y undo/redo
+  at the bottom (`ide::toolbar`, the only chrome: hint row, category tabs +
+  undo/redo/play, the category's tools) with four CATEGORIES (F1..F4 or
+  click; 1.. picks a tool inside the category): **build** — wall (drag
+  corner to corner), building (drag a rect: floor, walls, a +z doorway),
+  window (click a wall), roof (drag cells), lamp, spawn; **ground** — road,
+  walk, soil (drag half-wu rectangles, later over earlier), hole (click a
+  pothole), scorch (brush); **walls** — rain, soot, spall (drag over a
+  wall); **plants** — grass, dry (drag over the ground; right-drag mows),
+  tree (click), bush (drag scatters). Right button removes / scrubs / mows /
+  uproots / fills / lays soil, Esc cancels a gesture, Ctrl+Z / Ctrl+Y undo/redo
   (whole-level snapshots). The ghost of the gesture in flight is drawn by the
   TONEMAP from the primary-hit world position (`TonePush.edit1/edit2`, both
   twins) — stamps are opaque copies and cannot carry a ghost.
@@ -58,15 +61,27 @@ not the slider IDE:
   the sim (`GymGame::set_level` — before it, a wall built in an editor could
   be walked through), rebuilds, and saves file-backed levels.
 
-**PAINTED SURFACES** replace per-ray procedural wear for EVERY wall of "after
-the rain". A dwelling lot's authored history is no longer a shader branch: its exposure
-code (2 corrosion / 3 fire / 4 blast) selects a STROKE PRESET written into the
-level data (`neighborhood::history_strokes` — rain runs from leaking crowns,
-broad corrosion craters, smoke out of window heads, a blast tearing the crown
-off), so the houses are painted with the owner's own brushes and can be
-scrubbed, repainted and undone like any stroke. `terrain::cut_windows` then
-cuts the lot walls' openings through the painted mesh (uv interpolates, the
-atlas stays put). A spall reaching the top edge BREAKS THE CROWN
+**EVERYTHING IS LEVEL DATA (2026-09-23).** "after the rain" is a file
+(`crates/house-game/src/gym/after_the_rain.level`) and so is the empty
+"sandbox" (menu → levels) — the layout file that was `#include`d into the
+shader and the code that generated the street (`neighborhood.rs`) are
+deleted, so everything the street shows can be built and painted from an
+empty level (let's play #5 does exactly that). The level carries: `floor`
+rectangles (road / walk / soil, later over earlier — a building's Room cells
+are always slab floor), `pothole`s, `window`s (a centre point on a wall
+line; `terrain::cut_windows` cuts them through ANY painted wall), `roof`
+slabs (torn on +z), wall `paint` (the old lot histories were written out as
+ordinary strokes), `grow` strokes (incl. `scorch`) and `plant`s. Lintels
+over doorways and columns at building corners follow from the walls
+(`terrain::details`). The ground map in the atlas corner carries the
+surface kind + pothole depth in byte 2 and the scorch in byte 3 —
+`terrain.inc` reads them (`terrainParcel`, `terrainRoadHeight`,
+`terrainBurn`); the road's cracks are a noise contour network
+(`terrainCrack`, mirrored bit-for-bit in `foliage::crack_dist` so grass roots
+in the same cracks). Saving works for every file level (`Level::file`;
+`LEVEL_FILE=` redirects).
+
+**PAINTED SURFACES** replace per-ray procedural wear for EVERY street wall. A spall reaching the top edge BREAKS THE CROWN
 (`Face::crown`, the notch is the crater's outline; both faces share the lower
 crown) and the torn bars stand proud of it; lost cover lies as rubble below
 each crater.
@@ -95,8 +110,7 @@ baked on the CPU, the shader only reads. The `flora` crate (std only) bakes
 the GRASS DENSITY MAP (`green`, `dry` per texel, 4 texels per wu, a fixed
 256 × 256 square from the world origin) from the level's natural growth
 (`foliage::natural` — open soil in noise patches, the road only in its
-cracks, the burnt lot's surroundings scorched to sparse straw; moved out of
-the shade pass) plus the ground brush strokes (`GymLevel.ground`, file line
+cracks; moved out of the shade pass) plus the ground brush strokes (`GymLevel.ground`, file line
 `grow grass|dry|mow X Z R`). The map lives in the atlas's reserved top-left
 corner (painted faces pack below it, `Packer::below`), and `terrain.inc`'s
 `floraAt` decides per blade whether it roots and how much of it is straw —
@@ -109,8 +123,7 @@ grass grows under the cursor with no rebuild. TREES and BUSHES
 their seed by `flora::plant` (a wandering trunk, forking branches, faceted
 leaf clumps; one in five trees is dead; the ground's `dry` browns the
 leaves) and merged into three MATTE primitives (bark, leaf, dry leaf) by
-`rt-viewer/src/foliage.rs`. The street starts with a dozen
-(`neighborhood::starting_plants`). The sim walks through foliage.
+`rt-viewer/src/foliage.rs`. The sim walks through foliage.
 **BLIND METAL** adds `terrain.inc`'s atlas read through the threaded
 parameter.
 

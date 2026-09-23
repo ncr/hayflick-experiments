@@ -24,5 +24,4 @@ pub mod route;
 pub mod sim;
 pub mod trace;
 
-pub mod neighborhood;
 pub mod creative;

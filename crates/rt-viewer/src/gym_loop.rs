@@ -107,7 +107,7 @@ impl GymLoop {
         let sim = GymGame::new(spec.clone());
         let snap = sim.snapshot();
         let mut p0 = cell_world(snap.player);
-        if spec.neighborhood {p0.y=crate::terrain::height_at(snap.position);}
+        if spec.neighborhood {p0.y=crate::terrain::height_at(&spec, snap.position);}
         GymLoop {
             fixed: FixedLoop::new(TICK_DT),
             queue: InputQueue::new(),
@@ -325,11 +325,11 @@ impl GymLoop {
     /// this: there is no longer a second, eased path to measure instead.
     fn gait_tick(&mut self) {
         let snap = self.sim.snapshot();
-        let y=if self.spec.neighborhood {crate::terrain::height_at(snap.position)}else{crate::gym_scene::FLOOR_TOP};
+        let y=if self.spec.neighborhood {crate::terrain::height_at(&self.spec, snap.position)}else{crate::gym_scene::FLOOR_TOP};
         let p=Vec3::new(snap.position.x,y,snap.position.y);
-        let neighborhood=self.spec.neighborhood;
+        let spec=&self.spec;
         self.survivor.update_grounded(p,snap.velocity,snap.intent,snap.contact,snap.crouching,
-            |xz| if neighborhood {crate::terrain::height_at(xz)} else {crate::gym_scene::FLOOR_TOP});
+            |xz| if spec.neighborhood {crate::terrain::height_at(spec, xz)} else {crate::gym_scene::FLOOR_TOP});
         let (stride, _) = gait_params(self.mode());
         let distance = self.sim.snapshot().velocity.length() * TICK_DT;
         let moving = distance > 1.0e-6;
@@ -354,7 +354,7 @@ impl GymLoop {
     }
 
     fn sim_position_world(&self) -> Vec3 {
-        let y = if self.spec.neighborhood {crate::terrain::height_at(self.snap.position)}else{cell_world(self.snap.player).y};
+        let y = if self.spec.neighborhood {crate::terrain::height_at(&self.spec, self.snap.position)}else{cell_world(self.snap.player).y};
         Vec3::new(self.snap.position.x, y, self.snap.position.y)
     }
 
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn neighborhood_actor_stands_on_soil_not_the_old_gym_floor() {
-        let mut spec=house_game::gym::neighborhood::level();spec.player_start=CellPos::new(24,20);
+        let mut spec=crate::demos::Level::Neighborhood.spec();spec.player_start=CellPos::new(24,20);
         let t=GymLoop::new(spec);
         assert!((t.render_position().y + 0.075).abs()<1e-5);
     }
@@ -539,7 +539,7 @@ mod tests {
     /// harder brake leave the Route ~0.19 short, inside that radius.
     #[test]
     fn neighborhood_click_walks_continuously_to_the_goal() {
-        let mut spec=house_game::gym::neighborhood::level();spec.player_start=CellPos::new(24,20);
+        let mut spec=crate::demos::Level::Neighborhood.spec();spec.player_start=CellPos::new(24,20);
         let mut t=GymLoop::new(spec);t.click_ground(Vec3::new(24.5,0.0,18.5));
         let mut last=t.snap.position;
         for _ in 0..160 {t.run_due(TICK_DT);assert!(t.snap.position.distance(last)<0.04,"click route teleported instead of walking");last=t.snap.position;}
@@ -552,7 +552,7 @@ mod tests {
     /// a visible sideways drift under the trimetric game projection.
     #[test]
     fn held_w_follows_the_projection_without_sideways_zigzag() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),
@@ -664,7 +664,7 @@ mod tests {
     /// animation and the continuous body on the same stride.
     #[test]
     fn gait_phase_tracks_distance_instead_of_wall_clock() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),

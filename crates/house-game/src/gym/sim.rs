@@ -105,15 +105,19 @@ pub enum GrowBrush {
     Grass,
     Dry,
     Mow,
+    /// Scorch the ground (fire): burnt soil, and whatever grows there goes
+    /// sparse and dry.
+    Scorch,
 }
 
 impl GrowBrush {
-    pub const ALL: [GrowBrush; 3] = [GrowBrush::Grass, GrowBrush::Dry, GrowBrush::Mow];
+    pub const ALL: [GrowBrush; 4] = [GrowBrush::Grass, GrowBrush::Dry, GrowBrush::Mow, GrowBrush::Scorch];
     pub fn name(self) -> &'static str {
         match self {
             GrowBrush::Grass => "grass",
             GrowBrush::Dry => "dry",
             GrowBrush::Mow => "mow",
+            GrowBrush::Scorch => "scorch",
         }
     }
     pub fn by_name(s: &str) -> Option<GrowBrush> {
@@ -148,6 +152,37 @@ impl PlantKind {
     }
 }
 
+/// What covers the ground in a floor rectangle. A building's Room cells are
+/// always slab floor; everything no rectangle covers is open soil.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FloorKind {
+    Soil,
+    Road,
+    Walk,
+}
+
+impl FloorKind {
+    pub const ALL: [FloorKind; 3] = [FloorKind::Soil, FloorKind::Road, FloorKind::Walk];
+    pub fn name(self) -> &'static str {
+        match self {
+            FloorKind::Soil => "soil",
+            FloorKind::Road => "road",
+            FloorKind::Walk => "walk",
+        }
+    }
+    pub fn by_name(s: &str) -> Option<FloorKind> {
+        FloorKind::ALL.into_iter().find(|k| k.name() == s)
+    }
+}
+
+/// A rectangle of ground surface, world (x0, z0, x1, z1). Later rectangles
+/// cover earlier ones — painting is layering.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Floor {
+    pub kind: FloorKind,
+    pub rect: [f32; 4],
+}
+
 /// A placed plant: procedural, so the seed IS the plant (the renderer grows
 /// the same tree from it every time). Presentation only — the sim walks
 /// through foliage.
@@ -172,6 +207,15 @@ pub struct GymLevel {
     pub ground: Vec<GroundStroke>,
     /// Trees and bushes.
     pub plants: Vec<Plant>,
+    /// Ground surface rectangles (road, sidewalk, soil), later over earlier.
+    pub floors: Vec<Floor>,
+    /// Potholes in the road: world (x, z, radius).
+    pub potholes: Vec<[f32; 3]>,
+    /// Window openings: world (x, z) of the opening's centre on a wall line.
+    pub windows: Vec<[f32; 2]>,
+    /// Broken roof slabs over world rects (x0, z0, x1, z1); the +z edge is the
+    /// torn one.
+    pub roofs: Vec<[f32; 4]>,
     pub neighborhood: bool,
     pub grid: Grid,
     pub player_start: CellPos,
@@ -380,7 +424,7 @@ pub fn concrete_level() -> GymLevel {
         for x in x0..x1 { grid.set_edge(CellPos::new(x,z),Dir::Zm,EdgeKind::Wall); }
     }
     for z in 3..8 { grid.set_edge(CellPos::new(13,z),Dir::Xm,EdgeKind::Wall); }
-    GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
+    GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
 }
 
 #[cfg(test)]
@@ -446,7 +490,7 @@ mod tests {
     /// speed, and holding it does, within the ramp the constant promises.
     #[test]
     fn speed_ramps_instead_of_arriving_whole() {
-        let mut g = GymGame::new(GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         g.tick(Tick(0), &[hold(1.0, 0.0, MoveMode::Walk)]);
         let first = g.snapshot().velocity.length();
         assert!(first > 0.0 && first < SPEED_WALK, "one tick must not reach walking speed: {first}");
@@ -463,7 +507,7 @@ mod tests {
     /// leans on when it stops steering a stopping distance short of the goal.
     #[test]
     fn releasing_input_brakes_to_rest() {
-        let mut g = GymGame::new(GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         for t in 0..30u64 {
             g.tick(Tick(t), &[hold(1.0, 0.0, MoveMode::Run)]);
         }
@@ -483,7 +527,7 @@ mod tests {
 
     #[test]
     fn continuous_input_moves_between_cells_without_snapping() {
-        let mut g = GymGame::new(GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
         let start = g.snapshot().position;
         for t in 0..30u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Walk }]);
@@ -496,7 +540,7 @@ mod tests {
 
     #[test]
     fn crouch_survives_idle_limits_running_and_releases_cleanly() {
-        let mut g = GymGame::new(GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
         g.tick(Tick(0), &[Command::Crouch(true)]);
         let crouch_hash = g.state_hash();
         let mut standing=GymGame::new(g.spec().clone()); standing.tick(Tick(0),&[]);
@@ -516,7 +560,7 @@ mod tests {
 
     #[test]
     fn releasing_sprint_stops_within_eight_ticks_and_a_quarter_metre() {
-        let mut g=GymGame::new(GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
+        let mut g=GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
         for t in 0..60 {g.tick(Tick(t),&[Command::MoveWorld {dx:1024,dz:0,mode:MoveMode::Run}]);}
         let released=g.snapshot().position;
         for t in 60..68 {g.tick(Tick(t),&[]);}
@@ -528,7 +572,7 @@ mod tests {
     fn continuous_input_collides_with_grid_edges_and_keeps_sliding() {
         let mut grid = Grid::new(8, 8);
         grid.set_edge(CellPos::new(1, 2), Dir::Xp, EdgeKind::Wall);
-        let mut g = GymGame::new(GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
         for t in 0..120u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Run }]);
         }
@@ -561,7 +605,7 @@ mod tests {
     #[test]
     fn the_doorway_is_the_only_way_in() {
         // The doorway column, approached from the south.
-        let mut open = GymGame::new(GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut open = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x, DOORWAY.z + 3),
@@ -573,7 +617,7 @@ mod tests {
         assert_eq!(open.grid().cell(open.snapshot().player), CellKind::Room, "the doorway admits");
 
         // One cell east of it is the building's south wall.
-        let mut shut = GymGame::new(GymLevel { ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut shut = GymGame::new(GymLevel { floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x + 1, DOORWAY.z + 3),

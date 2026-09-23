@@ -10,8 +10,8 @@
 //! [`level_save`](crate::viewer::Viewer::level_save) writes THAT, unless the
 //! owner explicitly moved it (a creative-mode spawn edit updates both).
 //!
-//! Only the GYM is file-backed. The other levels are generated code, so edits
-//! there stay session-only and the save says so once.
+//! The gym, "after the rain" and "sandbox" are files (`Level::file`); a
+//! level that is still code keeps its edits for the session and says so.
 
 use house_game::gym::grid::CellPos;
 use house_game::gym::level_file;
@@ -38,19 +38,15 @@ fn env_overridden() -> bool {
     env::ALL.iter().filter(|(_, writes)| *writes).any(|(k, _)| std::env::var(k).is_ok())
 }
 
-/// The repo-relative path an unredirected save writes — the same bytes
-/// `include_str!` bakes in, so a saved edit lands as a `git diff` on the
-/// checked-in file.
-const GYM_LEVEL_PATH: &str = "crates/house-game/src/gym/gym.level";
-
 /// Level bookkeeping on the [`Viewer`](crate::viewer::Viewer).
 pub struct LevelState {
     /// The AUTHORED spawn — what a save writes. A demo's boot spawn is an
     /// override on the way in and never lands here; a creative-mode spawn
     /// edit does.
     pub authored_spawn: CellPos,
-    /// Only the gym has a file behind it; edits elsewhere are session-only.
-    pub file_backed: bool,
+    /// The file a save writes (`Level::file`, or `LEVEL_FILE`); `None` = a
+    /// level that is still code, edits session-only.
+    pub file: Option<String>,
     /// An INTERACTIVE level edit happened since the last save; demos never
     /// set it.
     pub dirty: bool,
@@ -60,13 +56,13 @@ pub struct LevelState {
 /// the `EDIT=` ops. The DEMO's spawn override is applied by the caller — this
 /// function's spec IS the authoring, and its spawn is what a save writes.
 pub fn load(level: crate::demos::Level) -> (GymLevel, LevelState) {
-    let file_backed = matches!(level, crate::demos::Level::Gym);
-    let mut spec = if file_backed {
+    let file = std::env::var(env::LEVEL_FILE).ok().or(level.file().map(str::to_string));
+    let mut spec = if level.file().is_some() {
         match std::env::var(env::LEVEL_FILE) {
             Ok(path) => match std::fs::read_to_string(&path) {
                 Ok(text) => level_file::parse(&text).unwrap_or_else(|e| panic!("LEVEL_FILE {path}: {e}")),
                 Err(_) => {
-                    println!("level: {path} not found — booting the baked gym.level (a save will create it)");
+                    println!("level: {path} not found — booting the baked level (a save will create it)");
                     level.spec()
                 }
             },
@@ -80,7 +76,7 @@ pub fn load(level: crate::demos::Level) -> (GymLevel, LevelState) {
         let n = ops.iter().filter(|&&op| level_file::apply_op(&mut spec, op)).count();
         println!("EDIT: {n} of {} ops applied", ops.len());
     }
-    let state = LevelState { authored_spawn: spec.player_start, file_backed, dirty: false };
+    let state = LevelState { authored_spawn: spec.player_start, file, dirty: false };
     (spec, state)
 }
 
@@ -98,15 +94,14 @@ impl crate::viewer::Viewer {
             println!("level: env override active — edits stay in this session only");
             return;
         }
-        if !self.level.file_backed {
+        let Some(path) = self.level.file.clone() else {
             println!("level: this level is generated code — edits stay in this session only");
             return;
-        }
+        };
         // The demo's spawn override must not be saved as authoring.
         let mut authored = self.gym.spec.clone();
         authored.player_start = self.level.authored_spawn;
         let text = level_file::serialize(&authored);
-        let path = std::env::var(env::LEVEL_FILE).unwrap_or_else(|_| GYM_LEVEL_PATH.to_string());
         match std::fs::write(&path, &text) {
             Ok(()) => println!("level: saved to {path}"),
             Err(e) => eprintln!("level: could not save {path}: {e} — edits stay in this session only"),
@@ -137,8 +132,13 @@ mod tests {
     /// the crate dir.)
     #[test]
     fn the_save_path_is_the_baked_source() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(super::GYM_LEVEL_PATH);
-        let text = std::fs::read_to_string(&path).expect("the save path must be the checked-in file");
-        assert_eq!(text, house_game::gym::level_file::GYM_LEVEL_SRC);
+        use crate::demos::Level;
+        use house_game::gym::level_file::{parse, serialize, AFTER_THE_RAIN_SRC, GYM_LEVEL_SRC, SANDBOX_SRC};
+        for (level, src) in [(Level::Gym, GYM_LEVEL_SRC), (Level::Neighborhood, AFTER_THE_RAIN_SRC), (Level::Sandbox, SANDBOX_SRC)] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(level.file().unwrap());
+            let text = std::fs::read_to_string(&path).expect("the save path must be the checked-in file");
+            assert_eq!(text, src, "{level:?}");
+            assert_eq!(serialize(&parse(src).unwrap()), src, "{level:?} is in canonical form, so a save is a clean diff");
+        }
     }
 }

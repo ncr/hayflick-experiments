@@ -17,6 +17,13 @@
 //! - `grow grass|dry|mow X Z R` — a ground brush dab (floats; file order =
 //!   paint order)
 //! - `plant tree|bush X Z SEED` — a procedural plant at world (X, Z)
+//! - `neighborhood` — build this level as a street: terrain, painted walls,
+//!   grass (the "after the rain" pipeline); without it, the greybox gym's
+//! - `floor road|walk|soil X0 Z0 X1 Z1` — a ground rectangle, later over
+//!   earlier (a building's Room cells are always slab floor)
+//! - `pothole X Z R` — a hole in the road
+//! - `window X Z` — a window opening centred at world (X, Z) on a wall line
+//! - `roof X0 Z0 X1 Z1` — a broken roof slab over a world rect, torn on +z
 //!
 //! [`serialize`] emits the CANONICAL form (fixed statement order, rooms and
 //! walls z-major) — `serialize(parse(f)) == f` for a canonical file, pinned
@@ -38,12 +45,20 @@
 //! creative mode's edits, the `EDIT=` harness knob and the tests all go through it.
 
 use super::grid::{CellKind, CellPos, EdgeKind, Grid};
-use super::sim::{GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
+use super::sim::{Floor, FloorKind, GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind};
 
 /// The checked-in gym level — THE one hand-authored level (owner directive
 /// 2026-07-12), embedded at compile time so headless tests, the viewer and
 /// the editor all read the same bytes and cargo rebuilds on change.
 pub const GYM_LEVEL_SRC: &str = include_str!("gym.level");
+
+/// "after the rain" — the street (2026-09-23: level DATA since the layout
+/// file and the code that generated it were retired; everything in it can be
+/// built and painted in creative mode).
+pub const AFTER_THE_RAIN_SRC: &str = include_str!("after_the_rain.level");
+
+/// "sandbox" — an empty street to build from nothing in creative mode.
+pub const SANDBOX_SRC: &str = include_str!("sandbox.level");
 
 /// Parse a level file. Errors carry the 1-based line number.
 pub fn parse(text: &str) -> Result<GymLevel, String> {
@@ -53,6 +68,11 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     let mut paint: Vec<PaintStroke> = Vec::new();
     let mut ground: Vec<GroundStroke> = Vec::new();
     let mut plants: Vec<Plant> = Vec::new();
+    let mut floors: Vec<Floor> = Vec::new();
+    let mut potholes: Vec<[f32; 3]> = Vec::new();
+    let mut windows: Vec<[f32; 2]> = Vec::new();
+    let mut roofs: Vec<[f32; 4]> = Vec::new();
+    let mut neighborhood = false;
     for (ln, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -80,6 +100,30 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
             };
             let mut f = || -> Result<f32, String> { it.next().and_then(|t| t.parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0).ok_or_else(|| err("bad radius")) };
             paint.push(PaintStroke { effect, pos, axis, sign, r: f()? });
+            continue;
+        }
+        if op == "neighborhood" {
+            neighborhood = true;
+            continue;
+        }
+        if matches!(op, "floor" | "pothole" | "window" | "roof") {
+            let err = |m: &str| format!("line {}: {op}: {m}", ln + 1);
+            let kind = if op == "floor" { Some(it.next().and_then(FloorKind::by_name).ok_or_else(|| err("unknown floor"))?) } else { None };
+            let v: Vec<f32> = it.map(|t| t.parse::<f32>().ok().filter(|v| v.is_finite())).collect::<Option<Vec<f32>>>().ok_or_else(|| err("bad number"))?;
+            let want = match op {
+                "pothole" => 3,
+                "window" => 2,
+                _ => 4,
+            };
+            if v.len() != want {
+                return Err(err(&format!("expected {want} numbers")));
+            }
+            match op {
+                "floor" => floors.push(Floor { kind: kind.unwrap(), rect: [v[0], v[1], v[2], v[3]] }),
+                "pothole" => potholes.push([v[0], v[1], v[2]]),
+                "window" => windows.push([v[0], v[1]]),
+                _ => roofs.push([v[0], v[1], v[2], v[3]]),
+            }
             continue;
         }
         if op == "grow" || op == "plant" {
@@ -151,7 +195,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     }
     let grid = grid.ok_or("no size statement")?;
     let player_start = spawn.ok_or("no spawn statement")?;
-    Ok(GymLevel { ground, plants, paint, neighborhood: false, grid, player_start, lights })
+    Ok(GymLevel { floors, potholes, windows, roofs, ground, plants, paint, neighborhood, grid, player_start, lights })
 }
 
 /// Emit the canonical text form: header, size, spawn, lamps (identity order),
@@ -159,15 +203,19 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
 pub fn serialize(spec: &GymLevel) -> String {
     let g = &spec.grid;
     let mut out = String::from(
-        "# gym.level - THE hand-authored gym level (docs/VISION.md: one level).\n\
-         # Level-as-data: creative mode writes this file back; review edits with git\n\
-         # diff. grid_hash is the level identity - editing invalidates recorded\n\
-         # gym traces and pinned state hashes.\n\
+        "# Hayflick level - creative mode writes this file back; review edits with\n\
+         # git diff. grid_hash is the level identity: editing the grid invalidates\n\
+         # recorded traces and pinned state hashes for this level.\n\
          # Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z\n\
          #          paint rain|soot|spall X Y Z +x|-x|+z|-z R\n\
-         #          grow grass|dry|mow X Z R | plant tree|bush X Z SEED\n",
+         #          grow grass|dry|mow|scorch X Z R | plant tree|bush X Z SEED\n\
+         #          neighborhood | floor road|walk|soil X0 Z0 X1 Z1 | pothole X Z R\n\
+         #          window X Z | roof X0 Z0 X1 Z1\n",
     );
     out.push_str(&format!("size {} {}\n", g.w, g.h));
+    if spec.neighborhood {
+        out.push_str("neighborhood\n");
+    }
     out.push_str(&format!("spawn {} {}\n", spec.player_start.x, spec.player_start.z));
     for (c, glow) in &spec.lights {
         out.push_str(&format!("lamp {} {} {}\n", c.x, c.z, glow));
@@ -208,6 +256,18 @@ pub fn serialize(spec: &GymLevel) -> String {
     }
     for p in &spec.plants {
         out.push_str(&format!("plant {} {} {} {}\n", p.kind.name(), p.x, p.z, p.seed));
+    }
+    for f in &spec.floors {
+        out.push_str(&format!("floor {} {} {} {} {}\n", f.kind.name(), f.rect[0], f.rect[1], f.rect[2], f.rect[3]));
+    }
+    for h in &spec.potholes {
+        out.push_str(&format!("pothole {} {} {}\n", h[0], h[1], h[2]));
+    }
+    for w in &spec.windows {
+        out.push_str(&format!("window {} {}\n", w[0], w[1]));
+    }
+    for r in &spec.roofs {
+        out.push_str(&format!("roof {} {} {} {}\n", r[0], r[1], r[2], r[3]));
     }
     out
 }
@@ -364,6 +424,23 @@ mod tests {
         assert!(parse("size 4 4\nspawn 1 1\npaint glitter 1 1 1 +x 0.3\n").is_err());
         assert!(parse("size 4 4\nspawn 1 1\npaint rain 1 1 1 up 0.3\n").is_err());
         assert!(parse("size 4 4\nspawn 1 1\npaint rain 1 1 1 +x 0\n").err().is_some_and(|e| e.contains("line 3")));
+    }
+
+    #[test]
+    fn street_data_round_trips() {
+        let mut spec = parse(GYM_LEVEL_SRC).unwrap();
+        spec.neighborhood = true;
+        spec.floors.push(Floor { kind: FloorKind::Road, rect: [0.0, 10.0, 26.0, 14.0] });
+        spec.potholes.push([8.3, 11.8, 1.25]);
+        spec.windows.push([3.1, 7.0]);
+        spec.roofs.push([2.0, 2.0, 9.0, 4.25]);
+        spec.ground.push(GroundStroke { brush: GrowBrush::Scorch, x: 1.0, z: 2.0, r: 1.5 });
+        let text = serialize(&spec);
+        let back = parse(&text).unwrap();
+        assert!(back.neighborhood);
+        assert_eq!((back.floors, back.potholes, back.windows, back.roofs, back.ground), (spec.floors.clone(), spec.potholes.clone(), spec.windows.clone(), spec.roofs.clone(), spec.ground.clone()));
+        assert!(parse("size 4 4\nspawn 1 1\nfloor lava 0 0 1 1\n").is_err());
+        assert!(parse("size 4 4\nspawn 1 1\nwindow 1\n").is_err());
     }
 
     #[test]

@@ -1,0 +1,538 @@
+# Hayflick level - creative mode writes this file back; review edits with
+# git diff. grid_hash is the level identity: editing the grid invalidates
+# recorded traces and pinned state hashes for this level.
+# Grammar: size W H | spawn X Z | lamp X Z GLOW | room X Z | wallx X Z | wallz X Z
+#          paint rain|soot|spall X Y Z +x|-x|+z|-z R
+#          grow grass|dry|mow|scorch X Z R | plant tree|bush X Z SEED
+#          neighborhood | floor road|walk|soil X0 Z0 X1 Z1 | pothole X Z R
+#          window X Z | roof X0 Z0 X1 Z1
+size 26 23
+neighborhood
+spawn 12 15
+room 2 2
+room 3 2
+room 4 2
+room 5 2
+room 6 2
+room 7 2
+room 8 2
+room 15 2
+room 16 2
+room 17 2
+room 18 2
+room 19 2
+room 20 2
+room 21 2
+room 2 3
+room 3 3
+room 4 3
+room 5 3
+room 6 3
+room 7 3
+room 8 3
+room 15 3
+room 16 3
+room 17 3
+room 18 3
+room 19 3
+room 20 3
+room 21 3
+room 2 4
+room 3 4
+room 4 4
+room 5 4
+room 6 4
+room 7 4
+room 8 4
+room 15 4
+room 16 4
+room 17 4
+room 18 4
+room 19 4
+room 20 4
+room 21 4
+room 2 5
+room 3 5
+room 4 5
+room 5 5
+room 6 5
+room 7 5
+room 8 5
+room 15 5
+room 16 5
+room 17 5
+room 18 5
+room 19 5
+room 20 5
+room 21 5
+room 2 6
+room 3 6
+room 4 6
+room 5 6
+room 6 6
+room 7 6
+room 8 6
+room 15 6
+room 16 6
+room 17 6
+room 18 6
+room 19 6
+room 20 6
+room 21 6
+room 4 17
+room 5 17
+room 6 17
+room 7 17
+room 8 17
+room 9 17
+room 10 17
+room 11 17
+room 4 18
+room 5 18
+room 6 18
+room 7 18
+room 8 18
+room 9 18
+room 10 18
+room 11 18
+room 4 19
+room 5 19
+room 6 19
+room 7 19
+room 8 19
+room 9 19
+room 10 19
+room 11 19
+room 4 20
+room 5 20
+room 6 20
+room 7 20
+room 8 20
+room 9 20
+room 10 20
+room 11 20
+room 4 21
+room 5 21
+room 6 21
+room 7 21
+room 8 21
+room 9 21
+room 10 21
+room 11 21
+wallx 2 2
+wallx 9 2
+wallx 15 2
+wallx 22 2
+wallx 2 3
+wallx 9 3
+wallx 15 3
+wallx 22 3
+wallx 2 4
+wallx 9 4
+wallx 15 4
+wallx 22 4
+wallx 2 5
+wallx 9 5
+wallx 15 5
+wallx 22 5
+wallx 2 6
+wallx 9 6
+wallx 15 6
+wallx 22 6
+wallx 4 17
+wallx 12 17
+wallx 4 18
+wallx 12 18
+wallx 4 19
+wallx 12 19
+wallx 4 20
+wallx 12 20
+wallx 4 21
+wallx 12 21
+wallz 2 2
+wallz 3 2
+wallz 4 2
+wallz 5 2
+wallz 6 2
+wallz 7 2
+wallz 8 2
+wallz 15 2
+wallz 16 2
+wallz 17 2
+wallz 18 2
+wallz 19 2
+wallz 20 2
+wallz 21 2
+wallz 2 7
+wallz 3 7
+wallz 4 7
+wallz 7 7
+wallz 8 7
+wallz 15 7
+wallz 16 7
+wallz 17 7
+wallz 20 7
+wallz 21 7
+wallz 4 17
+wallz 5 17
+wallz 6 17
+wallz 9 17
+wallz 10 17
+wallz 11 17
+wallz 4 22
+wallz 5 22
+wallz 6 22
+wallz 7 22
+wallz 8 22
+wallz 9 22
+wallz 10 22
+wallz 11 22
+paint rain 2.15 3.05 1.9 -z 0.42
+paint rain 2.45 3.05 1.9 -z 0.42
+paint rain 2.75 3.05 1.9 -z 0.42
+paint rain 3.05 3.05 1.9 -z 0.42
+paint rain 3.35 3.05 1.9 -z 0.42
+paint rain 3.6499999 3.05 1.9 -z 0.42
+paint rain 4.2116294 3.05 1.9 -z 0.42
+paint rain 4.511629 3.05 1.9 -z 0.42
+paint rain 4.8116293 3.05 1.9 -z 0.42
+paint rain 8.314036 3.05 1.9 -z 0.42
+paint rain 8.614037 3.05 1.9 -z 0.42
+paint spall 6.2927814 1.1334033 1.9 -z 1.3371508
+paint spall 4.111443 0.61150867 1.9 -z 1.108046
+paint spall 6.9685335 1.8984194 1.9 -z 1.1186519
+paint spall 3.8809142 1.4903057 1.9 -z 1.1185977
+paint spall 8.044489 0.78559136 2.1 +z 1.277353
+paint rain 2.15 3.05 7.1 +z 0.42
+paint rain 2.45 3.05 7.1 +z 0.42
+paint rain 2.75 3.05 7.1 +z 0.42
+paint rain 3.05 3.05 7.1 +z 0.42
+paint rain 3.35 3.05 7.1 +z 0.42
+paint rain 3.6499999 3.05 7.1 +z 0.42
+paint spall 7.944432 1.5024878 7.1 +z 1.1538396
+paint spall 7.477172 1.6336823 7.1 +z 1.379573
+paint spall 3.6170344 0.7514006 7.1 +z 1.033861
+paint spall 4.384074 0.728247 7.1 +z 0.9580024
+paint rain 3.6942458 3.05 6.9 -z 0.42
+paint rain 3.994246 3.05 6.9 -z 0.42
+paint rain 4.2942457 3.05 6.9 -z 0.42
+paint rain 4.594246 3.05 6.9 -z 0.42
+paint spall 6.010493 1.0583384 6.9 -z 1.2500842
+paint rain 1.9 3.05 2.15 -x 0.42
+paint rain 1.9 3.05 2.45 -x 0.42
+paint rain 1.9 3.05 2.75 -x 0.42
+paint rain 1.9 3.05 3.05 -x 0.42
+paint rain 1.9 3.05 3.35 -x 0.42
+paint rain 1.9 3.05 3.6499999 -x 0.42
+paint rain 1.9 3.05 3.9499998 -x 0.42
+paint spall 1.9 1.5853264 5.0442877 -x 1.0452996
+paint spall 1.9 1.0237136 4.650257 -x 1.055503
+paint spall 1.9 1.581849 5.1734447 -x 1.1885569
+paint spall 1.9 0.9748827 4.229224 -x 1.2582849
+paint rain 2.1 3.05 2.15 +x 0.42
+paint rain 2.1 3.05 2.45 +x 0.42
+paint rain 2.1 3.05 2.75 +x 0.42
+paint rain 2.1 3.05 3.05 +x 0.42
+paint rain 2.1 3.05 3.35 +x 0.42
+paint rain 2.1 3.05 3.6499999 +x 0.42
+paint rain 2.1 3.05 3.9499998 +x 0.42
+paint spall 2.1 0.5968687 5.0676546 +x 1.3154134
+paint spall 9.1 1.7077783 4.0420213 +x 0.94897896
+paint spall 9.1 0.81048286 3.423779 +x 1.146942
+paint spall 9.1 1.5952531 5.1373286 +x 1.2177168
+paint spall 9.1 0.5868453 5.2886734 +x 0.90926677
+paint spall 8.9 0.8547418 3.3002114 -x 1.0279899
+paint rain 15.15 3.05 1.9 -z 0.42
+paint rain 15.45 3.05 1.9 -z 0.42
+paint rain 15.75 3.05 1.9 -z 0.42
+paint rain 16.05 3.05 1.9 -z 0.42
+paint rain 16.55485 3.05 1.9 -z 0.42
+paint rain 16.854849 3.05 1.9 -z 0.42
+paint rain 17.154848 3.05 1.9 -z 0.42
+paint rain 17.45485 3.05 1.9 -z 0.42
+paint rain 17.754848 3.05 1.9 -z 0.42
+paint rain 20.04159 3.05 1.9 -z 0.42
+paint rain 20.34159 3.05 1.9 -z 0.42
+paint rain 20.64159 3.05 1.9 -z 0.42
+paint rain 20.941591 3.05 1.9 -z 0.42
+paint rain 21.24159 3.05 1.9 -z 0.42
+paint rain 21.541592 3.05 1.9 -z 0.42
+paint rain 21.84159 3.05 1.9 -z 0.42
+paint soot 16.1 2.1 1.9 -z 0.5
+paint soot 18.5 2.1 1.9 -z 0.5
+paint spall 20.94296 1.8824148 1.9 -z 0.5046008
+paint spall 17.392883 0.81594104 1.9 -z 0.50503397
+paint spall 20.965435 3.15 1.9 -z 0.55
+paint rain 17.99198 3.05 2.1 +z 0.42
+paint rain 18.291979 3.05 2.1 +z 0.42
+paint rain 18.59198 3.05 2.1 +z 0.42
+paint rain 18.89198 3.05 2.1 +z 0.42
+paint rain 19.191978 3.05 2.1 +z 0.42
+paint rain 19.68561 3.05 2.1 +z 0.42
+paint rain 19.985611 3.05 2.1 +z 0.42
+paint rain 20.28561 3.05 2.1 +z 0.42
+paint rain 20.58561 3.05 2.1 +z 0.42
+paint soot 16.121086 0.35 2.1 +z 0.78532773
+paint soot 17.869926 0.35 2.1 +z 0.697034
+paint soot 19.463684 0.35 2.1 +z 0.7988502
+paint soot 20.722507 0.35 2.1 +z 0.7916272
+paint spall 21.48357 1.5753399 2.1 +z 0.50922036
+paint spall 16.083052 2.269972 2.1 +z 0.5045193
+paint rain 15.15 3.05 7.1 +z 0.42
+paint rain 15.45 3.05 7.1 +z 0.42
+paint rain 15.75 3.05 7.1 +z 0.42
+paint rain 16.217432 3.05 7.1 +z 0.42
+paint rain 16.517433 3.05 7.1 +z 0.42
+paint rain 16.817432 3.05 7.1 +z 0.42
+paint rain 17.117432 3.05 7.1 +z 0.42
+paint rain 17.483225 3.05 7.1 +z 0.42
+paint rain 17.783224 3.05 7.1 +z 0.42
+paint rain 18.083225 3.05 7.1 +z 0.42
+paint rain 18.383224 3.05 7.1 +z 0.42
+paint rain 18.683224 3.05 7.1 +z 0.42
+paint rain 19.044384 3.05 7.1 +z 0.42
+paint rain 19.344383 3.05 7.1 +z 0.42
+paint rain 19.644382 3.05 7.1 +z 0.42
+paint rain 21.352535 3.05 7.1 +z 0.42
+paint rain 21.652536 3.05 7.1 +z 0.42
+paint soot 16.1 2.1 7.1 +z 0.5
+paint soot 18.5 2.1 7.1 +z 0.5
+paint spall 19.362366 2.2592294 7.1 +z 0.55186844
+paint spall 15.514966 1.438358 7.1 +z 0.6300105
+paint spall 16.450144 3.15 7.1 +z 0.55
+paint soot 16.131966 0.35 6.9 -z 0.7729149
+paint soot 17.613049 0.35 6.9 -z 0.6226141
+paint soot 19.074888 0.35 6.9 -z 0.6729854
+paint soot 20.793938 0.35 6.9 -z 0.67867285
+paint spall 21.454594 1.7667263 6.9 -z 0.62617576
+paint spall 17.082834 1.6809592 6.9 -z 0.57887465
+paint rain 14.9 3.05 2.15 -x 0.42
+paint rain 14.9 3.05 2.45 -x 0.42
+paint rain 14.9 3.05 2.75 -x 0.42
+paint rain 14.9 3.05 3.3359094 -x 0.42
+paint rain 14.9 3.05 3.6359093 -x 0.42
+paint rain 14.9 3.05 3.9359093 -x 0.42
+paint rain 14.9 3.05 4.497007 -x 0.42
+paint rain 14.9 3.05 4.7970066 -x 0.42
+paint rain 14.9 3.05 5.097007 -x 0.42
+paint rain 14.9 3.05 5.397007 -x 0.42
+paint rain 14.9 3.05 5.6970067 -x 0.42
+paint rain 14.9 3.05 5.9970064 -x 0.42
+paint soot 14.9 2.1 3.1 -x 0.5
+paint spall 14.9 1.0262809 5.9254885 -x 0.4552849
+paint spall 14.9 1.2294586 6.2269764 -x 0.5771258
+paint spall 14.9 3.15 3.7375114 -x 0.55
+paint soot 15.1 0.35 3.0889387 +x 0.60184455
+paint soot 15.1 0.35 4.514261 +x 0.63774896
+paint soot 15.1 0.35 6.0783815 +x 0.6881227
+paint spall 15.1 1.7869163 4.7712126 +x 0.57092273
+paint spall 15.1 1.4905775 3.8267355 +x 0.4551979
+paint rain 22.1 3.05 4.321759 +x 0.42
+paint rain 22.1 3.05 4.621759 +x 0.42
+paint rain 22.1 3.05 4.9217587 +x 0.42
+paint rain 22.1 3.05 5.221759 +x 0.42
+paint rain 22.1 3.05 5.521759 +x 0.42
+paint rain 22.1 3.05 5.8217587 +x 0.42
+paint rain 22.1 3.05 6.281433 +x 0.42
+paint rain 22.1 3.05 6.5814333 +x 0.42
+paint rain 22.1 3.05 6.8814335 +x 0.42
+paint soot 22.1 2.1 3.1 +x 0.5
+paint spall 22.1 0.81759953 5.572441 +x 0.46052402
+paint spall 22.1 1.1012542 2.547045 +x 0.5363822
+paint spall 22.1 3.15 5.7154727 +x 0.55
+paint rain 21.9 3.05 3.8583064 -x 0.42
+paint rain 21.9 3.05 4.1583066 -x 0.42
+paint rain 21.9 3.05 4.4583063 -x 0.42
+paint rain 21.9 3.05 4.9083257 -x 0.42
+paint rain 21.9 3.05 5.2083254 -x 0.42
+paint rain 21.9 3.05 5.5083256 -x 0.42
+paint rain 21.9 3.05 5.808326 -x 0.42
+paint rain 21.9 3.05 6.1083255 -x 0.42
+paint rain 21.9 3.05 6.4083257 -x 0.42
+paint rain 21.9 3.05 6.708326 -x 0.42
+paint soot 21.9 0.35 2.7848575 -x 0.64195275
+paint soot 21.9 0.35 4.1086826 -x 0.67088705
+paint soot 21.9 0.35 5.5224485 -x 0.7146571
+paint spall 21.9 0.8827524 4.697716 -x 0.51299274
+paint spall 21.9 1.5070834 5.8543863 -x 0.45717973
+paint rain 4.15 3.05 16.9 -z 0.42
+paint rain 4.45 3.05 16.9 -z 0.42
+paint rain 4.75 3.05 16.9 -z 0.42
+paint rain 5.05 3.05 16.9 -z 0.42
+paint rain 5.35 3.05 16.9 -z 0.42
+paint rain 5.6499996 3.05 16.9 -z 0.42
+paint rain 5.95 3.05 16.9 -z 0.42
+paint rain 6.3267894 3.05 16.9 -z 0.42
+paint rain 6.626789 3.05 16.9 -z 0.42
+paint rain 6.9267893 3.05 16.9 -z 0.42
+paint rain 7.2267895 3.05 16.9 -z 0.42
+paint rain 7.526789 3.05 16.9 -z 0.42
+paint rain 7.826789 3.05 16.9 -z 0.42
+paint spall 7.121352 3.2 16.9 -z 1.8821833
+paint spall 6.141746 2.1524413 16.9 -z 1.0183482
+paint spall 6.8622103 2.2954326 16.9 -z 0.83770275
+paint spall 6.986991 1.6655238 16.9 -z 0.71975017
+paint soot 7.252323 1.2632164 16.9 -z 0.55
+paint soot 7.533259 1.5946629 16.9 -z 0.55
+paint soot 7.1152735 1.8132397 16.9 -z 0.55
+paint rain 9.262959 3.05 17.1 +z 0.42
+paint rain 9.562959 3.05 17.1 +z 0.42
+paint rain 9.862959 3.05 17.1 +z 0.42
+paint rain 10.162959 3.05 17.1 +z 0.42
+paint rain 10.462959 3.05 17.1 +z 0.42
+paint rain 10.7629595 3.05 17.1 +z 0.42
+paint spall 10.230682 1.8085363 17.1 +z 0.5
+paint rain 4.15 3.05 22.1 +z 0.42
+paint rain 4.45 3.05 22.1 +z 0.42
+paint rain 4.75 3.05 22.1 +z 0.42
+paint rain 5.05 3.05 22.1 +z 0.42
+paint rain 5.3694205 3.05 22.1 +z 0.42
+paint rain 5.6694207 3.05 22.1 +z 0.42
+paint rain 5.9694204 3.05 22.1 +z 0.42
+paint rain 6.2694206 3.05 22.1 +z 0.42
+paint rain 6.569421 3.05 22.1 +z 0.42
+paint rain 6.8694205 3.05 22.1 +z 0.42
+paint rain 7.2868075 3.05 22.1 +z 0.42
+paint rain 7.5868073 3.05 22.1 +z 0.42
+paint rain 7.8868074 3.05 22.1 +z 0.42
+paint rain 8.186808 3.05 22.1 +z 0.42
+paint rain 8.486808 3.05 22.1 +z 0.42
+paint rain 8.786808 3.05 22.1 +z 0.42
+paint rain 11.663526 3.05 22.1 +z 0.42
+paint spall 6.0871344 3.2 22.1 +z 1.7235138
+paint spall 5.32359 2.3487768 22.1 +z 0.9420801
+paint spall 5.9607763 2.2296612 22.1 +z 0.9122033
+paint spall 6.4970117 1.6211509 22.1 +z 0.76126677
+paint spall 5.1198225 2.5561602 22.1 +z 0.8145927
+paint soot 5.638322 1.8264191 22.1 +z 0.55
+paint soot 5.5357246 1.9999741 22.1 +z 0.55
+paint soot 6.2053347 1.96053 22.1 +z 0.55
+paint rain 10.199558 3.05 21.9 -z 0.42
+paint rain 10.499559 3.05 21.9 -z 0.42
+paint rain 10.799559 3.05 21.9 -z 0.42
+paint rain 11.09956 3.05 21.9 -z 0.42
+paint rain 11.399559 3.05 21.9 -z 0.42
+paint spall 11.203027 1.1403909 21.9 -z 0.5
+paint rain 3.9 3.05 17.15 -x 0.42
+paint rain 3.9 3.05 17.45 -x 0.42
+paint rain 3.9 3.05 17.75 -x 0.42
+paint rain 3.9 3.05 18.05 -x 0.42
+paint rain 3.9 3.05 18.621939 -x 0.42
+paint rain 3.9 3.05 18.92194 -x 0.42
+paint rain 3.9 3.05 19.22194 -x 0.42
+paint rain 3.9 3.05 19.521938 -x 0.42
+paint rain 3.9 3.05 19.82194 -x 0.42
+paint rain 3.9 3.05 20.189209 -x 0.42
+paint rain 3.9 3.05 20.489208 -x 0.42
+paint rain 3.9 3.05 20.78921 -x 0.42
+paint rain 3.9 3.05 21.109362 -x 0.42
+paint rain 3.9 3.05 21.40936 -x 0.42
+paint rain 3.9 3.05 21.709362 -x 0.42
+paint spall 3.9 3.2 20.167875 -x 1.7360971
+paint spall 3.9 1.3696264 19.929602 -x 0.8676347
+paint spall 3.9 2.1498487 20.361916 -x 1.0449126
+paint spall 3.9 1.5463969 19.892883 -x 1.0245141
+paint spall 3.9 2.206726 20.845974 -x 0.885101
+paint soot 3.9 1.4755563 20.248787 -x 0.55
+paint soot 3.9 1.6920471 19.637722 -x 0.55
+paint soot 3.9 1.6624328 20.321667 -x 0.55
+paint rain 4.1 3.05 20.008263 +x 0.42
+paint rain 4.1 3.05 20.308262 +x 0.42
+paint rain 4.1 3.05 20.608261 +x 0.42
+paint rain 4.1 3.05 20.908262 +x 0.42
+paint rain 4.1 3.05 21.264854 +x 0.42
+paint rain 4.1 3.05 21.564856 +x 0.42
+paint rain 4.1 3.05 21.864857 +x 0.42
+paint spall 4.1 1.8193357 20.17681 +x 0.5
+paint rain 12.1 3.05 17.15 +x 0.42
+paint rain 12.1 3.05 17.45 +x 0.42
+paint rain 12.1 3.05 17.75 +x 0.42
+paint rain 12.1 3.05 18.05 +x 0.42
+paint rain 12.1 3.05 18.35 +x 0.42
+paint rain 12.1 3.05 18.65 +x 0.42
+paint rain 12.1 3.05 18.95 +x 0.42
+paint rain 12.1 3.05 19.378325 +x 0.42
+paint rain 12.1 3.05 19.678324 +x 0.42
+paint rain 12.1 3.05 19.978325 +x 0.42
+paint rain 12.1 3.05 20.278324 +x 0.42
+paint rain 12.1 3.05 20.690825 +x 0.42
+paint rain 12.1 3.05 20.990824 +x 0.42
+paint rain 12.1 3.05 21.290825 +x 0.42
+paint rain 12.1 3.05 21.590824 +x 0.42
+paint rain 12.1 3.05 21.890823 +x 0.42
+paint spall 12.1 3.2 19.207079 +x 1.7244577
+paint spall 12.1 1.5684779 19.268345 +x 0.8753868
+paint spall 12.1 1.7606108 19.2462 +x 0.80534124
+paint spall 12.1 1.6943874 19.165882 +x 0.74826705
+paint soot 12.1 1.2126291 19.857853 +x 0.55
+paint soot 12.1 1.8314434 19.003557 +x 0.55
+paint soot 12.1 1.5736308 18.925406 +x 0.55
+paint rain 11.9 3.05 17.15 -x 0.42
+paint rain 11.9 3.05 17.45 -x 0.42
+paint rain 11.9 3.05 17.75 -x 0.42
+paint rain 11.9 3.05 18.05 -x 0.42
+paint rain 11.9 3.05 18.35 -x 0.42
+paint rain 11.9 3.05 18.65 -x 0.42
+paint rain 11.9 3.05 18.95 -x 0.42
+paint spall 11.9 1.453268 19.954887 -x 0.5
+grow scorch 15 1.5 1.4
+grow scorch 16 1.5 1.4
+grow scorch 17 1.5 1.4
+grow scorch 18 1.5 1.4
+grow scorch 19 1.5 1.4
+grow scorch 20 1.5 1.4
+grow scorch 21 1.5 1.4
+grow scorch 22.5 2 1.4
+grow scorch 22.5 3 1.4
+grow scorch 22.5 4 1.4
+grow scorch 22.5 5 1.4
+grow scorch 22.5 6 1.4
+grow scorch 22 7.5 1.4
+grow scorch 21 7.5 1.4
+grow scorch 20 7.5 1.4
+grow scorch 19 7.5 1.4
+grow scorch 18 7.5 1.4
+grow scorch 17 7.5 1.4
+grow scorch 16 7.5 1.4
+grow scorch 14.5 7 1.4
+grow scorch 14.5 6 1.4
+grow scorch 14.5 5 1.4
+grow scorch 14.5 4 1.4
+grow scorch 14.5 3 1.4
+plant tree 12.2 4 11
+plant tree 24 5.5 23
+plant tree 15.5 20 37
+plant tree 22.5 18.5 41
+plant tree 1.2 20.5 53
+plant bush 10.5 6.6 61
+plant bush 13.8 7.2 67
+plant bush 23 7.6 71
+plant bush 13.2 17.6 73
+plant bush 2.8 16.3 79
+plant bush 19.5 21.8 83
+plant bush 17.2 16.2 89
+floor road 0 10 26 14
+floor walk 0 8.5 26 10
+floor walk 0 14 26 15.5
+floor walk 5 7 6.5 8.5
+floor walk 17 7 18.5 8.5
+floor walk 7 15.5 8.5 17
+pothole 8.3 11.8 1.25
+pothole 19 13.5 1
+pothole 2 10.4 0.8
+window 3 2
+window 5.4 2
+window 16 2
+window 18.4 2
+window 5 22
+window 7.4 22
+window 9.8 22
+window 2 3
+window 4 18
+window 9 3
+window 12 18
+window 15 3
+window 22 3
+roof 2 2 9 3.95
+roof 15 2 22 3.95
+roof 4 17 12 18.95
