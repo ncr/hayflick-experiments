@@ -1850,3 +1850,32 @@ Preventive checklist
   failures as geometry, not flakiness.
 - Arrival tolerances that lean on momentum must be re-derived for the
   slowest speed that uses them.
+
+## 2026-09-24 - A retargeted walk read as "unsure": the numbers were in the pelvis
+
+Root cause
+
+Four compounding retarget/runtime artifacts, none visible in a green test: a
+stroll capture stretched to the game speed, a heel strike (contact starting 3
+cm up) treated as a landing step, the ankle pinned instead of the rolling
+ground contact, and a linear loop closure that tilted the stance foot 11
+degrees toes-up. Each one made the legs too short for the pose, and the
+runtime sank the pelvis (up to 19 cm) to keep the feet — bent knees all
+stride long. The "strange arms" were the actor's build copied as direction:
+a rising clavicle (shrug), flared wrists, a back-leaning lower neck.
+
+Detection signal
+
+Owner playtest. Then: the pelvis-drop per tick over a cycle, the clip's
+own sole heights at mid-stance (heel 0.008, ball 0.057 — a tilted foot),
+and the CMU skeleton drawn next to ours at the same scale.
+
+Preventive checklist
+
+- For any locomotion change, log the IK's pelvis sink over a cycle; a
+  natural walk needs only a few cm at double support.
+- Check the stance foot is flat at mid-stance in the BAKED clip, not only
+  in the raw take — post-processing (loop closure) can undo it.
+- Copy motion, not build: bones whose rest pose differs between actor and
+  rig (clavicle, wrist, neck) keep the motion around their mean, not the
+  absolute direction.

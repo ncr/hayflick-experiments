@@ -5,7 +5,7 @@
 //! 1. **Phase from distance.** The gait phase advances by the distance the
 //!    body actually covered this tick over the stride length for its speed,
 //!    so a blocked or braking body cannot run in place.
-//! 2. **Blend by speed.** idle ↔ walk ↔ brisk ↔ run (and the knees-bent
+//! 2. **Blend by speed.** idle ↔ stroll ↔ walk ↔ brisk ↔ run (and the knees-bent
 //!    walk when crouched) are sampled at the SAME phase — every cycle starts
 //!    at a left heel strike — and blended by speed.
 //! 3. **Stride warping.** The chosen stride rarely equals the blended clips'
@@ -24,7 +24,7 @@
 //!    an underdamped spring, so it overshoots a little and settles.
 use crate::asset::{parse_anim, Clip, Skeleton, ANIM_BYTES};
 use crate::ik;
-use crate::pose::{blend, sample, Globals, Pose};
+use crate::pose::{blend, sample, sample_contact, Globals, Pose};
 use glam::{Quat, Vec2, Vec3};
 
 /// Fixed tick length (the sim's 60 Hz).
@@ -71,6 +71,9 @@ struct Foot {
     release: f32,
     /// Heading of a planted foot.
     yaw: f32,
+    /// The planted foot's pivot on the ground and which sole point it is
+    /// (0 heel, 1 ball, 2 toe tip): the foot rolls heel → ball → toe.
+    pivot: (Vec3, usize),
     step: Option<Step>,
 }
 
@@ -102,6 +105,7 @@ fn wrap(a: f32) -> f32 {
 #[derive(Clone, Copy, Debug)]
 struct Clips {
     idle: usize,
+    stroll: usize,
     walk: usize,
     brisk: usize,
     run: usize,
@@ -163,6 +167,9 @@ pub struct Body {
     cadence: f32,
     /// The gait has come to rest after a stop (see `tick`).
     settled: bool,
+    /// Every step the controller has started on its own (corrective,
+    /// landing and forced re-plants; not the clip's own strides).
+    pub steps: u32,
     /// Re-plant steps forced by a turn or a reversal (a straight walk or
     /// run never needs one — pinned by a test).
     pub forced_steps: u32,
@@ -172,7 +179,7 @@ impl Body {
     pub fn new(position: Vec2, ground: impl Fn(Vec2) -> f32) -> Body {
         let (skel, clips) = parse_anim(ANIM_BYTES);
         let find = |n: &str| clips.iter().position(|c| c.name == n).unwrap_or_else(|| panic!("clip {n}"));
-        let which = Clips { idle: find("idle"), walk: find("walk"), brisk: find("brisk"), run: find("run"), sneak: find("sneak") };
+        let which = Clips { idle: find("idle"), stroll: find("stroll"), walk: find("walk"), brisk: find("brisk"), run: find("run"), sneak: find("sneak") };
         let side = |n: &str| [skel.index(&format!("{n}L")), skel.index(&format!("{n}R"))];
         let b = Bones {
             spine: skel.index("spine"),
@@ -192,7 +199,7 @@ impl Body {
             toe: side("toe"),
         };
         let g0 = ground(position);
-        let foot = Foot { locked: false, pos: Vec3::ZERO, rot: Quat::IDENTITY, from: Vec3::ZERO, from_rot: Quat::IDENTITY, release: 1.0, yaw: 0.0, step: None };
+        let foot = Foot { locked: false, pos: Vec3::ZERO, rot: Quat::IDENTITY, from: Vec3::ZERO, from_rot: Quat::IDENTITY, release: 1.0, yaw: 0.0, pivot: (Vec3::ZERO, 0), step: None };
         let pose = Globals { rot: vec![Quat::IDENTITY; skel.bones.len()], head: skel.bones.iter().map(|b| b.head).collect() };
         let mut body = Body {
             skel,
@@ -221,6 +228,7 @@ impl Body {
             cadence: 0.0,
             settled: true,
             forced_steps: 0,
+            steps: 0,
         };
         // settle into the idle stance: both feet planted where it stands
         body.tick(&Input { position, ..Input::default() }, &ground);
@@ -236,20 +244,20 @@ impl Body {
 
     /// The gait blend at `speed`: (clip, weight) pairs, weights summing to 1.
     fn gait_weights(&self, speed: f32) -> Vec<(usize, f32)> {
-        let (w, br, r) = (self.clip(self.which.walk).speed(), self.clip(self.which.brisk).speed(), self.clip(self.which.run).speed());
-        // the everyday walk carries the game's walking speed (1.6) with its
-        // stride stretched; the brisk capture — a power walk, knees bent —
-        // only takes over on the way to a run
-        let w = w.max(1.75);
-        let upright = if speed <= w {
-            vec![(self.which.walk, 1.0)]
-        } else if speed <= br {
-            let t = (speed - w) / (br - w);
-            vec![(self.which.walk, 1.0 - t), (self.which.brisk, t)]
+        let w = &self.which;
+        // captured speeds: stroll 1.25, walk 1.62 (THE game walk, played at
+        // its own cadence), brisk 1.87, run 3.07
+        let ladder = [w.stroll, w.walk, w.brisk];
+        let at = |i: usize| self.clip(i).speed();
+        let upright = if speed <= at(w.stroll) {
+            vec![(w.stroll, 1.0)]
+        } else if let Some(k) = (0..2).find(|&k| speed <= at(ladder[k + 1])) {
+            let t = (speed - at(ladder[k])) / (at(ladder[k + 1]) - at(ladder[k]));
+            vec![(ladder[k], 1.0 - t), (ladder[k + 1], t)]
         } else {
             // the walk→run switch sits where people make it (~2.2 m/s)
-            let t = smooth((speed - br - 0.1) / (r - br - 0.2));
-            vec![(self.which.brisk, 1.0 - t), (self.which.run, t)]
+            let t = smooth((speed - at(w.brisk) - 0.1) / (at(w.run) - at(w.brisk) - 0.2));
+            vec![(w.brisk, 1.0 - t), (w.run, t)]
         };
         let c = smooth(self.crouch);
         let mut out: Vec<(usize, f32)> = upright.into_iter().map(|(i, x)| (i, x * (1.0 - c))).collect();
@@ -274,12 +282,21 @@ impl Body {
         (chosen.max(0.1), natural.max(0.1))
     }
 
+    /// Share of the blended gait's cycle with both feet off the ground.
+    fn flight_fraction(&self, weights: &[(usize, f32)]) -> f32 {
+        let n = 32;
+        (0..n).filter(|&k| {
+            let c = self.contact_at(weights, k as f32 / n as f32);
+            c[0] < 0.5 && c[1] < 0.5
+        }).count() as f32 / n as f32
+    }
+
     fn contact_at(&self, weights: &[(usize, f32)], phase: f32) -> [f32; 2] {
         let mut c = [0.0; 2];
         for &(i, w) in weights {
-            let p = sample(self.clip(i), phase);
-            c[0] += w * p.contact[0];
-            c[1] += w * p.contact[1];
+            let p = sample_contact(self.clip(i), phase);
+            c[0] += w * p[0];
+            c[1] += w * p[1];
         }
         c
     }
@@ -343,11 +360,23 @@ impl Body {
         self.stride = stride;
         let was_still = self.moving < 0.02;
         let target_moving = smooth(self.speed / 0.7);
+        // Faster than the capture, a runner does not reach further on the
+        // ground — he flies further. Whatever part of the extra stride the
+        // gait's flight phase can carry goes into the flight: while a foot
+        // is down the phase runs at the capture's own rate (stance geometry
+        // unchanged, no over-reach), in the air it slows so the cycle still
+        // covers `stride`. The rest (a walk has no flight) is spatial warp.
+        let flight = self.flight_fraction(&weights);
+        let extra = (stride - natural).max(0.0) * smooth(flight / 0.25);
+        let spatial = stride - extra;
         if dist > 0.0 {
             if was_still {
                 self.phase = self.start_phase(inp.velocity.normalize_or_zero());
             }
-            self.phase = (self.phase + dist / stride).rem_euclid(1.0);
+            let c = self.contact_at(&weights, self.phase);
+            let airborne = c[0] < 0.5 && c[1] < 0.5;
+            let per_cycle = if airborne && extra > 0.0 { spatial + extra / flight } else { spatial };
+            self.phase = (self.phase + dist / per_cycle).rem_euclid(1.0);
             self.cadence = dist / stride / DT;
             self.settled = false;
         } else if self.moving > 0.05 && !self.settled {
@@ -383,7 +412,7 @@ impl Body {
         // feet "planted" through the first steps of a start
         let stance = self.moving < 0.3;
         pose.contact = if stance { [1.0; 2] } else { gait.contact };
-        let warp = 1.0 + (stride / natural - 1.0) * self.moving;
+        let warp = 1.0 + (spatial / natural - 1.0) * self.moving;
 
         // ---- weight: lean into acceleration and turns (underdamped: a small
         // overshoot, then it settles)
@@ -423,6 +452,13 @@ impl Body {
         // ---- feet
         let centre = Vec3::new(pelvis.x, 0.0, pelvis.z);
         let mut wanted = [(Vec3::ZERO, Quat::IDENTITY); 2];
+        // the three sole points relative to the ankle, as the clip poses them
+        let mut soles = [[Vec3::ZERO; 3]; 2];
+        for (s, sole) in soles.iter_mut().enumerate() {
+            let (f, t) = (b.foot[s], b.toe[s]);
+            let tip = g.head[t] - g.head[f] + g.rot[t] * (self.skel.bones[t].tail - self.skel.bones[t].head) - g.rot[t] * Vec3::Y * 0.02;
+            *sole = [g.rot[f] * self.skel.heel, g.rot[f] * self.skel.ball, tip];
+        }
         for (s, want) in wanted.iter_mut().enumerate() {
             let f = b.foot[s];
             let mut local = heading.inverse() * (g.head[f] - centre);
@@ -473,6 +509,10 @@ impl Body {
                         foot.step = None;
                         foot.locked = true;
                         foot.yaw = yaw_of(anim_rot);
+                        // set down on the heel where the step landed (the old
+                        // pivot would pull it back to where it started)
+                        let heel = foot.pos + foot.rot * self.skel.heel;
+                        foot.pivot = (Vec3::new(heel.x, ground(Vec2::new(heel.x, heel.z)), heel.z), 0);
                         self.cool = 3;
                     } else {
                         foot.step = Some(st);
@@ -483,24 +523,43 @@ impl Body {
             if contact >= 0.5 {
                 if !foot.locked {
                     let at = if foot.release < 1.0 { foot.pos } else { anim };
-                    if at.y - floor > 0.03 {
-                        // landing from higher than a heel strike (a stop with a
-                        // foot in the air): finish the step instead of snapping
+                    if stance && at.y - floor > 0.03 {
+                        // stopping with a foot in the air: finish the step
+                        // instead of dropping it where it hangs
                         foot.step = Some(Step { from: foot.pos, from_rot: foot.rot, t: 0.0, time: 0.3 });
+                        self.steps += 1;
                         continue;
                     }
+                    // a heel strike: the clip's contact starts a few cm
+                    // above the ground and the heel is still descending —
+                    // pin it NOW (a step here would take a third of a cycle
+                    // off the stance and sink the pelvis to reach the ground)
                     foot.locked = true;
-                    foot.pos = at;
                     foot.yaw = yaw_of(anim_rot);
+                    let heel = at + soles[s][0];
+                    foot.pivot = (Vec3::new(heel.x, ground(Vec2::new(heel.x, heel.z)), heel.z), 0);
                 }
-                // planted: the clip's heel-toe roll, the foot's own heading
-                // (a planted foot swivels only as far as an ankle allows), and
-                // the lowest sole point resting on the ground
+                // planted: the clip's heel-toe roll and the foot's own heading
+                // (a planted foot swivels only as far as an ankle allows),
+                // rolling about the point that bears the weight — heel from
+                // the strike, then the ball, then the toe tip at push-off,
+                // whichever the clip holds lowest. Pinning the ANKLE instead
+                // leaves it 10-15 cm behind at push-off (the ankle travels
+                // forward as the foot rolls) and the pelvis sinks to reach it.
                 let dev = wrap(foot.yaw - yaw_of(anim_rot)).clamp(-0.6, 0.6);
                 foot.yaw = yaw_of(anim_rot) + dev;
-                foot.rot = (Quat::from_rotation_y(dev) * anim_rot).normalize();
-                let rot = foot.rot;
-                foot.pos.y = sole_floor(&self.skel, foot.pos, rot, ground);
+                let turn = Quat::from_rotation_y(dev);
+                foot.rot = (turn * anim_rot).normalize();
+                let off = soles[s].map(|o| turn * o);
+                let k = foot.pivot.1;
+                if k < 2 && off[k + 1].y < off[k].y - 0.005 {
+                    // roll onto the next point where it touches now
+                    let p = foot.pivot.0 - off[k] + off[k + 1];
+                    foot.pivot = (Vec3::new(p.x, ground(Vec2::new(p.x, p.z)), p.z), k + 1);
+                }
+                let mut p = foot.pivot.0 - off[foot.pivot.1];
+                p.y = p.y.max(sole_floor(&self.skel, p, foot.rot, ground));
+                foot.pos = p;
                 let foot = &mut self.feet[s];
                 let drift = Vec2::new(foot.pos.x - anim.x, foot.pos.z - anim.z).length();
                 if !stance && lifting_soon[s] >= 0.5 && (drift > 0.3 || spreads[s] > overreach) {
@@ -511,6 +570,7 @@ impl Body {
                     foot.locked = false;
                     foot.step = Some(Step { from: foot.pos, from_rot: foot.rot, t: 0.0, time: 0.2 });
                     self.forced_steps += 1;
+                    self.steps += 1;
                 }
             } else {
                 if foot.locked {
@@ -543,6 +603,7 @@ impl Body {
                 // a long way to go (a sprint stop) is a quicker, bigger step
                 let time = if d > 0.35 { 0.22 } else { 0.3 };
                 f.step = Some(Step { from: f.pos, from_rot: f.rot, t: 0.0, time });
+                self.steps += 1;
                 f.locked = false;
             }
         }
@@ -556,7 +617,9 @@ impl Body {
         let mut need: f32 = 0.0;
         for s in 0..2 {
             let hip = g.head[b.thigh[s]];
-            let reach = (self.skel.len(b.thigh[s]) + self.skel.len(b.shin[s])) * 0.985;
+            // a leg may straighten fully (the IK keeps a hair of bend); a
+            // wider margin sank the pelvis 1-2 cm at every heel strike
+            let reach = (self.skel.len(b.thigh[s]) + self.skel.len(b.shin[s])) * 0.998;
             let t = self.feet[s].pos;
             let h2 = Vec2::new(hip.x - t.x, hip.z - t.z).length_squared();
             let v = hip.y - t.y;
@@ -621,6 +684,12 @@ impl Body {
         }
     }
 
+    /// The ground points planted feet roll about (for tests): (point, which
+    /// sole point it is — 0 heel, 1 ball, 2 toe tip).
+    pub fn pivots(&self) -> [Option<(Vec3, usize)>; 2] {
+        [0, 1].map(|s| self.feet[s].locked.then_some(self.feet[s].pivot))
+    }
+
     /// Planted feet (for tests and debug overlays).
     pub fn planted(&self) -> [bool; 2] {
         [self.feet[0].locked, self.feet[1].locked]
@@ -683,22 +752,21 @@ mod tests {
             let mut pos = Vec2::ZERO;
             let mut vel = Vec2::ZERO;
             let mut body = Body::new(pos, flat);
-            let mut last: [Option<Vec3>; 2] = [None, None];
+            let mut last: [Option<(Vec3, usize)>; 2] = [None, None];
             let mut worst: f32 = 0.0;
             drive(&mut body, &mut pos, &mut vel, 0..360, |t| {
                 let a = if t > 180 { (t - 180) as f32 * 0.01 } else { 0.0 };
                 (Vec2::new(a.sin(), a.cos()) * speed, false)
             }, &flat, |_, b| {
-                for (s, last) in last.iter_mut().enumerate() {
-                    let p = b.feet()[s];
-                    if b.planted()[s] {
-                        if let Some(q) = *last {
+                // the ground point a planted foot rolls about never moves
+                // (it hands over heel -> ball -> toe tip as the foot rolls)
+                for (last, now) in last.iter_mut().zip(b.pivots()) {
+                    if let (Some((q, kq)), Some((p, kp))) = (*last, now) {
+                        if kq == kp {
                             worst = worst.max(Vec2::new(p.x - q.x, p.z - q.z).length());
                         }
-                        *last = Some(p);
-                    } else {
-                        *last = None;
                     }
+                    *last = now;
                 }
             });
             assert!(worst < 1e-5, "a planted foot slid {worst} wu per tick at {speed} wu/s");
@@ -708,12 +776,13 @@ mod tests {
 
     #[test]
     fn the_legs_reach_their_feet_and_the_soles_stay_on_or_above_uneven_ground() {
-        // a kerb across the path, a pothole after it
+        // a kerb across the path, a pothole after it — harsher than the
+        // street's terrain (`rt-viewer/src/terrain.rs` steps at most ~0.12)
         let ground = |p: Vec2| {
             if (2.0..2.4).contains(&p.x) && p.y.abs() < 0.5 {
-                -0.08
+                -0.06
             } else if p.x > 0.0 {
-                0.14
+                0.12
             } else {
                 0.0
             }
@@ -737,6 +806,32 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// The walk must be the capture, not a stretched one. Played off its
+    /// own speed, the clip's feet over-reach, the pelvis sinks to reach them
+    /// and the knees stay bent through the stance — the "unsure, not
+    /// confident" walk of the first playtest (35_01 at 1.25 stretched to 1.6
+    /// sank the pelvis 9 cm).
+    #[test]
+    fn the_game_walk_and_run_keep_their_legs_under_the_body() {
+        // (speed, worst sink, mean sink): a couple of cm at double support is
+        // the pelvis's natural low point; the playtested walk sank 19 cm
+        for (speed, peak, mean) in [(1.6, 0.035, 0.015), (4.2, 0.08, 0.04)] {
+            let mut pos = Vec2::ZERO;
+            let mut vel = Vec2::ZERO;
+            let mut body = Body::new(pos, flat);
+            let (mut worst, mut sum, mut n): (f32, f32, f32) = (0.0, 0.0, 0.0);
+            drive(&mut body, &mut pos, &mut vel, 0..300, |_| (Vec2::X * speed, false), &flat, |t, b| {
+                if t > 90 {
+                    worst = worst.max(b.drop);
+                    sum += b.drop;
+                    n += 1.0;
+                }
+            });
+            assert!(worst < peak, "at {speed} wu/s the pelvis sank {worst} to reach the feet");
+            assert!(sum / n < mean, "at {speed} wu/s the pelvis sank {} on average", sum / n);
+        }
     }
 
     #[test]
@@ -786,10 +881,9 @@ mod tests {
                 contact = Vec2::Y;
             }
             pos = next;
-            let before = body.feet();
+            let before = body.steps;
             body.tick(&Input { position: pos, velocity: vel, intent: want.normalize_or_zero(), contact, crouching: false }, &flat);
-            let moved = (0..2).any(|s| Vec2::new(body.feet()[s].x - before[s].x, body.feet()[s].z - before[s].z).length() > 1e-4);
-            if t > 120 && moved {
+            if t > 120 && body.steps != before {
                 steps += 1;
             }
         }

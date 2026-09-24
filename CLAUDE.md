@@ -246,7 +246,11 @@ before touching the body). The old rigid-part survivor (`survivor.rs`,
   test pins it to 1e-5 wu/tick), forced re-plant steps on sharp turns and
   reversals (never on a straight path — pinned), corrective steps at rest,
   sole-vs-terrain clamp, pelvis between the two supports, underdamped lean,
-  crouch, wall brace.
+  crouch, wall brace. Planted feet pin their GROUND CONTACT and roll heel →
+  ball → toe; a run faster than its capture stretches the flight, not the
+  stance. The bake fixes retarget artifacts (loop closure by motion, flat
+  feet, mean-pose-neutral arms/neck/head) — playtest 1 ("arms strange, walk
+  unsure") was exactly those; `docs/PLAYER.md` has the numbers.
 - The mesh is ONE dynamic run `player`; `player.rs` skins it every tick into
   `FrameState::skin`; the backends upload the run's vertex slice and rebuild
   its BLASes (`SceneGpu::record_skin`; Metal twin in `render_present`). The

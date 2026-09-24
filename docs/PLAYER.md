@@ -42,15 +42,18 @@ and run `python3 tools/character/bake.py <folder>`:
 | Clip | CMU file | Use |
 |---|---|---|
 | idle | 139_02 "shifting weight", frames 40–880 | time-looped idle (7 s) |
-| walk | 35_01 | walk cycle, 1.40 m stride at 1.25 m/s |
-| brisk | 07_12 "brisk walk" | 1.81 m at 2.03 m/s — only on the way to a run |
+| stroll | 35_01 | 1.40 m stride at 1.25 m/s — starts, stops, slow steps |
+| walk | 38_02 | 1.70 m at 1.62 m/s — THE game walk, played at its own cadence |
+| brisk | 08_06 | 1.73 m at 1.87 m/s — on the way to a run |
 | run | 35_17 | 2.33 m at 3.07 m/s, flight phase |
 | sneak | 132_15 "walk with knees bent" | crouched gait (legs and torso; arms come from `walk`) |
 
 plus the ASF of each subject (`<subject>.asf`). URLs:
 `http://mocap.cs.cmu.edu/subjects/<subject>/<subject>_<trial>.amc`.
 Rejected on review: subject 17's "walk stealthily" (a sideways crab walk),
-77_* (duplicates of 139), 143_32 (a jog labelled walk).
+77_* (duplicates of 139), 143_32 (a jog labelled walk), 07_12 (a power walk,
+knees bent), and — after the first playtest — 35_01 as THE walk: a 1.25 m/s
+stroll stretched to 1.6 read as "unsure, not confident".
 
 Retargeting is by direction: an ASF bone's global frame is the identity at
 rest, so its global rotation IS its rotation from rest; each of our bones gets
@@ -58,14 +61,39 @@ a fixed alignment `arc(our rest dir → CMU rest dir)`. The pelvis is placed so
 our hip centre follows the actor's (scaled by leg length), which keeps the
 actor's foot paths.
 
+Four corrections on top of the direction copy (each found by rendering the
+CMU skeleton next to ours, `tools/character/bake.py`'s module doc has the
+detail):
+
+- **Loop closure by motion.** Each cycle's end-vs-start residual is spread in
+  proportion to how fast each bone turns, not linearly — a linear spread put
+  the push-off's 13° foot residual into the whole stance (toes up, a walk on
+  the heels).
+- **Flat feet.** The foot's mid-stance pitch is taken out per clip and side
+  (an actor's calibrated foot is not our flat one), then the clip is lowered
+  onto the floor its flattened soles stand on.
+- **Neutral bones.** Clavicles, upper arms, hands, neck and head keep only the
+  actor's motion around the clip's MEAN pose; the mean itself becomes our bind
+  pose. Copying absolute directions shrugged the shoulders 5 cm (a CMU
+  clavicle rises 19°), flared the wrists ~45°, held a sneaker's arms out like
+  wings and tipped the face 20° to the sky.
+- **Stroll/walk ladder.** The game walk is a capture AT the game's walking
+  speed; stretching a slower one sank the pelvis (see below).
+
 ## Runtime (one fixed tick)
 
 1. **Phase from distance** actually covered over the stride for this speed.
-2. **Speed blend** idle ↔ walk ↔ brisk ↔ run, sneak by crouch, all sampled
+2. **Speed blend** idle ↔ stroll ↔ walk ↔ brisk ↔ run, sneak by crouch, all sampled
    at the same phase (every cycle starts at a left heel strike).
-3. **Stride warping**: foot fore-aft excursion × (chosen / natural stride).
-4. **Foot locking**: a foot the clip marks planted is pinned where it
-   landed; two-bone IK solves the leg, the animated knee gives the bend plane.
+3. **Stride warping**: foot fore-aft excursion × (chosen / natural stride);
+   for a gait with a flight phase (the run) the extra stride goes into the
+   FLIGHT instead — the phase runs at the capture's rate while a foot is
+   down and slows in the air — so a 4.2 run on a 3.07 capture does not
+   over-reach on the ground.
+4. **Foot locking**: a foot the clip marks planted is pinned at its ground
+   contact and rolls heel → ball → toe tip (whichever the clip holds lowest)
+   — pinning the ankle left it 10–15 cm behind at push-off; two-bone IK
+   solves the leg, the animated knee gives the bend plane.
    A turn or a reversal that leaves a planted foot out of reach (>0.3 from
    where the clip wants it, or >0.6 horizontally from its hip) re-plants it
    with a quick step instead of sinking the pelvis into a lunge.
@@ -88,8 +116,9 @@ the same on every level; the body is also used on the greybox gym levels.
 
 ## Checking motion
 
-- `cargo test -p avatar` pins: a planted foot never slides (walk, run,
-  curves), no forced re-plant on a straight path, soles above uneven ground,
+- `cargo test -p avatar` pins: a planted foot's ground contact never slides
+  (walk, run, curves), the walk and run keep the legs under the body (pelvis
+  sink ≤ 3.5 cm at 1.6, the playtested rig sank 19), no forced re-plant on a straight path, soles above uneven ground,
   bone lengths, stops settle, crouch without pops, wall brace, bit-identical
   replay.
 - `cargo run -p avatar --example dump -- <start-stop|turns|run|crouch|kerb|wall> f.bin`
@@ -98,6 +127,16 @@ the same on every level; the body is also used on the greybox gym levels.
 - In game: `PLAY_SCRIPT` (keys `w a s d shift`, `c` crouch, `e`/`q` camera)
   with `DEMO=` records captioned clips; plain `DEMO=` traces hold their
   `move_world` until the next command.
+
+## Playtest 1 (2026-09-24): "arms strange, walk unsure"
+
+Measured, then fixed: the walk (35_01 at 1.25 stretched to 1.6) sank the
+pelvis up to 19 cm, because (a) the capture's heel strike was taken for a
+landing from a height and the foot spent a third of the stance in a
+corrective step, (b) the ankle, not the contact point, was pinned, and (c)
+the loop closure tilted the stance foot 11° toes-up. The arms carried the
+actor's shrug, wrist flare and forward neck. Now: 3 cm at double support,
+~1 cm on average.
 
 ## Known limits / next
 

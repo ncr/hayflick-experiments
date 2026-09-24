@@ -25,7 +25,21 @@ the pelvis height is spread linearly over the cycle. Root motion becomes a
 stride length + the pelvis offset from the straight line, in the cycle's own
 heading frame, so the runtime can advance phase by distance travelled.
 
-IDLE clips are played by time; their residual is spread the same way.
+IDLE clips are played by time; their residual is spread the same way —
+in proportion to how fast each bone turns (see `close_loop`).
+
+FLAT FEET. An actor's calibrated rest foot is not our flat foot; per clip and
+side the heel->ball pitch at mid-stance (where a real foot lies flat) is taken
+out of the foot bone.
+
+NEUTRAL BONES. For the clavicles, upper arms, hands, neck and head, copying
+the actor's direction copies the actor's build too: a clavicle that rises
+19 degrees shrugs our horizontal one by 5 cm, a CMU wrist is bent ~45 degrees
+out, one actor holds his arms out like wings, a CMU lower neck leans back 20
+degrees and tips the face to the sky. For
+these bones the clip's own MEAN local rotation is taken out
+(`L'(t) = L(t) * mean^-1`, scaled by the weight in NEUTRAL): on average they
+sit in our bind pose, and only the motion around it is the actor's.
 """
 import math
 import struct
@@ -42,12 +56,16 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'assets/characters/player.anim'
 SAMPLES = 64
 IDLE_HZ = 30
+# bone -> share of the actor's motion around the clip's mean that is kept
+NEUTRAL = {'clavL': 1.0, 'clavR': 1.0, 'upperarmL': 1.0, 'upperarmR': 1.0,
+           'handL': 0.5, 'handR': 0.5, 'neck': 1.0, 'head': 1.0}
 
 # name, subject, trial, kind, (first, last) frame window to search (None = all)
 CLIPS = [
     ('idle', '139', '02', 'idle', (40, 880)),
-    ('walk', '35', '01', 'cycle', None),
-    ('brisk', '07', '12', 'cycle', None),
+    ('stroll', '35', '01', 'cycle', None),
+    ('walk', '38', '02', 'cycle', None),
+    ('brisk', '08', '06', 'cycle', None),
     ('run', '35', '17', 'cycle', None),
     ('sneak', '132', '15', 'cycle', None),
 ]
@@ -274,8 +292,12 @@ def sample_vec(arr, t):
 
 
 def close_loop(q):
-    """Spread the end-start rotation residual over the samples (q[-1] must
-    equal q[0] after; the stored cycle drops the duplicate last sample)."""
+    """Make q[-1] equal q[0] (the stored cycle drops the duplicate last
+    sample) by spreading the end-start residual of every rotation over the
+    cycle IN PROPORTION TO HOW FAST THE BONE TURNS there. A linear spread
+    moved 38_02's foot 11 degrees toes-up through the whole stance: the
+    residual comes from the push-off, where the foot turns fast and a
+    sample's worth of timing is 13 degrees, while a planted foot barely turns."""
     n = len(q) - 1
     out = q.copy()
     for b in range(q.shape[1]):
@@ -284,9 +306,102 @@ def close_loop(q):
             if np.dot(out[k, b], out[k - 1, b]) < 0:
                 out[k, b] = -out[k, b]
         fix = qmul(out[0, b], qconj(out[n, b]))
+        step = [2 * math.acos(min(1.0, abs(float(np.dot(out[k, b], out[k + 1, b]))))) for k in range(n)]
+        total = sum(step)
+        w = np.concatenate([[0.0], np.cumsum(step)]) / total if total > 1e-4 else np.linspace(0, 1, n + 1)
         for k in range(len(q)):
-            c = slerp(np.array([0, 0, 0, 1.0]), fix, k / n)
+            c = slerp(np.array([0, 0, 0, 1.0]), fix, w[k])
             out[k, b] = qmul(c, out[k, b])
+    return out
+
+
+def neutralize(rots):
+    """Take each NEUTRAL bone's clip-mean local rotation out (module doc)."""
+    out = rots.copy()
+    for name, keep in NEUTRAL.items():
+        b = sk.index(name)
+        q = out[:, b].copy()
+        for k in range(1, len(q)):
+            if np.dot(q[k], q[0]) < 0:
+                q[k] = -q[k]
+        mean = q.mean(axis=0)
+        mean /= np.linalg.norm(mean)
+        inv = qconj(mean)
+        for k in range(len(q)):
+            d = qmul(q[k], inv)
+            out[k, b] = slerp(np.array([0, 0, 0, 1.0]), d, keep) if keep < 1 else d
+    return out
+
+
+def foot_pitch(rots, cons, side):
+    """Elevation angle (radians) of the heel->ball line at MID-STANCE of the
+    baked (already loop-closed) samples — the middle third of every contact
+    run, where a real foot lies flat. Measured AFTER closing the loop: the
+    closure has to land its residual somewhere in the foot's cycle, and for
+    the foot whose stance straddles the cycle's end that is the stance."""
+    bones = sk.bones()
+    f = sk.index('footL' if side == 0 else 'footR')
+    d0 = np.array(sk.BALL) - np.array(sk.HEEL)
+    ang = []
+    for q in rots:
+        R = [None] * len(bones)
+        for i, (n, parent, h, t, c) in enumerate(bones):
+            m = quat_to_mat(q[i])
+            R[i] = m if parent < 0 else R[parent] @ m
+        d = R[f] @ d0
+        ang.append(math.atan2(d[1], np.linalg.norm(d[[0, 2]])))
+    ang = np.array(ang)
+    idx = np.where(np.asarray(cons)[:, side] >= 0.5)[0]
+    if len(idx) == 0:
+        return 0.0
+    mids = []
+    for run in np.split(idx, np.where(np.diff(idx) != 1)[0] + 1):
+        n = len(run)
+        mids.extend(run[n // 3: max(n // 3 + 1, 2 * n // 3)])
+    return float(np.mean(ang[mids]))
+
+
+def refloor(rots, offs, cons):
+    """Lower the clip onto the floor its FLATTENED feet stand on: the take's
+    floor was measured with the actor's tilted foot (heel down, toes up), so
+    after `flatten_feet` the ball would sink below it and the runtime would
+    have to raise the ankle — and sink the pelvis to keep the leg on it."""
+    bones = sk.bones()
+    head = np.array([b[2] for b in bones])
+    lows = []
+    for q, o, c in zip(rots, offs, cons):
+        R = [None] * len(bones)
+        pos = [None] * len(bones)
+        for i, (n, parent, h, t, cc) in enumerate(bones):
+            m = quat_to_mat(q[i])
+            if parent < 0:
+                R[i], pos[i] = m, np.array([0.0, o[1], 0.0])
+            else:
+                R[i] = R[parent] @ m
+                pos[i] = pos[parent] + R[parent] @ (head[i] - head[parent])
+        for side, name in enumerate(('footL', 'footR')):
+            if c[side] >= 0.5:
+                f = sk.index(name)
+                lows.append(min((pos[f] + R[f] @ np.array(p))[1] for p in (sk.HEEL, sk.BALL)))
+    out = np.array(offs, float)
+    if lows:
+        out[:, 1] -= np.percentile(lows, 3)
+    return out
+
+
+def rot_x(a):
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+
+
+def flatten_feet(rots, cons):
+    """Pitch each foot by its mid-stance elevation (module doc)."""
+    out = rots.copy()
+    for side, name in enumerate(('footL', 'footR')):
+        b = sk.index(name)
+        fix = mat_to_quat(rot_x(foot_pitch(rots, cons, side)))
+        for k in range(len(out)):
+            out[k, b] = qmul(out[k, b], fix)
     return out
 
 
@@ -336,7 +451,9 @@ def bake_cycle(take, a, b):
         rel = H.T @ (P - take.P[a] - T * k / SAMPLES)
         offs.append([rel[0], P[1], rel[2]])
         cons.append(sample_vec(take.contact.astype(float), t))
-    rots = close_loop(np.array(rots))
+    rots = neutralize(close_loop(np.array(rots)))
+    rots = flatten_feet(rots, cons)
+    offs = refloor(rots, offs, cons)
     offs = np.array(offs)
     offs[:, 1] += (offs[0, 1] - offs[-1, 1]) * np.linspace(0, 1, SAMPLES + 1)
     dur = (b - a) / take.hz
@@ -359,7 +476,9 @@ def bake_idle(take, window):
         rel = H.T @ (P - mean)
         offs.append([rel[0], P[1], rel[2]])
         cons.append(sample_vec(take.contact.astype(float), t))
-    rots = close_loop(np.array(rots))
+    rots = neutralize(close_loop(np.array(rots)))
+    rots = flatten_feet(rots, cons)
+    offs = refloor(rots, offs, cons)
     offs = np.array(offs)
     offs += np.outer(np.linspace(0, 1, n + 1), offs[0] - offs[-1])
     return dict(rots=rots[:-1], offs=offs[:-1], cons=np.array(cons[:-1]), stride=0.0, dur=n / IDLE_HZ)

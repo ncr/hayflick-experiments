@@ -192,7 +192,7 @@ mod tests {
         let (skel, clips) = parse_anim(ANIM_BYTES);
         let (mesh, nbones) = parse_skin(SKIN_BYTES);
         assert_eq!(nbones, skel.bones.len());
-        for name in ["idle", "walk", "brisk", "run", "sneak"] {
+        for name in ["idle", "stroll", "walk", "brisk", "run", "sneak"] {
             assert!(clips.iter().any(|c| c.name == name), "missing clip {name}");
         }
         for v in &mesh.vertices {
