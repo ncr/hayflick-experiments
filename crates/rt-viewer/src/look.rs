@@ -223,8 +223,8 @@ pub const AFTERMATH: Look = Look {
     sun: SunSky {
         sun_dir: [0.55, 0.48, 0.68],
         sun_rgb: [1.0, 0.88, 0.72],
-        horizon_rgb: [0.74, 0.80, 0.90],
-        zenith_rgb: [0.26, 0.42, 0.84],
+        horizon_rgb: [0.78, 0.82, 0.88],
+        zenith_rgb: [0.30, 0.44, 0.76],
         ground_rgb: [0.31, 0.29, 0.25],
     },
     style: StyleCfg { sat: 0.88, contrast: 1.0, grain: 0.028, grain_static: 1.0, curve: 1.0, ..StyleCfg::CLEAN },

@@ -141,7 +141,8 @@ pub fn plants(scene: &mut Scene, spec: &GymLevel, d: &flora::ground::Density) {
         push(&mut leaf, &soup.leaf);
         push(&mut dry, &soup.dry);
     }
-    for (verts, color, rough) in [(bark, [0.07, 0.055, 0.042, 0.0], 0.9), (leaf, [0.05, 0.075, 0.022, 0.0], 0.95), (dry, [0.11, 0.085, 0.04, 0.0], 0.95)] {
+    // dry leaves are olive-brown, not tan: a tan clump in sun read as a stone
+    for (verts, color, rough) in [(bark, [0.07, 0.055, 0.042, 0.0], 0.9), (leaf, [0.04, 0.075, 0.02, 0.0], 0.95), (dry, [0.085, 0.07, 0.028, 0.0], 0.95)] {
         if verts.is_empty() {
             continue;
         }

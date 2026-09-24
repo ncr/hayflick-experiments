@@ -103,26 +103,39 @@ fn limb(out: &mut Vec<Tri>, a: V, b: V, ra: f32, rb: f32) {
     }
 }
 
-/// A faceted leaf clump: an icosahedron, squashed and jittered so no two
-/// clumps share a silhouette.
-fn clump(out: &mut Vec<Tri>, c: V, r: f32, rng: &mut Rng) {
-    let t = (1.0 + 5f32.sqrt()) / 2.0;
-    let mut p: Vec<V> = [
-        [-1.0, t, 0.0], [1.0, t, 0.0], [-1.0, -t, 0.0], [1.0, -t, 0.0],
-        [0.0, -1.0, t], [0.0, 1.0, t], [0.0, -1.0, -t], [0.0, 1.0, -t],
-        [t, 0.0, -1.0], [t, 0.0, 1.0], [-t, 0.0, -1.0], [-t, 0.0, 1.0],
-    ]
-    .to_vec();
-    for q in &mut p {
-        let s = r * rng.range(0.75, 1.15) / (1.0 + t * t).sqrt();
-        *q = add(c, [q[0] * s, q[1] * s * 0.72, q[2] * s]);
+/// One leaf chip: a small closed octahedron (so a ray from outside always
+/// meets a FRONT face — the probe bake counts back faces as "buried"),
+/// flattened and turned at random.
+fn chip(out: &mut Vec<Tri>, c: V, s: f32, rng: &mut Rng) {
+    let a = norm([rng.range(-1.0, 1.0), rng.range(-0.4, 1.0), rng.range(-1.0, 1.0)]);
+    let helper = if a[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+    let u = norm(cross(a, helper));
+    let v = cross(a, u);
+    // a leaf is flat: thin along `a`, broad across it
+    let axes = [mul(u, s * rng.range(0.8, 1.2)), mul(a, s * 0.45), mul(v, s * rng.range(0.8, 1.2))];
+    for oct in 0..8 {
+        let sg = |k: usize| if oct >> k & 1 == 0 { 1.0 } else { -1.0 };
+        let (x, y, z) = (add(c, mul(axes[0], sg(0))), add(c, mul(axes[1], sg(1))), add(c, mul(axes[2], sg(2))));
+        // outward winding: the (u, a, v) frame is LEFT-handed (u × a = -v),
+        // so an octant with an even number of negative signs swaps two corners
+        out.push(if sg(0) * sg(1) * sg(2) > 0.0 { [x, z, y] } else { [x, y, z] });
     }
-    const F: [[usize; 3]; 20] = [
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
-    ];
-    for f in F {
-        out.push([p[f[0]], p[f[1]], p[f[2]]]);
+}
+
+/// A leaf clump: a loose cluster of small leaf chips in a squashed ellipsoid
+/// of radius `r`, denser toward its shell. The silhouette is ragged and the
+/// chips light and shadow one another, so it reads as foliage at the pixel
+/// scale — one big faceted ball per clump read as a rock on a stick
+/// (2026-09-24). `brown` is the chance a chip is dry, so a clump browns
+/// patchily, not all at once.
+fn clump(s: &mut Soup, c: V, r: f32, brown: f32, rng: &mut Rng) {
+    let n = ((r * r * 220.0) as usize).clamp(8, 48);
+    for _ in 0..n {
+        let d = norm([rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)]);
+        let reach = r * rng.f().powf(0.4);
+        let p = add(c, [d[0] * reach, d[1] * reach * 0.72, d[2] * reach]);
+        let into = if rng.f() < brown { &mut s.dry } else { &mut s.leaf };
+        chip(into, p, rng.range(0.06, 0.1), rng);
     }
 }
 
@@ -135,7 +148,9 @@ pub fn build(kind: Kind, x: f32, ground_y: f32, z: f32, seed: u32, dryness: f32)
     // health: how much of the crown still carries leaves. Skewed low — the
     // aftermath's trees are struggling, and one in five is dead outright.
     let health = if rng.f() < 0.2 { 0.0 } else { rng.f().powf(0.7) } * (1.0 - 0.6 * dryness);
-    let brown = |rng: &mut Rng| rng.f() < 0.12 + 0.8 * dryness * dryness;
+    // a clump is mostly green or mostly straw; its chips follow with a few
+    // strays the other way
+    let brown = |rng: &mut Rng| if rng.f() < 0.12 + 0.8 * dryness * dryness { 0.85 } else { 0.1 };
     match kind {
         Kind::Tree => {
             let height = rng.range(2.0, 3.3);
@@ -175,14 +190,14 @@ pub fn build(kind: Kind, x: f32, ground_y: f32, z: f32, seed: u32, dryness: f32)
                     limb(&mut s.bark, from, tip, rb * 0.35, 0.008);
                     if rng.f() < health {
                         let r = rng.range(0.22, 0.42);
-                        let into = if brown(&mut rng) { &mut s.dry } else { &mut s.leaf };
-                        clump(into, tip, r, &mut rng);
+                        let b = brown(&mut rng);
+                        clump(&mut s, tip, r, b, &mut rng);
                     }
                 }
                 if rng.f() < health {
                     let r = rng.range(0.3, 0.5);
-                    let into = if brown(&mut rng) { &mut s.dry } else { &mut s.leaf };
-                    clump(into, end, r, &mut rng);
+                    let b = brown(&mut rng);
+                    clump(&mut s, end, r, b, &mut rng);
                 }
             }
         }
@@ -198,8 +213,8 @@ pub fn build(kind: Kind, x: f32, ground_y: f32, z: f32, seed: u32, dryness: f32)
                 // a bush keeps more leaves than a tree, but dries the same
                 if rng.f() < 0.35 + 0.65 * health.max(0.3) {
                     let r = rng.range(0.16, 0.3);
-                    let into = if brown(&mut rng) { &mut s.dry } else { &mut s.leaf };
-                    clump(into, c, r, &mut rng);
+                    let b = brown(&mut rng);
+                    clump(&mut s, c, r, b, &mut rng);
                 }
             }
         }
@@ -242,6 +257,24 @@ mod tests {
         let (g_dry, d_dry) = count(1.0);
         assert!(g_wet > d_wet, "on healthy ground most leaves are green");
         assert!(d_dry > g_dry, "on dry ground most are straw");
+    }
+
+    #[test]
+    fn leaf_chips_wind_outward() {
+        // the normal the adapter takes from the winding must point away from
+        // the chip's centre, or a lit crown shades as its own inside
+        let mut rng = Rng { seed: 3, k: 0 };
+        for _ in 0..20 {
+            let mut out = Vec::new();
+            let c = [rng.range(-2.0, 2.0), rng.range(0.0, 3.0), rng.range(-2.0, 2.0)];
+            chip(&mut out, c, 0.08, &mut rng);
+            for [a, b, d] in out {
+                let n = cross(sub(b, a), sub(d, a));
+                let mid = mul(add(add(a, b), d), 1.0 / 3.0);
+                let out_dir = sub(mid, c);
+                assert!(n[0] * out_dir[0] + n[1] * out_dir[1] + n[2] * out_dir[2] > 0.0);
+            }
+        }
     }
 
     #[test]
