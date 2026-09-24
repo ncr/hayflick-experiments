@@ -100,7 +100,7 @@ pub struct Demo {
 }
 
 pub static DEMOS: &[Demo] = &[
-    Demo { name: "after the rain", level: Level::Neighborhood, blurb: "ruined homes, broken streets, wind and an old survivor", look: "aftermath", spawn: (12,15), script: &[], outdated: false },
+    Demo { name: "after the rain", level: Level::Neighborhood, blurb: "ruined homes, broken streets, wind and a vault dweller", look: "aftermath", spawn: (12,15), script: &[], outdated: false },
     Demo { name: "the lot", level: Level::Lot, blurb: "the street's east end: a garage, a kiosk and wrecks to search", look: "aftermath", spawn: (1,10), script: &[], outdated: false },
     Demo { name: "sandbox", level: Level::Sandbox, blurb: "an empty street: Tab and build it from nothing", look: "aftermath", spawn: (12,15), script: &[], outdated: false },
     Demo {

@@ -256,6 +256,11 @@ pub struct FrameState<'a> {
     pub light_emission: &'a [(LightKey, [f32; 3])],
     /// Mover transforms — patched into inst_buf; any change rebuilds the TLAS.
     pub instances: &'a [(InstanceKey, Mat4)],
+    /// Skinned runs (the player's body): this frame's vertices for EVERY
+    /// primitive of the run, in the run's vertex order (instance-local, like
+    /// the bind data the scene was built with). Uploaded over the run's slice
+    /// of the vertex buffer, and the run's BLASes are rebuilt from them.
+    pub skin: &'a [(InstanceKey, &'a [Vertex])],
 }
 
 /// CPU half of the NEE light-list build, factored out of `SceneGpu::build` so
@@ -481,6 +486,12 @@ pub struct SceneGpu {
     pub light_stage: Buffer,
     pub mat_stage: Buffer,
     pub blas_list: Vec<(vk::AccelerationStructureKHR, Buffer, Buffer)>,
+    /// The primitive table the BLASes were built from (a skinned run's
+    /// BLASes are rebuilt from the same ranges every frame).
+    prims: Vec<scene::Primitive>,
+    /// Per dynamic run: the host-visible staging buffer of a skinned run
+    /// (created on its first upload).
+    skin_stage: Vec<Option<Buffer>>,
     pub tlas: vk::AccelerationStructureKHR,
     pub tlas_buf: Buffer,
     pub tlas_scratch: Buffer,
@@ -698,7 +709,9 @@ impl SceneGpu {
         let probe_buf = ctx.device_local(&grid.header, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         println!("probes: {}x{}x{} = {} @ spacing {:.2} wu ({:.1} MB x 2 banks)", grid.dims[0], grid.dims[1], grid.dims[2], probe_count, grid.spacing, probe_count as f32 * 80.0 / 1e6);
 
-        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, abuf, lbuf, light_count, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, blas_list, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), roll_box: None, roll_frames: 0, roll_ray: 0, roll_prime: false, roll_n: 256, roll_k: 8, probes_baked: false })
+        let prims = scene.primitives.clone();
+        let skin_stage = (0..dyn_insts.len()).map(|_| None).collect();
+        Ok(SceneGpu { vbuf, ibuf, gbuf, mbuf, abuf, lbuf, light_count, lights_cpu, mats_cpu, light_link, light_stage, mat_stage, blas_list, prims, skin_stage, tlas, tlas_buf, tlas_scratch, inst_buf, n_inst, handles, dyn_insts, dyn_shadow, tlas_dirty: false, set_layout, pipeline_layout, shade_pipeline, shade_shader, probe_pipeline, probe_shader, probe_buf, probe_count, probe_origin: grid.origin, probe_spacing: grid.spacing, probe_dims: grid.dims, probe_rays: 0, refresh_queue: Vec::new(), roll_box: None, roll_frames: 0, roll_ray: 0, roll_prime: false, roll_n: 256, roll_k: 8, probes_baked: false })
     }
 
     /// Patch a named dynamic run's instance transform in the host-visible
@@ -736,11 +749,67 @@ impl SceneGpu {
         for &(key, m) in fs.instances {
             self.set_instance_transform(ctx, key, m);
         }
+        for &(key, verts) in fs.skin {
+            self.record_skin(ctx, cmd, key, verts);
+        }
         self.record_practicals_upload(ctx, cmd);
         if self.tlas_dirty {
             self.record_tlas_rebuild(ctx, cmd);
             self.tlas_dirty = false;
         }
+    }
+
+    /// A skinned run's new vertices: stage them, copy them over the run's
+    /// slice of the vertex buffer, rebuild the run's BLASes, and mark the
+    /// TLAS dirty (a rebuilt BLAS changes its bounds, so the TLAS that
+    /// references it must be rebuilt too). Ordered against the previous
+    /// frame's trace/builds (write-after-read) and before this frame's
+    /// TLAS build and shade dispatch.
+    unsafe fn record_skin(&mut self, ctx: &Ctx, cmd: vk::CommandBuffer, key: InstanceKey, verts: &[Vertex]) {
+        let di = key.0 as usize;
+        let (first, count) = self.dyn_insts[di];
+        let run = &self.prims[first as usize..(first + count) as usize];
+        let v0 = run[0].vertex_offset;
+        let v1 = run.iter().map(|p| p.vertex_offset + p.vertex_count).max().unwrap_or(v0);
+        assert_eq!(verts.len(), (v1 - v0) as usize, "skinned run {di}: {} vertices for a {}-vertex slice", verts.len(), v1 - v0);
+        let size = std::mem::size_of_val(verts) as u64;
+        if self.skin_stage[di].is_none() {
+            let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+            self.skin_stage[di] = Some(ctx.create_buffer(size, vk::BufferUsageFlags::TRANSFER_SRC, host));
+        }
+        let stage = self.skin_stage[di].as_ref().unwrap();
+        ctx.upload(stage, verts);
+        let d = &ctx.device;
+        let trace = vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR;
+        // the previous frame's trace and builds read these vertices
+        d.cmd_pipeline_barrier(cmd, trace, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[]);
+        let copy = vk::BufferCopy::default().dst_offset(v0 as u64 * std::mem::size_of::<Vertex>() as u64).size(size);
+        d.cmd_copy_buffer(cmd, stage.buffer, self.vbuf.buffer, &[copy]);
+        let written = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::TRANSFER_WRITE).dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
+        d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TRANSFER, trace, vk::DependencyFlags::empty(), &[written], &[], &[]);
+        for (i, p) in run.iter().enumerate() {
+            let (blas, _, scratch) = &self.blas_list[first as usize + i];
+            let tris = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: self.vbuf.address })
+                .vertex_stride(std::mem::size_of::<Vertex>() as u64)
+                .max_vertex(p.vertex_count - 1)
+                .index_type(vk::IndexType::UINT32)
+                .index_data(vk::DeviceOrHostAddressConstKHR { device_address: self.ibuf.address });
+            let geos = [vk::AccelerationStructureGeometryKHR::default().geometry_type(vk::GeometryTypeKHR::TRIANGLES).flags(vk::GeometryFlagsKHR::OPAQUE).geometry(vk::AccelerationStructureGeometryDataKHR { triangles: tris })];
+            let build = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .geometries(&geos)
+                .dst_acceleration_structure(*blas)
+                .scratch_data(vk::DeviceOrHostAddressKHR { device_address: scratch.address });
+            let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(p.index_count / 3).primitive_offset(p.index_offset * 4).first_vertex(p.vertex_offset);
+            ctx.as_dev.cmd_build_acceleration_structures(cmd, &[build], &[&[range]]);
+        }
+        let built = vk::MemoryBarrier::default().src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR).dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
+        d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR, trace, vk::DependencyFlags::empty(), &[built], &[], &[]);
+        self.tlas_dirty = true;
     }
 
     /// GPU half of the per-frame light streaming: stage `lights_cpu` +
@@ -1109,6 +1178,9 @@ impl SceneGpu {
             ctx.destroy_buffer(asbuf);
             ctx.destroy_buffer(scratch);
         }
+        for stage in self.skin_stage.iter().flatten() {
+            ctx.destroy_buffer(stage);
+        }
         ctx.destroy_buffer(&self.vbuf);
         ctx.destroy_buffer(&self.ibuf);
         ctx.destroy_buffer(&self.gbuf);
@@ -1241,7 +1313,7 @@ mod tests {
         let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2];
         let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, surface: 0, _pad: 0 }];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, vegetation: false, actor_position: [0.0; 3], extent: [0.0; 2], light_emission: &emis, instances: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, vegetation: false, actor_position: [0.0; 3], extent: [0.0; 2], light_emission: &emis, instances: &[], skin: &[] };
         frame_lights_cpu(&mut lights, &mut mats, &light_link, &fs);
         // an unaddressed slot keeps its previous values (light 0 holds base);
         // the linked material is untouched too — emission is game-authored,

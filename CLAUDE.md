@@ -29,6 +29,7 @@ Cargo workspace at the repo root, members `crates/*`:
 | `flora` | vegetation (2026-09-22): the grass density map from ground brush strokes, procedural trees and bushes as triangle soups | std only |
 | `props` | street props (2026-09-23): ten kinds grown from a seed as triangle soups per material | std only |
 | `phys-spike` | throwaway Box3D rigid-body world (leaf: no game, no GPU, no renderer) — the `wall smash` demo's rubble is its one consumer, through `rt-viewer/src/phys_scene.rs` | glam only |
+| `avatar` | the player's body (2026-09-24): skinned mesh + CMU mocap clips (`assets/characters/player.{skin,anim}`, built by `tools/character/`), the fixed-tick locomotion controller, foot IK, CPU skinning | glam only |
 | `rt-viewer` | `viewer` binary: winit shell, Metal backend, gym loop, capture | everything |
 
 **rt-probe and house-game never see each other** — only rt-viewer's adapter
@@ -225,6 +226,42 @@ BLIND METAL: `probes.metal` (vec4 radiance, slot 19), `shade.metal`
 (`probeE` skip, the wild edge, `misc3.zw`, the water mirror),
 `tonemap.metal` (the curve).
 
+## THE PLAYER BODY (owner 2026-09-24) — rebuilt from zero
+
+Owner: "IK and animations look weak and unnatural. Let's do it from zero and
+focus on it." Owner picks: a SKINNED mesh, motion from CMU MOTION CAPTURE,
+walk 1.6 (was 2.2, the human walk→run transition), the Vault 42 suit on a man
+of ~45. Design, data sources and review tools: `docs/PLAYER.md` (read it
+before touching the body). The old rigid-part survivor (`survivor.rs`,
+`blender/build_survivor.py`, `survivor.mesh`) is deleted; tag
+`archive/survivor-rig` has it.
+
+- ONE skeleton (`tools/character/skeleton.py`, 21 bones) shared by the mesh
+  builder and the mocap bake; both write it into their asset; Rust never
+  restates a joint.
+- `avatar::Body::tick` (fixed tick, from the fresh snapshot, every advance
+  path — live, DEMO, the CMDS prefix): phase from distance covered, speed
+  blend idle/walk/brisk/run (+ sneak when crouched) at a shared phase, stride
+  warping, FOOT LOCKING with two-bone IK (a planted foot never slides — the
+  test pins it to 1e-5 wu/tick), forced re-plant steps on sharp turns and
+  reversals (never on a straight path — pinned), corrective steps at rest,
+  sole-vs-terrain clamp, pelvis between the two supports, underdamped lean,
+  crouch, wall brace.
+- The mesh is ONE dynamic run `player`; `player.rs` skins it every tick into
+  `FrameState::skin`; the backends upload the run's vertex slice and rebuild
+  its BLASes (`SceneGpu::record_skin`; Metal twin in `render_present`). The
+  instance transform carries only the translation. Materials keep
+  `survivor.inc`'s fifteen slots (no shader change).
+- HARNESS: `DEMO=` traces now HOLD `move_world` until the next command
+  (`trace::hold`) — before, the sim braked after one tick and every held-walk
+  clip showed a figure standing still. `PLAY_SCRIPT` holds keys in DEMO too
+  (they were only read by the live loop) and has `c` (crouch).
+- **BLIND METAL:** the skinned-run upload + per-frame BLAS rebuild in
+  `metal_backend.rs` (`prim_descriptor`, `blas_scratch`) is unrun. First Mac
+  session: walk and crouch in `LEVEL=sandbox` — a body frozen in its bind
+  pose (arms hanging, feet together) while the camera follows means the
+  upload/rebuild did not run; a garbled body means the vertex slice is off.
+
 ## The wear/crack pipeline and the slider IDE — DELETED (2026-09-22)
 
 Owner: "private project, no legacy — if something needs deleting, delete it;
@@ -277,8 +314,9 @@ Same-day BLOCKY mesh rebuild (owner: prostsze kształty, blokowość jak
 tecta): every gym mesh is the fewest boxes that read — walls are clean
 slabs (no plinth), the roof is ONE inset parapet cap (no fascia — the
 amber accent moved to the lamps — no ridge; `RoofStyle` deleted), lamps
-are post + lantern block, grass tufts single blocks, the player a 10-box
-figure. Greens are MATTE by construction (`flags::MATTE`, set by
+are post + lantern block, grass tufts single blocks (the player was a 10-box
+figure until the 2026-09-24 body rebuild put the skinned Vault 42 man on every
+level). Greens are MATTE by construction (`flags::MATTE`, set by
 `gym_scene::mark_matte` on the grass floor + tufts): the shade pass skips
 spec + the gloss remap there — "trawa nie może się błyszczeć"; porcelain
 and glass keep the sheen.
@@ -308,8 +346,10 @@ The cell-stepping mover is GONE. `Command::MoveWorld` is the only movement
 command: acceleration ramp (`ACCEL_WU_PER_S2` 18), braking
 (`BRAKE_WU_PER_S2` 24), collide-and-slide against the grid at
 `PLAYER_RADIUS`, and a gait whose phase comes from the distance the body
-ACTUALLY covered (`WALK_STRIDE_WU` 1.6) so feet cannot skate or run in place
-against a wall.
+ACTUALLY covered (today the `avatar` crate — THE PLAYER BODY below) so feet
+cannot skate or run in place against a wall. Speeds are the same on every
+level since 2026-09-24: `SPEED_WALK` 1.6, `SPEED_RUN` 4.2, `SPEED_CROUCH` 1.1
+(the braking constant quoted here as 24 is 34 since 2026-09-05).
 2026-08-02 did the keyboard half: screen input converts through the ACTIVE
 projection's pixel basis (`Projection::screen_px_to_world`), so W is screen-up
 as a straight line under any preset at any yaw — the old hard-coded 2:1 map

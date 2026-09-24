@@ -584,6 +584,10 @@ impl Viewer {
         // This frame's scene state, typed — built from the gym SNAPSHOT:
         // nothing below reads sim internals, only what the snapshot publishes.
         let mut instances: Vec<(InstanceKey, Mat4)> = self.gym.instances(self.backend.handles());
+        // the skinned body, copied out so the frame does not hold the loop
+        // borrowed across the overlay/menu calls below (~100 KB per frame)
+        let skin_owned: Vec<(InstanceKey, Vec<rt_probe::scene::Vertex>)> = self.gym.skin(self.backend.handles()).into_iter().map(|(k, v)| (k, v.to_vec())).collect();
+        let skin: Vec<(InstanceKey, &[rt_probe::scene::Vertex])> = skin_owned.iter().map(|(k, v)| (*k, &v[..])).collect();
         instances.extend(self.gym.phys_instances(self.backend.handles()));
         let dim = self.lights_dim;
         let emission: Vec<(LightKey, [f32; 3])> = self.light_keys.iter().map(|&(k, base)| (k, [base[0] * dim, base[1] * dim, base[2] * dim])).collect();
@@ -596,6 +600,7 @@ impl Viewer {
             time: self.gym.time(), // SIM time — replayable, no wall clock
             light_emission: &emission,
             instances: &instances,
+            skin: &skin,
         };
 
         // ESC menu overlay (panel / REC badge), copied onto the PRESENTED

@@ -49,9 +49,9 @@ pub struct Material {
     pub metallic: f32,
     pub roughness: f32,
     /// SURFACE ID (was the free `_rsv` word, before that the glTF texture
-    /// index). 0 = an ordinary material; -2..=-16 = the survivor's fifteen
+    /// index). 0 = an ordinary material; -2..=-16 = the player's fifteen
     /// garment/skin surfaces (`survivor.inc`'s `survivorAlbedo`, written by
-    /// `rt-viewer/src/survivor.rs`). The word must stay because `Material` MUST
+    /// `rt-viewer/src/player.rs`). The word must stay because `Material` MUST
     /// be 48 B: MSL rounds any struct containing a `float4` up to a multiple of
     /// 16, so dropping it would leave the host and the GLSL twin at 44 B and
     /// the Metal twin at 48. Other values are free for the next surface family.

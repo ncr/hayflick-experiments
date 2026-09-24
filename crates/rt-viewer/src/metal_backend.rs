@@ -20,7 +20,7 @@ use core_graphics_types::geometry::CGSize;
 use glam::{Mat4, Vec3};
 use metal::*;
 use rt_probe::render::{frame_lights_cpu, scan_lights, LightScan};
-use rt_probe::scene::{Material, Vertex};
+use rt_probe::scene::{Material, Primitive, Vertex};
 use rt_probe::{bake_bank_emission, Config, InstanceTable, ProbeGrid, Scene, SceneHandles};
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -110,6 +110,11 @@ struct MetalScene {
     probe_spacing: f32,
     probe_dims: [u32; 3],
     blas_list: Vec<AccelerationStructure>,
+    /// The primitive table the BLASes were built from, and the per-primitive
+    /// build scratch a skinned run's per-frame rebuild reuses (allocated on
+    /// its first rebuild).
+    prims: Vec<Primitive>,
+    blas_scratch: Vec<Option<Buffer>>,
     tlas: AccelerationStructure,
     tlas_scratch: Buffer,
     inst_buf: Buffer,
@@ -186,6 +191,25 @@ unsafe fn write_buf<T: Copy>(b: &Buffer, data: &[T]) {
     std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, b.contents() as *mut u8, std::mem::size_of_val(data));
 }
 
+/// One primitive's BLAS descriptor over the shared vertex/index buffers —
+/// the startup build and a skinned run's per-frame rebuild use the same one.
+fn prim_descriptor(vbuf: &Buffer, ibuf: &Buffer, p: &Primitive) -> PrimitiveAccelerationStructureDescriptor {
+    let tri = AccelerationStructureTriangleGeometryDescriptor::descriptor();
+    tri.set_vertex_buffer(Some(vbuf));
+    tri.set_vertex_buffer_offset(p.vertex_offset as u64 * size_of::<Vertex>() as u64);
+    tri.set_vertex_stride(size_of::<Vertex>() as u64);
+    tri.set_vertex_format(MTLAttributeFormat::Float3);
+    tri.set_index_buffer(Some(ibuf));
+    tri.set_index_buffer_offset(p.index_offset as u64 * 4);
+    tri.set_index_type(MTLIndexType::UInt32);
+    tri.set_triangle_count((p.index_count / 3) as u64);
+    let geom_ref: &AccelerationStructureGeometryDescriptorRef = &tri;
+    let geoms = Array::from_slice(&[geom_ref]);
+    let desc = PrimitiveAccelerationStructureDescriptor::descriptor();
+    desc.set_geometry_descriptors(geoms);
+    desc
+}
+
 /// Build an instance-AS descriptor over the BLAS list + the (mutable) instance
 /// descriptor buffer. Rebuilt cheaply each TLAS refit (the descriptor is CPU).
 fn tlas_descriptor(blas_list: &[AccelerationStructure], inst_buf: &Buffer, n: u64) -> InstanceAccelerationStructureDescriptor {
@@ -234,19 +258,7 @@ impl MetalScene {
             let enc = cb.new_acceleration_structure_command_encoder();
             let mut scratches: Vec<Buffer> = Vec::new();
             for p in &scene.primitives {
-                let tri = AccelerationStructureTriangleGeometryDescriptor::descriptor();
-                tri.set_vertex_buffer(Some(&vbuf));
-                tri.set_vertex_buffer_offset(p.vertex_offset as u64 * size_of::<Vertex>() as u64);
-                tri.set_vertex_stride(size_of::<Vertex>() as u64);
-                tri.set_vertex_format(MTLAttributeFormat::Float3);
-                tri.set_index_buffer(Some(&ibuf));
-                tri.set_index_buffer_offset(p.index_offset as u64 * 4);
-                tri.set_index_type(MTLIndexType::UInt32);
-                tri.set_triangle_count((p.index_count / 3) as u64);
-                let geom_ref: &AccelerationStructureGeometryDescriptorRef = &tri;
-                let geoms = Array::from_slice(&[geom_ref]);
-                let desc = PrimitiveAccelerationStructureDescriptor::descriptor();
-                desc.set_geometry_descriptors(geoms);
+                let desc = prim_descriptor(&vbuf, &ibuf, p);
                 let desc_ref: &AccelerationStructureDescriptorRef = &desc;
                 let sizes = device.acceleration_structure_sizes_with_descriptor(desc_ref);
                 let blas = device.new_acceleration_structure_with_size(sizes.acceleration_structure_size);
@@ -328,6 +340,8 @@ impl MetalScene {
             probe_spacing: grid.spacing,
             probe_dims: grid.dims,
             blas_list,
+            prims: scene.primitives.clone(),
+            blas_scratch: (0..scene.primitives.len()).map(|_| None).collect(),
             tlas,
             tlas_scratch,
             inst_buf,
@@ -837,6 +851,33 @@ impl RenderBackend for MetalBackend {
         }
         if moved {
             write_buf(&self.sc.inst_buf, &self.sc.instances);
+            self.tlas_dirty = true;
+        }
+        // skinned runs (the player's body): new vertices over the run's slice
+        // of the Shared vertex buffer, then rebuild the run's BLASes (the
+        // Metal twin of the Vulkan SceneGpu::record_skin; nothing is in
+        // flight here — every command buffer is waited inline)
+        for &(key, verts) in fp.fs.skin {
+            let (first, count) = self.sc.dyn_insts[key.index() as usize];
+            let run = first as usize..(first + count) as usize;
+            let v0 = self.sc.prims[run.start].vertex_offset as usize;
+            let v1 = self.sc.prims[run.clone()].iter().map(|p| (p.vertex_offset + p.vertex_count) as usize).max().unwrap_or(v0);
+            assert_eq!(verts.len(), v1 - v0, "skinned run: vertex count does not match its slice");
+            std::ptr::copy_nonoverlapping(verts.as_ptr() as *const u8, (self.sc.vbuf.contents() as *mut u8).add(v0 * size_of::<Vertex>()), std::mem::size_of_val(verts));
+            let cb = self.queue.new_command_buffer();
+            let enc = cb.new_acceleration_structure_command_encoder();
+            for i in run {
+                let desc = prim_descriptor(&self.sc.vbuf, &self.sc.ibuf, &self.sc.prims[i]);
+                let desc_ref: &AccelerationStructureDescriptorRef = &desc;
+                if self.sc.blas_scratch[i].is_none() {
+                    let sizes = self.device.acceleration_structure_sizes_with_descriptor(desc_ref);
+                    self.sc.blas_scratch[i] = Some(self.device.new_buffer(sizes.build_scratch_buffer_size.max(1), MTLResourceOptions::StorageModePrivate));
+                }
+                enc.build_acceleration_structure(&self.sc.blas_list[i], desc_ref, self.sc.blas_scratch[i].as_ref().unwrap(), 0);
+            }
+            enc.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
             self.tlas_dirty = true;
         }
         if self.tlas_dirty {

@@ -31,10 +31,13 @@ pub const WORLD_INPUT_SCALE: f32 = 1024.0;
 /// Keeping the combined clearance here stops the rendered body at the visible
 /// wall instead of letting it overlap the slab.
 pub const PLAYER_RADIUS: f32 = 0.26;
-pub const SPEED_WALK: f32 = 3.0;
-pub const SPEED_RUN: f32 = 5.0;
-pub const SURVIVOR_WALK: f32 = 2.2;
-pub const SURVIVOR_RUN: f32 = 4.2;
+/// Walking, running and crouched speeds, the same on every level (owner
+/// 2026-09-24: walk 2.2 sat on the human walk→run transition and always read
+/// hurried; 1.6 is a brisk walk). The body (`avatar`) blends its captured
+/// cycles by the speed the sim ACTUALLY moves at, so these are feel knobs,
+/// not animation constants.
+pub const SPEED_WALK: f32 = 1.6;
+pub const SPEED_RUN: f32 = 4.2;
 pub const SPEED_CROUCH: f32 = 1.1;
 const ACCEL_WU_PER_S2: f32 = 18.0;
 /// Deceleration when no input arrives. Public because click-to-move has to
@@ -654,7 +657,6 @@ impl GymGame {
 
     fn speed(&self, mode: MoveMode) -> f32 {
         if self.crouching { return SPEED_CROUCH; }
-        if self.spec.neighborhood {return match mode {MoveMode::Walk=>SURVIVOR_WALK,MoveMode::Run=>SURVIVOR_RUN};}
         match mode {
             MoveMode::Walk => SPEED_WALK,
             MoveMode::Run => SPEED_RUN,
@@ -971,7 +973,7 @@ mod tests {
         assert!((g.snapshot().velocity.length()-SPEED_CROUCH).abs()<0.001);
         g.tick(Tick(121), &[Command::Crouch(false)]);
         for t in 122..182 {g.tick(Tick(t), &[drive]);}
-        assert!((g.snapshot().velocity.length()-SURVIVOR_RUN).abs()<0.001);
+        assert!((g.snapshot().velocity.length()-SPEED_RUN).abs()<0.001);
         assert!(!g.snapshot().crouching);
         for t in 182..200 {g.tick(Tick(t), &[]);}
         assert_eq!(g.snapshot().velocity,Vec2::ZERO);

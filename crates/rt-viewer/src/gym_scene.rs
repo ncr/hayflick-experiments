@@ -322,7 +322,7 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     if spec.neighborhood {crate::terrain::wild_ground(&mut scene, spec);}
 
     // ---- dynamics (after recompute_bounds, local space): the player body.
-    if look.concrete {crate::survivor::build(&mut scene);} else {build_player_body(&mut scene, look);}
+    crate::player::build(&mut scene);
 
     scene.floor_rect = [0.0, 0.0, w as f32, h as f32];
     scene.solids = Vec::new(); // collision is the sim's grid, not AABBs
@@ -494,61 +494,6 @@ fn roof_run(scene: &mut Scene, c: &[f32; 4], caps: &[[f32; 4]], i: usize, look: 
     mark_occluder(scene, first);
 }
 
-// ---- the player body --------------------------------------------------------
-//
-// One ARTICULATED blocky figure (~1.4 wu tall; 2026-07-12 rebuild — the
-// fewest boxes that read) built from five dynamic runs — core (one torso
-// block + head + hood cap + nose), `player/legL`, `/legR` (leg block +
-// boot band, authored around the HIP pivot) and `player/armL`, `/armR`
-// (one sleeve block, authored around the SHOULDER pivot) — so the loop
-// can swing limbs per tick (deterministic walk cycle). Limb geometry is
-// authored in PIVOT space: the loop's instance transform is
-// `body * translate(pivot) * swing`, so a zero swing reproduces the rest
-// pose exactly. The nose wedge makes facing read even axis-aligned.
-
-/// Hip pivot height + lateral leg offset; shoulder pivot height + lateral
-/// arm offset. The loop's limb transforms must use the SAME numbers.
-pub const HIP: f32 = 0.46875;
-pub const LEG_X: f32 = 0.0625;
-pub const SHOULDER: f32 = 1.0;
-pub const ARM_X: f32 = 0.1875;
-
-fn build_player_body(scene: &mut Scene, look: &Look) {
-    let coat = look.coat;
-    // ---- core: one torso block, head, hood cap, nose. The torso base dips
-    // 0.03125 below HIP so the leg tops (world HIP + 0.03125) stay buried
-    // inside it through the swing — no coplanar interfaces.
-    let first = scene.primitives.len();
-    part(scene, 0.15625, 0.125, HIP - 0.03125, SHOULDER + 0.0625, coat); // torso
-    part(scene, 0.09375, 0.09375, 1.0625, 1.28125, look.skin); // head
-    part(scene, 0.125, 0.125, 1.25, 1.40625, look.hood); // hood cap
-    // nose wedge on +Z at the head's face plane (facing read)
-    scene.add_box_world(Vec3::new(-0.03125, 1.125, 0.09375), Vec3::new(0.03125, 1.21875, 0.15625), look.skin, [0.0; 4], 0.8, 0.0);
-    scene.register_dynamic("player", first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
-
-    // ---- legs: one leg block + a boot band, hanging from the hip pivot
-    // (geometry centred on x — the pivot translation supplies ±LEG_X)
-    for suffix in ["legL", "legR"] {
-        let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(-0.0625, -HIP + 0.09375, -0.0625), Vec3::new(0.0625, 0.03125, 0.0625), look.legs, [0.0; 4], 0.6, 0.0);
-        scene.add_box_world(Vec3::new(-0.0625, -HIP, -0.0625), Vec3::new(0.0625, -HIP + 0.09375, 0.0625), look.boots, [0.0; 4], 0.6, 0.0);
-        scene.register_dynamic(&format!("player/{suffix}"), first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
-    }
-
-    // ---- arms: ONE sleeve block from the shoulder pivot, long enough to
-    // read as arm + hand; its inner face sinks 0.03125 into the torso side
-    // (overlap, never coplanar) so the silhouette stays joined mid-swing.
-    for suffix in ["armL", "armR"] {
-        let first = scene.primitives.len();
-        scene.add_box_world(Vec3::new(-0.0625, -0.53125, -0.0625), Vec3::new(0.0625, 0.03125, 0.0625), coat, [0.0; 4], 0.6, 0.0);
-        scene.register_dynamic(&format!("player/{suffix}"), first, scene.primitives.len() - first, Mat4::from_scale(Vec3::ZERO));
-    }
-}
-
-fn part(scene: &mut Scene, hx: f32, hz: f32, y0: f32, y1: f32, color: [f32; 4]) {
-    scene.add_box_world(Vec3::new(-hx, y0, -hz), Vec3::new(hx, y1, hz), color, [0.0; 4], 0.6, 0.0);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,7 +512,11 @@ mod tests {
     fn the_greybox_is_boxes_and_every_pier_mesh_is_its_authored_box() {
         let spec = gym_level();
         let (scene, meta) = build_gym(&spec, &crate::look::POLANA);
-        for p in &scene.primitives {
+        let (_, body, body_n, _) = scene.dynamics.iter().find(|(n, ..)| n == crate::player::RUN).cloned().unwrap();
+        for (i, p) in scene.primitives.iter().enumerate() {
+            if (body..body + body_n).contains(&i) {
+                continue; // the player's skinned body is the one mesh
+            }
             assert!(p.vertex_count == 24 || p.vertex_count == 4, "a sharp gym is boxes and floor quads only, not a {}-vertex mesh", p.vertex_count);
         }
         for pier in &meta.piers {
@@ -582,17 +531,15 @@ mod tests {
     }
 
 
-    /// EVERY look preset produces the five player runs the loop patches —
-    /// and keeps the NEE discipline (the only named lights are the spec
+    /// EVERY look preset produces the player's run the loop skins — and
+    /// keeps the NEE discipline (the only named lights are the spec
     /// lamps; dressing stays in dynamic runs / non-emissive statics).
     #[test]
     fn every_look_registers_the_player_runs_and_lamps_only() {
         for look in LOOKS {
             let spec = gym_level();
             let (scene, _) = build_gym(&spec, look);
-            for name in ["player", "player/legL", "player/legR", "player/armL", "player/armR"] {
-                assert!(scene.dynamics.iter().any(|(n, ..)| n == name), "{}: missing run {name}", look.name);
-            }
+            assert!(scene.dynamics.iter().any(|(n, ..)| n == crate::player::RUN), "{}: missing the player's run", look.name);
             // the only NEE lights are the named lamps
             let scan = rt_probe::scan_lights(&scene).unwrap();
             assert_eq!(scan.light_count as usize, spec.lights.len(), "{}: lamps only — dressing must stay in dynamic runs", look.name);

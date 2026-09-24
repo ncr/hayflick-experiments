@@ -55,6 +55,34 @@ pub fn parse_trace(src: &str) -> Result<Vec<(Tick, Command)>, String> {
     Ok(out)
 }
 
+/// Expand a parsed trace into the per-tick command stream the sim actually
+/// consumes, over ticks `0..ticks`: a `move_world` is a HELD key — it repeats
+/// on every tick until the next `move_world` or `wait` replaces it — exactly
+/// as the live loop re-pushes the held keys each tick. `crouch` and `search`
+/// stay one-shot. The sim itself is per-tick (a tick without a move brakes),
+/// so a trace fed unexpanded moved the body for ONE tick and then braked: a
+/// DEMO clip of a held walk showed a figure standing still (2026-09-24).
+pub fn hold(trace: &[(Tick, Command)], ticks: u64) -> Vec<(Tick, Command)> {
+    let mut sorted = trace.to_vec();
+    sorted.sort_by_key(|(t, _)| t.0);
+    let mut out = Vec::new();
+    let mut held = None;
+    let mut next = sorted.iter().peekable();
+    for t in 0..ticks {
+        while let Some((_, c)) = next.next_if(|(at, _)| at.0 <= t) {
+            match c {
+                Command::MoveWorld { .. } => held = Some(*c),
+                Command::Wait => held = None,
+                _ => out.push((Tick(t), *c)),
+            }
+        }
+        if let Some(c) = held {
+            out.push((Tick(t), c));
+        }
+    }
+    out
+}
+
 /// The exact inverse of `parse_trace` — journaled live commands replay
 /// losslessly.
 pub fn format_command(tick: Tick, c: &Command) -> String {
@@ -101,6 +129,23 @@ mod tests {
     fn a_cell_step_trace_is_rejected_by_name() {
         let e = parse_trace("10 move 1 0 walk\n").unwrap_err();
         assert!(e.contains("move_world"), "the error must name the replacement: {e}");
+    }
+    #[test]
+    fn a_held_move_repeats_every_tick_until_wait_or_a_new_move() {
+        let t = parse_trace("2 move_world 1024 0\n4 crouch on\n5 move_world 0 1024 run\n6 wait\n").unwrap();
+        let h = hold(&t, 8);
+        let east = Command::MoveWorld { dx: 1024, dz: 0, mode: MoveMode::Walk };
+        let south = Command::MoveWorld { dx: 0, dz: 1024, mode: MoveMode::Run };
+        assert_eq!(
+            h,
+            vec![
+                (Tick(2), east),
+                (Tick(3), east),
+                (Tick(4), Command::Crouch(true)),
+                (Tick(4), east),
+                (Tick(5), south),
+            ]
+        );
     }
     #[test]
     fn crouch_commands_round_trip_and_reject_missing_state() {

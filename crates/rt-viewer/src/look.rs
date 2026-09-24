@@ -15,7 +15,7 @@
 //! slight sheen — greens stay MATTE via the material bit), lush saturated
 //! greens and sky, the facade rhythm as clean panels with occasional
 //! FULL-HEIGHT black tinted-glass windows (real transmission — see
-//! gym_scene/shade), amber lamp mood, red-coat walker.
+//! gym_scene/shade), amber lamp mood.
 //! The A/B parents (`porcelain`, `meadow`) and every earlier candidate live
 //! in git history only. The ESC-menu look row went with them when [`POLANA`]
 //! stood alone, and came BACK with [`DUSK`] — the menu-first rule, working as
@@ -84,19 +84,13 @@ pub struct Look {
     pub bump: f32,
     pub bump_scale: f32,
     pub gi: f32,
-    // ---- the player body (linear)
-    pub coat: [f32; 4],
-    pub hood: [f32; 4],
-    pub skin: [f32; 4],
-    pub legs: [f32; 4],
-    pub boots: [f32; 4],
 }
 
 /// THE look (owner pick 2026-07-12): porcelain × meadow. Super-clean
 /// near-white ceramic monoliths with a slight sheen, occasional full-height
 /// black tinted-glass windows as the only facade rhythm, lush saturated
 /// meadow greens (MATTE by construction — grass never shines) with
-/// grass-tuft dress, big błękit sky, red-coat walker. The amber accent
+/// grass-tuft dress, big błękit sky. The amber accent
 /// lives in the lamp mood since the blocky rebuild dropped the fascia.
 pub const POLANA: Look = Look {
     name: "polana",
@@ -135,11 +129,6 @@ pub const POLANA: Look = Look {
     bump: 0.1, // …on near-smooth porcelain (minimal bumps — owner)
     bump_scale: 7.0,
     gi: 0.5,
-    coat: [0.42, 0.10, 0.08, 1.0], // the red-coat walker (from meadow)
-    hood: [0.26, 0.05, 0.04, 1.0],
-    skin: [0.74, 0.58, 0.45, 1.0],
-    legs: [0.80, 0.75, 0.65, 1.0], // cream slacks
-    boots: [0.10, 0.10, 0.11, 1.0],
 };
 
 /// The dusk sibling of polana (voxel-physics-spike): the SAME porcelain
@@ -195,11 +184,6 @@ pub const DUSK: Look = Look {
     bump: 0.1,
     bump_scale: 7.0,
     gi: 0.5,
-    coat: [0.42, 0.10, 0.08, 1.0],
-    hood: [0.26, 0.05, 0.04, 1.0],
-    skin: [0.74, 0.58, 0.45, 1.0],
-    legs: [0.80, 0.75, 0.65, 1.0],
-    boots: [0.10, 0.10, 0.11, 1.0],
 };
 
 /// Industrial daylight for the owner's realism reset (2026-09-04), graded
@@ -233,10 +217,6 @@ pub const AFTERMATH: Look = Look {
     gloss: 0.0,
     bump: 0.0,
     gi: 3.5,
-    coat: [0.12,0.16,0.14,1.0],
-    hood: [0.09,0.105,0.095,1.0],
-    legs: [0.16,0.145,0.115,1.0],
-    boots: [0.055,0.05,0.045,1.0],
     ..POLANA
 };
 

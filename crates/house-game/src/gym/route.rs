@@ -44,6 +44,15 @@ const SIGHT_STEP: f32 = 0.1;
 /// that spins.
 const ARRIVE_R: f32 = 0.26;
 
+/// The GOAL's arrival radius: half a body radius. A corner is passed at
+/// [`ARRIVE_R`], but the goal is where a clicked prop's stand point is, and
+/// at the walking speed (1.6 since 2026-09-24) the braking coast is only
+/// ~4 cm — arriving a full body radius short left a searched prop out of arm's
+/// reach. Still several ticks of walking from the point, so steering never
+/// aims at a point underfoot (the spin `ARRIVE_R` exists to prevent); at a run
+/// the stopping distance is the larger term anyway.
+const GOAL_R: f32 = 0.13;
+
 /// A planned route in WORLD space: the corners left after string-pulling,
 /// walked in order. Empty is not representable — [`Route::plan`] returns
 /// `None` rather than an empty route, so a live route always has a target.
@@ -101,7 +110,7 @@ impl Route {
         while let Some(&p) = self.points.first() {
             let last = self.points.len() == 1;
             let d = p - pos;
-            let near = if last { stop_dist.max(ARRIVE_R) } else { ARRIVE_R };
+            let near = if last { stop_dist.max(GOAL_R) } else { ARRIVE_R };
             if d.length() <= near {
                 if last {
                     return None;

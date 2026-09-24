@@ -22,6 +22,8 @@ surface = { path = "../surface" }
 # vegetation for creative mode: the grass density map and procedural trees
 # and bushes, baked on the CPU; a leaf, std only.
 flora = { path = "../flora" }
+# the player's body: skinned mesh, mocap clips, locomotion + IK; glam only.
+avatar = { path = "../avatar" }
 # procedural street props (cars, barrels, …) grown from a seed; std only.
 props = { path = "../props" }
 # destructibility: the "wall smash" demo's rubble — a Box3D brick wall +

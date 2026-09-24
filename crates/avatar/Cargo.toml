@@ -1,0 +1,8 @@
+[package]
+name = "avatar"
+version = "0.1.0"
+edition = "2021"
+description = "Pure leaf: the player's body — skinned mesh + motion-capture clips (assets/characters), the fixed-tick locomotion controller, foot IK and CPU skinning. No Scene, no GPU, no game."
+
+[dependencies]
+glam = "0.30"

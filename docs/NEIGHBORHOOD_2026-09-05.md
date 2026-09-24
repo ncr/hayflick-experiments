@@ -41,7 +41,8 @@ height and ground cover. The probe bake contains static scene geometry and
 average materials. This is a local, elastic interaction; it does not store
 permanent flattened trails or simulate vegetation growth over time.
 
-`survivor.rs` replaces the box figure in the aftermath aesthetic with a faceted
+(Historical: this rig was replaced by the skinned mocap body on 2026-09-24,
+`docs/PLAYER.md`.) `survivor.rs` replaced the box figure in the aftermath aesthetic with a faceted
 older man: receding grey hair, brows and beard, neck, coat collar/pockets,
 trousers, hands and boots. Fifteen dynamic runs articulate the pelvis, chest,
 head, thighs, shins, feet, upper/lower arms and hands. The rig uses planted stance

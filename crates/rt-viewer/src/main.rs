@@ -37,7 +37,7 @@ mod backend;
 mod capture;
 mod concrete;
 mod terrain;
-mod survivor;
+mod player;
 mod demos;
 mod flags;
 mod gym_loop;

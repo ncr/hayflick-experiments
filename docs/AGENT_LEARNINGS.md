@@ -1786,3 +1786,67 @@ Preventive checklist
 
 - Curved-surface appliques need subdivision in both dimensions and a small offset.
 - Check high-contrast garment markings in front/back views at game resolution.
+
+## 2026-09-24 - DEMO traces moved the body for one tick, so every held-walk clip stood still
+
+Root cause
+
+The sim is per-tick: a tick without a `move_world` brakes. The trace format
+and the record-gameplay skill both described `move_world` as a HELD key, but
+`demo_load` queued each command on its one tick only. Clips of scripted walks
+showed a motionless figure; the let's-play path had the same hole (held keys
+were read only by the live loop).
+
+Detection signal
+
+The ground pattern was identical across frames 100 and 470 of a "walk" clip. A
+per-tick print showed the position change by 0.005 wu once and never again.
+
+Preventive checklist
+
+- Before judging motion in a clip, check that the body actually travelled
+  (compare the ground under it at two frames).
+- A harness that replays input must replay it the way the live loop feeds it
+  (every tick), not the way the file spells it.
+
+## 2026-09-24 - Blending foot contact with the idle pose kept both feet planted through a start
+
+Root cause
+
+The idle clip marks both feet planted. Blending the contact curves by the
+same weight as the pose kept each foot's contact at or above 0.5 until the gait
+weight passed one half, so during a start neither foot lifted, the body slid
+away from its locked feet and the legs stretched into a lunge.
+
+Detection signal
+
+Side-view contact sheets of a start from rest showed a split stance a
+metre wide that appeared ONLY in the first half second.
+
+Preventive checklist
+
+- Blend poses, not discrete states: contact comes from the gait while moving
+  and from the idle stance at rest, never a mix.
+- Start a gait at the phase that matches the rest stance (mid-stance, feet
+  side by side), not at a heel strike.
+
+## 2026-09-24 - A slower walk left clicked props out of reach
+
+Root cause
+
+`Route::steer` counted the goal reached within one body radius and relied
+on the braking coast to carry the body the rest of the way. At 2.2 and 3.0
+wu/s the coast covered it; at the owner's 1.6 it is 4 cm, and a clicked
+barrel ended out of arm's reach.
+
+Detection signal
+
+`every_container_on_the_street_is_reachable` failed right after the speed
+change, with the body 0.84 wu from the barrel's centre.
+
+Preventive checklist
+
+- When a speed changes, rerun every test that walks somewhere and read the
+  failures as geometry, not flakiness.
+- Arrival tolerances that lean on momentum must be re-derived for the
+  slowest speed that uses them.

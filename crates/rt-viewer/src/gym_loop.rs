@@ -12,13 +12,13 @@
 //!   Shift = run.
 
 use crate::backend::Stamp;
-use crate::gym_scene::{cell_world, ARM_X, HIP, LEG_X, SHOULDER, WALL_CUT_H};
+use crate::gym_scene::{cell_world, WALL_CUT_H};
 use crate::menu::{mrect, mtext};
 use glam::{Mat4, Vec2, Vec3};
 use house_game::gym::grid::CellKind;
 use house_game::gym::route::Route;
 use house_game::gym::sim::{Carry, Command, GymGame, GymLevel, GymSnapshot, MoveMode};
-use house_game::gym::trace::parse_trace;
+use house_game::gym::trace::{hold, parse_trace};
 use house_game::TICK_DT;
 use iso_core::{world_to_window_px, Projection, ViewXform};
 use phys_spike::PhysWorld;
@@ -30,35 +30,14 @@ const BG: u32 = 0x12151a;
 const AMBER: u32 = 0xe8853c;
 const INK: u32 = 0xd0d0c0;
 
-/// Walk-cycle state — presentation-only, but ticked on the FIXED clock
-/// (run_due's per-tick loop / demo_advance_tick) so DEMO captures replay
-/// bit-identically. `phase` accumulates from actual ground distance; `blend`
-/// fades the pose in/out so stops settle to the rest pose instead of
-/// freezing mid-stride.
-#[derive(Clone, Copy, Default)]
-struct Gait {
-    phase: f32,
-    blend: f32,
-}
-
-/// Ground distance per full two-step cycle and hip swing amplitude (radians)
-/// per movement mode — the whole feel of the walk in two numbers. Driving the
-/// phase from distance keeps the feet tied to the body during acceleration,
-/// braking, and collide-and-slide.
-const WALK_STRIDE_WU: f32 = 1.6;
-const RUN_STRIDE_WU: f32 = 2.0;
-
-fn gait_params(mode: MoveMode) -> (f32, f32) {
-    match mode {
-        MoveMode::Walk => (WALK_STRIDE_WU, 0.5),
-        MoveMode::Run => (RUN_STRIDE_WU, 0.72),
+/// The ground height the body stands on: the terrain on street levels, the
+/// gym's floor slab elsewhere.
+fn ground_at(spec: &GymLevel, xz: Vec2) -> f32 {
+    if spec.neighborhood {
+        crate::terrain::height_at(spec, xz)
+    } else {
+        crate::gym_scene::FLOOR_TOP
     }
-}
-
-/// Sample the cycle: (core bob, leg swing, arm swing) — arms counter-swing.
-fn gait_pose(g: Gait, leg_amp: f32, arm_ratio: f32) -> (f32, f32, f32) {
-    let s = g.phase.sin() * g.blend;
-    ((g.phase * 2.0).sin().abs() * 0.02 * g.blend, s * leg_amp, -s * leg_amp * arm_ratio)
 }
 
 pub struct GymLoop {
@@ -87,11 +66,11 @@ pub struct GymLoop {
     pub show_inventory: bool,
     /// Projection used to interpret screen-relative movement.
     pub proj: Projection,
-    /// Walk-cycle state.
-    gait: Gait,
-    survivor: crate::survivor::Rig,
-    /// Presentation facing for the player body (radians about Y).
-    face: f32,
+    /// The player's body (the `avatar` crate): ticked on the fixed clock
+    /// from the fresh snapshot, skinned into the scene's "player" run.
+    pub player: crate::player::Player,
+    /// The crouch keys' state the DEMO path last turned into a command.
+    demo_crouch_keys: bool,
     /// Camera target the follow-cam last consumed.
     pub last_cam: Vec3,
     /// Destructibility spike: a box3d rigid-body world stepped once per fixed
@@ -119,6 +98,7 @@ impl GymLoop {
         let snap = sim.snapshot();
         let mut p0 = cell_world(snap.player);
         if spec.neighborhood {p0.y=crate::terrain::height_at(&spec, snap.position);}
+        let player = crate::player::Player::new(snap.position, |xz| ground_at(&spec, xz));
         GymLoop {
             fixed: FixedLoop::new(TICK_DT),
             queue: InputQueue::new(),
@@ -136,9 +116,8 @@ impl GymLoop {
             pending_search: None,
             show_inventory: false,
             proj,
-            gait: Gait::default(),
-            survivor: crate::survivor::Rig::new(p0),
-            face: 0.0,
+            player,
+            demo_crouch_keys: false,
             last_cam: p0,
             phys: None,
         }
@@ -306,7 +285,7 @@ impl GymLoop {
             let cmds = self.queue.drain_for(self.tick);
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
-            self.gait_tick();
+            self.body_tick();
             self.phys_step();
         }
         if n > 0 {
@@ -317,6 +296,20 @@ impl GymLoop {
 
     /// DEMO: one tick per rendered frame (deterministic gameplay capture).
     pub fn demo_advance_tick(&mut self) {
+        // A let's-play script holds keys through the same fields the window
+        // does: a held direction is this tick's move (and cancels a route,
+        // as live), and the crouch keys act on CHANGE only — a plain DEMO
+        // trace owns the crouch state with its own `crouch` commands.
+        let crouch_keys = self.crouch_toggle || self.crouch_held;
+        if crouch_keys != self.demo_crouch_keys {
+            self.demo_crouch_keys = crouch_keys;
+            self.queue.push(self.tick, Command::Crouch(crouch_keys));
+        }
+        if let Some(command) = self.held_command() {
+            self.plan = None;
+            self.pending_search = None;
+            self.queue.push(self.tick, command);
+        }
         // A live route steers here too, so a `WALK_TO=` capture records the
         // mouse path frame by frame exactly as the interactive loop walks it.
         self.arrive_and_search();
@@ -324,7 +317,7 @@ impl GymLoop {
         let cmds = self.queue.drain_for(self.tick);
         self.sim.tick(self.tick, &cmds);
         self.tick.0 += 1;
-        self.gait_tick();
+        self.body_tick();
         self.phys_step();
         self.refresh();
     }
@@ -337,7 +330,10 @@ impl GymLoop {
         let trace = parse_trace(&text).unwrap_or_else(|e| panic!("DEMO: {e}"));
         let ticks = cfg.harness.demo_ticks.unwrap_or_else(|| trace.iter().map(|(t, _)| t.0 + 1).max().unwrap_or(0));
         let n = trace.len();
-        for (t, c) in trace {
+        // offset by the boot tick: a CMDS prefix already advanced the clock
+        let at = self.tick.0;
+        for (t, c) in hold(&trace, ticks) {
+            let t = sim_core::Tick(t.0 + at);
             self.queue.push(t, c);
         }
         println!("DEMO(gym): {n} commands, playing {ticks} ticks from {path}");
@@ -363,14 +359,14 @@ impl GymLoop {
         let trace = parse_trace(&text).unwrap_or_else(|e| panic!("CMDS: {e}"));
         let ticks = cfg.game.cmds_ticks.unwrap_or_else(|| trace.iter().map(|(t, _)| t.0 + 1).max().unwrap_or(0));
         let n = trace.len();
-        for (t, c) in trace {
+        for (t, c) in hold(&trace, ticks) {
             self.queue.push(t, c);
         }
         for _ in 0..ticks {
             let cmds = self.queue.drain_for(self.tick);
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
-            self.gait_tick();
+            self.body_tick();
             self.phys_step();
         }
         self.cmds_prefix = self.tick.0;
@@ -378,38 +374,19 @@ impl GymLoop {
         println!("CMDS(gym): {n} commands over {ticks} ticks — state {:016x}", self.sim.state_hash());
     }
 
-    /// Advance the walk cycle one fixed tick from the distance the body
-    /// ACTUALLY covered, so the gait cannot run in place against a wall or
-    /// skate ahead of an accelerating body. One mover means one source for
-    /// this: there is no longer a second, eased path to measure instead.
-    fn gait_tick(&mut self) {
+    /// Advance the body one fixed tick from the FRESH snapshot — every
+    /// tick-advancing path (live, DEMO, the CMDS prefix) calls this, so a
+    /// replayed pose is the live pose. The body measures the distance the sim
+    /// ACTUALLY covered itself, so it cannot walk in place against a wall.
+    fn body_tick(&mut self) {
         let snap = self.sim.snapshot();
-        let y=if self.spec.neighborhood {crate::terrain::height_at(&self.spec, snap.position)}else{crate::gym_scene::FLOOR_TOP};
-        let p=Vec3::new(snap.position.x,y,snap.position.y);
-        let spec=&self.spec;
-        self.survivor.update_grounded(p,snap.velocity,snap.intent,snap.contact,snap.crouching,
-            |xz| if spec.neighborhood {crate::terrain::height_at(spec, xz)} else {crate::gym_scene::FLOOR_TOP});
-        let (stride, _) = gait_params(self.mode());
-        let distance = self.sim.snapshot().velocity.length() * TICK_DT;
-        let moving = distance > 1.0e-6;
-        let g = &mut self.gait;
-        g.blend = (g.blend + if moving { 0.34 } else { -0.12 }).clamp(0.0, 1.0);
-        if moving {
-            g.phase += std::f32::consts::TAU * distance / stride;
-        } else if g.blend == 0.0 {
-            g.phase = 0.0; // idle: next stride starts at heel-strike
-        }
+        let input = avatar::Input { position: snap.position, velocity: snap.velocity, intent: snap.intent, contact: snap.contact, crouching: snap.crouching };
+        let spec = &self.spec;
+        self.player.tick(&input, |xz| ground_at(spec, xz));
     }
 
     fn refresh(&mut self) {
         self.snap = self.sim.snapshot();
-        // Facing follows the velocity, not a position delta: a body sliding
-        // along a wall still travels, and the direction it travels is the one
-        // the figure should face.
-        let d = Vec3::new(self.snap.velocity.x, 0.0, self.snap.velocity.y);
-        if d.length_squared() > 1e-6 {
-            self.face = d.x.atan2(d.z);
-        }
     }
 
     fn sim_position_world(&self) -> Vec3 {
@@ -441,30 +418,15 @@ impl GymLoop {
 
     // ---- per-frame instance skinning ------------------------------------
 
-    /// Place the player body: core + four limbs composed from the gait
-    /// sample. Limb transforms MUST mirror the pivot constants the builder
-    /// authored the geometry around.
+    /// The player's instance transform (the translation its skinned
+    /// vertices are relative to).
     pub fn instances(&self, handles: &SceneHandles) -> Vec<(InstanceKey, Mat4)> {
-        if handles.instances.contains_key("player/head") {return self.survivor.instances(self.render_position(),handles);}
-        let mut out = Vec::new();
-        let get = |n: &str| handles.instances.get(n).copied();
-        let base = Mat4::from_translation(self.render_position()) * Mat4::from_rotation_y(self.face);
-        let Some(core) = get("player") else { return out };
-        let (_, leg_amp) = gait_params(self.mode());
-        let (bob, leg, arm) = gait_pose(self.gait, leg_amp, 0.65);
-        out.push((core, base * Mat4::from_translation(Vec3::new(0.0, bob, 0.0))));
-        let limb = |px: f32, py: f32, swing: f32| base * Mat4::from_translation(Vec3::new(px, py, 0.0)) * Mat4::from_rotation_x(swing);
-        for (suffix, m) in [
-            ("legL", limb(-LEG_X, HIP, leg)),
-            ("legR", limb(LEG_X, HIP, -leg)),
-            ("armL", limb(-ARM_X, SHOULDER, arm)),
-            ("armR", limb(ARM_X, SHOULDER, -arm)),
-        ] {
-            if let Some(k) = get(&format!("player/{suffix}")) {
-                out.push((k, m));
-            }
-        }
-        out
+        self.player.instance(handles).into_iter().collect()
+    }
+
+    /// This tick's skinned body for the renderer (`FrameState::skin`).
+    pub fn skin<'a>(&'a self, handles: &SceneHandles) -> Vec<(InstanceKey, &'a [rt_probe::scene::Vertex])> {
+        self.player.skin(handles).into_iter().collect()
     }
 
     /// Physics-spike movers: each box3d box's world transform, joined onto
@@ -575,11 +537,9 @@ mod tests {
         let mut cfg=Config::from_env();cfg.game.cmds=Some(path.to_string_lossy().into_owned());cfg.game.cmds_ticks=Some(60);
         let mut replay=GymLoop::new(gym_level());replay.run_cmds(&cfg);
         std::fs::remove_file(path).unwrap();
-        let handles=SceneHandles {lights:Default::default(),instances:
-            [("player/head".to_owned(),InstanceKey::from_index(0))].into_iter().collect()};
-        let live_pose=live.instances(&handles)[0].1;
-        let replay_pose=replay.instances(&handles)[0].1;
-        assert!(live_pose.abs_diff_eq(replay_pose,0.00001),"replay snapshot crouches but its pose did not advance");
+        assert!(live.player.body.crouch > 0.9, "sixty ticks is a full crouch");
+        let bits = |t: &GymLoop| t.player.vertices().iter().flat_map(|v| v.pos).map(f32::to_bits).collect::<Vec<_>>();
+        assert!(bits(&live) == bits(&replay), "replay snapshot crouches but its pose did not advance");
     }
 
     #[test]
@@ -592,10 +552,9 @@ mod tests {
     /// Codex's click regression (2026-09-05), re-aimed at the ONE mover: the
     /// click runs through `Route` like every other level's, so it must never
     /// teleport, and it arrives the way `Route::steer` defines arriving — the
-    /// last waypoint counts as reached inside one body radius (`ARRIVE_R` ==
-    /// `PLAYER_RADIUS`, the anti-spin floor), and braking coasts it closer.
-    /// Codex's own cell-walker hit 0.16; the slower neighborhood walk and the
-    /// harder brake leave the Route ~0.19 short, inside that radius.
+    /// goal counts as reached inside half a body radius (`GOAL_R`, since the
+    /// 1.6 walk of 2026-09-24), and braking coasts it closer. Asserted with
+    /// one full body radius of slack.
     #[test]
     fn neighborhood_click_walks_continuously_to_the_goal() {
         let mut spec=crate::demos::Level::Neighborhood.spec();spec.player_start=CellPos::new(24,20);
@@ -627,7 +586,9 @@ mod tests {
         let screen_x = delta.x * t.proj.px_x[0] as f32 + delta.y * t.proj.px_z[0] as f32;
         let screen_y = delta.x * t.proj.px_x[1] as f32 + delta.y * t.proj.px_z[1] as f32;
         assert!(screen_y > 0.0, "screen-up must move upward from the start: ({screen_x}, {screen_y})");
-        assert!(screen_x.abs() < 1.0e-3, "screen-up must be a straight line, not a zigzag: ({screen_x}, {screen_y})");
+        // a zigzag is whole pixels sideways; this bounds float drift relative
+        // to the distance walked
+        assert!(screen_x.abs() < 1.0e-4 * screen_y, "screen-up must be a straight line, not a zigzag: ({screen_x}, {screen_y})");
     }
 
     /// Continuous movement comes to rest without snapping the player back to
@@ -728,86 +689,4 @@ mod tests {
         assert!(t.plan.is_none());
     }
 
-    /// The walk cycle lives on the fixed clock: gait blends in while the
-    /// body walks, swings the legs in antiphase, and settles back to the
-    /// rest pose (blend 0) after the last ease lands.
-    #[test]
-    fn gait_swings_while_walking_and_settles_at_rest() {
-        let mut t = GymLoop::new(gym_level());
-        t.held[0] = true;
-        for _ in 0..24 {
-            t.run_due(TICK_DT);
-        }
-        let g = t.gait;
-        assert!(g.blend > 0.9, "mid-walk the pose must be fully blended in (blend={})", g.blend);
-        let (_, leg, arm) = gait_pose(g, 0.5, 0.65);
-        assert!(leg.abs() <= 0.5 && arm.abs() <= 0.5 * 0.65);
-        let mut peak: f32 = 0.0;
-        for _ in 0..16 {
-            t.run_due(TICK_DT);
-            let (_, l, _) = gait_pose(t.gait, 0.5, 0.65);
-            peak = peak.max(l.abs());
-        }
-        assert!(peak > 0.3, "a full cycle must reach a visible swing (peak={peak})");
-        t.held[0] = false;
-        for _ in 0..40 {
-            t.run_due(TICK_DT);
-        }
-        assert_eq!(t.gait.blend, 0.0, "idle must settle to the rest pose");
-        assert_eq!(t.gait.phase, 0.0, "the next stride restarts at heel-strike");
-    }
-
-    /// A walk cycle must cover a stable piece of ground. A fixed phase clock
-    /// advances too quickly while the mover is accelerating, which makes the
-    /// feet skate relative to the floor; distance-driven phase keeps the
-    /// animation and the continuous body on the same stride.
-    #[test]
-    fn gait_phase_tracks_distance_instead_of_wall_clock() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
-            neighborhood: false,
-            grid: house_game::gym::grid::Grid::new(64, 64),
-            player_start: CellPos::new(32, 32),
-            lights: Vec::new(),
-        });
-        t.held[0] = true;
-        let start = t.snap.position;
-        for _ in 0..180 {
-            t.run_due(TICK_DT);
-        }
-        let distance = (t.snap.position - start).length();
-        let cycles = t.gait.phase / std::f32::consts::TAU;
-        assert!(cycles > 1.0, "the gait must advance while walking");
-        let ground_per_cycle = distance / cycles;
-        assert!((ground_per_cycle - WALK_STRIDE_WU).abs() < 0.02, "gait stride drifted from movement: {ground_per_cycle} wu/cycle");
-    }
-
-    /// The articulated body emits five runs with mirrored leg swings.
-    #[test]
-    fn articulated_instances_mirror_legs() {
-        use std::collections::BTreeMap;
-        let mut t = GymLoop::new(gym_level());
-        t.held[0] = true;
-        for _ in 0..20 {
-            t.run_due(TICK_DT);
-        }
-        let mut instances = BTreeMap::new();
-        let names = ["player", "player/legL", "player/legR", "player/armL", "player/armR"];
-        for (i, n) in names.iter().enumerate() {
-            instances.insert(n.to_string(), InstanceKey::from_index(i as u32));
-        }
-        let handles = SceneHandles { lights: BTreeMap::new(), instances };
-        let out = t.instances(&handles);
-        assert_eq!(out.len(), 5, "core + four limbs");
-        let get = |name: &str| {
-            let k = handles.instances[name];
-            out.iter().find(|(ik, _)| *ik == k).map(|(_, m)| *m).unwrap()
-        };
-        let (ll, lr) = (get("player/legL"), get("player/legR"));
-        let swing = |m: Mat4| {
-            let z = m.transform_vector3(Vec3::Z);
-            z.y.atan2(z.z)
-        };
-        assert!((swing(ll) + swing(lr)).abs() < 1e-5, "legs must mirror");
-        assert!(swing(ll).abs() > 0.05, "mid-walk legs must be off rest");
-    }
 }
