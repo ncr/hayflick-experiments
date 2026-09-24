@@ -17,7 +17,7 @@ use crate::menu::{mrect, mtext};
 use glam::{Mat4, Vec2, Vec3};
 use house_game::gym::grid::CellKind;
 use house_game::gym::route::Route;
-use house_game::gym::sim::{Command, GymGame, GymLevel, GymSnapshot, MoveMode};
+use house_game::gym::sim::{Carry, Command, GymGame, GymLevel, GymSnapshot, MoveMode};
 use house_game::gym::trace::parse_trace;
 use house_game::TICK_DT;
 use iso_core::{world_to_window_px, Projection, ViewXform};
@@ -80,6 +80,11 @@ pub struct GymLoop {
     /// The live click-to-move route (None = keyboard/standing). Shell state:
     /// the sim only ever sees the per-tick world-input commands it steers.
     plan: Option<Route>,
+    /// A click on a prop (its index): walk the route to it, then search it
+    /// the moment it is in reach.
+    pending_search: Option<usize>,
+    /// The inventory panel is open (I). Presentation only.
+    pub show_inventory: bool,
     /// Projection used to interpret screen-relative movement.
     pub proj: Projection,
     /// Walk-cycle state.
@@ -104,7 +109,13 @@ impl GymLoop {
     }
 
     pub fn with_projection(spec: GymLevel, proj: Projection) -> GymLoop {
-        let sim = GymGame::new(spec.clone());
+        Self::with_carry(spec, proj, Carry::default())
+    }
+
+    /// A fresh loop on `spec` carrying in what the player brought from the
+    /// last level (an exit's level switch).
+    pub fn with_carry(spec: GymLevel, proj: Projection, carry: Carry) -> GymLoop {
+        let sim = GymGame::with_carry(spec.clone(), carry);
         let snap = sim.snapshot();
         let mut p0 = cell_world(snap.player);
         if spec.neighborhood {p0.y=crate::terrain::height_at(&spec, snap.position);}
@@ -122,6 +133,8 @@ impl GymLoop {
             crouch_toggle: false,
             yaw_deg: 0.0,
             plan: None,
+            pending_search: None,
+            show_inventory: false,
             proj,
             gait: Gait::default(),
             survivor: crate::survivor::Rig::new(p0),
@@ -136,6 +149,7 @@ impl GymLoop {
         self.run_held = false;
         self.crouch_held = false;
         self.plan = None;
+        self.pending_search = None;
     }
 
     /// Update the movement basis when the settings menu changes projection.
@@ -198,6 +212,46 @@ impl GymLoop {
     /// Clicking where the player already stands cancels the route.
     pub fn click_ground(&mut self, g: Vec3) {
         self.plan = Route::plan_in(self.sim.spec(), self.snap.position, Vec2::new(g.x, g.z));
+        self.pending_search = None;
+    }
+
+    /// LMB on a searchable prop: search it now if it is in reach, else walk
+    /// to a point beside it and search on arrival. An already searched prop
+    /// is just walked to.
+    pub fn click_prop(&mut self, i: usize) {
+        if self.sim.search_target() == Some(i) {
+            self.search_now();
+            return;
+        }
+        let Some(stand) = self.sim.spec().approach(i, self.snap.position) else { return };
+        self.plan = Route::plan_in(self.sim.spec(), self.snap.position, stand);
+        let searched = self.sim.carry().searched.contains(&house_game::gym::sim::prop_key(&self.sim.spec().props[i]));
+        self.pending_search = (self.plan.is_some() && !searched).then_some(i);
+    }
+
+    /// F: search what is in reach (the sim decides what that is).
+    pub fn search_now(&mut self) {
+        self.plan = None;
+        self.pending_search = None;
+        self.queue.push(self.tick, Command::Search);
+    }
+
+    /// After the route steered this tick: a clicked prop is searched the
+    /// tick it comes into reach — usually as the route arrives, but also when
+    /// the route stalls against a neighbour short of its goal (two barrels
+    /// side by side) with the prop already within arm's length, or as the
+    /// body coasts in after the route let go. A body that comes to rest out
+    /// of reach drops the click.
+    fn arrive_and_search(&mut self) {
+        let Some(i) = self.pending_search else { return };
+        if self.sim.search_target() == Some(i) {
+            self.plan = None;
+            self.pending_search = None;
+            self.queue.push(self.tick, Command::Search);
+        } else if self.plan.is_none() && self.sim.snapshot().velocity == Vec2::ZERO {
+            // the route ended and the body has coasted to rest out of reach
+            self.pending_search = None;
+        }
     }
 
     /// How far the body would still travel if input stopped THIS tick —
@@ -241,8 +295,12 @@ impl GymLoop {
             }
             if let Some(command) = self.held_command() {
                 self.plan = None;
+                self.pending_search = None;
                 self.queue.push(self.tick, command);
             } else {
+                // before steering: a search this tick must not share the
+                // tick with a step (walking breaks a search off)
+                self.arrive_and_search();
                 self.plan_step();
             }
             let cmds = self.queue.drain_for(self.tick);
@@ -261,6 +319,7 @@ impl GymLoop {
     pub fn demo_advance_tick(&mut self) {
         // A live route steers here too, so a `WALK_TO=` capture records the
         // mouse path frame by frame exactly as the interactive loop walks it.
+        self.arrive_and_search();
         self.plan_step();
         let cmds = self.queue.drain_for(self.tick);
         self.sim.tick(self.tick, &cmds);
@@ -552,7 +611,7 @@ mod tests {
     /// a visible sideways drift under the trimetric game projection.
     #[test]
     fn held_w_follows_the_projection_without_sideways_zigzag() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),
@@ -619,6 +678,46 @@ mod tests {
         assert!(miss < 0.3, "the body rests on the clicked point, off by {miss}");
     }
 
+    /// The click-to-search loop end to end on the street: click a prop, the
+    /// body walks to it, searches it on arrival, and the finds land in the
+    /// bag — twice in a row.
+    #[test]
+    fn clicking_props_walks_to_them_and_searches_them() {
+        let mut t = GymLoop::new(crate::demos::Level::Neighborhood.spec());
+        let props = t.sim.spec().props.clone();
+        let find = |k: house_game::gym::sim::PropKind| props.iter().position(|p| p.kind == k).unwrap();
+        for i in [find(house_game::gym::sim::PropKind::Mailbox), find(house_game::gym::sim::PropKind::Car)] {
+            t.click_prop(i);
+            for _ in 0..600 {
+                t.run_due(TICK_DT);
+            }
+            let key = house_game::gym::sim::prop_key(&props[i]);
+            assert!(t.sim.carry().searched.contains(&key), "{:?} was not searched; log {:?}", props[i].kind, t.sim.log());
+        }
+        assert_eq!(t.sim.log().len(), 2, "{:?}", t.sim.log());
+    }
+
+    /// Every searchable prop on the street levels can be reached and
+    /// searched from the level's spawn — loot sitting behind a wall or boxed
+    /// in by another prop would read as broken.
+    #[test]
+    fn every_container_on_the_street_is_reachable() {
+        for spec in [crate::demos::Level::Neighborhood.spec(), crate::demos::Level::Lot.spec()] {
+        for (i, p) in spec.props.iter().enumerate() {
+            if house_game::gym::loot::search_ticks(p.kind).is_none() {
+                continue;
+            }
+            let mut t = GymLoop::new(spec.clone());
+            t.click_prop(i);
+            for _ in 0..1500 {
+                t.run_due(TICK_DT);
+            }
+            let key = house_game::gym::sim::prop_key(p);
+            assert!(t.sim.carry().searched.contains(&key), "{:?} at ({}, {}) not searched; body at {:?}, near {:?}, log {:?}", p.kind, p.x, p.z, t.snap.position, t.sim.near_prop(), t.sim.log());
+        }
+        }
+    }
+
     /// Clicking off the map or the player's own cell leaves no plan.
     #[test]
     fn invalid_clicks_leave_no_plan() {
@@ -664,7 +763,7 @@ mod tests {
     /// animation and the continuous body on the same stride.
     #[test]
     fn gait_phase_tracks_distance_instead_of_wall_clock() {
-        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut t = GymLoop::new(house_game::gym::sim::GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: house_game::gym::grid::Grid::new(64, 64),
             player_start: CellPos::new(32, 32),

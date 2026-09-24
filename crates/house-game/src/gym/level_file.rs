@@ -26,6 +26,9 @@
 //! - `roof X0 Z0 X1 Z1` — a broken roof slab over a world rect, torn on +z
 //! - `prop KIND X Z YAW SEED` — a street prop (car, barrel, crate, tires,
 //!   barrier, pole, sign, hydrant, mailbox, bench), turned YAW radians
+//! - `exit X0 Z0 X1 Z1 SX SZ LEVEL NAME` — walking into the world rect takes
+//!   the player to the level named by the rest of the line (a LEVELS menu
+//!   name, spaces allowed), at cell (SX, SZ) there
 //!
 //! [`serialize`] emits the CANONICAL form (fixed statement order, rooms and
 //! walls z-major) — `serialize(parse(f)) == f` for a canonical file, pinned
@@ -47,7 +50,7 @@
 //! creative mode's edits, the `EDIT=` harness knob and the tests all go through it.
 
 use super::grid::{CellKind, CellPos, EdgeKind, Grid};
-use super::sim::{Floor, FloorKind, GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind, Prop, PropKind};
+use super::sim::{Exit, Floor, FloorKind, GroundStroke, GrowBrush, GymLevel, PaintEffect, PaintStroke, Plant, PlantKind, Prop, PropKind};
 
 /// The checked-in gym level — THE one hand-authored level (owner directive
 /// 2026-07-12), embedded at compile time so headless tests, the viewer and
@@ -61,6 +64,11 @@ pub const AFTER_THE_RAIN_SRC: &str = include_str!("after_the_rain.level");
 
 /// "sandbox" — an empty street to build from nothing in creative mode.
 pub const SANDBOX_SRC: &str = include_str!("sandbox.level");
+
+/// "the lot" — the street's east end (2026-09-24): a garage, a kiosk and a
+/// parking lot of wrecks to search; its west exit leads back to "after the
+/// rain".
+pub const THE_LOT_SRC: &str = include_str!("the_lot.level");
 
 /// Parse a level file. Errors carry the 1-based line number.
 pub fn parse(text: &str) -> Result<GymLevel, String> {
@@ -76,6 +84,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     let mut roofs: Vec<[f32; 4]> = Vec::new();
     let mut neighborhood = false;
     let mut props: Vec<Prop> = Vec::new();
+    let mut exits: Vec<Exit> = Vec::new();
     for (ln, raw) in text.lines().enumerate() {
         let line = raw.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -112,6 +121,19 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
             let (x, z, yaw) = (f()?, f()?, f()?);
             let seed = it.next().and_then(|t| t.parse::<u32>().ok()).ok_or_else(|| err("bad seed"))?;
             props.push(Prop { kind, x, z, yaw, seed });
+            continue;
+        }
+        if op == "exit" {
+            let err = |m: &str| format!("line {}: exit: {m}", ln + 1);
+            let mut f = || -> Result<f32, String> { it.next().and_then(|t| t.parse::<f32>().ok()).filter(|v| v.is_finite()).ok_or_else(|| err("bad number")) };
+            let rect = [f()?, f()?, f()?, f()?];
+            let mut n = || -> Result<i16, String> { it.next().and_then(|t| t.parse::<i16>().ok()).ok_or_else(|| err("bad spawn cell")) };
+            let spawn = CellPos::new(n()?, n()?);
+            let to = it.collect::<Vec<_>>().join(" ");
+            if to.is_empty() {
+                return Err(err("missing level name"));
+            }
+            exits.push(Exit { rect, spawn, to });
             continue;
         }
         if op == "neighborhood" {
@@ -207,7 +229,7 @@ pub fn parse(text: &str) -> Result<GymLevel, String> {
     }
     let grid = grid.ok_or("no size statement")?;
     let player_start = spawn.ok_or("no spawn statement")?;
-    Ok(GymLevel { props, floors, potholes, windows, roofs, ground, plants, paint, neighborhood, grid, player_start, lights })
+    Ok(GymLevel { props, exits, floors, potholes, windows, roofs, ground, plants, paint, neighborhood, grid, player_start, lights })
 }
 
 /// Emit the canonical text form: header, size, spawn, lamps (identity order),
@@ -222,7 +244,8 @@ pub fn serialize(spec: &GymLevel) -> String {
          #          paint rain|soot|spall X Y Z +x|-x|+z|-z R\n\
          #          grow grass|dry|mow|scorch X Z R | plant tree|bush X Z SEED\n\
          #          neighborhood | floor road|walk|soil X0 Z0 X1 Z1 | pothole X Z R\n\
-         #          window X Z | roof X0 Z0 X1 Z1 | prop KIND X Z YAW SEED\n",
+         #          window X Z | roof X0 Z0 X1 Z1 | prop KIND X Z YAW SEED\n\
+         #          exit X0 Z0 X1 Z1 SX SZ LEVEL NAME\n",
     );
     out.push_str(&format!("size {} {}\n", g.w, g.h));
     if spec.neighborhood {
@@ -283,6 +306,9 @@ pub fn serialize(spec: &GymLevel) -> String {
     }
     for p in &spec.props {
         out.push_str(&format!("prop {} {} {} {} {}\n", p.kind.name(), p.x, p.z, p.yaw, p.seed));
+    }
+    for e in &spec.exits {
+        out.push_str(&format!("exit {} {} {} {} {} {} {}\n", e.rect[0], e.rect[1], e.rect[2], e.rect[3], e.spawn.x, e.spawn.z, e.to));
     }
     out
 }
@@ -423,6 +449,19 @@ mod tests {
         assert_eq!(back.lights, spec.lights);
         assert_eq!(back.player_start, spec.player_start);
         assert_eq!(serialize(&back), text, "canonical form is a fixed point");
+    }
+
+    /// An exit keeps its rect, spawn cell and a level name with spaces.
+    #[test]
+    fn exits_round_trip_with_spaced_names() {
+        let text = "size 8 8\nspawn 1 1\nexit 7.2 2 8 5.5 1 3 after the rain\n";
+        let spec = parse(text).unwrap();
+        assert_eq!(spec.exits.len(), 1);
+        let e = &spec.exits[0];
+        assert_eq!((e.rect, e.spawn, e.to.as_str()), ([7.2, 2.0, 8.0, 5.5], CellPos::new(1, 3), "after the rain"));
+        let back = parse(&serialize(&spec)).unwrap();
+        assert_eq!(back.exits, spec.exits);
+        assert!(parse("size 8 8\nspawn 1 1\nexit 1 1 2 2 0 0\n").is_err(), "an exit names a level");
     }
 
     /// Paint strokes survive a save/load exactly (shortest round-trip floats)

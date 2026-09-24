@@ -154,6 +154,39 @@ presets reach comparable damage (full bar grids in the corrosion craters, the
 blast crown torn, rubble); Codex's lenses are still larger and more integrated
 — a preset-tuning job, not a model limit. NEXT: owner playtest.
 
+**THE FIRST GAMEPLAY LOOP (2026-09-24)** — search, carry, move on. All of it
+headless in `house-game` and pinned by tests:
+- **Search**: `Command::Search` (trace op `search`) starts on the nearest
+  searchable prop in reach (`GymGame::near_prop` — by FOOTPRINT distance, not
+  centre; `REACH` 0.35 past the body radius). Cars, crates, barrels and
+  mailboxes are containers (`gym::loot::search_ticks`: 66/42/30/18 ticks);
+  the body stands still meanwhile and movement input breaks it off. What a
+  prop holds is `loot::contents(kind, seed)` — the SAME seed that grows its
+  geometry, so the level file fixes the loot. A searched prop is remembered
+  by `prop_key` (kind, seed, position — not its index, which creative edits
+  reorder).
+- **Carry**: inventory + searched set + the log, crossing levels as one
+  `Carry` (`GymGame::with_carry`); all of it is in `state_hash`.
+- **Exits**: level line `exit X0 Z0 X1 Z1 SX SZ LEVEL NAME` — walking INTO
+  the rect (spawning inside does not count) takes the player to the LEVELS
+  menu entry of that name at cell (SX, SZ). `Viewer::take_exit` loads it the
+  menu's way and carries the bag, the sim clock and the input queue across,
+  so a DEMO trace keeps playing over a switch. "after the rain" now has
+  props and an east exit to the new level "the lot" (`the_lot.level`: a
+  garage, a kiosk, a parking lot of wrecks), whose west exit leads back.
+- **Input**: LMB on a container walks to a stand point beside it
+  (`GymLevel::approach`) and searches it the tick it is in reach — also when
+  the route stalls short against a neighbour, dropped only once the body is
+  at rest out of reach; `GymLevel::pick_prop` tests the click RAY against
+  each container's box (at least 0.3 wu a side, or a mailbox is unclickable).
+  F searches what is in reach, I opens the bag (PLAY_SCRIPT keys `f`, `i`).
+- **HUD** (`rt-viewer/src/hud.rs`, stamps — in SHOT/DEMO captures too,
+  hidden while building): the prompt / progress bar over the prop, the log
+  bottom-left (8 s of SIM time per line), the bag top-right.
+`GymLoop::tests::every_container_on_the_street_is_reachable` walks to and
+searches every container on both street levels — place a crate somewhere
+unreachable and it fails.
+
 **POLISH PASS (2026-09-24)** — the street looked like a prototype for four
 measurable reasons, each fixed at its cause:
 - **Buried probes.** The 0.5-wu probe grid has a layer just under the ground

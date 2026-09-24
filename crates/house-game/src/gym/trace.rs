@@ -5,6 +5,7 @@
 //!
 //! ```text
 //! 11 move_world 1024 0 walk # dx dz [walk|run] (default walk), fixed-point
+//! 200 search                  # search the prop in reach
 //! 400 wait
 //! ```
 //!
@@ -45,6 +46,7 @@ pub fn parse_trace(src: &str) -> Result<Vec<(Tick, Command)>, String> {
                 Some("on") => true, Some("off") => false,
                 _ => return Err(err("crouch: expected on or off")),
             }),
+            "search" => Command::Search,
             "wait" => Command::Wait,
             _ => return Err(err(&format!("unknown op {op:?}"))),
         };
@@ -65,6 +67,7 @@ pub fn format_command(tick: Tick, c: &Command) -> String {
             format!("{} move_world {} {} {}", tick.0, dx, dz, m)
         }
         Command::Crouch(active) => format!("{} crouch {}", tick.0, if *active {"on"} else {"off"}),
+        Command::Search => format!("{} search", tick.0),
         Command::Wait => format!("{} wait", tick.0),
     }
 }
@@ -75,9 +78,9 @@ mod tests {
 
     #[test]
     fn parse_and_format_round_trip() {
-        let src = "10 move_world 1024 0 walk\n30 move_world -1024 0 run\n40 move_world 0 1024\n50 move_world 512 -1024 run\n99 wait\n";
+        let src = "10 move_world 1024 0 walk\n30 move_world -1024 0 run\n40 move_world 0 1024\n50 move_world 512 -1024 run\n60 search\n99 wait\n";
         let trace = parse_trace(src).unwrap();
-        assert_eq!(trace.len(), 5);
+        assert_eq!(trace.len(), 6);
         let back: Vec<String> = trace.iter().map(|(t, c)| format_command(*t, c)).collect();
         let reparsed = parse_trace(&back.join("\n")).unwrap();
         assert_eq!(trace, reparsed);

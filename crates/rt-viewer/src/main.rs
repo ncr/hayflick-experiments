@@ -42,6 +42,7 @@ mod demos;
 mod flags;
 mod gym_loop;
 mod gym_scene;
+mod hud;
 mod creative_host;
 mod play_script;
 mod level_host;
@@ -257,6 +258,10 @@ impl ApplicationHandler for App {
                         r.recenter_pan();
                         r.rotate(-(r.view.yaw_q as i32));
                     }
+                    // the first gameplay loop (2026-09-24): F searches what is
+                    // in reach, I opens the bag
+                    Key::Character("f") if !event.repeat => r.gym.search_now(),
+                    Key::Character("i") if !event.repeat => r.gym.show_inventory = !r.gym.show_inventory,
                     // toggles ignore key repeat: holding the key must not strobe
                     Key::Character("r") if !event.repeat => r.toggle_recording(),
                     Key::Character("l") if !event.repeat => {

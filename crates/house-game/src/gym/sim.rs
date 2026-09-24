@@ -7,8 +7,17 @@
 //!
 //! Fully headless and deterministic: fixed tick, trace replay, `state_hash`
 //! over every observable field.
+//!
+//! THE FIRST GAMEPLAY LOOP (2026-09-24): the player SEARCHES props
+//! ([`Command::Search`] — cars, crates, barrels, mailboxes; what each holds is
+//! [`super::loot`]'s pure function of its seed), carries an inventory, reads a
+//! log of what happened, and leaves a level through its EXITS (rectangles
+//! naming another level). An inventory and the set of searched props cross
+//! levels as a [`Carry`].
 
 use super::grid::{CellPos, Dir, EdgeKind, Grid};
+use super::loot::{self, Item};
+use std::collections::BTreeSet;
 use glam::Vec2;
 use sim_core::{Simulation, Tick};
 use crate::{collide_and_slide, TICK_DT};
@@ -56,6 +65,10 @@ pub enum Command {
     /// silently did not apply to click-to-move.
     MoveWorld { dx: i16, dz: i16, mode: MoveMode },
     Crouch(bool),
+    /// Search the nearest searchable prop within reach ([`GymGame::search_target`]).
+    /// The search takes the prop's [`loot::search_ticks`]; the body stands
+    /// still meanwhile, and movement input breaks it off.
+    Search,
     Wait,
 }
 
@@ -207,6 +220,23 @@ impl PropKind {
             PropKind::Bench => (0.9, 0.3),
         }
     }
+
+    /// Roughly how tall the prop stands (wu) — enough for a click to pick it
+    /// by its body, not only by its footprint on the ground.
+    pub fn height(self) -> f32 {
+        match self {
+            PropKind::Car => 1.45,
+            PropKind::Barrel => 0.9,
+            PropKind::Crate => 0.85,
+            PropKind::Tires => 0.6,
+            PropKind::Barrier => 0.8,
+            PropKind::Pole => 3.0,
+            PropKind::Sign => 2.2,
+            PropKind::Hydrant => 0.75,
+            PropKind::Mailbox => 1.25,
+            PropKind::Bench => 0.8,
+        }
+    }
 }
 
 /// A placed prop: kind, world position, turn about y (radians), seed.
@@ -229,6 +259,40 @@ impl Prop {
         // into the prop's frame (the renderer turns local +x by `yaw` about y)
         let (lx, lz) = (dx * c - dz * s, dx * s + dz * c);
         lx.abs() < hx + r && lz.abs() < hz + r
+    }
+
+    /// Distance from (x, z) to the prop's footprint (0 inside it).
+    pub fn distance(&self, x: f32, z: f32) -> f32 {
+        let (hx, hz) = self.kind.half();
+        let (s, c) = self.yaw.sin_cos();
+        let (dx, dz) = (x - self.x, z - self.z);
+        let (lx, lz) = (dx * c - dz * s, dx * s + dz * c);
+        Vec2::new((lx.abs() - hx).max(0.0), (lz.abs() - hz).max(0.0)).length()
+    }
+
+    /// Where a ray (origin `o`, direction `d`) first enters the prop's box
+    /// (footprint × height, each half extent at least `min_half`), as a ray
+    /// parameter — `None` on a miss.
+    pub fn hit(&self, o: glam::Vec3, d: glam::Vec3, min_half: f32) -> Option<f32> {
+        let (hx, hz) = self.kind.half();
+        let (hx, hz) = (hx.max(min_half), hz.max(min_half));
+        let (s, c) = self.yaw.sin_cos();
+        let local = |v: glam::Vec3| glam::Vec3::new(v.x * c - v.z * s, v.y, v.x * s + v.z * c);
+        let (lo, ld) = (local(o - glam::Vec3::new(self.x, 0.0, self.z)), local(d));
+        let (min, max) = (glam::Vec3::new(-hx, -0.1, -hz), glam::Vec3::new(hx, self.kind.height(), hz));
+        let (mut t0, mut t1) = (f32::NEG_INFINITY, f32::INFINITY);
+        for a in 0..3 {
+            if ld[a].abs() < 1e-9 {
+                if lo[a] < min[a] || lo[a] > max[a] {
+                    return None;
+                }
+                continue;
+            }
+            let (ta, tb) = ((min[a] - lo[a]) / ld[a], (max[a] - lo[a]) / ld[a]);
+            t0 = t0.max(ta.min(tb));
+            t1 = t1.min(ta.max(tb));
+        }
+        (t0 <= t1 && t1 >= 0.0).then_some(t0.max(0.0))
     }
 }
 
@@ -274,6 +338,22 @@ pub struct Plant {
     pub seed: u32,
 }
 
+/// A way out of a level: walking into `rect` (world x0, z0, x1, z1) takes the
+/// player to the level named `to` (a LEVELS menu name), at cell `spawn`
+/// there.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Exit {
+    pub rect: [f32; 4],
+    pub spawn: CellPos,
+    pub to: String,
+}
+
+impl Exit {
+    pub fn contains(&self, p: Vec2) -> bool {
+        p.x >= self.rect[0] && p.y >= self.rect[1] && p.x <= self.rect[2] && p.y <= self.rect[3]
+    }
+}
+
 /// The gym level: the grid, where the player spawns, and the lamp cells the
 /// scene builder turns into named point lights (render data — the sim has no
 /// light model).
@@ -298,6 +378,8 @@ pub struct GymLevel {
     pub roofs: Vec<[f32; 4]>,
     /// Street props (solid).
     pub props: Vec<Prop>,
+    /// Ways out to other levels.
+    pub exits: Vec<Exit>,
     pub neighborhood: bool,
     pub grid: Grid,
     pub player_start: CellPos,
@@ -318,6 +400,93 @@ impl GymLevel {
             || self.props.iter().any(|p| p.blocks(x, z, r))
             || self.plants.iter().any(|p| p.kind == PlantKind::Tree && (p.x - x).powi(2) + (p.z - z).powi(2) < (TRUNK_R + r).powi(2))
     }
+
+    /// The SEARCHABLE prop a click ray hits first (the viewer unprojects the
+    /// click into the ray) — `None` when it hits none.
+    pub fn pick_prop(&self, o: glam::Vec3, d: glam::Vec3) -> Option<usize> {
+        self.props
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| super::loot::search_ticks(p.kind).is_some())
+            // a mailbox is a hand wide: the pick box is at least 0.3 wu a
+            // side, or a click must land on its few pixels exactly
+            .filter_map(|(i, p)| p.hit(o, d, 0.3).map(|t| (i, t)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    }
+
+    /// Where to stand to search prop `i`: a free point just outside its
+    /// footprint, within [`REACH`], nearest to `from` — `None` if every side
+    /// is walled in. Candidates ring the footprint (sides and corners) in the
+    /// prop's own frame, a hair outside the body's collision: a route counts
+    /// itself arrived within one body radius of its goal, and the point must
+    /// still be in reach from there.
+    pub fn approach(&self, i: usize, from: Vec2) -> Option<Vec2> {
+        let p = self.props[i];
+        let (hx, hz) = p.kind.half();
+        let gap = PLAYER_RADIUS + 0.04;
+        let (s, c) = p.yaw.sin_cos();
+        let mut best: Option<(f32, Vec2)> = None;
+        for k in 0..16 {
+            let a = k as f32 * std::f32::consts::TAU / 16.0;
+            // a point on the footprint's boundary in direction `a`, pushed out
+            let (dx, dz) = (a.cos(), a.sin());
+            let scale = (hx / dx.abs().max(1e-6)).min(hz / dz.abs().max(1e-6));
+            let (lx, lz) = (dx * scale + dx.signum() * gap * (dx.abs() > 0.3) as i32 as f32, dz * scale + dz.signum() * gap * (dz.abs() > 0.3) as i32 as f32);
+            // back to the world (the inverse of `blocks`' turn)
+            let w = Vec2::new(p.x + lx * c + lz * s, p.z - lx * s + lz * c);
+            if self.blocked(w.x, w.y, PLAYER_RADIUS) || !p.blocks(w.x, w.y, PLAYER_RADIUS + REACH) {
+                continue;
+            }
+            let d = w.distance_squared(from);
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, w));
+            }
+        }
+        best.map(|(_, w)| w)
+    }
+}
+
+/// How far past the body's radius a prop can be and still be searched (wu).
+pub const REACH: f32 = 0.35;
+
+/// A prop's identity for the searched set: kind, seed and position. Not its
+/// index — a creative-mode edit reorders the list.
+pub fn prop_key(p: &Prop) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for v in [p.kind as u64, p.seed as u64, p.x.to_bits() as u64, p.z.to_bits() as u64] {
+        for byte in v.to_le_bytes() {
+            h = (h ^ byte as u64).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// One line of the game log: when it happened and what.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LogLine {
+    pub tick: u64,
+    pub text: String,
+}
+
+/// A search in progress: which prop (index into the level's props, and its
+/// key), and ticks left of how many.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Search {
+    pub prop: usize,
+    pub key: u64,
+    pub left: u32,
+    pub total: u32,
+}
+
+/// What the player takes from one level to the next.
+#[derive(Clone, Default, PartialEq, Debug)]
+pub struct Carry {
+    /// Items in the order they were first found, each with its count.
+    pub inventory: Vec<(Item, u16)>,
+    /// [`prop_key`]s of every prop searched so far, on any level.
+    pub searched: BTreeSet<u64>,
+    pub log: Vec<LogLine>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -341,12 +510,123 @@ pub struct GymGame {
     intent: Vec2,
     crouching: bool,
     tick: u64,
+    carry: Carry,
+    search: Option<Search>,
+    /// The exit the body stands in (entering one is what takes it).
+    in_exit: Option<usize>,
+    /// The exit taken, once the body walks into one — the shell switches
+    /// level on it.
+    exit: Option<usize>,
 }
 
 impl GymGame {
     pub fn new(spec: GymLevel) -> GymGame {
+        GymGame::with_carry(spec, Carry::default())
+    }
+
+    /// A fresh game on `spec` that carries in what the player brought from
+    /// the last level.
+    pub fn with_carry(spec: GymLevel, carry: Carry) -> GymGame {
         let position = Vec2::new(spec.player_start.x as f32 + 0.5, spec.player_start.z as f32 + 0.5);
-        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, contact: Vec2::ZERO, intent: Vec2::ZERO, crouching: false, tick: 0, spec }
+        // spawning inside an exit does not take it: only walking in does
+        let in_exit = spec.exits.iter().position(|e| e.contains(position));
+        GymGame { player: spec.player_start, position, velocity: Vec2::ZERO, contact: Vec2::ZERO, intent: Vec2::ZERO, crouching: false, tick: 0, carry, search: None, in_exit, exit: None, spec }
+    }
+
+    /// Everything the player carries, to hand to the next level.
+    pub fn carry(&self) -> &Carry {
+        &self.carry
+    }
+
+    pub fn inventory(&self) -> &[(Item, u16)] {
+        &self.carry.inventory
+    }
+
+    pub fn log(&self) -> &[LogLine] {
+        &self.carry.log
+    }
+
+    /// The search in progress, if any.
+    pub fn searching(&self) -> Option<Search> {
+        self.search
+    }
+
+    /// The exit the player walked into, once they have.
+    pub fn exit_taken(&self) -> Option<&Exit> {
+        self.exit.map(|i| &self.spec.exits[i])
+    }
+
+    /// Forget a taken exit the shell could not follow (a level name it does
+    /// not know) — the player stays, and walking out and back in retries.
+    pub fn clear_exit(&mut self) {
+        self.exit = None;
+    }
+
+    /// The nearest SEARCHABLE prop within reach of the body, and whether it
+    /// has been searched already — the HUD's prompt reads this, and
+    /// [`Command::Search`] acts on it (if unsearched).
+    pub fn near_prop(&self) -> Option<(usize, bool)> {
+        let p = self.position;
+        self.spec
+            .props
+            .iter()
+            .enumerate()
+            .filter(|(_, q)| loot::search_ticks(q.kind).is_some() && q.blocks(p.x, p.y, PLAYER_RADIUS + REACH))
+            // nearest by footprint, not centre: beside a car's door the car
+            // is nearer than a mailbox by its bonnet
+            .min_by(|a, b| a.1.distance(p.x, p.y).total_cmp(&b.1.distance(p.x, p.y)))
+            .map(|(i, q)| (i, self.carry.searched.contains(&prop_key(q))))
+    }
+
+    /// The prop a [`Command::Search`] this tick would start on.
+    pub fn search_target(&self) -> Option<usize> {
+        self.near_prop().filter(|&(_, done)| !done).map(|(i, _)| i)
+    }
+
+    fn say(&mut self, text: String) {
+        self.carry.log.push(LogLine { tick: self.tick, text });
+    }
+
+    fn start_search(&mut self) {
+        if self.search.is_some() {
+            return;
+        }
+        let Some(i) = self.search_target() else { return };
+        let q = self.spec.props[i];
+        let total = loot::search_ticks(q.kind).expect("near_prop only offers searchable props");
+        self.search = Some(Search { prop: i, key: prop_key(&q), left: total, total });
+    }
+
+    /// One tick of the search in progress; the last one hands over the finds.
+    fn search_tick(&mut self) {
+        let Some(mut s) = self.search else { return };
+        s.left -= 1;
+        if s.left > 0 {
+            self.search = Some(s);
+            return;
+        }
+        self.search = None;
+        let q = self.spec.props[s.prop];
+        let found = loot::contents(q.kind, q.seed);
+        for &(item, n) in &found {
+            match self.carry.inventory.iter_mut().find(|(i, _)| *i == item) {
+                Some(slot) => slot.1 = slot.1.saturating_add(n),
+                None => self.carry.inventory.push((item, n)),
+            }
+        }
+        self.carry.searched.insert(s.key);
+        self.say(loot::describe(q.kind, &found));
+    }
+
+    /// Did the body walk into an exit this tick?
+    fn exit_check(&mut self) {
+        let now = self.spec.exits.iter().position(|e| e.contains(self.position));
+        if let Some(i) = now.filter(|_| now != self.in_exit && self.exit.is_none()) {
+            self.exit = Some(i);
+            let to = self.spec.exits[i].to.clone();
+            self.say(format!("heading to {to}"));
+        }
+        self.in_exit = now;
     }
 
     pub fn grid(&self) -> &Grid {
@@ -364,6 +644,9 @@ impl GymGame {
     /// collide-and-slide only refuses moves INTO a wall, so it can walk out.
     pub fn set_level(&mut self, spec: GymLevel) {
         self.spec = spec;
+        // the prop list may have been reordered under a search in progress
+        self.search = None;
+        self.in_exit = self.spec.exits.iter().position(|e| e.contains(self.position));
         self.velocity = Vec2::ZERO;
         self.intent = Vec2::ZERO;
         self.player = self.cell_for_position();
@@ -446,18 +729,33 @@ impl Simulation for GymGame {
         self.tick = t.0;
         self.intent = Vec2::ZERO;
         let mut world_input = None;
+        let mut search = false;
         for c in cmds {
             match *c {
                 Command::MoveWorld { dx, dz, mode } => world_input = Some((dx, dz, mode)),
                 Command::Crouch(active) => self.crouching = active,
+                Command::Search => search = true,
                 Command::Wait => {}
             }
         }
-        if let Some((dx, dz, mode)) = world_input {
+        if search {
+            self.start_search();
+        }
+        // walking off breaks a search off
+        if self.search.is_some() && world_input.is_some_and(|(dx, dz, _)| dx != 0 || dz != 0) {
+            let q = self.spec.props[self.search.unwrap().prop];
+            self.search = None;
+            self.say(format!("stopped searching the {}", q.kind.name()));
+        }
+        if self.search.is_some() {
+            self.brake_world();
+            self.search_tick();
+        } else if let Some((dx, dz, mode)) = world_input {
             self.move_world(dx, dz, mode);
         } else {
             self.brake_world();
         }
+        self.exit_check();
     }
 
     fn snapshot(&self) -> GymSnapshot {
@@ -482,6 +780,19 @@ impl Simulation for GymGame {
         eat(self.intent.x.to_bits() as u64); eat(self.intent.y.to_bits() as u64);
         eat(self.crouching as u64);
         eat(self.spec.grid.grid_hash());
+        for &(item, n) in &self.carry.inventory {
+            eat(item as u64);
+            eat(n as u64);
+        }
+        for &k in &self.carry.searched {
+            eat(k);
+        }
+        eat(self.carry.log.len() as u64);
+        if let Some(s) = self.search {
+            eat(s.key);
+            eat(s.left as u64);
+        }
+        eat(self.exit.map_or(u64::MAX, |i| i as u64));
         h
     }
 }
@@ -521,7 +832,7 @@ pub fn concrete_level() -> GymLevel {
         for x in x0..x1 { grid.set_edge(CellPos::new(x,z),Dir::Zm,EdgeKind::Wall); }
     }
     for z in 3..8 { grid.set_edge(CellPos::new(13,z),Dir::Xm,EdgeKind::Wall); }
-    GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
+    GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(8,12), lights: Vec::new() }
 }
 
 #[cfg(test)]
@@ -598,7 +909,7 @@ mod tests {
     /// speed, and holding it does, within the ramp the constant promises.
     #[test]
     fn speed_ramps_instead_of_arriving_whole() {
-        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         g.tick(Tick(0), &[hold(1.0, 0.0, MoveMode::Walk)]);
         let first = g.snapshot().velocity.length();
         assert!(first > 0.0 && first < SPEED_WALK, "one tick must not reach walking speed: {first}");
@@ -615,7 +926,7 @@ mod tests {
     /// leans on when it stops steering a stopping distance short of the goal.
     #[test]
     fn releasing_input_brakes_to_rest() {
-        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(8, 8), lights: Vec::new() });
         for t in 0..30u64 {
             g.tick(Tick(t), &[hold(1.0, 0.0, MoveMode::Run)]);
         }
@@ -635,7 +946,7 @@ mod tests {
 
     #[test]
     fn continuous_input_moves_between_cells_without_snapping() {
-        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid: Grid::new(16, 16), player_start: CellPos::new(4, 4), lights: Vec::new() });
         let start = g.snapshot().position;
         for t in 0..30u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Walk }]);
@@ -648,7 +959,7 @@ mod tests {
 
     #[test]
     fn crouch_survives_idle_limits_running_and_releases_cleanly() {
-        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: true, grid: Grid::new(64,64), player_start: CellPos::new(20,20), lights: Vec::new() });
         g.tick(Tick(0), &[Command::Crouch(true)]);
         let crouch_hash = g.state_hash();
         let mut standing=GymGame::new(g.spec().clone()); standing.tick(Tick(0),&[]);
@@ -668,7 +979,7 @@ mod tests {
 
     #[test]
     fn releasing_sprint_stops_within_eight_ticks_and_a_quarter_metre() {
-        let mut g=GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
+        let mut g=GymGame::new(GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),neighborhood:true,grid:Grid::new(64,64),player_start:CellPos::new(20,20),lights:Vec::new()});
         for t in 0..60 {g.tick(Tick(t),&[Command::MoveWorld {dx:1024,dz:0,mode:MoveMode::Run}]);}
         let released=g.snapshot().position;
         for t in 60..68 {g.tick(Tick(t),&[]);}
@@ -680,13 +991,136 @@ mod tests {
     fn continuous_input_collides_with_grid_edges_and_keeps_sliding() {
         let mut grid = Grid::new(8, 8);
         grid.set_edge(CellPos::new(1, 2), Dir::Xp, EdgeKind::Wall);
-        let mut g = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
+        let mut g = GymGame::new(GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(), neighborhood: false, grid, player_start: CellPos::new(1, 2), lights: Vec::new() });
         for t in 0..120u64 {
             g.tick(Tick(t), &[Command::MoveWorld { dx: WORLD_INPUT_SCALE as i16, dz: 0, mode: MoveMode::Run }]);
         }
         let s = g.snapshot();
         assert!(s.position.x <= 2.0 - PLAYER_RADIUS + 1e-4, "the player must stop before the wall: {:?}", s.position);
         assert!((s.position.y - 2.5).abs() < 1e-6, "an axis-aligned wall must not move the player along Z: {:?}", s.position);
+    }
+
+    /// An open 16×16 field with a crate beside the spawn and an exit east.
+    fn yard() -> GymLevel {
+        let mut lv = super::super::level_file::parse("size 16 16\nspawn 4 8\nprop crate 5.5 8.5 0 7\nprop pole 3.5 8.5 0 1\nexit 14 6 16 11 2 3 the lot\n").unwrap();
+        lv.neighborhood = false;
+        lv
+    }
+
+    fn crate_seed_with_loot() -> u32 {
+        (0..).find(|&s| !loot::contents(PropKind::Crate, s).is_empty()).unwrap()
+    }
+
+    #[test]
+    fn searching_a_crate_takes_its_time_then_fills_the_inventory_once() {
+        let mut lv = yard();
+        lv.props[0].seed = crate_seed_with_loot();
+        let mut g = GymGame::new(lv);
+        assert_eq!(g.search_target(), Some(0), "the crate is in reach; the pole is not searchable");
+        g.tick(Tick(0), &[Command::Search]);
+        let total = loot::search_ticks(PropKind::Crate).unwrap();
+        for t in 1..total as u64 {
+            assert!(g.inventory().is_empty(), "nothing is found before the search ends (tick {t})");
+            g.tick(Tick(t), &[]);
+        }
+        let found = loot::contents(PropKind::Crate, g.spec().props[0].seed);
+        assert_eq!(g.inventory(), &found[..]);
+        assert!(g.searching().is_none());
+        assert_eq!(g.near_prop(), Some((0, true)), "the crate reads as searched");
+        assert_eq!(g.search_target(), None, "and cannot be searched twice");
+        g.tick(Tick(total as u64 + 1), &[Command::Search]);
+        assert!(g.searching().is_none());
+        assert_eq!(g.log().len(), 1, "one line for the finds");
+    }
+
+    #[test]
+    fn walking_off_breaks_a_search_off_and_finds_nothing() {
+        let mut g = GymGame::new(yard());
+        g.tick(Tick(0), &[Command::Search]);
+        assert!(g.searching().is_some());
+        let before = g.snapshot().position;
+        g.tick(Tick(1), &[]);
+        assert_eq!(g.snapshot().position, before, "the body stands still while it searches");
+        g.tick(Tick(2), &[hold(-1.0, 0.0, MoveMode::Walk)]);
+        assert!(g.searching().is_none());
+        assert!(g.inventory().is_empty());
+        assert!(g.log()[0].text.starts_with("stopped searching"));
+        assert_eq!(g.search_target(), Some(0), "a broken-off search can be started again");
+    }
+
+    #[test]
+    fn nothing_in_reach_means_a_search_does_nothing() {
+        let mut lv = yard();
+        lv.player_start = CellPos::new(10, 2);
+        let mut g = GymGame::new(lv);
+        let h = g.state_hash();
+        g.tick(Tick(0), &[Command::Search]);
+        assert!(g.searching().is_none() && g.log().is_empty());
+        let mut idle = GymGame::new(g.spec().clone());
+        idle.tick(Tick(0), &[]);
+        assert_eq!(h, g.state_hash(), "a standing body's tick 0 changes nothing");
+        assert_eq!(idle.state_hash(), g.state_hash(), "a search with nothing in reach is a wait");
+    }
+
+    #[test]
+    fn walking_into_an_exit_takes_it_and_the_carry_crosses_over() {
+        let mut lv = yard();
+        lv.props[0].seed = crate_seed_with_loot();
+        let mut g = GymGame::new(lv);
+        g.tick(Tick(0), &[Command::Search]);
+        let mut t = 1;
+        while g.searching().is_some() {
+            g.tick(Tick(t), &[]);
+            t += 1;
+        }
+        // around the crate (a step north) and east into the exit
+        for _ in 0..18 {
+            g.tick(Tick(t), &[hold(0.0, -1.0, MoveMode::Run)]);
+            t += 1;
+        }
+        for _ in 0..200 {
+            g.tick(Tick(t), &[hold(1.0, 0.0, MoveMode::Run)]);
+            t += 1;
+            if g.exit_taken().is_some() {
+                break;
+            }
+        }
+        let exit = g.exit_taken().unwrap_or_else(|| panic!("the exit must be taken: at {:?}", g.snapshot().position)).clone();
+        assert_eq!((exit.to.as_str(), exit.spawn), ("the lot", CellPos::new(2, 3)));
+        // back to the same yard (the same crate, the same seed)
+        let next = GymGame::with_carry(g.spec().clone(), g.carry().clone());
+        assert_eq!(next.inventory(), g.inventory());
+        assert_eq!(next.search_target(), None, "props searched before are remembered");
+    }
+
+    #[test]
+    fn spawning_inside_an_exit_does_not_take_it() {
+        let mut lv = yard();
+        lv.player_start = CellPos::new(15, 8);
+        let mut g = GymGame::new(lv);
+        for t in 0..10 {
+            g.tick(Tick(t), &[]);
+        }
+        assert!(g.exit_taken().is_none());
+    }
+
+    #[test]
+    fn a_click_ray_picks_the_crate_by_its_body_and_an_approach_reaches_it() {
+        let lv = yard();
+        // a ray falling at the game's pitch onto the crate's top, from above
+        let d = glam::Vec3::new(0.4, -0.5, 0.77).normalize();
+        let top = glam::Vec3::new(5.5, 0.8, 8.5);
+        assert_eq!(lv.pick_prop(top - d * 20.0, d), Some(0));
+        // the same ray shifted clear of it misses; the pole is never picked
+        assert_eq!(lv.pick_prop(top + glam::Vec3::new(3.0, 0.0, 0.0) - d * 20.0, d), None);
+        assert_eq!(lv.pick_prop(glam::Vec3::new(3.5, 1.5, 8.5) - d * 20.0, d), None);
+        let stand = lv.approach(0, Vec2::new(1.5, 8.5)).expect("the crate is reachable");
+        assert!(!lv.blocked(stand.x, stand.y, PLAYER_RADIUS));
+        assert!(lv.props[0].blocks(stand.x, stand.y, PLAYER_RADIUS + REACH), "the stand point is in reach");
+        assert!(stand.x < 5.5, "on the side facing where the player comes from: {stand:?}");
+        let mut g = GymGame::new(GymLevel { player_start: CellPos::new(stand.x as i16, stand.y as i16), ..lv.clone() });
+        g.position = stand;
+        assert_eq!(g.search_target(), Some(0));
     }
 
     #[test]
@@ -713,7 +1147,7 @@ mod tests {
     #[test]
     fn the_doorway_is_the_only_way_in() {
         // The doorway column, approached from the south.
-        let mut open = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut open = GymGame::new(GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x, DOORWAY.z + 3),
@@ -725,7 +1159,7 @@ mod tests {
         assert_eq!(open.grid().cell(open.snapshot().player), CellKind::Room, "the doorway admits");
 
         // One cell east of it is the building's south wall.
-        let mut shut = GymGame::new(GymLevel { props: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
+        let mut shut = GymGame::new(GymLevel { props: Vec::new(), exits: Vec::new(), floors: Vec::new(), potholes: Vec::new(), windows: Vec::new(), roofs: Vec::new(), ground: Vec::new(), plants: Vec::new(), paint: Vec::new(),
             neighborhood: false,
             grid: gym_level().grid,
             player_start: CellPos::new(DOORWAY.x + 1, DOORWAY.z + 3),

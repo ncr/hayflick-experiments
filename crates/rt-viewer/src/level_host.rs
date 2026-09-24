@@ -10,7 +10,7 @@
 //! [`level_save`](crate::viewer::Viewer::level_save) writes THAT, unless the
 //! owner explicitly moved it (a creative-mode spawn edit updates both).
 //!
-//! The gym, "after the rain" and "sandbox" are files (`Level::file`); a
+//! The gym, "after the rain", "the lot" and "sandbox" are files (`Level::file`); a
 //! level that is still code keeps its edits for the session and says so.
 
 use house_game::gym::grid::CellPos;
@@ -133,8 +133,8 @@ mod tests {
     #[test]
     fn the_save_path_is_the_baked_source() {
         use crate::demos::Level;
-        use house_game::gym::level_file::{parse, serialize, AFTER_THE_RAIN_SRC, GYM_LEVEL_SRC, SANDBOX_SRC};
-        for (level, src) in [(Level::Gym, GYM_LEVEL_SRC), (Level::Neighborhood, AFTER_THE_RAIN_SRC), (Level::Sandbox, SANDBOX_SRC)] {
+        use house_game::gym::level_file::{parse, serialize, AFTER_THE_RAIN_SRC, GYM_LEVEL_SRC, SANDBOX_SRC, THE_LOT_SRC};
+        for (level, src) in [(Level::Gym, GYM_LEVEL_SRC), (Level::Neighborhood, AFTER_THE_RAIN_SRC), (Level::Sandbox, SANDBOX_SRC), (Level::Lot, THE_LOT_SRC)] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(level.file().unwrap());
             let text = std::fs::read_to_string(&path).expect("the save path must be the checked-in file");
             assert_eq!(text, src, "{level:?}");

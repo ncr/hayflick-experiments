@@ -185,7 +185,14 @@ impl Viewer {
     /// plan feeds pure Move commands).
     pub fn click_move(&mut self, win: Vec2) {
         let x = self.pick_xform();
-        if let Some(g) = window_px_to_ground(win, &x) {
+        if window_px_to_ground(win, &x).is_none() {
+            return; // off the picture: the guard band shows no world
+        }
+        // a searchable prop under the cursor wins over the ground behind it
+        let (o, d) = iso_core::window_px_to_ray(win, &x);
+        if let Some(i) = self.gym.sim.spec().pick_prop(o, d) {
+            self.gym.click_prop(i);
+        } else if let Some(g) = window_px_to_ground(win, &x) {
             self.gym.click_ground(g);
         }
     }

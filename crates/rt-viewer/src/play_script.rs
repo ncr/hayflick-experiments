@@ -14,7 +14,7 @@
 //! - `<f> say <text…>` — caption at the top of the screen (`say -` clears)
 //! - `<f> key <name>` — one press: `tab`, `esc`, `f1`..`f4` (category),
 //!   `1`..`9` (tool in the category), `ctrl+z`,
-//!   `ctrl+y`, `q`, `e`, `+`, `-`
+//!   `ctrl+y`, `q`, `e`, `+`, `-`; in play `f` (search) and `i` (the bag)
 //! - `<f> hold <key> <frames>` — hold `w`/`a`/`s`/`d`/`shift` for n frames
 //! - `<f> to <x> <z> <frames>` — glide the cursor to a world ground point
 //! - `<f> at <x> <y> <z> <frames>` — glide the cursor to any world point (a
@@ -174,6 +174,8 @@ impl Viewer {
             "-" => self.zoom_step(-1, self.view.cursor),
             "r" if self.creative.open => self.creative_turn(),
             "0" if self.creative.open => self.creative_set_tool(9),
+            "f" if !self.creative.open => self.gym.search_now(),
+            "i" if !self.creative.open => self.gym.show_inventory = !self.gym.show_inventory,
             "f1" | "f2" | "f3" | "f4" | "f5" => self.creative_set_group(name[1..].parse::<usize>().unwrap_or(1) - 1),
             n => match n.parse::<usize>() {
                 Ok(d @ 1..=9) if self.creative.open => self.creative_set_tool(d - 1),

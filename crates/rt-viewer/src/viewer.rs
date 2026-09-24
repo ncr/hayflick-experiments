@@ -460,6 +460,32 @@ impl Viewer {
         println!("demo: {} (look {}, spawn {:?}, {} beats)", demo.name, demo.look, demo.spawn, demo.script.len());
     }
 
+    /// An exit the player walked into switches level (2026-09-24): the next
+    /// level loads the way the LEVELS menu loads it (its look, a fresh
+    /// scene), the player arrives at the exit's spawn cell, and what they
+    /// carry — the bag, the searched props, the log — comes along. The sim
+    /// clock and the input queue carry over too, so a DEMO trace keeps
+    /// playing across the switch.
+    fn take_exit(&mut self) {
+        let Some(exit) = self.gym.sim.exit_taken().cloned() else { return };
+        let Some(demo) = crate::demos::by_name(&exit.to) else {
+            println!("exit: no level named {:?} — staying", exit.to);
+            self.gym.sim.clear_exit();
+            return;
+        };
+        let carry = self.gym.sim.carry().clone();
+        let (tick, queue) = (self.gym.tick, std::mem::replace(&mut self.gym.queue, sim_core::InputQueue::new()));
+        self.boot_demo(demo);
+        let mut spec = self.gym.spec.clone();
+        spec.player_start = exit.spawn;
+        self.gym = GymLoop::with_carry(spec, self.proj, carry);
+        self.gym.tick = tick;
+        self.gym.queue = queue;
+        self.retarget(self.gym.cam_target());
+        self.recenter_pan();
+        println!("exit: into {} at {:?}", exit.to, exit.spawn);
+    }
+
     /// Advance the named-demo timeline one sim step and apply its per-frame
     /// effects to generic knobs — the timeline logic itself lives in
     /// `demos::DemoRunner`; the loop only routes its outputs. Deterministic
@@ -542,6 +568,7 @@ impl Viewer {
         self.advance_rotation(frame_dt); // movement and rendering use the SAME visible yaw
         self.creative_pan(frame_dt); // building: WASD pans the free camera
         self.advance_sim(dt); // DEMO tick / pause / live fixed-tick
+        self.take_exit(); // walked into an exit: the next level loads
         self.drive_demo(); // named-demo timeline: tick-scheduled beats + look morph
         if !self.creative.open {
             self.follow_player_camera(); // follow the continuous/eased player body
@@ -591,6 +618,7 @@ impl Viewer {
         // mode's toolbar rides the same path ON PURPOSE: a DEMO capture of a
         // PLAY_SCRIPT is the headless verification of the chrome.
         let mut stamps = self.gym.stamps(&self.pick_xform(), self.backend.extent(), self.rs() as u32);
+        stamps.extend(self.hud_stamps());
         stamps.extend(self.creative_stamps(self.view.cursor));
         // Fog is a primary-ray effect, independent of the irradiance bake.
         // Menu adjustments must reach this frame without rebuilding geometry

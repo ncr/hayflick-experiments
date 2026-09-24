@@ -6,6 +6,7 @@
 #          grow grass|dry|mow|scorch X Z R | plant tree|bush X Z SEED
 #          neighborhood | floor road|walk|soil X0 Z0 X1 Z1 | pothole X Z R
 #          window X Z | roof X0 Z0 X1 Z1 | prop KIND X Z YAW SEED
+#          exit X0 Z0 X1 Z1 SX SZ LEVEL NAME
 size 26 23
 neighborhood
 spawn 12 15
@@ -536,3 +537,13 @@ window 22 3
 roof 2 2 9 3.95
 roof 15 2 22 3.95
 roof 4 17 12 18.95
+prop car 4.5 12.8 0 31
+prop car 21.2 11 0.2 43
+prop crate 3.2 5.6 0 12
+prop crate 20.6 3.6 0.4 22
+prop barrel 13.3 6.2 0 33
+prop mailbox 9.4 9.1 0 44
+prop barrel 10.8 20.6 0 55
+prop tires 24.2 16.2 0.3 66
+prop crate 5.2 18.2 0.2 77
+exit 25.3 10 26 14 1 10 the lot

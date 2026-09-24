@@ -53,6 +53,8 @@ pub enum Level {
     Neighborhood,
     /// An empty street to build from nothing (creative mode).
     Sandbox,
+    /// The street's east end: a garage, a kiosk and a lot of wrecks.
+    Lot,
 }
 
 impl Level {
@@ -61,6 +63,7 @@ impl Level {
             Level::Gym => house_game::gym::sim::gym_level(),
             Level::Neighborhood => house_game::gym::level_file::parse(house_game::gym::level_file::AFTER_THE_RAIN_SRC).expect("after_the_rain.level"),
             Level::Sandbox => house_game::gym::level_file::parse(house_game::gym::level_file::SANDBOX_SRC).expect("sandbox.level"),
+            Level::Lot => house_game::gym::level_file::parse(house_game::gym::level_file::THE_LOT_SRC).expect("the_lot.level"),
             Level::Concrete => house_game::gym::sim::concrete_level(),
         }
     }
@@ -73,6 +76,7 @@ impl Level {
             Level::Gym => Some("crates/house-game/src/gym/gym.level"),
             Level::Neighborhood => Some("crates/house-game/src/gym/after_the_rain.level"),
             Level::Sandbox => Some("crates/house-game/src/gym/sandbox.level"),
+            Level::Lot => Some("crates/house-game/src/gym/the_lot.level"),
             Level::Concrete => None,
         }
     }
@@ -97,6 +101,7 @@ pub struct Demo {
 
 pub static DEMOS: &[Demo] = &[
     Demo { name: "after the rain", level: Level::Neighborhood, blurb: "ruined homes, broken streets, wind and an old survivor", look: "aftermath", spawn: (12,15), script: &[], outdated: false },
+    Demo { name: "the lot", level: Level::Lot, blurb: "the street's east end: a garage, a kiosk and wrecks to search", look: "aftermath", spawn: (1,10), script: &[], outdated: false },
     Demo { name: "sandbox", level: Level::Sandbox, blurb: "an empty street: Tab and build it from nothing", look: "aftermath", spawn: (12,15), script: &[], outdated: false },
     Demo {
         name: "gym",
