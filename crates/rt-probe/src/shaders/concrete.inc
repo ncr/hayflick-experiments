@@ -1,7 +1,9 @@
 // Reinforced concrete material, shared verbatim by GLSL and Metal.
 // CFN and vector aliases are supplied by the embedding backend.
 // Units: world metres approximately; pixel footprint filters smaller detail.
-struct ConcreteSurface { vec3 albedo; vec3 normal; float roughness; float metallic; };
+// water: 0..1, how much of the point is standing water (a still mirror; the
+// shade pass reflects it) — puddles on the road (terrainSurface)
+struct ConcreteSurface { vec3 albedo; vec3 normal; float roughness; float metallic; float water; };
 CFN float cnHash(vec3 p) {
     p=fract(p*0.1031); p+=dot(p,p.yzx+33.33);
     return fract((p.x+p.y)*p.z);
@@ -38,7 +40,7 @@ CFN ConcreteGrain cnGravel(vec2 uv,float seed,float footprint) {
 }
 CFN ConcreteSurface concreteSurface(vec3 p,vec3 gn,vec2 uv,float code,float seed,float footprint) {
     int kind=int(code)/8;int history=int(code)-kind*8;
-    ConcreteSurface s;s.normal=gn;s.roughness=0.87;s.metallic=0.0;
+    ConcreteSurface s;s.normal=gn;s.roughness=0.87;s.metallic=0.0;s.water=0.0;
     if(kind==3) {
         // Continuous dusty industrial paving; exposed stone and subtle slab
         // joints. No grass classifier, checker, or legacy porcelain effect.

@@ -266,6 +266,7 @@ fn potholes(s: &mut Scene, spec: &GymLevel, road: i32) {
     chunks.emit(s, road);
     if !water.is_empty() {
         let m = s.new_material([0.012, 0.014, 0.016, 0.0], [0.0; 4], 0.04, 0.0);
+        s.materials[m as usize]._pad = crate::flags::WATER;
         let idx: Vec<u32> = (0..water.len() as u32).collect();
         s.add_mesh_world(&water, &idx, m);
     }

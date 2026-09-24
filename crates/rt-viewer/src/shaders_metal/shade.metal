@@ -537,7 +537,7 @@ kernel void shade(
     }
     ConcreteSurface concreteSample;
     if (concreteMaterial) {
-        if(grassHit){concreteSample.albedo=grass.color;concreteSample.normal=grass.normal;concreteSample.roughness=0.97;concreteSample.metallic=0.0;}
+        if(grassHit){concreteSample.albedo=grass.color;concreteSample.normal=grass.normal;concreteSample.roughness=0.97;concreteSample.metallic=0.0;concreteSample.water=0.0;}
         else if(m.baseColor.a>=32.0 && m.baseColor.a<56.0) concreteSample=terrainSurface(wpos,gn,h.uv,m.baseColor.a,surfacePx ATLAS_ARG);
         else concreteSample = concreteSurface(wpos, gn, h.uv, m.baseColor.a, m.emissive.a, surfacePx);
         albedo = concreteSample.albedo;
@@ -624,6 +624,31 @@ kernel void shade(
 
     if (pc.misc.w == 4) { outRadiance[idx] = float4(float3(ao), 1.0); return; }
     if (pc.misc.w != 3) col += albedo * (1.0/PI) * probeE(p, n, pd, pc) * ao * pc.look2.x;
+
+    // STANDING WATER (2026-09-24) — twin of shade.comp: road puddles and the
+    // pothole sheets (flag 8) mirror the scene with a stylized fresnel.
+    float water = concreteMaterial ? concreteSample.water : ((m.pad & 8) != 0 ? 1.0 : 0.0);
+    if (water > 0.0) {
+        float wt = max(pc.env4.w - 1.0, 0.0);
+        float2 rip = float2(cnNoise(float3(wpos.xz * 7.0, wt * 0.6)), cnNoise(float3(wpos.xz * 7.0 + 31.0, wt * 0.6))) - 0.5;
+        float3 wn = normalize(float3(rip.x * 0.05, 1.0, rip.y * 0.05));
+        float3 wdir = reflect(d, wn);
+        float3 wc = float3(0.0);
+        Hit wh;
+        if (trace(p, wdir, 60.0, 0x05u, accel, verts, indices, geoms, wh)) {
+            Material wm = mats[wh.mat];
+            float3 wnr = wh.n; if (dot(wnr, wdir) > 0.0) wnr = -wnr;
+            float3 wp2 = p + wdir * wh.t + wnr * 0.003;
+            wc = wm.emissive.rgb;
+            float wndl = max(dot(wnr, sunDir), 0.0);
+            if (pc.env0.x > 0.0 && wndl > 0.0 && !occluded(wp2, sunDir, 200.0, accel)) wc += wm.baseColor.rgb * sun * wndl;
+            wc += wm.baseColor.rgb * (1.0/PI) * probeE(wp2, wnr, pd, pc) * pc.look2.x;
+        } else {
+            wc = skyCol(wdir, pc);
+        }
+        float wf = 0.32 + 0.6 * pow(1.0 - max(dot(wn, -d), 0.0), 5.0);
+        col = mix(col, wc, water * wf);
+    }
 
     // ---- PIXELATED REFLECTIONS (REFL = look2.w > 0) — twin of shade.comp: a
     // mirror bounce rendered at 1/REFL_PX resolution and composited over the

@@ -176,8 +176,21 @@ measurable reasons, each fixed at its cause:
   Vulkan / `misc3.zw` Metal, 1/16 wu). No more void.
 - **Soil patches** are four flat tones with a grit-ragged edge instead of a
   smooth wash (`terrainSurface`).
+- **Leaf clumps** are clusters of 8–48 small CLOSED leaf chips (flattened
+  octahedra, `flora::plant::chip` — closed so the probe bake's back-face
+  count stays honest), browning chip by chip; dry leaves are olive-brown.
+  One big faceted ball per clump read as a rock on a stick.
+- **Rain** gathers into rivulets (`surface::rivulet`: jittered 0.2-wu pitch,
+  own width / strength / reach, lime at the rims) — per-column streaks read
+  as corrugated sheet.
+- **Standing water**: `ConcreteSurface.water` (road puddles in the slow
+  field's low spots, `terrainSurface`) and flag `WATER` 8 (the pothole
+  sheets) are still mirrors in the shade twins — the REFL block's cheap
+  bounce, a sim-clock ripple, a STYLIZED fresnel (0.32 + 0.6·Schlick; the
+  physical ~5 % at the game's view angle leaves a puddle black).
 BLIND METAL: `probes.metal` (vec4 radiance, slot 19), `shade.metal`
-(`probeE` skip, the wild edge, `misc3.zw`), `tonemap.metal` (the curve).
+(`probeE` skip, the wild edge, `misc3.zw`, the water mirror),
+`tonemap.metal` (the curve).
 
 ## The wear/crack pipeline and the slider IDE — DELETED (2026-09-22)
 
@@ -195,7 +208,7 @@ the amortized roll through `tear_off`), the AgeWall beat, the "crack lab",
 `PROBE_LOCAL` knob, and the already-disabled contour AA (`aa`, `aa scope`,
 `aa soften`, `aa rubble`, the tap/gate dispatches, `DEBUG_AA`). What survived
 is the part that was never about wear: the structural TWIN DIFF moved to
-`rt-viewer/src/twin.rs`, and `flags.rs` keeps OCCLUDER/GLASS/MATTE/CONCRETE.
+`rt-viewer/src/twin.rs`, and `flags.rs` keeps OCCLUDER/GLASS/MATTE/CONCRETE (WATER joined 2026-09-24).
 For the deleted code and its long design history (the rounds, the measured
 numbers, the blind-backend registers), check out commit `6940129` — the last
 tree that has it — and read its CLAUDE.md and `docs/CRACKS_PLAN_2026-07-25.md`.
@@ -334,8 +347,8 @@ DEMO_TICKS=N DEMO_DIR=<dir>` renders frame sequences; `LOOK=…`.
 
 `rt-viewer/src/flags.rs` owns every flag, NAMED BY VALUE (`_pad & VALUE`,
 never a bit index — the prose once drifted into two readings of "bit 4"):
-OCCLUDER 1, GLASS 2, MATTE 4, CONCRETE 16; 8/32/64/128 and everything above
-the flag byte are free since the wear deletion. `the_flags_are_distinct_bits`
+OCCLUDER 1, GLASS 2, MATTE 4, WATER 8 (2026-09-24), CONCRETE 16; 32/64/128
+and everything above the flag byte are free since the wear deletion. `the_flags_are_distinct_bits`
 walks the exhaustive list, and `both_twins_spell_every_flag_value_as_the_host_does`
 reads BOTH shader sources at compile time, because a flag whose value moves on
 the host and not in a shader is a silent, backend-specific wrong image.

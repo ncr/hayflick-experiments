@@ -47,7 +47,7 @@ CFN float terrainRoadHeight(vec2 p ATLAS_PARAM) {
     return -0.012-hole*0.052;
 }
 CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footprint ATLAS_PARAM) {
-    int kind=int(code)/8;ConcreteSurface s;s.normal=gn;s.roughness=0.96;s.metallic=0.0;
+    int kind=int(code)/8;ConcreteSurface s;s.normal=gn;s.roughness=0.96;s.metallic=0.0;s.water=0.0;
     float macro=cnFbm(p*1.3+17.0);float grit=cnNoise(p*43.0);
     if(kind==4) {
         float loss=smoothstep(0.015,0.055,uv.x);
@@ -61,6 +61,12 @@ CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footp
         float stripe=(1.0-smoothstep(0.035,0.045+footprint,abs(p.z-12.0)))*step(0.42,fract(p.x/3.2));
         float paint=stripe*smoothstep(0.25,0.70,cnNoise(p*18.0))*(1.0-loss)*(1.0-crack);
         s.albedo=mix(s.albedo,vec3(0.35,0.30,0.16),paint*0.65);
+        // PUDDLES (2026-09-24): after the rain the road's low spots hold
+        // water — blobs of a slow field, their rim ragged at the grit scale,
+        // a damp dark halo around each. The shade pass mirrors `water`.
+        float low=cnNoise(vec3(p.xz*0.8,5.0))+0.04*(grit-0.5);
+        s.water=smoothstep(0.745,0.76,low)*(1.0-loss);
+        s.albedo*=1.0-0.3*smoothstep(0.725,0.745,low);
         return s;
     }
     if(kind==5) {

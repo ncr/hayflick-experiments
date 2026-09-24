@@ -12,11 +12,12 @@
 //! | 1 | 0 | [`OCCLUDER`] | `gym_scene::mark_occluder`, painted walls, concrete | shade (WALLCUT / ROI) |
 //! | 2 | 1 | [`GLASS`] | `gym_scene::mark_glass` | shade (transmission) |
 //! | 4 | 2 | [`MATTE`] | `gym_scene::mark_matte`, the survivor's cloth | shade (kills spec + the gloss remap; the meadow) |
+//! | 8 | 3 | [`WATER`] | `terrain::potholes` (the standing water) | shade (the still-water mirror) |
 //! | 16 | 4 | [`CONCRETE`] | concrete + terrain builders | shade (the concrete/terrain samplers) |
 //!
-//! Values 8, 32, 64 and 128 are FREE since 2026-09-22: they were the wear
-//! pipeline's selection tag, its two geometry marks and the contour-AA
-//! opt-in, deleted with that pipeline (superseded by creative mode + painted
+//! Values 32, 64 and 128 are FREE since 2026-09-22 (8 was too, until WATER
+//! took it on 2026-09-24): they were the wear pipeline's selection tag, its
+//! two geometry marks and the contour-AA opt-in, deleted with that pipeline (superseded by creative mode + painted
 //! surfaces). Everything above the flag byte is free too — it carried the
 //! wear pipeline's paint lanes.
 
@@ -27,6 +28,9 @@ pub const GLASS: i32 = 2;
 /// MATTE by construction — the shade pass skips spec and the gloss remap here.
 /// "trawa nie może się błyszczeć" (owner, 2026-07-12).
 pub const MATTE: i32 = 4;
+/// Standing water: a still mirror (road puddles carry the same response
+/// through `terrainSurface`'s water mask instead of a flag).
+pub const WATER: i32 = 8;
 /// Dedicated reinforced-concrete material pipeline (`concrete.inc`,
 /// `terrain.inc`).
 pub const CONCRETE: i32 = 16;
@@ -35,7 +39,7 @@ pub const CONCRETE: i32 = 16;
 /// purpose: `the_flags_are_distinct_bits` walks THIS list, so a new flag that
 /// forgets to join it fails that test rather than colliding.
 #[allow(dead_code)]
-pub const ALL: [(&str, i32); 4] = [("OCCLUDER", OCCLUDER), ("GLASS", GLASS), ("MATTE", MATTE), ("CONCRETE", CONCRETE)];
+pub const ALL: [(&str, i32); 5] = [("OCCLUDER", OCCLUDER), ("GLASS", GLASS), ("MATTE", MATTE), ("WATER", WATER), ("CONCRETE", CONCRETE)];
 
 #[cfg(test)]
 mod tests {
