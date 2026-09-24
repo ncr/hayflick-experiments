@@ -289,20 +289,7 @@ impl GymLoop {
     pub fn run_due(&mut self, real_dt: f32) -> u32 {
         let n = self.fixed.advance(real_dt);
         for _ in 0..n {
-            let crouching = self.crouch_toggle || self.crouch_held;
-            if self.sim.snapshot().crouching != crouching {
-                self.queue.push(self.tick, Command::Crouch(crouching));
-            }
-            if let Some(command) = self.held_command() {
-                self.plan = None;
-                self.pending_search = None;
-                self.queue.push(self.tick, command);
-            } else {
-                // before steering: a search this tick must not share the
-                // tick with a step (walking breaks a search off)
-                self.arrive_and_search();
-                self.plan_step();
-            }
+            self.live_input();
             let cmds = self.queue.drain_for(self.tick);
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
@@ -315,12 +302,33 @@ impl GymLoop {
         n
     }
 
+    /// This tick's live input, queued as commands: the crouch state, then
+    /// held keys (which override any mouse route) or the route's steering.
+    /// Both paths emit the same command, so there is one mover.
+    fn live_input(&mut self) {
+        let crouching = self.crouch_toggle || self.crouch_held;
+        if self.sim.snapshot().crouching != crouching {
+            self.queue.push(self.tick, Command::Crouch(crouching));
+        }
+        if let Some(command) = self.held_command() {
+            self.plan = None;
+            self.pending_search = None;
+            self.queue.push(self.tick, command);
+        } else {
+            // before steering: a search this tick must not share the tick
+            // with a step (walking breaks a search off)
+            self.arrive_and_search();
+            self.plan_step();
+        }
+    }
+
     /// DEMO: one tick per rendered frame (deterministic gameplay capture).
     pub fn demo_advance_tick(&mut self) {
-        // A live route steers here too, so a `WALK_TO=` capture records the
-        // mouse path frame by frame exactly as the interactive loop walks it.
-        self.arrive_and_search();
-        self.plan_step();
+        // Live input applies here too — a `WALK_TO=` route and a
+        // PLAY_SCRIPT's held keys record frame by frame exactly as the
+        // interactive loop plays them (held keys used to be ignored in
+        // captures). A plain trace holds no keys, so it is unaffected.
+        self.live_input();
         let cmds = self.queue.drain_for(self.tick);
         self.sim.tick(self.tick, &cmds);
         self.tick.0 += 1;
