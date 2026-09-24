@@ -215,6 +215,42 @@ fn on_bar(u: f32, v: f32, width: f32) -> bool {
     du.abs() < width || dv.abs() < width
 }
 
+/// One texel along the wall, in wu.
+fn texel_u(spec: &FaceSpec) -> f32 {
+    1.0 / spec.tx_u
+}
+
+/// Where rain runs on a wall: water from a wet patch does not sheet down
+/// evenly, it gathers into RIVULETS. They sit on a jittered 0.2-wu pitch, a
+/// quarter of the slots stay dry, and each has its own width (two to seven
+/// texels along x, never under one), strength and reach. Returns this
+/// column's share of a rivulet (0 between them, up to 1 across a strong
+/// one — flat-topped, falling off only at its edges), how far out on its rim
+/// the column sits (0 core, 1 edge — where lime leaches), and its decay
+/// per wu (a short drip, or a run to the ground). Before 2026-09-24 every
+/// column decided on its own at a 3-texel noise period, and a rained-on wall
+/// read as corrugated sheet.
+fn rivulet(u: f32, texel: f32, seed: u32) -> (f32, f32, f32) {
+    const PITCH: f32 = 0.2;
+    let g = (u / PITCH).floor() as i32;
+    let mut best = (0.0f32, 0.0f32, 1.0f32);
+    for k in g - 1..=g + 1 {
+        if hash(k, 0, seed) < 0.25 {
+            continue;
+        }
+        let centre = (k as f32 + 0.2 + 0.6 * hash(k, 1, seed)) * PITCH;
+        let half = (0.03 + 0.06 * hash(k, 2, seed)).max(0.6 * texel);
+        let x = (u - centre).abs() / half;
+        if x < 1.0 {
+            let share = (0.55 + 0.45 * hash(k, 3, seed)) * (1.0 - x * x * x * x);
+            if share > best.0 {
+                best = (share, smooth(0.45, 0.95, x), 0.12 + 1.6 * hash(k, 4, seed).powi(2));
+            }
+        }
+    }
+    best
+}
+
 /// The texel ranges `[i0, i1) × [j0, j1)` a stroke can touch: its reach
 /// `ru` sideways and `down`/`up` vertically, in wu. Every effect loops only
 /// over this box — a face carries dozens of strokes and each used to visit
@@ -279,22 +315,27 @@ impl Face {
         if src.iter().any(|&x| x > 0.0) {
             for i in 0..w {
                 let u = (i as f32 + 0.5) / spec.tx_u;
-                // some columns carry water, some stay dry: streaks, not a
-                // wash — at this pixel size a streak must be a decided column
-                let carry = if noise(u * 13.0, 0.0, seed + 13) > 0.5 { 1.0 } else { 0.3 * hash(i as i32, 0, seed + 14) };
-                let mut flow = 0.0f32;
+                // water gathers into RIVULETS (see `rivulet`): this column's
+                // share of one, and how fast that rivulet dies out
+                let (carry, rim, decay) = rivulet(u, texel_u(&spec), seed + 13);
+                let run = (-decay / spec.tx_v).exp();
+                // and a damp wash right under the wet patch, between the
+                // rivulets, that dries within a hand's width
+                let wash_run = (-3.0 / spec.tx_v).exp();
+                let (mut flow, mut wash) = (0.0f32, 0.0f32);
                 for j in (0..h).rev() {
                     let k = j * w + i;
                     let v = (j as f32 + 0.5) / spec.tx_v;
-                    // each streak thins out as it runs, and breaks up here and there
-                    let run = 0.994 - 0.01 * noise(u * 5.0, v * 3.0, seed + 15);
-                    flow = (flow * run).max(src[k] * carry);
-                    f.wet[k] = flow.max(src[k] * 0.3);
-                    // lime leaches out along the streak edges, higher up
-                    let edge = smooth(0.62, 0.8, noise(u * 23.0, v * 0.6, seed + 17));
-                    f.leach[k] = flow * edge * smooth(0.25, 0.9, v);
+                    flow = (flow * run).max(src[k]);
+                    wash = (wash * wash_run).max(src[k]);
+                    // a run breaks up here and there instead of staying one
+                    // even stripe to the ground
+                    let broken = 0.5 + 0.5 * smooth(0.25, 0.6, noise(u * 7.0, v * 2.2, seed + 15));
+                    f.wet[k] = (flow * carry * (1.0 - 0.4 * rim) * broken).max(wash * 0.3);
+                    // lime leaches out along a rivulet's EDGES, higher up
+                    f.leach[k] = 0.7 * flow * carry.min(0.5) * 2.0 * rim * smooth(0.25, 0.9, v);
                     // a damp foot where a streak reaches the ground
-                    f.wet[k] = f.wet[k].max(flow * (1.0 - smooth(0.0, 0.45, v)) * 1.2);
+                    f.wet[k] = f.wet[k].max(flow * carry * (1.0 - smooth(0.0, 0.45, v)) * 1.2);
                 }
             }
         }
@@ -501,11 +542,26 @@ mod tests {
         let rain = Face::bake(spec(), &[Stroke { effect: Effect::Rain, u: 2.0, v: 2.6, r: 0.35 }]);
         let below = col_mean(&rain.wet, &rain, 0.8, 2.0, 1.6, 2.4);
         let above = col_mean(&rain.wet, &rain, 3.0, 3.2, 1.6, 2.4);
-        assert!(below > 0.1 && below > 4.0 * above, "rain streaks run DOWN: below {below} above {above}");
+        // (a mean over rivulets AND the dry gaps between them)
+        assert!(below > 0.03 && below > 4.0 * above, "rain streaks run DOWN: below {below} above {above}");
         let soot = Face::bake(spec(), &[Stroke { effect: Effect::Soot, u: 2.0, v: 0.6, r: 0.35 }]);
         let up = col_mean(&soot.soot, &soot, 1.2, 2.4, 1.6, 2.4);
         let down = col_mean(&soot.soot, &soot, 0.0, 0.15, 0.0, 1.0);
         assert!(up > 0.2 && up > 4.0 * down, "soot RISES: up {up} down {down}");
+    }
+
+    #[test]
+    fn rain_gathers_into_rivulets_of_different_widths_and_reach() {
+        let f = Face::bake(spec(), &[Stroke { effect: Effect::Rain, u: 2.0, v: 3.0, r: 0.6 }]);
+        // per column under the stroke: how far down the streak still shows
+        let reach: Vec<f32> = (0..f.w)
+            .filter(|&i| ((i as f32 + 0.5) / f.spec.tx_u - 2.0).abs() < 0.5)
+            .map(|i| (0..f.h).find(|&j| f.wet[j * f.w + i] > 0.08).map_or(f.spec.height, |j| j as f32 / f.spec.tx_v))
+            .collect();
+        let wet = reach.iter().filter(|&&r| r < 2.3).count();
+        assert!(wet > 3 && wet < reach.len(), "some columns carry a rivulet, some stay dry: {wet} of {}", reach.len());
+        let (lo, hi) = reach.iter().filter(|&&r| r < 2.3).fold((f32::MAX, 0.0f32), |(a, b), &r| (a.min(r), b.max(r)));
+        assert!(hi - lo > 0.5, "rivulets end at different heights: {lo}..{hi}");
     }
 
     #[test]
