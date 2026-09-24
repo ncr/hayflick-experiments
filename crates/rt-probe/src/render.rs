@@ -64,8 +64,9 @@ pub struct ShadePush {
     /// occluder-only twin of `cut16` — only walls/roofs/lintels (materials
     /// with the occluder flag) at or above the plane dissolve on the primary
     /// ray, so an indoor player gets a sill-height cutaway while bodies,
-    /// props and door leaves keep their full height. `misc3.yzw` are unused
-    /// (they carried the contour AA, deleted 2026-09-22).
+    /// props and door leaves keep their full height. `misc3.yz` = the level's
+    /// ground extent w, h in 1/16 wu (0 = no wild edge; [`FrameState::extent`]),
+    /// `misc3.w` is unused.
     pub misc3: [i32; 4],
     /// Sun/sky-as-data (Faza 1b, see [`crate::scene::EnvBlock`]): sun dir,
     /// sun tint, sky horizon tint, sky zenith tint — appended so the pre-1b
@@ -244,6 +245,10 @@ pub struct FrameState<'a> {
     /// The player's world position, pushed in `roi.xyz` when `vegetation` is
     /// on so the grass bends away from him.
     pub actor_position: [f32; 3],
+    /// The level's ground rectangle `[0, w] × [0, h]` in wu, pushed when
+    /// `vegetation` is on: past it the wild ground fades into the dust
+    /// (shade twins' `wildFade`). Packed in 1/16 wu.
+    pub extent: [f32; 2],
     /// Game-authored per-light rgb — THE light animation (flicker curves live
     /// in house-game now). Applied to the NEE record and the linked material,
     /// so the visible fixture matches the light it casts; slots not addressed
@@ -1236,7 +1241,7 @@ mod tests {
         let mut lights = vec![[1.0f32, 2.0, 3.0, 0.5, 8.0, 5.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]; 2];
         let mut mats = vec![scene::Material { base_color: [1.0; 4], emissive: [8.0, 5.0, 2.0, 1.0], metallic: 0.0, roughness: 0.5, surface: 0, _pad: 0 }];
         let emis = [(LightKey(1), [0.5f32, 0.6, 0.7])];
-        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, vegetation: false, actor_position: [0.0; 3], light_emission: &emis, instances: &[] };
+        let fs = FrameState { cam: dummy_cam(), room_lights: 1.0, time: 0.0, vegetation: false, actor_position: [0.0; 3], extent: [0.0; 2], light_emission: &emis, instances: &[] };
         frame_lights_cpu(&mut lights, &mut mats, &light_link, &fs);
         // an unaddressed slot keeps its previous values (light 0 holds base);
         // the linked material is untouched too — emission is game-authored,

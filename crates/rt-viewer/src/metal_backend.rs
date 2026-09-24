@@ -46,7 +46,7 @@ struct Push {
     roi2: [f32; 4],      // projected player px xy + disc falloff px + enabled (>0.5)
     look: [f32; 4],      // spec strength, bump strength, bump scale, gloss (look knobs)
     look2: [f32; 4],     // gi scale, matPoster levels, aoDither, reflStrength
-    misc3: [i32; 4],     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), _, _
+    misc3: [i32; 4],     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), level w, h in 1/16 wu (0 = no wild edge)
     env1: [f32; 4],      // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), _
     env2: [f32; 4],      // sun tint rgb, _
     env3: [f32; 4],      // sky horizon tint rgb, _
@@ -879,8 +879,8 @@ impl RenderBackend for MetalBackend {
             misc3: [
                 rt_probe::render::cut16(fp.cut_y),
                 rt_probe::render::cut16(fp.wall_cut),
-                0,
-                0,
+                if fp.fs.vegetation {(fp.fs.extent[0]*16.0) as i32} else {0},
+                if fp.fs.vegetation {(fp.fs.extent[1]*16.0) as i32} else {0},
             ],
             env1: env.env1,
             env2: env.env2,

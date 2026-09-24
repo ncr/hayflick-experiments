@@ -10,9 +10,25 @@ use crate::{noise, smooth};
 /// pass's blade cells are 0.7 wu, so a brush edge lands between blades, not
 /// through a clump).
 pub const TX: f32 = 4.0;
-/// The map is a fixed square of `DIM × DIM` texels (64 wu) at the level's
-/// origin, so the shader needs no size uniform. Levels are smaller than this.
-pub const DIM: usize = 256;
+/// The map is a fixed square of `DIM × DIM` texels (80 wu) starting at
+/// [`ORIGIN`] on both axes, so the shader needs no size uniform: it covers a
+/// level up to 64 wu plus the wild ground around it (2026-09-24 — the soil
+/// and its grass run on past the level's edge instead of stopping at a line).
+pub const DIM: usize = 320;
+/// World x and z of the map's first texel corner: 16 wu of wild ground on the
+/// level's negative sides. `terrain.inc` spells the same `16.0`.
+pub const ORIGIN: f32 = -16.0;
+
+/// The world point at the centre of texel `(i, j)`.
+fn centre(i: usize, j: usize) -> (f32, f32) {
+    ((i as f32 + 0.5) / TX + ORIGIN, (j as f32 + 0.5) / TX + ORIGIN)
+}
+
+/// The texel index holding world `(x, z)`, clamped onto the map.
+fn index(x: f32, z: f32) -> usize {
+    let c = |v: f32| (((v - ORIGIN) * TX).max(0.0) as usize).min(DIM - 1);
+    c(z) * DIM + c(x)
+}
 
 /// A ground brush.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -79,7 +95,7 @@ impl Density {
         let (mut green, mut dry, mut burn) = (vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n]);
         for j in 0..DIM {
             for i in 0..DIM {
-                let (x, z) = ((i as f32 + 0.5) / TX, (j as f32 + 0.5) / TX);
+                let (x, z) = centre(i, j);
                 let (g, d) = natural(x, z);
                 green[j * DIM + i] = g.clamp(0.0, 1.0);
                 dry[j * DIM + i] = d.clamp(0.0, 1.0);
@@ -87,10 +103,10 @@ impl Density {
         }
         for s in strokes {
             let reach = s.r * 1.5;
-            let c = |v: f32| ((v * TX).max(0.0) as usize).min(DIM);
+            let c = |v: f32| (((v - ORIGIN) * TX).max(0.0) as usize).min(DIM);
             for j in c(s.z - reach)..c(s.z + reach + 1.0 / TX) {
                 for i in c(s.x - reach)..c(s.x + reach + 1.0 / TX) {
-                    let (x, z) = ((i as f32 + 0.5) / TX, (j as f32 + 0.5) / TX);
+                    let (x, z) = centre(i, j);
                     let a = dab(s, x, z);
                     if a <= 0.0 {
                         continue;
@@ -130,18 +146,15 @@ impl Density {
     }
 
     pub fn burn_at(&self, x: f32, z: f32) -> f32 {
-        let (i, j) = (((x * TX) as usize).min(DIM - 1), ((z * TX) as usize).min(DIM - 1));
-        self.burn[j * DIM + i]
+        self.burn[index(x, z)]
     }
 
     pub fn green_at(&self, x: f32, z: f32) -> f32 {
-        let (i, j) = (((x * TX) as usize).min(DIM - 1), ((z * TX) as usize).min(DIM - 1));
-        self.green[j * DIM + i]
+        self.green[index(x, z)]
     }
 
     pub fn dry_at(&self, x: f32, z: f32) -> f32 {
-        let (i, j) = (((x * TX) as usize).min(DIM - 1), ((z * TX) as usize).min(DIM - 1));
-        self.dry[j * DIM + i]
+        self.dry[index(x, z)]
     }
 }
 
@@ -170,6 +183,13 @@ mod tests {
         assert!(d.dry_at(3.0, 3.0) > 0.8 && d.green_at(3.0, 3.0) >= 0.8, "dry keeps the grass standing");
         let g = Density::bake(&lawn, &[Stroke { brush: Brush::Dry, x: 3.0, z: 3.0, r: 0.8 }, Stroke { brush: Brush::Grass, x: 3.0, z: 3.0, r: 0.8 }]);
         assert!(g.dry_at(3.0, 3.0) < 0.1);
+    }
+
+    #[test]
+    fn the_map_reaches_past_the_level_origin() {
+        let d = Density::bake(&bare, &[Stroke { brush: Brush::Grass, x: -10.0, z: -4.0, r: 1.0 }]);
+        assert!(d.green_at(-10.0, -4.0) > 0.6, "grass paints on the wild ground");
+        assert_eq!(d.green_at(10.0, 4.0), 0.0, "and nowhere it was not painted");
     }
 
     #[test]

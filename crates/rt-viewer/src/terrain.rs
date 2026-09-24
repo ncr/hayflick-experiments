@@ -197,6 +197,26 @@ pub fn ground(s: &mut Scene, spec: &GymLevel) {
         }
     }
 }
+/// THE WILD GROUND (2026-09-24): bare soil past the level's edges, out to the
+/// grass density map's extent, so the street does not end in a hard line over
+/// the void. The shade pass grows the map's natural grass on it and fades it
+/// into the dust with distance from the level (`wildFade`). Four strips around
+/// the level's own soil — never under it, no coplanar faces. Call it AFTER
+/// `recompute_bounds`: the probe grid stays the level's (a probe field over
+/// 80 × 80 wu would hit the probe cap and coarsen the level's GI), and a wild
+/// point reads the clamped edge probes, which see the same open sky.
+pub fn wild_ground(s: &mut Scene, spec: &GymLevel) {
+    let soil = mat(s, 6, 1);
+    let (w, h) = (spec.grid.w as f32, spec.grid.h as f32);
+    let (lo, hi) = (flora::ground::ORIGIN, flora::ground::ORIGIN + flora::ground::DIM as f32 / flora::ground::TX);
+    let y = -0.075;
+    let mut earth = Mesh::default();
+    for [x0, z0, x1, z1] in [[lo, lo, 0.0, hi], [w, lo, hi, hi], [0.0, lo, w, 0.0], [0.0, h, w, hi]] {
+        quad(&mut earth, Vec3::new(x0, y, z0), Vec3::new(x1, y, z0), Vec3::new(x0, y, z1), Vec3::new(x1, y, z1), [0.0; 4]);
+    }
+    earth.emit(s, soil);
+}
+
 /// What a pothole leaves around it: broken asphalt plates kicked out over the
 /// rim, and — after the rain — standing water in its bottom.
 fn potholes(s: &mut Scene, spec: &GymLevel, road: i32) {

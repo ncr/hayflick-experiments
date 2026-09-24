@@ -29,7 +29,7 @@ struct Push {
     float4 style2; // palette mode, palette param, vignette, outline strength
     float4 style3; // grain size px, grain static flag, bloom strength, bloom threshold
     float4 style4; // shadow dither: strength, levels, luma threshold, dither world-phase y
-    float4 style5; // saturation, contrast, luma quantize levels, _
+    float4 style5; // saturation, contrast, luma quantize levels, tone curve (0 Reinhard, 1 filmic)
     float4 style6; // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
     float4 edit1;  // creative mode: ghost rect in world xz (x0, z0, x1, z1)
     float4 edit2;  // creative mode: on, ghost kind (0 none, 1 build, 2 remove, 3 hover), _, grid max y
@@ -209,7 +209,9 @@ kernel void tonemap(
             hdr += bacc / bw * pc.style3.z;
         }
 
-        col = hdr / (hdr + float3(1.0));   // Reinhard
+        // FILMIC (style5.w > 0.5) — twin of tonemap.comp: the ACES fit
+        if (pc.style5.w > 0.5) col = clamp((hdr * (2.51 * hdr + 0.03)) / (hdr * (2.43 * hdr + 0.59) + 0.14), 0.0, 1.0);
+        else col = hdr / (hdr + float3(1.0));   // Reinhard
         col = pow(col, float3(1.0 / 2.2)); // gamma
 
         int gp = int(pc.style1.x + 0.5);

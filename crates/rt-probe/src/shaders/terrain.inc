@@ -2,13 +2,14 @@
 // env4.w carries fixed simulation time + 1 while this environment is active.
 // The GRASS DENSITY MAP (creative mode, 2026-09-22): baked on the CPU by the
 // `flora` crate from the level's natural growth + the owner's ground brushes,
-// stored in the atlas's reserved corner — 256 x 256 texels at 4 per wu from
-// the world origin, byte 0 green (how much grass stands), byte 1 dry (how
+// stored in the atlas's reserved corner — 320 x 320 texels at 4 per wu from
+// world (-16, -16) (flora::ground::ORIGIN: the wild ground past the level's
+// negative edges has grass too), byte 0 green (how much grass stands), byte 1 dry (how
 // much of it is straw). Where blades grow is data now; how they look and move
 // stays here.
 CFN vec2 floraAt(vec2 p ATLAS_PARAM) {
-    vec2 t=floor(p*4.0);
-    if(t.x<0.0||t.y<0.0||t.x>=256.0||t.y>=256.0)return vec2(0.0);
+    vec2 t=floor((p+16.0)*4.0);
+    if(t.x<0.0||t.y<0.0||t.x>=320.0||t.y>=320.0)return vec2(0.0);
     uint v=atlas[uint(t.y)*2048u+uint(t.x)];
     return vec2(float(v&255u),float((v>>8)&255u))/255.0;
 }
@@ -18,8 +19,8 @@ CFN vec2 floraAt(vec2 p ATLAS_PARAM) {
 // the CPU (rt-viewer foliage.rs) — this used to be a layout file #included
 // here, which is why none of it could be built from an empty level.
 CFN uint terrainTexel(vec2 p ATLAS_PARAM) {
-    vec2 t=floor(p*4.0);
-    if(t.x<0.0||t.y<0.0||t.x>=256.0||t.y>=256.0)return 0u;
+    vec2 t=floor((p+16.0)*4.0);
+    if(t.x<0.0||t.y<0.0||t.x>=320.0||t.y>=320.0)return 0u;
     return atlas[uint(t.y)*2048u+uint(t.x)];
 }
 CFN vec2 terrainParcel(vec2 p ATLAS_PARAM) {
@@ -74,7 +75,11 @@ CFN ConcreteSurface terrainSurface(vec3 p,vec3 gn,vec2 uv,float code,float footp
         return s;
     }
     // Uneven barren soil: fine dusty fines, compact growthes and dark pockets.
-    s.albedo=mix(vec3(0.075,0.060,0.037),vec3(0.18,0.146,0.087),macro);
+    // The patches are FOUR flat tones, not a smooth wash (2026-09-24): a soft
+    // gradient under crisp blades read as a blurred photo behind pixel art.
+    // The pixel-scale grit jitters each band edge into a ragged stipple.
+    float band=floor(clamp(macro*4.0+0.9*(grit-0.5),0.0,3.99))/3.0;
+    s.albedo=mix(vec3(0.075,0.060,0.037),vec3(0.18,0.146,0.087),mix(macro,band,0.85));
     s.albedo*=0.80+0.35*grit;
     // grass roots green the soil under them (and straw browns it)
     vec2 flora=floraAt(p.xz ATLAS_ARG);

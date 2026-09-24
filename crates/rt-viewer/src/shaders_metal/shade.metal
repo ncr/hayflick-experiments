@@ -53,7 +53,7 @@ struct Push {
     float4 roi2;      // projected player px.xy, z = disc falloff px, w = enabled (>0.5)
     float4 look;      // spec strength, bump strength, bump scale (wu^-1), gloss (0..1)
     float4 look2;     // gi scale, matPoster levels, aoDither, reflStrength
-    int4   misc3;     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), _, _
+    int4   misc3;     // floorCutY 16.16 (INT_MAX = off), wallCutY 16.16 (INT_MAX = off; occluder-only sill cut), level w, h in 1/16 wu (0 = no wild edge)
     float4 env1;      // sun/sky-as-data (Faza 1b): sun dir xyz (normalized), w = ground tint r
     float4 env2;      // sun tint rgb, w = ground tint g
     float4 env3;      // sky horizon tint rgb, w = ground tint b
@@ -208,7 +208,9 @@ static float3 probeE(float3 p, float3 n, device const float* pd, constant Push& 
         uint base = 16u + pi * 20u;
         uint base1 = base + bankStride;
         float cnt = pd[base + 18u];
-        if (cnt < 1.0) continue;
+        // a buried probe (mostly back faces, probes.metal slot 19) sees the
+        // underside of the slab it sits under — never blend it in
+        if (cnt < 1.0 || pd[base + 19u] > 0.3 * cnt) continue;
         float3 fx = n.x > 0.0 ? axisFaces(pd, base, base1, 0u, lp)  : axisFaces(pd, base, base1, 3u, lp);
         float3 fy = n.y > 0.0 ? axisFaces(pd, base, base1, 6u, lp)  : axisFaces(pd, base, base1, 9u, lp);
         float3 fz = n.z > 0.0 ? axisFaces(pd, base, base1, 12u, lp) : axisFaces(pd, base, base1, 15u, lp);
@@ -453,9 +455,22 @@ kernel void shade(
       }
     }
 
+    // THE WILD EDGE (2026-09-24) — twin of shade.comp: past the level's
+    // ground rectangle (misc3.zw here) the wild ground fades into the dust.
+    float wild = 0.0;
+    float3 dust = float3(0.0);
+    if (pc.env4.w > 0.0 && pc.misc3.z > 0) {
+      float2 ext = float2(float(pc.misc3.z), float(pc.misc3.w)) / 16.0;
+      float3 wp = o + d * h.t;
+      float2 q = max(max(-wp.xz, wp.xz - ext), float2(0.0));
+      wild = hitb ? smoothstep(1.5, 13.0, length(q)) : 1.0;
+      dust = (pc.env3.rgb * (0.18 * pc.env0.y) + sun * airPhase(dot(d, sunDir))) * float3(1.0, 0.9, 0.74);
+    }
+
     float3 col;
     if (!hitb) {
         col = (skyCol(d, pc) * gtint + gsheen) * fogT + fogAdd;
+        col = mix(col, dust, wild);
         outAlbedo[idx] = float4(gtint, 1.0); // sky through glass demodulates tinted
         outPos[idx] = inContour ? float4(wallPos, 2.0) : float4(0.0); // w=0 → sky, w=2 → x-ray wall
         outRadiance[idx] = float4(col, 1.0);
@@ -652,5 +667,6 @@ kernel void shade(
     }
 
     col = (col * gtint + gsheen) * fogT + fogAdd;
+    col = mix(col, dust, wild);
     outRadiance[idx] = float4(col, 1.0);
 }

@@ -109,8 +109,9 @@ pub fn write_density(atlas: &mut Vec<u32>, spec: &GymLevel, d: &flora::ground::D
     for j in 0..DIM {
         let row = j * ATLAS_W as usize;
         for i in 0..DIM {
-            let (x, z) = ((i as f32 + 0.5) / flora::ground::TX, (j as f32 + 0.5) / flora::ground::TX);
-            let ground = if x < spec.grid.w as f32 && z < spec.grid.h as f32 { ground_byte(spec, x, z) } else { 0 };
+            let (x, z) = ((i as f32 + 0.5) / flora::ground::TX + flora::ground::ORIGIN, (j as f32 + 0.5) / flora::ground::TX + flora::ground::ORIGIN);
+            let inside = x >= 0.0 && z >= 0.0 && x < spec.grid.w as f32 && z < spec.grid.h as f32;
+            let ground = if inside { ground_byte(spec, x, z) } else { 0 };
             atlas[row + i] = packed[j * DIM + i] | ground << 16;
         }
     }
@@ -168,8 +169,10 @@ mod tests {
         for i in 0..20 {
             assert_eq!(d.green_at(2.0 + i as f32, 9.2), 0.0);
         }
-        // somewhere on open soil grass grows
+        // somewhere on open soil grass grows — and on the wild ground past the
+        // level's negative edge, which the map now reaches
         assert!((0..26).any(|x| d.green_at(x as f32 + 0.5, 20.5) > 0.3));
+        assert!((0..26).any(|z| d.green_at(-6.5, z as f32 + 0.5) > 0.3));
         // the road is bare off its cracks and grows in some
         let road: Vec<(f32, f32)> = (0..104).map(|i| (i as f32 * 0.25, 12.0)).collect();
         assert!(road.iter().filter(|&&(x, z)| crack_dist(Vec2::new(x, z)) > 0.3).all(|&(x, z)| natural(&spec, x, z).0 == 0.0));
@@ -177,14 +180,27 @@ mod tests {
     }
 
     #[test]
+    fn the_shader_reads_the_map_where_the_host_writes_it() {
+        // terrain.inc has no size uniform: it spells the map's origin, texel
+        // density and size as literals, and a host change that it does not get
+        // puts every blade and pothole in the wrong place
+        let inc = include_str!("../../rt-probe/src/shaders/terrain.inc");
+        let (o, tx, dim) = (-flora::ground::ORIGIN, flora::ground::TX, DIM as f32);
+        assert_eq!(inc.matches(&format!("floor((p+{o:.1})*{tx:.1})")).count(), 2);
+        assert_eq!(inc.matches(&format!("t.x>={dim:.1}||t.y>={dim:.1}")).count(), 2);
+    }
+
+    #[test]
     fn the_ground_map_lands_in_the_atlas_corner_and_carries_the_ground_kind() {
         let spec = street();
-        let mut atlas = vec![7u32; ATLAS_W as usize * 300];
+        let mut atlas = vec![7u32; ATLAS_W as usize * (DIM + 40)];
         let d = density(&spec, &[]);
         write_density(&mut atlas, &spec, &d);
         assert_eq!(atlas[DIM], 7, "column DIM of row 0 is not the map's");
         assert_eq!(atlas[DIM * ATLAS_W as usize], 7, "row DIM is not the map's");
-        let at = |x: f32, z: f32| atlas[(z * 4.0) as usize * ATLAS_W as usize + (x * 4.0) as usize];
+        let o = flora::ground::ORIGIN;
+        let at = |x: f32, z: f32| atlas[((z - o) * 4.0) as usize * ATLAS_W as usize + ((x - o) * 4.0) as usize];
+        assert_eq!((at(-3.0, 5.0) >> 16) & 3, crate::terrain::SOIL as u32, "past the level's edge is wild soil");
         assert_eq!((at(12.0, 12.0) >> 16) & 3, crate::terrain::ROAD as u32);
         assert_eq!((at(12.0, 9.0) >> 16) & 3, crate::terrain::WALK as u32);
         assert_eq!((at(5.0, 5.0) >> 16) & 3, crate::terrain::SLAB as u32, "a building's room is slab floor");

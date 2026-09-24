@@ -558,6 +558,8 @@ fn pc_alias(pair: &str, msl: bool) -> &'static [(&'static str, &'static str, &'s
             ("misc2", "z", "reflBlock"),
             ("misc2", "w", "floorCutY"),
             ("misc3", "x", "wallCutY"),
+            ("misc3", "y", "levelW"),
+            ("misc3", "z", "levelH"),
         ],
         ("shade", true) => &[
             ("misc2", "x", "lightCount"),
@@ -565,6 +567,8 @@ fn pc_alias(pair: &str, msl: bool) -> &'static [(&'static str, &'static str, &'s
             ("misc2", "z", "reflBlock"),
             ("misc3", "x", "floorCutY"),
             ("misc3", "y", "wallCutY"),
+            ("misc3", "z", "levelW"),
+            ("misc3", "w", "levelH"),
         ],
         _ => &[],
     }

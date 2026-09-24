@@ -202,7 +202,12 @@ pub const DUSK: Look = Look {
     boots: [0.10, 0.10, 0.11, 1.0],
 };
 
-/// Industrial daylight for the owner's realism reset (2026-09-04).
+/// Industrial daylight for the owner's realism reset (2026-09-04), graded
+/// for polish 2026-09-24: shadows are lit by a BLUE sky and the bounce (GI
+/// ×4 — before, the dusty-air veil was most of what a shadow held, so every
+/// shadow read as the same neutral grey), a warmer sun against them, half
+/// the dust, and the filmic curve so lit walls, lit ground and road land on
+/// three separate steps instead of one crowded mid-grey.
 pub const AFTERMATH: Look = Look {
     name: "aftermath",
     concrete: true,
@@ -213,21 +218,21 @@ pub const AFTERMATH: Look = Look {
     roof: 0x827d72,
     window: None,
     grass: None,
-    // Retain the key direction; open cool shadow detail and lift dust in the air.
-    lighting: [1.02, 1.85, 0.026, 2.6],
+    // the key direction is the owner's; the sky is what fills the shadows
+    lighting: [1.02, 3.2, 0.016, 2.6],
     sun: SunSky {
         sun_dir: [0.55, 0.48, 0.68],
-        sun_rgb: [1.0, 0.92, 0.81],
-        horizon_rgb: [0.82, 0.85, 0.88],
-        zenith_rgb: [0.38, 0.49, 0.65],
+        sun_rgb: [1.0, 0.88, 0.72],
+        horizon_rgb: [0.74, 0.80, 0.90],
+        zenith_rgb: [0.26, 0.42, 0.84],
         ground_rgb: [0.31, 0.29, 0.25],
     },
-    style: StyleCfg { sat: 0.92, contrast: 1.06, grain: 0.055, grain_static: 1.0, ..StyleCfg::CLEAN },
-    exposure: 0.58,
+    style: StyleCfg { sat: 0.88, contrast: 1.0, grain: 0.028, grain_static: 1.0, curve: 1.0, ..StyleCfg::CLEAN },
+    exposure: 0.34,
     spec: 0.45,
     gloss: 0.0,
     bump: 0.0,
-    gi: 0.85,
+    gi: 3.5,
     coat: [0.12,0.16,0.14,1.0],
     hood: [0.09,0.105,0.095,1.0],
     legs: [0.16,0.145,0.115,1.0],

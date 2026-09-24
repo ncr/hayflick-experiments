@@ -317,6 +317,9 @@ pub fn build_gym(spec: &GymLevel, look: &Look) -> (Scene, GymMeta) {
     }
 
     scene.recompute_bounds();
+    // the wild ground past the level's edges — static, but outside the bounds
+    // on purpose (see terrain::wild_ground)
+    if spec.neighborhood {crate::terrain::wild_ground(&mut scene, spec);}
 
     // ---- dynamics (after recompute_bounds, local space): the player body.
     if look.concrete {crate::survivor::build(&mut scene);} else {build_player_body(&mut scene, look);}

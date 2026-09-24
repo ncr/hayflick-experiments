@@ -565,6 +565,7 @@ impl Viewer {
             room_lights: dim,
             vegetation: self.gym.spec.neighborhood,
             actor_position: self.gym.cam_target().to_array(),
+            extent: [self.gym.spec.grid.w as f32, self.gym.spec.grid.h as f32],
             time: self.gym.time(), // SIM time — replayable, no wall clock
             light_emission: &emission,
             instances: &instances,

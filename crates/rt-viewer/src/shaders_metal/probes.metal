@@ -85,7 +85,8 @@ static bool occluded(float3 o, float3 dir, float tmax, instance_acceleration_str
     return isect.intersect(r, accel, PROBE_MASK).type != intersection_type::none;
 }
 
-static float3 radiance(float3 o, float3 d, uint seed, constant ProbePush& pc,
+// w = 1 when the FIRST hit is a back face: the probe sits inside geometry.
+static float4 radiance(float3 o, float3 d, uint seed, constant ProbePush& pc,
                        instance_acceleration_structure accel, device const Vertex* verts,
                        device const uint* indices, device const GeomInfo* geoms,
                        device const Material* mats, device const Light* lights){
@@ -93,12 +94,14 @@ static float3 radiance(float3 o, float3 d, uint seed, constant ProbePush& pc,
     float3 sunDir = pc.env1.xyz; // normalized CPU-side (EnvBlock::pack)
     float3 sun = pc.env2.rgb * 6.0 * pc.env0.x;
     float3 thru = float3(1.0), col = float3(0.0);
+    float back = 0.0;
     for (int b = 0; b <= bounces; b++){
         Hit h;
         if (!trace(o, d, 300.0, accel, verts, indices, geoms, h)) { col += thru * skyCol(d, pc); break; }
         Material m = mats[h.mat];
         float3 albedo = m.baseColor.rgb;
-        float3 n = h.n; if (dot(n, d) > 0.0) n = -n;
+        float3 n = h.n;
+        if (dot(n, d) > 0.0) { n = -n; if (b == 0) back = 1.0; }
         float3 p = o + h.t * d + n * 0.003;
 
         float ndl = max(dot(n, sunDir), 0.0);
@@ -137,7 +140,7 @@ static float3 radiance(float3 o, float3 d, uint seed, constant ProbePush& pc,
         o = p;
         if (max(thru.r, max(thru.g, thru.b)) < 0.02) break;
     }
-    return col;
+    return float4(col, back);
 }
 
 kernel void bake_probes(
@@ -175,6 +178,8 @@ kernel void bake_probes(
     float3 sums[6];
     for (int f = 0; f < 6; f++) sums[f] = float3(pd[base + f*3u], pd[base + f*3u + 1u], pd[base + f*3u + 2u]);
     float count = pd[base + 18u];
+    // slot 19: rays whose first hit was a back face (see probes.comp)
+    float backs = pd[base + 19u];
 
     // DDGI rolling refresh. roll = (decay, wrapRays, primeCount, _).
     // prime (roll.z>0, one-shot as a region enters rolling): rescale sums+count so
@@ -184,9 +189,11 @@ kernel void bake_probes(
     if (pc.roll.z > 0.0) {
         float fac = count > 0.0 ? pc.roll.z / count : 1.0;
         for (int i = 0; i < 6; i++) sums[i] *= fac;
+        backs *= fac;
         count = pc.roll.z;
     } else if (pc.roll.x > 0.0) {
         for (int i = 0; i < 6; i++) sums[i] *= pc.roll.x;
+        backs *= pc.roll.x;
         count *= pc.roll.x;
     }
 
@@ -200,7 +207,9 @@ kernel void bake_probes(
         float phi = TWOPI * fract(float(ri) * 0.6180339887);
         float rr = sqrt(max(0.0, 1.0 - zc * zc));
         float3 d = float3(rr * cos(phi), zc, rr * sin(phi));
-        float3 L = radiance(P, d, hashp(pi * 9781u + uint(ri) * 6271u + 1u), pc, accel, verts, indices, geoms, mats, lights);
+        float4 R = radiance(P, d, hashp(pi * 9781u + uint(ri) * 6271u + 1u), pc, accel, verts, indices, geoms, mats, lights);
+        float3 L = R.xyz;
+        backs += R.w;
         sums[0] += L * max( d.x, 0.0); sums[1] += L * max(-d.x, 0.0);
         sums[2] += L * max( d.y, 0.0); sums[3] += L * max(-d.y, 0.0);
         sums[4] += L * max( d.z, 0.0); sums[5] += L * max(-d.z, 0.0);
@@ -213,4 +222,5 @@ kernel void bake_probes(
         pd[base + f*3u + 2u] = sums[f].z;
     }
     pd[base + 18u] = count;
+    pd[base + 19u] = backs;
 }

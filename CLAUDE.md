@@ -154,6 +154,31 @@ presets reach comparable damage (full bar grids in the corrosion craters, the
 blast crown torn, rubble); Codex's lenses are still larger and more integrated
 — a preset-tuning job, not a model limit. NEXT: owner playtest.
 
+**POLISH PASS (2026-09-24)** — the street looked like a prototype for four
+measurable reasons, each fixed at its cause:
+- **Buried probes.** The 0.5-wu probe grid has a layer just under the ground
+  slab; it sees the slab's underside and the trilinear blend gave it ~60 % of
+  every ground point's GI — shadows held almost nothing but the dust veil (a
+  flat neutral grey, R=G=B). The bake now counts rays whose first hit is a
+  BACK face (probe payload slot 19, decayed/primed with the rest) and
+  `probeE` drops a probe past 30 % — GI on the street roughly doubled.
+- **The `aftermath` grade.** GI ×4 (`gi` 3.5), a bluer and brighter sky, a
+  warmer sun, half the dust (`fog` 0.016), half the grain, and the FILMIC
+  curve (`StyleCfg.curve`, `CURVE=`; the ACES fit in place of Reinhard, both
+  tonemap twins, TonePush `style5.w`) — lit walls, lit ground and road now
+  land on three separate steps. Polana/dusk keep Reinhard.
+- **The world's edge.** The grass density map moved to world (-16, -16) and
+  grew to 320 texels (80 wu; `flora::ground::ORIGIN`, pinned against
+  `terrain.inc`'s literals), `terrain::wild_ground` lays soil strips around
+  the level out to the map's extent (added AFTER `recompute_bounds`, so the
+  probe grid stays the level's), and the shade twins fade everything past
+  the level's rectangle into warm dust (`FrameState::extent` → `misc3.yz`
+  Vulkan / `misc3.zw` Metal, 1/16 wu). No more void.
+- **Soil patches** are four flat tones with a grit-ragged edge instead of a
+  smooth wash (`terrainSurface`).
+BLIND METAL: `probes.metal` (vec4 radiance, slot 19), `shade.metal`
+(`probeE` skip, the wild edge, `misc3.zw`), `tonemap.metal` (the curve).
+
 ## The wear/crack pipeline and the slider IDE — DELETED (2026-09-22)
 
 Owner: "private project, no legacy — if something needs deleting, delete it;

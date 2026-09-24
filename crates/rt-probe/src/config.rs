@@ -75,6 +75,7 @@ pub struct StyleCfg {
     pub sat: f32,          // SAT: saturation multiplier post-grade (1 = neutral, >1 punchier)
     pub contrast: f32,     // CONTRAST: contrast around 0.5 post-grade (1 = neutral)
     pub lumaq: f32,        // LUMAQ: quantize luminance to N hard levels, hue kept (0 = off)
+    pub curve: f32,        // CURVE: tone curve, 0 Reinhard, 1 filmic (the ACES fit: toe + later shoulder)
     pub analog: f32,       // ANALOG: analog-signal luma noise strength (0 = off)
     pub analog_chroma: f32, // ANALOG_CHROMA: chroma noise strength (defaults to ANALOG)
     pub analog_tear: f32,  // ANALOG_TEAR: horizontal scanline-tear strength (defaults to ANALOG)
@@ -106,6 +107,7 @@ impl StyleCfg {
         sat: 1.4,
         contrast: 1.12,
         lumaq: 0.0,
+        curve: 0.0,
         analog: 0.0,
         analog_chroma: -1.0,
         analog_tear: -1.0,
@@ -138,6 +140,7 @@ impl StyleCfg {
         st.sat = f("SAT", st.sat);
         st.contrast = f("CONTRAST", st.contrast);
         st.lumaq = f("LUMAQ", st.lumaq);
+        st.curve = f("CURVE", st.curve);
         st.analog = f("ANALOG", st.analog);
         // chroma/tear ride the master ANALOG strength unless overridden
         st.analog_chroma = f("ANALOG_CHROMA", st.analog_chroma);

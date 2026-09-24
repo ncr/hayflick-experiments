@@ -30,7 +30,7 @@ pub struct TonePush {
     pub style2: [f32; 4], // palette mode, palette param, vignette, outline strength
     pub style3: [f32; 4], // grain size px, grain static flag, bloom strength, bloom threshold
     pub style4: [f32; 4], // shadow dither: strength, levels, luma threshold, dither world-phase y
-    pub style5: [f32; 4], // saturation, contrast, luma quantize levels, _
+    pub style5: [f32; 4], // saturation, contrast, luma quantize levels, tone curve (0 Reinhard, 1 filmic)
     pub style6: [f32; 4], // analog: luma noise, chroma noise, scanline tear; w = CRT mask strength
     /// Creative mode's ghost rect in world xz: (x0, z0, x1, z1).
     pub edit1: [f32; 4],
@@ -253,7 +253,7 @@ pub fn build_tone_push(low_w: u32, low_h: u32, ext_w: u32, ext_h: u32, rs: i32, 
         style2: [style.palette, style.pal_p, style.vignette, style.outline],
         style3: [style.grain_sz, style.grain_static, style.bloom, style.bloom_th],
         style4: [style.sdither, style.sdither_n, style.sdither_th, dphase_y],
-        style5: [style.sat, style.contrast, style.lumaq, 0.0],
+        style5: [style.sat, style.contrast, style.lumaq, style.curve],
         style6: [style.analog, style.analog_chroma, style.analog_tear, style.crt_mask],
         edit1: edit[0],
         edit2: edit[1],
