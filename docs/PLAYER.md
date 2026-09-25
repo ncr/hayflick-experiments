@@ -74,7 +74,10 @@ detail):
   onto the floor its flattened soles stand on.
 - **Neutral bones.** Clavicles, upper arms, hands, neck and head keep only the
   actor's motion around the clip's MEAN pose; the mean itself becomes our bind
-  pose (the upper arms: 9° out from it, and 80 % of the swing). Copying absolute directions shrugged the shoulders 5 cm (a CMU
+  pose. The UPPER ARMS are the exception: they keep the actor's exact
+  direction in the chest frame (only the clavicle under them is neutralized,
+  compensated), 6° of carry away from the body, and the walk's swing scaled
+  to 65 % about its own mean (`ARM_SWING`). Copying absolute directions shrugged the shoulders 5 cm (a CMU
   clavicle rises 19°), flared the wrists ~45°, held a sneaker's arms out like
   wings and tipped the face 20° to the sky.
 - **Stroll/walk ladder.** The game walk is a capture AT the game's walking
@@ -148,6 +151,19 @@ feminine. Now: THE walk is 39_02 (step width 12.7 cm, hip sway 2.7 cm, pelvis
 roll 7.5°, hand swing 0.68 m, kept at 80 %), the upper arms' neutral hangs 9°
 away from the body (`NEUTRAL_POSE` in `bake.py`), and the torso lost its
 hip flare and gained chest and lat width (`build_mesh.py`).
+
+## Playtest 3 (2026-09-25): "hands too high and forward — is that really a normal walk?"
+
+The capture was normal; the retarget was wrong. Measured wrist-vs-shoulder
+over the cycle: the capture swings 24 cm forward and hangs under the
+shoulder; ours went 39 cm forward, higher, with the whole cycle 10–20 cm
+ahead. Two bugs in `neutralize`: the mean was removed as `q · mean⁻¹` (the
+swing kept the actor's axes, i.e. the wrong ones for our bind) instead of
+`mean⁻¹ · q`, and neutralizing the upper arm at all rotated the actor's mean
+arm — slightly behind the body, elbow bent forward — onto our vertical bind,
+tipping the whole swing forward. Now the arm tracks the capture's trajectory
+(scaled by our longer arm); the side-by-side check is the stick render of the
+CMU skeleton over ours at the same phases.
 
 ## Known limits / next
 

@@ -1900,3 +1900,29 @@ Preventive checklist
   pelvis roll low, arm swing from the shoulder, elbows off the torso.
 - A "neutral" retarget pose is still a pose: set the arms' carry angle
   deliberately, don't inherit the mesh's bind.
+
+## 2026-09-25 - Removing a "mean pose" with the quaternion on the wrong side
+
+Root cause
+
+`neutralize` computed `q * mean^-1`. For a local rotation `L = D * M` that is
+the deviation D about the ACTOR's axes, applied to our bind — the swing axis
+ended up rotated by the mean. The correct rigid correction is `mean^-1 * q`.
+On top, neutralizing the upper arm at all moved the actor's natural carry
+(behind the body, elbow forward) onto our vertical bind and tipped the swing
+forward. The hands rode high and ahead; the owner asked if the capture was
+even a normal walk.
+
+Detection signal
+
+Wrist position relative to the shoulder, capture vs baked clip, per phase:
+24 cm vs 39 cm forward at the peak, a 10-20 cm forward bias all cycle.
+
+Preventive checklist
+
+- After any retarget change, compare an end effector (wrist, ankle) to the
+  capture numerically over a cycle, not just by eye on a sheet.
+- A correction that must preserve a trajectory's shape is a LEFT multiply
+  (rotate the trajectory rigidly in the parent frame).
+- Only correct what differs in build (clavicle height, wrist flare); a
+  limb's carry angle is part of the motion.

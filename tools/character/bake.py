@@ -38,7 +38,8 @@ the actor's direction copies the actor's build too: a clavicle that rises
 out, one actor holds his arms out like wings, a CMU lower neck leans back 20
 degrees and tips the face to the sky. For
 these bones the clip's own MEAN local rotation is taken out
-(`L'(t) = L(t) * mean^-1`, scaled by the weight in NEUTRAL): on average they
+(`L'(t) = mean^-1 * L(t)`, a rigid turn of the whole trajectory, scaled
+by the weight in NEUTRAL): on average they
 sit in our bind pose, and only the motion around it is the actor's.
 """
 import math
@@ -57,14 +58,23 @@ OUT = ROOT / 'assets/characters/player.anim'
 SAMPLES = 64
 IDLE_HZ = 30
 # bone -> share of the actor's motion around the clip's mean that is kept
-NEUTRAL = {'clavL': 1.0, 'clavR': 1.0, 'upperarmL': 0.8, 'upperarmR': 0.8,
+NEUTRAL = {'clavL': 1.0, 'clavR': 1.0,
            'handL': 0.5, 'handR': 0.5, 'neck': 1.0, 'head': 1.0}
+# Bones whose WORLD-relative-to-parent's-parent orientation must survive the
+# neutralizing of their parent: the upper arms keep the actor's exact arm
+# direction in the chest frame (neutralizing them rotated the actor's mean
+# arm — hanging slightly behind the body, elbow bent forward — onto our
+# vertical bind and tipped the whole swing 10 cm forward and up; playtest 3).
+KEEP_THROUGH = {'upperarmL': 'clavL', 'upperarmR': 'clavR'}
 # The neutral pose a NEUTRAL bone's motion is centred on, when it is not our
 # bind pose: (axis in the parent frame, degrees). Our bind arms hang almost
 # against the torso; a man's arms hang a little away from it (owner: "elbows
 # at the body — the walk reads feminine"), so the upper arms centre 9 degrees
 # out.
-NEUTRAL_POSE = {'upperarmL': ((0, 0, 1), 9.0), 'upperarmR': ((0, 0, 1), -9.0)}
+# Arm swing kept per clip (around the arm's own mean, so the carry stays):
+# 39_02 swings the widest of ten captures (0.68 m hand travel).
+ARM_SWING = {'walk': 0.65, 'brisk': 0.8}
+NEUTRAL_POSE = {'upperarmL': ((0, 0, 1), 6.0), 'upperarmR': ((0, 0, 1), -6.0)}
 
 # name, subject, trial, kind, (first, last) frame window to search (None = all)
 CLIPS = [
@@ -325,6 +335,8 @@ def neutralize(rots):
     """Take each NEUTRAL bone's clip-mean local rotation out (module doc)."""
     out = rots.copy()
     for name, keep in NEUTRAL.items():
+        if name in NEUTRAL_POSE:
+            continue
         b = sk.index(name)
         q = out[:, b].copy()
         for k in range(1, len(q)):
@@ -339,9 +351,24 @@ def neutralize(rots):
             h = math.radians(deg) / 2
             pose = np.array([*(math.sin(h) * np.array(axis, float)), math.cos(h)])
         for k in range(len(q)):
-            d = qmul(q[k], inv)
+            # mean^-1 * q, NOT q * mean^-1: the first turns the actor's whole
+            # trajectory rigidly so its mean lands on our bind pose; the
+            # second keeps the deviation about the ACTOR's axes and swung the
+            # hands forward and up (playtest 3: wrist 39 cm in front of the
+            # shoulder where the capture has 24)
+            d = qmul(inv, q[k])
             d = slerp(np.array([0, 0, 0, 1.0]), d, keep) if keep < 1 else d
             out[k, b] = qmul(pose, d)
+    for name, parent in KEEP_THROUGH.items():
+        b, p = sk.index(name), sk.index(parent)
+        axis, deg = NEUTRAL_POSE.get(name, ((0, 0, 1), 0.0))
+        h = math.radians(deg) / 2
+        carry = np.array([*(math.sin(h) * np.array(axis, float)), math.cos(h)])
+        for k in range(len(out)):
+            # parent' * child' = parent * child, then the carry angle out
+            # from the body in the parent's frame
+            keep_world = qmul(qconj(out[k, p]), qmul(rots[k, p], rots[k, b]))
+            out[k, b] = qmul(carry, keep_world)
     return out
 
 
@@ -398,6 +425,24 @@ def refloor(rots, offs, cons):
     out = np.array(offs, float)
     if lows:
         out[:, 1] -= np.percentile(lows, 3)
+    return out
+
+
+def scale_arm_swing(rots, keep):
+    """Scale the upper arms' motion about their clip mean (rigidly, in the
+    parent frame: mean * slerp(1, mean^-1 * q, keep))."""
+    out = rots.copy()
+    for name in ('upperarmL', 'upperarmR'):
+        b = sk.index(name)
+        q = out[:, b].copy()
+        for k in range(1, len(q)):
+            if np.dot(q[k], q[0]) < 0:
+                q[k] = -q[k]
+        mean = q.mean(axis=0)
+        mean /= np.linalg.norm(mean)
+        for k in range(len(q)):
+            d = slerp(np.array([0, 0, 0, 1.0]), qmul(qconj(mean), q[k]), keep)
+            out[k, b] = qmul(mean, d)
     return out
 
 
@@ -577,6 +622,8 @@ def main():
                 print(f'  {name}: frames {a}..{b}, right strike at phase {mid:.2f}')
         else:
             c = bake_idle(take, window)
+        if name in ARM_SWING:
+            c['rots'] = scale_arm_swing(c['rots'], ARM_SWING[name])
         if want_report:
             report(name, take, c, window)
         clips.append((name, c))
