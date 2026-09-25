@@ -43,7 +43,7 @@ and run `python3 tools/character/bake.py <folder>`:
 |---|---|---|
 | idle | 139_02 "shifting weight", frames 40–880 | time-looped idle (7 s) |
 | stroll | 35_01 | 1.40 m stride at 1.25 m/s — starts, stops, slow steps |
-| walk | 38_02 | 1.70 m at 1.62 m/s — THE game walk, played at its own cadence |
+| walk | 39_02 | 1.69 m at 1.58 m/s — THE game walk, played at its own cadence |
 | brisk | 08_06 | 1.73 m at 1.87 m/s — on the way to a run |
 | run | 35_17 | 2.33 m at 3.07 m/s, flight phase |
 | sneak | 132_15 "walk with knees bent" | crouched gait (legs and torso; arms come from `walk`) |
@@ -74,7 +74,7 @@ detail):
   onto the floor its flattened soles stand on.
 - **Neutral bones.** Clavicles, upper arms, hands, neck and head keep only the
   actor's motion around the clip's MEAN pose; the mean itself becomes our bind
-  pose. Copying absolute directions shrugged the shoulders 5 cm (a CMU
+  pose (the upper arms: 9° out from it, and 80 % of the swing). Copying absolute directions shrugged the shoulders 5 cm (a CMU
   clavicle rises 19°), flared the wrists ~45°, held a sneaker's arms out like
   wings and tipped the face 20° to the sky.
 - **Stroll/walk ladder.** The game walk is a capture AT the game's walking
@@ -137,6 +137,17 @@ corrective step, (b) the ankle, not the contact point, was pinned, and (c)
 the loop closure tilted the stance foot 11° toes-up. The arms carried the
 actor's shrug, wrist flare and forward neck. Now: 3 cm at double support,
 ~1 cm on average.
+
+## Playtest 2 (2026-09-25): "not masculine — elbows at the body"
+
+Measured on ten CMU walks (`step width, hip sway, pelvis roll, elbow
+distance from the midline, hand swing`): 38_02 had the widest pelvis roll
+(15.7°), twice the hip sway of the others (5.4 cm) and the smallest hand
+swing (0.36 m); with our bind arms hanging against the torso that read
+feminine. Now: THE walk is 39_02 (step width 12.7 cm, hip sway 2.7 cm, pelvis
+roll 7.5°, hand swing 0.68 m, kept at 80 %), the upper arms' neutral hangs 9°
+away from the body (`NEUTRAL_POSE` in `bake.py`), and the torso lost its
+hip flare and gained chest and lat width (`build_mesh.py`).
 
 ## Known limits / next
 

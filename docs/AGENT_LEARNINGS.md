@@ -1879,3 +1879,24 @@ Preventive checklist
 - Copy motion, not build: bones whose rest pose differs between actor and
   rig (clavicle, wrist, neck) keep the motion around their mean, not the
   absolute direction.
+
+## 2026-09-25 - A walk capture carries its actor's gender cues; pick it by the numbers
+
+Root cause
+
+The capture chosen for its speed (38_02) had the widest pelvis roll and hip
+sway of ten candidates and the smallest arm swing, and our bind pose hangs the
+arms against the torso. The owner read it as feminine ("elbows at the body").
+
+Detection signal
+
+Owner playtest, then a per-take table: step width, lateral hip sway, pelvis
+roll, elbow distance from the midline, hand swing (`gait_metrics.py` in the
+session scratchpad; the numbers are in docs/PLAYER.md).
+
+Preventive checklist
+
+- Choose locomotion captures on style metrics as well as speed: hip sway and
+  pelvis roll low, arm swing from the shoulder, elbows off the torso.
+- A "neutral" retarget pose is still a pose: set the arms' carry angle
+  deliberately, don't inherit the mesh's bind.

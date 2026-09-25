@@ -57,14 +57,20 @@ OUT = ROOT / 'assets/characters/player.anim'
 SAMPLES = 64
 IDLE_HZ = 30
 # bone -> share of the actor's motion around the clip's mean that is kept
-NEUTRAL = {'clavL': 1.0, 'clavR': 1.0, 'upperarmL': 1.0, 'upperarmR': 1.0,
+NEUTRAL = {'clavL': 1.0, 'clavR': 1.0, 'upperarmL': 0.8, 'upperarmR': 0.8,
            'handL': 0.5, 'handR': 0.5, 'neck': 1.0, 'head': 1.0}
+# The neutral pose a NEUTRAL bone's motion is centred on, when it is not our
+# bind pose: (axis in the parent frame, degrees). Our bind arms hang almost
+# against the torso; a man's arms hang a little away from it (owner: "elbows
+# at the body — the walk reads feminine"), so the upper arms centre 9 degrees
+# out.
+NEUTRAL_POSE = {'upperarmL': ((0, 0, 1), 9.0), 'upperarmR': ((0, 0, 1), -9.0)}
 
 # name, subject, trial, kind, (first, last) frame window to search (None = all)
 CLIPS = [
     ('idle', '139', '02', 'idle', (40, 880)),
     ('stroll', '35', '01', 'cycle', None),
-    ('walk', '38', '02', 'cycle', None),
+    ('walk', '39', '02', 'cycle', None),
     ('brisk', '08', '06', 'cycle', None),
     ('run', '35', '17', 'cycle', None),
     ('sneak', '132', '15', 'cycle', None),
@@ -327,9 +333,15 @@ def neutralize(rots):
         mean = q.mean(axis=0)
         mean /= np.linalg.norm(mean)
         inv = qconj(mean)
+        pose = np.array([0, 0, 0, 1.0])
+        if name in NEUTRAL_POSE:
+            axis, deg = NEUTRAL_POSE[name]
+            h = math.radians(deg) / 2
+            pose = np.array([*(math.sin(h) * np.array(axis, float)), math.cos(h)])
         for k in range(len(q)):
             d = qmul(q[k], inv)
-            out[k, b] = slerp(np.array([0, 0, 0, 1.0]), d, keep) if keep < 1 else d
+            d = slerp(np.array([0, 0, 0, 1.0]), d, keep) if keep < 1 else d
+            out[k, b] = qmul(pose, d)
     return out
 
 
