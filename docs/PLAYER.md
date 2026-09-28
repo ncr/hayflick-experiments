@@ -23,14 +23,43 @@ showed ball shoulders and knee seams.
 
 | Where | What |
 |---|---|
-| `tools/character/skeleton.py` | THE skeleton (21 bones, rest rotations identity, 1.80 m) and the heel/ball contact points. Both tools import it and write it into their asset; Rust reads it from there. |
+| `tools/character/build_body.py` | Blender + MPFB: the MakeHuman man (see "The body" below) → `tools/character/body.npz` (mesh, per-quad ids, weights on our 21 bones, joints). The one step that needs Blender; its output is checked in. |
+| `tools/character/skeleton.py` | THE skeleton (21 bones, rest rotations identity, 1.80 m), its joints read from `body.npz`, and the heel/ball contact points. Both tools import it and write it into their asset; Rust reads it from there. |
 | `tools/character/cmu.py` | CMU ASF/AMC reader + forward kinematics (metres, Y up). |
 | `tools/character/bake.py` | Retargets the captures onto the skeleton, cuts and loops the cycles → `assets/characters/player.anim`. `--report` writes stick-figure review sheets. |
-| `tools/character/build_mesh.py` | The skinned mesh (lofts with per-ring bone weights, 15 materials keeping `survivor.inc`'s slots) → `assets/characters/player.skin`. `--preview out.png` renders four views. |
+| `tools/character/build_mesh.py` | Dresses `body.npz` in the Vault 42 suit (materials per MakeHuman quad, cloth smoothed and standing proud of the skin, the 42 cast onto the back; 15 materials keeping `survivor.inc`'s slots) → `assets/characters/player.skin`. `--preview out.png` renders four views. |
 | `tools/character/preview.py` | numpy z-buffer preview; also renders contact sheets of `avatar`'s `dump` example. |
 | `crates/avatar` | Runtime (glam only, headless): asset parsing, clip sampling/blending, the locomotion controller (`body.rs` — its module doc is the design), two-bone IK, CPU skinning. |
 | `crates/rt-viewer/src/player.rs` | Adapter: the mesh as ONE dynamic run `player`, re-skinned every fixed tick into `FrameState::skin`. |
 | `rt-probe` `SceneGpu::record_skin` / `metal_backend.rs` | Upload the skinned vertices over the run's slice of the vertex buffer, rebuild the run's BLASes, mark the TLAS dirty. |
+
+## The body (2026-09-28)
+
+Owner: "too thin, a flat seat, arms thin as if glued on to the torso — let's
+get a better model". The hand-lofted mesh is gone; the body is MakeHuman's
+base mesh through MPFB 2.0.17 (Blender extension, extensions.blender.org;
+code GPL-3, the base mesh, targets and rig weights CC0 — only CC0 data
+reaches the game, via `body.npz`). Owner pick: a stocky worker — male, age
+0.654 (~45), muscle 0.62, weight 0.82, proportions 0.5, plus detail targets
+(seat volume, pectoral/dorsi, shoulder and arm muscle, a trace of belly,
+thicker neck, less V-taper, wider waist; `build_body.py`'s `DETAIL`). The
+game_engine rig's weights are summed onto our bones (fingers → hand,
+spine_02+03 → chest) and its joints ARE our skeleton. The bind pose lowers
+MakeHuman's A pose: arms 7° out with the elbows a little forward, straight
+wrists, legs 3° out (MakeHuman stands with the ankles 39 cm apart). 13 380
+vertices, 26 756 triangles; skinning + the BLAS rebuild keep a frame at
+~0.55 ms on the RTX 5080.
+
+Rebuild (only when the body changes):
+
+```sh
+curl -L -o mpfb.zip https://extensions.blender.org/download/sha256:4f0a879d64a39bf646fbf5f53601ac678855da329d650617dca5737548239a87/add-on-mpfb-v2.0.17.zip
+export BLENDER_USER_RESOURCES=$PWD/bl_user   # isolated profile
+blender --command extension install-file -r user_default -e mpfb.zip
+blender -b --python tools/character/build_body.py
+python3 tools/character/build_mesh.py
+python3 tools/character/bake.py <cmu dir>     # the skeleton moved: rebake
+```
 
 ## Motion capture
 
@@ -177,6 +206,8 @@ bind palm's orientation.
 
 - Linear-blend skinning pinches at a deep knee bend (a dark crease at game
   size, no hole).
+- The suit is the body surface smoothed and lifted, not a cloth mesh: no
+  folds, no loose hems.
 - No turn-on-the-spot clip: a standing turn is corrective steps.
 - Crouch walk is the knees-bent capture made lower by IK, not a true
   sneak capture.

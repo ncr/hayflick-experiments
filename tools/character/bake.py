@@ -250,7 +250,12 @@ class Take:
             v[1:, s] = d
         k = np.ones(5) / 5
         self.fspeed = np.stack([np.convolve(v[:, s], k, 'same') for s in range(2)], 1)
-        raw = (low < 0.045) & (self.fspeed < 0.5)
+        # planted = nearly still AND near the lowest the foot gets over the
+        # surrounding second: a capture's floor is not level everywhere
+        # (08_06's stance height drifts from 5 to 9 cm), so a fixed height
+        # threshold loses strikes
+        base = np.stack([np.array([low[max(0, i - hz // 2):i + hz // 2, s].min() for i in range(n)]) for s in range(2)], 1)
+        raw = (low - base < 0.035) & (self.fspeed < 0.6)
         self.contact = np.stack([debounce(raw[:, s], 6) for s in range(2)], 1)
         d = np.linalg.norm(np.diff(self.P[:, [0, 2]], axis=0), axis=1) * hz
         self.speed = np.convolve(np.r_[d[0], d], np.ones(25) / 25, 'same')

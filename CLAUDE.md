@@ -236,9 +236,16 @@ before touching the body). The old rigid-part survivor (`survivor.rs`,
 `blender/build_survivor.py`, `survivor.mesh`) is deleted; tag
 `archive/survivor-rig` has it.
 
-- ONE skeleton (`tools/character/skeleton.py`, 21 bones) shared by the mesh
-  builder and the mocap bake; both write it into their asset; Rust never
-  restates a joint.
+- THE BODY (2026-09-28, owner: "too thin, flat seat, arms glued on") is
+  MakeHuman's base mesh via MPFB in Blender (`tools/character/build_body.py`
+  → `body.npz`, CC0 data only; the one Blender step, output checked in): a
+  stocky man of ~45, the game_engine rig's joints and weights mapped onto
+  our 21 bones. `build_mesh.py` only dresses it (Vault 42 materials per
+  quad, smoothed lifted cloth, the 42 on the back).
+- ONE skeleton (`tools/character/skeleton.py`, 21 bones, joints from
+  `body.npz`) shared by the mesh builder and the mocap bake; both write it
+  into their asset; Rust never restates a joint. A body change means a
+  rebake (`bake.py`).
 - `avatar::Body::tick` (fixed tick, from the fresh snapshot, every advance
   path — live, DEMO, the CMDS prefix): phase from distance covered, speed
   blend idle/walk/brisk/run (+ sneak when crouched) at a shared phase, stride

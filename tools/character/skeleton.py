@@ -3,66 +3,93 @@
 asset, and the runtime (`crates/avatar`) reads it from there, so the Rust
 side never restates a joint position.
 
-Game axes: Y up, the body faces +Z, so its LEFT side is +X. Metres (1 wu).
-A ~1.80 m man; joint heights follow Drillis & Contini's segment fractions
-of stature (ankle .039, knee .285, hip .53, shoulder .818, elbow .63,
-wrist .485) nudged to the mesh. The rest pose is the BIND pose: arms hang
-a few degrees out from the body, legs straight, feet flat — every bone's
-rest rotation is the identity, which is what makes retargeting a plain
-matter of directions (see `bake.py`).
+Since 2026-09-28 the joints come from the BODY: `body.npz`, the MakeHuman
+man `build_body.py` exports, carries the game_engine rig's joints in the
+lowered-arm bind pose, and each of our 21 bones runs between two of them
+(`_CENTRE`, `_SIDE`). The body is scaled to HEIGHT here (mesh and joints
+alike, `body()`).
 
-`cmu` names the bone of the CMU ASF skeleton whose motion drives it
-(`None` = the root, driven by the mocap root).
+Game axes: Y up, the body faces +Z, so its LEFT side is +X. Metres (1 wu).
+The rest pose is the BIND pose: arms hang a few degrees out from the body,
+legs straight, feet flat — every bone's rest rotation is the identity, which
+is what makes retargeting a plain matter of directions (see `bake.py`).
+
+`cmu` names the bone of the CMU ASF skeleton whose motion drives it.
 """
+from pathlib import Path
+
+import numpy as np
 
 HEIGHT = 1.80
+BODY = Path(__file__).resolve().parent / 'body.npz'
 
-# name, parent, head (joint), tail, cmu source
-_BONES = [
-    ('pelvis', None, (0.0, 0.975, 0.0), (0.0, 1.06, -0.005), 'root'),
-    ('spine', 'pelvis', (0.0, 1.02, -0.01), (0.0, 1.24, -0.025), 'lowerback'),
-    ('chest', 'spine', (0.0, 1.24, -0.025), (0.0, 1.495, -0.02), 'thorax'),
-    ('neck', 'chest', (0.0, 1.495, -0.02), (0.0, 1.585, 0.0), 'lowerneck'),
-    ('head', 'neck', (0.0, 1.585, 0.0), (0.0, 1.80, 0.005), 'head'),
+# name, parent, head joint, tail joint (game_engine joint names in body.npz,
+# or 'top' = the crown), cmu source
+_CENTRE = [
+    ('pelvis', None, 'pelvis.head', 'spine_01.head', 'root'),
+    ('spine', 'pelvis', 'spine_01.head', 'spine_02.head', 'lowerback'),
+    ('chest', 'spine', 'spine_02.head', 'neck_01.head', 'thorax'),
+    ('neck', 'chest', 'neck_01.head', 'head.head', 'lowerneck'),
+    ('head', 'neck', 'head.head', 'top', 'head'),
 ]
 _SIDE = [
-    # arms
-    ('clav', 'chest', (0.025, 1.455, -0.005), (0.175, 1.465, -0.03), 'clavicle'),
-    ('upperarm', 'clav', (0.175, 1.455, -0.03), (0.205, 1.155, -0.04), 'humerus'),
-    ('forearm', 'upperarm', (0.205, 1.155, -0.04), (0.215, 0.895, -0.005), 'radius'),
-    ('hand', 'forearm', (0.215, 0.895, -0.005), (0.22, 0.78, 0.01), 'hand'),
-    # legs
-    ('thigh', 'pelvis', (0.09, 0.93, 0.0), (0.095, 0.51, 0.012), 'femur'),
-    ('shin', 'thigh', (0.095, 0.51, 0.012), (0.10, 0.085, -0.02), 'tibia'),
-    ('foot', 'shin', (0.10, 0.085, -0.02), (0.105, 0.025, 0.125), 'foot'),
-    ('toe', 'foot', (0.105, 0.025, 0.125), (0.105, 0.02, 0.195), 'toes'),
+    ('clav', 'chest', 'clavicle_{s}.head', 'upperarm_{s}.head', 'clavicle'),
+    ('upperarm', 'clav', 'upperarm_{s}.head', 'lowerarm_{s}.head', 'humerus'),
+    ('forearm', 'upperarm', 'lowerarm_{s}.head', 'hand_{s}.head', 'radius'),
+    ('hand', 'forearm', 'hand_{s}.head', 'middle_03_{s}.tail', 'hand'),
+    ('thigh', 'pelvis', 'thigh_{s}.head', 'calf_{s}.head', 'femur'),
+    ('shin', 'thigh', 'calf_{s}.head', 'foot_{s}.head', 'tibia'),
+    ('foot', 'shin', 'foot_{s}.head', 'ball_{s}.head', 'foot'),
+    ('toe', 'foot', 'ball_{s}.head', 'ball_{s}.tail', 'toes'),
 ]
+BONE_NAMES = [b[0] for b in _CENTRE] + [n + s for s in 'LR' for n, *_ in _SIDE]
 
 
-def _mirror(p):
-    return (-p[0], p[1], p[2])
+def body():
+    """The body export and the scale that stands its crown at HEIGHT."""
+    d = dict(np.load(BODY))
+    return d, HEIGHT / float(d['pos'][:, 1].max())
+
+
+def _joints():
+    d, k = body()
+    j = {key[2:]: d[key] * k for key in d if key.startswith('j_')}
+    j['top'] = np.array([0.0, HEIGHT, j['head.head'][2]])
+    return j
 
 
 def bones():
     """[(name, parent index or -1, head, tail, cmu name)] parent-first."""
-    out = list(_BONES)
-    for side, cmu_side, flip in (('L', 'l', False), ('R', 'r', True)):
-        for name, parent, head, tail, cmu in _SIDE:
-            p = parent if parent in ('chest', 'pelvis') else parent + side
-            if flip:
-                head, tail = _mirror(head), _mirror(tail)
-            out.append((name + side, p, head, tail, cmu_side + cmu))
+    j = _joints()
+    out = [(n, p, tuple(map(float, j[h])), tuple(map(float, j[t])), c) for n, p, h, t, c in _CENTRE]
+    for side, gs in (('L', 'l'), ('R', 'r')):
+        for n, p, h, t, c in _SIDE:
+            parent = p if p in ('chest', 'pelvis') else p + side
+            out.append((n + side, parent, tuple(map(float, j[h.format(s=gs)])), tuple(map(float, j[t.format(s=gs)])), gs + c))
     names = [b[0] for b in out]
+    assert names == BONE_NAMES
     return [(n, names.index(p) if p else -1, h, t, c) for n, p, h, t, c in out]
 
 
 def index(name):
-    return [b[0] for b in bones()].index(name)
+    return BONE_NAMES.index(name)
 
 
-# Contact points on the sole, relative to the ankle in the rest pose (so in
-# the FOOT bone's frame): heel and ball, both ON the ground plane when the
-# rest foot stands flat. The runtime foot IK and the bake's contact detector
-# use the same two points.
-HEEL = (0.0, -0.085, -0.065)
-BALL = (0.005, -0.085, 0.145)
+def _contacts():
+    """Heel and ball contact points relative to the ankle in the rest pose
+    (so in the FOOT bone's frame), both ON the ground plane the rest foot
+    stands on: the heel at the back of the sole, the ball under the ball
+    joint. The runtime foot IK and the bake's contact detector use them."""
+    d, k = body()
+    pos = d['pos'] * k
+    j = _joints()
+    ankle, ball = j['foot_l.head'], j['ball_l.head']
+    w = d['w']
+    foot = (w[:, index('footL')] + w[:, index('toeL')]) > 0.5
+    ground = float(pos[foot, 1].min())
+    heel = (0.0, ground - ankle[1], float(pos[foot, 2].min()) + 0.015 - ankle[2])
+    ballp = (ball[0] - ankle[0], ground - ankle[1], ball[2] - ankle[2])
+    return tuple(float(x) for x in heel), tuple(float(x) for x in ballp)
+
+
+HEEL, BALL = _contacts()
