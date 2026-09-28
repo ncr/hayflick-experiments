@@ -329,6 +329,23 @@ impl Body {
         Quat::from_axis_angle(axis, angle)
     }
 
+    /// The thumb's second joint in the fist: `amount` (0..1) of the turn that
+    /// lays the thumb's last segment across the front of the fingers' curled
+    /// middle joints (its metacarpal stays by the palm, as in a real fist —
+    /// turning the whole thumb at its base left the tip below the fist).
+    fn thumb_over(&self, side: usize, knuckle: f32, amount: f32) -> Quat {
+        let b = &self.b;
+        let bones = &self.skel.bones;
+        let t2 = &bones[b.thumb[side][1]];
+        let (f1, f2) = (&bones[b.fingers[side][0]], &bones[b.fingers[side][1]]);
+        let q = self.curl(b.fingers[side][0], side, knuckle);
+        let middle = f1.head + q * (f2.head - f1.head);
+        let target = middle + Vec3::Z * 0.015;
+        let now = (t2.tail - t2.head).normalize();
+        let want = (target - t2.head).normalize();
+        Quat::IDENTITY.slerp(Quat::from_rotation_arc(now, want), amount.clamp(0.0, 1.0))
+    }
+
     fn contact_at(&self, weights: &[(usize, f32)], phase: f32) -> [f32; 2] {
         let mut c = [0.0; 2];
         for &(i, w) in weights {
@@ -480,14 +497,16 @@ impl Body {
         let fist = (run + 0.3 * c).min(1.0);
         let joint = |relaxed: f32, closed: f32| (relaxed + (closed - relaxed) * fist) * open;
         let finger = [joint(0.25, 1.15), joint(0.35, 1.4), joint(0.2, 0.8)];
-        let thumb = [joint(0.1, 0.7), joint(0.15, 1.0)];
+        // the thumb: along the index, lightly bent, relaxed; in the fist its
+        // tip crosses to the front of the curled fingers' middle joints (a
+        // thumb bent in the fingers' plane pointed forward off the fist)
+        let (thumb1, thumb2) = (joint(0.05, 0.15), 0.15 * open);
         for s in 0..2 {
             for (k, &a) in finger.iter().enumerate() {
                 pose.rot[b.fingers[s][k]] = self.curl(b.fingers[s][0], s, a);
             }
-            for (k, &a) in thumb.iter().enumerate() {
-                pose.rot[b.thumb[s][k]] = self.curl(b.thumb[s][0], s, a);
-            }
+            pose.rot[b.thumb[s][0]] = self.curl(b.thumb[s][0], s, thumb1);
+            pose.rot[b.thumb[s][1]] = self.curl(b.thumb[s][0], s, thumb2) * self.thumb_over(s, finger[0], fist * open);
         }
 
         // ---- pelvis

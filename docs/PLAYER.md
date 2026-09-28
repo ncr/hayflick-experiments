@@ -221,6 +221,16 @@ bind palm's orientation.
   running, flat on a wall. No capture drives them (`cmu` None in
   `skeleton.py`: they follow the hand in the bake).
 
+## Playtest 6 (2026-09-28): "the thumb is unnaturally far from the other fingers"
+
+MakeHuman's rest thumb stands 37° off the index with its tip 7.6 cm from
+the index knuckle. The bind turns the whole thumb at its base toward the
+index's middle joint: 20°, the tip 1.9 cm from it — along the side of the
+index. In the fist the metacarpal stays by the palm and the thumb's last
+segment folds across the front of the curled fingers (`thumb_over` in
+`body.rs`); bending the thumb in the fingers' plane had pointed it forward
+off the fist.
+
 ## Known limits / next
 
 - Linear-blend skinning pinches at a deep knee bend (a dark crease at game

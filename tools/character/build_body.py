@@ -158,6 +158,20 @@ def bind_pose(rig):
             rot = now.rotation_difference(want).to_matrix().to_4x4()
             pb.matrix = rig.matrix_world.inverted() @ (Matrix.Translation(head) @ rot @ Matrix.Translation(-head) @ (rig.matrix_world @ pb.matrix))
             bpy.context.view_layer.update()
+        # the thumb laid along the index finger: MakeHuman's rest thumb stands
+        # 37 degrees off it, its tip 7.6 cm from the index knuckle (owner
+        # 2026-09-28: "the thumb is unnaturally far from the other fingers").
+        # The whole thumb turns at its base toward the index's middle joint.
+        bpy.context.view_layer.update()
+        t1 = rig.pose.bones['thumb_01_' + s]
+        base = rig.matrix_world @ t1.head
+        tip = rig.matrix_world @ rig.pose.bones['thumb_03_' + s].tail
+        target = rig.matrix_world @ rig.pose.bones['index_02_' + s].head
+        now = (tip - base).normalized()
+        want = now.lerp((target - base).normalized(), 0.75).normalized()
+        rot = now.rotation_difference(want).to_matrix().to_4x4()
+        t1.matrix = rig.matrix_world.inverted() @ (Matrix.Translation(base) @ rot @ Matrix.Translation(-base) @ (rig.matrix_world @ t1.matrix))
+        bpy.context.view_layer.update()
         # the feet level and pointing straight ahead again after the leg
         # turns (MakeHuman's own ankle->ball direction, less its toe-out)
         pb = rig.pose.bones['foot_' + s]
