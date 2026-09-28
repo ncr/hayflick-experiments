@@ -231,6 +231,16 @@ segment folds across the front of the curled fingers (`thumb_over` in
 `body.rs`); bending the thumb in the fingers' plane had pointed it forward
 off the fist.
 
+## Playtest 7 (2026-09-28): "the hand looks long and slim"
+
+With the fingers together and the thumb in, the hand read long: 20 cm wrist
+to fingertip, an 11 cm palm (a man's is ~9.5–10), thin fingers. MakeHuman's
+hand targets shorten and thicken the fingers, spread them a little and
+widen the wrist (`DETAIL`); the palm length no target reaches, so the export
+scales each hand about its wrist, 12 % shorter along its axis and 10 %
+broader front to back (`broader_hands` in `build_body.py`, joints with it):
+palm 9.8 cm, finger 8.0 cm, breadth ~10 cm.
+
 ## Known limits / next
 
 - Linear-blend skinning pinches at a deep knee bend (a dark crease at game

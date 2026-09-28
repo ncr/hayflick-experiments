@@ -74,6 +74,16 @@ DETAIL = [
     ('legs/r-upperleg-muscle-incr', 0.35),
     ('legs/l-lowerleg-muscle-incr', 0.3),
     ('legs/r-lowerleg-muscle-incr', 0.3),
+    # a worker's hands: shorter, thicker fingers, a broader palm and wrist
+    # (owner 2026-09-28: with the fingers drawn together and the thumb in,
+    # the hand read long and slim — 21 cm wrist to fingertip)
+    ('hands/l-hand-fingers-length-decr', 0.55),
+    ('hands/r-hand-fingers-length-decr', 0.55),
+    ('hands/l-hand-fingers-diameter-incr', 0.7),
+    ('hands/r-hand-fingers-diameter-incr', 0.7),
+    ('hands/l-hand-fingers-distance-incr', 0.35),
+    ('hands/r-hand-fingers-distance-incr', 0.35),
+    ('hands/measure-wrist-circ-incr', 0.5),
 ]
 
 # our bone <- game_engine bones whose skin weights it takes
@@ -184,6 +194,40 @@ def bind_pose(rig):
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+# hand proportions no MakeHuman target reaches: the palm is 11 cm wrist to
+# knuckle (a man's is ~9.5-10) — the hand read long and slim
+HAND_SHORTER = 0.12   # along the hand's axis
+HAND_BROADER = 0.10   # front to back (the hand's breadth; the palm faces the thigh)
+
+
+def broader_hands(pos, w, joints, names):
+    """Scale each hand about its wrist: shorter along its axis, broader front
+    to back. A vertex moves by the share of its weight on the hand chain, so
+    the wrist blends into the forearm; the hand chain's joints move fully."""
+    pos = pos.copy()
+    for s, gs in (('L', 'l'), ('R', 'r')):
+        wr = joints[f'hand_{gs}.head']
+        axis = joints[f'middle_01_{gs}.head'] - wr
+        axis /= np.linalg.norm(axis)
+        breadth = np.array([0.0, 0.0, 1.0]) - axis * axis[2]
+        breadth /= np.linalg.norm(breadth)
+
+        def scale(p, h):
+            d = p - wr
+            a = d @ axis
+            b = d @ breadth
+            return p + np.outer(a * -HAND_SHORTER * h, axis) + np.outer(b * HAND_BROADER * h, breadth)
+        chain = [names.index(n + s) for n in ('hand', 'fingers1', 'fingers2', 'fingers3', 'thumb1', 'thumb2')]
+        h = w[:, chain].sum(1) / np.maximum(w.sum(1), 1e-9)
+        pos = scale(pos, h)
+        for key in list(joints):
+            bone = key.split('.')[0]  # e.g. index_01_l
+            finger = bone.split('_')[0] in ('index', 'middle', 'ring', 'pinky', 'thumb') and bone.endswith('_' + gs)
+            if finger or key == f'hand_{gs}.tail':
+                joints[key] = scale(joints[key][None], np.array([1.0]))[0]
+    return pos, joints
+
+
 def main():
     h = human()
     # refine the height macro until the man stands HEIGHT tall
@@ -245,6 +289,7 @@ def main():
     for k, v in eyes.items():
         joints[k] = np.array((wm @ v)[:]) @ G.T
     joints['top'] = np.array([0.0, pos[:, 1].max(), 0.0])
+    pos, joints = broader_hands(pos, w, joints, names)
     np.savez_compressed(OUT, pos=pos.astype(np.float32), tri=tri, poly=poly, w=w,
                         **{'g_' + k: v for k, v in groups.items()},
                         **{'j_' + k: v.astype(np.float32) for k, v in joints.items()})
