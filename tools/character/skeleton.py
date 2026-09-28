@@ -36,11 +36,19 @@ _SIDE = [
     ('clav', 'chest', 'clavicle_{s}.head', 'upperarm_{s}.head', 'clavicle'),
     ('upperarm', 'clav', 'upperarm_{s}.head', 'lowerarm_{s}.head', 'humerus'),
     ('forearm', 'upperarm', 'lowerarm_{s}.head', 'hand_{s}.head', 'radius'),
-    ('hand', 'forearm', 'hand_{s}.head', 'middle_03_{s}.tail', 'hand'),
+    ('hand', 'forearm', 'hand_{s}.head', 'middle_01_{s}.head', 'hand'),
     ('thigh', 'pelvis', 'thigh_{s}.head', 'calf_{s}.head', 'femur'),
     ('shin', 'thigh', 'calf_{s}.head', 'foot_{s}.head', 'tibia'),
     ('foot', 'shin', 'foot_{s}.head', 'ball_{s}.head', 'foot'),
     ('toe', 'foot', 'ball_{s}.head', 'ball_{s}.tail', 'toes'),
+    # the four fingers as one three-jointed finger, and a two-jointed thumb:
+    # the runtime curls them per gait (relaxed walking, a fist running).
+    # No capture drives them (cmu None: they follow the hand).
+    ('fingers1', 'hand', 'middle_01_{s}.head', 'middle_02_{s}.head', None),
+    ('fingers2', 'fingers1', 'middle_02_{s}.head', 'middle_03_{s}.head', None),
+    ('fingers3', 'fingers2', 'middle_03_{s}.head', 'middle_03_{s}.tail', None),
+    ('thumb1', 'hand', 'thumb_01_{s}.head', 'thumb_02_{s}.head', None),
+    ('thumb2', 'thumb1', 'thumb_02_{s}.head', 'thumb_03_{s}.tail', None),
 ]
 BONE_NAMES = [b[0] for b in _CENTRE] + [n + s for s in 'LR' for n, *_ in _SIDE]
 
@@ -65,7 +73,7 @@ def bones():
     for side, gs in (('L', 'l'), ('R', 'r')):
         for n, p, h, t, c in _SIDE:
             parent = p if p in ('chest', 'pelvis') else p + side
-            out.append((n + side, parent, tuple(map(float, j[h.format(s=gs)])), tuple(map(float, j[t.format(s=gs)])), gs + c))
+            out.append((n + side, parent, tuple(map(float, j[h.format(s=gs)])), tuple(map(float, j[t.format(s=gs)])), gs + c if c else None))
     names = [b[0] for b in out]
     assert names == BONE_NAMES
     return [(n, names.index(p) if p else -1, h, t, c) for n, p, h, t, c in out]

@@ -202,12 +202,33 @@ back, fingers curling in, thumb on the front edge (`build_mesh.py`). Measured
 over every clip the palm now faces within 0–37° of the thigh; a test pins the
 bind palm's orientation.
 
+## Playtest 5 (2026-09-28): "the seat is exaggerated, elbows close to the body with the hands further away, fix the stride, the hands never change"
+
+- Seat volume 0.55 → 0.15.
+- Arms: the walk's wrist hung 7 cm outside the elbow (a 16° forearm flare).
+  The upper arms now carry 9° out and each clip's forearms turn in toward
+  the body (`FOREARM_IN` in `bake.py`: walk 24°, the run keeps its own):
+  elbows ~6 cm outside the shoulder, the hands by the thighs.
+- Stride: the retargeted walk played its own stride, 1.75 m at 1.6 m/s —
+  110 steps/min, long and slow. The stride now comes from walking/running
+  norms for a 1.80 m man (`normative_stride` in `body.rs`: 1.6 m at 1.6 m/s,
+  ~120 steps/min; 2.9 m at 4.2 m/s), the clip warped to it; a test pins
+  the cadence.
+- Hands: fingers are three joints (knuckle, middle, tip — the four fingers
+  bend together about the middle finger's joints) and the thumb two, all
+  weighted from MakeHuman; the bind draws the fingers together. The runtime
+  curls them per gait: relaxed and loosely bent walking, a loose fist
+  running, flat on a wall. No capture drives them (`cmu` None in
+  `skeleton.py`: they follow the hand in the bake).
+
 ## Known limits / next
 
 - Linear-blend skinning pinches at a deep knee bend (a dark crease at game
   size, no hole).
 - The suit is the body surface smoothed and lifted, not a cloth mesh: no
   folds, no loose hems.
+- A tight fist crumples the index and little finger (they bend about the
+  middle finger's joints), so the running fist stays loose.
 - No turn-on-the-spot clip: a standing turn is corrective steps.
 - Crouch walk is the knees-bent capture made lower by IK, not a true
   sneak capture.

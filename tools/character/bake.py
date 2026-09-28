@@ -59,7 +59,8 @@ SAMPLES = 64
 IDLE_HZ = 30
 # bone -> share of the actor's motion around the clip's mean that is kept
 NEUTRAL = {'clavL': 1.0, 'clavR': 1.0,
-           'handL': 0.5, 'handR': 0.5, 'neck': 1.0, 'head': 1.0}
+           'handL': 0.5, 'handR': 0.5, 'neck': 1.0, 'head': 1.0,
+           }
 # Bones whose WORLD-relative-to-parent's-parent orientation must survive the
 # neutralizing of their parent: the upper arms keep the actor's exact arm
 # direction in the chest frame (neutralizing them rotated the actor's mean
@@ -74,7 +75,14 @@ KEEP_THROUGH = {'upperarmL': 'clavL', 'upperarmR': 'clavR'}
 # Arm swing kept per clip (around the arm's own mean, so the carry stays):
 # 39_02 swings the widest of ten captures (0.68 m hand travel).
 ARM_SWING = {'walk': 0.65, 'brisk': 0.8}
-NEUTRAL_POSE = {'upperarmL': ((0, 0, 1), 6.0), 'upperarmR': ((0, 0, 1), -6.0)}
+NEUTRAL_POSE = {'upperarmL': ((0, 0, 1), 9.0), 'upperarmR': ((0, 0, 1), -9.0)}
+# Degrees the forearm turns in toward the body about the forward axis, per
+# clip (owner 2026-09-28: "elbows close to the body and the hands further
+# away" — on the MakeHuman body the walk's wrist hung 7 cm OUTSIDE the elbow,
+# a 16 degree flare). With the upper arms carried 9 degrees out, the elbow
+# clears the torso and the hand hangs by the thigh. The run keeps its own
+# arms (hands pump in front of the belly).
+FOREARM_IN = {'idle': 16.0, 'stroll': 21.0, 'walk': 24.0, 'brisk': 22.0, 'sneak': 10.0}
 
 # name, subject, trial, kind, (first, last) frame window to search (None = all)
 CLIPS = [
@@ -172,7 +180,7 @@ class Rig:
         self.tail = np.array([b[3] for b in self.bones])
         self.align = []
         for name, parent, head, tail, src in self.bones:
-            if src == 'root':
+            if src in ('root', None):
                 self.align.append(np.eye(3))
                 continue
             ours = np.array(tail) - np.array(head)
@@ -189,7 +197,8 @@ class Rig:
         """Global rotations + joint heads for one CMU FK frame."""
         R = []
         for (name, parent, head, tail, src), A in zip(self.bones, self.align):
-            R.append(f[src][0] @ A)
+            # a bone no capture drives (the finger joints) follows its parent
+            R.append(f[src][0] @ A if src else R[parent])
         hip = 0.5 * (f['lfemur'][1] + f['rfemur'][1]) * self.scale
         pelvis = hip - R[0] @ (self.hip_rest - self.head[0])
         return np.array(R), pelvis
@@ -451,6 +460,28 @@ def scale_arm_swing(rots, keep):
     return out
 
 
+def forearm_in(rots, deg):
+    """Turn each forearm `deg` in toward the body about the clip frame's
+    forward axis at the elbow (the hand follows), per sample."""
+    bones = sk.bones()
+    out = rots.copy()
+    for side, sign in (('L', 1.0), ('R', -1.0)):
+        u, f = sk.index('upperarm' + side), sk.index('forearm' + side)
+        a = math.radians(deg) * -sign
+        c, s_ = math.cos(a), math.sin(a)
+        rz = np.array([[c, -s_, 0], [s_, c, 0], [0, 0, 1.0]])
+        for k in range(len(out)):
+            R = [None] * len(bones)
+            for i, (n, parent, h, t, cc) in enumerate(bones):
+                m = quat_to_mat(out[k, i])
+                R[i] = m if parent < 0 else R[parent] @ m
+                if i == f:
+                    break
+            gf = rz @ R[f]
+            out[k, f] = mat_to_quat(R[u].T @ gf)
+    return out
+
+
 def rot_x(a):
     c, s = math.cos(a), math.sin(a)
     return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
@@ -629,6 +660,8 @@ def main():
             c = bake_idle(take, window)
         if name in ARM_SWING:
             c['rots'] = scale_arm_swing(c['rots'], ARM_SWING[name])
+        if name in FOREARM_IN:
+            c['rots'] = forearm_in(c['rots'], FOREARM_IN[name])
         if want_report:
             report(name, take, c, window)
         clips.append((name, c))

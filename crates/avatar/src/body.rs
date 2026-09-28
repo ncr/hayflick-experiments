@@ -92,6 +92,25 @@ impl Spring {
     }
 }
 
+/// Stride (two steps, wu) of a 1.80 m man at `speed` (wu/s): walking
+/// norms (step ~0.80 m and ~120 steps/min at 1.6 m/s), running ones (~2.9 m
+/// strides at 4.2 m/s). The captured clips play at whatever cadence this
+/// gives — the retargeted walk's own 1.79 m at 1.68 m/s was 110 steps/min,
+/// the long, slow stride of playtest 5.
+fn normative_stride(speed: f32) -> f32 {
+    const T: [(f32, f32); 8] = [(0.3, 0.6), (0.6, 0.95), (1.0, 1.25), (1.25, 1.4), (1.6, 1.6), (2.0, 1.8), (3.0, 2.4), (4.2, 2.9)];
+    if speed <= T[0].0 {
+        return T[0].1 * (speed / T[0].0).max(0.3);
+    }
+    for w in T.windows(2) {
+        let ((v0, s0), (v1, s1)) = (w[0], w[1]);
+        if speed <= v1 {
+            return s0 + (s1 - s0) * (speed - v0) / (v1 - v0);
+        }
+    }
+    T[7].1 * (speed / T[7].0).sqrt()
+}
+
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -121,6 +140,9 @@ struct Bones {
     upperarm: [usize; 2],
     forearm: [usize; 2],
     hand: [usize; 2],
+    /// The finger joints (knuckle, middle, tip) and the thumb's two.
+    fingers: [[usize; 3]; 2],
+    thumb: [[usize; 2]; 2],
     /// Every arm bone, both sides (clavicle to hand).
     arm: [usize; 8],
     thigh: [usize; 2],
@@ -189,6 +211,14 @@ impl Body {
             upperarm: side("upperarm"),
             forearm: side("forearm"),
             hand: side("hand"),
+            fingers: {
+                let [a, b, c] = [side("fingers1"), side("fingers2"), side("fingers3")];
+                [[a[0], b[0], c[0]], [a[1], b[1], c[1]]]
+            },
+            thumb: {
+                let [a, b] = [side("thumb1"), side("thumb2")];
+                [[a[0], b[0]], [a[1], b[1]]]
+            },
             arm: {
                 let [a, b, c, d] = [side("clav"), side("upperarm"), side("forearm"), side("hand")];
                 [a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]]
@@ -270,16 +300,13 @@ impl Body {
     /// (speed / its natural speed)^0.6 — people lengthen AND quicken their
     /// steps as they speed up — and shortened at a shuffle.
     fn stride_at(&self, weights: &[(usize, f32)], speed: f32) -> (f32, f32) {
-        let mut natural = 0.0;
-        let mut chosen = 0.0;
-        for &(i, w) in weights {
-            let c = self.clip(i);
-            let ratio = (speed / c.speed()).max(0.05);
-            let scale = if ratio < 1.0 { ratio.sqrt().max(0.35) } else { ratio.powf(0.6) };
-            natural += w * c.stride;
-            chosen += w * c.stride * scale;
-        }
-        (chosen.max(0.1), natural.max(0.1))
+        let natural: f32 = weights.iter().map(|&(i, w)| w * self.clip(i).stride).sum();
+        let upright = normative_stride(speed);
+        // crouched, the knees-bent capture's own stride (scaled by speed)
+        let sneak = self.clip(self.which.sneak);
+        let low = sneak.stride * (speed / sneak.speed()).max(0.05).sqrt().max(0.35);
+        let c = smooth(self.crouch);
+        ((upright * (1.0 - c) + low * c).max(0.1), natural.max(0.1))
     }
 
     /// Share of the blended gait's cycle with both feet off the ground.
@@ -289,6 +316,17 @@ impl Body {
             let c = self.contact_at(weights, k as f32 / n as f32);
             c[0] < 0.5 && c[1] < 0.5
         }).count() as f32 / n as f32
+    }
+
+    /// A finger bone's rest-relative rotation curling it by `angle` toward
+    /// the palm, which faces the thigh in the bind (the tip turns toward the
+    /// body's midline).
+    fn curl(&self, bone: usize, side: usize, angle: f32) -> Quat {
+        let b = &self.skel.bones[bone];
+        let dir = (b.tail - b.head).normalize();
+        let medial = Vec3::X * if side == 0 { -1.0 } else { 1.0 };
+        let axis = dir.cross(medial).normalize_or(Vec3::Z);
+        Quat::from_axis_angle(axis, angle)
     }
 
     fn contact_at(&self, weights: &[(usize, f32)], phase: f32) -> [f32; 2] {
@@ -432,6 +470,24 @@ impl Body {
             // crouched, the arms come forward a little, elbows bent
             pose.rot[b.upperarm[s]] = rx(-c * 0.3 * (1.0 - self.moving)) * pose.rot[b.upperarm[s]];
             pose.rot[b.forearm[s]] = rx(-c * 0.45 * (1.0 - self.moving)) * pose.rot[b.forearm[s]];
+        }
+        // ---- hands: fingers relaxed, loosely bent at rest and walking; a
+        // loose fist running (knuckle ~65, middle ~80, tip ~45 degrees —
+        // the four fingers bend about the middle finger's joints, and a
+        // tighter fist crumples the index and little finger); flat on a wall
+        let run = weights.iter().filter(|&&(i, _)| i == self.which.run).map(|&(_, w)| w).sum::<f32>() * self.moving;
+        let open = 1.0 - smooth(self.brace);
+        let fist = (run + 0.3 * c).min(1.0);
+        let joint = |relaxed: f32, closed: f32| (relaxed + (closed - relaxed) * fist) * open;
+        let finger = [joint(0.25, 1.15), joint(0.35, 1.4), joint(0.2, 0.8)];
+        let thumb = [joint(0.1, 0.7), joint(0.15, 1.0)];
+        for s in 0..2 {
+            for (k, &a) in finger.iter().enumerate() {
+                pose.rot[b.fingers[s][k]] = self.curl(b.fingers[s][0], s, a);
+            }
+            for (k, &a) in thumb.iter().enumerate() {
+                pose.rot[b.thumb[s][k]] = self.curl(b.thumb[s][0], s, a);
+            }
         }
 
         // ---- pelvis
@@ -832,6 +888,41 @@ mod tests {
             assert!(worst < peak, "at {speed} wu/s the pelvis sank {worst} to reach the feet");
             assert!(sum / n < mean, "at {speed} wu/s the pelvis sank {} on average", sum / n);
         }
+    }
+
+    /// A 1.80 m man walks 1.6 m/s at ~120 steps a minute; the retargeted
+    /// capture's own stride gave 110 (playtest 5: "let's fix the stride").
+    #[test]
+    fn the_walk_and_run_keep_a_human_cadence() {
+        for (speed, lo, hi) in [(1.6, 114.0, 126.0), (4.2, 165.0, 185.0)] {
+            let mut pos = Vec2::ZERO;
+            let mut vel = Vec2::ZERO;
+            let mut body = Body::new(pos, flat);
+            drive(&mut body, &mut pos, &mut vel, 0..240, |_| (Vec2::X * speed, false), &flat, |_, _| {});
+            let steps_per_min = speed / body.stride * 2.0 * 60.0;
+            assert!((lo..hi).contains(&steps_per_min), "{steps_per_min} steps/min at {speed} wu/s");
+        }
+    }
+
+    /// Relaxed, half-open hands walking; a loose fist running; the fingers
+    /// curl toward the palm (which faces the thigh).
+    #[test]
+    fn the_fingers_close_into_a_fist_when_running() {
+        let curl_at = |speed: f32| {
+            let mut pos = Vec2::ZERO;
+            let mut vel = Vec2::ZERO;
+            let mut body = Body::new(pos, flat);
+            drive(&mut body, &mut pos, &mut vel, 0..200, |_| (Vec2::X * speed, false), &flat, |_, _| {});
+            let f = body.b.fingers[0][0];
+            let local = body.pose.rot[body.b.hand[0]].inverse() * body.pose.rot[f];
+            let bone = &body.skel.bones[f];
+            let rest = (bone.tail - bone.head).normalize();
+            (local.to_axis_angle().1, (local * rest).x - rest.x)
+        };
+        let (walk, walk_in) = curl_at(1.6);
+        let (run, run_in) = curl_at(4.2);
+        assert!(run > walk + 0.7, "fist {run} vs walking {walk} rad");
+        assert!(walk_in < 0.0 && run_in < walk_in, "the left fingers curl toward the midline: {walk_in} {run_in}");
     }
 
     #[test]

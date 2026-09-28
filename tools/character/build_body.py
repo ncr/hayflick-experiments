@@ -54,7 +54,7 @@ MACRO = {
 # (target file under data/targets, weight): the stocky worker on top of the
 # macros — a seat, shoulders and arms with muscle, a trace of belly.
 DETAIL = [
-    ('buttocks/buttocks-volume-incr', 0.55),
+    ('buttocks/buttocks-volume-incr', 0.15),
     ('torso/torso-muscle-pectoral-incr', 0.35),
     ('torso/torso-muscle-dorsi-incr', 0.35),
     ('torso/torso-scale-horiz-incr', 0.15),
@@ -89,7 +89,12 @@ for s, gs in (('L', 'l'), ('R', 'r')):
         'clav' + s: ['clavicle_' + gs],
         'upperarm' + s: ['upperarm_' + gs],
         'forearm' + s: ['lowerarm_' + gs],
-        'hand' + s: ['hand_' + gs] + [f'{f}_0{k}_{gs}' for f in ('thumb', 'index', 'middle', 'ring', 'pinky') for k in (1, 2, 3)],
+        'hand' + s: ['hand_' + gs],
+        'fingers1' + s: [f'{f}_01_{gs}' for f in ('index', 'middle', 'ring', 'pinky')],
+        'fingers2' + s: [f'{f}_02_{gs}' for f in ('index', 'middle', 'ring', 'pinky')],
+        'fingers3' + s: [f'{f}_03_{gs}' for f in ('index', 'middle', 'ring', 'pinky')],
+        'thumb1' + s: ['thumb_01_' + gs],
+        'thumb2' + s: ['thumb_02_' + gs, 'thumb_03_' + gs],
         'thigh' + s: ['thigh_' + gs],
         'shin' + s: ['calf_' + gs],
         'foot' + s: ['foot_' + gs],
@@ -139,6 +144,19 @@ def bind_pose(rig):
             rot = now.rotation_difference(want).to_matrix().to_4x4()
             m = Matrix.Translation(head) @ rot @ Matrix.Translation(-head) @ (rig.matrix_world @ pb.matrix)
             pb.matrix = rig.matrix_world.inverted() @ m
+            bpy.context.view_layer.update()
+        # a relaxed hand: index, ring and little finger drawn in beside the
+        # middle one (MakeHuman's rest hand is spread)
+        bpy.context.view_layer.update()
+        mid = rig.pose.bones['middle_01_' + s]
+        mdir = (rig.matrix_world @ mid.tail - rig.matrix_world @ mid.head).normalized()
+        for f, keep in (('index', 0.3), ('ring', 0.3), ('pinky', 0.25)):
+            pb = rig.pose.bones[f'{f}_01_{s}']
+            head = rig.matrix_world @ pb.head
+            now = (rig.matrix_world @ pb.tail - head).normalized()
+            want = now.lerp(mdir, 1 - keep).normalized()
+            rot = now.rotation_difference(want).to_matrix().to_4x4()
+            pb.matrix = rig.matrix_world.inverted() @ (Matrix.Translation(head) @ rot @ Matrix.Translation(-head) @ (rig.matrix_world @ pb.matrix))
             bpy.context.view_layer.update()
         # the feet level and pointing straight ahead again after the leg
         # turns (MakeHuman's own ankle->ball direction, less its toe-out)

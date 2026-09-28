@@ -137,6 +137,7 @@ def classify(pos, nrm, tri, poly, w, groups, eyes):
         near = (name == 'forearm' + s) | (name == 'hand' + s)
         mat[near & (along > -0.045) & (along < -0.005)] = YELLOW
         mat[(name == 'hand' + s) & (along >= -0.005)] = SKIN
+        mat[np.isin(name, [f'{b}{s}' for b in ('fingers1', 'fingers2', 'fingers3', 'thumb1', 'thumb2')])] = SKIN
     # boots from above the ankle, soles under
     boot = (y < ankle_y + 0.09) & np.isin(name, ['footL', 'footR', 'toeL', 'toeR', 'shinL', 'shinR'])
     mat[boot] = BOOT
