@@ -165,6 +165,14 @@ tipping the whole swing forward. Now the arm tracks the capture's trajectory
 (scaled by our longer arm); the side-by-side check is the stick render of the
 CMU skeleton over ours at the same phases.
 
+## Playtest 4 (2026-09-28): "the hands look like plates facing forward"
+
+The mesh built the hand like the anatomical pose: wide across the body,
+fingers curled forward. Rebuilt hanging palm to the thigh — wide front to
+back, fingers curling in, thumb on the front edge (`build_mesh.py`). Measured
+over every clip the palm now faces within 0–37° of the thigh; a test pins the
+bind palm's orientation.
+
 ## Known limits / next
 
 - Linear-blend skinning pinches at a deep knee bend (a dark crease at game

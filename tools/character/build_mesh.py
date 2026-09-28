@@ -384,19 +384,26 @@ def arm(side, sign):
             return YELLOW  # the cuff
         return SKIN if mt[j + 1] == SKIN else SUIT
     loft(pts, secs, wts, arm_mat, n=14, power=.85)
-    # hand: a relaxed half fist — palm block, fingers curled as one mass,
-    # thumb along the index finger
+    # hand: a relaxed half fist hanging PALM TO THE THIGH (owner 2026-09-28:
+    # the first cut had the palm facing forward, a flat plate across the
+    # body). The hand is wide front-to-back and thin side-to-side, the
+    # fingers curl in toward the thigh, the thumb lies along the front edge.
     hd = TAIL['hand' + side] - wr
-    hl = np.linalg.norm(hd)
-    hdir = hd / hl
+    hdir = hd / np.linalg.norm(hd)
+    fwd = np.array([0, 0, 1.0]) - hdir * hdir[2]
+    fwd /= np.linalg.norm(fwd)
+    out = np.cross(fwd, hdir)
+    out *= sign / np.sign(out[0])  # away from the body
+    inn = -out
+    frames = lambda n: [(hdir, fwd, out)] * n
     palm = [wr + hdir * s for s in (0, .03, .06, .085)]
-    loft(palm, [(.03, .02, .02, sign * .0), (.038, .024, .022), (.037, .023, .022), (.032, .02, .02)],
-         [[(F, .3), (H, .7)], [(H, 1)], [(H, 1)], [(H, 1)]], SKIN, n=10, power=.7)
-    loft([wr + hdir * .08 + np.array([0, 0, .006]), wr + hdir * .105 + np.array([0, 0, .016]),
-          wr + hdir * .11 + np.array([0, 0, .034])],
-         [(.035, .018, .018), (.034, .02, .02), (.03, .016, .016)], [[(H, 1)]] * 3, SKIN_HI, n=10, power=.7)
-    tube([wr + hdir * .02 + np.array([-sign * 0, 0, .025]), wr + hdir * .05 + np.array([-sign * .005, 0, .038]),
-          wr + hdir * .07 + np.array([-sign * .004, 0, .04])], .011, SKIN, H, n=6)
+    loft(palm, [(.03, .02, .02), (.038, .024, .022), (.037, .023, .022), (.032, .02, .02)],
+         [[(F, .3), (H, .7)], [(H, 1)], [(H, 1)], [(H, 1)]], SKIN, n=10, power=.7, frames=frames(4))
+    loft([wr + hdir * .08 + inn * .006, wr + hdir * .105 + inn * .016, wr + hdir * .11 + inn * .034],
+         [(.035, .018, .018), (.034, .02, .02), (.03, .016, .016)], [[(H, 1)]] * 3, SKIN_HI, n=10, power=.7,
+         frames=[(hdir, fwd, inn)] * 3)
+    tube([wr + hdir * .02 + fwd * .03, wr + hdir * .05 + fwd * .04 + inn * .008,
+          wr + hdir * .07 + fwd * .036 + inn * .014], .011, SKIN, H, n=6)
 
 
 arm('L', 1)

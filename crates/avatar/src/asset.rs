@@ -210,4 +210,29 @@ mod tests {
             assert!(b.parent.is_none_or(|p| p < i));
         }
     }
+
+    /// A relaxed hand hangs palm to the thigh: in the bind pose each hand is
+    /// wide front-to-back and thin side-to-side (owner 2026-09-28 — the first
+    /// mesh built it as a plate facing forward).
+    #[test]
+    fn the_hands_hang_palm_to_the_thigh() {
+        let (skel, _) = parse_anim(ANIM_BYTES);
+        let (mesh, _) = parse_skin(SKIN_BYTES);
+        for side in ["handL", "handR"] {
+            let h = skel.index(side);
+            let (wrist, dir) = (skel.bones[h].head, (skel.bones[h].tail - skel.bones[h].head).normalize());
+            // the palm: hand-weighted points short of the finger curl
+            let palm: Vec<Vec3> = mesh
+                .vertices
+                .iter()
+                .filter(|v| v.bones[0] as usize == h && v.weights[0] > 0.9)
+                .map(|v| v.pos)
+                .filter(|p| (0.02..0.07).contains(&(*p - wrist).dot(dir)))
+                .collect();
+            let mean = palm.iter().copied().sum::<Vec3>() / palm.len() as f32;
+            let var = |f: fn(Vec3) -> f32| palm.iter().map(|p| f(*p - mean).powi(2)).sum::<f32>() / palm.len() as f32;
+            let (across, fore_aft) = (var(|v| v.x).sqrt(), var(|v| v.z).sqrt());
+            assert!(fore_aft > 1.3 * across, "{side}: palm spread {across} across the body, {fore_aft} front to back");
+        }
+    }
 }
