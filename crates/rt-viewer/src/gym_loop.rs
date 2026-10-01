@@ -268,20 +268,7 @@ impl GymLoop {
     pub fn run_due(&mut self, real_dt: f32) -> u32 {
         let n = self.fixed.advance(real_dt);
         for _ in 0..n {
-            let crouching = self.crouch_toggle || self.crouch_held;
-            if self.sim.snapshot().crouching != crouching {
-                self.queue.push(self.tick, Command::Crouch(crouching));
-            }
-            if let Some(command) = self.held_command() {
-                self.plan = None;
-                self.pending_search = None;
-                self.queue.push(self.tick, command);
-            } else {
-                // before steering: a search this tick must not share the
-                // tick with a step (walking breaks a search off)
-                self.arrive_and_search();
-                self.plan_step();
-            }
+            self.live_input();
             let cmds = self.queue.drain_for(self.tick);
             self.sim.tick(self.tick, &cmds);
             self.tick.0 += 1;
@@ -292,6 +279,28 @@ impl GymLoop {
             self.refresh();
         }
         n
+    }
+
+    /// This tick's live input (the window's fixed-tick loop), queued as
+    /// commands: the crouch state, then held keys (which override any mouse
+    /// route) or the route's steering. Both paths emit the same command, so
+    /// there is one mover. `demo_advance_tick` mirrors it, except that the
+    /// crouch keys act on CHANGE there (a DEMO trace owns the crouch state).
+    fn live_input(&mut self) {
+        let crouching = self.crouch_toggle || self.crouch_held;
+        if self.sim.snapshot().crouching != crouching {
+            self.queue.push(self.tick, Command::Crouch(crouching));
+        }
+        if let Some(command) = self.held_command() {
+            self.plan = None;
+            self.pending_search = None;
+            self.queue.push(self.tick, command);
+        } else {
+            // before steering: a search this tick must not share the tick
+            // with a step (walking breaks a search off)
+            self.arrive_and_search();
+            self.plan_step();
+        }
     }
 
     /// DEMO: one tick per rendered frame (deterministic gameplay capture).
